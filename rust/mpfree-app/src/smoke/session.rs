@@ -1532,15 +1532,18 @@ impl Session {
         if let Some(c) = self.cloud.take() {
             self.out.show(ToUi::SampleGrains(c));
         }
-        // The sampler's input: the line input's sine, when it is on.
-        if let (Some(feed), Some(hz)) = (self.rec_feed.as_mut(), self.line_tone) {
+        // The line input's sine, when it is on: the sampler's input, and
+        // the audio tracks' (as main.rs gives them the looper's input).
+        let mut line = [0f32; PERIOD];
+        if let Some(hz) = self.line_tone {
             let step = hz / RATE as f32;
-            let mut l = [0f32; PERIOD];
-            for x in l.iter_mut() {
+            for x in line.iter_mut() {
                 *x = 0.5 * (self.line_phase * std::f32::consts::TAU).sin();
                 self.line_phase = (self.line_phase + step).fract();
             }
-            feed.period_gain(self.time.block(), &l, &l, 0, self.rec_gain);
+        }
+        if let (Some(feed), Some(_)) = (self.rec_feed.as_mut(), self.line_tone) {
+            feed.period_gain(self.time.block(), &line, &line, 0, self.rec_gain);
         }
         self.rec_gain.0 = self.rec_gain.1;
         // The looper's period, as main.rs runs it (`crate::loop_input`):
@@ -1650,7 +1653,7 @@ impl Session {
             self.time.block(),
             self.time.tempo_map(),
             self.time.song_on(),
-            (&z, &z),
+            (&line, &line),
         );
         self.tracks.play_into(&mut self.mix);
         let mut played = 0;
@@ -1744,6 +1747,9 @@ impl Session {
             }
         }
         if let Some(line) = self.tracks.take_note() {
+            self.out.note(&line);
+        }
+        if let Some(line) = self.tracks.take_file_line() {
             self.out.note(&line);
         }
         if let Some(what) = self.tracks.take_left_out() {
@@ -2085,6 +2091,8 @@ impl Session {
             FromUi::OpenProject(o) => self.open_project(o),
             FromUi::OpenLoops(l) => self.looper.open(*l),
             FromUi::OpenAudio(a) => self.tracks.open(*a),
+            FromUi::AudioFiles(dir) => self.tracks.record_to(dir),
+            FromUi::AudioSavedInto(dir) => self.tracks.saved_into(dir),
             FromUi::ExportAsk => {
                 // Nothing plays outside here, and every track plays the
                 // pads: the drum kit's strip or the synth's.

@@ -11,7 +11,7 @@
 //! rate=44100
 //! track=0 id=9 input=left monitor=auto
 //! region start=0 end=3840 take=3 src=0 gain=1 fade_in=0 fade_out=0
-//! take=3 rec=5b2f0d9c41e8a7763c0f12ab9e4d8c01 track=0 group=1 pass=0 bpm=120 anchor=-12.5 frames=44100 channels=1 file=3f0c.wav
+//! take=3 rec=5b2f0d9c41e8a7763c0f12ab9e4d8c01 track=0 group=1 pass=0 bpm=120 anchor=-12.5 frames=44100 channels=1 file=Vocal_5b2f0d9c41e8a7763c0f12ab9e4d8c01.wav
 //! ```
 //!
 //! A line is `key=value` words; `file=` comes last and takes the rest of
@@ -34,7 +34,14 @@
 //! name. Every recording is the project's own, its file in the project's
 //! `samples/`, at the part's `rate`; recordings from outside the project,
 //! and files at their own rates, come with streaming (the rethink's
-//! phase 3).
+//! phase 3b).
+//!
+//! A take's `file` is the name the host gives it as it saves
+//! ([`crate::files`], phase 3a): a take recorded to a file of its own is
+//! named for its track and its id (`NAME_ID.wav`), and its finished file
+//! is copied in whole ([`TakeFile::path`], no audio read); a take opened
+//! keeps its file's name; any other is `take_ID.wav`, written from its
+//! samples.
 //!
 //! Saving: [`crate::AudioTracks::save_into`] fills a [`Saved::room`] made
 //! off the audio thread with the settings, regions and takes without
@@ -98,7 +105,13 @@ pub struct TakeFile {
     pub channels: usize,
     /// Its audio's file in the project; empty until named.
     pub file: String,
-    /// Interleaved, `frames * channels` long (empty in the text).
+    /// Where its audio is as a finished file that holds all of it, when it
+    /// has one (not in the text): a take recorded to its file and saved
+    /// there, or one opened from a project. A save copies that file
+    /// whole, and `audio` is then empty.
+    pub path: Option<std::path::PathBuf>,
+    /// Interleaved, `frames * channels` long (empty in the text, and when
+    /// `path` gives it).
     pub audio: Vec<f32>,
 }
 
@@ -111,9 +124,9 @@ pub struct Saved {
     pub takes: Vec<TakeFile>,
 }
 
-/// Room for a take's file name in a [`Saved::room`] (a streamed take's
-/// name, `<stamp>-<n>.wav`, is at most 45 bytes).
-pub const NAME_ROOM: usize = 64;
+/// Room for a take's file name in a [`Saved::room`] (`NAME_ID.wav` is at
+/// most 85 bytes: [`crate::files::NAME_MAX`] and the id's 32 digits).
+pub const NAME_ROOM: usize = 96;
 
 impl Saved {
     /// Room for the most a save can hold: [`MAX_TRACKS`] tracks of
@@ -146,6 +159,7 @@ impl Saved {
                     frames: 0,
                     channels: 1,
                     file: String::with_capacity(NAME_ROOM),
+                    path: None,
                     audio: Vec::new(),
                 })
                 .collect(),
@@ -347,6 +361,7 @@ pub fn from_text(text: &str) -> Result<Saved, String> {
                 frames,
                 channels,
                 file,
+                path: None,
                 audio: Vec::new(),
             });
         }
@@ -526,6 +541,7 @@ mod tests {
             frames: 44_100,
             channels: 1 + id as usize % 2,
             file: file.to_string(),
+            path: None,
             audio: Vec::new(),
         };
         Saved {

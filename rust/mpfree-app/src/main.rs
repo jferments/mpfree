@@ -8121,6 +8121,10 @@ fn player_session(
                 gui::FromUi::OpenLoops(l) => looper.open(*l),
                 // The audio tracks' part goes in once they are empty.
                 gui::FromUi::OpenAudio(a) => tracks.open(*a),
+                // Each take to a file of its own from now on (phase 3a),
+                // and where a project save put them.
+                gui::FromUi::AudioFiles(dir) => tracks.record_to(dir),
+                gui::FromUi::AudioSavedInto(dir) => tracks.saved_into(dir),
                 gui::FromUi::OpenProject(mut o) => {
                     // Everything stops first: the clips change under the
                     // transport, and held notes would hang.
@@ -11419,6 +11423,9 @@ fn player_session(
         if let Some(line) = tracks.take_note() {
             out.note(&line);
         }
+        if let Some(line) = tracks.take_file_line() {
+            out.note(&line);
+        }
         if let Some(what) = tracks.take_left_out() {
             out.left_out(what);
         }
@@ -13474,6 +13481,7 @@ mod tests {
                 frames,
                 channels: 1,
                 file: String::new(),
+                path: None,
                 audio: vec![0.25; frames],
             };
             assert!(r.tracks.host.tracks.load_take(take).is_ok());
