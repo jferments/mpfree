@@ -472,6 +472,10 @@ pub(crate) fn went_to(m: &IoModel, to: To) -> (String, Went) {
         To::NoPad { track: t } => (format!("nothing: no pad on {}", track(t)), Went::Nothing),
         To::Pads => ("the pads' synth".to_string(), Went::Took),
         To::Routed { track: t } => (format!("{}, by its route", track(t)), Went::Took),
+        To::Synth { id } => (
+            format!("{}, by its route", crate::synth_name(m, id)),
+            Went::Took,
+        ),
         // Thru sends only while MIDI out is on.
         To::Thru { to: p } if m.live.built.notes_out => (
             format!("thru to {}", port_text(&m.monitor, p, Dir::Out)),
@@ -2057,6 +2061,17 @@ mod tests {
         assert_eq!(
             went_to(&m, To::Routed { track: 1 }),
             ("Bass, by its route".to_string(), Went::Took)
+        );
+        // A route that names a synth (step 11e) played it: by its channel
+        // name, or said gone.
+        m.live.synths = vec![(7, "FM · Pads".to_string())];
+        assert_eq!(
+            went_to(&m, To::Synth { id: 7 }),
+            ("FM · Pads, by its route".to_string(), Went::Took)
+        );
+        assert_eq!(
+            went_to(&m, To::Synth { id: 8 }).0,
+            "a synth that isn't here now, by its route"
         );
         // Drawn at the I/O view's width and the Dev page's.
         let s = MonitorSection::new(Arc::new(Mutex::new(m)));

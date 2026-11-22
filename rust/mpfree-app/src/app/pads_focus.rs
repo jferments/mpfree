@@ -263,8 +263,9 @@ pub struct RecPlan {
     /// the layers want a place.
     pub ready: bool,
     /// Where REC records each of the pads' layers beyond the first (step
-    /// 11c), in their order; None past the last.
-    pub layers: [Option<LayerTake>; super::pad_layers::MORE],
+    /// 11c), in their order, then each synth a MIDI route names (step
+    /// 11e, [`App::rec_more_synths`]); None where there is none.
+    pub layers: [Option<LayerTake>; super::REC_MORE],
 }
 
 /// Where REC records one of the pads' layers (the instrument redesign's
@@ -289,11 +290,14 @@ impl RecPlan {
     /// The REC chip's words after the arrow: "Track 2 · Poly", "New track
     /// · Poly", "Track 1 · not free" (pinned to a track that can't take
     /// it), "No free track · Poly"; with layers that record too, "Track 2
-    /// · FM + 1 more" (step 11c). `name` gives a track's name ("Bass" for
-    /// one you named).
+    /// · FM + 1 more" (step 11c); "Track 1 + 1 more" for the armed track
+    /// as it is, with a synth a MIDI route names (step 11e). `name` gives
+    /// a track's name ("Bass" for one you named).
     pub fn chip(self, name: impl Fn(usize) -> String) -> String {
         let more = self.more();
         let first = match self.take {
+            // The armed track as it is (a kit), with a route's synth.
+            SynthTake::On(t) if self.synth.is_empty() => name(t),
             SynthTake::On(t) => format!("{} · {}", name(t), self.synth),
             SynthTake::New => format!("New track · {}", self.synth),
             SynthTake::Pinned { track, .. } => return format!("{} · not free", name(track)),
@@ -325,13 +329,13 @@ impl RecPlan {
 /// a layer (its holder, None for the shared synth); `fits` whether a
 /// track is free ([`unfit`] says None). Allocates nothing.
 pub fn layer_takes(
-    layers: [Option<(&'static str, Option<usize>)>; super::pad_layers::MORE],
+    layers: [Option<(&'static str, Option<usize>)>; super::REC_MORE],
     tracks: usize,
     first: Option<usize>,
     candidates: u128,
     plays: impl Fn(usize, Option<usize>) -> bool,
     fits: impl Fn(usize) -> bool,
-) -> [Option<LayerTake>; super::pad_layers::MORE] {
+) -> [Option<LayerTake>; super::REC_MORE] {
     let bit = |t: usize| 1u128.checked_shl(t as u32).unwrap_or(0);
     let mut used = first.map_or(0, bit);
     // New tracks the plan adds: the first's, then the layers'.
@@ -546,7 +550,8 @@ impl App {
     }
 
     /// The free places whose instrument nothing plays any more (not the
-    /// pads, nor a track by a send, nor one waiting to be the pads'), each
+    /// pads, nor a track by a send, nor one waiting to be the pads', nor
+    /// a MIDI route that names it, step 11e), each
     /// taken out (step 6): a synth tried on the pads and left goes away,
     /// as nothing records it. Once a period; nothing allocated when there
     /// is none.
@@ -565,6 +570,7 @@ impl App {
             };
             if pads == Some(holder)
                 || all == Some(holder)
+                || self.routes_hold(holder)
                 || self.pads_to == Some(n)
                 || sent
                 || self.keeps_free(n)

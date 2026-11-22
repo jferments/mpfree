@@ -440,6 +440,10 @@ impl TrackOut {
 /// The tracks a route may name: the sequencer's (`mpfree_seq::MAX_TRACKS`).
 pub const ROUTE_TRACKS: usize = 128;
 
+/// The most synths the routes may name at once (the instrument redesign's
+/// step 11e): each plays on a route row of the app's instrument host.
+pub const ROUTE_SYNTHS: usize = 4;
+
 /// A port and channel that play one track, whichever track is armed: a
 /// route to "Tracks by channel" in the I/O view's Routing. Saved with the
 /// project, as `route = track 1 < MIDI · ch 10` (or `· all channels`); one
@@ -1955,6 +1959,42 @@ mod tests {
         assert_eq!(back.routes[0].source(), "MIDI · ch 3");
         assert_eq!(warn.len(), 4, "{warn:?}");
         assert!(warn[3].contains("the same route twice"), "{warn:?}");
+    }
+
+    /// A route that plays a synth no track has (the instrument redesign's
+    /// step 11e) reads back by the synth's number, and isn't the same
+    /// route as one to a track; number 0 isn't one. (A build from before
+    /// reads "instrument" as it reads "track 2 MIDI" above: named, and
+    /// left out.)
+    #[test]
+    fn a_route_to_a_synth_reads_back_by_its_number() {
+        let synth = TrackRoute {
+            port: DIN_NAME.to_string(),
+            channel: Some(1),
+            track: 0,
+            synth: Some(4),
+            blocks: Blocks::NONE,
+        };
+        let track = TrackRoute {
+            synth: None,
+            ..synth.clone()
+        };
+        let m = MidiSetup {
+            routes: vec![synth.clone(), track.clone()],
+            ..MidiSetup::default()
+        };
+        let text = m.to_text();
+        assert!(
+            text.contains("route = instrument 4 < MIDI · ch 2\n"),
+            "{text}"
+        );
+        let (back, warn) = MidiSetup::parse(&text);
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!(back.routes, m.routes);
+        assert!(!synth.same_route(&track));
+        let (back, warn) = MidiSetup::parse("mpfree-midi 1\nroute = instrument 0 < MIDI · ch 2\n");
+        assert!(back.routes.is_empty());
+        assert_eq!(warn.len(), 1, "{warn:?}");
     }
 
     /// A route's, a thru's and a port's blocks read back with the song; a

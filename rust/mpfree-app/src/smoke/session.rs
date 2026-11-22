@@ -260,6 +260,8 @@ pub struct Session {
     keys_on_pads: crate::KeysOnPads,
     /// The pads' layers beyond the first (step 11a), as main.rs's.
     pad_layers: crate::PadLayers,
+    /// The synths MIDI routes name (step 11e), as main.rs's.
+    route_synths: crate::RouteSynths,
     /// What the pads play with their layers, as the screen last heard it.
     layers_shown: [Option<&'static str>; crate::instruments::PAD_LAYERS],
     pub previewed: Vec<(usize, u8)>,
@@ -410,6 +412,7 @@ impl Session {
             host_held: [false; 16],
             keys_on_pads: crate::KeysOnPads::new(),
             pad_layers: crate::PadLayers::new(),
+            route_synths: crate::RouteSynths::new(),
             layers_shown: [None; crate::instruments::PAD_LAYERS],
             previewed: Vec::new(),
             awaiting: [false; 16],
@@ -886,6 +889,32 @@ impl Session {
         self.run_periods(2)
     }
 
+    /// The synths the project's MIDI routes name, as MIDI in gives them
+    /// when the Routing card changes (step 11e, `MusicIn::take_route_synths`),
+    /// by the project's instrument number, row by row.
+    pub fn name_route_synths(
+        &mut self,
+        ids: [Option<u32>; crate::instruments::ROUTE_SYNTHS],
+    ) -> &mut Session {
+        self.app.set_route_synths(ids);
+        self.run_periods(1)
+    }
+
+    /// A key pressed (`velocity` Some) or let go on a keyboard whose
+    /// route names route row `j`'s synth (step 11e), as main.rs plays it:
+    /// on the synth, and into the track recording it.
+    pub fn route_key(&mut self, j: usize, note: u8, velocity: Option<u8>) -> &mut Session {
+        let key = match velocity {
+            Some(velocity) => crate::midi_in::Key::Down { note, velocity },
+            None => crate::midi_in::Key::Up { note },
+        };
+        let own = &mut self.mix.instruments;
+        self.route_synths.key(j, key, &mut self.synth, own);
+        let (time, own) = (&mut self.time, &self.mix.instruments);
+        self.route_synths.rec_key(j, key, time, own, &self.synth);
+        self.run_periods(1)
+    }
+
     /// A USB keyboard's key pressed (`velocity` Some) or let go, as
     /// `player_session` hands it over while the synth has the pads: it
     /// plays the synth by note, and with step pads of the line held it
@@ -1330,6 +1359,14 @@ impl Session {
         );
         let recs = self.app.pads_layer_recs(self.time.also());
         self.pad_layers.rec_to(recs);
+        self.route_synths.follow(
+            self.app.route_synth_holders(),
+            self.app.route_synth_shared(),
+            &mut self.synth,
+            &mut self.mix.instruments,
+        );
+        let recs = self.app.route_recs(self.time.also());
+        self.route_synths.rec_to(recs);
         let host_name = pads_at
             .and_then(|h| self.mix.instruments.held(h))
             .map(|h| h.name);

@@ -33,6 +33,7 @@ mod arp;
 pub mod mapper;
 mod pad_layers;
 mod pads_focus;
+mod route_synths;
 pub mod saved;
 pub mod step_pads;
 mod synth_pads;
@@ -45,6 +46,7 @@ pub use mapper::{Code, MapView, Mark};
 use mpfree_arp::scale::pads::Pad as PadNotes;
 pub use pad_layers::layer_names;
 pub use pads_focus::{layer_takes, synth_track, unfit, LayerTake, PadFocus, RecPlan, SynthTake};
+pub use route_synths::REC_MORE;
 pub use step_pads::StepPads;
 pub use synth_pads::{sent_name, SynthItem};
 pub use synth_pick::SynthPickView;
@@ -1672,6 +1674,9 @@ pub struct App {
     /// A free place given a layer's synth, waiting for its id in the list,
     /// as `pads_to`.
     layer_to: [Option<usize>; pad_layers::MORE],
+    /// The synths MIDI routes name (step 11e, `app/route_synths.rs`), row
+    /// by row, as MIDI in last said.
+    route_synths: [Option<crate::instrument_list::InstrumentId>; route_synths::ROUTE_SYNTHS],
     /// The list of synths, while open (app/synth_pick.rs).
     synth_pick: Option<synth_pick::SynthPick>,
     /// The tracks that play the shared synth, a bit each
@@ -1856,6 +1861,7 @@ impl App {
             bank_to: [None; KIT_PAGES],
             pad_layers: [None; pad_layers::MORE],
             layer_to: [None; pad_layers::MORE],
+            route_synths: [None; route_synths::ROUTE_SYNTHS],
             synth_pick: None,
             synth_tracks: 0,
             configured: 0,
@@ -7913,7 +7919,7 @@ mod tests {
             synth: "Poly",
             holder: None,
             ready: false,
-            layers: [None; pad_layers::MORE],
+            layers: [None; REC_MORE],
         };
         assert_eq!(plan(SynthTake::On(2)).chip(name), "Track 3 · Poly");
         assert_eq!(plan(SynthTake::On(1)).chip(name), "Bass · Poly");
@@ -7958,7 +7964,9 @@ mod tests {
     /// after the first's, while the project holds more; else none.
     #[test]
     fn each_layer_records_where_its_synth_plays_or_on_a_free_track() {
-        let layers = [Some(("Pluck", Some(130))), Some(("Poly", None)), None];
+        let mut layers = [None; REC_MORE];
+        layers[0] = Some(("Pluck", Some(130)));
+        layers[1] = Some(("Poly", None));
         // Tracks 0 to 4: Track 3 plays Pluck; Tracks 2 and 4 are free.
         let plays = |t: usize, h: Option<usize>| match h {
             Some(130) => t == 3,

@@ -119,8 +119,22 @@ pub const fn layer(i: usize) -> usize {
     THE_PADS + 1 + i
 }
 
-/// Every row: the holders, then the pads, then their layers.
-const WHO: usize = HOLDERS + PAD_LAYERS;
+/// The most synths MIDI routes name at once (the instrument redesign's
+/// step 11e): a keyboard's route can play a synth no track plays, by a
+/// route row ([`routed`]).
+pub const ROUTE_SYNTHS: usize = mpfree_midi::setup::ROUTE_SYNTHS;
+
+/// Route row `j` (from 0, below [`ROUTE_SYNTHS`]), as a player: the synth
+/// the `j`th synth a MIDI route names (step 11e), played by a send as
+/// the pads' layers are ([`Instruments::set_routed`]), so its notes end
+/// where they started.
+pub const fn routed(j: usize) -> usize {
+    THE_PADS + PAD_LAYERS + j
+}
+
+/// Every row: the holders, then the pads, then their layers, then the
+/// route rows.
+const WHO: usize = HOLDERS + PAD_LAYERS + ROUTE_SYNTHS;
 
 /// Free place `n`'s holder number (from 0).
 pub const fn free(n: usize) -> usize {
@@ -609,6 +623,19 @@ impl Instruments {
     /// The holder whose instrument the pads' layer `i` plays.
     pub fn layer_at(&self, i: usize) -> Option<usize> {
         (i + 1 < PAD_LAYERS).then(|| self.owner(layer(i))).flatten()
+    }
+
+    /// Route row `j` (step 11e, [`routed`]) plays holder `to`'s
+    /// instrument from now on (None: nothing), the notes it left sounding
+    /// on the old one ending first. False (nothing changes) when `to`
+    /// holds none, or past the rows.
+    pub fn set_routed(&mut self, j: usize, to: Option<usize>) -> bool {
+        j < ROUTE_SYNTHS && self.set_send(routed(j), to).is_ok()
+    }
+
+    /// The holder whose instrument route row `j` plays.
+    pub fn routed_at(&self, j: usize) -> Option<usize> {
+        (j < ROUTE_SYNTHS).then(|| self.owner(routed(j))).flatten()
     }
 
     /// Whether player `who` (a track, the pads or a layer) holds key
@@ -1181,6 +1208,11 @@ impl Instruments {
                 parts.push(format!("pads layer {} plays {}", l + 2, whose(o)));
             }
         }
+        for j in 0..ROUTE_SYNTHS {
+            if let Some(o) = self.routed_at(j) {
+                parts.push(format!("MIDI route {} plays {}", j + 1, whose(o)));
+            }
+        }
         let locks = self.locks.describe();
         if parts.is_empty() && self.refused == 0 && self.cut == 0 && locks.is_none() {
             return None;
@@ -1534,6 +1566,37 @@ mod tests {
         assert!(i.take_out(a));
         assert_eq!((i.layer_at(0), i.pads_play_at()), (None, None));
         assert!(!i.pad_on(layer(0), 0, 100, 0));
+        assert_eq!(i.stats(b).stray_offs, 0);
+    }
+
+    /// A MIDI route that names a synth (step 11e) plays it on a route row
+    /// by a send, as a layer does: a key sounds on the synth's strip, ends
+    /// there when the row moves on, and nothing plays once it is taken
+    /// out. Only the rows there are.
+    #[test]
+    fn a_route_row_plays_the_synth_its_route_names() {
+        let mut i = Instruments::new(RATE, BLOCK);
+        let (a, b) = (free(0), free(1));
+        let sb = crate::mixing::free_channel(1);
+        assert!(!i.set_routed(0, Some(b)), "nothing there yet");
+        for h in [a, b] {
+            i.put(h, hum(), chromatic_from(60), &Tuning::standard())
+                .unwrap();
+        }
+        assert!(i.set_routed(0, Some(b)));
+        assert!(!i.set_routed(ROUTE_SYNTHS, Some(b)), "past the rows");
+        assert_eq!((i.routed_at(0), i.routed_at(1)), (Some(b), None));
+        assert!(i.describe().unwrap().contains("MIDI route 1 plays free 2"));
+        assert!(i.note_on(routed(0), 64, 100, 0));
+        let t = render_levels(&mut i);
+        assert!(level(&t, sb) > 0.0, "heard on its strip");
+        assert!(i.set_routed(0, Some(a)));
+        assert!(!i.key_held(routed(0), 64), "ended where it started");
+        let t = render_levels(&mut i);
+        assert_eq!(level(&t, sb), 0.0);
+        assert!(i.take_out(a));
+        assert_eq!(i.routed_at(0), None);
+        assert!(!i.note_on(routed(0), 64, 100, 0));
         assert_eq!(i.stats(b).stray_offs, 0);
     }
 

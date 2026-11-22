@@ -4499,6 +4499,35 @@ fn io_track_names(shown: &mut [String], tracks: &[mpfree_seq::Track]) {
     }
 }
 
+/// The synths a MIDI route can name past the tracks (the instrument
+/// redesign's step 11e), for the Routing card's stepper and the monitor:
+/// the shared synth, then each free place's synth (one picked in the list
+/// of synths), by the project's instrument number and channel name ("FM ·
+/// Pads"). `shown` changes only when the list does; twice a second, with
+/// the tracks' names.
+fn io_route_synths(
+    shown: &mut Vec<(u32, String)>,
+    listed: &instrument_list::InstrumentList,
+    mix: &mixing::MixHost,
+) {
+    use looping::Instrument;
+    let name = |i: Instrument| {
+        mix.instrument_strip(i, &[])
+            .map_or_else(String::new, |s| mix.strip_name(s))
+    };
+    let shared = instrument_list::InstrumentId::SHARED_SYNTH;
+    let mut now = vec![(shared.number(), name(Instrument::Synth))];
+    for n in 0..instruments::FREE {
+        let holder = instruments::free(n);
+        if let (Some(id), true) = (listed.free_of(n), mix.instruments.holds(holder)) {
+            now.push((id.number(), name(Instrument::Own(holder))));
+        }
+    }
+    if *shown != now {
+        *shown = now;
+    }
+}
+
 /// Track `t` as the project names it; one past the project's tracks is
 /// named by its number.
 fn track_name(project: &mpfree_seq::Project, t: u8) -> String {
@@ -4750,6 +4779,195 @@ fn track_line(
         None => "In the mixer: nothing, it sounds outside mpfree".to_string(),
     };
     vec![plays, heard]
+}
+
+/// The synths MIDI routes name (the instrument redesign's step 11e,
+/// app/route_synths.rs): each route row of the instrument host
+/// (`instruments::routed`) points at the synth its routes name, or plays
+/// the shared synth by note; and while REC records one, the route's keys
+/// go into the track that records it, as the pads' layers' do
+/// (`PadLayers`). A key's let-go, pressure and slide reach where it went
+/// though the row moved on meanwhile. Main.rs and the test session both
+/// use it. Allocates nothing.
+struct RouteSynths {
+    /// The rows that play the shared synth, a bit each.
+    synth: u8,
+    /// The keys each row holds on the shared synth, a bit each.
+    synth_keys: [u128; RouteSynths::ROWS],
+    /// The pedals each row's keys put down.
+    pedals: [midi_in::PedalsDown; RouteSynths::ROWS],
+    /// The track recording each row's synth now (`App::route_recs`).
+    rec: [Option<u8>; RouteSynths::ROWS],
+    /// The pad each key went to on the track it went into.
+    keys: midi_in::RoutedPads,
+    /// The tracks each row's keys went into, a bit each, for their
+    /// let-go.
+    key_tracks: [u128; RouteSynths::ROWS],
+}
+
+impl RouteSynths {
+    const ROWS: usize = instruments::ROUTE_SYNTHS;
+
+    fn new() -> RouteSynths {
+        RouteSynths {
+            synth: 0,
+            synth_keys: [0; RouteSynths::ROWS],
+            pedals: std::array::from_fn(|_| midi_in::PedalsDown::default()),
+            rec: [None; RouteSynths::ROWS],
+            keys: midi_in::RoutedPads::new(),
+            key_tracks: [0; RouteSynths::ROWS],
+        }
+    }
+
+    /// The rows as the app has them now (`App::route_synth_holders`,
+    /// `App::route_synth_shared`): each pointed at its holder, the shared
+    /// synth's rows on or off. The notes and pedals a row leaves end
+    /// there first. Nothing changes when nothing did.
+    fn follow(
+        &mut self,
+        holders: [Option<usize>; RouteSynths::ROWS],
+        shared: u8,
+        synth: &mut synth::Synth,
+        own: &mut instruments::Instruments,
+    ) {
+        for (j, h) in holders.into_iter().enumerate() {
+            let to = h.filter(|&h| own.holds(h));
+            let (on, was) = (shared >> j & 1 == 1, self.synth >> j & 1 == 1);
+            if own.routed_at(j) == to && on == was {
+                continue;
+            }
+            for ctl in self.pedals[j].lift() {
+                own.control(instruments::routed(j), ctl, 0.0, 0);
+                if was {
+                    synth.control(ctl, 0.0, 0);
+                }
+            }
+            if own.routed_at(j) != to {
+                own.set_routed(j, to);
+            }
+            if was && !on {
+                let held = std::mem::take(&mut self.synth_keys[j]);
+                for note in (0..128u8).filter(|&n| held >> n & 1 == 1) {
+                    synth.note_off_note(note, 0);
+                }
+            }
+            self.synth = self.synth & !(1 << j) | u8::from(on) << j;
+        }
+    }
+
+    /// Route row `j`'s key `k` on its synth, each key its own note at its
+    /// own velocity, as a route to a track plays it. A second note-on for
+    /// a key held there is ignored; a let-go, pressure or slide reaches
+    /// where the key went.
+    fn key(
+        &mut self,
+        j: usize,
+        k: midi_in::Key,
+        synth: &mut synth::Synth,
+        own: &mut instruments::Instruments,
+    ) {
+        use midi_in::Key;
+        if j >= RouteSynths::ROWS {
+            return;
+        }
+        let row = instruments::routed(j);
+        let on = self.synth >> j & 1 == 1;
+        let bit = |note: u8| 1u128 << (note & 0x7F);
+        let held = &mut self.synth_keys[j];
+        match k {
+            Key::Down { note, velocity } => {
+                let vel = velocity.max(1);
+                if !own.key_held(row, note) {
+                    own.note_on(row, note, vel, 0);
+                }
+                if on && *held & bit(note) == 0 {
+                    synth.note_on_note(note, vel, 0);
+                    *held |= bit(note);
+                }
+            }
+            Key::Up { note } => {
+                if own.key_held(row, note) {
+                    own.note_off(row, note, 0);
+                }
+                if *held & bit(note) != 0 {
+                    synth.note_off_note(note, 0);
+                    *held &= !bit(note);
+                }
+            }
+            Key::Pressure { note, value } => {
+                if own.key_held(row, note) {
+                    own.note_pressure(row, note, value);
+                }
+                if *held & bit(note) != 0 {
+                    synth.pressure_note(note, value);
+                }
+            }
+            Key::Expr { note, kind, value } => {
+                if own.key_held(row, note) {
+                    own.note_expression(row, note, kind, value);
+                }
+                if *held & bit(note) != 0 {
+                    synth.expression_note(note, kind, value);
+                }
+            }
+            Key::Bend { value } => {
+                if !own.bend(row, value) && on {
+                    synth.bend(value);
+                }
+            }
+            Key::Control { ctl, value } => {
+                if !own.control(row, ctl, value, 0) && on {
+                    synth.control(ctl, value, 0);
+                }
+                self.pedals[j].key(ctl, value);
+            }
+        }
+    }
+
+    /// The tracks recording the rows' synths now (`App::route_recs`).
+    fn rec_to(&mut self, recs: [Option<u8>; RouteSynths::ROWS]) {
+        self.rec = recs;
+    }
+
+    /// Route row `j`'s key into the track recording its synth, as the pad
+    /// its note plays there (`midi_file::pad_on_track`); its end and
+    /// pressure where it went.
+    fn rec_key(
+        &mut self,
+        j: usize,
+        k: midi_in::Key,
+        time: &mut time::TimeHost,
+        own: &instruments::Instruments,
+        synth: &synth::Synth,
+    ) {
+        use midi_in::Key;
+        if j >= RouteSynths::ROWS {
+            return;
+        }
+        match k {
+            Key::Down { .. } => {
+                let Some(t) = self.rec[j] else {
+                    return;
+                };
+                let pad = |n| midi_file::pad_on_track(own, Some(synth), usize::from(t), n);
+                if let Some(ev) = self.keys.event(t, k, pad) {
+                    time.routed_played(t, 0, ev);
+                    self.key_tracks[j] |= 1 << t;
+                }
+            }
+            Key::Up { .. } | Key::Pressure { .. } => {
+                let mut went = self.key_tracks[j];
+                while went != 0 {
+                    let t = went.trailing_zeros() as u8;
+                    went &= went - 1;
+                    if let Some(ev) = self.keys.event(t, k, |_| None) {
+                        time.routed_played(t, 0, ev);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// What the pads play on their own, before the arp and the recorder,
@@ -7878,6 +8096,7 @@ fn player_session(
     // The pads' layers beyond the first (step 11a), which the pads' hits
     // and the keys play too.
     let mut pad_layers = PadLayers::new();
+    let mut route_synths = RouteSynths::new();
     // The keys' expression on its gear, thinned for the recorder and the
     // move log (the MIDI plan's 3.7).
     let mut expr_rec = expr_rec::ExprRec::new();
@@ -8344,6 +8563,13 @@ fn player_session(
                     // A new or opened project arms the notes (rec_arm.rs).
                     app.rec = rec_arm::RecArm::default();
                     out.show(gui::ToUi::Rec(app.rec));
+                    // The synths its MIDI routes name (step 11e), from the
+                    // I/O setup the screen opened before sending the
+                    // project, so a synth only a route plays stays while
+                    // MIDI in catches up.
+                    if let Ok(m) = io_model.lock() {
+                        app.set_route_synths(midi_in::route_synths_of(&m.setup).0);
+                    }
                     // A save under way stops: the project changes under it.
                     if collect_now {
                         looper.cancel_save();
@@ -9295,6 +9521,7 @@ fn player_session(
             if mt >= track_names_at {
                 track_names_at = mt + 0.5;
                 io_track_names(&mut live.tracks, &time.project().tracks);
+                io_route_synths(&mut live.synths, &listed, &mix);
             }
             // Where each one's parameter stands, a few times a second, in
             // place (no allocation).
@@ -9321,6 +9548,14 @@ fn player_session(
         // once, after them.
         let armed = app.track();
         for (track, k) in music.take_routed() {
+            // A route that names a synth (step 11e): its row plays it, and
+            // the track recording it takes the key.
+            if let Some(j) = track.checked_sub(midi_in::SYNTH_ROUTES) {
+                let j = usize::from(j);
+                route_synths.key(j, k, &mut synth, &mut mix.instruments);
+                route_synths.rec_key(j, k, &mut time, &mix.instruments, &synth);
+                continue;
+            }
             if routed_held.direct(track, k, usize::from(track) == armed) {
                 routed_keys.push((track, k));
             } else {
@@ -10507,6 +10742,12 @@ fn player_session(
         if std::mem::take(&mut list_changed) {
             fx.extend(app.set_instrument_list(&listed));
         }
+        // The synths MIDI routes name (step 11e) as MIDI in applies a
+        // changed setup, before a free place nothing else plays is put
+        // away.
+        if let Some(ids) = music.take_route_synths() {
+            app.set_route_synths(ids);
+        }
         fx.extend(app.put_away_free());
         let pads_at = app.pads_holder().filter(|&h| mix.instruments.holds(h));
         // The pads' layers (step 11a) follow the app's, as the pads do.
@@ -10518,6 +10759,15 @@ fn player_session(
         );
         // The armed tracks that record a layer (step 11c).
         pad_layers.rec_to(app.pads_layer_recs(time.also()));
+        // The synths MIDI routes name (step 11e), and where REC takes
+        // their keys.
+        route_synths.follow(
+            app.route_synth_holders(),
+            app.route_synth_shared(),
+            &mut synth,
+            &mut mix.instruments,
+        );
+        route_synths.rec_to(app.route_recs(time.also()));
         if mix.instruments.pads_play_at() != pads_at {
             mix.instruments.pads_play(pads_at);
             // The Synth tab shows the pads' instrument while they play it

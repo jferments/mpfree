@@ -930,10 +930,12 @@ pub const KEEP_WAITS: &str = "Finish the take first: Keep keeps what just played
 /// The recording plan ([`app::RecPlan`], the redesign's step 5b): where
 /// REC or OVERDUB on the notes would record the pads' synth (the shared
 /// one, or from step 6 a synth picked in the list of synths) and, from step
-/// 11c, each of their layers; or None when they'd record the armed track
-/// as it is (the pads follow the track, the armed track plays the synth
-/// itself and every layer has an armed track that plays it, or REC
-/// records only the loop). REC uses it ([`rec_synth`]) and the REC chip
+/// 11c, each of their layers, then (step 11e) each synth a MIDI route
+/// names, over the armed track as it is while the pads play its kit; or
+/// None when they'd record the armed track as it is (the pads follow the
+/// track and no route names a synth, the armed track plays the synth
+/// itself and every layer and route synth has an armed track that plays
+/// it, or REC records only the loop). REC uses it ([`rec_synth`]) and the REC chip
 /// names it before you press (`main.rs` and the smoke session send it
 /// when it changes), so the two can't disagree. Changes nothing, and
 /// allocates nothing.
@@ -944,20 +946,26 @@ pub fn rec_plan(
 ) -> Option<app::RecPlan> {
     use crate::rec_arm::Target;
     use app::SynthTake;
-    let (holder, synth) = if app.pads_chose_synth() {
-        (None, app.pads_synth_name())
-    } else {
-        let h = app.pads_holder()?;
-        (Some(h), app.pads_held()?.name)
-    };
     let armed = time.armed().unwrap_or(0);
+    // The pads' synth; or, while they play the armed track's kit (or its
+    // MIDI out), that track as it is when a MIDI route names a synth to
+    // record (step 11e): `synth` empty.
+    let (holder, synth, kit) = if app.pads_chose_synth() {
+        (None, app.pads_synth_name(), false)
+    } else if let Some(h) = app.pads_holder() {
+        (Some(h), app.pads_held()?.name, false)
+    } else if app.routes_record() {
+        (None, "", true)
+    } else {
+        return None;
+    };
     let notes = app.rec.target == Target::Notes || app.rec.both;
     if !notes {
         return None;
     }
     let project = time.project();
     let app_side = |t: usize| track_set_up(app, mix, t);
-    let ready = app.track_plays_synth(armed, holder);
+    let ready = kit || app.track_plays_synth(armed, holder);
     let take = if ready {
         SynthTake::On(armed)
     } else {
@@ -968,7 +976,7 @@ pub fn rec_plan(
         synth,
         holder,
         ready,
-        layers: [None; crate::instruments::PAD_LAYERS - 1],
+        layers: [None; app::REC_MORE],
     };
     let first = match take {
         SynthTake::On(t) => Some(t),
@@ -986,7 +994,7 @@ pub fn rec_plan(
         also | bit(armed)
     };
     plan.layers = app::layer_takes(
-        app.pads_layer_synths(),
+        app.rec_more_synths(),
         project.tracks.len(),
         first,
         candidates,
@@ -994,9 +1002,8 @@ pub fn rec_plan(
         |t| app::unfit(project, t, app_side).is_none(),
     );
     // Every layer armed where it plays already: REC as it is.
-    let set = |l: &app::LayerTake| {
-        matches!(l.take, SynthTake::On(t) if l.plays && also & bit(t) != 0)
-    };
+    let set =
+        |l: &app::LayerTake| matches!(l.take, SynthTake::On(t) if l.plays && also & bit(t) != 0);
     if ready && plan.layers.iter().flatten().all(set) {
         return None;
     }
@@ -1082,7 +1089,7 @@ fn rec_synth(
     };
     let also_was = time.also() & !first_on;
     let mut room = crate::time::MAX_ALSO.saturating_sub(also_was.count_ones() as usize);
-    let mut work = [None; crate::instruments::PAD_LAYERS - 1];
+    let mut work = [None; app::REC_MORE];
     let mut left_out = Vec::new();
     for (slot, l) in work.iter_mut().zip(plan.layers.iter().flatten()) {
         let arm = !matches!(l.take, SynthTake::On(t) if also_was & bit(t) != 0);
@@ -1170,7 +1177,7 @@ fn rec_synth(
     };
     // The layers' new tracks, added before anything is armed (adding a
     // track lets the other armed tracks go, and arms the new one).
-    let mut layer_at = [None; crate::instruments::PAD_LAYERS - 1];
+    let mut layer_at = [None; app::REC_MORE];
     for (at, l) in layer_at.iter_mut().zip(work.iter()) {
         let Some(l) = l else { continue };
         *at = match l.take {

@@ -30,7 +30,9 @@
 //!   take: an armed track that plays its synth, or a free one pointed at
 //!   it and armed with the first (`desk.rs`, `rec_plan` and `rec_synth`;
 //!   [`App::pads_layer_synths`]). The audio loop gives each hit to the
-//!   armed tracks that play a layer ([`App::pads_layer_recs`]).
+//!   armed tracks that play a layer ([`App::pads_layer_recs`]). The
+//!   synths MIDI routes name (step 11e, `app/route_synths.rs`) record
+//!   after them the same way.
 //! - **Saved** in a part of its own, `pad-layers` ([`App::pad_layers_part`],
 //!   `crate::project::PAD_LAYERS`), a line per layer after the first
 //!   (`layer instrument 4`), written only while there are layers. The
@@ -165,15 +167,8 @@ impl App {
     /// such track. The audio loop gives them each pad hit. Allocates
     /// nothing.
     pub fn pads_layer_recs(&self, also: u128) -> [Option<u8>; MORE] {
-        let mut used = 0u128;
-        self.pads_layer_synths().map(|l| {
-            let (_, holder) = l?;
-            let t = (0..128).find(|&t| {
-                also >> t & 1 == 1 && used >> t & 1 == 0 && self.track_plays_synth(t, holder)
-            })?;
-            used |= 1 << t;
-            Some(t as u8)
-        })
+        let all = self.rec_more_tracks(also);
+        std::array::from_fn(|i| all[i])
     }
 
     /// The velocity a hit of `velocity` (raw) goes into a layer's track
