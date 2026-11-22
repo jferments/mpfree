@@ -78,10 +78,12 @@ pub struct Session {
 
 impl Session {
     pub fn new(
-        project: Project,
+        mut project: Project,
         launches: Vec<Launch>,
         armed: Option<usize>,
     ) -> Result<Session, String> {
+        // Every clip has its lasting id, as the app's opened projects do.
+        project.give_clip_ids();
         let transport =
             Box::new(Transport::new(RATE, BPM).map_err(|e| format!("transport: {e:?}"))?);
         let mut s = Session {
@@ -833,12 +835,11 @@ pub fn song_state() -> Result<TimeState, String> {
         .filter(|&r| s.project.row_filled(r))
         .map(|r| (r, scene_length(&s.project, r, BAR)))
         .collect();
-    let mut song = scenes_to_song(&s.project, &rows, 0)
+    let song = scenes_to_song(&s.project, &rows, 0)
         .map(|t| t.song)
         .map_err(|e| format!("{e:?}"))?;
-    song.make_unique(&s.project.tracks, 2)
-        .map_err(|e| format!("{e:?}"))?;
     s.project.arrangement = song;
+    s.project.make_unique(2).map_err(|e| format!("{e:?}"))?;
     s.project.scene_mut(1).ok_or("no row 2")?.name = "Verse".into();
     s.project.arrangement.markers[1].name = "Verse".into();
     let mut state = s.state();
@@ -1249,7 +1250,8 @@ pub fn notes_state(lens: crate::editor::Lens) -> Result<TimeState, String> {
     editor.lens = lens;
     state.edit = Some(Box::new(crate::view::EditInfo {
         editor,
-        clip: keys,
+        clip: keys.into(),
+        rev: 0,
         track_name: "Chords".into(),
         bar: BAR,
     }));
@@ -1318,7 +1320,8 @@ pub fn tracker_state() -> Result<TimeState, String> {
     editor.row = crate::editor::EUCLID_ROW + 1;
     state.edit = Some(Box::new(crate::view::EditInfo {
         editor,
-        clip: drums,
+        clip: drums.into(),
+        rev: 0,
         track_name: "Drums".into(),
         bar: BAR,
     }));

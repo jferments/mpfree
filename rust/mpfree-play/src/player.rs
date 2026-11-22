@@ -136,7 +136,7 @@ use mpfree_transport::time::{Swing, Tick};
 use mpfree_transport::{Block, Mark, Marker, Span, State};
 
 use crate::steps::{first_pass, Steps, HALF, STEP};
-use crate::view::{ClipView, MuteLanded, NowPlaying, PlayView, Started, Switches, TrackView};
+use crate::view::{ClipView, Due, MuteLanded, NowPlaying, PlayView, Started, Switches};
 
 /// Notes sounding at once, across all tracks.
 pub const MAX_ACTIVE: usize = 256;
@@ -254,7 +254,16 @@ pub struct Out {
     /// The destination ([`ALL`] for every one).
     pub dest: DestId,
     pub event: Event,
+    /// The event's note is a pitch, from a clip of notes
+    /// ([`mpfree_seq::Holds::Notes`], the instrument redesign's step 5c),
+    /// not a pad. False for a clip of pad hits, the live pads and every
+    /// event that isn't a note's.
+    pub notes: bool,
 }
+
+// Out fills the room tables' fixed lists (`room`): it took the kind of
+// note at 40 bytes, and grows no further unnoticed.
+const _: () = assert!(std::mem::size_of::<Out>() <= 40);
 
 /// Where the player's events go: the host maps each destination to the
 /// sampler, the arp, MIDI out ... Events arrive in frame order.
@@ -302,6 +311,17 @@ pub struct Stats {
     /// Locks and moves left out because the sink had no room to hold
     /// another parameter this period ([`Sink::hold`]): a moment too busy.
     pub busy: u64,
+    /// The timing contract (Arrange 2.5), for a view that says when and in
+    /// which revision its cues were decided ([`crate::Includes`]): cues,
+    /// mute cues and scene program changes whose line played before their
+    /// view came, which started at once in phase with it; cues dropped as
+    /// older than one already carried out on their track; and switches
+    /// whose clip a newer cue took out of the view before the view showed
+    /// them (the track was silent until it did). All should stay 0 while
+    /// the control half keeps up.
+    pub late_cues: u64,
+    pub stale_cues: u64,
+    pub lost_switches: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -309,6 +329,8 @@ struct Sounding {
     track: u16,
     dest: DestId,
     note: u8,
+    /// Its note is a pitch (a clip of notes, [`Out::notes`]).
+    notes: bool,
     off: Tick,
     /// Start order, to break ties.
     seq: u64,
@@ -323,6 +345,8 @@ struct Start {
     track: u16,
     dest: DestId,
     note: u8,
+    /// Its note is a pitch (a clip of notes, [`Out::notes`]).
+    notes: bool,
     velocity: u8,
     off: Tick,
     /// Percent; below 100 the note rolls with `key`.
@@ -365,6 +389,7 @@ struct Touching {
     track: u16,
     dest: DestId,
     note: u8,
+    notes: bool,
     slot: usize,
     /// The note's start as played, and its clip's speed.
     base: Tick,
@@ -379,6 +404,7 @@ const NO_TOUCHING: Touching = Touching {
     track: 0,
     dest: 0,
     note: 0,
+    notes: false,
     slot: 0,
     base: 0,
     speed: Speed::NORMAL,
@@ -395,6 +421,7 @@ struct Hit {
     track: u16,
     dest: DestId,
     note: u8,
+    notes: bool,
     velocity: u8,
     off: Tick,
 }
@@ -404,6 +431,7 @@ const NO_HIT: Hit = Hit {
     track: 0,
     dest: 0,
     note: 0,
+    notes: false,
     velocity: 0,
     off: 0,
 };
@@ -493,6 +521,7 @@ const NO_SOUND: Sounding = Sounding {
     track: 0,
     dest: 0,
     note: 0,
+    notes: false,
     off: 0,
     seq: 0,
     from: 0,
@@ -502,6 +531,7 @@ const NO_START: Start = Start {
     track: 0,
     dest: 0,
     note: 0,
+    notes: false,
     velocity: 0,
     off: 0,
     chance: 100,
@@ -737,6 +767,7 @@ impl Player {
                 at: 0,
                 origin: 0,
                 from: 0,
+                rev: 0,
             }; MAX_TRACKS],
             n_started: 0,
             mute_landed: [None; MAX_TRACKS],
@@ -882,7 +913,7 @@ impl Player {
         self.replaced = *replaced;
         self.take = *take;
         self.erase_take = *erase_take;
-        self.switches = *switches;
+        self.switches.copy_from(switches);
         self.mute_landed = *mute_landed;
         self.last = *last;
         self.seen = *seen;
@@ -970,7 +1001,12 @@ impl Player {
     }
 
     pub fn stats(&self) -> Stats {
-        self.stats
+        Stats {
+            late_cues: self.switches.late,
+            stale_cues: self.switches.stale,
+            lost_switches: self.switches.lost,
+            ..self.stats
+        }
     }
 
     /// Notes sounding now (started, not yet ended).
@@ -992,8 +1028,8 @@ impl Player {
         let (clip, origin, start) = match self.switches.playing_from(view, track) {
             Some(p) => p,
             None if view.song => {
-                let r = view.tracks.get(track)?.region_at(tick)?;
-                (&r.clip, r.clip.origin, r.clip.start)
+                let (r, clip) = view.placed_at(track, tick)?;
+                (clip, r.origin, r.start)
             }
             None => return None,
         };
@@ -1019,6 +1055,7 @@ impl Player {
             stamp: clip.stamp,
             muted: self.muted(view, track),
             repeats,
+            holds_notes: clip.holds_notes,
         })
     }
 
@@ -1038,7 +1075,9 @@ impl Player {
                 m += 1;
             }
             if matches!(span.state, State::Playing | State::Recording) {
-                self.play_span(view, span, out);
+                let ticks = span.ticks();
+                self.play_span(view, span, &ticks, out);
+                self.switches.played(span, &ticks);
             }
         }
         for marker in &markers[m..] {
@@ -1093,6 +1132,7 @@ impl Player {
                     track: ALL,
                     dest: ALL,
                     event: Event::AllOff,
+                    notes: false,
                 });
             }
             _ => {}
@@ -1111,13 +1151,20 @@ impl Player {
                 track: s.track,
                 dest: s.dest,
                 event: Event::NoteOff { note: s.note },
+                notes: s.notes,
             });
         }
         self.n_sounding = 0;
     }
 
-    fn play_span(&mut self, view: &PlayView, span: &Span, out: &mut impl Sink) {
-        let ticks = span.ticks();
+    fn play_span(
+        &mut self,
+        view: &PlayView,
+        span: &Span,
+        ticks: &Range<Tick>,
+        out: &mut impl Sink,
+    ) {
+        let ticks = ticks.clone();
         if ticks.is_empty() {
             return;
         }
@@ -1133,7 +1180,11 @@ impl Player {
             // span on its line: the track as it was up to it, then as the
             // cue has it.
             match self.mute_due(view, i, &ticks, bar) {
-                Some(m) => {
+                Some(due) => {
+                    let m = due.at;
+                    if due.late() {
+                        self.switches.late += 1;
+                    }
                     if m > ticks.start {
                         self.play_track(view, span, i, ticks.start..m);
                     }
@@ -1218,6 +1269,7 @@ impl Player {
                         program: p.program,
                         bank: p.bank,
                     },
+                    notes: false,
                 });
             }
             if s.reset || s.scene || !s.plays {
@@ -1233,18 +1285,19 @@ impl Player {
                 self.ratchet(i);
             }
             let (offset, frame) = place(span, s.tick);
-            if let Some(j) = self.find(s.track, s.dest, s.note) {
+            if let Some(j) = self.find(s.track, s.dest, s.note, s.notes) {
                 out.send(Out {
                     offset,
                     frame,
                     track: s.track,
                     dest: s.dest,
                     event: Event::NoteOff { note: s.note },
+                    notes: s.notes,
                 });
                 self.remove(j);
             }
             // The old note's pressure ends with it.
-            self.stop_touch(s.track, s.dest, s.note);
+            self.stop_touch(s.track, s.dest, s.note, s.notes);
             if self.n_sounding == MAX_ACTIVE {
                 self.stats.dropped += 1;
                 continue;
@@ -1267,11 +1320,13 @@ impl Player {
                     note: s.note,
                     velocity: s.velocity,
                 },
+                notes: s.notes,
             });
             self.sounding[self.n_sounding] = Sounding {
                 track: s.track,
                 dest: s.dest,
                 note: s.note,
+                notes: s.notes,
                 off: s.off,
                 seq: self.seq,
                 from: s.tick,
@@ -1331,18 +1386,19 @@ impl Player {
             NO_ERASE
         };
         // A cue starting in this span: the clip so far plays up to it.
-        let switch = self.switches.due(view, i, &ticks, bar);
+        let due = self.switches.due(view, i, &ticks, bar);
+        let switch = due.map(|d| d.at);
         let before = switch.map_or(ticks.clone(), |at| ticks.start..at);
         let playing = self.switches.playing_from(view, i);
         // Song mode: a track with no clip launched plays its
         // placements.
         let song = view.song && playing.is_none();
         let placed = if song {
-            track.region_at(ticks.start)
+            view.placed_at(i, ticks.start)
         } else {
             None
         };
-        let region = placed.map(|r| (r.clip.slot, r.clip.start));
+        let region = placed.map(|(r, c)| (c.slot, r.start));
         // A clip started since the last span (a launch, not a cue):
         // the track's last result starts again.
         let now = playing.map(|(c, _, start)| (c.slot, start)).or(region);
@@ -1355,10 +1411,14 @@ impl Player {
         // The scene's program change (S5): on its line, or here once it
         // landed. The clip playing then (from a switch on or before it,
         // the cued one) sends its own instead, if it has one.
-        if let Some(at) = self.scene_due(view, i, &ticks, bar) {
+        if let Some(due) = self.scene_due(view, i, &ticks, bar) {
+            let at = due.at;
+            if due.late() {
+                self.switches.late += 1;
+            }
             let own = match switch {
                 Some(s) if s <= at => track.cue.as_ref().and_then(|c| c.clip.as_ref()),
-                _ if song => track.region_at(at).map(|r| &r.clip),
+                _ if song => view.placed_at(i, at).map(|(_, c)| c),
                 _ => playing.map(|(c, _, _)| c),
             }
             .and_then(|c| c.program);
@@ -1366,7 +1426,7 @@ impl Player {
         }
         // Its program change, once: on its start, or here when it
         // started before (the music starting, a jump into it).
-        let clip = playing.map(|(c, _, _)| c).or(placed.map(|r| &r.clip));
+        let clip = playing.map(|(c, _, _)| c).or(placed.map(|(_, c)| c));
         if let (Some(key), Some(c)) = (now, clip) {
             let at = key.1.clamp(ticks.start, ticks.end - 1);
             self.program_start(i, key, c.program, at, track.dest, false);
@@ -1399,13 +1459,14 @@ impl Player {
                 self.collect_moves(clip, origin, i, track.dest, &before);
             }
         } else if song && !muted {
-            self.collect_song(track, i, &before, switch, span.swing);
+            self.collect_song(view, i, &before, switch, span.swing);
         }
-        let Some(at) = switch else { return };
+        let Some(due) = due else { return };
+        let at = due.at;
         // A track starts one cue a call at most, and there are at most
         // MAX_TRACKS tracks, so this always fits.
         if let (Some(s), Some(slot)) = (
-            self.switches.start(view, i, at),
+            self.switches.start(view, i, due),
             self.started.get_mut(self.n_started),
         ) {
             *slot = s;
@@ -1469,7 +1530,7 @@ impl Player {
             }
         } else if view.song && playing.is_none() && !self.muted(view, i) {
             // Stopped: the track goes back to the song.
-            self.collect_song(track, i, &(at..ticks.end), None, span.swing);
+            self.collect_song(view, i, &(at..ticks.end), None, span.swing);
         }
     }
 
@@ -1491,9 +1552,10 @@ impl Player {
     }
 
     /// Where the mute cue on track `i` lands in a span playing `ticks`, if
-    /// it does: the first line of its launch quantise among them. A cue
-    /// that landed already waits for the view to show it applied.
-    fn mute_due(&self, view: &PlayView, i: usize, ticks: &Range<Tick>, bar: Tick) -> Option<Tick> {
+    /// it does: the first line of its launch quantise among them, or at
+    /// once if its line played since it was decided (late, as a cue). A
+    /// cue that landed already waits for the view to show it applied.
+    fn mute_due(&self, view: &PlayView, i: usize, ticks: &Range<Tick>, bar: Tick) -> Option<Due> {
         let c = view.mute_cue(i)?;
         if self
             .mute_landed
@@ -1504,8 +1566,14 @@ impl Player {
         {
             return None;
         }
+        if let Some(line) = self.switches.crossed(Switches::mutes_decided(view), c.line) {
+            return Some(Due {
+                at: ticks.start,
+                line,
+            });
+        }
         let at = c.line.next(ticks.start, bar);
-        (at < ticks.end).then_some(at)
+        (at < ticks.end).then_some(Due { at, line: at })
     }
 
     /// Carry out the mute cue on track `i` at song tick `at`: going
@@ -1628,17 +1696,32 @@ impl Player {
     /// `ticks`, if it does: once a launch, on the first line of its line
     /// among them (bars of `bar` ticks); once it landed (or with no line),
     /// on the span's first tick after a stop or a jump.
-    fn scene_due(&self, view: &PlayView, i: usize, ticks: &Range<Tick>, bar: Tick) -> Option<Tick> {
+    fn scene_due(&self, view: &PlayView, i: usize, ticks: &Range<Tick>, bar: Tick) -> Option<Due> {
         let p = view.scene_program(i)?;
         if self.scene_sent.get(i).copied().flatten() == Some(p.id) {
             return None;
         }
         let landed = self.scene_landed.get(i).copied().flatten() == Some(p.id);
-        let at = match p.line {
-            Some(line) if !landed => line.next(ticks.start, bar),
-            _ => ticks.start,
+        let due = match p.line {
+            // Late, as the scene's cues are: at once.
+            Some(line) if !landed => {
+                match self.switches.crossed(Switches::decided(view, i), line) {
+                    Some(line) => Due {
+                        at: ticks.start,
+                        line,
+                    },
+                    None => {
+                        let at = line.next(ticks.start, bar);
+                        Due { at, line: at }
+                    }
+                }
+            }
+            _ => Due {
+                at: ticks.start,
+                line: ticks.start,
+            },
         };
-        (at < ticks.end).then_some(at)
+        (due.at < ticks.end).then_some(due)
     }
 
     /// Track `i`'s scene program change lands on song tick `at`: sent
@@ -1706,13 +1789,16 @@ impl Player {
     /// starts, so the two overlap and a legato synth glides.
     fn join(&mut self, s: &Start) -> bool {
         let mut tied = false;
+        // Notes of the other kind (pads against pitches) never join.
         let notes = self.sounding[..self.n_sounding]
             .iter_mut()
+            .filter(|x| x.notes == s.notes)
             .map(|x| (x.track, x.dest, x.note, x.from, &mut x.off));
         // A ratchet's hits from before the tie's tick that this span hasn't
         // played yet count as sounding, as they would at a shorter period.
         let hits = self.hits[..self.n_hits]
             .iter_mut()
+            .filter(|h| h.notes == s.notes)
             .map(|h| (h.track, h.dest, h.note, h.tick, &mut h.off));
         for (track, dest, note, from, off) in notes.chain(hits) {
             if track != s.track || dest != s.dest || *off < s.tick || from >= s.tick {
@@ -1755,6 +1841,7 @@ impl Player {
                 track: s.track,
                 dest: s.dest,
                 note: s.note,
+                notes: s.notes,
                 velocity: mpfree_seq::ramped(s.velocity, s.ramp, h as u8, s.ratchet),
                 off: at(h + 1).max(tick + 1).min(cut),
             });
@@ -1814,13 +1901,14 @@ impl Player {
             self.n_hits -= 1;
             self.end_until(view, h.tick, first, span, out);
             let (offset, frame) = place(span, h.tick);
-            if let Some(j) = self.find(h.track, h.dest, h.note) {
+            if let Some(j) = self.find(h.track, h.dest, h.note, h.notes) {
                 out.send(Out {
                     offset,
                     frame,
                     track: h.track,
                     dest: h.dest,
                     event: Event::NoteOff { note: h.note },
+                    notes: h.notes,
                 });
                 self.remove(j);
             }
@@ -1837,11 +1925,13 @@ impl Player {
                     note: h.note,
                     velocity: h.velocity,
                 },
+                notes: h.notes,
             });
             self.sounding[self.n_sounding] = Sounding {
                 track: h.track,
                 dest: h.dest,
                 note: h.note,
+                notes: h.notes,
                 off: h.off,
                 seq: self.seq,
                 from: h.tick,
@@ -1893,6 +1983,7 @@ impl Player {
             track: l.track,
             dest: l.dest,
             event,
+            notes: false,
         };
         match l.kind {
             LockKind::Step => {
@@ -1985,6 +2076,7 @@ impl Player {
                         track: h.track,
                         dest: h.dest,
                         event: Event::Unlock { addr },
+                        notes: false,
                     });
                 }
                 // Under a step's lock: when it ends, the parameter is free.
@@ -2027,6 +2119,7 @@ impl Player {
                             addr: h.addr,
                             value,
                         },
+                        notes: false,
                     });
                     self.stats.lanes += 1;
                     (h.lane, h.value, h.under) = (true, value, None);
@@ -2039,6 +2132,7 @@ impl Player {
                     track: h.track,
                     dest: h.dest,
                     event: Event::Unlock { addr: h.addr },
+                    notes: false,
                 }),
             }
         }
@@ -2172,29 +2266,35 @@ impl Player {
     /// cue's switch.
     fn collect_song(
         &mut self,
-        track: &TrackView,
+        view: &PlayView,
         i: usize,
         ticks: &Range<Tick>,
         cut: Option<Tick>,
         swing: Swing,
     ) {
+        let Some(track) = view.tracks.get(i) else {
+            return;
+        };
         let t = i as u16;
         let first = track.regions.partition_point(|r| r.end <= ticks.start);
         for r in &track.regions[first..] {
-            if r.clip.start >= ticks.end {
+            if r.start >= ticks.end {
                 break;
             }
-            let part = ticks.start.max(r.clip.start)..ticks.end.min(r.end);
-            if ticks.contains(&r.clip.start) {
-                let key = (r.clip.slot, r.clip.start);
-                self.program_start(i, key, r.clip.program, r.clip.start, track.dest, true);
+            // Every block's clip is in the view's song clips.
+            let Some(clip) = view.song_clips.get(r.clip) else {
+                continue;
+            };
+            let part = ticks.start.max(r.start)..ticks.end.min(r.end);
+            if ticks.contains(&r.start) {
+                let key = (clip.slot, r.start);
+                self.program_start(i, key, clip.program, r.start, track.dest, true);
             }
             let end = cut.map_or(r.end, |c| c.min(r.end));
-            let clip = &r.clip;
             self.collect(
                 clip,
-                clip.origin,
-                clip.start,
+                r.origin,
+                r.start,
                 t,
                 track.dest,
                 swing,
@@ -2206,7 +2306,7 @@ impl Player {
             if clip.moves.is_empty() {
                 self.forget_moves(i);
             } else {
-                self.collect_moves(clip, clip.origin, i, track.dest, &part);
+                self.collect_moves(clip, r.origin, i, track.dest, &part);
             }
             if ticks.contains(&r.end) {
                 self.cut_hits(t, r.end);
@@ -2423,6 +2523,7 @@ impl Player {
                 track,
                 dest,
                 note: n.note,
+                notes: clip.holds_notes,
                 velocity: n.velocity,
                 off,
                 chance: n.src.chance,
@@ -2539,6 +2640,7 @@ impl Player {
                 track: s.track,
                 dest: s.dest,
                 event: Event::NoteOff { note: s.note },
+                notes: s.notes,
             });
             self.remove(i);
         }
@@ -2558,6 +2660,7 @@ impl Player {
             track: s.track,
             dest: s.dest,
             note: s.note,
+            notes: s.notes,
             slot: s.slot,
             base: s.tick,
             speed: s.speed,
@@ -2598,6 +2701,7 @@ impl Player {
                 note: t.note,
                 value: p.value.min(127),
             },
+            notes: t.notes,
         });
         self.stats.pressure += 1;
         let next = t.next + 1;
@@ -2621,12 +2725,12 @@ impl Player {
         self.n_touching -= 1;
     }
 
-    /// A note on `track`, `dest` and `note` starts: the pressure of the one
-    /// before it ends.
-    fn stop_touch(&mut self, track: u16, dest: DestId, note: u8) {
+    /// A note on `track`, `dest` and `note` (a pitch with `notes`)
+    /// starts: the pressure of the one before it ends.
+    fn stop_touch(&mut self, track: u16, dest: DestId, note: u8, notes: bool) {
         if let Some(k) = self.touching[..self.n_touching]
             .iter()
-            .position(|t| (t.track, t.dest, t.note) == (track, dest, note))
+            .position(|t| (t.track, t.dest, t.note, t.notes) == (track, dest, note, notes))
         {
             self.drop_touch(k);
         }
@@ -2655,10 +2759,12 @@ impl Player {
         self.n_touching
     }
 
-    fn find(&self, track: u16, dest: DestId, note: u8) -> Option<usize> {
+    /// The sounding note on `track`, `dest` and `note`, of its kind (a
+    /// pitch with `notes`, else a pad).
+    fn find(&self, track: u16, dest: DestId, note: u8, notes: bool) -> Option<usize> {
         self.sounding[..self.n_sounding]
             .iter()
-            .position(|s| s.track == track && s.dest == dest && s.note == note)
+            .position(|s| s.track == track && s.dest == dest && s.note == note && s.notes == notes)
     }
 
     /// Remove keeping the start order.

@@ -83,7 +83,7 @@ use mpfree_sampler::model::{
 };
 use mpfree_ui::layout;
 use mpfree_ui::wave::{Marker, MarkerKind, WaveView, Waveform};
-use mpfree_ui::{Color, EventKind, Rect, Ui, UiEvent};
+use mpfree_ui::{ColorKey, EventKind, Paint, Rect, Ui, UiEvent};
 
 use crate::keys_widgets::{KeyZones, Zone};
 use crate::pads_tab::{sound_region, Sound};
@@ -92,7 +92,9 @@ use crate::play_widgets::{EnvelopeView, FilterCurve, LayerBar, LayerMap, MotionV
 use crate::slice_tool::pad_text;
 use crate::source::SourceView;
 use crate::wave_tab::{duration_text, mode_label, pad_color};
-use crate::widgets::{KnobCard, PadBar, SectionChip, SectionChips, Setting, SettingList};
+use crate::widgets::{
+    KnobCard, PadBar, SectionChip, SectionChips, Setting, SettingList, PAD_COLORS,
+};
 
 /// Widget names the tab adds. The app's own are `header` and `hint`.
 pub const BAR: &str = "smp-play-bar";
@@ -183,10 +185,9 @@ const ENV_OCTAVES: f32 = 4.0;
 const TIME_DETENTS: f32 = 8.0;
 /// Gesture ids the tab hands out start here, clear of other screens'.
 const GESTURE_BASE: u64 = 0x504C_4159_0000_0000;
-/// Layer colours on the map, in layer order.
-const LAYER_COLORS: [u32; 8] = [
-    0x6EA8FE, 0x3DDC97, 0xFF8A3D, 0xFFC145, 0xC77DFF, 0xFF5C8A, 0x4DD4E8, 0xA3E048,
-];
+/// Layer colours on the map, in layer order (the pads' palette, blue
+/// first).
+const LAYER_COLORS: [usize; 8] = [1, 2, 0, 3, 4, 5, 6, 7];
 
 /// The tab's rows. Each sits in one [`Section`], which lists them in
 /// order.
@@ -1242,8 +1243,12 @@ impl PlayTab {
         let labels: Vec<&str> = Section::ALL.iter().map(|s| s.label()).collect();
         ui.add(SECTIONS, SectionChips::new(&labels));
         ui.add(LIST, SettingList::new("Layers"));
-        let t = ui.theme.clone();
-        let colors = [t.accent, t.good, t.warn, Color::rgb(0xC77DFF)];
+        let colors = [
+            Paint::Key(ColorKey::Accent),
+            Paint::Key(ColorKey::Good),
+            Paint::Key(ColorKey::Warn),
+            Paint::Content(PAD_COLORS[4]),
+        ];
         for (k, row) in Section::Layers.qlinks().iter().enumerate() {
             ui.add(
                 QLINKS[k],
@@ -1503,7 +1508,7 @@ impl PlayTab {
         let p = &st.settings;
         let n = p.layers.len();
         if let Some(bar) = ui.get_mut::<PadBar>(BAR) {
-            bar.color = pad_color(st.pad);
+            bar.color = Paint::Content(pad_color(st.pad));
             bar.title = format!("Pad {} · {}", pad_text(self.bank, st.pad), p.name);
             let first = &p.layers[0].region;
             let mut about = vec![
@@ -1566,7 +1571,7 @@ impl PlayTab {
                         sub: format!("velocity {}–{}{own}{pick}", l.vel_lo, l.vel_hi),
                         lo: l.vel_lo,
                         hi: l.vel_hi,
-                        color: Color::rgb(LAYER_COLORS[k % LAYER_COLORS.len()]),
+                        color: PAD_COLORS[LAYER_COLORS[k % LAYER_COLORS.len()]],
                     }
                 })
                 .collect();

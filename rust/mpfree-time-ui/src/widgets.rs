@@ -217,16 +217,16 @@ impl Widget for TransportBar {
         cx.canvas.fill_round_rect(r, t.radius, t.surface);
         let inner = r.inset_xy(4, 4);
         // Stop, play, record.
-        let (lit, ink) = match self.run {
-            Run::Stopped => (BarButton::Stop, t.text),
-            Run::Playing => (BarButton::Play, t.bg),
-            Run::Recording | Run::CountIn => (BarButton::Rec, t.bg),
-        };
         let fill = match self.run {
             Run::Stopped => t.raised,
             Run::Playing => t.good,
             Run::Recording => t.bad,
             Run::CountIn => t.warn,
+        };
+        let (lit, ink) = match self.run {
+            Run::Stopped => (BarButton::Stop, t.text),
+            Run::Playing => (BarButton::Play, t.ink_on(fill)),
+            Run::Recording | Run::CountIn => (BarButton::Rec, t.ink_on(fill)),
         };
         for b in [BarButton::Stop, BarButton::Play, BarButton::Rec] {
             let Some(br) = TransportBar::button_rect(r, b) else {
@@ -234,7 +234,7 @@ impl Widget for TransportBar {
             };
             let on = b == lit;
             if on {
-                cx.canvas.fill_round_rect(br, 10, fill);
+                cx.canvas.fill_round_rect(br, t.round(10), fill);
             }
             let c = if on { ink } else { t.text_dim };
             let (mx, my) = (br.x + br.w / 2, br.y + br.h / 2);
@@ -255,7 +255,7 @@ impl Widget for TransportBar {
         let mut x = TransportBar::button_rect(r, BarButton::Rec).map_or(inner.x, |b| b.right()) + 8;
         // Replace or overdub.
         let mode = Rect::new(x, inner.y, MODE_W, inner.h);
-        cx.canvas.fill_round_rect(mode, 10, t.raised);
+        cx.canvas.fill_round_rect(mode, t.round(10), t.raised);
         let dot = if self.overdub { t.accent } else { t.warn };
         cx.canvas.fill_round_rect(
             Rect::new(mode.x + 14, mode.y + mode.h / 2 - 4, 8, 8),
@@ -302,7 +302,7 @@ impl Widget for TransportBar {
         let undo = Rect::new(right - UNDO_W, inner.y, UNDO_W, inner.h);
         match &self.undo {
             Some(what) => {
-                cx.canvas.fill_round_rect(undo, 10, t.raised);
+                cx.canvas.fill_round_rect(undo, t.round(10), t.raised);
                 cx.text(
                     FontId::Bold,
                     t.size_small + 1.0,
@@ -314,7 +314,7 @@ impl Widget for TransportBar {
                 hits.push((undo, EventKind::Tab(BarButton::Undo.index())));
             }
             None => {
-                cx.canvas.stroke_round_rect(undo, 10, 1, t.outline);
+                cx.canvas.stroke_round_rect(undo, t.round(10), 1, t.outline);
                 cx.text(
                     FontId::Sans,
                     t.size_small + 1.0,
@@ -618,12 +618,12 @@ pub const REC_SONG_W: i32 = 112;
 pub fn rec_song_pill(cx: &mut PaintCx, r: Rect, on: bool) {
     let t = cx.theme.clone();
     cx.canvas
-        .fill_round_rect(r, 10, if on { t.bad } else { t.raised });
-    let ink = if on { t.text } else { t.text_dim };
+        .fill_round_rect(r, t.round(10), if on { t.bad } else { t.raised });
+    let ink = if on { t.ink_on(t.bad) } else { t.text_dim };
     cx.canvas.fill_round_rect(
         Rect::new(r.x + 12, r.y + r.h / 2 - 5, 10, 10),
         5,
-        if on { t.text } else { t.bad },
+        if on { ink } else { t.bad },
     );
     cx.text(
         FontId::Bold,
@@ -776,12 +776,13 @@ impl ClipGrid {
             Held::Clip(track, slot) => {
                 let home = self.cell_rect(r, track, slot);
                 if let Some(h) = home {
-                    cx.canvas.fill_round_rect(h, 8, t.surface);
-                    cx.canvas.stroke_round_rect(h, 8, 2, t.outline);
+                    cx.canvas.fill_round_rect(h, t.round(8), t.surface);
+                    cx.canvas.stroke_round_rect(h, t.round(8), 2, t.outline);
                 }
                 let to = self.clip_target(r, gr);
                 if let Some(c) = to.and_then(|(t2, s2)| self.cell_rect(r, t2, s2)) {
-                    cx.canvas.stroke_round_rect(c.inset(-3), 10, 3, t.accent);
+                    cx.canvas
+                        .stroke_round_rect(c.inset(-3), t.round(10), 3, t.accent);
                 }
                 let card = match home {
                     Some(h) => Rect::new(h.x + dx, h.y + dy, h.w, h.h),
@@ -795,14 +796,15 @@ impl ClipGrid {
                 if let Some(cell) = self.tracks.get(track).and_then(|tr| tr.cells.get(slot)) {
                     paint_cell(cx, card, cell, self.base(cx, track));
                 }
-                cx.canvas.stroke_round_rect(card, 8, 2, t.accent);
+                cx.canvas.stroke_round_rect(card, t.round(8), 2, t.accent);
             }
             Held::Row(row) => {
                 let strip = |b: Rect| Rect::new(b.x, b.y, g.body.right() - b.x, b.h);
                 let home = self.scene_rect(r, row);
                 if let Some(b) = home {
-                    cx.canvas.fill_round_rect(strip(b), 8, t.surface);
-                    cx.canvas.stroke_round_rect(strip(b), 8, 2, t.outline);
+                    cx.canvas.fill_round_rect(strip(b), t.round(8), t.surface);
+                    cx.canvas
+                        .stroke_round_rect(strip(b), t.round(8), 2, t.outline);
                 }
                 // The row under the finger follows it, but stays clear of
                 // the line: below it on the way up, above it on the way
@@ -830,7 +832,7 @@ impl ClipGrid {
                 };
                 let y0 = y0.clamp(lo, hi.max(lo));
                 let b = Rect::new(g.body.x + 8, y0, LABEL_W, g.row_h);
-                cx.canvas.fill_round_rect(strip(b), 8, t.raised);
+                cx.canvas.fill_round_rect(strip(b), t.round(8), t.raised);
                 cx.text(
                     FontId::Bold,
                     t.size_small,
@@ -850,7 +852,8 @@ impl ClipGrid {
                         paint_cell(cx, cr, cell, self.base(cx, track));
                     }
                 }
-                cx.canvas.stroke_round_rect(strip(b), 8, 2, t.accent);
+                cx.canvas
+                    .stroke_round_rect(strip(b), t.round(8), 2, t.accent);
             }
         }
     }
@@ -1082,7 +1085,8 @@ impl Widget for ClipGrid {
         let edit = self.edit_rect(r);
         let add = self.add_rect(r);
         if let Some(b) = back {
-            cx.canvas.fill_round_rect(b, 10, t.raised.mix(t.good, 0.35));
+            cx.canvas
+                .fill_round_rect(b, t.round(10), t.raised.mix(t.good, 0.35));
             cx.text(
                 FontId::Bold,
                 t.size_small,
@@ -1098,7 +1102,7 @@ impl Widget for ClipGrid {
             let n = self.tracks.len();
             let last = (self.first_track + GRID_COLS).min(n);
             for (b, glyph, live) in [(back, "‹", self.first_track > 0), (on, "›", last < n)] {
-                cx.canvas.fill_round_rect(b, 10, t.raised);
+                cx.canvas.fill_round_rect(b, t.round(10), t.raised);
                 let ink = if live { t.text } else { t.text_faint };
                 cx.text(FontId::Bold, t.size_body, b, Align::Center, ink, glyph);
             }
@@ -1134,7 +1138,7 @@ impl Widget for ClipGrid {
                 legend,
             );
         }
-        cx.canvas.fill_round_rect(add, 10, t.raised);
+        cx.canvas.fill_round_rect(add, t.round(10), t.raised);
         cx.text(
             FontId::Bold,
             t.size_small,
@@ -1144,7 +1148,7 @@ impl Widget for ClipGrid {
             "+ Track",
         );
         rec_song_pill(cx, rec, self.song_rec);
-        cx.canvas.fill_round_rect(edit, 10, t.raised);
+        cx.canvas.fill_round_rect(edit, t.round(10), t.raised);
         cx.text(
             FontId::Bold,
             t.size_small,
@@ -1153,7 +1157,7 @@ impl Widget for ClipGrid {
             t.text,
             "Edit ›",
         );
-        cx.canvas.fill_round_rect(song, 10, t.raised);
+        cx.canvas.fill_round_rect(song, t.round(10), t.raised);
         cx.text(
             FontId::Bold,
             t.size_small,
@@ -1187,10 +1191,10 @@ impl Widget for ClipGrid {
             // the scene plays, ringed while it waits for the bar line.
             let playing = self.scene_playing == Some(slot);
             let fill = if playing { t.good } else { t.raised };
-            let ink = if playing { t.bg } else { t.text_dim };
-            cx.canvas.fill_round_rect(b, 10, fill);
+            let ink = if playing { t.ink_on(fill) } else { t.text_dim };
+            cx.canvas.fill_round_rect(b, t.round(10), fill);
             if self.scene_cued == Some(slot) {
-                cx.canvas.stroke_round_rect(b, 10, 2, t.warn);
+                cx.canvas.stroke_round_rect(b, t.round(10), 2, t.warn);
             }
             let mx = b.x + b.w / 2;
             let top = b.y + (b.h / 2 - 18).max(4);
@@ -1205,7 +1209,7 @@ impl Widget for ClipGrid {
             );
         }
         let stop = self.stop_all_rect(r);
-        cx.canvas.fill_round_rect(stop, 8, t.raised);
+        cx.canvas.fill_round_rect(stop, t.round(8), t.raised);
         let (mx, my) = (stop.x + stop.w / 2, stop.y + stop.h / 2);
         cx.canvas
             .fill_round_rect(Rect::new(mx - 5, my - 5, 10, 10), 2, t.text_dim);
@@ -1218,8 +1222,8 @@ impl Widget for ClipGrid {
             } else {
                 track.color
             };
-            cx.canvas
-                .fill_round_rect(head, 8, base.mix(t.surface, 0.72));
+            let head_fill = base.mix(t.surface, 0.72);
+            cx.canvas.fill_round_rect(head, t.round(8), head_fill);
             let two = !track.sound.is_empty();
             let mut name = if two {
                 Rect::new(head.x + 10, head.y + 3, head.w - 20, 20)
@@ -1227,7 +1231,7 @@ impl Widget for ClipGrid {
                 head.inset_xy(10, 0)
             };
             if track.armed {
-                cx.canvas.stroke_round_rect(head, 8, 2, t.bad);
+                cx.canvas.stroke_round_rect(head, t.round(8), 2, t.bad);
                 cx.canvas.fill_round_rect(
                     Rect::new(name.x, name.y + name.h / 2 - 4, 8, 8),
                     4,
@@ -1236,13 +1240,13 @@ impl Widget for ClipGrid {
                 name = name.take_left(14).1;
             }
             if track.solo && !track.armed {
-                cx.canvas.stroke_round_rect(head, 8, 2, t.accent);
+                cx.canvas.stroke_round_rect(head, t.round(8), 2, t.accent);
             }
             if let Some(w) = &track.waiting {
                 // Hatched while a change waits for its line, with what and
                 // when under the name (the second line, or the only one).
                 hatch(cx, head, t.warn.mix(t.surface, 0.55));
-                cx.canvas.stroke_round_rect(head, 8, 1, t.warn);
+                cx.canvas.stroke_round_rect(head, t.round(8), 1, t.warn);
                 let line = if two {
                     Rect::new(head.x + 10, head.y + 22, head.w - 14, 18)
                 } else {
@@ -1250,7 +1254,8 @@ impl Widget for ClipGrid {
                 };
                 let px = t.size_small - 3.0;
                 let w = waiting_fit(w, |s| cx.measure(FontId::Bold, px, s) <= line.w);
-                cx.text(FontId::Bold, px, line, Align::Left, t.warn, &w);
+                let ink = t.readable(t.warn, head_fill);
+                cx.text(FontId::Bold, px, line, Align::Left, ink, &w);
             } else if two {
                 let mut sound = Rect::new(head.x + 10, head.y + 22, head.w - 16, 18);
                 let dim = if track.mute { t.text_faint } else { t.text_dim };
@@ -1275,7 +1280,7 @@ impl Widget for ClipGrid {
             let ink = if track.mute {
                 t.text_faint
             } else {
-                base.mix(t.text, 0.25)
+                t.readable(base.mix(t.text, 0.25), head_fill)
             };
             cx.text(
                 FontId::Bold,
@@ -1588,15 +1593,16 @@ impl MorphBar {
 impl Widget for MorphBar {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
-        cx.canvas.fill_round_rect(r.inset_xy(4, 2), 12, t.surface);
+        cx.canvas
+            .fill_round_rect(r.inset_xy(4, 2), t.round(12), t.surface);
         let (a, fader, b, buttons) = MorphBar::parts(r);
         for (chip, side, row, near) in [
             (a, "A", self.a, self.pos < 0.5),
             (b, "B", self.b, self.pos >= 0.5),
         ] {
-            cx.canvas.fill_round_rect(chip, 10, t.raised);
+            cx.canvas.fill_round_rect(chip, t.round(10), t.raised);
             if self.on && near {
-                cx.canvas.stroke_round_rect(chip, 10, 2, t.accent);
+                cx.canvas.stroke_round_rect(chip, t.round(10), 2, t.accent);
             }
             cx.text(
                 FontId::Bold,
@@ -1617,8 +1623,11 @@ impl Widget for MorphBar {
             cx.canvas
                 .fill_round_rect(Rect::new(fader.x, my - 3, x - fader.x, 6), 3, ink);
         }
-        cx.canvas
-            .fill_round_rect(Rect::new(x - 9, fader.y + 4, 18, fader.h - 8), 6, ink);
+        cx.canvas.fill_round_rect(
+            Rect::new(x - 9, fader.y + 4, 18, fader.h - 8),
+            t.round(6),
+            ink,
+        );
         let label = if self.on {
             format!("Morph · {} parameters", self.params)
         } else {
@@ -1640,9 +1649,9 @@ impl Widget for MorphBar {
             };
             let waiting = i == 3 && self.reload_waiting;
             cx.canvas
-                .fill_round_rect(*br, 10, if live { t.raised } else { t.surface });
+                .fill_round_rect(*br, t.round(10), if live { t.raised } else { t.surface });
             if waiting {
-                cx.canvas.stroke_round_rect(*br, 10, 2, t.warn);
+                cx.canvas.stroke_round_rect(*br, t.round(10), 2, t.warn);
             }
             let word = if i == 2 {
                 format!("Save {}", if self.pos < 0.5 { "A" } else { "B" })
@@ -1720,7 +1729,7 @@ impl Widget for MorphBar {
 fn paint_cell(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color) {
     let t = cx.theme.clone();
     if cell.state == CellState::Empty {
-        cx.canvas.stroke_round_rect(cr, 10, 1, t.outline);
+        cx.canvas.stroke_round_rect(cr, t.round(10), 1, t.outline);
         cx.text(
             FontId::Sans,
             t.size_title + 3.0,
@@ -1737,7 +1746,7 @@ fn paint_cell(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color) {
         CellState::Armed => t.raised.mix(t.bad, 0.12),
         _ => t.raised.mix(base, 0.16),
     };
-    cx.canvas.fill_round_rect(cr, 10, fill);
+    cx.canvas.fill_round_rect(cr, t.round(10), fill);
     if cr.h < COMPACT_H {
         paint_compact(cx, cr, cell, base, fill);
         return;
@@ -1756,7 +1765,7 @@ fn paint_cell(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color) {
             t.size_small + 1.0,
             name,
             Align::Left,
-            t.bad,
+            t.readable(t.bad, fill),
             &cell.name,
         );
         let (detail, rest) = rest.take_top(20);
@@ -1773,8 +1782,8 @@ fn paint_cell(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color) {
         return;
     }
     match cell.state {
-        CellState::Queued => cx.canvas.stroke_round_rect(cr, 10, 2, t.warn),
-        CellState::Recording => cx.canvas.stroke_round_rect(cr, 10, 2, t.bad),
+        CellState::Queued => cx.canvas.stroke_round_rect(cr, t.round(10), 2, t.warn),
+        CellState::Recording => cx.canvas.stroke_round_rect(cr, t.round(10), 2, t.bad),
         _ => {}
     }
     let inner = cr.inset_xy(10, 8);
@@ -1789,8 +1798,8 @@ fn paint_cell(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color) {
     );
     let (detail, _) = rest.take_top(20);
     let detail_ink = match cell.state {
-        CellState::Recording => t.bad.mix(t.text, 0.2),
-        _ => t.text_dim,
+        CellState::Recording => t.readable(t.bad.mix(t.text, 0.2), fill),
+        _ => t.readable(t.text_dim, fill),
     };
     let rolling = matches!(cell.state, CellState::Playing | CellState::Recording);
     // A loop shows its pass on its wave, not with a ring.
@@ -1806,8 +1815,8 @@ fn paint_cell(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color) {
         18,
     );
     let foot_ink = match cell.state {
-        CellState::Queued => t.warn,
-        CellState::Recording => t.bad.mix(t.text, 0.2),
+        CellState::Queued => t.readable(t.warn, fill),
+        CellState::Recording => t.readable(t.bad.mix(t.text, 0.2), fill),
         _ => t.text_faint,
     };
     if let Some(wave) = &cell.wave {
@@ -1922,8 +1931,8 @@ fn paint_wave(
 fn paint_compact(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color, fill: Color) {
     let t = cx.theme.clone();
     match cell.state {
-        CellState::Queued => cx.canvas.stroke_round_rect(cr, 10, 2, t.warn),
-        CellState::Recording => cx.canvas.stroke_round_rect(cr, 10, 2, t.bad),
+        CellState::Queued => cx.canvas.stroke_round_rect(cr, t.round(10), 2, t.warn),
+        CellState::Recording => cx.canvas.stroke_round_rect(cr, t.round(10), 2, t.bad),
         CellState::Armed => {
             cx.canvas
                 .fill_round_rect(Rect::new(cr.x, cr.y + 4, 4, cr.h - 8), 2, t.bad)
@@ -1944,7 +1953,7 @@ fn paint_compact(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color, fill:
         cx.canvas
             .fill_round_rect(Rect::new(name.x, name.y + name.h / 2 - 4, 8, 8), 4, t.bad);
         name = name.take_left(13).1;
-        name_ink = t.bad;
+        name_ink = t.readable(t.bad, fill);
     }
     cx.text(
         FontId::Bold,
@@ -1964,6 +1973,7 @@ fn paint_compact(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color, fill:
                 CellState::Armed => (&cell.detail, t.text),
                 _ => (&cell.detail, t.text_dim),
             };
+            let ink = t.readable(ink, fill);
             cx.text(
                 FontId::Sans,
                 t.size_small - 2.0,
@@ -2106,7 +2116,7 @@ impl Widget for TakeList {
             }
             let row = Rect::new(body.x, y, body.w, TAKE_ROW_H - 4);
             if self.current == Some(i) {
-                cx.canvas.fill_round_rect(row, 8, t.raised);
+                cx.canvas.fill_round_rect(row, t.round(8), t.raised);
                 cx.canvas
                     .fill_round_rect(Rect::new(row.x, row.y + 9, 3, row.h - 18), 1, t.accent);
             }
@@ -2154,10 +2164,10 @@ impl Widget for TakeList {
             let b = TakeList::button_rect(r, i);
             match what {
                 Some(w) => {
-                    cx.canvas.fill_round_rect(b, 12, t.raised);
+                    cx.canvas.fill_round_rect(b, t.round(12), t.raised);
                     // Capture stands out: there is something to keep.
                     let ink = if i == 2 {
-                        cx.canvas.stroke_round_rect(b, 12, 2, t.accent);
+                        cx.canvas.stroke_round_rect(b, t.round(12), 2, t.accent);
                         t.accent
                     } else {
                         t.text
@@ -2175,7 +2185,7 @@ impl Widget for TakeList {
                     );
                 }
                 None => {
-                    cx.canvas.stroke_round_rect(b, 12, 1, t.outline);
+                    cx.canvas.stroke_round_rect(b, t.round(12), 1, t.outline);
                     cx.text(
                         FontId::Sans,
                         t.size_small + 1.0,

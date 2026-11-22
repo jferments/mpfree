@@ -28,6 +28,7 @@ the sound on cores 3 and 2 instead, for the device rounds to compare.
 | `mpfree-print` | The looper's prints and buffers, at idle priority ([below](#the-control-side-and-helper-threads)) |
 | `mpfree-screen` | Touch, the raster, the framebuffer. Ticks the pages every 33 ms and sleeps between ([profiling.md](profiling.md#the-screens-cost)) |
 | `mpfree-touch-bell` | The touchscreen's doorbell: sleeps in read(2) on a second read-only handle on the panel and wakes `mpfree-screen` when it sends something |
+| `mpfree-time` | With `--time-thread` only: the time engine's control half (the project, the takes, every compile), at the normal priority off the sound's cores ([time-threads.md](time-threads.md#apart-the-control-half-on-its-own-thread)) |
 | `mpfree-store` | Saved settings and patterns |
 | `mpfree-midilog` | The MIDI monitor's Save log (handed to `mpfree-store`) and, while the developer tools are on, its lines in `/run/mpfree-app/midi.log` for the workstation console; four times a second, holding the I/O model's lock only to take an ask or word new lines (the audio loop only `try_lock`s it) |
 | `mpfree-journal` | The console's log |
@@ -49,7 +50,12 @@ the sound on cores 3 and 2 instead, for the device rounds to compare.
    found no slow period: the worst part took 0.37 ms, 13 % of a period. So
    MIDI in, the screen's actions and the app logic stay on the audio thread
    for now. Any of them moves (through `TimeHost::split`) only when a device
-   run's `control: slow period` lines name it.
+   run's `control: slow period` lines name it. The time engine's control
+   half has a second mode on a thread of its own, `mpfree-time` (`--time-thread`,
+   Arrange 2.6b, [time-threads.md](time-threads.md#apart-the-control-half-on-its-own-thread)):
+   on the desktop a big song's compile costs the audio thread 0.4 to 0.8 ms,
+   likely more than a period on the MPC (not measured there yet), so it is
+   off by default until a device round has compared the two.
 3. **A second audio core** with lanes (`rust/mpfree-lanes`, below): half the
    sampler's voices, the synth, mixer stages, then pipelined returns. Built
    for the sampler, the mixer and the reverb returns: `--sound-cores two`

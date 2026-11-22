@@ -4,7 +4,22 @@
 
 use crate::panel::{self, Control, Look, Panel};
 use mpfree_ui::qlink;
-use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
+use mpfree_ui::{Align, Color, EventKind, FontId, Paint, PaintCx, Rect, Target, Touch, Widget};
+
+/// Pads' colours on the screen by their place in the bank (the pads' own
+/// colours are set elsewhere; this only tells pads apart), and the sound
+/// layers' on the Play tab's map: content colours, shown through the
+/// theme's `content()` and `swatch()`.
+pub const PAD_COLORS: [Color; 8] = [
+    Color::rgb(0xFF8A3D),
+    Color::rgb(0x6EA8FE),
+    Color::rgb(0x3DDC97),
+    Color::rgb(0xFFC145),
+    Color::rgb(0xC77DFF),
+    Color::rgb(0xFF5C8A),
+    Color::rgb(0x4DD4E8),
+    Color::rgb(0xA3E048),
+];
 
 // ---------------------------------------------------------------- pad bar
 
@@ -12,7 +27,7 @@ use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Touch, W
 /// sound, and the editor's tabs (or one button) on the right. A tap on an
 /// enabled tab gives [`EventKind::Tab`].
 pub struct PadBar {
-    pub color: Color,
+    pub color: Paint,
     pub title: String,
     pub subtitle: String,
     pub tabs: Vec<String>,
@@ -58,7 +73,7 @@ const BACK_W: i32 = 150;
 impl PadBar {
     pub fn new(tabs: &[&str]) -> PadBar {
         PadBar {
-            color: Color::rgb(0xFF8A3D),
+            color: Paint::Content(PAD_COLORS[0]),
             title: String::new(),
             subtitle: String::new(),
             tabs: tabs.iter().map(|s| s.to_string()).collect(),
@@ -134,7 +149,8 @@ impl Widget for PadBar {
         cx.panel(r);
         let sq = 36.min(r.h - 16).max(8);
         let swatch = Rect::new(r.x + t.pad, r.y + (r.h - sq) / 2, sq, sq);
-        cx.canvas.fill_round_rect(swatch, 8, self.color);
+        cx.canvas
+            .fill_round_rect(swatch, t.round(8), self.color.on(&t));
         let tabs = self.kit_rect(r).unwrap_or_else(|| self.tabs_rect(r));
         let text = Rect::new(
             swatch.right() + 14,
@@ -174,7 +190,7 @@ impl Widget for PadBar {
         if let (Some(k), Some(name)) = (self.kit_rect(r), self.kit.as_ref()) {
             // The kit's button: raised, "Kit" faint before the name, a
             // chevron at its right (it opens a list).
-            cx.canvas.fill_round_rect(k, 12, t.raised);
+            cx.canvas.fill_round_rect(k, t.round(12), t.raised);
             let x = k.x + 16;
             let kw = cx.text(
                 FontId::Bold,
@@ -211,9 +227,9 @@ impl Widget for PadBar {
             (self.button_rect(r), self.button.as_ref(), self.switch)
         {
             // A switch: a light at its left, lit and outlined while on.
-            cx.canvas.fill_round_rect(b, 12, t.raised);
+            cx.canvas.fill_round_rect(b, t.round(12), t.raised);
             if on {
-                cx.canvas.stroke_round_rect(b, 12, 2, t.accent);
+                cx.canvas.stroke_round_rect(b, t.round(12), 2, t.accent);
             }
             let dot = Rect::new(b.x + 18, b.y + b.h / 2 - 5, 10, 10);
             cx.canvas
@@ -224,7 +240,7 @@ impl Widget for PadBar {
         }
         if let (Some(b), Some(label)) = (self.button_rect(r), self.button.as_ref()) {
             // The button: raised, a folder at its left, the label after it.
-            cx.canvas.fill_round_rect(b, 12, t.raised);
+            cx.canvas.fill_round_rect(b, t.round(12), t.raised);
             let (fw, fh) = (20, 15);
             let (x0, y0) = (b.x + 16, b.y + (b.h - fh) / 2 + 1);
             cx.canvas
@@ -239,7 +255,7 @@ impl Widget for PadBar {
         }
         if let (Some(b), Some(label)) = (self.back_rect(r), self.back.as_ref()) {
             // The chip that goes back: raised, the label centred.
-            cx.canvas.fill_round_rect(b, 12, t.raised);
+            cx.canvas.fill_round_rect(b, t.round(12), t.raised);
             cx.text(FontId::Bold, t.size_body, b, Align::Center, t.text, label);
             return;
         }
@@ -248,7 +264,7 @@ impl Widget for PadBar {
             // drawn in its place.
             return;
         }
-        cx.canvas.fill_round_rect(tabs, 12, t.bg);
+        cx.canvas.fill_round_rect(tabs, t.round(12), t.bg);
         for (i, name) in self.tabs.iter().enumerate() {
             let tr = self.tab_rect(r, i);
             let on = i == self.active;
@@ -376,7 +392,7 @@ impl ToolStrip {
 impl Widget for ToolStrip {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
-        cx.canvas.fill_round_rect(r, 12, t.bg);
+        cx.canvas.fill_round_rect(r, t.round(12), t.bg);
         for (i, name) in self.tools.iter().enumerate() {
             let tr = self.tool_rect(r, i);
             let on = i == self.active;
@@ -451,7 +467,8 @@ pub struct KnobCard {
     pub sub: String,
     /// 0.0 to 1.0: how far round the knob's arc is lit.
     pub pos: f32,
-    pub color: Color,
+    /// Resolved on the theme it is drawn with.
+    pub color: Paint,
     /// The card the wheel zooms round: outlined.
     pub focused: bool,
     /// Nothing for this Q-Link to move (a loop point without a loop).
@@ -468,7 +485,7 @@ const ARC_START: f32 = 135.0;
 const ARC_SWEEP: f32 = 270.0;
 
 impl KnobCard {
-    pub fn new(label: &str, color: Color) -> KnobCard {
+    pub fn new(label: &str, color: impl Into<Paint>) -> KnobCard {
         KnobCard {
             label: label.to_string(),
             scope: String::new(),
@@ -476,7 +493,7 @@ impl KnobCard {
             value: String::new(),
             sub: String::new(),
             pos: 0.0,
-            color,
+            color: color.into(),
             focused: false,
             enabled: true,
             why: String::new(),
@@ -502,15 +519,12 @@ impl KnobCard {
     /// centred; the ring with the value in it, and the small text under it.
     fn paint_tall(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
-        let col = if self.enabled {
-            self.color
-        } else {
-            t.text_faint
-        };
+        let colour = self.color.on(&t);
+        let col = if self.enabled { colour } else { t.text_faint };
         cx.canvas.fill_round_rect(r, t.radius, t.surface);
         if self.focused && self.enabled {
             cx.canvas
-                .stroke_round_rect(r, t.radius, 2, t.outline.mix(self.color, 0.6));
+                .stroke_round_rect(r, t.radius, 2, t.outline.mix(colour, 0.6));
         }
         if self.enabled {
             cx.canvas
@@ -519,7 +533,13 @@ impl KnobCard {
         // As the shared column's cards: the number and the job centred
         // over the knob, where the job lives not drawn.
         let ink = if self.enabled { t.text } else { t.text_faint };
-        let rest = qlink::card_head(cx, qlink::card_inner(r), self.knob, self.job(), col, ink);
+        // The number in the knob's colour, kept readable on the card.
+        let number = if self.enabled {
+            t.readable(col, t.surface)
+        } else {
+            col
+        };
+        let rest = qlink::card_head(cx, qlink::card_inner(r), self.knob, self.job(), number, ink);
         let (ring, sub) = if self.sub.is_empty() {
             (rest, None)
         } else {
@@ -588,10 +608,11 @@ impl Widget for KnobCard {
             return self.paint_tall(cx, r);
         }
         let t = cx.theme.clone();
+        let colour = self.color.on(&t);
         cx.panel(r);
         if self.focused && self.enabled {
             cx.canvas
-                .stroke_round_rect(r, t.radius, 2, t.outline.mix(self.color, 0.6));
+                .stroke_round_rect(r, t.radius, 2, t.outline.mix(colour, 0.6));
         }
         let rad = (r.h as f32 / 2.0 - 22.0).clamp(10.0, 20.0);
         let centre = (
@@ -599,11 +620,7 @@ impl Widget for KnobCard {
             r.y as f32 + r.h as f32 / 2.0,
         );
         arc(cx, centre, rad, ARC_START, ARC_SWEEP, 5, t.raised);
-        let color = if self.enabled {
-            self.color
-        } else {
-            t.text_faint
-        };
+        let color = if self.enabled { colour } else { t.text_faint };
         if self.enabled {
             arc(
                 cx,
@@ -969,7 +986,7 @@ impl Widget for SettingList {
             };
             let on = k == self.selected;
             if on {
-                cx.canvas.fill_round_rect(row, 10, t.raised);
+                cx.canvas.fill_round_rect(row, t.round(10), t.raised);
                 cx.canvas
                     .fill_round_rect(Rect::new(row.x, row.y + 10, 4, row.h - 20), 2, t.accent);
             }
@@ -984,7 +1001,8 @@ impl Widget for SettingList {
             );
             if self.buttons.contains(&k) && self.why_faint(k).is_some() {
                 // A faint button: a faint rim and label.
-                cx.canvas.stroke_round_rect(value, 8, 1, t.text_faint);
+                cx.canvas
+                    .stroke_round_rect(value, t.round(8), 1, t.text_faint);
                 cx.text(
                     FontId::Bold,
                     t.size_body - 1.0,
@@ -997,10 +1015,10 @@ impl Widget for SettingList {
             }
             if self.buttons.contains(&k) {
                 // A button: raised, with a rim, and no arrows.
-                cx.canvas.fill_round_rect(value, 8, t.raised);
+                cx.canvas.fill_round_rect(value, t.round(8), t.raised);
                 cx.canvas.stroke_round_rect(
                     value,
-                    8,
+                    t.round(8),
                     if on { 2 } else { 1 },
                     if on { t.accent } else { t.text_dim },
                 );
@@ -1015,10 +1033,10 @@ impl Widget for SettingList {
                 continue;
             }
             cx.canvas
-                .fill_round_rect(value, 8, if on { t.surface } else { t.raised });
+                .fill_round_rect(value, t.round(8), if on { t.surface } else { t.raised });
             let open = on && self.editing;
             if open {
-                cx.canvas.stroke_round_rect(value, 8, 2, t.accent);
+                cx.canvas.stroke_round_rect(value, t.round(8), 2, t.accent);
             }
             let arrows = if open { t.accent } else { t.text_dim };
             let (left, mid) = value.take_left(SET_ARROW_W);
@@ -1318,9 +1336,9 @@ impl Widget for ButtonRow {
             let enabled = self.enabled.get(i).copied().unwrap_or(false);
             let primary = self.primary == Some(i) && enabled;
             cx.canvas
-                .fill_round_rect(b, 10, if primary { t.accent } else { t.raised });
+                .fill_round_rect(b, t.round(10), if primary { t.accent } else { t.raised });
             let color = if primary {
-                t.bg
+                t.on_accent
             } else if enabled {
                 t.text
             } else {
@@ -1412,7 +1430,7 @@ impl Widget for SectionChips {
             let b = self.chip_rect(r, i);
             let open = i == self.selected;
             cx.canvas
-                .fill_round_rect(b, 10, if open { t.raised } else { t.surface });
+                .fill_round_rect(b, t.round(10), if open { t.raised } else { t.surface });
             if open {
                 let bar = Rect::new(b.x + 10, b.bottom() - 4, (b.w - 20).max(0), 3);
                 cx.canvas.fill_rect(bar, t.accent);
@@ -1484,7 +1502,8 @@ pub struct KitTrack {
     /// kit").
     pub kit: String,
     pub color: Color,
-    /// The armed track: the pads play its kit.
+    /// The selected track (the armed one, unless a track was picked while
+    /// REC's arm is pinned): the pads play its kit.
     pub armed: bool,
     /// It plays a kit, so a tap arms it; a track without one is faint.
     pub enabled: bool,
@@ -1627,9 +1646,9 @@ impl Widget for KitTracks {
             };
             let outlined = k.armed && !perform_open;
             cx.canvas
-                .fill_round_rect(c, 10, if outlined { t.surface } else { t.raised });
+                .fill_round_rect(c, t.round(10), if outlined { t.surface } else { t.raised });
             if outlined {
-                cx.canvas.stroke_round_rect(c, 10, 2, t.accent);
+                cx.canvas.stroke_round_rect(c, t.round(10), 2, t.accent);
             }
             let inner = c.inset_xy(12, 0);
             let dot = Rect::new(inner.x, c.y + c.h / 2 - 4, 8, 8);
@@ -1703,10 +1722,13 @@ impl Widget for KitTracks {
             let x = p.x - KT_RULE_W / 2 - 1;
             cx.canvas
                 .fill_rect(Rect::new(x, p.y + 6, 2, (p.h - 12).max(0)), t.outline);
-            cx.canvas
-                .fill_round_rect(p, 10, if perform_open { t.surface } else { t.raised });
+            cx.canvas.fill_round_rect(
+                p,
+                t.round(10),
+                if perform_open { t.surface } else { t.raised },
+            );
             if perform_open {
-                cx.canvas.stroke_round_rect(p, 10, 2, t.accent);
+                cx.canvas.stroke_round_rect(p, t.round(10), 2, t.accent);
             }
             let inner = p.inset_xy(14, 0);
             let w = cx.text(
@@ -1893,9 +1915,9 @@ impl Widget for PadMap {
             let b = self.bank_rect(r, k).0;
             let shown = k == self.bank;
             cx.canvas
-                .fill_round_rect(b, 8, if shown { t.surface } else { t.raised });
+                .fill_round_rect(b, t.round(8), if shown { t.surface } else { t.raised });
             if shown {
-                cx.canvas.stroke_round_rect(b, 8, 2, t.accent);
+                cx.canvas.stroke_round_rect(b, t.round(8), 2, t.accent);
             }
             let inner = b.inset_xy(6, 5);
             let (top, rest) = inner.take_top(16);
@@ -1929,13 +1951,13 @@ impl Widget for PadMap {
                 (false, true) => c.color.mix(t.surface, 0.8),
                 (false, false) => t.raised,
             };
-            cx.canvas.fill_round_rect(b, 10, fill);
+            cx.canvas.fill_round_rect(b, t.round(10), fill);
             if filled {
                 cx.canvas
                     .fill_rect(Rect::new(b.x, b.y + 8, 4, b.h - 16), c.color);
             }
             if i == self.selected {
-                cx.canvas.stroke_round_rect(b, 10, 3, t.accent);
+                cx.canvas.stroke_round_rect(b, t.round(10), 3, t.accent);
             }
             let inner = b.inset_xy(10, 6);
             let (top, rest) = inner.take_top(20);
@@ -1953,7 +1975,7 @@ impl Widget for PadMap {
                     t.size_small - 2.0,
                     top,
                     Align::Right,
-                    t.good,
+                    t.readable(t.good, fill),
                     &format!("▶ {clip}"),
                 );
             } else if let Some(badge) = c.badge.as_ref().filter(|_| filled) {
@@ -1962,7 +1984,7 @@ impl Widget for PadMap {
                     t.size_small - 3.0,
                     top,
                     Align::Right,
-                    c.color,
+                    t.readable(c.color, fill),
                     badge,
                 );
             }

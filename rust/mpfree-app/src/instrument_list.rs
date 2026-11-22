@@ -71,7 +71,8 @@ pub enum Kind {
     /// the project's synth part, and it sounds on the Synth strip.
     SharedSynth,
     /// Track `track`'s own instrument (from 0): its sound is that track's
-    /// block of the instruments part, and it sounds on the track's channel.
+    /// block of the instruments part, and it sounds on the strip its slot
+    /// feeds (`Instruments::strip`), the track's channel today.
     Own { track: usize },
 }
 

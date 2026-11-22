@@ -36,7 +36,7 @@ use crate::list::{
     LIST_TO_SONG, SCENE_STEP,
 };
 use crate::song::{
-    AudioLane, SongBlock, SongLanes, ADD_AUDIO, AUDIO_BUTTONS, BARS_BACK, BARS_ON, INPUTS,
+    AudioLane, SongBlocks, SongLanes, ADD_AUDIO, AUDIO_BUTTONS, BARS_BACK, BARS_ON, INPUTS,
     MONITORS, NONE, PANEL, PANEL_CLOSE, PANEL_INPUT, PANEL_MONITOR, PANEL_MUTE, PANEL_SOLO,
     PANEL_TAKES, REC, REGION_SLOTS, SECTION_TAP, TEMPO_ROW,
 };
@@ -53,8 +53,8 @@ use mpfree_play::{anchored, ClipDrop, Cue, Launch, Replaced, SongChange, Take, T
 use mpfree_seq::scenes::MAX_FOLLOW_BARS;
 use mpfree_seq::{
     direction_steps, Clip, ClipProgram, ClipSettings, Direction, Follow, FollowAction, LaunchGrid,
-    Project, Quantise, SceneSettings, Source, Speed, TrackProgram, Transpose, LAUNCH_GRIDS,
-    MAX_CLIP_TICKS, MAX_TRACKS, MAX_TRANSPOSE, SLOTS,
+    Project, Quantise, SceneSettings, Speed, TrackProgram, Transpose, LAUNCH_GRIDS, MAX_CLIP_TICKS,
+    MAX_TRACKS, MAX_TRANSPOSE, SLOTS,
 };
 use mpfree_transport::time::{Meter, Swing, Tick, MAX_BPM, MIN_BPM, PPQ};
 use mpfree_transport::transport::MAX_COUNT_IN;
@@ -62,6 +62,7 @@ use mpfree_transport::{Command, State, Transport};
 use mpfree_ui::qlink::QLinkColumn;
 use mpfree_ui::widgets::{Chip, OptionButton, OptionList, OptionRow};
 use mpfree_ui::{Color, EventKind, Tone, Ui, UiEvent};
+use std::sync::Arc;
 
 /// Widget names the page adds. The app's own are `header` and `hint`.
 pub const TRANSPORT: &str = "transport";
@@ -649,6 +650,14 @@ pub struct TimeState {
     /// by default). The app sets them.
     pub cues: Vec<Cue>,
     pub armed: Option<usize>,
+    /// The track selected apart from the arm ([`TimeAction::Select`]), or
+    /// None while the selection is the armed track: see
+    /// [`TimeState::selected`].
+    pub track_pick: Option<usize>,
+    /// The selected track's slot picked for the Sequencer to edit apart
+    /// from what plays ([`TimeAction::EditClip`]), or None while it edits
+    /// the clip that plays.
+    pub clip_pick: Option<usize>,
     /// The other armed tracks, a bit each (`TimeAction::ArmAlso`): a take
     /// records their notes with the armed track's. Never the armed one.
     pub also: u128,
@@ -719,8 +728,11 @@ pub struct TimeState {
     /// The scene playing's follow action, for Perform's NEXT (S4). The
     /// app sets it.
     pub follow_next: Option<FollowNext>,
-    /// The arrangement's placements and markers.
-    pub placements: Vec<PlacementInfo>,
+    /// The arrangement's placements and markers. The placements are
+    /// shared: the screen keeps the same list from one transport update to
+    /// the next, so the Song view knows its blocks are the same without
+    /// comparing them (Arrange refactor 2.4).
+    pub placements: Arc<[PlacementInfo]>,
     pub markers: Vec<(Tick, String)>,
     /// The placement selected on the Song view. The app sets it.
     pub selected: Option<usize>,
@@ -793,7 +805,14 @@ pub enum Pick {
 #[derive(Clone, Debug, PartialEq)]
 pub struct EditInfo {
     pub editor: Editor,
-    pub clip: Clip,
+    /// The clip, shared: the time engine sends the same one until the clip
+    /// changes, so the screen tells an unchanged clip at no cost
+    /// ([`Arc::ptr_eq`]) and rebuilds the roll only when it did.
+    pub clip: Arc<Clip>,
+    /// The clip's revision: it moves whenever the clip changes (an edit,
+    /// a recorded note, UNDO, an edit from Steps), and a tap on a note
+    /// carries the one it was made on ([`EditAction::Note`]).
+    pub rev: u64,
     pub track_name: String,
     /// A bar, in the clip's ticks.
     pub bar: Tick,
@@ -837,6 +856,14 @@ impl Default for MorphInfo {
 }
 
 impl TimeState {
+    /// The selected track: the one the Sequencer's Steps, Notes and STEP
+    /// SEQ edit and the pads follow. The armed track unless a track was
+    /// selected apart from it while the arm is pinned
+    /// ([`TimeState::track_pick`]).
+    pub fn selected(&self) -> Option<usize> {
+        self.track_pick.or(self.armed)
+    }
+
     pub fn from_engine(
         transport: TransportInfo,
         project: &Project,
@@ -860,9 +887,11 @@ impl TimeState {
                 transpose: t.transpose,
                 follows: t.follows,
                 melodic: false,
+                // The rows the grid shows (Arrange 1.2: a project keeps
+                // more, for scene banks to come).
                 slots: t
                     .slots
-                    .iter()
+                    .shown()
                     .map(|s| {
                         s.as_ref().map(|c| ClipInfo {
                             name: c.name.clone(),
@@ -884,6 +913,8 @@ impl TimeState {
             launches: launches.to_vec(),
             cues: Vec::new(),
             armed,
+            track_pick: None,
+            clip_pick: None,
             also: 0,
             clipboard: None,
             done: takes.done().iter().map(TakeRow::of).collect(),
@@ -918,12 +949,15 @@ impl TimeState {
                     track: p.track,
                     start: p.start,
                     length: p.length,
-                    name: p
-                        .clip(&project.tracks)
+                    name: project
+                        .block_clip(p)
                         .map_or_else(|| "(empty)".to_string(), |c| c.name.clone()),
-                    unique: matches!(p.source, Source::Own(_)),
+                    // Its clip is the song's own (made unique, or a
+                    // deleted clip the song still plays).
+                    unique: project.arrangement.clips.get(p.clip).is_some(),
                 })
-                .collect(),
+                .collect::<Vec<_>>()
+                .into(),
             markers: project
                 .arrangement
                 .markers
@@ -1008,8 +1042,27 @@ pub enum TimeAction {
     Transport(Command),
     Undo,
     Redo,
-    /// Arm a track for recording, or none.
+    /// Arm a track for recording, or none. A track armed is selected too
+    /// (the Sequencer edits it and the pads follow it), so without a
+    /// pinned arm the two never part.
     Arm(Option<usize>),
+    /// A track picked (its name on Arrange, the Play page's track switch,
+    /// MAIN + a pad, a track on the Pads tab): selected, and armed too
+    /// unless REC's arm is pinned, which the app knows; it sends
+    /// [`TimeAction::Select`] then. On its own it arms, as
+    /// [`TimeAction::Arm`] does.
+    Pick(usize),
+    /// Select a track without moving the arm (a track picked while the
+    /// arm is pinned): Steps, Notes and STEP SEQ edit it and the pads
+    /// follow it, while REC still records the armed track. The armed
+    /// track itself selects it again.
+    Select(usize),
+    /// The clip the Sequencer edits on the selected track (refactor C2):
+    /// `Some(slot)` edits that slot's clip without launching it, so what
+    /// plays keeps playing; `None` edits the clip that plays again (its
+    /// first while none does). A track selected again goes back to what
+    /// plays.
+    EditClip(Option<usize>),
     /// Arm these tracks too, a bit each (track 0 the lowest), for one take
     /// over several tracks (the MPC's SHIFT + a track's arm): each records
     /// what its MIDI input sends it. The armed track is left out of it.
@@ -1529,14 +1582,14 @@ pub fn launches_after(launches: &[Launch], action: &TimeAction, t: &TransportInf
 }
 
 /// What a touch means, given what the screen shows.
-/// A tap on a track's name on the Clips grid: it arms the track, or lets
-/// go of the arm when it has it.
+/// A tap on a track's name on the Clips grid: it picks the track
+/// ([`TimeAction::Pick`]), or lets go of the arm when it has it.
 pub fn name_tap(st: &TimeState, track: usize) -> TimeAction {
-    TimeAction::Arm(if st.armed == Some(track) {
-        None
+    if st.armed == Some(track) {
+        TimeAction::Arm(None)
     } else {
-        Some(track)
-    })
+        TimeAction::Pick(track)
+    }
 }
 
 /// A tap on the Clips grid's cell at (`track`, `slot`): launch its clip,
@@ -1673,7 +1726,10 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
         }),
         (NOTES, kind) => Some(TimeAction::Edit(match *kind {
             EventKind::Tab(k) => EditAction::Button(k),
-            EventKind::Select(i) => EditAction::Note(i),
+            EventKind::Select(i) => EditAction::Note {
+                index: i,
+                rev: st.edit.as_ref().map_or(0, |e| e.rev),
+            },
             EventKind::Cell { row: PEN, col } => EditAction::Step(col as Tick),
             EventKind::Cell { row, col } => EditAction::Empty {
                 tick: col as Tick,
@@ -3863,9 +3919,17 @@ pub fn min_sec(seconds: f64) -> String {
 /// waveforms are left out: [`TimePage::update`] copies `st.waves` only
 /// when they change, as they can be large.
 pub fn song_lanes(st: &TimeState, first_bar: i64) -> SongLanes {
+    song_lanes_with(st, first_bar, None)
+}
+
+/// [`song_lanes`], with `blocks` for the blocks when they were made from
+/// `st.placements` ([`SongBlocks::made_from`]), so an update that changes
+/// no block copies none (Arrange refactor 2.4).
+fn song_lanes_with(st: &TimeState, first_bar: i64, blocks: Option<SongBlocks>) -> SongLanes {
     let t = &st.transport;
     let bar = t.meter.bar_ticks();
-    let placed = st.placements.iter().map(|p| p.start + p.length);
+    let blocks = blocks.unwrap_or_else(|| SongBlocks::of(&st.placements));
+    let placed = std::iter::once(blocks.end());
     let audio = st
         .audio
         .iter()
@@ -3895,19 +3959,7 @@ pub fn song_lanes(st: &TimeState, first_bar: i64) -> SongLanes {
             .map(|(i, tr)| (tr.name.clone(), track_color(i)))
             .collect(),
         sounds: st.tracks.iter().map(|tr| tr.sound.clone()).collect(),
-        blocks: st
-            .placements
-            .iter()
-            .enumerate()
-            .map(|(index, p)| SongBlock {
-                index,
-                track: p.track,
-                start: p.start,
-                length: p.length,
-                name: p.name.clone(),
-                unique: p.unique,
-            })
-            .collect(),
+        blocks,
         markers: st.markers.clone(),
         bar,
         first_bar,
@@ -3929,20 +3981,38 @@ pub fn song_lanes(st: &TimeState, first_bar: i64) -> SongLanes {
     }
 }
 
-/// The note editor's roll or list for `e`, with the playhead where the
-/// clip plays now (if it is launched).
-pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
+/// Where the note editor's clip plays now, in its own ticks, if it is
+/// launched and the transport has started.
+pub fn note_playhead(e: &EditInfo, st: &TimeState) -> Option<Tick> {
     let ed = &e.editor;
     let c = &e.clip;
-    let playhead = st
-        .launches
+    st.launches
         .iter()
         .find(|l| (l.track, l.slot) == (ed.track, ed.slot))
         .filter(|_| c.length > 0 && st.transport.position >= 0)
         .map(|l| {
             let at = c.speed.to_clip((st.transport.position - l.origin) as f64);
             (at.floor() as Tick).rem_euclid(c.length)
-        });
+        })
+}
+
+/// The screen built the note editor from `a` and is asked to show `b`:
+/// nothing but the playhead can have changed. The same clip (one shared
+/// copy, not compared note by note), revision and editor.
+fn same_edit(a: &EditInfo, b: &EditInfo) -> bool {
+    Arc::ptr_eq(&a.clip, &b.clip)
+        && a.rev == b.rev
+        && a.editor == b.editor
+        && a.bar == b.bar
+        && a.track_name == b.track_name
+}
+
+/// The note editor's roll or list for `e`, with the playhead where the
+/// clip plays now (if it is launched).
+pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
+    let ed = &e.editor;
+    let c = &e.clip;
+    let playhead = note_playhead(e, st);
     let selected = |i: usize| ed.sel.contains(&i);
     let n_sel = ed.sel.iter().filter(|&&i| i < c.notes.len()).count();
     let mut g = NoteGrid::new();
@@ -3961,7 +4031,15 @@ pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
         }
         Lens::Tracker => format!("tracker · {} steps", step_name(step)),
     };
-    g.legend = format!("{} notes · {} picked · {lens}", c.notes.len(), n_sel);
+    g.legend = if ed.cleared {
+        // Something else changed the clip and took a picked note with it.
+        format!(
+            "{} notes · the clip changed: picks cleared · {lens}",
+            c.notes.len()
+        )
+    } else {
+        format!("{} notes · {} picked · {lens}", c.notes.len(), n_sel)
+    };
     // Each note with its pressure: only the runs the notes name (the
     // clip keeps the runs of notes taken out too, for undo).
     g.notes = c
@@ -4024,6 +4102,11 @@ pub struct TimePage {
     /// while it is open the Clips page keeps the grid, the song or the
     /// list, and the editor's layout comes back once this is false again.
     pub edit_hidden: bool,
+    /// What the note editor's roll and options were last built from: an
+    /// update with the same clip and editor moves only the playhead
+    /// (piano roll plan 0C.1), so the playing transport costs the screen
+    /// no rebuild of 8,192 notes a frame.
+    edit_built: Option<Box<EditInfo>>,
 }
 
 impl TimePage {
@@ -4295,7 +4378,16 @@ impl TimePage {
                 l.can_add = can_add;
             }
         }
-        let mut lanes = song_lanes(st, self.first_bar);
+        // The blocks shown, while the placements are the same list: a frame
+        // that only moves the playhead or scrolls copies and compares no
+        // block (Arrange refactor 2.4).
+        let blocks = ui
+            .get::<SongLanes>(SONG)
+            .map(|l| &l.blocks)
+            .filter(|b| b.made_from(&st.placements))
+            .cloned();
+        let kept = blocks.is_some();
+        let mut lanes = song_lanes_with(st, self.first_bar, blocks);
         let (same, same_waves) = ui.get::<SongLanes>(SONG).map_or((true, true), |l| {
             let waves = crate::song::same_waves(&l.waves, &st.waves);
             lanes.keep_scroll(l);
@@ -4309,6 +4401,13 @@ impl TimePage {
                 let waves = std::mem::take(&mut l.waves);
                 *l = lanes;
                 l.waves = if same_waves { waves } else { st.waves.clone() };
+            }
+        } else if !kept {
+            // The same blocks in a new list (a new state from the engine):
+            // kept as made from it, so the next frames know them in one
+            // step. Nothing drawn changes.
+            if let Some(l) = ui.get_mut_quiet::<SongLanes>(SONG) {
+                l.blocks = lanes.blocks;
             }
         }
         let m = st.morph;
@@ -4327,21 +4426,37 @@ impl TimePage {
                 *b = bar;
             }
         }
-        if let Some(e) = &st.edit {
-            let grid = note_grid(e, st);
-            if ui.get::<NoteGrid>(NOTES).is_some_and(|g| !g.same(&grid)) {
-                if let Some(g) = ui.get_mut::<NoteGrid>(NOTES) {
-                    g.show(grid);
+        match &st.edit {
+            Some(e) if self.edit_built.as_ref().is_some_and(|b| same_edit(b, e)) => {
+                // Only the playhead can have moved.
+                let at = note_playhead(e, st);
+                if ui.get::<NoteGrid>(NOTES).is_some_and(|g| g.playhead != at) {
+                    if let Some(g) = ui.get_mut::<NoteGrid>(NOTES) {
+                        g.playhead = at;
+                    }
                 }
             }
-            let rows = edit_rows(&e.editor, &e.clip);
-            if let Some(l) = ui.get_mut::<OptionList>(EDIT_OPTIONS) {
-                if l.rows != rows || l.selected != e.editor.row {
-                    l.rows = rows;
-                    l.selected = e.editor.row;
-                    l.right = "wheel or arrows".to_string();
+            Some(e) => {
+                let grid = note_grid(e, st);
+                if ui.get::<NoteGrid>(NOTES).is_some_and(|g| !g.same(&grid)) {
+                    if let Some(g) = ui.get_mut::<NoteGrid>(NOTES) {
+                        g.show(grid);
+                    }
                 }
+                let rows = edit_rows(&e.editor, &e.clip);
+                if ui
+                    .get::<OptionList>(EDIT_OPTIONS)
+                    .is_some_and(|l| l.rows != rows || l.selected != e.editor.row)
+                {
+                    if let Some(l) = ui.get_mut::<OptionList>(EDIT_OPTIONS) {
+                        l.rows = rows;
+                        l.selected = e.editor.row;
+                        l.right = "wheel or arrows".to_string();
+                    }
+                }
+                self.edit_built = Some(e.clone());
             }
+            None => self.edit_built = None,
         }
         let rows = record_rows(st);
         let tabs = panel_tabs(st);
@@ -4411,7 +4526,7 @@ mod tests {
     use super::*;
     use mpfree_seq::{Clip, Note, Track};
     use mpfree_ui::widgets::{Header, Label};
-    use mpfree_ui::{Align, Fonts, Theme};
+    use mpfree_ui::{Align, Fonts, SoftCanvas, Theme};
 
     const BAR: Tick = 3840;
 
@@ -4666,7 +4781,8 @@ mod tests {
         .unwrap();
         let e = EditInfo {
             editor: crate::editor::Editor::new(0, 0, &c),
-            clip: c,
+            clip: c.into(),
+            rev: 0,
             track_name: "Drums".into(),
             bar: BAR,
         };
@@ -4674,6 +4790,58 @@ mod tests {
         assert_eq!(g.touch, [point(0, 90), point(40, 30)]);
         assert!(g.touch_of(0).is_empty());
         assert_eq!(g.touch_of(1), &g.touch[..]);
+    }
+
+    /// Piano roll plan 0C.1: while the note editor's clip (one shared
+    /// copy) and the editor stay the same, an update moves only the roll's
+    /// playhead and builds none of its notes again; a new copy builds it.
+    #[test]
+    fn the_note_editor_moves_only_its_playhead_while_its_clip_is_the_same() {
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", Header::new(&["Play", "Clips"]));
+        ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        let mut page = TimePage::add_to(&mut ui).unwrap();
+        ui.show(CLIPS_PAGE).unwrap();
+        let mut st = state();
+        let mut c = Clip::new("A", 2 * BAR);
+        c.add_note(Note::new(0, 240, 1, 100)).unwrap();
+        st.edit = Some(Box::new(EditInfo {
+            editor: crate::editor::Editor::new(0, 0, &c),
+            clip: c.into(),
+            rev: 1,
+            track_name: "Drums".into(),
+            bar: BAR,
+        }));
+        page.update(&mut ui, &st);
+        let e = st.edit.clone().unwrap();
+        let head = note_playhead(&e, &st);
+        assert!(head.is_some(), "track 1's clip plays");
+        assert_eq!(ui.get::<NoteGrid>(NOTES).unwrap().playhead, head);
+        // Marked, to see whether the roll is built again.
+        ui.get_mut::<NoteGrid>(NOTES).unwrap().title = "kept".into();
+        st.transport.position += 120;
+        page.update(&mut ui, &st);
+        let g = ui.get::<NoteGrid>(NOTES).unwrap();
+        assert_eq!(g.title, "kept", "not built again");
+        assert_eq!(g.playhead, note_playhead(&e, &st));
+        assert_ne!(g.playhead, head, "the playhead moved");
+        // The same notes in a new copy (the clip changed and changed
+        // back): built again.
+        let e = st.edit.as_mut().unwrap();
+        e.clip = Arc::new((*e.clip).clone());
+        page.update(&mut ui, &st);
+        assert!(ui
+            .get::<NoteGrid>(NOTES)
+            .unwrap()
+            .title
+            .starts_with("Edit · A"));
+        // Closed and opened again: built again too.
+        let open = st.edit.take();
+        page.update(&mut ui, &st);
+        ui.get_mut::<NoteGrid>(NOTES).unwrap().title = "kept".into();
+        st.edit = open;
+        page.update(&mut ui, &st);
+        assert_ne!(ui.get::<NoteGrid>(NOTES).unwrap().title, "kept");
     }
 
     #[test]
@@ -4831,7 +4999,7 @@ mod tests {
         assert_eq!(tap(3, 0), None, "no such track");
         assert_eq!(
             action(&ev(CLIPS, EventKind::Tab(0)), &st),
-            Some(TimeAction::Arm(Some(0)))
+            Some(TimeAction::Pick(0))
         );
         assert_eq!(
             action(&ev(CLIPS, EventKind::Toggle(4)), &st),
@@ -4968,6 +5136,68 @@ mod tests {
     }
 
     #[test]
+    fn a_frame_that_moves_the_playhead_or_scrolls_copies_no_block() {
+        // Arrange refactor 2.4: while the placements are the same list, the
+        // Song view keeps its blocks, so a long song costs a frame no more
+        // than a short one; new placements are new blocks.
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", Header::new(&["Play", "Clips"]));
+        ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        let mut page = TimePage::add_to(&mut ui).unwrap();
+        ui.show(CLIPS_PAGE).unwrap();
+        let mut st = state();
+        st.song_view = true;
+        let place = |n: usize| -> Arc<[PlacementInfo]> {
+            (0..n)
+                .map(|k| PlacementInfo {
+                    track: k % 3,
+                    start: (k / 3) as Tick * BAR,
+                    length: BAR,
+                    name: format!("Clip {k}"),
+                    unique: false,
+                })
+                .collect::<Vec<_>>()
+                .into()
+        };
+        st.placements = place(4096);
+        page.update(&mut ui, &st);
+        let blocks = |ui: &Ui| ui.get::<SongLanes>(SONG).unwrap().blocks.as_ptr();
+        let first = blocks(&ui);
+        for k in 0..4 {
+            st.transport.position += 960;
+            page.update(&mut ui, &st);
+            page.scroll(&ui, k);
+            page.update(&mut ui, &st);
+            let l = ui.get::<SongLanes>(SONG).unwrap();
+            assert_eq!(l.first_bar, (0..=k).sum::<i32>() as i64);
+            assert_eq!(l.playhead, Some(st.transport.position));
+            assert!(
+                std::ptr::eq(blocks(&ui), first),
+                "frame {k} copied the blocks"
+            );
+        }
+        // An equal list from the engine (a new state) is copied once, with
+        // nothing to draw, and the frames after it copy nothing.
+        let mut c = SoftCanvas::new(1280, 800);
+        ui.paint(&mut c);
+        st.placements = place(4096);
+        page.update(&mut ui, &st);
+        assert!(ui.paint(&mut c).is_empty(), "nothing changed on the screen");
+        let second = blocks(&ui);
+        assert!(!std::ptr::eq(second, first));
+        st.transport.position += 960;
+        page.update(&mut ui, &st);
+        page.update(&mut ui, &st);
+        assert!(std::ptr::eq(blocks(&ui), second));
+        // A changed one shows.
+        st.placements = place(5);
+        page.update(&mut ui, &st);
+        let l = ui.get::<SongLanes>(SONG).unwrap();
+        assert_eq!(l.blocks.len(), 5);
+        assert_eq!(l.blocks.get(4).map(|b| b.name.as_str()), Some("Clip 4"));
+    }
+
+    #[test]
     fn the_song_view_swaps_in_for_the_grid_and_its_buttons_act() {
         let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
         ui.add("header", Header::new(&["Play", "Clips"]));
@@ -4980,13 +5210,14 @@ mod tests {
             Some(TimeAction::SongView(true))
         );
         st.song_view = true;
-        st.placements.push(PlacementInfo {
+        st.placements = vec![PlacementInfo {
             track: 0,
             start: 3840,
             length: 7680,
             name: "Boom".into(),
             unique: false,
-        });
+        }]
+        .into();
         page.update(&mut ui, &st);
         assert!(ui.rect_of(SONG).is_some() && ui.rect_of(CLIPS).is_none());
         let lanes = ui.get::<SongLanes>(SONG).unwrap();

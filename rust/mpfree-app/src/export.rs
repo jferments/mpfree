@@ -280,7 +280,7 @@ impl Facts {
             .iter()
             .enumerate()
             .map(|(k, t)| {
-                let sounds = !t.mute && t.slots.iter().flatten().any(|c| !c.notes.is_empty());
+                let sounds = !t.mute && t.slots.clips().any(|c| !c.notes.is_empty());
                 let plays = if outside(k) {
                     Plays::Outside
                 } else if !sounds {
@@ -1515,6 +1515,7 @@ mod tests {
                         track: 0,
                         dest: 0,
                         event,
+                        notes: false,
                     };
                     self.host.tap.send(&o, NoteIs::Note);
                 }
@@ -1770,7 +1771,8 @@ mod tests {
             )
             .unwrap();
         p.tracks[1].slots[0] = Some(clip);
-        p.arrangement.placements = vec![Placement::linked(1, 0, 0, BAR)];
+        p.give_clip_ids();
+        p.arrangement.placements = vec![Placement::of(&p.tracks, 1, 0, 0, BAR)];
         // The song's own lane, on track 3's volume (CC 7): full, then off
         // at the half bar.
         let volume = ParamAddr::new(Owner::Midi(2), 7);

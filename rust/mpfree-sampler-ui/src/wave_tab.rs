@@ -49,7 +49,7 @@ use mpfree_ui::numpad::NumberAsk;
 use mpfree_ui::wave::{
     Beats, GrainSpan, LaneCell, Marker, MarkerKind, Peaks, WaveOverview, WaveView, Waveform,
 };
-use mpfree_ui::{Color, EventKind, Rect, Ui, UiEvent};
+use mpfree_ui::{Color, ColorKey, EventKind, Paint, Rect, Role, Ui, UiEvent};
 
 use crate::grain_tab::{self, CloudNow};
 use crate::grain_tool::{self, GrainPart};
@@ -745,12 +745,12 @@ impl WaveTab {
         ui.add(OVERVIEW, WaveOverview::new());
         ui.add(WAVE, Waveform::new());
         ui.add(REGION, SettingList::new("Region"));
-        let t = ui.theme.clone();
+        // The marks' colours: Start and End, Loop start and Loop end.
         let colors = [
-            t.accent,
-            t.accent.mix(t.bad, 0.55),
-            t.good,
-            t.good.mix(t.warn, 0.5),
+            Paint::Key(ColorKey::Accent),
+            Paint::Mix(ColorKey::Accent, ColorKey::Bad, 55),
+            Paint::Key(ColorKey::Good),
+            Paint::Mix(ColorKey::Good, ColorKey::Warn, 50),
         ];
         for (k, m) in Mark::ALL.iter().enumerate() {
             ui.add(
@@ -1111,7 +1111,7 @@ impl WaveTab {
             o.set_region(Some((0, frames)));
         }
         if let Some(bar) = ui.get_mut::<PadBar>(BAR) {
-            bar.color = Color::rgb(crate::rec_widgets::REC_COLOR);
+            bar.color = Paint::from(Role::Record);
             bar.title = title.to_string();
             bar.subtitle = subtitle.to_string();
         }
@@ -1151,8 +1151,8 @@ impl WaveTab {
             self.snap = Snap::ZeroCrossing;
         }
         let pad_color = match st.take {
-            Some(_) => Color::rgb(crate::rec_widgets::REC_COLOR),
-            None => pad_color(st.pad),
+            Some(_) => Paint::from(Role::Record),
+            None => Paint::Content(pad_color(st.pad)),
         };
         let live = self.live.is_some();
         if let Some(bar) = ui.get_mut::<PadBar>(BAR).filter(|_| !live) {
@@ -1282,8 +1282,7 @@ impl WaveTab {
         // The Slice tool's cuts in place of the region's marks: slice 1
         // starts at Start and the last ends at END, and each cut is in its
         // slice's colour, as the lane under the wave is.
-        let t = ui.theme.clone();
-        let tint = |k: usize| t.track[k % t.track.len()];
+        let tint = |k: usize| Paint::Key(ColorKey::Track((k % 8) as u8));
         let chop = st.chop.as_deref().filter(|_| self.tool == Tool::Slice);
         let mut lane = Vec::new();
         if let Some(cs) = chop {
@@ -1316,7 +1315,13 @@ impl WaveTab {
                 })
                 .collect();
         }
-        all.extend(self.warp.markers(st, bend, warp, t.warn, t.text));
+        all.extend(self.warp.markers(
+            st,
+            bend,
+            warp,
+            Paint::Key(ColorKey::Warn),
+            Paint::Key(ColorKey::Text),
+        ));
         let hits: Vec<u64> = self.warp.hits_of(st).iter().map(|&h| drawn(h)).collect();
         let beats = if warp {
             Some(warp_tool::beats(st, self.warp.grid))
@@ -2627,10 +2632,7 @@ fn markers(r: &Region) -> Vec<Marker> {
 /// A pad's colour on the screen, by its place in the bank (the pads' own
 /// colours are set elsewhere; this only tells pads apart).
 pub fn pad_color(pad: usize) -> Color {
-    const COLORS: [u32; 8] = [
-        0xFF8A3D, 0x6EA8FE, 0x3DDC97, 0xFFC145, 0xC77DFF, 0xFF5C8A, 0x4DD4E8, 0xA3E048,
-    ];
-    Color::rgb(COLORS[pad % COLORS.len()])
+    crate::widgets::PAD_COLORS[pad % crate::widgets::PAD_COLORS.len()]
 }
 
 /// Where `name` sits on a page laid out by [`LAYOUT`], whichever page shows.

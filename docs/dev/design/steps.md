@@ -122,7 +122,7 @@ A ratchet of N (1 to 8; 1 is a plain note) plays the note N times, evenly spread
 
 ## A step that is off (`Note.on`)
 
-Sequencer S6, for the redesign's Play page (a step grid of the armed track's pads; agreed with the redesign thread, 18 Nov). Since Jay's device run of 20 Nov 2026 a tap takes a step out (`toggle`) and only the step inspector's Off switches it off; a tap on a step that is off switches it back on. A step that is off keeps its notes and everything they hold: velocity, length, nudge, chance, condition, ratchet, ramp, join and its locks. The player leaves it out as it leaves out a note whose chance fails, with its own locks, but it sets no last result for PRE and NEI, and `Stats::off` counts it. `Change::On(false)` turns it off and `Change::On(true)` back on, one undoable edit each; `Step::on` shows it. Turning a step off is not a tap that clears it (`toggle`): nothing is lost.
+Sequencer S6, for the redesign's Play page (a step grid of the selected track's pads; agreed with the redesign thread, 18 Nov). Since Jay's device run of 20 Nov 2026 a tap takes a step out (`toggle`) and only the step inspector's Off switches it off; a tap on a step that is off switches it back on. A step that is off keeps its notes and everything they hold: velocity, length, nudge, chance, condition, ratchet, ramp, join and its locks. The player leaves it out as it leaves out a note whose chance fails, with its own locks, but it sets no last result for PRE and NEI, and `Stats::off` counts it. `Change::On(false)` turns it off and `Change::On(true)` back on, one undoable edit each; `Step::on` shows it. Turning a step off is not a tap that clears it (`toggle`): nothing is lost.
 
 ## Ties and slides (`Note.join`)
 

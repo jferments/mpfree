@@ -160,7 +160,7 @@ impl RecList {
 
     fn paint_switch(cx: &mut PaintCx, r: Rect, label: &str, sub: &str, on: bool) {
         let t = cx.theme.clone();
-        cx.canvas.fill_round_rect(r, 10, t.raised);
+        cx.canvas.fill_round_rect(r, t.round(10), t.raised);
         let lw = cx.measure(FontId::Bold, 15.0, label);
         cx.text(
             FontId::Bold,
@@ -221,7 +221,7 @@ impl Widget for RecList {
             t.text_dim,
             "REC records what is armed. A tap on a row arms it.",
         );
-        cx.canvas.fill_round_rect(hits.close, 10, t.raised);
+        cx.canvas.fill_round_rect(hits.close, t.round(10), t.raised);
         cx.text(
             FontId::Bold,
             15.0,
@@ -242,12 +242,12 @@ impl Widget for RecList {
             let armed = row.pill != ArmPill::Arm;
             if armed {
                 cx.canvas
-                    .fill_round_rect(*rr, 10, t.bad.mix(t.raised, 0.82));
-                cx.canvas.stroke_round_rect(*rr, 10, 1, t.bad);
+                    .fill_round_rect(*rr, t.round(10), t.bad.mix(t.raised, 0.82));
+                cx.canvas.stroke_round_rect(*rr, t.round(10), 1, t.bad);
                 cx.canvas
                     .fill_round_rect(Rect::new(rr.x, rr.y + 8, 4, rr.h - 16), 2, t.bad);
             } else {
-                cx.canvas.fill_round_rect(*rr, 10, t.raised);
+                cx.canvas.fill_round_rect(*rr, t.round(10), t.raised);
             }
             paint_pill(
                 cx,
@@ -324,7 +324,8 @@ impl Widget for RecList {
         // The right: what moves the arm, then the chip's looks.
         let (top, bottom) = right.take_top(right.h / 2 - 6);
         let bottom = bottom.take_top(12).1;
-        cx.canvas.fill_round_rect(top, 10, t.bg.mix(t.surface, 0.4));
+        cx.canvas
+            .fill_round_rect(top, t.round(10), t.bg.mix(t.surface, 0.4));
         draw::card(cx, top, "What moves the arm", "");
         let (_, body) = draw::card_head(top);
         let mut y = body.y;

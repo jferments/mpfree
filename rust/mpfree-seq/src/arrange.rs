@@ -1,14 +1,21 @@
 //! The arrangement (roadmap T13): clips on a timeline.
 //!
-//! A [`Placement`] puts a clip on a track from a song tick for a length.
-//! It is **linked** to a slot of its track ([`Source::Slot`]): an edit to
-//! the slot's clip shows in every placement of it, the way a pattern plays
-//! wherever the song uses it. [`Arrangement::make_unique`] gives a
-//! placement its own copy ([`Source::Own`]) to change on its own. A
-//! placement longer than its clip loops it; `offset` starts it part way in.
-//! [`Marker`]s name places in the song. A placement linked to a slot that
-//! is emptied (an undone capture, say) stays and plays nothing until the
-//! slot has a clip again; [`Arrangement::unlink`] keeps a copy instead.
+//! A [`Placement`] (a song block) puts a clip on a track's lane from a
+//! song tick for a length. It names its clip by its lasting id
+//! ([`ClipId`], the Arrange refactor's D1), wherever the clip lives: in a
+//! cell of the grid, or among the song's own clips ([`SongClips`]). An
+//! edit to the clip shows in every block of it, the way a pattern plays
+//! wherever the song uses it, and a clip moved to another cell (or its
+//! row dragged) keeps its id, so its blocks stay linked without being
+//! touched. A block plays through its own lane's track: a clip of the
+//! drums placed on the bass lane sounds through the bass.
+//! [`Project::make_unique`] gives a block a copy of its own among the
+//! song's clips, with a new id, to change on its own. A block longer
+//! than its clip loops it; `offset` starts it part way in. [`Marker`]s
+//! name places in the song. Deleting a clip the song plays moves it to
+//! the song's own clips, so the song plays on (`mpfree-play`'s takes); a
+//! block whose clip is gone (an undone capture, say) stays and plays
+//! nothing until its clip comes back.
 //!
 //! Scenes and the arrangement convert both ways:
 //!
@@ -31,8 +38,8 @@
 //!
 //! The Song view's drags (Jay, 14 Nov: drag and drop) edit it in place:
 //! [`Arrangement::move_placement`] moves or copies a placement along its
-//! lane or onto another track's (it takes its own copy of a linked clip
-//! there), [`Arrangement::set_length`] makes one longer or shorter, and
+//! lane or onto another track's (it stays linked to its clip),
+//! [`Arrangement::set_length`] makes one longer or shorter, and
 //! [`Arrangement::move_section`] moves or copies a section (marker to
 //! marker) on every track, the others closing up or making room.
 //!
@@ -48,12 +55,13 @@ use crate::mpfree_moves::{Kind, Map, Moves, Point, Target};
 use crate::mpfree_param::ParamAddr;
 use crate::scenes::SongList;
 use crate::{
-    Clip, Cond, Direction, Follow, FollowAction, Join, ModelError, Project, Scene, Track,
+    Clip, ClipId, Cond, Direction, Follow, FollowAction, Join, ModelError, Project, Scene, Track,
     MAX_TRACKS, SCENES, SLOTS,
 };
 use mpfree_transport::time::{
     valid_bpm, MapError, Segment, TempoMap, Tick, MAX_SEGMENTS, MIN_SPAN_TICKS,
 };
+use std::sync::Arc;
 
 /// Placements in a song.
 pub const MAX_PLACEMENTS: usize = 4096;
@@ -71,18 +79,10 @@ pub const SONG_LANE_LEN: u32 = 1 << 30;
 /// The song lane of the morph crossfader.
 pub const MORPH_LANE: Target = Target::Fixed(ParamAddr::morph_pos(0));
 
-/// Where a placement's clip comes from.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Source {
-    /// The clip in this slot of the placement's track.
-    Slot(usize),
-    /// Its own copy (made unique).
-    Own(Box<Clip>),
-}
-
-/// A clip on the timeline: see the module notes.
+/// A clip on the timeline (a song block): see the module notes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Placement {
+    /// The lane it is on: the track it plays through.
     pub track: usize,
     /// The song tick it starts on.
     pub start: Tick,
@@ -90,19 +90,34 @@ pub struct Placement {
     pub length: Tick,
     /// Where in the clip it starts, in the clip's own ticks (0: its top).
     pub offset: Tick,
-    pub source: Source,
+    /// The clip it plays, by its lasting id, in a cell or among the
+    /// song's own clips. [`ClipId::NONE`], or an id no clip has now: it
+    /// plays nothing.
+    pub clip: ClipId,
 }
 
 impl Placement {
-    /// Slot `slot` of `track` from `start` for `length` song ticks.
-    pub fn linked(track: usize, slot: usize, start: Tick, length: Tick) -> Placement {
+    /// Clip `clip` on `track`'s lane from `start` for `length` song ticks.
+    pub fn new(track: usize, clip: ClipId, start: Tick, length: Tick) -> Placement {
         Placement {
             track,
             start,
             length,
             offset: 0,
-            source: Source::Slot(slot),
+            clip,
         }
+    }
+
+    /// A block of the clip in cell `row` of `track` (in `tracks`), on that
+    /// track's lane from `start` for `length` song ticks: it names the
+    /// clip's id. An empty cell's block, or one of a clip with no id yet,
+    /// names none and plays nothing.
+    pub fn of(tracks: &[Track], track: usize, row: usize, start: Tick, length: Tick) -> Placement {
+        let clip = tracks
+            .get(track)
+            .and_then(|t| t.slots.get(row)?.as_ref())
+            .map_or(ClipId::NONE, |c| c.id);
+        Placement::new(track, clip, start, length)
     }
 
     pub fn end(&self) -> Tick {
@@ -113,12 +128,26 @@ impl Placement {
         (self.start..self.end()).contains(&tick)
     }
 
-    /// The clip it plays, linked or its own.
-    pub fn clip<'a>(&'a self, tracks: &'a [Track]) -> Option<&'a Clip> {
-        match &self.source {
-            Source::Slot(s) => tracks.get(self.track)?.slots.get(*s)?.as_ref(),
-            Source::Own(c) => Some(c),
+    /// The clip it plays, wherever it lives: its own lane's cells are
+    /// looked through first, then the song's clips, then the other
+    /// tracks'. None when no clip has its id. Allocates nothing.
+    pub fn clip<'a>(&self, tracks: &'a [Track], song: &'a SongClips) -> Option<&'a Clip> {
+        let id = self.clip;
+        if !id.is_given() {
+            return None;
         }
+        let on = |t: &'a Track| t.slots.clips().find(|c| c.id == id);
+        tracks
+            .get(self.track)
+            .and_then(on)
+            .or_else(|| song.get(id))
+            .or_else(|| {
+                tracks
+                    .iter()
+                    .enumerate()
+                    .filter(|&(t, _)| t != self.track)
+                    .find_map(|(_, t)| on(t))
+            })
     }
 
     /// The song tick its clip's tick 0 falls on in the pass it starts in:
@@ -130,11 +159,12 @@ impl Placement {
         self.start - back.round() as Tick
     }
 
-    /// What plays of it from song tick `at` on (inside it), from where the
-    /// clip has got to there: the part after a cut at `at`.
-    pub fn from(&self, tracks: &[Track], at: Tick) -> Placement {
-        let speed = self.clip(tracks).map_or(crate::Speed::NORMAL, |c| c.speed);
-        let length = self.clip(tracks).map_or(1, |c| c.length.max(1));
+    /// What plays of it from song tick `at` on (inside it), from where
+    /// its clip (`clip`, None when it has none now) has got to there: the
+    /// part after a cut at `at`.
+    pub fn from(&self, clip: Option<&Clip>, at: Tick) -> Placement {
+        let speed = clip.map_or(crate::Speed::NORMAL, |c| c.speed);
+        let length = clip.map_or(1, |c| c.length.max(1));
         let moved = speed.to_clip((at - self.start) as f64).round() as Tick;
         Placement {
             offset: (self.offset + moved).rem_euclid(length),
@@ -143,13 +173,109 @@ impl Placement {
             ..self.clone()
         }
     }
+}
 
-    /// The slot it is linked to.
-    pub fn slot(&self) -> Option<usize> {
-        match self.source {
-            Source::Slot(s) => Some(s),
-            Source::Own(_) => None,
+/// The song's own clips (the Arrange refactor's D1): clips no cell holds
+/// that the song's blocks play, a block's copy made unique or a deleted
+/// clip the song still plays. Each has its lasting id; they are kept in
+/// order of id, none twice. Copies of the song share them until one
+/// changes, so a Song view undo step keeps its blocks, not its clips.
+#[derive(Clone, Debug, Default)]
+pub struct SongClips(Arc<Vec<Clip>>);
+
+impl PartialEq for SongClips {
+    fn eq(&self, other: &SongClips) -> bool {
+        Arc::ptr_eq(&self.0, &other.0) || self.0 == other.0
+    }
+}
+
+impl SongClips {
+    /// The clip with id `id`.
+    pub fn get(&self, id: ClipId) -> Option<&Clip> {
+        self.at(id).ok().map(|k| &self.0[k])
+    }
+
+    /// The clip with id `id`, to change (the song's copies stop sharing).
+    pub fn get_mut(&mut self, id: ClipId) -> Option<&mut Clip> {
+        let k = self.at(id).ok()?;
+        Arc::make_mut(&mut self.0).get_mut(k)
+    }
+
+    fn at(&self, id: ClipId) -> Result<usize, usize> {
+        self.0.binary_search_by_key(&id, |c| c.id)
+    }
+
+    /// Whether these are the very clips `other` holds, shared, not a
+    /// copy of them.
+    pub fn shares(&self, other: &SongClips) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
+    /// In order of id.
+    pub fn iter(&self) -> std::slice::Iter<'_, Clip> {
+        self.0.iter()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Keep `clip`, in its place by id. `BadPlacement`, keeping nothing,
+    /// for a clip with no id or one a song clip has.
+    pub fn keep(&mut self, clip: Clip) -> Result<(), ModelError> {
+        if !clip.id.is_given() {
+            return Err(ModelError::BadPlacement);
         }
+        match self.at(clip.id) {
+            Ok(_) => Err(ModelError::BadPlacement),
+            Err(k) => {
+                Arc::make_mut(&mut self.0).insert(k, clip);
+                Ok(())
+            }
+        }
+    }
+
+    /// Take the clip with id `id` out.
+    pub fn take(&mut self, id: ClipId) -> Option<Clip> {
+        let k = self.at(id).ok()?;
+        Some(Arc::make_mut(&mut self.0).remove(k))
+    }
+
+    /// Keep only the clips `keep` says to (changing nothing, the copies
+    /// still shared, when it keeps them all).
+    pub fn retain(&mut self, mut keep: impl FnMut(&Clip) -> bool) {
+        if self.0.iter().all(&mut keep) {
+            return;
+        }
+        Arc::make_mut(&mut self.0).retain(keep);
+    }
+
+    /// Give each clip with no id, or one `taken` says another clip has,
+    /// the next id from `next` (moved on), in order; the rest keep
+    /// theirs. How many were given.
+    pub(crate) fn give_ids(
+        &mut self,
+        next: &mut u32,
+        mut taken: impl FnMut(ClipId) -> bool,
+    ) -> usize {
+        if self.0.iter().all(|c| c.id.is_given() && !taken(c.id)) {
+            return 0;
+        }
+        let clips = Arc::make_mut(&mut self.0);
+        let mut given = 0;
+        for c in clips.iter_mut() {
+            if !c.id.is_given() || taken(c.id) {
+                c.id = ClipId(*next);
+                *next = next.saturating_add(1);
+                given += 1;
+            }
+        }
+        clips.sort_by_key(|c| c.id);
+        given
     }
 }
 
@@ -181,10 +307,12 @@ pub struct MorphRows {
 }
 
 /// The song: placements sorted by track, then start (none overlapping on a
-/// track), and markers sorted by tick.
+/// track), the clips only the song has, and markers sorted by tick.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Arrangement {
     pub placements: Vec<Placement>,
+    /// The clips only the song has ([`SongClips`]).
+    pub clips: SongClips,
     pub markers: Vec<Marker>,
     /// The song's own lanes, on song ticks ([`SONG_LANE_LEN`] long, not
     /// looping), for parameters not on a track: the morph
@@ -216,25 +344,40 @@ impl Arrangement {
             .unwrap_or(0)
     }
 
+    /// The clip block `p` plays ([`Placement::clip`]).
+    pub fn clip_of<'a>(&'a self, tracks: &'a [Track], p: &Placement) -> Option<&'a Clip> {
+        p.clip(tracks, &self.clips)
+    }
+
+    /// Whether a block plays clip `id`.
+    pub fn plays(&self, id: ClipId) -> bool {
+        id.is_given() && self.placements.iter().any(|p| p.clip == id)
+    }
+
+    /// Every block and song clip in range, and each block's clip on a lane
+    /// of its kind: a loop's on a Loop track, a clip's off one (a block
+    /// whose clip is gone plays nothing and is fine). The cells' clips
+    /// are the project's to check.
     pub fn check(&self, tracks: &[Track]) -> Result<(), ModelError> {
-        if self.placements.len() > MAX_PLACEMENTS || self.markers.len() > MAX_MARKERS {
+        if self.placements.len() > MAX_PLACEMENTS
+            || self.markers.len() > MAX_MARKERS
+            || self.clips.len() > MAX_PLACEMENTS
+        {
             return Err(ModelError::BadPlacement);
         }
         self.list.check()?;
+        for c in self.clips.iter() {
+            c.check()?;
+        }
         for (i, p) in self.placements.iter().enumerate() {
             if p.length <= 0 || p.start < 0 || p.offset < 0 || p.track >= tracks.len() {
                 return Err(ModelError::BadPlacement);
             }
-            match &p.source {
-                Source::Slot(s) if *s >= SLOTS => return Err(ModelError::BadPlacement),
-                Source::Own(c) => {
-                    c.check()?;
-                    // A loop's own copy only on a Loop track, a clip's off one.
-                    if c.looped.is_some() != tracks[p.track].is_loops() {
-                        return Err(ModelError::BadLoop);
-                    }
-                }
-                Source::Slot(_) => {}
+            if self
+                .clip_of(tracks, p)
+                .is_some_and(|c| c.looped.is_some() != tracks[p.track].is_loops())
+            {
+                return Err(ModelError::BadLoop);
             }
             if let Some(prev) = i.checked_sub(1).map(|j| &self.placements[j]) {
                 let order = (prev.track, prev.start) < (p.track, p.start);
@@ -384,7 +527,7 @@ impl Arrangement {
                 self.placements.remove(i);
             }
             if end > to {
-                let rest = rest.from(tracks, to);
+                let rest = rest.from(rest.clip(tracks, &self.clips), to);
                 if self.placements.len() >= MAX_PLACEMENTS {
                     return Err(ModelError::BadPlacement);
                 }
@@ -392,7 +535,20 @@ impl Arrangement {
                 break;
             }
         }
+        self.drop_unplayed();
         Ok(())
+    }
+
+    /// Let go of the song's clips no block plays now (their last block
+    /// deleted or cut away): a Song view undo step keeps them in the song
+    /// as it was. Allocates a list of the ids played.
+    pub fn drop_unplayed(&mut self) {
+        if self.clips.is_empty() {
+            return;
+        }
+        let mut played: Vec<ClipId> = self.placements.iter().map(|p| p.clip).collect();
+        played.sort_unstable();
+        self.clips.retain(|c| played.binary_search(&c.id).is_ok());
     }
 
     /// Write morph moves recorded over song ticks `from..to` (points at
@@ -459,8 +615,14 @@ impl Arrangement {
         Ok(i)
     }
 
+    /// Delete block `i`: a song clip it was the last to play goes with
+    /// it.
     pub fn remove(&mut self, i: usize) -> Option<Placement> {
-        (i < self.placements.len()).then(|| self.placements.remove(i))
+        let p = (i < self.placements.len()).then(|| self.placements.remove(i))?;
+        if self.clips.get(p.clip).is_some() && !self.plays(p.clip) {
+            self.clips.take(p.clip);
+        }
+        Some(p)
     }
 
     /// The placements on `track`, in order.
@@ -478,29 +640,6 @@ impl Arrangement {
             .take_while(|p| p.track == track && p.start <= tick)
             .position(|p| p.contains(tick))
             .map(|k| a + k)
-    }
-
-    /// Give placement `i` its own copy of its clip.
-    pub fn make_unique(&mut self, tracks: &[Track], i: usize) -> Result<(), ModelError> {
-        let p = self.placements.get(i).ok_or(ModelError::BadPlacement)?;
-        if let Source::Slot(_) = p.source {
-            let clip = p.clip(tracks).ok_or(ModelError::BadPlacement)?.clone();
-            self.placements[i].source = Source::Own(Box::new(clip));
-        }
-        Ok(())
-    }
-
-    /// Before slot `slot` of `track` is emptied: every placement linked to
-    /// it gets its own copy, so the song still plays it. How many.
-    pub fn unlink(&mut self, tracks: &[Track], track: usize, slot: usize) -> usize {
-        let mut n = 0;
-        for i in 0..self.placements.len() {
-            let p = &self.placements[i];
-            if p.track == track && p.slot() == Some(slot) && self.make_unique(tracks, i).is_ok() {
-                n += 1;
-            }
-        }
-        n
     }
 
     /// Add a marker in its place.
@@ -521,14 +660,13 @@ impl Arrangement {
 
     /// Placement `i` moved to `track` from `start`, or with `copy` a copy
     /// of it put there and the placement left as it is (Jay, 14 Nov: drag
-    /// and drop on the Song view). Onto another track a placement linked
-    /// to a slot takes its own copy of the clip, as the slot would name
-    /// that track's clip. Refused (`BadPlacement`), changing nothing, when
-    /// it would overlap a placement there or start before 0, or goes to
-    /// another track linked to an empty slot; and (`BadLoop`) when it goes
-    /// to another track and either is a Loop track: a loop's block stays on
-    /// its Loop track's lane, as its cell stays in its column
-    /// (loop-tracks.md). Its index now.
+    /// and drop on the Song view). Either way it stays linked to its clip,
+    /// on another track's lane too, and plays through that track (the
+    /// Arrange refactor's D1). Refused (`BadPlacement`), changing nothing,
+    /// when it would overlap a placement there or start before 0; and
+    /// (`BadLoop`) when it goes to another track and either is a Loop
+    /// track: a loop's block stays on its Loop track's lane, as its cell
+    /// stays in its column (loop-tracks.md). Its index now.
     pub fn move_placement(
         &mut self,
         tracks: &[Track],
@@ -546,10 +684,6 @@ impl Arrangement {
             return Err(ModelError::BadLoop);
         }
         let mut moved = p.clone();
-        if track != p.track && p.slot().is_some() {
-            let clip = p.clip(tracks).ok_or(ModelError::BadPlacement)?;
-            moved.source = Source::Own(Box::new(clip.clone()));
-        }
         moved.track = track;
         moved.start = start;
         if copy {
@@ -635,7 +769,7 @@ impl Arrangement {
                 .into_iter()
                 .flat_map(|p| {
                     if p.start < at && at < p.end() {
-                        let rest = p.from(tracks, at);
+                        let rest = p.from(p.clip(tracks, &self.clips), at);
                         vec![
                             Placement {
                                 length: at - p.start,
@@ -654,6 +788,7 @@ impl Arrangement {
         // song list names rows, not ticks.
         let mut song = Arrangement {
             placements: Vec::new(),
+            clips: self.clips.clone(),
             markers: Vec::new(),
             lanes: self.lanes.clone(),
             morphs: self.morphs.clone(),
@@ -689,6 +824,42 @@ impl Arrangement {
     }
 }
 
+impl Project {
+    /// The clip song block `p` plays ([`Placement::clip`]).
+    pub fn block_clip(&self, p: &Placement) -> Option<&Clip> {
+        p.clip(&self.tracks, &self.arrangement.clips)
+    }
+
+    /// Give song block `i` a copy of its clip of its own, among the
+    /// song's clips with a new id, to change on its own (Make unique). A
+    /// block already playing a song clip no other block plays keeps it.
+    /// The id it plays now; `BadPlacement`, changing nothing, for no such
+    /// block or one whose clip is gone.
+    pub fn make_unique(&mut self, i: usize) -> Result<ClipId, ModelError> {
+        let p = self
+            .arrangement
+            .placements
+            .get(i)
+            .ok_or(ModelError::BadPlacement)?;
+        let id = p.clip;
+        let song = &self.arrangement;
+        let alone = song.placements.iter().filter(|q| q.clip == id).count() == 1;
+        if alone && song.clips.get(id).is_some() {
+            return Ok(id);
+        }
+        let mut copy = self.block_clip(p).ok_or(ModelError::BadPlacement)?.copied();
+        copy.id = self.new_clip_id();
+        let new = copy.id;
+        self.arrangement.clips.keep(copy)?;
+        self.arrangement.placements[i].clip = new;
+        // The clip it played, if a song clip no block plays now, goes.
+        if self.arrangement.clips.get(id).is_some() && !self.arrangement.plays(id) {
+            self.arrangement.clips.take(id);
+        }
+        Ok(new)
+    }
+}
+
 /// How long row `row` plays in a song: its follow's bars, else its longest
 /// clip in whole bars of `bar` ticks (one bar at least).
 pub fn scene_length(project: &Project, row: usize, bar: Tick) -> Tick {
@@ -707,7 +878,8 @@ pub fn scene_length(project: &Project, row: usize, bar: Tick) -> Tick {
 }
 
 /// Rows one after another from `at`, each for its length in song ticks,
-/// as linked placements with a marker each: see the module notes. The
+/// as placements of the rows' clips with a marker each: see the module
+/// notes. `BadPlacement` for a clip with no id yet. The
 /// scenes' mutes carry from row to row from none (a track a scene muted
 /// gets no blocks until a scene unmutes it), and a one-shot clip's block
 /// ends with its pass. What it can't carry is in the differences: a
@@ -760,7 +932,12 @@ pub fn scenes_to_song(
             if muted.get(track).copied().unwrap_or(false) {
                 continue;
             }
-            song.place(Placement::linked(track, row, t, len))?;
+            // Linked by its id: a clip without one (never put in through
+            // the project) can't be named.
+            if !clip.id.is_given() {
+                return Err(ModelError::BadPlacement);
+            }
+            song.place(Placement::new(track, clip.id, t, len))?;
         }
         let name = scene
             .map(|s| s.name.clone())
@@ -850,7 +1027,8 @@ pub fn song_to_scenes(project: &mut Project, bar: Tick) -> Result<ToScenes, Mode
         return Ok(ToScenes::default());
     }
     let n = parts.len();
-    let first = (0..SCENES.saturating_sub(n - 1))
+    // A run of empty rows on the grid: the rows it shows ([`SLOTS`]).
+    let first = (0..(SLOTS + 1).saturating_sub(n))
         .find(|&r| (r..r + n).all(|k| project.row_empty(k)))
         .ok_or(ModelError::NoRoom)?;
     let mut differences = song_differences(project, &parts, bar);
@@ -860,13 +1038,14 @@ pub fn song_to_scenes(project: &mut Project, bar: Tick) -> Result<ToScenes, Mode
         for (track, at) in playing.iter().enumerate() {
             let Some(i) = at else { continue };
             let block = &project.arrangement.placements[*i];
-            // A placement of an emptied slot plays nothing: nothing to copy.
-            let Some(clip) = block.clip(&project.tracks) else {
+            // A block whose clip is gone plays nothing: nothing to copy.
+            let Some(clip) = project.block_clip(block) else {
                 continue;
             };
             let (copy, why) = section_copy(block, clip, *a);
             differences.extend(why.into_iter().map(|w| Difference::on(track, *a, w)));
-            p.tracks[track].slots[row] = Some(copy);
+            // A copy: a clip of its own, with a new id.
+            p.put_new_clip(track, row, copy)?;
         }
         let bars = ((b - a + bar - 1) / bar).clamp(1, i64::from(crate::scenes::MAX_FOLLOW_BARS));
         let name = project
@@ -1308,6 +1487,7 @@ mod tests {
     }
 
     use super::*;
+    use crate::ClipAt;
 
     const BAR: Tick = 3840;
 
@@ -1319,7 +1499,15 @@ mod tests {
             t.slots[1] = Some(Clip::new("b", 2 * BAR));
             p.tracks.push(t);
         }
+        // Ids 1 and 2 on the drums, 3 and 4 on the bass.
+        p.give_clip_ids();
         p
+    }
+
+    /// The row of block `b`'s clip on its own lane's track (None: it
+    /// plays a clip that lives elsewhere, or none).
+    fn row(p: &Project, b: &Placement) -> Option<usize> {
+        p.tracks[b.track].slots.row_of(b.clip)
     }
 
     #[test]
@@ -1327,9 +1515,10 @@ mod tests {
         let p = project();
         let mut s = Arrangement::default();
         // Slot 1 (two bars) from 0 for 6 bars, and slot 0 from bar 7.
-        s.place(Placement::linked(0, 1, 0, 6 * BAR)).unwrap();
-        s.place(Placement::linked(0, 0, 7 * BAR, BAR)).unwrap();
-        s.place(Placement::linked(1, 0, 0, 8 * BAR)).unwrap();
+        s.place(Placement::of(&p.tracks, 0, 1, 0, 6 * BAR)).unwrap();
+        s.place(Placement::of(&p.tracks, 0, 0, 7 * BAR, BAR))
+            .unwrap();
+        s.place(Placement::of(&p.tracks, 1, 0, 0, 8 * BAR)).unwrap();
         s.clear(&p.tracks, 0, BAR, 3 * BAR + 100).unwrap();
         let t0: Vec<(Tick, Tick, Tick)> = s
             .on_track(0)
@@ -1398,11 +1587,11 @@ mod tests {
     fn placements_stay_sorted_and_never_overlap_on_a_track() {
         let p = project();
         let mut s = Arrangement::default();
-        assert_eq!(s.place(Placement::linked(1, 0, BAR, BAR)), Ok(0));
-        assert_eq!(s.place(Placement::linked(0, 0, 0, 2 * BAR)), Ok(0));
-        assert_eq!(s.place(Placement::linked(0, 1, 2 * BAR, BAR)), Ok(1));
+        assert_eq!(s.place(Placement::of(&p.tracks, 1, 0, BAR, BAR)), Ok(0));
+        assert_eq!(s.place(Placement::of(&p.tracks, 0, 0, 0, 2 * BAR)), Ok(0));
+        assert_eq!(s.place(Placement::of(&p.tracks, 0, 1, 2 * BAR, BAR)), Ok(1));
         assert_eq!(
-            s.place(Placement::linked(0, 1, BAR, BAR)),
+            s.place(Placement::of(&p.tracks, 0, 1, BAR, BAR)),
             Err(ModelError::BadPlacement)
         );
         assert_eq!(s.check(&p.tracks), Ok(()));
@@ -1414,45 +1603,69 @@ mod tests {
         assert_eq!(s.check(&p.tracks), Err(ModelError::BadPlacement));
     }
 
+    /// Arrange 1.3: a block names its clip by id, so it follows the clip
+    /// wherever it moves, until Make unique gives it a song clip of its
+    /// own; a block whose clip is gone stays, silent, until it is back.
     #[test]
-    fn a_linked_placement_follows_its_slot_until_made_unique() {
+    fn a_block_follows_its_clip_by_id_until_made_unique() {
         let mut p = project();
         p.arrangement
-            .place(Placement::linked(0, 1, 0, 4 * BAR))
+            .place(Placement::of(&p.tracks, 0, 1, 0, 4 * BAR))
             .unwrap();
+        assert_eq!(p.arrangement.placements[0].clip, ClipId(2));
         p.tracks[0].slots[1].as_mut().unwrap().name = "edited".into();
         let name = |p: &Project| {
-            p.arrangement.placements[0]
-                .clip(&p.tracks)
-                .unwrap()
-                .name
-                .clone()
+            p.block_clip(&p.arrangement.placements[0])
+                .map(|c| c.name.clone())
         };
-        assert_eq!(name(&p), "edited");
-        let tracks = p.tracks.clone();
-        p.arrangement.make_unique(&tracks, 0).unwrap();
-        p.tracks[0].slots[1].as_mut().unwrap().name = "again".into();
-        assert_eq!(name(&p), "edited", "its own copy now");
-        // Emptying a slot: its placements stay, silent, unless unlinked
-        // first (they keep a copy).
+        assert_eq!(name(&p).as_deref(), Some("edited"));
+        // The clip moved to another row, then to the bass's grid: the
+        // block is untouched and still plays it, on its own lane.
+        let c = p.tracks[0].slots[1].take();
+        p.tracks[0].slots[5] = c;
+        assert_eq!(name(&p).as_deref(), Some("edited"));
+        let c = p.tracks[0].slots[5].take();
+        p.tracks[1].slots[7] = c;
+        assert_eq!(name(&p).as_deref(), Some("edited"));
+        assert_eq!(
+            p.find_clip(ClipId(2)),
+            Some(ClipAt::Cell { track: 1, row: 7 })
+        );
+        assert_eq!(p.arrangement.placements[0].track, 0);
+        assert_eq!(p.check(), Ok(()));
+        // Made unique: a copy among the song's clips with the next id.
+        assert_eq!(p.make_unique(0), Ok(ClipId(5)));
+        assert_eq!(p.find_clip(ClipId(5)), Some(ClipAt::Song));
+        p.tracks[1].slots[7].as_mut().unwrap().name = "again".into();
+        assert_eq!(name(&p).as_deref(), Some("edited"), "its own copy now");
+        assert_eq!(p.make_unique(0), Ok(ClipId(5)), "already its own");
+        assert_eq!(p.check(), Ok(()));
+        // A cell emptied: its block stays, silent, and plays again when
+        // the clip comes back with its id.
         p.arrangement
-            .place(Placement::linked(1, 0, 0, BAR))
+            .place(Placement::of(&p.tracks, 1, 0, 0, BAR))
             .unwrap();
-        p.tracks[1].slots[0] = None;
+        let gone = p.tracks[1].slots[0].take();
         assert_eq!(p.check(), Ok(()));
-        assert!(p.arrangement.placements[1].clip(&p.tracks).is_none());
-        p.tracks[1].slots[0] = Some(Clip::new("a", BAR));
-        let tracks = p.tracks.clone();
-        assert_eq!(p.arrangement.unlink(&tracks, 1, 0), 1);
-        p.tracks[1].slots[0] = None;
-        assert_eq!(p.check(), Ok(()));
+        assert!(p.block_clip(&p.arrangement.placements[1]).is_none());
+        p.tracks[1].slots[0] = gone;
+        assert!(p.block_clip(&p.arrangement.placements[1]).is_some());
+        // Deleting a block lets go of the song clip only it played.
+        assert!(p.arrangement.remove(0).is_some());
+        assert!(p.arrangement.clips.is_empty());
+        // A song clip with a cell's id doesn't check: a clip lives in one
+        // place.
+        let mut twin = p.tracks[0].slots[0].clone().unwrap();
+        twin.name = "twin".into();
+        p.arrangement.clips.keep(twin).unwrap();
+        assert_eq!(p.check(), Err(ModelError::BadPlacement));
     }
 
     #[test]
     fn an_offset_moves_the_origin_back_at_the_clips_speed() {
         let mut c = Clip::new("c", BAR);
         c.speed = crate::Speed::new(1, 2).unwrap();
-        let mut pl = Placement::linked(0, 0, 10 * BAR, BAR);
+        let mut pl = Placement::new(0, ClipId(1), 10 * BAR, BAR);
         pl.offset = 960;
         assert_eq!(pl.origin(&c), 10 * BAR - 1920, "half speed: twice as far");
     }
@@ -1475,7 +1688,7 @@ mod tests {
             .placements
             .iter()
             .filter(|b| b.track == 0)
-            .map(|b| (b.slot().unwrap(), b.start, b.length))
+            .map(|b| (row(&p, b).unwrap(), b.start, b.length))
             .collect();
         assert_eq!(
             blocks,
@@ -1661,13 +1874,21 @@ mod tests {
         four.legato = true;
         four.follow = Some(Follow::after(2, FollowAction::Stop));
         p.tracks[0].slots[2] = Some(four);
+        p.give_clip_ids();
         let s = &mut p.arrangement;
         // Drums: the four-bar clip for 8 bars; bass joins on bar 3.
-        s.place(Placement::linked(0, 2, 0, 8 * BAR)).unwrap();
-        s.place(Placement::linked(1, 0, 2 * BAR, 6 * BAR)).unwrap();
+        s.place(Placement::of(&p.tracks, 0, 2, 0, 8 * BAR)).unwrap();
+        s.place(Placement::of(&p.tracks, 1, 0, 2 * BAR, 6 * BAR))
+            .unwrap();
+        let had = p.next_clip;
         let done = song_to_scenes(&mut p, BAR).unwrap();
         assert_eq!(done.rows, [3, 4]);
         assert_eq!(done.differences, [], "exact");
+        // Each copy a clip of its own, with a new id (Arrange 1.1).
+        let ids: Vec<u32> = [(0, 3), (0, 4), (1, 4)]
+            .map(|(t, r)| p.clip(t, r).unwrap().id.0)
+            .to_vec();
+        assert_eq!(ids, [had, had + 1, had + 2]);
         let copy = p.tracks[0].slots[4].as_ref().unwrap();
         let ticks: Vec<(Tick, u8)> = copy.notes.iter().map(|n| (n.tick, n.note)).collect();
         assert_eq!(ticks, [(2 * BAR, 10), (3 * BAR, 11), (0, 12), (BAR, 13)]);
@@ -1691,9 +1912,11 @@ mod tests {
         let song = |clip: Clip, start: Tick| {
             let mut p = project();
             p.tracks[0].slots[2] = Some(clip);
+            p.give_clip_ids();
             let s = &mut p.arrangement;
-            s.place(Placement::linked(0, 2, start, 8 * BAR)).unwrap();
-            s.place(Placement::linked(1, 0, start + 2 * BAR, 6 * BAR))
+            s.place(Placement::of(&p.tracks, 0, 2, start, 8 * BAR))
+                .unwrap();
+            s.place(Placement::of(&p.tracks, 1, 0, start + 2 * BAR, 6 * BAR))
                 .unwrap();
             p
         };
@@ -1749,7 +1972,10 @@ mod tests {
         assert_eq!(diffs(song(c, 0)), on_drums(Differs::HeldNote), "a tie");
         let mut p = song(four(), 0);
         let mut loops = Track::new_loops("loops", 2);
-        loops.slots[2] = Some(Clip::new_loop(0, 4 * BAR));
+        // The loop cell in the clip's place, with its id.
+        let mut cell = Clip::new_loop(0, 4 * BAR);
+        cell.id = p.clip(0, 2).unwrap().id;
+        loops.slots[2] = Some(cell);
         p.tracks[0] = loops;
         assert_eq!(diffs(p), on_drums(Differs::LoopCell));
         // At 3/4 speed, a section 2 bars and a tick in is 5,760.75 of the
@@ -1769,7 +1995,7 @@ mod tests {
         // the morph's lane.
         let mut p = song(four(), BAR);
         p.arrangement
-            .place(Placement::linked(1, 0, 11 * BAR, BAR))
+            .place(Placement::of(&p.tracks, 1, 0, 11 * BAR, BAR))
             .unwrap();
         p.arrangement.set_tempo(4 * BAR, 100.0, None).unwrap();
         let rows = [MorphRows { at: 0, a: 0, b: 1 }];
@@ -1788,7 +2014,7 @@ mod tests {
         // Longer than a follow's most bars.
         let mut p = project();
         p.arrangement
-            .place(Placement::linked(0, 0, 0, 1000 * BAR))
+            .place(Placement::of(&p.tracks, 0, 0, 0, 1000 * BAR))
             .unwrap();
         assert_eq!(diffs(p), [(None, 0, Differs::TooLong)]);
         // In words.
@@ -1829,12 +2055,18 @@ mod tests {
         p.tracks[0].slots[2] = Some(once);
         p.tracks[0].slots[3].as_mut().unwrap().follow = Some(Follow::after(1, FollowAction::Stop));
         p.tracks[0].slots[4].as_mut().unwrap().legato = true;
+        // A clip with no id yet can't be placed.
+        assert_eq!(
+            scenes_to_song(&p, &[(2, 4 * BAR)], 0),
+            Err(ModelError::BadPlacement)
+        );
+        p.give_clip_ids();
         let done = scenes_to_song(&p, &[(2, 4 * BAR), (3, BAR), (4, BAR)], 0).unwrap();
         let blocks: Vec<(usize, usize, Tick, Tick)> = done
             .song
             .placements
             .iter()
-            .map(|b| (b.track, b.slot().unwrap(), b.start, b.length))
+            .map(|b| (b.track, row(&p, b).unwrap(), b.start, b.length))
             .collect();
         assert_eq!(
             blocks,
@@ -1870,9 +2102,10 @@ mod tests {
         let mut p = project();
         // Drums 0..4 bars of one placement; bass 0..2 and 2..4 bars of two.
         let s = &mut p.arrangement;
-        s.place(Placement::linked(0, 0, 0, 4 * BAR)).unwrap();
-        s.place(Placement::linked(1, 0, 0, 2 * BAR)).unwrap();
-        s.place(Placement::linked(1, 0, 2 * BAR, 2 * BAR)).unwrap();
+        s.place(Placement::of(&p.tracks, 0, 0, 0, 4 * BAR)).unwrap();
+        s.place(Placement::of(&p.tracks, 1, 0, 0, 2 * BAR)).unwrap();
+        s.place(Placement::of(&p.tracks, 1, 0, 2 * BAR, 2 * BAR))
+            .unwrap();
         assert_eq!(sections(&p).len(), 2, "the bass's second placement");
         p.arrangement.placements[2].start = 3 * BAR;
         p.arrangement.placements[2].length = BAR;
@@ -1889,9 +2122,10 @@ mod tests {
     fn a_placement_moves_or_copies_along_and_across_lanes() {
         let p = project();
         let mut s = Arrangement::default();
-        s.place(Placement::linked(0, 0, 0, BAR)).unwrap();
-        s.place(Placement::linked(0, 1, 4 * BAR, 2 * BAR)).unwrap();
-        s.place(Placement::linked(1, 0, 0, BAR)).unwrap();
+        s.place(Placement::of(&p.tracks, 0, 0, 0, BAR)).unwrap();
+        s.place(Placement::of(&p.tracks, 0, 1, 4 * BAR, 2 * BAR))
+            .unwrap();
+        s.place(Placement::of(&p.tracks, 1, 0, 0, BAR)).unwrap();
         // Along its lane, past nothing: its index stays.
         assert_eq!(s.move_placement(&p.tracks, 0, 0, 2 * BAR, false), Ok(0));
         assert_eq!(s.placements[0].start, 2 * BAR);
@@ -1907,16 +2141,18 @@ mod tests {
             s.move_placement(&p.tracks, 0, 0, 2 * BAR + 100, false),
             Ok(0)
         );
-        // Across to the bass: its own copy of the drums' clip.
+        // Across to the bass: still the drums' clip, linked (Arrange
+        // 1.3), played through the bass.
         let j = s.move_placement(&p.tracks, 1, 1, 4 * BAR, false).unwrap();
         assert_eq!((s.placements[j].track, s.placements[j].start), (1, 4 * BAR));
-        assert_eq!(s.placements[j].slot(), None);
-        assert_eq!(s.placements[j].clip(&p.tracks).unwrap().name, "b");
+        assert_eq!(s.placements[j].clip, ClipId(2));
+        assert_eq!(s.clip_of(&p.tracks, &s.placements[j]).unwrap().name, "b");
+        assert!(s.clips.is_empty(), "no copy");
         // A copy along the lane stays linked; the first stays where it is.
         let n = s.placements.len();
         let c = s.move_placement(&p.tracks, 0, 0, 8 * BAR, true).unwrap();
         assert_eq!(s.placements.len(), n + 1);
-        assert_eq!(s.placements[c].slot(), Some(0));
+        assert_eq!(s.placements[c].clip, ClipId(1));
         assert_eq!(s.placements[0].start, 2 * BAR + 100);
         assert_eq!(s.check(&p.tracks), Ok(()));
         // A copy onto itself overlaps.
@@ -1927,8 +2163,8 @@ mod tests {
     }
 
     /// A loop's block stays on its Loop track's lane and a clip's block
-    /// off a Loop track's (loop-tracks.md part 5); a loop's own copy
-    /// anywhere else doesn't check.
+    /// off a Loop track's (loop-tracks.md part 5); a loop's block anywhere
+    /// else doesn't check, nor a clip's on a Loop track.
     #[test]
     fn a_loops_block_stays_on_its_loop_tracks_lane() {
         let mut p = project();
@@ -1936,9 +2172,10 @@ mod tests {
         a.slots[0] = Some(Clip::new_loop(0, BAR));
         p.tracks.push(a);
         p.tracks.push(Track::new_loops("Loops B", 3));
+        p.give_clip_ids();
         let mut s = Arrangement::default();
-        s.place(Placement::linked(0, 0, 0, BAR)).unwrap();
-        s.place(Placement::linked(2, 0, 0, BAR)).unwrap();
+        s.place(Placement::of(&p.tracks, 0, 0, 0, BAR)).unwrap();
+        s.place(Placement::of(&p.tracks, 2, 0, 0, BAR)).unwrap();
         let before = s.clone();
         for (i, to) in [(1, 0), (1, 3), (0, 2)] {
             for copy in [false, true] {
@@ -1952,25 +2189,31 @@ mod tests {
         // Along its own lane it moves as any block does.
         assert_eq!(s.move_placement(&p.tracks, 1, 2, 2 * BAR, false), Ok(1));
         assert_eq!(s.check(&p.tracks), Ok(()));
-        // Its own copy on a note track doesn't check, nor a clip's on a
-        // Loop track.
+        // The loop's block on a note track doesn't check, nor a clip's on
+        // a Loop track, its clip in a cell or the song's own.
         let mut bad = s.clone();
         bad.placements[1].track = 0;
         bad.placements[1].start = 4 * BAR;
-        bad.placements[1].source = Source::Own(Box::new(Clip::new_loop(0, BAR)));
         bad.placements.sort_by_key(|p| (p.track, p.start));
         assert_eq!(bad.check(&p.tracks), Err(ModelError::BadLoop));
         let mut bad = s.clone();
-        bad.placements[1].source = Source::Own(Box::new(Clip::new("a", BAR)));
+        bad.placements[1].clip = ClipId(1);
+        assert_eq!(bad.check(&p.tracks), Err(ModelError::BadLoop));
+        let mut own = Clip::new("a", BAR);
+        own.id = ClipId(40);
+        bad.clips.keep(own).unwrap();
+        bad.placements[1].clip = ClipId(40);
         assert_eq!(bad.check(&p.tracks), Err(ModelError::BadLoop));
     }
 
     #[test]
     fn a_placement_gets_longer_up_to_the_next_one() {
+        let p = project();
         let mut s = Arrangement::default();
-        s.place(Placement::linked(0, 0, 0, BAR)).unwrap();
-        s.place(Placement::linked(0, 0, 4 * BAR, BAR)).unwrap();
-        s.place(Placement::linked(1, 0, BAR, BAR)).unwrap();
+        s.place(Placement::of(&p.tracks, 0, 0, 0, BAR)).unwrap();
+        s.place(Placement::of(&p.tracks, 0, 0, 4 * BAR, BAR))
+            .unwrap();
+        s.place(Placement::of(&p.tracks, 1, 0, BAR, BAR)).unwrap();
         assert_eq!(s.set_length(0, 4 * BAR), Ok(()));
         assert_eq!(s.set_length(0, 4 * BAR + 1), Err(ModelError::BadPlacement));
         assert_eq!(s.set_length(0, 0), Err(ModelError::BadPlacement));
@@ -1984,10 +2227,12 @@ mod tests {
     fn sections_song() -> Project {
         let mut p = project();
         let s = &mut p.arrangement;
-        s.place(Placement::linked(0, 0, 0, 8 * BAR)).unwrap();
-        s.place(Placement::linked(1, 0, 0, 2 * BAR)).unwrap();
-        s.place(Placement::linked(1, 1, 2 * BAR, 2 * BAR)).unwrap();
-        s.place(Placement::linked(1, 0, 4 * BAR, 3 * BAR)).unwrap();
+        s.place(Placement::of(&p.tracks, 0, 0, 0, 8 * BAR)).unwrap();
+        s.place(Placement::of(&p.tracks, 1, 0, 0, 2 * BAR)).unwrap();
+        s.place(Placement::of(&p.tracks, 1, 1, 2 * BAR, 2 * BAR))
+            .unwrap();
+        s.place(Placement::of(&p.tracks, 1, 0, 4 * BAR, 3 * BAR))
+            .unwrap();
         for (at, name) in [(0, "A"), (2 * BAR, "B"), (4 * BAR, "C")] {
             s.mark(at, name).unwrap();
         }
@@ -2027,7 +2272,7 @@ mod tests {
                 (4 * BAR, 3 * BAR, 0)
             ]
         );
-        assert_eq!(s.on_track(1)[0].slot(), Some(1));
+        assert_eq!(row(&p, &s.on_track(1)[0]), Some(1));
         // The drums' long block is cut at the edges, each part in phase
         // (its clip is one bar, so every part starts at its top).
         assert_eq!(
@@ -2080,7 +2325,7 @@ mod tests {
                 (8 * BAR, 2 * BAR, 0)
             ]
         );
-        assert_eq!(s.on_track(1)[4].slot(), Some(1), "linked like the first");
+        assert_eq!(row(&p, &s.on_track(1)[4]), Some(1), "linked like the first");
         assert_eq!(s.check(&p.tracks), Ok(()));
     }
 

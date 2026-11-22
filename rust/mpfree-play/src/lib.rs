@@ -42,16 +42,16 @@ pub mod view;
 
 pub use ahead::{is_gear_control, Ahead, AheadCounts, MAX_AHEAD};
 pub use arp::ArpHost;
-pub use arps::{Through, TrackArps};
+pub use arps::{PadRows, Through, TrackArps, LAYOUT_PADS, PAD_NOTES};
 pub use mpfree_param;
 pub use player::{
-    Erased, ErasedLock, Event, Out, Player, Sink, Stats, ALL, ERASE_TAKES, SONG_TRACK,
+    Erased, ErasedLock, Event, Out, Player, Sink, Stats, ALL, ERASE_TAKES, MAX_LOCKED, SONG_TRACK,
 };
 pub use record::{
     Recorder, Taken, TakenLock, TakenMove, MAX_TOUCH_INPUT, MOVE_POINTS, TOUCH_BUFS, TOUCH_POINTS,
     TOUCH_ROOM,
 };
-pub use recorded::{Behind, Includes, Rec, Recent, RECENT};
+pub use recorded::{Behind, Decisions, Includes, Rec, Recent, RECENT};
 pub use steps::StepOrder;
 pub use takes::{
     ClipDrop, MovePut, MoveWrite, Recorded, Replaced, SceneEdit, SongChange, SongEdit, Take, Takes,

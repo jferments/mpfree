@@ -6,7 +6,7 @@ checked: 2026-11-19 a6fb29b2
 
 # The Sequencer: programming steps
 
-The **Sequencer** tab is where you build and fine-tune a pattern one step at a time. It shows the clip of the armed track (the one the pads play) in one of two views, switched at the right end of the transport bar:
+The **Sequencer** tab is where you build and fine-tune a pattern one step at a time. It shows a clip of the track you picked (the one the pads play): the clip that plays, or the one you pick with the clip chip (see [Edit another clip](#edit-another-clip)). There are two views, switched at the right end of the transport bar:
 
 - **Steps**: the pattern as a grid, one row per pad (or per note, on a synth), with your timing under it and the picked step's settings at the bottom. This chapter is about Steps.
 - **Notes**: the same clip as a piano roll, a list or a tracker, for fixing what you played in. See [Editing notes](editing-notes.md).
@@ -27,7 +27,15 @@ A **pattern** is a loop of steps, like a grid: each row is a pad, each column a 
 
 Changes play the next time the pattern comes round. **PLAY** starts the pattern on the screen when nothing else is playing, and a line moves across the grid to show where it is.
 
-The heading over the grid has, from the left: the red **Armed** pill, the pattern and track names, **+ Lane** (see [Lock lanes](#lock-lanes)), the page arrows **‹ 1/1 ›** and the length **– 16 steps +**.
+The heading over the grid has, from the left: the red **Armed** pill, the clip chip with the pattern's name, the track's name, **+ Lane** (see [Lock lanes](#lock-lanes)), the page arrows **‹ 1/1 ›** and the length **– 16 steps +**.
+
+### Edit another clip
+
+The Sequencer edits the clip that plays on the track. To work on another one without starting it, tap the clip chip (the pattern's name with a ▾) and pick it from the list. What plays keeps playing, so you can build Pattern 3 while Pattern 1 plays, then launch it from Arrange when it's ready. The heading then says which clip plays ("Pattern 1 plays"), and STEP SEQ and Notes edit the clip you picked too. Each edit is a take, so UNDO takes it back.
+
+The list starts with **What plays**, which goes back to editing the clip that plays. Turn the wheel and push to pick a row, or tap **Back** to keep the clip you edit. Picking another track also goes back to what plays.
+
+{{shot: sequencer-edit-clips | The clip chip's list: What plays (Pattern 1, edited now), then the track's clips with their slots, Pattern 1 playing.}}
 
 **Mute a row.** Each row's name is its mute button, with a speaker in the box beside it: tap the name to mute that pad, so you can drop the kick out and bring it back. Hold **ERASE** and tap a row's name to delete all of that sound's steps.
 
@@ -60,6 +68,8 @@ Hold your finger on a lit square to pick it. The Q-Links now turn its four main 
 | 2 | **Length** | How long the note lasts, from a 1/32 to several bars. |
 | 3 | **Nudge** | A little early or late, in milliseconds. |
 | 4 | **Chance** | How often it plays, for variations: 100 % always, 50 % half the time. |
+
+**Set several steps at once.** Hold **SHIFT** and tap lit squares on one row: each one is picked straight away, outlined, and a second SHIFT + tap leaves it out again. Now one turn of a Q-Link sets them all, so six hats get the same velocity with one turn, and one **UNDO** takes the whole turn back. The inspector's heading lists them ("Steps 1, 3, 5 · Hat · picked"), and its settings and locks go to every step picked. SHIFT + a tap on an empty square still puts a note there. Tapping a picked step without SHIFT takes it out, as always, and leaves the others picked. Holding a step picks it on its own, and the inspector's **×**, another page or another clip lets them all go. On the pads, holding several step pads does the same (see [The pads as steps](#the-pads-as-steps-step-seq)).
 
 Press **Q-LINK** for the next page, **Trig**: the step's **condition** (play only on some passes, or only with a fill), its **ratchet** (2 to 8 quick repeats within the step), a finer **nudge** in ticks and the ratchet's **ramp** (its repeats getting louder or softer). Press it again for **Sound**: the sound's tune, decay, filter and level on this one step (see [Locks](#locks-a-step-that-changes-the-sound)). Press it once more to come back to Step.
 
@@ -112,6 +122,8 @@ A **lock lane** shows one setting step by step, under its sound, like a row of i
 Tap a locked square again to take its lock off (the lane stays), or hold **ERASE** and tap it. The **×** in place of the lane's mute takes the lane off with all its locks; in Perform you hold it, and **UNDO** brings them back.
 
 A send's lane throws on chosen steps: lock **Delay send** high on the last two steps of a bar and only they echo. A sound's lock plays when the sound hits on that step, so a lock on a step without a hit waits for one there.
+
+**On a track that plays another track's instrument** (see [Share one between tracks](synths.md#a-synth-for-each-track)), the volume, pan and sends lanes move that instrument's mixer channel, since that is where the track is heard. If the instrument's own track, or another track that plays it, locks the same setting at the same time, the track you made first moves it, and the other's lock takes over when it stops.
 
 {{shot: sequencer-lanes-list | The list + Lane opens: the kick's settings (the pad hit last) first, then the track's volume, pan and sends.}}
 
@@ -200,7 +212,7 @@ The REC chip on the transport bar always names what REC records: the notes of th
 
 On the Play page, the loop row and the pattern each start their heading with an **Arm** pill: red on what REC records, grey on the other. Tap a grey one to record that instead, or hold **SHIFT** and tap it to record both in one pass: the pads into the clip and what you play into a loop (the chip says "Track 1 + Loop 1"; a plain tap on one pill goes back to that one alone).
 
-Tap the REC chip for **Record into**, the list of everything that can record: tap a row to arm it. **Rec song** under the rows records launches, mutes and scene changes into the song as you play (see [Recording a performance into the song](arranging.md#recording-a-performance-into-the-song)). Turn on **Pin the arm** to keep pages and track picks from moving it, so only a tap on Arm does (the chip says "REC · PINNED"). The chip, or **Close**, closes the list.
+Tap the REC chip for **Record into**, the list of everything that can record: tap a row to arm it. **Rec song** under the rows records launches, mutes and scene changes into the song as you play (see [Recording a performance into the song](arranging.md#recording-a-performance-into-the-song)). Turn on **Pin the arm** to keep pages and track picks from moving it, so only a tap on Arm does (the chip says "REC · PINNED"). While it is pinned, picking another track selects it without moving REC: the Sequencer's Steps, Notes and STEP SEQ edit that track and the pads play it, and the REC chip still names the pinned track. So with REC pinned on Chords you can pick Bass and fix its steps while the next take still goes to Chords. The pads play the track you picked, so to record them, pick the pinned track again (or tap its row in the list). The chip, or **Close**, closes the list.
 
 {{shot: play-rec-list | The REC chip's list, Record into: the track's notes (armed) and the looper, then Rec song and Pin the arm. The right side says what moves the arm and how the REC chip reads when armed, ready and recording.}}
 

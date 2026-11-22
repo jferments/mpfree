@@ -9,11 +9,11 @@
 //! This test file is its own program, so its global allocator (the only
 //! unsafe code here, a pass-through to the system allocator) does not
 //! affect the library, which forbids unsafe code. Only the test's own
-//! thread is watched. (The pattern of mpfree-looper's no_alloc test.)
+//! thread is watched, and counted, so tests running at once never count
+//! each other's calls. (The pattern of mpfree-looper's no_alloc test.)
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mpfree_audiotracks::save::TakeFile;
 use mpfree_audiotracks::{AudioTracks, Command as A, Input, Monitor, MAX_TRACKS};
@@ -22,12 +22,12 @@ use mpfree_transport::{Block, Command as T, Transport};
 struct Counting;
 thread_local! {
     static WATCH: Cell<bool> = const { Cell::new(false) };
+    static CALLS: Cell<usize> = const { Cell::new(0) };
 }
-static CALLS: AtomicUsize = AtomicUsize::new(0);
 
 fn count() {
     if WATCH.with(Cell::get) {
-        CALLS.fetch_add(1, Ordering::Relaxed);
+        CALLS.with(|c| c.set(c.get() + 1));
     }
 }
 fn watch(on: bool) {
@@ -180,7 +180,7 @@ fn commands_and_periods_never_allocate() {
         let mut frame = period as u64;
         let mut next = 0;
         let end = 16 * BAR;
-        CALLS.store(0, Ordering::Relaxed);
+        CALLS.with(|c| c.set(0));
         while frame < end {
             watch(true);
             while next < script.len() && script[next].0 * BAR <= frame {
@@ -215,7 +215,7 @@ fn commands_and_periods_never_allocate() {
             watch(false);
             frame += period as u64;
         }
-        assert_eq!(CALLS.load(Ordering::Relaxed), 0, "period {period}");
+        assert_eq!(CALLS.with(Cell::get), 0, "period {period}");
         assert!(matches!(held, Some(Ok(()))), "period {period}");
         assert!(a.take_returned().is_some(), "period {period}");
         assert!(a.takes().count() > 3, "period {period}");
@@ -224,7 +224,7 @@ fn commands_and_periods_never_allocate() {
         let _ = a.settings(0);
         let cleared = a.clear();
         watch(false);
-        assert_eq!(CALLS.load(Ordering::Relaxed), 0, "clear, period {period}");
+        assert_eq!(CALLS.with(Cell::get), 0, "clear, period {period}");
         assert!(cleared, "period {period}");
         assert_eq!(a.takes().count(), 0, "period {period}");
     }
@@ -301,12 +301,12 @@ fn streaming_never_allocates_on_the_audio_thread() {
             t.process(period as u32, &mut b);
             let map = *t.tempo_map();
             out.fill(0.0);
-            CALLS.store(0, Ordering::Relaxed);
+            CALLS.with(|c| c.set(0));
             watch(true);
             a.process(&b, &map, &input, &mut out);
             let _ = (a.stats(), a.memory(), a.unwritten(), a.peaks(0, 0, 10_000));
             watch(false);
-            calls += CALLS.load(Ordering::Relaxed);
+            calls += CALLS.with(Cell::get);
             // The disk thread's side: allocation allowed there, but the
             // tracks' calls it makes are watched.
             loop {
@@ -315,7 +315,7 @@ fn streaming_never_allocates_on_the_audio_thread() {
                 watch(false);
                 let Some(r) = r else { break };
                 match r {
-                    Io::Write { take, chunk } => {
+                    Io::Write { take, chunk } | Io::Rewrite { take, chunk } => {
                         watch(true);
                         let n = a.chunk(take, chunk).map(|c| {
                             buf[..c.len()].copy_from_slice(c);
@@ -330,7 +330,11 @@ fn streaming_never_allocates_on_the_audio_thread() {
                         watch(false);
                     }
                     Io::Read { take, chunk } => reads.push((take, chunk)),
-                    Io::Finish { .. } => {}
+                    Io::Finish { take } => {
+                        watch(true);
+                        a.finished(take, true);
+                        watch(false);
+                    }
                 }
             }
             for (take, chunk) in reads.drain(..) {
@@ -344,11 +348,125 @@ fn streaming_never_allocates_on_the_audio_thread() {
                 }
                 watch(false);
             }
-            calls += CALLS.load(Ordering::Relaxed);
+            calls += CALLS.with(Cell::get);
             frame += period as u64;
         }
         assert_eq!(calls, 0, "allocations at period {period}");
         assert!(a.stats().full == 0, "streaming kept every recording");
         assert!(disk.len() > 20);
     }
+}
+
+#[test]
+#[ignore = "finding 1: the host's period, streaming, allocates (a new take's file name, the messages to \
+            the disk thread); fixed by the fixed-size queues of mpfree-stream (P1)"]
+fn the_host_period_never_allocates_while_streaming() {
+    use mpfree_audiotracks::host::AudioHost;
+    const RATE: u32 = 22_050;
+    const BAR: u64 = 22_050; // 240 BPM
+    const P: usize = 256;
+    let dir = std::env::temp_dir().join(format!("mpfree-na-host-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut h = AudioHost::streaming(RATE, 4, dir.clone()).unwrap();
+    let mut t = Transport::new(RATE, 240.0).unwrap();
+    let mut b = Block::new();
+    let input: Vec<f32> = (0..2 * P)
+        .map(|j| ((j * 31) % 97) as f32 / 97.0 - 0.5)
+        .collect();
+    let mut out = vec![0.0f32; 2 * P];
+    h.command(A::Arm(0, true));
+    h.command(A::SetInput(0, Input::Left));
+    t.command(100, T::Record);
+    t.command(100 + 20 * BAR, T::Stop);
+    let mut frame = 0u64;
+    let mut calls = 0;
+    while frame < 22 * BAR {
+        t.process(P as u32, &mut b);
+        let map = *t.tempo_map();
+        CALLS.with(|c| c.set(0));
+        watch(true);
+        h.period(&b, &map, &input, &mut out);
+        watch(false);
+        calls += CALLS.with(Cell::get);
+        frame += P as u64;
+        std::thread::sleep(std::time::Duration::from_micros(100));
+    }
+    drop(h);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(calls, 0, "allocations in the host's period");
+}
+
+/// Phase 0.2: a save fills a room made off the audio thread
+/// (`Saved::room`) without allocating, and holds what `save_file` gives;
+/// while a track records it waits ("not settled"), still without
+/// allocating, and a second save into the same room allocates nothing
+/// either.
+#[test]
+fn a_save_fills_its_room_without_allocating() {
+    use mpfree_audiotracks::save::Saved;
+    const RATE: u32 = 22_050;
+    const BAR: u64 = 22_050; // 240 BPM
+    let period = 256usize;
+    let mut t = Transport::new(RATE, 240.0).unwrap();
+    let mut a = AudioTracks::new(RATE, 6);
+    let mut b = Block::new();
+    let input: Vec<f32> = (0..2 * period)
+        .map(|j| ((j * 31) % 97) as f32 / 97.0 - 0.5)
+        .collect();
+    let mut out = vec![0.0f32; 2 * period];
+    let mut room = Saved::room(RATE);
+    for c in [
+        A::Arm(0, true),
+        A::Arm(2, true),
+        A::SetInput(2, Input::Stereo),
+        A::SetLevel(5, 0.5),
+        A::SetMonitor(6, Monitor::In),
+    ] {
+        a.command(c);
+    }
+    t.command(0, T::Record);
+    t.command(2 * BAR, T::Stop);
+    let mut frame = 0u64;
+    let mut waited = 0;
+    while frame < 3 * BAR {
+        t.process(period as u32, &mut b);
+        let map = *t.tempo_map();
+        a.process(&b, &map, &input, &mut out);
+        CALLS.with(|c| c.set(0));
+        watch(true);
+        let filled = a.save_into(&mut room);
+        watch(false);
+        assert_eq!(CALLS.with(Cell::get), 0, "at frame {frame}");
+        if frame + (period as u64) <= 2 * BAR {
+            assert!(filled.is_none(), "recording at frame {frame}");
+            waited += 1;
+        }
+        frame += period as u64;
+    }
+    assert!(waited > 0);
+    a.command(A::Arm(0, false));
+    a.command(A::Arm(2, false));
+    for _ in 0..2 {
+        CALLS.with(|c| c.set(0));
+        watch(true);
+        let filled = a.save_into(&mut room);
+        watch(false);
+        assert_eq!(CALLS.with(Cell::get), 0, "settled");
+        let (tracks, takes) = filled.expect("settled");
+        let mut got = room.clone();
+        got.tracks.truncate(tracks);
+        got.takes.truncate(takes);
+        assert_eq!(Some(got), a.save_file());
+        assert_eq!(
+            (tracks, takes),
+            (4, 2),
+            "tracks 1, 3, 6, 7; a take each on 1 and 3"
+        );
+    }
+    // A room too small is left as it was.
+    let mut small = Saved::room(RATE);
+    small.takes.pop();
+    let before = small.clone();
+    assert!(a.save_into(&mut small).is_none());
+    assert_eq!(small, before);
 }

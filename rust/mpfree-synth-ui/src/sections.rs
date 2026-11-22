@@ -21,7 +21,7 @@
 
 use crate::pages::Page;
 use mpfree_node::{Curve, NodeInfo, ParamInfo};
-use mpfree_ui::{Color, Theme};
+use mpfree_ui::{Color, Paint, Theme};
 
 /// What a section does, which sets its colour. The colours are the
 /// theme's track colours 6, 5, 8 and 7 (cyan, coral, lime, pink in the
@@ -43,26 +43,21 @@ pub enum Job {
 }
 
 impl Job {
-    /// The default theme's colour for the job, as panels write it.
-    pub const fn default_color(self) -> Color {
+    /// The job's colour as a theme colour, for drawings built before the
+    /// theme is known.
+    pub const fn paint(self) -> Paint {
         match self {
-            Job::Source => Color::rgb(0x4DD8E8),
-            Job::Tone => Color::rgb(0xFF7A59),
-            Job::Shape => Color::rgb(0xA3E05B),
-            Job::Motion => Color::rgb(0xF26BA8),
-            Job::Voice => Color::rgb(0x98A1B3),
+            Job::Source => Paint::track(5),
+            Job::Tone => Paint::track(4),
+            Job::Shape => Paint::track(7),
+            Job::Motion => Paint::track(6),
+            Job::Voice => Paint::TEXT_DIM,
         }
     }
 
     /// The job's colour in theme `t`: a section's name, border and tint.
     pub fn color(self, t: &Theme) -> Color {
-        match self {
-            Job::Source => t.track(5),
-            Job::Tone => t.track(4),
-            Job::Shape => t.track(7),
-            Job::Motion => t.track(6),
-            Job::Voice => t.text_dim,
-        }
+        self.paint().on(t)
     }
 
     /// What a control's arc, fader or chosen button fills with: the job's
@@ -355,8 +350,10 @@ mod tests {
     #[test]
     fn jobs_are_the_themes_track_colours() {
         let d = Theme::dark();
+        assert_eq!(Job::Source.color(&d), Color::rgb(0x4DD8E8));
+        assert_eq!(Job::Voice.color(&d), d.text_dim);
         for j in [Job::Source, Job::Tone, Job::Shape, Job::Motion, Job::Voice] {
-            assert_eq!(j.color(&d), j.default_color(), "{j:?}");
+            assert_eq!(j.color(&d), j.paint().on(&d), "{j:?}");
         }
         assert_eq!(Job::guess("Filter env"), Job::Tone);
         assert_eq!(Job::guess("Amp env"), Job::Shape);

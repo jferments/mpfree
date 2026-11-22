@@ -141,11 +141,15 @@ impl time::Pads for Hits {
         ));
         false
     }
-    fn live(&mut self, o: &mpfree_play::Out) -> Option<mpfree_play::Event> {
+    // A live note records as its pad, and its notes are the pad's number:
+    // the session doesn't tell the time engine which tracks play notes
+    // (`TimeHost::set_notes_tracks`), so its takes stay pad hits.
+    fn live(&mut self, o: &mpfree_play::Out) -> time::Heard {
         use crate::midi_out::{kit_notes, NoteIs};
         use mpfree_play::Event;
+        use time::Heard;
         if self.quiet(o) {
-            return None;
+            return Heard::NONE;
         }
         self.note(o);
         // As main.rs's pads: the MIDI file gets what MIDI Out would.
@@ -158,13 +162,13 @@ impl time::Pads for Hits {
             Event::NoteOn { note, velocity } => {
                 self.on.push((usize::from(note), velocity));
                 self.queued.push((usize::from(note), velocity, o.offset));
-                Some(o.event)
+                Heard::pad(o.event)
             }
             Event::NoteOff { note } => {
                 self.released.push((usize::from(note), o.offset));
-                Some(o.event)
+                Heard::pad(o.event)
             }
-            _ => None,
+            _ => Heard::NONE,
         }
     }
 }
@@ -223,6 +227,8 @@ pub struct Session {
     /// as main.rs keeps them.
     sounds_shown: gui::TrackSounds,
     sends_shown: gui::TrackSends,
+    /// Where REC would record the pads' synth, as the screen last heard it.
+    plan_shown: Option<crate::app::RecPlan>,
     /// The time engine's REDOs seen so far, as player_session keeps them.
     redos_seen: u64,
     /// Messages for the screen that found it gone (none expected).
@@ -283,7 +289,7 @@ pub struct Session {
     synth_turns: undo::Turns<u16>,
     /// The presets the tracks' own synths play, and the preset picker's
     /// try (presets.rs), as main.rs keeps them.
-    presets: crate::presets::TrackPresets,
+    pub presets: crate::presets::TrackPresets,
     mix_turns: crate::mixturns::MixTurns,
     turns_told: (bool, bool),
     /// The library the browser saves projects into (`with_library`).
@@ -372,6 +378,7 @@ impl Session {
             instrument_list: crate::instrument_list::InstrumentList::new(),
             sounds_shown: [None; crate::instruments::TRACKS],
             sends_shown: [None; crate::instruments::TRACKS],
+            plan_shown: None,
             redos_seen: 0,
             quit: false,
             kits: n,
@@ -1247,6 +1254,11 @@ impl Session {
             self.sends_shown = sends;
             self.out.show(ToUi::TrackSends(Box::new(sends)));
         }
+        let plan = crate::desk::rec_plan(&self.app, &self.time, &self.mix);
+        if plan != self.plan_shown {
+            self.plan_shown = plan;
+            self.out.show(ToUi::RecPlan(plan));
+        }
         let (loop_rec, loop_dub) = self.looper.recording();
         let info = self.time.info();
         let lights = self.app.transport_lights(
@@ -1289,12 +1301,13 @@ impl Session {
         let rolled =
             crate::desk::pad_rolled(&mut self.app, &self.time, &self.looper, &mut self.out);
         self.fx.extend(rolled);
-        let armed = self.time.armed().unwrap_or(0);
-        if armed != self.app.track() {
-            let fx = self.app.set_track(armed);
+        // As main.rs: the pads follow the selected track.
+        let selected = self.time.selected().unwrap_or(0);
+        if selected != self.app.track() {
+            let fx = self.app.set_track(selected);
             self.fx.extend(fx);
-            // The pads play what the newly armed track plays.
-            self.kit_to = Some(self.track_kits.entry(armed));
+            // The pads play what the newly selected track plays.
+            self.kit_to = Some(self.track_kits.entry(selected));
         }
         if let Some(Effect::Arp(v)) = self.app.arp_poll() {
             self.out.show(ToUi::Arp(Box::new(v)));
@@ -1603,6 +1616,9 @@ impl Session {
         if let Some(line) = self.tracks.take_note() {
             self.out.note(&line);
         }
+        if let Some(what) = self.tracks.take_left_out() {
+            self.out.left_out(what);
+        }
         if std::mem::take(&mut self.save_asked) {
             if self.mix.opening() || self.looper.opening() || self.tracks.opening() {
                 self.out
@@ -1840,6 +1856,30 @@ impl Session {
                 self.presets
                     .act(ask, track, &mut self.synth, &mut self.mix, &mut self.out);
             }
+            // As main.rs (step 4c).
+            FromUi::NewTrackSound {
+                track,
+                engine,
+                give,
+            } => {
+                let made = self.presets.give(
+                    track,
+                    &engine,
+                    give,
+                    &self.synth,
+                    &mut self.mix,
+                    &mut self.out,
+                );
+                if let Some(held) = made {
+                    self.app.set_track_sound(track, Some(held));
+                    self.app.mark_project_edit();
+                    // What main.rs's loop does with what the builder made,
+                    // on its next period.
+                    while self.mix.poll_instruments().is_some() {}
+                    self.app
+                        .set_track_sound(track, self.mix.instruments.held(track));
+                }
+            }
             FromUi::Synth(mpfree_synth_ui::SynthAction::Preset(k)) => {
                 self.synth_turns.clear();
                 if let Some(name) = self.synth.load_preset(k).map(str::to_string) {
@@ -1878,12 +1918,12 @@ impl Session {
             FromUi::SampleGain(db) => self.rec_gain.1 = 10f32.powf(db / 20.0),
             FromUi::SampleGrains(c) => self.cloud = Some(c),
             // A tap on a track's sound line on Arrange, as main.rs: the
-            // track is armed and the Synth tab's MENU opens on its
+            // track is picked and the Synth tab's MENU opens on its
             // Instrument row, showing that track's instrument.
             FromUi::TrackInstrument(track) if track < self.time.project().tracks.len() => {
-                if self.time.armed() != Some(track) {
-                    let arm = mpfree_time_ui::TimeAction::Arm(Some(track));
-                    self.fx.push(Effect::Time(arm));
+                if self.time.selected() != Some(track) {
+                    let pick = mpfree_time_ui::TimeAction::Pick(track);
+                    self.fx.push(Effect::Time(pick));
                 }
                 let e = self.app.open_track_instrument(track);
                 self.fx.extend(e);

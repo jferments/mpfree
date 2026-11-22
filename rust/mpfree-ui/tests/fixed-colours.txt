@@ -1,0 +1,28 @@
+# Fixed colours each drawing file may still have: PATH COUNT # REASON, or
+# PATH * # REASON for a file left out. Checked by tests/fixed_colours.rs;
+# counts may only go down. Write them with
+#     MPFREE_LINT_BLESS=1 cargo test -p mpfree-ui --test fixed_colours
+mpfree-app/src/alsa.rs * # ALSA constants, not colours
+mpfree-app/src/gui.rs 6 # before theme roles (phase 0 baseline)
+mpfree-app/src/looper_deck.rs 1 # before theme roles (phase 0 baseline)
+mpfree-app/src/looper_tab.rs 8 # before theme roles (phase 0 baseline)
+mpfree-app/src/modpanels.rs 1 # before theme roles (phase 0 baseline)
+mpfree-app/src/perform_tab.rs 2 # before theme roles (phase 0 baseline)
+mpfree-app/src/play_page.rs 1 # before theme roles (phase 0 baseline)
+mpfree-app/src/play_widgets.rs 3 # the pads chip's colour before a theme is known (drawn warn), and the pink ~ of a control the mod matrix moves
+mpfree-app/src/skin_page.rs 1 # before theme roles (phase 0 baseline)
+mpfree-app/src/sys.rs * # system call flags, not colours
+mpfree-app/src/time/control.rs 2 # finger ids, not colours
+mpfree-fx-ui/src/sample.rs 5 # sample data for the preview screens
+mpfree-fx-ui/src/visual.rs 1 # before theme roles (phase 0 baseline)
+mpfree-mpcskin/src/look.rs 6 # Akai's generic knob colours (skin art), and black and white as the last resort for a theme whose own inks cannot read
+mpfree-mpcskin/src/model.rs 5 # plugin skin defaults from Akai's skin format
+mpfree-mpcskin/src/view.rs 8 # plugin skin drawing: the colours the MPC draws a skin's own controls in
+mpfree-sampler-ui/src/sample.rs 3 # sample data for the preview screens
+mpfree-sampler-ui/src/widgets.rs 8 # content colours: the pads' palette (PAD_COLORS), shown through content() and swatch()
+mpfree-synth-ui/src/sample.rs 8 # sample data for the preview screens
+mpfree-time-ui/src/view.rs 8 # the eight track colours a new project's tracks get: content, kept in every theme
+mpfree-ui/src/draw.rs 8 # content colours: the mockups' palette for kinds of sound and throws, shown through content() and swatch()
+mpfree-ui/src/png.rs * # PNG checksums, not colours
+mpfree-ui/src/theme.rs * # the built-in themes: where colours are written down
+mpfree-ui/src/widgets.rs 1 # a random seed, not a colour

@@ -63,11 +63,13 @@
 //! hear about recorded notes at most four times a second
 //! ([`TimeHost::take_changed`]). Every track plays the current kit.
 
+mod apart;
 mod audio;
 mod control;
 mod follow;
 pub mod link;
 mod pad_wait;
+pub mod strips;
 
 use mpfree_play::mpfree_param::{Owner, ParamAddr, RelAddr};
 use mpfree_play::room::{self, Table};
@@ -80,6 +82,8 @@ use mpfree_transport::time::Tick;
 use mpfree_transport::{Block, Command, Transport};
 use std::f32::consts::TAU;
 
+pub use apart::Say;
+use apart::{Apart, Told};
 pub use audio::TimeAudio;
 pub use control::{MuteLight, PadTap, TimeControl};
 pub use follow::Follow;
@@ -110,13 +114,20 @@ pub use mpfree_seq::steps::LINE;
 /// Pad hits kept for the screen between two periods (more are dropped).
 const MAX_HITS: usize = 16;
 
-/// What the Play page's pattern shows: the armed track's clip (the one
-/// playing, else its first), each sound's steps.
+/// What the Play page's pattern shows: the selected track's clip (the one
+/// picked to edit, else the one playing, else its first), each sound's
+/// steps.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct StepsData {
     pub track: usize,
     pub track_name: String,
     pub clip: Option<StepClip>,
+    /// The clip was picked to edit apart from what plays (the Sequencer's
+    /// clip chip, refactor C2).
+    pub picked: bool,
+    /// The track's clip that plays, when it isn't the one shown: its
+    /// name.
+    pub playing: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -272,6 +283,74 @@ pub struct HitInfo {
     pub bar_ticks: Tick,
 }
 
+/// Most notes one live note records as: a pad of chords' notes
+/// (`mpfree_arp::scale::pads::MAX_PAD_NOTES`).
+pub const HEARD_NOTES: usize = 4;
+
+/// What the armed track records of one live note ([`Pads::live`]): its pad,
+/// which a take of pad hits records and CAPTURE's history and the Play
+/// page's timing keep, and its notes as written (before the track's live
+/// transpose), which a take of notes records (the instrument redesign's
+/// step 5c). A pad of chords gives several notes; a note no pad plays (an
+/// arp's octave up) gives no pad. Fixed size, made on the audio thread.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Heard {
+    pub pad: Option<Event>,
+    notes: [Event; HEARD_NOTES],
+    n: u8,
+}
+
+impl Heard {
+    /// Nothing records.
+    pub const NONE: Heard = Heard {
+        pad: None,
+        notes: [Event::AllOff; HEARD_NOTES],
+        n: 0,
+    };
+
+    /// A host with no instruments: the pad, and the same number as its
+    /// note.
+    pub fn pad(event: Event) -> Heard {
+        Heard::of(Some(event), event, &[note_of(event)])
+    }
+
+    /// `kind` (a note-on with its velocity, a note-off, a pressure) on each
+    /// of `notes`, recorded as `pad` in a take of pad hits.
+    pub fn of(pad: Option<Event>, kind: Event, notes: &[u8]) -> Heard {
+        let mut h = Heard { pad, ..Heard::NONE };
+        for &note in notes.iter().take(HEARD_NOTES) {
+            h.notes[usize::from(h.n)] = match kind {
+                Event::NoteOn { velocity, .. } => Event::NoteOn { note, velocity },
+                Event::NoteOff { .. } => Event::NoteOff { note },
+                Event::Pressure { value, .. } => Event::Pressure { note, value },
+                e => e,
+            };
+            h.n += 1;
+        }
+        h
+    }
+
+    /// The notes a take of notes records, in order.
+    pub fn notes(&self) -> &[Event] {
+        &self.notes[..usize::from(self.n)]
+    }
+}
+
+/// The note number of a note's start, end or pressure (0 for the rest).
+fn note_of(e: Event) -> u8 {
+    match e {
+        Event::NoteOn { note, .. } | Event::NoteOff { note } | Event::Pressure { note, .. } => note,
+        _ => 0,
+    }
+}
+
+/// The notes each of a track's 16 pads plays (`mpfree_play::PadRows`):
+/// the step grid shows and edits a clip of notes through them, and a
+/// track's arp that works in notes plays a clip of pad hits by them.
+pub use mpfree_play::PadRows;
+
+const _: () = assert!(HEARD_NOTES == mpfree_play::PAD_NOTES);
+
 /// Where the sequencer's notes go: the sampler's pads. Each note names the
 /// track it came from (`Out::track`), so a host can play each track's own
 /// kit or instrument.
@@ -289,7 +368,10 @@ pub trait Pads {
     /// False leaves it to go on as usual (an `AllOff` should, so the pads
     /// stop too). The arps' notes, the live pads among them, go to
     /// [`Pads::live`] instead, which sees the whole event and says what
-    /// records. By default nothing is taken.
+    /// records. A clip of notes' notes ([`Out::notes`], instrument
+    /// redesign step 5c) come here too: a host with instruments takes
+    /// them, as the pad methods would read each note as a pad. By
+    /// default nothing is taken, and they play as pads.
     fn out(&mut self, o: &Out) -> bool {
         let _ = o;
         false
@@ -327,34 +409,44 @@ pub trait Pads {
         let _ = (addr, value, offset);
         false
     }
+    /// The mixer track (its number among the mixer's tracks) where track
+    /// `track`'s instrument sounds, for a clip's locks on "this track's
+    /// strip" ([`strips`]): another track's instrument it plays (step 4a)
+    /// is heard on that instrument's strip. None where the host doesn't
+    /// say (a kit, the synth, MIDI out): its own strip. By default None.
+    fn sounds_on(&self, track: u16) -> Option<u8> {
+        let _ = track;
+        None
+    }
     /// A note one of the per-track arps played ([`TimeHost::period_arps`]):
     /// the pads through their track's arp, a latched arp, or a clip that
     /// plays through its arp. It is live playing, so the pad player gives
-    /// it the pads' own treatment (velocity curve, flashes). Returns the
-    /// note to record as heard on the armed track (a pad number), or None.
-    /// By default it plays as a clip's note and records as it is.
-    fn live(&mut self, o: &Out) -> Option<Event> {
+    /// it the pads' own treatment (velocity curve, flashes). Returns what
+    /// the armed track records of it as heard: its pad, and its notes for
+    /// a take of notes ([`Heard`]). By default it plays as a clip's note
+    /// and records as it is.
+    fn live(&mut self, o: &Out) -> Heard {
         match o.event {
             Event::NoteOn { note, velocity } => {
                 self.hit_at(o.track, usize::from(note), velocity, o.offset);
-                Some(o.event)
+                Heard::pad(o.event)
             }
             Event::NoteOff { note } => {
                 self.release_at(o.track, usize::from(note), o.offset);
-                Some(o.event)
+                Heard::pad(o.event)
             }
             Event::AllOff => {
                 self.stop_all();
-                None
+                Heard::NONE
             }
             Event::Pressure { note, value } => {
                 self.pressure_at(o.track, usize::from(note), value, o.offset);
-                None
+                Heard::NONE
             }
             Event::Lock { .. }
             | Event::Lane { .. }
             | Event::Unlock { .. }
-            | Event::Program { .. } => None,
+            | Event::Program { .. } => Heard::NONE,
         }
     }
 }
@@ -466,7 +558,7 @@ impl Click {
 /// control half taking the period's news, so the two never differ for
 /// long enough to show.
 pub struct TimeHost {
-    control: TimeControl,
+    control: Half,
     audio: TimeAudio,
     /// Click while counting in and recording (off by default since live
     /// test 3; Play's options and SHIFT + PLAY START turn it on).
@@ -486,6 +578,36 @@ pub struct TimeHost {
     count_in_was: u8,
 }
 
+/// Where the control half runs: here, on the facade's thread with the
+/// audio half (together, the default), or on a thread of its own (apart,
+/// `--time-thread`; Arrange 2.6b, [`apart`]).
+enum Half {
+    Here(Box<TimeControl>),
+    Apart(Box<Apart>),
+}
+
+/// Tests reach into the control half together; apart it is on its thread.
+#[cfg(test)]
+impl std::ops::Deref for Half {
+    type Target = TimeControl;
+    fn deref(&self) -> &TimeControl {
+        match self {
+            Half::Here(c) => c,
+            Half::Apart(_) => panic!("the control half runs on its own thread"),
+        }
+    }
+}
+
+#[cfg(test)]
+impl std::ops::DerefMut for Half {
+    fn deref_mut(&mut self) -> &mut TimeControl {
+        match self {
+            Half::Here(c) => c,
+            Half::Apart(_) => panic!("the control half runs on its own thread"),
+        }
+    }
+}
+
 /// A step's parameter lock (`value`) or its end (`None`), `offset` frames
 /// into the period.
 pub type LockOut = (u32, mpfree_play::mpfree_param::ParamAddr, Option<f32>);
@@ -499,8 +621,11 @@ pub const QUANTISE_ON: u32 = 240;
 
 /// Locks and unlocks kept for the mixer in one period: every lock and
 /// unlock the period's table lets in (refactor A2: an unlock is never
-/// lost; mpfree_play::room).
-const MAX_LOCKS: usize = room::VALUES + room::LOCK_ENDS;
+/// lost; mpfree_play::room), and room again for the ends a lock on "this
+/// track's strip" sends on the old strip when its instrument moved
+/// ([`strips`]: one at most for each lock held, fewer than
+/// `room::LOCK_ENDS`).
+const MAX_LOCKS: usize = room::VALUES + 2 * room::LOCK_ENDS;
 /// Move values kept for the mod engine in one period: every value the
 /// period's table lets in.
 const MAX_LANES: usize = room::VALUES;
@@ -522,9 +647,11 @@ impl TimeHost {
     /// it has a track. Builds and compiles everything here (allocates):
     /// the app makes it on the screen thread and swaps it in.
     pub fn with_project(rate: u32, bpm: f64, mut project: Project) -> Result<TimeHost, String> {
-        // Every track has its lasting id from here on (a new project's,
-        // or one saved before tracks had ids, gets 1, 2, 3 ...).
+        // Every track and every clip has its lasting id from here on (a
+        // new project's, or one saved before they had ids, gets 1, 2, 3
+        // ...).
         project.give_track_ids();
+        project.give_clip_ids();
         project
             .check()
             .map_err(|e| format!("the clips don't hold together: {e:?}"))?;
@@ -538,7 +665,7 @@ impl TimeHost {
         let audio = TimeAudio::new(transport, rate, tracks, to_control, from_control);
         let control = TimeControl::new(project, info, rate, to_audio, from_audio, tracks)?;
         let mut host = TimeHost {
-            control,
+            control: Half::Here(Box::new(control)),
             audio,
             metronome: false,
             click_gain: click_gain(CLICK_DB),
@@ -567,12 +694,105 @@ impl TimeHost {
     /// audio half's, [`TimeControl::lost`] for the control half's; a view
     /// waits and is sent again). [`TimeControl::describe`] puts every
     /// count in the status line once one is not 0.
-    #[allow(dead_code)] // The app thread's control thread takes it (step 3).
+    /// Together only (apart, the control half is on its thread already).
+    #[allow(dead_code)] // The tests' threads take it.
     pub fn split(self) -> (TimeControl, TimeAudio) {
         let mut audio = self.audio;
         audio.metronome = self.metronome;
         audio.set_click_gain(self.click_gain);
-        (self.control, audio)
+        match self.control {
+            Half::Here(c) => (*c, audio),
+            Half::Apart(_) => panic!("split: the control half runs on its own thread"),
+        }
+    }
+
+    /// The control half onto a thread of its own (apart, the app's
+    /// `--time-thread`; Arrange 2.6b, [`apart`]). The host comes back
+    /// apart, or together with why the thread didn't start.
+    pub fn into_apart(self) -> (TimeHost, Option<String>) {
+        let TimeHost {
+            control,
+            audio,
+            metronome,
+            click_gain,
+            leader,
+            quantise_was,
+            play_from,
+            count_in_was,
+        } = self;
+        let (control, why) = match control {
+            Half::Here(c) => match Apart::start(c) {
+                Ok(a) => (Half::Apart(Box::new(a)), None),
+                Err((c, why)) => (Half::Here(c), Some(why)),
+            },
+            apart => (apart, None),
+        };
+        let host = TimeHost {
+            control,
+            audio,
+            metronome,
+            click_gain,
+            leader,
+            quantise_was,
+            play_from,
+            count_in_was,
+        };
+        (host, why)
+    }
+
+    /// The control half back on this thread (together), after what was
+    /// asked of it so far. None if its thread was lost.
+    #[allow(dead_code)] // Tests; a later step may switch modes while running.
+    pub fn into_together(self) -> Option<TimeHost> {
+        let TimeHost {
+            control,
+            mut audio,
+            metronome,
+            click_gain,
+            leader,
+            quantise_was,
+            play_from,
+            count_in_was,
+        } = self;
+        let control = match control {
+            Half::Apart(a) => Half::Here(a.stop()?),
+            here => here,
+        };
+        audio.receive();
+        Some(TimeHost {
+            control,
+            audio,
+            metronome,
+            click_gain,
+            leader,
+            quantise_was,
+            play_from,
+            count_in_was,
+        })
+    }
+
+    /// The control half runs on its own thread.
+    pub fn apart(&self) -> bool {
+        matches!(self.control, Half::Apart(_))
+    }
+
+    /// `f` on the control half: here, or apart borrowed back from its
+    /// thread for the call ([`Apart::lend`], counted): the same answer
+    /// either way.
+    fn with<R>(&mut self, f: impl FnOnce(&mut TimeControl) -> R) -> R {
+        match &mut self.control {
+            Half::Here(c) => f(c),
+            Half::Apart(a) => a.lend(f),
+        }
+    }
+
+    /// The asks' answers since the last call, with how the caller wants
+    /// each said (apart; together each call answers at once).
+    pub fn take_said(&mut self) -> Vec<(Say, Result<String, String>)> {
+        match &mut self.control {
+            Half::Here(_) => Vec::new(),
+            Half::Apart(a) => a.take_said(),
+        }
     }
 
     /// The audio half takes what the control half sent, and passes `r` on.
@@ -581,10 +801,22 @@ impl TimeHost {
         r
     }
 
-    /// The armed track (the one the pads, the arp panel and recording
-    /// follow), if any.
+    /// The armed track (the one REC records), if any.
     pub fn armed(&self) -> Option<usize> {
-        self.control.armed()
+        match &self.control {
+            Half::Here(c) => c.armed(),
+            Half::Apart(a) => a.light.armed,
+        }
+    }
+
+    /// The selected track (the one the Sequencer edits, and the pads and
+    /// the arp panel follow): the armed track unless a track was picked
+    /// while REC's arm is pinned (refactor C1).
+    pub fn selected(&self) -> Option<usize> {
+        match &self.control {
+            Half::Here(c) => c.selected(),
+            Half::Apart(a) => a.light.selected,
+        }
     }
 
     /// SHIFT + TC (the MPC's TC On/Off): the armed track's Quantise while
@@ -593,8 +825,7 @@ impl TimeHost {
     pub fn toggle_record_quantise(&mut self) -> Result<String, String> {
         let t = self.armed().ok_or("pick a track first")?;
         let track = self
-            .control
-            .project
+            .project()
             .tracks
             .get(t)
             .ok_or_else(|| format!("no track {}", t + 1))?;
@@ -674,25 +905,34 @@ impl TimeHost {
     /// The other armed tracks, a bit each, without the armed one
     /// (`TimeAction::ArmAlso`).
     pub fn also(&self) -> u128 {
-        self.control.also()
+        match &self.control {
+            Half::Here(c) => c.also(),
+            Half::Apart(a) => a.light.also,
+        }
     }
 
     /// The Loop cell armed on the grid, while it is still empty: the next
     /// loop recorded lands there (loop-tracks.md part 4).
     pub fn loop_cell(&self) -> Option<(usize, usize)> {
-        self.control.loop_cell()
+        match &self.control {
+            Half::Here(c) => c.loop_cell(),
+            Half::Apart(a) => a.light.loop_cell,
+        }
     }
 
     /// The note editor is open (the Sequencer tab shows its Notes view).
     pub fn editing(&self) -> bool {
-        self.control.editing()
+        match &self.control {
+            Half::Here(c) => c.editing(),
+            Half::Apart(a) => a.light.editing,
+        }
     }
 
     /// The loop playing (or launched) on Loop track `t`, for OVERDUB with
     /// a cell of it armed.
     pub fn loop_on(&self, t: usize) -> Option<usize> {
         let mask = mpfree_seq::loops::on_track(self.project(), t);
-        let plan = self.control.loop_plan();
+        let plan = self.loop_plan();
         (0..mpfree_seq::LOOPS).find(|&n| plan.on[n] && mask & (1u8 << n) != 0)
     }
 
@@ -702,9 +942,13 @@ impl TimeHost {
         self.audio.transposes()
     }
 
-    /// The project the clips are in (for a save: `project.rs`).
+    /// The project the clips are in (for a save: `project.rs`). Apart, the
+    /// copy published after the last change.
     pub fn project(&self) -> &Project {
-        &self.control.project
+        match &self.control {
+            Half::Here(c) => &c.project,
+            Half::Apart(a) => &a.heavy.project,
+        }
     }
 
     /// "Clips through the arp" for `track` (see `Track::through_arp`).
@@ -715,7 +959,7 @@ impl TimeHost {
     // tests do.
     #[allow(dead_code)]
     pub fn set_through_arp(&mut self, track: usize, on: bool) -> bool {
-        let r = self.control.set_through_arp(track, on);
+        let r = self.with(|c| c.set_through_arp(track, on));
         self.sent(r)
     }
 
@@ -723,7 +967,7 @@ impl TimeHost {
     /// (see `TimeControl::set_note_fx`). False if there is no such note
     /// track.
     pub fn set_note_fx(&mut self, track: usize, fx: mpfree_notefx::TrackFx) -> bool {
-        let r = self.control.set_note_fx(track, fx);
+        let r = self.with(|c| c.set_note_fx(track, fx));
         self.sent(r)
     }
 
@@ -765,12 +1009,18 @@ impl TimeHost {
 
     /// What the Play page's pattern shows. Allocates: called on a change.
     pub fn steps(&self) -> StepsData {
-        self.control.steps()
+        match &self.control {
+            Half::Here(c) => c.steps(),
+            Half::Apart(a) => a.heavy.steps.clone(),
+        }
     }
 
     /// True once after the steps the Play page shows changed.
     pub fn take_steps_changed(&mut self) -> bool {
-        self.control.take_steps_changed()
+        match &mut self.control {
+            Half::Here(c) => c.take_steps_changed(),
+            Half::Apart(a) => a.take_steps_changed(),
+        }
     }
 
     /// A touch on the Play page's pattern, as one undoable edit (a
@@ -778,20 +1028,53 @@ impl TimeHost {
     /// clip in place when it can be (`TimeControl::in_place`). A line for
     /// the log.
     pub fn step_action(&mut self, a: StepAction) -> Result<String, String> {
-        let at = std::time::Instant::now();
-        let was = self.control.costs;
-        let r = self.control.step_action(a);
-        let r = self.sent(r);
-        // From the action to the audio half having made it: what a tap
-        // or a turn costs the audio thread while both halves run on it.
-        let took = at.elapsed();
-        let c = &mut self.control.costs;
-        if c.steps_in_place > was.steps_in_place {
-            c.slowest_in_place = c.slowest_in_place.max(took);
-        } else if c.steps_compiled > was.steps_compiled {
-            c.slowest_step_compiled = c.slowest_step_compiled.max(took);
+        let audio = &mut self.audio;
+        let mut run = move |c: &mut TimeControl| {
+            let at = std::time::Instant::now();
+            let was = c.costs;
+            let r = c.step_action(a);
+            audio.receive();
+            // From the action to the audio half having made it: what a
+            // tap or a turn costs the audio thread while both halves run
+            // on it (apart, the wait for the control half is the lend's).
+            let took = at.elapsed();
+            let c = &mut c.costs;
+            if c.steps_in_place > was.steps_in_place {
+                c.slowest_in_place = c.slowest_in_place.max(took);
+            } else if c.steps_compiled > was.steps_compiled {
+                c.slowest_step_compiled = c.slowest_step_compiled.max(took);
+            }
+            r
+        };
+        match &mut self.control {
+            Half::Here(c) => run(c),
+            Half::Apart(ap) => ap.lend(run),
         }
-        r
+    }
+
+    /// [`TimeHost::step_action`] for a tap or a turn that only says what
+    /// it did, as [`TimeHost::act_then`] makes an action: together the
+    /// answer at once, apart None and the answer later, so a step edit
+    /// that has to compile never costs the audio thread.
+    pub fn step_action_then(&mut self, a: StepAction, say: Say) -> Option<Result<String, String>> {
+        let Half::Apart(ap) = &mut self.control else {
+            return Some(self.step_action(a));
+        };
+        ap.ask(Box::new(move |c| {
+            let at = std::time::Instant::now();
+            let was = c.costs;
+            let r = c.step_action(a);
+            // Apart, the edit's own time on the editing side's thread.
+            let took = at.elapsed();
+            let costs = &mut c.costs;
+            if costs.steps_in_place > was.steps_in_place {
+                costs.slowest_in_place = costs.slowest_in_place.max(took);
+            } else if costs.steps_compiled > was.steps_compiled {
+                costs.slowest_step_compiled = costs.slowest_step_compiled.max(took);
+            }
+            Some(Told::Said(say, r))
+        }));
+        None
     }
 
     /// The pad hits of the last period that fell while the transport
@@ -826,7 +1109,7 @@ impl TimeHost {
     /// the way was full (counted either way).
     pub fn command(&mut self, cmd: Command) -> bool {
         let refused = self.audio.counts().refused;
-        let sent = self.control.command(cmd);
+        let sent = self.with(|c| c.command(cmd));
         self.audio.receive();
         sent && self.audio.counts().refused == refused
     }
@@ -853,7 +1136,18 @@ impl TimeHost {
     /// arrives ([`TimeHost::followed_bpm`]).
     pub fn follow_tempo(&mut self, bpm: f64) {
         if self.audio.followed_bpm().is_none() {
-            self.control.project_tempo(bpm);
+            match &mut self.control {
+                Half::Here(c) => c.project_tempo(bpm),
+                // Apart, only a change goes (it does nothing otherwise).
+                Half::Apart(a) if a.tempo != Some(bpm) => {
+                    a.tempo = Some(bpm);
+                    a.ask(Box::new(move |c| {
+                        c.project_tempo(bpm);
+                        None
+                    }));
+                }
+                Half::Apart(_) => {}
+            }
             self.audio.receive();
         }
         self.audio.follow_tempo(bpm);
@@ -863,14 +1157,20 @@ impl TimeHost {
     /// point in effect at the playhead (`TempoEdit::AtPlayhead`), not the
     /// project's tempo.
     pub fn song_tempo_plays(&self) -> bool {
-        self.control.song_tempo_plays()
+        match &self.control {
+            Half::Here(c) => c.song_tempo_plays(),
+            Half::Apart(a) => a.light.song_tempo_plays,
+        }
     }
 
     /// While song mode plays the song's tempo points, the tempo of the
     /// point in effect at the playhead (None before the first): what the
     /// tempo turned steps from.
     pub fn tempo_here(&self) -> Option<f64> {
-        self.control.tempo_here()
+        match &self.control {
+            Half::Here(c) => c.tempo_here(),
+            Half::Apart(a) => a.light.tempo_here,
+        }
     }
 
     /// Follow another device's MIDI clock with these options (the
@@ -901,12 +1201,15 @@ impl TimeHost {
         if !self.audio.took() {
             return None;
         }
-        let r = self.control.take_started();
-        // No clip to record into (no empty slot): it plays without
-        // recording, the punch-in taken back on its frame.
-        if r.is_err() {
-            self.control.command(Command::Record);
-        }
+        let r = self.with(|c| {
+            let r = c.take_started();
+            // No clip to record into (no empty slot): it plays without
+            // recording, the punch-in taken back on its frame.
+            if r.is_err() {
+                c.command(Command::Record);
+            }
+            r
+        });
         Some(
             self.sent(r)
                 .unwrap_or_else(|e| format!("rec: {e}, so it only plays")),
@@ -935,7 +1238,7 @@ impl TimeHost {
         // back. Only when the start will go in.
         let ready = match take {
             Some(_) if self.audio.start_refusal(bpm, take).is_none() => {
-                Some(self.control.take_started_on_note())
+                Some(self.with(|c| c.take_started_on_note()))
             }
             _ => None,
         };
@@ -999,7 +1302,17 @@ impl TimeHost {
     /// Carry out a touch on the time engine's screens. Returns a line for
     /// the log.
     pub fn act(&mut self, a: TimeAction) -> Result<String, String> {
-        // Where PLAY starts from, for SHIFT + PLAY ([`TimeHost::play_back`]).
+        self.play_from(&a);
+        let waits = self.audio.clock_waits();
+        let r = self.with(|c| {
+            c.clock_waits = waits;
+            c.act(a)
+        });
+        self.sent(r)
+    }
+
+    /// Where PLAY starts from, for SHIFT + PLAY ([`TimeHost::play_back`]).
+    fn play_from(&mut self, a: &TimeAction) {
         let info = self.info();
         if info.state == mpfree_transport::State::Stopped {
             match a {
@@ -1008,15 +1321,37 @@ impl TimeHost {
                 _ => {}
             }
         }
-        self.control.clock_waits = self.audio.clock_waits();
-        let r = self.control.act(a);
-        self.sent(r)
+    }
+
+    /// [`TimeHost::act`] for the screen's and the buttons' touches, which
+    /// only say what they did: together the answer (`Some`), for the caller
+    /// to say as `say` asks; apart None at once, the action sent to the
+    /// control half's thread, and its answer later from
+    /// [`TimeHost::take_said`] with `say`, so a compile never costs the
+    /// audio thread (Arrange 2.6b).
+    pub fn act_then(&mut self, a: TimeAction, say: Say) -> Option<Result<String, String>> {
+        if !self.apart() {
+            return Some(self.act(a));
+        }
+        self.play_from(&a);
+        let waits = self.audio.clock_waits();
+        if let Half::Apart(ap) = &mut self.control {
+            ap.ask(Box::new(move |c| {
+                c.clock_waits = waits;
+                Some(Told::Said(say, c.act(a)))
+            }));
+        }
+        None
     }
 
     /// What live to song put into the song when the transport stopped
-    /// (or why it could not), once, for the log.
+    /// (or why it could not), once, for the log; apart, also what a take
+    /// did to Rec song and what the loops did on the grid.
     pub fn take_later_note(&mut self) -> Option<String> {
-        self.control.take_later_note()
+        match &mut self.control {
+            Half::Here(c) => c.take_later_note(),
+            Half::Apart(a) => a.take_note(),
+        }
     }
 
     /// The morph bar on the mixer's mod engine (`modu`): the rows, the
@@ -1028,7 +1363,7 @@ impl TimeHost {
         modu: &mut crate::modmix::ModMix,
         mixer: &mpfree_fx::Mixer,
     ) -> Result<String, String> {
-        let r = self.control.morph(a, modu, mixer);
+        let r = self.with(|c| c.morph(a, modu, mixer));
         self.sent(r)
     }
 
@@ -1038,7 +1373,7 @@ impl TimeHost {
     /// launched: a tap on the Clips page plays it like any clip. Returns a
     /// line for the log.
     pub fn put_clip(&mut self, clip: Clip) -> Result<String, String> {
-        let r = self.control.put_clip(clip);
+        let r = self.with(|c| c.put_clip(clip));
         self.sent(r)
     }
 
@@ -1046,18 +1381,26 @@ impl TimeHost {
     /// its track's first empty slot, as one take that one UNDO on the
     /// Clips page takes away; all or none. Returns a line for the log.
     pub fn put_clips(&mut self, clips: Vec<(usize, Clip)>) -> Result<String, String> {
-        let r = self.control.put_clips(clips);
+        let r = self.with(|c| c.put_clips(clips));
         self.sent(r)
     }
 
     /// A pad note as pressed, before any arp, in the coming period at
     /// `offset`. When the armed track's clips play through its arp, this
-    /// is what it records, and what the capture history keeps.
-    // The app calls it once its pads play through the per-track arps (the
-    // arp thread's side); until then only tests do.
-    #[allow(dead_code)]
+    /// is what it records, and what the capture history keeps. A clip of
+    /// notes has no notes from it: [`TimeHost::pad_pressed_notes`] gives
+    /// them.
     pub fn pad_pressed(&mut self, offset: u32, event: Event) {
-        self.audio.pad_pressed(offset, event);
+        self.audio
+            .pad_pressed(offset, &Heard::of(Some(event), event, &[]));
+    }
+
+    /// [`TimeHost::pad_pressed`] with the notes the pad plays, as written
+    /// (`PadRows`): a take of notes on a track whose clips play through
+    /// its arp records them (the instrument redesign's step 5d).
+    pub fn pad_pressed_notes(&mut self, offset: u32, event: Event, notes: &[u8]) {
+        self.audio
+            .pad_pressed(offset, &Heard::of(Some(event), event, notes));
     }
 
     /// Whether a live hit on a pad that starts on the launch line waits
@@ -1125,7 +1468,7 @@ impl TimeHost {
     /// there is no such track.
     #[allow(dead_code)]
     pub fn set_record_touch(&mut self, track: usize, on: bool) -> bool {
-        let r = self.control.set_record_touch(track, on);
+        let r = self.with(|c| c.set_record_touch(track, on));
         self.sent(r)
     }
 
@@ -1134,7 +1477,11 @@ impl TimeHost {
     /// ([`TimeHost::describe`]); tests read it here.
     #[allow(dead_code)]
     pub fn touch_dropped(&self) -> u64 {
-        self.audio.touch_dropped() + self.control.touch_lost()
+        let lost = match &self.control {
+            Half::Here(c) => c.touch_lost(),
+            Half::Apart(a) => a.light.touch_lost,
+        };
+        self.audio.touch_dropped() + lost
     }
 
     /// Live erase (ERASE held on a pad while the transport plays, the
@@ -1207,8 +1554,28 @@ impl TimeHost {
     /// joins the mute queue and lands on the launch line while the
     /// transport rolls ([`TimeControl::mute_or_solo`]).
     pub fn mute_or_solo(&mut self, t: usize, wait: bool, solo: bool) -> Result<String, String> {
-        let r = self.control.mute_or_solo(t, wait, solo);
+        let r = self.with(|c| c.mute_or_solo(t, wait, solo));
         self.sent(r)
+    }
+
+    /// [`TimeHost::mute_or_solo`] as [`TimeHost::act_then`] makes an
+    /// action: together the answer, apart None and the answer later.
+    pub fn mute_or_solo_then(
+        &mut self,
+        t: usize,
+        wait: bool,
+        solo: bool,
+        say: Say,
+    ) -> Option<Result<String, String>> {
+        match &mut self.control {
+            Half::Here(_) => Some(self.mute_or_solo(t, wait, solo)),
+            Half::Apart(a) => {
+                a.ask(Box::new(move |c| {
+                    Some(Told::Said(say, c.mute_or_solo(t, wait, solo)))
+                }));
+                None
+            }
+        }
     }
 
     /// A pad of the kit tapped as a mute key: at once, or waiting in the
@@ -1220,61 +1587,96 @@ impl TimeHost {
         wait: bool,
         solo: bool,
     ) -> PadTap {
-        self.control.pad_mute_or_solo(pad, now, wait, solo)
+        let r = self.with(|c| c.pad_mute_or_solo(pad, now, wait, solo));
+        self.sent(r)
     }
 
     /// The kit's pads whose change in the mute queue came due, for the
     /// mixer before its next period ([`TimeControl::take_pad_landings`]).
     pub fn take_pad_landings(&mut self) -> [Option<(bool, bool)>; control::PADS] {
-        self.control.take_pad_landings()
+        match &mut self.control {
+            Half::Here(c) => c.take_pad_landings(),
+            Half::Apart(a) => a.take_landings(),
+        }
     }
 
     /// Whether a change waits for the kit's pad `pad`, for its light.
     pub fn pad_waiting(&self, pad: usize) -> bool {
-        self.control.pad_waiting(pad)
+        match &self.control {
+            Half::Here(c) => c.pad_waiting(pad),
+            Half::Apart(a) => a.light.pad_waiting.get(pad).copied().unwrap_or(false),
+        }
     }
 
     /// Whether track `t` is muted (None: no such track).
     #[allow(dead_code)]
     pub fn muted(&self, t: usize) -> Option<bool> {
-        self.control.muted(t)
+        match &self.control {
+            Half::Here(c) => c.muted(t),
+            Half::Apart(a) => a.light.muted.get(t).copied().flatten(),
+        }
     }
 
     /// The tracks silent now, muted or left out by a solo, a bit a track
     /// ([`TimeControl::silenced`]): a track gone silent ends what its kit's
     /// Instrument and MIDI out pads hold, which no strip of its mutes.
     pub fn silenced(&self) -> u128 {
-        self.control.silenced()
+        match &self.control {
+            Half::Here(c) => c.silenced(),
+            Half::Apart(a) => a.light.silenced,
+        }
     }
 
     /// The tracks muted and soloed once the mute queue lands, a bit a
     /// track ([`TimeControl::mute_bits`]), for MIDI Learn.
     pub fn mute_bits(&self) -> (u128, u128) {
-        self.control.mute_bits()
+        match &self.control {
+            Half::Here(c) => c.mute_bits(),
+            Half::Apart(a) => a.light.mute_bits,
+        }
     }
 
     /// What TRACK MUTE's pad for track `t` shows (None: no such track).
     pub fn mute_light(&self, t: usize) -> Option<MuteLight> {
-        self.control.mute_light(t)
+        match &self.control {
+            Half::Here(c) => c.mute_light(t),
+            Half::Apart(a) => a.light.mute_light.get(t).copied().flatten(),
+        }
     }
 
     /// The mute queue waiting, if any.
     #[allow(dead_code)]
     pub fn mute_wait(&self) -> Option<&mpfree_time_ui::view::MuteWait> {
-        self.control.mute_wait()
+        match &self.control {
+            Half::Here(c) => c.mute_wait(),
+            Half::Apart(a) => a.heavy.mute_wait.as_ref(),
+        }
     }
 
     /// The project is in Perform, not Make (sequencer S4): the app follows
     /// it each period (`App::set_perform`).
     pub fn perform(&self) -> bool {
-        self.control.perform()
+        match &self.control {
+            Half::Here(c) => c.perform(),
+            Half::Apart(a) => a.light.perform,
+        }
     }
 
     /// Whether a take records (the notes, their count-in, or a loop's
     /// pass), each period: in Perform a take turns Rec song on for its
     /// length ([`TimeControl::take_follows`]). A line for the log.
     pub fn take_follows(&mut self, taking: bool) -> Option<String> {
-        let r = self.control.take_follows(taking);
+        let r = match &mut self.control {
+            Half::Here(c) => c.take_follows(taking),
+            // Apart, only a change goes (it does nothing otherwise); its
+            // line comes back for the log ([`TimeHost::take_later_note`]).
+            Half::Apart(a) if a.taking != Some(taking) => {
+                a.taking = Some(taking);
+                a.ask(Box::new(move |c| c.take_follows(taking).map(Told::Note)));
+                None
+            }
+            Half::Apart(_) => None,
+        };
         self.sent(r)
     }
 
@@ -1282,7 +1684,10 @@ impl TimeHost {
     /// lands on ([`TimeControl::loop_plan`]): for the looper, before its
     /// period, so a launch lands on its line's own frame.
     pub fn loop_plan(&self) -> mpfree_seq::loops::LoopPlan {
-        self.control.loop_plan()
+        match &self.control {
+            Half::Here(c) => c.loop_plan(),
+            Half::Apart(a) => a.light.loop_plan,
+        }
     }
 
     /// What the looper says of its loops ([`TimeControl::loops_are`]):
@@ -1291,27 +1696,44 @@ impl TimeHost {
         &mut self,
         now: &[mpfree_seq::loops::LoopNow; mpfree_seq::LOOPS],
     ) -> Vec<String> {
-        let r = self.control.loops_are(now);
+        let r = match &mut self.control {
+            Half::Here(c) => c.loops_are(now),
+            // Apart, sent; the lines come back for the log
+            // ([`TimeHost::take_later_note`]).
+            Half::Apart(a) => {
+                a.loops_are(*now);
+                Vec::new()
+            }
+        };
         self.sent(r)
     }
 
     /// The project's tracks, for TRACK MUTE's banks.
     pub fn track_count(&self) -> usize {
-        self.control.track_count()
+        match &self.control {
+            Half::Here(c) => c.track_count(),
+            Half::Apart(a) => a.light.track_count,
+        }
     }
 
     /// REDOs done so far, and whether REDO has anything to do: a track
     /// that comes back with a REDO gets its kit back
     /// ([`crate::sampler::TrackKits::follow`]).
     pub fn redos(&self) -> (u64, bool) {
-        (self.control.redos(), self.control.can_redo())
+        match &self.control {
+            Half::Here(c) => (c.redos(), c.can_redo()),
+            Half::Apart(a) => (a.light.redos, a.light.can_redo),
+        }
     }
 
     /// Whether track `t` has a clip launched (playing, or waiting for the
     /// transport); TRACK MUTE's pad lights have it in [`MuteLight`].
     #[cfg(test)]
     pub fn launched(&self, t: usize) -> bool {
-        self.control.launched(t)
+        match &self.control {
+            Half::Here(c) => c.launched(t),
+            Half::Apart(a) => t < 128 && a.light.launched & (1 << t) != 0,
+        }
     }
 
     /// FILL, as of the last period, for the button's light.
@@ -1356,6 +1778,21 @@ impl TimeHost {
         self.audio.set_ahead(frames);
     }
 
+    /// The tracks whose instrument plays notes (a track's own synth, or
+    /// another track's it plays, but not the Drums engine), one bit each:
+    /// a new clip REC makes for a take on one holds notes (step 5c), its
+    /// clips through its arp too (step 5d).
+    pub fn set_notes_tracks(&mut self, tracks: u128) {
+        self.with(|c| c.set_notes_tracks(tracks));
+    }
+
+    /// The notes each of track `track`'s 16 pads plays: a clip of notes
+    /// shows each pad's root on the step grid's pad rows, and a tap on a
+    /// pad's row edits its notes (step 5c).
+    pub fn set_pad_rows(&mut self, track: usize, rows: PadRows) {
+        self.with(|c| c.set_pad_rows(track, rows));
+    }
+
     /// What the look-ahead did, for the log.
     pub fn ahead_counts(&self) -> AheadCounts {
         self.audio.ahead_counts()
@@ -1379,8 +1816,14 @@ impl TimeHost {
         self.audio.metronome = self.metronome;
         self.audio.set_click_gain(self.click_gain);
         self.audio.run(frames, pads, arps);
-        self.control.poll();
-        self.audio.receive();
+        match &mut self.control {
+            Half::Here(c) => {
+                c.poll();
+                self.audio.receive();
+            }
+            // Apart, the thread polls; the newest copy comes here.
+            Half::Apart(a) => a.take_shown(),
+        }
     }
 
     /// Add the click to the rendered period; returns the peak afterwards.
@@ -1402,7 +1845,10 @@ impl TimeHost {
     /// Song mode is on: the song plays on tracks with no clip launched.
     /// Audio tracks play and record only then (layout spec 4c).
     pub fn song_on(&self) -> bool {
-        self.control.song_on()
+        match &self.control {
+            Half::Here(c) => c.song_on(),
+            Half::Apart(a) => a.light.song_on,
+        }
     }
 
     /// The song position as bar.beat.tick, for log lines.
@@ -1422,12 +1868,18 @@ impl TimeHost {
     /// True once after the clips, launches or takes changed. Notes and
     /// locks being recorded are told at most every quarter second.
     pub fn take_changed(&mut self) -> bool {
-        self.control.take_changed()
+        match &mut self.control {
+            Half::Here(c) => c.take_changed(),
+            Half::Apart(a) => a.take_changed(),
+        }
     }
 
     /// Everything the screens show.
     pub fn state(&self) -> TimeState {
-        self.control.state()
+        match &self.control {
+            Half::Here(c) => c.state(),
+            Half::Apart(a) => a.heavy.state.clone(),
+        }
     }
 
     /// Notes and locks that gave way (should stay 0): lost because a
@@ -1440,7 +1892,10 @@ impl TimeHost {
         c.dropped
             + c.busy
             + u64::from(c.ends_lost)
-            + self.control.dropped()
+            + match &self.control {
+                Half::Here(c) => c.dropped(),
+                Half::Apart(a) => a.light.dropped,
+            }
             + self.audio.note_mods_dropped()
     }
 
@@ -1461,7 +1916,10 @@ impl TimeHost {
     /// The time engine's part of the status line, with what passing
     /// between the halves lost, if anything.
     pub fn describe(&self) -> String {
-        self.control.describe()
+        match &self.control {
+            Half::Here(c) => c.describe(),
+            Half::Apart(a) => format!("{}; {}", a.heavy.describe, a.describe()),
+        }
     }
 }
 
@@ -1558,7 +2016,10 @@ mod tests {
         h.control.project.tracks[0].slots[0] = Some(Clip::new("taken", 960));
         let line = h.put_clip(clip.clone()).unwrap();
         assert_eq!(line, "phrase: 4 notes in slot 2 of Track 1");
-        assert_eq!(h.control.project.clip(0, 1), Some(&clip));
+        // A new clip, with a lasting id of its own.
+        let put = h.control.project.clip(0, 1).unwrap();
+        assert!(put.id.is_given());
+        assert_eq!(put.copied(), clip);
         assert!(h.control.launches.is_empty(), "not launched");
         // The armed track takes it.
         h.act(TimeAction::Arm(Some(2))).unwrap();
@@ -1630,8 +2091,11 @@ mod tests {
             .put_clips(vec![(0, drums.clone()), (1, bass.clone())])
             .unwrap();
         assert_eq!(line, "2 clips with 1 notes, from slot 1 of Track 1");
-        assert_eq!(h.control.project.clip(0, 0), Some(&drums));
-        assert_eq!(h.control.project.clip(1, 1), Some(&bass));
+        let put = |t, s| h.control.project.clip(t, s).map(Clip::copied);
+        assert_eq!(put(0, 0), Some(drums.clone()));
+        assert_eq!(put(1, 1), Some(bass.clone()));
+        let ids = |t, s| h.control.project.clip(t, s).unwrap().id;
+        assert!(ids(0, 0).is_given() && ids(1, 1).is_given() && ids(0, 0) != ids(1, 1));
         assert!(h.control.launches.is_empty(), "not launched");
         // One UNDO takes both.
         h.act(TimeAction::Undo).unwrap();
@@ -2089,6 +2553,53 @@ mod tests {
         );
     }
 
+    /// In song mode a tap on a clip the song plays goes into the one copy
+    /// every block of it plays, on its own lane and on another track's, in
+    /// place (Arrange 2.3): no compile, nothing allocated or freed on the
+    /// audio half, and the view just what a compile gives.
+    #[test]
+    fn a_step_edit_in_song_mode_goes_into_every_block_in_place() {
+        use mpfree_seq::arrange::Placement;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let tap = |pad, step, velocity| StepAction::Tap {
+            pad,
+            step,
+            velocity,
+        };
+        // A pattern on track 0, stopped, then in the song: two blocks on
+        // its own lane and one on track 1's.
+        h.step_action(tap(0, 0, 100)).unwrap();
+        h.act(TimeAction::StopAll).unwrap();
+        let p = &mut h.control.project;
+        for (track, start) in [(0, 0), (0, 2 * 3840), (1, 3840)] {
+            let mut b = Placement::of(&p.tracks, 0, 0, start, 3840);
+            b.track = track;
+            p.arrangement.place(b).unwrap();
+        }
+        h.act(TimeAction::SongMode(true)).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        assert_eq!(h.steps().clip.map(|c| c.slot), Some(0));
+        let compiles = h.control.costs.compiles;
+        let edits = [tap(0, 4, 100), tap(0, 8, 90), tap(0, 4, 100)];
+        for (i, a) in edits.into_iter().enumerate() {
+            let line = h.control.step_action(a);
+            assert!(line.is_ok(), "{a:?}: {line:?}");
+            let ((), allocs) = crate::sys::alloc_count::calls(|| h.audio.receive());
+            assert_eq!(allocs, 0, "{a:?}: the audio half allocated or freed");
+            assert_eq!(
+                *h.audio.view,
+                h.control.view().unwrap(),
+                "{a:?}: the view in place is what a compile gives"
+            );
+            run(&mut h, &mut pads, BAR / 2 + (i as u64 + 1) * BAR / 4, &[]);
+        }
+        assert_eq!(h.control.costs.compiles, compiles, "nothing compiled");
+        assert_eq!(h.control.costs.steps_in_place, edits.len() as u64);
+        assert_eq!(h.audio.counts().missed, 0);
+    }
+
     /// A step edit the view can't take in place compiles, as before: a new
     /// pattern, the pattern's length, a big erase, and any edit while
     /// recording, when the audio half edits the view itself.
@@ -2196,6 +2707,164 @@ mod tests {
         })
         .unwrap();
         assert_eq!(ways(&h), (3, 1), "two steps' notes");
+    }
+
+    /// Refactor C3: a track selected apart from the arm (picked while
+    /// REC's arm is pinned elsewhere) has room in the view for its step
+    /// edits, so a tap, a velocity change and a lock detent on its playing
+    /// clip go in place as the armed track's do: nothing compiled, nothing
+    /// missed, and the view in place is what a compile gives. The armed
+    /// track's clip keeps its room for recording.
+    #[test]
+    fn step_edits_on_a_track_selected_apart_from_the_arm_go_in_place() {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_seq::steps::Change;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        for t in [0, 2] {
+            h.control.project.tracks[t].slots[0] = Some(Clip::new("Beat", 16 * STEP_TICKS));
+            h.act(TimeAction::Launch { track: t, slot: 0 }).unwrap();
+        }
+        h.act(TimeAction::Arm(Some(0))).unwrap();
+        h.act(TimeAction::Select(2)).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 4, &[]);
+        let ways = |h: &TimeHost| {
+            (
+                h.control.costs.steps_in_place,
+                h.control.costs.steps_compiled,
+            )
+        };
+        let compiles = h.control.costs.compiles;
+        let tune = RelAddr::new(OnTrack::Pad(1), 2);
+        let edits = [
+            StepAction::Tap {
+                pad: 1,
+                step: 4,
+                velocity: 100,
+            },
+            StepAction::Change {
+                pad: 1,
+                step: 4,
+                change: Change::Velocity(60),
+            },
+            StepAction::Lock {
+                pad: 1,
+                steps: 1 << 4,
+                addr: tune,
+                value: Some(300.0),
+            },
+        ];
+        for (i, a) in edits.into_iter().enumerate() {
+            h.step_action(a).unwrap();
+            run(&mut h, &mut pads, BAR / 4 + (i as u64 + 1) * BAR / 8, &[]);
+        }
+        assert_eq!(ways(&h), (3, 0), "each edit in place");
+        assert_eq!(h.control.costs.compiles, compiles, "nothing compiled");
+        assert_eq!(h.audio.counts().missed, 0);
+        assert_eq!(*h.audio.view, h.control.view().unwrap());
+        let clip = h.project().clip(2, 0).unwrap();
+        assert_eq!((clip.notes.len(), clip.locks.len()), (1, 1));
+        assert!(h.project().clip(0, 0).unwrap().notes.is_empty());
+        // Selecting another track compiles once, for its room; selecting
+        // the armed track again needs none.
+        h.act(TimeAction::Select(3)).unwrap();
+        assert_eq!(h.control.costs.compiles, compiles + 1);
+        h.act(TimeAction::Select(0)).unwrap();
+        assert_eq!(h.control.costs.compiles, compiles + 1);
+    }
+
+    /// Refactor C2: the clip chip picks which of the selected track's
+    /// clips the Sequencer edits, without starting it: what plays keeps
+    /// playing, the edit goes to the picked clip (one take UNDO takes
+    /// back) with nothing compiled, and another track selected, What
+    /// plays or the clip taken away goes back to the clip that plays.
+    #[test]
+    fn a_clip_picked_to_edit_takes_the_steps_and_nothing_starts() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        for (s, name) in ["Pattern 1", "Pattern 2", "Pattern 3"]
+            .into_iter()
+            .enumerate()
+        {
+            h.control.project.tracks[0].slots[s] = Some(Clip::new(name, 16 * STEP_TICKS));
+        }
+        h.control.project.tracks[1].slots[0] = Some(Clip::new("Bass", 16 * STEP_TICKS));
+        h.control.project.give_clip_ids();
+        h.act(TimeAction::Arm(Some(0))).unwrap();
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 4, &[]);
+        let said = h.act(TimeAction::EditClip(Some(2))).unwrap();
+        assert_eq!(said, "editing Pattern 3 on Track 1 (Pattern 1 plays)");
+        let steps = h.steps();
+        assert_eq!(steps.clip.as_ref().map(|c| c.slot), Some(2));
+        assert!(steps.picked);
+        assert_eq!(steps.playing.as_deref(), Some("Pattern 1"));
+        assert_eq!(h.state().clip_pick, Some(2));
+        // A step goes into Pattern 3; Pattern 1 plays on, untouched, and
+        // nothing compiles (the picked clip isn't in what plays).
+        let compiles = h.control.costs.compiles;
+        h.step_action(StepAction::Tap {
+            pad: 0,
+            step: 4,
+            velocity: 100,
+        })
+        .unwrap();
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        assert_eq!(h.project().clip(0, 2).unwrap().notes.len(), 1);
+        assert!(h.project().clip(0, 0).unwrap().notes.is_empty());
+        assert_eq!(h.control.launches.len(), 1);
+        assert_eq!(h.control.launches[0].slot, 0, "Pattern 1 still plays");
+        assert_eq!(h.control.costs.compiles, compiles, "nothing compiled");
+        assert_eq!(*h.audio.view, h.control.view().unwrap());
+        h.act(TimeAction::Undo).unwrap();
+        assert!(
+            h.project().clip(0, 2).unwrap().notes.is_empty(),
+            "UNDO takes it back"
+        );
+        assert_eq!(
+            h.steps().clip.as_ref().map(|c| c.slot),
+            Some(2),
+            "and the pick stays"
+        );
+        // Launching another clip keeps the pick.
+        h.act(TimeAction::Launch { track: 0, slot: 1 }).unwrap();
+        run(&mut h, &mut pads, BAR * 2, &[]);
+        assert_eq!(h.steps().clip.as_ref().map(|c| c.slot), Some(2));
+        // What plays: the clip that plays again.
+        h.act(TimeAction::EditClip(None)).unwrap();
+        let steps = h.steps();
+        assert_eq!(steps.clip.as_ref().map(|c| c.slot), Some(1));
+        assert!(!steps.picked);
+        assert_eq!(steps.playing, None);
+        assert_eq!(h.state().clip_pick, None);
+        // Another track selected forgets the pick; back on track 1 the
+        // Sequencer shows what plays.
+        h.act(TimeAction::EditClip(Some(2))).unwrap();
+        h.act(TimeAction::Arm(Some(1))).unwrap();
+        assert_eq!(h.state().clip_pick, None);
+        h.act(TimeAction::Arm(Some(0))).unwrap();
+        assert_eq!(h.steps().clip.as_ref().map(|c| c.slot), Some(1));
+        // The picked clip dragged to another row: the pick goes with it
+        // (kept by the clip's lasting id, not its row).
+        h.act(TimeAction::EditClip(Some(2))).unwrap();
+        h.act(TimeAction::DropClip {
+            from: (0, 2),
+            to: (0, 5),
+            copy: false,
+        })
+        .unwrap();
+        assert_eq!(h.state().clip_pick, Some(5));
+        assert_eq!(h.steps().clip.as_ref().map(|c| c.slot), Some(5));
+        // A picked clip taken away: the Sequencer goes back to what plays.
+        h.act(TimeAction::DeleteClip { track: 0, slot: 5 }).unwrap();
+        assert_eq!(h.state().clip_pick, None);
+        assert_eq!(h.steps().clip.as_ref().map(|c| c.slot), Some(1));
+        // An empty slot, or nothing selected, can't be picked.
+        assert!(h.act(TimeAction::EditClip(Some(9))).is_err());
+        h.act(TimeAction::Arm(None)).unwrap();
+        assert!(h.act(TimeAction::EditClip(Some(0))).is_err());
     }
 
     /// A change the view can't make in place (here, a note it erases that
@@ -2359,17 +3028,22 @@ mod tests {
             .act(TimeAction::DeleteClip { track: 0, slot: 0 })
             .unwrap_err()
             .contains("empty"));
-        // A clip in the song stays.
-        h.control
-            .project
-            .arrangement
-            .placements
-            .push(mpfree_seq::arrange::Placement::linked(0, 1, 0, 960));
-        assert!(h
-            .act(TimeAction::DeleteClip { track: 0, slot: 1 })
-            .unwrap_err()
-            .contains("in the song"));
-        assert!(h.control.project.clip(0, 1).is_some());
+        // A clip the song plays goes to the song's own clips (Arrange
+        // 1.3): the song plays on, and UNDO puts it back in its cell.
+        let p = &mut h.control.project;
+        p.give_clip_ids();
+        let block = mpfree_seq::arrange::Placement::of(&p.tracks, 0, 1, 0, 960);
+        p.arrangement.placements.push(block);
+        let said = h.act(TimeAction::DeleteClip { track: 0, slot: 1 }).unwrap();
+        assert!(said.contains("the song keeps playing it"), "{said}");
+        let p = &h.control.project;
+        assert!(p.clip(0, 1).is_none());
+        let b = &p.arrangement.placements[0];
+        assert_eq!(p.block_clip(b).map(|c| c.name.as_str()), Some("fill"));
+        h.act(TimeAction::Undo).unwrap();
+        let p = &h.control.project;
+        assert_eq!(p.clip(0, 1).map(|c| c.name.as_str()), Some("fill"));
+        assert!(p.arrangement.clips.is_empty());
     }
 
     /// The clip settings card (sequencer S3): a row turned is one take
@@ -2458,7 +3132,10 @@ mod tests {
         assert!(h.state().done.is_empty(), "a copy is no take");
         let said = h.act(TimeAction::PasteClip { track: 1, slot: 2 }).unwrap();
         assert!(said.contains("a copy of beat in"), "{said}");
-        assert_eq!(h.control.project.clip(1, 2), Some(&beat));
+        // A copy: the same clip, but a clip of its own with its own id.
+        let pasted = h.control.project.clip(1, 2).unwrap();
+        assert_eq!(pasted.copied(), beat.copied());
+        assert_ne!(pasted.id, h.control.project.clip(0, 0).unwrap().id);
         assert_eq!(h.state().done.last().unwrap().short(), "paste 1");
         assert!(h
             .act(TimeAction::PasteClip { track: 0, slot: 0 })
@@ -2544,9 +3221,12 @@ mod tests {
         for (t, name) in [(0, "Beat"), (1, "Bass")] {
             h.control.project.tracks[t].slots[0] = Some(Clip::new(name, BAR));
         }
+        h.control.project.give_clip_ids();
+        let tracks = h.control.project.tracks.clone();
         let song = &mut h.control.project.arrangement;
-        song.place(Placement::linked(0, 0, 0, 2 * BAR)).unwrap();
-        song.place(Placement::linked(1, 0, 2 * BAR, 2 * BAR))
+        song.place(Placement::of(&tracks, 0, 0, 0, 2 * BAR))
+            .unwrap();
+        song.place(Placement::of(&tracks, 1, 0, 2 * BAR, 2 * BAR))
             .unwrap();
         song.mark(0, "Intro").unwrap();
         song.mark(2 * BAR, "Verse").unwrap();
@@ -2565,12 +3245,20 @@ mod tests {
         let said = h.act(mv(0, 1, 2 * BAR, false)).unwrap_err();
         assert!(said.contains("would run into another block"), "{said}");
         assert_eq!(h.control.project.arrangement, before);
-        // A copy onto the bass's lane is its own copy of the clip.
+        // A copy onto the bass's lane stays linked to the beat and plays
+        // through the bass (Arrange 1.3).
         let said = h.act(mv(0, 1, 6 * BAR, true)).unwrap();
         assert!(
-            said.contains("a copy of Beat at Track 2, bar 7, as its own copy"),
+            said.contains("a copy of Beat at Track 2, bar 7, playing through Track 2"),
             "{said}"
         );
+        let p = &h.control.project;
+        let copy = p.arrangement.at(1, 6 * BAR).unwrap();
+        assert_eq!(
+            p.arrangement.placements[copy].clip,
+            p.clip(0, 0).unwrap().id
+        );
+        assert!(p.arrangement.clips.is_empty(), "no copy of the clip");
         let said = h
             .act(TimeAction::StretchPlacement {
                 index: 0,
@@ -2650,6 +3338,146 @@ mod tests {
             .contains("128 tracks"));
     }
 
+    /// Refactor C1: a track selected apart from the arm (a track picked
+    /// while REC's arm is pinned) is the one the Play page's steps show, a
+    /// step tap edits and the note editor opens, while REC still records
+    /// the armed track. Arming a track selects it again, and so does
+    /// selecting the armed track; a pick on its own arms; a Loop track
+    /// has no steps to select.
+    #[test]
+    fn a_track_selected_apart_from_the_arm_is_the_one_the_steps_edit() {
+        use mpfree_time_ui::editor::EditAction as E;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        assert_eq!((h.armed(), h.selected()), (Some(0), Some(0)));
+        let said = h.act(TimeAction::Select(2)).unwrap();
+        assert_eq!(said, "selected: Track 3 (REC stays on Track 1, pinned)");
+        assert_eq!((h.armed(), h.selected()), (Some(0), Some(2)));
+        let st = h.state();
+        assert_eq!(
+            (st.armed, st.track_pick, st.selected()),
+            (Some(0), Some(2), Some(2))
+        );
+        assert_eq!(h.steps().track, 2);
+        assert_eq!(h.steps().track_name, "Track 3");
+        // A step tapped goes into Track 3, which gets its first clip;
+        // Track 1 stays empty.
+        h.step_action(StepAction::Tap {
+            pad: 0,
+            step: 0,
+            velocity: 100,
+        })
+        .unwrap();
+        let notes = |h: &TimeHost, t: usize| -> usize {
+            h.project().tracks[t]
+                .slots
+                .clips()
+                .map(|c| c.notes.len())
+                .sum()
+        };
+        assert_eq!((notes(&h, 2), notes(&h, 0)), (1, 0));
+        assert_eq!(h.steps().clip.map(|c| c.slot), Some(0));
+        // The recorder still takes live notes for the armed track alone.
+        h.audio.receive();
+        assert_eq!(h.audio.armed(), Some(0));
+        // The note editor opens on the selected track's clip.
+        assert_eq!(
+            h.act(TimeAction::Edit(E::Open)).unwrap(),
+            "edit: Pattern 1 on Track 3"
+        );
+        // Arming a track selects it too.
+        h.act(TimeAction::Arm(Some(1))).unwrap();
+        assert_eq!((h.armed(), h.selected()), (Some(1), Some(1)));
+        assert_eq!(h.state().track_pick, None);
+        // Selecting the armed track is the arm's selection again.
+        h.act(TimeAction::Select(3)).unwrap();
+        assert_eq!(h.act(TimeAction::Select(1)).unwrap(), "selected: Track 2");
+        assert_eq!((h.state().track_pick, h.selected()), (None, Some(1)));
+        // A pick on its own (the app found no pin) arms and selects.
+        h.act(TimeAction::Pick(4)).unwrap();
+        assert_eq!((h.armed(), h.selected()), (Some(4), Some(4)));
+        // Letting go of the arm leaves nothing selected apart from it.
+        h.act(TimeAction::Select(5)).unwrap();
+        h.act(TimeAction::Arm(None)).unwrap();
+        assert_eq!((h.armed(), h.selected()), (None, None));
+        // No such track, and a Loop track, select nothing.
+        h.act(TimeAction::Arm(Some(0))).unwrap();
+        assert!(h.act(TimeAction::Select(99)).is_err());
+        h.act(TimeAction::AddLoopTrack).unwrap();
+        let loops = h.project().tracks.len() - 1;
+        h.act(TimeAction::Arm(Some(0))).unwrap();
+        let said = h.act(TimeAction::Select(loops)).unwrap();
+        assert!(
+            said.ends_with("plays loops: the Sequencer stays on Track 1"),
+            "{said}"
+        );
+        assert_eq!(h.selected(), Some(0));
+    }
+
+    /// Refactor C1: the armed and the selected track are kept by their
+    /// lasting ids, never by their places: a track added before them, one
+    /// taken away from between them, UNDO taking away the armed track and
+    /// REDO bringing it back each leave the arm and the selection on their
+    /// own tracks (or, for a track that is gone, the arm on the last track
+    /// and the selection on the armed one); a project opened starts with
+    /// track 1 armed and selected.
+    #[test]
+    fn the_arm_and_the_selection_stay_on_their_own_tracks() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.act(TimeAction::Arm(Some(2))).unwrap();
+        h.act(TimeAction::Select(4)).unwrap();
+        let id = |h: &TimeHost, t: Option<usize>| t.map(|t| h.project().tracks[t].id);
+        let (armed, picked) = (id(&h, h.armed()), id(&h, h.selected()));
+        let names = |h: &TimeHost| {
+            let name = |t: Option<usize>| t.map(|t| h.project().tracks[t].name.clone());
+            (name(h.armed()), name(h.selected()))
+        };
+        let both = (Some("Track 3".to_string()), Some("Track 5".to_string()));
+        assert_eq!(names(&h), both);
+        // A track taken away from before both (as a delete would): each
+        // keeps its track, one place up.
+        h.control.project.tracks.remove(1);
+        h.control.compile().unwrap();
+        assert_eq!((h.armed(), h.selected()), (Some(1), Some(3)));
+        assert_eq!(names(&h), both);
+        // A track put in at the start: one place down.
+        let mut first = Track::new("New", 0);
+        h.control.project.give_track_id(&mut first);
+        h.control.project.tracks.insert(0, first);
+        h.control.compile().unwrap();
+        assert_eq!((h.armed(), h.selected()), (Some(2), Some(4)));
+        assert_eq!((id(&h, h.armed()), id(&h, h.selected())), (armed, picked));
+        // The selected track gone: the selection is the armed track.
+        h.control.project.tracks.remove(4);
+        h.control.compile().unwrap();
+        assert_eq!((h.armed(), h.selected()), (Some(2), Some(2)));
+        assert_eq!(h.state().track_pick, None);
+        // + Track arms and selects the new track; with another track
+        // selected apart from it, UNDO takes the armed track away: the arm
+        // goes to the last track, and the selection stays on its own.
+        h.act(TimeAction::AddTrack).unwrap();
+        let added = h.project().tracks.len() - 1;
+        assert_eq!((h.armed(), h.selected()), (Some(added), Some(added)));
+        h.act(TimeAction::Select(0)).unwrap();
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.project().tracks.len(), added);
+        assert_eq!((h.armed(), h.selected()), (Some(added - 1), Some(0)));
+        assert_eq!(names(&h).1.as_deref(), Some("New"));
+        // REDO brings the track back with its id; the arm, not an undo
+        // step, stays where it went, and the selection on its track.
+        h.act(TimeAction::Redo).unwrap();
+        assert_eq!(h.project().tracks.len(), added + 1);
+        assert_eq!((h.armed(), h.selected()), (Some(added - 1), Some(0)));
+        // A project opened: track 1 armed and selected, whatever its ids.
+        let mut p = h.project().clone();
+        p.tracks.swap(0, 3);
+        let mut opened = TimeHost::with_project(RATE, 120.0, p).unwrap();
+        assert_eq!((opened.armed(), opened.selected()), (Some(0), Some(0)));
+        assert_eq!(opened.state().track_pick, None);
+        assert_eq!(opened.steps().track, 0);
+        opened.act(TimeAction::Select(1)).unwrap();
+        assert_eq!(opened.steps().track, 1);
+    }
+
     const RATE: u32 = 44_100;
     const PERIOD: u32 = 128;
 
@@ -2670,9 +3498,21 @@ mod tests {
             mpfree_play::mpfree_param::ParamAddr,
             Option<f32>,
         )>,
+        /// (track, mixer track): where a track's instrument sounds
+        /// ([`Pads::sounds_on`]); a track not here, on its own strip.
+        sounds: Vec<(u16, u8)>,
+        /// A live pad plays these notes above its number (a chord of an
+        /// instrument's pad map, step 5c); empty: its number alone.
+        chord: Vec<u8>,
     }
 
     impl Pads for Fake {
+        fn sounds_on(&self, track: u16) -> Option<u8> {
+            self.sounds
+                .iter()
+                .find(|(t, _)| *t == track)
+                .map(|&(_, s)| s)
+        }
         fn hit_at(&mut self, _track: u16, pad: usize, velocity: u8, offset: u32) -> bool {
             self.hits
                 .push((self.frame + u64::from(offset), pad, velocity));
@@ -2701,6 +3541,33 @@ mod tests {
             let at = self.frame + u64::from(offset);
             self.locks.push((at, self.hits.len(), addr, value));
             true
+        }
+        // As the default, but a pad's notes are its chord's.
+        fn live(&mut self, o: &Out) -> Heard {
+            let (note, play) = match o.event {
+                Event::NoteOn { note, velocity } => (
+                    note,
+                    self.hit_at(o.track, usize::from(note), velocity, o.offset),
+                ),
+                Event::NoteOff { note } => {
+                    self.release_at(o.track, usize::from(note), o.offset);
+                    (note, true)
+                }
+                _ => return Heard::NONE,
+            };
+            let notes: Vec<u8> = if self.chord.is_empty() {
+                vec![note]
+            } else {
+                self.chord.iter().map(|&k| note + k).collect()
+            };
+            if !play {
+                Heard::NONE
+            } else if o.notes {
+                // An arp working in notes (step 5d): a note, no pad.
+                Heard::of(None, o.event, &[note])
+            } else {
+                Heard::of(Some(o.event), o.event, &notes)
+            }
         }
     }
 
@@ -3789,6 +4656,86 @@ mod tests {
         assert!(clip.notes.is_empty() && clip.locks.is_empty());
     }
 
+    /// Instrument redesign, after step 4d: a clip's lock on "this track's
+    /// strip" goes where the track's instrument sounds (strips.rs). Track
+    /// 2 plays track 3's instrument, heard on track 3's strip: its lock
+    /// and the lock's end go there, and track 3's own lock on the same
+    /// control waits behind it (no lasting ids here, so by track), then
+    /// takes over. A lock on an effect of track 2's strip stays there.
+    #[test]
+    fn a_lock_on_this_tracks_strip_goes_where_its_instrument_sounds() {
+        use mpfree_play::mpfree_param::{track_strip, OnTrack, Owner, ParamAddr, RelAddr, Strip};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let vol = RelAddr::new(OnTrack::Strip, 0);
+        let fx = RelAddr::new(OnTrack::Insert(1), 2);
+        // Each track: pad 2 on steps 1 and 9, step 1 locked; step 9's note,
+        // with no lock, ends it.
+        for (track, value) in [(1, 0.25), (2, 0.75)] {
+            h.act(TimeAction::Arm(Some(track))).unwrap();
+            for step in [0, 8] {
+                h.step_action(StepAction::Tap {
+                    pad: 2,
+                    step,
+                    velocity: 100,
+                })
+                .unwrap();
+            }
+            h.step_action(StepAction::Lock {
+                pad: 2,
+                steps: 1,
+                addr: vol,
+                value: Some(value),
+            })
+            .unwrap();
+        }
+        h.act(TimeAction::Arm(Some(1))).unwrap();
+        h.step_action(StepAction::Lock {
+            pad: 2,
+            steps: 1,
+            addr: fx,
+            value: Some(0.5),
+        })
+        .unwrap();
+        let Strip::Track(three) = track_strip(2) else {
+            unreachable!()
+        };
+        let mut pads = Fake {
+            sounds: vec![(1, three)],
+            ..Fake::default()
+        };
+        h.command(Command::Play);
+        let mut out = Vec::new();
+        // Past step 9, before the clip comes round again.
+        while pads.frame < 3 * BAR / 4 {
+            h.period(PERIOD, &mut pads);
+            out.extend(h.locks().iter().map(|&(_, a, v)| (a, v)));
+            h.clear_locks();
+            pads.frame += u64::from(PERIOD);
+        }
+        let on_three = ParamAddr::new(Owner::Strip(Strip::Track(three)), 0);
+        let fx_two = fx.on(1);
+        assert_eq!(
+            out,
+            vec![
+                // Step 1: track 2's lock on track 3's strip; its effect
+                // lock on its own; track 3's own lock waits.
+                (on_three, Some(0.25)),
+                (fx_two, Some(0.5)),
+                // Step 9: track 2's end hands the control to track 3, whose
+                // end lets it go.
+                (on_three, Some(0.75)),
+                (fx_two, None),
+                (on_three, None),
+            ]
+        );
+        let c = h.control.strips;
+        assert_eq!((c.moved, c.waited, c.full), (1, 1, 0));
+        assert!(h
+            .describe()
+            .contains("this track's strip: 1 locks went to their instrument's strip, 1 waited"));
+        assert_eq!(h.dropped(), 0);
+    }
+
     /// Per-track arps with track `track`'s arp playing up in sixteenths.
     fn arp_up(track: usize) -> TrackArps {
         use mpfree_arp::{Mode, Order, Rate, Settings};
@@ -3852,6 +4799,379 @@ mod tests {
             .filter(|&&(f, _, _)| f >= 2 * BAR)
             .map(|&(f, p, _)| (f, p))
             .collect()
+    }
+
+    /// Step 5c: REC's new clip on a track whose instrument plays notes
+    /// holds notes, and the take records the notes the pads played (a
+    /// pad's chord, each note), with the pad's pressure on each; on a
+    /// track that doesn't it holds pad hits and records the pad, as
+    /// before. Through the arp it holds notes too (step 5d).
+    #[test]
+    fn a_take_on_a_track_that_plays_notes_records_its_notes() {
+        use mpfree_seq::Holds;
+        let take = |track: usize, through: bool| {
+            let mut h = TimeHost::new(RATE, 120.0).unwrap();
+            let mut pads = Fake {
+                chord: vec![60, 64],
+                ..Fake::default()
+            };
+            let mut arps = TrackArps::new(RATE, 120.0);
+            h.control.project.tracks[track].through_arp = through;
+            h.set_notes_tracks(1 << 1);
+            h.command(Command::SetLoop(Some((0, 3840))));
+            h.act(TimeAction::NewClip { track, slot: 0 }).unwrap();
+            let holds = h.project().clip(track, 0).unwrap().holds;
+            while pads.frame < BAR - 1000 {
+                let at = pads.frame;
+                if at == 10 * u64::from(PERIOD) {
+                    arps.pad(
+                        track,
+                        0,
+                        Event::NoteOn {
+                            note: 4,
+                            velocity: 100,
+                        },
+                    );
+                }
+                if at == 20 * u64::from(PERIOD) {
+                    h.pad_pressure(5, 4, 70);
+                }
+                if at == 40 * u64::from(PERIOD) {
+                    arps.pad(track, 0, Event::NoteOff { note: 4 });
+                }
+                h.period_arps(PERIOD, &mut pads, &mut arps);
+                pads.frame += u64::from(PERIOD);
+            }
+            let clip = h.project().clip(track, 0).unwrap().clone();
+            let mut notes: Vec<(u8, Vec<u8>)> = clip
+                .notes
+                .iter()
+                .map(|n| (n.note, clip.touch_of(n).iter().map(|p| p.value).collect()))
+                .collect();
+            notes.sort();
+            assert_eq!(h.dropped(), 0);
+            (holds, notes)
+        };
+        assert_eq!(
+            take(1, false),
+            (Holds::Notes, vec![(64, vec![70]), (68, vec![70])],),
+            "the chord's notes, each with the pad's pressure"
+        );
+        assert_eq!(
+            take(0, false),
+            (Holds::Hits, vec![(4, vec![70])]),
+            "a track that plays no notes records the pad"
+        );
+        // Through the arp, pads as pressed: none here, so the take records
+        // nothing but makes a clip of notes (step 5d).
+        assert_eq!(take(1, true).0, Holds::Notes);
+    }
+
+    /// Step 5c: on a clip of notes the step grid's pad rows show the
+    /// notes the track's pads play, named by the pad, so the Play page and
+    /// the step pads read it as they read a clip of hits: a tap on pad 3's
+    /// row adds pad 3's note, the Note knob moves a step to another pad's
+    /// note, and a note no pad plays stays on a row of its own. A new
+    /// pattern on a track that plays notes holds notes; on one that
+    /// doesn't it holds pad hits, as before.
+    #[test]
+    fn a_clip_of_notes_shows_its_pads_notes_on_the_pad_rows() {
+        use mpfree_seq::steps::Change;
+        use mpfree_seq::Holds;
+        let mut rows = PadRows::PADS;
+        for p in 0..16 {
+            rows.set(p, &[60 + p as u8]);
+        }
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.set_notes_tracks(1);
+        h.set_pad_rows(0, rows);
+        let tap = |pad, step| StepAction::Tap {
+            pad,
+            step,
+            velocity: 100,
+        };
+        let said = h.step_action(tap(2, 0)).unwrap();
+        assert!(said.contains("step 1 of note D4"), "{said}");
+        let clip = h.project().clip(0, 0).unwrap().clone();
+        assert_eq!(clip.holds, Holds::Notes, "a new pattern holds notes");
+        let notes = |h: &TimeHost| -> Vec<(u8, Tick)> {
+            let mut v: Vec<_> = h
+                .project()
+                .clip(0, 0)
+                .unwrap()
+                .notes
+                .iter()
+                .map(|n| (n.note, n.tick))
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(notes(&h), vec![(62, 0)], "pad 3's note");
+        // The grid names the row by the pad.
+        let shown = |h: &TimeHost| {
+            let s = h.steps();
+            let c = s.clip.expect("the pattern");
+            c.rows
+                .iter()
+                .filter(|(p, r)| *p != LINE && r.iter().any(Option::is_some))
+                .map(|(p, r)| (*p, r.iter().position(Option::is_some).unwrap()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(shown(&h), vec![(2, 0)]);
+        // The Note knob on pad 3's step, to pad 6: the step plays pad 6's
+        // note, on pad 6's row.
+        h.step_action(StepAction::Change {
+            pad: 2,
+            step: 0,
+            change: Change::Note(5),
+        })
+        .unwrap();
+        assert_eq!(notes(&h), vec![(65, 0)]);
+        assert_eq!(shown(&h), vec![(5, 0)]);
+        // A note no pad plays (from a take, or a pad map changed since)
+        // keeps a row of its own, under its note.
+        h.step_action(tap(0, 2)).unwrap();
+        let mut up = rows;
+        for p in 0..16 {
+            up.set(p, &[72 + p as u8]);
+        }
+        h.set_pad_rows(0, up);
+        assert!(h.control.take_steps_changed(), "new rows show again");
+        let mut other = shown(&h);
+        other.sort();
+        assert_eq!(other, vec![(60, 2), (65, 0)]);
+        // A second tap on the same row takes the note back off.
+        h.set_pad_rows(0, rows);
+        h.step_action(tap(0, 2)).unwrap();
+        assert_eq!(notes(&h), vec![(65, 0)]);
+        // A track that plays no notes: a pattern of pad hits, by pad.
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.set_pad_rows(0, rows);
+        let said = h.step_action(tap(2, 0)).unwrap();
+        assert!(said.contains("step 1 of pad 3"), "{said}");
+        let clip = h.project().clip(0, 0).unwrap();
+        assert_eq!(clip.holds, Holds::Hits);
+        assert_eq!(clip.notes[0].note, 2);
+    }
+
+    /// Step 5c with a pad of chords: on a clip of notes a pad's row stands
+    /// for the whole chord, as a pad hit plays it on a clip of hits. A tap
+    /// puts all its notes on the step and takes them all off again; a
+    /// change takes every note; the Note knob puts the step on another
+    /// pad's notes; keys entered on the line are their pads' chords.
+    #[test]
+    fn a_pad_of_chords_steps_its_whole_chord_on_a_clip_of_notes() {
+        use mpfree_seq::steps::Change;
+        let mut rows = PadRows::PADS;
+        for p in 0..16 {
+            rows.set(p, &[60 + p as u8]);
+        }
+        // Pad 1 plays C major, its root last.
+        rows.set(0, &[64, 67, 60]);
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.set_notes_tracks(1);
+        h.set_pad_rows(0, rows);
+        let notes = |h: &TimeHost| -> Vec<(u8, u8)> {
+            let mut v: Vec<_> = h
+                .project()
+                .clip(0, 0)
+                .map(|c| c.notes.iter().map(|n| (n.note, n.velocity)).collect())
+                .unwrap_or_default();
+            v.sort();
+            v
+        };
+        let tap = |pad, step| StepAction::Tap {
+            pad,
+            step,
+            velocity: 100,
+        };
+        let said = h.step_action(tap(0, 0)).unwrap();
+        assert!(said.contains("note C4"), "the root names it: {said}");
+        assert_eq!(notes(&h), vec![(60, 100), (64, 100), (67, 100)]);
+        // Shown on pad 1's row.
+        let s = h.steps();
+        let row = &s.clip.as_ref().unwrap().rows;
+        assert!(row.iter().any(|(p, r)| *p == 0 && r[0].is_some()));
+        // Every note takes a change, and one UNDO takes it back.
+        h.step_action(StepAction::Change {
+            pad: 0,
+            step: 0,
+            change: Change::Velocity(50),
+        })
+        .unwrap();
+        assert_eq!(notes(&h), vec![(60, 50), (64, 50), (67, 50)]);
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(notes(&h), vec![(60, 100), (64, 100), (67, 100)]);
+        // The Note knob to pad 6: the step plays pad 6's note.
+        h.step_action(StepAction::Change {
+            pad: 0,
+            step: 0,
+            change: Change::Note(5),
+        })
+        .unwrap();
+        assert_eq!(notes(&h), vec![(65, 100)]);
+        // And back to pad 1: the chord again.
+        h.step_action(StepAction::Change {
+            pad: 5,
+            step: 0,
+            change: Change::Note(0),
+        })
+        .unwrap();
+        assert_eq!(notes(&h), vec![(60, 100), (64, 100), (67, 100)]);
+        // A second tap takes the whole chord off.
+        h.step_action(tap(0, 0)).unwrap();
+        assert_eq!(notes(&h), vec![]);
+        // Keys on the line: pad 1 and pad 3 give the chord and D4.
+        let mut keys = [(0, 0); MAX_PEN];
+        keys[0] = (0, 90);
+        keys[1] = (2, 80);
+        h.step_action(StepAction::Enter {
+            step: 1,
+            keys,
+            n: 2,
+        })
+        .unwrap();
+        assert_eq!(notes(&h), vec![(60, 90), (62, 80), (64, 90), (67, 90)]);
+    }
+
+    /// Pads as pressed with no notes to give a clip of notes (one through
+    /// the arp) aren't recorded into it, and each is counted.
+    #[test]
+    fn pads_as_pressed_into_a_clip_of_notes_are_counted_not_recorded() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let mut arps = TrackArps::new(RATE, 120.0);
+        h.control.project.tracks[1].through_arp = true;
+        h.command(Command::SetLoop(Some((0, 3840))));
+        h.act(TimeAction::NewClip { track: 1, slot: 0 }).unwrap();
+        h.control.project.tracks[1].slots[0].as_mut().unwrap().holds = mpfree_seq::Holds::Notes;
+        h.control.compile().unwrap();
+        for i in 0..40u64 {
+            if i == 10 {
+                h.pad_pressed(
+                    0,
+                    Event::NoteOn {
+                        note: 4,
+                        velocity: 100,
+                    },
+                );
+            }
+            if i == 20 {
+                h.pad_pressed(0, Event::NoteOff { note: 4 });
+            }
+            h.period_arps(PERIOD, &mut pads, &mut arps);
+            pads.frame += u64::from(PERIOD);
+        }
+        assert!(h.project().clip(1, 0).unwrap().notes.is_empty());
+        assert_eq!(h.dropped(), 1);
+    }
+
+    /// Step 5d: pads as pressed on a track whose clips play through its
+    /// arp record their notes into a clip of notes, each with the pad's
+    /// pressure.
+    #[test]
+    fn pads_as_pressed_into_a_clip_of_notes_record_their_notes() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let mut arps = TrackArps::new(RATE, 120.0);
+        h.control.project.tracks[1].through_arp = true;
+        h.set_notes_tracks(1 << 1);
+        h.command(Command::SetLoop(Some((0, 3840))));
+        h.act(TimeAction::NewClip { track: 1, slot: 0 }).unwrap();
+        for i in 0..40u64 {
+            if i == 10 {
+                let on = Event::NoteOn {
+                    note: 4,
+                    velocity: 100,
+                };
+                h.pad_pressed_notes(0, on, &[64, 67, 60]);
+            }
+            if i == 15 {
+                h.pad_pressure(0, 4, 70);
+            }
+            if i == 20 {
+                h.pad_pressed_notes(0, Event::NoteOff { note: 4 }, &[64, 67, 60]);
+            }
+            h.period_arps(PERIOD, &mut pads, &mut arps);
+            pads.frame += u64::from(PERIOD);
+        }
+        let clip = h.project().clip(1, 0).unwrap().clone();
+        assert_eq!(clip.holds, mpfree_seq::Holds::Notes);
+        let mut notes: Vec<(u8, Vec<u8>)> = clip
+            .notes
+            .iter()
+            .map(|n| (n.note, clip.touch_of(n).iter().map(|p| p.value).collect()))
+            .collect();
+        notes.sort();
+        assert_eq!(
+            notes,
+            vec![(60, vec![70]), (64, vec![70]), (67, vec![70])],
+            "the pad's chord, each note with its pressure"
+        );
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// Step 5d, as the plan proves it: the pads recorded while a clip
+    /// plays the same synth on another track, both through arps that work
+    /// in notes. The take holds the pads' notes and never the clip's,
+    /// whether the recording track's clips play through its arp (the pads
+    /// as pressed) or not (what its arp played).
+    #[test]
+    fn a_take_of_the_pads_leaves_out_a_clip_playing_the_same_synth() {
+        use mpfree_seq::{Holds, Note};
+        for through in [false, true] {
+            let mut h = TimeHost::new(RATE, 120.0).unwrap();
+            let mut pads = Fake::default();
+            let mut arps = TrackArps::new(RATE, 120.0);
+            let mut rows = PadRows::PADS;
+            rows.set(4, &[64, 67, 60]);
+            for t in 0..2 {
+                arps.set_on_notes(t, true);
+                arps.set_pads(t, &rows);
+            }
+            // Track 1 plays D3 all through, through its arp.
+            h.control.project.tracks[0].through_arp = true;
+            let mut c = Clip::new("D3", 3840);
+            c.holds = Holds::Notes;
+            c.notes = vec![Note::new(0, 3840, 50, 100)];
+            h.control.project.tracks[0].slots[0] = Some(c);
+            h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+            // Track 2 records the pads: pad 5, a C major chord.
+            h.control.project.tracks[1].through_arp = through;
+            h.set_notes_tracks(0b11);
+            h.command(Command::SetLoop(Some((0, 3840))));
+            h.act(TimeAction::NewClip { track: 1, slot: 0 }).unwrap();
+            let on = Event::NoteOn {
+                note: 4,
+                velocity: 100,
+            };
+            let off = Event::NoteOff { note: 4 };
+            for i in 0..40u64 {
+                for (at, e) in [(10, on), (20, off)] {
+                    if i == at {
+                        h.pad_pressed_notes(0, e, rows.notes(4));
+                        for &n in rows.notes(4) {
+                            let e = match e {
+                                Event::NoteOn { velocity, .. } => {
+                                    Event::NoteOn { note: n, velocity }
+                                }
+                                _ => Event::NoteOff { note: n },
+                            };
+                            arps.pad(1, 0, e);
+                        }
+                    }
+                }
+                h.period_arps(PERIOD, &mut pads, &mut arps);
+                pads.frame += u64::from(PERIOD);
+            }
+            assert!(pads.hits.iter().any(|&(_, n, _)| n == 50), "the clip plays");
+            let clip = h.project().clip(1, 0).unwrap().clone();
+            assert_eq!(clip.holds, Holds::Notes, "through {through}");
+            let mut notes: Vec<u8> = clip.notes.iter().map(|n| n.note).collect();
+            notes.sort();
+            assert_eq!(notes, vec![60, 64, 67], "through {through}");
+            assert_eq!(h.dropped(), 0);
+        }
     }
 
     /// A track's MIDI effects go from the project to the sound loop: the
@@ -4618,7 +5938,7 @@ mod tests {
         assert_eq!(h.act(TimeAction::StopAll).unwrap(), "stop all");
         run(&mut h, &mut pads, 6 * BAR, &[]);
         assert!(h.state().launches.is_empty());
-        assert!(h.act(TimeAction::LaunchScene(SLOTS)).is_err());
+        assert!(h.act(TimeAction::LaunchScene(mpfree_seq::ROWS)).is_err());
         assert_eq!(h.dropped(), 0);
     }
 
@@ -4655,9 +5975,10 @@ mod tests {
             let p = &mut h.control.project;
             p.tracks[0].slots[1] = Some(one_bar(9));
             p.tracks[1].slots[2] = Some(sixteenths(30));
+            p.give_clip_ids();
             p.arrangement
                 .placements
-                .push(Placement::linked(1, 2, 0, 8 * 3840));
+                .push(Placement::of(&p.tracks, 1, 2, 0, 8 * 3840));
             p.scene_mut(1).unwrap().mutes = Some(0b10);
             if solo {
                 p.tracks[0].solo = true;
@@ -4890,10 +6211,12 @@ mod tests {
         t.slots[0] = Some(Clip::new_loop(0, 3840));
         t.slots[1] = Some(Clip::new_loop(1, 3840));
         h.control.project.tracks.push(t);
+        h.control.project.give_clip_ids();
+        let tracks = &h.control.project.tracks;
         // Loop 1 over bars 2 and 3, loop 2 over bar 4.
         h.control.project.arrangement.placements = vec![
-            Placement::linked(8, 0, 3840, 7680),
-            Placement::linked(8, 1, 11520, 3840),
+            Placement::of(tracks, 8, 0, 3840, 7680),
+            Placement::of(tracks, 8, 1, 11520, 3840),
         ];
         h.act(TimeAction::SongMode(true)).unwrap();
         run(&mut h, &mut pads, u64::from(PERIOD), &[]);
@@ -5390,9 +6713,11 @@ mod tests {
             let p = &mut h.control.project;
             p.tracks[0].slots[2] = Some(four);
             p.tracks[1].slots[0] = Some(eighths);
+            p.give_clip_ids();
             let s = &mut p.arrangement;
-            s.place(Placement::linked(0, 2, 0, 8 * 3840)).unwrap();
-            s.place(Placement::linked(1, 0, 2 * 3840, 4 * 3840))
+            s.place(Placement::of(&p.tracks, 0, 2, 0, 8 * 3840))
+                .unwrap();
+            s.place(Placement::of(&p.tracks, 1, 0, 2 * 3840, 4 * 3840))
                 .unwrap();
             // The song, in song mode from bar 1.
             let mut heard = Fake::default();
@@ -5450,6 +6775,7 @@ mod tests {
         let s = p.scene_mut(2).unwrap();
         s.mutes = Some(0);
         s.follow = Some(Follow::after(1, FollowAction::Stop));
+        p.give_clip_ids();
         let mut song = TimeHost::new(RATE, 120.0).unwrap();
         song.control.project = h.control.project.clone();
         // The rows, from the first.
@@ -5474,6 +6800,59 @@ mod tests {
         assert_eq!((h.dropped(), song.dropped()), (0, 0));
     }
 
+    /// Arrange 1.2: a clip and a scene in row 40, past the grid's 16,
+    /// save, open, launch and play; the scene's follow action moves within
+    /// its bank (rows 32 to 47), never to the grid's rows; the grid still
+    /// shows 16 rows; and a row dragged on the grid leaves row 40 alone.
+    #[test]
+    fn a_clip_and_a_scene_in_row_40_save_open_launch_and_stay_put() {
+        use mpfree_seq::{Follow, FollowAction, Note, ROWS};
+        let beats = |pad: u8| {
+            let mut c = Clip::new("beats", 3840);
+            c.notes = (0..4)
+                .map(|k| Note::new(k * 960, 100, pad + k as u8, 100))
+                .collect();
+            c
+        };
+        let mut p = TimeHost::new(RATE, 120.0).unwrap().project().clone();
+        p.tracks[0].slots[0] = Some(beats(10));
+        p.tracks[0].slots[40] = Some(beats(40));
+        p.tracks[1].slots[41] = Some(beats(60));
+        let next = Some(Follow::after(1, FollowAction::Next));
+        let s = p.scene_mut(40).unwrap();
+        s.name = "Far".into();
+        s.follow = next;
+        p.scene_mut(41).unwrap().follow = next;
+        let read = mpfree_seq::save::from_text(&mpfree_seq::save::to_text(&p)).unwrap();
+        assert_eq!(read, p);
+        let mut h = TimeHost::with_project(RATE, 120.0, read).unwrap();
+        assert_eq!(h.state().tracks[0].slots.len(), SLOTS, "the grid's rows");
+        let mut pads = Fake::default();
+        h.act(TimeAction::LaunchScene(40)).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, 3 * BAR - 1000, &[]);
+        let hits: Vec<usize> = pads.hits.iter().map(|h| h.1).collect();
+        assert_eq!(hits, [40, 41, 42, 43, 60, 61, 62, 63, 40, 41, 42, 43]);
+        h.command(Command::Stop);
+        // A row dragged and one copied on the grid: row 40 stays.
+        h.act(TimeAction::DropRow {
+            from: 0,
+            to: 3,
+            copy: false,
+        })
+        .unwrap();
+        h.act(TimeAction::DropRow {
+            from: 2,
+            to: 0,
+            copy: true,
+        })
+        .unwrap();
+        let p = h.project();
+        assert_eq!(p.clip(0, 40).map(|c| c.notes[0].note), Some(40));
+        assert_eq!(p.scene(40).map(|s| s.name.as_str()), Some("Far"));
+        assert!(h.act(TimeAction::LaunchScene(ROWS)).is_err());
+    }
+
     /// Two one-bar rows become a song (Scenes → song), which plays in song
     /// mode; a clip launched on track 1 takes it over, and the song plays
     /// on there after it stops. The song goes back into rows (Song →
@@ -5492,6 +6871,7 @@ mod tests {
             h.control.project.tracks[t].slots[1] = Some(one_bar(base + 1));
         }
         h.control.project.tracks[0].slots[5] = Some(one_bar(9));
+        h.control.project.give_clip_ids();
         h.control.project.scene_mut(1).unwrap().name = "Drop".into();
         // Row 6 has a clip too: three rows, bars 1, 2 and 3.
         assert_eq!(
@@ -5527,9 +6907,12 @@ mod tests {
             "song → scenes: rows 3 to 5, exact (UNDO takes it back)"
         );
         let p = &h.control.project;
-        assert_eq!(p.tracks[0].slots[2], p.tracks[0].slots[0]);
-        assert_eq!(p.tracks[1].slots[3], p.tracks[1].slots[1]);
-        assert_eq!(p.tracks[0].slots[4], p.tracks[0].slots[5]);
+        // Copies of the clips the song played, each with an id of its own.
+        let same = |a: (usize, usize), b: (usize, usize)| {
+            let (a, b) = (p.clip(a.0, a.1).unwrap(), p.clip(b.0, b.1).unwrap());
+            a.copied() == b.copied() && a.id != b.id
+        };
+        assert!(same((0, 2), (0, 0)) && same((1, 3), (1, 1)) && same((0, 4), (0, 5)));
         assert_eq!(p.scene(3).unwrap().name, "Drop");
         // One edit: UNDO gives the project back exactly, REDO the rows.
         let after = p.clone();
@@ -5539,7 +6922,11 @@ mod tests {
         let said = h.act(TimeAction::Undo).unwrap();
         assert!(said.ends_with(" · rows 3 to 5"), "{said}");
         assert!(said.starts_with("undo: song → scenes "), "{said}");
-        assert_eq!(h.control.project, before);
+        // As before, but for the next clip id: UNDO never winds it back.
+        assert!(h.control.project.next_clip > before.next_clip);
+        let mut want = before.clone();
+        want.next_clip = h.control.project.next_clip;
+        assert_eq!(h.control.project, want);
         h.act(TimeAction::Redo).unwrap();
         assert_eq!(h.control.project, after);
         // Refused (too few empty rows left in a run): nothing changes, and
@@ -5609,12 +6996,17 @@ mod tests {
             p.tracks[t].slots[0] = Some(one_bar(base));
             p.tracks[t].slots[1] = Some(one_bar(base + 1));
         }
+        p.give_clip_ids();
         // Room for the pass (a block and a stretch on each track) and one
         // block more: row 2's two don't fit.
         for k in 0..MAX_PLACEMENTS - 5 {
-            p.arrangement
-                .placements
-                .push(Placement::linked(2, 0, (1000 + k as i64) * 3840, 3840));
+            p.arrangement.placements.push(Placement::of(
+                &p.tracks,
+                2,
+                0,
+                (1000 + k as i64) * 3840,
+                3840,
+            ));
         }
         h.act(TimeAction::LaunchScene(0)).unwrap();
         h.act(TimeAction::RecSong(true)).unwrap();
@@ -5668,6 +7060,7 @@ mod tests {
             h.control.project.tracks[t].slots[0] = Some(one_bar(base));
             h.control.project.tracks[t].slots[1] = Some(one_bar(base + 1));
         }
+        h.control.project.give_clip_ids();
         h.act(TimeAction::LaunchScene(0)).unwrap();
         h.act(TimeAction::RecSong(true)).unwrap();
         assert!(h.state().song_rec);
@@ -5731,11 +7124,11 @@ mod tests {
         };
         h.control.project.tracks[0].slots[0] = Some(one_bar(4));
         h.control.project.tracks[0].slots[1] = Some(one_bar(9));
-        h.control
-            .project
-            .arrangement
+        let p = &mut h.control.project;
+        p.give_clip_ids();
+        p.arrangement
             .placements
-            .push(Placement::linked(0, 0, 0, 8 * 3840));
+            .push(Placement::of(&p.tracks, 0, 0, 0, 8 * 3840));
         h.act(TimeAction::SongMode(true)).unwrap();
         assert!(!h.state().over_song(), "the song alone");
         h.act(TimeAction::Launch { track: 0, slot: 1 }).unwrap();
@@ -5913,6 +7306,7 @@ mod tests {
         t.slots[0] = Some(one_bar("intro", 4));
         t.slots[1] = Some(one_bar("verse", 9));
         t.slots[3] = Some(one_bar("drop", 6));
+        h.control.project.give_clip_ids();
         // Two steps: row 1, then the next row with a clip, row 2.
         assert_eq!(
             h.act(TimeAction::ListAdd).unwrap(),
@@ -6397,7 +7791,8 @@ mod tests {
             "edit: timing correct moved 3 notes"
         );
         assert_eq!(ticks(&h), [0, 960, 1920]);
-        h.act(TimeAction::Edit(E::Note(1))).unwrap();
+        let rev = h.state().edit.unwrap().rev;
+        h.act(TimeAction::Edit(E::Note { index: 1, rev })).unwrap();
         assert_eq!(
             h.act(TimeAction::Edit(E::Button(6))).unwrap(),
             "edit: 1 notes deleted"
@@ -6413,6 +7808,212 @@ mod tests {
             "edit: closed"
         );
         assert!(h.state().edit.is_none());
+    }
+
+    /// A tap on a note carries the clip's revision: after something else
+    /// changed the clip (here a step tapped on Steps), a tap made on the
+    /// old picture is refused and erases nothing; the picks follow their
+    /// notes to where they now are, and when a picked note goes they are
+    /// cleared and the legend says so (piano roll plan 0A.1).
+    #[test]
+    fn the_note_editor_refuses_a_tap_on_an_old_picture_and_its_picks_follow() {
+        use mpfree_time_ui::editor::EditAction as E;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let tap = |step| StepAction::Tap {
+            pad: 0,
+            step,
+            velocity: 100,
+        };
+        // Three kicks on steps 1, 5 and 9, then the editor on them.
+        for step in [0, 4, 8] {
+            h.step_action(tap(step)).unwrap();
+        }
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        let notes = |h: &TimeHost| h.control.project.clip(0, 0).unwrap().notes.clone();
+        let info = |h: &mut TimeHost| {
+            h.take_changed();
+            *h.state().edit.unwrap()
+        };
+        let old = info(&mut h);
+        assert_eq!(old.clip.notes.len(), 3);
+        // Erase picked, then step 1 taken off on Steps: the notes move up.
+        h.act(TimeAction::Edit(E::Button(2))).unwrap();
+        h.act(TimeAction::Edit(E::Button(2))).unwrap();
+        let mid = info(&mut h);
+        assert_eq!(mid.editor.tool, mpfree_time_ui::editor::Tool::Erase);
+        let gone = notes(&h)[0];
+        h.step_action(tap(0)).unwrap();
+        assert!(!notes(&h).contains(&gone));
+        // A tap made on the picture before: refused, nothing erased.
+        let before = notes(&h);
+        let said = h
+            .act(TimeAction::Edit(E::Note {
+                index: 0,
+                rev: mid.rev,
+            }))
+            .unwrap_err();
+        assert!(
+            said.contains("the clip changed under your finger"),
+            "{said}"
+        );
+        assert_eq!(notes(&h), before);
+        // The new picture's tap erases the note it showed.
+        let now = info(&mut h);
+        assert!(now.rev > mid.rev);
+        let hit = now.clip.notes[1];
+        h.act(TimeAction::Edit(E::Note {
+            index: 1,
+            rev: now.rev,
+        }))
+        .unwrap();
+        assert!(!notes(&h).contains(&hit));
+        assert_eq!(notes(&h).len(), 1);
+        // Picks follow: two kicks back, the last one picked by Select...
+        h.act(TimeAction::Edit(E::Button(2))).unwrap();
+        for step in [0, 12] {
+            h.step_action(tap(step)).unwrap();
+        }
+        let st = info(&mut h);
+        assert_eq!(st.editor.tool, mpfree_time_ui::editor::Tool::Select);
+        let last = st
+            .clip
+            .notes
+            .iter()
+            .position(|n| n.tick == 12 * 240)
+            .unwrap();
+        let picked = st.clip.notes[last];
+        h.act(TimeAction::Edit(E::Note {
+            index: last,
+            rev: st.rev,
+        }))
+        .unwrap();
+        // ...then the first note taken off on Steps: the pick follows its
+        // note to its new place.
+        h.step_action(tap(0)).unwrap();
+        let st = info(&mut h);
+        assert!(!st.editor.cleared);
+        assert_eq!(st.editor.sel.len(), 1);
+        assert_eq!(st.clip.notes[st.editor.sel[0]], picked);
+        // The picked note itself taken off: the picks are cleared, and the
+        // legend says why.
+        h.step_action(tap(12)).unwrap();
+        let st = info(&mut h);
+        assert!(st.editor.sel.is_empty());
+        assert!(st.editor.cleared);
+        let grid = mpfree_time_ui::view::note_grid(&st, &h.state());
+        assert!(
+            grid.legend.contains("the clip changed: picks cleared"),
+            "{}",
+            grid.legend
+        );
+    }
+
+    /// Piano roll plan 0C.1: an editor edit on the playing clip goes into
+    /// the view in place, as a step edit does (no compile, the view just
+    /// what a compile gives, timed for the status line); a drag of the
+    /// velocity lane, sent once as the finger lifts, is one take; and the
+    /// screens get one shared copy of the clip, the same while it is
+    /// unchanged, a new one when it changed.
+    #[test]
+    fn the_note_editor_edits_the_playing_clip_in_place_and_shares_one_copy() {
+        use mpfree_time_ui::editor::EditAction as E;
+        use std::sync::Arc;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let tap = |step| StepAction::Tap {
+            pad: 0,
+            step,
+            velocity: 100,
+        };
+        for step in [0, 4, 8] {
+            h.step_action(tap(step)).unwrap();
+        }
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        let info = |h: &mut TimeHost| {
+            h.take_changed();
+            *h.state().edit.unwrap()
+        };
+        let a = info(&mut h);
+        assert!(Arc::ptr_eq(&a.clip, &info(&mut h).clip), "the same copy");
+        let compiles = h.control.costs.compiles;
+        h.act(TimeAction::Edit(E::Button(4))).unwrap();
+        let takes = h.state().done.len();
+        for v in [0.5, 1.0] {
+            h.act(TimeAction::Edit(E::Velocity(v))).unwrap();
+            h.audio.receive();
+            assert_eq!(
+                *h.audio.view,
+                h.control.view().unwrap(),
+                "in place, as a compile gives"
+            );
+        }
+        assert_eq!(h.state().done.len(), takes + 2, "a take a drag");
+        let c = h.control.costs;
+        assert_eq!(
+            (c.compiles, c.notes_in_place, c.notes_compiled),
+            (compiles, 2, 0)
+        );
+        assert!(
+            h.describe().contains("; note edits: 2 in place (slowest "),
+            "{}",
+            h.describe()
+        );
+        let b = info(&mut h);
+        assert!(!Arc::ptr_eq(&a.clip, &b.clip), "changed: a new copy");
+        assert!(b.clip.notes.iter().all(|n| n.velocity == 127));
+        // A change from Steps: a new copy, then the same one again.
+        h.step_action(tap(12)).unwrap();
+        let d = info(&mut h);
+        assert!(!Arc::ptr_eq(&b.clip, &d.clip));
+        assert_eq!(d.clip.notes.len(), 4);
+        assert!(Arc::ptr_eq(&d.clip, &info(&mut h).clip));
+    }
+
+    /// An editor edit that what plays can't follow (the play view would not
+    /// build) is taken back from the clip and the takes, as a step edit is.
+    #[test]
+    fn a_note_editor_edit_the_play_view_cant_follow_is_taken_back() {
+        use mpfree_play::Launch;
+        use mpfree_time_ui::editor::EditAction as E;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.step_action(StepAction::Tap {
+            pad: 0,
+            step: 0,
+            velocity: 100,
+        })
+        .unwrap();
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        // Draw picked.
+        h.act(TimeAction::Edit(E::Button(2))).unwrap();
+        // A view that can't be built: two clips launched on track 2.
+        for slot in 0..2 {
+            h.control.project.tracks[1].slots[slot] = Some(Clip::new("x", 3840));
+            h.control.launches.push(Launch {
+                track: 1,
+                slot,
+                origin: 0,
+                start: 0,
+            });
+        }
+        // Another track armed: the edit compiles rather than going into the
+        // view in place (plan 0C.1).
+        h.control.armed = Some(2);
+        let clip = h.control.project.clip(0, 0).cloned();
+        let ed = h.state().edit.map(|e| e.editor);
+        let said = h
+            .act(TimeAction::Edit(E::Empty { tick: 960, note: 3 }))
+            .unwrap_err();
+        assert_eq!(h.control.costs.notes_compiled, 1);
+        assert!(said.ends_with("the edit was taken back"), "{said}");
+        assert_eq!(h.control.project.clip(0, 0).cloned(), clip);
+        assert_eq!(h.state().edit.map(|e| e.editor), ed, "the editor as it was");
+        // UNDO takes back the step, not the drawn note.
+        h.control.launches.retain(|l| l.track != 1);
+        h.control.project.tracks[1].slots = Default::default();
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.control.project.clip(0, 0).map(|c| c.notes.len()), None);
     }
 
     /// Pads played over bars 2 and 3 without recording; Capture keeps them
@@ -6537,8 +8138,7 @@ mod tests {
         let notes = |h: &TimeHost, t: usize| {
             h.control.project.tracks[t]
                 .slots
-                .iter()
-                .flatten()
+                .clips()
                 .map(|c| c.notes.iter().map(|n| n.note).collect::<Vec<_>>())
                 .collect::<Vec<_>>()
         };
@@ -6573,8 +8173,8 @@ mod tests {
         let mut pads = Fake::default();
         h.act(TimeAction::Arm(Some(0))).unwrap();
         h.act(TimeAction::ArmAlso(1 << 1 | 1 << 2)).unwrap();
-        for s in h.control.project.tracks[2].slots.iter_mut() {
-            *s = Some(Clip::new("full", 3840));
+        for s in 0..SLOTS {
+            h.control.project.tracks[2].slots[s] = Some(Clip::new("full", 3840));
         }
         let said = h.act(TimeAction::Transport(Command::Record)).unwrap();
         assert!(
@@ -7448,6 +9048,623 @@ mod tests {
         }
     }
 
+    /// The timing contract (Arrange 2.5) through the halves: a launch the
+    /// control half decides before it has heard the audio half play a bar
+    /// line (as a control half on its own thread can be behind) starts at
+    /// once, in phase with that line, and Dev counts it; from there on it
+    /// plays as if the launch had come in time for the line. Decided with
+    /// every period heard, the same launch at the same moment waits for the
+    /// next line, as before.
+    #[test]
+    fn a_launch_decided_before_the_control_half_heard_a_line_lands_in_phase_with_it() {
+        use mpfree_seq::Note;
+        let bar = u64::from(RATE) * 4 / 5;
+        let line = 2 * bar;
+        // `act` launches B at the first period from that frame; the
+        // control half hears nothing from `deaf` until then.
+        let play = |frames: u32, act: u64, deaf: u64| {
+            let mut h = TimeHost::new(RATE, 300.0).unwrap();
+            let mut pads = Fake::default();
+            let mut a = Clip::new("A", 3840);
+            a.notes = (0..4).map(|i| Note::new(i * 960, 100, 0, 100)).collect();
+            // B: two bars, so a pass out of phase would put its second
+            // bar's note (3) elsewhere.
+            let mut b = Clip::new("B", 2 * 3840);
+            b.notes = (0..8)
+                .flat_map(|i| {
+                    [
+                        Note::new(i * 960, 100, 1, 100),
+                        Note::new(i * 960 + 480, 100, 2, 100),
+                    ]
+                })
+                .chain([Note::new(3840, 100, 3, 100)])
+                .collect();
+            h.control.project.tracks[0].slots[0] = Some(a);
+            h.control.project.tracks[0].slots[1] = Some(b);
+            h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+            h.command(Command::Play);
+            let mut acted = None;
+            while pads.frame < 5 * bar {
+                if acted.is_none() && pads.frame >= act {
+                    h.act(TimeAction::Launch { track: 0, slot: 1 }).unwrap();
+                    acted = Some(pads.frame);
+                }
+                if (deaf..act).contains(&pads.frame) {
+                    h.audio.run(frames, &mut pads, None);
+                } else {
+                    h.period(frames, &mut pads);
+                }
+                pads.frame += u64::from(frames);
+            }
+            let (c, q) = (h.audio.counts(), h.audio.cue_counts());
+            assert_eq!(
+                (
+                    c.lost,
+                    c.behind,
+                    c.kept,
+                    c.refused,
+                    q.stale,
+                    q.lost,
+                    h.dropped()
+                ),
+                (0, 0, 0, 0, 0, 0, 0)
+            );
+            let hits: Vec<_> = pads.hits.iter().map(|&(f, p, _)| (f, p)).collect();
+            (hits, acted.unwrap_or(0), q.late, h.control.describe())
+        };
+        for frames in [64u32, 128, 512] {
+            let f = u64::from(frames);
+            // The period that holds the line.
+            let holds = line / f * f;
+            // In time: launched a period before it, everything heard.
+            let (in_time, _, late, _) = play(frames, holds - f, u64::MAX);
+            assert_eq!(late, 0);
+            for held in 1..=4u64 {
+                let what = format!("{frames} frames, {held} periods unheard");
+                // Launched after the line, the last `held` periods unheard.
+                let act = holds + f;
+                let (hits, from, late, said) = play(frames, act, act - held * f);
+                assert_eq!(late, 1, "{what}");
+                assert!(
+                    said.contains("1 started after their line"),
+                    "{what}: {said}"
+                );
+                // From the period it came on, as in time; before it, A.
+                let after = |h: &[(u64, usize)]| -> Vec<_> {
+                    h.iter().filter(|e| e.0 >= from).copied().collect()
+                };
+                assert_eq!(after(&hits), after(&in_time), "{what}");
+                assert!(
+                    after(&hits).iter().any(|e| e.1 == 3),
+                    "{what}: B's second bar"
+                );
+                assert!(
+                    hits.iter()
+                        .all(|&(at, p)| (at < from) == (p == 0) || at < line),
+                    "{what}"
+                );
+                // Everything heard, the same launch waits for bar 4.
+                let (step, _, late, _) = play(frames, act, u64::MAX);
+                assert_eq!(late, 0, "{what}");
+                let b = step.iter().find(|e| e.1 != 0).map(|e| e.0);
+                assert_eq!(b, Some(3 * bar), "{what}");
+            }
+        }
+    }
+
+    /// Arrange 2.6: with the control half on a thread of its own, busy with
+    /// everything a musician does to a song while it plays (launches,
+    /// scenes, stops, step taps, undo and redo, capture, mutes, song mode
+    /// on and off), the audio half allocates and frees nothing in any
+    /// whole period: taking what the control half sent, playing, and
+    /// sending back what it no longer plays.
+    #[test]
+    fn the_audio_half_allocates_nothing_in_any_period_while_the_control_half_works_on_its_own_thread(
+    ) {
+        use mpfree_seq::Note;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        /// Pads that only count, so the test itself allocates nothing.
+        #[derive(Default)]
+        struct Count(u64);
+        impl Pads for Count {
+            fn hit_at(&mut self, _: u16, _: usize, _: u8, _: u32) -> bool {
+                self.0 += 1;
+                true
+            }
+            fn release_at(&mut self, _: u16, _: usize, _: u32) {}
+            fn stop_all(&mut self) {}
+            fn pressure_at(&mut self, _: u16, _: usize, _: u8, _: u32) {}
+        }
+        let mut h = TimeHost::new(RATE, 140.0).unwrap();
+        // Eight tracks, two rows of 4-bar clips of 64 notes each.
+        for t in 0..8 {
+            if t > 0 {
+                h.act(TimeAction::AddTrack).unwrap();
+            }
+            for row in 0..2 {
+                let mut c = Clip::new("busy", 4 * 3840);
+                c.notes = (0..64)
+                    .map(|i| Note::new(i * 240, 120, ((t + row + i as usize) % 16) as u8, 100))
+                    .collect();
+                h.control.project.tracks[t].slots[row] = Some(c);
+            }
+        }
+        h.control.project.give_clip_ids();
+        h.act(TimeAction::ScenesToSong).unwrap();
+        h.command(Command::Play);
+        let (mut control, mut audio) = h.split();
+        let done = Arc::new(AtomicBool::new(false));
+        let stop = done.clone();
+        let thread = std::thread::spawn(move || {
+            let tap = |step| StepAction::Tap {
+                pad: 3,
+                step,
+                velocity: 100,
+            };
+            let mut k = 0usize;
+            let mut lines = 0usize;
+            while !stop.load(Ordering::Relaxed) {
+                let r = match k % 12 {
+                    0 => control.act(TimeAction::Launch {
+                        track: k % 8,
+                        slot: (k / 8) % 2,
+                    }),
+                    1 => control.act(TimeAction::LaunchScene((k / 12) % 2)),
+                    2 => control.step_action(tap(k % 16)),
+                    3 => control.act(TimeAction::Undo),
+                    4 => control.act(TimeAction::Redo),
+                    5 => control.act(TimeAction::Capture),
+                    6 => control.mute_or_solo(k % 8, k % 24 < 12, false),
+                    7 => control.act(TimeAction::StopClip(k % 8)),
+                    8 => control.act(TimeAction::SongMode(k % 24 < 12)),
+                    9 => control.step_action(tap((k + 5) % 16)),
+                    10 => control.act(TimeAction::Uncue(k % 8)),
+                    _ => control.act(TimeAction::Launch {
+                        track: (k + 3) % 8,
+                        slot: 1,
+                    }),
+                };
+                lines += usize::from(r.is_ok());
+                k += 1;
+                control.poll();
+                std::thread::sleep(std::time::Duration::from_micros(300));
+            }
+            control.poll();
+            (control, k, lines)
+        });
+        let mut pads = Count::default();
+        let mut worst = (0, 0);
+        for period in 0..4000 {
+            let ((), n) = crate::sys::alloc_count::calls(|| audio.run(PERIOD, &mut pads, None));
+            if n > worst.1 {
+                worst = (period, n);
+            }
+            std::thread::sleep(std::time::Duration::from_micros(100));
+        }
+        done.store(true, Ordering::Relaxed);
+        let (mut control, actions, ok) = thread.join().unwrap();
+        // What the audio half sent back last is freed there.
+        audio.run(PERIOD, &mut pads, None);
+        control.poll();
+        assert_eq!(worst, (0, 0), "(period, allocations and frees) at worst");
+        assert!(
+            actions > 1000 && ok > actions / 4,
+            "{actions} actions, {ok} ok"
+        );
+        assert!(pads.0 > 200, "it played: {} hits", pads.0);
+        assert!(
+            control.costs.compiles > 100,
+            "{} views",
+            control.costs.compiles
+        );
+        let c = audio.counts();
+        assert_eq!((c.lost, c.kept, c.ends_lost, control.lost()), (0, 0, 0, 0));
+    }
+
+    /// Arrange 2.6b: periods, a millisecond apart, until the editing side
+    /// on its own thread has answered `n` asks: the answers, oldest first.
+    fn answers(h: &mut TimeHost, pads: &mut Fake, n: usize) -> Vec<(Say, Result<String, String>)> {
+        let mut said = Vec::new();
+        let t0 = std::time::Instant::now();
+        while said.len() < n {
+            assert!(t0.elapsed().as_secs() < 10, "{} of {n} answers", said.len());
+            h.period(PERIOD, pads);
+            pads.frame += u64::from(PERIOD);
+            said.extend(h.take_said());
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(said.len(), n, "{said:?}");
+        said
+    }
+
+    /// Periods, a millisecond apart, until `done` holds of what the facade
+    /// reads (apart, the copy the editing side publishes).
+    fn until(h: &mut TimeHost, pads: &mut Fake, done: impl Fn(&TimeHost) -> bool) {
+        let t0 = std::time::Instant::now();
+        while !done(h) {
+            assert!(t0.elapsed().as_secs() < 10, "the copy never followed");
+            h.period(PERIOD, pads);
+            pads.frame += u64::from(PERIOD);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    /// A host with a one-bar clip of four notes on track 1, row 1.
+    fn host_with_a_clip() -> TimeHost {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut c = Clip::new("beat", 3840);
+        c.notes = (0..4)
+            .map(|i| mpfree_seq::Note::new(i * 960, 100, 3, 100))
+            .collect();
+        h.control.project.tracks[0].slots[0] = Some(c);
+        h.control.project.give_clip_ids();
+        h
+    }
+
+    /// Arrange 2.6b: apart, the screen's actions go to the editing side's
+    /// thread and return at once; their answers come back later, each with
+    /// how its caller wants it said, the same as together answers them on
+    /// the spot, and the published copy comes to match the project and
+    /// the selection together has. Back together, nothing was lost.
+    #[test]
+    fn apart_the_screens_actions_answer_as_together_and_the_copy_follows() {
+        let note = Say::Note {
+            ok: "time: ",
+            err: "time: ",
+        };
+        let actions = vec![
+            (TimeAction::AddTrack, note.clone()),
+            (TimeAction::Launch { track: 0, slot: 0 }, note.clone()),
+            (TimeAction::Arm(Some(1)), note.clone()),
+            (TimeAction::Launch { track: 0, slot: 3 }, note.clone()),
+            (TimeAction::Uncue(0), note.clone()),
+            (TimeAction::Undo, Say::Undo),
+            (TimeAction::Redo, Say::Undo),
+            (TimeAction::DeleteClip { track: 0, slot: 0 }, Say::Tell),
+            (TimeAction::Undo, Say::Undo),
+            (TimeAction::DeleteClip { track: 0, slot: 7 }, Say::Tell),
+        ];
+        let mut together = host_with_a_clip();
+        let mut pads = Fake::default();
+        let mut want = Vec::new();
+        for (a, say) in actions.clone() {
+            let r = together
+                .act_then(a, say.clone())
+                .expect("together answers at once");
+            want.push((say, r));
+            together.period(PERIOD, &mut pads);
+            pads.frame += u64::from(PERIOD);
+        }
+        assert!(
+            want.iter().any(|(_, r)| r.is_err()),
+            "an empty slot: {want:?}"
+        );
+        let (mut h, why) = host_with_a_clip().into_apart();
+        assert_eq!(why, None);
+        assert!(h.apart());
+        let mut pads = Fake::default();
+        for (a, say) in actions {
+            assert_eq!(h.act_then(a, say), None, "apart, the answer comes later");
+        }
+        assert_eq!(answers(&mut h, &mut pads, want.len()), want);
+        until(&mut h, &mut pads, |h| {
+            h.project() == together.project()
+                && (h.armed(), h.selected(), h.track_count(), h.redos())
+                    == (
+                        together.armed(),
+                        together.selected(),
+                        together.track_count(),
+                        together.redos(),
+                    )
+                && h.steps() == together.steps()
+        });
+        assert!(h.take_changed(), "the screens are told");
+        assert!(
+            h.describe().contains("10 asks, 0 lends"),
+            "{}",
+            h.describe()
+        );
+        let h = h.into_together().expect("the control half comes back");
+        assert!(!h.apart());
+        assert_eq!(h.project(), together.project());
+    }
+
+    /// Arrange 2.6b: apart, a call that isn't an ask borrows the control
+    /// half back for the call (a lend): its answer is the same as
+    /// together's, and what the facade reads straight after (the armed
+    /// track, the steps, the mutes) already shows it. Lends are counted.
+    #[test]
+    fn apart_a_lent_call_answers_at_once_and_reads_see_it() {
+        let (mut h, why) = host_with_a_clip().into_apart();
+        assert_eq!(why, None);
+        let mut pads = Fake::default();
+        assert!(h.act(TimeAction::Arm(Some(0))).is_ok());
+        assert_eq!(h.armed(), Some(0));
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        let before = h.steps();
+        assert!(before.clip.is_some(), "the launched clip's steps");
+        let r = h.step_action(StepAction::Tap {
+            pad: 5,
+            step: 2,
+            velocity: 100,
+        });
+        assert!(r.is_ok(), "{r:?}");
+        assert_ne!(h.steps(), before, "read straight after the tap");
+        assert!(h.take_steps_changed());
+        h.mute_or_solo(0, false, false).unwrap();
+        assert_eq!(h.muted(0), Some(true), "read straight after the mute");
+        // A copy published before a lend never comes after it: the facade
+        // never sees an older state than the lend left.
+        for k in 0..200 {
+            let t = k % 3;
+            h.act(TimeAction::Select(t)).unwrap();
+            h.period(PERIOD, &mut pads);
+            pads.frame += u64::from(PERIOD);
+            assert_eq!(h.selected(), Some(t), "after lend {k}");
+        }
+        h.act(TimeAction::Select(0)).unwrap();
+        assert!(h.command(Command::Play));
+        until(&mut h, &mut pads, |h| h.info().state.rolling());
+        while !pads_heard(&pads) {
+            h.period(PERIOD, &mut pads);
+            pads.frame += u64::from(PERIOD);
+        }
+        assert!(
+            h.describe().contains("0 asks, 206 lends"),
+            "{}",
+            h.describe()
+        );
+        // The project, read from the copy, comes to have the tap.
+        until(&mut h, &mut pads, |h| {
+            h.project().clip(0, 0).map(|c| c.notes.len()) == Some(5)
+        });
+    }
+
+    /// Whether the fake pads were told anything (a muted track still
+    /// plays to the pads' mixer strip, silent there).
+    fn pads_heard(p: &Fake) -> bool {
+        !p.hits.is_empty() || p.frame > 2 * BAR
+    }
+
+    /// Arrange 2.6b: apart, the facade's period (the audio half's period
+    /// and taking the newest copy, the copy it replaces sent back to be
+    /// freed on the editing side's thread) allocates and frees nothing, in
+    /// any period, while the editing side compiles launch after launch on
+    /// its own thread; the asks themselves are made between periods.
+    #[test]
+    fn apart_the_facades_period_allocates_nothing_while_the_editing_side_compiles() {
+        /// Pads that only count, so the test itself allocates nothing.
+        #[derive(Default)]
+        struct Count(u64);
+        impl Pads for Count {
+            fn hit_at(&mut self, _: u16, _: usize, _: u8, _: u32) -> bool {
+                self.0 += 1;
+                true
+            }
+            fn release_at(&mut self, _: u16, _: usize, _: u32) {}
+            fn stop_all(&mut self) {}
+            fn pressure_at(&mut self, _: u16, _: usize, _: u8, _: u32) {}
+        }
+        let mut h = TimeHost::new(RATE, 140.0).unwrap();
+        for t in 0..4 {
+            if t > 0 {
+                h.act(TimeAction::AddTrack).unwrap();
+            }
+            for row in 0..2 {
+                let mut c = Clip::new("busy", 4 * 3840);
+                c.notes = (0..64)
+                    .map(|i| {
+                        mpfree_seq::Note::new(
+                            i * 240,
+                            120,
+                            ((t + row + i as usize) % 16) as u8,
+                            100,
+                        )
+                    })
+                    .collect();
+                h.control.project.tracks[t].slots[row] = Some(c);
+            }
+        }
+        h.control.project.give_clip_ids();
+        h.command(Command::Play);
+        let (mut h, why) = h.into_apart();
+        assert_eq!(why, None);
+        let note = Say::Note { ok: "", err: "" };
+        let mut pads = Count::default();
+        let mut worst = (0, 0);
+        let mut asked = 0;
+        for period in 0..3000 {
+            if period % 3 == 0 {
+                let k = period / 3;
+                let a = match k % 4 {
+                    0 => TimeAction::Launch {
+                        track: k % 4,
+                        slot: (k / 4) % 2,
+                    },
+                    1 => TimeAction::Undo,
+                    2 => TimeAction::Redo,
+                    _ => TimeAction::StopClip(k % 4),
+                };
+                assert_eq!(h.act_then(a, note.clone()), None);
+                asked += 1;
+                let _ = h.take_said();
+            }
+            let ((), n) = crate::sys::alloc_count::calls(|| h.period(PERIOD, &mut pads));
+            if n > worst.1 {
+                worst = (period, n);
+            }
+            if period % 10 == 0 {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+        assert_eq!(worst, (0, 0), "(period, allocations and frees) at worst");
+        let h = h.into_together().expect("back");
+        assert!(asked > 900);
+        assert!(
+            h.control.costs.compiles > 100,
+            "{}",
+            h.control.costs.compiles
+        );
+        assert!(pads.0 > 20, "it played: {} hits", pads.0);
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// Arrange 2.6b: apart, what comes back without being asked reaches
+    /// the app as together: live to song's and the loops' lines, the mute
+    /// queue's landings and the steps changing; and the inputs the app
+    /// gives every period go only when they change.
+    #[test]
+    fn apart_the_editing_sides_news_reach_the_app() {
+        let (mut h, why) = host_with_a_clip().into_apart();
+        assert_eq!(why, None);
+        let mut pads = Fake::default();
+        // The tempo, every period: one ask for the change only.
+        for _ in 0..20 {
+            h.follow_tempo(100.0);
+            h.take_follows(false);
+            h.period(PERIOD, &mut pads);
+        }
+        assert!(h.describe().contains("2 asks"), "{}", h.describe());
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.command(Command::Play);
+        // The editing side has heard the transport start (its copy of the
+        // screens' state says so).
+        until(&mut h, &mut pads, |h| {
+            h.state().transport.state.rolling() && h.info().bpm == 100.0
+        });
+        // A mute waiting for its line lands on it, and its light follows.
+        h.mute_or_solo(0, true, false).unwrap();
+        assert!(h.mute_light(0).is_some_and(|l| l.waiting));
+        until(&mut h, &mut pads, |h| h.muted(0) == Some(true));
+        assert!(h.mute_light(0).is_some_and(|l| !l.waiting && l.silent));
+        let h = h.into_together().expect("back");
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// Arrange 2.6c, on the desktop: what each action costs the facade's
+    /// thread (the audio thread in the app) in the big song in song mode
+    /// while it plays, together and apart: the call and the period after
+    /// it, mean and worst of 20. Apart, the screen's actions go as asks
+    /// ([`TimeHost::act_then`], as `time_action` sends them), and a step
+    /// tap both as an ask and lent. `cargo test --release -p mpfree-app --bin mpfree --
+    /// --ignored print_what_each_action_costs --nocapture`.
+    #[test]
+    #[ignore]
+    fn print_what_each_action_costs_the_audio_thread_in_the_big_song() {
+        use mpfree_seq::{Note, Placement};
+        for apart in [false, true] {
+            let mut h = TimeHost::new(RATE, 120.0).unwrap();
+            let len = 16 * 960i64;
+            for t in 0..16 {
+                if t > 0 {
+                    h.act(TimeAction::AddTrack).unwrap();
+                }
+                for row in 0..2usize {
+                    let mut c = Clip::new("c", len);
+                    c.notes = (0..1000i64)
+                        .map(|k| {
+                            let pitch = 36 + (k * 7 + row as i64) % 48;
+                            Note::new(k * len / 1000, 8, pitch as u8, 100)
+                        })
+                        .collect();
+                    h.control.project.tracks[t].slots[row] = Some(c);
+                }
+            }
+            h.control.project.give_clip_ids();
+            for t in 0..16 {
+                for k in 0..32i64 {
+                    let b =
+                        Placement::of(&h.control.project.tracks, t, (k % 2) as usize, k * len, len);
+                    h.control.project.arrangement.place(b).unwrap();
+                }
+            }
+            h.act(TimeAction::SongMode(true)).unwrap();
+            h.command(Command::Play);
+            if apart {
+                h = h.into_apart().0;
+            }
+            let mut pads = Fake::default();
+            for _ in 0..50 {
+                h.period(PERIOD, &mut pads);
+            }
+            let note = Say::Note { ok: "", err: "" };
+            let mut rows: Vec<(&str, f64, f64)> = Vec::new();
+            let mut time = |name, h: &mut TimeHost, f: &mut dyn FnMut(&mut TimeHost)| {
+                let (mut worst, mut sum) = (0f64, 0f64);
+                for _ in 0..20 {
+                    let t0 = std::time::Instant::now();
+                    f(h);
+                    h.period(PERIOD, &mut pads);
+                    let ms = t0.elapsed().as_secs_f64() * 1000.0;
+                    (worst, sum) = (worst.max(ms), sum + ms);
+                    // The rest of the period, and a few more, as the app
+                    // has between touches.
+                    for _ in 0..3 {
+                        std::thread::sleep(std::time::Duration::from_millis(3));
+                        h.period(PERIOD, &mut pads);
+                        let _ = h.take_said();
+                    }
+                }
+                rows.push((name, sum / 20.0, worst));
+            };
+            let mut k = 0;
+            let act = |h: &mut TimeHost, a: TimeAction| {
+                let _ = h.act_then(a, note.clone());
+            };
+            time("a period alone", &mut h, &mut |_| {});
+            time("launch", &mut h, &mut |h| {
+                k += 1;
+                act(
+                    h,
+                    TimeAction::Launch {
+                        track: k % 16,
+                        slot: k % 2,
+                    },
+                );
+            });
+            time("scene", &mut h, &mut |h| {
+                k += 1;
+                act(h, TimeAction::LaunchScene(k % 2));
+            });
+            time("undo", &mut h, &mut |h| act(h, TimeAction::Undo));
+            time("redo", &mut h, &mut |h| act(h, TimeAction::Redo));
+            time("song mode off and on", &mut h, &mut |h| {
+                act(h, TimeAction::SongMode(false));
+                act(h, TimeAction::SongMode(true));
+            });
+            time("track mute", &mut h, &mut |h| {
+                k += 1;
+                let _ = h.mute_or_solo_then(k % 16, false, false, note.clone());
+            });
+            time("step tap", &mut h, &mut |h| {
+                k += 1;
+                let tap = StepAction::Tap {
+                    pad: 3,
+                    step: k % 16,
+                    velocity: 100,
+                };
+                let _ = h.step_action_then(tap, note.clone());
+            });
+            time("step tap, lent apart", &mut h, &mut |h| {
+                k += 1;
+                let _ = h.step_action(StepAction::Tap {
+                    pad: 3,
+                    step: k % 16,
+                    velocity: 100,
+                });
+            });
+            time("the screens' state", &mut h, &mut |h| {
+                std::hint::black_box(h.state());
+            });
+            let mode = if apart { "apart" } else { "together" };
+            for (n, mean, worst) in &rows {
+                eprintln!("{mode:9} {n:22} mean {mean:7.3} ms, worst {worst:7.3} ms");
+            }
+            eprintln!("{mode:9} {}", h.describe());
+        }
+    }
+
     /// Split, the halves run on two threads: the control half on its own,
     /// launching a clip and starting the transport, then polling every
     /// millisecond; the audio half here. The clip plays from the period
@@ -7900,6 +10117,8 @@ mod tests {
         let read = mpfree_seq::save::from_text(&mpfree_seq::save::to_text(&p)).unwrap();
         assert_eq!(read, p);
         let mut h = TimeHost::with_project(RATE, 120.0, read).unwrap();
+        // As saved, its clip given its lasting id as it opens.
+        p.give_clip_ids();
         assert_eq!(h.project(), &p);
         assert_eq!(h.state().armed, Some(0));
         let mut pads = Fake::default();

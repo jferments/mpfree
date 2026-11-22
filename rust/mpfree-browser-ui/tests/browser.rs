@@ -291,6 +291,105 @@ fn the_first_save_needs_no_typing_and_later_saves_keep_versions() {
     assert!(b.take_actions().contains(&BrowseAction::SaveRequested));
 }
 
+/// docs/dev/design/project-safety.md: a project whose open left things
+/// out (an effect this stick can't make, a take whose file is missing) is
+/// never saved over by SHIFT + BROWSE: the save goes into a new project
+/// beside it, said, and the one on the stick keeps all it has. Save as
+/// saves where it is told; another open, or a refused one, sets the mark
+/// as that project has it.
+#[test]
+fn a_project_whose_open_left_things_out_is_saved_beside_it() {
+    let (mut b, lib) = browser();
+    let snap = |bpm: f64| Snapshot {
+        meta: Meta {
+            tempo: bpm,
+            ..Meta::default()
+        },
+        parts: vec![("transport".into(), format!("bpm = {bpm}\n"))],
+    };
+    let t = 1_794_431_040;
+    let night = Loc::new(Place::Projects, &["Night drive"]).unwrap();
+    let beside = Loc::new(Place::Projects, &["Night drive 2"]).unwrap();
+    let as_it_was = lib.open_project(&night).unwrap();
+    let versions = lib.versions(&night).unwrap().len();
+    let open_night = |b: &mut Browser| {
+        b.go_source(src("Projects"));
+        select(b, "Night drive");
+        b.push();
+        assert!(b
+            .take_actions()
+            .iter()
+            .any(|a| matches!(a, BrowseAction::ProjectOpened { loc, .. } if *loc == night)));
+    };
+    open_night(&mut b);
+    // The app found what it couldn't open, part by part.
+    b.left_out(["the effect clap:com.example.verb on Master".to_string()]);
+    b.left_out(["a take of audio 2".to_string()]);
+    assert_eq!(b.left_out_list().len(), 2);
+    b.save(snap(100.0), t);
+    assert!(b.take_actions().contains(&BrowseAction::ProjectSaved {
+        loc: beside.clone()
+    }));
+    assert_eq!(b.project(), Some(&beside));
+    assert_eq!(
+        b.status_line(),
+        Some((
+            "Saved as Night drive 2: Night drive opened without the effect clap:com.example.verb on Master and 1 more, so it stays as it was",
+            false
+        ))
+    );
+    let saved = lib.open_project(&beside).unwrap();
+    assert_eq!(saved.part("transport"), Some("bpm = 100\n"));
+    assert_eq!(saved.meta.name, "Night drive 2");
+    // Night drive is untouched: the same parts, no new version.
+    let now = lib.open_project(&night).unwrap();
+    assert_eq!(now.parts, as_it_was.parts);
+    assert_eq!(lib.versions(&night).unwrap().len(), versions);
+    // The new project holds all it has: the next save goes into it.
+    assert!(b.left_out_list().is_empty());
+    b.save(snap(101.0), t + 60);
+    assert_eq!(b.project(), Some(&beside));
+    assert_eq!(lib.versions(&beside).unwrap().len(), 1);
+
+    // Opened again, it leaves the effect out again. Save as offers the
+    // name beside it; the project's own name, typed, is the musician's
+    // choice and saves over it.
+    open_night(&mut b);
+    assert!(b.left_out_list().is_empty(), "a new open starts clean");
+    b.left_out(["the effect clap:com.example.verb on Master".to_string()]);
+    b.save_as(t + 120);
+    assert!(matches!(&b.screen().modal, Modal::Keyboard { text, .. } if text == "Night drive 3"));
+    for _ in 0.."Night drive 3".len() {
+        b.input(Input::Key(Key::Backspace));
+    }
+    for c in "Night drive".chars() {
+        b.input(Input::Key(if c == ' ' { Key::Space } else { Key::Char(c) }));
+    }
+    b.input(Input::Key(Key::Done));
+    assert!(b.take_actions().contains(&BrowseAction::SaveRequested));
+    assert!(b.left_out_list().is_empty());
+    b.save(snap(102.0), t + 180);
+    assert_eq!(b.project(), Some(&night));
+    assert_eq!(b.status_line(), Some(("Saved Night drive", false)));
+    assert_eq!(lib.versions(&night).unwrap().len(), versions + 1);
+
+    // A refused open puts the mark back as it was for the project still
+    // open.
+    open_night(&mut b);
+    b.left_out(["loop 3".to_string()]);
+    b.go_source(src("Projects"));
+    select(&mut b, "Night drive 2");
+    b.push();
+    b.take_actions();
+    assert!(b.left_out_list().is_empty());
+    b.open_refused("Didn't open Night drive 2".into());
+    assert_eq!(b.left_out_list(), ["loop 3".to_string()]);
+    assert_eq!(b.project(), Some(&night));
+    // New project forgets it.
+    b.new_project();
+    assert!(b.left_out_list().is_empty());
+}
+
 #[test]
 fn lists_survive_a_restart_and_bad_lines_are_skipped() {
     let (mut b, _) = browser();
@@ -412,8 +511,9 @@ fn the_preset_picker_tries_each_preset_and_cancel_puts_the_old_one_back() {
     assert!(!s.can_go_back);
     assert_eq!(s.path, "Yours \u{b7} FM");
     assert_eq!(names(&b), ["Glass bell", "Metal bass", "Soft keys"]);
-    // Only loading: nothing is renamed or deleted (the row's star stars it).
-    assert_eq!(s.detail.buttons, [Button::Load]);
+    // Loading, or a new track with it: nothing is renamed or deleted (the
+    // row's star stars it).
+    assert_eq!(s.detail.buttons, [Button::Load, Button::NewTrackSound]);
     b.erase();
     b.go_source(src("Samples"));
     assert_eq!(b.screen().modal, Modal::None);
@@ -1334,7 +1434,7 @@ fn the_preset_picker_opens_on_the_engines_own_presets_and_tries_them() {
         .detail
         .lines
         .contains(&("You had".into(), "Reed Bite (edited)".into())));
-    assert_eq!(s.detail.buttons, [Button::Load]);
+    assert_eq!(s.detail.buttons, [Button::Load, Button::NewTrackSound]);
     // Opening asks for nothing: the sound only changes when it turns.
     assert!(b.take_actions().is_empty());
     b.dial(-1);
@@ -1395,6 +1495,59 @@ fn the_preset_picker_opens_on_the_engines_own_presets_and_tries_them() {
     b.open_preset_picker("Plugin", Vec::new(), keys_now("", Some(0)));
     b.input(Input::Source(src("Factory")));
     assert!(b.screen().detail.kind.contains("no presets of its own"));
+}
+
+#[test]
+fn new_track_with_this_sound_puts_the_tried_sound_back_and_asks_for_a_track() {
+    use mpfree_browser_ui::PresetFrom;
+    let (mut b, lib) = browser();
+    let own: Vec<String> = ["Init", "Soft Tines", "Bright Tines", "Reed Bite"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    // One of the engine's own, tried by the wheel first: its track gets
+    // its sound back, and a new track is asked for with the one picked.
+    b.open_preset_picker("Keys", own, keys_now("Reed Bite", Some(3)));
+    b.dial(-1);
+    b.take_actions();
+    b.input(Input::Button(Button::NewTrackSound));
+    assert_eq!(
+        b.take_actions(),
+        [
+            BrowseAction::RevertPreset,
+            BrowseAction::NewTrackWithPreset {
+                engine: "Keys".into(),
+                name: "Bright Tines".into(),
+                from: PresetFrom::Factory(2),
+            },
+            BrowseAction::PickerClosed { loaded: true },
+        ]
+    );
+    assert!(b.picking().is_none());
+    // One of the musician's, by its file; nothing tried, nothing put back.
+    b.open_preset_picker("FM", vec!["Init".into()], keys_now("Metal bass", None));
+    b.take_actions();
+    b.input(Input::Button(Button::NewTrackSound));
+    let path = lib
+        .root()
+        .join("Instruments")
+        .join("FM")
+        .join("Metal bass.preset");
+    assert_eq!(
+        b.take_actions(),
+        [
+            BrowseAction::NewTrackWithPreset {
+                engine: "FM".into(),
+                name: "Metal bass".into(),
+                from: PresetFrom::File(path),
+            },
+            // Like Load, a file used goes in Recent.
+            BrowseAction::SaveLists("recent = Instruments/FM/Metal bass.preset\n".into()),
+            BrowseAction::PickerClosed { loaded: true },
+        ]
+    );
+    // BROWSE's own Instruments place has no such button: the picker's.
+    assert!(!b.screen().detail.buttons.contains(&Button::NewTrackSound));
 }
 
 #[test]

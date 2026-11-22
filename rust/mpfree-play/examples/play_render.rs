@@ -359,6 +359,7 @@ impl Session {
                         track: TAKE as u16,
                         dest: 0,
                         event,
+                        notes: false,
                     },
                 );
             }
@@ -676,6 +677,7 @@ fn arp_out(block: &Block, offset: u32, kind: EventKind) -> Out {
         track: ARP_OUT,
         dest: 0,
         event,
+        notes: false,
     }
 }
 

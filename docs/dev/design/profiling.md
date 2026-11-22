@@ -250,6 +250,65 @@ with `--quick`) at 128 frames and 44.1 kHz:
   a tap 485,970 for the edit and 711,323 until it plays, a detent 375,783
   and 387,476, the grid 1,568,091, and the dense time case 29,520 a
   block); the targets come from the MPC's next device round.
+- **control, the big song (Arrange refactor 2.1):** what the song costs the
+  control half, on a song of 512 blocks: 16 tracks, each with two 4-bar
+  clips of 1,000 notes (32 clips), and 32 blocks a track, so every clip
+  plays in 16 blocks (`arrange_song` in the bench). "the big song's view:
+  compiled and swapped" is the view a song-mode edit compiles
+  (`PlayView::compile_cued` and `set_song`, as `TimeControl::view`), taken
+  by the audio half (`Recent::catch_up`, then the swap) and the old one
+  freed; its memory figure is the view's alone. "a step tap in song mode:
+  until it plays" is a tap on one of the song's clips, out and back in
+  (`Grid::toggle`, `Takes::edit`), then, before 2.3, the view compiled
+  again, since a song-mode edit couldn't go in place. "the
+  big song saved and opened" is the clips part written and read back
+  (`save::to_text`, `from_text`). A block of the first two was billions of
+  instructions before 2.3 and saving is still 150 million, so these cases
+  count one block in 200 after one warm-up block, and the timing run a few
+  (`cases::blocks_for`). First desktop
+  numbers (22 Nov), means: compiled and swapped 223 ms, the view holding
+  31.4 MB (512,000 notes, a copy of its clip in every block); a tap 224 ms
+  until it plays; saved and opened 8.1 ms. Callgrind: 3.52 billion
+  instructions to compile and swap, 3.52 billion a tap, 152 million to save
+  and open. Nearly all of the compile was the view's stamp, which hashed
+  the text of every note: about 6,800 instructions a note. Phase 2.3's
+  first step hashes each note, lock and lane word by word instead
+  (`note_hash`, `lock_hash`, `lane_hash`), with every field named so a new
+  one can't be left out: compiled and swapped 5.1 ms, a tap 5.0 ms until it
+  plays (desktop means), 74 million instructions each, 47 times fewer. Its
+  second step compiles each clip the song plays once, not once a block
+  (`PlayView::song_clips`), and makes a song-mode tap in place in that one
+  copy instead of compiling: compiled and swapped 0.41 ms with the view
+  holding 2.0 MB (32,000 notes), 6.9 million instructions; a tap 4 us until
+  it plays, 129 thousand instructions (the case now makes the edit in place
+  with `PlayView::edit_in_place`, as the audio half does). From 2.1 to
+  here: the view 15 times smaller, its compile 500 times cheaper, a tap
+  27,000 times. Their counts are in `instructions.txt`, from CI's first
+  run (train 135), as the step cases' were.
+- **screen, the Song view (Arrange refactor 2.4):** "Song view: 4,096
+  blocks, a frame while the song plays" is the screen thread's frame with
+  the longest song (`MAX_PLACEMENTS`: 16 tracks of 256 four-bar blocks):
+  the playhead moved, as `ToUi::Transport` does 30 times a second while
+  the song plays, the time page updated (`TimePage::update`) and the page
+  painted in software at the MPC's size; every 8th frame scrolls a bar, as
+  the wheel does. Like the control half's cases, the `screen` module has
+  no budget line, may allocate and is left out of `--check-allocs` and the
+  golden check (`cases::off_the_audio_path`). Before 2.4 a frame copied
+  every block twice (the Song view's contents built again from the
+  placements, and the old contents copied to compare), then drew and
+  hit-tested every block, working out the view's geometry for each:
+  10.9 million instructions and about 17,000 allocations a frame, a
+  0.97 ms desktop mean. 2.4 keeps the blocks while the placements are the
+  same list (`SongBlocks::made_from`) and finds the ones in view by lane
+  and time (`SongBlocks::between`): 5.5 million instructions, about 800
+  allocations (the rest of the page's update and the text), 0.53 ms. A
+  song of 16 blocks costs 3.8 million, so the longest song now costs only
+  for the extra blocks it shows (about 60 in view, against 16). Most of
+  what is left is the whole page painted again for a playhead that moved;
+  drawing the playhead alone is a later step. Its count in
+  `instructions.txt` was taken with CI's pinned toolchain on the build
+  container, which gave the three Arrange cases' counts to within 0.05 %
+  of CI's.
 - **looper:** 60 s of looper memory, recording a 2-bar first pass from the
   input, then overdubbing layer after layer with an undo every 30 s.
 - **mix:** the mixer (from the FX thread) idle, and routing 12 tracks and 8

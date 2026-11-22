@@ -3,14 +3,16 @@
 //!
 //! One record a line, a word saying what it is first, then numbers, and
 //! a name (when there is one) as the rest of the line. A track's clips,
-//! a scene's values and a song placement's own clip follow the line that
-//! opens them; `end` closes a clip. Lines this build doesn't know are
-//! skipped, so a newer build's file still opens.
+//! a scene's values and a song clip's body follow the line that opens
+//! them; `end` closes a clip. Lines this build doesn't know are skipped,
+//! so a newer build's file still opens.
 //!
 //! ```text
-//! mpfree-clips 1
+//! mpfree-clips 2
 //! perform
 //! launch bars 2
+//! nexttrack 3
+//! nextclip 5
 //! track Drums
 //! dest 0
 //! swing 240 58
@@ -21,12 +23,14 @@
 //! transpose 5 key
 //! follows
 //! clip 0 7680 Beat 1
+//! id 3
 //! speed 1 1
 //! launch ticks 960
 //! legato
 //! once
 //! program 4 bank 2
 //! direction pingpong
+//! holds notes
 //! touch 0:10 50:40
 //! note 0 240 36 100 100 - 1 0 2
 //! note 240 240 38 90 100 - 4 0 0 ramp:-40 slide
@@ -50,7 +54,12 @@
 //! mutes 5
 //! value t1.mix.0 -3
 //! program 1 12 bank 0
-//! place 0 0 7680 0 slot 0
+//! songclip 3840 Beat (own)
+//! id 4
+//! note 0 240 36 100 100 - 1 0 2
+//! end
+//! place 0 0 7680 0 clip 3
+//! place 0 7680 3840 0 clip 4
 //! marker 0 Intro
 //! tempo 0 92
 //! tempo 15360 140 ramp
@@ -60,6 +69,25 @@
 //! list 1 4
 //! listloop
 //! ```
+//!
+//! A clip's `id` line, first in its body, is its lasting id
+//! ([`crate::ClipId`], the Arrange refactor's 1.1), and `nextclip` the
+//! id the project gives next; a clip without one has none yet (an older
+//! build's file), and the host gives it one as the project opens
+//! ([`Project::give_clip_ids`]).
+//!
+//! Song blocks name their clip by its id (the Arrange refactor's 1.3):
+//! `place <track> <start> <length> <offset> clip <id>`, wherever the
+//! clip lives. The song's own clips ([`crate::SongClips`]) come before
+//! the blocks, each once as `songclip <length> <name>` with its body
+//! (its `id` line first) and `end`. That is `mpfree-clips 2`, which an
+//! older build doesn't open (decision 7). An `mpfree-clips 1` part, from
+//! before, still opens: its blocks named a row of their track
+//! (`... slot <row>`) or carried a clip of their own (`... own <length>
+//! <name>` and a body), so as it opens its clips get ids in track and
+//! row order, each `slot` block names its cell's clip (none for an empty
+//! cell: it plays nothing, as it did), and each `own` block's clip
+//! becomes a song clip with an id of its own, in order.
 //!
 //! A `tempo` line is a song's tempo point (tempo ramps): its tick, its
 //! tempo, and `ramp` when it glides to the next point. An older build
@@ -73,6 +101,12 @@
 //! A clip's `direction` line is its play direction (sequencer S6:
 //! `reverse`, `pingpong` or `random`; none for forward); an older build
 //! skips it, and a word it doesn't know, and plays the clip forward.
+//!
+//! A clip's `holds notes` line says its notes are MIDI notes, each
+//! number a pitch (the instrument redesign's step 5c, [`crate::Holds`]);
+//! a clip without it holds pad hits, as every clip saved before did. An
+//! older build skips it, and a word it doesn't know, and plays the notes
+//! as pads.
 //!
 //! A mutated clip's `original` lines (sequencer S6, [`crate::mutate`])
 //! are the clip as it was before its first Mutate, which Restore puts
@@ -98,15 +132,18 @@ use mpfree_notefx::{Slot, MAX_FX};
 use mpfree_param::{ParamAddr, RelAddr};
 use mpfree_transport::time::{Swing, Tick};
 
-use crate::arrange::{Marker, MorphRows, Placement, Source, TempoPoint};
+use crate::arrange::{Marker, MorphRows, Placement, TempoPoint};
 use crate::scenes::{Follow, FollowAction, ListStep, Scene, MAX_LIST_STEPS, SCENES};
 use crate::{
-    Clip, Cond, Join, LaunchGrid, Lock, LoopInput, Note, Original, Project, Quantise, Speed, Touch,
-    TouchPoint, Track, TrackKind, MAX_TRACKS, SLOTS,
+    Clip, ClipId, Cond, Join, LaunchGrid, Lock, LoopInput, Note, Original, Project, Quantise,
+    Speed, Touch, TouchPoint, Track, TrackKind, MAX_TRACKS, ROWS,
 };
 
 /// The first line.
-pub const FORMAT: &str = "mpfree-clips 1";
+pub const FORMAT: &str = "mpfree-clips 2";
+/// The first line of a part saved before song blocks named their clip by
+/// its id (Arrange 1.3), which still opens.
+pub const FORMAT_1: &str = "mpfree-clips 1";
 /// Pressure points a `touch` line holds (more go on more lines).
 const TOUCH_PER_LINE: usize = 64;
 
@@ -123,6 +160,9 @@ pub fn to_text(p: &Project) -> String {
     }
     if p.next_track != 0 {
         let _ = writeln!(s, "nexttrack {}", p.next_track);
+    }
+    if p.next_clip != 0 {
+        let _ = writeln!(s, "nextclip {}", p.next_clip);
     }
     for t in &p.tracks {
         let _ = writeln!(s, "track {}", one_line(&t.name));
@@ -163,11 +203,9 @@ pub fn to_text(p: &Project) -> String {
         if t.follows {
             let _ = writeln!(s, "follows");
         }
-        for (slot, c) in t.slots.iter().enumerate() {
-            if let Some(c) = c {
-                let _ = writeln!(s, "clip {slot} {} {}", c.length, one_line(&c.name));
-                clip_body(&mut s, c);
-            }
+        for (row, c) in t.slots.iter() {
+            let _ = writeln!(s, "clip {row} {} {}", c.length, one_line(&c.name));
+            clip_body(&mut s, c);
         }
     }
     for (row, sc) in p.scenes.iter().enumerate() {
@@ -186,20 +224,16 @@ pub fn to_text(p: &Project) -> String {
         }
     }
     let a = &p.arrangement;
+    for c in a.clips.iter() {
+        let _ = writeln!(s, "songclip {} {}", c.length, one_line(&c.name));
+        clip_body(&mut s, c);
+    }
     for pl in &a.placements {
-        let head = format!(
-            "place {} {} {} {}",
-            pl.track, pl.start, pl.length, pl.offset
+        let _ = writeln!(
+            s,
+            "place {} {} {} {} clip {}",
+            pl.track, pl.start, pl.length, pl.offset, pl.clip.0
         );
-        match &pl.source {
-            Source::Slot(slot) => {
-                let _ = writeln!(s, "{head} slot {slot}");
-            }
-            Source::Own(c) => {
-                let _ = writeln!(s, "{head} own {} {}", c.length, one_line(&c.name));
-                clip_body(&mut s, c);
-            }
-        }
     }
     for m in &a.markers {
         let _ = writeln!(s, "marker {} {}", m.at, one_line(&m.name));
@@ -226,6 +260,9 @@ pub fn to_text(p: &Project) -> String {
 }
 
 fn clip_body(s: &mut String, c: &Clip) {
+    if c.id.is_given() {
+        let _ = writeln!(s, "id {}", c.id.0);
+    }
     if let Some(n) = c.looped {
         let _ = writeln!(s, "loop {n}");
     }
@@ -255,6 +292,9 @@ fn clip_body(s: &mut String, c: &Clip) {
     }
     if c.direction != crate::Direction::Forward {
         let _ = writeln!(s, "direction {}", c.direction.word());
+    }
+    if c.holds != crate::Holds::Hits {
+        let _ = writeln!(s, "holds {}", c.holds.word());
     }
     // Pressure first: the notes name runs of it. Only what the notes and
     // the original's notes name is written, each run renumbered (B4a):
@@ -478,8 +518,20 @@ enum At {
 
 enum ClipHome {
     Slot(usize),
-    /// The placement waiting for it.
+    /// The song's own clips.
+    Song,
+    /// An `mpfree-clips 1` block's own clip: the block waiting for it.
     Own(usize, Tick, Tick, Tick),
+}
+
+/// An `mpfree-clips 1` part's blocks, by their place in the song's list,
+/// to name their clips once every clip is read.
+#[derive(Default)]
+struct OldBlocks {
+    /// A block of row `.1` of its track.
+    rows: Vec<(usize, usize)>,
+    /// A block with a clip of its own.
+    own: Vec<(usize, Clip)>,
 }
 
 /// The lanes being read: the lane open now.
@@ -493,10 +545,11 @@ struct LaneAt {
 pub fn from_text(text: &str) -> Result<Project, String> {
     let mut lines = text.lines().enumerate();
     match lines.next() {
-        Some((_, l)) if l.trim() == FORMAT => {}
+        Some((_, l)) if l.trim() == FORMAT || l.trim() == FORMAT_1 => {}
         _ => return Err(format!("not an {FORMAT} part")),
     }
     let mut p = Project::new();
+    let mut old = OldBlocks::default();
     let mut at = At::Top;
     let mut lane: Option<LaneAt> = None;
     // The lane open in a clip's original.
@@ -555,6 +608,15 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                 p.next_track = num(w.next())
                     .filter(|&n| n >= 1)
                     .ok_or_else(|| bad("nexttrack"))?
+            }
+            ("id", At::Clip(c, _)) => {
+                let id: u32 = num(w.next()).filter(|&n| n >= 1).ok_or_else(|| bad("id"))?;
+                c.id = crate::ClipId(id);
+            }
+            ("nextclip", At::Top) => {
+                p.next_clip = num(w.next())
+                    .filter(|&n| n >= 1)
+                    .ok_or_else(|| bad("nextclip"))?
             }
             ("swing", At::Track) => {
                 last(&mut p).swing = Some(swing(&mut w).ok_or_else(|| bad("swing"))?)
@@ -617,7 +679,7 @@ pub fn from_text(text: &str) -> Result<Project, String> {
             ("clip", At::Track) => {
                 let slot: usize = num(w.next()).ok_or_else(|| bad("slot"))?;
                 let length: Tick = num(w.next()).ok_or_else(|| bad("length"))?;
-                if slot >= SLOTS || last(&mut p).slots[slot].is_some() {
+                if slot >= ROWS || last(&mut p).slots[slot].is_some() {
                     return Err(bad("slot"));
                 }
                 let name = nth_rest(rest, 2);
@@ -655,6 +717,11 @@ pub fn from_text(text: &str) -> Result<Project, String> {
             ("direction", At::Clip(c, _)) => {
                 let word = w.next().ok_or_else(|| bad("direction"))?;
                 c.direction = crate::Direction::from_word(word).unwrap_or_default();
+            }
+            // A newer build's kind of notes plays as pad hits here.
+            ("holds", At::Clip(c, _)) => {
+                let word = w.next().ok_or_else(|| bad("holds"))?;
+                c.holds = crate::Holds::from_word(word).unwrap_or_default();
             }
             ("launch", At::Top) => p.launch = launch(&mut w).ok_or_else(|| bad("launch"))?,
             ("touch", At::Clip(c, _)) => {
@@ -740,14 +807,18 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                         last(&mut p).slots[slot] = Some(*c);
                         At::Track
                     }
+                    ClipHome::Song => {
+                        p.arrangement
+                            .clips
+                            .keep(*c)
+                            .map_err(|_| bad("a song clip with no id, or one taken"))?;
+                        At::Top
+                    }
                     ClipHome::Own(track, start, length, offset) => {
-                        p.arrangement.placements.push(Placement {
-                            track,
-                            start,
-                            length,
-                            offset,
-                            source: Source::Own(c),
-                        });
+                        let mut pl = Placement::new(track, ClipId::NONE, start, length);
+                        pl.offset = offset;
+                        old.own.push((p.arrangement.placements.len(), *c));
+                        p.arrangement.placements.push(pl);
                         At::Top
                     }
                 };
@@ -795,16 +866,21 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                 let start: Tick = num(w.next()).ok_or_else(|| bad("start"))?;
                 let length: Tick = num(w.next()).ok_or_else(|| bad("length"))?;
                 let offset: Tick = num(w.next()).ok_or_else(|| bad("offset"))?;
+                let mut pl = Placement::new(track, ClipId::NONE, start, length);
+                pl.offset = offset;
                 match w.next() {
+                    Some("clip") => {
+                        pl.clip = ClipId(num(w.next()).ok_or_else(|| bad("clip"))?);
+                        p.arrangement.placements.push(pl);
+                        at = At::Top;
+                    }
                     Some("slot") => {
                         let slot: usize = num(w.next()).ok_or_else(|| bad("slot"))?;
-                        p.arrangement.placements.push(Placement {
-                            track,
-                            start,
-                            length,
-                            offset,
-                            source: Source::Slot(slot),
-                        });
+                        if slot >= ROWS {
+                            return Err(bad("slot"));
+                        }
+                        old.rows.push((p.arrangement.placements.len(), slot));
+                        p.arrangement.placements.push(pl);
                         at = At::Top;
                     }
                     Some("own") => {
@@ -868,6 +944,11 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                 p.arrangement.list.looped = true;
                 at = At::Top;
             }
+            ("songclip", At::Top | At::Track | At::Scene) => {
+                let length: Tick = num(w.next()).ok_or_else(|| bad("length"))?;
+                let name = nth_rest(rest, 1);
+                at = At::Clip(Box::new(Clip::new(name, length)), ClipHome::Song);
+            }
             ("songlanes", At::Top | At::Track | At::Scene) => at = At::SongLanes(Moves::new()),
             ("perform", At::Top) => p.perform = true,
             // A newer build's line: skipped.
@@ -878,9 +959,35 @@ pub fn from_text(text: &str) -> Result<Project, String> {
     if lane.is_some() || matches!(at, At::Clip(..) | At::SongLanes(_)) {
         return Err("the part ends inside a clip".to_string());
     }
+    name_old_blocks(&mut p, old)?;
     p.check()
         .map_err(|e| format!("the clips don't hold together: {e:?}"))?;
     Ok(p)
+}
+
+/// An `mpfree-clips 1` part's blocks name their clips by id: the clips
+/// get ids first (in track and row order), then each block of a row names
+/// its cell's clip (none for an empty cell: it plays nothing, as it did)
+/// and each block's own clip becomes a song clip with the next id, in
+/// order of the blocks.
+fn name_old_blocks(p: &mut Project, old: OldBlocks) -> Result<(), String> {
+    if old.rows.is_empty() && old.own.is_empty() {
+        return Ok(());
+    }
+    p.give_clip_ids();
+    for (k, row) in old.rows {
+        let track = p.arrangement.placements[k].track;
+        p.arrangement.placements[k].clip = p.clip(track, row).map_or(ClipId::NONE, |c| c.id);
+    }
+    for (k, mut c) in old.own {
+        c.id = p.new_clip_id();
+        p.arrangement.placements[k].clip = c.id;
+        p.arrangement
+            .clips
+            .keep(c)
+            .map_err(|e| format!("a block's own clip: {e:?}"))?;
+    }
+    Ok(())
 }
 
 /// Nothing to close at a track line but a scene (scenes come after
@@ -1080,6 +1187,192 @@ mod track_id_tests {
         }
         assert!(from_text(&text.replace("nexttrack 4", "nexttrack 0")).is_err());
     }
+
+    /// Arrange 1.2: a clip and a scene in row 40, past the grid's 16, are
+    /// kept through the text; a row past the 64 a project keeps is
+    /// refused.
+    #[test]
+    fn a_clip_and_a_scene_in_row_40_come_back() {
+        let mut p = Project::new();
+        p.tracks.push(Track::new("Drums", 0));
+        p.tracks[0].slots[40] = Some(Clip::new("Far", 3840));
+        p.give_clip_ids();
+        p.scene_mut(40).unwrap().name = "Bank C".into();
+        p.arrangement
+            .place(Placement::of(&p.tracks, 0, 40, 0, 3840))
+            .unwrap();
+        let text = to_text(&p);
+        assert!(text.contains("clip 40 3840 Far\nid 1\n"), "{text}");
+        assert!(text.contains("scene 40 Bank C\n"), "{text}");
+        assert!(text.contains("place 0 0 3840 0 clip 1\n"), "{text}");
+        assert_eq!(from_text(&text).unwrap(), p);
+        for bad in [
+            text.replace("clip 40 ", "clip 64 "),
+            text.replace("scene 40 ", "scene 64 "),
+        ] {
+            assert!(from_text(&bad).is_err(), "{bad}");
+        }
+    }
+
+    /// Arrange 1.1: each clip's lasting id, a loop cell's too, and the
+    /// next id are kept through the text; a project saved before clips had
+    /// ids reads with none (the app gives them as it opens it); and an id
+    /// that doesn't read is refused.
+    #[test]
+    fn clip_ids_and_the_next_id_come_back() {
+        let mut p = Project::new();
+        p.tracks.push(Track::new("Drums", 0));
+        p.tracks.push(Track::new_loops("Loops", 1));
+        p.tracks[0].slots[0] = Some(Clip::new("Beat", 3840));
+        p.tracks[0].slots[2] = Some(Clip::new("Fill", 3840));
+        p.tracks[1].slots[1] = Some(Clip::new_loop(0, 3840));
+        let old = to_text(&p);
+        assert!(!old.contains("\nid ") && !old.contains("nextclip"));
+        assert_eq!(from_text(&old).unwrap(), p, "no ids, as saved");
+        assert_eq!(p.give_clip_ids(), 3);
+        p.tracks[0].slots[0] = None;
+        let text = to_text(&p);
+        assert!(text.contains("nextclip 4\n"), "{text}");
+        assert!(text.contains("clip 2 3840 Fill\nid 2\n"), "{text}");
+        assert!(
+            text.contains("clip 1 3840 Loop 1\nid 3\nloop 0\n"),
+            "{text}"
+        );
+        let back = from_text(&text).unwrap();
+        assert_eq!(back, p);
+        assert_eq!(
+            back.find_clip(crate::ClipId(3)),
+            Some(crate::ClipAt::Cell { track: 1, row: 1 })
+        );
+        for bad in ["id 0", "id x"] {
+            let t = text.replace("id 2", bad);
+            assert!(from_text(&t).is_err(), "{bad}");
+        }
+        assert!(from_text(&text.replace("nextclip 4", "nextclip 0")).is_err());
+    }
+
+    /// Arrange 1.3: blocks name their clip by id, the song's own clips
+    /// are written once each, and the part is `mpfree-clips 2`; a song
+    /// clip without an id, or with one taken, is refused, and a block
+    /// naming a clip that isn't there reads (it plays nothing).
+    #[test]
+    fn blocks_name_their_clips_and_the_songs_own_clips_come_back() {
+        let mut p = Project::new();
+        p.tracks.push(Track::new("Drums", 0));
+        p.tracks.push(Track::new("Bass", 1));
+        p.tracks[0].slots[0] = Some(Clip::new("Beat", 3840));
+        p.tracks[1].slots[2] = Some(Clip::new("Line", 7680));
+        p.give_clip_ids();
+        // The drums' beat on its own lane and on the bass's.
+        p.arrangement
+            .place(Placement::of(&p.tracks, 0, 0, 0, 7680))
+            .unwrap();
+        let mut across = Placement::of(&p.tracks, 0, 0, 7680, 3840);
+        across.track = 1;
+        p.arrangement.place(across).unwrap();
+        p.arrangement
+            .place(Placement::of(&p.tracks, 1, 2, 0, 7680))
+            .unwrap();
+        // One block made unique: its copy among the song's clips.
+        let k = p.arrangement.at(1, 0).unwrap();
+        assert_eq!(p.make_unique(k), Ok(crate::ClipId(3)));
+        let text = to_text(&p);
+        assert!(text.starts_with("mpfree-clips 2\n"), "{text}");
+        assert!(text.contains("\nsongclip 7680 Line\nid 3\nend\n"), "{text}");
+        assert!(text.contains("\nplace 0 0 7680 0 clip 1\n"), "{text}");
+        assert!(text.contains("\nplace 1 7680 3840 0 clip 1\n"), "{text}");
+        assert!(text.contains("\nplace 1 0 7680 0 clip 3\n"), "{text}");
+        let back = from_text(&text).unwrap();
+        assert_eq!(back, p);
+        assert_eq!(to_text(&back), text, "stable");
+        assert_eq!(back.find_clip(crate::ClipId(3)), Some(crate::ClipAt::Song));
+        // Refused: a song clip with no id, or one a cell has.
+        for bad in [
+            text.replace("songclip 7680 Line\nid 3\n", "songclip 7680 Line\n"),
+            text.replace("songclip 7680 Line\nid 3\n", "songclip 7680 Line\nid 1\n"),
+        ] {
+            assert!(from_text(&bad).is_err(), "{bad}");
+        }
+        // A block naming no clip there reads, and finds none.
+        let gone = from_text(&text.replace("clip 3\n", "clip 9\n")).unwrap();
+        let k = gone.arrangement.at(1, 0).unwrap();
+        assert!(gone.block_clip(&gone.arrangement.placements[k]).is_none());
+    }
+
+    /// Arrange 1.3: an `mpfree-clips 1` part, saved before blocks named
+    /// their clip, opens: its clips get ids in track and row order, each
+    /// `slot` block names its cell's clip (an empty cell's names none),
+    /// each `own` block's clip becomes a song clip with the next id; it
+    /// plays the same clips, and saves back as `mpfree-clips 2`.
+    #[test]
+    fn a_part_saved_before_blocks_named_their_clips_opens() {
+        let text = "mpfree-clips 1
+track Drums
+dest 0
+clip 0 3840 Beat
+end
+clip 3 3840 Fill
+end
+track Bass
+dest 1
+clip 1 7680 Line
+end
+place 0 0 7680 0 slot 0
+place 0 7680 3840 0 own 1920 Beat (own)
+note 0 240 36 100 100 - 1 0 0
+end
+place 1 0 7680 240 slot 1
+place 1 7680 3840 0 slot 5
+place 1 11520 3840 0 slot 1
+";
+        let p = from_text(text).unwrap();
+        let ids: Vec<(usize, usize, u32)> =
+            p.cell_clips().map(|(t, r, c)| (t, r, c.id.0)).collect();
+        assert_eq!(ids, [(0, 0, 1), (0, 3, 2), (1, 1, 3)]);
+        let blocks: Vec<(usize, Tick, Tick, u32)> = p
+            .arrangement
+            .placements
+            .iter()
+            .map(|b| (b.track, b.start, b.offset, b.clip.0))
+            .collect();
+        assert_eq!(
+            blocks,
+            [
+                (0, 0, 0, 1),
+                (0, 7680, 0, 4),
+                (1, 0, 240, 3),
+                (1, 7680, 0, 0),
+                (1, 11520, 0, 3)
+            ]
+        );
+        let own = p.arrangement.clips.get(crate::ClipId(4)).unwrap();
+        assert_eq!(
+            (own.name.as_str(), own.length, own.notes.len()),
+            ("Beat (own)", 1920, 1)
+        );
+        assert_eq!(p.next_clip, 5);
+        let names: Vec<Option<&str>> = p
+            .arrangement
+            .placements
+            .iter()
+            .map(|b| p.block_clip(b).map(|c| c.name.as_str()))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                Some("Beat"),
+                Some("Beat (own)"),
+                Some("Line"),
+                None,
+                Some("Line")
+            ]
+        );
+        let again = to_text(&p);
+        assert!(again.starts_with("mpfree-clips 2\n"));
+        assert_eq!(from_text(&again).unwrap(), p);
+        // A row past the 64 a project keeps is refused, as before.
+        assert!(from_text(&text.replace("slot 5", "slot 64")).is_err());
+    }
 }
 
 #[cfg(test)]
@@ -1131,6 +1424,7 @@ mod tests {
             bank: Some(300),
         });
         c.direction = crate::Direction::PingPong;
+        c.holds = crate::Holds::Notes;
         let pts: Vec<TouchPoint> = (0..150)
             .map(|k| TouchPoint {
                 at: k * 3,
@@ -1190,16 +1484,17 @@ mod tests {
         let pc = |program, bank| Some(crate::ClipProgram { program, bank });
         sc.set_program(2, pc(5, None)).unwrap();
         sc.set_program(0, pc(12, Some(3))).unwrap();
+        p.give_clip_ids();
         p.arrangement
             .placements
-            .push(Placement::linked(0, 0, 0, 7680));
-        p.arrangement.placements.push(Placement {
-            track: 0,
-            start: 7680,
-            length: 3840,
-            offset: 120,
-            source: Source::Own(Box::new(c)),
-        });
+            .push(Placement::of(&p.tracks, 0, 0, 0, 7680));
+        // A block of a song clip of its own (made unique), part way in.
+        let mut own = c;
+        own.id = p.new_clip_id();
+        let mut block = Placement::new(0, own.id, 7680, 3840);
+        block.offset = 120;
+        p.arrangement.clips.keep(own).unwrap();
+        p.arrangement.placements.push(block);
         p.arrangement.markers.push(Marker {
             at: 0,
             name: "Intro bit".into(),
@@ -1274,7 +1569,7 @@ mod tests {
         // The song list: an empty one writes nothing; steps out of range
         // are refused.
         assert!(!to_text(&Project::new()).contains("list"));
-        for bad in ["list 16 1", "list 0 0", "list 0 100", "list 0", "list x 1"] {
+        for bad in ["list 64 1", "list 0 0", "list 0 100", "list 0", "list x 1"] {
             assert!(from_text(&format!("{FORMAT}\n{bad}\n")).is_err(), "{bad}");
         }
         // A track's transpose (S4): as written writes nothing; past two
@@ -1409,6 +1704,46 @@ mod tests {
         }
     }
 
+    /// What a clip's notes stand for (step 5c): `holds notes` reads back;
+    /// none is hits, as every clip saved before, and so is a newer build's
+    /// word; a clip of hits writes no line, so its text is as before; a
+    /// line with no word refuses the part.
+    #[test]
+    fn a_clip_of_notes_reads_back_and_one_of_hits_saves_as_before() {
+        use crate::Holds;
+        let text = to_text(&full());
+        assert!(text.contains("direction pingpong\nholds notes\n"), "{text}");
+        let holds = |t: &str| {
+            from_text(t).unwrap().tracks[0].slots[0]
+                .as_ref()
+                .unwrap()
+                .holds
+        };
+        assert_eq!(holds(&text), Holds::Notes);
+        let hits = text.replace("holds notes\n", "");
+        assert_eq!(holds(&hits), Holds::Hits);
+        assert_eq!(
+            holds(&text.replace("holds notes", "holds hits")),
+            Holds::Hits
+        );
+        assert_eq!(
+            holds(&text.replace("holds notes", "holds chords")),
+            Holds::Hits,
+            "a newer build's word"
+        );
+        assert_eq!(to_text(&from_text(&hits).unwrap()), hits, "hits: no line");
+        assert!(from_text(&text.replace("holds notes", "holds")).is_err());
+        // Every other clip holds hits.
+        let p = from_text(&text).unwrap();
+        let notes = p
+            .tracks
+            .iter()
+            .flat_map(|t| t.slots.iter())
+            .filter(|(_, c)| c.holds == Holds::Notes)
+            .count();
+        assert_eq!(notes, 1);
+    }
+
     /// A clip's play direction (S6): read back; none is forward, and so
     /// is a newer build's word; a line with no word refuses the part.
     #[test]
@@ -1515,13 +1850,13 @@ mod tests {
         v.moves = Moves::new();
         v.check().unwrap();
         p.tracks[0].slots[3] = Some(v.clone());
-        p.arrangement.placements.push(Placement {
-            track: 0,
-            start: 0,
-            length: 3840,
-            offset: 0,
-            source: Source::Own(Box::new(v.clone())),
-        });
+        p.give_clip_ids();
+        let mut own = v.copied();
+        own.id = p.new_clip_id();
+        p.arrangement
+            .place(Placement::new(0, own.id, 0, 3840))
+            .unwrap();
+        p.arrangement.clips.keep(own).unwrap();
         let text = to_text(&p);
         assert!(
             text.contains("\noriginal 7680 1\noriginal note 0 240 36 "),

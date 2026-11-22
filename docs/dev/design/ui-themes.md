@@ -1,6 +1,6 @@
 # UI themes and modular layouts
 
-Status: first version in `mpfree-ui` (themes, effects, layout files) and the new `mpfree-startup` crate (themed startup screens). Asked for by the owner on 2026-11-11.
+Status: first version in `mpfree-ui` (themes, effects, layout files) and the new `mpfree-startup` crate (themed startup screens). Asked for by the owner on 2026-11-11. The theme refactor (colour roles, theme files that follow and mix colours, the contrast and fixed-colour checks, then a Light theme) started on 2026-11-22: see [The theme refactor](#the-theme-refactor) for where it stands.
 
 ## What the owner asked for
 
@@ -31,12 +31,45 @@ Fonts: Sans / Bold roles → the theme's `face_body` / `face_title` (every built
 
 | Layer | What it holds | Code |
 | --- | --- | --- |
-| Tokens | Colours by meaning (`bg`, `surface`, `raised`, `outline`, `text`, `text_dim`, `text_faint`, `accent`, `accent2`, `on_accent`, `good`, `warn`, `bad`), eight `track` colours, sizes (`radius`, `gap`, `pad`, five text sizes). | [`theme.rs`](../../../rust/mpfree-ui/src/theme.rs) |
+| Tokens | Core colours by meaning (`bg`, `surface`, `raised`, `outline`, `text`, `text_dim`, `text_faint`, `accent`, `accent2`, `on_accent`, `good`, `warn`, `bad`), eight `track` colours, sizes (`radius`, `gap`, `pad`, five text sizes). | [`theme.rs`](../../../rust/mpfree-ui/src/theme.rs) |
+| Roles | Every other colour a screen paints, each with a default rule in the core colours (`qlink.1 = {track.1}`), and the helpers screens use: `ink_on`, `swatch`, `round`, `Paint`. See [Colour roles](#colour-roles). | [`roles.rs`](../../../rust/mpfree-ui/src/roles.rs) |
 | Effects | `corners` (round, chamfer, square), `glow` (outline halo), `text_glow`, `backdrop` (solid, gradient, grid, dots, scanlines) with `backdrop_to`, `backdrop_line`, `backdrop_step`, and `tint` (how far kit and pad colours lean towards the accent on screen; pad lights are unchanged). | [`style.rs`](../../../rust/mpfree-ui/src/style.rs) |
 | Faces | `face_body`, `face_title`: which of the three built-in faces (sans, bold, mono) the two text roles use. The owner wants one consistent UI font in every theme (2026-11-11), so the built-in themes all keep sans and bold; the hook stays for user themes. | [`text.rs`](../../../rust/mpfree-ui/src/text.rs) `Fonts::set_roles` |
 | Startup | Which startup screen goes with the theme (`galaxy`, `console`, `synthwave`, `spaceship`). | [`mpfree-startup`](../../../rust/mpfree-startup) |
 
 `Styled` draws the default theme pixel for pixel as before (a test checks this). The backdrop is laid out in screen coordinates, so a widget that redraws only part of itself lines up with the rest of the screen. `Ui::set_theme` switches theme at run time: tokens, effects and font roles change together and every page is laid out again with the new spacing.
+
+## Colour roles
+
+A theme sets the core colours. Everything else a screen paints is a **role**: a named colour with a default rule written in the core colours, so a theme that sets only the core colours still gets every role, turned the right way for light or dark. A theme file can set any role to a colour or a rule of its own.
+
+The roles are one table, `ROLES` in [`roles.rs`](../../../rust/mpfree-ui/src/roles.rs): key, group, tier (core or role), default rule and one line of what it colours. The theme file's keys, `Theme::to_text`, the readability check and (in phase 4) the manual's role list all come from it. **A role is added in the same pull request as the first drawing code that uses it**, never ahead of it, so the table only holds roles something draws.
+
+| Key | Group | Default rule | What it colours |
+| --- | --- | --- | --- |
+| `record` | Status | `{bad}` | Recording: the record button, armed inputs, the level while recording |
+| `qlink.1` to `qlink.4` | Controls | `{track.1}` to `{track.4}` | The four Q-Link knobs: rings, Q1 to Q4 labels, what each moves |
+| `text_inverse` | Text | `{bg}` | Text on a fill too bright (or too dark) for `text` |
+| `highlight` | Light and shade | `{text}` | Bright marks: what a pad or button flashes towards when hit, the ring round a picked cell |
+| `shadow` | Light and shade | `light_dark({text}, {bg})` | Drop shadows (drawn see-through) |
+| `series.1` to `series.8` | Palettes | `{track.1}` to `{track.8}` | Graph lines and EQ bands, in order |
+| `handle` | Controls | `light_dark({surface}, {text})` | A switch's knob, a slider's handle |
+| `cut` | Palettes | `{text_dim}` | The EQ's low and high cuts, beside its bands' series colours |
+| `grain` | Sampler | `{accent2}` | The grain window over the wave and its GRAIN and SIZE marks |
+
+Every built-in theme sets some roles to the exact colours its screens drew before roles existed (the sampler's record red `#FF4D5E` and grain purple `#C77DFF`, the EQ's band and cut colours, the Play page's white flash and black shadow, the white of switch knobs and slider handles, and outside Default the default Q-Link colours), so moving a screen onto roles changes no pixel. Light (phase 4) uses the rules. A theme file with `base = default` copies those colours too, like everything else the base sets; a line such as `record = {bad}` puts a role back on its rule.
+
+What screens call:
+
+- `t.role(Role::X)`, or the helpers `t.qlink(i)`, `t.series(i)`, `t.record()`; `t.color(key)` reads any colour by its key.
+- `t.ink_on(fill)`: the label colour for any coloured fill, `text` or `text_inverse`, whichever reads better on it. It replaces `t.bg` used as dark text, and `on_accent` anywhere but on the accent.
+- `t.swatch(c)` for a content colour (a kit's, a pad's, a track's own): `fill` (as the theme shows it, through `t.content`), `tint` (18 % of it over the panel, for big areas), `line` (moved towards `text` just far enough for 3:1 on panels), `text` (the same for 4.5:1) and `ink` (`ink_on(fill)`). A colour that already reads comes back unchanged, which is why Default's pastels keep their pixels.
+- `t.readable(ink, fill)`: text in a colour of its own (a Q-Link knob's number, a macro's) on a fill the theme doesn't choose, moved towards whichever of `text` and `text_inverse` reads on the fill just far enough for 4.5:1. Text that already reads comes back unchanged.
+- `t.faded(ink, fill)`: the text of a control that does nothing as set, half see-through, but drawn just solid enough to keep 3:1 on `fill` where half would read less (a dark ink on a light panel). In the dark built-in themes it comes back half, as before.
+- `t.round(r)`: a corner radius drawn for Default's 14 px radius, scaled to the theme's, so one number, `radius`, sets every corner. Default gets `r` back. Circles, dots and pills keep their own radius.
+- `t.keys()`: a piano keyboard's white, black and marked keys, the right way round on a light or dark theme (white keys a quarter of the way from `text` to `bg` on a dark one, `surface` on a light one). Label a key with `ink_on(key)`.
+- `Paint` (a colour key, a colour key see-through, two keys mixed, a content colour, or a literal for artwork) for widgets built before they know the theme; `paint.on(&theme)` resolves it when drawn, so a page shown before the theme changed still draws in the new one. `Paint::ACCENT`, `Paint::TEXT_DIM` and the rest name the core colours, `Paint::track(i)` a track colour, and `paint.with_alpha(a)` makes one see-through. The sampler's knob cards, pad bar, wave marks, lane cells and grain window keep one, and so do `mpfree-synth-ui`'s tiles, cards, curves and boxes (the FX tab's too): its `themed()`, which matched colours by value, is gone.
+- `t.is_light()`: the theme's `mode`, or on `auto`, whether `bg` is brighter than `text`.
 
 ## Theme files
 
@@ -53,15 +86,47 @@ backdrop_line = #FF6C1166
 corners       = chamfer
 ```
 
-- Colours are `#RRGGBB` or `#RRGGBBAA` (a translucent `surface` lets the backdrop show through panels).
+- Colours are `#RRGGBB` or `#RRGGBBAA` (a translucent `surface` lets the backdrop show through panels), or follow and mix others:
+  - `{accent}` (or just `accent`) is another colour of the theme: a core colour, `track.1` to `track.8`, `backdrop_to`, `backdrop_line` or a role;
+  - `mix(a, b, 30%)` is 30 % of the way from `a` to `b`; `alpha(a, 40%)` is `a` at 40 % opacity;
+  - `light_dark(a, b)` is `a` on a light theme and `b` on a dark one, like CSS's `light-dark()`. `mode = auto | light | dark` says which the theme is (`auto` compares `bg` and `text`).
+  A colour may follow one set further down the file. A circle (`accent = {accent2}`, `accent2 = {accent}`) is a mistake that names both lines; both keep the base theme's colours.
+- `track = a b c` sets the eight track colours (a shorter list repeats); `track.3 = ...` sets one, and wins over the list.
 - `#` starts a comment when it begins the line or is followed by a space.
-- Mistakes are errors that name the line: `theme line 3: accent: expected #RRGGBB, got "blue"`.
-- `Theme::check()` warns when text is hard to read (WCAG contrast under 4.5:1 for text, 3:1 for dim text and accents), and when a button label's inks are under 4.5:1 on `raised`: both `text` and `text_dim`, because a label on a `raised` fill uses `Theme::button_ink(usable)` (text, or text_dim when the button can't be used) and never `text_faint` (Jay after live test 3: "light gray on a medium gray button is no bueno"). The built-in themes pass; a test keeps it that way.
-- Every built-in theme is written out in full in [`rust/mpfree-ui/themes/`](../../../rust/mpfree-ui/themes) as a starting point, and `cargo run -p mpfree-ui --example theme_file -- NAME` prints one. A test keeps those files in step with the code.
+- Two readings. `Theme::parse` is strict, for the app's themes folder today: any mistake or unknown key is an error that names the line (`theme line 3: accent: expected a colour (#RRGGBB, {name}, mix(), alpha() or light_dark()), got "blue"`). `Theme::load` never fails: a line with a mistake leaves what it would have changed as the base has it, an unknown key (from a newer MPFree, say) is skipped, and each is listed as a `Problem` (line, kind, what is wrong, what was used instead), followed by the readability warnings. The app switches to `load`, with the problems shown on the Appearance row, in phase 5 (a Prefs change, through the layout spec), so no theme ever falls back without saying so.
+- `Theme::check()` warns when text is hard to read (WCAG contrast under 4.5:1 for text, 3:1 for dim text, accents and the roles drawn as lines and labels: `record`, `qlink.N`, `series.N`), and when a button label's inks are under 4.5:1 on `raised`: both `text` and `text_dim`, because a label on a `raised` fill uses `Theme::button_ink(usable)` (text, or text_dim when the button can't be used) and never `text_faint` (Jay after live test 3: "light gray on a medium gray button is no bueno"). The built-in themes pass; a test keeps it that way.
+- Every built-in theme is written out in full in [`rust/mpfree-ui/themes/`](../../../rust/mpfree-ui/themes) as a starting point, roles included (as their rules, such as `qlink.2 = {track.2}`), and `cargo run -p mpfree-ui --example theme_file -- NAME` prints one. A test keeps those files in step with the code. [`example-sunrise.theme`](../../../rust/mpfree-ui/themes/example-sunrise.theme) shows following and fading colours.
 
 The pad player's Prefs has one **Appearance** row whose value is the theme in use. Its arrows (or - / +, or SHIFT + wheel) step through Default, Console, Synthwave and Spaceship. Each step switches the screen at once (`Ui::set_theme`) and keeps it in the store's "app" settings as `theme`, so it comes back at the next start. `mpfree --theme NAME|FILE` still picks the theme for one run (for `--preview` and on the device) and wins over the saved one.
 
 **Themes folder.** Theme files put in `files/themes/` on the data partition (`/run/mpfree-data/files/themes/` on the stick), named `NAME.theme` (lower case, digits, `.`, `_`, `-`), join the Appearance row after Spaceship, in name order, at most 32. The row shows the theme's `name` (or the file name when it has none or reuses a built-in theme's name). The app only reads the folder: a file that doesn't parse is left out with a log line (`themes: broken.theme left out: theme line 1: ...`), and `themes: found ...` lists the rest. Picking one keeps its file name as `theme`; if the file is gone at the next start, the default theme shows and the log says the saved theme was skipped.
+
+## Checks
+
+Two tests keep every theme usable as screens change. Both run in the normal `cargo test`, and both are ratchets: a count may go down at any time (the theme work lowers them as it goes) but going up fails.
+
+**Contrast on every screen, in every built-in theme** ([`mpfree-app/tests/theme_contrast.rs`](../../../rust/mpfree-app/tests/theme_contrast.rs)). `mpfree --display-lists DIR --theme all` draws each sample page in each built-in theme (the screens are built once). [`mpfree_ui::lint::text_runs`](../../../rust/mpfree-ui/src/lint.rs) plays each page's display list back and measures every run of text (glyphs of one ink on one line) against the average of the pixels under it, before it is drawn; a glowing theme's text glow is not counted as text. A run under 3:1 is unreadable. [`golden/theme-contrast.txt`](../../../rust/mpfree-app/golden/theme-contrast.txt) lists how many each theme's page may have, each line with its reason. On 22 Nov (phase 0) that was 553 runs in Default, 355 in Console, 319 in Synthwave and 2,594 in Spaceship; most are `text_faint` on `raised` or on a panel (2.6:1 in Default, 2.8:1 in Spaceship), and over 2,000 of Spaceship's are the arp panel's faint step marks. A page with more fails with the new runs' colours and places. If the new run is meant, write the list (`MPFREE_LINT_BLESS=1 cargo test -p mpfree-app --test theme_contrast`) and give its line a reason. About 25 s on the workstation.
+
+**No new fixed colours in drawing code** ([`mpfree-ui/tests/fixed_colours.rs`](../../../rust/mpfree-ui/tests/fixed_colours.rs)). It counts hex numbers of six or eight digits that aren't one side of a bit operation, and `Color::rgb(0)`, in the code of every crate that draws (`mpfree-ui`, `mpfree-app`, `mpfree-mpcskin`, every `mpfree-*-ui`), comments, strings and `#[cfg(test)]` items left out, and holds each file to its count in [`tests/fixed-colours.txt`](../../../rust/mpfree-ui/tests/fixed-colours.txt). Files where hex numbers aren't colours, or where colours are meant to be written down (the built-in themes), are listed with `*`. A file with more fails, naming the lines: use a core colour, a role, or `theme.swatch(colour)` instead, or add a role (in `roles.rs`, with its rule) if nothing fits. `MPFREE_LINT_BLESS=1 cargo test -p mpfree-ui --test fixed_colours` writes the counts.
+
+`Theme::check` covers each theme's own pairs (text on panels and buttons, accents, the line roles), and the theme file tests keep the written-out built-in themes in step.
+
+## The theme refactor
+
+Asked for on 2026-11-22 (a Reddit request for a light theme; the owner's go the same day): move every screen onto theme roles so themes are simple to write, then ship a **Light** theme with the default dark one as the proof. Themes change colours and styles, never layout, the font or the pad lights. Six phases, Default pixel for pixel the same through phases 0 to 3 (the golden screens prove it):
+
+| Phase | What | State |
+| --- | --- | --- |
+| 0 | Roles table and helpers, theme files that follow and mix colours, `Theme::load` with problems, the contrast and fixed-colour checks | #762 |
+| 1 | Shared widgets (`mpfree-ui`, the app's frame): Q-Link colours as `qlink` roles (`draw::KNOB` is gone; the Q-Link column's numbers through `t.readable`), labels on coloured fills (pills, wave markers, pads) through `ink_on`, card corners through `t.round`. Default draws the same display lists; in the other built-in themes the shared widgets' corners follow `radius`. A trial light palette's unreadable runs fall from 1,063 to about 400, the rest in feature crates | this change |
+| 2 | One pull request per feature crate (sampler, chain and mixer EQ, time, synth and FX with `Paint`, MIDI, arp and browser, the app's Play, Perform and Looper, and `mpfree-mpcskin`) | sampler: this change (its two palettes one, record red and grain purple from roles, knob cards, marks and lane cells keep a `Paint`, labels on fills through `ink_on`, keyboards through `t.keys()`; every Sample page reads in the trial light palette); chain and mixer EQ: this change (bands from `series`, cuts from `cut`, dot and button labels through `ink_on`, the notes keyboard through `t.keys()`, corners through `t.round`; every chain and mixer page reads in the trial light palette); MIDI, arp, browser and the FX pads: this change (card corners through `t.round`, labels on warn and accent2 fills through `ink_on`, on accent fills `on_accent`, the MIDI monitor's keyboard through `t.keys()`; their pages already read in the trial light palette); synth and FX: this change (tiles, cards, curves and boxes keep a `Paint`, so `themed()` and its colour matching are gone and the effect cards no longer need the theme to be built; a section shades a drawing's accent, good, warn and second accent like Q-Link colours 1 to 4, as the default theme did by value; labels on job and Q-Link fills through `ink_on`, a switched-off control's labels through `t.faded`, corners through `t.round`; every Synth page reads in the trial light palette); `mpfree-mpcskin`: this change (the pop-ups over skins follow the theme with the guards below, the two pop-up faults fixed); time (clips, Arrange and the song lanes): this change (track names on their own colour, the clips' second lines and words on cells through `t.readable`, labels on the transport's lit buttons, scene buttons, Rec song and the song tags through `ink_on`, corners through `t.round`, the note editor's fallback colour the third track colour; the Default clips pages' second lines go from as low as 2.5:1 to 4.5:1, every clips and Arrange page reads in the trial light palette); the app's Sequencer, Play, Pads and Looper: this change (the step chips' white and the lock lanes' lightening from `highlight`, their words through `ink_on` and `t.readable`, the pads' type badges and knob labels through `t.readable`, labels on lit buttons through `ink_on` instead of the page background, a muted speaker's red cross made to read on its button (`draw::speaker_on`), corners through `t.round`; the trial light palette's unreadable runs fall to 59, each one also unreadable in Default) |
+| 3 | Text sizes, `gap` and `pad` leave themes (owner, 22 Nov: consistent sizes everywhere so no theme can break a layout); the 8 touch areas that assume 14 px padding are fixed | |
+| 4 | `Theme::light()` and `themes/light.theme`, Light after Default in Prefs > Appearance, golden screens for Light, the manual page "Making your own theme" (shown to the owner on contact sheets first) | |
+| 5 | Theme writers' tools: problems on the Appearance row, `--check-theme`, a contact sheet script, commented example themes, and a "Keep this theme?" prompt after picking a theme that goes back to the old one after 15 seconds untouched (owner, 22 Nov; a Prefs change, so it goes through the layout spec) | |
+
+Flexible layouts and user-made controls are a separate, later piece of work (owner, 22 Nov), not part of themes.
+
+**MPC plugin skins.** The plugin's own art is drawn as its makers drew it, in every theme. MPFree's own pop-ups over it (the big knob editor and the list of choices) follow the theme (owner's pick, 22 Nov), in the UI font, with guards so a theme can't make them unusable ([`mpfree-mpcskin/src/look.rs`](../../../rust/mpfree-mpcskin/src/look.rs)): every colour pair a pop-up draws is checked when the theme is set (text 4.5:1 on what is under it, the knob's arc and pointer 3:1) and a pair that falls short is moved just far enough towards the theme's text or inverse text (black or white if the theme's own two are too alike); the panel is always solid, and its edge is measured against the dimmed skin round it and drawn to stand out 3:1. The Q-Link bank's frame, MPFree's mark on the art itself, measures the skin pixels under it and takes whichever theme ink reads, see-through, else a two-tone line. Every move is a rescue: logged when the theme is set (`screen: theme NAME: N colour(s) on the skin's pop-ups moved so they read: ...`) and counted on the Debug page with the two-tone frames; the built-in themes need none. Tests draw the pop-ups in every built-in theme and a torture theme (every colour alike, see-through panel) over very dark, very bright and mid-grey stand-in skins. Two faults are fixed with it: the panel is centred in the part of the MPC's screen MPFree shows (its top used to sit under the top bar), and a list names every choice from the skin's replacement strings (it used to show numbers for all but the current one).
 
 ## The built-in themes
 
@@ -125,11 +190,11 @@ What is automatic, for any crate that draws through `PaintCx`: colours that come
 
 What each crate should change (small, mechanical):
 
-1. **No hex colours in drawing code.** Use tokens; for a set of distinct colours (synth layers, tracks, graph series) use `t.track(i)`. `mpfree-synth-ui` is done: its panels build tiles and cards before they know the theme, so they name a colour by meaning (`QLINK_COLORS`, `TEXT`, `TEXT_DIM`, `TEXT_FAINT`, `ON_FILL`, the default theme's values) and `widgets::themed` swaps in the shown theme's token when painting (see [synths.md](synths.md)). That also covers `mpfree-fx-ui`, which uses the same widgets.
-2. **Content colours through `t.content(c)`** (kit colours, pad colours, user-chosen track colours), so tinting themes can pull them in.
-3. **Panels with `cx.panel(r)` / `cx.titled_panel(..)`**, buttons and pads with `fill_round_rect` at `t.radius` (or a little less): the corner style follows.
+1. **No hex colours in drawing code** (the [fixed-colour check](#checks) holds the line). Use core colours and roles; for a set of distinct colours use `t.track(i)` or `t.series(i)`, for the Q-Links `t.qlink(i)` (with `t.readable(t.qlink(i), fill)` for a knob's number as text). `mpfree-synth-ui`'s panels build tiles and cards before they know the theme, so they keep a `Paint` (`QLINK_COLORS`, `TEXT`, `TEXT_DIM`, `TEXT_FAINT`, `ON_FILL`, or `Paint::ACCENT` and the rest) that the widgets resolve when painting (see [synths.md](synths.md)). That also covers `mpfree-fx-ui`, which uses the same widgets.
+2. **Content colours through `t.swatch(c)`** (kit colours, pad colours, user-chosen track colours): `.fill` for fills (it goes through `t.content(c)`, so tinting themes can pull them in), `.text` for text in the colour, `.ink` for a label on it.
+3. **Panels with `cx.panel(r)` / `cx.titled_panel(..)`**, buttons and pads with `fill_round_rect` at `t.radius` (or a little less): the corner style follows. A corner drawn at a fixed size goes through `t.round(n)`; a circle, dot or pill keeps its own radius.
 4. **`t.bg` means "background".** A fill in exactly `t.bg` becomes the theme's backdrop. To paint a solid colour that happens to look like the background, use `t.surface` or a token, not `t.bg`.
-5. **Text colour on accent fills is `t.on_accent`.**
+5. **Text colour on accent fills is `t.on_accent`;** on any other coloured fill it is `t.ink_on(fill)`, never `t.bg`.
 6. Previews: add `--theme` to the crate's preview binary and render every theme in tests (cheap, catches unreadable combinations).
 
 ## Later

@@ -268,6 +268,7 @@ fn a_panic_clears_every_arp_and_passes_through() {
         track: ALL,
         dest: ALL,
         event: Event::AllOff,
+        notes: false,
     });
     let mut log = Log::default();
     arps.finish(&block, &mut log);
@@ -304,6 +305,7 @@ fn a_through_tracks_locks_go_around_its_arp() {
         track: KEYS as u16,
         dest: 0,
         event,
+        notes: false,
     };
     let mut sink = arps.through_sink();
     sink.send(out(0, Event::Lock { addr, value: 0.25 }));
@@ -704,6 +706,7 @@ fn a_mute_cuts_the_echoes_waiting_and_a_panic_ends_what_the_effects_added() {
         track: ALL,
         dest: ALL,
         event: Event::AllOff,
+        notes: false,
     });
     arps.finish(&block, &mut log);
     t.process(44_100, &mut block);
