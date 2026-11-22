@@ -31,6 +31,13 @@
 //! On a desktop, `--desktop-test DIR` runs against any empty-or-missing
 //! folder's parent instead (no mount checks), and `--quick` cuts every
 //! step to 2 s and 8 MiB, for the tests.
+//!
+//! `--read-only` writes nothing at all: it reads the audio already under
+//! `library/` the way the streaming engine will (many paced streams, reads
+//! of 64 to 512 KiB) and gives the tail of the read times and the window
+//! each stream would need ([`read`]). On the stick it also needs the
+//! partition mounted `noatime` (or read-only), so reading changes no
+//! access time.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -76,6 +83,9 @@ macro_rules! esay {
     }};
 }
 
+#[path = "disktest/read.rs"]
+mod read;
+
 static STOP: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn on_signal(_: libc::c_int) {
@@ -94,6 +104,7 @@ struct Opts {
     base: PathBuf,
     desktop: bool,
     quick: bool,
+    read_only: bool,
 }
 
 fn parse() -> Result<Opts, String> {
@@ -101,6 +112,7 @@ fn parse() -> Result<Opts, String> {
         base: PathBuf::from(MOUNT),
         desktop: false,
         quick: false,
+        read_only: false,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -110,9 +122,11 @@ fn parse() -> Result<Opts, String> {
                 o.desktop = true;
             }
             "--quick" => o.quick = true,
+            "--read-only" => o.read_only = true,
             "-h" | "--help" => {
-                say!("usage: mpfree-disktest [--desktop-test DIR] [--quick]");
+                say!("usage: mpfree-disktest [--read-only] [--desktop-test DIR] [--quick]");
                 say!("Without --desktop-test it runs only on {MOUNT}, the stick's partition 4.");
+                say!("--read-only reads the audio in its library folder and writes nothing.");
                 std::process::exit(0);
             }
             _ => return Err(format!("unknown argument {a:?}")),
@@ -124,8 +138,9 @@ fn parse() -> Result<Opts, String> {
     Ok(o)
 }
 
-/// The mount source of `point` from /proc/self/mountinfo, and its type.
-fn mount_of(point: &str) -> Result<(String, String), String> {
+/// The mount source of `point` from /proc/self/mountinfo, its type and
+/// its mount options.
+fn mount_of(point: &str) -> Result<(String, String, String), String> {
     let info = fs::read_to_string("/proc/self/mountinfo").map_err(|e| format!("mountinfo: {e}"))?;
     let mut found = None;
     for line in info.lines() {
@@ -135,7 +150,11 @@ fn mount_of(point: &str) -> Result<(String, String), String> {
         };
         if f.len() > dash + 2 && f.get(4) == Some(&point) {
             // The last mount on a point is the one in use.
-            found = Some((f[dash + 2].to_string(), f[dash + 1].to_string()));
+            found = Some((
+                f[dash + 2].to_string(),
+                f[dash + 1].to_string(),
+                f[5].to_string(),
+            ));
         }
     }
     found.ok_or_else(|| format!("{point} is not a mount point"))
@@ -157,8 +176,9 @@ fn ext4_label(dev: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&name[..end]).into_owned())
 }
 
-/// Rule zero: only the stick's partition 4.
-fn check_device() -> Result<(), String> {
+/// Rule zero: only the stick's partition 4. Reading only, it must also be
+/// mounted `noatime` or read-only, so a read changes no access time.
+fn check_device(read_only: bool) -> Result<(), String> {
     for dir in ["/dev", "/sys/block"] {
         if let Ok(rd) = fs::read_dir(dir) {
             for e in rd.flatten() {
@@ -171,9 +191,14 @@ fn check_device() -> Result<(), String> {
             }
         }
     }
-    let (src, fstype) = mount_of(MOUNT)?;
+    let (src, fstype, opts) = mount_of(MOUNT)?;
     if fstype != "ext4" {
         return Err(format!("{MOUNT} is {fstype}, not ext4"));
+    }
+    if read_only && !opts.split(',').any(|o| o == "noatime" || o == "ro") {
+        return Err(format!(
+            "{MOUNT} is mounted {opts}: reading would change access times (needs noatime or ro)"
+        ));
     }
     let name = src
         .strip_prefix("/dev/")
@@ -192,7 +217,7 @@ fn check_device() -> Result<(), String> {
     if label != LABEL {
         return Err(format!("{src} is labelled {label:?}, not {LABEL}"));
     }
-    say!("device: {MOUNT} is {src} (USB, partition 4, ext4 {LABEL:?}); no MMC device");
+    say!("device: {MOUNT} is {src} (USB, partition 4, ext4 {LABEL:?}, {opts}); no MMC device");
     Ok(())
 }
 
@@ -280,6 +305,52 @@ impl Times {
         let r = f().map_err(|e| e.to_string());
         self.ms.push(t.elapsed().as_secs_f64() * 1e3);
         r
+    }
+
+    fn merge(&mut self, other: Times) {
+        self.ms.extend(other.ms);
+    }
+
+    fn sorted(&self) -> Vec<f64> {
+        let mut v = self.ms.clone();
+        v.sort_by(f64::total_cmp);
+        v
+    }
+
+    /// The `p` quantile (nearest rank), 0 with no times.
+    fn quantile(&self, p: f64) -> f64 {
+        let v = self.sorted();
+        if v.is_empty() {
+            return 0.0;
+        }
+        v[((v.len() - 1) as f64 * p).round() as usize]
+    }
+
+    fn max(&self) -> f64 {
+        self.ms.iter().copied().fold(0.0, f64::max)
+    }
+
+    /// As [`Times::report`], with p99.9 and p99.99.
+    fn report_tails(&self, what: &str) -> String {
+        if self.ms.is_empty() {
+            return format!("  {what}: none");
+        }
+        let v = self.sorted();
+        let q = |p: f64| v[((v.len() - 1) as f64 * p).round() as usize];
+        let over = |l: f64| v.iter().filter(|&&x| x > l).count();
+        format!(
+            "  {what}: {} ops, p50 {:.2} ms, p99 {:.2} ms, p99.9 {:.2} ms, p99.99 {:.2} ms, max {:.2} ms; over 50/100/250/500 ms: {}/{}/{}/{}",
+            v.len(),
+            q(0.5),
+            q(0.99),
+            q(0.999),
+            q(0.9999),
+            v[v.len() - 1],
+            over(50.0),
+            over(100.0),
+            over(250.0),
+            over(500.0)
+        )
     }
 
     fn report(&self, what: &str) -> String {
@@ -558,7 +629,7 @@ fn main() -> ExitCode {
         BLOCK / 1024
     );
     if !o.desktop {
-        if let Err(e) = check_device() {
+        if let Err(e) = check_device(o.read_only) {
             esay!("mpfree-disktest: refused: {e}. Nothing was written.");
             return ExitCode::from(3);
         }
@@ -580,6 +651,22 @@ fn main() -> ExitCode {
             return ExitCode::from(3);
         }
     };
+    if o.read_only {
+        return match read::run(&base, o.quick) {
+            Ok(()) => {
+                say!("done");
+                ExitCode::SUCCESS
+            }
+            Err(read::Fail::Refused(e)) => {
+                esay!("mpfree-disktest: refused: {e}. Nothing was written.");
+                ExitCode::from(3)
+            }
+            Err(read::Fail::Failed(e)) => {
+                esay!("mpfree-disktest: failed: {e}. Nothing was written.");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let dir = base.join(FOLDER);
     if let Err(e) = clean(&dir) {
         esay!("mpfree-disktest: refused: {e}. Nothing was written.");
