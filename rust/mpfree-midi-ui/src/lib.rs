@@ -122,6 +122,11 @@ pub struct Live {
     /// The project's tracks by name, in order (at most 128, as many as
     /// MIDI out serves).
     pub tracks: Vec<String>,
+    /// The synths a route can name past the tracks (the instrument
+    /// redesign's step 11e): each with no track of its own, the shared
+    /// synth first, by the project's instrument id and channel name ("FM ·
+    /// Pads").
+    pub synths: Vec<(u32, String)>,
     /// Clock arriving now: the port's name and its tempo.
     pub clock_in: Option<(String, f32)>,
     /// The volts each CV output gives now.
@@ -172,6 +177,7 @@ impl Default for Live {
                 clock_measured: None,
             }],
             tracks: Vec::new(),
+            synths: Vec::new(),
             clock_in: None,
             cv_volts: [0.0; CV_OUTS],
             learn_names: Vec::new(),
@@ -410,6 +416,15 @@ pub fn sections(model: &Shared) -> Vec<Box<dyn mpfree_mixer_ui::IoSection>> {
         Box::new(form::FormSection::new(cv::Cv, model.clone())),
         Box::new(monitor::MonitorSection::new(model.clone())),
     ]
+}
+
+/// Synth `id` of the project (a route that names one, step 11e) by its
+/// channel name, as the app last said ([`Live::synths`]).
+pub(crate) fn synth_name(m: &IoModel, id: u32) -> String {
+    m.live.synths.iter().find(|s| s.0 == id).map_or_else(
+        || "a synth that isn't here now".to_string(),
+        |s| s.1.clone(),
+    )
 }
 
 /// A note's name as the app writes it (48 is C3, 60 is C4).

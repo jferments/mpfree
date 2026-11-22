@@ -28,8 +28,20 @@
 //!   the synth and the other banks play on as they did; its first choice
 //!   gives the bank back to the track. With the first, a tap plays on
 //!   every bank, a bank's own given up ([`App::synth_pick_scope`]).
+//! - **Layer** (step 11b; the plan's "Step 11", Joshi's "Build all
+//!   three" of 22 Nov 2026): a switch in the heading. With it on, a tap
+//!   adds the synth to what the pads play, or takes it off, up to
+//!   [`super::pad_layers::PAD_LAYERS`] (app/pad_layers.rs); each one
+//!   playing is outlined, and the header reads "Pads: FM + Pluck". The
+//!   first choice adds the selected track's synth (never a kit). Layers
+//!   are every bank's, so Layer and "Bank B only" don't go together: each
+//!   turns the other off. With Layer off a tap plays the synth alone, the
+//!   layers given up. The list opens with Layer on while the pads have
+//!   layers ([`App::synth_pick_layer`]).
 
+use super::pad_layers::{MORE, PAD_LAYERS};
 use super::{App, Effect, PadFocus, View};
+use crate::instrument_list::InstrumentId;
 use crate::instruments::{free, Held, FREE, SLOTS};
 use crate::synth::Engine;
 
@@ -52,6 +64,10 @@ pub struct SynthPickView {
     /// bank ("All banks"). None while PAD BANK picks the shared synth's
     /// layouts.
     pub bank: Option<(char, bool)>,
+    /// Layer is on (step 11b): a tap adds a synth or takes it off.
+    pub layer: bool,
+    /// The choices the pads play as layers beyond `now`, each outlined.
+    pub layers: Vec<usize>,
 }
 
 /// The list while it is open: what the pads played when it opened, for
@@ -69,6 +85,11 @@ pub(super) struct SynthPick {
     /// "Bank B only" (step 6c): a tap gives the bank the pads are on the
     /// synth, not every bank.
     bank_only: bool,
+    /// Layer (step 11b): a tap adds a synth to what the pads play or
+    /// takes it off.
+    layer: bool,
+    /// The layers the pads had when it opened, for Cancel.
+    had_layers: [Option<InstrumentId>; MORE],
 }
 
 /// What each built-in synth is good for, in musicians' words (the manual's
@@ -184,7 +205,51 @@ impl App {
             return Vec::new();
         }
         p.bank_only = only;
+        // A bank's own plays alone (step 11b).
+        if only {
+            p.layer = false;
+        }
         vec![Effect::SynthPick(self.synth_pick_view())]
+    }
+
+    /// The Layer switch in the open list's heading (step 11b): with it on,
+    /// a tap adds a synth to what the pads play or takes it off. Layers
+    /// are every bank's, so it turns "Bank B only" off.
+    pub fn synth_pick_layer(&mut self, on: bool) -> Vec<Effect> {
+        let Some(p) = self.synth_pick.as_mut() else {
+            return Vec::new();
+        };
+        if p.layer == on {
+            return Vec::new();
+        }
+        p.layer = on;
+        if on {
+            p.bank_only = false;
+        }
+        vec![Effect::SynthPick(self.synth_pick_view())]
+    }
+
+    /// The engine (or plugin) id of instrument `id` of the list: what its
+    /// tile in the list is.
+    fn node_of(&self, id: InstrumentId) -> Option<&'static str> {
+        match self.instrument_list.kind(id)? {
+            crate::instrument_list::Kind::SharedSynth => Some(self.synth_pads.engine.node_id()),
+            k => k.holder().and_then(|h| self.track_sound(h)).map(|h| h.id),
+        }
+    }
+
+    /// The node ids the pads play as layers beyond the first, those
+    /// waiting to go in last.
+    fn layer_nodes(&self) -> Vec<&'static str> {
+        self.pad_layers()
+            .filter_map(|id| self.node_of(id))
+            .chain(
+                self.layer_to
+                    .iter()
+                    .flatten()
+                    .filter_map(|&n| self.track_sound(free(n)).map(|h| h.id)),
+            )
+            .collect()
     }
 
     /// The list as the screen draws it, while it is open.
@@ -228,6 +293,16 @@ impl App {
             (PadFocus::Track, None) => Some(0),
             (PadFocus::Instrument(_), None) => None,
         };
+        // The layers (step 11b), each by its tile.
+        let layers = if self.layers_apply() {
+            self.layer_nodes()
+                .iter()
+                .filter_map(|id| synths.iter().position(|c| c.0 == *id).map(|i| i + 1))
+                .filter(|&i| Some(i) != now)
+                .collect()
+        } else {
+            Vec::new()
+        };
         Some(SynthPickView {
             track,
             choices,
@@ -236,6 +311,8 @@ impl App {
             bank: self
                 .banks_apply()
                 .then(|| (super::bank_letter(page), pick.bank_only)),
+            layer: pick.layer,
+            layers,
         })
     }
 
@@ -258,6 +335,9 @@ impl App {
             had_choice: None,
             // On a bank with its own, the next tap changes that bank.
             bank_only: self.pads_bank().is_some(),
+            // With layers, the next tap adds or takes off one (step 11b).
+            layer: self.has_layers() && self.pads_bank().is_none(),
+            had_layers: self.pad_layers,
         });
         let view = self.synth_pick_view();
         if let (Some(p), Some(v)) = (self.synth_pick.as_mut(), view.as_ref()) {
@@ -273,8 +353,22 @@ impl App {
             return Vec::new();
         }
         let bank = self.pick_bank();
+        let layer = self.synth_pick.is_some_and(|p| p.layer) && bank.is_none();
         let mut fx = Vec::new();
         match (i, bank) {
+            // Layer (step 11b): the selected track's synth on or off.
+            (0, None) if layer => fx.extend(match self.track_synth_id() {
+                Some(id) => self.toggle_pad_layer(id),
+                None => vec![Effect::Tell(format!(
+                    "Track {} plays a kit, and a kit can't be a layer: tap a synth",
+                    self.track + 1
+                ))],
+            }),
+            (_, None) if layer => {
+                if let Some(&(id, name)) = self.pick_choices().get(i - 1) {
+                    fx.extend(self.layer_synth(id, name));
+                }
+            }
             (0, None) => fx.extend(self.pads_follow_track()),
             (0, Some(b)) => fx.extend(self.bank_follows_track(b)),
             _ => {
@@ -341,9 +435,12 @@ impl App {
         };
         let banks_own =
             self.bank_focus.iter().any(Option::is_some) || self.bank_to.iter().any(Option::is_some);
+        // With Layer off a tap plays the synth alone (step 11b).
+        let layered = bank.is_none() && self.has_layers();
         if self.track_sound(holder).map(|h| h.id) == Some(id)
             && points
             && (bank.is_some() || !banks_own)
+            && !layered
         {
             return Vec::new();
         }
@@ -362,15 +459,20 @@ impl App {
                 if !points {
                     self.pads_to = Some(n);
                 }
-                // Every bank: a bank's own is given up.
+                // Every bank: a bank's own is given up, and the layers.
                 self.bank_focus = [None; super::KIT_PAGES];
                 self.bank_to = [None; super::KIT_PAGES];
+                self.clear_layers();
             }
             Some(b) if !points => self.bank_to[b] = Some(n),
             Some(_) => {}
         }
         self.project_edit = true;
         let said = match bank {
+            None if layered => format!(
+                "The pads play {name} alone · Track {} keeps what it plays · REC records it on a free track",
+                self.track + 1
+            ),
             None => format!(
                 "The pads play {name} on every track · Track {} keeps what it plays · REC records it on a free track",
                 self.track + 1
@@ -389,6 +491,113 @@ impl App {
         ]
     }
 
+    /// Layer on (step 11b): synth `id` (`name`) added to what the pads
+    /// play, from a free place of its own, or taken off when one of them
+    /// is it; said, or why not. Over a kit it is what the pads play,
+    /// alone (a kit can't be a layer).
+    fn layer_synth(&mut self, id: &'static str, name: &'static str) -> Vec<Effect> {
+        if self.generating() {
+            return vec![Effect::Tell(
+                "Layers play the pads as pressed: let go of NOTE REPEAT or Latch, or close the Arp panel, first"
+                    .into(),
+            )];
+        }
+        // One of them already: off.
+        let first = match self.pads_focus {
+            PadFocus::Instrument(f) => Some(f),
+            PadFocus::Track => None,
+        };
+        let on = first
+            .into_iter()
+            .chain(self.pad_layers())
+            .find(|&l| self.node_of(l) == Some(id));
+        if let Some(l) = on {
+            return self.toggle_pad_layer(l);
+        }
+        if let Some(l) = (0..MORE).find(|&l| {
+            self.layer_to[l]
+                .and_then(|n| self.track_sound(free(n)))
+                .is_some_and(|h| h.id == id)
+        }) {
+            self.layer_to[l] = None;
+            self.project_edit = true;
+            let now = self.pads_layer_names().unwrap_or_else(|| {
+                first
+                    .map_or("the track's instrument", |f| self.instrument_name(f))
+                    .to_string()
+            });
+            return vec![Effect::Note(format!(
+                "{name} is off the pads · they play {now}"
+            ))];
+        }
+        // The first not in yet: it is still going in.
+        if self.pads_to.is_some() {
+            return vec![Effect::Tell(
+                "A moment: the pads' synth is still going in, then tap to layer".into(),
+            )];
+        }
+        // Over a kit: the synth is what the pads play, alone.
+        let chosen = match first {
+            Some(f) => f,
+            None => match self.track_synth_id() {
+                Some(t) => t,
+                None => return self.pads_synth(id, name, None),
+            },
+        };
+        let count = 1 + self.pad_layers().count() + self.layer_to.iter().flatten().count();
+        if count >= PAD_LAYERS {
+            return vec![Effect::Tell(format!(
+                "The pads play {PAD_LAYERS} synths, the most: take one off first"
+            ))];
+        }
+        let kept = self.synth_pick.map_or(0, |p| p.kept);
+        let loaded = self.track_sounds.iter().flatten().count();
+        let place = (loaded < SLOTS)
+            .then(|| {
+                (0..FREE).find(|&n| {
+                    self.track_sound(free(n)).is_none()
+                        && self.pads_to != Some(n)
+                        && !self.bank_to.contains(&Some(n))
+                        && !self.layer_to.contains(&Some(n))
+                        && kept >> n & 1 == 0
+                })
+            })
+            .flatten();
+        let Some(n) = place else {
+            return vec![Effect::Tell(format!(
+                "No room for {name}: {SLOTS} instruments are loaded, the most at once. Set a track to Kit first"
+            ))];
+        };
+        let was = self.pads_focus();
+        self.pads_focus = PadFocus::Instrument(chosen);
+        let holder = free(n);
+        self.set_track_sound(
+            holder,
+            Some(Held {
+                id,
+                name,
+                instance: 0,
+            }),
+        );
+        if let Some(slot) = self.layer_to.iter_mut().find(|s| s.is_none()) {
+            *slot = Some(n);
+        }
+        self.project_edit = true;
+        let mut fx = Vec::new();
+        if self.pads_focus() != was {
+            fx.push(Effect::PadsFocus(self.pads_focus()));
+        }
+        let now = self.pads_layer_names().unwrap_or_else(|| name.to_string());
+        fx.push(Effect::TrackSound {
+            track: holder,
+            id: Some(id),
+        });
+        fx.push(Effect::Note(format!(
+            "The pads play {now} · each on its own strip in the mixer"
+        )));
+        fx
+    }
+
     /// Keep (or the page left, or the card again): the list closes and the
     /// pads keep what they play. Cancel: they play what they played when it
     /// opened again (the synths tried go away, as nothing plays them).
@@ -403,15 +612,23 @@ impl App {
         };
         let back = listed(pick.had);
         let banks = pick.had_banks.map(|f| f.filter(|&f| listed(f)));
+        let layers = pick
+            .had_layers
+            .map(|l| l.filter(|&id| self.instrument_list.kind(id).is_some()));
         let moved = self.pads_focus != pick.had
             || self.pads_to.is_some()
             || self.bank_focus != banks
-            || self.bank_to.iter().any(Option::is_some);
+            || self.bank_to.iter().any(Option::is_some)
+            || self.pad_layers != layers
+            || self.layer_to.iter().any(Option::is_some);
         if !keep && moved && back {
             self.pads_focus = pick.had;
             self.pads_to = None;
             self.bank_focus = banks;
             self.bank_to = [None; super::KIT_PAGES];
+            self.clear_layers();
+            self.pad_layers = layers;
+            self.pack_layers();
             self.project_edit = true;
             fx.push(Effect::PadsFocus(self.pads_focus()));
         }
