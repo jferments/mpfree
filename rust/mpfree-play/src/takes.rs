@@ -174,6 +174,19 @@ pub enum SongChange {
     Tempo {
         at: Tick,
     },
+    /// Bars put in or taken out of the song (Arrange 3.3, one
+    /// `TimeEdit`): `len` song ticks at song tick `at`, everything after
+    /// moved on (`inserted`) or back.
+    Bars {
+        at: Tick,
+        len: Tick,
+        inserted: bool,
+    },
+    /// A marker added, renamed, moved or taken away (Arrange 3.3): the one
+    /// at song tick `at` (where it was, for one taken away).
+    Marker {
+        at: Tick,
+    },
 }
 
 /// A Song view edit: what it did, and the song before and after it.
@@ -872,7 +885,27 @@ impl Takes {
         if joins {
             let take = self.done.last_mut().expect("checked");
             if let Some(e) = take.song.as_mut() {
-                e.change = change;
+                e.change = match (e.change, change) {
+                    // Bars put in one after the other (+ Bar pressed
+                    // again): the undo list says how many in all.
+                    (
+                        SongChange::Bars {
+                            at,
+                            len,
+                            inserted: true,
+                        },
+                        SongChange::Bars {
+                            at: next,
+                            len: more,
+                            inserted: true,
+                        },
+                    ) if next == at + len => SongChange::Bars {
+                        at,
+                        len: len + more,
+                        inserted: true,
+                    },
+                    (_, change) => change,
+                };
                 e.after = project.arrangement.clone();
             }
             return take.number;
