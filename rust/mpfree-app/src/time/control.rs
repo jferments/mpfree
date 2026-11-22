@@ -58,12 +58,31 @@ use mpfree_time_ui::view::{
 use mpfree_transport::time::{TempoMap, Tick};
 use mpfree_transport::{Block, Command, State};
 
+use super::audio_wait::{AudioNeed, AudioWaits, Ctx as WaitCtx, CueKey, Wait};
 use super::follow::FollowCounts;
 use super::link::{
     Counts, CueCounts, InPlace, PeriodEnd, Rx, StripCounts, ToAudio, ToControl, Tracks, Tx,
 };
 use super::timing::next_timeline;
 use super::{PadRows, StepAction, StepClip, StepsData, LINE, NEW_CLIP_BARS, RECORD_ROOM};
+
+/// What a cue waiting for its audio needs from the control half
+/// ([`WaitCtx`]), borrowed field by field so the waits can change beside
+/// it.
+macro_rules! wait_ctx {
+    ($c:expr) => {
+        WaitCtx {
+            project: &$c.project,
+            cues: &$c.cues,
+            launches: &$c.launches,
+            perform: &$c.perform,
+            queue: $c.mute_queue.as_ref().map(|(_, q)| q),
+            info: &$c.info,
+            rate: $c.rate,
+            heard: $c.heard,
+        }
+    };
+}
 
 /// The clip settings card's join keys for its takes, a row each (see
 /// `Takes::set_clip`).
@@ -536,6 +555,9 @@ pub struct TimeControl {
     /// What the audio half's player counted for the contract, as last
     /// sent.
     cue_counts: CueCounts,
+    /// Cues kept back until their audio is held, while takes stream from
+    /// their files (`audio_wait.rs`).
+    audio_waits: AudioWaits,
     tx: Tx<ToAudio>,
     rx: Rx<ToControl>,
     /// A view the audio half's full queue handed back, sent again on the
@@ -668,6 +690,7 @@ impl TimeControl {
             decisions: Box::default(),
             heard: 0,
             cue_counts: CueCounts::default(),
+            audio_waits: AudioWaits::default(),
             tx,
             rx,
             unsent: None,
@@ -1291,6 +1314,9 @@ impl TimeControl {
             // gave no cue wait in the mute queue for its line.
             compile |= self.queue_scene_mutes();
         }
+        // Cues waiting for their audio whose line played without them move
+        // on, or are cancelled.
+        compile |= self.audio_waits_due(end.frames);
         let recorded = std::mem::take(&mut self.recorded_now);
         // The transport stopped: what live to song recorded goes into the
         // song (it compiles).
@@ -1387,6 +1413,10 @@ impl TimeControl {
                 && c.slot
                     .is_none_or(|slot| project.clip(c.track, slot).is_some())
         });
+        // Cues decided since the last compile that launch audio wait for
+        // it, with streaming on; cues gone leave their waits.
+        let cx = wait_ctx!(self);
+        self.audio_waits.decided(&cx);
         self.find_arm_and_pick();
         // Tracks added or taken away: the other armed tracks let go.
         if self.also != 0 && self.also_n != n {
@@ -1440,6 +1470,101 @@ impl TimeControl {
             (c.slowest_compile, c.slowest_compile_notes) = (took, played);
         }
         Ok(())
+    }
+
+    /// Cues that launch audio wait until the app has held the start of
+    /// their audio in memory (`on`: takes stream from their files), or go
+    /// as they are (`audio_wait.rs`). Turned off, every cue waiting goes
+    /// into the next view as it is. The offline copy never turns it on.
+    pub fn set_audio_waits(&mut self, on: bool) {
+        if self.audio_waits.set_on(on) {
+            let _ = self.compile();
+        }
+    }
+
+    /// What the cues waiting for their audio need held, in the order they
+    /// wait. A key stays listed until its cues land or are cancelled, held
+    /// or not; [`TimeState::audio_waits`]'s `needs_rev` rises whenever the
+    /// list changes.
+    pub fn audio_needs(&self) -> &[AudioNeed] {
+        self.audio_waits.needs()
+    }
+
+    /// The app holds the audio `key`'s cues need (`ok`): they go into the
+    /// view at once and land on their line (a hold in its last few ms
+    /// lands late, in phase). Not `ok`: not held (yet), so they stay out,
+    /// or come out again, and move on when their line plays without them.
+    /// False when nothing waits under `key`.
+    pub fn audio_held(&mut self, key: CueKey, ok: bool) -> bool {
+        match self.audio_waits.held(key, ok) {
+            None => false,
+            Some(compile) => {
+                if compile {
+                    let _ = self.compile();
+                }
+                true
+            }
+        }
+    }
+
+    /// The app gave back the audio `key` held before its cues landed: they
+    /// come out of the view and move to their next line, or are cancelled
+    /// after their last move. At Now they wait again. False when nothing
+    /// held waits under `key`.
+    pub fn audio_given_back(&mut self, key: CueKey) -> bool {
+        let cx = wait_ctx!(self);
+        let Some((gone, said)) = self.audio_waits.given_back(&cx, key) else {
+            return false;
+        };
+        if let Some(w) = gone {
+            self.cancel_wait(w);
+        }
+        self.note_later(said);
+        let _ = self.compile();
+        true
+    }
+
+    /// After each period: waiting cues whose line played without them move
+    /// to the next, or are cancelled. True when it must compile.
+    fn audio_waits_due(&mut self, frames: u32) -> bool {
+        let period = self.period_ticks(frames);
+        let cx = wait_ctx!(self);
+        let mut compile = false;
+        for (gone, said) in self.audio_waits.period(&cx, period) {
+            if let Some(w) = gone {
+                self.cancel_wait(w);
+                compile = true;
+            }
+            self.note_later(said);
+        }
+        compile
+    }
+
+    /// Cues that waited for their audio cancelled: they leave the cue list
+    /// with their scene's program changes, the mutes they queued and the
+    /// scene's cue.
+    fn cancel_wait(&mut self, w: Wait) {
+        for c in &w.cues {
+            if let Some(i) = self.cues.iter().position(|x| x == c) {
+                self.cues.remove(i);
+            }
+            self.perform.uncue(c.track);
+        }
+        let mut p = w.programs;
+        while p != 0 {
+            self.perform.uncue(p.trailing_zeros() as usize);
+            p &= p - 1;
+        }
+        if let Some((_, q)) = &mut self.mute_queue {
+            q.want.retain(|x| !w.mutes.contains(&x.0));
+        }
+        if self.mute_queue.as_ref().is_some_and(|(_, q)| q.is_empty()) {
+            self.mute_queue = None;
+        }
+        if w.scene.is_some() && self.perform.cued() == w.scene {
+            self.perform.forget_cued();
+        }
+        self.changed = true;
     }
 
     /// Step edit `edit` of clip `slot` of `track`, already made to the
@@ -1537,9 +1662,16 @@ impl TimeControl {
                 }
             }
         }
+        // Cues waiting for their audio stay out, with their scene's
+        // program changes and the mute queue they joined.
+        self.audio_waits.hold_back(&mut v);
         // The mute queue: every track it changes, and every track a solo
         // in it silences or lets be heard, lands on the queue's line.
-        if let Some((id, q)) = &self.mute_queue {
+        if let Some((id, q)) = self
+            .mute_queue
+            .as_ref()
+            .filter(|_| !self.audio_waits.holds_queue())
+        {
             let after = queue_landed(project, q);
             for t in 0..project.tracks.len() {
                 let silent = after.silent(t);
@@ -5864,6 +5996,7 @@ impl TimeControl {
         st.clipboard = self.clipboard.as_ref().map(|c| c.name.clone());
         st.cues = self.cues.clone();
         st.mute_wait = self.mute_wait().cloned();
+        st.audio_waits = self.audio_waits.counts();
         st.saved = self.saved.iter().map(|s| (s.0, s.1)).collect();
         st.reloads = self
             .reloads
@@ -6023,6 +6156,15 @@ impl TimeControl {
                 "; cues whose view came late: {} started after their line, in time with it, \
                  {} older ones dropped, {} times a track was silent until the next view",
                 q.late, q.stale, q.lost
+            ));
+        }
+        // Cues that waited for their audio (streaming on).
+        let w = self.audio_waits.counts();
+        if w.kept > 0 {
+            line.push_str(&format!(
+                "; cues waiting for their audio: {} kept back, {} held in time, {} moved to a \
+                 later line, {} cancelled, {} given back, {} waiting now",
+                w.kept, w.held, w.moved, w.cancelled, w.given_back, w.waiting
             ));
         }
         // Song edits UNDO took back while the audio regions stayed (their

@@ -728,6 +728,9 @@ pub struct TimeState {
     /// Mute and solo changes waiting for their line (the mute queue). The
     /// app sets it.
     pub mute_wait: Option<MuteWait>,
+    /// Cues waiting for their audio while takes stream from their files
+    /// (the audio tracks rethink's phase 2). The app sets it.
+    pub audio_waits: AudioWaitCounts,
     /// The clips with a saved state (Save state on the clip card, S4), as
     /// (track, slot): Reload clip brings it back.
     pub saved: Vec<(usize, usize)>,
@@ -979,6 +982,7 @@ impl TimeState {
             launch: project.launch,
             cue_lines: Vec::new(),
             mute_wait: None,
+            audio_waits: AudioWaitCounts::default(),
             saved: Vec::new(),
             reloads: Vec::new(),
             placements: project
@@ -3898,6 +3902,29 @@ impl TimeState {
             ))
         }
     }
+}
+
+/// Cues kept back until their audio is held in memory, while takes
+/// stream from their files: how many wait now, and what became of the
+/// others since the project opened, for Dev > Debug and the status
+/// monitor.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AudioWaitCounts {
+    /// Waiting now, not held yet.
+    pub waiting: u32,
+    /// Kept back for their audio.
+    pub kept: u64,
+    /// Held in time to go into the view.
+    pub held: u64,
+    /// Moved to a later line, the line played without them.
+    pub moved: u64,
+    /// Cancelled after their last move, or at Now after two bars.
+    pub cancelled: u64,
+    /// Held, then given back before they landed.
+    pub given_back: u64,
+    /// Rises whenever the audio the waiting cues need changes, so the
+    /// app asks for it only then.
+    pub needs_rev: u64,
 }
 
 /// Mute and solo changes waiting for one launch line (sequencer S4's mute
