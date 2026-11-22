@@ -33352,6 +33352,121 @@ mod tests {
         assert_eq!(p.page(), sample_page::PLAY_PAGE);
     }
 
+    /// Sampler plan step 7d: Map to keys never works a sound's note out on
+    /// the screen. A sound not worked out yet goes first on the job service
+    /// and the kit is mapped once it is in; a kit changed meanwhile isn't
+    /// mapped, and a sound whose waveform waits for memory says so.
+    #[test]
+    fn map_to_keys_waits_for_its_sounds_notes_to_be_worked_out_off_the_screen() {
+        use mpfree_sampler::jobs::{Config, Jobs};
+        use mpfree_sampler::model::{Layer, Pad, Project, Region, Source};
+        use mpfree_sampler_ui::pads_tab;
+        let rate = 44_100;
+        // Two seconds of A3 (220 Hz) under a name with no note in it: its
+        // note can only be heard.
+        let data: Vec<f32> = (0..2 * rate as usize)
+            .map(|i| 0.5 * (i as f32 / rate as f32 * 220.0 * std::f32::consts::TAU).sin())
+            .collect();
+        let source = Source::new("Tone", rate, 1, data).unwrap();
+        let mut project = Project::new();
+        project.add_source(source.clone());
+        project
+            .set_pad(
+                0,
+                Some(Pad::new("Tone", Layer::new(Region::whole(&source)))),
+                None,
+            )
+            .unwrap();
+        let start = |jobs: Option<Jobs>| {
+            let mut p = sample_player(Fonts::embedded());
+            match jobs {
+                Some(j) => p.sample.use_jobs(j),
+                None => p.sample.hold_views(true),
+            }
+            let mut kits = p.kits.clone();
+            kits[0].name = "Tones".to_string();
+            kits[0].pads = (0..16)
+                .map(|i| (i == 0).then(|| "Tone".to_string()))
+                .collect();
+            p.apply(ToUi::Kits(kits));
+            p.apply(ToUi::SampleKits {
+                projects: vec![project.clone()],
+                rate,
+            });
+            open_pads(&mut p);
+            let _ = p.take_actions();
+            p
+        };
+        let press = |p: &mut Player| {
+            p.on_event(UiEvent {
+                widget: pads_tab::BUTTONS.into(),
+                kind: EventKind::Tab(3),
+            })
+        };
+        let keys = |p: &Player| p.sample.project(0).unwrap().pad(0).unwrap().keys;
+        let waits = "sample: kit 1 (Tones): map to keys waits for 1 sound to be worked out";
+
+        // Pressed before the tone is worked out: it waits, says so once,
+        // and maps when it is in.
+        let mut p = start(None);
+        press(&mut p);
+        assert_eq!(keys(&p), None, "nothing worked out on the screen");
+        press(&mut p);
+        assert_eq!(events_log(&p).iter().filter(|l| *l == waits).count(), 1);
+        let told = p.told.as_ref().map(|t| t.0.clone()).unwrap_or_default();
+        assert_eq!(told, "Map to keys waits for 1 sound to be worked out");
+        p.sample.hold_views(false);
+        settle_views(&mut p);
+        p.tick(0.0);
+        assert_eq!(keys(&p).map(|k| k.root), Some(57), "A3, heard");
+        assert!(
+            events_log(&p).iter().any(|l| l
+                == "sample: kit 1 (Tones): mapped to keys: 1 pad from A3 to A3 \
+                    (1 by its pitch), the pads play notes"),
+            "{:?}",
+            events_log(&p)
+        );
+
+        // The kit changed while it waited (its pad cleared): not mapped.
+        let mut p = start(None);
+        press(&mut p);
+        p.on_event(UiEvent {
+            widget: pads_tab::BUTTONS.into(),
+            kind: EventKind::Tab(2),
+        });
+        p.sample.hold_views(false);
+        settle_views(&mut p);
+        p.tick(0.0);
+        assert!(p.sample.project(0).unwrap().pad(0).is_none());
+        assert!(
+            events_log(&p).iter().any(|l| l
+                == "sample: kit 1 (Tones): not mapped to keys: \
+                    the kit changed while its sounds were worked out"),
+            "{:?}",
+            events_log(&p)
+        );
+
+        // No memory to spare for the tone's waveform: Map to keys says why
+        // and maps nothing.
+        let mut p = start(Some(Jobs::new(Config {
+            free: || Some(0),
+            ..sample_page::jobs_config()
+        })));
+        press(&mut p);
+        let end = Instant::now() + WORKER_WAIT;
+        let refused = "sample: kit 1 (Tones): not mapped to keys: \
+                       Tone's waveform waits for memory, so its note isn't known yet";
+        while !events_log(&p).iter().any(|l| l == refused) {
+            assert!(Instant::now() < end, "{:?}", events_log(&p));
+            std::thread::sleep(Duration::from_millis(2));
+            p.tick(0.0);
+        }
+        assert_eq!(keys(&p), None);
+        press(&mut p);
+        let told = p.told.as_ref().map(|t| t.0.clone()).unwrap_or_default();
+        assert_eq!(told, "Not mapped to keys: Tone's waveform waits for memory");
+    }
+
     #[test]
     fn map_to_keys_makes_the_bank_one_instrument_and_the_play_tab_plays_its_keys() {
         use mpfree_sampler::model::PadsPlay;

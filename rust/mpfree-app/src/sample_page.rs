@@ -207,6 +207,15 @@ struct Seat {
     region: Region,
 }
 
+/// A Map to keys waiting for its sounds' notes ([`SamplePage::map_waits`]).
+struct Mapping {
+    kit: usize,
+    pads: Vec<usize>,
+    /// The page's edits when it was pressed: it lands only if none came
+    /// since.
+    edits: u64,
+}
+
 /// A Normalize waiting for its sound's loudness summary
 /// ([`SamplePage::normalize_later`]), or done at once.
 #[derive(Clone)]
@@ -923,6 +932,8 @@ pub struct SamplePage {
     /// Normalizes waiting for their sound's loudness summary: a long
     /// region's peak is found in it ([`SamplePage::normalize_later`]).
     levelings: Vec<Leveling>,
+    /// A Map to keys waiting for its sounds' notes.
+    mapping: Option<Mapping>,
     /// Normalizes of a long region whose sound has no summary, which read
     /// every frame of it on the screen (a fallback: counted, logged and
     /// shown).
@@ -1150,6 +1161,7 @@ impl SamplePage {
             heard: Playheads::default(),
             seat_fallbacks: 0,
             levelings: Vec::new(),
+            mapping: None,
             normalize_fallbacks: 0,
             spawn_failed_told: 0,
             stale_copies: 0,
@@ -2153,6 +2165,24 @@ impl SamplePage {
         let Some(project) = self.projects.get(kit) else {
             return;
         };
+        // A pad that isn't a keygroup yet takes its note from its sound,
+        // whose pitch is worked out with its view on the job service: until
+        // then Map to keys waits (plan phase 2 step 7d), never working it
+        // out on the screen.
+        let waiting: Vec<Source> = pads
+            .iter()
+            .filter_map(|&pad| project.pad(pad))
+            .filter(|p| p.keys.is_none())
+            .filter_map(|p| p.layers.first())
+            .filter_map(|l| project.source(l.region.source))
+            .filter(|s| self.sources.ready(s.id()).is_none())
+            .cloned()
+            .collect();
+        if !waiting.is_empty() {
+            self.map_waits(kit, pads, &waiting);
+            return;
+        }
+        self.mapping = None;
         let mut roots = Vec::new();
         let mut from: Vec<(RootFrom, usize)> = Vec::new();
         let mut left = Vec::new();
@@ -2161,11 +2191,9 @@ impl SamplePage {
                 continue;
             };
             let source = project.source(p.layers[0].region.source);
-            let heard = source.and_then(|s| {
-                // The note heard is needed now: worked out here if the
-                // worker hasn't yet.
-                self.sources.full(s).root_note
-            });
+            let heard = source
+                .and_then(|s| self.sources.ready(s.id()))
+                .and_then(|v| v.root_note);
             let name = match source {
                 Some(s) if keymap::note_in_name(&s.name).is_some() => s.name.as_str(),
                 _ => p.name.as_str(),
@@ -2227,6 +2255,83 @@ impl SamplePage {
         self.told.push(told);
         let kit = self.kit_text_of(kit);
         self.lines.push(format!("sample: {kit}: {what}"));
+    }
+
+    /// Map to keys waits for the notes of `waiting` (sounds of `pads` of
+    /// kit `kit` whose views aren't worked out yet): they go first on the
+    /// job service, and [`Self::map_later`] maps once they are in. A sound
+    /// whose view waits for memory can't give its note: then it says so
+    /// and maps nothing.
+    fn map_waits(&mut self, kit: usize, pads: &[usize], waiting: &[Source]) {
+        let name = self.kit_text_of(kit);
+        if let Some(s) = waiting.iter().find(|s| self.sources.is_refused(s.id())) {
+            self.mapping = None;
+            let why = format!(
+                "not mapped to keys: {}'s waveform waits for memory, so its note isn't known yet",
+                s.name
+            );
+            self.told.push(format!(
+                "Not mapped to keys: {}'s waveform waits for memory",
+                s.name
+            ));
+            self.lines.push(format!("sample: {name}: {why}"));
+            return;
+        }
+        for s in waiting {
+            self.sources.get(s);
+        }
+        let n = waiting.len();
+        let what = format!(
+            "map to keys waits for {n} sound{} to be worked out",
+            if n == 1 { "" } else { "s" }
+        );
+        if self.mapping.is_none() {
+            self.lines.push(format!("sample: {name}: {what}"));
+        }
+        let mut told = what;
+        if let Some(c) = told.get_mut(0..1) {
+            c.make_ascii_uppercase();
+        }
+        self.told.push(told);
+        self.mapping = Some(Mapping {
+            kit,
+            pads: pads.to_vec(),
+            edits: self.edits,
+        });
+    }
+
+    /// A Map to keys waiting for its sounds' notes: mapped once they are
+    /// in, while the kit is still shown and unchanged; else dropped, and
+    /// said.
+    fn map_later(&mut self, ui: &mut Ui) {
+        let Some(m) = self.mapping.as_ref() else {
+            return;
+        };
+        if m.kit != self.kit || m.edits != self.edits {
+            let name = self.kit_text_of(m.kit);
+            self.mapping = None;
+            self.lines.push(format!(
+                "sample: {name}: not mapped to keys: the kit changed while its sounds were worked out"
+            ));
+            return;
+        }
+        let Some(project) = self.projects.get(m.kit) else {
+            self.mapping = None;
+            return;
+        };
+        let ready = m
+            .pads
+            .iter()
+            .filter_map(|&pad| project.pad(pad))
+            .filter(|p| p.keys.is_none())
+            .filter_map(|p| p.layers.first())
+            .filter_map(|l| project.source(l.region.source))
+            .all(|s| self.sources.ready(s.id()).is_some() || self.sources.is_refused(s.id()));
+        if ready {
+            let pads = m.pads.clone();
+            self.map_to_keys(&pads);
+            self.refresh(ui);
+        }
     }
 
     fn kit_text(&self) -> String {
@@ -6826,6 +6931,9 @@ impl SamplePage {
         if !self.levelings.is_empty() {
             self.normalize_later(ui);
         }
+        if self.mapping.is_some() {
+            self.map_later(ui);
+        }
     }
 
     /// The take running: what came in since the last poll, and it lands
@@ -6883,6 +6991,14 @@ impl SamplePage {
     #[cfg(test)]
     pub fn hold_views(&self, held: bool) {
         self.sources.hold(held);
+    }
+
+    /// Puts the page's work on `jobs` (its views with it, none made yet):
+    /// for tests that need a service with its own memory account.
+    #[cfg(test)]
+    pub fn use_jobs(&mut self, jobs: Jobs) {
+        self.sources = crate::views::Views::new(jobs.clone());
+        self.jobs = jobs;
     }
 
     /// Whether a sound's view (its peaks, hits, tempo or note) is still

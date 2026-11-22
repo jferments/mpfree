@@ -158,23 +158,6 @@ impl Inner {
         v
     }
 
-    /// The whole view of `s` now, worked out here if the worker hasn't
-    /// finished it: for a step that needs the result at once (Map to keys
-    /// needs the note heard). The last analysis on the screen: plan step 7
-    /// moves Map to keys onto the service, to wait instead.
-    pub fn full(&mut self, s: &Source) -> Arc<SourceView> {
-        match self.made.get(&s.id()) {
-            Some(v) if v.ready => v.clone(),
-            _ => {
-                let v = Arc::new(SourceView::analyse(s));
-                self.made.insert(s.id(), v.clone());
-                self.settled(s.id());
-                self.jobs.cancel(view_key(s.id()));
-                v
-            }
-        }
-    }
-
     /// A view read from its sound's cache file (`SourceView::from_cache`),
     /// ready: kept for its sound in place of one still being worked out
     /// (never of a ready one), and the sound no longer waits for the
@@ -309,6 +292,12 @@ impl Inner {
             .values()
             .any(|v| !v.ready && !self.refused.contains_key(&v.id))
             || !self.pitch_asked.is_empty()
+    }
+
+    /// Whether sound `id`'s view was refused for memory (and isn't worked
+    /// out since): it waits for its next try.
+    pub fn is_refused(&self, id: SourceId) -> bool {
+        self.told.contains(&id)
     }
 
     /// How many sounds wait for memory to work out their view.
@@ -573,7 +562,9 @@ mod tests {
         assert!(!v.busy());
         // A cache never replaces a view already worked out.
         let other = clicks("Other", 1, 0.5);
-        let made = v.full(&other);
+        v.get(&other);
+        settle(&mut v);
+        let made = v.get(&other);
         let again = SourceView::from_cache(&other, &made.to_cache().unwrap()).unwrap();
         v.known(Arc::new(again));
         assert!(Arc::ptr_eq(&made, &v.get(&other)));
@@ -582,19 +573,6 @@ mod tests {
         v.get(&new);
         assert!(v.ready(new.id()).is_none());
         settle(&mut v);
-    }
-
-    #[test]
-    fn the_whole_view_can_be_had_at_once() {
-        let s = clicks("Keys", 2, 0.8);
-        let mut v = views();
-        let whole = v.full(&s);
-        assert!(whole.ready);
-        assert!(Arc::ptr_eq(&whole, &v.get(&s)));
-        // The worker's copy, if it comes later, doesn't replace it.
-        std::thread::sleep(Duration::from_millis(50));
-        v.take_done();
-        assert!(Arc::ptr_eq(&whole, &v.get(&s)));
     }
 
     /// Memory just short: a job that needs more than a megabyte is refused.
