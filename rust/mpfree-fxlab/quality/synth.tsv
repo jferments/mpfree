@@ -4459,13 +4459,13 @@ synth/Poly[Breath Lead]/key_spread_db	3.3276
 synth/Poly[Breath Lead]/mono_loss_db	0
 synth/Poly[Breath Lead]/vel_curve_err_db	0.0124
 synth/Poly[Breath Lead]/vel_tone_oct	0.2657
-synth/Poly[Digital Bell]/chord6_vs_power_db	-0.0195
-synth/Poly[Digital Bell]/chord8_peak_dbfs	1.6398
-synth/Poly[Digital Bell]/dc_dbfs	-81.5032
-synth/Poly[Digital Bell]/key_spread_db	3.4236
+synth/Poly[Digital Bell]/chord6_vs_power_db	-0.0221
+synth/Poly[Digital Bell]/chord8_peak_dbfs	1.663
+synth/Poly[Digital Bell]/dc_dbfs	-81.203
+synth/Poly[Digital Bell]/key_spread_db	3.3774
 synth/Poly[Digital Bell]/mono_loss_db	0
-synth/Poly[Digital Bell]/vel_curve_err_db	0.0895
-synth/Poly[Digital Bell]/vel_tone_oct	0.7963
+synth/Poly[Digital Bell]/vel_curve_err_db	0.0861
+synth/Poly[Digital Bell]/vel_tone_oct	0.7949
 synth/Poly[Drift Pad]/chord6_vs_power_db	-0.2021
 synth/Poly[Drift Pad]/chord8_peak_dbfs	-3.9702
 synth/Poly[Drift Pad]/dc_dbfs	-129.495
@@ -4483,7 +4483,7 @@ synth/Poly[Dust Pad]/vel_tone_oct	0.2553
 synth/Poly[FM Keys]/chord6_vs_power_db	-0.0222
 synth/Poly[FM Keys]/chord8_peak_dbfs	0.4156
 synth/Poly[FM Keys]/dc_dbfs	-80.9173
-synth/Poly[FM Keys]/key_spread_db	3.0957
+synth/Poly[FM Keys]/key_spread_db	3.0972
 synth/Poly[FM Keys]/mono_loss_db	0
 synth/Poly[FM Keys]/vel_curve_err_db	0.0003
 synth/Poly[FM Keys]/vel_tone_oct	-0.0003
@@ -4910,17 +4910,17 @@ synth/Strings[Wide Strings]/key_spread_db	1.0173
 synth/Strings[Wide Strings]/mono_loss_db	1.5677
 synth/Strings[Wide Strings]/vel_curve_err_db	0.1038
 synth/Strings[Wide Strings]/vel_tone_oct	0.2632
-synth/Wavetable[Digital Bell]/chord6_vs_power_db	-0.0189
-synth/Wavetable[Digital Bell]/chord8_peak_dbfs	1.677
-synth/Wavetable[Digital Bell]/dc_dbfs	-82.3106
-synth/Wavetable[Digital Bell]/key_spread_db	3.4231
+synth/Wavetable[Digital Bell]/chord6_vs_power_db	-0.0212
+synth/Wavetable[Digital Bell]/chord8_peak_dbfs	1.7005
+synth/Wavetable[Digital Bell]/dc_dbfs	-81.9651
+synth/Wavetable[Digital Bell]/key_spread_db	3.3775
 synth/Wavetable[Digital Bell]/mono_loss_db	0
-synth/Wavetable[Digital Bell]/vel_curve_err_db	0.733
-synth/Wavetable[Digital Bell]/vel_tone_oct	0.7968
+synth/Wavetable[Digital Bell]/vel_curve_err_db	0.7382
+synth/Wavetable[Digital Bell]/vel_tone_oct	0.7954
 synth/Wavetable[FM Keys]/chord6_vs_power_db	-0.0223
 synth/Wavetable[FM Keys]/chord8_peak_dbfs	0.4686
 synth/Wavetable[FM Keys]/dc_dbfs	-81.6804
-synth/Wavetable[FM Keys]/key_spread_db	3.0953
+synth/Wavetable[FM Keys]/key_spread_db	3.0968
 synth/Wavetable[FM Keys]/mono_loss_db	0
 synth/Wavetable[FM Keys]/vel_curve_err_db	0.7336
 synth/Wavetable[FM Keys]/vel_tone_oct	-0.0003
@@ -5152,10 +5152,10 @@ synth/alias[Poly saw, drive 24 dB, C6]/worst_alias_db	-44.5046
 synth/alias[Poly saw, drive 24 dB, C7]/worst_alias_db	-38.0216
 synth/alias[Poly table, position 100, C5]/worst_alias_db	-65.363
 synth/alias[Poly table, position 100, C6]/worst_alias_db	-60.2528
-synth/alias[Poly table, position 100, C7]/worst_alias_db	-54.0363
-synth/alias[Poly table, sync 50, C5]/worst_alias_db	-44.9837
-synth/alias[Poly table, sync 50, C6]/worst_alias_db	-39.0481
-synth/alias[Poly table, sync 50, C7]/worst_alias_db	-32.7709
+synth/alias[Poly table, position 100, C7]/worst_alias_db	-66.7749
+synth/alias[Poly table, sync 50, C5]/worst_alias_db	-71.5987
+synth/alias[Poly table, sync 50, C6]/worst_alias_db	-84.5495
+synth/alias[Poly table, sync 50, C7]/worst_alias_db	-69.5961
 synth/alias[Poly triangle, C5]/worst_alias_db	-94.4156
 synth/alias[Poly triangle, C6]/worst_alias_db	-99.3602
 synth/alias[Poly triangle, C7]/worst_alias_db	-94.8609
@@ -5176,13 +5176,13 @@ synth/alias[Strings violin, C6]/worst_alias_db	-67.2942
 synth/alias[Strings violin, C7]/worst_alias_db	-65.4522
 synth/alias[Wavetable Init, C5]/worst_alias_db	-94.3786
 synth/alias[Wavetable Init, C6]/worst_alias_db	-84.3218
-synth/alias[Wavetable Init, C7]/worst_alias_db	-71.5456
+synth/alias[Wavetable Init, C7]/worst_alias_db	-84.2842
 synth/alias[Wavetable position 100, C5]/worst_alias_db	-65.3551
 synth/alias[Wavetable position 100, C6]/worst_alias_db	-60.1726
-synth/alias[Wavetable position 100, C7]/worst_alias_db	-54.0125
-synth/alias[Wavetable sync 50, C5]/worst_alias_db	-45.0101
-synth/alias[Wavetable sync 50, C6]/worst_alias_db	-39.0463
-synth/alias[Wavetable sync 50, C7]/worst_alias_db	-32.7709
+synth/alias[Wavetable position 100, C7]/worst_alias_db	-66.8927
+synth/alias[Wavetable sync 50, C5]/worst_alias_db	-71.3507
+synth/alias[Wavetable sync 50, C6]/worst_alias_db	-84.9473
+synth/alias[Wavetable sync 50, C7]/worst_alias_db	-69.5806
 synth/alias[Wind clarinet, tone 100, C5]/worst_alias_db	-93.9959
 synth/alias[Wind clarinet, tone 100, C6]/worst_alias_db	-85.7263
 synth/alias[Wind clarinet, tone 100, C7]/worst_alias_db	-83.1472

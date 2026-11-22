@@ -136,19 +136,19 @@
 52446	Poly Acid, 8 voices
 210895	Poly Brass, 8 voices
 41489	Poly Breath Lead, 8 voices
-362523	Poly Digital Bell, 8 voices
+369437	Poly Digital Bell, 8 voices
 294239	Poly Drift Pad, 8 voices
 355569	Poly Dust Pad, 8 voices
 350506	Poly FM Keys, 8 voices
 62675	Poly Grit Bass, 8 voices
 71532	Poly Growl Bass, 8 voices
-246714	Poly Harmonic Pluck, 8 voices
+248587	Poly Harmonic Pluck, 8 voices
 595812	Poly Init, 16 voices, unison 4
 193565	Poly Init, 8 voices
 58186	Poly Lead, 8 voices
 40919	Poly Low Note Lead, 8 voices
 550307	Poly Morph Pad, 8 voices
-264543	Poly Organ, 8 voices
+266416	Poly Organ, 8 voices
 208324	Poly Pluck, 8 voices
 37721	Poly Portamento Lead, 8 voices
 68637	Poly Singing Lead, 8 voices
@@ -160,17 +160,17 @@
 401599	Poly Super Stack, 8 voices
 335435	Poly Supersaw, 8 voices
 445278	Poly Sync Sweep, 8 voices
-246862	Poly Table Init, 8 voices
-1698302	Poly Table, 16 voices, both osc, unison 8
+248736	Poly Table Init, 8 voices
+1687855	Poly Table, 16 voices, both osc, unison 8
 664789	Poly Table, 8 voices, both osc, unison 4
 48137	Poly Unison Lead, 8 voices
 47197	Poly Vowel Lead, 8 voices
 246021	Poly Worn Brass, 8 voices
 4215241	Project: all at once
 295686	Project: bass into the limiter
-1331926	Project: dense synths
+1322058	Project: dense synths
 1599146	Project: distortion chain
-571852	Project: fast automation
+567742	Project: fast automation
 742130	Project: granular drums
 290797	Project: long stems
 12921	Ring mod
@@ -217,7 +217,7 @@
 39041	Choir formants: 8 voices, plain
 334933	Poly Init, 8 voices, distortion 24 dB
 330290	Poly Init, 8 voices, drive 24 dB
-333709	Poly Table, 8 voices, sync 50
+326596	Poly Table, 8 voices, sync 50
 31342	Talk box
 87944	Tape delay
 8952	Time with trig conditions and ratchets, 8 clips, arp
@@ -231,18 +231,18 @@
 11340	Tremolo
 32159	Tuner
 111176	Vocoder
-476604	Wavetable Digital Bell, 8 voices
-479074	Wavetable FM Keys, 8 voices
-77780	Wavetable Growl Bass, 8 voices
-362702	Wavetable Harmonic Pluck, 8 voices
-2715695	Wavetable Init, 16 voices, both osc, unison 8
-361976	Wavetable Init, 8 voices
-1034441	Wavetable Init, 8 voices, both osc, unison 4
-413168	Wavetable Init, 8 voices, sync 50
-858613	Wavetable Morph Pad, 8 voices
-362861	Wavetable Organ, 8 voices
-553843	Wavetable Sync Sweep, 8 voices
-60600	Wavetable Vowel Lead, 8 voices
+503385	Wavetable Digital Bell, 8 voices
+457063	Wavetable FM Keys, 8 voices
+75056	Wavetable Growl Bass, 8 voices
+340720	Wavetable Harmonic Pluck, 8 voices
+2685432	Wavetable Init, 16 voices, both osc, unison 8
+339995	Wavetable Init, 8 voices
+1014603	Wavetable Init, 8 voices, both osc, unison 4
+424098	Wavetable Init, 8 voices, sync 50
+838737	Wavetable Morph Pad, 8 voices
+340878	Wavetable Organ, 8 voices
+532200	Wavetable Sync Sweep, 8 voices
+57848	Wavetable Vowel Lead, 8 voices
 143226	Wind Concert Flute, a line
 144174	Wind Growl Sax, a line
 121431	Wind Init, a line

@@ -4,7 +4,7 @@ checked: 2026-11-22 33571aaf
 -->
 # DSP quality: fizz, filters near the top and the sample rate
 
-**Status:** plan approved by the owner on 2026-11-22; phase 0 (measures, the rate probe, reference renders, the full-project check) is being built; the rate probe's code is written and has not run on the MPC. **No sound has changed yet.** Design doc with both outside reviews and the answers to them: "DSP quality" (https://claude.ai/artifact/5jsLgS5ZaRoHzpvVbEUgZ5). Related pages: [FX quality](fx-quality.md), [Synth quality](synth-quality.md), [Drive and Character](fx-drive.md), [Synth library: architecture and roadmap](synth-architecture.md), [Disk streaming](disk-streaming.md), [Profiling](profiling.md).
+**Status:** plan approved by the owner on 2026-11-22; phase 0 (measures, the rate probe, reference renders, the full-project check) is being built; the rate probe's code is written and has not run on the MPC. Phase 1 has begun: step 1.1 changes the sync warp's sound on the table oscillator ([Step 1.1: sync](#step-11-sync)); no other sound has changed yet. Design doc with both outside reviews and the answers to them: "DSP quality" (https://claude.ai/artifact/5jsLgS5ZaRoHzpvVbEUgZ5). Related pages: [FX quality](fx-quality.md), [Synth quality](synth-quality.md), [Drive and Character](fx-drive.md), [Synth library: architecture and roadmap](synth-architecture.md), [Disk streaming](disk-streaming.md), [Profiling](profiling.md).
 
 ## Why
 
@@ -22,7 +22,7 @@ From the ratchet files on main (`rust/mpfree-fxlab/quality/synth.tsv`, `sampler.
 |---|---|---|
 | Poly saw, pulse, tables | -78 / -84 dB | band-limited tables (the voice core) |
 | Analog saw | -54 / -48 dB | polyBLEP at the host rate; never moved to the tables |
-| Poly table and Wavetable with sync 50 | -45 / -39 dB | the jump at each sync restart is not smoothed (`table_osc.rs`, `Warp::Sync`) |
+| Poly table and Wavetable with sync 50 | -45 / -39 dB | the jump at each sync restart is not smoothed (`table_osc.rs`, `Warp::Sync`); -72 / -85 dB since step 1.1 |
 | Squelch square | -48 / -39 dB | the shaper that turns the saw into a square has no ADAA (it already runs at 2x) |
 | Poly drive 24 dB / distortion 24 dB | -50 / -45 and -45 / -40 dB | the curve runs per voice at 1x |
 | Sampler, a semitone up, 9 kHz out | spur -31.5 dB | the Hermite read for small pitch changes |
@@ -102,6 +102,31 @@ The square is `SQ_LEVEL * tanh_pade(SQ_GAIN * (saw - SQ_THRESHOLD))`, where `tan
 
 F is evaluated in 64-bit (the difference of two nearby values loses precision in f32), and when two inputs nearly match the step uses the curve at their midpoint.
 
+### Step 1.1: sync
+
+Built, and kept: the owner's blind, level-matched A/B (22 Nov; Poly's Table wave and Wavetable at sync 50 on a line, both Digital Bells, a fast warp sweep) was a tie in all five pairs, so the fix replaces the old sound on its numbers. The sync warp of the table oscillator (`table_osc.rs`, so Poly's Table wave and the Wavetable synth alike) restarts the read at each wrap of the running phase, and the read jumps there in its level and in every derivative. Each restart now gets a band-limited correction at its own fraction of a sample:
+
+- **The jumps** (`Restart`). Once a control step: the read's level and first three derivatives at the ratio's fraction of a cycle (just before a restart) and at phase 0 (just after), from the playing level by central differences a table sample apart, on the frames crossfaded as the step has them, at the ratio and crossfade the step starts with and at those it ends with. In between, a straight line, exact at both ends. What the step before worked out is used again while it holds: the same frames, and the ratio within 0.00001 of where it was.
+- **The residuals** (`Edges`). Each jump, times the read's step a sample to its power, scales a residual: the running integrals of a Blackman-Harris windowed sinc (cutoff 0.43 of the rate, 12 samples either side, its second moment taken out) less the plain step, ramp, parabola and cubic, tabled 128 points to a sample. A restart's time is known ahead, so the 12 samples before it are corrected as well as the 12 after. This is the plan's "short table if needed": a polyBLEP on the level alone left the A1 rows near -50 dB, and the three derivative terms take them under -69.
+- **The level a sync read picks.** The correction holds to -60 dB only while the read's top harmonic stays under about a third of the rate, so a sync read picks its level for 1.5 times its fastest ratio (`SYNC_MARGIN`), a level or two lower than before. The smallest levels are now 128 samples, not 64: the linear read's images on a 64-sample level were at -54 dB. A table frame takes 51 KB instead of 49 ([Wavetable synth](wavetable.md)).
+- **A moving ratio glides.** The ratio used to step once a control step, so a fast warp move made a zipper (-17 to -21 dB against an oversampled read). It now moves a frame at a time across the step (`Warp::Sync { ratio, glide }`), bit-exact at any block size.
+
+| Measure | Before | After |
+|---|---|---|
+| A1 Poly table, sync 50, C5 / C6 / C7 | -45.0 / -39.0 / -32.8 dB | -71.6 / -84.5 / -69.6 dB |
+| A1 Wavetable sync 50, C5 / C6 / C7 | -45.0 / -39.0 / -32.8 dB | -71.4 / -84.9 / -69.6 dB |
+| A1 position 100 at C7 (both engines); Wavetable Init at C7 | -54.0; -71.5 dB | -66.8; -84.3 dB |
+| Y8 sync 50 fizz, C5 / C6 / C7 (both engines) | -34.8 / -31.6 / -28.2 dB | -67.6 / -83.0 / -68.3 dB |
+| Y8 sync 50 top (16 to 20 kHz against the 8x render), C5 / C6 / C7 | +6.7 / +12.7 / +14.9 dB | -9.8 / -1.5 / +12.8 dB |
+| Restarts between samples, three pitches, amounts 0.2, 0.5, 0.93 | | all under -60 dB |
+| A fast ratio sweep with a moving position, against an oversampled read | -17 to -21 dB | -46 to -52 dB |
+
+No other ratchet row moved past its tolerance; the four sync bench cases have new golden fingerprints.
+
+- **What it costs in sound: some of the top octave at C5.** With the lower level, the harmonics from 16 to 20 kHz are about 10 dB under the 8x render at C5, where before fizz folded there and made them 7 dB over it. Y8's sync references haven't converged (the 8x and 16x renders are 5 to 6 dB apart), so the figure is rough. The blind A/B heard no difference.
+- **A finding, not fixed here:** what is left in the fast sweep is the level switching while the ratio moves; with the level held, the same sweep is under -55 dB. A crossfade between levels would be a step of its own.
+- **Cost** (instruction gate, thousands of x86-64 instructions a block, against the build before). Sync on: Poly Table, 8 voices, sync 50, 334 to 327 (-2.1 %); Poly Sync Sweep 446 to 447 (+0.3 %); Poly Digital Bell 363 to 370 (+1.9 %); Wavetable Init, 8 voices, sync 50, 413 to 424 (+2.6 %); Wavetable Sync Sweep 576 to 553 (-3.9 %); **Wavetable Digital Bell 483 to 510 (+5.6 %), over the first limit of 5 %** (the owner accepted it on 22 Nov, to be checked again by the device timing, step 0.4): its envelope moves both the sync and the table position at every control step on a single layer, so the per-step work is spread over the fewest samples. Sync off: Poly's table sounds up to 0.8 % (per-step bookkeeping; the sample loop is as it was), Wavetable's sounds 2 to 6 % cheaper (its sample loop now has a version without sync). Part of Poly's saving is that a sync read now finds its table index from integers: on x86 that saves a costly float-to-index conversion, on the MPC's ARM it is one instruction either way. Device timing (step 0.4) is the real check.
+
 ## Targets and new measures
 
 New measures join fxlab and its ratchets in steps 0.2 and 0.5. As today, a target not met is printed, not failed, except the rows marked as gates.
@@ -160,7 +185,7 @@ Seven fixed projects in `rust/mpfree-bench/src/projects.rs`, each 16 beats at 12
 | Kind | Target | Today |
 |---|---|---|
 | Clean oscillators: saw, pulse, tables | -70 dB at C5 and C6, C7 reported | Poly -78 and -84; Analog -54 and -48 |
-| Hard sync, wavetable warps, FM feedback up to 5 | -60 dB at C5 and C6 | Sync -45 and -39 |
+| Hard sync, wavetable warps, FM feedback up to 5 | -60 dB at C5 and C6 | Table sync -72 and -85 (step 1.1; was -45 and -39) |
 | Synth drive and distortion, per voice | -60 dB at C5 and C6 | Poly drive -50 and -45, distortion -45 and -40 |
 | Sampler Drive at 12 dB; FX smooth curves | -65 dB with a 5 kHz sine (S6, G1) | Met |
 | FX hard curves at Eco 2x | -50 dB with a 5 kHz sine | Fuzz and Rectify just short; HQ 4x meets them |
