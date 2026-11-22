@@ -241,12 +241,23 @@ fn play(project: &Project, rate: u32, events: &[(usize, Event)], frames: usize) 
 /// pad's filter off), the left channel's first `frames` frames: for
 /// [`crate::filters`].
 pub(crate) fn through_pad(x: &[f64], filter: Option<Filter>, rate: u32, frames: usize) -> Vec<f64> {
-    let s = sound(x, rate);
-    let p = pad(&s, |p| {
+    through_shaped_pad(x, rate, frames, |p| {
         if let Some(f) = filter {
             p.filter = f;
         }
-    });
+    })
+}
+
+/// `x` played once on a pad as `shape` leaves it, the left channel's
+/// first `frames` frames.
+pub(crate) fn through_shaped_pad(
+    x: &[f64],
+    rate: u32,
+    frames: usize,
+    shape: impl FnOnce(&mut Pad),
+) -> Vec<f64> {
+    let s = sound(x, rate);
+    let p = pad(&s, shape);
     play(&kit(vec![(s, p)]), rate, &[(0, hit(0))], frames).left
 }
 

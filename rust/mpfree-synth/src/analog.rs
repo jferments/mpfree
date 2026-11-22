@@ -762,6 +762,11 @@ pub struct FilterProbe {
     bp_gain: f32,
     in_gain: f32,
     out: f32,
+    /// [`FilterProbe::glide`]'s targets and steps a sample.
+    g_to: f32,
+    dg: f32,
+    out_to: f32,
+    dout: f32,
 }
 
 impl FilterProbe {
@@ -777,6 +782,10 @@ impl FilterProbe {
             bp_gain: 0.0,
             in_gain: 1.0,
             out: 1.0,
+            g_to: 0.0,
+            dg: 0.0,
+            out_to: 1.0,
+            dout: 0.0,
         };
         p.set(0.0, 1_000.0, 0.0, 0.0);
         p
@@ -791,6 +800,24 @@ impl FilterProbe {
         self.in_gain = drive_gain(drive);
         self.out = makeup(self.filter, self.k) / self.in_gain;
         self.g = cutoff_g(cutoff, self.fs, cutoff_max(self.fs));
+        (self.g_to, self.dg, self.out_to, self.dout) = (self.g, 0.0, self.out, 0.0);
+    }
+
+    /// One control step of `frames` samples, moved as a card moves: the
+    /// filter's gain in a straight line from the last step's target to
+    /// **Cutoff** `cutoff` (Hz), **Resonance** (0 to 100) at once, and its
+    /// make-up in a straight line (the amplifier's ramp). The mode and
+    /// drive stay.
+    pub fn glide(&mut self, cutoff: f32, resonance: f32, frames: u32) {
+        let per = frames.max(1) as f32;
+        // Last step's ramps have arrived: land exactly.
+        self.g = self.g_to;
+        self.out = self.out_to;
+        (self.k, self.damp, self.bp_gain) = resonance_coefs(resonance / 100.0);
+        self.g_to = cutoff_g(cutoff, self.fs, cutoff_max(self.fs));
+        self.dg = (self.g_to - self.g) / per;
+        self.out_to = makeup(self.filter, self.k) / self.in_gain;
+        self.dout = (self.out_to - self.out) / per;
     }
 
     /// One sample through the filter.
@@ -803,7 +830,10 @@ impl FilterProbe {
             self.v
                 .svf(x, self.g, self.damp, self.filter - 1, self.bp_gain)
         };
-        f * self.out
+        let y = f * self.out;
+        self.g += self.dg;
+        self.out += self.dout;
+        y
     }
 }
 

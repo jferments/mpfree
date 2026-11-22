@@ -329,6 +329,8 @@ pub struct FilterProbe {
     k: f32,
     in_gain: f32,
     out_scale: f32,
+    /// [`FilterProbe::glide`]'s step of the gain a sample.
+    dg: f32,
 }
 
 impl FilterProbe {
@@ -345,6 +347,7 @@ impl FilterProbe {
             k: 0.0,
             in_gain: 1.0,
             out_scale: 1.0,
+            dg: 0.0,
         };
         p.set(1_000.0, 0.0, 0.0);
         p
@@ -360,13 +363,28 @@ impl FilterProbe {
     pub fn set(&mut self, cutoff: f32, resonance: f32, drive: f32) {
         (self.k, self.in_gain, self.out_scale) = filter_gains(resonance, drive);
         self.g = cutoff_g(cutoff, self.fs);
+        self.dg = 0.0;
+    }
+
+    /// One control step of `frames` frames, moved as the voice moves it:
+    /// the ladder's gain in a straight line a sample from where it is to
+    /// **Cutoff** `cutoff` (Hz), **Resonance** and **Filter drive** (0 to
+    /// 100) at once.
+    pub fn glide(&mut self, cutoff: f32, resonance: f32, drive: f32, frames: u32) {
+        (self.k, self.in_gain, self.out_scale) = filter_gains(resonance, drive);
+        let n = (frames.max(1) as usize * self.os) as f32;
+        self.dg = (cutoff_g(cutoff, self.fs) - self.g) / n;
     }
 
     /// One frame: `x` holds [`FilterProbe::oversampling`] samples at the
     /// filter's rate (only the first two are read); the frame's sample
     /// comes back.
     pub fn frame(&mut self, x: &[f32]) -> f32 {
-        let mut y = |x: f32| self.ladder.run(x * self.in_gain, self.g, self.k) * self.out_scale;
+        let mut y = |x: f32| {
+            let g = self.g;
+            self.g += self.dg;
+            self.ladder.run(x * self.in_gain, g, self.k) * self.out_scale
+        };
         if self.os == 2 {
             let a = y(x[0]);
             let b = y(x[1]);

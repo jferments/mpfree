@@ -1,6 +1,6 @@
 <!--
 covers: rust/mpfree-fxlab
-checked: 2026-11-19 01723ef1
+checked: 2026-11-22 33571aaf
 -->
 # FX quality: targets, the report and the ratchet
 
@@ -17,6 +17,8 @@ An effect is good when it meets its measured targets, wins or ties in blind, lev
 **The sampler** (measuring built 2026-11-17; the sampler review's engine item 7): a pad of `mpfree-sampler` measured by the same kind of numbers, with its own ratchet: [The sampler](#the-sampler) below.
 
 **The synths** (measuring built 2026-11-18; synth library stage 2): every synth engine and factory preset by the same method, with its own ratchet (`tests/synth.rs`, `quality/synth.tsv`): [Synth quality](synth-quality.md).
+
+**The synth and sampler filters** (measuring built 2026-11-22; DSP quality steps Y1 to Y3): every synth and sampler filter against the curve its page draws, and moving as its engine moves it, with its own ratchet (`tests/filters.rs`, `quality/filters.tsv`): [DSP quality](dsp-quality.md#the-filter-measures-y1a-y1b-y1c-y2a-y2b-and-y3).
 
 ## The report
 

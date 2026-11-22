@@ -31,16 +31,35 @@
 //!   full resonance, then 10 seconds: the pitch over the last 0.74 s
 //!   against the cutoff (target 10 cents) and how far the level moves
 //!   from the fifth second to the last (target 1 dB).
+//! - **Y1c, moving:** each filter moved the way its engine moves it, a
+//!   control step at a time: Poly's coefficients and the sampler's held
+//!   for a step, Analog's, Squelch's and Bass's cutoff in a straight line
+//!   across it (the sampler's through [`PadMirror`], held to a real pad
+//!   by a test). The moves: a fast filter envelope, an LFO, and the
+//!   cutoff and the resonance each moved at audio rate. **Staying
+//!   bounded:** fed noise, every frame and at the engine's step, every
+//!   sample stays finite and the peak against the loudest the same noise
+//!   gets with the settings held anywhere on the move (target 6 dB).
+//!   **Stepping noise,** for the envelope and the LFO: fed a steady tone,
+//!   the move at the engine's step against the same move every frame,
+//!   octave band by octave band where the output is within 60 dB of its
+//!   loudest band (target 3 dB). Every move repeats in a whole number of
+//!   steps and the tone fits the window, so the spectra have no leakage,
+//!   and a stepped move's lag doesn't count, only the noise it adds.
 
 use std::f64::consts::TAU;
 
-use mpfree_sampler::dsp::{Filter as PadFilter, FilterKind};
+use mpfree_sampler::dsp::{
+    vowel_formants, vowel_gain, vowel_resonance, Comb, Filter as PadFilter, FilterKind,
+    Ladder as PadLadder, Svf, FORMANT_2,
+};
 use mpfree_synth::dsp::{Filter as SynthFilter, FilterCoefs, FilterMode};
-use mpfree_synth::{analog, bass, squelch};
+use mpfree_synth::{analog, bass, poly, squelch};
 
-use crate::fft::Fft;
+use crate::fft::{power_spectrum, Fft};
 use crate::quality::{Better, Row};
 use crate::sampler;
+use crate::signals::white;
 use crate::synth::blackman_harris;
 
 /// The small signal: -40 dBFS.
@@ -62,6 +81,19 @@ const PEAK_FRAMES: usize = 1 << 17;
 /// Where the pad's impulse sits in its sound: clear of the envelope's
 /// start.
 const PAD_LEAD: usize = 4_096;
+/// Y1c: the resonances each move is measured at for staying bounded and
+/// for stepping noise, the noise's peak and the tone's.
+const BOUND_RESONANCES: [f32; 3] = [0.0, 0.9, 1.0];
+const STEP_RESONANCES: [f32; 2] = [0.5, 0.9];
+const BOUND_NOISE: f64 = 0.5;
+const STEP_TONE: f64 = 0.1;
+/// Y1c's stepping window and the frames run before it (host rate).
+const STEP_FRAMES: usize = 1 << 16;
+const STEP_SETTLE: usize = 1 << 14;
+/// How often the sampler's voice sets its filter (frames;
+/// `mpfree_sampler`'s private `FILTER_STEP`, held by
+/// `the_pad_mirror_moves_as_a_pad_does`).
+const PAD_STEP: usize = 16;
 
 /// A filter at one setting: `x`, at the filter's own rate (`os` samples a
 /// frame), to its output at the host rate, at the input's level.
@@ -74,6 +106,14 @@ type Run = Box<dyn FnMut(&[f64]) -> Vec<f64>>;
 
 type Make = Box<dyn Fn(f32, f32) -> Set>;
 type Drawn = Box<dyn Fn(f32, f32, f64) -> f64>;
+
+/// One control step of a moving filter: the cutoff (Hz) and resonance the
+/// step moves to, and its input at the filter's own rate; its output at
+/// the host rate.
+type Step = Box<dyn FnMut(f32, f32, &[f64]) -> Vec<f64>>;
+/// A moving filter at rest at a cutoff and resonance, with a control step
+/// of so many host frames: its samples a frame and its step.
+type Moving = Box<dyn Fn(f32, f32, usize) -> (usize, Step)>;
 
 /// A filter type and how to set it up.
 struct Subject {
@@ -88,6 +128,10 @@ struct Subject {
     peak: bool,
     /// It is meant to sing at full resonance (Y2b).
     sings: bool,
+    /// The filter as its engine moves it (Y1c), and the engine's control
+    /// step (frames).
+    moving: Moving,
+    ctrl: usize,
 }
 
 /// Every filter, at `rate`.
@@ -121,6 +165,18 @@ fn subjects(rate: u32) -> Vec<Subject> {
             saturates: false,
             peak: true,
             sings: false,
+            // The voice works out its coefficients once a control step.
+            moving: Box::new(move |_, _, _| {
+                let mut f = SynthFilter::default();
+                let step: Step = Box::new(move |fc, r, x| {
+                    let c = FilterCoefs::new(fc, r, rate as f32);
+                    let mut buf: Vec<f32> = x.iter().map(|&s| s as f32).collect();
+                    f.run(mode, &c, &mut buf);
+                    buf.into_iter().map(f64::from).collect()
+                });
+                (1, step)
+            }),
+            ctrl: poly::CTRL as usize,
         });
     }
     for (index, label) in [
@@ -147,6 +203,16 @@ fn subjects(rate: u32) -> Vec<Subject> {
             saturates: true,
             peak: true,
             sings: index == 0.0,
+            moving: Box::new(move |fc, r, _| {
+                let mut p = analog::FilterProbe::new(rate);
+                p.set(index, fc, 100.0 * r, 0.0);
+                let step: Step = Box::new(move |fc, r, x| {
+                    p.glide(fc, 100.0 * r, x.len() as u32);
+                    x.iter().map(|&s| f64::from(p.tick(s as f32))).collect()
+                });
+                (1, step)
+            }),
+            ctrl: analog::CTRL as usize,
         });
     }
     v.push(Subject {
@@ -164,6 +230,17 @@ fn subjects(rate: u32) -> Vec<Subject> {
         saturates: true,
         peak: true,
         sings: false,
+        moving: Box::new(move |fc, r, _| {
+            let mut p = squelch::FilterProbe::new(rate);
+            p.set(fc, 100.0 * r);
+            let os = p.oversampling();
+            let step: Step = Box::new(move |fc, r, x| {
+                p.glide(fc, 100.0 * r, (x.len() / os) as u32);
+                frames(x, os, |f| p.frame(f))
+            });
+            (os, step)
+        }),
+        ctrl: squelch::CTRL as usize,
     });
     v.push(Subject {
         name: "Bass".into(),
@@ -180,6 +257,17 @@ fn subjects(rate: u32) -> Vec<Subject> {
         saturates: true,
         peak: true,
         sings: true,
+        moving: Box::new(move |fc, r, _| {
+            let mut p = bass::FilterProbe::new(rate);
+            p.set(fc, 100.0 * r, 0.0);
+            let os = p.oversampling();
+            let step: Step = Box::new(move |fc, r, x| {
+                p.glide(fc, 100.0 * r, 0.0, (x.len() / os) as u32);
+                frames(x, os, |f| p.frame(f))
+            });
+            (os, step)
+        }),
+        ctrl: bass::CTRL as usize,
     });
     let (delay, gain) = pad_path(rate);
     for (label, kind, poles) in [
@@ -233,9 +321,110 @@ fn subjects(rate: u32) -> Vec<Subject> {
                     | FilterKind::Ladder
             ),
             sings: kind == FilterKind::Ladder,
+            moving: Box::new(move |fc, r, ctrl| {
+                let mut m = PadMirror::new(filter(fc, r), rate, ctrl as u32);
+                m.set(fc, r);
+                let step: Step = Box::new(move |fc, r, x| {
+                    m.set(fc, r);
+                    x.iter().map(|&s| f64::from(m.process(s as f32))).collect()
+                });
+                (1, step)
+            }),
+            ctrl: PAD_STEP,
         });
     }
     v
+}
+
+/// The sampler's filter as a voice runs it (`mpfree_sampler::engine`'s
+/// `retune` and `finish`, the left channel), so that it can be set every
+/// frame as well as every [`PAD_STEP`] frames. Each set first flushes the
+/// states too small to hear, as the voice's does.
+struct PadMirror {
+    f: PadFilter,
+    rate: f32,
+    /// Frames the comb's pitch glides over (the voice's step).
+    glide: u32,
+    svf: [Svf; 2],
+    ladder: PadLadder,
+    comb: Comb,
+    vowel_gain: f32,
+    /// The cutoff and resonance last set (the voice skips a set that
+    /// changes nothing).
+    last: Option<(u32, u32)>,
+}
+
+impl PadMirror {
+    fn new(f: PadFilter, rate: u32, glide: u32) -> PadMirror {
+        PadMirror {
+            f,
+            rate: rate as f32,
+            glide,
+            svf: [Svf::default(); 2],
+            ladder: PadLadder::default(),
+            comb: Comb::new(rate as f32),
+            vowel_gain: 1.0,
+            last: None,
+        }
+    }
+
+    fn set(&mut self, fc: f32, resonance: f32) {
+        let four = self.f.poles >= 4;
+        match self.f.kind {
+            FilterKind::Ladder => self.ladder.flush(),
+            FilterKind::Comb => {}
+            FilterKind::Vowel => self.svf.iter_mut().for_each(Svf::flush),
+            _ => {
+                self.svf[0].flush();
+                if four {
+                    self.svf[1].flush();
+                }
+            }
+        }
+        let key = (fc.to_bits(), resonance.to_bits());
+        if self.last == Some(key) {
+            return;
+        }
+        self.last = Some(key);
+        let rate = self.rate;
+        match self.f.kind {
+            FilterKind::Ladder => self.ladder.set(fc, resonance, self.f.drive_db, rate),
+            FilterKind::Comb => self.comb.set(fc, resonance, rate, self.glide),
+            FilterKind::Vowel => {
+                let (f1, f2) = vowel_formants(fc);
+                let res = vowel_resonance(resonance);
+                self.svf[0].set(f1, res, rate);
+                self.svf[1].set(f2, res, rate);
+                self.vowel_gain = vowel_gain(resonance);
+            }
+            _ => {
+                self.svf[0].set(fc, resonance, rate);
+                if four {
+                    self.svf[1].set(fc, resonance * 0.5, rate);
+                }
+            }
+        }
+    }
+
+    fn process(&mut self, x: f32) -> f32 {
+        let kind = self.f.kind;
+        match kind {
+            FilterKind::Ladder => self.ladder.process(0, x),
+            FilterKind::Comb => self.comb.process(x, 0.0).0,
+            FilterKind::Vowel => {
+                let [a, b] = &mut self.svf;
+                self.vowel_gain * (a.process(0, x, kind) + FORMANT_2 * b.process(0, x, kind))
+            }
+            _ => {
+                let y = self.svf[0].process(0, x, kind);
+                if self.f.poles >= 4 {
+                    self.svf[1].process(0, y, kind)
+                } else {
+                    y
+                }
+            }
+        }
+    }
 }
 
 /// `x` a frame of `os` samples at a time through `frame`.
@@ -412,6 +601,8 @@ pub fn report(rate: u32) -> Vec<Row> {
         if s.sings {
             singing(&mut rows, &s, rate);
         }
+        bounded(&mut rows, &s, rate);
+        stepping(&mut rows, &s, rate);
     }
     rows
 }
@@ -640,9 +831,231 @@ fn singing(rows: &mut Vec<Row>, s: &Subject, rate: u32) {
     }
 }
 
+/// One of Y1c's moves: a cycle of `period` host frames (a power of two
+/// and a whole number of control steps, so a stepped filter steps the
+/// same way every cycle), and the cutoff (Hz) and resonance at a phase of
+/// it (0 to 1) for a resonance setting.
+struct Move {
+    name: &'static str,
+    period: usize,
+    at: fn(f64, f32) -> (f32, f32),
+    /// It moves the resonance itself (measured once, not at each of
+    /// [`BOUND_RESONANCES`]).
+    own_resonance: bool,
+    /// A move an engine makes at its control rate, measured for stepping
+    /// noise too.
+    stepped: bool,
+}
+
+/// A fast filter envelope taking the cutoff between 100 Hz and 12.8 kHz:
+/// up in a straight line over the first 32nd of the cycle (1.5 ms at
+/// 44.1 kHz), then down by e^-9 over the rest (a 5 ms time constant).
+fn envelope_at(p: f64, r: f32) -> (f32, f32) {
+    const ATTACK: f64 = 1.0 / 32.0;
+    let e = if p < ATTACK {
+        p / ATTACK
+    } else {
+        (-9.0 * (p - ATTACK) / (1.0 - ATTACK)).exp()
+    };
+    ((100.0 * (7.0 * e).exp2()) as f32, r)
+}
+
+/// An LFO: two octaves either side of 1 kHz.
+fn lfo_at(p: f64, r: f32) -> (f32, f32) {
+    ((1_000.0 * (2.0 * (TAU * p).sin()).exp2()) as f32, r)
+}
+
+/// The cutoff at audio rate: three octaves either side of 1 kHz.
+fn audio_cutoff_at(p: f64, r: f32) -> (f32, f32) {
+    ((1_000.0 * (3.0 * (TAU * p).sin()).exp2()) as f32, r)
+}
+
+/// The resonance at audio rate, 0 to 1, at 1 kHz.
+fn audio_resonance_at(p: f64, _: f32) -> (f32, f32) {
+    (1_000.0, (0.5 - 0.5 * (TAU * p).cos()) as f32)
+}
+
+const MOVES: [Move; 4] = [
+    Move {
+        name: "envelope",
+        period: 2_048,
+        at: envelope_at,
+        own_resonance: false,
+        stepped: true,
+    },
+    Move {
+        name: "LFO",
+        period: 8_192,
+        at: lfo_at,
+        own_resonance: false,
+        stepped: true,
+    },
+    Move {
+        name: "audio-rate cutoff",
+        period: 64,
+        at: audio_cutoff_at,
+        own_resonance: false,
+        stepped: false,
+    },
+    Move {
+        name: "audio-rate resonance",
+        period: 64,
+        at: audio_resonance_at,
+        own_resonance: true,
+        stepped: false,
+    },
+];
+
+/// The filter's samples a frame.
+fn os_of(s: &Subject) -> usize {
+    (s.moving)(1_000.0, 0.0, 1).0
+}
+
+/// `x` (at the filter's own rate) through `s`'s filter moved with a
+/// control step of `ctrl` frames, each step toward `at(frame)` (cutoff,
+/// resonance) for the frame it starts at, as the engines work out their
+/// targets.
+fn run_moving(s: &Subject, ctrl: usize, x: &[f64], at: impl Fn(usize) -> (f32, f32)) -> Vec<f64> {
+    let (c0, r0) = at(0);
+    let (os, mut step) = (s.moving)(c0, r0, ctrl);
+    let frames = x.len() / os;
+    let mut y = Vec::with_capacity(frames);
+    let mut n = 0;
+    while n < frames {
+        let len = ctrl.min(frames - n);
+        let (c, r) = at(n);
+        y.extend(step(c, r, &x[n * os..(n + len) * os]));
+        n += len;
+    }
+    y
+}
+
+/// The phase of host frame `n` in a move's cycle.
+fn phase(m: &Move, n: usize) -> f64 {
+    (n % m.period) as f64 / m.period as f64
+}
+
+fn peak(y: &[f64]) -> Option<f64> {
+    y.iter()
+        .try_fold(0.0f64, |p, &v| v.is_finite().then(|| p.max(v.abs())))
+}
+
+/// Y1c, staying bounded.
+fn bounded(rows: &mut Vec<Row>, s: &Subject, rate: u32) {
+    let frames = rate as usize / 2;
+    let os = os_of(s);
+    let noise = white(frames * os, BOUND_NOISE, 0x59_1c);
+    for m in &MOVES {
+        let resonances: &[f32] = if m.own_resonance {
+            &[0.0]
+        } else {
+            &BOUND_RESONANCES
+        };
+        let mut worst = None::<f64>;
+        for &r in resonances {
+            let steps: &[usize] = if m.stepped { &[1, s.ctrl] } else { &[1] };
+            let moved = steps
+                .iter()
+                .map(|&ctrl| peak(&run_moving(s, ctrl, &noise, |n| (m.at)(phase(m, n), r))))
+                .try_fold(0.0f64, |a, p| p.map(|p| a.max(p)));
+            // The same noise with the settings held at 16 places on the
+            // move, half as long each.
+            let held = (0..16)
+                .map(|i| {
+                    let set = (m.at)(i as f64 / 16.0, r);
+                    peak(&run_moving(s, s.ctrl, &noise[..noise.len() / 2], |_| set))
+                })
+                .try_fold(0.0f64, |a, p| p.map(|p| a.max(p)));
+            let over = match (moved, held) {
+                (Some(a), Some(b)) => db20(a) - db20(b),
+                // Not finite.
+                _ => 999.0,
+            };
+            worst = Some(worst.map_or(over, |w: f64| w.max(over)));
+        }
+        if let Some(w) = worst {
+            put(
+                rows,
+                "Y1c",
+                format!("{}[{}]", s.name, m.name),
+                "over_held_peak_db",
+                w,
+                Better::Lower,
+                Some(6.0),
+                0.1,
+            );
+        }
+    }
+}
+
+/// Octave band powers (centres 62.5 Hz to 16 kHz) of `x`, which holds a
+/// whole number of cycles of everything in it (no window).
+fn octave_bands(x: &[f64], rate: u32) -> [f64; 9] {
+    let ps = power_spectrum(x);
+    let bin = f64::from(rate) / x.len() as f64;
+    let mut bands = [0.0; 9];
+    for (k, &p) in ps.iter().enumerate().skip(1) {
+        let b = ((k as f64 * bin / 62.5).log2() + 0.5).floor();
+        if (0.0..9.0).contains(&b) {
+            bands[b as usize] += p;
+        }
+    }
+    bands
+}
+
+/// Y1c, stepping noise.
+fn stepping(rows: &mut Vec<Row>, s: &Subject, rate: u32) {
+    let os = os_of(s);
+    let frames = STEP_SETTLE + STEP_FRAMES;
+    // A tone near 1 kHz that fits the window exactly.
+    let k = (1_000.0 * STEP_FRAMES as f64 / f64::from(rate)).round();
+    let fs = f64::from(rate) * os as f64;
+    let f0 = k * f64::from(rate) / STEP_FRAMES as f64;
+    let tone: Vec<f64> = (0..frames * os)
+        .map(|i| STEP_TONE * (TAU * f0 * i as f64 / fs).sin())
+        .collect();
+    for m in MOVES.iter().filter(|m| m.stepped) {
+        let mut worst = 0.0f64;
+        for r in STEP_RESONANCES {
+            let at = |n| (m.at)(phase(m, n), r);
+            let stepped = run_moving(s, s.ctrl, &tone, at);
+            let smooth = run_moving(s, 1, &tone, at);
+            let a = octave_bands(&stepped[STEP_SETTLE..], rate);
+            let b = octave_bands(&smooth[STEP_SETTLE..], rate);
+            // Each band against the smooth move's, where the stepped one
+            // is within 60 dB of the smooth one's loudest band; a smooth
+            // band quieter than that counts as that.
+            let floor = b.iter().cloned().fold(0.0, f64::max) * 1e-6;
+            let over = a
+                .iter()
+                .zip(&b)
+                .filter(|(&p, _)| p > floor || !p.is_finite())
+                .map(|(&p, &q)| {
+                    if p.is_finite() {
+                        10.0 * (p / q.max(floor)).log10()
+                    } else {
+                        999.0
+                    }
+                })
+                .fold(0.0, f64::max);
+            worst = worst.max(over);
+        }
+        put(
+            rows,
+            "Y1c",
+            format!("{}[{}]", s.name, m.name),
+            "step_noise_db",
+            worst,
+            Better::Lower,
+            Some(3.0),
+            0.1,
+        );
+    }
+}
+
 /// The ratchet file's header.
 const HEADER: &str =
-    "# The filter measures' ratchet (DSP quality Y1a, Y2a, Y2b): every number may stay or get better, never worse.\n\
+    "# The filter measures' ratchet (DSP quality Y1a, Y1c, Y2a, Y2b): every number may stay or get better, never worse.\n\
 # Written by `MPFREE_QUALITY_BLESS=1 cargo test --release --locked -p mpfree-fxlab --test filters`;\n\
 # see docs/dev/design/dsp-quality.md. key<TAB>value\n";
 
@@ -667,6 +1080,61 @@ mod tests {
         let (delay, gain) = pad_path(44_100);
         assert!(gain > 0.1 && gain <= 1.0, "gain {gain}");
         assert!(delay < 256, "delay {delay}");
+    }
+
+    #[test]
+    fn the_pad_mirror_moves_as_a_pad_does() {
+        use mpfree_sampler::dsp::{Ahdsr, Envelope};
+        let rate = 44_100;
+        let (delay, gain) = pad_path(rate);
+        // A filter envelope sweeping five octaves down in 40 ms over noise.
+        let env = Ahdsr {
+            attack_ms: 0.0,
+            hold_ms: 0.0,
+            decay_ms: 40.0,
+            sustain: 0.0,
+            release_ms: 5.0,
+        };
+        let x = white(8_192, 0.25, 7);
+        for (kind, poles) in [
+            (FilterKind::LowPass, 2u8),
+            (FilterKind::LowPass, 4),
+            (FilterKind::HighPass, 2),
+            (FilterKind::HighPass, 4),
+            (FilterKind::BandPass, 2),
+            (FilterKind::BandPass, 4),
+            (FilterKind::Notch, 2),
+            (FilterKind::Notch, 4),
+            (FilterKind::Ladder, 4),
+            (FilterKind::Vowel, 2),
+            (FilterKind::Comb, 2),
+        ] {
+            let f = PadFilter {
+                kind,
+                poles,
+                cutoff_hz: 200.0,
+                resonance: 0.7,
+                env_octaves: 5.0,
+                drive_db: 0.0,
+            };
+            let pad = sampler::through_shaped_pad(&x, rate, x.len() + delay, |p| {
+                p.filter = f;
+                p.filter_env = env;
+            });
+            let mut m = PadMirror::new(f, rate, PAD_STEP as u32);
+            let mut e = Envelope::start(&env, rate as f32);
+            let mut worst = 0.0f64;
+            for (n, &s) in x.iter().enumerate() {
+                let level = e.next();
+                if n % PAD_STEP == 0 {
+                    m.set(f.cutoff_hz * (f.env_octaves * level).exp2(), f.resonance);
+                }
+                let y = f64::from(m.process((s * gain) as f32));
+                worst = worst.max((y - pad[n + delay]).abs());
+            }
+            // The same to the rounding of f32.
+            assert!(worst < 1e-6, "{kind:?} {poles}-pole: {worst}");
+        }
     }
 
     #[test]

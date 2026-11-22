@@ -125,3 +125,27 @@ fn y8_every_listed_reference_still_agrees_with_16x() {
         assert!(rows.iter().any(|r| r.case == *name), "{name} is not a case");
     }
 }
+
+/// Y3 (reported only, `docs/dev/design/dsp-quality.md`): Analog's
+/// poly-mod at full and each synth's fast filter envelope against their
+/// 8x references. Every number finite.
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "release only: cargo test --release --locked -p mpfree-fxlab --test reference"
+)]
+fn y3_audio_rate_moves_are_measured() {
+    let rows = reference::y3(true);
+    print!("{}", reference::y3_text(&rows));
+    for r in &rows {
+        for v in [
+            r.fizz_db,
+            r.ref_fizz_db,
+            r.harmonic_err_db,
+            r.envelope_err_db,
+            r.level_db,
+        ] {
+            assert!(v.is_finite(), "{}: a Y3 number is not finite", r.case);
+        }
+    }
+}

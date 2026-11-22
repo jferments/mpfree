@@ -422,6 +422,12 @@ pub struct FilterProbe {
     k: f32,
     loop_h: f32,
     comp: f32,
+    /// [`FilterProbe::glide`]'s targets and steps (the gain's a frame, the
+    /// make-up's a sample).
+    g_to: f32,
+    dg: f32,
+    comp_to: f32,
+    dcomp: f32,
 }
 
 impl FilterProbe {
@@ -439,6 +445,10 @@ impl FilterProbe {
             k: 0.0,
             loop_h: loop_h(fs),
             comp: 1.0,
+            g_to: 0.0,
+            dg: 0.0,
+            comp_to: 1.0,
+            dcomp: 0.0,
         };
         p.set(1_000.0, 0.0);
         p
@@ -455,6 +465,24 @@ impl FilterProbe {
         self.g = cutoff_g(cutoff, self.fs);
         self.k = K_MAX * (resonance / 100.0);
         self.comp = (1.0 + self.k).sqrt();
+        (self.g_to, self.dg, self.comp_to, self.dcomp) = (self.g, 0.0, self.comp, 0.0);
+    }
+
+    /// One control step of `frames` frames, moved as the voice moves it:
+    /// the ladder's gain in a straight line a frame from the last step's
+    /// target to **Cutoff** `cutoff` (Hz), **Resonance** (0 to 100) at
+    /// once, and its make-up in a straight line a sample (the amplifier's
+    /// ramp).
+    pub fn glide(&mut self, cutoff: f32, resonance: f32, frames: u32) {
+        let per = frames.max(1) as f32;
+        // Last step's ramps have arrived: land exactly.
+        self.g = self.g_to;
+        self.comp = self.comp_to;
+        self.g_to = cutoff_g(cutoff, self.fs);
+        self.dg = (self.g_to - self.g) / per;
+        self.k = K_MAX * (resonance / 100.0);
+        self.comp_to = (1.0 + self.k).sqrt();
+        self.dcomp = (self.comp_to - self.comp) / (per * self.os as f32);
     }
 
     /// One frame: `x` holds [`FilterProbe::oversampling`] samples at the
@@ -462,7 +490,12 @@ impl FilterProbe {
     /// comes back.
     pub fn frame(&mut self, x: &[f32]) -> f32 {
         self.ladder.set(self.g, self.k, self.loop_h);
-        let mut y = |x: f32| self.ladder.step(x * IN_GAIN) * self.comp / IN_GAIN;
+        self.g += self.dg;
+        let mut y = |x: f32| {
+            let y = self.ladder.step(x * IN_GAIN) * self.comp / IN_GAIN;
+            self.comp += self.dcomp;
+            y
+        };
         if self.os == 2 {
             let a = y(x[0]);
             let b = y(x[1]);
