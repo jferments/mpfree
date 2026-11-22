@@ -10,7 +10,7 @@ The note editor shows a clip's notes so you can fix what you played: pull notes 
 
 {{shot: sequencer-notes | The note editor's piano roll across the screen, the overview strip over it. Two long melody notes show the pressure they were played with.}}
 
-The Notes view has the Arrange tab's transport bar along the top (**Stop**, **Play** and **Rec**, the record mode, the position, the tempo, the time signature, the launch line, **Undo** and the REC chip), the roll across the screen, and a row of buttons under the roll. The **Edit** options and the clip's **Takes** are in a drawer at the right: **Edit**, **TC** or the data wheel opens it, and the roll makes room.
+The Notes view has the Arrange tab's transport bar along the top (**Stop**, **Play** and **Rec**, the record mode, the position, the tempo, the time signature, the launch line, **Undo** and the REC chip), the roll across the screen, and a row of buttons under the roll. The **Edit** options and the clip's **Takes** are in a drawer at the right: **Edit**, **TC** or pushing the data wheel opens it, and the roll makes room.
 
 | Button | What it does |
 |---|---|
@@ -46,6 +46,28 @@ Notes are drawn as they will play. A note whose step is off (tapped off on Steps
 
 {{shot: sequencer-notes-list | The same notes as a list, the picked ones lit.}}
 
+### Change notes with the Q-Links
+
+While notes are picked, the four Q-Links change them, and the Q-Link column says so: its top reads **Note edit** with how many notes are picked, and its four cards, in the same colour, show what each knob changes and the value now, or the range across the picked notes ("80–104").
+
+- **Q1 Position** moves the picked notes a snap each step of the knob. With **Auto** snap each note keeps its feel; with a fixed snap they land on lines. Hold **SHIFT** to move them 4 ticks a step, off the grid.
+- **Q2 Length** makes them a snap longer or shorter each step; with **SHIFT**, 4 ticks.
+- **Q3 Semitones** moves them up or down a semitone each step. If one would go past the lowest or the highest note, nothing moves, so a chord keeps its shape.
+- **Q4 Velocity** makes them louder or softer, each keeping its difference from the others: the loudest stops at 127 and the softest at 1, and the rest stop with them. With **SHIFT** it widens or narrows the gap between the softest and the loudest, the notes in between keeping their places.
+- **One turn, one UNDO.** The Q-Links feel your fingers: from the first knob you touch to the last you let go is one turn, however many knobs you turn, and one **UNDO** takes it all back. Touching the screen, hitting a pad, pressing a button or 3 seconds without turning ends a turn too.
+- **Q-LINK** still shows Play's macro banks, over the note knobs; press it until the banks come round again to get **Note edit** back.
+- With no notes picked, the Q-Links do what they do on Play.
+
+### – / + and the data wheel
+
+While the drawer is closed:
+
+- **–** and **+** move the picked notes a snap earlier or later, as **Q1** does (the MPC's Nudge). A run of presses is one take. With no notes picked they open the drawer.
+- **SHIFT + – / +** zoom the roll in time, around the cursor when it is on screen.
+- **The data wheel** moves the **cursor**, a line across the roll in the note edit colour with a mark on the ruler, a snap at a time and round the clip; the roll scrolls to keep it in view. In the tracker the cursor's step is outlined and stays near the top. The cursor marks where the pads will write notes once they can. **SHIFT + wheel** still scrolls the rows, and pushing the wheel opens the drawer. On the list the wheel opens the drawer, as before.
+
+With the drawer open, the wheel, – and + work the Edit options as before.
+
 ### Zoom and scroll
 
 Rows open at least 40 pixels tall, big enough for a fingertip, and the roll opens with the clip's notes filling them. A short clip opens whole; a long one opens on two bars from its first note.
@@ -76,7 +98,7 @@ The tracker shows the clip as a list of steps from top to bottom, empty steps in
 
 - **One row per step**, at the snap's size (with Auto, the grid your roll's zoom picked). A step with several notes, such as a kick and a hat together, gives each note a row of its own under the step. An empty step shows dots. Rows are 40 pixels tall, as are the list's, so a tap lands on the row you meant.
 - **The columns**: the step (bar.beat.step), the pad or note, velocity, length, nudge (how many ticks early or late), chance, condition, ratchet (with its velocity ramp when it has one: "×4 -40" is four hits, the last 40 softer than the first), and how many parameter locks the step has. A setting left at its default shows as a faint dot, so what you changed stands out. A note whose step is off has a faint row and says "off" after its name; a tied or sliding note says "tie" or "slide".
-- **Tap a note's row** to pick it, then change it with the Edit options. With **Draw** on, tap an empty step to put a note there: the sound of the last note you tapped, a step long. Hold **ERASE** and tap a note's row to take it out.
+- **Tap a note's row** to pick it, then change it with the Q-Links or the Edit options. With **Draw** on, tap an empty step to put a note there: the sound of the last note you tapped, a step long. Hold **ERASE** and tap a note's row to take it out.
 - The step on each beat is shaded, a bar starts with a line, and a green mark shows the step playing.
 
 With the snap off, or finer than 1/32, the tracker uses 1/16 steps, and its title line says so. The names of the parameters a step locks are coming; for now it shows how many there are.

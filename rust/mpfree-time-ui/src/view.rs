@@ -31,8 +31,9 @@ use std::collections::BTreeMap;
 
 use crate::editor::zoom::RollView;
 use crate::editor::{
-    box_of, drop_of, edit_rows, pads, step_name, EditAction, Editor, Lens, LockMark, NoteBox,
-    NoteGrid, Tool, ADD, EDIT_BUTTON, MENU, PEN, SNAP_AUTO_T, START_HANDLE, STEP_FALLBACK,
+    box_of, drop_of, edit_rows, length_name, note_name, pads, position_name, step_name, EditAction,
+    Editor, Lens, LockMark, NoteBox, NoteGrid, Tool, ADD, EDIT_BUTTON, KNOBS, MENU, PEN,
+    SNAP_AUTO_T, START_HANDLE, STEP_FALLBACK,
 };
 use crate::list::{
     ListRow, SongListView, LIST_ADD, LIST_CLIPS, LIST_LOOP, LIST_PLAY, LIST_REMOVE, LIST_SONG,
@@ -63,7 +64,7 @@ use mpfree_seq::{
 use mpfree_transport::time::{Meter, Swing, Tick, MAX_BPM, MIN_BPM, PPQ};
 use mpfree_transport::transport::MAX_COUNT_IN;
 use mpfree_transport::{Command, State, Transport};
-use mpfree_ui::qlink::QLinkColumn;
+use mpfree_ui::qlink::{QLinkCard, QLinkColumn};
 use mpfree_ui::widgets::{Chip, OptionButton, OptionList, OptionRow};
 use mpfree_ui::{Color, EventKind, Tone, Ui, UiEvent};
 use std::sync::Arc;
@@ -144,6 +145,82 @@ pub fn clips_card_hint(st: &TimeState) -> &str {
 
 /// The hint line while COPY is held over the note editor (piano roll
 /// plan 1B.4).
+/// The note inspector (piano roll plan 1C.1): while notes are picked in
+/// the note editor, the Q-Link column's header ("3 notes") and its four
+/// cards, Position, Length, Semitones and Velocity, each with its value
+/// or range ("80–104"). None with no notes picked.
+pub fn note_cards(e: &EditInfo) -> Option<(String, [QLinkCard; 4])> {
+    let c = &e.clip;
+    let picked: Vec<&mpfree_seq::Note> = e
+        .editor
+        .sel
+        .iter()
+        .filter_map(|&i| c.notes.get(i))
+        .collect();
+    let first = picked.first()?;
+    let pad = pads(c);
+    let span = |f: &dyn Fn(&mpfree_seq::Note) -> i64| {
+        picked.iter().fold((f(first), f(first)), |(lo, hi), n| {
+            (lo.min(f(n)), hi.max(f(n)))
+        })
+    };
+    let range = |(lo, hi): (i64, i64), name: &dyn Fn(i64) -> String| {
+        if lo == hi {
+            name(lo)
+        } else {
+            format!("{}–{}", name(lo), name(hi))
+        }
+    };
+    let bar = e.bar.max(1);
+    let length = c.length.max(1);
+    let beat = PPQ as Tick;
+    // Several places: bar.beat of the first and the last.
+    let at = span(&|n| n.tick);
+    let position = if at.0 == at.1 {
+        position_name(at.0, bar)
+    } else {
+        let short = |t: i64| format!("{}.{}", t / bar + 1, (t % bar) / beat + 1);
+        format!("{}–{}", short(at.0), short(at.1))
+    };
+    let lens = span(&|n| n.len);
+    let short_len = |l: i64| {
+        let name = length_name(l);
+        name.strip_suffix(" ticks")
+            .map_or(name.clone(), |n| format!("{n}t"))
+    };
+    let pitch = span(&|n| i64::from(n.note));
+    let sound = |n: i64| {
+        let n = n.clamp(0, 127) as u8;
+        if pad {
+            format!("Pad {}", u16::from(n) + 1)
+        } else {
+            note_name(n)
+        }
+    };
+    let vel = span(&|n| i64::from(n.velocity));
+    let mut cards: [QLinkCard; 4] =
+        std::array::from_fn(|k| QLinkCard::new(KNOBS[k], "Notes", "", 0.0));
+    cards[0].value = position;
+    cards[0].pos = at.0 as f32 / length as f32;
+    cards[1].value = if lens.0 == lens.1 {
+        short_len(lens.0)
+    } else {
+        range(lens, &short_len)
+    };
+    cards[1].pos = (lens.1 as f32 / bar as f32).min(1.0);
+    cards[2].value = range(pitch, &sound);
+    cards[2].pos = pitch.1 as f32 / if pad { 15.0 } else { 127.0 };
+    cards[3].value = range(vel, &|v| v.to_string());
+    cards[3].pos = vel.1 as f32 / 127.0;
+    let n = picked.len();
+    let head = if n == 1 {
+        "1 note".to_string()
+    } else {
+        format!("{n} notes")
+    };
+    Some((head, cards))
+}
+
 pub fn notes_copy_hint(st: &TimeState) -> String {
     match &st.notes_copied {
         Some(what) => format!(
@@ -230,11 +307,18 @@ pub const EDIT_LIST_HINT: &str =
     "Tap a row to pick its note   ·   ERASE + tap: erase   ·   SHIFT + wheel: scroll   ·   Edit, TC or the wheel: the options";
 /// The hint line under the note editor's tracker.
 pub const EDIT_TRACKER_HINT: &str =
-    "Tap a row to pick its note   ·   Draw: tap an empty step   ·   ERASE + tap: erase   ·   SHIFT + wheel: scroll   ·   Edit, TC or the wheel: the options";
+    "Tap a row to pick its note   ·   Draw: tap an empty step   ·   ERASE + tap: erase   ·   wheel: the cursor   ·   SHIFT + wheel: scroll   ·   Edit, TC or a push: the options";
+/// The hint line under the piano roll with notes picked and the Edit
+/// options' drawer closed (piano roll plan 1C.1): the Q-Links are the
+/// note inspector.
+pub const EDIT_PICKED_HINT: &str =
+    "Q-Links: position, length, pitch, velocity (SHIFT: finer)   ·   - / +: nudge   ·   drag: move   ·   handles: start, length   ·   wheel: the cursor   ·   ERASE + tap: erase";
 
-/// The hint line under the note editor showing `lens`, with `tool`.
-pub fn edit_hint(lens: Lens, tool: Tool) -> &'static str {
+/// The hint line under the note editor showing `lens`, with `tool`, and
+/// `picked` when notes are picked with the drawer closed.
+pub fn edit_hint(lens: Lens, tool: Tool, picked: bool) -> &'static str {
     match lens {
+        Lens::Grid if picked => EDIT_PICKED_HINT,
         Lens::Grid if tool == Tool::Draw => EDIT_DRAW_HINT,
         Lens::Grid => EDIT_HINT,
         Lens::List => EDIT_LIST_HINT,
@@ -4543,6 +4627,9 @@ pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
     g.bar = e.bar;
     g.pads = pads(c);
     g.playhead = playhead;
+    // The cursor shows on the roll and the tracker (the list has no
+    // time line).
+    g.cursor = (ed.lens != Lens::List).then_some(ed.cursor);
     g.snap = ed.snap_ticks();
     g.snap_name = ed.snap_name();
     g.snap_auto = ed.snap_auto();
@@ -4605,6 +4692,9 @@ pub struct TimePage {
     /// Snap Auto's division last asked for, and for which clip, so it is
     /// asked once while the answer comes.
     auto_asked: Option<((usize, usize), usize)>,
+    /// The cursor last seen and on which clip (plan 1C.1): when the wheel
+    /// moves it, the roll scrolls to keep it on screen.
+    cursor_seen: Option<((usize, usize), Tick)>,
 }
 
 impl TimePage {
@@ -4788,6 +4878,23 @@ impl TimePage {
         }
         self.edit_drawer = true;
         true
+    }
+
+    /// The note editor shows with its drawer closed (plan 1C.1: – / +
+    /// nudge the picked notes and the wheel moves the cursor).
+    pub fn drawer_closed(&self, ui: &Ui) -> bool {
+        ui.layout_of(CLIPS_PAGE) == Some(EDIT_LAYOUT)
+    }
+
+    /// SHIFT + – / + on the note editor (plan 1C.1): the roll zooms in
+    /// time, `d` steps in (out if negative). True if it moved; call
+    /// [`TimePage::update`] after.
+    pub fn zoom_time(&mut self, ui: &mut Ui, d: i32) -> bool {
+        let Some(r) = ui.rect_of(NOTES) else {
+            return false;
+        };
+        ui.get_mut::<NoteGrid>(NOTES)
+            .is_some_and(|g| g.zoom_step(r, d))
     }
 
     /// Scroll the grid `delta` rows down (up if negative), or on the Song
@@ -5175,6 +5282,20 @@ impl TimePage {
                 if let Some(g) = ui.get_mut::<NoteGrid>(NOTES) {
                     g.view = g.open_view(r);
                     slot.insert(g.view);
+                }
+            }
+            // The wheel moved the cursor: the roll keeps it on screen (not
+            // when a clip first shows).
+            let seen = (key, e.editor.cursor);
+            if self.cursor_seen != Some(seen) {
+                let moved = self.cursor_seen.is_some_and(|(k, _)| k == key);
+                self.cursor_seen = Some(seen);
+                if let Some(g) = ui.get_mut::<NoteGrid>(NOTES).filter(|_| moved) {
+                    if g.lens == Lens::Grid && g.show_tick(r, e.editor.cursor) {
+                        if let Some(v) = self.views.get_mut(&key) {
+                            *v = g.view;
+                        }
+                    }
                 }
             }
             if let Some(g) = ui.get::<NoteGrid>(NOTES) {
@@ -5716,6 +5837,72 @@ mod tests {
         );
         assert_eq!(action(&moved, &st), None);
         assert!(page.page_tracks(&moved, &st));
+    }
+
+    /// The note inspector's cards (plan 1C.1): a value for one note, a
+    /// range for several; none with nothing picked. The cursor shows on
+    /// the roll, which scrolls to keep it on screen when the wheel moves
+    /// it, and SHIFT + – / + zoom the roll in time.
+    #[test]
+    fn the_note_inspector_cards_and_the_cursor() {
+        let mut c = Clip::new("A", 16 * BAR);
+        c.add_note(Note::new(0, 240, 60, 80)).unwrap();
+        c.add_note(Note::new(BAR + 480, 960, 67, 104)).unwrap();
+        c.add_note(Note::new(2 * BAR, 37, 64, 90)).unwrap();
+        let mut e = EditInfo {
+            editor: crate::editor::Editor::new(0, 0, &c),
+            clip: c.into(),
+            rev: 1,
+            track_name: "Keys".into(),
+            bar: BAR,
+            answer: EditAnswer::default(),
+        };
+        assert_eq!(note_cards(&e), None, "nothing picked");
+        e.editor.sel = vec![1];
+        let (head, cards) = note_cards(&e).unwrap();
+        assert_eq!(head, "1 note");
+        let names: Vec<&str> = cards.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["Position", "Length", "Semitones", "Velocity"]);
+        let values: Vec<&str> = cards.iter().map(|c| c.value.as_str()).collect();
+        assert_eq!(values, ["2.1.480", "1/4", "G3", "104"]);
+        e.editor.sel = vec![0, 1, 2];
+        let (head, cards) = note_cards(&e).unwrap();
+        assert_eq!(head, "3 notes");
+        let values: Vec<&str> = cards.iter().map(|c| c.value.as_str()).collect();
+        assert_eq!(values, ["1.1–3.1", "37t–1/4", "C3–G3", "80–104"]);
+        // The cursor on the roll, kept on screen.
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", Header::new(&["Play", "Clips"]));
+        ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        let mut page = TimePage::add_to(&mut ui).unwrap();
+        ui.show(CLIPS_PAGE).unwrap();
+        let mut st = state();
+        st.edit = Some(Box::new(e));
+        page.update(&mut ui, &st);
+        assert!(page.drawer_closed(&ui));
+        let g = ui.get::<NoteGrid>(NOTES).unwrap();
+        assert_eq!(g.cursor, Some(0));
+        let (start, shown) = (g.view.start, g.view.ticks_shown(ui.rect_of(NOTES).unwrap()));
+        let far = start + shown + 2 * BAR;
+        st.edit.as_mut().unwrap().editor.cursor = far;
+        page.update(&mut ui, &st);
+        let g = ui.get::<NoteGrid>(NOTES).unwrap();
+        assert_eq!(g.cursor, Some(far));
+        assert!(
+            g.view.start > start && far < g.view.start + shown,
+            "scrolled to it"
+        );
+        // SHIFT + +: closer in, about the cursor.
+        let ppt = g.view.ppt;
+        assert!(page.zoom_time(&mut ui, 1));
+        let g = ui.get::<NoteGrid>(NOTES).unwrap();
+        assert!(g.view.ppt > ppt);
+        let shown = g.view.ticks_shown(ui.rect_of(NOTES).unwrap());
+        assert!((g.view.start..g.view.start + shown).contains(&far));
+        // The list has no cursor.
+        st.edit.as_mut().unwrap().editor.lens = Lens::List;
+        page.update(&mut ui, &st);
+        assert_eq!(ui.get::<NoteGrid>(NOTES).unwrap().cursor, None);
     }
 
     /// With Follow on, the roll pages along with the playhead; off, it

@@ -34,6 +34,12 @@
 //!   time engine but the division Snap Auto picks
 //!   ([`EditAction::AutoSnap`]).
 //!
+//! The MPC's controls send their own actions: the note inspector's
+//! Q-Links ([`EditAction::Knob`], one take a turn, [`KNOBS`]), – / + with
+//! the drawer closed ([`EditAction::Nudge`]) and the wheel's cursor
+//! ([`EditAction::Cursor`], drawn as `NoteGrid::cursor`; piano roll plan
+//! 1C.1).
+//!
 //! On the roll, a note played with pad pressure shows it as a lighter
 //! contour along its bottom, as high as the pressure, from where each
 //! value was played to the next (`NoteGrid::touch`).
@@ -160,10 +166,12 @@ const SIXTEENTH: usize = 6;
 const FREE_LEN: Tick = PPQ as Tick / 4;
 /// The velocity a drawn note gets until another is used.
 const DRAW_VELOCITY: u8 = 100;
-/// A step, for a tap with Draw on (plan 1B.1, call 3): a note no longer
-/// than this comes out, as a tap on a lit step does; a longer one is
-/// picked. A 1/16, the Steps view's step.
-pub const TAP_STEP: Tick = PPQ as Tick / 4;
+/// The note inspector's knobs (piano roll plan 1C.1), Q1 to Q4, and
+/// their cards' names ([`EditAction::Knob`]).
+pub const KNOBS: [&str; 4] = ["Position", "Length", "Semitones", "Velocity"];
+/// A Q-Link turn's join key, apart from every row's: a turn's detents on
+/// any knob make one undoable take, its number in the key's top bits.
+const TURN_KEY: u64 = 0x80;
 /// Join keys, so turning a row or dragging the velocity lane makes one
 /// undoable take.
 const JOIN: u64 = 0xED17_0000_0000;
@@ -245,7 +253,8 @@ pub enum EditAction {
     /// picked keeps the others with it.
     Note { index: usize, rev: u64 },
     /// A note on the roll tapped (plan 1B.1): with Draw on, a note no
-    /// longer than a step comes out ([`TAP_STEP`]) and a longer one is
+    /// longer than the clip's step comes out (`Clip::step`, a 1/16 unless
+    /// changed, as on Steps) and a longer one is
     /// picked; with Draw off it is picked in place of the others.
     Tap { index: usize, rev: u64 },
     /// A note taken out: ERASE held + a tap.
@@ -319,6 +328,27 @@ pub enum EditAction {
     /// `tick`, from this clip or another, their pressure and locks with
     /// them. The app makes the edit ([`Editor::pasted`]).
     Paste { tick: Tick },
+    /// Q-Link `k` of the note inspector turned `ticks` detents while
+    /// notes are picked (plan 1C.1, [`KNOBS`]): Q1 moves them a snap a
+    /// detent (`fine`, SHIFT: 4 ticks), Q2 changes their length the same
+    /// way, Q3 moves them a semitone, Q4 changes their velocity keeping
+    /// the differences (`fine`: widens or narrows the gap between the soft
+    /// and loud ones). Every detent of turn `turn` (the app counts them,
+    /// from a knob touched to the last let go) joins one take.
+    Knob {
+        k: usize,
+        ticks: i32,
+        fine: bool,
+        turn: u64,
+    },
+    /// – / + with the Edit options' drawer closed (plan 1C.1): the picked
+    /// notes a snap earlier or later, as the MPC's Nudge; `fine` (SHIFT on
+    /// the knob), 4 ticks.
+    Nudge { steps: i32, fine: bool },
+    /// The data wheel with the drawer closed (plan 1C.1): the cursor, the
+    /// line where the pads will write, this many snaps on (back if
+    /// negative), round the clip.
+    Cursor(i32),
 }
 
 impl EditAction {
@@ -410,6 +440,9 @@ pub struct Editor {
     /// picks (a tap on a picked note takes it out) in place of replacing
     /// them.
     pub add: bool,
+    /// The cursor's tick (plan 1C.1): the line the wheel moves, where the
+    /// pads will write.
+    pub cursor: Tick,
 }
 
 impl Editor {
@@ -451,6 +484,7 @@ impl Editor {
             velocity: DRAW_VELOCITY,
             cleared: false,
             add: false,
+            cursor: 0,
         }
     }
 
@@ -499,6 +533,18 @@ impl Editor {
         match self.snap_ticks() {
             0 => Snap::Off,
             d => Snap::Absolute(d),
+        }
+    }
+
+    /// How a knob or – / + moves notes (plan 1C.1): onto the snap's lines,
+    /// or with Snap Auto by whole snaps, each note keeping its distance
+    /// from the grid (as an Auto drag); 4 ticks a step with no snap or
+    /// `fine`.
+    fn move_snap(&self, fine: bool) -> Snap {
+        match (self.snap_ticks(), fine) {
+            (0, _) | (_, true) => Snap::Off,
+            (d, false) if self.snap_auto() => Snap::Relative(d),
+            (d, false) => Snap::Absolute(d),
         }
     }
 
@@ -796,7 +842,7 @@ impl Editor {
             // pitch); a longer one, or any with Draw off, is picked alone.
             EditAction::Tap { index: i, .. } if i < clip.notes.len() => {
                 let n = clip.notes[i];
-                if self.tool == Tool::Draw && n.len <= TAP_STEP {
+                if self.tool == Tool::Draw && n.len <= clip.step.max(1) {
                     self.sound = n.note;
                     (
                         notes::delete(clip, &[i]),
@@ -972,6 +1018,67 @@ impl Editor {
                 return Done::default();
             }
             EditAction::Paste { .. } => return Done::default(),
+            EditAction::Knob { .. } | EditAction::Nudge { .. } if none => {
+                return Done::line("edit: pick notes first".into())
+            }
+            // The note inspector: one take a turn, whichever knobs turn.
+            EditAction::Knob {
+                k,
+                ticks,
+                fine,
+                turn,
+            } => {
+                let d = i64::from(ticks);
+                let e = match k {
+                    0 => notes::nudge(clip, &sel, d, self.move_snap(fine)),
+                    1 => {
+                        let by = if fine { notes::FREE_NUDGE } else { self.step() };
+                        notes::edit_end(clip, &sel, d * by)
+                    }
+                    // Past note 0 or 127 the whole move is refused, so a
+                    // chord keeps its shape.
+                    2 => notes::shift(clip, &sel, 0, ticks),
+                    3 if fine => notes::velocity_spread(clip, &sel, ticks),
+                    3 => notes::velocity_kept(clip, &sel, ticks),
+                    _ => return Done::default(),
+                };
+                (
+                    e,
+                    Some(base | TURN_KEY | (turn & 0xFFFF) << 48),
+                    true,
+                    true,
+                    String::new(),
+                )
+            }
+            // – / +: as the Nudge row, so a run of presses is one take.
+            EditAction::Nudge { steps, fine } => (
+                notes::nudge(clip, &sel, i64::from(steps), self.move_snap(fine)),
+                key(6),
+                true,
+                true,
+                String::new(),
+            ),
+            EditAction::Cursor(d) => {
+                let len = clip.length.max(1);
+                let step = self.step();
+                // Onto the snap's line first, then a snap a detent.
+                let on = self.cursor.div_euclid(step) * step;
+                let to = if on != self.cursor && d < 0 {
+                    on + Tick::from(d + 1) * step
+                } else {
+                    on + Tick::from(d) * step
+                };
+                self.cursor = to.rem_euclid(len);
+                // The tracker keeps the cursor's line third from the top.
+                if self.lens == Lens::Tracker {
+                    let rows = track_rows(&clip.notes, clip.length, self.grid());
+                    let at = self.grid().place(clip.length, self.cursor).0;
+                    if let Some(k) = rows.iter().position(|r| r.step == at) {
+                        self.first = k.saturating_sub(2);
+                    }
+                }
+                return Done::default();
+            }
             EditAction::PickRow(r) => {
                 self.row = r.min(EDIT_ROWS.len() - 1);
                 return Done::default();
@@ -1662,6 +1769,9 @@ pub struct NoteGrid {
     /// Pad rows (Pad 1 to 16) in place of note names.
     pub pads: bool,
     pub playhead: Option<Tick>,
+    /// The editor's cursor (plan 1C.1): a line on the roll and a mark on
+    /// the tracker's line, where the pads will write; the wheel moves it.
+    pub cursor: Option<Tick>,
     /// The snap in ticks (0: none), for the drag and the lines.
     pub snap: Tick,
     pub snap_name: String,
@@ -1873,6 +1983,7 @@ impl Default for NoteGrid {
             drawer: false,
             pads: false,
             playhead: None,
+            cursor: None,
             snap: PPQ as Tick / 4,
             snap_name: "1/16".into(),
             snap_auto: false,
@@ -1921,6 +2032,7 @@ impl NoteGrid {
     pub fn same(&self, other: &NoteGrid) -> bool {
         self.notes == other.notes
             && self.playhead == other.playhead
+            && self.cursor == other.cursor
             && self.title == other.title
             && self.legend == other.legend
             && (self.length, self.bar, self.pads, self.drawer, self.add)
@@ -2074,6 +2186,47 @@ impl NoteGrid {
     /// scroll, a tap not yet lifted): the page leaves Snap Auto alone.
     pub fn busy(&self) -> bool {
         self.drag.is_some() || self.hand != Hand::Idle
+    }
+
+    /// Scroll the view just far enough that tick `t` shows, an eighth of
+    /// the roll in from its edge (the cursor, plan 1C.1), in area `r`:
+    /// true if it moved. Not while fingers are on the roll.
+    pub fn show_tick(&mut self, r: Rect, t: Tick) -> bool {
+        if self.busy() {
+            return false;
+        }
+        let g = self.geo(r);
+        let mut v = g.v;
+        if v.show_tick(g.roll, self.length, self.rows(), t) {
+            self.view = v;
+            return true;
+        }
+        false
+    }
+
+    /// SHIFT + – / + (plan 1C.1): zoom in time (`d` above 0) or out, half
+    /// as much again a step, about the cursor when it shows, else the
+    /// roll's middle, in area `r`: true if it moved. Not while fingers are
+    /// on the roll.
+    pub fn zoom_step(&mut self, r: Rect, d: i32) -> bool {
+        if self.busy() || d == 0 || self.lens != Lens::Grid {
+            return false;
+        }
+        let g = self.geo(r);
+        let v = g.v;
+        let shown = v.ticks_shown(g.roll);
+        let at = self
+            .cursor
+            .filter(|c| (v.start..v.start + shown).contains(c))
+            .unwrap_or(v.start + shown / 2);
+        let x = self.x_of(&g, at);
+        let ppt = v.ppt * 1.5f64.powi(d);
+        let to = v.zoom_time(g.roll, self.length, self.rows(), ppt, at as f64, x);
+        if to == v {
+            return false;
+        }
+        self.view = to;
+        true
     }
 
     /// Page the view on to show tick `t` while Follow is on, in area `r`:
@@ -2478,14 +2631,27 @@ impl NoteGrid {
             t.text_faint,
             "Vel",
         );
+        let lines = was.intersect(Rect::new(
+            g.roll.x,
+            g.ruler.y,
+            g.roll.w,
+            g.roll.bottom() - g.ruler.y,
+        ));
+        // The cursor: a line in the note edit colour, with a mark on the
+        // ruler, under the playhead.
+        if let Some(c) = self.cursor {
+            let x = self.x_of(g, c.rem_euclid(self.length.max(1)));
+            cx.canvas.set_clip(lines);
+            cx.canvas.fill_rect(
+                Rect::new(x, g.ruler.y, 2, g.roll.bottom() - g.ruler.y),
+                t.accent2,
+            );
+            cx.canvas
+                .fill_rect(Rect::new(x - 5, g.ruler.y, 12, 6), t.accent2);
+        }
         if let Some(p) = self.playhead {
             let x = self.x_of(g, p.rem_euclid(self.length.max(1)));
-            cx.canvas.set_clip(was.intersect(Rect::new(
-                g.roll.x,
-                g.ruler.y,
-                g.roll.w,
-                g.roll.bottom() - g.ruler.y,
-            )));
+            cx.canvas.set_clip(lines);
             cx.canvas.fill_rect(
                 Rect::new(x, g.ruler.y, 2, g.roll.bottom() - g.ruler.y),
                 t.good,
@@ -2914,11 +3080,13 @@ impl NoteGrid {
         let beat = PPQ as Tick;
         let bar = self.bar.max(1);
         let size = self.grid().size();
-        let playing = self.playhead.map(|p| {
+        let place = |p: Tick| {
             self.grid()
                 .place(self.length, p.rem_euclid(self.length.max(1)))
                 .0
-        });
+        };
+        let playing = self.playhead.map(place);
+        let cursor = self.cursor.map(place);
         for (k, row) in self.track_rows().iter().skip(self.first).enumerate() {
             let Some(rr) = self.list_rect(r, k + 1) else {
                 break;
@@ -2939,6 +3107,10 @@ impl NoteGrid {
             if playing == Some(row.step) {
                 cx.canvas
                     .fill_rect(Rect::new(rr.x, rr.y + 2, 4, rr.h - 4), t.good);
+            }
+            // The cursor's step: its first line outlined.
+            if row.first && cursor == Some(row.step) {
+                cx.canvas.stroke_round_rect(rr, t.round(6), 2, t.accent2);
             }
             let (cells, faint) = self.track_cells(row);
             let mut x = rr.x + 8;
@@ -4266,6 +4438,115 @@ mod tests {
         let mut picked: Vec<Tick> = ed.sel.iter().map(|&i| d.notes[i].tick).collect();
         picked.sort_unstable();
         assert_eq!(picked, [960, 1200]);
+    }
+
+    /// The note inspector (plan 1C.1): Q1 to Q4 move, lengthen,
+    /// transpose and turn the picks, SHIFT finer; one join key a turn
+    /// whichever knob turns, a new turn a new key; – / + nudge as the
+    /// Nudge row; the wheel moves the cursor round the clip.
+    #[test]
+    fn the_note_inspector_turns_the_picks_one_take_a_turn() {
+        let mut c = clip(&[(0, 240, 60), (480, 240, 64), (1920, 240, 72)]);
+        c.notes[0].velocity = 80;
+        c.notes[1].velocity = 100;
+        let mut ed = Editor::new(0, 0, &c);
+        ed.snap = 6; // 1/16
+        let knob = |k, ticks, fine, turn| EditAction::Knob {
+            k,
+            ticks,
+            fine,
+            turn,
+        };
+        // Nothing picked: nothing changes.
+        let done = ed.act(knob(0, 1, false, 1), &c);
+        assert!(done.edit.is_empty() && done.line.contains("pick notes first"));
+        ed.sel = vec![0, 1];
+        let d = run(&mut ed, &mut c, knob(0, 2, false, 1));
+        let mut at: Vec<Tick> = c.notes.iter().map(|n| n.tick).collect();
+        at.sort_unstable();
+        assert_eq!(at, [480, 960, 1920]);
+        let key = d.join;
+        assert!(key.is_some());
+        // Another knob in the same turn: the same take.
+        let d = run(&mut ed, &mut c, knob(1, 1, false, 1));
+        assert_eq!(d.join, key);
+        assert_eq!(c.notes[ed.sel[0]].len, 480);
+        let d = run(&mut ed, &mut c, knob(1, -1, true, 1));
+        assert_eq!(d.join, key);
+        assert_eq!(c.notes[ed.sel[0]].len, 476, "SHIFT: 4 ticks");
+        // A new turn, a new take: semitones, the chord's shape kept.
+        let d = run(&mut ed, &mut c, knob(2, 3, false, 2));
+        assert_ne!(d.join, key);
+        let mut pitches: Vec<u8> = ed.sel.iter().map(|&i| c.notes[i].note).collect();
+        pitches.sort_unstable();
+        assert_eq!(pitches, [63, 67]);
+        assert!(
+            ed.act(knob(2, 100, false, 2), &c).edit.is_empty(),
+            "past 127"
+        );
+        // Velocity keeps the difference; SHIFT widens it.
+        run(&mut ed, &mut c, knob(3, 10, false, 2));
+        let vels = |ed: &Editor, c: &Clip| {
+            let mut v: Vec<u8> = ed.sel.iter().map(|&i| c.notes[i].velocity).collect();
+            v.sort_unstable();
+            v
+        };
+        assert_eq!(vels(&ed, &c), [90, 110]);
+        run(&mut ed, &mut c, knob(3, 1, true, 2));
+        assert_eq!(vels(&ed, &c), [87, 113]);
+        // SHIFT on Q1: 4 ticks.
+        run(&mut ed, &mut c, knob(0, -1, true, 3));
+        let mut at: Vec<Tick> = ed.sel.iter().map(|&i| c.notes[i].tick).collect();
+        at.sort_unstable();
+        assert_eq!(at, [476, 956]);
+        // – / +: a snap, as the Nudge row (onto the line first).
+        let d = run(
+            &mut ed,
+            &mut c,
+            EditAction::Nudge {
+                steps: 1,
+                fine: false,
+            },
+        );
+        assert_eq!(
+            d.join,
+            ed.act(EditAction::Row { row: 6, delta: 0 }, &c).join
+        );
+        let mut at: Vec<Tick> = ed.sel.iter().map(|&i| c.notes[i].tick).collect();
+        at.sort_unstable();
+        assert_eq!(at, [480, 960]);
+        // Snap Auto: whole snaps, each note keeping its feel.
+        ed.snap = SNAP_AUTO;
+        ed.auto = 6;
+        run(&mut ed, &mut c, knob(0, -1, true, 4));
+        run(&mut ed, &mut c, knob(0, 1, false, 4));
+        let mut at: Vec<Tick> = ed.sel.iter().map(|&i| c.notes[i].tick).collect();
+        at.sort_unstable();
+        assert_eq!(at, [716, 1196]);
+    }
+
+    /// The cursor (plan 1C.1): a snap a detent, onto the line first, round
+    /// the clip; on the tracker its line stays third from the top.
+    #[test]
+    fn the_wheel_moves_the_cursor_round_the_clip() {
+        let c = clip(&[(0, 240, 60)]);
+        let mut ed = Editor::new(0, 0, &c);
+        ed.snap = 6;
+        assert_eq!(ed.cursor, 0);
+        assert_eq!(ed.act(EditAction::Cursor(2), &c), Done::default());
+        assert_eq!(ed.cursor, 480);
+        ed.act(EditAction::Cursor(-3), &c);
+        assert_eq!(ed.cursor, 4 * 960 - 240, "round the clip");
+        ed.cursor = 250;
+        ed.act(EditAction::Cursor(-1), &c);
+        assert_eq!(ed.cursor, 240, "onto the line first");
+        ed.cursor = 250;
+        ed.act(EditAction::Cursor(1), &c);
+        assert_eq!(ed.cursor, 480);
+        ed.lens = Lens::Tracker;
+        ed.cursor = 0;
+        ed.act(EditAction::Cursor(8), &c);
+        assert_eq!((ed.cursor, ed.first), (1920, 6));
     }
 
     /// The Select menu (plan 1B.3): All, None and Invert; the filters,
