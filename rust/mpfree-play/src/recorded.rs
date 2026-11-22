@@ -104,6 +104,12 @@ pub struct Includes {
     /// place of one carried out that the view does not show yet, and an
     /// older one is dropped and counted.
     pub cues: [u32; mpfree_seq::MAX_TRACKS],
+    /// The song's timeline revision (0: not said): it changes with every
+    /// edit that moves time in the song (a section moved, bars put in or
+    /// taken out, a tempo point, song mode on or off, the UNDO or REDO of
+    /// one) and with every project opened. A timing change made against an
+    /// older one is cancelled (the smart loop end plan's step 0C).
+    pub timeline: u64,
 }
 
 impl Default for Includes {
@@ -114,6 +120,7 @@ impl Default for Includes {
             decided: [0; mpfree_seq::MAX_TRACKS],
             mutes_decided: 0,
             cues: [0; mpfree_seq::MAX_TRACKS],
+            timeline: 0,
         }
     }
 }
