@@ -782,7 +782,13 @@ fn paint_detail(cx: &mut PaintCx, detail: Rect, g: &Geo, d: &SetDetail) {
             ink_c,
             st.field.label(),
         );
-        cx.canvas.fill_round_rect(v, t.round(8), t.raised);
+        // A row that doesn't apply (Fade unless Ends is Fade) is an
+        // outline on the card, so its faint words stay readable on it.
+        if st.faint {
+            cx.canvas.stroke_round_rect(v, t.round(8), 1, t.outline);
+        } else {
+            cx.canvas.fill_round_rect(v, t.round(8), t.raised);
+        }
         if st.focused {
             cx.canvas.stroke_round_rect(v, t.round(8), 2, t.accent);
         }
@@ -848,7 +854,7 @@ fn paint_detail(cx: &mut PaintCx, detail: Rect, g: &Geo, d: &SetDetail) {
             t.size_small * 0.86,
             Rect::new(nr.x, nr.bottom() + 4, nr.w, 20),
             Align::Left,
-            t.text_faint,
+            t.text_dim,
             foot,
         );
     }
