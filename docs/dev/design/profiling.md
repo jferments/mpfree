@@ -723,6 +723,12 @@ running):
   many), each stretched copy (refused once per copy and tempo; the pad
   repitches, as it does until any copy is ready) and Auto-sample's Start.
   A test gives the page its own free memory (`SamplePage::set_mem_free`).
+- The sampler's job service promises each job's memory the same way,
+  for as long as the job runs (`jobs::Config::promise` is
+  `memory::reserve`), so a load never counts as free what a job is about
+  to take, nor a job what a load is, and "Set aside for loads under way"
+  counts running jobs too
+  ([sampler architecture](sampler-architecture.md#the-job-service-step-7)).
 - The looper and the audio tracks set their memory aside at start (Prefs'
   Loop memory and Audio track memory), and the recorder's input buffer is a
   fixed 26 MB, so they aren't checked.

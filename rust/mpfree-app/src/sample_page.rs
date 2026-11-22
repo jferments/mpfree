@@ -1188,8 +1188,8 @@ pub struct KitPads {
 /// workers off the sound's cores, the sound lane's at idle priority once
 /// the app turns idle jobs on (so the screen goes first, as the stretch
 /// and Process threads did) and the file lane's at the normal one, and
-/// every job checked against the memory floor. `main` gives it to the
-/// process's service at the start.
+/// every job's memory promised by the shared memory check while it runs.
+/// `main` gives it to the process's service at the start.
 pub fn jobs_config() -> JobsConfig {
     JobsConfig {
         sound_workers: 1,
@@ -1200,8 +1200,11 @@ pub fn jobs_config() -> JobsConfig {
                 let _ = crate::cores::background();
             }
         },
-        free: crate::memory::free_bytes,
-        room: crate::memory::room_in,
+        // The shared memory check: a job's promise, beside every load's.
+        promise: |need| {
+            crate::memory::reserve(crate::memory::free_bytes, need)
+                .map(mpfree_sampler::jobs::Hold::new)
+        },
     }
 }
 

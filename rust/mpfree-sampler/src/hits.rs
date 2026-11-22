@@ -170,10 +170,13 @@ mod tests {
     /// A service with 1 MB more than the floor free.
     fn short() -> Jobs {
         Jobs::new(crate::jobs::Config {
-            free: || Some(257_000_000),
-            room: |free, need| match free {
-                Some(f) if f.saturating_sub(need) >= 256_000_000 => Ok(()),
-                _ => Err("not enough memory".into()),
+            // 1 MB to spare.
+            promise: |need| {
+                if need <= 1_000_000 {
+                    Ok(crate::jobs::Hold::none())
+                } else {
+                    Err("not enough memory".into())
+                }
             },
             ..crate::jobs::Config::default()
         })
