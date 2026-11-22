@@ -1306,6 +1306,14 @@ pub const HEAD_LANE: usize = 11;
 pub const HEAD_CLIP: usize = 12;
 /// The Steps head's step size chip: `Tab(HEAD_SIZE)` (refactor D1).
 pub const HEAD_SIZE: usize = 13;
+/// The Steps head's length ("16 steps"): `Tab(HEAD_LENGTH)` puts the
+/// wheel on it (refactor D2). Turned, a step at a time, it is
+/// `Step { index: LENGTH_TURN, delta }`; SHIFT + - / + (or SHIFT + the
+/// wheel with a finger on it) doubles or halves it, `Step { index:
+/// LENGTH_TWICE, delta }`.
+pub const HEAD_LENGTH: usize = 10;
+pub const LENGTH_TURN: usize = 1;
+pub const LENGTH_TWICE: usize = 2;
 /// A lock lane's `pad`: this plus its number among the lock lanes. A tap
 /// on its step `col` gives `Cell { row: pad, col }`, its × `Toggle(pad)`,
 /// and a drag on (or the wheel turning) the step's cell `Step { index:
@@ -1332,8 +1340,9 @@ pub const HEAD_LONGER: usize = 3;
 pub const HEAD_FOLD: usize = 4;
 pub const HEAD_LOWER: usize = 5;
 pub const HEAD_HIGHER: usize = 6;
-/// The most steps the pattern's + makes, and the fewest its - leaves.
-pub const MAX_STEPS: usize = 128;
+/// The most steps the pattern's + makes, and the fewest its - leaves
+/// (a step at a time the length goes down to one).
+pub use crate::time::MAX_STEPS;
 pub const MIN_STEPS: usize = 16;
 
 /// What a paint drew, to find what changed.
@@ -1454,6 +1463,7 @@ impl Head {
     fn at(&self, x: i32, y: i32) -> Option<usize> {
         [
             (self.size, HEAD_SIZE),
+            (self.length, HEAD_LENGTH),
             (self.lane, HEAD_LANE),
             (self.prev, HEAD_PREV),
             (self.next, HEAD_NEXT),
@@ -1875,9 +1885,14 @@ impl StepGrid {
     #[cfg(test)]
     pub fn head_at(&self, r: Rect, k: usize) -> (i32, i32) {
         let h = self.head(r);
-        let b = [
-            h.prev, h.next, h.shorter, h.longer, h.fold, h.lower, h.higher,
-        ][k];
+        let b = match k {
+            HEAD_LENGTH => h.length,
+            HEAD_SIZE => h.size,
+            HEAD_LANE => h.lane,
+            _ => [
+                h.prev, h.next, h.shorter, h.longer, h.fold, h.lower, h.higher,
+            ][k],
+        };
         (b.x + b.w / 2, b.y + b.h / 2)
     }
 
@@ -2738,6 +2753,14 @@ impl Widget for StepGrid {
                 Target::tap("head", HEAD_SIZE, "Step size", h.size).disabled_if(self.length == 0),
             );
         }
+        // The length: a value the wheel and - / + turn a step at a time
+        // (refactor D2), once a tap or the outline puts them on it.
+        if self.bank.is_none() {
+            out.push(
+                Target::drag("length", HEAD_LENGTH, "Length", h.length)
+                    .disabled_if(self.length == 0),
+            );
+        }
         if self.pitched.is_some() && self.bank.is_none() {
             let (lower, higher) = self.octave_usable(g.rows);
             for (k, label, rect, can) in [
@@ -2816,15 +2839,35 @@ impl Widget for StepGrid {
     }
 
     fn steps(&self, t: &Target) -> bool {
-        t.id == "lock"
+        t.id == "lock" || t.id == "length"
     }
 
-    /// The wheel turning a lock's cell held (or grabbed): as a drag.
+    /// The wheel turning a lock's cell held (or grabbed): as a drag. On
+    /// the length: a step a detent.
     fn step(&mut self, t: &Target, delta: i32, _r: Rect) -> Option<EventKind> {
-        (t.id == "lock").then_some(EventKind::Step {
-            index: LOCK_LANE + t.index,
-            delta,
-        })
+        match t.id {
+            "lock" => Some(EventKind::Step {
+                index: LOCK_LANE + t.index,
+                delta,
+            }),
+            "length" => Some(EventKind::Step {
+                index: LENGTH_TURN,
+                delta,
+            }),
+            _ => None,
+        }
+    }
+
+    /// SHIFT + - / + on the length (or SHIFT + the wheel with a finger on
+    /// it): twice or half the steps, as the head's + and - (refactor D2).
+    fn held_step(&mut self, t: &Target, delta: i32, fine: bool, r: Rect) -> Option<EventKind> {
+        if fine && t.id == "length" {
+            return Some(EventKind::Step {
+                index: LENGTH_TWICE,
+                delta,
+            });
+        }
+        self.step(t, delta, r)
     }
 
     fn touch(&mut self, f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {

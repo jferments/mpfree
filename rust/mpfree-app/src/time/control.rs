@@ -1901,7 +1901,27 @@ impl TimeControl {
             StepAction::Length { steps, copy } => {
                 (grid.resize(clip, steps, copy), None, clip.name.clone())
             }
+            // A step at a time, from the clip's own length (refactor D2),
+            // so detents that come before the screen hears back all count.
+            StepAction::LengthBy { steps: by } => {
+                let n = grid.steps(clip.length);
+                let to = if by > 0 {
+                    // A longer clip (recorded) is never cut by a +.
+                    (n + by.unsigned_abs() as usize).min(super::MAX_STEPS.max(n))
+                } else {
+                    n.saturating_sub(by.unsigned_abs() as usize).max(1)
+                };
+                if to == n {
+                    return Err(if by > 0 {
+                        format!("steps: {} steps is the most here", super::MAX_STEPS)
+                    } else {
+                        "steps: 1 step is the fewest".into()
+                    });
+                }
+                (grid.resize(clip, to, false), None, clip.name.clone())
+            }
         };
+        let resized = edit.length;
         // A step past the clip's end, or a change to nothing: no take, and
         // on an empty track no clip either.
         if edit.is_empty() {
@@ -2004,18 +2024,24 @@ impl TimeControl {
                     ..
                 },
             ) => format!("steps: {what}"),
-            (None, StepAction::Length { steps, copy }) => {
+            (None, StepAction::Length { .. } | StepAction::LengthBy { .. }) => {
+                let copy = matches!(a, StepAction::Length { copy: true, .. });
+                let (old, new) = resized.unwrap_or_default();
+                let steps = grid.steps(new);
+                let st = if steps == 1 { "step" } else { "steps" };
                 // Bars of the song's meter, at the clip's step size.
                 let bar = self.info.meter.bar_ticks().max(1) as f64;
-                let song = speed.to_song((steps as Tick * grid.size()) as f64);
+                let song = speed.to_song(new as f64);
                 let bars = ((song / bar) - 1e-9).ceil().max(1.0) as usize;
                 let s = if bars == 1 { "" } else { "s" };
                 let how = if copy {
                     " · the new steps repeat the ones before them"
-                } else {
+                } else if new < old {
                     " · UNDO brings the rest back"
+                } else {
+                    " · the new steps are empty"
                 };
-                format!("steps: {what} is {steps} steps ({bars} bar{s}){how}")
+                format!("steps: {what} is {steps} {st} ({bars} bar{s}){how}")
             }
             (None, _) => String::new(),
         })

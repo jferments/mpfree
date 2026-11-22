@@ -269,7 +269,10 @@ impl Desk<'_> {
                 // ERASE + a lane's name: said in place of the hint.
                 let erase = matches!(a, time::StepAction::ClearPad { .. });
                 // The pattern's length: said in place of the hint too.
-                let length = matches!(a, time::StepAction::Length { .. });
+                let length = matches!(
+                    a,
+                    time::StepAction::Length { .. } | time::StepAction::LengthBy { .. }
+                );
                 match time.step_action(a) {
                     Ok(line) if length && !line.is_empty() => fx.push(app::Effect::Tell(line)),
                     Err(e) if length => fx.push(app::Effect::Tell(format!("steps: {e}"))),

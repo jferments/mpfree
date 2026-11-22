@@ -41,6 +41,8 @@ The list starts with **What plays**, which goes back to editing the clip that pl
 
 **Make it longer.** A pattern starts at 16 steps, one bar of 16ths. Tap **+** at the top right of the pattern to double it to 32 steps, then 64, then 128 (eight bars of 16ths). The new steps repeat the ones you have, so the beat carries on and you change what you want in the copy. **‹** and **›** turn the pages of 16 steps, and the number between them says which page you're on. **–** halves the pattern again, down to 16 steps; press **UNDO** if you want the steps it took off back.
 
+**Any length.** For a 13-step bass line against a 16-step beat, tap the length (**16 steps**) and turn the wheel, or press the **–** and **+** buttons by the wheel: each click adds or takes one step, down to 1 and up to 128. New steps are empty, and **UNDO** brings back a step you took off, notes and all. **SHIFT** + **–** or **+** halves or doubles it as the buttons on the screen do. Push the wheel, or tap somewhere else, when you're done.
+
 With more rows than fit, swipe the rows up and down; the bar at the right shows where you are. Turning **Timing strip** off in the Sequencer's options (**MENU**) gives the pattern more rows.
 
 ### Change the step size

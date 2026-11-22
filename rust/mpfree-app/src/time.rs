@@ -273,7 +273,17 @@ pub enum StepAction {
     /// repeat the ones before them; steps that go take their notes along.
     /// One take, so UNDO puts the old length and notes back.
     Length { steps: usize, copy: bool },
+    /// The length a step at a time (refactor D2: the head's length tapped,
+    /// then the wheel or - and +): `steps` more (or fewer, negative), from
+    /// the clip's own length, up to [`MAX_STEPS`] and down to one step.
+    /// New steps are empty; steps that go take their notes along. One take
+    /// each, so UNDO puts the old length and notes back.
+    LengthBy { steps: i32 },
 }
+
+/// The most steps the Sequencer's head makes a pattern, doubling or a
+/// step at a time (Jay after live test 3: up to 128).
+pub const MAX_STEPS: usize = 128;
 
 /// A pad hit while the transport rolls: where it fell, for the Play page's
 /// timing (the Beats view's timing strip).
@@ -2473,6 +2483,74 @@ mod tests {
         assert!(h.act(TimeAction::StepSize(200)).is_err());
         h.act(TimeAction::Arm(Some(1))).unwrap();
         assert!(h.act(TimeAction::StepSize(480)).is_err());
+    }
+
+    /// Refactor D2: the length a step at a time, from the clip's own
+    /// length: fewer steps take their notes (UNDO brings them back), more
+    /// are empty, at the clip's step size; it stops at one step and at
+    /// 128, and a longer (recorded) clip is never cut by a step more.
+    #[test]
+    fn the_length_goes_a_step_at_a_time_and_a_long_clip_is_never_cut() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut beat = Clip::new("Bass", 16 * STEP_TICKS);
+        for step in [0, 13, 14] {
+            beat.notes
+                .push(mpfree_seq::Note::new(step * STEP_TICKS, 120, 36, 100));
+        }
+        h.control.project.tracks[0].slots[0] = Some(beat);
+        h.control.project.give_clip_ids();
+        h.act(TimeAction::Arm(Some(0))).unwrap();
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        let before = h.project().clip(0, 0).unwrap().notes.clone();
+        let by = |h: &mut TimeHost, steps| h.step_action(StepAction::LengthBy { steps });
+        for _ in 0..3 {
+            by(&mut h, -1).unwrap();
+        }
+        let clip = h.project().clip(0, 0).unwrap();
+        assert_eq!(clip.length, 13 * STEP_TICKS);
+        assert_eq!(clip.notes.len(), 1, "steps 14 and 15 went with theirs");
+        let said = by(&mut h, 1).unwrap();
+        assert_eq!(
+            said,
+            "steps: Bass is 14 steps (1 bar) · the new steps are empty"
+        );
+        let said = by(&mut h, -1).unwrap();
+        assert!(
+            said.ends_with("13 steps (1 bar) · UNDO brings the rest back"),
+            "{said}"
+        );
+        // Five takes: UNDO five times, and the notes are back.
+        for _ in 0..5 {
+            h.act(TimeAction::Undo).unwrap();
+        }
+        let clip = h.project().clip(0, 0).unwrap();
+        assert_eq!((clip.length, &clip.notes), (16 * STEP_TICKS, &before));
+        // At 1/8 steps: one more is an eighth, and the bars follow.
+        h.act(TimeAction::StepSize(480)).unwrap();
+        let said = by(&mut h, 1).unwrap();
+        assert!(said.contains("is 9 steps (2 bars)"), "{said}");
+        assert_eq!(h.project().clip(0, 0).unwrap().length, 9 * 480);
+        // Down to one step, and no further.
+        assert!(by(&mut h, -100).unwrap().contains("is 1 step (1 bar)"));
+        assert_eq!(by(&mut h, -1).unwrap_err(), "steps: 1 step is the fewest");
+        // Up to 128, and no further.
+        by(&mut h, 500).unwrap();
+        assert_eq!(h.steps().clip.unwrap().steps, MAX_STEPS);
+        assert!(by(&mut h, 1).unwrap_err().contains("128 steps is the most"));
+        // A recorded clip of 200 sixteenths: a step more is refused, a
+        // step fewer takes one step, never down to 128.
+        h.act(TimeAction::StepSize(240)).unwrap();
+        h.step_action(StepAction::Length {
+            steps: 200,
+            copy: false,
+        })
+        .unwrap();
+        assert!(by(&mut h, 1).is_err());
+        by(&mut h, -1).unwrap();
+        assert_eq!(h.project().clip(0, 0).unwrap().length, 199 * STEP_TICKS);
+        // No clip: nothing.
+        h.act(TimeAction::Arm(Some(1))).unwrap();
+        assert_eq!(by(&mut h, 1), Ok(String::new()));
     }
 
     /// A play direction moves by 1/16s whatever the step size (refactor

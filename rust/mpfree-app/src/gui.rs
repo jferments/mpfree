@@ -3281,6 +3281,26 @@ impl Player {
         self.refresh_hint();
     }
 
+    /// A tap on the Steps head's length (refactor D2): the outline,
+    /// already on it from the finger, is grabbed, so the wheel and - / +
+    /// set it a step at a time until a push or a tap elsewhere.
+    fn grab_length(&mut self) {
+        if self.play.steps.clip.is_none() {
+            self.tell("steps: tap a step to start a pattern first");
+            return;
+        }
+        let on = self
+            .ui
+            .focused()
+            .is_some_and(|f| f.widget == play_page::STEPS && f.target.id == "length");
+        if on {
+            self.ui.set_focus_grabbed(true);
+            self.tell(
+                "Length: the wheel or – and + add or take a step · SHIFT + – or +: twice or half · push: done",
+            );
+        }
+    }
+
     /// Row `row` of the step size list picked: the list closes and the
     /// clip's steps take that size.
     fn pick_step_size(&mut self, row: usize) -> Option<FromUi> {
@@ -12364,6 +12384,38 @@ impl Player {
                 self.toggle_size_list();
                 None
             }
+            // The length (refactor D2): a tap puts the wheel and - / + on
+            // it, a step at a time; SHIFT + - / + doubles or halves it.
+            (play_page::STEPS, EventKind::Tab(play_widgets::HEAD_LENGTH)) => {
+                self.grab_length();
+                None
+            }
+            (
+                play_page::STEPS,
+                EventKind::Step {
+                    index: play_widgets::LENGTH_TURN,
+                    delta,
+                },
+            ) => {
+                if self.play.steps.clip.is_none() {
+                    self.tell("steps: tap a step to start a pattern first");
+                    return None;
+                }
+                Some(FromUi::Steps(StepAction::LengthBy { steps: delta }))
+            }
+            (
+                play_page::STEPS,
+                EventKind::Step {
+                    index: play_widgets::LENGTH_TWICE,
+                    delta,
+                },
+            ) => match self.play.length_action(delta > 0) {
+                Ok(a) => Some(FromUi::Steps(a)),
+                Err(why) => {
+                    self.tell(&why);
+                    None
+                }
+            },
             // A gear lane's mod rows (LFO to CC, layout spec 4m): its name
             // opens them over the pattern; + LFO adds a row from LFO 1, a
             // finger on a row's bar sets its depth, its × takes it off,
@@ -22784,6 +22836,69 @@ mod tests {
     /// a tap lists the six sizes with the steps the clip would have in
     /// each (its own marked); a tap or the wheel's push picks one, Back
     /// picks none.
+    /// Refactor D2: a tap on the head's length puts the wheel and - / +
+    /// on it, a step at a time from the clip's own length; SHIFT + - / +
+    /// doubles or halves it as the head's + and - do; the push lets go and
+    /// the wheel moves the outline again.
+    #[test]
+    fn a_tap_on_the_length_puts_the_wheel_on_it_a_step_at_a_time() {
+        let mut p = sample_play(Fonts::embedded(), PlayView::Beats);
+        p.take_actions();
+        let r = p.ui.rect_of(play_page::STEPS).unwrap();
+        let (x, y) =
+            p.ui.get::<StepGrid>(play_page::STEPS)
+                .unwrap()
+                .head_at(r, play_widgets::HEAD_LENGTH);
+        assert_eq!(p.touch(7, Touch::Down, x, y), None);
+        p.touch(7, Touch::Up, x, y);
+        let f = p.ui.focused().unwrap();
+        assert_eq!(
+            (f.widget.as_str(), f.target.id),
+            (play_page::STEPS, "length")
+        );
+        assert!(p.ui.focus_grabbed());
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.contains("add or take a step"), "{hint}");
+        let len = |a: Vec<FromUi>| -> Vec<StepAction> {
+            a.into_iter()
+                .filter_map(|a| match a {
+                    FromUi::Steps(s) => Some(s),
+                    _ => None,
+                })
+                .collect()
+        };
+        // The wheel: a step a detent, each asked of the clip's length.
+        p.nav(Nav::Turn(-1));
+        p.nav(Nav::Turn(-1));
+        assert_eq!(
+            len(p.take_actions()),
+            [StepAction::LengthBy { steps: -1 }; 2]
+        );
+        // - and + too.
+        p.nav(Nav::Step(1));
+        assert_eq!(len(p.take_actions()), [StepAction::LengthBy { steps: 1 }]);
+        // SHIFT + +: twice the steps, repeating them; SHIFT + - at 16
+        // says why not.
+        p.nav(Nav::Fine(1));
+        assert_eq!(
+            len(p.take_actions()),
+            [StepAction::Length {
+                steps: 32,
+                copy: true
+            }]
+        );
+        p.nav(Nav::Fine(-1));
+        assert!(len(p.take_actions()).is_empty());
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.contains("halves down to 16 steps"), "{hint}");
+        // The push lets go: the wheel moves the outline again.
+        p.nav(Nav::Push);
+        assert!(!p.ui.focus_grabbed());
+        p.nav(Nav::Turn(1));
+        assert!(len(p.take_actions()).is_empty());
+        assert_ne!(p.ui.focused().map(|f| f.target.id), Some("length"));
+    }
+
     #[test]
     fn the_step_size_chip_lists_the_sizes_and_picks_one() {
         use mpfree_ui::Widget as _;
