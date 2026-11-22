@@ -41,8 +41,9 @@ use mpfree_seq::loops::{LoopNow, LoopPlan};
 use mpfree_seq::{Project, LOOPS, MAX_TRACKS};
 use mpfree_time_ui::view::{MuteWait, TimeState};
 
-use super::control::{MuteLight, TimeControl, PADS};
+use super::control::{MuteLight, TimeControl};
 use super::StepsData;
+use crate::mixing::PADS;
 
 /// Asks the facade's queue holds before one waits in the facade
 /// ([`Counts::full`]).
@@ -95,8 +96,6 @@ pub enum Told {
     /// Lines for the log, one each: what the looper's loops did on the
     /// grid ([`TimeControl::loops_are`]).
     Notes(Vec<String>),
-    /// The kit's pads whose change in the mute queue came due.
-    Landings([Option<(bool, bool)>; PADS]),
 }
 
 /// An ask: run on the control half, perhaps with something to tell.
@@ -153,7 +152,7 @@ impl Light {
             silenced: c.silenced(),
             mute_bits: c.mute_bits(),
             loop_plan: c.loop_plan(),
-            pad_waiting: std::array::from_fn(|p| c.pad_waiting(p)),
+            pad_waiting: std::array::from_fn(|p| c.selected().is_some_and(|s| c.pad_waiting(s, p))),
             muted: std::array::from_fn(|t| c.muted(t)),
             mute_light: std::array::from_fn(|t| c.mute_light(t)),
             launched: (0..MAX_TRACKS.min(128))
@@ -231,7 +230,6 @@ pub struct Apart {
     steps_changed: bool,
     said: Vec<(Say, Result<String, String>)>,
     notes: VecDeque<String>,
-    landings: [Option<(bool, bool)>; PADS],
     pub counts: Counts,
     /// What the facade last sent of the inputs it gives every period, so
     /// only a change goes: the app's tempo, whether a take records.
@@ -297,7 +295,6 @@ impl Apart {
             steps_changed: false,
             said: Vec::with_capacity(KEPT),
             notes: VecDeque::with_capacity(KEPT),
-            landings: [None; PADS],
             counts: Counts::default(),
             tempo: None,
             taking: None,
@@ -409,13 +406,6 @@ impl Apart {
                 Ok(Told::Said(say, r)) => self.said.push((say, r)),
                 Ok(Told::Note(line)) => self.notes.push_back(line),
                 Ok(Told::Notes(lines)) => self.notes.extend(lines),
-                Ok(Told::Landings(l)) => {
-                    for (k, l) in self.landings.iter_mut().zip(l) {
-                        if l.is_some() {
-                            *k = l;
-                        }
-                    }
-                }
                 Err(_) => return,
             }
         }
@@ -432,12 +422,6 @@ impl Apart {
     pub fn take_note(&mut self) -> Option<String> {
         self.drain_told();
         self.notes.pop_front()
-    }
-
-    /// The kit's pads whose change came due since the last call.
-    pub fn take_landings(&mut self) -> [Option<(bool, bool)>; PADS] {
-        self.drain_told();
-        std::mem::replace(&mut self.landings, [None; PADS])
     }
 
     pub fn take_changed(&mut self) -> bool {
@@ -544,10 +528,6 @@ impl Thread {
             c.poll();
             if let Some(line) = c.take_later_note() {
                 self.unsent.push_back(Told::Note(line));
-            }
-            let l = c.take_pad_landings();
-            if l.iter().any(Option::is_some) {
-                self.unsent.push_back(Told::Landings(l));
             }
             while let Some(t) = self.unsent.pop_front() {
                 match self.tell.try_send(t) {

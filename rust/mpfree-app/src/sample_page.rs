@@ -225,11 +225,11 @@ const LOAD: &str = "load";
 /// A job's id from what it is for (a Put on audio track's sound and span,
 /// a Normalize's layer), so the same asked for again while it waits takes
 /// its place.
-fn job_id(what: impl std::hash::Hash) -> u64 {
+fn job_id(what: impl std::hash::Hash) -> u128 {
     use std::hash::Hasher;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     what.hash(&mut h);
-    h.finish()
+    u128::from(h.finish())
 }
 
 /// What Put on audio track holds at once, in bytes, for `samples` samples
@@ -353,7 +353,7 @@ struct Leveling {
 
 impl Leveling {
     /// The layer it normalizes, as a job's id: one Normalize a layer.
-    fn layer_id(&self) -> u64 {
+    fn layer_id(&self) -> u128 {
         job_id((self.kit, self.pad, self.take, self.layer))
     }
 }
@@ -4985,7 +4985,7 @@ impl SamplePage {
         self.jobs.submit(
             mpfree_sampler::jobs::Job::new(
                 mpfree_sampler::jobs::Lane::Sound,
-                mpfree_sampler::jobs::Key::new("process", kit as u64),
+                mpfree_sampler::jobs::Key::new("process", kit as u128),
                 move |run| {
                     let t = Instant::now();
                     let r = (|| {
@@ -6039,9 +6039,8 @@ impl SamplePage {
             .iter()
             .flat_map(|p| p.sources())
             .filter(|s| seen.insert(s.id()))
-            .filter_map(|s| self.sources.ready(s.id()))
-            .filter(|v| v.pyramid.is_some())
-            .map(|v| (cache_file(v.id), v))
+            .filter_map(|s| Some((cache_file(s), self.sources.ready(s.id())?)))
+            .filter(|(_, v)| v.pyramid.is_some())
             .collect()
     }
 
@@ -6072,7 +6071,12 @@ impl SamplePage {
                         bytes.len() as u64,
                     );
                     let _promise = crate::memory::reserve(free, need)?;
-                    wav::read(f, &bytes)
+                    let s = wav::read(f, &bytes)?;
+                    // A sound an older build saved under its 64-bit id
+                    // keeps that file, so saving the project again writes
+                    // no sound a second time (plan phase 2 step 8).
+                    s.keep_old_file(f);
+                    Ok(s)
                 });
                 let _ = tx.send(r.map(|o| {
                     let (o, said) = opened_at_rate(o, rate, free);
@@ -8481,7 +8485,7 @@ fn cached_views(o: &Opened, read: &ReadSample) -> Vec<Arc<SourceView>> {
         .flat_map(|(_, p)| p.sources())
         .filter(|s| seen.insert(s.id()))
         .filter_map(|s| {
-            let bytes = read(&cache_file(s.id())).ok()?;
+            let bytes = read(&cache_file(s)).ok()?;
             SourceView::from_cache(s, &bytes).map(Arc::new)
         })
         .collect()
