@@ -390,7 +390,7 @@ fn service_key(k: &CopyKey) -> Key {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     (k.source.0, k.start, k.end, k.cents).hash(&mut h);
-    Key::new("stretch", h.finish())
+    Key::new("stretch", u128::from(h.finish()))
 }
 
 /// The copies on the job service, by its key: the newest asked for each.

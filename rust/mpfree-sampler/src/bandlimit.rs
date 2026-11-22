@@ -437,7 +437,7 @@ pub fn need(frames: usize, channels: usize) -> u64 {
 
 /// The service's key for a sound's copies: its cell, which the job holds.
 fn key(cell: &Arc<OctaveCell>) -> Key {
-    Key::new("octaves", Arc::as_ptr(cell) as usize as u64)
+    Key::new("octaves", Arc::as_ptr(cell) as usize as u128)
 }
 
 /// Makes sure a sound's octave copies are made or on their way: at once

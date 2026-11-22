@@ -26865,6 +26865,169 @@ mod tests {
         assert_eq!(q.sample.cache_part().len(), 1);
     }
 
+    /// Sampler plan step 8: a sound loaded into two kits is held once, in
+    /// the sound store, with one set of octave copies; the page's memory
+    /// count says so.
+    #[test]
+    fn a_sound_loaded_into_two_kits_is_held_once() {
+        use mpfree_sampler::model::Source;
+        use mpfree_sampler::wav;
+        let dir = std::env::temp_dir().join(format!("mpfree-two-kits-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A sound no other test holds.
+        let data: Vec<f32> = (0..2 * 22_050)
+            .map(|i| ((i as f32 * 0.0137).sin() * 0.4 * 32_768.0).round() / 32_768.0 + 0.0)
+            .collect();
+        let path = dir.join("Shared.wav");
+        let made = Source::new("Shared", 44_100, 2, data).unwrap();
+        std::fs::write(&path, wav::bytes(&made)).unwrap();
+        drop(made);
+        let mut p = sample_player(Fonts::embedded());
+        let (kit, _) = mpfree_sampler_ui::sample::project();
+        p.apply(ToUi::SampleKits {
+            projects: vec![kit.clone(), kit],
+            rate: 44_100,
+        });
+        p.apply(ToUi::Show(View::Sample));
+        let pad = 3;
+        let source = |p: &Player, k: usize| {
+            let kit = p.sample.project(k).unwrap();
+            let id = kit.pad(pad)?.layers[0].region.source;
+            kit.source(id).cloned()
+        };
+        let load = |p: &mut Player, k: usize| {
+            p.apply(ToUi::Kit(k));
+            let _ = p.take_actions();
+            p.apply(ToUi::PadDown { pad, velocity: 100 });
+            p.apply(ToUi::PadUp(pad));
+            p.tick(0.033);
+            p.sample.load_file(path.clone(), false);
+            tick_until(p, |p| source(p, k).is_some_and(|s| s.name == "Shared"));
+        };
+        load(&mut p, 0);
+        let before = p.sample.memory();
+        load(&mut p, 1);
+        let (one, two) = (source(&p, 0).unwrap(), source(&p, 1).unwrap());
+        assert!(one.same_sound(&two), "one copy for both kits");
+        assert_eq!(one.data().addr(), two.data().addr());
+        // What one kit's pad makes for it is the other's too.
+        one.make_octaves();
+        assert!(two.octaves().get().is_some());
+        let after = p.sample.memory();
+        assert_eq!((after.count, after.sounds), (before.count, before.sounds));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Sampler plan step 8: a project an older build saved, its sounds and
+    /// their analysis named by 64-bit ids, opens with the same kit and the
+    /// same sounds, reads its analysis, and saves again under the same
+    /// names, so no sound is written twice.
+    #[test]
+    fn an_older_projects_sounds_keep_their_files_and_open_the_same() {
+        use mpfree_sampler::model::{Layer, Pad, Region, Source};
+        use mpfree_sampler::wav;
+        use mpfree_sampler_ui::source::{cache_file, SourceView};
+        use std::collections::HashMap;
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let rate = mpfree_sampler_ui::sample::RATE;
+        // A kit on a sound no other test holds, since the file it keeps is
+        // kept with the sound itself.
+        let data: Vec<f32> = (0..2 * rate as usize)
+            .map(|i| {
+                let t = (i / 2) as f32 / rate as f32;
+                let y = 0.5 * (t * 330.0 * std::f32::consts::TAU).sin() * (-3.0 * t).exp();
+                (y * 32_768.0).round() / 32_768.0 + 0.0
+            })
+            .collect();
+        let made = Source::new("Old take", rate, 2, data).unwrap();
+        let mut saved = Project::new();
+        saved.add_source(made.clone());
+        let layer = Layer::new(Region::whole(&made));
+        saved
+            .set_pad(pad, Some(Pad::new("Old take", layer)), None)
+            .unwrap();
+        let mut p = sample_player(Fonts::embedded());
+        p.apply(ToUi::SampleKits {
+            projects: vec![saved.clone()],
+            rate,
+        });
+        let (mut text, sounds) = p.sample.save_part();
+        let view = SourceView::analyse(&made);
+        let file = cache_file(&made);
+        drop(p);
+        // As the older build named them: the 64-bit FNV-1a hash of the
+        // sound's rate, channels and samples.
+        let old_id = |s: &mpfree_sampler::model::Source| {
+            let mut h = 0xCBF2_9CE4_8422_2325u64;
+            let bytes = s.rate().to_le_bytes().into_iter().chain([s.channels()]);
+            let samples = s.data().iter().flat_map(|x| x.to_bits().to_le_bytes());
+            for b in bytes.chain(samples) {
+                h = (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01B3);
+            }
+            h
+        };
+        let mut files: HashMap<String, Vec<u8>> = HashMap::new();
+        let mut old_names = Vec::new();
+        for (f, s) in &sounds {
+            let old = format!("{:016x}.wav", old_id(s));
+            assert!(text.contains(f.as_str()) && f.len() == 32 + 4, "{f}");
+            text = text.replace(f.as_str(), &old);
+            files.insert(old.clone(), wav::bytes(s));
+            old_names.push(old);
+        }
+        // Its analysis, the old id inside, beside the sound shown.
+        let shown = sounds.iter().position(|(_, s)| s.id() == view.id).unwrap();
+        let old_cache = old_names[shown].replace(".wav", ".a1.peaks");
+        assert_ne!(old_cache, file);
+        let mut bytes = view.to_cache().unwrap();
+        bytes[8..16].copy_from_slice(&old_id(&sounds[shown].1).to_le_bytes());
+        files.insert(old_cache.clone(), bytes);
+        let mut q = sample_player(Fonts::embedded());
+        q.apply(ToUi::SampleKits {
+            projects: vec![Project::new()],
+            rate,
+        });
+        q.apply(ToUi::Kit(0));
+        q.apply(ToUi::Show(View::Sample));
+        let _ = q.take_actions();
+        q.sample.open_part(
+            text,
+            Box::new(move |f| files.get(f).cloned().ok_or_else(|| "missing".to_string())),
+        );
+        tick_until(&mut q, |q| q.sample.project(0).unwrap().pad(pad).is_some());
+        // The same kit, on the same sounds, sample for sample: it plays as
+        // it did.
+        let got = q.sample.project(0).unwrap();
+        assert_eq!(got.pad(pad), saved.pad(pad));
+        assert_eq!(got.chop_sets, saved.chop_sets);
+        assert_eq!(got.sources().len(), saved.sources().len());
+        for s in saved.sources() {
+            let g = got.source(s.id()).expect("the same id");
+            assert!(g
+                .data()
+                .iter()
+                .map(f32::to_bits)
+                .eq(s.data().iter().map(f32::to_bits)));
+        }
+        // Its analysis read, not worked out again.
+        assert!(!q.sample.analysing(), "nothing analysed again");
+        let log = events_log(&q);
+        assert!(
+            log.iter()
+                .any(|l| l == "sample: the analysis of 1 sound read from the project"),
+            "{log:?}"
+        );
+        // Saved again: the same files, so the library writes none.
+        let (text, again) = q.sample.save_part();
+        let mut names: Vec<String> = again.into_iter().map(|(f, _)| f).collect();
+        names.sort();
+        old_names.sort();
+        assert_eq!(names, old_names);
+        assert!(old_names.iter().all(|f| text.contains(f.as_str())));
+        let caches: Vec<String> = q.sample.cache_part().into_iter().map(|(f, _)| f).collect();
+        assert_eq!(caches, vec![old_cache]);
+    }
+
     #[test]
     fn the_kits_save_with_their_sounds_and_open_again() {
         use mpfree_sampler::{save, wav};

@@ -51,14 +51,17 @@ impl std::fmt::Display for ModelError {
 }
 impl std::error::Error for ModelError {}
 
-/// A source's identity: a 64-bit FNV-1a hash of its rate, channel count and
-/// samples, so the same audio is stored once however many pads use it.
+/// A sound's identity: 128 bits from a fast hash of its rate, channel
+/// count and samples ([`crate::store::content_id`]), so the same audio is
+/// held once however many pads and kits use it ([`crate::store`]). Before
+/// the sampler plan's step 8 it was a 64-bit FNV-1a hash; a sound saved
+/// under one of those keeps its file ([`Source::keep_old_file`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct SourceId(pub u64);
+pub struct SourceId(pub u128);
 
 impl std::fmt::Display for SourceId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:016x}", self.0)
+        write!(f, "{:032x}", self.0)
     }
 }
 
@@ -184,30 +187,14 @@ impl From<Vec<f32>> for Pcm {
     }
 }
 
-/// Recorded or imported audio. Its audio never changes after it is made;
-/// its name can ([`Project::rename`]).
+/// Recorded or imported audio, as a kit holds it: its name in the kit and
+/// the sound itself, held once in the sound store ([`crate::store`]) and
+/// shared by every clone and every other source of the same audio. Its
+/// audio never changes after it is made; its name can ([`Project::rename`]).
 #[derive(Clone, Debug)]
 pub struct Source {
-    id: SourceId,
     pub name: String,
-    rate: u32,
-    channels: u8,
-    /// Interleaved when stereo; 16 bits when it can be ([`Pcm::new`]).
-    data: Pcm,
-    /// Its octave copies, for reading it more than an octave up
-    /// ([`crate::bandlimit`]), shared by every clone. Made when a pad
-    /// that can play it that high asks for them.
-    octaves: Arc<crate::bandlimit::OctaveCell>,
-    /// Its hits, for a granular Stretch ([`crate::hits`]), shared by every
-    /// clone. Found when a pad that stretches it asks for them.
-    hits: Arc<crate::hits::HitCell>,
-}
-
-fn fnv1a(hash: &mut u64, bytes: &[u8]) {
-    for b in bytes {
-        *hash ^= u64::from(*b);
-        *hash = hash.wrapping_mul(0x0000_0100_0000_01B3);
-    }
+    sound: Arc<crate::store::Sound>,
 }
 
 impl Source {
@@ -228,20 +215,14 @@ impl Source {
                 *x = 0.0;
             }
         }
-        let mut h = 0xCBF2_9CE4_8422_2325u64;
-        fnv1a(&mut h, &rate.to_le_bytes());
-        fnv1a(&mut h, &[channels]);
-        for x in &data {
-            fnv1a(&mut h, &x.to_bits().to_le_bytes());
-        }
+        let id = SourceId(crate::store::content_id(rate, channels, &data));
+        let samples = data.len();
+        // The store's sound when it holds this audio already: the samples
+        // made here go, and this source shares that one.
+        let sound = crate::store::held(id, rate, channels, samples, || Pcm::new(data));
         Ok(Source {
-            id: SourceId(h),
             name: name.to_string(),
-            rate,
-            channels,
-            data: Pcm::new(data),
-            octaves: Arc::default(),
-            hits: Arc::default(),
+            sound,
         })
     }
 
@@ -256,50 +237,75 @@ impl Source {
     }
 
     pub fn id(&self) -> SourceId {
-        self.id
+        self.sound.id
     }
     pub fn rate(&self) -> u32 {
-        self.rate
+        self.sound.rate
     }
     pub fn channels(&self) -> u8 {
-        self.channels
+        self.sound.channels
     }
     pub fn frames(&self) -> u64 {
-        (self.data.len() / usize::from(self.channels)) as u64
+        (self.sound.data.len() / usize::from(self.sound.channels)) as u64
     }
     /// Its samples, interleaved when stereo.
     pub fn data(&self) -> &Pcm {
-        &self.data
+        &self.sound.data
+    }
+    /// Whether both are the one sound in the store (not just equal ones).
+    pub fn same_sound(&self, other: &Source) -> bool {
+        Arc::ptr_eq(&self.sound, &other.sound)
     }
     /// The same sound (the same id) held as floats, as every sound was
     /// before 16-bit sounds were kept as 16 bits: for tests and benches
-    /// that compare the two.
+    /// that compare the two. A copy of its own, never shared through the
+    /// store.
     pub fn held_as_floats(&self) -> Source {
+        let s = &self.sound;
         Source {
-            data: Pcm::F32(self.data.to_vec().into()),
-            octaves: Arc::default(),
-            hits: Arc::default(),
-            ..self.clone()
+            name: self.name.clone(),
+            sound: Arc::new(crate::store::Sound::alone(
+                s.id,
+                s.rate,
+                s.channels,
+                Pcm::F32(s.data.to_vec().into()),
+            )),
         }
+    }
+    /// The file a project keeps it in when that isn't named by its id
+    /// ([`crate::wav::file_name`]): one an older build saved it in, under
+    /// its 64-bit id, which it keeps so the project's files don't change.
+    pub fn file(&self) -> Option<&str> {
+        self.sound.file.get().map(String::as_str)
+    }
+    /// Keeps `file`, a file of a project's `samples/` it was read from, as
+    /// the one it is saved in from now on ([`Source::file`]) when `file`
+    /// is named by a 64-bit id, as an older build named its sounds
+    /// ([`crate::wav::old_id_name`]), and it has no file kept yet. True if
+    /// it was kept.
+    pub fn keep_old_file(&self, file: &str) -> bool {
+        crate::wav::old_id_name(file) && self.sound.file.set(file.to_string()).is_ok()
     }
     /// Where its octave copies are kept ([`crate::bandlimit::prepare`]
     /// makes them).
     pub fn octaves(&self) -> &Arc<crate::bandlimit::OctaveCell> {
-        &self.octaves
+        &self.sound.octaves
     }
     /// Makes its octave copies here and now if they aren't made yet: for
     /// offline renders and tests, which mustn't wait on a thread.
     pub fn make_octaves(&self) {
-        crate::bandlimit::prepare_now(&self.octaves, &self.data, self.channels);
+        let s = &self.sound;
+        crate::bandlimit::prepare_now(&s.octaves, &s.data, s.channels);
     }
     /// Where its hits are kept ([`crate::hits::prepare`] finds them).
     pub fn hits(&self) -> &Arc<crate::hits::HitCell> {
-        &self.hits
+        &self.sound.hits
     }
     /// Finds its hits here and now if they aren't found yet: for offline
     /// renders and tests, which mustn't wait on a thread.
     pub fn find_hits(&self) {
-        crate::hits::prepare_now(&self.hits, &self.data, self.channels, self.rate);
+        let s = &self.sound;
+        crate::hits::prepare_now(&s.hits, &s.data, s.channels, s.rate);
     }
 
     /// The same sound at `rate` (itself when it is at that rate already),
@@ -308,17 +314,17 @@ impl Source {
     /// of the new one. Heavy for a long sound: call it off the audio and
     /// screen threads.
     pub fn at_rate(&self, rate: u32) -> Result<(Source, Rescale), ModelError> {
-        let data = if rate == self.rate {
-            self.data.to_vec()
+        let data = if rate == self.rate() {
+            self.data().to_vec()
         } else {
-            let from = self.data.all_f32();
-            mpfree_stretch::convert_rate(&from, usize::from(self.channels), self.rate, rate)
+            let from = self.data().all_f32();
+            mpfree_stretch::convert_rate(&from, usize::from(self.channels()), self.rate(), rate)
         };
-        let to = Source::new(&self.name, rate, self.channels, data)?;
+        let to = Source::new(&self.name, rate, self.channels(), data)?;
         let r = Rescale {
-            from: self.id,
-            to: to.id,
-            ratio: f64::from(rate) / f64::from(self.rate),
+            from: self.id(),
+            to: to.id(),
+            ratio: f64::from(rate) / f64::from(self.rate()),
             frames: to.frames(),
             rate,
         };

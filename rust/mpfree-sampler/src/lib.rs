@@ -46,6 +46,7 @@ pub mod record;
 pub mod save;
 pub mod scene;
 pub mod sound_file;
+pub mod store;
 pub mod warp;
 pub mod wav;
 

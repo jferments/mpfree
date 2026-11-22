@@ -210,7 +210,7 @@ impl SourceView {
         let onsets = self.onsets.as_ref().map_or_else(Vec::new, |o| o.to_bytes());
         let mut out = Vec::with_capacity(48 + peaks.len() + onsets.len());
         out.extend_from_slice(CACHE_MAGIC);
-        out.extend_from_slice(&self.id.0.to_le_bytes());
+        out.extend_from_slice(&((self.id.0 >> 64) as u64).to_le_bytes());
         out.extend_from_slice(&pyramid.frames().to_le_bytes());
         out.extend_from_slice(&(pyramid.channels() as u32).to_le_bytes());
         out.extend_from_slice(&self.tempo.unwrap_or(f64::NAN).to_le_bytes());
@@ -244,7 +244,7 @@ impl SourceView {
         let frames = u64_le(take(8)?);
         let channels = u32_le(take(4)?);
         let ch = usize::from(s.channels());
-        if SourceId(id) != s.id() || frames != s.frames() || channels as usize != ch {
+        if !cache_ids(s).contains(&id) || frames != s.frames() || channels as usize != ch {
             return None;
         }
         let tempo = f64::from_le_bytes(take(8)?.try_into().ok()?);
@@ -296,11 +296,28 @@ impl SourceView {
 }
 
 /// The name of the file a sound's analysis is kept in beside it, in a
-/// project's `samples/`: `<id>.a1.peaks`. The analysis's version is in the
-/// name, so a newer analysis never takes an older one's file for its own:
-/// it analyses the sound again and its save writes a file of its own.
-pub fn cache_file(id: SourceId) -> String {
-    format!("{id}.a{CACHE_VERSION}.peaks")
+/// project's `samples/`: its sound file's name with `.a1.peaks` for
+/// `.wav` (`<id>.a1.peaks`, or, for a sound an older build saved under its
+/// 64-bit id, that file's name). The analysis's version is in the name, so
+/// a newer analysis never takes an older one's file for its own: it
+/// analyses the sound again and its save writes a file of its own.
+pub fn cache_file(s: &Source) -> String {
+    let file = mpfree_sampler::wav::file_name(s);
+    let stem = file.strip_suffix(".wav").unwrap_or(&file);
+    format!("{stem}.a{CACHE_VERSION}.peaks")
+}
+
+/// The ids a cache file of `s` may hold to say it is this sound's: the
+/// first 64 bits of its id, which is what a cache file holds since ids
+/// have 128 (the sampler plan's step 8), and, for a sound an older build
+/// saved under its 64-bit id, that id.
+fn cache_ids(s: &Source) -> [u64; 2] {
+    let new = (s.id().0 >> 64) as u64;
+    let old = s
+        .file()
+        .and_then(|f| f.strip_suffix(".wav"))
+        .and_then(|id| u64::from_str_radix(id, 16).ok());
+    [new, old.unwrap_or(new)]
 }
 
 /// The analysis's version: raise it with any change to what the analysis
