@@ -1,0 +1,25 @@
+# An example light theme: warm paper instead of Light's cool grey, a deep
+# teal accent and small square-ish corners. It starts from Light, so it is
+# a light theme already (mode = light): every role that turns the right way
+# for light or dark (the inverse text, shadows, switch knobs) follows.
+base       = light
+name       = Paper
+# The page, the panels on it and the buttons on those, lightest in the
+# middle. Keep text at 4.5:1 or more on all three, and text_dim too:
+# mpfree --check-theme FILE says if anything falls short.
+bg         = #E9E4DA
+surface    = #F7F4EE
+raised     = #DED8CC
+outline    = #C6BDAE
+text       = #1F1B16
+text_dim   = #4E463B
+text_faint = #6B6254
+# The accent is drawn under white words (on_accent) and as lines on the
+# panels, so it needs to be dark enough for both.
+accent     = #0E6B70
+accent2    = mix({accent}, #8A3B6E, 60%)
+corners    = round
+radius     = 6
+# Status colours a shade deeper than Light's, for the warmer cells.
+good       = #136640
+bad        = #A82222

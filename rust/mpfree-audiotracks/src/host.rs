@@ -22,79 +22,73 @@
 //! - **Waveforms:** [`AudioHost::wave`] reads a take's peaks into columns
 //!   for the screen ([`TakeWave`]), at [`WAVE_SPEED`]. The pool lives with
 //!   the tracks on the audio thread, so this is how the screen sees it.
+//! - **Recording to files:** with [`AudioHost::record_to`], each take
+//!   recorded goes to a file of its own as it records (see
+//!   [`crate::files`]). The worker owns the writer and knows every take's
+//!   file; each period the audio thread hands it the tracks' requests
+//!   ([`crate::Io`]) and copies the takes recording out of the pool into
+//!   buffers made once, at most [`COPY_SAMPLES`] a period, a buffer at a
+//!   time. A save names each take's file and copies the finished ones
+//!   whole ([`crate::save::TakeFile::path`]); only takes without one are
+//!   read from memory. How each file stands comes back for the lanes
+//!   ([`AudioHost::file`]) and the log ([`AudioHost::take_event`]).
 //!
 //! The channels to the worker are `std::sync::mpsc`: a message now and
 //! then can allocate a block of the channel, as in the looper's host. A
 //! period with nothing under way sends nothing.
 
-use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::Arc;
+use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
+use std::time::Duration;
 
 use mpfree_transport::time::TempoMap;
 use mpfree_transport::{Block, Tick};
 
-pub use crate::disk::DiskStats;
-use crate::disk::{Disk, FromDisk, ToDisk};
+use crate::files::{self, FileEvent, FileView, Files, Name, Said, WriterConfig};
 use crate::save::{Saved, TakeFile};
 use crate::stretch::{fit_ratio, StretchJob};
 use crate::{
-    AudioTracks, Command, Io, SaveState, TakeInfo, CHUNK, IO_QUEUE, MAX_TAKES, PEAK_BLOCK,
+    AudioTracks, Command, Io, RecordingId, TakeInfo, CHUNK, MAX_TAKES, MAX_TRACKS, PEAK_BLOCK,
 };
 
-/// Streaming: samples copied into or out of the tracks' memory in one
-/// period at most (a chunk takes 4 periods): about 94 chunks a second at
-/// 128-frame periods, against about 60 for 8 stereo tracks recording while
-/// 8 more play, and a small, steady cost on the audio thread.
+/// Recording to files: samples copied out of the tracks' memory in one
+/// period at most: 64 times what 8 stereo tracks record in a 128-frame
+/// period would need a quarter of, a small, steady cost on the audio
+/// thread.
 pub const COPY_SAMPLES: usize = 8192;
-/// Streaming: chunk buffers kept for the disk thread (made once).
+/// Recording to files: buffers of [`CHUNK`] samples kept for copying takes
+/// out to the worker (made once; each comes back once the writer has its
+/// frames).
 const SPARE: usize = 32;
-/// Streaming: a fit holds the whole take in memory while it stretches, so
-/// takes longer than this many samples (about 6 minutes of stereo at
-/// 44.1 kHz) are refused.
-pub const FIT_MAX_SAMPLES: usize = 1 << 25;
+/// Events for the log waiting to be taken, at most.
+const EVENTS: usize = 64;
 
-/// A chunk copying into the tracks (read from the disk) or out of them
-/// (to be written), a part a period.
-enum Job {
-    Fill {
-        take: u16,
-        chunk: u32,
-        buf: Vec<f32>,
-        len: usize,
-        done: usize,
-    },
-    Out {
-        take: u16,
-        chunk: u32,
-        channels: usize,
-        buf: Vec<f32>,
-        len: usize,
-        done: usize,
-    },
+/// A take recording to its file: how far it has been copied out, and the
+/// buffer filling for the worker.
+struct Out {
+    take: u16,
+    rec: RecordingId,
+    channels: usize,
+    /// Frames copied out.
+    sent: usize,
+    buf: Option<Vec<f32>>,
+    /// Samples in `buf`.
+    fill: usize,
 }
 
-/// The disk thread and what goes between it and the tracks.
-struct Streaming {
-    tx: Sender<ToDisk>,
-    rx: Receiver<FromDisk>,
+/// Recording to files, on the audio thread's side.
+struct FileSide {
     spare: Vec<Vec<f32>>,
-    /// Writes and finishes, in order; reads to send; read chunks to copy
-    /// in; the copy under way.
-    waiting: VecDeque<Io>,
-    reads: VecDeque<(u16, u32)>,
-    fills: VecDeque<(u16, u32, Vec<f32>, usize)>,
-    job: Option<Job>,
-    /// Each take's file name.
-    names: Vec<Option<String>>,
-    stamp: u64,
-    next: u32,
-    /// Writes and finishes not answered yet; saved takes being opened.
-    in_flight: usize,
-    opening: usize,
-    stats: Arc<DiskStats>,
-    dir: PathBuf,
+    outs: Vec<Out>,
+    /// Each track's name for its take files.
+    names: [Name; MAX_TRACKS],
+    /// Each take's file as last said (by take id), with the recording it
+    /// belongs to.
+    views: Vec<Option<(RecordingId, FileView)>>,
+    /// Each track's next take's files: the recording, and whether they are
+    /// made.
+    armed: [Option<(RecordingId, bool)>; MAX_TRACKS],
+    events: Vec<FileEvent>,
 }
 
 /// Frames of a take a save or a fit reads for each frame that plays.
@@ -123,13 +117,13 @@ pub struct TakeWave {
 enum ToWorker {
     /// Room for a save (`Saved::room`), for the audio thread to fill.
     Room,
-    /// A filled room: trimmed to its first `tracks` and `takes`, and, with
-    /// `audio`, given room for every take's audio.
+    /// A filled room: trimmed to its first `tracks` and `takes`, each
+    /// take named for its file, and room made for the audio of those
+    /// whose file can't be copied whole ([`Files::name_save`]).
     Size {
         saved: Saved,
         tracks: usize,
         takes: usize,
-        audio: bool,
     },
     /// A zeroed buffer of this many samples (a take to fit), for the
     /// tracks of generation `gen`.
@@ -150,11 +144,46 @@ enum ToWorker {
     Drop(Vec<f32>),
     DropSaved(Saved),
     DropWave(TakeWave),
+    /// Record into `dir` from now on.
+    Files {
+        dir: PathBuf,
+        cfg: WriterConfig,
+    },
+    /// The tracks' requests about the files ([`crate::Io`]), with what the
+    /// worker needs to act on them.
+    Arm {
+        track: u8,
+        rec: RecordingId,
+        channels: u8,
+        name: Name,
+    },
+    Disarm(RecordingId),
+    Start(RecordingId),
+    /// Frames of a recording, interleaved: the first `len` samples of
+    /// `buf`, which comes back.
+    Push {
+        rec: RecordingId,
+        buf: Vec<f32>,
+        len: usize,
+    },
+    /// The recording stopped and every frame was pushed.
+    Stop(RecordingId),
+    /// A take opened with a project, and its file there.
+    Known {
+        rec: RecordingId,
+        name: String,
+        path: Option<PathBuf>,
+        frames: usize,
+    },
+    /// The tracks were emptied.
+    Clear,
+    /// A project save finished into this `samples/`.
+    SavedInto(PathBuf),
 }
 
 enum FromWorker {
     Room(Saved),
-    Sized(Saved),
+    Sized(Saved, Vec<FileEvent>),
     Buffer {
         audio: Vec<f32>,
         gen: u32,
@@ -164,6 +193,16 @@ enum FromWorker {
         gen: u32,
     },
     Wave(Vec<(f32, f32)>),
+    /// A buffer the writer has the frames of.
+    Spare(Vec<f32>),
+    Files(Said),
+    /// A take started with no file: why.
+    NoFile {
+        rec: RecordingId,
+        why: String,
+    },
+    /// Recording to files couldn't start: why.
+    FilesFailed(String),
 }
 
 enum Waving {
@@ -171,8 +210,6 @@ enum Waving {
     Sizing { id: u16, columns: usize },
     /// Column `at` is next.
     Reading { wave: TakeWave, at: usize },
-    /// Streaming: the disk thread makes it from its table.
-    Disk { id: u16 },
 }
 
 enum Saving {
@@ -207,12 +244,6 @@ enum Fitting {
     Stretching {
         take: TakeInfo,
     },
-    /// Streaming: the take's audio is coming from its file.
-    Fetching {
-        take: TakeInfo,
-        ratio: f64,
-        bpm: f64,
-    },
     /// The stretched take is copying in; then `swap` plays it.
     Loading {
         new: u16,
@@ -233,9 +264,7 @@ pub struct AudioHost {
     fitting: Option<Fitting>,
     waving: Option<Waving>,
     wave: Option<TakeWave>,
-    stream: Option<Streaming>,
-    /// Streaming: saved takes that could not be opened (why, one a take).
-    pub open_errors: Vec<String>,
+    files: FileSide,
     /// Fits swapped in, and ones that could not be made or loaded.
     pub fits: u64,
     pub fits_failed: u64,
@@ -250,10 +279,6 @@ pub struct AudioHost {
     /// buffer or stretched take carries the generation it was asked for
     /// in, and one for tracks since emptied is dropped.
     generation: u32,
-    /// Streaming: whole takes asked of the disk for a fit before the
-    /// tracks were emptied, whose answers are dropped as they come (the
-    /// disk answers each, in order).
-    stale_reads: u32,
     /// Background results dropped because the tracks were emptied after
     /// they were asked for.
     pub stale: u64,
@@ -264,8 +289,6 @@ pub struct AudioHost {
 pub enum ImportRefused {
     /// Another sound is still copying in.
     Busy,
-    /// Streaming from take files: a sound would need a file of its own.
-    Streaming,
     /// No take id is free.
     NoTake,
     /// Not enough audio track memory left, or the sound or track is not
@@ -281,64 +304,7 @@ impl AudioHost {
         let (done, rx) = channel();
         let spawned = std::thread::Builder::new()
             .name("mpfree-audiotracks".into())
-            .spawn(move || {
-                for m in jobs {
-                    let reply = match m {
-                        ToWorker::Room => FromWorker::Room(Saved::room(rate)),
-                        ToWorker::Size {
-                            mut saved,
-                            tracks,
-                            takes,
-                            audio,
-                        } => {
-                            saved.tracks.truncate(tracks);
-                            saved.takes.truncate(takes);
-                            if audio {
-                                for k in &mut saved.takes {
-                                    k.audio = vec![0.0; k.frames * k.channels];
-                                }
-                            }
-                            FromWorker::Sized(saved)
-                        }
-                        ToWorker::Buffer { n, gen } => FromWorker::Buffer {
-                            audio: vec![0.0; n],
-                            gen,
-                        },
-                        ToWorker::Stretch {
-                            take,
-                            audio,
-                            ratio,
-                            bpm,
-                            id,
-                            gen,
-                        } => {
-                            let out = StretchJob::new(take, audio, rate, ratio, bpm, id)
-                                .ok()
-                                .and_then(|mut j| {
-                                    while !j.run(1 << 15).finished {}
-                                    j.finish()
-                                });
-                            FromWorker::Stretched { out, gen }
-                        }
-                        ToWorker::Wave(n) => FromWorker::Wave(Vec::with_capacity(n)),
-                        ToWorker::Drop(v) => {
-                            drop(v);
-                            continue;
-                        }
-                        ToWorker::DropSaved(s) => {
-                            drop(s);
-                            continue;
-                        }
-                        ToWorker::DropWave(w) => {
-                            drop(w);
-                            continue;
-                        }
-                    };
-                    if done.send(reply).is_err() {
-                        break;
-                    }
-                }
-            })
+            .spawn(move || work(rate, &jobs, &done))
             .is_ok();
         AudioHost {
             tracks: AudioTracks::new(rate, seconds),
@@ -350,72 +316,88 @@ impl AudioHost {
             fitting: None,
             waving: None,
             wave: None,
-            stream: None,
-            open_errors: Vec::new(),
+            files: FileSide {
+                // The buffers for copying takes out, made now so turning
+                // files on later never allocates.
+                spare: (0..SPARE).map(|_| vec![0.0; CHUNK]).collect(),
+                outs: Vec::with_capacity(MAX_TAKES),
+                names: [Name::default(); MAX_TRACKS],
+                views: vec![None; MAX_TAKES],
+                armed: [None; MAX_TRACKS],
+                events: Vec::with_capacity(EVENTS),
+            },
             fits: 0,
             fits_failed: 0,
             importing: None,
             import_cuts: Vec::new(),
             imports: 0,
             generation: 0,
-            stale_reads: 0,
             stale: 0,
         }
     }
 
-    /// The tracks streaming from take files in `dir` (made if missing; on
-    /// the MPC, a folder on the stick's data partition), with `seconds` of
-    /// stereo memory in front of it (see the module notes of
-    /// [`crate`]), the worker thread and the disk thread
-    /// (`mpfree-audiotracks-disk`).
-    pub fn streaming(rate: u32, seconds: u32, dir: PathBuf) -> std::io::Result<AudioHost> {
-        std::fs::create_dir_all(&dir)?;
-        let mut h = AudioHost::new(rate, seconds);
-        h.tracks.stream(true);
-        let stats = Arc::new(DiskStats::default());
-        let (tx, jobs) = channel::<ToDisk>();
-        let (done, rx) = channel();
-        let disk = Disk::new(dir.clone(), rate, stats.clone());
-        std::thread::Builder::new()
-            .name("mpfree-audiotracks-disk".into())
-            .spawn(move || disk.serve(jobs, done))?;
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
-        h.stream = Some(Streaming {
-            tx,
-            rx,
-            spare: (0..SPARE).map(|_| vec![0.0; CHUNK]).collect(),
-            waiting: VecDeque::with_capacity(IO_QUEUE),
-            reads: VecDeque::with_capacity(IO_QUEUE),
-            fills: VecDeque::with_capacity(SPARE),
-            job: None,
-            names: vec![None; MAX_TAKES],
-            stamp,
-            next: 0,
-            in_flight: 0,
-            opening: 0,
-            stats,
-            dir,
-        });
-        Ok(h)
+    /// Record every take to a file of its own in `dir` (made if missing;
+    /// the library's work folder for the audio tracks), from the next
+    /// armed track on (see [`crate::files`]). Call it once, at start,
+    /// after anything a cut-off run left there is recovered
+    /// ([`crate::files::recover_into`]). Does not allocate (the message
+    /// carries `dir`). Refused, with `dir` given back to try again later,
+    /// while a track records or a take is still being written, or with no
+    /// worker.
+    pub fn record_to(&mut self, dir: PathBuf, cfg: WriterConfig) -> Result<(), PathBuf> {
+        if self.tx.is_none() || !self.tracks.files(true) {
+            return Err(dir);
+        }
+        self.send(ToWorker::Files { dir, cfg });
+        Ok(())
     }
 
-    /// Streaming: the disk thread's counters (reads, writes, errors, the
-    /// longest call).
-    pub fn disk_stats(&self) -> Option<&DiskStats> {
-        self.stream.as_ref().map(|s| &*s.stats)
+    /// Track `track`'s name for its next takes' files (see
+    /// [`crate::files::Name`]). Does not allocate.
+    pub fn set_name(&mut self, track: usize, name: &str) {
+        if let Some(n) = self.files.names.get_mut(track) {
+            if n.as_str() != name {
+                *n = Name::new(name);
+            }
+        }
     }
 
-    /// Streaming: the folder the take files are in, and take `id`'s file.
-    pub fn take_file(&self, id: u16) -> Option<PathBuf> {
-        let st = self.stream.as_ref()?;
-        Some(st.dir.join(st.names.get(id as usize)?.as_ref()?))
+    /// Take `id`'s file as the writer last said (None: no file: recorded
+    /// with files off, brought in, or its files couldn't be made).
+    pub fn file(&self, id: u16) -> Option<FileView> {
+        let (rec, v) = (*self.files.views.get(id as usize)?)?;
+        (self.tracks.take(id)?.rec == rec).then_some(v)
     }
 
-    /// Streaming: saved takes still being opened.
-    pub fn opening(&self) -> usize {
-        self.stream.as_ref().map_or(0, |s| s.opening)
+    /// Whether track `track`'s next take's files are made: Some(false)
+    /// while they are being made, None when it isn't armed to record to a
+    /// file.
+    pub fn armed_file(&self, track: usize) -> Option<bool> {
+        let (rec, ready) = (*self.files.armed.get(track)?)?;
+        (self.tracks.next_recording(track).map(|(r, _)| r) == Some(rec)).then_some(ready)
+    }
+
+    /// The next thing about the files for the log, oldest first.
+    pub fn take_event(&mut self) -> Option<FileEvent> {
+        if self.files.events.is_empty() {
+            None
+        } else {
+            Some(self.files.events.remove(0))
+        }
+    }
+
+    /// A project save finished into `samples` (its `samples/` folder): the
+    /// takes it has a file of are kept from there from now on, and their
+    /// copies in the work folder go. Allocates the message: between
+    /// periods.
+    pub fn saved_into(&self, samples: PathBuf) {
+        self.send(ToWorker::SavedInto(samples));
+    }
+
+    fn event(&mut self, e: FileEvent) {
+        if self.files.events.len() < EVENTS {
+            self.files.events.push(e);
+        }
     }
 
     fn send(&self, m: ToWorker) {
@@ -485,41 +467,43 @@ impl AudioHost {
 
     /// Put a saved part back: every take (copying in over the next
     /// periods) and every track. Takes or tracks that could not be put
-    /// back are listed in the error; the rest are in. Any audio not taken
-    /// goes to the worker to drop.
+    /// back are listed in the error; the rest are in. A take's file in the
+    /// project (its `file`, and its `path` when the opener found it) goes
+    /// to the worker, so a save names it again and copies it from there.
+    /// Any audio not taken goes to the worker to drop.
     pub fn load(&mut self, mut saved: Saved) -> Result<(), String> {
-        if let Some(st) = &mut self.stream {
-            // Streaming: each take's file is opened and checked on the disk
-            // thread, then the take is put back (see `opening`;
-            // failures land in `open_errors`).
-            for mut k in saved.takes.drain(..) {
-                k.audio = Vec::new();
-                if let Some(n) = st.names.get_mut(k.id as usize) {
-                    *n = Some(k.file.clone());
-                }
-                st.opening += 1;
-                let _ = st.tx.send(ToDisk::Open { file: k });
-            }
-            let mut bad = Vec::new();
-            for t in &saved.tracks {
-                if !self.tracks.load_track(t) {
-                    bad.push(format!("track {}", t.index + 1));
-                }
-            }
-            self.send(ToWorker::DropSaved(saved));
-            return if bad.is_empty() {
-                Ok(())
-            } else {
-                Err(format!("audio tracks: could not load {}", bad.join(", ")))
-            };
-        }
         // Only a refusal allocates (its line); what is left of the part
         // goes to the worker to drop.
         let mut bad = Vec::new();
-        for k in saved.takes.drain(..) {
-            if let Err(k) = self.tracks.load_take(k) {
-                bad.push(format!("take {}", k.id));
-                self.send(ToWorker::Drop(k.audio));
+        for mut k in saved.takes.drain(..) {
+            let (id, frames) = (k.id, k.frames);
+            let name = std::mem::take(&mut k.file);
+            let path = k.path.take();
+            match self.tracks.load_take(k) {
+                Ok(()) => {
+                    if let Some(t) = self.tracks.take(id) {
+                        if path.is_some() {
+                            self.files.views[id as usize] = Some((t.rec, FileView::SAVED));
+                        }
+                        self.send(ToWorker::Known {
+                            rec: t.rec,
+                            name,
+                            path,
+                            frames,
+                        });
+                    }
+                }
+                Err(k) => {
+                    bad.push(format!("take {}", k.id));
+                    self.send(ToWorker::Drop(k.audio));
+                    // Its name and path are dropped on the worker too.
+                    self.send(ToWorker::Known {
+                        rec: RecordingId::NONE,
+                        name,
+                        path,
+                        frames: 0,
+                    });
+                }
             }
         }
         for t in &saved.tracks {
@@ -562,9 +546,6 @@ impl AudioHost {
         if self.importing.is_some() {
             return refuse(self, audio, ImportRefused::Busy);
         }
-        if self.stream.is_some() {
-            return refuse(self, audio, ImportRefused::Streaming);
-        }
         let Some(id) = self.tracks.free_take_id() else {
             return refuse(self, audio, ImportRefused::NoTake);
         };
@@ -587,6 +568,7 @@ impl AudioHost {
             frames,
             channels,
             file: String::new(),
+            path: None,
             audio,
         };
         match self.tracks.load_take(file) {
@@ -623,9 +605,7 @@ impl AudioHost {
 
     /// Fit take `id` to `bpm` (the tempo now), keeping its pitch. False if
     /// a fit is under way, the take is not there or records, its tempo is
-    /// not known or already `bpm`, or there is no worker; streaming, also
-    /// until all of it is on the disk ([`SaveState::Saved`]), as the fit
-    /// reads it from there.
+    /// not known or already `bpm`, or there is no worker.
     pub fn fit(&mut self, id: u16, bpm: f64) -> bool {
         if self.fitting.is_some() || self.tx.is_none() {
             return false;
@@ -636,20 +616,6 @@ impl AudioHost {
         let Some(ratio) = fit_ratio(take.bpm, bpm).filter(|r| (r - 1.0).abs() > 1e-9) else {
             return false;
         };
-        if let Some(st) = &self.stream {
-            if take.frames * take.channels > FIT_MAX_SAMPLES
-                || self.tracks.save_state(id) != Some(SaveState::Saved)
-            {
-                return false;
-            }
-            let _ = st.tx.send(ToDisk::ReadAll {
-                take: id,
-                frames: take.frames,
-                channels: take.channels,
-            });
-            self.fitting = Some(Fitting::Fetching { take, ratio, bpm });
-            return true;
-        }
         self.send(ToWorker::Buffer {
             n: take.frames * take.channels,
             gen: self.generation,
@@ -663,8 +629,7 @@ impl AudioHost {
         match self.fitting.as_ref()? {
             Fitting::Sizing { take, .. }
             | Fitting::Reading { take, .. }
-            | Fitting::Stretching { take }
-            | Fitting::Fetching { take, .. } => Some(take.id),
+            | Fitting::Stretching { take } => Some(take.id),
             Fitting::Loading { swap, .. } => match swap {
                 Command::Swap { old, .. } => Some(*old),
                 _ => None,
@@ -685,17 +650,6 @@ impl AudioHost {
             self.send(ToWorker::DropWave(wave));
         }
         let columns = columns.clamp(1, MAX_COLUMNS);
-        if let Some(st) = &self.stream {
-            let t = self.tracks.take(id).expect("checked above");
-            let _ = st.tx.send(ToDisk::Wave {
-                take: id,
-                frames: t.frames,
-                channels: t.channels,
-                columns,
-            });
-            self.waving = Some(Waving::Disk { id });
-            return true;
-        }
         self.send(ToWorker::Wave(columns));
         self.waving = Some(Waving::Sizing { id, columns });
         true
@@ -714,27 +668,29 @@ impl AudioHost {
 
     /// Every track as new and every take forgotten
     /// ([`AudioTracks::clear`]: refused, false, while a track records, a
-    /// take copies in or audio is still going to the disk), for New
-    /// project or a project opening. The background jobs asked for until
-    /// now are the old project's: a fit under way stops, and whatever the
-    /// worker or the disk still sends for it is dropped as it comes
+    /// take copies in or a take is still being copied out to its file),
+    /// for New project or a project opening. The background jobs asked
+    /// for until now are the old project's: a fit under way stops, and
+    /// whatever the worker still sends for it is dropped as it comes
     /// ([`AudioHost::stale`]), so it can never reach the new project's
     /// takes (a take id comes back after a clear). A sound still being
-    /// brought in goes with the rest. Does not allocate.
+    /// brought in goes with the rest. The take files stay where they are.
+    /// Does not allocate.
     pub fn clear(&mut self) -> bool {
-        if !self.tracks.clear() {
+        if !self.files.outs.is_empty() || !self.tracks.clear() {
             return false;
         }
         self.generation = self.generation.wrapping_add(1);
         match self.fitting.take() {
             Some(Fitting::Reading { audio, .. }) => self.send(ToWorker::Drop(audio)),
-            Some(Fitting::Fetching { .. }) => self.stale_reads += 1,
             // Sizing and Stretching: the worker's answer carries the old
             // generation; Loading: its take went with the rest.
             Some(Fitting::Sizing { .. } | Fitting::Stretching { .. } | Fitting::Loading { .. })
             | None => {}
         }
         self.importing = None;
+        self.files.views.fill(None);
+        self.send(ToWorker::Clear);
         true
     }
 
@@ -766,10 +722,9 @@ impl AudioHost {
         while let Some(v) = self.tracks.take_returned() {
             self.send(ToWorker::Drop(v));
         }
-        self.tend_disk();
         while let Some(m) = self.rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
             match m {
-                FromWorker::Room(saved) | FromWorker::Sized(saved) if self.cancelled > 0 => {
+                FromWorker::Room(saved) | FromWorker::Sized(saved, _) if self.cancelled > 0 => {
                     self.cancelled -= 1;
                     self.send(ToWorker::DropSaved(saved));
                 }
@@ -780,20 +735,30 @@ impl AudioHost {
                         self.send(ToWorker::DropSaved(room));
                     }
                 },
-                // Streaming: the audio is in the take files already, and
-                // the save is done.
-                FromWorker::Sized(saved) if self.stream.is_some() => {
-                    self.saving = None;
-                    if let Some(old) = self.saved.replace(saved) {
-                        self.send(ToWorker::DropSaved(old));
+                FromWorker::Sized(saved, said) => {
+                    for e in said {
+                        self.event(e);
                     }
-                }
-                FromWorker::Sized(saved) => {
                     self.saving = Some(Saving::Reading {
                         saved,
                         i: 0,
                         frame: 0,
                     });
+                }
+                FromWorker::Spare(buf) => self.files.spare.push(buf),
+                FromWorker::Files(said) => self.heard(said),
+                FromWorker::NoFile { rec, why } => {
+                    if let Some(t) = self.tracks.take_of(rec).and_then(|id| self.tracks.take(id)) {
+                        self.event(FileEvent::NoFile {
+                            track: t.track,
+                            why,
+                        });
+                    }
+                }
+                FromWorker::FilesFailed(why) => {
+                    // The tracks go on recording into memory only.
+                    self.tracks.files(false);
+                    self.event(FileEvent::ArmFailed { track: 0, why });
                 }
                 // For tracks emptied since it was asked for (a project
                 // opened): dropped, never let near the new project's takes.
@@ -867,275 +832,195 @@ impl AudioHost {
                 }
             }
         }
+        self.tend_files();
         let budget = READ_SPEED * frames.max(1);
         self.tend_save(budget);
         self.tend_fit(budget);
         self.tend_wave(WAVE_SPEED * frames.max(1));
     }
 
-    /// Streaming: answers from the disk thread into the tracks, and the
-    /// tracks' requests out to it, copying at most [`COPY_SAMPLES`] samples
-    /// a period.
-    fn tend_disk(&mut self) {
-        let Some(st) = self.stream.as_mut() else {
-            return;
-        };
-        let mut audio = None;
-        let mut disk_wave = None;
-        while let Ok(m) = st.rx.try_recv() {
-            match m {
-                FromDisk::Written {
-                    take,
-                    chunk,
-                    buf,
-                    ok,
-                } => {
-                    st.in_flight -= 1;
-                    if ok {
-                        self.tracks.written(take, chunk);
-                    } else {
-                        self.tracks.write_failed(take, chunk);
+    /// What the worker said about a file.
+    fn heard(&mut self, said: Said) {
+        match said {
+            Said::Ready(rec) => {
+                for a in self.files.armed.iter_mut().flatten() {
+                    if a.0 == rec {
+                        a.1 = true;
                     }
-                    st.spare.push(buf);
                 }
-                FromDisk::Read {
-                    take,
-                    chunk,
-                    buf,
-                    got,
-                } => match got {
-                    Some(len) if st.fills.len() < st.fills.capacity() => {
-                        st.fills.push_back((take, chunk, buf, len));
-                    }
-                    _ => {
-                        self.tracks.fill_failed(take, chunk);
-                        st.spare.push(buf);
-                    }
-                },
-                FromDisk::Finished { take, ok } => {
-                    st.in_flight -= 1;
-                    self.tracks.finished(take, ok);
-                }
-                FromDisk::Opened { file, ok } => {
-                    st.opening -= 1;
-                    let id = file.id;
-                    let r = ok.and_then(|()| {
-                        self.tracks
-                            .add_take(file)
-                            .map_err(|f| format!("take {}: could not be put back", f.id))
+            }
+            Said::Failed { rec, why } => {
+                // The files for a track's next take: the track doesn't arm.
+                if let Some(t) = (0..MAX_TRACKS)
+                    .find(|&t| self.tracks.next_recording(t).map(|(r, _)| r) == Some(rec))
+                {
+                    self.tracks.command(Command::Arm(t, false));
+                    self.files.armed[t] = None;
+                    self.event(FileEvent::ArmFailed { track: t, why });
+                } else if let Some(t) = self.tracks.take_of(rec).and_then(|id| self.tracks.take(id))
+                {
+                    // A take already recording into them: memory only.
+                    self.event(FileEvent::NoFile {
+                        track: t.track,
+                        why,
                     });
-                    if let Err(e) = r {
-                        if let Some(n) = st.names.get_mut(id as usize) {
-                            *n = None;
-                        }
-                        self.open_errors.push(e);
-                    }
                 }
-                FromDisk::Audio { take, audio: a } => audio = Some((take, a)),
-                FromDisk::Wave(w) => disk_wave = Some(w),
             }
-        }
-        // The tracks' requests: reads go out at once (as buffers allow);
-        // writes and finishes keep their order.
-        while st.waiting.len() < st.waiting.capacity() && st.reads.len() < st.reads.capacity() {
-            match self.tracks.take_io() {
-                Some(Io::Read { take, chunk }) => st.reads.push_back((take, chunk)),
-                Some(r) => st.waiting.push_back(r),
-                None => break,
-            }
-        }
-        while !st.reads.is_empty() && !st.spare.is_empty() {
-            let (take, chunk) = st.reads.pop_front().expect("checked");
-            let buf = st.spare.pop().expect("checked");
-            let _ = st.tx.send(ToDisk::Read { take, chunk, buf });
-        }
-        // Copies, read chunks first.
-        let mut budget = COPY_SAMPLES;
-        loop {
-            if st.job.is_none() {
-                if let Some((take, chunk, buf, len)) = st.fills.pop_front() {
-                    st.job = Some(Job::Fill {
-                        take,
-                        chunk,
-                        buf,
-                        len,
-                        done: 0,
+            Said::View { rec, view } => {
+                let Some(id) = self.tracks.take_of(rec) else {
+                    return;
+                };
+                let before = self.files.views[id as usize].map(|(_, v)| v.state);
+                self.files.views[id as usize] = Some((rec, view));
+                let worth = match view.state {
+                    files::TakeState::AtRisk(_) | files::TakeState::Stopped(_) => true,
+                    files::TakeState::Saved => {
+                        matches!(before, Some(files::TakeState::AtRisk(_)))
+                    }
+                    _ => false,
+                };
+                if worth && before != Some(view.state) {
+                    let track = self.tracks.take(id).map_or(0, |t| t.track);
+                    self.event(FileEvent::State {
+                        track,
+                        state: view.state,
                     });
-                } else {
-                    match st.waiting.front().copied() {
-                        Some(io @ (Io::Write { take, chunk } | Io::Rewrite { take, chunk })) => {
-                            if budget == 0 || st.spare.is_empty() {
-                                break;
-                            }
-                            st.waiting.pop_front();
-                            if matches!(io, Io::Write { chunk: 0, .. }) {
-                                // A new take: a new file, never one a save
-                                // names. (A write tried again goes to the
-                                // file the take has.)
-                                let name = format!("{}-{}.wav", st.stamp, st.next);
-                                st.next += 1;
-                                st.names[take as usize] = Some(name.clone());
-                                let _ = st.tx.send(ToDisk::Name { take, name });
-                            }
-                            let Some(len) = self.tracks.chunk(take, chunk).map(<[f32]>::len) else {
-                                continue;
-                            };
-                            st.job = Some(Job::Out {
-                                take,
-                                chunk,
-                                channels: self.tracks.take(take).map_or(1, |t| t.channels),
-                                buf: st.spare.pop().expect("checked"),
-                                len,
-                                done: 0,
-                            });
-                        }
-                        Some(Io::Finish { take }) => {
-                            st.waiting.pop_front();
-                            if let Some(t) = self.tracks.take(take) {
-                                st.in_flight += 1;
-                                let _ = st.tx.send(ToDisk::Finish {
-                                    take,
-                                    frames: t.frames,
-                                    channels: t.channels,
-                                });
-                            }
-                            continue;
-                        }
-                        Some(Io::Read { .. }) | None => break,
-                    }
                 }
             }
-            if budget == 0 {
-                break;
-            }
-            match st.job.take() {
-                Some(Job::Fill {
-                    take,
-                    chunk,
-                    buf,
-                    len,
-                    done,
-                }) => {
-                    let k = budget.min(len - done);
-                    let last = done + k == len;
-                    let kept = self
-                        .tracks
-                        .fill_part(take, chunk, done, &buf[done..done + k], last);
-                    budget -= k;
-                    if kept && !last {
-                        st.job = Some(Job::Fill {
-                            take,
-                            chunk,
-                            buf,
-                            len,
-                            done: done + k,
-                        });
-                    } else {
-                        st.spare.push(buf);
-                    }
-                }
-                Some(Job::Out {
-                    take,
-                    chunk,
+        }
+    }
+
+    /// Recording to files: the tracks' requests to the worker, and the
+    /// takes recording copied out to it, at most [`COPY_SAMPLES`] samples
+    /// a period, a buffer at a time. A take copied out in full once it has
+    /// stopped is finished, and can be forgotten again.
+    fn tend_files(&mut self) {
+        while let Some(io) = self.tracks.take_io() {
+            match io {
+                Io::Arm {
+                    track,
+                    rec,
                     channels,
-                    mut buf,
-                    len,
-                    done,
-                }) => {
-                    let Some(data) = self.tracks.chunk(take, chunk) else {
-                        st.spare.push(buf);
+                } => {
+                    let name = self.files.names[usize::from(track) % MAX_TRACKS];
+                    if let Some(a) = self.files.armed.get_mut(usize::from(track)) {
+                        *a = Some((rec, false));
+                    }
+                    self.send(ToWorker::Arm {
+                        track,
+                        rec,
+                        channels,
+                        name,
+                    });
+                }
+                Io::Disarm { rec } => {
+                    for a in &mut self.files.armed {
+                        if a.is_some_and(|(r, _)| r == rec) {
+                            *a = None;
+                        }
+                    }
+                    self.send(ToWorker::Disarm(rec));
+                }
+                Io::Start { take } => {
+                    let Some(t) = self.tracks.take(take) else {
                         continue;
                     };
-                    let k = budget.min(len - done);
-                    buf[done..done + k].copy_from_slice(&data[done..done + k]);
-                    budget -= k;
-                    if done + k == len {
-                        st.in_flight += 1;
-                        let _ = st.tx.send(ToDisk::Write {
+                    if let Some(a) = self.files.armed.get_mut(t.track) {
+                        if a.is_some_and(|(r, _)| r == t.rec) {
+                            *a = None;
+                        }
+                    }
+                    self.files.views[take as usize] = Some((
+                        t.rec,
+                        FileView {
+                            state: files::TakeState::Recording,
+                            ..FileView::SAVED
+                        },
+                    ));
+                    self.send(ToWorker::Start(t.rec));
+                    if self.files.outs.len() < self.files.outs.capacity() {
+                        self.files.outs.push(Out {
                             take,
-                            chunk,
-                            channels,
-                            len,
-                            data: buf,
+                            rec: t.rec,
+                            channels: t.channels,
+                            sent: 0,
+                            buf: None,
+                            fill: 0,
                         });
                     } else {
-                        st.job = Some(Job::Out {
-                            take,
-                            chunk,
-                            channels,
+                        // Never: a take writing can't be forgotten, so
+                        // there are never more than MAX_TAKES.
+                        self.tracks.written(take);
+                    }
+                }
+            }
+        }
+        let mut budget = COPY_SAMPLES;
+        let mut i = 0;
+        while i < self.files.outs.len() {
+            let FileSide { spare, outs, .. } = &mut self.files;
+            let o = &mut outs[i];
+            let Some(t) = self.tracks.take(o.take).filter(|t| t.rec == o.rec) else {
+                // Never: a take writing can't be forgotten.
+                if let Some(b) = o.buf.take() {
+                    spare.push(b);
+                }
+                outs.swap_remove(i);
+                continue;
+            };
+            let ch = o.channels.max(1);
+            let full = CHUNK - CHUNK % ch;
+            while o.sent < t.frames && budget >= ch {
+                if o.buf.is_none() {
+                    match spare.pop() {
+                        Some(b) => o.buf = Some(b),
+                        None => break,
+                    }
+                }
+                let buf = o.buf.as_mut().expect("just made sure");
+                let n = (t.frames - o.sent)
+                    .min((full - o.fill) / ch)
+                    .min(budget / ch);
+                let got = self
+                    .tracks
+                    .read_take(o.take, o.sent, &mut buf[o.fill..o.fill + n * ch])
+                    .unwrap_or(0);
+                o.sent += got;
+                o.fill += got * ch;
+                budget -= got * ch;
+                if o.fill == full {
+                    let buf = o.buf.take().expect("filled");
+                    let _ = self.tx.as_ref().map(|tx| {
+                        tx.send(ToWorker::Push {
+                            rec: o.rec,
                             buf,
-                            len,
-                            done: done + k,
+                            len: full,
+                        })
+                    });
+                    o.fill = 0;
+                }
+                if got == 0 {
+                    break;
+                }
+            }
+            if !t.recording && o.sent >= t.frames {
+                let o = outs.swap_remove(i);
+                if let Some(buf) = o.buf {
+                    if o.fill > 0 {
+                        self.send(ToWorker::Push {
+                            rec: o.rec,
+                            buf,
+                            len: o.fill,
                         });
+                    } else {
+                        self.files.spare.push(buf);
                     }
                 }
-                None => break,
+                self.send(ToWorker::Stop(o.rec));
+                self.tracks.written(o.take);
+                continue;
             }
-        }
-        if let Some((_, a)) = audio.as_mut().filter(|_| self.stale_reads > 0) {
-            // A fit's read asked for before the tracks were emptied.
-            self.stale_reads -= 1;
-            self.stale += 1;
-            if let Some(a) = a.take() {
-                self.send(ToWorker::Drop(a));
-            }
-            audio = None;
-        }
-        if let Some((take, a)) = audio {
-            match (self.fitting.take(), a) {
-                (
-                    Some(Fitting::Fetching {
-                        take: t,
-                        ratio,
-                        bpm,
-                    }),
-                    Some(audio),
-                ) if t.id == take => match self.tracks.free_take_id() {
-                    Some(id) => {
-                        self.send(ToWorker::Stretch {
-                            take: t,
-                            audio,
-                            ratio,
-                            bpm,
-                            id,
-                            gen: self.generation,
-                        });
-                        self.fitting = Some(Fitting::Stretching { take: t });
-                    }
-                    None => {
-                        self.fits_failed += 1;
-                        self.send(ToWorker::Drop(audio));
-                    }
-                },
-                (Some(Fitting::Fetching { .. }), _) => self.fits_failed += 1,
-                (other, a) => {
-                    self.fitting = other;
-                    if let Some(a) = a {
-                        self.send(ToWorker::Drop(a));
-                    }
-                }
-            }
-        }
-        if let Some(w) = disk_wave {
-            if let Some(Waving::Disk { id }) = self.waving.take() {
-                if let Some(mut w) = w.filter(|w| w.id == id) {
-                    // The part not on the disk yet (a recording's
-                    // end) from the tracks' own table.
-                    let fpc = w.frames_per_column;
-                    let mut at = w.columns.len() * fpc;
-                    while at < w.frames && w.columns.len() < w.columns.capacity() {
-                        let to = (at + fpc).min(w.frames);
-                        match self.tracks.peaks(id, at, to) {
-                            Some(p) => w.columns.push(p),
-                            None => break,
-                        }
-                        at = to;
-                    }
-                    if let Some(old) = self.wave.replace(w) {
-                        self.send(ToWorker::DropWave(old));
-                    }
-                }
-            }
+            i += 1;
         }
     }
 
@@ -1193,6 +1078,18 @@ impl AudioHost {
         }
     }
 
+    /// Whether no take is still on its way into its file: none being
+    /// copied out, and none the writer last said was Recording or Saving.
+    fn files_settled(&self) -> bool {
+        self.files.outs.is_empty()
+            && !self.files.views.iter().flatten().any(|(_, v)| {
+                matches!(
+                    v.state,
+                    files::TakeState::Recording | files::TakeState::Saving
+                )
+            })
+    }
+
     fn tend_save(&mut self, budget: usize) {
         match self.saving.take() {
             None => {}
@@ -1200,16 +1097,10 @@ impl AudioHost {
             Some(Saving::Waiting(mut room)) => {
                 // Settled first, and only then filled, into the worker's
                 // room: nothing is made here, nor while a take records,
-                // loads or is still being written to its file.
-                let written = self.stream.as_ref().is_none_or(|st| {
-                    st.waiting.is_empty()
-                        && st.job.is_none()
-                        && st.in_flight == 0
-                        && st.opening == 0
-                        && self.tracks.unwritten() == 0
-                        && self.tracks.loading() == 0
-                });
-                let filled = if written {
+                // loads, or is still on its way into its file (a save
+                // names only finished files: it waits while one is
+                // Saving).
+                let filled = if self.files_settled() {
                     self.tracks.save_into(&mut room)
                 } else {
                     None
@@ -1217,19 +1108,10 @@ impl AudioHost {
                 match filled {
                     None => self.saving = Some(Saving::Waiting(room)),
                     Some((tracks, takes)) => {
-                        // Streaming: each take's file, into its room.
-                        if let Some(st) = &self.stream {
-                            for k in &mut room.takes[..takes] {
-                                if let Some(Some(name)) = st.names.get(k.id as usize) {
-                                    k.file.push_str(name);
-                                }
-                            }
-                        }
                         self.send(ToWorker::Size {
                             saved: room,
                             tracks,
                             takes,
-                            audio: self.stream.is_none(),
                         });
                         self.saving = Some(Saving::Sizing);
                     }
@@ -1244,6 +1126,11 @@ impl AudioHost {
                 let mut left = budget;
                 while left > 0 && i < saved.takes.len() {
                     let k = &mut saved.takes[i];
+                    if k.path.is_some() {
+                        // Copied whole from its file by the save.
+                        i += 1;
+                        continue;
+                    }
                     let ch = k.channels;
                     let to = (frame + left).min(k.frames);
                     match self
@@ -1344,4 +1231,134 @@ impl AudioHost {
             other => self.fitting = other,
         }
     }
+}
+
+/// The worker thread: every big buffer made and dropped here, stretches,
+/// and the files (see the module notes). It wakes at least every 50 ms
+/// while the writer runs, to see how its takes stand.
+fn work(rate: u32, jobs: &Receiver<ToWorker>, done: &Sender<FromWorker>) {
+    let mut files = Files::new(rate);
+    loop {
+        let m = if files.writing() {
+            match jobs.recv_timeout(Duration::from_millis(20)) {
+                Ok(m) => Some(m),
+                Err(RecvTimeoutError::Timeout) => None,
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+        } else {
+            match jobs.recv() {
+                Ok(m) => Some(m),
+                Err(_) => break,
+            }
+        };
+        let reply = m.and_then(|m| serve(rate, &mut files, m));
+        if let Some(r) = reply {
+            if done.send(r).is_err() {
+                break;
+            }
+        }
+        for said in files.poll(false) {
+            if done.send(FromWorker::Files(said)).is_err() {
+                return;
+            }
+        }
+    }
+}
+
+/// One message to the worker, and its answer if it has one.
+fn serve(rate: u32, files: &mut Files, m: ToWorker) -> Option<FromWorker> {
+    Some(match m {
+        ToWorker::Room => FromWorker::Room(Saved::room(rate)),
+        ToWorker::Size {
+            mut saved,
+            tracks,
+            takes,
+        } => {
+            saved.tracks.truncate(tracks);
+            saved.takes.truncate(takes);
+            // The writer's latest word first, so a take just Saved is
+            // copied from its file.
+            let _ = files.poll(true);
+            let said = files.name_save(&mut saved.takes);
+            FromWorker::Sized(saved, said)
+        }
+        ToWorker::Buffer { n, gen } => FromWorker::Buffer {
+            audio: vec![0.0; n],
+            gen,
+        },
+        ToWorker::Stretch {
+            take,
+            audio,
+            ratio,
+            bpm,
+            id,
+            gen,
+        } => {
+            let out = StretchJob::new(take, audio, rate, ratio, bpm, id)
+                .ok()
+                .and_then(|mut j| {
+                    while !j.run(1 << 15).finished {}
+                    j.finish()
+                });
+            FromWorker::Stretched { out, gen }
+        }
+        ToWorker::Wave(n) => FromWorker::Wave(Vec::with_capacity(n)),
+        ToWorker::Drop(v) => {
+            drop(v);
+            return None;
+        }
+        ToWorker::DropSaved(s) => {
+            drop(s);
+            return None;
+        }
+        ToWorker::DropWave(w) => {
+            drop(w);
+            return None;
+        }
+        ToWorker::Files { dir, cfg } => match files.start(dir, cfg) {
+            Ok(()) => return None,
+            Err(e) => FromWorker::FilesFailed(e.to_string()),
+        },
+        ToWorker::Arm {
+            track,
+            rec,
+            channels,
+            name,
+        } => FromWorker::Files(files.arm(track, rec, channels, name)?),
+        ToWorker::Disarm(rec) => {
+            files.disarm(rec);
+            return None;
+        }
+        ToWorker::Start(rec) => match files.start_take(rec) {
+            Ok(()) => return None,
+            Err(why) => FromWorker::NoFile { rec, why },
+        },
+        ToWorker::Push { rec, buf, len } => {
+            files.push(rec, &buf[..len.min(buf.len())]);
+            FromWorker::Spare(buf)
+        }
+        ToWorker::Stop(rec) => {
+            files.stop(rec);
+            return None;
+        }
+        ToWorker::Known {
+            rec,
+            name,
+            path,
+            frames,
+        } => {
+            if rec.is_given() {
+                files.known(rec, name, path, frames);
+            }
+            return None;
+        }
+        ToWorker::Clear => {
+            files.clear();
+            return None;
+        }
+        ToWorker::SavedInto(dir) => {
+            files.saved_into(&dir);
+            return None;
+        }
+    })
 }
