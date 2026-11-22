@@ -32,7 +32,7 @@ use std::collections::BTreeMap;
 use crate::editor::zoom::RollView;
 use crate::editor::{
     box_of, drop_of, edit_rows, pads, step_name, EditAction, Editor, Lens, LockMark, NoteBox,
-    NoteGrid, Tool, ADD, EDIT_BUTTON, PEN, SNAP_AUTO_T, START_HANDLE, STEP_FALLBACK,
+    NoteGrid, Tool, ADD, EDIT_BUTTON, MENU, PEN, SNAP_AUTO_T, START_HANDLE, STEP_FALLBACK,
 };
 use crate::list::{
     ListRow, SongListView, LIST_ADD, LIST_CLIPS, LIST_LOOP, LIST_PLAY, LIST_REMOVE, LIST_SONG,
@@ -1980,6 +1980,7 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             // A touch naming a note carries the picture it was made on.
             let rev = st.edit.as_ref().map_or(0, |e| e.rev);
             match *kind {
+                EventKind::Tab(k) if k >= MENU => EditAction::Choose(k - MENU),
                 EventKind::Tab(k) => EditAction::Button(k),
                 EventKind::Select(i) => EditAction::Note { index: i, rev },
                 EventKind::Toggle(i) => EditAction::Tap { index: i, rev },
@@ -4530,6 +4531,7 @@ pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
     g.snap_name = ed.snap_name();
     g.snap_auto = ed.snap_auto();
     g.tool = ed.tool;
+    g.add = ed.add;
     g.lens = ed.lens;
     g.first = ed.first;
     g.color = track_color(ed.track);
@@ -5298,6 +5300,11 @@ mod tests {
                 ticks: -240
             })
         );
+        assert_eq!(
+            ev(EventKind::Tab(crate::editor::MENU + 5)),
+            edit(EditAction::Choose(5))
+        );
+        assert_eq!(ev(EventKind::Tab(5)), edit(EditAction::Button(5)));
         assert_eq!(
             ev(EventKind::Stretch { index: 2, to: 240 }),
             edit(EditAction::Resize {
