@@ -180,7 +180,7 @@ impl RecList {
         );
         let track = Rect::new(r.right() - 72, r.y + r.h / 2 - 13, 52, 26);
         cx.canvas
-            .fill_round_rect(track, 13, if on { t.accent } else { t.surface });
+            .fill_round_rect(track, 13, if on { t.picked() } else { t.surface });
         cx.canvas.stroke_round_rect(track, 13, 1, t.outline);
         let kx = if on { track.right() - 24 } else { track.x + 2 };
         cx.canvas.fill_round_rect(

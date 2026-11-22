@@ -965,7 +965,7 @@ fn paint_button(cx: &mut PaintCx, t: &Theme, r: Rect, label: &str, on: bool, usa
         r,
         t.round(10),
         if on {
-            t.accent
+            t.picked()
         } else if usable {
             t.raised
         } else {
@@ -978,7 +978,7 @@ fn paint_button(cx: &mut PaintCx, t: &Theme, r: Rect, label: &str, on: bool, usa
         r,
         Align::Center,
         if on {
-            t.on_accent
+            t.on_picked()
         } else {
             t.button_ink(usable)
         },
@@ -1103,14 +1103,14 @@ pub fn paint_page(cx: &mut PaintCx, t: &Theme, page: Rect, l: &PageLayout, ns: &
                 for &(r, v) in &row.seg {
                     let name = names.get(v as usize).copied().unwrap_or("");
                     if v == now {
-                        cx.canvas.fill_round_rect(r, t.round(8), t.accent);
+                        cx.canvas.fill_round_rect(r, t.round(8), t.picked());
                     }
                     cx.text(
                         if v == now { FontId::Bold } else { FontId::Sans },
                         t.size_small,
                         r,
                         Align::Center,
-                        if v == now { t.on_accent } else { t.text_dim },
+                        if v == now { t.on_picked() } else { t.text_dim },
                         name,
                     );
                 }

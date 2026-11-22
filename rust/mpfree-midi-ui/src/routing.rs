@@ -1697,7 +1697,7 @@ fn paint_square(cx: &mut PaintCx, r: Rect, sq: &Square, inward: bool, picked: bo
 fn button(cx: &mut PaintCx, r: Rect, text: &str, lit: bool) {
     let t = cx.theme.clone();
     let (fill, ink) = if lit {
-        (t.accent, t.on_accent)
+        (t.picked(), t.on_picked())
     } else {
         (t.raised, t.text)
     };

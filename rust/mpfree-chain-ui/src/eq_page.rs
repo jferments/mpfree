@@ -1236,7 +1236,7 @@ impl EqPage {
             Button::Kind(k) => {
                 let lit = picked.is_some_and(|b| self.kind(b) == k);
                 let (fill, ink) = if lit {
-                    (t.accent, t.on_accent)
+                    (t.picked(), t.on_picked())
                 } else {
                     (t.raised, if picked.is_some() { t.text } else { t.text_dim })
                 };
@@ -1277,7 +1277,7 @@ impl EqPage {
                 };
                 let lit = band.is_some() && band == self.listening();
                 let (fill, ink) = match (band, lit) {
-                    (_, true) => (t.accent, t.on_accent),
+                    (_, true) => (t.picked(), t.on_picked()),
                     (Some(_), false) => (t.raised, t.text),
                     _ => (t.surface, t.text_dim),
                 };

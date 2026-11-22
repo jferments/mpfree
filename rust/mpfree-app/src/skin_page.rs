@@ -175,8 +175,9 @@ impl SkinWidget {
 
     /// Colours MPFree's pop-ups over the skin in theme `t` and draws again.
     /// A colour the theme gave them that had to be moved to read is logged
-    /// (and counted on the Debug page).
-    pub fn set_theme(&mut self, t: &Theme) {
+    /// (and counted on the Debug page); gives how many were moved, for the
+    /// status board.
+    pub fn set_theme(&mut self, t: &Theme) -> usize {
         let rescues = self.view.set_theme(t);
         if !rescues.is_empty() {
             let what: Vec<&str> = rescues.iter().map(|r| r.what).collect();
@@ -187,7 +188,9 @@ impl SkinWidget {
                 what.join(", ")
             );
         }
+        let moved = rescues.len();
         self.render();
+        moved
     }
 
     /// Edits from the skin's own controls, the wheel or a Q-Link. The
