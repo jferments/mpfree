@@ -233,6 +233,12 @@ pub struct Opening {
     /// would lose it, so the project isn't saved over
     /// (docs/dev/design/project-safety.md).
     pub left_out: Vec<String>,
+    /// It was saved by an older mpfree and changed as it opened (its audio
+    /// tracks became tracks, or their levels and the Audio strip moved
+    /// into the mixer: the audio tracks rethink's phase 1), so its first
+    /// save goes into a new project beside it and it stays as it was, a
+    /// backup ([`mpfree_browser_ui::Browser::converted`]).
+    pub converted: bool,
     /// What it is, for the log ("Night drive", "a new project").
     pub what: String,
     /// The Looper's loops are cleared (always: a project without a looper
@@ -623,6 +629,7 @@ pub fn opening(
     let mut note_fx = None;
     let mut audio = crate::audiotracks::Slots::default();
     let mut audio_moves = Vec::new();
+    let mut converted = false;
     let format = check(snap)?;
     let since_4b = saved_since_4b(snap);
     let cant = |part: &str, e: String| format!("{} can't be read ({e})", part_words(part));
@@ -661,6 +668,7 @@ pub fn opening(
             // An older part's levels and pans move to the tracks' mixer
             // strips (phase 1b), below once the mixer is read.
             audio_moves = audio_strip_moves(&p, &slots, snap.part(AUDIOTRACKS));
+            converted = note.is_some() || !audio_moves.is_empty();
             audio = slots;
             notes.extend(note);
             let mut fx = Box::new([mpfree_notefx::TrackFx::default(); mpfree_seq::MAX_TRACKS]);
@@ -751,6 +759,7 @@ pub fn opening(
         pads: snap.part(PADS).map(str::to_string),
         notes,
         left_out,
+        converted,
         what: what.to_string(),
         // Always: a project without loops or audio tracks has none, not
         // the last project's.
@@ -3470,6 +3479,51 @@ mod tests {
         let (snap, line) = needs(&c);
         assert_eq!(line.as_deref(), Some("synths-without-tracks audio-tracks"));
         assert_eq!(check(&snap), Ok(FORMAT));
+    }
+
+    /// A project whose audio tracks an older build saved is brought up to
+    /// date as it opens (its levels and pans to the mixer, or its tracks
+    /// into the track list), so the open says it changed, and the browser
+    /// keeps it as it was ([`Opening::converted`]); one saved since isn't.
+    #[test]
+    fn a_project_whose_audio_tracks_an_older_build_saved_opens_converted() {
+        use mpfree_audiotracks::save::{Saved, TrackFile};
+        let none = &crate::plugins::Plugins::none();
+        let mut c = collected(String::new(), InstrumentList::new().text());
+        let mut t = mpfree_seq::Track::new_audio("Vocal", 0);
+        c.clips.give_track_id(&mut t);
+        let id = t.id.0;
+        c.clips.tracks.push(t);
+        let saved = Saved {
+            rate: 44_100,
+            tracks: vec![TrackFile {
+                index: 0,
+                id,
+                input: mpfree_audiotracks::Input::Left,
+                monitor: mpfree_audiotracks::Monitor::Auto,
+                level: 1.0,
+                pan: 0.0,
+                muted: false,
+                solo: false,
+                from: String::new(),
+                regions: Vec::new(),
+            }],
+            takes: Vec::new(),
+        };
+        // As the screen saves it: the part beside the snapshot's.
+        let mut snap = snapshot(&c, Vec::new());
+        snap.parts
+            .push((AUDIOTRACKS.to_string(), audio_part(saved).0));
+        assert!(!opening(&snap, 44_100, "x", none).unwrap().converted);
+        // The same part as phase 1a wrote it, before levels were strips'.
+        let mut older = snap.clone();
+        for (name, text) in &mut older.parts {
+            if name == AUDIOTRACKS {
+                *text = text.replace(&format!("{AUDIO_LEVELS_IN_STRIPS}\n"), "");
+            }
+        }
+        assert_ne!(older.parts, snap.parts);
+        assert!(opening(&older, 44_100, "x", none).unwrap().converted);
     }
 
     /// Phase 0's gate (docs/dev/design/project-safety.md): a project that

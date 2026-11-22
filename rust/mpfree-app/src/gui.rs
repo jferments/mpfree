@@ -133,6 +133,12 @@ const MARKER_NAME_LEN: usize = 32;
 /// apart).
 pub const OPENS_ON_THEIR_WAY: usize = 2;
 
+/// Why a project changed as it opened is kept as it was, its first save
+/// going beside it ([`mpfree_browser_ui::Browser::converted`]): "Saving
+/// as Night drive 2: Night drive was saved by an older mpfree, so it
+/// stays as it was".
+const CONVERTED: &str = "was saved by an older mpfree";
+
 /// Why an open waits for the last ones ([`OPENS_ON_THEIR_WAY`]).
 const OPENS_BUSY: &str = "the last two projects are still going in; try again in a moment";
 
@@ -10776,6 +10782,13 @@ impl Player {
         // What it left out keeps it from being saved over; the parts read
         // after (the kits, the loops, the takes) add theirs as they come.
         self.left_out(std::mem::take(&mut o.left_out));
+        // Brought up to date as it opened (an older build's audio
+        // tracks): kept as it was, its first save going beside it.
+        if o.converted {
+            if let Some(b) = self.browser.as_mut() {
+                b.converted(CONVERTED);
+            }
+        }
         let lib = self.browser.as_ref().map(|b| b.library().clone());
         if let (Some(text), Some(lib)) = (snap.part(crate::project::SAMPLER), lib) {
             let loc = loc.clone();
@@ -27906,6 +27919,8 @@ mod tests {
         );
         assert!(lib.sample_path(&loc, &k.file).is_ok());
         assert!(!p.browser.as_ref().unwrap().unsaved());
+        // Saved by this build: nothing brought up to date, saved in place.
+        assert_eq!(p.browser.as_ref().unwrap().converted_why(), None);
         // Once the open settles, a pad played isn't an edit; a new clip is.
         p.opened_at = None;
         p.saw_action(&FromUi::PreviewStop);
@@ -28076,6 +28091,30 @@ mod tests {
             "{:?}",
             events_log(&r)
         );
+        // Saved by an older build (its audio part without levels=strips):
+        // it opens brought up to date, so it is kept as it was, its first
+        // save going beside it.
+        let mut older = lib.open_project(&loc).unwrap();
+        for (name, text) in &mut older.parts {
+            if name == project::AUDIOTRACKS {
+                *text = text.replace(&format!("{}\n", project::AUDIO_LEVELS_IN_STRIPS), "");
+            }
+        }
+        lib.save_project(&loc, &older, 10).unwrap();
+        let mut o = sample_sampler(Fonts::embedded());
+        o.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), "");
+        o.take_actions();
+        o.apply(ToUi::ProjectDefaults(defaults()));
+        let b = o.browser.as_mut().unwrap();
+        b.go_source(source("Projects"));
+        select(b, loc.name());
+        b.push();
+        o.step_browser();
+        assert!(o
+            .take_actions()
+            .iter()
+            .any(|a| matches!(a, FromUi::OpenProject(_))));
+        assert_eq!(o.browser.as_ref().unwrap().converted_why(), Some(CONVERTED));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

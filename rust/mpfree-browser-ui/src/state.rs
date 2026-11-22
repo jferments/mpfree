@@ -769,6 +769,7 @@ struct BeforeOpen {
     recovering: bool,
     recent: Vec<Loc>,
     left_out: Vec<String>,
+    converted: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -852,6 +853,10 @@ pub struct Browser {
     /// ([`Browser::left_out`]): a save would lose it, so SHIFT + BROWSE
     /// saves into a new project beside it.
     left_out: Vec<String>,
+    /// Why the project open was changed as it opened, if it was (saved
+    /// by an older mpfree: [`Browser::converted`]): its first save goes
+    /// beside it too, so it stays as it was.
+    converted: Option<String>,
     /// A save going into such a new project: its name, and why.
     saving_beside: Option<(String, String)>,
     mode: Mode,
@@ -933,6 +938,7 @@ impl Browser {
             recovering: false,
             before_open: None,
             left_out: Vec::new(),
+            converted: None,
             saving_beside: None,
             mode: Mode::Folder,
             sort: Sort::Name,
@@ -1171,7 +1177,7 @@ impl Browser {
                 self.status = Some((line, false));
                 // The project saved holds all it has: nothing left out to
                 // keep from it.
-                self.left_out.clear();
+                self.forget_left_out();
                 self.unsaved = false;
                 self.project = Some(loc.clone());
                 self.last = Some(loc.clone());
@@ -1195,7 +1201,7 @@ impl Browser {
                 self.created = 0;
                 self.unsaved = true;
                 self.recovering = true;
-                self.left_out.clear();
+                self.forget_left_out();
                 self.actions.push(BrowseAction::ProjectOpened { loc, snap });
                 if self.pick.is_some() && !std::mem::take(&mut self.opening_last) {
                     self.close_pick(true);
@@ -1208,7 +1214,7 @@ impl Browser {
                 self.last = Some(loc.clone());
                 self.created = snap.meta.created;
                 self.unsaved = false;
-                self.left_out.clear();
+                self.forget_left_out();
                 self.remember(loc.clone());
                 self.actions.push(BrowseAction::ProjectOpened { loc, snap });
                 // Opened at start (Prefs > At start), a picker opened
@@ -1239,7 +1245,7 @@ impl Browser {
                 self.created = snap.meta.created;
                 // Not the newest save: saving it keeps what it replaces.
                 self.unsaved = true;
-                self.left_out.clear();
+                self.forget_left_out();
                 self.remember(loc.clone());
                 self.actions.push(BrowseAction::ProjectOpened { loc, snap });
             }
@@ -1943,6 +1949,7 @@ impl Browser {
             recovering: self.recovering,
             recent: self.recent.clone(),
             left_out: self.left_out.clone(),
+            converted: self.converted.clone(),
         }
     }
 
@@ -1963,6 +1970,7 @@ impl Browser {
             self.recovering = b.recovering;
             self.recent = b.recent;
             self.left_out = b.left_out;
+            self.converted = b.converted;
             if lists {
                 self.actions
                     .push(BrowseAction::SaveLists(self.lists_text()));
@@ -2626,7 +2634,7 @@ impl Browser {
                             // the project's own after an open that left
                             // things out (the name ready to keep was the
                             // one beside it).
-                            self.left_out.clear();
+                            self.forget_left_out();
                             self.project = Some(loc);
                             self.actions.push(BrowseAction::SaveRequested);
                         }
@@ -2702,7 +2710,8 @@ impl Browser {
     /// recordings and kits), written into the project first where it
     /// doesn't have them yet.
     ///
-    /// A project whose open left things out ([`Browser::left_out`]) isn't
+    /// A project whose open left things out ([`Browser::left_out`]), or
+    /// that was changed as it opened ([`Browser::converted`]), isn't
     /// saved over: the save goes into a new project beside it
     /// (`Night drive 2`), which is the project from then on, and the
     /// status line says why. Save as, to any name, saves where it is told.
@@ -2717,15 +2726,20 @@ impl Browser {
     ) -> Option<String> {
         self.saving_beside = None;
         let loc = match &self.project {
-            Some(l) if !self.left_out.is_empty() => {
+            Some(l) if self.keep_as_it_was() => {
                 let name = self.library().copy_project_name(l.name());
                 match Loc::top(Place::Projects).join(&name) {
                     Ok(beside) => {
-                        let why = format!(
-                            "{} opened without {}, so it stays as it was",
-                            l.name(),
-                            self.left_out_words()
-                        );
+                        let why = match &self.converted {
+                            Some(c) if self.left_out.is_empty() => {
+                                format!("{} {c}, so it stays as it was", l.name())
+                            }
+                            _ => format!(
+                                "{} opened without {}, so it stays as it was",
+                                l.name(),
+                                self.left_out_words()
+                            ),
+                        };
                         self.saving_beside = Some((name, why));
                         snap.meta.name = String::new();
                         beside
@@ -2828,7 +2842,7 @@ impl Browser {
     /// the project's; the one beside it when its open left things out).
     pub fn save_as(&mut self, now: u64) {
         let text = match &self.project {
-            Some(l) if !self.left_out.is_empty() => self.library().copy_project_name(l.name()),
+            Some(l) if self.keep_as_it_was() => self.library().copy_project_name(l.name()),
             Some(l) => l.name().to_string(),
             None => self.library().new_project_name(now),
         };
@@ -2844,7 +2858,7 @@ impl Browser {
     pub fn new_project(&mut self) {
         self.project = None;
         self.created = 0;
-        self.left_out.clear();
+        self.forget_left_out();
     }
 
     /// The app says what the project just opened left out (an effect or
@@ -2861,6 +2875,36 @@ impl Browser {
     /// What the project open left out, as [`Browser::left_out`] was told.
     pub fn left_out_list(&self) -> &[String] {
         &self.left_out
+    }
+
+    /// The app says the project just opened was changed as it opened, a
+    /// few words on why ("was saved by an older mpfree"): saved by an
+    /// older build, its format was brought up to date (the audio tracks
+    /// rethink's phase 1 makes its audio tracks tracks). Its first save
+    /// goes into a new project beside it, as for [`Browser::left_out`], so
+    /// the one on the stick stays as it was, a backup that older build
+    /// can still open (docs/dev/design/project-safety.md).
+    pub fn converted(&mut self, why: impl Into<String>) {
+        self.converted = Some(why.into());
+    }
+
+    /// Why the project open was changed as it opened, as
+    /// [`Browser::converted`] was told.
+    pub fn converted_why(&self) -> Option<&str> {
+        self.converted.as_deref()
+    }
+
+    /// The project open isn't saved over: its open left things out, or
+    /// it was changed as it opened.
+    fn keep_as_it_was(&self) -> bool {
+        !self.left_out.is_empty() || self.converted.is_some()
+    }
+
+    /// The project saved, or another one, holds all it has: nothing to
+    /// keep it from being saved over.
+    fn forget_left_out(&mut self) {
+        self.left_out.clear();
+        self.converted = None;
     }
 
     /// A save going into a new project beside the one open (its open
