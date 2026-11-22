@@ -969,6 +969,33 @@ pub struct MenuView {
 /// How long "Keep this theme?" waits before it puts the old theme back.
 pub const THEME_TRIAL_S: f64 = 15.0;
 
+/// About as many characters as a line of Prefs' panel holds.
+const HELP_CHARS: usize = 48;
+
+/// The most lines of theme problems the Appearance panel lists after its
+/// help (the panel holds about 15 lines).
+const THEME_PROBLEM_LINES: usize = 10;
+
+/// `text` in lines of at most `width` characters, broken at spaces (a
+/// longer word gets a line of its own).
+fn wrap_line(text: &str, width: usize) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > width {
+            out.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if !line.is_empty() {
+        out.push(line);
+    }
+    out
+}
+
 /// A theme picked in Prefs > Appearance and not kept yet: the theme to go
 /// back to, and when ([`THEME_TRIAL_S`] after the last step).
 #[derive(Clone, Debug, PartialEq)]
@@ -1540,6 +1567,13 @@ pub struct App {
     /// `--data`): the file name, which is what `settings.theme` holds, and
     /// the theme's own name for the Appearance row. After [`THEMES`].
     pub theme_files: Vec<(String, String)>,
+    /// Each theme file's problems, by file name, as lines (a line it
+    /// couldn't use, an unknown key, an ignored line, a colour hard to
+    /// read): the Appearance panel lists them while that theme is in use.
+    pub theme_problems: Vec<(String, Vec<String>)>,
+    /// Theme files left out of Appearance at start, and why; the panel
+    /// names them.
+    pub themes_left_out: Vec<(String, String)>,
     /// Starts where the saved theme couldn't be used (its file gone, or
     /// left out) and the default theme showed: a fallback, logged by
     /// [`App::restore`] and counted on the Debug page.
@@ -1848,6 +1882,8 @@ impl App {
             menu_editing: false,
             page_editing: false,
             theme_files: Vec::new(),
+            theme_problems: Vec::new(),
+            themes_left_out: Vec::new(),
             theme_fallbacks: 0,
             theme_trial: None,
             tick_t: 0.0,
@@ -5035,14 +5071,17 @@ impl App {
         let (name, _) = self.item_text(items[selected]);
         let (help_heading, help, help_buttons) = match self.theme_trial_help() {
             Some(asks) => asks,
-            None => (
-                name.to_string(),
-                self.item_help(items[selected])
+            None => {
+                let mut help: Vec<String> = self
+                    .item_help(items[selected])
                     .into_iter()
                     .map(String::from)
-                    .collect(),
-                Vec::new(),
-            ),
+                    .collect();
+                if items[selected] == Item::Appearance {
+                    help.extend(self.theme_problem_lines());
+                }
+                (name.to_string(), help, Vec::new())
+            }
         };
         Effect::Menu(MenuView {
             title,
@@ -5520,6 +5559,44 @@ impl App {
             ],
             vec!["Keep".to_string(), "Go back".to_string()],
         ))
+    }
+
+    /// The Appearance panel's lines after its help: the problems of the
+    /// theme file in use, then the theme files left out and why, each
+    /// wrapped to the panel, at most [`THEME_PROBLEM_LINES`] in all.
+    fn theme_problem_lines(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some((file, problems)) = self
+            .theme_problems
+            .iter()
+            .find(|(f, _)| *f == self.settings.theme)
+        {
+            let name = self
+                .theme_choices()
+                .find(|c| c.0 == file)
+                .map_or(file.as_str(), |c| c.1);
+            out.push(String::new());
+            out.push(format!(
+                "{name}: {} problem{}",
+                problems.len(),
+                if problems.len() == 1 { "" } else { "s" }
+            ));
+            for p in problems {
+                out.extend(wrap_line(p, HELP_CHARS));
+            }
+        }
+        if !self.themes_left_out.is_empty() {
+            out.push(String::new());
+            out.push("Left out:".to_string());
+            for (file, why) in &self.themes_left_out {
+                out.extend(wrap_line(&format!("{file}: {why}"), HELP_CHARS));
+            }
+        }
+        if out.len() > THEME_PROBLEM_LINES {
+            out.truncate(THEME_PROBLEM_LINES - 1);
+            out.push("More in the log (Dev tab, Console).".to_string());
+        }
+        out
     }
 
     /// Ends "Keep this theme?": `keep` keeps the theme on screen, else the
@@ -6706,6 +6783,67 @@ mod tests {
         assert!(fx.contains(&Effect::Note(
             "theme: back to Console (Synthwave not kept)".into()
         )));
+    }
+
+    /// Owner, 22 Nov 07:17Z: the Appearance panel lists the problems of the
+    /// theme file in use, and names the files left out and why.
+    #[test]
+    fn appearance_lists_a_theme_files_problems_and_the_files_left_out() {
+        let mut app = App::new(44_100, false);
+        app.theme_files = vec![("sunrise.theme".into(), "Sunrise".into())];
+        app.theme_problems = vec![(
+            "sunrise.theme".into(),
+            vec![
+                "line 3: accent: expected a colour (#RRGGBB, {name}, mix(), alpha() or \
+                 light_dark()), got \"blue\" (kept synthwave's #FF2E97)"
+                    .into(),
+            ],
+        )];
+        app.themes_left_out = vec![(
+            "fog.theme".into(),
+            "nothing could be read: text on panels (surface) 1.0:1, under the 3:1 \
+             every theme must reach"
+                .into(),
+        )];
+        app.map.menu = Some(MENU);
+        app.button(button::SHIFT, true, 0.0);
+        press(&mut app, MENU);
+        app.button(button::SHIFT, false, 0.0);
+        let at = row(&app, Item::Appearance);
+        let help = |fx: &[Effect]| match fx.iter().rev().find(|e| matches!(e, Effect::Menu(_))) {
+            Some(Effect::Menu(m)) => m.help.clone(),
+            _ => panic!("{fx:?}"),
+        };
+        // On Default: the help, then the files left out.
+        let lines = help(&app.select(at));
+        let at_left = lines
+            .iter()
+            .position(|l| l == "Left out:")
+            .expect("left out");
+        assert_eq!(lines[at_left - 1], "");
+        assert!(lines[at_left + 1].starts_with("fog.theme: nothing could be read:"));
+        assert!(!lines.iter().any(|l| l.starts_with("Sunrise:")));
+        // On Sunrise (kept): its problem too, wrapped to the panel.
+        for _ in 0..5 {
+            app.step_item(at, 1);
+        }
+        assert_eq!(app.settings.theme, "sunrise.theme");
+        let lines = help(&app.help_button(0));
+        let at_name = lines
+            .iter()
+            .position(|l| l == "Sunrise: 1 problem")
+            .expect("its problems");
+        assert!(lines[at_name + 1].starts_with("line 3: accent: expected a colour"));
+        assert!(
+            lines[at_name..]
+                .iter()
+                .all(|l| l.chars().count() <= HELP_CHARS),
+            "{lines:?}"
+        );
+        assert!(lines.iter().any(|l| l.ends_with("#FF2E97)")), "{lines:?}");
+        // Another row's help doesn't list them.
+        assert!(!help(&app.select(0)).iter().any(|l| l == "Left out:"));
+        assert_eq!(wrap_line("a bb ccc", 4), ["a bb", "ccc"]);
     }
 
     #[test]

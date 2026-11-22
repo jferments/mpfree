@@ -1185,11 +1185,13 @@ pub enum ToUi {
     /// (what `Settings::theme` holds when one is picked) and the theme.
     ThemeFiles(Vec<(String, Theme)>),
     /// Theme safety nets at start, added to the Debug page's counts: theme
-    /// files left out (they didn't parse, or no one could read their
-    /// text) and starts where the default theme showed in place of the
-    /// saved one or the one `--theme` named.
+    /// files left out (no one could read their text, or they aren't text),
+    /// lines of theme files that used the base theme's value (a mistake,
+    /// an unknown key), and starts where the default theme showed in place
+    /// of the saved one or the one `--theme` named.
     ThemeFallbacks {
         left_out: u64,
+        lines_fell_back: u64,
         default_shown: u64,
     },
     ClearLogs,
@@ -2010,9 +2012,10 @@ pub struct Player {
     settings: Settings,
     /// The themes folder's themes, for Prefs > Appearance.
     theme_files: Vec<(String, Theme)>,
-    /// Theme files left out at start and starts with the default theme
-    /// in place of the one asked for ([`ToUi::ThemeFallbacks`]).
-    theme_fallbacks: (u64, u64),
+    /// Theme files left out at start, their lines that used the base's
+    /// value, and starts with the default theme in place of the one asked
+    /// for ([`ToUi::ThemeFallbacks`]).
+    theme_fallbacks: (u64, u64, u64),
     session: (String, Tone),
     /// Lines for the Console page come from the system log (the app); in the
     /// timed step there is none, so the step's own lines go there.
@@ -2612,7 +2615,7 @@ impl Player {
             status,
             settings: Settings::default(),
             theme_files: Vec::new(),
-            theme_fallbacks: (0, 0),
+            theme_fallbacks: (0, 0, 0),
             session: ("Starting".to_string(), Tone::Dim),
             console_from_lines: timed,
             console_backlog: VecDeque::new(),
@@ -8711,10 +8714,12 @@ impl Player {
             ToUi::ThemeFiles(t) => self.theme_files = t,
             ToUi::ThemeFallbacks {
                 left_out,
+                lines_fell_back,
                 default_shown,
             } => {
                 self.theme_fallbacks.0 += left_out;
-                self.theme_fallbacks.1 += default_shown;
+                self.theme_fallbacks.1 += lines_fell_back;
+                self.theme_fallbacks.2 += default_shown;
             }
             ToUi::ClearLogs => {
                 for name in ["midi", "events"] {
@@ -11662,7 +11667,14 @@ impl Player {
                     Tone::Warn,
                 ));
             }
-            let (left_out, default_shown) = self.theme_fallbacks;
+            let (left_out, fell_back, default_shown) = self.theme_fallbacks;
+            if fell_back > 0 {
+                memory.push((
+                    "Themes: theme file lines that used the base's value".to_string(),
+                    format!("{fell_back}×"),
+                    Tone::Warn,
+                ));
+            }
             if left_out > 0 {
                 memory.push((
                     "Themes: theme files left out (see the log)".to_string(),

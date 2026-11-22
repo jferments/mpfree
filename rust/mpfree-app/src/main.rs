@@ -742,54 +742,100 @@ fn load_tuning_files(store: &mpfree_store::Store) -> (Vec<synth::TuningFile>, Ve
 /// The most theme files the themes folder offers.
 const MAX_THEME_FILES: usize = 32;
 
-/// The themes folder's `NAME.theme` files that parse, in name order (at
-/// most [`MAX_THEME_FILES`]), each with its theme. A theme without its own
-/// `name`, or named like a built-in one, is shown by its file name. A file
-/// that doesn't parse, or whose text no one could read
-/// ([`Theme::unusable`]), is left out with a line saying why (the second
-/// list, lines for the log), and counted (the third, for the Debug page).
-/// Only reads.
-fn load_theme_files(store: &mpfree_store::Store) -> (Vec<(String, Theme)>, Vec<String>, u64) {
-    let (mut found, mut notes, mut left_out) = (Vec::new(), Vec::new(), 0);
+/// What the themes folder holds, read at start ([`load_theme_files`]).
+#[derive(Default)]
+struct ThemeFolder {
+    /// The file name and theme of each theme offered, in name order.
+    found: Vec<(String, Theme)>,
+    /// Each offered file's problems, as Prefs > Appearance lists them:
+    /// lines it couldn't use, unknown keys, ignored lines, colours hard to
+    /// read.
+    problems: Vec<(String, Vec<String>)>,
+    /// Files left out, and why.
+    left_out: Vec<(String, String)>,
+    /// Lines of offered files that couldn't be used (a mistake, an unknown
+    /// key): each used the base theme's value, a fallback.
+    lines_fell_back: u64,
+    /// Lines for the log.
+    notes: Vec<String>,
+}
+
+/// The themes folder's `NAME.theme` files, in name order (at most
+/// [`MAX_THEME_FILES`]), each read the forgiving way ([`Theme::load`]): a
+/// line with a mistake uses the base theme's value, an unknown key is
+/// skipped, and each such line is logged, counted and kept for Prefs >
+/// Appearance to list (owner, 22 Nov 07:17Z). Only a theme no one could
+/// read ([`Theme::unusable`]), or a file that isn't text, is left out, with
+/// a line saying why. A theme without its own `name`, or named like a
+/// built-in one, is shown by its file name. Only reads.
+fn load_theme_files(store: &mpfree_store::Store) -> ThemeFolder {
+    use mpfree_ui::theme::ProblemKind;
+    let mut folder = ThemeFolder::default();
     for file in store.list(app::THEMES_FOLDER) {
         let Some(stem) = file.strip_suffix(".theme").filter(|s| !s.is_empty()) else {
             continue;
         };
-        if found.len() == MAX_THEME_FILES {
-            notes.push(format!(
+        if folder.found.len() == MAX_THEME_FILES {
+            folder.notes.push(format!(
                 "themes: only the first {MAX_THEME_FILES} theme files are offered"
             ));
             break;
         }
-        let text = store
+        let Some(text) = store
             .read(app::THEMES_FOLDER, &file)
-            .and_then(|b| String::from_utf8(b).ok());
-        match text.map(|t| Theme::parse(&t)) {
-            Some(Ok(mut t)) => {
-                if app::THEMES
-                    .iter()
-                    .any(|b| b.1.eq_ignore_ascii_case(t.name.trim()))
-                    || t.name.trim().is_empty()
-                {
-                    t.name = stem.to_string();
-                }
-                found.push((file, t));
-            }
-            Some(Err(e)) => {
-                notes.push(format!("themes: {file} left out: {e}"));
-                left_out += 1;
-            }
-            None => {
-                notes.push(format!("themes: {file} left out: not readable text"));
-                left_out += 1;
-            }
+            .and_then(|b| String::from_utf8(b).ok())
+        else {
+            folder
+                .notes
+                .push(format!("themes: {file} left out: not readable text"));
+            folder
+                .left_out
+                .push((file, "not readable text".to_string()));
+            continue;
+        };
+        let (mut t, problems) = Theme::load(&text);
+        if let Some(why) = problems
+            .iter()
+            .find(|p| p.kind == ProblemKind::Unusable)
+            .map(|p| p.text.clone())
+        {
+            folder.notes.push(format!("themes: {file} left out: {why}"));
+            folder.left_out.push((file, why));
+            continue;
         }
+        if app::THEMES
+            .iter()
+            .any(|b| b.1.eq_ignore_ascii_case(t.name.trim()))
+            || t.name.trim().is_empty()
+        {
+            t.name = stem.to_string();
+        }
+        let mut lines = Vec::new();
+        for p in &problems {
+            let kind = match p.kind {
+                ProblemKind::Mistake | ProblemKind::Unknown => {
+                    folder.lines_fell_back += 1;
+                    "used the base for"
+                }
+                ProblemKind::Ignored => "ignored",
+                ProblemKind::HardToRead => "hard to read",
+                ProblemKind::Unusable => unreachable!("left out above"),
+            };
+            folder.notes.push(format!("themes: {file}: {kind}: {p}"));
+            lines.push(p.to_string());
+        }
+        if !lines.is_empty() {
+            folder.problems.push((file.clone(), lines));
+        }
+        folder.found.push((file, t));
     }
-    if !found.is_empty() {
-        let names: Vec<&str> = found.iter().map(|(_, t)| t.name.as_str()).collect();
-        notes.push(format!("themes: found {}", names.join(", ")));
+    if !folder.found.is_empty() {
+        let names: Vec<&str> = folder.found.iter().map(|(_, t)| t.name.as_str()).collect();
+        folder
+            .notes
+            .push(format!("themes: found {}", names.join(", ")));
     }
-    (found, notes, left_out)
+    folder
 }
 
 /// The built-in fonts, or files given with --font, --bold-font, --mono-font.
@@ -3778,6 +3824,7 @@ fn player(o: &Options, timed: bool) -> Result<(), String> {
             out.say(&format!("{e}; using the default theme"));
             player.apply(gui::ToUi::ThemeFallbacks {
                 left_out: 0,
+                lines_fell_back: 0,
                 default_shown: 1,
             });
         }
@@ -6782,15 +6829,20 @@ fn player_session(
     // The themes folder: theme files the user put in files/themes/ (read
     // only), offered in Prefs > Appearance after the built-in themes. Listed
     // before restore so a saved theme file comes back.
-    let (theme_files, notes, themes_left_out) = load_theme_files(&store);
-    for line in notes {
-        out.say(&line);
+    let folder = load_theme_files(&store);
+    for line in &folder.notes {
+        out.say(line);
     }
-    app.theme_files = theme_files
+    app.theme_files = folder
+        .found
         .iter()
         .map(|(f, t)| (f.clone(), t.name.clone()))
         .collect();
-    out.show(gui::ToUi::ThemeFiles(theme_files));
+    app.theme_problems = folder.problems;
+    app.themes_left_out = folder.left_out;
+    let themes_left_out = app.themes_left_out.len() as u64;
+    let theme_lines_fell_back = folder.lines_fell_back;
+    out.show(gui::ToUi::ThemeFiles(folder.found));
     // The library in the data folder (its places are made there if they
     // are missing), for the Pads tab's browser, with its Recent and
     // Favourites from the store. Without --data the browser says so.
@@ -6867,9 +6919,10 @@ fn player_session(
     out.show(gui::ToUi::Settings(app.settings.clone()));
     // Theme files left out, and a saved theme that couldn't be used (the
     // default shows): counted on the Debug page.
-    if themes_left_out > 0 || app.theme_fallbacks > 0 {
+    if themes_left_out > 0 || theme_lines_fell_back > 0 || app.theme_fallbacks > 0 {
         out.show(gui::ToUi::ThemeFallbacks {
             left_out: themes_left_out,
+            lines_fell_back: theme_lines_fell_back,
             default_shown: app.theme_fallbacks,
         });
     }
@@ -12166,7 +12219,8 @@ fn contact_sheet(o: &Options) -> Result<(), String> {
 /// `--check-theme FILE`: what someone writing a theme needs to know,
 /// without an MPC. Every problem the file has, by line (`Theme::load`);
 /// whether the app would offer it in Prefs > Appearance or leave it out
-/// (`Theme::parse`, the floor included); and every sample screen where
+/// (as [`load_theme_files`] does: only below the floor); and every sample
+/// screen where
 /// more text is under 3:1 than in the theme the file starts from, each
 /// run with its colours and place. Only reads FILE; opens no devices.
 /// Ends with an error when the app would leave the file out.
@@ -12195,7 +12249,12 @@ fn check_theme(o: &Options) -> Result<(), String> {
     if problems.is_empty() {
         out.push("  no problems".to_string());
     }
-    let refused = Theme::parse(&text).err();
+    // As the themes folder reads it: only a theme no one could read is
+    // left out; a line with a mistake uses the base's value.
+    let refused = problems
+        .iter()
+        .find(|p| p.kind == mpfree_ui::theme::ProblemKind::Unusable)
+        .map(|p| p.text.clone());
     match &refused {
         Some(e) => out.push(format!(
             "the app leaves this file out of Prefs > Appearance: {e}"
@@ -13304,32 +13363,55 @@ mod tests {
         fs::write(t.join("fog.theme"), "text = #151922\n").unwrap();
         fs::write(t.join("notes.txt"), "not a theme\n").unwrap();
         let store = mpfree_store::Store::at(&d, |_| {});
-        let (found, notes, left_out) = load_theme_files(&store);
-        assert_eq!(left_out, 2);
-        let names: Vec<(&str, &str)> = found
+        let folder = load_theme_files(&store);
+        let names: Vec<(&str, &str)> = folder
+            .found
             .iter()
             .map(|(f, t)| (f.as_str(), t.name.as_str()))
             .collect();
-        // Named like a built-in theme (Console, from its base): its file name.
+        // Named like a built-in theme (Console, from its base), or with no
+        // name: its file name. A mistake in a line doesn't leave the file
+        // out: that line uses the base's value, and it is listed.
         assert_eq!(
             names,
-            vec![("plain.theme", "plain"), ("sunrise.theme", "Sunrise")]
+            vec![
+                ("broken.theme", "broken"),
+                ("plain.theme", "plain"),
+                ("sunrise.theme", "Sunrise")
+            ]
+        );
+        assert_eq!(folder.lines_fell_back, 1);
+        assert_eq!(folder.problems.len(), 1);
+        assert_eq!(folder.problems[0].0, "broken.theme");
+        assert!(
+            folder.problems[0].1[0].starts_with("line 1: accent: expected a colour"),
+            "{:?}",
+            folder.problems
         );
         assert!(
-            notes
-                .iter()
-                .any(|n| n.starts_with("themes: broken.theme left out")),
-            "{notes:?}"
+            folder.notes.iter().any(|n| n.starts_with(
+                "themes: broken.theme: used the base for: line 1: accent: expected a colour"
+            )),
+            "{:?}",
+            folder.notes
         );
+        // Only a theme no one could read is left out.
+        assert_eq!(folder.left_out.len(), 1);
+        assert_eq!(folder.left_out[0].0, "fog.theme");
         assert!(
-            notes.iter().any(
+            folder.notes.iter().any(
                 |n| n.starts_with("themes: fog.theme left out: nothing could be read: text on")
             ),
-            "{notes:?}"
+            "{:?}",
+            folder.notes
         );
         assert!(
-            notes.iter().any(|n| n == "themes: found plain, Sunrise"),
-            "{notes:?}"
+            folder
+                .notes
+                .iter()
+                .any(|n| n == "themes: found broken, plain, Sunrise"),
+            "{:?}",
+            folder.notes
         );
         let _ = fs::remove_dir_all(&d);
     }

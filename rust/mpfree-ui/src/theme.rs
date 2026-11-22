@@ -572,10 +572,10 @@ impl Theme {
     ///
     /// Colours are `#RRGGBB` or `#RRGGBBAA`, or follow and mix others
     /// (see [`crate::roles`]); `track` takes up to eight, and `track.N`
-    /// sets one. This is the strict reading for the app's themes folder:
+    /// sets one. This is the strict reading, for `--theme FILE` and tests:
     /// any mistake or unknown key is an error that names the line, and so
-    /// is a theme no one could read ([`Theme::unusable`]); see
-    /// [`Theme::load`] for the forgiving one.
+    /// is a theme no one could read ([`Theme::unusable`]). The app's themes
+    /// folder uses the forgiving one, [`Theme::load`].
     pub fn parse(text: &str) -> Result<Theme, String> {
         let (theme, problems) = Theme::load(text);
         match problems

@@ -1,7 +1,7 @@
 <!--
 status: changing
-covers: rust/mpfree-ui/src/theme.rs rust/mpfree-ui/src/roles.rs rust/mpfree-ui/themes rust/mpfree-app/src/main.rs
-checked: 2026-11-22 42325efc
+covers: rust/mpfree-ui/src/theme.rs rust/mpfree-ui/src/roles.rs rust/mpfree-ui/themes rust/mpfree-app/src/main.rs rust/mpfree-app/src/app.rs
+checked: 2026-11-22 512dc09a
 -->
 
 # Making your own theme
@@ -22,7 +22,7 @@ A theme changes colours, corners, glow, the pattern behind the panels and the st
    ```
 
 3. Copy it into the folder `files/themes/` on the MPFREE-DATA part of your MPFree stick.
-4. Start MPFree. Press **SHIFT + MENU** to open Prefs, pick **Appearance** and press **+** until it says **Sunrise**. The screen changes at once.
+4. Start MPFree. Press **SHIFT + MENU** to open Prefs, pick **Appearance** and press **+** until it says **Sunrise**. The screen changes at once, and the right panel asks **Keep Sunrise?** Press **Keep**, or push the data wheel. If you do nothing for 15 seconds, MPFree goes back to the theme you had, so a theme you can't read never sticks.
 
 That's Synthwave with an orange accent. MPFree remembers your pick at the next start. Theme files come after the built-in themes on the Appearance row, in name order, up to 32 of them.
 
@@ -110,24 +110,29 @@ A colour can follow one set further down the file. Two colours that follow each 
 
 Text sizes, spacing and the font aren't theme settings. A theme file written before they were taken out still works: MPFree ignores those lines.
 
-## When a theme doesn't show up
+## When something in a theme is wrong
 
-MPFree reads every theme file when it starts. A file with a mistake is left out of the Appearance row, and the reason goes in the log. Turn on **Prefs > Show developer tools**, open the **Console** on the Dev tab, and look for a line that starts `themes:`. It names the file, the line and what is wrong:
+MPFree reads every theme file when it starts. When a line has a mistake, such as a misspelt colour, the theme still shows up on the Appearance row: that one setting stays as the `base` theme has it, and everything else in the file is used.
+
+Pick your theme on **Prefs > Appearance** and the right panel lists what MPFree couldn't use, with the line number:
 
 ```text
-themes: sunrise.theme left out: theme line 3: accent: expected a colour (#RRGGBB, {name}, mix(), alpha() or light_dark()), got "orange"
+Sunrise: 1 problem
+line 3: accent: expected a colour (#RRGGBB, {name}, mix(), alpha() or light_dark()), got "orange" (kept synthwave's #FF2E97)
 ```
+
+It also lists lines MPFree ignores (a key it doesn't know, or an old setting such as a text size) and colours that are hard to read against each other. The same lines go in the log: turn on **Prefs > Show developer tools**, open the **Console** on the Dev tab, and look for lines that start `themes:`.
 
 Fix the line, copy the file to the stick again, and start MPFree again.
 
 ### A theme no one could read
 
-MPFree won't use a theme whose words can't be read, because then you couldn't read Prefs to pick another theme either. If `text` or `text_dim` is too close to `bg`, to `surface` or to `raised` (under 3:1 contrast, the point where words stop being readable), the file is left out with a line that says which:
+MPFree won't use a theme whose words can't be read, because then you couldn't read Prefs to pick another theme either. If `text` or `text_dim` is too close to `bg`, to `surface` or to `raised` (under 3:1 contrast, the point where words stop being readable), the file is left out of the Appearance row. The Appearance panel names it and says why, and so does the log:
 
 ```text
 themes: fog.theme left out: nothing could be read: text on panels (surface) 1.0:1, under the 3:1 every theme must reach
 ```
 
-If that was the theme you had picked, MPFree starts in the Default theme instead and the log says so. The Dev tab's **CPU by engine** page counts both: the theme files left out, and the starts that showed Default in place of the theme you picked.
+If that was the theme you had picked, MPFree starts in the Default theme instead and the log says so. The Dev tab's **CPU by engine** page counts all of this: the theme lines that used the base's value, the theme files left out, and the starts that showed Default in place of the theme you picked.
 
 Good contrast is higher than that: 4.5:1 for words and 3:1 for lines and dim labels is a good aim. The built-in themes all reach it. A website contrast checker will tell you the contrast between two colours.
