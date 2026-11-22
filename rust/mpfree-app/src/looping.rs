@@ -32,6 +32,7 @@
 
 use crate::alsa;
 use crate::time::{Allowed, Answer, TimeHost, TimingChange};
+use mpfree_looper::find::{find, FindJob};
 use mpfree_looper::print::{frames_at, PrintJob};
 use mpfree_looper::save::Saved;
 use mpfree_looper::{
@@ -45,7 +46,9 @@ use mpfree_transport::time::{Tick, PPQ};
 use mpfree_transport::Block;
 use mpfree_ui::wave::{Peaks, WaveColumn};
 use std::ops::Range;
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{
+    channel, sync_channel, Receiver, Sender, SyncSender, TryRecvError, TrySendError,
+};
 use std::sync::Arc;
 
 pub const PERIOD: usize = 128;
@@ -1497,6 +1500,11 @@ pub struct LoopHost {
     bpm: f64,
     rate: u32,
     printer: Printer,
+    /// Smart loop end's finder, for the line input and mixes.
+    pub finder: Finder,
+    /// Smart loop end listens for hits ([`Command::SmartByEar`]), as the
+    /// looper was last told.
+    by_ear_smart: bool,
     /// A save of the loops under way, and one done.
     saving: Option<Saving>,
     saved: Option<Saved>,
@@ -1606,6 +1614,119 @@ struct Wanted {
     n: usize,
     frames: usize,
     version: u64,
+}
+
+/// Smart loop end's finder for the line input and mixes (the smart loop
+/// end plan, step 3; [`mpfree_looper::find`]): a thread of its own, not
+/// the print worker, which runs one long job at a time at idle priority,
+/// so a print can never make Auto miss its moment. One job, made here
+/// once, goes back and forth through two one-place channels: the looper
+/// fills it when it wants a decision ([`Looper::find_job`]), the thread
+/// answers it and sends it back, and the next period hands the answer to
+/// the looper ([`Looper::found`]), which drops it if its take has gone.
+/// The thread sleeps until asked, at the normal priority, off the sound's
+/// cores. Nothing here waits or allocates on the audio thread: an ask
+/// made while the job is still out waits for the next period, and the
+/// looper keeps the tap when the answer comes too late (counted), as it
+/// does if the thread is gone.
+pub struct Finder {
+    to: Option<SyncSender<Box<FindJob>>>,
+    back: Option<Receiver<Box<FindJob>>>,
+    /// The job, when it isn't with the thread.
+    job: Option<Box<FindJob>>,
+    /// Answer on the calling thread instead (tests that step periods far
+    /// faster than they would play).
+    pub inline: bool,
+    /// Jobs answered, and periods an ask waited for the job to come back.
+    pub answered: u64,
+    pub waited: u64,
+    /// The thread couldn't start or has stopped: the looper keeps every
+    /// tap its finder would have weighed.
+    pub gone: bool,
+}
+
+impl Finder {
+    fn new(rate: u32) -> Finder {
+        let job = Box::new(FindJob::new(mpfree_looper::ends::reach(rate, f64::NAN)));
+        let (to, jobs) = sync_channel::<Box<FindJob>>(1);
+        let (done, back) = sync_channel::<Box<FindJob>>(1);
+        let spawned = std::thread::Builder::new()
+            .name("mpfree-find".into())
+            .spawn(move || {
+                // Normal priority, off the sound's cores.
+                let _ = crate::cores::background();
+                for mut j in jobs {
+                    find(&mut j);
+                    if done.send(j).is_err() {
+                        break;
+                    }
+                }
+            })
+            .is_ok();
+        Finder {
+            to: spawned.then_some(to),
+            back: spawned.then_some(back),
+            job: Some(job),
+            inline: false,
+            answered: 0,
+            waited: 0,
+            gone: !spawned,
+        }
+    }
+
+    /// The thread is gone: nothing more goes to it.
+    fn lose(&mut self) {
+        self.to = None;
+        self.back = None;
+        self.gone = true;
+    }
+
+    /// After the looper's period: an answer back goes to the looper, and
+    /// a new ask goes to the thread (or is answered here when `inline`).
+    fn tend(&mut self, looper: &mut Looper) {
+        if self.job.is_none() {
+            match self.back.as_ref().map(Receiver::try_recv) {
+                Some(Ok(j)) => {
+                    looper.found(&j);
+                    self.answered += 1;
+                    self.job = Some(j);
+                }
+                Some(Err(TryRecvError::Disconnected)) => self.lose(),
+                _ => {}
+            }
+        }
+        if !self.inline && self.to.is_none() {
+            return;
+        }
+        let Some(mut j) = self.job.take() else {
+            if looper.find_wanted() {
+                self.waited += 1;
+            }
+            return;
+        };
+        if !looper.find_job(&mut j) {
+            self.job = Some(j);
+            return;
+        }
+        if self.inline {
+            find(&mut j);
+            looper.found(&j);
+            self.answered += 1;
+            self.job = Some(j);
+            return;
+        }
+        if let Some(to) = &self.to {
+            match to.try_send(j) {
+                Ok(()) => {}
+                // (Full can't happen: there is one job, and it was here.)
+                Err(TrySendError::Full(j)) => self.job = Some(j),
+                Err(TrySendError::Disconnected(j)) => {
+                    self.job = Some(j);
+                    self.lose();
+                }
+            }
+        }
+    }
 }
 
 /// Prints made on a worker thread, one at a time (see the module notes).
@@ -1887,6 +2008,8 @@ impl LoopHost {
             bpm: 120.0,
             rate,
             printer: Printer::new(rate),
+            finder: Finder::new(rate),
+            by_ear_smart: false,
             saving: None,
             saved: None,
             save_restarts: 0,
@@ -2374,6 +2497,14 @@ impl LoopHost {
                 }
             ),
             (Command::SetSmartEnd(m), _) => format!("smart loop end: {}", smart_end_text(m)),
+            (Command::SmartByEar(on), _) => format!(
+                "smart loop end listens to {}",
+                if on {
+                    "the hits it hears in the take"
+                } else {
+                    "the pads and MIDI notes"
+                }
+            ),
             (Command::TempoMeant(on), _) => format!(
                 "the song's tempo counts as {} when a free first loop's length is read",
                 if on {
@@ -3118,6 +3249,12 @@ impl LoopHost {
         if by_ear != self.by_ear_set && self.looper.command(Command::StartsByEar(by_ear)) {
             self.by_ear_set = by_ear;
         }
+        // Smart loop end listens for the hits in the line input and a mix
+        // (the notes are the pads', and a mix may hold more than them).
+        let by_ear = self.source != LoopSource::Pads;
+        if by_ear != self.by_ear_smart && self.looper.command(Command::SmartByEar(by_ear)) {
+            self.by_ear_smart = by_ear;
+        }
         if let Some(span) = block.spans().first() {
             self.beats_per_bar = u32::from(span.meter.beats);
             self.bar_ticks = span.meter.bar_ticks();
@@ -3129,6 +3266,7 @@ impl LoopHost {
         if let Some(span) = block.spans().last() {
             self.printer.tend(&mut self.looper, span.bpm);
         }
+        self.finder.tend(&mut self.looper);
         self.tend_save();
         self.tend_copy();
         note
@@ -3437,6 +3575,26 @@ impl LoopHost {
                     "; smart loop end: {} ends moved, {} offered, {} taps kept, {} starts on \
                      the first hit, {} overdubs begun with what was played after the end",
                     st.ends_moved, st.ends_offered, st.taps_kept, st.starts_found, st.handoffs
+                )
+            } else {
+                String::new()
+            }
+            + &if st.hits_heard + st.finds_asked > 0 || self.finder.gone {
+                format!(
+                    "; by ear: {} hits heard, {} decisions asked of the finder, {} answered in \
+                     time, {} too late (the tap kept), {} answers dropped (late, or for a take \
+                     gone), {} periods an ask waited for the finder{}",
+                    st.hits_heard,
+                    st.finds_asked,
+                    st.finds_answered,
+                    st.finds_late,
+                    st.finds_stale,
+                    self.finder.waited,
+                    if self.finder.gone {
+                        ", its thread is gone (taps are kept)"
+                    } else {
+                        ""
+                    }
                 )
             } else {
                 String::new()
@@ -3881,15 +4039,11 @@ impl LoopHost {
     }
 
     /// Smart loop end (the MENU setting, [`Command::SetSmartEnd`]): it
-    /// follows the pads and MIDI notes, so it's Off while takes record
-    /// from the line input or a mix. Cheap to call every period: the
-    /// looper is told when it changes.
+    /// follows the pads and MIDI notes, and listens for the hits in the
+    /// line input and a mix (step 3, [`Command::SmartByEar`], told each
+    /// period with the source). Cheap to call every period: the looper is
+    /// told when it changes.
     pub fn set_smart_end(&mut self, m: SmartEnd) {
-        let m = if self.source == LoopSource::Pads {
-            m
-        } else {
-            SmartEnd::Off
-        };
         if m != self.smart && self.looper.command(Command::SetSmartEnd(m)) {
             self.smart = m;
         }
@@ -6023,6 +6177,167 @@ mod tests {
         }
         let s = h.looper.status();
         assert_eq!((s.phase, s.frames), (Phase::Overdubbing, 105_840));
+    }
+
+    /// Smart loop end step 3, Auto by ear while long prints run: a print
+    /// of a 32 s loop runs over and over on every core at the print
+    /// worker's idle priority while a free first loop records two bars of
+    /// a beat from the mix and closes on Auto, the periods paced as they
+    /// play. The finder, on its own thread at the normal priority, answers
+    /// in time and the loop closes on the downbeat it heard, or Auto keeps
+    /// your tap (counted, and said). Either way no period waits for it.
+    #[test]
+    fn auto_by_ear_while_long_prints_run_never_waits_for_the_finder() {
+        use mpfree_fx::StripId;
+        use mpfree_looper::hits::kit::Kit;
+        use mpfree_looper::Bounce;
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+        use std::time::{Duration, Instant};
+        const RATE: u32 = 44_100;
+        const TWO_BARS: u64 = 176_400;
+        // The prints: 16 bars at 120 printed at 100, a chunk at a time as
+        // the worker runs them, counted.
+        let stop = Arc::new(AtomicBool::new(false));
+        let chunks = Arc::new(AtomicU64::new(0));
+        let frames = 32 * RATE as usize;
+        let audio: Vec<f32> = (0..2 * frames)
+            .map(|i| 0.3 * ((i / 2) as f64 * std::f64::consts::TAU / 100.0).sin() as f32)
+            .collect();
+        let bounce = Arc::new(Bounce {
+            from_loop: 0,
+            audio,
+            frames,
+            ticks: 64 * i64::from(PPQ),
+            origin: 0,
+            complete: true,
+            version: 1,
+            dry: true,
+            rate: 0,
+        });
+        let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
+        let printers: Vec<_> = (0..cores)
+            .map(|_| {
+                let (stop, chunks, bounce) = (stop.clone(), chunks.clone(), bounce.clone());
+                std::thread::spawn(move || {
+                    mpfree_lanes::os::idle_job();
+                    while !stop.load(Ordering::Relaxed) {
+                        let mut j = PrintJob::new(&bounce, RATE, frames * 6 / 5).unwrap();
+                        while !stop.load(Ordering::Relaxed) && !j.run(1 << 15) {
+                            chunks.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                })
+            })
+            .collect();
+        let mut h = LoopHost::new(RATE, 20);
+        assert!(!h.finder.inline && !h.finder.gone, "its thread");
+        // (At the beat's tempo: the period that closes the loop wants no
+        // print, whose ask to the print worker may allocate.)
+        let mut t = Transport::new(RATE, 120.0).unwrap();
+        let mut b = Block::new();
+        let _ = h.set_source(LoopSource::Mix(StripId::Master));
+        h.set_tempo_from_loop(true);
+        h.set_smart_end(SmartEnd::Auto);
+        h.command(Command::SetBars(None));
+        let period = |h: &mut LoopHost, t: &mut Transport, b: &mut Block, l: &[f32; PERIOD]| {
+            assert!(t.process(PERIOD as u32, b));
+            h.take_pads_as(l, l, Ok(0));
+            let (mut ol, mut or) = ([0.0; PERIOD], [0.0; PERIOD]);
+            h.period(b, &mut ol, &mut or);
+        };
+        period(&mut h, &mut t, &mut b, &[0.0; PERIOD]);
+        // Two bars of the beat at 120, 80 ms after REC; REC again 40 ms
+        // after its next downbeat.
+        h.command(Command::Record);
+        let rec = t.frame();
+        let early = 3_528u64;
+        let mut audio = vec![0.0f32; 2 * (TWO_BARS as usize + RATE as usize)];
+        Kit::new(RATE).beat(&mut audio, early as usize, 120.0, 2, &|_| 0.0);
+        let tap = rec + early + TWO_BARS + 1_764;
+        let (mut tapped, mut printing_at_ask, mut started, mut rec_from) =
+            (false, None, None, None);
+        let (mut took, mut allocs) = (Vec::new(), 0);
+        let beat = Duration::from_secs_f64(PERIOD as f64 / f64::from(RATE));
+        let t0 = Instant::now();
+        let mut p = 0u32;
+        while t.frame() < tap + RATE as u64 / 2 {
+            std::thread::sleep((t0 + beat * p).saturating_duration_since(Instant::now()));
+            p += 1;
+            if !tapped && t.frame() + PERIOD as u64 > tap {
+                h.command(Command::Record);
+                tapped = true;
+            }
+            let mut l = [0.0; PERIOD];
+            for (i, x) in l.iter_mut().enumerate() {
+                let at = (t.frame() - rec) as usize + i;
+                *x = audio.get(2 * at).copied().unwrap_or(0.0);
+            }
+            let (now, from) = (Instant::now(), t.frame());
+            let ((), calls) = crate::sys::alloc_count::calls(|| period(&mut h, &mut t, &mut b, &l));
+            allocs += calls;
+            if let Some((_, r, at, into)) = h.take_tempo() {
+                let pos = t.position();
+                let start = pos - pos.rem_euclid(t.meter().bar_ticks()) + into;
+                t.command(at, T::Locate(start));
+                t.command(at, T::SetTempo(r.bpm));
+                t.command(at, T::Play);
+                started = Some(r.bpm);
+            }
+            took.push(now.elapsed());
+            if rec_from.is_none() && h.looper.status().phase == Phase::Recording {
+                rec_from = Some(from);
+            }
+            if printing_at_ask.is_none() && h.finder.job.is_none() {
+                printing_at_ask = Some(chunks.load(Ordering::Relaxed));
+            }
+        }
+        let after = chunks.load(Ordering::Relaxed);
+        stop.store(true, Ordering::Relaxed);
+        for p in printers {
+            p.join().unwrap();
+        }
+        let asked = printing_at_ask.expect("the finder was asked");
+        assert!(
+            after > asked && asked > 0,
+            "the prints ran on: {asked}, then {after}"
+        );
+        assert!(started.is_some(), "the song started: {}", h.describe());
+        let st = h.looper.stats();
+        let s = h.looper.status();
+        let (line, words) = h.take_smart().expect("a word on the tap");
+        if st.finds_answered == 1 {
+            assert_eq!(s.frames as u64, TWO_BARS, "{line}");
+            assert_eq!(started, Some(120.0));
+            // It started on the first kick: a mix comes a period late (the
+            // mixer's period), so the kick handed over on a frame was
+            // played a period before it.
+            let kick = (rec + early - PERIOD as u64 - rec_from.unwrap()) as i64;
+            assert_eq!(s.moved.map(|m| m.start), Some(kick), "{line}");
+        } else {
+            // Too slow a machine: the tap stands, counted and said.
+            assert_eq!(st.finds_late, 1, "{line}");
+            assert_eq!(
+                words.as_deref(),
+                Some("Kept your tap: it couldn't listen in time.")
+            );
+        }
+        took.sort();
+        let worst = *took.last().unwrap();
+        // A period plays in 2.9 ms; these ran unoptimized beside the
+        // prints. Waiting for the finder would take its whole answer.
+        assert!(
+            worst < beat * 4,
+            "worst period {worst:?}, 99.9th {:?}: {}",
+            took[took.len() * 999 / 1000],
+            h.describe()
+        );
+        eprintln!(
+            "periods: 99th {:?}, 99.9th {:?}, worst {worst:?}; {line}",
+            took[took.len() * 99 / 100],
+            took[took.len() * 999 / 1000]
+        );
+        assert_eq!(allocs, 0, "allocations or frees on the audio thread's path");
+        assert!(h.describe().contains("; by ear: "), "{}", h.describe());
     }
 
     /// Half speed at the tempo it was recorded at: like tape at once (an

@@ -2202,6 +2202,7 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| looper(rate, 60)));
     v.push(measured(|| looper_loops(rate, 60, false)));
     v.push(measured(|| looper_loops(rate, 60, true)));
+    v.push(measured(|| looper_by_ear(rate, 60)));
     v.push(measured(|| audio_tracks(rate, 0, false)));
     v.push(measured(|| audio_tracks(rate, 2, false)));
     v.push(measured(|| audio_tracks(rate, 2, true)));
@@ -4514,6 +4515,91 @@ fn looper(rate: u32, seconds: u32) -> Case {
             out[..2 * n].fill(0.0);
             t.process(n as u32, &mut block);
             lp.process(&block, &line_in[..2 * n], &mut out[..2 * n]);
+            for (i, (a, c)) in l.iter_mut().zip(r.iter_mut()).enumerate() {
+                *a = out[2 * i];
+                *c = out[2 * i + 1];
+            }
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// Smart loop end by ear (step 3): a free first pass from the line input
+/// with Auto, over and over, 8 s a turn. Two bars of a beat at 120 BPM
+/// come in 80 ms after REC, REC again comes 40 ms after the next downbeat,
+/// and Auto closes the loop on the downbeat it heard and starts the song;
+/// the loop plays to the turn's end, then it is cleared and the song
+/// stopped. The hit track listens all through the pass. The finder answers
+/// in the period after it is asked, so one block a turn holds its work
+/// (in the app it runs on a thread of its own).
+fn looper_by_ear(rate: u32, seconds: u32) -> Case {
+    use mpfree_looper::find::{find, FindJob};
+    use mpfree_looper::hits::kit::Kit;
+    use mpfree_looper::SmartEnd;
+    let mut t = Transport::new(rate, 100.0).expect("transport");
+    let mut lp = Looper::new(rate, seconds);
+    for c in [
+        LooperCommand::TempoFromLoop(true),
+        LooperCommand::SetBars(None),
+        LooperCommand::SetSmartEnd(SmartEnd::Auto),
+        LooperCommand::SmartByEar(true),
+    ] {
+        lp.command(c);
+    }
+    let mut job = FindJob::new(mpfree_looper::ends::reach(rate, f64::NAN));
+    let turn = 8 * u64::from(rate);
+    let ms = move |m: u64| m * u64::from(rate) / 1000;
+    let (early, late) = (ms(80), ms(40));
+    let two_bars = 4 * u64::from(rate);
+    let mut beat = vec![0.0f32; 2 * turn as usize];
+    Kit::new(rate).beat(&mut beat, early as usize, 120.0, 2, &|_| 0.0);
+    let tap = early + two_bars + late;
+    let mut block = TBlock::new();
+    let (mut line_in, mut out) = (vec![0.0f32; 2 * MAX_BLOCK], vec![0.0f32; 2 * MAX_BLOCK]);
+    let (mut frame, mut from, mut tapped) = (0u64, 0u64, false);
+    Case {
+        name: format!("Looper ({seconds} s), a free first pass by ear with Auto"),
+        module: "looper",
+        what: "the hit track on a free first pass, Auto closing it on the downbeat heard",
+        block: Box::new(move |_, l, r| {
+            let n = l.len();
+            // (A tenth of a second between turns, for the clear.)
+            let at = frame.saturating_sub(from);
+            if frame == from {
+                lp.command(LooperCommand::Record);
+            }
+            if !tapped && at + n as u64 > tap {
+                lp.command(LooperCommand::Record);
+                tapped = true;
+            }
+            for i in 0..n {
+                let x = match frame >= from {
+                    true => beat.get(2 * (at as usize + i)).copied().unwrap_or(0.0),
+                    false => 0.0,
+                };
+                input_frame(&mut line_in, i, x, x);
+            }
+            out[..2 * n].fill(0.0);
+            t.process(n as u32, &mut block);
+            lp.process(&block, &line_in[..2 * n], &mut out[..2 * n]);
+            frame += n as u64;
+            if lp.find_job(&mut job) {
+                find(&mut job);
+                lp.found(&job);
+            }
+            if let Some((_, reading, at, into)) = lp.take_tempo() {
+                let pos = t.position();
+                let start = pos - pos.rem_euclid(t.meter().bar_ticks()) + into;
+                t.command(at, T::Locate(start));
+                t.command(at, T::SetTempo(reading.bpm));
+                t.command(at, T::Play);
+            }
+            if frame >= from + turn {
+                lp.command(LooperCommand::Clear);
+                t.command(frame, T::Stop);
+                from = frame + ms(100) / n as u64 * n as u64;
+                tapped = false;
+            }
             for (i, (a, c)) in l.iter_mut().zip(r.iter_mut()).enumerate() {
                 *a = out[2 * i];
                 *c = out[2 * i + 1];

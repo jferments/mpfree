@@ -1946,6 +1946,107 @@ mod looper {
         });
     }
 
+    /// A free first loop recorded from the whole mix (Records from:
+    /// Master), smart loop end on `mode`: REC 80 ms before the first pad,
+    /// the same pad again 2 s later, and REC 40 ms after it. The frames
+    /// from the first hit to the second, and the frame REC started on.
+    fn by_ear_take(s: &mut Session, mode: mpfree_looper::SmartEnd) -> (usize, u64) {
+        use crate::looping::LoopSource;
+        use mpfree_fx::StripId;
+        s.make_sounds();
+        let _ = s.looper.set_source(LoopSource::Mix(StripId::Master));
+        s.press("header", "tab", "Looper");
+        s.app.settings.loop_tempo = true;
+        s.app.settings.smart_end = mode;
+        let free = at(s, "leditor", "bars", 1);
+        s.press_target(&free).run_for(0.1);
+        s.button("REC");
+        let rec = s.time.next_frame();
+        s.run_for(0.08);
+        let first = s.time.next_frame();
+        s.pad(0, 120, 0.1);
+        s.run_for(2.0 - 0.1);
+        let again = s.time.next_frame();
+        s.pad_edge(0, 120, true);
+        s.run_for(0.04);
+        s.button("REC");
+        s.pad_edge(0, 0, false);
+        until_phase(s, Phase::Playing, 1.0);
+        ((again - first) as usize, rec)
+    }
+
+    /// Smart loop end step 3, by ear: recording the mix, smart loop end
+    /// listens for the hits in it, not the pads' notes. On Auto the loop
+    /// starts on the first hit's sound, 80 ms after REC, and closes where
+    /// the second hit's sound lines up with it: the frames between the two
+    /// hits, to the frame. The log says so, and the status line counts the
+    /// hits heard and the finder's answer.
+    #[test]
+    fn by_ear_auto_closes_a_loop_from_the_mix_on_the_hits_it_hears() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let (between, _) = by_ear_take(&mut s, mpfree_looper::SmartEnd::Auto);
+            let st = status(&s);
+            assert!(
+                st.frames.abs_diff(between) <= 1,
+                "{} frames, {between} between the hits",
+                st.frames
+            );
+            let lead = st.moved.expect("moved").start;
+            let want = (0.08 * f64::from(crate::RATE)) as i64;
+            assert!(
+                (want..want + (0.025 * f64::from(crate::RATE)) as i64).contains(&lead),
+                "started {lead} frames after REC"
+            );
+            let line = s
+                .said()
+                .into_iter()
+                .find(|l| l.starts_with("looper: Loop 1: your tap was "))
+                .unwrap_or_else(|| panic!("{:?}", s.said()));
+            assert!(
+                line.contains(
+                    " late; smart loop end closed it on the end you played, and \
+                               started it on your first hit, "
+                ),
+                "{line}"
+            );
+            let lst = s.looper.looper.stats();
+            assert_eq!(
+                (lst.finds_asked, lst.finds_answered, lst.finds_late),
+                (1, 1, 0)
+            );
+            assert!(lst.hits_heard >= 2, "{lst:?}");
+            let d = s.looper.describe();
+            assert!(
+                d.contains("; by ear: ")
+                    && d.contains(" hits heard, 1 decisions asked of the finder, 1 answered in time, 0 too late"),
+                "{d}"
+            );
+        });
+    }
+
+    /// The same by ear on Suggest: the loop closes on the tap, then offers
+    /// the first hit and the end it heard as one snap, and Snap lands it
+    /// on the downbeat: the frames between the hits.
+    #[test]
+    fn by_ear_suggest_offers_the_hits_it_hears_in_the_mix() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let (between, _) = by_ear_take(&mut s, mpfree_looper::SmartEnd::Suggest);
+            let tap = status(&s).frames;
+            s.run_for(0.4);
+            let by = status(&s).offer.expect("an offer");
+            assert!(by.end < 0 && by.start > 0, "{by:?}");
+            assert!(
+                (tap as i64 + by.longer()).abs_diff(between as i64) <= 1,
+                "{tap} frames and {by:?}, {between} between the hits"
+            );
+            s.looper.snap(mpfree_looper::Snap::Found);
+            until_moved(&mut s, Some(by));
+            assert!(status(&s).frames.abs_diff(between) <= 1);
+        });
+    }
+
     /// Smart loop end plan, step 0B: with Tempo from the first loop on,
     /// Length 2 bars means 2 bars at the tempo you play (it records free
     /// from REC, and nothing is read). On Free, a loop near the old 80 BPM

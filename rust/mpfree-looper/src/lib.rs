@@ -3577,7 +3577,7 @@ impl Looper {
                         let why = SmartOutcome::Kept(if d.verdict == Verdict::Moved {
                             "too short a loop"
                         } else {
-                            d.verdict.why()
+                            d.verdict.why_by(self.by_ear)
                         });
                         match from_hit(tap).filter(|_| room) {
                             // On your first hit, ending on your tap.
@@ -3721,7 +3721,7 @@ impl Looper {
                     SmartOutcome::Kept("that end is outside what the loop kept")
                 }
                 Verdict::Moved => SmartOutcome::Offered(found.end),
-                v => SmartOutcome::Kept(v.why()),
+                v => SmartOutcome::Kept(v.why_by(self.by_ear)),
             };
             if !found.is_none() {
                 l.found = Some(found);
@@ -3822,6 +3822,13 @@ impl Looper {
         job.near_from = FindJob::near_from_for(f.ask.tap, f.ask.reach);
         job.near_len = self.kept_mono(f.k, job.near_from, f.ask.heard_to, &mut job.near);
         true
+    }
+
+    /// Whether the looper has asked the finder something the host hasn't
+    /// taken yet ([`Looper::find_job`]): an ask that waits for the job to
+    /// come back from the finder's thread.
+    pub fn find_wanted(&self) -> bool {
+        self.find.is_some_and(|f| !f.sent)
     }
 
     /// The finder's answer to `job`: kept for its take if the looper still

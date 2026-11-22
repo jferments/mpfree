@@ -419,6 +419,25 @@ impl Verdict {
             Verdict::Late => "it couldn't listen in time",
         }
     }
+
+    /// [`Verdict::why`], or for hits heard on the line input or a mix
+    /// (`heard`) [`Verdict::why_heard`].
+    pub fn why_by(self, heard: bool) -> &'static str {
+        if heard {
+            self.why_heard()
+        } else {
+            self.why()
+        }
+    }
+
+    /// The same, for hits heard on the line input or a mix.
+    pub fn why_heard(self) -> &'static str {
+        match self {
+            Verdict::NoMatch => "no hit near it",
+            Verdict::Lost => "too many hits to follow",
+            v => v.why(),
+        }
+    }
 }
 
 /// What a decision found.

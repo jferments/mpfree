@@ -102,6 +102,7 @@
 221974	Lo-fi
 294259	Looper (60 s), 8 loops of 3 layers playing
 417853	Looper (60 s), 8 loops of 3 layers playing, half edited
+34896	Looper (60 s), a free first pass by ear with Auto
 26754	Looper (60 s), overdubbing
 30334	Master safety
 308489	Mixer, 12 tracks and 8 pads, routing only
