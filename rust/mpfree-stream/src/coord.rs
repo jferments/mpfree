@@ -54,6 +54,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::format::{decode, layout, Layout};
+use crate::ledger::{Ledger, Pool};
 use crate::msg::{FromPlayer, Tag, ToPlayer, Where, MAX_SOURCES};
 use crate::player::{unit_frames, Config, UNIT};
 use crate::writer::Gate;
@@ -80,6 +81,10 @@ pub struct Plan {
     /// only while every playing cursor has at least this long, or the
     /// longest stall seen lately, before it needs a unit not yet in hand.
     pub stall_s: f64,
+    /// The stall comes from measuring this stick (the stick test, D1), not
+    /// from a default. Until it does, admission calls a workload untested
+    /// ([`crate::policy::Cover::Untested`]).
+    pub measured: bool,
 }
 
 impl Default for Plan {
@@ -91,6 +96,7 @@ impl Default for Plan {
             in_flight: 8,
             join_bytes: 512 * 1024,
             stall_s: 0.5,
+            measured: false,
         }
     }
 }
@@ -99,13 +105,11 @@ impl Plan {
     /// The plan's window rule for a device whose worst shortfall measured
     /// `worst_s` seconds: twice that and one more, never under 4 s.
     pub fn for_shortfall(worst_s: f64) -> Plan {
-        let w = if worst_s.is_finite() && worst_s > 0.0 {
-            2.0 * worst_s + 1.0
-        } else {
-            0.0
-        };
+        let measured = worst_s.is_finite() && worst_s > 0.0;
+        let w = if measured { 2.0 * worst_s + 1.0 } else { 0.0 };
         Plan {
             window_s: w.max(4.0),
+            measured,
             ..Plan::default()
         }
     }
@@ -307,8 +311,14 @@ pub enum Refusal {
 }
 
 enum Store {
-    File { file: Arc<File>, layout: Layout },
-    Memory,
+    File {
+        file: Arc<File>,
+        layout: Layout,
+    },
+    /// Lent by the engine that holds it: its bytes, for the ledger.
+    Memory {
+        bytes: u64,
+    },
 }
 
 struct Src {
@@ -322,7 +332,7 @@ impl Src {
     fn layout(&self) -> Option<&Layout> {
         match &self.store {
             Store::File { layout, .. } => Some(layout),
-            Store::Memory => None,
+            Store::Memory { .. } => None,
         }
     }
 }
@@ -397,6 +407,8 @@ pub struct Coordinator {
     finished: HashMap<u32, Result<Vec<u8>, String>>,
     reserve: usize,
     pool: Vec<Vec<f32>>,
+    /// Buffers made at start (in the pool or out with a fill).
+    buffers: usize,
     bytes: Vec<Vec<u8>>,
     /// Units read whole, waiting for a buffer or a slot.
     ready: VecDeque<(Tag, u32, Vec<u8>)>,
@@ -457,6 +469,7 @@ impl Coordinator {
             finished: HashMap::new(),
             reserve: 0,
             pool: (0..cfg.buffers).map(|_| vec![0.0; UNIT]).collect(),
+            buffers: cfg.buffers,
             bytes: Vec::new(),
             ready: VecDeque::new(),
             out: VecDeque::new(),
@@ -500,6 +513,53 @@ impl Coordinator {
     /// Whether the workload fits, as of the last planning round.
     pub fn admission(&self) -> Admission {
         self.admission
+    }
+
+    /// The memory streaming holds, for the shared memory check and the
+    /// screen ([`crate::ledger`]).
+    pub fn ledger(&self) -> Ledger {
+        const UNIT_BYTES: u64 = (UNIT * std::mem::size_of::<f32>()) as u64;
+        let units = |n: usize| n as u64 * UNIT_BYTES;
+        let allocated = units(self.mirror.len());
+        let in_use = units(self.mirror.iter().filter(|m| m.held != Held::Free).count());
+        // Every tier: Next is the last.
+        let held = self.held_units(HoldTier::Next);
+        let idle = self.bytes.iter().map(Vec::capacity).sum::<usize>();
+        let raw = idle
+            + self.ready.iter().map(|(.., b)| b.capacity()).sum::<usize>()
+            + self.flights.values().map(|f| f.bytes).sum::<usize>();
+        let floats = units(self.buffers);
+        let jobs = self.jobs.iter().map(|j| j.data.capacity()).sum::<usize>()
+            + self
+                .finished
+                .values()
+                .map(|r| r.as_ref().map_or(0, Vec::capacity))
+                .sum::<usize>();
+        let lent = self
+            .sources
+            .iter()
+            .flatten()
+            .map(|s| match s.store {
+                Store::Memory { bytes } => bytes,
+                Store::File { .. } => 0,
+            })
+            .sum();
+        Ledger {
+            cache: Pool {
+                allocated,
+                in_use,
+                reserved: units(self.reserve + held.len()).min(allocated),
+                reclaimable: 0,
+            },
+            buffers: Pool {
+                allocated: floats + raw as u64,
+                in_use: units(self.buffers.saturating_sub(self.pool.len())) + (raw - idle) as u64,
+                reserved: 0,
+                reclaimable: 0,
+            },
+            jobs: jobs as u64,
+            lent,
+        }
     }
 
     /// Seconds until a playing cursor needs a unit that isn't in the cache
@@ -658,7 +718,9 @@ impl Coordinator {
         let tag = self.next_tag(source);
         self.sources[s] = Some(Src {
             tag,
-            store: Store::Memory,
+            store: Store::Memory {
+                bytes: (data.len() * std::mem::size_of::<f32>()) as u64,
+            },
             cursors: Vec::new(),
         });
         self.send(ToPlayer::Resident {
@@ -1444,7 +1506,7 @@ impl Coordinator {
             let src = self.sources[usize::from(s)].as_ref().expect("current");
             let (file, l) = match &src.store {
                 Store::File { file, layout } => (file.clone(), *layout),
-                Store::Memory => continue,
+                Store::Memory { .. } => continue,
             };
             let first = u64::from(unit) * unit_frames(l.channels);
             self.request = self.request.wrapping_add(1);

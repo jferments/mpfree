@@ -19,6 +19,12 @@
 //!   [`crc32c`].
 //! - [`writer`]: the takes' writes and checkpoint rounds on a thread of
 //!   their own, waiting for playback's reads, spread across the interval.
+//! - [`policy`]: what a sound is apart from what it is doing (class, access,
+//!   the musician's rule, device), and what follows: memory or disk, how
+//!   much of its start stays in memory, and why admission says a workload
+//!   isn't covered (the later phases, P3).
+//! - [`ledger`]: the memory streaming owns or manages, for the app's shared
+//!   memory check ([`coord::Coordinator::ledger`]).
 
 #![forbid(unsafe_code)]
 
@@ -27,8 +33,10 @@ pub mod crc32c;
 pub mod cursor;
 pub mod format;
 pub mod fsio;
+pub mod ledger;
 pub mod msg;
 pub mod player;
+pub mod policy;
 pub mod rec;
 pub mod recover;
 #[cfg(feature = "testkit")]
