@@ -11317,6 +11317,9 @@ fn player_session(
         {
             looper.notes_lost(at);
         }
+        // A snap: its tempo asked of the time engine, or, committed, the
+        // loop told to change on the same frame.
+        out.loop_start(looper.tend_snap(&mut time, tracks.host.tracks.has_regions()));
         let line_note = looper.run(time.block(), &mut loop_l, &mut loop_r);
         // A loop that heard the line input with the song stopped starts it.
         let take = app.rec.ready.map(|take| take == rec_arm::Take::Add);
@@ -11330,7 +11333,10 @@ fn player_session(
         let (said, tempo) = loop_sets_tempo(&mut looper, &mut time, take, export.running());
         out.loop_start(said);
         out.smart_end(looper.take_smart());
-        loop_tempo = tempo.or(loop_tempo);
+        // A snap landed: the song's tempo changed with the loop.
+        let (said, snapped) = looper.take_snap();
+        out.loop_start(said);
+        loop_tempo = tempo.or(snapped).or(loop_tempo);
         // The audio tracks record the same line input onto the Song view's
         // lanes, and each plays into its own mixer channel (song mode only).
         tracks.follow_latency(app.settings.loop_latency);

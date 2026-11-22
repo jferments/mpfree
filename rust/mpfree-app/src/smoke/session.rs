@@ -1584,6 +1584,10 @@ impl Session {
         {
             self.looper.notes_lost(at);
         }
+        let said = self
+            .looper
+            .tend_snap(&mut self.time, self.tracks.host.tracks.has_regions());
+        self.out.loop_start(said);
         if let Some(line) = self.looper.run(self.time.block(), &mut ll, &mut lr) {
             self.out.note(&line);
         }
@@ -1599,7 +1603,9 @@ impl Session {
             crate::loop_sets_tempo(&mut self.looper, &mut self.time, take, exporting);
         self.out.loop_start(said);
         self.out.smart_end(self.looper.take_smart());
-        self.loop_tempo = tempo.or(self.loop_tempo);
+        let (said, snapped) = self.looper.take_snap();
+        self.out.loop_start(said);
+        self.loop_tempo = tempo.or(snapped).or(self.loop_tempo);
         // The Looper tab and the Play page's strip follow the loop, as
         // main.rs shows them: its wave a slice at a time, its changes in
         // the log, and the loop's view about as often as the transport card

@@ -1530,6 +1530,78 @@ mod looper {
         });
     }
 
+    /// Smart loop end step 1b, the whole way through: Suggest closes on
+    /// a tap 40 ms after the hit played again, then offers the end it
+    /// heard. Snap (what the screens will offer) changes the loop's end
+    /// and the song's tempo together on the loop's next downbeat, the
+    /// app's tempo follows, and UNDO takes it back the same way.
+    #[test]
+    fn a_snap_changes_the_loop_and_the_tempo_on_its_downbeat_and_undo_takes_it_back() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.make_sounds();
+            s.press("header", "tab", "Looper");
+            s.app.settings.loop_tempo = true;
+            let free = at(&mut s, "leditor", "bars", 1);
+            s.press_target(&free).run_for(0.1);
+            s.button("REC");
+            let first = s.time.next_frame();
+            s.pad(0, 120, 0.1);
+            s.run_for(2.0 - 0.1);
+            let again = s.time.next_frame();
+            s.pad_edge(0, 120, true);
+            s.run_for(0.04);
+            s.button("REC");
+            s.pad_edge(0, 0, false);
+            until_phase(&mut s, Phase::Playing, 1.0);
+            let tap = status(&s).frames;
+            let tap_bpm = s.time.info().bpm;
+            s.run_for(0.2);
+            let by = status(&s).offer.expect("an offer");
+            assert!(by < 0, "the tap was late");
+            assert_eq!(
+                s.looper.snap(mpfree_looper::Snap::Found),
+                "looper: Snap: Loop 1 changes on its next downbeat, with the tempo"
+            );
+            let until_moved = |s: &mut Session, moved: Option<i64>| {
+                let end = s.t() + 3.0;
+                while status(s).moved != moved && s.t() < end {
+                    s.run_periods(1);
+                }
+                assert_eq!(status(s).moved, moved, "{:?}", s.said());
+            };
+            until_moved(&mut s, Some(by));
+            let st = status(&s);
+            assert_eq!(st.frames as i64, tap as i64 + by);
+            let between = (again - first) as usize;
+            assert!(
+                st.frames.abs_diff(between) <= crate::PERIOD,
+                "{}",
+                st.frames
+            );
+            let said = s.said();
+            let line = said
+                .iter()
+                .find(|l| l.starts_with("looper: Loop 1: snapped "))
+                .unwrap_or_else(|| panic!("{said:?}"));
+            assert!(line.contains(" ms earlier: 1 bar at "), "{line}");
+            s.run_for(0.1);
+            let bpm = s.time.info().bpm;
+            assert!(bpm > tap_bpm, "{bpm} after {tap_bpm}");
+            assert_eq!(s.app.settings.bpm, bpm, "the app's tempo follows");
+            assert_eq!(s.time.tempo_map().segments().len(), 1);
+            // UNDO goes back on a downbeat too, with the tap's tempo.
+            s.button("UNDO");
+            until_moved(&mut s, None);
+            s.run_for(0.1);
+            assert_eq!(status(&s).frames, tap);
+            assert_eq!(status(&s).offer, Some(by), "on offer again");
+            assert!((s.time.info().bpm - tap_bpm).abs() < 1e-9);
+            assert_eq!(s.app.settings.bpm, s.time.info().bpm);
+            assert_eq!(s.looper.snaps_refused, 0);
+        });
+    }
+
     /// Smart loop end plan, step 0B: with Tempo from the first loop on,
     /// Length 2 bars means 2 bars at the tempo you play (it records free
     /// from REC, and nothing is read). On Free, a loop near the old 80 BPM

@@ -503,6 +503,9 @@ pub enum Step {
     Added(u8, usize),
     /// This layer moved to that loop: a delete here.
     Moved(u8, usize),
+    /// Smart loop end moved the loop's end this many frames, with the
+    /// song's tempo, on the loop's downbeat ([`Looper::snap_at`]).
+    Snap(i64),
 }
 
 /// A loop's history: the steps Undo takes back and the ones Redo brings
@@ -674,6 +677,50 @@ pub const OVERDUB_AT_ONCE: &str = "the overdub started at once";
 /// tap can't be heard.
 pub const OFFER_MS: f64 = 5.0;
 
+/// A change of a loop's end made with the song's tempo, landing on the
+/// loop's downbeat ([`Looper::snap_plan`], [`Looper::snap_at`]): the loop's
+/// length and the tempo change together, so its bars stay and it plays
+/// as recorded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Snap {
+    /// Take the end smart loop end found ([`Status::offer`]).
+    Found,
+    /// Put the closing tap back ([`Status::moved`]): Use my tap.
+    Tap,
+    /// Undo the last step, a snap ([`Step::Snap`]).
+    Undo,
+    /// Redo the next step, a snap.
+    Redo,
+}
+
+/// A snap worked out ([`Looper::snap_plan`]): the host asks the time engine
+/// for the tempo on `at`, and once that is committed, gives the plan back
+/// ([`Looper::snap_at`]) so the loop changes on the same frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SnapPlan {
+    pub n: usize,
+    pub snap: Snap,
+    /// Frames the end moves (negative: earlier).
+    pub by: i64,
+    /// The tempo at which the loop's bars are its new length exactly.
+    pub bpm: f64,
+    /// The loop's next downbeat, as a song tick and a frame.
+    pub tick: Tick,
+    pub at: u64,
+    /// The loop's version it was worked out at ([`Status::version`]): a
+    /// loop changed since doesn't take it.
+    pub version: u64,
+}
+
+/// What became of a snap the host gave ([`Looper::take_snap`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SnapDone {
+    pub plan: SnapPlan,
+    /// It landed on its frame; false: the loop had changed, and nothing
+    /// of the loop moved.
+    pub landed: bool,
+}
+
 /// Counted, never silent.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
@@ -815,10 +862,18 @@ pub struct Status {
     /// listens on to the end of the reach before it closes (the ring says
     /// closing).
     pub closing: bool,
-    /// Smart loop end, Suggest: the end it found, in frames from the tap
-    /// the loop closed on (negative: earlier, the tap was late). It lasts
-    /// until the loop's sound changes.
+    /// Smart loop end: how far [`Snap::Found`] would move the loop's end
+    /// to the end it found, in frames (negative: earlier, the tap was
+    /// late). Suggest offers it once its reach has been heard; after Use
+    /// my tap it is on offer again. It lasts until the loop's sound
+    /// changes in any other way.
     pub offer: Option<i64>,
+    /// Smart loop end moved the loop's end this many frames from the
+    /// closing tap (Auto, or a snap): [`Snap::Tap`] puts it back. Lasts as
+    /// [`Status::offer`] does.
+    pub moved: Option<i64>,
+    /// A snap given to land on this frame ([`Looper::snap_at`]).
+    pub snapping: Option<u64>,
 }
 
 /// The memory gauge: all the loops together.
@@ -982,6 +1037,9 @@ enum Kind {
     Fit,
     /// A layer copied in from another loop.
     Added,
+    /// Smart loop end's change of the end, with the tempo (an
+    /// [`Edit::Resize`] made on the loop's downbeat).
+    Snap,
 }
 
 /// The other loop's side of a layer copied between loops: the loop and
@@ -1032,6 +1090,10 @@ impl Act {
             },
             Kind::Added => Step::Added(self.slot, self.link.map_or(0, |l| l.lp as usize)),
             Kind::Edit => Step::Edit(self.edit.unwrap_or(Edit::Half)),
+            Kind::Snap => Step::Snap(match self.edit {
+                Some(Edit::Resize(by)) => by,
+                _ => 0,
+            }),
             Kind::Merge => Step::Merge(self.slot),
             Kind::Fit => Step::Fit(self.slot),
         }
@@ -1040,7 +1102,7 @@ impl Act {
     /// Where the act keeps a shape, if it does.
     fn shape(&self) -> Option<usize> {
         match self.kind {
-            Kind::Edit => Some(self.slot as usize),
+            Kind::Edit | Kind::Snap => Some(self.slot as usize),
             Kind::Merge | Kind::Fit => Some(self.index as usize),
             Kind::Overdub | Kind::Delete | Kind::Added => None,
         }
@@ -1768,10 +1830,19 @@ struct Loop {
     /// Suggest: the closed pass waits to the end of the reach for its
     /// decision.
     smart_wait: Option<SmartWait>,
-    /// Suggest: the end it offers, from the tap, at the loop's version
-    /// then (a change to the sound ends the offer).
-    offer: Option<i64>,
-    offer_version: u64,
+    /// The end smart loop end found, in frames from the tap (None: the
+    /// tap stood), and how far the loop's end now is from the tap; both
+    /// hold while the loop is at `smart_version` (any other change to the
+    /// sound ends them).
+    found: Option<i64>,
+    moved: i64,
+    smart_version: u64,
+    /// A snap to land on its frame ([`Looper::snap_at`]), and what became
+    /// of the last one, for the host.
+    snap: Option<SnapPlan>,
+    snap_done: Option<SnapDone>,
+    /// The snap's frame (`u64::MAX` with none): checked frame by frame.
+    snap_frame: u64,
 }
 
 /// A closed free first pass waiting for smart loop end's decision.
@@ -1964,8 +2035,12 @@ impl Loop {
         tap: None,
         closing: false,
         smart_wait: None,
-        offer: None,
-        offer_version: 0,
+        found: None,
+        moved: 0,
+        smart_version: 0,
+        snap: None,
+        snap_done: None,
+        snap_frame: u64::MAX,
     };
 
     /// Armed to start when you play, and no note yet.
@@ -2047,6 +2122,9 @@ pub struct Looper {
     smart: SmartEnd,
     notes: NoteLog,
     smart_out: Option<SmartNote>,
+    /// The last period's last span: where the song goes from here, for a
+    /// snap's downbeat ([`Looper::snap_plan`]).
+    last_span: Option<Span>,
 }
 
 impl Looper {
@@ -2082,6 +2160,7 @@ impl Looper {
             smart: SmartEnd::Off,
             notes: NoteLog::new(),
             smart_out: None,
+            last_span: None,
         }
     }
 
@@ -2343,7 +2422,12 @@ impl Looper {
                 kept: l.slots[0].valid.1 as i64,
             }),
             closing: l.closing,
-            offer: l.offer.filter(|_| l.offer_version == l.version),
+            offer: l
+                .smart_now()
+                .and_then(|(f, m)| f.map(|f| f - m))
+                .filter(|&o| o != 0),
+            moved: l.smart_now().map(|(_, m)| m).filter(|&m| m != 0),
+            snapping: l.snap.map(|p| p.at),
         })
     }
 
@@ -2752,6 +2836,7 @@ impl Looper {
             .min(input.len() / 2)
             .min(out.len() / 2);
         self.now = block.start_frame;
+        self.last_span = block.spans().last().copied();
         if let Some(s) = block.spans().first() {
             self.stopped = s.state == State::Stopped;
             self.bar_ticks = s.meter.bar_ticks();
@@ -2997,6 +3082,92 @@ impl Looper {
         self.smart_out.take()
     }
 
+    /// Snap `s` on loop `n` ([`Snap`]), worked out against where the song
+    /// was going at the end of the last period: how far the end moves,
+    /// the tempo at which the loop's bars are its new length exactly, and
+    /// the loop's next downbeat on or after frame `after` (the transport's
+    /// next frame, which may be a period on from the looper's), its tick
+    /// and frame. The host asks the time engine for that tempo on that
+    /// frame and, once committed, gives the plan to [`Looper::snap_at`].
+    /// Or why it can't: the song isn't playing, the loop isn't playing as
+    /// it was left, it plays at another speed, or the new length is
+    /// outside what was kept or the tempo range. Changes nothing.
+    pub fn snap_plan(&self, n: usize, s: Snap, after: u64) -> Result<SnapPlan, &'static str> {
+        let l = self.loops.get(n).ok_or("there is no such loop")?;
+        let span = self
+            .last_span
+            .filter(|s| matches!(s.state, State::Playing | State::Recording))
+            .ok_or("the song isn't playing")?;
+        if l.phase != Phase::Playing || l.od_open || l.busy() {
+            return Err("the loop is busy");
+        }
+        if l.speed != 0 || l.rate != 0 {
+            return Err("the loop plays at another speed");
+        }
+        let by = l.snap_by(s)?;
+        let len = l.len as i64 + by;
+        let fits = match s {
+            Snap::Found | Snap::Tap => l.edited(Edit::Resize(by)).is_some(),
+            Snap::Undo | Snap::Redo => true,
+        };
+        if !fits || len <= 0 || l.len_ticks <= 0 {
+            return Err("that end is outside what the loop kept");
+        }
+        let bpm = 60.0 * f64::from(self.rate) * l.len_ticks as f64 / (f64::from(PPQ) * len as f64);
+        if !(LOOP_MIN_BPM..=LOOP_MAX_BPM).contains(&bpm) {
+            return Err("its tempo would be out of range");
+        }
+        // The next downbeat from the coming period's first frame on, by
+        // the span's clock (as `Span::tick_at` and `Span::frame_of` work it
+        // out, the frame rounded the same way, so the tempo's anchor falls
+        // on that tick).
+        let next = after.max(span.frame + u64::from(span.len));
+        let (rate, ppq) = (f64::from(span.rate), f64::from(PPQ));
+        let t = span.anchor_tick as f64
+            + (next as f64 - span.anchor_frame as f64) * span.bpm * ppq / (60.0 * rate);
+        let k = ((t - l.origin as f64) / l.len_ticks as f64).floor() as i64 + 1;
+        let tick = l.origin + k * l.len_ticks;
+        let f = (tick as f64 - span.anchor_tick as f64) * 60.0 * rate / (span.bpm * ppq);
+        let at = (span.anchor_frame as i64 + f.round() as i64).max(0) as u64;
+        Ok(SnapPlan {
+            n,
+            snap: s,
+            by,
+            bpm,
+            tick,
+            at: at.max(next),
+            version: l.version,
+        })
+    }
+
+    /// Land snap `p` ([`Looper::snap_plan`]) on its frame, now that the
+    /// time engine has committed its tempo there: from then the loop
+    /// waits for nothing else (commands that change it wait until it has
+    /// landed). Call it before [`Looper::process`] runs the period its
+    /// frame falls in. False if the loop has changed since (counted, and
+    /// said by [`Looper::take_snap`]). Allocation-free.
+    pub fn snap_at(&mut self, p: SnapPlan) -> bool {
+        let Some(l) = self.loops.get_mut(p.n) else {
+            return false;
+        };
+        if l.version != p.version || l.phase != Phase::Playing || l.snap.is_some() {
+            self.stats.refused += 1;
+            l.snap_done = Some(SnapDone {
+                plan: p,
+                landed: false,
+            });
+            return false;
+        }
+        l.snap = Some(p);
+        l.snap_frame = p.at;
+        true
+    }
+
+    /// What became of a snap given to [`Looper::snap_at`], once.
+    pub fn take_snap(&mut self) -> Option<SnapDone> {
+        self.loops.iter_mut().find_map(|l| l.snap_done.take())
+    }
+
     /// A note started (a pad hit or a MIDI note-on, [`NoteStart`]), on the
     /// song's frame clock: smart loop end weighs them ([`ends`]). Give
     /// every note of a period before [`Looper::process`] runs it. Kept
@@ -3228,8 +3399,9 @@ impl Looper {
                 Verdict::Moved if !reads => SmartOutcome::Kept("too short a loop"),
                 Verdict::Moved if audible => {
                     let l = &mut self.loops[k];
-                    l.offer = Some(by);
-                    l.offer_version = l.version;
+                    l.found = Some(by);
+                    l.moved = 0;
+                    l.smart_version = l.version;
                     SmartOutcome::Offered(by)
                 }
                 Verdict::Moved => SmartOutcome::Close(by),
@@ -3936,7 +4108,7 @@ impl Loop {
     /// Whether undoing or redoing `a` can bring back `slot`'s layer.
     fn brings_back(&self, a: &Act, slot: usize) -> bool {
         match a.kind {
-            Kind::Edit => false,
+            Kind::Edit | Kind::Snap => false,
             Kind::Overdub | Kind::Delete | Kind::Added => a.slot as usize == slot,
             Kind::Merge | Kind::Fit => {
                 let kept = &self.shapes[a.index as usize];
@@ -4004,7 +4176,8 @@ impl Loop {
     /// Merging, fitting, being bounced out or copying a layer in or out:
     /// the layers must not change.
     fn busy(&self) -> bool {
-        self.merging
+        self.snap.is_some()
+            || self.merging
             || self.bouncing
             || self.fitting
             || self.swapping
@@ -4327,6 +4500,12 @@ impl Loop {
 
     /// Make an edit, keeping the shape before it for Undo.
     fn edit(&mut self, stats: &mut Stats, e: Edit) {
+        self.make_edit(stats, e, Kind::Edit);
+    }
+
+    /// Edit `e`, as a step of `kind` Undo takes back; false (counted) if it
+    /// can't be made.
+    fn make_edit(&mut self, stats: &mut Stats, e: Edit, kind: Kind) -> bool {
         let ready = self.phase == Phase::Playing
             && !self.od_open
             && !self.first_open
@@ -4334,17 +4513,17 @@ impl Loop {
             && self.len_ticks > 0;
         let Some(new) = ready.then(|| self.edited(e)).flatten() else {
             stats.refused += 1;
-            return;
+            return false;
         };
         self.n_undone = 0;
         let Some(i) = self.free_shape() else {
             stats.refused += 1;
-            return;
+            return false;
         };
         self.shapes[i] = self.shape();
         self.set_shape(&new);
         self.push_done(Act {
-            kind: Kind::Edit,
+            kind,
             slot: i as u8,
             index: 0,
             edit: Some(e),
@@ -4352,6 +4531,7 @@ impl Loop {
             link: None,
         });
         self.crossfade_from(i);
+        true
     }
 
     /// The shape an edit makes, or None if it cannot be made.
@@ -5154,7 +5334,7 @@ impl Loop {
                 self.keep_clear = false;
             }
             Kind::Added => self.slots[a.slot as usize].leaving = true,
-            Kind::Edit => self.swap_shape(a.slot as usize),
+            Kind::Edit | Kind::Snap => self.swap_shape(a.slot as usize),
             Kind::Merge => self.unmerge(a),
             Kind::Fit => self.start_swap(a.index as usize),
         }
@@ -5169,7 +5349,7 @@ impl Loop {
         match a.kind {
             Kind::Delete => self.slots[a.slot as usize].leaving = true,
             Kind::Overdub | Kind::Added => self.restore(a),
-            Kind::Edit => self.swap_shape(a.slot as usize),
+            Kind::Edit | Kind::Snap => self.swap_shape(a.slot as usize),
             Kind::Merge => self.remerge(a),
             Kind::Fit => self.start_swap(a.index as usize),
         }
@@ -5304,12 +5484,88 @@ impl Loop {
         self.forget_smart();
     }
 
-    /// Smart loop end lets go of this loop's tap, wait and offer.
+    /// Smart loop end lets go of this loop's tap, wait, offer and snap.
     fn forget_smart(&mut self) {
         self.tap = None;
         self.closing = false;
         self.smart_wait = None;
-        self.offer = None;
+        self.found = None;
+        self.moved = 0;
+        self.snap = None;
+        self.snap_frame = u64::MAX;
+    }
+
+    /// The end found and how far the end is from the tap, while the loop
+    /// is as smart loop end left it.
+    fn smart_now(&self) -> Option<(Option<i64>, i64)> {
+        (self.smart_version == self.version && self.snap.is_none() && self.phase == Phase::Playing)
+            .then_some((self.found, self.moved))
+    }
+
+    /// Frames a snap moves the end ([`Snap`]), if it can be made now.
+    fn snap_by(&self, s: Snap) -> Result<i64, &'static str> {
+        let top = |acts: &[Act]| match acts.last() {
+            Some(a) if a.kind == Kind::Snap => match a.edit {
+                Some(Edit::Resize(by)) => Some(by),
+                _ => None,
+            },
+            _ => None,
+        };
+        match s {
+            Snap::Found | Snap::Tap => {
+                let (found, moved) = self.smart_now().ok_or("the loop has changed since")?;
+                let by = match s {
+                    Snap::Found => found.ok_or("smart loop end found no end")? - moved,
+                    _ => -moved,
+                };
+                if by == 0 {
+                    return Err(match s {
+                        Snap::Found => "the loop already ends there",
+                        _ => "the loop already ends on your tap",
+                    });
+                }
+                Ok(by)
+            }
+            Snap::Undo => top(&self.done[..self.n_done])
+                .map(|by| -by)
+                .ok_or("the last step isn't a snap"),
+            Snap::Redo => top(&self.undone[..self.n_undone]).ok_or("the next step isn't a snap"),
+        }
+    }
+
+    /// Land the snap waiting, on its frame: the end moves (a step Undo
+    /// takes back, [`Kind::Snap`]), or the step is undone or redone. The
+    /// tempo changed on the same frame. Not if the loop changed since it
+    /// was worked out (said, [`SnapDone`]).
+    #[cold]
+    #[inline(never)]
+    fn land_snap(&mut self, stats: &mut Stats) {
+        self.snap_frame = u64::MAX;
+        let Some(p) = self.snap.take() else {
+            return;
+        };
+        let ready = self.version == p.version && self.phase == Phase::Playing && !self.busy();
+        let landed = ready
+            && self.snap_by(p.snap) == Ok(p.by)
+            && match p.snap {
+                Snap::Found | Snap::Tap => self.make_edit(stats, Edit::Resize(p.by), Kind::Snap),
+                Snap::Undo => {
+                    self.undo();
+                    true
+                }
+                Snap::Redo => {
+                    self.redo();
+                    true
+                }
+            };
+        if landed {
+            self.moved += p.by;
+            self.touch();
+            self.smart_version = self.version;
+        } else {
+            stats.refused += 1;
+        }
+        self.snap_done = Some(SnapDone { plan: p, landed });
     }
 
     fn abort(&mut self, stats: &mut Stats) {
@@ -6148,6 +6404,9 @@ impl Loop {
                 continue;
             }
             let f = r.f + j as u64;
+            if f >= self.snap_frame {
+                self.land_snap(stats);
+            }
             if self.merging && f >= self.mg_at {
                 self.finish_merge(store, me);
             }
@@ -6168,6 +6427,11 @@ impl Loop {
                 // Still to the run's end, or to where a merge or a fit
                 // takes over.
                 let mut end = ys.len();
+                if self.snap_frame != u64::MAX {
+                    end = end
+                        .min(self.snap_frame.saturating_sub(r.f) as usize)
+                        .max(j + 1);
+                }
                 if self.merging {
                     end = end.min((self.mg_at - r.f) as usize);
                 }

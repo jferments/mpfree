@@ -128,6 +128,8 @@ fn step_text(s: Step, layers: &[Option<LayerInfo>], rate: u32) -> String {
             |n| format!("From loop {} · {n}", from + 1),
         ),
         Step::Moved(_, to) => format!("Moved to loop {}", to + 1),
+        // Smart loop end's Snap or Use my tap, with the tempo.
+        Step::Snap(d) => format!("Snap · {}", edit_text(Edit::Resize(d), rate)),
     }
 }
 

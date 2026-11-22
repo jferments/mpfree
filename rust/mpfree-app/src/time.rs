@@ -1352,7 +1352,6 @@ impl TimeHost {
 
     /// The song's timeline as it is now, for a timing change to be made
     /// against ([`TimeAudio::timeline`]).
-    #[allow(dead_code)] // smart loop end, steps 1 and 2
     pub fn timeline(&self) -> u64 {
         self.audio.timeline()
     }
@@ -1360,7 +1359,6 @@ impl TimeHost {
     /// Whether timing change `c` may be offered now: Safe, Ask (with
     /// `audio`, recorded audio playing at its own speed, at a new tempo)
     /// or Refused ([`TimeAudio::allowed`]).
-    #[allow(dead_code)] // smart loop end, steps 1 and 2
     pub fn allowed(&self, c: &TimingChange, audio: bool) -> Allowed {
         self.audio.allowed(c, audio)
     }
@@ -1368,20 +1366,17 @@ impl TimeHost {
     /// Timing change `c`, on its frame: its ticket, or why not
     /// ([`TimeAudio::timing_change`]). Called on the audio loop's thread,
     /// as [`TimeHost::start_at`] is.
-    #[allow(dead_code)] // smart loop end, steps 1 and 2
     pub fn timing_change(&mut self, c: TimingChange) -> Result<u32, &'static str> {
         self.audio.timing_change(c)
     }
 
     /// Take back the timing change with `ticket` if it still waits.
-    #[allow(dead_code)] // smart loop end, steps 1 and 2
     pub fn cancel_timing(&mut self, ticket: u32, why: &'static str) -> bool {
         self.audio.cancel_timing(ticket, why)
     }
 
     /// What became of the timing change with `ticket`, if it is one of
     /// the last few.
-    #[allow(dead_code)] // smart loop end, steps 1 and 2
     pub fn timing_answer(&self, ticket: u32) -> Option<Answer> {
         self.audio.timing_answer(ticket)
     }

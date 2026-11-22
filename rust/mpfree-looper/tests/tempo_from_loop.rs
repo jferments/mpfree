@@ -12,8 +12,8 @@
 //! (3 s).
 
 use mpfree_looper::{
-    read_bars, After, Command as L, Looper, NoteStart, Phase, Reading, SmartEnd, SmartOutcome,
-    Starts, Sure, TempoHint, TempoKind, FADE, LOOP_MAX_BPM,
+    read_bars, After, Command as L, Edit, Looper, NoteStart, Phase, Reading, SmartEnd,
+    SmartOutcome, Snap, SnapPlan, Starts, Step, Sure, TempoHint, TempoKind, FADE, LOOP_MAX_BPM,
 };
 use mpfree_transport::time::PPQ;
 use mpfree_transport::{Block, Command as T, Meter, State, Transport};
@@ -43,6 +43,9 @@ struct Rig {
     /// Where the song started in the loop, in ticks after its first bar
     /// line (smart loop end's Auto).
     into: i64,
+    /// A snap the time engine has said yes to: its tempo goes in on its
+    /// frame, and the looper is given it, before the period it lands in.
+    snap: Option<SnapPlan>,
 }
 
 impl Rig {
@@ -63,6 +66,7 @@ impl Rig {
             starts: 0,
             notes: Vec::new(),
             into: 0,
+            snap: None,
         };
         r.cmd(L::TempoFromLoop(true));
         r.cmd(L::SetBars(None));
@@ -95,6 +99,14 @@ impl Rig {
             self.mix[..2 * n].fill(0.0);
             // The period's notes first, as the host gives them.
             let end = self.frame + n as u64;
+            // A snap committed: the tempo on its frame, as the time engine
+            // lands it, and the loop told before it runs that period.
+            if let Some(p) = self.snap.filter(|p| p.at < end) {
+                assert!(p.at >= self.frame);
+                assert!(self.t.command(p.at, T::TempoNow(p.bpm)));
+                self.l.snap_at(p);
+                self.snap = None;
+            }
             for x in self
                 .notes
                 .iter()
@@ -690,6 +702,89 @@ fn suggest_closes_on_the_tap_then_offers_the_end_it_found() {
     let note = r.l.take_smart().unwrap();
     assert_eq!(note.outcome, SmartOutcome::Offered(by));
     assert_eq!(r.l.stats().ends_offered, 1);
+}
+
+/// Suggest's offer taken: the loop's end and the song's tempo change
+/// together on the loop's next downbeat, and from there it plays the two
+/// bars as recorded, sample for sample, at exactly 120. Undo and Redo of
+/// the snap land the same way, and Use my tap puts the tap back, with its
+/// tempo; the offer comes back.
+#[test]
+fn a_snap_lands_on_the_loops_downbeat_with_the_tempo_and_goes_back_the_same_way() {
+    let (mut r, rec_from, tap) = late_tap(SmartEnd::Suggest, true);
+    r.until_playing(512);
+    r.run(tap + 2_205 + 256);
+    let by = (rec_from + 88_200) as i64 - tap as i64;
+    let tap_bpm = r.tempo.unwrap().1;
+    assert_eq!(r.l.status().offer, Some(by));
+    assert_eq!(r.l.status().moved, None);
+    // Taking it.
+    let p = r.l.snap_plan(0, Snap::Found, r.frame).unwrap();
+    let s = r.l.status();
+    assert_eq!(p.by, by);
+    assert!((p.bpm - 120.0).abs() < 1e-9, "{}", p.bpm);
+    assert_eq!((p.tick - s.origin).rem_euclid(s.ticks), 0, "a downbeat");
+    assert!(p.at > r.frame && p.at <= r.frame + 256 + s.frames as u64);
+    assert_eq!(
+        r.l.snap_plan(0, Snap::Tap, r.frame),
+        Err("the loop already ends on your tap")
+    );
+    r.snap = Some(p);
+    r.run(p.at);
+    assert_eq!(r.l.status().offer, Some(by), "until it lands");
+    r.run(p.at + 70_000);
+    assert_eq!(r.l.take_snap().map(|d| d.landed), Some(true));
+    let s = r.l.status();
+    assert_eq!((s.frames, s.ticks), (88_200, 2 * BAR_TICKS));
+    assert_eq!((s.offer, s.moved, s.snapping), (None, Some(by), None));
+    assert_eq!(r.t.bpm(), p.bpm);
+    assert_eq!(r.l.history().done().last(), Some(&Step::Snap(by)));
+    // From the downbeat: the two bars as recorded, in step with the song.
+    for j in [FADE as u64 + 10, 5_000, 60_000] {
+        assert!(close(r.out_at(p.at + j), sound(rec_from + j)), "frame {j}");
+    }
+    assert_eq!(r.t.position(), p.tick + 2 * BAR_TICKS * 70_000 / 88_200 + 1);
+    // Undo lands on a downbeat too, with the tap's tempo.
+    let u = r.l.snap_plan(0, Snap::Undo, r.frame).unwrap();
+    assert_eq!((u.by, u.bpm), (-by, tap_bpm));
+    r.snap = Some(u);
+    r.run(u.at + 1_000);
+    assert!(r.l.take_snap().unwrap().landed);
+    assert_eq!(r.l.status().frames as u64, tap - rec_from);
+    assert_eq!(r.l.status().offer, Some(by), "on offer again");
+    assert_eq!(r.l.history().redo(), &[Step::Snap(by)]);
+    assert_eq!(r.t.bpm(), tap_bpm);
+    let d = r.l.snap_plan(0, Snap::Redo, r.frame).unwrap();
+    r.snap = Some(d);
+    r.run(d.at + 1_000);
+    assert!(r.l.take_snap().unwrap().landed);
+    assert_eq!(r.l.status().moved, Some(by));
+    // Use my tap: a step of its own.
+    let t = r.l.snap_plan(0, Snap::Tap, r.frame).unwrap();
+    assert_eq!((t.by, t.bpm), (-by, tap_bpm));
+    r.snap = Some(t);
+    r.run(t.at + 1_000);
+    assert!(r.l.take_snap().unwrap().landed);
+    let s = r.l.status();
+    assert_eq!(
+        (s.frames as u64, s.moved, s.offer),
+        (tap - rec_from, None, Some(by))
+    );
+    assert_eq!(r.l.history().done().last(), Some(&Step::Snap(-by)));
+    // A snap worked out before the loop changed doesn't land, and nothing
+    // of the loop moves.
+    let p = r.l.snap_plan(0, Snap::Found, r.frame).unwrap();
+    r.cmd(L::Edit(Edit::Reverse));
+    r.run(r.frame + 256);
+    r.snap = Some(p);
+    r.run(p.at + 256);
+    assert_eq!(r.l.take_snap().map(|d| d.landed), Some(false));
+    assert_eq!(r.l.status().frames as u64, tap - rec_from);
+    assert_eq!(r.l.status().offer, None, "the change ended the offer");
+    assert_eq!(
+        r.l.snap_plan(0, Snap::Found, r.frame),
+        Err("the loop has changed since")
+    );
 }
 
 #[test]

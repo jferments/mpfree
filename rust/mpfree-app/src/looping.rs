@@ -31,12 +31,14 @@
 //! MPC: it waits for the owner's go in the round 6 runbook.
 
 use crate::alsa;
+use crate::time::{Allowed, Answer, TimeHost, TimingChange};
 use mpfree_looper::print::{frames_at, PrintJob};
 use mpfree_looper::save::Saved;
 use mpfree_looper::{
     Bounce, Candidate, Command, Edit, History, LayerCommand, LayerInfo, LoopFile, Looper, Memory,
-    NoteStart, Phase, Print, Reading, SmartEnd, SmartNote, SmartOutcome, Starts, Stats, Status,
-    Step, Sure, Take, HEARD_SECONDS, LOOP_MAX_BPM, LOOP_MIN_BPM, MAX_LAYERS, MAX_LOOPS,
+    NoteStart, Phase, Print, Reading, SmartEnd, SmartNote, SmartOutcome, Snap, SnapDone, SnapPlan,
+    Starts, Stats, Status, Step, Sure, Take, HEARD_SECONDS, LOOP_MAX_BPM, LOOP_MIN_BPM, MAX_LAYERS,
+    MAX_LOOPS,
 };
 use mpfree_seq::loops::{LoopNow, LoopPlan};
 use mpfree_transport::time::{Tick, PPQ};
@@ -1332,6 +1334,15 @@ pub struct LoopHost {
     /// Periods whose notes didn't all reach smart loop end
     /// ([`LoopHost::notes_lost`]): counted, logged and said.
     pub notes_lost: u64,
+    /// A snap asked for (Snap, Use my tap, or UNDO or REDO of a snap),
+    /// for a loop, until the next period works it out
+    /// ([`LoopHost::tend_snap`]); then the plan, waiting for the time
+    /// engine's answer to its tempo.
+    snap_want: Option<(usize, Snap)>,
+    snap_wait: Option<(SnapPlan, u32)>,
+    /// Snaps that couldn't be made or didn't land: counted, logged and
+    /// said.
+    pub snaps_refused: u64,
     /// Free first passes whose Length bars would have been slower than
     /// [`LOOP_MIN_BPM`], so the length was read instead
     /// ([`Reading::overruled`]): counted, logged and said.
@@ -1733,6 +1744,9 @@ impl LoopHost {
             tempo_meant: false,
             smart: SmartEnd::Off,
             notes_lost: 0,
+            snap_want: None,
+            snap_wait: None,
+            snaps_refused: 0,
             readings_overruled: 0,
             tempos_refused: 0,
             match_pattern: false,
@@ -2047,6 +2061,18 @@ impl LoopHost {
 
     /// A press or a setting, with its `looper:` line for the log.
     pub fn command(&mut self, c: Command) -> String {
+        // UNDO or REDO of a snap lands on the loop's downbeat with the
+        // tempo, as the snap did.
+        let h = self.looper.history();
+        match c {
+            Command::Undo if matches!(h.done().last(), Some(Step::Snap(_))) => {
+                return self.snap(Snap::Undo);
+            }
+            Command::Redo if matches!(h.redo().first(), Some(Step::Snap(_))) => {
+                return self.snap(Snap::Redo);
+            }
+            _ => {}
+        }
         // The app's latency is the line input's; the pads have their own.
         // Records from: Loops makes a new loop a resample.
         let empty = self
@@ -3298,6 +3324,11 @@ impl LoopHost {
             } else {
                 String::new()
             }
+            + &if self.snaps_refused > 0 {
+                format!("; {} snaps refused or not landed", self.snaps_refused)
+            } else {
+                String::new()
+            }
             + &if self.notes_lost > 0 {
                 format!(
                     "; {} periods with more notes than smart loop end could follow",
@@ -3760,6 +3791,163 @@ impl LoopHost {
         self.looper.notes_lost(at);
     }
 
+    /// Smart loop end's Snap ([`Snap::Found`]), Use my tap ([`Snap::Tap`]),
+    /// or UNDO or REDO of a snap, on the picked loop: the loop's end and
+    /// the song's tempo change together on its next downbeat. Worked out
+    /// and asked of the time engine at the next period
+    /// ([`LoopHost::tend_snap`]); what it did, or why not, comes after.
+    /// The line for the log now.
+    pub fn snap(&mut self, s: Snap) -> String {
+        let n = self.looper.selected();
+        self.snap_want = Some((n, s));
+        format!(
+            "looper: {}: Loop {} changes on its next downbeat, with the tempo",
+            snap_name(s),
+            n + 1
+        )
+    }
+
+    /// Every period, after the time engine's and before
+    /// [`LoopHost::run`]: a snap asked for is worked out
+    /// ([`Looper::snap_plan`]) and its tempo asked of the time engine on
+    /// the loop's next downbeat ([`TimeHost::timing_change`]): refused
+    /// while another loop has sound (its tempo would change under it), and
+    /// for now while `audio` (recorded audio, the audio tracks' regions,
+    /// would play out of step; the screens will ask first). Once the
+    /// time engine commits it, the loop is told to change on the same
+    /// frame ([`Looper::snap_at`]); if the loop changes first, the tempo is
+    /// taken back. A refusal: the line for the log and the screen,
+    /// counted.
+    pub fn tend_snap(&mut self, time: &mut TimeHost, audio: bool) -> Option<(String, bool)> {
+        if let Some((p, ticket)) = self.snap_wait {
+            if self
+                .looper
+                .loop_status(p.n)
+                .is_none_or(|s| s.version != p.version)
+            {
+                self.snap_wait = None;
+                time.cancel_timing(ticket, "the loop changed");
+                return Some(self.snap_refused(
+                    p.n,
+                    p.snap,
+                    "the loop changed before its downbeat",
+                ));
+            }
+            match time.timing_answer(ticket) {
+                Some(Answer::Waiting) => return None,
+                Some(Answer::Committed(at)) => {
+                    self.snap_wait = None;
+                    // Said once it has landed (take_snap).
+                    self.looper.snap_at(SnapPlan { at, ..p });
+                    return None;
+                }
+                Some(Answer::Cancelled(why) | Answer::Refused(why)) => {
+                    self.snap_wait = None;
+                    return Some(self.snap_refused(p.n, p.snap, why));
+                }
+                None => {
+                    self.snap_wait = None;
+                    return Some(self.snap_refused(p.n, p.snap, "the time engine lost it"));
+                }
+            }
+        }
+        let (n, s) = self.snap_want.take()?;
+        let others = (0..MAX_LOOPS)
+            .filter(|&k| k != n)
+            .filter_map(|k| self.looper.loop_status(k))
+            .any(|st| st.phase != Phase::Empty);
+        if others {
+            return Some(self.snap_refused(n, s, "another loop has sound"));
+        }
+        let p = match self.looper.snap_plan(n, s, time.next_frame()) {
+            Ok(p) => p,
+            Err(why) => return Some(self.snap_refused(n, s, why)),
+        };
+        let c = TimingChange {
+            at: p.at,
+            tempo: Some(p.bpm),
+            position: None,
+            play: false,
+            take: None,
+            made_against: time.timeline(),
+        };
+        match time.allowed(&c, audio) {
+            Allowed::Safe => {}
+            Allowed::Ask(_) => {
+                return Some(self.snap_refused(
+                    n,
+                    s,
+                    "the audio tracks would play at their old tempo",
+                ))
+            }
+            Allowed::Refused(why) => return Some(self.snap_refused(n, s, why)),
+        }
+        match time.timing_change(c) {
+            Ok(ticket) => {
+                self.snap_wait = Some((p, ticket));
+                None
+            }
+            Err(why) => Some(self.snap_refused(n, s, why)),
+        }
+    }
+
+    /// Snap `s` on loop `n` can't be made (`why`): counted; the line for
+    /// the log and the screen.
+    fn snap_refused(&mut self, n: usize, s: Snap, why: &str) -> (String, bool) {
+        self.snaps_refused += 1;
+        (
+            format!("looper: Loop {}: can't {}: {why}", n + 1, snap_verb(s)),
+            true,
+        )
+    }
+
+    /// After the looper's period: what became of a snap given it
+    /// ([`Looper::take_snap`]): the line for the log, said on the screen
+    /// too ("snapped 48 ms earlier: 2 bars at 120.00 BPM"), and the tempo
+    /// the song now plays at, for the app's (it changed with the loop, or
+    /// already had when a loop changed first).
+    pub fn take_snap(&mut self) -> (Option<(String, bool)>, Option<f64>) {
+        let Some(SnapDone { plan: p, landed }) = self.looper.take_snap() else {
+            return (None, None);
+        };
+        let n = p.n + 1;
+        if !landed {
+            self.snaps_refused += 1;
+            return (
+                Some((
+                    format!(
+                        "looper: Loop {n}: {} didn't land: the loop changed (the tempo did)",
+                        snap_name(p.snap)
+                    ),
+                    true,
+                )),
+                Some(p.bpm),
+            );
+        }
+        let Some(s) = self.looper.loop_status(p.n) else {
+            return (None, Some(p.bpm));
+        };
+        let bars = ticks_text(s.ticks, self.bar_ticks);
+        let ms = ms(p.by, self.rate);
+        let way = if p.by < 0 { "earlier" } else { "later" };
+        let what = match p.snap {
+            Snap::Found => format!("snapped {ms:.0} ms {way}"),
+            Snap::Tap => "back to your tap".to_string(),
+            Snap::Undo => format!("Undo: the end {ms:.0} ms {way}"),
+            Snap::Redo => format!("Redo: the end {ms:.0} ms {way}"),
+        };
+        (
+            Some((
+                format!(
+                    "looper: Loop {n}: {what}: {bars} at {:.2} BPM, from its downbeat",
+                    p.bpm
+                ),
+                true,
+            )),
+            Some(p.bpm),
+        )
+    }
+
     /// After the looper's period: what smart loop end made of a closing
     /// tap ([`Looper::take_smart`]), once a pass. The line for the log
     /// (with the best two ends, scored) and, when your tap stood, the
@@ -3932,6 +4120,26 @@ pub fn overdubs_text(o: mpfree_looper::Overdubs) -> &'static str {
             "Replace (what you play takes the place of what was there)"
         }
         mpfree_looper::Overdubs::Once => "Once (one pass, then back to playing)",
+    }
+}
+
+/// A snap as the log names it.
+fn snap_name(s: Snap) -> &'static str {
+    match s {
+        Snap::Found => "Snap",
+        Snap::Tap => "Use my tap",
+        Snap::Undo => "Undo of the snap",
+        Snap::Redo => "Redo of the snap",
+    }
+}
+
+/// A snap as "can't ..." says it.
+fn snap_verb(s: Snap) -> &'static str {
+    match s {
+        Snap::Found => "snap",
+        Snap::Tap => "go back to your tap",
+        Snap::Undo => "undo the snap",
+        Snap::Redo => "redo the snap",
     }
 }
 
