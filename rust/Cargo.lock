@@ -936,6 +936,7 @@ name = "mpfree-compose"
 version = "0.1.0"
 dependencies = [
  "mpfree-context",
+ "mpfree-play",
  "mpfree-seq",
  "mpfree-transport",
 ]

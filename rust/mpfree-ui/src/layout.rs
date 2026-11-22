@@ -6,7 +6,7 @@
 //! ```
 //!
 //! - `row(...)` places its children left to right, `col(...)` top to bottom,
-//!   with the theme's gap between them.
+//!   with the gap between them ([`crate::sizes::GAP`], the same in every theme).
 //! - Any other name is a slot: the widget added to the `Ui` under that name.
 //! - After a child, `:N` gives it N pixels, `:N*` a share of what is left
 //!   (weight N), and `:*` or nothing a share of weight 1.
