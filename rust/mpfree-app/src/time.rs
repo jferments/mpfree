@@ -2063,7 +2063,7 @@ mod tests {
             let (mut l, mut r) = ([0f32; crate::PERIOD], [0f32; crate::PERIOD]);
             for i in from..from + 40 {
                 let ctx = mpfree_fx::mpfree_node::Ctx::new(RATE, i * crate::PERIOD as u64);
-                mix.period(&ctx, (&z, &z), (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
+                mix.period(&ctx, (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
             }
         };
         // The crossfader's first move loads rows 1 and 2.
@@ -3588,6 +3588,17 @@ mod tests {
         let said = h.act(mv(0, 1, 2 * BAR, false)).unwrap_err();
         assert!(said.contains("would run into another block"), "{said}");
         assert_eq!(h.control.project.arrangement, before);
+        // Onto an audio track's lane: refused, and it says why.
+        let dest = h.control.project.tracks[0].dest;
+        h.control
+            .project
+            .tracks
+            .push(mpfree_seq::Track::new_audio("Audio 1", dest));
+        let audio = h.control.project.tracks.len() - 1;
+        let said = h.act(mv(0, audio, 0, true)).unwrap_err();
+        assert!(said.contains("Audio 1 is an audio track"), "{said}");
+        assert_eq!(h.control.project.arrangement, before);
+        h.control.project.tracks.pop();
         // A copy onto the bass's lane stays linked to the beat and plays
         // through the bass (Arrange 1.3).
         let said = h.act(mv(0, 1, 6 * BAR, true)).unwrap();

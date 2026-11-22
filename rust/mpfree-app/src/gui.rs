@@ -910,7 +910,8 @@ pub fn no_pad_mutes(what: &str, kit: Option<usize>, page: usize) -> Option<Strin
 /// Writes what each track plays under its name: its own instrument's
 /// name, or another track's ("Track 3's FM", `sends`), else what it plays
 /// of the list of kits (`kits`): "Kit" (kit 1), "Kit 2" and on, or
-/// "Synth"; a Loop track's input ("Pads", for the pads and the synth).
+/// "Synth"; a Loop track's input ("Pads", for the pads and the synth);
+/// an audio track's input ("In L", "In ST", "From Mix": layout spec 4f).
 /// And which tracks play notes, so transpose moves them
 /// (`TrackInfo::melodic`): one with an instrument (not the drum engine),
 /// or one that plays the synth while it plays notes (`synth_notes`).
@@ -922,10 +923,19 @@ fn fill_sounds(
     synth_notes: bool,
 ) {
     use std::borrow::Cow;
+    let audio = &st.audio;
     for (i, t) in st.tracks.iter_mut().enumerate() {
         let played = played(sounds, sends, i);
         let own = played.map(|(h, _)| h);
+        let lane = audio.iter().find(|l| l.row == i).filter(|_| t.audio);
         let name: Cow<str> = match (t.loops, played) {
+            _ if t.audio => match lane {
+                // Its input under the name, as drawn: "In L", or "From
+                // Mix" while it records from inside the mix.
+                Some(l) if l.mix.is_some() => "From Mix".into(),
+                Some(l) => format!("In {}", mpfree_time_ui::song::input_chip(l.input)).into(),
+                None => "".into(),
+            },
             (Some(input), _) => input.short().into(),
             (None, Some((h, from))) => played_name(h, from).into(),
             (None, None) if kits.plays_synth(i) => "Synth".into(),
@@ -938,6 +948,7 @@ fn fill_sounds(
             t.sound = name.into_owned();
         }
         t.melodic = t.loops.is_none()
+            && !t.audio
             && match own {
                 Some(h) => h.id != DRUMS_ENGINE,
                 None => synth_notes && kits.plays_synth(i),
@@ -6871,6 +6882,7 @@ impl Player {
                 View::Sequencer => format!("Tap a step: in or out   ·   hold a step: edit it   ·   Notes: the clip's notes   ·   \
                                             + Lane: a lock lane   ·   STEP SEQ: steps on the pads   ·   PAD BANK: bank   ·   \
                                             MENU: options   ·   {stop}"),
+                View::Arrange if self.time_page.adding => mpfree_time_ui::song::ADD_HINT.to_string(),
                 View::Arrange if self.time.list_view => time_view::LIST_HINT.to_string(),
                 View::Arrange if self.time.song_view => time_view::song_hint(&self.time).to_string(),
                 View::Arrange if self.time_page.clip_card => time_view::CLIPS_CARD_HINT.to_string(),
@@ -13689,7 +13701,15 @@ impl Player {
             // track's input steps to the next (Pads, Line in, Resample).
             (time_view::CLIPS, EventKind::Tab(k)) if k >= mpfree_time_ui::widgets::SOUND_TAP => {
                 let t = k - mpfree_time_ui::widgets::SOUND_TAP;
-                if self.time.tracks.get(t).is_some_and(|tr| tr.loops.is_some()) {
+                if let Some(tr) = self.time.tracks.get(t).filter(|tr| tr.audio) {
+                    // An audio track's input: its panel on the Song view.
+                    let line = format!(
+                        "{}'s input: tap its name on the Song view (Song ›) to open its panel",
+                        tr.name
+                    );
+                    self.tell(&line);
+                    None
+                } else if self.time.tracks.get(t).is_some_and(|tr| tr.loops.is_some()) {
                     Some(FromUi::Time(TimeAction::LoopInput(t)))
                 } else {
                     Some(FromUi::TrackInstrument(t))
@@ -13725,6 +13745,16 @@ impl Player {
             {
                 time_view::learn_target(&ev, &self.time)
                     .map(|a| FromUi::LearnValue(LearnValue::Param(a)))
+            }
+            // "+ Track" opens its chooser (Note track, Audio track, Loop
+            // track; layout spec 4c), and a touch off it closes it: the
+            // page's own. SHIFT + "+ Track" still adds a Loop track.
+            (time_view::CLIPS, EventKind::Toggle(_)) | (time_view::SONG, EventKind::Tab(_))
+                if self.time_page.chooser(&ev, &self.time, self.status.shift) =>
+            {
+                self.time_page.update(&mut self.ui, &self.time);
+                self.refresh_hint();
+                None
             }
             (time_view::CLIPS, EventKind::Toggle(_))
             | (
@@ -13800,6 +13830,23 @@ impl Player {
                 // A swipe across a take lane and a region's drag are free
                 // with SHIFT held, and SHIFT + Undo redoes (layout spec 4c).
                 let fine = self.status.shift;
+                // "+ Track" itself (the chooser's rows are what they say).
+                let plus = match (ev.widget.as_str(), &ev.kind) {
+                    (time_view::CLIPS, EventKind::Toggle(k)) => {
+                        *k == mpfree_seq::SLOTS + mpfree_time_ui::widgets::ADD_TRACK
+                    }
+                    (time_view::SONG, EventKind::Tab(k)) => *k == mpfree_time_ui::song::ADD_TRACK,
+                    _ => false,
+                };
+                // A track picked in the chooser: it closes.
+                if matches!(
+                    a,
+                    Some(
+                        TimeAction::AddTrack | TimeAction::AddAudioTrack | TimeAction::AddLoopTrack
+                    )
+                ) {
+                    self.time_page.update(&mut self.ui, &self.time);
+                }
                 a.map(|a| {
                     let a = match a {
                         TimeAction::Audio(AudioAction::Undo) if fine => {
@@ -13817,7 +13864,7 @@ impl Player {
                             TimeAction::Audio(AudioAction::Move { region, to, fine })
                         }
                         // SHIFT + "+ Track": a Loop track.
-                        TimeAction::AddTrack if fine => TimeAction::AddLoopTrack,
+                        TimeAction::AddTrack if fine && plus => TimeAction::AddLoopTrack,
                         // SHIFT held as the finger lifts: a copy, not a move.
                         TimeAction::DropClip { from, to, .. } => TimeAction::DropClip {
                             from,
@@ -16335,6 +16382,75 @@ fn sample_app() -> crate::app::App {
 /// The mixer's Tracks view over the real mixer with tracks 1 and 2 playing
 /// their own instruments (Poly, FM): a chord each for a few periods, the
 /// costs fixed so the picture is the same on every run.
+/// The Mix tab's tracks with two audio tracks, Vocal (input L) and Guitar
+/// (stereo), each playing into its own channel (phase 1b), dressed as
+/// the loop dresses them (`TrackHost::dress_strips`).
+fn sample_audio_track_mixer() -> mpfree_mixer_ui::MixState {
+    use mpfree_fx::{ids::mixer as mx, StripId};
+    let mut project = mpfree_seq::Project::new();
+    project.tracks.push(mpfree_seq::Track::new("Drums", 0));
+    project
+        .tracks
+        .push(mpfree_seq::Track::new_audio("Vocal", 0));
+    project
+        .tracks
+        .push(mpfree_seq::Track::new_audio("Guitar", 0));
+    project.give_track_ids();
+    let mut tracks = crate::audiotracks::TrackHost::new(44_100, 1);
+    tracks.sync(&project, 0, true);
+    let guitar = (0..mpfree_audiotracks::MAX_TRACKS)
+        .find(|&s| tracks.place(s) == Some(2))
+        .expect("the guitar's engine track");
+    let stereo = mpfree_time_ui::view::AudioAction::Input {
+        track: guitar,
+        input: mpfree_audiotracks::Input::Stereo,
+    };
+    let _ = tracks.action(stereo, &TransportInfo::default(), true);
+    let mut mix = crate::mixing::MixHost::new(44_100, -18.0, -12.0);
+    let (vocal_ch, guitar_ch) = (mix.track_channel(1), mix.track_channel(2));
+    mix.audio_tracks = 0b110;
+    mix.mixer
+        .set_now(StripId::Track(guitar_ch), mx::VOLUME, -3.0);
+    mix.mixer.set_now(StripId::Track(guitar_ch), mx::PAN, 30.0);
+    let silent = [0f32; crate::PERIOD];
+    let (mut l, mut r) = ([0f32; crate::PERIOD], [0f32; crate::PERIOD]);
+    for k in 0..40u64 {
+        for (ch, hz, amp) in [(vocal_ch, 220.0f32, 0.3f32), (guitar_ch, 330.0, 0.5)] {
+            if let Some((il, ir)) = mix.mixer.track_input(ch) {
+                for f in 0..crate::PERIOD {
+                    let t = (k as usize * crate::PERIOD + f) as f32 / 44_100.0;
+                    let x = amp * (std::f32::consts::TAU * hz * t).sin();
+                    il[f] = x;
+                    ir[f] = x;
+                }
+            }
+        }
+        let ctx = mpfree_node::Ctx::new(44_100, k * crate::PERIOD as u64);
+        mix.period(
+            &ctx,
+            (&silent, &silent),
+            (&silent, &silent),
+            (&silent, &silent),
+            &mut l,
+            &mut r,
+        );
+    }
+    mix.show(Some(mpfree_mixer_ui::MixView::Tracks));
+    let mut st = mix
+        .poll_state(std::time::Instant::now())
+        .expect("the mixer shows");
+    tracks.dress_strips(&mut st, &project, 0, &mix);
+    st.selected = Some(StripId::Track(guitar_ch));
+    st.cost_pct = st.cost_pct.map(|_| 12.0);
+    for (k, v) in st.strips.iter_mut().chain([&mut st.master]).enumerate() {
+        v.cost_pct = v.cost_pct.map(|_| 0.5 + k as f32 * 0.25);
+        for i in &mut v.inserts {
+            i.cost_pct = i.cost_pct.map(|_| 1.5);
+        }
+    }
+    st
+}
+
 fn sample_instrument_mixer(synth: &crate::synth::Synth) -> mpfree_mixer_ui::MixState {
     use crate::synth::Engine;
     let mut mix = crate::mixing::MixHost::new(44_100, -18.0, -12.0);
@@ -16360,7 +16476,6 @@ fn sample_instrument_mixer(synth: &crate::synth::Synth) -> mpfree_mixer_ui::MixS
         let ctx = mpfree_node::Ctx::new(44_100, k * crate::PERIOD as u64);
         mix.period(
             &ctx,
-            (&silent, &silent),
             (&silent, &silent),
             (&silent, &silent),
             (&silent, &silent),
@@ -18330,6 +18445,40 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("arrange-song-audio sample: {e}"),
     }
+    // The same project on the Clips grid (layout spec 4f): the vocal and
+    // the guitar are columns after the note tracks, a wave mark and their
+    // input under their names, their cells dashed, the guitar armed; the
+    // "+ Track" chooser open (4c).
+    match mpfree_time_ui::sample::song_audio_state() {
+        Ok(mut state) => {
+            state.song_view = false;
+            state.region = None;
+            let mut p = quiet_player(fonts());
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Arrange));
+            p.time_page.first_track = mpfree_time_ui::widgets::GRID_COLS;
+            p.time_page.adding = true;
+            p.time_page.update(&mut p.ui, &p.time);
+            p.refresh_hint();
+            out.push(("arrange-clips-audio", p));
+        }
+        Err(e) => eprintln!("arrange-clips-audio sample: {e}"),
+    }
+    // The Song view with "+ Track"'s chooser open beside it (4c, as
+    // drawn): Note track, Audio track, Loop track.
+    match mpfree_time_ui::sample::song_audio_state() {
+        Ok(mut state) => {
+            state.region = None;
+            let mut p = quiet_player(fonts());
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Arrange));
+            p.time_page.adding = true;
+            p.time_page.update(&mut p.ui, &p.time);
+            p.refresh_hint();
+            out.push(("arrange-song-add", p));
+        }
+        Err(e) => eprintln!("arrange-song-add sample: {e}"),
+    }
     // The same with the guitar's track panel open (layout spec 4c), its
     // input on ST, soloed, and nothing picked: the Q-Links are its level
     // and pan.
@@ -18450,12 +18599,18 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         Ok(mut p) => {
             use mpfree_fx::StripId;
             let mut strips = vec![("Master".to_string(), StripId::Master)];
-            for t in 0..crate::mixing::TRACKS {
+            // The old shared Audio strip isn't listed (phase 1b): an audio
+            // track has its own channel, named after it.
+            for t in (0..crate::mixing::TRACKS).filter(|&t| t != crate::mixing::AUDIO) {
                 strips.push((crate::mixing::name(StripId::Track(t)), StripId::Track(t)));
             }
             strips.push((
                 "Keys".to_string(),
                 StripId::Track(crate::mixing::TRACKS + 2),
+            ));
+            strips.push((
+                "Vocal".to_string(),
+                StripId::Track(crate::mixing::TRACKS + 3),
             ));
             for b in 0..8 {
                 strips.push((crate::mixing::name(StripId::Bus(b)), StripId::Bus(b)));
@@ -18827,11 +18982,18 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     out.push(("synth-pick-bank", bank));
     // The mixer with two tracks playing their own instruments: Poly on
     // track 1 in the Drums strip, named "Track 1" for it, and FM on track 2
-    // in its own channel after Synth, Loop and Audio.
+    // in its own channel after Synth and Loop.
     let mut mixer = sample_player(fonts());
     mixer.apply(ToUi::Show(View::Mixer));
     mixer.apply(ToUi::Mixer(Box::new(sample_instrument_mixer(&fm))));
     out.push(("mixer-instruments", mixer));
+    // Two audio tracks, each on its own strip (the audio tracks rethink,
+    // phase 1b): named and coloured as the track, a wave mark and the
+    // input by the name, the guitar picked, down 3 dB and to the right.
+    let mut audio_mix = sample_player(fonts());
+    audio_mix.apply(ToUi::Show(View::Mixer));
+    audio_mix.apply(ToUi::Mixer(Box::new(sample_audio_track_mixer())));
+    out.push(("mixer-audio-tracks", audio_mix));
     // The Sample page: the loop on kit 1's pad 5, the music playing for
     // 40 s so the recorder row's Keep card keeps the last 4 bars
     // (one-page step 2c); then zoomed round the loop start after a Q-Link
@@ -25842,6 +26004,7 @@ mod tests {
         st.song_view = true;
         st.audio = vec![AudioLane {
             track: 1,
+            row: usize::MAX,
             name: "Audio 2".into(),
             color: time_view::audio_color(1),
             armed: false,
@@ -25888,8 +26051,8 @@ mod tests {
         assert_eq!(
             shown,
             [
-                ("Level", "AUDIO 2", "-6.0 dB"),
-                ("Pan", "AUDIO 2", "L20"),
+                ("Level", "ITS STRIP", "-6.0 dB"),
+                ("Pan", "ITS STRIP", "L20"),
                 ("Gain", "REGION", "6.0 dB"),
                 ("Fades", "REGION", "10 ms"),
             ]
@@ -27795,6 +27958,13 @@ mod tests {
         clips.tracks[0].slots[0] = Some(clip);
         // Its lasting id, as a project in the app has it (Arrange 1.1).
         clips.give_clip_ids();
+        // Audio 2, an audio track at the end of the track list, which the
+        // audio part names by its lasting id (the audio tracks rethink,
+        // phase 1a).
+        let mut audio_track = mpfree_seq::Track::new_audio("Audio 2", 0);
+        clips.give_track_id(&mut audio_track);
+        let audio_id = audio_track.id.0;
+        clips.tracks.push(audio_track);
         let synth = crate::synth::Synth::new(44_100);
         // Loop 2 with one layer, as the looper's save gives it.
         let layer: Vec<f32> = (0..2 * 4410).map(|k| (k % 97) as f32 / 200.0).collect();
@@ -27833,12 +28003,9 @@ mod tests {
             rate: 44_100,
             tracks: vec![mpfree_audiotracks::save::TrackFile {
                 index: 1,
+                id: audio_id,
                 input: mpfree_audiotracks::Input::Right,
-                monitor: mpfree_audiotracks::Monitor::Auto,
-                level: 0.5,
-                pan: 0.0,
-                muted: false,
-                solo: true,
+                monitor: mpfree_audiotracks::Monitor::In,
                 from: String::new(),
                 regions: vec![mpfree_audiotracks::Region {
                     start: 0,
@@ -27852,6 +28019,7 @@ mod tests {
             }],
             takes: vec![mpfree_audiotracks::save::TakeFile {
                 id: 4,
+                rec: mpfree_audiotracks::RecordingId(0x77),
                 track: 1,
                 group: 1,
                 pass: 0,
@@ -27969,12 +28137,18 @@ mod tests {
         assert_eq!(audio.tracks.len(), 1);
         let t = &audio.tracks[0];
         assert_eq!(
-            (t.index, t.input, t.level, t.solo),
-            (1, mpfree_audiotracks::Input::Right, 0.5, true)
+            (t.index, t.input, t.monitor),
+            (
+                1,
+                mpfree_audiotracks::Input::Right,
+                mpfree_audiotracks::Monitor::In
+            )
         );
         assert_eq!(t.regions[0].take, 4);
         let k = &audio.takes[0];
         assert_eq!((k.id, k.frames, k.channels), (4, 4410, 1));
+        // The recording keeps its lasting id (phase 1c).
+        assert_eq!(k.rec, mpfree_audiotracks::RecordingId(0x77));
         assert_eq!(k.audio, take);
         assert!(
             k.file.starts_with("take-") && k.file.ends_with(".wav"),
