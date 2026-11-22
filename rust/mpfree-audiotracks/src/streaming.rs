@@ -22,14 +22,15 @@
 //!   its file; the bytes go back to the worker.
 
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::Arc;
 use std::time::Duration;
 
 use mpfree_stream::coord::{Coordinator, IoThread, JobId, JobTier, Plan};
+use mpfree_stream::format::Layout;
 use mpfree_stream::msg::MAX_SOURCES;
-use mpfree_stream::player::{Config, Player};
+use mpfree_stream::player::{Config, Player, UNIT};
 use mpfree_stream::writer::Gate;
 
 use crate::RecordingId;
@@ -43,9 +44,64 @@ pub struct StreamConfig {
     pub plan: Plan,
 }
 
+/// The fewest cache slots [`StreamConfig::for_memory`] gives (4 MiB).
+pub const MIN_SLOTS: usize = 64;
+
+impl StreamConfig {
+    /// A cache as big as `seconds` of stereo at `rate` Hz (the musician's
+    /// audio track memory), and at least [`MIN_SLOTS`]. The coordinator
+    /// reads as far ahead as that holds, up to its plan's window.
+    pub fn for_memory(seconds: u32, rate: u32) -> StreamConfig {
+        let samples = seconds as usize * rate as usize * 2;
+        StreamConfig {
+            cache: Config {
+                slots: samples.div_ceil(UNIT).max(MIN_SLOTS),
+                ..Config::default()
+            },
+            ..StreamConfig::default()
+        }
+    }
+
+    /// The cache's size in bytes.
+    pub fn cache_bytes(&self) -> usize {
+        self.cache.slots * UNIT * std::mem::size_of::<f32>()
+    }
+}
+
+/// Whether the sound file at `path` holds a take of `channels` and
+/// `frames` at `rate` Hz, by its header alone (no audio read): what a
+/// project opening checks before a take opens as its file. The stream
+/// thread checks the same as it opens it.
+pub fn check_file(path: &Path, channels: usize, frames: usize, rate: u32) -> Result<(), String> {
+    let mut f = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let l = mpfree_stream::format::layout(&mut f).map_err(|e| e.to_string())?;
+    mismatch(&l, channels, frames, rate).map_or(Ok(()), Err)
+}
+
+/// Why a file laid out as `l` isn't a take of `channels` and `frames` at
+/// `rate` Hz, if it isn't.
+fn mismatch(l: &Layout, channels: usize, frames: usize, rate: u32) -> Option<String> {
+    if usize::from(l.channels) != channels {
+        Some(format!(
+            "it has {} channels, the take {channels}",
+            l.channels
+        ))
+    } else if l.frames != frames as u64 {
+        Some(format!("it has {} frames, the take {frames}", l.frames))
+    } else if l.rate != rate {
+        Some(format!("it is at {} Hz, the tracks at {rate} Hz", l.rate))
+    } else if l.cut_short {
+        Some("it holds less audio than its header says".into())
+    } else {
+        None
+    }
+}
+
 /// What the stream thread is asked to do (see the module notes).
 pub(crate) enum ToStream {
+    /// `era` is the host's generation of the tracks, given back.
     Open {
+        era: u32,
         take: u16,
         rec: RecordingId,
         path: PathBuf,
@@ -67,12 +123,14 @@ pub(crate) enum ToStream {
 pub(crate) enum Opened {
     /// Take `take`'s file is open as its source, at generation `gen`.
     Open {
+        era: u32,
         take: u16,
         rec: RecordingId,
         gen: u32,
     },
     /// It couldn't be opened, or doesn't hold what the take does.
     Failed {
+        era: u32,
         take: u16,
         rec: RecordingId,
         why: String,
@@ -179,12 +237,13 @@ impl Side {
     ) -> bool {
         match m {
             ToStream::Open {
+                era,
                 take,
                 rec,
                 path,
                 channels,
                 frames,
-            } => opened(self.open(take, rec, &path, channels, frames)),
+            } => opened(self.open(era, take, rec, &path, channels, frames)),
             ToStream::Close { take, gen } => {
                 if self.gens.get(usize::from(take)) == Some(&gen) {
                     self.c.close(take);
@@ -232,14 +291,20 @@ impl Side {
     /// `channels` and `frames` at the tracks' rate.
     fn open(
         &mut self,
+        era: u32,
         take: u16,
         rec: RecordingId,
-        path: &std::path::Path,
+        path: &Path,
         channels: usize,
         frames: usize,
     ) -> Opened {
         let (c, rate) = (&mut self.c, self.rate);
-        let failed = |why: String| Opened::Failed { take, rec, why };
+        let failed = |why: String| Opened::Failed {
+            era,
+            take,
+            rec,
+            why,
+        };
         let tag = match c.open(take, path) {
             Ok(tag) => tag,
             Err(why) => return failed(why),
@@ -248,27 +313,14 @@ impl Side {
             c.close(take);
             return failed("it isn't a sound file the stream layer reads".into());
         };
-        let why = if usize::from(l.channels) != channels {
-            Some(format!(
-                "it has {} channels, the take {channels}",
-                l.channels
-            ))
-        } else if l.frames != frames as u64 {
-            Some(format!("it has {} frames, the take {frames}", l.frames))
-        } else if l.rate != rate {
-            Some(format!("it is at {} Hz, the tracks at {rate} Hz", l.rate))
-        } else if l.cut_short {
-            Some("it holds less audio than its header says".into())
-        } else {
-            None
-        };
-        if let Some(why) = why {
+        if let Some(why) = mismatch(&l, channels, frames, rate) {
             c.close(take);
             self.gens[usize::from(take)] = 0;
             return failed(why);
         }
         self.gens[usize::from(take)] = tag.gen;
         Opened::Open {
+            era,
             take,
             rec,
             gen: tag.gen,

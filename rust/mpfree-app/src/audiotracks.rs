@@ -57,9 +57,10 @@
 
 use mpfree_audiotracks::host::{AudioHost, ImportRefused, TakeWave, MAX_COLUMNS};
 use mpfree_audiotracks::save::{Saved, TrackFile};
+use mpfree_audiotracks::streaming::StreamConfig;
 use mpfree_audiotracks::{
-    Command, Input, Monitor, Retime, RetimeRefused, SongStep, TakeInfo, MAX_REGIONS, MAX_TRACKS,
-    PEAK_BLOCK,
+    Command, Input, Monitor, Retime, RetimeRefused, SongStep, TakeInfo, MAX_REGIONS, MAX_TAKES,
+    MAX_TRACKS, PEAK_BLOCK,
 };
 use mpfree_seq::TrackId;
 use mpfree_time_ui::song::{audio_blocks, input_chip, take_lanes, AudioLane, MixFrom, MONITORS};
@@ -137,6 +138,10 @@ const ARM_WINDOW: u64 = 1000;
 /// Periods between new reads of a recording take's waveform (about a
 /// quarter of a second).
 const GROW_EVERY: u64 = 86;
+/// Periods between looks at the frames takes on their files played as
+/// silence (about a second): a stick falling behind gives a line a
+/// second at most.
+const DROPOUTS_EVERY: u64 = 344;
 
 /// Room for each audio track's name in the lines (bytes; a longer name is
 /// cut short there).
@@ -283,6 +288,22 @@ pub struct TrackHost {
     /// The folder to record takes into, until the host takes it
     /// ([`TrackHost::record_to`]: it waits while a track records).
     files_dir: Option<std::path::PathBuf>,
+    /// Frames each take on its file has played as silence, as last said
+    /// in the log ([`TrackHost::take_file_line`]).
+    silent_seen: [u64; MAX_TAKES],
+    /// The song's meter, for the bar a dropout was at.
+    time_sig: mpfree_transport::time::Meter,
+}
+
+/// Playing takes from their files, for Dev's Performance page.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct StreamNumbers {
+    /// Takes on their files, of all takes.
+    pub on_file: usize,
+    pub takes: usize,
+    /// Seconds of takes on their files that played as silence, the drive
+    /// being late, since the start.
+    pub silent_s: f64,
 }
 
 impl TrackHost {
@@ -331,7 +352,39 @@ impl TrackHost {
             silent: [false; MAX_TRACKS],
             arm_next: None,
             files_dir: None,
+            silent_seen: [0; MAX_TAKES],
+            time_sig: mpfree_transport::time::Meter::default(),
         }
+    }
+
+    /// Play takes from their files (Dev's "Audio tracks from their
+    /// files"), through a cache as big as `seconds` of stereo (Audio track
+    /// memory): call it at start, before [`TrackHost::record_to`]. The
+    /// cache's size in bytes, or None if refused. The stream layer starts
+    /// on the host's worker; if it can't, the log says so and takes play
+    /// from memory.
+    pub fn stream(&mut self, seconds: u32) -> Option<usize> {
+        let cfg = StreamConfig::for_memory(seconds, self.rate);
+        self.host.stream(cfg).then(|| cfg.cache_bytes())
+    }
+
+    /// Whether takes play from their files.
+    pub fn streams(&self) -> bool {
+        self.host.streams()
+    }
+
+    /// Takes on their files and what they missed, while takes play from
+    /// their files. Does not allocate.
+    pub fn stream_numbers(&self) -> Option<StreamNumbers> {
+        if !self.host.streams() {
+            return None;
+        }
+        let tr = &self.host.tracks;
+        Some(StreamNumbers {
+            on_file: tr.takes().filter(|k| tr.on_file(k.id)).count(),
+            takes: tr.takes().count(),
+            silent_s: tr.stats().missed as f64 / f64::from(self.rate),
+        })
     }
 
     /// Record every take to a file of its own in `dir` (the library's work
@@ -360,11 +413,51 @@ impl TrackHost {
     }
 
     /// The next line for the log about a take's file (it couldn't be made,
-    /// it is at risk, a save took a take from memory), naming the track as
-    /// the musician named it. Allocates only when there is one.
+    /// it is at risk, a save took a take from memory, it couldn't be
+    /// opened to play from), naming the track as the musician named it;
+    /// and, about once a second while it happens, the takes on their
+    /// files that played silence because the drive was late. Allocates
+    /// only when there is one.
     pub fn take_file_line(&mut self) -> Option<String> {
-        let e = self.host.take_event()?;
-        Some(e.line(&self.who(e.track())))
+        if let Some(e) = self.host.take_event() {
+            return Some(e.line(&self.who(e.track())));
+        }
+        if self.host.streams() && self.periods.is_multiple_of(DROPOUTS_EVERY) {
+            return self.dropout_line();
+        }
+        None
+    }
+
+    /// "audio tracks: the drive fell behind: 0.3 s of Vocal went silent
+    /// at bar 34" for each take whose silent frames grew since the last.
+    fn dropout_line(&mut self) -> Option<String> {
+        let mut line: Option<String> = None;
+        for id in 0..MAX_TAKES as u16 {
+            let i = usize::from(id);
+            let Some((now, tick)) = self.host.tracks.missed(id) else {
+                // Gone: a take given this id later starts from none.
+                self.silent_seen[i] = 0;
+                continue;
+            };
+            // Less than before: a new take under the same id.
+            let seen = Some(self.silent_seen[i]).filter(|&s| s <= now).unwrap_or(0);
+            self.silent_seen[i] = now;
+            let Some(k) = self.host.tracks.take(id).filter(|_| now > seen) else {
+                continue;
+            };
+            let secs = (now - seen) as f64 / f64::from(self.rate);
+            let bar = self.time_sig.position(tick.floor() as Tick).bar;
+            let who = self.who(k.track);
+            match &mut line {
+                None => {
+                    line = Some(format!(
+                        "audio tracks: the drive fell behind: {secs:.1} s of {who} went silent at bar {bar}"
+                    ));
+                }
+                Some(l) => l.push_str(&format!(", {secs:.1} s of {who} at bar {bar}")),
+            }
+        }
+        line
     }
 
     /// A project opening, or New: which project track each engine track
@@ -613,6 +706,9 @@ impl TrackHost {
         // through its own channel (`play_into`).
         self.host
             .period(block, map, &self.input[..], &mut self.out[..]);
+        if let Some(sp) = block.spans().last() {
+            self.time_sig = sp.meter;
+        }
         self.measure();
         self.periods += 1;
         self.tend_open();
@@ -905,9 +1001,13 @@ impl TrackHost {
     }
 
     /// True while a project's audio tracks are going in: emptying, waiting
-    /// for the part, or takes copying in. A save waits for it.
+    /// for the part, takes copying in, or takes waiting for their files to
+    /// open. A save waits for it.
     pub fn opening(&self) -> bool {
-        self.clearing || self.pending.is_some() || self.host.tracks.loading() > 0
+        self.clearing
+            || self.pending.is_some()
+            || self.host.tracks.loading() > 0
+            || self.host.opening() > 0
     }
 
     /// A line for the log from the open, once.
@@ -3170,6 +3270,117 @@ mod tests {
         assert!(r.state().audio.is_empty());
         assert!(!r.h.silent[1] && r.h.inputs[1] == Input::Left);
         assert!(!r.h.host.tracks.settings(1).unwrap().mute);
+    }
+
+    /// Phase 3b step 3: with Dev's "Audio tracks from their files" on, a
+    /// project's takes open as their files with nothing read into memory,
+    /// Dev's Performance page counts them, and frames the drive was late
+    /// with are said in the log, with the track and the bar.
+    #[test]
+    fn takes_play_from_their_files_and_dropouts_are_said() {
+        use mpfree_audiotracks::save::{wav, TakeFile};
+        use mpfree_audiotracks::{RecordingId, Region};
+        let dir = std::env::temp_dir().join(format!("mpfree-th-stream-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut r = Rig::new();
+        // 10 s of stereo is under the least cache, 4 MiB.
+        assert_eq!(r.h.stream(10), Some(4 << 20));
+        assert!(r.h.stream(10).is_none(), "once");
+        assert!(r.h.streams());
+        assert_eq!(r.add(), 0);
+        // 30 s of mono in the project's file: longer than the cache holds.
+        let frames = 30 * RATE as usize;
+        let audio: Vec<f32> = (0..frames)
+            .map(|g| (g % 100) as f32 / 200.0 - 0.25)
+            .collect();
+        let path = dir.join("Audio-1_take.wav");
+        std::fs::write(&path, wav(&audio, 1, RATE)).unwrap();
+        // 30 s at 120 BPM: 60 beats.
+        let end: Tick = 60 * mpfree_transport::time::PPQ as Tick;
+        let saved = Saved {
+            rate: RATE,
+            tracks: vec![TrackFile {
+                index: 0,
+                id: 0,
+                input: Input::Left,
+                monitor: Monitor::Auto,
+                from: String::new(),
+                regions: vec![Region {
+                    start: 0,
+                    end,
+                    take: 0,
+                    src: 0,
+                    gain: 1.0,
+                    fade_in: 0,
+                    fade_out: 0,
+                }],
+            }],
+            takes: vec![TakeFile {
+                id: 0,
+                rec: RecordingId(0x77),
+                track: 0,
+                group: 0,
+                pass: 0,
+                bpm: 120.0,
+                anchor: 0.0,
+                frames,
+                channels: 1,
+                file: "Audio-1_take.wav".into(),
+                path: Some(path.clone()),
+                audio: Vec::new(),
+            }],
+        };
+        r.h.clear();
+        r.h.open(saved);
+        let t0 = Instant::now();
+        while r.h.opening() {
+            assert!(t0.elapsed() < Duration::from_secs(20), "never opened");
+            r.period();
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        assert_eq!(
+            r.h.take_note().as_deref(),
+            Some("project: 1 audio track and 1 take in")
+        );
+        assert!(r.h.host.tracks.on_file(0));
+        assert_eq!(r.h.host.tracks.memory().used, 0, "nothing read in");
+        assert_eq!(r.h.host.tracks.regions(0).len(), 1);
+        assert_eq!(
+            r.h.stream_numbers(),
+            Some(StreamNumbers {
+                on_file: 1,
+                takes: 1,
+                silent_s: 0.0,
+            })
+        );
+        // Playing, then on at once to bar 11 (20 s in), which the cache
+        // can't have yet: its first period plays silence.
+        r.command(T::Locate(0));
+        r.command(T::Play);
+        r.periods(10);
+        r.command(T::Locate(10 * 4 * mpfree_transport::time::PPQ as i64));
+        r.periods(2);
+        assert!(r.h.stream_numbers().unwrap().silent_s > 0.0);
+        // The log says so within a second, naming the track and the bar.
+        let mut line = None;
+        for _ in 0..=DROPOUTS_EVERY {
+            r.period();
+            if let Some(l) = r.h.take_file_line() {
+                line = Some(l);
+                break;
+            }
+        }
+        let line = line.expect("a line about the dropout");
+        assert!(
+            line.starts_with("audio tracks: the drive fell behind: ")
+                && line.ends_with(" s of Audio 1 went silent at bar 11"),
+            "{line}"
+        );
+        r.command(T::Stop);
+        r.periods(4);
+        drop(r);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -93,6 +93,9 @@ pub struct AudioNumbers {
     pub peak_grains: usize,
     /// Grain Shape turns that waited for older grains to end.
     pub window_waits: u64,
+    /// Audio track takes played from their files (Dev's "Audio tracks
+    /// from their files"); None while they play from memory.
+    pub track_files: Option<crate::audiotracks::StreamNumbers>,
 }
 
 /// The period: 128 frames at 44.1 kHz, in µs.
@@ -451,7 +454,7 @@ impl DebugPages {
                 Tone::Good
             }
         };
-        let rows = vec![
+        let mut rows = vec![
             (
                 "Period (128 frames)".to_string(),
                 format!("{PERIOD_US:.0} µs"),
@@ -533,6 +536,22 @@ impl DebugPages {
                 },
             ),
         ];
+        if let Some(f) = a.track_files {
+            rows.push((
+                "Audio track takes on their files".to_string(),
+                format!("{} of {}", f.on_file, f.takes),
+                Tone::Normal,
+            ));
+            rows.push((
+                "Audio tracks silent, the drive late".to_string(),
+                format!("{:.1} s", f.silent_s),
+                if f.silent_s == 0.0 {
+                    Tone::Good
+                } else {
+                    Tone::Bad
+                },
+            ));
+        }
         if let Some(s) = ui.get_mut::<StatList>("audio") {
             s.set(rows);
         }

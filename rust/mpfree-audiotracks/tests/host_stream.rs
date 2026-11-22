@@ -4,7 +4,8 @@
 //! freed, the song sounding exactly as it does from memory; a project's
 //! takes open as their files with nothing copied in; a waveform or a fit
 //! of a take on its file reads the file and gives what it gives from
-//! memory; a project take whose file is missing is left out and said;
+//! memory; a project take whose file is missing is left out and said,
+//! with its regions; a project's tracks wait for its takes' files;
 //! clearing closes the files, and a project opens again after; streaming
 //! can't start once recording to files has.
 
@@ -339,6 +340,44 @@ fn a_project_take_whose_file_is_missing_is_left_out_and_said() {
     let have: Vec<_> = r.h.tracks.takes().map(|k| k.track).collect();
     assert_eq!(have, [0]);
     assert!(r.all_on_file());
+    // The tracks went in once the takes had: without the regions of the
+    // take left out, so none plays a take that isn't there.
+    assert_eq!(r.h.tracks.regions(0).len(), 1);
+    assert!(r.h.tracks.regions(1).is_empty());
+    let again = r.save();
+    assert!(again.tracks.iter().all(|t| t
+        .regions
+        .iter()
+        .all(|g| again.takes.iter().any(|k| k.id == g.take))));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_project_s_tracks_wait_for_its_takes_files() {
+    let dir = scratch("wait");
+    let mut first = Rig::new(Some(&dir), false);
+    first.record(true);
+    let saved = first.save();
+    let mut r = Rig::new(None, true);
+    r.live = false;
+    assert!(r.h.load(saved.clone()).is_ok());
+    // Until the files are open, no region plays a take not yet there.
+    assert!((0..2).all(|t| r.h.tracks.regions(t).is_empty()));
+    assert_eq!(
+        r.h.load(saved.clone()),
+        Err("audio tracks: another project is still opening".into())
+    );
+    r.run_until(|r| r.h.opening() == 0);
+    assert!((0..2).all(|t| r.h.tracks.regions(t).len() == 1));
+    // Emptied while its takes open: nothing of it comes in after.
+    assert!(r.h.clear());
+    r.run_to(r.frame + 4 * P);
+    assert!(r.h.load(saved.clone()).is_ok());
+    assert!(r.h.clear());
+    r.run_to(r.frame + 40 * P);
+    assert_eq!(r.h.tracks.takes().count(), 0);
+    assert!((0..2).all(|t| r.h.tracks.regions(t).is_empty()));
+    assert!(r.events().is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }
 

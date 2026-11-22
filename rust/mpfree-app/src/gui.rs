@@ -10987,11 +10987,12 @@ impl Player {
             self.browser.as_ref().map(|b| b.library().clone()),
         ) {
             let (text, loc, rate) = (text.to_string(), loc.clone(), self.project_rate);
+            let streams = self.settings.audio_streams;
             let (tx, rx) = std::sync::mpsc::channel();
             let read = std::thread::Builder::new()
                 .name("audio-open".into())
                 .spawn(move || {
-                    let r = crate::project::audio_open(&text, rate, |f| {
+                    let r = crate::project::audio_open(&text, rate, streams, |f| {
                         lib.sample_path(&loc, f).map_err(|e| e.to_string())
                     });
                     let _ = tx.send(r);
@@ -15024,6 +15025,7 @@ pub fn sample_player(fonts: Fonts) -> Player {
             ends_lost: 0,
             peak_grains: 0,
             window_waits: 0,
+            track_files: None,
         },
     }));
     p.set_screen_row(
@@ -18053,6 +18055,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
                 ends_lost: 0,
                 peak_grains: 48,
                 window_waits: 0,
+                track_files: None,
             },
             ..Timing::default()
         }));

@@ -1933,6 +1933,16 @@ impl AudioTracks {
         Ok(())
     }
 
+    /// Whether a saved track is one [`AudioTracks::load_track`] can put
+    /// back (a track that exists, regions that fit, each with a length,
+    /// in order and not overlapping), whatever the tracks are doing.
+    pub fn track_fits(f: &TrackFile) -> bool {
+        f.index < MAX_TRACKS
+            && f.regions.len() <= MAX_REGIONS
+            && f.regions.iter().all(|r| r.end > r.start)
+            && f.regions.windows(2).all(|w| w[0].end <= w[1].start)
+    }
+
     /// Put a saved track's input, monitor and regions back (its takes
     /// loaded with [`AudioTracks::load_take`], before or after); its level,
     /// pan, mute and solo stay as they are, since a save doesn't hold
@@ -1941,12 +1951,7 @@ impl AudioTracks {
     /// track is past the last or recording, or the regions are too many or
     /// out of order.
     pub fn load_track(&mut self, f: &TrackFile) -> bool {
-        let ok = f.index < MAX_TRACKS
-            && f.regions.len() <= MAX_REGIONS
-            && f.regions.iter().all(|r| r.end > r.start)
-            && f.regions.windows(2).all(|w| w[0].end <= w[1].start)
-            && self.tracks[f.index].rec.is_none();
-        if !ok {
+        if !Self::track_fits(f) || self.tracks[f.index].rec.is_some() {
             return false;
         }
         let t = &mut self.tracks[f.index];

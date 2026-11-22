@@ -179,6 +179,9 @@ pub enum FileEvent {
     /// Playing takes from their files couldn't start (`why`): every take
     /// plays from memory, as before.
     NoStream { why: String },
+    /// A project's track went in without its regions, as it was recording
+    /// when its takes' files had opened.
+    TrackLeftOut { track: usize },
 }
 
 impl FileEvent {
@@ -189,7 +192,8 @@ impl FileEvent {
             | FileEvent::NoFile { track, .. }
             | FileEvent::FromMemory { track, .. }
             | FileEvent::State { track, .. }
-            | FileEvent::Unopened { track, .. } => *track,
+            | FileEvent::Unopened { track, .. }
+            | FileEvent::TrackLeftOut { track } => *track,
             FileEvent::NoStream { .. } => 0,
         }
     }
@@ -247,6 +251,10 @@ impl FileEvent {
             FileEvent::NoStream { why } => format!(
                 "audio tracks: takes play from memory, as playing them from the drive couldn't \
                  start ({why})"
+            ),
+            FileEvent::TrackLeftOut { .. } => format!(
+                "audio tracks: {who}'s regions in the project were left out, as it was recording \
+                 when they went in"
             ),
         }
     }

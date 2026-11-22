@@ -39,7 +39,8 @@
 //!   reads. Each recorded take's file is opened once the writer has
 //!   finished it, and the take moves to it ([`crate::Command::OnFile`]); a
 //!   project's takes open as their files with nothing copied in
-//!   ([`AudioHost::load`]; a save waits until they are in). A waveform or
+//!   ([`AudioHost::load`]; its tracks go in once they have, without the
+//!   regions of one left out, and a save waits for them). A waveform or
 //!   a fit of a take on its file reads the file on the worker, behind
 //!   playback's reads, and one reading a take from memory when it moves
 //!   goes on from its file; a save copies it whole, as before.
@@ -197,8 +198,11 @@ enum ToWorker {
         frames: usize,
         channels: usize,
     },
-    /// The tracks were emptied.
-    Clear,
+    /// The tracks were emptied: what is asked from now on is for the
+    /// tracks of generation `gen`.
+    Clear {
+        gen: u32,
+    },
     /// A project save finished into this `samples/`.
     SavedInto(PathBuf),
     /// Start the stream layer: takes play from their files (boxed: sent
@@ -345,6 +349,11 @@ pub struct AudioHost {
     /// A project's takes waiting for their files to open (room for every
     /// take, made once; a take here holds no audio, name or path).
     opening: Vec<TakeFile>,
+    /// That project's tracks (its takes taken out), waiting until every
+    /// take has come in or been left out: then they go in, without the
+    /// regions of a take left out, so no region ever plays a take that
+    /// won't come.
+    waiting: Option<Saved>,
 }
 
 /// Why [`AudioHost::import`] could not take a sound.
@@ -399,6 +408,7 @@ impl AudioHost {
             stale: 0,
             streaming: false,
             opening: Vec::with_capacity(MAX_TAKES),
+            waiting: None,
         }
     }
 
@@ -568,9 +578,17 @@ impl AudioHost {
     /// lasting id of its own) opens as its file instead, its audio not
     /// needed: it comes in once the file is open ([`AudioHost::opening`]),
     /// and one whose file can't be opened is left out, said in the log.
+    /// The tracks then go in once every take has come in or been left
+    /// out, without the regions of a take left out (a track that can't go
+    /// in is listed in the error at once). Refused while another
+    /// project's takes are still opening ([`AudioHost::clear`] first).
     pub fn load(&mut self, mut saved: Saved) -> Result<(), String> {
         // Only a refusal allocates (its line); what is left of the part
         // goes to the worker to drop.
+        if self.waiting.is_some() {
+            self.send(ToWorker::DropSaved(saved));
+            return Err("audio tracks: another project is still opening".into());
+        }
         let mut bad = Vec::new();
         for mut k in saved.takes.drain(..) {
             let (id, frames, channels) = (k.id, k.frames, k.channels);
@@ -627,12 +645,21 @@ impl AudioHost {
                 }
             }
         }
-        for t in &saved.tracks {
-            if !self.tracks.load_track(t) {
-                bad.push(format!("track {}", t.index + 1));
+        if self.opening.is_empty() {
+            for t in &saved.tracks {
+                if !self.tracks.load_track(t) {
+                    bad.push(format!("track {}", t.index + 1));
+                }
             }
+            self.send(ToWorker::DropSaved(saved));
+        } else {
+            for t in &saved.tracks {
+                if !AudioTracks::track_fits(t) {
+                    bad.push(format!("track {}", t.index + 1));
+                }
+            }
+            self.waiting = Some(saved);
         }
-        self.send(ToWorker::DropSaved(saved));
         if bad.is_empty() {
             Ok(())
         } else {
@@ -843,9 +870,15 @@ impl AudioHost {
         }
         self.importing = None;
         self.files.views.fill(None);
-        // Takes still waiting for their files hold nothing to free.
+        // Takes still waiting for their files hold nothing to free; their
+        // tracks go to the worker.
         self.opening.clear();
-        self.send(ToWorker::Clear);
+        if let Some(w) = self.waiting.take() {
+            self.send(ToWorker::DropSaved(w));
+        }
+        self.send(ToWorker::Clear {
+            gen: self.generation,
+        });
         if self.streaming {
             self.send(ToWorker::Project);
         }
@@ -920,6 +953,17 @@ impl AudioHost {
                 }
                 FromWorker::StreamFailed(why) => {
                     self.streaming = false;
+                    // A project's takes waiting for their files won't
+                    // open: left out, said, and its tracks go in.
+                    while let Some(k) = self.opening.pop() {
+                        self.tracks.reserve(k.id, false);
+                        self.event(FileEvent::Unopened {
+                            track: k.track,
+                            why: why.clone(),
+                            kept: false,
+                        });
+                    }
+                    self.tracks_in();
                     self.event(FileEvent::NoStream { why });
                 }
                 FromWorker::Opened(o) => self.opened(o),
@@ -1021,7 +1065,12 @@ impl AudioHost {
     /// more is closed.
     fn opened(&mut self, o: Opened) {
         match o {
-            Opened::Open { take, rec, gen } => {
+            // For tracks since emptied: its source goes.
+            Opened::Open { era, take, gen, .. } if era != self.generation => {
+                self.send(ToWorker::Close { take, gen });
+            }
+            Opened::Failed { era, .. } if era != self.generation => {}
+            Opened::Open { take, rec, gen, .. } => {
                 if let Some(i) = self
                     .opening
                     .iter()
@@ -1037,6 +1086,7 @@ impl AudioHost {
                             kept: false,
                         });
                     }
+                    self.tracks_in();
                 } else if self
                     .tracks
                     .take(take)
@@ -1048,7 +1098,7 @@ impl AudioHost {
                     self.send(ToWorker::Close { take, gen });
                 }
             }
-            Opened::Failed { take, rec, why } => {
+            Opened::Failed { take, rec, why, .. } => {
                 if let Some(i) = self
                     .opening
                     .iter()
@@ -1061,6 +1111,7 @@ impl AudioHost {
                         why,
                         kept: false,
                     });
+                    self.tracks_in();
                 } else if let Some(t) = self.tracks.take(take).filter(|t| t.rec == rec) {
                     self.event(FileEvent::Unopened {
                         track: t.track,
@@ -1070,6 +1121,29 @@ impl AudioHost {
                 }
             }
         }
+    }
+
+    /// A project's tracks go in once none of its takes is still opening:
+    /// without the regions of the takes left out.
+    fn tracks_in(&mut self) {
+        if !self.opening.is_empty() {
+            return;
+        }
+        let Some(mut saved) = self.waiting.take() else {
+            return;
+        };
+        for t in &mut saved.tracks {
+            if !AudioTracks::track_fits(t) {
+                // Listed by the load.
+                continue;
+            }
+            let tracks = &self.tracks;
+            t.regions.retain(|r| tracks.take(r.take).is_some());
+            if !self.tracks.load_track(t) {
+                self.event(FileEvent::TrackLeftOut { track: t.index });
+            }
+        }
+        self.send(ToWorker::DropSaved(saved));
     }
 
     /// What the worker said about a file.
@@ -1500,6 +1574,7 @@ fn work(rate: u32, jobs: &Receiver<ToWorker>, done: &Sender<FromWorker>, back: &
         stream: None,
         wants: Vec::new(),
         next_job: 1,
+        era: 0,
     };
     loop {
         let m = if w.files.writing() {
@@ -1552,6 +1627,10 @@ struct Worker {
     /// Whole-file reads asked of the stream thread, and what each is for.
     wants: Vec<(u32, Want)>,
     next_job: u32,
+    /// The tracks' generation (as [`ToWorker::Clear`] last said): each
+    /// file opened carries it, so an answer for tracks since emptied is
+    /// told apart.
+    era: u32,
 }
 
 impl Worker {
@@ -1563,6 +1642,7 @@ impl Worker {
         };
         for (take, rec, path, channels, frames) in self.files.take_opens() {
             let _ = st.tx.send(ToStream::Open {
+                era: self.era,
                 take,
                 rec,
                 path,
@@ -1727,8 +1807,9 @@ impl Worker {
                 }
                 return None;
             }
-            ToWorker::Clear => {
+            ToWorker::Clear { gen } => {
                 files.clear();
+                self.era = gen;
                 return None;
             }
             ToWorker::SavedInto(dir) => {

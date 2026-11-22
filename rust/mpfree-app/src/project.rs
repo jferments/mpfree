@@ -938,9 +938,15 @@ pub fn audio_part(mut saved: mpfree_audiotracks::save::Saved) -> (String, Vec<Ta
 /// there. The files can be big: run it off the screen thread. A take whose
 /// sound can't be read, or isn't the take's, is left out with the regions
 /// playing it, and a line says so (and the third list).
+///
+/// With `streams` (takes play from their files, phase 3b), a take's sound
+/// isn't read: its file's header is checked and the take opens as its
+/// file ([`mpfree_audiotracks::host::AudioHost::load`]). Takes recorded
+/// at another rate, and a second take of one recording, are still read.
 pub fn audio_open(
     text: &str,
     rate: u32,
+    streams: bool,
     find: impl Fn(&str) -> Result<std::path::PathBuf, String>,
 ) -> Result<Read<mpfree_audiotracks::save::Saved>, String> {
     let mut saved = mpfree_audiotracks::save::from_text(text)?;
@@ -953,8 +959,14 @@ pub fn audio_open(
         ));
     }
     let mut gone = Vec::new();
+    let headers_only = streams && saved.rate == rate;
+    let mut recs = std::collections::HashSet::new();
     saved.takes.retain_mut(|k| {
         let got = find(&k.file).and_then(|path| {
+            if headers_only && recs.insert(k.rec) {
+                return mpfree_audiotracks::streaming::check_file(&path, k.channels, k.frames, rate)
+                    .map(|()| (Vec::new(), path));
+            }
             let (audio, ch, _) = std::fs::read(&path)
                 .map_err(|e| e.to_string())
                 .and_then(|b| mpfree_audiotracks::save::from_wav(&b))?;
@@ -3772,7 +3784,7 @@ mod tests {
                 Err("not there".to_string())
             }
         };
-        let (back, notes, left) = audio_open(&text, 44_100, find).unwrap();
+        let (back, notes, left) = audio_open(&text, 44_100, false, find).unwrap();
         assert!(notes.is_empty() && left.is_empty(), "{notes:?}");
         assert_eq!(back.takes.len(), 3);
         assert_eq!(back.takes[0].audio, a);
@@ -3788,7 +3800,7 @@ mod tests {
         assert_eq!(recs, vec![0x100, 0x101, 0x102]);
         // Take 1's file gone: it is left out with its region, and said;
         // another rate is said too (not left out: the takes are there).
-        let (back, notes, left) = audio_open(&text, 48_000, |f| {
+        let (back, notes, left) = audio_open(&text, 48_000, false, |f| {
             if f == named {
                 Err("gone".into())
             } else {
@@ -3807,7 +3819,7 @@ mod tests {
         // A file that isn't the take's sound (another length) is refused.
         let short = dir.join("short.wav");
         std::fs::write(&short, wav(&a[..100], 1, 44_100)).unwrap();
-        let (back, notes, _) = audio_open(&text, 44_100, |f| {
+        let (back, notes, _) = audio_open(&text, 44_100, false, |f| {
             if f == vocal {
                 Ok(short.clone())
             } else {
@@ -3817,7 +3829,29 @@ mod tests {
         .unwrap();
         assert_eq!(back.takes.len(), 1);
         assert!(notes.iter().all(|n| n.contains("not this take's sound")));
-        assert!(audio_open("nope", 44_100, find).is_err());
+        // Takes playing from their files: no sound is read, each file is
+        // checked by its header, and one of another length is refused.
+        let (back, notes, left) = audio_open(&text, 44_100, true, find).unwrap();
+        assert!(notes.is_empty() && left.is_empty(), "{notes:?}");
+        assert_eq!(back.takes.len(), 3);
+        assert!(back
+            .takes
+            .iter()
+            .all(|k| k.audio.is_empty() && k.path.is_some()));
+        let (back, notes, _) = audio_open(&text, 44_100, true, |f| {
+            if f == vocal {
+                Ok(short.clone())
+            } else {
+                find(f)
+            }
+        })
+        .unwrap();
+        assert_eq!(back.takes.len(), 1);
+        assert!(notes.iter().all(|n| n.contains("frames")), "{notes:?}");
+        // At another rate their sound is read, as before.
+        let (back, _, _) = audio_open(&text, 48_000, true, find).unwrap();
+        assert!(back.takes.iter().all(|k| !k.audio.is_empty()));
+        assert!(audio_open("nope", 44_100, false, find).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
