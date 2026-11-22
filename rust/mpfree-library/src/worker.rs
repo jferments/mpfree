@@ -111,13 +111,19 @@ pub enum Job {
         loc: Loc,
         set: crate::Set,
     },
-    /// The quick check of every song in a set ([`Library::check_song`]),
-    /// with the names of the keyboards and controls connected now.
+    /// The check of every song in a set ([`Library::check_song`]; every
+    /// file read in full when `deep`), with the names of the keyboards and
+    /// controls connected now.
     CheckSet {
         loc: Loc,
         set: crate::Set,
         connected: Vec<String>,
+        deep: bool,
     },
+    /// Every set, read ([`Library::all_sets`]).
+    Sets,
+    /// The projects a set can hold ([`Library::songs`]).
+    Songs,
 }
 
 /// What a job gave.
@@ -164,6 +170,10 @@ pub enum Outcome {
     /// A set checked: where each song is and what its check says, in the
     /// set's order.
     SetChecked(Loc, Vec<(crate::Found, crate::SongCheck)>),
+    /// Every set: its entry and its songs, or why it couldn't be read.
+    Sets(Vec<(Entry, Result<crate::Set, String>)>),
+    /// The projects a set can hold: folder name and lasting id.
+    Songs(Vec<(String, String)>),
 }
 
 /// A job's number and what came of it (or why it failed, in words).
@@ -349,11 +359,18 @@ pub fn run(lib: &Library, job: Job) -> std::io::Result<Outcome> {
             loc,
             set,
             connected,
+            deep,
         } => {
             let on = |n: &str| connected.iter().any(|c| c == n);
-            let checks = set.songs.iter().map(|s| lib.check_song(s, &on)).collect();
+            let checks = set
+                .songs
+                .iter()
+                .map(|s| lib.check_song_with(s, &on, deep))
+                .collect();
             Outcome::SetChecked(loc, checks)
         }
+        Job::Sets => Outcome::Sets(lib.all_sets()?),
+        Job::Songs => Outcome::Songs(lib.songs()?),
     })
 }
 

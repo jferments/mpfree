@@ -236,6 +236,8 @@ pub enum Kind {
     Pattern,
     /// A Standard MIDI File (`.mid`, `.midi`, `.smf`): loads as clips.
     Midi,
+    /// A set list (`.set`, in Sets: [`sets`]).
+    Set,
     Other,
 }
 
@@ -249,6 +251,7 @@ impl Kind {
             Some(e) if e == "preset" => Kind::Preset,
             Some(e) if e == "pattern" || e == "arp" => Kind::Pattern,
             Some(e) if e == "mid" || e == "midi" || e == "smf" => Kind::Midi,
+            Some(e) if e == "set" => Kind::Set,
             _ => Kind::Other,
         }
     }
@@ -1541,6 +1544,7 @@ pub(crate) mod tests {
         assert_eq!(Kind::of_file("Up down.arp"), Kind::Pattern);
         assert_eq!(Kind::of_file("Sequence01.MID"), Kind::Midi);
         assert_eq!(Kind::of_file("song.midi"), Kind::Midi);
+        assert_eq!(Kind::of_file("Friday.set"), Kind::Set);
         assert_eq!(Kind::of_file("notes.txt"), Kind::Other);
         assert_eq!(Place::from_label("Instruments"), Some(Place::Instruments));
     }

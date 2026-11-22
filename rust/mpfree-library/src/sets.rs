@@ -369,6 +369,40 @@ impl Library {
         Ok(sets)
     }
 
+    /// Every set, read: each one's entry and its songs, or why it couldn't
+    /// be read. Sets are a few KB each, so the Sets place reads them all
+    /// at once to show how many songs each holds.
+    pub fn all_sets(&self) -> io::Result<Vec<(Entry, Result<Set, String>)>> {
+        let top = Self::sets_top();
+        Ok(self
+            .sets()?
+            .into_iter()
+            .map(|e| {
+                let set = top
+                    .join(&e.name)
+                    .and_then(|l| self.load_set(&l))
+                    .map_err(|err| err.to_string());
+                (e, set)
+            })
+            .collect())
+    }
+
+    /// The projects a set can hold: each project in Projects (not
+    /// autosave's) by its folder's name, with its lasting id (empty for
+    /// one saved before ids), in natural order.
+    pub fn songs(&self) -> io::Result<Vec<(String, String)>> {
+        let top = Loc::top(Place::Projects);
+        Ok(self
+            .list(&top)?
+            .into_iter()
+            .filter(|e| e.kind == crate::Kind::Project)
+            .filter_map(|e| {
+                let meta = self.project_meta(&top.join(&e.name).ok()?).ok()?;
+                (!meta.is_autosave()).then_some((e.name, meta.id))
+            })
+            .collect())
+    }
+
     /// Reads a set.
     pub fn load_set(&self, set: &Loc) -> io::Result<Set> {
         let bytes = self.read(set, MAX_SET_BYTES)?;
@@ -440,6 +474,17 @@ impl Library {
         song: &SetSong,
         connected: &dyn Fn(&str) -> bool,
     ) -> (Found, SongCheck) {
+        self.check_song_with(song, connected, false)
+    }
+
+    /// [`Library::check_song`], reading every file in full when `deep`
+    /// (Check every file, for the day of the show).
+    pub fn check_song_with(
+        &self,
+        song: &SetSong,
+        connected: &dyn Fn(&str) -> bool,
+        deep: bool,
+    ) -> (Found, SongCheck) {
         let found = self.find_song(song);
         let mut c = SongCheck::default();
         for n in &song.needs {
@@ -464,7 +509,7 @@ impl Library {
                 .insert(0, format!("it doesn\u{2019}t read: {e}"));
             return (found, c);
         }
-        match self.check_project(loc, false) {
+        match self.check_project(loc, deep) {
             Ok(check) if check.no_manifest => c.unchecked = true,
             Ok(check) => {
                 let (missing, changed) = check.gaps();
@@ -653,5 +698,33 @@ mod tests {
         assert_eq!(found, Found::At(old));
         assert!(check.unchecked && check.ready());
         assert_eq!(check.word(), "NOT CHECKED");
+    }
+
+    #[test]
+    fn the_sets_place_reads_every_set_and_lists_the_songs_it_can_add() {
+        let lib = Library::at(&temp()).unwrap();
+        let projects = Loc::top(Place::Projects);
+        let night = projects.join("Night drive").unwrap();
+        let saved = lib.save_project(&night, &song_snap("Night drive"), 0).unwrap();
+        // Autosave's project and plain folders aren't songs.
+        let auto = lib.autosave_project().unwrap();
+        let mut snap = song_snap("Autosave");
+        snap.meta.mark_autosave();
+        lib.save_project(&auto, &snap, 0).unwrap();
+        lib.new_folder(&projects, "Old stuff").unwrap();
+        assert_eq!(lib.songs().unwrap(), [("Night drive".to_string(), saved.id.clone())]);
+
+        let friday = lib.new_set("Friday").unwrap();
+        let set = Set {
+            songs: vec![SetSong::new(&saved.id, "Night drive")],
+            extra: vec![],
+        };
+        lib.save_set(&friday, &set).unwrap();
+        fs::write(lib.root().join("Sets/Broken.set"), "not a set\n").unwrap();
+        let all = lib.all_sets().unwrap();
+        let names: Vec<&str> = all.iter().map(|(e, _)| e.name.as_str()).collect();
+        assert_eq!(names, ["Broken.set", "Friday.set"]);
+        assert!(all[0].1.is_err());
+        assert_eq!(all[1].1.as_ref().unwrap().songs.len(), 1);
     }
 }
