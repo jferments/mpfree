@@ -13,6 +13,8 @@ path = "src/lib.rs"
 # Content hashes for prepared copies and snapshots; already in the
 # workspace (mpfree-stick, mpfree-factory).
 sha2 = "0.10"
+# FLAC decoded a frame at a time, for FLAC sources (our own decoder).
+mpfree-flac = { path = "../mpfree-flac" }
 
 # O_DIRECT for checking a published file past the page cache (a constant
 # only: the crate has no unsafe code).

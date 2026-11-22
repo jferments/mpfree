@@ -1384,6 +1384,7 @@ name = "mpfree-stream"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "mpfree-flac",
  "mpfree-stream",
  "sha2",
 ]
