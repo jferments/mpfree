@@ -29,6 +29,10 @@
 //!   or a comp boundary, is seamless when the takes are of the same part.
 //!   Where the same take runs straight on (a Split), nothing fades, and a
 //!   gain change there ramps over [`FADE`] frames (`Join`).
+//! - **Cuts keep their fades.** A region cut in two (a Split, an erase or
+//!   punch across it, a song time edit) keeps the region's own fades on
+//!   both parts, each counting the frames cut off it ([`Region::into`],
+//!   [`Region::left`]), so a fade the cut goes through plays on as it did.
 //! - **Time.** A region sits on song ticks, so it stays on its bar when the
 //!   tempo before it changes. Its audio plays at the rate it was recorded
 //!   at, from the region's start, as a DAW plays audio that is not warped:
@@ -239,7 +243,8 @@ pub enum Command {
     },
     /// Fades of the region of `track` playing at `at`, in frames from its
     /// start and to its end (each at most half the region; on top of the
-    /// crossfades every region has).
+    /// crossfades every region has). They are its own: a part cut from a
+    /// longer region no longer counts the frames cut off it.
     SetFades {
         track: usize,
         at: Tick,
@@ -433,8 +438,16 @@ pub struct Region {
     /// take's end: those frames are silent).
     pub src: i64,
     pub gain: f32,
+    /// Its fade in and fade out in frames, measured on the region it was
+    /// cut from (`into`, `left`).
     pub fade_in: u32,
     pub fade_out: u32,
+    /// Frames of the region it was cut from (a Split, an erase, a punch,
+    /// a song time edit) before its start and after its end: 0 for one
+    /// never cut. Its fades are that whole region's, so a cut keeps
+    /// exactly its share of them.
+    pub into: u32,
+    pub left: u32,
 }
 
 impl Region {
@@ -446,6 +459,8 @@ impl Region {
         gain: 1.0,
         fade_in: 0,
         fade_out: 0,
+        into: 0,
+        left: 0,
     };
 
     pub fn contains(&self, t: Tick) -> bool {
@@ -860,8 +875,9 @@ impl Track {
     }
 
     /// Take `from..to` out of the regions: ones inside go, ones across an
-    /// edge are cut there (a cut start moves `src` on), and one across the
-    /// whole stretch becomes two. Checked by `clear_fits` first.
+    /// edge are cut there ([`cut`]: a cut start moves `src` on, and each
+    /// part keeps its share of the fades), and one across the whole
+    /// stretch becomes two. Checked by `clear_fits` first.
     fn clear(&mut self, map: &TempoMap, rate: u32, from: Tick, to: Tick) {
         if to <= from {
             return;
@@ -879,24 +895,18 @@ impl Track {
                 continue;
             }
             if r.start < from && r.end > to {
-                let mut right = r;
-                right.start = to;
-                right.src =
-                    r.src + frames_from(map, r.start as f64, to as f64, rate).round() as i64;
-                self.regions[i].end = from;
+                self.regions[i] = cut(&r, from, map, rate).0;
                 self.regions.copy_within(i + 1..self.n, i + 2);
-                self.regions[i + 1] = right;
+                self.regions[i + 1] = cut(&r, to, map, rate).1;
                 self.n += 1;
                 i += 2;
                 continue;
             }
-            if r.start < from {
-                self.regions[i].end = from;
+            self.regions[i] = if r.start < from {
+                cut(&r, from, map, rate).0
             } else {
-                self.regions[i].start = to;
-                self.regions[i].src =
-                    r.src + frames_from(map, r.start as f64, to as f64, rate).round() as i64;
-            }
+                cut(&r, to, map, rate).1
+            };
             i += 1;
         }
     }
@@ -979,19 +989,86 @@ enum Join {
     Ramp,
 }
 
-/// How `b` meets `a`, the region before it, along `map`: the same take
-/// running on means `b` starts where `a` ends, on the frame `a` would
-/// play next, and neither fades there.
+/// How `b` meets `a`, the region before it, along `map`. The same take
+/// running on (`b` starts where `a` ends, on the frame `a` would play
+/// next) is [`Join::Straight`] when the gain runs on too: `a`'s gain with
+/// its fades on that frame is `b`'s. So the two parts of a Split, which
+/// keep their shares of one region's fades, play as that region did.
 fn join(a: &Region, b: &Region, map: &TempoMap, rate: u32) -> Join {
-    let runs_on = b.start == a.end
-        && b.take == a.take
-        && a.fade_out == 0
-        && b.fade_in == 0
-        && b.src == a.src + frames_from(map, a.start as f64, a.end as f64, rate).round() as i64;
-    match (runs_on, a.gain == b.gain) {
-        (false, _) => Join::Fade,
-        (true, true) => Join::Straight,
-        (true, false) => Join::Ramp,
+    let frames = |r: &Region| frames_from(map, r.start as f64, r.end as f64, rate).round() as i64;
+    let len_a = frames(a);
+    if b.start != a.end || b.take != a.take || b.src != a.src + len_a {
+        return Join::Fade;
+    }
+    let end_a = a.gain * Envelope::of(a, len_a).at(len_a);
+    let start_b = b.gain * Envelope::of(b, frames(b)).at(0);
+    if end_a == start_b {
+        Join::Straight
+    } else {
+        Join::Ramp
+    }
+}
+
+/// `r` cut at tick `at` (inside it) along `map`: the part before and the
+/// part after. Each keeps the region's fades and counts the frames cut
+/// off it ([`Region::into`], [`Region::left`]), so it plays exactly its
+/// share of them; the part after plays on from where `r` had got to.
+fn cut(r: &Region, at: Tick, map: &TempoMap, rate: u32) -> (Region, Region) {
+    let frames = |a: Tick, b: Tick| frames_from(map, a as f64, b as f64, rate).round() as i64;
+    let add = |n: u32, k: i64| (i64::from(n) + k).clamp(0, i64::from(u32::MAX)) as u32;
+    let (mut before, mut after) = (*r, *r);
+    before.end = at;
+    before.left = add(r.left, frames(at, r.end));
+    let k = frames(r.start, at);
+    after.start = at;
+    after.src = r.src + k;
+    after.into = add(r.into, k);
+    (before, after)
+}
+
+/// A region's own fades as it plays, `len_f` frames long: its fade in and
+/// fade out measured on the region it was cut from, `into` frames before
+/// it and `left` after it, each at most half that region.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Envelope {
+    into: i64,
+    /// Frames from its start to the end of the region it was cut from.
+    end: i64,
+    fade_in: i64,
+    fade_out: i64,
+}
+
+impl Envelope {
+    pub(crate) fn of(r: &Region, len_f: i64) -> Envelope {
+        let (into, left) = (i64::from(r.into), i64::from(r.left));
+        let half = (into + len_f + left).max(0) / 2;
+        Envelope {
+            into,
+            end: len_f + left,
+            fade_in: i64::from(r.fade_in).min(half),
+            fade_out: i64::from(r.fade_out).min(half),
+        }
+    }
+
+    /// The gain at frame `e` of it (1 between the fades). Past its end a
+    /// fade out goes on along the same line and stays at nothing there.
+    pub(crate) fn at(&self, e: i64) -> f32 {
+        let mut g = 1.0;
+        let from_start = e + self.into;
+        if self.fade_in > 0 && from_start < self.fade_in {
+            g *= from_start.max(0) as f32 / self.fade_in as f32;
+        }
+        let to_end = self.end - e;
+        if self.fade_out > 0 && to_end < self.fade_out {
+            g *= to_end.max(0) as f32 / self.fade_out as f32;
+        }
+        g
+    }
+
+    /// The frames of it the fades leave alone: from the first up to the
+    /// second, which may be past its end (the caller stops there).
+    fn plain(&self) -> (i64, i64) {
+        (self.fade_in - self.into, self.end - self.fade_out)
     }
 }
 
@@ -1672,6 +1749,8 @@ impl AudioTracks {
                     gain: 1.0,
                     fade_in: 0,
                     fade_out: 0,
+                    into: 0,
+                    left: 0,
                 };
                 self.edit(tk.track as usize, |t, m, rate| t.put(m, rate, r), map);
             }
@@ -1688,14 +1767,8 @@ impl AudioTracks {
                         if t.n == MAX_REGIONS {
                             return false;
                         }
-                        let r = t.regions[i];
-                        let mut right = r;
-                        right.start = at;
-                        right.src =
-                            r.src + frames_from(m, r.start as f64, at as f64, rate).round() as i64;
-                        right.fade_in = 0;
-                        t.regions[i].end = at;
-                        t.regions[i].fade_out = 0;
+                        let (left, right) = cut(&t.regions[i], at, m, rate);
+                        t.regions[i] = left;
                         t.regions.copy_within(i + 1..t.n, i + 2);
                         t.regions[i + 1] = right;
                         t.n += 1;
@@ -1765,8 +1838,10 @@ impl AudioTracks {
                 self.edit(
                     track,
                     |t, _, _| {
-                        t.regions[i].fade_in = fade_in;
-                        t.regions[i].fade_out = fade_out;
+                        let r = &mut t.regions[i];
+                        (r.fade_in, r.fade_out) = (fade_in, fade_out);
+                        // Fades set on it are its own, cut or not.
+                        (r.into, r.left) = (0, 0);
                         true
                     },
                     map,
@@ -1860,6 +1935,8 @@ impl AudioTracks {
                             if r.take == old {
                                 r.take = new;
                                 r.src = (r.src as f64 * ratio).round() as i64;
+                                let scale = |n: u32| (f64::from(n) * ratio).round() as u32;
+                                (r.into, r.left) = (scale(r.into), scale(r.left));
                                 any = true;
                             }
                         }
@@ -2165,6 +2242,8 @@ impl AudioTracks {
                         gain: 1.0,
                         fade_in: 0,
                         fade_out: 0,
+                        into: 0,
+                        left: 0,
                     };
                     if !t.put(m, rate, r) {
                         return false;
@@ -2351,6 +2430,8 @@ impl AudioTracks {
                 gain: 1.0,
                 fade_in: 0,
                 fade_out: 0,
+                into: 0,
+                left: 0,
             };
             self.edit(t, |tr, m, rate| tr.put(m, rate, r), map);
         }
@@ -3059,8 +3140,7 @@ impl AudioTracks {
             if e0 >= stop || e0 + len as i64 <= 0 {
                 continue;
             }
-            let fi = i64::from(r.fade_in).min(len_f / 2).max(0);
-            let fo = i64::from(r.fade_out).min(len_f / 2).max(0);
+            let env = Envelope::of(r, len_f);
             let fade = &*fade;
             let gain_at = |e: i64| -> f32 {
                 if e < 0 || e >= stop {
@@ -3082,24 +3162,20 @@ impl AudioTracks {
                         _ => g *= fade[j as usize],
                     }
                 }
-                if fi > 0 && e < fi {
-                    g *= e as f32 / fi as f32;
-                }
-                // Its fade out reaches nothing at its end, and the
-                // crossfade past the end goes on from there.
-                if fo > 0 && e >= len_f - fo {
-                    g *= (len_f - e).max(0) as f32 / fo as f32;
-                }
-                g
+                // Its own fades. A fade out reaches nothing at the end of
+                // the region it was cut from, and the crossfade past its
+                // end goes on from where it got to.
+                g * env.at(e)
             };
             let dst = &mut buf[2 * off..2 * (off + len)];
-            let plain_from = if before == Join::Straight {
-                fi
+            let (plain_from, plain_to) = env.plain();
+            let edge = if before == Join::Straight {
+                0
             } else {
-                (FADE as i64).max(fi)
+                FADE as i64
             };
-            // The whole run past the fades: one gain.
-            let plain = e0 >= plain_from && e0 + len as i64 <= len_f - fo;
+            // The whole run past the fades and crossfades: one gain.
+            let plain = e0 >= plain_from.max(edge) && e0 + len as i64 <= plain_to.min(len_f);
             let (g, k) = (r.gain, r.src + e0);
             let missed = match tk.store {
                 Store::File { gen } => {

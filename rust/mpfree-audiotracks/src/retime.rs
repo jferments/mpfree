@@ -13,9 +13,11 @@
 //!   where the region had got to: its `src` moves on by the frames from
 //!   the region's start to the cut along the old tempo map (the tempo
 //!   moves with its stretch, so those frames are the same after).
-//! - A region keeps its fade in on the part that holds its start and its
-//!   fade out on the part that holds its end; a cut has neither (as
-//!   [`crate::Command::Split`] cuts).
+//! - Each part keeps its share of the region's fades, as
+//!   [`crate::Command::Split`] cuts: the fades stay the region's, and a
+//!   part counts the frames cut off before and after it
+//!   ([`Region::into`], [`Region::left`]), so a fade the cut goes
+//!   through plays on each side exactly as it did.
 //! - Two parts of one region that meet again with the audio running on
 //!   (the second starts where the first ended in the old song: a copy put
 //!   straight after what it copies) are one region again, so no crossfade
@@ -23,7 +25,7 @@
 //! - Nothing allocates: [`Retime`] is a fixed size and [`Retime::apply`]
 //!   writes into a slice the caller owns, so the audio thread can make it.
 
-use crate::{frames_from, Region};
+use crate::{cut, Region};
 use mpfree_transport::time::{TempoMap, Tick};
 
 /// Pieces an edit has at most (a move: what comes before, the moved
@@ -147,18 +149,17 @@ impl Retime {
                 let (a, b) = (r.start.max(p.from), r.end.min(p.end));
                 let mut q = *r;
                 if a > r.start {
-                    q.src = r.src + frames_from(map, r.start as f64, a as f64, rate).round() as i64;
-                    q.fade_in = 0;
+                    q = cut(&q, a, map, rate).1;
                 }
                 if b < r.end {
-                    q.fade_out = 0;
+                    q = cut(&q, b, map, rate).0;
                 }
                 q.start = p.place(a);
                 q.end = p.place(b);
                 if let (Some((j, old_end)), Some(prev)) = (last, n.checked_sub(1)) {
                     if j == i && old_end == a && out[prev].end == q.start {
                         out[prev].end = q.end;
-                        out[prev].fade_out = q.fade_out;
+                        out[prev].left = q.left;
                         last = Some((i, b));
                         continue;
                     }
@@ -175,7 +176,7 @@ impl Retime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::MAX_REGIONS;
+    use crate::{frames_from, MAX_REGIONS};
 
     const RATE: u32 = 48_000;
     /// A bar of 4/4 in ticks (960 a beat).
@@ -194,6 +195,8 @@ mod tests {
             gain: 1.0,
             fade_in: 100,
             fade_out: 200,
+            into: 0,
+            left: 0,
         }
     }
 
@@ -212,11 +215,15 @@ mod tests {
     }
 
     /// The take and frame that plays at tick `t` (each region from its
-    /// start at the recorded rate, as the tracks play it), at 120 BPM.
-    fn heard(regions: &[Region], t: Tick) -> Option<(u16, i64)> {
+    /// start at the recorded rate, as the tracks play it), at 120 BPM, and
+    /// its gain with the region's fades.
+    fn heard(regions: &[Region], t: Tick) -> Option<(u16, i64, f32)> {
         let r = regions.iter().find(|r| r.contains(t))?;
-        let f = frames_from(&map(), r.start as f64, t as f64, RATE).round() as i64;
-        Some((r.take, r.src + f))
+        let frames =
+            |a: Tick, b: Tick| frames_from(&map(), a as f64, b as f64, RATE).round() as i64;
+        let f = frames(r.start, t);
+        let fades = crate::Envelope::of(r, frames(r.start, r.end)).at(f);
+        Some((r.take, r.src + f, r.gain * fades))
     }
 
     /// A bar is 2 s at 120 BPM: 96,000 frames.
@@ -224,7 +231,7 @@ mod tests {
 
     /// Verse (bars 5-8) moved before the Intro (bars 1-4): a vocal across
     /// the Intro's end is cut there, each part goes with its section and
-    /// plays what it played, and the fades stay on the outer ends.
+    /// plays what it played, and each keeps its share of the fades.
     #[test]
     fn a_moved_section_takes_its_audio_with_it() {
         let (from, to) = (4 * BAR, 8 * BAR);
@@ -244,13 +251,13 @@ mod tests {
                     start: 0,
                     end: 2 * BAR,
                     src: 5_000 + 2 * BAR_FRAMES,
-                    fade_in: 0,
+                    into: 2 * BAR_FRAMES as u32,
                     ..vocal
                 },
                 Region {
                     start: 6 * BAR,
                     end: 8 * BAR,
-                    fade_out: 0,
+                    left: 2 * BAR_FRAMES as u32,
                     ..vocal
                 },
                 guitar,
@@ -279,12 +286,12 @@ mod tests {
         let after = apply(&r, &[held]);
         assert_eq!(after.len(), 2);
         assert_eq!(
-            (after[0].start, after[0].end, after[0].fade_out),
-            (3 * BAR, at, 0)
+            (after[0].start, after[0].end, after[0].left),
+            (3 * BAR, at, BAR_FRAMES as u32)
         );
         assert_eq!(
-            (after[1].start, after[1].end, after[1].src, after[1].fade_in),
-            (6 * BAR, 7 * BAR, BAR_FRAMES, 0)
+            (after[1].start, after[1].end, after[1].src, after[1].into),
+            (6 * BAR, 7 * BAR, BAR_FRAMES, BAR_FRAMES as u32)
         );
         assert_eq!(heard(&after, at + BAR), None, "the room is silent");
     }
@@ -311,6 +318,33 @@ mod tests {
         assert_eq!(heard(&after, 2 * BAR), heard(&[across], 4 * BAR));
     }
 
+    /// Cuts through long fades (bars put in inside the fade in, bars taken
+    /// out inside the fade out): every tick left plays at the gain it did,
+    /// each part going on along the fade it was cut from.
+    #[test]
+    fn a_cut_through_a_fade_plays_it_on_each_side_as_it_did() {
+        let mut long = region(0, 4 * BAR, 1, 0);
+        (long.fade_in, long.fade_out) = (2 * BAR_FRAMES as u32 - 7, 2 * BAR_FRAMES as u32);
+        let put_in = Retime::new(&[piece(0, Some(BAR), 0), piece(BAR, None, 3 * BAR)]).unwrap();
+        let after = apply(&put_in, &[long]);
+        assert_eq!(after.len(), 2);
+        for t in (0..4 * BAR).step_by(13) {
+            let new = if t < BAR { t } else { t + 2 * BAR };
+            assert_eq!(heard(&[long], t), heard(&after, new), "put in, tick {t}");
+        }
+        // Three quarters into the fade in, on the part after the cut.
+        let g = heard(&after, 3 * BAR + BAR / 2).unwrap().2;
+        assert!((g - 0.75).abs() < 1e-4, "{g}");
+        let (from, to) = (3 * BAR, 3 * BAR + BAR / 2);
+        let taken = Retime::new(&[piece(0, Some(from), 0), piece(to, None, from)]).unwrap();
+        let after = apply(&taken, &[long]);
+        assert_eq!(after.len(), 2);
+        for t in (0..4 * BAR).step_by(13).filter(|t| !(from..to).contains(t)) {
+            let new = if t < from { t } else { t - (to - from) };
+            assert_eq!(heard(&[long], t), heard(&after, new), "taken out, tick {t}");
+        }
+    }
+
     /// A copy put straight after what it copies: the copy's part and the
     /// part after it run on in the old song, so they are one region.
     #[test]
@@ -328,14 +362,15 @@ mod tests {
         assert_eq!(
             after
                 .iter()
-                .map(|q| (q.start, q.end, q.src, q.fade_in, q.fade_out))
+                .map(|q| (q.start, q.end, q.src, q.into, q.left))
                 .collect::<Vec<_>>(),
             [
-                (3 * BAR, 4 * BAR, 0, 100, 0),
-                (5 * BAR, 8 * BAR, 0, 100, 200),
+                (3 * BAR, 4 * BAR, 0, 0, 2 * BAR_FRAMES as u32),
+                (5 * BAR, 8 * BAR, 0, 0, 0),
             ],
             "the copy's part and the rest joined"
         );
+        assert!(after.iter().all(|q| (q.fade_in, q.fade_out) == (100, 200)));
     }
 
     /// Too many parts for the room: None, and a track nothing moves needs

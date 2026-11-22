@@ -6002,6 +6002,8 @@ mod tests {
                 gain: 1.0,
                 fade_in: 0,
                 fade_out: 0,
+                into: 0,
+                left: 0,
             }],
             takes: Vec::new(),
             recording: None,

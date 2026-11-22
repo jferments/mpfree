@@ -3800,6 +3800,8 @@ mod tests {
             gain: 1.0,
             fade_in: 0,
             fade_out: 0,
+            into: 0,
+            left: 0,
         };
         // Take 0 was recorded to its file, which holds all of it: copied
         // whole. Take 1 has no file: written from its samples, named for

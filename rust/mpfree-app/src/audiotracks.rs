@@ -1225,6 +1225,8 @@ impl TrackHost {
                 h.add(u64::from(r.gain.to_bits()));
                 h.add(u64::from(r.fade_in));
                 h.add(u64::from(r.fade_out));
+                h.add(u64::from(r.into));
+                h.add(u64::from(r.left));
             }
         }
         let s = tr.stats();
@@ -3382,6 +3384,8 @@ mod tests {
                     gain: 1.0,
                     fade_in: 0,
                     fade_out: 0,
+                    into: 0,
+                    left: 0,
                 }],
             }],
             takes: vec![TakeFile {

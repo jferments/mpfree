@@ -381,9 +381,13 @@ pub struct AudioBlock {
     pub frames: f64,
     /// Its level, 0 to 4 (1 is as recorded).
     pub gain: f32,
-    /// Its fades, in frames.
+    /// Its fades, in frames, measured on the region it was cut from:
+    /// `into` frames of that region lie before `start` and `left` after
+    /// `end` (0 for a region never cut), so a cut shows its share.
     pub fade_in: u32,
     pub fade_out: u32,
+    pub into: u32,
+    pub left: u32,
 }
 
 /// One of an audio track's takes, as its take lane shows it: see
@@ -855,6 +859,8 @@ pub fn audio_blocks(
                 gain: r.gain,
                 fade_in: r.fade_in,
                 fade_out: r.fade_out,
+                into: r.into,
+                left: r.left,
             }
         })
         .collect()
@@ -2156,15 +2162,21 @@ impl SongLanes {
         let wave = br.inset_xy(0, 2);
         let ink = lane.color.mix(t.text, 0.6);
         self.paint_wave(cx, b.take, wave, br, x0, b.src as f64, per_px, ink);
-        // Fades: the part above each slope is dimmed.
+        // Fades: the part above each slope is dimmed. A cut shows its share
+        // of the fades of the region it was cut from.
         let shade = t.surface.mix(lane.color, 0.15);
-        for (frames, rising) in [(b.fade_in, true), (b.fade_out, false)] {
-            let px = (f64::from(frames) / per_px.max(1e-9)).round() as i32;
-            if px < 2 {
+        let px_of = |frames: u32| (f64::from(frames) / per_px.max(1e-9)).round() as i32;
+        for (frames, cut, rising) in [(b.fade_in, b.into, true), (b.fade_out, b.left, false)] {
+            let (px, off) = (px_of(frames), px_of(cut));
+            if px < 2 || off >= px {
                 continue;
             }
-            for k in 0..px {
-                let x = if rising { x0 + k } else { x1 - 1 - k };
+            for k in off..px {
+                let x = if rising {
+                    x0 - off + k
+                } else {
+                    x1 - 1 + off - k
+                };
                 if x < br.x || x >= br.right() {
                     continue;
                 }
@@ -3377,6 +3389,8 @@ mod tests {
             gain: 1.0,
             fade_in: 0,
             fade_out: 0,
+            into: 0,
+            left: 0,
         }
     }
 
@@ -3950,6 +3964,8 @@ mod tests {
             gain: 1.0,
             fade_in: 0,
             fade_out: 0,
+            into: 0,
+            left: 0,
         }];
         let lanes = take_lanes(0, &regions, &takes, &map, 44_100);
         let shown: Vec<_> = lanes.iter().map(|l| (l.take, l.name.as_str())).collect();
@@ -4177,6 +4193,8 @@ mod tests {
             gain: 1.0,
             fade_in: 5,
             fade_out: 7,
+            into: 3,
+            left: 0,
         };
         // Track 0's takes: 4 (group 0), 2 (group 1, pass 0), 9 (group 1,
         // pass 1, the newest). Take 1 is another track's.
@@ -4203,7 +4221,10 @@ mod tests {
         // A beat at 120 BPM and 48 kHz is 24 000 frames.
         assert_eq!(b[0].frames, 24_000.0);
         assert_eq!(b[2].frames, 48_000.0);
-        assert_eq!((b[1].src, b[1].fade_in, b[1].fade_out), (10, 5, 7));
+        assert_eq!(
+            (b[1].src, b[1].fade_in, b[1].fade_out, b[1].into, b[1].left),
+            (10, 5, 7, 3, 0)
+        );
     }
 
     #[test]
