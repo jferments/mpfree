@@ -1343,6 +1343,10 @@ pub enum ToUi {
     /// The audio loop's CPU by engine numbers, sent once at the start; the
     /// page reads them while it shows.
     Engines(Arc<crate::engines::EngineShared>),
+    /// A problem report for the status board (`mpfree-status`): `Copy`, no
+    /// heap memory, from any thread. Until System status phase 2 it shows
+    /// only on Dev > Status.
+    Problem(mpfree_status::Report),
     /// What the Looper tab shows: the looper, the line input's meter.
     Looper(Box<LooperView>),
     /// The audio tracks' level bars, 0 to 1, by track (Arrange's Song
@@ -2181,6 +2185,13 @@ pub struct Player {
     debug: DebugPages,
     /// The audio loop's CPU by engine numbers (None until the loop starts).
     engines: Option<Arc<crate::engines::EngineShared>>,
+    /// Every problem reported this session (System status; phase 0 shows it
+    /// on Dev > Status only), and its clock: made with the Player and moved
+    /// on by [`Player::tick`], so tests drive it.
+    status_board: mpfree_status::Board,
+    status_clock: Instant,
+    /// Time since Dev > Status was last filled, s.
+    status_drawn: f32,
     /// The Looper tab, and what it shows.
     // Boxed: it holds every loop's status and layer rows, and a Player is
     // moved by value often enough (sample_screens) that its size matters.
@@ -2677,6 +2688,9 @@ impl Player {
             time: TimeState::default(),
             debug,
             engines: None,
+            status_board: mpfree_status::Board::new(),
+            status_clock: Instant::now(),
+            status_drawn: 0.0,
             looper_page,
             looper: LooperView::default(),
             play: PlayPage::default(),
@@ -6588,6 +6602,8 @@ impl Player {
                                           log every 30 s   ·   SHIFT + wheel: Dev page   ·   {stop}"),
                 View::Procs => format!("Every process on the MPC, read from /proc once a second while this page \
                                         shows   ·   SHIFT + wheel: Dev page   ·   {stop}"),
+                View::StatusBoard => format!("Every problem reported this session, as the status board holds it; the \
+                                              System status page will show them   ·   SHIFT + wheel: Dev page   ·   {stop}"),
                 View::Touch => "Touch the test area: it is measured before the tuning   ·   Wheel: pick a value   ·   - / +: change it \
                                 (applies at once)   ·   MENU: corner check, Touch lab   ·   SHIFT + wheel: Dev page".to_string(),
                 View::Map => "Tap a control, then press it   ·   Wheel: pick   ·   +: listen   ·   -: skip   ·   \
@@ -7332,6 +7348,31 @@ impl Player {
         self.told = Some((tell_text(line), TELL_SECONDS));
         self.tells += 1;
         self.refresh_hint();
+    }
+
+    /// A problem for the status board, at the board's clock. Dev > Status
+    /// follows it while it shows.
+    pub fn report_problem(&mut self, r: mpfree_status::Report) {
+        self.status_board.apply(r, self.status_clock);
+        if self.view == View::StatusBoard {
+            self.status_drawn = 0.0;
+            DebugPages::set_status(&mut self.ui, &self.status_board, self.status_clock);
+        }
+    }
+
+    /// Moves the status board's clock on by `dt` s; Dev > Status refills
+    /// twice a second while it shows (its ages move).
+    fn status_tick(&mut self, dt: f32) {
+        let dt = dt.max(0.0);
+        self.status_clock += Duration::from_secs_f32(dt);
+        self.status_board.tick(self.status_clock);
+        if self.view == View::StatusBoard {
+            self.status_drawn += dt;
+            if self.status_drawn >= 0.5 {
+                self.status_drawn = 0.0;
+                DebugPages::set_status(&mut self.ui, &self.status_board, self.status_clock);
+            }
+        }
     }
 
     /// Opens the number pad for `ask` over the page showing.
@@ -8377,6 +8418,7 @@ impl Player {
             }
             ToUi::Map(m) => DebugPages::set_map(&mut self.ui, &m),
             ToUi::Engines(shared) => self.engines = Some(shared),
+            ToUi::Problem(r) => self.report_problem(r),
             ToUi::Looper(v) => {
                 // The picked loop's history moved, or a loop was cleared
                 // (a key held on Play picks it as it clears): UNDO on All
@@ -10547,6 +10589,10 @@ impl Player {
             );
             self.say(format!("project: safe start: {words}"));
             self.tell(&words);
+            // On the status board too (Dev > Status until phase 2).
+            self.report_problem(mpfree_status::Report::began(
+                &mpfree_status::kinds::CRASH_RESTART,
+            ));
             return;
         }
         if let Some(k) = &kept {
@@ -11437,6 +11483,12 @@ impl Player {
             View::Touch => {
                 DebugPages::set_strip(&mut self.ui, v);
                 self.touch_dev_page().to_string()
+            }
+            View::StatusBoard => {
+                DebugPages::set_strip(&mut self.ui, v);
+                self.status_drawn = 0.0;
+                DebugPages::set_status(&mut self.ui, &self.status_board, self.status_clock);
+                crate::debug_page::STATUS_PAGE.to_string()
             }
             View::Debug | View::Perf | View::Engines | View::Procs | View::Map | View::Console => {
                 DebugPages::set_strip(&mut self.ui, v);
@@ -13204,6 +13256,7 @@ impl Player {
 
     /// Advance animations by `dt` seconds.
     pub fn tick(&mut self, dt: f32) {
+        self.status_tick(dt);
         self.power_tick(dt);
         self.script_hold_tick(dt);
         self.guard_tick(dt);
@@ -17255,6 +17308,26 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         core_cpu_pct: vec![32.0, 2.5, 1.0, 1.0],
     });
     out.push(("debug-procs", pr));
+    // Debug mode: the status board raw, after a dropout that ended, a
+    // missing MIDI port and a lasting state still settling.
+    let mut st = sample_player(fonts());
+    st.apply(ToUi::Settings(Settings {
+        debug_mode: true,
+        ..Settings::default()
+    }));
+    {
+        use mpfree_status::{kinds, Report, Subject};
+        st.apply(ToUi::Problem(Report::happened(&kinds::SOUND_DROPOUT, 3)));
+        st.tick(1.5);
+        st.apply(ToUi::Problem(
+            Report::began(&kinds::PORT_MISSING).about(Subject(2)),
+        ));
+        st.tick(2.0);
+        st.apply(ToUi::Problem(Report::happened(&kinds::VOICES_GIVEN_UP, 6)));
+        st.apply(ToUi::Problem(Report::began(&kinds::NEAR_LIMIT)));
+    }
+    st.apply(ToUi::Show(View::StatusBoard));
+    out.push(("debug-status", st));
     // Debug mode: the Touch page after some taps, holds and swipes, a finger
     // down, and a small saved correction; then Targets mode, four done.
     push_touch_dev_samples(&mut out, &fonts);
@@ -26325,6 +26398,48 @@ mod tests {
     /// BROWSE, SHIFT + BROWSE, Open and New project through the screen, on
     /// a library in a scratch folder.
     #[test]
+    fn problems_reach_the_status_board_and_dev_status_follows_it() {
+        use crate::debug_page::STATUS_PAGE;
+        use mpfree_status::{kinds, Report, Subject};
+        let rows = |p: &mut Player| -> Vec<(String, String, Tone)> {
+            p.ui.get_mut::<StatList>("statusopen").unwrap().rows.clone()
+        };
+        let mut p = sample_player(Fonts::embedded());
+        p.apply(ToUi::Settings(Settings {
+            debug_mode: true,
+            ..Settings::default()
+        }));
+        // Reported while another page shows: kept on the board.
+        p.apply(ToUi::Problem(Report::happened(&kinds::SAVE_FAILED, 1)));
+        assert_eq!(p.status_board.chip().now, 1);
+        p.apply(ToUi::Show(View::StatusBoard));
+        assert_eq!(p.ui.page(), STATUS_PAGE);
+        let r = rows(&mut p);
+        assert_eq!(r[1].0, "fail storage/save-failed");
+        assert!(r[1].1.starts_with("now · 1×"), "{:?}", r[1]);
+        // The board's clock is the Player's: a moment ends NOW_FOR later,
+        // and the page follows within half a second.
+        p.tick(3.2);
+        p.tick(0.5);
+        let r = rows(&mut p);
+        assert!(r[1].1.starts_with("ended 3.7 s ago"), "{:?}", r[1]);
+        assert_eq!(r[0].1, "fail, ring · 0 now · 1 ended, not seen");
+        // A report while the page shows lands at once.
+        p.apply(ToUi::Problem(
+            Report::began(&kinds::PORT_MISSING).about(Subject(4)),
+        ));
+        assert!(rows(&mut p)
+            .iter()
+            .any(|r| r.0 == "warn midi/port-missing #4" && r.1.starts_with("now")));
+        // Nothing on the top bar or the hint line: until phase 2 the board
+        // shows only here.
+        assert!(p.told.is_none());
+        // SHIFT + wheel reaches it on the Dev tab's strip, before Console.
+        assert_eq!(crate::app::DEBUG_PAGES[6], View::StatusBoard);
+        assert_eq!(View::StatusBoard.tab_view(), Some(View::Debug));
+    }
+
+    #[test]
     fn a_project_saves_opens_again_and_new_starts_empty() {
         use crate::project::{self, Collected, Defaults};
         use mpfree_browser_ui::sample::{select, source};
@@ -26705,6 +26820,13 @@ mod tests {
             c.told.as_ref().map(|t| t.0.clone()),
             Some(tell_text(&said)),
             "on the hint line"
+        );
+        assert!(
+            c.status_board
+                .raw()
+                .iter()
+                .any(|p| { p.kind == &mpfree_status::kinds::CRASH_RESTART && p.is_now() }),
+            "on the status board (Dev > Status until System status phase 2)"
         );
         assert!(opens(&mut c).is_none(), "nor later");
         // A last project gone since is said; the new one stays.

@@ -813,6 +813,7 @@ dependencies = [
  "mpfree-screen-log",
  "mpfree-seq",
  "mpfree-simd",
+ "mpfree-status",
  "mpfree-store",
  "mpfree-synth",
  "mpfree-synth-ui",
@@ -1332,6 +1333,10 @@ dependencies = [
  "mpfree-store",
  "mpfree-ui",
 ]
+
+[[package]]
+name = "mpfree-status"
+version = "0.1.0"
 
 [[package]]
 name = "mpfree-stick"

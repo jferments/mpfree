@@ -51,7 +51,7 @@ The music tabs, in this order:
 | Mix | The mixer (its strips as Faders or as Effects, the I/O view) and every strip's effect chain (section 3a; Jay's card, 14 Nov 07:15Z) | App (the mixer panel is the FX thread's crate) |
 | Dev | Only when Prefs > "Show developer tools" is On | App |
 
-- **Dev's pages,** on a strip under the top bar: MIDI log | Performance | CPU by engine | Processes | Map controls | Touch | Console. CPU by engine and Processes were asked for by Jay at 08:19Z (the profiling thread builds them). Touch is the graphical touch calibration and testing tool with its tuning (Jay, 22:23Z; the touchscreen thread builds it, with a "Touch targets" page): the wheel and + / - step the tuning, SHIFT + wheel still changes Dev page, and MENU there offers Calibrate touch and Touch lab.
+- **Dev's pages,** on a strip under the top bar: MIDI log | Performance | CPU by engine | Processes | Map controls | Touch | Status | Console. CPU by engine and Processes were asked for by Jay at 08:19Z (the profiling thread builds them). Touch is the graphical touch calibration and testing tool with its tuning (Jay, 22:23Z; the touchscreen thread builds it, with a "Touch targets" page): the wheel and + / - step the tuning, SHIFT + wheel still changes Dev page, and MENU there offers Calibrate touch and Touch lab. Status is the System status board raw, for developers (Jay approved the System status plan, 22 Nov 08:35Z; [status.md](status.md)); the musician's status chip and System status page are a later change to this spec.
 - **Not tabs:**
   - **Prefs.** SHIFT + MENU opens it.
   - **Each page's options.** MENU opens them.
