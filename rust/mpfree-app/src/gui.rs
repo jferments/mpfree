@@ -31821,6 +31821,80 @@ mod tests {
         assert_eq!(gain_now(&p), gain);
         assert!(said(&p, done) && !said(&p, waits), "{:?}", events_log(&p));
         assert_eq!(p.sample.normalize_fallbacks(), 0);
+
+        // Plan phase 2 step 7f: its waveform waits for memory, and its
+        // summary with it, so Normalize doesn't wait for them: the peak is
+        // read from every frame on the job service instead (reading needs
+        // no memory), the same peak, never on the screen. Pressed while
+        // the waveform is still on its way, and pressed once it waits.
+        let refused = "sample: Long take's waveform waits: not enough memory";
+        let instead = "sample: pad A5's waveform waits for memory, so its peak is read from \
+                       every frame instead, off the screen";
+        let short = |p: &mut Player| {
+            p.sample.use_jobs(mpfree_sampler::jobs::Jobs::new(
+                mpfree_sampler::jobs::Config {
+                    free: || Some(crate::memory::FLOOR + 1000),
+                    ..sample_page::jobs_config()
+                },
+            ));
+        };
+        let wait = |p: &mut Player, until: &dyn Fn(&Player) -> bool| {
+            let end = Instant::now() + WORKER_WAIT;
+            while !until(p) {
+                assert!(Instant::now() < end, "{:?}", events_log(p));
+                std::thread::sleep(Duration::from_millis(2));
+                p.tick(0.0);
+            }
+        };
+        for known in [false, true] {
+            let mut p = sample_player(Fonts::embedded());
+            short(&mut p);
+            p.sample.hold_views(!known);
+            p.apply(ToUi::SampleKits {
+                projects: vec![project.clone()],
+                rate,
+            });
+            p.apply(ToUi::PadDown { pad, velocity: 100 });
+            p.apply(ToUi::PadUp(pad));
+            p.apply(ToUi::Show(View::Sample));
+            if known {
+                wait(&mut p, &|p| said(p, refused));
+            }
+            press(&mut p);
+            assert_eq!(gain_now(&p), 0.0, "nothing read on the screen");
+            assert!(said(&p, if known { instead } else { waits }));
+            p.sample.hold_views(false);
+            wait(&mut p, &|p| gain_now(p) == gain);
+            assert!(said(&p, instead) && said(&p, done), "{:?}", events_log(&p));
+            assert_eq!(p.sample.normalize_fallbacks(), 0, "not a fallback");
+        }
+
+        // Changed while its peak was read: let go, and said.
+        let mut p = sample_player(Fonts::embedded());
+        short(&mut p);
+        p.apply(ToUi::SampleKits {
+            projects: vec![project.clone()],
+            rate,
+        });
+        p.apply(ToUi::PadDown { pad, velocity: 100 });
+        p.apply(ToUi::PadUp(pad));
+        p.apply(ToUi::Show(View::Sample));
+        wait(&mut p, &|p| said(p, refused));
+        p.sample.hold_views(true);
+        press(&mut p);
+        p.sample
+            .project_mut(0)
+            .unwrap()
+            .edit_pad(pad, None, |pd| pd.layers[0].region.gain_db = -3.0)
+            .unwrap();
+        p.sample.hold_views(false);
+        wait(&mut p, &|p| {
+            said(
+                p,
+                "sample: pad A5 not normalized: it changed before its peak was found",
+            )
+        });
+        assert_eq!(gain_now(&p), -3.0);
     }
 
     #[test]

@@ -210,12 +210,16 @@ struct Seat {
 /// Put on audio track's jobs on the service.
 const TO_AUDIO: &str = "to-audio";
 
-/// A Put on audio track job's id: its sound and span, so the same span
-/// asked for again while waiting takes its place.
-fn to_audio_id(id: SourceId, start: u64, end: u64) -> u64 {
-    use std::hash::{Hash, Hasher};
+/// Normalize's peaks read off the screen, on the service.
+const PEAK: &str = "peak";
+
+/// A job's id from what it is for (a Put on audio track's sound and span,
+/// a Normalize's layer), so the same asked for again while it waits takes
+/// its place.
+fn job_id(what: impl std::hash::Hash) -> u64 {
+    use std::hash::Hasher;
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    (id.0, start, end).hash(&mut h);
+    what.hash(&mut h);
     h.finish()
 }
 
@@ -310,8 +314,22 @@ struct Mapping {
     edits: u64,
 }
 
+/// A peak read off the screen, with the Normalize it is for.
+type Peak = (Leveling, f32);
+
+/// Why Normalize reads every frame of a long region
+/// ([`SamplePage::peak_off_screen`]).
+#[derive(Clone, Copy)]
+enum Without {
+    /// Its sound has no loudness summary: a fallback.
+    Summary,
+    /// The summary waits with its waveform for memory.
+    Memory,
+}
+
 /// A Normalize waiting for its sound's loudness summary
-/// ([`SamplePage::normalize_later`]), or done at once.
+/// ([`SamplePage::normalize_later`]) or its peak
+/// ([`SamplePage::peak_off_screen`]), or done at once.
 #[derive(Clone)]
 struct Leveling {
     kit: usize,
@@ -322,6 +340,13 @@ struct Leveling {
     /// The region as it was when Normalize was pressed: a waiting
     /// Normalize lands only while the region is still exactly this.
     region: Region,
+}
+
+impl Leveling {
+    /// The layer it normalizes, as a job's id: one Normalize a layer.
+    fn layer_id(&self) -> u64 {
+        job_id((self.kit, self.pad, self.take, self.layer))
+    }
 }
 
 /// The region (Wave tab) or pad (Play tab) a drag or turn started from,
@@ -1039,6 +1064,8 @@ pub struct SamplePage {
     stale_copies: u32,
     /// Put on audio track's sounds, made on the job service.
     to_audio: (mpsc::Sender<ToAudio>, Receiver<ToAudio>),
+    /// Normalize's peaks read off the screen, with what they are for.
+    peaks: (mpsc::Sender<Peak>, Receiver<Peak>),
     /// The take recording as the wave draws it (one-page step 2f, part 3),
     /// and the time to its next redraw.
     drawn: Option<mpfree_sampler_ui::live_take::LiveTake>,
@@ -1262,6 +1289,7 @@ impl SamplePage {
             spawn_failed_told: 0,
             stale_copies: 0,
             to_audio: mpsc::channel(),
+            peaks: mpsc::channel(),
             drawn: None,
             drawn_in: 0.0,
             recall: None,
@@ -3089,7 +3117,7 @@ impl SamplePage {
         };
         let rate = self.rate;
         let need = to_audio_need((end - start) * ch, s.rate(), rate);
-        let key = Key::new(TO_AUDIO, to_audio_id(s.id(), start, end));
+        let key = Key::new(TO_AUDIO, job_id((s.id().0, start, end)));
         let (tx, why) = (self.to_audio.0.clone(), self.to_audio.0.clone());
         let (made, refused) = (name.clone(), name.clone());
         self.jobs.submit(
@@ -4592,7 +4620,9 @@ impl SamplePage {
     /// read frame by frame where it is; a longer one is searched in its
     /// sound's loudness summary ([`Region::peak_from`], the same peak),
     /// and waits for the summary when it isn't worked out yet
-    /// ([`Self::normalize_later`]).
+    /// ([`Self::normalize_later`]), or is read frame by frame on the job
+    /// service when there is none to wait for ([`Self::peak_off_screen`],
+    /// phase 2 step 7f).
     fn normalize(&mut self, ui: &mut Ui, pad: usize, layer: usize) {
         self.lift();
         let kit = self.kit;
@@ -4669,15 +4699,30 @@ impl SamplePage {
         else {
             return;
         };
-        let (peak, read_all) = if l.region.frames() <= model::SCAN_FRAMES {
-            (l.region.peak(source), false)
+        let peak = if l.region.frames() <= model::SCAN_FRAMES {
+            l.region.peak(source)
         } else {
             match self.sources.summary(l.region.source) {
                 Summary::Ready(p) => match l.region.peak_from(source, p.pyramid()) {
-                    Some(peak) => (peak, false),
-                    None => (l.region.peak(source), true),
+                    Some(peak) => peak,
+                    None => {
+                        let source = source.clone();
+                        self.peak_off_screen(l, source, Without::Summary);
+                        return;
+                    }
                 },
-                Summary::None => (l.region.peak(source), true),
+                Summary::None => {
+                    let source = source.clone();
+                    self.peak_off_screen(l, source, Without::Summary);
+                    return;
+                }
+                // Its waveform waits for memory, and with it its summary:
+                // reading every frame needs none.
+                Summary::Pending if self.sources.is_refused(l.region.source) => {
+                    let source = source.clone();
+                    self.peak_off_screen(l, source, Without::Memory);
+                    return;
+                }
                 Summary::Pending => {
                     let (what, told) = self.leveling_text(&l);
                     self.told
@@ -4685,10 +4730,10 @@ impl SamplePage {
                     self.lines.push(format!(
                         "sample: {what} normalizes once its sound's loudness summary is worked out"
                     ));
-                    // A second press on the same layer replaces the first.
-                    self.levelings.retain(|w| {
-                        (w.kit, w.pad, w.take, w.layer) != (l.kit, l.pad, l.take, l.layer)
-                    });
+                    // A second press on the same layer replaces the first,
+                    // waiting or read off the screen.
+                    self.levelings.retain(|w| w.layer_id() != l.layer_id());
+                    self.jobs.cancel(Key::new(PEAK, l.layer_id()));
                     if self.levelings.len() >= MAX_SEATS {
                         self.levelings.remove(0);
                     }
@@ -4697,16 +4742,75 @@ impl SamplePage {
                 }
             }
         };
-        if read_all {
-            self.normalize_fallbacks += 1;
-            let (what, _) = self.leveling_text(&l);
-            let line = format!(
-                "sample: fallback: {what}'s peak read from every frame on the screen: its sound has no loudness summary ({} so far)",
-                self.normalize_fallbacks
-            );
-            self.lines.push(line);
-        }
+        self.jobs.cancel(Key::new(PEAK, l.layer_id()));
         self.set_level(ui, &l, peak);
+    }
+
+    /// Normalize `l` from every frame of its region (plan phase 2 step 7f),
+    /// read on the job service's sound lane, never on the screen: for a
+    /// long region whose sound has no loudness summary (a fallback:
+    /// counted, logged and shown), or whose summary waits with its
+    /// waveform for memory (reading the frames needs none). It lands on a
+    /// later tick ([`Self::peaks_in`]) while the region is still as it was.
+    fn peak_off_screen(&mut self, l: Leveling, source: Source, without: Without) {
+        let (what, told) = self.leveling_text(&l);
+        match without {
+            Without::Summary => {
+                self.normalize_fallbacks += 1;
+                self.lines.push(format!(
+                    "sample: fallback: {what}'s peak read from every frame off the screen: its sound has no loudness summary ({} so far)",
+                    self.normalize_fallbacks
+                ));
+            }
+            Without::Memory => self.lines.push(format!(
+                "sample: {what}'s waveform waits for memory, so its peak is read from every frame instead, off the screen"
+            )),
+        }
+        self.told
+            .push(format!("{told} will normalize when its peak is found"));
+        self.levelings.retain(|w| w.layer_id() != l.layer_id());
+        let key = Key::new(PEAK, l.layer_id());
+        let tx = self.peaks.0.clone();
+        self.jobs.submit(
+            mpfree_sampler::jobs::Job::new(Lane::Sound, key, move |run| {
+                let peak = l.region.peak(&source);
+                if !run.cancelled() {
+                    let _ = tx.send((l, peak));
+                }
+            })
+            .order(Order::First),
+        );
+    }
+
+    /// Peaks read off the screen ([`Self::peak_off_screen`]) since the
+    /// last tick: each Normalize lands while its region is still exactly
+    /// as it was pressed on, as an undo step of its own; one changed since
+    /// is let go, and says so.
+    fn peaks_in(&mut self, ui: &mut Ui) {
+        while let Ok((l, peak)) = self.peaks.1.try_recv() {
+            if self.leveling_holds(&l) {
+                self.set_level(ui, &l, peak);
+            } else {
+                let (what, _) = self.leveling_text(&l);
+                self.lines.push(format!(
+                    "sample: {what} not normalized: it changed before its peak was found"
+                ));
+            }
+        }
+    }
+
+    /// Whether `l`'s region is still exactly as it was when Normalize was
+    /// pressed.
+    fn leveling_holds(&self, l: &Leveling) -> bool {
+        self.projects.get(l.kit).and_then(|p| {
+            match l.take {
+                Some(t) => p.take(t),
+                None => p.pad(l.pad),
+            }?
+            .layers
+            .get(l.layer)
+            .map(|x| x.region == l.region)
+        }) == Some(true)
     }
 
     /// Normalize `l` to `peak`: its gain set, one undo step, and said.
@@ -4767,16 +4871,11 @@ impl SamplePage {
         let mut i = 0;
         while i < self.levelings.len() {
             let l = self.levelings[i].clone();
-            let same = self.projects.get(l.kit).and_then(|p| {
-                match l.take {
-                    Some(t) => p.take(t),
-                    None => p.pad(l.pad),
-                }?
-                .layers
-                .get(l.layer)
-                .map(|x| x.region == l.region)
-            }) == Some(true);
-            let pending = matches!(self.sources.summary(l.region.source), Summary::Pending);
+            let same = self.leveling_holds(&l);
+            // A summary waiting with its waveform for memory isn't waited
+            // for: the peak is read from every frame instead ([`Self::level`]).
+            let pending = matches!(self.sources.summary(l.region.source), Summary::Pending)
+                && !self.sources.is_refused(l.region.source);
             if same && pending {
                 i += 1;
                 continue;
@@ -4804,8 +4903,8 @@ impl SamplePage {
         self.stale_copies
     }
 
-    /// Times Normalize read every frame of a long region on the screen
-    /// for want of its sound's summary.
+    /// Times Normalize read every frame of a long region (off the screen
+    /// since plan phase 2 step 7f) for want of its sound's summary.
     pub fn normalize_fallbacks(&self) -> u32 {
         self.normalize_fallbacks
     }
@@ -7035,6 +7134,7 @@ impl SamplePage {
         if !self.levelings.is_empty() {
             self.normalize_later(ui);
         }
+        self.peaks_in(ui);
         if self.mapping.is_some() {
             self.map_later(ui);
         }
