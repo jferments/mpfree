@@ -68,7 +68,7 @@ pub fn need(frames: usize, channels: usize) -> u64 {
 
 /// The service's key for a sound's hits: its cell, which the job holds.
 fn key(cell: &Arc<HitCell>) -> Key {
-    Key::new("hits", Arc::as_ptr(cell) as usize as u64)
+    Key::new("hits", Arc::as_ptr(cell) as usize as u128)
 }
 
 /// Makes sure a sound's hits are found or on their way: at once for a

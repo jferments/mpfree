@@ -95,7 +95,10 @@ fn the_source_is_analysed_once_for_the_screens() {
     let s = &p.sources()[0];
     let tempo = view.tempo.expect("a drum loop has a tempo");
     assert!((tempo - BPM).abs() < 0.05, "tempo {tempo}");
-    assert_eq!(view.mono.len() as u64, s.frames());
+    assert_eq!(
+        view.mono.as_ref().unwrap().to_vec().len() as u64,
+        s.frames()
+    );
     // Zoomed in, the pyramid draws the samples themselves; zoomed out, its
     // columns hold the same peaks to within its 16-bit storage.
     let raw = RawPeaks::new(s.data().to_vec().into(), 2).unwrap();
@@ -198,7 +201,7 @@ fn dragging_a_marker_snaps_it_and_one_drag_is_one_undo_step() {
         gestures.push(gesture);
         let l = region.sustain_loop.unwrap();
         assert!(
-            zero_crossing_at(&st.source.mono, l.start),
+            zero_crossing_at(&st.source.mono.as_ref().unwrap().to_vec(), l.start),
             "loop start {} is on a zero crossing",
             l.start
         );
@@ -251,7 +254,7 @@ fn markers_never_cross_and_the_region_stays_valid() {
 #[test]
 fn q_links_move_a_pixel_a_detent_snapped_or_a_frame_with_shift() {
     let mut s = sample();
-    let mono = s.state.source.mono.clone();
+    let mono = s.state.source.mono.as_ref().unwrap().to_vec();
     let start = region(&s).start;
     let st = s.state.clone();
     let a = s.tab.qlink(&mut s.ui, &st, 0, 1, false).unwrap();
