@@ -25,6 +25,9 @@
 //!   isn't covered (the later phases, P3).
 //! - [`ledger`]: the memory streaming owns or manages, for the app's shared
 //!   memory check ([`coord::Coordinator::ledger`]).
+//! - [`resample`]: files at another rate played at the engine's,
+//!   resampled ahead into engine-rate units
+//!   ([`coord::Coordinator::open_at_engine_rate`]).
 
 #![forbid(unsafe_code)]
 
@@ -39,6 +42,7 @@ pub mod player;
 pub mod policy;
 pub mod rec;
 pub mod recover;
+pub mod resample;
 #[cfg(feature = "testkit")]
 pub mod testkit;
 pub mod writer;

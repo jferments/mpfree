@@ -57,6 +57,7 @@ use crate::format::{decode, layout, Layout};
 use crate::ledger::{Ledger, Pool};
 use crate::msg::{FromPlayer, Tag, ToPlayer, Where, MAX_SOURCES};
 use crate::player::{unit_frames, Config, UNIT};
+use crate::resample::Rate;
 use crate::writer::Gate;
 
 /// Past this much of a recording's capture memory, background reads stop.
@@ -244,6 +245,8 @@ pub struct Stats {
     pub refused: u32,
     /// Times a read waited because no slot could be given up.
     pub no_room: u32,
+    /// Units read again while already in the cache, and not filled again.
+    pub duplicates: u32,
 }
 
 /// Whether what plays, what is held and what is reserved fits the cache.
@@ -324,8 +327,20 @@ enum Store {
 struct Src {
     tag: Tag,
     store: Store,
+    /// A file played at the engine's rate: its units are engine frames,
+    /// made from the file's frames around them.
+    rate: Option<Rate>,
     /// Where each cursor playing it last played.
     cursors: Vec<Where>,
+}
+
+/// The frames a file source plays in: the file's own, or the engine's
+/// for one played at the engine's rate. Units, holds, readiness and
+/// cursors all count in these, never in the other.
+#[derive(Clone, Copy)]
+struct Shape {
+    channels: u16,
+    frames: u64,
 }
 
 impl Src {
@@ -334,6 +349,29 @@ impl Src {
             Store::File { layout, .. } => Some(layout),
             Store::Memory { .. } => None,
         }
+    }
+
+    fn shape(&self) -> Option<Shape> {
+        let l = self.layout()?;
+        Some(Shape {
+            channels: l.channels,
+            frames: self.rate.map_or(l.frames, |r| r.frames()),
+        })
+    }
+
+    /// The file frames (`start..end`) unit `unit` is made from.
+    fn span(&self, unit: u32) -> Option<(u64, u64)> {
+        let sh = self.shape()?;
+        let uf = unit_frames(sh.channels);
+        let first = u64::from(unit) * uf;
+        let n = sh.frames.saturating_sub(first).min(uf);
+        if n == 0 {
+            return None;
+        }
+        Some(match self.rate {
+            Some(r) => r.span(first, n),
+            None => (first, first + n),
+        })
     }
 }
 
@@ -410,6 +448,9 @@ pub struct Coordinator {
     /// Buffers made at start (in the pool or out with a fill).
     buffers: usize,
     bytes: Vec<Vec<u8>>,
+    /// A resampled unit's file frames, decoded (it grows to the largest
+    /// unit read).
+    scratch: Vec<f32>,
     /// Units read whole, waiting for a buffer or a slot.
     ready: VecDeque<(Tag, u32, Vec<u8>)>,
     /// Messages waiting for room on the way to the sound thread.
@@ -471,6 +512,7 @@ impl Coordinator {
             pool: (0..cfg.buffers).map(|_| vec![0.0; UNIT]).collect(),
             buffers: cfg.buffers,
             bytes: Vec::new(),
+            scratch: Vec::new(),
             ready: VecDeque::new(),
             out: VecDeque::new(),
             round: 1,
@@ -528,7 +570,7 @@ impl Coordinator {
         let raw = idle
             + self.ready.iter().map(|(.., b)| b.capacity()).sum::<usize>()
             + self.flights.values().map(|f| f.bytes).sum::<usize>();
-        let floats = units(self.buffers);
+        let floats = units(self.buffers) + (self.scratch.capacity() * 4) as u64;
         let jobs = self.jobs.iter().map(|j| j.data.capacity()).sum::<usize>()
             + self
                 .finished
@@ -680,22 +722,44 @@ impl Coordinator {
     /// Make `source` the sound in the file at `path` (replacing what it
     /// was, under a new generation).
     pub fn open(&mut self, source: u16, path: &Path) -> Result<Tag, String> {
+        self.open_as(source, path, false)
+    }
+
+    /// Open `source` from a file played at the engine's rate
+    /// ([`Plan::rate`]): a stem or a clip. A file at another rate is
+    /// resampled ahead into engine-rate units ([`crate::resample`]), so
+    /// its frames, holds, loop points and cursors count in engine frames
+    /// ([`Coordinator::frames`]); one already at the engine's rate opens
+    /// as [`Coordinator::open`] does.
+    pub fn open_at_engine_rate(&mut self, source: u16, path: &Path) -> Result<Tag, String> {
+        self.open_as(source, path, true)
+    }
+
+    fn open_as(&mut self, source: u16, path: &Path, engine: bool) -> Result<Tag, String> {
         let s = Self::check_source(source)?;
         let mut file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let layout = layout(&mut file).map_err(|e| format!("{}: {e}", path.display()))?;
+        let rate = if engine {
+            Rate::new(layout.rate, self.plan.rate, layout.frames)
+        } else {
+            None
+        };
         let tag = self.next_tag(source);
-        self.sources[s] = Some(Src {
+        let src = Src {
             tag,
             store: Store::File {
                 file: Arc::new(file),
                 layout,
             },
+            rate,
             cursors: Vec::new(),
-        });
+        };
+        let frames = src.shape().map_or(0, |sh| sh.frames);
+        self.sources[s] = Some(src);
         self.send(ToPlayer::Open {
             tag,
             channels: layout.channels,
-            frames: layout.frames,
+            frames,
         });
         Ok(tag)
     }
@@ -721,6 +785,7 @@ impl Coordinator {
             store: Store::Memory {
                 bytes: (data.len() * std::mem::size_of::<f32>()) as u64,
             },
+            rate: None,
             cursors: Vec::new(),
         });
         self.send(ToPlayer::Resident {
@@ -744,13 +809,26 @@ impl Coordinator {
         self.send(ToPlayer::Close { tag: src.tag });
     }
 
-    /// A file source's layout.
+    /// A file source's layout: the file's own frames and rate.
     pub fn layout(&self, source: u16) -> Option<Layout> {
         self.sources
             .get(usize::from(source))?
             .as_ref()?
             .layout()
             .copied()
+    }
+
+    /// The frames a file source plays: engine frames for one opened with
+    /// [`Coordinator::open_at_engine_rate`] at another rate, else the
+    /// file's.
+    pub fn frames(&self, source: u16) -> Option<u64> {
+        Some(
+            self.sources
+                .get(usize::from(source))?
+                .as_ref()?
+                .shape()?
+                .frames,
+        )
     }
 
     fn current(&self, tag: Tag) -> bool {
@@ -762,7 +840,7 @@ impl Coordinator {
                 .is_some_and(|s| s.tag == tag)
     }
 
-    fn units_of(l: &Layout, from: u64, to: u64) -> std::ops::Range<u32> {
+    fn units_of(l: Shape, from: u64, to: u64) -> std::ops::Range<u32> {
         let uf = unit_frames(l.channels);
         let to = to.min(l.frames);
         if from >= to {
@@ -794,7 +872,7 @@ impl Coordinator {
                 .get(usize::from(source))
                 .and_then(Option::as_ref)
                 .ok_or(Refusal::NotOpen(source))?;
-            let l = src.layout().ok_or(Refusal::NotOpen(source))?;
+            let l = src.shape().ok_or(Refusal::NotOpen(source))?;
             for u in Self::units_of(l, from, to) {
                 new.insert((source, u));
             }
@@ -895,7 +973,7 @@ impl Coordinator {
                 .ok_or(Refusal::Gone(*id))?;
             let l = self.sources[usize::from(h.tag.source)]
                 .as_ref()
-                .and_then(Src::layout)
+                .and_then(Src::shape)
                 .ok_or(Refusal::Gone(*id))?;
             for u in Self::units_of(l, h.from, h.to) {
                 units.insert((h.tag.source, u));
@@ -949,7 +1027,7 @@ impl Coordinator {
         for h in self.holds.iter().filter(|h| h.tier <= tier) {
             let Some(l) = self.sources[usize::from(h.tag.source)]
                 .as_ref()
-                .and_then(Src::layout)
+                .and_then(Src::shape)
             else {
                 continue;
             };
@@ -971,7 +1049,7 @@ impl Coordinator {
         else {
             return false;
         };
-        match src.layout() {
+        match src.shape() {
             None => true,
             Some(l) => Self::units_of(l, from, to).all(|u| self.map.contains_key(&(source, u))),
         }
@@ -1096,18 +1174,28 @@ impl Coordinator {
             return;
         }
         // A joined read: each unit it brought whole goes on.
-        let mut at = 0;
-        for u in first..first + units {
-            let want = self.unit_bytes(s, u);
-            if at + want <= n {
-                let mut b = self.bytes.pop().unwrap_or_default();
-                b.clear();
-                b.extend_from_slice(&r.buf[at..at + want]);
-                self.ready.push_back((tag, u, b));
-            } else {
-                self.stats.short_reads += 1;
+        let src = self.sources[usize::from(s)].as_ref().expect("current");
+        let (Some(l), Some((start, _))) = (src.layout(), src.span(first)) else {
+            self.bytes.push(r.buf);
+            return;
+        };
+        let align = l.block_align();
+        let pieces: Vec<Option<(usize, usize)>> = (first..first + units)
+            .map(|u| {
+                src.span(u)
+                    .map(|(a, b)| ((a - start) as usize * align, (b - a) as usize * align))
+            })
+            .collect();
+        for (u, piece) in (first..).zip(pieces) {
+            match piece {
+                Some((at, want)) if at + want <= n => {
+                    let mut b = self.bytes.pop().unwrap_or_default();
+                    b.clear();
+                    b.extend_from_slice(&r.buf[at..at + want]);
+                    self.ready.push_back((tag, u, b));
+                }
+                _ => self.stats.short_reads += 1,
             }
-            at += want;
         }
         self.bytes.push(r.buf);
     }
@@ -1227,16 +1315,22 @@ impl Coordinator {
         true
     }
 
-    fn unit_bytes(&self, source: u16, unit: u32) -> usize {
-        let Some(l) = self.sources[usize::from(source)]
-            .as_ref()
-            .and_then(Src::layout)
-        else {
+    /// The file bytes a read of units `first..first + units` of `source`
+    /// takes: from where the first one's frames start to where the last
+    /// one's end (a resampled source's units share the frames at their
+    /// edges, read once). 0 if the last one is past the end.
+    fn read_bytes(&self, source: u16, first: u32, units: u32) -> usize {
+        let Some(src) = self.sources[usize::from(source)].as_ref() else {
             return 0;
         };
-        let uf = unit_frames(l.channels);
-        let first = u64::from(unit) * uf;
-        (l.frames.saturating_sub(first).min(uf)) as usize * l.block_align()
+        let (Some(l), Some(a), Some(b)) = (
+            src.layout(),
+            src.span(first),
+            src.span(first + units.saturating_sub(1)),
+        ) else {
+            return 0;
+        };
+        (b.1 - a.0) as usize * l.block_align()
     }
 
     /// A slot for a new unit: a free one, else the one wanted longest ago
@@ -1265,12 +1359,37 @@ impl Coordinator {
                 break;
             };
             let (tag, unit, bytes) = self.ready.pop_front().expect("checked");
-            let l = *self.sources[usize::from(tag.source)]
+            if self.map.contains_key(&(tag.source, unit)) {
+                // Already in the cache (a read that crossed one already
+                // filled): filling it again would take the playing copy
+                // away while the new one is copied in.
+                self.stats.duplicates += 1;
+                self.bytes.push(bytes);
+                continue;
+            }
+            let src = self.sources[usize::from(tag.source)]
                 .as_ref()
-                .and_then(Src::layout)
                 .expect("a current file source");
+            let l = *src.layout().expect("a file source");
             let mut buf = self.pool.pop().expect("checked");
-            let len = decode(l.sample, l.endian, &bytes, &mut buf);
+            let len = match (src.rate, src.span(unit), src.shape()) {
+                (Some(rate), Some((at, _)), Some(sh)) => {
+                    // Decode the file's frames, then make the unit's
+                    // engine frames from them.
+                    let samples = bytes.len() / l.sample.bytes();
+                    if self.scratch.len() < samples {
+                        self.scratch.resize(samples, 0.0);
+                    }
+                    let got = decode(l.sample, l.endian, &bytes, &mut self.scratch);
+                    let uf = unit_frames(sh.channels);
+                    let first = u64::from(unit) * uf;
+                    let len = (sh.frames - first).min(uf) as usize * usize::from(sh.channels);
+                    let ch = usize::from(sh.channels);
+                    rate.run(ch, &self.scratch[..got], at, first, &mut buf[..len]);
+                    len
+                }
+                _ => decode(l.sample, l.endian, &bytes, &mut buf),
+            };
             self.bytes.push(bytes);
             if let Held::Unit { source, unit } = self.mirror[slot].held {
                 self.map.remove(&(source, unit));
@@ -1312,7 +1431,7 @@ impl Coordinator {
             let Some(src) = src.as_ref() else {
                 continue;
             };
-            let Some(l) = src.layout() else {
+            let Some(l) = src.shape() else {
                 continue;
             };
             let uf = unit_frames(l.channels);
@@ -1428,7 +1547,7 @@ impl Coordinator {
         for h in &self.holds {
             let Some(l) = self.sources[usize::from(h.tag.source)]
                 .as_ref()
-                .and_then(Src::layout)
+                .and_then(Src::shape)
             else {
                 continue;
             };
@@ -1443,12 +1562,18 @@ impl Coordinator {
                 }
             }
         }
-        // Mark what is cached; list what is missing.
+        // Mark what is cached; list what is missing. A unit read and
+        // waiting for a buffer isn't missing: asking again would read it
+        // twice, and its second fill would replace a copy already playing.
+        let waiting: HashSet<(u16, u32)> =
+            self.ready.iter().map(|(t, u, _)| (t.source, *u)).collect();
         let mut missing: Vec<(f64, Tag, u32)> = Vec::new();
         for (&(s, u), &(deadline, tag)) in &wants {
             match self.map.get(&(s, u)) {
                 Some(&slot) => self.mirror[slot].wanted = self.round,
-                None if !self.asked.contains_key(&(s, u)) => missing.push((deadline, tag, u)),
+                None if !self.asked.contains_key(&(s, u)) && !waiting.contains(&(s, u)) => {
+                    missing.push((deadline, tag, u))
+                }
                 None => {}
             }
         }
@@ -1481,7 +1606,7 @@ impl Coordinator {
             if self.asked.contains_key(&(s, unit)) {
                 continue;
             }
-            let mut bytes = self.unit_bytes(s, unit);
+            let mut bytes = self.read_bytes(s, unit, 1);
             // The next deadline that isn't one of this file's next units.
             let other = missing[i + 1..]
                 .iter()
@@ -1493,14 +1618,14 @@ impl Coordinator {
                 if !missing_set.contains(&(s, next)) || self.asked.contains_key(&(s, next)) {
                     break;
                 }
-                let more = self.unit_bytes(s, next);
-                if more == 0
-                    || bytes + more > self.plan.join_bytes
-                    || queue_s + self.read_time(bytes + more) > 0.5 * other
+                let joined = self.read_bytes(s, unit, units + 1);
+                if joined == 0
+                    || joined > self.plan.join_bytes
+                    || queue_s + self.read_time(joined) > 0.5 * other
                 {
                     break;
                 }
-                bytes += more;
+                bytes = joined;
                 units += 1;
             }
             let src = self.sources[usize::from(s)].as_ref().expect("current");
@@ -1508,7 +1633,9 @@ impl Coordinator {
                 Store::File { file, layout } => (file.clone(), *layout),
                 Store::Memory { .. } => continue,
             };
-            let first = u64::from(unit) * unit_frames(l.channels);
+            let Some((first, _)) = src.span(unit) else {
+                continue;
+            };
             self.request = self.request.wrapping_add(1);
             let request = self.request;
             let cancel = Arc::new(AtomicBool::new(false));

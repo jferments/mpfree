@@ -207,7 +207,14 @@ with `--quick`) at 128 frames and 44.1 kHz:
   ([sampler architecture](sampler-architecture.md), voice allocation) cost.
   Counted in instructions on the workstation, 24 plain voices took 408,000
   a block through the full voice loop and take 39,000 through the plain
-  path; 64 take 74,000.
+  path; 64 take 74,000. "Stream voices" are `mpfree-stream`'s cursors
+  reading streamed sounds (disk streaming's P3, step 3), for the
+  sampler's voice limit: 64 voices at 1.5 times their rate take 1.1 M
+  instructions a block with Hermite and 6.4 M band-limited (8.2 M at 3
+  times, 11.8 M with 16 crossings a side); 16 stems at the engine's rate
+  take 65,000. On the workstation 64 band-limited voices are 18 % of a
+  period, so on the MPC fewer fit in the sampler's 25 %: the device round
+  measures it, and the sampler sets the limit.
 - **fx:** every effect, Grains FX and a 4-slot insert chain, on a tone under
   noise bursts, and the mixer with a song's inserts.
 - **time:** the transport looping 4 bars at 128 BPM with 8 clips playing

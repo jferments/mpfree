@@ -751,3 +751,41 @@ fn the_ledger_counts_what_streaming_allocated_not_what_it_borrows() {
     rig.c.close(1);
     assert_eq!(rig.c.ledger().lent, 0);
 }
+
+#[test]
+fn sixteen_stems_at_once_are_read_once_and_never_filled_twice() {
+    // Every unit of 16 stems wanted in the same round: more read than
+    // buffers can carry at once. One waiting for a buffer must not be
+    // asked for again, or its second fill takes the playing copy away
+    // while it is copied in (a dropout).
+    let dir = folder("sixteen");
+    let mut rig = Rig::new(
+        Config {
+            slots: 256,
+            ..Config::default()
+        },
+        Plan::default(),
+    );
+    rig.c.new_project();
+    for s in 0..16u16 {
+        let p = dir.join(format!("{s}.wav"));
+        wav(&p, Store::Float, 2, 48_000, u32::from(s) + 1);
+        rig.c.open(s, &p).expect("opens");
+    }
+    let mut ks: Vec<Cursor> = (0..16).map(|s| Cursor::new(s, s)).collect();
+    let mut refs: Vec<&mut Cursor> = ks.iter_mut().collect();
+    rig.warm(&mut refs, 400);
+    // 6 units a stem.
+    assert_eq!(rig.c.cached(), 96);
+    assert_eq!(rig.p.ready(), 96);
+    let s = rig.c.stats();
+    assert_eq!(s.reads + s.joined, 96, "{s:?}");
+    assert_eq!(rig.p.stats().filled, 96);
+    let mut missed = 0;
+    for _ in 0..100 {
+        let mut outs = vec![vec![0.0; 512]; 16];
+        missed += rig.period(&mut refs, &mut outs);
+    }
+    assert_eq!(missed, 0);
+    assert_eq!(rig.p.stats().filled, 96);
+}

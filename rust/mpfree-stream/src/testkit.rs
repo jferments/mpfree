@@ -115,6 +115,30 @@ pub fn wav(path: &Path, store: Store, channels: u16, frames: u64, marker: u32) {
     fs::write(path, f).expect("write wav");
 }
 
+/// A 32-bit float WAV at `rate` holding `samples` (interleaved,
+/// `channels` a frame).
+pub fn float_wav(path: &Path, rate: u32, channels: u16, samples: &[f32]) {
+    let align = u32::from(channels) * 4;
+    let mut fmt = Vec::new();
+    fmt.extend_from_slice(&3u16.to_le_bytes());
+    fmt.extend_from_slice(&channels.to_le_bytes());
+    fmt.extend_from_slice(&rate.to_le_bytes());
+    fmt.extend_from_slice(&(rate * align).to_le_bytes());
+    fmt.extend_from_slice(&(align as u16).to_le_bytes());
+    fmt.extend_from_slice(&32u16.to_le_bytes());
+    let data: Vec<u8> = samples.iter().flat_map(|x| x.to_le_bytes()).collect();
+    let mut f = b"RIFF".to_vec();
+    f.extend_from_slice(&(4 + 8 + fmt.len() as u32 + 8 + data.len() as u32).to_le_bytes());
+    f.extend_from_slice(b"WAVE");
+    f.extend_from_slice(b"fmt ");
+    f.extend_from_slice(&(fmt.len() as u32).to_le_bytes());
+    f.extend_from_slice(&fmt);
+    f.extend_from_slice(b"data");
+    f.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    f.extend_from_slice(&data);
+    fs::write(path, f).expect("write wav");
+}
+
 /// A player and its coordinator, reading files inline.
 pub struct Rig {
     pub p: Player,
