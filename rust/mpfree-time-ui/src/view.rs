@@ -566,7 +566,8 @@ impl TakeRow {
     /// What it is: "take", "capture", "edit", "delete", "paste",
     /// "settings", "reload", "mutate", "restore", for a drop "move",
     /// "swap" or "copy", and for a Song view edit "move", "copy",
-    /// "length", "delete", "unique", "scenes" or "tempo", "list" for the
+    /// "length", "delete", "unique", "scenes", "tempo", "bars" or
+    /// "marker", "list" for the
     /// song list, "scene" for the scene editor and "song → scenes".
     pub fn word(&self) -> &'static str {
         if self.rows.is_some() {
@@ -582,6 +583,8 @@ impl TakeRow {
                 SongChange::Scenes { .. } => "scenes",
                 SongChange::List | SongChange::ListToSong { .. } => "list",
                 SongChange::Tempo { .. } => "tempo",
+                SongChange::Bars { .. } => "bars",
+                SongChange::Marker { .. } => "marker",
             };
         }
         if let Some(d) = self.dropped {
@@ -1300,6 +1303,11 @@ pub enum TimeAction {
     },
     /// A section's name tapped: pick it (the wheel's push then grabs it).
     PickSection(Option<usize>),
+    /// Bars put in or taken out of the song (Arrange 3.3), everything
+    /// after moving with them.
+    SongBars(BarsEdit),
+    /// The song's markers edited (Arrange 3.3): only the markers change.
+    SongMarker(MarkerEdit),
     /// Give a placement its own copy of its clip.
     MakeUnique(usize),
     DeletePlacement(usize),
@@ -1380,6 +1388,35 @@ pub enum TempoEdit {
     /// card, 18 Nov): the point in effect at the playhead takes `bpm`, or
     /// before the first point a new one at the playhead's bar.
     AtPlayhead(f64),
+}
+
+/// Bars put in or taken out of the song (Arrange 3.3): one
+/// `mpfree_seq::TimeEdit`, so the blocks, markers, tempo points, morph
+/// moves and rows after it all move, and UNDO takes it back.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BarsEdit {
+    /// `bars` empty bars put in at song tick `at` (a bar line): the room
+    /// holds the tempo and the morph as they were just before it.
+    Insert { at: Tick, bars: u32 },
+    /// The bars from song tick `from` to `to` taken out (bar lines), and
+    /// everything after closed up.
+    Delete { from: Tick, to: Tick },
+}
+
+/// An edit of the song's markers (Arrange 3.3), each one UNDO takes back.
+/// Only the markers change: to move what plays, move a section.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MarkerEdit {
+    /// A new marker on song tick `at` (a bar line), named with the next
+    /// free letter (`Arrangement::new_marker_name`), picked.
+    Add(Tick),
+    /// Marker `index` given a new name.
+    Rename { index: usize, name: String },
+    /// Marker `index` moved to song tick `at` (a bar line): its section's
+    /// edge moves, nothing else.
+    Move { index: usize, at: Tick },
+    /// Marker `index` taken away: its bars join the section before.
+    Delete(usize),
 }
 
 /// What a touch on the Song view's audio lanes asks for (layout spec 4c).
@@ -3197,9 +3234,17 @@ pub fn take_title(st: &TimeState, row: &TakeRow) -> String {
                 .map_or("section", |m| m.1.as_str());
             return format!("{word} {} · {name}", row.shown());
         }
-        Some(SongChange::Tempo { at }) => {
+        Some(SongChange::Tempo { at } | SongChange::Bars { at, .. }) => {
             let bar = st.transport.meter.bar_ticks().max(1);
             return format!("{word} {} · bar {}", row.shown(), at.div_euclid(bar) + 1);
+        }
+        Some(SongChange::Marker { at }) => {
+            let bar = st.transport.meter.bar_ticks().max(1);
+            let name = st.markers.iter().find(|m| m.0 == at).map_or_else(
+                || format!("bar {}", at.div_euclid(bar) + 1),
+                |m| m.1.clone(),
+            );
+            return format!("{word} {} · {name}", row.shown());
         }
         Some(SongChange::Scenes { .. } | SongChange::List | SongChange::ListToSong { .. })
         | None => {}
@@ -3251,6 +3296,20 @@ fn take_detail(st: &TimeState, row: &TakeRow) -> String {
         Some(SongChange::List) => return "song list".into(),
         Some(SongChange::ListToSong { steps }) => return format!("{steps} steps → song"),
         Some(SongChange::Tempo { .. }) => return "tempo point".into(),
+        Some(SongChange::Bars { len, inserted, .. }) => {
+            let n = if len % bar == 0 {
+                format!("{}", len / bar)
+            } else {
+                format!("{:.1}", len as f64 / bar as f64)
+            };
+            let bars = if n == "1" { "bar" } else { "bars" };
+            return if inserted {
+                format!("{n} {bars} put in")
+            } else {
+                format!("{n} {bars} taken out")
+            };
+        }
+        Some(SongChange::Marker { at }) => return format!("at bar {}", bar_of(at)),
         None => {}
     }
     match row.dropped {

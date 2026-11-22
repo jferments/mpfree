@@ -3354,6 +3354,163 @@ mod tests {
         assert_eq!(h.control.project.arrangement, before);
     }
 
+    /// Bars put in and taken out (Arrange 3.3): everything after moves,
+    /// tempo points and markers too, each is one UNDO, and the undo list
+    /// names it.
+    #[test]
+    fn bars_go_in_and_come_out_and_undo_takes_each_back() {
+        use mpfree_seq::arrange::Placement;
+        use mpfree_time_ui::BarsEdit;
+        const BAR: i64 = 3840;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        for (t, name) in [(0, "Beat"), (1, "Bass")] {
+            h.control.project.tracks[t].slots[0] = Some(Clip::new(name, BAR));
+        }
+        h.control.project.give_clip_ids();
+        let tracks = h.control.project.tracks.clone();
+        let song = &mut h.control.project.arrangement;
+        song.place(Placement::of(&tracks, 0, 0, 0, 4 * BAR))
+            .unwrap();
+        song.place(Placement::of(&tracks, 1, 0, 4 * BAR, 2 * BAR))
+            .unwrap();
+        song.mark(0, "Intro").unwrap();
+        song.mark(4 * BAR, "Verse").unwrap();
+        song.set_tempo(4 * BAR, 100.0, None).unwrap();
+        let start = h.control.project.arrangement.clone();
+        let bars = |h: &mut TimeHost, e| h.act(TimeAction::SongBars(e));
+        // Two bars for a bridge before the Verse.
+        let said = bars(
+            &mut h,
+            BarsEdit::Insert {
+                at: 4 * BAR,
+                bars: 2,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            said,
+            "song: 2 empty bars at bar 5; everything after moved on (UNDO takes them out)"
+        );
+        let song = &h.control.project.arrangement;
+        assert_eq!(song.markers[1].at, 6 * BAR, "the Verse moved on");
+        assert_eq!(song.tempo[0].at, 6 * BAR, "and its tempo");
+        assert_eq!(song.placements[1].start, 6 * BAR, "and the bass");
+        let after_insert = song.clone();
+        // A bar out of the Intro's beat.
+        let said = bars(
+            &mut h,
+            BarsEdit::Delete {
+                from: BAR,
+                to: 2 * BAR,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            said,
+            "song: bar 2 taken out; everything after moved back (UNDO puts them back)"
+        );
+        let song = &h.control.project.arrangement;
+        assert_eq!(song.placements[0].length, 3 * BAR, "the beat a bar shorter");
+        assert_eq!(song.markers[1].at, 5 * BAR);
+        // No bars at all: refused, nothing changes.
+        let before = h.control.project.arrangement.clone();
+        let said = bars(
+            &mut h,
+            BarsEdit::Delete {
+                from: 2 * BAR,
+                to: 2 * BAR,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(said, "song: there are no bars to take out at bar 3");
+        assert_eq!(h.control.project.arrangement, before);
+        let st = h.control.state();
+        let row = st.done.last().unwrap();
+        assert_eq!(row.word(), "bars");
+        assert_eq!(mpfree_time_ui::view::take_title(&st, row), "Bars 2 · bar 2");
+        let said = h.act(TimeAction::Undo).unwrap();
+        assert!(said.contains("the song's bars at bar 2"), "{said}");
+        assert_eq!(h.control.project.arrangement, after_insert);
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.control.project.arrangement, start, "both undone");
+    }
+
+    /// Markers added, renamed, moved and taken away (Arrange 3.3): only the
+    /// markers change, each is one UNDO, and names are kept.
+    #[test]
+    fn markers_are_added_renamed_moved_and_taken_away_each_one_undo() {
+        use mpfree_seq::arrange::Placement;
+        use mpfree_time_ui::MarkerEdit;
+        const BAR: i64 = 3840;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.control.project.tracks[0].slots[0] = Some(Clip::new("Beat", BAR));
+        h.control.project.give_clip_ids();
+        let tracks = h.control.project.tracks.clone();
+        let song = &mut h.control.project.arrangement;
+        song.place(Placement::of(&tracks, 0, 0, 0, 8 * BAR))
+            .unwrap();
+        song.mark(0, "Intro").unwrap();
+        let start = h.control.project.arrangement.clone();
+        let marker = |h: &mut TimeHost, e| h.act(TimeAction::SongMarker(e));
+        let names = |h: &TimeHost| -> Vec<(i64, String)> { h.control.state().markers.clone() };
+        let said = marker(&mut h, MarkerEdit::Add(4 * BAR)).unwrap();
+        assert_eq!(said, "song: marker A at bar 5 (UNDO takes it away)");
+        assert_eq!(h.control.state().section, Some(1), "picked");
+        let said = marker(&mut h, MarkerEdit::Add(4 * BAR)).unwrap_err();
+        assert_eq!(said, "song: there's a marker at bar 5 already");
+        let said = marker(
+            &mut h,
+            MarkerEdit::Rename {
+                index: 1,
+                name: " Bridge ".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(said, "song: A is Bridge now (UNDO gives its name back)");
+        let said = marker(
+            &mut h,
+            MarkerEdit::Rename {
+                index: 1,
+                name: "  ".into(),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(said, "song: Bridge needs a name");
+        let said = marker(
+            &mut h,
+            MarkerEdit::Move {
+                index: 1,
+                at: 6 * BAR,
+            },
+        )
+        .unwrap();
+        assert!(said.starts_with("song: Bridge moved to bar 7;"), "{said}");
+        assert_eq!(
+            names(&h),
+            [(0, "Intro".to_string()), (6 * BAR, "Bridge".to_string())]
+        );
+        let said = marker(&mut h, MarkerEdit::Move { index: 1, at: 0 }).unwrap_err();
+        assert_eq!(said, "song: Bridge can't go onto another marker at bar 1");
+        let said = marker(&mut h, MarkerEdit::Delete(1)).unwrap();
+        assert_eq!(
+            said,
+            "song: marker Bridge taken away; its bars join Intro (UNDO puts it back)"
+        );
+        assert_eq!(
+            h.control.project.arrangement.placements, start.placements,
+            "only the markers changed"
+        );
+        let said = h.act(TimeAction::Undo).unwrap();
+        assert!(said.contains("the song's marker at bar 7"), "{said}");
+        assert_eq!(names(&h)[1].1, "Bridge", "back with its name");
+        for _ in 0..3 {
+            h.act(TimeAction::Undo).unwrap();
+        }
+        assert_eq!(h.control.project.arrangement, start, "every edit undone");
+        h.act(TimeAction::Redo).unwrap();
+        assert_eq!(names(&h)[1], (4 * BAR, "A".to_string()));
+    }
+
     #[test]
     fn plus_track_adds_an_armed_track_up_to_128_and_undo_takes_it_away() {
         let mut h = TimeHost::new(RATE, 120.0).unwrap();

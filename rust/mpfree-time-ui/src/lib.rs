@@ -31,4 +31,6 @@ pub mod song;
 pub mod view;
 pub mod widgets;
 
-pub use view::{action, TempoEdit, TimeAction, TimePage, TimeState, TransportInfo};
+pub use view::{
+    action, BarsEdit, MarkerEdit, TempoEdit, TimeAction, TimePage, TimeState, TransportInfo,
+};

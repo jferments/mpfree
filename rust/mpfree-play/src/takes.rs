@@ -174,6 +174,19 @@ pub enum SongChange {
     Tempo {
         at: Tick,
     },
+    /// Bars put in or taken out of the song (Arrange 3.3, one
+    /// `TimeEdit`): `len` song ticks at song tick `at`, everything after
+    /// moved on (`inserted`) or back.
+    Bars {
+        at: Tick,
+        len: Tick,
+        inserted: bool,
+    },
+    /// A marker added, renamed, moved or taken away (Arrange 3.3): the one
+    /// at song tick `at` (where it was, for one taken away).
+    Marker {
+        at: Tick,
+    },
 }
 
 /// A Song view edit: what it did, and the song before and after it.

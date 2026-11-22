@@ -42,6 +42,7 @@ use mpfree_seq::scenes::{MAX_LIST_STEPS, MAX_TIMES};
 use mpfree_seq::steps::{Edit, Grid};
 use mpfree_seq::time_edit::Refused;
 use mpfree_seq::ListStep;
+use mpfree_seq::TimeEdit;
 use mpfree_seq::{
     Clip, ClipId, LaunchGrid, ModelError, Project, TouchPoint, TrackId, LOOPS, MAX_TRACKS, ROWS,
     SLOTS,
@@ -49,9 +50,9 @@ use mpfree_seq::{
 use mpfree_time_ui::editor::{EditAction, Editor};
 use mpfree_time_ui::list::ListRow;
 use mpfree_time_ui::view::{
-    bars_label, card_rows, clips_after, grid_name, rows_named, scene_rows, AudioAction, EditInfo,
-    FollowNext, MorphInfo, MuteWait, RegionId, TakeRow, TempoEdit, TimeAction, TimeState,
-    TransportInfo, SCENE_NAME,
+    bars_label, card_rows, clips_after, grid_name, rows_named, scene_rows, AudioAction, BarsEdit,
+    EditInfo, FollowNext, MarkerEdit, MorphInfo, MuteWait, RegionId, TakeRow, TempoEdit,
+    TimeAction, TimeState, TransportInfo, SCENE_NAME,
 };
 use mpfree_transport::time::{TempoMap, Tick};
 use mpfree_transport::{Block, Command, State};
@@ -1665,6 +1666,20 @@ impl TimeControl {
                     bar_beat(at, self.info.meter)
                 )
             }
+            Some(SongChange::Bars { at, .. }) => {
+                return format!(
+                    "{} · the song's bars at {}",
+                    r.short(),
+                    bar_beat(at, self.info.meter)
+                )
+            }
+            Some(SongChange::Marker { at }) => {
+                return format!(
+                    "{} · the song's marker at {}",
+                    r.short(),
+                    bar_beat(at, self.info.meter)
+                )
+            }
             None => {}
         }
         if let Some((first, last)) = r.rows {
@@ -3249,7 +3264,9 @@ impl TimeControl {
             | TimeAction::DeletePlacement(_)
             | TimeAction::MovePlacement { .. }
             | TimeAction::StretchPlacement { .. }
-            | TimeAction::MoveSection { .. } => {
+            | TimeAction::MoveSection { .. }
+            | TimeAction::SongBars(_)
+            | TimeAction::SongMarker(_) => {
                 // Edits of the song alone, each one UNDO takes back.
                 let bar = info.meter.bar_ticks();
                 let before = self.project.arrangement.clone();
@@ -3742,6 +3759,142 @@ impl TimeControl {
                         Some(SongChange::SectionMoved { at: start }),
                     )
                 })
+            }
+            TimeAction::SongBars(e) => {
+                let b = bar.max(1);
+                let (edit, from, len, inserted) = match e {
+                    BarsEdit::Insert { at, bars } => {
+                        let len = Tick::from(bars) * b;
+                        (TimeEdit::Insert { at, len }, at, len, true)
+                    }
+                    BarsEdit::Delete { from, to } => {
+                        (TimeEdit::Delete { from, to }, from, to - from, false)
+                    }
+                };
+                let n = if len % b == 0 {
+                    format!("{}", len / b)
+                } else {
+                    format!("{:.1}", len as f64 / b as f64)
+                };
+                let bars = if n == "1" { "bar" } else { "bars" };
+                // The bars taken out, by number: "bar 9", "bars 9 to 10".
+                let span = if from % b == 0 && len % b == 0 && len > 0 {
+                    let (first, last) = (from / b + 1, (from + len) / b);
+                    if first == last {
+                        format!("bar {first}")
+                    } else {
+                        format!("bars {first} to {last}")
+                    }
+                } else {
+                    format!("{} to {}", at(from), at(from + len))
+                };
+                *song = song.edited(tracks, edit, bpm).map_err(|r| {
+                    let what = if inserted {
+                        format!("{n} {bars} can't go in at {}", at(from))
+                    } else if len <= 0 {
+                        format!("there are no bars to take out at {}", at(from))
+                    } else {
+                        format!("{span} can't come out")
+                    };
+                    match r {
+                        Refused::BadRange => format!("song: {what}"),
+                        r => format!("song: {what}: {}", refused_said(r, at)),
+                    }
+                })?;
+                self.section = None;
+                self.selected = None;
+                self.tempo_pick = None;
+                Ok((
+                    if inserted {
+                        format!(
+                            "song: {n} empty {bars} at {}; everything after moved on (UNDO takes them out)",
+                            at(from)
+                        )
+                    } else {
+                        format!(
+                            "song: {span} taken out; everything after moved back (UNDO puts them back)"
+                        )
+                    },
+                    Some(SongChange::Bars {
+                        at: from,
+                        len,
+                        inserted,
+                    }),
+                ))
+            }
+            TimeAction::SongMarker(e) => {
+                let marker = |song: &mpfree_seq::arrange::Arrangement, k: usize| {
+                    song.markers
+                        .get(k)
+                        .map(|m| (m.at, m.name.clone()))
+                        .ok_or_else(|| "song: there's no such marker".to_string())
+                };
+                match e {
+                    MarkerEdit::Add(t) => {
+                        let name = song.new_marker_name();
+                        let k = song.add_marker(t, &name).map_err(|_| {
+                            if t < 0 {
+                                "song: a marker can't go before the song's start".to_string()
+                            } else if song.markers.iter().any(|m| m.at == t) {
+                                format!("song: there's a marker at {} already", at(t))
+                            } else {
+                                "song: the song has as many markers as it can hold".to_string()
+                            }
+                        })?;
+                        self.section = Some(k);
+                        Ok((
+                            format!("song: marker {name} at {} (UNDO takes it away)", at(t)),
+                            Some(SongChange::Marker { at: t }),
+                        ))
+                    }
+                    MarkerEdit::Rename { index, name } => {
+                        let (t, was) = marker(song, index)?;
+                        let name = name.trim().to_string();
+                        song.rename_marker(index, &name)
+                            .map_err(|_| format!("song: {was} needs a name"))?;
+                        Ok((
+                            format!("song: {was} is {name} now (UNDO gives its name back)"),
+                            Some(SongChange::Marker { at: t }),
+                        ))
+                    }
+                    MarkerEdit::Move { index, at: t } => {
+                        let (_, name) = marker(song, index)?;
+                        let k = song.move_marker(index, t).map_err(|_| {
+                            if t < 0 {
+                                format!("song: {name} can't go before the song's start")
+                            } else {
+                                format!("song: {name} can't go onto another marker at {}", at(t))
+                            }
+                        })?;
+                        self.section = Some(k);
+                        Ok((
+                            format!(
+                                "song: {name} moved to {}; only where its section starts moved (UNDO takes it back)",
+                                at(t)
+                            ),
+                            Some(SongChange::Marker { at: t }),
+                        ))
+                    }
+                    MarkerEdit::Delete(index) => {
+                        let (t, name) = marker(song, index)?;
+                        song.remove_marker(index)
+                            .map_err(|_| "song: there's no such marker".to_string())?;
+                        self.section = None;
+                        let joins = index
+                            .checked_sub(1)
+                            .and_then(|k| song.markers.get(k))
+                            .map_or_else(
+                                || "what comes before the first marker".to_string(),
+                                |m| m.name.clone(),
+                            );
+                        Ok((
+                            format!(
+                                "song: marker {name} taken away; its bars join {joins} (UNDO puts it back)"
+                            ),
+                            Some(SongChange::Marker { at: t }),
+                        ))
+                    }
+                }
             }
             TimeAction::ScenesToSong => {
                 // Every row with a clip, in order, after the song's end

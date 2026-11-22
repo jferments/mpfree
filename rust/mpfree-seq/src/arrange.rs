@@ -659,6 +659,70 @@ impl Arrangement {
         Ok(())
     }
 
+    /// A name for a new marker: the first letter, A to Z, no marker has
+    /// as its name, else "Section N" for the markers' count plus one.
+    pub fn new_marker_name(&self) -> String {
+        ('A'..='Z')
+            .map(String::from)
+            .find(|n| self.markers.iter().all(|m| &m.name != n))
+            .unwrap_or_else(|| format!("Section {}", self.markers.len() + 1))
+    }
+
+    /// A marker named `name` added on song tick `at` (the Arrange
+    /// refactor's 3.3), and its index. Refused (`BadPlacement`), changing
+    /// nothing: before the start, one too many, an empty name, or a tick
+    /// a marker has already (a section is never empty).
+    pub fn add_marker(&mut self, at: Tick, name: &str) -> Result<usize, ModelError> {
+        if name.trim().is_empty() || self.markers.iter().any(|m| m.at == at) {
+            return Err(ModelError::BadPlacement);
+        }
+        self.mark(at, name)?;
+        Ok(self.markers.partition_point(|m| m.at < at))
+    }
+
+    /// Marker `k` named `name`. Refused (`BadPlacement`) for no such
+    /// marker or an empty name.
+    pub fn rename_marker(&mut self, k: usize, name: &str) -> Result<(), ModelError> {
+        if name.trim().is_empty() {
+            return Err(ModelError::BadPlacement);
+        }
+        let m = self.markers.get_mut(k).ok_or(ModelError::BadPlacement)?;
+        m.name = name.to_string();
+        Ok(())
+    }
+
+    /// Marker `k` moved to song tick `at`, keeping its name, and its index
+    /// now (past another marker it changes places with it). Only the
+    /// marker moves: its section's edge, not what plays (to move what
+    /// plays, move the section). Refused (`BadPlacement`), changing
+    /// nothing: no such marker, before the start, or onto another marker.
+    pub fn move_marker(&mut self, k: usize, at: Tick) -> Result<usize, ModelError> {
+        if k >= self.markers.len()
+            || at < 0
+            || self
+                .markers
+                .iter()
+                .enumerate()
+                .any(|(j, m)| j != k && m.at == at)
+        {
+            return Err(ModelError::BadPlacement);
+        }
+        let mut m = self.markers.remove(k);
+        m.at = at;
+        let i = self.markers.partition_point(|n| n.at < at);
+        self.markers.insert(i, m);
+        Ok(i)
+    }
+
+    /// Marker `k` taken away, and returned: its bars join the section
+    /// before. `BadPlacement` for no such marker.
+    pub fn remove_marker(&mut self, k: usize) -> Result<Marker, ModelError> {
+        if k >= self.markers.len() {
+            return Err(ModelError::BadPlacement);
+        }
+        Ok(self.markers.remove(k))
+    }
+
     /// Placement `i` moved to `track` from `start`, or with `copy` a copy
     /// of it put there and the placement left as it is (Jay, 14 Nov: drag
     /// and drop on the Song view). Either way it stays linked to its clip,
@@ -2275,6 +2339,84 @@ mod tests {
         // The drums play on into the copy: one block.
         assert_eq!(lane(s, 0), [(0, 10 * BAR, 0)]);
         assert_eq!(s.check(&p.tracks), Ok(()));
+    }
+
+    /// Markers added, renamed, moved and taken away (Arrange 3.3): only
+    /// the markers change, each keeps its name, and a refusal changes
+    /// nothing.
+    #[test]
+    fn markers_are_added_renamed_moved_and_taken_away() {
+        let mut p = sections_song();
+        let s = &mut p.arrangement;
+        let blocks = s.placements.clone();
+        // A, B and C are taken: the next is D.
+        assert_eq!(s.new_marker_name(), "D");
+        assert_eq!(s.add_marker(6 * BAR, "D"), Ok(3));
+        assert_eq!(s.add_marker(BAR, "Pickup"), Ok(1));
+        assert_eq!(
+            names(s),
+            [
+                (0, "A"),
+                (BAR, "Pickup"),
+                (2 * BAR, "B"),
+                (4 * BAR, "C"),
+                (6 * BAR, "D")
+            ]
+        );
+        let before = s.clone();
+        for refused in [
+            s.add_marker(2 * BAR, "E"),
+            s.add_marker(-1, "E"),
+            s.add_marker(3 * BAR, " "),
+        ] {
+            assert_eq!(refused, Err(ModelError::BadPlacement));
+        }
+        assert_eq!(s.rename_marker(9, "X"), Err(ModelError::BadPlacement));
+        assert_eq!(s.rename_marker(1, ""), Err(ModelError::BadPlacement));
+        assert_eq!(s.move_marker(1, 2 * BAR), Err(ModelError::BadPlacement));
+        assert_eq!(s.move_marker(1, -BAR), Err(ModelError::BadPlacement));
+        assert_eq!(
+            s.remove_marker(5).map(|m| m.at),
+            Err(ModelError::BadPlacement)
+        );
+        assert_eq!(*s, before);
+        s.rename_marker(1, "Fill").unwrap();
+        // Past B and C: it changes places with them, its name kept.
+        assert_eq!(s.move_marker(1, 5 * BAR), Ok(3));
+        assert_eq!(
+            names(s),
+            [
+                (0, "A"),
+                (2 * BAR, "B"),
+                (4 * BAR, "C"),
+                (5 * BAR, "Fill"),
+                (6 * BAR, "D")
+            ]
+        );
+        assert_eq!(
+            s.section(2, BAR),
+            Some((4 * BAR, 5 * BAR)),
+            "C ends at Fill"
+        );
+        assert_eq!(s.remove_marker(3).unwrap().name, "Fill");
+        assert_eq!(s.section(2, BAR), Some((4 * BAR, 6 * BAR)), "C runs to D");
+        assert_eq!(s.placements, blocks, "only the markers changed");
+        assert_eq!(s.check(&p.tracks), Ok(()));
+    }
+
+    /// Past Z, a new marker is Section N.
+    #[test]
+    fn a_new_marker_is_named_by_the_next_free_letter() {
+        let mut s = Arrangement::default();
+        assert_eq!(s.new_marker_name(), "A");
+        for (i, c) in ('A'..='Z').enumerate() {
+            if c != 'C' {
+                s.mark(i as Tick * BAR, &c.to_string()).unwrap();
+            }
+        }
+        assert_eq!(s.new_marker_name(), "C");
+        s.mark(30 * BAR, "C").unwrap();
+        assert_eq!(s.new_marker_name(), "Section 27");
     }
 
     /// A section move keeps the song list (it names rows, not ticks).
