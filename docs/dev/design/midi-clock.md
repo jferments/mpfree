@@ -13,6 +13,8 @@ Each period, in time order, the time engine calls:
 - `located(offset, tick, out)` on a locate or a loop wrap;
 - `pulse(tick, offset, out)` for each line of `Span::lines(PULSE_TICKS)`.
 
+`moved(offset, tick, playing, out)` is for a host that puts the song somewhere new on a frame without the transport's marks saying so, such as a song switch in a live show: it takes the position and whether the song plays from there, whatever played before. Playing from the top (tick 0, or a count-in), Stop if the clock ran, then Start; playing from further in, Song Position and Continue (after Stop if it ran); stopped, Stop if it ran and Song Position.
+
 | Transport | MIDI out |
 |---|---|
 | Starts from tick 0 | Start (`FA`), then a pulse at tick 0 |
@@ -86,6 +88,6 @@ The status line gets a "following a clock" part once a count isn't 0: jumps to t
 
 ## Tests
 
-`cargo test -p mpfree-midi-clock`. They cover Start and pulse timing at 120 BPM, Continue from the middle of a bar, a count-in, a loop wrap, Stop and a locate while stopped, a full buffer, reading the tempo with about 1 ms of jitter, Start, Continue, Stop and Song Position in, and a round trip from `ClockOut` back through `ClockIn` at 140 BPM.
+`cargo test -p mpfree-midi-clock`. They cover Start and pulse timing at 120 BPM, Continue from the middle of a bar, a count-in, a loop wrap, Stop and a locate while stopped, `moved` from the top, further in and stopped, a full buffer, reading the tempo with about 1 ms of jitter, Start, Continue, Stop and Song Position in, and a round trip from `ClockOut` back through `ClockIn` at 140 BPM.
 
 Following (`cargo test -p mpfree-app --bin mpfree follow`): `time::follow::tests` measure the cases above, and `a_ready_take_records_from_the_leaders_first_pulse` and `following_position_holds_the_loop_off_and_gives_it_back` the waiting and the held loop. `rec_arm::tests::play_keeps_a_take_ready_while_it_waits_for_the_clock` and the smoke test `following_a_clock_play_waits_and_a_ready_take_records_from_its_start` (PLAY's line, REC and PLAY, the leader's Start recording, its Stop) go through the app; `mpfree-time-ui`'s `record_settings_step_within_their_range` shows and steps the held loop.

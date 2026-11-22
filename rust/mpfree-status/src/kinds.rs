@@ -11,8 +11,11 @@
 //! 4. **A new kind joins here, not on the screen.** The design page of the
 //!    feature that reports it says which level it is and why.
 //!
-//! These are the phase 1 kinds and the themes' four; disk streaming,
-//! plugins and the MIDI clock add theirs in phase 3
+//! These are the phase 1 kinds, the themes' four in Screen, and, in
+//! Storage, disk streaming's phase 3 kinds (reported by
+//! `mpfree_stream::status::Watch`; its design page
+//! `docs/dev/design/disk-streaming.md` says why each has its level).
+//! Plugins and the MIDI clock add theirs in phase 3
 //! (`docs/dev/design/status.md`). The words are drafts; any can change.
 
 use crate::{Action, Kind, Level, Shape, System};
@@ -166,6 +169,92 @@ pub static NOT_ENOUGH_MEMORY: Kind = Kind {
 
 // ---------------------------------------------------------------- Storage
 
+/// The stick's data partition is gone or can only be read: nothing can be
+/// saved or recorded, so the saves and takes that fail are its echoes.
+pub static STICK_MISSING: Kind = Kind {
+    id: "storage/stick-missing",
+    system: System::Storage,
+    level: Level::Fail,
+    shape: Shape::Stays,
+    short: "Stick missing",
+    title: "MPFree can't write to the stick",
+    what: "The stick's space for your music is gone or can only be read, so nothing new can be saved or recorded.",
+    to_try: "Turn the MPC off, check the stick is in firmly, and turn it on again. If it happens again, the stick may be failing.",
+    action: None,
+    manual: "mpfree-cant-write-to-the-stick",
+    hides: &[
+        &SAVE_FAILED,
+        &RECORDING_AT_RISK,
+        &NOT_SAVED_YET,
+        &STICK_NEARLY_FULL,
+    ],
+};
+
+/// A take is At risk (`TakeState::AtRisk`): writes, syncs or records keep
+/// failing, or the stick is full or gone, so a cut now loses everything
+/// after its last committed frame. It still plays from capture memory.
+pub static RECORDING_AT_RISK: Kind = Kind {
+    id: "storage/recording-at-risk",
+    system: System::Storage,
+    level: Level::Fail,
+    shape: Shape::Lasts,
+    short: "Recording at risk",
+    title: "A recording isn't being saved",
+    what: "The stick isn't taking a take: it may be full, out or failing. The take is kept in memory and MPFree keeps trying, but if the power goes now, everything since it was last saved is lost.",
+    to_try: "Keep the MPC on, and check the stick is in and has room. The take is saved as soon as the stick works again.",
+    action: None,
+    manual: "a-recording-isnt-being-saved",
+    hides: &[&NOT_SAVED_YET],
+};
+
+/// A take's capture memory filled and recording stopped at that frame
+/// (`TakeState::Stopped`); what was captured is kept.
+pub static RECORDING_STOPPED: Kind = Kind {
+    id: "storage/recording-stopped",
+    system: System::Storage,
+    level: Level::Fail,
+    shape: Shape::Happens,
+    short: "Recording stopped",
+    title: "A recording stopped by itself",
+    what: "The stick fell so far behind that the memory kept for a take filled up, so recording stopped there. Everything recorded up to then is kept.",
+    to_try: "Record fewer tracks at once, or use a faster stick. Check the stick is in and has room.",
+    action: None,
+    manual: "a-recording-stopped-by-itself",
+    hides: &[],
+};
+
+/// The SD card went while sounds played from it (`Coordinator::lost`):
+/// nothing more is read for them, so they stop.
+pub static CARD_REMOVED: Kind = Kind {
+    id: "storage/card-removed",
+    system: System::Storage,
+    level: Level::Fail,
+    shape: Shape::Happens,
+    short: "Card removed",
+    title: "The SD card came out while it was playing",
+    what: "Sounds were playing from the SD card when it came out, so they stopped.",
+    to_try: "Put the card back in, then start them again.",
+    action: None,
+    manual: "the-sd-card-came-out-while-it-was-playing",
+    hides: &[],
+};
+
+/// A streamed sound played silence where its audio wasn't read in time
+/// (the player's missed frames).
+pub static STICK_FELL_BEHIND: Kind = Kind {
+    id: "storage/stick-fell-behind",
+    system: System::Storage,
+    level: Level::Fail,
+    shape: Shape::Happens,
+    short: "Stick fell behind",
+    title: "Part of a sound went quiet",
+    what: "The stick or SD card didn't keep up with a sound playing from it, so part of the sound played as silence.",
+    to_try: "Play fewer audio tracks or long samples at once. If it keeps happening, try a faster stick or card.",
+    action: None,
+    manual: "part-of-a-sound-went-quiet",
+    hides: &[],
+};
+
 /// The store's or the library's save failed ("not saved: ...").
 pub static SAVE_FAILED: Kind = Kind {
     id: "storage/save-failed",
@@ -178,6 +267,102 @@ pub static SAVE_FAILED: Kind = Kind {
     to_try: "Check the stick is in and has room, then save again.",
     action: None,
     manual: "saving-didnt-work",
+    hides: &[],
+};
+
+/// A take's capture memory is at least nine tenths full
+/// (`TakeView::nearly_full`) while it records.
+pub static RECORDING_MAY_STOP: Kind = Kind {
+    id: "storage/recording-may-stop",
+    system: System::Storage,
+    level: Level::Warn,
+    shape: Shape::Lasts,
+    short: "Recording may stop",
+    title: "A recording may stop soon",
+    what: "The stick is falling behind, and the memory kept for a take is nearly full. If it fills, recording stops there and what was recorded is kept.",
+    to_try: "Stop any recording you don't need, or record fewer tracks at once.",
+    action: None,
+    manual: "a-recording-may-stop-soon",
+    hides: &[],
+};
+
+/// A take unsaved past twice its interval (`TakeView::show_unsaved`): the
+/// stick is slow, but saving still works.
+pub static NOT_SAVED_YET: Kind = Kind {
+    id: "storage/not-saved-yet",
+    system: System::Storage,
+    level: Level::Warn,
+    shape: Shape::Lasts,
+    short: "Not saved yet",
+    title: "A recording is slow to save",
+    what: "The stick is slow, so the newest part of a take has waited longer than usual to be saved. Saving still works; only a power cut now would lose that part.",
+    to_try: "Record fewer tracks at once, or use a faster stick.",
+    action: None,
+    manual: "a-recording-is-slow-to-save",
+    hides: &[],
+};
+
+/// What plays doesn't fit the cache even at the least safe read-ahead
+/// (`Admission::safe` false): MPFree says so rather than quietly read
+/// less far ahead.
+pub static STREAMING_AT_LIMIT: Kind = Kind {
+    id: "storage/streaming-at-limit",
+    system: System::Storage,
+    level: Level::Warn,
+    shape: Shape::Lasts,
+    short: "Streaming at limit",
+    title: "Too much is playing from the stick or card",
+    what: "More is playing from the stick or SD card than MPFree can safely read ahead, so a slow moment there could make a sound go quiet.",
+    to_try: "Play fewer audio tracks or long samples at once.",
+    action: None,
+    manual: "too-much-is-playing-from-the-stick-or-card",
+    hides: &[],
+};
+
+/// Under 1 GB, or under 10 minutes of what is armed, left on the stick.
+pub static STICK_NEARLY_FULL: Kind = Kind {
+    id: "storage/stick-nearly-full",
+    system: System::Storage,
+    level: Level::Warn,
+    shape: Shape::Lasts,
+    short: "Stick nearly full",
+    title: "The stick is nearly full",
+    what: "Less than 1 GB, or less than 10 minutes of recording, is left on the stick.",
+    to_try: "Remove takes, samples or projects you don't need, or copy them to a computer.",
+    action: None,
+    manual: "the-stick-is-nearly-full",
+    hides: &[],
+};
+
+/// A finished take failed the whole-take check (`recover::WholeCheck`):
+/// its bytes aren't what was recorded. The audio is kept.
+pub static TAKE_DAMAGED: Kind = Kind {
+    id: "storage/take-damaged",
+    system: System::Storage,
+    level: Level::Warn,
+    shape: Shape::UntilSeen,
+    short: "Take damaged",
+    title: "A take didn't read back as it was recorded",
+    what: "MPFree read a finished take back from the stick, and part of it isn't what was recorded. The take is kept so you can listen and decide.",
+    to_try: "Listen to the take and record it again if it sounds wrong. If it happens again, the stick may be failing.",
+    action: None,
+    manual: "a-take-didnt-read-back-as-it-was-recorded",
+    hides: &[],
+};
+
+/// Recovery finished a take a power cut or a crash cut off
+/// (`recover::Found::Finished` or `CutOff`).
+pub static TAKE_RECOVERED: Kind = Kind {
+    id: "storage/take-recovered",
+    system: System::Storage,
+    level: Level::Note,
+    shape: Shape::Happens,
+    short: "Take recovered",
+    title: "A take was finished after a power cut",
+    what: "A take was cut off when the power went or MPFree stopped, so MPFree finished it at this start, up to the last moment it had saved.",
+    to_try: "Listen to its end: if the power went while it was recording, the last few seconds may be missing.",
+    action: None,
+    manual: "a-take-was-finished-after-a-power-cut",
     hides: &[],
 };
 
@@ -387,7 +572,18 @@ pub static ALL: &[&Kind] = &[
     &NEAR_LIMIT,
     &MEMORY_LOW,
     &NOT_ENOUGH_MEMORY,
+    &STICK_MISSING,
+    &RECORDING_AT_RISK,
+    &RECORDING_STOPPED,
+    &CARD_REMOVED,
+    &STICK_FELL_BEHIND,
     &SAVE_FAILED,
+    &RECORDING_MAY_STOP,
+    &NOT_SAVED_YET,
+    &STREAMING_AT_LIMIT,
+    &STICK_NEARLY_FULL,
+    &TAKE_DAMAGED,
+    &TAKE_RECOVERED,
     &NO_SESSION,
     &TOUCH_STOPPED,
     &PORT_MISSING,
@@ -527,10 +723,27 @@ mod tests {
     fn a_red_problem_is_one_you_heard_or_could_lose_work_by() {
         // Fail is for faults heard, work at risk or MPFree not answering;
         // a state near a limit is never red (the plan's levels).
-        for k in [&NEAR_LIMIT, &MEMORY_LOW, &GRAINS_THINNED, &VOICES_GIVEN_UP] {
+        for k in [
+            &NEAR_LIMIT,
+            &MEMORY_LOW,
+            &GRAINS_THINNED,
+            &VOICES_GIVEN_UP,
+            &RECORDING_MAY_STOP,
+            &NOT_SAVED_YET,
+            &STREAMING_AT_LIMIT,
+            &STICK_NEARLY_FULL,
+        ] {
             assert_eq!(k.level, Level::Warn, "{}", k.id);
         }
-        for k in [&SOUND_DROPOUT, &SAVE_FAILED, &NO_SESSION] {
+        for k in [
+            &SOUND_DROPOUT,
+            &SAVE_FAILED,
+            &NO_SESSION,
+            &RECORDING_AT_RISK,
+            &RECORDING_STOPPED,
+            &STICK_FELL_BEHIND,
+            &CARD_REMOVED,
+        ] {
             assert_eq!(k.level, Level::Fail, "{}", k.id);
         }
     }

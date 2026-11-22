@@ -1,10 +1,10 @@
 <!--
-covers: rust/mpfree-status rust/mpfree-app/src/debug_page.rs
+covers: rust/mpfree-status rust/mpfree-app/src/debug_page.rs rust/mpfree-app/src/status_watch.rs
 checked: 2026-11-22 e7409223
 -->
 # System status (`mpfree-status`)
 
-**Status:** phase 0 built 2026-11-22: the `mpfree-status` crate (the catalogue, reports and the board, with its tests) and a Status page in Dev > Debug that shows the board raw. Nothing changes for musicians yet: the status chip, the System status page and the red hint line arrive in phase 2. The full plan, its research and its decisions are in the Claude Doc [System status monitor](https://claude.ai/artifact/Re2JmUJFbmrg74hj8wCEyR), approved as recommended by the owner on 22 Nov 2026 (08:35Z). This page says what is built, as it is built.
+**Status:** phase 0 built 2026-11-22: the `mpfree-status` crate (the catalogue, reports and the board, with its tests) and a Status page in Dev > Debug that shows the board raw. Phase 1 built the same day: the watchers that turn today's counters and states into reports, and a log line for each problem that starts or ends. Nothing changes for musicians yet: the status chip, the System status page and the red hint line arrive in phase 2. The full plan, its research and its decisions are in the Claude Doc [System status monitor](https://claude.ai/artifact/Re2JmUJFbmrg74hj8wCEyR), approved as recommended by the owner on 22 Nov 2026 (08:35Z). This page says what is built, as it is built.
 
 **Owner:** the System status thread. Other threads add kinds to the catalogue and send reports; they don't draw a chip or a warning of their own.
 
@@ -47,6 +47,7 @@ All of it is in `rust/mpfree-status`, std only, with no I/O and no drawing.
 - **A cause hides its effects.** A report whose kind is in a going problem's `hides` list is kept but not shown, so the page names the cause, not its echoes (the pads not answering hides the dropouts it causes).
 - **Worst first:** red before yellow, then a problem happening now before one that ended, then the most recent.
 - **The last 256 reports** (`EVENTS`) are kept in a ring for the Dev page, with a count of older ones.
+- **Every start and end is a `Change`** (`Board::take_changes`, up to 128 waiting, `CHANGES`), with the count and, for an end, how long it was showing. The screen thread writes one log line for each (below).
 - **An end for a problem never reported** is ignored.
 - `Board::unexpected(allowed)` lists the kinds on the board that a test didn't expect, for the soak and golden tests.
 
@@ -78,7 +79,50 @@ All of it is in `rust/mpfree-status`, std only, with no I/O and no drawing.
 
 `controls/no-session` hides the dropouts, skips, dropped notes, voices given up and near limit that it causes.
 
+## Disk streaming's kinds (phase 3)
+
+Reported through `mpfree_stream::status::Watch`; [disk-streaming.md](disk-streaming.md#what-the-musician-is-told-the-storage-kinds) says what feeds each and why it has its level. In page order, in Storage beside `storage/save-failed`:
+
+| Id | Level | Shape | Short words |
+|---|---|---|---|
+| `storage/stick-missing` | fail | stays | Stick missing |
+| `storage/recording-at-risk` | fail | lasts | Recording at risk |
+| `storage/recording-stopped` | fail | happens | Recording stopped |
+| `storage/card-removed` | fail | happens | Card removed |
+| `storage/stick-fell-behind` | fail | happens | Stick fell behind |
+| `storage/recording-may-stop` | warn | lasts | Recording may stop |
+| `storage/not-saved-yet` | warn | lasts | Not saved yet |
+| `storage/streaming-at-limit` | warn | lasts | Streaming at limit |
+| `storage/stick-nearly-full` | warn | lasts | Stick nearly full |
+| `storage/take-damaged` | warn | until seen | Take damaged |
+| `storage/take-recovered` | note | happens | Take recovered |
+
+`storage/stick-missing` hides the failed saves, the takes at risk or not saved yet, and the stick nearly full that it causes; `storage/recording-at-risk` hides Not saved yet.
+
 The catalogue's tests keep the words honest: every field filled, titles without a full stop, what happened and what to try ending with one, short words within 18 characters, no engineer words (underrun, buffer, lane, period, thread, DSP), ids unique with their system's prefix and a lower-case slug, manual anchors unique, `kinds::ALL` in page order, a button's words named in what to try, and every hidden effect a real kind.
+
+## Where each kind comes from (phase 1)
+
+The watcher (`rust/mpfree-app/src/status_watch.rs`) looks each time the audio loop's timing arrives, every 250 ms (`Player::status_look`). It compares counters with its last look, and reports a state when it begins and when it ends; the board settles it. The other kinds are reported where they happen.
+
+| Kind | Comes from | Where |
+|---|---|---|
+| `sound/dropout` | the sound card's underruns (`Timing::underruns`), what they went up by | watcher |
+| `sound/note-may-hang` | note endings the queues found no room for (`AudioNumbers::ends_lost`) | watcher |
+| `sound/near-limit` | the whole period's last window Tight or Over against its budget (`engines::near_limit`, the CPU chip's colour) | watcher |
+| `memory/low` | free memory (MemAvailable) under 1.5 times the 256 MB floor, or RAM over 85 %; back once 32 MB more is free and RAM is 3 points under | watcher, from the screen thread's look at `/proc/meminfo` every 2 s |
+| `memory/not-enough` | the Sample page's lines that say something wasn't loaded or was left out for want of memory (`memory::SHORT`); a sound only kept at its own rate still loaded | `Player::print_sample_lines` |
+| `storage/save-failed` | the store's "not saved" for the FX shelf, touch tuning, settings and the MIDI rig | `main.rs` |
+| `controls/no-session` | the session chip's No reply or Stopped (red). Its No session (yellow: playing without Akai's setup, the pads still play) isn't this kind; phase 2 needs a yellow kind for it before the chip goes | watcher |
+| `controls/touch-stopped` | the touchscreen's read failed and it hasn't opened again; it ends when it does | the screen loop |
+| `midi/port-missing` | a port the project uses (a track's MIDI out, a track's input route, the clock it follows, the Controller and Follow while on) not plugged in at two looks running, 2 s apart (`IoModel::missing_ports`), once the app is ready. The subject is the port; the Dev page and the log name it | watcher |
+| `project/parts-missing` | the browser's left-out list, while it has anything (it saves as a new project) | watcher |
+| `project/crash-restart` | the safe start | `gui.rs` |
+| `screen/no-gpu` | the GPU process stopped and software drawing took over, until the next start | `drawing.rs` |
+| `mpc/one-core` | a set-up row in red on CPU by engine: the audio thread not on its core, or a strict lane on the audio thread (`CoreShared::fell_back`) | watcher |
+| `sound/skipped`, `sound/notes-dropped`, `sound/voices-given-up`, `sound/grains-thinned` | the sampler refactor's step 10 trades: a lane late with its part, full queues, load shedding, the grain share crowded | the sampler's `Trades::note`, when its step 10 lands (agreed 22 Nov); the watcher doesn't watch these counters |
+
+**The log.** Each start and end is one line, `status: + sound/dropout (3) The sound dropped out` and `status: - sound/dropout after 1.2 s`, with the port's name for a port and "(its cause is going)" for an effect its cause hides, so the Console, the journal and the test tools see what the board sees. The 30 s status lines stay as they are.
 
 ## How a thread reports
 
@@ -96,7 +140,7 @@ Dev > Debug's strip gains **Status**, between Touch and Console (`View::StatusBo
 - Left, "Problems this session": the status colour first ("all good", or for example "fail, ring · 1 now · 1 ended, not seen"), then one row per problem, labelled by level and id (and `#n` for a subject), with its state, how many times, when it first and last happened (a state that is going shows only when it began), and whether it is unseen or hidden by its cause.
 - Right, "Last reports, newest first": the last 40 reports, each with when it came, with the number of older ones in the title.
 
-Times are since MPFree started ("at 3.5 s", "at 1:10"), not ages, so they stand still: the page looks twice a second while it shows, and at once when a report arrives, and redraws only when the board changed (`no_page_redraws_while_idle`). The golden screen `debug-status` draws it with a dropout, a missing MIDI port, voices given up and the sound settling near its limit.
+Times are since MPFree started ("at 3.5 s", "at 1:10"), not ages, so they stand still: the page looks twice a second while it shows, and at once when a report arrives, and redraws only when the board changed (`no_page_redraws_while_idle`). A missing port shows by its name ("warn midi/port-missing Juno-X"). The golden screen `debug-status` draws it with a dropout, a missing MIDI port, voices given up and the sound settling near its limit.
 
 The `Player` keeps its own status clock, moved on by `tick(dt)`, so the board's timing in the app's tests is exact.
 
@@ -105,7 +149,7 @@ The `Player` keeps its own status clock, moved on by `tick(dt)`, so the board's 
 | Phase | What lands | State |
 |---|---|---|
 | 0 | The `mpfree-status` crate (catalogue, reports, board) and the Dev > Status page; save failures and the crash restart report | built |
-| 1 | Watchers on the screen thread for the 17 phase 1 kinds above (the themes' four are reported by the theme code itself); the sampler's trades move in; one log line each time a problem starts or ends. Gates: the bench, and the demo songs play green. Still only in Dev > Debug | next |
+| 1 | Watchers on the screen thread for the kinds above (the themes' four are reported by the theme code itself); one log line each time a problem starts or ends; the demo songs play green. Still only in Dev > Debug. The sampler's trades move in with its step 10, and the bench's check moves to `Board::unexpected` with its step 13 | built (the trades: with the sampler) |
 | 2 | The status chip (CPU and RAM, coloured; it replaces today's CPU, RAM and session chips), the System status page (opened from the chip or a Prefs row), the red hint line, the manual chapter "When something goes wrong", golden screens and the controls catalogue. Its layout spec change lands first, as its own docs pull request for the owner | planned |
 | 3 | Everyone reports in: disk streaming, themes (their four came with the theme writers' tools), plugins, MIDI clock, the MPC's temperature and processor clock, each owner's pull request adding its own catalogue entries | planned |
 | Later | Not in this go: where the time goes per track and pad, saving a report to the stick, and errors from the system journal from a short reviewed list | |
@@ -114,4 +158,7 @@ The `Player` keeps its own status clock, moved on by `tick(dt)`, so the board's 
 
 - `cargo test -p mpfree-status`: the catalogue's words, the board's rules (moments, counts, settling on and off, latching, inhibition, worst first, a full board, the event ring, no allocation once made).
 - `cargo test -p mpfree-app --bin mpfree -- problems_reach_the_status_board`: a report reaches the board and the Dev page follows it.
+- `cargo test -p mpfree-app --bin mpfree -- status_watch:: the_watchers_turn a_missing_midi_port`: each watched counter and state, memory's lines, a port after two looks and by its name.
+- `cargo test -p mpfree-app --bin mpfree -- every_song_plays_green`: each demo song opens and plays eight bars with nothing on the board (`Board::unexpected`).
+- `cargo test -p mpfree-midi-ui -- missing_ports`: the ports a project uses and isn't plugged into.
 - `cargo test -p mpfree-app --test cli`: the `debug-status` golden screen.
