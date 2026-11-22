@@ -2,6 +2,7 @@
 pub mod handle;
 pub mod inflate;
 pub mod json;
+pub mod look;
 pub mod model;
 pub mod paint;
 pub mod png;

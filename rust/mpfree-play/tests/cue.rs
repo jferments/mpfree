@@ -227,6 +227,7 @@ fn a_launch_waits_for_the_bar_line_and_starts_the_clip_from_its_top() {
             origin,
             mute: None,
             from: BAR,
+            rev: 0,
         }]
     );
     assert_eq!(
@@ -320,6 +321,7 @@ fn a_stop_waits_for_the_bar_line_too() {
             origin: BAR,
             mute: None,
             from: BAR,
+            rev: 0,
         }]
     );
     assert_eq!((r.launches, r.cues), (vec![], vec![]));

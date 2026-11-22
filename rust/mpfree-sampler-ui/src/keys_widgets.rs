@@ -277,7 +277,7 @@ impl Widget for KeyZones {
             };
             let on = Some(i) == picked;
             let fill = z.color.mix(t.surface, if on { 0.35 } else { 0.7 });
-            cx.canvas.fill_round_rect(zr, 6, fill);
+            cx.canvas.fill_round_rect(zr, t.round(6), fill);
             if z.fade > 0 {
                 let (k, f) = (z.keys, z.fade);
                 if k.lo > 0 {
@@ -290,7 +290,7 @@ impl Widget for KeyZones {
                 }
             }
             if on {
-                cx.canvas.stroke_round_rect(zr, 6, 2, z.color);
+                cx.canvas.stroke_round_rect(zr, t.round(6), 2, z.color);
                 // Handles on both edges.
                 for x in [zr.x, zr.right() - 4] {
                     cx.canvas.fill_round_rect(
@@ -340,14 +340,15 @@ impl Widget for KeyZones {
         // The keys: roots tinted, held keys lit.
         let roots: Vec<u8> = self.zones.iter().map(|z| z.keys.root).collect();
         let lit = t.accent;
+        let piano = t.keys();
         for (i, &n) in b.whites.iter().enumerate() {
             let kr = Rect::new(b.x0 + b.kw * i as i32 + 1, keys.y, b.kw - 2, keys.h);
             let color = if self.held.contains(&n) {
                 lit
             } else if roots.contains(&n) {
-                t.text.mix(t.accent, 0.35)
+                piano.white_root
             } else {
-                t.text.mix(t.bg, 0.25)
+                piano.white
             };
             cx.canvas.fill_round_rect(kr, 3, color);
             if n % 12 == 0 && b.kw >= 14 {
@@ -357,7 +358,7 @@ impl Widget for KeyZones {
                     small - 1.0,
                     lr,
                     Align::Center,
-                    t.bg,
+                    t.ink_on(color),
                     &note_name(n),
                 );
             }
@@ -371,9 +372,9 @@ impl Widget for KeyZones {
             let color = if self.held.contains(&n) {
                 lit
             } else if roots.contains(&n) {
-                t.bg.mix(t.accent, 0.7)
+                piano.black_root
             } else {
-                t.bg
+                piano.black
             };
             cx.canvas.fill_round_rect(kr, 3, color);
         }

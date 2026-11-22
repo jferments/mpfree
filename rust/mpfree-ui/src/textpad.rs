@@ -456,9 +456,9 @@ impl Widget for TextPad {
         );
         for (k, fr) in &fields {
             let on = *k - KEY_FIELD == self.field;
-            cx.canvas.fill_round_rect(*fr, 12, t.raised);
+            cx.canvas.fill_round_rect(*fr, t.round(12), t.raised);
             if on {
-                cx.canvas.stroke_round_rect(*fr, 12, 2, t.accent);
+                cx.canvas.stroke_round_rect(*fr, t.round(12), 2, t.accent);
             }
             cx.text(
                 if on { FontId::Bold } else { FontId::Sans },
@@ -471,8 +471,8 @@ impl Widget for TextPad {
         }
         // The name, with the cursor; smaller when it is long.
         let d = TextPad::display(r);
-        cx.canvas.fill_round_rect(d, 12, t.raised);
-        cx.canvas.stroke_round_rect(d, 12, 2, t.accent);
+        cx.canvas.fill_round_rect(d, t.round(12), t.raised);
+        cx.canvas.stroke_round_rect(d, t.round(12), 2, t.accent);
         let line = d.inset_xy(20, 0);
         let text = self.text();
         let size = [40.0, 32.0, 24.0]
@@ -501,9 +501,9 @@ impl Widget for TextPad {
             let enter = k == KEY_ENTER;
             let shift_on = (k == KEY_SHIFT && self.shift) || (k == KEY_SYMBOLS && self.symbols);
             cx.canvas
-                .fill_round_rect(kr, 12, if enter { t.accent } else { t.raised });
+                .fill_round_rect(kr, t.round(12), if enter { t.accent } else { t.raised });
             if shift_on {
-                cx.canvas.stroke_round_rect(kr, 12, 2, t.accent);
+                cx.canvas.stroke_round_rect(kr, t.round(12), 2, t.accent);
             }
             let ink = if enter {
                 t.on_accent

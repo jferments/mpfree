@@ -4,9 +4,7 @@
 
 use mpfree_analysis::note_name;
 use mpfree_sampler::model::Keys;
-use mpfree_ui::{Align, Color, FontId, PaintCx, Rect, Widget};
-
-use crate::rec_widgets::REC_COLOR;
+use mpfree_ui::{Align, FontId, PaintCx, Rect, Widget};
 
 /// One velocity layer: the velocities it answers and the one it is
 /// played at.
@@ -98,7 +96,8 @@ impl Widget for KeyMapView {
         cx.titled_panel(r, &self.title, &self.right);
         let (band, keys, vel, caption) = KeyMapView::areas(r);
         let small = t.size_small - 1.0;
-        let rec = Color::rgb(REC_COLOR);
+        let rec = t.record();
+        let piano = t.keys();
         // The white keys share the width; black keys sit on their edges.
         let whites: Vec<u8> = (self.first..=self.last).filter(|n| !is_black(*n)).collect();
         let n_white = whites.len().max(1) as i32;
@@ -141,7 +140,7 @@ impl Widget for KeyMapView {
                 t.bg.mix(t.accent, 0.16)
             };
             let zr = Rect::new(a + 1, band.y + 4, (b - a - 2).max(2), band.h - 8);
-            cx.canvas.fill_round_rect(zr, 6, fill);
+            cx.canvas.fill_round_rect(zr, t.round(6), fill);
             // The root: a dot over its key.
             let (ra, rb) = key_span(z.root);
             let dot = Rect::new((ra + rb) / 2 - 4, zr.bottom() - 12, 8, 8);
@@ -163,14 +162,15 @@ impl Widget for KeyMapView {
             let color = if self.current == Some(n) {
                 rec
             } else if roots.contains(&n) {
-                t.text.mix(t.accent, 0.35)
+                piano.white_root
             } else {
-                t.text.mix(t.bg, 0.25)
+                piano.white
             };
             cx.canvas.fill_round_rect(kr, 3, color);
             if n % 12 == 0 {
                 let lr = Rect::new(kr.x, kr.bottom() - 20, kr.w, 18);
-                cx.text(FontId::Sans, small, lr, Align::Center, t.bg, &note_name(n));
+                let ink = t.ink_on(color);
+                cx.text(FontId::Sans, small, lr, Align::Center, ink, &note_name(n));
             }
         }
         for n in self.first..=self.last {
@@ -182,9 +182,9 @@ impl Widget for KeyMapView {
             let color = if self.current == Some(n) {
                 rec
             } else if roots.contains(&n) {
-                t.bg.mix(t.accent, 0.7)
+                piano.black_root
             } else {
-                t.bg
+                piano.black
             };
             cx.canvas.fill_round_rect(kr, 3, color);
         }
@@ -194,7 +194,7 @@ impl Widget for KeyMapView {
         let axis = Rect::new(vel.x + label_w, vel.y + 22, vel.w - label_w, 36);
         let lr = Rect::new(vel.x, axis.y, label_w - 8, axis.h);
         cx.text(FontId::Bold, small, lr, Align::Left, t.text_dim, "Velocity");
-        cx.canvas.fill_round_rect(axis, 6, t.bg);
+        cx.canvas.fill_round_rect(axis, t.round(6), t.bg);
         let x_of = |v: u8| axis.x + ((f32::from(v) - 1.0) / 126.0 * axis.w as f32) as i32;
         for (k, l) in self.layers.iter().enumerate() {
             let (a, b) = (x_of(l.lo), x_of(l.hi));
@@ -240,7 +240,8 @@ impl Widget for KeyMapView {
         // A line under the axis, such as why it can't start.
         if !self.note.is_empty() {
             let nr = Rect::new(vel.x, axis.bottom() + 48, vel.w, 40);
-            cx.canvas.fill_round_rect(nr, 8, t.bg.mix(t.warn, 0.18));
+            cx.canvas
+                .fill_round_rect(nr, t.round(8), t.bg.mix(t.warn, 0.18));
             cx.text(
                 FontId::Bold,
                 t.size_body,

@@ -962,9 +962,9 @@ fn lines(cx: &mut PaintCx, r: Rect, text: &[&str], ink: Color) {
 /// A value box: its text, outlined when picked.
 fn value_box(cx: &mut PaintCx, r: Rect, text: &str, picked: bool, enabled: bool) {
     let t = cx.theme.clone();
-    cx.canvas.fill_round_rect(r, 8, t.bg);
+    cx.canvas.fill_round_rect(r, t.round(8), t.bg);
     if picked {
-        cx.canvas.stroke_round_rect(r, 8, 2, t.accent);
+        cx.canvas.stroke_round_rect(r, t.round(8), 2, t.accent);
     }
     let ink = if enabled { t.text } else { t.text_faint };
     cx.text(FontId::Sans, t.size_body, r, Align::Center, ink, text);
@@ -978,9 +978,9 @@ fn button(cx: &mut PaintCx, r: Rect, text: &str, picked: bool, enabled: bool) {
     } else {
         (t.bg, t.text_faint)
     };
-    cx.canvas.fill_round_rect(r, 10, fill);
+    cx.canvas.fill_round_rect(r, t.round(10), fill);
     if picked {
-        cx.canvas.stroke_round_rect(r, 10, 2, t.accent);
+        cx.canvas.stroke_round_rect(r, t.round(10), 2, t.accent);
     }
     cx.text(FontId::Bold, t.size_small, r, Align::Center, ink, text);
 }
@@ -1170,13 +1170,13 @@ impl IoSection for PortPage {
             let on = v.setup.ignore.has(*kind);
             let cr = l.chips[k];
             let (fill, ink) = if on {
-                (t.warn, t.on_accent)
+                (t.warn, t.ink_on(t.warn))
             } else {
                 (t.raised, t.text_dim)
             };
-            cx.canvas.fill_round_rect(cr, 10, fill);
+            cx.canvas.fill_round_rect(cr, t.round(10), fill);
             if picked == Sel::Ignore(k) {
-                cx.canvas.stroke_round_rect(cr, 10, 2, t.accent);
+                cx.canvas.stroke_round_rect(cr, t.round(10), 2, t.accent);
             }
             // A narrow chip takes the smaller letters, so "All notes off"
             // fits.

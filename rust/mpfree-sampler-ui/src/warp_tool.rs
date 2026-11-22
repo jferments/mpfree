@@ -32,7 +32,7 @@ use std::sync::Arc;
 
 use mpfree_sampler::model::{Region, SourceId, Warp, WarpMethod, WARP_BPM};
 use mpfree_ui::wave::{bend_through, Beats, Marker, MarkerKind};
-use mpfree_ui::Color;
+use mpfree_ui::Paint;
 
 use crate::panel::{Control, Item, Look, Panel, Section};
 use crate::wave_tab::{region_tempo, with_warp_tempo, WaveState, TYPED_WARP_TEMPO};
@@ -485,8 +485,8 @@ impl WarpTool {
         st: &WaveState,
         bend: &[(f64, f64)],
         lit: bool,
-        color: Color,
-        picked: Color,
+        color: Paint,
+        picked: Paint,
     ) -> Vec<Marker> {
         let Some(w) = st.region.warp.as_ref() else {
             return Vec::new();

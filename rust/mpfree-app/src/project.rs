@@ -231,6 +231,11 @@ pub struct Opening {
     pub pad_layers: Option<String>,
     /// Lines for the log: parts that didn't read.
     pub notes: Vec<String>,
+    /// What of the project's was left out (an effect or instrument this
+    /// stick can't make, say), a few words each for the musician: a save
+    /// would lose it, so the project isn't saved over
+    /// (docs/dev/design/project-safety.md).
+    pub left_out: Vec<String>,
     /// What it is, for the log ("Night drive", "a new project").
     pub what: String,
     /// The Looper's loops are cleared (always: a project without a looper
@@ -539,6 +544,7 @@ fn tracks_play(
     picks: Vec<(usize, TrackPick)>,
     list: &InstrumentList,
     notes: &mut Vec<String>,
+    left_out: &mut Vec<String>,
 ) -> (Vec<(usize, Option<usize>)>, Vec<(usize, usize)>) {
     let mut out = Vec::with_capacity(picks.len());
     let mut sends = Vec::new();
@@ -555,10 +561,13 @@ fn tracks_play(
                     "project: track {} plays its own instrument {id} (it said it plays it from another track)",
                     track + 1
                 )),
-                None => notes.push(format!(
-                    "project: track {} plays its kit (its instrument {id} isn't in the project's list)",
-                    track + 1
-                )),
+                None => {
+                    notes.push(format!(
+                        "project: track {} plays its kit (its instrument {id} isn't in the project's list)",
+                        track + 1
+                    ));
+                    left_out.push(format!("what track {} plays", track + 1));
+                }
             },
         }
     }
@@ -600,6 +609,7 @@ pub fn opening(
     plugins: &crate::plugins::Plugins,
 ) -> Result<Opening, String> {
     let mut notes = Vec::new();
+    let mut left_out = Vec::new();
     let tempo = Some(snap.meta.tempo).filter(|t| t.is_finite() && *t >= 20.0 && *t <= 300.0);
     let swing = snap
         .meta
@@ -665,13 +675,15 @@ pub fn opening(
     };
     if let Some(m) = &mix {
         notes.extend(m.notes.iter().cloned());
+        left_out.extend(m.left_out.iter().cloned());
     }
     let instruments = match snap.part(INSTRUMENTS) {
         None => Vec::new(),
         Some(text) => {
-            let (slots, more) =
-                instruments_load(text, rate, plugins).map_err(|e| cant(INSTRUMENTS, e))?;
+            let (slots, more, left) =
+                instruments_read(text, rate, plugins).map_err(|e| cant(INSTRUMENTS, e))?;
             notes.extend(more);
+            left_out.extend(left);
             slots
         }
     };
@@ -698,7 +710,7 @@ pub fn opening(
         None => (Vec::new(), Vec::new()),
         Some(text) => {
             let picks = track_kits_parse(text).map_err(|e| cant(TRACK_KITS, e))?;
-            tracks_play(picks, &instrument_list, &mut notes)
+            tracks_play(picks, &instrument_list, &mut notes, &mut left_out)
         }
     };
     Ok(Opening {
@@ -716,6 +728,7 @@ pub fn opening(
         pads: snap.part(PADS).map(str::to_string),
         pad_layers: snap.part(PAD_LAYERS).map(str::to_string),
         notes,
+        left_out,
         what: what.to_string(),
         // Always: a project without loops or audio tracks has none, not
         // the last project's.
@@ -821,13 +834,15 @@ fn audio_id(audio: &[f32], rate: u32) -> String {
 /// Reads the looper's part and each layer's sound (`read` gives a file's
 /// bytes from the project's `samples/`). The files can be big: run it off
 /// the screen thread. A loop whose sound can't be read is left out, with
-/// a line saying so.
+/// a line saying so; the third list says what was left out, a few words
+/// each ([`Opening::left_out`]).
 pub fn loops_open(
     text: &str,
     read: impl Fn(&str) -> Result<Vec<u8>, String>,
-) -> Result<(mpfree_looper::save::Saved, Vec<String>), String> {
+) -> Result<Read<mpfree_looper::save::Saved>, String> {
     let mut saved = mpfree_looper::save::from_text(text)?;
     let mut notes = Vec::new();
+    let mut left = Vec::new();
     saved.loops.retain_mut(|(n, f)| {
         for y in &mut f.layers {
             match read(&y.file).and_then(|b| mpfree_looper::save::from_wav(&b)) {
@@ -838,14 +853,19 @@ pub fn loops_open(
                         *n + 1,
                         y.file
                     ));
+                    left.push(format!("loop {}", *n + 1));
                     return false;
                 }
             }
         }
         true
     });
-    Ok((saved, notes))
+    Ok((saved, notes, left))
 }
+
+/// A part read off the screen thread: the part, lines for the log, and
+/// what was left out, a few words each ([`Opening::left_out`]).
+pub type Read<T> = (T, Vec<String>, Vec<String>);
 
 // ------------------------------------------------------------ the audio tracks
 
@@ -875,14 +895,15 @@ pub fn audio_part(mut saved: mpfree_audiotracks::save::Saved) -> (String, Vec<Ta
 /// file's bytes from the project's `samples/`); `rate` is the sound's.
 /// The files can be big: run it off the screen thread. A take whose sound
 /// can't be read, or isn't the take's, is left out with the regions
-/// playing it, and a line says so.
+/// playing it, and a line says so (and the third list).
 pub fn audio_open(
     text: &str,
     rate: u32,
     read: impl Fn(&str) -> Result<Vec<u8>, String>,
-) -> Result<(mpfree_audiotracks::save::Saved, Vec<String>), String> {
+) -> Result<Read<mpfree_audiotracks::save::Saved>, String> {
     let mut saved = mpfree_audiotracks::save::from_text(text)?;
     let mut notes = Vec::new();
+    let mut left = Vec::new();
     if saved.rate != rate {
         notes.push(format!(
             "project: the audio tracks were recorded at {} Hz and play at {rate} Hz, so they sound off-speed",
@@ -911,6 +932,7 @@ pub fn audio_open(
                     k.track + 1,
                     k.file
                 ));
+                left.push(format!("a take of audio {}", k.track + 1));
                 gone.push(k.id);
                 false
             }
@@ -921,7 +943,7 @@ pub fn audio_open(
             t.regions.retain(|r| !gone.contains(&r.take));
         }
     }
-    Ok((saved, notes))
+    Ok((saved, notes, left))
 }
 
 /// New project: the parts the app started with, and an empty song.
@@ -1323,6 +1345,8 @@ pub struct MixLoad {
     /// name their settings when it loads (`ModMix::set_note_fx`).
     pub note_fx: Option<Box<[mpfree_notefx::TrackFx; mpfree_seq::MAX_TRACKS]>>,
     pub notes: Vec<String>,
+    /// What was left out, a few words each ([`Opening::left_out`]).
+    pub left_out: Vec<String>,
     /// Keys set once their inserts are in: (strip, slot, key strip).
     /// Filled by the audio loop as it puts them in.
     pub keys: Vec<(StripId, usize, StripId)>,
@@ -1399,6 +1423,7 @@ pub fn mixer_load(
         modu: modu.map(str::to_string),
         note_fx: None,
         notes: Vec::new(),
+        left_out: Vec::new(),
         // Room for every key, so the audio loop never grows it.
         keys: Vec::with_capacity(64),
     };
@@ -1497,6 +1522,8 @@ pub fn mixer_load(
                             "project: the effect {id} on {} is left out: {e}",
                             strip_text(st)
                         ));
+                        out.left_out
+                            .push(format!("the effect {id} on {}", crate::mixing::name(st)));
                         None
                     }
                 });
@@ -1525,6 +1552,11 @@ pub fn mixer_load(
                             "project: the effect {} on {} didn't take its state ({e})",
                             node.info().id,
                             strip_text(*st)
+                        ));
+                        out.left_out.push(format!(
+                            "the settings of the effect {} on {}",
+                            node.info().id,
+                            crate::mixing::name(*st)
                         ));
                     }
                 }
@@ -1628,12 +1660,27 @@ pub fn instruments_text(inst: &crate::instruments::Instruments) -> String {
 /// engine, or a plugin through the rack in its own process), ready to go
 /// in: allocates and waits, so not on the audio thread. An instrument that
 /// can't be made is left out with a line saying so, and its track plays
-/// the kit. Gives the instruments and the lines.
+/// the kit. Gives the instruments and the lines (the tests'; the open
+/// takes what was left out too).
+#[cfg(test)]
 pub fn instruments_load(
     text: &str,
     rate: u32,
     plugins: &crate::plugins::Plugins,
 ) -> Result<(Vec<Option<Loaded>>, Vec<String>), String> {
+    instruments_read(text, rate, plugins).map(|(slots, notes, _)| (slots, notes))
+}
+
+/// The instruments, the lines and what was left out
+/// ([`Opening::left_out`]).
+type InstrumentsRead = (Vec<Option<Loaded>>, Vec<String>, Vec<String>);
+
+/// [`instruments_load`], with what was left out, a few words each.
+fn instruments_read(
+    text: &str,
+    rate: u32,
+    plugins: &crate::plugins::Plugins,
+) -> Result<InstrumentsRead, String> {
     let mut lines = text.lines().enumerate();
     // The preset format its settings are in.
     let format = match lines.next().and_then(|(_, l)| instruments_version(l)) {
@@ -1641,6 +1688,7 @@ pub fn instruments_load(
         None => return Err(format!("not an {INSTRUMENTS_FORMAT} part")),
     };
     let mut notes = Vec::new();
+    let mut left = Vec::new();
     // A track, its node and its plugin instance (0 for an engine).
     type Made = (usize, Box<dyn Node>, u64);
     let mut made: Vec<Made> = Vec::new();
@@ -1661,7 +1709,7 @@ pub fn instruments_load(
         let first = w.next();
         if !design.is_empty() && first != Some("sound") {
             if let Some(Some(m)) = open.as_mut() {
-                design_in(m, &design, format, rate, &mut notes);
+                design_in(m, &design, format, rate, &mut notes, &mut left);
             }
             design.clear();
         }
@@ -1702,6 +1750,7 @@ pub fn instruments_load(
                         notes.push(format!(
                             "project: {whose} instrument is left out (no such place, or named twice)"
                         ));
+                        left.push(format!("track {n}'s instrument {id}"));
                         None
                     }
                     // Not even made: the most at once already are.
@@ -1710,6 +1759,7 @@ pub fn instruments_load(
                             "project: {whose} instrument {id} is left out: {} instruments are loaded already, the most at once; {instead}",
                             crate::instruments::SLOTS
                         ));
+                        left.push(format!("track {n}'s instrument {id}"));
                         None
                     }
                     Some(t) => match make_instrument_node(id, &extras, rate, plugins) {
@@ -1718,6 +1768,7 @@ pub fn instruments_load(
                             notes.push(format!(
                                 "project: {whose} instrument {id} is left out: {e}; {instead}"
                             ));
+                            left.push(format!("track {n}'s instrument {id}"));
                             None
                         }
                     },
@@ -1760,6 +1811,11 @@ pub fn instruments_load(
                             holder_name(*t),
                             node.info().id
                         ));
+                        left.push(format!(
+                            "the settings of track {}'s instrument {}",
+                            *t + 1,
+                            node.info().id
+                        ));
                     }
                 }
             }
@@ -1769,7 +1825,7 @@ pub fn instruments_load(
     }
     if let Some(Some(m)) = open.as_mut() {
         if !design.is_empty() {
-            design_in(m, &design, format, rate, &mut notes);
+            design_in(m, &design, format, rate, &mut notes, &mut left);
         }
     }
     if let Some(Some(m)) = open.take() {
@@ -1794,6 +1850,7 @@ pub fn instruments_load(
                             "project: {}'s Wavetable sound didn't move to Poly ({e}); it is left out",
                             holder_name(track)
                         ));
+                        left.push(format!("track {}'s Wavetable sound", track + 1));
                         return None;
                     }
                 }
@@ -1812,19 +1869,20 @@ pub fn instruments_load(
             })
         })
         .collect();
-    Ok((slots, notes))
+    Ok((slots, notes, left))
 }
 
 /// Puts a track's sound's design (its `sound` lines, saved in preset
 /// format `format`) around the engine just made: the effects and macros
 /// its preset brought. One that can't be built leaves the engine plain,
-/// said in `notes`.
+/// said in `notes` and `left`.
 fn design_in(
     m: &mut (usize, Box<dyn Node>, u64),
     lines: &[(String, String)],
     format: u32,
     rate: u32,
     notes: &mut Vec<String>,
+    left: &mut Vec<String>,
 ) {
     let (track, node, _) = m;
     let id = node.info().id;
@@ -1841,10 +1899,13 @@ fn design_in(
             s.prepare_effects(rate, mpfree_node::MAX_BLOCK);
             *node = Box::new(s);
         }
-        Err(e) => notes.push(format!(
-            "project: track {}'s sound didn't build ({e}); it plays without its effects and macros",
-            *track + 1
-        )),
+        Err(e) => {
+            notes.push(format!(
+                "project: track {}'s sound didn't build ({e}); it plays without its effects and macros",
+                *track + 1
+            ));
+            left.push(format!("track {}'s sound's effects and macros", *track + 1));
+        }
     }
 }
 
@@ -2203,6 +2264,15 @@ mod tests {
         let load = mixer_load(&text, None, 44_100, &crate::plugins::Plugins::none()).unwrap();
         assert_eq!(load.notes.len(), 1);
         assert!(load.notes[0].contains("clap:com.example.nothing"));
+        // Left out, so a save would lose it (the project isn't saved
+        // over); a newer build's line isn't.
+        assert_eq!(
+            load.left_out,
+            vec![format!(
+                "the effect clap:com.example.nothing on {}",
+                crate::mixing::name(StripId::Track(0))
+            )]
+        );
         assert_eq!(load.chains.len(), 1);
         let (s, v) = &load.chains[0];
         assert_eq!(*s, StripId::Track(1));
@@ -2293,12 +2363,12 @@ mod tests {
                 .map(|(_, a)| mpfree_looper::save::wav(a, 44_100))
                 .ok_or_else(|| "not there".to_string())
         };
-        let (back, notes) = loops_open(&text, read).unwrap();
-        assert!(notes.is_empty());
+        let (back, notes, left) = loops_open(&text, read).unwrap();
+        assert!(notes.is_empty() && left.is_empty());
         assert_eq!(back.loops.len(), 2);
         assert_eq!(back.loops[1].1.layers[0].audio, vec![0.5; 4]);
         // Loop 4's file gone: it is left out, and said.
-        let (back, notes) = loops_open(&text, |f| {
+        let (back, notes, left) = loops_open(&text, |f| {
             if f == files[1].0 {
                 Err("gone".into())
             } else {
@@ -2311,6 +2381,7 @@ mod tests {
             notes[0].starts_with("project: loop 4 wasn't opened"),
             "{notes:?}"
         );
+        assert_eq!(left, vec!["loop 4".to_string()]);
         assert!(loops_open("nope", read).is_err());
     }
 
@@ -3531,8 +3602,8 @@ mod tests {
                 .map(|(_, b)| b.clone())
                 .ok_or_else(|| "not there".to_string())
         };
-        let (back, notes) = audio_open(&text, 44_100, read).unwrap();
-        assert!(notes.is_empty(), "{notes:?}");
+        let (back, notes, left) = audio_open(&text, 44_100, read).unwrap();
+        assert!(notes.is_empty() && left.is_empty(), "{notes:?}");
         assert_eq!(back.takes.len(), 3);
         assert_eq!(back.takes[1].audio, a);
         assert_eq!(back.takes[2].channels, 2);
@@ -3540,8 +3611,8 @@ mod tests {
         assert_eq!(back.tracks[0].input, Input::Stereo);
         assert_eq!(back.tracks[0].regions.len(), 2);
         // Take 2's file gone: it is left out with its region, and said;
-        // another rate is said too.
-        let (back, notes) = audio_open(&text, 48_000, |f| {
+        // another rate is said too (not left out: the takes are there).
+        let (back, notes, left) = audio_open(&text, 48_000, |f| {
             if f == files[1].0 {
                 Err("gone".into())
             } else {
@@ -3556,9 +3627,10 @@ mod tests {
             notes[1].starts_with("project: a take of audio 1 wasn't opened"),
             "{notes:?}"
         );
+        assert_eq!(left, vec!["a take of audio 1".to_string()]);
         // A file that isn't the take's sound (another length) is refused.
         let short = mpfree_audiotracks::save::wav(&a[..100], 1, 44_100);
-        let (back, notes) = audio_open(&text, 44_100, |f| {
+        let (back, notes, _) = audio_open(&text, 44_100, |f| {
             if f == files[0].0 {
                 Ok(short.clone())
             } else {

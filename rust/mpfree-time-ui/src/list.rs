@@ -220,9 +220,9 @@ impl Widget for SongListView {
             (clips, "Clips", false),
             (song, "Song", false),
         ] {
-            cx.canvas.fill_round_rect(b, 10, t.raised);
+            cx.canvas.fill_round_rect(b, t.round(10), t.raised);
             if lit {
-                cx.canvas.stroke_round_rect(b, 10, 2, t.accent);
+                cx.canvas.stroke_round_rect(b, t.round(10), 2, t.accent);
             }
             cx.text(FontId::Bold, t.size_small, b, Align::Center, t.text, word);
         }
@@ -254,13 +254,13 @@ impl Widget for SongListView {
             } else {
                 t.raised
             };
-            cx.canvas.fill_round_rect(line, 10, fill);
+            cx.canvas.fill_round_rect(line, t.round(10), fill);
             if row.playing.is_some() {
-                cx.canvas.stroke_round_rect(line, 10, 2, t.good);
+                cx.canvas.stroke_round_rect(line, t.round(10), 2, t.good);
             } else if row.waiting {
-                cx.canvas.stroke_round_rect(line, 10, 2, t.warn);
+                cx.canvas.stroke_round_rect(line, t.round(10), 2, t.warn);
             } else if picked {
-                cx.canvas.stroke_round_rect(line, 10, 2, t.accent);
+                cx.canvas.stroke_round_rect(line, t.round(10), 2, t.accent);
             }
             let mid = |x: i32, w: i32| Rect::new(line.x + x, line.y, w, line.h);
             cx.text(
@@ -272,13 +272,13 @@ impl Widget for SongListView {
                 &(k + 1).to_string(),
             );
             let sw = Rect::new(line.x + 44, line.y + 10, 30, line.h - 20);
-            cx.canvas.fill_round_rect(sw, 6, t.track(row.row));
+            cx.canvas.fill_round_rect(sw, t.round(6), t.track(row.row));
             let (scene, times) = self.boxes(r, k).expect("in view");
             for (b, word) in [
                 (scene, row.name.as_str()),
                 (times, &format!("× {}", row.times)),
             ] {
-                cx.canvas.fill_round_rect(b, 8, t.surface);
+                cx.canvas.fill_round_rect(b, t.round(8), t.surface);
                 let (less, more) = if b == scene {
                     ("‹", "›")
                 } else {
@@ -348,7 +348,7 @@ impl Widget for SongListView {
             }
         }
         if let Some(add) = self.line_rect(r, self.rows.len()) {
-            cx.canvas.stroke_round_rect(add, 10, 1, t.outline);
+            cx.canvas.stroke_round_rect(add, t.round(10), 1, t.outline);
             let then = if self.looped {
                 "then: from the top"
             } else {
@@ -386,7 +386,7 @@ impl Widget for SongListView {
         for (k, b) in SongListView::button_rects(r).iter().enumerate() {
             let usable = k == 0 && !self.rows.is_empty() || k > 0 && self.picked.is_some();
             cx.canvas
-                .fill_round_rect(*b, 10, if usable { t.raised } else { t.surface });
+                .fill_round_rect(*b, t.round(10), if usable { t.raised } else { t.surface });
             cx.text(
                 FontId::Bold,
                 t.size_small,

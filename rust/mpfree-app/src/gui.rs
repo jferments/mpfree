@@ -123,6 +123,17 @@ pub const STEP_HOLD: f32 = 0.4;
 /// What the hint line says when such a button is touched in Perform.
 pub const GUARD_HINT: &str = "Hold to delete";
 
+/// Opens on their way to the audio loop and back at once, at most (live
+/// shows A2). The audio loop holds the engines each one replaced until
+/// the screen takes them, in as many slots, so none is ever freed on the
+/// audio thread; a third open while two are still on their way is
+/// refused and said (it can only come from opens a few milliseconds
+/// apart).
+pub const OPENS_ON_THEIR_WAY: usize = 2;
+
+/// Why an open waits for the last ones ([`OPENS_ON_THEIR_WAY`]).
+const OPENS_BUSY: &str = "the last two projects are still going in; try again in a moment";
+
 /// A finger holding a button that deletes or clears, in Perform (the
 /// guard): which finger, how long it has held (s), where it landed, and
 /// the button (its widget and rectangle) the red fill crosses.
@@ -470,10 +481,10 @@ const NO_LIBRARY_HINT: &str =
 const OPEN_SETTLE: Duration = Duration::from_millis(1500);
 
 /// An opened project's loops as read, with lines about any left out.
-type LoopsRead = Result<(mpfree_looper::save::Saved, Vec<String>), String>;
+type LoopsRead = Result<crate::project::Read<mpfree_looper::save::Saved>, String>;
 /// An opened project's audio tracks, read on their own thread, with lines
-/// for the log.
-type AudioRead = Result<(mpfree_audiotracks::save::Saved, Vec<String>), String>;
+/// for the log and what was left out.
+type AudioRead = Result<crate::project::Read<mpfree_audiotracks::save::Saved>, String>;
 
 /// Seconds since 1970 (UTC) now: when a project is saved.
 fn now_utc() -> u64 {
@@ -933,6 +944,10 @@ pub enum ToUi {
     Gear(Option<sample_page::GearOut>),
     /// A line for the terminal and the Events log.
     Line(String),
+    /// Something of the project just opened that the audio loop couldn't
+    /// put back (an audio take with no room), a few words: the project
+    /// isn't saved over (docs/dev/design/project-safety.md).
+    LeftOut(String),
     /// A short press of the power button (power.rs): the power card opens,
     /// or closes if it is open.
     PowerPress,
@@ -2096,6 +2111,9 @@ pub struct Player {
     project_rate: u32,
     /// When the last open landed ([`OPEN_SETTLE`]).
     opened_at: Option<Instant>,
+    /// Opens sent to the audio loop whose replaced engines haven't come
+    /// back yet ([`OPENS_ON_THEIR_WAY`] at most).
+    opens_out: usize,
     /// How many of the actions in the outbox an open or New project put
     /// there (with any before them): the open's own, never an edit,
     /// however long its own work (the kits, say) took on a slow machine.
@@ -2660,6 +2678,7 @@ impl Player {
             export_job: None,
             project_rate: 44_100,
             opened_at: None,
+            opens_out: 0,
             open_actions: 0,
             sample_edits: 0,
             loops_load: None,
@@ -3940,7 +3959,8 @@ impl Player {
             }
         });
         let wrap: fn(&str) -> String = match loaded {
-            Some(w) => {
+            Some(mut w) => {
+                w.set_theme(&self.ui.theme);
                 let tabs = skin_page::SkinTabs::new(&w.view.tabs());
                 // For the device round's log: the skin is drawn.
                 println!(
@@ -6927,6 +6947,10 @@ impl Player {
                     .map(|(_, t)| t.clone())
             };
             if let Some(t) = Theme::builtin(&s.theme).or_else(file) {
+                // A plugin's skin: MPFree's pop-ups over it follow too.
+                if let Some(w) = self.ui.get_mut::<skin_page::SkinWidget>(skin_page::SKIN) {
+                    w.set_theme(&t);
+                }
                 self.ui.set_theme(t);
             }
         }
@@ -8229,6 +8253,7 @@ impl Player {
             ToUi::Nav(n) => self.nav(n),
             ToUi::Held { delta, fine } => self.held_turn(delta, fine),
             ToUi::TurnsReady { synth, mixer } => self.turns_ready = (synth, mixer),
+            ToUi::LeftOut(what) => self.left_out([what]),
             ToUi::Line(l) | ToUi::Event(l) => {
                 let tone = tone_of(&l);
                 if let Some(e) = self.ui.get_mut::<LogPanel>("events") {
@@ -8825,6 +8850,7 @@ impl Player {
             // an edit).
             ToUi::ProjectBack(old) => {
                 drop(old);
+                self.opens_out = self.opens_out.saturating_sub(1);
                 self.opened_at = Some(Instant::now());
                 if let Some(b) = self.browser.as_mut() {
                     b.open_landed();
@@ -10373,6 +10399,7 @@ impl Player {
         let opening = !self.start_checked
             || self.loops_load.is_some()
             || self.audio_load.is_some()
+            || self.sample.opening()
             || self.project_defaults.is_none()
             || self.opened_at.is_some_and(|t| t.elapsed() < OPEN_SETTLE);
         if !unsaved || !self.autosave_dirty || opening || self.autosave_off {
@@ -10422,6 +10449,16 @@ impl Player {
                 self.say(
                     "project: not saved, the audio tracks are still opening (try again in a moment)"
                         .into(),
+                );
+            }
+            return;
+        }
+        // The kits being read are the project's; the ones here still the
+        // last project's, which must not be saved into it.
+        if self.sample.opening() {
+            if !auto {
+                self.say(
+                    "project: not saved, the kits are still opening (try again in a moment)".into(),
                 );
             }
             return;
@@ -10503,8 +10540,15 @@ impl Player {
             return;
         }
         self.save_sent = Some((Instant::now(), samples.len() - caches_n, snap.parts.len()));
-        b.save_with(snap, samples, now_utc());
+        let beside = b.save_with(snap, samples, now_utc());
         mpfree_browser_ui::show(&mut self.ui, b);
+        // A project whose open left things out goes into a new project
+        // beside it (docs/dev/design/project-safety.md), said in place.
+        if let Some(line) = beside {
+            self.say(format!("project: {line}"));
+            self.tell(&line);
+            return;
+        }
         let line = match b.project() {
             Some(l) => format!("project: saving {}", l.name()),
             None => "project: saving".to_string(),
@@ -10522,10 +10566,16 @@ impl Player {
     /// changes, so the project open stays as it was. A part the project
     /// hasn't got opens as New has it, never as the last project left it.
     fn open_project(&mut self, loc: &mpfree_library::Loc, snap: &mpfree_library::Snapshot) {
-        let o = match self.project_opening(snap, loc.name()) {
+        if self.opens_out >= OPENS_ON_THEIR_WAY {
+            return self.open_refused(loc.name(), OPENS_BUSY);
+        }
+        let mut o = match self.project_opening(snap, loc.name()) {
             Ok(o) => o,
             Err(why) => return self.open_refused(loc.name(), &why),
         };
+        // What it left out keeps it from being saved over; the parts read
+        // after (the kits, the loops, the takes) add theirs as they come.
+        self.left_out(std::mem::take(&mut o.left_out));
         let lib = self.browser.as_ref().map(|b| b.library().clone());
         if let (Some(text), Some(lib)) = (snap.part(crate::project::SAMPLER), lib) {
             let loc = loc.clone();
@@ -10539,6 +10589,7 @@ impl Player {
             );
         }
         self.open_midi(snap.part(crate::project::MIDI));
+        self.opens_out += 1;
         self.outbox.push(FromUi::OpenProject(Box::new(o)));
         // No kits saved: the factory kits, as New has them.
         if snap.part(crate::project::SAMPLER).is_none() {
@@ -10565,7 +10616,10 @@ impl Player {
                 });
             match read {
                 Ok(_) => self.loops_load = Some(rx),
-                Err(e) => self.say(format!("project: the loops weren't opened ({e})")),
+                Err(e) => {
+                    self.say(format!("project: the loops weren't opened ({e})"));
+                    self.left_out(["its loops".to_string()]);
+                }
             }
         }
         // The audio tracks, on a thread too: a take's file can be minutes
@@ -10589,7 +10643,10 @@ impl Player {
                 });
             match read {
                 Ok(_) => self.audio_load = Some(rx),
-                Err(e) => self.say(format!("project: the audio tracks weren't opened ({e})")),
+                Err(e) => {
+                    self.say(format!("project: the audio tracks weren't opened ({e})"));
+                    self.left_out(["its audio tracks".to_string()]);
+                }
             }
         }
         // The kits and engines coming in are the open's own news.
@@ -10669,6 +10726,12 @@ impl Player {
 
     /// New project: the parts the app started with, the factory kits.
     fn new_project(&mut self) {
+        if self.opens_out >= OPENS_ON_THEIR_WAY {
+            let line = format!("a new project wasn't made: {OPENS_BUSY}");
+            self.say(format!("project: {line}"));
+            self.tell(&line);
+            return;
+        }
         let Some(d) = self.project_defaults.as_ref() else {
             self.say(
                 "project: not ready for a new project yet (the sound is still starting)"
@@ -10694,6 +10757,7 @@ impl Player {
             }
         };
         self.open_midi(None);
+        self.opens_out += 1;
         self.outbox.push(FromUi::OpenProject(Box::new(o)));
         (self.loops_load, self.audio_load) = (None, None);
         self.opened_at = Some(Instant::now());
@@ -10865,14 +10929,18 @@ impl Player {
         };
         self.loops_load = None;
         match r {
-            Ok((saved, notes)) => {
+            Ok((saved, notes, left)) => {
                 for n in notes {
                     self.say(n);
                 }
+                self.left_out(left);
                 self.outbox.push(FromUi::OpenLoops(Box::new(saved)));
                 self.opened_at = Some(Instant::now());
             }
-            Err(e) => self.say(format!("project: the loops weren't opened ({e})")),
+            Err(e) => {
+                self.say(format!("project: the loops weren't opened ({e})"));
+                self.left_out(["its loops".to_string()]);
+            }
         }
     }
 
@@ -10888,14 +10956,32 @@ impl Player {
         };
         self.audio_load = None;
         match r {
-            Ok((saved, notes)) => {
+            Ok((saved, notes, left)) => {
                 for n in notes {
                     self.say(n);
                 }
+                self.left_out(left);
                 self.outbox.push(FromUi::OpenAudio(Box::new(saved)));
                 self.opened_at = Some(Instant::now());
             }
-            Err(e) => self.say(format!("project: the audio tracks weren't opened ({e})")),
+            Err(e) => {
+                self.say(format!("project: the audio tracks weren't opened ({e})"));
+                self.left_out(["its audio tracks".to_string()]);
+            }
+        }
+    }
+
+    /// Things the project open left out (a few words each), from any part
+    /// as it comes: the browser saves into a new project beside it from
+    /// then on, so the one on the stick keeps what this stick couldn't
+    /// open (docs/dev/design/project-safety.md).
+    fn left_out(&mut self, what: impl IntoIterator<Item = String>) {
+        let mut what = what.into_iter().peekable();
+        if what.peek().is_none() {
+            return;
+        }
+        if let Some(b) = self.browser.as_mut() {
+            b.left_out(what);
         }
     }
 
@@ -11801,6 +11887,17 @@ impl Player {
                 memory.push((
                     "Sampler: Normalize read every frame (no summary)".to_string(),
                     format!("{read}×"),
+                    Tone::Warn,
+                ));
+            }
+            let moved = self
+                .ui
+                .get::<skin_page::SkinWidget>(skin_page::SKIN)
+                .map_or(0, |w| w.view.rescue_count());
+            if moved > 0 {
+                memory.push((
+                    "Skin pop-ups: colours moved so they read".to_string(),
+                    format!("{moved}×"),
                     Tone::Warn,
                 ));
             }
@@ -13556,6 +13653,9 @@ impl Player {
         let waits = self.take_waits();
         self.sample.set_take_waits(waits);
         self.sample.tick(&mut self.ui, dt, self.view.sampler());
+        // What the project's kits left out, once read.
+        let left = self.sample.take_left_out();
+        self.left_out(left);
         // The pad take (sampler R5.7): recording, or over.
         while let Some(n) = self.sample.take_pad_now() {
             self.outbox.push(FromUi::PadTake(n));
@@ -19490,7 +19590,8 @@ mod tests {
             length: 7680,
             name: "Beat".into(),
             unique: false,
-        }];
+        }]
+        .into();
         p.time.markers = vec![(0, "Intro".into()), (7680, "Verse".into())];
         p.time_page.update(&mut p.ui, &p.time);
         p.ui.paint(&mut SoftCanvas::new(1280, 800));
@@ -19971,7 +20072,7 @@ mod tests {
         ];
         p.time.edit = Some(Box::new(time_view::EditInfo {
             editor: Editor::new(0, 0, &clip),
-            clip,
+            clip: clip.into(),
             rev: 0,
             track_name: "Track 1".into(),
             bar: 3840,
@@ -27035,6 +27136,83 @@ mod tests {
     /// the engines, the browser still saves to the project that was open,
     /// and the screen says why in plain words.
     #[test]
+    fn opens_wait_for_the_engines_they_replaced_to_come_back() {
+        // Live shows A2: the audio loop keeps the engines an open replaced
+        // in OPENS_ON_THEIR_WAY slots until the screen takes them, so the
+        // screen never has more opens on their way than that, and none is
+        // freed on the audio thread.
+        use crate::project::{self, Defaults};
+        use mpfree_browser_ui::sample::{select, source};
+        use mpfree_library::{Loc, Place};
+        let dir = std::env::temp_dir().join(format!("mpfree-on-their-way-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let lib = mpfree_library::Library::at(&dir).unwrap();
+        let mut p = sample_sampler(Fonts::embedded());
+        p.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), "");
+        p.take_actions();
+        let synth = crate::synth::Synth::new(44_100);
+        let good = project::new_snapshot(&Defaults {
+            tempo: 120.0,
+            mixer: project::mixer_text(&crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer, 0),
+            modu: String::new(),
+            synth: project::synth_text(&Default::default(), &synth.sounds()),
+        });
+        for name in ["One", "Two", "Three"] {
+            let loc = Loc::top(Place::Projects).join(name).unwrap();
+            lib.save_project(&loc, &good, 0).unwrap();
+        }
+        p.apply(ToUi::Show(View::Browser));
+        let open = |p: &mut Player, name: &str| {
+            let b = p.browser.as_mut().unwrap();
+            b.go_source(source("Projects"));
+            select(b, name);
+            b.push();
+            p.step_browser();
+            p.take_actions().into_iter().find_map(|a| match a {
+                FromUi::OpenProject(o) => Some(o),
+                _ => None,
+            })
+        };
+        let one = open(&mut p, "One").expect("One opens");
+        let two = open(&mut p, "Two").expect("Two opens while One's engines are on their way");
+        assert_eq!(OPENS_ON_THEIR_WAY, 2);
+        assert!(
+            open(&mut p, "Three").is_none(),
+            "a third open went while two were on their way"
+        );
+        let (line, problem) = p.browser.as_ref().unwrap().status_line().unwrap();
+        assert!(
+            problem && line.starts_with(&format!("Didn't open Three: {OPENS_BUSY}")),
+            "{line}"
+        );
+        let two_loc = Loc::top(Place::Projects).join("Two").unwrap();
+        assert_eq!(p.browser.as_ref().unwrap().project(), Some(&two_loc));
+        // New project waits the same way.
+        p.new_project();
+        assert!(
+            !p.take_actions()
+                .iter()
+                .any(|a| matches!(a, FromUi::OpenProject(_))),
+            "New went while two opens were on their way"
+        );
+        assert!(
+            events_log(&p)
+                .iter()
+                .any(|l| l == &format!("project: a new project wasn't made: {OPENS_BUSY}")),
+            "{:?}",
+            events_log(&p)
+        );
+        // Once one comes back, the next open goes.
+        p.apply(ToUi::ProjectBack(one));
+        let three = open(&mut p, "Three").expect("Three opens once One's engines are back");
+        p.apply(ToUi::ProjectBack(two));
+        p.apply(ToUi::ProjectBack(three));
+        assert_eq!(p.opens_out, 0);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn a_project_this_build_cant_read_doesnt_open_and_the_open_one_stays() {
         use crate::project::{self, Defaults};
         use mpfree_browser_ui::sample::{select, source};
@@ -27108,6 +27286,151 @@ mod tests {
                 events_log(&p)
             );
         }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// docs/dev/design/project-safety.md: a project whose open left
+    /// something out (here an effect whose plugin isn't on the stick, kit
+    /// sounds whose files aren't there, and a take the audio loop had no
+    /// room for) is never saved over:
+    /// SHIFT + BROWSE saves into a new project beside it and says why, and
+    /// the project on the stick keeps all it has. A save while the kits
+    /// are still being read waits, so the last project's kits never go
+    /// into the new one.
+    #[test]
+    fn a_project_that_opened_with_things_left_out_is_saved_beside_it() {
+        use crate::project::{self, Collected, Defaults};
+        use mpfree_browser_ui::sample::{select, source};
+        use mpfree_library::{Loc, Place};
+        let dir = std::env::temp_dir().join(format!("mpfree-beside-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let lib = mpfree_library::Library::at(&dir).unwrap();
+        let mut p = sample_sampler(Fonts::embedded());
+        p.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), "");
+        p.take_actions();
+        let synth = crate::synth::Synth::new(44_100);
+        let mixer = project::mixer_text(&crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer, 0);
+        let synth_text = project::synth_text(&Default::default(), &synth.sounds());
+        let mut song = project::new_snapshot(&Defaults {
+            tempo: 120.0,
+            mixer: mixer.clone(),
+            modu: String::new(),
+            synth: synth_text.clone(),
+        });
+        for (name, text) in &mut song.parts {
+            if name == project::MIXER {
+                text.push_str("insert master 7 1 clap:com.example.verb file=verb.clap\n");
+            }
+        }
+        // Kits whose sounds were never written into the project.
+        song.parts
+            .push((project::SAMPLER.to_string(), p.sample.save_part().0));
+        let at = Loc::top(Place::Projects).join("Song").unwrap();
+        let beside = Loc::top(Place::Projects).join("Song 2").unwrap();
+        lib.save_project(&at, &song, 0).unwrap();
+        let as_it_was = lib.open_project(&at).unwrap();
+        p.apply(ToUi::Show(View::Browser));
+        let b = p.browser.as_mut().unwrap();
+        b.go_source(source("Projects"));
+        select(b, "Song");
+        b.push();
+        p.step_browser();
+        let o = p
+            .take_actions()
+            .into_iter()
+            .find_map(|a| match a {
+                FromUi::OpenProject(o) => Some(o),
+                _ => None,
+            })
+            .expect("Song opens");
+        // What was left out stayed on the screen side, with the browser.
+        assert!(o.left_out.is_empty());
+        let verb = format!(
+            "the effect clap:com.example.verb on {}",
+            crate::mixing::name(mpfree_fx::StripId::Master)
+        );
+        assert_eq!(
+            p.browser.as_ref().unwrap().left_out_list(),
+            std::slice::from_ref(&verb)
+        );
+        p.apply(ToUi::ProjectBack(o));
+        let parts = |tempo: f64| {
+            Box::new(Collected {
+                tempo,
+                swing: Default::default(),
+                clips: crate::time::TimeHost::new(44_100, tempo)
+                    .unwrap()
+                    .project()
+                    .clone(),
+                mixer: mixer.clone(),
+                modu: String::new(),
+                synth: synth_text.clone(),
+                arp: format!("{}\n", crate::app::ARP_HEADER),
+                instruments: String::new(),
+                track_kits: String::new(),
+                instrument_list: crate::instrument_list::InstrumentList::new().text(),
+                pads: String::new(),
+                pad_layers: String::new(),
+                perform: String::new(),
+                loops: None,
+                audio: None,
+            })
+        };
+        // The kits are still being read: no save yet (the kits here are
+        // still the last project's).
+        assert!(p.sample.opening());
+        p.ask_save();
+        p.apply(ToUi::ProjectParts(parts(100.0)));
+        p.step_browser();
+        assert!(
+            events_log(&p)
+                .iter()
+                .any(|l| l
+                    == "project: not saved, the kits are still opening (try again in a moment)"),
+            "{:?}",
+            events_log(&p)
+        );
+        assert!(lib.project_meta(&beside).is_err());
+        // They come, each sound left out said.
+        tick_until(&mut p, |p| !p.sample.opening());
+        let kits = p.browser.as_ref().unwrap().left_out_list()[1..].to_vec();
+        assert!(!kits.is_empty());
+        assert!(kits.iter().all(|k| k.starts_with("part of ")), "{kits:?}");
+        // The audio loop had no room for a take.
+        p.apply(ToUi::LeftOut("part of its audio tracks".into()));
+        let more = kits.len() + 1;
+        p.ask_save();
+        p.apply(ToUi::ProjectParts(parts(101.0)));
+        p.step_browser();
+        let b = p.browser.as_ref().unwrap();
+        assert_eq!(b.project(), Some(&beside));
+        let why = format!("Song opened without {verb} and {more} more, so it stays as it was");
+        assert_eq!(
+            b.status_line(),
+            Some((format!("Saved as Song 2: {why}").as_str(), false))
+        );
+        assert_eq!(
+            p.told.as_ref().map(|(t, _)| t.clone()),
+            Some(tell_text(&format!("Saving as Song 2: {why}")))
+        );
+        assert!(
+            events_log(&p)
+                .iter()
+                .any(|l| l == &format!("project: Saving as Song 2: {why}")),
+            "{:?}",
+            events_log(&p)
+        );
+        assert_eq!(lib.open_project(&beside).unwrap().meta.tempo, 101.0);
+        // Song is as it was: the effect still named, no new version.
+        assert_eq!(lib.open_project(&at).unwrap().parts, as_it_was.parts);
+        assert!(lib.versions(&at).unwrap().is_empty());
+        // Song 2 holds all it has: the next save goes into it.
+        p.ask_save();
+        p.apply(ToUi::ProjectParts(parts(102.0)));
+        p.step_browser();
+        assert_eq!(p.browser.as_ref().unwrap().project(), Some(&beside));
+        assert_eq!(lib.open_project(&beside).unwrap().meta.tempo, 102.0);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

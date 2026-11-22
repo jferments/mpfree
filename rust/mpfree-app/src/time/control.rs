@@ -22,6 +22,7 @@
 //! audio half, which makes them to its view in place, whole or not at all
 //! ([`ToAudio::EditPart`], [`ToAudio::EditEnd`]; refactor A3).
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use mpfree_capture::{keep, moves_for_clip, Capture, KeepError, Kept, Now, Pending};
@@ -29,7 +30,8 @@ use mpfree_notefx::{Chain, TrackFx, MAX_FX};
 use mpfree_perform::{Perform, SceneMorph, SongRecorder, When};
 use mpfree_play::Replaced;
 use mpfree_play::{
-    ClipDrop, Cue, Includes, Launch, MuteCue, MuteLanded, PlayView, SongChange, Started, Takes,
+    ClipDrop, Cue, Decisions, Includes, Launch, MuteCue, MuteLanded, PlayView, SongChange, Started,
+    Takes,
 };
 use mpfree_play::{MOVE_POINTS, TOUCH_POINTS};
 use mpfree_seq::arrange::{
@@ -56,7 +58,9 @@ use mpfree_transport::time::{TempoMap, Tick};
 use mpfree_transport::{Block, Command, State};
 
 use super::follow::FollowCounts;
-use super::link::{Counts, InPlace, PeriodEnd, Rx, StripCounts, ToAudio, ToControl, Tracks, Tx};
+use super::link::{
+    Counts, CueCounts, InPlace, PeriodEnd, Rx, StripCounts, ToAudio, ToControl, Tracks, Tx,
+};
 use super::{
     PadRows, StepAction, StepClip, StepsData, LINE, NEW_CLIP_BARS, RECORD_ROOM, STEP_TICKS,
 };
@@ -146,15 +150,27 @@ pub struct Costs {
     /// taken what it sent ([`super::TimeHost::step_action`]).
     pub slowest_in_place: Duration,
     pub slowest_step_compiled: Duration,
+    /// Note editor edits made in place, and those that compiled (piano
+    /// roll plan 0C.1), with the slowest of each: the control half's time
+    /// from the touch to the edit sent ([`TimeControl::edit`]), on
+    /// whichever thread it runs.
+    pub notes_in_place: u64,
+    pub notes_compiled: u64,
+    pub slowest_note_in_place: Duration,
+    pub slowest_note_compiled: Duration,
 }
 
 impl Costs {
     /// "compiles: 12 (slowest 0.21 ms, 96 notes and locks); step edits:
-    /// 40 in place (slowest 0.02 ms), 3 compiled (slowest 0.25 ms)".
+    /// 40 in place (slowest 0.02 ms), 3 compiled (slowest 0.25 ms); note
+    /// edits: 5 in place (slowest 0.03 ms), 1 compiled (slowest 0.30 ms)".
+    /// The note edits come last, so the device checks that read the rest
+    /// (`tools/mpc-one/app_checks.py`) read it as before.
     pub fn describe(&self) -> String {
         let ms = |d: Duration| d.as_secs_f64() * 1e3;
         format!(
             "compiles: {} (slowest {:.2} ms, {} notes and locks); step edits: {} in place \
+             (slowest {:.2} ms), {} compiled (slowest {:.2} ms); note edits: {} in place \
              (slowest {:.2} ms), {} compiled (slowest {:.2} ms)",
             self.compiles,
             ms(self.slowest_compile),
@@ -162,7 +178,11 @@ impl Costs {
             self.steps_in_place,
             ms(self.slowest_in_place),
             self.steps_compiled,
-            ms(self.slowest_step_compiled)
+            ms(self.slowest_step_compiled),
+            self.notes_in_place,
+            ms(self.slowest_note_in_place),
+            self.notes_compiled,
+            ms(self.slowest_note_compiled)
         )
     }
 }
@@ -266,8 +286,11 @@ pub struct TimeControl {
     /// The editor's clip as the editor last knew it, and its revision,
     /// which moves each time the clip differs from that copy (piano roll
     /// plan 0A.1): the editor's own edits, and anything else that changed
-    /// it, which the picks follow ([`TimeControl::edit_follow`]).
-    edit_seen: Option<Clip>,
+    /// it, which the picks follow ([`TimeControl::edit_follow`]). Shared
+    /// with the screens: [`TimeControl::state`] sends this same copy while
+    /// the clip is unchanged, so they rebuild the roll only when it moved
+    /// (plan 0C.1).
+    edit_seen: Option<Arc<Clip>>,
     edit_rev: u64,
     /// The armed track: REC records it, and the audio half's recorder
     /// takes live notes only for it. Kept by its lasting id
@@ -393,9 +416,19 @@ pub struct TimeControl {
     /// Pressure values no note could play again, freed so far, and how
     /// many times (refactor B4b).
     touch_freed: (u64, u64),
-    /// What the views include: the recorded changes made so far, and the
-    /// started cues applied on each track.
+    /// What the views include: the recorded changes made so far, the
+    /// started cues applied on each track, and each track's newest
+    /// decision with the frame it was made at (Arrange 2.5).
     pub(super) includes: Includes,
+    /// The control half's side of the timing contract: which cues are new
+    /// decisions (Arrange 2.5).
+    decisions: Box<Decisions>,
+    /// The absolute frame the music had reached as far as the control half
+    /// has heard: the end of the last period it took.
+    heard: u64,
+    /// What the audio half's player counted for the contract, as last
+    /// sent.
+    cue_counts: CueCounts,
     tx: Tx<ToAudio>,
     rx: Rx<ToControl>,
     /// A view the audio half's full queue handed back, sent again on the
@@ -515,6 +548,9 @@ impl TimeControl {
             touch_grew: Vec::new(),
             touch_freed: (0, 0),
             includes: Includes::default(),
+            decisions: Box::default(),
+            heard: 0,
+            cue_counts: CueCounts::default(),
             tx,
             rx,
             unsent: None,
@@ -936,6 +972,7 @@ impl TimeControl {
                     }
                 }
                 ToControl::Follow(c) => self.follow = c,
+                ToControl::Cues(c) => self.cue_counts = c,
                 ToControl::Strips(c) => self.strips = c,
                 ToControl::Period(end) => self.period(end),
                 ToControl::Done(v) => drop(v),
@@ -953,6 +990,7 @@ impl TimeControl {
         self.fresh = true;
         self.block.start_frame = end.start_frame;
         self.block.frames = end.frames;
+        self.heard = end.start_frame + u64::from(end.frames);
         self.info = end.info;
         self.counts = end.counts;
         // Out of recording: a take UNDO threw away goes now that all of
@@ -1011,6 +1049,7 @@ impl TimeControl {
             }
             self.perform.started(&mut self.project, &st);
             st.apply(&mut self.launches, &mut self.cues);
+            self.decisions.started(&st);
             if let Some(n) = self.includes.switches.get_mut(st.track) {
                 *n = n.wrapping_add(1);
             }
@@ -1189,7 +1228,11 @@ impl TimeControl {
         if self.also != 0 && self.also_n != n {
             self.also = 0;
         }
-        let v = self.view()?;
+        let mut v = self.view()?;
+        // Each new decision in it gets its revision and the frame the
+        // music had reached when it was made: a cue whose line played
+        // before the view came lands late, in phase (Arrange 2.5).
+        self.decisions.stamp(&mut v, self.heard, &mut self.includes);
         // Room to record into every armed track's clips without
         // allocating.
         let mut armed = self.armed_set();
@@ -2112,11 +2155,12 @@ impl TimeControl {
             let clip = self.project.clip(track, slot).ok_or("edit: no such clip")?;
             let line = format!("edit: {} on {name}", clip.name);
             self.editor = Some(Editor::new(track, slot, clip));
-            self.edit_seen = Some(clip.clone());
+            self.edit_seen = Some(Arc::new(clip.clone()));
             self.edit_rev += 1;
             self.changed = true;
             return Ok(line);
         }
+        let at = Instant::now();
         self.edit_follow();
         if let EditAction::Note { rev, .. } = a {
             if rev != self.edit_rev {
@@ -2157,7 +2201,24 @@ impl TimeControl {
                 ed.applied(clip, &done);
             }
             self.editor = Some(ed);
-            if let Err(e) = self.compile() {
+            // Into the playing clip in place when it fits, as a step edit
+            // goes (plan 0C.1); else one compile.
+            let in_place = self.in_place(track, slot, &done.edit);
+            let built = if in_place {
+                self.steps_changed = true;
+                Ok(())
+            } else {
+                self.compile()
+            };
+            let (took, c) = (at.elapsed(), &mut self.costs);
+            if in_place {
+                c.notes_in_place += 1;
+                c.slowest_note_in_place = c.slowest_note_in_place.max(took);
+            } else {
+                c.notes_compiled += 1;
+                c.slowest_note_compiled = c.slowest_note_compiled.max(took);
+            }
+            if let Err(e) = built {
                 // What plays can't follow: the edit goes from the clip and
                 // the takes, the editor is as it was, and the view as it
                 // was is built again (as a step edit does).
@@ -2176,7 +2237,7 @@ impl TimeControl {
                     Err(b) => format!("edit: {e}: the edit could not be taken back ({b:?})"),
                 });
             }
-            self.edit_seen = self.project.clip(track, slot).cloned();
+            self.edit_seen = self.project.clip(track, slot).cloned().map(Arc::new);
             self.edit_rev += 1;
         } else {
             self.editor = Some(ed);
@@ -2195,16 +2256,16 @@ impl TimeControl {
             return;
         };
         let now = self.project.clip(ed.track, ed.slot);
-        if now == self.edit_seen.as_ref() {
+        if now == self.edit_seen.as_deref() {
             return;
         }
-        match (self.edit_seen.as_ref(), now) {
+        match (self.edit_seen.as_deref(), now) {
             (Some(was), Some(now)) => {
                 ed.follow(was, now);
             }
             _ => ed.sel.clear(),
         }
-        self.edit_seen = now.cloned();
+        self.edit_seen = now.cloned().map(Arc::new);
         self.edit_rev += 1;
         self.changed = true;
     }
@@ -4926,14 +4987,6 @@ impl TimeControl {
         n
     }
 
-    /// Track `t`'s pad mutes and solos, a bit each by kit pad.
-    pub fn pad_mutes(&self, t: usize) -> Option<(u128, u128)> {
-        self.project
-            .tracks
-            .get(t)
-            .map(|tr| (tr.pad_mutes, tr.pad_solos))
-    }
-
     /// Whether a change waits for track `t`'s pad `pad` in the mute queue,
     /// for its light.
     pub fn pad_waiting(&self, t: usize, pad: usize) -> bool {
@@ -5224,9 +5277,15 @@ impl TimeControl {
         st.edit = self.editor.as_ref().and_then(|ed| {
             let clip = self.project.clip(ed.track, ed.slot)?;
             let bar = clip.speed.to_clip(self.info.meter.bar_ticks() as f64);
+            // The copy the editor last knew, when the clip is still that
+            // (always, after `take_changed`): no copy of the clip each time.
+            let clip = match &self.edit_seen {
+                Some(seen) if **seen == *clip => Arc::clone(seen),
+                _ => Arc::new(clip.clone()),
+            };
             Some(Box::new(EditInfo {
                 editor: ed.clone(),
-                clip: clip.clone(),
+                clip,
                 rev: self.edit_rev,
                 track_name: self.project.tracks[ed.track].name.clone(),
                 bar: bar.round() as Tick,
@@ -5320,6 +5379,17 @@ impl TimeControl {
                  {} views kept unfreed, {} transport commands refused, {} step edits \
                  compiled again",
                 c.behind, c.kept, c.refused, c.missed
+            ));
+        }
+        // The timing contract (Arrange 2.5): cues the audio half carried
+        // out after their line, in phase with it, because their view came
+        // late; older ones it dropped; clips a newer cue took away first.
+        let q = &self.cue_counts;
+        if q.late + q.stale + q.lost > 0 {
+            line.push_str(&format!(
+                "; cues whose view came late: {} started after their line, in time with it, \
+                 {} older ones dropped, {} times a track was silent until the next view",
+                q.late, q.stale, q.lost
             ));
         }
         // What compiles and step edits cost (the device's numbers for the

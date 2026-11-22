@@ -26,8 +26,8 @@ use mpfree_transport::{Block, Command, Mark, State, Transport};
 
 use super::follow::{Follow, FollowCounts, Follower};
 use super::link::{
-    Counts, InPlace, PeriodEnd, Rx, StripCounts, ToAudio, ToControl, Tracks, Tx, MAX_IN_PLACE,
-    POINTS_CHUNK, TOUCH_CHUNK,
+    Counts, CueCounts, InPlace, PeriodEnd, Rx, StripCounts, ToAudio, ToControl, Tracks, Tx,
+    MAX_IN_PLACE, POINTS_CHUNK, TOUCH_CHUNK,
 };
 use super::pad_wait::{DuePads, PadFrom, PadWait, PadWaits};
 use super::strips::{Ev, Sent, StripLocks};
@@ -106,6 +106,8 @@ pub struct TimeAudio {
     /// counts as last sent.
     follower: Follower,
     follow_sent: FollowCounts,
+    /// The timing contract's counts as last sent (Arrange 2.5).
+    cues_sent: CueCounts,
     click: Click,
     /// Click while counting in and recording.
     pub metronome: bool,
@@ -211,6 +213,7 @@ impl TimeAudio {
             chains_in: std::array::from_fn(|_| None),
             follower: Follower::new(rate),
             follow_sent: FollowCounts::default(),
+            cues_sent: CueCounts::default(),
             click: Click::new(rate),
             metronome: false,
             advanced: None,
@@ -1399,6 +1402,10 @@ impl TimeAudio {
         if follow != self.follow_sent && self.tx.send(ToControl::Follow(follow)).is_ok() {
             self.follow_sent = follow;
         }
+        let cues = self.cue_counts();
+        if cues != self.cues_sent && self.tx.send(ToControl::Cues(cues)).is_ok() {
+            self.cues_sent = cues;
+        }
         let strips = self.strips.counts();
         if strips != self.strips_sent && self.tx.send(ToControl::Strips(strips)).is_ok() {
             self.strips_sent = strips;
@@ -1435,6 +1442,17 @@ impl TimeAudio {
             missed: super::link::rare(self.missed),
             busy: self.sink.refused() + self.player.stats().busy + self.arps_busy,
             ends_lost: super::link::rare(self.sink.lost() + self.locks_lost + self.arps_lost),
+        }
+    }
+
+    /// What the timing contract counted (Arrange 2.5): the player's cues
+    /// that came late, were dropped as stale, or lost a switch's clip.
+    pub fn cue_counts(&self) -> CueCounts {
+        let s = self.player.stats();
+        CueCounts {
+            late: super::link::rare(s.late_cues),
+            stale: super::link::rare(s.stale_cues),
+            lost: super::link::rare(s.lost_switches),
         }
     }
 
