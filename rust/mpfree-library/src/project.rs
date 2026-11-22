@@ -3,10 +3,11 @@
 //!
 //! ```text
 //! Projects/Night drive/
-//!   project.txt            "mpfree-project 1", then key = value lines
+//!   project.txt            "mpfree-project 1", then key = value lines (its lasting id among them)
 //!   parts/<owner>.txt      one text file per engine (transport, sampler, synth, mixer ...)
 //!   samples/<hash>.<ext>   every sound the project uses, copied in, named by content
 //!   versions/<id>/         earlier saves: their project.txt and parts/
+//!   manifest.txt           every part and sound with its size and hash (crate::manifest)
 //! ```
 //!
 //! - **The browser owns the folder; each engine owns its part.** An engine
@@ -24,6 +25,12 @@
 //!   and their length, so the same sound is stored once and a project
 //!   never misses a sample because a drive is gone. Two different sounds
 //!   with the same name are told apart by comparing their bytes.
+//! - **Each project has a lasting id** ([`Meta::id`]): 32 hex digits made
+//!   at its first save, kept by every save after it and by a rename, so a
+//!   set list can find a song that was renamed or moved. A save into a
+//!   new folder (Save As) gets a new id; a folder copied by hand carries
+//!   its original's id, and the copy gets its own at its next save
+//!   ([`Saved::copy_of`]).
 //! - **Earlier saves are kept** ([`Library::versions`]), the newest
 //!   `keep` of them, so going back is one tap.
 //! - **Sounds an engine made** (a recording in RAM, a resample) come with
@@ -54,12 +61,12 @@ pub const AUTOSAVE: &str = "Autosave";
 /// The project.txt key that marks autosave's project: `autosave = yes`.
 pub const AUTOSAVE_KEY: &str = "autosave";
 
-const PARTS: &str = "parts";
+pub(crate) const PARTS: &str = "parts";
 const NEW_PARTS: &str = ".parts-new";
 /// The start of a sound's name in a project's samples folder while a save
 /// writes it ([`write_samples`]).
 const INCOMING: &str = ".incoming-";
-const SAMPLES: &str = "samples";
+pub(crate) const SAMPLES: &str = "samples";
 const VERSIONS: &str = "versions";
 
 /// An engine's piece of a project.
@@ -175,6 +182,14 @@ pub struct Meta {
     pub saved: u64,
     /// The build that saved it.
     pub app: String,
+    /// The project's lasting id: 32 lowercase hex digits, or empty when it
+    /// has none yet (never saved, or saved by a build from before ids).
+    /// [`Library::save_project_with`] decides it: a caller leaves it empty.
+    pub id: String,
+    /// The folder it was saved in, beside its id: a folder copied by hand
+    /// still names its original, which is how a save tells the copy from
+    /// the original ([`Saved::copy_of`]).
+    pub folder: String,
     /// Any other `key = value` lines, kept as they were.
     pub extra: Vec<(String, String)>,
 }
@@ -187,6 +202,8 @@ impl Default for Meta {
             created: 0,
             saved: 0,
             app: String::new(),
+            id: String::new(),
+            folder: String::new(),
             extra: Vec::new(),
         }
     }
@@ -218,6 +235,12 @@ impl Meta {
             self.saved,
             one_line(&self.app)
         );
+        if valid_id(&self.id) {
+            s.push_str(&format!("id = {}\n", self.id));
+            if !one_line(&self.folder).is_empty() {
+                s.push_str(&format!("folder = {}\n", one_line(&self.folder)));
+            }
+        }
         for (k, v) in &self.extra {
             s.push_str(&format!("{} = {}\n", one_line(k), one_line(v)));
         }
@@ -251,6 +274,13 @@ impl Meta {
                 "created" => m.created = v.parse().unwrap_or(0),
                 "saved" => m.saved = v.parse().unwrap_or(0),
                 "app" => m.app = v.to_string(),
+                // An id that isn't 32 hex digits is no id: the next save
+                // gives the project one.
+                "id" => {
+                    let v = v.to_ascii_lowercase();
+                    m.id = if valid_id(&v) { v } else { String::new() };
+                }
+                "folder" => m.folder = v.to_string(),
                 _ => m.extra.push((k.to_string(), v.to_string())),
             }
         }
@@ -264,6 +294,46 @@ fn one_line(s: &str) -> String {
         .collect::<String>()
         .trim()
         .to_string()
+}
+
+/// Whether `s` is a project id: 32 lowercase hex digits ([`Meta::id`]).
+pub fn valid_id(s: &str) -> bool {
+    s.len() == 32 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// A new project id: 128 random bits as 32 hex digits. The bits come from
+/// the hasher keys the standard library seeds from the system's random
+/// source, mixed with the time and a count, so two ids made in the same
+/// moment still differ.
+pub fn new_id() -> String {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher as _};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let n = COUNT.fetch_add(1, Ordering::Relaxed);
+    let mut id = String::with_capacity(32);
+    for half in 0..2u8 {
+        let mut h = RandomState::new().build_hasher();
+        h.write_u128(now);
+        h.write_u64(n);
+        h.write_u8(half);
+        id.push_str(&format!("{:016x}", h.finish()));
+    }
+    id
+}
+
+/// How a save went ([`Library::save_project_with`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Saved {
+    /// The project's lasting id now ([`Meta::id`]).
+    pub id: String,
+    /// The project was a copy of this one, made outside mpfree (a folder
+    /// copied by hand, so it carried the other's id): it has its own id
+    /// now, and the other keeps its id.
+    pub copy_of: Option<String>,
 }
 
 /// A whole project as text: its meta and its parts by owner.
@@ -332,7 +402,7 @@ fn sync_dir(dir: &Path) -> io::Result<()> {
     File::open(dir)?.sync_all()
 }
 
-fn write_synced(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn write_synced(path: &Path, bytes: &[u8]) -> io::Result<()> {
     write_unsynced(path, bytes)?.sync_all()
 }
 
@@ -368,20 +438,20 @@ fn sync_files(files: &[File]) -> io::Result<()> {
     Ok(())
 }
 
-fn real_dir(p: &Path) -> bool {
+pub(crate) fn real_dir(p: &Path) -> bool {
     fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_dir())
 }
 
 /// Two 64-bit FNV-1a hashes with different seeds, read in chunks.
 #[derive(Clone, Copy)]
-struct Hasher {
+pub(crate) struct Hasher {
     a: u64,
     b: u64,
     len: u64,
 }
 
 impl Hasher {
-    fn new() -> Hasher {
+    pub(crate) fn new() -> Hasher {
         Hasher {
             a: 0xcbf2_9ce4_8422_2325,
             b: 0x6c62_272e_07bb_0142,
@@ -389,7 +459,7 @@ impl Hasher {
         }
     }
 
-    fn update(&mut self, bytes: &[u8]) {
+    pub(crate) fn update(&mut self, bytes: &[u8]) {
         for &x in bytes {
             self.a = (self.a ^ u64::from(x)).wrapping_mul(0x0000_0100_0000_01b3);
             self.b = (self.b ^ u64::from(x))
@@ -400,7 +470,12 @@ impl Hasher {
     }
 
     fn name(&self) -> String {
-        format!("{:016x}{:016x}-{}", self.a, self.b, self.len)
+        format!("{}-{}", self.hex(), self.len)
+    }
+
+    /// The two hashes as 32 hex digits (no length).
+    pub(crate) fn hex(&self) -> String {
+        format!("{:016x}{:016x}", self.a, self.b)
     }
 }
 
@@ -424,7 +499,7 @@ fn same_bytes(a: &Path, b: &Path) -> io::Result<bool> {
 }
 
 impl Library {
-    fn project_dir(&self, project: &Loc) -> io::Result<PathBuf> {
+    pub(crate) fn project_dir(&self, project: &Loc) -> io::Result<PathBuf> {
         if project.place != Place::Projects || project.names().len() != 1 {
             return Err(bad(
                 io::ErrorKind::InvalidInput,
@@ -517,7 +592,7 @@ impl Library {
 
     /// Saves a project: makes its folder the first time, then saves
     /// whole or not at all, keeping the newest `keep` earlier saves.
-    pub fn save_project(&self, project: &Loc, snap: &Snapshot, keep: usize) -> io::Result<()> {
+    pub fn save_project(&self, project: &Loc, snap: &Snapshot, keep: usize) -> io::Result<Saved> {
         self.save_project_with(project, snap, keep, &[])
     }
 
@@ -525,13 +600,20 @@ impl Library {
     /// project's `samples/` doesn't have yet (whole: a `.part` file,
     /// synced, renamed). If one can't be written, nothing of the save is:
     /// the last save stands.
+    ///
+    /// The save decides the project's lasting id ([`Meta::id`]): the one
+    /// its folder's project.txt has (every save into a folder keeps it),
+    /// else the one `snap` comes with, else a new one. If another project
+    /// carries that id and is still in the folder it was saved in, this
+    /// one is a copy of it made outside mpfree, and gets a new id
+    /// ([`Saved::copy_of`]). Autosave's project has no id.
     pub fn save_project_with(
         &self,
         project: &Loc,
         snap: &Snapshot,
         keep: usize,
         samples: &[NewSample],
-    ) -> io::Result<()> {
+    ) -> io::Result<Saved> {
         let dir = self.project_dir(project)?;
         for s in samples {
             if !valid_name(&s.file) {
@@ -561,6 +643,8 @@ impl Library {
             }
         }
         self.recover(&dir)?;
+        let mut meta = snap.meta.clone();
+        let saved = self.lasting_id(project, &dir, &mut meta);
         for sub in [SAMPLES, VERSIONS] {
             if !real_dir(&dir.join(sub)) {
                 fs::create_dir(dir.join(sub))?;
@@ -611,11 +695,56 @@ impl Library {
         fs::rename(&new, &parts)?;
         sync_dir(&dir)?;
         let part = dir.join(format!("{PROJECT_FILE}.part"));
-        write_synced(&part, snap.meta.to_text().as_bytes())?;
+        write_synced(&part, meta.to_text().as_bytes())?;
         fs::rename(&part, dir.join(PROJECT_FILE))?;
         sync_dir(&dir)?;
         self.prune_versions(&dir, keep);
-        Ok(())
+        Ok(saved)
+    }
+
+    /// The id a save of `project` (in `dir`) writes, put in `meta` with
+    /// the folder's name ([`Library::save_project_with`]).
+    fn lasting_id(&self, project: &Loc, dir: &Path, meta: &mut Meta) -> Saved {
+        if meta.is_autosave() {
+            meta.id.clear();
+            meta.folder.clear();
+            return Saved::default();
+        }
+        let folder = project.name().to_string();
+        let kept = read_meta(&dir.join(PROJECT_FILE))
+            .map(|m| m.id)
+            .filter(|id| valid_id(id))
+            .or_else(|| Some(meta.id.clone()).filter(|id| valid_id(id)));
+        let copy_of = kept.as_deref().and_then(|id| self.home_of(id, &folder));
+        let id = match kept {
+            Some(id) if copy_of.is_none() => id,
+            _ => new_id(),
+        };
+        meta.id = id.clone();
+        meta.folder = folder;
+        Saved { id, copy_of }
+    }
+
+    /// The project in Projects, other than `except`, that has `id` and is
+    /// still in the folder it was saved in ([`Meta::folder`]), if there is
+    /// one. Reads each project's project.txt.
+    fn home_of(&self, id: &str, except: &str) -> Option<String> {
+        let top = self.path(&Loc::top(Place::Projects)).ok()?;
+        let mut found: Vec<String> = fs::read_dir(top)
+            .ok()?
+            .filter_map(Result::ok)
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+            .filter_map(|e| {
+                let name = e.file_name().into_string().ok()?;
+                if name == except || name.starts_with('.') {
+                    return None;
+                }
+                let m = read_meta(&e.path().join(PROJECT_FILE))?;
+                (m.id == id && m.folder == name).then_some(name)
+            })
+            .collect();
+        found.sort_by(|a, b| crate::natural_cmp(a, b));
+        found.into_iter().next()
     }
 
     /// Finishes a save that was cut off: new parts written but not moved
@@ -870,6 +999,18 @@ fn place_samples(dir: &Path, incoming: &[(PathBuf, PathBuf)]) -> io::Result<()> 
     Ok(())
 }
 
+/// A project.txt, read no further than 64 KiB (it is a few lines): None
+/// when it isn't there or isn't one.
+pub(crate) fn read_meta(path: &Path) -> Option<Meta> {
+    let mut text = String::new();
+    File::open(path)
+        .ok()?
+        .take(64 << 10)
+        .read_to_string(&mut text)
+        .ok()?;
+    Meta::parse(&text).ok()
+}
+
 fn read_snapshot(dir: &Path) -> io::Result<Snapshot> {
     let meta = Meta::parse(&fs::read_to_string(dir.join(PROJECT_FILE))?)?;
     let mut parts = Vec::new();
@@ -943,6 +1084,7 @@ mod tests {
             saved,
             app: "test".into(),
             extra: vec![("key".into(), "C minor".into())],
+            ..Meta::default()
         }
     }
 
@@ -969,12 +1111,21 @@ mod tests {
             state: "pad 1 = kick.wav\n".into(),
         };
         let snap = Snapshot::from_parts(meta("Night drive", 10), &[&seq, &smp]);
-        lib.save_project(&p, &snap, KEEP_VERSIONS).unwrap();
+        let saved = lib.save_project(&p, &snap, KEEP_VERSIONS).unwrap();
         // The browser lists it as a project.
         let l = lib.list(&Loc::top(Place::Projects)).unwrap();
         assert_eq!(l[0].kind, crate::Kind::Project);
         let back = lib.open_project(&p).unwrap();
-        assert_eq!(back.meta, snap.meta);
+        // The save gave it its lasting id, beside the folder it is in.
+        assert!(valid_id(&saved.id), "{saved:?}");
+        assert_eq!(
+            back.meta,
+            Meta {
+                id: saved.id.clone(),
+                folder: "Night drive".into(),
+                ..snap.meta.clone()
+            }
+        );
         assert_eq!(back.part("transport"), Some("bpm = 92.5\n"));
         let mut seq2 = Engine {
             owner: "transport",
@@ -1419,5 +1570,212 @@ mod tests {
             assert!(lib.save_project_with(&p, &snap, 10, &[s]).is_err(), "{bad}");
         }
         assert_eq!(lib.open_project(&p).unwrap().part("sampler"), Some("first"));
+    }
+
+    /// Copies a project's folder the way a computer would, outside mpfree.
+    fn copy_by_hand(from: &Path, to: &Path) {
+        fs::create_dir(to).unwrap();
+        for e in fs::read_dir(from).unwrap().map(Result::unwrap) {
+            if e.file_type().unwrap().is_dir() {
+                copy_by_hand(&e.path(), &to.join(e.file_name()));
+            } else {
+                fs::copy(e.path(), to.join(e.file_name())).unwrap();
+            }
+        }
+    }
+
+    fn song(name: &str, saved: u64) -> Snapshot {
+        Snapshot {
+            meta: meta(name, saved),
+            parts: vec![("transport".into(), format!("bpm = {saved}\n"))],
+        }
+    }
+
+    fn id_of(lib: &Library, p: &Loc) -> String {
+        lib.project_meta(p).unwrap().id
+    }
+
+    #[test]
+    fn an_id_reads_back_and_a_bad_one_is_no_id() {
+        let m = Meta {
+            id: "0123456789abcdef0123456789abcdef".into(),
+            folder: "Night drive".into(),
+            ..meta("Night drive", 5)
+        };
+        let text = m.to_text();
+        assert!(text.contains("\nid = 0123456789abcdef0123456789abcdef\nfolder = Night drive\n"));
+        assert_eq!(Meta::parse(&text).unwrap(), m);
+        // Written by hand in capitals: still the id.
+        let up = Meta::parse("mpfree-project 1\nid = 0123456789ABCDEF0123456789ABCDEF\n").unwrap();
+        assert_eq!(up.id, "0123456789abcdef0123456789abcdef");
+        // Not 32 hex digits: no id (the next save gives one), and the
+        // line isn't kept as an unknown one either.
+        for bad in [
+            "xyz",
+            "0123456789abcdef",
+            "0123456789abcdef0123456789abcdeg",
+        ] {
+            let m = Meta::parse(&format!("mpfree-project 1\nid = {bad}\n")).unwrap();
+            assert_eq!((m.id.as_str(), m.extra.len()), ("", 0), "{bad}");
+            assert!(!m.to_text().contains("id ="), "{bad}");
+        }
+        // No id, no folder line.
+        let none = Meta {
+            folder: "x".into(),
+            ..meta("x", 1)
+        };
+        assert!(!none.to_text().contains("folder"));
+        // Ids are new every time.
+        let (a, b) = (new_id(), new_id());
+        assert!(valid_id(&a) && valid_id(&b) && a != b, "{a} {b}");
+    }
+
+    /// A project keeps its id through every save, a rename and an open of
+    /// an earlier save; a save into a new folder (Save As) gets a new one.
+    #[test]
+    fn a_project_keeps_its_id_and_save_as_gets_a_new_one() {
+        let d = temp();
+        let lib = Library::at(&d).unwrap();
+        let top = Loc::top(Place::Projects);
+        let p = top.join("Song").unwrap();
+        let first = lib.save_project(&p, &song("Song", 1), 10).unwrap();
+        assert!(valid_id(&first.id) && first.copy_of.is_none(), "{first:?}");
+        let again = lib.save_project(&p, &song("Song", 2), 10).unwrap();
+        assert_eq!(again, first);
+        // Opened as it was saved first (that save's project.txt is
+        // older), then saved: still the project's id.
+        let v = lib.versions(&p).unwrap();
+        let old = lib.open_version(&p, &v[0].id).unwrap();
+        assert_eq!(lib.save_project(&p, &old, 10).unwrap().id, first.id);
+        // Renamed in the browser: the same song.
+        let moved = lib.rename(&p, "Song (live)").unwrap();
+        assert_eq!(id_of(&lib, &moved), first.id);
+        let after = lib
+            .save_project(&moved, &song("Song (live)", 3), 10)
+            .unwrap();
+        assert_eq!(after, first);
+        assert_eq!(lib.project_meta(&moved).unwrap().folder, "Song (live)");
+        // Save As: the app's snapshot carries no id, and the new folder
+        // has none, so the copy is a song of its own.
+        let copy = top.join("Song B").unwrap();
+        let b = lib.save_project(&copy, &song("Song B", 4), 10).unwrap();
+        assert!(
+            valid_id(&b.id) && b.id != first.id && b.copy_of.is_none(),
+            "{b:?}"
+        );
+        // Saved as a project already there: that project's newest save,
+        // with its id.
+        let onto = lib.save_project(&copy, &song("Song B", 5), 10).unwrap();
+        assert_eq!(onto.id, b.id);
+        // An id a caller brings is used for a folder that has none...
+        let brought = Snapshot {
+            meta: Meta {
+                id: "00000000000000000000000000000001".into(),
+                ..meta("Brought", 6)
+            },
+            ..song("Brought", 6)
+        };
+        let c = top.join("Brought").unwrap();
+        assert_eq!(
+            lib.save_project(&c, &brought, 10).unwrap().id,
+            brought.meta.id
+        );
+        // ...but never one a project in its own folder has.
+        let twin = Snapshot {
+            meta: Meta {
+                id: first.id.clone(),
+                ..meta("Twin", 7)
+            },
+            ..song("Twin", 7)
+        };
+        let t = lib
+            .save_project(&top.join("Twin").unwrap(), &twin, 10)
+            .unwrap();
+        assert_ne!(t.id, first.id);
+        assert_eq!(t.copy_of.as_deref(), Some("Song (live)"));
+    }
+
+    /// A folder copied by hand carries its original's id: the original
+    /// keeps it, and the copy gets its own at its next save, saying so.
+    #[test]
+    fn a_folder_copied_by_hand_gets_its_own_id_at_its_next_save() {
+        let d = temp();
+        let lib = Library::at(&d).unwrap();
+        let top = Loc::top(Place::Projects);
+        let (song_loc, copy_loc) = (top.join("Song").unwrap(), top.join("Song copy").unwrap());
+        let a = lib.save_project(&song_loc, &song("Song", 1), 10).unwrap();
+        copy_by_hand(&lib.path(&song_loc).unwrap(), &lib.path(&copy_loc).unwrap());
+        assert_eq!(id_of(&lib, &copy_loc), a.id);
+        // The original saves as ever.
+        assert_eq!(
+            lib.save_project(&song_loc, &song("Song", 2), 10).unwrap(),
+            a
+        );
+        // The copy is told apart.
+        let c = lib
+            .save_project(&copy_loc, &song("Song copy", 3), 10)
+            .unwrap();
+        assert!(valid_id(&c.id) && c.id != a.id, "{c:?}");
+        assert_eq!(c.copy_of.as_deref(), Some("Song"));
+        assert_eq!(id_of(&lib, &copy_loc), c.id);
+        // Once: after that both keep theirs.
+        assert_eq!(
+            lib.save_project(&copy_loc, &song("Song copy", 4), 10)
+                .unwrap()
+                .copy_of,
+            None
+        );
+        assert_eq!(id_of(&lib, &copy_loc), c.id);
+        assert_eq!(
+            lib.save_project(&song_loc, &song("Song", 5), 10).unwrap(),
+            a
+        );
+    }
+
+    /// Copied by hand and the original renamed by hand too: neither is in
+    /// the folder it was saved in, so the first saved keeps the id and the
+    /// other gets its own when it is saved.
+    #[test]
+    fn with_no_original_in_its_folder_the_first_saved_keeps_the_id() {
+        let d = temp();
+        let lib = Library::at(&d).unwrap();
+        let top = Loc::top(Place::Projects);
+        let song_loc = top.join("Song").unwrap();
+        let a = lib.save_project(&song_loc, &song("Song", 1), 10).unwrap();
+        let dir = lib.path(&song_loc).unwrap();
+        copy_by_hand(&dir, &lib.path(&top.join("Song copy").unwrap()).unwrap());
+        fs::rename(&dir, lib.path(&top.join("Song old").unwrap()).unwrap()).unwrap();
+        let old = lib
+            .save_project(&top.join("Song old").unwrap(), &song("Song old", 2), 10)
+            .unwrap();
+        assert_eq!(old, a);
+        let c = lib
+            .save_project(&top.join("Song copy").unwrap(), &song("Song copy", 3), 10)
+            .unwrap();
+        assert_ne!(c.id, a.id);
+        assert_eq!(c.copy_of.as_deref(), Some("Song old"));
+    }
+
+    /// A project saved by a build from before ids gets one at its first
+    /// save here; autosave's project never has one.
+    #[test]
+    fn older_projects_get_an_id_and_autosave_has_none() {
+        let d = temp();
+        let lib = Library::at(&d).unwrap();
+        let p = Loc::top(Place::Projects).join("Old song").unwrap();
+        lib.save_project(&p, &song("Old song", 1), 10).unwrap();
+        // As an older build writes it: no id line.
+        let dir = lib.path(&p).unwrap();
+        fs::write(dir.join(PROJECT_FILE), meta("Old song", 1).to_text()).unwrap();
+        assert_eq!(id_of(&lib, &p), "");
+        let s = lib.save_project(&p, &song("Old song", 2), 10).unwrap();
+        assert!(valid_id(&s.id) && s.copy_of.is_none(), "{s:?}");
+        assert_eq!(id_of(&lib, &p), s.id);
+        let mut auto = song("Autosave of Old song", 3);
+        auto.meta.mark_autosave();
+        let at = lib.autosave_project().unwrap();
+        assert_eq!(lib.save_project(&at, &auto, 0).unwrap(), Saved::default());
+        let m = lib.project_meta(&at).unwrap();
+        assert_eq!((m.id.as_str(), m.folder.as_str()), ("", ""));
     }
 }

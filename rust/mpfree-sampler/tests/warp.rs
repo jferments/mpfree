@@ -345,14 +345,15 @@ fn process_makes_a_new_source_in_the_layers_place_and_undo_brings_it_back() {
 
 #[test]
 fn the_worker_makes_copies_in_turn_and_cancel_drops_the_rest() {
+    use mpfree_sampler::jobs::{Config, Jobs};
     use mpfree_sampler::warp::{Done, Worker};
     use std::time::Duration;
     let s = sine(1.0, 220.0);
     let p = project(&s, warped_pad(&s, 100.0, WarpMethod::Stretch));
     let mut warps = Warps::new(120.0);
-    let w = Worker::spawn().unwrap();
+    let w = Worker::on(Jobs::new(Config::default()));
     let k = warps.missing(&p)[0];
-    assert!(w.send(k, Warps::spec(&p, &k).unwrap()));
+    assert!(w.send(k, Warps::spec(&p, &k).unwrap(), 0));
     match w.recv_timeout(Duration::from_secs(20)) {
         Some(Done::Copy(key, data, _)) => {
             assert_eq!(key, k);
@@ -367,16 +368,113 @@ fn the_worker_makes_copies_in_turn_and_cancel_drops_the_rest() {
     let long = sine(30.0, 220.0);
     let q = project(&long, warped_pad(&long, 100.0, WarpMethod::Stretch));
     let a = warps.missing(&q)[0];
-    assert!(w.send(a, Warps::spec(&q, &a).unwrap()));
+    assert!(w.send(a, Warps::spec(&q, &a).unwrap(), 0));
     w.cancel();
     warps.set_tempo(90.0);
     let b = warps.missing(&p)[0];
-    assert!(w.send(b, Warps::spec(&p, &b).unwrap()));
+    assert!(w.send(b, Warps::spec(&p, &b).unwrap(), 0));
     assert!(matches!(w.recv_timeout(Duration::from_secs(20)), Some(Done::Cancelled(k)) if k == a));
     assert!(matches!(w.recv_timeout(Duration::from_secs(20)), Some(Done::Copy(k, ..)) if k == b));
     // Dropping it with a long job running returns soon.
-    assert!(w.send(a, Warps::spec(&q, &a).unwrap()));
+    assert!(w.send(a, Warps::spec(&q, &a).unwrap(), 0));
     let t = std::time::Instant::now();
     drop(w);
     assert!(t.elapsed() < Duration::from_secs(10));
+}
+
+#[test]
+fn tempo_turns_keep_one_stretch_a_region_and_only_the_last_is_made() {
+    use mpfree_sampler::jobs::{Config, Jobs};
+    use mpfree_sampler::warp::{Done, Worker};
+    use std::time::Duration;
+    let s = sine(1.0, 220.0);
+    let p = project(&s, warped_pad(&s, 100.0, WarpMethod::Stretch));
+    let jobs = Jobs::new(Config::default());
+    let w = Worker::on(jobs.clone());
+    jobs.hold(true);
+    // Fifty tempo turns while the service is busy elsewhere.
+    let keys: Vec<_> = (0..50)
+        .map(|i| {
+            let warps = Warps::new(80.0 + f64::from(i));
+            let k = warps.missing(&p)[0];
+            assert!(w.send(k, Warps::spec(&p, &k).unwrap(), 1_000));
+            k
+        })
+        .collect();
+    assert_eq!(jobs.waiting(), 1, "one job for the region");
+    assert_eq!(w.asked(), 1);
+    assert_eq!(jobs.reserved(), 0);
+    for k in &keys[..49] {
+        assert!(matches!(w.try_recv(), Some(Done::Cancelled(c)) if c == *k));
+    }
+    jobs.hold(false);
+    match w.recv_timeout(Duration::from_secs(20)) {
+        Some(Done::Copy(k, data, _)) => {
+            assert_eq!(k, keys[49]);
+            assert_eq!(data.len() as u64, k.frames * 2);
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(w.recv_timeout(Duration::from_millis(100)).is_none());
+    assert_eq!(w.asked(), 0);
+    let c = jobs.counts();
+    assert_eq!((c.done, c.replaced), (1, 49));
+}
+
+#[test]
+fn a_stretch_running_when_its_region_is_asked_again_stops_and_never_sends_its_copy() {
+    use mpfree_sampler::jobs::{Config, Jobs};
+    use mpfree_sampler::warp::{Done, Worker};
+    use std::time::{Duration, Instant};
+    let long = sine(30.0, 220.0);
+    let q = project(&long, warped_pad(&long, 100.0, WarpMethod::Stretch));
+    let jobs = Jobs::new(Config::default());
+    let w = Worker::on(jobs.clone());
+    let a = Warps::new(120.0).missing(&q)[0];
+    assert!(w.send(a, Warps::spec(&q, &a).unwrap(), 0));
+    let t = Instant::now();
+    while jobs.waiting() > 0 {
+        assert!(t.elapsed() < Duration::from_secs(20), "never started");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let b = Warps::new(90.0).missing(&q)[0];
+    assert!(w.send(b, Warps::spec(&q, &b).unwrap(), 0));
+    assert!(matches!(w.try_recv(), Some(Done::Cancelled(k)) if k == a));
+    match w.recv_timeout(Duration::from_secs(60)) {
+        Some(Done::Copy(k, ..)) => assert_eq!(k, b),
+        other => panic!("{other:?}"),
+    }
+    assert!(
+        w.recv_timeout(Duration::from_millis(100)).is_none(),
+        "a's copy never comes"
+    );
+}
+
+#[test]
+fn a_stretch_the_memory_floor_cant_spare_is_refused_and_says_why() {
+    use mpfree_sampler::jobs::{Config, Jobs};
+    use mpfree_sampler::warp::{Done, Worker};
+    use std::time::Duration;
+    let s = sine(1.0, 220.0);
+    let p = project(&s, warped_pad(&s, 100.0, WarpMethod::Stretch));
+    let jobs = Jobs::new(Config {
+        free: || Some(1_000),
+        room: |free, need| match free {
+            Some(f) if f >= need => Ok(()),
+            _ => Err("not enough memory: needs more".into()),
+        },
+        ..Config::default()
+    });
+    let w = Worker::on(jobs.clone());
+    let k = Warps::new(120.0).missing(&p)[0];
+    assert!(w.send(k, Warps::spec(&p, &k).unwrap(), 2_000));
+    match w.recv_timeout(Duration::from_secs(20)) {
+        Some(Done::Refused(r, why)) => {
+            assert_eq!(r, k);
+            assert_eq!(why, "not enough memory: needs more");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(w.asked(), 0);
+    assert_eq!(jobs.counts().refused, 1);
 }
