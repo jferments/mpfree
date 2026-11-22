@@ -7,9 +7,9 @@
 //! recorded) that the project keeps with its samples.
 //!
 //! ```text
-//! mpfree-audiotracks 1
+//! mpfree-audiotracks 2
 //! rate=44100
-//! track=0 input=left monitor=auto level=1 pan=0 muted=0 solo=0
+//! track=0 id=9 input=left monitor=auto level=1 pan=0 muted=0 solo=0
 //! region start=0 end=3840 take=3 src=0 gain=1 fade_in=0 fade_out=0
 //! take=3 track=0 group=1 pass=0 bpm=120 anchor=-12.5 frames=44100 channels=1 file=3f0c.wav
 //! ```
@@ -17,6 +17,13 @@
 //! A line is `key=value` words; `file=` comes last and takes the rest of
 //! the line. Unknown keys and lines are skipped, so a newer build's text
 //! still loads. A region line belongs to the track line above it.
+//!
+//! A track line's `id` is the lasting id of its track in the project's
+//! track list (the audio tracks rethink, phase 1: an audio track is a
+//! track like any other); its `track` number only ties the takes to it in
+//! this file. That is `mpfree-audiotracks 2`. An `mpfree-audiotracks 1`
+//! part, from before, still opens: its tracks have no id ([`TrackFile::id`]
+//! 0), and the app gives each one with something on it a track.
 //!
 //! Saving: [`crate::AudioTracks::save_into`] fills a [`Saved::room`] made
 //! off the audio thread with the settings, regions and takes without
@@ -31,12 +38,22 @@ use mpfree_transport::time::Tick;
 use crate::{Input, Monitor, Region, MAX_REGIONS, MAX_TAKES, MAX_TRACKS};
 
 /// The first line of the text.
-pub const FORMAT: &str = "mpfree-audiotracks 1";
+pub const FORMAT: &str = "mpfree-audiotracks 2";
+/// The first line of a part saved before audio tracks were tracks, which
+/// still opens: its tracks have no id.
+pub const FORMAT_1: &str = "mpfree-audiotracks 1";
 
 /// A track as saved.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TrackFile {
+    /// Its place among the engine's tracks: in the text, only what ties
+    /// the takes to it.
     pub index: usize,
+    /// The lasting id of its track in the project's track list, which the
+    /// app fills in: 0 for none, as in an `mpfree-audiotracks 1` part and
+    /// in what [`crate::AudioTracks::save_into`] gives. The text has no
+    /// `id` for 0. Which tracks need one is the app's to check.
+    pub id: u32,
     pub input: Input,
     pub monitor: Monitor,
     pub level: f32,
@@ -94,6 +111,7 @@ impl Saved {
             tracks: (0..MAX_TRACKS)
                 .map(|index| TrackFile {
                     index,
+                    id: 0,
                     input: Input::Left,
                     monitor: Monitor::Auto,
                     level: 1.0,
@@ -149,8 +167,13 @@ pub fn to_text(saved: &Saved) -> String {
     let mut s = format!("{FORMAT}\nrate={}\n", saved.rate);
     for t in &saved.tracks {
         s.push_str(&format!(
-            "track={} input={} monitor={} level={} pan={} muted={} solo={}\n",
+            "track={}{} input={} monitor={} level={} pan={} muted={} solo={}\n",
             t.index,
+            if t.id != 0 {
+                format!(" id={}", t.id)
+            } else {
+                String::new()
+            },
             input_word(t.input),
             monitor_word(t.monitor),
             t.level,
@@ -218,10 +241,11 @@ fn bit(kv: &[(&str, &str)], key: &str) -> bool {
 /// their own track.
 pub fn from_text(text: &str) -> Result<Saved, String> {
     let mut lines = text.lines().enumerate();
-    match lines.next() {
-        Some((_, l)) if l.trim_end() == FORMAT => {}
+    let ids = match lines.next() {
+        Some((_, l)) if l.trim_end() == FORMAT => true,
+        Some((_, l)) if l.trim_end() == FORMAT_1 => false,
         _ => return Err(format!("not an audio tracks part (no \"{FORMAT}\")")),
-    }
+    };
     let mut saved = Saved {
         rate: 0,
         tracks: Vec::new(),
@@ -238,8 +262,16 @@ pub fn from_text(text: &str) -> Result<Saved, String> {
             if index >= MAX_TRACKS || saved.tracks.iter().any(|t| t.index == index) {
                 return Err(format!("line {n}: track {index} is past the last or twice"));
             }
+            let id: u32 = match get(&kv, "id") {
+                Some(_) if ids => num(&kv, "id", n)?,
+                _ => 0,
+            };
+            if id != 0 && saved.tracks.iter().any(|t| t.id == id) {
+                return Err(format!("line {n}: track id {id} twice"));
+            }
             saved.tracks.push(TrackFile {
                 index,
+                id,
                 input: match get(&kv, "input") {
                     Some("right") => Input::Right,
                     Some("stereo") => Input::Stereo,
@@ -496,6 +528,7 @@ mod tests {
             tracks: vec![
                 TrackFile {
                     index: 0,
+                    id: 12,
                     input: Input::Stereo,
                     monitor: Monitor::Off,
                     level: 0.7,
@@ -507,6 +540,7 @@ mod tests {
                 },
                 TrackFile {
                     index: 3,
+                    id: 4,
                     input: Input::Left,
                     monitor: Monitor::Auto,
                     level: 1.0,
@@ -529,8 +563,31 @@ mod tests {
     fn the_text_comes_back_as_it_was() {
         let s = saved();
         let t = to_text(&s);
-        assert!(t.starts_with("mpfree-audiotracks 1\n"));
+        assert!(t.starts_with("mpfree-audiotracks 2\n"));
+        assert!(t.contains("\ntrack=3 id=4 input=left "), "{t}");
         assert_eq!(from_text(&t), Ok(s));
+    }
+
+    /// A part saved before audio tracks were tracks opens with no ids; in
+    /// a version 2 part a track's id is never there twice.
+    #[test]
+    fn a_part_from_before_track_ids_opens_without_them() {
+        let mut s = saved();
+        let t = to_text(&s)
+            .replace("mpfree-audiotracks 2", "mpfree-audiotracks 1")
+            .replace(" id=12", "")
+            .replace(" id=4", "");
+        for t in &mut s.tracks {
+            t.id = 0;
+        }
+        assert_eq!(from_text(&t), Ok(s));
+        let v2 = to_text(&saved());
+        assert_eq!(from_text(&v2.replace(" id=4", "")).unwrap().tracks[1].id, 0);
+        assert!(from_text(&v2.replace(" id=4", " id=x")).is_err());
+        assert!(from_text(&v2.replace(" id=4", " id=12")).is_err());
+        // Version 1 with ids (never written) reads them as nothing.
+        let old = v2.replace("mpfree-audiotracks 2", "mpfree-audiotracks 1");
+        assert!(from_text(&old).unwrap().tracks.iter().all(|t| t.id == 0));
     }
 
     #[test]
@@ -552,7 +609,7 @@ mod tests {
         .unwrap_err();
         assert!(e.contains("line 7"), "{e}");
         assert!(from_text(&t.replace("track=3", "track=0")).is_err());
-        assert!(from_text(&t.replace("track=3 input", "track=8 input")).is_err());
+        assert!(from_text(&t.replace("track=3 id", "track=8 id")).is_err());
         assert!(from_text(&t.replace(" file=d.wav", "")).is_err());
         assert!(from_text(&t.replace("start=1920", "start=1000")).is_err());
         assert!(from_text(&t.replace("take=1 src", "take=5 src")).is_err());

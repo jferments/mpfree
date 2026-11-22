@@ -1071,6 +1071,8 @@ impl AudioSession {
         .into_iter()
         .map(|(track, name, input, level)| crate::song::AudioLane {
             track,
+            // In the track list: song_audio_state puts them there.
+            row: usize::MAX,
             name: name.into(),
             color: crate::view::audio_color(track),
             armed: self.tracks.armed(track),
@@ -1121,7 +1123,22 @@ impl AudioSession {
 pub fn song_audio_state() -> Result<TimeState, String> {
     let mut state = song_state()?;
     let audio = AudioSession::new()?;
-    let (lanes, waves) = audio.lanes();
+    let (mut lanes, waves) = audio.lanes();
+    // The two audio tracks at the end of the track list (the audio tracks
+    // rethink's phase 1), each lane in its track's place.
+    for l in &mut lanes {
+        let mut t = state.tracks[0].clone();
+        t.name = l.name.clone();
+        t.sound = crate::song::input_chip(l.input).to_string();
+        t.audio = true;
+        t.loops = None;
+        t.melodic = false;
+        (t.mute, t.solo, t.silent) = (false, false, false);
+        t.slots = vec![None; t.slots.len()];
+        l.row = state.tracks.len();
+        l.color = crate::view::track_color(l.row);
+        state.tracks.push(t);
+    }
     let picked = lanes[0]
         .blocks
         .iter()
@@ -1163,9 +1180,9 @@ fn song_audio_sample(fonts: Fonts) -> Result<Sample, String> {
     page.update(&mut ui, &state);
     Ok(Sample {
         name: "clips-song-audio",
-        about: "Arrange page, Song view with two audio lanes under the song: Vocal \
-                recorded over bars 1-8 and punched in over 5-8 (that region picked, with \
-                fades), Guitar armed",
+        about: "Arrange page, Song view with two audio tracks after the song's tracks: \
+                Vocal recorded over bars 1-8 and punched in over 5-8 (that region picked, \
+                with fades), Guitar armed",
         ui,
         state,
     })

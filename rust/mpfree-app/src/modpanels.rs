@@ -144,10 +144,10 @@ pub struct NotesSource {
 
 impl NotesSource {
     /// Track `t`'s, from the project and the app's arps; None for a Loop
-    /// track or past the project's tracks.
+    /// track, an audio track or past the project's tracks.
     pub fn of(app: &App, time: &crate::time::TimeHost, t: usize) -> Option<NotesSource> {
         let track = time.project().tracks.get(t)?;
-        if track.loops().is_some() {
+        if !track.plays_notes() {
             return None;
         }
         let s = app.arps.engine_at(t).settings();

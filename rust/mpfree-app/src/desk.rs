@@ -425,6 +425,12 @@ impl Desk<'_> {
                     )));
                     return None;
                 }
+                if time.project().tracks.get(t).is_some_and(|tr| tr.is_audio()) {
+                    fx.push(app::Effect::Tell(format!(
+                        "{name} is an audio track: its arm dot on the Song view arms it"
+                    )));
+                    return None;
+                }
                 let done = app.rec.add_track(t, &name, time.armed(), &now);
                 out.show(gui::ToUi::Rec(app.rec));
                 fx.extend(rec_effects(done, time, looper));
@@ -522,6 +528,15 @@ impl Desk<'_> {
             // Put on Audio track (the one Sample page's step 6): where it
             // went, or why not, said in place of the hint.
             gui::FromUi::SampleToAudio(s) => {
+                // No audio track with room: a new one at the end of the
+                // track list (phase 1a), as + Track adds it.
+                if tracks.bring_track(&time.info()).is_none() && tracks.free_slot().is_some() {
+                    match time.act(mpfree_time_ui::view::TimeAction::AddAudioTrack) {
+                        Ok(line) => out.note(&format!("time: {line}")),
+                        Err(e) => out.note(&format!("time: {e}")),
+                    }
+                    tracks.sync(time.project(), time.silenced(), true);
+                }
                 let (Ok(line) | Err(line)) = tracks.bring(*s, &time.info());
                 out.note(&format!("audio tracks: {line}"));
                 out.show(gui::ToUi::Tell(line));

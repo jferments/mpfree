@@ -873,7 +873,8 @@ pub fn no_pad_mutes(what: &str, kit: Option<usize>, page: usize) -> Option<Strin
 /// Writes what each track plays under its name: its own instrument's
 /// name, or another track's ("Track 3's FM", `sends`), else what it plays
 /// of the list of kits (`kits`): "Kit" (kit 1), "Kit 2" and on, or
-/// "Synth"; a Loop track's input ("Pads", for the pads and the synth).
+/// "Synth"; a Loop track's input ("Pads", for the pads and the synth);
+/// an audio track's input chip ("L", "ST", "Mix": layout spec 4f).
 /// And which tracks play notes, so transpose moves them
 /// (`TrackInfo::melodic`): one with an instrument (not the drum engine),
 /// or one that plays the synth while it plays notes (`synth_notes`).
@@ -885,10 +886,17 @@ fn fill_sounds(
     synth_notes: bool,
 ) {
     use std::borrow::Cow;
+    let audio = &st.audio;
     for (i, t) in st.tracks.iter_mut().enumerate() {
         let played = played(sounds, sends, i);
         let own = played.map(|(h, _)| h);
+        let lane = audio.iter().find(|l| l.row == i).filter(|_| t.audio);
         let name: Cow<str> = match (t.loops, played) {
+            _ if t.audio => match lane {
+                Some(l) if l.mix.is_some() => "Mix".into(),
+                Some(l) => mpfree_time_ui::song::input_chip(l.input).into(),
+                None => "".into(),
+            },
             (Some(input), _) => input.short().into(),
             (None, Some((h, from))) => played_name(h, from).into(),
             (None, None) if kits.plays_synth(i) => "Synth".into(),
@@ -901,6 +909,7 @@ fn fill_sounds(
             t.sound = name.into_owned();
         }
         t.melodic = t.loops.is_none()
+            && !t.audio
             && match own {
                 Some(h) => h.id != DRUMS_ENGINE,
                 None => synth_notes && kits.plays_synth(i),
@@ -13305,6 +13314,18 @@ impl Player {
                 time_view::learn_target(&ev, &self.time)
                     .map(|a| FromUi::LearnValue(LearnValue::Param(a)))
             }
+            // "+ Track" opens its chooser (Note track, Audio track, Loop
+            // track; layout spec 4c), and a touch off it closes it: the
+            // page's own. SHIFT + "+ Track" still adds a Loop track.
+            (time_view::CLIPS, EventKind::Toggle(_)) | (time_view::SONG, EventKind::Tab(_))
+                if self
+                    .time_page
+                    .chooser(&ev, &self.time, self.status.shift) =>
+            {
+                self.time_page.update(&mut self.ui, &self.time);
+                self.refresh_hint();
+                None
+            }
             (time_view::CLIPS, EventKind::Toggle(_))
             | (
                 time_view::RECORD | time_view::CLIP_CARD | time_view::SCENE_CARD,
@@ -13361,6 +13382,25 @@ impl Player {
                 // A swipe across a take lane and a region's drag are free
                 // with SHIFT held, and SHIFT + Undo redoes (layout spec 4c).
                 let fine = self.status.shift;
+                // "+ Track" itself (the chooser's rows are what they say).
+                let plus = match (ev.widget.as_str(), &ev.kind) {
+                    (time_view::CLIPS, EventKind::Toggle(k)) => {
+                        *k == mpfree_seq::SLOTS + mpfree_time_ui::widgets::ADD_TRACK
+                    }
+                    (time_view::SONG, EventKind::Tab(k)) => *k == mpfree_time_ui::song::ADD_TRACK,
+                    _ => false,
+                };
+                // A track picked in the chooser: it closes.
+                if matches!(
+                    a,
+                    Some(
+                        TimeAction::AddTrack
+                            | TimeAction::AddAudioTrack
+                            | TimeAction::AddLoopTrack
+                    )
+                ) {
+                    self.time_page.update(&mut self.ui, &self.time);
+                }
                 a.map(|a| {
                     let a = match a {
                         TimeAction::Audio(AudioAction::Undo) if fine => {
@@ -13378,7 +13418,7 @@ impl Player {
                             TimeAction::Audio(AudioAction::Move { region, to, fine })
                         }
                         // SHIFT + "+ Track": a Loop track.
-                        TimeAction::AddTrack if fine => TimeAction::AddLoopTrack,
+                        TimeAction::AddTrack if fine && plus => TimeAction::AddLoopTrack,
                         // SHIFT held as the finger lifts: a copy, not a move.
                         TimeAction::DropClip { from, to, .. } => TimeAction::DropClip {
                             from,
@@ -24860,6 +24900,7 @@ mod tests {
         st.song_view = true;
         st.audio = vec![AudioLane {
             track: 1,
+            row: usize::MAX,
             name: "Audio 2".into(),
             color: time_view::audio_color(1),
             armed: false,
@@ -26708,6 +26749,7 @@ mod tests {
             rate: 44_100,
             tracks: vec![mpfree_audiotracks::save::TrackFile {
                 index: 1,
+                id: 0,
                 input: mpfree_audiotracks::Input::Right,
                 monitor: mpfree_audiotracks::Monitor::Auto,
                 level: 0.5,

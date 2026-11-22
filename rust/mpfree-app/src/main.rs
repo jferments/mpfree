@@ -6242,7 +6242,7 @@ fn pattern_bars(time: &time::TimeHost) -> Option<u32> {
     let bar = time.info().meter.bar_ticks().max(1) as f64;
     let tracks = &time.project().tracks;
     (0..tracks.len())
-        .filter(|&t| !tracks[t].is_loops())
+        .filter(|&t| tracks[t].plays_notes())
         .filter_map(|t| time.now_playing(t))
         .filter(|p| p.song_len > 0.0)
         .map(|p| (p.song_len / bar - 1e-6).ceil().max(1.0) as u32)
@@ -6414,6 +6414,39 @@ fn time_action(
         TimeAction::Pick(t) if app.rec.pinned => TimeAction::Select(t),
         a => a,
     };
+    // An audio track's mute and solo are the track's (phase 1a), as on
+    // any track.
+    let a = match a {
+        TimeAction::Audio(AudioAction::Mute { track, on })
+        | TimeAction::Audio(AudioAction::Solo { track, on }) => {
+            let solo = matches!(a, TimeAction::Audio(AudioAction::Solo { .. }));
+            let Some(t) = tracks.place(track) else {
+                out.note(&format!("audio tracks: there is no audio track {}", track + 1));
+                return Vec::new();
+            };
+            let now = time.project().tracks.get(t).map(|tr| if solo { tr.solo } else { tr.mute });
+            if now != Some(on) {
+                match time.mute_or_solo(t, false, solo) {
+                    Ok(line) => out.note(&line),
+                    Err(e) => out.note(&format!("audio tracks: {e}")),
+                }
+            }
+            tracks.sync(time.project(), time.silenced(), true);
+            return Vec::new();
+        }
+        a => a,
+    };
+    if matches!(a, TimeAction::AddAudioTrack) && tracks.free_slot().is_none() {
+        out.note(&format!(
+            "audio tracks: {} audio tracks is the most this MPFree plays",
+            mpfree_audiotracks::MAX_TRACKS
+        ));
+        return Vec::new();
+    }
+    // "+ Track"'s Audio track: armed once it is there (layout spec 4c).
+    if matches!(a, TimeAction::AddAudioTrack) {
+        tracks.arm_next();
+    }
     // The audio lanes' touches go to the audio tracks; a pick stays with
     // the time engine, which keeps the selection.
     if let TimeAction::Audio(aa) = a {
@@ -6466,6 +6499,10 @@ fn time_action(
         }
         _ => None,
     };
+    let tracks_change = matches!(
+        a,
+        TimeAction::AddAudioTrack | TimeAction::Undo | TimeAction::Redo
+    );
     let say = match waiting {
         Some(leader) => time::Say::Waiting(leader),
         None if erase => time::Say::Tell,
@@ -6486,6 +6523,11 @@ fn time_action(
         // thread and what it says comes back later ([`time_said`]).
         _ => time.act_then(a, say.clone()),
     };
+    // A track added, or taken away or brought back: the audio tracks'
+    // table follows at once (apart, within a few periods).
+    if tracks_change {
+        tracks.sync(time.project(), time.silenced(), true);
+    }
     // The note editor opened or closed: the Sequencer's Notes view
     // follows (apart, again when the answer comes).
     let mut fx = app.set_notes_open(time.editing());
@@ -8131,7 +8173,10 @@ fn player_session(
                         out.note(&looper.clear_all());
                     }
                     if o.clear_audio {
-                        // Recordings end; the tracks empty once they have.
+                        // Recordings end; the tracks empty once they have,
+                        // each engine track for the project's audio track
+                        // it plays from now on.
+                        tracks.bind(o.audio_slots);
                         tracks.clear();
                     }
                     for line in o.notes.drain(..) {
@@ -11116,6 +11161,10 @@ fn player_session(
             Some(mpfree_export::Only::AudioTrack(t)) => Some(usize::from(t)),
             _ => None,
         });
+        // The audio tracks in the track list (phase 1a): each engine track
+        // follows its project track, and is silent while that is muted or
+        // left out by a solo.
+        tracks.sync(time.project(), time.silenced(), false);
         // Tracks recording from inside the mix (step 9) take the mixer's
         // last block for them, before they run.
         tracks.feed_inside(&mut mix);
@@ -11251,7 +11300,7 @@ fn player_session(
             loops_saving = loops_held.is_none();
         }
         if audio_saving {
-            audio_held = tracks.take_saved();
+            audio_held = tracks.take_saved(time.project());
             audio_saving = audio_held.is_none();
         }
         if collect_now && !loops_saving && !audio_saving {

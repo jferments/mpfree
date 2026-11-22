@@ -649,6 +649,9 @@ impl TimeControl {
         if t.is_loops() {
             return Err(format!("edit: {} plays loops, it has no steps", t.name));
         }
+        if t.is_audio() {
+            return Err(format!("edit: {} is an audio track, it has no steps", t.name));
+        }
         let (id, name) = (t.id, t.name.clone());
         let playing = self
             .launches
@@ -697,7 +700,7 @@ impl TimeControl {
                 self.armed
                     .filter(|&t| !self.armed_id.is_given() && t < project.tracks.len())
             });
-            let armed = found.or_else(|| project.tracks.iter().rposition(|t| !t.is_loops()));
+            let armed = found.or_else(|| project.tracks.iter().rposition(|t| t.plays_notes()));
             self.armed = armed;
             self.armed_id = self.id_of(armed);
         }
@@ -898,7 +901,7 @@ impl TimeControl {
         let Some(t) = self.project.tracks.get_mut(track) else {
             return false;
         };
-        if t.loops().is_some() {
+        if !t.plays_notes() {
             return false;
         }
         if t.note_fx != fx {
@@ -2479,6 +2482,9 @@ impl TimeControl {
                 if t.is_loops() {
                     return Err(format!("paste: {} plays loops, not clips", t.name));
                 }
+                if t.is_audio() {
+                    return Err(format!("paste: {} is an audio track: it takes no clips yet", t.name));
+                }
                 let place = format!("{} / {}", t.name, slot + 1);
                 self.takes
                     .paste_clip(&mut self.project, track, slot, c.clone())
@@ -2625,6 +2631,16 @@ impl TimeControl {
                     None => format!("armed: {name} plays loops"),
                 })
             }
+            TimeAction::Arm(Some(t))
+                if self.project.tracks.get(t).is_some_and(|t| t.is_audio()) =>
+            {
+                // An audio track records with its own arm (its dot on the
+                // Song view): the pads stay on their track.
+                let name = &self.project.tracks[t].name;
+                Err(format!(
+                    "armed: {name} is an audio track: its arm dot on the Song view arms it"
+                ))
+            }
             TimeAction::ArmAlso(tracks) => {
                 if matches!(self.info.state, State::Recording | State::CountIn) {
                     return Err("armed: finish the take first".into());
@@ -2632,7 +2648,7 @@ impl TimeControl {
                 let n = self.project.tracks.len();
                 let mut keep = 0u128;
                 for (t, tr) in self.project.tracks.iter().enumerate() {
-                    if tracks & (1 << t) != 0 && !tr.is_loops() {
+                    if tracks & (1 << t) != 0 && tr.plays_notes() {
                         keep |= 1 << t;
                     }
                 }
@@ -2656,6 +2672,19 @@ impl TimeControl {
                     match self.selected().and_then(|s| self.project.tracks.get(s)) {
                         Some(s) => format!("{name} plays loops: the Sequencer stays on {}", s.name),
                         None => format!("{name} plays loops"),
+                    },
+                )
+            }
+            TimeAction::Select(t) if self.project.tracks.get(t).is_some_and(|t| t.is_audio()) => {
+                // An audio track has no steps either.
+                let name = &self.project.tracks[t].name;
+                Ok(
+                    match self.selected().and_then(|s| self.project.tracks.get(s)) {
+                        Some(s) => format!(
+                            "{name} is an audio track: the Sequencer stays on {}",
+                            s.name
+                        ),
+                        None => format!("{name} is an audio track"),
                     },
                 )
             }
@@ -2807,6 +2836,14 @@ impl TimeControl {
                     self.project.tracks[track].name
                 ))
             }
+            TimeAction::NewClip { track, .. }
+                if self.project.tracks.get(track).is_some_and(|t| t.is_audio()) =>
+            {
+                Err(format!(
+                    "{} is an audio track: it takes no clips yet; record it on the Song view",
+                    self.project.tracks[track].name
+                ))
+            }
             TimeAction::NewClip { track, slot } => {
                 let holds = self.take_holds(track);
                 let bar = info.meter.bar_ticks();
@@ -2870,6 +2907,10 @@ impl TimeControl {
                 ))
             }
             TimeAction::DropClip { from, to, copy } => {
+                let audio = |t: usize| self.project.tracks.get(t).is_some_and(|t| t.is_audio());
+                if audio(from.0) || audio(to.0) {
+                    return Err("clips: an audio track takes no clips yet".to_string());
+                }
                 let loops = |t: usize| self.project.tracks.get(t).map(|t| t.is_loops());
                 if loops(from.0) != loops(to.0) {
                     return Err(
@@ -2968,6 +3009,22 @@ impl TimeControl {
                 self.compile()?;
                 Ok(format!(
                     "{name} added, a Loop track: tap a cell of it to record a loop there (UNDO takes it away)"
+                ))
+            }
+            TimeAction::AddAudioTrack => {
+                let taken = |k: usize| {
+                    let name = format!("Audio {k}");
+                    self.project.tracks.iter().any(|t| t.name == name)
+                };
+                let k = (1..).find(|&k| !taken(k)).unwrap_or(1);
+                let name = format!("Audio {k}");
+                let track = mpfree_seq::Track::new_audio(&name, 0);
+                self.takes
+                    .add_track_as(&mut self.project, track)
+                    .map_err(|_| format!("{MAX_TRACKS} tracks is the most a project holds"))?;
+                self.compile()?;
+                Ok(format!(
+                    "{name} added, an audio track: arm it and REC records it in song mode (UNDO takes it away)"
                 ))
             }
             TimeAction::LoopCell(None) => {

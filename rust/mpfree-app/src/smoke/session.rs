@@ -1644,6 +1644,8 @@ impl Session {
             Some(mpfree_export::Only::AudioTrack(t)) => Some(usize::from(t)),
             _ => None,
         });
+        let silenced = self.time.silenced();
+        self.tracks.sync(self.time.project(), silenced, false);
         self.tracks.feed_inside(&mut self.mix);
         self.tracks.period(
             self.time.block(),
@@ -1782,7 +1784,7 @@ impl Session {
             self.loops_saving = self.loops_held.is_none();
         }
         if self.audio_saving {
-            self.audio_held = self.tracks.take_saved();
+            self.audio_held = self.tracks.take_saved(self.time.project());
             self.audio_saving = self.audio_held.is_none();
         }
         if self.collect_now && !self.loops_saving && !self.audio_saving {
@@ -1923,6 +1925,7 @@ impl Session {
         }
         if o.clear_audio {
             // Recordings end; the tracks empty once they have.
+            self.tracks.bind(o.audio_slots);
             self.tracks.clear();
         }
         for line in o.notes.drain(..) {
