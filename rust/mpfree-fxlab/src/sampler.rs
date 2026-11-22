@@ -73,7 +73,9 @@ const HEADER: &str =
 pub fn report(rate: u32) -> Vec<Row> {
     let mut rows = Vec::new();
     pitched(&mut rows, rate);
+    pitched_y5(&mut rows, rate);
     folds(&mut rows, rate);
+    kept_top(&mut rows, rate);
     seams(&mut rows, rate);
     stops(&mut rows, rate);
     filters(&mut rows, rate);
@@ -332,6 +334,81 @@ fn pitched(rows: &mut Vec<Row>, rate: u32) {
             );
         }
     }
+}
+
+/// Y5 of the DSP quality plan (docs/dev/design/dsp-quality.md): the
+/// small pitch changes and pitch-downs S1 leaves out, and a tone near the
+/// top. A row whose sine would have to be above 21 kHz in the sound is
+/// left out (it can't be in a 44.1 kHz file).
+fn pitched_y5(rows: &mut Vec<Row>, rate: u32) {
+    for out_hz in [3_000.0, 9_000.0, 13_500.0] {
+        let at_pitch = pitched_sine(0, out_hz, rate);
+        for (cents, how) in [
+            (-1200, "an octave down"),
+            (-700, "a fifth down"),
+            (-200, "two semitones down"),
+            (-100, "a semitone down"),
+            (100, "a semitone up"),
+            (200, "two semitones up"),
+        ] {
+            // S1 already has these two at 3 and 9 kHz.
+            if out_hz < 10_000.0 && (cents == -700 || cents == 100) {
+                continue;
+            }
+            if out_hz / (f64::from(cents) / 1200.0).exp2() > 21_000.0 {
+                continue;
+            }
+            let h = pitched_sine(cents, out_hz, rate);
+            let subject = format!("pitch[{how}, {} kHz out]", out_hz / 1000.0);
+            put(
+                rows,
+                "Y5",
+                subject.clone(),
+                "spur_worst_db",
+                h.spur_db,
+                Better::Lower,
+                Some(-50.0),
+                0.5,
+            );
+            put(
+                rows,
+                "Y5",
+                subject.clone(),
+                "spur_hz",
+                h.spur_hz.round(),
+                Better::Info,
+                None,
+                0.0,
+            );
+            put(
+                rows,
+                "Y5",
+                subject,
+                "level_db",
+                h.level_db - at_pitch.level_db,
+                Better::Near(0.0),
+                Some(1.0),
+                0.05,
+            );
+        }
+    }
+}
+
+/// Y6 of the DSP quality plan: a 96 kHz file's 30 kHz tone played an
+/// octave down. Kept as the original (step 3.2) it is heard at 15 kHz;
+/// read from the 44.1 kHz copy it is gone. Shown, not kept, until step
+/// 3.2 says which one the sampler plays.
+fn kept_top(rows: &mut Vec<Row>, rate: u32) {
+    put(
+        rows,
+        "Y6",
+        "kept top[30 kHz in a 96 kHz file, an octave down]".into(),
+        "heard_db",
+        heard_of(30_000.0, 96_000, -1200, rate),
+        Better::Info,
+        None,
+        0.0,
+    );
 }
 
 /// What is heard of a sine at `hz` in a sound at `src_rate`, played

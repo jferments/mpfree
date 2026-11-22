@@ -1613,35 +1613,40 @@ mod tests {
         });
     }
 
-    /// The Kick's speaker on Play and Pad 1's M in the pad mixer are one
-    /// mute: each shows what the other did.
+    /// The Kick's speaker on Play mutes the Kick on the track the steps
+    /// show (step 10: a pad mute is the track's); Pad 1's M in the pad
+    /// mixer mutes kit 1's channel, for every track, and leaves the
+    /// speaker as it is.
     #[test]
-    fn a_speaker_on_play_and_m_in_the_pad_mixer_are_one_mute() {
+    fn a_speaker_on_play_mutes_the_tracks_pad_and_m_in_the_pad_mixer_its_channel() {
         on_big_stack(|| {
             let mut s = Session::new();
             s.play_view("Beats");
             let kick = lane(&s, "Kick").0;
+            let t = s.time.steps().track;
             s.press("steps", "mute", "Kick speaker");
-            assert!(
-                s.mix.play_levels().pad_mutes & (1 << kick) != 0,
-                "the speaker muted pad 1"
+            assert_eq!(
+                s.time.pad_mutes(t),
+                Some((1 << kick, 0)),
+                "the speaker muted the track's Kick"
             );
             assert!(lane(&s, "Kick").2, "drawn muted");
+            assert_eq!(s.mix.pad_mutes(), 0, "no channel muted");
 
             s.press("header", "tab", "Mix");
             s.press("mixer", "view", "Pads").run_for(0.1);
-            assert!(strip(&s, "Pad 1").mute, "the pad mixer shows Pad 1 muted");
+            assert!(!strip(&s, "Pad 1").mute, "Pad 1's channel plays");
             s.press("mixer", "mute", "Pad 1 M").run_for(0.1);
-            assert!(!strip(&s, "Pad 1").mute);
-            assert_eq!(
-                s.mix.play_levels().pad_mutes & (1 << kick),
-                0,
-                "M let it play"
-            );
+            assert!(strip(&s, "Pad 1").mute);
+            assert_eq!(s.mix.pad_mutes(), 1, "M muted the channel");
 
             s.press("header", "tab", "Play");
             assert_eq!(s.view(), View::Play);
-            assert!(!lane(&s, "Kick").2, "the speaker shows it playing");
+            assert!(lane(&s, "Kick").2, "the speaker shows the track's mute");
+            s.press("steps", "mute", "Kick speaker");
+            assert!(!lane(&s, "Kick").2, "the speaker let it play");
+            assert_eq!(s.time.pad_mutes(t), Some((0, 0)));
+            assert_eq!(s.mix.pad_mutes(), 1, "the channel stays muted");
         });
     }
 
@@ -2022,7 +2027,9 @@ mod tests {
     /// Track 1 keeps its kit. PAD BANK A gives the pads the kit again (FM
     /// stays, as bank B points at it) and B gives them FM; REC there
     /// records FM on a free track, and the project's pads part keeps the
-    /// bank's line.
+    /// bank's line. The Synth tab's hint then says who plays FM: "the
+    /// pads, Track 2" while Track 2 is picked (the pads follow it on the
+    /// other banks), "pads bank B, Track 2" once Track 1 is again.
     #[test]
     fn bank_b_only_plays_fm_on_bank_b_and_the_kit_on_the_others() {
         use crate::instruments::free;
@@ -2085,6 +2092,27 @@ mod tests {
                 s.app.pads_part().contains("\nbank B instrument "),
                 "{}",
                 s.app.pads_part()
+            );
+            // Who plays FM (step 8). REC picked Track 2, so the other
+            // banks follow it to FM: the pads, every bank.
+            s.button("STOP").settle();
+            s.run_for(crate::gui::TELL_SECONDS as f64 + 0.5).settle();
+            assert!(
+                s.hint().starts_with("FM: the pads, Track 2"),
+                "{}",
+                s.hint()
+            );
+            // Track 1 picked again: bank B alone of the pads, and Track 2.
+            let pick = mpfree_time_ui::TimeAction::Pick(0);
+            s.route(crate::gui::FromUi::Time(pick));
+            s.run_periods(2).settle();
+            assert_eq!(s.app.track(), 0);
+            assert_eq!(s.mix.instruments.pads_play_at(), Some(free(0)));
+            s.run_for(crate::gui::TELL_SECONDS as f64 + 0.5).settle();
+            assert!(
+                s.hint().starts_with("FM: pads bank B, Track 2"),
+                "{}",
+                s.hint()
             );
         });
     }
@@ -2312,6 +2340,149 @@ mod tests {
             assert!(s.tracks.inside(0).is_none());
             s.run_periods(4);
             assert!(!s.tracks.host.tracks.records_inside(0));
+        });
+    }
+
+    /// Recording to files (the audio tracks rethink, phase 3a), the whole
+    /// path: at start a take a cut-off run left in the work folder goes
+    /// into Recordings, and the log says so; then a take recorded on an
+    /// audio track goes to a file of its own there, named for the track and
+    /// the take's id; a save copies that file whole into the project's
+    /// `samples/`, and the work folder's copy goes; the next save copies it
+    /// from the project.
+    #[test]
+    fn a_take_records_to_its_own_file_and_a_save_copies_it_into_the_project() {
+        use crate::gui::FromUi;
+        use mpfree_audiotracks::files::TakeState;
+        use mpfree_time_ui::view::AudioAction;
+        use mpfree_time_ui::TimeAction;
+        on_big_stack(|| {
+            let dir =
+                std::env::temp_dir().join(format!("mpfree-take-files-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("a scratch folder");
+            let mut s = Session::with_library(&dir);
+            let lib = s.library.clone().unwrap();
+            let work = lib.work_dir(crate::project::AUDIOTRACKS).unwrap();
+            let recordings = lib.root().join(mpfree_library::Place::Recordings.folder());
+            // A finished take a session never saved left behind.
+            let old = format!("Bass_{:032x}.wav", 7);
+            let tone: Vec<f32> = (0..2000).map(|k| (k as f32 * 0.05).sin() * 0.5).collect();
+            std::fs::write(
+                work.join(&old),
+                mpfree_audiotracks::save::wav(&tone, 1, crate::RATE),
+            )
+            .unwrap();
+            let until = |s: &mut Session, what: &str, done: &dyn Fn(&Session) -> bool| {
+                let wall = std::time::Instant::now() + std::time::Duration::from_secs(20);
+                while !done(s) {
+                    assert!(std::time::Instant::now() < wall, "timed out: {what}");
+                    s.run_periods(4);
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+            };
+            // At start, as open_library does: the recovery, then files on.
+            s.screen.recover_audio_files();
+            until(&mut s, "files on", &|s| {
+                s.tracks.host.tracks.records_to_files()
+            });
+            assert!(recordings.join(&old).exists(), "kept in Recordings");
+            assert!(!work.join(&old).exists());
+            assert!(
+                s.said()
+                    .iter()
+                    .any(|l| l.contains("1 take not saved in a project was kept in Recordings")),
+                "{:?}",
+                s.said()
+            );
+            // An audio track, armed as it is added, with a tone on the line
+            // input; its next take's file is made as it arms.
+            s.line_in(Some(440.0));
+            s.press("header", "tab", "Arrange").settle();
+            s.press("clips", "song", "Song").settle();
+            s.press("song", "button", "Play song").settle();
+            s.press("song", "add-track", "+ Track").settle();
+            s.press("song", "add-kind", "Audio track")
+                .run_periods(2)
+                .settle();
+            assert!(s.tracks.host.tracks.armed(0));
+            until(&mut s, "its file made", &|s| {
+                s.tracks.host.armed_file(0) == Some(true)
+            });
+            let (rec, _) = s.tracks.host.tracks.next_recording(0).unwrap();
+            let name = format!("Audio 1_{rec}.wav");
+            assert!(work.join(format!("{name}.recording")).exists());
+            // A second of it.
+            s.time.command(mpfree_transport::Command::Record);
+            s.run_for(1.0);
+            s.time.command(mpfree_transport::Command::Stop);
+            s.run_periods(20).settle();
+            // Disarmed, its next take's files go.
+            s.route(FromUi::Time(TimeAction::Audio(AudioAction::Arm {
+                track: 0,
+                on: false,
+            })));
+            s.run_periods(2).settle();
+            let take = s.tracks.host.tracks.takes().next().expect("a take");
+            assert_eq!(
+                take.rec, rec,
+                "it recorded under the id its file was made for"
+            );
+            until(&mut s, "its file finished", &|s| {
+                s.tracks
+                    .host
+                    .file(take.id)
+                    .is_some_and(|f| f.state == TakeState::Saved)
+            });
+            let recorded = work.join(&name);
+            let bytes = std::fs::read(&recorded).unwrap();
+            let (audio, ch, _) = mpfree_audiotracks::save::from_wav(&bytes).unwrap();
+            assert_eq!(
+                (ch, audio.len()),
+                (take.channels, take.frames * take.channels)
+            );
+            let mut mem = vec![0.0; audio.len()];
+            s.tracks
+                .host
+                .tracks
+                .read_take(take.id, 0, &mut mem)
+                .unwrap();
+            assert!(audio == mem, "the file is the take, frame for frame");
+            assert!(audio.iter().any(|x| x.abs() > 0.1), "the tone is in it");
+            // The save copies the file whole; the work folder's copy goes.
+            s.button_with("SHIFT", "BROWSE");
+            let project = (0..400)
+                .find_map(|_| {
+                    s.run_for(0.05);
+                    s.said()
+                        .into_iter()
+                        .find_map(|l| l.strip_prefix("project: saved ").map(str::to_string))
+                })
+                .expect("saved");
+            let loc = mpfree_library::Loc::top(mpfree_library::Place::Projects)
+                .join(&project)
+                .unwrap();
+            let samples = lib.samples_dir(&loc).unwrap();
+            assert_eq!(std::fs::read(samples.join(&name)).unwrap(), bytes);
+            until(&mut s, "the work copy gone", &|_| !recorded.exists());
+            // The next save copies it from the project, with nothing in the
+            // work folder.
+            s.button_with("SHIFT", "BROWSE");
+            let saves = |s: &Session| {
+                s.said()
+                    .iter()
+                    .filter(|l| l.starts_with("project: saved "))
+                    .count()
+            };
+            until(&mut s, "saved again", &|s| saves(s) == 2);
+            assert_eq!(std::fs::read(samples.join(&name)).unwrap(), bytes);
+            let left: Vec<_> = std::fs::read_dir(&work)
+                .unwrap()
+                .filter_map(Result::ok)
+                .map(|e| e.file_name())
+                .collect();
+            assert!(left.is_empty(), "{left:?}");
+            let _ = std::fs::remove_dir_all(&dir);
         });
     }
 
@@ -4316,12 +4487,13 @@ mod tests {
         });
     }
 
-    /// The kit's pad mutes in Perform (sequencer S4): SHIFT + TRACK MUTE's
-    /// pads wait for the bar line as the tracks' do, and land in the mixer
-    /// there; held TRACK MUTE over them solos a pad of the kit (waiting
-    /// too) and leaves the pads the kit's; STOP lands a change that waits.
+    /// A track's pad mutes in Perform (sequencer S4; step 10): SHIFT +
+    /// TRACK MUTE's pads wait for the bar line as the tracks' do, and the
+    /// selected track takes them there, its own and no channel; held
+    /// TRACK MUTE over them solos a pad (waiting too) and leaves the pads
+    /// mute keys; STOP lands a change that waits.
     #[test]
-    fn in_perform_a_kit_pad_mute_waits_for_the_bar_and_held_it_solos() {
+    fn in_perform_a_tracks_pad_mute_waits_for_the_bar_and_held_it_solos() {
         on_big_stack(|| {
             let mut s = Session::new();
             s.play_view("Beats");
@@ -4333,44 +4505,40 @@ mod tests {
             assert!(s.time.project().perform);
             s.button_with("SHIFT", "TRACK MUTE");
             assert_eq!(s.app.mute_keys(), crate::app::MuteKeys::Pads);
+            let t = s.app.track();
+            let name = s.time.project().tracks[t].name.clone();
             s.pad(0, 100, 0.05);
-            assert!(s.time.pad_waiting(0), "it waits");
-            assert_eq!(s.mix.pad_mutes(), 0);
-            assert!(
-                s.said()
-                    .iter()
-                    .any(|l| l == "pad mute: pad 1 muted on the next bar"),
-                "{:?}",
-                s.said()
-            );
+            assert!(s.time.pad_waiting(t, 0), "it waits");
+            assert_eq!(s.time.pad_mutes(t), Some((0, 0)));
+            let said = format!("pad mute: {name} A1 muted on the next bar");
+            assert!(s.said().contains(&said), "{:?}", s.said());
             s.run_for(0.1);
             let reading = s.screen.time.waiting_reading();
-            assert_eq!(reading.as_deref(), Some("Pad 1 at 2.1"));
+            assert_eq!(reading, Some(format!("{name} A1 at 2.1")));
             s.run_for(2.0);
-            assert_eq!(s.mix.pad_mutes(), 1, "landed on bar 2");
-            assert!(!s.time.pad_waiting(0) && s.time.mute_wait().is_none());
+            assert_eq!(s.time.pad_mutes(t), Some((1, 0)), "landed on bar 2");
+            assert_eq!(s.mix.pad_mutes(), 0, "no channel muted");
+            assert!(!s.time.pad_waiting(t, 0) && s.time.mute_wait().is_none());
+            let landed = format!("pad mute: at 2.1, {name} A1 muted");
             assert!(
-                s.said()
-                    .iter()
-                    .any(|l| l.contains("pad mute: at 2.1, pad 1 muted")),
+                s.said().iter().any(|l| l.contains(&landed)),
                 "{:?}",
                 s.said()
             );
-            // Held TRACK MUTE + pad 3: its solo waits, and the pads stay the
-            // kit's once TRACK MUTE is let go.
+            // Held TRACK MUTE + pad 3: its solo waits, and the pads stay
+            // mute keys once TRACK MUTE is let go.
             s.button_edge("TRACK MUTE", true);
             s.pad(2, 100, 0.05);
             s.button_edge("TRACK MUTE", false);
             assert_eq!(s.app.mute_keys(), crate::app::MuteKeys::Pads);
-            assert!(s.time.pad_waiting(2));
+            assert!(s.time.pad_waiting(t, 2));
             s.run_for(2.0);
-            assert_eq!(s.mix.pad_solos(), 1 << 2, "soloed on bar 3");
-            assert_eq!(s.mix.solo_silent() & 1, 1, "the kick is silent by it");
+            assert_eq!(s.time.pad_mutes(t), Some((1, 1 << 2)), "soloed on bar 3");
             // STOP lands a change that waits.
             s.pad(0, 100, 0.05);
-            assert!(s.time.pad_waiting(0));
+            assert!(s.time.pad_waiting(t, 0));
             s.button("STOP").run_for(0.1);
-            assert_eq!(s.mix.pad_mutes(), 0, "STOP landed it");
+            assert_eq!(s.time.pad_mutes(t), Some((0, 1 << 2)), "STOP landed it");
             assert!(s.time.mute_wait().is_none());
             s.button("TRACK MUTE");
         });

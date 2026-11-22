@@ -402,13 +402,13 @@ pub fn paint(cx: &mut PaintCx, list: Rect, detail: Rect, s: &PluginsScreen) {
     for (v, vr) in &g.views {
         let on = *v == s.view;
         cx.canvas
-            .fill_round_rect(*vr, t.round(10), if on { t.accent } else { t.raised });
+            .fill_round_rect(*vr, t.round(10), if on { t.picked() } else { t.raised });
         cx.text(
             if on { FontId::Bold } else { FontId::Sans },
             t.size_small,
             *vr,
             Align::Center,
-            if on { t.on_accent } else { t.text },
+            if on { t.on_picked() } else { t.text },
             v.label(),
         );
     }
@@ -692,9 +692,9 @@ fn paint_row(cx: &mut PaintCx, rr: Rect, row: &PluginRow, selected: bool) {
 fn button(cx: &mut PaintCx, r: Rect, label: &str, lit: bool, danger: bool) {
     let t = cx.theme.clone();
     cx.canvas
-        .fill_round_rect(r, t.round(10), if lit { t.accent } else { t.raised });
+        .fill_round_rect(r, t.round(10), if lit { t.picked() } else { t.raised });
     let ink = if lit {
-        t.on_accent
+        t.on_picked()
     } else if danger {
         t.bad
     } else {
@@ -713,7 +713,7 @@ fn button(cx: &mut PaintCx, r: Rect, label: &str, lit: bool, danger: bool) {
 fn chip(cx: &mut PaintCx, r: Rect, label: &str, on: bool) {
     let t = cx.theme.clone();
     if on {
-        cx.canvas.fill_round_rect(r, r.h / 2, t.accent);
+        cx.canvas.fill_round_rect(r, r.h / 2, t.picked());
     } else {
         cx.canvas.stroke_round_rect(r, r.h / 2, 1, t.outline);
     }
@@ -722,7 +722,7 @@ fn chip(cx: &mut PaintCx, r: Rect, label: &str, on: bool) {
         t.size_small,
         r,
         Align::Center,
-        if on { t.on_accent } else { t.text_dim },
+        if on { t.on_picked() } else { t.text_dim },
         label,
     );
 }

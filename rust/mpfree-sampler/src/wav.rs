@@ -77,9 +77,27 @@ pub fn encoding(s: &Source) -> Encoding {
     }
 }
 
-/// The file a project keeps `s` in: its id, so the same sound is one file.
+/// The file a project keeps `s` in: its id, so the same sound is one file
+/// (`<32 hex digits>.wav`). A sound an older build saved under its 64-bit
+/// id keeps that file ([`Source::keep_old_file`]), so opening and saving
+/// an older project writes no sound again.
 pub fn file_name(s: &Source) -> String {
-    format!("{}.wav", s.id())
+    match s.file() {
+        Some(f) => f.to_string(),
+        None => format!("{}.wav", s.id()),
+    }
+}
+
+/// Whether `file` is named as builds before the sampler plan's step 8
+/// named a project's sounds: a 64-bit id, 16 lower-case hex digits, and
+/// `.wav`.
+pub fn old_id_name(file: &str) -> bool {
+    file.strip_suffix(".wav").is_some_and(|id| {
+        id.len() == 16
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
 }
 
 /// Writes `s` as a WAV file (see the module docs), in chunks.

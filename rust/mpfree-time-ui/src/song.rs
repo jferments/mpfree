@@ -68,6 +68,7 @@
 //! it through. It sits under the track's lane if it fits, else over it;
 //! touches on it go to it alone.
 
+use crate::report::ReportCard;
 use crate::view::PlacementInfo;
 use crate::widgets::{rec_song_pill, REC_SONG_W};
 use mpfree_audiotracks::host::TakeWave;
@@ -526,6 +527,9 @@ pub struct SongLanes {
     /// The tempo point picked (an index into `tempo`), for the wheel and
     /// Ramp and Delete. The app sets it.
     pub tempo_pick: Option<usize>,
+    /// The last conversion's report card, open over the lanes (the
+    /// Arrange refactor's 4.3): it takes their touches and their targets.
+    pub report: Option<ReportCard>,
 }
 
 /// What a finger holds on the Song view, and where in it (song ticks from
@@ -683,6 +687,7 @@ impl Default for SongLanes {
             tempo: Vec::new(),
             tempo_base: 120.0,
             tempo_pick: None,
+            report: None,
         }
     }
 }
@@ -880,6 +885,9 @@ impl SongLanes {
         self.swipe = old.swipe;
         self.moving = old.moving;
         self.grip = old.grip;
+        if let (Some(card), Some(was)) = (self.report.as_mut(), old.report.as_ref()) {
+            card.keep_scroll(was);
+        }
     }
 
     /// A copy with no waveforms (they can be large).
@@ -917,6 +925,7 @@ impl SongLanes {
             tempo: self.tempo.clone(),
             tempo_base: self.tempo_base,
             tempo_pick: self.tempo_pick,
+            report: self.report.clone(),
         }
     }
 
@@ -2580,9 +2589,15 @@ impl Widget for SongLanes {
         if let Some(rows) = self.chooser_rects(r) {
             paint_chooser(cx, &rows);
         }
+        if let Some(card) = &self.report {
+            card.paint(cx, r);
+        }
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
+        if let Some(card) = &self.report {
+            return card.targets(r);
+        }
         // The chooser open: its rows, and anywhere else closes it.
         if let Some(rows) = self.chooser_rects(r) {
             let mut out: Vec<Target> = rows
@@ -2744,7 +2759,10 @@ impl Widget for SongLanes {
         out
     }
 
-    fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+    fn touch(&mut self, f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        if let Some(card) = self.report.as_mut() {
+            return card.touch(f, phase, x, y, r);
+        }
         // The "+ Track" chooser open: a row adds that kind of track, and a
         // touch anywhere else only closes it.
         if self.adding {

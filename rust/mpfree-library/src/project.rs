@@ -505,6 +505,13 @@ fn same_bytes(a: &Path, b: &Path) -> io::Result<bool> {
 }
 
 impl Library {
+    /// A project's `samples/` folder, where its saves keep its sounds (an
+    /// engine that keeps files of its own learns where they went once a
+    /// save has finished: the audio tracks' takes).
+    pub fn samples_dir(&self, project: &Loc) -> io::Result<PathBuf> {
+        Ok(self.project_dir(project)?.join(SAMPLES))
+    }
+
     pub(crate) fn project_dir(&self, project: &Loc) -> io::Result<PathBuf> {
         if project.place != Place::Projects || project.names().len() != 1 {
             return Err(bad(

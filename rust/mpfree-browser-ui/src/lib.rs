@@ -73,7 +73,7 @@ pub const BROWSER_PAGE: &str = "browser";
 pub const BROWSER_LAYOUT: &str = "col(header:60, browser:*, hint:26)";
 /// The hint line while the Plugins place shows.
 pub const PLUGINS_HINT: &str = "Dial: move  ·  push: next picture  ·  +: install  ·  -: back  ·  SHIFT + dial: places  ·  BROWSE closes";
-/// The hint line while the Sets place lists the sets (layout spec 4n).
+/// The hint line while the Sets place lists the sets (layout spec 4o).
 pub const SETS_HINT: &str = "Dial: move  ·  push: edit the set  ·  Play set: plays it in Perform  ·  Check set: the quick check on every song  ·  BROWSE closes";
 /// The hint line while a set is being edited.
 pub const SET_EDIT_HINT: &str = "Dial: move  ·  - / +: move the picked song  ·  push or tap a value: change it  ·  Add songs: from Projects  ·  BROWSE closes";

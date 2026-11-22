@@ -93,10 +93,10 @@ A job started for one project can finish after another has opened. Where each ki
 
 - **The screen's reads** (the kits, the loops, the audio tracks): each open replaces the channel the last open's thread answers on (`SamplePage::opening`, `Player::loops_load`, `Player::audio_load`), so an answer for an older open has nowhere to go; New project's factory kits drop a kit read still under way (`SamplePage::reset_kits`).
 - **What the audio loop holds for an open:** the looper's loops waiting to go in (`LoopHost::clear_all` drops them) and the audio tracks' part (`TrackHost::clear` drops it).
-- **The audio tracks' background jobs** (new): `AudioHost::clear` empties the tracks for an open or New, and adds one to the host's generation. A fit's buffer and its stretched take carry the generation they were asked for in, and one for emptied tracks is dropped as it comes and counted (`AudioHost::stale`). Before, a fit under way when a project opened came back after the switch and was swapped into the new project's take with the same id (take ids come back after a clear). Streaming, the whole take asked of the disk for such a fit is dropped as it comes too (`stale_reads`: the disk answers every read, in order; a generation on the disk's own messages is the streaming layer's, agreed with its thread). A sound being brought in goes with the rest.
+- **The audio tracks' background jobs** (new): `AudioHost::clear` empties the tracks for an open or New, and adds one to the host's generation. A fit's buffer and its stretched take carry the generation they were asked for in, and one for emptied tracks is dropped as it comes and counted (`AudioHost::stale`). Before, a fit under way when a project opened came back after the switch and was swapped into the new project's take with the same id (take ids come back after a clear). (The old streaming's disk thread, which needed the same for a fit's reads, was removed in the audio tracks' phase 3a; a generation on the disk's own messages is `mpfree-stream`'s, agreed with its thread.) A sound being brought in goes with the rest.
 - **The looper's prints** check the loop's version before they are used (`Printer`, `Looper::loop_status`). Loops become clips of audio tracks in phase 4, which moves them onto the same generation.
 
-**Tests:** `tests/host.rs` `a_fit_from_before_a_project_opened_never_reaches_the_new_takes` (the clear at every stage of a fit; without the generation the old take lands as the new project's take 1) and `tests/host_stream.rs` `a_fit_read_from_before_a_project_opened_is_dropped`.
+**Tests:** `tests/host.rs` `a_fit_from_before_a_project_opened_never_reaches_the_new_takes` (the clear at every stage of a fit; without the generation the old take lands as the new project's take 1).
 
 ## Saves committed in order (0.3: already so, checked)
 
@@ -110,11 +110,12 @@ The library already commits a project save in order (`Library::save_project_with
 
 | Fault | Test |
 |---|---|
-| A result arriving after a project switch; a stretch that finishes after it was cancelled | `tests/host.rs` `a_fit_from_before_a_project_opened_never_reaches_the_new_takes`, `tests/host_stream.rs` `a_fit_read_from_before_a_project_opened_is_dropped`, and the sequences |
+| A result arriving after a project switch; a stretch that finishes after it was cancelled | `tests/host.rs` `a_fit_from_before_a_project_opened_never_reaches_the_new_takes`, and the sequences |
 | A save stopped between steps | the sequences; `tests/host.rs` `a_cancelled_save_leaves_nothing_behind_and_the_next_save_works`; the library's `a_save_cut_off_at_any_step_opens_whole` |
 | A write error (a full disk) | the library's `a_sound_that_cannot_be_written_leaves_the_last_save_standing` |
-| A missing file | `project::tests::audio_takes_are_named_for_their_audio_and_a_missing_one_is_said`; streaming, `tests/host_stream.rs` |
-| A slow read (the disk stalling past the read-ahead) | `tests/host_stream.rs` `a_stalling_disk_is_heard_as_counted_misses_while_the_loop_goes_on` |
+| A missing file | `project::tests::audio_takes_keep_the_names_the_tracks_gave_and_a_missing_one_is_said`; a take's folder gone as its track arms, `tests/files.rs` `a_track_whose_files_cant_be_made_doesnt_arm_and_says_why` |
+| A slow read (the disk stalling past the read-ahead) | `mpfree-stream`'s own tests (`tests/plan.rs`); the audio tracks play from memory until phase 3b |
+| The app killed mid-take | `tests/files.rs` `a_take_cut_off_is_recovered_at_the_next_start_up_to_its_last_checkpoint` |
 | Memory that can't be reserved | `generated_sequences_with_the_memory_full_lose_nothing_else` |
 | A part this build can't read | phase 0.1's tests, above |
 

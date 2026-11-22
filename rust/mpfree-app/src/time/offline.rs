@@ -58,6 +58,8 @@ pub const MAX_BARS: Tick = 9_999;
 pub struct Played {
     pub placements: Vec<Placement>,
     pub starts: Vec<(Tick, usize)>,
+    /// Where the rows stop playing: `at` and their length.
+    pub end: Tick,
 }
 
 /// Play `steps` from song tick `at` (on a bar line of `bar` ticks): see
@@ -131,7 +133,11 @@ pub fn play_rows(
     }
     host.act(TimeAction::RecSong(false))?;
     let placements = host.project().arrangement.placements.clone();
-    Ok(Played { placements, starts })
+    Ok(Played {
+        placements,
+        starts,
+        end,
+    })
 }
 
 /// A clip as the copy plays it: what decides where its blocks start and

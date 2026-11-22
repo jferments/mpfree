@@ -2,6 +2,7 @@
 
 use mpfree_grain::{Budget, Clip, GrainVoice};
 use mpfree_sampler::engine::{Engine, EngineView, Event, GRAIN_BUDGET, KILL_FRAMES};
+use mpfree_sampler::grain_share::RESERVE;
 use mpfree_sampler::model::*;
 
 const RATE: u32 = 44_100;
@@ -426,14 +427,16 @@ fn stealing_and_the_budget_bound_the_grains() {
         });
     }
     // Each cloud starts with a few grains under way and fills in over a
-    // grain (thinned to fit its voice): within 0.35 s they want more than
-    // the budget holds.
-    for _ in 0..120 {
+    // grain (thinned to fit its voice): together they want far more than
+    // the budget holds. Crowded, they share it evenly (step 9), each
+    // thinning to fit its share, and keep room free for a new hit.
+    let mut most = 0;
+    for _ in 0..360 {
         run(&mut e, 128, 128);
-        assert!(e.live_grains() <= GRAIN_BUDGET);
+        most = most.max(e.live_grains());
+        assert!(e.live_grains() + RESERVE <= GRAIN_BUDGET);
     }
-    assert_eq!(e.live_grains(), GRAIN_BUDGET);
-    assert!(e.stats().skipped_grains > 0);
+    assert!(most > GRAIN_BUDGET * 3 / 4, "{most}");
     e.apply(Event::AllOff);
     run(&mut e, 4410, 128);
     assert_eq!((e.active_voices(), e.live_grains()), (0, 0));

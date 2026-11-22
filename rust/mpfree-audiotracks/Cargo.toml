@@ -16,4 +16,5 @@ path = "src/bin/disktest.rs"
 [dependencies]
 mpfree-transport = { path = "../mpfree-transport" }
 mpfree-stretch = { path = "../mpfree-stretch" }
+mpfree-stream = { path = "../mpfree-stream" }
 libc = "0.2"

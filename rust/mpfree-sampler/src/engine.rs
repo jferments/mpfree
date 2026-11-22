@@ -107,6 +107,7 @@ use crate::dsp::{
     Ahdsr, Comb, Envelope, Filter, FilterKind, Ladder, Rng, Sample, Svf, FORMANT_2, TINY,
 };
 use crate::grain_clip::GrainClip;
+use crate::grain_share::{self, Claim, Rank};
 use crate::hits::{self, HitCell};
 use crate::model::{
     edge_gain, ChannelPick, Fade, GrainMode, GrainParams, Keys, LayerSelect, Levels, LfoShape,
@@ -2015,7 +2016,8 @@ pub struct Stats {
     /// frame (or with the same place's next let-go, if one comes first).
     pub late_let_gos: u64,
     pub peak_voices: usize,
-    /// Grains refused because the grain budget was full.
+    /// Grains not made for the grain budget: it was full, or the cloud had
+    /// its share of a crowded budget ([`crate::grain_share`]).
     pub skipped_grains: u64,
     /// Split: parts of blocks the lane's voices were handed over for, and
     /// the ones it missed its deadline on (those voices are unheard for
@@ -2024,6 +2026,39 @@ pub struct Stats {
     pub lane_late: u64,
     /// Voices given up under load ([`Engine::cull`]).
     pub culls: u64,
+    /// Frames the clouds wanted more grains than the budget holds, so each
+    /// got a share and thinned to fit it ([`crate::grain_share`]).
+    pub crowded_frames: u64,
+    /// Grains ended early to keep room for new hits, each faded out over a
+    /// few milliseconds, never cut ([`crate::grain_share`]).
+    pub faded_grains: u64,
+    /// Times a cloud wanting grains got no share of a crowded budget: it
+    /// makes no new ones and finishes those it has
+    /// ([`crate::grain_share`]).
+    pub held_back_clouds: u64,
+}
+
+/// Which cloud a grain [`Claim`] is ([`Engine::share_grains`]).
+#[derive(Clone, Copy, Debug)]
+enum Cloud {
+    /// A voice slot's grain voice.
+    Slot(usize),
+    /// The master effect's cloud (0) or its repeat's (1).
+    Master(usize),
+}
+
+/// The grain voice of `cloud`, if it is still there.
+fn cloud_mut<'a>(
+    pool: &'a mut Voices,
+    master: &'a mut Option<GrainFx>,
+    cloud: Cloud,
+) -> Option<&'a mut GrainVoice> {
+    match cloud {
+        Cloud::Slot(slot) => pool.grain_mut(slot),
+        Cloud::Master(k) => master
+            .as_mut()
+            .and_then(|fx| fx.clouds_mut().into_iter().nth(k)),
+    }
 }
 
 pub struct Engine {
@@ -2036,6 +2071,11 @@ pub struct Engine {
     master_kit: usize,
     /// The voices, with their grain voices, grain budgets and buffers.
     pool: Voices,
+    /// Every cloud's claim on the grain budget and which cloud it is, for
+    /// sharing it out ([`Engine::share_grains`]): room for every voice
+    /// and the master effect's two clouds, reserved here.
+    claims: Vec<Claim>,
+    clouds: Vec<Cloud>,
     /// Split: the second share of the voices renders here, on another core.
     lane: Option<Lane<Carrier>>,
     /// (frame offset, kit, event).
@@ -2143,6 +2183,8 @@ impl Engine {
                 b_skipped: 0,
                 split: false,
             },
+            claims: Vec::with_capacity(voices.max(1) + 2),
+            clouds: Vec::with_capacity(voices.max(1) + 2),
             lane: None,
             events: Vec::with_capacity(MAX_EVENTS),
             late_due: vec![NOT_DUE; kits * LET_GO_PLACES + 1],
@@ -2353,6 +2395,11 @@ impl Engine {
     /// line ([`EngineView::starts_on_line`]). Never allocates.
     pub fn kit_starts_on_line(&self, kit: usize, pad: usize) -> bool {
         self.views.get(kit).is_some_and(|v| v.starts_on_line(pad))
+    }
+
+    /// The output rate it renders at, Hz.
+    pub fn rate(&self) -> u32 {
+        self.rate as u32
     }
 
     /// Frames rendered so far. Synced grains start on frames of this
@@ -4334,6 +4381,96 @@ impl Engine {
         self.tape_moved = true;
     }
 
+    /// Shares the grain budget out by musical priority before a part of
+    /// `frames` frames ([`crate::grain_share`]): among every granular voice
+    /// here (the lane's share only while it is home; away, it keeps the
+    /// limit it left with) and, with `master`, the master effect's clouds.
+    /// Then, crowded, fades the oldest grains of the lowest-ranked clouds
+    /// over their shares to keep [`grain_share::RESERVE`] grains free for
+    /// new hits. While every cloud fits with room to spare, every share is
+    /// none and the clouds play exactly as before. No allocation.
+    fn share_grains(&mut self, frames: usize, master: bool) {
+        let rate = self.rate as u32;
+        let new_hit = (grain_share::NEW_HIT_SECS * f64::from(rate)) as u64;
+        let Engine {
+            pool,
+            master: fx,
+            claims,
+            clouds,
+            stats,
+            ..
+        } = self;
+        // No grain playing anywhere here: nothing to share, and a cloud
+        // starting now starts unshared (`GrainVoice::start`). So a kit with
+        // no grain pads pays only this.
+        if pool.a.budget.live() == 0 && pool.b.as_ref().is_none_or(|b| b.budget.live() == 0) {
+            return;
+        }
+        claims.clear();
+        clouds.clear();
+        for (slot, (v, g)) in pool.iter().enumerate() {
+            if v.active && v.granular {
+                let played = g.played();
+                let rank = grain_share::rank_of(played, v.held, rate);
+                // A new hit claims what it will have by the end of its
+                // first moments, not all it will ever want.
+                let wants = match rank {
+                    Rank::NewHit => g.wants_within(new_hit.saturating_sub(played)),
+                    _ => g.wants(),
+                };
+                claims.push(Claim::new(rank, played, wants, g.alive()));
+                clouds.push(Cloud::Slot(slot));
+            }
+        }
+        if let Some(fx) = fx.as_mut().filter(|_| master) {
+            for (k, g) in fx.clouds_mut().into_iter().enumerate() {
+                if g.wants() > 0 || g.alive() > 0 {
+                    // It plays everything: it counts as the youngest held
+                    // cloud, protected first and thinned last of them.
+                    claims.push(Claim::new(Rank::Held, 0, g.wants(), g.alive()));
+                    clouds.push(Cloud::Master(k));
+                }
+            }
+        }
+        if claims.is_empty() {
+            return;
+        }
+        let (total, live) = match pool.b.as_ref() {
+            Some(b) => (GRAIN_BUDGET, pool.a.budget.live() + b.budget.live()),
+            None if pool.split => (
+                GRAIN_BUDGET.saturating_sub(pool.b_limit),
+                pool.a.budget.live(),
+            ),
+            None => (GRAIN_BUDGET, pool.a.budget.live()),
+        };
+        let shared = grain_share::share(claims, total);
+        for (c, &cloud) in claims.iter().zip(clouds.iter()) {
+            if let Some(g) = cloud_mut(pool, fx, cloud) {
+                if c.share == 0 && c.wants > 0 && g.share() > 0 {
+                    stats.held_back_clouds += 1;
+                }
+                g.set_share(c.share);
+            }
+        }
+        if !shared.crowded {
+            return;
+        }
+        stats.crowded_frames += frames as u64;
+        // Grains ending within the fade (or this part, if longer) count as
+        // room already, so a grain fading out is not counted twice.
+        let fade = (grain_share::FADE_SECS * f64::from(rate)).max(2.0) as u32;
+        let soon = fade.max(frames as u32);
+        let ending: usize = clouds
+            .iter()
+            .filter_map(|&c| cloud_mut(pool, fx, c).map(|g| g.ending(soon)))
+            .sum();
+        let free = total.saturating_sub(live);
+        let faded = grain_share::make_room(claims, free, ending, |i, n| {
+            cloud_mut(pool, fx, clouds[i]).map_or(0, |g| g.fade_oldest(n, fade))
+        });
+        stats.faded_grains += faded as u64;
+    }
+
     /// The render loop: events on their frames, then every voice into its
     /// pad's pair, then (`master`) the master effect over pad 0's pair,
     /// which is the mixed pair when `out` is [`Mixed`]. Split, each part of
@@ -4387,6 +4524,7 @@ impl Engine {
             let frame = self.frames + at as u64;
             self.follow_tape(b - a);
             self.pool.share_budget();
+            self.share_grains(b - a, master);
             let rate = self.rate;
             let lane_busy = self
                 .pool

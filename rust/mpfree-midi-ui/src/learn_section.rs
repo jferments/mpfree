@@ -1908,7 +1908,7 @@ fn button(cx: &mut PaintCx, r: Rect, text: &str, lit: bool) {
 fn segment(cx: &mut PaintCx, r: Rect, text: &str, on: bool, enabled: bool) {
     let t = cx.theme.clone();
     let (fill, ink) = match (on, enabled) {
-        (true, _) => (t.accent, t.on_accent),
+        (true, _) => (t.picked(), t.on_picked()),
         (false, true) => (t.raised, t.text),
         (false, false) => (t.raised, t.text_faint),
     };

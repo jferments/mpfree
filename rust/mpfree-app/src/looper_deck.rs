@@ -542,7 +542,7 @@ impl LoopDeck {
         let pads = LoopDeck::pads_rect(r);
         let pill = pads.inset_xy(0, 3);
         if self.head.pads {
-            cx.canvas.fill_round_rect(pill, pill.h / 2, t.accent);
+            cx.canvas.fill_round_rect(pill, pill.h / 2, t.picked());
         } else {
             cx.canvas.fill_round_rect(pill, pill.h / 2, t.raised);
         }
@@ -552,7 +552,7 @@ impl LoopDeck {
         s.draw(
             cx.canvas,
             if self.head.pads {
-                t.on_accent
+                t.on_picked()
             } else {
                 t.text_faint
             },
@@ -568,7 +568,7 @@ impl LoopDeck {
             ),
             Align::Left,
             if self.head.pads {
-                t.on_accent
+                t.on_picked()
             } else {
                 t.text_dim
             },
@@ -748,7 +748,7 @@ impl LoopDeck {
             speaker_on(cx, sx, sy, if muted { t.bad } else { t.text }, muted, b);
             // The solo: lit while this loop is soloed.
             let (fill, ink) = if ch.solo {
-                (t.accent, t.on_accent)
+                (t.picked(), t.on_picked())
             } else {
                 (t.raised, t.text_dim)
             };

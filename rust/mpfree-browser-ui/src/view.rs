@@ -1149,10 +1149,10 @@ fn detail_label(s: &Screen, b: Button) -> String {
 
 fn button(cx: &mut PaintCx, r: Rect, label: &str, lit: bool, danger: bool) {
     let t = cx.theme.clone();
-    let fill = if lit { t.accent } else { t.raised };
+    let fill = if lit { t.picked() } else { t.raised };
     cx.canvas.fill_round_rect(r, t.round(10), fill);
     let ink = if lit {
-        t.on_accent
+        t.on_picked()
     } else if danger {
         t.bad
     } else {
@@ -1164,7 +1164,7 @@ fn button(cx: &mut PaintCx, r: Rect, label: &str, lit: bool, danger: bool) {
 fn chip(cx: &mut PaintCx, r: Rect, label: &str, on: bool) {
     let t = cx.theme.clone();
     if on {
-        cx.canvas.fill_round_rect(r, r.h / 2, t.accent);
+        cx.canvas.fill_round_rect(r, r.h / 2, t.picked());
     } else {
         cx.canvas.stroke_round_rect(r, r.h / 2, 1, t.outline);
     }
@@ -1173,7 +1173,7 @@ fn chip(cx: &mut PaintCx, r: Rect, label: &str, on: bool) {
         t.size_small,
         r,
         Align::Center,
-        if on { t.on_accent } else { t.text_dim },
+        if on { t.on_picked() } else { t.text_dim },
         label,
     );
 }

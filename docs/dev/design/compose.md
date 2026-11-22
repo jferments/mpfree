@@ -5,7 +5,7 @@ checked: 2026-11-22 d9a2b851
 
 # The composer and the Musical Context
 
-**Status:** phases 0A (the musical model) and 0B (the check through real playback), 2026-11-22. The code is [`rust/mpfree-context`](../../../rust/mpfree-context) and [`rust/mpfree-compose`](../../../rust/mpfree-compose). Nothing is on screen, nothing runs on the MPC, and nothing else in mpfree uses these crates yet. The owner approved the design on 2026-11-22 with Continue as the first tool.
+**Status:** phases 0A (the musical model) and 0B (the check through real playback), and phase 0C's listener, plan and new chords, 2026-11-22. The code is [`rust/mpfree-context`](../../../rust/mpfree-context) and [`rust/mpfree-compose`](../../../rust/mpfree-compose). Nothing is on screen, nothing runs on the MPC, and nothing else in mpfree uses these crates yet. The owner approved the design on 2026-11-22 with Continue as the first tool.
 
 ## What it is for
 
@@ -24,7 +24,7 @@ There is no trained model: the engine is procedural. It reads what was played (k
 |---|---|---|
 | 0A | The musical model: the Musical Context, phrases of events with roles and sources, decisions kept apart from notes, stable dice, the re-fit table, the timing contract, rule kinds, style components, instrument profiles | Built (this page) |
 | 0B | An integration check, developer only: one simple phrase played in place of a clip through the real play view, kept and undone; clip revisions; the preview states tried against the real play view, player and take undo | Built (this page) |
-| 0C | The full engine: listening, plan, harmony, phrase, playing, groove; three styles; two-sided Try again; the reading budget; listening tests against simpler baselines; MPC timings | Next |
+| 0C | The full engine: listening, plan, harmony, phrase, playing, groove; three styles; two-sided Try again; the reading budget; listening tests against simpler baselines; MPC timings | Listening, the plan and new chords built; the rest next |
 | 1 | Continue, with the preview states and an all-or-nothing Keep | |
 | 2 | Add a part, with one harmony answer for rows and the song | |
 | 3 | Improvise and Answer, with record sources, chord settle and note owners | |
@@ -43,7 +43,10 @@ Both are plain data and functions. Nothing here runs on the audio thread; from p
 - **Chords** (`chord.rs`): 12 qualities on 12 roots. A `ChordTimeline` is spans with their own start and length from tick 0, with no gaps; a span may last a beat or the whole clip (drones), and may say "no clear chord". Each span says whether it was heard, suggested (shown dashed) or set by the musician.
 - **The harmony question** (`harmony.rs`): every part asks "what is the harmony here?" through the `Harmony` trait. A `Resolver` answers from the first source that applies: the chord held (live tools), then in song mode the song section's chords, on the clip grid the row's Harmony line, then suggested chords, else no clear chord. A row's chords run for the row's length (as `mpfree_seq::scene_length` defines it) and a line shorter than the row repeats; `row_tick` places a shorter clip's notes on each pass, so a two-bar bass in an eight-bar row meets four stretches of chords.
 - **Groove** (`groove.rs`): played drums as residual timing. See the timing contract below.
+- **The listener** (`listen.rs`, phase 0C): notes read as a key and a chord timeline, with the second prototype's numbers. Every note is weighted by how long it sounds and where it starts (half as much again on a bar line, a fifth more on a beat) and compared with the six modes in all 12 keys; the home note is picked by the cues a player uses (the last note, the first strong note, the lowest and longest, each bar's first note, a note held at a bar's end), the evidence is capped at 24 weighted notes, and a mode prior favours major and minor. Chords are a semi-Markov search over beats: every span from one beat to the whole of what was read, against 144 chord shapes and a 145th, no chord, scored by the notes that fit, the notes that don't, the chord notes missing and the lowest note on the root, plus how long chords usually last. A beat's rest stays inside its chord; a bar of silence, or notes that fit no chord (`NO_CLEAR_CHORD`), is no clear chord. `chord_of` names the one chord a handful of notes make. The tests hear the prototype's examples as it did: D F A is "Dm" and "Likely D minor, also possible A minor, not sure yet", the riff "C minor, fairly sure", the Dorian tune "D Dorian, fairly sure", and Cm7 F7 | Bbmaj7 Ebmaj7 | Am7b5 D7 | Gm6 exactly. A full reading (16 bars, 2,048 notes) takes about 6.5 ms on one desktop core; MPC timings come with the rest of 0C.
 - **The context** (`context.rs`): the key, chords, groove, the pitch classes played, motifs (their place only, until 0C), and every clip read with its `Revision`, so a stale reading is never used (`is_stale`). `ReadBudget` caps what a reading reads. The context only compares revisions; the composer makes them (see "Previews and Keep" below).
+
+`read` (`read.rs`, phase 0C) reads clips into a Musical Context as they play: notes after quantise and speed, a shorter clip looping over the longest as a row plays them; clips of notes give the key and chords, drum clips the groove (heard with playback's swing, which the template then takes out); every clip goes in with its revision, and a pitched part made of pad hits is left out and said so, since a pad's pitch depends on the kit.
 
 ## The model
 
@@ -52,6 +55,14 @@ A part keeps its **decisions** apart from its **notes** (`event.rs`). A `NoteDec
 `realize` turns decisions into notes under a harmony, a key (or none) and an instrument, with no dice: the same input always makes the same notes. Anchors (chord tones, colour and scale notes) are placed first, each following its motion from the anchor before it; approach notes then take a half step into the next note, and passing, neighbour and ghost notes lean on the notes either side. With no clear chord, chord-tone roles keep to the pitch classes played, so nothing is invented. Lengths follow the instrument.
 
 `decisions_of` reads decisions back out of plain notes: each note's role over the chord it was heard on, and its motion. Realising them under the same harmony gives the same notes for diatonic material, so "Fit to the new chords" works on any clip, including one written by hand.
+
+## The plan and the chords (phase 0C)
+
+`Settings` (`settings.rs`) carries the controls in the design's words: Style, Similarity, Variation, Activity, Range, Keep, Bars, Ending and the seed.
+
+`plan` (`plan.rs`) gives every bar a job, a tension aim, an activity and a similarity aim before any note. Jobs are yours, repeat, loop, vary, sequence, answer, develop, contrast, return and land (home, open, or leading back). A style's plan shapes are of two kinds: its pattern sets the jobs (Minimal loops, Groove calls and answers, Jazz-ish builds sentences), and its tension curve, picked by the seed from the style's own (one climax, small waves, a slow build), sets the rise and fall. Sixteen bars or more get a contrasting phrase and a return. With the second prototype's numbers, the test's 16 Jazz-ish bars contrast in bars 9 and 10 (similarity 0.31), peak in bar 12 (tension 0.975), return in bar 13 (aiming at 0.91) and land home in bar 16 (0.125), as the prototype measured.
+
+`progression` (`progression.rs`) makes the chord timeline over every bar. Your bars keep the chords heard in them; a repeat or a return plays your bar's chords; every other new bar takes chords from the style's palette (diatonic triads or sevenths on its degrees, plus a borrowed V in minor for Jazz-ish), cut into the style's harmonic rhythm (two bars, one bar, half a bar). A landing bar's last beat takes the ending's chord. The chain is sampled by forward filtering and backward sampling from your last chord, weighted by the style's stay and root-motion weights, so it never dead-ends and Try again (the `attempt` in the dice name) gives another good progression; Variation flattens or sharpens the weights. New chords are marked suggested, shown dashed. A loop bar plays your riff over the style's chords rather than copying yours, so Minimal mostly stays on Cm and sometimes moves to Bb or Fm and back. With no clear key, the new bars play your bars' chords again in order, and nothing is invented.
 
 ## Implementation contracts
 
@@ -70,7 +81,7 @@ A design review set four must-haves before the code that needs them, and six mor
 | 9. Live: chord settle, note owners, release | Before phase 3 | Phase 3 |
 | 10. Instrument profiles | Data in phase 0 | Built: `profile.rs` |
 | 11. Styles made of parts | Phase 0 data model | Built: `style.rs` |
-| 12. Reading costs and memory | Phase 0 | `ReadBudget`, revisions and stale checks; the reader is phase 0C's |
+| 12. Reading costs and memory | Phase 0 | `ReadBudget`, revisions and stale checks; the listener reads inside the budget and says when it was cut short (0C) |
 
 ### What a change re-fits (contract 2)
 

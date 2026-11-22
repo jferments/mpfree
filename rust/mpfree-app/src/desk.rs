@@ -291,6 +291,11 @@ impl Desk<'_> {
                 mix.play(p);
                 let _ = tell_throw_said(mix, out);
             }
+            // A lane's speaker: the pad muted on its track (step 10).
+            gui::FromUi::PadMute { track, pad, mute } => {
+                let line = time.pad_mute_now(track, pad, mute).unwrap_or_else(|e| e);
+                out.note(&line);
+            }
             gui::FromUi::Steps(a) => {
                 // ERASE + a lane's name: said in place of the hint.
                 let erase = matches!(a, time::StepAction::ClearPad { .. });
@@ -334,6 +339,7 @@ impl Desk<'_> {
             gui::FromUi::MenuSelect(k) => fx.extend(app.select(k)),
             gui::FromUi::MenuStep(k, d) => fx.extend(app.step_item(k, d)),
             gui::FromUi::GuideButton(k) => fx.extend(app.guide_button(k)),
+            gui::FromUi::HelpButton(k) => fx.extend(app.help_button(k)),
             gui::FromUi::Arp(a) => fx.extend(app.arp_action(a)),
             gui::FromUi::Workspace(a) => fx.extend(app.workspace_action(*a)),
             gui::FromUi::ArpChip => fx.extend(app.toggle_panel()),
@@ -689,6 +695,8 @@ impl Desk<'_> {
             | gui::FromUi::SongEndReset
             | gui::FromUi::OpenLoops(_)
             | gui::FromUi::OpenAudio(_)
+            | gui::FromUi::AudioFiles(_)
+            | gui::FromUi::AudioSavedInto(_)
             | gui::FromUi::TrackInstrument(_)
             // A MIDI file's notes go on the pads the instruments play them on.
             | gui::FromUi::MidiFile(_)
@@ -871,6 +879,7 @@ impl Desk<'_> {
             app::Effect::ClipsWheel { delta, scroll } => {
                 out.show(gui::ToUi::ClipsWheel { delta, scroll })
             }
+            app::Effect::EditTc => out.show(gui::ToUi::EditTc),
             app::Effect::Map(m) => out.show(gui::ToUi::Map(Box::new(m))),
             app::Effect::LevelsWheel(d) => out.show(gui::ToUi::LevelsWheel(d)),
             // ERASE + PAD BANK with STEP SEQ on: said in place of the hint.
