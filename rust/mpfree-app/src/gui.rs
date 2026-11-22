@@ -1566,6 +1566,9 @@ pub enum FromUi {
     MenuSelect(usize),
     MenuStep(usize, i32),
     GuideButton(usize),
+    /// A button under Prefs' help: Keep (0) or Go back (1) while "Keep
+    /// this theme?" asks.
+    HelpButton(usize),
     /// A touch on the Arp panel or the quick band.
     Arp(ArpAction),
     /// A touch in the pattern workspace (its editor has changed already).
@@ -8651,6 +8654,7 @@ impl Player {
                 if let Some(c) = self.ui.get_mut::<Card>("help") {
                     c.heading = m.help_heading;
                     c.lines = m.help.into_iter().map(|l| (l, Tone::Dim)).collect();
+                    c.buttons = m.help_buttons;
                 }
             }
             ToUi::Guide(g) => {
@@ -11365,6 +11369,7 @@ impl Player {
                 | FromUi::Tab(_)
                 | FromUi::MenuSelect(_)
                 | FromUi::GuideButton(_)
+                | FromUi::HelpButton(_)
                 | FromUi::UndoReady(_)
                 | FromUi::UndoHistory(_)
                 | FromUi::Overlay(_)
@@ -13034,6 +13039,7 @@ impl Player {
             ("options", EventKind::Select(i)) => Some(FromUi::MenuSelect(i)),
             ("options", EventKind::Step { index, delta }) => Some(FromUi::MenuStep(index, delta)),
             ("guide", EventKind::Tab(i)) => Some(FromUi::GuideButton(i)),
+            ("help", EventKind::Tab(i)) => Some(FromUi::HelpButton(i)),
             ("header", EventKind::Select(i)) if Some(i) == self.arp_chip => Some(FromUi::ArpChip),
             ("header", EventKind::Select(i)) if Some(i) == self.level_chip => {
                 Some(FromUi::PadLevelOff)

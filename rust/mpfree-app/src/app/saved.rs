@@ -121,8 +121,10 @@ impl App {
         }
         // A built-in theme or one from the themes folder; a theme file given
         // with --theme is for that run only.
-        if self.offers_theme(&s.theme) {
-            out.set_str("theme", &s.theme);
+        // Kept, not on trial: a theme "Keep this theme?" still asks about
+        // is never what the next start opens with.
+        if self.offers_theme(self.kept_theme()) {
+            out.set_str("theme", self.kept_theme());
         }
         out
     }

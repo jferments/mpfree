@@ -353,6 +353,9 @@ The first step of the Play, Pads and Sequencer redesign (approved by Jay 18 Nov 
 - **Prefs always opens on its main rows.** On System info, the Backup and Akai kits rows or the Touch screen rows, MENU (or Back) goes back to them, on the row that opened them.
 - **System info** shows the program's version and commit, the OS, the kernel and the hardware.
 - **Line input** is Off at every start.
+- **Appearance** (the theme; owner's pick "Yes, both" on the theme thread's card, 22 Nov 2026 07:17Z):
+  - **Keep this theme?** Changing Appearance switches the screen at once, and the panel on the right ("About this setting") then asks "Keep Console?" with "Back to Default in 15 s" counting down, and two buttons, **Keep** and **Go back**. Keep, or the data wheel's push on the Appearance row, keeps it. Go back, closing Prefs, or 15 seconds without either, puts the theme from before back. Stepping again starts the 15 seconds again, still going back to the theme from before the first step; stepping back to that one ends the question. While it asks, the panel asks on every row, and the old theme is the one kept for the next start.
+  - **Theme problems.** When Appearance is on a theme file, the panel lists that file's problems under the row's help: lines it couldn't use (each uses the base theme's value), keys it doesn't know, lines it ignored, and colours that are hard to read. It also names the theme files that were left out, and why. Only a theme no one could read (text or dim text under 3:1 on the page, a panel or a button) is left out; a file with a mistake in a line is offered.
 
 ## 6. The buttons everywhere
 

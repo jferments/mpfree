@@ -305,6 +305,7 @@ impl Desk<'_> {
             gui::FromUi::MenuSelect(k) => fx.extend(app.select(k)),
             gui::FromUi::MenuStep(k, d) => fx.extend(app.step_item(k, d)),
             gui::FromUi::GuideButton(k) => fx.extend(app.guide_button(k)),
+            gui::FromUi::HelpButton(k) => fx.extend(app.help_button(k)),
             gui::FromUi::Arp(a) => fx.extend(app.arp_action(a)),
             gui::FromUi::Workspace(a) => fx.extend(app.workspace_action(*a)),
             gui::FromUi::ArpChip => fx.extend(app.toggle_panel()),

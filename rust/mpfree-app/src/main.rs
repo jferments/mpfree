@@ -9352,6 +9352,8 @@ fn player_session(
             }
         }
         fx.extend(app.tick(t));
+        // "Keep this theme?" counting down in Prefs > Appearance.
+        fx.extend(app.theme_tick());
         // As set, not rounded: the song plays at it, and a project saves it
         // as it is.
         if let Some(bpm) = loop_tempo.take() {
