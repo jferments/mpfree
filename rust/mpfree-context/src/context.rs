@@ -10,10 +10,9 @@ use mpfree_transport::time::Tick;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ClipRef(pub u32);
 
-/// A version of a clip's contents. Whoever reads a clip names its
-/// revision (phase 0B decides how: a hash of what the clip plays, like
-/// the play view's stamp, or a counter kept with the clip); the context
-/// only compares them.
+/// A version of a clip's contents: a hash of what the clip plays, made
+/// from the clip when asked (`mpfree_compose::bind::revision`), so no
+/// edit path can forget to move it on. The context only compares them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Revision(pub u64);
 

@@ -851,8 +851,9 @@ impl Default for Settings {
 
 /// The themes Prefs > Appearance offers: the built-in name and its row.
 /// The same names, in the same order, as `mpfree_ui::theme::BUILTIN`.
-pub const THEMES: [(&str, &str); 4] = [
+pub const THEMES: [(&str, &str); 5] = [
     ("default", "Default"),
+    ("light", "Light"),
     ("console", "Console"),
     ("synthwave", "Synthwave"),
     ("spaceship", "Spaceship"),
@@ -1550,6 +1551,10 @@ pub struct App {
     /// `--data`): the file name, which is what `settings.theme` holds, and
     /// the theme's own name for the Appearance row. After [`THEMES`].
     pub theme_files: Vec<(String, String)>,
+    /// Starts where the saved theme couldn't be used (its file gone, or
+    /// left out) and the default theme showed: a fallback, logged by
+    /// [`App::restore`] and counted on the Debug page.
+    pub theme_fallbacks: u64,
     /// Tuning files found in the tunings folder at start (`files/tunings/`
     /// in `--data`), in the synth's order ([`crate::synth::Synth::tuning_files`]):
     /// each one's name and whether its keyboard map sets the root and
@@ -1891,6 +1896,7 @@ impl App {
             menu_editing: false,
             page_editing: false,
             theme_files: Vec::new(),
+            theme_fallbacks: 0,
             tuning_files: Vec::new(),
             sound_cores_now: SoundCores::Shared,
             loop_memory_now: LoopMemory::default(),
@@ -4848,9 +4854,9 @@ impl App {
             Item::Appearance => vec![
                 "The theme: the colours and the panels' style.",
                 "The arrows, - / + or SHIFT + wheel step through",
-                "Default, Console, Synthwave and Spaceship; the",
-                "screen changes at once. The layout and the font",
-                "stay the same. It is kept for the next start.",
+                "Default, Light, Console, Synthwave and Spaceship;",
+                "the screen changes at once. The layout and the",
+                "font stay the same. It is kept for the next start.",
             ],
             Item::TouchSection => vec![
                 "The touch screen's settings: screen pad",
@@ -6437,10 +6443,11 @@ mod tests {
         let fx = app.step_item(at, 1);
         assert!(
             fx.iter()
-                .any(|e| matches!(e, Effect::Settings(s) if s.theme == "console")),
+                .any(|e| matches!(e, Effect::Settings(s) if s.theme == "light")),
             "{fx:?}"
         );
-        assert_eq!(value(&fx), "Console");
+        assert_eq!(value(&fx), "Light");
+        assert_eq!(value(&app.step_item(at, 1)), "Console");
         app.step_item(at, 1);
         assert_eq!(value(&app.step_item(at, 1)), "Spaceship");
         // It stops at the ends.
@@ -6557,14 +6564,14 @@ mod tests {
         let fx = press(&mut app, PUSH);
         assert_eq!((menu(&fx).selected, menu(&fx).editing), (at, true));
         let fx = app.wheel(1);
-        assert_eq!(menu(&fx).rows[at].1, "Console");
+        assert_eq!(menu(&fx).rows[at].1, "Light");
         assert_eq!(menu(&fx).selected, at, "the row stays picked");
         let fx = app.wheel(1);
-        assert_eq!(menu(&fx).rows[at].1, "Synthwave");
+        assert_eq!(menu(&fx).rows[at].1, "Console");
         // Push again: set, and the wheel moves between rows again.
         let fx = press(&mut app, PUSH);
         assert!(!menu(&fx).editing);
-        assert_eq!(app.settings.theme, "synthwave");
+        assert_eq!(app.settings.theme, "console");
         let fx = app.wheel(-1);
         assert_eq!((menu(&fx).selected, menu(&fx).editing), (at - 1, false));
         // A tap on a row, or leaving Prefs, closes an open row.
@@ -6602,7 +6609,7 @@ mod tests {
             Some(Effect::Menu(m)) => m.rows[at].1.clone(),
             _ => panic!("{fx:?}"),
         };
-        for _ in 0..3 {
+        for _ in 0..4 {
             app.step_item(at, 1);
         }
         // Past Spaceship: the theme file, by its own name, then the end.
@@ -6616,14 +6623,19 @@ mod tests {
         next.theme_files = app.theme_files.clone();
         next.restore(&kept, &mpfree_store::Settings::default());
         assert_eq!(next.settings.theme, "sunrise.theme");
-        // Gone from the folder: the default theme, and the log says so.
+        assert_eq!(next.theme_fallbacks, 0);
+        // Gone from the folder (or left out as unreadable): the default
+        // theme, the log says so, and the fallback is counted.
         let mut gone = App::new(44_100, false);
         let notes = gone.restore(&kept, &mpfree_store::Settings::default());
         assert_eq!(gone.settings.theme, "default");
         assert!(
-            notes.iter().any(|n| n.contains("theme = sunrise.theme")),
+            notes.iter().any(|n| n
+                .starts_with("theme: the saved theme sunrise.theme can't be used now")
+                && n.ends_with("so the default theme shows")),
             "{notes:?}"
         );
+        assert_eq!(gone.theme_fallbacks, 1);
     }
 
     #[test]
