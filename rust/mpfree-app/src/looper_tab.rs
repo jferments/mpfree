@@ -3506,12 +3506,6 @@ impl Widget for AskButtons {
         cx.text(FontId::Bold, 14.0, no, Align::Center, t.text, "Not now");
     }
 
-    /// The widgets under it redraw on their own: it is drawn again every
-    /// frame it shows, so it stays on top.
-    fn animating(&self) -> bool {
-        true
-    }
-
     fn targets(&self, r: Rect) -> Vec<Target> {
         let (yes, no) = AskButtons::parts(r);
         vec![

@@ -6085,13 +6085,20 @@ impl Player {
         // Snap anyway and Not now at the hint line's end while a snap
         // asks (the hint line says what).
         let asking = self.looper.smart.asking;
-        if let (Some((snap, _)), Some(b)) = (
-            asking,
-            self.ui
-                .get_mut::<crate::looper_tab::AskButtons>(crate::looper_tab::ASK),
-        ) {
+        // (Reached only when its words change: a reach redraws it.)
+        if let Some((snap, _)) = asking {
             let yes = crate::looping::ask_button(snap);
-            if b.yes != yes {
+            let differs = self
+                .ui
+                .get::<crate::looper_tab::AskButtons>(crate::looper_tab::ASK)
+                .is_some_and(|b| b.yes != yes);
+            if let Some(b) = differs
+                .then(|| {
+                    self.ui
+                        .get_mut::<crate::looper_tab::AskButtons>(crate::looper_tab::ASK)
+                })
+                .flatten()
+            {
                 b.yes = yes.to_string();
             }
         }

@@ -708,10 +708,10 @@ impl Ui {
     /// whatever the layout puts there, or taken away (None): a control that
     /// comes and goes without moving anything (the Looper tab's Snap anyway
     /// and Not now at the hint line's end). It is the page's topmost slot:
-    /// the first to get a touch, and drawn after the others. A widget
-    /// under it that redraws on its own can cover it until it is drawn
-    /// again, so a float says it is [`Widget::animating`] while it shows.
-    /// The page keeps it when it is laid out again.
+    /// the first to get a touch, and drawn after the others: whenever
+    /// anything under it is drawn, it is drawn again whole, so it stays on
+    /// top without redrawing while nothing changes. The page keeps it when
+    /// it is laid out again.
     pub fn set_float(&mut self, page: &str, name: &str, rect: Option<Rect>) -> Result<(), String> {
         let wi = self
             .widgets
@@ -1348,9 +1348,14 @@ impl Ui {
         let last = if self.full { None } else { self.drawn };
         let mut drawn = last;
         let (fonts, widgets, full) = (&mut self.fonts, &mut self.widgets, &mut self.full);
-        for &(wi, r) in &page.slots {
+        // The floats come last: one is drawn again over anything drawn
+        // under it.
+        let floats_from = page.slots.len() - page.floats.len();
+        let mut under: Vec<Rect> = Vec::new();
+        for (si, &(wi, r)) in page.slots.iter().enumerate() {
             let (_, w, dirty) = &mut widgets[wi];
-            let mut whole = *full || refocus.contains(&wi);
+            let covered = si >= floats_from && under.iter().any(|u| !u.intersect(r).is_empty());
+            let mut whole = *full || refocus.contains(&wi) || covered;
             if !(whole || *dirty || w.animating()) {
                 continue;
             }
@@ -1435,6 +1440,9 @@ impl Ui {
                 }
                 if !*full {
                     damage.push(part);
+                }
+                if floats_from < page.slots.len() {
+                    under.push(part);
                 }
             }
         }
@@ -1525,6 +1533,39 @@ mod tests {
         assert!(ui.needs_paint());
         assert!(ui.set_float("p", "nope", None).is_err());
         assert!(ui.set_float("nope", "f", None).is_err());
+    }
+
+    /// A float is drawn again whenever a widget under it is, so it stays
+    /// on top, and not while nothing under it changes (the Looper tab's
+    /// Snap anyway and Not now redrew every frame until 22 Nov).
+    #[test]
+    fn a_float_is_drawn_again_over_what_is_drawn_under_it_and_only_then() {
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 200, 100);
+        ui.add("a", probe());
+        ui.add("b", probe());
+        ui.add("f", probe());
+        ui.add_page("p", "row(a, b)").unwrap();
+        ui.show("p").unwrap();
+        let rb = ui.rect_of("b").unwrap();
+        ui.set_float("p", "f", Some(Rect::new(rb.x + 10, rb.y + 10, 40, 20)))
+            .unwrap();
+        let mut c = SoftCanvas::new(200, 100);
+        ui.paint(&mut c);
+        let painted = |ui: &Ui, n: &str| ui.get::<Probe>(n).unwrap().paints.get();
+        assert_eq!(painted(&ui, "f"), 1);
+        // Nothing changes: nothing is drawn.
+        assert!(!ui.needs_paint());
+        ui.paint(&mut c);
+        assert_eq!(painted(&ui, "f"), 1);
+        // The widget beside it: it stays.
+        ui.get_mut::<Probe>("a");
+        ui.paint(&mut c);
+        assert_eq!((painted(&ui, "a"), painted(&ui, "f")), (2, 1));
+        // The widget under it: it is drawn again, after it, whole.
+        ui.get_mut::<Probe>("b");
+        let damage = ui.paint(&mut c);
+        assert_eq!((painted(&ui, "b"), painted(&ui, "f")), (2, 2));
+        assert_eq!(damage.last(), ui.rect_of("f").as_ref());
     }
 
     /// Perform's guard (sequencer S4): a hold fill is drawn over its
