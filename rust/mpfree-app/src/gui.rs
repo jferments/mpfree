@@ -5412,7 +5412,7 @@ impl Player {
                         what: plan.chip(|t| self.track_name(t)),
                         ..chip
                     },
-                    _ => chip,
+                    _ => self.pinned_apart(chip),
                 }
             }
             Target::Loop => {
@@ -5431,6 +5431,39 @@ impl Player {
                 }
             }
         }
+    }
+
+    /// With REC's arm pinned and another track selected (step sequencer
+    /// refactor C1), the pads play the selected track's sound while REC
+    /// records on the pinned track, which plays its own: the notes' chip
+    /// names the pinned track, not the selected one the pattern shows,
+    /// and when the two play different things, what the take will play
+    /// ("Drums · plays Kit, not FM"), so its sound is no surprise.
+    fn pinned_apart(&self, chip: play_widgets::RecChip) -> play_widgets::RecChip {
+        let (Some(armed), Some(picked)) = (self.time.armed, self.time.track_pick) else {
+            return chip;
+        };
+        if !self.rec.pinned || armed == picked {
+            return chip;
+        }
+        // What a track plays, its instrument's name alone ("FM", not "FM ·
+        // Glass Keys").
+        let sound = |t: usize| {
+            self.time
+                .tracks
+                .get(t)
+                .and_then(|tr| tr.sound.split(" · ").next())
+                .unwrap_or_default()
+                .to_string()
+        };
+        let (takes, heard) = (sound(armed), sound(picked));
+        let name = self.track_name(armed);
+        let what = if takes.is_empty() || heard.is_empty() || takes == heard {
+            name
+        } else {
+            format!("{name} · plays {takes}, not {heard}")
+        };
+        play_widgets::RecChip { what, ..chip }
     }
 
     /// The page showing arms what it shows ([`crate::rec_arm`]): the
@@ -23048,6 +23081,44 @@ mod tests {
             (names[0].as_str(), names[19].as_str()),
             ("Part 1", "Part 20")
         );
+    }
+
+    /// REC's arm pinned on Drums and Bass selected (refactor C1): the REC
+    /// chip names Drums, not the track the pattern shows, and since Bass
+    /// plays kit 2 and Drums kit 1, it says what the take will play.
+    #[test]
+    fn a_pinned_rec_names_its_track_and_what_it_plays_when_another_is_selected() {
+        use crate::rec_arm::Target;
+        let mut p = sample_play(Fonts::embedded(), PlayView::Beats);
+        let mut st = p.time.clone();
+        let one = st.tracks[0].clone();
+        st.tracks = ["Drums", "Bass", "Hats"]
+            .into_iter()
+            .map(|name| mpfree_time_ui::view::TrackInfo {
+                name: name.into(),
+                ..one.clone()
+            })
+            .collect();
+        (st.armed, st.track_pick) = (Some(0), Some(1));
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        let mut kits = crate::sampler::TrackKits::new(2);
+        assert!(kits.set(1, 1));
+        p.apply(ToUi::TrackKits(Box::new(kits)));
+        p.rec.target = Target::Notes;
+        p.rec.pinned = true;
+        let chip = |p: &Player| p.rec_chip().what;
+        assert_eq!(chip(&p), "Drums · plays Kit, not Kit 2");
+        // The same sound: the pinned track's name alone.
+        st.track_pick = Some(2);
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        assert_eq!(chip(&p), "Drums");
+        // Not pinned, or no track picked apart: the chip as before.
+        p.rec.pinned = false;
+        assert_ne!(chip(&p), "Drums");
+        p.rec.pinned = true;
+        st.track_pick = None;
+        p.apply(ToUi::Time(Box::new(st)));
+        assert_ne!(chip(&p), "Drums");
     }
 
     #[test]
