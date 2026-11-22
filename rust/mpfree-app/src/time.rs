@@ -2189,6 +2189,53 @@ mod tests {
         );
     }
 
+    /// In song mode a tap on a clip the song plays goes into the one copy
+    /// every block of it plays, on its own lane and on another track's, in
+    /// place (Arrange 2.3): no compile, nothing allocated or freed on the
+    /// audio half, and the view just what a compile gives.
+    #[test]
+    fn a_step_edit_in_song_mode_goes_into_every_block_in_place() {
+        use mpfree_seq::arrange::Placement;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let tap = |pad, step, velocity| StepAction::Tap {
+            pad,
+            step,
+            velocity,
+        };
+        // A pattern on track 0, stopped, then in the song: two blocks on
+        // its own lane and one on track 1's.
+        h.step_action(tap(0, 0, 100)).unwrap();
+        h.act(TimeAction::StopAll).unwrap();
+        let p = &mut h.control.project;
+        for (track, start) in [(0, 0), (0, 2 * 3840), (1, 3840)] {
+            let mut b = Placement::of(&p.tracks, 0, 0, start, 3840);
+            b.track = track;
+            p.arrangement.place(b).unwrap();
+        }
+        h.act(TimeAction::SongMode(true)).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        assert_eq!(h.steps().clip.map(|c| c.slot), Some(0));
+        let compiles = h.control.costs.compiles;
+        let edits = [tap(0, 4, 100), tap(0, 8, 90), tap(0, 4, 100)];
+        for (i, a) in edits.into_iter().enumerate() {
+            let line = h.control.step_action(a);
+            assert!(line.is_ok(), "{a:?}: {line:?}");
+            let ((), allocs) = crate::sys::alloc_count::calls(|| h.audio.receive());
+            assert_eq!(allocs, 0, "{a:?}: the audio half allocated or freed");
+            assert_eq!(
+                *h.audio.view,
+                h.control.view().unwrap(),
+                "{a:?}: the view in place is what a compile gives"
+            );
+            run(&mut h, &mut pads, BAR / 2 + (i as u64 + 1) * BAR / 4, &[]);
+        }
+        assert_eq!(h.control.costs.compiles, compiles, "nothing compiled");
+        assert_eq!(h.control.costs.steps_in_place, edits.len() as u64);
+        assert_eq!(h.audio.counts().missed, 0);
+    }
+
     /// A step edit the view can't take in place compiles, as before: a new
     /// pattern, the pattern's length, a big erase, and any edit while
     /// recording, when the audio half edits the view itself.
