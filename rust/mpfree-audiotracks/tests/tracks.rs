@@ -151,6 +151,77 @@ fn latency_puts_the_take_where_it_was_played() {
     }
 }
 
+/// Step 9 of the instrument redesign: a track records from inside (the
+/// host's block, such as an instrument's channel), as late as the host
+/// says, in stereo whatever its input, and never plays it through. The
+/// line input on another track goes on as before.
+#[test]
+fn a_track_records_from_inside_where_it_was_played_and_never_plays_it_through() {
+    const LAT: u64 = 700;
+    let inside = |g: u64| {
+        if g >= LAT {
+            (sig(g - LAT), 0.5 * sig(g - LAT))
+        } else {
+            (0.0, 0.0)
+        }
+    };
+    let mut r = Rig::new(10, 128);
+    // The line input is elsewhere: track 1 records it.
+    r.input = Box::new(|g| (-sig(g), -sig(g)));
+    r.cmd(A::SetInside(0, Some(LAT as u32)));
+    r.cmd(A::SetMonitor(0, Monitor::In));
+    r.cmd(A::Arm(0, true));
+    r.cmd(A::Arm(1, true));
+    r.cmd(A::SetMonitor(1, Monitor::Off));
+    r.at(START, T::Record);
+    r.at(START + BAR, T::Stop);
+    // Run as the host does: fill track 0's block from inside each period.
+    let period = r.period;
+    let mut inp = vec![0.0f32; 2 * period];
+    let mut mix = vec![0.0f32; 2 * period];
+    let end = START + BAR + 2 * LAT;
+    while r.frame < end {
+        let n = (period as u64).min(end - r.frame) as usize;
+        let buf = r.a.inside_input(0).unwrap();
+        for j in 0..n {
+            let (l, rr) = inside(r.frame + j as u64);
+            buf[2 * j] = l;
+            buf[2 * j + 1] = rr;
+            let (a, b) = (r.input)(r.frame + j as u64);
+            inp[2 * j] = a;
+            inp[2 * j + 1] = b;
+        }
+        mix[..2 * n].fill(0.0);
+        assert!(r.t.process(n as u32, &mut r.b));
+        let map = *r.t.tempo_map();
+        r.a.process(&r.b, &map, &inp[..2 * n], &mut mix[..2 * n]);
+        // Monitor In, yet nothing of the inside block plays through.
+        assert!(mix[..2 * n].iter().all(|&v| v == 0.0), "frame {}", r.frame);
+        r.frame += n as u64;
+    }
+    r.out.resize(2 * r.frame as usize, 0.0);
+    let take = r.a.take(0).unwrap();
+    assert_eq!(take.channels, 2, "from inside: stereo");
+    assert_eq!(take.frames, (BAR + LAT) as usize + FADE);
+    assert!(r.a.records_inside(0) && !r.a.records_inside(1));
+    // Played back: where it was played, both sides as they came.
+    r.cmd(A::Arm(0, false));
+    r.cmd(A::Arm(1, false));
+    r.cmd(A::Mute(1, true));
+    r.cmd(A::SetInside(0, None));
+    r.input = Box::new(|_| (0.0, 0.0));
+    let p = START + 3 * BAR;
+    r.at(p, T::PlayStart);
+    r.run_to(p + BAR);
+    assert!(!r.a.records_inside(0), "back on the line input");
+    for k in FADE as u64..BAR - 1 {
+        assert_eq!(r.l(p + k), sig(START + k), "frame {k}");
+        assert_eq!(r.r(p + k), 0.5 * sig(START + k), "frame {k}");
+    }
+    // Track 1 took the line input, mono from its left jack.
+    assert_eq!(r.a.take(1).map(|t| t.channels), Some(1));
+}
+
 #[test]
 fn punch_in_and_out_crossfade_over_the_older_take() {
     let mut r = Rig::new(20, 200);

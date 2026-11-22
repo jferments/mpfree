@@ -81,6 +81,7 @@ use mpfree_play::mpfree_param::{OnTrack, RelAddr};
 use mpfree_sampler::autosample::{Finished, Gear, Job, Plan, PlanError};
 use mpfree_sampler::engine::{EngineView, PadField};
 use mpfree_sampler::export;
+use mpfree_sampler::jobs::{Config as JobsConfig, Jobs, Key, Lane, Order};
 use mpfree_sampler::keymap::{self, RootFrom};
 use mpfree_sampler::model::{
     self as model, ChannelPick, ChopSet, Fade, Layer, Levels, LoopMode, ModelError, Pad, PadsPlay,
@@ -206,8 +207,138 @@ struct Seat {
     region: Region,
 }
 
+/// Put on audio track's jobs on the service.
+const TO_AUDIO: &str = "to-audio";
+
+/// Normalize's peaks read off the screen, on the service.
+const PEAK: &str = "peak";
+
+/// Opening a project's kits, on the service's file lane (one at a time).
+const OPEN: &str = "open";
+
+/// Loading a kit file, on the file lane (one at a time).
+const KIT: &str = "kit";
+
+/// The browser's Load, on the file lane (one at a time).
+const LOAD: &str = "load";
+
+/// A job's id from what it is for (a Put on audio track's sound and span,
+/// a Normalize's layer), so the same asked for again while it waits takes
+/// its place.
+fn job_id(what: impl std::hash::Hash) -> u64 {
+    use std::hash::Hasher;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    what.hash(&mut h);
+    h.finish()
+}
+
+/// What Put on audio track holds at once, in bytes, for `samples` samples
+/// of a sound at `from` Hz put on tracks at `to` Hz: the stretch as
+/// floats; when converted, a second copy as the sound to convert, and the
+/// converted floats twice over (made, then kept).
+pub fn to_audio_need(samples: u64, from: u32, to: u32) -> u64 {
+    let bytes = samples.saturating_mul(4);
+    if from == to {
+        bytes
+    } else {
+        let ratio = f64::from(to) / f64::from(from.max(1));
+        bytes
+            .saturating_mul(2)
+            .saturating_add((2.0 * bytes as f64 * ratio) as u64)
+    }
+}
+
+/// The frames Put on audio track copies out, its cuts (from `start`) and
+/// the sound's tempo.
+struct Span {
+    start: u64,
+    end: u64,
+    cuts: Vec<u64>,
+    bpm: f64,
+}
+
+/// What a Put on audio track job sends back.
+enum ToAudio {
+    Made(Box<crate::audiotracks::Sound>),
+    /// The sound's name, and why: refused for memory.
+    Refused(String, String),
+    /// The sound's name, and why it couldn't be made.
+    Failed(String, String),
+}
+
+/// Put on audio track's work, on the job service's sound lane: `span` of
+/// `s` as floats, at `rate` (converted when the sound's isn't, its cuts
+/// moved with it). Nothing when it was told to stop.
+fn copy_for_audio(
+    s: &Source,
+    span: Span,
+    rate: u32,
+    name: String,
+    run: &mpfree_sampler::jobs::Running,
+) -> Option<ToAudio> {
+    let ch = usize::from(s.channels());
+    let Some(frames) = s
+        .data()
+        .f32s(span.start as usize * ch..span.end as usize * ch)
+    else {
+        let why = "no sound between the slices' ends".to_string();
+        return Some(ToAudio::Failed(name, why));
+    };
+    let mut audio = frames.into_owned();
+    let mut cuts = span.cuts;
+    if run.cancelled() {
+        return None;
+    }
+    // The tracks play at the app's rate: a sound at another is converted,
+    // its cuts moved with it.
+    if s.rate() != rate {
+        match Source::new(&name, s.rate(), s.channels(), audio).and_then(|x| x.at_rate(rate)) {
+            Ok((x, r)) => {
+                for c in &mut cuts {
+                    *c = (*c as f64 * r.ratio).round() as u64;
+                }
+                audio = x.data().to_vec();
+            }
+            Err(e) => return Some(ToAudio::Failed(name, e.to_string())),
+        }
+        if run.cancelled() {
+            return None;
+        }
+    }
+    Some(ToAudio::Made(Box::new(crate::audiotracks::Sound {
+        name,
+        channels: ch,
+        audio,
+        cuts,
+        bpm: span.bpm,
+    })))
+}
+
+/// A Map to keys waiting for its sounds' notes ([`SamplePage::map_waits`]).
+struct Mapping {
+    kit: usize,
+    pads: Vec<usize>,
+    /// The page's edits when it was pressed: it lands only if none came
+    /// since.
+    edits: u64,
+}
+
+/// A peak read off the screen, with the Normalize it is for.
+type Peak = (Leveling, f32);
+
+/// Why Normalize reads every frame of a long region
+/// ([`SamplePage::peak_off_screen`]).
+#[derive(Clone, Copy)]
+enum Without {
+    /// Its sound has no loudness summary: a fallback.
+    Summary,
+    /// The summary waits with its waveform for memory.
+    Memory,
+}
+
 /// A Normalize waiting for its sound's loudness summary
-/// ([`SamplePage::normalize_later`]), or done at once.
+/// ([`SamplePage::normalize_later`]) or its peak
+/// ([`SamplePage::peak_off_screen`]), or done at once.
 #[derive(Clone)]
 struct Leveling {
     kit: usize,
@@ -218,6 +349,13 @@ struct Leveling {
     /// The region as it was when Normalize was pressed: a waiting
     /// Normalize lands only while the region is still exactly this.
     region: Region,
+}
+
+impl Leveling {
+    /// The layer it normalizes, as a job's id: one Normalize a layer.
+    fn layer_id(&self) -> u64 {
+        job_id((self.kit, self.pad, self.take, self.layer))
+    }
 }
 
 /// The region (Wave tab) or pad (Play tab) a drag or turn started from,
@@ -746,6 +884,9 @@ pub struct SamplePage {
     /// off the screen thread the first time a pad using the source is
     /// shown ([`crate::views`]).
     sources: crate::views::Views,
+    /// The job service the views (and, step by step, the rest of the
+    /// sampler's heavy work) run on ([`mpfree_sampler::jobs`]).
+    jobs: Jobs,
     kit: usize,
     pad: usize,
     tab: Option<WaveTab>,
@@ -919,10 +1060,21 @@ pub struct SamplePage {
     /// Normalizes waiting for their sound's loudness summary: a long
     /// region's peak is found in it ([`SamplePage::normalize_later`]).
     levelings: Vec<Leveling>,
+    /// A Map to keys waiting for its sounds' notes.
+    mapping: Option<Mapping>,
     /// Normalizes of a long region whose sound has no summary, which read
     /// every frame of it on the screen (a fallback: counted, logged and
     /// shown).
     normalize_fallbacks: u32,
+    /// The job service's workers that couldn't start, as last logged.
+    spawn_failed_told: u64,
+    /// Stretched copies thrown away because their pad changed while they
+    /// were made.
+    stale_copies: u32,
+    /// Put on audio track's sounds, made on the job service.
+    to_audio: (mpsc::Sender<ToAudio>, Receiver<ToAudio>),
+    /// Normalize's peaks read off the screen, with what they are for.
+    peaks: (mpsc::Sender<Peak>, Receiver<Peak>),
     /// The take recording as the wave draws it (one-page step 2f, part 3),
     /// and the time to its next redraw.
     drawn: Option<mpfree_sampler_ui::live_take::LiveTake>,
@@ -1032,18 +1184,47 @@ pub struct KitPads {
     pub tags: Vec<Option<&'static str>>,
 }
 
+/// The config of the sampler's job service ([`mpfree_sampler::jobs`]): its
+/// workers off the sound's cores, the sound lane's at idle priority once
+/// the app turns idle jobs on (so the screen goes first, as the stretch
+/// and Process threads did) and the file lane's at the normal one, and
+/// every job checked against the memory floor. `main` gives it to the
+/// process's service at the start.
+pub fn jobs_config() -> JobsConfig {
+    JobsConfig {
+        sound_workers: 1,
+        file_workers: 1,
+        on_start: |lane| match lane {
+            mpfree_sampler::jobs::Lane::Sound => mpfree_lanes::os::idle_job(),
+            mpfree_sampler::jobs::Lane::File => {
+                let _ = crate::cores::background();
+            }
+        },
+        free: crate::memory::free_bytes,
+        room: crate::memory::room_in,
+    }
+}
+
 impl SamplePage {
     /// Adds the page for a pad without a sound to `ui` (the Wave tab's page
     /// is added with the first sound shown).
     pub fn add(ui: &mut Ui) -> Result<SamplePage, String> {
         ui.add(EMPTY, Card::new("Sample"));
         ui.add_page(EMPTY_PAGE, EMPTY_LAYOUT)?;
+        // The sampler's one job service (plan phase 2 step 7), configured
+        // at the program's start ([`jobs_config`]). A test's page has one
+        // of its own, so one test holding it holds no other.
+        #[cfg(not(test))]
+        let jobs = Jobs::shared();
+        #[cfg(test)]
+        let jobs = Jobs::new(jobs_config());
         let mut p = SamplePage {
             projects: Vec::new(),
             names: Vec::new(),
             factory: None,
             rate: 44_100,
-            sources: crate::views::Views::new(),
+            sources: crate::views::Views::new(jobs.clone()),
+            jobs,
             kit: 0,
             pad: 0,
             tab: None,
@@ -1115,7 +1296,12 @@ impl SamplePage {
             heard: Playheads::default(),
             seat_fallbacks: 0,
             levelings: Vec::new(),
+            mapping: None,
             normalize_fallbacks: 0,
+            spawn_failed_told: 0,
+            stale_copies: 0,
+            to_audio: mpsc::channel(),
+            peaks: mpsc::channel(),
             drawn: None,
             drawn_in: 0.0,
             recall: None,
@@ -2117,6 +2303,24 @@ impl SamplePage {
         let Some(project) = self.projects.get(kit) else {
             return;
         };
+        // A pad that isn't a keygroup yet takes its note from its sound,
+        // whose pitch is worked out with its view on the job service: until
+        // then Map to keys waits (plan phase 2 step 7d), never working it
+        // out on the screen.
+        let waiting: Vec<Source> = pads
+            .iter()
+            .filter_map(|&pad| project.pad(pad))
+            .filter(|p| p.keys.is_none())
+            .filter_map(|p| p.layers.first())
+            .filter_map(|l| project.source(l.region.source))
+            .filter(|s| self.sources.ready(s.id()).is_none())
+            .cloned()
+            .collect();
+        if !waiting.is_empty() {
+            self.map_waits(kit, pads, &waiting);
+            return;
+        }
+        self.mapping = None;
         let mut roots = Vec::new();
         let mut from: Vec<(RootFrom, usize)> = Vec::new();
         let mut left = Vec::new();
@@ -2125,11 +2329,9 @@ impl SamplePage {
                 continue;
             };
             let source = project.source(p.layers[0].region.source);
-            let heard = source.and_then(|s| {
-                // The note heard is needed now: worked out here if the
-                // worker hasn't yet.
-                self.sources.full(s).root_note
-            });
+            let heard = source
+                .and_then(|s| self.sources.ready(s.id()))
+                .and_then(|v| v.root_note);
             let name = match source {
                 Some(s) if keymap::note_in_name(&s.name).is_some() => s.name.as_str(),
                 _ => p.name.as_str(),
@@ -2191,6 +2393,83 @@ impl SamplePage {
         self.told.push(told);
         let kit = self.kit_text_of(kit);
         self.lines.push(format!("sample: {kit}: {what}"));
+    }
+
+    /// Map to keys waits for the notes of `waiting` (sounds of `pads` of
+    /// kit `kit` whose views aren't worked out yet): they go first on the
+    /// job service, and [`Self::map_later`] maps once they are in. A sound
+    /// whose view waits for memory can't give its note: then it says so
+    /// and maps nothing.
+    fn map_waits(&mut self, kit: usize, pads: &[usize], waiting: &[Source]) {
+        let name = self.kit_text_of(kit);
+        if let Some(s) = waiting.iter().find(|s| self.sources.is_refused(s.id())) {
+            self.mapping = None;
+            let why = format!(
+                "not mapped to keys: {}'s waveform waits for memory, so its note isn't known yet",
+                s.name
+            );
+            self.told.push(format!(
+                "Not mapped to keys: {}'s waveform waits for memory",
+                s.name
+            ));
+            self.lines.push(format!("sample: {name}: {why}"));
+            return;
+        }
+        for s in waiting {
+            self.sources.get(s);
+        }
+        let n = waiting.len();
+        let what = format!(
+            "map to keys waits for {n} sound{} to be worked out",
+            if n == 1 { "" } else { "s" }
+        );
+        if self.mapping.is_none() {
+            self.lines.push(format!("sample: {name}: {what}"));
+        }
+        let mut told = what;
+        if let Some(c) = told.get_mut(0..1) {
+            c.make_ascii_uppercase();
+        }
+        self.told.push(told);
+        self.mapping = Some(Mapping {
+            kit,
+            pads: pads.to_vec(),
+            edits: self.edits,
+        });
+    }
+
+    /// A Map to keys waiting for its sounds' notes: mapped once they are
+    /// in, while the kit is still shown and unchanged; else dropped, and
+    /// said.
+    fn map_later(&mut self, ui: &mut Ui) {
+        let Some(m) = self.mapping.as_ref() else {
+            return;
+        };
+        if m.kit != self.kit || m.edits != self.edits {
+            let name = self.kit_text_of(m.kit);
+            self.mapping = None;
+            self.lines.push(format!(
+                "sample: {name}: not mapped to keys: the kit changed while its sounds were worked out"
+            ));
+            return;
+        }
+        let Some(project) = self.projects.get(m.kit) else {
+            self.mapping = None;
+            return;
+        };
+        let ready = m
+            .pads
+            .iter()
+            .filter_map(|&pad| project.pad(pad))
+            .filter(|p| p.keys.is_none())
+            .filter_map(|p| p.layers.first())
+            .filter_map(|l| project.source(l.region.source))
+            .all(|s| self.sources.ready(s.id()).is_some() || self.sources.is_refused(s.id()));
+        if ready {
+            let pads = m.pads.clone();
+            self.map_to_keys(&pads);
+            self.refresh(ui);
+        }
     }
 
     fn kit_text(&self) -> String {
@@ -2779,7 +3058,7 @@ impl SamplePage {
                 });
             }
             ChopAction::ToPads { .. } => self.put_slices(ui, &a, None, out),
-            ChopAction::ToAudio { .. } => self.send_to_audio(None, &a, out),
+            ChopAction::ToAudio { .. } => self.send_to_audio(None, &a),
             ChopAction::Export { pad, layer, cuts } => self.export(*pad, *layer, cuts),
         }
     }
@@ -2790,8 +3069,13 @@ impl SamplePage {
     /// for the sound loop to put on an audio track
     /// ([`crate::audiotracks::TrackHost::bring`], which says where it
     /// went). The sound as recorded: the pad's settings stay on the pad,
-    /// and the pads and the page stay as they are.
-    fn send_to_audio(&mut self, take: Option<usize>, a: &ChopAction, out: &mut Vec<FromUi>) {
+    /// and the pads and the page stay as they are. The copy, and the change
+    /// of rate when the sound's isn't the tracks', are made on the job
+    /// service's sound lane (plan phase 2 step 7e), never on the screen:
+    /// the sound comes on a later [`Self::take_to_audio`]. A sound never
+    /// changes once made, so what comes is right whatever was edited
+    /// meanwhile.
+    fn send_to_audio(&mut self, take: Option<usize>, a: &ChopAction) {
         let ChopAction::ToAudio {
             pad,
             layer,
@@ -2814,67 +3098,29 @@ impl SamplePage {
         let Some(s) = p
             .and_then(|p| p.layers.get(*layer))
             .and_then(|l| project.source(l.region.source))
+            .cloned()
         else {
             self.lines
                 .push("sample: not put on an audio track: the sound is missing".into());
             return;
         };
-        let ch = usize::from(s.channels());
+        let ch = u64::from(s.channels());
         let end = end.min(s.frames());
-        let span = (start < end && (1..=2).contains(&ch))
-            .then(|| s.data().f32s(start as usize * ch..end as usize * ch))
-            .flatten();
-        let Some(span) = span else {
+        if start >= end || !(1..=2).contains(&ch) {
             self.lines.push(
                 "sample: not put on an audio track: no sound between the slices' ends".into(),
             );
             return;
-        };
-        // What it holds at once (sampler plan, phase 1 step 5): the
-        // stretch as floats; when converted, a second copy as the sound to
-        // convert, and the converted floats twice over (made, then kept).
-        let bytes = (span.len() * 4) as u64;
-        let need = if s.rate() == self.rate {
-            bytes
-        } else {
-            let ratio = f64::from(self.rate) / f64::from(s.rate());
-            2 * bytes + (2.0 * bytes as f64 * ratio) as u64
-        };
-        if let Err(why) = crate::memory::room_in((self.mem_free)(), need) {
-            self.told.push(format!("Not put on an audio track: {why}"));
-            self.lines
-                .push(format!("sample: not put on an audio track: {why}"));
-            return;
         }
-        let mut audio = span.into_owned();
-        let mut cuts: Vec<u64> = bounds[1..bounds.len() - 1]
+        let cuts: Vec<u64> = bounds[1..bounds.len() - 1]
             .iter()
             .filter(|&&c| start < c && c < end)
             .map(|&c| c - start)
             .collect();
-        // The tracks play at the app's rate: a sound at another is
-        // converted, its cuts moved with it.
-        if s.rate() != self.rate {
-            match Source::new(name, s.rate(), s.channels(), audio)
-                .and_then(|x| x.at_rate(self.rate))
-            {
-                Ok((x, r)) => {
-                    for c in &mut cuts {
-                        *c = (*c as f64 * r.ratio).round() as u64;
-                    }
-                    audio = x.data().to_vec();
-                }
-                Err(e) => {
-                    self.lines
-                        .push(format!("sample: not put on an audio track: {e}"));
-                    return;
-                }
-            }
-        }
         // Its tempo, for the Song view's Fit to tempo.
         let bpm = self
             .sources
-            .get(s)
+            .get(&s)
             .tempo
             .filter(|b| b.is_finite() && *b > 0.0)
             .unwrap_or(0.0);
@@ -2882,13 +3128,53 @@ impl SamplePage {
             "" => "The sound".to_string(),
             n => n.to_string(),
         };
-        out.push(FromUi::SampleToAudio(Box::new(crate::audiotracks::Sound {
-            name,
-            channels: ch,
-            audio,
-            cuts,
-            bpm,
-        })));
+        let rate = self.rate;
+        let need = to_audio_need((end - start) * ch, s.rate(), rate);
+        let key = Key::new(TO_AUDIO, job_id((s.id().0, start, end)));
+        let (tx, why) = (self.to_audio.0.clone(), self.to_audio.0.clone());
+        let (made, refused) = (name.clone(), name.clone());
+        self.jobs.submit(
+            mpfree_sampler::jobs::Job::new(Lane::Sound, key, move |run| {
+                let span = Span {
+                    start,
+                    end,
+                    cuts,
+                    bpm,
+                };
+                if let Some(t) = copy_for_audio(&s, span, rate, made, run) {
+                    let _ = tx.send(t);
+                }
+            })
+            .order(Order::First)
+            .needs(need, move |w| {
+                let _ = why.send(ToAudio::Refused(refused, w));
+            }),
+        );
+        self.told
+            .push(format!("Copying {name} out for an audio track"));
+        let kit = self.kit_text();
+        self.lines.push(format!(
+            "sample: {kit}: copying {name} out for an audio track"
+        ));
+    }
+
+    /// Put on audio track's sounds made since the last call
+    /// ([`Self::send_to_audio`]), for the sound loop. One refused for
+    /// memory, or that couldn't be made, says why on the hint line and in
+    /// the log, and nothing is sent.
+    pub fn take_to_audio(&mut self) -> Vec<FromUi> {
+        let mut out = Vec::new();
+        while let Ok(t) = self.to_audio.1.try_recv() {
+            match t {
+                ToAudio::Made(s) => out.push(FromUi::SampleToAudio(s)),
+                ToAudio::Refused(name, why) | ToAudio::Failed(name, why) => {
+                    self.told.push(format!("Not put on an audio track: {why}"));
+                    self.lines
+                        .push(format!("sample: {name} not put on an audio track: {why}"));
+                }
+            }
+        }
+        out
     }
 
     /// Put on's main button: the slices on the pads (on one pad, on keys
@@ -4347,7 +4633,9 @@ impl SamplePage {
     /// read frame by frame where it is; a longer one is searched in its
     /// sound's loudness summary ([`Region::peak_from`], the same peak),
     /// and waits for the summary when it isn't worked out yet
-    /// ([`Self::normalize_later`]).
+    /// ([`Self::normalize_later`]), or is read frame by frame on the job
+    /// service when there is none to wait for ([`Self::peak_off_screen`],
+    /// phase 2 step 7f).
     fn normalize(&mut self, ui: &mut Ui, pad: usize, layer: usize) {
         self.lift();
         let kit = self.kit;
@@ -4424,15 +4712,30 @@ impl SamplePage {
         else {
             return;
         };
-        let (peak, read_all) = if l.region.frames() <= model::SCAN_FRAMES {
-            (l.region.peak(source), false)
+        let peak = if l.region.frames() <= model::SCAN_FRAMES {
+            l.region.peak(source)
         } else {
             match self.sources.summary(l.region.source) {
                 Summary::Ready(p) => match l.region.peak_from(source, p.pyramid()) {
-                    Some(peak) => (peak, false),
-                    None => (l.region.peak(source), true),
+                    Some(peak) => peak,
+                    None => {
+                        let source = source.clone();
+                        self.peak_off_screen(l, source, Without::Summary);
+                        return;
+                    }
                 },
-                Summary::None => (l.region.peak(source), true),
+                Summary::None => {
+                    let source = source.clone();
+                    self.peak_off_screen(l, source, Without::Summary);
+                    return;
+                }
+                // Its waveform waits for memory, and with it its summary:
+                // reading every frame needs none.
+                Summary::Pending if self.sources.is_refused(l.region.source) => {
+                    let source = source.clone();
+                    self.peak_off_screen(l, source, Without::Memory);
+                    return;
+                }
                 Summary::Pending => {
                     let (what, told) = self.leveling_text(&l);
                     self.told
@@ -4440,10 +4743,10 @@ impl SamplePage {
                     self.lines.push(format!(
                         "sample: {what} normalizes once its sound's loudness summary is worked out"
                     ));
-                    // A second press on the same layer replaces the first.
-                    self.levelings.retain(|w| {
-                        (w.kit, w.pad, w.take, w.layer) != (l.kit, l.pad, l.take, l.layer)
-                    });
+                    // A second press on the same layer replaces the first,
+                    // waiting or read off the screen.
+                    self.levelings.retain(|w| w.layer_id() != l.layer_id());
+                    self.jobs.cancel(Key::new(PEAK, l.layer_id()));
                     if self.levelings.len() >= MAX_SEATS {
                         self.levelings.remove(0);
                     }
@@ -4452,16 +4755,75 @@ impl SamplePage {
                 }
             }
         };
-        if read_all {
-            self.normalize_fallbacks += 1;
-            let (what, _) = self.leveling_text(&l);
-            let line = format!(
-                "sample: fallback: {what}'s peak read from every frame on the screen: its sound has no loudness summary ({} so far)",
-                self.normalize_fallbacks
-            );
-            self.lines.push(line);
-        }
+        self.jobs.cancel(Key::new(PEAK, l.layer_id()));
         self.set_level(ui, &l, peak);
+    }
+
+    /// Normalize `l` from every frame of its region (plan phase 2 step 7f),
+    /// read on the job service's sound lane, never on the screen: for a
+    /// long region whose sound has no loudness summary (a fallback:
+    /// counted, logged and shown), or whose summary waits with its
+    /// waveform for memory (reading the frames needs none). It lands on a
+    /// later tick ([`Self::peaks_in`]) while the region is still as it was.
+    fn peak_off_screen(&mut self, l: Leveling, source: Source, without: Without) {
+        let (what, told) = self.leveling_text(&l);
+        match without {
+            Without::Summary => {
+                self.normalize_fallbacks += 1;
+                self.lines.push(format!(
+                    "sample: fallback: {what}'s peak read from every frame off the screen: its sound has no loudness summary ({} so far)",
+                    self.normalize_fallbacks
+                ));
+            }
+            Without::Memory => self.lines.push(format!(
+                "sample: {what}'s waveform waits for memory, so its peak is read from every frame instead, off the screen"
+            )),
+        }
+        self.told
+            .push(format!("{told} will normalize when its peak is found"));
+        self.levelings.retain(|w| w.layer_id() != l.layer_id());
+        let key = Key::new(PEAK, l.layer_id());
+        let tx = self.peaks.0.clone();
+        self.jobs.submit(
+            mpfree_sampler::jobs::Job::new(Lane::Sound, key, move |run| {
+                let peak = l.region.peak(&source);
+                if !run.cancelled() {
+                    let _ = tx.send((l, peak));
+                }
+            })
+            .order(Order::First),
+        );
+    }
+
+    /// Peaks read off the screen ([`Self::peak_off_screen`]) since the
+    /// last tick: each Normalize lands while its region is still exactly
+    /// as it was pressed on, as an undo step of its own; one changed since
+    /// is let go, and says so.
+    fn peaks_in(&mut self, ui: &mut Ui) {
+        while let Ok((l, peak)) = self.peaks.1.try_recv() {
+            if self.leveling_holds(&l) {
+                self.set_level(ui, &l, peak);
+            } else {
+                let (what, _) = self.leveling_text(&l);
+                self.lines.push(format!(
+                    "sample: {what} not normalized: it changed before its peak was found"
+                ));
+            }
+        }
+    }
+
+    /// Whether `l`'s region is still exactly as it was when Normalize was
+    /// pressed.
+    fn leveling_holds(&self, l: &Leveling) -> bool {
+        self.projects.get(l.kit).and_then(|p| {
+            match l.take {
+                Some(t) => p.take(t),
+                None => p.pad(l.pad),
+            }?
+            .layers
+            .get(l.layer)
+            .map(|x| x.region == l.region)
+        }) == Some(true)
     }
 
     /// Normalize `l` to `peak`: its gain set, one undo step, and said.
@@ -4522,16 +4884,11 @@ impl SamplePage {
         let mut i = 0;
         while i < self.levelings.len() {
             let l = self.levelings[i].clone();
-            let same = self.projects.get(l.kit).and_then(|p| {
-                match l.take {
-                    Some(t) => p.take(t),
-                    None => p.pad(l.pad),
-                }?
-                .layers
-                .get(l.layer)
-                .map(|x| x.region == l.region)
-            }) == Some(true);
-            let pending = matches!(self.sources.summary(l.region.source), Summary::Pending);
+            let same = self.leveling_holds(&l);
+            // A summary waiting with its waveform for memory isn't waited
+            // for: the peak is read from every frame instead ([`Self::level`]).
+            let pending = matches!(self.sources.summary(l.region.source), Summary::Pending)
+                && !self.sources.is_refused(l.region.source);
             if same && pending {
                 i += 1;
                 continue;
@@ -4548,14 +4905,25 @@ impl SamplePage {
         }
     }
 
-    /// Times Normalize read every frame of a long region on the screen
-    /// for want of its sound's summary.
+    /// What the sampler's job service has done: for Dev > Debug.
+    pub fn jobs_counts(&self) -> mpfree_sampler::jobs::Counts {
+        self.jobs.counts()
+    }
+
+    /// Stretched copies thrown away because their pad changed while they
+    /// were made.
+    pub fn stale_copies(&self) -> u32 {
+        self.stale_copies
+    }
+
+    /// Times Normalize read every frame of a long region (off the screen
+    /// since plan phase 2 step 7f) for want of its sound's summary.
     pub fn normalize_fallbacks(&self) -> u32 {
         self.normalize_fallbacks
     }
 
     /// Process: a new sound of layer `layer` of pad `pad`'s region, made on
-    /// a thread of its own: stretched from its warp tempo to the project's
+    /// the job service: stretched from its warp tempo to the project's
     /// when it stretches (its pins made part of the audio), or repitched
     /// to it when it repitches (stretched, then moved by the semitones the
     /// tape would), and moved `semitones` more. When it is done it takes
@@ -4608,51 +4976,54 @@ impl SamplePage {
             }
         };
         let (tx, rx) = mpsc::channel();
+        let refused = tx.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let done = Arc::new(AtomicU32::new(0));
         let (stopped, made) = (stop.clone(), done.clone());
-        let run = std::thread::Builder::new()
-            .name("mpfree-process".into())
-            .spawn(move || {
-                // After the sound and the screen, as the warp copies are.
-                mpfree_lanes::os::idle_job();
-                let t = Instant::now();
-                let r = (|| {
-                    let mut job = spec.start().map_err(|e| e.to_string())?;
-                    loop {
-                        if stopped.load(Ordering::Relaxed) {
-                            return Err("stopped".to_string());
+        // On the job service's sound lane, after what waits there; its
+        // memory checked again as it starts, with the jobs running then.
+        self.jobs.submit(
+            mpfree_sampler::jobs::Job::new(
+                mpfree_sampler::jobs::Lane::Sound,
+                mpfree_sampler::jobs::Key::new("process", kit as u64),
+                move |run| {
+                    let t = Instant::now();
+                    let r = (|| {
+                        let mut job = spec.start().map_err(|e| e.to_string())?;
+                        loop {
+                            if stopped.load(Ordering::Relaxed) || run.cancelled() {
+                                return Err("stopped".to_string());
+                            }
+                            let p = job.run(PROCESS_STEP);
+                            made.store(p.done.to_bits(), Ordering::Relaxed);
+                            if p.finished {
+                                break;
+                            }
                         }
-                        let p = job.run(PROCESS_STEP);
-                        made.store(p.done.to_bits(), Ordering::Relaxed);
-                        if p.finished {
-                            break;
-                        }
-                    }
-                    job.into_output()
-                        .ok_or_else(|| "nothing came out".to_string())
-                })();
-                let _ = tx.send(r.map(|audio| (audio, t.elapsed())));
-            });
-        match run {
-            Ok(_) => {
-                self.lines
-                    .push(format!("sample: processing pad {at}: {text}"));
-                self.processing = Some(Processing {
-                    kit,
-                    what,
-                    at,
-                    text,
-                    rx,
-                    stop,
-                    done,
-                    shown: 0.0,
-                });
-                if let (Some(tab), Some(st)) = (self.tab.as_mut(), self.state.as_ref()) {
-                    tab.set_processing(ui, st, Some(0.0));
-                }
-            }
-            Err(e) => say_not(self, e.to_string()),
+                        job.into_output()
+                            .ok_or_else(|| "nothing came out".to_string())
+                    })();
+                    let _ = tx.send(r.map(|audio| (audio, t.elapsed())));
+                },
+            )
+            .needs(need, move |why| {
+                let _ = refused.send(Err(why));
+            }),
+        );
+        self.lines
+            .push(format!("sample: processing pad {at}: {text}"));
+        self.processing = Some(Processing {
+            kit,
+            what,
+            at,
+            text,
+            rx,
+            stop,
+            done,
+            shown: 0.0,
+        });
+        if let (Some(tab), Some(st)) = (self.tab.as_mut(), self.state.as_ref()) {
+            tab.set_processing(ui, st, Some(0.0));
         }
         self.refresh(ui);
     }
@@ -4678,7 +5049,7 @@ impl SamplePage {
                 }
                 return;
             }
-            Err(TryRecvError::Disconnected) => Err("its thread stopped".to_string()),
+            Err(TryRecvError::Disconnected) => Err("it stopped before it finished".to_string()),
         };
         let Some(p) = self.processing.take() else {
             return;
@@ -5676,28 +6047,31 @@ impl SamplePage {
 
     /// Opens the sampler's part of a project (`text`, as
     /// [`SamplePage::save_part`] made it). The sounds are read (`read` gives
-    /// a file's bytes from the project's `samples/`) and decoded on a
-    /// thread of their own; the kits change on a later
-    /// [`SamplePage::tick`], each kit in its place, and the log says what
-    /// couldn't be used. A take or auto-sample under way is dropped then,
-    /// as when the kits are loaded.
+    /// a file's bytes from the project's `samples/`) and decoded on the job
+    /// service's file lane (plan phase 2 step 7g), so a long analysis never
+    /// holds it up; the kits change on a later [`SamplePage::tick`], each
+    /// kit in its place, and the log says what couldn't be used. A take or
+    /// auto-sample under way is dropped then, as when the kits are loaded.
+    /// An open while another is under way replaces it.
     #[allow(dead_code)] // the app's browser wiring calls it
     pub fn open_part(&mut self, text: String, read: ReadSample) {
         self.left_out.clear();
         let (tx, rx) = mpsc::channel();
         let (free, rate) = (self.mem_free, self.rate);
-        let spawned = std::thread::Builder::new()
-            .name("sample-open".into())
-            .spawn(move || {
-                let _ = crate::cores::background(); // off the sound's cores and priority
-                                                    // Each sound only while it leaves the memory MPFree keeps
-                                                    // free; one that doesn't is left out and the log says why.
+        self.jobs.submit(mpfree_sampler::jobs::Job::new(
+            Lane::File,
+            Key::new(OPEN, 0),
+            move |_| {
+                // Each sound only while it leaves the memory MPFree keeps
+                // free; one that doesn't is left out and the log says why.
+                // The promise holds while it is decoded.
                 let r = save::from_text(&text, &mut |f| {
                     let bytes = read(f)?;
-                    crate::memory::room_in(
-                        free(),
-                        crate::memory::decode_need(f, bytes.len() as u64),
-                    )?;
+                    let need = crate::memory::decode_peak(
+                        &mut std::io::Cursor::new(&bytes),
+                        bytes.len() as u64,
+                    );
+                    let _promise = crate::memory::reserve(free, need)?;
                     wav::read(f, &bytes)
                 });
                 let _ = tx.send(r.map(|o| {
@@ -5705,17 +6079,11 @@ impl SamplePage {
                     let views = cached_views(&o, &read);
                     (o, said, views)
                 }));
-            });
-        match spawned {
-            Ok(_) => {
-                self.opening = Some(rx);
-                self.lines
-                    .push("sample: opening the project's kits".to_string());
-            }
-            Err(e) => self
-                .lines
-                .push(format!("sample: the project's kits weren't opened ({e})")),
-        }
+            },
+        ));
+        self.opening = Some(rx);
+        self.lines
+            .push("sample: opening the project's kits".to_string());
     }
 
     /// The kit the pads play as a kit file (`mpfree_library::kit`): its
@@ -5763,7 +6131,7 @@ impl SamplePage {
 
     /// Loads a kit file (`dir` is its folder: `kit.txt` and its sounds) in
     /// place of the kit the pads play, named for the folder. Read and decoded
-    /// on a thread of its own; the kit changes on a later
+    /// on the job service's file lane; the kit changes on a later
     /// [`SamplePage::tick`]. What can't be used is left out and said in the
     /// log. A load while another is under way replaces it.
     pub fn open_kit(&mut self, dir: PathBuf) {
@@ -5790,24 +6158,18 @@ impl SamplePage {
             .to_string();
         let (tx, rx) = mpsc::channel();
         let (free, rate) = (self.mem_free, self.rate);
-        let spawned = std::thread::Builder::new()
-            .name("sample-kit".into())
-            .spawn(move || {
-                let _ = crate::cores::background(); // off the sound's cores and priority
-                let r = read_kit_file(&dir, &mut |f, len| {
-                    crate::memory::room_in(free(), crate::memory::decode_need(f, len))
+        self.jobs.submit(mpfree_sampler::jobs::Job::new(
+            Lane::File,
+            Key::new(KIT, 0),
+            move |_| {
+                let r = read_kit_file(&dir, &mut |p, len| {
+                    crate::memory::reserve(free, crate::memory::decode_peak_at(p, len))
                 });
                 let _ = tx.send(r.map(|o| opened_at_rate(o, rate, free)));
-            });
-        match spawned {
-            Ok(_) => {
-                self.kit_loading = Some((rx, k, name.clone()));
-                self.lines.push(format!("sample: loading the kit {name}"));
-            }
-            Err(e) => self
-                .lines
-                .push(format!("sample: the kit {name} wasn't loaded ({e})")),
-        }
+            },
+        ));
+        self.kit_loading = Some((rx, k, name.clone()));
+        self.lines.push(format!("sample: loading the kit {name}"));
     }
 
     fn poll_kit(&mut self, ui: &mut Ui) {
@@ -5817,7 +6179,7 @@ impl SamplePage {
         let r = match rx.try_recv() {
             Ok(r) => r,
             Err(TryRecvError::Empty) => return,
-            Err(TryRecvError::Disconnected) => Err("its thread stopped".to_string()),
+            Err(TryRecvError::Disconnected) => Err("it stopped before it finished".to_string()),
         };
         let Some((_, k, name)) = self.kit_loading.take() else {
             return;
@@ -5874,24 +6236,21 @@ impl SamplePage {
 
     /// The browser's Load (`to_pad` false: onto the pad shown, one undo
     /// step) and Load to pad (`to_pad`: onto the next pad hit). The WAV,
-    /// AIFF or FLAC file is read and decoded on a thread of its own and
-    /// lands on a later [`SamplePage::tick`]. A Load while another is under way
-    /// replaces it.
+    /// AIFF or FLAC file is read and decoded on the job service's file lane
+    /// and lands on a later [`SamplePage::tick`]. A Load while another is
+    /// under way replaces it.
     #[allow(dead_code)] // the app's browser wiring calls it
     pub fn load_file(&mut self, path: PathBuf, to_pad: bool) {
         let (tx, rx) = mpsc::channel();
         let free = self.mem_free;
         let rate = self.rate;
-        let spawned = std::thread::Builder::new()
-            .name("sample-load".into())
-            .spawn(move || {
-                let _ = crate::cores::background(); // off the sound's cores and priority
+        self.jobs.submit(
+            mpfree_sampler::jobs::Job::new(Lane::File, Key::new(LOAD, 0), move |_| {
                 let _ = tx.send(read_sound(&path, free, rate));
-            });
-        match spawned {
-            Ok(_) => self.loading = Some((rx, to_pad)),
-            Err(e) => self.lines.push(format!("sample: not loaded ({e})")),
-        }
+            })
+            .order(Order::First),
+        );
+        self.loading = Some((rx, to_pad));
     }
 
     /// A sound Load to pad is holding for the next pad hit.
@@ -5905,7 +6264,7 @@ impl SamplePage {
         let r = match rx.try_recv() {
             Ok(r) => r,
             Err(TryRecvError::Empty) => return,
-            Err(TryRecvError::Disconnected) => Err("its thread stopped".to_string()),
+            Err(TryRecvError::Disconnected) => Err("it stopped before it finished".to_string()),
         };
         self.opening = None;
         match r {
@@ -6049,7 +6408,7 @@ impl SamplePage {
         let r = match rx.try_recv() {
             Ok(r) => r,
             Err(TryRecvError::Empty) => return,
-            Err(TryRecvError::Disconnected) => Err("its thread stopped".to_string()),
+            Err(TryRecvError::Disconnected) => Err("it stopped before it finished".to_string()),
         };
         self.loading = None;
         if let Ok(LoadedSound {
@@ -6786,11 +7145,23 @@ impl SamplePage {
                 self.stale = true;
             }
         }
+        self.lines.extend(self.sources.take_lines());
+        let failed = self.jobs.counts().spawn_failed;
+        if failed > self.spawn_failed_told {
+            self.spawn_failed_told = failed;
+            self.lines.push(format!(
+                "sample: a background worker couldn't start ({failed}× so far); its work waits for it, tried again with the next job"
+            ));
+        }
         if !self.seats.is_empty() {
             self.seat_later(ui);
         }
         if !self.levelings.is_empty() {
             self.normalize_later(ui);
+        }
+        self.peaks_in(ui);
+        if self.mapping.is_some() {
+            self.map_later(ui);
         }
     }
 
@@ -6849,6 +7220,20 @@ impl SamplePage {
     #[cfg(test)]
     pub fn hold_views(&self, held: bool) {
         self.sources.hold(held);
+    }
+
+    /// The page's job service: for tests that put work of their own on it.
+    #[cfg(test)]
+    pub fn jobs(&self) -> &Jobs {
+        &self.jobs
+    }
+
+    /// Puts the page's work on `jobs` (its views with it, none made yet):
+    /// for tests that need a service with its own memory account.
+    #[cfg(test)]
+    pub fn use_jobs(&mut self, jobs: Jobs) {
+        self.sources = crate::views::Views::new(jobs.clone());
+        self.jobs = jobs;
     }
 
     /// Whether a sound's view (its peaks, hits, tempo or note) is still
@@ -7262,7 +7647,7 @@ impl SamplePage {
         self.unstretched.clear();
     }
 
-    /// Copies kit `kit` needs at the tempo go to the stretch thread.
+    /// Copies kit `kit` needs at the tempo go to the job service.
     fn ask_for_copies(&mut self, kit: usize) {
         let Some(project) = self.projects.get(kit) else {
             return;
@@ -7276,16 +7661,10 @@ impl SamplePage {
         if missing.is_empty() {
             return;
         }
-        if self.stretcher.is_none() {
-            match Worker::spawn() {
-                Ok(w) => self.stretcher = Some(w),
-                Err(e) => {
-                    self.lines.push(format!("sample: no stretch thread: {e}"));
-                    return;
-                }
-            }
-        }
-        let Some(w) = &self.stretcher else { return };
+        let jobs = &self.jobs;
+        let w = self
+            .stretcher
+            .get_or_insert_with(|| Worker::on(jobs.clone()));
         for k in missing {
             // The copy, and the source's part the thread is handed.
             let ch = project
@@ -7303,7 +7682,7 @@ impl SamplePage {
             }
             match Warps::spec(project, &k) {
                 Ok(spec) => {
-                    if w.send(k, spec) {
+                    if w.send(k, spec, need) {
                         self.stretching.push(k);
                     }
                 }
@@ -7312,7 +7691,7 @@ impl SamplePage {
         }
     }
 
-    /// Takes in the copies the stretch thread has finished; the kits that
+    /// Takes in the copies the job service has finished; the kits that
     /// play them get new views.
     fn take_copies(&mut self) {
         let Some(w) = &self.stretcher else { return };
@@ -7324,6 +7703,20 @@ impl SamplePage {
             match d {
                 Done::Copy(key, data, took) => {
                     self.stretching.retain(|k| *k != key);
+                    // Out of date if no kit plays it any more (its pad
+                    // changed while it was made): thrown away, counted.
+                    let wanted = self
+                        .projects
+                        .iter()
+                        .any(|p| self.warps.wanted(p).contains(&key));
+                    if !wanted {
+                        self.stale_copies += 1;
+                        self.lines.push(format!(
+                            "sample: a stretched copy came after its pad changed: thrown away ({}× so far)",
+                            self.stale_copies
+                        ));
+                        continue;
+                    }
                     self.warps.insert_for(key, data, &self.projects);
                     for k in 0..self.projects.len() {
                         if self.warps.wanted(&self.projects[k]).contains(&key) {
@@ -7343,6 +7736,15 @@ impl SamplePage {
                     self.lines.push(format!("sample: stretch failed: {e}"));
                 }
                 Done::Cancelled(key) => self.stretching.retain(|k| *k != key),
+                Done::Refused(key, why) => {
+                    self.stretching.retain(|k| *k != key);
+                    self.unstretched.push(key);
+                    self.lines.push(format!(
+                        "sample: not stretched, the pad repitches instead ({why})"
+                    ));
+                    self.told
+                        .push(format!("Not stretched, the pad repitches instead: {why}"));
+                }
             }
         }
     }
@@ -8131,8 +8533,8 @@ fn read_one(path: &Path, free: fn() -> Option<u64>) -> Loaded {
     if len > wav::MAX_SAMPLES as u64 * 8 + (1 << 20) {
         return Err("too long to hold in memory".to_string());
     }
-    let file = path.to_string_lossy();
-    crate::memory::room_in(free(), crate::memory::decode_need(&file, len))?;
+    // The promise holds until the sound is decoded.
+    let _promise = crate::memory::reserve(free, crate::memory::decode_peak_at(path, len))?;
     let name = path
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
@@ -8189,11 +8591,12 @@ pub fn kit_file_of(name: &str, p: &Project) -> (String, Vec<(String, Source)>) {
 }
 
 /// Reads a kit folder: its `kit.txt` (the sampler's part, one kit) and the
-/// sounds it names, each only if `room(file, bytes)` says it fits in
-/// memory. Files are looked for in the folder only (no links, no paths).
+/// sounds it names, each only if `room(path, bytes)` promises the memory
+/// it needs, held while it is decoded. Files are looked for in the folder
+/// only (no links, no paths).
 fn read_kit_file(
     dir: &std::path::Path,
-    room: &mut dyn FnMut(&str, u64) -> Result<(), String>,
+    room: &mut dyn FnMut(&Path, u64) -> Result<crate::memory::Ticket, String>,
 ) -> Result<Opened, String> {
     let text_path = dir.join(mpfree_library::KIT_FILE);
     let m = std::fs::symlink_metadata(&text_path).map_err(|e| format!("kit.txt: {e}"))?;
@@ -8210,7 +8613,7 @@ fn read_kit_file(
         if !m.is_file() {
             return Err("not a file".to_string());
         }
-        room(f, m.len())?;
+        let _promise = room(&p, m.len())?;
         let bytes = std::fs::read(&p).map_err(|e| e.to_string())?;
         wav::read(f, &bytes)
     })
@@ -8388,7 +8791,7 @@ impl SamplePage {
             // Put on Audio track: the take's sound on a track (step 6); the
             // take stays on the page.
             WaveAction::Chop(a @ ChopAction::ToAudio { .. }) => {
-                self.send_to_audio(Some(i), &a, out);
+                self.send_to_audio(Some(i), &a);
                 None
             }
             // Live chop plays a pad (the tool says so before it gets here).
@@ -8954,6 +9357,46 @@ impl SamplePage {
 
 #[cfg(test)]
 mod tests {
+    /// Sampler plan step 7e: Put on audio track's copy, made on the job
+    /// service, brings a sound at another rate to the tracks' rate and
+    /// moves its cuts with it; its memory is what the copy and the change
+    /// of rate hold.
+    #[test]
+    fn put_on_audio_tracks_copy_converts_a_sound_at_another_rate_and_moves_its_cuts() {
+        use super::*;
+        let n = 22_050;
+        let data: Vec<f32> = (0..n * 2)
+            .map(|i| 0.5 * ((i / 2) as f32 * 0.01).sin())
+            .collect();
+        let s = Source::new("Half", 22_050, 2, data).unwrap();
+        let jobs = Jobs::in_place(JobsConfig::default());
+        let (tx, rx) = mpsc::channel();
+        jobs.submit(mpfree_sampler::jobs::Job::new(
+            Lane::Sound,
+            Key::new(TO_AUDIO, 1),
+            move |run| {
+                let span = Span {
+                    start: 1000,
+                    end: 21_000,
+                    cuts: vec![5000, 10_000],
+                    bpm: 120.0,
+                };
+                let _ = tx.send(copy_for_audio(&s, span, 44_100, "Half".into(), run));
+            },
+        ));
+        let Ok(Some(ToAudio::Made(m))) = rx.try_recv() else {
+            panic!("the copy wasn't made");
+        };
+        assert_eq!((m.name.as_str(), m.channels, m.bpm), ("Half", 2, 120.0));
+        assert_eq!(m.cuts, vec![10_000, 20_000]);
+        let frames = m.audio.len() / 2;
+        assert!((39_990..=40_010).contains(&frames), "{frames}");
+        // The same rate: the stretch as floats. Another: twice that, and
+        // the converted floats twice over.
+        assert_eq!(to_audio_need(1_000, 44_100, 44_100), 4_000);
+        assert_eq!(to_audio_need(1_000, 22_050, 44_100), 8_000 + 16_000);
+    }
+
     /// REC's second line on the recorder row (one-page step 2c) holds
     /// every reason REC can't start and every status, uncut, in the
     /// built-in font.

@@ -72,6 +72,9 @@ pub enum Job {
         samples: Vec<NewSample>,
     },
     OpenProject(Loc),
+    /// Brings a project's manifest up to date
+    /// ([`Library::update_manifest`]), after a save has landed.
+    UpdateManifest(Loc),
     /// The unsaved work, into autosave's project
     /// ([`Library::autosave_project`]), keeping no earlier saves. The
     /// snapshot's meta is marked as autosave's here.
@@ -119,9 +122,13 @@ pub enum Outcome {
     Deleted(TrashItem),
     Trash(Vec<TrashItem>),
     Read(Loc, Vec<u8>),
-    Saved(Loc),
+    /// A project saved, here, and how ([`crate::Saved`]: its id, and
+    /// whether it turned out to be a copy of another project).
+    Saved(Loc, crate::Saved),
     /// The unsaved work saved into autosave's project, here.
     Autosaved(Loc),
+    /// A project's manifest brought up to date.
+    Manifest(Loc, crate::ManifestDone),
     Project(Loc, Snapshot),
     Versions(Loc, Vec<Version>),
     /// An earlier save, read: the project, the version's id, its parts.
@@ -251,8 +258,8 @@ pub fn run(lib: &Library, job: Job) -> std::io::Result<Outcome> {
             keep,
             samples,
         } => {
-            lib.save_project_with(&project, &snap, keep, &samples)?;
-            Outcome::Saved(project)
+            let saved = lib.save_project_with(&project, &snap, keep, &samples)?;
+            Outcome::Saved(project, saved)
         }
         Job::Autosave { mut snap, samples } => {
             snap.meta.mark_autosave();
@@ -262,6 +269,18 @@ pub fn run(lib: &Library, job: Job) -> std::io::Result<Outcome> {
             Outcome::Autosaved(loc)
         }
         Job::OpenProject(l) => Outcome::Project(l.clone(), lib.open_project(&l)?),
+        Job::UpdateManifest(l) => {
+            let done = lib.update_manifest(&l).map_err(|e| {
+                std::io::Error::new(
+                    e.kind(),
+                    format!(
+                        "Saved {}, but the list of its files that set lists check wasn't updated: {e}",
+                        l.name()
+                    ),
+                )
+            })?;
+            Outcome::Manifest(l, done)
+        }
         Job::Versions(l) => Outcome::Versions(l.clone(), lib.versions(&l)?),
         Job::OpenVersion(l, id) => {
             let snap = lib.open_version(&l, &id)?;

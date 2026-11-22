@@ -67,9 +67,10 @@ static GLOBAL: Counting = Counting;
 fn commands_and_periods_never_allocate() {
     const RATE: u32 = 44_100;
     let mut t = Transport::new(RATE, 120.0).unwrap();
-    // 12 seconds: a 2-bar loop at 120 BPM is 4 s, so it fills up after
-    // two overdubs and the rest are refused.
-    let mut l = Looper::new(RATE, 12);
+    // 13 seconds: a 2-bar loop at 120 BPM is 4 s (and its first pass
+    // keeps about half a second around it), so it fills up after two
+    // overdubs and the rest are refused.
+    let mut l = Looper::new(RATE, 13);
     let mut b = Block::new();
     let mut input = vec![0.0f32; 2 * 4096];
     let mut out = vec![0.0f32; 2 * 4096];
@@ -164,6 +165,7 @@ fn commands_and_periods_never_allocate() {
     let mut bounced2 = 0;
     let mut copied2 = false;
     let mut played2 = false;
+    let mut moved2 = false;
     watch(true);
     t.command(0, T::Play);
     l.command(L::Record);
@@ -287,9 +289,30 @@ fn commands_and_periods_never_allocate() {
             let _ = l2.command(L::SetBars(Some(1)));
             let _ = l2.command(L::Resample);
         }
-        // A layer of loop 0 onto loop 1, loop 1's first pass moved into
-        // loop 2, and Undo on loop 1, which takes the move back.
+        // Loop 0's bounds moved, resized and turned in the audio its
+        // first pass kept, and one taken back; a layer of loop 0 onto
+        // loop 1, loop 1's first pass moved into loop 2, and Undo on loop
+        // 1, which takes the move back.
         match i {
+            200 => {
+                let _ = l2.command(L::Edit(E::Turn(1_000)));
+            }
+            220 => {
+                let _ = l2.command(L::Edit(E::Move(500)));
+            }
+            240 => {
+                let _ = l2.command(L::Edit(E::Resize(-700)));
+            }
+            260 => {
+                let _ = l2.command(L::Undo);
+            }
+            280 => {
+                moved2 = l2
+                    .status()
+                    .bounds
+                    .is_some_and(|b| b.start == b.captured.0 + 500)
+                    && l2.history().done().len() == 2;
+            }
             1500 => {
                 let _ = l2.copy_layer(0, 0, 1, true);
             }
@@ -327,6 +350,7 @@ fn commands_and_periods_never_allocate() {
     assert!(bounced2 > 10, "{bounced2} bounces in the calm session");
     assert_eq!(l2.loop_status(1).unwrap().phase, Phase::Playing);
     assert!(copied2 && played2, "no layer copied in the calm session");
+    assert!(moved2, "loop 0's bounds didn't move in the calm session");
     // The move into loop 2 was taken back: loop 1 has both layers again.
     assert_eq!(l2.loop_status(2).unwrap().phase, Phase::Empty);
     assert_eq!(l2.loop_status(1).unwrap().layers, 2);
@@ -580,8 +604,8 @@ fn a_free_pass_setting_the_tempo_never_allocates() {
         assert!(t.process(n as u32, &mut b));
         l.process(&b, &input[..2 * n], &mut out[..2 * n]);
         // The host: the tempo, then PLAY, on the frame asked.
-        if let Some((_, bpm, at)) = l.take_tempo() {
-            let _ = t.command(at, T::SetTempo(bpm));
+        if let Some((_, r, at)) = l.take_tempo() {
+            let _ = t.command(at, T::SetTempo(r.bpm));
             let _ = t.command(at, T::Play);
             tempos += 1;
         }

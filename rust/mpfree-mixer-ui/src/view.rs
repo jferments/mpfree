@@ -293,6 +293,16 @@ pub fn pan_text(p: f32) -> String {
 }
 
 /// The strips' colours, from the theme (one per track number).
+/// A small wave mark in `r`, four bars of different heights: an audio
+/// track's, as on the Clips grid and the Song view.
+fn wave_mark(cx: &mut PaintCx, r: Rect, color: Color) {
+    for (k, h) in [5, 12, 8, 3].iter().enumerate() {
+        let x = r.x + k as i32 * 4;
+        cx.canvas
+            .fill_round_rect(Rect::new(x, r.y + (r.h - h) / 2, 2, *h), 1, color);
+    }
+}
+
 fn strip_color(t: &Theme, s: StripId) -> Color {
     let palette = [
         t.accent,
@@ -1799,7 +1809,7 @@ impl MixerView {
         }
         let ink = if s.audible { t.text } else { t.text_faint };
         // Name over a colour stripe.
-        let color = strip_color(&t, s.id);
+        let color = s.color.unwrap_or_else(|| strip_color(&t, s.id));
         cx.canvas.fill_round_rect(
             Rect::new(p.name.x, p.name.y, p.name.w, 4),
             2,
@@ -1809,7 +1819,24 @@ impl MixerView {
                 color.mix(t.surface, 0.6)
             },
         );
-        let label = p.name.take_top(6).1;
+        let mut label = p.name.take_top(6).1;
+        // An audio track's input at the right of the name, after a wave
+        // mark (layout spec 3a): "∿ ST".
+        if let Some(input) = &s.audio {
+            let w = cx.measure(FontId::Sans, t.size_small - 2.0, input);
+            let chip = Rect::new(label.right() - w, label.y, w, label.h);
+            cx.text(
+                FontId::Sans,
+                t.size_small - 2.0,
+                chip,
+                Align::Right,
+                t.text_dim,
+                input,
+            );
+            let mark = Rect::new(chip.x - 18, label.y + label.h / 2 - 6, 14, 12);
+            wave_mark(cx, mark, color);
+            label.w = (mark.x - 4 - label.x).max(0);
+        }
         cx.text(FontId::Bold, t.size_small, label, Align::Left, ink, &s.name);
         if master {
             self.paint_cost(cx, label, false);

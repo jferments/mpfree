@@ -813,7 +813,9 @@ dependencies = [
  "mpfree-screen-log",
  "mpfree-seq",
  "mpfree-simd",
+ "mpfree-status",
  "mpfree-store",
+ "mpfree-stream",
  "mpfree-synth",
  "mpfree-synth-ui",
  "mpfree-time-ui",
@@ -869,6 +871,7 @@ dependencies = [
  "mpfree-sampler",
  "mpfree-seq",
  "mpfree-simd",
+ "mpfree-stream",
  "mpfree-synth",
  "mpfree-time-ui",
  "mpfree-track",
@@ -925,6 +928,23 @@ name = "mpfree-clap-testplug"
 version = "0.1.0"
 dependencies = [
  "mpfree-clap",
+]
+
+[[package]]
+name = "mpfree-compose"
+version = "0.1.0"
+dependencies = [
+ "mpfree-context",
+ "mpfree-seq",
+ "mpfree-transport",
+]
+
+[[package]]
+name = "mpfree-context"
+version = "0.1.0"
+dependencies = [
+ "mpfree-scale",
+ "mpfree-transport",
 ]
 
 [[package]]
@@ -1336,6 +1356,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-status"
+version = "0.1.0"
+
+[[package]]
 name = "mpfree-stick"
 version = "0.1.0"
 dependencies = [
@@ -1360,6 +1384,7 @@ name = "mpfree-stream"
 version = "0.1.0"
 dependencies = [
  "mpfree-stream",
+ "sha2",
 ]
 
 [[package]]

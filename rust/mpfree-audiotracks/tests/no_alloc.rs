@@ -2,9 +2,10 @@
 //! reads each frame) must not allocate or free. A counting global
 //! allocator checks that across a busy session: recording on several
 //! tracks at once, punch in and out, loop recording, locates, a tempo
-//! change, comping, every edit, undo and redo, forgetting takes, a full
-//! memory, latency changes and stops, a take loaded from a save and takes
-//! read for one, at period sizes from 1 to 4096.
+//! change, comping, every edit, undo and redo, a song time edit with its
+//! undo and redo, forgetting takes, a full memory, latency changes and
+//! stops, a take loaded from a save and takes read for one, at period
+//! sizes from 1 to 4096.
 //!
 //! This test file is its own program, so its global allocator (the only
 //! unsafe code here, a pass-through to the system allocator) does not
@@ -16,7 +17,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 use mpfree_audiotracks::save::TakeFile;
-use mpfree_audiotracks::{AudioTracks, Command as A, Input, Monitor, MAX_TRACKS};
+use mpfree_audiotracks::{AudioTracks, Command as A, Input, Monitor, Piece, Retime, MAX_TRACKS};
 use mpfree_transport::{Block, Command as T, Transport};
 
 struct Counting;
@@ -67,6 +68,13 @@ fn commands_and_periods_never_allocate() {
         for (j, s) in input.iter_mut().enumerate() {
             *s = ((j * 31) % 97) as f32 / 97.0 - 0.5;
         }
+        // A bar put in at the start (a song time edit, Arrange 3.4).
+        let bar_in = Retime::new(&[Piece {
+            from: 0,
+            end: i64::MAX,
+            to: BT,
+        }])
+        .unwrap();
         // Commands at bar k, transport commands at bar k too.
         let script: Vec<(u64, Vec<A>, Vec<T>)> = vec![
             (
@@ -127,6 +135,13 @@ fn commands_and_periods_never_allocate() {
                     A::Undo,
                     A::Undo,
                     A::Redo,
+                    A::Retime {
+                        song: 1,
+                        retime: bar_in,
+                    },
+                    A::SongUndo(1),
+                    A::SongRedo(1),
+                    A::ForgetSong(1),
                 ],
                 vec![T::SetTempo(200.0)],
             ),
@@ -163,6 +178,8 @@ fn commands_and_periods_never_allocate() {
         a.process(&b, &map, &input, &mut out);
         let mut load = Some(TakeFile {
             id: 200,
+            // Its own lasting id, kept as it loads.
+            rec: mpfree_audiotracks::RecordingId(0x5eed),
             track: 5,
             group: 9,
             pass: 0,
@@ -419,7 +436,7 @@ fn a_save_fills_its_room_without_allocating() {
         A::Arm(0, true),
         A::Arm(2, true),
         A::SetInput(2, Input::Stereo),
-        A::SetLevel(5, 0.5),
+        A::SetInput(5, Input::Right),
         A::SetMonitor(6, Monitor::In),
     ] {
         a.command(c);

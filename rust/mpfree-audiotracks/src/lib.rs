@@ -40,6 +40,13 @@
 //!   armed track while stopped or recording, and the track's regions
 //!   otherwise; [`Monitor::In`] always hears the input as well;
 //!   [`Monitor::Off`] never does.
+//! - **Lasting ids.** Every take is a recording with a [`RecordingId`]:
+//!   given as it starts (recorded, brought in or a stretched copy) or kept
+//!   from its save, saved with it, and never given to another, so a
+//!   project, its undo steps and later its clips and files can name it
+//!   across saves. The take's `u16` is only its place in this engine;
+//!   regions and undo steps name that place, and a place an undo step
+//!   names is never given to another take ([`AudioTracks::in_use`]).
 //! - **One memory.** Takes share one pool of samples, asked for once in
 //!   [`AudioTracks::new`], in chunks of [`CHUNK`] samples: a recording
 //!   takes one chunk at a time, so several tracks record together with no
@@ -62,12 +69,15 @@
 mod disk;
 pub mod host;
 mod pool;
+pub mod retime;
 pub mod save;
 pub mod stretch;
 
 pub use pool::CHUNK;
 use pool::{Pool, State as SlotState};
+pub use retime::{Piece, Retime};
 use std::collections::VecDeque;
+use std::fmt;
 
 use save::{Saved, TakeFile, TrackFile};
 
@@ -87,8 +97,9 @@ pub const FADE: usize = 64;
 /// A loaded take's audio copies in at this many frames for each frame
 /// that plays (a minute of audio in about a second).
 pub const LOAD_SPEED: usize = 64;
-/// Edits and recordings Undo can take back.
-pub const HISTORY: usize = 32;
+/// Edits and recordings Undo can take back, counted a track at a time (a
+/// song time edit is one step of a track each).
+pub const HISTORY: usize = 64;
 /// Commands waiting for the next period.
 const QUEUE: usize = 64;
 /// The most frames the tracks run in one go.
@@ -154,6 +165,11 @@ pub enum Command {
     Arm(usize, bool),
     /// What the track's next recording takes.
     SetInput(usize, Input),
+    /// The track records from inside (Some: how late the host's block for
+    /// it is, in frames) or the line input (None): the instrument
+    /// redesign's step 9. A track recording from inside takes its block in
+    /// stereo, never plays it through, and can't change while it records.
+    SetInside(usize, Option<u32>),
     SetMonitor(usize, Monitor),
     /// The track's level, 0 to 2 (1 is as recorded).
     SetLevel(usize, f32),
@@ -224,6 +240,139 @@ pub enum Command {
         new: u16,
         ratio: f64,
     },
+    /// A song time edit (the Arrange refactor's 3.4, [`retime`]): every
+    /// track's regions move with the stretch of song they sit in, as one
+    /// undo step that belongs to song edit `song` (not 0). Only
+    /// [`Command::SongUndo`] and [`Command::SongRedo`] take that step back
+    /// and bring it back; [`Command::Undo`] and [`Command::Redo`] stop at
+    /// it. The cuts use the tempo map of the period before (the one the
+    /// regions were placed on: the edit's own view brings the new one).
+    /// Refused, nothing changing, while a track records or when a track's
+    /// regions would not fit ([`AudioTracks::retime_refused`] says first).
+    Retime {
+        song: u32,
+        retime: Retime,
+    },
+    /// Take back, or bring back, song edit `song`'s steps (one a
+    /// [`Command::Retime`] it was made of: + Bar pressed in a row is one
+    /// song edit): refused unless they are the steps Undo, or Redo, would
+    /// take next.
+    SongUndo(u32),
+    SongRedo(u32),
+    /// The song can no longer take back, or bring back, song edit `song`
+    /// (its history moved on past it): its steps go, with every step
+    /// Undo or Redo could only reach through them, so the regions never
+    /// go back to where they sat on a song that is gone. Changes no
+    /// region.
+    ForgetSong(u32),
+}
+
+/// Why the tracks can't take a song time edit ([`AudioTracks::retime_refused`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RetimeRefused {
+    /// The track records.
+    Recording(usize),
+    /// The track's regions, cut at the edit's edges, would be more than
+    /// [`MAX_REGIONS`].
+    Full(usize),
+}
+
+/// Whether a song edit's step can be taken back or brought back
+/// ([`AudioTracks::song_step`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SongStep {
+    /// It is the step Undo (or Redo) takes next.
+    Next,
+    /// Other steps lie on top of it (audio edits made since).
+    Under,
+    /// The history no longer holds it (it ran past it, or was cleared).
+    Gone,
+}
+
+/// A recording's lasting id (the audio tracks rethink, phase 1c): a
+/// random 128-bit number, given as a take starts (recorded, brought in, or
+/// a stretched copy) and saved with it, never given to another. 0 is none.
+/// The recording files of the disk streaming plan carry the same number
+/// in their names (`NAME_ID.wav`, ID as its 32 hex digits:
+/// [`RecordingId::to_string`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RecordingId(pub u128);
+
+impl RecordingId {
+    pub const NONE: RecordingId = RecordingId(0);
+
+    pub fn is_given(self) -> bool {
+        self.0 != 0
+    }
+
+    /// From its 32 hex digits, as saved and in file names; None for
+    /// anything else, or for 0.
+    pub fn parse(s: &str) -> Option<RecordingId> {
+        if s.len() != 32 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        u128::from_str_radix(s, 16)
+            .ok()
+            .map(RecordingId)
+            .filter(|r| r.is_given())
+    }
+}
+
+impl fmt::Display for RecordingId {
+    /// Its 32 hex digits, lower case.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:032x}", self.0)
+    }
+}
+
+/// Makes [`RecordingId`]s without allocating (on the audio thread, as a
+/// recording starts): a key drawn at random once, and a count put through
+/// a mix that never maps two counts to one number, so no id repeats in a
+/// run, and runs (each with its own key) don't meet but by a chance of
+/// about one in 2^128.
+#[derive(Clone, Copy)]
+struct Ids {
+    key: u128,
+    next: u64,
+}
+
+impl Ids {
+    fn new() -> Ids {
+        use std::hash::{BuildHasher, Hasher};
+        let half = |salt: u64| {
+            let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+            h.write_u64(salt);
+            if let Ok(d) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+                h.write_u128(d.as_nanos());
+            }
+            h.finish()
+        };
+        Ids {
+            key: (u128::from(half(1)) << 64) | u128::from(half(2)),
+            next: 0,
+        }
+    }
+
+    fn fresh(&mut self) -> RecordingId {
+        loop {
+            let n = self.next;
+            self.next = self.next.wrapping_add(1);
+            // `mix` is one to one, so the high half alone never repeats.
+            let hi = mix((self.key >> 64) as u64 ^ n);
+            let lo = mix(self.key as u64 ^ n.rotate_left(32) ^ 0x9e37_79b9_7f4a_7c15);
+            let id = RecordingId((u128::from(hi) << 64) | u128::from(lo));
+            if id.is_given() {
+                return id;
+            }
+        }
+    }
+}
+
+/// SplitMix64's finish: a one-to-one mix of the 64 bits.
+fn mix(mut z: u64) -> u64 {
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
 }
 
 /// A stretch of song ticks playing a stretch of a take: tick `start`
@@ -261,7 +410,10 @@ impl Region {
 /// What the screen shows of a take.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TakeInfo {
+    /// Its place in this engine (what regions name).
     pub id: u16,
+    /// Its lasting id ([`RecordingId`]), kept across saves.
+    pub rec: RecordingId,
     pub track: usize,
     /// Recordings of one press of Record share a group; each pass of a
     /// loop recording is a take of its own, numbered from 0.
@@ -364,6 +516,7 @@ pub struct Memory {
 #[derive(Clone, Copy)]
 struct Take {
     live: bool,
+    rec: RecordingId,
     track: u8,
     channels: u8,
     group: u16,
@@ -386,6 +539,7 @@ struct Take {
 
 const NO_TAKE: Take = Take {
     live: false,
+    rec: RecordingId::NONE,
     track: 0,
     channels: 1,
     group: 0,
@@ -506,6 +660,11 @@ struct Track {
     /// Gains (left, right) at the end of the last period, for the ramp.
     gains: [f32; 2],
     buf: Vec<f32>,
+    /// Records from inside, not the line input (the instrument redesign's
+    /// step 9): the host's block for it ([`AudioTracks::inside_input`]),
+    /// as late as this many frames, which a take makes up in place of the
+    /// line input's latency. It is never heard through the track.
+    inside: Option<u32>,
 }
 
 impl Track {
@@ -525,6 +684,7 @@ impl Track {
             blocked: false,
             gains: [1.0, 1.0],
             buf: vec![0.0; 2 * MAX_PERIOD as usize],
+            inside: None,
         }
     }
 
@@ -604,12 +764,30 @@ impl Track {
     }
 }
 
-/// One step of the history: a track's regions before (or, once undone,
-/// after) an edit.
+/// One track of a step of the history: its regions before (or, once
+/// undone, after) an edit.
 struct Snap {
     track: usize,
     n: usize,
+    /// The step it belongs to: the snaps of one step share it (a song time
+    /// edit changes several tracks at once), and it goes up by one a step.
+    step: u32,
+    /// The song edit the step belongs to (0: none): see
+    /// [`Command::Retime`].
+    song: u32,
     regions: [Region; MAX_REGIONS],
+}
+
+impl Snap {
+    fn new() -> Snap {
+        Snap {
+            track: 0,
+            n: 0,
+            step: 0,
+            song: 0,
+            regions: [Region::EMPTY; MAX_REGIONS],
+        }
+    }
 }
 
 /// Frames from tick `a` to tick `b` (fractional) along the tempo map, as
@@ -636,6 +814,8 @@ fn fade_table() -> [f32; FADE + 1] {
 /// The audio tracks: see the module notes.
 pub struct AudioTracks {
     rate: u32,
+    /// Where new takes' lasting ids come from.
+    ids: Ids,
     /// [`AudioTracks::set_only`]: the one track heard (an export's replay).
     only: Option<usize>,
     pool: Pool,
@@ -655,6 +835,11 @@ pub struct AudioTracks {
     h_base: usize,
     h_done: usize,
     h_redo: usize,
+    /// The last step's number ([`Snap::step`]).
+    step: u32,
+    /// The tempo map of the last period run: the one the regions were
+    /// placed on, for a song time edit whose view brings a new one.
+    last_map: TempoMap,
     stats: Stats,
     /// Takes whose saved audio is copying in (room for all, made once).
     loads: Vec<(u16, Vec<f32>)>,
@@ -672,23 +857,24 @@ pub struct AudioTracks {
     /// Frames since the last planning round, and whether one is due now.
     plan_wait: usize,
     replan: bool,
+    /// Each track's block from inside (step 9), stereo interleaved,
+    /// [`MAX_PERIOD`] frames a track, which the host fills before
+    /// [`AudioTracks::process`].
+    inside: Box<[f32]>,
 }
+
+/// One track's room in [`AudioTracks::inside_input`].
+const INSIDE: usize = 2 * MAX_PERIOD as usize;
 
 impl AudioTracks {
     /// Audio tracks at `rate` with memory for `seconds` of stereo audio
     /// (twice that of mono takes), all allocated here.
     pub fn new(rate: u32, seconds: u32) -> AudioTracks {
         let samples = rate as usize * seconds as usize * 2;
-        let mut hist = Vec::with_capacity(HISTORY);
-        for _ in 0..HISTORY {
-            hist.push(Snap {
-                track: 0,
-                n: 0,
-                regions: [Region::EMPTY; MAX_REGIONS],
-            });
-        }
+        let hist = (0..HISTORY).map(|_| Snap::new()).collect();
         AudioTracks {
             rate,
+            ids: Ids::new(),
             only: None,
             pool: Pool::new(samples),
             takes: vec![NO_TAKE; MAX_TAKES],
@@ -699,11 +885,9 @@ impl AudioTracks {
             active: true,
             groups: 0,
             hist,
-            scratch: Box::new(Snap {
-                track: 0,
-                n: 0,
-                regions: [Region::EMPTY; MAX_REGIONS],
-            }),
+            scratch: Box::new(Snap::new()),
+            step: 0,
+            last_map: TempoMap::constant(120.0).expect("a valid tempo"),
             pending: [None; MAX_TRACKS],
             h_base: 0,
             h_done: 0,
@@ -719,7 +903,21 @@ impl AudioTracks {
             loop_range: None,
             plan_wait: 0,
             replan: false,
+            inside: vec![0.0; MAX_TRACKS * INSIDE].into_boxed_slice(),
         }
+    }
+
+    /// Where the host puts track `t`'s block from inside before each
+    /// [`AudioTracks::process`] (stereo interleaved, as the line input),
+    /// while the track records from inside (step 9). None past the last
+    /// track. Real-time safe.
+    pub fn inside_input(&mut self, t: usize) -> Option<&mut [f32]> {
+        self.inside.get_mut(t * INSIDE..(t + 1) * INSIDE)
+    }
+
+    /// Whether track `t` records from inside (step 9).
+    pub fn records_inside(&self, t: usize) -> bool {
+        self.tracks.get(t).is_some_and(|tr| tr.inside.is_some())
     }
 
     /// Only track `only` is heard (None: every track, as their mutes and
@@ -805,6 +1003,7 @@ impl AudioTracks {
         let t = self.takes.get(id as usize).filter(|t| t.live)?;
         Some(TakeInfo {
             id,
+            rec: t.rec,
             track: t.track as usize,
             group: t.group,
             pass: t.pass,
@@ -815,6 +1014,28 @@ impl AudioTracks {
             recording: t.recording,
             cut_short: t.cut_short,
         })
+    }
+
+    /// The take whose lasting id is `rec`, if it is here.
+    pub fn take_of(&self, rec: RecordingId) -> Option<u16> {
+        if !rec.is_given() {
+            return None;
+        }
+        self.takes
+            .iter()
+            .position(|t| t.live && t.rec == rec)
+            .map(|i| i as u16)
+    }
+
+    /// The lasting id a take loaded or brought in keeps: its own when it
+    /// has one no other take has, else a new one (a part saved before
+    /// takes had them; two takes never share one).
+    fn keep_id(&mut self, rec: RecordingId) -> RecordingId {
+        if rec.is_given() && self.take_of(rec).is_none() {
+            rec
+        } else {
+            self.ids.fresh()
+        }
     }
 
     /// An id no take has, for a take made off the audio thread (a stretch)
@@ -924,20 +1145,32 @@ impl AudioTracks {
         self.stats.refused += 1;
     }
 
-    /// Save the scratch copy (a track's regions before an edit) as an undo
-    /// step, dropping the oldest when full and anything Redo could bring
-    /// back.
-    fn push_history(&mut self) {
+    /// A new step's number, for the snaps [`AudioTracks::push_history`]
+    /// puts in it.
+    fn next_step(&mut self) -> u32 {
+        self.step = self.step.wrapping_add(1);
+        self.step
+    }
+
+    /// Save the scratch copy (a track's regions before an edit) in undo
+    /// step `step`, of song edit `song` (0: none), dropping anything Redo
+    /// could bring back and, when full, the oldest step (all its tracks).
+    fn push_history(&mut self, step: u32, song: u32) {
+        if self.h_done == HISTORY {
+            let oldest = self.hist[self.h_base].step;
+            while self.h_done > 0 && self.hist[self.h_base].step == oldest {
+                self.h_base = (self.h_base + 1) % HISTORY;
+                self.h_done -= 1;
+            }
+        }
         let idx = (self.h_base + self.h_done) % HISTORY;
         let (src, dst) = (&*self.scratch, &mut self.hist[idx]);
         dst.track = src.track;
         dst.n = src.n;
+        dst.step = step;
+        dst.song = song;
         dst.regions[..src.n].copy_from_slice(&src.regions[..src.n]);
-        if self.h_done == HISTORY {
-            self.h_base = (self.h_base + 1) % HISTORY;
-        } else {
-            self.h_done += 1;
-        }
+        self.h_done += 1;
         self.h_redo = 0;
     }
 
@@ -949,6 +1182,182 @@ impl AudioTracks {
             std::mem::swap(&mut s.regions[i], &mut t.regions[i]);
         }
         std::mem::swap(&mut s.n, &mut t.n);
+    }
+
+    /// The snap Undo takes next and the one Redo brings next.
+    fn undo_snap(&self) -> Option<&Snap> {
+        let i = self.h_done.checked_sub(1)?;
+        Some(&self.hist[(self.h_base + i) % HISTORY])
+    }
+
+    fn redo_snap(&self) -> Option<&Snap> {
+        (self.h_redo > 0).then(|| &self.hist[(self.h_base + self.h_done) % HISTORY])
+    }
+
+    /// Take back the step on top, every track of it.
+    fn undo_step(&mut self) {
+        let Some(step) = self.undo_snap().map(|s| s.step) else {
+            return;
+        };
+        while self.undo_snap().is_some_and(|s| s.step == step) {
+            self.h_done -= 1;
+            self.h_redo += 1;
+            self.swap_history((self.h_base + self.h_done) % HISTORY);
+        }
+    }
+
+    /// Bring back the step Redo brings next, every track of it.
+    fn redo_step(&mut self) {
+        let Some(step) = self.redo_snap().map(|s| s.step) else {
+            return;
+        };
+        while self.redo_snap().is_some_and(|s| s.step == step) {
+            self.swap_history((self.h_base + self.h_done) % HISTORY);
+            self.h_done += 1;
+            self.h_redo -= 1;
+        }
+    }
+
+    /// The song edit whose step Undo would take next (Undo stops there:
+    /// it is the app's UNDO's), if it is one.
+    pub fn undo_is_song(&self) -> Option<u32> {
+        self.undo_snap().map(|s| s.song).filter(|&s| s != 0)
+    }
+
+    /// The same for Redo.
+    pub fn redo_is_song(&self) -> Option<u32> {
+        self.redo_snap().map(|s| s.song).filter(|&s| s != 0)
+    }
+
+    /// Where song edit `song`'s step is: next for Undo (`undo`) or Redo,
+    /// under other steps, or gone.
+    pub fn song_step(&self, song: u32, undo: bool) -> SongStep {
+        let next = if undo {
+            self.undo_snap()
+        } else {
+            self.redo_snap()
+        };
+        if song != 0 && next.is_some_and(|s| s.song == song) {
+            return SongStep::Next;
+        }
+        let (from, n) = if undo {
+            (0, self.h_done)
+        } else {
+            (self.h_done, self.h_redo)
+        };
+        let held = (from..from + n).any(|i| self.hist[(self.h_base + i) % HISTORY].song == song);
+        if song != 0 && held {
+            SongStep::Under
+        } else {
+            SongStep::Gone
+        }
+    }
+
+    /// Drop song edit `song`'s steps and every step only reachable
+    /// through them: on the Undo side the newest of them and all older
+    /// steps, on the Redo side the first of them and all steps redone
+    /// after it ([`Command::ForgetSong`]).
+    fn forget_song(&mut self, song: u32) {
+        if song == 0 {
+            return self.refuse();
+        }
+        let at = |i: usize| self.hist[(self.h_base + i) % HISTORY].song == song;
+        let undo = (0..self.h_done).rev().find(|&i| at(i));
+        let redo = (self.h_done..self.h_done + self.h_redo).find(|&i| at(i));
+        if undo.is_none() && redo.is_none() {
+            return self.refuse();
+        }
+        if let Some(j) = redo {
+            self.h_redo = j - self.h_done;
+        }
+        if let Some(i) = undo {
+            self.h_base = (self.h_base + i + 1) % HISTORY;
+            self.h_done -= i + 1;
+        }
+    }
+
+    /// Whether a command sent now might not do what the tracks say now
+    /// ([`AudioTracks::retime_refused`], [`AudioTracks::song_step`]): one
+    /// waiting for the next period changes the regions or the history
+    /// (or may: an arm can end a recording), or the queue is full.
+    /// Settings waiting (input, monitor, level, pan, mute, solo, latency)
+    /// don't count.
+    pub fn busy(&self) -> bool {
+        self.q_len == QUEUE
+            || self.queue[..self.q_len].iter().flatten().any(|c| {
+                !matches!(
+                    c,
+                    Command::SetInput(..)
+                        | Command::SetMonitor(..)
+                        | Command::SetLevel(..)
+                        | Command::SetPan(..)
+                        | Command::Mute(..)
+                        | Command::Solo(..)
+                        | Command::SetLatency(_)
+                )
+            })
+    }
+
+    /// Whether any step of the history, done or undone, belongs to a song
+    /// edit.
+    pub fn has_song_steps(&self) -> bool {
+        (0..self.h_done + self.h_redo).any(|i| self.hist[(self.h_base + i) % HISTORY].song != 0)
+    }
+
+    /// Whether any track holds a region.
+    pub fn has_regions(&self) -> bool {
+        self.tracks.iter().any(|t| t.n > 0)
+    }
+
+    /// Why the tracks can't take song time edit `r` now, if they can't: a
+    /// track records, or a track's regions would not fit. For the app to
+    /// ask before it edits the song, so a refusal changes nothing
+    /// anywhere.
+    pub fn retime_refused(&self, r: &Retime) -> Option<RetimeRefused> {
+        for (k, t) in self.tracks.iter().enumerate() {
+            if t.rec.is_some() {
+                return Some(RetimeRefused::Recording(k));
+            }
+            if r.count(t.regions()) > MAX_REGIONS {
+                return Some(RetimeRefused::Full(k));
+            }
+        }
+        None
+    }
+
+    /// Song time edit `r` of song edit `song` on every track it changes,
+    /// as one step (see [`Command::Retime`]). False, nothing changed, when
+    /// a track records or one's regions would not fit.
+    fn retime(&mut self, song: u32, r: &Retime) -> bool {
+        if song == 0 || self.retime_refused(r).is_some() {
+            return false;
+        }
+        let step = self.next_step();
+        let (map, rate) = (self.last_map, self.rate);
+        for k in 0..MAX_TRACKS {
+            if !r.changes(self.tracks[k].regions()) {
+                continue;
+            }
+            {
+                let (t, s) = (&self.tracks[k], &mut *self.scratch);
+                s.track = k;
+                s.n = t.n;
+                s.regions[..t.n].copy_from_slice(t.regions());
+            }
+            let s = &*self.scratch;
+            let t = &mut self.tracks[k];
+            match r.apply(&s.regions[..s.n], &map, rate, &mut t.regions) {
+                Some(n) => t.n = n,
+                // Checked above: it fits.
+                None => {
+                    t.regions[..s.n].copy_from_slice(&s.regions[..s.n]);
+                    t.n = s.n;
+                    continue;
+                }
+            }
+            self.push_history(step, song);
+        }
+        true
     }
 
     /// An edit of one track's regions: `f` changes them and says whether it
@@ -971,7 +1380,8 @@ impl AudioTracks {
         }
         let rate = self.rate;
         if f(&mut self.tracks[track], map, rate) {
-            self.push_history();
+            let step = self.next_step();
+            self.push_history(step, 0);
         } else {
             let (t, s) = (&mut self.tracks[track], &*self.scratch);
             t.n = s.n;
@@ -990,6 +1400,9 @@ impl AudioTracks {
                 }
             }
             Command::SetInput(t, i) if ok_track(t) => self.tracks[t].input = i,
+            Command::SetInside(t, lat) if ok_track(t) && self.tracks[t].rec.is_none() => {
+                self.tracks[t].inside = lat.map(|l| l.min(MAX_PERIOD * 8));
+            }
             Command::SetMonitor(t, m) if ok_track(t) => self.tracks[t].monitor = m,
             Command::SetLevel(t, l) if ok_track(t) && l.is_finite() => {
                 self.tracks[t].level = l.clamp(0.0, 2.0)
@@ -1129,21 +1542,39 @@ impl AudioTracks {
                 );
             }
             Command::Undo => {
-                if self.h_done == 0 || self.any_recording() {
+                if self.h_done == 0 || self.any_recording() || self.undo_is_song().is_some() {
                     return self.refuse();
                 }
-                self.h_done -= 1;
-                self.h_redo += 1;
-                self.swap_history((self.h_base + self.h_done) % HISTORY);
+                self.undo_step();
             }
             Command::Redo => {
-                if self.h_redo == 0 || self.any_recording() {
+                if self.h_redo == 0 || self.any_recording() || self.redo_is_song().is_some() {
                     return self.refuse();
                 }
-                self.swap_history((self.h_base + self.h_done) % HISTORY);
-                self.h_done += 1;
-                self.h_redo -= 1;
+                self.redo_step();
             }
+            Command::Retime { song, retime } => {
+                if !self.retime(song, &retime) {
+                    self.refuse();
+                }
+            }
+            Command::SongUndo(song) => {
+                if self.any_recording() || self.song_step(song, true) != SongStep::Next {
+                    return self.refuse();
+                }
+                while self.undo_is_song() == Some(song) {
+                    self.undo_step();
+                }
+            }
+            Command::SongRedo(song) => {
+                if self.any_recording() || self.song_step(song, false) != SongStep::Next {
+                    return self.refuse();
+                }
+                while self.redo_is_song() == Some(song) {
+                    self.redo_step();
+                }
+            }
+            Command::ForgetSong(song) => self.forget_song(song),
             Command::Forget(id) => {
                 let ok = self
                     .takes
@@ -1246,6 +1677,7 @@ impl AudioTracks {
         for k in self.takes() {
             let f = &mut room.takes[takes];
             f.id = k.id;
+            f.rec = k.rec;
             f.track = k.track;
             f.group = k.group;
             f.pass = k.pass;
@@ -1261,11 +1693,7 @@ impl AudioTracks {
             let keep = t.n > 0
                 || room.takes[..takes].iter().any(|k| k.track == i)
                 || t.input != Input::Left
-                || t.monitor != Monitor::Auto
-                || t.level != 1.0
-                || t.pan != 0.0
-                || t.mute
-                || t.solo;
+                || t.monitor != Monitor::Auto;
             if !keep {
                 continue;
             }
@@ -1273,10 +1701,7 @@ impl AudioTracks {
             f.index = i;
             f.input = t.input;
             f.monitor = t.monitor;
-            f.level = t.level;
-            f.pan = t.pan;
-            f.muted = t.mute;
-            f.solo = t.solo;
+            f.from.clear();
             f.regions.clear();
             f.regions.extend_from_slice(t.regions());
             tracks += 1;
@@ -1311,7 +1736,8 @@ impl AudioTracks {
         (done > 0 || want == 0).then_some(done)
     }
 
-    /// Put a saved take back, under its own id: its memory is taken now,
+    /// Put a saved take back, under its own id and its lasting id (a new
+    /// one if it has none or another take has it): its memory is taken now,
     /// and its audio (moved in, never grown or freed here) copies in at
     /// [`LOAD_SPEED`] over the next periods; it plays once copied. Then
     /// the audio waits in [`AudioTracks::take_returned`] for the host to
@@ -1333,8 +1759,10 @@ impl AudioTracks {
         {
             return Err(f);
         }
+        let rec = self.keep_id(f.rec);
         self.takes[id] = Take {
             live: true,
+            rec,
             track: f.track as u8,
             channels: f.channels as u8,
             group: f.group,
@@ -1367,9 +1795,11 @@ impl AudioTracks {
         Ok(())
     }
 
-    /// Put a saved track's settings and regions back (its takes loaded
-    /// with [`AudioTracks::load_take`], before or after). The undo history
-    /// is forgotten. Does not allocate. False (nothing changed) if the
+    /// Put a saved track's input, monitor and regions back (its takes
+    /// loaded with [`AudioTracks::load_take`], before or after); its level,
+    /// pan, mute and solo stay as they are, since a save doesn't hold
+    /// them (the app keeps them in its mixer and track list). The undo
+    /// history is forgotten. Does not allocate. False (nothing changed) if the
     /// track is past the last or recording, or the regions are too many or
     /// out of order.
     pub fn load_track(&mut self, f: &TrackFile) -> bool {
@@ -1384,18 +1814,6 @@ impl AudioTracks {
         let t = &mut self.tracks[f.index];
         t.input = f.input;
         t.monitor = f.monitor;
-        t.level = if f.level.is_finite() {
-            f.level.clamp(0.0, 2.0)
-        } else {
-            1.0
-        };
-        t.pan = if f.pan.is_finite() {
-            f.pan.clamp(-1.0, 1.0)
-        } else {
-            0.0
-        };
-        t.mute = f.muted;
-        t.solo = f.solo;
         t.n = f.regions.len();
         t.regions[..t.n].copy_from_slice(&f.regions);
         self.h_done = 0;
@@ -1427,6 +1845,7 @@ impl AudioTracks {
             t.n = 0;
             t.armed = false;
             t.input = Input::Left;
+            t.inside = None;
             t.monitor = Monitor::Auto;
             t.level = 1.0;
             t.pan = 0.0;
@@ -1593,10 +2012,16 @@ impl AudioTracks {
             self.tracks[t].blocked = true;
             return;
         };
-        let lat_ticks = mpfree_transport::time::ticks_in(f64::from(self.latency), bpm, self.rate);
-        let ch = self.tracks[t].input.channels();
+        let lat = self.tracks[t].inside.unwrap_or(self.latency);
+        let lat_ticks = mpfree_transport::time::ticks_in(f64::from(lat), bpm, self.rate);
+        // From inside: the mix in stereo.
+        let ch = match self.tracks[t].inside {
+            Some(_) => 2,
+            None => self.tracks[t].input.channels(),
+        };
         self.takes[id] = Take {
             live: true,
+            rec: self.ids.fresh(),
             track: t as u8,
             channels: ch as u8,
             group,
@@ -1642,7 +2067,8 @@ impl AudioTracks {
         // Go on writing the input that belongs before the punch out (the
         // latency), and a crossfade's worth more, so the end can fade into
         // what follows.
-        let stop_at = g + u64::from(self.latency) + FADE as u64;
+        let lat = self.tracks[t].inside.unwrap_or(self.latency);
+        let stop_at = g + u64::from(lat) + FADE as u64;
         if self.takes[id].recording && !self.takes[id].cut_short && stop_at > g {
             self.tracks[t].tail = Some(Tail {
                 take: rec.take,
@@ -1802,6 +2228,9 @@ impl AudioTracks {
         }
         let markers = block.markers();
         let mut m = 0;
+        // Each track's block from inside, lent to the runs (no allocation:
+        // an empty box stands in meanwhile).
+        let inside = std::mem::take(&mut self.inside);
         for span in block.spans() {
             let span_len = span.len as usize;
             let mut i = 0;
@@ -1829,10 +2258,12 @@ impl AudioTracks {
                     off,
                     end - i,
                     &input[2 * off..2 * (off + end - i)],
+                    &inside,
                 );
                 i = end;
             }
         }
+        self.inside = inside;
         while m < markers.len() {
             self.marker(map, markers[m].mark, markers[m].frame);
             m += 1;
@@ -1844,6 +2275,7 @@ impl AudioTracks {
                 self.plan(map);
             }
         }
+        self.last_map = *map;
     }
 
     // ---- streaming -----------------------------------------------------
@@ -2050,7 +2482,8 @@ impl AudioTracks {
     }
 
     /// Streaming: put back a take whose audio is on the disk, under its own
-    /// id; its chunks are read as the song needs them. Does not allocate.
+    /// id and lasting id (as [`AudioTracks::load_take`]); its chunks are
+    /// read as the song needs them. Does not allocate.
     /// Gives `f` back if not streaming, the id is past the last or in use,
     /// the track past the last, or the take empty.
     pub fn add_take(&mut self, f: TakeFile) -> Result<(), TakeFile> {
@@ -2066,8 +2499,10 @@ impl AudioTracks {
             return Err(f);
         }
         self.pool.release_take(f.id);
+        let rec = self.keep_id(f.rec);
         self.takes[id] = Take {
             live: true,
+            rec,
             track: f.track as u8,
             channels: f.channels as u8,
             group: f.group,
@@ -2217,13 +2652,28 @@ impl AudioTracks {
         }
     }
 
-    fn run(&mut self, map: &TempoMap, span: &Span, f: u64, off: usize, len: usize, input: &[f32]) {
+    #[allow(clippy::too_many_arguments)]
+    fn run(
+        &mut self,
+        map: &TempoMap,
+        span: &Span,
+        f: u64,
+        off: usize,
+        len: usize,
+        line: &[f32],
+        inside: &[f32],
+    ) {
         let recording_state = span.state == State::Recording;
         let rolling = matches!(span.state, State::Playing | State::Recording);
         let tick0 = span.tick_at(f);
         self.at_tick = span.tick_at(f + len as u64);
         self.at_bpm = span.bpm;
         for t in 0..MAX_TRACKS {
+            // What this track records: its block from inside, or the line.
+            let input = match self.tracks[t].inside {
+                Some(_) => &inside[t * INSIDE + 2 * off..t * INSIDE + 2 * (off + len)],
+                None => line,
+            };
             let want = self.active && recording_state && self.tracks[t].armed;
             if !want {
                 // A recording cut short waits for the next punch in.
@@ -2276,11 +2726,14 @@ impl AudioTracks {
                 }
             }
             let tr = &self.tracks[t];
-            let hear_input = match tr.monitor {
-                Monitor::Off => false,
-                Monitor::In => true,
-                Monitor::Auto => tr.armed && (span.state != State::Playing || !self.active),
-            };
+            // A track recording from inside never plays it through: it is
+            // heard where it comes from already.
+            let hear_input = tr.inside.is_none()
+                && match tr.monitor {
+                    Monitor::Off => false,
+                    Monitor::In => true,
+                    Monitor::Auto => tr.armed && (span.state != State::Playing || !self.active),
+                };
             if rolling && self.active && tr.rec.is_none() {
                 self.play(t, map, span, tick0, off, len);
             }
@@ -2424,5 +2877,25 @@ impl AudioTracks {
                 tr.gains = target;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Ids never repeat in a run, are never 0, and two runs draw two keys.
+    #[test]
+    fn recording_ids_never_repeat() {
+        let mut ids = Ids::new();
+        let mut seen: Vec<u128> = (0..20_000).map(|_| ids.fresh().0).collect();
+        assert!(seen.iter().all(|&r| r != 0));
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), 20_000);
+        assert_ne!(Ids::new().key, Ids::new().key);
+        // Each half looks random: about half its bits set.
+        let r = ids.fresh().0;
+        assert!((32..=96).contains(&r.count_ones()), "{r:032x}");
     }
 }

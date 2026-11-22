@@ -84,8 +84,8 @@ struct Tried {
 /// engine's own by index, or the musician's by name), and a track's sound
 /// from before the picker's first try.
 pub struct TrackPresets {
-    index: [Option<usize>; instruments::TRACKS],
-    own: [Option<String>; instruments::TRACKS],
+    index: [Option<usize>; instruments::HOLDERS],
+    own: [Option<String>; instruments::HOLDERS],
     tried: Option<Tried>,
     /// A sound the builder was too busy to make: made once it is free (the
     /// newest only, so a fast turn ends on the preset it stops at).
@@ -95,7 +95,7 @@ pub struct TrackPresets {
 impl Default for TrackPresets {
     fn default() -> TrackPresets {
         TrackPresets {
-            index: [None; instruments::TRACKS],
+            index: [None; instruments::HOLDERS],
             own: std::array::from_fn(|_| None),
             tried: None,
             waiting: None,

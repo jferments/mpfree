@@ -19,6 +19,21 @@
 //!   [`crc32c`].
 //! - [`writer`]: the takes' writes and checkpoint rounds on a thread of
 //!   their own, waiting for playback's reads, spread across the interval.
+//! - [`policy`]: what a sound is apart from what it is doing (class, access,
+//!   the musician's rule, device), and what follows: memory or disk, how
+//!   much of its start stays in memory, and why admission says a workload
+//!   isn't covered (the later phases, P3).
+//! - [`ledger`]: the memory streaming owns or manages, for the app's shared
+//!   memory check ([`coord::Coordinator::ledger`]).
+//! - [`resample`]: files at another rate played at the engine's,
+//!   resampled ahead into engine-rate units
+//!   ([`coord::Coordinator::open_at_engine_rate`]).
+//! - [`prepare`]: prepared copies at the engine's rate, named by what made
+//!   them; [`publish`]: files published whole or not at all, never over
+//!   another; [`snapshot`]: a set's real versions, named by content, and
+//!   its checks; [`ready`]: how ready a set is, from what was tested.
+//! - [`storage`]: the stick and the SD card (only through the hardware
+//!   project's handle), insertion numbers, paths kept inside a library.
 
 #![forbid(unsafe_code)]
 
@@ -27,10 +42,18 @@ pub mod crc32c;
 pub mod cursor;
 pub mod format;
 pub mod fsio;
+pub mod ledger;
 pub mod msg;
 pub mod player;
+pub mod policy;
+pub mod prepare;
+pub mod publish;
+pub mod ready;
 pub mod rec;
 pub mod recover;
+pub mod resample;
+pub mod snapshot;
+pub mod storage;
 #[cfg(feature = "testkit")]
 pub mod testkit;
 pub mod writer;

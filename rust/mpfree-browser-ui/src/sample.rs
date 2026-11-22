@@ -128,7 +128,7 @@ pub fn fill(data: &Path) -> Result<Library, String> {
                     created: 1_794_400_000,
                     saved: 1_794_430_000 + i * 600,
                     app: "preview".into(),
-                    extra: Vec::new(),
+                    ..Meta::default()
                 },
                 parts: vec![("transport".into(), format!("bpm = {tempo}\n"))],
             };
