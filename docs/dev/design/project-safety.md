@@ -53,6 +53,22 @@ A job started for one project can finish after another has opened. Where each ki
 
 The library already commits a project save in order (`Library::save_project_with`, `rust/mpfree-library/src/project.rs`): the new sounds (including an audio track's take files, copied from its work folder) and the new parts are written beside the project and synced together; then the sounds are renamed into `samples/` and the folder synced; then the old parts go into `versions/`, the new parts into place, the folder synced, and last `project.txt` through a `.part` file, synced, renamed and the folder synced. A save cut off at any point opens as the save before or the new one, never a project naming a file that isn't there (`Library::recover`). The audio tracks hand their part over only once every take has settled (0.2), so the take files a save copies are whole.
 
-## Tests under pressure (0.4, planned)
+## Tests under pressure (0.4, as built)
 
-Generated sequences of operations (a seeded generator, no new crate), injected faults (a slow read, a write error, a missing file, a result after a project switch, a save stopped between steps) and the allocation check across whole workflows (saving, opening, starting and stopping recordings).
+**Generated sequences** (`rust/mpfree-audiotracks/tests/sequences.rs`): a seeded generator (xorshift, no test crate, the same steps on every machine) drives the audio tracks in their host through 40 steps a seed, 20 seeds: recording 1 or 2 bars on any track (mono or stereo), edits (comp, split, erase, move, gain) wherever they land, undo and redo, a fit to another tempo left running, saves (one in three stopped part way, as an open stops one), opens (New, or the last save, while a fit or save may be under way), and forgetting takes. After every step every region plays a take that is there and a track's regions are in order and never overlap; every save has each take's audio whole and names only takes it holds, and opens in a fresh host exactly as saved; at the end a save reopened in place gives back the same tracks. Six more seeds run with 3 seconds of memory, so recordings and fits are refused or cut short. With the generation of 0.3 taken out, seed 13 fails: two stretched takes from before an open turn up in the next project.
+
+**Injected faults**, and where each is tested:
+
+| Fault | Test |
+|---|---|
+| A result arriving after a project switch; a stretch that finishes after it was cancelled | `tests/host.rs` `a_fit_from_before_a_project_opened_never_reaches_the_new_takes`, `tests/host_stream.rs` `a_fit_read_from_before_a_project_opened_is_dropped`, and the sequences |
+| A save stopped between steps | the sequences; `tests/host.rs` `a_cancelled_save_leaves_nothing_behind_and_the_next_save_works`; the library's `a_save_cut_off_at_any_step_opens_whole` |
+| A write error (a full disk) | the library's `a_sound_that_cannot_be_written_leaves_the_last_save_standing` |
+| A missing file | `project::tests::audio_takes_are_named_for_their_audio_and_a_missing_one_is_said`; streaming, `tests/host_stream.rs` |
+| A slow read (the disk stalling past the read-ahead) | `tests/host_stream.rs` `a_stalling_disk_is_heard_as_counted_misses_while_the_loop_goes_on` |
+| Memory that can't be reserved | `generated_sequences_with_the_memory_full_lose_nothing_else` |
+| A part this build can't read | phase 0.1's tests, above |
+
+The streaming layer's own faults (writes and finishes that fail, short reads) come with its P0.5 (`DiskStats` fault knobs); once that is on main, a save with a take at risk ends with a plain reason instead of waiting.
+
+**The allocation check across workflows:** `tests/no_alloc.rs` watches the tracks' calls through recording, punch, loops, locates, tempo changes, comping, every edit, undo and redo, forgetting, a full memory, loading a take from a save, reading takes for one, emptying the tracks for an open (`clear`) and, new, filling a save's room settled or not (`save_into`). The host's own sends to its worker and the disk thread go through unbounded channels, which allocate now and then; making them bounded is the streaming layer's P1 (agreed), after which the check moves up to the host's whole period.
