@@ -2003,13 +2003,69 @@ mod tests {
             let Some((t, kit)) = rec else {
                 panic!("no track records the kit layer: {:?}", s.said());
             };
-            assert_eq!(kit, Some(0), "kit 1's bank A");
+            assert_eq!(kit, Some((0, 0)), "kit 1's bank A");
             assert_eq!(
                 s.track_kits.kit_of(usize::from(t)),
                 Some(0),
                 "it plays kit 1"
             );
             assert_ne!(s.time.armed(), Some(usize::from(t)), "a track of its own");
+        });
+    }
+
+    /// Sampler step 15f, part 2: a kit layer plays each key too, as its
+    /// kit's Keys play sends it: on a kit of drum pads, the pad that sends
+    /// the note (the MPC note map, whatever bank the pads show), and the
+    /// key's let-go reaches it there. A kit layer that is the kit the
+    /// armed track's keys play takes none of them, so a key never plays a
+    /// kit twice.
+    #[test]
+    fn a_kit_layer_plays_each_key_as_its_kit_takes_it() {
+        use crate::instrument_list::InstrumentId;
+        on_big_stack(|| {
+            let mut session = Session::new();
+            let s = &mut session;
+            s.make_sounds();
+            s.run_periods(2);
+            let kit_1 = s.instrument_list.of_kit(0).expect("kit 1 has an id");
+            let kit_2 = s.instrument_list.of_kit(1).expect("kit 2 has an id");
+            let synth = InstrumentId::SHARED_SYNTH;
+            let part =
+                format!("mpfree-pads 2\nplay instrument {synth}\nlayer instrument {kit_2}\n");
+            let (notes, fx) = s.app.open_pads(Some(&part));
+            assert!(notes.is_empty(), "{notes:?}");
+            s.fx.extend(fx);
+            s.run_periods(4);
+            assert_eq!(s.app.pads_layer_kits()[0], Some((1, 0)), "kit 2's bank A");
+            let player = s.sounds.as_ref().expect("the kits");
+            let pad = (0..16)
+                .find(|&p| player.has_sound(1, p))
+                .expect("a pad kit 2 fills");
+            let note = mpfree_midi::profile::kit_note(pad).expect("its note");
+            s.key_edge(note, Some(100));
+            s.run_periods(2);
+            let player = s.sounds.as_ref().expect("the kits");
+            assert!(player.kit_pad_voices(1, pad) > 0, "kit 2's pad plays");
+            assert_eq!(s.pad_layers.kit_keys_held(), 1, "the key is held there");
+            s.key_edge(note, None);
+            s.run_periods(2);
+            assert_eq!(s.pad_layers.kit_keys_held(), 0, "let go there");
+            s.run_for(2.0);
+
+            // A layer on the kit the armed track plays leaves the key to
+            // the track.
+            let part =
+                format!("mpfree-pads 2\nplay instrument {kit_2}\nlayer instrument {kit_1}\n");
+            let (notes, fx) = s.app.open_pads(Some(&part));
+            assert!(notes.is_empty(), "{notes:?}");
+            s.fx.extend(fx);
+            s.run_periods(4);
+            assert_eq!(s.app.pads_layer_kits()[0], Some((0, 0)), "kit 1's bank A");
+            s.key_edge(note, Some(100));
+            s.run_periods(2);
+            assert_eq!(s.pad_layers.kit_keys_held(), 0, "the track has the key");
+            s.key_edge(note, None);
+            s.run_periods(2);
         });
     }
 

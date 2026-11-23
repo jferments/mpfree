@@ -5661,10 +5661,91 @@ fn rec_pads_arp(to: PadsPreview, n: ArpNote, rec: Option<u8>, time: &mut time::T
 /// No track: what [`PadsArp`] keeps for a note nothing records.
 const NO_REC: u8 = u8::MAX;
 
-/// The note a layer's track records pad `pad` (0 to 15) as: the pad, or a
-/// kit layer's pad of bank `page` (sampler step 15f).
-fn layer_note(pad: usize, page: Option<u8>) -> u8 {
-    page.map_or(pad as u8, |p| p * 16 + pad as u8)
+/// A kit layer as its track records it (sampler step 15f): the kit, the
+/// bank of it its hits take, and how the kit takes notes now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LayerKit {
+    kit: u8,
+    page: u8,
+    keys: mpfree_sampler::engine::KitKeys,
+}
+
+impl LayerKit {
+    /// The note pad `pad` (0 to 15)'s hit records as: the kit's pad of the
+    /// bank, or the note that pad plays on a kit played as notes (its
+    /// track holds notes, `sampler::KitNotes`).
+    fn pad_note(self, pad: usize) -> Option<u8> {
+        let kp = usize::from(self.page) * 16 + pad;
+        if self.keys.takes_notes() {
+            self.keys.note_of_pad(kp)
+        } else {
+            u8::try_from(kp).ok().filter(|&p| p < 128)
+        }
+    }
+
+    /// The note a key `note` records as: itself on a kit played as notes,
+    /// else the pad that sends it (the MPC note map, any bank); None for a
+    /// key the kit's keygroups take on a kit of pads (it plays but isn't
+    /// kept, as on the armed track).
+    fn key_note(self, note: u8) -> Option<u8> {
+        if self.keys.takes_notes() {
+            Some(note)
+        } else if self.keys.to_keygroups(note) {
+            None
+        } else {
+            Some(mpfree_midi::profile::kit_pad_of_note(note) as u8)
+        }
+    }
+}
+
+/// A keyboard's key `k` on the kit layers (sampler step 15f,
+/// [`PadLayers::kit_key`]): the pad it reaches as that pad's kind has it
+/// ([`play_routed_pad`]), or the keygroups as a key; the wheel bends their
+/// keygroups. `v` shapes a velocity as the pads'. None of it reaches the
+/// kit the armed track's keys play already (`armed_kit`). Never allocates.
+#[allow(clippy::too_many_arguments)]
+fn play_kit_layer_key(
+    layers: &mut PadLayers,
+    k: midi_in::Key,
+    v: impl Fn(u8) -> u8,
+    armed_kit: Option<usize>,
+    track: u8,
+    midi: &mut midi_out::MidiOut,
+    (pad_synths, synth): (&mut pad_synths::PadSynths, &mut synth::Synth),
+    player: &mut sampler::Player,
+) {
+    use midi_in::Key;
+    use mpfree_play::Event;
+    if let Key::Bend { value } = k {
+        for kit in layers.kit_bend(armed_kit).into_iter().flatten() {
+            player.bend_kit(usize::from(kit), value);
+        }
+        return;
+    }
+    for (kit, to) in layers.kit_key(k, armed_kit, player).into_iter().flatten() {
+        let kit = usize::from(kit);
+        match (to, k) {
+            (sampler::NoteTo::Pad(p), _) => {
+                let note = p.min(127) as u8;
+                let event = match k {
+                    Key::Down { velocity, .. } => Event::NoteOn {
+                        note,
+                        velocity: v(velocity),
+                    },
+                    Key::Up { .. } => Event::NoteOff { note },
+                    Key::Pressure { value, .. } => Event::Pressure { note, value },
+                    _ => continue,
+                };
+                play_routed_pad(track, p, event, midi, (pad_synths, synth), player, kit);
+            }
+            (sampler::NoteTo::Keys(n), Key::Down { velocity, .. }) => {
+                player.key_kit_at(kit, n, v(velocity), 0);
+            }
+            (sampler::NoteTo::Keys(n), Key::Up { .. }) => player.key_off_kit_at(kit, n, 0),
+            // A keygroup's key takes no pressure yet.
+            _ => {}
+        }
+    }
 }
 
 /// The kit layers' pads a hit played or lets go of, (kit, kit pad) each
@@ -5922,17 +6003,24 @@ struct PadLayers {
     /// The pedals the keys put down on the layers.
     pedals: midi_in::PedalsDown,
     /// The track recording each layer now (`App::pads_layer_recs`), with
-    /// the bank of a kit layer's kit (its track records that bank's pad,
-    /// sampler step 15f).
-    rec: [Option<(u8, Option<u8>)>; PadLayers::MORE],
-    /// The tracks each pad's hit went into, for its let-go and pressure.
-    fed: [[Option<(u8, Option<u8>)>; PadLayers::MORE]; 16],
+    /// a kit layer's kit (its track records that bank's pad, or the note
+    /// it plays, sampler step 15f).
+    rec: [Option<(u8, Option<LayerKit>)>; PadLayers::MORE],
+    /// The track each pad's hit went into for each layer, and the note it
+    /// went in as, for its let-go and pressure.
+    fed: [[Option<(u8, u8)>; PadLayers::MORE]; 16],
     /// The kit each kit layer plays and its bank (`App::pads_layer_kits`,
     /// sampler step 15f).
     kits: [Option<(u8, u8)>; PadLayers::MORE],
     /// The kit pad each pad's hit played on each kit layer, (kit, kit
     /// pad), for its let-go and pressure though the layers changed since.
     kit_held: [[Option<(u8, u8)>; PadLayers::MORE]; 16],
+    /// Where each key went on each kit layer, (kit, where), for its
+    /// let-go and pressure though the layers changed since.
+    kit_keys: [[Option<(u8, sampler::NoteTo)>; PadLayers::MORE]; 128],
+    /// The kit layers the wheel bent, to bend back once they are layers
+    /// no more.
+    bent: [Option<u8>; PadLayers::MORE],
     /// The pad each key went to on each track it went into, as a route's
     /// (CAPTURE's rule: a note no pad plays alone isn't kept).
     keys: midi_in::RoutedPads,
@@ -5954,23 +6042,106 @@ impl PadLayers {
             fed: [[None; PadLayers::MORE]; 16],
             kits: [None; PadLayers::MORE],
             kit_held: [[None; PadLayers::MORE]; 16],
+            kit_keys: [[None; PadLayers::MORE]; 128],
+            bent: [None; PadLayers::MORE],
             keys: midi_in::RoutedPads::new(),
             key_tracks: 0,
         }
     }
 
-    /// The tracks recording the layers now (`App::pads_layer_recs`): the
-    /// hits and keys that follow go into them. A hit or key held goes on
-    /// where it went.
-    fn rec_to(&mut self, recs: [Option<(u8, Option<u8>)>; PadLayers::MORE]) {
-        self.rec = recs;
+    /// The tracks recording the layers now (`App::pads_layer_recs`), a
+    /// kit layer's with how its kit takes notes now (`keys`,
+    /// `sampler::Player::kit_keys`): the hits and keys that follow go
+    /// into them. A hit or key held goes on where it went.
+    fn rec_to(
+        &mut self,
+        recs: [Option<app::LayerRec>; PadLayers::MORE],
+        keys: impl Fn(usize) -> mpfree_sampler::engine::KitKeys,
+    ) {
+        self.rec = recs.map(|r| {
+            r.map(|(t, kit)| {
+                let kit = kit.map(|(kit, page)| LayerKit {
+                    kit,
+                    page,
+                    keys: keys(usize::from(kit)),
+                });
+                (t, kit)
+            })
+        });
     }
 
     /// The kit layers as the app has them now (`App::pads_layer_kits`):
-    /// each hit plays its pad of their bank on them too. A hit held goes
-    /// on where it went.
-    fn kits_to(&mut self, kits: [Option<(u8, u8)>; PadLayers::MORE]) {
+    /// each hit plays its pad of their bank on them too, and each key as
+    /// the kit takes it. A hit or key held goes on where it went. Returns
+    /// the kits the wheel bent that are layers no more, to bend back.
+    fn kits_to(
+        &mut self,
+        kits: [Option<(u8, u8)>; PadLayers::MORE],
+    ) -> [Option<u8>; PadLayers::MORE] {
         self.kits = kits;
+        let now = kits.map(|l| l.map(|(kit, _)| kit));
+        let gone = self.bent.map(|b| b.filter(|k| !now.contains(&Some(*k))));
+        self.bent = self.bent.map(|b| b.filter(|k| now.contains(&Some(*k))));
+        gone
+    }
+
+    /// A keyboard's key `k` on the kit layers (sampler step 15f), (kit,
+    /// where it goes) each, as each kit's Keys play sends it
+    /// (`sampler::Player::note_to`: the pad that sends the note, or the
+    /// keygroups that hold it). A key going down is kept for its let-go and
+    /// pressure, which go where it went though the layers changed since. A
+    /// kit layer that is the kit the armed track's keys play already
+    /// (`armed_kit`) takes none, so one key never plays a kit twice; nor
+    /// does a second note-on for a key held there. Never allocates.
+    fn kit_key(
+        &mut self,
+        k: midi_in::Key,
+        armed_kit: Option<usize>,
+        player: &sampler::Player,
+    ) -> [Option<(u8, sampler::NoteTo)>; PadLayers::MORE] {
+        use midi_in::Key;
+        let none = [None; PadLayers::MORE];
+        let at = |note: u8| usize::from(note & 0x7F);
+        match k {
+            Key::Down { note, .. } => {
+                let kits = self.kits;
+                let held = &mut self.kit_keys[at(note)];
+                if held.iter().any(Option::is_some) {
+                    return none;
+                }
+                *held = kits.map(|l| {
+                    let (kit, _) = l?;
+                    let k = usize::from(kit);
+                    (Some(k) != armed_kit).then(|| (kit, player.note_to(k, note)))
+                });
+                *held
+            }
+            Key::Up { note } => std::mem::take(&mut self.kit_keys[at(note)]),
+            Key::Pressure { note, .. } => self.kit_keys[at(note)],
+            _ => none,
+        }
+    }
+
+    /// The kit layers the wheel bends now (their keygroups,
+    /// `sampler::Player::bend_kit`): every one but the kit the armed
+    /// track's keys play already (`armed_kit`), kept so a kit that stops
+    /// being a layer is bent back ([`PadLayers::kits_to`]).
+    fn kit_bend(&mut self, armed_kit: Option<usize>) -> [Option<u8>; PadLayers::MORE] {
+        let bent = self.kits.map(|l| {
+            l.map(|(kit, _)| kit)
+                .filter(|&k| Some(usize::from(k)) != armed_kit)
+        });
+        self.bent = bent;
+        bent
+    }
+
+    /// The keys held on the kit layers now (for the tests).
+    #[cfg(test)]
+    fn kit_keys_held(&self) -> usize {
+        self.kit_keys
+            .iter()
+            .filter(|k| k.iter().any(Option::is_some))
+            .count()
     }
 
     /// Pad `pad` (0 to 15) down: the kit layers' pads it plays, (kit, kit
@@ -6006,9 +6177,12 @@ impl PadLayers {
         let (Some(velocity), Some(fed)) = (velocity, self.fed.get_mut(pad)) else {
             return;
         };
-        *fed = self.rec;
-        for &(t, page) in self.rec.iter().flatten() {
-            let note = layer_note(pad, page);
+        *fed = self.rec.map(|r| {
+            let (t, kit) = r?;
+            let note = kit.map_or(Some(pad as u8), |k| k.pad_note(pad))?;
+            Some((t, note))
+        });
+        for &(t, note) in fed.iter().flatten() {
             time.routed_played(t, 0, mpfree_play::Event::NoteOn { note, velocity });
         }
     }
@@ -6018,8 +6192,7 @@ impl PadLayers {
         let Some(fed) = self.fed.get_mut(pad) else {
             return;
         };
-        for (t, page) in std::mem::take(fed).into_iter().flatten() {
-            let note = layer_note(pad, page);
+        for (t, note) in std::mem::take(fed).into_iter().flatten() {
             time.routed_played(t, 0, mpfree_play::Event::NoteOff { note });
         }
     }
@@ -6029,16 +6202,16 @@ impl PadLayers {
         let Some(fed) = self.fed.get(pad) else {
             return;
         };
-        for &(t, page) in fed.iter().flatten() {
-            let note = layer_note(pad, page);
+        for &(t, note) in fed.iter().flatten() {
             time.routed_played(t, 0, mpfree_play::Event::Pressure { note, value });
         }
     }
 
     /// A keyboard's key into each track recording a layer, as the pad its
     /// note plays there (`midi_file::pad_on_track`: the track plays its
-    /// layer's synth, its own pad map's or the shared synth's); its end
-    /// and pressure where it went. `velocity` is as the recorder takes it
+    /// layer's synth, its own pad map's or the shared synth's), or as a
+    /// kit layer's kit takes it ([`LayerKit::key_note`], sampler step
+    /// 15f); its end and pressure where it went. `velocity` is as the recorder takes it
     /// (None: nothing records the pads now).
     fn rec_key(
         &mut self,
@@ -6054,9 +6227,12 @@ impl PadLayers {
                 let Some(velocity) = velocity else {
                     return;
                 };
-                for &(t, _) in self.rec.iter().flatten() {
+                for &(t, kit) in self.rec.iter().flatten() {
                     let key = Key::Down { note, velocity };
-                    let pad = |n| midi_file::pad_on_track(own, Some(synth), usize::from(t), n);
+                    let pad = |n| match kit {
+                        Some(k) => k.key_note(n),
+                        None => midi_file::pad_on_track(own, Some(synth), usize::from(t), n),
+                    };
                     if let Some(ev) = self.keys.event(t, key, pad) {
                         time.routed_played(t, 0, ev);
                         self.key_tracks |= 1 << t;
@@ -11233,6 +11409,12 @@ fn player_session(
             ),
             midi_in::KeysPlay::KitPads(_)
         );
+        // The kit the armed track's keys play, which the kit layers leave
+        // to it (sampler step 15f); none while the pads' synth takes the
+        // keys (`KeysOnPads`).
+        let armed_kit = (kit_keys || kit_notes_armed)
+            .then(|| player.kit())
+            .filter(|_| !matches!(pads_preview, Some(PadsPreview::Synth | PadsPreview::Host)));
         if armed != expr_track || pads_preview != expr_pads {
             // Its gear's pedals come up with its expression; its
             // instrument's and the synth's here (or the pads' synth's, as
@@ -11257,6 +11439,18 @@ fn player_session(
             // The pads' layers (step 11a) play each key too, by note,
             // whichever way the first plays it.
             pad_layers.key(k, shape, &mut synth, &mut mix.instruments);
+            // A kit layer plays each key too, as its kit's Keys play sends
+            // it (sampler step 15f).
+            play_kit_layer_key(
+                &mut pad_layers,
+                k,
+                shape,
+                armed_kit,
+                armed as u8,
+                &mut midi_out,
+                (&mut mix.pad_synths, &mut synth),
+                &mut player,
+            );
             // And into each track recording a layer (step 11c).
             let rv = match k {
                 midi_in::Key::Down { velocity, .. } => app.layer_rec_velocity(velocity),
@@ -12686,8 +12880,14 @@ fn player_session(
             &mut mix.instruments,
         );
         // The armed tracks that record a layer (step 11c).
-        pad_layers.rec_to(app.pads_layer_recs(time.also()));
-        pad_layers.kits_to(app.pads_layer_kits());
+        pad_layers.rec_to(app.pads_layer_recs(time.also()), |kit| player.kit_keys(kit));
+        for kit in pad_layers
+            .kits_to(app.pads_layer_kits())
+            .into_iter()
+            .flatten()
+        {
+            player.bend_kit(usize::from(kit), 0.0);
+        }
         // And what the pads play on their own, the pads' arp's notes too,
         // into the track REC set up for it (sampler step 15c).
         let own_rec = app.pads_own_rec(time.also());
@@ -15548,6 +15748,43 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Sampler step 15f: a kit layer's track records a hit as the kit's
+    /// pad of the layer's bank, and a key as the pad that sends it; on a
+    /// kit played as notes, both as the notes they play. A key its
+    /// keygroups take on a kit of pads plays but isn't kept.
+    #[test]
+    fn a_kit_layer_records_a_hit_and_a_key_as_its_kit_takes_them() {
+        use mpfree_sampler::engine::KitKeys;
+        use mpfree_sampler::model::KeysPlay;
+        let pads = LayerKit {
+            kit: 1,
+            page: 2,
+            keys: KitKeys::PADS,
+        };
+        assert_eq!(pads.pad_note(3), Some(35), "bank C's pad 4");
+        assert_eq!(pads.key_note(37), Some(0), "C#2 sends A1");
+        let both = LayerKit {
+            keys: KitKeys {
+                play: KeysPlay::Both,
+                held: 1 << 60,
+                pads_from: None,
+            },
+            ..pads
+        };
+        assert_eq!(both.key_note(60), None, "its keygroup's key isn't kept");
+        assert_eq!(both.key_note(37), Some(0), "the rest send their pads");
+        let notes = LayerKit {
+            keys: KitKeys {
+                play: KeysPlay::Keygroups,
+                held: 0,
+                pads_from: Some(48),
+            },
+            ..pads
+        };
+        assert_eq!(notes.pad_note(3), Some(48 + 35), "the note C4 plays");
+        assert_eq!(notes.key_note(61), Some(61), "a key as itself");
+    }
 
     /// 16 Levels' Transpose on the pads (S4): the step the armed track is
     /// on is lit, pad 9 dim white, the rest dim blue; past the pads none

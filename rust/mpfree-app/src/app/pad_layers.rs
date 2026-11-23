@@ -56,6 +56,10 @@ pub const PAD_LAYERS: usize = crate::instruments::PAD_LAYERS;
 /// The layers beyond the first.
 pub const MORE: usize = PAD_LAYERS - 1;
 
+/// The track recording a layer, with a kit layer's kit and the bank of it
+/// its hits take (sampler step 15f; [`App::pads_layer_recs`]).
+pub type LayerRec = (u8, Option<(u8, u8)>);
+
 /// Names joined: "FM + Pluck" ([`App::pads_layer_list`]); None when
 /// there are none.
 pub fn layer_names(list: &[Option<&'static str>; PAD_LAYERS]) -> Option<String> {
@@ -184,10 +188,11 @@ impl App {
     /// the other armed tracks (`also`, a bit each: `TimeHost::also`) that
     /// plays its synth, as REC sets them up (`desk.rs`, `rec_synth`). None:
     /// no layer there, one that doesn't play on the bank the pads are on,
-    /// or no such track. The audio loop gives them each pad hit, with the
-    /// bank of the kit a kit layer plays (sampler step 15f: its track
-    /// records the kit's pad of that bank). Allocates nothing.
-    pub fn pads_layer_recs(&self, also: u128) -> [Option<(u8, Option<u8>)>; MORE] {
+    /// or no such track. The audio loop gives them each pad hit and key,
+    /// with the kit a kit layer plays and the bank of it (sampler step
+    /// 15f: its track records the kit's pad of that bank, and a key as
+    /// the kit takes it). Allocates nothing.
+    pub fn pads_layer_recs(&self, also: u128) -> [Option<LayerRec>; MORE] {
         let more = self.rec_more_sounds();
         let all = self.rec_more_tracks(also);
         std::array::from_fn(|i| match more[i] {
@@ -195,11 +200,8 @@ impl App {
                 from: RecFrom::Layer(l),
                 ..
             }) if self.layer_plays_now(l) => {
-                let page = self
-                    .layer_now(l)
-                    .and_then(|e| self.layer_kit(e))
-                    .map(|k| k.1);
-                all[i].map(|t| (t, page))
+                let kit = self.layer_now(l).and_then(|e| self.layer_kit(e));
+                all[i].map(|t| (t, kit))
             }
             _ => None,
         })

@@ -44,7 +44,7 @@ pub use arp::{
 };
 pub use mapper::{Code, MapView, Mark};
 use mpfree_arp::scale::pads::Pad as PadNotes;
-pub use pad_layers::layer_names;
+pub use pad_layers::{layer_names, LayerRec};
 pub use pads_focus::{
     layer_takes, synth_track, unfit, BankEntry, LayerEntry, LayerTake, PadFocus, PadMap, RecPlan,
     RecSound, SynthTake,
