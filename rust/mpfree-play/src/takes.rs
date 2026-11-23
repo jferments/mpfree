@@ -1107,6 +1107,64 @@ impl Takes {
         Ok(number)
     }
 
+    /// Add a part on a new track (composing tools S2.6, New track): `track`
+    /// goes in at the end of the project, as [`Takes::add_track_as`] adds
+    /// one (the lowest destination no track uses, its lasting id), with
+    /// `clip` in its slot `slot` and, when `line` is given, row `slot`'s
+    /// Harmony line, as one edit that one UNDO takes back (the clip, the
+    /// chords and the track). The edit's number and the new track's index.
+    /// `TooManyTracks` at [`MAX_TRACKS`], `BadScene` for a line too long,
+    /// the clip's own refusals as they are; nothing changes on an error.
+    pub fn add_part_on_new_track(
+        &mut self,
+        project: &mut Project,
+        mut track: Track,
+        slot: usize,
+        clip: Clip,
+        line: Option<ChordTimeline>,
+    ) -> Result<(u32, usize), ModelError> {
+        if project.tracks.len() >= MAX_TRACKS {
+            return Err(ModelError::TooManyTracks);
+        }
+        clip.check()?;
+        let edit = match line {
+            Some(l) => chords_edit(project, slot, l)?,
+            None => None,
+        };
+        track.dest = (0..=MAX_TRACKS as DestId)
+            .find(|d| project.tracks.iter().all(|t| t.dest != *d))
+            .unwrap_or(project.tracks.len() as DestId);
+        project.give_track_id(&mut track);
+        let index = project.tracks.len();
+        project.tracks.push(track);
+        if let Err(e) = project.put_new_clip(index, slot, clip) {
+            project.tracks.pop();
+            return Err(e);
+        }
+        let clip = project.clip(index, slot).expect("put").clone();
+        if let Some(e) = &edit {
+            put_row_chords(project, slot, &e.after);
+        }
+        // The track as it went in, empty: the take puts the clip back in
+        // it on REDO.
+        let mut empty = project.tracks[index].clone();
+        if let Some(s) = empty.slots.get_mut(slot) {
+            *s = None;
+        }
+        self.edits += 1;
+        let number = self.edits;
+        self.push(Take {
+            number,
+            edited: true,
+            part: true,
+            made: vec![(index, slot, clip)],
+            track_added: Some((index, empty)),
+            chords: edit.map(Box::new),
+            ..Take::default()
+        });
+        Ok((number, index))
+    }
+
     /// ERASE + a clip (Jay after live test 3): take clip `slot` of
     /// `track` out of its slot, as an edit of its own that undo puts back.
     /// A clip the song plays moves to the song's own clips, with its id,
@@ -2395,6 +2453,56 @@ mod tests {
             Err(ModelError::BadSlot)
         );
         assert_eq!(p, now);
+    }
+
+    /// A part on a new track (S2.6, New track) is one edit: UNDO takes
+    /// the clip and the track away, REDO brings both back; with no room
+    /// for a track nothing changes.
+    #[test]
+    fn a_part_on_a_new_track_is_one_edit() {
+        let mut p = project();
+        p.give_clip_ids();
+        let before = p.clone();
+        let mut t = Takes::new(8);
+        let (_, index) = t
+            .add_part_on_new_track(
+                &mut p,
+                Track::new("Bass", 0),
+                2,
+                Clip::new("bass", 3840),
+                None,
+            )
+            .unwrap();
+        assert_eq!(index, before.tracks.len());
+        assert_eq!(p.tracks[index].name, "Bass");
+        assert_eq!(p.clip(index, 2).unwrap().name, "bass");
+        assert_ne!(p.tracks[index].id, mpfree_seq::TrackId::NONE);
+        assert!(p.tracks[..index]
+            .iter()
+            .all(|o| o.dest != p.tracks[index].dest));
+        t.undo(&mut p);
+        assert_eq!(p.tracks, before.tracks);
+        t.redo(&mut p);
+        assert_eq!(p.tracks.len(), index + 1);
+        assert_eq!(p.clip(index, 2).unwrap().name, "bass");
+        t.undo(&mut p);
+        assert_eq!(p.tracks, before.tracks);
+        // No room: nothing changes.
+        while p.tracks.len() < MAX_TRACKS {
+            p.tracks.push(Track::new("t", 0));
+        }
+        let full = p.clone();
+        assert_eq!(
+            t.add_part_on_new_track(
+                &mut p,
+                Track::new("Bass", 0),
+                0,
+                Clip::new("bass", 3840),
+                None
+            ),
+            Err(ModelError::TooManyTracks)
+        );
+        assert_eq!(p, full);
     }
 
     fn taken(tick: i64, take: u32) -> Taken {
