@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-midi rust/mpfree-midi-ui/src/learn.rs rust/mpfree-midi-ui/src/port_page.rs rust/mpfree-app/src/midi_in.rs rust/mpfree-app/src/midi_out.rs rust/mpfree-app/src/cv_out.rs
-checked: 2026-11-19 f0b39161
+checked: 2026-11-22 a7bacbcb
 -->
 
 # Playing other gear: MIDI, sync and CV
@@ -300,6 +300,8 @@ Learned controls kept in **Project** are saved with the song; those kept in **Ri
 
 While you record, a learned control that turns something on the armed track (a synth's knob, a pad's own setting, the track's fader, pan or sends, an effect on the track, a MIDI effect's setting) records into the clip as if you turned that knob on the screen: each move becomes a lock on the note you are playing, or on the nearest step ([Knob moves while you record](clips.md#knob-moves-while-you-record)). The arpeggiator's settings, the tempo, the transport, the looper, the Play card's controls and the macros only move; they don't record.
 
+A control on your controller can't tell MPFree when your hand leaves it, so MPFree counts it as in your hand while it moves and for half a second after it stops, as it does a synth's knob. Then the setting follows the clip again, with the move you just recorded. If you touch the same setting on the screen meanwhile, your finger takes it over, and the control is ignored until it has been still for half a second.
+
 ### Playing and stopping from your controller
 
 A button, pad, key or footswitch on your controller can press MPFree's transport buttons, and a knob or fader can set the tempo. In the Learn section, tap **Transport and tempo** by the heading (the card shows them straight away while nothing is learned yet), tap one, then press the button or move the knob:
@@ -362,6 +364,7 @@ The **MIDI Follow** card is in the **Learn** section. Tap **MIDI Follow** by the
 The line under them says what it does now, or why it waits (*Keystep 37 isn't plugged in: Follow waits for it.*).
 
 - A knob turns its Q-Link by as much as it moves, so a value never jumps when you start turning. The first move after you plug the controller in or turn Follow on only tells MPFree where the knob is.
+- A knob counts as a finger on its Q-Link while it turns and for half a second after it stops. Then it lets go as a finger lifting off would: a setting you turned while recording follows the clip again, and on the Sample page that run of turns is one UNDO step.
 - The controller's keys still play the armed track, as any keyboard's do, and its other controls do what they did. A control you taught with MIDI Learn keeps its job: Learn wins over Follow.
 - MIDI Follow is kept with the rig, so it stays when you open another project.
 - Values go back only while **Send values back** is on and **Send MIDI and CV out** is on in Prefs, and only to a controller with an output. Each goes on the CC and channel its knob sends.

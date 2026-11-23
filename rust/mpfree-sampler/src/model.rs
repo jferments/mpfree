@@ -132,6 +132,16 @@ impl Pcm {
                 .map(|s| std::borrow::Cow::Owned(s.iter().map(|x| x.f()).collect())),
         }
     }
+    /// As [`Pcm::f32s`], made straight into shared memory in one go, with
+    /// no second copy on the way (a 16-bit sound's floats collected into a
+    /// `Vec` and then shared would be held twice for a moment). A stretch
+    /// job holds its input this way.
+    pub fn f32s_shared(&self, range: std::ops::Range<usize>) -> Option<Arc<[f32]>> {
+        match self {
+            Pcm::F32(d) => d.get(range).map(Arc::from),
+            Pcm::I16(d) => d.get(range).map(|s| s.iter().map(|x| x.f()).collect()),
+        }
+    }
     /// Every sample as floats ([`Pcm::f32s`] of all of it).
     pub fn all_f32(&self) -> std::borrow::Cow<'_, [f32]> {
         self.f32s(0..self.len()).expect("the whole range")

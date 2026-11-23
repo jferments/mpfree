@@ -9,45 +9,24 @@
 //! saying what happened.
 //!
 //! **A kit is named by its instrument id, never by a track.** Instruments
-//! make the sound and tracks record and play back to them, so a command
-//! keeps its shape when kits join the project's list of instruments (the
-//! refactor's phase 3, with the instrument redesign). Until then the list
-//! has no kits, and kit `k` in the list of kits answers to a stand-in id,
-//! [`kit_id`]: past any number a list gives out (it counts up one at a
-//! time from 2), never saved and never shown. Phase 3 swaps [`kit_id`] and
-//! [`kit_of`] for the list's own ids; nothing that makes or runs a command
-//! changes.
+//! make the sound and tracks record and play back to them. Every kit is
+//! in the project's list of instruments with its lasting id (the
+//! refactor's phase 3, step 14), and a command names it by that id: the
+//! page goes by the list's [`KitIds`], as the audio loop last said them,
+//! to name a kit and to find it again.
 
 use std::fmt;
 use std::ops::Range;
 
-use mpfree_sampler::engine::MAX_KITS;
 use mpfree_sampler::model::{ModelError, Project};
 pub use mpfree_sampler_ui::command::{Change, Chopped, Landing, SceneSlot};
 
-use crate::instrument_list::InstrumentId;
-
-/// The stand-in id of the first kit, until kits join the list of
-/// instruments: the top half of the numbers, which a list that gives out
-/// one number at a time from 2 never reaches.
-const FIRST_KIT_ID: u32 = 1 << 31;
-
-/// The id kit `kit` (its place in the list of kits, from 0) answers to.
-pub fn kit_id(kit: usize) -> InstrumentId {
-    let n = FIRST_KIT_ID + (kit.min(MAX_KITS) as u32);
-    InstrumentId::from_number(n).expect("the stand-in ids start past 0")
-}
-
-/// The kit that answers to `id`, as a place in a list of `kits` kits, or
-/// None (not a kit's id, or a kit the list hasn't got).
-pub fn kit_of(id: InstrumentId, kits: usize) -> Option<usize> {
-    (0..kits.min(MAX_KITS)).find(|&k| kit_id(k) == id)
-}
+use crate::instrument_list::{InstrumentId, KitIds};
 
 /// A change to a kit, the kit named by its instrument id.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Command {
-    /// The kit it changes ([`kit_id`]).
+    /// The kit it changes, by its id in the project's list.
     pub kit: InstrumentId,
     pub change: Change,
     /// The same for every change of one drag or turn, so they make one
@@ -60,11 +39,10 @@ pub struct Command {
 }
 
 impl Command {
-    /// `change` to kit `kit` (a place in the list of kits), a step of its
-    /// own.
-    pub fn to_kit(kit: usize, change: Change) -> Command {
+    /// `change` to the kit `kit` names, a step of its own.
+    pub fn to_kit(kit: InstrumentId, change: Change) -> Command {
         Command {
-            kit: kit_id(kit),
+            kit,
             change,
             gesture: None,
             onto: None,
@@ -76,11 +54,11 @@ impl Command {
         Command { gesture, ..self }
     }
 
-    /// The command's result onto kit `kit` (a place in the list of kits)
-    /// instead: Chop to a new kit.
-    pub fn onto(self, kit: usize) -> Command {
+    /// The command's result onto the kit `kit` names instead: Chop to a
+    /// new kit.
+    pub fn onto(self, kit: InstrumentId) -> Command {
         Command {
-            onto: Some(kit_id(kit)),
+            onto: Some(kit),
             ..self
         }
     }
@@ -91,6 +69,9 @@ impl Command {
 pub enum Refused {
     /// No kit answers to the id.
     NoKit(InstrumentId),
+    /// The kit place has no id in the project's list: there is no kit
+    /// there.
+    NoKitAt(usize),
     /// The kit refused the change (no such pad, layer or sound, or a pad
     /// the model doesn't take).
     Model(ModelError),
@@ -104,7 +85,7 @@ pub enum Refused {
 impl fmt::Display for Refused {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Refused::NoKit(_) => write!(f, "NoKit"),
+            Refused::NoKit(_) | Refused::NoKitAt(_) => write!(f, "NoKit"),
             Refused::Model(e) => write!(f, "{e:?}"),
             Refused::OntoAnotherKit => write!(f, "OntoAnotherKit"),
         }
@@ -135,13 +116,15 @@ pub struct Done {
     pub put_back: Option<(usize, usize)>,
 }
 
-/// Runs `cmd` on `kits` (the list of kits): the kit its id names makes the
-/// change as one undo step, or as part of its gesture's step. Refused, no
-/// kit changes.
-pub fn run(kits: &mut [Project], cmd: &Command) -> Result<Done, Refused> {
-    let kit = kit_of(cmd.kit, kits.len()).ok_or(Refused::NoKit(cmd.kit))?;
+/// Runs `cmd` on `kits` (the list of kits, each place's id in `ids`): the
+/// kit its id names makes the change as one undo step, or as part of its
+/// gesture's step. Refused, no kit changes.
+pub fn run(kits: &mut [Project], ids: &KitIds, cmd: &Command) -> Result<Done, Refused> {
+    let kit = ids
+        .kit(cmd.kit, kits.len())
+        .ok_or(Refused::NoKit(cmd.kit))?;
     let onto = match cmd.onto {
-        Some(id) => Some(kit_of(id, kits.len()).ok_or(Refused::NoKit(id))?),
+        Some(id) => Some(ids.kit(id, kits.len()).ok_or(Refused::NoKit(id))?),
         None => None,
     };
     let done = |kit, pads| Done {
@@ -221,21 +204,53 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn a_kit_answers_to_its_id_and_no_instrument_of_the_list_is_a_kit() {
-        for k in [0, 1, 5, MAX_KITS - 1] {
-            assert_eq!(kit_of(kit_id(k), MAX_KITS), Some(k));
-        }
-        assert_eq!(kit_of(kit_id(5), 3), None, "a kit the list hasn't got");
-        // The shared synth and the ids a list gives tracks' instruments
-        // are never a kit's.
+    /// The project's list as the audio loop has it: track 1's own
+    /// instrument (2), then the three kits (3, 4 and 5).
+    fn listed() -> InstrumentList {
         let mut list = InstrumentList::new();
-        assert!(list.follow(0b111));
-        let given: Vec<InstrumentId> = (0..3).filter_map(|t| list.own_of(t)).collect();
-        assert_eq!(given.len(), 3);
-        for id in given.into_iter().chain([InstrumentId::SHARED_SYNTH]) {
-            assert_eq!(kit_of(id, MAX_KITS), None, "instrument {id}");
+        assert!(list.follow(0b1));
+        assert!(list.follow_kits(3));
+        list
+    }
+
+    /// Kit `k`'s id in [`listed`].
+    fn id(k: usize) -> InstrumentId {
+        listed().of_kit(k).expect("a kit's id")
+    }
+
+    fn run(kits: &mut [Project], cmd: &Command) -> Result<Done, Refused> {
+        super::run(kits, &listed().kit_ids(), cmd)
+    }
+
+    #[test]
+    fn a_kit_answers_to_its_id_in_the_list_and_no_other_instrument_is_a_kit() {
+        let mut k = kits();
+        let list = listed();
+        let ids = list.kit_ids();
+        let level = |kit| {
+            Command::to_kit(
+                kit,
+                Change::Own {
+                    pad: 0,
+                    field: PadField::Level,
+                    value: -3.0,
+                },
+            )
+        };
+        for kit in 0..3 {
+            assert_eq!(run(&mut k, &level(id(kit))).map(|d| d.kit), Ok(kit));
         }
+        // The shared synth and track 1's own instrument are no kit's, nor
+        // is a kit's id past the kits there are.
+        let own = list.own_of(0).expect("track 1's own");
+        for not in [InstrumentId::SHARED_SYNTH, own] {
+            assert_eq!(run(&mut k, &level(not)), Err(Refused::NoKit(not)));
+        }
+        assert_eq!(
+            super::run(&mut k[..2], &ids, &level(id(2))),
+            Err(Refused::NoKit(id(2))),
+            "a kit the sampler hasn't got"
+        );
     }
 
     #[test]
@@ -243,7 +258,7 @@ mod tests {
         let mut k = kits();
         let before = k.clone();
         let cmd = Command::to_kit(
-            1,
+            id(1),
             Change::Own {
                 pad: 0,
                 field: PadField::Level,
@@ -267,7 +282,7 @@ mod tests {
         assert_eq!(k[2].pad(0), before[2].pad(0));
         // A pad replaced says so, for the Play page's names.
         let put = Command::to_kit(
-            2,
+            id(2),
             Change::Pad {
                 pad: 4,
                 to: before[2].pad(0).cloned().map(Box::new),
@@ -280,10 +295,12 @@ mod tests {
     fn a_refused_command_changes_no_kit_and_says_why_as_the_page_did() {
         let mut k = kits();
         let before = k.clone();
-        let nowhere = Command::to_kit(7, Change::KeyFade(2));
-        assert_eq!(run(&mut k, &nowhere), Err(Refused::NoKit(kit_id(7))));
+        let seven = InstrumentId::from_number(7).expect("an id");
+        let nowhere = Command::to_kit(seven, Change::KeyFade(2));
+        assert_eq!(run(&mut k, &nowhere), Err(Refused::NoKit(seven)));
+        assert_eq!(Refused::NoKitAt(7).to_string(), "NoKit");
         let no_pad = Command::to_kit(
-            0,
+            id(0),
             Change::Turn {
                 pad: 9,
                 knob: PadKnob::Tune,
@@ -318,23 +335,23 @@ mod tests {
         let take = k[0].pad(0).cloned().expect("pad 0");
         let i = k[0].add_take(take).expect("a take");
         let from_take = Command::to_kit(
-            0,
+            id(0),
             Change::Chop {
                 from: Chopped::Take(i),
                 chop: Box::new(chop.clone()),
             },
         );
-        let done = run(&mut k, &from_take.clone().onto(2)).expect("onto kit 3");
+        let done = run(&mut k, &from_take.clone().onto(id(2))).expect("onto kit 3");
         assert_eq!((done.kit, done.pads, done.renamed), (2, Some(0..2), true));
         assert!(k[2].pad(1).is_some(), "the slices on kit 3");
         assert!(k[0].take(i).is_none(), "the take left kit 1's page");
         assert_eq!(k[0].pad(0), before[0].pad(0));
         // Onto itself, or another change onto another kit: refused.
         assert_eq!(
-            run(&mut k, &from_take.onto(0)),
+            run(&mut k, &from_take.onto(id(0))),
             Err(Refused::OntoAnotherKit)
         );
-        let fade = Command::to_kit(0, Change::KeyFade(1)).onto(1);
+        let fade = Command::to_kit(id(0), Change::KeyFade(1)).onto(id(1));
         assert_eq!(run(&mut k, &fade), Err(Refused::OntoAnotherKit));
         assert_eq!(k[1].pad(0), before[1].pad(0));
     }
@@ -342,10 +359,10 @@ mod tests {
     #[test]
     fn a_command_that_finds_its_kit_as_it_asks_changes_nothing_and_owes_nothing() {
         let mut k = kits();
-        let store = Command::to_kit(1, Change::SceneStore(SceneSlot::A));
+        let store = Command::to_kit(id(1), Change::SceneStore(SceneSlot::A));
         let done = run(&mut k, &store).expect("stored");
         assert!(done.changed && done.plays, "saved with the kit, a new view");
-        let back = Command::to_kit(1, Change::SceneReturn);
+        let back = Command::to_kit(id(1), Change::SceneReturn);
         let done = run(&mut k, &back).expect("back to A");
         assert_eq!(
             (done.changed, done.plays, done.renamed, done.put_back),
@@ -353,7 +370,7 @@ mod tests {
             "nothing changed since A"
         );
         let pan = Command::to_kit(
-            1,
+            id(1),
             Change::Own {
                 pad: 0,
                 field: PadField::Pan,
@@ -370,7 +387,7 @@ mod tests {
         let take = k[2].pad(0).cloned().expect("pad 0");
         k[2].add_take(take).expect("a take");
         let named = Command::to_kit(
-            2,
+            id(2),
             Change::NameTake {
                 take: 0,
                 name: "Vox".to_string(),
@@ -386,7 +403,7 @@ mod tests {
         let mut k = kits();
         let turn = |d| {
             Command::to_kit(
-                0,
+                id(0),
                 Change::Turn {
                     pad: 0,
                     knob: PadKnob::Tune,

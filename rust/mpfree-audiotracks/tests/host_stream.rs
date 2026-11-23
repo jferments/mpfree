@@ -23,6 +23,7 @@ use mpfree_audiotracks::host::AudioHost;
 use mpfree_audiotracks::save::{from_wav, Saved};
 use mpfree_audiotracks::streaming::StreamConfig;
 use mpfree_audiotracks::Command as A;
+use mpfree_stream::coord::Plan;
 use mpfree_stream::player::Config;
 use mpfree_transport::{Block, Command as T, Transport};
 
@@ -61,13 +62,19 @@ fn small() -> StreamConfig {
     cache(256)
 }
 
+/// A cache of `slots` units. The plan expects a 0.5 s stall, so a region's
+/// held start is a second (the stall and half a second more), whatever the
+/// default stall is.
 fn cache(slots: usize) -> StreamConfig {
     StreamConfig {
         cache: Config {
             slots,
             ..Config::default()
         },
-        ..StreamConfig::default()
+        plan: Plan {
+            stall_s: 0.5,
+            ..StreamConfig::default().plan
+        },
     }
 }
 
@@ -89,7 +96,12 @@ impl Rig {
 
     /// [`Rig::new`] with takes played from their files through `cfg`.
     fn with(dir: Option<&Path>, cfg: Option<StreamConfig>) -> Rig {
-        let mut h = AudioHost::new(RATE, 30);
+        Rig::sized(dir, cfg, 30)
+    }
+
+    /// [`Rig::with`] with memory for `seconds` of stereo.
+    fn sized(dir: Option<&Path>, cfg: Option<StreamConfig>, seconds: u32) -> Rig {
+        let mut h = AudioHost::new(RATE, seconds);
         let stream = cfg.is_some();
         if let Some(cfg) = cfg {
             assert!(h.stream(cfg));
@@ -134,15 +146,31 @@ impl Rig {
         }
     }
 
-    /// Periods until `done`, giving the threads time.
+    /// Periods until `done`, giving the threads time: more of it a period
+    /// before [`START`], so a busy machine's threads (the writer making an
+    /// armed take's file, the player starting) have seconds to answer in
+    /// the lead-in, not a quarter of one.
     #[track_caller]
     fn run_until(&mut self, mut done: impl FnMut(&mut Rig) -> bool) {
         let t0 = Instant::now();
         while !done(self) {
             assert!(t0.elapsed() < Duration::from_secs(30), "timed out");
             self.period();
-            std::thread::sleep(Duration::from_micros(300));
+            let pause = if self.frame < START { 4000 } else { 300 };
+            std::thread::sleep(Duration::from_micros(pause));
         }
+    }
+
+    /// Track `tracks`' files made for their armed takes, before [`START`].
+    #[track_caller]
+    fn armed(&mut self, tracks: &[usize]) {
+        let t0 = Instant::now();
+        self.run_until(|r| tracks.iter().all(|&t| r.h.armed_file(t) == Some(true)));
+        assert!(
+            self.frame < START - P,
+            "the files took {:?} to be made, past the lead-in",
+            t0.elapsed()
+        );
     }
 
     fn events(&mut self) -> Vec<FileEvent> {
@@ -157,7 +185,7 @@ impl Rig {
         self.h
             .command(A::SetInput(1, mpfree_audiotracks::Input::Stereo));
         if files {
-            self.run_until(|r| r.h.armed_file(0) == Some(true) && r.h.armed_file(1) == Some(true));
+            self.armed(&[0, 1]);
         }
         assert!(self.frame < START - P);
         self.t.command(START, T::Record);
@@ -180,8 +208,7 @@ impl Rig {
     /// until its take is on its file.
     fn record_long(&mut self, bars: u64) {
         self.h.command(A::Arm(0, true));
-        self.run_until(|r| r.h.armed_file(0) == Some(true));
-        assert!(self.frame < START - P);
+        self.armed(&[0]);
         self.t.command(START, T::Record);
         self.t.command(START + bars * BAR, T::Stop);
         self.run_to(START + bars * BAR + 4 * P);
@@ -468,7 +495,8 @@ fn the_starts_of_regions_on_their_files_are_held_so_a_jump_to_one_plays_at_once(
     let regions = r.split([6, 12, 18]);
     assert_eq!(regions.len(), 4);
     r.run_until(|r| r.h.heads_wanted == 4 && r.h.heads_held == 4);
-    // A second of each: twice the longest stall the plan expects.
+    // A second of each: the longest stall the plan expects, and half a
+    // second more.
     let k = regions[0].take;
     r.run_until(|r| regions.iter().all(|g| r.cached(k, g.src, BAR)));
     // Only the starts: not the rest of a region (the playhead, stopped
@@ -503,6 +531,44 @@ fn the_starts_of_regions_on_their_files_are_held_so_a_jump_to_one_plays_at_once(
     assert_ne!(moved, regions);
     r.run_until(|r| moved.iter().all(|g| r.cached(k, g.src, BAR)));
     assert!(r.events().is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Step 5d: frames a take on its file played as silence because the drive
+/// was late reach System status as Stick fell behind, about no track.
+#[test]
+fn the_drive_falling_behind_is_told_to_system_status() {
+    use mpfree_audiotracks::files::Problem;
+    use mpfree_status::{kinds, Report};
+    let dir = scratch("behind");
+    let mut r = Rig::with(Some(&dir), Some(cache(64)));
+    r.record_long(24);
+    r.run_until(|r| r.all_on_file());
+    let before: Vec<Problem> = std::iter::from_fn(|| r.h.take_problem()).collect();
+    assert!(
+        !before
+            .iter()
+            .any(|p| p.report.kind == &kinds::STICK_FELL_BEHIND),
+        "{before:?}"
+    );
+    // A jump into the middle of the take, played from there at once (Play,
+    // not PlayStart, which plays from bar 1: whether bar 1's start was
+    // held yet decided it before), which the cache can't have yet.
+    r.t.command(r.frame, T::Locate(15 * BAR_T));
+    r.t.command(r.frame, T::Play);
+    r.run_to(r.frame + 2 * P);
+    assert!(r.h.tracks.stats().missed > 0);
+    // The player's counters go to System status every 64 periods.
+    r.run_to(r.frame + 70 * P);
+    let after: Vec<Problem> = std::iter::from_fn(|| r.h.take_problem()).collect();
+    assert!(
+        after.contains(&Problem {
+            report: Report::happened(&kinds::STICK_FELL_BEHIND, 1),
+            track: None,
+        }),
+        "{after:?}"
+    );
+    assert_eq!(r.h.problems_lost, 0);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -618,7 +684,9 @@ fn a_sound_whose_file_cant_be_written_comes_into_memory_and_is_said() {
     let dir = scratch("unwritten");
     let mut r = Rig::new(Some(&dir), true);
     r.live = false;
-    // The folder is gone: the file can't be written.
+    // The folder is gone: the file can't be written. (The worker makes it
+    // after starting the player, so wait for it first.)
+    r.run_until(|_| dir.is_dir());
     std::fs::remove_dir_all(&dir).unwrap();
     let id = r.h.import(1, 0, 2, a_sound(), vec![], 120.0).unwrap();
     r.run_until(|r| r.h.importing().is_none());
@@ -685,6 +753,83 @@ fn a_project_s_converted_takes_are_written_to_files_and_play_from_them() {
         assert_eq!((ch, rate), (b.channels, RATE));
         assert!(audio == b.audio, "the converted sound, as it was");
     }
+    assert!(r.events().is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Track 0 (mono) records `bars` bars from [`START`], then disarms; with
+/// `files`, into its file, at about four times the speed it plays (each
+/// period given time, so the writer commits as it would).
+fn record_paced(r: &mut Rig, bars: u64, files: bool) {
+    r.h.command(A::Arm(0, true));
+    if files {
+        r.armed(&[0]);
+    }
+    assert!(r.frame < START - P);
+    r.t.command(START, T::Record);
+    r.t.command(START + bars * BAR, T::Stop);
+    while r.frame < START + bars * BAR + 4 * P {
+        r.period();
+        if files && r.frame > START {
+            std::thread::sleep(Duration::from_millis(3));
+        }
+    }
+    r.h.command(A::Arm(0, false));
+    r.live = false;
+}
+
+#[test]
+fn a_recording_longer_than_memory_records_on_as_its_file_takes_it() {
+    let dir = scratch("long");
+    // 8 s of mono into memory for 3 s of stereo (6 s of mono).
+    let mut mem = Rig::sized(None, None, 30);
+    record_paced(&mut mem, 8, false);
+    let want = mem.save();
+    let mut short = Rig::sized(Some(&dir), None, 3);
+    record_paced(&mut short, 8, true);
+    assert_eq!(
+        short.h.tracks.stats().full,
+        1,
+        "without streaming: cut short"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let dir = scratch("long-on");
+    let mut r = Rig::sized(Some(&dir), Some(small()), 3);
+    record_paced(&mut r, 8, true);
+    assert_eq!(r.h.tracks.stats().full, 0, "never out of memory");
+    r.run_until(|r| r.all_on_file());
+    assert_eq!(r.h.tracks.memory().used, 0);
+    let k = r.h.tracks.takes().next().unwrap();
+    assert_eq!(k.frames, want.takes[0].frames);
+    // Its file holds what memory would have.
+    let saved = r.save();
+    let path = saved.takes[0]
+        .path
+        .as_ref()
+        .expect("copied whole from its file");
+    let (audio, ch, _) = from_wav(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(ch, 1);
+    assert!(audio == want.takes[0].audio, "the same sound");
+    // Its waveform (from what the writer was given) is memory's.
+    assert!(mem.h.wave(k.id, 300));
+    assert!(r.h.wave(k.id, 300));
+    let mut want_wave = None;
+    mem.run_until(|m| {
+        want_wave = m.h.take_wave();
+        want_wave.is_some()
+    });
+    let mut got_wave = None;
+    r.run_until(|r| {
+        got_wave = r.h.take_wave();
+        got_wave.is_some()
+    });
+    assert!(!want_wave.as_ref().unwrap().columns.is_empty());
+    assert_eq!(got_wave, want_wave);
+    // And plays as it does from memory.
+    let got = r.play_song();
+    assert!(got == mem.play_song());
+    assert_eq!(r.h.tracks.stats().missed, 0);
     assert!(r.events().is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }

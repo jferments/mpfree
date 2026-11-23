@@ -8,9 +8,10 @@
 //!   worst commit time, but never more than [`WriterConfig::max_wait_s`]
 //!   past its time, and not at all once its take's capture memory is half
 //!   full (recording moves up).
-//! - **Recording pressure** goes the other way through the same gate: the
-//!   fullest take's capture memory, so the coordinator stops background
-//!   reads past three quarters.
+//! - **Recording pressure** goes the other way through the same gate:
+//!   whether any take has captured audio not yet saved, so background
+//!   work on the stick waits while anything records, and the fullest
+//!   take's capture memory.
 //! - **Spreading.** Several takes' rounds are spread across the interval,
 //!   or run together ([`WriterConfig::spread`]; D4 measures which a real
 //!   stick likes better).
@@ -33,7 +34,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
@@ -76,6 +77,7 @@ impl Clock for RealClock {
 pub struct Gate {
     cushion: AtomicU64,
     capture: AtomicU64,
+    recording: AtomicBool,
 }
 
 impl Gate {
@@ -84,6 +86,7 @@ impl Gate {
         Gate {
             cushion: AtomicU64::new(f64::INFINITY.to_bits()),
             capture: AtomicU64::new(0f64.to_bits()),
+            recording: AtomicBool::new(false),
         }
     }
     pub fn set_cushion(&self, seconds: f64) {
@@ -99,6 +102,15 @@ impl Gate {
     /// How full the fullest recording take's capture memory is, 0 to 1.
     pub fn capture_fill(&self) -> f64 {
         f64::from_bits(self.capture.load(Ordering::Relaxed))
+    }
+    pub fn set_recording(&self, on: bool) {
+        self.recording.store(on, Ordering::Relaxed);
+    }
+    /// Whether a take has captured audio not yet saved: background work on
+    /// the stick waits until none has (D2b on the MPC, 23 Nov). A take
+    /// armed but not yet recording (a track only monitoring) doesn't count.
+    pub fn recording(&self) -> bool {
+        self.recording.load(Ordering::Relaxed)
     }
 }
 
@@ -343,7 +355,9 @@ impl Writer {
         match self.find(no) {
             Some(i) if self.takes[i].take.captured() == 0 => {
                 let e = self.takes.remove(i);
-                e.take.disarm(&mut *self.fs)
+                let gone = e.take.disarm(&mut *self.fs);
+                self.share_fill();
+                gone
             }
             _ => false,
         }
@@ -458,16 +472,18 @@ impl Writer {
         }
     }
 
-    /// Recording pressure for the coordinator: the fullest take's capture
-    /// memory.
+    /// Recording pressure for the coordinator: whether a take has captured
+    /// audio not yet saved, and the fullest take's capture memory.
     fn share_fill(&self) {
-        let fill = self
-            .takes
-            .iter()
-            .filter(|e| e.take.state() != TakeState::Saved)
-            .map(|e| e.take.fill())
-            .fold(0.0, f64::max);
+        let open = || {
+            self.takes
+                .iter()
+                .filter(|e| e.take.state() != TakeState::Saved)
+        };
+        let fill = open().map(|e| e.take.fill()).fold(0.0, f64::max);
         self.gate.set_capture_fill(fill);
+        self.gate
+            .set_recording(open().any(|e| e.take.captured() > 0));
     }
 
     /// The take whose round is due first.

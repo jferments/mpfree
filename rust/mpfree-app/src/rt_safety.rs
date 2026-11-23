@@ -843,6 +843,7 @@ fn slow_gear_moves(delay_tenths: u16, lane: bool, lfo: bool) -> Vec<(u64, u64, V
             on: true,
             ramp: 0,
             join: Join::Attack,
+            group: 0,
         })
         .collect();
     clip.locks = vec![Lock::new(
