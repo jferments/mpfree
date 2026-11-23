@@ -193,6 +193,45 @@ The target was -60 dB at C5 and C6; C7 meets it too. The square's references now
 
 - **Cost** (instruction gate, against the build before; limit 10 % more): Squelch Square Acid 64.8k to 64.4k a block (-0.6 %), Acid Line and Distorted -1.1 % (the same code laid out a little better).
 
+### Step 1.5: levels and DC
+
+Built. Nine presets clipped the lab's 8-note chord at full velocity (L2), by 0.2 to 2.2 dB: Analog Init, Poly Brass, Square Keys and Worn Cards; Poly Init, Digital Bell and FM Keys; Wavetable Digital Bell and FM Keys. None had DC above −60 dBFS (L3).
+
+- **One chord wasn't enough.** A chord's peak depends on what the voices are doing when it starts. Each preset was played 32 times, at other start times and after 0 to 7 short notes had died away. Analog's voice cards and free-running oscillators moved the peak by up to 4 dB, Pluck's noise by up to 4.4 dB, Drawbar's free-running wheels by up to 2.6 dB, and the Sync Sweep LFO by about 1 dB. Seven presets that passed on the one chord clipped on others. L2 now takes the loudest of eight chords (`synth::CHORD8_TRIALS`: starting from 0 to 0.77 s in, after 0, 2, 4 or 6 short notes; [Synth quality](synth-quality.md)), and every preset was also checked on the 32.
+- **Only levels changed**, so tone, envelopes and every other ratchet row are as they were (DC is lower by the same amount). Every preset that clipped on any of the 40 chords, and every preset already being lowered, now peaks at −0.5 dBFS or lower on all of them.
+- **Default levels.** Analog's, Poly's and Pluck's default **Level** drop to −3, −4 and −2 dB, as FM's did on 19 Nov (−9 dB), so a fresh instrument and each Init have headroom. Presets that played at the old default now say 0 dB and sound as they did: Poly Pluck, Brass, Sub Bass, Super Lead and Super Stab, and Pluck Pizzicato. Loading one of them glides the level up from the default over the first few milliseconds, as any preset's level does.
+- **Poly's Table presets** keep following the Wavetable ones (`polys_table_presets_play_as_the_wavetable_ones`): each comes down by the same amount.
+
+| Preset | Level | The one chord before | Loudest of the 40 chords | Phrase loudness, LUFS |
+|---|---|---|---|---|
+| Analog Init | 0 → −3 dB | +1.4 | +2.4 → −0.6 | −12.8 → −15.8 |
+| Analog Poly Brass | −1 → −4 dB | +0.4 | +2.1 → −0.9 | −14.2 → −17.2 |
+| Analog Warm Pad | 2 → 1 dB | −0.1 | +0.2 → −0.8 | −15.8 → −16.8 |
+| Analog Square Keys | 0 → −3.5 dB | +0.8 | +2.6 → −0.9 | −17.3 → −20.8 |
+| Analog Clang Bell | 0 → −1 dB | −2.4 | +0.3 → −0.7 | −19.9 → −20.9 |
+| Analog Slow Sweep | 0 → −1 dB | −0.4 | +0.5 → −0.5 | −17.8 → −18.8 |
+| Analog Hollow Pulse | 0 → −2 dB | −1.7 | +1.0 → −1.0 | −17.2 → −19.2 |
+| Analog Worn Cards | 0 → −2 dB | +0.2 | +1.1 → −0.9 | −14.6 → −16.6 |
+| Poly Init | 0 → −4 dB | +2.2 | +2.2 → −1.8 | −16.3 → −20.3 |
+| Poly Sync Sweep | 1.9 → 0.9 dB | −0.4 | +0.4 → −0.6 | −19.2 → −20.2 |
+| Poly Digital Bell | 1.9 → −1.1 dB | +1.7 | +1.7 → −1.3 | −16.8 → −19.8 |
+| Poly FM Keys | 1.9 → 0.4 dB | +0.4 | +0.4 → −1.1 | −20.4 → −21.9 |
+| Wavetable Sync Sweep | 0 → −1 dB | −0.4 | +0.2 → −0.8 | −19.9 → −20.9 |
+| Wavetable Digital Bell | 0 → −3 dB | +1.7 | +1.7 → −1.3 | −17.6 → −20.6 |
+| Wavetable FM Keys | 0 → −1.5 dB | +0.5 | +0.5 → −1.0 | −21.1 → −22.6 |
+| Drawbar Jazz Perc | 2 → 1 dB | −0.7 | +0.2 → −0.8 | −17.0 → −18.0 |
+| Drawbar Reedy | 2 → 1 dB | −1.4 | +0.2 → −0.8 | −15.9 → −16.9 |
+| Pluck Init | 0 → −2 dB | −3.3 | +1.0 → −1.0 | −25.7 → −27.7 |
+| Pluck Nylon | 1.5 → 1 dB | −1.6 | 0.0 → −0.5 | −25.2 → −25.7 |
+| Pluck Harp | 0 → −1 dB | −1.6 | 0.0 → −1.0 | −24.8 → −25.8 |
+| Pluck Banjo | −0.5 → −2.5 dB | −1.6 | +1.3 → −0.7 | −24.8 → −26.8 |
+
+Peaks are in dBFS. Analog's phrases now sit at −15.8 to −21.9 LUFS, still among the library's loudest. Left as they are, because they meet the row on all 40 chords: Drawbar Hollow, Combo Perc, Init, Church, Combo Reed and Gospel (−0.1 to −0.4 dBFS), Pluck Pizzicato and Oud (−0.2, −0.3), Poly Table Init and Super Stack (−0.2, −0.5), and Wavetable Init (−0.1).
+
+- **Reblessed:** `quality/synth.tsv`, with 193 L2 rows (the new measure: higher or the same on every preset left alone) and 12 DC rows (lower); `golden/cases.txt`, 23 renders of these presets, of Poly's and Analog's defaults, and of three Poly presets whose level now glides up from the new default as they load.
+- **Cost:** none. The level is the multiply it always was.
+- **Listening:** [preset levels page](https://claude.ai/artifact/PNxQqP6oGhWWAjQde4zASv), each changed preset before and after, with the lab's phrase and then an 8-note chord at full velocity, for Jay to check that each new level still suits the sound.
+
 ## Targets and new measures
 
 New measures join fxlab and its ratchets in steps 0.2 and 0.5. As today, a target not met is printed, not failed, except the rows marked as gates.

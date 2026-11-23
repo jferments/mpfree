@@ -3726,14 +3726,11 @@ mod tests {
         assert_eq!(s.poly.active_voices(), 0, "Poly's release ended");
         assert_eq!(s.fm.active_voices(), 1);
         // The Synth tab edits FM now.
+        let poly_level = s.poly.param(pp::LEVEL);
         let id = mpfree_synth::fm_params::LEVEL;
         s.set(id, -6.0);
         assert_eq!(s.value(id), -6.0);
-        assert_eq!(
-            s.poly.param(pp::LEVEL),
-            Poly::new(44_100).param(pp::LEVEL),
-            "Poly untouched"
-        );
+        assert_eq!(s.poly.param(pp::LEVEL), poly_level, "Poly untouched");
         assert_eq!(s.load_preset(2), Some("Bell Tower"));
         assert_eq!(s.preset_count(), Fm::presets().len());
         assert_eq!(s.kit_view().name, "Synth: FM");

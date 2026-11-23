@@ -2,79 +2,79 @@
 # Written by `MPFREE_QUALITY_BLESS=1 cargo test --release --locked -p mpfree-fxlab --test synth`;
 # see docs/dev/design/synth-quality.md. key<TAB>value
 synth/Analog[Chorus Strings]/chord6_vs_power_db	0.1694
-synth/Analog[Chorus Strings]/chord8_peak_dbfs	-2.9003
+synth/Analog[Chorus Strings]/chord8_peak_dbfs	-0.909
 synth/Analog[Chorus Strings]/dc_dbfs	-106.3739
 synth/Analog[Chorus Strings]/key_spread_db	2.9458
 synth/Analog[Chorus Strings]/mono_loss_db	1.2221
 synth/Analog[Chorus Strings]/vel_curve_err_db	0.0165
 synth/Analog[Chorus Strings]/vel_tone_oct	0
 synth/Analog[Clang Bell]/chord6_vs_power_db	0.0066
-synth/Analog[Clang Bell]/chord8_peak_dbfs	-2.4363
+synth/Analog[Clang Bell]/chord8_peak_dbfs	-0.9576
 synth/Analog[Clang Bell]/dc_dbfs	-140
 synth/Analog[Clang Bell]/key_spread_db	3.225
 synth/Analog[Clang Bell]/mono_loss_db	0
 synth/Analog[Clang Bell]/vel_curve_err_db	0.293
 synth/Analog[Clang Bell]/vel_tone_oct	0
-synth/Analog[Fat Lead]/chord8_peak_dbfs	-4.0626
+synth/Analog[Fat Lead]/chord8_peak_dbfs	-4.0589
 synth/Analog[Fat Lead]/dc_dbfs	-125.6918
 synth/Analog[Fat Lead]/key_spread_db	5.2423
 synth/Analog[Fat Lead]/mono_loss_db	1.1898
 synth/Analog[Fat Lead]/vel_curve_err_db	0.1163
 synth/Analog[Fat Lead]/vel_tone_oct	0.125
-synth/Analog[Glide Lead]/chord8_peak_dbfs	-10.9533
+synth/Analog[Glide Lead]/chord8_peak_dbfs	-10.941
 synth/Analog[Glide Lead]/dc_dbfs	-140
 synth/Analog[Glide Lead]/key_spread_db	3.3577
 synth/Analog[Glide Lead]/mono_loss_db	0
 synth/Analog[Glide Lead]/vel_curve_err_db	0.1167
 synth/Analog[Glide Lead]/vel_tone_oct	0.1204
 synth/Analog[Hollow Pulse]/chord6_vs_power_db	-0.0532
-synth/Analog[Hollow Pulse]/chord8_peak_dbfs	-1.7208
-synth/Analog[Hollow Pulse]/dc_dbfs	-133.5134
+synth/Analog[Hollow Pulse]/chord8_peak_dbfs	-2.9308
+synth/Analog[Hollow Pulse]/dc_dbfs	-135.5133
 synth/Analog[Hollow Pulse]/key_spread_db	10.0647
 synth/Analog[Hollow Pulse]/mono_loss_db	1.0466
 synth/Analog[Hollow Pulse]/vel_curve_err_db	0.1192
 synth/Analog[Hollow Pulse]/vel_tone_oct	0
 synth/Analog[Init]/chord6_vs_power_db	0.2087
-synth/Analog[Init]/chord8_peak_dbfs	1.4074
+synth/Analog[Init]/chord8_peak_dbfs	-0.8147
 synth/Analog[Init]/dc_dbfs	-140
 synth/Analog[Init]/key_spread_db	3.5302
 synth/Analog[Init]/mono_loss_db	0
 synth/Analog[Init]/vel_curve_err_db	0.1192
 synth/Analog[Init]/vel_tone_oct	0
 synth/Analog[Poly Brass]/chord6_vs_power_db	-0.3576
-synth/Analog[Poly Brass]/chord8_peak_dbfs	0.3587
+synth/Analog[Poly Brass]/chord8_peak_dbfs	-1.6838
 synth/Analog[Poly Brass]/dc_dbfs	-140
 synth/Analog[Poly Brass]/key_spread_db	0.7403
 synth/Analog[Poly Brass]/mono_loss_db	0
 synth/Analog[Poly Brass]/vel_curve_err_db	0.1235
 synth/Analog[Poly Brass]/vel_tone_oct	0.1565
 synth/Analog[Slow Sweep]/chord6_vs_power_db	0.1226
-synth/Analog[Slow Sweep]/chord8_peak_dbfs	-0.4276
-synth/Analog[Slow Sweep]/dc_dbfs	-122.7858
+synth/Analog[Slow Sweep]/chord8_peak_dbfs	-1.4276
+synth/Analog[Slow Sweep]/dc_dbfs	-123.7859
 synth/Analog[Slow Sweep]/key_spread_db	6.3857
 synth/Analog[Slow Sweep]/mono_loss_db	1.0938
 synth/Analog[Slow Sweep]/vel_curve_err_db	0.0165
 synth/Analog[Slow Sweep]/vel_tone_oct	0
-synth/Analog[Solo Lead]/chord8_peak_dbfs	-9.3944
+synth/Analog[Solo Lead]/chord8_peak_dbfs	-6.6602
 synth/Analog[Solo Lead]/dc_dbfs	-140
 synth/Analog[Solo Lead]/key_spread_db	5.2623
 synth/Analog[Solo Lead]/mono_loss_db	0
 synth/Analog[Solo Lead]/vel_curve_err_db	0.113
 synth/Analog[Solo Lead]/vel_tone_oct	0.1139
 synth/Analog[Square Keys]/chord6_vs_power_db	-0.2087
-synth/Analog[Square Keys]/chord8_peak_dbfs	0.7628
-synth/Analog[Square Keys]/dc_dbfs	-134.2666
+synth/Analog[Square Keys]/chord8_peak_dbfs	-2.7357
+synth/Analog[Square Keys]/dc_dbfs	-137.7668
 synth/Analog[Square Keys]/key_spread_db	2.7668
 synth/Analog[Square Keys]/mono_loss_db	1.3963
 synth/Analog[Square Keys]/vel_curve_err_db	0.1116
 synth/Analog[Square Keys]/vel_tone_oct	0.1
-synth/Analog[Sync Lead]/chord8_peak_dbfs	-10.1409
+synth/Analog[Sync Lead]/chord8_peak_dbfs	-8.435
 synth/Analog[Sync Lead]/dc_dbfs	-140
 synth/Analog[Sync Lead]/key_spread_db	4.893
 synth/Analog[Sync Lead]/mono_loss_db	0
 synth/Analog[Sync Lead]/vel_curve_err_db	0.1192
 synth/Analog[Sync Lead]/vel_tone_oct	0
-synth/Analog[Unison Bass]/chord8_peak_dbfs	-12.2364
+synth/Analog[Unison Bass]/chord8_peak_dbfs	-9.239
 synth/Analog[Unison Bass]/dc_dbfs	-140
 synth/Analog[Unison Bass]/key_spread_db	3.8417
 synth/Analog[Unison Bass]/low_correlation	1
@@ -84,14 +84,14 @@ synth/Analog[Unison Bass]/start_step_dbfs	-140
 synth/Analog[Unison Bass]/vel_curve_err_db	0.1192
 synth/Analog[Unison Bass]/vel_tone_oct	0
 synth/Analog[Warm Pad]/chord6_vs_power_db	-1.0268
-synth/Analog[Warm Pad]/chord8_peak_dbfs	-0.0854
-synth/Analog[Warm Pad]/dc_dbfs	-130.7009
+synth/Analog[Warm Pad]/chord8_peak_dbfs	-1.0841
+synth/Analog[Warm Pad]/dc_dbfs	-131.701
 synth/Analog[Warm Pad]/key_spread_db	2.6493
 synth/Analog[Warm Pad]/mono_loss_db	1.1538
 synth/Analog[Warm Pad]/vel_curve_err_db	0.0165
 synth/Analog[Warm Pad]/vel_tone_oct	0
 synth/Analog[Worn Cards]/chord6_vs_power_db	0.2497
-synth/Analog[Worn Cards]/chord8_peak_dbfs	0.1639
+synth/Analog[Worn Cards]/chord8_peak_dbfs	-0.9884
 synth/Analog[Worn Cards]/dc_dbfs	-140
 synth/Analog[Worn Cards]/key_spread_db	4.6244
 synth/Analog[Worn Cards]/mono_loss_db	0
@@ -160,7 +160,7 @@ synth/Bass[Distorted 808]/small_speaker_db	-16.6587
 synth/Bass[Distorted 808]/start_step_dbfs	-80.3842
 synth/Bass[Distorted 808]/vel_curve_err_db	0.2449
 synth/Bass[Distorted 808]/vel_tone_oct	0.3219
-synth/Bass[Fat Saw]/chord8_peak_dbfs	-5.0073
+synth/Bass[Fat Saw]/chord8_peak_dbfs	-4.9794
 synth/Bass[Fat Saw]/dc_dbfs	-140
 synth/Bass[Fat Saw]/key_spread_db	1.2675
 synth/Bass[Fat Saw]/low_correlation	1
@@ -169,7 +169,7 @@ synth/Bass[Fat Saw]/small_speaker_db	-7.4215
 synth/Bass[Fat Saw]/start_step_dbfs	-136.7197
 synth/Bass[Fat Saw]/vel_curve_err_db	0.2193
 synth/Bass[Fat Saw]/vel_tone_oct	0.1397
-synth/Bass[Funk Bass]/chord8_peak_dbfs	-6.8528
+synth/Bass[Funk Bass]/chord8_peak_dbfs	-6.8171
 synth/Bass[Funk Bass]/dc_dbfs	-140
 synth/Bass[Funk Bass]/key_spread_db	1.6608
 synth/Bass[Funk Bass]/low_correlation	1
@@ -178,7 +178,7 @@ synth/Bass[Funk Bass]/small_speaker_db	-2.8585
 synth/Bass[Funk Bass]/start_step_dbfs	-126.0927
 synth/Bass[Funk Bass]/vel_curve_err_db	0.0383
 synth/Bass[Funk Bass]/vel_tone_oct	0.3168
-synth/Bass[Glide Bass]/chord8_peak_dbfs	-4.6733
+synth/Bass[Glide Bass]/chord8_peak_dbfs	-4.6494
 synth/Bass[Glide Bass]/dc_dbfs	-140
 synth/Bass[Glide Bass]/key_spread_db	0.6729
 synth/Bass[Glide Bass]/low_correlation	1
@@ -187,7 +187,7 @@ synth/Bass[Glide Bass]/small_speaker_db	-7.1848
 synth/Bass[Glide Bass]/start_step_dbfs	-127.8209
 synth/Bass[Glide Bass]/vel_curve_err_db	0.0511
 synth/Bass[Glide Bass]/vel_tone_oct	0.1682
-synth/Bass[Growl Press]/chord8_peak_dbfs	-6.2078
+synth/Bass[Growl Press]/chord8_peak_dbfs	-6.1691
 synth/Bass[Growl Press]/dc_dbfs	-140
 synth/Bass[Growl Press]/key_spread_db	0.6975
 synth/Bass[Growl Press]/low_correlation	1
@@ -205,7 +205,7 @@ synth/Bass[Growl Reese]/small_speaker_db	-7.4901
 synth/Bass[Growl Reese]/start_step_dbfs	-127.0046
 synth/Bass[Growl Reese]/vel_curve_err_db	0.2942
 synth/Bass[Growl Reese]/vel_tone_oct	0.1568
-synth/Bass[High Note Lead]/chord8_peak_dbfs	-9.943
+synth/Bass[High Note Lead]/chord8_peak_dbfs	-9.8794
 synth/Bass[High Note Lead]/dc_dbfs	-140
 synth/Bass[High Note Lead]/key_spread_db	0.6715
 synth/Bass[High Note Lead]/low_correlation	1
@@ -214,7 +214,7 @@ synth/Bass[High Note Lead]/small_speaker_db	-4.9994
 synth/Bass[High Note Lead]/start_step_dbfs	-117.6932
 synth/Bass[High Note Lead]/vel_curve_err_db	0.1376
 synth/Bass[High Note Lead]/vel_tone_oct	0.1716
-synth/Bass[Init]/chord8_peak_dbfs	-6.5348
+synth/Bass[Init]/chord8_peak_dbfs	-6.5024
 synth/Bass[Init]/dc_dbfs	-140
 synth/Bass[Init]/key_spread_db	0.6598
 synth/Bass[Init]/low_correlation	1
@@ -241,7 +241,7 @@ synth/Bass[Low Note Lines]/small_speaker_db	-7.3579
 synth/Bass[Low Note Lines]/start_step_dbfs	-133.4037
 synth/Bass[Low Note Lines]/vel_curve_err_db	0.051
 synth/Bass[Low Note Lines]/vel_tone_oct	0.2181
-synth/Bass[Noisy Bass]/chord8_peak_dbfs	-6.0829
+synth/Bass[Noisy Bass]/chord8_peak_dbfs	-6.0531
 synth/Bass[Noisy Bass]/dc_dbfs	-140
 synth/Bass[Noisy Bass]/key_spread_db	0.6777
 synth/Bass[Noisy Bass]/low_correlation	1
@@ -250,7 +250,7 @@ synth/Bass[Noisy Bass]/small_speaker_db	-6.6796
 synth/Bass[Noisy Bass]/start_step_dbfs	-130.1362
 synth/Bass[Noisy Bass]/vel_curve_err_db	0.0537
 synth/Bass[Noisy Bass]/vel_tone_oct	0.193
-synth/Bass[Pluck Bass]/chord8_peak_dbfs	-7.6647
+synth/Bass[Pluck Bass]/chord8_peak_dbfs	-7.6192
 synth/Bass[Pluck Bass]/dc_dbfs	-140
 synth/Bass[Pluck Bass]/key_spread_db	0.9719
 synth/Bass[Pluck Bass]/low_correlation	1
@@ -259,7 +259,7 @@ synth/Bass[Pluck Bass]/small_speaker_db	-7.1052
 synth/Bass[Pluck Bass]/start_step_dbfs	-133.8154
 synth/Bass[Pluck Bass]/vel_curve_err_db	0.0406
 synth/Bass[Pluck Bass]/vel_tone_oct	0.2669
-synth/Bass[Power Bass]/chord8_peak_dbfs	-6.841
+synth/Bass[Power Bass]/chord8_peak_dbfs	-6.7739
 synth/Bass[Power Bass]/dc_dbfs	-140
 synth/Bass[Power Bass]/key_spread_db	0.8233
 synth/Bass[Power Bass]/low_correlation	1
@@ -268,7 +268,7 @@ synth/Bass[Power Bass]/small_speaker_db	-7.0477
 synth/Bass[Power Bass]/start_step_dbfs	-122.3374
 synth/Bass[Power Bass]/vel_curve_err_db	0.1968
 synth/Bass[Power Bass]/vel_tone_oct	0.1232
-synth/Bass[Press Wah]/chord8_peak_dbfs	-6.9427
+synth/Bass[Press Wah]/chord8_peak_dbfs	-6.9135
 synth/Bass[Press Wah]/dc_dbfs	-140
 synth/Bass[Press Wah]/key_spread_db	1.0103
 synth/Bass[Press Wah]/low_correlation	1
@@ -277,7 +277,7 @@ synth/Bass[Press Wah]/small_speaker_db	-3.2556
 synth/Bass[Press Wah]/start_step_dbfs	-136.5258
 synth/Bass[Press Wah]/vel_curve_err_db	0.1264
 synth/Bass[Press Wah]/vel_tone_oct	0.3741
-synth/Bass[Rate Glide Bass]/chord8_peak_dbfs	-2.5958
+synth/Bass[Rate Glide Bass]/chord8_peak_dbfs	-2.5885
 synth/Bass[Rate Glide Bass]/dc_dbfs	-140
 synth/Bass[Rate Glide Bass]/key_spread_db	0.6834
 synth/Bass[Rate Glide Bass]/low_correlation	1
@@ -286,7 +286,7 @@ synth/Bass[Rate Glide Bass]/small_speaker_db	-6.6696
 synth/Bass[Rate Glide Bass]/start_step_dbfs	-131.1528
 synth/Bass[Rate Glide Bass]/vel_curve_err_db	0.0619
 synth/Bass[Rate Glide Bass]/vel_tone_oct	0.2023
-synth/Bass[Reese Sweep]/chord8_peak_dbfs	-10.7766
+synth/Bass[Reese Sweep]/chord8_peak_dbfs	-10.5875
 synth/Bass[Reese Sweep]/dc_dbfs	-140
 synth/Bass[Reese Sweep]/key_spread_db	0.6226
 synth/Bass[Reese Sweep]/low_correlation	1
@@ -295,7 +295,7 @@ synth/Bass[Reese Sweep]/small_speaker_db	-4.9096
 synth/Bass[Reese Sweep]/start_step_dbfs	-123.8429
 synth/Bass[Reese Sweep]/vel_curve_err_db	0.2849
 synth/Bass[Reese Sweep]/vel_tone_oct	0.275
-synth/Bass[Reese]/chord8_peak_dbfs	-6.9163
+synth/Bass[Reese]/chord8_peak_dbfs	-6.7537
 synth/Bass[Reese]/dc_dbfs	-140
 synth/Bass[Reese]/key_spread_db	0.8897
 synth/Bass[Reese]/low_correlation	1
@@ -304,7 +304,7 @@ synth/Bass[Reese]/small_speaker_db	-7.2822
 synth/Bass[Reese]/start_step_dbfs	-125.497
 synth/Bass[Reese]/vel_curve_err_db	0.0624
 synth/Bass[Reese]/vel_tone_oct	0.2119
-synth/Bass[Resonant Sweep]/chord8_peak_dbfs	-5.9845
+synth/Bass[Resonant Sweep]/chord8_peak_dbfs	-5.9509
 synth/Bass[Resonant Sweep]/dc_dbfs	-140
 synth/Bass[Resonant Sweep]/key_spread_db	1.3573
 synth/Bass[Resonant Sweep]/low_correlation	1
@@ -313,7 +313,7 @@ synth/Bass[Resonant Sweep]/small_speaker_db	-1.1893
 synth/Bass[Resonant Sweep]/start_step_dbfs	-130.585
 synth/Bass[Resonant Sweep]/vel_curve_err_db	0.4011
 synth/Bass[Resonant Sweep]/vel_tone_oct	0.3535
-synth/Bass[Round Mono]/chord8_peak_dbfs	-6.9293
+synth/Bass[Round Mono]/chord8_peak_dbfs	-6.8915
 synth/Bass[Round Mono]/dc_dbfs	-140
 synth/Bass[Round Mono]/key_spread_db	0.8989
 synth/Bass[Round Mono]/low_correlation	1
@@ -322,7 +322,7 @@ synth/Bass[Round Mono]/small_speaker_db	-7.7993
 synth/Bass[Round Mono]/start_step_dbfs	-137.3486
 synth/Bass[Round Mono]/vel_curve_err_db	0.0581
 synth/Bass[Round Mono]/vel_tone_oct	0.1948
-synth/Bass[Rubber Bass]/chord8_peak_dbfs	-6.0708
+synth/Bass[Rubber Bass]/chord8_peak_dbfs	-6.0407
 synth/Bass[Rubber Bass]/dc_dbfs	-140
 synth/Bass[Rubber Bass]/key_spread_db	1.1805
 synth/Bass[Rubber Bass]/low_correlation	1
@@ -349,7 +349,7 @@ synth/Bass[Soft Reese]/small_speaker_db	-22.7614
 synth/Bass[Soft Reese]/start_step_dbfs	-140
 synth/Bass[Soft Reese]/vel_curve_err_db	0.0919
 synth/Bass[Soft Reese]/vel_tone_oct	0.0069
-synth/Bass[Soft Triangle]/chord8_peak_dbfs	-10.8376
+synth/Bass[Soft Triangle]/chord8_peak_dbfs	-10.8144
 synth/Bass[Soft Triangle]/dc_dbfs	-140
 synth/Bass[Soft Triangle]/key_spread_db	2.8896
 synth/Bass[Soft Triangle]/low_correlation	1
@@ -358,7 +358,7 @@ synth/Bass[Soft Triangle]/small_speaker_db	-26.4321
 synth/Bass[Soft Triangle]/start_step_dbfs	-140
 synth/Bass[Soft Triangle]/vel_curve_err_db	0.0271
 synth/Bass[Soft Triangle]/vel_tone_oct	0.0022
-synth/Bass[Square Sub]/chord8_peak_dbfs	-7.3638
+synth/Bass[Square Sub]/chord8_peak_dbfs	-7.3623
 synth/Bass[Square Sub]/dc_dbfs	-140
 synth/Bass[Square Sub]/key_spread_db	1.1586
 synth/Bass[Square Sub]/low_correlation	1
@@ -367,7 +367,7 @@ synth/Bass[Square Sub]/small_speaker_db	-10.6548
 synth/Bass[Square Sub]/start_step_dbfs	-125.761
 synth/Bass[Square Sub]/vel_curve_err_db	0.077
 synth/Bass[Square Sub]/vel_tone_oct	0.168
-synth/Bass[Sub Sine]/chord8_peak_dbfs	-15.2339
+synth/Bass[Sub Sine]/chord8_peak_dbfs	-15.1661
 synth/Bass[Sub Sine]/dc_dbfs	-140
 synth/Bass[Sub Sine]/key_spread_db	1.6593
 synth/Bass[Sub Sine]/low_correlation	1
@@ -376,7 +376,7 @@ synth/Bass[Sub Sine]/small_speaker_db	-104.1449
 synth/Bass[Sub Sine]/start_step_dbfs	-86.1519
 synth/Bass[Sub Sine]/vel_curve_err_db	0.0001
 synth/Bass[Sub Sine]/vel_tone_oct	0
-synth/Bass[Sub Triangle]/chord8_peak_dbfs	-16.1856
+synth/Bass[Sub Triangle]/chord8_peak_dbfs	-16.1365
 synth/Bass[Sub Triangle]/dc_dbfs	-140
 synth/Bass[Sub Triangle]/key_spread_db	1.6906
 synth/Bass[Sub Triangle]/low_correlation	1
@@ -385,7 +385,7 @@ synth/Bass[Sub Triangle]/small_speaker_db	-26.3674
 synth/Bass[Sub Triangle]/start_step_dbfs	-90.0724
 synth/Bass[Sub Triangle]/vel_curve_err_db	0.0001
 synth/Bass[Sub Triangle]/vel_tone_oct	0.0001
-synth/Bass[Synth Pop]/chord8_peak_dbfs	-6.61
+synth/Bass[Synth Pop]/chord8_peak_dbfs	-6.5619
 synth/Bass[Synth Pop]/dc_dbfs	-140
 synth/Bass[Synth Pop]/key_spread_db	1.4075
 synth/Bass[Synth Pop]/low_correlation	1
@@ -412,7 +412,7 @@ synth/Bass[Tube 808]/small_speaker_db	-25.5313
 synth/Bass[Tube 808]/start_step_dbfs	-140
 synth/Bass[Tube 808]/vel_curve_err_db	0.8823
 synth/Bass[Tube 808]/vel_tone_oct	0.1101
-synth/Bass[Wide Detune]/chord8_peak_dbfs	-6.2315
+synth/Bass[Wide Detune]/chord8_peak_dbfs	-6.0975
 synth/Bass[Wide Detune]/dc_dbfs	-140
 synth/Bass[Wide Detune]/key_spread_db	0.982
 synth/Bass[Wide Detune]/low_correlation	1
@@ -429,77 +429,77 @@ synth/Choir[Aah Choir]/mono_loss_db	1.2349
 synth/Choir[Aah Choir]/vel_curve_err_db	0.2884
 synth/Choir[Aah Choir]/vel_tone_oct	0.508
 synth/Choir[Aah to Ee]/chord6_vs_power_db	1.1554
-synth/Choir[Aah to Ee]/chord8_peak_dbfs	-5.3185
+synth/Choir[Aah to Ee]/chord8_peak_dbfs	-5.2372
 synth/Choir[Aah to Ee]/dc_dbfs	-131.8451
 synth/Choir[Aah to Ee]/key_spread_db	3.9397
 synth/Choir[Aah to Ee]/mono_loss_db	1.2408
 synth/Choir[Aah to Ee]/vel_curve_err_db	0.1348
 synth/Choir[Aah to Ee]/vel_tone_oct	0.2801
 synth/Choir[Big Choir]/chord6_vs_power_db	0.127
-synth/Choir[Big Choir]/chord8_peak_dbfs	-6.1902
+synth/Choir[Big Choir]/chord8_peak_dbfs	-5.651
 synth/Choir[Big Choir]/dc_dbfs	-140
 synth/Choir[Big Choir]/key_spread_db	0.4051
 synth/Choir[Big Choir]/mono_loss_db	1.5676
 synth/Choir[Big Choir]/vel_curve_err_db	0.2968
 synth/Choir[Big Choir]/vel_tone_oct	0.3635
 synth/Choir[Bright Aahs]/chord6_vs_power_db	0.4667
-synth/Choir[Bright Aahs]/chord8_peak_dbfs	-4.4542
+synth/Choir[Bright Aahs]/chord8_peak_dbfs	-3.7444
 synth/Choir[Bright Aahs]/dc_dbfs	-136.9178
 synth/Choir[Bright Aahs]/key_spread_db	3.4468
 synth/Choir[Bright Aahs]/mono_loss_db	0.8967
 synth/Choir[Bright Aahs]/vel_curve_err_db	0.07
 synth/Choir[Bright Aahs]/vel_tone_oct	0.1424
 synth/Choir[Choir Stab]/chord6_vs_power_db	-2.5283
-synth/Choir[Choir Stab]/chord8_peak_dbfs	-8.0991
+synth/Choir[Choir Stab]/chord8_peak_dbfs	-3.8361
 synth/Choir[Choir Stab]/dc_dbfs	-122.0888
 synth/Choir[Choir Stab]/key_spread_db	3.8445
 synth/Choir[Choir Stab]/mono_loss_db	0.9508
 synth/Choir[Choir Stab]/vel_curve_err_db	0.2721
 synth/Choir[Choir Stab]/vel_tone_oct	0.6659
 synth/Choir[Choir Swell]/chord6_vs_power_db	-0.2149
-synth/Choir[Choir Swell]/chord8_peak_dbfs	-8.454
+synth/Choir[Choir Swell]/chord8_peak_dbfs	-7.0281
 synth/Choir[Choir Swell]/dc_dbfs	-140
 synth/Choir[Choir Swell]/key_spread_db	0.84
 synth/Choir[Choir Swell]/mono_loss_db	1.097
 synth/Choir[Choir Swell]/vel_curve_err_db	0.2878
 synth/Choir[Choir Swell]/vel_tone_oct	0.2951
 synth/Choir[Dry Choir]/chord6_vs_power_db	-0.0102
-synth/Choir[Dry Choir]/chord8_peak_dbfs	-8.7932
+synth/Choir[Dry Choir]/chord8_peak_dbfs	-6.6718
 synth/Choir[Dry Choir]/dc_dbfs	-140
 synth/Choir[Dry Choir]/key_spread_db	0.786
 synth/Choir[Dry Choir]/mono_loss_db	0
 synth/Choir[Dry Choir]/vel_curve_err_db	0.1783
 synth/Choir[Dry Choir]/vel_tone_oct	0.2515
 synth/Choir[Eh Pad]/chord6_vs_power_db	0.8147
-synth/Choir[Eh Pad]/chord8_peak_dbfs	-5.8252
+synth/Choir[Eh Pad]/chord8_peak_dbfs	-5.3095
 synth/Choir[Eh Pad]/dc_dbfs	-137.4483
 synth/Choir[Eh Pad]/key_spread_db	1.4559
 synth/Choir[Eh Pad]/mono_loss_db	1.0336
 synth/Choir[Eh Pad]/vel_curve_err_db	0.3687
 synth/Choir[Eh Pad]/vel_tone_oct	0.7841
 synth/Choir[Hall Choir]/chord6_vs_power_db	-0.3304
-synth/Choir[Hall Choir]/chord8_peak_dbfs	-6.4148
+synth/Choir[Hall Choir]/chord8_peak_dbfs	-6.1292
 synth/Choir[Hall Choir]/dc_dbfs	-140
 synth/Choir[Hall Choir]/key_spread_db	1.4669
 synth/Choir[Hall Choir]/mono_loss_db	0.9767
 synth/Choir[Hall Choir]/vel_curve_err_db	0.2919
 synth/Choir[Hall Choir]/vel_tone_oct	0.3371
 synth/Choir[Init]/chord6_vs_power_db	-0.3269
-synth/Choir[Init]/chord8_peak_dbfs	-6.4766
+synth/Choir[Init]/chord8_peak_dbfs	-5.6886
 synth/Choir[Init]/dc_dbfs	-137.4469
 synth/Choir[Init]/key_spread_db	0.4445
 synth/Choir[Init]/mono_loss_db	1.2856
 synth/Choir[Init]/vel_curve_err_db	0.2074
 synth/Choir[Init]/vel_tone_oct	0.124
 synth/Choir[Low Chant]/chord6_vs_power_db	-1.931
-synth/Choir[Low Chant]/chord8_peak_dbfs	-5.9314
+synth/Choir[Low Chant]/chord8_peak_dbfs	-4.974
 synth/Choir[Low Chant]/dc_dbfs	-132.1724
 synth/Choir[Low Chant]/key_spread_db	1.5339
 synth/Choir[Low Chant]/mono_loss_db	0.6741
 synth/Choir[Low Chant]/vel_curve_err_db	0.1123
 synth/Choir[Low Chant]/vel_tone_oct	0.1814
 synth/Choir[Men's Choir]/chord6_vs_power_db	-0.1878
-synth/Choir[Men's Choir]/chord8_peak_dbfs	-6.5414
+synth/Choir[Men's Choir]/chord8_peak_dbfs	-4.3458
 synth/Choir[Men's Choir]/dc_dbfs	-140
 synth/Choir[Men's Choir]/key_spread_db	0.9454
 synth/Choir[Men's Choir]/mono_loss_db	0.8066
@@ -540,48 +540,48 @@ synth/Choir[Soft Oohs]/key_spread_db	2.8893
 synth/Choir[Soft Oohs]/mono_loss_db	1.2809
 synth/Choir[Soft Oohs]/vel_curve_err_db	0.2121
 synth/Choir[Soft Oohs]/vel_tone_oct	0.2618
-synth/Choir[Solo Voice]/chord8_peak_dbfs	-17.2604
+synth/Choir[Solo Voice]/chord8_peak_dbfs	-17.1144
 synth/Choir[Solo Voice]/dc_dbfs	-140
 synth/Choir[Solo Voice]/key_spread_db	0.1849
 synth/Choir[Solo Voice]/mono_loss_db	0.0001
 synth/Choir[Solo Voice]/vel_curve_err_db	0.1866
 synth/Choir[Solo Voice]/vel_tone_oct	0.113
 synth/Choir[Sopranos]/chord6_vs_power_db	-0.1123
-synth/Choir[Sopranos]/chord8_peak_dbfs	-5.4211
+synth/Choir[Sopranos]/chord8_peak_dbfs	-5.2753
 synth/Choir[Sopranos]/dc_dbfs	-140
 synth/Choir[Sopranos]/key_spread_db	1.1599
 synth/Choir[Sopranos]/mono_loss_db	1.0032
 synth/Choir[Sopranos]/vel_curve_err_db	0.154
 synth/Choir[Sopranos]/vel_tone_oct	0.1567
 synth/Choir[Space Choir]/chord6_vs_power_db	0.2122
-synth/Choir[Space Choir]/chord8_peak_dbfs	-10.845
+synth/Choir[Space Choir]/chord8_peak_dbfs	-9.505
 synth/Choir[Space Choir]/dc_dbfs	-139.9054
 synth/Choir[Space Choir]/key_spread_db	1.0883
 synth/Choir[Space Choir]/mono_loss_db	1.2207
 synth/Choir[Space Choir]/vel_curve_err_db	0.0516
 synth/Choir[Space Choir]/vel_tone_oct	0.3639
 synth/Choir[Straight Trebles]/chord6_vs_power_db	0.433
-synth/Choir[Straight Trebles]/chord8_peak_dbfs	-6.0847
+synth/Choir[Straight Trebles]/chord8_peak_dbfs	-4.6117
 synth/Choir[Straight Trebles]/dc_dbfs	-136.2431
 synth/Choir[Straight Trebles]/key_spread_db	2.4012
 synth/Choir[Straight Trebles]/mono_loss_db	0.9432
 synth/Choir[Straight Trebles]/vel_curve_err_db	0.3079
 synth/Choir[Straight Trebles]/vel_tone_oct	0.2975
-synth/Choir[Vowel Lead]/chord8_peak_dbfs	-13.0506
+synth/Choir[Vowel Lead]/chord8_peak_dbfs	-12.3345
 synth/Choir[Vowel Lead]/dc_dbfs	-138.1971
 synth/Choir[Vowel Lead]/key_spread_db	1.4237
 synth/Choir[Vowel Lead]/mono_loss_db	0.2881
 synth/Choir[Vowel Lead]/vel_curve_err_db	0.6798
 synth/Choir[Vowel Lead]/vel_tone_oct	1.1724
 synth/Choir[Vowel Pad]/chord6_vs_power_db	0.8393
-synth/Choir[Vowel Pad]/chord8_peak_dbfs	-6.416
+synth/Choir[Vowel Pad]/chord8_peak_dbfs	-5.1296
 synth/Choir[Vowel Pad]/dc_dbfs	-134.5714
 synth/Choir[Vowel Pad]/key_spread_db	1.6847
 synth/Choir[Vowel Pad]/mono_loss_db	1.0414
 synth/Choir[Vowel Pad]/vel_curve_err_db	0.3489
 synth/Choir[Vowel Pad]/vel_tone_oct	0.5758
 synth/Choir[Wah Voices]/chord6_vs_power_db	-0.5083
-synth/Choir[Wah Voices]/chord8_peak_dbfs	-4.9138
+synth/Choir[Wah Voices]/chord8_peak_dbfs	-4.232
 synth/Choir[Wah Voices]/dc_dbfs	-104.1209
 synth/Choir[Wah Voices]/key_spread_db	1.5971
 synth/Choir[Wah Voices]/mono_loss_db	1.1109
@@ -602,28 +602,28 @@ synth/Drawbar[Ballad]/mono_loss_db	1.2822
 synth/Drawbar[Ballad]/vel_curve_err_db	0
 synth/Drawbar[Ballad]/vel_tone_oct	0
 synth/Drawbar[Bright Perc]/chord6_vs_power_db	1.0825
-synth/Drawbar[Bright Perc]/chord8_peak_dbfs	-3.9104
+synth/Drawbar[Bright Perc]/chord8_peak_dbfs	-3.8865
 synth/Drawbar[Bright Perc]/dc_dbfs	-124.7144
 synth/Drawbar[Bright Perc]/key_spread_db	4.1124
 synth/Drawbar[Bright Perc]/mono_loss_db	2.087
 synth/Drawbar[Bright Perc]/vel_curve_err_db	0
 synth/Drawbar[Bright Perc]/vel_tone_oct	0
 synth/Drawbar[Church]/chord6_vs_power_db	3.3371
-synth/Drawbar[Church]/chord8_peak_dbfs	-1.4631
+synth/Drawbar[Church]/chord8_peak_dbfs	-0.307
 synth/Drawbar[Church]/dc_dbfs	-140
 synth/Drawbar[Church]/key_spread_db	1.1729
 synth/Drawbar[Church]/mono_loss_db	0
 synth/Drawbar[Church]/vel_curve_err_db	0
 synth/Drawbar[Church]/vel_tone_oct	0
 synth/Drawbar[Combo Flute]/chord6_vs_power_db	1.0329
-synth/Drawbar[Combo Flute]/chord8_peak_dbfs	-3.8193
+synth/Drawbar[Combo Flute]/chord8_peak_dbfs	-2.8561
 synth/Drawbar[Combo Flute]/dc_dbfs	-140
 synth/Drawbar[Combo Flute]/key_spread_db	0.6666
 synth/Drawbar[Combo Flute]/mono_loss_db	0
 synth/Drawbar[Combo Flute]/vel_curve_err_db	0
 synth/Drawbar[Combo Flute]/vel_tone_oct	0
 synth/Drawbar[Combo Garage]/chord6_vs_power_db	-0.3119
-synth/Drawbar[Combo Garage]/chord8_peak_dbfs	-8.6459
+synth/Drawbar[Combo Garage]/chord8_peak_dbfs	-8.3517
 synth/Drawbar[Combo Garage]/dc_dbfs	-140
 synth/Drawbar[Combo Garage]/key_spread_db	0.9771
 synth/Drawbar[Combo Garage]/mono_loss_db	0
@@ -644,21 +644,21 @@ synth/Drawbar[Combo Reed]/mono_loss_db	0
 synth/Drawbar[Combo Reed]/vel_curve_err_db	0
 synth/Drawbar[Combo Reed]/vel_tone_oct	0
 synth/Drawbar[Combo Rotary]/chord6_vs_power_db	1.826
-synth/Drawbar[Combo Rotary]/chord8_peak_dbfs	-2.771
+synth/Drawbar[Combo Rotary]/chord8_peak_dbfs	-1.8153
 synth/Drawbar[Combo Rotary]/dc_dbfs	-121.2648
 synth/Drawbar[Combo Rotary]/key_spread_db	2.3276
 synth/Drawbar[Combo Rotary]/mono_loss_db	0.546
 synth/Drawbar[Combo Rotary]/vel_curve_err_db	0
 synth/Drawbar[Combo Rotary]/vel_tone_oct	0
 synth/Drawbar[Combo Square]/chord6_vs_power_db	2.1122
-synth/Drawbar[Combo Square]/chord8_peak_dbfs	-3.7119
+synth/Drawbar[Combo Square]/chord8_peak_dbfs	-1.7107
 synth/Drawbar[Combo Square]/dc_dbfs	-140
 synth/Drawbar[Combo Square]/key_spread_db	2.3257
 synth/Drawbar[Combo Square]/mono_loss_db	0
 synth/Drawbar[Combo Square]/vel_curve_err_db	0
 synth/Drawbar[Combo Square]/vel_tone_oct	0
 synth/Drawbar[Combo Vibrato]/chord6_vs_power_db	1.2027
-synth/Drawbar[Combo Vibrato]/chord8_peak_dbfs	-3.8134
+synth/Drawbar[Combo Vibrato]/chord8_peak_dbfs	-3.5858
 synth/Drawbar[Combo Vibrato]/dc_dbfs	-140
 synth/Drawbar[Combo Vibrato]/key_spread_db	1.3247
 synth/Drawbar[Combo Vibrato]/mono_loss_db	0
@@ -693,7 +693,7 @@ synth/Drawbar[Gospel]/mono_loss_db	0.7285
 synth/Drawbar[Gospel]/vel_curve_err_db	0
 synth/Drawbar[Gospel]/vel_tone_oct	0
 synth/Drawbar[Hollow]/chord6_vs_power_db	1.8285
-synth/Drawbar[Hollow]/chord8_peak_dbfs	-2.0367
+synth/Drawbar[Hollow]/chord8_peak_dbfs	-0.1314
 synth/Drawbar[Hollow]/dc_dbfs	-122.9012
 synth/Drawbar[Hollow]/key_spread_db	2.2258
 synth/Drawbar[Hollow]/mono_loss_db	0.2706
@@ -707,21 +707,21 @@ synth/Drawbar[Init]/mono_loss_db	0.8063
 synth/Drawbar[Init]/vel_curve_err_db	0
 synth/Drawbar[Init]/vel_tone_oct	0
 synth/Drawbar[Jazz Perc]/chord6_vs_power_db	2.4009
-synth/Drawbar[Jazz Perc]/chord8_peak_dbfs	-0.6565
-synth/Drawbar[Jazz Perc]/dc_dbfs	-119.797
+synth/Drawbar[Jazz Perc]/chord8_peak_dbfs	-1.2998
+synth/Drawbar[Jazz Perc]/dc_dbfs	-120.797
 synth/Drawbar[Jazz Perc]/key_spread_db	3.3182
 synth/Drawbar[Jazz Perc]/mono_loss_db	0.7235
 synth/Drawbar[Jazz Perc]/vel_curve_err_db	0
 synth/Drawbar[Jazz Perc]/vel_tone_oct	0
 synth/Drawbar[Reedy]/chord6_vs_power_db	0.704
-synth/Drawbar[Reedy]/chord8_peak_dbfs	-1.3942
-synth/Drawbar[Reedy]/dc_dbfs	-118.7176
+synth/Drawbar[Reedy]/chord8_peak_dbfs	-2.3942
+synth/Drawbar[Reedy]/dc_dbfs	-119.7177
 synth/Drawbar[Reedy]/key_spread_db	2.4386
 synth/Drawbar[Reedy]/mono_loss_db	1.8839
 synth/Drawbar[Reedy]/vel_curve_err_db	0
 synth/Drawbar[Reedy]/vel_tone_oct	0
 synth/Drawbar[Rock Drive]/chord6_vs_power_db	-4.1327
-synth/Drawbar[Rock Drive]/chord8_peak_dbfs	-8.9399
+synth/Drawbar[Rock Drive]/chord8_peak_dbfs	-8.8627
 synth/Drawbar[Rock Drive]/dc_dbfs	-106.8625
 synth/Drawbar[Rock Drive]/key_spread_db	1.2849
 synth/Drawbar[Rock Drive]/mono_loss_db	0.9432
@@ -3817,7 +3817,7 @@ synth/FM[Bell Tower]/mono_loss_db	0.0884
 synth/FM[Bell Tower]/vel_curve_err_db	0.9291
 synth/FM[Bell Tower]/vel_tone_oct	2.1077
 synth/FM[Brass Section]/chord6_vs_power_db	0.3828
-synth/FM[Brass Section]/chord8_peak_dbfs	-6.359
+synth/FM[Brass Section]/chord8_peak_dbfs	-6.3546
 synth/FM[Brass Section]/dc_dbfs	-92.1911
 synth/FM[Brass Section]/key_spread_db	2.8471
 synth/FM[Brass Section]/mono_loss_db	0.0502
@@ -3831,7 +3831,7 @@ synth/FM[Drawbars]/mono_loss_db	0.2636
 synth/FM[Drawbars]/vel_curve_err_db	0
 synth/FM[Drawbars]/vel_tone_oct	0
 synth/FM[Glass Keys]/chord6_vs_power_db	0.0052
-synth/FM[Glass Keys]/chord8_peak_dbfs	-1.6051
+synth/FM[Glass Keys]/chord8_peak_dbfs	-1.5893
 synth/FM[Glass Keys]/dc_dbfs	-140
 synth/FM[Glass Keys]/key_spread_db	2.1393
 synth/FM[Glass Keys]/mono_loss_db	0.0436
@@ -3852,7 +3852,7 @@ synth/FM[Log Drum]/mono_loss_db	0.1066
 synth/FM[Log Drum]/vel_curve_err_db	1.5899
 synth/FM[Log Drum]/vel_tone_oct	0.2857
 synth/FM[Reed Lead]/chord6_vs_power_db	0.5041
-synth/FM[Reed Lead]/chord8_peak_dbfs	-2.3057
+synth/FM[Reed Lead]/chord8_peak_dbfs	-2.2984
 synth/FM[Reed Lead]/dc_dbfs	-140
 synth/FM[Reed Lead]/key_spread_db	2.4234
 synth/FM[Reed Lead]/mono_loss_db	0.0189
@@ -3875,7 +3875,7 @@ synth/FM[Silk Pad]/mono_loss_db	-0.0185
 synth/FM[Silk Pad]/vel_curve_err_db	0.7281
 synth/FM[Silk Pad]/vel_tone_oct	0.1298
 synth/FM[Steel Pluck]/chord6_vs_power_db	1.5656
-synth/FM[Steel Pluck]/chord8_peak_dbfs	-1.2643
+synth/FM[Steel Pluck]/chord8_peak_dbfs	-1.2469
 synth/FM[Steel Pluck]/dc_dbfs	-140
 synth/FM[Steel Pluck]/key_spread_db	2.6442
 synth/FM[Steel Pluck]/mono_loss_db	0.0428
@@ -3892,7 +3892,7 @@ synth/Keys[Ballad]/mono_loss_db	0
 synth/Keys[Ballad]/vel_curve_err_db	0.2981
 synth/Keys[Ballad]/vel_tone_oct	0.9351
 synth/Keys[Barking Tines]/chord6_vs_power_db	-2.3097
-synth/Keys[Barking Tines]/chord8_peak_dbfs	-11.1441
+synth/Keys[Barking Tines]/chord8_peak_dbfs	-11.0563
 synth/Keys[Barking Tines]/dc_dbfs	-140
 synth/Keys[Barking Tines]/decay_c4_err_pct	0.7576
 synth/Keys[Barking Tines]/decay_slope	-0.7353
@@ -3912,7 +3912,7 @@ synth/Keys[Bell Keys]/mono_loss_db	0
 synth/Keys[Bell Keys]/vel_curve_err_db	0.1326
 synth/Keys[Bell Keys]/vel_tone_oct	0.5582
 synth/Keys[Bright Reed]/chord6_vs_power_db	-0.6096
-synth/Keys[Bright Reed]/chord8_peak_dbfs	-2.6111
+synth/Keys[Bright Reed]/chord8_peak_dbfs	-2.56
 synth/Keys[Bright Reed]/dc_dbfs	-140
 synth/Keys[Bright Reed]/decay_c4_err_pct	0.1207
 synth/Keys[Bright Reed]/decay_slope	-0.7503
@@ -3922,7 +3922,7 @@ synth/Keys[Bright Reed]/mono_loss_db	0
 synth/Keys[Bright Reed]/vel_curve_err_db	0.2476
 synth/Keys[Bright Reed]/vel_tone_oct	0.0408
 synth/Keys[Bright Tines]/chord6_vs_power_db	-0.0042
-synth/Keys[Bright Tines]/chord8_peak_dbfs	-1.9218
+synth/Keys[Bright Tines]/chord8_peak_dbfs	-1.7387
 synth/Keys[Bright Tines]/dc_dbfs	-140
 synth/Keys[Bright Tines]/decay_c4_err_pct	0.9576
 synth/Keys[Bright Tines]/decay_slope	-0.7126
@@ -3943,7 +3943,7 @@ synth/Keys[Brilliant Clav]/release_drop_err_st	0.0027
 synth/Keys[Brilliant Clav]/vel_curve_err_db	0.9112
 synth/Keys[Brilliant Clav]/vel_tone_oct	0.1397
 synth/Keys[Clav]/chord6_vs_power_db	1.203
-synth/Keys[Clav]/chord8_peak_dbfs	-3.6652
+synth/Keys[Clav]/chord8_peak_dbfs	-3.6376
 synth/Keys[Clav]/dc_dbfs	-140
 synth/Keys[Clav]/decay_c4_err_pct	-8.1244
 synth/Keys[Clav]/decay_slope	-0.7564
@@ -3953,7 +3953,7 @@ synth/Keys[Clav]/release_drop_err_st	-0.0006
 synth/Keys[Clav]/vel_curve_err_db	0.9201
 synth/Keys[Clav]/vel_tone_oct	0.1239
 synth/Keys[Dirty Reed]/chord6_vs_power_db	-1.4848
-synth/Keys[Dirty Reed]/chord8_peak_dbfs	-6.3419
+synth/Keys[Dirty Reed]/chord8_peak_dbfs	-6.309
 synth/Keys[Dirty Reed]/dc_dbfs	-140
 synth/Keys[Dirty Reed]/decay_c4_err_pct	-0.0412
 synth/Keys[Dirty Reed]/decay_slope	-0.75
@@ -3963,7 +3963,7 @@ synth/Keys[Dirty Reed]/mono_loss_db	0
 synth/Keys[Dirty Reed]/vel_curve_err_db	1.1141
 synth/Keys[Dirty Reed]/vel_tone_oct	0.0516
 synth/Keys[Driven Clav]/chord6_vs_power_db	-1.7899
-synth/Keys[Driven Clav]/chord8_peak_dbfs	-12.6767
+synth/Keys[Driven Clav]/chord8_peak_dbfs	-12.6715
 synth/Keys[Driven Clav]/dc_dbfs	-71.672
 synth/Keys[Driven Clav]/decay_c4_err_pct	-7.5287
 synth/Keys[Driven Clav]/decay_slope	-0.7667
@@ -3973,7 +3973,7 @@ synth/Keys[Driven Clav]/release_drop_err_st	0
 synth/Keys[Driven Clav]/vel_curve_err_db	1.8794
 synth/Keys[Driven Clav]/vel_tone_oct	0.1071
 synth/Keys[Dusty Keys]/chord6_vs_power_db	-3.3162
-synth/Keys[Dusty Keys]/chord8_peak_dbfs	-14.5182
+synth/Keys[Dusty Keys]/chord8_peak_dbfs	-13.9091
 synth/Keys[Dusty Keys]/dc_dbfs	-123.143
 synth/Keys[Dusty Keys]/decay_c4_err_pct	4.2544
 synth/Keys[Dusty Keys]/decay_slope	-0.7458
@@ -3995,7 +3995,7 @@ synth/Keys[Funk Clav]/release_drop_err_st	-0.0002
 synth/Keys[Funk Clav]/vel_curve_err_db	1.0758
 synth/Keys[Funk Clav]/vel_tone_oct	0.1718
 synth/Keys[Hard Tines]/chord6_vs_power_db	0.2067
-synth/Keys[Hard Tines]/chord8_peak_dbfs	-3.4865
+synth/Keys[Hard Tines]/chord8_peak_dbfs	-3.2335
 synth/Keys[Hard Tines]/dc_dbfs	-140
 synth/Keys[Hard Tines]/decay_c4_err_pct	1.2915
 synth/Keys[Hard Tines]/decay_slope	-0.7107
@@ -4005,7 +4005,7 @@ synth/Keys[Hard Tines]/mono_loss_db	0
 synth/Keys[Hard Tines]/vel_curve_err_db	0.1319
 synth/Keys[Hard Tines]/vel_tone_oct	1.4986
 synth/Keys[Hollow Tines]/chord6_vs_power_db	-0.1385
-synth/Keys[Hollow Tines]/chord8_peak_dbfs	-2.803
+synth/Keys[Hollow Tines]/chord8_peak_dbfs	-2.7391
 synth/Keys[Hollow Tines]/dc_dbfs	-140
 synth/Keys[Hollow Tines]/decay_c4_err_pct	0.9419
 synth/Keys[Hollow Tines]/decay_slope	-0.6096
@@ -4015,7 +4015,7 @@ synth/Keys[Hollow Tines]/mono_loss_db	0
 synth/Keys[Hollow Tines]/vel_curve_err_db	0.1297
 synth/Keys[Hollow Tines]/vel_tone_oct	0.9896
 synth/Keys[Init]/chord6_vs_power_db	-0.3431
-synth/Keys[Init]/chord8_peak_dbfs	-1.3745
+synth/Keys[Init]/chord8_peak_dbfs	-1.3238
 synth/Keys[Init]/dc_dbfs	-140
 synth/Keys[Init]/decay_c4_err_pct	0.4372
 synth/Keys[Init]/decay_slope	-0.734
@@ -4025,7 +4025,7 @@ synth/Keys[Init]/mono_loss_db	0
 synth/Keys[Init]/vel_curve_err_db	0.1284
 synth/Keys[Init]/vel_tone_oct	1.2117
 synth/Keys[Lo-fi Tines]/chord6_vs_power_db	-3.17
-synth/Keys[Lo-fi Tines]/chord8_peak_dbfs	-13.5114
+synth/Keys[Lo-fi Tines]/chord8_peak_dbfs	-13.4688
 synth/Keys[Lo-fi Tines]/dc_dbfs	-112.8943
 synth/Keys[Lo-fi Tines]/decay_c4_err_pct	2.0923
 synth/Keys[Lo-fi Tines]/decay_slope	-0.7159
@@ -4036,7 +4036,7 @@ synth/Keys[Lo-fi Tines]/trem_rate_err_pct	0.1287
 synth/Keys[Lo-fi Tines]/vel_curve_err_db	1.4823
 synth/Keys[Lo-fi Tines]/vel_tone_oct	1.1526
 synth/Keys[Long Tines]/chord6_vs_power_db	-0.9047
-synth/Keys[Long Tines]/chord8_peak_dbfs	-3.1291
+synth/Keys[Long Tines]/chord8_peak_dbfs	-3.053
 synth/Keys[Long Tines]/dc_dbfs	-140
 synth/Keys[Long Tines]/decay_c4_err_pct	1.1348
 synth/Keys[Long Tines]/decay_slope	-0.7324
@@ -4056,7 +4056,7 @@ synth/Keys[Mellow Reed]/mono_loss_db	0
 synth/Keys[Mellow Reed]/vel_curve_err_db	0.1655
 synth/Keys[Mellow Reed]/vel_tone_oct	0.0274
 synth/Keys[Mellow Tines]/chord6_vs_power_db	-1.6203
-synth/Keys[Mellow Tines]/chord8_peak_dbfs	-6.6608
+synth/Keys[Mellow Tines]/chord8_peak_dbfs	-6.6195
 synth/Keys[Mellow Tines]/dc_dbfs	-140
 synth/Keys[Mellow Tines]/decay_c4_err_pct	-0.0275
 synth/Keys[Mellow Tines]/decay_slope	-0.8034
@@ -4066,7 +4066,7 @@ synth/Keys[Mellow Tines]/mono_loss_db	0
 synth/Keys[Mellow Tines]/vel_curve_err_db	0.3298
 synth/Keys[Mellow Tines]/vel_tone_oct	0.4872
 synth/Keys[Muted Clav]/chord6_vs_power_db	2.4963
-synth/Keys[Muted Clav]/chord8_peak_dbfs	-0.7205
+synth/Keys[Muted Clav]/chord8_peak_dbfs	-0.7111
 synth/Keys[Muted Clav]/dc_dbfs	-140
 synth/Keys[Muted Clav]/decay_c4_err_pct	-0.8224
 synth/Keys[Muted Clav]/decay_slope	-0.6297
@@ -4076,7 +4076,7 @@ synth/Keys[Muted Clav]/release_drop_err_st	0.001
 synth/Keys[Muted Clav]/vel_curve_err_db	0.6955
 synth/Keys[Muted Clav]/vel_tone_oct	-0.0315
 synth/Keys[Pan Clav]/chord6_vs_power_db	1.4884
-synth/Keys[Pan Clav]/chord8_peak_dbfs	-0.94
+synth/Keys[Pan Clav]/chord8_peak_dbfs	-0.6724
 synth/Keys[Pan Clav]/dc_dbfs	-140
 synth/Keys[Pan Clav]/decay_c4_err_pct	-6.3119
 synth/Keys[Pan Clav]/decay_slope	-0.7584
@@ -4087,7 +4087,7 @@ synth/Keys[Pan Clav]/trem_rate_err_pct	0.2353
 synth/Keys[Pan Clav]/vel_curve_err_db	0.9488
 synth/Keys[Pan Clav]/vel_tone_oct	0.1948
 synth/Keys[Pan Reed]/chord6_vs_power_db	-0.5328
-synth/Keys[Pan Reed]/chord8_peak_dbfs	-1.2467
+synth/Keys[Pan Reed]/chord8_peak_dbfs	-1.2155
 synth/Keys[Pan Reed]/dc_dbfs	-92.0952
 synth/Keys[Pan Reed]/decay_c4_err_pct	0.1661
 synth/Keys[Pan Reed]/decay_slope	-0.7504
@@ -4098,7 +4098,7 @@ synth/Keys[Pan Reed]/trem_rate_err_pct	-0.0243
 synth/Keys[Pan Reed]/vel_curve_err_db	0.2601
 synth/Keys[Pan Reed]/vel_tone_oct	0.0274
 synth/Keys[Pan Tines]/chord6_vs_power_db	-0.3362
-synth/Keys[Pan Tines]/chord8_peak_dbfs	-1.2408
+synth/Keys[Pan Tines]/chord8_peak_dbfs	-1.226
 synth/Keys[Pan Tines]/dc_dbfs	-139.4503
 synth/Keys[Pan Tines]/decay_c4_err_pct	0.4761
 synth/Keys[Pan Tines]/decay_slope	-0.7317
@@ -4109,7 +4109,7 @@ synth/Keys[Pan Tines]/trem_rate_err_pct	0.2068
 synth/Keys[Pan Tines]/vel_curve_err_db	0.1877
 synth/Keys[Pan Tines]/vel_tone_oct	1.2353
 synth/Keys[Phase Tines]/chord6_vs_power_db	-0.1483
-synth/Keys[Phase Tines]/chord8_peak_dbfs	-2.7611
+synth/Keys[Phase Tines]/chord8_peak_dbfs	-0.7867
 synth/Keys[Phase Tines]/dc_dbfs	-140
 synth/Keys[Phase Tines]/decay_c4_err_pct	0.5871
 synth/Keys[Phase Tines]/decay_slope	-0.7279
@@ -4119,7 +4119,7 @@ synth/Keys[Phase Tines]/mono_loss_db	0.6513
 synth/Keys[Phase Tines]/vel_curve_err_db	0.6118
 synth/Keys[Phase Tines]/vel_tone_oct	1.6264
 synth/Keys[Reed Bite]/chord6_vs_power_db	-1.5548
-synth/Keys[Reed Bite]/chord8_peak_dbfs	-4.8643
+synth/Keys[Reed Bite]/chord8_peak_dbfs	-4.8273
 synth/Keys[Reed Bite]/dc_dbfs	-140
 synth/Keys[Reed Bite]/decay_c4_err_pct	-0.0447
 synth/Keys[Reed Bite]/decay_slope	-0.7502
@@ -4129,7 +4129,7 @@ synth/Keys[Reed Bite]/mono_loss_db	0
 synth/Keys[Reed Bite]/vel_curve_err_db	1.0303
 synth/Keys[Reed Bite]/vel_tone_oct	0.0523
 synth/Keys[Reed]/chord6_vs_power_db	-0.5328
-synth/Keys[Reed]/chord8_peak_dbfs	-3.1896
+synth/Keys[Reed]/chord8_peak_dbfs	-3.1724
 synth/Keys[Reed]/dc_dbfs	-140
 synth/Keys[Reed]/decay_c4_err_pct	0.133
 synth/Keys[Reed]/decay_slope	-0.7507
@@ -4139,7 +4139,7 @@ synth/Keys[Reed]/mono_loss_db	0
 synth/Keys[Reed]/vel_curve_err_db	0.2476
 synth/Keys[Reed]/vel_tone_oct	0.0275
 synth/Keys[Soft Clav]/chord6_vs_power_db	1.3998
-synth/Keys[Soft Clav]/chord8_peak_dbfs	-5.6247
+synth/Keys[Soft Clav]/chord8_peak_dbfs	-5.6085
 synth/Keys[Soft Clav]/dc_dbfs	-140
 synth/Keys[Soft Clav]/decay_c4_err_pct	-2.4108
 synth/Keys[Soft Clav]/decay_slope	-0.756
@@ -4160,7 +4160,7 @@ synth/Keys[Soft Reed]/mono_loss_db	0
 synth/Keys[Soft Reed]/vel_curve_err_db	0.2898
 synth/Keys[Soft Reed]/vel_tone_oct	0.0192
 synth/Keys[Soft Tines]/chord6_vs_power_db	-1.9697
-synth/Keys[Soft Tines]/chord8_peak_dbfs	-5.2688
+synth/Keys[Soft Tines]/chord8_peak_dbfs	-5.2665
 synth/Keys[Soft Tines]/dc_dbfs	-140
 synth/Keys[Soft Tines]/decay_c4_err_pct	0.106
 synth/Keys[Soft Tines]/decay_slope	-0.7773
@@ -4170,7 +4170,7 @@ synth/Keys[Soft Tines]/mono_loss_db	0
 synth/Keys[Soft Tines]/vel_curve_err_db	0.3205
 synth/Keys[Soft Tines]/vel_tone_oct	0.769
 synth/Keys[Stab Clav]/chord6_vs_power_db	2.2209
-synth/Keys[Stab Clav]/chord8_peak_dbfs	-0.883
+synth/Keys[Stab Clav]/chord8_peak_dbfs	-0.8737
 synth/Keys[Stab Clav]/dc_dbfs	-140
 synth/Keys[Stab Clav]/decay_c4_err_pct	-9.0966
 synth/Keys[Stab Clav]/decay_slope	-0.687
@@ -4180,7 +4180,7 @@ synth/Keys[Stab Clav]/release_drop_err_st	0.0027
 synth/Keys[Stab Clav]/vel_curve_err_db	1.0226
 synth/Keys[Stab Clav]/vel_tone_oct	-0.0202
 synth/Keys[Stage Tines]/chord6_vs_power_db	0.1238
-synth/Keys[Stage Tines]/chord8_peak_dbfs	-1.065
+synth/Keys[Stage Tines]/chord8_peak_dbfs	-0.8349
 synth/Keys[Stage Tines]/dc_dbfs	-119.7983
 synth/Keys[Stage Tines]/decay_c4_err_pct	1.0296
 synth/Keys[Stage Tines]/decay_slope	-0.7224
@@ -4201,7 +4201,7 @@ synth/Keys[Thin Clav]/release_drop_err_st	-0.0006
 synth/Keys[Thin Clav]/vel_curve_err_db	0.5196
 synth/Keys[Thin Clav]/vel_tone_oct	0.253
 synth/Keys[Trem Clav]/chord6_vs_power_db	1.1385
-synth/Keys[Trem Clav]/chord8_peak_dbfs	-0.972
+synth/Keys[Trem Clav]/chord8_peak_dbfs	-0.9629
 synth/Keys[Trem Clav]/dc_dbfs	-140
 synth/Keys[Trem Clav]/decay_c4_err_pct	-3.7047
 synth/Keys[Trem Clav]/decay_slope	-0.7466
@@ -4213,7 +4213,7 @@ synth/Keys[Trem Clav]/trem_rate_err_pct	0.0407
 synth/Keys[Trem Clav]/vel_curve_err_db	0.8891
 synth/Keys[Trem Clav]/vel_tone_oct	0.4019
 synth/Keys[Trem Reed]/chord6_vs_power_db	-0.5688
-synth/Keys[Trem Reed]/chord8_peak_dbfs	-0.8215
+synth/Keys[Trem Reed]/chord8_peak_dbfs	-0.6632
 synth/Keys[Trem Reed]/dc_dbfs	-140
 synth/Keys[Trem Reed]/decay_c4_err_pct	0.3957
 synth/Keys[Trem Reed]/decay_slope	-0.7372
@@ -4224,7 +4224,7 @@ synth/Keys[Trem Reed]/trem_rate_err_pct	0.4098
 synth/Keys[Trem Reed]/vel_curve_err_db	0.244
 synth/Keys[Trem Reed]/vel_tone_oct	0.0183
 synth/Keys[Wah Clav]/chord6_vs_power_db	1.72
-synth/Keys[Wah Clav]/chord8_peak_dbfs	-0.5361
+synth/Keys[Wah Clav]/chord8_peak_dbfs	-0.5214
 synth/Keys[Wah Clav]/dc_dbfs	-132.1888
 synth/Keys[Wah Clav]/decay_c4_err_pct	-11.2864
 synth/Keys[Wah Clav]/decay_slope	-0.7943
@@ -4237,7 +4237,7 @@ synth/Keys[Wah Clav]/vel_tone_oct	0.6788
 synth/Pluck/position 20/fifth_vs_neighbours_db	-44.0366
 synth/Pluck/position 50/even_vs_odd_db	-49.977
 synth/Pluck[Banjo]/chord6_vs_power_db	-0.0566
-synth/Pluck[Banjo]/chord8_peak_dbfs	-1.5865
+synth/Pluck[Banjo]/chord8_peak_dbfs	-3.5865
 synth/Pluck[Banjo]/dc_dbfs	-140
 synth/Pluck[Banjo]/decay_c4_err_pct	-10.8406
 synth/Pluck[Banjo]/decay_slope	-0.5632
@@ -4255,7 +4255,7 @@ synth/Pluck[Bell]/mono_loss_db	0.0691
 synth/Pluck[Bell]/vel_curve_err_db	0.3265
 synth/Pluck[Bell]/vel_tone_oct	0.1431
 synth/Pluck[Celesta]/chord6_vs_power_db	-0.1873
-synth/Pluck[Celesta]/chord8_peak_dbfs	-3.2718
+synth/Pluck[Celesta]/chord8_peak_dbfs	-3.2289
 synth/Pluck[Celesta]/dc_dbfs	-140
 synth/Pluck[Celesta]/decay_c4_err_pct	0.2316
 synth/Pluck[Celesta]/decay_slope	-0.4995
@@ -4273,7 +4273,7 @@ synth/Pluck[Chimes]/mono_loss_db	0.1087
 synth/Pluck[Chimes]/vel_curve_err_db	0.2989
 synth/Pluck[Chimes]/vel_tone_oct	0.2064
 synth/Pluck[Glass]/chord6_vs_power_db	-0.2321
-synth/Pluck[Glass]/chord8_peak_dbfs	-3.8467
+synth/Pluck[Glass]/chord8_peak_dbfs	-3.6751
 synth/Pluck[Glass]/dc_dbfs	-140
 synth/Pluck[Glass]/decay_c4_err_pct	-0.6272
 synth/Pluck[Glass]/decay_slope	-0.4947
@@ -4282,7 +4282,7 @@ synth/Pluck[Glass]/mono_loss_db	0.0578
 synth/Pluck[Glass]/vel_curve_err_db	0.2208
 synth/Pluck[Glass]/vel_tone_oct	0.2438
 synth/Pluck[Glockenspiel]/chord6_vs_power_db	-0.1246
-synth/Pluck[Glockenspiel]/chord8_peak_dbfs	-4.0836
+synth/Pluck[Glockenspiel]/chord8_peak_dbfs	-4.0737
 synth/Pluck[Glockenspiel]/dc_dbfs	-140
 synth/Pluck[Glockenspiel]/decay_c4_err_pct	0.0905
 synth/Pluck[Glockenspiel]/decay_slope	-0.4965
@@ -4291,7 +4291,7 @@ synth/Pluck[Glockenspiel]/mono_loss_db	0.0557
 synth/Pluck[Glockenspiel]/vel_curve_err_db	0.0857
 synth/Pluck[Glockenspiel]/vel_tone_oct	0.1948
 synth/Pluck[Harp]/chord6_vs_power_db	-0.0084
-synth/Pluck[Harp]/chord8_peak_dbfs	-1.5538
+synth/Pluck[Harp]/chord8_peak_dbfs	-0.9747
 synth/Pluck[Harp]/dc_dbfs	-140
 synth/Pluck[Harp]/decay_c4_err_pct	-7.2855
 synth/Pluck[Harp]/decay_slope	-0.4793
@@ -4300,7 +4300,7 @@ synth/Pluck[Harp]/mono_loss_db	0.2453
 synth/Pluck[Harp]/vel_curve_err_db	0.2626
 synth/Pluck[Harp]/vel_tone_oct	0.3072
 synth/Pluck[Harpsichord]/chord6_vs_power_db	0.0013
-synth/Pluck[Harpsichord]/chord8_peak_dbfs	-3.1126
+synth/Pluck[Harpsichord]/chord8_peak_dbfs	-0.9611
 synth/Pluck[Harpsichord]/dc_dbfs	-140
 synth/Pluck[Harpsichord]/decay_c4_err_pct	-14.9846
 synth/Pluck[Harpsichord]/decay_slope	-0.5162
@@ -4309,7 +4309,7 @@ synth/Pluck[Harpsichord]/mono_loss_db	0.095
 synth/Pluck[Harpsichord]/vel_curve_err_db	0.0193
 synth/Pluck[Harpsichord]/vel_tone_oct	0.1106
 synth/Pluck[Init]/chord6_vs_power_db	0.9173
-synth/Pluck[Init]/chord8_peak_dbfs	-3.3431
+synth/Pluck[Init]/chord8_peak_dbfs	-0.9663
 synth/Pluck[Init]/dc_dbfs	-140
 synth/Pluck[Init]/decay_c4_err_pct	-13.6052
 synth/Pluck[Init]/decay_slope	-0.4931
@@ -4318,7 +4318,7 @@ synth/Pluck[Init]/mono_loss_db	0.0608
 synth/Pluck[Init]/vel_curve_err_db	0.2258
 synth/Pluck[Init]/vel_tone_oct	0.1206
 synth/Pluck[Kalimba]/chord6_vs_power_db	-0.6473
-synth/Pluck[Kalimba]/chord8_peak_dbfs	-3.1061
+synth/Pluck[Kalimba]/chord8_peak_dbfs	-2.7902
 synth/Pluck[Kalimba]/dc_dbfs	-140
 synth/Pluck[Kalimba]/decay_c4_err_pct	0.1711
 synth/Pluck[Kalimba]/decay_slope	-0.4998
@@ -4327,7 +4327,7 @@ synth/Pluck[Kalimba]/mono_loss_db	0.0632
 synth/Pluck[Kalimba]/vel_curve_err_db	0.1454
 synth/Pluck[Kalimba]/vel_tone_oct	0.1194
 synth/Pluck[Koto]/chord6_vs_power_db	-0.5782
-synth/Pluck[Koto]/chord8_peak_dbfs	-1.4991
+synth/Pluck[Koto]/chord8_peak_dbfs	-0.5858
 synth/Pluck[Koto]/dc_dbfs	-140
 synth/Pluck[Koto]/decay_c4_err_pct	-13.2527
 synth/Pluck[Koto]/decay_slope	-0.5321
@@ -4336,7 +4336,7 @@ synth/Pluck[Koto]/mono_loss_db	0.0508
 synth/Pluck[Koto]/vel_curve_err_db	0.0427
 synth/Pluck[Koto]/vel_tone_oct	0.1396
 synth/Pluck[Marimba]/chord6_vs_power_db	-0.3925
-synth/Pluck[Marimba]/chord8_peak_dbfs	-4.1279
+synth/Pluck[Marimba]/chord8_peak_dbfs	-4.0433
 synth/Pluck[Marimba]/dc_dbfs	-140
 synth/Pluck[Marimba]/decay_c4_err_pct	0.1011
 synth/Pluck[Marimba]/decay_slope	-0.4992
@@ -4345,7 +4345,7 @@ synth/Pluck[Marimba]/mono_loss_db	0.0567
 synth/Pluck[Marimba]/vel_curve_err_db	0.2834
 synth/Pluck[Marimba]/vel_tone_oct	0.1646
 synth/Pluck[Music Box]/chord6_vs_power_db	-0.7586
-synth/Pluck[Music Box]/chord8_peak_dbfs	-2.3811
+synth/Pluck[Music Box]/chord8_peak_dbfs	-1.8163
 synth/Pluck[Music Box]/dc_dbfs	-140
 synth/Pluck[Music Box]/decay_c4_err_pct	0.1517
 synth/Pluck[Music Box]/decay_slope	-0.4997
@@ -4354,7 +4354,7 @@ synth/Pluck[Music Box]/mono_loss_db	0.1809
 synth/Pluck[Music Box]/vel_curve_err_db	0.2013
 synth/Pluck[Music Box]/vel_tone_oct	0.1293
 synth/Pluck[Muted Bass]/chord6_vs_power_db	0.07
-synth/Pluck[Muted Bass]/chord8_peak_dbfs	-2.7007
+synth/Pluck[Muted Bass]/chord8_peak_dbfs	-1.3178
 synth/Pluck[Muted Bass]/dc_dbfs	-140
 synth/Pluck[Muted Bass]/decay_c4_err_pct	-9.1702
 synth/Pluck[Muted Bass]/decay_slope	-0.4889
@@ -4366,7 +4366,7 @@ synth/Pluck[Muted Bass]/start_step_dbfs	-57.0492
 synth/Pluck[Muted Bass]/vel_curve_err_db	0.527
 synth/Pluck[Muted Bass]/vel_tone_oct	0.4769
 synth/Pluck[Nylon]/chord6_vs_power_db	0.9711
-synth/Pluck[Nylon]/chord8_peak_dbfs	-1.5678
+synth/Pluck[Nylon]/chord8_peak_dbfs	-0.9842
 synth/Pluck[Nylon]/dc_dbfs	-140
 synth/Pluck[Nylon]/decay_c4_err_pct	-12.3979
 synth/Pluck[Nylon]/decay_slope	-0.4886
@@ -4375,7 +4375,7 @@ synth/Pluck[Nylon]/mono_loss_db	0.0487
 synth/Pluck[Nylon]/vel_curve_err_db	0.5903
 synth/Pluck[Nylon]/vel_tone_oct	0.1876
 synth/Pluck[Oud]/chord6_vs_power_db	0.2288
-synth/Pluck[Oud]/chord8_peak_dbfs	-2.261
+synth/Pluck[Oud]/chord8_peak_dbfs	-0.3442
 synth/Pluck[Oud]/dc_dbfs	-140
 synth/Pluck[Oud]/decay_c4_err_pct	-13.2734
 synth/Pluck[Oud]/decay_slope	-0.5019
@@ -4393,7 +4393,7 @@ synth/Pluck[Pizzicato]/mono_loss_db	0.3509
 synth/Pluck[Pizzicato]/vel_curve_err_db	0.4456
 synth/Pluck[Pizzicato]/vel_tone_oct	0.4804
 synth/Pluck[Steel Drum]/chord6_vs_power_db	-0.1596
-synth/Pluck[Steel Drum]/chord8_peak_dbfs	-0.7145
+synth/Pluck[Steel Drum]/chord8_peak_dbfs	-0.6753
 synth/Pluck[Steel Drum]/dc_dbfs	-140
 synth/Pluck[Steel Drum]/decay_c4_err_pct	-1.8443
 synth/Pluck[Steel Drum]/decay_slope	-0.4882
@@ -4411,7 +4411,7 @@ synth/Pluck[Steel String]/mono_loss_db	-0.1198
 synth/Pluck[Steel String]/vel_curve_err_db	0.0449
 synth/Pluck[Steel String]/vel_tone_oct	0.1873
 synth/Pluck[Upright Bass]/chord6_vs_power_db	-0.5365
-synth/Pluck[Upright Bass]/chord8_peak_dbfs	-2.397
+synth/Pluck[Upright Bass]/chord8_peak_dbfs	-1.6261
 synth/Pluck[Upright Bass]/dc_dbfs	-140
 synth/Pluck[Upright Bass]/decay_c4_err_pct	-12.3968
 synth/Pluck[Upright Bass]/decay_slope	-0.4732
@@ -4423,7 +4423,7 @@ synth/Pluck[Upright Bass]/start_step_dbfs	-54.928
 synth/Pluck[Upright Bass]/vel_curve_err_db	0.3682
 synth/Pluck[Upright Bass]/vel_tone_oct	0.4745
 synth/Pluck[Vibes]/chord6_vs_power_db	-0.0398
-synth/Pluck[Vibes]/chord8_peak_dbfs	-5.6528
+synth/Pluck[Vibes]/chord8_peak_dbfs	-5.6344
 synth/Pluck[Vibes]/dc_dbfs	-140
 synth/Pluck[Vibes]/decay_c4_err_pct	0.1345
 synth/Pluck[Vibes]/decay_slope	-0.4979
@@ -4432,7 +4432,7 @@ synth/Pluck[Vibes]/mono_loss_db	0.0509
 synth/Pluck[Vibes]/vel_curve_err_db	0.1621
 synth/Pluck[Vibes]/vel_tone_oct	0.2239
 synth/Pluck[Xylophone]/chord6_vs_power_db	-1.2609
-synth/Pluck[Xylophone]/chord8_peak_dbfs	-1.0817
+synth/Pluck[Xylophone]/chord8_peak_dbfs	-0.7877
 synth/Pluck[Xylophone]/dc_dbfs	-140
 synth/Pluck[Xylophone]/decay_c4_err_pct	-0.1597
 synth/Pluck[Xylophone]/decay_slope	-0.4978
@@ -4447,42 +4447,42 @@ synth/Poly[Acid]/mono_loss_db	0
 synth/Poly[Acid]/vel_curve_err_db	0.0213
 synth/Poly[Acid]/vel_tone_oct	0.8193
 synth/Poly[Brass]/chord6_vs_power_db	1.7438
-synth/Poly[Brass]/chord8_peak_dbfs	-4.9874
+synth/Poly[Brass]/chord8_peak_dbfs	-4.9837
 synth/Poly[Brass]/dc_dbfs	-106.2103
 synth/Poly[Brass]/key_spread_db	2.2952
 synth/Poly[Brass]/mono_loss_db	0
 synth/Poly[Brass]/vel_curve_err_db	0.0173
 synth/Poly[Brass]/vel_tone_oct	0.2549
-synth/Poly[Breath Lead]/chord8_peak_dbfs	-15.1534
+synth/Poly[Breath Lead]/chord8_peak_dbfs	-14.8948
 synth/Poly[Breath Lead]/dc_dbfs	-116.3204
 synth/Poly[Breath Lead]/key_spread_db	3.3276
 synth/Poly[Breath Lead]/mono_loss_db	0
 synth/Poly[Breath Lead]/vel_curve_err_db	0.0124
 synth/Poly[Breath Lead]/vel_tone_oct	0.2657
 synth/Poly[Digital Bell]/chord6_vs_power_db	-0.0221
-synth/Poly[Digital Bell]/chord8_peak_dbfs	1.663
-synth/Poly[Digital Bell]/dc_dbfs	-81.203
+synth/Poly[Digital Bell]/chord8_peak_dbfs	-1.337
+synth/Poly[Digital Bell]/dc_dbfs	-84.203
 synth/Poly[Digital Bell]/key_spread_db	3.3774
 synth/Poly[Digital Bell]/mono_loss_db	0
 synth/Poly[Digital Bell]/vel_curve_err_db	0.0861
 synth/Poly[Digital Bell]/vel_tone_oct	0.7949
 synth/Poly[Drift Pad]/chord6_vs_power_db	-0.2021
-synth/Poly[Drift Pad]/chord8_peak_dbfs	-3.9702
+synth/Poly[Drift Pad]/chord8_peak_dbfs	-2.9606
 synth/Poly[Drift Pad]/dc_dbfs	-129.495
 synth/Poly[Drift Pad]/key_spread_db	2.0724
 synth/Poly[Drift Pad]/mono_loss_db	0.095
 synth/Poly[Drift Pad]/vel_curve_err_db	0.0079
 synth/Poly[Drift Pad]/vel_tone_oct	0.2391
 synth/Poly[Dust Pad]/chord6_vs_power_db	0.0262
-synth/Poly[Dust Pad]/chord8_peak_dbfs	-10.1473
+synth/Poly[Dust Pad]/chord8_peak_dbfs	-9.0251
 synth/Poly[Dust Pad]/dc_dbfs	-111.011
 synth/Poly[Dust Pad]/key_spread_db	4.2076
 synth/Poly[Dust Pad]/mono_loss_db	0.4605
 synth/Poly[Dust Pad]/vel_curve_err_db	0.018
 synth/Poly[Dust Pad]/vel_tone_oct	0.2553
 synth/Poly[FM Keys]/chord6_vs_power_db	-0.0222
-synth/Poly[FM Keys]/chord8_peak_dbfs	0.4156
-synth/Poly[FM Keys]/dc_dbfs	-80.9173
+synth/Poly[FM Keys]/chord8_peak_dbfs	-1.0844
+synth/Poly[FM Keys]/dc_dbfs	-82.4173
 synth/Poly[FM Keys]/key_spread_db	3.0972
 synth/Poly[FM Keys]/mono_loss_db	0
 synth/Poly[FM Keys]/vel_curve_err_db	0.0003
@@ -4513,8 +4513,8 @@ synth/Poly[Harmonic Pluck]/mono_loss_db	0
 synth/Poly[Harmonic Pluck]/vel_curve_err_db	0.0923
 synth/Poly[Harmonic Pluck]/vel_tone_oct	-0.0196
 synth/Poly[Init]/chord6_vs_power_db	1.7918
-synth/Poly[Init]/chord8_peak_dbfs	2.1611
-synth/Poly[Init]/dc_dbfs	-80.5333
+synth/Poly[Init]/chord8_peak_dbfs	-1.8369
+synth/Poly[Init]/dc_dbfs	-84.5333
 synth/Poly[Init]/key_spread_db	3.2788
 synth/Poly[Init]/mono_loss_db	0
 synth/Poly[Init]/vel_curve_err_db	0.0144
@@ -4525,28 +4525,28 @@ synth/Poly[Lead]/key_spread_db	3.0324
 synth/Poly[Lead]/mono_loss_db	0
 synth/Poly[Lead]/vel_curve_err_db	0.021
 synth/Poly[Lead]/vel_tone_oct	0.1584
-synth/Poly[Low Note Lead]/chord8_peak_dbfs	-13.4848
+synth/Poly[Low Note Lead]/chord8_peak_dbfs	-13.23
 synth/Poly[Low Note Lead]/dc_dbfs	-118.1781
 synth/Poly[Low Note Lead]/key_spread_db	4.1267
 synth/Poly[Low Note Lead]/mono_loss_db	0
 synth/Poly[Low Note Lead]/vel_curve_err_db	0.0193
 synth/Poly[Low Note Lead]/vel_tone_oct	0.3546
 synth/Poly[Morph Pad]/chord6_vs_power_db	0.1213
-synth/Poly[Morph Pad]/chord8_peak_dbfs	-15.837
+synth/Poly[Morph Pad]/chord8_peak_dbfs	-14.8808
 synth/Poly[Morph Pad]/dc_dbfs	-135.4022
 synth/Poly[Morph Pad]/key_spread_db	3.6751
 synth/Poly[Morph Pad]/mono_loss_db	0.6099
 synth/Poly[Morph Pad]/vel_curve_err_db	0.0041
 synth/Poly[Morph Pad]/vel_tone_oct	0.1581
 synth/Poly[Organ]/chord6_vs_power_db	1.8496
-synth/Poly[Organ]/chord8_peak_dbfs	-6.2087
+synth/Poly[Organ]/chord8_peak_dbfs	-6.2076
 synth/Poly[Organ]/dc_dbfs	-94.8276
 synth/Poly[Organ]/key_spread_db	3.8413
 synth/Poly[Organ]/mono_loss_db	0
 synth/Poly[Organ]/vel_curve_err_db	0.0011
 synth/Poly[Organ]/vel_tone_oct	-0.0003
 synth/Poly[Pluck]/chord6_vs_power_db	0.1013
-synth/Poly[Pluck]/chord8_peak_dbfs	-5.1967
+synth/Poly[Pluck]/chord8_peak_dbfs	-5.15
 synth/Poly[Pluck]/dc_dbfs	-87.5501
 synth/Poly[Pluck]/key_spread_db	7.5256
 synth/Poly[Pluck]/mono_loss_db	0
@@ -4558,7 +4558,7 @@ synth/Poly[Portamento Lead]/key_spread_db	3.2662
 synth/Poly[Portamento Lead]/mono_loss_db	0
 synth/Poly[Portamento Lead]/vel_curve_err_db	0.0187
 synth/Poly[Portamento Lead]/vel_tone_oct	0.4236
-synth/Poly[Singing Lead]/chord8_peak_dbfs	-13.6781
+synth/Poly[Singing Lead]/chord8_peak_dbfs	-12.497
 synth/Poly[Singing Lead]/dc_dbfs	-140
 synth/Poly[Singing Lead]/key_spread_db	2.4256
 synth/Poly[Singing Lead]/mono_loss_db	0
@@ -4571,7 +4571,7 @@ synth/Poly[Slide Lead]/key_spread_db	4.959
 synth/Poly[Slide Lead]/mono_loss_db	0
 synth/Poly[Slide Lead]/vel_curve_err_db	0.0205
 synth/Poly[Slide Lead]/vel_tone_oct	0.2735
-synth/Poly[Sub Bass]/chord8_peak_dbfs	-15.6617
+synth/Poly[Sub Bass]/chord8_peak_dbfs	-15.655
 synth/Poly[Sub Bass]/dc_dbfs	-81.354
 synth/Poly[Sub Bass]/key_spread_db	13.4343
 synth/Poly[Sub Bass]/low_correlation	1
@@ -4580,42 +4580,42 @@ synth/Poly[Sub Bass]/small_speaker_db	-37.3009
 synth/Poly[Sub Bass]/start_step_dbfs	-93.213
 synth/Poly[Sub Bass]/vel_curve_err_db	0.0108
 synth/Poly[Sub Bass]/vel_tone_oct	0.0005
-synth/Poly[Super Lead]/chord8_peak_dbfs	-9.3611
+synth/Poly[Super Lead]/chord8_peak_dbfs	-9.3554
 synth/Poly[Super Lead]/dc_dbfs	-94.2451
 synth/Poly[Super Lead]/key_spread_db	2.8316
 synth/Poly[Super Lead]/mono_loss_db	0
 synth/Poly[Super Lead]/vel_curve_err_db	0.0161
 synth/Poly[Super Lead]/vel_tone_oct	0.2316
 synth/Poly[Super Pad]/chord6_vs_power_db	0.0738
-synth/Poly[Super Pad]/chord8_peak_dbfs	-1.0068
+synth/Poly[Super Pad]/chord8_peak_dbfs	-0.8379
 synth/Poly[Super Pad]/dc_dbfs	-115.5023
 synth/Poly[Super Pad]/key_spread_db	3.4783
 synth/Poly[Super Pad]/mono_loss_db	0
 synth/Poly[Super Pad]/vel_curve_err_db	0.0175
 synth/Poly[Super Pad]/vel_tone_oct	0.2162
 synth/Poly[Super Stab]/chord6_vs_power_db	-0.1382
-synth/Poly[Super Stab]/chord8_peak_dbfs	-6.8058
+synth/Poly[Super Stab]/chord8_peak_dbfs	-2.6386
 synth/Poly[Super Stab]/dc_dbfs	-97.107
 synth/Poly[Super Stab]/key_spread_db	4.3022
 synth/Poly[Super Stab]/mono_loss_db	0
 synth/Poly[Super Stab]/vel_curve_err_db	0.0047
 synth/Poly[Super Stab]/vel_tone_oct	0.3538
 synth/Poly[Super Stack]/chord6_vs_power_db	0.3723
-synth/Poly[Super Stack]/chord8_peak_dbfs	-3.0314
+synth/Poly[Super Stack]/chord8_peak_dbfs	-2.2245
 synth/Poly[Super Stack]/dc_dbfs	-91.5689
 synth/Poly[Super Stack]/key_spread_db	5.3512
 synth/Poly[Super Stack]/mono_loss_db	0.4107
 synth/Poly[Super Stack]/vel_curve_err_db	0.0087
 synth/Poly[Super Stack]/vel_tone_oct	0.2172
 synth/Poly[Supersaw]/chord6_vs_power_db	-0.0054
-synth/Poly[Supersaw]/chord8_peak_dbfs	-2.8394
+synth/Poly[Supersaw]/chord8_peak_dbfs	-2.1413
 synth/Poly[Supersaw]/dc_dbfs	-95.6122
 synth/Poly[Supersaw]/key_spread_db	3.4424
 synth/Poly[Supersaw]/mono_loss_db	0.7037
 synth/Poly[Supersaw]/vel_curve_err_db	0.0084
 synth/Poly[Supersaw]/vel_tone_oct	0.2118
 synth/Poly[Sync Sweep]/chord6_vs_power_db	1.4472
-synth/Poly[Sync Sweep]/chord8_peak_dbfs	-0.4455
+synth/Poly[Sync Sweep]/chord8_peak_dbfs	-0.6056
 synth/Poly[Sync Sweep]/dc_dbfs	-140
 synth/Poly[Sync Sweep]/key_spread_db	3.5566
 synth/Poly[Sync Sweep]/mono_loss_db	0
@@ -4628,26 +4628,26 @@ synth/Poly[Table Init]/key_spread_db	3.2942
 synth/Poly[Table Init]/mono_loss_db	0
 synth/Poly[Table Init]/vel_curve_err_db	0.0044
 synth/Poly[Table Init]/vel_tone_oct	0
-synth/Poly[Unison Lead]/chord8_peak_dbfs	-10.7888
+synth/Poly[Unison Lead]/chord8_peak_dbfs	-10.7679
 synth/Poly[Unison Lead]/dc_dbfs	-110.6329
 synth/Poly[Unison Lead]/key_spread_db	4.6569
 synth/Poly[Unison Lead]/mono_loss_db	0.3575
 synth/Poly[Unison Lead]/vel_curve_err_db	0.0136
 synth/Poly[Unison Lead]/vel_tone_oct	0.2653
-synth/Poly[Vowel Lead]/chord8_peak_dbfs	-15.375
+synth/Poly[Vowel Lead]/chord8_peak_dbfs	-15.2903
 synth/Poly[Vowel Lead]/dc_dbfs	-91.0162
 synth/Poly[Vowel Lead]/key_spread_db	3.8497
 synth/Poly[Vowel Lead]/mono_loss_db	0
 synth/Poly[Vowel Lead]/vel_curve_err_db	0.018
 synth/Poly[Vowel Lead]/vel_tone_oct	0.162
 synth/Poly[Worn Brass]/chord6_vs_power_db	0.5684
-synth/Poly[Worn Brass]/chord8_peak_dbfs	-4.3642
+synth/Poly[Worn Brass]/chord8_peak_dbfs	-3.9575
 synth/Poly[Worn Brass]/dc_dbfs	-110.1087
 synth/Poly[Worn Brass]/key_spread_db	2.235
 synth/Poly[Worn Brass]/mono_loss_db	0
 synth/Poly[Worn Brass]/vel_curve_err_db	0.0112
 synth/Poly[Worn Brass]/vel_tone_oct	0.2191
-synth/Squelch[Acid Lead]/chord8_peak_dbfs	-13.9894
+synth/Squelch[Acid Lead]/chord8_peak_dbfs	-13.9699
 synth/Squelch[Acid Lead]/dc_dbfs	-140
 synth/Squelch[Acid Lead]/key_spread_db	2.3507
 synth/Squelch[Acid Lead]/low_correlation	1
@@ -4656,7 +4656,7 @@ synth/Squelch[Acid Lead]/small_speaker_db	-3.6119
 synth/Squelch[Acid Lead]/start_step_dbfs	-116.6504
 synth/Squelch[Acid Lead]/vel_curve_err_db	0.5537
 synth/Squelch[Acid Lead]/vel_tone_oct	-0.0596
-synth/Squelch[Acid Line]/chord8_peak_dbfs	-6.7732
+synth/Squelch[Acid Line]/chord8_peak_dbfs	-4.2042
 synth/Squelch[Acid Line]/dc_dbfs	-140
 synth/Squelch[Acid Line]/key_spread_db	2.5829
 synth/Squelch[Acid Line]/low_correlation	1
@@ -4665,7 +4665,7 @@ synth/Squelch[Acid Line]/small_speaker_db	-8.8298
 synth/Squelch[Acid Line]/start_step_dbfs	-123.3403
 synth/Squelch[Acid Line]/vel_curve_err_db	1.9584
 synth/Squelch[Acid Line]/vel_tone_oct	0.1235
-synth/Squelch[Deep Bass]/chord8_peak_dbfs	-7.0587
+synth/Squelch[Deep Bass]/chord8_peak_dbfs	-5.5062
 synth/Squelch[Deep Bass]/dc_dbfs	-140
 synth/Squelch[Deep Bass]/key_spread_db	1.6809
 synth/Squelch[Deep Bass]/low_correlation	1
@@ -4674,7 +4674,7 @@ synth/Squelch[Deep Bass]/small_speaker_db	-16.8957
 synth/Squelch[Deep Bass]/start_step_dbfs	-135.0647
 synth/Squelch[Deep Bass]/vel_curve_err_db	1.3427
 synth/Squelch[Deep Bass]/vel_tone_oct	-0.0625
-synth/Squelch[Distorted]/chord8_peak_dbfs	-15.745
+synth/Squelch[Distorted]/chord8_peak_dbfs	-14.734
 synth/Squelch[Distorted]/dc_dbfs	-140
 synth/Squelch[Distorted]/key_spread_db	4.1655
 synth/Squelch[Distorted]/low_correlation	1
@@ -4683,7 +4683,7 @@ synth/Squelch[Distorted]/small_speaker_db	-12.4233
 synth/Squelch[Distorted]/start_step_dbfs	-104.8138
 synth/Squelch[Distorted]/vel_curve_err_db	0.1043
 synth/Squelch[Distorted]/vel_tone_oct	0.0047
-synth/Squelch[Init]/chord8_peak_dbfs	-7.0902
+synth/Squelch[Init]/chord8_peak_dbfs	-5.2894
 synth/Squelch[Init]/dc_dbfs	-140
 synth/Squelch[Init]/key_spread_db	2.0035
 synth/Squelch[Init]/low_correlation	1
@@ -4692,7 +4692,7 @@ synth/Squelch[Init]/small_speaker_db	-9.9138
 synth/Squelch[Init]/start_step_dbfs	-125.7396
 synth/Squelch[Init]/vel_curve_err_db	1.5458
 synth/Squelch[Init]/vel_tone_oct	-0.0582
-synth/Squelch[Plucky]/chord8_peak_dbfs	-7.3989
+synth/Squelch[Plucky]/chord8_peak_dbfs	-5.4081
 synth/Squelch[Plucky]/dc_dbfs	-140
 synth/Squelch[Plucky]/key_spread_db	2.3326
 synth/Squelch[Plucky]/low_correlation	1
@@ -4701,7 +4701,7 @@ synth/Squelch[Plucky]/small_speaker_db	-10.2271
 synth/Squelch[Plucky]/start_step_dbfs	-121.417
 synth/Squelch[Plucky]/vel_curve_err_db	1.9268
 synth/Squelch[Plucky]/vel_tone_oct	0.1605
-synth/Squelch[Rubber]/chord8_peak_dbfs	-8.9022
+synth/Squelch[Rubber]/chord8_peak_dbfs	-6.1027
 synth/Squelch[Rubber]/dc_dbfs	-140
 synth/Squelch[Rubber]/key_spread_db	2.1849
 synth/Squelch[Rubber]/low_correlation	1
@@ -4710,7 +4710,7 @@ synth/Squelch[Rubber]/small_speaker_db	-10.9925
 synth/Squelch[Rubber]/start_step_dbfs	-130.0463
 synth/Squelch[Rubber]/vel_curve_err_db	1.327
 synth/Squelch[Rubber]/vel_tone_oct	-0.3723
-synth/Squelch[Screamer]/chord8_peak_dbfs	-14.2353
+synth/Squelch[Screamer]/chord8_peak_dbfs	-13.1131
 synth/Squelch[Screamer]/dc_dbfs	-140
 synth/Squelch[Screamer]/key_spread_db	4.2843
 synth/Squelch[Screamer]/low_correlation	1
@@ -4719,7 +4719,7 @@ synth/Squelch[Screamer]/small_speaker_db	-13.8537
 synth/Squelch[Screamer]/start_step_dbfs	-112.4143
 synth/Squelch[Screamer]/vel_curve_err_db	0.3207
 synth/Squelch[Screamer]/vel_tone_oct	0.3731
-synth/Squelch[Square Acid]/chord8_peak_dbfs	-7.2868
+synth/Squelch[Square Acid]/chord8_peak_dbfs	-5.278
 synth/Squelch[Square Acid]/dc_dbfs	-140
 synth/Squelch[Square Acid]/key_spread_db	3.156
 synth/Squelch[Square Acid]/low_correlation	1
@@ -4729,21 +4729,21 @@ synth/Squelch[Square Acid]/start_step_dbfs	-126.438
 synth/Squelch[Square Acid]/vel_curve_err_db	2.0578
 synth/Squelch[Square Acid]/vel_tone_oct	0.1234
 synth/Strings[Ballad Pad]/chord6_vs_power_db	0.3417
-synth/Strings[Ballad Pad]/chord8_peak_dbfs	-4.4153
+synth/Strings[Ballad Pad]/chord8_peak_dbfs	-2.8471
 synth/Strings[Ballad Pad]/dc_dbfs	-137.154
 synth/Strings[Ballad Pad]/key_spread_db	0.3109
 synth/Strings[Ballad Pad]/mono_loss_db	1.2989
 synth/Strings[Ballad Pad]/vel_curve_err_db	0.124
 synth/Strings[Ballad Pad]/vel_tone_oct	0.2383
 synth/Strings[Bowed]/chord6_vs_power_db	0.0295
-synth/Strings[Bowed]/chord8_peak_dbfs	-5.6755
+synth/Strings[Bowed]/chord8_peak_dbfs	-3.3411
 synth/Strings[Bowed]/dc_dbfs	-134.6204
 synth/Strings[Bowed]/key_spread_db	2.2142
 synth/Strings[Bowed]/mono_loss_db	1.3068
 synth/Strings[Bowed]/vel_curve_err_db	0.1051
 synth/Strings[Bowed]/vel_tone_oct	0.2388
 synth/Strings[Brass Ensemble]/chord6_vs_power_db	0.5772
-synth/Strings[Brass Ensemble]/chord8_peak_dbfs	-5.6289
+synth/Strings[Brass Ensemble]/chord8_peak_dbfs	-3.2124
 synth/Strings[Brass Ensemble]/dc_dbfs	-140
 synth/Strings[Brass Ensemble]/key_spread_db	2.4189
 synth/Strings[Brass Ensemble]/mono_loss_db	0.8595
@@ -4757,169 +4757,169 @@ synth/Strings[Brassy Lead]/mono_loss_db	0.441
 synth/Strings[Brassy Lead]/vel_curve_err_db	0.0816
 synth/Strings[Brassy Lead]/vel_tone_oct	0.1173
 synth/Strings[Bright Strings]/chord6_vs_power_db	0.0584
-synth/Strings[Bright Strings]/chord8_peak_dbfs	-6.438
+synth/Strings[Bright Strings]/chord8_peak_dbfs	-3.6437
 synth/Strings[Bright Strings]/dc_dbfs	-134.9005
 synth/Strings[Bright Strings]/key_spread_db	1.7826
 synth/Strings[Bright Strings]/mono_loss_db	1.3117
 synth/Strings[Bright Strings]/vel_curve_err_db	0.0643
 synth/Strings[Bright Strings]/vel_tone_oct	0.1642
 synth/Strings[Cello and Viola]/chord6_vs_power_db	0.1159
-synth/Strings[Cello and Viola]/chord8_peak_dbfs	-5.582
+synth/Strings[Cello and Viola]/chord8_peak_dbfs	-3.2698
 synth/Strings[Cello and Viola]/dc_dbfs	-135.2804
 synth/Strings[Cello and Viola]/key_spread_db	1.2358
 synth/Strings[Cello and Viola]/mono_loss_db	1.3019
 synth/Strings[Cello and Viola]/vel_curve_err_db	0.1534
 synth/Strings[Cello and Viola]/vel_tone_oct	0.2478
 synth/Strings[Classic Strings]/chord6_vs_power_db	-0.2359
-synth/Strings[Classic Strings]/chord8_peak_dbfs	-5.3355
+synth/Strings[Classic Strings]/chord8_peak_dbfs	-3.5459
 synth/Strings[Classic Strings]/dc_dbfs	-134.6452
 synth/Strings[Classic Strings]/key_spread_db	1.0206
 synth/Strings[Classic Strings]/mono_loss_db	1.3224
 synth/Strings[Classic Strings]/vel_curve_err_db	0.111
 synth/Strings[Classic Strings]/vel_tone_oct	0.2453
 synth/Strings[Dark Strings]/chord6_vs_power_db	-0.3578
-synth/Strings[Dark Strings]/chord8_peak_dbfs	-4.4517
+synth/Strings[Dark Strings]/chord8_peak_dbfs	-3.691
 synth/Strings[Dark Strings]/dc_dbfs	-131.6174
 synth/Strings[Dark Strings]/key_spread_db	1.424
 synth/Strings[Dark Strings]/mono_loss_db	1.2985
 synth/Strings[Dark Strings]/vel_curve_err_db	0.2608
 synth/Strings[Dark Strings]/vel_tone_oct	0.2875
 synth/Strings[Disco Strings]/chord6_vs_power_db	-0.0981
-synth/Strings[Disco Strings]/chord8_peak_dbfs	-5.9057
+synth/Strings[Disco Strings]/chord8_peak_dbfs	-4.2922
 synth/Strings[Disco Strings]/dc_dbfs	-140
 synth/Strings[Disco Strings]/key_spread_db	1.5298
 synth/Strings[Disco Strings]/mono_loss_db	1.3183
 synth/Strings[Disco Strings]/vel_curve_err_db	0.1054
 synth/Strings[Disco Strings]/vel_tone_oct	0.201
 synth/Strings[Dry Divider]/chord6_vs_power_db	-0.2065
-synth/Strings[Dry Divider]/chord8_peak_dbfs	-7.3053
+synth/Strings[Dry Divider]/chord8_peak_dbfs	-6.504
 synth/Strings[Dry Divider]/dc_dbfs	-140
 synth/Strings[Dry Divider]/key_spread_db	1.155
 synth/Strings[Dry Divider]/mono_loss_db	0
 synth/Strings[Dry Divider]/vel_curve_err_db	0.1097
 synth/Strings[Dry Divider]/vel_tone_oct	0.2693
 synth/Strings[Full Ensemble]/chord6_vs_power_db	0.1281
-synth/Strings[Full Ensemble]/chord8_peak_dbfs	-4.9735
+synth/Strings[Full Ensemble]/chord8_peak_dbfs	-4.2764
 synth/Strings[Full Ensemble]/dc_dbfs	-128.9595
 synth/Strings[Full Ensemble]/key_spread_db	1.3589
 synth/Strings[Full Ensemble]/mono_loss_db	1.1091
 synth/Strings[Full Ensemble]/vel_curve_err_db	0.0964
 synth/Strings[Full Ensemble]/vel_tone_oct	0.2644
 synth/Strings[Hall Strings]/chord6_vs_power_db	-0.3304
-synth/Strings[Hall Strings]/chord8_peak_dbfs	-5.368
+synth/Strings[Hall Strings]/chord8_peak_dbfs	-4.658
 synth/Strings[Hall Strings]/dc_dbfs	-136.1063
 synth/Strings[Hall Strings]/key_spread_db	0.5314
 synth/Strings[Hall Strings]/mono_loss_db	1.8203
 synth/Strings[Hall Strings]/vel_curve_err_db	0.1042
 synth/Strings[Hall Strings]/vel_tone_oct	0.2457
 synth/Strings[High Strings]/chord6_vs_power_db	0.0767
-synth/Strings[High Strings]/chord8_peak_dbfs	-7.3352
+synth/Strings[High Strings]/chord8_peak_dbfs	-7.0438
 synth/Strings[High Strings]/dc_dbfs	-140
 synth/Strings[High Strings]/key_spread_db	0.9974
 synth/Strings[High Strings]/mono_loss_db	1.2638
 synth/Strings[High Strings]/vel_curve_err_db	0.1913
 synth/Strings[High Strings]/vel_tone_oct	0.2386
 synth/Strings[Horn Section]/chord6_vs_power_db	0.5489
-synth/Strings[Horn Section]/chord8_peak_dbfs	-4.8339
+synth/Strings[Horn Section]/chord8_peak_dbfs	-3.4865
 synth/Strings[Horn Section]/dc_dbfs	-136.7406
 synth/Strings[Horn Section]/key_spread_db	2.0465
 synth/Strings[Horn Section]/mono_loss_db	1.1987
 synth/Strings[Horn Section]/vel_curve_err_db	0.0884
 synth/Strings[Horn Section]/vel_tone_oct	0.2313
 synth/Strings[Init]/chord6_vs_power_db	-0.3537
-synth/Strings[Init]/chord8_peak_dbfs	-6.1404
+synth/Strings[Init]/chord8_peak_dbfs	-3.9811
 synth/Strings[Init]/dc_dbfs	-135.1935
 synth/Strings[Init]/key_spread_db	1.5376
 synth/Strings[Init]/mono_loss_db	1.327
 synth/Strings[Init]/vel_curve_err_db	0.0958
 synth/Strings[Init]/vel_tone_oct	0.2402
 synth/Strings[Lo-fi Strings]/chord6_vs_power_db	-0.2054
-synth/Strings[Lo-fi Strings]/chord8_peak_dbfs	-6.6837
+synth/Strings[Lo-fi Strings]/chord8_peak_dbfs	-4.0955
 synth/Strings[Lo-fi Strings]/dc_dbfs	-140
 synth/Strings[Lo-fi Strings]/key_spread_db	2.3683
 synth/Strings[Lo-fi Strings]/mono_loss_db	0.6985
 synth/Strings[Lo-fi Strings]/vel_curve_err_db	0.1301
 synth/Strings[Lo-fi Strings]/vel_tone_oct	0.3072
 synth/Strings[Low Strings]/chord6_vs_power_db	0.5905
-synth/Strings[Low Strings]/chord8_peak_dbfs	-5.4436
+synth/Strings[Low Strings]/chord8_peak_dbfs	-2.8893
 synth/Strings[Low Strings]/dc_dbfs	-139.93
 synth/Strings[Low Strings]/key_spread_db	2.525
 synth/Strings[Low Strings]/mono_loss_db	1.3657
 synth/Strings[Low Strings]/vel_curve_err_db	0.0938
 synth/Strings[Low Strings]/vel_tone_oct	0.22
 synth/Strings[Mono Ensemble]/chord6_vs_power_db	-0.4846
-synth/Strings[Mono Ensemble]/chord8_peak_dbfs	-6.1824
+synth/Strings[Mono Ensemble]/chord8_peak_dbfs	-4.0669
 synth/Strings[Mono Ensemble]/dc_dbfs	-133.988
 synth/Strings[Mono Ensemble]/key_spread_db	2.1202
 synth/Strings[Mono Ensemble]/mono_loss_db	0
 synth/Strings[Mono Ensemble]/vel_curve_err_db	0.0978
 synth/Strings[Mono Ensemble]/vel_tone_oct	0.2362
 synth/Strings[Orchestra]/chord6_vs_power_db	0.182
-synth/Strings[Orchestra]/chord8_peak_dbfs	-4.8208
+synth/Strings[Orchestra]/chord8_peak_dbfs	-2.6359
 synth/Strings[Orchestra]/dc_dbfs	-136.1499
 synth/Strings[Orchestra]/key_spread_db	0.4329
 synth/Strings[Orchestra]/mono_loss_db	1.3156
 synth/Strings[Orchestra]/vel_curve_err_db	0.1495
 synth/Strings[Orchestra]/vel_tone_oct	0.2778
 synth/Strings[Paraphonic 70s]/chord6_vs_power_db	-0.5461
-synth/Strings[Paraphonic 70s]/chord8_peak_dbfs	-6.1042
+synth/Strings[Paraphonic 70s]/chord8_peak_dbfs	-3.8866
 synth/Strings[Paraphonic 70s]/dc_dbfs	-134.6136
 synth/Strings[Paraphonic 70s]/key_spread_db	1.5991
 synth/Strings[Paraphonic 70s]/mono_loss_db	1.3
 synth/Strings[Paraphonic 70s]/vel_curve_err_db	0.0972
 synth/Strings[Paraphonic 70s]/vel_tone_oct	0.2382
 synth/Strings[Slow Swell]/chord6_vs_power_db	-0.4392
-synth/Strings[Slow Swell]/chord8_peak_dbfs	-10.5899
+synth/Strings[Slow Swell]/chord8_peak_dbfs	-7.5663
 synth/Strings[Slow Swell]/dc_dbfs	-138.8774
 synth/Strings[Slow Swell]/key_spread_db	1.0898
 synth/Strings[Slow Swell]/mono_loss_db	1.3275
 synth/Strings[Slow Swell]/vel_curve_err_db	0.1162
 synth/Strings[Slow Swell]/vel_tone_oct	0.2411
 synth/Strings[Space Strings]/chord6_vs_power_db	0.0598
-synth/Strings[Space Strings]/chord8_peak_dbfs	-11.7645
+synth/Strings[Space Strings]/chord8_peak_dbfs	-10.393
 synth/Strings[Space Strings]/dc_dbfs	-119.0722
 synth/Strings[Space Strings]/key_spread_db	1.5993
 synth/Strings[Space Strings]/mono_loss_db	1.402
 synth/Strings[Space Strings]/vel_curve_err_db	0.1476
 synth/Strings[Space Strings]/vel_tone_oct	0.2703
 synth/Strings[Staccato Strings]/chord6_vs_power_db	-0.1228
-synth/Strings[Staccato Strings]/chord8_peak_dbfs	-5.7246
+synth/Strings[Staccato Strings]/chord8_peak_dbfs	-2.8392
 synth/Strings[Staccato Strings]/dc_dbfs	-133.7817
 synth/Strings[Staccato Strings]/key_spread_db	0.8691
 synth/Strings[Staccato Strings]/mono_loss_db	1.319
 synth/Strings[Staccato Strings]/vel_curve_err_db	0.0894
 synth/Strings[Staccato Strings]/vel_tone_oct	0.2515
 synth/Strings[Swirl Strings]/chord6_vs_power_db	-0.2003
-synth/Strings[Swirl Strings]/chord8_peak_dbfs	-6.4702
+synth/Strings[Swirl Strings]/chord8_peak_dbfs	-4.0151
 synth/Strings[Swirl Strings]/dc_dbfs	-139.7963
 synth/Strings[Swirl Strings]/key_spread_db	1.1301
 synth/Strings[Swirl Strings]/mono_loss_db	1.0769
 synth/Strings[Swirl Strings]/vel_curve_err_db	0.0833
 synth/Strings[Swirl Strings]/vel_tone_oct	0.2417
 synth/Strings[Vox Strings]/chord6_vs_power_db	-0.1669
-synth/Strings[Vox Strings]/chord8_peak_dbfs	-4.1008
+synth/Strings[Vox Strings]/chord8_peak_dbfs	-1.2407
 synth/Strings[Vox Strings]/dc_dbfs	-135.1813
 synth/Strings[Vox Strings]/key_spread_db	1.0478
 synth/Strings[Vox Strings]/mono_loss_db	1.1979
 synth/Strings[Vox Strings]/vel_curve_err_db	0.3263
 synth/Strings[Vox Strings]/vel_tone_oct	0.2764
 synth/Strings[Wide Strings]/chord6_vs_power_db	-0.3913
-synth/Strings[Wide Strings]/chord8_peak_dbfs	-6.6414
+synth/Strings[Wide Strings]/chord8_peak_dbfs	-4.8751
 synth/Strings[Wide Strings]/dc_dbfs	-140
 synth/Strings[Wide Strings]/key_spread_db	1.0173
 synth/Strings[Wide Strings]/mono_loss_db	1.5677
 synth/Strings[Wide Strings]/vel_curve_err_db	0.1038
 synth/Strings[Wide Strings]/vel_tone_oct	0.2632
 synth/Wavetable[Digital Bell]/chord6_vs_power_db	-0.0212
-synth/Wavetable[Digital Bell]/chord8_peak_dbfs	1.7005
-synth/Wavetable[Digital Bell]/dc_dbfs	-81.9651
+synth/Wavetable[Digital Bell]/chord8_peak_dbfs	-1.2995
+synth/Wavetable[Digital Bell]/dc_dbfs	-84.9651
 synth/Wavetable[Digital Bell]/key_spread_db	3.3775
 synth/Wavetable[Digital Bell]/mono_loss_db	0
 synth/Wavetable[Digital Bell]/vel_curve_err_db	0.7382
 synth/Wavetable[Digital Bell]/vel_tone_oct	0.7954
 synth/Wavetable[FM Keys]/chord6_vs_power_db	-0.0223
-synth/Wavetable[FM Keys]/chord8_peak_dbfs	0.4686
-synth/Wavetable[FM Keys]/dc_dbfs	-81.6804
+synth/Wavetable[FM Keys]/chord8_peak_dbfs	-1.0314
+synth/Wavetable[FM Keys]/dc_dbfs	-83.1804
 synth/Wavetable[FM Keys]/key_spread_db	3.0968
 synth/Wavetable[FM Keys]/mono_loss_db	0
 synth/Wavetable[FM Keys]/vel_curve_err_db	0.7336
@@ -4948,7 +4948,7 @@ synth/Wavetable[Init]/mono_loss_db	0
 synth/Wavetable[Init]/vel_curve_err_db	0.7295
 synth/Wavetable[Init]/vel_tone_oct	0
 synth/Wavetable[Morph Pad]/chord6_vs_power_db	0.0996
-synth/Wavetable[Morph Pad]/chord8_peak_dbfs	-15.7993
+synth/Wavetable[Morph Pad]/chord8_peak_dbfs	-15.0338
 synth/Wavetable[Morph Pad]/dc_dbfs	-131.5246
 synth/Wavetable[Morph Pad]/key_spread_db	3.3309
 synth/Wavetable[Morph Pad]/mono_loss_db	0.601
@@ -4962,98 +4962,98 @@ synth/Wavetable[Organ]/mono_loss_db	0
 synth/Wavetable[Organ]/vel_curve_err_db	0.001
 synth/Wavetable[Organ]/vel_tone_oct	-0.0003
 synth/Wavetable[Sync Sweep]/chord6_vs_power_db	1.4527
-synth/Wavetable[Sync Sweep]/chord8_peak_dbfs	-0.4419
-synth/Wavetable[Sync Sweep]/dc_dbfs	-67.5039
+synth/Wavetable[Sync Sweep]/chord8_peak_dbfs	-0.8783
+synth/Wavetable[Sync Sweep]/dc_dbfs	-68.5039
 synth/Wavetable[Sync Sweep]/key_spread_db	3.6125
 synth/Wavetable[Sync Sweep]/mono_loss_db	0
 synth/Wavetable[Sync Sweep]/vel_curve_err_db	0.6374
 synth/Wavetable[Sync Sweep]/vel_tone_oct	0.5876
-synth/Wavetable[Vowel Lead]/chord8_peak_dbfs	-15.3328
+synth/Wavetable[Vowel Lead]/chord8_peak_dbfs	-15.2389
 synth/Wavetable[Vowel Lead]/dc_dbfs	-91.7468
 synth/Wavetable[Vowel Lead]/key_spread_db	3.8497
 synth/Wavetable[Vowel Lead]/mono_loss_db	0
 synth/Wavetable[Vowel Lead]/vel_curve_err_db	0.7308
 synth/Wavetable[Vowel Lead]/vel_tone_oct	0.1621
-synth/Wind[Bamboo Flute]/chord8_peak_dbfs	-5.2563
+synth/Wind[Bamboo Flute]/chord8_peak_dbfs	-5.0306
 synth/Wind[Bamboo Flute]/dc_dbfs	-90.5873
 synth/Wind[Bamboo Flute]/key_spread_db	1.2186
 synth/Wind[Bamboo Flute]/mono_loss_db	0
 synth/Wind[Bamboo Flute]/vel_curve_err_db	0.0474
 synth/Wind[Bamboo Flute]/vel_tone_oct	0.4591
-synth/Wind[Breathy Flute]/chord8_peak_dbfs	-4.7199
+synth/Wind[Breathy Flute]/chord8_peak_dbfs	-4.6227
 synth/Wind[Breathy Flute]/dc_dbfs	-87.991
 synth/Wind[Breathy Flute]/key_spread_db	1.1748
 synth/Wind[Breathy Flute]/mono_loss_db	0
 synth/Wind[Breathy Flute]/vel_curve_err_db	0.082
 synth/Wind[Breathy Flute]/vel_tone_oct	0.4401
-synth/Wind[Breathy Sax]/chord8_peak_dbfs	-8.2347
+synth/Wind[Breathy Sax]/chord8_peak_dbfs	-8.2198
 synth/Wind[Breathy Sax]/dc_dbfs	-95.5115
 synth/Wind[Breathy Sax]/key_spread_db	1.4303
 synth/Wind[Breathy Sax]/mono_loss_db	0
 synth/Wind[Breathy Sax]/vel_curve_err_db	0.2151
 synth/Wind[Breathy Sax]/vel_tone_oct	0.1044
-synth/Wind[Concert Flute]/chord8_peak_dbfs	-4.3119
+synth/Wind[Concert Flute]/chord8_peak_dbfs	-4.2907
 synth/Wind[Concert Flute]/dc_dbfs	-86.7866
 synth/Wind[Concert Flute]/key_spread_db	1.1474
 synth/Wind[Concert Flute]/mono_loss_db	0
 synth/Wind[Concert Flute]/vel_curve_err_db	0.0231
 synth/Wind[Concert Flute]/vel_tone_oct	0.5177
-synth/Wind[Dark Clarinet]/chord8_peak_dbfs	-7.1574
+synth/Wind[Dark Clarinet]/chord8_peak_dbfs	-7.1314
 synth/Wind[Dark Clarinet]/dc_dbfs	-98.136
 synth/Wind[Dark Clarinet]/key_spread_db	1.4168
 synth/Wind[Dark Clarinet]/mono_loss_db	0
 synth/Wind[Dark Clarinet]/vel_curve_err_db	0.2123
 synth/Wind[Dark Clarinet]/vel_tone_oct	0.1432
 synth/Wind[Flute Choir]/chord6_vs_power_db	-1.7311
-synth/Wind[Flute Choir]/chord8_peak_dbfs	-1.1488
+synth/Wind[Flute Choir]/chord8_peak_dbfs	-1.0464
 synth/Wind[Flute Choir]/dc_dbfs	-82.549
 synth/Wind[Flute Choir]/key_spread_db	1.1328
 synth/Wind[Flute Choir]/mono_loss_db	0.7026
 synth/Wind[Flute Choir]/vel_curve_err_db	0.0678
 synth/Wind[Flute Choir]/vel_tone_oct	0.5166
-synth/Wind[Growl Sax]/chord8_peak_dbfs	-5.3343
+synth/Wind[Growl Sax]/chord8_peak_dbfs	-5.1042
 synth/Wind[Growl Sax]/dc_dbfs	-90.2272
 synth/Wind[Growl Sax]/key_spread_db	1.1406
 synth/Wind[Growl Sax]/mono_loss_db	0
 synth/Wind[Growl Sax]/vel_curve_err_db	0.1207
 synth/Wind[Growl Sax]/vel_tone_oct	0.3498
-synth/Wind[Hall Flute]/chord8_peak_dbfs	-2.9388
+synth/Wind[Hall Flute]/chord8_peak_dbfs	-2.3548
 synth/Wind[Hall Flute]/dc_dbfs	-87.7825
 synth/Wind[Hall Flute]/key_spread_db	1.9957
 synth/Wind[Hall Flute]/mono_loss_db	0.1714
 synth/Wind[Hall Flute]/vel_curve_err_db	0.0204
 synth/Wind[Hall Flute]/vel_tone_oct	0.4885
-synth/Wind[Init]/chord8_peak_dbfs	-6.2587
+synth/Wind[Init]/chord8_peak_dbfs	-6.2336
 synth/Wind[Init]/dc_dbfs	-98.468
 synth/Wind[Init]/key_spread_db	1.1364
 synth/Wind[Init]/mono_loss_db	0
 synth/Wind[Init]/vel_curve_err_db	0.0518
 synth/Wind[Init]/vel_tone_oct	0.5857
-synth/Wind[Jazz Clarinet]/chord8_peak_dbfs	-5.9744
+synth/Wind[Jazz Clarinet]/chord8_peak_dbfs	-5.8912
 synth/Wind[Jazz Clarinet]/dc_dbfs	-99.9827
 synth/Wind[Jazz Clarinet]/key_spread_db	1.0311
 synth/Wind[Jazz Clarinet]/mono_loss_db	0
 synth/Wind[Jazz Clarinet]/vel_curve_err_db	0.0878
 synth/Wind[Jazz Clarinet]/vel_tone_oct	0.7367
-synth/Wind[Ocarina]/chord8_peak_dbfs	-6.7915
+synth/Wind[Ocarina]/chord8_peak_dbfs	-6.7818
 synth/Wind[Ocarina]/dc_dbfs	-99.6957
 synth/Wind[Ocarina]/key_spread_db	1.4336
 synth/Wind[Ocarina]/mono_loss_db	0
 synth/Wind[Ocarina]/vel_curve_err_db	0.7592
 synth/Wind[Ocarina]/vel_tone_oct	0.2509
-synth/Wind[Pan Pipes]/chord8_peak_dbfs	-5.2569
+synth/Wind[Pan Pipes]/chord8_peak_dbfs	-5.2341
 synth/Wind[Pan Pipes]/dc_dbfs	-97.745
 synth/Wind[Pan Pipes]/key_spread_db	1.258
 synth/Wind[Pan Pipes]/mono_loss_db	0
 synth/Wind[Pan Pipes]/vel_curve_err_db	0.1036
 synth/Wind[Pan Pipes]/vel_tone_oct	0.4945
-synth/Wind[Pressure Swell]/chord8_peak_dbfs	-8.0792
+synth/Wind[Pressure Swell]/chord8_peak_dbfs	-8.0042
 synth/Wind[Pressure Swell]/dc_dbfs	-98.4417
 synth/Wind[Pressure Swell]/key_spread_db	1.4528
 synth/Wind[Pressure Swell]/mono_loss_db	0
 synth/Wind[Pressure Swell]/vel_curve_err_db	0.2389
 synth/Wind[Pressure Swell]/vel_tone_oct	0.1529
-synth/Wind[Recorder]/chord8_peak_dbfs	-4.3089
+synth/Wind[Recorder]/chord8_peak_dbfs	-4.2772
 synth/Wind[Recorder]/dc_dbfs	-88.0936
 synth/Wind[Recorder]/key_spread_db	1.1473
 synth/Wind[Recorder]/mono_loss_db	0
@@ -5066,25 +5066,25 @@ synth/Wind[Reed Section]/key_spread_db	1.3665
 synth/Wind[Reed Section]/mono_loss_db	1.0029
 synth/Wind[Reed Section]/vel_curve_err_db	0.1216
 synth/Wind[Reed Section]/vel_tone_oct	0.1255
-synth/Wind[Smoky Sax]/chord8_peak_dbfs	-7.2604
+synth/Wind[Smoky Sax]/chord8_peak_dbfs	-7.0683
 synth/Wind[Smoky Sax]/dc_dbfs	-96.0768
 synth/Wind[Smoky Sax]/key_spread_db	1.5946
 synth/Wind[Smoky Sax]/mono_loss_db	0.1382
 synth/Wind[Smoky Sax]/vel_curve_err_db	0.0322
 synth/Wind[Smoky Sax]/vel_tone_oct	0.152
-synth/Wind[Soprano Sax]/chord8_peak_dbfs	-7.2402
+synth/Wind[Soprano Sax]/chord8_peak_dbfs	-7.2378
 synth/Wind[Soprano Sax]/dc_dbfs	-94.9047
 synth/Wind[Soprano Sax]/key_spread_db	1.2725
 synth/Wind[Soprano Sax]/mono_loss_db	0
 synth/Wind[Soprano Sax]/vel_curve_err_db	0.1602
 synth/Wind[Soprano Sax]/vel_tone_oct	0.2634
-synth/Wind[Tenor Sax]/chord8_peak_dbfs	-7.5589
+synth/Wind[Tenor Sax]/chord8_peak_dbfs	-7.5546
 synth/Wind[Tenor Sax]/dc_dbfs	-95.3175
 synth/Wind[Tenor Sax]/key_spread_db	1.2928
 synth/Wind[Tenor Sax]/mono_loss_db	0
 synth/Wind[Tenor Sax]/vel_curve_err_db	0.1219
 synth/Wind[Tenor Sax]/vel_tone_oct	0.1925
-synth/Wind[Warm Clarinet]/chord8_peak_dbfs	-6.626
+synth/Wind[Warm Clarinet]/chord8_peak_dbfs	-6.5937
 synth/Wind[Warm Clarinet]/dc_dbfs	-97.6447
 synth/Wind[Warm Clarinet]/key_spread_db	1.2606
 synth/Wind[Warm Clarinet]/mono_loss_db	0
