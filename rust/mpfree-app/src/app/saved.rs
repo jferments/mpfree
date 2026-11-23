@@ -80,12 +80,13 @@ impl App {
         out.set_i64("screen-velocity", s.screen_velocity as i64);
         out.set_str(
             "latch-keeps-pads",
-            if s.latch_mode == LatchMode::Toggle {
-                "toggle"
-            } else {
-                "replace"
+            match s.latch_mode {
+                LatchMode::Toggle => "toggle",
+                LatchMode::Add => "add",
+                _ => "replace",
             },
         );
+        out.set_bool("sustain-pedal-latches", s.pedal_latches);
         out.set_i64("audio-buffer", s.periods as i64);
         out.set_bool("developer-tools", s.debug_mode);
         out.set_bool("midi-cv-out", s.sends_midi);
@@ -177,6 +178,7 @@ impl App {
                 "latch-keeps-pads" => match v {
                     "replace" => Some(LatchMode::Replace),
                     "toggle" => Some(LatchMode::Toggle),
+                    "add" => Some(LatchMode::Add),
                     _ => None,
                 }
                 .map(|m| s.latch_mode = m)
@@ -192,6 +194,7 @@ impl App {
                     })
                     .is_some(),
                 "developer-tools" => app.get_bool(k).map(|b| s.debug_mode = b).is_some(),
+                "sustain-pedal-latches" => app.get_bool(k).map(|b| s.pedal_latches = b).is_some(),
                 "midi-cv-out" => app.get_bool(k).map(|b| s.sends_midi = b).is_some(),
                 "sound-cores" => crate::cores::SoundCores::parse(v)
                     .map(|m| s.sound_cores = m)
@@ -302,7 +305,11 @@ impl App {
                  export {} ({}, {} Hz)",
                 s.curve.label(),
                 s.screen_velocity,
-                if s.latch_mode == LatchMode::Toggle { "toggle" } else { "replace" },
+                match s.latch_mode {
+                    LatchMode::Toggle => "toggle",
+                    LatchMode::Add => "add",
+                    _ => "replace",
+                },
                 s.periods,
                 on(s.debug_mode),
                 s.theme,

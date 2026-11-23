@@ -78,7 +78,8 @@ A control that can't do anything right now is drawn faint, and a tap on it says 
 
 - **`arp-modes/segment`**: the mode (Direct, Repeat, Arp, Pattern). Tap one; the panel shows that mode's settings.
 - **`arp-list/row`**: a setting of the mode (the arp's direction, octaves, the pattern). Tap to pick it; the wheel and - / + change it.
-- **`arp-qlinks/slider`**: Rate, Gate, Swing and Octaves, as sliders (the Q-Links turn the same). Drag one.
+- **`arp-mod/modifier`**: the Modifier box at the right of the mode tabs: the controller that pushes the arp (the mod wheel, pressure, an expression pedal, breath or a learned knob) and how far it is now, or "Off · tap to pick a controller". Tap it for the arp options' Modifier section (the controller and how far its top pushes each setting); SHIFT + a touch on it arms MIDI Learn for the Modifier. *Example:* tap it, set Controller to Mod wheel, press MENU, latch a chord and push the wheel: the Rate slider reads 1/16 → 1/32. *Tests:* `the_modifier_shows_where_it_pushes`, `the_modifier_box_opens_its_options`.
+- **`arp-qlinks/slider`**: Rate, Gate, Swing and Octaves, as sliders (the Q-Links turn the same). Drag one. While the Modifier pushes one, a ring in the second accent shows where it plays and its value reads "1/16 → 1/32"; the knob stays on the setting.
 - **`arp-steps/step`**: the steps of a pattern. In Pattern, tap a step to edit it; in the other modes they show the notes as they play, and a tap says to pick Pattern.
 - **`arp-ws-grid/cell`**: a cell of the pattern workspace: tap to put a note on the step or take it off. *Test:* `the_workspace_edits_by_touch_and_shows_what_the_pads_write`.
 - **`arp-ws-tools/button`**: the workspace's Back, Step time, Free time and Undo. *Test:* `the_workspace_edits_by_touch_and_shows_what_the_pads_write`.
