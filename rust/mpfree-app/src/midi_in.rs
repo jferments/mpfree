@@ -667,6 +667,10 @@ pub struct MusicIn {
     /// Other gear's transport commands and scene picks since the app last
     /// took them ([`MusicIn::take_remote_in`]); fixed room.
     remote_in: Vec<RemoteIn>,
+    /// Patches (live shows C1): what the keys play while the song has
+    /// some. Each message as it came goes there after MIDI Learn and
+    /// before the routes and the armed track ([`crate::patch_in`]).
+    patch: crate::patch_in::PatchIn,
 }
 
 /// The most MMC commands and program changes kept for the app between
@@ -745,6 +749,7 @@ impl MusicIn {
             mmc_in: false,
             program_in: ProgramIn::Off,
             remote_in: Vec::with_capacity(REMOTE_IN),
+            patch: crate::patch_in::PatchIn::new(),
         }
     }
 
@@ -821,6 +826,48 @@ impl MusicIn {
     /// track is armed), each with its track, from 0.
     pub fn take_routed(&mut self) -> std::vec::Drain<'_, (u8, Key)> {
         self.routed.drain(..)
+    }
+
+    /// What the song's patch played since the last take (live shows C1),
+    /// each key with what plays it: a track (from 0), played at once as a
+    /// route's keys to a track that isn't armed are, or [`SYNTH_ROUTES`] +
+    /// the route row of a synth no track has.
+    pub fn take_patched(&mut self) -> std::vec::Drain<'_, (u8, Key)> {
+        self.patch.take()
+    }
+
+    /// The song's patches change (a project opened, an edit): `rig` comes
+    /// in, and the old ones take its place in the box, to be freed on the
+    /// screen thread. Held keys end where they started. The route rows are
+    /// worked out again at the next [`MusicIn::sync`].
+    pub fn swap_patches(&mut self, rig: &mut crate::patch_in::PatchRig) {
+        self.patch.swap(rig, self.ports.all());
+        if *self.patch.synths() != rig.synths {
+            self.applied = None;
+        }
+    }
+
+    /// Picks patch `to` (from 0; None: keys as routed), at once or when
+    /// every key and pedal is up. False: the song hasn't got it.
+    pub fn pick_patch(&mut self, to: Option<usize>, when: mpfree_patch::keys::When) -> bool {
+        let rows = self.route_synths;
+        self.patch.pick(to, when, &rows)
+    }
+
+    /// The synths the song's patches name, for the route rows
+    /// ([`route_synths_of`]).
+    pub fn patch_synths(&self) -> &[Option<u32>] {
+        self.patch.synths()
+    }
+
+    /// The patch the keys play (from 0), or None: as routed.
+    pub fn patch_playing(&self) -> Option<usize> {
+        self.patch.playing()
+    }
+
+    /// Every sound stopped: the patch's table forgets what it held.
+    pub fn patches_stopped(&mut self) {
+        self.patch.stopped();
     }
 
     /// The synths the project's routes name (step 11e), by the project's
@@ -1130,9 +1177,11 @@ impl MusicIn {
                 self.router.set_port_blocks(p.id, set.blocks);
                 // Its MPE zone, as its gear's profile says (else what the
                 // controller itself says).
+                let zone = m.profile(&p.name).and_then(|f| f.mpe).unwrap_or_default();
                 if let Some(x) = self.mpe.get_mut(usize::from(p.id.0)) {
-                    x.set_zone(m.profile(&p.name).and_then(|f| f.mpe).unwrap_or_default());
+                    x.set_zone(zone);
                 }
+                self.patch.set_zone(p.id, zone);
             }
             // Routes to tracks, on this run's port numbers: a route whose
             // port hasn't been plugged in yet waits for it (plugging a
@@ -1140,7 +1189,8 @@ impl MusicIn {
             // A route that names a synth (step 11e) plays as a track past
             // the tracks, one for each synth named, up to ROUTE_SYNTHS;
             // the routes past them are left out, and said.
-            let (synths, left) = route_synths_of(&m.setup);
+            // The patches' synths take the rows the routes leave.
+            let (synths, left) = route_synths_of(&m.setup, self.patch.synths());
             self.route_synths_new |= synths != self.route_synths;
             self.route_synths = synths;
             self.synth_routes_left = left;
@@ -1349,6 +1399,8 @@ impl MusicIn {
         if let Some(a) = self.about.get_mut(usize::from(id.0)) {
             a.clone_from(&p.about);
         }
+        // A patch's zone that names this keyboard finds it.
+        self.patch.plugged(id, &p.name);
         Some(id)
     }
 
@@ -1375,6 +1427,8 @@ impl MusicIn {
             routed_key(e, routed);
             passed(e, thru, dropped);
         });
+        // What its keys and pedals hold in a patch ends there.
+        self.patch.unplugged(port, &self.route_synths);
         let routed_ended = self.routed[routed_held..]
             .iter()
             .filter(|(_, k)| matches!(k, Key::Up { .. }))
@@ -1462,6 +1516,8 @@ impl MusicIn {
         };
         let learn_only = self.input[p] == PortInput::LearnOnly;
         let learns = self.input[p] != PortInput::PlaysTracks;
+        // What the port ignores reaches no patch either.
+        let ignores = self.router.ignores(port);
         let frame = (t.max(0.0) * f64::from(CLOCK_RATE)) as u64;
         let armed = self.armed;
         let (keys_at, routed_at) = (keys.len(), self.routed.len());
@@ -1582,8 +1638,50 @@ impl MusicIn {
             // hear it as it came, before any route's blocks.
             let mut took = false;
             let route_synths = self.route_synths;
+            // The patch played this message, or kept it quiet: the routes
+            // and the armed track don't hear it.
+            let mut patched = false;
+            let patch = &mut self.patch;
             self.router.feed(port, b, 0, |e| match e {
-                In::Seen { msg, .. } => seen = Some(msg),
+                In::Seen { msg, .. } => {
+                    seen = Some(msg);
+                    // Patches (live shows C1): the message as it came goes
+                    // to the patch playing, after Learn has had it, before
+                    // any route or the armed track. Not from a port that
+                    // only learns, or that ignores the message's kind.
+                    if learn_only || ignores.msg(&msg) {
+                        return;
+                    }
+                    if patch.active()
+                        && learn_or_follow(
+                            learn,
+                            knobs,
+                            learning,
+                            sets,
+                            port,
+                            &msg,
+                            t,
+                            learns,
+                            &mut to,
+                            &mut learned,
+                        )
+                    {
+                        took = true;
+                        return;
+                    }
+                    let now = patch.playing().map(|i| i as u8);
+                    match patch.msg(port, msg, &route_synths) {
+                        Some(mpfree_patch::keys::Went::Played) => {
+                            patched = true;
+                            to = To::Patch { patch: now };
+                        }
+                        Some(mpfree_patch::keys::Went::Nowhere) => {
+                            patched = true;
+                            to = To::PatchGap { patch: now };
+                        }
+                        _ => {}
+                    }
+                }
                 // The port's "Ignore coming in": listed, nothing else.
                 In::Ignored { .. } => {
                     got = true;
@@ -1622,6 +1720,16 @@ impl MusicIn {
                         to = To::Thru { to: out };
                         passed(other, thru, dropped);
                         return;
+                    }
+                    // What the patch took goes no further, but for the
+                    // note-off the router sends when a key held the old
+                    // way is struck again: the old way ends its note.
+                    if let (true, In::Track { msg, .. } | In::Routed { msg, .. }) = (patched, other)
+                    {
+                        let strikes = matches!(seen, Some(Msg::NoteOn { vel, .. }) if vel > 0);
+                        if !(strikes && matches!(msg, Msg::NoteOff { .. })) {
+                            return;
+                        }
                     }
                     // A route plays its track, whatever the port's input:
                     // its notes, pedals and wheels. Its other CCs (a knob)
@@ -1852,6 +1960,28 @@ impl MusicIn {
                 self.synth_routes_left
             ));
         }
+        // Patches (live shows C1): what plays, and every fallback counted.
+        if self.patch.patches() > 0 {
+            let playing = match self.patch.playing() {
+                Some(i) => format!("patch {} plays", i + 1),
+                None => "keys as routed".to_string(),
+            };
+            let waiting = match self.patch.waiting() {
+                Some(Some(i)) => format!("; patch {} waits for the hands", i + 1),
+                Some(None) => "; keys as routed wait for the hands".to_string(),
+                None => String::new(),
+            };
+            let st = self.patch.stats();
+            lines.push(format!(
+                "Patches: {} in the song, {playing}{waiting}; {} switches; {} keys played nothing (the table was full), {} pedal or wheel moves missed an instrument, {} missed a keyboard, {} sends dropped",
+                self.patch.patches(),
+                st.switches,
+                st.held_full,
+                st.reach_full,
+                st.keyboards_full,
+                self.patch.dropped
+            ));
+        }
         if self.thru_dropped > 0 {
             lines.push(format!(
                 "Thru: {} messages dropped (more than {THRU_MSGS} in a period)",
@@ -1984,12 +2114,14 @@ fn passed(e: In, thru: &mut Vec<Passed>, dropped: &mut u64) {
     }
 }
 
-/// A route's notes and controllers as keys, with the track they play.
 /// The synths `setup`'s routes name (step 11e), each once, in the order
 /// of the routes, up to [`ROUTE_SYNTHS`]; and how many routes name one
-/// past them (left out).
+/// past them (left out). Then the synths the song's patches name
+/// (`patches`, [`crate::patch_in::PatchIn::synths`]) in the rows left: a
+/// patch's past them plays nothing, and isn't counted here.
 pub fn route_synths_of(
     setup: &mpfree_midi::setup::MidiSetup,
+    patches: &[Option<u32>],
 ) -> ([Option<u32>; ROUTE_SYNTHS], usize) {
     let mut synths = [None; ROUTE_SYNTHS];
     let mut left = 0;
@@ -2000,6 +2132,14 @@ pub fn route_synths_of(
         match synths.iter_mut().find(|s| s.is_none()) {
             Some(s) => *s = Some(id),
             None => left += 1,
+        }
+    }
+    for &id in patches.iter().flatten() {
+        if synths.contains(&Some(id)) {
+            continue;
+        }
+        if let Some(s) = synths.iter_mut().find(|s| s.is_none()) {
+            *s = Some(id);
         }
     }
     (synths, left)
@@ -2373,6 +2513,95 @@ mod tests {
         let (keys, _) = run(&mut m, keystep, &[0x89, 36, 0]);
         assert!(keys.is_empty());
         assert!(passed(&mut m).is_empty());
+    }
+
+    /// Patches (live shows C1): with a patch playing, a key goes to its
+    /// zones and not to the armed track or a route; Learn still takes
+    /// what it learned first; the monitor says the patch; a key held from
+    /// before the patch lets go the old way; a synth the patch names takes
+    /// a route row the routes left.
+    #[test]
+    fn a_patch_plays_its_zones_before_the_routes_and_the_armed_track() {
+        use mpfree_midi::blocks::Blocks;
+        use mpfree_midi::setup::{TrackRoute, DIN_NAME};
+        use mpfree_patch::keys::When;
+        use mpfree_patch::{Layout, Patches};
+        let mut m = MusicIn::new();
+        let io = model();
+        {
+            let mut v = io.lock().unwrap();
+            v.setup.routes = vec![TrackRoute {
+                port: DIN_NAME.to_string(),
+                channel: Some(0),
+                track: 5,
+                synth: Some(4),
+                blocks: Blocks::NONE,
+            }];
+            v.gen += 1;
+        }
+        m.sync(&io, 0.5);
+        assert_eq!(m.take_route_synths(), Some([Some(4), None, None, None]));
+        // Held before the song had patches: the route has it.
+        let _ = run(&mut m, DIN, &[0x90, 50, 100]);
+        assert_eq!(m.take_routed().count(), 1);
+        let mut split = Layout::BassAndKeys.patch("Split", "track 2");
+        split.zones[1].plays = "instrument 9".into();
+        let mut rig = crate::patch_in::PatchRig::of(&Patches { list: vec![split] });
+        m.swap_patches(&mut rig);
+        assert!(rig.rig.is_empty(), "the old (empty) rig comes back");
+        // The patch's synth takes the row the route left.
+        m.sync(&io, 0.6);
+        assert_eq!(m.take_route_synths(), Some([Some(4), Some(9), None, None]));
+        assert!(m.pick_patch(Some(0), When::Now));
+        assert_eq!(m.patch_playing(), Some(0));
+        let (keys, _) = run(&mut m, DIN, &[0x90, 36, 90, 0x90, 60, 80]);
+        assert!(keys.is_empty(), "the armed track hears none: {keys:?}");
+        assert_eq!(m.take_routed().count(), 0, "nor the route");
+        assert_eq!(
+            m.take_patched().collect::<Vec<_>>(),
+            vec![
+                (
+                    1,
+                    Key::Down {
+                        note: 36,
+                        velocity: 90
+                    }
+                ),
+                (
+                    SYNTH_ROUTES + 1,
+                    Key::Down {
+                        note: 60,
+                        velocity: 80
+                    }
+                ),
+            ]
+        );
+        // The key held from before lets go where it went down.
+        let _ = run(&mut m, DIN, &[0x80, 50, 0]);
+        assert_eq!(
+            m.take_routed().collect::<Vec<_>>(),
+            vec![(SYNTH_ROUTES, Key::Up { note: 50 })]
+        );
+        assert_eq!(m.take_patched().count(), 0);
+        m.sync(&io, 0.75);
+        {
+            let v = io.lock().unwrap();
+            let went: Vec<To> = v.monitor.newest().map(|(_, l)| l.to).collect();
+            assert!(went.contains(&To::Patch { patch: Some(0) }), "{went:?}");
+        }
+        assert!(m
+            .summary()
+            .iter()
+            .any(|l| l.starts_with("Patches: 1 in the song, patch 1 plays")));
+        // A stop of every sound: the table forgets, and the let-goes go
+        // the old way, harmlessly.
+        m.patches_stopped();
+        let _ = run(&mut m, DIN, &[0x80, 36, 0]);
+        assert_eq!(
+            m.take_routed().collect::<Vec<_>>(),
+            vec![(SYNTH_ROUTES, Key::Up { note: 36 })]
+        );
+        assert_eq!(m.take_patched().count(), 0);
     }
 
     /// A route that names a synth (the instrument redesign's step 11e)

@@ -135,6 +135,7 @@ mod modpanels;
 mod pace;
 mod pad_synths;
 mod parts;
+mod patch_in;
 mod perf;
 mod perform_pads;
 mod perform_tab;
@@ -8480,7 +8481,9 @@ fn player_session(
     );
     let mut keys: Vec<midi_in::Key> = Vec::with_capacity(64);
     // Keys a route sends to a track that isn't armed, played at once.
-    let mut routed_keys: Vec<(u8, midi_in::Key)> = Vec::with_capacity(64);
+    // Room for a period's routed keys and everything a patch can send in
+    // one (live shows C1), so the sound loop never grows it.
+    let mut routed_keys: Vec<(u8, midi_in::Key)> = Vec::with_capacity(64 + patch_in::OUTS);
     let mut routed_held = midi_in::RoutedHeld::new();
     let mut routed_pads = midi_in::RoutedPads::new();
     // The track the keys' expression last went to on MIDI out: when
@@ -8995,8 +8998,17 @@ fn player_session(
                     // I/O setup the screen opened before sending the
                     // project, so a synth only a route plays stays while
                     // MIDI in catches up.
+                    // Its patches (live shows C1): the old ones go back in
+                    // the box. Every sound stops above, so the table starts
+                    // empty.
+                    music.patches_stopped();
+                    if let Some(p) = o.patches.as_mut() {
+                        music.swap_patches(p);
+                    }
                     if let Ok(m) = io_model.lock() {
-                        app.set_route_synths(midi_in::route_synths_of(&m.setup).0);
+                        app.set_route_synths(
+                            midi_in::route_synths_of(&m.setup, music.patch_synths()).0,
+                        );
                     }
                     // A save under way stops: the project changes under it.
                     if collect_now {
@@ -10037,6 +10049,17 @@ fn player_session(
             } else {
                 keys.push(k);
             }
+        }
+        // What the song's patch plays (live shows C1): at once, as a
+        // route's keys to a track that isn't armed, whichever track that
+        // is (nothing records them yet: C3), and a synth no track has on
+        // its route row.
+        for (track, k) in music.take_patched() {
+            if let Some(j) = track.checked_sub(midi_in::SYNTH_ROUTES) {
+                route_synths.key(usize::from(j), k, &mut synth, &mut mix.instruments);
+                continue;
+            }
+            routed_keys.push((track, k));
         }
         // Keys play the armed track: by note while the pads press notes (a
         // synth pad layout, or the track's own synth's pad map, step 7); on
@@ -11091,6 +11114,7 @@ fn player_session(
                     synth.stop();
                     mix.instruments.stop();
                     mix.pad_synths.stop();
+                    music.patches_stopped();
                 }
                 app::Effect::Audio(p) => audio_change = Some(p),
                 app::Effect::Quit => stop = true,

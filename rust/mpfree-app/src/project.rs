@@ -87,6 +87,9 @@ pub const PADS: &str = "pads";
 pub const PAD_LAYERS: &str = "pad-layers";
 /// The Song view's audio tracks and their takes ([`audio_part`]).
 pub const AUDIOTRACKS: &str = "audiotracks";
+/// The song's patches (live shows C1, `mpfree_patch::Patches`): what the
+/// keys play. Written only while there are some.
+pub const PATCHES: &str = "patches";
 
 /// The mixer part's first line.
 pub const MIXER_FORMAT: &str = "mpfree-mixer 1";
@@ -151,8 +154,16 @@ pub const AUDIO_TRACKS: &str = "audio-tracks";
 /// lose them. The clips part is `mpfree-clips 4` too, which such a build
 /// doesn't read; the line says it in words before anything is read.
 pub const LINKED_SONG_LIST: &str = "linked-song-list";
+/// A project with patches (live shows C1): an older build would play the
+/// keys as routed, unsaid, and drop the patches on its next save.
+pub const PATCHES_NEED: &str = "patches";
 /// The features this build has, of those a project can need.
-pub const KNOWN_NEEDS: &[&str] = &[SYNTHS_WITHOUT_TRACKS, AUDIO_TRACKS, LINKED_SONG_LIST];
+pub const KNOWN_NEEDS: &[&str] = &[
+    SYNTHS_WITHOUT_TRACKS,
+    AUDIO_TRACKS,
+    LINKED_SONG_LIST,
+    PATCHES_NEED,
+];
 
 // ------------------------------------------------------------ the loop's side
 
@@ -261,6 +272,13 @@ pub struct Opening {
     /// Which project track each of the audio engine's tracks plays
     /// ([`audio_slots`]): set as the tracks are emptied.
     pub audio_slots: crate::audiotracks::Slots,
+    /// Its patches as the audio loop plays them (none: the keys play as
+    /// routed). The loop swaps them in, and the old ones come back in the
+    /// box.
+    pub patches: Option<Box<crate::patch_in::PatchRig>>,
+    /// Its patches as the screen keeps them, taken out before the box goes
+    /// to the audio loop.
+    pub patch_list: mpfree_patch::Patches,
 }
 
 impl std::fmt::Debug for Opening {
@@ -347,6 +365,9 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
     if c.clips.arrangement.uses_sections() {
         needs.push(LINKED_SONG_LIST);
     }
+    if parts.iter().any(|(k, _)| k == PATCHES) {
+        needs.push(PATCHES_NEED);
+    }
     if !needs.is_empty() {
         extra.push((NEEDS_KEY.to_string(), needs.join(" ")));
     }
@@ -415,7 +436,7 @@ pub fn check(snap: &Snapshot) -> Result<u32, String> {
     // song, so one that doesn't read is said and the pads follow the track
     // (`App::open_pads`).
     type Reads = fn(&str) -> Result<(), String>;
-    let checks: [(&str, Reads); 6] = [
+    let checks: [(&str, Reads); 7] = [
         (SAMPLER, |t| starts_with(t, mpfree_sampler::save::FORMAT)),
         (LOOPER, |t| mpfree_looper::save::from_text(t).map(drop)),
         (AUDIOTRACKS, |t| {
@@ -424,6 +445,11 @@ pub fn check(snap: &Snapshot) -> Result<u32, String> {
         (ARP, |t| starts_with(t, crate::app::ARP_HEADER)),
         (INSTRUMENT_LIST, |t| InstrumentList::parse(t).map(drop)),
         (TRACK_KITS, |t| track_kits_parse(t).map(drop)),
+        (PATCHES, |t| {
+            mpfree_patch::Patches::parse(t)
+                .map(drop)
+                .map_err(|e| e.to_string())
+        }),
     ];
     for (name, reads) in checks {
         if let Some(text) = snap.part(name) {
@@ -459,6 +485,7 @@ fn part_words(part: &str) -> String {
         PADS => "pads settings",
         PAD_LAYERS => "pads' layers",
         AUDIOTRACKS => "audio tracks",
+        PATCHES => "patches",
         other => other,
     };
     format!("its {words}")
@@ -752,6 +779,13 @@ pub fn opening(
             tracks_play(picks, &instrument_list, &mut notes, &mut left_out)
         }
     };
+    // Its patches (live shows C1); none plays the keys as routed.
+    let patch_list = match snap.part(PATCHES) {
+        None => mpfree_patch::Patches::default(),
+        Some(text) => {
+            mpfree_patch::Patches::parse(text).map_err(|e| cant(PATCHES, e.to_string()))?
+        }
+    };
     Ok(Opening {
         tempo,
         swing,
@@ -774,6 +808,8 @@ pub fn opening(
         clear_loops: true,
         clear_audio: true,
         audio_slots: audio,
+        patches: Some(crate::patch_in::PatchRig::of(&patch_list)),
+        patch_list,
     })
 }
 
@@ -3142,6 +3178,41 @@ mod tests {
         assert_eq!(check(&snap), Ok(FORMAT));
     }
 
+    /// Patches (live shows C1): saved as their own part with a needs
+    /// line, so an older build refuses the project rather than drop them,
+    /// and opened back with a rig for the audio loop. A project without
+    /// patches has neither, and opens with none (not the last project's).
+    #[test]
+    fn a_projects_patches_save_with_a_needs_line_and_open_back() {
+        use mpfree_patch::{Layout, Patches};
+        let none = &crate::plugins::Plugins::none();
+        let c = collected(String::new(), InstrumentList::new().text());
+        let plain = snapshot(&c, Vec::new());
+        assert!(plain.part(PATCHES).is_none());
+        let o = opening(&plain, 44_100, "x", none).unwrap();
+        assert!(o.patch_list.list.is_empty());
+        assert!(o.patches.as_ref().is_some_and(|p| p.rig.is_empty()));
+        let mut split = Layout::BassAndKeys.patch("Split", "track 2");
+        split.zones[1].plays = "instrument 6".into();
+        let patches = Patches {
+            list: vec![Layout::Whole.patch("Piano", "track 1"), split],
+        };
+        let snap = snapshot(&c, vec![(PATCHES.to_string(), patches.to_text())]);
+        let needs = snap
+            .meta
+            .extra
+            .iter()
+            .find(|(k, _)| k == NEEDS_KEY)
+            .map(|(_, v)| v.as_str());
+        assert_eq!(needs, Some(PATCHES_NEED));
+        assert_eq!(check(&snap), Ok(FORMAT));
+        let o = opening(&snap, 44_100, "x", none).unwrap();
+        assert_eq!(o.patch_list, patches);
+        let rig = o.patches.as_ref().unwrap();
+        assert_eq!(rig.rig.len(), 2);
+        assert_eq!(rig.synths, [Some(6), None, None, None]);
+    }
+
     /// Phase 0's gate (docs/dev/design/project-safety.md): a project that
     /// needs something this build hasn't got, or has a part this build
     /// can't read (clips saved as `mpfree-clips 9` here, as an
@@ -3185,6 +3256,11 @@ mod tests {
                 "its audio tracks can't be read (",
             ),
             (ARP, "mpfree-arp 2\n", "its arps can't be read ("),
+            (
+                PATCHES,
+                "mpfree-patches 1\npatch = Lead\nzone = track 1\nkeys = 60 40\n",
+                "its patches can't be read (",
+            ),
             (
                 INSTRUMENTS,
                 "mpfree-instruments 9\n",

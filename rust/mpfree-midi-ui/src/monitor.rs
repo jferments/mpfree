@@ -490,6 +490,13 @@ pub(crate) fn went_to(m: &IoModel, to: To) -> (String, Went) {
         To::NotFollowed => ("not followed".to_string(), Went::Nothing),
         To::Transport => ("MMC: the transport".to_string(), Went::Clock),
         To::Scene(k) => (format!("launched scene {}", u16::from(k) + 1), Went::Took),
+        To::Patch { patch: Some(k) } => (format!("patch {}", u16::from(k) + 1), Went::Took),
+        To::Patch { patch: None } => ("the patch it was held in".to_string(), Went::Took),
+        To::PatchGap { patch: Some(k) } => (
+            format!("nothing: outside patch {}'s zones", u16::from(k) + 1),
+            Went::Nothing,
+        ),
+        To::PatchGap { patch: None } => ("nothing: no patch takes it".to_string(), Went::Nothing),
         To::Nothing => ("nothing takes it".to_string(), Went::Nothing),
         To::Ignored => ("ignored".to_string(), Went::Nothing),
         To::PortIgnores => ("ignored: this port's setting".to_string(), Went::Nothing),

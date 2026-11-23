@@ -2245,6 +2245,10 @@ pub struct Player {
     browser: Option<Box<mpfree_browser_ui::Browser>>,
     /// The I/O view's model (its MIDI setup is the project's `midi` part).
     io_model: Option<mpfree_midi_ui::Shared>,
+    /// The song's patches (live shows C1, the project's `patches` part):
+    /// what the keys play. The audio loop plays its own copy
+    /// (`patch_in::PatchRig`).
+    patches: mpfree_patch::Patches,
     /// The parts New project goes back to, once the audio loop sent them.
     project_defaults: Option<crate::project::Defaults>,
     /// The plugins an open makes a project's plugin effects and synths
@@ -2932,6 +2936,7 @@ impl Player {
             sample,
             browser: None,
             io_model: None,
+            patches: mpfree_patch::Patches::default(),
             project_defaults: None,
             project_plugins: std::sync::Arc::new(crate::plugins::Plugins::none()),
             plugin_page: crate::plugin_page::PluginPage::new(),
@@ -11587,6 +11592,11 @@ impl Player {
                 mpfree_midi_ui::MidiPart(m.clone()).save(),
             ));
         }
+        // Only while the song has patches: one without plays its keys as
+        // before, and opens in any build.
+        if !self.patches.list.is_empty() {
+            extra.push((crate::project::PATCHES.to_string(), self.patches.to_text()));
+        }
         let mut samples: Vec<_> = sounds
             .into_iter()
             .map(|(file, src)| {
@@ -11740,6 +11750,8 @@ impl Player {
             );
         }
         self.open_midi(snap.part(crate::project::MIDI));
+        // Its patches: the screen keeps the list, the loop plays the rig.
+        self.patches = std::mem::take(&mut o.patch_list);
         self.opens_out += 1;
         self.outbox.push(FromUi::OpenProject(Box::new(o)));
         // No kits saved: the factory kits, as New has them.

@@ -365,8 +365,16 @@ impl Keys {
     /// ending where they started. A patch playing that the new list
     /// doesn't have leaves the keys as routed. Gives the old copy back, to
     /// be freed off the audio thread.
-    pub fn set_rig(&mut self, rig: Box<Rig>) -> Box<Rig> {
-        let old = std::mem::replace(&mut self.rig, rig);
+    pub fn set_rig(&mut self, mut rig: Box<Rig>) -> Box<Rig> {
+        self.swap_rig(&mut rig);
+        rig
+    }
+
+    /// [`Keys::set_rig`] in place: `rig` comes in, and the old one takes
+    /// its place in the caller's box (which may be inside another), so
+    /// nothing is made or freed here.
+    pub fn swap_rig(&mut self, rig: &mut Box<Rig>) {
+        std::mem::swap(&mut self.rig, rig);
         self.port_kb = [NO_KEYBOARD; MAX_PORT_IDS];
         if self.now.is_some_and(|i| self.rig.patch(i).is_none()) {
             self.now = None;
@@ -376,7 +384,6 @@ impl Keys {
                 self.waiting = None;
             }
         }
-        old
     }
 
     /// The patch playing (from 0), or None: keys as routed.
@@ -522,6 +529,17 @@ impl Keys {
         self.held
             .iter()
             .position(|h| h.is_some_and(|h| h.from == from && h.note == note))
+    }
+
+    /// [`Keys::find`], else the note on another channel of the same port:
+    /// an MPE zone's master channel presses and slides the notes held on
+    /// its members.
+    fn find_on_port(&self, from: From, note: u8) -> Option<usize> {
+        self.find(from, note).or_else(|| {
+            self.held
+                .iter()
+                .position(|h| h.is_some_and(|h| h.from.port == from.port && h.note == note))
+        })
     }
 
     /// Plays `k` from `from`, giving what the instruments are sent to
@@ -687,7 +705,7 @@ impl Keys {
         out: &mut impl FnMut(Out),
         msg: impl Fn(Inst, u8) -> Out,
     ) -> Went {
-        match self.find(from, note).and_then(|i| self.held[i]) {
+        match self.find_on_port(from, note).and_then(|i| self.held[i]) {
             Some(h) if h.routed => Went::Routed,
             Some(h) => {
                 for d in h.dests().iter().filter(|d| d.wheels || !expression) {
@@ -1353,6 +1371,26 @@ mod tests {
         assert_eq!(r.up(KEYLAB, 64), Went::Played);
         assert_eq!(r.take(), vec![on(PIANO, 64, 90), off(PIANO, 64)]);
         assert!(!r.k.active());
+    }
+
+    #[test]
+    fn an_mpe_masters_pressure_reaches_the_note_on_its_member() {
+        let mut r = Run::new(Some(0));
+        let member = From { port: 1, ch: 3 };
+        r.down(member, 60, 100);
+        r.take();
+        let press = In::Pressure { note: 60, value: 9 };
+        assert_eq!(r.key(KEYLAB, press), Went::Played);
+        assert_eq!(
+            r.take(),
+            vec![Out::Pressure {
+                inst: PIANO,
+                note: 60,
+                value: 9
+            }]
+        );
+        // Another keyboard's note 60 is its own.
+        assert_eq!(r.key(NORD, press), Went::Routed);
     }
 
     #[test]

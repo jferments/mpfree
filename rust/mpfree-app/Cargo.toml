@@ -59,6 +59,9 @@ mpfree-simd = { path = "../mpfree-simd" }
 mpfree-midi = { path = "../mpfree-midi" }
 mpfree-midi-clock = { path = "../mpfree-midi-clock" }
 mpfree-midi-ui = { path = "../mpfree-midi-ui" }
+# Patches (live shows C1, patch_in.rs): zones and the table of held keys
+# and pedals.
+mpfree-patch = { path = "../mpfree-patch" }
 # The library in the data folder and its browser (the Pads tab's Browse
 # view): places, folders, Load, Load to pad and the preview.
 mpfree-library = { path = "../mpfree-library" }

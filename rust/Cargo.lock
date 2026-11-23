@@ -805,6 +805,7 @@ dependencies = [
  "mpfree-mpcstore",
  "mpfree-node",
  "mpfree-notefx",
+ "mpfree-patch",
  "mpfree-perform",
  "mpfree-play",
  "mpfree-plughost",
