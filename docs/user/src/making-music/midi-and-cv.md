@@ -21,7 +21,7 @@ Plug a keyboard into **MIDI IN**, or a USB keyboard into the **USB** port, and i
 
 ### The pitch wheel, pressure and MPE
 
-A keyboard's **pitch wheel** bends every note of the sound it plays, by that sound's own *Bend range* on the Synth tab. **Pressure** on a key (polyphonic aftertouch) or on the whole keyboard (channel aftertouch) goes to the sound's pressure destinations, as pressing a pad harder does: channel aftertouch presses every key held on its channel. A route's track takes its port's wheel and pressure too.
+A keyboard's **pitch wheel** bends every note of the sound it plays, by that sound's own *Bend range* on the Synth tab. On a kit it bends the notes its keygroups play, a whole tone each way, and leaves drum pads at their pitch. **Pressure** on a key (polyphonic aftertouch) or on the whole keyboard (channel aftertouch) goes to the sound's pressure destinations, as pressing a pad harder does: channel aftertouch presses every key held on its channel. A route's track takes its port's wheel and pressure too.
 
 An **MPE** controller (an expressive keyboard that gives each finger its own channel, such as a Seaboard, a LinnStrument or an Osmose) plays each note with its own expression:
 
