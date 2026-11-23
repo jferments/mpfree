@@ -766,6 +766,7 @@ impl TakeRow {
                 Replaced::Mutate => "mutate",
                 Replaced::Restore => "restore",
                 Replaced::Convert => "convert",
+                Replaced::Continue { .. } => "continue",
             }
         } else if self.deleted {
             "delete"
@@ -962,6 +963,8 @@ pub struct TimeState {
     /// point in effect at the playhead (None before the first), which the
     /// Tempo row steps from. None otherwise. The app sets it.
     pub tempo_here: Option<f64>,
+    /// Continue, while one is under way (composing tools).
+    pub continuing: Option<Arc<crate::continuing::Continuing>>,
 }
 
 /// What a conversion (Scenes → song, List → song, Song → scenes) made
@@ -1229,6 +1232,7 @@ impl TimeState {
             tempo_pick: None,
             report: None,
             tempo_here: None,
+            continuing: None,
         }
     }
 
@@ -1482,6 +1486,9 @@ pub enum TimeAction {
     },
     /// Close Convert to notes' preview.
     ConvertCancel,
+    /// Continue (composing tools): carry a clip on, hear it in place of
+    /// the clip, keep it or go back.
+    Continue(crate::continuing::ContinueAction),
     /// Put these rows on the morph's A and B (loaded again if it is on).
     MorphRows {
         a: usize,
@@ -3835,6 +3842,8 @@ fn take_detail(st: &TimeState, row: &TakeRow) -> String {
         (Some(Replaced::Mutate), None) => return "a variation".into(),
         (Some(Replaced::Restore), _) => return "the original".into(),
         (Some(Replaced::Convert), _) => return "converted to notes".into(),
+        (Some(Replaced::Continue { bars: 1 }), _) => return "1 more bar".into(),
+        (Some(Replaced::Continue { bars }), _) => return format!("{bars} more bars"),
         (None, _) => {}
     }
     if row.deleted {

@@ -65,6 +65,7 @@
 
 mod apart;
 mod audio;
+mod compose;
 mod control;
 mod follow;
 pub mod link;
@@ -2181,10 +2182,15 @@ impl TimeHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mpfree_compose::State as PreviewState;
     use mpfree_play::PlayView;
+    use mpfree_play::Replaced;
     use mpfree_seq::SLOTS;
+    use mpfree_time_ui::continuing::{ContinueAction, ContinueAsk, Continuing};
     use mpfree_time_ui::view::{AudioAction, RegionId};
+    use mpfree_transport::time::Tick;
     use mpfree_transport::State;
+    use std::sync::Arc;
 
     #[test]
     fn the_morph_bar_runs_the_scene_morph_on_the_mixers_mod_engine() {
@@ -12800,5 +12806,384 @@ mod tests {
         notes.sort();
         assert_eq!(notes, vec![0, 62], "pad 1's chord came out");
         assert_eq!(h.dropped(), 0);
+    }
+
+    // ------------------------------------------------ Continue (phase 1)
+
+    /// A host with a one-bar riff of eight notes (a clip of notes) on
+    /// track 1, row 1.
+    fn riff_host() -> TimeHost {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut c = Clip::new("riff", 3840);
+        c.holds = mpfree_seq::Holds::Notes;
+        c.notes = [60u8, 63, 67, 65, 63, 62, 63, 60]
+            .iter()
+            .enumerate()
+            .map(|(i, &n)| mpfree_seq::Note::new(i as Tick * 480, 240, n, 96))
+            .collect();
+        h.control.project.tracks[0].slots[0] = Some(c);
+        h.control.project.give_clip_ids();
+        h
+    }
+
+    fn continue_ask(bars: u8) -> TimeAction {
+        continue_on(0, bars)
+    }
+
+    fn continue_on(track: usize, bars: u8) -> TimeAction {
+        TimeAction::Continue(ContinueAction::Ask(Box::new(ContinueAsk {
+            track,
+            slot: 0,
+            settings: mpfree_compose::Settings {
+                bars,
+                ..mpfree_compose::Settings::default()
+            },
+            kind: mpfree_compose::InstrumentKind::OneNote,
+            lanes: mpfree_compose::Lanes::default(),
+        })))
+    }
+
+    fn continuing(h: &TimeHost) -> Option<Arc<Continuing>> {
+        h.state().continuing
+    }
+
+    /// The hits clip `c`, launched at song tick 0 and looping, makes
+    /// from frame `from` to `to`, as (frame, note).
+    fn clip_hits(c: &Clip, from: u64, to: u64) -> Vec<(u64, usize)> {
+        let frame = |t: Tick| t as u64 * BAR / 3840;
+        let mut v = Vec::new();
+        let mut pass = 0;
+        while frame(pass * c.length) < to {
+            for n in c.notes.iter().filter(|n| n.on) {
+                let f = frame(pass * c.length + n.tick);
+                if (from..to).contains(&f) {
+                    v.push((f, usize::from(n.note)));
+                }
+            }
+            pass += 1;
+        }
+        v.sort();
+        v
+    }
+
+    /// The fake pads' hits from frame `from` to `to`, as (frame, note).
+    fn hits_in(pads: &Fake, from: u64, to: u64) -> Vec<(u64, usize)> {
+        let mut v: Vec<(u64, usize)> = pads
+            .hits
+            .iter()
+            .filter(|h| (from..to).contains(&h.0))
+            .map(|h| (h.0, h.1))
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// The same notes, each within a frame of where it should be.
+    fn same_hits(got: &[(u64, usize)], want: &[(u64, usize)]) -> bool {
+        got.len() == want.len()
+            && got
+                .iter()
+                .zip(want)
+                .all(|(g, w)| g.1 == w.1 && g.0.abs_diff(w.0) <= 1)
+    }
+
+    /// Periods, a millisecond apart, until Continue has a result and the
+    /// bar line it comes in on (or it came in at once): the line.
+    fn result_in(h: &mut TimeHost, pads: &mut Fake) -> Option<Tick> {
+        until(h, pads, |h| {
+            continuing(h).is_some_and(|c| c.line.is_some() || c.heard)
+        });
+        continuing(h).unwrap().line
+    }
+
+    /// Composing tools phase 1: Continue on a playing clip. The result
+    /// comes from the composer's own thread and comes in on the next bar
+    /// line, in place of the clip and in time with it (its launch keeps
+    /// its origin); nothing is written until Keep, which is one take that
+    /// plays on unchanged; UNDO takes it all back.
+    #[test]
+    fn continue_is_heard_from_the_next_bar_line_kept_as_one_take_and_undone() {
+        let mut h = riff_host();
+        let mut pads = Fake::default();
+        let riff = h.project().clip(0, 0).unwrap().clone();
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 4, &[]);
+        assert_eq!(
+            h.act(continue_ask(1)).unwrap(),
+            "continue: 1 more bar of riff, Minimal"
+        );
+        let c = continuing(&h).unwrap();
+        assert_eq!(
+            (c.state, c.heard, c.position),
+            (PreviewState::Preparing, false, None)
+        );
+        let at = result_in(&mut h, &mut pads).expect("on a bar line");
+        let c = continuing(&h).unwrap();
+        assert_eq!(
+            (c.state, c.heard, c.position),
+            (PreviewState::Ready, false, Some((1, 1)))
+        );
+        assert_eq!(at % 3840, 0);
+        let heard = c.clip.clone().unwrap();
+        assert_eq!((heard.length, c.new_from), (2 * 3840, 3840));
+        assert!(heard.notes.iter().any(|n| n.tick >= 3840), "new notes");
+        assert_eq!(h.project().clip(0, 0).unwrap(), &riff, "nothing written");
+        assert_eq!(c.made.as_ref().unwrap().plan.len(), 2, "each bar's job");
+
+        // Up to the line the riff; from it the clip as heard, on its
+        // origin: a 2-bar clip whose second bar is the new one.
+        let line = at as u64 * BAR / 3840;
+        run(&mut h, &mut pads, line + 2 * BAR, &[]);
+        let c = continuing(&h).unwrap();
+        assert_eq!(
+            (c.state, c.heard, c.line),
+            (PreviewState::Auditioning, true, None)
+        );
+        assert!(same_hits(
+            &hits_in(&pads, 0, line),
+            &clip_hits(&riff, 0, line)
+        ));
+        let after = hits_in(&pads, line, line + 2 * BAR);
+        assert!(
+            same_hits(&after, &clip_hits(&heard, line, line + 2 * BAR)),
+            "{after:?}"
+        );
+        assert_eq!(
+            h.project().clip(0, 0).unwrap(),
+            &riff,
+            "still nothing written"
+        );
+
+        // Keep: one take, playing the same notes on.
+        assert_eq!(
+            h.act(TimeAction::Continue(ContinueAction::Keep)).unwrap(),
+            "continue: 1 more bar of riff kept (UNDO takes it back)"
+        );
+        assert!(continuing(&h).is_none());
+        let kept = h.project().clip(0, 0).unwrap().clone();
+        assert_eq!((kept.length, &kept.notes), (heard.length, &heard.notes));
+        let st = h.state();
+        let row = st.done.last().unwrap();
+        assert_eq!(row.replaced, Some(Replaced::Continue { bars: 1 }));
+        assert!(row.short().starts_with("continue"), "{}", row.short());
+        let from = line + 2 * BAR;
+        run(&mut h, &mut pads, from + 2 * BAR, &[]);
+        assert!(same_hits(
+            &hits_in(&pads, from, from + 2 * BAR),
+            &clip_hits(&kept, from, from + 2 * BAR)
+        ));
+
+        // UNDO: the clip as it was, length and all.
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.project().clip(0, 0).unwrap(), &riff);
+        assert_eq!(h.dropped(), 0);
+        assert!(
+            h.describe().contains("continue: 1 asked, 1 made"),
+            "{}",
+            h.describe()
+        );
+    }
+
+    /// Try again while a result plays: it plays on until the next one has
+    /// come and its line; ‹ › step back and forth on bar lines; Back
+    /// brings the clip back on the next one, as it was.
+    #[test]
+    fn try_again_and_back_change_the_music_on_bar_lines() {
+        let mut h = riff_host();
+        let mut pads = Fake::default();
+        let riff = h.project().clip(0, 0).unwrap().clone();
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 4, &[]);
+        h.act(continue_ask(1)).unwrap();
+        let at = result_in(&mut h, &mut pads).unwrap();
+        run(&mut h, &mut pads, at as u64 * BAR / 3840 + BAR / 4, &[]);
+        let first = continuing(&h).unwrap().clip.clone().unwrap();
+        assert!(continuing(&h).unwrap().heard);
+
+        assert_eq!(
+            h.act(continue_ask(1)).unwrap(),
+            "continue: trying 1 more bar of riff again, Minimal (the last plays on until it's ready)"
+        );
+        let c = continuing(&h).unwrap();
+        assert_eq!((c.state, c.heard), (PreviewState::Preparing, true));
+        until(&mut h, &mut pads, |h| {
+            continuing(h).is_some_and(|c| c.position == Some((2, 2)))
+        });
+        let c = continuing(&h).unwrap();
+        let second = c.clip.clone().unwrap();
+        assert!(c.heard, "the first plays on");
+        let at = c.line.expect("the second on the next line");
+        run(&mut h, &mut pads, at as u64 * BAR / 3840 + BAR / 4, &[]);
+        let c = continuing(&h).unwrap();
+        assert_eq!(
+            (c.state, c.heard, c.line),
+            (PreviewState::Auditioning, true, None)
+        );
+        assert_eq!(c.clip.as_deref(), Some(&*second));
+
+        // ‹: the first again, on the next line.
+        let said = h
+            .act(TimeAction::Continue(ContinueAction::Step { back: true }))
+            .unwrap();
+        assert!(
+            said.starts_with("continue: the result shown, heard from bar "),
+            "{said}"
+        );
+        assert!(h
+            .act(TimeAction::Continue(ContinueAction::Step { back: true }))
+            .unwrap_err()
+            .contains("no earlier result"));
+        let c = continuing(&h).unwrap();
+        assert_eq!(c.position, Some((1, 2)));
+        let at = c.line.unwrap();
+        run(&mut h, &mut pads, at as u64 * BAR / 3840 + BAR / 4, &[]);
+        assert_eq!(continuing(&h).unwrap().clip.as_deref(), Some(&*first));
+
+        // Back: the clip as it was, from the next line.
+        let said = h.act(TimeAction::Continue(ContinueAction::Back)).unwrap();
+        assert!(
+            said.starts_with("continue: back to the clip as it was, heard from bar "),
+            "{said}"
+        );
+        let c = continuing(&h).unwrap();
+        assert_eq!((c.state, c.heard), (PreviewState::Cancelling, true));
+        let line = c.line.unwrap() as u64 * BAR / 3840;
+        run(&mut h, &mut pads, line + 2 * BAR, &[]);
+        assert!(continuing(&h).is_none());
+        assert!(same_hits(
+            &hits_in(&pads, line, line + 2 * BAR),
+            &clip_hits(&riff, line, line + 2 * BAR)
+        ));
+        assert_eq!(h.project().clip(0, 0).unwrap(), &riff);
+        assert!(h.state().done.is_empty(), "Back writes nothing");
+    }
+
+    /// Any change to the clip while its result plays stops the result at
+    /// once (the clip plays as it now is) and says so; REC stops one
+    /// playing at once, and it stays ready for after.
+    #[test]
+    fn an_edit_or_rec_stops_the_new_bars_at_once() {
+        let mut h = riff_host();
+        let mut pads = Fake::default();
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 4, &[]);
+        h.act(continue_ask(2)).unwrap();
+        let at = result_in(&mut h, &mut pads).unwrap();
+        run(&mut h, &mut pads, at as u64 * BAR / 3840 + BAR / 4, &[]);
+        assert!(continuing(&h).unwrap().heard);
+
+        // An edit (it compiles): the result goes, the clip plays as edited.
+        h.control.project.tracks[0].slots[0].as_mut().unwrap().notes[0].note = 72;
+        h.control.compile().unwrap();
+        let c = continuing(&h).unwrap();
+        assert_eq!((c.state, c.heard), (PreviewState::Invalidated, false));
+        assert_eq!(c.words.as_deref(), Some("The clip changed: try again?"));
+        let edited = h.project().clip(0, 0).unwrap().clone();
+        let from = pads.frame + BAR;
+        run(&mut h, &mut pads, from + BAR, &[]);
+        assert!(same_hits(
+            &hits_in(&pads, from, from + BAR),
+            &clip_hits(&edited, from, from + BAR)
+        ));
+        assert_eq!(h.project().clip(0, 0).unwrap(), &edited, "nothing written");
+        assert!(h
+            .act(TimeAction::Continue(ContinueAction::Keep))
+            .unwrap_err()
+            .contains("continue: "));
+
+        // Again, then REC: the clip comes back before the take starts.
+        h.act(continue_ask(1)).unwrap();
+        let at = result_in(&mut h, &mut pads).unwrap();
+        run(&mut h, &mut pads, at as u64 * BAR / 3840 + BAR / 4, &[]);
+        assert!(continuing(&h).unwrap().heard);
+        h.act(TimeAction::Transport(Command::Record)).unwrap();
+        let c = continuing(&h).unwrap();
+        assert_eq!((c.state, c.heard), (PreviewState::Ready, false));
+        let said = h.take_later_note().unwrap();
+        assert!(
+            said.ends_with("continue: REC brought the clip back; the new bars stay ready"),
+            "{said}"
+        );
+        let to = pads.frame + 2 * BAR;
+        run(&mut h, &mut pads, to, &[]);
+        assert!(!continuing(&h).unwrap().heard, "none while recording");
+        assert!(h
+            .act(continue_ask(1))
+            .unwrap_err()
+            .contains("not while recording"));
+        assert!(
+            h.describe().contains("1 stopped by REC"),
+            "{}",
+            h.describe()
+        );
+        // REC replaced the riff's notes as it passed them (no overdub): a
+        // change, so the result that waited went too.
+        assert_eq!(continuing(&h).unwrap().state, PreviewState::Invalidated);
+        assert!(
+            h.describe().contains("2 stopped by a change"),
+            "{}",
+            h.describe()
+        );
+    }
+
+    /// Stopped, a result comes in at once; a clip of pad hits, a loop's
+    /// cell or an empty slot are refused with why.
+    #[test]
+    fn stopped_a_result_comes_in_at_once_and_what_cant_be_carried_on_says_why() {
+        let mut h = riff_host();
+        let mut pads = Fake::default();
+        h.act(continue_ask(4)).unwrap();
+        assert_eq!(result_in(&mut h, &mut pads), None, "at once");
+        let c = continuing(&h).unwrap();
+        assert_eq!((c.state, c.heard), (PreviewState::Auditioning, true));
+        assert_eq!(c.clip.as_ref().unwrap().length, 5 * 3840);
+        h.act(TimeAction::Continue(ContinueAction::Back)).unwrap();
+        assert!(continuing(&h).is_none(), "stopped, Back is at once too");
+
+        let mut beat = Clip::new("beat", 3840);
+        beat.notes = vec![mpfree_seq::Note::new(0, 100, 3, 100)];
+        h.control.project.tracks[1].slots[0] = Some(beat);
+        let ask = |track| continue_on(track, 1);
+        assert_eq!(
+            h.act(ask(1)).unwrap_err(),
+            "continue: This clip plays pads, so there's no tune to carry on."
+        );
+        assert_eq!(
+            h.act(ask(2)).unwrap_err(),
+            "continue: slot 1 of track 3 is empty"
+        );
+    }
+
+    /// Apart (Arrange 2.6b), Continue goes through the editing side's
+    /// thread the same way: asked, heard, kept.
+    #[test]
+    fn continue_works_with_the_halves_apart() {
+        let (mut h, why) = riff_host().into_apart();
+        assert_eq!(why, None);
+        let mut pads = Fake::default();
+        assert_eq!(h.act_then(continue_ask(1), Say::Tell), None);
+        let said = answers(&mut h, &mut pads, 1);
+        assert_eq!(
+            said[0].1.as_deref(),
+            Ok("continue: 1 more bar of riff, Minimal")
+        );
+        until(&mut h, &mut pads, |h| {
+            continuing(h).is_some_and(|c| c.heard)
+        });
+        assert_eq!(
+            h.act_then(TimeAction::Continue(ContinueAction::Keep), Say::Tell),
+            None
+        );
+        let said = answers(&mut h, &mut pads, 1);
+        assert_eq!(
+            said[0].1.as_deref(),
+            Ok("continue: 1 more bar of riff kept (UNDO takes it back)")
+        );
+        until(&mut h, &mut pads, |h| {
+            h.project().clip(0, 0).is_some_and(|c| c.length == 2 * 3840)
+        });
     }
 }

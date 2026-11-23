@@ -876,7 +876,7 @@ impl Engine {
         // The pad's live settings and locks, where set, in place of its own.
         let kit_live = &self.lives[at];
         let live = kit_live.row(p);
-        let program = kit_live.program;
+        let program = kit_live.program_for(note);
         let set = |f: PadField| Some(live[f as usize]).filter(|x| !x.is_nan());
         let mut amp = vp.amp;
         if let Some(ms) = set(PadField::Attack) {

@@ -76,6 +76,8 @@ pub struct ProblemView {
     pub last: Instant,
     /// When it ended, once over.
     pub ended: Option<Instant>,
+    /// Lasting and staying: when the spell going now began.
+    pub since: Option<Instant>,
     /// Shown at least once (a lasting problem only after [`SETTLE_ON`]).
     pub shown: bool,
     /// Looked at since it last happened.
@@ -107,6 +109,30 @@ pub struct ChipView {
     /// Problems that ended and haven't been seen.
     pub unseen: usize,
 }
+
+/// The status chip's whole look (phase 2; Jay, 22 Nov 2026 08:17Z): its
+/// colour is the worst of the CPU, the RAM and the problems, and a number
+/// past its line takes that colour too, so plain numbers on a coloured
+/// chip mean a problem on the page.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ChipLook {
+    /// `None`: green, all good.
+    pub level: Option<Level>,
+    /// The colour comes only from problems that ended and haven't been
+    /// seen: a ring, not a fill.
+    pub ring: bool,
+    /// The CPU number's colour: red while the sound dropped out (happening
+    /// now), yellow while it is near its limit; a slow moment alone is
+    /// never red.
+    pub cpu: Option<Level>,
+    /// The RAM number's colour, by its lines.
+    pub ram: Option<Level>,
+}
+
+/// RAM in use over this (%) is yellow on the chip, and over
+/// [`RAM_FULL_PCT`] red: the RAM chip's lines until now.
+pub const RAM_BUSY_PCT: f64 = 70.0;
+pub const RAM_FULL_PCT: f64 = 85.0;
 
 /// One system's line on the page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -186,6 +212,7 @@ impl Entry {
             first: self.first,
             last: self.last,
             ended: self.ended,
+            since: self.going_since,
             shown: self.shown,
             seen: self.seen,
             hidden: self.hidden,
@@ -426,6 +453,52 @@ impl Board {
     /// The status colour from the problems (see [`ChipView`]).
     pub fn chip(&self) -> ChipView {
         Board::colour(self.open.iter())
+    }
+
+    /// The status chip's look with RAM at `ram_pct` (None before the first
+    /// reading).
+    pub fn chip_look(&self, ram_pct: Option<f64>) -> ChipLook {
+        let going = |k: &Kind| {
+            self.open
+                .iter()
+                .any(|e| e.kind == k && e.state == ProblemState::Now && e.view().listed())
+        };
+        let cpu = if going(&crate::kinds::SOUND_DROPOUT) {
+            Some(Level::Fail)
+        } else if going(&crate::kinds::NEAR_LIMIT) {
+            Some(Level::Warn)
+        } else {
+            None
+        };
+        let ram = ram_pct.and_then(|p| {
+            if p > RAM_FULL_PCT {
+                Some(Level::Fail)
+            } else if p > RAM_BUSY_PCT {
+                Some(Level::Warn)
+            } else {
+                None
+            }
+        });
+        let mut filled = cpu.max(ram);
+        let mut ringed = None;
+        for e in &self.open {
+            let p = e.view();
+            if !p.listed() || p.kind.level == Level::Note {
+                continue;
+            }
+            if p.is_now() {
+                filled = filled.max(Some(p.kind.level));
+            } else if !p.seen {
+                ringed = ringed.max(Some(p.kind.level));
+            }
+        }
+        let level = filled.max(ringed);
+        ChipLook {
+            level,
+            ring: level.is_some() && filled < level,
+            cpu,
+            ram,
+        }
     }
 
     /// The nine systems, in page order.
@@ -965,6 +1038,57 @@ mod tests {
             })
         });
         out
+    }
+
+    #[test]
+    fn the_chip_takes_the_worst_of_cpu_ram_and_problems() {
+        let t0 = Instant::now();
+        let mut b = Board::new();
+        assert_eq!(b.chip_look(Some(40.0)), ChipLook::default(), "green");
+        let l = b.chip_look(Some(75.0));
+        assert_eq!(
+            (l.level, l.ram, l.cpu),
+            (Some(Level::Warn), Some(Level::Warn), None)
+        );
+        assert_eq!(
+            b.chip_look(Some(90.0)).level,
+            Some(Level::Fail),
+            "RAM over 85 %"
+        );
+        // The sound near its limit for a second: the CPU number yellow.
+        b.apply(Report::began(&NEAR_LIMIT), t0);
+        go(&mut b, t0, 1.1);
+        let l = b.chip_look(Some(40.0));
+        assert_eq!(
+            (l.level, l.cpu, l.ring),
+            (Some(Level::Warn), Some(Level::Warn), false)
+        );
+        // It dropped out: the CPU number red, and the chip.
+        b.apply(Report::happened(&SOUND_DROPOUT, 1), at(t0, 2.0));
+        let l = b.chip_look(Some(40.0));
+        assert_eq!((l.level, l.cpu), (Some(Level::Fail), Some(Level::Fail)));
+        // The dropout over and not seen, the load still near: the red
+        // shows as a ring, round a yellow CPU number.
+        go(&mut b, t0, 5.5);
+        let l = b.chip_look(Some(40.0));
+        assert_eq!(
+            (l.level, l.ring, l.cpu),
+            (Some(Level::Fail), true, Some(Level::Warn)),
+            "a red ring round a yellow CPU"
+        );
+        b.seen(at(t0, 6.0));
+        let l = b.chip_look(Some(40.0));
+        assert_eq!(
+            (l.level, l.ring),
+            (Some(Level::Warn), false),
+            "seen: what is going now"
+        );
+        // A problem, numbers plain.
+        b.apply(Report::ended(&NEAR_LIMIT), at(t0, 6.0));
+        go(&mut b, t0, 9.5);
+        b.apply(Report::began(&PORT_MISSING).about(Subject(1)), at(t0, 10.0));
+        let l = b.chip_look(Some(40.0));
+        assert_eq!((l.level, l.cpu, l.ram), (Some(Level::Warn), None, None));
     }
 
     #[test]
