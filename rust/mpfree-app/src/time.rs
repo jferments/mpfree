@@ -9439,6 +9439,14 @@ mod tests {
             velocity: 100,
         })
         .unwrap();
+        // A clip of pad hits takes no scale (its numbers are pads).
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        let line = h
+            .act(TimeAction::Edit(E::Scale(Some(Scale::new(0, MAJOR)))))
+            .unwrap();
+        assert_eq!(line, "edit: a clip of pads has no scale");
+        // A clip of notes, which a synth's track plays, does.
+        h.control.project.tracks[0].slots[0].as_mut().unwrap().holds = mpfree_seq::Holds::Notes;
         h.act(TimeAction::Edit(E::Open)).unwrap();
         for (tick, note) in [(960, 60), (1920, 64)] {
             h.act(TimeAction::Edit(E::Draw {

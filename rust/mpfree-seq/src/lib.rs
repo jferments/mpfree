@@ -944,9 +944,11 @@ pub struct Clip {
     /// STEP SEQ show and edit, never when a note plays.
     pub step: Tick,
     /// The scale its notes are written in (piano roll plan 2B.1): None
-    /// (Off) until one is picked. A view of the clip, as the step size
-    /// is: it lights the Notes view's rows and makes its moves go by scale
-    /// notes, but never changes a note by itself or how anything plays.
+    /// (Off) until one is picked, and always on a clip of pad hits, whose
+    /// numbers are pads, not pitches ([`Clip::takes_scale`]). A view of
+    /// the clip, as the step size is: it lights the Notes view's rows and
+    /// makes its moves go by scale notes, but never changes a note by
+    /// itself or how anything plays.
     pub scale: Option<Scale>,
     /// Its notes, locks, length and moves as they were before its first
     /// Mutate (sequencer S6, [`mutate`]): what Restore puts back and each
@@ -1032,7 +1034,8 @@ pub enum ModelError {
     /// A clip's step size isn't one of [`steps::SIZES`].
     BadStep,
     /// A clip's scale has a root past B (11), notes past the octave, or
-    /// leaves out its root ([`scale_ok`]).
+    /// leaves out its root ([`scale_ok`]), or is on a clip of pad hits,
+    /// which takes none ([`Clip::takes_scale`]).
     BadScale,
     /// A loop cell names no loop or holds notes, or a clip is on a track
     /// of the other kind (a loop cell on a note track, a note clip on a
@@ -1096,6 +1099,13 @@ pub fn scale_ok(s: Scale) -> bool {
 }
 
 impl Clip {
+    /// Whether it can have a scale (piano roll plan 2B.1): a clip of MIDI
+    /// notes can; a clip of pad hits can't, since its numbers are pads,
+    /// and a scale step would move a hit onto another pad.
+    pub fn takes_scale(&self) -> bool {
+        self.holds == Holds::Notes
+    }
+
     /// Its speed, swing, quantise, follow action, launch quantise and
     /// legato.
     pub fn settings(&self) -> ClipSettings {
@@ -1145,7 +1155,7 @@ impl Clip {
         if !steps::SIZES.contains(&s.step) {
             return Err(ModelError::BadStep);
         }
-        if s.scale.is_some_and(|k| !scale_ok(k)) {
+        if s.scale.is_some_and(|k| !scale_ok(k) || !self.takes_scale()) {
             return Err(ModelError::BadScale);
         }
         self.speed = s.speed;
@@ -1341,7 +1351,10 @@ impl Clip {
         if !steps::SIZES.contains(&self.step) {
             return Err(ModelError::BadStep);
         }
-        if self.scale.is_some_and(|k| !scale_ok(k)) {
+        if self
+            .scale
+            .is_some_and(|k| !scale_ok(k) || !self.takes_scale())
+        {
             return Err(ModelError::BadScale);
         }
         if self.program.is_some_and(|p| !p.ok()) {
@@ -2755,10 +2768,12 @@ mod tests {
     }
 
     /// A clip's scale (piano roll plan 2B.1) is one of its settings: set
-    /// and read back with them, and one no scale could be refused.
+    /// and read back with them, all or none; one no scale could be, and
+    /// any on a clip of pad hits, refused.
     #[test]
     fn a_clips_scale_is_checked_with_its_settings() {
         let mut c = Clip::new("c", 960);
+        c.holds = Holds::Notes;
         assert_eq!(c.scale, None);
         let mut s = c.settings();
         let ok = Scale::new(9, mpfree_scale::MINOR);
@@ -2776,10 +2791,25 @@ mod tests {
             assert_eq!(c.check(), Err(ModelError::BadScale));
             c.scale = None;
         }
+        // All or none: a speed sent with a bad scale doesn't go in.
+        let was = c.settings();
+        s.speed = Speed::new(2, 1).unwrap();
+        s.scale = Some(Scale { root: 12, ..ok });
+        assert_eq!(c.set_settings(s), Err(ModelError::BadScale));
+        assert_eq!(c.settings(), was);
         s.scale = Some(ok);
         assert_eq!(c.set_settings(s), Ok(()));
         assert_eq!(c.settings().scale, Some(ok));
         assert_eq!(c.check(), Ok(()));
+        // A clip of pad hits takes none, from its settings or as it is.
+        let mut hits = Clip::new("h", 960);
+        assert!(!hits.takes_scale() && c.takes_scale());
+        let mut s = hits.settings();
+        s.scale = Some(ok);
+        assert_eq!(hits.set_settings(s), Err(ModelError::BadScale));
+        assert_eq!(hits.scale, None);
+        hits.scale = Some(ok);
+        assert_eq!(hits.check(), Err(ModelError::BadScale));
     }
 
     #[test]

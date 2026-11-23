@@ -112,7 +112,7 @@ Each clip can have a scale of its own, so a melody stays in key while you move a
 - **New notes land in key.** With a scale on, a note you draw or tap in on a row off the scale lands on the scale note nearest it (the lower one when two are as near). Hold **SHIFT** to put it exactly where you tap.
 - **Fit to scale.** The last row of the Edit options moves the picked notes, or every note when none are picked, onto the nearest scale note. Its value says how many notes are off the scale ("3 off"); turn the data wheel either way to fit them, and one **UNDO** takes it back.
 - **Find them.** **Off the scale** in the Select menu picks every note off the clip's scale.
-- **Pads.** A clip of pad hits has no scale: its chip says "Scale: none on pads".
+- **Pads.** A clip of pad hits has no scale, since its notes are pads rather than pitches: its chip says "Scale: none on pads". That includes an older clip on a synth track that follows the pads; convert it to notes first ([Melody: Convert to notes](clips.md#melody-convert-to-notes)) to give it a scale.
 
 {{shot: sequencer-notes-scales | The Scale menu open over the roll: the roots along the top, then the pads' scale and every other scale.}}
 

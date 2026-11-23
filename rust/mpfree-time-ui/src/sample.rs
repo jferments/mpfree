@@ -1195,6 +1195,8 @@ fn song_audio_sample(fonts: Fonts) -> Result<Sample, String> {
 /// by hand, so some notes sit a little off the 1/16 grid.
 pub fn keys_clip() -> Clip {
     let mut c = Clip::new("Keys", 2 * BAR);
+    // Played on a synth: notes, not pad hits (its scale goes by it).
+    c.holds = mpfree_seq::Holds::Notes;
     // (tick, length, note, velocity)
     let chords: [(Tick, Tick, [u8; 3]); 4] = [
         (0, 2 * BEAT - 40, [60, 63, 67]),

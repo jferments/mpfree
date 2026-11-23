@@ -135,13 +135,17 @@
 //! the notes play the same either way.
 //!
 //! A clip's `scale` line is the scale the Notes view lights (piano roll
-//! plan 2B.1): its root's name, then the notes going up as semitones
-//! above it, and `/` and the notes coming down when they differ
-//! (`scale D 0 2 3 5 7 9 10`, `mpfree_scale::scale_text`); none for Off.
-//! It changes no note and nothing that plays, so an older build skips
-//! it. A `scale` line this build can't read (no root, a root it doesn't
-//! name, steps that make no scale) refuses the part, as a value out of
-//! range does: only a bug or a hand edit writes one.
+//! plan 2B.1): its root's name (`C` to `B`, with sharps), then the notes
+//! going up as semitones above it, rising from 0 to at most 11, and `/`
+//! and the notes coming down the same way when they differ (`scale D 0 2
+//! 3 5 7 9 10`, `mpfree_scale::scale_text`); none for Off, and none on a
+//! clip of pad hits, which takes no scale. It changes no note and
+//! nothing that plays, so an older build skips it, and this one reads a
+//! root it doesn't name (a newer build's word, a flat) as Off, as it
+//! does a step size it doesn't know, and a line on a clip of pad hits.
+//! A line with no words, or a root this build names with notes that
+//! aren't written that way (none, past 11, falling, a degree such as
+//! `b3`), refuses the part, as a value out of range does.
 //!
 //! A clip's `holds notes` line says its notes are MIDI notes, each
 //! number a pitch (the instrument redesign's step 5c, [`crate::Holds`]);
@@ -388,7 +392,9 @@ fn clip_body(s: &mut String, c: &Clip) {
             let _ = writeln!(s, "step {name}");
         }
     }
-    if let Some(k) = c.scale {
+    // A scale no scale could be, or one on a clip of pad hits, is not
+    // written, as a step size with no name isn't.
+    if let Some(k) = c.scale.filter(|&k| crate::scale_ok(k) && c.takes_scale()) {
         let _ = writeln!(s, "scale {}", scale_text(k));
     }
     // What its instrument locks were made for (refactor F1). A node id is
@@ -601,14 +607,40 @@ fn scale_text(k: crate::Scale) -> String {
     format!("{root} {}", mpfree_scale::scale_text(k.mask, k.down))
 }
 
-/// The words after `scale`: a root's name (with a sharp, as written) and
-/// its notes ([`mpfree_scale::parse_steps`]); None when they don't make
-/// a scale.
-fn scale_from(text: &str) -> Option<crate::Scale> {
-    let (root, steps) = text.split_once(' ')?;
-    let root = mpfree_scale::NOTE_NAMES.iter().position(|n| *n == root)?;
-    let (up, down) = mpfree_scale::parse_steps(steps).ok()?;
-    let k = crate::Scale::with_down(root as u8, up, down);
+/// A `scale` line's notes after its root, read only as [`scale_text`]
+/// writes them: semitones above the root, each once, rising from 0 to at
+/// most 11, and after one `/` the notes coming down the same way. None
+/// for anything else: no notes, a first note not 0, a note past 11, out
+/// of order or twice, a number written another way (`03`, `+3`), a
+/// degree (`b3`), a `/` with no notes on a side, or two of them.
+fn scale_steps<'a>(root: u8, words: impl Iterator<Item = &'a str>) -> Option<crate::Scale> {
+    let mut masks = [0u16; 2];
+    let mut side = 0;
+    let mut last: Option<u8> = None;
+    for word in words {
+        if word == "/" {
+            if side == 1 || last.is_none() {
+                return None;
+            }
+            side = 1;
+            last = None;
+            continue;
+        }
+        let n: u8 = word.parse().ok().filter(|n: &u8| n.to_string() == word)?;
+        let next = match last {
+            None => n == 0,
+            Some(l) => n > l && n < 12,
+        };
+        if !next {
+            return None;
+        }
+        masks[side] |= 1 << n;
+        last = Some(n);
+    }
+    // No notes after the root or the `/`.
+    last?;
+    let down = if side == 1 { masks[1] } else { masks[0] };
+    let k = crate::Scale::with_down(root, masks[0], down);
     crate::scale_ok(k).then_some(k)
 }
 
@@ -857,11 +889,15 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                 let word = w.next().ok_or_else(|| bad("step"))?;
                 c.step = crate::steps::size_named(word).unwrap_or(crate::steps::DEFAULT_SIZE);
             }
-            // A scale line this build can't read refuses the part, as a
-            // value out of range does: only a bug or a hand edit writes one.
+            // A root this build doesn't name (a newer build's) reads as
+            // Off; one it does with notes not written as it writes them
+            // refuses the part, as a value out of range does.
             ("scale", At::Clip(c, _)) => {
-                let text = w.collect::<Vec<_>>().join(" ");
-                c.scale = Some(scale_from(&text).ok_or_else(|| bad("scale"))?);
+                let root = w.next().ok_or_else(|| bad("scale"))?;
+                c.scale = match mpfree_scale::NOTE_NAMES.iter().position(|n| *n == root) {
+                    Some(r) => Some(scale_steps(r as u8, w).ok_or_else(|| bad("scale"))?),
+                    None => None,
+                };
             }
             // A newer build's kind of notes plays as pad hits here.
             ("holds", At::Clip(c, _)) => {
@@ -959,9 +995,14 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                 lane = Some(lane_head(&mut w).ok_or_else(|| bad("lane"))?);
             }
             ("end", At::Clip(..)) => {
-                let At::Clip(c, home) = std::mem::replace(&mut at, At::Top) else {
+                let At::Clip(mut c, home) = std::mem::replace(&mut at, At::Top) else {
                     unreachable!()
                 };
+                // A clip of pad hits takes no scale: a line on one (a hand
+                // edit) reads as Off, wherever its `holds` line was.
+                if !c.takes_scale() {
+                    c.scale = None;
+                }
                 c.check().map_err(|e| bad(&format!("clip {e:?}")))?;
                 at = match home {
                     ClipHome::Slot(slot) => {
@@ -1977,7 +2018,10 @@ mod tests {
                 .holds
         };
         assert_eq!(holds(&text), Holds::Notes);
-        let hits = text.replace("holds notes\n", "");
+        // As hits, without the scale a clip of pad hits doesn't take.
+        let hits = text
+            .replace("holds notes\n", "")
+            .replace("scale D 0 2 3 5 7 9 10\n", "");
         assert_eq!(holds(&hits), Holds::Hits);
         assert_eq!(
             holds(&text.replace("holds notes", "holds hits")),
@@ -2107,8 +2151,7 @@ mod tests {
 
     /// A clip's scale (piano roll plan 2B.1): its root's name and its
     /// notes, read back as written, the notes coming down too when they
-    /// differ; none is Off; a line this build can't read refuses the
-    /// part.
+    /// differ, and saved again the same byte for byte; none is Off.
     #[test]
     fn a_clips_scale_reads_back() {
         use crate::Scale;
@@ -2124,30 +2167,115 @@ mod tests {
                 .scale
         };
         assert_eq!(scale(&text), Some(Scale::new(2, mpfree_scale::DORIAN)));
-        let classical = mpfree_scale::by_name("Mel. minor classical").unwrap();
-        for k in [
-            Scale::new(11, mpfree_scale::PENTATONIC_MINOR),
-            Scale::new(1, mpfree_scale::CHROMATIC),
-            Scale::of(9, classical),
-        ] {
+        let with = |k: Scale| {
             let mut p = full();
             p.tracks[0].slots[0].as_mut().unwrap().scale = Some(k);
-            let t = to_text(&p);
+            to_text(&p)
+        };
+        // Every root of every built-in scale, and the fewest notes: the
+        // root alone, both ways or coming down.
+        let mut all: Vec<Scale> = (0..12)
+            .flat_map(|r| mpfree_scale::SCALES.iter().map(move |d| Scale::of(r, d)))
+            .collect();
+        all.extend([Scale::new(0, 1), Scale::with_down(0, 0b101, 1)]);
+        for k in all {
+            let t = with(k);
             assert_eq!(scale(&t), Some(k), "{t}");
+            assert_eq!(to_text(&from_text(&t).unwrap()), t, "{k:?}");
         }
-        assert!(to_text(&{
-            let mut p = full();
-            p.tracks[0].slots[0].as_mut().unwrap().scale = Some(Scale::of(9, classical));
-            p
-        })
-        .contains("scale A 0 2 3 5 7 9 11 / 0 2 3 5 7 8 10\n"));
+        let classical = mpfree_scale::by_name("Mel. minor classical").unwrap();
+        assert!(with(Scale::of(9, classical)).contains("scale A 0 2 3 5 7 9 11 / 0 2 3 5 7 8 10\n"));
+        assert!(with(Scale::new(0, 1)).contains("\nscale C 0\n"));
+        assert!(with(Scale::with_down(0, 0b101, 1)).contains("\nscale C 0 2 / 0\n"));
         let off = text.replace("scale D 0 2 3 5 7 9 10\n", "");
         assert_eq!(scale(&off), None);
         assert!(!to_text(&from_text(&off).unwrap()).contains("\nscale "));
-        for odd in ["H 0 2 4", "D 0 2 x", "Db 0 3 7", "D", "D 0 2 12", ""] {
-            let t = text.replace("scale D 0 2 3 5 7 9 10", &format!("scale {odd}"));
+    }
+
+    /// A `scale` line is read wherever it is in a clip's body, a song
+    /// clip's too, the last of two winning; a root this build doesn't
+    /// name reads as Off, as does a line on a clip of pad hits (which the
+    /// writer never writes); notes not written as the writer writes them
+    /// refuse the part.
+    #[test]
+    fn a_scale_line_is_read_as_written_or_as_off() {
+        use crate::Scale;
+        let text = to_text(&full());
+        let line = "scale D 0 2 3 5 7 9 10\n";
+        let dorian = Some(Scale::new(2, mpfree_scale::DORIAN));
+        let (slot, song) = text.split_at(text.find("songclip").unwrap());
+        assert!(slot.contains(line) && song.contains(line), "{text}");
+        let scales = |t: &str| {
+            let p = from_text(t).unwrap();
+            let own = p.arrangement.clips.iter().next().unwrap().scale;
+            (p.tracks[0].slots[0].as_ref().unwrap().scale, own)
+        };
+        // Last in the bodies (just before each `end`), and twice.
+        let mut moved = String::new();
+        for body in text.split_inclusive("\nend\n") {
+            if body.contains(line) {
+                moved += &body.strip_suffix("end\n").unwrap().replacen(line, "", 1);
+                moved += line;
+                moved += "end\n";
+            } else {
+                moved += body;
+            }
+        }
+        assert_eq!(moved.matches(line).count(), 2, "{moved}");
+        assert_eq!(scales(&moved), (dorian, dorian));
+        let twice = text.replacen(line, &format!("scale A 0 3 7\n{line}"), 1);
+        assert_eq!(scales(&twice), (dorian, dorian), "the last wins");
+        let twice = text.replacen(line, &format!("{line}scale A 0 3 7\n"), 1);
+        assert_eq!(scales(&twice).0, Some(Scale::new(9, 0b1000_1001)));
+        // A root this build doesn't name: Off, the part read.
+        for root in ["Db 0 3 7", "key", "d 0 2", "H 0 2 4", "c# 0 3"] {
+            let t = text.replacen(line, &format!("scale {root}\n"), 1);
+            assert_eq!(scales(&t), (None, dorian), "{root}");
+        }
+        // On a clip of pad hits: Off; and never written for one.
+        let hits = text.replacen("holds notes\n", "", 1);
+        assert_eq!(scales(&hits), (None, dorian));
+        let slot_text = |p: &Project| {
+            let t = to_text(p);
+            t[..t.find("songclip").unwrap()].to_string()
+        };
+        let mut p = full();
+        p.tracks[0].slots[0].as_mut().unwrap().holds = crate::Holds::Hits;
+        assert!(!slot_text(&p).contains("\nscale "));
+        // Nor a scale no scale could be.
+        let c = p.tracks[0].slots[0].as_mut().unwrap();
+        c.holds = crate::Holds::Notes;
+        c.scale = Some(Scale {
+            root: 14,
+            ..Scale::new(0, mpfree_scale::MAJOR)
+        });
+        assert!(!slot_text(&p).contains("\nscale "));
+        // Notes not as the writer writes them refuse the part: none, a
+        // first note not 0 (`1 4 7` is not degrees), past 11, falling,
+        // twice, another way of writing a number, a degree, a `/` with
+        // a side empty, two of them, or the notes down not from 0.
+        for odd in [
+            "D",
+            "",
+            "D 0 2 x",
+            "D 0 2 12",
+            "D 1 4 7",
+            "D 0 4 2",
+            "D 0 2 2",
+            "D 0 03 7",
+            "D 0 +3",
+            "D 0 b3",
+            "D 0 2 /",
+            "D / 0 2",
+            "D 0 2 / 0 / 0",
+            "D 0 2 / 2",
+        ] {
+            let t = text.replacen(line, &format!("scale {odd}\n"), 1);
             assert!(from_text(&t).is_err(), "{odd}");
         }
+        // Spaces between the words are as one.
+        let t = text.replacen(line, "scale D  0 2   3 5 7 9 10 \n", 1);
+        assert_eq!(scales(&t), (dorian, dorian));
     }
 
     /// A mutated clip keeps its original (S6), lanes and all, read back

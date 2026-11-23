@@ -872,7 +872,7 @@ impl Editor {
                 all.clone().filter(|&i| over[i]).collect()
             }
             // Off the scale (plan 2B.1): the notes the roll marks.
-            13 => match clip.scale.filter(|_| !pads(clip)) {
+            13 => match lit_scale(clip) {
                 Some(k) => which(&|n| !k.contains(i16::from(n.note))),
                 None => {
                     return Done::line("edit: the clip has no scale: pick one with Scale".into())
@@ -1412,7 +1412,8 @@ impl Editor {
                 return Done::default();
             }
             // The clip's scale: a setting, not an edit of its notes.
-            EditAction::Scale(_) | EditAction::Root(_) if pads(clip) && !clip.notes.is_empty() => {
+            // A clip of pad hits takes none, its numbers being pads.
+            EditAction::Scale(_) | EditAction::Root(_) if !clip.takes_scale() => {
                 return Done::line("edit: a clip of pads has no scale".into())
             }
             EditAction::Scale(k) => {
@@ -1761,9 +1762,10 @@ fn locks_name(n: usize) -> String {
 }
 
 /// The scale the Notes view lights and moves by: the clip's, but none on
-/// a clip of pads (plan 2B.1: Scale hides there).
+/// a clip of pad hits, which takes none ([`Clip::takes_scale`]), nor
+/// while the roll shows pad rows (plan 2B.1: Scale hides there).
 pub fn lit_scale(clip: &Clip) -> Option<Scale> {
-    clip.scale.filter(|_| !pads(clip))
+    clip.scale.filter(|_| clip.takes_scale() && !pads(clip))
 }
 
 /// The clip plays the pads (every note below 16, or none): the roll shows
@@ -6944,6 +6946,7 @@ mod tests {
 mod scale_tests {
     use super::*;
     use mpfree_seq::mpfree_scale::{DORIAN, MAJOR, MINOR};
+    use mpfree_seq::Holds;
 
     const R: Rect = Rect {
         x: 0,
@@ -6954,6 +6957,7 @@ mod scale_tests {
 
     fn clip(notes: &[(Tick, u8)]) -> Clip {
         let mut c = Clip::new("Keys", 3840);
+        c.holds = Holds::Notes;
         for &(t, n) in notes {
             c.add_note(Note::new(t, 240, n, 100)).unwrap();
         }
@@ -7059,14 +7063,30 @@ mod scale_tests {
             ..Scale::new(0, MAJOR)
         };
         assert_eq!(ed.act(EditAction::Scale(Some(bad)), &c).scale, None);
-        let pads = clip(&[(0, 3)]);
+        // A clip of pad hits has none, whatever pads it hits (B1 is 16),
+        // and lights none it was given.
+        for notes in [&[(0, 3)][..], &[(0, 3), (240, 16)], &[]] {
+            let mut pads = clip(notes);
+            pads.holds = Holds::Hits;
+            for a in [
+                EditAction::Scale(Some(Scale::new(0, MAJOR))),
+                EditAction::Root(2),
+            ] {
+                let done = Editor::new(0, 0, &pads).act(a, &pads);
+                assert_eq!(
+                    (done.scale, done.line.as_str()),
+                    (None, "edit: a clip of pads has no scale"),
+                    "{notes:?}"
+                );
+            }
+            pads.scale = Some(Scale::new(0, MAJOR));
+            assert_eq!(lit_scale(&pads), None, "{notes:?}");
+        }
+        // An empty clip of notes takes one.
+        let empty = clip(&[]);
         let done =
-            Editor::new(0, 0, &pads).act(EditAction::Scale(Some(Scale::new(0, MAJOR))), &pads);
-        assert_eq!(
-            (done.scale, done.line.as_str()),
-            (None, "edit: a clip of pads has no scale")
-        );
-        assert_eq!(lit_scale(&pads), None);
+            Editor::new(0, 0, &empty).act(EditAction::Scale(Some(Scale::new(0, MAJOR))), &empty);
+        assert_eq!(done.scale, Some(Some(Scale::new(0, MAJOR))));
     }
 
     /// With the clip's scale on, a drag and Q3 move by its notes (a chord

@@ -4654,9 +4654,13 @@ pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
     g.lens = ed.lens;
     g.first = ed.first;
     g.color = track_color(ed.track);
-    // The clip's scale (plan 2B.1): none shows on pads.
+    // The clip's scale (plan 2B.1): none shows on pads, nor on a clip of
+    // pad hits, which takes none.
     g.scale = lit_scale(c);
-    g.scale_name = ed.offers.label(c.scale);
+    g.scale_name = match c.takes_scale() {
+        true => ed.offers.label(c.scale),
+        false => "none on pads".into(),
+    };
     g.offers = Arc::clone(&ed.offers);
     g
 }
