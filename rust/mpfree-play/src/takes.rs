@@ -186,6 +186,26 @@ pub enum SongChange {
         track: usize,
         start: Tick,
     },
+    /// Several blocks at once (phase 6): `blocks` moved `lanes` lanes and
+    /// `by` song ticks, or copies of them put there, or deleted.
+    SeveralMoved {
+        blocks: usize,
+        lanes: i32,
+        by: Tick,
+    },
+    SeveralCopied {
+        blocks: usize,
+        lanes: i32,
+        by: Tick,
+    },
+    SeveralDeleted {
+        blocks: usize,
+    },
+    /// `blocks` of the picked ones split at song tick `at` (6.5).
+    SeveralSplit {
+        blocks: usize,
+        at: Tick,
+    },
     /// Scenes → song: `rows` rows onto the song's end.
     Scenes {
         rows: usize,
@@ -222,6 +242,12 @@ pub enum SongChange {
     /// on (a new clip REC put in an empty cell). Otherwise the parts ride
     /// on the clip's take ([`Take::followed`]).
     Followed {
+        row: usize,
+    },
+    /// Row `row` taken out on the scene card (the Arrange refactor's
+    /// 5.2): the song keeps the clips it plays, and its list, parts and
+    /// morph follow the rows that moved up.
+    RowDeleted {
         row: usize,
     },
 }
@@ -391,9 +417,23 @@ pub struct SceneEdit {
     pub after: SceneSettings,
 }
 
+/// What changed rows as one edit.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RowsWhat {
+    /// Song → scenes filled them.
+    #[default]
+    ToScenes,
+    /// Capture scene put what played into row `row` (5.3).
+    Captured { row: usize },
+    /// The scene card's Delete row took row `row` out (5.2).
+    Deleted { row: usize },
+}
+
 /// Rows changed as one edit ([`Takes::rows_edit`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct RowsEdit {
+    /// What changed them.
+    pub what: RowsWhat,
     /// The rows it changed, in order.
     pub rows: Vec<usize>,
     /// The scenes it changed, as (row, before, after), whole: a plain
@@ -1213,6 +1253,11 @@ impl Takes {
     /// edit gave it; redo the same way. The edit's number, or the latest
     /// edit's when nothing changed (no take then).
     pub fn rows_edit(&mut self, before: &Project, project: &Project) -> u32 {
+        self.rows_edit_as(before, project, RowsWhat::ToScenes)
+    }
+
+    /// [`Takes::rows_edit`] for `what`.
+    pub fn rows_edit_as(&mut self, before: &Project, project: &Project, what: RowsWhat) -> u32 {
         let mut made = Vec::new();
         let mut removed = Vec::new();
         let mut rows = Vec::new();
@@ -1251,10 +1296,45 @@ impl Takes {
             edited: true,
             made,
             removed,
-            rows: Some(Box::new(RowsEdit { rows, scenes })),
+            rows: Some(Box::new(RowsEdit { what, rows, scenes })),
             ..Take::default()
         });
         number
+    }
+
+    /// Rows changed with the song in one take ([`Takes::rows_edit`] and
+    /// the song before and after, as `change`), which one UNDO takes back
+    /// whole: a row taken out, whose clips the song keeps and whose
+    /// list, parts and morph follow the rows. Its number, or the latest
+    /// edit's when nothing changed.
+    pub fn rows_song_edit(
+        &mut self,
+        before: &Project,
+        project: &Project,
+        what: RowsWhat,
+        change: SongChange,
+    ) -> u32 {
+        let edits = self.edits;
+        let number = self.rows_edit_as(before, project, what);
+        if before.arrangement == project.arrangement {
+            return number;
+        }
+        let song = SongEdit {
+            change,
+            before: before.arrangement.clone(),
+            after: project.arrangement.clone(),
+        };
+        match self
+            .done
+            .last_mut()
+            .filter(|t| number != edits && t.number == number)
+        {
+            Some(t) => {
+                t.song = Some(Box::new(song));
+                number
+            }
+            None => self.song_edit(project, change, before.arrangement.clone()),
+        }
     }
 
     /// CAPTURE into a clip that holds notes already (the one that was

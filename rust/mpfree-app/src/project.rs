@@ -135,7 +135,8 @@ pub const FORMAT: u32 = mpfree_library::project::PARTS_FORMAT;
 /// project has a synth that no track has ([`SYNTHS_WITHOUT_TRACKS`]), an
 /// audio track ([`AUDIO_TRACKS`]), an audio clip ([`AUDIO_CLIPS`]), a
 /// linked song list ([`LINKED_SONG_LIST`]), a scene that keeps a track
-/// playing ([`SCENE_KEEP`]) or a free loop ([`FREE_LOOPS`]).
+/// playing ([`SCENE_KEEP`]), a free loop ([`FREE_LOOPS`]) or a scene that
+/// sets the tempo ([`SCENE_TEMPO`]).
 pub const NEEDS_KEY: &str = "needs";
 /// A project with a synth in a free place (the instrument redesign's step
 /// 6: one picked for the pads, no track's): an older build would read the
@@ -169,6 +170,11 @@ pub const SCENE_KEEP: &str = "scene-keep";
 /// play it as a song loop, in the song's time and at its tempo, and lose
 /// the free clock's line.
 pub const FREE_LOOPS: &str = "free-loops";
+/// A project with a scene that sets the tempo (the Arrange refactor's
+/// 5.2b, `mpfree_seq::Scene::tempo`): an older build would skip the
+/// scene's `bpm` line and play on at the tempo before, so it must not
+/// open it.
+pub const SCENE_TEMPO: &str = "scene-tempo";
 /// The features this build has, of those a project can need.
 pub const KNOWN_NEEDS: &[&str] = &[
     SYNTHS_WITHOUT_TRACKS,
@@ -177,6 +183,7 @@ pub const KNOWN_NEEDS: &[&str] = &[
     LINKED_SONG_LIST,
     SCENE_KEEP,
     FREE_LOOPS,
+    SCENE_TEMPO,
 ];
 
 // ------------------------------------------------------------ the loop's side
@@ -389,6 +396,9 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
         .any(|(name, text)| name == LOOPER && has_free_loops(text))
     {
         needs.push(FREE_LOOPS);
+    }
+    if c.clips.scenes.iter().any(|s| s.tempo.is_some()) {
+        needs.push(SCENE_TEMPO);
     }
     if !needs.is_empty() {
         extra.push((NEEDS_KEY.to_string(), needs.join(" ")));
@@ -3341,6 +3351,11 @@ mod tests {
         c.clips.scene_mut(3).unwrap().set_keep(0, true).unwrap();
         let (snap, line) = needs(&c);
         assert_eq!(line.as_deref(), Some(SCENE_KEEP));
+        assert_eq!(check(&snap), Ok(FORMAT));
+        // Arrange 5.2b: a scene that sets the tempo, with one that keeps.
+        c.clips.scene_mut(5).unwrap().set_bpm(Some(140.0)).unwrap();
+        let (snap, line) = needs(&c);
+        assert_eq!(line.as_deref(), Some("scene-keep scene-tempo"));
         assert_eq!(check(&snap), Ok(FORMAT));
     }
 
