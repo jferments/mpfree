@@ -1,0 +1,8 @@
+[package]
+name = "mpfree-filter"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The filters the pads and the Filter effect share: the trapezoidal state-variable stage with its bounded resonance"
+
+[dependencies]

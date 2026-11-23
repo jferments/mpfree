@@ -138,7 +138,7 @@ The Pads tab's **Browse for** opens the full browser, not a picker: see [Samplin
 
 ### Your own synth presets
 
-Synth presets you save (**Save preset** in the preset picker) go in **Instruments**, in a folder for each synth, and show up under **Yours** when you open that synth's presets. Loading one from **Instruments** in the full browser puts it on the Synth tab's sound, if it was made on the same synth.
+Synth presets you save (**Save preset** in the preset picker) go in **Instruments**, in a folder for each synth, and show up under **Yours** when you open that synth's presets. Loading one from **Instruments** in the full browser puts it on the Synth tab's sound, if it was made on the same synth. XY pad layouts you save (**Save to browser** in a layout's Setup) go in **Instruments › XY pad**; loading one puts it in the song as one of [your XY layouts](xy-layouts.md#using-a-layout-in-another-song).
 
 ## Getting files on and off the stick
 

@@ -1528,6 +1528,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-filter"
+version = "0.1.0"
+
+[[package]]
 name = "mpfree-flac"
 version = "0.1.0"
 
@@ -1535,6 +1539,7 @@ version = "0.1.0"
 name = "mpfree-fx"
 version = "0.1.0"
 dependencies = [
+ "mpfree-filter",
  "mpfree-grain",
  "mpfree-lanes",
  "mpfree-node",

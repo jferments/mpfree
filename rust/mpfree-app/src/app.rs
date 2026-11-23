@@ -10455,6 +10455,59 @@ mod tests {
             .is_none());
     }
 
+    /// The XY pad's hand on a track's arp (`App::arp_hand`, `arp_beneath`,
+    /// `keep_arp`): the pad's gate plays and the gate as set stays, the
+    /// push (in percent) pushes even with no controller picked, a Q-Link
+    /// turn takes the gate from the pad, Stay sets the gate as a learned
+    /// control does, and another track's arp is its own.
+    #[test]
+    fn the_xy_pads_hand_reaches_a_tracks_arp() {
+        use mpfree_play::mpfree_param::arp as ids;
+        let mut app = ready();
+        app.toggle_panel();
+        app.arp_action(ArpAction::Mode(Mode::Arp));
+        let set = app.eng().settings();
+        assert!(app.arp_hand(0, ids::GATE, Some(90.0)));
+        assert_eq!(app.eng().live().gate, 90);
+        assert_eq!(app.arp_param(0, ids::GATE).unwrap().1, f32::from(set.gate));
+        assert_eq!(
+            app.arp_beneath(0, ids::GATE),
+            Some((f32::from(set.gate), f32::from(set.gate)))
+        );
+        let Some(Effect::Arp(v)) = app.arp_poll() else {
+            panic!("the panel hears what plays");
+        };
+        assert_eq!((v.live.gate, v.settings.gate), (90, set.gate));
+        // The push, in percent: the pad is the controller.
+        assert!(app.arp_hand(0, ids::MODIFIER, Some(100.0)));
+        assert_eq!(app.eng().live().rate, Rate::ThirtySecond);
+        assert_eq!(app.arp_beneath(0, ids::MODIFIER), Some((0.0, 0.0)));
+        app.arp_hand(0, ids::MODIFIER, None);
+        assert_eq!(app.eng().live().rate, set.rate);
+        // A Q-Link turn of the gate takes it from the pad.
+        app.qlink(1, 0, Some(20)).expect("the panel takes Q-Link 2");
+        let turned = app.eng().settings().gate;
+        assert_ne!(turned, set.gate);
+        assert_eq!(app.eng().live().gate, turned);
+        app.arp_hand(0, ids::GATE, Some(95.0));
+        assert_eq!(app.eng().live().gate, turned, "kept until the pad lets go");
+        app.arp_hand(0, ids::GATE, None);
+        // Stay: the pad's step as set.
+        app.arp_hand(0, ids::GATE, Some(70.4));
+        assert_eq!(app.keep_arp(0, ids::GATE, 70.4).unwrap().0, 70.0);
+        assert_eq!(app.arp.gate, 70);
+        app.arp_hand(0, ids::GATE, None);
+        assert_eq!(app.eng().live().gate, 70);
+        assert!(app.eng().hand().is_empty());
+        // Another track's arp, and what isn't one.
+        assert!(app.arp_hand(2, ids::OCTAVES, Some(3.0)));
+        assert_eq!(app.arps.engine_at(2).live().octaves, 3);
+        assert_eq!(app.eng().live().octaves, set.octaves);
+        assert!(!app.arp_hand(0, 99, Some(1.0)));
+        assert!(!app.arp_hand(mpfree_seq::MAX_TRACKS, ids::GATE, Some(1.0)));
+        assert!(app.keep_arp(0, 99, 1.0).is_none());
+    }
+
     /// A tap on the Modifier box opens the arp's options on its row; the
     /// pedal's and Latch's rows are there too.
     #[test]

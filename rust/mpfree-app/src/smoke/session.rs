@@ -1625,8 +1625,8 @@ impl Session {
             }
             self.xy_show();
         }
-        // The XY pad's hand on a synth's and a pad's own settings, as
-        // main.rs: to their owners before they play.
+        // The XY pad's hand on a synth's, a pad's and an arp's own
+        // settings, as main.rs: to their owners before they play.
         if self.mix.xy_own().holding() > 0 {
             let mut hands = self.mix.take_xy_own();
             let (mut kept, mut pads_learned, mut turned) = (Vec::new(), Vec::new(), false);
@@ -1637,11 +1637,15 @@ impl Session {
                 kits: &self.track_kits,
                 pads_learned: &mut pads_learned,
                 synth_turned: &mut turned,
+                app: Some(&mut self.app),
+                arp_fx: Vec::new(),
             };
             hands.apply(PERIOD as u32, &mut side, |a, before, after| {
                 kept.push((a, before, after))
             });
+            let arp_fx = side.arp_fx;
             self.mix.put_xy_own(hands, &kept);
+            self.fx.extend(arp_fx);
             self.own_told(pads_learned, turned);
         }
         // The XY pad's Stay: the settings it kept at a lift, one UNDO step.
@@ -2631,6 +2635,9 @@ impl Session {
                     self.out.show(ToUi::Tell(line));
                 }
                 self.out.show(v);
+                if let Some((name, text)) = self.xy_yours.saving.take() {
+                    self.out.show(ToUi::XyLayoutText { name, text });
+                }
             }
             FromUi::SaveProject => self.save_asked = true,
             FromUi::OpenProject(o) => self.open_project(o),
@@ -2741,8 +2748,11 @@ impl Session {
                                         kits: &self.track_kits,
                                         pads_learned: &mut pads_learned,
                                         synth_turned: &mut turned,
+                                        app: Some(&mut self.app),
+                                        arp_fx: Vec::new(),
                                     };
                                     crate::xy_own::OwnSide::keep(&mut side, addr, v);
+                                    self.fx.extend(side.arp_fx);
                                 } else {
                                     self.panels.set_param(&mut self.mix, addr, v, false);
                                 }

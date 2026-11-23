@@ -544,3 +544,44 @@ fn the_playing_keys_slide_and_tone_move_the_voice() {
     render(&mut b, 4800, &[(0, on(36, 100))]);
     assert!((b.osc_hz() / hz0 - 1.0).abs() < 1e-4);
 }
+
+#[test]
+fn the_ladder_sings_in_tune_at_full_resonance() {
+    // As Analog's: one small impulse at Resonance 100, and the ladder
+    // sings at its cutoff within 10 cents (it sang up to 190 cents flat
+    // before DSP quality step 2.2).
+    let rate = 44_100u32;
+    for fc in [110.0f32, 440.0, 1_760.0, 7_040.0] {
+        let mut p = mpfree_synth::bass::FilterProbe::new(rate);
+        p.set(fc, 100.0, 0.0);
+        let os = p.oversampling();
+        let mut y = Vec::new();
+        for i in 0..rate as usize * 3 {
+            let mut x = vec![0.0f32; os];
+            if i == 0 {
+                x[0] = 0.01;
+            }
+            y.push(p.frame(&x));
+        }
+        let tail = &y[rate as usize * 2..];
+        let mut first = None;
+        let (mut last, mut n) = (0.0f64, 0usize);
+        for i in 1..tail.len() {
+            if tail[i - 1] < 0.0 && tail[i] >= 0.0 {
+                let t = (i - 1) as f64 + f64::from(-tail[i - 1]) / f64::from(tail[i] - tail[i - 1]);
+                if first.is_none() {
+                    first = Some(t);
+                } else {
+                    n += 1;
+                }
+                last = t;
+            }
+        }
+        let f = n as f64 * f64::from(rate) / (last - first.expect("it rings"));
+        let c = 1200.0 * (f / f64::from(fc)).log2();
+        assert!(
+            c.abs() < 10.0,
+            "sings at {f:.2} Hz for {fc} Hz ({c:.1} cents)"
+        );
+    }
+}

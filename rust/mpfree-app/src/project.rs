@@ -133,8 +133,10 @@ pub const FORMAT: u32 = mpfree_library::project::PARTS_FORMAT;
 /// build that lacks one doesn't open the project, and says which
 /// ([`check`]; docs/dev/design/project-safety.md). Written while the
 /// project has a synth that no track has ([`SYNTHS_WITHOUT_TRACKS`]), an
-/// audio track ([`AUDIO_TRACKS`]), an audio clip ([`AUDIO_CLIPS`]), or a
-/// loop cell on an audio track ([`AUDIO_LOOPS`]).
+/// audio track ([`AUDIO_TRACKS`]), an audio clip ([`AUDIO_CLIPS`]), a
+/// linked song list ([`LINKED_SONG_LIST`]), a scene that keeps a track
+/// playing ([`SCENE_KEEP`]), a free loop ([`FREE_LOOPS`]) or a loop cell
+/// on an audio track ([`AUDIO_LOOPS`]).
 pub const NEEDS_KEY: &str = "needs";
 /// A project with a synth in a free place (the instrument redesign's step
 /// 6: one picked for the pads, no track's): an older build would read the
@@ -163,12 +165,19 @@ pub const LINKED_SONG_LIST: &str = "linked-song-list";
 /// build would skip the scene's `keep` line and stop those tracks at the
 /// scene change, so it must not open it.
 pub const SCENE_KEEP: &str = "scene-keep";
+/// A project with a free loop (Sync: Free, [`mpfree_looper::Clock::Free`]):
+/// an older build would read its loop line's `clock=free` as nothing and
+/// play it as a song loop, in the song's time and at its tempo, and lose
+/// the free clock's line.
+pub const FREE_LOOPS: &str = "free-loops";
+
 /// A project with a loop cell on an audio track, or a block of one (the
 /// audio tracks rethink, phase 4b, made with Dev's "Loops on audio
 /// tracks"): a build from before phase 4 would read its `loopclip` line as
 /// unknown and open it as an empty note clip, so it refuses the project
 /// instead.
 pub const AUDIO_LOOPS: &str = "audio-loops";
+
 /// The features this build has, of those a project can need.
 pub const KNOWN_NEEDS: &[&str] = &[
     SYNTHS_WITHOUT_TRACKS,
@@ -176,6 +185,7 @@ pub const KNOWN_NEEDS: &[&str] = &[
     AUDIO_CLIPS,
     LINKED_SONG_LIST,
     SCENE_KEEP,
+    FREE_LOOPS,
     AUDIO_LOOPS,
 ];
 
@@ -384,6 +394,12 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
     if c.clips.scenes.iter().any(|s| s.keep != 0) {
         needs.push(SCENE_KEEP);
     }
+    if parts
+        .iter()
+        .any(|(name, text)| name == LOOPER && has_free_loops(text))
+    {
+        needs.push(FREE_LOOPS);
+    }
     if c.clips.loop_places().next().is_some() {
         needs.push(AUDIO_LOOPS);
     }
@@ -399,6 +415,15 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
         },
         parts,
     }
+}
+
+/// Whether the looper's part `text` holds a free loop.
+fn has_free_loops(text: &str) -> bool {
+    mpfree_looper::save::from_text(text).is_ok_and(|s| {
+        s.loops
+            .iter()
+            .any(|(_, f)| f.clock == mpfree_looper::Clock::Free)
+    })
 }
 
 /// Whether this build can open `snap` whole, checked before anything
@@ -2583,6 +2608,7 @@ mod tests {
                     speed: 0,
                     rate: 0,
                     id: 0,
+                    clock: mpfree_looper::Clock::Song,
                     layers,
                 },
             )
@@ -2602,6 +2628,7 @@ mod tests {
                 ),
                 one(3, vec![layer(vec![0.5; 4])]),
             ],
+            free_clock: None,
         };
         let (text, files) = loops_part(saved.clone());
         assert_eq!(files.len(), 2);
@@ -3429,6 +3456,64 @@ mod tests {
                     .to_string()
             )
         );
+    }
+
+    /// A project with a free loop (Sync: Free) says it needs free loops,
+    /// so an older build doesn't open its free loops as song loops; with
+    /// song loops only, it needs nothing. This build opens it.
+    #[test]
+    fn a_project_with_a_free_loop_says_it_needs_free_loops() {
+        use mpfree_looper::save::{to_text, ClockFile, LayerFile, LoopFile, Saved};
+        use mpfree_looper::Clock;
+        let c = collected(String::new(), InstrumentList::new().text());
+        let part = |clock: Clock| {
+            let file = LoopFile {
+                frames: 2,
+                ticks: 96,
+                origin: 0,
+                level: 1.0,
+                muted: false,
+                bars: None,
+                after: mpfree_looper::After::Play,
+                starts: mpfree_looper::Starts::Bar,
+                fade_old: 1.0,
+                speed: 0,
+                rate: 0,
+                id: 0,
+                clock,
+                layers: vec![LayerFile {
+                    level: 1.0,
+                    pan: 0.0,
+                    muted: false,
+                    solo: false,
+                    faded: 1.0,
+                    file: "loop-1.wav".into(),
+                    audio: Vec::new(),
+                }],
+            };
+            let saved = Saved {
+                rate: 44_100,
+                selected: 0,
+                loops: vec![(0, file)],
+                free_clock: (clock == Clock::Free).then_some(ClockFile {
+                    bpm: 97.5,
+                    meter: mpfree_transport::Meter::new(4, 4).unwrap(),
+                    top: 0,
+                }),
+            };
+            snapshot(&c, vec![(LOOPER.to_string(), to_text(&saved))])
+        };
+        let needs = |snap: &Snapshot| {
+            snap.meta
+                .extra
+                .iter()
+                .find(|(k, _)| k == NEEDS_KEY)
+                .map(|(_, v)| v.clone())
+        };
+        assert_eq!(needs(&part(Clock::Song)), None, "song loops need nothing");
+        let free = part(Clock::Free);
+        assert_eq!(needs(&free).as_deref(), Some(FREE_LOOPS));
+        assert_eq!(check(&free), Ok(FORMAT));
     }
 
     /// Phase 0's gate (docs/dev/design/project-safety.md): a project that
