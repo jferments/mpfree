@@ -7176,7 +7176,7 @@ impl Player {
                 View::Arrange if self.time_page.adding => mpfree_time_ui::song::ADD_HINT.to_string(),
                 View::Arrange if self.time.list_view => time_view::LIST_HINT.to_string(),
                 View::Arrange if self.time.song_view => time_view::song_hint(&self.time).to_string(),
-                View::Arrange if self.time_page.clip_card => time_view::CLIPS_CARD_HINT.to_string(),
+                View::Arrange if self.time_page.clip_card => time_view::clips_card_hint(&self.time).to_string(),
                 View::Arrange if self.time_page.scene_card => time_view::SCENE_HINT.to_string(),
                 View::Arrange => CLIPS_HINT.to_string(),
                 // A snap over recorded audio asks: Snap anyway and Not
@@ -19071,12 +19071,33 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
                     c.variation = Some(2);
                 }
                 p.time_page.clip_card = true;
-                p.apply(ToUi::Time(Box::new(st)));
+                p.apply(ToUi::Time(Box::new(st.clone())));
                 p.apply(ToUi::Show(View::Arrange));
                 if let Some(l) = p.ui.get_mut::<OptionList>(time_view::CLIP_CARD) {
                     l.selected = time_view::CLIP_MUTATE;
                 }
                 out.push(("clips-card-mutate", p));
+            }
+            // Convert to notes' preview (step sequencer refactor E1): its
+            // words on the hint line, Cancel and Convert under the rows.
+            if let Ok(mut p) = sample_clips(fonts()) {
+                if let Some((track, slot)) = st.focus() {
+                    st.converting = Some(time_view::Converting {
+                        track,
+                        slot,
+                        ok: true,
+                        line: "Convert to notes: 8 pad hits become 12 notes. Keeps what Clip 1 \
+                               plays now with these pads (C3 to D#4)"
+                            .to_string(),
+                    });
+                }
+                p.time_page.clip_card = true;
+                p.apply(ToUi::Time(Box::new(st)));
+                p.apply(ToUi::Show(View::Arrange));
+                if let Some(l) = p.ui.get_mut::<OptionList>(time_view::CLIP_CARD) {
+                    l.selected = time_view::CLIP_MELODY;
+                }
+                out.push(("clips-card-convert", p));
             }
         }
         Err(e) => eprintln!("clips-card sample: {e}"),

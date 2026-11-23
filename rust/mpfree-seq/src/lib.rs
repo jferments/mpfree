@@ -55,6 +55,7 @@
 #![forbid(unsafe_code)]
 
 pub mod arrange;
+pub mod convert;
 pub mod inst;
 pub mod loops;
 pub mod mutate;
