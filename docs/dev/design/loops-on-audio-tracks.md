@@ -1,6 +1,6 @@
 # Loops on audio tracks: the contracts (phase 4)
 
-**Status:** designed 23 Nov 2026, before 4b's code, as the [phase 4 plan](https://claude.ai/artifact/HA92ecH36LM6UDwiLCwJHa) asks (approved by Jay on 23 Nov; its build steps are in [audio-tracks.md](audio-tracks.md#loops-joining-audio-tracks-phase-4)). Built: 4a, each loop on its own output ([looper.md](looper.md#each-loop-on-its-own-output)), and 4b's model step: loop ids, loop cells on audio tracks, and one track a loop (marked built below). Everything else here is 4b to 4e, behind Dev's switch until 4e. The interfaces it builds on are phase 2's (audio clips, `Player::audio`) and Arrange 4b's (one song) as they merged; where this page names one of their types, it is that type, not a copy.
+**Status:** designed 23 Nov 2026, before 4b's code, as the [phase 4 plan](https://claude.ai/artifact/HA92ecH36LM6UDwiLCwJHa) asks (approved by Jay on 23 Nov; its build steps are in [audio-tracks.md](audio-tracks.md#loops-joining-audio-tracks-phase-4)). Built: 4a, each loop on its own output ([looper.md](looper.md#each-loop-on-its-own-output)), and of 4b: loop ids, loop cells on audio tracks and one track a loop (the model step), the arranger's loop answer, the track player's loops with one crossfade at the track, and the looper playing a loop where it is told (each marked built below). The app's wiring, transaction ids and recording are still to come. Everything else here is 4b to 4e, behind Dev's switch until 4e. The interfaces it builds on are phase 2's (audio clips, `Player::audio`) and Arrange 4b's (one song) as they merged; where this page names one of their types, it is that type, not a copy.
 
 Three contracts, so 4b, 4c and 4d each follow one written interface: the identities, the track player, and the transactions behind one UNDO.
 
@@ -70,16 +70,18 @@ AudioPlays::Loop {
 
 ### What the looper is told
 
-Before `Looper::process` each period, the track player gives each slot that sounds its runs:
+Before `Looper::process_each` each period, the track player gives each slot that sounds its runs (built: `mpfree-looper` `on_track.rs`, [looper.md](looper.md#a-loop-on-an-audio-track)):
 
 ```rust
-pub struct Run {
+pub struct PlayRun {
     pub from: u32,      // the first frame of the period it plays
     pub to: u32,        // the frame after its last
     pub origin: f64,    // the song tick the loop's pass 0 starts on
 }
-looper.play(slot, &runs)   // at most MAX_AUDIO_CHANGES + 2 runs a slot a period
+looper.play(slot, &runs)   // at most MAX_PLAY_RUNS (6) runs a slot a period
 ```
+
+The track player's side is `LoopPlayer::plan` then `LoopPlayer::runs(track)` (`mpfree-audiotracks` `loop_play.rs`, built): each `LoopRun` names its loop by id, and the host gives each loop's runs to its slot.
 
 - **The place** in the loop is the song position's, counted from the run's origin: `(tick - origin)` modulo the loop's own ticks, as a loop's own `origin` is used today. So locates, transport loops, stops and tempo changes behave as they do now (a jump crossfades inside the looper over its `FADE`), and a loop made shorter repeats sooner inside the same block.
 - **Two origins, kept apart** (loop-tracks.md's "an origin per launch"): the loop's own `origin` stays where its first pass was recorded, for `KEEP_BEFORE`, Snap and its history; the run's origin is where this playback counts from.
@@ -89,8 +91,11 @@ looper.play(slot, &runs)   // at most MAX_AUDIO_CHANGES + 2 runs a slot a period
 
 ### One crossfade, at the track
 
+Built in `loop_play.rs` (`LoopPlayer::mix_into`, from `AudioTracks::process_with_loops`), apart from the Loop group's macros, Listen and the Loop strip's going.
+
 The track player sums the slot's buffer (4a's `LoopOuts`) and the region player's voices into the track's channel input, each source's gain applied once: `y[n] = gL[n]·L[n] + gT[n]·T[n]`. The fades are phase 2's: equal power over the audio tracks' `FADE` (64 frames), not the looper's 256. A switch between two loop clips on one track runs both slots through the fade. The channel's effects hear one signal.
 
+- **A loop is in one voice at a time.** A loop that comes back while its last voice still fades out (a switch away and back inside `FADE`) takes that voice again, its gain rising from where the fade had it, so the looper is only ever asked for one place of a loop. A third loop inside a fade takes the voice that is closing, and is counted (`LoopPlayer::stolen`).
 - **The track's mute and solo are the only ones a loop has.** The answer's mute ramps the track's sum over `FADE`, as for clips; the panel's Mute and Solo are the engine's, as now. A muted track's loop is still told its runs, so it comes back where the transport says; the looper may skip rendering it while its gain is 0, since its place comes from the song position, not from running.
 - **The Loop group's Level and Filter** act on the loop source only, before the sum (a gain and a DJ filter a track's loop source; at rest, a check). The outgoing loop keeps them until its fade ends; a take clip never has them. Delay is an offset on the channel's Send A while it plays a loop.
 - **Listen** (a loop alone, while stopped) is a run the track player makes itself, through the track's channel.
@@ -143,7 +148,14 @@ This is Arrange 3.4's way (ask first, then apply in the first period the edit pl
 
 ## What 4b's tests pin
 
-Built so far: `mpfree-seq`'s `save.rs` `loop_cells_read_back_and_a_loop_keeps_to_one_track` (two rows of one track name a loop and read back; the `loopclip` line's refusals; a loop cell on a note track, with a note, with regions or naming no loop refused; the loop's cell or block on another track refused, a copy with a loop of its own not; a block made the song's own still names it). To come:
+Built so far:
+
+- `mpfree-seq`'s `save.rs` `loop_cells_read_back_and_a_loop_keeps_to_one_track` (two rows of one track name a loop and read back; the `loopclip` line's refusals; a loop cell on a note track, with a note, with regions or naming no loop refused; the loop's cell or block on another track refused, a copy with a loop of its own not; a block made the song's own still names it).
+- `mpfree-play`'s `a_loop_cell_plays_its_loop_from_its_clips_origin` (the arranger answers a loop cell with `AudioPlays::Loop`, its id and its clip's origin).
+- `mpfree-audiotracks`' `tests/loop_play.rs`: a loop opens on its frame and the looper is told from there; a take clip and a loop cross over once, with equal power, on the arranger's frame; the answer's mute ramps a loop and it comes back in place; two loops cross over in two voices and a third takes the closing one (counted); the same loop from another origin stays one voice; a loop back inside its own fade reopens its voice from the gain it had; stopped, nothing plays. Each for periods of 1 to 4096 frames. `tests/no_alloc.rs`'s `loops_through_the_track_player_never_allocate`.
+- `mpfree-looper`'s `tests/on_track.rs` ([looper.md](looper.md#a-loop-on-an-audio-track)): only where told, from the run's origin, at full gain; a new origin crossfades the place; after silence no crossfade; its own launch, mute and solo refused.
+
+To come:
 
 - A loop recorded into a cell of Audio 1 and overdubbed is heard only on Audio 1's channel, to the sample.
 - A `LoopId` named on two tracks is refused by `Project::check`; a copy onto another track gets a new one.
