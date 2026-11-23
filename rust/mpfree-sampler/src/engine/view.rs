@@ -178,6 +178,72 @@ pub struct EngineView {
     pub(super) take: Option<ViewPad>,
     pub(super) master: MasterFx,
     pub(super) pads_play: PadsPlay,
+    /// How notes reach the kit, as its model says ([`KitKeys`]).
+    pub(super) keys: KitKeys,
+}
+
+/// How a note from a keyboard, a MIDI route or a clip of notes reaches a
+/// kit (its [`KeysPlay`], sampler step 15 and live shows decision 6),
+/// resolved with its view so the audio thread decides in one step and
+/// always agrees with what the kit holds. Fixed size, no heap.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KitKeys {
+    /// What keys play ([`Project::keys_play`]: as picked, else by what the
+    /// kit holds).
+    pub play: KeysPlay,
+    /// The notes some keygroup with a sound holds, bit n for note n.
+    pub held: u128,
+    /// The note pad 1 plays while the pads play notes
+    /// ([`PadsPlay::Keys`]), else None.
+    pub pads_from: Option<u8>,
+}
+
+impl KitKeys {
+    /// A kit of drum pads, as every kit was before keys had a setting.
+    pub const PADS: KitKeys = KitKeys {
+        play: KeysPlay::Pads,
+        held: 0,
+        pads_from: None,
+    };
+
+    /// Whether some keygroup with a sound holds note `note`.
+    pub fn holds(self, note: u8) -> bool {
+        note < 128 && self.held >> note & 1 == 1
+    }
+
+    /// Whether note `note` plays the keygroups (as a key, through every one
+    /// that holds it), not the pad that sends it: always on Keygroups, on
+    /// Both where a keygroup holds it, never on Pads.
+    pub fn to_keygroups(self, note: u8) -> bool {
+        match self.play {
+            KeysPlay::Pads => false,
+            KeysPlay::Keygroups => true,
+            KeysPlay::Both => self.holds(note),
+        }
+    }
+
+    /// Whether the kit is played as notes, like a synth: its keys play the
+    /// keygroups (Keygroups) and its pads play notes too
+    /// ([`PadsPlay::Keys`]), so a key the pads reach can go through the
+    /// pad that plays its note (the track's arp and REC take it as they
+    /// take that pad).
+    pub fn takes_notes(self) -> bool {
+        self.play == KeysPlay::Keygroups && self.pads_from.is_some()
+    }
+
+    /// The pad that plays note `note` while the pads play notes (pad 1 is
+    /// [`KitKeys::pads_from`], each pad a semitone up), else None.
+    pub fn pad_of_note(self, note: u8) -> Option<u8> {
+        let from = self.pads_from?;
+        note.checked_sub(from)
+            .filter(|&p| usize::from(p) < PADS && note < 128)
+    }
+
+    /// The note pad `pad` plays while the pads play notes, else None.
+    pub fn note_of_pad(self, pad: usize) -> Option<u8> {
+        let n = usize::from(self.pads_from?) + pad;
+        (pad < PADS && n < 128).then_some(n as u8)
+    }
 }
 
 /// The pad number a take's voices carry: past every pad, so no table
@@ -274,7 +340,13 @@ impl EngineView {
             take: None,
             master: MasterFx::default(),
             pads_play: PadsPlay::Pads,
+            keys: KitKeys::PADS,
         }
+    }
+
+    /// How notes reach the kit ([`KitKeys`]).
+    pub fn keys(&self) -> KitKeys {
+        self.keys
     }
 
     /// Resolves every pad of a project for an engine running at `rate`.
@@ -540,12 +612,30 @@ impl EngineView {
         }
         // The take the Sample page shows, kept off the pads.
         let take = take.and_then(|t| project.take(t)).map(|p| view_of(PADS, p));
+        // The notes some keygroup with a sound holds, for Both.
+        let held = pads
+            .iter()
+            .flatten()
+            .filter(|p| !p.layers.is_empty())
+            .filter_map(|p| p.keys)
+            .fold(0u128, |bits, k| {
+                (k.lo..=k.hi.min(127)).fold(bits, |b, n| b | 1 << n)
+            });
+        let keys = KitKeys {
+            play: project.keys_play(),
+            held,
+            pads_from: match project.pads_play() {
+                PadsPlay::Keys { from } => Some(from),
+                _ => None,
+            },
+        };
         EngineView {
             revision: project.revision(),
             pads,
             take,
             master: *project.master(),
             pads_play: project.pads_play(),
+            keys,
         }
     }
 }

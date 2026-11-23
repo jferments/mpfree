@@ -218,6 +218,8 @@ While the pad is a keygroup, or the pads play notes, Edit pad's Pitch and Pad se
 - Tap a bar to pick its pad. Drag the picked pad's ends to set its lowest and highest keys, and its dot to move the root.
 - Press the keys to hear the kit. The line under the keys shows the 16 notes the pads play.
 
+A keyboard on MIDI IN or USB plays a kit of keygroups by pitch too, and a key outside every keygroup plays nothing (see [Playing MPFree from a keyboard](midi-and-cv.md#playing-mpfree-from-a-keyboard)).
+
 The Pitch section's Keys controls do the same with numbers: the Keys switch makes one pad a keygroup, Low key, High key and Root key set its range, and the Pad section's Pads play switches the pads between their own sounds and notes.
 
 ### Crossfades
