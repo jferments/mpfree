@@ -58,6 +58,10 @@ sampler/pad filter[low-pass 2-pole, 1 kHz]/butterworth_error_db	0.0013
 sampler/pad filter[low-pass 2-pole, 2 kHz, resonance 0.3, 1.8 kHz sawtooth at 0 dBFS]/dc_dbfs	-140
 sampler/pad filter[low-pass 2-pole, 2 kHz, resonance 1, 1.8 kHz sawtooth at 0 dBFS]/dc_dbfs	-140
 sampler/pad filter[low-pass 2-pole, 500 Hz]/slope_db_per_octave	12.3867
+sampler/pad filter[low-pass 2-pole, Key track 0.5 and -1, 12-TET]/cutoff_error_pct	0.015
+sampler/pad filter[low-pass 2-pole, Key track 1, 12-TET]/cutoff_error_pct	0.0151
+sampler/pad filter[low-pass 2-pole, Key track 1, 24-TET]/cutoff_error_pct	0.015
+sampler/pad filter[low-pass 2-pole, Key track 1, just]/cutoff_error_pct	0.0149
 sampler/pad filter[low-pass 2-pole, resonance 0]/cutoff_error_pct	0.015
 sampler/pad filter[low-pass 2-pole, swept 100 Hz to 10 kHz, resonance 0.75, pink at -18 dBFS]/peak_dbfs	-2.6095
 sampler/pad filter[low-pass 2-pole, swept 100 Hz to 10 kHz, resonance 1, pink at -18 dBFS]/peak_dbfs	-1.3718

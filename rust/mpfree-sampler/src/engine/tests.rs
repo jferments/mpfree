@@ -1114,3 +1114,348 @@ fn a_follower_is_never_stolen() {
     assert_eq!(e.stats().steals, 1);
     assert!(e.pool.iter().all(|(v, _)| !v.active || v.pad == 1));
 }
+
+// ---------------------------------------------------------------------------
+// The filter gap plan's F3: a hit's own part of its filter.
+
+/// A keygroup over the whole keyboard (its root A3) of a steady sound
+/// under a 1 kHz low-pass, as `shape` leaves its pad.
+fn filtered_project(shape: impl FnOnce(&mut crate::model::Pad)) -> Project {
+    use crate::dsp::{Filter, FilterKind};
+    use crate::model::{Layer, Pad, Region, Source};
+    let rate = 44_100;
+    let s = Source::new("s", rate, 1, vec![0.1; rate as usize * 2]).unwrap();
+    let mut r = Region::whole(&s);
+    r.mode = PlayMode::Gate;
+    let mut pad = Pad::new("keys", Layer::new(r));
+    pad.filter = Filter {
+        kind: FilterKind::LowPass,
+        poles: 2,
+        cutoff_hz: 1_000.0,
+        resonance: 0.0,
+        env_octaves: 0.0,
+        drive_db: 0.0,
+    };
+    shape(&mut pad);
+    let mut p = Project::new();
+    p.add_source(s);
+    p.set_pad(0, Some(pad), None).unwrap();
+    p.spread_to_keys(0, 57).unwrap();
+    p
+}
+
+/// [`filtered_project`] on an engine.
+fn filtered_keys(shape: impl FnOnce(&mut crate::model::Pad)) -> Engine {
+    let mut e = Engine::new(44_100, 8);
+    e.set_view(EngineView::build(&filtered_project(shape), 44_100));
+    e
+}
+
+/// The newest voice still sounding.
+fn newest(e: &Engine) -> &Voice {
+    e.pool
+        .iter()
+        .map(|(v, _)| v)
+        .filter(|v| v.active && v.kill_left == 0)
+        .max_by_key(|v| v.age)
+        .expect("a voice")
+}
+
+fn key_on(e: &mut Engine, note: u8, velocity: u8) {
+    e.apply(Event::Key { note, velocity });
+}
+
+fn blocks(e: &mut Engine, n: usize) {
+    let (mut l, mut r) = (vec![0.0; 128], vec![0.0; 128]);
+    for _ in 0..n {
+        e.render(&mut l, &mut r);
+    }
+}
+
+fn near(a: f32, b: f32) -> bool {
+    (a / b - 1.0).abs() < 1e-5
+}
+
+/// The cutoff follows the key by the pad's key tracking (an octave for
+/// 12 keys at 1, the other way below 0), from the sound's root, in its
+/// kit's tuning, and follows an edit of it while the note plays.
+#[test]
+fn the_cutoff_follows_the_key_by_its_key_track() {
+    let fc = |track: f32, note: u8| {
+        let mut e = filtered_keys(|p| p.key_track = track);
+        key_on(&mut e, note, 127);
+        let m = &newest(&e).motion;
+        assert_eq!(m.fc, m.hit_fc, "the factor in use");
+        m.hit_fc
+    };
+    assert_eq!(fc(1.0, 57), 1.0);
+    assert!(near(fc(1.0, 69), 2.0));
+    assert!(near(fc(1.0, 45), 0.5));
+    assert!(near(fc(0.5, 81), 2.0));
+    assert!(near(fc(-1.0, 69), 0.5));
+    assert_eq!(fc(0.0, 81), 1.0);
+    // In a tuning: where the key sounds there, from the sound's root.
+    let just = mpfree_tuning::Builtin::Just.tuning(0, 440.0);
+    let mut e = filtered_keys(|p| p.key_track = 1.0);
+    e.set_tuning(0, &just);
+    key_on(&mut e, 64, 127);
+    let want = ((700.0 + just.offset_cents(64.0)) / 1200.0).exp2();
+    assert!(near(newest(&e).motion.hit_fc, want));
+    // Pads playing notes play their keys: pad 1 is C3, 9 keys down.
+    let mut e = filtered_keys(|p| p.key_track = 1.0);
+    e.apply(Event::NoteOn {
+        pad: 0,
+        velocity: 127,
+    });
+    assert!(near(newest(&e).motion.hit_fc, (-0.75f32).exp2()));
+    // An edit of the key tracking reaches the note playing.
+    let mut p = filtered_project(|_| {});
+    let mut e = Engine::new(44_100, 8);
+    e.set_view(EngineView::build(&p, 44_100));
+    key_on(&mut e, 69, 127);
+    assert_eq!(newest(&e).motion.hit_fc, 1.0);
+    let mut pad = p.pad(0).cloned().unwrap();
+    pad.key_track = 1.0;
+    p.set_pad(0, Some(pad), None).unwrap();
+    e.edit_kit_view(0, EngineView::build(&p, 44_100));
+    let m = &newest(&e).motion;
+    assert!(near(m.hit_fc, 2.0) && near(m.fc, 2.0), "{}", m.fc);
+}
+
+/// A legato move takes the cutoff to the new key at once, and a glide
+/// takes it there with the pitch, from where the last note was.
+#[test]
+fn the_cutoff_follows_a_legato_move_and_a_glide() {
+    use crate::model::Mono;
+    let mut e = filtered_keys(|p| {
+        p.key_track = 1.0;
+        p.mono = Mono {
+            on: true,
+            legato: true,
+            ..Mono::default()
+        };
+    });
+    key_on(&mut e, 57, 127);
+    blocks(&mut e, 1);
+    let age = newest(&e).age;
+    key_on(&mut e, 69, 127);
+    let m = &newest(&e).motion;
+    assert_eq!(newest(&e).age, age, "a legato move, not a new note");
+    assert!(near(m.hit_fc, 2.0) && near(m.fc, 2.0), "{}", m.fc);
+
+    // Glide on every note, 100 ms: the next note's cutoff starts where
+    // the last one's was, and moves an octave with the pitch.
+    let mut e = filtered_keys(|p| {
+        p.key_track = 1.0;
+        p.mono = Mono {
+            on: true,
+            glide_ms: 100.0,
+            ..Mono::default()
+        };
+    });
+    key_on(&mut e, 57, 127);
+    blocks(&mut e, 1);
+    e.apply(Event::KeyOff { note: 57 });
+    key_on(&mut e, 69, 127);
+    let m = &newest(&e).motion;
+    assert!(near(m.hit_fc, 2.0), "{}", m.hit_fc);
+    assert!(near(m.fc, 1.0), "starts at the last note's: {}", m.fc);
+    // Half way, the cutoff is as far up as the pitch.
+    blocks(&mut e, 17);
+    let m = &newest(&e).motion;
+    let pitch = ((1200.0 + m.cents) / 1200.0).exp2();
+    assert!(
+        m.fc > 1.3 && m.fc < 1.5 && near(m.fc, pitch),
+        "{} {pitch}",
+        m.fc
+    );
+    blocks(&mut e, 30);
+    let m = &newest(&e).motion;
+    assert!(m.cents == 0.0 && near(m.fc, 2.0), "{} {}", m.cents, m.fc);
+}
+
+/// Velocity on the filter envelope: a soft hit's depth is less, by the
+/// pad's amount, and its attack longer, by up to a second.
+#[test]
+fn velocity_scales_the_envelopes_depth_and_lengthens_its_attack() {
+    let scale = |amount: f32, velocity: u8| {
+        let mut e = filtered_keys(|p| {
+            p.filter.env_octaves = 4.0;
+            p.vel_to_env = amount;
+        });
+        key_on(&mut e, 57, velocity);
+        newest(&e).motion.env_scale
+    };
+    assert_eq!(scale(1.0, 127), 1.0);
+    assert!(near(scale(1.0, 1), 1.0 / 127.0));
+    assert!(near(scale(0.5, 1), 1.0 - 0.5 * 126.0 / 127.0));
+    assert_eq!(scale(0.0, 1), 1.0);
+
+    // An attack of 0 ms at the hardest; at the softest about a second, so
+    // a tenth of the way up 0.1 s in.
+    let level = |velocity: u8| {
+        let mut e = filtered_keys(|p| {
+            p.filter.env_octaves = 4.0;
+            p.vel_to_attack = 1.0;
+        });
+        key_on(&mut e, 57, velocity);
+        blocks(&mut e, 34);
+        newest(&e).fenv.as_ref().unwrap().level()
+    };
+    assert_eq!(level(127), 1.0);
+    let soft = level(1);
+    let want = 34.0 * 128.0 / (0.001 * (1_000.0 * 126.0 / 127.0) * 44_100.0);
+    assert!((soft - want).abs() < 1e-3, "{soft} vs {want}");
+}
+
+/// A hit's random on its filter: one draw for all its layers, within the
+/// pad's amounts, another for the next hit, and the same for the same
+/// performance, played or exported. While the transport plays, from the
+/// place in the song and the time round its loop.
+#[test]
+fn a_hits_random_is_one_draw_for_its_layers_and_the_same_each_time() {
+    use crate::dsp::{Filter, FilterKind};
+    use crate::model::{Layer, Pad, Region, Source};
+    let rate = 44_100;
+    let s = Source::new("s", rate, 1, vec![0.1; rate as usize]).unwrap();
+    let engine = || {
+        // Two layers panned apart, each with a filter of its own.
+        let mut pad = Pad::new("p", Layer::new(Region::whole(&s)));
+        pad.layers.push(Layer::new(Region::whole(&s)));
+        pad.layers[0].pan = -1.0;
+        pad.layers[1].pan = 1.0;
+        pad.polyphony = 8;
+        pad.filter = Filter {
+            kind: FilterKind::LowPass,
+            poles: 2,
+            cutoff_hz: 1_000.0,
+            resonance: 0.3,
+            env_octaves: 0.0,
+            drive_db: 0.0,
+        };
+        pad.cutoff_random = 1.0;
+        pad.res_random = 0.5;
+        let mut other = pad.clone();
+        other.name = "o".into();
+        let mut p = Project::new();
+        p.add_source(s.clone());
+        p.set_pad(0, Some(pad), None).unwrap();
+        p.set_pad(1, Some(other), None).unwrap();
+        let mut e = Engine::new(rate, 16);
+        e.set_view(EngineView::build(&p, rate));
+        e
+    };
+    // The newest hit's draws, a layer at a time: its two voices, the
+    // newest of the pad's (each voice starts a step later than the last).
+    let draws = |e: &Engine, pad: u8| {
+        let mut d: Vec<(u64, u8, f32, f32)> = e
+            .pool
+            .iter()
+            .filter(|(v, _)| v.active && v.pad == pad)
+            .map(|(v, _)| (v.age, v.layer, v.motion.hit_oct, v.motion.res_add))
+            .collect();
+        d.sort_by_key(|x| std::cmp::Reverse(x.0));
+        d.truncate(2);
+        assert_eq!(d[0].0, d[1].0 + 1, "one hit's");
+        d.sort_by_key(|x| x.1);
+        let d: Vec<(u8, f32, f32)> = d.into_iter().map(|x| (x.1, x.2, x.3)).collect();
+        assert_eq!((d[0].0, d[1].0), (0, 1), "both layers");
+        assert_eq!((d[0].1, d[0].2), (d[1].1, d[1].2), "one draw for the hit");
+        (d[0].1, d[0].2)
+    };
+    let hit = |e: &mut Engine, pad: u8| {
+        e.apply(Event::NoteOn { pad, velocity: 127 });
+    };
+    let mut e = engine();
+    hit(&mut e, 0);
+    hit(&mut e, 1);
+    let first = draws(&e, 0);
+    assert!(first.0.abs() <= 2.0 && first.1.abs() <= 0.25, "{first:?}");
+    assert!(first.0 != 0.0 && first.1 != 0.0);
+    assert_ne!(draws(&e, 1), first, "another pad hit with it draws its own");
+    blocks(&mut e, 1);
+    hit(&mut e, 0);
+    let second = draws(&e, 0);
+    assert_ne!(second, first);
+    // The same performance again draws the same.
+    let mut again = engine();
+    hit(&mut again, 0);
+    assert_eq!(draws(&again, 0), first);
+    blocks(&mut again, 1);
+    hit(&mut again, 0);
+    assert_eq!(draws(&again, 0), second);
+
+    // Playing, from the place in the song: the same beat draws the same
+    // however long the engine ran first; another beat, another draw.
+    let at_beat = |run: usize, beat: f64| {
+        let mut e = engine();
+        e.set_tempo(120.0);
+        blocks(&mut e, run);
+        e.set_beat(Some(beat));
+        hit(&mut e, 0);
+        draws(&e, 0)
+    };
+    assert_eq!(at_beat(0, 8.0), at_beat(7, 8.0));
+    assert_ne!(at_beat(0, 8.0), at_beat(0, 9.0));
+    // A loop going round again (a beat long: 22,050 frames at 120 BPM)
+    // draws anew at the same beat; starting again from stopped draws as
+    // the first time.
+    let mut e = engine();
+    e.set_tempo(120.0);
+    e.set_beat(Some(0.0));
+    hit(&mut e, 0);
+    let top = draws(&e, 0);
+    blocks(&mut e, 172);
+    e.set_beat(Some(0.998));
+    blocks(&mut e, 1);
+    e.set_beat(Some(0.0));
+    hit(&mut e, 0);
+    let round = draws(&e, 0);
+    assert_ne!(round, top);
+    blocks(&mut e, 4);
+    e.set_beat(None);
+    blocks(&mut e, 4);
+    e.set_beat(Some(0.0));
+    hit(&mut e, 0);
+    assert_eq!(draws(&e, 0), top);
+}
+
+/// Continue on a mono pad: a note that starts again starts its amp and
+/// filter envelopes from where the last note's were, not from zero.
+#[test]
+fn continue_starts_a_mono_notes_envelopes_where_the_last_ones_were() {
+    use crate::model::Mono;
+    let levels = |cont: bool| {
+        let mut e = filtered_keys(|p| {
+            p.amp.attack_ms = 200.0;
+            p.filter_env.attack_ms = 400.0;
+            p.filter.env_octaves = 2.0;
+            p.mono = Mono {
+                on: true,
+                env_continue: cont,
+                ..Mono::default()
+            };
+        });
+        key_on(&mut e, 57, 127);
+        blocks(&mut e, 34);
+        let v = newest(&e);
+        let was = (
+            v.amp.as_ref().unwrap().level(),
+            v.fenv.as_ref().unwrap().level(),
+        );
+        let age = v.age;
+        key_on(&mut e, 60, 127);
+        let v = newest(&e);
+        assert!(v.age != age, "a new note");
+        let now = (
+            v.amp.as_ref().unwrap().level(),
+            v.fenv.as_ref().unwrap().level(),
+        );
+        (was, now)
+    };
+    let (was, now) = levels(true);
+    assert!(was.0 > 0.4 && was.1 > 0.2, "{was:?}");
+    assert_eq!(now, was);
+    let (_, now) = levels(false);
+    assert_eq!(now, (0.0, 0.0));
+}

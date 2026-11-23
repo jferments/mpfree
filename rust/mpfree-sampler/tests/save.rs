@@ -590,8 +590,9 @@ fn lfo_pitch_envelope_and_velocity_routes_save_and_open() {
     );
 }
 
-/// A pad's Mono, Legato and Glide (sampler R5.5) save and open; a kit saved
-/// before them opens with them off.
+/// A pad's Mono, Legato and Glide (sampler R5.5) and Continue (the filter
+/// gap plan's F3) save and open; a kit saved before them opens with them
+/// off.
 #[test]
 fn mono_legato_and_glide_save_and_open() {
     let s = noise(3_000, 2, 6, "Bass");
@@ -604,6 +605,7 @@ fn mono_legato_and_glide_save_and_open() {
         legato: true,
         glide_ms: 120.0,
         glide_held: true,
+        env_continue: true,
     };
     p.set_pad(5, Some(pd), None).unwrap();
     let (text, files) = save(&[("Bass", &p)], 0);
@@ -612,6 +614,7 @@ fn mono_legato_and_glide_save_and_open() {
         "kit.0.pad.5.mono.legato = yes",
         "kit.0.pad.5.mono.glide_ms = 120",
         "kit.0.pad.5.mono.glide_held = yes",
+        "kit.0.pad.5.mono.env_continue = yes",
     ] {
         assert!(text.lines().any(|l| l == line), "{line} in\n{text}");
     }
@@ -629,6 +632,71 @@ fn mono_legato_and_glide_save_and_open() {
         .map(|l| format!("{l}\n"))
         .collect();
     assert_eq!(read(&old).pad(5).unwrap().mono, Mono::default());
+}
+
+/// What moves a pad's filter per hit (the filter gap plan's F3) saves and
+/// opens: key tracking, velocity on the cutoff (below 0 too), on the
+/// envelope's depth and on its attack, and the random on the cutoff and
+/// resonance. A kit saved before them opens with none.
+#[test]
+fn the_filter_per_hit_settings_save_and_open() {
+    let s = noise(3_000, 2, 9, "Keys");
+    let mut p = Project::new();
+    p.add_source(s.clone());
+    let mut pd = Pad::new("Keys", Layer::new(Region::whole(&s)));
+    pd.filter.kind = FilterKind::LowPass;
+    pd.filter.cutoff_hz = 900.0;
+    pd.vel_to_cutoff = -0.5;
+    pd.key_track = 0.75;
+    pd.vel_to_env = 0.25;
+    pd.vel_to_attack = 0.5;
+    pd.cutoff_random = 0.125;
+    pd.res_random = 1.0;
+    p.set_pad(3, Some(pd), None).unwrap();
+    let (text, files) = save(&[("Keys", &p)], 0);
+    for line in [
+        "kit.0.pad.3.vel_to_cutoff = -0.5",
+        "kit.0.pad.3.key_track = 0.75",
+        "kit.0.pad.3.vel_to_env = 0.25",
+        "kit.0.pad.3.vel_to_attack = 0.5",
+        "kit.0.pad.3.cutoff_random = 0.125",
+        "kit.0.pad.3.res_random = 1",
+    ] {
+        assert!(text.lines().any(|l| l == line), "{line} in\n{text}");
+    }
+    let read = |text: &str| {
+        from_text(text, &mut |f| wav::read("x", &files[f]))
+            .unwrap()
+            .kits
+            .remove(0)
+            .1
+    };
+    assert_same(&read(&text), &p);
+    let new = [
+        "key_track",
+        "vel_to_env",
+        "vel_to_attack",
+        "cutoff_random",
+        "res_random",
+    ];
+    let old: String = text
+        .lines()
+        .filter(|l| !new.iter().any(|k| l.contains(&format!(".{k} = "))))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    let back = read(&old);
+    let b = back.pad(3).unwrap();
+    assert_eq!(
+        (
+            b.key_track,
+            b.vel_to_env,
+            b.vel_to_attack,
+            b.cutoff_random,
+            b.res_random,
+            b.vel_to_cutoff
+        ),
+        (0.0, 0.0, 0.0, 0.0, 0.0, -0.5)
+    );
 }
 
 #[test]

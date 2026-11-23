@@ -190,7 +190,16 @@ pub(super) fn live_step(v: &mut Voice) {
             flt.resonance = res + d * k;
             moving = true;
         }
-        if flt.cutoff_hz != fc || flt.resonance != res {
+        // The envelope's depth, in octaves as the cutoff (F3).
+        let env = flt.env_octaves;
+        let d = f.env_to - env;
+        if d.abs() <= 1e-4 {
+            flt.env_octaves = f.env_to;
+        } else {
+            flt.env_octaves = env + d * k;
+            moving = true;
+        }
+        if flt.cutoff_hz != fc || flt.resonance != res || flt.env_octaves != env {
             v.filter_key = None;
         }
     }
@@ -287,7 +296,8 @@ pub(super) fn follow_motion(v: &mut Voice) {
 #[inline(never)]
 pub(super) fn motion_step(v: &mut Voice) {
     let m = &mut v.motion;
-    let mut cents = m.vel_cents + m.env_cents + m.glide_cents;
+    let glide = m.glide_cents;
+    let mut cents = m.vel_cents + m.env_cents + glide;
     if m.env_cents != 0.0 {
         m.env_cents *= m.env_k;
         if m.env_cents.abs() < 0.01 {
@@ -301,7 +311,11 @@ pub(super) fn motion_step(v: &mut Voice) {
             m.glide_cents - m.glide_inc.copysign(m.glide_cents)
         };
     }
-    let mut fc = m.vel_fc;
+    let mut fc = m.hit_fc;
+    // The key follows the glide's pitch, not only where it lands (F3).
+    if glide != 0.0 && m.key_track != 0.0 {
+        fc *= (m.key_track * glide / 1200.0).exp2();
+    }
     let mut side = [1.0f32; 2];
     let lfo = m.to != LfoTarget::Off;
     if lfo {
@@ -345,7 +359,12 @@ pub(super) fn motion_step(v: &mut Voice) {
     }
 }
 
-/// Sets the voice's filter for envelope level `e`. The coefficients only
+/// Sets the voice's filter for envelope level `e`: the cutoff is the
+/// pad's (or a live one, gliding) moved by the envelope at its depth (its
+/// hit's velocity scaling it), then by pressure's factor and the
+/// movement's (the LFO, and the hit's own: velocity, key and random), each
+/// an octave sum made a factor once; the resonance has the hit's random on
+/// it (the filter gap plan's F3). The coefficients only
 /// depend on `e` and the cutoff factors of pressure and movement, so while
 /// none moves (a held sustain, no pressure, no LFO on the cutoff) this
 /// skips the `exp2` and `tan`. A state-variable type glides to the new
@@ -365,8 +384,9 @@ pub(super) fn retune(v: &mut Voice, f: Filter, e: f32, rate: f32) {
         return;
     }
     v.filter_key = Some(key);
-    let fc = f.cutoff_hz * (f.env_octaves * e).exp2() * moved;
-    v.filt.set(&f, fc, f.resonance, rate, FILTER_STEP);
+    let fc = f.cutoff_hz * (f.env_octaves * v.motion.env_scale * e).exp2() * moved;
+    let res = (f.resonance + v.motion.res_add).clamp(0.0, 1.0);
+    v.filt.set(&f, fc, res, rate, FILTER_STEP);
 }
 
 /// `start` times pressure's gain, the amp envelope's next value and the kill

@@ -719,6 +719,11 @@ pub struct Mono {
     /// Glide only to a key played while another is held; off, to every
     /// note, from the last one played.
     pub glide_held: bool,
+    /// A note that starts again (not a legato move) starts its amp and
+    /// filter envelopes' attacks from where the last note's envelopes
+    /// were, instead of from zero, so a quick line doesn't dip between
+    /// its notes (the filter gap plan's F3, "Continue"; off, "Restart").
+    pub env_continue: bool,
 }
 
 /// The longest glide, in ms.
@@ -2274,9 +2279,33 @@ pub struct Pad {
     pub lfo: PadLfo,
     /// The pad's pitch envelope (sampler R5 part 4).
     pub pitch_env: PitchEnv,
-    /// 0 to 1: how much darker a soft hit is than the hardest, up to 4
-    /// octaves lower at the softest when 1 (where the pad has a filter).
+    /// -1 to 1: how much darker a soft hit is than the hardest, up to 4
+    /// octaves lower at the softest when 1 (where the pad has a filter);
+    /// below 0 a soft hit is brighter instead, up to 4 octaves at -1 (the
+    /// filter gap plan's F3).
     pub vel_to_cutoff: f32,
+    /// -1 to 1: how far the cutoff follows the key played (its tuned
+    /// pitch from the sound's root, [`crate::model::Keys::root`]): at 1 a
+    /// key an octave up doubles the cutoff, at -1 halves it (F3). A hit on
+    /// the pad itself (with the pads playing pads, not notes) plays at the
+    /// root, so only keys move it.
+    pub key_track: f32,
+    /// 0 to 1: how much less the filter envelope moves the cutoff on a
+    /// soft hit than on the hardest: at 1 the softest moves it not at all
+    /// (F3).
+    pub vel_to_env: f32,
+    /// 0 to 1: how much longer the filter envelope's attack is on a soft
+    /// hit than on the hardest: at 1 the softest takes [`VEL_ATTACK_MS`]
+    /// more (F3).
+    pub vel_to_attack: f32,
+    /// 0 to 1: how far each hit's cutoff wanders, up to
+    /// [`RANDOM_OCTAVES`] up or down at 1, and its resonance, up to
+    /// [`RANDOM_RES`] either way (clamped to 0 to 1). One draw a hit, the
+    /// same for all its layers, from the hit's place in the song
+    /// ([`crate::engine`]'s random), so a song plays the same each time
+    /// (F3).
+    pub cutoff_random: f32,
+    pub res_random: f32,
     /// Semitones the softest hit plays below the hardest (-12 to +12; below
     /// 0, softer hits play higher). A warped layer and a grain voice keep
     /// their pitch.
@@ -2296,6 +2325,13 @@ pub struct Pad {
 
 /// The longest key fade, in notes.
 pub const MAX_KEY_FADE: u8 = 24;
+/// What [`Pad::vel_to_attack`] at 1 adds to the softest hit's filter
+/// attack, in ms.
+pub const VEL_ATTACK_MS: f32 = 1000.0;
+/// How far [`Pad::cutoff_random`] at 1 moves a hit's cutoff either way,
+/// in octaves, and [`Pad::res_random`] its resonance (of 0 to 1).
+pub const RANDOM_OCTAVES: f32 = 2.0;
+pub const RANDOM_RES: f32 = 0.5;
 /// The longest velocity fade.
 pub const MAX_VEL_FADE: u8 = 64;
 
@@ -2557,6 +2593,11 @@ impl Pad {
             lfo: PadLfo::default(),
             pitch_env: PitchEnv::default(),
             vel_to_cutoff: 0.0,
+            key_track: 0.0,
+            vel_to_env: 0.0,
+            vel_to_attack: 0.0,
+            cutoff_random: 0.0,
+            res_random: 0.0,
             vel_to_pitch: 0.0,
             mono: Mono::default(),
             kind: PadKind::Sample,
@@ -2592,7 +2633,12 @@ impl Pad {
             && (-1.0..=1.0).contains(&l.depth)
             && (-PITCH_ENV_ST..=PITCH_ENV_ST).contains(&e.semitones)
             && PITCH_DECAY_MS.contains(&e.decay_ms)
-            && (0.0..=1.0).contains(&self.vel_to_cutoff)
+            && (-1.0..=1.0).contains(&self.vel_to_cutoff)
+            && (-1.0..=1.0).contains(&self.key_track)
+            && (0.0..=1.0).contains(&self.vel_to_env)
+            && (0.0..=1.0).contains(&self.vel_to_attack)
+            && (0.0..=1.0).contains(&self.cutoff_random)
+            && (0.0..=1.0).contains(&self.res_random)
             && (-12.0..=12.0).contains(&self.vel_to_pitch)
             && GLIDE_MS.contains(&self.mono.glide_ms)
     }

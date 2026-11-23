@@ -83,9 +83,17 @@ pub(super) fn retarget(
         v.filter_key = None;
         f.own_fc = OPEN_FILTER.cutoff_hz;
     }
-    if v.filter.is_some() {
+    if let Some(flt) = v.filter.as_mut() {
         f.fc_to = cutoff.unwrap_or(f.own_fc) * octaves.exp2();
         f.res_to = get(PadField::Resonance).unwrap_or(f.own_res);
+        // The envelope's depth glides there; the Drive is there at once,
+        // as an edit's is (it keeps its level as it turns; F3).
+        f.env_to = get(PadField::EnvDepth).unwrap_or(f.own_env);
+        let drive = get(PadField::Drive).unwrap_or(f.own_drive);
+        if flt.drive_db != drive {
+            flt.drive_db = drive;
+            v.filter_key = None;
+        }
     }
     f.cents_to = if v.warp_bpm > 0.0 {
         0.0
@@ -200,15 +208,17 @@ pub(super) fn follow_edit(
         (v.follow.own_fc, v.follow.own_res) = (fc, res);
         moved = true;
     }
-    // A ladder's Drive at once (it keeps its level as it turns).
-    if let Some(cur) = v.filter.as_mut() {
-        if cur.kind == FilterKind::Ladder
-            && pf.kind == FilterKind::Ladder
-            && cur.drive_db != pf.drive_db
-        {
-            cur.drive_db = pf.drive_db;
-            v.filter_key = None;
-        }
+    // The envelope's depth and the Drive: the pad's own, which
+    // [`retarget`] puts in place under a live one (a ladder's Drive at
+    // once: it keeps its level as it turns; F3).
+    if v.filter.is_some() && (pf.env_octaves != f.own_env || pf.drive_db != f.own_drive) {
+        (v.follow.own_env, v.follow.own_drive) = (pf.env_octaves, pf.drive_db);
+        moved = true;
+    }
+    // How far the cutoff follows the key: at once, from the key it plays.
+    if vp.key_track != v.motion.key_track {
+        v.motion.key_track = vp.key_track;
+        v.motion.rekey(v.key_cents);
     }
 
     // Tune: the layer's speed against the one it played at. A warped

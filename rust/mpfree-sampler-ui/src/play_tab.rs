@@ -306,7 +306,8 @@ pub enum Row {
 impl Row {
     /// The pad's own setting this row sets, as the engine names it
     /// ([`PadField`], which clips' locks and MIDI Learn use): None for a
-    /// row without one (a layer's, the filter envelope's, the kit's).
+    /// row without one (a layer's, the filter envelope's times, the
+    /// kit's).
     pub fn field(self) -> Option<PadField> {
         Some(match self {
             Row::Level => PadField::Level,
@@ -321,6 +322,8 @@ impl Row {
             Row::LfoDepth => PadField::LfoDepth,
             Row::PitchEnv => PadField::PitchEnv,
             Row::PitchDecay => PadField::PitchDecay,
+            Row::Drive => PadField::Drive,
+            Row::FilterEnv => PadField::EnvDepth,
             _ => return None,
         })
     }

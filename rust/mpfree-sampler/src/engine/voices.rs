@@ -92,6 +92,12 @@ pub(super) struct Follow {
     pub(super) own_pan: f32,
     pub(super) own_fc: f32,
     pub(super) own_res: f32,
+    /// The filter envelope's depth (octaves) it is going to, and the pad's
+    /// own depth and Drive (the filter gap plan's F3: a live
+    /// [`PadField::EnvDepth`] or [`PadField::Drive`] in their place).
+    pub(super) env_to: f32,
+    pub(super) own_env: f32,
+    pub(super) own_drive: f32,
 }
 
 /// A voice's movement (sampler R5 part 4): its pad's LFO, its pitch
@@ -125,9 +131,21 @@ pub(super) struct Motion {
     /// The pitch envelope now, in cents, and what a step leaves of it.
     pub(super) env_cents: f32,
     pub(super) env_k: f32,
-    /// The hit's velocity on its pitch (cents) and on its cutoff (a factor).
+    /// The hit's velocity on its pitch (cents), and the hit's own factor on
+    /// its cutoff (the filter gap plan's F3): its velocity's and random's
+    /// octaves (`hit_oct`) and its key's (`key_track` times the voice's
+    /// [`Voice::key_cents`]), summed and made a factor once
+    /// ([`Motion::rekey`]). A glide adds what is left of it to the key
+    /// ([`motion_step`]).
     pub(super) vel_cents: f32,
-    pub(super) vel_fc: f32,
+    pub(super) hit_fc: f32,
+    pub(super) hit_oct: f32,
+    pub(super) key_track: f32,
+    /// The hit's velocity on its filter envelope's depth (a factor, 1 at the
+    /// hardest), and its random on the resonance (added, then kept to 0 to
+    /// 1): both applied where the filter is set ([`retune`]).
+    pub(super) env_scale: f32,
+    pub(super) res_add: f32,
     /// A mono pad's glide (sampler R5.5): cents still to slide, and how
     /// many a step slides (a straight line in cents, so every interval
     /// takes the pad's glide time).
@@ -162,7 +180,11 @@ impl Default for Motion {
             env_cents: 0.0,
             env_k: 0.0,
             vel_cents: 0.0,
-            vel_fc: 1.0,
+            hit_fc: 1.0,
+            hit_oct: 0.0,
+            key_track: 0.0,
+            env_scale: 1.0,
+            res_add: 0.0,
             glide_cents: 0.0,
             glide_inc: 0.0,
             cents: 0.0,
@@ -179,6 +201,17 @@ impl Default for Motion {
 pub(super) const ENV_FALL: f32 = 9.21;
 
 impl Motion {
+    /// The hit's factor on the cutoff for a voice whose key is `key_cents`
+    /// from its sound's root ([`Voice::key_cents`]): at a new voice, and
+    /// when a legato or glide move takes it to another key. The factor in
+    /// use too, unless [`motion_step`] works it out on its next step.
+    pub(super) fn rekey(&mut self, key_cents: f32) {
+        self.hit_fc = (self.hit_oct + self.key_track * key_cents / 1200.0).exp2();
+        if !self.on {
+            self.fc = self.hit_fc;
+        }
+    }
+
     /// Slides the pitch in from `cents` over `ms` at output rate `rate`
     /// (sampler R5.5); 0 ms jumps.
     pub(super) fn glide(&mut self, cents: f32, ms: f32, rate: f32) {

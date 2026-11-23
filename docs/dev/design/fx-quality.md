@@ -526,6 +526,7 @@ The string machine's chorus ([fx-modulation.md](fx-modulation.md#ensemble)) join
 | PF6 | `pad filter[...]/ring_up_db` | 28 dB (as F4) | A -40 dBFS sine at a 1 kHz cutoff, Resonance 1 (low-pass 2 and 4 poles, band-pass) against the pad with no filter; the Ladder at 0.9 kept without a target (at 1 it sings on its own) |
 | PF7 | `pad filter[...]/alias_worst_db` | -65 dB (as S6) | A sine at 0 dBFS through the Ladder at Drive 12 dB, under a cutoff where its loop works hard: 2.5 kHz at 5 kHz and Resonance 0.9, 5 kHz at 8 kHz and 0.7, 7 kHz at 10 kHz and 0.9; the loudest bin that is no harmonic, 20 Hz to 20 kHz |
 | PF8 | `pad filter[...]/dc_dbfs` | -60 dBFS (as D4) | A centred sawtooth at full scale and about 1.8 kHz (a whole number of frames a cycle, so its cycles average to 0) under a 2 kHz cutoff, every state-variable type at 2 and 4 poles, at Resonance 0.3 and 1: the output's DC over whole cycles once settled, as if the pad passed the sound at unity. The Ladder at Drive 0 and 12 dB is reported without a target (its drive's curve makes some DC; step F6 rebuilds it) |
+| PF9 | `pad filter[...]/cutoff_error_pct` | within 1 % (as PF1) | The cutoff following the key (the filter gap plan's step F3): a 2-pole low-pass at 1 kHz on a keygroup (root A3) with Key track 1 (keys two octaves down to an octave up), 0.5 (two octaves either way) and -1 (an octave either way) in 12-TET, and 1 in just intonation on C and in 24-TET: the -3 dB point, from a click on the key against the same key on a dry keygroup, against 1 kHz moved by the key track times where the key sounds from the sound's root in the tuning |
 
 A mutation check: with Vintage on, S2 reads -3.0 and -4.1 dB and the ratchet fails.
 
@@ -568,6 +569,13 @@ The filter gap plan's step F2b ([fx-filter.md](fx-filter.md#the-pad-filter)): th
 - **S5:** against the new prototypes every filter is within about its old error (0.03 to 1.03 dB): the 2-pole low-pass 0.72 dB near 5 kHz, and the band-pass still 1.03 near 8 kHz, just over its target, both the bilinear mapping as before. The prototypes in the lab are the textbook curves, so the row tests the engine rather than copying it.
 - **S6:** the open, driven Ladder reads -98.3 and -74.1 dB at 12 dB of Drive (target -65; were -108.9 and -83.9) and -58.6 and -45.8 at 24 dB (were -65.0 and -44.3). A pad's centre pan, -3 dB, now comes after the drive instead of before it, so the drive hears the 0 dBFS sine at 0 dBFS rather than -3: it is driven harder. The ratchet was re-blessed for it.
 - **DSP quality's rows** (`crate::filters`, [DSP quality](dsp-quality.md)): under a fast envelope the state-variable types now step 1.5 to 2.6 dB over the held sound (Y1c; were 13.1 to 20.6) and under an LFO 0.16 dB or less (were 2.7 to 4.2), the Ladder 2.67 and 0.0001 (were 5.20 and 1.47); the resonant peak lands within 0.07 cents of the cutoff (were up to 26.1). The pad's drawn curve is now the stages' exact digital response, so the heard-against-drawn rows read as before or closer, and nine rows that compared 18 to 20 kHz no longer apply: the drawing is under -30 dB there. How far a moving filter rises over the same filter held reads higher in some rows, up to 3.9 dB (a 2-pole band-pass under the fast envelope, from 2.0; target 6), because the guard lowers the held peak it is measured against and a ring that a move takes by surprise is damped a frame or two late; the rows with the resonance moving at audio rate through the low-, high- and band-pass types read -14.1 to -4.6 dB before and -5.5 to -1.4 now, still under the held sound.
+
+### The cutoff follows the key (2026-11-23)
+
+The filter gap plan's step F3 ([fx-filter.md](fx-filter.md#the-pad-filter)): a hit's own part of its filter (Key track, velocity on the envelope, a random per hit) and the new row PF9.
+
+- **Met, the key tracking:** the -3 dB point is within 0.015 % of where the key puts it in every row, 12-TET at Key track 1, 0.5 and -1, just intonation and quarter tones: the 2-pole cutoff's own accuracy (PF1), so the tracking itself adds nothing measurable.
+- **Unchanged:** every other sampler and filter row, and the bench's golden sounds, since each new setting at 0 multiplies the cutoff by 1 and adds 0 to the resonance.
 
 ## Round 4: the rest of the dynamics
 

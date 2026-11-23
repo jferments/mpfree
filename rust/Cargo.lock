@@ -1048,6 +1048,7 @@ dependencies = [
  "mpfree-stretch",
  "mpfree-synth",
  "mpfree-synth-ui",
+ "mpfree-tuning",
 ]
 
 [[package]]

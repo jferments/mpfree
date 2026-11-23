@@ -194,6 +194,17 @@ impl Envelope {
         }
     }
 
+    /// [`Envelope::start`], its attack rising from `level` (0 to 1) instead
+    /// of from zero, in what is left of its time: a mono pad's next note
+    /// with Continue (the filter gap plan's F3). From 0 it is `start`.
+    pub fn start_from(p: &Ahdsr, rate: f32, level: f32) -> Envelope {
+        let mut e = Envelope::start(p, rate);
+        if e.stage == Stage::Attack && level > 0.0 {
+            e.level = level.min(1.0);
+        }
+        e
+    }
+
     pub fn release(&mut self) {
         if self.stage != Stage::Done {
             self.stage = Stage::Release;
@@ -297,6 +308,10 @@ pub struct Filter {
 
 /// The ladder's strongest drive, in dB.
 pub const MAX_DRIVE_DB: f32 = 24.0;
+
+/// The filter envelope's deepest move of the cutoff either way, in
+/// octaves ([`Filter::env_octaves`]).
+pub const MAX_ENV_OCTAVES: f32 = 4.0;
 
 impl Default for Filter {
     fn default() -> Self {

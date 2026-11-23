@@ -105,6 +105,15 @@ pub(super) struct Vary {
     /// Cents on top of `semis` that the voice keeps: a 16 Levels Tune
     /// step's interval in its kit's tuning.
     pub(super) cents: f32,
+    /// The hit's random on its filter (the filter gap plan's F3): octaves
+    /// on the cutoff and an amount on the resonance, the same for each of
+    /// its layers ([`Engine::hit_random`]).
+    pub(super) rand_oct: f32,
+    pub(super) rand_res: f32,
+    /// A mono pad's next note with Continue ([`crate::model::Mono::env_continue`]):
+    /// the levels its amp and filter envelopes start their attacks from,
+    /// where the last note's were.
+    pub(super) env_from: Option<(f32, f32)>,
 }
 
 impl Vary {
@@ -275,6 +284,21 @@ impl Engine {
             return;
         }
         let from = self.mono_pitch(pad).or(self.mono_at[at * PADS + p]);
+        // Continue: the new note's envelopes start where the last note's
+        // are (its newest sounding voice's), not from zero (F3).
+        if m.env_continue {
+            vary.env_from = self
+                .pool
+                .iter()
+                .filter(|(v, _)| {
+                    v.active && v.kill_left == 0 && usize::from(v.kit) == at && v.pad == pad
+                })
+                .max_by_key(|(v, _)| v.age)
+                .map(|(v, _)| {
+                    let level = |e: &Option<Envelope>| e.as_ref().map_or(0.0, Envelope::level);
+                    (level(&v.amp), level(&v.fenv))
+                });
+        }
         for (v, _) in self.pool.iter_mut() {
             if v.active && usize::from(v.kit) == at && v.pad == pad {
                 Self::kill(v);
@@ -359,6 +383,9 @@ impl Engine {
                     m.glide_cents = 0.0;
                 }
                 m.cents += m.glide_cents - was;
+                // The filter follows the new key: at once, or from where
+                // it is with the glide (F3).
+                m.rekey(v.key_cents);
                 retime(v);
             }
             v.note = note;
@@ -611,6 +638,17 @@ impl Engine {
 
         let vel = f32::from(velocity) / 127.0;
         let level = (1.0 - vp.vel_to_level) + vp.vel_to_level * vel * vel;
+        // The hit's random on its filter, one draw for all its layers (F3).
+        let vary = if vp.cutoff_random > 0.0 || vp.res_random > 0.0 {
+            let (c, r) = self.hit_random(p, note);
+            Vary {
+                rand_oct: c * vp.cutoff_random * RANDOM_OCTAVES,
+                rand_res: r * vp.res_random * RANDOM_RES,
+                ..vary
+            }
+        } else {
+            vary
+        };
         // Key and velocity fades: a level for each layer, set at the start.
         let key_gain = match vp.keys {
             Some(k) if note != NO_NOTE && k.contains(note) => {
@@ -775,6 +813,7 @@ impl Engine {
                     v.key_cents += key - was;
                     v.tuned = Some(key);
                 }
+                v.motion.rekey(v.key_cents);
                 v.glide_to = to;
                 v.glide_step = (to - v.grain_hit) / glide.max(1) as f32;
                 v.glide_left = glide;
@@ -793,7 +832,12 @@ impl Engine {
     /// Retrig off), its pitch envelope, and velocity `vel` (0 to 1) on its
     /// pitch and cutoff, under the pad's `live` row. `pitched`: its pitch
     /// may move. `glide`: cents it slides in from, over the pad's glide
-    /// time (a mono pad's next note, sampler R5.5).
+    /// time (a mono pad's next note, sampler R5.5). The filter gap plan's
+    /// F3: `key_cents` is its key from its sound's root
+    /// ([`Voice::key_cents`]), and `vary` holds its hit's random; with
+    /// velocity on the envelope's depth, they make the hit's own part of
+    /// its filter's setting ([`retune`]).
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn motion_for(
         &self,
         vp: &ViewPad,
@@ -801,6 +845,8 @@ impl Engine {
         vel: f32,
         pitched: bool,
         glide: f32,
+        key_cents: f32,
+        vary: &Vary,
     ) -> Motion {
         let set = |f: PadField| Some(live[f as usize]).filter(|x| !x.is_nan());
         let rate = self.rate;
@@ -817,7 +863,10 @@ impl Engine {
             } else {
                 0.0
             },
-            vel_fc: (-4.0 * vp.vel_to_cutoff * soft).exp2(),
+            hit_oct: -4.0 * vp.vel_to_cutoff * soft + vary.rand_oct,
+            key_track: vp.key_track,
+            env_scale: 1.0 - vp.vel_to_env * soft,
+            res_add: vary.rand_res,
             pitched,
             // Seeded from the hit count, so the same performance renders
             // the same.
@@ -837,9 +886,47 @@ impl Engine {
             m.glide(glide, vp.mono.glide_ms, rate);
         }
         m.cents = m.vel_cents + m.env_cents + m.glide_cents;
-        m.fc = m.vel_fc;
+        // The hit's factor is the cutoff's until `motion_step` first works
+        // it out: from where a glide starts, as the pitch is (F3).
+        m.rekey(key_cents);
+        m.fc = m.hit_fc;
+        if m.glide_cents != 0.0 && m.key_track != 0.0 {
+            m.fc *= (m.key_track * m.glide_cents / 1200.0).exp2();
+        }
         m.on |= m.env_cents != 0.0 || m.glide_cents != 0.0;
         m
+    }
+
+    /// The random of a hit on pad `pad` (`note` for a keygroup's) for its
+    /// filter, two values from -1 to 1, the cutoff's and the resonance's
+    /// (the filter gap plan's F3): from where the hit is, not from a count
+    /// of hits, so a song plays the same each time from its start, an
+    /// export matches what played, and an edit elsewhere leaves a hit's
+    /// random as it was. While the transport plays that is its place in
+    /// the song, to a 960th of a beat, and how many times it has jumped
+    /// back since it started (a loop's hits draw anew each time round);
+    /// stopped, the engine's frame. With its kit, pad and note, so two
+    /// pads or a chord's notes hit together each draw their own.
+    pub(super) fn hit_random(&self, pad: usize, note: u8) -> (f32, f32) {
+        let (place, pass) = match self.beat {
+            Some((frame, beat)) => {
+                let at = beat + (self.event_frame as f64 - frame as f64) / self.frames_per_beat();
+                ((at * 960.0).round() as i64 as u64 | 1 << 63, self.passes)
+            }
+            None => (self.event_frame & !(1 << 63), 0),
+        };
+        let who = (self.at as u64) << 24 | (pad as u64) << 8 | u64::from(note);
+        // SplitMix64's finish, twice: every bit of the place, who and the
+        // pass reaches all 64 of it.
+        let mix = |mut h: u64| {
+            h = (h ^ (h >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            h = (h ^ (h >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            h ^ (h >> 31)
+        };
+        let h = mix(place ^ who.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        let h = mix(h ^ u64::from(pass).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        let unit = |x: u64| (x & 0xFF_FFFF) as f32 / (1u32 << 23) as f32 - 1.0;
+        (unit(h), unit(h >> 32))
     }
 
     /// Where an LFO that runs on between hits (Retrig off) is in its cycle
@@ -1043,7 +1130,17 @@ impl Engine {
             set(PadField::Cutoff),
             set(PadField::Resonance),
             program[ProgramField::Cutoff as usize],
-        );
+        )
+        .map(|mut f| {
+            // A live or locked Drive and envelope depth (F3).
+            if let Some(db) = set(PadField::Drive) {
+                f.drive_db = db;
+            }
+            if let Some(oct) = set(PadField::EnvDepth) {
+                f.env_octaves = oct;
+            }
+            f
+        });
         // A live tune in place of the pad's own, and the program's tune
         // (which playing voices follow). A warped layer keeps its pitch.
         let warped = l.warp_bpm > 0.0;
@@ -1127,6 +1224,9 @@ impl Engine {
             own_pan: vp.pan,
             own_fc,
             own_res,
+            env_to: filter.map_or(0.0, |f| f.env_octaves),
+            own_env: vp.filter.env_octaves,
+            own_drive: vp.filter.drive_db,
             ..Follow::default()
         };
         let step = if l.warp_bpm > 0.0 {
@@ -1137,7 +1237,21 @@ impl Engine {
         // The pad's LFO, pitch envelope and velocity on pitch and cutoff
         // (R5 part 4), with a live or locked depth and envelope. A warped
         // layer and a grain voice keep their pitch.
-        let motion = self.motion_for(vp, &live, vel, !granular && !warped, vary.glide_cents);
+        let key_cents = semis as f32 * 100.0 + tuned;
+        let motion = self.motion_for(
+            vp,
+            &live,
+            vel,
+            !granular && !warped,
+            vary.glide_cents,
+            key_cents,
+            &vary,
+        );
+        // The filter envelope, its attack longer on a soft hit, and where
+        // a mono pad's Continue starts both envelopes (F3).
+        let mut fenv = vp.filter_env;
+        fenv.attack_ms += vp.vel_to_attack * (1.0 - vel.clamp(0.0, 1.0)) * VEL_ATTACK_MS;
+        let env_from = vary.env_from.unwrap_or((0.0, 0.0));
         // A plain one-shot (as a kit's drum hits are) can take one of the
         // voices past the full-voice limit: it costs a fraction of a full
         // voice once it plays (`plain_now`, `render_plain`).
@@ -1243,8 +1357,8 @@ impl Engine {
             mode: Some(mode),
             held: true,
             age: self.clock,
-            amp: Some(Envelope::start(&amp, self.rate)),
-            fenv: filter.map(|_| Envelope::start(&vp.filter_env, self.rate)),
+            amp: Some(Envelope::start_from(&amp, self.rate, env_from.0)),
+            fenv: filter.map(|_| Envelope::start_from(&fenv, self.rate, env_from.1)),
             filter,
             filt: VoiceFilter {
                 comb,
@@ -1282,7 +1396,7 @@ impl Engine {
             plain_step: plain,
             note,
             tuned: vary.tuned,
-            key_cents: semis as f32 * 100.0 + tuned,
+            key_cents,
             by: vary.by.unwrap_or(p as u8),
             latch: vp.latch,
             audition: vary.slice.is_some(),

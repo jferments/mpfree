@@ -1147,6 +1147,11 @@ fn visit_pad<F: Fields>(f: &mut F, p: &mut Pad) {
         lfo,
         pitch_env,
         vel_to_cutoff,
+        key_track,
+        vel_to_env,
+        vel_to_attack,
+        cutoff_random,
+        res_random,
         vel_to_pitch,
         mono,
         kind,
@@ -1230,6 +1235,12 @@ fn visit_pad<F: Fields>(f: &mut F, p: &mut Pad) {
         f.num("decay_ms", decay_ms);
     });
     f.num("vel_to_cutoff", vel_to_cutoff);
+    // Saves before the filter gap plan's F3 open with none of these.
+    f.num("key_track", key_track);
+    f.num("vel_to_env", vel_to_env);
+    f.num("vel_to_attack", vel_to_attack);
+    f.num("cutoff_random", cutoff_random);
+    f.num("res_random", res_random);
     f.num("vel_to_pitch", vel_to_pitch);
     f.scope("mono", |f| {
         let Mono {
@@ -1237,11 +1248,13 @@ fn visit_pad<F: Fields>(f: &mut F, p: &mut Pad) {
             legato,
             glide_ms,
             glide_held,
+            env_continue,
         } = mono;
         f.flag("on", on);
         f.flag("legato", legato);
         f.num("glide_ms", glide_ms);
         f.flag("glide_held", glide_held);
+        f.flag("env_continue", env_continue);
     });
     visit_kind(f, kind);
     f.flag("on_launch", on_launch);

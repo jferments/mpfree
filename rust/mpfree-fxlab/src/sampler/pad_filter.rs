@@ -47,6 +47,14 @@
 //!   filter linear. The Ladder's rows, at Drive 0 and 12 dB, have no target
 //!   yet: its drive's curve makes some DC, which step F6 rebuilds.
 //!
+//! - **PF9, the cutoff follows the key:** a 2-pole low-pass at 1 kHz on a
+//!   keygroup (its root A3), Key track 1, 0.5 and -1, keys from two
+//!   octaves down to two up, in 12-TET, just intonation and quarter tones
+//!   (the filter gap plan's F3): the -3 dB point against 1 kHz moved by the
+//!   key track times how far the key sounds from the sound's root in the
+//!   kit's tuning, from the key's click against the same key's click on
+//!   a dry keygroup. Within 1 %, as PF1.
+//!
 //! DSP quality's measures (`crate::filters`, Y1a to Y2b) hold the pad's
 //! filter to the curve its page draws, and cover two things the effect's
 //! targets ask for here too: stepping under a fast envelope and LFO
@@ -55,7 +63,9 @@
 //! bench's sampler cases, as for S1 to S7.
 
 use mpfree_sampler::dsp::{Ahdsr, Filter, FilterKind};
+use mpfree_sampler::engine::{Engine, EngineView, Event};
 use mpfree_sampler::model::Pad;
+use mpfree_tuning::{Builtin, Tuning};
 
 use super::{floor, hit, kit, pad, play, put, sound, through, worst_alias_db};
 use crate::fft::power_spectrum;
@@ -156,6 +166,7 @@ pub(super) fn rows(rows: &mut Vec<Row>, rate: u32) {
     quiet(rows, rate);
     driven(rows, rate);
     centred(rows, rate);
+    keyed(rows, rate);
 }
 
 // ---------------------------------------------------------------------------
@@ -461,6 +472,120 @@ fn centred(rows: &mut Vec<Row>, rate: u32) {
             Better::Lower,
             None,
             1.0,
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PF9: the cutoff follows the key.
+
+/// The keygroup's root: A3, where its sound plays as recorded.
+const ROOT: u8 = 57;
+
+/// A click on key `note` of a keygroup over the whole keyboard (its root
+/// [`ROOT`]) in `tuning`, through `f` at Key track `track` (None: dry),
+/// the left channel's first `frames` frames.
+fn keyed_click(
+    f: Option<Filter>,
+    track: f32,
+    note: u8,
+    tuning: &Tuning,
+    rate: u32,
+    frames: usize,
+) -> Vec<f64> {
+    let mut click = vec![0.0; IR];
+    click[32] = 0.5;
+    let s = sound(&click, rate);
+    let p = pad(&s, |p| {
+        if let Some(f) = f {
+            p.filter = f;
+        }
+        p.key_track = track;
+    });
+    let mut project = kit(vec![(s, p)]);
+    project.spread_to_keys(0, ROOT).expect("a lab keygroup");
+    for s in project.sources() {
+        s.make_octaves();
+    }
+    let mut e = Engine::new(rate, 8);
+    e.set_view(EngineView::build(&project, rate));
+    e.set_tuning(0, tuning);
+    e.apply(Event::Key {
+        note,
+        velocity: 127,
+    });
+    let (mut l, mut r) = (vec![0.0f32; frames], vec![0.0f32; frames]);
+    for (a, b) in l.chunks_mut(128).zip(r.chunks_mut(128)) {
+        e.render(a, b);
+    }
+    l.into_iter().map(f64::from).collect()
+}
+
+/// A PF9 row: its name, the kit's tuning, and the keys played, each with
+/// its Key track.
+type KeyRow<'a> = (&'a str, &'a Tuning, &'a [(f32, u8)]);
+
+fn keyed(rows: &mut Vec<Row>, rate: u32) {
+    // Two octaves down reads the click at a quarter of its speed.
+    let frames = IR * 4;
+    let equal = Tuning::standard();
+    let just = Builtin::Just.tuning(0, 440.0);
+    let quarter = Tuning::equal(24, 440.0);
+    let cases: [KeyRow; 4] = [
+        (
+            "Key track 1, 12-TET",
+            &equal,
+            &[
+                (1.0, ROOT - 24),
+                (1.0, ROOT - 12),
+                (1.0, ROOT - 5),
+                (1.0, ROOT + 7),
+                (1.0, ROOT + 12),
+            ],
+        ),
+        (
+            "Key track 0.5 and -1, 12-TET",
+            &equal,
+            &[
+                (0.5, ROOT - 24),
+                (0.5, ROOT + 24),
+                (-1.0, ROOT - 12),
+                (-1.0, ROOT + 12),
+            ],
+        ),
+        (
+            "Key track 1, just",
+            &just,
+            &[(1.0, 60), (1.0, 64), (1.0, 67)],
+        ),
+        (
+            "Key track 1, 24-TET",
+            &quarter,
+            &[(1.0, 45), (1.0, 50), (1.0, 58), (1.0, 69)],
+        ),
+    ];
+    let low_pass = filter(FilterKind::LowPass, 2, 1_000.0, 0.0);
+    for (name, tuning, keys) in cases {
+        let mut worst = 0.0f64;
+        for &(track, note) in keys {
+            // Where the key sounds from the sound's root, in the tuning.
+            let cents = f64::from(i32::from(note) - i32::from(ROOT)) * 100.0
+                + f64::from(tuning.offset_cents(f32::from(note)));
+            let want = 1_000.0 * (f64::from(track) * cents / 1200.0).exp2();
+            let dry = keyed_click(None, track, note, tuning, rate, frames);
+            let wet = keyed_click(Some(low_pass), track, note, tuning, rate, frames);
+            let found = minus_3db(|f| gain_db(&wet, &dry, f, rate), want, false, rate);
+            worst = worst.max((found / want - 1.0).abs() * 100.0);
+        }
+        put(
+            rows,
+            "PF9",
+            format!("pad filter[low-pass 2-pole, {name}]"),
+            "cutoff_error_pct",
+            worst,
+            Better::Lower,
+            Some(1.0),
+            0.05,
         );
     }
 }

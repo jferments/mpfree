@@ -48,9 +48,9 @@
 //!
 //! - **PF1 to PF9, the pad filter against its knobs:** the cutoff, shape
 //!   and slope at Resonance 0, the passband, a loud and a quiet sound at
-//!   full Resonance, stepping under a fast envelope and LFO, the Ladder
-//!   singing and a driven Ladder's aliases, against fixed targets rather
-//!   than each type's own prototype ([`pad_filter`]).
+//!   full Resonance, a driven Ladder's aliases, a loud sound staying
+//!   centred and the cutoff following the key, against fixed targets
+//!   rather than each type's own prototype ([`pad_filter`]).
 //!
 //! Cost per voice is the bench's: `mpfree-bench`'s sampler cases, counted
 //! on CI by the instruction gate. Design: `docs/dev/design/fx-quality.md`
