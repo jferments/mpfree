@@ -1371,6 +1371,18 @@ pub fn notes_tool_state() -> Result<TimeState, String> {
     Ok(state)
 }
 
+/// The keys clip with Pads write on (piano roll plan 1C.2): the cursor
+/// on the second bar's last beat, where a pad pressed writes, nothing
+/// picked.
+pub fn notes_pads_state() -> Result<TimeState, String> {
+    let mut state = notes_state(crate::editor::Lens::Grid)?;
+    let e = state.edit.as_mut().ok_or("no editor")?;
+    e.editor.pads_write = true;
+    e.editor.cursor = BAR + 3 * BEAT;
+    e.editor.sel.clear();
+    Ok(state)
+}
+
 /// The note editor on "Keys" with the two melody notes that carry
 /// pressure picked (piano roll plan 3A.1): with the Pressure lane on,
 /// it draws their swells as lines under them.
