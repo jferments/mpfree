@@ -1187,3 +1187,215 @@ fn the_free_clock_counts_as_the_songs_spans_do() {
     assert_eq!(c.span(0, 64, 123_456).state, State::Stopped);
     assert_eq!(c.next_bar(123_456), None);
 }
+
+/// Presses at random on two song loops and two free loops together, with
+/// the song starting, stopping, locating and changing tempo under them,
+/// the free loops' own Stop and Play, Capture and snaps (a round with a
+/// snap runs until it lands), at an odd period size, beside the same
+/// presses with no free loop at all (the free loops' presses left out,
+/// everything else the same). The free loops are muted, so what is heard
+/// is the song loops alone. Nothing panics, every layer plays its loop's
+/// length, the memory adds up, a free loop playing always has the free
+/// clock, and the song loops come out exactly as they do with no free
+/// loop: the same output to the bit, the same state and the same layers,
+/// sample for sample. The free loops take and give back memory, so the
+/// song loops' overdubs get other blocks than they would without them:
+/// that is how this found overdubs at another tempo playing what their
+/// blocks held before (`tests/looper.rs`, an overdub at another tempo).
+#[test]
+fn random_presses_on_free_loops_leave_the_song_loops_as_they_would_be() {
+    use mpfree_looper::Edit as E;
+    let mut seed = 0x5EED_F2EE_100F_C0DEu64;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let rig = || {
+        let mut r = Rig::new(97);
+        r.l = Looper::new(RATE, 240);
+        r
+    };
+    let (mut a, mut b) = (rig(), rig());
+    // Loops 2 and 3 are free, and muted from the start.
+    for n in [2, 3] {
+        a.select(n);
+        a.cmd(L::SetClock(Clock::Free));
+        a.cmd(L::Mute(true));
+    }
+    let input = |f: u64| {
+        let x = noise(f);
+        [0.3 * x[0], 0.2 * x[1]]
+    };
+    let same = |a: &Rig, b: &Rig, n: usize, round: u32, layers: bool| {
+        let (x, y) = (a.status(n), b.status(n));
+        let key = |s: &Status| {
+            (
+                s.phase,
+                s.layers,
+                s.redo,
+                s.frames,
+                s.ticks,
+                s.origin,
+                s.position.to_bits(),
+                s.muted,
+                s.version,
+                (s.cut, s.starts_on, s.cue, s.kept),
+                (s.speed, s.rate, s.clock, s.free),
+            )
+        };
+        assert_eq!(key(&x), key(&y), "song loop {n} in round {round}");
+        assert_eq!(x.capturing.map(f32::to_bits), y.capturing.map(f32::to_bits));
+        if layers {
+            for k in 0..x.layers {
+                let (u, v) = (a.l.loop_layer(n, k).unwrap(), b.l.loop_layer(n, k).unwrap());
+                let mut p = vec![[0.0f32; 2]; u.len() / 2];
+                let mut q = vec![[0.0f32; 2]; v.len() / 2];
+                u.read(0, &mut p);
+                v.read(0, &mut q);
+                assert!(p == q, "song loop {n} layer {k} in round {round}");
+            }
+        }
+    };
+    let (mut free_played, mut free_snaps, mut free_captures, mut song_played) = (0, 0, 0, 0);
+    a.at(START, T::Play);
+    b.at(START, T::Play);
+    for round in 0..1_200u32 {
+        // Every draw is made in both runs alike; only the free loops'
+        // presses are left out of the run without them.
+        let what = next() % 24;
+        let free = (10..18).contains(&what);
+        // Loop 3 records less, so that loop 2 is often the only free loop
+        // with sound, which a free snap needs.
+        let n = match next() % 4 {
+            0 if free => 3,
+            _ if free => 2,
+            k => (k % 2) as usize,
+        };
+        let pick = next() % 16;
+        let arg = next();
+        // A snap needs sound: on an empty free loop, Capture instead.
+        let pick = if free && pick > 12 && a.status(n).phase == Phase::Empty {
+            12
+        } else {
+            pick
+        };
+        // A press; a snap planned gives the frame it lands on, and the
+        // round runs to it.
+        let press = |r: &mut Rig| -> Option<u64> {
+            r.select(n);
+            let c = match pick {
+                0 | 1 => L::Record,
+                2 | 3 => L::Overdub,
+                4 => L::Undo,
+                5 => L::Redo,
+                6 => L::Edit(E::Half),
+                7 => L::Edit(E::Double),
+                8 => L::Edit(E::Reverse),
+                9 => L::Edit(E::Nudge((arg % 9) as i32 - 4)),
+                10 if arg % 3 == 0 => L::Forget,
+                10 => L::Clear,
+                11 => L::SetBars([None, Some(1), Some(2)][(arg % 3) as usize]),
+                12 => L::Capture((arg % 2 + 1) as u32),
+                13 if !free => L::Mute(arg % 2 == 0),
+                13..=15 => {
+                    let s = [Snap::Bars(1), Snap::Bars(2), Snap::Bars(4), Snap::Undo]
+                        [(arg % 4) as usize];
+                    let p = r.l.snap_plan(n, s, r.frame).ok()?;
+                    let at = p.at;
+                    r.l.snap_at(p);
+                    return Some(at);
+                }
+                _ => return None,
+            };
+            r.cmd(c);
+            None
+        };
+        // One input, one recording: a loop that starts recording stops
+        // the others recording, so a free loop starts only while no song
+        // loop records (or is armed to).
+        let song_records = (0..2).any(|k| {
+            matches!(
+                a.status(k).phase,
+                Phase::Armed | Phase::Recording | Phase::Overdubbing
+            )
+        });
+        // A capture counts once it has made a loop.
+        let captured = (free && pick == 12 && a.status(n).phase == Phase::Empty).then_some(n);
+        let mut lands = None;
+        match what {
+            0..=9 => {
+                lands = press(&mut a);
+                assert_eq!(press(&mut b), lands);
+            }
+            10..=17 if song_records && pick < 4 => {}
+            10..=17 => lands = press(&mut a),
+            18..=21 => {
+                let c = match what {
+                    // STOP half as often as PLAY: a second STOP with the
+                    // song stopped stops the free loops too.
+                    18 => T::Play,
+                    19 if arg % 2 == 0 => T::Play,
+                    19 => T::Stop,
+                    20 => T::Locate((arg % 24) as i64 * BAR_TICKS / 4),
+                    _ => T::TempoNow(100.0 + (arg % 150) as f64),
+                };
+                let f = a.frame;
+                let (x, y) = (a.t.command(f, c), b.t.command(f, c));
+                assert_eq!(x, y);
+            }
+            22 if arg % 3 == 0 => {
+                a.cmd(L::FreeStop);
+                b.cmd(L::FreeStop);
+            }
+            _ => {
+                a.cmd(L::FreePlay);
+                b.cmd(L::FreePlay);
+            }
+        }
+        let to = (a.frame + 300 + next() % 3_000).max(lands.map_or(0, |at| at + 1));
+        a.run(to, &input);
+        b.run(to, &input);
+        if let Some(d) = a.l.take_snap() {
+            free_snaps += usize::from(d.landed && d.plan.n >= 2);
+        }
+        let _ = b.l.take_snap();
+        for n in 0..4 {
+            let s = a.status(n);
+            for k in 0..s.layers {
+                let w = a.l.loop_layer(n, k).unwrap();
+                assert_eq!(w.len(), 2 * s.frames, "loop {n} layer {k} in round {round}");
+            }
+            if n >= 2 {
+                assert_eq!(s.clock, Clock::Free);
+                if matches!(s.phase, Phase::Playing | Phase::Overdubbing) {
+                    assert!(a.l.free_clock().is_some(), "loop {n} plays, round {round}");
+                    free_played += 1;
+                }
+                free_captures += usize::from(captured == Some(n) && s.phase != Phase::Empty);
+            } else {
+                song_played += usize::from(s.phase == Phase::Playing);
+                same(&a, &b, n, round, true);
+            }
+        }
+        let m = a.l.memory();
+        assert!(
+            m.used <= m.capacity / 2,
+            "memory {} of {}",
+            m.used,
+            m.capacity
+        );
+        assert_eq!(m.used, (0..8).map(|n| a.status(n).used).sum::<usize>());
+        assert_eq!(first_difference(&a.out, &b.out), None, "round {round}");
+    }
+    for n in 0..2 {
+        same(&a, &b, n, 1_200, true);
+    }
+    assert!(a.out.iter().all(|v| v.is_finite() && v.abs() < 8.0));
+    assert!(
+        free_played > 1_000 && song_played > 300 && free_snaps >= 4 && free_captures >= 4,
+        "free loops played {free_played}, song loops {song_played}, free snaps {free_snaps}, \
+         captures {free_captures}"
+    );
+}

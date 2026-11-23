@@ -40,7 +40,7 @@ The MPC's own **REC**, **OVERDUB** and **UNDO** work the picked loop while the l
 | **Clear** (Looper tab), or a ring held a second | | | Deletes the whole loop, so you can start again. UNDO brings it back. |
 | **The loop's speaker** | | | Silences the loop without losing it. Tap again to hear it. |
 
-**STOP** while the first pass records stops it at once and keeps what you played, up to the next bar line, so a loop is never lost. Stopping the transport while you overdub ends the overdub. With the transport stopped, Record or Overdub on a loop that has something in it waits for **PLAY**, with OVERDUB and PLAY blinking; **STOP** then lets go of it (and of a loop armed with Record), so nothing is left blinking.
+**STOP** while the first pass records stops it at once and keeps what you played, up to the next bar line, so a loop is never lost. Stopping the transport while you overdub ends the overdub. If the song jumps while you overdub (you move the playhead, or the song's loop goes round where the loop doesn't fit it), the overdub carries on from the new place: over bars it has already recorded, it adds to them; past them, before it has gone round the loop once, it carries on as a new layer, so UNDO takes back what you played after the jump first. With the transport stopped, Record or Overdub on a loop that has something in it waits for **PLAY**, with OVERDUB and PLAY blinking; **STOP** then lets go of it (and of a loop armed with Record), so nothing is left blinking.
 
 ## The Looper tab
 

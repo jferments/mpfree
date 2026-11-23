@@ -178,6 +178,11 @@ const STEP: f32 = 1.0 / FADE as f32;
 /// input runs on without a break there, so a short fade is enough, and the
 /// downbeat's attack is kept (about 0.7 ms at 44.1 kHz).
 pub const HANDOFF_FADE: usize = 32;
+/// The most loop frames the overdub writer moves on from one frame to the
+/// next while the song plays on: the song at its fastest (400 BPM) over a
+/// loop recorded at its slowest (20 BPM) moves 20. Further than that, or
+/// back, the song jumped ([`Loop::od_jump`]).
+const MAX_STEP: usize = 32;
 /// A table entry with no block.
 const NONE: u16 = u16::MAX;
 /// An overdub whose input never went over this (-60 dB) took silence, and
@@ -2061,6 +2066,18 @@ struct Loop {
     /// The slot it writes.
     od_layer: usize,
     od_in: usize,
+    /// The loop frame it wrote last, and what it wrote there: the song
+    /// slower than the loop was recorded brings it to a frame again, and
+    /// faster takes it past frames, which it fills ([`Loop::write_overdub`]).
+    od_q: usize,
+    od_y: [f32; 2],
+    /// Frames since the song jumped under it, for its fade-in at the new
+    /// place (`FADE`: none).
+    od_rise: usize,
+    /// Its slot's count of frames recorded when it last went back over
+    /// them (the song jumped back): the frames after that it has recorded
+    /// once, and only those fade out where it was at the next jump.
+    od_fresh_from: usize,
     /// Frames of the writer's fade-in.
     od_fade: usize,
     od_stop_in: Option<u32>,
@@ -2399,6 +2416,10 @@ impl Loop {
         od_open: false,
         od_layer: 0,
         od_in: 0,
+        od_q: 0,
+        od_y: [0.0; 2],
+        od_rise: FADE,
+        od_fresh_from: 0,
         od_fade: FADE,
         od_stop_in: None,
         od_out: 0,
@@ -8085,6 +8106,10 @@ impl Loop {
         self.od_handoff = false;
         self.od_layer = k;
         self.od_in = 0;
+        self.od_q = 0;
+        self.od_y = [0.0; 2];
+        self.od_rise = FADE;
+        self.od_fresh_from = 0;
         self.od_fade = fade;
         self.od_stop_in = None;
         self.od_once = self.overdubs == Overdubs::Once;
@@ -8178,7 +8203,14 @@ impl Loop {
     /// writer to finish (it runs `latency` frames behind, so this input is
     /// still the first pass), and while the transport is stopped (Overdub
     /// pressed before Play); it fades out when the transport stops.
-    fn overdub_frame(&mut self, store: &mut Store, me: usize, x: [f32; 2], playing: bool) {
+    fn overdub_frame(
+        &mut self,
+        store: &mut Store,
+        stats: &mut Stats,
+        me: usize,
+        x: [f32; 2],
+        playing: bool,
+    ) {
         if self.first_open {
             return;
         }
@@ -8192,7 +8224,7 @@ impl Loop {
             }
             self.od_stop_in = Some(0);
         }
-        self.write_overdub(store, me, x);
+        self.write_overdub(store, stats, me, x);
     }
 
     /// Smart loop end's Auto with Then: Overdub, at the overdub's first
@@ -8246,13 +8278,37 @@ impl Loop {
         self.handoffs += 1;
     }
 
-    fn write_overdub(&mut self, store: &mut Store, me: usize, x: [f32; 2]) {
+    /// The overdub writer's frame: input `x` on the loop frame `latency`
+    /// before the playhead. A layer plays only the frames its overdub
+    /// recorded (`Slot::valid`, one stretch from where it began), never
+    /// what a reused block held before, so the writer goes from frame to
+    /// frame of the loop, whatever the song's tempo: the song slower than
+    /// the loop was recorded brings it to a frame again (the frame keeps
+    /// the input it took first), faster takes it past frames (they take
+    /// what lies between the inputs either side), and a jump goes to
+    /// [`Loop::od_jump`]. At the loop's own tempo it moves a frame a frame.
+    fn write_overdub(&mut self, store: &mut Store, stats: &mut Stats, me: usize, x: [f32; 2]) {
         let len = self.len;
+        let q = ((self.pos - f64::from(self.latency))
+            .rem_euclid(len as f64)
+            .round() as usize)
+            % len;
+        // The loop frames on from the one it wrote last.
+        let was = self.od_q;
+        let mut step = if q >= was { q - was } else { q + len - was };
+        if self.slots[self.od_layer].valid.1 > 0 && step > MAX_STEP {
+            if !self.od_jump(store, stats, me, q) {
+                return;
+            }
+            step = 1;
+        }
+        let k = self.od_layer;
         // One pass: it punches out `latency` frames early, so that its
-        // fade-out starts on the frame it started on.
+        // fade-out starts on the frame it started on (counted in the loop
+        // frames it has recorded).
         if self.od_once
             && self.od_stop_in.is_none()
-            && self.od_in >= len.saturating_sub(self.latency as usize).max(1)
+            && self.slots[k].valid.1 >= len.saturating_sub(self.latency as usize).max(1)
         {
             self.punch_out();
         }
@@ -8261,6 +8317,11 @@ impl Loop {
         } else {
             1.0
         };
+        // Fading in where the song jumped it to.
+        if self.od_rise < FADE {
+            g = g.min((self.od_rise as f32 + 0.5) * STEP);
+            self.od_rise += 1;
+        }
         self.od_in += 1;
         self.od_peak = self.od_peak.max(x[0].abs()).max(x[1].abs());
         let mut last = false;
@@ -8273,43 +8334,144 @@ impl Loop {
             Some(left) => self.od_stop_in = Some(left - 1),
             None => {}
         }
-        let q = ((self.pos - f64::from(self.latency))
-            .rem_euclid(len as f64)
-            .round() as usize)
-            % len;
-        let k = self.od_layer;
-        let (start, count) = self.slots[k].valid;
         let y = [x[0] * g, x[1] * g];
-        if count == 0 {
+        let first = self.slots[k].valid.1 == 0;
+        if first {
             if self.od_handoff {
                 self.hand_off(store, me, q, x, y);
             } else {
                 self.slots[k].valid = (q, 1);
                 store.set(me, k, q, y);
             }
-        } else if count < len {
-            self.slots[k].valid = (start, count + 1);
-            store.set(me, k, q, y);
-        } else if self.slots[k].replace.is_some() {
+        } else if step == 1 {
+            self.od_put(store, me, q, y, g);
+        } else if step > 1 {
+            let y0 = self.od_y;
+            for i in 1..step {
+                let w = i as f32 / step as f32;
+                let t = if was + i >= len {
+                    was + i - len
+                } else {
+                    was + i
+                };
+                let v = [y0[0] + (y[0] - y0[0]) * w, y0[1] + (y[1] - y0[1]) * w];
+                self.od_put(store, me, t, v, g);
+            }
+            self.od_put(store, me, q, y, g);
+        }
+        if first || step != 0 {
+            self.od_q = q;
+            self.od_y = y;
+        }
+        if last {
+            self.close_overdub(store, me);
+        }
+    }
+
+    /// Frame `t` of the overdub's layer takes `y`, its input at gain `g`:
+    /// the frame after what it has recorded, or, once it has gone round
+    /// the loop or the song took it back, a frame it recorded before, which
+    /// it adds to (over a Replace's earlier passes it crossfades, and Fade
+    /// old keeps their share).
+    #[inline]
+    fn od_put(&mut self, store: &mut Store, me: usize, t: usize, y: [f32; 2], g: f32) {
+        let (len, k) = (self.len, self.od_layer);
+        let (start, count) = self.slots[k].valid;
+        if count < len {
+            let end = if start + count >= len {
+                start + count - len
+            } else {
+                start + count
+            };
+            if t == end {
+                self.slots[k].valid = (start, count + 1);
+                store.set(me, k, t, y);
+                return;
+            }
+            // Back over what it recorded: the song jumped back.
+            self.od_fresh_from = count;
+        }
+        if self.slots[k].replace.is_some() {
             // Replace: a later pass takes the place of the earlier ones,
             // crossfading into them as it fades out.
-            let was = store.get(me, k, q);
+            let was = store.get(me, k, t);
             store.set(
                 me,
                 k,
-                q,
+                t,
                 [was[0] * (1.0 - g) + y[0], was[1] * (1.0 - g) + y[1]],
             );
         } else if self.fade_old < 1.0 {
             // Fade old: this layer's earlier passes keep their share.
-            let was = store.get(me, k, q);
+            let was = store.get(me, k, t);
             let f = self.fade_old;
-            store.set(me, k, q, [was[0] * f + y[0], was[1] * f + y[1]]);
+            store.set(me, k, t, [was[0] * f + y[0], was[1] * f + y[1]]);
         } else {
-            store.add(me, k, q, y);
+            store.add(me, k, t, y);
         }
-        if last {
-            self.close_overdub(store, me);
+    }
+
+    /// The song jumped under the overdub (a locate, or the song's loop
+    /// going round where this loop doesn't fit it), to loop frame `q`.
+    /// Into what it has recorded, or on from its end, it records on there,
+    /// fading in and adding to what it recorded, and what it recorded last
+    /// fades out where it was. Past what it has recorded, before it has
+    /// gone round the loop, a layer would hold frames it never recorded:
+    /// it ends where it was (faded out), and a new overdub records from
+    /// the new place, as Overdub pressed twice would (Once, or punching
+    /// out already, it just ends). Hardly begun (under a fade), it starts
+    /// again at the new place. False if it ended and records nothing more.
+    #[cold]
+    #[inline(never)]
+    fn od_jump(&mut self, store: &mut Store, stats: &mut Stats, me: usize, q: usize) -> bool {
+        let (len, k) = (self.len, self.od_layer);
+        let (start, count) = self.slots[k].valid;
+        self.od_rise = 0;
+        if count >= len {
+            return true;
+        }
+        let d = if q >= start {
+            q - start
+        } else {
+            q + len - start
+        };
+        let ending = self.od_stop_in.is_some();
+        if d <= count && !ending {
+            self.fade_back(store, me);
+            return true;
+        }
+        if count < FADE && !ending {
+            self.slots[k].valid = (0, 0);
+            self.od_fresh_from = 0;
+            return true;
+        }
+        self.fade_back(store, me);
+        let again = !ending && !self.od_once;
+        self.close_overdub(store, me);
+        if again {
+            self.open_overdub(store, stats, me, FADE);
+        }
+        self.od_open
+    }
+
+    /// What the overdub recorded last, up to where it is, fades out there,
+    /// as a punch-out fades it: the song jumped it elsewhere. Only frames
+    /// it recorded once (where it went back over what it recorded, what
+    /// it added to is left as it is).
+    #[cold]
+    fn fade_back(&mut self, store: &mut Store, me: usize) {
+        let (len, k) = (self.len, self.od_layer);
+        let (start, count) = self.slots[k].valid;
+        if count == 0 || count >= len || self.od_q != (start + count - 1) % len {
+            return;
+        }
+        let n = self.od_out_len.min(count - self.od_fresh_from.min(count));
+        let last = self.od_q;
+        for i in 0..n {
+            let t = if last >= i { last - i } else { last + len - i };
+            let w = (i as f32 + 0.5) / n as f32;
+            let v = store.get(me, k, t);
+            store.set(me, k, t, [v[0] * w, v[1] * w]);
         }
     }
 
@@ -8413,7 +8575,7 @@ impl Loop {
             ys[j][0] += v[0];
             ys[j][1] += v[1];
             if self.od_open {
-                self.overdub_frame(store, me, x, r.playing);
+                self.overdub_frame(store, stats, me, x, r.playing);
             }
             j += 1;
         }
