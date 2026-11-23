@@ -2663,6 +2663,7 @@ mod tests {
             faded: 1.0,
             file: String::new(),
             audio,
+            raw: None,
         };
         let one = |n: usize, layers: Vec<LayerFile>| {
             (
@@ -2682,6 +2683,7 @@ mod tests {
                     id: 0,
                     clock: mpfree_looper::Clock::Song,
                     layers,
+                    raw: None,
                 },
             )
         };

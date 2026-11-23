@@ -451,6 +451,27 @@ fn saving_and_loading_never_allocate() {
     assert_eq!(l.loop_status(5).unwrap().phase, Phase::Empty);
     assert!(l.take_loaded(5).is_some());
     drop(loaded);
+    // Kept as the looper holds it (audio tracks phase 4c): raw_layer
+    // reads, and the load copies in and puts the views back, without
+    // allocating.
+    let mut raw = l.loop_file_raw(0).expect("savable");
+    for y in &mut raw.layers {
+        y.audio = vec![0.0; 2 * y.raw.as_ref().unwrap().size];
+    }
+    watch(true);
+    for (k, y) in raw.layers.iter_mut().enumerate() {
+        for (i, piece) in y.audio.chunks_mut(2 * 777).enumerate() {
+            assert!(l.raw_layer(0, k, 777 * i, piece).is_some());
+        }
+    }
+    l.select_loop(6);
+    l.load(6, raw).unwrap();
+    for &n in [1usize, 7, 128, 333, 4096, 64].iter().cycle().take(400) {
+        period(&mut t, &mut l, n);
+    }
+    watch(false);
+    assert_eq!(l.loop_status(6).unwrap().phase, Phase::Playing);
+    assert!(l.take_loaded(6).is_some());
     assert_eq!(calls(), 0, "allocated while saving or loading");
 }
 

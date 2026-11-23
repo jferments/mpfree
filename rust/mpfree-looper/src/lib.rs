@@ -118,7 +118,7 @@ pub use outs::LoopOuts;
 pub use reading::{
     read_bars, read_bars_with, Reading, Sure, TempoHint, TempoKind, LOOP_MAX_BPM, LOOP_MIN_BPM,
 };
-pub use save::{LayerFile, LoopFile};
+pub use save::{LayerFile, LoopFile, RawLayer, RawShape};
 
 use ends::NoteLog;
 use find::FindJob;
@@ -1562,6 +1562,48 @@ const NO_SHAPE: Shape = Shape {
     in_order: 0,
 };
 
+/// A loop opening as the looper held it (format 2, audio tracks phase
+/// 4c): each layer's view of its audio, and the loop's shape, checked
+/// before anything changes ([`Looper::load`]) and taken when all of its
+/// audio is in.
+#[derive(Clone, Copy)]
+struct LoadRaw {
+    views: [View; MAX_LAYERS],
+    shape: save::RawShape,
+}
+
+impl LoadRaw {
+    /// Its views and shape, if `f` was kept as the looper held it (None:
+    /// as it plays). Err when they don't hold together: a layer's view
+    /// that doesn't play the loop's length, frames written past its audio,
+    /// a seam too long, or a first pass's region or capture outside layer
+    /// 0's audio; or only some of it kept that way.
+    fn of(f: &LoopFile) -> Result<Option<LoadRaw>, ()> {
+        let Some(shape) = f.raw else {
+            return match f.layers.iter().any(|y| y.raw.is_some()) {
+                true => Err(()),
+                false => Ok(None),
+            };
+        };
+        let mut views = [View::EMPTY; MAX_LAYERS];
+        for (k, y) in f.layers.iter().enumerate() {
+            let r = y.raw.as_ref().ok_or(())?;
+            let v = View::from_pieces(r.size, &r.pieces).ok_or(())?;
+            if v.len() != f.frames || r.valid.0 >= r.size || r.valid.1 > r.size {
+                return Err(());
+            }
+            *views.get_mut(k).ok_or(())? = v;
+        }
+        let first = views[0].size();
+        let inside = |(a, b): (usize, usize)| a <= first && b <= first;
+        let ok = shape.seam <= MAX_SEAM
+            && shape.region.is_none_or(inside)
+            && shape.captured.0 <= shape.captured.1
+            && inside(shape.captured);
+        ok.then_some(Some(LoadRaw { views, shape })).ok_or(())
+    }
+}
+
 /// A layer's place in its loop and its mix. Its audio is in the store.
 #[derive(Clone, Copy, Debug)]
 struct Slot {
@@ -1871,6 +1913,16 @@ impl Store {
 /// Blocks for `frames` frames.
 fn blocks_for(frames: usize) -> usize {
     frames.div_ceil(BLOCK)
+}
+
+/// The frames of a layer's `size` up to its last one written, `valid`
+/// being (first written, count): all of them once it went round.
+fn written_to(size: usize, (start, count): (usize, usize)) -> usize {
+    if count >= size || start + count > size {
+        size
+    } else {
+        start + count
+    }
 }
 
 /// The blocks [`Looper::new`] makes for `seconds` at `rate`: the seconds,
@@ -2193,6 +2245,11 @@ struct Loop {
     loading: bool,
     ld_layers: usize,
     ld_frames: usize,
+    /// Frames a load copies in, all its layers' together.
+    ld_total: usize,
+    /// A loop opening as the looper held it (format 2): its layers'
+    /// views and its shape, which it takes when all of it is in.
+    ld_raw: Option<LoadRaw>,
     ld_ticks: Tick,
     ld_origin: Tick,
     ld_done: usize,
@@ -2492,6 +2549,8 @@ impl Loop {
         loading: false,
         ld_layers: 0,
         ld_frames: 0,
+        ld_total: 0,
+        ld_raw: None,
         ld_ticks: 0,
         ld_origin: 0,
         ld_done: 0,
@@ -3218,7 +3277,7 @@ impl Looper {
                 .fitting
                 .then(|| l.fit_done as f32 / l.fit_frames.max(1) as f32),
             loading: (l.loading && l.ld_heard.is_none())
-                .then(|| l.ld_done as f32 / (l.ld_frames * l.ld_layers).max(1) as f32),
+                .then(|| l.ld_done as f32 / l.ld_total.max(1) as f32),
             copying: l
                 .adding
                 .then(|| l.ad_done as f32 / l.ad_frames.max(1) as f32),
@@ -3325,6 +3384,7 @@ impl Looper {
                     faded: s.age,
                     file: String::new(),
                     audio: Vec::new(),
+                    raw: None,
                 }
             })
             .collect();
@@ -3343,7 +3403,73 @@ impl Looper {
             id: 0,
             clock: l.clock,
             layers,
+            raw: None,
         })
+    }
+
+    /// Loop `n` as the looper holds it (format 2, audio tracks phase 4c),
+    /// to save it so that it reopens exactly: [`Looper::loop_file`] with
+    /// its shape ([`save::RawShape`]) and each layer's view of its audio
+    /// ([`save::RawLayer`]), without the audio (read it with
+    /// [`Looper::raw_layer`]). None when it couldn't be saved now.
+    /// Allocates: not for the audio thread.
+    pub fn loop_file_raw(&self, n: usize) -> Option<LoopFile> {
+        let mut f = self.loop_file(n)?;
+        let l = &self.loops[n];
+        // The first pass's region and capture are in slot 0's audio,
+        // which opens as layer 0: kept only while that is its first layer.
+        let first = l.listed(0) == Some(0);
+        f.raw = Some(save::RawShape {
+            seam: l.seam,
+            region: l.region.filter(|_| first),
+            captured: if first { l.captured } else { (0, 0) },
+            cut: l.cut,
+        });
+        for (k, y) in f.layers.iter_mut().enumerate() {
+            let slot = l.listed(k)?;
+            let (s, v) = (&l.slots[slot], &l.views[slot]);
+            y.raw = Some(save::RawLayer {
+                size: v.size(),
+                valid: s.valid,
+                pieces: v
+                    .pieces()
+                    .iter()
+                    .map(|p| (p.start, p.len, p.back))
+                    .collect(),
+                replace: s.replace,
+            });
+        }
+        Some(f)
+    }
+
+    /// Frames `from` on of layer `k` of loop `n`'s audio (in play order)
+    /// as it was written, not as it plays: its view's `size` frames, which
+    /// [`Looper::loop_file_raw`] gives (audio tracks phase 4c). Frames it
+    /// never wrote, and any past its audio, are silence. Into `out`,
+    /// interleaved stereo; gives the loop's version ([`Status::version`]),
+    /// or None, writing nothing, when the loop couldn't be saved now or
+    /// has no such layer. Does not allocate.
+    pub fn raw_layer(&self, n: usize, k: usize, from: usize, out: &mut [f32]) -> Option<u64> {
+        let l = self.loops.get(n)?;
+        if !l.savable() {
+            return None;
+        }
+        let slot = l.listed(k)?;
+        let blocks = self.store.blocks_of(n, slot);
+        let size = l.views[slot].size();
+        let (start, count) = l.slots[slot].valid;
+        for (i, y) in out.chunks_exact_mut(2).enumerate() {
+            let a = from + i;
+            // Frames from the first one written, as playback counts them.
+            let written = a < size && (count >= size || (a + size - start % size) % size < count);
+            let x = if written {
+                self.store.frame(blocks, a / BLOCK, a % BLOCK)
+            } else {
+                [0.0; 2]
+            };
+            y.copy_from_slice(&x);
+        }
+        Some(l.version)
     }
 
     /// Frames `from` on of layer `k` of loop `n` (in play order) as it
@@ -3391,6 +3517,13 @@ impl Looper {
     /// loop number is past [`MAX_LOOPS`], there are no layers or more
     /// than `MAX_LAYERS - 1`, a layer is shorter than `frames`, the
     /// memory is short, or it is a free loop and there is no free clock.
+    /// A loop kept as the looper held it ([`Looper::loop_file_raw`]) is
+    /// checked whole first, each layer's audio being its view's size; its
+    /// memory goes up to each layer's last frame written, and its views
+    /// and shape come back exactly.
+    // The file comes back whole, not boxed: this runs on the audio thread,
+    // which must not allocate or free.
+    #[allow(clippy::result_large_err)]
     pub fn load(&mut self, n: usize, f: LoopFile) -> Result<(), LoopFile> {
         let Some(l) = self.loops.get_mut(n) else {
             return Err(f);
@@ -3404,12 +3537,25 @@ impl Looper {
             && f.ticks > 0
             && !f.layers.is_empty()
             && f.layers.len() < MAX_LAYERS
-            && f.layers.iter().all(|y| y.audio.len() >= 2 * f.frames)
             && (f.clock == Clock::Song || self.free_time.clock.is_some());
+        // Each layer's audio and how it plays it: as it plays (the loop's
+        // length, a whole view), or as the looper held it (format 2).
+        let raw = match LoadRaw::of(&f) {
+            Ok(r) => r,
+            Err(()) => return Err(f),
+        };
+        let size = |k: usize| raw.as_ref().map_or(f.frames, |r| r.views[k].size());
+        let ok = ok && (0..f.layers.len()).all(|k| f.layers[k].audio.len() >= 2 * size(k));
         if !ok {
             return Err(f);
         }
-        let need = f.layers.len() * blocks_for(f.frames);
+        // Memory for the frames written: a first pass's view reaches
+        // MAX_SEAM frames past what it kept, which it never writes.
+        let held = |k: usize| match &f.layers[k].raw {
+            Some(r) => written_to(size(k), r.valid),
+            None => size(k),
+        };
+        let need: usize = (0..f.layers.len()).map(|k| blocks_for(held(k))).sum();
         if self.store.available() < need {
             return Err(f);
         }
@@ -3417,9 +3563,11 @@ impl Looper {
         self.store.drop_kept(n);
         l.reclaim(&mut self.store, n);
         for (k, y) in f.layers.iter().enumerate() {
-            self.store.grow(n, k, blocks_for(f.frames));
+            self.store.grow(n, k, blocks_for(held(k)));
+            let r = y.raw.as_ref();
             let mut s = Slot {
-                valid: (0, f.frames),
+                valid: r.map_or((0, f.frames), |r| r.valid),
+                replace: r.and_then(|r| r.replace),
                 level: y.level.clamp(0.0, 2.0),
                 pan: y.pan.clamp(-1.0, 1.0),
                 mute: y.muted,
@@ -3429,6 +3577,8 @@ impl Looper {
             };
             let any_solo = f.layers.iter().any(|y| y.solo);
             (s.gl, s.gr) = s.target(any_solo);
+            // A muted Replace covers nothing from its first frame.
+            s.duck = if s.heard(any_solo) { 1.0 } else { 0.0 };
             l.slots[k] = s;
         }
         l.level = f.level.clamp(0.0, 2.0);
@@ -3444,11 +3594,13 @@ impl Looper {
         l.loading = true;
         l.ld_layers = f.layers.len();
         l.ld_frames = f.frames;
+        l.ld_total = (0..f.layers.len()).map(size).sum();
+        l.ld_raw = raw;
         l.ld_ticks = f.ticks;
         l.ld_origin = f.origin;
         l.ld_done = 0;
         l.ld_from = self.now;
-        l.ld_at = self.now + (f.layers.len() * f.frames).div_ceil(LOAD_SPEED) as u64;
+        l.ld_at = self.now + l.ld_total.div_ceil(LOAD_SPEED) as u64;
         self.loads[n] = Some(f);
         Ok(())
     }
@@ -5673,6 +5825,8 @@ impl Looper {
         l.ld_heard = Some(t.start);
         l.ld_layers = 1;
         l.ld_frames = t.frames;
+        l.ld_total = t.frames;
+        l.ld_raw = None;
         l.ld_ticks = t.ticks;
         l.ld_origin = t.origin;
         l.ld_done = 0;
@@ -6816,11 +6970,22 @@ impl Loop {
     /// frame `end` is due: [`LOAD_SPEED`] frames for each frame since the
     /// load started.
     fn render_load(&mut self, store: &mut Store, me: usize, f: &LoopFile, end: u64) {
-        let total = self.ld_layers * self.ld_frames;
+        let total = self.ld_total;
         let due = (end - self.ld_from).saturating_mul(LOAD_SPEED as u64);
         let target = total.min(due.min(usize::MAX as u64) as usize);
+        // Each layer's frames in turn: the loop's length, or as the
+        // looper held it, its audio's own size.
+        let size = |k: usize| match &self.ld_raw {
+            Some(r) => r.views[k].size(),
+            None => self.ld_frames,
+        };
+        let (mut k, mut base) = (0, 0);
         for i in self.ld_done..target {
-            let (k, q) = (i / self.ld_frames, i % self.ld_frames);
+            while i - base >= size(k) {
+                base += size(k);
+                k += 1;
+            }
+            let q = i - base;
             let a = &f.layers[k].audio;
             store.set(me, k, q, [a[2 * q], a[2 * q + 1]]);
         }
@@ -6884,6 +7049,14 @@ impl Loop {
             self.views[k] = View::whole(self.len);
         }
         self.seam = FADE;
+        // As the looper held it: its views and shape, exactly.
+        if let Some(r) = self.ld_raw.take() {
+            self.views = r.views;
+            self.seam = r.shape.seam;
+            self.region = r.shape.region;
+            self.captured = r.shape.captured;
+            self.cut = r.shape.cut;
+        }
         self.n_done = 0;
         self.n_undone = 0;
         self.gain = 0.0;
@@ -8776,7 +8949,7 @@ impl Loop {
                 // A load, or a layer copied in, starts playing on its frame
                 // (whatever the period size), once all of it is in.
                 let (at, ready) = if self.loading {
-                    (self.ld_at, self.ld_done == self.ld_layers * self.ld_frames)
+                    (self.ld_at, self.ld_done == self.ld_total)
                 } else if self.adding {
                     (self.ad_at, self.ad_done == self.ad_frames)
                 } else {
@@ -9357,7 +9530,9 @@ impl Loop {
 
 #[cfg(test)]
 mod tests {
-    use super::{bytes_for, n_blocks, rem_ticks, Looper, BLOCK, NONE};
+    use super::{bytes_for, n_blocks, rem_ticks, written_to, Looper, BLOCK, NONE};
+    use crate::save::{LayerFile, LoopFile, RawLayer, RawShape};
+    use crate::{After, Starts, FADE};
 
     /// `bytes_for` is what `Looper::new` really sets aside, and the
     /// longest Prefs size (20 minutes) fits in the block numbers at both
@@ -9427,5 +9602,67 @@ mod tests {
             );
         }
         assert_eq!(checked, 1_000_000);
+    }
+
+    /// A layer kept as held takes memory up to its last frame written:
+    /// all of it once it went round.
+    #[test]
+    fn written_to_is_the_last_frame_written() {
+        assert_eq!(written_to(100, (0, 40)), 40);
+        assert_eq!(written_to(100, (30, 40)), 70);
+        assert_eq!(written_to(100, (70, 40)), 100);
+        assert_eq!(written_to(100, (0, 100)), 100);
+        assert_eq!(written_to(100, (5, 300)), 100);
+    }
+
+    /// Opened as held, a muted Replace covers nothing from its first
+    /// frame, and a heard one all it wrote: they don't move there.
+    #[test]
+    fn a_loaded_replace_starts_where_its_mute_leaves_it() {
+        let frames = 4 * BLOCK;
+        let layer = |muted: bool, replace: Option<(u32, u32)>| LayerFile {
+            level: 1.0,
+            pan: 0.0,
+            muted,
+            solo: false,
+            faded: 1.0,
+            file: String::new(),
+            audio: vec![0.25; 2 * frames],
+            raw: Some(RawLayer {
+                size: frames,
+                valid: (BLOCK, BLOCK),
+                pieces: vec![(0, frames as u32, false)],
+                replace,
+            }),
+        };
+        for (muted, duck) in [(true, 0.0), (false, 1.0)] {
+            let mut l = Looper::new(44_100, 4);
+            let f = LoopFile {
+                frames,
+                ticks: 960,
+                origin: 0,
+                level: 1.0,
+                muted: false,
+                bars: None,
+                after: After::Play,
+                starts: Starts::Bar,
+                fade_old: 1.0,
+                speed: 0,
+                rate: 0,
+                id: 0,
+                layers: vec![layer(false, None), layer(muted, Some((64, 64)))],
+                raw: Some(RawShape {
+                    seam: FADE,
+                    region: None,
+                    captured: (0, 0),
+                    cut: frames,
+                }),
+            };
+            assert!(l.load(0, f).is_ok());
+            let s = &l.loops[0].slots;
+            assert_eq!((s[0].duck, s[1].duck), (1.0, duck), "muted {muted}");
+            // Memory up to the last frame each wrote.
+            assert_eq!(l.store.held[0][0], 2);
+        }
     }
 }

@@ -38,6 +38,23 @@
 //! free-clock bpm=93.40000000000001 beats=4 unit=4 top=0
 //! ```
 //!
+//! Format 2 (`mpfree-looper 2`, audio tracks phase 4c, written only for
+//! loops kept as the looper holds them: [`LoopFile::raw`]) keeps each
+//! layer's audio as written, not as it plays, with how it plays it, so a
+//! loop reopens exactly and its edits can be taken further. Its loop line
+//! adds `seam=`, `region=` (or `-`), `captured=` and `cut=`; each layer
+//! line adds `size=` (frames of its audio, which its file holds),
+//! `valid=` (the first frame written and how many), `view=` (its pieces,
+//! `start:len` with `:b` for one played backwards, joined by `+`) and
+//! `replace=` (a Replace layer's fades in and out, or `-`):
+//!
+//! ```text
+//! mpfree-looper 2
+//! rate=44100 selected=0
+//! loop=0 frames=88200 ticks=3840 origin=0 level=1 muted=0 bars=1 after=play fade_old=1 seam=256 region=1536,1536 captured=1536,89736 cut=88200
+//! layer level=1 pan=0 muted=0 solo=0 faded=1 size=92808 valid=0,92808 view=1536:88200 replace=- file=3f0c...e1.wav
+//! ```
+//!
 //! A line is `key=value` words; `file=` comes last and takes the rest of
 //! the line. Unknown keys and lines are skipped, so a newer build's text
 //! still loads.
@@ -49,6 +66,8 @@ use crate::{After, Clock, FreeClock, Starts, MAX_LAYERS, MAX_LOOPS};
 
 /// The first line of the text.
 pub const FORMAT: &str = "mpfree-looper 1";
+/// The first line of format 2: loops kept as the looper holds them.
+pub const FORMAT_2: &str = "mpfree-looper 2";
 
 /// A loop as saved: its settings and its layers in play order.
 #[derive(Clone, Debug, PartialEq)]
@@ -76,6 +95,38 @@ pub struct LoopFile {
     /// are the free clock's ([`Saved::free_clock`]).
     pub clock: Clock,
     pub layers: Vec<LayerFile>,
+    /// Its shape as the looper holds it (format 2), with each layer's
+    /// [`LayerFile::raw`]; None: its layers as they play (format 1).
+    pub raw: Option<RawShape>,
+}
+
+/// A loop's shape as the looper holds it (format 2), beyond its length,
+/// place and speed: what its layers' views need to play the same.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RawShape {
+    /// Frames of its loop point's crossfade.
+    pub seam: usize,
+    /// The first pass's loop in the audio it kept (its first frame, and
+    /// the one on bar 1) while layer 0 plays that region alone.
+    pub region: Option<(usize, usize)>,
+    /// The frames of the first pass's audio that were its loop, as
+    /// recorded (for Move, Resize and the smart end).
+    pub captured: (usize, usize),
+    /// Frames of the first pass that hold its sound.
+    pub cut: usize,
+}
+
+/// A layer as the looper holds it (format 2): its audio as written,
+/// [`LayerFile::audio`] holding `size` frames, and how it plays it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RawLayer {
+    pub size: usize,
+    /// The first frame written, and how many (wrapping round `size`).
+    pub valid: (usize, usize),
+    /// Its view's pieces: first frame, frames, backwards.
+    pub pieces: Vec<(u32, u32, bool)>,
+    /// A Replace layer's fades in and out, in frames.
+    pub replace: Option<(u32, u32)>,
 }
 
 /// The free clock as saved, for its free loops: its tempo, exactly, its
@@ -111,8 +162,10 @@ pub struct LayerFile {
     /// Its audio's file in the project (`samples/...`); empty until named.
     pub file: String,
     /// Interleaved stereo, the loop's `frames` long, as it plays (empty in
-    /// the text).
+    /// the text); with `raw`, its `size` frames as written.
     pub audio: Vec<f32>,
+    /// How it plays its audio (format 2); None: as it plays (format 1).
+    pub raw: Option<RawLayer>,
 }
 
 /// The looper's part of a project: the device rate the loops were made
@@ -133,8 +186,13 @@ fn flag(b: bool) -> u8 {
 /// The text for `saved` (the layers' audio is not in it: each layer's
 /// `file` names it).
 pub fn to_text(saved: &Saved) -> String {
+    let format = if saved.loops.iter().any(|(_, l)| l.raw.is_some()) {
+        FORMAT_2
+    } else {
+        FORMAT
+    };
     let mut s = format!(
-        "{FORMAT}\nrate={} selected={}\n",
+        "{format}\nrate={} selected={}\n",
         saved.rate, saved.selected
     );
     for (n, l) in &saved.loops {
@@ -168,9 +226,36 @@ pub fn to_text(saved: &Saved) -> String {
             s.pop();
             s.push_str(" clock=free\n");
         }
-        for y in &l.layers {
+        if let Some(r) = &l.raw {
+            s.pop();
+            let region = r
+                .region
+                .map_or("-".to_string(), |(a, b)| format!("{a},{b}"));
             s.push_str(&format!(
-                "layer level={} pan={} muted={} solo={} faded={} file={}\n",
+                " seam={} region={region} captured={},{} cut={}\n",
+                r.seam, r.captured.0, r.captured.1, r.cut
+            ));
+        }
+        for y in &l.layers {
+            let raw = y.raw.as_ref().map_or(String::new(), |r| {
+                let view: Vec<String> = r
+                    .pieces
+                    .iter()
+                    .map(|&(a, n, b)| format!("{a}:{n}{}", if b { ":b" } else { "" }))
+                    .collect();
+                let replace = r
+                    .replace
+                    .map_or("-".to_string(), |(i, o)| format!("{i},{o}"));
+                format!(
+                    " size={} valid={},{} view={} replace={replace}",
+                    r.size,
+                    r.valid.0,
+                    r.valid.1,
+                    view.join("+")
+                )
+            });
+            s.push_str(&format!(
+                "layer level={} pan={} muted={} solo={} faded={}{raw} file={}\n",
                 y.level,
                 y.pan,
                 flag(y.muted),
@@ -236,14 +321,73 @@ fn bit(kv: &[(&str, &str)], key: &str) -> bool {
     get(kv, key) == Some("1")
 }
 
+/// `a,b`, two whole numbers.
+fn pair(v: &str) -> Option<(usize, usize)> {
+    let (a, b) = v.split_once(',')?;
+    Some((a.parse().ok()?, b.parse().ok()?))
+}
+
+/// A format 2 layer line's [`RawLayer`]: its audio's size, the frames
+/// written within it, a view of at most [`crate::view::MAX_PIECES`] pieces each
+/// starting inside its audio, and a Replace's fades. Refused, with the
+/// line, when any of it doesn't hold.
+fn raw_layer(kv: &[(&str, &str)], n: usize) -> Result<RawLayer, String> {
+    let size: usize = num(kv, "size", n)?;
+    let bad = |what: &str| format!("line {n}: {what}");
+    let valid = get(kv, "valid")
+        .and_then(pair)
+        .ok_or_else(|| bad("no valid"))?;
+    if size == 0 || size > u32::MAX as usize || valid.0 >= size.max(1) || valid.1 > size {
+        return Err(bad("its audio's frames"));
+    }
+    let view = get(kv, "view").ok_or_else(|| bad("no view"))?;
+    let mut pieces = Vec::new();
+    for p in view.split('+') {
+        let mut w = p.split(':');
+        let start = w.next().and_then(|x| x.parse::<u32>().ok());
+        let len = w.next().and_then(|x| x.parse::<u32>().ok());
+        let back = match w.next() {
+            None => false,
+            Some("b") => true,
+            Some(_) => return Err(bad("view")),
+        };
+        match (start, len) {
+            (Some(a), Some(l)) if (a as usize) < size && l > 0 && w.next().is_none() => {
+                pieces.push((a, l, back))
+            }
+            _ => return Err(bad("view")),
+        }
+    }
+    if pieces.is_empty() || pieces.len() > crate::view::MAX_PIECES {
+        return Err(bad("view"));
+    }
+    let replace = match get(kv, "replace") {
+        Some("-") | None => None,
+        Some(v) => {
+            let (i, o) = pair(v).ok_or_else(|| bad("replace"))?;
+            Some((
+                u32::try_from(i).map_err(|_| bad("replace"))?,
+                u32::try_from(o).map_err(|_| bad("replace"))?,
+            ))
+        }
+    };
+    Ok(RawLayer {
+        size,
+        valid,
+        pieces,
+        replace,
+    })
+}
+
 /// The part from its text. The layers come back without audio: load each
 /// one's `file`.
 pub fn from_text(text: &str) -> Result<Saved, String> {
     let mut lines = text.lines().enumerate();
-    match lines.next() {
-        Some((_, l)) if l.trim_end() == FORMAT => {}
+    let two = match lines.next() {
+        Some((_, l)) if l.trim_end() == FORMAT => false,
+        Some((_, l)) if l.trim_end() == FORMAT_2 => true,
         _ => return Err(format!("not a looper part (no \"{FORMAT}\")")),
-    }
+    };
     let mut saved = Saved {
         rate: 0,
         selected: 0,
@@ -324,6 +468,23 @@ pub fn from_text(text: &str) -> Result<Saved, String> {
                         _ => Clock::Song,
                     },
                     layers: Vec::new(),
+                    raw: if two {
+                        Some(RawShape {
+                            seam: num(&kv, "seam", n)?,
+                            region: match get(&kv, "region") {
+                                Some("-") | None => None,
+                                Some(v) => {
+                                    Some(pair(v).ok_or_else(|| format!("line {n}: region={v}"))?)
+                                }
+                            },
+                            captured: get(&kv, "captured")
+                                .and_then(pair)
+                                .ok_or_else(|| format!("line {n}: no captured"))?,
+                            cut: num(&kv, "cut", n)?,
+                        })
+                    } else {
+                        None
+                    },
                 },
             ));
         } else if line.starts_with("layer") {
@@ -337,6 +498,10 @@ pub fn from_text(text: &str) -> Result<Saved, String> {
             if file.is_empty() {
                 return Err(format!("line {n}: a layer with no file"));
             }
+            let raw = match two {
+                true => Some(raw_layer(&kv, n)?),
+                false => None,
+            };
             l.layers.push(LayerFile {
                 level: level(&kv, "level", n, 0.0, 2.0)?,
                 pan: level(&kv, "pan", n, -1.0, 1.0)?,
@@ -345,6 +510,7 @@ pub fn from_text(text: &str) -> Result<Saved, String> {
                 faded: level(&kv, "faded", n, 0.0, 1.0).unwrap_or(1.0),
                 file,
                 audio: Vec::new(),
+                raw,
             });
         }
     }
@@ -445,6 +611,7 @@ mod tests {
             faded: 0.88,
             file: file.to_string(),
             audio: Vec::new(),
+            raw: None,
         };
         Saved {
             rate: 44_100,
@@ -467,6 +634,7 @@ mod tests {
                         id: 0x0123_4567_89ab_cdef_fedc_ba98_7654_3210,
                         clock: Clock::Free,
                         layers: vec![layer(1.0, "a b.wav"), layer(0.1, "c.wav")],
+                        raw: None,
                     },
                 ),
                 (
@@ -486,6 +654,7 @@ mod tests {
                         id: 0,
                         clock: Clock::Song,
                         layers: vec![layer(1.0 / 3.0, "d.wav")],
+                        raw: None,
                     },
                 ),
             ],
@@ -543,6 +712,81 @@ mod tests {
         // Out-of-range mixes are kept in range.
         let s = from_text(&t.replace("level=0.7", "level=9")).unwrap();
         assert_eq!(s.loops[0].1.level, 2.0);
+    }
+
+    /// Format 2 (audio tracks phase 4c): a loop kept as the looper holds
+    /// it comes back as it was, its shape and each layer's view of its
+    /// audio; a view, written frames or a Replace that doesn't hold is
+    /// refused with its line, and a format 1 text still reads.
+    #[test]
+    fn a_loop_as_the_looper_holds_it_comes_back_as_it_was() {
+        let mut s = saved();
+        let l = &mut s.loops[0].1;
+        l.raw = Some(RawShape {
+            seam: 512,
+            region: Some((8192, 9000)),
+            captured: (8192, 96_392),
+            cut: 88_200,
+        });
+        l.layers[0].raw = Some(RawLayer {
+            size: 112_776,
+            valid: (0, 112_776),
+            pieces: vec![(9000, 79_392, false), (8192, 808, false)],
+            replace: None,
+        });
+        l.layers[1].raw = Some(RawLayer {
+            size: 88_200,
+            valid: (20_000, 30_000),
+            pieces: vec![(88_199, 88_200, true)],
+            replace: Some((256, 512)),
+        });
+        let t = to_text(&s);
+        assert!(t.starts_with("mpfree-looper 2\n"), "{t}");
+        assert!(t.contains(" seam=512 region=8192,9000 captured=8192,96392 cut=88200"));
+        assert!(
+            t.contains("view=9000:79392+8192:808 replace=- file=a b.wav"),
+            "{t}"
+        );
+        assert!(t.contains("valid=20000,30000 view=88199:88200:b replace=256,512"));
+        // Loop 2 kept as it plays, in a format 2 text: no shape, and its
+        // layer needs one, so it is refused.
+        let only = |s: &Saved| {
+            let mut s = s.clone();
+            s.loops.truncate(1);
+            s
+        };
+        assert_eq!(from_text(&to_text(&only(&s))), Ok(only(&s)));
+        assert!(from_text(&t).is_err(), "a layer with no view in format 2");
+        let t = to_text(&only(&s));
+        for (from, to) in [
+            ("view=9000:79392+8192:808", "view=200000:5"),
+            ("view=9000:79392+8192:808", "view=9000:0"),
+            ("view=9000:79392+8192:808", "view=9000:79392:x"),
+            ("view=9000:79392+8192:808", "view="),
+            ("valid=20000,30000", "valid=20000,99999"),
+            ("valid=20000,30000", "valid=88200,1"),
+            ("replace=256,512", "replace=256"),
+            ("size=88200", "size=0"),
+            (" cut=88200", ""),
+            ("region=8192,9000", "region=8192"),
+        ] {
+            assert!(t.contains(from), "{from}");
+            let e = from_text(&t.replace(from, to)).unwrap_err();
+            assert!(e.starts_with("line "), "{to}: {e}");
+        }
+        assert_eq!(
+            from_text(&t.replace("region=8192,9000", "region=-"))
+                .unwrap()
+                .loops[0]
+                .1
+                .raw
+                .unwrap()
+                .region,
+            None
+        );
+        // Format 1 still reads, with nothing kept as the looper holds it.
+        let one = from_text(&to_text(&saved())).unwrap();
+        assert!(one.loops.iter().all(|(_, l)| l.raw.is_none()));
     }
 
     #[test]
