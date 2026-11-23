@@ -4,8 +4,9 @@
   python3 tools/mpc-one/devtest_report.py LOG [LOG ...] [--out FILE]
 
 Give it the logs results.py kept for the round (~/mpfree-results/current/
-NN-NAME.log) or the tools' own --report files: host_bench_mpc.py's and
-host_devtest_mpc.py's, in any order. It finds in them:
+NN-NAME.log) or the tools' own --report files: host_bench_mpc.py's,
+host_devtest_mpc.py's and host_streamtest_mpc.py's, in any order. It finds
+in them:
 
 - the workflows (host_devtest_mpc.py): each run's exit code, the steps the
   app could not do (a control not on the page, a button with no number), the
@@ -14,7 +15,10 @@ host_devtest_mpc.py's, in any order. It finds in them:
   after the step that caused them), and for every mark's part of a run its
   underruns, periods, slow periods, late parts on the sound cores, and the
   sampler's and synth's render means over that part (from the status lines
-  the app writes at each mark); the screen's frames; your listening answer;
+  the app writes at each mark); where takes play from their files (the
+  stream test, D3), the takes on files and the seconds that went silent
+  because the drive was late, over each part (any silence fails the run);
+  the screen's frames; your listening answer;
 - heavy-load on each sound-core setting side by side, with the setting the
   numbers favour;
 - the benchmarks (host_bench_mpc.py): the NEON keep-or-drop A/B (every
@@ -44,6 +48,9 @@ CORES = re.compile(r"^status: sound cores (\S+): ")
 LATE = re.compile(r"(\d+) late")
 SLOW = re.compile(r"^control: slow period at ")
 SCREEN = re.compile(r"^screen: (\d+) frames, mean ([\d.]+) ms, slowest ([\d.]+) ms")
+# The audio tracks' status line while takes play from their files (the stream test's workflows, D3).
+FILES = re.compile(r"^status: audio tracks: .*; from their files: (\d+) of (\d+) takes, ([\d.]+) s went silent, "
+                   r"(\d+) of (\d+) region starts held")
 JSON_START = re.compile(r"^----- (\S+)\.json -----$")
 JSON_END = re.compile(r"^----- end of (\S+)\.json -----$")
 BUILD = re.compile(r"^\[\d+/\d+\] The (\S+) build")
@@ -97,8 +104,12 @@ def runs_in(lines):
 def totals(block):
     """(underruns, periods, sampler mean, synth mean, late, sampler max, synth max) of one status block."""
     t = {"underruns": None, "periods": None, "sampler": None, "synth": None, "late": 0,
-         "sampler_max": None, "synth_max": None}
+         "sampler_max": None, "synth_max": None, "silent": None, "on_file": None}
     for ln in block:
+        m = FILES.match(ln)
+        if m:
+            t["silent"] = float(m.group(3))
+            t["on_file"] = f"{m.group(1)} of {m.group(2)}"
         m = STATUS.match(ln)
         if m:
             t["underruns"], t["periods"] = int(m.group(2)), int(m.group(3))
@@ -149,6 +160,8 @@ def analyse(run):
             part.update(underruns=b["underruns"] - a["underruns"], periods=b["periods"] - a["periods"],
                         late=b["late"] - a["late"], sampler=window_mean(a, b, "sampler"),
                         synth=window_mean(a, b, "synth"))
+        if a and b and a["silent"] is not None and b["silent"] is not None:
+            part.update(silent=b["silent"] - a["silent"], on_file=b["on_file"])
         parts.append(part)
     failed = [f"line {m.group(1)}: {m.group(2)}" for ln in lines for m in [NOT_DONE.match(ln)] if m]
     checks = []
@@ -180,8 +193,10 @@ def fmt(v, digits=0):
 def workflow_section(runs, out, answer):
     bad = False
     out.append("## Workflows\n")
-    out.append("| workflow | exit | ran to its end | checks met | steps not done | underruns | slow periods | late parts |")
-    out.append("|---|---|---|---|---|---|---|---|")
+    streams = any(p.get("silent") is not None for run in runs for p in analyse(run)["parts"])
+    out.append("| workflow | exit | ran to its end | checks met | steps not done | underruns | slow periods | late parts |"
+               + (" went silent (s) |" if streams else ""))
+    out.append("|---|---|---|---|---|---|---|---|" + ("---|" if streams else ""))
     found = []
     for run in runs:
         a = analyse(run)
@@ -190,10 +205,13 @@ def workflow_section(runs, out, answer):
         under = sum(p.get("underruns", 0) or 0 for p in a["parts"])
         slow = sum(p["slow"] for p in a["parts"])
         late = sum(p.get("late", 0) or 0 for p in a["parts"])
-        ok = run.rc == 0 and a["done"] and met == len(a["checks"]) and not a["failed"] and under == 0
+        silent = [p["silent"] for p in a["parts"] if p.get("silent") is not None]
+        ok = (run.rc == 0 and a["done"] and met == len(a["checks"]) and not a["failed"] and under == 0
+              and sum(silent) == 0)
         bad |= not ok
         out.append(f"| {run.label()} | {run.rc if run.rc is not None else 'cut off'} | {'yes' if a['done'] else 'NO'} "
-                   f"| {met} of {len(a['checks'])} | {len(a['failed'])} | {under} | {slow} | {late} |")
+                   f"| {met} of {len(a['checks'])} | {len(a['failed'])} | {under} | {slow} | {late} |"
+                   + (f" {fmt(sum(silent), 2) if silent else '-'} |" if streams else ""))
     out.append("")
     if answer is not None:
         out.append(f"Your listening answer: {answer or '(nothing wrong)'}\n")
@@ -210,13 +228,20 @@ def workflow_section(runs, out, answer):
     out.append("## Each part of each workflow\n")
     out.append("Underruns, periods and late parts are counted over the part; render means are the part's own "
                "(µs a period); slow periods are the app's `control: slow period` lines.\n")
+    if streams:
+        out.append("Where takes play from their files (the stream test's workflows), takes on files is the count at "
+                   "the part's end and went silent the seconds of takes that played as silence in it because the "
+                   "drive was late.\n")
     for run, a in found:
+        files = any(p.get("silent") is not None for p in a["parts"])
         out.append(f"### {run.label()}\n")
-        out.append("| part | underruns | periods | slow periods | late parts | sampler render µs | synth render µs |")
-        out.append("|---|---|---|---|---|---|---|")
+        out.append("| part | underruns | periods | slow periods | late parts | sampler render µs | synth render µs |"
+                   + (" takes on files | went silent (s) |" if files else ""))
+        out.append("|---|---|---|---|---|---|---|" + ("---|---|" if files else ""))
         for p in a["parts"]:
             out.append(f"| {p['name']} | {fmt(p.get('underruns'))} | {fmt(p.get('periods'))} | {p['slow']} "
-                       f"| {fmt(p.get('late'))} | {fmt(p.get('sampler'))} | {fmt(p.get('synth'))} |")
+                       f"| {fmt(p.get('late'))} | {fmt(p.get('sampler'))} | {fmt(p.get('synth'))} |"
+                       + (f" {p.get('on_file') or '-'} | {fmt(p.get('silent'), 2)} |" if files else ""))
         e = a["end"]
         if e and e.get("sampler_max") is not None:
             out.append(f"\nWorst period of the run: sampler {e['sampler_max']} µs, synth {fmt(e.get('synth_max'))} µs.")

@@ -17,6 +17,7 @@ Plug a keyboard into **MIDI IN**, or a USB keyboard into the **USB** port, and i
 - **While the pads play a synth of their own** (the header reads **Pads: FM**, from the [list of synths](synths.md#pick-any-synth-for-the-pads) or **Play Poly on the pads**), the keys play it too, each key its own note, whichever track is armed, and the armed track hears none of them. Recording works as from the pads: the REC chip names the track it will use. A key you hold as the pads move on still lets go on the synth it started. Tap the chip for **Follow track** and the keys play the armed track again.
 - **With a synth on the pads,** the shared synth or a synth of the track's own, each key plays its own note, through the arpeggiator, so **NOTE REPEAT** and Latch work from the keyboard too. A note held on a key and a pad ends when both let go.
 - **With a drum kit,** every key hits one of the kit's 128 pads: the pad that sends that note to a drum machine with no [profile](#device-profiles) of its own (see [A kit on a drum machine](#a-kit-on-a-drum-machine)), whichever bank **PAD BANK** shows. C#2 is A1, C2 is A2 and so on through bank A, as the MPC sends its pads; B1 (35) is B1, D#2 (39) is B2 and so on through banks B to H. So a drum machine or another MPFree playing a kit's notes plays the same pads. The keys go through the arpeggiator, so **NOTE REPEAT** and Latch work from the keyboard, and a pad held on a key and on the MPC ends when both let go. Keys only play: in **STEP SEQ**, **TRACK MUTE** or 16 Levels they still play their pads, as keys on a synth do.
+- **With a kit of keygroups** (sounds spread across the keys, such as a sampled piano, see [Playing a kit on keys](shaping-a-pad.md#playing-a-kit-on-keys)), each key plays the keygroups that hold its note, at its own pitch, and a key outside every keygroup plays nothing, so a key below the piano never fires a drum. A kit that holds drum pads and keygroups plays its pads, as above. While the pads play notes too, the keys the pads reach go through them, with the arpeggiator and recording; for now, other keys on keygroups play at once, past the arpeggiator, and don't record (the MIDI monitor says each key's note, and the end of the run says how many there were). A key you hold lets go where it started.
 - The pad velocity setting, and Full Level, shape the keys' velocity as they do the pads'.
 
 ### The pitch wheel, pressure and MPE
@@ -50,7 +51,7 @@ So that no note hangs, a pedal that is down comes up on the track it was holding
 
 The I/O view's **Routing** section shows where each source's MIDI goes, on one grid. Down the side are your ports (the 5-pin **MIDI in** and each USB device), **The pads**, and the tracks. Across the top: **Armed track**, **Tracks by channel**, **Learn**, each MIDI out port and **CV out**. A square with a green bar plays something in MPFree; a blue bar sends something out. **+** means a tap sets it up, and **—** means nothing can go there (a tap says why). A small number in a square's corner counts its [blocks](#blocks-on-a-route).
 
-- **Tracks by channel** sends one channel of a port to one track, whichever track is armed. Tap a port's square and pick the channel and the track on the card below the grid (with – and +, or Q-Links 1 and 2). **+ Route** adds another, **Remove route** takes the picked one away. Two routes from the same channel to two tracks play both, to layer sounds. On a track that plays a kit, each key hits the pad that sends its note, and the pad plays as it would from the pads: its sound, its [synth voice or its note out to your gear](pads.md#what-a-pad-plays-sample-loop-instrument-midi-out). For example: a drum machine on **MIDI IN**, channel 10, plays **Drums**, while a keyboard on channel 1 plays **Bass** and you work on another track with the pads.
+- **Tracks by channel** sends one channel of a port to one track, whichever track is armed. Tap a port's square and pick the channel and the track on the card below the grid (with – and +, or Q-Links 1 and 2). **+ Route** adds another, **Remove route** takes the picked one away. Two routes from the same channel to two tracks play both, to layer sounds. On a track that plays a kit, each key hits the pad that sends its note, and the pad plays as it would from the pads: its sound, its [synth voice or its note out to your gear](pads.md#what-a-pad-plays-sample-loop-instrument-midi-out). A kit of keygroups plays each key by its pitch instead, as from the armed track's keys. For example: a drum machine on **MIDI IN**, channel 10, plays **Drums**, while a keyboard on channel 1 plays **Bass** and you work on another track with the pads.
 - Notes a route takes go only to its track, never to the armed track as well, so nothing plays twice. The rest of the port's notes go to the armed track.
 - A track played by a route plays where its clips play: its own sound, its synth or drum machine through MIDI out, and its CV outputs. With a drum kit, each key hits the pad that sends its note, in any bank. Only the armed track's notes go through the arpeggiator. A route's track records when you arm it too (SHIFT and a tap on its row in the REC chip's list, see [Record several tracks at once](sequencer.md#record-several-tracks-at-once)); otherwise it only plays, and [Capture](clips.md#capture-keep-what-you-just-played) keeps what a route played and puts it in the route's track.
 - **A synth no track plays.** Past the last track, the route's track stepper goes on to the synths no track has of its own: the shared synth (**Synth**) and each synth you picked in the list of synths, by its name in the mixer (**FM · Pads**). The route then plays that synth, whatever the pads and the armed track play, so a second keyboard can play the synth you're trying out on the pads. A synth a route plays stays in the project while the route does. Up to four synths can have routes at once: a fifth is refused, and says so.
@@ -235,16 +236,16 @@ MPFree can follow another device's MIDI clock. In the mixer's I/O view, under **
 - With **Start and stop** on, its Start and Stop start and stop MPFree. While the device is stopped, **PLAY** waits for it and says *Waiting for clock: PLAY starts when MIDI In starts*: press PLAY (or PLAY START, for bar 1) to get the pattern ready, then start the device.
 - To record from the device's start, press **REC** (or OVERDUB) while both are stopped. The take records from the device's first beat, with no count-in, since the device counts. PLAY keeps the take ready and says so; STOP lets go of it.
 - With **Position** on, MPFree plays from the same bar as the device, and goes back in step if it drifts away. The device owns the song's timeline, so MPFree's own loop is off while Position is on: the Record tab's **Loop** row reads *off while following*, and what you set there comes back when you turn Position off. Clips and scenes you launch still land on the bar line, which is the device's bar line too.
-- If its clock stops arriving, MPFree keeps playing at the last tempo.
+- If its clock stops arriving while it plays, MPFree keeps playing at the last tempo, and the status chip turns yellow until the clock comes back or the device sends Stop ([The clock MPFree follows stopped](../reference/when-something-goes-wrong.md#the-clock-mpfree-follows-stopped)).
 
 ### Playing, stopping and picking scenes from other gear
 
 Under **From other gear** in the **Sync** section, two settings let another device run MPFree. Both are off until you turn them on, and both are kept with the project.
 
 - **MMC in**: a computer's DAW, a hard disk recorder or a tape deck can play, stop, record and locate MPFree with **MIDI Machine Control** (MMC). Turn it on, and turn on "Send MMC" (or "MMC out") on the other device, on the port it reaches MPFree through. As on an MPC: **Play** (and **Deferred Play**) presses PLAY, **Stop** and **Pause** press STOP, **Record Strobe** presses REC, and **Locate** moves the playhead to its time (00:00:00:00 is the start of the song, along its tempo). **Locate zero then Play** is PLAY START. They do what the buttons do with what is armed: Record Strobe records what is armed, a ready take starts on Play, and Stop keeps a pad take that is recording. Play while MPFree plays does nothing (it is not FILL). Record Exit, fast forward and rewind do nothing. MPFree doesn't send MMC.
-- **Program change in**: set it to **Launches a scene**, and a program change from any port launches that scene of the [Clips grid](clips.md): program 1 launches scene 1, program 2 scene 2, and so on, on any channel, as a tap on the scene's launch button does (on the next bar line while playing). A program past the grid's last scene does nothing, and the log says so. A port set to ignore program changes (its page's **Ignore coming in**) launches nothing.
+- **Program change in**: set it to **Launches a scene**, and a program change from any port launches that scene of the [Clips grid](clips.md): program 1 launches scene 1, program 2 scene 2, and so on, on any channel, as a tap on the scene's launch button does (on the next bar line while playing). A program past the grid's last scene does nothing, and the log says so. A port set to ignore program changes (its page's **Ignore coming in**) launches nothing. Set it to **Picks a patch** and program 1 picks the song's patch 1, program 2 patch 2, and so on, at once or, with the **Switches** row under it, when your hands are up (see [Patches](patches.md#switching-with-a-program-change)).
 
-The MIDI monitor shows where each went: *MMC: the transport*, or *launched scene 3*.
+The MIDI monitor shows where each went: *MMC: the transport*, *launched scene 3*, or *picked patch 2*.
 
 MPFree can also send its own clock from **MIDI OUT**, or to a USB device, so a drum machine or an arpeggiator plays in time with it. Each port's **Clock out** is **Off**, **While playing** or **Always**, and each port with a delay gets its clock that much early. On a port's page, **Divide** slows the clock one port gets and **Nudge** moves it a little later or earlier than its notes (see [A port's page](#a-ports-page)).
 
@@ -316,7 +317,7 @@ Transport controls are kept in **Rig**, so they work in every project. Nothing h
 
 ### Playing the looper from a footswitch
 
-{{shot: mixer-io-learn-looper | The Learn section's Looper card: the Loop stepper on the picked loop with its Key and Mute, then Next loop, Undo, Redo, Capture and Clear.}}
+{{shot: mixer-io-learn-looper | The Learn section's Looper card: the Loop stepper on the picked loop with its Key and Mute, Next loop and Capture, then Undo, Redo, Clear, Snap and Use my tap.}}
 
 A footswitch leaves both hands on your instrument while you loop. Any control that sends MIDI can play the [looper](looping.md): a footswitch, a pedalboard, a button, a pad or a key. The MPC One has no footswitch jack, so plug the footswitch into a MIDI controller or a MIDI pedal that has one, and connect that to the MPC's USB or 5-pin MIDI in.
 
@@ -326,6 +327,7 @@ In the Learn section, tap **Looper** by the heading, tap one, then press the foo
 - **Key**: what the loop's pad does as a [loop key](looping.md#the-pads-as-loop-keys). Press to record from the next bar line, again to end the first pass, then to overdub and to play on; a muted loop plays again. Hold it for a second to clear the loop (UNDO brings it back).
 - **Mute**: mutes the loop, and lets it play again. A key or a pad flips it on each press; a footswitch or a fader mutes from halfway up and lets it play below that.
 - **Next loop** picks the next loop (after Loop 8, Loop 1). **Undo**, **Redo** and **Clear** are the Looper tab's buttons, on the picked loop. **Capture** keeps the bars you just played as a loop.
+- **Snap** and **Use my tap** are [smart loop end](looping.md#smart-loop-end)'s, on the picked loop, so you can take its suggestion without letting go of your instrument. **Snap** moves the loop's end (or start) to the hit it found, on the loop's next downbeat; **Use my tap** puts it back where you tapped. When the screen asks **Snap anyway?**, **Snap** says yes and **Use my tap** says not now.
 
 These work on every page, whatever the pads are doing. A **Key** or a press starts as **Button: while held**, so a footswitch goes down and comes up as a pad does; leave it so. The Learn section lists each one by what it plays: **Looper · Loop 3 key**, **Looper · picked loop's key**, **Looper · Next loop**. Looper controls are kept in **Rig**, so your pedalboard works in every project.
 
@@ -338,10 +340,24 @@ A knob or fader on your controller can turn the Play page's **Swing** and **Filt
 - **Swing**: from straight (50 %) to the most swing (75 %), as Play's Swing Q-Link turns it.
 - **Filter**: the filter Play's Filter Q-Link turns, the same way: track 1's, which Play's card calls Drums, whatever your project names track 1; low-pass below the middle, high-pass above it, and off in the middle.
 - **XY across** and **XY up**: each moves the XY pad one way, as your finger does, and the other way stays where it is. The pad on the Play page follows. Its effect plays until both are back where the pad rests: across in the middle and up at the bottom. Learn one on a joystick's two directions, or on two knobs side by side.
+- **Next patch** and **Previous patch**: a footswitch or a button that steps through the song's [patches](patches.md#switching-from-a-footswitch). Its card's **Switches** says whether the patch changes at once or once your hands are up.
 
 **Your finger and the XY knobs together:** the one that started last plays. Move a learned XY knob while your finger is on the pad and the knob takes over; your finger does nothing until you lift it and touch again. A touch while the knobs hold the pad takes it back the same way, and the knobs then do nothing until they are back where the pad rests.
 
 These work on every page. The Learn section lists them as **Play · Swing**, **Play · Filter**, **Play · XY across** and **Play · XY up**. They are kept in **Rig**, so your controller works the same in every project, and they move the sound but don't record into a clip. Touching Play's own cards and pad still works as before.
+
+### Footswitches for a set
+
+{{shot: mixer-io-learn-show | The Learn section's Show card: a set's seven controls, each for a footswitch or a button to learn.}}
+
+A footswitch can move you through a [set](set-lists.md) on stage, so you never reach for the screen between songs. In the Learn section, tap **Show** by the heading, tap one, then press the footswitch or the button:
+
+- **Next song** arms the song after the one playing, and pressing it again goes to it. **Previous song** arms the one before.
+- **Go** goes to the armed song. **Cancel next** drops the armed song and leaves the music as it is. **Back to the set order** arms the song after the one playing, in the set's order.
+- **Panic** stops and silences everything, as SHIFT + STOP does, and sends notes off on every MIDI out.
+- **Click** turns the click on or off, as SHIFT + PLAY START does.
+
+A press counts once: it acts as the switch goes down, a second press within 50 ms is the same press (a footswitch's bounce), and presses while a song is changing are ignored. These work on every page, in every project, while a set is open; with no set open they do nothing, and the hint line says so. They are kept in **Rig**. The Learn section lists them as **Show · Next song**, **Show · Go** and so on. If one control has two jobs, both its rows show in red with what else it does: learn one of them again on another switch.
 
 ### Playing a Perform pad from your gear
 

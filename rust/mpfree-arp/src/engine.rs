@@ -674,6 +674,8 @@ struct Pending {
     /// Absolute time in frames.
     at: f64,
     kind: EventKind,
+    /// The order it was queued in: events on the same frame go out in it.
+    seq: u64,
 }
 
 pub struct Engine {
@@ -725,6 +727,8 @@ pub struct Engine {
     /// direct mode ([`Engine::set_at`]): 0, at its top, but for a pad hit
     /// that waited for the launch line. Back to 0 once the period runs.
     at: u32,
+    /// The next event's [`Pending::seq`].
+    seq: u64,
 }
 
 impl Engine {
@@ -747,6 +751,7 @@ impl Engine {
             queue: [Pending {
                 at: 0.0,
                 kind: EventKind::Off { note: 0 },
+                seq: 0,
             }; MAX_PENDING],
             queued: 0,
             tied: 0.0,
@@ -759,6 +764,7 @@ impl Engine {
             sync: None,
             next_tick: 0,
             overflow: 0,
+            seq: 0,
         }
     }
 
@@ -1452,7 +1458,12 @@ impl Engine {
 
     fn queue_at(&mut self, at: f64, kind: EventKind) {
         if self.queued < MAX_PENDING {
-            self.queue[self.queued] = Pending { at, kind };
+            self.queue[self.queued] = Pending {
+                at,
+                kind,
+                seq: self.seq,
+            };
+            self.seq = self.seq.wrapping_add(1);
             self.queued += 1;
         } else {
             self.overflow += 1;
@@ -1471,9 +1482,13 @@ impl Engine {
         }
     }
 
-    /// Moves every pending event before `end` into `out`, in time order.
+    /// Moves every pending event before `end` into `out`, frame by frame;
+    /// on one frame, in the order they were queued. So a note that ends
+    /// on the frame it plays again ends first, and a note played and let
+    /// go inside one period plays and ends: it never hangs.
     fn drain(&mut self, end: u64, out: &mut Events) {
         let start = self.now as f64;
+        let key = |p: &Pending| ((p.at - start).max(0.0).floor(), p.seq);
         loop {
             let mut best: Option<usize> = None;
             for i in 0..self.queued {
@@ -1483,11 +1498,7 @@ impl Engine {
                 }
                 let earlier = match best {
                     None => true,
-                    Some(b) => {
-                        let q = &self.queue[b];
-                        let is_on = |k: &EventKind| matches!(k, EventKind::On { .. });
-                        (p.at, is_on(&p.kind)) < (q.at, is_on(&q.kind))
-                    }
+                    Some(b) => key(p) < key(&self.queue[b]),
                 };
                 if earlier {
                     best = Some(i);
@@ -1635,6 +1646,32 @@ mod tests {
         );
         e.set_latch(LatchMode::Off); // 6 is still held, so it keeps sounding
         assert!(run(&mut e, 128, 128).is_empty());
+    }
+
+    /// A pad or key pressed and let go before the next period (a quick
+    /// tap, or a MIDI note with no length) plays and ends on that period's
+    /// first frame: its note-off goes out after its note-on, so the note
+    /// never hangs.
+    #[test]
+    fn a_tap_inside_one_period_does_not_hang() {
+        let mut e = engine(Mode::Direct);
+        e.press(5, 90);
+        e.release(5);
+        let got = run(&mut e, 128, 128);
+        assert_eq!(
+            got,
+            [
+                (
+                    0,
+                    EventKind::On {
+                        note: 5,
+                        velocity: 90
+                    }
+                ),
+                (0, EventKind::Off { note: 5 })
+            ]
+        );
+        assert_eq!(e.sounding(), 0);
     }
 
     #[test]

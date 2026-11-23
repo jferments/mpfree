@@ -225,6 +225,8 @@ pub struct Session {
     pub synth_on: bool,
     /// What each track plays, as main.rs keeps it.
     pub track_kits: crate::sampler::TrackKits,
+    /// The song's tuning the kits were handed last, as main.rs keeps it.
+    kits_tuned: Option<crate::synth::TuningPick>,
     /// The project's instruments, as main.rs keeps them.
     pub instrument_list: crate::instrument_list::InstrumentList,
     /// The tracks' own instruments and sends the screen was last told of,
@@ -259,6 +261,11 @@ pub struct Session {
     /// The pads held on the instrument the host's pads player plays (step
     /// 6), as main.rs's.
     host_held: [bool; 16],
+    /// The kit chosen for the pads that plays on its own (sampler step
+    /// 15), as main.rs's `pads_preview`, and the kit and pad each pad held
+    /// on it hit.
+    kit_preview: Option<usize>,
+    kit_held: [Option<(usize, usize)>; 16],
     /// Keys playing the pads' synth while the pads play it on their own
     /// (step 7b, as main.rs).
     keys_on_pads: crate::KeysOnPads,
@@ -289,9 +296,6 @@ pub struct Session {
     /// The app's effects waiting for the desk (a test may add some).
     pub fx: Vec<Effect>,
     kit_to: Option<usize>,
-    /// A kit picked in the list (or turned with SHIFT + the wheel) since
-    /// the kit last changed: the pads follow the track (main.rs's own).
-    kit_picked: bool,
     /// The boxes the screen lent the audio thread.
     preview: Option<Box<crate::preview::Preview>>,
     rec_feed: Option<Box<crate::sampler::RecFeed>>,
@@ -315,7 +319,13 @@ pub struct Session {
     /// try (presets.rs), as main.rs keeps them.
     pub presets: crate::presets::TrackPresets,
     mix_turns: crate::mixturns::MixTurns,
-    turns_told: (bool, bool),
+    turns_told: (bool, bool, bool),
+    /// Your XY layouts in the song, as main.rs keeps them, and whether a
+    /// project's layout waits for its mixer to play.
+    pub xy_yours: crate::xy_song::XySong,
+    xy_opening: bool,
+    /// Stay's turns on a layout of yours, for UNDO (main.rs's own).
+    xy_turns: crate::xy_song::XyTurns,
     /// The library the browser saves projects into (`with_library`).
     pub library: Option<mpfree_library::Library>,
     /// A save asked for (SHIFT + BROWSE, Save in the browser), and the
@@ -403,6 +413,7 @@ impl Session {
             kit: 0,
             synth_on: false,
             track_kits: crate::sampler::TrackKits::new(n),
+            kits_tuned: None,
             instrument_list: {
                 // Each kit place has its id, as main.rs's (step 14).
                 let mut list = crate::instrument_list::InstrumentList::new();
@@ -422,6 +433,8 @@ impl Session {
             mute_pressed: [false; 16],
             preview_on: false,
             preview_held: [false; 16],
+            kit_preview: None,
+            kit_held: [None; 16],
             host_held: [false; 16],
             keys_on_pads: crate::KeysOnPads::new(),
             pad_layers: crate::PadLayers::new(),
@@ -440,7 +453,6 @@ impl Session {
             to_screen,
             fx: Vec::new(),
             kit_to: None,
-            kit_picked: false,
             preview: None,
             rec_feed: None,
             line_tone: None,
@@ -450,10 +462,13 @@ impl Session {
             periods: 0,
             t0: Instant::now(),
             canvas: mpfree_ui::SoftCanvas::new(gui::SCREEN.0, gui::SCREEN.1),
+            xy_yours: crate::xy_song::XySong::default(),
+            xy_opening: false,
+            xy_turns: undo::Turns::default(),
             synth_turns: undo::Turns::default(),
             presets: crate::presets::TrackPresets::default(),
             mix_turns: undo::Turns::default(),
-            turns_told: (false, false),
+            turns_told: (false, false, false),
             library: None,
             save_asked: false,
             loops_saving: false,
@@ -467,6 +482,14 @@ impl Session {
         s.out.show(ToUi::Synth(s.synth.state()));
         s.out
             .show(ToUi::KitIds(Box::new(s.instrument_list.kit_ids())));
+        // Simulated time runs far faster than it plays: smart loop end's
+        // finder answers in the period that asks, as its thread would in
+        // the time a period plays.
+        s.looper.finder.inline = true;
+        // The app has the list from the first period, as main.rs's (its
+        // `list_changed` starts true), kits and all.
+        let fx = s.app.set_instrument_list(&s.instrument_list);
+        s.fx.extend(fx);
         let mut projects = vec![mpfree_sampler_ui::sample::project().0];
         projects.resize_with(n, mpfree_sampler::model::Project::new);
         s.out.show(ToUi::SampleKits {
@@ -759,6 +782,8 @@ impl Session {
         let file = crate::kit::build_kits(&[("Tones", crate::kit::build(&sounds))]);
         let mut kits = crate::kit::parse_kits(&file).expect("the tones kit");
         self.sounds = Some(crate::sampler::Player::new(&mut kits, &notes, RATE).expect("a player"));
+        // A new player starts in 12-TET: the next period hands it the tuning.
+        self.kits_tuned = None;
         self
     }
 
@@ -995,7 +1020,8 @@ impl Session {
         {
             Some(crate::PadsPreview::Host)
         } else {
-            None
+            self.kit_preview
+                .map(|k| crate::PadsPreview::Kit(k.min(usize::from(u8::MAX)) as u8))
         }
     }
 
@@ -1031,6 +1057,20 @@ impl Session {
         moves.set(id, value);
         let fx = crate::desk::play_remote(&self.time, &mut self.mix, &mut self.out, &mut moves);
         self.fx.extend(fx);
+        self.run_periods(2)
+    }
+
+    /// A control learned on Next or Previous patch (`id`, the Play card's;
+    /// live shows C1) moved to `value` (0 to 1), as player_session takes
+    /// MIDI Learn's: on any page, a press stepping the song's patches, and
+    /// the hint line saying why when there is nowhere to go.
+    pub fn patch_footswitch(&mut self, id: u16, value: f32) -> &mut Session {
+        if let Some((d, hands_up)) = self.remote.patch_write(id, value) {
+            if let Some(why) = crate::desk::step_patch(&mut self.music, d, hands_up) {
+                self.out.show(ToUi::Tell(why));
+            }
+        }
+        self.out.show(ToUi::Keys(Box::new(self.music.keys_now())));
         self.run_periods(2)
     }
 
@@ -1073,6 +1113,21 @@ impl Session {
         self
     }
 
+    /// Program change in: Picks a patch (live shows C1), at once or,
+    /// `waits`, when every key and pedal is up.
+    pub fn program_picks_patches(&mut self, waits: bool) -> &mut Session {
+        let io = std::sync::Arc::new(std::sync::Mutex::new(mpfree_midi_ui::IoModel::default()));
+        {
+            let mut m = io.lock().unwrap();
+            m.setup.program_in = mpfree_midi::setup::ProgramIn::Patch;
+            m.setup.program_waits = waits;
+            m.gen += 1;
+        }
+        let t = self.t();
+        self.music.sync(&io, t);
+        self
+    }
+
     /// Bytes from other gear on the 5-pin MIDI In, as the sound loop takes
     /// them: what MMC and program changes do (the Sync section's).
     pub fn midi_from_gear(&mut self, bytes: &[u8]) -> &mut Session {
@@ -1083,6 +1138,21 @@ impl Session {
         let fx = crate::desk::remote_in(&mut self.music, &self.time, &mut self.app, &mut self.out);
         self.fx.extend(fx);
         self.run_periods(2)
+    }
+
+    /// A keyboard on the 5-pin MIDI In played `bytes`, as the sound loop
+    /// takes them while the song has patches (live shows C1): what the
+    /// patch sent, by track (or route row past `SYNTH_ROUTES`), and the
+    /// screen told what the keys do, as main.rs tells it.
+    pub fn keys_from_gear(&mut self, bytes: &[u8]) -> Vec<(u8, crate::midi_in::Key)> {
+        let t = self.t();
+        let mut keys = Vec::new();
+        self.music
+            .bytes(crate::midi_in::DIN, bytes, t, &mut keys, &mut |_| {});
+        let sent: Vec<_> = self.music.take_patched().collect();
+        self.out.show(ToUi::Keys(Box::new(self.music.keys_now())));
+        self.run_periods(2);
+        sent
     }
 
     /// The controller the Perform pads' learned keys came from went away.
@@ -1234,6 +1304,31 @@ impl Session {
             self.out.show(ToUi::PadUp(pad));
             return;
         }
+        // A kit chosen for the pads (sampler step 15), as main.rs: the pad
+        // of its page the pads are on plays on its own, before the arp and
+        // the recorder; its let-go reaches the kit and pad it hit.
+        if let (true, true, Some(k)) = (down, pad < 16, self.kit_preview) {
+            let v = self.app.velocity(velocity);
+            let kit_pad = self.app.kit_pad(pad);
+            if let Some(p) = self.sounds.as_mut() {
+                p.hit_kit_at(k, kit_pad, v, 0);
+            }
+            let own = &mut self.mix.instruments;
+            self.pad_layers.pad_on(pad, v, &mut self.synth, own);
+            let rv = self.app.layer_rec_velocity(velocity);
+            self.pad_layers.rec_on(pad, rv, &mut self.time);
+            self.kit_held[pad] = Some((k, kit_pad));
+            self.previewed.push((pad, v));
+            self.out.show(ToUi::PadDown { pad, velocity: v });
+            return;
+        }
+        if let Some((k, kit_pad)) = self.kit_held.get_mut(pad).and_then(Option::take) {
+            if let Some(p) = self.sounds.as_mut() {
+                p.release_kit_at(k, kit_pad, 0);
+            }
+            self.out.show(ToUi::PadUp(pad));
+            return;
+        }
         if !down && pad < 16 && std::mem::take(&mut self.mute_pressed[pad]) {
             self.out.show(ToUi::PadUp(pad));
             return;
@@ -1343,6 +1438,21 @@ impl Session {
 
     fn period(&mut self) {
         self.settle();
+        if self.xy_opening && !self.mix.opening() {
+            self.xy_opening = false;
+            if let Some(c) = self.xy_yours.opening() {
+                self.mix.xy_done(crate::xy_song::Done {
+                    load: Some(Some(c)),
+                    hold: None,
+                });
+            }
+            self.xy_show();
+        }
+        // The XY pad's Stay: the settings it kept at a lift, one UNDO step.
+        if let Some((key, from, to)) = crate::xy_song::kept_turn(self.mix.take_xy_kept()) {
+            let now = self.now();
+            self.xy_turns.turned(key, from, to, now);
+        }
         // The list of instruments follows the tracks' own and the free
         // places' (step 6), as main.rs's period does: the app hears of it,
         // a free place nothing plays is put away, and the pads play the
@@ -1638,6 +1748,7 @@ impl Session {
         }
         // `|`, not `||`: both flags are taken.
         if self.time.take_changed() | self.tracks.take_changed() {
+            self.tracks.keep_named(self.time.recordings());
             self.out.show(ToUi::Time(Box::new(crate::time_state(
                 &self.time,
                 &self.tracks,
@@ -1781,16 +1892,24 @@ impl Session {
         let silenced = self.time.silenced();
         self.tracks.sync(self.time.project(), silenced, false);
         self.tracks.feed_inside(&mut self.mix);
+        let time = &self.time;
         self.tracks.period(
-            self.time.block(),
-            self.time.tempo_map(),
-            self.time.song_on(),
+            time.block(),
+            time.tempo_map(),
+            time.song_on(),
             (&line, &line),
+            Some(&|p| time.audio(p)),
         );
         self.tracks.play_into(&mut self.mix);
         let mut played = 0;
         if let Some(p) = self.sounds.as_mut() {
             p.set_tempo(self.time.info().bpm);
+            // The kits play the song's tuning, as main.rs hands it over.
+            let (now, said) = crate::kits_follow_tuning(&self.synth, p, self.kits_tuned);
+            self.kits_tuned = now;
+            if let Some(line) = said {
+                self.out.note(&line);
+            }
             let mut pads = self.mix.pads();
             p.render_routed(PERIOD, &mut pads);
             played = pads.played();
@@ -1937,6 +2056,7 @@ impl Session {
             synth: crate::project::synth_text(&self.app.synth_settings(), &self.synth.sounds()),
             arp: self.app.arp_part(),
             perform: self.app.perform_set().text(),
+            xy: self.xy_yours.text(),
             instruments: crate::project::instruments_text(&self.mix.instruments),
             track_kits: crate::project::track_kits_text(
                 &self.track_kits,
@@ -1945,7 +2065,6 @@ impl Session {
             ),
             instrument_list: self.instrument_list.text(),
             pads: self.app.pads_part(),
-            pad_layers: self.app.pad_layers_part(),
             loops,
             audio,
         };
@@ -1992,8 +2111,30 @@ impl Session {
             self.fx
                 .push(Effect::Time(TimeAction::Transport(Command::SetSwing(sw))));
         }
+        // Your XY layouts, as main.rs: the one playing lets go before the
+        // mixer changes, and the project's plays once its mixer is in.
+        self.mix.xy_yours(None);
+        let (song, notes) = crate::xy_song::XySong::parse(o.xy.as_deref().unwrap_or(""));
+        for line in notes {
+            self.out.note(&format!("project: {line}"));
+        }
+        self.xy_yours = song;
+        self.xy_turns.clear();
+        self.xy_opening = true;
         if let Some(m) = o.mix.take() {
             self.mix.open(m);
+        }
+        // Its patches, and the keys play its patch 1, as main.rs (live
+        // shows C1).
+        self.music.patches_stopped();
+        if let Some(p) = o.patches.as_mut() {
+            self.music.swap_patches(p);
+        }
+        if !self
+            .music
+            .pick_patch(Some(0), mpfree_patch::keys::When::Now)
+        {
+            self.music.pick_patch(None, mpfree_patch::keys::When::Now);
         }
         if let Some((options, sounds)) = o.synth.take() {
             for line in self.synth.set_sounds(&sounds) {
@@ -2044,8 +2185,7 @@ impl Session {
         self.out
             .show(ToUi::KitIds(Box::new(self.instrument_list.kit_ids())));
         // As main.rs: the app has the list before the pads part names one.
-        let fx = self.app.set_instrument_list(&self.instrument_list);
-        self.fx.extend(fx);
+        self.app.open_list(&self.instrument_list);
         let (notes, fx) = self.app.open_arp(o.arp.as_deref());
         for line in notes {
             self.out.note(&line);
@@ -2059,9 +2199,6 @@ impl Session {
         self.app.forget_copies();
         let (notes, fx) = self.app.open_pads(o.pads.as_deref());
         for line in notes {
-            self.out.note(&line);
-        }
-        for line in self.app.open_pad_layers(o.pad_layers.as_deref()) {
             self.out.note(&line);
         }
         self.fx.extend(fx);
@@ -2093,11 +2230,17 @@ impl Session {
         }
         crate::record_knob(&a, &self.app, &self.mix, &mut self.time);
         let mut fx = std::mem::take(&mut self.fx);
+        // A ready-made layout picked on the XY pad's list: none of yours
+        // plays from now (as main.rs).
+        let xy_picked = matches!(a, FromUi::PlayFx(mixing::PlayFx::XyEffect(_)));
         let rest = {
             let (mut d, out) = self.desk();
             d.screen(a, t, out, &mut fx)
         };
         self.fx = fx;
+        if xy_picked && self.xy_yours.playing.take().is_some() {
+            self.xy_show();
+        }
         // As the audio loop does: a mixer turn, from its value before the
         // desk set it.
         if let Some(turn) = mix_turn {
@@ -2127,7 +2270,6 @@ impl Session {
             FromUi::PadBank(_) => {}
             FromUi::Kit(k) => {
                 self.kit_to = Some(k.min(self.kits));
-                self.kit_picked = true;
             }
             FromUi::Synth(mpfree_synth_ui::SynthAction::Set { id, value }) => {
                 let from = self.synth.value(id);
@@ -2236,6 +2378,30 @@ impl Session {
                 self.out.note(&line);
                 self.out.show(ToUi::Tell(line));
             }
+            // Your XY layouts, as main.rs.
+            FromUi::Xy(act) => {
+                let track = u8::try_from(self.app.track()).unwrap_or(u8::MAX);
+                let pads = |_: u8, _: u8, _: u16| None;
+                let (mix, synth, app, time) = (&self.mix, &*self.synth, &self.app, &self.time);
+                let look = |a| crate::xy_seen(mix, synth, app, &pads, time, a);
+                let mut told = None;
+                let done = self.xy_yours.act(
+                    act,
+                    track,
+                    |pick, name| mix.xy_ready(pick, name),
+                    &look,
+                    &mut |l| told = Some(l),
+                );
+                match done {
+                    Ok(d) => self.mix.xy_done(d),
+                    Err(e) => told = Some(e),
+                }
+                if let Some(line) = told {
+                    self.out.note(&format!("xy: {line}"));
+                    self.out.show(ToUi::Tell(line));
+                }
+                self.xy_show();
+            }
             FromUi::SaveProject => self.save_asked = true,
             FromUi::OpenProject(o) => self.open_project(o),
             FromUi::OpenLoops(l) => self.looper.open(*l),
@@ -2272,6 +2438,15 @@ impl Session {
                 }
             }
             // The sampler's and the store's: nothing to check here.
+            // The song's patches (live shows C1), as main.rs takes them:
+            // the old ones go back to the screen.
+            FromUi::Patches(mut p) => {
+                self.music.swap_patches(&mut p);
+                self.out.show(ToUi::PatchesBack(p));
+            }
+            FromUi::PickPatch(to) => {
+                self.music.pick_patch(to, mpfree_patch::keys::When::Now);
+            }
             FromUi::SaveTouch(_)
             | FromUi::Slice { .. }
             | FromUi::SampleLiveChop { .. }
@@ -2279,7 +2454,8 @@ impl Session {
             | FromUi::SampleTake { .. }
             | FromUi::SampleKey { .. }
             | FromUi::SamplePadLive { .. }
-            | FromUi::SaveBrowserLists(_) => {}
+            | FromUi::SaveBrowserLists(_)
+            | FromUi::SaveReport(_) => {}
             FromUi::UndoHistory(on) => {
                 let (rows, now) = match on {
                     gui::UndoOn::Synth => self
@@ -2292,6 +2468,9 @@ impl Session {
                         .rows("Start: the mix before these turns", |t| {
                             crate::mixturns::row(t)
                         }),
+                    gui::UndoOn::Xy => self.xy_turns.rows("Start: before these lifts", |t| {
+                        crate::xy_turn_row(&self.mix, t)
+                    }),
                 };
                 self.out.show(ToUi::UndoHistory { on, rows, now });
             }
@@ -2324,6 +2503,23 @@ impl Session {
                             line
                         })
                     }
+                    gui::UndoOn::Xy => {
+                        let turn = if redo {
+                            self.xy_turns.redo()
+                        } else {
+                            self.xy_turns.undo()
+                        };
+                        turn.map(|t| {
+                            for (addr, v) in crate::xy_song::turn_values(&t, redo) {
+                                self.panels.set_param(&mut self.mix, addr, v, false);
+                            }
+                            format!(
+                                "{}: {}",
+                                if redo { "redo" } else { "undo" },
+                                crate::xy_turn_row(&self.mix, &t)
+                            )
+                        })
+                    }
                 };
                 let line = line.unwrap_or_else(|| {
                     format!(
@@ -2337,18 +2533,34 @@ impl Session {
         }
     }
 
+    /// Your XY layouts to the screen, as main.rs's `xy_view`.
+    fn xy_show(&mut self) {
+        let pads = |_: u8, _: u8, _: u16| None;
+        let v = crate::xy_view(
+            &mut self.xy_yours,
+            &self.mix,
+            &self.synth,
+            &self.app,
+            &pads,
+            &self.time,
+        );
+        self.out.show(v);
+    }
+
     /// Whether the Synth tab's and the mixer's turns have something to
     /// undo, when that changes (as the audio loop tells the screen).
     fn tell_turns(&mut self) {
         let ready = (
             !self.synth_turns.done().is_empty(),
             !self.mix_turns.done().is_empty(),
+            !self.xy_turns.done().is_empty(),
         );
         if ready != self.turns_told {
             self.turns_told = ready;
             self.out.show(ToUi::TurnsReady {
                 synth: ready.0,
                 mixer: ready.1,
+                xy: ready.2,
             });
         }
     }
@@ -2361,6 +2573,8 @@ impl Session {
         // records the pads as they are.
         self.app.set_configured(self.track_kits.picked());
         self.app.set_synth_tracks(self.track_kits.on_synth());
+        let on_kit = self.app.pads_kit().map_or(0, |k| self.track_kits.on_kit(k));
+        self.app.set_pads_kit_tracks(on_kit);
         for _ in 0..8 {
             if self.fx.is_empty() {
                 return;
@@ -2392,7 +2606,6 @@ impl Session {
                         let now = self.kit_to.unwrap_or(self.kit) as i64;
                         self.kit_to =
                             Some((now + d as i64).rem_euclid(self.kits as i64 + 1) as usize);
-                        self.kit_picked = true;
                     }
                     Effect::SynthPads(p) => {
                         if self.synth.set_settings(p) {
@@ -2423,6 +2636,16 @@ impl Session {
                         }
                         if t == self.app.track() {
                             self.kit_to = Some(self.track_kits.synth());
+                        }
+                    }
+                    // As main.rs (sampler step 15).
+                    Effect::KitOnTrack { track, kit } => {
+                        if self.track_kits.set(track, kit) {
+                            self.out
+                                .show(ToUi::TrackKits(Box::new(self.track_kits.clone())));
+                        }
+                        if track == self.app.track() {
+                            self.kit_to = Some(kit);
                         }
                     }
                     // As main.rs: opening a page changes what no track plays.
@@ -2600,12 +2823,9 @@ impl Session {
     /// the pads following the armed track, as main.rs takes it; then what
     /// the pads play (app/pads_focus.rs).
     fn change_kit(&mut self) {
-        // As main.rs: a kit picked while the synth was chosen for the pads
-        // makes them follow the track; so does the arp over a kit.
-        if std::mem::take(&mut self.kit_picked) {
-            let fx = self.app.kit_pick_follows_track();
-            self.fx.extend(fx);
-        }
+        // As main.rs: a kit picked leaves the pads' own choice alone
+        // (sampler step 15b); the arp over a kit makes them follow the
+        // track (until step 15c).
         let fx = self.app.arp_ends_pads_synth();
         self.fx.extend(fx);
         let playing = if self.synth_on { self.kits } else { self.kit };
@@ -2636,6 +2856,26 @@ impl Session {
                 }
             }
             self.preview_on = preview_now;
+        }
+        // A kit chosen for the pads (sampler step 15), as main.rs: on its
+        // own while the selected track doesn't play it itself. The pads
+        // held on a kit they leave let go there; their let-go is taken
+        // quietly.
+        let host = self.mix.instruments.pads_play_at().is_some();
+        let t = self.app.track();
+        let kit_now = self.app.pads_kit().filter(|&k| {
+            let through = !self.mix.instruments.plays(t);
+            !preview_now && !host && !(through && self.track_kits.kit_of(t) == Some(k))
+        });
+        if kit_now != self.kit_preview {
+            for held in self.kit_held.iter().flatten() {
+                if Some(held.0) != kit_now {
+                    if let Some(p) = self.sounds.as_mut() {
+                        p.release_kit_at(held.0, held.1, 0);
+                    }
+                }
+            }
+            self.kit_preview = kit_now;
         }
     }
 

@@ -349,7 +349,7 @@ pub fn transform(m: &[GridNote], c: Transform) -> Vec<GridNote> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use mpfree_context::key::Mode;
 

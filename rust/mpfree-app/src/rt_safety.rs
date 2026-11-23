@@ -318,6 +318,7 @@ impl Rig {
             time.tempo_map(),
             time.song_on(),
             looper.input(),
+            Some(&|p| time.audio(p)),
         );
         tracks.play_into(mix);
         mix.follow(looper.line.is_open(), looper.monitor);
@@ -1311,6 +1312,86 @@ fn routed_keys_play_their_track_where_its_clips_play() {
     assert!(rig.time.state().capture.is_some(), "CAPTURE has the keys");
     assert!(rig.midi.close());
     assert_eq!(*sink.0.lock().unwrap(), [0x91, 60, 100, 0x81, 60, 64]);
+}
+
+/// Sampler step 15: a route's keys reach a kit as its Keys play sends
+/// them. On a kit of keygroups only they play by pitch, in the keygroup's
+/// range, and a key outside it plays nothing, not the drum pad that sends
+/// it; nothing on the sound path allocates.
+#[test]
+fn routed_keys_play_a_kits_keygroups_by_pitch() {
+    use crate::midi_in::Key;
+    use mpfree_sampler::model::Keys;
+    let mut rig = Rig::new(false);
+    let mut projects = rig.player.take_projects();
+    let pads: Vec<usize> = (0..128).filter(|&p| rig.player.has_sound(0, p)).collect();
+    let n = pads.len() as u64;
+    assert!(n > 0);
+    for p in pads {
+        projects[0]
+            .edit_pad(p, None, |pad| {
+                pad.keys = Some(Keys {
+                    lo: 48,
+                    hi: 72,
+                    root: 60,
+                })
+            })
+            .unwrap();
+    }
+    let mut swap = Box::new(crate::sampler::ViewSwap {
+        kit: 0,
+        view: Some(mpfree_sampler::engine::EngineView::build(
+            &projects[0],
+            RATE,
+        )),
+        routes: crate::sampler::pad_routes(&projects[0]),
+    });
+    assert!(rig.player.swap_view(&mut swap));
+    assert_eq!(
+        rig.player.kit_keys(0).play,
+        mpfree_sampler::model::KeysPlay::Keygroups,
+        "a kit of keygroups only"
+    );
+    let before = rig.player.hits();
+    let keys = [
+        Key::Down {
+            note: 64,
+            velocity: 100,
+        },
+        Key::Up { note: 64 },
+        // The first pad's own note, below the keygroups.
+        Key::Down {
+            note: PAD_NOTES[0],
+            velocity: 100,
+        },
+        Key::Up { note: PAD_NOTES[0] },
+    ];
+    let ((), calls) = crate::sys::alloc_count::calls(|| {
+        for key in keys {
+            crate::play_routed(
+                5,
+                key,
+                &mut rig.midi,
+                &mut rig.cv,
+                &mut rig.mix.instruments,
+                &mut rig.mix.pad_synths,
+                &mut rig.synth,
+                false,
+                &mut rig.player,
+                0,
+            );
+        }
+    });
+    assert_eq!(calls, 0, "allocations or frees on the sound path");
+    rig.period(0);
+    // Every pad holds E3, so each plays it once; none holds the pad note
+    // below them.
+    assert_eq!(
+        rig.player.hits() - before,
+        n,
+        "E3 on every keygroup, nothing else"
+    );
+    assert!(!rig.player.kit_keys(0).holds(PAD_NOTES[0]));
 }
 
 /// What thru passes on (the I/O view's Routing: a keyboard's channel 10

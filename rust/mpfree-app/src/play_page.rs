@@ -194,9 +194,17 @@ pub fn frame(body: &str) -> String {
     )
 }
 
-/// The layout of [`XY_FULL_PAGE`]: the XY pad takes the whole view.
+/// The layout of [`XY_FULL_PAGE`]: the XY pad takes the whole view, with
+/// Hold, Let go and Setup under it (layout spec 4o).
 pub fn xy_full_layout() -> String {
-    frame(&format!("{XY}:*"))
+    use crate::xy_widgets::{XY_BAR, XY_BAR_H};
+    frame(&format!("{XY}:*, {XY_BAR}:{XY_BAR_H}"))
+}
+
+/// The layout of Setup for a layout of yours: it takes the whole view
+/// (layout spec 4o).
+pub fn xy_setup_layout() -> String {
+    frame(&format!("{}:*", crate::xy_setup::XY_SETUP))
 }
 
 /// A layout written for the old Play page, `col(header:60, BODY, hint:26)`,
@@ -854,6 +862,9 @@ pub struct PlayPage {
     /// What the XY pad plays: None, Filter + echo; `Some(k)`, the XY FX's
     /// effect `k` ([`XY_CHOICES`]; Prefs keeps it).
     pub xy_effect: Option<usize>,
+    /// A layout of yours on the XY pad (`xy_song.rs`): it plays in the
+    /// ready-made one's place.
+    pub yours: Option<YoursPad>,
     /// STEP SEQ: the sound whose steps the pads are, and their page.
     pub on_pads: Option<crate::app::StepPads>,
     /// STEP SEQ: the step pads held (their sound, and the steps, the first
@@ -1067,6 +1078,7 @@ impl Default for PlayPage {
             throws: [false; 8],
             xy: crate::xy_layouts::pad(None),
             xy_effect: None,
+            yours: None,
             on_pads: None,
             held: None,
             picks: None,
@@ -1172,6 +1184,16 @@ pub const XY_CHOICES: [&str; 10] = [
     "Ring mod",
     "Gate",
 ];
+
+/// A layout of yours as the XY pad shows it: its name on the chip, its
+/// directions' names on the axes, and what it plays under the pad.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct YoursPad {
+    pub name: String,
+    pub across: String,
+    pub up: String,
+    pub line: String,
+}
 
 /// What across and up do in XY choice `i` ([`XY_CHOICES`]).
 pub fn xy_choice_detail(i: usize) -> String {
@@ -3576,15 +3598,57 @@ impl PlayPage {
     pub fn set_xy_effect(&mut self, pick: Option<usize>) {
         let pick = pick.filter(|&k| k < mpfree_fx::xyfx::EFFECTS.len());
         self.xy_effect = pick;
+        self.yours = None;
         self.xy = crate::xy_layouts::pad(pick);
+    }
+
+    /// A layout of yours plays on the XY pad (None: the ready-made one
+    /// picked again). The pad's dot rests where the layout rests and
+    /// glides back over its glide (Go back) or stays.
+    pub fn set_yours(&mut self, m: Option<&crate::xy_song::MineView>) {
+        match m {
+            Some(m) => {
+                // The dot lands within a hundredth in about five of the
+                // pad's time constants: over the layout's glide.
+                let lift = if m.stay {
+                    mpfree_xy::Lift::Stay
+                } else {
+                    mpfree_xy::Lift::GoBack {
+                        snap_ms: m.glide_ms / 5.0,
+                    }
+                };
+                if self.yours.is_none() || self.xy.rest() != m.rest {
+                    self.xy = mpfree_xy::Pad::new(m.rest, lift);
+                } else {
+                    self.xy.set_lift(lift);
+                }
+                self.yours = Some(YoursPad {
+                    name: m.name.clone(),
+                    across: m.across.clone(),
+                    up: m.up.clone(),
+                    line: m.line.clone(),
+                });
+            }
+            None => {
+                if self.yours.take().is_some() {
+                    self.xy = crate::xy_layouts::pad(self.xy_effect);
+                }
+            }
+        }
     }
 
     /// The XY pad's label ("LP 1.2 kHz · echo 40 %", "Decay 2.4 s ·
     /// Amount 40 %"), its chip, its axes and, with no finger on it, where
     /// its dot is.
     pub fn fill_xy(&self, p: &mut XyPad) {
-        let (chip, x_axis, y_axis, label) = match self.xy_effect {
-            None => {
+        let (chip, x_axis, y_axis, label) = match (&self.yours, self.xy_effect) {
+            (Some(y), _) => (
+                y.name.clone(),
+                format!("{}  →", y.across),
+                format!("↑ {}", y.up),
+                y.line.clone(),
+            ),
+            (None, None) => {
                 let (x, y) = self.xy.position();
                 let (dj, echo) = crate::xy_layouts::filter_echo(x, y);
                 (
@@ -3594,7 +3658,7 @@ impl PlayPage {
                     format!("{} · echo {echo:.0} %", filter_text(dj)),
                 )
             }
-            Some(k) => {
+            (None, Some(k)) => {
                 let (ax, ay) = mpfree_fx::xyfx::axes(k);
                 let (x, y) = self.xy.position();
                 let text = |a, pos| {
@@ -3774,6 +3838,7 @@ impl PlayPage {
             view: 0,
             rec: None,
             pads: None,
+            keys: None,
         }
     }
 }

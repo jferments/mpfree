@@ -60,13 +60,18 @@ A knob you turn while morphing changes the scene the crossfader is nearer, and t
 
 ## The song
 
-The song is your clips laid out on a timeline, one lane per track. Tap **Song ›** above the clip grid to see it, and **Clips** to go back to the grid. **+ Track**, under the last track's lane, adds a track, as on the grid. With more tracks than fit, drag up or down on the names to scroll.
+The song is your clips laid out on a timeline, one lane per track. Tap **Song** on the chip at the top left of the Arrange page (**Clips | List | Song**) to see it, and **Clips** to go back to the grid; the part lit is the view you're on. **+ Track**, under the last track's lane, adds a track, as on the grid. With more tracks than fit, drag up or down on the names to scroll.
 
 {{shot: arrange-song | The Song view: seven rows made into a song (Intro, Verse, Build and on), eight tracks of blocks under the scene names, and Rec song on.}}
 
 - **Scenes → song** adds every row that has clips to the end of the song, one after another, with each scene's name above the bars where it starts. It plays the rows behind the scenes, much faster than real time, and records what they play, so the song plays just what the rows played: a scene's mutes carrying on into the rows after it, a one-shot clip stopping after its pass, a clip's follow action moving to its next clip, and a legato clip picking up where the clip before it had got to. A follow action with a chance rolls the same way each time you convert, so the same rows always make the same song.
 - **Song on** plays the song. A track plays the song wherever you have not launched a clip on it. Launch a clip and it takes that track over. Stop it and the track goes back to the song. While clips play over the song, **Back to song** shows on the grid's title line: it stops them all on the next Launch line, and every track plays the song from there.
-- **Song → scenes** goes the other way. It cuts the song into its parts and puts each part into empty rows, set to play one after another. It never writes over a row that has clips, or one you have set up without clips (a name, mutes, a follow action, morph values or a program change). A part that starts partway into a block gets its clip turned round to start there, so launching the first row plays what the song played. **UNDO** takes the whole thing back in one go, and **SHIFT + UNDO** puts it back.
+- **What each track plays** shows on the grid while the song is on. A track the song has something for has a **SONG** tag on its name: filled green while it plays the song, outlined while a clip you launched plays over it. A clip about to give the track back says when, in amber ("to song 6.1"). On the Song view, a clip you launched is drawn over its track's lane, the song's blocks hatched under it while they wait, and a dashed amber line marks where the song comes back.
+
+{{shot: clips-perform-song | Song on in Perform: SONG tags on the tracks, filled where they play the song and outlined where a launched clip plays over it, and the glitch going back to the song at 6.1.}}
+
+{{shot: arrange-song-over | The same on the Song view: the launched clips drawn over their lanes, the glitch ending at the dashed line where the song comes back, and the chords waiting for bar 6.}}
+- **Song → scenes** goes the other way. It cuts the song into its parts and puts each part into empty rows, set to play one after another. It never writes over a row that has clips, or one you have set up without clips (a name, mutes, a follow action, morph values or a program change). A part that starts partway into a block gets its clip turned round to start there, so launching the first row plays what the song played. What an audio track recorded comes too: each part's stretch of its lane becomes an audio clip in the part's row, named after the track and its bars ("Vocal 5–8"), playing exactly what the song played there, fades and all. A part with more than 16 recordings on one audio track can't be one clip, so nothing changes and the message line says where ("Vocal, bars 9 to 16: 21 regions, and a clip holds 16"); split the part with a marker, or bounce it first. **UNDO** takes the whole thing back in one go, and **SHIFT + UNDO** puts it back.
 - Every conversion tells you whether it came out **exact**. An exact one says so in place of the hint line ("Song → scenes: rows 9 to 11, exact. UNDO takes it back."). When something can't carry over, a card opens over the song with one row for each difference: the track (or **Song** when it's the whole song's), the bar, and what's different. That can be a part off the bar line, a stretch of silence, the song's tempo changes or morph moves, a note held over a row change, a clip that plays in Random order or has notes with a chance (a copy rolls them its own way), or, going into the song, a scene's program changes (the one thing the song doesn't play yet). Five rows show at a time; drag the list or turn the wheel for the rest.
 - On the card, **UNDO** (or the MPC's UNDO) takes the whole conversion back, and **Done** closes the card and keeps the result. A tap anywhere outside the card, **MENU** or another page also closes it and keeps the result; that tap does nothing else. Once the card is closed, the details are still in the log in Dev.
 
@@ -75,7 +80,7 @@ The song is your clips laid out on a timeline, one lane per track. Tap **Song �
 - Under each track's name is what it plays: its kit (**Kit** for kit 1, then **Kit 2** and on: see [A kit for each track](pads.md#a-kit-for-each-track)), **Synth**, or its own instrument (see [A synth for each track](synths.md#a-synth-for-each-track)).
 - **Loop tracks** have lanes too, and Song on plays their loops' blocks as it plays clips (see [Loops in the song](looping.md#loops-in-the-song)).
 
-A block in the song is linked to its clip, so when you edit the clip, every block that uses it changes too. Moving the clip on the grid, to another row or track, doesn't change the song: its blocks play it wherever it is. **Make unique** gives the selected block its own copy, so you can change it without touching the others. A unique block has a small dot in its corner. **Delete** removes the selected block, and **UNDO** puts it back. In Perform, Delete takes a half-second hold (see [Make and Perform](playing-live.md#make-and-perform)).
+A block in the song is linked to its clip, so when you edit the clip, every block that uses it changes too. Moving the clip on the grid, to another row or track, doesn't change the song: its blocks play it wherever it is. The exception is a part of a linked song list that plays a row: it follows its row (see [The song list](#the-song-list)). **Make unique** gives the selected block its own copy, so you can change it without touching the others. A unique block has a small dot in its corner. **Delete** removes the selected block, and **UNDO** puts it back. In Perform, Delete takes a half-second hold (see [Make and Perform](playing-live.md#make-and-perform)).
 
 ### Moving blocks and sections
 
@@ -128,21 +133,47 @@ Points are at least a 1/16 apart, and a song has up to 31.
 
 ### Audio in the song
 
-Audio you record from the INPUTS goes on **audio tracks**, with lanes of their own under the clip lanes, on the same timeline. They play whenever the song plays. Recording them, editing their regions and picking the best parts of several takes is in [Recording audio tracks](audio-tracks.md).
+Audio you record from the INPUTS goes on **audio tracks**, with lanes of their own under the clip lanes, on the same timeline. They play whenever the song plays, unless an audio clip launched on the grid plays in its place. Recording them, editing their regions and picking the best parts of several takes is in [Recording audio tracks](audio-tracks.md).
 
-When you move a section, put bars in or take them out, the audio moves with the song. A region across a section's edge is cut there, and each part plays what it played; parts that meet again in their new place are one region again.
+When you move a section, put bars in or take them out, the audio moves with the song. A region across a section's edge is cut there, and each part plays what it played, fades included; parts that meet again in their new place are one region again.
 
 - **UNDO** takes the audio back with the song, and **SHIFT + UNDO** puts both back.
-- If you changed a region since (a split, a move, a fade), **UNDO** waits and says so. Take that change back first with the region's **Undo**, then press **UNDO**.
+- If you changed a region since (a split, a move, a fade), **UNDO** takes those changes back first, then the song edit with its audio.
 - While an audio track records, the song's bars can't move: the message line says to stop the recording first, and nothing changes.
 
 ## The song list
 
-The song list plays scenes one after another, each so many times: "Intro × 2, Verse × 4, Drop × 4, Break × 1". It's the quick way to sketch a song's shape without laying out blocks, and a scene can come back as often as you like. Tap **List** at the top of the Song view to see it; in Perform, **MAIN** goes Clips, Song, List. **Clips** and **Song** at the top go back.
+The song list is your song as a list of parts, each playing a scene so many times: "Intro × 2, Verse × 4, Drop × 4, Break × 1". It's the quick way to sketch a song's shape without laying out blocks, and a scene can come back as often as you like. Tap **List** on the chip at the top left of the Arrange page to see it; in Perform, **MAIN** goes Clips, Song, List.
+
+In a new project the list and the song are one song shown two ways: each part on the list is a stretch of the song, from one of its markers to the next, and changing either changes the other. The title says so: "Linked to the song · 7 parts · 50 bars · 2:10". A project saved before this keeps a list of its own, apart from the song (see [A list of its own](#a-list-of-its-own)).
+
+{{shot: arrange-list-linked | The song list linked to the song: the song's parts with the Song row first, the Verse playing its third pass of four, and the first Drop changed in the song and picked.}}
+
+- **+ Add a scene** puts a part after the one you picked (at the end if none is), playing the next row that has clips. The song gets that row's clips in the part's place, and everything after it moves later.
+- Tap **‹** or **›** on a part's scene to play another scene there; the part takes the scene's name, and the song after it moves to make room or closes up. Tap **–** or **+** to change how many times it plays (1 to 99): **+** adds a pass at its end and everything after moves later; **–** takes its last pass out and everything after closes up. **Bars** says how long the part lasts, and **Starts** the bar it starts on.
+- To move a part, drag it by its **grip**, the two short bars at its left (or its number): a line shows where it will land, and it goes there when you let go, with everything in its bars. A drag that starts anywhere else on the row scrolls a long list.
+- **Remove** takes the picked part out with everything in its bars, and the song closes up (in Perform, hold it for half a second).
+- **Song**, in faint words at the top, is the song's bars before its first marker, when it has some. It can't be moved, given a scene or repeated; add a marker on the Song view's ruler to make those bars a part.
+- Every change is one step for **UNDO**, the song's bars with it.
+
+**A part plays what its row holds.** Record a clip into a part's row, paste or drag one there, drag one away or delete it, and every part that plays that row changes with it. The part keeps its bars: a longer clip is cut at the part's end, and a shorter row plays round as many times as fill it. One **UNDO** takes back the clip and the parts together, and the Takes list says "and the song". A part changed in the song keeps what it has.
+
+The song changes the list too. Drag a section's name along the Song view's ruler and the part moves on the list; put in a marker and the list gets a new part. **Edit inside a part** on the Song view (move, delete, add or resize a block, make one unique, change its bars, or record over it with Rec song) and it becomes the song's own: the list marks it "● changed in the song", and its passes become plain bars (× 1). Moving or copying it whole doesn't count. **Back to the scene**, in List → song's place, puts the scene's clips back for the part's bars, as many passes as fit; it is lit when a changed part is picked. **Scenes → song** adds its rows after the last part.
+
+**Playing.** Tap a part to pick it. **Play from here** plays the song from the part's first bar, with **Song on**: clips you launched over the song stop, and it starts playing if it was stopped. As each part starts, its scene's mutes and program changes come in, as launching the scene would, and a scene without mutes leaves them as they were. The part playing is lit green with "pass 3 of 4". **Loop the list** loops the song from its first part to the end of its last; any loop you had set comes back when you turn it off. Launching a scene over the song, and **Back to song**, work as they always do.
+
+On the Song view, a part that plays its scene more than once has its times after its name on the ruler ("Verse ×2"), and a faint dashed line marks where each pass starts, labelled "pass 2 of 2". Once the part is the song's own, its passes are plain bars and the lines go.
+
+{{shot: arrange-song-passes | The Song view with the Verse playing its scene twice: "Verse ×2" on the ruler and a dashed line where its second pass starts.}}
+
+### A list of its own
+
+A project saved before the list was linked keeps a list of its own, apart from the song: its steps play scenes live, and the song doesn't change when the list does.
 
 {{shot: arrange-list | The song list: seven steps with their times, bars and where each starts; the Drop playing its third pass of four.}}
 
 - **+ Add a scene** puts a step after the one you picked (at the end if none is), playing the next row that has clips. Tap **‹** or **›** on a step's scene to change it, and **–** or **+** to change how many times it plays (1 to 99). **Bars** says how long the step lasts, and **Starts** the bar it starts on.
+- To move a step, drag it by its **grip**, the two short bars at its left (or its number): a line shows where it will land, and it goes there when you let go. **UNDO** puts it back. A drag that starts anywhere else on the row scrolls a long list.
 - Tap a step to pick it. **Play from here** plays the list from that step, starting on the next Launch line (at once while stopped). Each step's scene plays its times, and the next comes in on the bar line, so you can play pads or turn knobs over it. The step playing is lit green with "pass 3 of 4"; the one about to start is outlined amber.
 - After the last step everything stops, unless **Loop the list** is on: then it starts again from the top.
 - Launch a scene yourself, stop all, or tap **Back to song**, and the list stops leading; what plays carries on.
@@ -151,19 +182,29 @@ The song list plays scenes one after another, each so many times: "Intro × 2, V
 
 A scene's length is its follow action's bars if it has one, else its longest clip, rounded up to whole bars. Moving a row on the grid takes the list's steps with it.
 
+**Link** makes the list and the song one, as in a new project. It sits left of **Loop the list**, only on a list of its own. Tap it and choose:
+
+{{shot: arrange-list-link | Link's two choices over a list of its own: Song from the list, and List from the song, each saying what it would do.}}
+
+- **Song from the list**: the list's steps become the start of the song, each a part that plays its scene, and the song you had moves along after them. The song then plays what the list played.
+- **List from the song**: the song stays as it is, and its marked parts become the list, each played once.
+
+Each line says what it would do to this project before you choose, and either is one step for **UNDO**. Tap **Link** again, or anywhere off the choices, to close them without linking. Once the list is linked, Link goes.
+
 ## Recording a performance into the song
 
 **Rec song** records what you play on the clip grid into the song, so a jam becomes a song you can edit afterwards. The button sits above the clip grid and on the Song view, and it is red while it is on.
 
 1. Tap **Rec song**.
 2. Press play and jam: launch clips and rows, stop tracks, move the morph crossfader.
-3. Press stop, or tap **Rec song** again. What you played goes into the song.
+3. Press stop, or tap **Rec song** again. What you played goes into the song, as one step **UNDO** takes back.
 
 - Each clip goes into the song where it started and stopped, linked to its clip. It plays from the song just as it does from the grid, pad pressure included.
 - Tracks that were muted are left out of the song for as long as they were muted.
 - The morph crossfader's moves are recorded too, with the two rows it was between. If you leave the crossfader still for a moment, the song holds it there until your next move.
 - A track you didn't touch keeps what the song already had there. Where you launched a clip, it records over the song, like recording over tape.
 - With the loop on, each time round records over the last.
+- An audio clip launched on an audio track goes into the song as a block too. Where it lands over something that track recorded, the block replaces it, and **UNDO** takes back both. The other way round, recording on an audio track over a block cuts the block there, and **UNDO** takes back both too (see [Audio clips in the song](audio-tracks.md#audio-clips-in-the-song)).
 - A song holds up to 4,096 blocks. When a recording gets to 90 % of that, the message line warns you. If a launch would take it past the limit, Rec song stops recording on every track on that launch line (never halfway through a scene change) and turns off, the message says so, and everything recorded up to there goes into the song. The music plays on.
 - Rec song records which clips played, not new notes. To record notes, use **REC** on a clip (see [Clips and patterns](clips.md)).
 - **In Perform, REC brings Rec song with it**: each take you record (a clip or a loop) also records the grid into the song for as long as it lasts, and the REC chip says "+ Rec song". To leave it out of a take, tap the REC chip and turn off **Rec song with REC**; it's back for the take after. Rec song turned on by hand stays on as usual (see [Make and Perform](playing-live.md#make-and-perform)).

@@ -69,7 +69,7 @@ use mpfree_midi::learn::{Encoding, Mode, Saved, Source, Takeover};
 use mpfree_midi::setup::{Kept, PortInput, DIN_NAME, FOLLOW_KNOBS};
 use mpfree_mixer_ui::{IoInput, IoKnob, IoReply, IoSection};
 use mpfree_param::looper::{self, Which};
-use mpfree_param::{clips, play, transport, Owner, ParamAddr};
+use mpfree_param::{clips, play, show, transport, Owner, ParamAddr};
 use mpfree_ui::{Align, Color, FontId, PaintCx, Rect, Target, Touch};
 
 use crate::{note_name, IoModel, Shared};
@@ -94,8 +94,13 @@ const PLAY_W: i32 = 64;
 const CLIPS_W: i32 = 136;
 /// The heading's Looper button.
 const LOOPER_W: i32 = 76;
+/// The heading's Show button, left of Looper (live shows B1).
+const SHOW_W: i32 = 64;
 /// The Clips and scenes card's track stepper's - and +.
 const CLIP_STEP_W: i32 = 34;
+/// The looper card's Loop stepper's words ("Picked loop", "Loop 8")
+/// between its - and +.
+const LOOP_WORDS_W: i32 = 96;
 /// Where the heading's key may start, after its words ("WHAT YOUR
 /// CONTROLLERS MOVE · 12"), and the least room it is drawn in.
 const KEY_FROM: i32 = 290;
@@ -128,6 +133,10 @@ pub(crate) const LOOPER_HINT: &str =
 /// The hint line while Play's card shows.
 pub(crate) const PLAY_HINT: &str = "Tap one, then move a knob or a fader on your controller";
 
+/// The hint line while the Show card shows.
+pub(crate) const SHOW_HINT: &str =
+    "Tap a job, then press your footswitch  ·  wheel: pick a row  ·  a red row: one control, two jobs";
+
 /// The card of buttons to learn that shows in the picked row's place.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Buttons {
@@ -140,6 +149,9 @@ enum Buttons {
     Looper,
     /// Play's Swing, Filter, XY across and XY up ([`play::ALL`]).
     Play,
+    /// A set's controls: Next song, Previous song, Go and the rest
+    /// ([`show::ALL`]).
+    Show,
 }
 
 /// The Clips and scenes card's buttons, after the track's stepper: the
@@ -161,8 +173,8 @@ fn clip_target(i: usize, track: u8) -> ParamAddr {
 
 /// The looper card's buttons, after the Loop stepper: that loop's Key
 /// and Mute, then the looper's own (on the loop picked when they are
-/// pressed).
-const LOOPER_BUTTONS: [&str; 7] = [
+/// pressed), smart loop end's Snap and Use my tap last.
+const LOOPER_BUTTONS: [&str; 9] = [
     "Key",
     "Mute",
     "Next loop",
@@ -170,6 +182,8 @@ const LOOPER_BUTTONS: [&str; 7] = [
     "Redo",
     "Capture",
     "Clear",
+    "Snap",
+    "Use my tap",
 ];
 
 /// What the looper card's Loop stepper steps through: the picked loop,
@@ -197,7 +211,9 @@ fn looper_target(i: usize, w: Which) -> ParamAddr {
         3 => looper::UNDO,
         4 => looper::REDO,
         5 => looper::CAPTURE,
-        _ => looper::CLEAR,
+        6 => looper::CLEAR,
+        7 => looper::SNAP,
+        _ => looper::USE_MY_TAP,
     };
     ParamAddr::new(Owner::Looper, id)
 }
@@ -205,6 +221,11 @@ fn looper_target(i: usize, w: Which) -> ParamAddr {
 /// The address Play's card's button `i` arms ([`play::ALL`]'s order).
 fn play_target(i: usize) -> ParamAddr {
     ParamAddr::new(Owner::Play, play::ALL[i].0)
+}
+
+/// The address the Show card's button `i` arms ([`show::ALL`]'s order).
+fn show_target(i: usize) -> ParamAddr {
+    ParamAddr::new(Owner::Show, show::ALL[i].0)
 }
 
 /// How a learned control can move its parameter, in the order Works as
@@ -283,6 +304,11 @@ enum Hit {
     Play,
     /// One of its buttons ([`play::ALL`]).
     PlayPick(usize),
+    /// The heading's Show: the card shows a set's controls, or the picked
+    /// row again.
+    Show,
+    /// One of its buttons ([`show::ALL`]).
+    ShowPick(usize),
     /// The heading's MIDI Follow, in a narrow section: the card shows it,
     /// or the picked row again.
     Follow,
@@ -310,6 +336,8 @@ struct Layout {
     clips: Rect,
     /// The heading's Looper button, left of Clips and scenes.
     looper: Rect,
+    /// The heading's Show button, left of Looper.
+    show: Rect,
     /// The heading's key (RIG and PROJECT), where there is room for it.
     key: Option<Rect>,
     /// The heading's MIDI Follow button, in a section too narrow for the
@@ -354,11 +382,12 @@ fn layout(r: Rect, learning: bool) -> Layout {
     let play = Rect::new(transport.x - 8 - PLAY_W, head.y, PLAY_W, head.h);
     let clips = Rect::new(play.x - 8 - CLIPS_W, head.y, CLIPS_W, head.h);
     let looper = Rect::new(clips.x - 8 - LOOPER_W, head.y, LOOPER_W, head.h);
+    let show = Rect::new(looper.x - 8 - SHOW_W, head.y, SHOW_W, head.h);
     // The key between the heading's words and the buttons, where they
     // leave it room.
     let key_x = head.x + KEY_FROM;
-    let key = (wide && looper.x - 12 - key_x >= KEY_MIN_W)
-        .then(|| Rect::new(key_x, head.y, looper.x - 12 - key_x, head.h));
+    let key = (wide && show.x - 12 - key_x >= KEY_MIN_W)
+        .then(|| Rect::new(key_x, head.y, show.x - 12 - key_x, head.h));
     y += HEAD_H;
     let bottom = Rect::new(r.x, r.bottom() - CARD_H, r.w, CARD_H);
     let (card, follow) = if wide {
@@ -397,6 +426,7 @@ fn layout(r: Rect, learning: bool) -> Layout {
         play,
         clips,
         looper,
+        show,
         key,
         follow_button,
         table,
@@ -694,20 +724,80 @@ fn clip_rects(l: &Layout) -> ([Rect; 2], [Rect; 5]) {
     (steps, [p[1], p[2], p[3], p[4], p[5]])
 }
 
-/// The looper card's parts, on the same grid: the Loop stepper (- and
-/// +) in the first place, that loop's Key and Mute and Next loop beside
-/// it, then Undo, Redo, Capture and Clear on the second row.
-fn looper_rects(l: &Layout) -> ([Rect; 2], [Rect; 7]) {
-    let (steps, _) = clip_rects(l);
-    let p = pick_rects(l);
-    (steps, [p[1], p[2], p[3], p[4], p[5], p[6], p[7]])
+/// The looper card's parts, in [`LOOPER_BUTTONS`]' order, on a grid of
+/// two rows of five (the transport card's rows), the first column wide
+/// enough for the Loop stepper's words: the stepper (- and +) in the
+/// first place, that loop's Key and Mute, Next loop and Capture beside
+/// it, then Undo, Redo, Clear, Snap and Use my tap on the second row.
+fn looper_rects(l: &Layout) -> ([Rect; 2], [Rect; 9]) {
+    let ci = l.card.inset(14);
+    let first = (2 * CLIP_STEP_W + LOOP_WORDS_W).min(ci.w / 3);
+    let w = (ci.w - 4 * 8 - first) / 4;
+    let y = ci.y + BUTTON_H + 34;
+    let p: [Rect; 10] = std::array::from_fn(|i| {
+        let (row, col) = ((i / 5) as i32, (i % 5) as i32);
+        let (x, w) = match col {
+            0 => (ci.x, first),
+            _ => (ci.x + first + 8 + (col - 1) * (w + 8), w),
+        };
+        Rect::new(x, y + row * (PICK_H + 8), w, PICK_H)
+    });
+    let s = p[0];
+    let steps = [
+        Rect::new(s.x, s.y, CLIP_STEP_W, s.h),
+        Rect::new(s.right() - CLIP_STEP_W, s.y, CLIP_STEP_W, s.h),
+    ];
+    (
+        steps,
+        [p[1], p[2], p[3], p[5], p[6], p[4], p[7], p[8], p[9]],
+    )
 }
 
-/// Play's card's buttons, on the same grid: Swing, Filter, XY across and
-/// XY up on the first row.
-fn play_rects(l: &Layout) -> [Rect; 4] {
+/// Where Play's card puts each of its buttons ([`play::ALL`]'s order): a
+/// row and a place on the transport card's grid of four to a row, with a
+/// third row under its two. Swing, Filter, XY across and XY up fill the
+/// first row; Next patch is the second row's fourth place (the XY pad's
+/// Hold and layout buttons take its first three) and Previous patch
+/// starts the third (live shows C1).
+const PLAY_PLACES: [(i32, usize); play::ALL.len()] =
+    [(0, 0), (0, 1), (0, 2), (0, 3), (1, 3), (2, 0)];
+
+/// Play's card's buttons, on the same grid ([`PLAY_PLACES`]).
+fn play_rects(l: &Layout) -> [Rect; play::ALL.len()] {
     let p = pick_rects(l);
-    [p[0], p[1], p[2], p[3]]
+    std::array::from_fn(|i| {
+        let (row, place) = PLAY_PLACES[i];
+        let r = p[place];
+        Rect::new(r.x, r.y + row * (PICK_H + 8), r.w, r.h)
+    })
+}
+
+/// Whether a learned control steps the song's patches (Next or Previous
+/// patch, live shows C1): its card's third line is Switches, not
+/// Takeover.
+fn steps_patches(s: &Saved) -> bool {
+    s.target.owner == Owner::Play && play::patch_step(s.target.param).is_some()
+}
+
+/// The Switches line's choices for Next and Previous patch: whether the
+/// switch waits for your hands, its words, and what it does.
+const SWITCHES: [(bool, &str, &str); 2] = [
+    (
+        false,
+        "At once",
+        "At once: the patch changes as you press. Held notes and pedals end where they started.",
+    ),
+    (
+        true,
+        "Hands up",
+        "When your hands are up: the patch changes once every key and pedal is up.",
+    ),
+];
+
+/// The Show card's seven, on the transport card's grid.
+fn show_rects(l: &Layout) -> [Rect; 7] {
+    let p = pick_rects(l);
+    std::array::from_fn(|i| p[i])
 }
 
 /// The table's columns: Control, Moves, Now, Kept in (x and width).
@@ -820,6 +910,23 @@ fn idle_why(m: &IoModel, kept: Kept, l: &Saved) -> Option<&'static str> {
         }
         _ => None,
     }
+}
+
+/// What else the `k`th learned control does, when one control has two
+/// jobs in the same place (the song or the rig): another learned row with
+/// its channel and control, on its port or on any port. Both rows show in
+/// red with the other's job (live shows B1, layout spec 4d).
+fn also_does(m: &IoModel, all: &[(Kept, &Saved)], k: usize) -> Option<String> {
+    let (kept, s) = all.get(k)?;
+    let j = all.iter().enumerate().position(|(j, (kj, o))| {
+        j != k
+            && kj == kept
+            && o.channel == s.channel
+            && o.source == s.source
+            && (o.port == s.port || o.port.is_none() || s.port.is_none())
+    })?;
+    let name = name_of(m, j, all[j].1);
+    Some(format!("also {}", split_name(&name).0))
 }
 
 fn name_of(m: &IoModel, k: usize, l: &Saved) -> String {
@@ -988,7 +1095,21 @@ impl Learn {
 
     /// Play's card's button `i`: Learn waits for a control to take it.
     fn arm_play(&mut self, i: usize) -> IoReply {
-        self.arm_as(play_target(i), play::ALL[i].1, "move a knob or a fader")
+        let how = if play::patch_step(play::ALL[i].0).is_some() {
+            "press a footswitch or a button"
+        } else {
+            "move a knob or a fader"
+        };
+        self.arm_as(play_target(i), play::ALL[i].1, how)
+    }
+
+    /// The Show card's button `i`: Learn waits for a control to take it.
+    fn arm_show(&mut self, i: usize) -> IoReply {
+        self.arm_as(
+            show_target(i),
+            show::ALL[i].1,
+            "press a footswitch or a button",
+        )
     }
 
     fn top_for(&self, rows: usize, shown: usize) -> usize {
@@ -1033,6 +1154,9 @@ impl Learn {
         }
         if l.looper.contains(x, y) {
             return Some(Hit::Looper);
+        }
+        if l.show.contains(x, y) {
+            return Some(Hit::Show);
         }
         if l.follow_button.is_some_and(|b| b.contains(x, y)) {
             return Some(Hit::Follow);
@@ -1079,6 +1203,10 @@ impl Learn {
                     .iter()
                     .position(|p| p.contains(x, y))
                     .map(Hit::PlayPick),
+                Buttons::Show => show_rects(&l)
+                    .iter()
+                    .position(|p| p.contains(x, y))
+                    .map(Hit::ShowPick),
             };
         }
         if l.again.contains(x, y) {
@@ -1100,7 +1228,11 @@ impl Learn {
         if up.contains(x, y) {
             return Some(Hit::Mode(1));
         }
-        for (i, s) in segments(l.line[2], TAKEOVERS.len()).iter().enumerate() {
+        let third = match m.setup.learned_at(self.pick) {
+            Some((_, s)) if steps_patches(s) => SWITCHES.len(),
+            _ => TAKEOVERS.len(),
+        };
+        for (i, s) in segments(l.line[2], third).iter().enumerate() {
             if s.contains(x, y) {
                 return Some(Hit::Takeover(i));
             }
@@ -1267,6 +1399,14 @@ impl Learn {
 
     fn takeover(&mut self, i: usize) -> IoReply {
         self.edit(|l| {
+            // Next and Previous patch: the line is Switches, kept in the
+            // target's number (`play::with_hands_up`).
+            if steps_patches(l) {
+                let to = play::with_hands_up(l.target.param, SWITCHES[i.min(1)].0);
+                let changed = l.target.param != to;
+                l.target.param = to;
+                return Ok(changed);
+            }
             if l.mode != Mode::Absolute {
                 return Err("Takeover is for knobs and faders".to_string());
             }
@@ -1333,6 +1473,8 @@ impl Learn {
             Hit::LooperPick(i) => self.arm_looper(i),
             Hit::Play => self.show_buttons(Buttons::Play),
             Hit::PlayPick(i) => self.arm_play(i),
+            Hit::Show => self.show_buttons(Buttons::Show),
+            Hit::ShowPick(i) => self.arm_show(i),
             Hit::Follow => {
                 self.follow = !self.follow;
                 IoReply::Redraw
@@ -1599,7 +1741,7 @@ impl Learn {
             let lit = self.waits_for(m, looper_target(i, self.loop_which));
             button(cx, r, LOOPER_BUTTONS[i], lit);
         }
-        let last = pick_rects(l)[7];
+        let last = looper_rects(l).1[8];
         para(
             cx,
             t.size_small * 0.9,
@@ -1639,10 +1781,58 @@ impl Learn {
             t.text_dim,
             "Tap one, then move a knob or a fader on your controller. It works in every project.",
         );
-        for (i, r) in play_rects(l).into_iter().enumerate() {
+        let rects = play_rects(l);
+        for (i, r) in rects.into_iter().enumerate() {
             button(cx, r, play::ALL[i].1, self.waits_for(m, play_target(i)));
         }
-        let last = play_rects(l)[3];
+        // The faint lines beside Previous patch, on the third row.
+        let last = rects[rects.len() - 1];
+        para(
+            cx,
+            t.size_small * 0.9,
+            Rect::new(
+                last.right() + 12,
+                last.y - 4,
+                ci.right() - last.right() - 12,
+                ci.bottom() - last.y + 4,
+            ),
+            t.text_faint,
+            "Swing and Filter turn as Play's Q-Links do (Filter is Drums'); XY across and up \
+             move the pad as a finger does. Next and Previous patch step the song's patches, \
+             stopping at the ends.",
+        );
+    }
+
+    /// The Show card (live shows B1, layout spec 4d): a set's controls,
+    /// on the transport card's grid.
+    fn paint_show(&self, cx: &mut PaintCx, m: &IoModel, l: &Layout, back: bool) {
+        let t = cx.theme.clone();
+        cx.canvas.fill_round_rect(l.card, t.round(12), t.surface);
+        let ci = l.card.inset(14);
+        cx.text(
+            FontId::Bold,
+            t.size_small,
+            Rect::new(ci.x, ci.y, l.again.x - ci.x - 8, BUTTON_H),
+            Align::Left,
+            t.text_dim,
+            "SHOW",
+        );
+        if back {
+            button(cx, l.remove, "Back", false);
+        }
+        para(
+            cx,
+            t.size_small * 0.9,
+            Rect::new(ci.x, ci.y + BUTTON_H, ci.w, 2 * SAYS_LINE_H),
+            t.text_dim,
+            "Tap one, then press a footswitch or a button on your controller. \
+             It works in every project while a set is open.",
+        );
+        let rects = show_rects(l);
+        for (i, r) in rects.iter().enumerate() {
+            button(cx, *r, show::ALL[i].1, self.waits_for(m, show_target(i)));
+        }
+        let last = rects[6];
         para(
             cx,
             t.size_small * 0.9,
@@ -1653,10 +1843,9 @@ impl Learn {
                 ci.bottom() - last.bottom() - 6,
             ),
             t.text_faint,
-            "Swing and Filter turn as Play's Q-Links do (Filter is track 1's, which Play calls Drums). \
-             XY across and XY up move the XY pad as a finger does: its effect plays until \
-             both are back, across in the middle and up at the bottom. \
-             Play's own touches stay as they are.",
+            "A press counts once: a second press within 50 ms is the same press, and \
+             presses while a song is changing are ignored. Panic stops and silences \
+             everything, as SHIFT + STOP, and sends notes off on every MIDI out.",
         );
     }
 
@@ -1674,6 +1863,7 @@ impl Learn {
             Some(Buttons::Clips) => self.paint_clips(cx, m, l, n > 0),
             Some(Buttons::Looper) => self.paint_looper(cx, m, l, n > 0),
             Some(Buttons::Play) => self.paint_play(cx, m, l, n > 0),
+            Some(Buttons::Show) => self.paint_show(cx, m, l, n > 0),
             None => self.paint_card(cx, m, l, self.pick.min(n - 1)),
         }
     }
@@ -1734,17 +1924,26 @@ impl Learn {
         let [down, up] = mode_rects(l.line[1]);
         let mode = MODES.iter().find(|x| x.0 == s.mode).map_or("?", |x| x.1);
         stepper(cx, down, up, mode);
-        // Takeover.
-        label(cx, l.line[2], "Takeover");
+        // Takeover, or Next and Previous patch's Switches.
+        let switches = steps_patches(s);
+        let waits = play::patch_step(s.target.param).is_some_and(|(_, w)| w);
         let knob = s.mode == Mode::Absolute;
-        for (i, sr) in segments(l.line[2], TAKEOVERS.len()).into_iter().enumerate() {
-            segment(
-                cx,
-                sr,
-                TAKEOVERS[i].1,
-                knob && s.takeover == TAKEOVERS[i].0,
-                knob,
-            );
+        if switches {
+            label(cx, l.line[2], "Switches");
+            for (i, sr) in segments(l.line[2], SWITCHES.len()).into_iter().enumerate() {
+                segment(cx, sr, SWITCHES[i].1, waits == SWITCHES[i].0, true);
+            }
+        } else {
+            label(cx, l.line[2], "Takeover");
+            for (i, sr) in segments(l.line[2], TAKEOVERS.len()).into_iter().enumerate() {
+                segment(
+                    cx,
+                    sr,
+                    TAKEOVERS[i].1,
+                    knob && s.takeover == TAKEOVERS[i].0,
+                    knob,
+                );
+            }
         }
         // Kept in.
         label(cx, l.line[3], "Kept in");
@@ -1769,8 +1968,10 @@ impl Learn {
                 Kept::Project => "this song",
             },
         );
-        // What the takeover does, or why there is none.
-        let why = if knob {
+        // What the takeover (or the switch) does, or why there is none.
+        let why = if switches {
+            SWITCHES[waits as usize].2
+        } else if knob {
             TAKEOVERS
                 .iter()
                 .find(|x| x.0 == s.takeover)
@@ -1843,6 +2044,9 @@ impl IoSection for Learn {
         if self.buttons == Some(Buttons::Play) && !self.follow {
             return Some(PLAY_HINT);
         }
+        if self.buttons == Some(Buttons::Show) && !self.follow {
+            return Some(SHOW_HINT);
+        }
         Some(HINT)
     }
 
@@ -1881,7 +2085,7 @@ impl IoSection for Learn {
         let all: Vec<(Kept, &Saved)> = m.setup.all_learned().collect();
         // The words end before the buttons: "LEARNED · N" where the
         // long words don't fit (cut short rather than under them).
-        let words = Rect::new(l.head.x, l.head.y, l.looper.x - 8 - l.head.x, l.head.h);
+        let words = Rect::new(l.head.x, l.head.y, l.show.x - 8 - l.head.x, l.head.h);
         let mut heading = format!("WHAT YOUR CONTROLLERS MOVE · {}", all.len());
         if cx.measure(FontId::Bold, t.size_small, &heading) > words.w {
             heading = format!("LEARNED · {}", all.len());
@@ -1909,6 +2113,7 @@ impl IoSection for Learn {
             card == Some(Buttons::Clips),
         );
         button(cx, l.looper, "Looper", card == Some(Buttons::Looper));
+        button(cx, l.show, "Show", card == Some(Buttons::Show));
         if let Some(b) = l.follow_button {
             button(cx, b, "MIDI Follow", self.follow);
         }
@@ -1964,13 +2169,22 @@ impl IoSection for Learn {
                 continue;
             };
             let idle = idle_why(&m, *kept, s);
+            let also = idle.is_none().then(|| also_does(&m, &all, k)).flatten();
             if k == self.pick {
                 cx.canvas.stroke_round_rect(rr, t.round(8), 2, t.accent2);
             } else if k % 2 == 1 {
                 cx.canvas.fill_round_rect(rr, t.round(8), t.raised);
             }
-            let ink = if idle.is_some() { t.text_faint } else { t.text };
-            let dim = if idle.is_some() {
+            let ink = if also.is_some() {
+                t.bad
+            } else if idle.is_some() {
+                t.text_faint
+            } else {
+                t.text
+            };
+            let dim = if also.is_some() {
+                t.bad
+            } else if idle.is_some() {
                 t.text_faint
             } else {
                 t.text_dim
@@ -2010,8 +2224,9 @@ impl IoSection for Learn {
                 ink,
                 main,
             );
-            let sub = idle.unwrap_or(rest);
+            let sub = also.as_deref().or(idle).unwrap_or(rest);
             let sub_ink = match idle {
+                _ if also.is_some() => t.bad,
                 Some("its port only plays tracks") => t.warn,
                 Some(_) => t.text_faint,
                 None => t.text_dim,
@@ -2103,6 +2318,7 @@ impl IoSection for Learn {
         out.push(Target::tap("learn-play", 0, "Play controls", l.play));
         out.push(Target::tap("learn-clips", 0, "Clips and scenes", l.clips));
         out.push(Target::tap("learn-looper", 0, "Looper controls", l.looper));
+        out.push(Target::tap("learn-show", 0, "Show controls", l.show));
         if let Some(b) = l.follow_button {
             out.push(Target::tap("learn-follow", 0, "MIDI Follow", b));
         }
@@ -2174,6 +2390,11 @@ impl IoSection for Learn {
                         out.push(Target::tap("learn-play-pick", i, play::ALL[i].1, r));
                     }
                 }
+                Buttons::Show => {
+                    for (i, r) in show_rects(&l).into_iter().enumerate() {
+                        out.push(Target::tap("learn-show-pick", i, show::ALL[i].1, r));
+                    }
+                }
             }
             return out;
         }
@@ -2189,11 +2410,17 @@ impl IoSection for Learn {
         let [down, up] = mode_rects(l.line[1]);
         out.push(Target::tap("learn-mode", 0, "Works as −", down));
         out.push(Target::tap("learn-mode", 1, "Works as +", up));
-        for (i, sr) in segments(l.line[2], TAKEOVERS.len()).into_iter().enumerate() {
-            out.push(
-                Target::tap("learn-takeover", i, TAKEOVERS[i].1, sr)
-                    .disabled_if(s.mode != Mode::Absolute),
-            );
+        if steps_patches(s) {
+            for (i, sr) in segments(l.line[2], SWITCHES.len()).into_iter().enumerate() {
+                out.push(Target::tap("learn-switches", i, SWITCHES[i].1, sr));
+            }
+        } else {
+            for (i, sr) in segments(l.line[2], TAKEOVERS.len()).into_iter().enumerate() {
+                out.push(
+                    Target::tap("learn-takeover", i, TAKEOVERS[i].1, sr)
+                        .disabled_if(s.mode != Mode::Absolute),
+                );
+            }
         }
         for (i, sr) in segments(l.line[3], KEPT.len()).into_iter().enumerate() {
             out.push(Target::tap("learn-kept", i, KEPT[i].1, sr));
@@ -2326,11 +2553,21 @@ impl IoSection for Learn {
                 pos: mode as f32 / (MODES.len() - 1) as f32,
                 enabled: true,
             },
-            IoKnob {
-                label: "Takeover".to_string(),
-                text: TAKEOVERS[take].1.to_string(),
-                pos: take as f32 / (TAKEOVERS.len() - 1) as f32,
-                enabled: s.mode == Mode::Absolute,
+            if steps_patches(s) {
+                let waits = play::patch_step(s.target.param).is_some_and(|(_, w)| w);
+                IoKnob {
+                    label: "Switches".to_string(),
+                    text: SWITCHES[waits as usize].1.to_string(),
+                    pos: f32::from(u8::from(waits)),
+                    enabled: true,
+                }
+            } else {
+                IoKnob {
+                    label: "Takeover".to_string(),
+                    text: TAKEOVERS[take].1.to_string(),
+                    pos: take as f32 / (TAKEOVERS.len() - 1) as f32,
+                    enabled: s.mode == Mode::Absolute,
+                }
             },
         ])
     }
@@ -2344,14 +2581,24 @@ impl IoSection for Learn {
             0 | 1 => self.range(knob, detents, step),
             2 => self.mode(detents.signum()),
             3 => {
-                let at = {
+                let (at, n) = {
                     let m = self.model.lock().unwrap_or_else(|e| e.into_inner());
-                    m.setup
-                        .learned_at(self.pick)
-                        .and_then(|(_, s)| TAKEOVERS.iter().position(|x| x.0 == s.takeover))
-                        .unwrap_or(0)
+                    match m.setup.learned_at(self.pick) {
+                        Some((_, s)) if steps_patches(s) => (
+                            usize::from(play::patch_step(s.target.param).is_some_and(|(_, w)| w)),
+                            SWITCHES.len(),
+                        ),
+                        Some((_, s)) => (
+                            TAKEOVERS
+                                .iter()
+                                .position(|x| x.0 == s.takeover)
+                                .unwrap_or(0),
+                            TAKEOVERS.len(),
+                        ),
+                        None => (0, TAKEOVERS.len()),
+                    }
                 };
-                let to = (at as i32 + detents.signum()).clamp(0, TAKEOVERS.len() as i32 - 1);
+                let to = (at as i32 + detents.signum()).clamp(0, n as i32 - 1);
                 self.takeover(to as usize)
             }
             _ => IoReply::Ignored,
@@ -2477,16 +2724,17 @@ mod tests {
         let _ = paint(&s);
         let empty = ids(&s, AREA);
         assert_eq!(
-            empty[..5],
+            empty[..6],
             [
                 "learn-transport",
                 "learn-play",
                 "learn-clips",
                 "learn-looper",
+                "learn-show",
                 "learn-follow"
             ]
         );
-        assert_eq!(empty[5..], ["learn-pick"; 8]);
+        assert_eq!(empty[6..], ["learn-pick"; 8]);
         // Clips and scenes in its place, and back.
         tap(&mut s, "learn-clips", 0);
         fits(&s, AREA);
@@ -2501,6 +2749,7 @@ mod tests {
             "learn-clips",
             "learn-looper",
             "learn-play",
+            "learn-show",
         ] {
             let mut s = Learn::new(model());
             assert_eq!(tap(&mut s, card, 0), IoReply::Redraw);
@@ -2839,9 +3088,23 @@ mod tests {
                 "Undo",
                 "Redo",
                 "Capture",
-                "Clear"
+                "Clear",
+                "Snap",
+                "Use my tap"
             ]
         );
+        // The Loop stepper's words fit between its - and +, and no two
+        // buttons overlap.
+        let l = layout(AREA, false);
+        let (steps, buttons) = looper_rects(&l);
+        assert!(steps[1].x - steps[0].right() >= LOOP_WORDS_W);
+        for (i, a) in buttons.iter().enumerate() {
+            assert!(a.x >= steps[1].right() || a.y > steps[1].y, "{i}");
+            assert_eq!(l.card.inset(14).intersect(*a), *a, "{i}");
+            for b in &buttons[i + 1..] {
+                assert!(a.intersect(*b).is_empty(), "{i}");
+            }
+        }
         // Nothing for the Q-Links while it shows.
         assert!(s.qlinks().unwrap().iter().all(|k| !k.enabled));
         assert_eq!(s.qlink_turn(0, 1, false), IoReply::Ignored);
@@ -2899,6 +3162,8 @@ mod tests {
             (4, looper::REDO),
             (5, looper::CAPTURE),
             (6, looper::CLEAR),
+            (7, looper::SNAP),
+            (8, looper::USE_MY_TAP),
         ] {
             tap(&mut s, "learn-looper-pick", i);
             assert_eq!(armed(&m), at(id));
@@ -2948,7 +3213,17 @@ mod tests {
             .filter(|t| t.id == "learn-play-pick")
             .map(|t| t.label)
             .collect();
-        assert_eq!(labels, ["Swing", "Filter", "XY across", "XY up"]);
+        assert_eq!(
+            labels,
+            [
+                "Swing",
+                "Filter",
+                "XY across",
+                "XY up",
+                "Next patch",
+                "Previous patch"
+            ]
+        );
         assert_eq!(s.hint(), Some(PLAY_HINT));
         // Nothing for the Q-Links or - and + while it shows.
         assert!(s.qlinks().unwrap().iter().all(|k| !k.enabled));
@@ -2982,14 +3257,139 @@ mod tests {
         fits(&s, WIDE);
     }
 
+    /// Next and Previous patch on Play's card (live shows C1): Next patch
+    /// in the second row's fourth place and Previous patch starting a
+    /// third row, each asking for a footswitch; a learned one's card has
+    /// Switches (At once, Hands up) in Takeover's place, kept in the
+    /// control's number so a build without patches keeps the control.
+    #[test]
+    fn next_and_previous_patch_learn_a_footswitch_and_say_when_they_switch() {
+        let m = model();
+        let mut s = Learn::new(m.clone());
+        tap(&mut s, "learn-play", 0);
+        let _ = paint(&s);
+        let rect = |s: &Learn, i: usize| {
+            s.targets(AREA)
+                .into_iter()
+                .find(|t| t.id == "learn-play-pick" && t.index == i)
+                .unwrap()
+                .rect
+        };
+        let (swing, up, next, previous) = (rect(&s, 0), rect(&s, 3), rect(&s, 4), rect(&s, 5));
+        assert_eq!((next.x, previous.x), (up.x, swing.x));
+        assert!(
+            next.y > up.bottom() && previous.y > next.bottom(),
+            "{next:?} {previous:?}"
+        );
+        fits(&s, AREA);
+        fits(&s, WIDE);
+        assert_eq!(tap(&mut s, "learn-play-pick", 4), IoReply::Redraw);
+        assert_eq!(
+            m.lock().unwrap().asks.learn_target,
+            Some(ParamAddr::new(Owner::Play, play::NEXT_PATCH))
+        );
+        assert_eq!(
+            s.take_note().unwrap(),
+            "Next patch: press a footswitch or a button on your controller"
+        );
+        // A footswitch learned on Previous patch, kept in the rig.
+        let pedal = Saved {
+            source: Source::Cc(66),
+            target: ParamAddr::new(Owner::Play, play::PREVIOUS_PATCH),
+            mode: Mode::Momentary,
+            ..learned(None, 66, 0)
+        };
+        m.lock().unwrap().setup.learned_in(Kept::Rig, pedal);
+        let n = m.lock().unwrap().setup.all_learned().count();
+        let _ = paint(&s);
+        tap(&mut s, "learn-row", n - 1);
+        let _ = paint(&s);
+        let shown = ids(&s, AREA);
+        assert!(shown.contains(&"learn-switches") && !shown.contains(&"learn-takeover"));
+        let k = s.qlinks().unwrap();
+        assert_eq!(
+            (k[3].label.as_str(), k[3].text.as_str()),
+            ("Switches", "At once")
+        );
+        assert_eq!(tap(&mut s, "learn-switches", 1), IoReply::Redraw);
+        let target = |m: &Shared| m.lock().unwrap().setup.learned_at(n - 1).unwrap().1.target;
+        assert_eq!(
+            target(&m),
+            ParamAddr::new(Owner::Play, play::PREVIOUS_PATCH_HANDS_UP)
+        );
+        assert_eq!(s.qlinks().unwrap()[3].text, "Hands up");
+        // The fourth Q-Link turns it back.
+        assert_eq!(s.qlink_turn(3, -1, false), IoReply::Redraw);
+        assert_eq!(
+            target(&m),
+            ParamAddr::new(Owner::Play, play::PREVIOUS_PATCH)
+        );
+        assert_eq!(tap(&mut s, "learn-switches", 0), IoReply::Handled);
+    }
+
+    /// The Show card (live shows B1, layout spec 4d): a set's seven
+    /// controls, each arming Learn on its job, kept in the rig.
+    #[test]
+    fn shows_card_arms_learn_on_a_sets_controls() {
+        let m = model();
+        let mut s = Learn::new(m.clone());
+        let _ = paint(&s);
+        assert!(!ids(&s, AREA).contains(&"learn-show-pick"));
+        assert_eq!(tap(&mut s, "learn-show", 0), IoReply::Redraw);
+        let _ = paint(&s);
+        let labels: Vec<String> = s
+            .targets(AREA)
+            .into_iter()
+            .filter(|t| t.id == "learn-show-pick")
+            .map(|t| t.label)
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "Next song",
+                "Previous song",
+                "Go",
+                "Cancel next",
+                "Back to the set order",
+                "Panic",
+                "Click"
+            ]
+        );
+        assert_eq!(s.hint(), Some(SHOW_HINT));
+        let armed = |m: &Shared| m.lock().unwrap().asks.learn_target;
+        for (i, (id, _)) in show::ALL.into_iter().enumerate() {
+            assert_eq!(tap(&mut s, "learn-show-pick", i), IoReply::Redraw);
+            let at = ParamAddr::new(Owner::Show, id);
+            assert_eq!(armed(&m), Some(at));
+            assert!(s.waits_for(&m.lock().unwrap(), at), "lit");
+        }
+        assert_eq!(
+            s.take_note().unwrap(),
+            "Click: press a footswitch or a button on your controller"
+        );
+        let _ = paint(&s);
+        tap(&mut s, "learn-back", 0);
+        assert!(ids(&s, AREA).contains(&"learn-again"));
+        fits(&s, WIDE);
+    }
+
     /// The heading's words keep their room before the buttons: the long
     /// ones where they fit, else the short.
     #[test]
     fn the_heading_says_what_is_learned_in_the_room_it_has() {
         let s = Learn::new(model());
-        for area in [AREA, WIDE] {
+        // The section beside the Q-Link column: the mixer's 1116 px, less
+        // the master strip (150) and its gap, the sections' list (170) and
+        // its gap. "LEARNED · 12" fits before the Show button.
+        let mpc = Rect::new(194, 136, 772, 614);
+        for area in [mpc, WIDE] {
             let l = layout(area, false);
-            assert!(l.looper.x - 8 > l.head.x + 100, "{area:?}");
+            assert!(l.show.x - 8 > l.head.x + 100, "{area:?}");
+        }
+        for area in [AREA, mpc, WIDE] {
+            let l = layout(area, false);
+            assert!(l.show.x > l.head.x, "{area:?}");
+            assert!(l.show.right() + 8 <= l.looper.x);
             assert!(l.looper.right() + 8 <= l.clips.x);
             assert!(l.clips.right() + 8 <= l.play.x);
             assert!(l.play.right() + 8 <= l.transport.x);
@@ -3022,6 +3422,31 @@ mod tests {
         assert_eq!(idle_why(&v, all[0].0, all[0].1), None);
         assert_eq!(idle_why(&v, all[1].0, all[1].1), Some("unplugged, waits"));
         assert_eq!(idle_why(&v, all[2].0, all[2].1), None);
+        assert!((0..3).all(|k| also_does(&v, &all, k).is_none()));
+    }
+
+    /// One control with two jobs in the rig (here one learned on any port
+    /// and one on its own port): both rows say what else it does (layout
+    /// spec 4d), and the song's own mapping isn't a second job.
+    #[test]
+    fn a_control_with_two_jobs_says_what_else_it_does() {
+        let m = model();
+        {
+            let mut v = m.lock().unwrap();
+            let mut other = v.setup.rig_learn[0].clone();
+            other.port = None;
+            other.target = ParamAddr::new(Owner::Show, show::PANIC);
+            v.setup.rig_learn.push(other);
+            v.live.learn_names.push("Panic (Show)".into());
+        }
+        let v = m.lock().unwrap();
+        let all: Vec<_> = v.setup.all_learned().collect();
+        assert_eq!(all.len(), 4);
+        assert_eq!(also_does(&v, &all, 3).as_deref(), Some("also Volume"));
+        assert_eq!(also_does(&v, &all, 2).as_deref(), Some("also Panic"));
+        assert_eq!(also_does(&v, &all, 0), None);
+        drop(v);
+        let _ = paint(&Learn::new(m));
     }
 
     #[test]

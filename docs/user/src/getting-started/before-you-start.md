@@ -41,9 +41,6 @@ Tap a button, or turn the data wheel to it and push the wheel.
 
 **Holding the power button down** for a few seconds still switches the MPC off at once, without asking and without saving. Use it only if MPFree stops answering, or if the card says it can't shut down from here.
 
-> [!MPC]
-> As on the MPC: a short press of the power button asks before switching off, and holding it switches off at once.
-
 > [!WARNING]
 > MPFree is early test software. The stick is made with the MPFree USB creator from your own copy of Akai's update file: [Installing MPFree](installing.md) shows how. There are no downloads for musicians yet; that page will say where to get the creator when there is a release.
 

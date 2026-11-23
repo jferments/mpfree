@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-sampler/src/model.rs rust/mpfree-sampler-ui/src/play_tab.rs rust/mpfree-sampler-ui/src/sound_panel.rs rust/mpfree-sampler-ui/src/grain_tab.rs rust/mpfree-sampler-ui/src/grain_tool.rs rust/mpfree-sampler-ui/src/keys_widgets.rs rust/mpfree-grain rust/mpfree-app/src/sample_page.rs
-checked: 2026-11-18 ec8cb82
+checked: 2026-11-23 27484a97
 -->
 
 # Shaping how a pad plays
@@ -88,13 +88,15 @@ To fill in **Stops** or **Also plays**, tap its selector, then hit the pads you 
 
 **FULL LEVEL** and Half Level play every hit at full or at half strength, sampled pads included (see [Buttons and controls](../reference/controls.md)).
 
-### Pitched up: clean or Vintage
+### Pitched: clean or Vintage
 
 Play a sound higher than it was recorded (**Tune** up, a key above a keygroup's root, pressure on pitch) and its top end moves up past what the MPC can play. On old samplers that part folds back down as harsh, metallic tones that were never in the sound (aliasing): a hi-hat pitched up an octave gains a whine. MPFree filters it out as it plays, so pitched-up hats, breaks and keys stay clean. A sound recorded at a higher rate, such as a 96 kHz file, plays clean too, and so do the grains of a granular pad whose **Pitch** or **Pitch spray** takes them up.
 
-The **Vintage** switch of the Pitch section turns that off for one pad, its grains included. At **On** the pad plays pitched up the way old samplers did, grit and all, for when that is the sound you want. Vintage is saved with the kit.
+Pitched down, or only a little up, a sound is filled in between its samples. The quick way old samplers did that leaves faint tones near the top that were never in the sound. MPFree fills it in more carefully, so those stay much quieter (a granular pad's grains still use the quick way). The difference is small: in a blind listening test with drums, synth chords, a keygroup melody and a pitch bend, the two couldn't be told apart.
 
-Up to two semitones up, clean and Vintage sound exactly the same: what folds back there is above hearing. Past that, a clean pad takes a little more of the MPC's power for each sound it plays, and a Vintage one doesn't.
+The **Vintage** switch of the Pitch section turns both off for one pad, its grains included. At **On** the pad plays pitched the way old samplers did, grit and all, for when that is the sound you want. Vintage is saved with the kit.
+
+A clean pad takes a little more of the MPC's power for each pitched sound it plays, and more again past two semitones up; a Vintage one doesn't.
 
 ### Movement: an LFO and a pitch envelope
 
@@ -218,7 +220,11 @@ While the pad is a keygroup, or the pads play notes, Edit pad's Pitch and Pad se
 - Tap a bar to pick its pad. Drag the picked pad's ends to set its lowest and highest keys, and its dot to move the root.
 - Press the keys to hear the kit. The line under the keys shows the 16 notes the pads play.
 
+A keyboard on MIDI IN or USB plays a kit of keygroups by pitch too, and a key outside every keygroup plays nothing (see [Playing MPFree from a keyboard](midi-and-cv.md#playing-mpfree-from-a-keyboard)).
+
 The Pitch section's Keys controls do the same with numbers: the Keys switch makes one pad a keygroup, Low key, High key and Root key set its range, and the Pad section's Pads play switches the pads between their own sounds and notes.
+
+Keygroups play the song's [tuning](synths.md#tuning), set in the Synth tab's options. In standard tuning a key plays its sound a semitone higher for each key above the root. In another tuning, MPFree takes the sound to be at its root note's standard pitch and plays every key, the root too, at the tuning's pitch for that key. The pad's own Tune still moves it as before, and a hit on the pad itself doesn't follow the tuning.
 
 ### Crossfades
 

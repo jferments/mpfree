@@ -726,3 +726,178 @@ fn a_save_fills_its_room_without_allocating() {
     assert!(a.save_into(&mut small).is_none());
     assert_eq!(small, before);
 }
+
+#[test]
+fn clips_never_allocate() {
+    // Launches closer than a fade (a fifth voice), an edit, a mute, song
+    // mode, a ring and loop jumps, on every track, at periods from 1 to
+    // 4096: the answers are built before each period, as the arranger's
+    // player builds them from its view.
+    use mpfree_audiotracks::{Answer, Change, ClipPlay, ClipRegion, Plays, RecordingId};
+    const RATE: u32 = 22_050;
+    const BT: i64 = 3_840;
+    let regions: Vec<[ClipRegion; 2]> = (0..4u16)
+        .map(|k| {
+            let r = ClipRegion {
+                start: 0,
+                end: 960,
+                rec: RecordingId(100 + u128::from(k)),
+                src: 0,
+                phase: 0.0,
+                gain: 1.0,
+                fade_in: 100,
+                fade_out: 100,
+                into: 0,
+                left: 0,
+            };
+            [
+                r,
+                ClipRegion {
+                    start: 1280,
+                    end: BT,
+                    src: 3000,
+                    ..r
+                },
+            ]
+        })
+        .collect();
+    let clip = |k: usize, origin: f64, stamp: u64| ClipPlay {
+        regions: &regions[k],
+        origin,
+        len: BT,
+        last_frame: 30_000,
+        gain: 1.0,
+        clip: k as u32 + 1,
+        stamp,
+    };
+    for period in [1usize, 64, 333, 4096] {
+        let mut t = Transport::new(RATE, 240.0).unwrap();
+        let mut a = AudioTracks::new(RATE, 30);
+        let mut b = Block::new();
+        for k in 0..4u16 {
+            let audio = (0..2 * 44_100)
+                .map(|j| ((j * 31 + k as usize) % 97) as f32 / 97.0 - 0.5)
+                .collect();
+            let f = TakeFile {
+                id: k,
+                rec: RecordingId(100 + u128::from(k)),
+                track: 0,
+                group: k,
+                pass: 0,
+                bpm: 240.0,
+                anchor: 0.0,
+                frames: 44_100,
+                channels: 2,
+                file: String::new(),
+                path: None,
+                audio,
+            };
+            assert!(a.load_take(f).is_ok());
+        }
+        let input = vec![0.0f32; 2 * period];
+        let mut out = vec![0.0f32; 2 * period];
+        let mut frame = 0u64;
+        while a.loading() > 0 {
+            assert!(t.process(period as u32, &mut b));
+            let map = *t.tempo_map();
+            a.process(&b, &map, &input, &mut out);
+            frame += period as u64;
+        }
+        let map = *t.tempo_map();
+        assert!(a.place(3, &[], &map));
+        assert!(t.command(frame, T::SetLoop(Some((0, 2 * BT)))));
+        assert!(t.command(frame, T::PlayStart));
+        let start = frame;
+        let at = |tick: i64| start + tick as u64 * 735 / 128;
+        // At frame `at`, track `tr` plays clip `k` (or its song) from
+        // `origin`, at `stamp`, `muted`, ringing what played.
+        #[derive(Clone, Copy)]
+        struct Ev {
+            at: u64,
+            tr: usize,
+            k: Option<usize>,
+            origin: f64,
+            stamp: u64,
+            muted: bool,
+            ring: bool,
+        }
+        let e = |at, tr, k, origin, stamp| Ev {
+            at,
+            tr,
+            k,
+            origin,
+            stamp,
+            muted: false,
+            ring: false,
+        };
+        let mut evs: Vec<Ev> = Vec::new();
+        for tr in 0..MAX_TRACKS {
+            evs.push(e(at(0), tr, Some(tr % 3), 0.0, 1));
+            evs.push(e(at(0) + 4000, tr, Some(tr % 3), 0.0, 2));
+            for k in 0..4 {
+                evs.push(e(at(BT) + 9 * k as u64, tr, Some(k % 3), BT as f64, 1));
+            }
+            evs.push(Ev {
+                muted: true,
+                ..e(at(BT) + 3000, tr, Some(0), BT as f64, 1)
+            });
+            evs.push(Ev {
+                ring: true,
+                ..e(at(BT) + 6000, tr, None, 0.0, 0)
+            });
+        }
+        evs.sort_by_key(|e| e.at);
+        let mut changes: Vec<Vec<Change>> =
+            (0..MAX_TRACKS).map(|_| Vec::with_capacity(16)).collect();
+        let end = at(6 * BT);
+        CALLS.with(|c| c.set(0));
+        let mut calls = 0;
+        while frame < end {
+            let n = period as u64;
+            for (tr, cs) in changes.iter_mut().enumerate() {
+                cs.clear();
+                for e in evs
+                    .iter()
+                    .filter(|e| e.tr == tr && (frame..frame + n).contains(&e.at))
+                {
+                    if cs.len() == 4 {
+                        cs.remove(0);
+                    }
+                    cs.push(Change {
+                        frame: (e.at - frame) as u32,
+                        // The whole tick it lands on, as the player gives.
+                        tick: ((e.at - start) as f64 * 128.0 / 735.0).round(),
+                        plays: e
+                            .k
+                            .map_or(Plays::Song, |k| Plays::Clip(clip(k, e.origin, e.stamp))),
+                        muted: e.muted,
+                        ring: e.ring,
+                    });
+                }
+            }
+            let mut answers = [Answer::default(); MAX_TRACKS];
+            for (tr, ans) in answers.iter_mut().enumerate() {
+                let before = evs.iter().rev().find(|e| e.tr == tr && e.at < frame);
+                *ans = Answer {
+                    start: before.map_or(Plays::Song, |e| {
+                        e.k.map_or(Plays::Song, |k| Plays::Clip(clip(k, e.origin, e.stamp)))
+                    }),
+                    muted: before.is_some_and(|e| e.muted),
+                    changes: &changes[tr],
+                    superseded: 0,
+                };
+            }
+            watch(true);
+            assert!(t.process(n as u32, &mut b));
+            let map = *t.tempo_map();
+            a.process_with(&b, &map, &input, &mut out, &answers);
+            let _ = a.stats();
+            watch(false);
+            calls += CALLS.with(Cell::get);
+            CALLS.with(|c| c.set(0));
+            frame += n;
+        }
+        assert!(a.stats().declicked > 0);
+        assert_eq!(calls, 0, "period {period}");
+    }
+}
