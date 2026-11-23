@@ -107,6 +107,10 @@ pub use clips::{
 };
 use clips::{Glide, Lane, Mode, Shape, Window, NO_TAKE_ID};
 pub use loop_play::{LoopPlayer, LoopRun, LOOP_VOICES};
+
+/// Each loop's buffer for the period, by its id
+/// ([`AudioTracks::process_with_loops`]).
+type LoopSource<'a, 's> = &'a dyn Fn(u128) -> Option<&'s [f32]>;
 use pool::Pool;
 pub use pool::CHUNK;
 pub use retime::{Piece, Retime};
@@ -3021,7 +3025,7 @@ impl AudioTracks {
         input: &[f32],
         out: &mut [f32],
         answers: &[Answer],
-        loops: Option<(&LoopPlayer, &dyn Fn(u128) -> Option<&'s [f32]>)>,
+        loops: Option<(&LoopPlayer, LoopSource<'_, 's>)>,
     ) {
         let n = (block.frames as usize)
             .min(input.len() / 2)

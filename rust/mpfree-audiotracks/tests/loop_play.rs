@@ -426,3 +426,62 @@ fn stopped_nothing_plays_and_the_next_start_is_afresh() {
     assert!(r.told[0].to <= stop + 1, "{:?}", r.told);
     assert!(r.out[2 * (stop as usize + 1)..].iter().all(|&s| s == 0.0));
 }
+
+#[test]
+fn a_loop_back_inside_its_own_fade_reopens_its_voice_from_where_it_was() {
+    // Loop 4, a take clip at `b`, loop 4 again 20 frames into the fade
+    // (from another origin): one voice, its gain going back up from where
+    // the fade had it, and the looper told one run at a time.
+    let (a, b) = (fr(BT), fr(2 * BT));
+    let c = b + 20;
+    let takes = || vec![ones(4 * BAR as usize)];
+    for period in PERIODS {
+        let mut r = Rig::new(period, takes());
+        r.run(
+            fr(3 * BT),
+            &[ev(a, lp(4, BT)), ev(b, take_clip(2 * BT)), ev(c, lp(4, 0))],
+        );
+        assert_eq!(r.loops.stolen(), 0, "period {period}");
+        // The loop's runs never overlap: the looper plays one place.
+        for (i, x) in r.told.iter().enumerate() {
+            for y in &r.told[i + 1..] {
+                assert!(x.to <= y.from || y.to <= x.from, "{:?}", r.told);
+            }
+        }
+        assert_eq!(
+            r.told,
+            [
+                Told {
+                    id: 4,
+                    origin: BT as f64,
+                    from: a,
+                    to: c,
+                },
+                Told {
+                    id: 4,
+                    origin: 0.0,
+                    from: c,
+                    to: fr(3 * BT),
+                },
+            ],
+            "period {period}"
+        );
+        // The loop's share (the right side is minus it, the take clip's
+        // ones are the same on both): continuous through `c`, and all of
+        // it once the fade back is done.
+        let share = |g: u64| (r.l(g) - r.r(g)) / (2.0 * level(4));
+        let at_c = share(c);
+        assert!(
+            (at_c - fade(FADE - 20)).abs() < 1e-5,
+            "period {period} {at_c}"
+        );
+        assert!((share(c - 1) - fade(FADE - 19)).abs() < 1e-5);
+        for k in 0..FADE as u64 {
+            assert!(
+                share(c + k + 1) >= share(c + k) - 1e-6,
+                "period {period} {k}"
+            );
+        }
+        assert!((share(c + FADE as u64 - 20) - 1.0).abs() < 1e-6);
+    }
+}

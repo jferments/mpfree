@@ -292,6 +292,23 @@ impl LoopPlayer {
                     if let Some(v) = playing {
                         lane.voices[v].win.close_at(f, Join::Fade);
                     }
+                    // The loop still closing in the other voice (a switch
+                    // away and back inside a fade): that voice opens again
+                    // from the gain it has, so a loop is only ever in one
+                    // voice and the looper renders one place for it.
+                    let back = (0..LOOP_VOICES).find(|&v| {
+                        Some(v) != playing && lane.voices[v].on && lane.voices[v].id == l.id
+                    });
+                    if let Some(v) = back {
+                        let w = lane.voices[v].win;
+                        let k = f.saturating_sub(w.to).min(FADE as u64);
+                        lane.voices[v].win =
+                            Window::opening(f.saturating_sub(FADE as u64 - k), Join::Fade);
+                        lane.voices[v].origin = l.origin;
+                        lane.mode = Mode::Loop(v);
+                        lane.mute.set(heard, f);
+                        return;
+                    }
                     let v = match lane.voices.iter().position(|v| !v.on) {
                         Some(v) => v,
                         None => {

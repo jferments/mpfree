@@ -94,6 +94,7 @@ pub mod ends;
 pub mod find;
 pub mod heard;
 pub mod hits;
+mod on_track;
 mod outs;
 pub mod print;
 pub mod reading;
@@ -102,6 +103,7 @@ mod view;
 
 pub use ends::{Candidate, Event, EventLog, InnerBeat, NoteStart, Verdict};
 pub use heard::{Take, HEARD_SECONDS};
+pub use on_track::{PlayRun, MAX_PLAY_RUNS};
 pub use outs::LoopOuts;
 pub use reading::{
     read_bars, read_bars_with, Reading, Sure, TempoHint, TempoKind, LOOP_MAX_BPM, LOOP_MIN_BPM,
@@ -112,6 +114,7 @@ use ends::NoteLog;
 use find::FindJob;
 use heard::Heard;
 use hits::{HitLog, HitTrack};
+use on_track::{OnTrack, Told};
 
 use view::{Cursor, View};
 
@@ -1136,6 +1139,10 @@ struct Run<'a> {
     /// The run's first frame.
     f: u64,
     playing: bool,
+    /// For a loop on an audio track ([`Looper::play`]): whether its first
+    /// frame looks for a jump, in place of the span's first frame doing so
+    /// (`on_track::first_of`).
+    first: Option<bool>,
 }
 
 #[derive(Clone, Copy)]
@@ -2288,6 +2295,9 @@ pub struct Looper {
     /// What each loop and Listen played in the last period, apart
     /// ([`Looper::process_each`]).
     outs: LoopOuts,
+    /// The loops on audio tracks ([`Looper::play`]): where the track
+    /// player says each sounds next. None: the loop launches itself.
+    on_track: [Option<OnTrack>; MAX_LOOPS],
 }
 
 impl Looper {
@@ -2330,6 +2340,7 @@ impl Looper {
             smart_out: None,
             last_span: None,
             outs: LoopOuts::new(MAX_PERIOD as usize),
+            on_track: [None; MAX_LOOPS],
         }
     }
 
@@ -2477,6 +2488,51 @@ impl Looper {
     /// if the queue is full.
     pub fn launch(&mut self, n: usize, on: bool, at: Option<Tick>) -> bool {
         self.push(Queued::Launch { n, on, at })
+    }
+
+    /// Loop `n` plays on an audio track (audio tracks phase 4, step 4b):
+    /// `runs` are the frames of the next period it sounds on, in order,
+    /// each at its place counted from its origin (`on_track`'s module
+    /// says how). The first call puts the loop on the track: from then
+    /// the track player says where it sounds, a period at a time (no call,
+    /// or no runs, is silence, and a loop told nothing isn't run), and the
+    /// loop's own launch, mute and solo are refused. Call it before
+    /// [`Looper::process_each`] each period; its own buffer
+    /// ([`LoopOuts::loop_out`]) then holds it, at full gain, for the
+    /// track to fade and mix. False (counted as refused, and the runs told
+    /// before kept) if `n` is past the loops or the runs are more than
+    /// [`MAX_PLAY_RUNS`], empty, out of order or overlapping.
+    pub fn play(&mut self, n: usize, runs: &[PlayRun]) -> bool {
+        let Some(l) = self.loops.get_mut(n) else {
+            self.stats.refused += 1;
+            return false;
+        };
+        let t = self.on_track[n].get_or_insert_with(|| {
+            // The track fades it: it is on, unmuted and not soloed.
+            l.on = true;
+            l.cue = None;
+            l.muted = false;
+            l.solo = false;
+            OnTrack::default()
+        });
+        if !t.tell(runs) {
+            self.stats.refused += 1;
+            return false;
+        }
+        true
+    }
+
+    /// Loop `n` launches itself again, as it did before it went on a
+    /// track ([`Looper::play`]): on, from the next period.
+    pub fn leave_track(&mut self, n: usize) {
+        if let Some(t) = self.on_track.get_mut(n) {
+            *t = None;
+        }
+    }
+
+    /// Loop `n` is on an audio track ([`Looper::play`]).
+    pub fn on_track(&self, n: usize) -> bool {
+        self.on_track.get(n).is_some_and(|t| t.is_some())
     }
 
     /// The loop the commands act on (as of the last period).
@@ -3104,10 +3160,25 @@ impl Looper {
         self.close_free(block);
         self.tend_captures();
         self.play_listen(block, n, outs);
-        // A loop with sound soloed: the others fall silent.
-        let any_solo = self.loops.iter().any(|l| l.solo && l.phase != Phase::Empty);
-        for l in &mut self.loops {
+        // A loop with sound soloed: the others fall silent. A loop on a
+        // track is its track's to solo, and plays at full gain while it
+        // plays: the track fades it (a clear or a swap still fades it out).
+        let tracked = |k: usize| self.on_track[k].is_some();
+        let any_solo = (self.loops.iter().enumerate())
+            .any(|(k, l)| l.solo && l.phase != Phase::Empty && !tracked(k));
+        let mut told = [None; MAX_LOOPS];
+        for (k, l) in self.loops.iter_mut().enumerate() {
             l.solo_out = any_solo && !l.solo;
+            if let Some(t) = self.on_track[k].as_mut() {
+                told[k] = Some(t.take());
+                l.solo_out = false;
+                if matches!(l.phase, Phase::Playing | Phase::Overdubbing)
+                    && !l.clearing
+                    && !l.swapping
+                {
+                    l.gain = 1.0;
+                }
+            }
         }
         let end = block.start_frame + n as u64;
         for k in 0..self.loops.len() {
@@ -3123,6 +3194,7 @@ impl Looper {
             prints,
             loads,
             heard,
+            on_track,
             ..
         } = self;
         let end = block.start_frame + n as u64;
@@ -3182,10 +3254,10 @@ impl Looper {
         }
         // Loops resampling run last in each run, on what the others played
         // in it.
-        let rs = loops
-            .iter()
-            .enumerate()
-            .fold(0u32, |m, (k, l)| m | (u32::from(l.resample) << k));
+        // (Not a loop on a track: it hears its track's input.)
+        let rs = loops.iter().enumerate().fold(0u32, |m, (k, l)| {
+            m | (u32::from(l.resample && on_track[k].is_none()) << k)
+        });
         outs.set_resampling(rs);
         let markers = block.markers();
         let mut m = 0;
@@ -3244,21 +3316,27 @@ impl Looper {
                     input: &input[2 * off..2 * (off + frames)],
                     f,
                     playing,
+                    first: None,
                 };
                 // Each loop adds its frames to its own buffer; a quiet one
                 // has none to add.
                 for (k, l) in loops.iter_mut().enumerate() {
                     if rs & (1 << k) == 0 && !l.quiet() {
                         let (p, waiting) = (prints[k].now.as_ref(), prints[k].next.is_some());
-                        l.run(
-                            store,
-                            stats,
-                            k,
-                            &run,
-                            p,
-                            waiting,
-                            outs.run_mut(k, off, frames),
-                        );
+                        match (on_track[k].as_mut(), &told[k]) {
+                            (Some(t), Some(told)) => {
+                                l.run_told(store, stats, k, t, told, &run, off, p, waiting, outs)
+                            }
+                            _ => l.run(
+                                store,
+                                stats,
+                                k,
+                                &run,
+                                p,
+                                waiting,
+                                outs.run_mut(k, off, frames),
+                            ),
+                        }
                     }
                 }
                 if rs != 0 {
@@ -4155,6 +4233,8 @@ impl Looper {
         match q {
             Queued::Select(n) if n < MAX_LOOPS => self.selected = n,
             Queued::Select(_) => self.stats.no_layer += 1,
+            // A loop on a track launches only where the track says.
+            Queued::Launch { n, .. } if self.on_track(n) => self.stats.refused += 1,
             Queued::Launch { n, on, at } => match self.loops.get_mut(n) {
                 Some(l) => match at {
                     Some(t) => l.cue = Some((on, t)),
@@ -4165,6 +4245,10 @@ impl Looper {
                 },
                 None => self.stats.no_layer += 1,
             },
+            // Its track mutes and solos it.
+            Queued::Loop(Command::Mute(_) | Command::Solo(_)) if self.on_track(s) => {
+                self.stats.refused += 1
+            }
             Queued::Loop(Command::SetLatency(l)) => {
                 for lp in &mut self.loops {
                     lp.latency = l;
@@ -7131,6 +7215,59 @@ impl Loop {
         }
     }
 
+    /// A loop on a track's part of a run ([`Looper::play`]): only the
+    /// frames it was told, each cut of the run at its place counted from
+    /// its run's origin (its ticks moved by its own origin less the
+    /// run's), into its own buffer. Frames it wasn't told stay silent.
+    #[allow(clippy::too_many_arguments)]
+    fn run_told(
+        &mut self,
+        store: &mut Store,
+        stats: &mut Stats,
+        me: usize,
+        t: &mut OnTrack,
+        told: &Told,
+        r: &Run,
+        off: usize,
+        print: Option<&Print>,
+        waiting: bool,
+        outs: &mut LoopOuts,
+    ) {
+        let frames = r.ticks.len();
+        let mut ticks = [0.0f64; RUN];
+        for p in told.runs() {
+            let a = (p.from as usize).max(off);
+            let b = (p.to as usize).min(off + frames);
+            if a >= b {
+                continue;
+            }
+            let (j, m) = (a - off, b - a);
+            let shift = self.origin as f64 - p.origin;
+            for (t, &s) in ticks[..m].iter_mut().zip(&r.ticks[j..j + m]) {
+                *t = s + shift;
+            }
+            let f = r.f + j as u64;
+            let cut = Run {
+                from: r.from + j,
+                ticks: &ticks[..m],
+                input: &r.input[2 * j..2 * (j + m)],
+                f,
+                playing: r.playing,
+                first: on_track::first_of(t.last, f, p.origin),
+            };
+            self.run(
+                store,
+                stats,
+                me,
+                &cut,
+                print,
+                waiting,
+                outs.run_mut(me, a, m),
+            );
+            t.last = Some((f + m as u64, p.origin));
+        }
+    }
+
     /// Nothing to play and nothing coming in: empty, with no load and no
     /// layer copying in. Its run would do nothing ([`Loop::run`]), so it
     /// isn't run.
@@ -7204,7 +7341,7 @@ impl Loop {
             if self.fitting && f >= self.fit_at && self.jump == 0 && self.xf == 0 {
                 self.finish_fit(store, stats, me, print);
             }
-            let first = r.from + j == 0;
+            let first = j == 0 && r.first.unwrap_or(r.from == 0);
             if !first && self.still(r.playing, live) {
                 // Still to the run's end, or to where a merge or a fit
                 // takes over.
