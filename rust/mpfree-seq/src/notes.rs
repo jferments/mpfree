@@ -598,7 +598,9 @@ pub struct Copied {
 /// A copy of the `sel` notes of `clip`, with their pressure and the
 /// locks they own (empty for none).
 pub fn copy(clip: &Clip, sel: &[usize]) -> Copied {
-    let notes: Vec<Note> = picked(clip, sel).map(|(_, n)| n).collect();
+    // A trigger group copied whole keeps its number; a part of one
+    // decides alone ([`crate::groups::copy_out`]).
+    let notes = crate::groups::copy_out(clip, sel);
     let Some(first) = notes.iter().map(|n| n.tick).min() else {
         return Copied::default();
     };
@@ -656,6 +658,9 @@ pub enum CarryError {
     Locks,
     /// Nor for their pressure ([`crate::MAX_TOUCH_POINTS`]).
     Pressure,
+    /// A trigger group in the copy needs a free number on the tick it
+    /// lands on, and none is left there ([`crate::groups::GroupsFull`]).
+    Groups,
 }
 
 /// What [`carry`] makes: the edit, one take, and the locks it left out
@@ -673,8 +678,10 @@ pub struct Carried {
 /// is for the clip as it is); a lock comes when `keep` says the clip's
 /// track has its setting ([`same_setting`]), in place of a lock already
 /// in its place, and is left out otherwise, as a pad's own lock is in a
-/// clip of notes, where it would not play. Refused, with nothing put in,
-/// when the clip holds the other kind ([`Holds`]) or has no room.
+/// clip of notes, where it would not play. A trigger group copied whole
+/// is one trigger where it lands, never joined to one there. Refused,
+/// with nothing put in, when the clip holds the other kind ([`Holds`]) or
+/// has no room.
 pub fn carry(
     clip: &Clip,
     copied: &Copied,
@@ -717,6 +724,10 @@ pub fn carry(
     if !touch_room(clip.touch.len(), &touch) {
         return Err(CarryError::Pressure);
     }
+    // A trigger group in the copy is a new trigger where it lands, with a
+    // free number where its tick has its number already: a paste never
+    // joins a trigger that is there.
+    crate::groups::settle_new(clip, &[], &mut add, false).map_err(|_| CarryError::Groups)?;
     // One lock in each place: a copy longer than the clip wraps onto
     // itself, and the last lock in a place wins, as it would recorded.
     let mut places = HashSet::new();
@@ -1495,6 +1506,46 @@ mod tests {
     /// A track with MIDI effects `fx` and no instrument known.
     fn at(fx: &TrackFx) -> TrackSettings<'_> {
         TrackSettings { fx, inst: None }
+    }
+
+    #[test]
+    fn a_copied_trigger_stays_one_where_it_lands_and_a_part_of_one_decides_alone() {
+        // A clip of notes with a three-note chord that rolls as one
+        // (group 129) on the first beat, and the same number on beat 3.
+        let mut c = clip(&[(0, Q, 60), (0, Q, 64), (0, Q, 67), (2 * Q, Q, 72)]);
+        c.holds = Holds::Notes;
+        for n in c.notes.iter_mut() {
+            n.group = 129;
+        }
+        assert!(c.groups_ok());
+        // Copied whole, the chord keeps its number...
+        let whole = copy(&c, &[0, 1, 2]);
+        assert!(whole.notes.iter().all(|n| n.group == 129));
+        // ...and pasted on beat 3, where 129 is taken, it is a trigger of
+        // its own there with a free number, never joined to the note
+        // already there.
+        let into = carry(&c, &whole, 2 * Q, |_| true).unwrap();
+        let g: Vec<u8> = into.edit.add.iter().map(|n| n.group).collect();
+        assert!(
+            g.iter().all(|&x| x == g[0]) && g[0] != 129 && g[0] != 0,
+            "{g:?}"
+        );
+        let mut d = c.clone();
+        d.apply(&into.edit).unwrap();
+        assert!(d.groups_ok());
+        assert_eq!(d.trigger(2 * Q, 129).len(), 1);
+        assert_eq!(d.trigger(2 * Q, g[0]).len(), 3);
+        // Pasted on an empty beat it keeps its number.
+        let into = carry(&c, &whole, Q, |_| true).unwrap();
+        assert!(into.edit.add.iter().all(|n| n.group == 129));
+        // Two notes of the chord copied: they decide alone.
+        let part = copy(&c, &[0, 1]);
+        assert!(part.notes.iter().all(|n| n.group == 0));
+        // Into a clip of pad hits nothing grouped goes (and notes don't
+        // go there at all).
+        let mut hits = clip(&[]);
+        hits.holds = Holds::Hits;
+        assert_eq!(carry(&hits, &whole, 0, |_| true), Err(CarryError::Holds));
     }
 
     #[test]

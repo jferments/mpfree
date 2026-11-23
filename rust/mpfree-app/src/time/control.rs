@@ -2889,6 +2889,12 @@ impl TimeControl {
                         clip.name
                     );
                 }
+                CarryError::Groups => {
+                    return format!(
+                        "paste: {} has too many chords on a step the copy lands on, so nothing went in",
+                        clip.name
+                    );
+                }
                 CarryError::Notes => "notes",
                 CarryError::Locks => "locks",
                 CarryError::Pressure => "pad pressure",
