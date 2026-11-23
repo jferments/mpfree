@@ -649,8 +649,11 @@ impl Widget for SongListView {
             );
             if let Some(grip) = grip {
                 out.push(
+                    // Two rows down: past the next step, so the drag
+                    // moves even the first step (a drag of one row
+                    // lands in the gap the step is already beside).
                     Target::drag("grip", k, format!("Step {} grip", k + 1), grip)
-                        .towards(0, ROW_H + ROW_GAP),
+                        .towards(0, 2 * (ROW_H + ROW_GAP)),
                 );
             }
             let (less, rest) = scene.take_left(scene.w / 3);
