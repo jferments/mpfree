@@ -9,7 +9,7 @@ checked: 2026-11-19 a6fb29b2
 The **Sequencer** tab is where you build and fine-tune a pattern one step at a time. It shows a clip of the track you picked (the one the pads play): the clip that plays, or the one you pick with the clip chip (see [Edit another clip](#edit-another-clip)). There are two views, switched at the right end of the transport bar:
 
 - **Steps**: the pattern as a grid, one row per pad (or per note, on a synth), with your timing under it and the picked step's settings at the bottom. This chapter is about Steps.
-- **Notes**: the same clip as a piano roll, a list or a tracker, for fixing what you played in. See [Editing notes](editing-notes.md).
+- **Notes**: the same clip as a piano roll, a list or a tracker, for fixing what you played in, drawing notes, chords and velocity, and shaping pressure and locks along the notes. See [Editing notes in the piano roll](editing-notes.md).
 
 Press **STEP SEQ** from any page to come here, with the pads turned into the steps of a sound (see [The pads as steps](#the-pads-as-steps-step-seq)). Opening the Sequencer tab arms the track's notes, so **REC** records into this clip.
 

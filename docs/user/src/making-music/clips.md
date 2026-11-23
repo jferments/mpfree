@@ -91,11 +91,10 @@ The pads feel how hard you keep pressing after you hit them. While you record, t
 - The pressure stays with its note. If the clip's quantise moves a note into time, or you move the note in the note editor, its pressure moves with it.
 - MPFree keeps only the movement that matters: a change of two steps or more right away, a small change once it has lasted a moment (10 ms). A finger's tiny wobble isn't kept, so clips stay light.
 - The clip keeps the raw pressure, and each sound decides what pressure does. Change a sound's pressure curve and the clip plays back through the new one.
-- Splitting a note in the note editor keeps its pressure on the first part only.
-- The note editor shows it: a note you leaned into has a lighter shape along its bottom, as high as you pressed (see [Editing notes](editing-notes.md)).
+- The note editor shows it: a note you leaned into has a lighter shape along its bottom, as high as you pressed. Its **Pressure** lane redraws it: pick the notes and draw a new line, a swell or a fade, even on a note played without any (see [Drawing pressure](editing-notes.md#drawing-pressure)).
+- Chopping a note into pieces in the note editor gives each piece its part of the pressure, and copying notes into another clip takes their pressure with them.
 - Capture keeps it too, and the song plays it wherever a clip is placed.
 - Turn **Pressure** to **Off** for a track that shouldn't record it, for example drums you want to stay steady. Capture leaves it out on that track too.
-- Coming: editing pressure in the note editor.
 
 ## Clip settings
 
@@ -222,7 +221,7 @@ The pattern on the **Sequencer** tab's **Steps** view is a clip shown as a grid 
 
 ## Editing notes
 
-To fix what you played (pull notes into time, move them, change how hard they hit, draw new ones), tap **Notes** on the Sequencer tab, or **Edit ›** above the clip grid, which takes you there. The note editor has a chapter of its own: [Editing notes](editing-notes.md).
+To fix what you played (pull notes into time, move them, change how hard they hit, draw new ones), tap **Notes** on the Sequencer tab, or **Edit ›** above the clip grid, which takes you there. The note editor, MPFree's piano roll, has a chapter of its own: [Editing notes in the piano roll](editing-notes.md).
 
 > [!MPC]
 > On the MPC, a sequence holds every track and you switch whole sequences. In MPFree each track has its own clips, launched on their own like Ableton Live's clips, and clips of different lengths play side by side.
