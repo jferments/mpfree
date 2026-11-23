@@ -654,14 +654,14 @@ impl Widget for PlayTransport {
         for (i, (sr, name)) in segs.iter().zip(self.look.views).enumerate() {
             let on = i == self.look.view;
             if on {
-                cx.canvas.fill_round_rect(*sr, t.round(10), t.accent);
+                cx.canvas.fill_round_rect(*sr, t.round(10), t.picked());
             }
             cx.text(
                 FontId::Bold,
                 15.0,
                 *sr,
                 Align::Center,
-                if on { t.ink_on(t.accent) } else { t.text_dim },
+                if on { t.ink_on(t.picked()) } else { t.text_dim },
                 name,
             );
         }
@@ -949,10 +949,10 @@ impl Widget for MiniPads {
                     let lit = on == Some(i);
                     if lit {
                         cx.canvas
-                            .fill_round_rect(half.inset(2), (half.h - 4) / 2, t.accent);
+                            .fill_round_rect(half.inset(2), (half.h - 4) / 2, t.picked());
                     }
                     let ink = if lit {
-                        t.ink_on(t.accent)
+                        t.ink_on(t.picked())
                     } else if i == 1 && !s.scale {
                         t.text_faint
                     } else {
@@ -1096,6 +1096,11 @@ pub struct LockCells {
     /// step's value as bars a finger draws ([`ValueCells`]); `cells` is
     /// then empty.
     pub values: Option<ValueCells>,
+    /// Its locks are on a control of an instrument the track doesn't play
+    /// now (step sequencer refactor F1): kept, not played. Its bars are
+    /// faint, with this over them ("made for Poly's Cutoff, not playing on
+    /// FM"); the × still takes them off.
+    pub silent: Option<String>,
 }
 
 /// A Velocity or Chance lane under a sound (step sequencer refactor D3):
@@ -2159,7 +2164,7 @@ impl StepGrid {
             // Fold: lit while on.
             let face = Rect::new(hd.fold.x + 4, mid - 13, hd.fold.w - 8, 26);
             let (fill, ink) = if p.fold {
-                (t.accent, t.ink_on(t.accent))
+                (t.picked(), t.ink_on(t.picked()))
             } else {
                 (t.raised, t.text)
             };
@@ -2236,7 +2241,7 @@ impl StepGrid {
             let f = face(*br);
             let lit = b.bank == Some(i);
             let (fill, ink) = if lit {
-                (t.accent, t.ink_on(t.accent))
+                (t.picked(), t.ink_on(t.picked()))
             } else {
                 (t.raised, t.button_ink(b.bank.is_some()))
             };
@@ -2276,7 +2281,7 @@ impl StepGrid {
         // Follow, lit while on.
         let f = face(l.follow);
         let (fill, ink) = if b.follow {
-            (t.accent, t.ink_on(t.accent))
+            (t.picked(), t.ink_on(t.picked()))
         } else {
             (t.raised, t.text)
         };
@@ -2480,11 +2485,20 @@ fn paint_lock_lane(
 ) {
     let t = cx.theme.clone();
     let y = g.row_y(k);
-    let ink = t.readable(LOCKED.mix(t.role(Role::Highlight), 0.45), t.surface);
+    let lane_ink = t.readable(LOCKED.mix(t.role(Role::Highlight), 0.45), t.surface);
+    // Locks that don't play now (F1): the lane's name is faint too, but
+    // never under 3:1 (the floor for readable text; a light theme's
+    // faint purple would be), its outline as any lock lane's (fainter,
+    // it would not show).
+    let ink = if lk.silent.is_some() {
+        mpfree_ui::roles::reach(lane_ink.mix(t.surface, 0.45), lane_ink, t.surface, 3.0)
+    } else {
+        lane_ink
+    };
     let mb = g.mute_button(k);
     let nr = Rect::new(g.names.x, y, mb.x - 4 - g.names.x, g.rh);
     cx.canvas.fill_round_rect(nr, t.round(8), t.surface);
-    dashed_outline(cx, nr, ink.with_alpha(130));
+    dashed_outline(cx, nr, lane_ink.with_alpha(130));
     // The hook from the sound above.
     cx.canvas
         .fill_rect(Rect::new(nr.x + 9, nr.y + 7, 2, 10), ink);
@@ -2526,8 +2540,11 @@ fn paint_lock_lane(
         cx.canvas.fill_round_rect(
             Rect::new(sr.x + 3, sr.bottom() - 3 - bh, sr.w - 6, bh),
             4,
-            ink.with_alpha(190),
+            ink.with_alpha(if lk.silent.is_some() { 60 } else { 190 }),
         );
+        if lk.silent.is_some() {
+            continue;
+        }
         // The value over it: only the number when the unit doesn't fit.
         let shown = if cx.measure(FontId::Bold, 10.0, &text) <= sr.w - 4 {
             text.as_str()
@@ -2542,6 +2559,13 @@ fn paint_lock_lane(
             t.readable(t.role(Role::Highlight), base),
             shown,
         );
+    }
+    // Locks kept but not played: why, over the lane's steps.
+    if let Some(why) = &lk.silent {
+        let last = g.cell(k, steps.clamp(1, 16) - 1);
+        let first = g.cell(k, 0);
+        let across = Rect::new(first.x + 8, first.y, last.right() - first.x - 16, first.h);
+        cx.text(FontId::Sans, 13.0, across, Align::Left, t.text_dim, why);
     }
 }
 
@@ -3603,7 +3627,7 @@ impl Widget for StepInspector {
                 if k == 2 {
                     LOCKED
                 } else {
-                    t.accent
+                    t.picked()
                 }
             } else {
                 t.raised
@@ -3666,7 +3690,7 @@ impl Widget for StepInspector {
             for (k, b) in g.on.iter().enumerate() {
                 let lit = (k == 0) == on;
                 let fill = match (lit, k) {
-                    (true, 0) => t.accent,
+                    (true, 0) => t.picked(),
                     (true, _) => t.warn,
                     _ => t.raised,
                 };
@@ -3744,9 +3768,9 @@ impl Widget for StepInspector {
             (g.clear, "Clear", false),
         ] {
             cx.canvas
-                .fill_round_rect(b, t.round(8), if on { t.accent } else { t.raised });
+                .fill_round_rect(b, t.round(8), if on { t.picked() } else { t.raised });
             let ink = if on {
-                t.ink_on(t.accent)
+                t.ink_on(t.picked())
             } else {
                 t.button_ink(i.one)
             };
@@ -4568,6 +4592,7 @@ mod tests {
                 opens_rows: false,
                 moved: false,
                 values: None,
+                silent: None,
             }),
             ..lane(LOCK_LANE + id, &[])
         };
@@ -4813,6 +4838,7 @@ mod tests {
                 opens_rows: true,
                 moved: false,
                 values: None,
+                silent: None,
             }),
             ..lane(LOCK_LANE + id, &[])
         }));

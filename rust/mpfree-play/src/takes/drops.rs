@@ -251,8 +251,8 @@ pub(super) fn follow(project: &mut Project, drop: ClipDrop, back: bool) {
     follow_rows(project, drop, back);
 }
 
-/// A row drop: the scenes, the morph's rows and the song list's steps
-/// follow the row.
+/// A row drop: the scenes, the morph's rows, the song list's steps and
+/// the sections made from a scene follow the row.
 fn follow_rows(project: &mut Project, drop: ClipDrop, back: bool) {
     if !drop.is_row() {
         return;
@@ -285,9 +285,18 @@ fn follow_rows(project: &mut Project, drop: ClipDrop, back: bool) {
         m.a = row(m.a).unwrap_or(m.a).min(SCENES - 1);
         m.b = row(m.b).unwrap_or(m.b).min(SCENES - 1);
     }
-    // The song list's steps play the same scenes where they went.
+    // The song list's steps play the same scenes where they went, and a
+    // linked list's sections follow theirs.
     for step in &mut project.arrangement.list.steps {
         step.row = row(step.row).unwrap_or(step.row).min(SCENES - 1);
+    }
+    for from in project
+        .arrangement
+        .markers
+        .iter_mut()
+        .filter_map(|m| m.scene.as_mut())
+    {
+        from.row = row(from.row).unwrap_or(from.row).min(SCENES - 1);
     }
 }
 
@@ -450,6 +459,15 @@ mod tests {
         // The song list plays rows 3 then 2.
         let step = |row| mpfree_seq::ListStep { row, times: 1 };
         p.arrangement.list.steps = vec![step(2), step(1)];
+        // And a section of the song made from row 3 (Arrange 4b).
+        let section = |row| mpfree_seq::Marker {
+            scene: Some(mpfree_seq::FromScene {
+                row,
+                changed: false,
+            }),
+            ..mpfree_seq::Marker::new(0, "Drop")
+        };
+        p.arrangement.markers = vec![section(2)];
         let mut takes = Takes::new(8);
         // Row 3 in between rows 1 and 2: rows 2 moves down one.
         let (_, d) = takes.drop_row(&mut p, 2, 1, false).unwrap();
@@ -457,6 +475,11 @@ mod tests {
             p.arrangement.list.steps,
             vec![step(1), step(2)],
             "the list's steps follow their rows"
+        );
+        assert_eq!(
+            p.arrangement.markers,
+            vec![section(1)],
+            "and so does the section made from it"
         );
         assert_eq!(d, ClipDrop::RowMoved { from: 2, to: 1 });
         assert_eq!(name(&p, 1, 1), Some("Bass C"));
@@ -494,6 +517,7 @@ mod tests {
             .place(Placement::of(&want.tracks, 1, 2, 0, 1920))
             .unwrap();
         want.arrangement.list.steps = vec![step(2), step(1)];
+        want.arrangement.markers = vec![section(2)];
         want.next_clip = p.next_clip;
         assert_eq!(p, want);
     }

@@ -262,21 +262,111 @@ pub struct RecPlan {
     /// which the track REC records on plays by a send; None for the
     /// shared synth, which it plays as its Synth kit.
     pub holder: Option<usize>,
+    /// The armed track plays the pads' synth already (`take` is it): only
+    /// the layers want a place.
+    pub ready: bool,
+    /// Where REC records each of the pads' layers beyond the first (step
+    /// 11c), in their order, then each synth a MIDI route names (step
+    /// 11e, [`App::rec_more_synths`]); None where there is none.
+    pub layers: [Option<LayerTake>; super::REC_MORE],
+}
+
+/// Where REC records one of the pads' layers (the instrument redesign's
+/// step 11c): as the first, where its synth lives. An armed track that
+/// plays it already (one REC records too, or the armed track the first
+/// moves the arm from), else a free track pointed at it, else a new one;
+/// `Full` when the project holds no more, and that layer isn't recorded.
+/// Never `Pinned`: the pin is the first's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LayerTake {
+    pub take: SynthTake,
+    /// The layer's synth's name ("Pluck").
+    pub synth: &'static str,
+    /// Its holder in the instrument host, as [`RecPlan::holder`]; None for
+    /// the shared synth.
+    pub holder: Option<usize>,
+    /// The track plays the synth already: nothing on it changes.
+    pub plays: bool,
 }
 
 impl RecPlan {
     /// The REC chip's words after the arrow: "Track 2 · Poly", "New track
     /// · Poly", "Track 1 · not free" (pinned to a track that can't take
-    /// it), "No free track · Poly". `name` gives a track's name ("Bass"
-    /// for one you named).
+    /// it), "No free track · Poly"; with layers that record too, "Track 2
+    /// · FM + 1 more" (step 11c); "Track 1 + 1 more" for the armed track
+    /// as it is, with a synth a MIDI route names (step 11e). `name` gives
+    /// a track's name ("Bass" for one you named).
     pub fn chip(self, name: impl Fn(usize) -> String) -> String {
-        match self.take {
+        let more = self.more();
+        let first = match self.take {
+            // The armed track as it is (a kit), with a route's synth.
+            SynthTake::On(t) if self.synth.is_empty() => name(t),
             SynthTake::On(t) => format!("{} · {}", name(t), self.synth),
             SynthTake::New => format!("New track · {}", self.synth),
-            SynthTake::Pinned { track, .. } => format!("{} · not free", name(track)),
-            SynthTake::Full => format!("No free track · {}", self.synth),
+            SynthTake::Pinned { track, .. } => return format!("{} · not free", name(track)),
+            SynthTake::Full => return format!("No free track · {}", self.synth),
+        };
+        if more == 0 {
+            first
+        } else {
+            format!("{first} + {more} more")
         }
     }
+
+    /// How many layers record besides the first: those with a place.
+    pub fn more(self) -> usize {
+        self.layers
+            .iter()
+            .flatten()
+            .filter(|l| l.take != SynthTake::Full)
+            .count()
+    }
+}
+
+/// Where REC records the pads' layers beyond the first (step 11c), in
+/// order: an armed track that plays a layer's synth already, from
+/// `candidates` (a bit each: the other armed tracks, and the armed one
+/// when the first moves the arm from it), else the first free track, else
+/// a new one while the project holds more. `first` is the track the
+/// first records on (None: a new one). `plays` says whether a track plays
+/// a layer (its holder, None for the shared synth); `fits` whether a
+/// track is free ([`unfit`] says None). Allocates nothing.
+pub fn layer_takes(
+    layers: [Option<(&'static str, Option<usize>)>; super::REC_MORE],
+    tracks: usize,
+    first: Option<usize>,
+    candidates: u128,
+    plays: impl Fn(usize, Option<usize>) -> bool,
+    fits: impl Fn(usize) -> bool,
+) -> [Option<LayerTake>; super::REC_MORE] {
+    let bit = |t: usize| 1u128.checked_shl(t as u32).unwrap_or(0);
+    let mut used = first.map_or(0, bit);
+    // New tracks the plan adds: the first's, then the layers'.
+    let mut news = usize::from(first.is_none());
+    layers.map(|l| {
+        let (synth, holder) = l?;
+        let armed = (0..tracks.min(128))
+            .find(|&t| candidates & bit(t) != 0 && used & bit(t) == 0 && plays(t, holder));
+        let (take, plays) = if let Some(t) = armed {
+            (SynthTake::On(t), true)
+        } else if let Some(t) = (0..tracks).find(|&t| used & bit(t) == 0 && fits(t)) {
+            (SynthTake::On(t), false)
+        } else if tracks + news < mpfree_seq::MAX_TRACKS {
+            news += 1;
+            (SynthTake::New, false)
+        } else {
+            (SynthTake::Full, false)
+        };
+        if let SynthTake::On(t) = take {
+            used |= bit(t);
+        }
+        Some(LayerTake {
+            take,
+            synth,
+            holder,
+            plays,
+        })
+    })
 }
 
 /// Where REC records the pads' synth: the armed track when nobody set it
@@ -332,12 +422,16 @@ impl App {
     /// instrument redesign's step 8, "FM: pads bank B, Track 2"): `.0`
     /// the pads' own choice does (every bank without one of its own), `.1`
     /// a bit for each bank whose own does. The banks' own count only on a
-    /// kit's pages ([`App::banks_apply`]). Allocates nothing.
+    /// kit's pages ([`App::banks_apply`]). A layer (step 11b) counts as
+    /// the pads' own choice. Allocates nothing.
     pub fn pads_who(&self, plays: impl Fn(PadFocus) -> bool) -> (bool, u8) {
+        // What every bank plays, its layers too (step 11b).
+        let all =
+            plays(self.pads_focus) || self.pad_layers().any(|id| plays(PadFocus::Instrument(id)));
         if !self.banks_apply() {
-            return (plays(self.pads_focus), 0);
+            return (all, 0);
         }
-        let every = self.bank_focus.iter().any(Option::is_none) && plays(self.pads_focus);
+        let every = self.bank_focus.iter().any(Option::is_none) && all;
         let banks = (0..super::KIT_PAGES)
             .filter(|&b| self.bank_focus[b].is_some_and(&plays))
             .fold(0u8, |bits, b| bits | 1 << b);
@@ -448,6 +542,10 @@ impl App {
                 }));
             }
         }
+        // A layer's synth that has its id now, or one gone (step 11a); none
+        // left to say once the pads' own synth went (Follow track gave
+        // them up).
+        fx.extend(self.layers_follow_list());
         if self.pads_focus() != was && !fx.iter().any(|e| matches!(e, Effect::PadsFocus(_))) {
             fx.insert(0, Effect::PadsFocus(self.pads_focus()));
         }
@@ -455,7 +553,8 @@ impl App {
     }
 
     /// The free places whose instrument nothing plays any more (not the
-    /// pads, nor a track by a send, nor one waiting to be the pads'), each
+    /// pads, nor a track by a send, nor one waiting to be the pads', nor
+    /// a MIDI route that names it, step 11e), each
     /// taken out (step 6): a synth tried on the pads and left goes away,
     /// as nothing records it. Once a period; nothing allocated when there
     /// is none.
@@ -474,10 +573,12 @@ impl App {
             };
             if pads == Some(holder)
                 || all == Some(holder)
+                || self.routes_hold(holder)
                 || self.pads_to == Some(n)
                 || sent
                 || self.keeps_free(n)
                 || self.banks_hold(holder)
+                || self.layers_hold(holder)
             {
                 continue;
             }
@@ -616,6 +717,9 @@ impl App {
                 .pads_holder()
                 .is_some_and(|h| self.track_owner(self.track) != Some(h)),
         };
+        // Layers (step 11a) play the pads as pressed, which the arp
+        // doesn't.
+        let over = over || (self.has_layers() && self.layers_apply());
         if !over || !self.generating() {
             return Vec::new();
         }
@@ -681,6 +785,8 @@ impl App {
         let mut notes = Vec::new();
         self.pads_to = None;
         self.bank_to = [None; super::KIT_PAGES];
+        // The layers come after, from their own part (`open_pad_layers`).
+        self.clear_layers();
         let listed = |f: &PadFocus| match f {
             PadFocus::Instrument(id) => self.instrument_list.kind(*id).is_some(),
             PadFocus::Track => true,
@@ -730,15 +836,20 @@ impl App {
     pub(super) fn pads_back(&mut self, why: impl FnOnce(usize) -> String) -> Vec<Effect> {
         let banks =
             self.bank_focus.iter().any(Option::is_some) || self.bank_to.iter().any(Option::is_some);
-        if self.pads_focus == PadFocus::Track && self.pads_to.is_none() && !banks {
+        if self.pads_focus == PadFocus::Track
+            && self.pads_to.is_none()
+            && !banks
+            && !self.has_layers()
+        {
             return Vec::new();
         }
-        // Every bank too (step 6c): Follow track is the pads following the
-        // track.
+        // Every bank too (step 6c), and the layers (step 11a): Follow
+        // track is the pads following the track.
         self.pads_focus = PadFocus::Track;
         self.pads_to = None;
         self.bank_focus = [None; super::KIT_PAGES];
         self.bank_to = [None; super::KIT_PAGES];
+        self.clear_layers();
         self.project_edit = true;
         vec![
             Effect::PadsFocus(PadFocus::Track),

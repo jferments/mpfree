@@ -20,6 +20,7 @@
 //! | `arp` | the arps | `App::arp_part` | `App::open_arp` |
 //! | `perform` | the Perform set (`perform_pads.rs`) | `PerformSet::text` | `PerformSet::parse`, then `App::set_perform_set` |
 //! | `pads` | what the pads play (`app/pads_focus.rs`): the selected track's instrument, or one chosen for them | `App::pads_part` | `App::open_pads`; none (New, or saved before it) follows the track |
+//! | `pad-layers` | the synths the pads play beyond the first (`app/pad_layers.rs`), written only while there are some | `App::pad_layers_part` | `App::open_pad_layers`, after the pads part; none: one synth |
 //! | `audiotracks` | the audio tracks | [`audio_part`]: each track's settings and regions, a WAV a take in `samples/` | [`audio_open`] on a thread, then [`crate::audiotracks::TrackHost::open`] |
 //!
 //! The project's tempo is `project.txt`'s `tempo`, and its format
@@ -79,6 +80,10 @@ pub const INSTRUMENT_LIST: &str = "instrument-list";
 /// What the pads play: the selected track's instrument, or one chosen for
 /// them (`App::pads_part`, the instrument redesign's step 3).
 pub const PADS: &str = "pads";
+/// The synths the pads play beyond the first (`App::pad_layers_part`, the
+/// instrument redesign's step 11a): a part of its own, so a build from
+/// before reads the pads part and plays the first only.
+pub const PAD_LAYERS: &str = "pad-layers";
 /// The Song view's audio tracks and their takes ([`audio_part`]).
 pub const AUDIOTRACKS: &str = "audiotracks";
 
@@ -140,8 +145,14 @@ pub const SYNTHS_WITHOUT_TRACKS: &str = "synths-without-tracks";
 /// The clips part is `mpfree-clips 3` too, which such a build doesn't
 /// read; the line says it in words before anything is read.
 pub const AUDIO_TRACKS: &str = "audio-tracks";
+/// A project whose song list is linked to its song, or whose song's
+/// markers carry their sections' scenes and passes (the Arrange
+/// refactor's phase 4b): an older build would show the list empty and
+/// lose them. The clips part is `mpfree-clips 4` too, which such a build
+/// doesn't read; the line says it in words before anything is read.
+pub const LINKED_SONG_LIST: &str = "linked-song-list";
 /// The features this build has, of those a project can need.
-pub const KNOWN_NEEDS: &[&str] = &[SYNTHS_WITHOUT_TRACKS, AUDIO_TRACKS];
+pub const KNOWN_NEEDS: &[&str] = &[SYNTHS_WITHOUT_TRACKS, AUDIO_TRACKS, LINKED_SONG_LIST];
 
 // ------------------------------------------------------------ the loop's side
 
@@ -168,6 +179,9 @@ pub struct Collected {
     /// What the pads play ([`crate::app::App::pads_part`]); not saved
     /// when empty.
     pub pads: String,
+    /// The pads' layers beyond the first
+    /// ([`crate::app::App::pad_layers_part`]); not saved when empty.
+    pub pad_layers: String,
     /// The Looper's loops with their layers' audio (read as they play:
     /// [`crate::looping::LoopHost::save`]); None when the looper couldn't
     /// save. Freed on the screen thread.
@@ -225,6 +239,9 @@ pub struct Opening {
     /// What the pads play (the pads part); None (New, or a project saved
     /// before it had one): they follow the selected track.
     pub pads: Option<String>,
+    /// The pads' layers beyond the first (the pad layers part); None: one
+    /// synth.
+    pub pad_layers: Option<String>,
     /// Lines for the log: parts that didn't read.
     pub notes: Vec<String>,
     /// What of the project's was left out (an effect or instrument this
@@ -312,6 +329,9 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
     if !c.pads.is_empty() {
         parts.push((PADS.to_string(), c.pads.clone()));
     }
+    if !c.pad_layers.is_empty() {
+        parts.push((PAD_LAYERS.to_string(), c.pad_layers.clone()));
+    }
     parts.extend(extra);
     let mut extra = vec![
         (FORMAT_KEY.to_string(), FORMAT.to_string()),
@@ -323,6 +343,9 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
     }
     if c.clips.tracks.iter().any(mpfree_seq::Track::is_audio) {
         needs.push(AUDIO_TRACKS);
+    }
+    if c.clips.arrangement.uses_sections() {
+        needs.push(LINKED_SONG_LIST);
     }
     if !needs.is_empty() {
         extra.push((NEEDS_KEY.to_string(), needs.join(" ")));
@@ -424,6 +447,7 @@ fn part_words(part: &str) -> String {
         TRACK_KITS => "list of what its tracks play",
         INSTRUMENT_LIST => "list of instruments",
         PADS => "pads settings",
+        PAD_LAYERS => "pads' layers",
         AUDIOTRACKS => "audio tracks",
         other => other,
     };
@@ -731,6 +755,7 @@ pub fn opening(
         sends,
         instrument_list,
         pads: snap.part(PADS).map(str::to_string),
+        pad_layers: snap.part(PAD_LAYERS).map(str::to_string),
         notes,
         left_out,
         what: what.to_string(),
@@ -2778,6 +2803,7 @@ mod tests {
             track_kits,
             instrument_list: InstrumentList::new().text(),
             pads: String::new(),
+            pad_layers: String::new(),
             loops: None,
             audio: None,
         };
@@ -2829,6 +2855,7 @@ mod tests {
             track_kits,
             instrument_list,
             pads: String::new(),
+            pad_layers: String::new(),
             loops: None,
             audio: None,
         }
@@ -3086,7 +3113,7 @@ mod tests {
     /// Phase 1a: a project with an audio track says it needs audio
     /// tracks, so an older build doesn't open it as an empty note track;
     /// with a synth in a free place too, the line names both, and this
-    /// build opens it.
+    /// build opens it. A linked song list (Arrange 4b) says it needs one.
     #[test]
     fn a_project_with_an_audio_track_says_it_needs_audio_tracks() {
         let needs = |c: &Collected| {
@@ -3110,6 +3137,19 @@ mod tests {
         c.instruments = format!("{INSTRUMENTS_FORMAT}\nfree 1 mpfree.fm\n");
         let (snap, line) = needs(&c);
         assert_eq!(line.as_deref(), Some("synths-without-tracks audio-tracks"));
+        assert_eq!(check(&snap), Ok(FORMAT));
+        // Arrange 4b: a linked song list, or a marker with its section's
+        // passes, says so too.
+        let mut c = collected(String::new(), InstrumentList::new().text());
+        c.clips.arrangement.list.linked = true;
+        assert_eq!(needs(&c).1.as_deref(), Some(LINKED_SONG_LIST));
+        c.clips.arrangement.list.linked = false;
+        c.clips.arrangement.markers = vec![mpfree_seq::Marker {
+            passes: 2,
+            ..mpfree_seq::Marker::new(0, "Verse")
+        }];
+        let (snap, line) = needs(&c);
+        assert_eq!(line.as_deref(), Some(LINKED_SONG_LIST));
         assert_eq!(check(&snap), Ok(FORMAT));
     }
 
@@ -3474,6 +3514,7 @@ mod tests {
                 track_kits: String::new(),
                 instrument_list: InstrumentList::new().text(),
                 pads: String::new(),
+                pad_layers: String::new(),
                 loops: None,
                 audio: None,
             };
@@ -3511,6 +3552,7 @@ mod tests {
             track_kits: String::new(),
             instrument_list: InstrumentList::new().text(),
             pads: String::new(),
+            pad_layers: String::new(),
             loops: None,
             audio: None,
         };
@@ -3545,6 +3587,24 @@ mod tests {
         )
         .unwrap();
         assert_eq!(o.pads, None, "a new project follows the track");
+        assert_eq!(o.pad_layers, None);
+    }
+
+    /// The pads' layers (the instrument redesign's step 11a): a part of
+    /// their own, only while there are some, so the pads part stays as an
+    /// older build reads it.
+    #[test]
+    fn the_pads_layers_are_a_part_of_their_own() {
+        let mut c = collected(String::new(), InstrumentList::new().text());
+        c.pads = "mpfree-pads 1\nplay instrument 2\n".into();
+        let snap = snapshot(&c, Vec::new());
+        assert_eq!(snap.part(PAD_LAYERS), None, "none: no part");
+        c.pad_layers = "mpfree-pad-layers 1\nlayer instrument 3\n".into();
+        let snap = snapshot(&c, Vec::new());
+        assert_eq!(snap.part(PADS), Some(c.pads.as_str()));
+        assert_eq!(snap.part(PAD_LAYERS), Some(c.pad_layers.as_str()));
+        let o = opening(&snap, 44_100, "a test", &crate::plugins::Plugins::none()).unwrap();
+        assert_eq!(o.pad_layers.as_deref(), Some(c.pad_layers.as_str()));
     }
 
     /// A project saved before Drums was track 1's strip plays its clips'
@@ -3589,6 +3649,7 @@ mod tests {
                 track_kits: String::new(),
                 instrument_list: InstrumentList::new().text(),
                 pads: String::new(),
+                pad_layers: String::new(),
                 loops: None,
                 audio: None,
             };
@@ -3678,6 +3739,7 @@ mod tests {
                 track_kits: String::new(),
                 instrument_list: InstrumentList::new().text(),
                 pads: String::new(),
+                pad_layers: String::new(),
                 loops: None,
                 audio: None,
             };
@@ -3714,6 +3776,7 @@ mod tests {
             track_kits: String::new(),
             instrument_list: InstrumentList::new().text(),
             pads: String::new(),
+            pad_layers: String::new(),
             loops: None,
             audio: None,
         };

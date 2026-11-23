@@ -1138,6 +1138,14 @@ impl Synth {
         self.settings.engine
     }
 
+    /// The engine playing now as a node's info and controls (step
+    /// sequencer refactor F1: what a track that plays the synth plays, so
+    /// a clip's locks play only on the kind they were made for).
+    pub fn node_ref(&self) -> (&'static mpfree_node::NodeInfo, &'static [ParamInfo]) {
+        let n = self.node();
+        (n.info(), n.params())
+    }
+
     // ------------------------------------------------------------ the pads
 
     pub fn settings(&self) -> PadSettings {

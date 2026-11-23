@@ -163,6 +163,7 @@ fn shots() -> Vec<Shot> {
         port: port.into(),
         channel: Some(channel),
         track,
+        synth: None,
         blocks: Blocks::NONE,
     };
     routing.setup.routes = vec![

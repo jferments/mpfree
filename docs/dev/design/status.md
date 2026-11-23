@@ -71,6 +71,10 @@ All of it is in `rust/mpfree-status`, std only, with no I/O and no drawing.
 | `project/parts-missing` | warn | stays | Parts missing | Show what's missing |
 | `project/crash-restart` | fail | stays | After a crash | Open the last project |
 | `screen/no-gpu` | warn | stays | No GPU drawing | |
+| `screen/theme-left-out` | warn | stays | Theme left out | |
+| `screen/theme-mistakes` | warn | stays | Theme has mistakes | |
+| `screen/theme-not-found` | warn | stays | Theme not found | |
+| `screen/skin-colours-moved` | warn | stays | Colours fixed | |
 | `mpc/one-core` | warn | stays | Sound on one core | |
 
 `controls/no-session` hides the dropouts, skips, dropped notes, voices given up and near limit that it causes.
@@ -116,7 +120,7 @@ The watcher (`rust/mpfree-app/src/status_watch.rs`) looks each time the audio lo
 | `project/crash-restart` | the safe start | `gui.rs` |
 | `screen/no-gpu` | the GPU process stopped and software drawing took over, until the next start | `drawing.rs` |
 | `mpc/one-core` | a set-up row in red on CPU by engine: the audio thread not on its core, or a strict lane on the audio thread (`CoreShared::fell_back`) | watcher |
-| `sound/skipped`, `sound/notes-dropped`, `sound/voices-given-up`, `sound/grains-thinned` | the sampler refactor's step 10 trades: a lane late with its part, full queues, load shedding, the grain share crowded | the sampler's `Trades::note`, when its step 10 lands (agreed 22 Nov); the watcher doesn't watch these counters |
+| `sound/skipped`, `sound/notes-dropped`, `sound/voices-given-up`, `sound/grains-thinned` | the sampler refactor's step 10 trades: a lane late with its part, full queues, load shedding, the grain share crowded | the sampler's `Trades::note` (its step 10, agreed 22 Nov); the watcher doesn't watch these counters |
 
 **The log.** Each start and end is one line, `status: + sound/dropout (3) The sound dropped out` and `status: - sound/dropout after 1.2 s`, with the port's name for a port and "(its cause is going)" for an effect its cause hides, so the Console, the journal and the test tools see what the board sees. The 30 s status lines stay as they are.
 
@@ -145,9 +149,9 @@ The `Player` keeps its own status clock, moved on by `tick(dt)`, so the board's 
 | Phase | What lands | State |
 |---|---|---|
 | 0 | The `mpfree-status` crate (catalogue, reports, board) and the Dev > Status page; save failures and the crash restart report | built |
-| 1 | Watchers on the screen thread for the kinds above; one log line each time a problem starts or ends; the demo songs play green. Still only in Dev > Debug. The sampler's trades move in with its step 10, and the bench's check moves to `Board::unexpected` with its step 13 | built (the trades: with the sampler) |
+| 1 | Watchers on the screen thread for the kinds above (the themes' four are reported by the theme code itself); one log line each time a problem starts or ends; the demo songs play green. Still only in Dev > Debug. The sampler's trades move in with its step 10, and the bench's check moves to `Board::unexpected` with its step 13 | built (the trades: with the sampler) |
 | 2 | The status chip (CPU and RAM, coloured; it replaces today's CPU, RAM and session chips), the System status page (opened from the chip or a Prefs row), the red hint line, the manual chapter "When something goes wrong", golden screens and the controls catalogue. Its layout spec change lands first, as its own docs pull request for the owner | planned |
-| 3 | Everyone reports in: disk streaming, themes, plugins, MIDI clock, the MPC's temperature and processor clock, each owner's pull request adding its own catalogue entries | planned |
+| 3 | Everyone reports in: disk streaming, themes (their four came with the theme writers' tools), plugins, MIDI clock, the MPC's temperature and processor clock, each owner's pull request adding its own catalogue entries | planned |
 | Later | Not in this go: where the time goes per track and pad, saving a report to the stick, and errors from the system journal from a short reviewed list | |
 
 ## Tests

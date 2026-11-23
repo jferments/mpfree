@@ -117,13 +117,19 @@ impl App {
         // what the Looper records from, is off at every start.
         out.set_i64("loop-level", s.loop_level_db.round() as i64);
         out.set_bool("loop-tempo", s.loop_tempo);
+        out.set_str(
+            "smart-loop-end",
+            &crate::app::smart_end_name(s.smart_end).to_lowercase(),
+        );
         if s.loop_latency_set {
             out.set_i64("loop-latency", i64::from(s.loop_latency));
         }
         // A built-in theme or one from the themes folder; a theme file given
         // with --theme is for that run only.
-        if self.offers_theme(&s.theme) {
-            out.set_str("theme", &s.theme);
+        // Kept, not on trial: a theme "Keep this theme?" still asks about
+        // is never what the next start opens with.
+        if self.offers_theme(self.kept_theme()) {
+            out.set_str("theme", self.kept_theme());
         }
         out
     }
@@ -260,6 +266,11 @@ impl App {
                     .map(|n| s.loop_level_db = n as f32)
                     .is_some(),
                 "loop-tempo" => app.get_bool(k).map(|b| s.loop_tempo = b).is_some(),
+                "smart-loop-end" => crate::app::SMART_ENDS
+                    .into_iter()
+                    .find(|&m| crate::app::smart_end_name(m).eq_ignore_ascii_case(v))
+                    .map(|m| s.smart_end = m)
+                    .is_some(),
                 "loop-latency" => app
                     .get_i64(k)
                     .filter(|n| (0..=4096).contains(n))
@@ -287,7 +298,7 @@ impl App {
             notes.push(format!(
                 "saved settings: pad curve {}, screen velocity {}, latch {}, audio buffer {} periods, \
                  developer tools {}, theme {}, sound cores {}, loop memory {} min, metronome {} at {} dB, \
-                 loop level {:+.0} dB, tempo from the first loop {}, line input latency {}, at start {}, \
+                 loop level {:+.0} dB, tempo from the first loop {}, smart loop end {}, line input latency {}, at start {}, \
                  export {} ({}, {} Hz)",
                 s.curve.label(),
                 s.screen_velocity,
@@ -301,6 +312,7 @@ impl App {
                 s.metronome_db,
                 s.loop_level_db,
                 on(s.loop_tempo),
+                crate::app::smart_end_name(s.smart_end).to_lowercase(),
                 if s.loop_latency_set {
                     format!("{} frames", s.loop_latency)
                 } else {

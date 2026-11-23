@@ -22,7 +22,10 @@
 //! - A tap on an empty square adds that route and picks it; a tap on a
 //!   set one picks it. The card under the grid shows the picked square:
 //!   its On and Off, for Tracks by channel each route with its channel
-//!   and track, and for thru each channel it sends. The wheel moves across
+//!   and track, and for thru each channel it sends. A route's track
+//!   stepper goes on past the tracks to the synths no track has of its
+//!   own, by their channel names ("FM · Pads"; the instrument redesign's
+//!   step 11e): the route plays that synth. The wheel moves across
 //!   the squares, - and + take a route away or add it, and the Q-Links
 //!   turn the picked route's channel and track.
 //! - **Blocks** (board 5): a port's Armed track square, and each route
@@ -175,6 +178,46 @@ fn track_name(m: &IoModel, t: u8) -> String {
 
 fn track_count(m: &IoModel) -> usize {
     m.live.tracks.len().max(1)
+}
+
+/// What route `r` plays, in words: its track's name, or the synth it
+/// names (step 11e) by its channel name.
+fn route_to(m: &IoModel, r: &TrackRoute) -> String {
+    match r.synth {
+        Some(id) => crate::synth_name(m, id),
+        None => track_name(m, r.track),
+    }
+}
+
+/// Whether route `i` can name synth `id` (step 11e): the routes, the
+/// others than `i`, name it already or fewer than
+/// [`mpfree_midi::setup::ROUTE_SYNTHS`] others.
+fn synth_room(m: &IoModel, i: usize, id: u32) -> bool {
+    let mut named: Vec<u32> = m
+        .setup
+        .routes
+        .iter()
+        .enumerate()
+        .filter(|&(j, _)| j != i)
+        .filter_map(|(_, r)| r.synth)
+        .collect();
+    named.sort_unstable();
+    named.dedup();
+    named.contains(&id) || named.len() < mpfree_midi::setup::ROUTE_SYNTHS
+}
+
+/// Where route `r` stands on its stepper: the tracks from 0, then the
+/// synths a route can name ([`crate::Live::synths`]). A synth that isn't
+/// here now stands past the last.
+fn route_place(m: &IoModel, r: &TrackRoute) -> usize {
+    let tracks = track_count(m);
+    match r.synth {
+        Some(id) => {
+            let all = &m.live.synths;
+            tracks + all.iter().position(|s| s.0 == id).unwrap_or(all.len())
+        }
+        None => usize::from(r.track),
+    }
 }
 
 fn grid(m: &IoModel, room: usize) -> Grid {
@@ -417,7 +460,7 @@ fn square_by_channel(m: &IoModel, rs: &[usize], plugged: bool) -> Square {
         [i] => {
             let r = &m.setup.routes[*i];
             Square::set(
-                track_name(m, r.track),
+                route_to(m, r),
                 if plugged {
                     channel_text(r.channel)
                 } else {
@@ -1045,12 +1088,18 @@ impl Routing {
                                 m.setup.shown(&name)
                             ));
                         };
-                        let taken = |t: u8| mine.iter().any(|&i| m.setup.routes[i].track == t);
+                        let taken = |t: u8| {
+                            mine.iter().any(|&i| {
+                                let r = &m.setup.routes[i];
+                                r.synth.is_none() && r.track == t
+                            })
+                        };
                         let track = (0..tracks as u8).find(|&t| !taken(t)).unwrap_or(0);
                         m.setup.routes.push(TrackRoute {
                             port: name.clone(),
                             channel: Some(channel),
                             track,
+                            synth: None,
                             blocks: Blocks::NONE,
                         });
                         added = Some(mine.len());
@@ -1242,23 +1291,42 @@ impl Routing {
         let changed = self.edit(|m| {
             let i = *routes_from(m, &name).get(k).ok_or("No route picked")?;
             let r = m.setup.routes[i].clone();
-            let to = i32::from(r.track) + d;
-            let last = track_count(m) as i32 - 1;
+            // The tracks, then the synths no track has (step 11e).
+            let tracks = track_count(m);
+            let to = route_place(m, &r) as i32 + d;
+            let last = (tracks + m.live.synths.len()) as i32 - 1;
             if !(0..=last).contains(&to) {
+                let what = if d < 0 || m.live.synths.is_empty() {
+                    "track"
+                } else {
+                    "synth"
+                };
                 return Err(format!(
-                    "The route plays the {} track: {} picks another",
+                    "The route plays the {} {what}: {} picks another",
                     if d > 0 { "last" } else { "first" },
                     if d > 0 { "-" } else { "+" }
                 ));
             }
-            set_route(
-                m,
-                i,
-                TrackRoute {
-                    track: to as u8,
+            let to = to as usize;
+            let r = match to.checked_sub(tracks).and_then(|j| m.live.synths.get(j)) {
+                Some(&(id, _)) if !synth_room(m, i, id) => {
+                    return Err(format!(
+                        "{} synths can have routes at once: take one away first",
+                        mpfree_midi::setup::ROUTE_SYNTHS
+                    ));
+                }
+                Some(&(id, _)) => TrackRoute {
+                    track: 0,
+                    synth: Some(id),
                     ..r
                 },
-            )
+                None => TrackRoute {
+                    track: to as u8,
+                    synth: None,
+                    ..r
+                },
+            };
+            set_route(m, i, r)
         });
         if changed {
             IoReply::Redraw
@@ -1429,7 +1497,7 @@ fn set_route(m: &mut IoModel, i: usize, r: TrackRoute) -> Result<(), String> {
         return Err(format!(
             "{} → {} is a route already",
             r.source_in(&m.setup),
-            track_name(m, r.track)
+            route_to(m, &r)
         ));
     }
     m.setup.routes[i] = r;
@@ -1629,7 +1697,7 @@ fn paint_square(cx: &mut PaintCx, r: Rect, sq: &Square, inward: bool, picked: bo
 fn button(cx: &mut PaintCx, r: Rect, text: &str, lit: bool) {
     let t = cx.theme.clone();
     let (fill, ink) = if lit {
-        (t.accent, t.on_accent)
+        (t.picked(), t.on_picked())
     } else {
         (t.raised, t.text)
     };
@@ -1688,7 +1756,7 @@ impl Routing {
                 format!(
                     "{s} · {} → {} · its blocks",
                     channel_text(r.channel),
-                    track_name(m, r.track)
+                    route_to(m, r)
                 )
             }
             Some(Whose::Thru(i)) => {
@@ -1809,7 +1877,7 @@ impl Routing {
                         t.text_dim,
                         "→",
                     );
-                    stepper(cx, steps[2], steps[3], &track_name(m, r.track), picked);
+                    stepper(cx, steps[2], steps[3], &route_to(m, r), picked);
                     let bb = blocks_button(line);
                     blocks_chip(cx, bb, r.blocks.len());
                     let say = Rect::new(
@@ -2367,7 +2435,7 @@ fn last_through(m: &IoModel, w: &Whose, port: &str, blocks: Blocks) -> Option<Sa
         Whose::Port(_) => (None, "played the armed track".to_string()),
         Whose::Route(i) => {
             let r = m.setup.routes.get(*i)?;
-            (r.channel, format!("played {}", track_name(m, r.track)))
+            (r.channel, format!("played {}", route_to(m, r)))
         }
         Whose::Thru(i) => {
             let r = m.setup.thru.get(*i)?;
@@ -2396,7 +2464,11 @@ fn last_through(m: &IoModel, w: &Whose, port: &str, blocks: Blocks) -> Option<Sa
         let ours = match (w, s.to) {
             (_, To::Nothing) => true,
             (Whose::Port(_), To::Track { .. } | To::NoPad { .. } | To::Pads) => true,
-            (Whose::Route(i), To::Routed { track }) => m.setup.routes[*i].track == track,
+            (Whose::Route(i), To::Routed { track }) => {
+                let r = &m.setup.routes[*i];
+                r.synth.is_none() && r.track == track
+            }
+            (Whose::Route(i), To::Synth { id }) => m.setup.routes[*i].synth == Some(id),
             (Whose::Thru(_), To::Thru { to }) => Some(to) == to_id,
             _ => false,
         };
@@ -2793,11 +2865,11 @@ impl IoSection for Routing {
                         pos: at as f32 / 16.0,
                         enabled: true,
                     };
-                    let n = track_count(&m);
+                    let n = track_count(&m) + m.live.synths.len();
                     knobs[1] = IoKnob {
                         label: "Track".to_string(),
-                        text: track_name(&m, r.track),
-                        pos: f32::from(r.track) / (n.max(2) - 1) as f32,
+                        text: route_to(&m, r),
+                        pos: route_place(&m, r) as f32 / (n.max(2) - 1) as f32,
                         enabled: true,
                     };
                 }
@@ -3274,6 +3346,7 @@ mod tests {
                     port: DIN_NAME.to_string(),
                     channel: Some(0),
                     track: 0,
+                    synth: None,
                     blocks: mpfree_midi::blocks::Blocks::NONE,
                 }]
             );
@@ -3312,6 +3385,63 @@ mod tests {
         }
         assert_eq!(m.lock().unwrap().setup.routes[0].channel, None);
         assert!(s.take_note().unwrap().contains("first, all"));
+    }
+
+    /// A route's track stepper goes on past the tracks to the synths no
+    /// track has (the instrument redesign's step 11e), by their channel
+    /// names, and back; past the last synth it says so. A fifth synth
+    /// named by the routes is refused.
+    #[test]
+    fn a_routes_track_steps_on_past_the_tracks_to_the_synths() {
+        let m = model();
+        m.lock().unwrap().live.synths = vec![(1, "Synth".into()), (7, "FM · Pads".into())];
+        let mut s = Routing::new(m.clone());
+        let _ = paint(&s);
+        let (x, y) = centre(square_at(&s, "MIDI in", "Tracks"));
+        tap(&mut s, x, y);
+        let tracks = track_count(&m.lock().unwrap());
+        for _ in 0..tracks + 1 {
+            s.qlink_turn(1, 1, false);
+        }
+        let route = || m.lock().unwrap().setup.routes[0].clone();
+        assert_eq!((route().synth, route().track), (Some(7), 0));
+        let _ = paint(&s);
+        assert!(
+            s.targets(AREA)
+                .iter()
+                .any(|t| t.label == "MIDI in → Tracks: FM · Pads"),
+            "{:?}",
+            s.targets(AREA).iter().map(|t| &t.label).collect::<Vec<_>>()
+        );
+        assert_eq!(s.qlinks().unwrap()[1].text, "FM · Pads");
+        s.qlink_turn(1, 1, false);
+        assert!(s.take_note().unwrap().contains("the last synth"));
+        // Back past the shared synth to the last track.
+        s.qlink_turn(1, -1, false);
+        assert_eq!(route().synth, Some(1));
+        s.qlink_turn(1, -1, false);
+        assert_eq!(
+            (route().synth, usize::from(route().track)),
+            (None, tracks - 1)
+        );
+        // Four other synths named already: a fifth is refused.
+        {
+            let mut v = m.lock().unwrap();
+            let r = v.setup.routes[0].clone();
+            for k in 0..4u8 {
+                v.setup.routes.push(TrackRoute {
+                    channel: Some(k + 1),
+                    synth: Some(20 + u32::from(k)),
+                    ..r.clone()
+                });
+            }
+        }
+        s.qlink_turn(1, 1, false);
+        assert_eq!(route().synth, None);
+        assert!(s
+            .take_note()
+            .unwrap()
+            .contains("4 synths can have routes at once"));
     }
 
     #[test]

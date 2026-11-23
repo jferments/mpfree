@@ -133,6 +133,14 @@ Built in `rust/mpfree-fxlab`: `src/robust.rs` and `tests/robust.rs` for Y4 and Y
   - **Not converged:** Poly's drive and Analog's drive 100 still fold at 8x (the drive's fizz 6 dB lower at 16x; Analog's harmonics 2.5 to 4.2 dB apart); sync (harmonics 1.3 to 6 dB apart); Squelch's square; every FM case (feedback 7 is noise by design); Analog's saw at C6 and C7 (fizz 3.7 dB apart, just above the floor). Strings and Drawbar's combo reed are a different case: their harmonics agree within 0.3 dB, but their energy off the harmonics grows by about 8 dB from 8x to 16x, so it is not folding but something that depends on the rate. Both play the divide-down bank (`mpfree-synth/src/bank.rs`), the first place to look. Steps 1.1 and 2.1 set their Y8 targets against the 16x render, or after the cause is found.
   - **What the converged references show beyond fizz:** below 16 kHz, Poly's saw, pulse and tables are 4 to 6.5 dB brighter at 44.1 kHz than their references. The plain patch's filter is set to 20 kHz: at 8x it takes 12 dB off at 20 kHz, as an analog four-pole would, but at 44.1 kHz, that close to Nyquist, the same setting lets nearly everything through below 16 kHz (step 2.2's question: which one is intended). Strings and the combo reed go the other way, 14 to 17 dB darker near 15 kHz, and Choir 6 to 11 dB. Wind is 1.4 to 3.1 dB quieter at 44.1 kHz: the bore models change with the rate. From 16 to 20 kHz, Poly's oscillators keep no harmonics above about 16.7 kHz, where their references keep them all; that top-end loss is what step 1.2's "harmonic loss" is measured by.
 
+### The full-project check (step 0.6)
+
+Seven fixed projects in `rust/mpfree-bench/src/projects.rs`, each 16 beats at 120 BPM that loop: dense synths, a distortion chain, granular drums, long stems recorded at 48 kHz, a bass into the limiter, fast automation, and all six at once. Each plays through the whole chain as a song does: the synths in the track host into the mixer's tracks, the sampler's pads into the pad channels and on into their tracks, every insert, the sends, the returns, the master chain and Master safety. They play from fixed scores, so the time engine's own cost stays in its own bench cases. Sounds and stems are made in code, so the repository holds no audio.
+
+- **The render check:** each project's 16 beats and 2 s more are fingerprinted per half second and channel (the level, and the octave bands from 63 Hz to 16 kHz) and compared with `golden/projects.txt`: within 0.1 dB of level and 0.25 dB a band, leaving out bands more than 60 dB under the loudest. That passes another libm but fails any change a listener could hear. The check also says whether each render is still bit-identical to the approved one; that is reported, not gated, since another platform's libm changes the bits. It runs in release, in its own CI step, in about 2 s. A PR that changes the sound blesses it and says why.
+- **Instruction counts:** each project is also a bench case, so the instruction gate counts it per block (200 blocks after the 50-block warm-up, with every part playing) and fails a rise over 5 %. Today: all at once 4.2 M instructions a block, the distortion chain 1.6 M, dense synths 1.3 M, granular drums 0.74 M, fast automation 0.57 M, the bass into the limiter 0.30 M, long stems 0.29 M. Counting whole songs instead would cost the gate minutes a project, so the counts are of that stretch. The project cases are left out of the soak and of the bench's coarser golden test.
+- **On the device:** the plan checks device deadlines once per phase. These projects are what that run plays (step 0.4).
+
 **Fizz targets by kind:**
 
 | Kind | Target | Today |
@@ -163,6 +171,23 @@ The limits below are **first limits**, set before building. When a better candid
 | 2.3 FX cost | Saves, never spends: kept only if the whole effect is faster on the device | It pays for nothing on another core |
 
 NEON kernels stay bit-exact with their plain loops (no fused multiply-add on ARMv7), as the supersaw, the Choir's formants and the banks already are, so every ratchet and golden file stays valid. A tolerance only if a kernel truly can't be.
+
+### What each limit is judged on (step 0.4)
+
+Each first limit is checked on named bench cases (`rust/mpfree-bench`), counted per 128-frame block by the instruction gate on CI and timed on the MPC in the device bench round (`tools/mpc-one/host_bench_mpc.py`: alone, then split over cores with `--lanes`). The projects of step 0.6 give the full-project view. Counts below are today's, in thousands of x86-64 instructions a block (`instructions.txt`); they decide nothing about the device by themselves.
+
+| Step | Cases (today, k instructions a block) |
+|---|---|
+| 1.1 Sync | Poly Table, 8 voices, sync 50 (334) against Poly Table Init (247); Wavetable Init, 8 voices, sync 50 (413) against Wavetable Init (362). Sync off must not move the Init cases |
+| 1.2 Analog | Analog Init (265), Poly Brass (203), Warm Pad (321) at 8 voices; Worn Cards at 16 (466) |
+| 1.3 Squelch | Squelch Square Acid (64) and Acid Line (59) |
+| 1.4 Sampler read | Sampler, 20 pads (1,435); the x16 held cases (547 to 1,774); plain copies: the drum kit cases (42 to 79), which must not move |
+| 2.1 Poly's drive | Poly Init, 8 voices, drive 24 dB (330) and distortion 24 dB (335) against Poly Init (194). Today's drive already costs 1.7 times the plain voice, more than the first limit of 1.3 times, so step 2.1 has to make it cheaper or bring the trade to the owner |
+| 2.2 Synth filters | The Analog cases above and every Poly preset case |
+| 2.3 FX cost | Drive Eco 2x (203) and HQ 4x (430), Amp (320, 342), Fuzz (386), Character's Iron (120) and Soften (97), EQ HQ 2x (188), Multi filter Hard (80), drive (144) and ladder (92), Lo-fi (222), Ring mod (13), Rotary (108), Limiter with true peak (98), Master safety (30) |
+| Every step | The seven "Project:" cases: dense synths (1,332), distortion chain (1,599), granular drums (742), long stems (291), bass into the limiter (296), fast automation (572), all at once (4,215) |
+
+The four cases this step added (sync on Poly's Table wave and on Wavetable, Poly's drive and distortion) have golden fingerprints and instruction baselines like the rest. The device run is the next device bench round, with its own go; nothing here runs on the MPC.
 
 ## The rate probe
 

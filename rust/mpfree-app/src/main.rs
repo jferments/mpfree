@@ -156,6 +156,7 @@ mod remote;
 mod rt_safety;
 mod sample_page;
 mod sampler;
+mod sampler_commands;
 mod screen_cost;
 mod screen_picture;
 mod script;
@@ -176,7 +177,9 @@ mod touch_dev;
 mod touchlab_page;
 mod undo;
 mod views;
+mod waiting;
 mod xy_list;
+mod xy_slot;
 
 use mpfree_arp::scale::{pads::MAX_PAD_NOTES, Shift};
 use mpfree_controller::midi::{Message, Parser};
@@ -228,6 +231,12 @@ struct Options {
     sysfs: PathBuf,
     preview: Option<PathBuf>,
     display_lists: Option<PathBuf>,
+    /// `--check-theme FILE`: a theme file's problems and its unreadable
+    /// text on every sample screen ([`check_theme`]).
+    check_theme: Option<PathBuf>,
+    /// `--contact-sheet DIR`: every sample screen in `--theme` beside the
+    /// theme it starts from, with a page to look at them ([`contact_sheet`]).
+    contact_sheet: Option<PathBuf>,
     font: Option<PathBuf>,
     bold_font: Option<PathBuf>,
     mono_font: Option<PathBuf>,
@@ -297,6 +306,8 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         sysfs: PathBuf::from("/sys/class/graphics/fb0"),
         preview: None,
         display_lists: None,
+        check_theme: None,
+        contact_sheet: None,
         font: None,
         bold_font: None,
         mono_font: None,
@@ -345,6 +356,8 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--sysfs" => o.sysfs = PathBuf::from(value()?),
             "--preview" => o.preview = Some(PathBuf::from(value()?)),
             "--display-lists" => o.display_lists = Some(PathBuf::from(value()?)),
+            "--check-theme" => o.check_theme = Some(PathBuf::from(value()?)),
+            "--contact-sheet" => o.contact_sheet = Some(PathBuf::from(value()?)),
             "--font" => o.font = Some(PathBuf::from(value()?)),
             "--bold-font" => o.bold_font = Some(PathBuf::from(value()?)),
             "--mono-font" => o.mono_font = Some(PathBuf::from(value()?)),
@@ -366,7 +379,12 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             _ => return Err(format!("unknown argument {arg}")),
         }
     }
-    if o.preview.is_none() && o.display_lists.is_none() && o.command.is_empty() {
+    if o.preview.is_none()
+        && o.display_lists.is_none()
+        && o.check_theme.is_none()
+        && o.contact_sheet.is_none()
+        && o.command.is_empty()
+    {
         return Err(
             "usage: mpfree inventory|screen|touch|pads|lights|setup|drums|play|app|click [options]"
                 .to_string(),
@@ -594,6 +612,18 @@ impl Out {
         }
     }
 
+    /// What smart loop end made of a closing tap
+    /// ([`looping::LoopHost::take_smart`]): the log, and the screen when
+    /// your tap stood.
+    fn smart_end(&mut self, said: Option<(String, Option<String>)>) {
+        if let Some((line, tell)) = said {
+            self.note(&line);
+            if let Some(words) = tell {
+                self.show(gui::ToUi::Tell(words));
+            }
+        }
+    }
+
     /// Something for the pad player's screen only (nothing printed).
     fn show(&mut self, msg: gui::ToUi) {
         if let Some(s) = self.sink.as_ref() {
@@ -731,54 +761,100 @@ fn load_tuning_files(store: &mpfree_store::Store) -> (Vec<synth::TuningFile>, Ve
 /// The most theme files the themes folder offers.
 const MAX_THEME_FILES: usize = 32;
 
-/// The themes folder's `NAME.theme` files that parse, in name order (at
-/// most [`MAX_THEME_FILES`]), each with its theme. A theme without its own
-/// `name`, or named like a built-in one, is shown by its file name. A file
-/// that doesn't parse, or whose text no one could read
-/// ([`Theme::unusable`]), is left out with a line saying why (the second
-/// list, lines for the log), and counted (the third, for the Debug page).
-/// Only reads.
-fn load_theme_files(store: &mpfree_store::Store) -> (Vec<(String, Theme)>, Vec<String>, u64) {
-    let (mut found, mut notes, mut left_out) = (Vec::new(), Vec::new(), 0);
+/// What the themes folder holds, read at start ([`load_theme_files`]).
+#[derive(Default)]
+struct ThemeFolder {
+    /// The file name and theme of each theme offered, in name order.
+    found: Vec<(String, Theme)>,
+    /// Each offered file's problems, as Prefs > Appearance lists them:
+    /// lines it couldn't use, unknown keys, ignored lines, colours hard to
+    /// read.
+    problems: Vec<(String, Vec<String>)>,
+    /// Files left out, and why.
+    left_out: Vec<(String, String)>,
+    /// Lines of offered files that couldn't be used (a mistake, an unknown
+    /// key): each used the base theme's value, a fallback.
+    lines_fell_back: u64,
+    /// Lines for the log.
+    notes: Vec<String>,
+}
+
+/// The themes folder's `NAME.theme` files, in name order (at most
+/// [`MAX_THEME_FILES`]), each read the forgiving way ([`Theme::load`]): a
+/// line with a mistake uses the base theme's value, an unknown key is
+/// skipped, and each such line is logged, counted and kept for Prefs >
+/// Appearance to list (owner, 22 Nov 07:17Z). Only a theme no one could
+/// read ([`Theme::unusable`]), or a file that isn't text, is left out, with
+/// a line saying why. A theme without its own `name`, or named like a
+/// built-in one, is shown by its file name. Only reads.
+fn load_theme_files(store: &mpfree_store::Store) -> ThemeFolder {
+    use mpfree_ui::theme::ProblemKind;
+    let mut folder = ThemeFolder::default();
     for file in store.list(app::THEMES_FOLDER) {
         let Some(stem) = file.strip_suffix(".theme").filter(|s| !s.is_empty()) else {
             continue;
         };
-        if found.len() == MAX_THEME_FILES {
-            notes.push(format!(
+        if folder.found.len() == MAX_THEME_FILES {
+            folder.notes.push(format!(
                 "themes: only the first {MAX_THEME_FILES} theme files are offered"
             ));
             break;
         }
-        let text = store
+        let Some(text) = store
             .read(app::THEMES_FOLDER, &file)
-            .and_then(|b| String::from_utf8(b).ok());
-        match text.map(|t| Theme::parse(&t)) {
-            Some(Ok(mut t)) => {
-                if app::THEMES
-                    .iter()
-                    .any(|b| b.1.eq_ignore_ascii_case(t.name.trim()))
-                    || t.name.trim().is_empty()
-                {
-                    t.name = stem.to_string();
-                }
-                found.push((file, t));
-            }
-            Some(Err(e)) => {
-                notes.push(format!("themes: {file} left out: {e}"));
-                left_out += 1;
-            }
-            None => {
-                notes.push(format!("themes: {file} left out: not readable text"));
-                left_out += 1;
-            }
+            .and_then(|b| String::from_utf8(b).ok())
+        else {
+            folder
+                .notes
+                .push(format!("themes: {file} left out: not readable text"));
+            folder
+                .left_out
+                .push((file, "not readable text".to_string()));
+            continue;
+        };
+        let (mut t, problems) = Theme::load(&text);
+        if let Some(why) = problems
+            .iter()
+            .find(|p| p.kind == ProblemKind::Unusable)
+            .map(|p| p.text.clone())
+        {
+            folder.notes.push(format!("themes: {file} left out: {why}"));
+            folder.left_out.push((file, why));
+            continue;
         }
+        if app::THEMES
+            .iter()
+            .any(|b| b.1.eq_ignore_ascii_case(t.name.trim()))
+            || t.name.trim().is_empty()
+        {
+            t.name = stem.to_string();
+        }
+        let mut lines = Vec::new();
+        for p in &problems {
+            let kind = match p.kind {
+                ProblemKind::Mistake | ProblemKind::Unknown => {
+                    folder.lines_fell_back += 1;
+                    "used the base for"
+                }
+                ProblemKind::Ignored => "ignored",
+                ProblemKind::HardToRead => "hard to read",
+                ProblemKind::Unusable => unreachable!("left out above"),
+            };
+            folder.notes.push(format!("themes: {file}: {kind}: {p}"));
+            lines.push(p.to_string());
+        }
+        if !lines.is_empty() {
+            folder.problems.push((file.clone(), lines));
+        }
+        folder.found.push((file, t));
     }
-    if !found.is_empty() {
-        let names: Vec<&str> = found.iter().map(|(_, t)| t.name.as_str()).collect();
-        notes.push(format!("themes: found {}", names.join(", ")));
+    if !folder.found.is_empty() {
+        let names: Vec<&str> = folder.found.iter().map(|(_, t)| t.name.as_str()).collect();
+        folder
+            .notes
+            .push(format!("themes: found {}", names.join(", ")));
     }
-    (found, notes, left_out)
+    folder
 }
 
 /// The built-in fonts, or files given with --font, --bold-font, --mono-font.
@@ -2852,7 +2928,7 @@ fn pad_starts_loop(
         // starts the song (loop_sets_tempo).
         line.push_str(", free: REC again closes it and sets the tempo");
     } else if time.info().state == mpfree_transport::State::Stopped {
-        match start_song_on_note(time, at, None, take, exporting) {
+        match start_song_on_note(time, at, None, take, exporting, 0) {
             Ok(more) => {
                 line.push_str(", and the song with it");
                 if let Some(m) = more {
@@ -2986,7 +3062,7 @@ fn loop_starts_song(
 ) -> LoopStart {
     let n = looper.take_start()?;
     Some(
-        match start_song_on_note(time, time.next_frame(), None, take, exporting) {
+        match start_song_on_note(time, time.next_frame(), None, take, exporting, 0) {
             Ok(more) => (
                 format!(
                     "looper: Loop {} heard you: the song starts on your note{}",
@@ -3000,20 +3076,21 @@ fn loop_starts_song(
     )
 }
 
-/// The song starts on a note on frame `at` (at tempo `bpm`, if given),
-/// unless an export runs (the transport's own refusals:
-/// [`time::TimeHost::start_at`]).
+/// The song starts on a note on frame `at` (at tempo `bpm`, if given,
+/// `into` ticks into the bar it stopped in), unless an export runs (the
+/// transport's own refusals: [`time::TimeHost::start_at`]).
 fn start_song_on_note(
     time: &mut time::TimeHost,
     at: u64,
     bpm: Option<f64>,
     take: Option<bool>,
     exporting: bool,
+    into: mpfree_transport::time::Tick,
 ) -> Result<Option<String>, String> {
     if exporting {
         return Err("an export is running".to_string());
     }
-    time.start_at(at, bpm, take)
+    time.start_at(at, bpm, take, into)
 }
 
 /// Tempo from the first loop (the looper's options): whether the song can
@@ -3040,10 +3117,10 @@ fn loop_sets_tempo(
     take: Option<bool>,
     exporting: bool,
 ) -> (LoopStart, Option<f64>) {
-    let Some((n, r, at)) = looper.take_tempo() else {
+    let Some((n, r, at, into)) = looper.take_tempo() else {
         return (None, None);
     };
-    match start_song_on_note(time, at, Some(r.bpm), take, exporting) {
+    match start_song_on_note(time, at, Some(r.bpm), take, exporting, into) {
         Ok(more) => {
             // A close call, or a Length it couldn't keep: on the screen too.
             let note = looping::reading_note(&r);
@@ -3795,12 +3872,16 @@ fn player(o: &Options, timed: bool) -> Result<(), String> {
             out.say(&format!("{e}; using the default theme"));
             player.apply(gui::ToUi::ThemeFallbacks {
                 left_out: 0,
+                lines_fell_back: 0,
                 default_shown: 1,
             });
         }
     }
     let (to_ui, from_audio) = sync_channel::<gui::ToUi>(4096);
     let (to_audio, from_ui) = sync_channel::<gui::FromUi>(256);
+    // The screen's XY pad as one value beside that queue (xy_slot.rs).
+    let xy = std::sync::Arc::new(xy_slot::XySlot::default());
+    player.set_xy_slot(std::sync::Arc::clone(&xy));
     // The power button: only when the system can act on a request
     // (`--power-request`, the stick's root path unit). Read-only, not
     // grabbed, on a thread of its own (power.rs).
@@ -3843,7 +3924,7 @@ fn player(o: &Options, timed: bool) -> Result<(), String> {
     if !timed {
         follow_journal(to_ui.clone());
     }
-    let result = player_session(o, &mut out, timed, &from_ui);
+    let result = player_session(o, &mut out, timed, &from_ui, &xy);
     if let Err(e) = &result {
         // On the screen only: main prints the STOP line as for every step.
         out.show(gui::ToUi::Session("Stopped".into(), Tone::Bad));
@@ -4536,6 +4617,35 @@ fn io_track_names(shown: &mut [String], tracks: &[mpfree_seq::Track]) {
     }
 }
 
+/// The synths a MIDI route can name past the tracks (the instrument
+/// redesign's step 11e), for the Routing card's stepper and the monitor:
+/// the shared synth, then each free place's synth (one picked in the list
+/// of synths), by the project's instrument number and channel name ("FM ·
+/// Pads"). `shown` changes only when the list does; twice a second, with
+/// the tracks' names.
+fn io_route_synths(
+    shown: &mut Vec<(u32, String)>,
+    listed: &instrument_list::InstrumentList,
+    mix: &mixing::MixHost,
+) {
+    use looping::Instrument;
+    let name = |i: Instrument| {
+        mix.instrument_strip(i, &[])
+            .map_or_else(String::new, |s| mix.strip_name(s))
+    };
+    let shared = instrument_list::InstrumentId::SHARED_SYNTH;
+    let mut now = vec![(shared.number(), name(Instrument::Synth))];
+    for n in 0..instruments::FREE {
+        let holder = instruments::free(n);
+        if let (Some(id), true) = (listed.free_of(n), mix.instruments.holds(holder)) {
+            now.push((id.number(), name(Instrument::Own(holder))));
+        }
+    }
+    if *shown != now {
+        *shown = now;
+    }
+}
+
 /// Track `t` as the project names it; one past the project's tracks is
 /// named by its number.
 fn track_name(project: &mpfree_seq::Project, t: u8) -> String {
@@ -4741,6 +4851,243 @@ fn who_plays(
     Some(format!("{name}: {}", who.join(", ")))
 }
 
+/// A track's line (the instrument redesign's step 11d, the plan's "a
+/// track's line"): what track `t` plays and where it is heard, shown over
+/// the Instrument row's help in the Synth tab's options: ["Track 2 plays
+/// Track 1's Poly", "In the mixer: Poly · Track 1"]. The mixer names the
+/// channel (`MixHost::instrument_strip`, `MixHost::strip_name`), so it
+/// reads as the Mix tab does. `homes` say where each kit plays
+/// (`TrackKits::homes`); `midi_out`: the track sends MIDI out. Allocates;
+/// the loop asks a few times a second while the options show.
+fn track_line(
+    t: usize,
+    mix: &mixing::MixHost,
+    kits: &sampler::TrackKits,
+    homes: &[u8],
+    synth_name: &str,
+    midi_out: bool,
+) -> Vec<String> {
+    use looping::Instrument;
+    let own = &mix.instruments;
+    let who = format!("Track {}", t + 1);
+    let i = if midi_out {
+        Instrument::MidiOut
+    } else if let Some(o) = own.owner(t) {
+        Instrument::Own(o)
+    } else {
+        kits.kit_of(t).map_or(Instrument::Synth, Instrument::Kit)
+    };
+    let plays = match i {
+        Instrument::Own(o) => {
+            let name = own.held(o).map_or("an instrument", |h| h.name);
+            if o == t {
+                format!("{who} plays its own {name}")
+            } else if o < instruments::TRACKS {
+                format!("{who} plays Track {}'s {name}", o + 1)
+            } else {
+                format!("{who} plays {name}, from the list of synths")
+            }
+        }
+        Instrument::Kit(k) => format!("{who} plays Kit {}", k + 1),
+        Instrument::Synth => format!("{who} plays the shared {synth_name}"),
+        Instrument::MidiOut => format!("{who} plays gear on MIDI out"),
+    };
+    let heard = match mix.instrument_strip(i, homes) {
+        Some(s) => format!("In the mixer: {}", mix.strip_name(s)),
+        None => "In the mixer: nothing, it sounds outside mpfree".to_string(),
+    };
+    vec![plays, heard]
+}
+
+/// The synths MIDI routes name (the instrument redesign's step 11e,
+/// app/route_synths.rs): each route row of the instrument host
+/// (`instruments::routed`) points at the synth its routes name, or plays
+/// the shared synth by note; and while REC records one, the route's keys
+/// go into the track that records it, as the pads' layers' do
+/// (`PadLayers`). A key's let-go, pressure and slide reach where it went
+/// though the row moved on meanwhile. Main.rs and the test session both
+/// use it. Allocates nothing.
+struct RouteSynths {
+    /// The rows that play the shared synth, a bit each.
+    synth: u8,
+    /// The keys each row holds on the shared synth, a bit each.
+    synth_keys: [u128; RouteSynths::ROWS],
+    /// The pedals each row's keys put down.
+    pedals: [midi_in::PedalsDown; RouteSynths::ROWS],
+    /// The track recording each row's synth now (`App::route_recs`).
+    rec: [Option<u8>; RouteSynths::ROWS],
+    /// The pad each key went to on the track it went into.
+    keys: midi_in::RoutedPads,
+    /// The tracks each row's keys went into, a bit each, for their
+    /// let-go.
+    key_tracks: [u128; RouteSynths::ROWS],
+}
+
+impl RouteSynths {
+    const ROWS: usize = instruments::ROUTE_SYNTHS;
+
+    fn new() -> RouteSynths {
+        RouteSynths {
+            synth: 0,
+            synth_keys: [0; RouteSynths::ROWS],
+            pedals: std::array::from_fn(|_| midi_in::PedalsDown::default()),
+            rec: [None; RouteSynths::ROWS],
+            keys: midi_in::RoutedPads::new(),
+            key_tracks: [0; RouteSynths::ROWS],
+        }
+    }
+
+    /// The rows as the app has them now (`App::route_synth_holders`,
+    /// `App::route_synth_shared`): each pointed at its holder, the shared
+    /// synth's rows on or off. The notes and pedals a row leaves end
+    /// there first. Nothing changes when nothing did.
+    fn follow(
+        &mut self,
+        holders: [Option<usize>; RouteSynths::ROWS],
+        shared: u8,
+        synth: &mut synth::Synth,
+        own: &mut instruments::Instruments,
+    ) {
+        for (j, h) in holders.into_iter().enumerate() {
+            let to = h.filter(|&h| own.holds(h));
+            let (on, was) = (shared >> j & 1 == 1, self.synth >> j & 1 == 1);
+            if own.routed_at(j) == to && on == was {
+                continue;
+            }
+            for ctl in self.pedals[j].lift() {
+                own.control(instruments::routed(j), ctl, 0.0, 0);
+                if was {
+                    synth.control(ctl, 0.0, 0);
+                }
+            }
+            if own.routed_at(j) != to {
+                own.set_routed(j, to);
+            }
+            if was && !on {
+                let held = std::mem::take(&mut self.synth_keys[j]);
+                for note in (0..128u8).filter(|&n| held >> n & 1 == 1) {
+                    synth.note_off_note(note, 0);
+                }
+            }
+            self.synth = self.synth & !(1 << j) | u8::from(on) << j;
+        }
+    }
+
+    /// Route row `j`'s key `k` on its synth, each key its own note at its
+    /// own velocity, as a route to a track plays it. A second note-on for
+    /// a key held there is ignored; a let-go, pressure or slide reaches
+    /// where the key went.
+    fn key(
+        &mut self,
+        j: usize,
+        k: midi_in::Key,
+        synth: &mut synth::Synth,
+        own: &mut instruments::Instruments,
+    ) {
+        use midi_in::Key;
+        if j >= RouteSynths::ROWS {
+            return;
+        }
+        let row = instruments::routed(j);
+        let on = self.synth >> j & 1 == 1;
+        let bit = |note: u8| 1u128 << (note & 0x7F);
+        let held = &mut self.synth_keys[j];
+        match k {
+            Key::Down { note, velocity } => {
+                let vel = velocity.max(1);
+                if !own.key_held(row, note) {
+                    own.note_on(row, note, vel, 0);
+                }
+                if on && *held & bit(note) == 0 {
+                    synth.note_on_note(note, vel, 0);
+                    *held |= bit(note);
+                }
+            }
+            Key::Up { note } => {
+                if own.key_held(row, note) {
+                    own.note_off(row, note, 0);
+                }
+                if *held & bit(note) != 0 {
+                    synth.note_off_note(note, 0);
+                    *held &= !bit(note);
+                }
+            }
+            Key::Pressure { note, value } => {
+                if own.key_held(row, note) {
+                    own.note_pressure(row, note, value);
+                }
+                if *held & bit(note) != 0 {
+                    synth.pressure_note(note, value);
+                }
+            }
+            Key::Expr { note, kind, value } => {
+                if own.key_held(row, note) {
+                    own.note_expression(row, note, kind, value);
+                }
+                if *held & bit(note) != 0 {
+                    synth.expression_note(note, kind, value);
+                }
+            }
+            Key::Bend { value } => {
+                if !own.bend(row, value) && on {
+                    synth.bend(value);
+                }
+            }
+            Key::Control { ctl, value } => {
+                if !own.control(row, ctl, value, 0) && on {
+                    synth.control(ctl, value, 0);
+                }
+                self.pedals[j].key(ctl, value);
+            }
+        }
+    }
+
+    /// The tracks recording the rows' synths now (`App::route_recs`).
+    fn rec_to(&mut self, recs: [Option<u8>; RouteSynths::ROWS]) {
+        self.rec = recs;
+    }
+
+    /// Route row `j`'s key into the track recording its synth, as the pad
+    /// its note plays there (`midi_file::pad_on_track`); its end and
+    /// pressure where it went.
+    fn rec_key(
+        &mut self,
+        j: usize,
+        k: midi_in::Key,
+        time: &mut time::TimeHost,
+        own: &instruments::Instruments,
+        synth: &synth::Synth,
+    ) {
+        use midi_in::Key;
+        if j >= RouteSynths::ROWS {
+            return;
+        }
+        match k {
+            Key::Down { .. } => {
+                let Some(t) = self.rec[j] else {
+                    return;
+                };
+                let pad = |n| midi_file::pad_on_track(own, Some(synth), usize::from(t), n);
+                if let Some(ev) = self.keys.event(t, k, pad) {
+                    time.routed_played(t, 0, ev);
+                    self.key_tracks[j] |= 1 << t;
+                }
+            }
+            Key::Up { .. } | Key::Pressure { .. } => {
+                let mut went = self.key_tracks[j];
+                while went != 0 {
+                    let t = went.trailing_zeros() as u8;
+                    went &= went - 1;
+                    if let Some(ev) = self.keys.event(t, k, |_| None) {
+                        time.routed_played(t, 0, ev);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// What the pads play on their own, before the arp and the recorder,
 /// while the armed track plays something else (app/pads_focus.rs).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4875,6 +5222,324 @@ impl KeysOnPads {
     #[cfg(test)]
     fn held(&self) -> usize {
         self.held.iter().filter(|h| h.is_some()).count()
+    }
+}
+
+/// The pads' layers beyond the first (the instrument redesign's step 11a,
+/// app/pad_layers.rs): each pad hit plays them too, whichever way the
+/// first plays (on its own, or through the armed track), each by its own
+/// pad map, before the arp and the recorder; and so does each key of a
+/// keyboard. The instrument host's layer players (`instruments::layer`)
+/// play its synths, pointed each period ([`PadLayers::follow`]); the
+/// shared synth plays here. A hit or key remembers whether it started on
+/// the shared synth, so its let-go ends it there though the layers
+/// changed meanwhile; the host's players remember theirs. The pedals a
+/// keyboard put down on the layers come up as they move on, so nothing
+/// hangs. While a track armed besides the armed one plays a layer's synth
+/// (step 11c: REC sets them up, `desk.rs`), each hit and key goes into
+/// that track's recorder too, as a routed keyboard's does
+/// (`TimeHost::routed_played`), and its let-go goes where it went. Main.rs
+/// and the test session both use it. Allocates nothing once made.
+struct PadLayers {
+    /// The shared synth is a layer now.
+    synth: bool,
+    /// The pads whose hit started on the shared synth as a layer, a bit
+    /// each.
+    synth_pads: u16,
+    /// The keys held on the shared synth as a layer, a bit each.
+    synth_keys: u128,
+    /// The pedals the keys put down on the layers.
+    pedals: midi_in::PedalsDown,
+    /// The track recording each layer now (`App::pads_layer_recs`).
+    rec: [Option<u8>; PadLayers::MORE],
+    /// The tracks each pad's hit went into, for its let-go and pressure.
+    fed: [[Option<u8>; PadLayers::MORE]; 16],
+    /// The pad each key went to on each track it went into, as a route's
+    /// (CAPTURE's rule: a note no pad plays alone isn't kept).
+    keys: midi_in::RoutedPads,
+    /// The tracks a key went into, a bit each, for its let-go.
+    key_tracks: u128,
+}
+
+impl PadLayers {
+    /// The layers beyond the first.
+    const MORE: usize = instruments::PAD_LAYERS - 1;
+
+    fn new() -> PadLayers {
+        PadLayers {
+            synth: false,
+            synth_pads: 0,
+            synth_keys: 0,
+            pedals: midi_in::PedalsDown::default(),
+            rec: [None; PadLayers::MORE],
+            fed: [[None; PadLayers::MORE]; 16],
+            keys: midi_in::RoutedPads::new(),
+            key_tracks: 0,
+        }
+    }
+
+    /// The tracks recording the layers now (`App::pads_layer_recs`): the
+    /// hits and keys that follow go into them. A hit or key held goes on
+    /// where it went.
+    fn rec_to(&mut self, recs: [Option<u8>; PadLayers::MORE]) {
+        self.rec = recs;
+    }
+
+    /// Pad `pad` (0 to 15) down: into each track recording a layer, at
+    /// `velocity` as the recorder takes it (`App::layer_rec_velocity`;
+    /// None: nothing records the pads now).
+    fn rec_on(&mut self, pad: usize, velocity: Option<u8>, time: &mut time::TimeHost) {
+        let (Some(velocity), Some(fed)) = (velocity, self.fed.get_mut(pad)) else {
+            return;
+        };
+        *fed = self.rec;
+        for &t in self.rec.iter().flatten() {
+            let note = pad as u8;
+            time.routed_played(t, 0, mpfree_play::Event::NoteOn { note, velocity });
+        }
+    }
+
+    /// Pad `pad` up: its end where its hit went.
+    fn rec_off(&mut self, pad: usize, time: &mut time::TimeHost) {
+        let Some(fed) = self.fed.get_mut(pad) else {
+            return;
+        };
+        for t in std::mem::take(fed).into_iter().flatten() {
+            let note = pad as u8;
+            time.routed_played(t, 0, mpfree_play::Event::NoteOff { note });
+        }
+    }
+
+    /// Pad `pad`'s pressure where its hit went.
+    fn rec_pressure(&mut self, pad: usize, value: u8, time: &mut time::TimeHost) {
+        let Some(fed) = self.fed.get(pad) else {
+            return;
+        };
+        for &t in fed.iter().flatten() {
+            let note = pad as u8;
+            time.routed_played(t, 0, mpfree_play::Event::Pressure { note, value });
+        }
+    }
+
+    /// A keyboard's key into each track recording a layer, as the pad its
+    /// note plays there (`midi_file::pad_on_track`: the track plays its
+    /// layer's synth, its own pad map's or the shared synth's); its end
+    /// and pressure where it went. `velocity` is as the recorder takes it
+    /// (None: nothing records the pads now).
+    fn rec_key(
+        &mut self,
+        k: midi_in::Key,
+        velocity: Option<u8>,
+        time: &mut time::TimeHost,
+        own: &instruments::Instruments,
+        synth: &synth::Synth,
+    ) {
+        use midi_in::Key;
+        match k {
+            Key::Down { note, .. } => {
+                let Some(velocity) = velocity else {
+                    return;
+                };
+                for &t in self.rec.iter().flatten() {
+                    let key = Key::Down { note, velocity };
+                    let pad = |n| midi_file::pad_on_track(own, Some(synth), usize::from(t), n);
+                    if let Some(ev) = self.keys.event(t, key, pad) {
+                        time.routed_played(t, 0, ev);
+                        self.key_tracks |= 1 << t;
+                    }
+                }
+            }
+            Key::Up { .. } | Key::Pressure { .. } => {
+                let mut went = self.key_tracks;
+                while went != 0 {
+                    let t = went.trailing_zeros() as u8;
+                    went &= went - 1;
+                    if let Some(ev) = self.keys.event(t, k, |_| None) {
+                        time.routed_played(t, 0, ev);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The layers as the app has them now (`App::pads_layer_holders`,
+    /// `App::pads_layer_synth`): the host's layer players pointed at the
+    /// holders it holds, the shared synth's layer on or off. The notes
+    /// and pedals left on a layer that goes end there first. Nothing
+    /// changes (and nothing allocates) when nothing did.
+    fn follow(
+        &mut self,
+        holders: [Option<usize>; PadLayers::MORE],
+        synth_on: bool,
+        synth: &mut synth::Synth,
+        own: &mut instruments::Instruments,
+    ) {
+        let at = holders.map(|h| h.filter(|&h| own.holds(h)));
+        let moved = (0..PadLayers::MORE).any(|i| own.layer_at(i) != at[i]);
+        if !moved && synth_on == self.synth {
+            return;
+        }
+        for ctl in self.pedals.lift() {
+            for i in 0..PadLayers::MORE {
+                own.control(instruments::layer(i), ctl, 0.0, 0);
+            }
+            if self.synth {
+                synth.control(ctl, 0.0, 0);
+            }
+        }
+        for (i, &to) in at.iter().enumerate() {
+            if own.layer_at(i) != to {
+                own.set_layer(i, to);
+            }
+        }
+        if self.synth && !synth_on {
+            for pad in (0..16).filter(|&p| self.synth_pads >> p & 1 == 1) {
+                synth.note_off(pad, 0);
+            }
+            for note in (0..128u8).filter(|&n| self.synth_keys >> n & 1 == 1) {
+                synth.note_off_note(note, 0);
+            }
+            self.synth_pads = 0;
+            self.synth_keys = 0;
+        }
+        self.synth = synth_on;
+    }
+
+    /// Pad `pad` (0 to 15) down at velocity `v` (shaped): every layer
+    /// plays it.
+    fn pad_on(
+        &mut self,
+        pad: usize,
+        v: u8,
+        synth: &mut synth::Synth,
+        own: &mut instruments::Instruments,
+    ) {
+        let none = mpfree_arp::scale::Shift::NONE;
+        for i in 0..PadLayers::MORE {
+            own.pad_on_shifted(instruments::layer(i), pad, v, 0, &none);
+        }
+        if self.synth && pad < 16 {
+            synth.note_on(pad, v, 0);
+            self.synth_pads |= 1 << pad;
+        }
+    }
+
+    /// Pad `pad` up: the notes its hit started on the layers end there.
+    /// Nothing for a hit that started none.
+    fn pad_off(
+        &mut self,
+        pad: usize,
+        synth: &mut synth::Synth,
+        own: &mut instruments::Instruments,
+    ) {
+        for i in 0..PadLayers::MORE {
+            own.pad_off(instruments::layer(i), pad, 0);
+        }
+        if pad < 16 && self.synth_pads >> pad & 1 == 1 {
+            synth.note_off(pad, 0);
+            self.synth_pads &= !(1 << pad);
+        }
+    }
+
+    /// Pad `pad`'s pressure on the notes its hit started on the layers.
+    fn pad_pressure(
+        &mut self,
+        pad: usize,
+        value: u8,
+        synth: &mut synth::Synth,
+        own: &mut instruments::Instruments,
+    ) {
+        for i in 0..PadLayers::MORE {
+            own.pad_pressure(instruments::layer(i), pad, value, 0);
+        }
+        if pad < 16 && self.synth_pads >> pad & 1 == 1 {
+            synth.pressure(pad, value);
+        }
+    }
+
+    /// A keyboard's key `k` on the layers too, each key its own note (`v`
+    /// shapes a velocity as the pads'). A second note-on for a key held
+    /// there is ignored; a let-go, pressure or slide reaches where the key
+    /// went.
+    fn key(
+        &mut self,
+        k: midi_in::Key,
+        v: impl Fn(u8) -> u8,
+        synth: &mut synth::Synth,
+        own: &mut instruments::Instruments,
+    ) {
+        use midi_in::Key;
+        let bit = |note: u8| 1u128 << (note & 0x7F);
+        match k {
+            Key::Down { note, velocity } => {
+                let vel = v(velocity);
+                for i in 0..PadLayers::MORE {
+                    if !own.key_held(instruments::layer(i), note) {
+                        own.note_on(instruments::layer(i), note, vel, 0);
+                    }
+                }
+                if self.synth && self.synth_keys & bit(note) == 0 {
+                    synth.note_on_note(note, vel, 0);
+                    self.synth_keys |= bit(note);
+                }
+            }
+            Key::Up { note } => {
+                for i in 0..PadLayers::MORE {
+                    if own.key_held(instruments::layer(i), note) {
+                        own.note_off(instruments::layer(i), note, 0);
+                    }
+                }
+                if self.synth_keys & bit(note) != 0 {
+                    synth.note_off_note(note, 0);
+                    self.synth_keys &= !bit(note);
+                }
+            }
+            Key::Pressure { note, value } => {
+                for i in 0..PadLayers::MORE {
+                    if own.key_held(instruments::layer(i), note) {
+                        own.note_pressure(instruments::layer(i), note, value);
+                    }
+                }
+                if self.synth_keys & bit(note) != 0 {
+                    synth.pressure_note(note, value);
+                }
+            }
+            Key::Expr { note, kind, value } => {
+                for i in 0..PadLayers::MORE {
+                    if own.key_held(instruments::layer(i), note) {
+                        own.note_expression(instruments::layer(i), note, kind, value);
+                    }
+                }
+                if self.synth_keys & bit(note) != 0 {
+                    synth.expression_note(note, kind, value);
+                }
+            }
+            Key::Bend { value } => {
+                for i in 0..PadLayers::MORE {
+                    own.bend(instruments::layer(i), value);
+                }
+                if self.synth {
+                    synth.bend(value);
+                }
+            }
+            Key::Control { ctl, value } => {
+                for i in 0..PadLayers::MORE {
+                    own.control(instruments::layer(i), ctl, value, 0);
+                }
+                if self.synth {
+                    synth.control(ctl, value, 0);
+                }
+                self.pedals.key(ctl, value);
+            }
+        }
+    }
+
+    /// Whether a hit or key plays the shared synth as a layer now (for
+    /// the tests).
+    #[cfg(test)]
+    fn holds_synth(&self) -> bool {
+        self.synth_pads != 0 || self.synth_keys != 0
     }
 }
 
@@ -5641,6 +6306,31 @@ fn synth_seen<'s>(
     kits.plays_synth(usize::from(track)).then_some(synth)
 }
 
+/// The instrument each track plays now (step sequencer refactor F1), into
+/// `plays` by track, as `SeqPads::lock_at` finds a lock's sound: the
+/// track's own instrument, the synth while it has the pads, or none (a
+/// kit, or a track MIDI Out takes, whose instrument locks reach nothing).
+/// Never allocates.
+fn track_instruments(
+    plays: &mut [Option<time::InstRef>],
+    own: &instruments::Instruments,
+    kits: &sampler::TrackKits,
+    synth: &synth::Synth,
+    midi: &midi_out::MidiOut,
+) {
+    for (t, p) in plays.iter_mut().enumerate() {
+        *p = if midi.takes(t as u16) {
+            None
+        } else if own.plays(t) {
+            own.node(t).map(|n| (n.info(), n.params()))
+        } else if kits.plays_synth(t) {
+            Some(synth.node_ref())
+        } else {
+            None
+        };
+    }
+}
+
 impl SeqPads<'_> {
     /// Pressure on `pad`'s sounding note of `track`, from `by` (its clip,
     /// or its arp): the synth's notes that source started, else the pad's
@@ -6340,6 +7030,38 @@ fn looper_action(
             Vec::new()
         }
         looping::LoopAction::Capture => vec![app::Effect::Tell(looper.capture())],
+        // Smart loop end's chip, the loop point view and the hint line's
+        // question.
+        looping::LoopAction::Snap(s) => {
+            out.note(&looper.snap(s));
+            Vec::new()
+        }
+        looping::LoopAction::Side(side, keep) => {
+            out.note(&looper.side(side, keep));
+            Vec::new()
+        }
+        looping::LoopAction::Ab(on) => {
+            let line = looper.set_ab(on);
+            out.note(&line);
+            vec![app::Effect::Tell(line)]
+        }
+        looping::LoopAction::Answer(anyway) => {
+            let line = if anyway {
+                looper.snap_anyway()
+            } else {
+                looper.snap_not_now()
+            };
+            line.map(|l| {
+                out.note(&l);
+                app::Effect::Tell(l)
+            })
+            .into_iter()
+            .collect()
+        }
+        looping::LoopAction::PointView(open) => {
+            looper.set_point_open(open);
+            Vec::new()
+        }
         looping::LoopAction::CaptureSpan(end, bars) => {
             out.note(&looper.set_capture_span(end, bars));
             Vec::new()
@@ -6641,9 +7363,14 @@ fn time_action(
         a,
         TimeAction::AddAudioTrack | TimeAction::Undo | TimeAction::Redo
     );
+    let convert = matches!(
+        a,
+        TimeAction::ScenesToSong | TimeAction::ListToSong | TimeAction::SongToScenes
+    );
     let say = match waiting {
         Some(leader) => time::Say::Waiting(leader),
         None if erase => time::Say::Tell,
+        None if convert => time::Say::Convert,
         None if undo => time::Say::Undo,
         None => time::Say::Note {
             ok: "time: ",
@@ -6721,6 +7448,21 @@ fn time_said(out: &mut Out, say: time::Say, r: Result<String, String>) -> Vec<ap
             Vec::new()
         }
         (time::Say::NoteOrTell { err }, Err(e)) => vec![app::Effect::Tell(format!("{err}{e}"))],
+        // An exact conversion opens nothing: its line shows in place of the
+        // hint. One with differences opens the report card (the time
+        // engine's `TimeState::report`), whose own hint shows.
+        (time::Say::Convert, Ok(line)) => {
+            out.note(&format!("time: {line}"));
+            if line.ends_with(time::EXACT) {
+                vec![app::Effect::Tell(line)]
+            } else {
+                Vec::new()
+            }
+        }
+        (time::Say::Convert, Err(e)) => {
+            out.note(&format!("time: {e}"));
+            vec![app::Effect::Tell(e)]
+        }
     }
 }
 
@@ -6932,6 +7674,7 @@ fn player_session(
     out: &mut Out,
     timed: bool,
     from_ui: &Receiver<gui::FromUi>,
+    xy: &xy_slot::XySlot,
 ) -> Result<(), String> {
     // The store (--data: the stick's partition 4) opens first, before the
     // first start writes anything there: it marks a new, empty data folder as
@@ -7055,12 +7798,17 @@ fn player_session(
     // The name of the instrument the host's pads player plays, as the
     // screen last heard it (step 6).
     let mut pads_host_shown: Option<&'static str> = None;
+    // What the pads play with their layers, as the screen last heard it
+    // (step 11b).
+    let mut layers_shown = [None; instruments::PAD_LAYERS];
     // What the screen shows the pads play, and their bank's letter when it
     // is the bank's own (step 6c).
     let mut pads_shown: (app::PadFocus, Option<usize>) = (app::PadFocus::Track, None);
     // Who plays the Synth tab's instrument, as last shown (step 8b), and
     // when to look again.
     let mut who_shown: Option<String> = None;
+    // When the selected track's line was last asked for (step 11d).
+    let mut line_at = 0.0;
     let mut who_at = 0.0f64;
     let mut preview_held: [Option<PadsPreview>; 16] = [None; 16];
     // The list of instruments changed since the app last had it (step 6).
@@ -7214,15 +7962,20 @@ fn player_session(
     // The themes folder: theme files the user put in files/themes/ (read
     // only), offered in Prefs > Appearance after the built-in themes. Listed
     // before restore so a saved theme file comes back.
-    let (theme_files, notes, themes_left_out) = load_theme_files(&store);
-    for line in notes {
-        out.say(&line);
+    let folder = load_theme_files(&store);
+    for line in &folder.notes {
+        out.say(line);
     }
-    app.theme_files = theme_files
+    app.theme_files = folder
+        .found
         .iter()
         .map(|(f, t)| (f.clone(), t.name.clone()))
         .collect();
-    out.show(gui::ToUi::ThemeFiles(theme_files));
+    app.theme_problems = folder.problems;
+    app.themes_left_out = folder.left_out;
+    let themes_left_out = app.themes_left_out.len() as u64;
+    let theme_lines_fell_back = folder.lines_fell_back;
+    out.show(gui::ToUi::ThemeFiles(folder.found));
     // The library in the data folder (its places are made there if they
     // are missing), for the Pads tab's browser, with its Recent and
     // Favourites from the store. Without --data the browser says so.
@@ -7299,9 +8052,10 @@ fn player_session(
     out.show(gui::ToUi::Settings(app.settings.clone()));
     // Theme files left out, and a saved theme that couldn't be used (the
     // default shows): counted on the Debug page.
-    if themes_left_out > 0 || app.theme_fallbacks > 0 {
+    if themes_left_out > 0 || theme_lines_fell_back > 0 || app.theme_fallbacks > 0 {
         out.show(gui::ToUi::ThemeFallbacks {
             left_out: themes_left_out,
+            lines_fell_back: theme_lines_fell_back,
             default_shown: app.theme_fallbacks,
         });
     }
@@ -7467,6 +8221,9 @@ fn player_session(
     let mut loop_tempo: Option<f64> = None;
     // The port the tempo chip last said the tempo comes from.
     let mut clock_from: Option<String> = None;
+    // What each track's instrument is, told to the time engine each period.
+    let mut inst_now: [Option<time::InstRef>; mpfree_seq::MAX_TRACKS] =
+        [None; mpfree_seq::MAX_TRACKS];
     out.show(gui::ToUi::Macros(Box::new(panels.macros_state(&mix))));
     let mut shown_levels = mix.play_levels();
     out.show(gui::ToUi::PlayLevels(shown_levels));
@@ -7698,6 +8455,10 @@ fn player_session(
     let mut pedals_down = midi_in::PedalsDown::default();
     // Keys playing the pads' synth while the pads play it on their own.
     let mut keys_on_pads = KeysOnPads::new();
+    // The pads' layers beyond the first (step 11a), which the pads' hits
+    // and the keys play too.
+    let mut pad_layers = PadLayers::new();
+    let mut route_synths = RouteSynths::new();
     // The keys' expression on its gear, thinned for the recorder and the
     // move log (the MIDI plan's 3.7).
     let mut expr_rec = expr_rec::ExprRec::new();
@@ -8172,6 +8933,13 @@ fn player_session(
                     // A new or opened project arms the notes (rec_arm.rs).
                     app.rec = rec_arm::RecArm::default();
                     out.show(gui::ToUi::Rec(app.rec));
+                    // The synths its MIDI routes name (step 11e), from the
+                    // I/O setup the screen opened before sending the
+                    // project, so a synth only a route plays stays while
+                    // MIDI in catches up.
+                    if let Ok(m) = io_model.lock() {
+                        app.set_route_synths(midi_in::route_synths_of(&m.setup).0);
+                    }
                     // A save under way stops: the project changes under it.
                     if collect_now {
                         looper.cancel_save();
@@ -8360,6 +9128,10 @@ fn player_session(
                     list_changed = false;
                     let (notes, pads_fx) = app.open_pads(o.pads.as_deref());
                     for line in notes {
+                        out.note(&line);
+                    }
+                    // Its layers, after the pads part (step 11a).
+                    for line in app.open_pad_layers(o.pad_layers.as_deref()) {
                         out.note(&line);
                     }
                     fx.extend(pads_fx);
@@ -8569,6 +9341,14 @@ fn player_session(
                 _ => {}
             }
             parts.item_named(parts::SCREEN_ACTIONS, t_item, &item);
+        }
+        // The screen's XY pad as it stands: a lift whose action never came
+        // lets go here (xy_slot.rs).
+        if mix.screen_xy(xy.read()) {
+            out.note(&format!(
+                "XY pad: let go from the screen's state, its lift never came ({} so far)",
+                mix.xy_found_up()
+            ));
         }
         // MIDI Learn listens only while the chain editor's learn is armed:
         // Back or closing the editor stops it too. The I/O view's Learn
@@ -9124,6 +9904,7 @@ fn player_session(
             if mt >= track_names_at {
                 track_names_at = mt + 0.5;
                 io_track_names(&mut live.tracks, &time.project().tracks);
+                io_route_synths(&mut live.synths, &listed, &mix);
             }
             // Where each one's parameter stands, a few times a second, in
             // place (no allocation).
@@ -9150,6 +9931,14 @@ fn player_session(
         // once, after them.
         let armed = app.track();
         for (track, k) in music.take_routed() {
+            // A route that names a synth (step 11e): its row plays it, and
+            // the track recording it takes the key.
+            if let Some(j) = track.checked_sub(midi_in::SYNTH_ROUTES) {
+                let j = usize::from(j);
+                route_synths.key(j, k, &mut synth, &mut mix.instruments);
+                route_synths.rec_key(j, k, &mut time, &mix.instruments, &synth);
+                continue;
+            }
             if routed_held.direct(track, k, usize::from(track) == armed) {
                 routed_keys.push((track, k));
             } else {
@@ -9185,6 +9974,15 @@ fn player_session(
             // too, by note, and the armed track hears none of them (step
             // 7b); a key held there lets go there.
             let shape = |v| app.velocity(v);
+            // The pads' layers (step 11a) play each key too, by note,
+            // whichever way the first plays it.
+            pad_layers.key(k, shape, &mut synth, &mut mix.instruments);
+            // And into each track recording a layer (step 11c).
+            let rv = match k {
+                midi_in::Key::Down { velocity, .. } => app.layer_rec_velocity(velocity),
+                _ => None,
+            };
+            pad_layers.rec_key(k, rv, &mut time, &mix.instruments, &synth);
             if keys_on_pads.key(k, pads_preview, shape, &mut synth, &mut mix.instruments) {
                 if let midi_in::Key::Control { ctl, value } = k {
                     pedals_down.key(ctl, value);
@@ -9419,6 +10217,24 @@ fn player_session(
                     }
                 }
             }
+            // The pads' layers (step 11a): a pad's let-go and pressure
+            // reach the notes its hit started there, whichever arm below
+            // takes them. Keys play the layers by note (above), so a key
+            // that plays a pad doesn't.
+            match m.event {
+                Some(ControlEvent::PadUp { pad }) if (pad as usize) < 16 && !m.music => {
+                    pad_layers.pad_off(pad as usize, &mut synth, &mut mix.instruments);
+                    pad_layers.rec_off(pad as usize, &mut time);
+                }
+                Some(ControlEvent::PadPressure { pad, pressure })
+                    if (pad as usize) < 16 && !m.music =>
+                {
+                    let own = &mut mix.instruments;
+                    pad_layers.pad_pressure(pad as usize, pressure, &mut synth, own);
+                    pad_layers.rec_pressure(pad as usize, pressure, &mut time);
+                }
+                _ => {}
+            }
             let mut send = |to, msg| {
                 midi_out.controller(to, msg);
             };
@@ -9575,6 +10391,10 @@ fn player_session(
                         }
                         _ => synth.note_on(pad, v, 0),
                     }
+                    if !m.music {
+                        pad_layers.pad_on(pad, v, &mut synth, &mut mix.instruments);
+                        pad_layers.rec_on(pad, app.layer_rec_velocity(velocity), &mut time);
+                    }
                     preview_held[pad] = pads_preview;
                     out.show(gui::ToUi::PadDown { pad, velocity: v });
                     if mute_shown.is_none() {
@@ -9677,6 +10497,12 @@ fn player_session(
                             // With the notes it plays, for a take of notes (step 5d).
                             let rows = pad_rows(&mix.instruments, &synth, &track_kits, app.track());
                             time.pad_pressed_notes(0, ev, rows.notes(pad));
+                        }
+                        // The pads' layers (step 11a) play the hit too.
+                        if !m.music {
+                            let v = app.velocity(velocity);
+                            pad_layers.pad_on(pad, v, &mut synth, &mut mix.instruments);
+                            pad_layers.rec_on(pad, app.layer_rec_velocity(velocity), &mut time);
                         }
                         fx.extend(app.pad_down(pad, velocity));
                         awaiting[pad] = true;
@@ -9875,6 +10701,8 @@ fn player_session(
             }
         }
         fx.extend(app.tick(t));
+        // "Keep this theme?" counting down in Prefs > Appearance.
+        fx.extend(app.theme_tick());
         // As set, not rounded: the song plays at it, and a project saves it
         // as it is.
         if let Some(bpm) = loop_tempo.take() {
@@ -10301,8 +11129,32 @@ fn player_session(
         if std::mem::take(&mut list_changed) {
             fx.extend(app.set_instrument_list(&listed));
         }
+        // The synths MIDI routes name (step 11e) as MIDI in applies a
+        // changed setup, before a free place nothing else plays is put
+        // away.
+        if let Some(ids) = music.take_route_synths() {
+            app.set_route_synths(ids);
+        }
         fx.extend(app.put_away_free());
         let pads_at = app.pads_holder().filter(|&h| mix.instruments.holds(h));
+        // The pads' layers (step 11a) follow the app's, as the pads do.
+        pad_layers.follow(
+            app.pads_layer_holders(),
+            app.pads_layer_synth(),
+            &mut synth,
+            &mut mix.instruments,
+        );
+        // The armed tracks that record a layer (step 11c).
+        pad_layers.rec_to(app.pads_layer_recs(time.also()));
+        // The synths MIDI routes name (step 11e), and where REC takes
+        // their keys.
+        route_synths.follow(
+            app.route_synth_holders(),
+            app.route_synth_shared(),
+            &mut synth,
+            &mut mix.instruments,
+        );
+        route_synths.rec_to(app.route_recs(time.also()));
         if mix.instruments.pads_play_at() != pads_at {
             mix.instruments.pads_play(pads_at);
             // The Synth tab shows the pads' instrument while they play it
@@ -10324,6 +11176,13 @@ fn player_session(
         if host_name != pads_host_shown {
             pads_host_shown = host_name;
             out.show(gui::ToUi::PadsHost(host_name));
+        }
+        // What the pads play with their layers (step 11b): "Pads: FM +
+        // Pluck". Nothing allocated while nothing changes.
+        let layers_now = app.pads_layer_list();
+        if layers_now != layers_shown {
+            layers_shown = layers_now;
+            out.show(gui::ToUi::PadsLayers(app::layer_names(&layers_now)));
         }
         // What the pads play now and the bank whose own it is (step 6c):
         // PAD BANK, the synth's layout coming or going, a bank's synth
@@ -10353,6 +11212,17 @@ fn player_session(
                 who_shown.clone_from(&who);
                 out.show(gui::ToUi::WhoPlays(who));
             }
+        }
+        // The selected track's line over the Instrument row (step 11d),
+        // as often, while the options show.
+        if app.view() == app::View::Options && mt >= line_at {
+            line_at = mt + 0.25;
+            let t = app.track();
+            let to_gear = |t: usize| midi_out.takes(t as u16);
+            let homes = track_kits.homes(|t| !mix.instruments.plays(t) && !to_gear(t));
+            let name = synth.engine_name();
+            let line = track_line(t, &mix, &track_kits, &homes, name, to_gear(t));
+            fx.extend(app.set_track_line(line));
         }
         let playing_kit = if synth_on { synth_kit } else { player.kit() };
         let mut kit_switched = false;
@@ -10622,6 +11492,17 @@ fn player_session(
         // The tracks on gear slower than the sound's lead play their clips
         // that much ahead (sequencer S5).
         time.set_ahead(&midi_out.ahead());
+        // A clip's instrument locks play only on the kind of instrument
+        // they were made for (step sequencer refactor F1).
+        let n = time.track_count().min(inst_now.len());
+        track_instruments(
+            &mut inst_now[..n],
+            &mix.instruments,
+            &track_kits,
+            &synth,
+            &midi_out,
+        );
+        time.set_instruments(&inst_now[..n]);
         // A take on a track whose instrument plays notes records notes
         // (instrument redesign step 5c).
         time.set_notes_tracks(mix.instruments.note_tracks());
@@ -11347,6 +12228,16 @@ fn player_session(
             export.running(),
         ));
         looper.set_tempo_meant(app.tempo_by_hand);
+        looper.set_smart_end(app.settings.smart_end);
+        // The period's notes, for smart loop end.
+        if let Some(at) =
+            time.take_notes(|frame, track, key, velocity| looper.note(frame, track, key, velocity))
+        {
+            looper.notes_lost(at);
+        }
+        // A snap: its tempo asked of the time engine, or, committed, the
+        // loop told to change on the same frame.
+        out.loop_start(looper.tend_snap(&mut time, tracks.host.tracks.has_regions()));
         let line_note = looper.run(time.block(), &mut loop_l, &mut loop_r);
         // A loop that heard the line input with the song stopped starts it.
         let take = app.rec.ready.map(|take| take == rec_arm::Take::Add);
@@ -11359,7 +12250,11 @@ fn player_session(
         // A free first loop closed: the song starts at its tempo.
         let (said, tempo) = loop_sets_tempo(&mut looper, &mut time, take, export.running());
         out.loop_start(said);
-        loop_tempo = tempo.or(loop_tempo);
+        out.smart_end(looper.take_smart());
+        // A snap landed: the song's tempo changed with the loop.
+        let (said, snapped) = looper.take_snap();
+        out.loop_start(said);
+        loop_tempo = tempo.or(snapped).or(loop_tempo);
         // The audio tracks record the same line input onto the Song view's
         // lanes, and each plays into its own mixer channel (song mode only).
         tracks.follow_latency(app.settings.loop_latency);
@@ -11528,6 +12423,7 @@ fn player_session(
                 track_kits: project::track_kits_text(&track_kits, &mix.instruments, &listed),
                 instrument_list: listed.text(),
                 pads: app.pads_part(),
+                pad_layers: app.pad_layers_part(),
                 loops,
                 audio,
             })));
@@ -12033,7 +12929,7 @@ fn player_session(
             let plan = desk::rec_plan(&app, &time, &mix);
             if plan != plan_shown {
                 plan_shown = plan;
-                out.show(gui::ToUi::RecPlan(plan));
+                out.show(gui::ToUi::RecPlan(plan.map(Box::new)));
             }
             if track_kits != kits_shown {
                 kits_shown = track_kits.clone();
@@ -12679,6 +13575,243 @@ fn display_lists(o: &Options) -> Result<(), String> {
     Ok(())
 }
 
+/// The runs of text under 3:1 on page `p` drawn in theme `t` (the
+/// contrast check's measure, `mpfree_ui::lint`).
+fn unreadable_runs(p: &mut gui::Player, t: &Theme) -> Result<Vec<mpfree_ui::lint::Run>, String> {
+    use mpfree_ui::lint::{text_runs, FLOOR};
+    p.ui.set_theme(t.clone());
+    let (w, h) = p.ui.size();
+    let mut rec = mpfree_ui::record::Recorder::new(w, h);
+    let mut bytes = Vec::new();
+    rec.begin_frame();
+    p.ui.paint(&mut rec);
+    rec.encode_frame(&mut bytes);
+    let frames = mpfree_ui::record::Frame::decode_all(&bytes)?;
+    Ok(text_runs(&frames[0])
+        .into_iter()
+        .filter(|r| r.ratio < FLOOR)
+        .collect())
+}
+
+/// The built-in theme a theme file starts from (its first line's `base`),
+/// by name, or the default theme.
+fn base_theme(text: &str) -> (String, Theme) {
+    text.lines()
+        .map(|l| l.split('#').next().unwrap_or("").trim())
+        .find(|l| !l.is_empty())
+        .and_then(|l| l.split_once('='))
+        .filter(|(k, _)| k.trim() == "base")
+        .and_then(|(_, v)| {
+            let v = v.trim().to_ascii_lowercase();
+            Theme::builtin(&v).map(|t| (v, t))
+        })
+        .unwrap_or_else(|| ("default".to_string(), Theme::dark()))
+}
+
+/// The page `--contact-sheet` writes: each screen's name over the two
+/// pictures, `theme/NAME.png` (labelled `theme`) and `base/NAME.png`
+/// (labelled `base`), side by side. One self-contained file with no
+/// scripts, readable in light and dark browsers, that opens from disk.
+fn contact_sheet_html(theme: &str, base: &str, names: &[&str]) -> String {
+    let esc = |t: &str| {
+        t.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+    };
+    let (theme, base) = (esc(theme), esc(base));
+    let mut html = format!(
+        "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\n\
+         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
+         <title>{theme} beside {base}</title>\n<style>\n\
+         :root {{ color-scheme: light dark; --bg: #EEF0F3; --card: #FFFFFF; --line: #D3D8E0; --fg: #161A21; --dim: #4D5565; }}\n\
+         @media (prefers-color-scheme: dark) {{ :root {{ --bg: #0F1217; --card: #181C23; --line: #2A303B; --fg: #E8EBF0; --dim: #A2AABA; }} }}\n\
+         body {{ margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }}\n\
+         main {{ max-width: 1480px; margin: 0 auto; padding: 24px 16px 48px; }}\n\
+         h1 {{ font-size: 26px; margin: 0 0 6px; }}\n\
+         p {{ margin: 0 0 18px; color: var(--dim); }}\n\
+         .grid {{ display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 640px), 1fr)); }}\n\
+         section {{ background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px; }}\n\
+         h2 {{ font: 500 14px ui-monospace, monospace; margin: 0 0 8px; }}\n\
+         .pair {{ display: grid; gap: 8px; grid-template-columns: 1fr 1fr; }}\n\
+         @media (max-width: 560px) {{ .pair {{ grid-template-columns: 1fr; }} }}\n\
+         figure {{ margin: 0; }}\n\
+         img {{ display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 6px; }}\n\
+         figcaption {{ font: 12px ui-monospace, monospace; color: var(--dim); margin-top: 4px; }}\n\
+         </style></head><body><main>\n\
+         <h1>{theme} beside {base}</h1>\n\
+         <p>Every sample screen MPFree draws ({n}), {theme} on the left and {base} on the right. \
+         Open a picture for its full size (1280 &times; 800).</p>\n<div class=\"grid\">\n",
+        n = names.len()
+    );
+    for name in names {
+        let name = esc(name);
+        html.push_str(&format!(
+            "<section><h2>{name}</h2><div class=\"pair\">\
+             <figure><a href=\"theme/{name}.png\"><img loading=\"lazy\" src=\"theme/{name}.png\" alt=\"{name} in {theme}\"></a><figcaption>{theme}</figcaption></figure>\
+             <figure><a href=\"base/{name}.png\"><img loading=\"lazy\" src=\"base/{name}.png\" alt=\"{name} in {base}\"></a><figcaption>{base}</figcaption></figure>\
+             </div></section>\n"
+        ));
+    }
+    html.push_str("</div>\n</main></body></html>\n");
+    html
+}
+
+/// `--contact-sheet DIR` with `--theme NAME|FILE`: every sample screen in
+/// the theme and in the theme it starts from (a file's `base`, else
+/// Default; Light for Default itself), as new PNG files in DIR/theme and
+/// DIR/base, and DIR/index.html to look at them side by side. What a
+/// theme writer looks over before sharing a theme, and what the owner saw
+/// Light on. Writes only new files; opens no devices.
+fn contact_sheet(o: &Options) -> Result<(), String> {
+    let dir = o.contact_sheet.as_ref().unwrap();
+    let theme = load_theme(o)?;
+    let given = o.theme.clone().unwrap_or_else(|| "default".to_string());
+    let (base_name, base) = match Theme::builtin(&given) {
+        Some(_) if given.eq_ignore_ascii_case("default") => ("light".to_string(), Theme::light()),
+        Some(_) => ("default".to_string(), Theme::dark()),
+        None => base_theme(&fs::read_to_string(&given).map_err(|e| format!("{given}: {e}"))?),
+    };
+    let label = if theme.name.trim().is_empty() {
+        given.clone()
+    } else {
+        theme.name.clone()
+    };
+    let base_label = Theme::builtin(&base_name).map_or(base_name.clone(), |t| t.name);
+    let fonts = || {
+        Fonts::with_files(
+            o.font.as_deref(),
+            o.bold_font.as_deref(),
+            o.mono_font.as_deref(),
+        )
+    };
+    fonts()?;
+    for sub in ["theme", "base"] {
+        let d = dir.join(sub);
+        fs::create_dir_all(&d).map_err(|e| format!("{}: {e}", d.display()))?;
+    }
+    let mut names = Vec::new();
+    for (name, mut p) in gui::sample_screens(|| fonts().unwrap_or_else(|_| Fonts::embedded())) {
+        for (sub, t) in [("theme", &theme), ("base", &base)] {
+            p.ui.set_theme(t.clone());
+            let (w, h) = p.ui.size();
+            let mut canvas = SoftCanvas::new(w, h);
+            p.ui.paint(&mut canvas);
+            write_png(&dir.join(sub).join(format!("{name}.png")), &canvas)?;
+        }
+        names.push(name);
+    }
+    let page = dir.join("index.html");
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&page)
+        .and_then(|mut f| f.write_all(contact_sheet_html(&label, &base_label, &names).as_bytes()))
+        .map_err(|e| format!("{}: {e}", page.display()))?;
+    println!(
+        "contact sheet written: {} screens, {label} beside {base_label}, {}",
+        names.len(),
+        page.display()
+    );
+    Ok(())
+}
+
+/// `--check-theme FILE`: what someone writing a theme needs to know,
+/// without an MPC. Every problem the file has, by line (`Theme::load`);
+/// whether the app would offer it in Prefs > Appearance or leave it out
+/// (as [`load_theme_files`] does: only below the floor); and every sample
+/// screen where
+/// more text is under 3:1 than in the theme the file starts from, each
+/// run with its colours and place. Only reads FILE; opens no devices.
+/// Ends with an error when the app would leave the file out.
+fn check_theme(o: &Options) -> Result<(), String> {
+    let path = o.check_theme.as_ref().unwrap();
+    let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let (theme, problems) = Theme::load(&text);
+    let name = if theme.name.trim().is_empty() {
+        path.display().to_string()
+    } else {
+        theme.name.clone()
+    };
+    // The report is printed at the end, after the lines the sample
+    // screens print as they are built.
+    let mut out = vec![format!("theme {name} ({})", path.display())];
+    for p in &problems {
+        let kind = match p.kind {
+            mpfree_ui::theme::ProblemKind::Mistake => "mistake",
+            mpfree_ui::theme::ProblemKind::Unknown => "unknown key",
+            mpfree_ui::theme::ProblemKind::HardToRead => "hard to read",
+            mpfree_ui::theme::ProblemKind::Ignored => "ignored",
+            mpfree_ui::theme::ProblemKind::Unusable => "unusable",
+        };
+        out.push(format!("  {kind}: {p}"));
+    }
+    if problems.is_empty() {
+        out.push("  no problems".to_string());
+    }
+    // As the themes folder reads it: only a theme no one could read is
+    // left out; a line with a mistake uses the base's value.
+    let refused = problems
+        .iter()
+        .find(|p| p.kind == mpfree_ui::theme::ProblemKind::Unusable)
+        .map(|p| p.text.clone());
+    match &refused {
+        Some(e) => out.push(format!(
+            "the app leaves this file out of Prefs > Appearance: {e}"
+        )),
+        None => out.push("the app offers it in Prefs > Appearance".to_string()),
+    }
+    // The theme the file starts from, for a fair comparison: faint text
+    // that is under 3:1 there too is the screen's, not the file's.
+    let base = base_theme(&text);
+    let fonts = || {
+        Fonts::with_files(
+            o.font.as_deref(),
+            o.bold_font.as_deref(),
+            o.mono_font.as_deref(),
+        )
+    };
+    fonts()?;
+    let (mut pages, mut worse, mut runs, mut base_runs) = (0, 0, 0, 0);
+    for (page, mut p) in gui::sample_screens(|| fonts().unwrap_or_else(|_| Fonts::embedded())) {
+        let mine = unreadable_runs(&mut p, &theme)?;
+        let theirs = unreadable_runs(&mut p, &base.1)?;
+        pages += 1;
+        runs += mine.len();
+        base_runs += theirs.len();
+        if mine.len() > theirs.len() {
+            worse += 1;
+            out.push(format!(
+                "{page}: {} run(s) of text under 3:1 ({}: {})",
+                mine.len(),
+                base.0,
+                theirs.len()
+            ));
+            for r in &mine {
+                out.push(format!(
+                    "  #{:06X} on #{:06X} at {},{} ({} glyph(s), {:.1}:1)",
+                    r.ink.xrgb(),
+                    r.under.xrgb(),
+                    r.x,
+                    r.y,
+                    r.glyphs,
+                    r.ratio
+                ));
+            }
+        }
+    }
+    out.push(format!(
+        "screens: {pages} drawn, {runs} run(s) of text under 3:1 ({}: {base_runs}), \
+         {worse} page(s) with more than {}",
+        base.0, base.0
+    ));
+    println!("{}", out.join("\n"));
+    match refused {
+        Some(e) => Err(format!("{}: {e}", path.display())),
+        None => Ok(()),
+    }
+}
+
 /// `--script FILE`: the workflow, read and checked before anything starts,
 /// and the run's length from it (a few seconds more, for the last status
 /// lines and the sounds' tails).
@@ -12722,6 +13855,12 @@ fn main() {
         }
         if o.display_lists.is_some() {
             return gui::on_screens_stack(|| display_lists(&o));
+        }
+        if o.check_theme.is_some() {
+            return gui::on_screens_stack(|| check_theme(&o));
+        }
+        if o.contact_sheet.is_some() {
+            return gui::on_screens_stack(|| contact_sheet(&o));
         }
         match o.command.as_str() {
             "inventory" => inventory(&o),
@@ -14109,6 +15248,29 @@ mod tests {
     }
 
     #[test]
+    fn a_contact_sheet_pairs_each_screen_with_its_base() {
+        let html = contact_sheet_html("Sunrise <2>", "Synthwave", &["play", "mixer-eq"]);
+        assert!(html.starts_with("<!doctype html>"));
+        assert!(html.contains("<title>Sunrise &lt;2&gt; beside Synthwave</title>"));
+        assert!(html.contains("Every sample screen MPFree draws (2)"));
+        for name in ["play", "mixer-eq"] {
+            assert!(
+                html.contains(&format!("src=\"theme/{name}.png\"")),
+                "{name}"
+            );
+            assert!(html.contains(&format!("src=\"base/{name}.png\"")), "{name}");
+        }
+        assert!(!html.contains("<script"));
+        // The base is the file's first line, else Default.
+        assert_eq!(
+            base_theme("# mine\nbase = Light\naccent = #FF0000\n").0,
+            "light"
+        );
+        assert_eq!(base_theme("accent = #FF0000\nbase = light\n").0, "default");
+        assert_eq!(base_theme("base = vaporwave\n").0, "default");
+    }
+
+    #[test]
     fn the_themes_folder_offers_theme_files_that_parse() {
         let d = std::env::temp_dir().join(format!("mpfree-themes-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
@@ -14126,32 +15288,55 @@ mod tests {
         fs::write(t.join("fog.theme"), "text = #151922\n").unwrap();
         fs::write(t.join("notes.txt"), "not a theme\n").unwrap();
         let store = mpfree_store::Store::at(&d, |_| {});
-        let (found, notes, left_out) = load_theme_files(&store);
-        assert_eq!(left_out, 2);
-        let names: Vec<(&str, &str)> = found
+        let folder = load_theme_files(&store);
+        let names: Vec<(&str, &str)> = folder
+            .found
             .iter()
             .map(|(f, t)| (f.as_str(), t.name.as_str()))
             .collect();
-        // Named like a built-in theme (Console, from its base): its file name.
+        // Named like a built-in theme (Console, from its base), or with no
+        // name: its file name. A mistake in a line doesn't leave the file
+        // out: that line uses the base's value, and it is listed.
         assert_eq!(
             names,
-            vec![("plain.theme", "plain"), ("sunrise.theme", "Sunrise")]
+            vec![
+                ("broken.theme", "broken"),
+                ("plain.theme", "plain"),
+                ("sunrise.theme", "Sunrise")
+            ]
+        );
+        assert_eq!(folder.lines_fell_back, 1);
+        assert_eq!(folder.problems.len(), 1);
+        assert_eq!(folder.problems[0].0, "broken.theme");
+        assert!(
+            folder.problems[0].1[0].starts_with("line 1: accent: expected a colour"),
+            "{:?}",
+            folder.problems
         );
         assert!(
-            notes
-                .iter()
-                .any(|n| n.starts_with("themes: broken.theme left out")),
-            "{notes:?}"
+            folder.notes.iter().any(|n| n.starts_with(
+                "themes: broken.theme: used the base for: line 1: accent: expected a colour"
+            )),
+            "{:?}",
+            folder.notes
         );
+        // Only a theme no one could read is left out.
+        assert_eq!(folder.left_out.len(), 1);
+        assert_eq!(folder.left_out[0].0, "fog.theme");
         assert!(
-            notes.iter().any(
+            folder.notes.iter().any(
                 |n| n.starts_with("themes: fog.theme left out: nothing could be read: text on")
             ),
-            "{notes:?}"
+            "{:?}",
+            folder.notes
         );
         assert!(
-            notes.iter().any(|n| n == "themes: found plain, Sunrise"),
-            "{notes:?}"
+            folder
+                .notes
+                .iter()
+                .any(|n| n == "themes: found broken, plain, Sunrise"),
+            "{:?}",
+            folder.notes
         );
         let _ = fs::remove_dir_all(&d);
     }

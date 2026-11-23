@@ -29,9 +29,15 @@
 //! still picks one, so the song can start, and names the other
 //! ([`Reading::other`]) for the screen to offer.
 //!
-//! The beat inside the loop (pad notes, line-in hits) joins as evidence in
-//! the plan's steps 1 and 3, which also allow counts other than powers of
-//! two.
+//! 4. **The beat inside the loop.** With pad or MIDI notes played into
+//!    it (the plan's step 1; line-in hits in step 3), each bar count is
+//!    scored by how well the notes fall on its beats ([`read_bars_with`]).
+//!    Bar counts whose beats the notes miss lose; one that is twice
+//!    another still fits about as well (the hi-hats in eighths at 80 look
+//!    like quarters at 160), so that close call stays with the
+//!    preference. Counts other than powers of two (3, 5, 6 or 7 bars) are
+//!    read only when the beat fits them clearly better than the best
+//!    power of two.
 //!
 //! [`Command::TempoFromLoop`]: crate::Command::TempoFromLoop
 
@@ -64,6 +70,14 @@ const HINT_SET: f64 = 2.0;
 const HINT_EARLIER: f64 = 0.3;
 /// The most bars a reading considers.
 const MAX_BARS: u32 = 1 << 16;
+/// What the beat inside the loop adds to a reading: how well the notes
+/// played fall on its bar count's beats (0 to 1), times this.
+const W_BEAT: f64 = 1.5;
+/// Bar counts other than powers of two the beat can make a case for.
+const OTHER_COUNTS: [u32; 4] = [3, 5, 6, 7];
+/// How much better than the best power of two's the beat must fit an
+/// other count for it to be read.
+pub const FIT_LEAD: f64 = 0.2;
 
 /// How the song's tempo before the loop came about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,6 +119,10 @@ pub struct Reading {
     /// be slower than [`LOOP_MIN_BPM`]: then the length was read as if
     /// free, and `bars` differs.
     pub said: Option<u32>,
+    /// How well the notes played into the loop fall on the beats of
+    /// `bars` bars, 0 to 1 ([`read_bars_with`]). None with no notes to go
+    /// on (or Length said the bars).
+    pub beat: Option<f64>,
 }
 
 impl Reading {
@@ -147,6 +165,21 @@ pub fn read_bars(
     said: Option<u32>,
     hint: Option<TempoHint>,
 ) -> Option<Reading> {
+    read_bars_with(len, rate, bar, said, hint, &|_| None)
+}
+
+/// As [`read_bars`], with the beat inside the loop as evidence: `fit`
+/// says how well the notes played into it fall on the beats of so many
+/// bars over its length, 0 to 1 (None: no notes to go on), as
+/// [`crate::ends::InnerBeat::fit`] does.
+pub fn read_bars_with(
+    len: usize,
+    rate: u32,
+    bar: Tick,
+    said: Option<u32>,
+    hint: Option<TempoHint>,
+    fit: &dyn Fn(u32) -> Option<f64>,
+) -> Option<Reading> {
     let fewest = said.filter(|&n| n > 0).unwrap_or(1);
     let fastest = tempo_of(len, rate, bar, fewest);
     // (A NaN or an infinity, for no frames or no bar, is refused here.)
@@ -162,37 +195,72 @@ pub fn read_bars(
                 sure: Sure::Clear,
                 other: None,
                 said,
+                beat: None,
             });
         }
     }
     // Free, or a said count too slow: every power of two in the app's
-    // tempos, scored. Ties go to fewer bars, as the old window's did.
-    let mut best: Option<(u32, f64, f64)> = None;
-    let mut second: Option<(u32, f64, f64)> = None;
+    // tempos, scored, with the beat's fit. Ties go to fewer bars, as the
+    // old window's did.
+    let mut best: Option<Cand> = None;
+    let mut second: Option<Cand> = None;
+    let mut take = |c: Cand| match best {
+        Some(b) if c.score <= b.score + 1e-12 => {
+            if second.is_none_or(|s| c.score > s.score + 1e-12) {
+                second = Some(c);
+            }
+        }
+        _ => {
+            second = best;
+            best = Some(c);
+        }
+    };
+    let cand = |bars: u32, bpm: f64| {
+        let beat = fit(bars);
+        Cand {
+            bars,
+            bpm,
+            score: score(bpm, hint) + beat.map_or(0.0, |f| W_BEAT * f),
+            beat,
+        }
+    };
     let mut bars = 1u32;
+    let mut powers: Option<Cand> = None;
     while bars <= MAX_BARS {
         let bpm = tempo_of(len, rate, bar, bars);
         if bpm > LOOP_MAX_BPM {
             break;
         }
         if bpm >= LOOP_MIN_BPM {
-            let s = score(bpm, hint);
-            match best {
-                Some((_, _, b)) if s <= b + 1e-12 => {
-                    if second.is_none_or(|(_, _, c)| s > c + 1e-12) {
-                        second = Some((bars, bpm, s));
-                    }
-                }
-                _ => {
-                    second = best;
-                    best = Some((bars, bpm, s));
-                }
+            let c = cand(bars, bpm);
+            if powers.is_none_or(|p| c.score > p.score + 1e-12) {
+                powers = Some(c);
             }
+            take(c);
         }
         bars *= 2;
     }
-    let (bars, bpm, s) = best?;
-    let close = second.filter(|&(_, _, c)| s - c < MARGIN);
+    // Other counts, where the beat fits them clearly better than the best
+    // power of two.
+    if let Some(lead) = powers.and_then(|p| p.beat) {
+        for n in OTHER_COUNTS {
+            let bpm = tempo_of(len, rate, bar, n);
+            if !(LOOP_MIN_BPM..=LOOP_MAX_BPM).contains(&bpm) {
+                continue;
+            }
+            let c = cand(n, bpm);
+            if c.beat.is_some_and(|f| f >= lead + FIT_LEAD) {
+                take(c);
+            }
+        }
+    }
+    let Cand {
+        bars,
+        bpm,
+        score: s,
+        beat,
+    } = best?;
+    let close = second.filter(|c| s - c.score < MARGIN);
     Some(Reading {
         bars,
         bpm,
@@ -201,9 +269,19 @@ pub fn read_bars(
         } else {
             Sure::Clear
         },
-        other: close.map(|(b, t, _)| (b, t)),
+        other: close.map(|c| (c.bars, c.bpm)),
         said,
+        beat,
     })
+}
+
+/// A bar count scored.
+#[derive(Clone, Copy)]
+struct Cand {
+    bars: u32,
+    bpm: f64,
+    score: f64,
+    beat: Option<f64>,
 }
 
 #[cfg(test)]

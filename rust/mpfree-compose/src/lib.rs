@@ -41,6 +41,18 @@
 //!
 //! - [`read`]: clips read into a Musical Context as they play, each at its
 //!   revision (the listener itself is `mpfree_context::listen`).
+//! - [`settings`]: the controls a request carries.
+//! - [`plan`]: what each bar is for: its job, tension, activity and
+//!   similarity aim.
+//! - [`progression`]: new chords from the style's chord moves, yours kept
+//!   as heard, sampled so Try again gives another good progression.
+//! - [`motif`]: a tune as places in the scale on the grid, its phrase
+//!   breaks, how alike two stretches are, and the classic transforms.
+//! - [`rhythm`]: a bar's rhythm kept, varied, given the style's feel, or
+//!   made new, for any meter.
+//! - [`phrase`]: each new bar's notes by a beam search scored on your
+//!   steps, the chords, the style and its neighbours; Try again on one
+//!   bar leads into the bar after it (contract 1).
 //!
 //! Nothing here runs on the audio thread. The composer runs as an
 //! idle-priority background job (phase 0C onwards).
@@ -50,12 +62,18 @@ pub mod bind;
 pub mod dice;
 pub mod event;
 pub mod keep;
+pub mod motif;
+pub mod phrase;
+pub mod plan;
 pub mod preview;
 pub mod profile;
+pub mod progression;
 pub mod read;
 pub mod realize;
 pub mod refit;
+pub mod rhythm;
 pub mod rules;
+pub mod settings;
 pub mod style;
 pub mod timing;
 
@@ -63,11 +81,17 @@ pub use bind::{audition, revision, revision_in, Binding, Stale};
 pub use dice::{Dice, DiceName, Job};
 pub use event::{Event, MotifRef, Motion, NoteDecision, Part, PartId, Role, Source};
 pub use keep::{clip_notes, continuation, KeepError};
+pub use motif::{similarity, transform, GridNote, Similarity, Transform};
+pub use phrase::{continue_line, try_again, Line, Phrasing};
+pub use plan::{plan, BarJob, BarPlan};
 pub use preview::{Arrival, Preview, Proposal, Refusal, State};
 pub use profile::{Articulation, InstrumentKind, Profile};
+pub use progression::{diatonic, progression};
 pub use read::{read, LeftOut, ToRead};
 pub use realize::{decisions_of, realize, Fit, PlainNote};
 pub use refit::{action, effect, misfits, Action, Aspects, Change, Effect, How, Target};
+pub use rhythm::{Grid, Onset};
 pub use rules::{RangeSetting, Rule, RuleKind, Suggestion, Unmet, Weights};
+pub use settings::{Ending, Keeps, Settings};
 pub use style::{Component, PlanShape, Style, GROOVE, JAZZISH, MINIMAL, STYLES};
 pub use timing::{check, heard, heard_tick, written, Playback, Timing, TimingNote};
