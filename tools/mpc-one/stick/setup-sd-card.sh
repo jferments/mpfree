@@ -293,7 +293,11 @@ case "$flags" in *$mark) dirty=yes ;; *) dirty=no ;; esac
 # 4. Mounted read-only.
 mkdir -p "$R$MNT" || fail "could not make $MNT"
 mounted=yes
-mount -t "$fs" -o "ro,nosuid,nodev,noexec,noatime,uid=0,gid=$APP_GID,fmask=0137,dmask=0027" "$R/dev/$dev" "$R$MNT" \
+# Names as UTF-8, as the pad player reads them: Akai's kernel turns FAT's names into ISO 8859-1 unless told
+# (CONFIG_FAT_DEFAULT_IOCHARSET), which no name outside ASCII survives; exFAT's default is UTF-8 already, said
+# here as Akai's own mount says it.
+case $fs in vfat) names=utf8 ;; *) names=iocharset=utf8 ;; esac
+mount -t "$fs" -o "ro,nosuid,nodev,noexec,noatime,uid=0,gid=$APP_GID,fmask=0137,dmask=0027,$names" "$R/dev/$dev" "$R$MNT" \
   2>> "$S/sd-card-log.txt" || fail "the card ($kind) could not be mounted read-only"
 grep -q "^/dev/$dev $MNT $fs ro," "$R/proc/mounts" || fail "the card is not mounted read-only at $MNT"
 counters > "$S/sd-card-counters-before.txt"

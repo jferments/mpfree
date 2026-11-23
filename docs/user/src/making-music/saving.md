@@ -138,7 +138,7 @@ The data wheel moves through the list and its push opens or loads; the other but
 
 Sounds on the card play, load and go on pads as anywhere else. To keep one in your library, pick it, tap **Copy**, then go to a place such as Samples and tap **Paste**. There is no Rename, Cut, Delete, New folder or star on the card.
 
-If the card wasn't safely removed last time (the power went off, or it was pulled out while something was saving to it), the line under the list says **This card wasn't safely removed last time: check it on a computer**. It still opens to read. Before saving anything to it from your computer or the MPC software, check it with your computer's disk tool (on Windows, the drive's Properties > Tools > Check; on a Mac, Disk Utility > First Aid).
+If the card wasn't safely removed last time (the power went off, or it was pulled out while something was saving to it), the line under the list says **This card wasn't safely removed last time: check it on a computer**. It still opens to read. The card keeps that mark until a disk check clears it, so it may be from long ago. Before saving anything to it from your computer or the MPC software, check it with your computer's disk tool (on Windows, the drive's Properties > Tools > Check; on a Mac, Disk Utility > First Aid).
 
 With no card in the slot, the place says so: put one in and tap **SD card** again. The card is put away 30 seconds after you close the browser, and opens again when you come back to it.
 

@@ -31,6 +31,8 @@ MNT = "/run/mpfree-sd"
 RULE = "run/udev/rules.d/00-mpfree-sd-ro.rules"
 RO_RULE = 'SUBSYSTEM=="block", KERNEL=="mmcblk*", ENV{DEVTYPE}=="disk", ACTION=="add", ATTR{force_ro}="1"\n'
 OPTIONS = "ro,nosuid,nodev,noexec,noatime,uid=0,gid=960,fmask=0137,dmask=0027"
+# Names as UTF-8, each filesystem's way.
+NAMES = {"vfat": "utf8", "exfat": "iocharset=utf8"}
 CARD_SECTORS = 4096
 PART_START = 64
 # Where the kernel puts the card: under the SD controller's folder, /sys/block/mmcblk1 a link to it.
@@ -384,7 +386,9 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(len([r for r in reads if r.startswith(sector) and r.endswith(" count=1")]), 1, reads)
         self.assertEqual(len(reads), 2, reads)
         for call in self.calls("mount: "):
-            self.assertRegex(call, rf"^-t (vfat|exfat) -o {re.escape(OPTIONS)} {re.escape(dev)} {re.escape(MNT)}$")
+            fs = call.split()[1]
+            self.assertIn(fs, NAMES, call)
+            self.assertEqual(call, f"-t {fs} -o {OPTIONS},{NAMES[fs]} {dev} {MNT}")
 
     # The ordinary ways.
 
@@ -398,7 +402,7 @@ class WindowTests(unittest.TestCase):
                               "fs": "vfat", "sectors": str(CARD_SECTORS), "mount": MNT, "dirty": "no"})
         self.assertEqual(self.kernel.rule, RO_RULE, "the rule is there before the bind")
         self.assertEqual(read_text(os.path.join(self.root, CARD_DIR, "force_ro")), "1\n")
-        self.assertIn(f"/dev/mmcblk1p1 {MNT} vfat {OPTIONS},", read_text(os.path.join(self.root, "proc/mounts")))
+        self.assertIn(f"/dev/mmcblk1p1 {MNT} vfat {OPTIONS},utf8,", read_text(os.path.join(self.root, "proc/mounts")))
         self.assertIn("window open: mmcblk1, 4096 sectors, FAT32 on mmcblk1p1, read-only at /run/mpfree-sd",
                       self.notes())
         # It stays open, checking once a second, until it is asked to close.
@@ -769,8 +773,9 @@ class StaticTests(unittest.TestCase):
         self.assertEqual(re.findall(r'>\s*"?\$R/dev/[^\s;]+', code), ['> "$R/dev/kmsg"'])
         # One mount, read-only first; no other way to change a filesystem.
         self.assertEqual([m.strip() for m in re.findall(r"(?:^|[\s;|&(])mount\s[^\n]*", code)],
-                         ['mount -t "$fs" -o "ro,nosuid,nodev,noexec,noatime,uid=0,gid=$APP_GID,fmask=0137,dmask=0027" '
+                         ['mount -t "$fs" -o "ro,nosuid,nodev,noexec,noatime,uid=0,gid=$APP_GID,fmask=0137,dmask=0027,$names" '
                           '"$R/dev/$dev" "$R$MNT" \\'])
+        self.assertIn("case $fs in vfat) names=utf8 ;; *) names=iocharset=utf8 ;; esac\n", code)
         for word in ("fsck", "mkfs", "mke2fs", "mkfs.vfat", "mkfs.exfat", "fsck.vfat", "fsck.exfat", "blkdiscard",
                      "hdparm", "sfdisk", "sgdisk", "parted", "wipefs", "tune2fs", "e2fsck", "debugfs", "truncate",
                      "fallocate", "fatlabel", "exfatlabel", "dosfslabel", "blockdev", "chown", "chmod"):
