@@ -15,6 +15,8 @@
 //! scale = Dorian
 //! root = D
 //! swing-from = transport
+//! modifier = modwheel
+//! modifier-push = rate 2 octaves 1 gate 30 swing 0 rolls 0 accents 0
 //! pattern-name = Pulse
 //! pattern = x . x x | oct 0 1
 //! track 2
@@ -24,7 +26,9 @@
 //! `mode` is the panel's pick; `plays` is what the arp plays through while
 //! its track isn't the armed one (what a through-arp track's clips hear).
 //! The pattern is kept as it plays, edits and all, with the name of the
-//! library pattern it came from. Latch is how you play, not the song: an
+//! library pattern it came from. The modifier is its controller
+//! (`off`, `modwheel`, `pressure`, `expression`, `breath`, `knob`) and how
+//! far its top pushes each setting. Latch is how you play, not the song: an
 //! open lets every arp go. A word not understood is left at its default
 //! and said. Only the armed track and the tracks whose arp isn't the
 //! default are listed (a project can have 128 tracks); a track left out
@@ -34,7 +38,8 @@ use super::TrackUi;
 use crate::app::{App, Effect};
 use mpfree_arp::scale::{Scale, Snap, NOTE_NAMES};
 use mpfree_arp::{
-    Chord, LatchMode, Mode, Order, Pattern, Rate, Settings, SyncStart, Turns, Velocity,
+    Chord, LatchMode, ModSource, Mode, Modifier, Order, Pattern, Rate, Settings, SyncStart, Turns,
+    Velocity,
 };
 use mpfree_seq::MAX_TRACKS;
 use std::fmt::Write;
@@ -71,6 +76,38 @@ fn note_of(v: &str) -> Option<u8> {
 
 fn number<T: std::str::FromStr + PartialOrd>(v: &str, lo: T, hi: T) -> Option<T> {
     v.parse::<T>().ok().filter(|n| *n >= lo && *n <= hi)
+}
+
+/// The modifier's pushes as the part writes them.
+fn pushes(m: &Modifier) -> String {
+    format!(
+        "rate {} octaves {} gate {} swing {} rolls {} accents {}",
+        m.rate, m.octaves, m.gate, m.swing, m.rolls, m.accents
+    )
+}
+
+/// [`pushes`] read back into `m`, every amount in its range; None (and
+/// `m` as it was) for anything else.
+fn read_pushes(v: &str, m: &mut Modifier) -> Option<()> {
+    let mut out = *m;
+    let words: Vec<&str> = v.split_whitespace().collect();
+    if words.is_empty() || !words.len().is_multiple_of(2) {
+        return None;
+    }
+    for pair in words.chunks(2) {
+        let signed = |(lo, hi): (i8, i8)| number(pair[1], lo, hi);
+        match pair[0] {
+            "rate" => out.rate = signed(Modifier::RATE)?,
+            "octaves" => out.octaves = signed(Modifier::OCTAVES)?,
+            "gate" => out.gate = signed(Modifier::GATE)?,
+            "swing" => out.swing = signed(Modifier::SWING)?,
+            "rolls" => out.rolls = number(pair[1], 0, Modifier::ROLLS)?,
+            "accents" => out.accents = number(pair[1], 0, Modifier::ACCENTS)?,
+            _ => return None,
+        }
+    }
+    *m = out;
+    Some(())
 }
 
 /// FNV-1a over what is written to it: the arps' state, without a String.
@@ -203,6 +240,8 @@ impl App {
                     }
                     .to_string(),
                 ),
+                ("modifier", word(s.modifier.source)),
+                ("modifier-push", pushes(&s.modifier)),
                 ("pattern-name", pattern_name),
                 ("pattern", u.pattern.to_text()),
             ];
@@ -342,6 +381,10 @@ impl App {
                 }
                 .map(|b| u.swing_from_transport = b)
                 .is_some(),
+                "modifier" => pick(&ModSource::ALL, v)
+                    .map(|x| s.modifier.source = x)
+                    .is_some(),
+                "modifier-push" => read_pushes(v, &mut s.modifier).is_some(),
                 "pattern-name" => {
                     // A name the library no longer has: the pattern still
                     // plays (below), under the first one's name.

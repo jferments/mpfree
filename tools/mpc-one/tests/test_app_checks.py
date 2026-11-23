@@ -560,6 +560,28 @@ class JudgeTests(unittest.TestCase):
             "looper: Clear: the loop fades out (3 layers); UNDO brings it back"))))
         self.assertTrue(got["the held ring cleared the loop"])
 
+    def test_smart_end_reads_the_offer_the_snap_the_way_back_and_auto(self):
+        """smart-end passes on Suggest's offer, the snap, Use my tap and Auto closing the loop, in the looper's own
+        words (as the smart-loop-end workflow's run wrote them); a tap kept by Auto fails its last look."""
+        run = ["looper: Loop 1: your tap was 70 ms late; smart loop end offers the end you played, and offers to start "
+               "it on your first hit, 17 ms after REC",
+               "looper: Loop 1: snapped the start 17 ms later and the end 70 ms earlier: 2 bars at 120.19 BPM, from its "
+               "downbeat",
+               "looper: Loop 1: Undo: the start 17 ms earlier and the end 70 ms later: 2 bars at 117.62 BPM, from its "
+               "downbeat",
+               "looper: Clear: the loop fades out (1 layers); UNDO brings it back",
+               "looper: Loop 1: your tap was 49 ms late; smart loop end closed it on the end you played, and started it "
+               "on your first hit, 70 ms after REC"]
+        self.assertTrue(all(ok for ok, _ in self.judge("smart-end", checks.Window(lines(*run)))))
+        got = dict((what, ok) for ok, what in self.judge("smart-end", checks.Window(lines(
+            *run[:-1], "looper: Loop 1: smart loop end kept your tap: it couldn't listen in time"))))
+        self.assertFalse(got["Auto closed it on the end you played"])
+        self.assertTrue(got["Use my tap went back"])
+        got = dict((what, ok) for ok, what in self.judge("smart-end", checks.Window(lines(
+            "looper: Loop 1: back to your tap: 2 bars at 118.72 BPM, from its downbeat"))))
+        self.assertTrue(got["Use my tap went back"])
+        self.assertFalse(got["Snap moved the loop"])
+
     def test_clip_program_needs_the_row_the_program_change_out_and_sending_off(self):
         """clip-program passes on Prefs' switch on, the clip card's Program 5, the program change out of MIDI OUT
         (the writer's line) and the switch off again; without the program change it fails."""

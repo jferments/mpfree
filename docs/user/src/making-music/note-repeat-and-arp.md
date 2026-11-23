@@ -40,6 +40,11 @@ What a new pad press does while Latch is on is a setting in [Prefs](../reference
 
 - **Replace** (the default): a fresh press after you let go of everything starts a new set of latched pads. To latch several pads, hold them down together.
 - **Toggle**: each press adds that pad to the set or takes it out, so you can build a groove pad by pad.
+- **Add**: every press joins the set and stays until Latch goes, so you can build a chord or a groove one pad at a time without taking any out.
+
+### Latching with the sustain pedal
+
+With a keyboard's sustain pedal plugged in, turn on **Sustain pedal latches** (in [Prefs](../reference/prefs.md), or in the arp's options below) and the pedal works Latch while the arp plays (Repeat, Arp or Pattern): hold the pedal down and what you play keeps going after you let go; lift it and the notes you aren't holding stop. While it latches the arp, the pedal doesn't hold the sound's notes. With the arp on Direct, the pedal sustains the sound as it always does.
 
 A latched pad repeats at the velocity you struck it with, not at the pressure of your finger as it lifted.
 
@@ -49,6 +54,16 @@ For a sound that should simply keep playing after you let go (a loop, a drone, a
 
 > [!TIP]
 > Latch a hi-hat at 1/16, then play the kick and snare over it by hand. With the pattern recording, the latched hats record too.
+
+## When the pads play something of their own
+
+Note Repeat, Latch and the arpeggiator play whatever the pads play, and turning them on never changes that. When you have chosen a synth or a kit for the pads (the top bar reads **Pads: Poly**, say) while the selected track plays something else, the repeats and arpeggios play that synth or kit, with the selected track's arp settings: its mode, rate, gate, swing, pattern and Latch. Your drums and the track's clips go on as before.
+
+- **On a synth** the arp plays the notes of the pads you hold, chords too, as the synth's pad layout has them.
+- **On a kit** it plays the kit's pads on the bank the pads are on.
+- **When the pads move to something else** (Follow track, another bank with its own pick, another synth or kit), what the arp was playing there stops, latched notes too. Play again to start it on what the pads play now.
+- **Layers** play each hit once, as you press it; the repeats play the pads' first sound.
+- **Recording:** REC records the synth or kit on a free track as usual (see [Synths](synths.md)), and the arp's notes record as you hear them. Once that track is selected the pads play through it and its arp. While the pads play a bank's own synth or kit, the arp's notes go into that sound's own track (see [Recording every bank](synths.md#recording-every-bank)).
 
 ## The Arp panel
 
@@ -125,6 +140,35 @@ Press **MENU** while the Arp panel is open for the arp's own settings. Each one 
 | **Strum** | Spreads the notes of a chord step across the step, lowest first, like a strummed guitar. |
 | **New notes restart** | On: every new pad press starts the order and the pattern again from the first step. Off: they carry on. |
 | **Swing from** | **Transport**: while the sequencer plays with swing, the arp swings with it. **Arp**: always the arp's own swing (Q-Link 3). |
+| **Modifier** | Opens the Modifier's settings: the controller that pushes the arp, and how far (the next section). |
+| **Latch keeps pads**, **Sustain pedal latches** | The same rows as in Prefs: how Latch keeps pads, and whether the sustain pedal latches the arp (see [Latch](#latch)). |
+
+## Push the arp with a controller
+
+The **Modifier** lets one controller push the arp while you play: the mod wheel up and the arp runs faster and climbs an octave higher, back down and it plays as you set it. It is how a held chord builds into a rush, or a hi-hat roll gets tighter as you lean on the pads.
+
+{{shot: arp-modifier | The Arp panel with the mod wheel 80 % up: the Modifier box beside the tabs shows it, and the sliders show what plays now beside what is set, 1/16 → 1/32, gate 50 → 74 %, 2 → 3 octaves. The step strip along the bottom climbs the extra octave.}}
+
+1. Open the Arp panel and tap the **Modifier** box at the right of the tabs (or press **MENU** and pick **Modifier**).
+2. Pick the **Controller**: **Mod wheel**, **Pressure** (how hard you press the pads, or the keys of a keyboard with aftertouch, after the hit), **Expression pedal**, **Breath**, or **Learned knob**. For a knob, hold **SHIFT**, touch the Modifier box, then turn the knob (see [MIDI Learn](midi-and-cv.md#midi-learn)).
+3. Set how far the controller's top pushes each setting. Picking a controller already makes it 2 rates faster and an octave higher at the top.
+4. Play, and move the controller.
+
+{{shot: arp-modifier-options | The Modifier's settings: the controller and how far its top pushes the rate, octaves, gate and swing, and the rolls and accents it adds.}}
+
+| Setting | At the controller's top |
+|---|---|
+| **Pushes rate** | Up to 4 rates faster: from 1/16, +2 is 1/32. Below zero, slower. |
+| **Pushes octaves** | Up to 3 more octaves (4 in all). Below zero, fewer. |
+| **Pushes gate** | Longer notes, up to 100 %. Below zero, shorter, choppier ones. |
+| **Pushes swing** | More swing, up to 75 %. Below zero, straighter. |
+| **Adds rolls** | Up to 7 extra hits in every step: a roll that builds as you push, great on drums with Note Repeat. |
+| **Adds accents** | The chance that a step plays accented, at the Accent level. |
+
+The push follows the controller smoothly: halfway up pushes about half as far. A new rate starts on the next step and stays in time with the beat. Your settings never change: the sliders keep showing them, with a ring where the arp plays now. The controller still reaches the sound as well, so the mod wheel can open a filter while it pushes the arp. Each track's arp has its own Modifier, saved with your project.
+
+> [!TIP]
+> On a drum kit: Note Repeat on the hi-hat, Controller **Pressure**, **Adds rolls** +3, and Pushes rate 0. Press harder into the pad and the hats roll.
 
 ## Scales and chords
 
@@ -166,4 +210,4 @@ Drag a cell up or down, or select it and turn the data wheel, to change it. **Ro
 > Saved patterns are kept on the MPFree stick, so they are still there after you switch off. Each track's arp, with its pattern as you left it, is saved in your project too, and comes back when you open it. See [Saving your work](saving.md).
 
 > [!MPC]
-> On the MPC, Note Repeat and the arpeggiator share one window: hold **NOTE REPEAT**, tap **Arp**, and pick its Action (Arp, Note Repeat, Rhythm or Pattern). In MPFree NOTE REPEAT's – and + switch between repeat, arp and pattern while you play, and the Arp panel takes the middle of the Play page while the transport bar, the master bar and the Q-Links stay on screen. Latch is a double press of NOTE REPEAT. The MPC's Rhythm and Pattern actions play patterns from its own lists; MPFree's patterns are your own, written step by step or tapped in, with ratchets, chance, ties and octave jumps.
+> On the MPC, Note Repeat and the arpeggiator share one window: hold **NOTE REPEAT**, tap **Arp**, and pick its Action (Arp, Note Repeat, Rhythm or Pattern). In MPFree NOTE REPEAT's – and + switch between repeat, arp and pattern while you play, and the Arp panel takes the middle of the Play page while the transport bar, the master bar and the Q-Links stay on screen. Latch is a double press of NOTE REPEAT. The MPC's arpeggiator modifiers let several controllers push it at once; MPFree's Modifier takes one controller per track, can push the other way too (slower, fewer octaves, shorter notes), and adds rolls and accents. The MPC's Rhythm and Pattern actions play patterns from its own lists; MPFree's patterns are your own, written step by step or tapped in, with ratchets, chance, ties and octave jumps.

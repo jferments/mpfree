@@ -282,6 +282,18 @@ fn makes_a_stick_the_hook_takes() {
     // The first-start setup and the formatter, with this stick's values.
     let fmt = String::from_utf8(read(&root, "/etc/mpfree-test/setup-format.sh")).unwrap();
     assert!(fmt.contains(&made.values.data_uuid) && !fmt.contains("@DATA_UUID@"));
+    // The SD card's read-only window, byte for byte, started only by its path unit.
+    assert_eq!(
+        read(&root, "/etc/mpfree-test/setup-sd-card.sh"),
+        include_bytes!("../../../tools/mpc-one/stick/setup-sd-card.sh")
+    );
+    assert_eq!(
+        root.lookup("/etc/mpfree-test/setup-sd-card.sh")
+            .unwrap()
+            .unwrap()
+            .perm(),
+        0o755
+    );
     // The startup screen waits for the format step, in a drop-in folder of its own.
     let drop_in = String::from_utf8(read(
         &root,

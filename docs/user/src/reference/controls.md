@@ -64,6 +64,8 @@ Every button works as soon as MPFree starts, with nothing to learn: the develope
 | **NOTE REPEAT** (hold) | While held, pads repeat in time at the repeat rate. | Works |
 | **NOTE REPEAT** twice, or **SHIFT + NOTE REPEAT** | Latch: repeat keeps going after you let go. Press again to stop. | Works |
 | **NOTE REPEAT + MENU** | Opens the Arp panel. | Works |
+| A keyboard's **sustain pedal** | With **Sustain pedal latches** on in Prefs: latches the arp while it plays; up lets go. | Works |
+| A keyboard's **mod wheel**, **expression pedal**, **breath** or **pressure** | Pushes the arp, when it is the Modifier's controller (the Modifier box on the Arp panel). | Works |
 
 ## Arrange tab
 

@@ -30,12 +30,17 @@ the first waits for you to press Enter:
      its own main thread to core 3 and its lane workers to core 2, and prints
      "not pinned (reason)" and runs unpinned if a pin is refused; writes
      nothing). Their output, and the JSON, go into this report.
-  5. The default build only, two more runs for the device round's asks:
+  5. The default build only, three more runs for the device round's asks:
      `mpfree-bench --starts` (16 notes started in one block on every preset:
-     what a note costs as it starts; writes nothing) and
+     what a note costs as it starts; writes nothing),
      `mpfree-bench --plain --json default-plain.json` (every engine again
      with the NEON kernels off, their plain Rust twins instead: the NEON
-     keep-or-drop A/B, read by devtest_report.py against default.json).
+     keep-or-drop A/B, read by devtest_report.py against default.json) and
+     `mpfree-bench --stems` (the stem separation's networks with seeded
+     weights on 30 s of noise, about 4 minutes and 200 MB of RAM: its NEON
+     kernels checked against their twins first, then four timed runs on
+     cores 0 and 1, pinning its own threads; it skips itself if less than
+     400 MB is free; writes nothing).
   6. Only with --before COMMIT=PATH (once for each): builds of earlier
      commits, made the default build's way, so a change's cost on the MPC
      can be read against the commit before it. Each is checked in step 1 and
@@ -43,9 +48,9 @@ the first waits for you to press Enter:
      `--json <commit>.json` only (about 2 to 5 minutes each).
 
 The benchmark only computes. It opens no device and writes only its JSON
-file (the --afford and --lanes runs write nothing), into /run/mpfree-bench
-(RAM). The --lanes run sets the CPU affinity of its own threads only, which
-ends with the process. It
+file (the --afford, --lanes and --stems runs write nothing), into
+/run/mpfree-bench (RAM). The --lanes and --stems runs set the CPU affinity of
+their own threads only, which ends with the process. It
 runs as an ordinary process (no real-time priority), so the pad player's
 audio thread (SCHED_FIFO), if it is running, always comes first: the
 benchmark cannot make it underrun. For a clean run, after the copy it stops
@@ -87,11 +92,12 @@ RUNS = (
     ("--afford", 600),
     ("--lanes --lane-cores 3,2", 1200),
 )
-# The default build's own runs after RUNS (the device round's asks): note starts, and every engine with the
-# NEON kernels off for the A/B against its --json.
+# The default build's own runs after RUNS (the device round's asks): note starts, every engine with the
+# NEON kernels off for the A/B against its --json, and the stem separation (docs/dev/design/stems.md).
 DEFAULT_RUNS = (
     ("--starts", 600),
     ("--plain --json @@BUILD@@-plain.json", 1200),
+    ("--stems", 900),
 )
 # An earlier commit's build (--before): it names its files on the MPC, so its label is only a short commit
 # hash. It runs the reference kernels and every engine; --afford and --lanes are the two builds' own.
@@ -231,7 +237,7 @@ def main(argv):
         for n, (name, _, _) in enumerate(programs, start=4):
             out.say(f"\n[{n}/{total}] The {name} build: the reference kernels, every engine, then one core vs two (only computes)")
             extra = DEFAULT_RUNS if name == "default" else ()
-            answer = app.ready(out, "Takes about " + ("15 to 25" if extra else "10 to 15")
+            answer = app.ready(out, "Takes about " + ("20 to 30" if extra else "10 to 15")
                                + " minutes; the MPC can stay as it is.")
             if answer == "quit":
                 raise Stop("stopped by you")

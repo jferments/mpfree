@@ -147,7 +147,8 @@ enum Buttons {
     /// A loop's Key and Mute and the looper's own presses (the
     /// footswitch).
     Looper,
-    /// Play's Swing, Filter, XY across and XY up ([`play::ALL`]).
+    /// Play's Swing, Filter, XY across and XY up, then the XY pad's Hold
+    /// and layout buttons ([`play::ALL`]).
     Play,
     /// A set's controls: Next song, Previous song, Go and the rest
     /// ([`show::ALL`]).
@@ -756,11 +757,20 @@ fn looper_rects(l: &Layout) -> ([Rect; 2], [Rect; 9]) {
 /// Where Play's card puts each of its buttons ([`play::ALL`]'s order): a
 /// row and a place on the transport card's grid of four to a row, with a
 /// third row under its two. Swing, Filter, XY across and XY up fill the
-/// first row; Next patch is the second row's fourth place (the XY pad's
-/// Hold and layout buttons take its first three) and Previous patch
+/// first row; XY Hold, XY layout next and XY layout back take the second's
+/// first three (layout spec 4o), Next patch its fourth, and Previous patch
 /// starts the third (live shows C1).
-const PLAY_PLACES: [(i32, usize); play::ALL.len()] =
-    [(0, 0), (0, 1), (0, 2), (0, 3), (1, 3), (2, 0)];
+const PLAY_PLACES: [(i32, usize); play::ALL.len()] = [
+    (0, 0),
+    (0, 1),
+    (0, 2),
+    (0, 3),
+    (1, 0),
+    (1, 1),
+    (1, 2),
+    (1, 3),
+    (2, 0),
+];
 
 /// Play's card's buttons, on the same grid ([`PLAY_PLACES`]).
 fn play_rects(l: &Layout) -> [Rect; play::ALL.len()] {
@@ -1095,8 +1105,11 @@ impl Learn {
 
     /// Play's card's button `i`: Learn waits for a control to take it.
     fn arm_play(&mut self, i: usize) -> IoReply {
-        let how = if play::patch_step(play::ALL[i].0).is_some() {
+        let id = play::ALL[i].0;
+        let how = if play::patch_step(id).is_some() {
             "press a footswitch or a button"
+        } else if play::is_press(id) {
+            "press a button, a key or a footswitch"
         } else {
             "move a knob or a fader"
         };
@@ -1779,7 +1792,8 @@ impl Learn {
             t.size_small * 0.9,
             Rect::new(ci.x, ci.y + BUTTON_H, ci.w, 2 * SAYS_LINE_H),
             t.text_dim,
-            "Tap one, then move a knob or a fader on your controller. It works in every project.",
+            "Tap one, then move a knob or a fader (or press a button) on your controller. \
+             It works in every project.",
         );
         let rects = play_rects(l);
         for (i, r) in rects.into_iter().enumerate() {
@@ -1797,9 +1811,10 @@ impl Learn {
                 ci.bottom() - last.y + 4,
             ),
             t.text_faint,
-            "Swing and Filter turn as Play's Q-Links do (Filter is Drums'); XY across and up \
-             move the pad as a finger does. Next and Previous patch step the song's patches, \
-             stopping at the ends.",
+            "Swing and Filter turn as Play's Q-Links do (Filter is track 1's). XY across and up \
+             move the pad as a finger does, until both are back; XY Hold is the pad's Hold and \
+             the layout buttons step your layouts. Next and Previous patch step the song's \
+             patches, stopping at the ends.",
         );
     }
 
@@ -3220,6 +3235,9 @@ mod tests {
                 "Filter",
                 "XY across",
                 "XY up",
+                "XY Hold",
+                "XY layout next",
+                "XY layout back",
                 "Next patch",
                 "Previous patch"
             ]
@@ -3241,6 +3259,15 @@ mod tests {
         assert_eq!(
             s.take_note().unwrap(),
             "XY up: move a knob or a fader on your controller"
+        );
+        // The XY pad's buttons are presses.
+        for (i, id) in [(4, play::XY_HOLD), (5, play::XY_NEXT), (6, play::XY_BACK)] {
+            assert_eq!(tap(&mut s, "learn-play-pick", i), IoReply::Redraw);
+            assert_eq!(armed(&m), Some(ParamAddr::new(Owner::Play, id)));
+        }
+        assert_eq!(
+            s.take_note().unwrap(),
+            "XY layout back: press a button, a key or a footswitch on your controller"
         );
         let _ = paint(&s);
         // Play again shows the picked row's; Back does too.
@@ -3275,7 +3302,7 @@ mod tests {
                 .unwrap()
                 .rect
         };
-        let (swing, up, next, previous) = (rect(&s, 0), rect(&s, 3), rect(&s, 4), rect(&s, 5));
+        let (swing, up, next, previous) = (rect(&s, 0), rect(&s, 3), rect(&s, 7), rect(&s, 8));
         assert_eq!((next.x, previous.x), (up.x, swing.x));
         assert!(
             next.y > up.bottom() && previous.y > next.bottom(),
@@ -3283,7 +3310,7 @@ mod tests {
         );
         fits(&s, AREA);
         fits(&s, WIDE);
-        assert_eq!(tap(&mut s, "learn-play-pick", 4), IoReply::Redraw);
+        assert_eq!(tap(&mut s, "learn-play-pick", 7), IoReply::Redraw);
         assert_eq!(
             m.lock().unwrap().asks.learn_target,
             Some(ParamAddr::new(Owner::Play, play::NEXT_PATCH))

@@ -881,6 +881,7 @@ dependencies = [
  "mpfree-seq",
  "mpfree-simd",
  "mpfree-status",
+ "mpfree-stems",
  "mpfree-stream",
  "mpfree-synth",
  "mpfree-time-ui",
@@ -1388,6 +1389,13 @@ dependencies = [
 [[package]]
 name = "mpfree-status"
 version = "0.1.0"
+
+[[package]]
+name = "mpfree-stems"
+version = "0.1.0"
+dependencies = [
+ "mpfree-simd",
+]
 
 [[package]]
 name = "mpfree-stick"

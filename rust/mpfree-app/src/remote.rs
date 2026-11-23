@@ -41,7 +41,10 @@
 //! the Filter (track 1's, which Play calls Drums) as Play's Q-Links do, or
 //! moves the XY pad across or up as a finger does ([`PlayMoves`] says how,
 //! once a period). The XY pad's effect plays while the pad is away from
-//! where it rests: across in the middle, up at the bottom. Play's own
+//! where it rests: across in the middle, up at the bottom. A learned
+//! button, key or footswitch switches the XY pad's Hold, or steps through
+//! the song's layouts of yours (the ready-made ones while there are
+//! none): each press past the middle once ([`XyPresses`]). Play's own
 //! touches stay as they are.
 //!
 //! A set's controls (the Learn section's Show card, live shows B1;
@@ -288,9 +291,24 @@ const FILTER_OFF: f32 = 1.0;
 
 /// Play's controls as learned controls set them this period (the last
 /// value each was given, 0 to 1 over its range), done once a period
-/// ([`PlayMoves::take`]), so the XY pad's two ways move together.
+/// ([`PlayMoves::take`]), so the XY pad's two ways move together. The XY
+/// pad's buttons (Hold, the layout ones) are pressed while past the
+/// middle, and press once each time they go past it.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct PlayMoves([Option<f32>; play::KNOBS]);
+pub struct PlayMoves {
+    set: [Option<f32>; play::ALL.len()],
+    /// Which of Play's presses are down now, by id.
+    down: [bool; play::ALL.len()],
+}
+
+/// The XY pad's learned buttons pressed this period.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct XyPresses {
+    /// XY Hold was pressed: Hold switches.
+    pub hold: bool,
+    /// The layout buttons' presses: + for next, - for back.
+    pub step: i8,
+}
 
 /// What learned controls do to Play this period.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -302,20 +320,48 @@ pub struct PlayActs {
     /// Move the XY pad: across, up, and whether it is held away from
     /// where it rests (as a finger down: its effect plays).
     pub xy: Option<(f32, f32, bool)>,
+    /// The XY pad's Hold and layout buttons pressed.
+    pub xy_presses: XyPresses,
 }
 
 impl PlayMoves {
     /// A learned control set Play's control `id` to `value` (0 to 1).
     pub fn set(&mut self, id: u16, value: f32) {
-        if let Some(v) = self.0.get_mut(usize::from(id)) {
+        if let Some(v) = self.set.get_mut(usize::from(id)) {
             *v = Some(value.clamp(0.0, 1.0));
         }
+    }
+
+    /// Whether no learned control moved anything since the last
+    /// [`PlayMoves::take`].
+    pub fn idle(&self) -> bool {
+        self.set.iter().all(Option::is_none)
     }
 
     /// What this period's moves do, with Play standing at `now`; the moves
     /// are spent. The XY pad's other way stays where it is.
     pub fn take(&mut self, now: Now) -> PlayActs {
-        let [swing, filter, across, up] = std::mem::take(&mut self.0);
+        let set = std::mem::take(&mut self.set);
+        let mut xy_presses = XyPresses::default();
+        for (id, v) in set.iter().enumerate() {
+            let (Some(v), Ok(id16)) = (*v, u16::try_from(id)) else {
+                continue;
+            };
+            if !play::is_press(id16) {
+                continue;
+            }
+            let down = v >= 0.5;
+            let pressed = down && !self.down[id];
+            self.down[id] = down;
+            if pressed {
+                match id16 {
+                    play::XY_HOLD => xy_presses.hold = !xy_presses.hold,
+                    play::XY_NEXT => xy_presses.step = xy_presses.step.saturating_add(1),
+                    _ => xy_presses.step = xy_presses.step.saturating_sub(1),
+                }
+            }
+        }
+        let [swing, filter, across, up, ..] = set;
         let swing = swing
             .map(|v| SWING.from_unit(v).round().clamp(50.0, 75.0) as u8)
             .filter(|&a| a != now.swing);
@@ -340,7 +386,12 @@ impl PlayMoves {
             }
             (x, y, x != 0.5 || y != 0.0)
         });
-        PlayActs { swing, filter, xy }
+        PlayActs {
+            swing,
+            filter,
+            xy,
+            xy_presses,
+        }
     }
 }
 
@@ -1114,7 +1165,40 @@ mod tests {
         assert_eq!(read(play::FILTER), Some((play::FILTER, 0.3)));
         assert_eq!(read(play::XY_ACROSS), Some((play::XY_ACROSS, 0.25)));
         assert_eq!(read(play::XY_UP), Some((play::XY_UP, 0.75)));
-        assert_eq!(describe_play(4, now), None);
+        assert_eq!(describe_play(play::XY_HOLD, now), None, "a press");
+        assert_eq!(describe_play(99, now), None);
+    }
+
+    /// The XY pad's learned buttons press once each time they go past the
+    /// middle: Hold switches, next and back step (several presses in a
+    /// period add up only when they come down apart).
+    #[test]
+    fn the_xy_pads_buttons_press_once_past_the_middle() {
+        let mut m = PlayMoves::default();
+        m.set(play::XY_HOLD, 1.0);
+        let a = m.take(STOPPED);
+        assert_eq!(
+            a.xy_presses,
+            XyPresses {
+                hold: true,
+                step: 0
+            }
+        );
+        assert_eq!(a.xy, None, "the pad doesn't move");
+        m.set(play::XY_HOLD, 1.0);
+        assert_eq!(m.take(STOPPED).xy_presses, XyPresses::default(), "held");
+        m.set(play::XY_HOLD, 0.0);
+        assert_eq!(m.take(STOPPED).xy_presses, XyPresses::default());
+        m.set(play::XY_HOLD, 0.8);
+        assert!(m.take(STOPPED).xy_presses.hold, "again");
+        m.set(play::XY_NEXT, 1.0);
+        m.set(play::XY_BACK, 1.0);
+        assert_eq!(m.take(STOPPED).xy_presses.step, 0, "one each way");
+        m.set(play::XY_NEXT, 0.0);
+        let _ = m.take(STOPPED);
+        m.set(play::XY_NEXT, 1.0);
+        assert_eq!(m.take(STOPPED).xy_presses.step, 1);
+        assert!(m.idle());
     }
 
     /// A key learned on a Perform pad presses it past the middle and lets

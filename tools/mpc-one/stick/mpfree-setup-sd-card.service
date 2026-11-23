@@ -1,0 +1,13 @@
+[Unit]
+Description=MPFree: open the SD card for the pad player until it is done; read-only
+DefaultDependencies=no
+After=mpfree-test-internal-off.service
+Requires=mpfree-test-internal-off.service
+Conflicts=shutdown.target
+Before=shutdown.target
+IgnoreOnIsolate=yes
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /etc/mpfree-test/setup-sd-card.sh
+TimeoutStartSec=infinity

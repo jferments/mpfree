@@ -2026,10 +2026,11 @@ mod tests {
     /// and FM: bank B plays FM, named "Pads B: FM" in the header, while
     /// Track 1 keeps its kit. PAD BANK A gives the pads the kit again (FM
     /// stays, as bank B points at it) and B gives them FM; REC there
-    /// records FM on a free track, and the project's pads part keeps the
-    /// bank's line. The Synth tab's hint then says who plays FM: "the
-    /// pads, Track 2" while Track 2 is picked (the pads follow it on the
-    /// other banks), "pads bank B, Track 2" once Track 1 is again.
+    /// records FM on a free track armed with Track 1, which stays armed so
+    /// the other banks go on playing its kit (sampler step 15c: "REC →
+    /// Track 1 + 1 more"), and the project's pads part keeps the bank's
+    /// line. The Synth tab's hint then says who plays FM: "pads bank B,
+    /// Track 2".
     #[test]
     fn bank_b_only_plays_fm_on_bank_b_and_the_kit_on_the_others() {
         use crate::instruments::free;
@@ -2079,34 +2080,26 @@ mod tests {
                 Some("FM"),
                 "FM stays for bank B"
             );
-            // Bank B again: FM, and REC records it on Track 2.
+            // Bank B again: FM, and REC records it on Track 2, armed with
+            // Track 1, which stays armed (sampler step 15c).
             s.button("PAD BANK B/F").run_periods(2).settle();
             assert_eq!(s.mix.instruments.pads_play_at(), Some(free(0)));
             s.run_periods(1).settle();
-            assert_eq!(rec_chip(&s), "REC → Track 2 · FM");
+            assert_eq!(rec_chip(&s), "REC → Track 1 + 1 more");
             s.button("REC").settle();
             s.run_periods(2).settle();
             assert_eq!(s.mix.instruments.send(1), Some(free(0)), "the same FM");
+            assert_eq!(s.time.armed(), Some(0), "the arm stays on Track 1");
+            assert_eq!(s.time.also(), 1 << 1, "Track 2 armed too");
+            assert_eq!(s.app.track(), 0, "the other banks play Track 1's kit");
             assert_eq!(s.app.pad_page(), 1, "REC never moves the pads");
             assert!(
                 s.app.pads_part().contains("\nbank B instrument "),
                 "{}",
                 s.app.pads_part()
             );
-            // Who plays FM (step 8). REC picked Track 2, so the other
-            // banks follow it to FM: the pads, every bank.
+            // Who plays FM (step 8): bank B alone of the pads, and Track 2.
             s.button("STOP").settle();
-            s.run_for(crate::gui::TELL_SECONDS as f64 + 0.5).settle();
-            assert!(
-                s.hint().starts_with("FM: the pads, Track 2"),
-                "{}",
-                s.hint()
-            );
-            // Track 1 picked again: bank B alone of the pads, and Track 2.
-            let pick = mpfree_time_ui::TimeAction::Pick(0);
-            s.route(crate::gui::FromUi::Time(pick));
-            s.run_periods(2).settle();
-            assert_eq!(s.app.track(), 0);
             assert_eq!(s.mix.instruments.pads_play_at(), Some(free(0)));
             s.run_for(crate::gui::TELL_SECONDS as f64 + 0.5).settle();
             assert!(
@@ -2257,7 +2250,7 @@ mod tests {
             assert_eq!(s.mix.instruments.send(2), Some(free(1)), "Track 3: Pluck");
             assert_eq!(s.time.also(), 1 << 2, "Track 3 armed too");
             assert_eq!(s.app.rec.ready, Some(Take::Replace));
-            assert_eq!(s.app.pads_layer_recs(s.time.also())[0], Some(2));
+            assert_eq!(s.app.pads_layer_recs(s.time.also())[0], Some((2, None)));
             // PLAY: the hits and a key go into both tracks.
             s.button("PLAY");
             let end = s.t() + 4.0;
@@ -5540,6 +5533,112 @@ mod tests {
             let text = s.xy_yours.text();
             assert!(text.starts_with("xy 1\nlayout\tLayout 1\n"), "{text}");
             assert!(text.contains("playing\t0"), "{text}");
+        });
+    }
+
+    /// A synth's own setting on a layout of yours (the XY plan's phase 2,
+    /// "a synth's settings gain the hand layer"): SHIFT + a touch on a
+    /// Synth tab knob joins it; the pad plays it without changing its own
+    /// value, Go back gives that back, Stay keeps the pad's, and UNDO
+    /// puts it back.
+    #[test]
+    fn a_layout_of_yours_plays_a_synths_knob_and_lets_go_of_it() {
+        use mpfree_synth_ui::view as synth_view;
+        on_big_stack(|| {
+            use crate::xy_widgets::XY_BANNER;
+            use mpfree_ui::Touch;
+            let mut s = Session::new();
+            s.play_view("All");
+            s.press(crate::play_page::XY, "xy-chip", "").settle();
+            s.press(crate::xy_list::XY_LIST, "new", "+ New layout")
+                .settle();
+            s.press(crate::xy_setup::XY_SETUP, "plus", "+ across")
+                .settle();
+            s.press("header", "tab", "Synth").settle();
+            let knob = s
+                .controls()
+                .into_iter()
+                .find(|o| o.widget == synth_view::TILES && o.target.id == "knob")
+                .expect("a knob on the Synth tab")
+                .target;
+            s.button_edge("SHIFT", true);
+            s.press_target(&knob).settle();
+            s.button_edge("SHIFT", false);
+            let across = s.xy_yours.yours[0].layout.across.targets.clone();
+            assert_eq!(across.len(), 1, "the knob joined across: {:?}", s.lines);
+            let addr = across[0].addr;
+            assert!(
+                matches!(addr.owner, mpfree_play::mpfree_param::Owner::Inst(_)),
+                "{addr:?}"
+            );
+            s.press(XY_BANNER, "done", "Done").settle();
+            let value = |s: &Session| s.synth.value(addr.param);
+            let before = value(&s);
+
+            // The pad plays it; its own value stays as it was.
+            s.button_with("SHIFT", "NEXT SEQ").settle();
+            assert_eq!(s.page(), crate::play_page::XY_FULL_PAGE);
+            let pad = s
+                .control(crate::play_page::XY, "xy", "")
+                .expect("the pad")
+                .target
+                .rect;
+            // The far end from where the knob is now.
+            let from = across[0].from;
+            let to = across[0].to;
+            let unit = |v: f32| ((v - from) / (to - from)).clamp(0.0, 1.0);
+            let x = if unit(before) > 0.5 {
+                pad.x + pad.w / 20
+            } else {
+                pad.x + pad.w * 19 / 20
+            };
+            let y = pad.y + pad.h / 2;
+            if let Some(a) = s.screen.touch(9, Touch::Down, x, y) {
+                s.route(a);
+            }
+            s.run_for(0.3);
+            let held = value(&s);
+            assert!(
+                (held - before).abs() > 0.05 * (to - from).abs(),
+                "the pad moved the knob: {before} → {held}"
+            );
+            assert!(s.mix.xy_own().holding() > 0, "held by the pad's hand");
+            if let Some(a) = s.screen.touch(9, Touch::Up, x, y) {
+                s.route(a);
+            }
+            s.run_for(1.0);
+            assert!(
+                (value(&s) - before).abs() < 1e-3 * (1.0 + before.abs()),
+                "Go back: {before} again, not {}",
+                value(&s)
+            );
+            assert_eq!(s.mix.xy_own().holding(), 0, "let go");
+
+            // Stay keeps the pad's value as the knob's own; UNDO gives the
+            // old one back.
+            s.press(crate::xy_widgets::XY_BAR, "xy-bar", "Let go: Go back")
+                .settle();
+            if let Some(a) = s.screen.touch(9, Touch::Down, x, y) {
+                s.route(a);
+            }
+            s.run_for(0.3);
+            if let Some(a) = s.screen.touch(9, Touch::Up, x, y) {
+                s.route(a);
+            }
+            s.run_for(0.5).settle();
+            let stayed = value(&s);
+            assert!(
+                (stayed - held).abs() < 1e-3 * (1.0 + held.abs()),
+                "Stay: {held}, not {stayed}"
+            );
+            assert_eq!(s.mix.xy_own().holding(), 0, "nothing stays held");
+            s.button("UNDO").settle();
+            s.run_for(0.2);
+            assert!(
+                (value(&s) - before).abs() < 1e-3 * (1.0 + before.abs()),
+                "UNDO: {before} again, not {}",
+                value(&s)
+            );
         });
     }
 }

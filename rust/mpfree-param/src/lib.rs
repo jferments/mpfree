@@ -555,7 +555,11 @@ pub mod arp {
     pub const SWING: u16 = 2;
     /// The octaves an order climbs, 1 to 4.
     pub const OCTAVES: u16 = 3;
-    /// Every one, in Q-Link order, with its name.
+    /// The Modifier, 0 to 100 %: a learned knob pushes the arp with it while
+    /// the Modifier's controller is "Learned knob" (mpfree-arp's
+    /// `modifier.rs`). Not a Q-Link.
+    pub const MODIFIER: u16 = 4;
+    /// The four the Q-Links turn, in Q-Link order, with their names.
     pub const ALL: [(u16, &str); 4] = [
         (RATE, "Rate"),
         (GATE, "Gate"),
@@ -565,6 +569,9 @@ pub mod arp {
 
     /// The name of parameter `id`, if it is one.
     pub fn name(id: u16) -> Option<&'static str> {
+        if id == MODIFIER {
+            return Some("Modifier");
+        }
         ALL.iter().find(|(i, _)| *i == id).map(|(_, n)| *n)
     }
 }
@@ -583,6 +590,13 @@ pub mod play {
     pub const XY_ACROSS: u16 = 2;
     /// The XY pad up, 0 (bottom) to 1 (top).
     pub const XY_UP: u16 = 3;
+    /// The XY pad's Hold: a press switches it (a layout of yours).
+    pub const XY_HOLD: u16 = 4;
+    /// The XY pad's next layout: a press plays the next of this song's
+    /// layouts of yours (the next ready-made one while there are none).
+    pub const XY_NEXT: u16 = 5;
+    /// The XY pad's layout before, as [`XY_NEXT`] the other way.
+    pub const XY_BACK: u16 = 6;
     /// Next patch (live shows C1): a press picks the song's next patch,
     /// at once.
     pub const NEXT_PATCH: u16 = 7;
@@ -596,19 +610,25 @@ pub mod play {
     pub const NEXT_PATCH_HANDS_UP: u16 = 9;
     /// Previous patch when your hands are up.
     pub const PREVIOUS_PATCH_HANDS_UP: u16 = 10;
-    /// The knobs, Swing to XY up: their ids are 0 to `KNOBS - 1`, each
-    /// set to a value (the rest are presses).
-    pub const KNOBS: usize = 4;
     /// Every one on the Learn section's Play card, in its order, with its
     /// name.
-    pub const ALL: [(u16, &str); 6] = [
+    pub const ALL: [(u16, &str); 9] = [
         (SWING, "Swing"),
         (FILTER, "Filter"),
         (XY_ACROSS, "XY across"),
         (XY_UP, "XY up"),
+        (XY_HOLD, "XY Hold"),
+        (XY_NEXT, "XY layout next"),
+        (XY_BACK, "XY layout back"),
         (NEXT_PATCH, "Next patch"),
         (PREVIOUS_PATCH, "Previous patch"),
     ];
+
+    /// Whether `id` is a press (a button, a key, a footswitch), not a
+    /// value: the XY pad's Hold and its layout buttons.
+    pub const fn is_press(id: u16) -> bool {
+        matches!(id, XY_HOLD | XY_NEXT | XY_BACK)
+    }
 
     /// The name of parameter `id`, if it is one.
     pub fn name(id: u16) -> Option<&'static str> {
@@ -1344,11 +1364,21 @@ mod tests {
     #[test]
     fn plays_ids_stay_put() {
         assert_eq!(
-            [play::SWING, play::FILTER, play::XY_ACROSS, play::XY_UP],
-            [0, 1, 2, 3]
+            [
+                play::SWING,
+                play::FILTER,
+                play::XY_ACROSS,
+                play::XY_UP,
+                play::XY_HOLD,
+                play::XY_NEXT,
+                play::XY_BACK
+            ],
+            [0, 1, 2, 3, 4, 5, 6]
         );
         assert_eq!(play::name(play::XY_ACROSS), Some("XY across"));
-        assert_eq!(play::name(4), None);
+        assert_eq!(play::name(play::XY_HOLD), Some("XY Hold"));
+        assert!(play::is_press(play::XY_NEXT) && !play::is_press(play::XY_UP));
+        assert_eq!(play::name(99), None);
         // Next and Previous patch have a number each for Switches: At once
         // and When your hands are up, both with the one name.
         assert_eq!(play::name(play::NEXT_PATCH_HANDS_UP), Some("Next patch"));
