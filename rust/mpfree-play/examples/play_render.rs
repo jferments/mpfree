@@ -695,6 +695,7 @@ fn notes(list: &[(i64, i64, u8, u8)]) -> Vec<Note> {
             on: true,
             ramp: 0,
             join: mpfree_seq::Join::Attack,
+            group: 0,
         })
         .collect()
 }
@@ -786,6 +787,7 @@ fn song() -> (Project, Vec<Launch>) {
                 on: true,
                 ramp: 0,
                 join: mpfree_seq::Join::Attack,
+                group: 0,
             })
         })
         .collect();

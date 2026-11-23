@@ -1111,7 +1111,7 @@ impl TimeAudio {
                     self.kind_refused += 1;
                 }
                 for &e in h.notes() {
-                    self.recorder.input(offset, e);
+                    self.recorder.input_grouped(offset, e, h.group());
                 }
             } else {
                 self.recorder.input(offset, event);
@@ -1171,7 +1171,7 @@ impl TimeAudio {
         if !self.tracks.records_pressed() {
             if self.takes_notes() {
                 for &e in h.notes() {
-                    self.recorder.input(offset, e);
+                    self.recorder.input_grouped(offset, e, h.group());
                 }
             } else if let Some(ev) = h.pad {
                 self.recorder.input(offset, ev);
@@ -1194,12 +1194,14 @@ impl TimeAudio {
             let took = Took {
                 holds: Holds::Hits,
                 paired: !notes.is_empty(),
+                group: 0,
             };
             self.played(offset, ev, took);
         }
         let took = Took {
             holds: Holds::Notes,
             paired: h.pad.is_some(),
+            group: h.group(),
         };
         for &e in notes {
             self.send(ToControl::Played(offset, e, took));
@@ -1258,11 +1260,13 @@ impl TimeAudio {
             let took = Took {
                 holds: Holds::Hits,
                 paired: !notes.is_empty(),
+                group: 0,
             };
             self.send(ToControl::Played(offset, event, took));
             let took = Took {
                 holds: Holds::Notes,
                 paired: true,
+                group: mpfree_seq::groups::pad_group(pad),
             };
             for &note in notes {
                 self.send(ToControl::Played(
@@ -1309,7 +1313,7 @@ impl TimeAudio {
                 Some(r) if note || touch => {
                     if into_notes {
                         for &e in heard.notes() {
-                            r.input(offset, e);
+                            r.input_grouped(offset, e, heard.group());
                         }
                     } else {
                         r.input(offset, event);
@@ -1330,11 +1334,13 @@ impl TimeAudio {
             let took = Took {
                 holds: Holds::Hits,
                 paired: !notes.is_empty(),
+                group: 0,
             };
             self.send(ToControl::PlayedOn(track, offset, event, took));
             let took = Took {
                 holds: Holds::Notes,
                 paired: true,
+                group: heard.group(),
             };
             for &e in notes {
                 self.send(ToControl::PlayedOn(track, offset, e, took));

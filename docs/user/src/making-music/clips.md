@@ -143,7 +143,7 @@ When a pattern has gone stale, let the clip vary itself. On the Clip tab's **Mut
 - a ratchet: a single hit becomes two or three quick ones, or a ratchet becomes a single hit;
 - on a track that plays notes (a synth or outside gear, not a kit), the next pitch up or down among the notes the clip already plays, so the tune stays in its key. A kit's pads never change sound.
 
-Hold **SHIFT** as you tap **›** for a bolder variation, about half the notes. Steps that are off stay off, and tied and slid notes keep their pitch so the tie still holds.
+Hold **SHIFT** as you tap **›** for a bolder variation, about half the notes. Steps that are off stay off, and tied and slid notes keep their pitch so the tie still holds. A chord a pad played changes as one: its chance once for the whole chord, every note softer or harder by the same amount so the voicing stays, and its notes keep their pitches.
 
 {{shot: clips-card-mutate | The Clip tab's Mutate row: Clip 1 plays a variant, its original kept.}}
 
@@ -155,7 +155,7 @@ Each Mutate and Restore is a take ("Mutate 4 · variant 2", "Restore 5 · the or
 
 A clip on a synth track either **uses notes**, each note keeping its pitch whatever you do to the pads, or **follows the pads**: it remembers which pads were hit and plays whatever those pads play now, so a new scale, pad layout or octave changes its tune. Recording on a synth track makes clips that use notes. Clips made before that, and every clip on a kit, follow the pads. The Clip tab's **Melody** row says which: **pads** or **notes**.
 
-To fix a clip's tune as it sounds now, tap **›** on its **Melody** row (or pick the row with the data wheel and press **+**). Nothing changes yet: the line under the screen says what it would do ("Convert to notes: 8 pad hits become 12 notes. Keeps what Verse plays now with these pads (C3 to D#4)"), and the buttons under the rows are **Cancel** and **Convert**. Tap **Convert**, and each hit becomes the note its pad plays now, or every note of a chord pad, each keeping the hit's timing, length, velocity, condition, ratchet, tie or slide, and its pressure. A lock on the synth's sound stays on its step. The clip plays exactly as it did, the row says **notes**, and the line says "Converted: 8 pad hits are 12 notes". It is one take ("Convert 5 · converted to notes"), so **UNDO** brings back the clip that follows the pads, and **SHIFT + UNDO** converts it again. If you mutated the clip, its original is converted too, so **Restore** brings back notes.
+To fix a clip's tune as it sounds now, tap **›** on its **Melody** row (or pick the row with the data wheel and press **+**). Nothing changes yet: the line under the screen says what it would do ("Convert to notes: 8 pad hits become 12 notes. Keeps what Verse plays now with these pads (C3 to D#4)"), and the buttons under the rows are **Cancel** and **Convert**. Tap **Convert**, and each hit becomes the note its pad plays now, or every note of a chord pad, each keeping the hit's timing, length, velocity, chance, condition, ratchet, tie or slide, and its pressure. A chord pad's notes stay one chord: with a chance or a condition, they play together or not at all, on the same passes as the pad's hit did. A lock on the synth's sound stays on its step. The clip plays exactly as it did, the row says **notes**, and the line says "Converted: 8 pad hits are 12 notes". It is one take ("Convert 5 · converted to notes"), so **UNDO** brings back the clip that follows the pads, and **SHIFT + UNDO** converts it again. If you mutated the clip, its original is converted too, so **Restore** brings back notes.
 
 {{shot: clips-card-convert | Convert to notes' preview: what it would make on the line under the screen, Cancel and Convert under the rows.}}
 
@@ -163,7 +163,7 @@ Convert works with the music stopped: while it plays, the line asks you to press
 
 When converting couldn't keep exactly what the clip plays, nothing changes, only **Cancel** shows, and the line names everything to fix at once:
 
-- **A step with a chance below 100 %:** a chord's notes would each roll their own dice. Set it to 100 % first.
+- **One pad hit twice on the same step with a different chance or condition,** such as "Pad A1 is hit twice on step 5 with a different chance or condition": as notes, a pad's notes on one step play together or not at all. Take one off, or set them alike.
 - **A lock on a pad's own setting,** such as "Pad A3's Tune on step 5": it has no note to follow. The lock lane's **×** takes it off.
 - **A pad that plays no note now,** because its notes fall off the top or bottom of the keyboard: take its steps off, or move the pads so it plays one.
 - **Two pads that play the same note, sounding together,** such as "Pad A1 and Pad A4 both play C3 and sound together on step 5": as notes, one would cut the other short. Move one of them.
