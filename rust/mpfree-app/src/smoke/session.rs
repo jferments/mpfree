@@ -479,6 +479,10 @@ impl Session {
         s.out.show(ToUi::Synth(s.synth.state()));
         s.out
             .show(ToUi::KitIds(Box::new(s.instrument_list.kit_ids())));
+        // Simulated time runs far faster than it plays: smart loop end's
+        // finder answers in the period that asks, as its thread would in
+        // the time a period plays.
+        s.looper.finder.inline = true;
         let mut projects = vec![mpfree_sampler_ui::sample::project().0];
         projects.resize_with(n, mpfree_sampler::model::Project::new);
         s.out.show(ToUi::SampleKits {

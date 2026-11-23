@@ -748,7 +748,8 @@ pub struct Settings {
     /// starts the song) when it closes. Off by default; kept in Prefs.
     pub loop_tempo: bool,
     /// The looper's options "Smart loop end": when tempo from the first
-    /// loop closes a loop played on the pads, Suggest (the default)
+    /// loop closes a loop played on the pads (or heard in the line input
+    /// or a mix, by ear), Suggest (the default)
     /// closes on your tap and offers the downbeat you played, Auto
     /// listens a moment on and closes on it, Off keeps your tap. Kept in
     /// Prefs.
@@ -5231,12 +5232,12 @@ impl App {
             ],
             Item::SmartEnd => vec![
                 "When tempo from the first loop closes a loop",
-                "you played on the pads or keys. Suggest: it",
-                "closes on your tap, then offers the downbeat",
-                "you played if your tap was off it. Auto: it",
-                "listens a moment past your tap and closes on",
-                "the downbeat you played; the song starts in",
-                "step. Off: it closes on your tap.",
+                "on the pads, keys, line input or a mix.",
+                "Suggest: it closes on your tap, then offers",
+                "the downbeat you played if your tap was off",
+                "it. Auto: it listens a moment past your tap",
+                "and closes on the downbeat you played; the",
+                "song starts in step. Off: your tap stands.",
             ],
             Item::LoopMemory => vec![
                 "How much sound the loops can hold, all",

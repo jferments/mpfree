@@ -169,7 +169,8 @@ pub enum LooperAct {
         n: usize,
         on: bool,
     },
-    /// Pressed: Next loop, Undo, Redo, Capture or Clear.
+    /// Pressed: Next loop, Undo, Redo, Capture, Clear, Snap or Use my
+    /// tap.
     Press(Looper),
 }
 
@@ -362,8 +363,8 @@ pub struct Remote {
     /// loop's.
     loop_keys: [Option<KeyHeld>; 9],
     /// The looper's presses held down now, bit `id` for Next loop to
-    /// Clear.
-    looper_held: u8,
+    /// Use my tap.
+    looper_held: u16,
     /// The mute last asked of each loop and when, until the looper has
     /// it ([`MUTE_ASK_S`]).
     mute_asked: [Option<(bool, f64)>; 8],
@@ -442,8 +443,8 @@ impl Remote {
     /// A learned control set looper parameter `id` to `value` (0 to 1) at
     /// `t` seconds. A key goes down past the middle and lets go under it,
     /// as a pad does (its hold clears the loop: [`Remote::loop_holds`]);
-    /// Next loop, Undo, Redo, Capture and Clear press once each time they
-    /// go down; a mute is on from the middle up, and does something only
+    /// Next loop, Undo, Redo, Capture, Clear, Snap and Use my tap press
+    /// once each time they go down; a mute is on from the middle up, and does something only
     /// when that isn't where the loop stands (or will, once the looper has
     /// the last one asked).
     pub fn looper_write(&mut self, id: u16, value: f32, now: Now, t: f64) -> LooperAct {
@@ -494,7 +495,7 @@ impl Remote {
                 LooperAct::Mute { n, on }
             }
             press => {
-                let bit = 1u8 << (id & 7);
+                let bit = 1u16 << (id & 15);
                 let held = self.looper_held & bit != 0;
                 match (on, held) {
                     (true, false) => {
@@ -893,6 +894,8 @@ mod tests {
             (looper::REDO, Looper::Redo),
             (looper::CAPTURE, Looper::Capture),
             (looper::CLEAR, Looper::Clear),
+            (looper::SNAP, Looper::Snap),
+            (looper::USE_MY_TAP, Looper::UseMyTap),
         ] {
             assert_eq!(r.looper_write(id, 1.0, STOPPED, 0.0), LooperAct::Press(l));
             assert_eq!(r.looper_write(id, 0.8, STOPPED, 0.0), LooperAct::Nothing);
@@ -900,7 +903,7 @@ mod tests {
             assert_eq!(r.looper_write(id, 1.0, STOPPED, 0.0), LooperAct::Press(l));
             assert_eq!(describe_looper(id, STOPPED), None);
         }
-        assert_eq!(r.looper_write(7, 1.0, STOPPED, 0.0), LooperAct::Nothing);
+        assert_eq!(r.looper_write(9, 1.0, STOPPED, 0.0), LooperAct::Nothing);
     }
 
     /// A loop's mute is on from the middle up and acts only where the

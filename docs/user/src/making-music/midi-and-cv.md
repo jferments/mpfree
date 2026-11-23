@@ -317,7 +317,7 @@ Transport controls are kept in **Rig**, so they work in every project. Nothing h
 
 ### Playing the looper from a footswitch
 
-{{shot: mixer-io-learn-looper | The Learn section's Looper card: the Loop stepper on the picked loop with its Key and Mute, then Next loop, Undo, Redo, Capture and Clear.}}
+{{shot: mixer-io-learn-looper | The Learn section's Looper card: the Loop stepper on the picked loop with its Key and Mute, Next loop and Capture, then Undo, Redo, Clear, Snap and Use my tap.}}
 
 A footswitch leaves both hands on your instrument while you loop. Any control that sends MIDI can play the [looper](looping.md): a footswitch, a pedalboard, a button, a pad or a key. The MPC One has no footswitch jack, so plug the footswitch into a MIDI controller or a MIDI pedal that has one, and connect that to the MPC's USB or 5-pin MIDI in.
 
@@ -327,6 +327,7 @@ In the Learn section, tap **Looper** by the heading, tap one, then press the foo
 - **Key**: what the loop's pad does as a [loop key](looping.md#the-pads-as-loop-keys). Press to record from the next bar line, again to end the first pass, then to overdub and to play on; a muted loop plays again. Hold it for a second to clear the loop (UNDO brings it back).
 - **Mute**: mutes the loop, and lets it play again. A key or a pad flips it on each press; a footswitch or a fader mutes from halfway up and lets it play below that.
 - **Next loop** picks the next loop (after Loop 8, Loop 1). **Undo**, **Redo** and **Clear** are the Looper tab's buttons, on the picked loop. **Capture** keeps the bars you just played as a loop.
+- **Snap** and **Use my tap** are [smart loop end](looping.md#smart-loop-end)'s, on the picked loop, so you can take its suggestion without letting go of your instrument. **Snap** moves the loop's end (or start) to the hit it found, on the loop's next downbeat; **Use my tap** puts it back where you tapped. When the screen asks **Snap anyway?**, **Snap** says yes and **Use my tap** says not now.
 
 These work on every page, whatever the pads are doing. A **Key** or a press starts as **Button: while held**, so a footswitch goes down and comes up as a pad does; leave it so. The Learn section lists each one by what it plays: **Looper · Loop 3 key**, **Looper · picked loop's key**, **Looper · Next loop**. Looper controls are kept in **Rig**, so your pedalboard works in every project.
 
