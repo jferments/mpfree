@@ -2,6 +2,9 @@
 # theme: THEME PAGE COUNT # REASON. Checked by tests/theme_contrast.rs; the
 # counts may only go down. Write them with
 #     MPFREE_LINT_BLESS=1 cargo test -p mpfree-app --test theme_contrast
+abletown arp-pattern 1 # the Pattern mode's Edit pattern and Record on pads buttons, as before this change; none of the pattern list's
+abletown arp-pattern-mine 1 # the Pattern mode's Edit pattern and Record on pads buttons, as before this change; none of the pattern list's
+abletown arp-pattern-rolls 1 # the Pattern mode's Edit pattern and Record on pads buttons, as before this change; none of the pattern list's
 abletown arp-workspace-record 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown arrange-instruments 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown browser 2 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
@@ -350,6 +353,9 @@ light synth-pads-preview 1 # Light (phase 4): faint text, under 3:1 in Default t
 light synth-table 3 # Light (phase 4): faint text, under 3:1 in Default too
 light synth-voice 2 # Light (phase 4): faint text, under 3:1 in Default too
 light xy-banner 1 # the Synth tab's own runs under the XY banner (as synth); the banner's text reads
+slate arp-pattern 2 # the Pattern mode's Edit pattern and Record on pads buttons, as before this change; none of the pattern list's
+slate arp-pattern-mine 2 # the Pattern mode's Edit pattern and Record on pads buttons, as before this change; none of the pattern list's
+slate arp-pattern-rolls 2 # the Pattern mode's Edit pattern and Record on pads buttons, as before this change; none of the pattern list's
 slate arp-workspace-record 3 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
 slate arrange-instruments 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
 slate browser 2 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
@@ -394,6 +400,9 @@ slate synth-xy 3 # as synth-filter (the same page and runs; the XY marks add non
 slate xy-banner 2 # the Synth tab's own runs under the XY banner (as synth); the banner's text reads
 spaceship arp-modifier 5 # the same runs as arp-panel (the master bar's scale), none of the Modifier's
 spaceship arp-panel 5 # before the theme refactor (phase 0 baseline)
+spaceship arp-pattern 7 # the master bar's scale (as arp-panel), the faded Original and a rest in the step strip; none of the pattern list's
+spaceship arp-pattern-mine 6 # the master bar's scale (as arp-panel), the faded Original and a rest in the step strip; none of the pattern list's
+spaceship arp-pattern-rolls 6 # the master bar's scale (as arp-panel), the faded Original and a rest in the step strip; none of the pattern list's
 spaceship arp-quick-band 18 # before the theme refactor (phase 0 baseline)
 spaceship arp-quick-band-pushed 18 # the same runs as arp-quick-band (the Play page under the band), none of the Modifier's
 spaceship arp-workspace-record 18 # before the theme refactor (phase 0 baseline)
