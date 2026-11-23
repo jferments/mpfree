@@ -425,10 +425,11 @@ impl Engine {
         self.start_voice(
             usize::from(TAKE_PAD),
             li,
-            level,
+            (level, 1.0),
             vel,
             NO_NOTE,
             Vary::default(),
+            None,
         );
     }
 
@@ -468,7 +469,7 @@ impl Engine {
             slice: Some((i64::from(start), i64::from(end))),
             ..Vary::default()
         };
-        self.start_voice(p, li, level, vel, NO_NOTE, vary);
+        self.start_voice(p, li, (level, 1.0), vel, NO_NOTE, vary, None);
     }
 
     /// A hit on pad `pad` itself: it plays, and so does every pad it
@@ -631,6 +632,11 @@ impl Engine {
                 legato[li] = l.glide > 0 && l.mode == PlayMode::Granular;
             }
         }
+        // The voices the hit starts (slot and age, by layer), and the slot
+        // of its first filtered one: the others go near it, so its layers
+        // can share one filter ([`Engine::share_filter`]).
+        let mut started = [None; crate::model::MAX_LAYERS];
+        let mut near = None;
         for li in 0..count {
             if !chosen[li] {
                 continue;
@@ -658,7 +664,77 @@ impl Engine {
                     None => break,
                 }
             }
-            self.start_voice(p, li, level * gains[li], vel, note, vary);
+            let slot = self.start_voice(p, li, (level, gains[li]), vel, note, vary, near);
+            if let Some(slot) = slot {
+                started[li] = Some((slot, self.clock));
+                if near.is_none() && self.pool.voice(slot).is_some_and(|v| v.pre.on) {
+                    near = Some(slot);
+                }
+            }
+        }
+        self.share_filter(&started[..count]);
+    }
+
+    /// The layers one hit started (`started`: the slot and age of each, by
+    /// layer) that share one filter after their mix (the filter gap plan's
+    /// F2c): those still playing as they started, filtered with their gains
+    /// in two parts ([`Pre`]), not granular or an audition, in one share,
+    /// with the same filter, layer pan and play mode. The first of each
+    /// such set leads it ([`Role`]) and takes the others' tails of the
+    /// voices they stole (each fades from the hit's start, so the sum fades
+    /// as they would). A set of one stays solo.
+    pub(super) fn share_filter(&mut self, started: &[Option<(usize, u64)>]) {
+        let fits = |v: &Voice, age: u64| {
+            v.active
+                && v.age == age
+                && v.role == Role::Solo
+                && v.kill_left == 0
+                && v.pre.on
+                && !v.granular
+                && !v.audition
+        };
+        let mut taken = [false; crate::model::MAX_LAYERS];
+        for i in 0..started.len() {
+            let Some((lead, hit)) = started[i] else {
+                continue;
+            };
+            let Some(v) = self.pool.voice(lead).filter(|v| !taken[i] && fits(v, hit)) else {
+                continue;
+            };
+            let key = (v.filter, v.layer_pan, v.mode);
+            let at = self.pool.local(lead) as u16;
+            let mut tail = (v.tail_left, v.tail_l, v.tail_r);
+            let mut any = false;
+            for j in i + 1..started.len() {
+                let Some((slot, age)) = started[j] else {
+                    continue;
+                };
+                if taken[j] || !self.pool.same_share(lead, slot) {
+                    continue;
+                }
+                let Some(f) = self.pool.voice_mut(slot) else {
+                    continue;
+                };
+                if !fits(f, age) || (f.filter, f.layer_pan, f.mode) != key {
+                    continue;
+                }
+                f.role = Role::Follower;
+                f.lead = at;
+                f.hit = hit;
+                if f.tail_left > 0 {
+                    tail.0 = tail.0.max(f.tail_left);
+                    tail.1 += f.tail_l;
+                    tail.2 += f.tail_r;
+                }
+                (f.tail_left, f.tail_l, f.tail_r) = (0, 0.0, 0.0);
+                taken[j] = true;
+                any = true;
+            }
+            if let Some(v) = self.pool.voice_mut(lead).filter(|_| any) {
+                v.role = Role::Lead;
+                v.hit = hit;
+                (v.tail_left, v.tail_l, v.tail_r) = tail;
+            }
         }
     }
 
@@ -781,26 +857,30 @@ impl Engine {
         cycles.rem_euclid(1.0) as f32
     }
 
-    /// Starts layer `li` of pad `p` with what `vary` changes. A slice, for
-    /// an audition, plays those source frames instead of the layer's
-    /// region: once, forward, without fades or a loop.
+    /// Starts layer `li` of pad `p` with what `vary` changes, at `level`
+    /// (its velocity's level and its key and velocity crossfade), in a
+    /// free slot of the share slot `near` is in if one is free. A slice,
+    /// for an audition, plays those source frames instead of the layer's
+    /// region: once, forward, without fades or a loop. The slot it took,
+    /// if it started.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn start_voice(
         &mut self,
         p: usize,
         li: usize,
-        level: f32,
+        level: (f32, f32),
         vel: f32,
         note: u8,
         vary: Vary,
-    ) {
+        near: Option<usize>,
+    ) -> Option<usize> {
+        let (level, fade) = level;
         let semis = vary.semis;
         let at = self.at;
         // A pad's, or the take's on TAKE_PAD: none of the tables below
         // indexed by pad reaches it (they read it with `get`, or not at
         // all).
-        let Some(vp) = self.views[at].pad_or_take(p) else {
-            return;
-        };
+        let vp = self.views[at].pad_or_take(p)?;
         let l = &vp.layers[li];
         // A slice is in source frames; a stretched copy has its own.
         let slice = vary.slice.map(|(a, b)| match &l.source_at {
@@ -815,7 +895,7 @@ impl Engine {
                 let frames = (l.data.len() / if l.stereo { 2 } else { 1 }) as i64;
                 let (a, b) = (a.max(0), b.min(frames));
                 if a >= b {
-                    return;
+                    return None;
                 }
                 Some((a, b))
             }
@@ -835,7 +915,7 @@ impl Engine {
                 .chain(std::iter::once(l.end));
             match (edges.nth(k), edges.next()) {
                 (Some(a), Some(b)) if a < b => Some((a, b, k)),
-                _ => return,
+                _ => return None,
             }
         } else {
             None
@@ -845,7 +925,10 @@ impl Engine {
             .and_then(|(_, _, k)| l.slice_sets.get(k))
             .copied()
             .unwrap_or(ViewSlice::PLAIN);
-        let level = level * own.gain;
+        // The hit's own part of the layer's gain (the key and velocity
+        // crossfade and the slice's gain), and all of the hit's.
+        let part = fade * own.gain;
+        let (vel_level, level) = (level, level * fade * own.gain);
         // What the voice reads: the layer's region, the slice of it (on to
         // the region's end, if the slice says so), or the audition's
         // frames once. A slice doesn't loop.
@@ -1001,22 +1084,40 @@ impl Engine {
             ((l.step as f64 * octaves.exp2()).round() as i64).max(1)
         };
         // The gain: the view's, unless a live level or pan or the
-        // program's level moves it.
-        let unit_gain = l.unit_gain * level;
+        // program's level moves it. A filtered voice (not a Comb) has it in
+        // two parts ([`Pre`]): its layer's gain and the hit's crossfades
+        // before the filter, its velocity and the pad's level and pan after.
+        let pre = if filter.is_some_and(|f| f.kind != FilterKind::Comb) {
+            Pre {
+                on: true,
+                gain: l.unit_gain * part,
+                hit: part,
+            }
+        } else {
+            Pre::default()
+        };
         let (live_db, live_pan) = (set(PadField::Level), set(PadField::Pan));
         let program_db = program[ProgramField::Level as usize];
-        let (gain_l, gain_r) = if live_db.is_none() && live_pan.is_none() && program_db == 0.0 {
-            (l.gain_l * level, l.gain_r * level)
+        let db = live_db.unwrap_or(vp.level_db) + program_db;
+        let pan = live_pan.unwrap_or(vp.pan);
+        let plain_gain = live_db.is_none() && live_pan.is_none() && program_db == 0.0;
+        let (unit_gain, (gain_l, gain_r)) = if !pre.on {
+            let unit_gain = l.unit_gain * level;
+            if plain_gain {
+                (unit_gain, (l.gain_l * level, l.gain_r * level))
+            } else {
+                (unit_gain, live_gains(unit_gain, l.pan, db, pan))
+            }
+        } else if plain_gain && l.unit_gain > 0.0 {
+            // The view's gain without the layer's part, which comes first.
+            let (gl, gr) = (l.gain_l / l.unit_gain, l.gain_r / l.unit_gain);
+            (vel_level, (gl * vel_level, gr * vel_level))
         } else {
-            live_gains(
-                unit_gain,
-                l.pan,
-                live_db.unwrap_or(vp.level_db) + program_db,
-                live_pan.unwrap_or(vp.pan),
-            )
+            (vel_level, live_gains(vel_level, l.pan, db, pan))
         };
         let follow = Follow {
             gain_to: [gain_l, gain_r],
+            pre_to: pre.gain,
             fc_to: filter.map_or(0.0, |f| f.cutoff_hz),
             res_to: filter.map_or(0.0, |f| f.resonance),
             cents,
@@ -1071,28 +1172,39 @@ impl Engine {
         let slot = if !light && full_now >= self.full_limit {
             Self::victim(&self.pool, &mut self.held, true)
         } else {
-            match self.pool.free_slot() {
+            match self.pool.free_slot_near(near) {
                 Some(slot) => slot,
                 None => Self::victim(&self.pool, &mut self.held, false),
             }
         };
-        let Some(old) = self.pool.voice(slot) else {
-            return;
-        };
+        let old = self.pool.voice(slot)?;
         let (stolen, was_granular, last) = (old.active, old.granular, (old.last_l, old.last_r));
+        // A lead's hit ends with it, and its tail is the hit's: its
+        // followers go now ([`Voices::end_followers`]). A follower is never
+        // taken ([`Engine::victim`]); if one were, its sound is in its
+        // lead's, not its own, so it leaves no tail.
+        let (lead_of, follower) = (
+            (stolen && old.role == Role::Lead).then_some(old.hit),
+            old.role == Role::Follower,
+        );
         if was_granular {
             self.pool.kill_grain(slot);
         }
+        if let Some(hit) = lead_of {
+            self.pool.end_followers(slot, hit);
+        }
         let (tail_l, tail_r) = if stolen {
             self.stats.steals += 1;
-            last
+            if follower {
+                (0.0, 0.0)
+            } else {
+                last
+            }
         } else {
             (0.0, 0.0)
         };
         self.clock += 1;
-        let Some(v) = self.pool.voice_mut(slot) else {
-            return;
-        };
+        let v = self.pool.voice_mut(slot)?;
         // The comb's line stays with the slot.
         let mut comb = std::mem::take(&mut v.filt.comb);
         comb.reset();
@@ -1147,7 +1259,7 @@ impl Engine {
             tail_r,
             last_l: 0.0,
             last_r: 0.0,
-            heard: gain_l.abs().max(gain_r.abs()),
+            heard: gain_l.abs().max(gain_r.abs()) * pre.gain,
             granular,
             src_rate: l.src_rate,
             grain_base: grain,
@@ -1220,6 +1332,12 @@ impl Engine {
             xf_from: Heard::Exact,
             xf_left: 0,
             motion,
+            role: Role::Solo,
+            lead: 0,
+            hit: 0,
+            pre,
+            hosting: false,
+            host_until: 0,
         };
         if self.tape != 1.0 {
             // A hit on a stopped (or slowing) tape plays at its speed.
@@ -1243,5 +1361,6 @@ impl Engine {
         if n > self.stats.peak_voices {
             self.stats.peak_voices = n;
         }
+        Some(slot)
     }
 }

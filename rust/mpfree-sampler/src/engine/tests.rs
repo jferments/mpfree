@@ -871,3 +871,246 @@ fn a_seamless_loop_reads_as_the_unrolled_sound() {
         }
     }
 }
+
+/// A hit's filtered layers share one filter after their mix (the filter
+/// gap plan's F2c): the first leads, the others follow it; a layer with
+/// its own pan or play mode keeps its own filter, as does every layer of a
+/// pad with no filter or a Comb.
+#[test]
+fn a_hits_filtered_layers_share_one_filter() {
+    use crate::dsp::{Filter, FilterKind};
+    use crate::model::{Layer, Pad, Region, Source};
+    let rate = 44_100;
+    let s = Source::new("s", rate, 1, vec![0.1; rate as usize]).unwrap();
+    let layer = |pan: f32, mode: PlayMode| {
+        let mut l = Layer::new(Region::whole(&s));
+        l.pan = pan;
+        l.region.mode = mode;
+        l
+    };
+    let roles = |kind: FilterKind| {
+        let mut pad = Pad::new("p", layer(0.0, PlayMode::OneShot));
+        pad.layers.push(layer(0.0, PlayMode::OneShot));
+        pad.layers.push(layer(0.5, PlayMode::OneShot));
+        pad.layers.push(layer(0.0, PlayMode::Gate));
+        pad.layers.push(layer(0.0, PlayMode::OneShot));
+        pad.filter = Filter {
+            kind,
+            poles: 2,
+            cutoff_hz: 1_000.0,
+            resonance: 0.3,
+            env_octaves: 0.0,
+            drive_db: 0.0,
+        };
+        let mut p = Project::new();
+        p.add_source(s.clone());
+        p.set_pad(0, Some(pad), None).unwrap();
+        let mut e = Engine::new(rate, 8);
+        e.set_view(EngineView::build(&p, rate));
+        e.apply(Event::NoteOn {
+            pad: 0,
+            velocity: 127,
+        });
+        let (mut l, mut r) = (vec![0.0; 256], vec![0.0; 256]);
+        e.render(&mut l, &mut r);
+        let mut got: Vec<(u8, Role)> = e
+            .pool
+            .iter()
+            .filter(|(v, _)| v.active)
+            .map(|(v, _)| (v.layer, v.role))
+            .collect();
+        got.sort_by_key(|x| x.0);
+        got
+    };
+    use Role::*;
+    assert_eq!(
+        roles(FilterKind::LowPass),
+        [
+            (0, Lead),
+            (1, Follower),
+            (2, Solo),
+            (3, Solo),
+            (4, Follower)
+        ]
+    );
+    assert_eq!(
+        roles(FilterKind::Ladder),
+        [
+            (0, Lead),
+            (1, Follower),
+            (2, Solo),
+            (3, Solo),
+            (4, Follower)
+        ]
+    );
+    for kind in [FilterKind::Off, FilterKind::Comb] {
+        assert!(roles(kind).iter().all(|&(_, r)| r == Solo), "{kind:?}");
+    }
+}
+
+/// Split, a hit's layers go to one share, so they share their filter
+/// there as unsplit.
+#[test]
+fn a_split_hit_keeps_its_layers_in_one_share() {
+    use crate::dsp::{Filter, FilterKind};
+    use crate::model::{Layer, Pad, Region, Source};
+    let rate = 44_100;
+    let s = Source::new("s", rate, 1, vec![0.1; rate as usize]).unwrap();
+    let mut pad = Pad::new("p", Layer::new(Region::whole(&s)));
+    for _ in 0..3 {
+        pad.layers.push(Layer::new(Region::whole(&s)));
+    }
+    pad.polyphony = 16;
+    pad.filter = Filter {
+        kind: FilterKind::LowPass,
+        poles: 2,
+        cutoff_hz: 1_000.0,
+        resonance: 0.3,
+        env_octaves: 0.0,
+        drive_db: 0.0,
+    };
+    let mut p = Project::new();
+    p.add_source(s.clone());
+    p.set_pad(0, Some(pad), None).unwrap();
+    let mut e = Engine::new(rate, 16);
+    e.set_view(EngineView::build(&p, rate));
+    e.split(mpfree_lanes::Config {
+        threaded: false,
+        ..mpfree_lanes::Config::default()
+    });
+    let (mut l, mut r) = (vec![0.0; 128], vec![0.0; 128]);
+    for hit in 0..4 {
+        e.apply(Event::NoteOn {
+            pad: 0,
+            velocity: 127,
+        });
+        e.render(&mut l, &mut r);
+        let n = e.pool.a.voices.len();
+        // Each hit's four voices: one lead and three followers in its share.
+        let mut leads = 0;
+        for (i, (v, _)) in e.pool.iter().enumerate() {
+            if v.active && v.role == Role::Follower {
+                let lead = if i < n {
+                    &e.pool.a.voices[usize::from(v.lead)]
+                } else {
+                    &e.pool.b.as_ref().unwrap().voices[usize::from(v.lead)]
+                };
+                assert_eq!((lead.role, lead.hit), (Role::Lead, v.hit), "hit {hit}");
+            }
+            leads += usize::from(v.active && v.role == Role::Lead);
+        }
+        assert_eq!(leads, hit + 1, "hit {hit}");
+    }
+}
+
+/// A project with a pad whose two layers share a filter (pad 0, a sound
+/// at `level`) and a plain one-layer pad of a louder sound (pad 1), each
+/// of `polyphony` voices.
+fn chained_project(level: f32, polyphony: u8) -> Project {
+    use crate::dsp::{Filter, FilterKind};
+    use crate::model::{Layer, Pad, Region, Source};
+    let rate = 44_100;
+    let quiet = Source::new("q", rate, 1, vec![level; rate as usize]).unwrap();
+    let loud = Source::new("l", rate, 1, vec![0.5; rate as usize]).unwrap();
+    let mut pad = Pad::new("p", Layer::new(Region::whole(&quiet)));
+    pad.layers.push(Layer::new(Region::whole(&quiet)));
+    pad.polyphony = polyphony;
+    pad.filter = Filter {
+        kind: FilterKind::LowPass,
+        poles: 2,
+        cutoff_hz: 1_000.0,
+        resonance: 0.3,
+        env_octaves: 0.0,
+        drive_db: 0.0,
+    };
+    let mut other = Pad::new("o", Layer::new(Region::whole(&loud)));
+    other.polyphony = polyphony;
+    let mut p = Project::new();
+    p.add_source(quiet);
+    p.add_source(loud);
+    p.set_pad(0, Some(pad), None).unwrap();
+    p.set_pad(1, Some(other), None).unwrap();
+    p
+}
+
+/// A hit's lead taken by another voice takes its hit with it, the whole
+/// hit at once: its followers' slots are free for the next layer, so a
+/// two-layer hit into a full pool steals one voice, not two, and no hit is
+/// left playing some of its layers.
+#[test]
+fn a_stolen_lead_takes_its_whole_hit() {
+    let rate = 44_100;
+    let p = chained_project(0.1, 8);
+    let mut e = Engine::new(rate, 4);
+    e.set_view(EngineView::build(&p, rate));
+    let (mut l, mut r) = (vec![0.0; 128], vec![0.0; 128]);
+    for _ in 0..2 {
+        e.apply(Event::NoteOn {
+            pad: 0,
+            velocity: 127,
+        });
+        e.render(&mut l, &mut r);
+    }
+    let roles = |e: &Engine| {
+        let mut v: Vec<Role> = e
+            .pool
+            .iter()
+            .filter(|(v, _)| v.active)
+            .map(|(v, _)| v.role)
+            .collect();
+        v.sort_by_key(|r| *r as u8);
+        v
+    };
+    use Role::*;
+    assert_eq!(roles(&e), [Lead, Lead, Follower, Follower]);
+    // The first hit, the oldest, goes whole.
+    let first = e.pool.iter().map(|(v, _)| v.hit).min().unwrap();
+    e.apply(Event::NoteOn {
+        pad: 0,
+        velocity: 127,
+    });
+    assert_eq!(e.stats().steals, 1);
+    assert!(e.pool.iter().all(|(v, _)| !v.active || v.hit != first));
+    e.render(&mut l, &mut r);
+    assert_eq!(roles(&e), [Lead, Lead, Follower, Follower]);
+}
+
+/// A follower is never the voice a new one takes, even fading out (a
+/// follower given up on its own): its sound is inside its lead's, so it
+/// has no tail of its own to leave. Its hit's lead goes instead, and the
+/// hit with it.
+#[test]
+fn a_follower_is_never_stolen() {
+    let rate = 44_100;
+    // A quiet sound through a low-pass that passes it all: the follower,
+    // alone of the three, is the quietest, so it is the one given up.
+    let p = chained_project(0.05, 8);
+    let mut e = Engine::new(rate, 3);
+    e.set_view(EngineView::build(&p, rate));
+    let (mut l, mut r) = (vec![0.0; 256], vec![0.0; 256]);
+    for pad in [0, 1] {
+        e.apply(Event::NoteOn { pad, velocity: 127 });
+    }
+    // Long enough for each voice's level ([`Voice::heard`]) to come down
+    // from where it started to what it plays.
+    for _ in 0..24 {
+        e.render(&mut l, &mut r);
+    }
+    assert!(e.cull());
+    let fading = |e: &Engine| {
+        e.pool
+            .iter()
+            .filter(|(v, _)| v.active && v.kill_left > 0)
+            .map(|(v, _)| v.role)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(fading(&e), [Role::Follower]);
+    // The pool is full: the new voice takes the lead (the oldest voice
+    // that isn't fading), not the fading follower, and the hit goes whole.
+    e.apply(Event::NoteOn {
+        pad: 1,
+        velocity: 127,
+    });
+    assert_eq!(e.stats().steals, 1);
+    assert!(e.pool.iter().all(|(v, _)| !v.active || v.pad == 1));
+}

@@ -43,6 +43,8 @@ On the **Filter** section the drawing shows the filter's own envelope instead of
 
 A cutoff or resonance change reaches a sound that is still playing, gliding there, and so does Drive; a new envelope or filter type plays from the next hit. The filter comes before the volume envelope and the pad's level and pan, so how hard a sound drives the filter (its Drive, and how loud its resonance gets) doesn't change as the envelope falls, as you hit softer or as you turn the pad down; a Comb comes after them, so it can ring on.
 
+The layers a hit plays together go through one filter, each at its own level, as one sound would: through Drive, two layers growl into each other instead of side by side, and where one layer's sound stops, the filter rings it out smoothly. A layer with a pan or play mode of its own goes through a filter of its own. Turn a layer's level while the pad plays and you hear it at once; a pan change to layers that share the filter is heard from the next hit. When MPFree runs out of voices and has to cut a sound short for a new one, a hit whose layers share a filter is cut as a whole, never one layer of it.
+
 A kit saved before 23 November 2026 opens with a note if its pads use a low pass, high pass, band pass, notch or Ladder: those filters were reworked then, so their pads now play as their settings say and may sound brighter than they did. Check them by ear.
 
 ### Filter types: low pass to comb

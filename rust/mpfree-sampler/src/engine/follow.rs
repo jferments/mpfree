@@ -146,14 +146,29 @@ pub(super) fn follow_edit(
     let f = v.follow;
     let mut moved = was_live;
 
-    // Level and pan: the layer's gain and pan under the hit's own.
-    let unit_gain = l.unit_gain * v.hit_gain;
+    // Level and pan: the layer's gain and pan under the hit's own. With
+    // its gains in two parts ([`Pre`]), the layer's gain is before the
+    // filter and glides there. A hit whose layers share a filter keeps the
+    // pan they started with (its lead's gains are all of theirs): a new
+    // layer pan is heard from the next hit.
+    let (unit_gain, pre_to) = if v.pre.on {
+        (v.unit_gain, l.unit_gain * v.pre.hit)
+    } else {
+        (l.unit_gain * v.hit_gain, f.pre_to)
+    };
+    let layer_pan = if v.role == Role::Solo {
+        l.pan
+    } else {
+        v.layer_pan
+    };
     if unit_gain != v.unit_gain
-        || l.pan != v.layer_pan
+        || pre_to != f.pre_to
+        || layer_pan != v.layer_pan
         || vp.level_db != f.own_db
         || vp.pan != f.own_pan
     {
-        (v.unit_gain, v.layer_pan) = (unit_gain, l.pan);
+        (v.unit_gain, v.layer_pan) = (unit_gain, layer_pan);
+        v.follow.pre_to = pre_to;
         (v.follow.own_db, v.follow.own_pan) = (vp.level_db, vp.pan);
         moved = true;
     }
