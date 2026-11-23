@@ -19675,6 +19675,38 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("arrange-song sample: {e}"),
     }
+    // The Song view's block tools (the Arrange refactor's phase 6): Hook
+    // picked, with its start grip, Split and Duplicate lit; then its start
+    // grip held and dragged two bars to the left (trim from the left).
+    for (name, trim) in [("arrange-song-block", false), ("arrange-song-trim", true)] {
+        match mpfree_time_ui::sample::busy_song_state() {
+            Ok(mut state) => {
+                state.selected = state.placements.iter().position(|b| b.name == "Hook");
+                let mut p = quiet_player(fonts());
+                busy_sounds(&mut p);
+                p.apply(ToUi::Time(Box::new(state)));
+                p.apply(ToUi::Show(View::Arrange));
+                if trim {
+                    let (w, h) = SCREEN;
+                    let mut c = SoftCanvas::new(w, h);
+                    p.ui.paint(&mut c);
+                    let r = p.ui.rect_of(time_view::SONG);
+                    let grip = r.and_then(|r| {
+                        p.ui.get::<mpfree_time_ui::song::SongLanes>(time_view::SONG)?
+                            .start_rect(r)
+                    });
+                    if let (Some(g), Some(r)) = (grip, r) {
+                        let bar_px = (r.w - 28 - mpfree_time_ui::song::NAME_W) / 16;
+                        let (x, y) = (g.x + g.w / 2 + 4, g.y + g.h / 2);
+                        p.touch(901, Touch::Down, x, y);
+                        p.touch(901, Touch::Move, x - 2 * bar_px, y);
+                    }
+                }
+                out.push((name, p));
+            }
+            Err(e) => eprintln!("{name} sample: {e}"),
+        }
+    }
     // The same song with the Verse picked by a tap on its name (Arrange
     // 3.3): its grip left of the marker and + Bar, Rename, Remove marker
     // and Delete bars in place of the clip buttons.

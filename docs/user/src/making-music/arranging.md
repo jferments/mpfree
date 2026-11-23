@@ -82,12 +82,20 @@ The song is your clips laid out on a timeline, one lane per track. Tap **Song** 
 
 A block in the song is linked to its clip, so when you edit the clip, every block that uses it changes too. Moving the clip on the grid, to another row or track, doesn't change the song: its blocks play it wherever it is. The exception is a part of a linked song list that plays a row: it follows its row (see [The song list](#the-song-list)). **Make unique** gives the selected block its own copy, so you can change it without touching the others. A unique block has a small dot in its corner. **Delete** removes the selected block, and **UNDO** puts it back. In Perform, Delete takes a half-second hold (see [Make and Perform](playing-live.md#make-and-perform)).
 
+### Split and Duplicate
+
+- **Split** (the first button under the lanes) cuts at the playhead. With a block picked, it cuts that block in two, and the part after is picked, so another Split cuts it again. With nothing picked, it cuts every block the playhead is on, on every track. The song plays exactly as it did; you just have two blocks to move, trim or delete. If the playhead isn't on a block, it says so.
+- **Duplicate** puts a copy of the picked block right after it, linked to the same clip, and picks the copy, so pressing it again builds a run. If another block is in the way, it says so and changes nothing.
+- A split doesn't make a part of a linked song list the song's own: the part plays just what it did. A trim, a slide or a duplicate inside the part does.
+
 ### Moving blocks and sections
 
 You can move the song around with your finger:
 
 - **Drag a block** to move it. Once your finger moves, it lifts and follows you, and its new place is outlined, with a tag saying the bar it starts on. It snaps to the bar. Drag it up or down to put it on another track's lane (a loop's block stays on its Loop track's lane, and a clip's block stays off them). There it plays that track's sound and stays linked to the same clip, so editing the clip still changes both. Hold **SHIFT** as you lift to drop a copy instead, linked to the same clip. Lift it where it started to leave it be. A block can't land on top of another one.
 - **Drag a picked block's end** to make it longer or shorter, a bar at a time. The picked block has a grip (two short bars) at its right end. Past the clip's end, the clip plays again from its top.
+- **Drag a picked block's start** to trim it from the left, a bar at a time: the grip at its left end. What it plays stays where it was in the song, so a later start leaves out the clip's first bars, and an earlier one brings in the bars before (from the clip's end, as it loops). It stops at the block before it on its lane, and keeps its last bar.
+- **Slide what a block plays:** pick the block, hold your finger still on it for a moment, then drag. The block stays where it is and the clip moves inside it, a 1/16 at a time, with a tag saying how far ("slide +1 beat"). Drag right to play it later, left to play it earlier.
 - **Drag a section's name** on the ruler to move the whole section, every track, from its marker to the next one. A line shows where it will go. The sections close up behind it and make room for it, so nothing is written over. Hold **SHIFT** as you lift to put a copy there instead, such as a second verse. Everything in the section goes with it: its blocks, the audio on its audio tracks, its marker, its tempo changes and its morph moves, so it sounds the same in its new place. A block that runs across a section's edge is cut there, and each part still plays as it did; where the parts of one block meet again in step, they stay one block. If a tempo ramp runs past the section's end, its last 1/16 holds steady so the section still ends on time.
 - Hold a dragged block or section at the left or right edge and the bars scroll.
 - With the wheel: pick a block, push the wheel to grab it, turn to move it a beat at a time, and push again to let go. Tap a section's name to pick it, then push and turn to move it a section at a time.
