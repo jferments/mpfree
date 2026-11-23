@@ -38474,8 +38474,8 @@ mod tests {
         );
         assert_eq!(
             p.ui.get::<ButtonRow>(send::SEND).unwrap().enabled,
-            [true, true],
-            "Send to pad and Chop to pads (step 3b: its slices go on pads from here)"
+            [true, true, true],
+            "Send to pad, Chop to pads and Stems (step 3b: its slices go on pads from here)"
         );
         // A tap on the wave plays it on its own voice.
         ev(&mut p, wave_tab::WAVE, EventKind::Frame(0));
@@ -41629,7 +41629,7 @@ mod tests {
         assert_eq!(p.page(), sample_page::PAGE);
         assert_eq!(
             p.ui.get::<ButtonRow>(send::SEND).unwrap().enabled,
-            [true, true]
+            [true, true, true]
         );
         // A second press calls it off; a third waits for the hit.
         press(&mut p, send::SEND_TO_PAD);
@@ -41691,7 +41691,7 @@ mod tests {
         });
         assert_eq!(
             p.ui.get::<ButtonRow>(send::SEND).unwrap().enabled,
-            [false, false]
+            [false, false, false]
         );
     }
 

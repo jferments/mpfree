@@ -77,6 +77,7 @@ fn run() -> Result<(), String> {
             .into_iter()
             .map(|s| (s.name, s.about, s.ui)),
     );
+    screens.extend(mpfree_sampler_ui::stems_page::samples(Fonts::embedded)?);
     for (name, about, mut ui) in screens {
         let (w, h) = ui.size();
         let mut c = SoftCanvas::new(w, h);

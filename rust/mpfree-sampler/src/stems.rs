@@ -22,13 +22,18 @@
 //! sound, rounded to 16 bits with triangular dither ([`to_16_bits`]), so
 //! [`crate::model::Pcm::new`] holds them as 16 bits, at half the memory:
 //! a stem can't be finer than its sound.
+//!
+//! While it runs, [`Split::peaks`] is each stem's picture so far, a column
+//! at a time, for the Stems page's lanes to fill as the stems come.
 
 use crate::jobs::{Job, Jobs, Key, Lane, Running};
-use mpfree_stems::{Model, Separator, Settings, Sink, Stem};
+use mpfree_stems::{Model, Separator, Settings, Sink};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+pub use mpfree_stems::{segments, steps, Stem, RATE, SEGMENT};
 
 /// The job kind of every step of a split.
 pub const KIND: &str = "stems";
@@ -59,6 +64,20 @@ pub struct Ask {
     pub keep: [bool; 4],
     /// Round the stems to 16 bits, with dither: the sound is 16-bit.
     pub sixteen: bool,
+    /// The columns [`Split::peaks`] has across the whole sound (the Stems
+    /// page's lanes' width).
+    pub columns: usize,
+}
+
+/// The stems' picture as they come: each stem's columns so far, each the
+/// lowest and the highest sample of both sides over `per` frames, in
+/// [`Stem::ALL`]'s order (all four, kept or not).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Peaks {
+    pub per: usize,
+    /// The columns across the whole sound.
+    pub columns: usize,
+    pub stems: [Vec<(f32, f32)>; 4],
 }
 
 /// A split under way.
@@ -66,6 +85,7 @@ pub struct Split {
     key: Key,
     stop: Arc<AtomicBool>,
     done: Arc<AtomicU32>,
+    peaks: Arc<Mutex<Peaks>>,
     rx: Receiver<Result<Made, String>>,
 }
 
@@ -102,11 +122,16 @@ impl Split {
         let stop = Arc::new(AtomicBool::new(false));
         let done = Arc::new(AtomicU32::new(0));
         let key = Key::new(KIND, ask.id);
+        let peaks = Arc::new(Mutex::new(Peaks {
+            per: frames.div_ceil(ask.columns.max(1)).max(1),
+            columns: ask.columns.max(1),
+            stems: Default::default(),
+        }));
         let state = State {
             jobs: jobs.clone(),
             key,
             sep,
-            sink: Gather::new(ask.keep, frames),
+            sink: Gather::new(ask.keep, frames, peaks.clone()),
             sixteen: ask.sixteen,
             stop: stop.clone(),
             done: done.clone(),
@@ -119,6 +144,7 @@ impl Split {
             key,
             stop,
             done,
+            peaks,
             rx,
         })
     }
@@ -131,6 +157,12 @@ impl Split {
     /// How far it has got, 0 to 1, a step at a time.
     pub fn progress(&self) -> f32 {
         f32::from_bits(self.done.load(Ordering::Relaxed))
+    }
+
+    /// Each stem's picture so far ([`Peaks`]): whole once it has
+    /// finished.
+    pub fn peaks(&self) -> Peaks {
+        self.peaks.lock().map(|p| p.clone()).unwrap_or_default()
     }
 
     /// Stops it before its next step (a step under way finishes first);
@@ -187,6 +219,7 @@ fn step(mut st: Box<State>, run: &Running) {
         }
         Ok(false) => {
             st.done.store(1f32.to_bits(), Ordering::Relaxed);
+            st.sink.finish();
             let State {
                 sink, sixteen, tx, ..
             } = *st;
@@ -209,15 +242,24 @@ fn step(mut st: Box<State>, run: &Running) {
 }
 
 /// The separation's sink: the kept stems, in buffers as long as the sound
-/// from the start, so nothing grows as they come.
+/// from the start, so nothing grows as they come, and every stem's
+/// picture.
 struct Gather {
     stems: [Option<Vec<f32>>; 4],
+    peaks: Arc<Mutex<Peaks>>,
+    /// Each stem's column under way: its lowest, its highest, its frames.
+    column: [(f32, f32, usize); 4],
+    per: usize,
 }
 
 impl Gather {
-    fn new(keep: [bool; 4], frames: usize) -> Gather {
+    fn new(keep: [bool; 4], frames: usize, peaks: Arc<Mutex<Peaks>>) -> Gather {
+        let per = peaks.lock().map_or(1, |p| p.per);
         Gather {
             stems: keep.map(|k| k.then(|| Vec::with_capacity(frames * 2))),
+            peaks,
+            column: [(0.0, 0.0, 0); 4],
+            per,
         }
     }
 }
@@ -228,7 +270,35 @@ impl Sink for Gather {
         if let Some(s) = self.stems[k].as_mut() {
             s.extend_from_slice(stereo);
         }
+        let mut done = Vec::new();
+        let (lo, hi, n) = &mut self.column[k];
+        for f in stereo.chunks_exact(2) {
+            *lo = lo.min(f[0]).min(f[1]);
+            *hi = hi.max(f[0]).max(f[1]);
+            *n += 1;
+            if *n == self.per {
+                done.push((*lo, *hi));
+                (*lo, *hi, *n) = (0.0, 0.0, 0);
+            }
+        }
+        if let Ok(mut p) = self.peaks.lock() {
+            p.stems[k].extend(done);
+        }
         Ok(())
+    }
+}
+
+impl Gather {
+    /// The last columns, short ones, once the stems are all out.
+    fn finish(&mut self) {
+        if let Ok(mut p) = self.peaks.lock() {
+            for (k, c) in self.column.iter_mut().enumerate() {
+                if c.2 > 0 {
+                    p.stems[k].push((c.0, c.1));
+                    *c = (0.0, 0.0, 0);
+                }
+            }
+        }
     }
 }
 
@@ -280,6 +350,7 @@ mod tests {
             settings: Settings::default(),
             keep,
             sixteen,
+            columns: 100,
         }
     }
 
@@ -338,6 +409,50 @@ mod tests {
         // them counted replaced by the next.
         let c = jobs.counts();
         assert_eq!((c.done, c.replaced), (12, 0));
+        // The picture: every stem's, kept or not, a column a hundredth of
+        // the sound, each its lowest and highest sample.
+        let peaks = split.peaks();
+        assert_eq!((peaks.per, peaks.columns), (882, 100));
+        for (k, stem) in want.iter().enumerate() {
+            assert_eq!(peaks.stems[k].len(), 100, "stem {k}");
+            for (c, &(lo, hi)) in peaks.stems[k].iter().enumerate() {
+                let col = &stem[c * 882 * 2..((c + 1) * 882 * 2).min(stem.len())];
+                let want_lo = col.iter().copied().fold(0.0f32, f32::min);
+                let want_hi = col.iter().copied().fold(0.0f32, f32::max);
+                assert_eq!((lo, hi), (want_lo, want_hi), "stem {k} column {c}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_picture_fills_a_segment_at_a_time() {
+        let model = Arc::new(Model::small(3));
+        let input: Arc<[f32]> = noise(2 * 44_100 * 2, 5, 0.4).into();
+        let jobs = Jobs::new(Config::default());
+        jobs.hold(true);
+        let split = Split::start(&jobs, ask(&model, &input, [true; 4], false), ()).unwrap();
+        assert!(split.peaks().stems.iter().all(Vec::is_empty));
+        jobs.hold(false);
+        let mut seen = Vec::new();
+        while split.poll().is_none() {
+            let n = split.peaks().stems[0].len();
+            if seen.last() != Some(&n) {
+                seen.push(n);
+            }
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        let n = split.peaks().stems[0].len();
+        if seen.last() != Some(&n) {
+            seen.push(n);
+        }
+        // Nothing, the first segment's columns, then all of them.
+        assert_eq!(seen.first(), Some(&0));
+        assert_eq!(seen.last(), Some(&100));
+        assert!(seen.len() >= 3, "{seen:?}");
+        assert!(
+            seen.windows(2).all(|w| w[0] < w[1]),
+            "it only grows: {seen:?}"
+        );
     }
 
     #[test]
@@ -396,7 +511,11 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(1));
         }
-        assert!(!jobs.has(split.key()));
+        // And the job itself, once its worker has put it down.
+        while jobs.has(split.key()) {
+            assert!(t.elapsed() < Duration::from_secs(10), "the job stayed");
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     #[test]

@@ -1,10 +1,10 @@
 <!--
-covers: rust/mpfree-stems rust/mpfree-simd/src/neon.rs rust/mpfree-bench/src/stems.rs
+covers: rust/mpfree-stems rust/mpfree-simd/src/neon.rs rust/mpfree-bench/src/stems.rs rust/mpfree-sampler/src/stems.rs rust/mpfree-sampler-ui/src/stems_page.rs
 checked: 2026-11-23 dea01de
 -->
 # Stem separation (`mpfree-stems`)
 
-**Status:** engine built (plan step 1, 2026-11-23), on the workstation only: the crate, its two NEON kernels in `mpfree-simd`, the model packer and the bench's `--stems` mode. **Nothing here has run on the MPC**, and nothing in the app uses it yet. The plan (Spleeter, the steps after this one and the decisions put to the owner) is in the stems research notes; the device run is plan step 2, the Stems sheet's mockup step 3, the app step 4.
+**Status:** engine built (plan step 1, 2026-11-23), on the workstation only: the crate, its two NEON kernels in `mpfree-simd`, the model packer and the bench's `--stems` mode. **Nothing here has run on the MPC**. The sampler's side of plan step 4 is built too (the split as a chain of jobs, the stems landing as one undo step, the Stems page), but the app doesn't offer it yet. The plan (Spleeter, the steps after this one and the decisions put to the owner) is in the stems research notes; the device run is plan step 2, the Stems page's mockups step 3, the app step 4.
 
 ## What it does
 
@@ -56,6 +56,19 @@ while sep.step(&mut sink)? {                          // a step: an STFT, a U-Ne
 - `Model::need` is what a separation holds at its most besides the model and the sound: 75.9 MB at 1024 bins and 96.9 MB at full band with two threads, whatever the sound's length. A test runs both bands on Spleeter's real shapes with a counting allocator: they held 75.6 and 96.6 MB (`tests/need.rs`, which fails if the promise is short, or more than 5 % over). With the model that is about 155 and 176 MB.
 - `stats()` says where the time went (STFT, U-Nets, unpacking, masks, the sink) and the kernel's multiply-adds.
 
+## In the sampler (plan step 4)
+
+The app runs a split as `mpfree_sampler::stems::Split`, on the job service's sound lane (`jobs.rs`), **one step a job**: a segment's STFT, one stem's U-Net (about 1.6 s on the MPC) or the segment's masks. The separation owns its model and the sound read (`Separator<Arc<Model>, Arc<[f32]>>`, which is `Send`), so it moves from one job to the next: each step ends by putting the next at the back of the queue with `Jobs::follow`, which queues a job behind the running one with the same key without stopping it or counting it replaced (`Jobs::submit` would). A job for the sound being shown waits at most one step, and a split of a minute's sound never holds the lane for a minute.
+
+- **Memory:** the caller promises it once for the whole split (the model, the sound, `Model::need` and the stems) and hands the ticket to `Split::start`; the split holds it until it ends however it ends, and the steps ask the service for nothing, so it never runs out of memory halfway.
+- **Stop** stops it between steps; nothing it made is kept. A second split of the same sound takes the first one's place (they share the key).
+- **The picture as it comes:** `Split::peaks` is each stem's columns so far (the lowest and highest sample of both sides over a column's frames), which fill a segment at a time, so the Stems page draws the stems as they come.
+- **16-bit stems:** for a 16-bit sound the stems are rounded to 16 bits with triangular dither (`to_16_bits`, through `i16` so a zero has no sign), and are held as 16 bits at half the memory: a stem can't be finer than its sound.
+- **Landing:** `Project::put_stems(sounds, to)` adds the stems' sounds and puts them on pads, one pad's layers (all at full velocity, so they play together) or takes, as **one undo step** (an `Undo::Group`); it refuses a pad past the last or named twice, layers on an empty pad, a layer playing a sound neither given nor in the kit and more takes than the page keeps, changing nothing. The sampler UI's `Change::Stems` makes it.
+- **The page:** `mpfree_sampler_ui::stems_page` is the Stems page as the layout spec draws it (the picture, the Split, Put on and Listen sections, the stems' levels on the Q-Links), with what each press asks of the app; `mpfree-sampler-preview` draws its five screens (`stems-*.png`). The app wiring (the model from the stick, the sound read at 44.1 kHz, the memory check, polling the split and landing it) is the rest of step 4.
+
+`mpfree_stems::segments` and `steps` count a sound's segments and steps as a separator on Spleeter's shape counts them, so the page can say how long a split takes (10.4 s a segment on the MPC by the plan's estimate, then as the last split went) before the model is read.
+
 ## The model file
 
 `Model::open` reads `MPFSTEM2`: the eight bytes `MPFSTEM2`, the stems (a little-endian u32, 4), then each stem's 50 tensors in Spleeter's order (seven convolutions, kernel and bias, the seventh the mask layer's; six transposed ones; twelve batch norms folded to a scale and a shift), each as its kind (u32: 1 f32, 2 half), its count (u32) and its values. Kernels are halves, the rest f32. The reader refuses a file that is short, long, of another kind or stem count, with a count that isn't the layout's, or with a half that isn't a normal number or zero, and says which tensor.
@@ -88,7 +101,7 @@ The MPC's figures are the plan's estimate until the device run: 9.4 s for a 10 s
 ## What's next
 
 - Plan step 2: `mpfree-bench --stems` in the next device round's benchmark block (RAM only, on the owner's go).
-- Plan step 3: a mockup of the Stems sheet over the Sample page, proposed for the layout spec.
-- Plan step 4: the job in the app (the job service's sound lane, idle priority, `Model::need` as its promise, a Stop between steps), `Change::Stems` as one undo step, the destinations, the model file on the stick and the manual page.
+- Plan step 3: the Stems page's mockups, proposed for the layout spec.
+- Plan step 4, the rest: the app wiring (the model file on the stick, the sound read and converted to 44.1 kHz, the shared memory check, the split polled and landed, the pad bar's "Stems 42 %"), New kit and Library, and the manual page.
 - Faster, if the device run shows the U-Nets well below twice the kernel's rate: a NEON transpose for the gather's stores (about 0.2 G of the 3.54 G above), a radix-4 FFT (it changes the bits, so the SNR checks run again) and a faster `expf`.
 - Holding less: both channels' STFT stay for the whole segment (16.8 MB); working them out again for the masks would save that for about 3 % more time.

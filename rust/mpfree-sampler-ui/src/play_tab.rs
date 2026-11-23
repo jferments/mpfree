@@ -126,7 +126,7 @@ pub const SCENE_ROWS: usize = 4;
 /// open section's picture across the page, and under it the section's
 /// controls beside the scenes, between the pad bar and the Q-Link cards.
 /// Each section has its own picture ([`layout`]).
-pub const LAYOUT: &str = "col(header:60, row(smp-play-bar:*, smp-send:330):60, \
+pub const LAYOUT: &str = "col(header:60, row(smp-play-bar:*, smp-send:460):60, \
                           row(col(smp-play-sections:56, smp-play-layers:*, \
                           row(smp-play-list:*, smp-play-scenes:356):242):*, \
                           col(smp-play-q1, smp-play-q2, smp-play-q3, smp-play-q4):128):*, hint:26)";

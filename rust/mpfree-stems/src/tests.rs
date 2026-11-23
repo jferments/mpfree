@@ -285,3 +285,20 @@ fn profile_a_short_segment() {
         s.analyse, s.nets, s.unpack, s.masks, s.macs
     );
 }
+
+#[test]
+fn the_segments_and_steps_are_counted_as_spleeters_separator_counts_them() {
+    let model = Model::synthetic(1);
+    // 24.6 s, the mockups' loop: three segments, the last a short one.
+    for samples in [1, SEGMENT - N, SEGMENT - N + 1, 1_084_860] {
+        let input = vec![0.0; samples];
+        let sep = Separator::at(&model, &input[..], 1, Band::Full.bins(), true, 1).unwrap();
+        assert_eq!(segments(samples), sep.segments, "{samples} samples");
+        assert_eq!(steps(samples), sep.segments * 6);
+    }
+    assert_eq!(segments(SEGMENT - N), 1);
+    assert_eq!(segments(SEGMENT - N + 1), 2);
+    assert_eq!(segments(1_084_860), 3);
+    let seconds = SEGMENT as f64 / f64::from(RATE);
+    assert!((11.8..12.0).contains(&seconds), "{seconds} s");
+}

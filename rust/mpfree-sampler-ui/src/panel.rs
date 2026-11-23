@@ -74,6 +74,10 @@ pub enum Look {
     /// map. A tap on a pad is [`EventKind::Cell`] with the row and the
     /// pad's place in the bank.
     Pads(Vec<PadCell>),
+    /// Not a control: a line of what is so, the row's name and then its
+    /// value ("Holds   176 MB while it runs"; the Stems page's Split
+    /// section). A finger and the wheel pass over it.
+    Text,
 }
 
 /// One pad of a [`Look::Pads`] map.
@@ -217,6 +221,9 @@ pub struct Section {
     /// Outlined in the accent: the section picked (the FX page's effect
     /// on the Q-Links).
     pub lit: bool,
+    /// The note in the warning colour: why the section's main button can't
+    /// go (the Stems page's Put on).
+    pub warn: bool,
 }
 
 impl Section {
@@ -228,6 +235,7 @@ impl Section {
             lines,
             from_top: false,
             lit: false,
+            warn: false,
         }
     }
 
@@ -243,6 +251,12 @@ impl Section {
 
     pub fn lit(mut self, lit: bool) -> Section {
         self.lit = lit;
+        self
+    }
+
+    /// The note in the warning colour ([`Section::warn`]).
+    pub fn warn(mut self, warn: bool) -> Section {
+        self.warn = warn;
         self
     }
 }
@@ -288,6 +302,9 @@ const GRID_GAP: i32 = 6;
 /// A pad map's pads, and between them.
 const CELL_H: i32 = 28;
 const CELL_GAP: i32 = 4;
+/// A line of text ([`Look::Text`]), and its name's column.
+const TEXT_H: i32 = 20;
+const TEXT_NAME_W: i32 = 72;
 /// A switch.
 const SWITCH_W: i32 = 46;
 const SWITCH_H: i32 = 27;
@@ -366,6 +383,7 @@ fn item_h(look: &Look, it: &Item) -> i32 {
     match look {
         Look::Knob { .. } => KNOB_H + if it.tall { LABEL_H } else { 0 },
         Look::Toggle(_) => SWITCH_H,
+        Look::Text => TEXT_H,
         _ if it.height > 0 => it.height + name,
         Look::Primary(_) => PRIMARY_H + name,
         Look::Grid { options, cols, .. } => {
@@ -731,6 +749,7 @@ pub fn touch(
                 Some(EventKind::Select(k))
             }
         }
+        Look::Text => None,
     }
 }
 
@@ -799,6 +818,7 @@ pub fn targets(
                         .disabled_if(c.faint || *pos >= 1.0),
                 );
             }
+            Look::Text => {}
         }
     }
     out
@@ -821,7 +841,7 @@ pub fn held(
     let c = controls.get(p.row).filter(|c| !c.faint)?;
     let name = names.get(p.row).cloned().unwrap_or_default();
     match c.look {
-        Look::Button(_) | Look::Primary(_) => None,
+        Look::Button(_) | Look::Primary(_) | Look::Text => None,
         Look::Knob { .. } => Some(Target::drag("knob", p.row, name, p.control)),
         Look::Slider { .. } => Some(Target::drag("slider", p.row, name, p.control)),
         _ => Some(Target::tap("control", p.row, name, p.control)),
@@ -928,7 +948,8 @@ pub fn paint(
         if !s.note.is_empty() {
             let tw = cx.measure(FontId::Bold, 12.0, &s.title.to_uppercase());
             let note = Rect::new(head.x + tw + 8, head.y, (head.w - tw - 8).max(0), head.h);
-            cx.text(FontId::Sans, 12.0, note, Align::Right, t.text_dim, &s.note);
+            let ink = if s.warn { t.warn } else { t.text_dim };
+            cx.text(FontId::Sans, 12.0, note, Align::Right, ink, &s.note);
         }
     }
     let ctrl = t.raised;
@@ -1135,6 +1156,12 @@ pub fn paint(
                         );
                     }
                 }
+            }
+            Look::Text => {
+                let (name_r, value_r) = p.rect.take_left(TEXT_NAME_W.min(p.rect.w));
+                cx.text(FontId::Sans, 13.0, name_r, Align::Left, dim, name);
+                let px = fit(cx, FontId::Sans, 13.0, 10.0, value, value_r.w);
+                cx.text(FontId::Sans, px, value_r, Align::Left, ink, value);
             }
             Look::Slider { pos } => {
                 if p.control != p.rect {

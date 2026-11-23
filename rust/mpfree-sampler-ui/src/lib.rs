@@ -48,6 +48,10 @@
 //!   Its picture is in [`auto_widgets`].
 //! - [`send`]: the Send to pad and Chop to pads buttons beside every editor
 //!   tab's bar.
+//! - [`stems_page`]: the Stems page over the Sample page: the sound split
+//!   into vocals, drums, bass and other, the stems put on pads, a pad's
+//!   layers, takes, a new kit or the library, each stem's level on the
+//!   Q-Links.
 //! - [`sound_panel`]: the Sound section beside the Wave page's panel: how
 //!   the pad plays its sound (Amp, Filter, Pitch, Movement), four of the
 //!   Play page's controls at a time (the one Sample page, 18 Nov 2026).
@@ -83,6 +87,7 @@ pub mod send;
 pub mod slice_tool;
 pub mod sound_panel;
 pub mod source;
+pub mod stems_page;
 pub mod warp_tool;
 pub mod wave_tab;
 pub mod widgets;

@@ -79,7 +79,7 @@ pub const TOOLS: &str = "smp-tools";
 /// zoom card's place), the waveform
 /// across the page, the panel of settings under it with the Sound section
 /// on its right, the Q-Link cards on the right, and the app's hint line.
-pub const LAYOUT: &str = "col(header:60, row(smp-bar:*, smp-send:330):60, \
+pub const LAYOUT: &str = "col(header:60, row(smp-bar:*, smp-send:460):60, \
                           row(col(smp-recorder:64, row(smp-tools:360, smp-overview:*, smp-keep:340):56, smp-wave:*, \
                           row(smp-region:*, smp-sound:340):242):*, \
                           col(smp-q1, smp-q2, smp-q3, smp-q4):128):*, hint:26)";

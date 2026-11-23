@@ -1,12 +1,15 @@
-//! The Sample tab's two buttons beside its bar, on every editor tab (Jay,
+//! The Sample tab's three buttons beside its bar, on every editor tab (Jay,
 //! 12 Nov 2026: "the sample screen would have a smaller send to pad, chop
-//! to pads options"):
+//! to pads options"; Stems since the stems plan's step 3):
 //!
 //! - **Send to pad:** the next pad hit gets a copy of the pad picked, its
 //!   sound and every edit (one undo step). A second press calls it off.
 //! - **Chop to pads:** the Wave page's Slice tool, where the sound is cut
 //!   and its slices go onto pads; with the Slice tool it is the tool's own
 //!   Chop to pads.
+//! - **Stems:** the Stems page ([`crate::stems_page`]), which splits the
+//!   sound into vocals, drums, bass and other; lit while it is open, when
+//!   a press takes the page back to Wave.
 //!
 //! With a take kept on the Wave page (one-page step 2b), Send to pad puts
 //! the take itself on the pad hit (it leaves the page, one undo step);
@@ -21,15 +24,16 @@ use crate::widgets::ButtonRow;
 
 /// The buttons' widget.
 pub const SEND: &str = "smp-send";
-/// Its width beside the bar.
-pub const SEND_W: i32 = 330;
+/// Its width beside the bar (the pages' layouts say it as a number).
+pub const SEND_W: i32 = 460;
 /// The buttons, in order.
-pub const BUTTONS: [&str; 2] = ["Send to pad", "Chop to pads"];
+pub const BUTTONS: [&str; 3] = ["Send to pad", "Chop to pads", "Stems"];
 /// Send to pad's label while it waits for the pad hit.
 pub const SENDING: &str = "Hit a pad";
 /// [`BUTTONS`]' places.
 pub const SEND_TO_PAD: usize = 0;
 pub const CHOP_TO_PADS: usize = 1;
+pub const STEMS: usize = 2;
 
 /// Adds the buttons to `ui` unless a tab added them already.
 pub fn add(ui: &mut Ui) {
@@ -64,8 +68,16 @@ pub fn show_take(ui: &mut Ui, sending: bool) {
             BUTTONS[SEND_TO_PAD]
         }
         .to_string();
-        b.enabled = vec![true, true];
+        b.enabled = vec![true; BUTTONS.len()];
         b.why = vec![String::new(); BUTTONS.len()];
+    }
+}
+
+/// Lights Stems while the Stems page is open (a press then takes the page
+/// back to Wave).
+pub fn light_stems(ui: &mut Ui, open: bool) {
+    if let Some(b) = ui.get_mut::<ButtonRow>(SEND) {
+        b.primary = open.then_some(STEMS);
     }
 }
 
@@ -83,13 +95,21 @@ mod tests {
         let b = ui.get::<ButtonRow>(SEND).unwrap();
         assert_eq!(
             b.labels,
-            ["Hit a pad", "Chop to pads"],
+            ["Hit a pad", "Chop to pads", "Stems"],
             "kept, not added again"
         );
-        assert_eq!(b.enabled, [true, true]);
+        assert_eq!(b.enabled, [true, true, true]);
         show(&mut ui, false, false);
         let b = ui.get::<ButtonRow>(SEND).unwrap();
         assert_eq!(b.labels, BUTTONS);
-        assert_eq!(b.enabled, [false, false], "faint for a pad without a sound");
+        assert_eq!(
+            b.enabled,
+            [false, false, false],
+            "faint for a pad without a sound"
+        );
+        light_stems(&mut ui, true);
+        assert_eq!(ui.get::<ButtonRow>(SEND).unwrap().primary, Some(STEMS));
+        light_stems(&mut ui, false);
+        assert_eq!(ui.get::<ButtonRow>(SEND).unwrap().primary, None);
     }
 }

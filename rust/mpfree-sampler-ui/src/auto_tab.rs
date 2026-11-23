@@ -52,7 +52,7 @@ pub const WHEEL: &str = "smp-auto-wheel";
 
 /// The page: the keyboard beside the list, the buttons under them, as the
 /// Rec tab's.
-pub const LAYOUT: &str = "col(header:60, row(smp-auto-bar:*, smp-send:330):60, \
+pub const LAYOUT: &str = "col(header:60, row(smp-auto-bar:*, smp-send:460):60, \
                           row(col(row(smp-auto-view:*, smp-auto-list:340):*, \
                           row(smp-auto-buttons:*, smp-auto-wheel:340):88):*, smp-auto-qlinks:128):*, hint:26)";
 

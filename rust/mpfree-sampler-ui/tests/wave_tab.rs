@@ -1010,7 +1010,11 @@ fn a_take_kept_on_the_page_shows_as_new_with_send_and_chop_lit() {
     assert!(bar.subtitle.ends_with(" · take 2 of 2"), "{}", bar.subtitle);
     send::show_take(&mut s.ui, false);
     let b = s.ui.get::<ButtonRow>(send::SEND).unwrap();
-    assert_eq!(b.enabled, [true, true], "a take's slices go on pads too");
+    assert_eq!(
+        b.enabled,
+        [true, true, true],
+        "a take's slices go on pads too, and it splits into stems"
+    );
     send::show_take(&mut s.ui, true);
     let b = s.ui.get::<ButtonRow>(send::SEND).unwrap();
     assert_eq!(b.labels[0], send::SENDING);

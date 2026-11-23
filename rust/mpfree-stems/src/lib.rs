@@ -54,6 +54,25 @@ use stft::{Channel, OverlapAdd, Rfft, BINS, HOP, N};
 /// is converted first.
 pub const RATE: u32 = 44_100;
 
+/// A segment's samples (a channel's) on Spleeter's model: its 512 STFT
+/// frames' hops, about 11.9 s at 44.1 kHz. A separation works through a
+/// sound a segment at a time, so the stems come a segment at a time.
+pub const SEGMENT: usize = net::Shape::SPLEETER.rows * HOP;
+
+/// The segments a sound of `samples` (a channel's) is worked through in on
+/// Spleeter's model: each is a step for its STFT, one for each stem's
+/// U-Net and one for its masks.
+pub fn segments(samples: usize) -> usize {
+    stft::frames(samples).div_ceil(net::Shape::SPLEETER.rows)
+}
+
+/// The steps a separation of `samples` (a channel's) on Spleeter's model
+/// takes: [`Separator::step`] is called this many times before it says
+/// it is done.
+pub fn steps(samples: usize) -> usize {
+    segments(samples) * (2 + Stem::ALL.len())
+}
+
 /// One of the four stems, in the model's order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Stem {
