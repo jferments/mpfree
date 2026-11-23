@@ -6229,8 +6229,8 @@ mod tests {
         by_ear_while_long_prints_run(false);
     }
 
-    /// The two tests above: `answers` false takes the finder's answers
-    /// away (they never come back).
+    /// The two tests above: `answers` false leaves the finder's answers
+    /// unread (they never come back).
     fn by_ear_while_long_prints_run(answers: bool) {
         use mpfree_fx::StripId;
         use mpfree_looper::hits::kit::Kit;
@@ -6289,9 +6289,9 @@ mod tests {
         // if the tap stands at another tempo and the closing period asks
         // for a print at the old one.
         h.printer.send(ToPrinter::Drop(None, Vec::new()));
-        if !answers {
-            h.finder.back = None;
-        }
+        // (The answers left unread: the finder's thread goes on, as a slow
+        // one would, and none comes back.)
+        let _unread = (!answers).then(|| h.finder.back.take());
         // (At the beat's tempo: when the finder answers, the period that
         // closes the loop wants no print.)
         let mut t = Transport::new(RATE, 120.0).unwrap();
