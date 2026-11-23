@@ -22,11 +22,13 @@ A CLAP plugin becomes an `mpfree_node::Node`, so anything that holds a node can 
   - Pad pressure, as CLAP's pressure expression.
   - Bend, as MIDI pitch bend when the plugin takes MIDI. Otherwise it is a tuning expression on each held note, 2 semitones at full bend.
   - Per-note expression: a note's slide is its tuning expression (plus the bend when the bend goes as tuning), its tone the brightness expression, and its release velocity goes in its note-off. A note that starts under a held bend or slide starts there.
+  - A plugin whose note port takes MIDI and not CLAP's own notes gets its notes as MIDI: note on and off, pad pressure as poly pressure, the bend as pitch bend. Slide and tone are left out (MIDI has no per-note expression without MPE).
   - `AllOff`, as a note-off for every held note.
   - The mod wheel, breath and foot controller (`NodeEvent::Control`), as MIDI controllers 1, 2 and 11 when the plugin takes MIDI. The pedals reach a plugin as held notes: the host holds its note-offs (`mpfree_node::pedal`).
   - Parameter changes.
   - The transport (tempo, position in beats and seconds, playing) goes with every block.
   - Parameter values the plugin sends back (its own meters, its own changes) show in `param()`.
+- **Tunings** ([tunings step T6](tunings.md#t6-as-built-the-plugins)). `set_tuning` gives the instrument its tuning: each note's tuning expression adds how far the tuning puts it from 12-TET at A4 = 440 Hz, worked out at the note's bent and slid pitch, and held notes move at the next block. In 12-TET at 440 nothing changes. A plugin that takes only MIDI notes plays 12-TET, and `follows_tuning()` says false so the app can say so.
 - **Blocks.** Blocks longer than the plugin was activated for are cut into pieces. Events and parameter changes still land on their frame, and the output is the same.
 - **When a plugin fails.** If `process` returns an error, the block is counted. An instrument outputs silence and an effect passes its input through. A plugin that won't activate is counted and stays silent.
 - **State and the main thread.** `ClapNode::control()` gives a `ClapControl` for the control thread:
@@ -45,7 +47,7 @@ A CLAP plugin becomes an `mpfree_node::Node`, so anything that holds a node can 
 
 CLAP names two threads. The main thread is the control thread that opened the first library. The audio thread is whichever thread calls `process`; it may change, but never runs two at once.
 
-- `ClapNode::process` never allocates or locks. Its event list and audio buffers are made in `prepare`, and parameter values are atomics shared with `ClapControl`. `tests/no_alloc.rs` checks this with the counting allocator: 2000 blocks of notes, pressure, bend, parameters and an effect after the synth.
+- `ClapNode::process` never allocates or locks. Its event list and audio buffers are made in `prepare`, and parameter values are atomics shared with `ClapControl`. `tests/no_alloc.rs` checks this with the counting allocator: 2000 blocks of notes, pressure, bend, parameters, tuning changes and an effect after the synth.
 - `prepare` and dropping the node stop processing and deactivate from the control thread. Nothing else can touch the node at that moment, and for that moment the host's thread-check calls this thread the audio thread, which CLAP allows.
 - A plugin's id, name and parameter list become `'static` data, because nodes describe themselves that way. Each distinct plugin is kept once, for the life of the program.
 - The host can only check its own side. A plugin that allocates or blocks in `process` would still hurt the audio thread. That is what the sandbox (P2, below) is for: the plugin runs in its own process with a deadline each block, and gives silence and a count when it misses.
@@ -55,7 +57,7 @@ CLAP names two threads. The main thread is the control thread that opened the fi
 [`rust/mpfree-plughost`](../../../rust/mpfree-plughost) runs each plugin in its own process, `mpfree-plughost`, so a plugin that crashes, hangs or blocks can't take MPFree's audio thread with it. The node interface stays the same: a sandboxed plugin goes wherever an in-process one goes.
 
 - **Starting one.** `spawn(exe, plugin_file, id)` starts the process for one plugin. It returns a `SandboxNode`, which is a `Node` with the same `clap:` id and the same parameters as the in-process node, and a `Sandbox`, the control-thread handle. The process loads the plugin with `mpfree-clap` and reports its name, kind and parameters. A missing file or plugin id comes back as `Error::Plugin` with the reason.
-- **Each block.** The node writes the block's context, events and input into memory it shares with the process (a memfd of about 144 KB). It bumps a sequence number and wakes the process with a futex. The process runs the plugin on its own audio thread, writes the output and the parameter values back, and bumps its own number. The node waits for that until a deadline: half the block's length by default (`Deadline::Fraction(0.5)`), or a fixed time for offline work (`Deadline::Fixed`).
+- **Each block.** The node writes the block's context, events and input into memory it shares with the process (a memfd of about 145 KB). A tuning the node was handed goes with the next block, as plain numbers and a count of the changes (version 3 of the block); the process hands it to the plugin before that block, and a process started again takes it at once. The process's hello says whether its plugin follows tunings. It bumps a sequence number and wakes the process with a futex. The process runs the plugin on its own audio thread, writes the output and the parameter values back, and bumps its own number. The node waits for that until a deadline: half the block's length by default (`Deadline::Fraction(0.5)`), or a fixed time for offline work (`Deadline::Fixed`).
   - **On time:** the plugin's output, sample for sample what it gives in-process.
   - **Late, a miss:** an instrument adds nothing and an effect passes its input through. The late block's events still reach the plugin. Until the process catches up, the node doesn't post again, and those blocks count as **busy**.
   - Blocks longer than the size the process was prepared for are cut into pieces, one round trip each.
@@ -124,7 +126,7 @@ Not yet:
 
 `mpfree_clap::testplug` holds two small CLAP plugins of our own, so the host is tested without anyone else's binary:
 
-- **MPFree Test Synth:** 16 voices; Gain, Decay and Wave (an enum); two read-only meters (voices sounding and the transport's tempo, sent back as output events); a hidden parameter; state, tail and latency; CLAP and MIDI note dialects; pressure and tuning expressions; presets: three built in (a PLUGIN location, by load key) and the `.mptp` files in `$MPFREE_TESTPLUG_PRESETS`, else `$HOME/mpfree-testplug-presets` (a FILE location), through its own preset-discovery factory, and preset-load.
+- **MPFree Test Synth:** 16 voices; Gain, Decay and Wave (an enum); two read-only meters (voices sounding and the transport's tempo, sent back as output events); a hidden parameter; state, tail and latency; CLAP and MIDI note dialects (a test of its own can make it take only MIDI, `testplug::NOTE_DIALECTS`); pressure and tuning expressions; presets: three built in (a PLUGIN location, by load key) and the `.mptp` files in `$MPFREE_TESTPLUG_PRESETS`, else `$HOME/mpfree-testplug-presets` (a FILE location), through its own preset-discovery factory, and preset-load.
 - **MPFree Test Gain:** a stereo effect, with a Fail switch that makes `process` return an error. For the sandbox's tests only, a Stall setting makes `process` sleep and a Crash switch makes it abort its process.
 
 `rust/mpfree-clap-testplug` builds the same two as a real shared library, `libmpfree_clap_testplug.so`, which the tests load with `dlopen`.
@@ -147,6 +149,7 @@ Not yet:
 - the test synth's presets are found (built in and from a folder, with names, categories and flags), a file it can't read is said, and a preset loads by load key and from a file, its values following; an unknown one gives the plugin's reason (`tests/presets.rs`);
 - the entry's `init` and `deinit` balance, and the file stays started while a plugin or its control handle lives (`tests/lifecycle.rs`);
 - no allocation on the audio thread's path (`tests/no_alloc.rs`);
+- in a tuning, the test synth plays each note within 0.2 cents of the tuning's pitch, a slide lands on the tuning's key, a held note moves at the block after a change, and 12-TET at 440 gives the same samples as no tuning (`tests/tunings.rs`); a synth that takes only MIDI gets its notes as MIDI, says it can't follow and plays 12-TET (`tests/midi_only.rs`);
 - the test synth as a track host instrument: it plays on its track, takes a parameter from the host, rings out after a swap and comes back to be dropped; the test gain as an insert in a mixer strip's chain (`tests/track.rs`).
 
 The same tests pass for `armv7-unknown-linux-gnueabihf` under qemu, including the `dlopen` test.
@@ -156,6 +159,7 @@ The same tests pass for `armv7-unknown-linux-gnueabihf` under qemu, including th
 - the control messages round-trip and junk is refused; the process's arguments and events read back;
 - the sandboxed node has the same id, name, kind, parameters and values as the in-process one;
 - the test synth gives exactly the same samples sandboxed as in-process, for notes, pressure, bend, a parameter event and `AllOff`, and the values it sends back arrive; a reset silences it in both;
+- in a tuning too: sample for sample, held notes move back to 12-TET the same, and a process killed and started again plays in the tuning it had;
 - the test gain matches in-process sample for sample, with blocks cut to the prepared size;
 - a plugin that sleeps 1 s in `process` against a 30 ms deadline: the node doesn't wait for it, the effect stays dry, the next block is busy, and once it wakes the queued change goes with the next block;
 - a frozen process (`SIGSTOP`) is a silent miss for an instrument, and when it thaws the note from the missed block sounds;

@@ -277,6 +277,9 @@ pub struct Instruments {
     /// Ring-outs cut short to lend their slot (more than [`SLOTS`] at once),
     /// or by a new instrument while an older one still rang out there.
     cut: u64,
+    /// Instruments put in so far ([`Instruments::put`]): the audio loop
+    /// hands a new one its tuning (`main.rs`, `TuningsHanded`).
+    puts: u64,
     /// The values under the clips' locks on the instruments' parameters
     /// ([`Instruments::lock`]), keyed by track and parameter.
     locks: crate::locks::Under,
@@ -316,6 +319,7 @@ impl Instruments {
             slot_of: [NO_SLOT; WHO],
             refused: 0,
             cut: 0,
+            puts: 0,
             locks: crate::locks::Under::new(rate),
             first: crate::mixing::track_channel(0),
             sends: [NO_SEND; WHO],
@@ -743,7 +747,20 @@ impl Instruments {
         // locks are forgotten.
         let t = track as u32;
         self.locks.forget(|k| k >> 16 == t, |_, _| {});
+        self.puts += 1;
         Ok(())
+    }
+
+    /// How many instruments have been put in ([`Instruments::put`]), to
+    /// see that one came in.
+    pub fn puts(&self) -> u64 {
+        self.puts
+    }
+
+    /// The tuning holder `track`'s instrument plays in, if it has one.
+    #[cfg(test)]
+    pub fn tuning(&self, track: usize) -> Option<&Tuning> {
+        self.host.tuning(self.slot(track)?)
     }
 
     /// Takes track `track`'s instrument out, so it plays the pads again,
@@ -1148,6 +1165,15 @@ impl Instruments {
         if let Some(s) = self.slot(track) {
             self.host.set_tuning(s, tuning);
         }
+    }
+
+    /// Whether track `track`'s instrument plays the tuning it's handed:
+    /// false for a plugin that takes only MIDI notes, which plays 12-TET
+    /// (`Node::follows_tuning`). True with no instrument.
+    pub fn follows_tuning(&self, track: usize) -> bool {
+        self.slot(track)
+            .and_then(|s| self.host.instrument(s))
+            .is_none_or(|i| mpfree_node::Node::follows_tuning(i.node()))
     }
 
     /// Every slot's next `frames` frames into its track's mixer channel.

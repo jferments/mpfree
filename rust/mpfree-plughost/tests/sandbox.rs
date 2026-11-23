@@ -5,7 +5,7 @@
 
 use mpfree_clap::testplug::{gain_params, synth_params, GAIN_ID, SYNTH_ID};
 use mpfree_clap::{ClapNode, Library};
-use mpfree_node::{Ctx, Kind, Node, NodeEvent, Timed};
+use mpfree_node::{Ctx, Kind, Node, NodeEvent, Timed, Tuning};
 use mpfree_plughost::{
     list, parse_list_line, spawn, Deadline, Error, Health, Listed, Program, Sandbox, SandboxNode,
 };
@@ -431,6 +431,85 @@ fn a_crash_is_noticed_and_restarted_from_saved_state() {
         (s.blocks, s.misses, s.down, s.crashes, s.restarts),
         (2, 1, 1, 1, 1)
     );
+}
+
+/// 5-limit just intonation on C: E a pure third (13.7 cents under
+/// 12-TET's), G a pure fifth.
+fn just_on_c() -> Tuning {
+    let ratios = [
+        1.0,
+        16.0 / 15.0,
+        9.0 / 8.0,
+        6.0 / 5.0,
+        5.0 / 4.0,
+        4.0 / 3.0,
+        45.0 / 32.0,
+        1.5,
+        8.0 / 5.0,
+        5.0 / 3.0,
+        9.0 / 5.0,
+        15.0 / 8.0,
+    ];
+    let c4 = 440.0 * 2f64.powf(-9.0 / 12.0);
+    Tuning::from_keys(|k| {
+        let d = k - 60;
+        Some(c4 * ratios[d.rem_euclid(12) as usize] * 2f64.powi(d.div_euclid(12)))
+    })
+    .expect("just on C")
+}
+
+#[test]
+fn a_sandboxed_synth_plays_its_tuning_as_in_process() {
+    let mut here = local(SYNTH_ID, 256);
+    let (mut there, sb) = sandboxed(SYNTH_ID, 256);
+    assert!(there.follows_tuning(), "the test synth takes CLAP's notes");
+    let on = |note| NodeEvent::NoteOn {
+        note,
+        velocity: 100,
+    };
+    let events = [(10, on(64)), (300, on(67))];
+    let plain = render(&mut local(SYNTH_ID, 256), &events, 0, 2048, 256);
+    let just = just_on_c();
+    for n in [&mut here as &mut dyn Node, &mut there] {
+        n.set_tuning(&just);
+    }
+    let a = render(&mut here, &events, 0, 2048, 256);
+    let b = render(&mut there, &events, 0, 2048, 256);
+    assert!(peak(&a.0) > 0.01, "the synth sounds");
+    assert_ne!(a, plain, "the tuning moved its notes");
+    assert_eq!(a, b, "sample for sample the same");
+    // Back to 12-TET while the notes are held: they move back on both.
+    for n in [&mut here as &mut dyn Node, &mut there] {
+        n.set_tuning(&Tuning::standard());
+    }
+    let a = render(&mut here, &[], 2048, 1024, 256);
+    let b = render(&mut there, &[], 2048, 1024, 256);
+    assert_eq!(a, b, "held notes moved back the same");
+    // A process started again takes the tuning the node was handed.
+    for n in [&mut here as &mut dyn Node, &mut there] {
+        n.set_tuning(&just);
+        n.process(
+            &Ctx::new(RATE, 3072),
+            &[Timed::new(0, NodeEvent::AllOff)],
+            &mut [0.0; 256],
+            &mut [0.0; 256],
+        );
+    }
+    let pid = sb.pid().unwrap() as libc::pid_t;
+    // SAFETY: a signal to our own child.
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGKILL) }, 0);
+    let until = Instant::now() + Duration::from_secs(5);
+    while sb.poll() == Health::Running {
+        assert!(Instant::now() < until, "the process didn't go");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    sb.restart(None).expect("restart");
+    here.reset();
+    let again = [(3600, on(64))];
+    let a = render(&mut here, &again, 3584, 2048, 256);
+    let b = render(&mut there, &again, 3584, 2048, 256);
+    assert!(peak(&b.0) > 0.01, "it plays again");
+    assert_eq!(a, b, "in the tuning it had before the restart");
 }
 
 #[test]

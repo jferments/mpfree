@@ -190,6 +190,7 @@ mod time;
 mod touch_bell;
 mod touch_dev;
 mod touchlab_page;
+mod tunings;
 mod undo;
 mod views;
 mod waiting;
@@ -6862,38 +6863,216 @@ fn ask_plugin_presets(mix: &mut mixing::MixHost) {
     }
 }
 
-/// The kits follow the song's tuning (tunings plan T3): when the pick
-/// differs from `was` (None at the start), every kit's keygroups get it.
-/// Returns the pick now, and a line saying so (none for 12-TET at the
-/// start, or with no change). Allocates only for the line, on a change.
-fn kits_follow_tuning(
-    synth: &synth::Synth,
-    player: &mut sampler::Player,
-    was: Option<synth::TuningPick>,
-) -> (Option<synth::TuningPick>, Option<String>) {
-    let pick = synth.settings().tuning;
-    if was == Some(pick) {
-        return (was, None);
-    }
-    player.set_tuning(&synth.tuning_now());
-    let said = (was.is_some() || pick != synth::TuningPick::default()).then(|| {
-        format!(
-            "sampler: the kits' keygroups play {} (pad hits and slices as tuned on the pad)",
-            synth.tuning_label()
-        )
-    });
-    (Some(pick), said)
+/// What the audio loop last handed each instrument for its tuning
+/// (tunings step T5, docs/dev/design/tunings.md). Every period
+/// [`TuningsHanded::follow`] works out what each one plays in (its own
+/// tuning or the song's, `App::tunings`) and hands the tuning to those
+/// whose pick changed: the tracks' own instruments and the free places'
+/// (by holder), every kit place's keygroups, and each synth pad's copy
+/// (its kit's). The shared synth plays its pick through the pads'
+/// settings (`App::shared_tuning_follows`). A new instrument or copy put
+/// in is handed its pick on the next period. Plain data: it never
+/// allocates but for the log line when the song's tuning changes.
+struct TuningsHanded {
+    /// Each holder's instrument's id and pick, as last handed.
+    holders:
+        [Option<(Option<instrument_list::InstrumentId>, synth::TuningPick)>; instruments::HOLDERS],
+    /// Each kit place's pick, as last handed.
+    kits: [Option<synth::TuningPick>; instrument_list::KITS],
+    /// Each synth pad slot's kit and pick, as last handed.
+    pads: [Option<(usize, synth::TuningPick)>; pad_synths::HOST_SLOTS],
+    /// The instruments and synth pad copies put in, as last seen.
+    puts: (u64, u64),
+    /// The song's tuning, as last seen.
+    song: Option<synth::TuningPick>,
+    /// Each holder whose instrument can't follow its tuning, as the log
+    /// last said: its instrument's id, its pick and its node's id.
+    twelve: [Option<(
+        Option<instrument_list::InstrumentId>,
+        synth::TuningPick,
+        &'static str,
+    )>; instruments::HOLDERS],
+    /// The tracks' and free places' instruments that can't follow a
+    /// tuning, a bit each ([`TuningsHanded::deaf`]).
+    deaf: (u128, u16),
 }
 
-/// The tracks' own synths follow the Synth tab's pad layout, octave and
-/// tuning (Drums keeps its kit notes).
+impl TuningsHanded {
+    fn new() -> TuningsHanded {
+        TuningsHanded {
+            holders: [None; instruments::HOLDERS],
+            kits: [None; instrument_list::KITS],
+            pads: [None; pad_synths::HOST_SLOTS],
+            puts: (u64::MAX, u64::MAX),
+            song: None,
+            twelve: [None; instruments::HOLDERS],
+            deaf: (0, 0),
+        }
+    }
+
+    /// The tracks' own instruments and the free places' that can't follow
+    /// a tuning (a plugin that takes only MIDI notes), a bit each, as of
+    /// the last [`TuningsHanded::follow`]: the tuning screens say so
+    /// (tunings step T6, `App::set_tuning_facts`).
+    fn deaf(&self) -> (u128, u16) {
+        self.deaf
+    }
+
+    /// Holder `h`'s bit in [`TuningsHanded::deaf`], set or cleared.
+    fn set_deaf(&mut self, h: usize, deaf: bool) {
+        if h < instruments::TRACKS {
+            let bit = 1u128 << h;
+            self.deaf.0 = if deaf {
+                self.deaf.0 | bit
+            } else {
+                self.deaf.0 & !bit
+            };
+        } else if let Some(bit) = 1u16.checked_shl((h - instruments::TRACKS) as u32) {
+            self.deaf.1 = if deaf {
+                self.deaf.1 | bit
+            } else {
+                self.deaf.1 & !bit
+            };
+        }
+    }
+
+    /// Hands each instrument whose pick changed its tuning; with `sampler`
+    /// None (a session with no kits), the kits wait. Returns the lines for
+    /// the log: when the song's tuning changed (none for 12-TET at the
+    /// start), "sampler: the kits' keygroups play Just (5-limit) on D (pad
+    /// hits and slices as tuned on the pad)"; once for an instrument that
+    /// can't follow its tuning (tunings step T6), "tunings: Track 3's own
+    /// instrument, Surge XT, takes only MIDI notes, so it plays 12-TET, not
+    /// Just (5-limit) on D". With nothing to say it allocates nothing.
+    fn follow(
+        &mut self,
+        tunings: &tunings::Tunings,
+        listed: &instrument_list::InstrumentList,
+        synth: &synth::Synth,
+        mix: &mut mixing::MixHost,
+        sampler: Option<&mut sampler::Player>,
+    ) -> Vec<String> {
+        let mut said = Vec::new();
+        let files = synth.tuning_files();
+        // One tuning made for each pick handed this period.
+        let mut made: Option<(synth::TuningPick, mpfree_tuning::Tuning)> = None;
+        let mut tuning = |p: synth::TuningPick| -> mpfree_tuning::Tuning {
+            match &made {
+                Some((q, t)) if *q == p => t.clone(),
+                _ => {
+                    let t = p.tuning(files);
+                    made = Some((p, t.clone()));
+                    t
+                }
+            }
+        };
+        let puts = (mix.instruments.puts(), mix.pad_synths.puts());
+        if puts.0 != self.puts.0 {
+            self.holders = [None; instruments::HOLDERS];
+        }
+        if puts.1 != self.puts.1 {
+            self.pads = [None; pad_synths::HOST_SLOTS];
+        }
+        self.puts = puts;
+        let (tracks, free) = (mix.instruments.held_tracks(), mix.instruments.held_free());
+        for h in 0..instruments::HOLDERS {
+            let held = if h < instruments::TRACKS {
+                tracks >> h & 1 == 1
+            } else {
+                free >> (h - instruments::TRACKS) & 1 == 1
+            };
+            if !held {
+                self.holders[h] = None;
+                self.twelve[h] = None;
+                self.set_deaf(h, false);
+                continue;
+            }
+            let id = listed.of_holder(h);
+            let pick = tunings.pick(id);
+            if self.holders[h] != Some((id, pick)) {
+                let t = tuning(pick);
+                mix.instruments.set_tuning(h, &t);
+                self.holders[h] = Some((id, pick));
+                self.set_deaf(h, !mix.instruments.follows_tuning(h));
+                // One that plays 12-TET whatever it's handed says so once.
+                let node = mix.instruments.held(h).map_or("", |i| i.id);
+                if t.is_standard() || mix.instruments.follows_tuning(h) {
+                    self.twelve[h] = None;
+                } else if self.twelve[h] != Some((id, pick, node)) {
+                    self.twelve[h] = Some((id, pick, node));
+                    let who = if h < instruments::TRACKS {
+                        instrument_list::Kind::Own { track: h }
+                    } else {
+                        instrument_list::Kind::Free {
+                            place: h - instruments::TRACKS,
+                        }
+                    };
+                    let name = mix.instruments.held(h).map_or("", |i| i.name);
+                    said.push(format!(
+                        "tunings: {}, {name}, takes only MIDI notes, so it plays 12-TET, not {}",
+                        who.words(),
+                        pick.label(files)
+                    ));
+                }
+            }
+        }
+        for s in 0..pad_synths::HOST_SLOTS {
+            let Some(kit) = mix.pad_synths.kit_of(s) else {
+                self.pads[s] = None;
+                continue;
+            };
+            let pick = tunings.pick(listed.of_kit(kit));
+            if self.pads[s] != Some((kit, pick)) {
+                mix.pad_synths.set_tuning(s, &tuning(pick));
+                self.pads[s] = Some((kit, pick));
+            }
+        }
+        let mut own = 0;
+        if let Some(player) = sampler {
+            for k in 0..player.kits().min(instrument_list::KITS) {
+                let id = listed.of_kit(k);
+                let pick = tunings.pick(id);
+                own += usize::from(id.is_some_and(|id| tunings.own(id).is_some()));
+                if self.kits[k] != Some(pick) {
+                    player.set_kit_tuning(k, &tuning(pick));
+                    self.kits[k] = Some(pick);
+                }
+            }
+        }
+        let song = tunings.song();
+        if self.song == Some(song) {
+            return said;
+        }
+        let was = self.song.replace(song);
+        if was.is_some() || song != synth::TuningPick::default() {
+            let mut line = format!(
+                "sampler: the kits' keygroups play {} (pad hits and slices as tuned on the pad)",
+                song.label(files)
+            );
+            if own > 0 {
+                line.push_str(&format!("; {own} with a tuning of their own keep it"));
+            }
+            said.insert(0, line);
+        }
+        said
+    }
+
+    /// A new sampler player (the test session's: main.rs keeps one):
+    /// its kits are handed their tunings again.
+    #[cfg(test)]
+    fn new_player(&mut self) {
+        self.kits = [None; instrument_list::KITS];
+    }
+}
+
+/// The tracks' own synths follow the Synth tab's pad layout and octave
+/// (Drums keeps its kit notes); their tunings are their own or the song's
+/// ([`TuningsHanded`]).
 fn own_follow_synth(synth: &synth::Synth, own: &mut instruments::Instruments) {
-    let tuning = synth.tuning_now();
     for t in 0..instruments::HOLDERS {
         if let Some(h) = own.held(t) {
             let e = synth::Engine::from_node_id(h.id).unwrap_or(synth::Engine::Poly);
             own.set_pads(t, synth.pads_for(e));
-            own.set_tuning(t, &tuning);
         }
     }
 }
@@ -9629,8 +9808,10 @@ fn player_session(
         sampler::Player::with_user_kits(&mut kits, &mpc_one::PAD_NOTES, RATE, sampler::USER_KITS)?;
     // The empty kits kept for New kit, after the others and Grains.
     let user_kits = player.user_kits();
-    // The song's tuning the kits play, once the loop has handed it over.
-    let mut kits_tuned: Option<synth::TuningPick> = None;
+    // What each instrument plays in, as the loop last handed it over
+    // (tunings step T5).
+    // Boxed: its tables would sit on the loop's stack.
+    let mut tunings_handed = Box::new(TuningsHanded::new());
     let sounds: usize = kits.iter().map(|k| k.sounds.len()).sum();
     out.say(&format!("pad player: {} kits, {sounds} sounds", kits.len()));
     for (k, kit) in kits
@@ -9692,6 +9873,8 @@ fn player_session(
     // What the screen shows the pads play, and their bank's letter when it
     // is the bank's own (step 6c).
     let mut pads_shown: (app::PadFocus, Option<usize>) = (app::PadFocus::Track, None);
+    // Each kit's tuning as the Pads tab's Edit pad last showed it.
+    let mut kit_tunings_shown = None;
     // Who plays the Synth tab's instrument, as last shown (step 8b), and
     // when to look again.
     let mut who_shown: Option<String> = None;
@@ -9863,6 +10046,20 @@ fn player_session(
     // 6. Sound.
     progress(out, 6, "Starting the sound", "Opening the sound card", 0.9);
     let mut app = app::App::new(RATE, timed && o.workflow.is_none());
+    // The kits by name, for the Tunings page (an empty kit for New kit has
+    // none).
+    app.set_kit_names(
+        kits.iter()
+            .enumerate()
+            .map(|(k, kit)| {
+                if user_kits.contains(&k) && kit.sounds.is_empty() {
+                    String::new()
+                } else {
+                    kit.name.clone()
+                }
+            })
+            .collect(),
+    );
     // Prefs > Backup and Akai kits: what the first start did or left out.
     app.set_setup(setup_prefs(o, &store));
     // Saved settings and found buttons, read now from the store (opened
@@ -11276,6 +11473,13 @@ fn player_session(
                         out.note(&line);
                     }
                     fx.extend(pads_fx);
+                    // The instruments' own tunings, after the synth part
+                    // and the list (tunings step T5).
+                    let (notes, tunings_fx) = app.open_tunings(o.tunings.as_deref());
+                    for line in notes {
+                        out.note(&line);
+                    }
+                    fx.extend(tunings_fx);
                     if o.clear_loops {
                         out.note(&looper.clear_all());
                     }
@@ -13386,7 +13590,6 @@ fn player_session(
                 {
                     if synth.shift_octave(d) {
                         own_follow_synth(&synth, &mut mix.instruments);
-                        mix.pad_synths.set_tuning(&synth.tuning_now());
                         if synth_on {
                             app.set_pad_layout(Some(synth.pad_layout()));
                         }
@@ -13428,7 +13631,6 @@ fn player_session(
                         out.show(gui::ToUi::Synth(synth.state()));
                     }
                     own_follow_synth(&synth, &mut mix.instruments);
-                    mix.pad_synths.set_tuning(&synth.tuning_now());
                     out.note(&synth_pads_note(&synth));
                     out.show(gui::ToUi::KitChanged {
                         kit: synth_kit,
@@ -13832,6 +14034,13 @@ fn player_session(
             }
             pads_shown = pads_now;
         }
+        // Each kit's tuning for the Pads tab's Edit pad (tunings step T6):
+        // nothing made while nothing changes.
+        let kit_tunings_now = Some(app.kit_tunings_key());
+        if kit_tunings_now != kit_tunings_shown {
+            kit_tunings_shown = kit_tunings_now;
+            out.show(gui::ToUi::KitTunings(app.kit_tunings()));
+        }
         // Who plays the Synth tab's instrument (step 8b), a few times a
         // second while the tab shows.
         if app.view() == app::View::Synth && mt >= who_at {
@@ -13858,6 +14067,15 @@ fn player_session(
             let name = synth.engine_name();
             let line = track_line(t, &mix, &track_kits, &homes, name, to_gear(t));
             fx.extend(app.set_track_line(line));
+            // What the tuning screens say (tunings step T6): who can't
+            // follow a tuning, and the kit each track plays.
+            let kit_of = std::array::from_fn(|t| {
+                track_kits
+                    .kit_of(t)
+                    .and_then(|k| u8::try_from(k).ok())
+                    .filter(|_| !to_gear(t))
+            });
+            fx.extend(app.set_tuning_facts(tunings_handed.deaf(), kit_of));
         }
         let playing_kit = if synth_on { synth_kit } else { player.kit() };
         let mut kit_switched = false;
@@ -14930,11 +15148,11 @@ fn player_session(
         let t_render = Instant::now();
         // Warped pads play at the transport's tempo.
         player.set_tempo(time.info().bpm);
-        // Every kit's keygroups play the song's tuning (tunings plan T3),
-        // handed over when it changes.
-        let (now, said) = kits_follow_tuning(&synth, &mut player, kits_tuned);
-        kits_tuned = now;
-        if let Some(line) = said {
+        // Each instrument plays its own tuning or the song's (tunings
+        // step T5), handed over when its pick changes.
+        for line in
+            tunings_handed.follow(app.tunings(), &listed, &synth, &mut mix, Some(&mut player))
+        {
             out.note(&line);
         }
         // A synced pad LFO keeps to the beats while the transport rolls.
@@ -15216,6 +15434,7 @@ fn player_session(
                 track_kits: project::track_kits_text(&track_kits, &mix.instruments, &listed),
                 instrument_list: listed.text(),
                 pads: app.pads_part(),
+                tunings: app.tunings_part(),
                 loops,
                 audio,
             })));
@@ -20671,55 +20890,219 @@ mod tests {
     }
 
     #[test]
-    fn the_kits_follow_the_songs_tuning_and_say_so_on_a_change() {
+    fn each_instrument_plays_its_own_tuning_or_the_songs() {
         let tone: Vec<i16> = (0..2_000)
             .flat_map(|i| [((i as f32 * 0.03).sin() * 12_000.0) as i16; 2])
             .collect();
         let kick = kit::build(&[(mpc_one::PAD_NOTES[4], "Kick", &tone[..])]);
         let mut ks = kit::parse_kits(&kit::build_kits(&[("House", kick)])).unwrap();
         let mut player = sampler::Player::new(&mut ks, &mpc_one::PAD_NOTES, RATE).unwrap();
-        let mut synth = synth::Synth::new(RATE);
+        let synth = synth::Synth::new(RATE);
+        let mut mix = mixing::MixHost::new(RATE, 0.0, 6.0);
+        let put = |mix: &mut mixing::MixHost, track: usize| {
+            let (id, extras, values) = synth.sound_of(synth::Engine::Poly);
+            let made = instruments::make(
+                &plugins::Plugins::none(),
+                id,
+                &extras,
+                &values,
+                RATE,
+                PERIOD,
+            )
+            .unwrap();
+            let pads = synth.pads_for(synth::Engine::Poly);
+            let plain = mpfree_tuning::Tuning::standard();
+            assert!(mix.instruments.put(track, made, pads, &plain).is_ok());
+        };
+        // Tracks 1 and 3 have their own Poly.
+        put(&mut mix, 0);
+        put(&mut mix, 2);
+        let mut listed = instrument_list::InstrumentList::new();
+        listed.follow_kits(player.kits());
+        listed.follow(mix.instruments.held_tracks());
+        let (track1, track3) = (listed.own_of(0).unwrap(), listed.own_of(2).unwrap());
+        let kit2 = listed.of_kit(1).unwrap();
+        let mut tunings = tunings::Tunings::new();
+        let mut handed = TuningsHanded::new();
         let kits = |player: &sampler::Player| {
-            (0..)
-                .map_while(|k| player.kit_tuning(k).cloned())
+            (0..player.kits())
+                .map(|k| player.kit_tuning(k).cloned().unwrap())
                 .collect::<Vec<_>>()
         };
+        let pick = |builtin, root, a4_hz| synth::TuningPick {
+            builtin,
+            root,
+            a4_hz,
+            file: None,
+        };
         // 12-TET at the start: handed over, said nothing.
-        let (was, said) = kits_follow_tuning(&synth, &mut player, None);
-        assert_eq!(was, Some(synth::TuningPick::default()));
-        assert_eq!(said, None);
+        assert_eq!(
+            handed.follow(&tunings, &listed, &synth, &mut mix, Some(&mut player)),
+            Vec::<String>::new()
+        );
+        assert!(kits(&player).iter().all(|t| t.is_standard()));
+        // The song in just on D; Track 3's Poly in its own meantone at 415.
+        let just_d = pick(synth::Builtin::Just, 2, 440);
+        let meantone = pick(synth::Builtin::Meantone, 0, 415);
+        tunings.set_song(just_d);
+        tunings.set_own(track3, Some(meantone));
+        let said = handed.follow(&tunings, &listed, &synth, &mut mix, Some(&mut player));
+        assert_eq!(
+            said,
+            ["sampler: the kits' keygroups play Just (5-limit) on D (pad hits and slices as tuned on the pad)"]
+        );
+        let (just, mean) = (just_d.tuning(&[]), meantone.tuning(&[]));
+        assert_eq!(mix.instruments.tuning(0), Some(&just));
+        assert_eq!(mix.instruments.tuning(2), Some(&mean));
+        assert!(kits(&player).iter().all(|t| *t == just));
+        // Nothing changed: nothing to say.
+        assert_eq!(
+            handed.follow(&tunings, &listed, &synth, &mut mix, Some(&mut player)),
+            Vec::<String>::new()
+        );
+        // Kit 2 has its own 24-TET; the song goes Pythagorean on E: only
+        // those on Song's move.
+        let quarter = pick(synth::Builtin::Equal24, 0, 440);
+        tunings.set_own(kit2, Some(quarter));
+        let pyth = pick(synth::Builtin::Pythagorean, 4, 440);
+        tunings.set_song(pyth);
+        let said = handed.follow(&tunings, &listed, &synth, &mut mix, Some(&mut player));
+        assert!(
+            said.len() == 1 && said[0].ends_with("; 1 with a tuning of their own keep it"),
+            "{said:?}"
+        );
+        let pyth_t = pyth.tuning(&[]);
+        assert_eq!(mix.instruments.tuning(0), Some(&pyth_t));
+        assert_eq!(mix.instruments.tuning(2), Some(&mean));
         let all = kits(&player);
-        assert!(!all.is_empty());
-        assert!(all.iter().all(|t| t.is_standard()));
-        // A just pick reaches every kit, once, with a line.
-        let just = synth::TuningPick {
+        assert_eq!(all[1], quarter.tuning(&[]));
+        assert!(all.iter().enumerate().all(|(k, t)| k == 1 || *t == pyth_t));
+        // A new sound in Track 3 (the id stays) is handed its own tuning.
+        put(&mut mix, 2);
+        assert_eq!(
+            mix.instruments.tuning(2),
+            Some(&mpfree_tuning::Tuning::standard())
+        );
+        handed.follow(&tunings, &listed, &synth, &mut mix, Some(&mut player));
+        assert_eq!(mix.instruments.tuning(2), Some(&mean));
+        // Track 3's taken out: its tuning goes with its id, and its next
+        // instrument plays the song's.
+        assert!(mix.instruments.take_out(2));
+        listed.follow(mix.instruments.held_tracks());
+        assert!(tunings.follow(&listed));
+        assert_eq!(tunings.own(track3), None);
+        put(&mut mix, 2);
+        listed.follow(mix.instruments.held_tracks());
+        assert_ne!(listed.own_of(2), Some(track3));
+        handed.follow(&tunings, &listed, &synth, &mut mix, Some(&mut player));
+        assert_eq!(mix.instruments.tuning(2), Some(&pyth_t));
+        assert_eq!(tunings.pick(Some(track1)), pyth);
+    }
+
+    /// A plugin instrument that takes only MIDI notes: it plays 12-TET.
+    struct MidiOnly;
+
+    static MIDI_ONLY: mpfree_node::NodeInfo = mpfree_node::NodeInfo {
+        id: "clap:test.midi-only",
+        name: "Midi Synth",
+        kind: mpfree_node::Kind::Instrument,
+    };
+
+    impl mpfree_node::Node for MidiOnly {
+        fn info(&self) -> &'static mpfree_node::NodeInfo {
+            &MIDI_ONLY
+        }
+        fn params(&self) -> &'static [mpfree_node::ParamInfo] {
+            &[]
+        }
+        fn param(&self, _: u16) -> f32 {
+            0.0
+        }
+        fn set_param(&mut self, _: u16, _: f32) {}
+        fn prepare(&mut self, _: u32, _: usize) {}
+        fn reset(&mut self) {}
+        fn process(
+            &mut self,
+            _: &mpfree_node::Ctx,
+            _: &[mpfree_node::Timed],
+            _: &mut [f32],
+            _: &mut [f32],
+        ) {
+        }
+        fn follows_tuning(&self) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn a_plugin_that_takes_only_midi_says_once_it_plays_12_tet() {
+        let synth = synth::Synth::new(RATE);
+        let mut mix = mixing::MixHost::new(RATE, 0.0, 6.0);
+        let plain = mpfree_tuning::Tuning::standard();
+        let put = |mix: &mut mixing::MixHost, track: usize| {
+            let made = (
+                mpfree_track::Instrument::new(Box::new(MidiOnly), RATE, PERIOD),
+                instruments::Held {
+                    id: MIDI_ONLY.id,
+                    name: MIDI_ONLY.name,
+                    instance: 0,
+                },
+            );
+            let pads = synth.pads_for(synth::Engine::Poly);
+            assert!(mix.instruments.put(track, made, pads, &plain).is_ok());
+        };
+        put(&mut mix, 2);
+        assert!(!mix.instruments.follows_tuning(2));
+        assert!(
+            mix.instruments.follows_tuning(0),
+            "no instrument: nothing to say"
+        );
+        let mut listed = instrument_list::InstrumentList::new();
+        listed.follow(mix.instruments.held_tracks());
+        let mut tunings = tunings::Tunings::new();
+        let mut handed = TuningsHanded::new();
+        // In 12-TET there's nothing to say.
+        assert!(handed
+            .follow(&tunings, &listed, &synth, &mut mix, None)
+            .is_empty());
+        let just_d = synth::TuningPick {
             builtin: synth::Builtin::Just,
             root: 2,
-            ..synth::TuningPick::default()
+            a4_hz: 440,
+            file: None,
         };
-        let mut p = synth.settings();
-        p.tuning = just;
-        synth.set_settings(p);
-        let (was, said) = kits_follow_tuning(&synth, &mut player, was);
-        assert_eq!(was, Some(just));
-        let said = said.expect("a line");
-        assert!(
-            said.starts_with("sampler: the kits' keygroups play "),
-            "{said}"
+        tunings.set_song(just_d);
+        let said = handed.follow(&tunings, &listed, &synth, &mut mix, None);
+        assert_eq!(
+            said,
+            [
+                "sampler: the kits' keygroups play Just (5-limit) on D (pad hits and slices as tuned on the pad)",
+                "tunings: Track 3's own instrument, Midi Synth, takes only MIDI notes, so it plays 12-TET, not Just (5-limit) on D",
+            ]
         );
-        assert!(said.contains(&synth.tuning_label()), "{said}");
-        let all = kits(&player);
-        assert_eq!(all.len(), player.kits());
-        assert!(all.iter().all(|t| *t == synth.tuning_now()));
-        // The same pick again: nothing to do.
-        assert_eq!(kits_follow_tuning(&synth, &mut player, was), (was, None));
-        // Back to 12-TET: said, as any change is.
-        synth.set_settings(synth::PadSettings {
-            tuning: synth::TuningPick::default(),
-            ..synth.settings()
-        });
-        let (_, said) = kits_follow_tuning(&synth, &mut player, was);
-        assert!(said.is_some());
-        assert!(kits(&player).iter().all(|t| t.is_standard()));
+        // Said once: another sound put in elsewhere hands every holder its
+        // tuning again, and nothing more is said.
+        put(&mut mix, 5);
+        listed.follow(mix.instruments.held_tracks());
+        let again = handed.follow(&tunings, &listed, &synth, &mut mix, None);
+        assert_eq!(
+            again,
+            ["tunings: Track 6's own instrument, Midi Synth, takes only MIDI notes, so it plays 12-TET, not Just (5-limit) on D"]
+        );
+        // Back to 12-TET, then just again: it says so again.
+        tunings.set_song(synth::TuningPick::default());
+        assert_eq!(
+            handed
+                .follow(&tunings, &listed, &synth, &mut mix, None)
+                .len(),
+            1
+        );
+        tunings.set_song(just_d);
+        assert_eq!(
+            handed
+                .follow(&tunings, &listed, &synth, &mut mix, None)
+                .len(),
+            3
+        );
     }
 }

@@ -593,6 +593,10 @@ impl Node for Offloaded {
     fn set_tuning(&mut self, tuning: &Tuning) {
         self.local.set_tuning(tuning);
     }
+
+    fn follows_tuning(&self) -> bool {
+        self.local.follows_tuning()
+    }
 }
 
 #[cfg(test)]

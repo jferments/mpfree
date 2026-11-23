@@ -1,11 +1,11 @@
 //! The audio thread's part of the CLAP host never allocates or frees:
 //! notes, pressure, bend, parameters (as events and between blocks), the
-//! values the plugin sends back, blocks cut to the plugin's size, and an
-//! effect after the synth.
+//! values the plugin sends back, blocks cut to the plugin's size, tuning
+//! changes, and an effect after the synth.
 
 use mpfree_clap::testplug::{self, gain_params, synth_params, GAIN_ID, SYNTH_ID};
 use mpfree_clap::Library;
-use mpfree_node::{Ctx, Node, NodeEvent, Timed};
+use mpfree_node::{Ctx, Node, NodeEvent, Timed, Tuning};
 use mpfree_prof::alloc::{installed, thread_count, CountingAlloc};
 
 #[global_allocator]
@@ -25,6 +25,10 @@ fn the_audio_threads_part_never_allocates() {
     let decay = synth.param_index(synth_params::DECAY).expect("decay");
     let wave = synth.param_index(synth_params::WAVE).expect("wave");
     let level = gain.param_index(gain_params::GAIN).expect("gain");
+    // Three tunings, made before: 12-TET, quarter tones and a table.
+    let table = Tuning::from_keys(|k| Some(261.6 * 2f64.powf(f64::from(k - 60) / 12.0 + 0.01)))
+        .expect("a table");
+    let tunings = [Tuning::standard(), Tuning::equal(24, 440.0), table];
     let mut events: Vec<Timed> = Vec::with_capacity(16);
     let (mut l, mut r) = (vec![0f32; 128], vec![0f32; 128]);
     let before = thread_count();
@@ -73,6 +77,9 @@ fn the_audio_threads_part_never_allocates() {
         }
         if b % 500 == 499 {
             events.push(Timed::new(127, NodeEvent::AllOff));
+        }
+        if b % 50 == 0 {
+            synth.set_tuning(&tunings[(b / 50) as usize % 3]);
         }
         if b % 11 == 0 {
             synth.set_param(decay, 50.0 + (b % 1000) as f32);

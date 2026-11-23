@@ -1295,6 +1295,7 @@ dependencies = [
  "mpfree-node",
  "mpfree-prof",
  "mpfree-track",
+ "mpfree-tuning",
 ]
 
 [[package]]

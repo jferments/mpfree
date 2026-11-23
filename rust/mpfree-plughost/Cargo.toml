@@ -7,6 +7,7 @@ description = "The plugin sandbox: each CLAP plugin in its own process, so a cra
 
 [dependencies]
 mpfree-node = { path = "../mpfree-node" }
+mpfree-tuning = { path = "../mpfree-tuning" }
 mpfree-clap = { path = "../mpfree-clap" }
 mpfree-mpchost = { path = "../mpfree-mpchost" }
 libc = "0.2"

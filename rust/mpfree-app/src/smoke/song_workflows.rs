@@ -39,6 +39,24 @@ mod tests {
         Lab { s, dir }
     }
 
+    /// The song's tuning on the Tunings page (tunings step T6): the Synth
+    /// tab's options, the Tuning row's help card link, the page's rows
+    /// stepped (`steps`: row, delta; row 1 the song's tuning, 2 its root,
+    /// 3 its A4), then MENU back to the Synth options and MENU shut.
+    fn song_tuning(s: &mut Session, steps: &[(usize, i32)]) {
+        use crate::gui::FromUi;
+        s.press("header", "tab", "Synth").settle();
+        s.button("MENU").settle();
+        s.press("options", "row", "Tuning").settle();
+        s.press("help", "link", "Tunings").settle();
+        for &(row, d) in steps {
+            s.route(FromUi::MenuStep(row, d));
+            s.run_for(0.05);
+        }
+        s.button("MENU").settle();
+        s.button("MENU").settle();
+    }
+
     /// BROWSE, Projects, the song's row tapped twice (the first picks it,
     /// the second opens it): as on the MPC.
     fn open(s: &mut Session, name: &str) {
@@ -720,7 +738,6 @@ mod tests {
     #[test]
     fn a_song_in_just_on_d_plays_its_keygroups_tuned_and_keeps_it() {
         on_big_stack(|| {
-            use crate::gui::FromUi;
             use mpfree_sampler::engine::EngineView;
             use mpfree_sampler::model::{Layer, Pad, Project, Region, Source};
             use mpfree_tuning::{Builtin, Tuning};
@@ -797,16 +814,8 @@ mod tests {
             );
             assert!(kits(s).iter().all(Tuning::is_standard));
 
-            // The Synth tab's options: Tuning to Just, its root to D.
-            s.press("header", "tab", "Synth").settle();
-            s.button("MENU").settle();
-            s.route(FromUi::MenuStep(5, 1));
-            s.run_for(0.05);
-            for _ in 0..2 {
-                s.route(FromUi::MenuStep(6, 1));
-                s.run_for(0.05);
-            }
-            s.button("MENU").settle();
+            // The song's tuning to Just, its root to D, on the Tunings page.
+            song_tuning(s, &[(1, 1), (2, 1), (2, 1)]);
             let just_d = Builtin::Just.tuning(2, 440.0);
             let said = "sampler: the kits' keygroups play Just (5-limit) on D \
                         (pad hits and slices as tuned on the pad)";
@@ -843,6 +852,197 @@ mod tests {
             keygroup(s);
             let again = key(s, f_sharp);
             assert!(cents(again, want).abs() < 1.0, "{again} Hz, not {want}");
+        });
+    }
+
+    /// Tunings step T5: instruments in two tunings at once, each keeping
+    /// its own. Kit 1 and kit 2 each play a keygroup (a 220 Hz tone on A3
+    /// over the keyboard), and Track 2 has its own Poly. The song goes to
+    /// just on D on the Synth tab; kit 2 gets a tuning of its own,
+    /// meantone at A4 = 415. Kit 1 and Track 2's Poly play the song's and
+    /// kit 2 its own, at once. The song back to 12-TET moves only those on
+    /// Song's. Saved, the project has a tunings part and needs
+    /// own-tunings; opened again, kit 2 keeps its own. A tunings part with
+    /// a line that doesn't read refuses the project, said.
+    #[test]
+    fn instruments_play_their_own_tunings_and_the_songs_at_once() {
+        on_big_stack(|| {
+            use crate::synth::{Builtin, TuningPick};
+            use mpfree_sampler::engine::EngineView;
+            use mpfree_sampler::model::{Layer, Pad, Project, Region, Source};
+            const RATE: u32 = crate::RATE;
+            let mut l = lab("own-tunings");
+            let s = &mut l.s;
+            let name = "Night Market";
+            let lib = s.library.clone().expect("a library");
+            let loc = mpfree_library::Loc::top(mpfree_library::Place::Projects)
+                .join(name)
+                .expect("a project's place");
+            open(s, name);
+            s.make_sounds().run_for(0.05);
+            s.give_own(1, crate::synth::Engine::Poly).run_for(0.05);
+            // Kit `kit` a keygroup over the whole keyboard.
+            let keygroup = |s: &mut Session, kit: usize| {
+                let n = (RATE as f32 * 0.7) as usize;
+                let x = (0..n)
+                    .map(|i| 0.3 * (i as f32 * 220.0 * std::f32::consts::TAU / RATE as f32).sin())
+                    .collect();
+                let tone = Source::new("tone", RATE, 1, x).unwrap();
+                let mut p = Project::new();
+                p.add_source(tone.clone());
+                p.set_pad(
+                    0,
+                    Some(Pad::new("tone", Layer::new(Region::whole(&tone)))),
+                    None,
+                )
+                .unwrap();
+                p.spread_to_keys(0, 57).unwrap();
+                let mut swap = crate::sampler::ViewSwap {
+                    kit,
+                    view: Some(EngineView::build(&p, RATE)),
+                    routes: vec![None; mpfree_sampler::model::PADS],
+                };
+                let player = s.sounds.as_mut().expect("a kit");
+                player.select(kit);
+                assert!(player.swap_view(&mut swap));
+            };
+            // The pitch a key sounds at on kit `kit`, from the left channel.
+            let key = |s: &mut Session, kit: usize, note: u8| -> f64 {
+                s.run_for(0.3);
+                s.heard = Some(Vec::new());
+                let player = s.sounds.as_mut().expect("a kit");
+                assert!(player.key_kit_at(kit, note, 100, 0));
+                s.run_for(0.35);
+                let h = s.heard.take().unwrap();
+                let x: Vec<f64> = h.iter().step_by(2).map(|&v| f64::from(v)).collect();
+                let (from, to) = ((RATE / 20) as usize, (RATE as f64 * 0.3) as usize);
+                let ups: Vec<f64> = (from..to)
+                    .filter(|&i| x[i - 1] < 0.0 && x[i] >= 0.0)
+                    .map(|i| (i - 1) as f64 + x[i - 1] / (x[i - 1] - x[i]))
+                    .collect();
+                assert!(ups.len() > 50, "the key sounds: {}", ups.len());
+                let span = ups[ups.len() - 1] - ups[0];
+                (ups.len() - 1) as f64 * f64::from(RATE) / span
+            };
+            let cents = |a: f64, b: f64| 1200.0 * (a / b).log2();
+            let kit_tuning = |s: &Session, k: usize| {
+                s.sounds
+                    .as_ref()
+                    .and_then(|p| p.kit_tuning(k).cloned())
+                    .expect("a kit place")
+            };
+            let poly = |s: &Session| {
+                s.mix
+                    .instruments
+                    .tuning(1)
+                    .cloned()
+                    .expect("Track 2's Poly")
+            };
+            keygroup(s, 0);
+            keygroup(s, 1);
+            let kit2 = s.instrument_list.of_kit(1).expect("kit 2 has an id");
+
+            // The song in just on D; kit 2 in its own meantone at 415.
+            song_tuning(s, &[(1, 1), (2, 1), (2, 1)]);
+            let meantone = TuningPick {
+                builtin: Builtin::Meantone,
+                a4_hz: 415,
+                ..TuningPick::default()
+            };
+            let fx = s.app.set_own_tuning(kit2, Some(meantone));
+            s.fx.extend(fx);
+            s.run_for(0.05);
+            let said = "tunings: Kit 2 plays its own tuning, Meantone 1/4 comma on C, A4 415 Hz";
+            assert!(s.until_said(said, 1.0), "{:?}", s.said());
+            let (just_d, mean) = (
+                Builtin::Just.tuning(2, 440.0),
+                Builtin::Meantone.tuning(0, 415.0),
+            );
+            assert_eq!(kit_tuning(s, 0), just_d);
+            assert_eq!(kit_tuning(s, 1), mean);
+            assert_eq!(poly(s), just_d);
+            // Each kit's F#4 at its own tuning's pitch.
+            let f_sharp = 66u8;
+            for (kit, t) in [(0, &just_d), (1, &mean)] {
+                let heard = key(s, kit, f_sharp);
+                let want = f64::from(t.hz(66.0));
+                assert!(
+                    cents(heard, want).abs() < 1.0,
+                    "kit {}: {heard} Hz, not {want}",
+                    kit + 1
+                );
+            }
+
+            // The song back to 12-TET: kit 1 and the Poly follow, kit 2
+            // keeps its own.
+            song_tuning(s, &[(1, -1)]);
+            let said = "sampler: the kits' keygroups play 12-TET (pad hits and slices as tuned on the pad); 1 with a tuning of their own keep it";
+            assert!(s.until_said(said, 1.0), "{:?}", s.said());
+            assert!(kit_tuning(s, 0).is_standard());
+            assert!(poly(s).is_standard());
+            assert_eq!(kit_tuning(s, 1), mean);
+            // And the song in just on D again, to save.
+            song_tuning(s, &[(1, 1)]);
+            assert_eq!(kit_tuning(s, 0), just_d);
+
+            // Saved: the tunings part and the needs line.
+            s.button_with("SHIFT", "BROWSE");
+            let saved = format!("project: saved {name}");
+            assert!(s.until_said(&saved, 5.0), "{saved}: {:?}", s.said());
+            let snap = lib.open_project(&loc).expect("it opens");
+            let part = snap.part(crate::project::TUNINGS).expect("a tunings part");
+            assert_eq!(
+                part,
+                format!("mpfree-tunings 1\ninstrument {kit2} root C a4 415 meantone\n")
+            );
+            let needs = snap
+                .meta
+                .extra
+                .iter()
+                .find(|(k, _)| k == crate::project::NEEDS_KEY);
+            assert!(
+                needs.is_some_and(|(_, v)| v.split_whitespace().any(|n| n == "own-tunings")),
+                "{:?}",
+                snap.meta.extra
+            );
+
+            // New project: every instrument on the song's 12-TET.
+            s.button("BROWSE");
+            s.press("browser", "place", "Projects");
+            s.press("browser", "button", "New project");
+            s.run_for(0.3);
+            assert!(kit_tuning(s, 1).is_standard());
+            assert_eq!(s.app.tunings().owned(), 0);
+
+            // Opened again: kit 2 in its own, the song's just on D.
+            open(s, name);
+            s.run_for(0.05);
+            assert_eq!(s.app.tunings().own(kit2), Some(meantone));
+            assert_eq!(kit_tuning(s, 0), just_d);
+            assert_eq!(kit_tuning(s, 1), mean);
+            let opened = s.lines.iter().any(|l| {
+                l == "tunings: the song plays Just (5-limit) on D; with their own: Kit 2 Meantone 1/4 comma on C, A4 415 Hz"
+            });
+            assert!(opened, "{:?}", s.said());
+
+            // Edit pad's Tuning on the Pads tab (tunings step T6, board 4),
+            // as its arrows send it: kit 2 back on Song's.
+            s.route(crate::gui::FromUi::KitTuning { kit: 1, delta: -9 });
+            s.run_for(0.05);
+            let said = "tunings: Kit 2 plays the song's tuning, Just (5-limit) on D";
+            assert!(s.until_said(said, 1.0), "{:?}", s.said());
+            assert_eq!(s.app.tunings().own(kit2), None);
+            assert_eq!(kit_tuning(s, 1), just_d);
+
+            // A tunings part that doesn't read: the project isn't opened.
+            let mut bad = snap.clone();
+            for (k, v) in bad.parts.iter_mut() {
+                if k == crate::project::TUNINGS {
+                    *v = "mpfree-tunings 1\ninstrument 9 root H a4 440 just\n".to_string();
+                }
+            }
+            let why = crate::project::check(&bad).expect_err("refused");
+            assert!(why.contains("its tunings can't be read"), "{why}");
         });
     }
 

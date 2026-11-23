@@ -123,6 +123,17 @@ impl Kind {
             Kind::Free { place } => Some(crate::instruments::free(place)),
         }
     }
+
+    /// The instrument as the log names it: "the shared synth", "Track 3's
+    /// own instrument", "free place 2's synth", "Kit 4".
+    pub fn words(self) -> String {
+        match self {
+            Kind::SharedSynth => "the shared synth".to_string(),
+            Kind::Own { track } => format!("Track {}'s own instrument", track + 1),
+            Kind::Free { place } => format!("free place {}'s synth", place + 1),
+            Kind::Kit { kit } => format!("Kit {}", kit + 1),
+        }
+    }
 }
 
 /// The project's instruments, each with its lasting id, and the number
