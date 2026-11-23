@@ -1,5 +1,5 @@
 <!--
-covers: rust/mpfree-app/src/instrument_list.rs rust/mpfree-app/src/instruments.rs rust/mpfree-app/src/locks.rs rust/mpfree-app/src/project.rs rust/mpfree-app/src/app/pads_focus.rs rust/mpfree-app/src/time/strips.rs rust/mpfree-seq/src/lib.rs rust/mpfree-seq/src/save.rs
+covers: rust/mpfree-app/src/instrument_list.rs rust/mpfree-app/src/instruments.rs rust/mpfree-app/src/tunings.rs rust/mpfree-app/src/locks.rs rust/mpfree-app/src/project.rs rust/mpfree-app/src/app/pads_focus.rs rust/mpfree-app/src/time/strips.rs rust/mpfree-seq/src/lib.rs rust/mpfree-seq/src/save.rs
 checked: 2026-11-20 c5b97009
 -->
 # Instruments apart from tracks
@@ -443,3 +443,6 @@ The rest of steps 7 and 8, left out until each had a place on the screen or a wa
 - **Choices made in building:** the stepper lists every synth with no track of its own, the shared synth too, whether or not a track sends to it, so the list doesn't change under you while you step; a route synth that is also the pads' synth or a layer still gets its own track (two players, two tracks), so its take never mixes with the pads'.
 - **Tests:** `mpfree_midi::setup::tests::a_route_to_a_synth_reads_back_by_its_number`; `midi_in::tests::a_route_that_names_a_synth_plays_it_and_the_monitor_says_so`; `instruments::tests::a_route_row_plays_the_synth_its_route_names`; `mpfree_midi_ui::routing::tests::a_routes_track_steps_on_past_the_tracks_to_the_synths`; the monitor's words in `mpfree_midi_ui::monitor::tests`; `smoke::workflows::tests::a_route_that_names_a_synth_plays_it_and_rec_records_it_on_its_own_track` (FM kept by the route after Follow track, its key on the row, the chip, REC on Track 2 in one take with Track 1's kit).
 
+## Tunings (tunings step T5)
+
+A tuning is the instrument's, not the track's ([tunings.md](tunings.md)): every instrument in the list (the shared synth, each track's own, each free place's, each kit) plays the song's tuning ("Song's") or one of its own, kept by its id (`tunings.rs`). Tracks that play one instrument share its tuning; Duplicate copies it; a preset doesn't carry one. An instrument taken out loses its tuning with its id, so whatever takes its place starts on Song's. The audio loop hands each its tuning when its pick changes (`TuningsHanded`); the project keeps the picks in the `tunings` part, by id. As built: [tunings.md](tunings.md#t5-as-built).

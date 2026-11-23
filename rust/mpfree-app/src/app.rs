@@ -38,6 +38,7 @@ pub mod saved;
 pub mod step_pads;
 mod synth_pads;
 mod synth_pick;
+mod tuning_picks;
 
 pub use arp::{
     built_in_patterns, mode_label, ArpItem, ArpView, LiveMap, WorkspaceView, ARP_HEADER,
@@ -1857,6 +1858,14 @@ pub struct App {
     /// ([`App::set_instrument_list`]): what an instrument chosen for the
     /// pads is, and where it is held (step 6).
     instrument_list: crate::instrument_list::InstrumentList,
+    /// The song's tuning and each instrument's own (tunings step T5,
+    /// `app/tuning_picks.rs`). The Synth tab's Tuning rows set the song's;
+    /// `synth_pads.tuning` is what the shared synth plays.
+    tunings: crate::tunings::Tunings,
+    /// A track whose own instrument is a copy (Duplicate), waiting for its
+    /// id in the list to take the tuning of the instrument it copies (by
+    /// that one's id).
+    tuning_copies: [Option<crate::instrument_list::InstrumentId>; mpfree_seq::MAX_TRACKS],
     /// A free place given a synth for the pads, waiting for its id in the
     /// list: the pads play it once it has one (step 6).
     pads_to: Option<usize>,
@@ -2057,6 +2066,8 @@ impl App {
             arp_layout: None,
             pad_map: PadMap::default(),
             instrument_list: crate::instrument_list::InstrumentList::new(),
+            tunings: crate::tunings::Tunings::new(),
+            tuning_copies: [None; mpfree_seq::MAX_TRACKS],
             pads_to: None,
             bank_to: [None; KIT_PAGES],
             layer_to: [None; pad_layers::MORE],
@@ -8004,6 +8015,161 @@ mod tests {
         press(&mut app, MENU);
         assert_eq!(app.view(), View::Synth);
         assert_eq!(app.tab(0), vec![Effect::Show(View::Play)]);
+    }
+
+    /// Tunings step T5 in the app: the Synth tab's Tuning rows set the
+    /// song's tuning; the shared synth plays its own when it has one; an
+    /// instrument's own goes with its id, and a project's tunings part
+    /// gives them back, an instrument the list hasn't got said.
+    #[test]
+    fn each_instrument_has_its_own_tuning_or_the_songs() {
+        use crate::instrument_list::{InstrumentId, InstrumentList};
+        use crate::synth::{Builtin, TuningPick};
+        let mut app = ready();
+        let mut list = InstrumentList::new();
+        list.follow_kits(3);
+        list.follow(0b10);
+        app.set_instrument_list(&list);
+        let (shared, kit2, track2) = (
+            InstrumentId::SHARED_SYNTH,
+            list.of_kit(1).unwrap(),
+            list.own_of(1).unwrap(),
+        );
+        let synth_tuning = |fx: &[Effect]| {
+            fx.iter().find_map(|e| match e {
+                Effect::SynthPads(p) => Some(p.tuning),
+                _ => None,
+            })
+        };
+        let meantone = TuningPick {
+            builtin: Builtin::Meantone,
+            a4_hz: 415,
+            ..TuningPick::default()
+        };
+        // The shared synth in its own meantone: the synth plays it, the
+        // song stays 12-TET.
+        let fx = app.set_own_tuning(shared, Some(meantone));
+        assert_eq!(synth_tuning(&fx), Some(meantone));
+        assert!(fx.contains(&Effect::Note(
+            "tunings: the shared synth plays its own tuning, Meantone 1/4 comma on C, A4 415 Hz"
+                .to_string()
+        )));
+        assert_eq!(app.tunings().song(), TuningPick::default());
+        assert_eq!(app.synth_settings().get_str("tuning"), Some("12-tet"));
+        // The song's Tuning row: the song goes to just, said to the synth
+        // only as a change of the options (the shared synth keeps its own).
+        app.open_tab(View::Synth);
+        press(&mut app, MENU);
+        let row = synth_pads::SYNTH_OPTIONS
+            .iter()
+            .position(|&i| i == Item::Synth(SynthItem::Tuning))
+            .unwrap();
+        let fx = app.step_item(row, 1);
+        assert_eq!(synth_tuning(&fx), Some(meantone));
+        assert_eq!(app.tunings().song().builtin, Builtin::Just);
+        assert_eq!(app.synth_settings().get_str("tuning"), Some("just"));
+        // Back on Song's: the synth plays just.
+        let fx = app.set_own_tuning(shared, None);
+        assert_eq!(synth_tuning(&fx).map(|t| t.builtin), Some(Builtin::Just));
+        assert!(app.set_own_tuning(shared, None).is_empty());
+        // An instrument the list hasn't got: nothing.
+        let none = InstrumentId::from_number(99).unwrap();
+        assert!(app.set_own_tuning(none, Some(meantone)).is_empty());
+        assert_eq!(app.tunings().owned(), 0);
+
+        // Kit 2 and Track 2's own in tunings of their own, saved.
+        app.set_own_tuning(kit2, Some(meantone));
+        app.set_own_tuning(
+            track2,
+            Some(TuningPick {
+                builtin: Builtin::Equal24,
+                ..TuningPick::default()
+            }),
+        );
+        let part = app.tunings_part();
+        assert_eq!(part.lines().count(), 3, "{part}");
+        // Track 2's instrument taken out: its tuning goes.
+        list.follow(0);
+        app.set_instrument_list(&list);
+        assert_eq!(app.tunings().own(track2), None);
+        assert_eq!(app.tunings().own(kit2), Some(meantone));
+
+        // Opened in a new app: the synth part's song, the part's own. The
+        // instrument the list hasn't got any more is said and left out.
+        let mut next = ready();
+        let (_, _) = next.open_synth(&app.synth_settings());
+        next.set_instrument_list(&list);
+        let (notes, fx) = next.open_tunings(Some(&part));
+        assert_eq!(next.tunings().song().builtin, Builtin::Just);
+        assert_eq!(next.tunings().own(kit2), Some(meantone));
+        assert_eq!(next.tunings().own(track2), None);
+        assert_eq!(synth_tuning(&fx).map(|t| t.builtin), Some(Builtin::Just));
+        assert_eq!(
+            notes,
+            [
+                format!("tunings: left out the tuning of instrument {track2}, not in the project's list"),
+                "tunings: the song plays Just (5-limit) on C; with their own: Kit 2 Meantone 1/4 comma on C, A4 415 Hz"
+                    .to_string(),
+            ]
+        );
+        // A new project's synth part: every instrument on Song's again.
+        next.open_synth(&Default::default());
+        let (notes, _) = next.open_tunings(None);
+        assert!(notes.is_empty());
+        assert_eq!(next.tunings(), &crate::tunings::Tunings::new());
+        // A part that doesn't read is said, and changes nothing.
+        let (notes, _) = next.open_tunings(Some("mpfree-tunings 1\nsong root C a4 440 just\n"));
+        assert_eq!(notes.len(), 1);
+        assert!(
+            notes[0].starts_with("tunings: its tunings can't be read"),
+            "{notes:?}"
+        );
+        assert_eq!(next.tunings().owned(), 0);
+    }
+
+    /// Duplicate copies the tuning (tunings step T5): a copy of Track 2's
+    /// own takes its tuning once the list gives it its id, and a copy into
+    /// a track that has its own already takes it at once.
+    #[test]
+    fn a_copy_takes_the_tuning_of_the_instrument_it_copies() {
+        use crate::instrument_list::InstrumentList;
+        use crate::synth::{Builtin, TuningPick};
+        let mut app = ready();
+        let mut list = InstrumentList::new();
+        list.follow_kits(1);
+        list.follow(0b10);
+        app.set_instrument_list(&list);
+        let track2 = list.own_of(1).unwrap();
+        let poly = crate::instruments::Held {
+            id: "mpfree.poly",
+            name: "Poly",
+            instance: 0,
+        };
+        app.set_track_sound(1, Some(poly));
+        let meantone = TuningPick {
+            builtin: Builtin::Meantone,
+            ..TuningPick::default()
+        };
+        app.set_own_tuning(track2, Some(meantone));
+        // Track 3 takes a copy: no id yet, so it waits.
+        app.track = 2;
+        app.copy_track_sound(1);
+        assert_eq!(app.tunings().owned(), 1);
+        list.follow(0b110);
+        app.set_instrument_list(&list);
+        let track3 = list.own_of(2).unwrap();
+        assert_eq!(app.tunings().own(track3), Some(meantone));
+        // Track 4 has its own already (on Song's): the copy's tuning at once.
+        list.follow(0b1110);
+        app.set_instrument_list(&list);
+        let track4 = list.own_of(3).unwrap();
+        app.track = 3;
+        app.copy_track_sound(1);
+        assert_eq!(app.tunings().own(track4), Some(meantone));
+        // A copy of one on Song's puts the copy on Song's.
+        app.set_own_tuning(track2, None);
+        app.copy_track_sound(1);
+        assert_eq!(app.tunings().own(track4), None);
     }
 
     #[test]

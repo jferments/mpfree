@@ -64,6 +64,11 @@ struct Rig {
     /// When kept: every message MIDI out sent, as (the first frame of the
     /// period it was handed over in, its frame, its bytes).
     sent: Option<Vec<(u64, u64, Vec<u8>)>>,
+    /// The project's instruments, and what each was handed for its tuning
+    /// (tunings step T5): kit 1 in its own just, the rest on the song's
+    /// 12-TET.
+    listed: crate::instrument_list::InstrumentList,
+    tunings: crate::TuningsHanded,
 }
 
 fn tone(frames: usize, f: f32) -> Vec<i16> {
@@ -86,8 +91,18 @@ impl Rig {
         let mut kits = kit::parse_kits(&kit::build_kits(&[("House", a)])).unwrap();
         let mut app = app::App::new(RATE, false);
         app.arp_action(ArpAction::Mode(Mode::Arp));
+        let player = sampler::Player::new(&mut kits, &PAD_NOTES, RATE).unwrap();
+        let mut listed = crate::instrument_list::InstrumentList::new();
+        listed.follow_kits(player.kits());
+        app.set_instrument_list(&listed);
+        let kit1 = listed.of_kit(0).unwrap();
+        let just = synth::TuningPick {
+            builtin: synth::Builtin::Just,
+            ..synth::TuningPick::default()
+        };
+        assert!(!app.set_own_tuning(kit1, Some(just)).is_empty());
         Rig {
-            player: sampler::Player::new(&mut kits, &PAD_NOTES, RATE).unwrap(),
+            player,
             synth: cores::SynthSlot::new(synth::Synth::new(RATE)),
             looper: looping::LoopHost::new(RATE, 20),
             tracks: {
@@ -125,6 +140,8 @@ impl Rig {
                 mpfree_sampler::record::input16(crate::sample_page::SCREEN_RECALL_SECONDS, RATE).0,
             ),
             sent: None,
+            listed,
+            tunings: crate::TuningsHanded::new(),
         }
     }
 
@@ -177,6 +194,8 @@ impl Rig {
             tap,
             recall,
             sent,
+            listed,
+            tunings,
             ..
         } = self;
         let synth_on = *synth_on;
@@ -290,6 +309,10 @@ impl Rig {
         time.clear_locks();
         // The pads, each into its mixer channel, and on to the Drums track.
         player.set_tempo(time.info().bpm);
+        // Each instrument's tuning, handed over when its pick changes (the
+        // first period, here).
+        let said = tunings.follow(app.tunings(), listed, synth, mix, Some(&mut *player));
+        assert!(said.is_none(), "12-TET at the start says nothing");
         // The period's deadline for the lanes, as the loop sets it after
         // each write; far, so a slow machine (qemu in CI) is never late.
         let until = std::time::Instant::now() + std::time::Duration::from_secs(5);

@@ -225,8 +225,9 @@ pub struct Session {
     pub synth_on: bool,
     /// What each track plays, as main.rs keeps it.
     pub track_kits: crate::sampler::TrackKits,
-    /// The song's tuning the kits were handed last, as main.rs keeps it.
-    kits_tuned: Option<crate::synth::TuningPick>,
+    /// What each instrument plays in, as main.rs hands it over (tunings
+    /// step T5).
+    tunings_handed: crate::TuningsHanded,
     /// The project's instruments, as main.rs keeps them.
     pub instrument_list: crate::instrument_list::InstrumentList,
     /// The tracks' own instruments and sends the screen was last told of,
@@ -413,7 +414,7 @@ impl Session {
             kit: 0,
             synth_on: false,
             track_kits: crate::sampler::TrackKits::new(n),
-            kits_tuned: None,
+            tunings_handed: crate::TuningsHanded::new(),
             instrument_list: {
                 // Each kit place has its id, as main.rs's (step 14).
                 let mut list = crate::instrument_list::InstrumentList::new();
@@ -783,7 +784,7 @@ impl Session {
         let mut kits = crate::kit::parse_kits(&file).expect("the tones kit");
         self.sounds = Some(crate::sampler::Player::new(&mut kits, &notes, RATE).expect("a player"));
         // A new player starts in 12-TET: the next period hands it the tuning.
-        self.kits_tuned = None;
+        self.tunings_handed.new_player();
         self
     }
 
@@ -1860,12 +1861,19 @@ impl Session {
         let mut played = 0;
         if let Some(p) = self.sounds.as_mut() {
             p.set_tempo(self.time.info().bpm);
-            // The kits play the song's tuning, as main.rs hands it over.
-            let (now, said) = crate::kits_follow_tuning(&self.synth, p, self.kits_tuned);
-            self.kits_tuned = now;
-            if let Some(line) = said {
-                self.out.note(&line);
-            }
+        }
+        // Each instrument plays its own tuning or the song's, as main.rs
+        // hands them over.
+        if let Some(line) = self.tunings_handed.follow(
+            self.app.tunings(),
+            &self.instrument_list,
+            &self.synth,
+            &mut self.mix,
+            self.sounds.as_mut(),
+        ) {
+            self.out.note(&line);
+        }
+        if let Some(p) = self.sounds.as_mut() {
             let mut pads = self.mix.pads();
             p.render_routed(PERIOD, &mut pads);
             played = pads.played();
@@ -2021,6 +2029,7 @@ impl Session {
             ),
             instrument_list: self.instrument_list.text(),
             pads: self.app.pads_part(),
+            tunings: self.app.tunings_part(),
             loops,
             audio,
         };
@@ -2142,6 +2151,11 @@ impl Session {
         self.fx.extend(fx);
         self.app.forget_copies();
         let (notes, fx) = self.app.open_pads(o.pads.as_deref());
+        for line in notes {
+            self.out.note(&line);
+        }
+        self.fx.extend(fx);
+        let (notes, fx) = self.app.open_tunings(o.tunings.as_deref());
         for line in notes {
             self.out.note(&line);
         }

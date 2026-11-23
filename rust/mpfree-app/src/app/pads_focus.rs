@@ -754,6 +754,7 @@ impl App {
         let was = self.pads_focus();
         let missing = self.missing();
         self.instrument_list.clone_from(list);
+        self.tunings_follow_list();
         // A synth given a free place for a bank (step 6c), the pads or a
         // layer (step 11a) that has its id now.
         for b in 0..super::KIT_PAGES {

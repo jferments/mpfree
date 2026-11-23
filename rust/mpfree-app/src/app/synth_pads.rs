@@ -32,6 +32,7 @@
 
 use super::{App, Effect, Item, View};
 use crate::synth::{Builtin, Engine, A4_MAX, A4_MIN, BANKS};
+use crate::tunings::{builtin_key, note_of};
 use mpfree_arp::scale::pads::{InKeyRows, PadLayout};
 use mpfree_arp::scale::{Scale, NOTE_NAMES, SCALES};
 use mpfree_store::Settings;
@@ -113,24 +114,6 @@ fn rows_key(r: InKeyRows) -> &'static str {
     }
 }
 
-fn builtin_key(b: Builtin) -> &'static str {
-    match b {
-        Builtin::Equal12 => "12-tet",
-        Builtin::Just => "just",
-        Builtin::Pythagorean => "pythagorean",
-        Builtin::Meantone => "meantone",
-        Builtin::Equal24 => "24-tet",
-    }
-}
-
-/// A note name ("C#", any case) as 0 to 11.
-fn note_of(v: &str) -> Option<u8> {
-    NOTE_NAMES
-        .iter()
-        .position(|n| n.eq_ignore_ascii_case(v))
-        .map(|i| i as u8)
-}
-
 /// The tuning file prefix in the "synth" settings: `tuning = file NAME`.
 const FILE_PREFIX: &str = "file ";
 
@@ -191,7 +174,7 @@ impl App {
 
     /// The Tuning row's choice: the built-in tunings, then the files.
     fn tuning_choice(&self) -> usize {
-        let t = &self.synth_pads.tuning;
+        let t = &self.tunings.song();
         match t.file {
             Some(f) if usize::from(f) < self.tuning_files.len() => {
                 Builtin::ALL.len() + usize::from(f)
@@ -206,11 +189,14 @@ impl App {
     /// The tuning file picked, as (name, whether its map sets root and A4).
     fn tuning_file(&self) -> Option<&(String, bool)> {
         self.tuning_files
-            .get(usize::from(self.synth_pads.tuning.file?))
+            .get(usize::from(self.tunings.song().file?))
     }
 
     pub(super) fn synth_item_text(&self, item: SynthItem) -> (&'static str, String) {
         let p = &self.synth_pads;
+        // The Tuning rows are the song's (tunings step T5: an instrument's
+        // own gets its rows with the phase 2 screens).
+        let song = self.tunings.song();
         let file = self.tuning_file();
         let mapped = file.is_some_and(|f| f.1);
         match item {
@@ -243,16 +229,16 @@ impl App {
                 "Tuning",
                 match file {
                     Some((name, _)) => fit(name),
-                    None => p.tuning.builtin.name().to_string(),
+                    None => song.builtin.name().to_string(),
                 },
             ),
             SynthItem::TuningRoot => {
-                let root = NOTE_NAMES[usize::from(p.tuning.root % 12)];
+                let root = NOTE_NAMES[usize::from(song.root % 12)];
                 (
                     "Tuning root",
                     if mapped {
                         "set by its .kbm".to_string()
-                    } else if file.is_some() || p.tuning.builtin.has_root() {
+                    } else if file.is_some() || song.builtin.has_root() {
                         root.to_string()
                     } else {
                         format!("{root} (not used)")
@@ -264,7 +250,7 @@ impl App {
                 if mapped {
                     "set by its .kbm".to_string()
                 } else {
-                    format!("{} Hz", p.tuning.a4_hz)
+                    format!("{} Hz", song.a4_hz)
                 },
             ),
         }
@@ -341,7 +327,12 @@ impl App {
 
     /// One of the synth's option rows stepped by `d` (-1 or +1).
     pub(super) fn step_synth_item(&mut self, item: SynthItem, d: i32) -> Vec<Effect> {
-        let before = (self.synth_pads, self.pad_scale_pick, self.pad_scale_root);
+        let before = (
+            self.synth_pads,
+            self.pad_scale_pick,
+            self.pad_scale_root,
+            self.tunings.song(),
+        );
         match item {
             SynthItem::Engine => return self.step_track_sound(d),
             SynthItem::Scale => {
@@ -370,7 +361,7 @@ impl App {
             SynthItem::Tuning => {
                 let last = Builtin::ALL.len() + self.tuning_files.len() - 1;
                 let at = (self.tuning_choice() as i32 + d).clamp(0, last as i32) as usize;
-                let t = &mut self.synth_pads.tuning;
+                let mut t = self.tunings.song();
                 // With a file picked, the built-in tuning is 12-TET: what
                 // plays if the file were missing, and what a kept file
                 // pick comes back with.
@@ -378,18 +369,28 @@ impl App {
                     Some(&b) => (b, None),
                     None => (Builtin::Equal12, Some((at - Builtin::ALL.len()) as u8)),
                 };
+                self.tunings.set_song(t);
             }
             SynthItem::TuningRoot => {
-                let t = &mut self.synth_pads.tuning;
+                let mut t = self.tunings.song();
                 t.root = (i32::from(t.root % 12) + d).clamp(0, 11) as u8;
+                self.tunings.set_song(t);
             }
             SynthItem::A4 => {
-                let t = &mut self.synth_pads.tuning;
+                let mut t = self.tunings.song();
                 t.a4_hz =
                     (i32::from(t.a4_hz) + d).clamp(i32::from(A4_MIN), i32::from(A4_MAX)) as u16;
+                self.tunings.set_song(t);
             }
         }
-        if (self.synth_pads, self.pad_scale_pick, self.pad_scale_root) == before {
+        self.shared_tuning_follows();
+        let now = (
+            self.synth_pads,
+            self.pad_scale_pick,
+            self.pad_scale_root,
+            self.tunings.song(),
+        );
+        if now == before {
             return Vec::new();
         }
         self.project_edit = true;
@@ -538,7 +539,7 @@ impl App {
     /// same engine and sound, so a change to one leaves the other. A send
     /// ends; an instrument of its own takes the copy's sound and keeps the
     /// tracks that play it, as a new sound does. The loop makes it.
-    fn copy_track_sound(&mut self, owner: usize) -> Vec<Effect> {
+    pub(super) fn copy_track_sound(&mut self, owner: usize) -> Vec<Effect> {
         let track = self.track;
         let Some(held) = self.track_sound(owner) else {
             return Vec::new();
@@ -556,6 +557,7 @@ impl App {
             }),
         );
         self.track_copied[track] = Some(owner as u8);
+        self.copy_tuning(track, owner);
         vec![Effect::TrackCopy { track, from: owner }]
     }
 
@@ -733,7 +735,9 @@ impl App {
         for (key, (layout, _)) in BANK_KEYS.iter().zip(p.banks) {
             out.set_str(key, layout_key(layout));
         }
-        let t = &p.tuning;
+        // The song's tuning (the project's own part has it too, with each
+        // instrument's: `App::tunings_part`).
+        let t = &self.tunings.song();
         match self.tuning_file() {
             Some((name, _)) => out.set_str("tuning", &format!("{FILE_PREFIX}{name}")),
             None => out.set_str("tuning", builtin_key(t.builtin)),
@@ -758,6 +762,10 @@ impl App {
             b.1 = octave;
         }
         (self.pad_scale_pick, self.pad_scale_root) = (0, 0);
+        // The song's tuning from the part, every instrument on Song's
+        // until the tunings part says ([`App::open_tunings`]).
+        self.tunings = crate::tunings::Tunings::new();
+        self.tuning_copies = [None; mpfree_seq::MAX_TRACKS];
         let (notes, _) = self.restore_synth(s);
         (notes, vec![Effect::SynthPads(self.synth_pads)])
     }
@@ -771,6 +779,9 @@ impl App {
     pub fn restore_synth(&mut self, s: &Settings) -> (Vec<String>, Vec<Effect>) {
         let mut skipped = Vec::new();
         let mut scale = None;
+        // The tuning lines are the song's: read into the pads' settings,
+        // then handed to the song's (below).
+        self.synth_pads.tuning = self.tunings.song();
         for (k, v) in s.iter() {
             let p = &mut self.synth_pads;
             let ok = match k {
@@ -820,6 +831,8 @@ impl App {
                 skipped.push(format!("{k} = {v}"));
             }
         }
+        self.tunings.set_song(self.synth_pads.tuning);
+        self.shared_tuning_follows();
         if let Some(name) = scale {
             let found = if name == "off" {
                 Some(0)
