@@ -443,6 +443,34 @@ pub fn wav(audio: &[f32], channels: usize, rate: u32) -> Vec<u8> {
     b
 }
 
+/// The header [`write_wav`] starts a file of `samples` samples with
+/// (32-bit float, `channels` interleaved, at `rate`), for a file written
+/// a piece at a time whose length is known first (a loop's layer, phase
+/// 4c.3).
+pub fn wav_header(samples: usize, channels: usize, rate: u32) -> [u8; 44] {
+    let ch = channels.clamp(1, 2) as u16;
+    let data = 4 * samples;
+    let mut h = [0u8; 44];
+    let mut at = 0;
+    let mut put = |b: &[u8]| {
+        h[at..at + b.len()].copy_from_slice(b);
+        at += b.len();
+    };
+    put(b"RIFF");
+    put(&(36 + data as u32).to_le_bytes());
+    put(b"WAVEfmt ");
+    put(&16u32.to_le_bytes());
+    put(&3u16.to_le_bytes());
+    put(&ch.to_le_bytes());
+    put(&rate.to_le_bytes());
+    put(&(rate * 4 * u32::from(ch)).to_le_bytes());
+    put(&(4 * ch).to_le_bytes());
+    put(&32u16.to_le_bytes());
+    put(b"data");
+    put(&(data as u32).to_le_bytes());
+    h
+}
+
 /// [`wav`] written to `w` a piece at a time, without a copy of the whole
 /// file (a project's save writes each take this way).
 pub fn write_wav(
@@ -451,22 +479,7 @@ pub fn write_wav(
     channels: usize,
     rate: u32,
 ) -> std::io::Result<()> {
-    let ch = channels.clamp(1, 2) as u16;
-    let data = 4 * audio.len();
-    let mut h = Vec::with_capacity(44);
-    h.extend_from_slice(b"RIFF");
-    h.extend_from_slice(&(36 + data as u32).to_le_bytes());
-    h.extend_from_slice(b"WAVEfmt ");
-    h.extend_from_slice(&16u32.to_le_bytes());
-    h.extend_from_slice(&3u16.to_le_bytes());
-    h.extend_from_slice(&ch.to_le_bytes());
-    h.extend_from_slice(&rate.to_le_bytes());
-    h.extend_from_slice(&(rate * 4 * u32::from(ch)).to_le_bytes());
-    h.extend_from_slice(&(4 * ch).to_le_bytes());
-    h.extend_from_slice(&32u16.to_le_bytes());
-    h.extend_from_slice(b"data");
-    h.extend_from_slice(&(data as u32).to_le_bytes());
-    w.write_all(&h)?;
+    w.write_all(&wav_header(audio.len(), channels, rate))?;
     let mut buf = [0u8; 4096];
     for piece in audio.chunks(buf.len() / 4) {
         for (o, v) in buf.chunks_exact_mut(4).zip(piece) {

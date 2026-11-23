@@ -438,6 +438,9 @@ pub(crate) struct Files {
     /// Bytes a second the takes armed or recording take (for the drive's
     /// look: nearly full by what is armed).
     armed: Arc<AtomicU64>,
+    /// Loop layers' files written in the work folder ([`LayerWrite`]):
+    /// each name and path, until a save holds it.
+    layer_files: Vec<(String, PathBuf)>,
 }
 
 impl Files {
@@ -453,7 +456,14 @@ impl Files {
             watch: Watch::new(),
             problems: Vec::new(),
             armed: Arc::new(AtomicU64::new(0)),
+            layer_files: Vec::new(),
         }
+    }
+
+    /// A loop layer's file was written whole in the work folder.
+    pub fn layer_written(&mut self, name: String, path: PathBuf) {
+        self.layer_files.retain(|(n, _)| *n != name);
+        self.layer_files.push((name, path));
     }
 
     /// What System status is to hear of the takes since last asked.
@@ -901,6 +911,17 @@ impl Files {
             f.name.clone_from(name);
             f.path = Some(there);
         }
+        // Loop layers' files the save holds a copy of go from the work
+        // folder too (phase 4c.3); the rest stay for the next save, or
+        // the next start's recovery.
+        self.layer_files.retain(|(name, path)| {
+            let there = dir.join(name);
+            if !std::fs::symlink_metadata(&there).is_ok_and(|m| m.is_file()) || *path == there {
+                return true;
+            }
+            let _ = std::fs::remove_file(path);
+            false
+        });
     }
 }
 
@@ -1177,6 +1198,166 @@ pub fn write_take(
     Ok((name, path))
 }
 
+/// A loop layer's recording's file name in the work folder and a
+/// project's `samples/` (phase 4c.3): `loop_ID.wav`, as the app's save
+/// names it.
+pub fn layer_file_name(rec: RecordingId) -> String {
+    format!("loop_{rec}.wav")
+}
+
+/// A loop's layer written to its recording's file in the work folder as
+/// the audio thread reads it from the looper, a piece at a time (audio
+/// tracks phase 4c.3, docs/dev/design/loops-on-audio-tracks.md, rule 4):
+/// `loop_ID.wav` ([`layer_file_name`]), 32-bit float, to a hidden `.part`
+/// file made new, synced once all of it is in, then renamed, as
+/// [`write_take`]'s files are. A piece waits while playback's cache is
+/// less than [`WRITE_CUSHION_S`] ahead (at most [`WRITE_WAIT`]), so
+/// playback's reads come first, without the worker waiting: it is
+/// written as the worker next wakes. A run cut off after the rename
+/// leaves the file for the next start to find ([`recover_into`]).
+pub(crate) struct LayerWrite {
+    pub rec: RecordingId,
+    /// Samples the file holds once whole, and written so far.
+    samples: usize,
+    put: usize,
+    name: String,
+    part: PathBuf,
+    path: PathBuf,
+    fs: StdFs,
+    /// Bytes for one piece, made once.
+    bytes: Vec<u8>,
+    /// Pieces given and not written yet (each buffer with its samples),
+    /// oldest first, and since when the oldest has waited.
+    queue: std::collections::VecDeque<(Vec<f32>, usize)>,
+    since: Option<Instant>,
+    /// Every piece has been given.
+    ended: bool,
+}
+
+impl LayerWrite {
+    /// Start recording `rec`'s file in `dir`: `frames` frames of
+    /// `channels` at `rate`, its header written (a `.part` an earlier
+    /// write left goes first).
+    pub fn begin(
+        dir: &Path,
+        rec: RecordingId,
+        frames: usize,
+        channels: usize,
+        rate: u32,
+    ) -> io::Result<LayerWrite> {
+        let name = layer_file_name(rec);
+        let mut w = LayerWrite {
+            rec,
+            samples: frames * channels.clamp(1, 2),
+            put: 0,
+            part: dir.join(format!(".{name}.part")),
+            path: dir.join(&name),
+            name,
+            fs: StdFs::new(),
+            bytes: Vec::with_capacity(4 * crate::pool::CHUNK),
+            queue: std::collections::VecDeque::new(),
+            since: None,
+            ended: false,
+        };
+        if w.fs.exists(&w.part) {
+            let _ = w.fs.remove(&w.part);
+        }
+        let header = crate::save::wav_header(w.samples, channels, rate);
+        let made =
+            w.fs.create(&w.part, true)
+                .and_then(|()| w.fs.write_at(&w.part, 0, &header));
+        if let Err(e) = made {
+            let _ = w.fs.remove(&w.part);
+            return Err(e);
+        }
+        Ok(w)
+    }
+
+    /// The first `len` samples of `buf` are the next piece.
+    pub fn give(&mut self, buf: Vec<f32>, len: usize) {
+        if self.queue.is_empty() {
+            self.since = Some(Instant::now());
+        }
+        self.queue.push_back((buf, len));
+    }
+
+    /// Every piece has been given.
+    pub fn end(&mut self) {
+        self.ended = true;
+    }
+
+    /// Write the pieces waiting, while playback's cache is `cushion`
+    /// seconds ahead (None: nothing plays from files) or the oldest has
+    /// waited long enough; each buffer written goes into `spent`. Writing
+    /// more than the file holds is refused.
+    pub fn tend(&mut self, cushion: Option<f64>, spent: &mut Vec<Vec<f32>>) -> io::Result<()> {
+        while let Some((buf, len)) = self.queue.pop_front() {
+            let waited = self.since.is_some_and(|t| t.elapsed() >= WRITE_WAIT);
+            if cushion.is_some_and(|c| c < WRITE_CUSHION_S) && !waited {
+                self.queue.push_front((buf, len));
+                return Ok(());
+            }
+            let piece = &buf[..len.min(buf.len())];
+            if self.put + piece.len() > self.samples {
+                spent.push(buf);
+                return Err(io::Error::other("more audio than its layer holds"));
+            }
+            self.bytes.clear();
+            for v in piece {
+                self.bytes.extend_from_slice(&v.to_le_bytes());
+            }
+            let at = 44 + 4 * self.put as u64;
+            let wrote = self.fs.write_at(&self.part, at, &self.bytes);
+            self.put += piece.len();
+            spent.push(buf);
+            wrote?;
+            self.since = Some(Instant::now());
+        }
+        Ok(())
+    }
+
+    /// Every piece is given and written.
+    pub fn done(&self) -> bool {
+        self.ended && self.queue.is_empty()
+    }
+
+    /// The whole file synced, then named, and its folder synced: its name
+    /// and path. Short of its layer's audio, it goes and that is the
+    /// error.
+    pub fn finish(mut self) -> io::Result<(String, PathBuf)> {
+        let dir = self
+            .path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
+        let finished = if self.put == self.samples {
+            self.fs
+                .sync(&self.part)
+                .and_then(|()| self.fs.rename(&self.part, &self.path))
+                .and_then(|()| self.fs.sync_dir(&dir))
+        } else {
+            Err(io::Error::other(format!(
+                "{} of its {} samples came",
+                self.put, self.samples
+            )))
+        };
+        match finished {
+            Ok(()) => Ok((std::mem::take(&mut self.name), self.path.clone())),
+            Err(e) => {
+                let _ = self.fs.remove(&self.part);
+                Err(e)
+            }
+        }
+    }
+
+    /// Stopped before it was whole: its `.part` goes; the buffers still
+    /// waiting go into `spent`.
+    pub fn abandon(mut self, spent: &mut Vec<Vec<f32>>) {
+        spent.extend(self.queue.drain(..).map(|(b, _)| b));
+        let _ = self.fs.remove(&self.part);
+    }
+}
+
 /// What [`recover_into`] found: the log's lines, System status's reports
 /// (Take recovered for each take it finished; Take damaged, about
 /// [`Subject::found_take`], for each whose whole check failed), and the
@@ -1240,7 +1421,7 @@ pub fn recover_into(work: &Path, keep: &Path) -> io::Result<Recovered> {
     }
     std::fs::create_dir_all(keep)?;
     // Takes, and stretches of audio that couldn't be checked.
-    let (mut moved, mut apart) = (0, 0);
+    let (mut moved, mut apart, mut layers) = (0, 0, 0);
     let mut names: Vec<_> = std::fs::read_dir(work)?
         .filter_map(Result::ok)
         .filter_map(|e| e.file_name().into_string().ok())
@@ -1268,11 +1449,14 @@ pub fn recover_into(work: &Path, keep: &Path) -> io::Result<Recovered> {
         }
         if base.contains(".unverified.") {
             apart += 1;
+        } else if n.starts_with("loop_") {
+            // A loop's layer, written once it closed (phase 4c.3).
+            layers += 1;
         } else {
             moved += 1;
         }
     }
-    if moved + apart > 0 {
+    if moved + apart + layers > 0 {
         fs.sync_dir(keep)?;
         fs.sync_dir(work)?;
     }
@@ -1281,6 +1465,13 @@ pub fn recover_into(work: &Path, keep: &Path) -> io::Result<Recovered> {
             "audio tracks: {moved} take{} not saved in a project {} kept in Recordings",
             if moved == 1 { "" } else { "s" },
             if moved == 1 { "was" } else { "were" }
+        ));
+    }
+    if layers > 0 {
+        lines.push(format!(
+            "audio tracks: {layers} loop layer{} not saved in a project {} kept in Recordings",
+            if layers == 1 { "" } else { "s" },
+            if layers == 1 { "was" } else { "were" }
         ));
     }
     if apart > 0 {

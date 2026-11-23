@@ -3634,6 +3634,38 @@ fn drive_room(dir: &std::path::Path) -> Option<mpfree_audiotracks::files::Room> 
     })
 }
 
+/// Loops' closed layers' files (phase 4c.3) go through the audio tracks'
+/// worker, to the folder takes record into.
+impl crate::loops_on_tracks::LayerFiles for TrackHost {
+    fn can_write(&self) -> bool {
+        self.host.layer_files()
+    }
+
+    fn begin(&mut self, rec: u128, frames: usize) -> bool {
+        self.host.layer_begin(RecordingId(rec), frames, 2)
+    }
+
+    fn buffer(&mut self) -> Option<Vec<f32>> {
+        self.host.layer_buffer()
+    }
+
+    fn piece(&mut self, rec: u128, buf: Vec<f32>, len: usize) {
+        self.host.layer_piece(RecordingId(rec), buf, len);
+    }
+
+    fn end(&mut self, rec: u128) {
+        self.host.layer_end(RecordingId(rec));
+    }
+
+    fn drop_layer(&mut self, rec: u128) {
+        self.host.layer_drop(RecordingId(rec));
+    }
+
+    fn written(&mut self) -> Option<(u128, Option<String>)> {
+        self.host.layer_written().map(|(r, why)| (r.0, why))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -180,12 +180,30 @@ pub struct LayerRecs {
     /// For each loop's layer slots ([`LayerInfo::id`]): the layer the
     /// recording was given to ([`LayerInfo::born`]) and its id.
     recs: [[(u64, u128); MAX_LAYERS]; MAX_LOOPS],
+    /// And where its file stands (phase 4c.3, [`LayerWriter`]).
+    files: [[FileState; MAX_LAYERS]; MAX_LOOPS],
+}
+
+/// Where a layer's recording's file stands (phase 4c.3).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FileState {
+    /// Not written: the layer's audio is only in memory.
+    #[default]
+    Unwritten,
+    /// Being written.
+    Writing,
+    /// Whole and synced: in the work folder, or in the project it opened
+    /// from.
+    Synced,
+    /// Couldn't be written (said once): not tried again for this layer.
+    Failed,
 }
 
 impl Default for LayerRecs {
     fn default() -> LayerRecs {
         LayerRecs {
             recs: [[(0, 0); MAX_LAYERS]; MAX_LOOPS],
+            files: [[FileState::Unwritten; MAX_LAYERS]; MAX_LOOPS],
         }
     }
 }
@@ -200,9 +218,10 @@ impl LayerRecs {
                 let Some(y) = looper.loop_layer_info(n, k) else {
                     break;
                 };
-                let slot = &mut self.recs[n][y.id as usize % MAX_LAYERS];
-                if y.closed && y.born != 0 && slot.0 != y.born {
-                    *slot = (y.born, fresh());
+                let s = y.id as usize % MAX_LAYERS;
+                if y.closed && y.born != 0 && self.recs[n][s].0 != y.born {
+                    self.recs[n][s] = (y.born, fresh());
+                    self.files[n][s] = FileState::Unwritten;
                 }
             }
         }
@@ -220,14 +239,224 @@ impl LayerRecs {
 
     /// Loop `n` loaded from a project, its layer `k` in slot `k` as the
     /// looper puts it: each keeps the recording it was saved with (0: it
-    /// gets a fresh one once it is in).
+    /// gets a fresh one once it is in), whose file is in the project.
     pub fn opened(&mut self, looper: &Looper, n: usize, recs: &[u128]) {
         for (k, &rec) in recs.iter().enumerate().take(MAX_LAYERS) {
             let born = looper.slot_born(n, k).unwrap_or(0);
             if rec != 0 && born != 0 {
                 self.recs[n % MAX_LOOPS][k] = (born, rec);
+                self.files[n % MAX_LOOPS][k] = FileState::Synced;
             }
         }
+    }
+
+    /// Where layer `y` of loop `n`'s file stands (Unwritten for a layer
+    /// with no recording yet).
+    pub fn file(&self, n: usize, y: &LayerInfo) -> FileState {
+        let (n, s) = (n % MAX_LOOPS, y.id as usize % MAX_LAYERS);
+        if self.recs[n][s].0 == y.born && y.born != 0 {
+            self.files[n][s]
+        } else {
+            FileState::Unwritten
+        }
+    }
+
+    /// Layers of loop `n` whose audio is only in memory: not yet in a
+    /// synced file (a layer still recording counts). Rule 4 says them on
+    /// the loop's ring and to System status.
+    pub fn unsaved(&self, looper: &Looper, n: usize) -> usize {
+        (0..MAX_LAYERS)
+            .map_while(|k| looper.loop_layer_info(n, k))
+            .filter(|y| self.file(n, y) != FileState::Synced)
+            .count()
+    }
+
+    /// The slot holding recording `rec`, by loop and slot.
+    fn find(&self, rec: u128) -> Option<(usize, usize)> {
+        (0..MAX_LOOPS)
+            .flat_map(|n| (0..MAX_LAYERS).map(move |s| (n, s)))
+            .find(|&(n, s)| rec != 0 && self.recs[n][s].1 == rec)
+    }
+}
+
+/// Where closed layers' files are written (phase 4c.3): the audio tracks'
+/// worker, through [`crate::audiotracks::TrackHost`]; recordings by their
+/// ids. None of these allocate.
+pub trait LayerFiles {
+    /// A layer's file can be written now: there is a work folder.
+    fn can_write(&self) -> bool;
+    /// Start recording `rec`'s file, `frames` stereo frames; false if it
+    /// can't be now.
+    fn begin(&mut self, rec: u128, frames: usize) -> bool;
+    /// An empty buffer for the next piece (its length is the room), if
+    /// one is back.
+    fn buffer(&mut self) -> Option<Vec<f32>>;
+    /// The first `len` samples of `buf` are `rec`'s next piece.
+    fn piece(&mut self, rec: u128, buf: Vec<f32>, len: usize);
+    /// Every piece of `rec` is given.
+    fn end(&mut self, rec: u128);
+    /// Stop writing `rec`; nothing of it is kept.
+    fn drop_layer(&mut self, rec: u128);
+    /// What came of a file, oldest first: synced (None), or why not.
+    fn written(&mut self) -> Option<(u128, Option<String>)>;
+}
+
+/// Closed layers written to their recordings' files soon after they close
+/// (audio tracks phase 4c.3, docs/dev/design/loops-on-audio-tracks.md
+/// rule 4), one at a time, read from the looper a piece at a time
+/// ([`Looper::raw_of`]) with the loops playing on: a closed layer's audio
+/// never changes, so its pieces hold together whatever the loop does
+/// meanwhile. A layer that goes before its file is whole (cleared, UNDO)
+/// is dropped, and written again if it comes back. Each period, with
+/// recordings on; allocates nothing.
+#[derive(Debug, Default)]
+pub struct LayerWriter {
+    job: Option<Job>,
+    /// Files that couldn't be written, counted, and the last reason,
+    /// until the app takes it for the log ([`LayerWriter::take_failure`]).
+    pub failed: u64,
+    why: Option<String>,
+}
+
+/// The layer being written: loop `n`'s slot `slot`, numbered `born`, as
+/// recording `rec`, `size` frames, read up to `from`; the buffer filling
+/// and its samples; and whether every piece is given (then it waits for
+/// its file to be synced).
+#[derive(Debug)]
+struct Job {
+    n: usize,
+    slot: usize,
+    born: u64,
+    rec: u128,
+    size: usize,
+    from: usize,
+    buf: Option<Vec<f32>>,
+    fill: usize,
+    ended: bool,
+}
+
+impl LayerWriter {
+    /// One period: what the files said, then up to `budget` frames of the
+    /// layer being written, or the next closed layer with an unwritten
+    /// recording started.
+    pub fn tend(
+        &mut self,
+        recs: &mut LayerRecs,
+        looper: &Looper,
+        files: &mut dyn LayerFiles,
+        mut budget: usize,
+    ) {
+        while let Some((rec, why)) = files.written() {
+            if let Some((n, s)) = recs.find(rec) {
+                if recs.files[n][s] == FileState::Writing {
+                    recs.files[n][s] = if why.is_none() {
+                        FileState::Synced
+                    } else {
+                        FileState::Failed
+                    };
+                }
+            }
+            if let Some(why) = why {
+                self.failed += 1;
+                self.why = Some(why);
+            }
+            if self.job.as_ref().is_some_and(|j| j.rec == rec) {
+                self.job = None;
+            }
+        }
+        if let Some(j) = self.job.as_mut().filter(|j| !j.ended) {
+            if looper.raw_of(j.n, j.born, 0, &mut []).is_none() {
+                // Its layer went (cleared, undone, the loop loaded over):
+                // its file goes, and its buffer back.
+                files.drop_layer(j.rec);
+                if let Some(b) = j.buf.take() {
+                    files.piece(j.rec, b, 0);
+                }
+                if recs.recs[j.n][j.slot] == (j.born, j.rec) {
+                    recs.files[j.n][j.slot] = FileState::Unwritten;
+                }
+                self.job = None;
+            }
+        }
+        if let Some(j) = self.job.as_mut().filter(|j| !j.ended) {
+            while budget > 0 && j.from < j.size {
+                if j.buf.is_none() {
+                    j.buf = files.buffer();
+                    j.fill = 0;
+                }
+                let Some(buf) = j.buf.as_mut() else { break };
+                let room = (buf.len() - j.fill) / 2;
+                let n = room.min(j.size - j.from).min(budget);
+                if looper
+                    .raw_of(j.n, j.born, j.from, &mut buf[j.fill..j.fill + 2 * n])
+                    .is_none()
+                {
+                    break;
+                }
+                j.from += n;
+                j.fill += 2 * n;
+                budget -= n;
+                if j.fill + 2 > buf.len() || j.from == j.size {
+                    let b = j.buf.take().expect("filled");
+                    files.piece(j.rec, b, j.fill);
+                    j.fill = 0;
+                }
+            }
+            if j.from == j.size && j.buf.is_none() {
+                files.end(j.rec);
+                j.ended = true;
+            }
+        }
+        if self.job.is_none() && files.can_write() {
+            self.start_next(recs, looper, files);
+        }
+    }
+
+    /// Start the first closed layer, loop by loop in play order, with a
+    /// recording and no file yet.
+    fn start_next(&mut self, recs: &mut LayerRecs, looper: &Looper, files: &mut dyn LayerFiles) {
+        for n in 0..MAX_LOOPS {
+            for k in 0..MAX_LAYERS {
+                let Some(y) = looper.loop_layer_info(n, k) else {
+                    break;
+                };
+                let s = y.id as usize % MAX_LAYERS;
+                let (born, rec) = recs.recs[n][s];
+                if !y.closed || born != y.born || rec == 0 {
+                    continue;
+                }
+                if recs.files[n][s] != FileState::Unwritten {
+                    continue;
+                }
+                let Some(size) = looper.raw_of(n, born, 0, &mut []) else {
+                    continue;
+                };
+                if !files.begin(rec, size) {
+                    return;
+                }
+                recs.files[n][s] = FileState::Writing;
+                self.job = Some(Job {
+                    n,
+                    slot: s,
+                    born,
+                    rec,
+                    size,
+                    from: 0,
+                    buf: None,
+                    fill: 0,
+                    ended: size == 0,
+                });
+                if size == 0 {
+                    files.end(rec);
+                }
+                return;
+            }
+        }
+    }
+
+    /// The last file that couldn't be written's reason, once, for the log.
+    pub fn take_failure(&mut self) -> Option<String> {
+        self.why.take()
     }
 }
 

@@ -495,3 +495,53 @@ fn each_layer_keeps_a_number_of_its_own() {
     assert!(opened[0] != opened[1] && opened.iter().all(|&x| x > 0));
     assert!((0..2).all(|k| b.l.layer_info(k).unwrap().closed));
 }
+
+/// Phase 4c.3: a closed layer reads as it was written by its number
+/// whatever the loop is doing (here overdubbing another layer, when the
+/// loop can't be saved), never while it is still being written, and not
+/// once the loop no longer lists it.
+#[test]
+fn a_closed_layer_reads_by_its_number_while_the_loop_goes_on() {
+    let mut r = layered();
+    let (first, k0) = (r.l.layer_info(0).unwrap(), raw(&r, 0));
+    let (second, k1) = (r.l.layer_info(1).unwrap(), raw(&r, 1));
+    r.cmd(L::Overdub);
+    r.run(r.frame + 4_096, &tone);
+    let open = r.l.layer_info(3).unwrap();
+    assert!(open.recording && !open.closed);
+    let mut two = [0.0f32; 2];
+    assert_eq!(r.l.raw_layer(0, 0, 0, &mut two), None, "not savable now");
+    let mut out = vec![1.0; k0.len()];
+    assert_eq!(r.l.raw_of(0, first.born, 0, &mut out), Some(k0.len() / 2));
+    assert_eq!(out, k0);
+    // A piece from the middle, as the writer reads it.
+    let mut piece = vec![1.0; 2_000];
+    assert_eq!(
+        r.l.raw_of(0, second.born, 300, &mut piece),
+        Some(k1.len() / 2)
+    );
+    assert_eq!(piece, k1[600..2_600]);
+    assert_eq!(
+        r.l.raw_of(0, open.born, 0, &mut two),
+        None,
+        "still being written"
+    );
+    assert_eq!(r.l.raw_of(0, 0, 0, &mut two), None);
+    assert_eq!(
+        r.l.raw_of(1, first.born, 0, &mut two),
+        None,
+        "another loop's"
+    );
+    // Closed, it reads; undone, the loop no longer lists it.
+    r.cmd(L::Overdub);
+    r.run(r.frame + 4_096, &silence);
+    assert!(r.l.layer_info(3).unwrap().closed);
+    let k3 = raw(&r, 3);
+    let mut out = vec![1.0; k3.len()];
+    assert_eq!(r.l.raw_of(0, open.born, 0, &mut out), Some(k3.len() / 2));
+    assert_eq!(out, k3);
+    r.cmd(L::Undo);
+    r.run(r.frame + 4_096, &silence);
+    assert_eq!(r.l.raw_of(0, open.born, 0, &mut two), None);
+    assert!(r.l.raw_of(0, first.born, 0, &mut two).is_some());
+}

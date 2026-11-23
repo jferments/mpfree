@@ -3480,6 +3480,29 @@ impl Looper {
             return None;
         }
         let slot = l.listed(k)?;
+        self.raw_slot(n, slot, from, out);
+        Some(l.version)
+    }
+
+    /// Frames `from` on of loop `n`'s layer numbered `born`
+    /// ([`LayerInfo::born`]) as it was written, as [`Looper::raw_layer`]
+    /// gives them, once the layer is closed ([`LayerInfo::closed`]) and
+    /// whatever else the loop is doing: a closed layer's audio never
+    /// changes, so phase 4c.3 writes each to its file while the loop
+    /// plays, overdubs or is edited. Gives the layer's size, or None,
+    /// writing nothing, when the loop doesn't list that layer or it is
+    /// still being written. Does not allocate.
+    pub fn raw_of(&self, n: usize, born: u64, from: usize, out: &mut [f32]) -> Option<usize> {
+        let l = self.loops.get(n)?;
+        let slot = l.slot_of(born).filter(|&s| l.slot_closed(s))?;
+        self.raw_slot(n, slot, from, out);
+        Some(l.views[slot].size())
+    }
+
+    /// Slot `slot` of loop `n`'s audio from frame `from`, as written (see
+    /// [`Looper::raw_layer`]).
+    fn raw_slot(&self, n: usize, slot: usize, from: usize, out: &mut [f32]) {
+        let l = &self.loops[n];
         let blocks = self.store.blocks_of(n, slot);
         let size = l.views[slot].size();
         let (start, count) = l.slots[slot].valid;
@@ -3494,7 +3517,6 @@ impl Looper {
             };
             y.copy_from_slice(&x);
         }
-        Some(l.version)
     }
 
     /// Frames `from` on of layer `k` of loop `n` (in play order) as it
@@ -3939,9 +3961,7 @@ impl Looper {
             faded: s.age,
             replace: s.replace.is_some(),
             born: s.born,
-            closed: !(l.od_open && l.od_layer == slot)
-                && !(slot == 0 && (l.first_open || l.tail))
-                && !matches!(l.phase, Phase::Recording | Phase::Armed),
+            closed: l.slot_closed(slot),
         })
     }
 
@@ -6196,6 +6216,28 @@ impl Loop {
     /// The first pass is being recorded into slot 0.
     fn first_in_progress(&self) -> bool {
         matches!(self.phase, Phase::Recording) || self.first_open
+    }
+
+    /// Slot `k`'s audio is all written and never changes again (audio
+    /// tracks phase 4c, rule 1): no first pass, overdub, merge, fit, load
+    /// or layer copying in writes into it, and a first pass is done
+    /// keeping what it hears after its loop ([`LayerInfo::closed`]).
+    fn slot_closed(&self, k: usize) -> bool {
+        !(matches!(self.phase, Phase::Recording | Phase::Armed)
+            || (k == 0 && (self.first_open || self.tail))
+            || (self.od_open && self.od_layer == k)
+            || (self.merging && self.mg_slot == k)
+            || (self.fitting && self.fit_slot == k)
+            || (self.loading && k < self.ld_layers)
+            || (self.adding && self.ad_slot == k))
+    }
+
+    /// The slot of the layer numbered `born` ([`LayerInfo::born`]), if
+    /// the loop lists it.
+    fn slot_of(&self, born: u64) -> Option<usize> {
+        (0..self.layers())
+            .filter_map(|k| self.listed(k))
+            .find(|&s| born != 0 && self.slots[s].born == born)
     }
 
     /// Give back the memory of every slot that can no longer come back.

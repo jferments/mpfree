@@ -15337,6 +15337,10 @@ fn player_session(
             tracks.plan_loops(time.block(), &|p| time.audio(p));
             looper.give_loop_id(|| tracks.fresh_loop_id());
             looper.give_layer_recs(|| tracks.fresh_recording_id());
+            // Closed layers to their files soon after they close (4c.3).
+            if let Some(line) = looper.write_layers(&mut tracks, time.block().frames as usize) {
+                out.note(&line);
+            }
             looper.tell_tracks(time.project(), tracks.loop_player());
         }
         let line_note = looper.run(time.block(), &mut loop_l, &mut loop_r);
