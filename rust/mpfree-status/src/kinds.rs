@@ -391,6 +391,24 @@ pub static NO_SESSION: Kind = Kind {
     ],
 };
 
+/// The pads' session with the MPC didn't start within 20 s at start-up, so
+/// MPFree plays without Akai's setup message (the session chip's yellow
+/// No session until phase 2). The pads still play, so it is yellow; it
+/// ends if the session starts later.
+pub static NO_SETUP: Kind = Kind {
+    id: "controls/no-setup",
+    system: System::Controls,
+    level: Level::Warn,
+    shape: Shape::Stays,
+    short: "Without Akai setup",
+    title: "The pads started without Akai's setup",
+    what: "The MPC's pads didn't answer MPFree's setup in time when it started, so MPFree plays without it. The pads and buttons still play.",
+    to_try: "Keep playing. If a pad, button or knob doesn't answer, restart MPFree.",
+    action: None,
+    manual: "the-pads-started-without-akais-setup",
+    hides: &[],
+};
+
 /// The touch reader stopped ringing its doorbell.
 pub static TOUCH_STOPPED: Kind = Kind {
     id: "controls/touch-stopped",
@@ -585,6 +603,7 @@ pub static ALL: &[&Kind] = &[
     &TAKE_DAMAGED,
     &TAKE_RECOVERED,
     &NO_SESSION,
+    &NO_SETUP,
     &TOUCH_STOPPED,
     &PORT_MISSING,
     &CRASH_RESTART,

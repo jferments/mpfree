@@ -40,6 +40,7 @@ pub mod record;
 pub mod roles;
 pub mod shape;
 pub mod sizes;
+pub mod status_page;
 pub mod style;
 pub mod text;
 pub mod textpad;
