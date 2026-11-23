@@ -46,6 +46,7 @@ pub use model::Model;
 
 use gemm::Work;
 use net::Tensor;
+use std::ops::Deref;
 use std::time::{Duration, Instant};
 use stft::{Channel, OverlapAdd, Rfft, BINS, HOP, N};
 
@@ -232,10 +233,16 @@ enum Stage {
     Done,
 }
 
-/// One sound's separation, a step at a time.
-pub struct Separator<'a> {
-    model: &'a Model,
-    input: &'a [f32],
+/// One sound's separation, a step at a time. It holds the model and the
+/// sound through `M` and `I`: borrowed (`&Model`, `&[f32]`) for a run on one
+/// thread, or shared (`Arc<Model>`, `Arc<[f32]>`) for a separation that
+/// moves from one job to the next between steps, which `Separator` is
+/// `Send` for.
+pub struct Separator<M, I> {
+    model: M,
+    input: I,
+    /// The input's whole frames, in samples (all channels).
+    len: usize,
     channels: usize,
     bins: usize,
     extend: bool,
@@ -260,19 +267,19 @@ pub struct Separator<'a> {
     stats: Stats,
 }
 
-impl<'a> Separator<'a> {
+impl<M: Deref<Target = Model>, I: AsRef<[f32]>> Separator<M, I> {
     /// A separation of `input` (interleaved, `channels` of 1 or 2, at
     /// `rate`). A mono sound is separated as stereo with both sides the
     /// same, as Spleeter does; the stems are always stereo (the networks'
     /// two outputs have their own weights, so a mono sound's stems can
     /// differ a little side to side).
     pub fn new(
-        model: &'a Model,
-        input: &'a [f32],
+        model: M,
+        input: I,
         channels: usize,
         rate: u32,
         settings: &Settings,
-    ) -> Result<Separator<'a>, Error> {
+    ) -> Result<Separator<M, I>, Error> {
         if rate != RATE {
             return Err(Error::Rate(rate));
         }
@@ -288,23 +295,25 @@ impl<'a> Separator<'a> {
     }
 
     pub(crate) fn at(
-        model: &'a Model,
-        input: &'a [f32],
+        model: M,
+        input: I,
         channels: usize,
         bins: usize,
         extend: bool,
         threads: usize,
-    ) -> Result<Separator<'a>, Error> {
+    ) -> Result<Separator<M, I>, Error> {
         if !(1..=2).contains(&channels) {
             return Err(Error::Channels(channels));
         }
         assert!(bins.is_multiple_of(64) && bins <= BINS && (!extend || bins >= 64));
-        let samples = input.len() / channels;
+        let samples = input.as_ref().len() / channels;
         let frames = stft::frames(samples);
         let rows = model.shape.rows;
+        let work = Work::new(model.widest());
         Ok(Separator {
             model,
-            input: &input[..samples * channels],
+            input,
+            len: samples * channels,
             channels,
             bins,
             extend,
@@ -332,7 +341,7 @@ impl<'a> Separator<'a> {
                 })
                 .collect(),
             stereo: Vec::with_capacity(2 * CHUNK_SAMPLES),
-            work: Work::new(model.widest()),
+            work,
             stats: Stats::default(),
         })
     }
@@ -408,7 +417,7 @@ impl<'a> Separator<'a> {
         let (f0, nf) = (self.seg * rows, self.rows_now());
         let (rf, win) = (&self.rf, &self.win);
         let channels = self.channels;
-        let input = self.input;
+        let input = &self.input.as_ref()[..self.len];
         let one = |ch: usize, (re, im): &mut (Vec<f32>, Vec<f32>)| {
             let x = Channel {
                 data: input,

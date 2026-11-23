@@ -194,6 +194,30 @@ fn it_steps_four_networks_a_segment_and_counts_their_work() {
 }
 
 #[test]
+fn a_separation_that_owns_its_model_and_sound_moves_between_threads() {
+    let model = std::sync::Arc::new(Model::synthetic_shaped(SMALL, 1));
+    let input: std::sync::Arc<[f32]> = noise(2 * 44_100 * 2, 6, 0.5).into();
+    let here = separate(&model, &input, 2, true, 2);
+    let mut sep = Separator::at(model.clone(), input.clone(), 2, BINS_SMALL, true, 2).unwrap();
+    let mut keep = Keep::default();
+    // A step a thread, as the app's job service runs it: the separation
+    // and its sink move to the next job each time.
+    loop {
+        let (s, k, more) = std::thread::spawn(move || {
+            let more = sep.step(&mut keep).unwrap();
+            (sep, keep, more)
+        })
+        .join()
+        .unwrap();
+        (sep, keep) = (s, k);
+        if !more {
+            break;
+        }
+    }
+    assert_eq!(keep.stems, here.stems);
+}
+
+#[test]
 fn what_it_refuses() {
     let model = Model::synthetic_shaped(SMALL, 1);
     let s = Settings::default();
