@@ -167,8 +167,26 @@ One limit is the caller's: a damaged inode can claim a size its blocks don't hol
 - **Its look:** the SD card place's (read-only path line, Copy only, no stars). Its own screens go to Jay first, as the SD card's did.
 
 **Unverified, to settle before it is built:**
-- Which top folders Akai's browser shows on the Internal drive. A read-only listing of partition 8's top folder from the owner's eMMC backup (on the workstation, with `debugfs -R ls`) answers it without the MPC.
-- Whether Akai's partition 8 uses features the reader refuses (`INCOMPAT_KNOWN`). The same backup answers it (`dumpe2fs -h`).
+- Which top folders Akai's browser shows on the Internal drive.
+- Whether Akai's partition 8 uses features the reader refuses (`INCOMPAT_KNOWN`).
+- Whether its folders and files all read with MPFree's reader, and how many sounds have holes.
+
+The owner's eMMC backup answers all three on the workstation, without the MPC, through [`mpfree-ext4-survey`](../../../rust/mpfree-diskimage/src/bin/mpfree-ext4-survey.rs). `mpfree-ext4-survey --newest-backup` opens the newest `~/mpfree-backups/mpc-one-emmc-*/mmcblk0.img` read-only and finds the partition named `data` by its GPT. It reads that partition with the reader the place will use and reports:
+- its feature words, by name, and whether the reader opens it;
+- the journal's state;
+- the top folder, marking what the place leaves out;
+- counts of files, folders, hashed folders and links, and how deep the folders go;
+- the largest folder and how long it took to list;
+- the files' endings and the sounds against the place's limit;
+- how many WAVs start with a WAVE header;
+- the files with holes;
+- every file read whole as a stream, with the time and any error.
+
+It prints names and counts, never a file's contents. Its tests run it on a GPT disk image whose `data` partition `mke2fs -d` made like the Internal drive, with:
+- 600 sounds in a hashed folder;
+- a sound with silence stored as a hole;
+- Akai's `system` folder;
+- a link and a hidden file.
 - How long the reader takes to list a folder of a few thousand samples on the eMMC (htree folders are read whole). On the host, `lists_a_hashed_folder_of_thousands_of_files` lists a hashed folder of 5000 files whole, each with its size, in about 3 ms from an image the host has cached. The eMMC's own reads are what is left to measure, on the MPC.
 
 **Passes when,** on the MPC with Jay's go and a rehearsed block: the place lists the Internal drive, a sound from it loads and plays, Copy and Paste put it in the library, the counters stay unchanged, and the boot hashes are the same before and after.
