@@ -225,6 +225,8 @@ pub struct Session {
     pub synth_on: bool,
     /// What each track plays, as main.rs keeps it.
     pub track_kits: crate::sampler::TrackKits,
+    /// The song's tuning the kits were handed last, as main.rs keeps it.
+    kits_tuned: Option<crate::synth::TuningPick>,
     /// The project's instruments, as main.rs keeps them.
     pub instrument_list: crate::instrument_list::InstrumentList,
     /// The tracks' own instruments and sends the screen was last told of,
@@ -409,6 +411,7 @@ impl Session {
             kit: 0,
             synth_on: false,
             track_kits: crate::sampler::TrackKits::new(n),
+            kits_tuned: None,
             instrument_list: {
                 // Each kit place has its id, as main.rs's (step 14).
                 let mut list = crate::instrument_list::InstrumentList::new();
@@ -768,6 +771,8 @@ impl Session {
         let file = crate::kit::build_kits(&[("Tones", crate::kit::build(&sounds))]);
         let mut kits = crate::kit::parse_kits(&file).expect("the tones kit");
         self.sounds = Some(crate::sampler::Player::new(&mut kits, &notes, RATE).expect("a player"));
+        // A new player starts in 12-TET: the next period hands it the tuning.
+        self.kits_tuned = None;
         self
     }
 
@@ -1815,6 +1820,12 @@ impl Session {
         let mut played = 0;
         if let Some(p) = self.sounds.as_mut() {
             p.set_tempo(self.time.info().bpm);
+            // The kits play the song's tuning, as main.rs hands it over.
+            let (now, said) = crate::kits_follow_tuning(&self.synth, p, self.kits_tuned);
+            self.kits_tuned = now;
+            if let Some(line) = said {
+                self.out.note(&line);
+            }
             let mut pads = self.mix.pads();
             p.render_routed(PERIOD, &mut pads);
             played = pads.played();
