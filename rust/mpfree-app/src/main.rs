@@ -2173,14 +2173,20 @@ fn pad_note_names() -> String {
 
 /// How keys play the armed track: by note while the pads press notes (a
 /// synth pad layout or the track's own synth's pad map, `key_notes`), the
-/// kit's own pads while it plays a kit (not the synth, nor an instrument of
-/// its own), else as the pad (1 to 16) the MPC gives each note (an
-/// instrument whose arp works in pads, such as the Drums engine).
-fn keys_play(synth_on: bool, key_notes: bool, own: bool) -> midi_in::KeysPlay {
+/// kit as its Keys play (`kit`) sends each note while it plays a kit (not
+/// the synth, nor an instrument of its own), else as the pad (1 to 16) the
+/// MPC gives each note (an instrument whose arp works in pads, such as the
+/// Drums engine).
+fn keys_play(
+    synth_on: bool,
+    key_notes: bool,
+    own: bool,
+    kit: mpfree_sampler::engine::KitKeys,
+) -> midi_in::KeysPlay {
     if key_notes {
         midi_in::KeysPlay::Notes
     } else if !synth_on && !own {
-        midi_in::KeysPlay::KitPads
+        midi_in::KeysPlay::KitPads(kit)
     } else {
         midi_in::KeysPlay::Pads
     }
@@ -4178,9 +4184,11 @@ struct SeqPads<'a> {
 /// A key a route sends to a track that isn't armed (the I/O view's
 /// Routing): played at once where the track's clips play, on MIDI out, its
 /// own instrument, or what it plays: the synth by note when it plays the
-/// synth (`plays_synth`), else its kit's pad that sends the note
-/// (`profile::kit_pad_of_note`) as that pad's kind has it, as a clip's
-/// note on it would be ([`play_routed_pad`]). And on CV out if it follows
+/// synth (`plays_synth`), else its kit as the kit's Keys play sends the
+/// note (sampler step 15, `sampler::Player::note_on_to`): the pad that
+/// sends it (`profile::kit_pad_of_note`) as that pad's kind has it, as a
+/// clip's note on it would be ([`play_routed_pad`]), or the keygroups that
+/// hold it. And on CV out if it follows
 /// the track. It goes through no arp, and nothing records it: REC records
 /// the armed track.
 // What a track plays comes in pieces the sound loop holds apart.
@@ -4295,12 +4303,25 @@ fn play_routed(
         }
         return;
     }
-    // A kit: the pad that sends the note, in any bank.
-    if let Event::NoteOn { note, .. } | Event::NoteOff { note } | Event::Pressure { note, .. } =
-        event
-    {
-        let pad = profile::kit_pad_of_note(note);
-        play_routed_pad(track, pad, event, midi, (pad_synths, synth), player, kit);
+    // A kit, as its Keys play sends the note (sampler step 15): the pad
+    // that sends it, in any bank, or the keygroups that hold it. A let-go
+    // and pressure go where the note went down.
+    let to = match event {
+        Event::NoteOn { note, .. } => player.note_on_to(kit, note),
+        Event::NoteOff { note } => player.note_off_to(kit, note),
+        Event::Pressure { note, .. } => player.note_held_to(kit, note),
+        _ => return,
+    };
+    match (to, event) {
+        (sampler::NoteTo::Pad(pad), _) => {
+            play_routed_pad(track, pad, event, midi, (pad_synths, synth), player, kit);
+        }
+        (sampler::NoteTo::Keys(n), Event::NoteOn { velocity, .. }) => {
+            player.key_kit_at(kit, n, velocity, 0);
+        }
+        (sampler::NoteTo::Keys(n), Event::NoteOff { .. }) => player.key_off_kit_at(kit, n, 0),
+        // A keygroup's key takes no pressure yet.
+        _ => {}
     }
 }
 
@@ -6389,15 +6410,48 @@ impl SeqPads<'_> {
     /// track plays. MIDI out, CV and an export's file get the note as a
     /// note. A track's own instrument or the synth plays it by number,
     /// moved by the track's live transpose as it started (`sounding`, so
-    /// its end and pressure reach that note). A kit's pads answer it as
-    /// they answer MIDI in: each note is on one pad
-    /// (`mpfree_midi::profile::kit_pad_of_note`). Always taken: the pads
-    /// never read a note as a pad number.
+    /// its end and pressure reach that note). A kit answers it as it
+    /// answers MIDI in, by its Keys play (sampler step 15): each note on
+    /// one pad (`mpfree_midi::profile::kit_pad_of_note`), or through the
+    /// keygroups that hold it. Always taken: the pads never read a note
+    /// as a pad number.
     fn out_note(&mut self, o: &mpfree_play::Out) -> bool {
         use mpfree_play::Event;
         let track = usize::from(o.track);
         if self.plays_kit(o.track) {
-            let pad = |note| mpfree_midi::profile::kit_pad_of_note(note);
+            // As the kit's Keys play sends the note (sampler step 15): its
+            // keygroups take it as a key, by pitch, or the pad that sends
+            // it plays; its let-go and pressure go where it went down.
+            let kit = self.kit_of(o.track);
+            let to = match o.event {
+                Event::NoteOn { note, .. } => Some(self.player.note_on_to(kit, note)),
+                Event::NoteOff { note } => Some(self.player.note_off_to(kit, note)),
+                Event::Pressure { note, .. } => Some(self.player.note_held_to(kit, note)),
+                _ => None,
+            };
+            if let Some(sampler::NoteTo::Keys(n)) = to {
+                self.cv.send(o, midi_out::NoteIs::Note);
+                self.tap.send(o, midi_out::NoteIs::Note);
+                match o.event {
+                    Event::NoteOn { velocity, .. } => {
+                        // A note no keygroup holds plays nothing.
+                        let holds = self.player.kit_keys(kit).holds(n);
+                        if self.player.key_kit_at(kit, n, velocity, o.offset) && holds {
+                            self.hits += 1;
+                        } else {
+                            self.silent += 1;
+                        }
+                    }
+                    Event::NoteOff { .. } => self.player.key_off_kit_at(kit, n, o.offset),
+                    // A keygroup's key takes no pressure yet.
+                    _ => {}
+                }
+                return true;
+            }
+            let pad = |note: u8| match to {
+                Some(sampler::NoteTo::Pad(p)) => p,
+                _ => mpfree_midi::profile::kit_pad_of_note(note),
+            };
             let event = match o.event {
                 Event::NoteOn { note, velocity } => Event::NoteOn {
                     note: pad(note) as u8,
@@ -8498,6 +8552,9 @@ fn player_session(
     // move log (the MIDI plan's 3.7).
     let mut expr_rec = expr_rec::ExprRec::new();
     let mut key_misses = 0u64;
+    // Keys the armed track's kit played on its keygroups at once, past the
+    // arp and REC (sampler step 15; they record from step 15c).
+    let mut keys_direct = 0u64;
     // Messages each port's MIDI out writer dropped with its queue full, as
     // the monitor was last told.
     let mut out_full = [0u64; mpfree_midi::MAX_PORTS];
@@ -8877,19 +8934,19 @@ fn player_session(
                 gui::FromUi::SampleTake { kit, down } => {
                     player.take_at(kit, down, 0);
                 }
+                // The Sample tab's keys play that kit's keygroups, any kit.
                 gui::FromUi::SampleKey {
                     kit,
                     note,
                     velocity,
                     down,
-                } if kit == player.kit() => {
+                } => {
                     if down {
-                        player.key_at(note, velocity, 0);
+                        player.key_kit_at(kit, note, velocity, 0);
                     } else {
-                        player.key_off_at(note, 0);
+                        player.key_off_kit_at(kit, note, 0);
                     }
                 }
-                gui::FromUi::SampleKey { .. } => {}
                 gui::FromUi::SamplePadLive { kit, values } => player.pad_live(kit, &values),
                 // The browser's preview: a new sound replaces the one
                 // playing, which goes back to be freed.
@@ -9444,6 +9501,7 @@ fn player_session(
                     synth_on,
                     app.keys_play_notes(),
                     mix.instruments.plays(app.track()),
+                    player.kit_keys(player.kit()),
                 )
             },
         );
@@ -9998,12 +10056,20 @@ fn player_session(
         }
         // Keys play the armed track: by note while the pads press notes (a
         // synth pad layout, or the track's own synth's pad map, step 7); on
-        // a kit, each note the kit pad that sends it
-        // (`profile::kit_pad_of_note`, A1 to H16 whatever bank the pads
-        // show); else as the pad the MPC gives that note.
+        // a kit, as its Keys play sends each note (sampler step 15): the
+        // kit pad that sends it (`profile::kit_pad_of_note`, A1 to H16
+        // whatever bank the pads show) or the keygroups that hold it; else
+        // as the pad the MPC gives that note.
         let key_notes = app.keys_play_notes();
-        let kit_keys = keys_play(synth_on, key_notes, mix.instruments.plays(armed))
-            == midi_in::KeysPlay::KitPads;
+        let kit_keys = matches!(
+            keys_play(
+                synth_on,
+                key_notes,
+                mix.instruments.plays(armed),
+                player.kit_keys(player.kit()),
+            ),
+            midi_in::KeysPlay::KitPads(_)
+        );
         if armed != expr_track || pads_preview != expr_pads {
             // Its gear's pedals come up with its expression; its
             // instrument's and the synth's here (or the pads' synth's, as
@@ -10125,49 +10191,94 @@ fn player_session(
                     }
                     None
                 }
-                // A kit: the key plays its kit pad through the track's arp
-                // (and records), as a pad would, but in any bank and never
-                // as STEP SEQ's, TRACK MUTE's or the loop keys' pads.
+                // A kit, as its Keys play sends the key (sampler step 15,
+                // `sampler::Player::note_on_to`): the kit pad that plays it
+                // goes through the track's arp (and records), as a pad
+                // would, but in any bank and never as STEP SEQ's, TRACK
+                // MUTE's or the loop keys' pads; a key on the keygroups
+                // that no pad plays sounds at once, past the arp and REC
+                // (until step 15c), and is counted. A let-go and pressure
+                // go where the key went down.
                 midi_in::Key::Down { note, velocity } if kit_keys => {
-                    let pad = profile::kit_pad_of_note(note) as u8;
-                    // A Loop pad's hit waits for the launch line (R5.3b).
-                    let w = time::PadWait {
-                        from: time::PadFrom::Key(pad),
-                        down: true,
-                        velocity,
-                        kit_pad: pad,
-                    };
-                    if !waits_for_line(&mut time, &player, &app, synth_on, w, &mut waits_full, out)
-                    {
-                        if let Some(ev) = app.pressed_pad_event(pad, velocity, true) {
-                            time.pad_pressed(0, ev);
+                    let kit = player.kit();
+                    match player.note_on_to(kit, note) {
+                        sampler::NoteTo::Pad(pad) => {
+                            let pad = pad as u8;
+                            // A Loop pad's hit waits for the launch line
+                            // (R5.3b).
+                            let w = time::PadWait {
+                                from: time::PadFrom::Key(pad),
+                                down: true,
+                                velocity,
+                                kit_pad: pad,
+                            };
+                            if !waits_for_line(
+                                &mut time,
+                                &player,
+                                &app,
+                                synth_on,
+                                w,
+                                &mut waits_full,
+                                out,
+                            ) {
+                                if let Some(ev) = app.pressed_pad_event(pad, velocity, true) {
+                                    time.pad_pressed(0, ev);
+                                }
+                                fx.extend(app.kit_key_down(pad, velocity));
+                            }
                         }
-                        fx.extend(app.kit_key_down(pad, velocity));
+                        sampler::NoteTo::Keys(n) => {
+                            if player.key_kit_at(kit, n, app.velocity(velocity), 0) {
+                                keys_direct += 1;
+                                if keys_direct == 1 {
+                                    out.midi(&format!(
+                                        "+{mt:.3} s a key on the kit's keygroups: it plays at once, \
+                                         not through the arp, and doesn't record yet; such keys are counted"
+                                    ));
+                                }
+                            }
+                        }
                     }
                     None
                 }
                 midi_in::Key::Up { note } if kit_keys => {
-                    let pad = profile::kit_pad_of_note(note) as u8;
-                    let w = time::PadWait {
-                        from: time::PadFrom::Key(pad),
-                        down: false,
-                        velocity: 0,
-                        kit_pad: pad,
-                    };
-                    if !waits_for_line(&mut time, &player, &app, synth_on, w, &mut waits_full, out)
-                    {
-                        if let Some(ev) = app.pressed_pad_event(pad, 0, false) {
-                            time.pad_pressed(0, ev);
+                    let kit = player.kit();
+                    match player.note_off_to(kit, note) {
+                        sampler::NoteTo::Pad(pad) => {
+                            let pad = pad as u8;
+                            let w = time::PadWait {
+                                from: time::PadFrom::Key(pad),
+                                down: false,
+                                velocity: 0,
+                                kit_pad: pad,
+                            };
+                            if !waits_for_line(
+                                &mut time,
+                                &player,
+                                &app,
+                                synth_on,
+                                w,
+                                &mut waits_full,
+                                out,
+                            ) {
+                                if let Some(ev) = app.pressed_pad_event(pad, 0, false) {
+                                    time.pad_pressed(0, ev);
+                                }
+                                fx.extend(app.kit_key_up(pad));
+                            }
                         }
-                        fx.extend(app.kit_key_up(pad));
+                        sampler::NoteTo::Keys(n) => player.key_off_kit_at(kit, n, 0),
                     }
                     None
                 }
                 midi_in::Key::Pressure { note, value } if kit_keys => {
-                    let pad = profile::kit_pad_of_note(note) as u8;
-                    time.pad_pressure(0, pad, value);
-                    app.kit_key_pressure(pad, value);
-                    player.pressure(usize::from(pad), value);
+                    // A keygroup's key takes no pressure yet.
+                    if let sampler::NoteTo::Pad(pad) = player.note_held_to(player.kit(), note) {
+                        let pad = pad as u8;
+                        time.pad_pressure(0, pad, value);
+                        app.kit_key_pressure(pad, value);
+                        player.pressure(usize::from(pad), value);
+                    }
                     None
                 }
                 midi_in::Key::Down { note, velocity } => {
@@ -13060,6 +13171,11 @@ fn player_session(
     if key_misses > 0 {
         out.say(&format!("MIDI in: {key_misses} keys had no pad in the kit"));
     }
+    if keys_direct > 0 {
+        out.say(&format!(
+            "MIDI in: {keys_direct} keys played the kit's keygroups at once (not recorded)"
+        ));
+    }
     drop(usb);
     let kits_used: Vec<String> = used
         .iter()
@@ -14390,6 +14506,49 @@ mod tests {
             };
             assert!(seq.out(&clip_out(0, 10, empty, true)));
             assert_eq!(seq.hits, 1, "an empty pad");
+        });
+    }
+
+    /// Sampler step 15: a clip's notes reach a kit as its Keys play sends
+    /// them. A kit of keygroups only plays them by pitch, in their range,
+    /// and a note outside every keygroup plays nothing (not the drum pad
+    /// that sends it).
+    #[test]
+    fn a_clip_of_notes_plays_a_kits_keygroups_by_pitch() {
+        use mpfree_play::Event;
+        use mpfree_sampler::model::Keys;
+        use time::Pads;
+        on_the_pads(&[], &[], |seq| {
+            let mut projects = seq.player.take_projects();
+            projects[0]
+                .edit_pad(4, None, |pad| {
+                    pad.keys = Some(Keys {
+                        lo: 48,
+                        hi: 72,
+                        root: 60,
+                    })
+                })
+                .unwrap();
+            let mut swap = Box::new(sampler::ViewSwap {
+                kit: 0,
+                view: Some(mpfree_sampler::engine::EngineView::build(
+                    &projects[0],
+                    RATE,
+                )),
+                routes: sampler::pad_routes(&projects[0]),
+            });
+            assert!(seq.player.swap_view(&mut swap));
+            let note = |note| Event::NoteOn {
+                note,
+                velocity: 100,
+            };
+            assert!(seq.out(&clip_out(0, 0, note(60), true)));
+            assert_eq!((seq.hits, seq.silent), (1, 0), "the keygroup's root");
+            assert_eq!(seq.flashes[4], 0, "no pad");
+            assert!(seq.out(&clip_out(0, 10, Event::NoteOff { note: 60 }, true)));
+            // The kick's own note is outside the keygroup: nothing.
+            assert!(seq.out(&clip_out(0, 20, note(mpc_one::PAD_NOTES[4]), true)));
+            assert_eq!((seq.hits, seq.silent), (1, 1));
         });
     }
 
