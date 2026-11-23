@@ -33,6 +33,16 @@ In Setup, tap **+ across** or **+ up**. A banner comes up at the foot of the scr
 
 While the banner is up, SHIFT + a touch picks for the pad instead of for MIDI Learn. Once it's gone, SHIFT + a touch is MIDI Learn again.
 
+### From the chain editor
+
+In the chain editor, touch an effect's control and tap **XY →** or **XY ↑** on the Modulate row under the page. The control goes on that direction of the layout the pad plays, over its whole range, and the hint line says so: "Tone (Drums strip · Drive, effect 2) moves up on Squelch, 5.0 to 20 kHz · XY ↑ again: take it off · its range and curve: Setup on the XY page".
+
+- On a ready-made layout, a layout of yours is made from it first, and the hint line says so. The ready-made one stays as it was.
+- The chip is lit while the control is on that direction. Tap the lit chip to take it off; tap the other one to move it there.
+- A switch can't go on the pad: its chips are greyed, and a tap says why.
+
+Every control on the layout the pad plays wears a mark on the chain editor's pages: **X→** or **Y↑** at its knob's top left (under a macro's badge), a thin arc outside its ring from a tick at the layout's from to an arrow at its to (a backwards one's arrow runs the other way), and a dot where the setting really is now. For an Add setting the arc starts from the setting's own value, and the dot is its value plus the pad's push.
+
 ## Setup
 
 Setup shows the layout's name, each direction with its name and its settings, and how the pad behaves when you let go. Tap the name to type the layout's name and what across and up are called.

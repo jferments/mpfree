@@ -130,6 +130,16 @@ pub enum XyAction {
     WaitEnd(bool),
     /// The pad's Hold.
     Hold(bool),
+    /// XY → or XY ↑ on the chain editor's Modulate row (layout spec 4b's
+    /// XY chips): the setting goes on that direction of the layout playing
+    /// (a ready-made one, `pick` as Prefs keeps it, becomes a layout of
+    /// yours first), over its whole range, Even, Set; on that direction
+    /// already, it comes off.
+    Chip {
+        addr: ParamAddr,
+        up: bool,
+        pick: Option<usize>,
+    },
 }
 
 /// A setting as the sound loop sees it now ([`Look`]).
@@ -723,7 +733,76 @@ impl XySong {
                 load: None,
                 hold: Some(on),
             }),
+            XyAction::Chip { addr, up, pick } => self.chip(addr, up, pick, ready, look, tell),
         }
+    }
+
+    /// XY → (`up` false) or XY ↑ on `addr`: see [`XyAction::Chip`].
+    fn chip(
+        &mut self,
+        addr: ParamAddr,
+        up: bool,
+        pick: Option<usize>,
+        ready: impl FnOnce(Option<usize>, &str) -> Option<Mine>,
+        look: Look<'_>,
+        tell: &mut dyn FnMut(String),
+    ) -> Result<Done, String> {
+        let chip = if up { "XY ↑" } else { "XY →" };
+        if !reachable(addr) {
+            return Err("That is a button: the pad moves settings with a range".to_string());
+        }
+        let seen = look(addr)?;
+        let who = format!("{} ({})", seen.name, seen.place);
+        if let Err(why) = movable(&seen.info) {
+            return Err(format!("{who} can't go on the pad: {why}"));
+        }
+        // A ready-made layout playing: a copy of it becomes yours.
+        let (i, made) = match self.playing.filter(|&i| i < self.yours.len()) {
+            Some(i) => (i, String::new()),
+            None => {
+                let base = crate::play_page::XY_CHOICES[pick.map_or(0, |k| k + 1)];
+                let name = self.free_name(base, 2);
+                let Some(m) = ready(pick, &name) else {
+                    return Err(format!(
+                        "Play {base} on the pad once first: its effect isn't on the master yet"
+                    ));
+                };
+                let (i, _) = self.add(m)?;
+                (i, format!(" (yours, made from {base})"))
+            }
+        };
+        let m = &mut self.yours[i];
+        let name = m.layout.name.clone();
+        let was = m.layout.way_of(addr);
+        if was == Some(up) {
+            m.layout.take_off(addr);
+            tell(format!("{who} is off {name}{made}"));
+        } else {
+            let t = Target::linear(addr, seen.info.from_unit(0.0), seen.info.from_unit(1.0));
+            m.layout.put(up, t).map_err(|_| {
+                format!(
+                    "{} has {TARGETS} settings: take one off first",
+                    if up { "Up" } else { "Across" }
+                )
+            })?;
+            m.remember(addr, &seen.name, &seen.place);
+            let moved = if was.is_some() {
+                format!(", moved from {}", way(!up))
+            } else {
+                String::new()
+            };
+            tell(format!(
+                "{who} moves {} on {name}{made}{moved}, {} to {} · {chip} again: take it off · \
+                 its range and curve: Setup on the XY page",
+                way(up),
+                mpfree_mod::text::value_text(&seen.info, t.from),
+                mpfree_mod::text::value_text(&seen.info, t.to)
+            ));
+        }
+        Ok(Done {
+            load: self.reload(i),
+            hold: None,
+        })
     }
 
     /// A SHIFT + touch on `addr` while the banner waits: it joins the
@@ -1345,6 +1424,60 @@ mod tests {
 
     fn join(song: &mut XySong, addr: ParamAddr) -> Result<Done, String> {
         act(song, XyAction::Join(crate::gui::LearnValue::Param(addr)))
+    }
+
+    /// XY → and XY ↑ on the Modulate row: on a ready-made layout a copy
+    /// becomes yours with the setting on it; the other way moves it, the
+    /// same way again takes it off, and a switch can't go on.
+    #[test]
+    fn the_modulate_rows_xy_chips_put_a_setting_on_the_pad_and_take_it_off() {
+        let mut song = XySong::default();
+        let mut told = Vec::new();
+        let chip = |addr, up| XyAction::Chip {
+            addr,
+            up,
+            pick: None,
+        };
+        let d = song
+            .act(
+                chip(MIX, true),
+                1,
+                |pick, name| {
+                    assert_eq!(pick, None, "Filter + echo");
+                    Some(Mine::new(name))
+                },
+                &look,
+                &mut |l| told.push(l),
+            )
+            .unwrap();
+        assert!(matches!(d.load, Some(Some(_))), "it plays at once: {d:?}");
+        assert_eq!(song.playing, Some(0));
+        assert_eq!(song.yours[0].layout.name, "Filter + echo 2");
+        assert_eq!(song.yours[0].layout.way_of(MIX), Some(true));
+        let t = song.yours[0].layout.up.targets[0];
+        assert_eq!(
+            (t.from, t.to, t.how),
+            (0.0, 100.0, How::Set),
+            "its whole range"
+        );
+        assert!(
+            told[0].starts_with(
+                "Mix (Master · Room, effect 1) moves up on Filter + echo 2 \
+                 (yours, made from Filter + echo), "
+            ) && told[0].contains("XY ↑ again: take it off"),
+            "{told:?}"
+        );
+        // On a layout of yours, across moves it there.
+        act(&mut song, chip(MIX, false)).unwrap();
+        assert_eq!(song.yours.len(), 1, "the layout playing takes it");
+        assert_eq!(song.yours[0].layout.way_of(MIX), Some(false));
+        // XY → again: off.
+        let d = act(&mut song, chip(MIX, false)).unwrap();
+        assert!(matches!(d.load, Some(Some(_))), "{d:?}");
+        assert_eq!(song.yours[0].layout.way_of(MIX), None);
+        let e = act(&mut song, chip(BYPASS, true)).unwrap_err();
+        assert!(e.contains("can't go on the pad: it is a switch"), "{e}");
+        assert_eq!(song.yours[0].layout.way_of(BYPASS), None);
     }
 
     /// "+ New layout" plays an empty layout; the banner's settings join one

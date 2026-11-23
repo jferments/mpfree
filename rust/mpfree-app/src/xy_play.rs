@@ -235,6 +235,18 @@ impl XyPlay {
         self.layout.is_some()
     }
 
+    /// The layout of yours as the pad plays it now, for the knobs' marks:
+    /// the gesture's while a finger (or Hold) keeps one, else the layout
+    /// pointed by `follow` when it follows the selected track.
+    pub fn shown(&self, follow: impl Fn(ParamAddr) -> ParamAddr) -> Option<Compiled> {
+        let l = self.layout?;
+        Some(match self.now {
+            Some(now) => now,
+            None if l.follows() => l.mapped(follow),
+            None => l,
+        })
+    }
+
     /// `layout` plays from now (None: a ready-made one does). The old one
     /// lets go of everything first, at once, and its rows go; the new
     /// one's Add settings get their rows, and its Hold starts as the

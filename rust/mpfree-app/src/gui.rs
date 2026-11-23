@@ -2164,13 +2164,18 @@ const CAPTURE_FRAMES: usize = mpfree_fx::GrainNode::MEMORY_S as usize * crate::R
 
 /// A chain editor action as the message for the audio loop. A Capture
 /// takes the buffer it is copied into with it, made here, so the audio
-/// thread never allocates or frees it.
-fn chain_msg(a: ChainAction) -> FromUi {
+/// thread never allocates or frees it. XY → and XY ↑ go to your layouts,
+/// with `pick`, the ready-made layout Prefs keeps (a copy of it becomes
+/// yours when it plays).
+fn chain_msg(a: ChainAction, pick: Option<usize>) -> FromUi {
     match a {
         ChainAction::Capture(slot) => FromUi::Capture {
             slot,
             held: Box::new(Held::new(2, CAPTURE_FRAMES)),
         },
+        ChainAction::Xy { addr, up } => {
+            FromUi::Xy(crate::xy_song::XyAction::Chip { addr, up, pick })
+        }
         a => FromUi::Chain(a),
     }
 }
@@ -10579,7 +10584,9 @@ impl Player {
             ToUi::ChainPush => {
                 if mpfree_chain_ui::chain_push(&mut self.ui) {
                     let acts = mpfree_chain_ui::take_chain_actions(&mut self.ui);
-                    self.outbox.extend(acts.into_iter().map(chain_msg));
+                    let pick = self.play.xy_effect;
+                    self.outbox
+                        .extend(acts.into_iter().map(|a| chain_msg(a, pick)));
                 } else {
                     // The picker is shut: the push is the outline's.
                     self.nav(Nav::Push);
@@ -14437,7 +14444,9 @@ impl Player {
                 .get_mut::<mpfree_chain_ui::ChainView>(mpfree_chain_ui::CHAIN)
             {
                 let stop = cv.stop_listening();
-                self.outbox.extend(stop.into_iter().map(chain_msg));
+                let pick = self.play.xy_effect;
+                self.outbox
+                    .extend(stop.into_iter().map(|a| chain_msg(a, pick)));
             }
         }
         let (was, now) = (self.view == View::Touch, v == View::Touch);
@@ -16171,7 +16180,8 @@ impl Player {
                     // shut: its hint.
                     self.refresh_hint();
                 }
-                let mut acts = acts.into_iter().map(chain_msg);
+                let pick = self.play.xy_effect;
+                let mut acts = acts.into_iter().map(|a| chain_msg(a, pick));
                 let first = acts.next();
                 self.outbox.extend(acts);
                 first
@@ -16680,7 +16690,9 @@ impl Player {
         // A finger held on an effect in the picker opens its presets.
         if self.view == View::Chain && mpfree_chain_ui::chain_hold(&mut self.ui) {
             let acts = mpfree_chain_ui::take_chain_actions(&mut self.ui);
-            self.outbox.extend(acts.into_iter().map(chain_msg));
+            let pick = self.play.xy_effect;
+            self.outbox
+                .extend(acts.into_iter().map(|a| chain_msg(a, pick)));
         }
         // A finger held still on a Looper layer's row: it can lift out to
         // drag now (moved sooner, it swiped the rows).
@@ -19440,6 +19452,39 @@ fn sample_panels(p: &mut Player, view: View) {
     p.apply(ToUi::Macros(Box::new(song.macros_state(0))));
 }
 
+/// The chain editor of [`sample_panels`] with the XY pad's layout on Drive
+/// (across, 20 % to 85 %) and Tone (up, from halfway, the touched one), as
+/// the app marks them (`modpanels::xy_marks`).
+fn sample_xy_marks(p: &mut Player) {
+    use mpfree_chain_ui::sample::{Song, DRUMS};
+    use mpfree_chain_ui::state::XyMark;
+    use mpfree_play::mpfree_param::Owner;
+    let song = Song::new();
+    let Some(uid) = song.drums.uid(1) else {
+        return;
+    };
+    let at = |id| ParamAddr::new(Owner::Insert(DRUMS, uid), id);
+    let mut st = song.chain_state(DRUMS, 1, 0, Some(at(mpfree_fx::ids::drive::TONE)));
+    st.back = Some("Mixer".into());
+    st.strip_name = st.title.trim_end_matches(" FX").to_string();
+    st.strip_kind = "Track 1".into();
+    for v in &mut st.params {
+        let (up, from, to) = match v.addr.param {
+            mpfree_fx::ids::drive::DRIVE => (false, 0.2, 0.85),
+            mpfree_fx::ids::drive::TONE => (true, 0.5, 1.0),
+            _ => continue,
+        };
+        v.xy = Some(XyMark {
+            up,
+            from,
+            to,
+            now: v.pos,
+            recorded: false,
+        });
+    }
+    p.apply(ToUi::Chain(Box::new(st)));
+}
+
 /// The chain editor on the drum bus's EQ, shaped as on the approved
 /// mockups (a low cut, a low bump, a mud cut on band 2, presence and a
 /// high cut), band 2 picked, as the app sends it.
@@ -20764,6 +20809,12 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         sample_panels(&mut p, view);
         out.push((name, p));
     }
+    // The XY pad's marks and chips (boards 5 and 6 of the XY mockups,
+    // approved 23 Nov 10:34Z): Drive across, Tone up and touched.
+    let mut xy = sample_player(fonts());
+    sample_panels(&mut xy, View::Chain);
+    sample_xy_marks(&mut xy);
+    out.push(("chain-xy", xy));
     // The sidechain (layout spec 4b): the keys' Compressor listening to the
     // kick pad, and the sidechain list over it.
     for (name, list) in [("chain-sidechain", false), ("chain-sidechain-list", true)] {
@@ -37528,7 +37579,7 @@ mod tests {
         use crate::mixing::Captured;
         use mpfree_sampler::model::PlayMode;
         let mut p = sample_sampler(Fonts::embedded());
-        match chain_msg(ChainAction::Capture(2)) {
+        match chain_msg(ChainAction::Capture(2), None) {
             FromUi::Capture { slot, held } => {
                 assert_eq!(slot, 2);
                 assert!(held.room() >= 8 * 44_100, "the whole memory fits");
@@ -37536,7 +37587,7 @@ mod tests {
             m => panic!("{m:?}"),
         }
         assert_eq!(
-            chain_msg(ChainAction::Select(1)),
+            chain_msg(ChainAction::Select(1), None),
             FromUi::Chain(ChainAction::Select(1))
         );
         // What the audio thread sends back: two seconds of a tone, from a

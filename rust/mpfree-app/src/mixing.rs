@@ -1890,6 +1890,17 @@ impl MixHost {
         }
     }
 
+    /// The layout the XY pad plays now, for the knobs' marks (layout spec
+    /// 4b): a layout of yours as its gesture has it (one that follows, on
+    /// the selected track), else the ready-made one picked.
+    pub fn xy_shown(&self) -> Option<mpfree_xy::Compiled> {
+        if self.xy_play.playing() {
+            let track = self.xy_track;
+            return self.xy_play.shown(|a| crate::xy_play::followed(a, track));
+        }
+        self.xy_layout()
+    }
+
     /// Whether Hold is on (a layout of yours).
     pub fn xy_held(&self) -> bool {
         self.xy_play.playing() && self.xy_play.hold()

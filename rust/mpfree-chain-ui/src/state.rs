@@ -65,6 +65,27 @@ pub struct ParamView {
     /// The macro that moves it.
     pub macro_: Option<usize>,
     pub locked: bool,
+    /// Where the XY pad's layout moves it (the app fills it in).
+    pub xy: Option<XyMark>,
+}
+
+/// A control on the layout the XY pad plays (layout spec 4b's XY marks):
+/// which way the pad moves it, the stretch it covers as knob positions
+/// (0 to 1), and where the setting really is now.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct XyMark {
+    /// On the pad's up (Y↑), else across (X→).
+    pub up: bool,
+    /// The knob's position with the pad at its left or bottom, and at its
+    /// right or top: `to` below `from` runs the other way. For Add, its
+    /// own value pushed by the layout's ends.
+    pub from: f32,
+    pub to: f32,
+    /// Where the setting really is now (for Add, its own value plus the
+    /// pad's push).
+    pub now: f32,
+    /// A recorded move plays it (a hollow dot; the XY plan's phase 3).
+    pub recorded: bool,
 }
 
 impl ParamView {
@@ -616,6 +637,7 @@ pub fn param_view(n: &dyn Node, owner: Owner, engine: &ModEngine, id: u16) -> Op
         mod_range: engine.mod_range(addr),
         macro_: engine.macro_of(addr),
         locked: engine.is_locked(addr),
+        xy: None,
     })
 }
 

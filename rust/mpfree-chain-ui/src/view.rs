@@ -39,7 +39,7 @@ use mpfree_ui::{Align, EventKind, FontId, Gesture, PaintCx, Rect, Target, Touch,
 use crate::eq_page::EqPage;
 use crate::notes::{self, NoteAction};
 use crate::picker::{Hit, PickerLayout, PickerView, HOLD};
-use crate::state::{macro_color, ChainState, ParamView, StripList, STRIP_GROUPS};
+use crate::state::{macro_color, ChainState, ParamView, StripList, XyMark, STRIP_GROUPS};
 
 /// The section widget's `Tab` number for a heading's action (pages are
 /// numbered from 0, far below it).
@@ -113,6 +113,15 @@ pub enum ChainAction {
     },
     /// Arm learn: the next Q-Link turned takes this parameter.
     Learn(ParamAddr),
+    /// XY → or XY ↑ on the Modulate row: the control goes on that
+    /// direction of the layout the XY pad plays (a ready-made one becomes
+    /// a layout of yours first), over its whole range, Even, Set; on the
+    /// direction it is on already, it comes off (layout spec 4b's XY
+    /// chips). The app says what happened, or why not.
+    Xy {
+        addr: ParamAddr,
+        up: bool,
+    },
     /// Add a matrix row from `source` to the parameter (depth 25 %).
     AddRow {
         target: ParamAddr,
@@ -203,7 +212,11 @@ const MODE_ROW_H: i32 = 40;
 /// The presets button's padding before its label.
 const PRESET_PAD: i32 = 12;
 /// The Modulate row's buttons.
-const MACRO_W: i32 = 40;
+const MACRO_W: i32 = 34;
+/// The Modulate row's XY → and XY ↑ (between the name and the macros),
+/// and the gap between them.
+const XY_CHIP_W: i32 = 60;
+const XY_CHIP_GAP: i32 = 8;
 const LEARN_W: i32 = 108;
 const LFO_W: i32 = 76;
 const FOLLOWER_W: i32 = 100;
@@ -298,6 +311,8 @@ pub struct Layout {
     pub modulate: Rect,
     pub mod_name: Rect,
     pub rows_link: Rect,
+    /// XY → and XY ↑.
+    pub xy_chips: [Rect; 2],
     pub macros: [Rect; MACROS],
     pub learn: Rect,
     pub add_lfo: Rect,
@@ -473,7 +488,16 @@ pub fn layout(r: Rect, st: &ChainState, pv: &PickerView, open: Open) -> Layout {
     let m0 = learn.x - 12 - (MACROS as i32 * (MACRO_W + 3) - 3);
     let macros =
         std::array::from_fn(|m| Rect::new(m0 + m as i32 * (MACRO_W + 3), line.y, MACRO_W, line.h));
-    let mod_name = Rect::new(line.x + 4, line.y, (m0 - 12 - line.x - 4).max(0), line.h);
+    let x0 = m0 - 12 - 2 * XY_CHIP_W - XY_CHIP_GAP;
+    let xy_chips = std::array::from_fn(|k| {
+        Rect::new(
+            x0 + k as i32 * (XY_CHIP_W + XY_CHIP_GAP),
+            line.y,
+            XY_CHIP_W,
+            line.h,
+        )
+    });
+    let mod_name = Rect::new(line.x + 4, line.y, (x0 - 12 - line.x - 4).max(0), line.h);
     let rows_link = Rect::new(mod_name.x, mod_name.y + 22, mod_name.w, mod_name.h - 22);
     let (mut rows_panel, mut depth_rows) = (None, Vec::new());
     // A MIDI effect's page has the rows of its setting touched too.
@@ -532,6 +556,7 @@ pub fn layout(r: Rect, st: &ChainState, pv: &PickerView, open: Open) -> Layout {
         modulate,
         mod_name,
         rows_link,
+        xy_chips,
         macros,
         learn,
         add_lfo,
@@ -2180,6 +2205,14 @@ impl ChainView {
             self.push(ChainAction::Learn(focus));
             return;
         }
+        // A greyed chip goes too: the app says why the pad can't move it.
+        if let Some(k) = l.xy_chips.iter().position(|r| r.contains(x, y)) {
+            self.push(ChainAction::Xy {
+                addr: focus,
+                up: k == 1,
+            });
+            return;
+        }
         if l.rows_link.contains(x, y) && !st.rows.is_empty() {
             self.open.rows = !self.open.rows;
             return;
@@ -2467,6 +2500,81 @@ fn focused_takes_rows(st: &ChainState) -> bool {
             mpfree_fx::mpfree_node::Curve::Toggle | mpfree_fx::mpfree_node::Curve::Choice(_)
         )
     })
+}
+
+/// Where on a dial `d` across a setting is at knob position `p`: the
+/// angle its ring uses (clockwise on screen from the bottom left).
+fn ring_angle(p: f32) -> f32 {
+    0.75 * PI + 1.5 * PI * p.clamp(0.0, 1.0)
+}
+
+/// The XY pad's arc's radius round a dial `d` across: outside its ring,
+/// and outside the matrix's ring when it has one.
+fn xy_radius(d: f32, p: &ParamView) -> f32 {
+    d * 0.5 + if p.mod_range.is_some() { 13.0 } else { 10.0 }
+}
+
+/// A box round a dial at `kx`, `ky` that holds everything drawn at `r`.
+fn xy_box(kx: f32, ky: f32, r: f32) -> Rect {
+    let reach = r + 10.0;
+    Rect::new(
+        (kx - reach) as i32,
+        (ky - reach) as i32,
+        (2.0 * reach) as i32 + 1,
+        (2.0 * reach) as i32 + 1,
+    )
+}
+
+/// The XY pad's stretch round a dial at `kx`, `ky` (layout spec 4b's XY
+/// marks): a thin arc in the text colour at radius `r`, from a tick at
+/// the layout's from to an arrow at its to.
+fn paint_xy_arc(cx: &mut PaintCx, kx: f32, ky: f32, r: f32, m: XyMark) {
+    let t = cx.theme.clone();
+    let angle = ring_angle;
+    let bbox = xy_box(kx, ky, r);
+    let at = |a: f32, rr: f32| (kx + rr * a.cos(), ky + rr * a.sin());
+    let (a0, a1) = (angle(m.from), angle(m.to));
+    let mut arc = Mask::new(bbox);
+    let lo = a0.min(a1);
+    arc.arc(kx, ky, r, lo, a0.max(a1).max(lo + 0.02), 1.5);
+    arc.segment(at(a0, r - 4.0), at(a0, r + 4.0), 1.5);
+    // The arrow's head, pointing on round the ring the way it runs.
+    let way = if m.to >= m.from { 1.0 } else { -1.0 };
+    let tip = at(a1, r);
+    let (tx, ty) = (-a1.sin() * way, a1.cos() * way);
+    let (nx, ny) = (a1.cos(), a1.sin());
+    let back = (tip.0 - tx * 6.0, tip.1 - ty * 6.0);
+    arc.segment(tip, (back.0 + nx * 3.5, back.1 + ny * 3.5), 1.5);
+    arc.segment(tip, (back.0 - nx * 3.5, back.1 - ny * 3.5), 1.5);
+    arc.draw(cx.canvas, t.text);
+}
+
+/// The dot on the XY pad's arc ([`paint_xy_arc`]): the second accent
+/// where the setting really is now, hollow while a recorded move plays it.
+fn paint_xy_dot(cx: &mut PaintCx, kx: f32, ky: f32, r: f32, m: XyMark) {
+    let t = cx.theme.clone();
+    let a = ring_angle(m.now);
+    let (dx, dy) = (kx + r * a.cos(), ky + r * a.sin());
+    // A rim in the background's colour: it reads over a badge it passes.
+    let mut rim = Mask::new(xy_box(kx, ky, r));
+    rim.disc(dx, dy, 5.5);
+    rim.draw(cx.canvas, t.bg);
+    let mut dot = Mask::new(xy_box(kx, ky, r));
+    if m.recorded {
+        dot.arc(dx, dy, 3.0, 0.0, 2.0 * PI, 1.5);
+    } else {
+        dot.disc(dx, dy, 4.0);
+    }
+    dot.draw(cx.canvas, t.accent2);
+}
+
+/// What the Modulate row's XY chips say.
+const XY_CHIPS: [&str; 2] = ["XY →", "XY ↑"];
+
+/// The XY pad moves settings with a range: not a switch or a meter.
+fn focused_takes_xy(st: &ChainState) -> bool {
+    st.focused()
+        .is_some_and(|p| !p.info.readonly && p.info.curve != Curve::Toggle)
 }
 
 fn depth_of(bar: Rect, x: i32) -> f32 {
@@ -2891,6 +2999,10 @@ impl ChainView {
                 ));
             }
             out.push(Target::tap("learn", 0, "Learn", l.learn));
+            let xy = focused_takes_xy(st);
+            for (k, r) in l.xy_chips.iter().enumerate() {
+                out.push(Target::tap("xy", k, XY_CHIPS[k], *r).disabled_if(!xy));
+            }
             let takes = focused_takes_rows(st);
             out.push(Target::tap("add-lfo", 0, "+ LFO", l.add_lfo).disabled_if(!takes));
             out.push(
@@ -3543,11 +3655,13 @@ impl ChainView {
 
     /// Over the page's controls: a ring round a knob for how far the
     /// matrix moves it, a badge in its macro's colour ("M2") at the knob's
-    /// top left (its Q-Link's is at its top right), and LK for a lock.
+    /// top left (its Q-Link's is at its top right), the XY pad's mark (X→
+    /// or Y↑ under it, the stretch the pad covers round the ring), and LK
+    /// for a lock.
     fn paint_badges(&self, cx: &mut PaintCx, page: Rect) {
         let t = cx.theme.clone();
         for (k, p) in self.state.params.iter().enumerate() {
-            if p.mod_range.is_none() && p.macro_.is_none() && !p.locked {
+            if p.mod_range.is_none() && p.macro_.is_none() && !p.locked && p.xy.is_none() {
                 continue;
             }
             let Some((_, g)) = self.page.control_geom(page, k) else {
@@ -3569,6 +3683,9 @@ impl ChainView {
                         let mut m = Mask::new(bbox);
                         m.arc(kx, ky, d * 0.5 + 5.0, a0, a1.max(a0 + 0.02), 3.0);
                         m.draw(cx.canvas, t.good);
+                    }
+                    if let Some(m) = p.xy {
+                        paint_xy_arc(cx, kx, ky, xy_radius(d, p), m);
                     }
                     // Beside a small dial with its name at its right,
                     // the Q-Link's badge sits over it: this one goes
@@ -3596,10 +3713,27 @@ impl ChainView {
                 );
                 y += 22;
             }
+            if let Some(m) = p.xy {
+                let b = Rect::new(bx, y, 30, 18);
+                cx.canvas.fill_round_rect(b, 6, t.text);
+                cx.text(
+                    FontId::Bold,
+                    12.0,
+                    b,
+                    Align::Center,
+                    t.ink_on(t.text),
+                    if m.up { "Y↑" } else { "X→" },
+                );
+                y += 22;
+            }
             if p.locked {
                 let b = Rect::new(bx, y, 30, 18);
                 cx.canvas.fill_round_rect(b, 6, t.warn);
                 cx.text(FontId::Bold, 12.0, b, Align::Center, t.on_accent, "LK");
+            }
+            // The dot last: over the badges it may pass under.
+            if let (Some(m), Some((kx, ky, d))) = (p.xy, g.dial) {
+                paint_xy_dot(cx, kx, ky, xy_radius(d, p), m);
             }
         }
     }
@@ -3663,6 +3797,34 @@ impl ChainView {
             },
             &summary,
         );
+        // XY → and XY ↑: lit while the control is on that direction (the
+        // text colour, as its badge), greyed on a switch.
+        let movable = focused_takes_xy(st);
+        let way = p.xy.map(|m| m.up);
+        for (k, r) in l.xy_chips.iter().enumerate() {
+            let lit = way == Some(k == 1);
+            let fill = if lit {
+                t.text
+            } else if movable {
+                t.raised
+            } else {
+                t.surface.mix(t.raised, 0.3)
+            };
+            cx.canvas.fill_round_rect(*r, t.round(10), fill);
+            let ink = if lit {
+                t.ink_on(t.text)
+            } else {
+                t.button_ink(movable)
+            };
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                *r,
+                Align::Center,
+                ink,
+                XY_CHIPS[k],
+            );
+        }
         for (m, mr) in l.macros.iter().enumerate() {
             let on = p.macro_ == Some(m);
             let c = macro_color(&t, m);
