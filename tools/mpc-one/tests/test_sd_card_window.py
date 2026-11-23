@@ -37,6 +37,8 @@ PART_START = 64
 CARD_DIR = f"sys/devices/platform/{SD}/mmc_host/mmc1/mmc1:0001/block/mmcblk1"
 EMMC_DIR = f"sys/devices/platform/{EMMC}/mmc_host/mmc0/mmc0:0001/block/mmcblk0"
 REFUSED = "[  812.40] Trying to write to read-only block-device mmcblk1p1\n"
+# The pad player's word for an opening, as it writes it in the request; every status gives it back.
+ASK = "5f0c1d2e3a4b59687766554433221100"
 
 
 def boot_sector(kind):
@@ -288,9 +290,9 @@ class WindowTests(unittest.TestCase):
             text = text.replace("\nQUIET=120\n", f"\nQUIET={self.quiet}\n", 1)
         return text
 
-    def start(self, **env):
+    def start(self, request=ASK + "\n", **env):
         path = os.path.join(self.root, "run/mpfree-app/sd-card.request")
-        write(path, "")
+        write(path, request)
         self.proc = subprocess.Popen([self.dash, "-c", self.script(), "setup-sd-card.sh"],
                                      env={"PATH": self.bin, "FAKE_LOG": self.log, "FAKE_ROOT": self.root, **env},
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -316,6 +318,14 @@ class WindowTests(unittest.TestCase):
         out = self.proc.stdout.read() if self.proc.poll() is not None else "still running"
         self.fail(f"no state={state}: {out}\n{self.notes()}")
 
+    def wait_state_ask(self, state, ask, seconds=20):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            if os.path.exists(self.status_path()) and self.status(ask=ask).get("state") == state:
+                return self.status(ask=ask)
+            time.sleep(0.02)
+        self.fail(f"no state={state}\n{self.notes()}")
+
     def close_card(self):
         write(os.path.join(self.root, "run/mpfree-app/sd-card.close"), "")
         return self.finish()
@@ -323,9 +333,12 @@ class WindowTests(unittest.TestCase):
     def status_path(self):
         return os.path.join(self.root, "run/mpfree-setup/sd-card-status")
 
-    def status(self):
+    def status(self, ask=ASK):
+        """The status, without its ask line, which must give back the request's word."""
         with open(self.status_path()) as fh:
-            return dict(line.split("=", 1) for line in fh.read().splitlines())
+            st = dict(line.split("=", 1) for line in fh.read().splitlines())
+        self.assertEqual(st.pop("ask", None), ask, st)
+        return st
 
     def notes(self):
         return read_text(os.path.join(self.root, "run/mpfree-setup/sd-card-log.txt"))
@@ -663,6 +676,27 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(code, 0, out + self.notes())
         self.assertEqual(self.status()["state"], "closed")
         self.assert_closed()
+
+    def test_every_status_gives_back_the_requests_word(self):
+        # Only its hex digits, at most 32 of them: nothing else from the file reaches the status.
+        for request, ask in ((ASK + "\n", ASK), ("", ""), ("$(reboot) 'x\n\nab;cd\n", "ebabcd"),
+                             ("0123456789abcdef" * 4 + "\n", "0123456789abcdef" * 2)):
+            with self.subTest(request=request):
+                self.tearDown()
+                self.setUp()
+                self.kernel = FakeSdKernel(self.root)
+                self.start(request=request)
+                self.assertEqual(self.wait_state_ask("open", ask)["state"], "open")
+                code, out = self.close_card()
+                self.assertEqual(code, 0, out + self.notes())
+                self.assertEqual(self.status(ask=ask)["state"], "closed")
+        # One that stops at the checks says it too.
+        self.tearDown()
+        self.setUp()
+        os.remove(os.path.join(self.root, "run/mpfree-internal-off.txt"))
+        code, out = self.run_window()
+        self.assertEqual(code, 1, out)
+        self.assertEqual(self.status()["state"], "failed")
 
     def test_a_close_left_from_before_is_not_for_this_opening(self):
         self.kernel = FakeSdKernel(self.root)

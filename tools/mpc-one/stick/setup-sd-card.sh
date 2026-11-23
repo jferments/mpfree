@@ -43,8 +43,8 @@ R=''
 # (which only switch read-only on).
 # Every program of Akai's system it runs is in NEEDS: it stops before anything else when one is missing.
 # Progress and the result: /run/mpfree-setup/sd-card-status (key=value lines), read by the pad player:
-# state (checking, opening, open, closing, closed, none, failed), message, and while open card, fs,
-# sectors and mount. Notes: /run/mpfree-setup/sd-card-log.txt and the kernel log.
+# state (checking, opening, open, closing, closed, none, failed), message, ask (the request's word), and while
+# open card, fs, sectors and mount. Notes: /run/mpfree-setup/sd-card-log.txt and the kernel log.
 [ -n "$R" ] || PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 SD=ff0c0000
@@ -70,11 +70,15 @@ name=''
 devdir=''
 
 mkdir -p "$S"
+# The pad player's word for this opening (hex digits from the request), given back in every status, so it
+# knows the answer is to its own request and not an earlier opening's.
+ask=$(cut -c1-32 "$ASK/sd-card.request" 2>/dev/null | tr -cd '0-9a-f')
+ask=$(printf '%s' "$ask" | cut -c1-32)
 # The request has done its job: taken away so the path unit does not start this again when it ends. A close
 # or a counter left from an earlier opening is not for this one.
 rm -f "$ASK/sd-card.request" "$ASK/sd-card.close" "$ALIVE"
 status() {   # state message
-  { echo "state=$1"; echo "message=$2"
+  { echo "state=$1"; echo "message=$2"; echo "ask=$ask"
     if [ "$1" = open ]; then echo "card=$card"; echo "fs=$fs"; echo "sectors=$sectors"; echo "mount=$MNT"; fi
   } > "$S/sd-card-status.new" && mv "$S/sd-card-status.new" "$S/sd-card-status"
 }
