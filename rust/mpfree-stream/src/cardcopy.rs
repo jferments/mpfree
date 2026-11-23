@@ -18,8 +18,8 @@
 //! ever resumed: a part file a cut left is removed at start
 //! ([`crate::publish::sweep_parts`]), and the next copy, from any card,
 //! starts from the beginning. Copies go a block at a time, asking before
-//! each block whether to go on ([`Pace`]): they wait while recording
-//! presses or playback's cushion is short ([`background`]), and run at
+//! each block whether to go on ([`Pace`]): they wait while anything
+//! records or playback's cushion is short ([`background`]), and run at
 //! the lowest I/O priority (set with the copy's thread in P5's tuning).
 
 use std::cell::Cell;
@@ -28,7 +28,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::coord::STOP_BACKGROUND;
 use crate::fsio::Fs;
 use crate::publish::{hex, publish_as, Sink};
 use crate::storage::Located;
@@ -51,11 +50,12 @@ pub enum Pace {
     Stop,
 }
 
-/// The pace for copies behind playback and recording: wait while a take's
-/// capture memory is past the point background reads stop, or while
-/// playback's cushion is under `cushion_s` seconds.
+/// The pace for copies behind playback and recording: wait while a take
+/// is recording or not yet saved (on the MPC's stick a heavy copy beside
+/// a recording put it 24 s behind in 45 s, D2b), or while playback's
+/// cushion is under `cushion_s` seconds.
 pub fn background(gate: &Gate, cushion_s: f64) -> Pace {
-    if gate.capture_fill() >= STOP_BACKGROUND || gate.cushion() < cushion_s {
+    if gate.recording() || gate.cushion() < cushion_s {
         Pace::Wait
     } else {
         Pace::Go

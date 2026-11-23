@@ -23,6 +23,7 @@ use mpfree_audiotracks::host::AudioHost;
 use mpfree_audiotracks::save::{from_wav, Saved};
 use mpfree_audiotracks::streaming::StreamConfig;
 use mpfree_audiotracks::Command as A;
+use mpfree_stream::coord::Plan;
 use mpfree_stream::player::Config;
 use mpfree_transport::{Block, Command as T, Transport};
 
@@ -61,13 +62,18 @@ fn small() -> StreamConfig {
     cache(256)
 }
 
+/// A cache of `slots` units. The plan expects a 0.5 s stall, so a region's
+/// held start is a second (twice it), whatever the default stall is.
 fn cache(slots: usize) -> StreamConfig {
     StreamConfig {
         cache: Config {
             slots,
             ..Config::default()
         },
-        ..StreamConfig::default()
+        plan: Plan {
+            stall_s: 0.5,
+            ..StreamConfig::default().plan
+        },
     }
 }
 
