@@ -584,6 +584,7 @@ impl Session {
                 looper: &mut self.looper,
                 tracks: &mut self.tracks,
                 music: &mut self.music,
+                listed: &self.instrument_list,
                 level_db: &mut self.level_db,
                 max_db: MAX_DB,
                 card: 0,
@@ -2545,9 +2546,10 @@ impl Session {
             // Your XY layouts, as main.rs.
             FromUi::Xy(act) => {
                 let track = u8::try_from(self.app.track()).unwrap_or(u8::MAX);
-                let pads = |_: u8, _: u8, _: u16| None;
+                let pads = |_: mpfree_play::mpfree_param::Owner, _: u16| None;
                 let (mix, synth, app, time) = (&self.mix, &*self.synth, &self.app, &self.time);
-                let look = |a| crate::xy_seen(mix, synth, app, &pads, time, a);
+                let listed = &self.instrument_list;
+                let look = |a| crate::xy_seen(mix, synth, app, listed, &pads, time, a);
                 let mut told = None;
                 let done = self.xy_yours.act(
                     act,
@@ -2690,12 +2692,13 @@ impl Session {
 
     /// Your XY layouts to the screen, as main.rs's `xy_view`.
     fn xy_show(&mut self) {
-        let pads = |_: u8, _: u8, _: u16| None;
+        let pads = |_: mpfree_play::mpfree_param::Owner, _: u16| None;
         let v = crate::xy_view(
             &mut self.xy_yours,
             &self.mix,
             &self.synth,
             &self.app,
+            &self.instrument_list,
             &pads,
             &self.time,
         );

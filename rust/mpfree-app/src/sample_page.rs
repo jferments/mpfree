@@ -121,7 +121,7 @@ use crate::gui::FromUi;
 use crate::instrument_list::{InstrumentId, KitIds};
 use crate::mixing::Captured;
 use crate::modpanels::PadFx;
-use crate::sampler::{Cloud, Playheads, RecFeed, RecSource, ViewSwap};
+use crate::sampler::{Cloud, PadParam, Playheads, RecFeed, RecSource, ViewSwap};
 use crate::sampler_commands::{self, Change, Command, Landing, SceneSlot};
 use crate::views::Summary;
 use mpfree_fx::{CapturePoint, StripId};
@@ -970,7 +970,7 @@ pub struct SamplePage {
     play_turn: Option<(usize, PadKnob, u64)>,
     /// A learned MIDI control turning a pad's setting (MIDI Learn): the
     /// kit, the pad, the setting and the turn's undo id.
-    learn_turn: Option<(usize, usize, PadField, u64)>,
+    learn_turn: Option<(usize, usize, PadParam, u64)>,
     shown_heads: Vec<u64>,
     lines: Vec<String>,
     /// What the pad take ([`SamplePage::pad_take`]) tells the arm next,
@@ -3947,26 +3947,36 @@ impl SamplePage {
         }
     }
 
-    /// A learned MIDI control (MIDI Learn) set kit `kit`'s pad `pad`'s own
-    /// `field` to `value`, in the field's units ([`scene::own`]'s), as the
-    /// Play tab's knob sets it: one undo step a turn, a turn after a rest
-    /// ([`TURN_REST_S`]) or of another setting a new one. The kit's new view
-    /// goes to the audio thread; the engine's live rows (the Q-Links'
-    /// values, the clips' locks) are left alone. Nothing for a pad without
-    /// a sound, or a value it has already.
-    pub fn learned(&mut self, kit: usize, pad: usize, field: PadField, value: f32) {
+    /// A learned MIDI control (MIDI Learn) set kit `kit`'s pad `pad`'s
+    /// setting `what` to `value`, in the setting's units: one of the pad's
+    /// own ([`scene::own`]'s), as the Play tab's knob sets it, or a layer's
+    /// grain setting (sampler refactor step 17), as the Grain tool's row
+    /// sets it. One undo step a turn, a turn after a rest ([`TURN_REST_S`])
+    /// or of another setting a new one. The kit's new view goes to the
+    /// audio thread; the engine's live rows (the Q-Links' values, the
+    /// clips' locks) are left alone. Nothing for a pad without a sound, a
+    /// layer it hasn't got, or a value it has already.
+    pub fn learned(&mut self, kit: usize, pad: usize, what: PadParam, value: f32) {
         let Some(before) = self.projects.get(kit).and_then(|p| p.pad(pad)).cloned() else {
             return;
         };
         let mut after = before.clone();
-        scene::set_own(&mut after, field, value);
+        match what {
+            PadParam::Own(field) => scene::set_own(&mut after, field, value),
+            PadParam::Grain { layer, field } => {
+                let Some(l) = after.layers.get_mut(usize::from(layer)) else {
+                    return;
+                };
+                field.set(&mut l.region.grain, value);
+            }
+        }
         if after == before {
             return;
         }
         self.turned();
         if self
             .learn_turn
-            .is_some_and(|(k, p, f, _)| (k, p, f) != (kit, pad, field))
+            .is_some_and(|(k, p, f, _)| (k, p, f) != (kit, pad, what))
             || (self.learn_turn.is_none() && self.gesture.is_some())
         {
             self.lift();
@@ -3976,7 +3986,7 @@ impl SamplePage {
             None => {
                 // "LEARN" and the edit count: a new undo step.
                 let id = 0x4C45_4152_4E00_0000 | (self.edits & 0xFF_FFFF);
-                self.learn_turn = Some((kit, pad, field, id));
+                self.learn_turn = Some((kit, pad, what, id));
                 self.gesture = Some(Gesture {
                     id,
                     kit,
@@ -3987,8 +3997,18 @@ impl SamplePage {
                 id
             }
         };
-        let own = Change::Own { pad, field, value };
-        match self.change_kit(kit, own, Some(id)) {
+        let change = match what {
+            PadParam::Own(field) => Change::Own { pad, field, value },
+            PadParam::Grain { layer, .. } => {
+                let layer = usize::from(layer);
+                Change::Region {
+                    pad,
+                    layer,
+                    region: Box::new(after.layers[layer].region.clone()),
+                }
+            }
+        };
+        match self.change_kit(kit, change, Some(id)) {
             Ok(_) => self.stale = true,
             Err(e) => self.lines.push(format!(
                 "sample: pad {} not changed by MIDI Learn ({e})",
@@ -3999,17 +4019,27 @@ impl SamplePage {
 
     /// The pad setting under a touch for SHIFT + a touch (MIDI Learn): a
     /// knob or row of the Play tab's panel, or the Pads tab's Level, Pan
-    /// or Tune, on the pad the page edits ([`SamplePage::pad`]). None for
-    /// anything else.
-    pub fn learn_field(&self, widget: &str, t: &mpfree_ui::Target) -> Option<(usize, PadField)> {
-        let field = if widget == play_tab::LIST {
-            self.play.as_ref()?.field_at(t)?
+    /// or Tune, on the pad the page edits ([`SamplePage::pad`]); or a row
+    /// with a range of the Grain tool, a grain setting of the layer it
+    /// edits (sampler refactor step 17). None for anything else.
+    pub fn learn_field(&self, widget: &str, t: &mpfree_ui::Target) -> Option<(usize, PadParam)> {
+        let what = if widget == play_tab::LIST {
+            PadParam::Own(self.play.as_ref()?.field_at(t)?)
         } else if widget == pads_tab::LIST {
-            pads_tab::Row::field_at(self.pads_state.as_ref()?, t)?
+            PadParam::Own(pads_tab::Row::field_at(self.pads_state.as_ref()?, t)?)
+        } else if let (Some(tab), Some(st)) = (self.tab.as_ref(), self.state.as_ref()) {
+            if self.shown_take().is_some() {
+                return None;
+            }
+            let field = tab.grain_row_at(st, widget, t)?.field()?;
+            PadParam::Grain {
+                layer: u8::try_from(self.layer()).ok()?,
+                field,
+            }
         } else {
             return None;
         };
-        Some((self.pad, field))
+        Some((self.pad, what))
     }
 
     /// Whether the Pads tab's picked pad has the Level, Pan and Tune rows

@@ -86,7 +86,44 @@ pub fn learn_addr(v: gui::LearnValue, t: u8) -> mpfree_play::mpfree_param::Param
         gui::LearnValue::Param(a) => a,
         gui::LearnValue::Synth(id) => ParamAddr::new(Owner::Inst(t), id),
         gui::LearnValue::Arp(id) => ParamAddr::new(Owner::Arp(t), id),
-        gui::LearnValue::Pad { pad, field } => ParamAddr::new(Owner::Pad(t, pad), field),
+        gui::LearnValue::Pad { pad, field, .. } => ParamAddr::new(Owner::Pad(t, pad), field),
+    }
+}
+
+/// The setting a SHIFT + touch names for MIDI Learn (sampler step 16): a
+/// knob on the Synth tab names the instrument the tab shows, and a pad's
+/// setting the kit the Sample or Pads tab shows, by its number in the
+/// project's list, so the control stays on it whichever track plays it.
+/// A list without the number falls back to the track ([`learn_addr`]).
+pub fn learn_addr_named(
+    v: gui::LearnValue,
+    t: u8,
+    listed: &crate::instrument_list::InstrumentList,
+    mix: &mixing::MixHost,
+    app: &app::App,
+) -> mpfree_play::mpfree_param::ParamAddr {
+    use crate::instrument_list::InstrumentId;
+    use mpfree_play::mpfree_param::{Owner, ParamAddr};
+    let number = |id: Option<InstrumentId>| id.and_then(|id| u16::try_from(id.number()).ok());
+    match v {
+        gui::LearnValue::Synth(id) => {
+            let h =
+                crate::instrument_track(&mix.instruments, crate::tab_who(app, &mix.instruments));
+            let shown = if mix.instruments.holds(h) {
+                listed.of_holder(h)
+            } else {
+                Some(InstrumentId::SHARED_SYNTH)
+            };
+            match number(shown) {
+                Some(n) => ParamAddr::new(Owner::Sound(n), id),
+                None => learn_addr(v, t),
+            }
+        }
+        gui::LearnValue::Pad { kit, pad, field } => match number(listed.of_kit(usize::from(kit))) {
+            Some(n) => ParamAddr::new(Owner::KitPad(n, pad), field),
+            None => learn_addr(v, t),
+        },
+        _ => learn_addr(v, t),
     }
 }
 
@@ -100,6 +137,9 @@ pub struct Desk<'a> {
     /// The audio tracks on the Song view's lanes.
     pub tracks: &'a mut audiotracks::TrackHost,
     pub music: &'a mut midi_in::MusicIn,
+    /// The project's list of instruments, for what MIDI Learn names a kit
+    /// or a synth by (sampler step 16).
+    pub listed: &'a crate::instrument_list::InstrumentList,
     /// The Level (the mixer's master fader), in dB, and its top.
     pub level_db: &'a mut f32,
     pub max_db: f32,
@@ -126,6 +166,7 @@ impl Desk<'_> {
             looper,
             tracks,
             music,
+            listed,
             level_db,
             max_db,
             ..
@@ -221,11 +262,15 @@ impl Desk<'_> {
             }
             // SHIFT + a touch on a value (layout spec 4d): MIDI Learn waits
             // for a control to take it, and the same value again cancels.
-            // A knob on the Synth tab is the selected track's synth's, an
-            // arp slider the armed track's arp's, and a pad's setting on
-            // the Sample or Pads tab the armed track's kit's.
+            // An arp slider is the armed track's arp's. A knob on the Synth
+            // tab names the instrument the tab shows, and a pad's setting
+            // on the Sample or Pads tab the kit they show, by its number in
+            // the project's list (sampler step 16), so the control stays on
+            // it whichever track plays it; only a list without the number
+            // falls back to the track, as before.
             gui::FromUi::LearnValue(v) => {
-                let addr = learn_addr(v, u8::try_from(app.track()).unwrap_or(u8::MAX));
+                let t = u8::try_from(app.track()).unwrap_or(u8::MAX);
+                let addr = learn_addr_named(v, t, listed, mix, app);
                 if music.armed() == Some(addr) && music.waits() {
                     music.disarm();
                 } else {

@@ -38,6 +38,13 @@ pub struct ViewLayer {
     pub(super) src_rate: u32,
     /// Grain settings with the layer's tune and reverse folded in.
     pub(super) grain: mpfree_grain::Params,
+    /// The region's grain settings as edited, before the tune and reverse
+    /// go in: what a grain setting's parameter reads (sampler refactor
+    /// step 17, [`EngineView::layer_grain`]).
+    pub(super) own_grain: mpfree_grain::Params,
+    /// The layer's place on its pad (a layer whose sound is missing has
+    /// no view, so the view's places can skip one).
+    pub(super) place: u8,
     /// What a key or a tune moves ([`pitched_grain`]): a Tone region's
     /// density (its note), or the grains' pitch and, with the region's key
     /// tracking, their size and the scan.
@@ -342,6 +349,17 @@ impl EngineView {
         }
     }
 
+    /// Pad `pad`'s layer `layer`'s grain settings as edited (its region's,
+    /// without the tune and reverse the voice plays them with): what a
+    /// grain setting's parameter reads (sampler refactor step 17). Kept in
+    /// every mode, as the region keeps them. None for a pad without a
+    /// sound or a layer it hasn't got.
+    pub fn layer_grain(&self, pad: usize, layer: usize) -> Option<&mpfree_grain::Params> {
+        let p = self.pads.get(pad)?.as_ref()?;
+        let v = p.layers.iter().find(|v| usize::from(v.place) == layer)?;
+        Some(&v.own_grain)
+    }
+
     /// How many slices pad `pad` plays from: its most sliced layer's, 1
     /// when none is sliced (or there is no such pad).
     pub fn pad_slices(&self, pad: usize) -> usize {
@@ -428,7 +446,8 @@ impl EngineView {
             let layers = p
                 .layers
                 .iter()
-                .filter_map(|l| {
+                .enumerate()
+                .filter_map(|(li, l)| {
                     let s = project.source(l.region.source)?;
                     let r = &l.region;
                     let (pl, pr) = pan_gains(l.pan + p.pan);
@@ -474,6 +493,8 @@ impl EngineView {
                         vel_hi: l.vel_hi,
                         src_rate: s.rate(),
                         grain,
+                        own_grain: r.grain,
+                        place: li as u8,
                         follow,
                         glide: (r.grain_glide_ms.clamp(0.0, GRAIN_GLIDE_MAX_MS) / 1000.0
                             * rate as f32) as u32,
@@ -703,6 +724,16 @@ impl Engine {
     /// (MIDI Learn reads where a learned pad setting stands).
     pub fn kit_pad_own(&self, kit: usize, pad: usize, field: PadField) -> Option<f32> {
         self.views.get(kit)?.pad_own(pad, field)
+    }
+
+    /// [`EngineView::layer_grain`] of kit `kit`'s pad.
+    pub fn kit_layer_grain(
+        &self,
+        kit: usize,
+        pad: usize,
+        layer: usize,
+    ) -> Option<&mpfree_grain::Params> {
+        self.views.get(kit)?.layer_grain(pad, layer)
     }
 
     /// [`EngineView::pad_slices`] of kit `kit`'s pad (1 past the kits).

@@ -40,6 +40,7 @@ use mpfree_sampler::engine::{
     CloudState, Engine, EngineView, Event, GrainView, KitKeys, LaneConfig, LaneSetup, LaneStats,
     PadField, PadOut, MAX_GRAINS, TAKE_PAD,
 };
+use mpfree_sampler::grain_field::GrainField;
 use mpfree_sampler::model::{
     GrainParams, Layer, Pad, PadKind, PlayMode, PressureRoute, PressureTarget, Project, Region,
     Source, PADS,
@@ -64,6 +65,62 @@ pub const KEY_BEND_CENTS: f32 = 200.0;
 /// ms).
 pub fn pad_field(param: u16) -> Option<PadField> {
     PadField::ALL.get(usize::from(param)).copied()
+}
+
+/// What a kit pad's parameter id names (`Owner::Pad`, `Owner::KitPad`):
+/// one of the pad's own settings ([`pad_field`]), or one of its layers'
+/// grain settings (sampler refactor step 17: the layer's place on the pad
+/// and the setting, `mpfree_param::pad::layer`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PadParam {
+    Own(PadField),
+    Grain { layer: u8, field: GrainField },
+}
+
+impl PadParam {
+    /// What parameter `id` names; None for a number that names nothing.
+    pub fn of(id: u16) -> Option<PadParam> {
+        match mpfree_play::mpfree_param::pad::layer_of(id) {
+            Some((layer, g)) => Some(PadParam::Grain {
+                layer,
+                field: GrainField::of(g)?,
+            }),
+            None => pad_field(id).map(PadParam::Own),
+        }
+    }
+
+    /// Its parameter id ([`PadParam::of`]'s inverse).
+    pub fn id(self) -> u16 {
+        match self {
+            PadParam::Own(f) => f as u16,
+            PadParam::Grain { layer, field } => {
+                mpfree_play::mpfree_param::pad::layer(layer, field as u8).unwrap_or(u16::MAX)
+            }
+        }
+    }
+
+    /// Its name and the range a learned control covers: [`pad_info`] for
+    /// the pad's own (`slices` for Slice), the Grain tab's for a layer's
+    /// grain setting ([`GrainField::info`]).
+    pub fn info(self, slices: usize) -> mpfree_node::ParamInfo {
+        match self {
+            PadParam::Own(f) => pad_info(f, slices),
+            PadParam::Grain { field, .. } => {
+                let mut i = field.info();
+                i.id = self.id();
+                i
+            }
+        }
+    }
+
+    /// The layer it is on, counted from 1 as the Play tab's layer map
+    /// shows them; None for one of the pad's own settings.
+    pub fn layer_shown(self) -> Option<usize> {
+        match self {
+            PadParam::Own(_) => None,
+            PadParam::Grain { layer, .. } => Some(usize::from(layer) + 1),
+        }
+    }
 }
 
 /// A kit pad's own setting as MIDI Learn moves it (`Owner::Pad`): its name
@@ -1150,6 +1207,24 @@ impl Player {
             PadField::Resonance => Some(0.0),
             _ => None,
         })
+    }
+
+    /// Kit `kit`'s pad `pad`'s value of `p` as edited: its own setting
+    /// ([`Player::pad_own`]), or a layer's grain setting as the kit's view
+    /// keeps it (sampler refactor step 17), in the units
+    /// [`PadParam::info`] shows. None for a pad without a sound, or a
+    /// layer it hasn't got.
+    pub fn pad_param_now(&self, kit: usize, pad: usize, p: PadParam) -> Option<f32> {
+        match p {
+            PadParam::Own(f) => self.pad_own(kit, pad, f),
+            PadParam::Grain { layer, field } => {
+                if !self.has_sound(kit, pad) {
+                    return None;
+                }
+                let g = self.engine.kit_layer_grain(kit, pad, usize::from(layer))?;
+                Some(field.get(g))
+            }
+        }
     }
 
     /// How many slices kit `kit`'s pad `pad` plays from (1 unsliced).

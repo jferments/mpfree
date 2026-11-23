@@ -511,7 +511,8 @@ const SHIFT_SYNTH_HINT: &str =
 const SHIFT_SAMPLE_HINT: &str =
     "SHIFT +   wheel: pad   ·   Q-Links: finer   ·   UNDO: redo   ·   MENU: Prefs   ·   STOP: back to bar 1";
 /// SHIFT held on the Sample tab's Play page, where a touch on a knob arms
-/// MIDI Learn on the pad's setting.
+/// MIDI Learn on the pad's setting, or with the Grain tool open, where a
+/// touch on a row or a Q-Link card arms it on the layer's grain setting.
 const SHIFT_SAMPLE_LEARN_HINT: &str =
     "SHIFT +   touch a knob: MIDI Learn   ·   wheel: pad   ·   Q-Links: finer   ·   UNDO: redo   ·   MENU: Prefs   ·   STOP: back to bar 1";
 /// SHIFT held on the Pads tab, where a touch on Level, Pan or Tune arms
@@ -1397,11 +1398,12 @@ pub enum ToUi {
     },
     /// Every value of the synth, in its parameter order (after a preset).
     SynthValues(Vec<f32>),
-    /// Learned MIDI controls moved kit pads' own settings (MIDI Learn,
-    /// `Owner::Pad`): `(kit, pad, setting, value)`, each in the setting's
-    /// units, set on the kit as the Play tab's knob sets it
+    /// Learned MIDI controls moved kit pads' settings (MIDI Learn,
+    /// `Owner::Pad`, `Owner::KitPad`): `(kit, pad, setting, value)`, each
+    /// in the setting's units, set on the kit as the Play tab's knob sets a
+    /// pad's own and the Grain tool's row a layer's grain setting
     /// ([`sample_page::SamplePage::learned`]).
-    PadsLearned(Vec<(usize, u8, mpfree_sampler::engine::PadField, f32)>),
+    PadsLearned(Vec<(usize, u8, crate::sampler::PadParam, f32)>),
     /// Save preset's answer (`presets::Ask::Text`): the Synth tab's sound
     /// as preset text and the engine's folder it goes in, or why not.
     PresetText {
@@ -2195,15 +2197,20 @@ pub enum LearnValue {
     /// A mixer strip's fader, pan or send, an effect's knob on the chain
     /// editor, or a macro's knob.
     Param(ParamAddr),
-    /// A knob of the synth the Synth tab shows (the selected track's), by
-    /// its parameter id.
+    /// A knob of the synth the Synth tab shows (the selected track's, or
+    /// the one the pads play), by its parameter id. Learn names the
+    /// instrument itself (sampler step 16), so the knob stays on it.
     Synth(u16),
     /// One of the armed track's arp settings its Q-Links turn, by its id
     /// in `mpfree_param::arp`.
     Arp(u16),
     /// A setting of a pad of the kit the Sample and Pads tabs show (the
-    /// armed track's): the pad, and the setting's `PadField` number.
-    Pad { pad: u8, field: u16 },
+    /// kit the last hit played, else the armed track's; sampler step 15d):
+    /// its kit place, the pad, and the setting's parameter id (a
+    /// `PadField` number, or a layer's grain setting from 256, sampler
+    /// refactor step 17: `crate::sampler::PadParam`). Learn names the kit
+    /// itself (sampler step 16), so the knob stays on it.
+    Pad { kit: u8, pad: u8, field: u16 },
 }
 
 /// A track asked of the time engine for a kit: by "+ Kit track", or by a
@@ -7888,6 +7895,14 @@ impl Player {
             SHIFT_SAMPLE_LEARN_HINT.to_string()
         } else if self.status.shift && self.ready && self.perform_showing() {
             SHIFT_PERFORM_HINT.to_string()
+        } else if self.status.shift
+            && self.ready
+            && self.view == View::Sample
+            && self.sample.grain_tool()
+        {
+            // The Grain tool's rows and Q-Link cards learn a layer's grain
+            // setting (sampler refactor step 17).
+            SHIFT_SAMPLE_LEARN_HINT.to_string()
         } else if self.status.shift && self.ready && self.view == View::Sample {
             SHIFT_SAMPLE_HINT.to_string()
         } else if self.status.shift
@@ -12909,7 +12924,19 @@ impl Player {
                 }),
             );
         }
-        self.open_midi(snap.part(crate::project::MIDI));
+        // Learned pad settings and synth knobs that name their track (a
+        // project from before sampler step 16) name what the track plays.
+        let midi = snap.part(crate::project::MIDI).map(|t| {
+            crate::project::learns_moved_up(t, &o.track_kits, &o.sends, &o.instrument_list)
+        });
+        if let Some((_, n @ 1..)) = midi {
+            let s = if n == 1 { "" } else { "s" };
+            self.say(format!(
+                "project: {n} learned control{s} now stay on their kit or synth, \
+                 whichever track plays it"
+            ));
+        }
+        self.open_midi(midi.as_ref().map(|(t, _)| t.as_str()));
         self.opens_out += 1;
         self.outbox.push(FromUi::OpenProject(Box::new(o)));
         // No kits saved: the factory kits, as New has them.
@@ -14950,11 +14977,13 @@ impl Player {
             return skin.param_id_at(x, y, r).map(LearnValue::Synth);
         }
         // A pad's own setting: a knob of the Sample tab's Play page, or
-        // the Pads tab's Level, Pan or Tune.
-        if let Some((pad, field)) = self.sample.learn_field(w, t) {
+        // the Pads tab's Level, Pan or Tune; or a grain setting of the
+        // layer the Grain tool edits (sampler refactor step 17).
+        if let Some((pad, what)) = self.sample.learn_field(w, t) {
             return Some(LearnValue::Pad {
+                kit: u8::try_from(self.sample.kit()).ok()?,
                 pad: u8::try_from(pad).ok()?,
-                field: field as u16,
+                field: what.id(),
             });
         }
         mpfree_chain_ui::param_of(&self.ui, w, t).map(LearnValue::Param)
@@ -27085,7 +27114,7 @@ mod tests {
             p.apply(ToUi::PadsLearned(vec![(
                 0,
                 pad as u8,
-                PadField::Tune,
+                crate::sampler::PadParam::Own(PadField::Tune),
                 cents,
             )]));
         };
@@ -27103,6 +27132,137 @@ mod tests {
             "{:?}",
             events_log(&p)
         );
+    }
+
+    /// Sampler refactor step 17: with the Grain tool open, SHIFT + a touch
+    /// on a row with a range or on a Q-Link card learns that grain setting
+    /// of the layer the tool edits (`mpfree_param::pad::layer`); a choice
+    /// learns nothing. A learned move sets it on the kit as the row does,
+    /// one undo step a turn.
+    #[test]
+    fn shift_and_a_touch_on_the_grain_tool_learns_the_layers_grain_setting() {
+        use crate::sampler::PadParam;
+        use mpfree_play::mpfree_param::pad as ids;
+        use mpfree_sampler::grain_field::GrainField;
+        use mpfree_sampler_ui::grain_tab::Row;
+        use mpfree_sampler_ui::grain_tool::GrainPart;
+        use mpfree_sampler_ui::wave_tab::{self, Tool};
+        use mpfree_ui::Rect;
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        pick_tool(&mut p, Tool::Grain);
+        p.apply(ToUi::SampleLift);
+        for v in views(p.take_actions()).0 {
+            p.apply(ToUi::SampleViewBack(v));
+        }
+        grain_part(&mut p, GrainPart::Filter);
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        p.take_actions();
+        let region = |p: &Player| {
+            p.sample.project(0).unwrap().pad(pad).unwrap().layers[0]
+                .region
+                .clone()
+        };
+        let centre = |r: Rect| (r.x + r.w / 2, r.y + r.h / 2);
+        let row_at = |p: &Player, row: Row| {
+            let i = GrainPart::Filter
+                .rows(&region(p))
+                .iter()
+                .position(|r| *r == row)
+                .unwrap();
+            p.ui.targets()
+                .into_iter()
+                .find(|pt| {
+                    pt.widget == wave_tab::REGION
+                        && pt.target.index == i + 1
+                        && mpfree_sampler_ui::play_tab::is_value_target(&pt.target)
+                })
+                .map(|pt| centre(pt.target.rect))
+                .unwrap()
+        };
+        let card_at = |p: &Player, k: usize| {
+            p.ui.targets()
+                .into_iter()
+                .find(|pt| pt.widget == wave_tab::QLINKS[k])
+                .map(|pt| centre(pt.target.rect))
+                .unwrap()
+        };
+        let press = |p: &mut Player, (x, y): (i32, i32)| {
+            let mut acts: Vec<FromUi> =
+                [p.touch(1, Touch::Down, x, y), p.touch(1, Touch::Up, x, y)]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+            acts.extend(p.take_actions());
+            acts
+        };
+        let learn = |f: GrainField| {
+            [FromUi::LearnValue(LearnValue::Pad {
+                kit: 0,
+                pad: pad as u8,
+                field: ids::layer(0, f as u8).unwrap(),
+            })]
+        };
+        p.status.shift = true;
+        p.refresh_hint();
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(
+            hint.starts_with("SHIFT +   touch a knob: MIDI Learn"),
+            "{hint}"
+        );
+        let cutoff = row_at(&p, Row::Cutoff);
+        assert_eq!(press(&mut p, cutoff), learn(GrainField::Cutoff));
+        let size = card_at(&p, 1);
+        assert_eq!(
+            press(&mut p, size),
+            learn(GrainField::Size),
+            "Q-Link 2's card"
+        );
+        // The filter's kind: its choices are buttons, not a value.
+        let kind =
+            p.ui.targets()
+                .into_iter()
+                .find(|pt| {
+                    pt.widget == wave_tab::REGION
+                        && pt.target.id == "choice"
+                        && pt.target.label.starts_with("Pass: ")
+                })
+                .map(|pt| centre(pt.target.rect))
+                .unwrap();
+        assert!(
+            !press(&mut p, kind)
+                .iter()
+                .any(|a| matches!(a, FromUi::LearnValue(_))),
+            "the filter's kind is a choice"
+        );
+        p.status.shift = false;
+        // A turn of the learned control: the layer's region follows, its
+        // view goes out once, and one undo step takes the turn back.
+        let was = region(&p).grain.size_ms;
+        let what = PadParam::Grain {
+            layer: 0,
+            field: GrainField::Size,
+        };
+        p.apply(ToUi::PadsLearned(vec![(0, pad as u8, what, 300.0)]));
+        p.apply(ToUi::PadsLearned(vec![(0, pad as u8, what, 450.0)]));
+        assert_eq!(region(&p).grain.size_ms, 450.0);
+        let (sent, _) = views(p.take_actions());
+        assert_eq!(sent.len(), 1);
+        p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
+        p.apply(ToUi::PadsLearned(vec![(0, pad as u8, what, 450.0)]));
+        assert!(
+            views(p.take_actions()).0.is_empty(),
+            "the same value sends nothing"
+        );
+        // A layer the pad hasn't got changes nothing.
+        let second = PadParam::Grain {
+            layer: 1,
+            field: GrainField::Size,
+        };
+        p.apply(ToUi::PadsLearned(vec![(0, pad as u8, second, 90.0)]));
+        assert!(views(p.take_actions()).0.is_empty());
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(region(&p).grain.size_ms, was);
     }
 
     #[test]
@@ -27135,6 +27295,7 @@ mod tests {
         };
         let learn = |field: PadField| {
             [FromUi::LearnValue(LearnValue::Pad {
+                kit: 0,
                 pad: pad as u8,
                 field: field as u16,
             })]
@@ -27161,13 +27322,13 @@ mod tests {
         p.apply(ToUi::PadsLearned(vec![(
             0,
             pad as u8,
-            PadField::Tune,
+            crate::sampler::PadParam::Own(PadField::Tune),
             700.0,
         )]));
         p.apply(ToUi::PadsLearned(vec![(
             0,
             pad as u8,
-            PadField::Tune,
+            crate::sampler::PadParam::Own(PadField::Tune),
             1_200.4,
         )]));
         assert_eq!(
@@ -27181,7 +27342,7 @@ mod tests {
         p.apply(ToUi::PadsLearned(vec![(
             0,
             pad as u8,
-            PadField::Tune,
+            crate::sampler::PadParam::Own(PadField::Tune),
             1_200.0,
         )]));
         assert!(views(p.take_actions()).0.is_empty());

@@ -162,6 +162,12 @@ pub const LINKED_SONG_LIST: &str = "linked-song-list";
 /// build would skip the scene's `keep` line and stop those tracks at the
 /// scene change, so it must not open it.
 pub const SCENE_KEEP: &str = "scene-keep";
+
+/// A project with a learned control that names a kit's pad or a synth by
+/// its number in the list of instruments (sampler step 16,
+/// `Owner::KitPad`, `Owner::Sound`): an older build can't read those
+/// `learn` lines, and would drop them at its next save.
+pub const LEARN_BY_INSTRUMENT: &str = "learn-by-instrument";
 /// The features this build has, of those a project can need.
 pub const KNOWN_NEEDS: &[&str] = &[
     SYNTHS_WITHOUT_TRACKS,
@@ -169,6 +175,7 @@ pub const KNOWN_NEEDS: &[&str] = &[
     AUDIO_CLIPS,
     LINKED_SONG_LIST,
     SCENE_KEEP,
+    LEARN_BY_INSTRUMENT,
 ];
 
 // ------------------------------------------------------------ the loop's side
@@ -322,6 +329,19 @@ fn parse_swing(v: &str) -> Option<mpfree_transport::time::Swing> {
     mpfree_transport::time::Swing::new(g.trim().parse().ok()?, a.trim().parse().ok()?)
 }
 
+/// Whether the MIDI part `text` has a learned control that names a kit's
+/// pad or a synth by its number in the list (sampler step 16): what the
+/// [`LEARN_BY_INSTRUMENT`] need is written for.
+pub fn learns_by_instrument(text: &str) -> bool {
+    use mpfree_play::mpfree_param::Owner;
+    text.lines()
+        .filter_map(|l| {
+            let (k, v) = l.split_once('=')?;
+            (k.trim() == "learn").then(|| mpfree_midi::learn::Saved::parse(v.trim()))?
+        })
+        .any(|l| matches!(l.target.owner, Owner::KitPad(..) | Owner::Sound(_)))
+}
+
 /// The project as text, from what the loop collected and the screen's own
 /// parts (`extra`: the sampler's, the I/O setup's, the loops').
 pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
@@ -375,6 +395,13 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
     }
     if c.clips.scenes.iter().any(|s| s.keep != 0) {
         needs.push(SCENE_KEEP);
+    }
+    let midi = parts
+        .iter()
+        .find(|(k, _)| k == MIDI)
+        .map(|(_, t)| t.as_str());
+    if midi.is_some_and(learns_by_instrument) {
+        needs.push(LEARN_BY_INSTRUMENT);
     }
     if !needs.is_empty() {
         extra.push((NEEDS_KEY.to_string(), needs.join(" ")));
@@ -811,6 +838,74 @@ pub fn opening(
         clear_audio: true,
         audio_slots: audio,
     })
+}
+
+// ------------------------------------------------------------ learned controls
+
+/// The MIDI part `text` as the project opens, with each learned
+/// control kept with the project that names a kit's pad or a synth by its
+/// track (`t3.pad5.2`, `t3.inst.12`: a project saved before sampler step
+/// 16) moved up to name what that track plays (the opening's
+/// [`Opening::track_kits`], [`Opening::sends`] and list), by its number in
+/// the list
+/// (`kit9.pad5.2`, `i9.12`), so it stays on that sound when the track
+/// picks another. A pad's setting names the track's kit (none for a track
+/// on the synth); a synth's knob the track's own instrument, the one it
+/// plays by a send, else the shared synth, as Learn turned it before.
+/// Controls kept for every project, and every other line, stay as they
+/// are. Gives how many moved.
+pub fn learns_moved_up(
+    text: &str,
+    track_kits: &[(usize, Option<usize>)],
+    sends: &[(usize, usize)],
+    list: &InstrumentList,
+) -> (String, usize) {
+    use mpfree_midi::learn::Saved;
+    use mpfree_play::mpfree_param::{Owner, ParamAddr};
+    let number = |id: Option<InstrumentId>| id.and_then(|id| u16::try_from(id.number()).ok());
+    let up = |target: ParamAddr| -> Option<ParamAddr> {
+        let owner = match target.owner {
+            Owner::Pad(t, pad) => {
+                let t = usize::from(t);
+                let kit = match track_kits.iter().rev().find(|(tt, _)| *tt == t) {
+                    Some((_, kit)) => (*kit)?,
+                    None => 0,
+                };
+                Owner::KitPad(number(list.of_kit(kit))?, pad)
+            }
+            Owner::Inst(t) => {
+                let t = usize::from(t);
+                let sent = sends.iter().find(|(tt, _)| *tt == t).map(|&(_, h)| h);
+                let id = match (list.own_of(t), sent) {
+                    (Some(id), _) => Some(id),
+                    (None, Some(h)) => list.of_holder(h),
+                    (None, None) => Some(InstrumentId::SHARED_SYNTH),
+                };
+                Owner::Sound(number(id)?)
+            }
+            _ => return None,
+        };
+        Some(ParamAddr::new(owner, target.param))
+    };
+    let mut out = String::with_capacity(text.len());
+    let mut moved = 0;
+    for line in text.lines() {
+        let saved = line
+            .split_once('=')
+            .filter(|(k, _)| k.trim() == "learn")
+            .and_then(|(_, v)| Saved::parse(v.trim()));
+        match saved.and_then(|l| up(l.target).map(|t| (l, t))) {
+            Some((mut l, target)) => {
+                l.target = target;
+                out.push_str("learn = ");
+                out.push_str(&l.text());
+                moved += 1;
+            }
+            None => out.push_str(line),
+        }
+        out.push('\n');
+    }
+    (out, moved)
 }
 
 // ------------------------------------------------------------ what the tracks play
@@ -3379,6 +3474,100 @@ mod tests {
         assert!(c.clips.arrangement.clips.is_empty());
         let snap = snapshot(&c, Vec::new());
         assert_eq!(check_against(&snap, &phase_1), Ok(FORMAT));
+    }
+
+    /// Sampler step 16: a learned control that names a kit's pad or a
+    /// synth by its number in the list (`kit9.pad5.2`, `i9.12`) makes the
+    /// project need `learn-by-instrument`, since an older build can't read
+    /// those lines; one by track, or kept for every project, doesn't.
+    #[test]
+    fn a_control_learned_by_instrument_says_the_project_needs_it() {
+        let line = |target: &str| {
+            format!("learn = any | ch 1 | cc 74 | {target} | 0.0000 1.0000 | absolute | jump\n")
+        };
+        let midi = |lines: &str| (MIDI.to_string(), format!("mpfree-midi 1\n{lines}"));
+        let needs = |extra: Vec<(String, String)>| {
+            let c = collected(String::new(), InstrumentList::new().text());
+            let snap = snapshot(&c, extra);
+            let line = snap
+                .meta
+                .extra
+                .iter()
+                .find(|(k, _)| k == NEEDS_KEY)
+                .map(|(_, v)| v.clone());
+            (snap, line)
+        };
+        assert_eq!(needs(vec![midi(&line("t3.pad5.2"))]).1, None);
+        assert_eq!(needs(vec![midi(&line("t3.inst.12"))]).1, None);
+        let rig = line("i9.12").replace("learn =", "learn-rig =");
+        assert_eq!(needs(vec![midi(&rig)]).1, None, "only the project's own");
+        for target in ["kit9.pad5.2", "i9.12"] {
+            let (snap, line) = needs(vec![midi(&line(target))]);
+            assert_eq!(line.as_deref(), Some(LEARN_BY_INSTRUMENT), "{target}");
+            assert_eq!(check(&snap), Ok(FORMAT));
+        }
+        assert!(mpfree_midi::learn::Saved::parse(
+            "any | ch 1 | cc 74 | kit9.pad5.2 | 0.0000 1.0000 | absolute | jump"
+        )
+        .is_some());
+    }
+
+    /// Sampler step 16, part b: a project saved before it has its learned
+    /// pad settings and synth knobs by track. As it opens, each names what
+    /// its track plays then, by its number in the list: the track's kit
+    /// (kit 1 for a track the part doesn't name), the track's own
+    /// instrument, the one it plays by a send, else the shared synth. A
+    /// pad on a track that plays the synth, a strip's control and a
+    /// control kept for every project stay as they are.
+    #[test]
+    fn learned_controls_by_track_move_up_to_what_the_track_plays() {
+        use crate::instruments::free;
+        let mut list = InstrumentList::new();
+        list.follow_kits(3);
+        list.follow(1 << 2);
+        list.follow_free(1);
+        let n = |id: Option<InstrumentId>| id.unwrap().number();
+        let (kit_1, kit_3) = (n(list.of_kit(0)), n(list.of_kit(2)));
+        let (own_3, free_1) = (n(list.own_of(2)), n(list.free_of(0)));
+        // Track 2 plays kit 3, track 4 the synth; track 5 plays free place
+        // 1's synth by a send, track 6 track 3's own.
+        let track_kits = [(1, Some(2)), (3, None)];
+        let sends = [(4, free(0)), (5, 2)];
+        let line = |key: &str, target: &str| {
+            format!("{key} = any | ch 1 | cc 74 | {target} | 0.0000 1.0000 | absolute | jump")
+        };
+        let targets = [
+            ("t0.pad4.2", format!("kit{kit_1}.pad4.2")),
+            ("t1.pad4.2", format!("kit{kit_3}.pad4.2")),
+            ("t3.pad4.2", "t3.pad4.2".to_string()),
+            ("t2.inst.12", format!("i{own_3}.12")),
+            ("t4.inst.12", format!("i{free_1}.12")),
+            ("t5.inst.12", format!("i{own_3}.12")),
+            ("t0.inst.12", "i1.12".to_string()),
+            ("t0.mix.0", "t0.mix.0".to_string()),
+        ];
+        let mut text = String::from("mpfree-midi 1\nfollow.start-stop = off\n");
+        for (old, _) in &targets {
+            text.push_str(&line("learn", old));
+            text.push('\n');
+        }
+        let rig = line("learn-rig", "t0.pad4.2");
+        text.push_str(&rig);
+        text.push('\n');
+        let (moved, count) = learns_moved_up(&text, &track_kits, &sends, &list);
+        assert_eq!(count, 6, "{moved}");
+        let lines: Vec<&str> = moved.lines().collect();
+        assert_eq!(lines[..2], ["mpfree-midi 1", "follow.start-stop = off"]);
+        for (i, (old, new)) in targets.iter().enumerate() {
+            assert_eq!(lines[2 + i], line("learn", new), "{old}");
+        }
+        assert_eq!(lines[2 + targets.len()], rig, "kept for every project");
+        assert!(learns_by_instrument(&moved));
+        // Opening it again moves nothing more.
+        assert_eq!(
+            learns_moved_up(&moved, &track_kits, &sends, &list),
+            (moved.clone(), 0)
+        );
     }
 
     /// Phase 0's gate (docs/dev/design/project-safety.md): a project that
