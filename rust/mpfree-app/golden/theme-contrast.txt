@@ -371,6 +371,7 @@ spaceship arrange-song-audio 10 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-loops 12 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-panel 12 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-panel-mix 12 # new screen (instrument redesign, step 9): the faint labels arrange-song-panel has
+spaceship arrange-song-passes 10 # new screen (Arrange 4b.4): arrange-song's 10 faint runs; the pass label adds none
 spaceship arrange-song-section 10 # arrange-song with the Verse picked (Arrange 3.3): its faint text, the same 10 runs as arrange-song
 spaceship arrange-song-takes 10 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-tempo 10 # before the theme refactor (phase 0 baseline)

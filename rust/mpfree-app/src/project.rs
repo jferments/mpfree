@@ -1091,15 +1091,10 @@ pub fn audio_slots(
     Ok(slots)
 }
 
-/// New project: the parts the app started with, and an empty song.
+/// New project: the parts the app started with, and an empty song, its
+/// song list linked to it (the Arrange refactor's 4b.4).
 pub fn new_snapshot(d: &Defaults) -> Snapshot {
-    let mut clips = mpfree_seq::Project::new();
-    for i in 0..crate::time::TRACKS {
-        clips.tracks.push(mpfree_seq::Track::new(
-            &format!("Track {}", i + 1),
-            i as u16,
-        ));
-    }
+    let clips = crate::time::new_project();
     Snapshot {
         meta: mpfree_library::Meta {
             tempo: d.tempo,

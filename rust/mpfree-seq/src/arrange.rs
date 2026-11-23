@@ -1165,20 +1165,65 @@ impl Arrangement {
                 passes: 1,
             });
         }
-        for (k, m) in self.markers.iter().enumerate() {
-            let to = match self.markers.get(k + 1) {
-                Some(n) => n.at,
-                None => self.last_end(m, bar),
-            };
-            out.push(SongSection {
-                marker: Some(k),
-                start: m.at,
-                end: to,
-                scene: m.scene,
-                passes: m.passes,
-            });
-        }
+        out.extend((0..self.markers.len()).filter_map(|k| self.part_of(k, bar)));
         out
+    }
+
+    /// The section playing at song tick `t` ([`Arrangement::parts`]),
+    /// found without making the list (each period of a linked song looks):
+    /// None before the song's start or past its last section.
+    pub fn part_at(&self, t: Tick, bar: Tick) -> Option<SongSection> {
+        let k = self.markers.partition_point(|m| m.at <= t);
+        let Some(i) = k.checked_sub(1) else {
+            let bar = bar.max(1);
+            let end = match self.markers.first() {
+                Some(m) => m.at,
+                None => (self.end() + bar - 1) / bar * bar,
+            };
+            return (0..end).contains(&t).then_some(SongSection {
+                marker: None,
+                start: 0,
+                end,
+                scene: None,
+                passes: 1,
+            });
+        };
+        self.part_of(i, bar).filter(|s| t < s.end)
+    }
+
+    /// The first section that starts after song tick `t` (0 or later),
+    /// found without making the list.
+    pub fn part_after(&self, t: Tick, bar: Tick) -> Option<SongSection> {
+        self.part_of(self.markers.partition_point(|m| m.at <= t), bar)
+    }
+
+    /// Where the song's sections start and end, the first to the last
+    /// ([`Arrangement::parts`]); None with none.
+    pub fn parts_span(&self, bar: Tick) -> Option<(Tick, Tick)> {
+        let start = self
+            .part_at(0, bar)
+            .map_or_else(|| self.markers.first().map(|m| m.at), |s| Some(s.start))?;
+        let end = match self.markers.last() {
+            Some(m) => self.last_end(m, bar),
+            None => self.part_at(0, bar)?.end,
+        };
+        Some((start, end))
+    }
+
+    /// Marker `k`'s section.
+    fn part_of(&self, k: usize, bar: Tick) -> Option<SongSection> {
+        let m = self.markers.get(k)?;
+        let end = match self.markers.get(k + 1) {
+            Some(n) => n.at,
+            None => self.last_end(m, bar),
+        };
+        Some(SongSection {
+            marker: Some(k),
+            start: m.at,
+            end,
+            scene: m.scene,
+            passes: m.passes,
+        })
     }
 
     /// What section `s` holds while it follows its scene; None for one
@@ -2140,6 +2185,40 @@ mod tests {
         song.markers[2].scene = Some(FromScene::following(0, 4 * BAR));
         assert_eq!(song.section(2, BAR), Some((8 * BAR, 12 * BAR)));
         assert_eq!(song.parts(BAR)[2].end, 12 * BAR);
+    }
+
+    /// Phase 4b.4: the section found at a tick, the one after it and the
+    /// sections' span, found without making the list, are the list's.
+    #[test]
+    fn a_part_found_at_a_tick_is_the_one_the_list_has() {
+        let mut p = project();
+        linked(&mut p, &[(0, 2), (1, 3), (0, 1)]);
+        let check = |song: &Arrangement| {
+            let parts = song.parts(BAR);
+            for t in (0..14).map(|k| k * BAR / 2) {
+                let at = parts.iter().find(|s| (s.start..s.end).contains(&t));
+                assert_eq!(song.part_at(t, BAR).as_ref(), at, "{t}");
+                let after = parts.iter().find(|s| s.start > t);
+                assert_eq!(song.part_after(t, BAR).as_ref(), after, "{t}");
+            }
+            let span = parts
+                .first()
+                .zip(parts.last())
+                .map(|(a, b)| (a.start, b.end));
+            assert_eq!(song.parts_span(BAR), span);
+        };
+        let mut song = p.arrangement.clone();
+        check(&song);
+        // The bars before the first marker, the last section's silence,
+        // no marker, no song.
+        song.markers.remove(0);
+        song.markers[1].scene = Some(FromScene::following(0, 4 * BAR));
+        check(&song);
+        assert_eq!(song.parts_span(BAR), Some((0, 12 * BAR)));
+        song.markers.clear();
+        check(&song);
+        check(&Arrangement::default());
+        assert_eq!(Arrangement::default().parts_span(BAR), None);
     }
 
     /// A marker's passes are 1 to 99, its scene a row with a pass; a

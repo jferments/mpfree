@@ -72,6 +72,7 @@ use super::{
 };
 
 mod linked;
+mod sections;
 pub use linked::edits_steps;
 
 /// The clip settings card's join keys for its takes, a row each (see
@@ -84,11 +85,6 @@ const SCENE_JOIN: u64 = 0x5C_0000;
 
 /// Started cues one period may bring before the list grows.
 const STARTED_ROOM: usize = 64;
-
-/// What a linked song list can't do yet (the Arrange refactor's phase 4b:
-/// it plays the song from 4b.4).
-pub(super) const LIST_LINKED: &str =
-    "song list: it is the song's parts now: play them with the song (SONG on)";
 
 /// The tracks' mutes and solos as they will be once a mute queue lands,
 /// read without changing the project.
@@ -369,6 +365,17 @@ pub struct TimeControl {
     /// Perform's Rec song with REC: armed by the take, or taken off for
     /// it ([`TimeControl::take_follows`]).
     song_take: SongTake,
+    /// A linked song as it plays (4b.4, `sections`): where the section
+    /// whose mutes and program changes came in last starts, where the one
+    /// cued for its first tick starts, and the playhead as the last period
+    /// left it.
+    section_now: Option<Tick>,
+    section_next: Option<Tick>,
+    section_last: Tick,
+    /// The transport's loop Loop the list set on a linked list, and the
+    /// musician's it kept aside.
+    list_loop: Option<(Tick, Tick)>,
+    loop_kept: Option<(Tick, Tick)>,
     /// A take records (the notes, their count-in, or a loop), as the host
     /// last said.
     taking: bool,
@@ -619,6 +626,11 @@ impl TimeControl {
             project_bpm: info.bpm,
             song_rec: SongRecorder::default(),
             song_take: SongTake::Idle,
+            section_now: None,
+            section_next: None,
+            section_last: 0,
+            list_loop: None,
+            loop_kept: None,
             taking: false,
             later_note: None,
             throw: false,
@@ -1327,6 +1339,9 @@ impl TimeControl {
             // gave no cue wait in the mute queue for its line.
             compile |= self.queue_scene_mutes();
         }
+        // A linked song's sections bring their scenes' mutes and program
+        // changes (4b.4).
+        compile |= self.sections_due(self.info.meter.bar_ticks());
         let recorded = std::mem::take(&mut self.recorded_now);
         // The transport stopped: what live to song recorded goes into the
         // song (it compiles).
@@ -1767,7 +1782,7 @@ impl TimeControl {
         let mut made = false;
         let info = self.info;
         let bar = info.meter.bar_ticks();
-        let length = info.loop_range.map_or(NEW_CLIP_BARS * bar, |(a, b)| b - a);
+        let length = self.clip_loop().map_or(NEW_CLIP_BARS * bar, |(a, b)| b - a);
         while also != 0 {
             let track = also.trailing_zeros() as usize;
             also &= also - 1;
@@ -1814,7 +1829,7 @@ impl TimeControl {
             Some(s) => (s, format!("slot {} of track {} launched", s + 1, track + 1)),
             None => {
                 let bar = info.meter.bar_ticks();
-                let length = info.loop_range.map_or(NEW_CLIP_BARS * bar, |(a, b)| b - a);
+                let length = self.clip_loop().map_or(NEW_CLIP_BARS * bar, |(a, b)| b - a);
                 let t = self.project.tracks.get_mut(track).ok_or("no such track")?;
                 let s = t
                     .slots
@@ -3408,8 +3423,9 @@ impl TimeControl {
                     None => "armed: none".into(),
                 })
             }
-            TimeAction::ListPlay(_) if self.project.arrangement.list.linked => {
-                Err(LIST_LINKED.into())
+            // Linked to the song, the list plays the song (4b.4).
+            TimeAction::ListPlay(k) if self.project.arrangement.list.linked => {
+                self.play_from_part(k)
             }
             TimeAction::LaunchScene(_)
             | TimeAction::StopAll
@@ -3536,7 +3552,7 @@ impl TimeControl {
             TimeAction::NewClip { track, slot } => {
                 let holds = self.take_holds(track);
                 let bar = info.meter.bar_ticks();
-                let length = info.loop_range.map_or(NEW_CLIP_BARS * bar, |(a, b)| b - a);
+                let length = self.clip_loop().map_or(NEW_CLIP_BARS * bar, |(a, b)| b - a);
                 let t = self.project.tracks.get_mut(track).ok_or("no such track")?;
                 let s = t.slots.get_mut(slot).ok_or("no such slot")?;
                 if s.is_some() {

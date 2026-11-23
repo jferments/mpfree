@@ -19346,6 +19346,24 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("arrange-song-section sample: {e}"),
     }
+    // A song linked to its list (the Arrange refactor's 4b.4): the Verse
+    // plays its scene twice, "Verse ×2" on the ruler and a faint dashed
+    // line where its second pass starts, "pass 2 of 2".
+    match mpfree_time_ui::sample::busy_song_state() {
+        Ok(mut state) => {
+            state.list_linked = true;
+            let verse = state.markers.get(1..3).map(|m| m[1].0 - m[0].0);
+            state.passes = (0..state.markers.len())
+                .map(|k| verse.filter(|_| k == 1).map(|len| (2, len / 2)))
+                .collect();
+            let mut p = quiet_player(fonts());
+            busy_sounds(&mut p);
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("arrange-song-passes", p));
+        }
+        Err(e) => eprintln!("arrange-song-passes sample: {e}"),
+    }
     // The song's tempo points on the lane over the bars: 100 BPM from
     // bar 3 ramping to 128 at bar 6, the ramping point picked (its Ramp
     // and Delete in place of the clip buttons).
@@ -30323,7 +30341,10 @@ mod tests {
         let mut clips_9 = good.clone();
         for (name, text) in &mut clips_9.parts {
             if name == project::CLIPS {
-                *text = text.replacen("mpfree-clips 2", "mpfree-clips 9", 1);
+                // A new project's clips are format 4 (its list linked).
+                let was = mpfree_seq::save::FORMAT_4;
+                assert!(text.contains(was));
+                *text = text.replacen(was, "mpfree-clips 9", 1);
             }
         }
         let mut newer = good.clone();

@@ -138,7 +138,30 @@ When you move a section, put bars in or take them out, the audio moves with the 
 
 ## The song list
 
-The song list plays scenes one after another, each so many times: "Intro × 2, Verse × 4, Drop × 4, Break × 1". It's the quick way to sketch a song's shape without laying out blocks, and a scene can come back as often as you like. Tap **List** at the top of the Song view to see it; in Perform, **MAIN** goes Clips, Song, List. **Clips** and **Song** at the top go back.
+The song list is your song as a list of parts, each playing a scene so many times: "Intro × 2, Verse × 4, Drop × 4, Break × 1". It's the quick way to sketch a song's shape without laying out blocks, and a scene can come back as often as you like. Tap **List** at the top of the Song view to see it; in Perform, **MAIN** goes Clips, Song, List. **Clips** and **Song** at the top go back.
+
+In a new project the list and the song are one song shown two ways: each part on the list is a stretch of the song, from one of its markers to the next, and changing either changes the other. The title says so: "Song list · linked to the song · 7 parts · 50 bars · 2:10". A project saved before this keeps a list of its own, apart from the song (see [A list of its own](#a-list-of-its-own)).
+
+{{shot: arrange-list-linked | The song list linked to the song: the song's parts with the Song row first, the Verse playing its third pass of four, and the first Drop changed in the song and picked.}}
+
+- **+ Add a scene** puts a part after the one you picked (at the end if none is), playing the next row that has clips. The song gets that row's clips in the part's place, and everything after it moves later.
+- Tap **‹** or **›** on a part's scene to play another scene there; the part takes the scene's name, and the song after it moves to make room or closes up. Tap **–** or **+** to change how many times it plays (1 to 99): **+** adds a pass at its end and everything after moves later; **–** takes its last pass out and everything after closes up. **Bars** says how long the part lasts, and **Starts** the bar it starts on.
+- To move a part, drag it by its **grip**, the two short bars at its left (or its number): a line shows where it will land, and it goes there when you let go, with everything in its bars. A drag that starts anywhere else on the row scrolls a long list.
+- **Remove** takes the picked part out with everything in its bars, and the song closes up (in Perform, hold it for half a second).
+- **Song**, in faint words at the top, is the song's bars before its first marker, when it has some. It can't be moved, given a scene or repeated; add a marker on the Song view's ruler to make those bars a part.
+- Every change is one step for **UNDO**, the song's bars with it.
+
+The song changes the list too. Drag a section's name along the Song view's ruler and the part moves on the list; put in a marker and the list gets a new part. **Edit inside a part** on the Song view (move, delete, add or resize a block, make one unique, change its bars, or record over it with Rec song) and it becomes the song's own: the list marks it "● changed in the song", and its passes become plain bars (× 1). Moving or copying it whole doesn't count. **Back to the scene**, in List → song's place, puts the scene's clips back for the part's bars, as many passes as fit; it is lit when a changed part is picked. **Scenes → song** adds its rows after the last part.
+
+**Playing.** Tap a part to pick it. **Play from here** plays the song from the part's first bar, with **Song on**: clips you launched over the song stop, and it starts playing if it was stopped. As each part starts, its scene's mutes and program changes come in, as launching the scene would, and a scene without mutes leaves them as they were. The part playing is lit green with "pass 3 of 4". **Loop the list** loops the song from its first part to the end of its last; any loop you had set comes back when you turn it off. Launching a scene over the song, and **Back to song**, work as they always do.
+
+On the Song view, a part that plays its scene more than once has its times after its name on the ruler ("Verse ×2"), and a faint dashed line marks where each pass starts, labelled "pass 2 of 2". Once the part is the song's own, its passes are plain bars and the lines go.
+
+{{shot: arrange-song-passes | The Song view with the Verse playing its scene twice: "Verse ×2" on the ruler and a dashed line where its second pass starts.}}
+
+### A list of its own
+
+A project saved before the list was linked keeps a list of its own, apart from the song: its steps play scenes live, and the song doesn't change when the list does.
 
 {{shot: arrange-list | The song list: seven steps with their times, bars and where each starts; the Drop playing its third pass of four.}}
 

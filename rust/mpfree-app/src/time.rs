@@ -97,6 +97,20 @@ pub use timing::{Allowed, Answer, TimingChange};
 
 /// Tracks in a new project.
 pub const TRACKS: usize = 8;
+
+/// A new project's clips: [`TRACKS`] empty tracks, an empty song, and the
+/// song list linked to the song (the Arrange refactor's 4b.4: the list is
+/// the song's parts). [`TimeHost::new`], for tests, leaves it unlinked.
+pub fn new_project() -> Project {
+    let mut project = Project::new();
+    for i in 0..TRACKS {
+        project
+            .tracks
+            .push(Track::new(&format!("Track {}", i + 1), i as u16));
+    }
+    project.arrangement.list.linked = true;
+    project
+}
 /// Bars in a clip made by tapping an empty slot (without a loop set).
 pub const NEW_CLIP_BARS: i64 = 2;
 /// Notes, and locks, the armed track's clips can take while recording
@@ -759,6 +773,11 @@ impl TimeHost {
                 .push(Track::new(&format!("Track {}", i + 1), i as u16));
         }
         TimeHost::with_project(rate, bpm, project)
+    }
+
+    /// As the app starts: a new project ([`new_project`]).
+    pub fn new_project(rate: u32, bpm: f64) -> Result<TimeHost, String> {
+        TimeHost::with_project(rate, bpm, new_project())
     }
 
     /// Stopped at bar 1 with `project` (an opened one), track 1 armed when
@@ -8460,9 +8479,8 @@ mod tests {
     /// Arrange 4b.1: a linked song list shows the song's sections, each
     /// with its marker's name, its scene and its passes, and the bars
     /// before the first marker as "Song"; the one the song plays is lit
-    /// with its pass, and picking one picks its scene. Until it plays the
-    /// song (4b.4) a play says where to go and changes nothing; it needs no
-    /// List → song; the loop switch works.
+    /// with its pass, and picking one picks its scene. It needs no List →
+    /// song; the loop switch works.
     #[test]
     fn a_linked_list_shows_the_songs_sections_and_their_passes() {
         use mpfree_seq::arrange::{scenes_to_song, FromScene, Placement};
@@ -8517,12 +8535,9 @@ mod tests {
             h.act(TimeAction::ListPick(Some(3))).unwrap(),
             "song list: nothing picked"
         );
-        // Not yet a play; no List → song; the loop switch works.
+        // No List → song; the loop switch works (Play from here: 4b.4's
+        // tests).
         let was = h.control.project.arrangement.clone();
-        assert_eq!(
-            h.act(TimeAction::ListPlay(0)),
-            Err(control::LIST_LINKED.into())
-        );
         assert_eq!(
             h.act(TimeAction::ListToSong),
             Err("list → song: the list is the song's parts already".into())
@@ -9072,6 +9087,292 @@ mod tests {
         );
         assert!(linked_rows(&h)[1].4);
         assert!(!linked_rows(&h)[0].4);
+    }
+
+    /// The grid Arrange 4b.4's tests play, its list (unlinked) the steps
+    /// row 1 once, row 2 twice and row 3 once:
+    ///
+    /// - track 1: a bar in each row (pads 10, 20, 30);
+    /// - track 2: row 1's bar moves to row 2's after a bar (a follow), and
+    ///   row 3 has a bar (pads 40, 50, 60);
+    /// - track 3, which plays elsewhere: two bars in row 1 (so row 1 is
+    ///   two bars), none in row 2, a bar in row 3 (pads 70, 80);
+    /// - scene 1 hears every track and sends track 3 program 6; scene 2
+    ///   mutes track 1 (still muted in row 3, which leaves the mutes as
+    ///   they are) and sends no program; scene 3 sends program 10.
+    fn section_grid() -> mpfree_seq::Project {
+        use mpfree_seq::{ClipProgram, Follow, FollowAction, ListStep, Note, TrackProgram};
+        let clip = |bars: i64, pad: u8| {
+            let mut c = Clip::new("beats", bars * 3840);
+            c.notes = (0..4 * bars)
+                .map(|k| Note::new(k * 960, 100, pad + k as u8, 100))
+                .collect();
+            Some(c)
+        };
+        let mut p = TimeHost::new(RATE, 120.0).unwrap().project().clone();
+        let t = &mut p.tracks;
+        for (row, pad) in [(0, 10), (1, 20), (2, 30)] {
+            t[0].slots[row] = clip(1, pad);
+        }
+        t[1].slots[0] = clip(1, 40).map(|mut c| {
+            c.follow = Some(Follow::after(1, FollowAction::Next));
+            c
+        });
+        t[1].slots[1] = clip(1, 50);
+        t[1].slots[2] = clip(1, 60);
+        t[2].slots[0] = clip(2, 70);
+        t[2].slots[2] = clip(1, 80);
+        let program = |n: u8| {
+            vec![TrackProgram {
+                track: 2,
+                program: ClipProgram {
+                    program: n,
+                    bank: None,
+                },
+            }]
+        };
+        let s = p.scene_mut(0).unwrap();
+        s.mutes = Some(0);
+        s.programs = program(5);
+        p.scene_mut(1).unwrap().mutes = Some(0b1);
+        p.scene_mut(2).unwrap().programs = program(9);
+        p.arrangement.list.steps = [(0, 1), (1, 2), (2, 1)]
+            .into_iter()
+            .map(|(row, times)| ListStep { row, times })
+            .collect();
+        p.give_clip_ids();
+        p
+    }
+
+    /// [`section_grid`] linked: its song made by the list's edits, row 1
+    /// bars 1 and 2, row 2 bars 3 and 4, row 3 bar 5.
+    fn section_song() -> TimeHost {
+        let mut p = section_grid();
+        p.arrangement.list.steps.clear();
+        p.arrangement.list.linked = true;
+        let mut h = TimeHost::with_project(RATE, 120.0, p).unwrap();
+        for a in [
+            TimeAction::ListAdd,
+            TimeAction::ListAdd,
+            TimeAction::ListAdd,
+            TimeAction::ListTimes { step: 1, delta: 1 },
+        ] {
+            h.act(a).unwrap();
+        }
+        // Its blocks are the scenes' clips with no scene's mutes: track 1
+        // plays on through rows 2 and 3 (List → song leaves them out).
+        let song = &h.control.project.arrangement;
+        let parts: Vec<(Tick, Option<usize>, u16)> = song
+            .markers
+            .iter()
+            .map(|m| (m.at, m.scene.map(|f| f.row), m.passes))
+            .collect();
+        assert_eq!(
+            parts,
+            [
+                (0, Some(0), 1),
+                (2 * 3840, Some(1), 2),
+                (4 * 3840, Some(2), 1)
+            ]
+        );
+        let track_1: Vec<Tick> = song
+            .placements
+            .iter()
+            .filter(|b| b.track == 0)
+            .map(|b| b.start)
+            .collect();
+        assert_eq!(track_1, [0, 2 * 3840, 4 * 3840]);
+        h
+    }
+
+    /// Arrange 4b.4 (plan D8, playing the list plays the song): a linked
+    /// song played in song mode gives what the list played live gives,
+    /// the same notes and program changes on the same frames at several
+    /// period sizes: each section brings its scene's mutes (carried into
+    /// the next section, as the list carries them) and program changes as
+    /// it starts, though its blocks were made with none. Looped, the song
+    /// goes round as the list does, the first section's mutes and program
+    /// changes in again on the jump.
+    #[test]
+    fn a_linked_song_plays_what_its_list_played_at_every_period_size() {
+        for (period, looped) in [
+            (7u32, false),
+            (128, false),
+            (1000, false),
+            (7, true),
+            (128, true),
+            (1000, true),
+        ] {
+            let to = if looped { 11 * BAR } else { 5 * BAR + 1000 };
+            let by = |h: &mut TimeHost, r: &mut Routed, to: u64| {
+                while r.pads.frame < to {
+                    h.period(period, r);
+                    r.pads.frame += u64::from(period);
+                }
+            };
+            let routed = || Routed {
+                track: 2,
+                ..Routed::default()
+            };
+            let mut live = TimeHost::with_project(RATE, 120.0, section_grid()).unwrap();
+            let mut heard = routed();
+            live.act(TimeAction::ListLoop(looped)).unwrap();
+            live.act(TimeAction::ListPlay(0)).unwrap();
+            live.command(Command::Play);
+            by(&mut live, &mut heard, to);
+            let mut song = section_song();
+            song.act(TimeAction::SongMode(true)).unwrap();
+            song.act(TimeAction::ListLoop(looped)).unwrap();
+            // A period stopped: the first section comes in at once.
+            song.period(period, &mut routed());
+            let mut played = routed();
+            song.command(Command::Play);
+            by(&mut song, &mut played, to);
+            let p = &played.pads;
+            let why = format!("period {period}, looped {looped}");
+            assert_eq!(p.hits, heard.pads.hits, "{why}");
+            assert_eq!(p.releases, heard.pads.releases, "{why}");
+            assert_eq!(played.taken, heard.taken, "{why}");
+            assert_eq!((live.dropped(), song.dropped()), (0, 0));
+            // What the mutes and programs show: track 2's follow, track 1
+            // muted from row 2 on (heard again round the loop), and the
+            // programs on their bars.
+            let first = |pad: usize, from: u64| {
+                let mut hits = p.hits.iter().filter(|h| h.0 >= from);
+                hits.find(|h| h.1 == pad).map(|h| h.0)
+            };
+            assert_eq!((first(10, 0), first(50, 0)), (Some(0), Some(BAR)));
+            assert_eq!(first(20, 0), None);
+            assert_eq!((first(30, 0), first(60, 0)), (None, Some(4 * BAR)));
+            let programs: Vec<(u64, u8)> = played
+                .taken
+                .iter()
+                .filter_map(|&(f, e)| match e {
+                    Event::Program { program, .. } => Some((f, program)),
+                    _ => None,
+                })
+                .collect();
+            if looped {
+                assert_eq!(first(10, 2 * BAR), Some(5 * BAR), "{why}");
+                assert_eq!(
+                    programs,
+                    [
+                        (0, 5),
+                        (4 * BAR, 9),
+                        (5 * BAR, 5),
+                        (9 * BAR, 9),
+                        (10 * BAR, 5)
+                    ],
+                    "{why}"
+                );
+            } else {
+                assert_eq!(first(10, 2 * BAR), None, "{why}");
+                assert_eq!(programs, [(0, 5), (4 * BAR, 9)], "{why}");
+            }
+        }
+    }
+
+    /// Arrange 4b.4: Play from here on a linked list stops the clips
+    /// launched over the song and plays the song from the part's first
+    /// bar, song mode on and its scene's mutes in at once; stopped, it
+    /// starts the transport. Loop the list loops the song, first part to
+    /// last (the transport's loop, the musician's kept aside and given
+    /// back), and the first part's mutes and program changes come in on
+    /// the loop's jump; a new clip is as long as the musician's loop.
+    #[test]
+    fn play_from_here_plays_the_song_from_a_part_and_loop_the_list_goes_round() {
+        const B: Tick = 3840;
+        let mut h = section_song();
+        let mut r = Routed {
+            track: 2,
+            ..Routed::default()
+        };
+        let by = |h: &mut TimeHost, r: &mut Routed, to: u64| {
+            while r.pads.frame < to {
+                h.period(PERIOD, r);
+                r.pads.frame += u64::from(PERIOD);
+            }
+        };
+        let more = |h: &mut TimeHost, r: &mut Routed, periods: u64| {
+            let to = r.pads.frame + periods * u64::from(PERIOD);
+            by(h, r, to);
+        };
+        let hits_from = |r: &Routed, from: u64| -> Vec<(u64, usize)> {
+            let hits = r.pads.hits.iter().filter(|h| h.0 >= from);
+            hits.map(|h| (h.0 - from, h.1)).collect()
+        };
+        // A clip launched over the song (song mode off), half a bar in.
+        h.act(TimeAction::Launch { track: 1, slot: 2 }).unwrap();
+        h.command(Command::Play);
+        by(&mut h, &mut r, BAR / 2);
+        let said = h.act(TimeAction::ListPlay(1)).unwrap();
+        assert_eq!(said, "song list: the song from Scene 2, bar 3");
+        let st = h.state();
+        assert!(st.song_on && st.launches.is_empty() && st.cues.is_empty());
+        assert_eq!(st.list_pick, Some(1));
+        let from = r.pads.frame;
+        by(&mut h, &mut r, from + 3 * BAR + 1000);
+        // Track 2's row 2 from bar 3, its row 3 from bar 5; track 1 muted.
+        let pads: Vec<usize> = hits_from(&r, from).iter().map(|h| h.1).collect();
+        assert_eq!(pads, [50, 51, 52, 53, 50, 51, 52, 53, 60, 61, 62, 63]);
+        assert_eq!(hits_from(&r, from)[8].0, 2 * BAR);
+        assert!(r.taken.contains(&(
+            from + 2 * BAR,
+            Event::Program {
+                program: 9,
+                bank: None
+            }
+        )));
+        // Stopped: from bar 5, the transport started.
+        h.command(Command::Stop);
+        more(&mut h, &mut r, 2);
+        h.act(TimeAction::ListPlay(2)).unwrap();
+        more(&mut h, &mut r, 1);
+        assert!(h.info().state.rolling());
+        // Loop the list: the song's five bars, the musician's loop kept.
+        h.command(Command::SetLoop(Some((B, 3 * B))));
+        more(&mut h, &mut r, 1);
+        h.act(TimeAction::ListLoop(true)).unwrap();
+        more(&mut h, &mut r, 2);
+        assert_eq!(h.info().loop_range, Some((0, 5 * B)));
+        h.command(Command::Stop);
+        more(&mut h, &mut r, 2);
+        h.act(TimeAction::ListPlay(2)).unwrap();
+        let from = r.pads.frame;
+        r.taken.clear();
+        by(&mut h, &mut r, from + 4 * BAR - 1000);
+        // Bar 5, then round to bar 1: row 1's mutes (every track heard)
+        // and program on the jump, then row 2's mutes on bar 3 again.
+        let hits = hits_from(&r, from);
+        let first = |pad: usize| hits.iter().find(|h| h.1 == pad).map(|h| h.0);
+        assert_eq!(
+            (first(30), first(10), first(40)),
+            (Some(0), Some(BAR), Some(BAR))
+        );
+        assert_eq!(first(20), None, "muted again on bar 3");
+        assert_eq!(first(50).map(|f| f > BAR), Some(true));
+        let programs: Vec<(u64, u8)> = r
+            .taken
+            .iter()
+            .filter_map(|&(f, e)| match e {
+                Event::Program { program, .. } => Some((f - from, program)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(programs, [(0, 9), (BAR, 5)]);
+        // A new clip is as long as the musician's loop (two bars).
+        h.act(TimeAction::NewClip { track: 3, slot: 0 }).unwrap();
+        assert_eq!(h.control.project.clip(3, 0).map(|c| c.length), Some(2 * B));
+        // Loop the list off: the musician's loop back; song mode off: no
+        // list loop either.
+        h.act(TimeAction::ListLoop(false)).unwrap();
+        more(&mut h, &mut r, 2);
+        assert_eq!(h.info().loop_range, Some((B, 3 * B)));
+        h.act(TimeAction::ListLoop(true)).unwrap();
+        h.act(TimeAction::SongMode(false)).unwrap();
+        more(&mut h, &mut r, 2);
+        assert_eq!(h.info().loop_range, Some((B, 3 * B)));
+        assert_eq!(h.dropped(), 0);
     }
 
     /// Save state and Reload clip (sequencer S4): the saved state comes

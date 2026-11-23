@@ -8089,7 +8089,7 @@ fn player_session(
     });
     // The time engine (transport, clips, takes) runs in this loop too;
     // with --time-thread its editing side has a thread of its own.
-    let mut time = time::TimeHost::new(RATE, app.settings.bpm)?;
+    let mut time = time::TimeHost::new_project(RATE, app.settings.bpm)?;
     if o.time_thread {
         time = time_apart(out, time);
     }

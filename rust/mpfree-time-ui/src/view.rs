@@ -785,6 +785,10 @@ pub struct TimeState {
     /// comparing them (Arrange refactor 2.4).
     pub placements: Arc<[PlacementInfo]>,
     pub markers: Vec<(Tick, String)>,
+    /// Each marker's passes and their length, on a linked song while its
+    /// part follows its scene with more than one (the Arrange refactor's
+    /// 4b.4: "×N" after its name and a line where each pass starts).
+    pub passes: Vec<Option<(u16, Tick)>>,
     /// The placement selected on the Song view. The app sets it.
     pub selected: Option<usize>,
     /// The section picked on the Song view (by its marker), for the
@@ -1077,6 +1081,17 @@ impl TimeState {
                 .iter()
                 .map(|m| (m.at, m.name.clone()))
                 .collect(),
+            passes: project
+                .arrangement
+                .markers
+                .iter()
+                .map(|m| {
+                    let linked = project.arrangement.list.linked;
+                    m.scene
+                        .filter(|f| linked && !f.changed && m.passes > 1)
+                        .map(|f| (m.passes, f.pass))
+                })
+                .collect(),
             selected: None,
             section: None,
             song_rec: false,
@@ -1366,7 +1381,9 @@ pub enum TimeAction {
     ListPick(Option<usize>),
     /// Play the song list from this step: its scene as a scene launch
     /// does, then each step after it in turn
-    /// (`mpfree_perform::Perform::play_list`).
+    /// (`mpfree_perform::Perform::play_list`). Linked to the song (the
+    /// Arrange refactor's 4b.4): the song from the part's first bar, in
+    /// song mode.
     ListPlay(usize),
     /// Step `step`'s times one more or fewer (1 to 99).
     ListTimes {
@@ -1393,7 +1410,8 @@ pub enum TimeAction {
     /// Back to the scene (a linked list, the Arrange refactor's 4b.3):
     /// step `k`'s part, changed in the song, made from its scene again.
     ListBack(usize),
-    /// The list goes round after its last step, or stops.
+    /// The list goes round after its last step, or stops. Linked to the
+    /// song (4b.4): in song mode the song loops, first part to last.
     ListLoop(bool),
     /// The list onto the end of the song, played offline through Rec song
     /// (the Arrange refactor's 4.1, the app's time engine).
@@ -4351,6 +4369,7 @@ fn song_lanes_with(st: &TimeState, first_bar: i64, blocks: Option<SongBlocks>) -
         sounds: st.tracks.iter().map(|tr| tr.sound.clone()).collect(),
         blocks,
         markers: st.markers.clone(),
+        passes: st.passes.clone(),
         bar,
         first_bar,
         bars: 16,
