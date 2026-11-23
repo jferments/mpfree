@@ -7728,6 +7728,9 @@ fn time_action(
             | TimeAction::PasteClip { .. }
             | TimeAction::DropClip { .. }
             | TimeAction::DropRow { .. }
+            | TimeAction::CaptureScene
+            | TimeAction::InsertRow(_)
+            | TimeAction::DeleteRow(_)
             | TimeAction::MovePlacement { .. }
             | TimeAction::StretchPlacement { .. }
             | TimeAction::MoveSection { .. }
@@ -7738,6 +7741,10 @@ fn time_action(
             | TimeAction::DuplicatePlacement(_)
             | TimeAction::TrimPlacement { .. }
             | TimeAction::SlidePlacement { .. }
+            | TimeAction::MovePlacements { .. }
+            | TimeAction::DuplicatePlacements(_)
+            | TimeAction::DeletePlacements(_)
+            | TimeAction::SplitPlacements(_)
             | TimeAction::Perform(_)
     ) || matches!(a, TimeAction::SongTempo(e) if !matches!(e, TempoEdit::Pick(_)))
         // A linked song list's step edits are the song's (Arrange 4b.2).
@@ -11671,6 +11678,11 @@ fn player_session(
                 fx.extend(time_said(out, say, r));
             }
             fx.extend(app.set_notes_open(time.editing()));
+        }
+        // A scene's tempo landed on its line (Arrange 5.2b): the app's
+        // tempo becomes it, as if turned there.
+        if let Some(bpm) = time.take_scene_tempo() {
+            fx.extend(app.set_tempo(bpm));
         }
         if let Some(bpm) = followed_tempo.take() {
             let bpm = (bpm * 10.0).round() / 10.0;

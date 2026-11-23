@@ -19,6 +19,9 @@
 //!   Elektron's program change per pattern): launching the scene sends
 //!   each track's on the scene's line, to the outside gear its track plays
 //!   on, unless the clip the track starts there sends one of its own.
+//! - **a tempo** (the Arrange refactor's 5.2b): launching the scene sets
+//!   the project's tempo on its line, so a set can change tempo from one
+//!   scene to the next. In song mode the song's tempo points win.
 //!
 //! A clip can have a follow action of its own: after some bars, its track
 //! plays another clip (the next slot down, any other ...) or stops.
@@ -116,13 +119,24 @@ pub struct TrackProgram {
     pub program: ClipProgram,
 }
 
-/// A scene's programs in order of track, one a track, each in range.
 /// Whether a track bitmask has a bit past the last track.
 fn past_last_track(bits: u128) -> bool {
     bits.checked_shr(MAX_TRACKS as u32)
         .is_some_and(|rest| rest != 0)
 }
 
+/// A scene's tempo, in tenths of a BPM ([`Scene::tempo`]): the app's range,
+/// 30 to 300 BPM, since it becomes the project's tempo.
+pub const SCENE_TEMPO: core::ops::RangeInclusive<u16> = 300..=3000;
+
+/// `bpm` as a scene's tempo, to the nearest 0.1 BPM: None out of
+/// [`SCENE_TEMPO`] (or not a number).
+pub fn scene_tempo(bpm: f64) -> Option<u16> {
+    let tenths = (bpm * 10.0).round();
+    (tenths.is_finite() && (300.0..=3000.0).contains(&tenths)).then_some(tenths as u16)
+}
+
+/// A scene's programs in order of track, one a track, each in range.
 fn check_programs(programs: &[TrackProgram]) -> Result<(), ModelError> {
     let in_order = programs.windows(2).all(|w| w[0].track < w[1].track);
     if !in_order
@@ -170,6 +184,8 @@ pub struct SceneSettings {
     pub programs: Vec<TrackProgram>,
     /// The tracks whose empty cell keeps what they play: [`Scene::keep`].
     pub keep: u128,
+    /// The tempo it sets on its line: [`Scene::tempo`].
+    pub tempo: Option<u16>,
 }
 
 impl SceneSettings {
@@ -193,6 +209,7 @@ impl SceneSettings {
             .and_then(|m| m.checked_shr(MAX_TRACKS as u32))
             .is_some_and(|rest| rest != 0)
             || past_last_track(self.keep)
+            || self.tempo.is_some_and(|t| !SCENE_TEMPO.contains(&t))
             || self.name.chars().count() > MAX_SCENE_NAME
             || self.name.chars().any(char::is_control)
         {
@@ -278,6 +295,12 @@ pub struct Scene {
     /// either way. The scene's mute for the track still comes in on its
     /// line.
     pub keep: u128,
+    /// The tempo it sets (the Arrange refactor's 5.2b), in tenths of a BPM
+    /// within [`SCENE_TEMPO`]: launched, the project's tempo becomes it on
+    /// the scene's line (stopped, at once), as if turned there; None leaves
+    /// the tempo as it is. While song mode plays the song's tempo points,
+    /// they lead and the scene's tempo is left out.
+    pub tempo: Option<u16>,
 }
 
 impl Scene {
@@ -297,6 +320,7 @@ impl Scene {
             follow: self.follow,
             programs: self.programs.clone(),
             keep: self.keep,
+            tempo: self.tempo,
         }
     }
 
@@ -311,6 +335,7 @@ impl Scene {
         self.follow = s.follow;
         self.programs.clone_from(&s.programs);
         self.keep = s.keep;
+        self.tempo = s.tempo;
         Ok(())
     }
 
@@ -348,6 +373,21 @@ impl Scene {
         Ok(())
     }
 
+    /// The tempo it sets in BPM ([`Scene::tempo`]), if it sets one.
+    pub fn bpm(&self) -> Option<f64> {
+        self.tempo.map(|t| f64::from(t) / 10.0)
+    }
+
+    /// It sets the tempo `bpm` (to the nearest 0.1 BPM), or none. `BadScene`
+    /// out of [`SCENE_TEMPO`], and nothing changes.
+    pub fn set_bpm(&mut self, bpm: Option<f64>) -> Result<(), ModelError> {
+        self.tempo = match bpm {
+            Some(b) => Some(scene_tempo(b).ok_or(ModelError::BadScene)?),
+            None => None,
+        };
+        Ok(())
+    }
+
     /// Whether track `t` is muted while this scene plays, or `None` when
     /// the scene leaves it as it is.
     pub fn mutes_track(&self, t: usize) -> Option<bool> {
@@ -365,6 +405,7 @@ impl Scene {
             .and_then(|m| m.checked_shr(MAX_TRACKS as u32))
             .is_some_and(|rest| rest != 0)
             || past_last_track(self.keep)
+            || self.tempo.is_some_and(|t| !SCENE_TEMPO.contains(&t))
         {
             return Err(ModelError::BadScene);
         }
@@ -469,6 +510,7 @@ mod tests {
         let pc = |program, bank| ClipProgram { program, bank };
         let want = SceneSettings {
             keep: 0b100,
+            tempo: Some(1285),
             name: "Drop".into(),
             mutes: Some(0b10),
             follow: Some(Follow::after(8, FollowAction::Next)),
@@ -520,10 +562,39 @@ mod tests {
                 ],
                 ..want.clone()
             },
+            SceneSettings {
+                tempo: Some(299),
+                ..want.clone()
+            },
+            SceneSettings {
+                tempo: Some(3001),
+                ..want.clone()
+            },
         ] {
             assert!(s.set_settings(&bad).is_err(), "{bad:?}");
         }
         assert_eq!(s.settings(), want);
+        assert_eq!(s.bpm(), Some(128.5));
+    }
+
+    /// A scene's tempo is kept to 0.1 BPM in the app's range.
+    #[test]
+    fn a_scenes_tempo_is_a_tenth_of_a_bpm_in_the_apps_range() {
+        let mut s = Scene::default();
+        assert_eq!(s.bpm(), None);
+        s.set_bpm(Some(127.96)).unwrap();
+        assert_eq!((s.tempo, s.bpm()), (Some(1280), Some(128.0)));
+        s.set_bpm(Some(30.0)).unwrap();
+        s.set_bpm(Some(300.0)).unwrap();
+        for bad in [29.9, 300.1, f64::NAN, f64::INFINITY] {
+            assert!(s.set_bpm(Some(bad)).is_err(), "{bad}");
+            assert_eq!(s.tempo, Some(3000), "unchanged");
+        }
+        s.tempo = Some(10);
+        assert!(s.check().is_err());
+        s.set_bpm(None).unwrap();
+        assert_eq!(s.bpm(), None);
+        assert!(s.check().is_ok());
     }
 
     /// One program a track, kept in order of track; none takes it off.

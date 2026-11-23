@@ -162,6 +162,11 @@ pub const LINKED_SONG_LIST: &str = "linked-song-list";
 /// build would skip the scene's `keep` line and stop those tracks at the
 /// scene change, so it must not open it.
 pub const SCENE_KEEP: &str = "scene-keep";
+/// A project with a scene that sets the tempo (the Arrange refactor's
+/// 5.2b, `mpfree_seq::Scene::tempo`): an older build would skip the
+/// scene's `bpm` line and play on at the tempo before, so it must not
+/// open it.
+pub const SCENE_TEMPO: &str = "scene-tempo";
 /// The features this build has, of those a project can need.
 pub const KNOWN_NEEDS: &[&str] = &[
     SYNTHS_WITHOUT_TRACKS,
@@ -169,6 +174,7 @@ pub const KNOWN_NEEDS: &[&str] = &[
     AUDIO_CLIPS,
     LINKED_SONG_LIST,
     SCENE_KEEP,
+    SCENE_TEMPO,
 ];
 
 // ------------------------------------------------------------ the loop's side
@@ -375,6 +381,9 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
     }
     if c.clips.scenes.iter().any(|s| s.keep != 0) {
         needs.push(SCENE_KEEP);
+    }
+    if c.clips.scenes.iter().any(|s| s.tempo.is_some()) {
+        needs.push(SCENE_TEMPO);
     }
     if !needs.is_empty() {
         extra.push((NEEDS_KEY.to_string(), needs.join(" ")));
@@ -3316,6 +3325,11 @@ mod tests {
         c.clips.scene_mut(3).unwrap().set_keep(0, true).unwrap();
         let (snap, line) = needs(&c);
         assert_eq!(line.as_deref(), Some(SCENE_KEEP));
+        assert_eq!(check(&snap), Ok(FORMAT));
+        // Arrange 5.2b: a scene that sets the tempo, with one that keeps.
+        c.clips.scene_mut(5).unwrap().set_bpm(Some(140.0)).unwrap();
+        let (snap, line) = needs(&c);
+        assert_eq!(line.as_deref(), Some("scene-keep scene-tempo"));
         assert_eq!(check(&snap), Ok(FORMAT));
     }
 

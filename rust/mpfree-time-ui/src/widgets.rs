@@ -590,6 +590,9 @@ pub struct ClipGrid {
     /// [`ROW_MIN_H`] with rings and countdowns. Off (Make), the rows are
     /// compact, [`ROW_MIN_H_MAKE`], eight in view with names and lengths.
     pub big: bool,
+    /// The scene card, open over the grid (the Arrange refactor's 5.2):
+    /// it takes the grid's touches while it is.
+    pub scene_card: Option<crate::scene_card::SceneCard>,
     /// What was drawn last, so a change redraws only the cells that changed.
     drawn: RefCell<Option<Drawn>>,
     /// A finger down on a track's name: where (x) and which track. Let go
@@ -653,6 +656,8 @@ struct Drawn {
     show_button: bool,
     /// Where a dragged clip or row was drawn.
     dragged: Option<(Held, (i32, i32))>,
+    /// The scene card was drawn over it.
+    card: bool,
 }
 
 /// `Toggle(slots + ADD_TRACK)`: "+ Track".
@@ -841,6 +846,27 @@ struct Geo {
 }
 
 impl ClipGrid {
+    /// The row whose number a finger holds still (not dragged), for the
+    /// app's hold that opens its scene card.
+    pub fn held_row(&self) -> Option<usize> {
+        match self.grip {
+            Some(Grip {
+                held: Held::Row(row),
+                lifted: false,
+                ..
+            }) => Some(row),
+            _ => None,
+        }
+    }
+
+    /// The hold on a row's number opened its scene card: the finger's lift
+    /// launches nothing and drops nothing.
+    pub fn let_go_of_row(&mut self) {
+        if self.held_row().is_some() {
+            self.grip = None;
+        }
+    }
+
     pub fn new(title: &str, slots: usize) -> ClipGrid {
         ClipGrid {
             title: title.to_string(),
@@ -857,6 +883,7 @@ impl ClipGrid {
             big: false,
             back_to_song: false,
             show_button: false,
+            scene_card: None,
             drawn: RefCell::new(None),
             press: None,
             grip: None,
@@ -1251,6 +1278,8 @@ impl Widget for ClipGrid {
             || d.show_button != self.show_button
             || d.dragged.is_some()
             || self.dragged_now().is_some()
+            || d.card
+            || self.scene_card.is_some()
         {
             return None;
         }
@@ -1291,6 +1320,7 @@ impl Widget for ClipGrid {
             back_to_song: self.back_to_song,
             show_button: self.show_button,
             dragged: self.dragged_now(),
+            card: self.scene_card.is_some(),
         });
         // The view chip, then the title, shortened to what comes before
         // " · " where "Back to song" or Show leaves it no room.
@@ -1568,9 +1598,15 @@ impl Widget for ClipGrid {
         if let Some(rows) = self.chooser_rects(r) {
             crate::song::paint_chooser(cx, &rows);
         }
+        if let Some(card) = &self.scene_card {
+            card.paint(cx, r);
+        }
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
+        if let Some(card) = &self.scene_card {
+            return card.targets(r);
+        }
         // The chooser open: its rows, and anywhere else closes it.
         if let Some(rows) = self.chooser_rects(r) {
             let mut out: Vec<Target> = rows
@@ -1633,6 +1669,13 @@ impl Widget for ClipGrid {
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        // The scene card open: its touches, and one off it closes it.
+        if let Some(card) = self.scene_card.as_mut() {
+            self.grip = None;
+            self.empty = None;
+            self.press = None;
+            return card.touch(phase, x, y, r);
+        }
         // The "+ Track" chooser open: a row adds that kind of track, and a
         // touch anywhere else only closes it.
         if self.adding {
