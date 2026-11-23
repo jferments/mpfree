@@ -6179,13 +6179,43 @@ mod tests {
         assert_eq!((s.phase, s.frames), (Phase::Overdubbing, 105_840));
     }
 
+    /// The opening thread's voluntary context switches: the times it
+    /// slept, waiting for something (Linux; None elsewhere). A thread
+    /// taken off its core for another is not counted. The file stays
+    /// open, so a read is one seek and one read, no path to look up.
+    struct Sleeps(Option<std::fs::File>, String);
+
+    impl Sleeps {
+        fn open() -> Self {
+            let f = std::fs::File::open("/proc/thread-self/status").ok();
+            Sleeps(f, String::with_capacity(4096))
+        }
+
+        fn read(&mut self) -> Option<u64> {
+            use std::io::{Read, Seek, SeekFrom};
+            let f = self.0.as_mut()?;
+            self.1.clear();
+            f.seek(SeekFrom::Start(0)).ok()?;
+            f.read_to_string(&mut self.1).ok()?;
+            self.1
+                .lines()
+                .find_map(|l| l.strip_prefix("voluntary_ctxt_switches:"))?
+                .trim()
+                .parse()
+                .ok()
+        }
+    }
+
     /// Smart loop end step 3, Auto by ear while long prints run: a print
-    /// of a 32 s loop runs over and over on every core at the print
+    /// of a 32 s loop runs over and over on up to four cores at the print
     /// worker's idle priority while a free first loop records two bars of
     /// a beat from the mix and closes on Auto, the periods paced as they
     /// play. The finder, on its own thread at the normal priority, answers
     /// in time and the loop closes on the downbeat it heard, or Auto keeps
-    /// your tap (counted, and said). Either way no period waits for it.
+    /// your tap (counted, and said). Either way no period waits for it:
+    /// the period's thread never sleeps inside one (its voluntary context
+    /// switches, which a busy machine taking its core away doesn't add
+    /// to), and no period allocates.
     #[test]
     fn auto_by_ear_while_long_prints_run_never_waits_for_the_finder() {
         use mpfree_fx::StripId;
@@ -6214,8 +6244,9 @@ mod tests {
             dry: true,
             rate: 0,
         });
+        // (Well under the cores: the test suite runs beside it.)
         let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
-        let printers: Vec<_> = (0..cores)
+        let printers: Vec<_> = (0..(cores / 4).clamp(1, 4))
             .map(|_| {
                 let (stop, chunks, bounce) = (stop.clone(), chunks.clone(), bounce.clone());
                 std::thread::spawn(move || {
@@ -6257,6 +6288,11 @@ mod tests {
         let (mut tapped, mut printing_at_ask, mut started, mut rec_from) =
             (false, None, None, None);
         let (mut took, mut allocs) = (Vec::new(), 0);
+        // Sleeps inside the periods (which ones), and outside them (the
+        // pacing: the count is read for real).
+        let mut sleeps = Sleeps::open();
+        let (mut waits, mut slept) = (Some(Vec::new()), 0u64);
+        let mut last = sleeps.read();
         let beat = Duration::from_secs_f64(PERIOD as f64 / f64::from(RATE));
         let t0 = Instant::now();
         let mut p = 0u32;
@@ -6273,8 +6309,20 @@ mod tests {
                 *x = audio.get(2 * at).copied().unwrap_or(0.0);
             }
             let (now, from) = (Instant::now(), t.frame());
+            let before = sleeps.read();
             let ((), calls) = crate::sys::alloc_count::calls(|| period(&mut h, &mut t, &mut b, &l));
+            let after = sleeps.read();
             allocs += calls;
+            match (last, before, after, waits.as_mut()) {
+                (Some(l), Some(b), Some(a), Some(w)) => {
+                    slept += b - l;
+                    if a > b {
+                        w.push((p, a - b));
+                    }
+                }
+                _ => waits = None,
+            }
+            last = after;
             if let Some((_, r, at, into)) = h.take_tempo() {
                 let pos = t.position();
                 let start = pos - pos.rem_euclid(t.meter().bar_ticks()) + into;
@@ -6323,14 +6371,17 @@ mod tests {
         }
         took.sort();
         let worst = *took.last().unwrap();
-        // A period plays in 2.9 ms; these ran unoptimized beside the
-        // prints. Waiting for the finder would take its whole answer.
-        assert!(
-            worst < beat * 4,
-            "worst period {worst:?}, 99.9th {:?}: {}",
-            took[took.len() * 999 / 1000],
-            h.describe()
-        );
+        // Waiting on the finder would sleep: on Linux, none did. (The
+        // periods' times are only reported: a loaded machine can take the
+        // core away from any of them.)
+        if let Some(w) = waits {
+            assert!(slept > 0, "the pacing sleeps, so the count moves");
+            assert!(
+                w.is_empty(),
+                "periods that slept (period, times): {w:?} of {p}: {}",
+                h.describe()
+            );
+        }
         eprintln!(
             "periods: 99th {:?}, 99.9th {:?}, worst {worst:?}; {line}",
             took[took.len() * 99 / 100],
