@@ -53,6 +53,10 @@
 //! - [`phrase`]: each new bar's notes by a beam search scored on your
 //!   steps, the chords, the style and its neighbours; Try again on one
 //!   bar leads into the bar after it (contract 1).
+//! - [`playing`]: how new notes are played: loudness, length, and timing
+//!   from the drummer's groove or the style's shared drift (contract 3).
+//! - [`request`]: Continue end to end, from a clip in a project to the
+//!   proposal a preview plays and Keep writes, and Try again on one bar.
 //!
 //! Nothing here runs on the audio thread. The composer runs as an
 //! idle-priority background job (phase 0C onwards).
@@ -65,12 +69,14 @@ pub mod keep;
 pub mod motif;
 pub mod phrase;
 pub mod plan;
+pub mod playing;
 pub mod preview;
 pub mod profile;
 pub mod progression;
 pub mod read;
 pub mod realize;
 pub mod refit;
+pub mod request;
 pub mod rhythm;
 pub mod rules;
 pub mod settings;
@@ -90,6 +96,7 @@ pub use progression::{diatonic, progression};
 pub use read::{read, LeftOut, ToRead};
 pub use realize::{decisions_of, realize, Fit, PlainNote};
 pub use refit::{action, effect, misfits, Action, Aspects, Change, Effect, How, Target};
+pub use request::{continue_clip, continue_notes, try_bar, Continue, Continued, OnClip, Refused};
 pub use rhythm::{Grid, Onset};
 pub use rules::{RangeSetting, Rule, RuleKind, Suggestion, Unmet, Weights};
 pub use settings::{Ending, Keeps, Settings};
