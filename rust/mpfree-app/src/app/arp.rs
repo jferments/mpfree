@@ -1112,12 +1112,10 @@ impl App {
                 let m = &mut self.arp.modifier;
                 m.source = step_in(&ModSource::ALL, m.source, d);
             }
-            ArpItem::ModRate => self.push_amount(|m| &mut m.rate, d, Modifier::RATE),
-            ArpItem::ModOctaves => self.push_amount(|m| &mut m.octaves, d, Modifier::OCTAVES),
-            ArpItem::ModGate => {
-                self.push_amount(|m| &mut m.gate, MOD_GATE_STEP * d, Modifier::GATE)
-            }
-            ArpItem::ModSwing => self.push_amount(|m| &mut m.swing, d, Modifier::SWING),
+            ArpItem::ModRate => self.step_push(|m| &mut m.rate, d, Modifier::RATE),
+            ArpItem::ModOctaves => self.step_push(|m| &mut m.octaves, d, Modifier::OCTAVES),
+            ArpItem::ModGate => self.step_push(|m| &mut m.gate, MOD_GATE_STEP * d, Modifier::GATE),
+            ArpItem::ModSwing => self.step_push(|m| &mut m.swing, d, Modifier::SWING),
             ArpItem::ModRolls => {
                 let m = &mut self.arp.modifier;
                 m.rolls = (i32::from(m.rolls) + d).clamp(0, i32::from(Modifier::ROLLS)) as u8;
@@ -1220,7 +1218,7 @@ impl App {
 
     /// One of the Modifier's signed amounts stepped by `d`, kept to
     /// `(lo, hi)`.
-    fn push_amount(&mut self, at: fn(&mut Modifier) -> &mut i8, d: i32, (lo, hi): (i8, i8)) {
+    fn step_push(&mut self, at: fn(&mut Modifier) -> &mut i8, d: i32, (lo, hi): (i8, i8)) {
         let v = at(&mut self.arp.modifier);
         *v = (i32::from(*v) + d).clamp(i32::from(lo), i32::from(hi)) as i8;
     }
