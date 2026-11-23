@@ -1002,11 +1002,17 @@ fn a_cut_test_killed_mid_take_keeps_every_promise_and_is_then_cleared() {
         ] {
             assert!(text.contains(want), "missing {want:?} in\n{text}");
         }
-        assert_eq!(
-            text.matches("every sample as recorded").count(),
-            4,
-            "{text}"
-        );
+        // Every take is judged: back as recorded and as promised, or (cut
+        // off as it started, before anything was committed for it) kept
+        // apart unproved with nothing promised.
+        let judged = text
+            .lines()
+            .filter(|l| {
+                l.contains("every sample as recorded; promised ")
+                    || l.ends_with(", and nothing was promised")
+            })
+            .count();
+        assert_eq!(judged, 4, "{text}");
         assert!(!text.contains("FAIL"), "{text}");
         // Only its folder went.
         assert!(!cut.exists());
@@ -1099,11 +1105,77 @@ fn a_cut_test_without_a_cut_is_checked_and_a_broken_promise_fails() {
     );
     std::fs::remove_file(cut.join("notes.txt")).unwrap();
 
-    // As recorded, every promise holds, and the folder goes.
-    let (status, out) = after_cut(&d, &saved);
-    assert!(status.success(), "{out}");
-    assert!(out.contains("RESULT: PASS"), "{out}");
-    assert!(!cut.exists());
+    // Take 4 cut off as it started: its audio there, nothing committed for
+    // it (no checkpoint), so recovery can't prove it and keeps it apart. A
+    // promise for it fails; with none, it is said and the rest passes.
+    let take4 = std::fs::read_dir(&cut)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| {
+            let n = p.file_name().unwrap().to_string_lossy().into_owned();
+            n.starts_with("rec4_") && n.ends_with(".wav") && !n.contains("unverified")
+        })
+        .unwrap();
+    let take4_bytes = std::fs::read(&take4).unwrap();
+    let recording = take4.with_extension("wav.recording");
+    let unproved = take4.with_extension("unverified.wav");
+    let promised_4 = text
+        .lines()
+        .rev()
+        .find(|l| l.starts_with("promised: takes "))
+        .unwrap()
+        .to_string();
+    let none_for_4 = saved.with_file_name("none-for-4.txt");
+    let w4 = promised_4
+        .split(' ')
+        .find_map(|w| w.strip_prefix("4="))
+        .unwrap()
+        .trim_end_matches(';')
+        .to_string();
+    assert_ne!(w4, "0", "{promised_4}");
+    std::fs::write(
+        &none_for_4,
+        format!(
+            "{text}{}\n",
+            promised_4.replace(&format!(" 4={w4}"), " 4=0")
+        ),
+    )
+    .unwrap();
+    for promised in [true, false] {
+        std::fs::remove_file(&take4).ok();
+        std::fs::remove_file(&unproved).ok();
+        std::fs::write(&recording, &take4_bytes).unwrap();
+        let (status, out) = after_cut(&d, if promised { &saved } else { &none_for_4 });
+        assert!(
+            out.contains("recovery, take 4: its audio can't be proved (nothing committed for it); kept apart as rec4_"),
+            "{out}"
+        );
+        assert!(
+            out.contains("take 4: ") && out.contains("only audio that can't be proved came back ("),
+            "{out}"
+        );
+        if promised {
+            assert_eq!(status.code(), Some(1), "{out}");
+            assert!(
+                out.contains(&format!(
+                    "of them as recorded; kept apart); {w4} frames were promised"
+                )),
+                "{out}"
+            );
+            assert!(cut.exists());
+        } else {
+            assert!(status.success(), "{out}");
+            assert!(
+                out.contains("of them as recorded; kept apart), and nothing was promised"),
+                "{out}"
+            );
+            assert!(!out.contains("FAIL"), "{out}");
+            // As recorded, every other promise holds, and the folder goes.
+            assert!(out.contains("RESULT: PASS"), "{out}");
+            assert!(!cut.exists());
+        }
+    }
     let (status, out) = after_cut(&d, &saved);
     assert_eq!(status.code(), Some(3), "{out}");
     assert!(out.contains("isn't there: nothing to check"), "{out}");
