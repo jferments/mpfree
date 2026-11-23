@@ -146,3 +146,50 @@ pub(crate) fn mix4_from(
         }
     }
 }
+
+/// The twin of [`crate::gemm4x8`]: step by step, row by row, column by
+/// column (see there for what it computes).
+#[inline]
+pub fn gemm4x8(kc: usize, a: &[f32], b: &[f32], acc: &mut [f32; 32]) {
+    let mut c = *acc;
+    for k in 0..kc {
+        let ak = &a[k * 4..k * 4 + 4];
+        let bk = &b[k * 8..k * 8 + 8];
+        for r in 0..4 {
+            let ar = ak[r];
+            for j in 0..8 {
+                c[r * 8 + j] += ar * bk[j];
+            }
+        }
+    }
+    *acc = c;
+}
+
+/// One half-precision value (as bits) as f32: exact, except that a NaN
+/// becomes the default NaN, as NEON's conversion makes it.
+#[inline]
+pub fn half(h: u16) -> f32 {
+    let sign = u32::from(h & 0x8000) << 16;
+    let exp = u32::from((h >> 10) & 0x1f);
+    let man = u32::from(h & 0x3ff);
+    let bits = match (exp, man) {
+        (0, 0) => sign,
+        (0, m) => {
+            // Subnormal: m * 2^-24, normalised. The top bit of m is bit p (0 to 9).
+            let p = 31 - m.leading_zeros();
+            sign | ((p + 103) << 23) | ((m << (23 - p)) & 0x7f_ffff)
+        }
+        (0x1f, 0) => sign | 0x7f80_0000,
+        (0x1f, _) => 0x7fc0_0000,
+        (e, m) => sign | ((e + 112) << 23) | (m << 13),
+    };
+    f32::from_bits(bits)
+}
+
+/// The twin of [`crate::f16_to_f32`]: one at a time.
+#[inline]
+pub fn f16_to_f32(src: &[u16], dst: &mut [f32]) {
+    for (d, &h) in dst.iter_mut().zip(src) {
+        *d = half(h);
+    }
+}

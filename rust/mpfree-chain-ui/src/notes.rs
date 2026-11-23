@@ -203,6 +203,7 @@ pub fn param_views(track: u8, id: u16, fx: &Fx) -> (Vec<ParamView>, Vec<ParamVie
             mod_range: None,
             macro_: None,
             locked: false,
+            xy: None,
         })
     };
     let all = (0..fx.settings().len())

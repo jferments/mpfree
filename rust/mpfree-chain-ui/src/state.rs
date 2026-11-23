@@ -65,7 +65,13 @@ pub struct ParamView {
     /// The macro that moves it.
     pub macro_: Option<usize>,
     pub locked: bool,
+    /// Where the XY pad's layout moves it (the app fills it in).
+    pub xy: Option<XyMark>,
 }
+
+/// A control on the layout the XY pad plays (layout spec 4b's XY marks),
+/// as the section view draws it on the Synth tab too.
+pub use mpfree_synth_ui::section_view::XyMark;
 
 impl ParamView {
     pub fn text(&self) -> String {
@@ -616,6 +622,7 @@ pub fn param_view(n: &dyn Node, owner: Owner, engine: &ModEngine, id: u16) -> Op
         mod_range: engine.mod_range(addr),
         macro_: engine.macro_of(addr),
         locked: engine.is_locked(addr),
+        xy: None,
     })
 }
 

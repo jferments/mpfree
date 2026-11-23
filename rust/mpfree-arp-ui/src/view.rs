@@ -22,10 +22,12 @@
 //! its own widgets and the layouts that place them.
 
 use crate::widgets::{
-    Button, ButtonRow, CellKind, MiniBar, Segments, SliderStack, StepCell, StepStrip, MINI_FASTER,
-    MINI_LATCH, MINI_OPEN, MINI_SLOWER,
+    Button, ButtonRow, CellKind, MiniBar, ModBox, Segments, SliderStack, StepCell, StepStrip,
+    MINI_FASTER, MINI_LATCH, MINI_OPEN, MINI_SLOWER,
 };
-use mpfree_arp::{Engine, Held, Mode, Order, Pattern, Pick, Rate, Settings, Step, MAX_NOTES};
+use mpfree_arp::{
+    Engine, Held, ModSource, Mode, Order, Pattern, Pick, Rate, Settings, Step, MAX_NOTES,
+};
 use mpfree_ui::widgets::{Chip, ListItem, ListView};
 use mpfree_ui::{EventKind, Tone, Ui, UiEvent};
 
@@ -36,6 +38,10 @@ pub const QLINKS: &str = "arp-qlinks";
 pub const ACTIONS: &str = "arp-actions";
 pub const STEPS: &str = "arp-steps";
 pub const MINI: &str = "arp-mini";
+/// The Modifier box beside the mode tabs ([`with_modifier`]).
+pub const MODBOX: &str = "arp-mod";
+/// Its width.
+pub const MODBOX_W: i32 = 340;
 
 /// Every layout keeps the pads where the Play page has them: the arp's
 /// widgets only ever take the right-hand column, [`SIDE`] pixels wide, so
@@ -64,6 +70,18 @@ pub const MINI_H: i32 = 56;
 /// app's Play page.
 pub const SIDE: i32 = 460;
 
+/// `layout` with the Modifier box ([`MODBOX`], [`MODBOX_W`] pixels) at the
+/// right of the mode tabs' row, for a panel as wide as the app's Play page
+/// gives it (the tabs keep the rest). The layouts above leave it out: the
+/// 460-pixel column has no room beside four tabs.
+pub fn with_modifier(layout: &str) -> String {
+    layout.replacen(
+        &format!("{MODES}:52"),
+        &format!("row({MODES}:*, {MODBOX}:{MODBOX_W}):52"),
+        1,
+    )
+}
+
 /// The mode tabs, in [`Mode`] order.
 pub const MODE_TABS: [&str; 4] = ["Direct", "Repeat", "Arp", "Pattern"];
 /// The Q-Links, top to bottom, as Jay's plan maps them.
@@ -84,6 +102,11 @@ const MODES_ALL: [Mode; 4] = [Mode::Direct, Mode::Repeat, Mode::Arp, Mode::Patte
 #[derive(Clone, Debug)]
 pub struct ArpState {
     pub settings: Settings,
+    /// What the arp plays now: the settings as the Modifier pushes them
+    /// ([`Engine::live`]); the same as [`ArpState::settings`] unpushed.
+    pub live: Settings,
+    /// How far the Modifier's controller is now, 0.0 to 1.0.
+    pub push: f32,
     pub pattern: Pattern,
     /// The patterns to choose from, by name, and which one is loaded.
     pub patterns: Vec<(String, Pattern)>,
@@ -110,6 +133,8 @@ impl ArpState {
     ) -> ArpState {
         ArpState {
             settings: e.settings(),
+            live: e.live(),
+            push: e.modifier(),
             pattern: *e.pattern(),
             patterns,
             pattern_index,
@@ -125,19 +150,16 @@ impl ArpState {
     /// turns, the one whose turn it is), sorted, grown into chords and scale
     /// runs as the engine grows them.
     fn sorted(&self) -> Vec<Held> {
-        let mut v = match mpfree_arp::turn_of(
-            &self.settings,
-            self.notes.len(),
-            self.step.saturating_sub(1),
-        ) {
-            Some(k) => vec![self.notes[k]],
-            None => self.notes.clone(),
-        };
+        let mut v =
+            match mpfree_arp::turn_of(&self.live, self.notes.len(), self.step.saturating_sub(1)) {
+                Some(k) => vec![self.notes[k]],
+                None => self.notes.clone(),
+            };
         v.sort_by_key(|h| h.note);
         v.truncate(MAX_NOTES);
         let mut list = [Held::default(); MAX_NOTES];
         list[..v.len()].copy_from_slice(&v);
-        let n = mpfree_arp::step_notes(&self.settings, &mut list, v.len());
+        let n = mpfree_arp::step_notes(&self.live, &mut list, v.len());
         list[..n].to_vec()
     }
 }
@@ -159,6 +181,8 @@ pub enum ArpAction {
     Latch,
     /// The strip's name was tapped: open the Arp panel.
     OpenPanel,
+    /// The Modifier box was tapped: open its options.
+    Modifier,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -245,9 +269,10 @@ pub fn order_preview(order: Order) -> String {
 }
 
 /// The step strip for the Arp and Repeat modes: the order's notes over the
-/// held pads. Returns the cells, the first step's number and the playing cell.
+/// held pads, with the octaves the Modifier pushes to. Returns the cells,
+/// the first step's number and the playing cell.
 pub fn arp_cells(st: &ArpState) -> (Vec<StepCell>, usize, Option<usize>) {
-    let s = &st.settings;
+    let s = &st.live;
     let sorted = st.sorted();
     let n = sorted.len();
     if n == 0 || s.mode == Mode::Direct {
@@ -481,6 +506,7 @@ impl ArpPanel {
         ui.add(ACTIONS, ButtonRow::new(&PATTERN_BUTTONS));
         ui.add(STEPS, StepStrip::new(8));
         ui.add(MINI, MiniBar::default());
+        ui.add(MODBOX, ModBox::default());
         ui.add_page(quick, QUICK_LAYOUT)?;
         let mut panel = ArpPanel {
             name: name.to_string(),
@@ -545,7 +571,9 @@ impl ArpPanel {
                     )
                 }
             };
-            m.rate = s.rate.label().to_string();
+            // The rate playing: pushed, in the second accent.
+            m.rate = st.live.rate.label().to_string();
+            m.pushed = st.live.rate != s.rate;
             m.latched = st.latched;
             m.can_slower = at > 0;
             m.can_faster = at + 1 < Rate::ALL.len();
@@ -595,10 +623,20 @@ impl ArpPanel {
             }
         }
         if let Some(q) = ui.get_mut::<SliderStack>(QLINKS) {
-            for (row, (v, text)) in q.rows.iter_mut().zip(qlink_values(s)) {
+            let live = qlink_values(&st.live);
+            for ((row, (v, text)), now) in q.rows.iter_mut().zip(qlink_values(s)).zip(live) {
+                row.pushed = (now.1 != text).then_some(now);
                 row.value = v;
                 row.text = text;
             }
+        }
+        if let Some(b) = ui.get_mut::<ModBox>(MODBOX) {
+            let m = s.modifier;
+            (b.source, b.amount) = if m.source == ModSource::Off {
+                (String::new(), 0.0)
+            } else {
+                (m.source.label().to_string(), st.push)
+            };
         }
         if let Some(b) = ui.get_mut::<ButtonRow>(ACTIONS) {
             b.buttons[3] = Button {
@@ -656,6 +694,7 @@ impl ArpPanel {
             .get(*i)
             .map(|b| ArpAction::Button(*b)),
             (STEPS, EventKind::Select(i)) if s.mode == Mode::Pattern => Some(ArpAction::Step(*i)),
+            (MODBOX, EventKind::Tab(_)) => Some(ArpAction::Modifier),
             (MINI, EventKind::Tab(i)) => {
                 let at = Rate::ALL.iter().position(|r| *r == s.rate).unwrap_or(0);
                 match *i {
@@ -717,6 +756,8 @@ mod tests {
     fn state(settings: Settings, held: &[u8], step: u64) -> ArpState {
         ArpState {
             settings,
+            live: settings,
+            push: 0.0,
             pattern: Pattern::default(),
             patterns: built_in_patterns(),
             pattern_index: 0,
@@ -1130,6 +1171,78 @@ mod tests {
         };
         assert_eq!(set.gate, 100);
         s.ui.touch(2, Touch::Up, 0, 0);
+    }
+
+    /// The Modifier: a box beside the tabs where the panel is wide, the
+    /// pushed values beside the set ones on the sliders, the rate playing
+    /// on the quick band and the pushed octaves in the step strip; a tap
+    /// on the box opens its options.
+    #[test]
+    fn the_modifier_shows_where_it_pushes() {
+        let set = Settings {
+            mode: Mode::Arp,
+            modifier: mpfree_arp::Modifier {
+                source: ModSource::ModWheel,
+                ..mpfree_arp::Modifier::default()
+            },
+            ..Settings::default()
+        };
+        let mut st = state(set, &[0, 4, 7], 0);
+        let mut ui = Ui::new(mpfree_ui::Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", mpfree_ui::widgets::Header::new(&["Arp"]));
+        ui.add("pads", mpfree_ui::widgets::PadGrid::new(16, 4));
+        ui.add(
+            "hint",
+            mpfree_ui::widgets::Label::new("", Tone::Dim, mpfree_ui::Align::Center),
+        );
+        let mut page = ArpPanel::add(&mut ui, "Arp", "Arp quick", &st).unwrap();
+        ui.show("Arp").unwrap();
+        // The 460-pixel column has no room for it.
+        assert!(ui.rect_of(MODBOX).is_none());
+        // A full-width panel (the app's) has it at the tabs' right.
+        fn full(layout: &str) -> String {
+            with_modifier(layout)
+                .replace("row(pads:*, ", "row(pads:0, ")
+                .replace("):460):*", "):*):*")
+        }
+        page.set_layout_wrap(&mut ui, full).unwrap();
+        ui.show("Arp").unwrap();
+        let (tabs, b) = (ui.rect_of(MODES).unwrap(), ui.rect_of(MODBOX).unwrap());
+        assert_eq!((b.w, b.y, b.h), (MODBOX_W, tabs.y, tabs.h));
+        assert!(b.x >= tabs.right() && tabs.w > 4 * 160, "{tabs:?}");
+        let m = ui.get::<ModBox>(MODBOX).unwrap();
+        assert_eq!((m.source.as_str(), m.amount), ("Mod wheel", 0.0));
+        let q = ui.get::<SliderStack>(QLINKS).unwrap();
+        assert!(q.rows.iter().all(|r| r.pushed.is_none()), "unpushed");
+        // The wheel at the top: 1/16 → 1/32, 1 → 2 octaves.
+        st.push = 1.0;
+        st.live.rate = Rate::ThirtySecond;
+        st.live.octaves = 2;
+        st.step = 1;
+        page.update(&mut ui, &st).unwrap();
+        assert_eq!(ui.get::<ModBox>(MODBOX).unwrap().amount, 1.0);
+        let q = ui.get::<SliderStack>(QLINKS).unwrap();
+        assert_eq!(q.rows[0].text, "1/16");
+        assert_eq!(q.rows[0].pushed.as_ref().unwrap().1, "1/32");
+        assert_eq!(q.rows[3].pushed.as_ref().unwrap().1, "2");
+        assert!(q.rows[1].pushed.is_none() && q.rows[2].pushed.is_none());
+        let mini = ui.get::<MiniBar>(MINI).unwrap();
+        assert_eq!((mini.rate.as_str(), mini.pushed), ("1/32", true));
+        let strip = ui.get::<StepStrip>(STEPS).unwrap();
+        assert!(
+            strip.cells.iter().any(|c| c.sub == "oct +1"),
+            "the pushed octave"
+        );
+        // Off: the box says so.
+        st.settings.modifier.source = ModSource::Off;
+        page.update(&mut ui, &st).unwrap();
+        assert!(ui.get::<ModBox>(MODBOX).unwrap().source.is_empty());
+        // A tap on it.
+        let ev = ui.touch(1, Touch::Down, b.x + 20, b.y + b.h / 2).unwrap();
+        ui.touch(1, Touch::Up, 0, 0);
+        assert_eq!(page.action(&ev, &st, &mut None), Some(ArpAction::Modifier));
+        let mut c = mpfree_ui::SoftCanvas::new(1280, 800);
+        ui.paint(&mut c);
     }
 
     #[test]

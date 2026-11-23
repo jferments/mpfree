@@ -121,6 +121,11 @@ pub enum LatchMode {
     /// Each press adds the note, or takes it out if it is already latched,
     /// so a chord can be built and edited one pad at a time.
     Toggle,
+    /// Notes stay after release and every press adds to them, held or not;
+    /// a latched note pressed again stays. Only letting Latch go (or
+    /// clearing it) drops them. The MPC's "Add" latch mode (3.10.1 guide,
+    /// p. 83).
+    Add,
 }
 
 /// The pads or keys physically down, and the notes the generators use
@@ -183,6 +188,9 @@ impl Notes {
                     self.active.insert(note, velocity);
                 }
             }
+            LatchMode::Add => {
+                self.active.insert(note, velocity);
+            }
         }
     }
 
@@ -240,7 +248,7 @@ mod tests {
     /// still sets it.
     #[test]
     fn a_latched_note_keeps_the_velocity_it_was_struck_with() {
-        for mode in [LatchMode::Replace, LatchMode::Toggle] {
+        for mode in [LatchMode::Replace, LatchMode::Toggle, LatchMode::Add] {
             let mut n = Notes::new();
             n.set_mode(mode);
             n.press(36, 100);
@@ -328,6 +336,23 @@ mod tests {
         assert_eq!(notes(n.active()), [1, 3]);
         n.clear_latched();
         assert!(n.active().is_empty());
+    }
+
+    #[test]
+    fn add_latch_keeps_every_note_pressed_until_latch_goes() {
+        let mut n = Notes::new();
+        n.set_mode(LatchMode::Add);
+        n.press(1, 100);
+        n.release(1);
+        n.press(5, 90); // nothing held: still joins
+        n.release(5);
+        n.press(1, 80); // pressed again: stays, at the new velocity
+        n.release(1);
+        assert_eq!(notes(n.active()), [1, 5]);
+        assert_eq!(n.active().velocity(1), Some(80));
+        n.press(7, 100);
+        n.set_mode(LatchMode::Off); // only what is held stays
+        assert_eq!(notes(n.active()), [7]);
     }
 
     #[test]
