@@ -145,8 +145,8 @@ impl Reach for ModReach<'_> {
         self.modu.pad_keep(addr, value)
     }
     fn row(&mut self, n: u8, addr: ParamAddr) -> bool {
-        // A synth's or a pad's own setting doesn't go through the mod
-        // engine: Add can't push it yet (Setup greys it).
+        // A synth's, a pad's or an arp's own setting doesn't go through
+        // the mod engine: Add can't push it yet (Setup greys it).
         !is_own(addr) && self.modu.pad_row(self.mixer, n, addr, 1.0).is_ok()
     }
     fn unrow(&mut self, n: u8, addr: ParamAddr) {
@@ -492,9 +492,9 @@ impl XyPlay {
         }
     }
 
-    /// A Stay turn on a synth's or a pad's own setting, which comes from
-    /// the sound loop once it has handed the setting on (`xy_own.rs`): it
-    /// joins the lift's UNDO step.
+    /// A Stay turn on a synth's, a pad's or an arp's own setting, which
+    /// comes from the sound loop once it has handed the setting on
+    /// (`xy_own.rs`): it joins the lift's UNDO step.
     pub fn add_kept(&mut self, addr: ParamAddr, before: f32, after: f32) {
         if self.kept.len() < self.kept.capacity() {
             self.kept.push((addr, before, after));

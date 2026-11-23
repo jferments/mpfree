@@ -13,8 +13,8 @@
 //!   says so.
 //! - **New settings** join over their whole range, Even, Set. A switch
 //!   (or a meter) is refused, and so is a direction already at 8.
-//! - **Add** is refused on a synth's or a pad's own settings until the mod
-//!   engine reaches them ([`Seen::own`]).
+//! - **Add** is refused on a synth's, a pad's or an arp's own settings
+//!   until the mod engine reaches them ([`Seen::own`]).
 //! - **A setting that went away** (its effect taken out, its track
 //!   removed) stays on the layout, struck out with the reason, under the
 //!   name it had ([`Mine::names`]); it is never pointed at whatever took
@@ -159,8 +159,8 @@ pub struct Seen {
     /// "Master".
     pub place: String,
     pub dot: Dot,
-    /// A synth's or a pad's own setting: no Add until the mod engine
-    /// reaches it.
+    /// A synth's, a pad's or an arp's own setting: no Add until the mod
+    /// engine reaches it.
     pub own: bool,
 }
 
@@ -363,7 +363,7 @@ pub struct WaitView {
 pub const NO_HOLD: &str =
     "Hold works on a layout of yours for now: Setup makes a copy of this one yours";
 
-/// Why Add is greyed on a synth's or a pad's own setting.
+/// Why Add is greyed on a synth's, a pad's or an arp's own setting.
 pub const NO_ADD: &str =
     "Add works on the mixer, effects and outside gear for now: a synth's, a pad's or an arp's own setting moves by Set";
 
