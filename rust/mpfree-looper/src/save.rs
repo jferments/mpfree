@@ -766,7 +766,11 @@ mod tests {
         );
         assert!(t.contains("valid=20000,30000 view=88199:88200:b replace=256,512"));
         assert!(t.contains(" rec=0123456789abcdef0000000000000001 size=112776 "));
-        assert_eq!(t.matches(" rec=").count(), 1, "none for a layer with no recording");
+        assert_eq!(
+            t.matches(" rec=").count(),
+            1,
+            "none for a layer with no recording"
+        );
         // Loop 2 kept as it plays, in a format 2 text: no shape, and its
         // layer needs one, so it is refused.
         let only = |s: &Saved| {

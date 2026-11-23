@@ -17,7 +17,7 @@
 //! audio tracks look at the track list.
 
 use mpfree_audiotracks::{LoopPlayer, MAX_TRACKS};
-use mpfree_looper::{Looper, Phase, PlayRun, MAX_LOOPS, MAX_PLAY_RUNS};
+use mpfree_looper::{LayerInfo, Looper, Phase, PlayRun, MAX_LAYERS, MAX_LOOPS, MAX_PLAY_RUNS};
 use mpfree_seq::{LoopId, Project};
 
 /// Periods between looks at which loops the project names (about 23 ms at
@@ -167,6 +167,67 @@ impl OnTracks {
         let n = self.slot_of(LoopId(id))?;
         let outs = looper.outs();
         outs.on_track(n).then(|| outs.loop_out(n))
+    }
+}
+
+/// Each layer's recording (audio tracks phase 4c, step 4c.2): the id of
+/// the recording that holds a layer's audio as written, given once the
+/// layer is closed and kept while its slot holds it, through edits, mutes,
+/// UNDO and saves. A save with recordings on writes it with the layer
+/// (`rec=`) and names the layer's file by it; an open puts it back.
+#[derive(Clone, Debug)]
+pub struct LayerRecs {
+    /// For each loop's layer slots ([`LayerInfo::id`]): the layer the
+    /// recording was given to ([`LayerInfo::born`]) and its id.
+    recs: [[(u64, u128); MAX_LAYERS]; MAX_LOOPS],
+}
+
+impl Default for LayerRecs {
+    fn default() -> LayerRecs {
+        LayerRecs {
+            recs: [[(0, 0); MAX_LAYERS]; MAX_LOOPS],
+        }
+    }
+}
+
+impl LayerRecs {
+    /// Each closed layer with no recording yet gets one from `fresh` (the
+    /// audio tracks' id maker). Each period, with recordings on. Does not
+    /// allocate.
+    pub fn give(&mut self, looper: &Looper, mut fresh: impl FnMut() -> u128) {
+        for n in 0..MAX_LOOPS {
+            for k in 0..MAX_LAYERS {
+                let Some(y) = looper.loop_layer_info(n, k) else {
+                    break;
+                };
+                let slot = &mut self.recs[n][y.id as usize % MAX_LAYERS];
+                if y.closed && y.born != 0 && slot.0 != y.born {
+                    *slot = (y.born, fresh());
+                }
+            }
+        }
+    }
+
+    /// Layer `y` of loop `n`'s recording (0: none yet).
+    pub fn of(&self, n: usize, y: &LayerInfo) -> u128 {
+        let (born, rec) = self.recs[n % MAX_LOOPS][y.id as usize % MAX_LAYERS];
+        if born == y.born && born != 0 {
+            rec
+        } else {
+            0
+        }
+    }
+
+    /// Loop `n` loaded from a project, its layer `k` in slot `k` as the
+    /// looper puts it: each keeps the recording it was saved with (0: it
+    /// gets a fresh one once it is in).
+    pub fn opened(&mut self, looper: &Looper, n: usize, recs: &[u128]) {
+        for (k, &rec) in recs.iter().enumerate().take(MAX_LAYERS) {
+            let born = looper.slot_born(n, k).unwrap_or(0);
+            if rec != 0 && born != 0 {
+                self.recs[n % MAX_LOOPS][k] = (born, rec);
+            }
+        }
     }
 }
 

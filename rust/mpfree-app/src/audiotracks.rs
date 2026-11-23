@@ -1219,6 +1219,12 @@ impl TrackHost {
         self.host.tracks.fresh_rec().0
     }
 
+    /// A new recording's id for a loop's layer (phase 4c.2), from the same
+    /// id maker as takes': never 0, never given twice.
+    pub fn fresh_recording_id(&mut self) -> u128 {
+        self.host.tracks.fresh_rec().0
+    }
+
     /// [`TrackHost::period`] with the tracks' loops (phase 4b, behind
     /// Dev's switch): planned before the looper ran
     /// ([`TrackHost::plan_loops`]), and each loop's sound in the period by

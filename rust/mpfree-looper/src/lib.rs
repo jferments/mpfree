@@ -3914,6 +3914,14 @@ impl Looper {
         self.loop_layer_info(self.selected, k)
     }
 
+    /// The layer slot `slot` of loop `n` holds ([`LayerInfo::id`] names
+    /// the slot, [`LayerInfo::born`] the layer), listed in play order or
+    /// not: a loop being loaded puts layer `k` in slot `k`, numbered
+    /// before it is listed. 0 for none yet.
+    pub fn slot_born(&self, n: usize, slot: usize) -> Option<u64> {
+        Some(self.loops.get(n)?.slots.get(slot)?.born)
+    }
+
     /// Layer `k` of loop `n`, counting in play order.
     pub fn loop_layer_info(&self, n: usize, k: usize) -> Option<LayerInfo> {
         let l = self.loops.get(n)?;

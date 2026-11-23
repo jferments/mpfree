@@ -144,8 +144,9 @@ pub const FORMAT: u32 = mpfree_library::project::PARTS_FORMAT;
 /// linked song list ([`LINKED_SONG_LIST`]), a scene that keeps a track
 /// playing ([`SCENE_KEEP`]), patches ([`PATCHES_NEED`]), a free loop
 /// ([`FREE_LOOPS`]), a scene that sets the tempo ([`SCENE_TEMPO`]), an
-/// instrument with a tuning of its own ([`OWN_TUNINGS`]) or a loop cell on
-/// an audio track ([`AUDIO_LOOPS`]).
+/// instrument with a tuning of its own ([`OWN_TUNINGS`]), a loop cell on
+/// an audio track ([`AUDIO_LOOPS`]) or loops kept as recordings
+/// ([`LOOP_RECORDINGS`]).
 pub const NEEDS_KEY: &str = "needs";
 /// A project with a synth in a free place (the instrument redesign's step
 /// 6: one picked for the pads, no track's): an older build would read the
@@ -198,6 +199,12 @@ pub const OWN_TUNINGS: &str = "own-tunings";
 /// unknown and open it as an empty note clip, so it refuses the project
 /// instead.
 pub const AUDIO_LOOPS: &str = "audio-loops";
+/// A project whose loops are kept as the looper holds them, each layer as
+/// a recording (`mpfree-looper 2`, the audio tracks rethink's phase 4c.2,
+/// saved with Dev's "Loops on audio tracks"): a build from before it
+/// can't read the looper's part, so it refuses the project with this
+/// reason instead.
+pub const LOOP_RECORDINGS: &str = "loop-recordings";
 
 /// The features this build has, of those a project can need.
 pub const KNOWN_NEEDS: &[&str] = &[
@@ -211,6 +218,7 @@ pub const KNOWN_NEEDS: &[&str] = &[
     SCENE_TEMPO,
     OWN_TUNINGS,
     AUDIO_LOOPS,
+    LOOP_RECORDINGS,
 ];
 
 // ------------------------------------------------------------ the loop's side
@@ -452,6 +460,12 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
     }
     if c.clips.loop_places().next().is_some() {
         needs.push(AUDIO_LOOPS);
+    }
+    if parts
+        .iter()
+        .any(|(name, text)| name == LOOPER && text.starts_with(mpfree_looper::save::FORMAT_2))
+    {
+        needs.push(LOOP_RECORDINGS);
     }
     if !needs.is_empty() {
         extra.push((NEEDS_KEY.to_string(), needs.join(" ")));
@@ -962,15 +976,24 @@ pub fn track_kits_parse(text: &str) -> Result<Vec<(usize, InstrumentId)>, String
 
 /// The looper's part and its layers' sounds for the project's `samples/`,
 /// each layer named for its audio (`loop-<id>.wav`), so a layer saved
-/// before is not written again.
+/// before is not written again. A layer kept as the looper holds it with
+/// its recording (audio tracks phase 4c.2) is named by the recording
+/// (`loop_<rec>.wav`, its audio as written), which never changes once the
+/// layer is closed.
 pub fn loops_part(mut saved: mpfree_looper::save::Saved) -> (String, Vec<(String, Vec<f32>)>) {
     let mut files = Vec::new();
     for (_, f) in &mut saved.loops {
-        let n = 2 * f.frames;
         for y in &mut f.layers {
+            let (n, rec) = y
+                .raw
+                .as_ref()
+                .map_or((2 * f.frames, 0), |r| (2 * r.size, r.rec));
             let mut audio = std::mem::take(&mut y.audio);
             audio.truncate(n);
-            y.file = format!("loop-{}.wav", audio_id(&audio, saved.rate));
+            y.file = match rec {
+                0 => format!("loop-{}.wav", audio_id(&audio, saved.rate)),
+                rec => format!("loop_{rec:032x}.wav"),
+            };
             if !files.iter().any(|(name, _)| *name == y.file) {
                 files.push((y.file.clone(), audio));
             }
@@ -3605,7 +3628,9 @@ mod tests {
                     faded: 1.0,
                     file: "loop-1.wav".into(),
                     audio: Vec::new(),
+                    raw: None,
                 }],
+                raw: None,
             };
             let saved = Saved {
                 rate: 44_100,
@@ -3630,6 +3655,70 @@ mod tests {
         let free = part(Clock::Free);
         assert_eq!(needs(&free).as_deref(), Some(FREE_LOOPS));
         assert_eq!(check(&free), Ok(FORMAT));
+    }
+
+    /// Loops kept as the looper holds them (`mpfree-looper 2`, audio tracks
+    /// phase 4c.2): the project needs `loop-recordings`, which a build from
+    /// before it refuses with the reason; this build opens it.
+    #[test]
+    fn a_project_with_loops_as_recordings_needs_loop_recordings() {
+        use mpfree_looper::save::{to_text, LayerFile, LoopFile, RawLayer, RawShape, Saved};
+        let c = collected(String::new(), InstrumentList::new().text());
+        let file = LoopFile {
+            frames: 2,
+            ticks: 96,
+            origin: 0,
+            level: 1.0,
+            muted: false,
+            bars: None,
+            after: mpfree_looper::After::Play,
+            starts: mpfree_looper::Starts::Bar,
+            fade_old: 1.0,
+            speed: 0,
+            rate: 0,
+            id: 0,
+            clock: mpfree_looper::Clock::Song,
+            layers: vec![LayerFile {
+                level: 1.0,
+                pan: 0.0,
+                muted: false,
+                solo: false,
+                faded: 1.0,
+                file: "loop_1.wav".into(),
+                audio: Vec::new(),
+                raw: Some(RawLayer {
+                    size: 2,
+                    valid: (0, 2),
+                    pieces: vec![(0, 2, false)],
+                    replace: None,
+                    rec: 7,
+                }),
+            }],
+            raw: Some(RawShape {
+                seam: 0,
+                region: None,
+                captured: (0, 0),
+                cut: 2,
+            }),
+        };
+        let saved = Saved {
+            rate: 44_100,
+            selected: 0,
+            loops: vec![(0, file)],
+            free_clock: None,
+        };
+        let snap = snapshot(&c, vec![(LOOPER.to_string(), to_text(&saved))]);
+        let needs = snap.meta.extra.iter().find(|(k, _)| k == NEEDS_KEY);
+        assert_eq!(needs.map(|(_, v)| v.as_str()), Some(LOOP_RECORDINGS));
+        assert_eq!(check(&snap), Ok(FORMAT));
+        // A build without it: refused, with the reason.
+        let mut old = snap.clone();
+        for (k, v) in &mut old.meta.extra {
+            if k == NEEDS_KEY {
+                *v = "loop-recordings-2".into();
+            }
+        }
+        assert!(check(&old).unwrap_err().contains("loop-recordings-2"));
     }
 
     /// Phase 0's gate (docs/dev/design/project-safety.md): a project that

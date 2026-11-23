@@ -1637,6 +1637,12 @@ pub struct LoopHost {
     /// Loops on audio tracks (phase 4b, behind Dev's switch): each slot's
     /// loop's lasting id, and which are on tracks.
     pub on_tracks: crate::loops_on_tracks::OnTracks,
+    /// Layers as recordings (phase 4c.2, behind the same switch): saves
+    /// keep each loop as the looper holds it (`mpfree-looper 2`), each
+    /// layer named by its recording ([`LoopHost::set_recordings`]).
+    recordings: bool,
+    /// Each closed layer's recording ([`LoopHost::give_layer_recs`]).
+    layer_recs: crate::loops_on_tracks::LayerRecs,
 }
 
 /// A whole loop copying into an empty one, a layer at a time
@@ -1688,6 +1694,12 @@ enum Saving {
 
 /// Frames of the loops' layers a save reads for each frame that plays.
 pub const SAVE_SPEED: usize = 64;
+
+/// Frames a save reads of layer `k` of `f`: the loop's length as it
+/// plays, or as the looper holds it, its audio's size (phase 4c.2).
+fn layer_frames(f: &LoopFile, k: usize) -> usize {
+    f.layers[k].raw.as_ref().map_or(f.frames, |r| r.size)
+}
 
 /// What the worker is asked: a buffer for a bounce, a print, room for a
 /// save's audio, or to drop what the audio loop is done with.
@@ -1874,8 +1886,9 @@ impl Printer {
                         }
                         ToPrinter::Size(mut saved) => {
                             for (_, f) in &mut saved.loops {
-                                for y in &mut f.layers {
-                                    y.audio = vec![0.0; 2 * f.frames];
+                                for k in 0..f.layers.len() {
+                                    let size = layer_frames(f, k);
+                                    f.layers[k].audio = vec![0.0; 2 * size];
                                 }
                             }
                             FromPrinter::Sized(saved)
@@ -2141,6 +2154,8 @@ impl LoopHost {
             copy: None,
             copy_end: None,
             on_tracks: Default::default(),
+            recordings: false,
+            layer_recs: Default::default(),
             heard_peaks: vec![
                 0.0;
                 if seconds > 0 {
@@ -2182,16 +2197,22 @@ impl LoopHost {
             Saving::Reading {
                 saved, i, k, frame, ..
             } => {
+                // Frames of a loop's first `upto` layers.
+                let frames = |f: &LoopFile, upto: usize| -> usize {
+                    (0..upto.min(f.layers.len()))
+                        .map(|j| layer_frames(f, j))
+                        .sum()
+                };
                 let all: usize = saved
                     .loops
                     .iter()
-                    .map(|(_, f)| f.layers.len() * f.frames)
+                    .map(|(_, f)| frames(f, f.layers.len()))
                     .sum();
                 let done: usize = saved.loops[..*i]
                     .iter()
-                    .map(|(_, f)| f.layers.len() * f.frames)
+                    .map(|(_, f)| frames(f, f.layers.len()))
                     .sum::<usize>()
-                    + saved.loops.get(*i).map_or(0, |(_, f)| k * f.frames)
+                    + saved.loops.get(*i).map_or(0, |(_, f)| frames(f, *k))
                     + frame;
                 Some(done as f32 / all.max(1) as f32)
             }
@@ -2304,9 +2325,14 @@ impl LoopHost {
         for (n, f) in saved.loops {
             let id = f.id;
             let on_free = f.clock == Clock::Free;
+            let mut recs = [0u128; mpfree_looper::MAX_LAYERS];
+            for (r, y) in recs.iter_mut().zip(&f.layers) {
+                *r = y.raw.as_ref().map_or(0, |r| r.rec);
+            }
             match self.looper.load(n, f) {
                 Ok(()) => {
                     self.on_tracks.set(n, id);
+                    self.layer_recs.opened(&self.looper, n, &recs);
                     done.push((n + 1).to_string());
                     if on_free {
                         free.push((n + 1).to_string());
@@ -2389,9 +2415,20 @@ impl LoopHost {
                         selected: self.looper.selected(),
                         loops: (0..MAX_LOOPS)
                             .filter_map(|n| {
-                                let mut f = self.looper.loop_file(n)?;
+                                let mut f = match self.recordings {
+                                    true => self.looper.loop_file_raw(n)?,
+                                    false => self.looper.loop_file(n)?,
+                                };
                                 // Its lasting id, if it has one (phase 4b).
                                 f.id = self.on_tracks.id(n).map_or(0, |i| i.0);
+                                // Each layer's recording (4c.2).
+                                for (k, y) in f.layers.iter_mut().enumerate() {
+                                    if let (Some(r), Some(info)) =
+                                        (y.raw.as_mut(), self.looper.loop_layer_info(n, k))
+                                    {
+                                        r.rec = self.layer_recs.of(n, &info);
+                                    }
+                                }
                                 Some((n, f))
                             })
                             .collect(),
@@ -2433,15 +2470,22 @@ impl LoopHost {
                 let mut budget = SAVE_SPEED * PERIOD;
                 while budget > 0 && i < saved.loops.len() {
                     let (n, f) = &mut saved.loops[i];
-                    let take = budget.min(f.frames - frame);
+                    let size = layer_frames(f, k);
+                    let take = budget.min(size - frame);
+                    let raw = f.layers[k].raw.is_some();
                     let out = &mut f.layers[k].audio[2 * frame..2 * (frame + take)];
-                    if self.looper.read_layer(*n, k, frame, out).is_none() {
+                    // As written (4c.2) or as it plays.
+                    let read = match raw {
+                        true => self.looper.raw_layer(*n, k, frame, out),
+                        false => self.looper.read_layer(*n, k, frame, out),
+                    };
+                    if read.is_none() {
                         // Busy for now (a merge or a fit starting): wait.
                         break;
                     }
                     budget -= take;
                     frame += take;
-                    if frame == f.frames {
+                    if frame == size {
                         frame = 0;
                         k += 1;
                         if k == f.layers.len() {
@@ -3464,6 +3508,25 @@ impl LoopHost {
     /// buffer, too).
     pub fn input(&self) -> (&[f32; PERIOD], &[f32; PERIOD]) {
         (&self.input_l, &self.input_r)
+    }
+
+    /// Layers as recordings (audio tracks phase 4c.2, behind Dev's "Loops
+    /// on audio tracks"): with it on, a save keeps each loop as the looper
+    /// holds it (`mpfree_looper::Looper::loop_file_raw`, read with
+    /// `raw_layer`), each layer with its recording's id, so it opens
+    /// exactly and its edits can be taken further; off, each layer as it
+    /// plays, as before. A project opens either way.
+    pub fn set_recordings(&mut self, on: bool) {
+        self.recordings = on;
+    }
+
+    /// With recordings on, each closed layer with no recording yet gets
+    /// one, `fresh()` (the audio tracks' id maker). Each period; does not
+    /// allocate.
+    pub fn give_layer_recs(&mut self, fresh: impl FnMut() -> u128) {
+        if self.recordings {
+            self.layer_recs.give(&self.looper, fresh);
+        }
     }
 
     /// Loops on audio tracks (phase 4b, behind Dev's switch): a loop with
@@ -7344,6 +7407,94 @@ mod tests {
             .map(|i| (a[i] - c[i]).abs())
             .fold(0.0, f32::max);
         assert!(worst < 1e-5, "differs by {worst}");
+    }
+
+    /// Layers as recordings (audio tracks phase 4c.2, behind Dev's "Loops
+    /// on audio tracks"): with recordings on, each closed layer gets a
+    /// recording once; a save keeps each loop as the looper holds it
+    /// (`mpfree-looper 2`), each layer with its recording and its file
+    /// named by it; it opens in a fresh host playing the same, and keeps
+    /// its recordings, so saved again it names the same files and nothing
+    /// is written twice.
+    #[test]
+    fn loops_saved_as_recordings_open_the_same_and_keep_their_recordings() {
+        use mpfree_looper::save::{from_text, wav};
+        let (mut h, mut t, mut b) = saving_host();
+        h.set_recordings(true);
+        let mut next = 0u128;
+        let mut fresh = || {
+            next += 1;
+            0xfeed_0000 + next
+        };
+        h.give_layer_recs(&mut fresh);
+        h.give_layer_recs(&mut fresh);
+        assert_eq!(next, 2, "a recording a layer, once");
+        h.save();
+        let saved = saved_from(&mut h, &mut t, &mut b);
+        let (text, files) = crate::project::loops_part(saved);
+        assert!(text.starts_with("mpfree-looper 2\n"), "{text}");
+        let names: Vec<String> = files.iter().map(|(n, _)| n.clone()).collect();
+        assert_eq!(
+            names,
+            [
+                format!("loop_{:032x}.wav", 0xfeed_0001u128),
+                format!("loop_{:032x}.wav", 0xfeed_0002u128)
+            ]
+        );
+        // The first pass's audio as written: more than its loop.
+        let frames = from_text(&text).unwrap().loops[0].1.frames;
+        assert!(files[0].1.len() > 2 * frames);
+        let wavs: Vec<(String, Vec<u8>)> = files
+            .iter()
+            .map(|(n, a)| (n.clone(), wav(a, 44_100)))
+            .collect();
+        let read = |name: &str| {
+            wavs.iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, b)| b.clone())
+                .ok_or_else(|| format!("no {name}"))
+        };
+        let (back, notes, left) = crate::project::loops_open(&text, read).unwrap();
+        assert!(notes.is_empty() && left.is_empty(), "{notes:?}");
+        // Into a fresh host at the same song frame: it plays as the first
+        // one does, a bar on.
+        let (mut h2, mut t2) = (
+            LoopHost::new(44_100, 20),
+            Transport::new(44_100, 120.0).unwrap(),
+        );
+        h2.set_recordings(true);
+        let mut b2 = Block::new();
+        t2.command(0, T::Play);
+        let skip = (t.frame() / PERIOD as u64) as usize;
+        run_host(&mut h2, &mut t2, &mut b2, skip);
+        assert!(h2.load(back).starts_with("looper: loading loops 1"));
+        let a = run_host(&mut h, &mut t, &mut b, 1500);
+        let c = run_host(&mut h2, &mut t2, &mut b2, 1500);
+        let n = a.len();
+        let worst = (n - 2 * 88_200..n)
+            .map(|i| (a[i] - c[i]).abs())
+            .fold(0.0, f32::max);
+        assert!(worst < 1e-5, "differs by {worst}");
+        // Its layers keep the recordings they opened with: saved again,
+        // the same files.
+        h2.give_layer_recs(|| panic!("a layer opened with its recording got another"));
+        h2.save();
+        let again = saved_from(&mut h2, &mut t2, &mut b2);
+        let (text2, files2) = crate::project::loops_part(again);
+        let names2: Vec<String> = files2.iter().map(|(n, _)| n.clone()).collect();
+        assert_eq!(names2, names);
+        for ((_, x), (_, y)) in files.iter().zip(&files2) {
+            assert!(x == y, "the same audio");
+        }
+        assert_eq!(
+            from_text(&text2).unwrap().loops,
+            from_text(&text).unwrap().loops
+        );
+        // With recordings off, a save is as before: each layer as it plays.
+        h2.set_recordings(false);
+        h2.save();
+        let (text3, _) = crate::project::loops_part(saved_from(&mut h2, &mut t2, &mut b2));
+        assert!(text3.starts_with("mpfree-looper 1\n"), "{text3}");
     }
 
     #[test]
