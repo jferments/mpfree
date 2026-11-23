@@ -1461,6 +1461,9 @@ pub enum Effect {
     Arp(ArpView),
     /// The arp's pattern list (names and patterns), when it changes.
     Patterns(Vec<(String, Pattern)>),
+    /// The arp's phrase list, whenever it changes: MPFree's own, the
+    /// owner's and the open project's.
+    Phrases(mpfree_arp_ui::PhraseList),
     /// The pattern workspace: open it on a pattern, or start or stop
     /// recording on the pads.
     Workspace(WorkspaceView),
@@ -1482,6 +1485,9 @@ pub enum Effect {
     /// Keep this library text in the store as arp/patterns.txt (the store's
     /// own thread writes it).
     SavePatterns(String),
+    /// Keep this library text, the owner's own phrases, in the store as
+    /// arp/phrases.txt.
+    SavePhrases(String),
     /// STOP in the timed `play` step: end it.
     Quit,
     /// Open the Touch lab page (it starts at its first step).
@@ -1819,6 +1825,22 @@ pub struct App {
     /// The patterns to pick from (built in; Save changes them in memory).
     patterns: Vec<(String, Pattern)>,
     pattern_index: usize,
+    /// The phrases to pick from, in three runs (`app/arp/phrases.rs`):
+    /// MPFree's own (the first `phrases_built`), the owner's (up to
+    /// `phrases_own`: the store's arp/phrases.txt), then the ones only the
+    /// open project has.
+    phrases: Vec<(String, mpfree_arp::Phrase)>,
+    phrases_built: usize,
+    phrases_own: usize,
+    /// The armed track's phrase, as a place in `phrases`.
+    phrase_index: usize,
+    /// The kind of phrase the Phrase tab's list shows when it is not the
+    /// pick's: an empty one stepped to (the owner's, before they have
+    /// made a phrase). None: the pick's.
+    phrase_shelf: Option<mpfree_arp_ui::phrases::Shelf>,
+    /// The phrase last picked on each kind's shelf, so stepping back to a
+    /// kind returns to it (`app/arp/phrases.rs`).
+    phrase_last: [Option<usize>; mpfree_arp_ui::phrases::Shelf::ALL.len()],
     /// The pattern the engine plays (edited, mutated or recorded from the
     /// list's).
     pattern: Pattern,
@@ -1828,7 +1850,8 @@ pub struct App {
     /// How the next recording on the pads goes: Step time or Free time.
     record_mode: RecordMode,
     /// Save also keeps the patterns in the store (arp/patterns.txt, when
-    /// the store saves: `app --data DIR`), through [`Effect::SavePatterns`].
+    /// the store saves: `app --data DIR`), through [`Effect::SavePatterns`],
+    /// and the owner's phrases beside them ([`Effect::SavePhrases`]).
     pub pattern_file: bool,
     /// Q-Link turns not yet used, per knob (rate and octaves need several).
     qlink_turns: [i32; 4],
@@ -1838,6 +1861,10 @@ pub struct App {
     /// The Modifier's push the arp screens last showed, in percent, and
     /// the settings it played (they redraw when either moves).
     sent_push: (u8, mpfree_arp::Settings),
+    /// The 1/32 of its phrase the Phrase tab's cursor was last sent at
+    /// (while the Arp panel shows), and whether a pick waited for the bar
+    /// line.
+    sent_phrase: (Option<u32>, bool),
     /// Where the sustain pedal went down, while it is down
     /// ([`App::arp_pedal`]).
     pedal_down: Option<arp::PedalTo>,
@@ -2003,6 +2030,7 @@ impl App {
         let arps = TrackArps::new(sample_rate, settings.bpm);
         let patterns = arp::built_in_patterns();
         let pattern = patterns.first().map(|(_, p)| *p).unwrap_or_default();
+        let phrases = arp::built_in_phrases();
         let sent_notes = arps.engine_at(0).active().clone();
         let mut app = App {
             settings,
@@ -2073,6 +2101,12 @@ impl App {
             swing_from_transport: true,
             patterns,
             pattern_index: 0,
+            phrases_built: phrases.len(),
+            phrases_own: phrases.len(),
+            phrases,
+            phrase_index: 0,
+            phrase_shelf: None,
+            phrase_last: [None; mpfree_arp_ui::phrases::Shelf::ALL.len()],
             pattern,
             mutations: 0,
             recorder: None,
@@ -2081,6 +2115,7 @@ impl App {
             qlink_turns: [0; 4],
             sent_step: 0,
             sent_push: (0, mpfree_arp::Settings::default()),
+            sent_phrase: (None, false),
             pedal_down: None,
             pedal_latch: None,
             sent_notes,
@@ -2135,11 +2170,13 @@ impl App {
             project_edit: false,
             arp_seen: 0,
         };
-        // Every track's arp starts on the first pattern, as the panel does.
-        // Settings alone don't start an engine, so this needn't mark all
-        // 128 in use.
+        // Every track's arp starts on the first pattern and the first
+        // phrase, as the panel does. Settings alone don't start an engine,
+        // so this needn't mark all 128 in use.
+        let phrase = app.phrases.first().map(|(_, p)| *p).unwrap_or_default();
         for (e, u) in app.arps.engines_mut().zip(app.track_ui.iter_mut()) {
             e.set_pattern(pattern);
+            e.set_phrase(phrase);
             u.pattern = pattern;
         }
         app.update_engine();
@@ -2509,6 +2546,7 @@ impl App {
             Effect::Settings(self.settings.clone()),
             Effect::Light(button::FULL_LEVEL, LIGHT_OFF),
             Effect::Patterns(self.patterns.clone()),
+            Effect::Phrases(self.phrase_list()),
             self.arp_view(),
         ];
         fx.extend(self.repeat_light());
@@ -3110,8 +3148,8 @@ impl App {
         !self.swing_from_transport
     }
 
-    /// The engine makes notes of its own (Repeat, Arp or Pattern), so a hit
-    /// may sound later than the press, and latched pads stay lit.
+    /// The engine makes notes of its own (Repeat, Arp, Pattern or Phrase),
+    /// so a hit may sound later than the press, and latched pads stay lit.
     pub fn generating(&self) -> bool {
         self.arps.engine_at(self.track).settings().mode != Mode::Direct
     }

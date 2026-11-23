@@ -34,7 +34,18 @@ pub struct Chip {
     /// Lit, as the folder icon is while the browser shows: the page it
     /// opens is showing.
     pub lit: bool,
+    /// The same said in fewer words, for a bar with no room for every
+    /// chip in full: the header shows this then, cut with "…" if it is
+    /// still too long, so the chip keeps its place, a tap still finds it,
+    /// and the chips after it keep theirs where they can. A chip without
+    /// one is left out when it doesn't fit, with the chips after it. For
+    /// a plain chip (no `inks`).
+    pub short: Option<String>,
 }
+
+/// The least room, in pixels of text, a chip's short form is shown in
+/// (about ten characters): with less the chip is left out.
+const SHORT_MIN: i32 = 72;
 
 impl Chip {
     pub fn new(text: impl Into<String>, tone: Tone) -> Chip {
@@ -45,7 +56,15 @@ impl Chip {
             inks: Vec::new(),
             ring: false,
             lit: false,
+            short: None,
         }
+    }
+
+    /// The chip saying `short` where the bar has no room for every chip
+    /// in full.
+    pub fn short(mut self, short: impl Into<String>) -> Chip {
+        self.short = Some(short.into());
+        self
     }
 
     /// The chip as wide as `widest` (or its text, if that is wider).
@@ -328,15 +347,40 @@ impl Widget for Header {
         let h = 34.min(r.h);
         let mut drawn = self.drawn_chips.borrow_mut();
         drawn.clear();
+        // Each chip's text as wide as it is in full (or as its fixed room).
+        let full: Vec<i32> = self
+            .chips
+            .iter()
+            .map(|chip| {
+                let tw = cx.measure(FontId::Sans, t.size_small, &chip.text);
+                chip.room
+                    .map_or(tw, |r| tw.max(cx.measure(FontId::Sans, t.size_small, r)))
+            })
+            .collect();
+        // With no room for every chip in full, the chips that have a short
+        // form say that, so that as few chips as can be are left out.
+        let all: i32 = full.iter().map(|tw| tw + 40 + 8).sum::<i32>() - 8;
+        let crowded = right - all < limit;
         for (i, chip) in self.chips.iter().enumerate() {
-            let tw = cx.measure(FontId::Sans, t.size_small, &chip.text);
-            let tw = chip
-                .room
-                .map_or(tw, |r| tw.max(cx.measure(FontId::Sans, t.size_small, r)));
-            let w = tw + 40;
-            if right - w < limit {
-                break;
+            let short = chip
+                .short
+                .as_deref()
+                .filter(|_| crowded && chip.inks.is_empty());
+            let said = short.unwrap_or(chip.text.as_str());
+            let mut tw = match short {
+                Some(s) => cx.measure(FontId::Sans, t.size_small, s),
+                None => full[i],
+            };
+            if right - (tw + 40) < limit {
+                // Still no room: a short form is cut to the room left;
+                // any other chip is left out, with the chips after it.
+                let room = right - limit - 40;
+                if short.is_none() || room < SHORT_MIN {
+                    break;
+                }
+                tw = room;
             }
+            let w = tw + 40;
             let cr = Rect::new(right - w, r.y + (r.h - h) / 2, w, h);
             drawn.push((i, cr));
             let well = if chip.lit { t.raised } else { t.surface };
@@ -361,14 +405,7 @@ impl Widget for Header {
             }
             if chip.inks.is_empty() {
                 let text = Rect::new(cr.x + 28, cr.y, tw + 4, h);
-                cx.text(
-                    FontId::Sans,
-                    t.size_small,
-                    text,
-                    Align::Left,
-                    t.text,
-                    &chip.text,
-                );
+                cx.text(FontId::Sans, t.size_small, text, Align::Left, t.text, said);
             } else {
                 let mut x = cr.x + 28;
                 for (part, ink) in &chip.inks {
@@ -2613,6 +2650,104 @@ mod tests {
         assert_eq!((cpu1, ram1), (cpu100, ram100));
         // A chip with no room is as wide as its text.
         assert!(Chip::new("CPU 1 %", Tone::Good).room.is_none());
+    }
+
+    /// A chip too long for the bar is left out, with the chips after it.
+    /// One with a short form says that instead, cut to the room left if
+    /// that is too long as well, and stays where a tap finds it; and it
+    /// says its short form before a chip after it is left out.
+    #[test]
+    fn a_chip_with_a_short_form_keeps_its_place() {
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        let mut h = Header::app("Play");
+        h.folder_icon = Some(false);
+        ui.add("header", h);
+        ui.add_full_page("p", "col(header:60)").unwrap();
+        let bar = ui.rect_of("header").unwrap();
+        let limit = ui
+            .get::<Header>("header")
+            .unwrap()
+            .tab_rect(bar, APP_TABS.len())
+            .x;
+        let size = ui.theme.size_small;
+        let status = || Chip::new("CPU 24 %  RAM 38 %", Tone::Good).room("CPU 100 %  RAM 100 %");
+        let long = "Phrase: Six eight ostinato, latched · 120 BPM";
+        let drawn = |ui: &mut Ui, chips: Vec<Chip>| -> Vec<Option<Rect>> {
+            let n = chips.len();
+            ui.get_mut::<Header>("header").unwrap().chips = chips;
+            let mut c = SoftCanvas::new(1280, 800);
+            ui.paint(&mut c);
+            let h = ui.get::<Header>("header").unwrap();
+            (0..n).map(|i| h.chip_rect(i)).collect()
+        };
+        // As it was: no room, no chip, and none after it.
+        let got = drawn(
+            &mut ui,
+            vec![
+                status(),
+                Chip::new(long, Tone::Warn),
+                Chip::new("MAKE", Tone::Dim),
+            ],
+        );
+        assert!(got[0].is_some() && got[1].is_none() && got[2].is_none());
+        // Its short form fits: all of it, as wide as its words.
+        let short = "Six eight ostinato";
+        let got = drawn(
+            &mut ui,
+            vec![status(), Chip::new(long, Tone::Warn).short(short)],
+        );
+        let r = got[1].expect("the short form shows");
+        assert_eq!(r.w, ui.fonts.measure(FontId::Sans, size, short) + 40);
+        assert!(r.x >= limit);
+        assert_eq!(
+            ui.touch(1, Touch::Down, r.x + 5, 30).map(|e| e.kind),
+            Some(EventKind::Select(1)),
+            "a tap finds it"
+        );
+        ui.touch(1, Touch::Up, r.x + 5, 30);
+        // A short form too long as well is cut to the room: the chip
+        // reaches from the chip before it to where the tabs end.
+        let got = drawn(
+            &mut ui,
+            vec![status(), Chip::new(long, Tone::Warn).short(long)],
+        );
+        let cut = got[1].expect("cut, not left out");
+        assert_eq!(cut.x, limit);
+        assert_eq!(cut.right(), got[0].unwrap().x - 8);
+        // A chip that fits says all of it, short form or not.
+        let got = drawn(
+            &mut ui,
+            vec![status(), Chip::new("Arp off", Tone::Dim).short("Off")],
+        );
+        let fits = got[1].unwrap();
+        assert_eq!(fits.w, ui.fonts.measure(FontId::Sans, size, "Arp off") + 40);
+        // A chip that fits alone, but leaves no room for the chip after
+        // it, gives up its extra words first: both show.
+        let (all, name) = ("Phrase: Offbeat pump · 120 BPM", "Phrase: Offbeat pump");
+        let make = || Chip::new("MAKE", Tone::Dim);
+        let got = drawn(&mut ui, vec![status(), Chip::new(all, Tone::Warn), make()]);
+        assert!(got[1].is_some() && got[2].is_none(), "as it was: {got:?}");
+        let got = drawn(
+            &mut ui,
+            vec![status(), Chip::new(all, Tone::Warn).short(name), make()],
+        );
+        assert_eq!(
+            got[1].unwrap().w,
+            ui.fonts.measure(FontId::Sans, size, name) + 40
+        );
+        let last = got[2].expect("the chip after it keeps its place");
+        assert!(last.x >= limit);
+        assert_eq!(last.right(), got[1].unwrap().x - 8);
+        // With next to no room left even the short form is left out.
+        let got = drawn(
+            &mut ui,
+            vec![
+                status(),
+                Chip::new("Arp: Up 1/16, latched · 120 BPM", Tone::Warn),
+                Chip::new(long, Tone::Warn).short(short),
+            ],
+        );
+        assert!(got[1].is_some() && got[2].is_none());
     }
 
     #[test]

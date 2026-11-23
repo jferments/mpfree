@@ -1411,9 +1411,8 @@ impl Session {
             self.out.show(ToUi::PadUp(pad));
             return;
         }
-        if let (true, true, Some(to)) =
-            (down && pad < 16, self.app.generating(), self.pads_preview())
-        {
+        let arp_on = self.app.pads_own_mode() != mpfree_arp::Mode::Direct;
+        if let (true, true, Some(to)) = (down && pad < 16, arp_on, self.pads_preview()) {
             let v = self.app.velocity(velocity);
             let mut buf = [0u8; mpfree_arp::scale::pads::MAX_PAD_NOTES];
             let n = match to {
@@ -1995,9 +1994,9 @@ impl Session {
             .period_arps(PERIOD as u32, &mut self.hits, &mut self.app.arps);
         // The pads' arp (sampler step 15c), as main.rs: on the clips' arps'
         // period, where the pads play on their own.
-        let own_swing = self.app.arp_own_swing();
+        let (mode, own_swing) = (self.app.pads_own_mode(), self.app.arp_own_swing());
         self.pads_arp
-            .follow(self.app.arps.engine_at(self.app.track()), own_swing);
+            .follow(self.app.arps.engine_at(self.app.track()), mode, own_swing);
         {
             let (synth, own) = (&mut *self.synth, &mut self.mix.instruments);
             let (sounds, played) = (&mut self.sounds, &mut self.arp_played);
@@ -3021,7 +3020,7 @@ impl Session {
                     Effect::BankLights => {}
                     Effect::Audio(p) => self.out.note(&format!("audio buffer: {p} periods")),
                     Effect::Quit => self.quit = true,
-                    Effect::SavePatterns(_) => {}
+                    Effect::SavePatterns(_) | Effect::SavePhrases(_) => {}
                     Effect::SaveProject => self.save_asked = true,
                     // 16 LEVEL, as main.rs: the synth's pads open Transpose;
                     // the Drums engine's have neither.

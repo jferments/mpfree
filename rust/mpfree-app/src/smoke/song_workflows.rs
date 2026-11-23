@@ -2221,6 +2221,83 @@ mod tests {
             s.pad_edge(pad, 0, false);
         });
     }
+    /// Phrases meet sampler step 15c: a phrase stays with its track.
+    /// Track 1 plays the synth with its arp on the Phrase tab while the
+    /// pads play kit 2 on their own. A pad held there plays kit 2's pad
+    /// once, as pressed: the pads' arp has the track's settings and no
+    /// phrase, and must never play the engine's stand-in for one (the held
+    /// note on every beat). NOTE REPEAT repeats the pad, as on a kit track
+    /// left on Phrase, and the track's own arp stays on its phrase.
+    #[test]
+    fn a_phrase_stays_with_its_track_while_the_pads_play_a_kit_on_their_own() {
+        use crate::PadsPreview;
+        use mpfree_arp::Mode;
+        use mpfree_arp_ui::view::ArpAction;
+        on_big_stack(|| {
+            let mut session = Session::new();
+            let s = &mut session;
+            s.make_sounds();
+            s.run_periods(2);
+            s.pick_synth();
+            let kit_2 = s.instrument_list.of_kit(1).expect("kit 2 has an id");
+            let part = format!("mpfree-pads 2\nplay instrument {kit_2}\n");
+            let (notes, fx) = s.app.open_pads(Some(&part));
+            assert!(notes.is_empty(), "{notes:?}");
+            s.fx.extend(fx);
+            s.run_periods(4);
+            assert_eq!(s.app.pads_kit(), Some(1), "the pads play kit 2");
+            let fx = s.app.toggle_panel();
+            s.fx.extend(fx);
+            let fx = s.app.arp_action(ArpAction::Mode(Mode::Phrase));
+            s.fx.extend(fx);
+            s.run_periods(4);
+            let track = |s: &Session| s.app.arps.engine_at(s.app.track()).settings().mode;
+            assert!(s.app.phrases_play(), "Track 1 plays the synth");
+            assert_eq!(track(s), Mode::Phrase, "the track's arp is on its phrase");
+            let player = s.sounds.as_ref().expect("the kits");
+            let pad = (0..16)
+                .find(|&p| player.has_sound(1, p))
+                .expect("a pad kit 2 fills");
+            // Held for two beats and more: once, as pressed.
+            s.arp_played.clear();
+            s.previewed.clear();
+            s.pad_edge(pad, 100, true);
+            s.run_periods(2);
+            let player = s.sounds.as_ref().expect("the kits");
+            assert!(player.kit_pad_voices(1, pad) > 0, "kit 2's pad plays");
+            s.run_for(1.5);
+            assert!(s.arp_played.is_empty(), "no phrase: {:?}", s.arp_played);
+            assert_eq!(s.previewed.len(), 1, "once: {:?}", s.previewed);
+            assert_eq!(s.pads_arp_sounding(), 0);
+            s.pad_edge(pad, 0, false);
+            s.run_periods(2);
+            // NOTE REPEAT: the pad repeats on kit 2, and the track keeps
+            // its phrase.
+            s.button_edge("NOTE REPEAT", true);
+            s.run_periods(2);
+            assert_eq!(track(s), Mode::Phrase);
+            assert_eq!(s.app.pads_own_mode(), Mode::Repeat);
+            s.pad_edge(pad, 100, true);
+            s.run_for(1.0);
+            let repeats = s
+                .arp_played
+                .iter()
+                .filter(|&&(to, n, _)| to == PadsPreview::Kit(1) && usize::from(n) == pad)
+                .count();
+            assert!(repeats >= 6, "kit 2's pad repeats: {:?}", s.arp_played);
+            assert_eq!(repeats, s.arp_played.len(), "nothing else plays");
+            s.pad_edge(pad, 0, false);
+            s.run_for(0.3);
+            let n = s.arp_played.len();
+            s.run_for(0.5);
+            assert_eq!(s.arp_played.len(), n, "let go: the repeats stop");
+            s.button_edge("NOTE REPEAT", false);
+            s.run_periods(2);
+            assert_eq!(track(s), Mode::Phrase, "the panel is still on Phrase");
+            assert_eq!(s.pads_arp_sounding(), 0);
+        });
+    }
+
     /// REC records what is heard (sampler step 15c's second part): every
     /// sound of the pad map on a track of its own, in one take. The pads
     /// play kit 2 on their own and bank B the synth, while Track 1 keeps

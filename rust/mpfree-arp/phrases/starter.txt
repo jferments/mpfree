@@ -1,0 +1,89 @@
+# MPFree's starter phrases: 64 written for MPFree, 16 of each kind. None is
+# copied from Akai's phrases or from any other product's.
+#
+# Copy this file to write your own, and hear every phrase in a file with:
+#   mpfree-arp-render --patterns my-phrases.txt
+#
+# One phrase per line: Name = kind scale [grid] [meter] [swung] [N bars] : steps | lanes
+#   kind   bass, riff, chords or line: the shelf it sits on
+#   scale  the scale it was written in: major, minor, or either
+#   grid   what one step is: 1/8, 1/8T, 1/16 (when left out), 1/16T, 1/32, 1/32T
+#   meter  4/4 (when left out) or 3/4
+# Steps: . rest, _ tie, 1 to 7 a step of the scale from the note you hold
+# (b or # lowers or raises it a half step, named from the major scale: a
+# minor phrase writes b3, b6, b7), + or - an octave up or down, 1,3,5 notes
+# together. After a note: ! accent, ' short, ~ held for the whole step.
+# Lanes, each looping at its own length: vel, gate, nudge.
+# Two spaces between bars are only for the eye.
+
+# Bass
+Offbeat pump       = bass either : . . 1 _ . . 1 _ . . 1 _ . . 1 _
+Octave bounce      = bass either 1/8 : 1 1+' 1 1+' 1 1+' 1 1+'
+Rolling sixteenths = bass either : . 1 1 1 . 1 1 1 . 1 1 1 . 1 1 1  . 1 1 1 . 1 1 1 . 1 1 1 . 1 5- 1
+Gallop bass        = bass either : 1! _ 1 1 1 _ 1 1 1! _ 1 1 1 _ 1 1
+Sub drop           = bass either 1/8 : 1 _ _ _ _ _ . 1'  1 _ _ . 5- _ _ _
+Funk pocket        = bass minor : 1! . . 1' . . 1+' . . . b7- 1 . . 1+' .  1! . . 1' . . 1+' . 1 . . . 5- . b7- 7-
+Dub steps          = bass minor 1/8 : 1 _ . 1 b3 _ 1 .  5- _ . 5- b7- _ 1 .
+Night drive        = bass minor : 1 1 1+ 1 1 1 1+ 1 1 1 1+ 1 1 1 1+ 1  1 1 1+ 1 1 1 1+ 1 b7- b7- b7 b7- 5- 5- 5 5-
+Acid line          = bass minor : 1 1 1+! 1 . 1 b3' 1 1+! . 1 1 b7-~ 1 1+ b2
+Trap glide         = bass minor : 1 _ _ _ _ _ . 1 _ _ . 1 _ . 1' .  1 _ _ _ _ _ . 1 _ _ . b3 _ . b7-~ _
+Afro pulse         = bass either : 1 . . 1 . . 1 . . . 5- . 6- . 1 .  1 . . 1 . . 5 . . 3 . . 1 . 5- .
+Garage skip        = bass minor swung : . . 1 _ . . . 1' 1 _ . . b7- _ . .  . . 1 _ . . . 1' b3 _ . . 1' . 5- .
+Shuffle walk       = bass major 1/8T : 1 . 1 3 . 3 5 . 5 6 . 6  b7 . b7 6 . 6 5 . 5 3 . 3
+Waltz bass         = bass either 1/8 3/4 : 1 _ _ . 5 .  1 _ 3 . 5 .  1 _ _ . 5 .  5- _ 6- . 7- .
+Jungle sub         = bass minor : 1 _ _ _ _ _ . . . . 1 _ _ . 5- _  b3 _ _ _ _ _ . . . . 2 _ _ . b7- _
+Up and back        = bass either 1/8 : 1 3 5 6 1+ 6 5 3
+
+# Riff
+Minor hook         = riff minor : 1 . . b3 . . 5 . 4 . b3 . 1 . . .  b7- . . 1 . . b3 . 2 . . . 1 _ _ .
+Stutter lead       = riff either : 1' 1' 1 . 1' 1' 1 . 5' 5' 5 . 4 . 3 .
+Pentatonic climb   = riff minor 1/8 : 1 b3 4 5 b7 5 b7 1+  b3+ 1+ b7 5 1+ _ _ .
+Blues lick         = riff minor 1/8T : 1+ b7 5 b5 4 b3 1 _ . b7- 1 .
+Chug and stab      = riff minor : 1' 1' 1' b3! _ 1' 1' 4! _ 1' 1' b3! _ 1' b2! _  1' 1' 1' b3! _ 1' 1' 4! _ 1' 1' 5! _ b5! _ 4!
+Anthem             = riff major 1/8 : 3 _ _ 3 _ _ 5 _  6 _ _ 5 _ _ 3 _  4 _ _ 4 _ _ 6 _  5 _ _ _ _ _ . .
+Call and answer    = riff either : 5 . 6 5 . 3 . . 1 . 2 3 . 1 . .  5 . 6 5 . 3 . . 2 . 1 6- . 1 . .
+Synth pop hook     = riff major 1/8 : 5 3 . 5 3 . 6 5  . 3 . 2 3 _ 1 .
+Dorian strut       = riff minor : 1 . 1 b3 . 4 . 5 . . 6 5 . 4 b3 .  1 . 1 b3 . 4 . 5 . . b7 5 . 4 5 .
+Pedal point        = riff either : 3+ 1 2+ 1 1+ 1 2+ 1 3+ 1 2+ 1 1+ 1 7 1  4+ 1 3+ 1 2+ 1 3+ 1 4+ 1 3+ 1 2+ 1 1+ 1
+Lazy swing         = riff major 1/8 swung : . 5 6 1+ . 6 5 _  3 . 2 3 1 _ . .
+Sixteenth burst    = riff minor : 1 2 b3 4 5 4 b3 2 1 . . . 5! . . .
+Hip-hop keys       = riff minor : 1+ . . b7 . . 5 . . . b6 . 5 . . .  1+ . . b7 . . 5 . . . b3 . 4 . . .
+Harmonic turn      = riff minor 1/8 : 1 7- 1 2 b3 2 1 7-  1 b3 5 b6 5 _ . .
+Shuffle riff       = riff minor 1/8T : 1 . b3 4 . b3 1 . b7- 1 . .  1 . b3 4 . #4 5 . b3 1 . .
+Waltz tune         = riff major 1/8 3/4 : 3 _ _ 4 5 _  6 _ 5 _ 3 _  4 _ _ 3 2 _  1 _ _ _ . .
+
+# Chords
+Three three two    = chords either : 1,3,5 _ _ . . . 1,3,5 _ _ . . . 1,3,5 _ . .
+Offbeat stabs      = chords either : . . 1,3,5' . . . 1,3,5' . . . 1,3,5' . . . 1,3,5' .
+Skank              = chords either : . . . . 3,5,1+' . 3,5,1+' . . . . . 3,5,1+' . 3,5,1+' .
+Wide pad           = chords either 1/8 : 1,5,3+~ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _  1,5,4+~ _ _ _ _ _ _ _  1,5,3+~ _ _ _ _ _ _ _
+Funk sixteenths    = chords minor : b3,5,b7' . b3,5,b7' b3,5,b7' . b3,5,b7' . b3,5,b7! . b3,5,b7' b3,5,b7' . b3,5,b7' . b3,5,b7! .
+Power chug         = chords either 1/8 : 1,5,1+! 1,5' 1,5' 1,5,1+! 1,5' 1,5' 1,5,1+! 1,5'
+Gallop chords      = chords either : 1,5' 1,5' 1,5,1+ _ 1,5' 1,5' 1,5,1+ _ 1,5' 1,5' 1,5,1+ _ 1,5' 1,5' 1,5,1+ _
+Pop eighths        = chords either 1/8 : 1,3,5 1,3,5 1,3,5 1,3,5 1,3,5 1,3,5 1,3,5 1,3,5 | vel 115 85 95 85
+Sus lift           = chords either 1/8 : 1,4,5 _ _ 1,4,5 _ _ 1,3,5 _  1,2,5 _ _ 1,2,5 _ _ 1,3,5 _
+Soul sevenths      = chords either : 1,3,5,7 _ _ . . . 1,3,5,7' . . . 1,3,5,7 _ _ _ . .  1,3,5,7 _ _ . . . 1,3,5,7' . . 3,5,7,2+ _ _ . . . .
+Twelve eight       = chords either 1/8T : 1,3,5 1,3,5 1,3,5 1,3,5 1,3,5 1,3,5 1,3,5 1,3,5 1,3,5 1,3,5 1,3,5 1,3,5 | vel 110 75 85
+Waltz chords       = chords either 1/8 3/4 : . . 3,5,1+ . 3,5,1+ .  . . 5,1+,3+ . 5,1+,3+ .
+Oom pah            = chords either 1/8 : 1- . 3,5,1+ . 5-- . 3,5,1+ .
+Dub echo           = chords minor : 1,b3,5' . . 1,b3,5' . . 1,b3,5' . . 1,b3,5' . . . . . .  . . . . 1,b3,5' . . 1,b3,5' . . 1,b3,5' . . 1,b3,5' . . | vel 115 0 0 80 0 0 55 0 0 35 0 0 0 0 0 0 0 0 0 0 115 0 0 80 0 0 55 0 0 35 0 0
+Stab and hold      = chords either : 1,3,5! . . . . . 1,3,5 _ _ _ _ _ _ _ _ _  1,3,5! . . 1,3,5' . . 1,3,5,2+ _ _ _ _ _ _ _ . .
+Montuno            = chords either 1/8 : 1,1+ . 3,5 1,1+ . 3,5 . 1,1+  . 3,5 . 1,1+ . 3,5 . 1,1+
+
+# Arp lines
+Up the chord       = line either : 1 3 5 1+ 3+ 5+ 1++ 5+ 3+ 1+ 5 3 1 5- 1 3
+Rolling triad      = line either : 1 5 3+ 1 5 3+ 1 5 3+ 1 5 3+ 1 5 3+ 5
+Octave pulse       = line either : 1 1+ 1 1+ 1 5 1 1+ 1 1+ 1 1+ 1 5 1 3+
+Dotted climb       = line either : 1 _ . 3 _ . 5 _ . 1+ _ . 3+ _ . 5+  _ . 1++ _ . 5+ _ . 3+ _ . 1+ _ . 5 _
+Minor cascade      = line minor : 1++ b7+ 5+ b3+ 1+ b7 5 b3 1 b3 5 b7 1+ b3+ 5+ b7+
+Open fifths        = line either : 1 5 1+ 5 2+ 5 1+ 5 1 5 1+ 5 2+ 5 1+ 5
+Seventh sweep      = line either : 1 3 5 7 1+ 3+ 5+ 7+ 5+ 3+ 1+ 7 5 3 1 7-
+Add nine shimmer   = line either : 1 5 2+ 3+ 5+ 3+ 2+ 5 1 5 2+ 3+ 1++ 3+ 2+ 5
+Triplet waterfall  = line either 1/8T : 1++ 5+ 3+ 5+ 3+ 1+ 3+ 1+ 5 1+ 5 3
+Bounce line        = line either : 1 1+ 5 1+ 3 1+ 5 1+ 1 1+ 5 1+ 6 1+ 5 1+
+Six eight ostinato = line either 1/8T : 1 5 1+ 3+ 1+ 5 1 5 1+ 2+ 1+ 5
+Sus shimmer        = line either : 1 4 5 1+ 5 4 1 2 5 1+ 5 2 1 4 5 1+
+Gate pattern       = line either : 1+ 1+ . 5 5 . 3 . 1+ 1+ . 5 5 . 3 1
+Wide leap          = line either 1/8 : 1 5 3+ 5 1++ 5 3+ 5  1 5 2+ 5 7+ 5 2+ 5
+Dark pulse         = line minor : 1 1 b3 1 5 1 b6 5 1 1 b3 1 5 1 b7 b6
+Swung thirds       = line either 1/8 swung : 1 3 2 4 3 5 4 6  5 3 4 2 3 1 2 7-

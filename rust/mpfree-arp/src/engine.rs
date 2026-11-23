@@ -15,7 +15,11 @@ use crate::hand::{Hand, HandOn};
 use crate::modifier::{self, ModSource, Modifier, Steps};
 use crate::notes::{Held, LatchMode, NoteSet, Notes, MAX_NOTES};
 use crate::pattern::{Pattern, Pick, Step};
+use crate::phrase::{Follow, Phrase, Playhead, Speed};
 use crate::scale::{Scale, Snap, CHROMATIC, MAJOR};
+
+mod phrase_mode;
+pub use phrase_mode::phrase_speed;
 
 /// Clock resolution: ticks per quarter note.
 pub const PPQ: u32 = 960;
@@ -464,6 +468,9 @@ pub enum Mode {
     Arp,
     /// The latch pattern plays over the held notes.
     Pattern,
+    /// A whole phrase plays from the newest held note, in its own rhythm,
+    /// and moves to each new note held ([`Engine::set_phrase`]).
+    Phrase,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -541,6 +548,11 @@ pub struct Settings {
     pub start: SyncStart,
     /// What a controller pushes while you play ([`crate::modifier`]).
     pub modifier: Modifier,
+    /// Phrase mode: by steps of the scale or by semitones.
+    pub follow: Follow,
+    /// Phrase mode: half, as written or double its written rhythm. A
+    /// modifier's push on the rate moves it by the same ratio.
+    pub speed: Speed,
 }
 
 impl Default for Settings {
@@ -565,6 +577,8 @@ impl Default for Settings {
             ramp: Ramp::OFF,
             start: SyncStart::Step,
             modifier: Modifier::default(),
+            follow: Follow::InKey,
+            speed: Speed::AsWritten,
         }
     }
 }
@@ -750,6 +764,21 @@ pub struct Engine {
     /// direct mode ([`Engine::set_at`]): 0, at its top, but for a pad hit
     /// that waited for the launch line. Back to 0 once the period runs.
     at: u32,
+    /// Phrase mode's phrase ([`Engine::set_phrase`]), a phrase picked
+    /// while it plays (it waits for its line to come in on), and where the
+    /// phrase is. What plays them is in `engine/phrase_mode.rs`.
+    phrase: Phrase,
+    next_phrase: Option<Phrase>,
+    playhead: Playhead,
+    /// The key a phrase follows In key while the arp's own scale is off
+    /// ([`Engine::set_key`]).
+    key: Option<Scale>,
+    /// The engine's own clock while the transport is stopped: tick
+    /// `free_tick` falls on frame `free_frame` at the engine's tempo. It
+    /// moves only when the tempo or the transport does, so the clock
+    /// never drifts.
+    free_frame: f64,
+    free_tick: f64,
     /// The next event's [`Pending::seq`].
     seq: u64,
 }
@@ -794,6 +823,12 @@ impl Engine {
             sync: None,
             next_tick: 0,
             overflow: 0,
+            phrase: Phrase::default(),
+            next_phrase: None,
+            playhead: Playhead::new(),
+            key: None,
+            free_frame: 0.0,
+            free_tick: 0.0,
             seq: 0,
         }
     }
@@ -936,7 +971,9 @@ impl Engine {
             self.once_len = 0;
             self.bag = 0;
         }
-        if self.live.rate != old.rate && self.running && self.sync.is_some() {
+        if self.live.mode == Mode::Phrase {
+            self.respeed_phrase();
+        } else if self.live.rate != old.rate && self.running && self.sync.is_some() {
             self.next_tick = self.grid_after(i64::from(self.live.rate.ticks()));
             self.next_step = self.frame_of(self.next_tick as f64);
         }
@@ -982,7 +1019,11 @@ impl Engine {
     /// The free-running tempo. While a transport plays, [`Engine::sync`]
     /// sets the tempo instead.
     pub fn set_tempo(&mut self, bpm: f64) {
-        self.bpm = bpm.clamp(20.0, 300.0);
+        let bpm = bpm.clamp(20.0, 300.0);
+        if bpm != self.bpm {
+            self.anchor_free();
+            self.bpm = bpm;
+        }
     }
 
     /// True while the steps follow a playing transport.
@@ -996,6 +1037,10 @@ impl Engine {
     /// carrying on from where the transport left it.
     pub fn sync(&mut self, clock: &Clock) {
         if !clock.playing {
+            if self.sync.is_some() {
+                // The engine's own clock carries on from the transport's.
+                self.anchor_free();
+            }
             self.sync = None;
             return;
         }
@@ -1010,7 +1055,13 @@ impl Engine {
                 .map(|(grid, amount)| (grid.max(1), amount.clamp(50, 75))),
             bar_ticks: clock.bar_ticks.max(1),
         });
-        if self.running {
+        if self.running && self.live.mode == Mode::Phrase {
+            if !was || clock.jumped {
+                // In time with the transport from its start or its jump:
+                // the phrase starts again on the next 1/16, beat or bar.
+                self.restart_phrase(self.phrase_start_unit());
+            }
+        } else if self.running {
             if !was || clock.jumped {
                 self.next_tick = self.grid_after(i64::from(self.live.rate.ticks()));
             }
@@ -1027,6 +1078,9 @@ impl Engine {
         let settings = settings.clamped();
         if settings.mode != self.settings.mode {
             self.drop_pending_ons();
+            if self.settings.mode == Mode::Phrase {
+                self.stop_phrase();
+            }
             if self.settings.mode == Mode::Direct {
                 // Notes held in Direct mode are sounding: stop them; the
                 // generator takes over from the next step.
@@ -1135,6 +1189,9 @@ impl Engine {
     /// grid as usual. Does nothing to an engine that is not idle.
     pub fn skip(&mut self, frames: u32) {
         if self.idle() {
+            if self.sync.is_some() {
+                self.anchor_free();
+            }
             self.now += u64::from(frames);
             self.sync = None;
             self.at = 0;
@@ -1189,7 +1246,9 @@ impl Engine {
     pub fn process(&mut self, frames: u32, out: &mut Events) {
         out.len = 0;
         let end = self.now + u64::from(frames);
-        if self.running && self.sync.is_some() {
+        if self.running && self.live.mode == Mode::Phrase {
+            self.play_phrase(end);
+        } else if self.running && self.sync.is_some() {
             let ticks = i64::from(self.live.rate.ticks());
             loop {
                 let len = self.step_frames();
@@ -1341,6 +1400,9 @@ impl Engine {
             self.step = 0;
             self.arp_counter = 0;
             self.nudge = None;
+            if self.settings.mode == Mode::Phrase {
+                self.retrigger_phrase();
+            }
         }
         if self.settings.mode == Mode::Direct {
             let at = (self.now + u64::from(self.at)) as f64;
@@ -1392,10 +1454,41 @@ impl Engine {
             self.nudge = None;
             self.step = 0;
             self.arp_counter = 0;
+            if self.settings.mode == Mode::Phrase {
+                self.start_phrase(self.phrase_start_unit());
+            }
         } else if !want && self.running {
             self.running = false;
             self.drop_pending_ons();
+            if self.settings.mode == Mode::Phrase {
+                self.stop_phrase();
+            }
         }
+    }
+
+    /// The clock tick at engine frame `frame`: the transport's while it
+    /// plays, else the engine's own.
+    fn clock_tick(&self, frame: f64) -> f64 {
+        match self.sync {
+            Some(s) => s.anchor_tick as f64 + (frame - s.anchor_frame) / self.frames_per_tick(),
+            None => self.free_tick + (frame - self.free_frame) / self.frames_per_tick(),
+        }
+    }
+
+    /// The engine frame of clock tick `t`, to the nearest whole frame.
+    fn clock_frame(&self, t: f64) -> f64 {
+        match self.sync {
+            Some(_) => self.frame_of(t),
+            None => self.free_frame + ((t - self.free_tick) * self.frames_per_tick()).round(),
+        }
+    }
+
+    /// Moves the engine's own clock's anchor to now, where it is, before
+    /// the tempo or the transport changes.
+    fn anchor_free(&mut self) {
+        let t = self.clock_tick(self.now as f64);
+        self.free_frame = self.now as f64;
+        self.free_tick = t;
     }
 
     fn velocity_of(&self, played: u8) -> u8 {
@@ -1440,7 +1533,7 @@ impl Engine {
         let gate = self.live.gate;
         self.tied = 0.0;
         match self.settings.mode {
-            Mode::Direct => {}
+            Mode::Direct | Mode::Phrase => {}
             Mode::Repeat => {
                 let hit = self.pushed_hit(Hit::plain(gate));
                 self.chord(&sorted[..n], hit, at, len)
@@ -1656,9 +1749,20 @@ impl Engine {
         for k in 0..r {
             let start = at + sub * f64::from(k);
             let extra = if k + 1 == r { self.tied } else { 0.0 };
-            self.queue_at(start, EventKind::On { note, velocity });
-            self.queue_at(start + on_for + extra, EventKind::Off { note });
+            self.queue_note(start, start + on_for + extra, note, velocity);
         }
+    }
+
+    /// Queues a note whole or not at all: it starts only when its ending
+    /// has a place in the queue too, so a full queue leaves a note out and
+    /// never leaves one hanging.
+    fn queue_note(&mut self, at: f64, off: f64, note: u8, velocity: u8) {
+        if self.queued + 2 > MAX_PENDING {
+            self.overflow += 2;
+            return;
+        }
+        self.queue_at(at, EventKind::On { note, velocity });
+        self.queue_at(off, EventKind::Off { note });
     }
 
     /// How many tie steps follow pattern step `step` (wrapping, but never
@@ -1742,12 +1846,12 @@ mod tests {
     use super::*;
     use crate::pattern::BUILT_IN;
 
-    const SR: u32 = 48_000;
+    pub(super) const SR: u32 = 48_000;
     /// A sixteenth at 120 bpm and 48 kHz.
-    const STEP: u64 = 6_000;
+    pub(super) const STEP: u64 = 6_000;
 
     /// Absolute (frame, event) list from running `frames` frames in blocks.
-    fn run(e: &mut Engine, frames: u64, block: u32) -> Vec<(u64, EventKind)> {
+    pub(super) fn run(e: &mut Engine, frames: u64, block: u32) -> Vec<(u64, EventKind)> {
         let mut out = Events::new();
         let mut got = Vec::new();
         let mut done = 0;
@@ -1765,7 +1869,7 @@ mod tests {
         got
     }
 
-    fn ons(events: &[(u64, EventKind)]) -> Vec<(u64, u8)> {
+    pub(super) fn ons(events: &[(u64, EventKind)]) -> Vec<(u64, u8)> {
         events
             .iter()
             .filter_map(|(t, k)| match k {
@@ -1775,7 +1879,7 @@ mod tests {
             .collect()
     }
 
-    fn engine(mode: Mode) -> Engine {
+    pub(super) fn engine(mode: Mode) -> Engine {
         let mut e = Engine::new(SR, 120.0);
         e.set_settings(Settings {
             mode,
@@ -2264,7 +2368,7 @@ mod tests {
         assert!(out.dropped > 0 || e.overflow > 0);
     }
 
-    fn notes_of(e: &mut Engine, steps: u64) -> Vec<u8> {
+    pub(super) fn notes_of(e: &mut Engine, steps: u64) -> Vec<u8> {
         ons(&run(e, STEP * steps, 128))
             .into_iter()
             .map(|(_, n)| n)
@@ -2785,16 +2889,16 @@ mod tests {
     /// A stretch of transport time: from engine frame `from`, tick
     /// `tick` is on frame `from` and the tempo is `bpm`.
     #[derive(Clone, Copy)]
-    struct Span {
-        from: u64,
-        tick: i64,
-        bpm: f64,
-        playing: bool,
-        jumped: bool,
-        swing: Option<(u32, u8)>,
+    pub(super) struct Span {
+        pub(super) from: u64,
+        pub(super) tick: i64,
+        pub(super) bpm: f64,
+        pub(super) playing: bool,
+        pub(super) jumped: bool,
+        pub(super) swing: Option<(u32, u8)>,
     }
 
-    fn span(from: u64, tick: i64, bpm: f64) -> Span {
+    pub(super) fn span(from: u64, tick: i64, bpm: f64) -> Span {
         Span {
             from,
             tick,
@@ -2809,7 +2913,7 @@ mod tests {
     /// cut where a span starts, and each piece gets its own `sync`.
     /// `press` events are applied at their frames (which must be period
     /// boundaries in every block size used).
-    fn run_synced(
+    pub(super) fn run_synced(
         e: &mut Engine,
         spans: &[Span],
         press: &[(u64, u8)],
@@ -3038,14 +3142,14 @@ mod tests {
         assert_eq!(ons(&got), [(4 * STEP, 1), (8 * STEP, 1)]);
     }
 
-    fn wheel(m: Modifier) -> Modifier {
+    pub(super) fn wheel(m: Modifier) -> Modifier {
         Modifier {
             source: ModSource::ModWheel,
             ..m
         }
     }
 
-    fn on_velocities(events: &[(u64, EventKind)]) -> Vec<u8> {
+    pub(super) fn on_velocities(events: &[(u64, EventKind)]) -> Vec<u8> {
         events
             .iter()
             .filter_map(|(_, k)| match k {

@@ -22,6 +22,9 @@
 //! [`Effect::SynthPads`]; the audio loop applies them. The pads panel's
 //! Chromatic | In key switch ([`App::synth_pick_layout`]) and the PAD BANK
 //! buttons picking a bank's layout ([`App::synth_bank`]) change them too.
+//! The scale is also the key a phrase follows In key
+//! (`docs/dev/design/arpeggiator.md`, "Phrases"), so the effect is made in
+//! one place, [`App::pads_changed`], which tells every track's arp.
 //!
 //! They are the song's (Jay, 13 Nov): kept in the project's "synth" part
 //! ([`App::synth_settings`], put back by [`App::open_synth`]), not in
@@ -161,6 +164,16 @@ impl App {
     /// if any, and the owner's own scales (name, notes up, notes down).
     pub fn scale_offers(&self) -> (Option<Scale>, &[(String, u16, u16)]) {
         (self.synth_pads.scale, &self.custom_scales)
+    }
+
+    /// The pads' settings changed: the effect that hands them to the
+    /// synth. Every change goes out through here, so the arps hear of the
+    /// pads' key with it ([`App::send_key`]: a phrase In key follows the
+    /// scale the pads play). A way to change the pads that built the
+    /// effect itself would leave a phrase in the old key.
+    fn pads_changed(&mut self) -> Effect {
+        self.send_key();
+        Effect::SynthPads(self.synth_pads)
     }
 
     /// The Scale row's choices: 0 is Off, then the built-in scales but
@@ -393,7 +406,7 @@ impl App {
             return Vec::new();
         }
         self.project_edit = true;
-        vec![Effect::SynthPads(self.synth_pads)]
+        vec![self.pads_changed()]
     }
 
     /// The Instrument row's choices for a track: Kit, the other tracks'
@@ -698,7 +711,7 @@ impl App {
         } else {
             format!("pads: Chromatic ({scale} lit)")
         };
-        vec![Effect::SynthPads(self.synth_pads), Effect::Tell(line)]
+        vec![self.pads_changed(), Effect::Tell(line)]
     }
 
     /// The pads take bank `bank`'s layout (0 = A to 7 = H): the PAD BANK
@@ -709,7 +722,7 @@ impl App {
             return Vec::new();
         }
         self.synth_pads.bank = bank;
-        vec![Effect::SynthPads(self.synth_pads)]
+        vec![self.pads_changed()]
     }
 
     /// The "synth" settings: the Synth tab's options and each bank's
@@ -759,7 +772,7 @@ impl App {
         }
         (self.pad_scale_pick, self.pad_scale_root) = (0, 0);
         let (notes, _) = self.restore_synth(s);
-        (notes, vec![Effect::SynthPads(self.synth_pads)])
+        (notes, vec![self.pads_changed()])
     }
 
     /// Puts back the Synth tab's options from `s` (words as
@@ -864,7 +877,7 @@ impl App {
         let fx = if s.is_empty() {
             Vec::new()
         } else {
-            vec![Effect::SynthPads(self.synth_pads)]
+            vec![self.pads_changed()]
         };
         (notes, fx)
     }
