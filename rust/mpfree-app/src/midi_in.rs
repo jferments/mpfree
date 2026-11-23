@@ -163,6 +163,17 @@ fn expr_key(e: mpfree_midi::mpe::Expr) -> Key {
 /// The tracks a route may name (`mpfree_midi::setup::ROUTE_TRACKS`).
 const ROUTE_TRACKS: usize = mpfree_midi::setup::ROUTE_TRACKS;
 
+/// The synths routes may name at once (the instrument redesign's step
+/// 11e, `instruments::ROUTE_SYNTHS`).
+pub const ROUTE_SYNTHS: usize = crate::instruments::ROUTE_SYNTHS;
+
+/// Where a route that names a synth (step 11e) comes in: the `j`th of
+/// [`MusicIn::route_synths`] comes as a routed key ([`MusicIn::take_routed`])
+/// on track `SYNTH_ROUTES + j`, past every track a route may name.
+pub const SYNTH_ROUTES: u8 = ROUTE_TRACKS as u8;
+
+const _: () = assert!(ROUTE_TRACKS + ROUTE_SYNTHS <= u8::MAX as usize);
+
 /// Where each routed key went down: played on its own track at once, or
 /// with the armed track's keys (its track was armed then). Its note-off and
 /// pressure follow it there, even if the armed track changed while it was
@@ -623,6 +634,14 @@ pub struct MusicIn {
     /// Keys a route sends to its track, whichever track is armed, until
     /// the app takes them ([`MusicIn::take_routed`]).
     routed: Vec<(u8, Key)>,
+    /// The synths the routes name (step 11e), each once, in the order of
+    /// the routes, by the project's instrument number: the `j`th plays
+    /// as track [`SYNTH_ROUTES`] + `j`.
+    route_synths: [Option<u32>; ROUTE_SYNTHS],
+    /// Routes left out for naming a synth past [`ROUTE_SYNTHS`] others.
+    synth_routes_left: usize,
+    /// The setup changed `route_synths` since the app took them.
+    route_synths_new: bool,
     /// The pedals each port holds down and where they went, so that
     /// unplugging it lets them up there.
     pedals: Vec<PedalDown>,
@@ -712,6 +731,9 @@ impl MusicIn {
             note_offs: false,
             about: vec![String::new(); MAX_PORTS],
             routed: Vec::with_capacity(ROUTED_KEYS),
+            route_synths: [None; ROUTE_SYNTHS],
+            synth_routes_left: 0,
+            route_synths_new: false,
             pedals: Vec::new(),
             thru: Vec::with_capacity(THRU_MSGS),
             thru_dropped: 0,
@@ -799,6 +821,14 @@ impl MusicIn {
     /// track is armed), each with its track, from 0.
     pub fn take_routed(&mut self) -> std::vec::Drain<'_, (u8, Key)> {
         self.routed.drain(..)
+    }
+
+    /// The synths the project's routes name (step 11e), by the project's
+    /// instrument number, once each time the setup changes them: the keys
+    /// of the `j`th come on track [`SYNTH_ROUTES`] + `j`
+    /// ([`MusicIn::take_routed`]).
+    pub fn take_route_synths(&mut self) -> Option<[Option<u32>; ROUTE_SYNTHS]> {
+        std::mem::take(&mut self.route_synths_new).then_some(self.route_synths)
     }
 
     /// Controller mode's plan, once each time the setup changes it (None
@@ -1106,15 +1136,26 @@ impl MusicIn {
             // Routes to tracks, on this run's port numbers: a route whose
             // port hasn't been plugged in yet waits for it (plugging a
             // port in applies the setup again).
+            // A route that names a synth (step 11e) plays as a track past
+            // the tracks, one for each synth named, up to ROUTE_SYNTHS;
+            // the routes past them are left out, and said.
+            let (synths, left) = route_synths_of(&m.setup);
+            self.route_synths_new |= synths != self.route_synths;
+            self.route_synths = synths;
+            self.synth_routes_left = left;
             let ports = &self.ports;
             let routed = &mut self.routed;
             self.router.set_routes(
                 m.setup.routes.iter().filter_map(|r| {
                     let id = ports.all().iter().find(|p| p.name == r.port)?.id;
+                    let track = match r.synth {
+                        Some(n) => SYNTH_ROUTES + synths.iter().position(|s| *s == Some(n))? as u8,
+                        None => r.track,
+                    };
                     Some(Route {
                         port: PortFilter::One(id),
                         channel: r.channel.map_or(ChanFilter::Omni, ChanFilter::One),
-                        track: r.track,
+                        track,
                         blocks: r.blocks,
                     })
                 }),
@@ -1539,6 +1580,7 @@ impl MusicIn {
             // else, however many routes and thru name its channel. They
             // hear it as it came, before any route's blocks.
             let mut took = false;
+            let route_synths = self.route_synths;
             self.router.feed(port, b, 0, |e| match e {
                 In::Seen { msg, .. } => seen = Some(msg),
                 // The port's "Ignore coming in": listed, nothing else.
@@ -1584,8 +1626,16 @@ impl MusicIn {
                     // its notes, pedals and wheels. Its other CCs (a knob)
                     // nothing takes yet.
                     if let In::Routed { track, msg, .. } = other {
+                        // A route that names a synth (step 11e) says it.
+                        let went = match track
+                            .checked_sub(SYNTH_ROUTES)
+                            .and_then(|j| route_synths.get(usize::from(j)).copied().flatten())
+                        {
+                            Some(id) => To::Synth { id },
+                            None => To::Routed { track },
+                        };
                         to = if key(msg).is_some() {
-                            To::Routed { track }
+                            went
                         } else {
                             To::Nothing
                         };
@@ -1593,7 +1643,7 @@ impl MusicIn {
                         // Its bend and pressure (after its note, which
                         // they may come with).
                         match mpe.msg(msg, &mut |e| routed.push((track, expr_key(e)))) {
-                            Took::Expr => to = To::Routed { track },
+                            Took::Expr => to = went,
                             Took::Zone(z) => zone_said = Some(z),
                             Took::No => {}
                         }
@@ -1795,6 +1845,12 @@ impl MusicIn {
                 mpfree_midi::setup::MAX_LEARNED
             ));
         }
+        if self.synth_routes_left > 0 {
+            lines.push(format!(
+                "Routing: {} routes to synths left out ({ROUTE_SYNTHS} synths can have routes at once)",
+                self.synth_routes_left
+            ));
+        }
         if self.thru_dropped > 0 {
             lines.push(format!(
                 "Thru: {} messages dropped (more than {THRU_MSGS} in a period)",
@@ -1928,6 +1984,26 @@ fn passed(e: In, thru: &mut Vec<Passed>, dropped: &mut u64) {
 }
 
 /// A route's notes and controllers as keys, with the track they play.
+/// The synths `setup`'s routes name (step 11e), each once, in the order
+/// of the routes, up to [`ROUTE_SYNTHS`]; and how many routes name one
+/// past them (left out).
+pub fn route_synths_of(
+    setup: &mpfree_midi::setup::MidiSetup,
+) -> ([Option<u32>; ROUTE_SYNTHS], usize) {
+    let mut synths = [None; ROUTE_SYNTHS];
+    let mut left = 0;
+    for id in setup.routes.iter().filter_map(|r| r.synth) {
+        if synths.contains(&Some(id)) {
+            continue;
+        }
+        match synths.iter_mut().find(|s| s.is_none()) {
+            Some(s) => *s = Some(id),
+            None => left += 1,
+        }
+    }
+    (synths, left)
+}
+
 fn routed_key(e: In, routed: &mut Vec<(u8, Key)>) {
     let In::Routed { track, msg, .. } = e else {
         return;
@@ -2298,6 +2374,91 @@ mod tests {
         assert!(passed(&mut m).is_empty());
     }
 
+    /// A route that names a synth (the instrument redesign's step 11e)
+    /// plays as a track past the tracks, one for each synth named (two
+    /// routes to the same synth share one), and the monitor says the
+    /// synth; the app takes the synths once each time they change. A
+    /// fifth synth's route is left out, and said.
+    #[test]
+    fn a_route_that_names_a_synth_plays_it_and_the_monitor_says_so() {
+        use mpfree_midi::blocks::Blocks;
+        use mpfree_midi::setup::{TrackRoute, DIN_NAME};
+        let mut m = MusicIn::new();
+        let io = model();
+        let route = |channel: u8, synth: u32| TrackRoute {
+            port: DIN_NAME.to_string(),
+            channel: Some(channel),
+            track: 0,
+            synth: Some(synth),
+            blocks: Blocks::NONE,
+        };
+        {
+            let mut v = io.lock().unwrap();
+            v.setup.routes = vec![route(0, 7), route(1, 7), route(2, 1)];
+            v.gen += 1;
+        }
+        m.sync(&io, 0.5);
+        assert_eq!(m.take_route_synths(), Some([Some(7), Some(1), None, None]));
+        assert_eq!(m.take_route_synths(), None, "once");
+        let _ = run(&mut m, DIN, &[0x90, 60, 90, 0x91, 62, 80, 0x92, 64, 70]);
+        let r = SYNTH_ROUTES;
+        assert_eq!(
+            m.take_routed().collect::<Vec<_>>(),
+            vec![
+                (
+                    r,
+                    Key::Down {
+                        note: 60,
+                        velocity: 90
+                    }
+                ),
+                (
+                    r,
+                    Key::Down {
+                        note: 62,
+                        velocity: 80
+                    }
+                ),
+                (
+                    r + 1,
+                    Key::Down {
+                        note: 64,
+                        velocity: 70
+                    }
+                ),
+            ]
+        );
+        m.sync(&io, 0.75);
+        {
+            let v = io.lock().unwrap();
+            let went: Vec<To> = v.monitor.newest().map(|(_, l)| l.to).collect();
+            assert!(went.contains(&To::Synth { id: 7 }), "{went:?}");
+            assert!(went.contains(&To::Synth { id: 1 }), "{went:?}");
+        }
+        // Five synths named: the last route is left out, and said.
+        {
+            let mut v = io.lock().unwrap();
+            v.setup.routes = (0..5).map(|k| route(k, 10 + u32::from(k))).collect();
+            v.gen += 1;
+        }
+        m.sync(&io, 1.0);
+        assert_eq!(
+            m.take_route_synths(),
+            Some([Some(10), Some(11), Some(12), Some(13)])
+        );
+        // (The keys still held on the old routes end there.)
+        let _ = m.take_routed();
+        let _ = run(&mut m, DIN, &[0x94, 60, 90]);
+        assert_eq!(m.take_routed().count(), 0, "channel 5's route is left out");
+        assert!(
+            m.summary()
+                .iter()
+                .any(|l| l.contains("1 routes to synths left out")),
+            "{:?}",
+            m.summary()
+        );
+    }
+
     /// A route's blocks shape what it plays and its Split leaves the rest
     /// of the keys to the armed track; the port's own blocks shape the
     /// armed track's keys; Learn hears a knob as it came, even one the
@@ -2314,6 +2475,7 @@ mod tests {
                 port: DIN_NAME.to_string(),
                 channel: Some(9),
                 track: 40,
+                synth: None,
                 blocks: Blocks::parse("split 36 47; transpose 12").unwrap(),
             }];
             v.setup.set_port(DIN_NAME, |p| {
@@ -2377,12 +2539,14 @@ mod tests {
                     port: DIN_NAME.to_string(),
                     channel: Some(9),
                     track: 40,
+                    synth: None,
                     blocks: mpfree_midi::blocks::Blocks::NONE,
                 },
                 TrackRoute {
                     port: "Keystep 37".to_string(),
                     channel: None,
                     track: 2,
+                    synth: None,
                     blocks: mpfree_midi::blocks::Blocks::NONE,
                 },
             ];
@@ -2537,6 +2701,7 @@ mod tests {
                 port: "Keystep 37".to_string(),
                 channel: None,
                 track: 2,
+                synth: None,
                 blocks: mpfree_midi::blocks::Blocks::NONE,
             }];
             v.gen += 1;
@@ -2939,6 +3104,7 @@ mod tests {
                 port: mpfree_midi::setup::DIN_NAME.to_string(),
                 channel: Some(3),
                 track: 5,
+                synth: None,
                 blocks: Default::default(),
             }];
             v.gen += 1;
@@ -2987,6 +3153,7 @@ mod tests {
                 port: "Keystep 37".to_string(),
                 channel: Some(3),
                 track: 5,
+                synth: None,
                 blocks: Default::default(),
             }];
             v.gen += 1;

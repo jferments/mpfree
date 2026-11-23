@@ -106,8 +106,35 @@ pub const HOLDERS: usize = TRACKS + FREE;
 /// start ends where it started when they move on. They never hold one.
 pub const THE_PADS: usize = HOLDERS;
 
-/// Every row: the holders, then the pads.
-const WHO: usize = HOLDERS + 1;
+/// The most synths the pads play at once (the instrument redesign's step
+/// 11a, layers): what they play ([`THE_PADS`]) and as many again less one
+/// by the layer players ([`layer`]).
+pub const PAD_LAYERS: usize = 4;
+
+/// The pads' layer `i` beyond the first (from 0, up to [`PAD_LAYERS`] -
+/// 2), as a player: like [`THE_PADS`], it plays a held instrument by a
+/// send ([`Instruments::set_layer`]), and its notes end where they
+/// started.
+pub const fn layer(i: usize) -> usize {
+    THE_PADS + 1 + i
+}
+
+/// The most synths MIDI routes name at once (the instrument redesign's
+/// step 11e): a keyboard's route can play a synth no track plays, by a
+/// route row ([`routed`]).
+pub const ROUTE_SYNTHS: usize = mpfree_midi::setup::ROUTE_SYNTHS;
+
+/// Route row `j` (from 0, below [`ROUTE_SYNTHS`]), as a player: the synth
+/// the `j`th synth a MIDI route names (step 11e), played by a send as
+/// the pads' layers are ([`Instruments::set_routed`]), so its notes end
+/// where they started.
+pub const fn routed(j: usize) -> usize {
+    THE_PADS + PAD_LAYERS + j
+}
+
+/// Every row: the holders, then the pads, then their layers, then the
+/// route rows.
+const WHO: usize = HOLDERS + PAD_LAYERS + ROUTE_SYNTHS;
 
 /// Free place `n`'s holder number (from 0).
 pub const fn free(n: usize) -> usize {
@@ -408,13 +435,14 @@ impl Instruments {
         self.slot(self.owner(track)?)
     }
 
-    /// Track `track` (or the pads, [`THE_PADS`]) plays holder `to`'s
-    /// instrument from now on (None: the pads again; the pads: nothing).
-    /// `to` is another track or a free place. The notes it left sounding
-    /// on the old one end first. Refused while the track has its own
-    /// instrument, and when `to` has none. Never allocates.
+    /// Track `track` (or the pads, [`THE_PADS`], or one of their layers,
+    /// [`layer`]) plays holder `to`'s instrument from now on (None: the
+    /// pads again; the pads and their layers: nothing). `to` is another
+    /// track or a free place. The notes it left sounding on the old one
+    /// end first. Refused while the track has its own instrument, and when
+    /// `to` has none. Never allocates.
     pub fn set_send(&mut self, track: usize, to: Option<usize>) -> Result<(), SendRefused> {
-        let player = track < TRACKS || track == THE_PADS;
+        let player = track < TRACKS || (THE_PADS..WHO).contains(&track);
         if !player || to.is_some_and(|t| t >= HOLDERS) {
             return Err(SendRefused::NoTrack);
         }
@@ -582,6 +610,39 @@ impl Instruments {
     /// The holder whose instrument the pads play, if they play one here.
     pub fn pads_play_at(&self) -> Option<usize> {
         self.owner(THE_PADS)
+    }
+
+    /// The pads' layer `i` (step 11a, [`layer`]) plays holder `to`'s
+    /// instrument from now on (None: nothing), the notes it left sounding
+    /// on the old one ending first. False (nothing changes) when `to`
+    /// holds none, or past the layers.
+    pub fn set_layer(&mut self, i: usize, to: Option<usize>) -> bool {
+        i + 1 < PAD_LAYERS && self.set_send(layer(i), to).is_ok()
+    }
+
+    /// The holder whose instrument the pads' layer `i` plays.
+    pub fn layer_at(&self, i: usize) -> Option<usize> {
+        (i + 1 < PAD_LAYERS).then(|| self.owner(layer(i))).flatten()
+    }
+
+    /// Route row `j` (step 11e, [`routed`]) plays holder `to`'s
+    /// instrument from now on (None: nothing), the notes it left sounding
+    /// on the old one ending first. False (nothing changes) when `to`
+    /// holds none, or past the rows.
+    pub fn set_routed(&mut self, j: usize, to: Option<usize>) -> bool {
+        j < ROUTE_SYNTHS && self.set_send(routed(j), to).is_ok()
+    }
+
+    /// The holder whose instrument route row `j` plays.
+    pub fn routed_at(&self, j: usize) -> Option<usize> {
+        (j < ROUTE_SYNTHS).then(|| self.owner(routed(j))).flatten()
+    }
+
+    /// Whether player `who` (a track, the pads or a layer) holds key
+    /// `note` on the instrument it plays (a keyboard's, the arp's), so
+    /// its let-go has a note to end there.
+    pub fn key_held(&self, who: usize, note: u8) -> bool {
+        note < 128 && self.keys.get(who).is_some_and(|k| k >> note & 1 == 1)
     }
 
     /// A slot to lend track `track`: an idle one (no instrument, nothing
@@ -1142,6 +1203,16 @@ impl Instruments {
         if let Some(o) = self.pads_play_at() {
             parts.push(format!("the pads play {}", whose(o)));
         }
+        for l in 0..PAD_LAYERS - 1 {
+            if let Some(o) = self.layer_at(l) {
+                parts.push(format!("pads layer {} plays {}", l + 2, whose(o)));
+            }
+        }
+        for j in 0..ROUTE_SYNTHS {
+            if let Some(o) = self.routed_at(j) {
+                parts.push(format!("MIDI route {} plays {}", j + 1, whose(o)));
+            }
+        }
         let locks = self.locks.describe();
         if parts.is_empty() && self.refused == 0 && self.cut == 0 && locks.is_none() {
             return None;
@@ -1450,6 +1521,83 @@ mod tests {
         assert_eq!(i.set_send(5, None), Ok(()));
         assert!(i.take_out(place));
         assert_eq!((i.held_free(), i.count()), (0, 0));
+    }
+
+    /// Step 11a: the pads' layers. Each layer player plays a held
+    /// instrument by a send, as the pads' own does, so one hit sounds on
+    /// each strip; a layer that moves on ends the notes it left there, and
+    /// a key's let-go finds its own. Only holders with an instrument, and
+    /// only the layers there are.
+    #[test]
+    fn the_pads_layers_play_each_hit_on_each_strip_and_end_where_they_started() {
+        let mut i = Instruments::new(RATE, BLOCK);
+        let (a, b) = (free(0), free(1));
+        let (sa, sb) = (
+            crate::mixing::free_channel(0),
+            crate::mixing::free_channel(1),
+        );
+        assert!(!i.set_layer(0, Some(b)), "nothing there yet");
+        for h in [a, b] {
+            i.put(h, hum(), chromatic_from(60), &Tuning::standard())
+                .unwrap();
+        }
+        assert!(i.pads_play(Some(a)));
+        assert!(i.set_layer(0, Some(b)));
+        assert!(!i.set_layer(PAD_LAYERS - 1, Some(b)), "past the layers");
+        assert_eq!((i.layer_at(0), i.layer_at(1)), (Some(b), None));
+        assert!(i.describe().unwrap().contains("pads layer 2 plays free 2"));
+        // One hit, each strip.
+        i.pad_on(THE_PADS, 0, 100, 0);
+        i.pad_on(layer(0), 0, 100, 0);
+        let t = render_levels(&mut i);
+        assert_eq!((level(&t, sa), level(&t, sb)), (0.5, 0.5));
+        i.pad_off(THE_PADS, 0, 0);
+        i.pad_off(layer(0), 0, 0);
+        let t = render_levels(&mut i);
+        assert_eq!((level(&t, sa), level(&t, sb)), (0.0, 0.0));
+        // A held key; the layer moves to A: the key's note ends on B.
+        assert!(i.note_on(layer(0), 64, 100, 0));
+        assert!(i.key_held(layer(0), 64) && !i.key_held(THE_PADS, 64));
+        assert!(i.set_layer(0, Some(a)));
+        assert!(!i.key_held(layer(0), 64), "ended where it started");
+        let t = render_levels(&mut i);
+        assert_eq!(level(&t, sb), 0.0);
+        // Taken out: the layer plays nothing.
+        assert!(i.take_out(a));
+        assert_eq!((i.layer_at(0), i.pads_play_at()), (None, None));
+        assert!(!i.pad_on(layer(0), 0, 100, 0));
+        assert_eq!(i.stats(b).stray_offs, 0);
+    }
+
+    /// A MIDI route that names a synth (step 11e) plays it on a route row
+    /// by a send, as a layer does: a key sounds on the synth's strip, ends
+    /// there when the row moves on, and nothing plays once it is taken
+    /// out. Only the rows there are.
+    #[test]
+    fn a_route_row_plays_the_synth_its_route_names() {
+        let mut i = Instruments::new(RATE, BLOCK);
+        let (a, b) = (free(0), free(1));
+        let sb = crate::mixing::free_channel(1);
+        assert!(!i.set_routed(0, Some(b)), "nothing there yet");
+        for h in [a, b] {
+            i.put(h, hum(), chromatic_from(60), &Tuning::standard())
+                .unwrap();
+        }
+        assert!(i.set_routed(0, Some(b)));
+        assert!(!i.set_routed(ROUTE_SYNTHS, Some(b)), "past the rows");
+        assert_eq!((i.routed_at(0), i.routed_at(1)), (Some(b), None));
+        assert!(i.describe().unwrap().contains("MIDI route 1 plays free 2"));
+        assert!(i.note_on(routed(0), 64, 100, 0));
+        let t = render_levels(&mut i);
+        assert!(level(&t, sb) > 0.0, "heard on its strip");
+        assert!(i.set_routed(0, Some(a)));
+        assert!(!i.key_held(routed(0), 64), "ended where it started");
+        let t = render_levels(&mut i);
+        assert_eq!(level(&t, sb), 0.0);
+        assert!(i.take_out(a));
+        assert_eq!(i.routed_at(0), None);
+        assert!(!i.note_on(routed(0), 64, 100, 0));
+        assert_eq!(i.stats(b).stray_offs, 0);
     }
 
     /// Where a track is heard while it plays an instrument, for a clip's

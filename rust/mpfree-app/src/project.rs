@@ -20,6 +20,7 @@
 //! | `arp` | the arps | `App::arp_part` | `App::open_arp` |
 //! | `perform` | the Perform set (`perform_pads.rs`) | `PerformSet::text` | `PerformSet::parse`, then `App::set_perform_set` |
 //! | `pads` | what the pads play (`app/pads_focus.rs`): the selected track's instrument, or one chosen for them | `App::pads_part` | `App::open_pads`; none (New, or saved before it) follows the track |
+//! | `pad-layers` | the synths the pads play beyond the first (`app/pad_layers.rs`), written only while there are some | `App::pad_layers_part` | `App::open_pad_layers`, after the pads part; none: one synth |
 //! | `audiotracks` | the audio tracks | [`audio_part`]: each track's settings and regions, a WAV a take in `samples/` | [`audio_open`] on a thread, then [`crate::audiotracks::TrackHost::open`] |
 //!
 //! The project's tempo is `project.txt`'s `tempo`, and its format
@@ -79,6 +80,10 @@ pub const INSTRUMENT_LIST: &str = "instrument-list";
 /// What the pads play: the selected track's instrument, or one chosen for
 /// them (`App::pads_part`, the instrument redesign's step 3).
 pub const PADS: &str = "pads";
+/// The synths the pads play beyond the first (`App::pad_layers_part`, the
+/// instrument redesign's step 11a): a part of its own, so a build from
+/// before reads the pads part and plays the first only.
+pub const PAD_LAYERS: &str = "pad-layers";
 /// The Song view's audio tracks and their takes ([`audio_part`]).
 pub const AUDIOTRACKS: &str = "audiotracks";
 
@@ -140,8 +145,14 @@ pub const SYNTHS_WITHOUT_TRACKS: &str = "synths-without-tracks";
 /// The clips part is `mpfree-clips 3` too, which such a build doesn't
 /// read; the line says it in words before anything is read.
 pub const AUDIO_TRACKS: &str = "audio-tracks";
+/// A project whose song list is linked to its song, or whose song's
+/// markers carry their sections' scenes and passes (the Arrange
+/// refactor's phase 4b): an older build would show the list empty and
+/// lose them. The clips part is `mpfree-clips 4` too, which such a build
+/// doesn't read; the line says it in words before anything is read.
+pub const LINKED_SONG_LIST: &str = "linked-song-list";
 /// The features this build has, of those a project can need.
-pub const KNOWN_NEEDS: &[&str] = &[SYNTHS_WITHOUT_TRACKS, AUDIO_TRACKS];
+pub const KNOWN_NEEDS: &[&str] = &[SYNTHS_WITHOUT_TRACKS, AUDIO_TRACKS, LINKED_SONG_LIST];
 
 // ------------------------------------------------------------ the loop's side
 
@@ -168,6 +179,9 @@ pub struct Collected {
     /// What the pads play ([`crate::app::App::pads_part`]); not saved
     /// when empty.
     pub pads: String,
+    /// The pads' layers beyond the first
+    /// ([`crate::app::App::pad_layers_part`]); not saved when empty.
+    pub pad_layers: String,
     /// The Looper's loops with their layers' audio (read as they play:
     /// [`crate::looping::LoopHost::save`]); None when the looper couldn't
     /// save. Freed on the screen thread.
@@ -225,6 +239,9 @@ pub struct Opening {
     /// What the pads play (the pads part); None (New, or a project saved
     /// before it had one): they follow the selected track.
     pub pads: Option<String>,
+    /// The pads' layers beyond the first (the pad layers part); None: one
+    /// synth.
+    pub pad_layers: Option<String>,
     /// Lines for the log: parts that didn't read.
     pub notes: Vec<String>,
     /// What of the project's was left out (an effect or instrument this
@@ -312,6 +329,9 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
     if !c.pads.is_empty() {
         parts.push((PADS.to_string(), c.pads.clone()));
     }
+    if !c.pad_layers.is_empty() {
+        parts.push((PAD_LAYERS.to_string(), c.pad_layers.clone()));
+    }
     parts.extend(extra);
     let mut extra = vec![
         (FORMAT_KEY.to_string(), FORMAT.to_string()),
@@ -323,6 +343,9 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
     }
     if c.clips.tracks.iter().any(mpfree_seq::Track::is_audio) {
         needs.push(AUDIO_TRACKS);
+    }
+    if c.clips.arrangement.uses_sections() {
+        needs.push(LINKED_SONG_LIST);
     }
     if !needs.is_empty() {
         extra.push((NEEDS_KEY.to_string(), needs.join(" ")));
@@ -424,6 +447,7 @@ fn part_words(part: &str) -> String {
         TRACK_KITS => "list of what its tracks play",
         INSTRUMENT_LIST => "list of instruments",
         PADS => "pads settings",
+        PAD_LAYERS => "pads' layers",
         AUDIOTRACKS => "audio tracks",
         other => other,
     };
@@ -731,6 +755,7 @@ pub fn opening(
         sends,
         instrument_list,
         pads: snap.part(PADS).map(str::to_string),
+        pad_layers: snap.part(PAD_LAYERS).map(str::to_string),
         notes,
         left_out,
         what: what.to_string(),
@@ -938,23 +963,41 @@ pub fn audio_part(mut saved: mpfree_audiotracks::save::Saved) -> (String, Vec<Ta
 /// there. The files can be big: run it off the screen thread. A take whose
 /// sound can't be read, or isn't the take's, is left out with the regions
 /// playing it, and a line says so (and the third list).
+///
+/// With `streams` (takes play from their files, phase 3b), a take's sound
+/// isn't read: its file's header is checked and the take opens as its
+/// file ([`mpfree_audiotracks::host::AudioHost::load`]). Takes recorded
+/// at another rate, and a second take of one recording, are still read.
+///
+/// Takes recorded at another rate are converted to `rate`
+/// ([`mpfree_audiotracks::save::Saved::convert`]), so they play at their
+/// own speed and pitch, and a line says so; with `streams` the host then
+/// writes each to a file of its own and plays it from there.
 pub fn audio_open(
     text: &str,
     rate: u32,
+    streams: bool,
     find: impl Fn(&str) -> Result<std::path::PathBuf, String>,
 ) -> Result<Read<mpfree_audiotracks::save::Saved>, String> {
     let mut saved = mpfree_audiotracks::save::from_text(text)?;
     let mut notes = Vec::new();
     let mut left = Vec::new();
-    if saved.rate != rate {
+    let converts = saved.rate != rate;
+    if converts {
         notes.push(format!(
-            "project: the audio tracks were recorded at {} Hz and play at {rate} Hz, so they sound off-speed",
+            "project: the audio tracks were recorded at {} Hz; their takes were converted to {rate} Hz to play at their own speed",
             saved.rate
         ));
     }
     let mut gone = Vec::new();
+    let headers_only = streams && saved.rate == rate;
+    let mut recs = std::collections::HashSet::new();
     saved.takes.retain_mut(|k| {
         let got = find(&k.file).and_then(|path| {
+            if headers_only && recs.insert(k.rec) {
+                return mpfree_audiotracks::streaming::check_file(&path, k.channels, k.frames, rate)
+                    .map(|()| (Vec::new(), path));
+            }
             let (audio, ch, _) = std::fs::read(&path)
                 .map_err(|e| e.to_string())
                 .and_then(|b| mpfree_audiotracks::save::from_wav(&b))?;
@@ -986,6 +1029,11 @@ pub fn audio_open(
         for t in &mut saved.tracks {
             t.regions.retain(|r| !gone.contains(&r.take));
         }
+    }
+    if converts {
+        // Each take read whole (none by its header only): converted, and
+        // the regions playing it scaled with it.
+        saved.convert(rate);
     }
     Ok((saved, notes, left))
 }
@@ -2755,6 +2803,7 @@ mod tests {
             track_kits,
             instrument_list: InstrumentList::new().text(),
             pads: String::new(),
+            pad_layers: String::new(),
             loops: None,
             audio: None,
         };
@@ -2806,6 +2855,7 @@ mod tests {
             track_kits,
             instrument_list,
             pads: String::new(),
+            pad_layers: String::new(),
             loops: None,
             audio: None,
         }
@@ -3063,7 +3113,7 @@ mod tests {
     /// Phase 1a: a project with an audio track says it needs audio
     /// tracks, so an older build doesn't open it as an empty note track;
     /// with a synth in a free place too, the line names both, and this
-    /// build opens it.
+    /// build opens it. A linked song list (Arrange 4b) says it needs one.
     #[test]
     fn a_project_with_an_audio_track_says_it_needs_audio_tracks() {
         let needs = |c: &Collected| {
@@ -3087,6 +3137,19 @@ mod tests {
         c.instruments = format!("{INSTRUMENTS_FORMAT}\nfree 1 mpfree.fm\n");
         let (snap, line) = needs(&c);
         assert_eq!(line.as_deref(), Some("synths-without-tracks audio-tracks"));
+        assert_eq!(check(&snap), Ok(FORMAT));
+        // Arrange 4b: a linked song list, or a marker with its section's
+        // passes, says so too.
+        let mut c = collected(String::new(), InstrumentList::new().text());
+        c.clips.arrangement.list.linked = true;
+        assert_eq!(needs(&c).1.as_deref(), Some(LINKED_SONG_LIST));
+        c.clips.arrangement.list.linked = false;
+        c.clips.arrangement.markers = vec![mpfree_seq::Marker {
+            passes: 2,
+            ..mpfree_seq::Marker::new(0, "Verse")
+        }];
+        let (snap, line) = needs(&c);
+        assert_eq!(line.as_deref(), Some(LINKED_SONG_LIST));
         assert_eq!(check(&snap), Ok(FORMAT));
     }
 
@@ -3451,6 +3514,7 @@ mod tests {
                 track_kits: String::new(),
                 instrument_list: InstrumentList::new().text(),
                 pads: String::new(),
+                pad_layers: String::new(),
                 loops: None,
                 audio: None,
             };
@@ -3488,6 +3552,7 @@ mod tests {
             track_kits: String::new(),
             instrument_list: InstrumentList::new().text(),
             pads: String::new(),
+            pad_layers: String::new(),
             loops: None,
             audio: None,
         };
@@ -3522,6 +3587,24 @@ mod tests {
         )
         .unwrap();
         assert_eq!(o.pads, None, "a new project follows the track");
+        assert_eq!(o.pad_layers, None);
+    }
+
+    /// The pads' layers (the instrument redesign's step 11a): a part of
+    /// their own, only while there are some, so the pads part stays as an
+    /// older build reads it.
+    #[test]
+    fn the_pads_layers_are_a_part_of_their_own() {
+        let mut c = collected(String::new(), InstrumentList::new().text());
+        c.pads = "mpfree-pads 1\nplay instrument 2\n".into();
+        let snap = snapshot(&c, Vec::new());
+        assert_eq!(snap.part(PAD_LAYERS), None, "none: no part");
+        c.pad_layers = "mpfree-pad-layers 1\nlayer instrument 3\n".into();
+        let snap = snapshot(&c, Vec::new());
+        assert_eq!(snap.part(PADS), Some(c.pads.as_str()));
+        assert_eq!(snap.part(PAD_LAYERS), Some(c.pad_layers.as_str()));
+        let o = opening(&snap, 44_100, "a test", &crate::plugins::Plugins::none()).unwrap();
+        assert_eq!(o.pad_layers.as_deref(), Some(c.pad_layers.as_str()));
     }
 
     /// A project saved before Drums was track 1's strip plays its clips'
@@ -3566,6 +3649,7 @@ mod tests {
                 track_kits: String::new(),
                 instrument_list: InstrumentList::new().text(),
                 pads: String::new(),
+                pad_layers: String::new(),
                 loops: None,
                 audio: None,
             };
@@ -3655,6 +3739,7 @@ mod tests {
                 track_kits: String::new(),
                 instrument_list: InstrumentList::new().text(),
                 pads: String::new(),
+                pad_layers: String::new(),
                 loops: None,
                 audio: None,
             };
@@ -3691,6 +3776,7 @@ mod tests {
             track_kits: String::new(),
             instrument_list: InstrumentList::new().text(),
             pads: String::new(),
+            pad_layers: String::new(),
             loops: None,
             audio: None,
         };
@@ -3782,6 +3868,13 @@ mod tests {
         };
         assert_eq!((file, audio.len(), *channels), (&named, 800, 2));
         assert!(text.contains(&vocal) && text.contains(&named), "{text}");
+        // The library knows them as takes, by name and in the part, so it
+        // can move them to the Trash once no kept save names them.
+        let in_part: Vec<&str> = mpfree_library::project::take_files(&text).collect();
+        assert_eq!(in_part, [vocal.as_str(), named.as_str(), vocal.as_str()]);
+        assert!(in_part
+            .iter()
+            .all(|f| mpfree_library::project::is_take_file(f)));
         // The project's samples/ as a save leaves it.
         std::fs::write(dir.join(&named), wav(audio, 2, 44_100)).unwrap();
         let find = |f: &str| {
@@ -3792,7 +3885,7 @@ mod tests {
                 Err("not there".to_string())
             }
         };
-        let (back, notes, left) = audio_open(&text, 44_100, find).unwrap();
+        let (back, notes, left) = audio_open(&text, 44_100, false, find).unwrap();
         assert!(notes.is_empty() && left.is_empty(), "{notes:?}");
         assert_eq!(back.takes.len(), 3);
         assert_eq!(back.takes[0].audio, a);
@@ -3807,8 +3900,9 @@ mod tests {
         let recs: Vec<u128> = back.takes.iter().map(|k| k.rec.0).collect();
         assert_eq!(recs, vec![0x100, 0x101, 0x102]);
         // Take 1's file gone: it is left out with its region, and said;
-        // another rate is said too (not left out: the takes are there).
-        let (back, notes, left) = audio_open(&text, 48_000, |f| {
+        // another rate is said too (not left out: the takes are there,
+        // converted to the rate they play at).
+        let (back, notes, left) = audio_open(&text, 48_000, false, |f| {
             if f == named {
                 Err("gone".into())
             } else {
@@ -3818,7 +3912,17 @@ mod tests {
         .unwrap();
         assert_eq!(back.takes.len(), 2);
         assert_eq!(back.tracks[0].regions, vec![region(0, 960, 0)]);
-        assert!(notes[0].contains("44100 Hz"), "{notes:?}");
+        assert!(
+            notes[0].contains("recorded at 44100 Hz") && notes[0].contains("converted to 48000 Hz"),
+            "{notes:?}"
+        );
+        assert_eq!(back.rate, 48_000);
+        // 400 frames at 44.1 kHz are 435 at 48 kHz.
+        assert!(back.takes.iter().all(|k| k.frames == 435
+            && k.audio.len() == 435
+            && k.path.is_none()
+            && k.file.is_empty()
+            && k.rec == RecordingId::NONE));
         assert!(
             notes[1].starts_with("project: a take of audio 1 wasn't opened"),
             "{notes:?}"
@@ -3827,7 +3931,7 @@ mod tests {
         // A file that isn't the take's sound (another length) is refused.
         let short = dir.join("short.wav");
         std::fs::write(&short, wav(&a[..100], 1, 44_100)).unwrap();
-        let (back, notes, _) = audio_open(&text, 44_100, |f| {
+        let (back, notes, _) = audio_open(&text, 44_100, false, |f| {
             if f == vocal {
                 Ok(short.clone())
             } else {
@@ -3837,7 +3941,35 @@ mod tests {
         .unwrap();
         assert_eq!(back.takes.len(), 1);
         assert!(notes.iter().all(|n| n.contains("not this take's sound")));
-        assert!(audio_open("nope", 44_100, find).is_err());
+        // Takes playing from their files: no sound is read, each file is
+        // checked by its header, and one of another length is refused.
+        let (back, notes, left) = audio_open(&text, 44_100, true, find).unwrap();
+        assert!(notes.is_empty() && left.is_empty(), "{notes:?}");
+        assert_eq!(back.takes.len(), 3);
+        assert!(back
+            .takes
+            .iter()
+            .all(|k| k.audio.is_empty() && k.path.is_some()));
+        let (back, notes, _) = audio_open(&text, 44_100, true, |f| {
+            if f == vocal {
+                Ok(short.clone())
+            } else {
+                find(f)
+            }
+        })
+        .unwrap();
+        assert_eq!(back.takes.len(), 1);
+        assert!(notes.iter().all(|n| n.contains("frames")), "{notes:?}");
+        // At another rate their sound is read and converted, with no file
+        // holding it: the host writes each to a file of its own.
+        let (back, notes, left) = audio_open(&text, 48_000, true, find).unwrap();
+        assert_eq!((notes.len(), left.len()), (1, 0), "{notes:?}");
+        assert_eq!(back.takes.len(), 3);
+        assert!(back
+            .takes
+            .iter()
+            .all(|k| k.frames == 435 && k.audio.len() == 435 * k.channels && k.path.is_none()));
+        assert!(audio_open("nope", 44_100, false, find).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

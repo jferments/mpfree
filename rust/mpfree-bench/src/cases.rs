@@ -25,12 +25,14 @@ use mpfree_play::{Ahead, Launch, Out, PlayView, Player, Sink, TrackArps};
 use mpfree_prof::alloc;
 use mpfree_prof::budget::MPC;
 use mpfree_sampler::dsp::{Filter, FilterKind};
-use mpfree_sampler::engine::{Engine, EngineView, Event};
+use mpfree_sampler::engine::{Engine, EngineView, Event, GRAIN_BUDGET};
+use mpfree_sampler::grain_share::RESERVE;
 use mpfree_sampler::model::*;
 use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
 use mpfree_seq::{Clip, Lock, Note, Project as Song, Quantise, Speed, Track};
 use mpfree_synth::params::{
-    OSC1_LEVEL, OSC1_WAVE, OSC2_LEVEL, OSC2_WAVE, POLYPHONY, UNISON, VOICE_MODE, WAVE_TABLE,
+    DIST, DRIVE, OSC1_LEVEL, OSC1_POS, OSC1_WARP, OSC1_WARP_MODE, OSC1_WAVE, OSC2_LEVEL, OSC2_WAVE,
+    POLYPHONY, UNISON, VOICE_MODE, WAVE_TABLE,
 };
 use mpfree_synth::wavetable::params as wt;
 use mpfree_synth::{
@@ -623,6 +625,123 @@ fn pluck(preset: &str, rate: u32, voices: usize) -> Case {
     }
 }
 
+/// What a sampler case may trade away to keep going (sampler plan step
+/// 10). Anything else it trades fails the bench run, as the case ends.
+#[derive(Clone, Copy, Default)]
+struct Allow {
+    /// Voices taken over for new hits (a pad past its polyphony, a full
+    /// pool): normal playing, which the status board never hears of.
+    steals: bool,
+    /// Grains thinned, faded or held back for the grain budget.
+    grains: bool,
+    /// A core late with its voices (lane cases on real threads).
+    late: bool,
+}
+
+/// A bench case's sampler engine, checked as its case ends against what
+/// it may trade ([`Allow`]). Its counts go to a status board as the app
+/// sends them, and [`Board::unexpected`](mpfree_status::Board::unexpected)
+/// names what was shown that the case doesn't allow: notes dropped and
+/// voices given up always fail, grains thinned and a skipped part of the
+/// sound unless allowed, and steals unless allowed. The check runs when
+/// the case is dropped, after it is counted, so it costs the counts
+/// nothing.
+struct Watched {
+    e: Engine,
+    name: String,
+    allow: Allow,
+}
+
+impl Watched {
+    fn new(e: Engine, name: &str, allow: Allow) -> Self {
+        Self {
+            e,
+            name: name.to_string(),
+            allow,
+        }
+    }
+
+    /// The trades the case made that it may not, with how many.
+    fn unexpected(&self) -> Vec<String> {
+        use mpfree_status::{kinds, Board, Report, SETTLE_ON};
+        let st = self.e.stats();
+        let a = self.allow;
+        let mut board = Board::new();
+        let t0 = std::time::Instant::now();
+        for (kind, n) in [
+            (&kinds::NOTES_DROPPED, st.dropped_events),
+            (&kinds::VOICES_GIVEN_UP, st.culls),
+            (&kinds::SOUND_SKIPPED, st.lane_late),
+        ] {
+            if n > 0 {
+                let times = u32::try_from(n).unwrap_or(u32::MAX);
+                board.apply(Report::happened(kind, times), t0);
+            }
+        }
+        let thinned = [
+            st.skipped_grains,
+            st.crowded_frames,
+            st.faded_grains,
+            st.held_back_clouds,
+        ];
+        if thinned.iter().any(|&n| n > 0) {
+            board.apply(Report::began(&kinds::GRAINS_THINNED), t0);
+            board.tick(t0 + SETTLE_ON);
+        }
+        let mut allowed = Vec::new();
+        if a.grains {
+            allowed.push(&kinds::GRAINS_THINNED);
+        }
+        if a.late {
+            allowed.push(&kinds::SOUND_SKIPPED);
+        }
+        let mut bad: Vec<String> = board
+            .unexpected(&allowed)
+            .into_iter()
+            .map(|k| match k.id {
+                "sound/grains-thinned" => format!("{} {thinned:?}", k.title),
+                _ => {
+                    let n = board
+                        .raw()
+                        .iter()
+                        .find(|v| v.kind == k)
+                        .map_or(0, |v| v.times);
+                    format!("{}: {n}", k.title)
+                }
+            })
+            .collect();
+        if st.steals > 0 && !a.steals {
+            bad.push(format!("Voices stolen: {}", st.steals));
+        }
+        bad
+    }
+}
+
+impl std::ops::Deref for Watched {
+    type Target = Engine;
+    fn deref(&self) -> &Engine {
+        &self.e
+    }
+}
+
+impl std::ops::DerefMut for Watched {
+    fn deref_mut(&mut self) -> &mut Engine {
+        &mut self.e
+    }
+}
+
+impl Drop for Watched {
+    fn drop(&mut self) {
+        let bad = self.unexpected();
+        if !bad.is_empty() && !std::thread::panicking() {
+            panic!(
+                "{}: the sampler traded away what this case may not: {bad:?}",
+                self.name
+            );
+        }
+    }
+}
+
 /// Which of the sampler case's pads are set. The hits are the same in
 /// every case (a hit on an unset pad does nothing), so the two parts add
 /// up to the whole.
@@ -642,7 +761,16 @@ enum SamplerPads {
 /// every 4 blocks (about 11 a second), and optionally the master grain
 /// effect.
 fn sampler(name: &str, rate: u32, master: bool, which: SamplerPads) -> Case {
-    let mut e = sampler_engine(rate, master, which, 24, |_| true);
+    let allow = Allow {
+        steals: true,
+        grains: true,
+        ..Allow::default()
+    };
+    let mut e = Watched::new(
+        sampler_engine(rate, master, which, 24, |_| true),
+        name,
+        allow,
+    );
     let mut hits = SamplerHits::new();
     Case {
         name: name.to_string(),
@@ -765,6 +893,12 @@ fn drum_kit(name: &str, rate: u32, voices: usize, sixteen: bool) -> Case {
     }
     let mut e = Engine::new(rate, voices);
     e.set_view(EngineView::build(&p, rate));
+    // Each hit pushes out the oldest voice of its pad.
+    let allow = Allow {
+        steals: true,
+        ..Allow::default()
+    };
+    let mut e = Watched::new(e, name, allow);
     let mut b0 = 0u64;
     Case {
         name: name.to_string(),
@@ -802,6 +936,11 @@ fn drum_kits(name: &str, rate: u32, voices: usize, kits: usize) -> Case {
     for k in 0..kits {
         e.set_kit_view(k, EngineView::build(&p, rate));
     }
+    let allow = Allow {
+        steals: true,
+        ..Allow::default()
+    };
+    let mut e = Watched::new(e, name, allow);
     let mut b0 = 0u64;
     Case {
         name: name.to_string(),
@@ -1420,6 +1559,48 @@ pub fn all(rate: u32) -> Vec<Case> {
             )
         }));
     }
+    // The voices the DSP quality plan's first limits are judged on (step
+    // 0.4, docs/dev/design/dsp-quality.md): hard sync on Poly's Table wave
+    // and on Wavetable (step 1.1, against "Poly Table Init" and "Wavetable
+    // Init"), and Poly's per-voice drive and distortion (step 2.1, against
+    // "Poly Init"), each at 8 voices.
+    v.push(measured(|| {
+        synth(
+            "Poly Table, 8 voices, sync 50".to_string(),
+            rate,
+            &[
+                (OSC1_WAVE, WAVE_TABLE as f32),
+                (OSC1_POS, 100.0),
+                (OSC1_WARP_MODE, 2.0),
+                (OSC1_WARP, 50.0),
+            ],
+            8,
+        )
+    }));
+    v.push(measured(|| {
+        chords(
+            "Wavetable Init, 8 voices, sync 50".to_string(),
+            rate,
+            Box::new(Wavetable::new(rate)),
+            &[
+                (wt::osc_id(0, wt::POSITION), 100.0),
+                (wt::osc_id(0, wt::WARP_MODE), 2.0),
+                (wt::osc_id(0, wt::WARP), 50.0),
+            ],
+            Some(wt::POLYPHONY),
+            8,
+        )
+    }));
+    for (name, id) in [("drive", DRIVE), ("distortion", DIST)] {
+        v.push(measured(|| {
+            synth(
+                format!("Poly Init, 8 voices, {name} 24 dB"),
+                rate,
+                &[(id, 24.0)],
+                8,
+            )
+        }));
+    }
     // FM: a six-operator keys sound, a brass with feedback 7, and a lead
     // whose operators play the triangle, saw and square (the waves' loop).
     for (name, voices) in [("Glass Keys", 8), ("Brass Section", 16), ("Reed Lead", 8)] {
@@ -1493,6 +1674,7 @@ pub fn all(rate: u32) -> Vec<Case> {
             SamplerPads::Grains,
         )
     }));
+    v.extend(grain_worst_cases(rate));
     v.push(measured(|| {
         effect(
             "Multi filter (LP 12)",
@@ -2003,6 +2185,18 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(arrange_step));
     v.push(measured(arrange_save));
     v.push(measured(song_view_frame));
+    for what in [
+        RollFrame::Built,
+        RollFrame::BuiltPressure,
+        RollFrame::Plays,
+        RollFrame::Scrolled,
+        RollFrame::Zoomed,
+        RollFrame::Switched,
+    ] {
+        v.push(measured(|| roll_frame(what)));
+    }
+    v.push(measured(|| note_edit(NoteEditCase::VelocityAndUndo)));
+    v.push(measured(|| note_edit(NoteEditCase::TransposeAll)));
     v.push(measured(|| live_arps(rate, 4)));
     v.push(measured(|| live_arps(rate, 16)));
     v.push(measured(|| looper(rate, 60)));
@@ -2017,6 +2211,11 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| stream_voices(rate, 64, Read::Sinc16, 1.5)));
     v.push(measured(|| stream_voices(rate, 16, Read::Sinc8, 1.0)));
     v.push(measured(|| song(rate)));
+    // The DSP quality plan's fixed test projects (step 0.6), each through
+    // the whole chain.
+    for name in crate::projects::ALL {
+        v.push(measured(|| crate::projects::case(name, rate)));
+    }
     v
 }
 
@@ -2426,9 +2625,16 @@ pub fn scaling(rate: u32) -> Vec<Scaling> {
 /// cost. The other settings are the round 7 granular pads' (pitch spray,
 /// spread, scan).
 fn held_grains(rate: u32, grains: usize) -> Case {
-    let mut e = grain_engine(rate, grains);
+    let name = format!("Sampler grains x{grains}");
+    // The top point asks for the whole budget, past the room sharing keeps
+    // for a new hit, so it thins.
+    let allow = Allow {
+        grains: grains + RESERVE > GRAIN_BUDGET,
+        ..Allow::default()
+    };
+    let mut e = Watched::new(grain_engine(rate, grains), &name, allow);
     Case {
-        name: format!("Sampler grains x{grains}"),
+        name,
         module: "sampler",
         what: "4 granular pads held, grains alive in all",
         block: Box::new(move |b, l, r| {
@@ -2443,6 +2649,204 @@ fn held_grains(rate: u32, grains: usize) -> Case {
         }),
         mem_bytes: 0,
     }
+}
+
+/// What a grain worst case turns on (sampler plan step 13).
+#[derive(Clone, Copy, Default)]
+struct Worst {
+    /// A band pass on every grain, its cutoff sprayed (`GrainFilter`).
+    filters: bool,
+    /// Pitched up 7 semitones, so every grain takes the clean
+    /// (band-limited) read.
+    clean: bool,
+    /// Each grain's pitch sprayed over 12 semitones either way: grains at
+    /// many speeds, those up past two semitones on the clean read.
+    pitch_spray: bool,
+    /// The master Grains FX over everything, dense.
+    master: bool,
+}
+
+/// How often a grain worst case lets go of one of its pads and hits it
+/// again, in blocks (about 0.3 s), so new hits, ringing tails and the room
+/// made for them come round all the time.
+const WORST_RETRIGGER: u64 = 100;
+
+/// A grain worst case (sampler plan step 13): `pads` granular pads held
+/// (two voices each, so a let-go rings out under the next hit), together
+/// asking for more grains at once than the engine's budget, so the whole
+/// budget plays and the sharing of step 9 works every block; every
+/// [`WORST_RETRIGGER`] blocks the next pad is let go and hit again.
+/// `w` turns on the costly grain features. Five pads: 100 ms grains, 640 a
+/// second, each wanting the 64 a voice keeps. More pads: the 400 ms, 150 a
+/// second clouds of the sharing tests.
+fn grain_worst(name: &str, rate: u32, pads: usize, w: Worst, lane: Option<LaneConfig>) -> Case {
+    let split = lane.is_some();
+    let mut e = grain_worst_engine(name, rate, pads, w, lane);
+    Case {
+        name: name.to_string(),
+        module: "sampler",
+        what: "granular pads held over the grain budget, one re-hit every 0.3 s",
+        block: Box::new(move |b, l, r| {
+            grain_worst_hits(&mut e, b, pads);
+            if split {
+                e.render_until(l, r, Instant::now() + lane_wait());
+            } else {
+                l.fill(0.0);
+                r.fill(0.0);
+                e.render(l, r);
+            }
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// A [`grain_worst`] case's hits for block `b`: every pad at the start,
+/// then the next pad let go and hit again every [`WORST_RETRIGGER`]
+/// blocks.
+fn grain_worst_hits(e: &mut Engine, b: u64, pads: usize) {
+    if b == 0 {
+        for pad in 0..pads {
+            e.apply(Event::NoteOn {
+                pad: pad as u8,
+                velocity: 100,
+            });
+        }
+    } else if b.is_multiple_of(WORST_RETRIGGER) {
+        let pad = ((b / WORST_RETRIGGER) % pads as u64) as u8;
+        e.apply(Event::NoteOff { pad });
+        e.apply(Event::NoteOn { pad, velocity: 100 });
+    }
+}
+
+/// The engine behind a [`grain_worst`] case, checked for its trades as it
+/// ends.
+fn grain_worst_engine(
+    name: &str,
+    rate: u32,
+    pads: usize,
+    w: Worst,
+    lane: Option<LaneConfig>,
+) -> Watched {
+    let s = Source::new("worst", rate, 2, bench_sound(rate as usize * 4, false)).expect("source");
+    if w.clean || w.pitch_spray {
+        // Made now, so every grain finds them (a long sound's copies are
+        // otherwise made on their own thread).
+        s.make_octaves();
+    }
+    let mut p = Project::new();
+    p.add_source(s.clone());
+    for i in 0..pads {
+        let mut r = Region::whole(&s);
+        r.mode = PlayMode::Granular;
+        let (size_ms, density) = if pads <= 5 {
+            (100.0, 640.0)
+        } else {
+            (400.0, 150.0)
+        };
+        r.grain = GrainParams {
+            position: i as f32 / pads as f32,
+            spray: 0.5,
+            size_ms,
+            density,
+            spread: 1.0,
+            pitch: if w.clean { 7.0 } else { 0.0 },
+            pitch_spray: if w.pitch_spray { 12.0 } else { 0.0 },
+            filter: if w.filters {
+                mpfree_sampler::model::GrainFilter {
+                    kind: mpfree_sampler::model::GrainFilterKind::Band,
+                    cutoff_hz: 1_500.0,
+                    resonance: 0.5,
+                    spray: 1.0,
+                }
+            } else {
+                mpfree_sampler::model::GrainFilter::default()
+            },
+            ..GrainParams::default()
+        };
+        let mut pad = Pad::new("g", Layer::new(r));
+        pad.polyphony = 2;
+        p.set_pad(i, Some(pad), None).expect("pad");
+    }
+    let mut e = Engine::new(rate, 2 * pads);
+    if w.master {
+        e.set_master_fx(Engine::make_master_fx(rate));
+        p.set_master(
+            MasterFx {
+                mix: 0.5,
+                grain: GrainParams {
+                    density: 200.0,
+                    size_ms: 150.0,
+                    spray: 0.3,
+                    ..MasterFx::default().grain
+                },
+            },
+            None,
+        )
+        .expect("master");
+    }
+    e.set_view(EngineView::build(&p, rate));
+    // Crowded by design. Each pad's let-go rings out until its next hit
+    // comes round, so the re-hit takes over no voice.
+    let allow = Allow {
+        grains: true,
+        late: lane.as_ref().is_some_and(|c| c.threaded),
+        ..Allow::default()
+    };
+    if let Some(config) = lane {
+        e.split(config);
+    }
+    Watched::new(e, name, allow)
+}
+
+/// The grain worst cases on one core, for every bench run, the
+/// instruction gate and the golden fingerprints (sampler plan step 13).
+fn grain_worst_cases(rate: u32) -> Vec<Case> {
+    let all = Worst {
+        filters: true,
+        clean: true,
+        pitch_spray: true,
+        master: true,
+    };
+    [
+        ("Grains worst: 5 pads", Worst::default(), 5),
+        (
+            "Grains worst: 5 pads, grain filters",
+            Worst {
+                filters: true,
+                ..Worst::default()
+            },
+            5,
+        ),
+        (
+            "Grains worst: 5 pads, clean read",
+            Worst {
+                clean: true,
+                ..Worst::default()
+            },
+            5,
+        ),
+        (
+            "Grains worst: 5 pads, pitch spray",
+            Worst {
+                pitch_spray: true,
+                ..Worst::default()
+            },
+            5,
+        ),
+        (
+            "Grains worst: 5 pads + Grains FX",
+            Worst {
+                master: true,
+                ..Worst::default()
+            },
+            5,
+        ),
+        ("Grains worst: 5 pads, everything", all, 5),
+        ("Grains worst: 64 clouds sharing", Worst::default(), 64),
+    ]
+    .into_iter()
+    .map(|(name, w, pads)| measured(|| grain_worst(name, rate, pads, w, None)))
+    .collect()
 }
 
 /// The engine behind [`held_grains`].
@@ -2523,12 +2927,14 @@ fn held_pads(rate: u32, n: usize, up: bool, sixteen: bool) -> Case {
     }
     let mut e = Engine::new(rate, n.max(1));
     e.set_view(EngineView::build(&p, rate));
+    let name = format!(
+        "Sampler x{n} held{}{}",
+        if up { " up" } else { "" },
+        if sixteen { ", 16-bit sound" } else { "" }
+    );
+    let mut e = Watched::new(e, &name, Allow::default());
     Case {
-        name: format!(
-            "Sampler x{n} held{}{}",
-            if up { " up" } else { "" },
-            if sixteen { ", 16-bit sound" } else { "" }
-        ),
+        name,
         module: "sampler",
         what: if up {
             "looping pads held down, pitched up"
@@ -2600,8 +3006,10 @@ fn moving_pads(rate: u32, n: usize) -> Case {
     }
     let mut e = Engine::new(rate, n.max(1));
     e.set_view(EngineView::build(&p, rate));
+    let name = format!("Sampler x{n} held, LFO and pitch envelope");
+    let mut e = Watched::new(e, &name, Allow::default());
     Case {
-        name: format!("Sampler x{n} held, LFO and pitch envelope"),
+        name,
         module: "sampler",
         what: "looping pads held down, each with an LFO and a pitch envelope",
         block: Box::new(move |b, l, r| {
@@ -2670,6 +3078,7 @@ fn new_filter_pads(rate: u32, n: usize, kind: FilterKind, drive_db: f32) -> Case
             "looping pads held down through a vowel filter, its envelope moving",
         ),
     };
+    let mut e = Watched::new(e, &name, Allow::default());
     Case {
         name,
         module: "sampler",
@@ -2732,11 +3141,13 @@ fn filtered_pads(rate: u32, n: usize, ringing: bool) -> Case {
     }
     let mut e = Engine::new(rate, n.max(1));
     e.set_view(EngineView::build(&p, rate));
+    let name = format!(
+        "Sampler x{n} {}",
+        if ringing { "ringing" } else { "filtered" }
+    );
+    let mut e = Watched::new(e, &name, Allow::default());
     Case {
-        name: format!(
-            "Sampler x{n} {}",
-            if ringing { "ringing" } else { "filtered" }
-        ),
+        name,
         module: "sampler",
         what: if ringing {
             "filtered pads held, ringing out on silence"
@@ -3198,13 +3609,29 @@ pub fn off_the_audio_path(c: &Case) -> bool {
 /// blocks than the rest ([`blocks_for`]).
 pub const BIG_SONG: &str = "Arrange: ";
 
+/// What the note editor's transpose of every note in a full clip is
+/// called (piano roll plan 0C.3). Its edit takes every note out and puts
+/// them back one at a time, in the clip and in the joined take, about a
+/// second a block on a desktop today, so it counts and times as few
+/// blocks as the big-song cases ([`blocks_for`]).
+pub const BIG_EDIT: &str = "Note editor: 8,192 notes, all picked";
+
+/// Whether `c` counts and times far fewer blocks than the rest: the
+/// big-song cases ([`BIG_SONG`]) and the note editor's biggest edit
+/// ([`BIG_EDIT`]).
+pub fn big(c: &Case) -> bool {
+    c.name.starts_with(BIG_SONG) || c.name.starts_with(BIG_EDIT)
+}
+
 /// Blocks to warm up for and then count, of `blocks` asked for: an engine
 /// counts every one after 50; the control half's step cases and the
 /// screen's cases a tenth of them after 5, since a step edit or a frame
-/// costs far more a block than an engine and the same every block; the big-song cases one in 200 (at least one)
-/// after one, since a block of theirs is billions of instructions.
+/// costs far more a block than an engine and the same every block; the
+/// big cases ([`big`]: the big song's and the note editor's biggest edit)
+/// one in 200 (at least one) after one, since a block of theirs is
+/// billions of instructions.
 pub fn blocks_for(c: &Case, blocks: u64) -> (u64, u64) {
-    if c.name.starts_with(BIG_SONG) {
+    if big(c) {
         (1, (blocks / 200).max(1))
     } else if off_the_audio_path(c) {
         (5, (blocks / 10).max(1))
@@ -3589,6 +4016,309 @@ fn song_view_frame() -> Case {
             r.fill(0.0);
             l[0] = drawn.len() as f32;
             r[0] = page.first_bar as f32;
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// What a piano roll case does each frame (piano roll plan 0C.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RollFrame {
+    /// A new copy of the clip each frame (the clip changed): the roll
+    /// built again from its notes and drawn.
+    Built,
+    /// The same, every note with a run of pad pressure.
+    BuiltPressure,
+    /// The playhead moved while the clip plays: only it moves.
+    Plays,
+    /// Two bars shown, scrolled on a sixteenth each frame, as a finger on
+    /// the ruler does.
+    Scrolled,
+    /// Zoomed a step each frame from a bar across the roll to the whole
+    /// clip and back, as a pinch does.
+    Zoomed,
+    /// Two full clips shown in turn, a frame each: the Sequencer's clip
+    /// switched, each keeping its own view.
+    Switched,
+}
+
+/// What [`roll_page`] sets up: the screen, the time page, its state, a
+/// canvas and the two clips' edit pictures.
+type RollPage = (
+    mpfree_ui::Ui,
+    mpfree_time_ui::view::TimePage,
+    mpfree_time_ui::view::TimeState,
+    mpfree_ui::SoftCanvas,
+    [Box<mpfree_time_ui::view::EditInfo>; 2],
+);
+
+/// The note editor's page on the full clip of [`step_song`] (8,192 notes,
+/// 8 bars), as the Sequencer shows it: the transport playing, the editor
+/// open with its drawer closed, painted once. With `pressure`, every note
+/// has a run of pad pressure (as many points each as the clip holds,
+/// [`mpfree_seq::MAX_TOUCH_POINTS`]); with `two`, slot 1 holds a copy.
+fn roll_page(pressure: bool, two: bool) -> RollPage {
+    use mpfree_play::Takes;
+    use mpfree_seq::TouchPoint;
+    use mpfree_time_ui::editor::Editor;
+    use mpfree_time_ui::view::{self as tv, EditInfo, TimePage, TimeState, TransportInfo};
+    use mpfree_ui::widgets::{Header, Label};
+    use mpfree_ui::{Align, Fonts, SoftCanvas, Theme, Tone, Ui};
+    use std::sync::Arc;
+    let (mut song, launches) = step_song();
+    if pressure {
+        let c = song.tracks[0].slots[0].as_mut().expect("the clip");
+        let each = (mpfree_seq::MAX_TOUCH_POINTS / c.notes.len()).clamp(1, 8);
+        for k in 0..c.notes.len() {
+            let len = c.notes[k].len.max(1) as u32;
+            let run: Vec<TouchPoint> = (0..each)
+                .map(|j| TouchPoint {
+                    at: len * j as u32 / each as u32,
+                    value: (40 + 80 * j / each) as u8,
+                })
+                .collect();
+            let t = c.add_touch(&run).expect("room for the pressure");
+            c.notes[k].touch = t;
+        }
+    }
+    if two {
+        let copy = song.tracks[0].slots[0].clone();
+        song.tracks[0].slots[1] = copy;
+    }
+    let playing = TransportInfo {
+        state: mpfree_transport::State::Playing,
+        ..TransportInfo::default()
+    };
+    let st = TimeState::from_engine(playing, &song, &launches, Some(0), &Takes::default());
+    let bar = 4 * i64::from(PPQ);
+    let info = |slot: usize, rev: u64| {
+        let clip = song.clip(0, slot).expect("the clip");
+        Box::new(EditInfo {
+            editor: Editor::new(0, slot, clip),
+            clip: Arc::new(clip.clone()),
+            rev,
+            track_name: "Keys".into(),
+            bar,
+            answer: Default::default(),
+        })
+    };
+    let infos = [info(0, 1), info(if two { 1 } else { 0 }, 2)];
+    let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+    ui.add("header", Header::new(&["Play", "Sequencer"]));
+    ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+    let mut page = TimePage::add_to(&mut ui).expect("the time page");
+    ui.show(tv::CLIPS_PAGE).expect("the clips page");
+    let mut st = st;
+    st.edit = Some(infos[0].clone());
+    let mut canvas = SoftCanvas::new(1280, 800);
+    // The roll gets its size on the first paint, then its opening view.
+    for _ in 0..2 {
+        page.update(&mut ui, &st);
+        ui.paint(&mut canvas);
+    }
+    (ui, page, st, canvas, infos)
+}
+
+/// The piano roll on a full clip of 8,192 notes, a frame a block, as the
+/// screen draws it (piano roll plan 0C.3; see [`RollFrame`]): the page
+/// updated and painted in software at the MPC's size.
+fn roll_frame(what: RollFrame) -> Case {
+    use mpfree_time_ui::editor::NoteGrid;
+    use mpfree_time_ui::view as tv;
+    use std::sync::Arc;
+    let (mut ui, mut page, mut st, mut canvas, infos) = roll_page(
+        what == RollFrame::BuiltPressure,
+        what == RollFrame::Switched,
+    );
+    // The clip's second copy, for a new one each frame.
+    let copies = [infos[0].clip.clone(), Arc::new((*infos[0].clip).clone())];
+    let area = ui.rect_of(tv::NOTES).expect("the roll's area");
+    let (length, bar) = (infos[0].clip.length, infos[0].bar);
+    // Scrolled: two bars across; zoomed: a bar across to the whole clip.
+    let roll = ui
+        .get::<NoteGrid>(tv::NOTES)
+        .map(|g| g.roll_rect(area))
+        .expect("the roll");
+    let roll_w = roll.w;
+    let ppt_of = move |ticks: i64| f64::from(roll_w) / ticks as f64;
+    if let Some(g) = ui.get_mut::<NoteGrid>(tv::NOTES) {
+        if what == RollFrame::Scrolled {
+            g.view = g
+                .view
+                .zoom_time(roll, length, 128, ppt_of(2 * bar), 0.0, roll.x);
+        }
+    }
+    page.update(&mut ui, &st);
+    ui.paint(&mut canvas);
+    let (name, what_text) = match what {
+        RollFrame::Built => (
+            "Piano roll: 8,192 notes, built and drawn",
+            "a new copy of the clip: the roll built again from its notes, updated and painted",
+        ),
+        RollFrame::BuiltPressure => (
+            "Piano roll: 8,192 notes with pressure, built and drawn",
+            "as built and drawn, every note with a run of pad pressure drawn along it",
+        ),
+        RollFrame::Plays => (
+            "Piano roll: 8,192 notes, a frame while it plays",
+            "the playhead moved: the roll's playhead set, the page painted",
+        ),
+        RollFrame::Scrolled => (
+            "Piano roll: 8,192 notes, scrolled a sixteenth a frame",
+            "two bars across, the view moved on a sixteenth, the page updated and painted",
+        ),
+        RollFrame::Zoomed => (
+            "Piano roll: 8,192 notes, zoomed from a bar to the whole clip",
+            "the view zoomed a step from a bar across to the whole clip and back, painted",
+        ),
+        RollFrame::Switched => (
+            "Piano roll: two clips of 8,192 notes, switched each frame",
+            "the other clip shown, its view kept: the roll built again and painted",
+        ),
+    };
+    Case {
+        name: name.to_string(),
+        module: SCREEN,
+        what: what_text,
+        block: Box::new(move |b, l, r| {
+            st.transport.position += i64::from(PPQ) / 8;
+            match what {
+                RollFrame::Built | RollFrame::BuiltPressure => {
+                    if let Some(e) = st.edit.as_mut() {
+                        e.clip = copies[(b % 2) as usize].clone();
+                        e.rev += 1;
+                    }
+                }
+                RollFrame::Plays => {}
+                RollFrame::Scrolled => {
+                    if let Some(g) = ui.get_mut::<NoteGrid>(tv::NOTES) {
+                        let mut v = g.view;
+                        v.start = (b as i64 * STEP) % (length - 2 * bar);
+                        g.view = v.clamped(roll, length, 128);
+                    }
+                }
+                RollFrame::Zoomed => {
+                    // 16 steps each way, a bar across to the whole clip.
+                    let k = (b % 32) as i64;
+                    let k = if k < 16 { k } else { 31 - k };
+                    let ticks = bar + (length - bar) * k / 15;
+                    if let Some(g) = ui.get_mut::<NoteGrid>(tv::NOTES) {
+                        let mid = (length / 2) as f64;
+                        g.view = g.view.zoom_time(
+                            roll,
+                            length,
+                            128,
+                            ppt_of(ticks),
+                            mid,
+                            roll.x + roll.w / 2,
+                        );
+                    }
+                }
+                RollFrame::Switched => st.edit = Some(infos[(b % 2) as usize].clone()),
+            }
+            page.update(&mut ui, &st);
+            let drawn = ui.paint(&mut canvas);
+            l.fill(0.0);
+            r.fill(0.0);
+            let g = ui.get::<NoteGrid>(tv::NOTES);
+            l[0] = drawn.len() as f32;
+            r[0] = g.map_or(0, |g| g.notes.len()) as f32;
+            r[1] = g.map_or(0.0, |g| g.view.ppt) as f32;
+            l[1] = g.map_or(0, |g| g.view.start) as f32;
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// What a note editor edit case does (piano roll plan 0C.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NoteEditCase {
+    /// One picked note's velocity set (a velocity lane drag, one edit on
+    /// the lift), then taken back by UNDO, a block each.
+    VelocityAndUndo,
+    /// Every note picked and transposed a semitone, up then down.
+    TransposeAll,
+}
+
+/// A note editor edit on the full clip of [`step_song`] while it plays,
+/// as `TimeControl::edit` makes it (piano roll plan 0C.3): the edit worked
+/// out (`Editor::act`), made to the clip and the takes (`Takes::edit`, one
+/// undo), the picks found again (`Editor::applied`), and the playing view
+/// edited in place when it fits (`InPlace::fits`) or compiled again. On a
+/// clip this full nothing fits: a velocity change is a note out and one
+/// in, which costs twice the clip's 8,192 notes in place, more than
+/// `IN_PLACE_WORK` (a step tap's one note change fits); a transpose of
+/// every note is 16,384 changes; UNDO always compiles in the app.
+fn note_edit(what: NoteEditCase) -> Case {
+    use mpfree_play::{InPlace, Takes, MAX_IN_PLACE};
+    use mpfree_time_ui::editor::{EditAction, Editor};
+    let (mut song, launches) = step_song();
+    let mut view = step_view(&mut song, &launches);
+    let mut takes = Takes::default();
+    let mut ed = Editor::new(0, 0, song.clip(0, 0).expect("the clip"));
+    let mut changes = [InPlace::EraseNote(Note::new(0, 1, 0, 1)); MAX_IN_PLACE];
+    let (mut in_place, mut compiled) = (0u64, 0u64);
+    let (name, what_text) = match what {
+        NoteEditCase::VelocityAndUndo => (
+            "Note editor: 8,192 notes, a velocity change and its UNDO, until it plays",
+            "a picked note's velocity set, then UNDO, a block each: the view compiled after each",
+        ),
+        NoteEditCase::TransposeAll => (
+            "Note editor: 8,192 notes, all picked and transposed, until it plays",
+            "every note moved a semitone, the picks found again, the view compiled",
+        ),
+    };
+    Case {
+        name: name.to_string(),
+        module: CONTROL,
+        what: what_text,
+        block: Box::new(move |b, l, r| {
+            let undo = what == NoteEditCase::VelocityAndUndo && b % 2 == 1;
+            if undo {
+                takes.undo(&mut song);
+                view = step_view(&mut song, &launches);
+                compiled += 1;
+            } else {
+                let clip = song.clip(0, 0).expect("the clip");
+                let a = match what {
+                    NoteEditCase::VelocityAndUndo => {
+                        ed.sel = vec![(b as usize * 37) % clip.notes.len()];
+                        EditAction::Velocity((b % 64) as f32 / 64.0)
+                    }
+                    NoteEditCase::TransposeAll => {
+                        ed.sel = (0..clip.notes.len()).collect();
+                        EditAction::Row {
+                            row: 7,
+                            delta: if b % 2 == 0 { 1 } else { -1 },
+                        }
+                    }
+                };
+                let done = ed.act(a, clip);
+                assert!(InPlace::count(&done.edit) > 0, "an edit");
+                takes
+                    .edit(&mut song, 0, 0, &done.edit, done.join)
+                    .expect("the edit");
+                let clip = song.clip(0, 0).expect("the clip");
+                ed.applied(clip, &done);
+                let (notes, locks) = (clip.notes.len(), clip.locks.len());
+                let n = InPlace::count(&done.edit);
+                if InPlace::fits(&done.edit, notes, locks) {
+                    for (slot, c) in changes.iter_mut().zip(InPlace::all(&done.edit)) {
+                        *slot = c;
+                    }
+                    assert!(view.edit_in_place(0, 0, &changes[..n]), "in place");
+                    in_place += 1;
+                } else {
+                    view = step_view(&mut song, &launches);
+                    compiled += 1;
+                }
+            }
+            l.fill(0.0);
+            r.fill(0.0);
+            l[0] = song.clip(0, 0).map_or(0, |c| c.notes.len()) as f32;
+            r[0] = view.notes() as f32;
+            l[1] = in_place as f32;
+            r[1] = compiled as f32;
         }),
         mem_bytes: 0,
     }
@@ -4645,6 +5375,38 @@ pub fn lanes(rate: u32, worker: Option<usize>, third: Option<usize>) -> Vec<Case
             )
         }),
         measured(|| {
+            grain_worst(
+                "Grains worst: 5 pads, everything, split, one core",
+                rate,
+                5,
+                Worst {
+                    filters: true,
+                    clean: true,
+                    pitch_spray: true,
+                    master: true,
+                },
+                Some(LaneConfig {
+                    name: "mpfree-bench-ln".into(),
+                    threaded: false,
+                    ..LaneConfig::default()
+                }),
+            )
+        }),
+        measured(|| {
+            grain_worst(
+                "Grains worst: 5 pads, everything, split, 2 cores",
+                rate,
+                5,
+                Worst {
+                    filters: true,
+                    clean: true,
+                    pitch_spray: true,
+                    master: true,
+                },
+                Some(config(false)),
+            )
+        }),
+        measured(|| {
             beside(
                 "Sampler 24 voices + Poly Init 8 voices, 1 core",
                 rate,
@@ -4818,7 +5580,7 @@ impl<E> Part<E> {
 
 /// Half the sampler's pads, with this block's hits.
 struct SamplerPart {
-    e: Engine,
+    e: Watched,
     hits: Option<[Event; 2]>,
 }
 
@@ -4845,9 +5607,19 @@ impl Job for Part<Chords> {
 /// on this thread, which is the same work on one core. Each block waits up
 /// to `wait` for the lane.
 fn split_sampler(name: &str, rate: u32, lane: Option<LaneConfig>, wait: Duration) -> Case {
-    let mut here = sampler_engine(rate, false, SamplerPads::All, 12, |p| p % 2 == 0);
+    // As the sampler case, and a lane on its own core may be late.
+    let allow = Allow {
+        steals: true,
+        grains: true,
+        late: lane.is_some(),
+    };
+    let half = |even: bool| {
+        let e = sampler_engine(rate, false, SamplerPads::All, 12, |p| (p % 2 == 0) == even);
+        Watched::new(e, name, allow)
+    };
+    let mut here = half(true);
     let there = Part::new(SamplerPart {
-        e: sampler_engine(rate, false, SamplerPads::All, 12, |p| p % 2 == 1),
+        e: half(false),
         hits: None,
     });
     let mut lane = match lane {
@@ -4889,7 +5661,16 @@ fn split_sampler(name: &str, rate: u32, lane: Option<LaneConfig>, wait: Duration
 /// choke and steal still seeing all 24. `lane` None: the lane runs on this
 /// thread, which is the same work on one core.
 fn native_split(name: &str, rate: u32, lane: Option<LaneConfig>) -> Case {
-    let mut e = sampler_engine(rate, false, SamplerPads::All, 24, |_| true);
+    let allow = Allow {
+        steals: true,
+        grains: true,
+        late: lane.is_some(),
+    };
+    let mut e = Watched::new(
+        sampler_engine(rate, false, SamplerPads::All, 24, |_| true),
+        name,
+        allow,
+    );
     let config = lane.unwrap_or(LaneConfig {
         name: "mpfree-bench-ln".into(),
         threaded: false,
@@ -4915,7 +5696,16 @@ fn native_split(name: &str, rate: u32, lane: Option<LaneConfig>) -> Case {
 /// (`lane` None), or Poly on a lane beside the sampler. Each block waits up
 /// to `wait` for the lane.
 fn beside(name: &str, rate: u32, lane: Option<LaneConfig>, wait: Duration) -> Case {
-    let mut here = sampler_engine(rate, false, SamplerPads::All, 24, |_| true);
+    let allow = Allow {
+        steals: true,
+        grains: true,
+        ..Allow::default()
+    };
+    let mut here = Watched::new(
+        sampler_engine(rate, false, SamplerPads::All, 24, |_| true),
+        name,
+        allow,
+    );
     let poly = Part::new(Chords::new(
         rate,
         Box::new(Poly::new(rate)),
@@ -5094,7 +5884,7 @@ mod tests {
     #[test]
     fn the_lane_cases_cover_one_core_and_two() {
         let mut cases = lanes(44_100, None, None);
-        assert_eq!(cases.len(), 21);
+        assert_eq!(cases.len(), 23);
         assert!(cases.iter().any(|c| c.name.contains("one core")));
         assert!(cases.iter().any(|c| c.name.contains("2 cores")));
         for c in &mut cases {
@@ -5221,6 +6011,77 @@ mod tests {
     }
 
     #[test]
+    fn the_grain_worst_cases_keep_the_whole_budget_playing() {
+        // Sampler plan step 13: each case asks for more grains than the
+        // budget, so near the budget's worth plays every block, shared out,
+        // and its re-hits sound.
+        let every = Worst {
+            filters: true,
+            clean: true,
+            pitch_spray: true,
+            master: true,
+        };
+        for (w, pads) in [(Worst::default(), 5), (every, 5), (Worst::default(), 64)] {
+            let mut e = grain_worst_engine("test", 44_100, pads, w, None);
+            let (mut l, mut r) = ([0.0f32; 128], [0.0f32; 128]);
+            let (mut least, mut most, mut sum) = (usize::MAX, 0, 0);
+            for b in 0..700u64 {
+                grain_worst_hits(&mut e, b, pads);
+                e.render(&mut l, &mut r);
+                if b >= 200 {
+                    least = least.min(e.live_grains());
+                    most = most.max(e.live_grains());
+                    sum += e.live_grains();
+                }
+            }
+            // About 200 of the 256 play (step 9 keeps room for a new hit
+            // and counts the grains about to end), dipping as a re-hit's
+            // cloud builds while the one let go rings out.
+            let budget = mpfree_sampler::engine::GRAIN_BUDGET;
+            let mean = sum / 500;
+            assert!(most + RESERVE <= budget, "{pads} pads: {most}");
+            assert!(mean * 4 >= budget * 3, "{pads} pads: {mean} on average");
+            assert!(least * 2 >= budget, "{pads} pads: as few as {least}");
+            let st = e.stats();
+            assert!(st.crowded_frames > 0 && st.hits >= 5, "{st:?}");
+            assert!(l.iter().chain(&r).all(|v| v.is_finite()));
+        }
+    }
+
+    #[test]
+    fn a_sampler_case_fails_on_a_trade_it_may_not_make() {
+        // Sampler plan step 10: the whole-budget grain point thins its
+        // grains; allowed, it ends quietly, and not allowed, it fails.
+        let run = |allow| {
+            let mut e = Watched::new(grain_engine(44_100, 256), "test", allow);
+            for pad in 0..4 {
+                e.apply(Event::NoteOn { pad, velocity: 100 });
+            }
+            let (mut l, mut r) = ([0.0f32; 128], [0.0f32; 128]);
+            for _ in 0..200 {
+                e.render(&mut l, &mut r);
+            }
+            e
+        };
+        let allowed = run(Allow {
+            grains: true,
+            ..Allow::default()
+        });
+        assert!(allowed.unexpected().is_empty());
+        drop(allowed);
+        let e = run(Allow::default());
+        assert!(
+            e.unexpected()
+                .iter()
+                .any(|what| what.starts_with("Grains thinned")),
+            "{:?}",
+            e.unexpected()
+        );
+        let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(e)));
+        assert!(ended.is_err(), "it ended without failing");
+    }
+
+    #[test]
     fn the_grain_points_hold_about_that_many_grains() {
         for n in [16usize, 64, 256] {
             let mut e = grain_engine(44_100, n);
@@ -5304,6 +6165,71 @@ mod tests {
         assert_eq!(r[0], 1.0);
         assert!(off_the_audio_path(&c));
         assert_eq!(blocks_for(&c, 200), (5, 20));
+    }
+
+    #[test]
+    fn the_piano_roll_cases_draw_every_note_and_move_as_asked() {
+        let bar = 4.0 * PPQ as f32;
+        for what in [
+            RollFrame::Built,
+            RollFrame::BuiltPressure,
+            RollFrame::Plays,
+            RollFrame::Scrolled,
+            RollFrame::Zoomed,
+            RollFrame::Switched,
+        ] {
+            let mut c = measured(|| roll_frame(what));
+            assert_eq!(c.module, SCREEN);
+            assert!(off_the_audio_path(&c));
+            assert_eq!(blocks_for(&c, 200), (5, 20));
+            // (painted, notes in the roll, view start, view zoom) a block.
+            let seen: Vec<_> = (0..4)
+                .map(|b| {
+                    let (mut l, mut r) = (vec![0.0f32; 128], vec![0.0f32; 128]);
+                    (c.block)(b, &mut l, &mut r);
+                    (l[0], r[0], l[1], r[1])
+                })
+                .collect();
+            assert!(
+                seen.iter().all(|s| s.0 > 0.0 && s.1 == 8_192.0),
+                "{what:?}: {seen:?}"
+            );
+            let starts: Vec<f32> = seen.iter().map(|s| s.2).collect();
+            let zooms: Vec<f32> = seen.iter().map(|s| s.3).collect();
+            match what {
+                RollFrame::Scrolled => {
+                    assert_eq!(starts, [0.0, 240.0, 480.0, 720.0], "a sixteenth a frame");
+                    assert!(zooms.iter().all(|&z| z == zooms[0]));
+                }
+                RollFrame::Zoomed => {
+                    // A bar across, then wider each frame.
+                    assert!(zooms.windows(2).all(|w| w[1] < w[0]), "{zooms:?}");
+                    let roll_w = zooms[0] * bar;
+                    assert!(roll_w > 600.0, "{roll_w}");
+                }
+                _ => {
+                    assert!(starts.iter().all(|&s| s == 0.0), "{what:?}: {starts:?}");
+                    assert!(zooms.iter().all(|&z| z == zooms[0]), "{what:?}: {zooms:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_note_edit_cases_compile_a_clip_this_full() {
+        for what in [NoteEditCase::VelocityAndUndo, NoteEditCase::TransposeAll] {
+            let mut c = measured(|| note_edit(what));
+            assert_eq!(c.module, CONTROL);
+            assert!(off_the_audio_path(&c));
+            // The transpose of every note counts a block, as the big song.
+            let big_one = what == NoteEditCase::TransposeAll;
+            assert_eq!(big(&c), big_one);
+            assert_eq!(blocks_for(&c, 200), if big_one { (1, 1) } else { (5, 20) });
+            let (l, r) = run(&mut c, 4);
+            // Every note still there and playing; none went in place.
+            assert_eq!((l[0], r[0]), (8_192.0, 8_192.0), "{what:?}");
+            assert_eq!((l[1], r[1]), (0.0, 4.0), "{what:?}: in place, compiled");
+        }
     }
 
     #[test]

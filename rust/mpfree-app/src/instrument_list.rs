@@ -65,6 +65,11 @@ impl InstrumentId {
     pub fn from_number(n: u32) -> Option<InstrumentId> {
         (n >= 1).then_some(InstrumentId(n))
     }
+
+    /// Its number, as it is saved (a MIDI route names it by this).
+    pub fn number(self) -> u32 {
+        self.0
+    }
 }
 
 impl fmt::Display for InstrumentId {

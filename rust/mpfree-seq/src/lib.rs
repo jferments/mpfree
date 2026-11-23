@@ -64,7 +64,9 @@ pub mod scenes;
 pub mod steps;
 pub mod time_edit;
 
-pub use arrange::{Arrangement, Marker, MorphRows, Placement, SongClips, TempoPoint};
+pub use arrange::{
+    Arrangement, FromScene, Marker, MorphRows, Placement, SongClips, SongSection, TempoPoint,
+};
 pub use mutate::{Amount, Original, Pitches};
 pub use scenes::{
     Follow, FollowAction, ListStep, Scene, SceneSettings, SongList, TrackProgram, MAX_SCENE_NAME,

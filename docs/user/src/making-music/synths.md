@@ -50,6 +50,30 @@ Tap the synth's card at the top left of the **Synth** tab (its name, the track a
 - **The project remembers it.** Saved with FM on the pads, or on bank B, the project opens with FM there again.
 - **Not while the arp plays the pads** (NOTE REPEAT, Latch or the Arp panel): it plays through the selected track, so let go of it first.
 
+### Layers: more than one synth on the pads
+
+The pads can play up to four synths at once, such as a soft pad sound and a bass under it. Each hit plays every one of them at the same velocity, and so does each key of a keyboard.
+
+1. Open the list of synths (tap the instrument card).
+2. Tap **Layer** at the top of the list, beside Cancel, so it lights up.
+3. Tap the synths you want: each tap adds one to what the pads play, outlined and tagged **ON THE PADS**. Tap one again to take it off.
+4. Tap **Keep layers**.
+
+- **The top of the screen names them all**: **Pads: FM + Pluck**.
+- **Each synth plays on its own mixer channel** ("FM · Pads", "Pluck · Pads"), so you can turn one down, mute it or solo it in the Mix tab.
+- **The first tile, Track 1's**, adds the selected track's own synth, or the shared Poly when the track plays it. A kit can't be a layer: if the pads follow a track that plays a kit, the first synth you tap is what they play, and the next one is layered on it.
+- **Taking off the first** makes the next one the first. The last one stays: **Follow track** gives the pads back to the track, and the layers go with it.
+- **With Layer off**, a tap plays that one synth alone again, and the layers go.
+- **Layers are for every bank.** **Layer** and **Bank B only** don't go together: picking one turns the other off. A bank with a synth of its own plays that synth alone.
+- **Not while the arp plays the pads**: the arp plays through the selected track, where layers can't follow, so starting it gives the pads back to the track.
+- **The project remembers them.** An older MPFree opening the project plays the first synth only.
+- **Recording.** REC records each layer on a track of its own, in one take. The REC chip names where the first goes and counts the rest: **REC → Track 2 · FM + 1 more**. When you press REC, the first synth goes on a free track as above, and each layer gets a free track too (or a new one at the end), pointed at that same synth and armed with the first, as SHIFT + a tap in REC's list arms a track. A track you armed that already plays a layer's synth keeps it. Every hit, and every key a pad plays, goes into each track, and one UNDO takes the whole take back. The next REC records on the same tracks, with nothing more to set up.
+  - A new track that REC added for a layer goes away with its own UNDO, after the take's.
+  - When the project holds no more tracks, or 16 tracks already record at once, the line says which layer isn't recorded, and the rest record.
+  - A keyboard's key goes into a layer's track as the pad that plays its note on that synth; a note no pad plays alone sounds but isn't kept, as on a track a keyboard is routed to.
+  - A keyboard routed to a synth no track plays (see [Playing several tracks from your keyboards](midi-and-cv.md#playing-several-tracks-from-your-keyboards)) records the same way: its synth gets a track of its own in the same take, counted on the chip.
+- **Looping layers.** To loop all the layers with the Looper, record from a mix that has them all (the Looper tab's **Records from**), such as Master: **Records from: Pads** takes the first synth's channel.
+
 ## The twelve synths
 
 Any of the twelve can be a track's own instrument (see [A synth for each track](#a-synth-for-each-track)), and any track can have a different one.
@@ -81,7 +105,9 @@ Every track can play its own instrument: Poly on one, FM on another, a plugin sy
 2. Open the Synth tab's options: press **MENU**, or tap the gear at the right end of the title bar. The top row is named after the track: **Track 2 instrument**.
 3. Change it. It steps through **Kit** (the pads' kit, as every track starts), the other tracks' instruments (**Track 3's FM**: see below), **Poly**, **FM**, **Drums**, **Pluck**, **Keys**, **Drawbar**, **Squelch**, **Analog**, **Strings**, **Bass**, **Wind** and **Choir**, then any plugin synths you have put in `files/plugins/` on the stick: CLAP synths and MPC plugin instruments (see [Effects](effects.md#plugins) for where to put them).
 
-{{shot: synth-instrument | Track 2's instrument set to a plugin synth, with the row's help on the right.}}
+{{shot: synth-instrument | Track 2's instrument set to a plugin synth, with what it plays, where it is heard and the row's help on the right.}}
+
+- **What the track plays, and where you hear it.** Over the row's help, two lines say what the selected track plays and which mixer channel its sound comes out of, as the Mix tab names it: **Track 3 plays Track 2's Poly** and **In the mixer: Poly · Track 2**. A track on its kit reads **Track 1 plays Kit 1** and **In the mixer: Drums**; on the shared synth, **Track 2 plays the shared Poly** and **In the mixer: Synth**; with a synth REC pointed it at from the list of synths, **Track 2 plays FM, from the list of synths** and **In the mixer: FM · Pads**; sending MIDI out, **In the mixer: nothing, it sounds outside mpfree**.
 
 - **It starts as a copy** of the synth's sound on the Synth tab, edits included. From then on it is the track's own: the Synth tab edits the selected track's instrument, and its title says whose it is ("Track 2"). Loading a preset gives the track a fresh copy with that preset.
 - **The pads play the selected track.** Select another track and the pads play its instrument, or its kit if it has none. The track's clips play its instrument too, whichever track is selected.
