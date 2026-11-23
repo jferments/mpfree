@@ -8,7 +8,7 @@ checked: 2026-11-23 a545c383
 
 **Audio tracks** record what comes into the MPC's INPUTS (a vocal, a guitar, a synth) onto the song's timeline, next to your clips. Record a part a few times, then keep the best bits of each. Use them when a part is too long or too free to loop: a verse, a solo, a whole take of a song.
 
-An audio track is a track of your project like any other: it sits in the track list with your other tracks, and **Mute** and **Solo** work on it as on any track. On the Arrange tab's **Song** view its lane sits in its place among your tracks, and that is where you record and edit it; the **Clips** grid shows it as a column too. Audio tracks play when the song plays (song mode on); with song mode off they stay silent, though an armed track still lets you hear its input.
+An audio track is a track of your project like any other: it sits in the track list with your other tracks, and **Mute** and **Solo** work on it as on any track. On the Arrange tab's **Song** view its lane sits in its place among your tracks, and that is where you record and edit it; the **Clips** grid shows it as a column too, whose cells hold **audio clips** you launch like any clip. An audio track plays its launched clip, and otherwise, when the song plays (song mode on), its song; with neither it stays silent, though an armed track still lets you hear its input.
 
 {{shot: arrange-song-audio | The Song view with two audio lanes: a vocal recorded twice, its newer take picked, and a guitar armed.}}
 
@@ -37,9 +37,66 @@ Every audio track has a lane, in its place in the track list. To add another, ta
 
 ## In the Clips grid
 
-On the Clips grid an audio track is a column like the others, with a wave mark and its input (**In L**) under its name. Tap its name to arm it, as for any track. Its cells are drawn dashed: audio clips aren't in the grid yet, so a tap on one tells you to record the track on the Song view. **+ Track** on the grid opens the same choice of Note track, Audio track or Loop track.
+On the Clips grid an audio track is a column like the others, with a wave mark and its input (**In L**) under its name. Tap its name to arm it, as for any track. **+ Track** on the grid opens the same choice of Note track, Audio track or Loop track.
 
 {{shot: arrange-clips-audio | The Clips grid with two audio tracks, Vocal and Guitar (armed), and + Track's choice of a kind of track open.}}
+
+### Audio clips
+
+An audio track's cells hold **audio clips**: a stretch of your recordings that you launch from the grid, loop or play once, as you would a clip of notes. Tap one and it starts on the next Launch line; scenes, a row's number, **Stop all** and follow actions work on audio clips too. The song itself doesn't change: launched, the clip plays in place of the track's song until you stop it or go **Back to song**.
+
+There are two ways to make one:
+
+- **To a cell**, on the Song view: pick a region and tap **To a cell**. The region goes in its track's first empty cell, top down, as a clip as long as the region, named after the track and its bars ("Vocal 5–8"). The hint line says where it went ("Vocal, bars 5 to 8: in row 3 · UNDO takes it out"). If the track has no empty cell, nothing happens and the hint line says so.
+- **Put in a cell**, on the Sample page: see [Audio track: the slices on the song](sampling.md#audio-track-the-slices-on-the-song).
+
+An empty audio cell is drawn dashed; a tap on it says how to fill it.
+
+{{shot: arrange-clips-audio-cells | Audio clips at 92 BPM: Hook vox playing, Ad libs and Outro waiting to start, Riff made at 120, Solo missing its audio, Intro still ringing past its stop, and Amen not ready.}}
+
+**What a cell says.** Each audio cell shows the clip's name and a small wave of one pass. Playing, the wave lights up to the playhead. Under the name, in the wave's place while the clip is stopped or waiting, a word says what matters, and a tap on the cell says it in full on the hint line:
+
+| Word | What it means |
+|---|---|
+| **from 17.1** (amber) | Launched: it starts at bar 17. |
+| **waits 18.1** (amber) | Its audio is still loading from the drive, so it starts a little later, on bar 18, in time with the bar. |
+| **made at 120** (amber) | It was made at 120 BPM and the project plays at another tempo, so each pass leaves a gap or cuts its end off. **Fit to tempo** on the Clip tab fixes it (below). |
+| **not ready** (red) | Its audio couldn't be loaded in time, so the launch was cancelled. Tap it to try again. |
+| **missing** (red) | A recording it plays wasn't found when the project opened. It can't play. |
+
+A clip set to play **once** shows its playhead dimmed while its sound rings on after its track stopped, so the grid never looks silent while you hear it. In Perform the cell's foot gives its length ("2 bars"), or a once clip's time ("3:17 once").
+
+**Moving and copying.** Drag an audio clip to another row or another audio track; **SHIFT** as you lift makes a copy, which plays the same recordings. An audio clip can't go on a note or Loop track (nor a clip of notes on an audio track): the hint line says why. **COPY** + a clip and an empty audio cell works too.
+
+### Audio clips in the song
+
+With **Rec song** on, an audio clip you launch goes into the song as a block on its track's lane, as a clip of notes does (see [Recording a performance into the song](arranging.md#recording-a-performance-into-the-song)). In song mode it plays from the song just as you heard it from the grid.
+
+{{shot: arrange-song-audio-blocks | Two blocks of audio clips on Guitar's lane after its recording: Riff, two bars played twice (picked), and Outro, a once clip.}}
+
+- A block of an audio clip has a strip along its top in the track's colour with the clip's name, and its wave under it, drawn again each time the clip goes round, with a faint line where each pass starts. A recorded region has no strip, so you can always tell them apart. A once clip says so ("Outro · once").
+- A block and a region never overlap on a lane. Where Rec song puts a block over recorded regions, the block replaces them, and **UNDO** brings them back.
+- Dragging a block over a region, or making it longer over one, is refused, and the hint line says why ("Riff can't go over the region at bar 9: a block and a region never overlap on a lane"). While you drag, its outline turns red where it can't go.
+- Recording over a block cuts the block where the take starts and ends. So does swiping a take lane, dragging a region or bringing a sound in over it. **UNDO** takes back the recording and the cut together.
+- Drag a block to another audio track's lane to play it through that track. An audio clip's block can't go on a note or Loop track's lane, nor a clip of notes on an audio track's.
+
+### The Clip tab for an audio clip
+
+Arm an audio track (its name on the grid, or its arm dot on the Song view) and the Record panel's **Clip** tab shows its playing clip, else its first, until you arm a note track again.
+
+{{shot: arrange-clips-audio-card | The Clip tab for Riff, made at 120 BPM in a project at 92: its rows, the gap it leaves each pass, and Fit to tempo.}}
+
+| Row | What it does |
+|---|---|
+| **Length** | A loop's length in bars and beats. **-** and **+** step a beat, **SHIFT** a bar. Shorter, the clip stops its sound there; longer again, what was cut comes back, and past its sound it is silent. A once clip shows its time (3:17) and doesn't step. |
+| **Mode** | **Restart**, **Legato** or **Once**: as for a clip of notes. A once clip plays its sound to the end. |
+| **Launch**, **Follow**, **After** | As for a clip of notes. |
+| **Gain** | The clip's own level, from off to +12 dB, in 0.5 dB steps (**SHIFT**: 0.1 dB), on top of each region's gain. |
+| **Name** | Tap it to rename the clip on the keyboard. |
+
+Each row you turn is one step **UNDO** takes back.
+
+**Fit to tempo.** Under the rows, two lines say the tempo the clip was made at and what that means at the project's tempo ("Made at 120 BPM: at 92 a 1.2 s gap each pass"). **Fit to tempo** makes a copy of its audio stretched to the project's tempo, keeping the pitch, and the clip plays the copy. It takes a moment ("Fitting… 40 %") and you can keep working; then it is one step **UNDO** takes back, to the clip as it was. The song keeps the original recordings. The button is grey when the clip is already at the project's tempo, and for a once clip, which plays to its end at any tempo; a tap then says why.
 
 ## The track panel
 
@@ -73,14 +130,14 @@ If the sound you picked goes away (its channel is taken out of the mix), the tra
 
 ## Editing regions
 
-Tap a region to pick it. The buttons along the bottom become **Split**, **Erase**, **Fades**, **Gain**, **Takes** and **Undo** for that region; tap empty space to go back to the song's own buttons.
+Tap a region to pick it. The buttons along the bottom become **Split**, **Erase**, **Fades**, **Gain**, **Takes** and **To a cell** for that region; tap empty space to go back to the song's own buttons. (**To a cell** makes the region an audio clip: see [Audio clips](#audio-clips).)
 
-- **Split** cuts the region at the playhead, so put the playhead inside it first.
+- **Split** cuts the region at the playhead, so put the playhead inside it first. Nothing you hear changes: a fade the cut goes through carries on across it, each part showing its share of the slope.
 - **Erase** takes the region out.
 - **Drag** a region sideways to move it. It snaps to sixteenth notes; hold **SHIFT** to move it freely. It stays picked where it lands.
-- **Gain** and **Fades** are on the Q-Links. While a region is picked, the four knobs turn the track's **Level** (Q1) and **Pan** (Q2), which are its mixer strip's, and the region's **Gain** (Q3) and **Fades** (Q4, the fade in and the fade out together). Hold **SHIFT** for fine steps. A fade shows as a slope on the region.
-- **Undo** takes back the last change, and **SHIFT + Undo** redoes what Undo took back.
-- **Moving a section, + Bar and Delete bars** on the Song view move the regions with the song (see [Audio in the song](arranging.md#audio-in-the-song)). Undo here stops at such an edit and says so: **UNDO** takes it back, with the song, and **SHIFT + UNDO** puts it back.
+- **Gain** and **Fades** are on the Q-Links. While a region is picked, the four knobs turn the track's **Level** (Q1) and **Pan** (Q2), which are its mixer strip's, and the region's **Gain** (Q3) and **Fades** (Q4, the fade in and the fade out together). Hold **SHIFT** for fine steps. A fade shows as a slope on the region. On a part cut from a longer region (by **Split**, a punch in, or moving the song's bars), the fades you set are its own, at its own ends.
+- **UNDO** takes back the last region change, and **SHIFT + UNDO** redoes what UNDO took back, as long as region changes are what you did last. After anything else (To a cell, a clip changed) UNDO takes that back first.
+- **Moving a section, + Bar and Delete bars** on the Song view move the regions with the song (see [Audio in the song](arranging.md#audio-in-the-song)). **UNDO** takes such an edit back with the song, after any region changes made since, and **SHIFT + UNDO** puts it back.
 
 ## Comping with take lanes
 
@@ -92,7 +149,7 @@ Tap **Takes** (in the track panel, or in the bottom row with a region picked). A
 
 - **Swipe** across a take lane to play that stretch of the take on the track, in place of what was there. The swipe snaps to sixteenth notes; hold **SHIFT** for a free swipe.
 - **Tap** a take lane to play that take everywhere it has audio.
-- **Undo** takes each swipe back.
+- **UNDO** takes each swipe back.
 
 When an older take plays, its region on the track says which one ("take 1"). Tap **Takes** again to close the lanes.
 

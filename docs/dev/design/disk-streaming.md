@@ -134,7 +134,7 @@ None writes to the MPC's internal storage; each block is rehearsed word for word
 | Test | Label | What it does | Writes |
 |---|---|---|---|
 | W, fault tests | workstation and CI | From P0.5, failing first, against both engines: short reads, early end of file, read and write errors, a full disk, failed syncs, a stall of seconds, a source removed mid-read, take numbers reused, a cancelled big read, a file layer that cuts a recording or import after every step; each run compares the rendered sound with a reference | test files on the workstation |
-| WP, pull tests | by hand, a backed-up spare stick | Before D6: a stick pulled mid-recording and mid-import, then the recovery checked | the spare stick |
+| WP, pull tests | by hand, a backed-up spare stick on a computer, no MPC | Before D6: a stick pulled mid-recording and mid-import, then the recovery checked: `mpfree-disktest --cut-test`, then `--after-cut` ([below](#wp-the-pull-test)) | the spare stick, in its own folder |
 | D0, survey | read-only | [below](#d0-the-streaming-survey) | nothing |
 | D1, stick reads | read-only | [below](#d1-the-read-only-stick-test) | nothing; the program runs from RAM |
 | D2, stick writes | state-changing, stick only | the existing `mpfree-disktest` write run (audio-tracks.md) | at most 448 MiB of its own files on partition 4, deleted at the end |
@@ -310,6 +310,27 @@ D2b found reads waiting behind writes on the stick: 1.65 s beside a recording, 2
 - **Step 10:** the streams' threads in the real-time class (level 4), the recorder's thread as found.
 
 [`src/bin/disktest/prio.rs`](../../../rust/mpfree-audiotracks/src/bin/disktest/prio.rs) sets the priority with `ioprio_set` on threads the step starts and ends itself, the recorder's found by its name (`mpfree_stream::writer::THREAD`), and reads it back; a priority belongs to its thread, so nothing outside the program changes and nothing needs putting back. The kernel's writeback threads keep theirs, so writes they send aren't lowered. Before each step it tries the priorities on a thread of its own; one Linux refuses (the real-time class needs root or `CAP_SYS_NICE`) leaves the step out, saying why. The run prints the priority it found and the stick's scheduler, and the summary has a `disk` column (`f` as found, `b`, `rt`). P5 keeps a priority for the app's I/O threads only if step 9 or 10 shows a shorter worst shortfall and no worse recording than step 2; it then goes in the I/O threads' start in `mpfree-stream` (which forbids unsafe code, so through a hook the host gives it).
+
+### WP: the pull test
+
+The recording file protocol is tested against a model stick that cuts after every operation ([recording-files.md](recording-files.md#how-it-is-tested)). What a model can't show is what a real stick keeps when its power goes mid-write: whether data it said was synced is still there, and what a write in flight leaves. WP finds that out on a spare stick pulled from a computer, so the MPC is never involved; D6, the power cut on the MPC, comes after it with its own safety review.
+
+`mpfree-disktest --desktop-test DIR --cut-test` ([`src/bin/disktest/cut.rs`](../../../rust/mpfree-audiotracks/src/bin/disktest/cut.rs)), with DIR on the spare stick:
+
+- **What it writes:** only its own folder, `mpfree-cuttest/`, which the other runs never clear. 4 takes through MPFree's own recorder at its defaults (stereo float at 48 kHz, 1.54 MB/s in all, a round every 2 s, spread), about 4 minutes of them (368 MiB), while an import beside them publishes 16 MiB files one after another as checked copies are published (`publish`: a part file, synced, read back, renamed, the folder synced), the oldest removed once 4 are there. At most 448 MiB at once, and it needs twice that free.
+- **Every sample is checkable:** each sample of each take is a value only that take, frame and channel have (a 24-bit whole number over 2^24, exact in a float), and each byte of each import likewise, so what comes back is compared exactly, not by a checksum alone.
+- **What it promises:** every half second, when it changed, a line `promised: takes 1=N 2=N 3=N 4=N; imports A B C`: each take's committed frames (synced, with its checkpoint, as the writer reports them) and the imports published. An import leaves the promise before it is removed, and is removed only 2 s after a promise without it was said, so the saved text never names an import the run removed itself. The text must be kept off the stick (the terminal and `tee` to the computer's own disk).
+- **The pull:** after 30 s it says `CUT NOW`, and the stick is pulled any time in the next few minutes. Without a pull it stops at its room, saves the takes and says no cut was made.
+- **Where it runs:** DIR must be on an ext4 file system (as the MPC's partition 4 is) on a USB disk, and the run says which device that is, so the right stick is pulled. The cut test and `--after-cut` run only with `--desktop-test`: on the MPC's stick they are refused until D6's safety review.
+
+`mpfree-disktest --desktop-test DIR --after-cut FILE`, after the stick is put back and mounted at the same place, with FILE the pull run's saved text:
+
+- runs recovery on the folder as MPFree's start does (`recover`), and the whole-take check on each take it finishes;
+- checks each take came back with at least its last promised frames, every frame exactly as recorded; audio past the record, kept apart as `.tail.unverified.wav`, is counted and compared but not judged; so is a take cut off as it started, before anything was committed for it, which recovery keeps apart as `.unverified.wav` (nothing was promised for it; a promise for such a take fails);
+- sweeps part files, and checks every promised import is there and whole, and any other there whole too (the one in flight when the stick went);
+- on a pass deletes its folder, its own names only; on a fail keeps it for a look and says why. It refuses a folder holding anything that isn't one of its names, and touches nothing then.
+
+Tests: `tests/disktest.rs` kills a quick run mid-take at three different moments and finds every promise kept and the folder cleared each time; a run with no cut is checked and cleared; a promise of one frame more than was recorded, a sample changed in a take, and a stranger's file in the folder each fail and keep the folder; a second start is refused while the folder is there; and both halves are refused without `--desktop-test`. The unit tests in `cut.rs` cover the samples (distinct and exact), the imports (filled in any order alike, a changed byte found), the promise line read back as said, the test's own names, and finding the mount above a folder. A kill isn't a pull (the computer keeps what it cached), so only the real pull tests the stick.
 
 ## P0.5: the old engine's fault fixes
 

@@ -652,6 +652,71 @@ fn free_pass_without_allocating(mode: SmartEnd) {
     assert!(l.stats().aborted >= 1, "PLAY threw one away");
 }
 
+/// Smart loop end by ear, in Suggest and Auto: the hit track listening to
+/// a free pass of the kit's beat on the line input, the finder's job
+/// filled, answered and taken, at odd period sizes, allocate nothing.
+#[test]
+fn a_free_pass_by_ear_never_allocates() {
+    use mpfree_looper::find::{find, FindJob};
+    use mpfree_looper::hits::kit::Kit;
+    const RATE: u32 = 22_050;
+    for mode in [SmartEnd::Suggest, SmartEnd::Auto] {
+        let mut t = Transport::new(RATE, 100.0).unwrap();
+        let mut l = Looper::new(RATE, 30);
+        let mut b = Block::new();
+        let mut out = vec![0.0f32; 2 * 4096];
+        let mut audio = vec![0.0f32; 2 * 6 * RATE as usize];
+        let rec_from = 10_000usize;
+        Kit::new(RATE).beat(&mut audio, rec_from + 1_764, 120.0, 2, &|_| 0.0);
+        let mut job = FindJob::new(mpfree_looper::ends::reach(RATE, f64::NAN));
+        let sizes = [1usize, 7, 128, 333, 64, 256];
+        let mut said = 0;
+        let _ = l.command(L::TempoFromLoop(true));
+        let _ = l.command(L::SetBars(None));
+        let _ = l.command(L::SetSmartEnd(mode));
+        let _ = l.command(L::SmartByEar(true));
+        let mut closed = false;
+        let mut i = 0u64;
+        watch(true);
+        while (t.frame() as usize) < audio.len() / 2 - 4096 {
+            let f = t.frame() as usize;
+            let n = sizes[(i % sizes.len() as u64) as usize];
+            i += 1;
+            if f >= rec_from
+                && t.frame() < rec_from as u64 + 512
+                && l.status().phase == Phase::Empty
+            {
+                let _ = l.command(L::Record);
+            }
+            if !closed && f >= rec_from + 1_764 + 88_200 + 1_323 {
+                let _ = l.command(L::Record);
+                closed = true;
+            }
+            out[..2 * n].fill(0.0);
+            assert!(t.process(n as u32, &mut b));
+            l.process(&b, &audio[2 * f..2 * (f + n)], &mut out[..2 * n]);
+            if l.find_job(&mut job) {
+                find(&mut job);
+                l.found(&job);
+            }
+            if let Some((_, r, at, _)) = l.take_tempo() {
+                let _ = t.command(at, T::SetTempo(r.bpm));
+                let _ = t.command(at, T::Play);
+            }
+            if l.take_smart().is_some() {
+                said += 1;
+            }
+            let _ = l.stats();
+        }
+        watch(false);
+        assert_eq!(calls(), 0, "allocated by ear ({mode:?})");
+        assert_eq!(said, 1, "{mode:?}");
+        let st = l.stats();
+        assert_eq!((st.finds_asked, st.finds_answered), (1, 1), "{st:?}");
+        assert!(st.ends_moved + st.ends_offered == 1, "{st:?}");
+    }
+}
+
 /// Smart loop end's snaps: Suggest offers the downbeat played before a
 /// late tap, and a snap to it, its Undo and Redo, Use my tap, and Read as
 /// 4 bars and its Undo, each worked out, given and landed at odd period

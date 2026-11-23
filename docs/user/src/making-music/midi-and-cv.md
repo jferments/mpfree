@@ -319,7 +319,7 @@ Transport controls are kept in **Rig**, so they work in every project. Nothing h
 
 ### Playing the looper from a footswitch
 
-{{shot: mixer-io-learn-looper | The Learn section's Looper card: the Loop stepper on the picked loop with its Key and Mute, then Next loop, Undo, Redo, Capture and Clear.}}
+{{shot: mixer-io-learn-looper | The Learn section's Looper card: the Loop stepper on the picked loop with its Key and Mute, Next loop and Capture, then Undo, Redo, Clear, Snap and Use my tap.}}
 
 A footswitch leaves both hands on your instrument while you loop. Any control that sends MIDI can play the [looper](looping.md): a footswitch, a pedalboard, a button, a pad or a key. The MPC One has no footswitch jack, so plug the footswitch into a MIDI controller or a MIDI pedal that has one, and connect that to the MPC's USB or 5-pin MIDI in.
 
@@ -329,6 +329,7 @@ In the Learn section, tap **Looper** by the heading, tap one, then press the foo
 - **Key**: what the loop's pad does as a [loop key](looping.md#the-pads-as-loop-keys). Press to record from the next bar line, again to end the first pass, then to overdub and to play on; a muted loop plays again. Hold it for a second to clear the loop (UNDO brings it back).
 - **Mute**: mutes the loop, and lets it play again. A key or a pad flips it on each press; a footswitch or a fader mutes from halfway up and lets it play below that.
 - **Next loop** picks the next loop (after Loop 8, Loop 1). **Undo**, **Redo** and **Clear** are the Looper tab's buttons, on the picked loop. **Capture** keeps the bars you just played as a loop.
+- **Snap** and **Use my tap** are [smart loop end](looping.md#smart-loop-end)'s, on the picked loop, so you can take its suggestion without letting go of your instrument. **Snap** moves the loop's end (or start) to the hit it found, on the loop's next downbeat; **Use my tap** puts it back where you tapped. When the screen asks **Snap anyway?**, **Snap** says yes and **Use my tap** says not now.
 
 These work on every page, whatever the pads are doing. A **Key** or a press starts as **Button: while held**, so a footswitch goes down and comes up as a pad does; leave it so. The Learn section lists each one by what it plays: **Looper · Loop 3 key**, **Looper · picked loop's key**, **Looper · Next loop**. Looper controls are kept in **Rig**, so your pedalboard works in every project.
 
@@ -345,6 +346,19 @@ A knob or fader on your controller can turn the Play page's **Swing** and **Filt
 **Your finger and the XY knobs together:** the one that started last plays. Move a learned XY knob while your finger is on the pad and the knob takes over; your finger does nothing until you lift it and touch again. A touch while the knobs hold the pad takes it back the same way, and the knobs then do nothing until they are back where the pad rests.
 
 These work on every page. The Learn section lists them as **Play · Swing**, **Play · Filter**, **Play · XY across** and **Play · XY up**. They are kept in **Rig**, so your controller works the same in every project, and they move the sound but don't record into a clip. Touching Play's own cards and pad still works as before.
+
+### Footswitches for a set
+
+{{shot: mixer-io-learn-show | The Learn section's Show card: a set's seven controls, each for a footswitch or a button to learn.}}
+
+A footswitch can move you through a [set](set-lists.md) on stage, so you never reach for the screen between songs. In the Learn section, tap **Show** by the heading, tap one, then press the footswitch or the button:
+
+- **Next song** arms the song after the one playing, and pressing it again goes to it. **Previous song** arms the one before.
+- **Go** goes to the armed song. **Cancel next** drops the armed song and leaves the music as it is. **Back to the set order** arms the song after the one playing, in the set's order.
+- **Panic** stops and silences everything, as SHIFT + STOP does, and sends notes off on every MIDI out.
+- **Click** turns the click on or off, as SHIFT + PLAY START does.
+
+A press counts once: it acts as the switch goes down, a second press within 50 ms is the same press (a footswitch's bounce), and presses while a song is changing are ignored. These work on every page, in every project, while a set is open; with no set open they do nothing, and the hint line says so. They are kept in **Rig**. The Learn section lists them as **Show · Next song**, **Show · Go** and so on. If one control has two jobs, both its rows show in red with what else it does: learn one of them again on another switch.
 
 ### Playing a Perform pad from your gear
 

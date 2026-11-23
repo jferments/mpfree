@@ -1102,6 +1102,7 @@ dependencies = [
 name = "mpfree-looper"
 version = "0.1.0"
 dependencies = [
+ "mpfree-analysis",
  "mpfree-stretch",
  "mpfree-transport",
 ]

@@ -99,6 +99,11 @@ LIBRARY_NEEDLES = (
     # (Library::path, links refused) through write_synced (project.rs's O_NOFOLLOW open above), then renames
     # it over manifest.txt. Nothing else in the folder is touched; a cut-off .part is overwritten next time.
     ("mpfree-library/manifest.rs", "fs::rename(&part, dir.join(MANIFEST_FILE))?;"),
+    # A set list (sets.rs; live shows B1, 22 Nov 2026): BROWSE's Sets place saves a set after each change as
+    # Sets/<name>.set.part (Library::path: the Sets place, a name valid_name takes, links refused) through
+    # write_synced (project.rs's O_NOFOLLOW open above), then renames it over Sets/<name>.set. save_set refuses
+    # any path that isn't a .set file in Sets. New set, Rename, Copy and Delete use the library's own (listed).
+    ("mpfree-library/sets.rs", "fs::rename(&part, &path)?;"),
     # Kit files (kit.rs; the browser thread, 16 Nov 2026): Save kit in BROWSE's Kits place or the Pads tab's
     # picker builds the kit in a hidden .kit-<id>-<name> folder beside where it goes (in Kits, Samples ...;
     # never Projects or the Trash: check_writable), each file made new (create_new, O_NOFOLLOW) with a name

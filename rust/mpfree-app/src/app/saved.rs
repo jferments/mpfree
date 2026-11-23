@@ -92,6 +92,7 @@ impl App {
             },
         );
         out.set_bool("sustain-pedal-latches", s.pedal_latches);
+        out.set_bool("quick-advance", s.quick_advance);
         out.set_i64("audio-buffer", s.periods as i64);
         out.set_bool("developer-tools", s.debug_mode);
         out.set_bool("midi-cv-out", s.sends_midi);
@@ -200,6 +201,7 @@ impl App {
                     .is_some(),
                 "developer-tools" => app.get_bool(k).map(|b| s.debug_mode = b).is_some(),
                 "sustain-pedal-latches" => app.get_bool(k).map(|b| s.pedal_latches = b).is_some(),
+                "quick-advance" => app.get_bool(k).map(|b| s.quick_advance = b).is_some(),
                 "midi-cv-out" => app.get_bool(k).map(|b| s.sends_midi = b).is_some(),
                 "sound-cores" => crate::cores::SoundCores::parse(v)
                     .map(|m| s.sound_cores = m)
@@ -471,6 +473,9 @@ mod tests {
         a.step_item(r, -1);
         let r = row(&a, Item::DebugMode);
         a.step_item(r, 1);
+        // Quick advance (live shows B1) is kept too.
+        let r = row(&a, Item::QuickAdvance);
+        a.step_item(r, 1);
         // MIDI and CV out stay on across restarts (Jay, 16 Nov).
         let r = row(&a, Item::SendsMidi);
         a.step_item(r, 1);
@@ -503,6 +508,7 @@ mod tests {
         let (app, map) = (saves[0].1.clone(), saves[1].1.clone());
         assert_eq!(app.get_str("audio-buffer"), Some("2"));
         assert_eq!(app.get_bool("developer-tools"), Some(true));
+        assert_eq!(app.get_bool("quick-advance"), Some(true));
         assert_eq!(app.get_bool("midi-cv-out"), Some(true));
         assert_eq!(app.get_bool("metronome"), Some(true));
         assert_eq!(app.get_str("start-with"), Some("last"));
@@ -571,6 +577,7 @@ mod tests {
         assert!(notes[1].starts_with("saved buttons: "), "{notes:?}");
         assert!(!b.settings.line_input, "line input is never kept");
         assert!(b.settings.sends_midi, "MIDI and CV out stay on");
+        assert!(b.settings.quick_advance, "Quick advance is kept");
         assert!(b.take_saves().is_empty());
     }
 

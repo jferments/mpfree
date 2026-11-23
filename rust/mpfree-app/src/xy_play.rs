@@ -16,6 +16,10 @@
 //!   sums with an LFO and keeps working under locks and moves. A setting
 //!   whose row the engine refuses (no room, or a switch) is counted and
 //!   pushes nothing.
+//! - **The gate** (a layout of yours made from an XY FX's: its Active):
+//!   the pad's hand holds it at 1 from the landing, so the effect plays,
+//!   and lets go of it at once at the lift (Go back or Stay), so an echo
+//!   rings out; Hold keeps it open.
 //! - **When the finger lifts:** with Hold on, nothing lets go until Hold
 //!   is off. Go back lets each Set setting glide back to its own value as
 //!   it is by then (`ModEvent::LetGo`), over the layout's glide. Stay makes
@@ -150,6 +154,8 @@ pub struct XyPlay {
     /// Each setting's last value from the pad (a push for Add).
     last: [f32; SLOTS],
     away: [Away; SLOTS],
+    /// The pad holds its layout's gate open (an XY FX's Active).
+    gated: bool,
     hold: bool,
     down: bool,
     /// Where the pad is, where it was when the finger landed, and where
@@ -177,6 +183,7 @@ impl XyPlay {
             held: [false; SLOTS],
             last: [0.0; SLOTS],
             away: [Away::default(); SLOTS],
+            gated: false,
             hold: false,
             down: false,
             pos: (0.5, 0.5),
@@ -247,6 +254,13 @@ impl XyPlay {
         self.down = true;
         self.here = self.pos;
         self.landed = (x, y);
+        // The gate opens while the pad is held (a copy of an XY FX's
+        // layout: the effect plays).
+        if let Some(g) = self.now.and_then(|c| c.gate()) {
+            if !self.gated {
+                self.gated = r.touch(g, 1.0);
+            }
+        }
         self.moved(r, x, y);
     }
 
@@ -295,8 +309,6 @@ impl XyPlay {
 
     /// Hold on or off. Turned off with no finger down, the pad lets go as
     /// the layout says.
-    // The XY page's Hold and Stay's UNDO (the screens' pull request).
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn set_hold(&mut self, r: &mut dyn Reach, on: bool, recording: bool) {
         self.hold = on;
         if !on && !self.down {
@@ -305,8 +317,6 @@ impl XyPlay {
     }
 
     /// Whether Hold is on.
-    // The XY page's Hold and Stay's UNDO (the screens' pull request).
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn hold(&self) -> bool {
         self.hold
     }
@@ -326,7 +336,7 @@ impl XyPlay {
     // The XY page's Hold and Stay's UNDO (the screens' pull request).
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn holds(&self) -> bool {
-        self.held.iter().any(|&h| h)
+        self.gated || self.held.iter().any(|&h| h)
     }
 
     fn frames(&self, ms: f32) -> u32 {
@@ -343,6 +353,11 @@ impl XyPlay {
             Lift::Stay => (PUSH_AWAY_MS, true),
         };
         let frames = self.frames(ms);
+        // The gate closes at once, Stay or not (an echo rings out).
+        if let Some(g) = c.gate().filter(|_| self.gated) {
+            r.let_go(g, 0);
+            self.gated = false;
+        }
         for (i, t) in c.slots() {
             if !self.held[i] {
                 continue;
@@ -385,6 +400,9 @@ impl XyPlay {
     /// a gesture cancelled, a controller unplugged), even with Hold on.
     pub fn cancel(&mut self, r: &mut dyn Reach) {
         if let Some(c) = self.now.take().or(self.layout) {
+            if let Some(g) = c.gate().filter(|_| self.gated) {
+                r.let_go(g, 0);
+            }
             for (i, t) in c.slots() {
                 if !self.held[i] {
                     continue;
@@ -397,6 +415,7 @@ impl XyPlay {
         }
         self.held = [false; SLOTS];
         self.away = [Away::default(); SLOTS];
+        self.gated = false;
         self.down = false;
     }
 
@@ -427,8 +446,6 @@ impl XyPlay {
 
     /// Stay's turns since the last call, as one UNDO step: each setting,
     /// its own value before and after.
-    // The XY page's Hold and Stay's UNDO (the screens' pull request).
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn take_kept(&mut self) -> std::vec::Drain<'_, (ParamAddr, f32, f32)> {
         self.kept.drain(..)
     }
