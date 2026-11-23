@@ -7102,12 +7102,15 @@ impl Player {
         if let Some(xy) = self.ui.get::<XyPad>(play_page::XY) {
             let mut probe = XyPad::default();
             self.play.fill_xy(&mut probe);
-            // A finger on the pad puts the dot; otherwise it glides home.
-            let at = (!xy.on).then_some((probe.x, probe.y));
+            // A finger on the pad puts the dot, unless it moves the pad
+            // from where it is; otherwise it glides home.
+            let from_here = self.play.xy_from_here();
+            let at = (!xy.on || from_here).then_some((probe.x, probe.y));
             let changed = xy.label != probe.label
                 || xy.chip != probe.chip
                 || xy.x_axis != probe.x_axis
                 || xy.y_axis != probe.y_axis
+                || xy.from_here != from_here
                 || at.is_some_and(|a| a != (xy.x, xy.y));
             if changed {
                 if let Some(xy) = self.ui.get_mut::<XyPad>(play_page::XY) {
@@ -7115,6 +7118,7 @@ impl Player {
                     xy.chip = probe.chip;
                     xy.x_axis = probe.x_axis;
                     xy.y_axis = probe.y_axis;
+                    xy.from_here = from_here;
                     if let Some((x, y)) = at {
                         (xy.x, xy.y) = (x, y);
                     }
