@@ -134,7 +134,7 @@ None writes to the MPC's internal storage; each block is rehearsed word for word
 | Test | Label | What it does | Writes |
 |---|---|---|---|
 | W, fault tests | workstation and CI | From P0.5, failing first, against both engines: short reads, early end of file, read and write errors, a full disk, failed syncs, a stall of seconds, a source removed mid-read, take numbers reused, a cancelled big read, a file layer that cuts a recording or import after every step; each run compares the rendered sound with a reference | test files on the workstation |
-| WP, pull tests | by hand, a backed-up spare stick on a computer, no MPC | Before D6: a stick pulled mid-recording and mid-import, then the recovery checked: `mpfree-disktest --cut-test`, then `--after-cut` ([below](#wp-the-pull-test)) | the spare stick, in its own folder |
+| WP, pull tests | by hand, a backed-up spare stick on a computer, no MPC | Before D6: a stick pulled mid-recording and mid-import, then the recovery checked: `mpfree-disktest --cut-test`, then `--after-cut` ([below](#wp-the-pull-test)). Before S2, the same on spare FAT32 and exFAT sticks with `--fat` or `--fat-hidden`, checked without writing ([below](#wp-on-fat-the-pull-test-for-saving-to-the-sd-card)) | the spare stick, in its own folder |
 | D0, survey | read-only | [below](#d0-the-streaming-survey) | nothing |
 | D1, stick reads | read-only | [below](#d1-the-read-only-stick-test) | nothing; the program runs from RAM |
 | D2, stick writes | state-changing, stick only | the existing `mpfree-disktest` write run (audio-tracks.md) | at most 448 MiB of its own files on partition 4, deleted at the end |
@@ -330,7 +330,47 @@ The recording file protocol is tested against a model stick that cuts after ever
 - sweeps part files, and checks every promised import is there and whole, and any other there whole too (the one in flight when the stick went);
 - on a pass deletes its folder, its own names only; on a fail keeps it for a look and says why. It refuses a folder holding anything that isn't one of its names, and touches nothing then.
 
-Tests: `tests/disktest.rs` kills a quick run mid-take at three different moments and finds every promise kept and the folder cleared each time; a run with no cut is checked and cleared; a promise of one frame more than was recorded, a sample changed in a take, and a stranger's file in the folder each fail and keep the folder; a second start is refused while the folder is there; and both halves are refused without `--desktop-test`. The unit tests in `cut.rs` cover the samples (distinct and exact), the imports (filled in any order alike, a changed byte found), the promise line read back as said, the test's own names, and finding the mount above a folder. A kill isn't a pull (the computer keeps what it cached), so only the real pull tests the stick.
+Tests: `tests/disktest.rs` kills a quick run mid-take at three different moments and finds every promise kept and the folder cleared each time; a run with no cut is checked and cleared; a promise of one frame more than was recorded, a sample changed in a take, and a stranger's file in the folder each fail and keep the folder; a second start is refused while the folder is there; and both halves are refused without `--desktop-test`. The unit tests in `cut.rs` cover the samples (distinct and exact), the imports (filled in any order alike, a changed byte found, a length a cut left), the promise line read back as said, the test's own names, and finding the mount above a folder. A kill isn't a pull (the computer keeps what it cached), so only the real pull tests the stick.
+
+#### WP on FAT: the pull test for saving to the SD card
+
+The same pull on a spare FAT32 or exFAT stick, for [S2](../hardware/sd-card-and-internal-drive.md#step-s2-saving-to-the-card-design-not-built), saving to the SD card. A card holds whole files, never a take being recorded, so this run writes only imports. It measures the two ways S2 weighs: how often a pull leaves a lost file, or one file under two names, with each.
+
+`mpfree-disktest --desktop-test DIR --cut-test --fat` (or `--fat-hidden`), with DIR on the spare stick:
+
+- **What it writes:** only `mpfree-cuttest/`, imports one after another for five minutes, as a save writes them: 256 KiB files (a project's or a kit's size) and every fourth a 4 MiB one (a sample's). The oldest is removed once 4 are there, as above. At most 20 MiB at once.
+- **The two ways:**
+  - `--fat` publishes as MPFree does (`publish`: a part file, synced, read back, renamed, the folder synced). FAT's rename takes two steps: the new name goes in, then the old one comes out. A pull between them leaves both names on the same clusters.
+  - `--fat-hidden` makes each file under its own name and hides it straight away (`FAT_IOCTL_SET_ATTRIBUTES`, which both drivers take in 6.18). The file is written and synced, then shown and synced again. Showing it changes one directory entry in place.
+- **What it says:** a first line `cut test way: fat-rename` (or `fat-hidden`), the folder's device, its type and its mount options. Then the same `promised: takes none; imports …` lines and `CUT NOW` after 30 s.
+- **Where it runs:** DIR must be on vfat or exfat on a USB disk.
+
+`--after-cut FILE` takes the way from FILE's first line and **writes nothing at all**. That is how MPFree treats a card a cut left marked in use: it isn't written until a computer has checked it. It checks that:
+
+- every promised import is there, shown and whole;
+- every shown import is whole;
+- the imports still hidden and the part files are counted as in flight, and not judged.
+
+An import found under two names is a rename cut between its steps, and the check names it. It is a fail if that import was promised, since its folder had been synced. If it wasn't promised, the check only says so, and the computer's `fsck.vfat -n` (`… and … share clusters`) confirms the cross-link.
+
+The folder stays as found, so the stick is formatted before its next run. An ext4 run's text is refused on a FAT stick, since that check sweeps and deletes.
+
+Tests (`tests/disktest.rs`):
+
+- Quick runs of both ways are killed at four moments. Each is checked with every promise kept and the folder byte for byte as it was.
+- A run with no cut is checked:
+  - its promised import's part file put back beside it fails;
+  - the same import with no promise is named and passes;
+  - a lone part file is counted;
+  - a promised import hidden again fails;
+  - a changed byte fails;
+  - a missing import fails;
+  - a take's name or a stranger's file is refused.
+  - Every check leaves the folder as it was.
+- The flags go only with `--cut-test`, one at a time.
+- A real run on a folder that isn't on FAT is refused.
+
+A test's quick run keeps the hidden mark as the sticky bit, because its folder isn't on FAT. The real ioctl runs only on the stick.
 
 ## P0.5: the old engine's fault fixes
 

@@ -448,6 +448,7 @@ impl ChainHost {
             (Some(g), Some(sc)) => Some(sidechain_list(h, sid, sc, g)),
             _ => self.listing.map(|g| strip_list(h, g)),
         };
+        xy_marks(&mut st.params, h);
         st
     }
 
@@ -628,6 +629,9 @@ impl ChainHost {
                 self.learning = true;
                 return ChainOut::Learn(addr);
             }
+            // The screen sends XY → and XY ↑ to your layouts
+            // (`gui::chain_msg`, `XyAction::Chip`), never here.
+            ChainAction::Xy { .. } => {}
             ChainAction::AddRow { target, source } => {
                 let row = Row {
                     source,
@@ -729,6 +733,35 @@ impl ChainHost {
             return Vec::new();
         };
         mpfree_chain_ui::picture(c, slot, "", t, h.mixer.rate(), bpm)
+    }
+}
+
+/// The XY pad's marks on `params` (layout spec 4b's XY marks): each one
+/// the layout playing now moves gets which way, the stretch the pad covers
+/// as knob positions, and where it really is (the knob's own position:
+/// after the matrix, so after an Add setting's push too).
+pub fn xy_marks(params: &mut [mpfree_chain_ui::state::ParamView], h: &MixHost) {
+    let layout = h.xy_shown();
+    let engine = h.modu.engine();
+    for p in params.iter_mut() {
+        p.xy = layout.and_then(|l| {
+            let (i, t) = l.slots().find(|(_, t)| t.addr == p.addr)?;
+            let (from, to) = match t.how {
+                mpfree_xy::How::Set => (p.info.to_unit(t.from), p.info.to_unit(t.to)),
+                // A push from wherever its own value is.
+                mpfree_xy::How::Add => {
+                    let own = p.info.to_unit(engine.base(p.addr).unwrap_or(p.value));
+                    ((own + t.from).clamp(0.0, 1.0), (own + t.to).clamp(0.0, 1.0))
+                }
+            };
+            Some(mpfree_chain_ui::state::XyMark {
+                up: i >= mpfree_xy::TARGETS,
+                from,
+                to,
+                now: p.pos,
+                recorded: false,
+            })
+        });
     }
 }
 

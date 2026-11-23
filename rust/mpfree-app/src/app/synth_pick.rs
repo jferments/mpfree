@@ -408,12 +408,6 @@ impl App {
         name: &'static str,
         bank: Option<usize>,
     ) -> Vec<Effect> {
-        if self.generating() {
-            return vec![Effect::Tell(
-                "The pads play a synth picked here as pressed: let go of NOTE REPEAT or Latch, or close the Arp panel, first"
-                    .into(),
-            )];
-        }
         let Some(n) = self.pick_place(bank) else {
             return vec![Effect::Tell(format!(
                 "No room for {name}: {SLOTS} instruments are loaded, the most at once. Set a track to Kit first"
@@ -493,12 +487,6 @@ impl App {
     /// is it; said, or why not. Over a kit it is what the pads play,
     /// alone (a kit can't be a layer).
     fn layer_synth(&mut self, id: &'static str, name: &'static str) -> Vec<Effect> {
-        if self.generating() {
-            return vec![Effect::Tell(
-                "Layers play the pads as pressed: let go of NOTE REPEAT or Latch, or close the Arp panel, first"
-                    .into(),
-            )];
-        }
         // One of them already: off.
         let first = match self.pad_map.base {
             PadFocus::Instrument(f) => Some(f),

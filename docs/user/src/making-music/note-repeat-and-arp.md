@@ -55,6 +55,16 @@ For a sound that should simply keep playing after you let go (a loop, a drone, a
 > [!TIP]
 > Latch a hi-hat at 1/16, then play the kick and snare over it by hand. With the pattern recording, the latched hats record too.
 
+## When the pads play something of their own
+
+Note Repeat, Latch and the arpeggiator play whatever the pads play, and turning them on never changes that. When you have chosen a synth or a kit for the pads (the top bar reads **Pads: Poly**, say) while the selected track plays something else, the repeats and arpeggios play that synth or kit, with the selected track's arp settings: its mode, rate, gate, swing, pattern and Latch. Your drums and the track's clips go on as before.
+
+- **On a synth** the arp plays the notes of the pads you hold, chords too, as the synth's pad layout has them.
+- **On a kit** it plays the kit's pads on the bank the pads are on.
+- **When the pads move to something else** (Follow track, another bank with its own pick, another synth or kit), what the arp was playing there stops, latched notes too. Play again to start it on what the pads play now.
+- **Layers** play each hit once, as you press it; the repeats play the pads' first sound.
+- **Recording:** REC records the synth or kit on a free track as usual (see [Synths](synths.md)), and the arp's notes record as you hear them. Once that track is selected the pads play through it and its arp. While the pads play a bank's own synth or kit, the arp's notes go into that sound's own track (see [Recording every bank](synths.md#recording-every-bank)).
+
 ## The Arp panel
 
 The **Arp panel** opens on the Play page, in place of the loops, the rows and the throws, with **NOTE REPEAT + MENU**, or by tapping the arp chip in the top bar (such as **Arp: Up 1/16, latched · 120 BPM**, which shows while the arp, a repeat or a latch is on). The same again closes it. While it is open, the pads play through the arp in the mode its tabs pick, and you don't need to hold NOTE REPEAT.

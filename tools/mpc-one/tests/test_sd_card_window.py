@@ -37,17 +37,23 @@ PART_START = 64
 CARD_DIR = f"sys/devices/platform/{SD}/mmc_host/mmc1/mmc1:0001/block/mmcblk1"
 EMMC_DIR = f"sys/devices/platform/{EMMC}/mmc_host/mmc0/mmc0:0001/block/mmcblk0"
 REFUSED = "[  812.40] Trying to write to read-only block-device mmcblk1p1\n"
+# The pad player's word for an opening, as it writes it in the request; every status gives it back.
+ASK = "5f0c1d2e3a4b59687766554433221100"
 
 
-def boot_sector(kind):
-    """The first sector of a filesystem, as FAT and exFAT write it (the names at 3, 54 and 82), the rest noise."""
+def boot_sector(kind, flags=0):
+    """The first sector of a filesystem, as FAT and exFAT write it (the names at 3, 54 and 82), the rest noise,
+    but for the byte that holds the in-use mark (FAT32 65, FAT16 37, exFAT's VolumeFlags 106-107): `flags`."""
     s = bytearray(blob(kind, 512))
     if kind == "fat32":
         s[3:11], s[82:90] = b"MSDOS5.0", b"FAT32   "
+        s[65] = flags
     elif kind == "fat16":
         s[3:11], s[54:62] = b"MSDOS5.0", b"FAT16   "
+        s[37] = flags
     elif kind == "exfat":
         s[3:11] = b"EXFAT   "
+        s[106:108] = flags.to_bytes(2, "little")
     elif kind == "ntfs":
         s[3:11] = b"NTFS    "
     elif kind == "ext4":   # ext4 keeps nothing in its first sector; its superblock is at 1024
@@ -67,8 +73,8 @@ class FakeSdKernel:
     `writable` (a card that stays writable), `ignore_rule`, `ignore_unbind`."""
 
     def __init__(self, root, card="fat32", parts=1, emmc_too=False, boot_area=False, writable=False,
-                 ignore_rule=False, ignore_unbind=False):
-        self.root, self.card, self.parts = root, card, parts
+                 ignore_rule=False, ignore_unbind=False, flags=0):
+        self.root, self.card, self.parts, self.flags = root, card, parts, flags
         self.emmc_too, self.boot_area, self.writable = emmc_too, boot_area, writable
         self.ignore_rule, self.ignore_unbind = ignore_rule, ignore_unbind
         self.bound, self.unbound, self.rule = [], [], None
@@ -139,7 +145,7 @@ class FakeSdKernel:
         disk_ro = "0\n" if self.writable else ("link", "force_ro")
         part_ro = "0\n" if self.writable else ("link", "../force_ro")
         stat = STAT.format(w=0, ws=0, d=0)
-        fs = boot_sector(self.card)
+        fs = boot_sector(self.card, self.flags)
         parts = []
         if self.parts == 0:
             write(os.path.join(self.root, "dev/mmcblk1"), fs + bytes(1024))
@@ -268,6 +274,7 @@ class WindowTests(unittest.TestCase):
               "mpfree-internal-off: done: no eMMC or SD card block device is left\n")
         self.kernel = None
         self.proc = None
+        self.quiet = None   # QUIET for this run, when a test needs it shorter
 
     def tearDown(self):
         if self.proc and self.proc.poll() is None:
@@ -281,11 +288,15 @@ class WindowTests(unittest.TestCase):
         with open(WINDOW) as fh:
             text = fh.read()
         self.assertTrue(text.startswith("R=''\n"))
-        return text.replace("R=''", f"R='{self.root}'", 1)
+        text = text.replace("R=''", f"R='{self.root}'", 1)
+        if self.quiet is not None:
+            self.assertEqual(text.count("\nQUIET=120\n"), 1)
+            text = text.replace("\nQUIET=120\n", f"\nQUIET={self.quiet}\n", 1)
+        return text
 
-    def start(self, **env):
+    def start(self, request=ASK + "\n", **env):
         path = os.path.join(self.root, "run/mpfree-app/sd-card.request")
-        write(path, "")
+        write(path, request)
         self.proc = subprocess.Popen([self.dash, "-c", self.script(), "setup-sd-card.sh"],
                                      env={"PATH": self.bin, "FAKE_LOG": self.log, "FAKE_ROOT": self.root, **env},
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -311,6 +322,14 @@ class WindowTests(unittest.TestCase):
         out = self.proc.stdout.read() if self.proc.poll() is not None else "still running"
         self.fail(f"no state={state}: {out}\n{self.notes()}")
 
+    def wait_state_ask(self, state, ask, seconds=20):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            if os.path.exists(self.status_path()) and self.status(ask=ask).get("state") == state:
+                return self.status(ask=ask)
+            time.sleep(0.02)
+        self.fail(f"no state={state}\n{self.notes()}")
+
     def close_card(self):
         write(os.path.join(self.root, "run/mpfree-app/sd-card.close"), "")
         return self.finish()
@@ -318,9 +337,12 @@ class WindowTests(unittest.TestCase):
     def status_path(self):
         return os.path.join(self.root, "run/mpfree-setup/sd-card-status")
 
-    def status(self):
+    def status(self, ask=ASK):
+        """The status, without its ask line, which must give back the request's word."""
         with open(self.status_path()) as fh:
-            return dict(line.split("=", 1) for line in fh.read().splitlines())
+            st = dict(line.split("=", 1) for line in fh.read().splitlines())
+        self.assertEqual(st.pop("ask", None), ask, st)
+        return st
 
     def notes(self):
         return read_text(os.path.join(self.root, "run/mpfree-setup/sd-card-log.txt"))
@@ -354,8 +376,13 @@ class WindowTests(unittest.TestCase):
             self.assertTrue(self.calls("umount: ")[-1].endswith(MNT), self.calls("umount: "))
 
     def assert_read_only(self, dev="/dev/mmcblk1p1"):
-        """The card was read only as one sector of its filesystem, and mounted read-only."""
-        self.assertEqual(self.calls("dd: "), [f"if={self.root}{dev} bs=512 count=1"])
+        """The card was read only as one sector of its filesystem, and mounted read-only; the in-use mark was
+        read from the sector's copy in RAM."""
+        reads = self.calls("dd: ")
+        self.assertEqual([r for r in reads if "/dev/" in r], [f"if={self.root}{dev} bs=512 count=1"])
+        sector = f"if={self.root}/run/mpfree-setup/sd-card-sector bs=1 skip="
+        self.assertEqual(len([r for r in reads if r.startswith(sector) and r.endswith(" count=1")]), 1, reads)
+        self.assertEqual(len(reads), 2, reads)
         for call in self.calls("mount: "):
             self.assertRegex(call, rf"^-t (vfat|exfat) -o {re.escape(OPTIONS)} {re.escape(dev)} {re.escape(MNT)}$")
 
@@ -368,7 +395,7 @@ class WindowTests(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.root, "run/mpfree-app/sd-card.request")),
                          "the request is taken away, so the path unit stays quiet")
         self.assertEqual(st, {"state": "open", "message": "The SD card is open, read-only.", "card": "mmcblk1",
-                              "fs": "vfat", "sectors": str(CARD_SECTORS), "mount": MNT})
+                              "fs": "vfat", "sectors": str(CARD_SECTORS), "mount": MNT, "dirty": "no"})
         self.assertEqual(self.kernel.rule, RO_RULE, "the rule is there before the bind")
         self.assertEqual(read_text(os.path.join(self.root, CARD_DIR, "force_ro")), "1\n")
         self.assertIn(f"/dev/mmcblk1p1 {MNT} vfat {OPTIONS},", read_text(os.path.join(self.root, "proc/mounts")))
@@ -399,6 +426,32 @@ class WindowTests(unittest.TestCase):
                 self.assertEqual(code, 0, out + self.notes())
                 self.assert_closed()
                 self.assert_read_only(f"/dev/{dev}")
+
+    def test_a_card_not_safely_removed_last_time_is_still_opened_and_said(self):
+        # (card, flags, dirty): only the in-use bit counts, and exFAT's disk-error bit.
+        for card, flags, dirty in (("fat32", 0x01, "yes"), ("fat32", 0x02, "no"), ("fat16", 0x01, "yes"),
+                                   ("fat16", 0x00, "no"), ("exfat", 0x0002, "yes"), ("exfat", 0x0001, "no"),
+                                   ("exfat", 0x0004, "yes"), ("exfat", 0x0100, "no")):
+            with self.subTest(card=card, flags=flags):
+                self.tearDown()
+                self.setUp()
+                self.kernel = FakeSdKernel(self.root, card=card, flags=flags)
+                self.start()
+                st = self.wait_state("open")
+                self.assertEqual(st["dirty"], dirty)
+                if dirty == "yes":
+                    self.assertEqual(st["message"], "The SD card is open, read-only. It wasn't safely removed "
+                                                    "last time: check it on a computer.")
+                    self.assertIn("the card was not unmounted cleanly last time", self.notes())
+                else:
+                    self.assertEqual(st["message"], "The SD card is open, read-only.")
+                    self.assertNotIn("not unmounted cleanly", self.notes())
+                self.assertEqual("disk error" in self.notes(), flags == 0x0004)
+                code, out = self.close_card()
+                self.assertEqual(code, 0, out + self.notes())
+                self.assert_closed()
+                self.assert_read_only()
+                self.assertFalse(os.path.exists(os.path.join(self.root, "run/mpfree-setup/sd-card-sector")))
 
     def test_an_empty_slot(self):
         self.kernel = FakeSdKernel(self.root, card=None)
@@ -624,6 +677,62 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(self.status()["state"], "failed")
         self.assertNotIn(MNT, self.mounts(), "unmounted before it turns the MPC off")
 
+    def test_closes_when_the_pad_player_stops_answering(self):
+        alive = os.path.join(self.root, "run/mpfree-app/sd-card.alive")
+        write(alive, "00000000000000000007\n")   # an earlier opening's: not this one's
+        self.quiet = 5
+        self.kernel = FakeSdKernel(self.root)
+        self.start()
+        self.wait_state("open")
+        self.assertFalse(os.path.exists(alive), "an earlier opening's counter is taken away")
+        # While the counter moves, the window stays open, far past QUIET checks.
+        for n in range(1, 31):
+            write(alive, f"{n:020}\n")
+            time.sleep(0.05)
+        self.assertIsNone(self.proc.poll(), "it stays open while the pad player answers" + self.notes())
+        self.assertEqual(self.status()["state"], "open")
+        # Then it stops: the window closes as if asked, and checks everything as it does.
+        code, out = self.finish()
+        self.assertEqual(code, 0, out + self.notes())
+        self.assertEqual(self.status(), {"state": "closed",
+                                         "message": "Closed: MPFree stopped reading the card. Nothing was written "
+                                                    "to it."})
+        self.assertIn("closed: MPFree stopped reading the card (its counter stood still for 5 s)", self.notes())
+        self.assert_closed()
+        self.assert_read_only()
+        self.assertFalse(os.path.exists(alive), "the counter is taken away with the window")
+
+    def test_a_pad_player_that_never_answers_still_gets_its_window_closed(self):
+        self.quiet = 3
+        self.kernel = FakeSdKernel(self.root)
+        self.start()
+        self.wait_state("open")
+        code, out = self.finish()
+        self.assertEqual(code, 0, out + self.notes())
+        self.assertEqual(self.status()["state"], "closed")
+        self.assert_closed()
+
+    def test_every_status_gives_back_the_requests_word(self):
+        # Only its hex digits, at most 32 of them: nothing else from the file reaches the status.
+        for request, ask in ((ASK + "\n", ASK), ("", ""), ("$(reboot) 'x\n\nab;cd\n", "ebabcd"),
+                             ("0123456789abcdef" * 4 + "\n", "0123456789abcdef" * 2)):
+            with self.subTest(request=request):
+                self.tearDown()
+                self.setUp()
+                self.kernel = FakeSdKernel(self.root)
+                self.start(request=request)
+                self.assertEqual(self.wait_state_ask("open", ask)["state"], "open")
+                code, out = self.close_card()
+                self.assertEqual(code, 0, out + self.notes())
+                self.assertEqual(self.status(ask=ask)["state"], "closed")
+        # One that stops at the checks says it too.
+        self.tearDown()
+        self.setUp()
+        os.remove(os.path.join(self.root, "run/mpfree-internal-off.txt"))
+        code, out = self.run_window()
+        self.assertEqual(code, 1, out)
+        self.assertEqual(self.status()["state"], "failed")
+
     def test_a_close_left_from_before_is_not_for_this_opening(self):
         self.kernel = FakeSdKernel(self.root)
         write(os.path.join(self.root, "run/mpfree-app/sd-card.close"), "")
@@ -652,8 +761,10 @@ class StaticTests(unittest.TestCase):
     def test_never_writes_the_card(self):
         code = self.code()
         # The card is read once, one sector, into a pipe; nothing is written to a device but the kernel log.
-        self.assertEqual([m.strip("( ") for m in re.findall(r"(?:^|[\s;|&(])dd\s[^\n|]*", code)],
-                         ['dd if="$R/dev/$dev" bs=512 count=1 2>/dev/null'])
+        self.assertEqual([m.strip("(\n ") for m in re.findall(r"(?:^|[\s;|&(])dd\s[^\n|]*", code)],
+                         ['dd if="$R/dev/$dev" bs=512 count=1 2>/dev/null > "$SECTOR"',
+                          'dd if="$SECTOR" bs=1 skip="$1" count=1 2>/dev/null'])
+        self.assertIn('SECTOR="$S/sd-card-sector"\n', code)
         self.assertEqual(re.findall(r"\bof=\S+", code), [])
         self.assertEqual(re.findall(r'>\s*"?\$R/dev/[^\s;]+', code), ['> "$R/dev/kmsg"'])
         # One mount, read-only first; no other way to change a filesystem.
@@ -678,9 +789,11 @@ class StaticTests(unittest.TestCase):
         self.assertIn("devdir=$d\n", code)
         self.assertEqual(re.findall(r"(?m)^\s*devdir=\S+", code), ["devdir=''", "  devdir=$d"])
         # Deletes: its own files in /run, stale /dev/disk links, the empty mount point.
-        self.assertEqual(sorted(set(re.findall(r"\brm -f \"[^\"]+\"(?: \"[^\"]+\")?", code))),
-                         sorted({'rm -f "$ASK/sd-card.request" "$ASK/sd-card.close"', 'rm -f "$l"', 'rm -f "$RULE"',
-                                 'rm -f "$ASK/sd-card.close"', 'rm -f "$S/sd-card-counters-now.txt"'}))
+        self.assertEqual(sorted(set(re.findall(r"\brm -f \"[^\"]+\"(?: \"[^\"]+\")*", code))),
+                         sorted({'rm -f "$ASK/sd-card.request" "$ASK/sd-card.close" "$ALIVE"', 'rm -f "$l"',
+                                 'rm -f "$RULE"', 'rm -f "$ASK/sd-card.close"', 'rm -f "$S/sd-card-counters-now.txt"',
+                                 'rm -f "$ALIVE" "$S/sd-card-sector"'}))
+        self.assertIn('ALIVE="$ASK/sd-card.alive"\n', code)
         self.assertNotIn("rm -r", code)
         self.assertIn('rmdir "$R$MNT"', code)
         self.assertIn("MNT=/run/mpfree-sd\n", code)

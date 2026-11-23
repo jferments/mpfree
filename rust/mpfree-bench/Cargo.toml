@@ -26,6 +26,7 @@ mpfree-moves = { path = "../mpfree-moves" }
 mpfree-lanes = { path = "../mpfree-lanes" }
 mpfree-instruments = { path = "../mpfree-instruments" }
 mpfree-simd = { path = "../mpfree-simd" }
+mpfree-stems = { path = "../mpfree-stems" }
 mpfree-time-ui = { path = "../mpfree-time-ui" }
 mpfree-stream = { path = "../mpfree-stream" }
 mpfree-ui = { path = "../mpfree-ui" }

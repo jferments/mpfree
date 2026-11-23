@@ -130,6 +130,16 @@ pub enum XyAction {
     WaitEnd(bool),
     /// The pad's Hold.
     Hold(bool),
+    /// XY → or XY ↑ on the chain editor's Modulate row (layout spec 4b's
+    /// XY chips): the setting goes on that direction of the layout playing
+    /// (a ready-made one, `pick` as Prefs keeps it, becomes a layout of
+    /// yours first), over its whole range, Even, Set; on that direction
+    /// already, it comes off.
+    Chip {
+        addr: ParamAddr,
+        up: bool,
+        pick: Option<usize>,
+    },
 }
 
 /// A setting as the sound loop sees it now ([`Look`]).
@@ -297,6 +307,8 @@ impl MineView {
 /// One setting's row in Setup.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RowView {
+    /// Its setting (None only in a row made as a default).
+    pub addr: Option<ParamAddr>,
     pub up: bool,
     /// Its place on its direction.
     pub k: usize,
@@ -336,14 +348,47 @@ pub struct WaitView {
     pub just: String,
 }
 
-/// Why a synth's or a pad's own setting can't join yet (they come with
-/// the pad's hand on them, the next step of phase 2).
-pub const NOT_YET: &str =
-    "A synth's and a pad's own settings join the pad soon: for now, the mixer, effects, macros and outside gear";
+/// Hold on a ready-made layout, from the screen or a learned button
+/// (phase 2): it comes with the XY page.
+pub const NO_HOLD: &str =
+    "Hold works on a layout of yours for now: Setup makes a copy of this one yours";
 
 /// Why Add is greyed on a synth's or a pad's own setting.
 pub const NO_ADD: &str =
-    "Add works on the mixer, effects and outside gear for now: a synth's and a pad's own settings join later";
+    "Add works on the mixer, effects and outside gear for now: a synth's or a pad's own setting moves by Set";
+
+/// What a learned layout button plays (Learn's Play card: XY layout next
+/// and back, `step` presses): the layout of yours `step` on from the one
+/// playing (the first, or the last going back, when none plays), or,
+/// while the song has none, the ready-made one `step` on from `ready`
+/// (None: Filter + echo), in the list's order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stepped {
+    Yours(usize),
+    Ready(Option<usize>),
+}
+
+impl XySong {
+    /// Where `step` presses of a learned layout button go ([`Stepped`]).
+    pub fn stepped(&self, ready: Option<usize>, step: i8) -> Stepped {
+        let step = i32::from(step);
+        let n = self.yours.len() as i32;
+        if n > 0 {
+            let i = match self.playing {
+                Some(i) => i as i32 + step,
+                None if step > 0 => step - 1,
+                None => n + step,
+            };
+            return Stepped::Yours(i.rem_euclid(n) as usize);
+        }
+        let len = crate::play_page::XY_CHOICES.len() as i32;
+        let at = ready.map_or(0, |k| k as i32 + 1);
+        match (at + step).rem_euclid(len) {
+            0 => Stepped::Ready(None),
+            k => Stepped::Ready(Some(k as usize - 1)),
+        }
+    }
+}
 
 /// An Add push as Setup writes it.
 fn push_text(p: f32) -> String {
@@ -690,7 +735,76 @@ impl XySong {
                 load: None,
                 hold: Some(on),
             }),
+            XyAction::Chip { addr, up, pick } => self.chip(addr, up, pick, ready, look, tell),
         }
+    }
+
+    /// XY → (`up` false) or XY ↑ on `addr`: see [`XyAction::Chip`].
+    fn chip(
+        &mut self,
+        addr: ParamAddr,
+        up: bool,
+        pick: Option<usize>,
+        ready: impl FnOnce(Option<usize>, &str) -> Option<Mine>,
+        look: Look<'_>,
+        tell: &mut dyn FnMut(String),
+    ) -> Result<Done, String> {
+        let chip = if up { "XY ↑" } else { "XY →" };
+        if !reachable(addr) {
+            return Err("That is a button: the pad moves settings with a range".to_string());
+        }
+        let seen = look(addr)?;
+        let who = format!("{} ({})", seen.name, seen.place);
+        if let Err(why) = movable(&seen.info) {
+            return Err(format!("{who} can't go on the pad: {why}"));
+        }
+        // A ready-made layout playing: a copy of it becomes yours.
+        let (i, made) = match self.playing.filter(|&i| i < self.yours.len()) {
+            Some(i) => (i, String::new()),
+            None => {
+                let base = crate::play_page::XY_CHOICES[pick.map_or(0, |k| k + 1)];
+                let name = self.free_name(base, 2);
+                let Some(m) = ready(pick, &name) else {
+                    return Err(format!(
+                        "Play {base} on the pad once first: its effect isn't on the master yet"
+                    ));
+                };
+                let (i, _) = self.add(m)?;
+                (i, format!(" (yours, made from {base})"))
+            }
+        };
+        let m = &mut self.yours[i];
+        let name = m.layout.name.clone();
+        let was = m.layout.way_of(addr);
+        if was == Some(up) {
+            m.layout.take_off(addr);
+            tell(format!("{who} is off {name}{made}"));
+        } else {
+            let t = Target::linear(addr, seen.info.from_unit(0.0), seen.info.from_unit(1.0));
+            m.layout.put(up, t).map_err(|_| {
+                format!(
+                    "{} has {TARGETS} settings: take one off first",
+                    if up { "Up" } else { "Across" }
+                )
+            })?;
+            m.remember(addr, &seen.name, &seen.place);
+            let moved = if was.is_some() {
+                format!(", moved from {}", way(!up))
+            } else {
+                String::new()
+            };
+            tell(format!(
+                "{who} moves {} on {name}{made}{moved}, {} to {} · {chip} again: take it off · \
+                 its range and curve: Setup on the XY page",
+                way(up),
+                mpfree_mod::text::value_text(&seen.info, t.from),
+                mpfree_mod::text::value_text(&seen.info, t.to)
+            ));
+        }
+        Ok(Done {
+            load: self.reload(i),
+            hold: None,
+        })
     }
 
     /// A SHIFT + touch on `addr` while the banner waits: it joins the
@@ -822,6 +936,7 @@ fn mine_view(m: &mut Mine, look: Look<'_>) -> MineView {
                         How::Add => (t.from, t.to, push_text(t.from), push_text(t.to)),
                     };
                     RowView {
+                        addr: Some(t.addr),
                         up,
                         k,
                         name: seen.name,
@@ -840,6 +955,7 @@ fn mine_view(m: &mut Mine, look: Look<'_>) -> MineView {
                 Err(why) => {
                     let (name, place) = m.name_of(t.addr);
                     RowView {
+                        addr: Some(t.addr),
                         up,
                         k,
                         name,
@@ -1312,6 +1428,60 @@ mod tests {
 
     fn join(song: &mut XySong, addr: ParamAddr) -> Result<Done, String> {
         act(song, XyAction::Join(crate::gui::LearnValue::Param(addr)))
+    }
+
+    /// XY → and XY ↑ on the Modulate row: on a ready-made layout a copy
+    /// becomes yours with the setting on it; the other way moves it, the
+    /// same way again takes it off, and a switch can't go on.
+    #[test]
+    fn the_modulate_rows_xy_chips_put_a_setting_on_the_pad_and_take_it_off() {
+        let mut song = XySong::default();
+        let mut told = Vec::new();
+        let chip = |addr, up| XyAction::Chip {
+            addr,
+            up,
+            pick: None,
+        };
+        let d = song
+            .act(
+                chip(MIX, true),
+                1,
+                |pick, name| {
+                    assert_eq!(pick, None, "Filter + echo");
+                    Some(Mine::new(name))
+                },
+                &look,
+                &mut |l| told.push(l),
+            )
+            .unwrap();
+        assert!(matches!(d.load, Some(Some(_))), "it plays at once: {d:?}");
+        assert_eq!(song.playing, Some(0));
+        assert_eq!(song.yours[0].layout.name, "Filter + echo 2");
+        assert_eq!(song.yours[0].layout.way_of(MIX), Some(true));
+        let t = song.yours[0].layout.up.targets[0];
+        assert_eq!(
+            (t.from, t.to, t.how),
+            (0.0, 100.0, How::Set),
+            "its whole range"
+        );
+        assert!(
+            told[0].starts_with(
+                "Mix (Master · Room, effect 1) moves up on Filter + echo 2 \
+                 (yours, made from Filter + echo), "
+            ) && told[0].contains("XY ↑ again: take it off"),
+            "{told:?}"
+        );
+        // On a layout of yours, across moves it there.
+        act(&mut song, chip(MIX, false)).unwrap();
+        assert_eq!(song.yours.len(), 1, "the layout playing takes it");
+        assert_eq!(song.yours[0].layout.way_of(MIX), Some(false));
+        // XY → again: off.
+        let d = act(&mut song, chip(MIX, false)).unwrap();
+        assert!(matches!(d.load, Some(Some(_))), "{d:?}");
+        assert_eq!(song.yours[0].layout.way_of(MIX), None);
+        let e = act(&mut song, chip(BYPASS, true)).unwrap_err();
+        assert!(e.contains("can't go on the pad: it is a switch"), "{e}");
+        assert_eq!(song.yours[0].layout.way_of(BYPASS), None);
     }
 
     /// "+ New layout" plays an empty layout; the banner's settings join one

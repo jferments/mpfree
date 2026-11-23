@@ -105,6 +105,11 @@ pub const TAIL: usize = 128;
 /// Hits played together: notes within this many milliseconds of a hit's
 /// first note are one hit (a chord, a flam).
 pub const TOGETHER_MS: f64 = 30.0;
+/// A flam at the opening: a note louder than the opening hit's own, this
+/// soon after its first note, is part of it (a soft hat played just
+/// ahead of the kick). Without it the soft note alone would stand for
+/// the opening, and a soft note like it near the tap could win.
+pub const FLAM_MS: f64 = 45.0;
 /// The reach either side of the tap, at most: a 1/16 note if that is
 /// shorter (above 150 BPM).
 pub const REACH_MS: f64 = 100.0;
@@ -126,6 +131,16 @@ pub const W_PRIOR: f64 = 0.2;
 pub const THRESHOLD: f64 = 0.9;
 /// How far ahead of everything else (the tap included) it must be.
 pub const MARGIN: f64 = 0.4;
+/// Far from the tap: more than this part of the reach away. A hit there
+/// moves the tap only when the beat backs it, once the loop has a beat
+/// to go on ([`MIN_BEAT_NOTES`]): its rhythm part at least [`BEAT_BACKS`],
+/// and no less than your tap's own (the loop ending there fits the beat
+/// at least as well as the loop ending on your tap). At fast tempos the
+/// reach is a 1/16 note, so a tap almost a 16th early reaches back
+/// nearly an 8th, to a pickup that sounds like the first hit.
+pub const FAR: f64 = 0.7;
+/// The rhythm part a far hit needs, at least.
+pub const BEAT_BACKS: f64 = 0.15;
 
 /// A pass's notes (or hits), from its start: the first [`HEAD`], then the
 /// last [`TAIL`]. Ones the tail had to drop are counted, and the newest
@@ -301,7 +316,9 @@ impl<E: Event> InnerBeat<E> {
             .iter()
             .position(|x| x.frame() >= from && x.frame() <= from + reach);
         let origin = open.map_or(from, |i| all[i].frame());
-        let skip = open.map_or(0, |i| hit_at(all, i, frames(rate, TOGETHER_MS)).1);
+        let skip = open.map_or(0, |i| {
+            opening_at(all, i, frames(rate, TOGETHER_MS), frames(rate, FLAM_MS)).1
+        });
         let end = from + len as u64;
         let mut notes = [E::NONE; HEAD + TAIL];
         let mut k = 0;
@@ -486,7 +503,7 @@ pub fn decide<E: Event>(
     let open = notes
         .iter()
         .position(|x| x.frame() >= ask.start && x.frame() <= ask.start + ask.reach);
-    let opening = open.map(|i| hit_at(notes, i, together));
+    let opening = open.map(|i| opening_at(notes, i, together, frames(ask.rate, FLAM_MS)));
     // The loop is measured from it (a loop started on REC a moment before
     // your first hit starts on the hit): an end is where it comes round.
     let lead = opening.map_or(0, |o| notes[o.0].frame() - ask.start);
@@ -547,7 +564,13 @@ pub fn decide<E: Event>(
             second = *c;
         }
     }
-    let clear = best.score >= THRESHOLD && best.score - second.score >= MARGIN;
+    // Far from the tap, with a beat to go on, the beat must back it, at
+    // least as well as it backs your tap.
+    let far = best.end.abs_diff(ask.tap) as f64 > FAR * ask.reach as f64;
+    let unbacked = far
+        && ctx.beat_notes() >= MIN_BEAT_NOTES
+        && (best.rhythm < BEAT_BACKS || best.rhythm < tap.rhythm);
+    let clear = best.score >= THRESHOLD && best.score - second.score >= MARGIN && !unbacked;
     Decision {
         verdict: if clear {
             Verdict::Moved
@@ -571,6 +594,26 @@ fn hit_at<E: Event>(notes: &[E], i: usize, together: u64) -> (usize, usize) {
         j += 1;
     }
     (i, j)
+}
+
+/// The opening hit, from its first note `i`: the notes played together
+/// with it, and with a flam's louder note if one comes within `flam` of
+/// it (with that note's own together).
+fn opening_at<E: Event>(notes: &[E], i: usize, together: u64, flam: u64) -> (usize, usize) {
+    let (first, mut last) = hit_at(notes, i, together);
+    let loudest = notes[first..last]
+        .iter()
+        .map(|x| x.level())
+        .fold(0.0, f64::max);
+    let f = notes[first].frame();
+    if let Some(k) = notes[last..]
+        .iter()
+        .take_while(|x| x.frame() - f <= flam)
+        .position(|x| x.level() > loudest)
+    {
+        last = hit_at(notes, last + k, together).1;
+    }
+    (first, last)
 }
 
 struct Ctx<'a, E: Event> {
@@ -633,6 +676,22 @@ impl<E: Event> Ctx<'_, E> {
         best
     }
 
+    /// The loop's notes the rhythm part weighs: after the opening hit, up
+    /// to the reach.
+    fn beat(&self) -> impl Iterator<Item = &E> {
+        let from = self.ask.start + self.lead;
+        let to = self.ask.tap.saturating_sub(self.ask.reach);
+        let after = self.opening.map_or(0, |o| o.1);
+        self.notes[after..]
+            .iter()
+            .filter(move |x| x.frame() >= from && x.frame() < to)
+    }
+
+    /// How many there are: the beat the loop has to go on.
+    fn beat_notes(&self) -> usize {
+        self.beat().count()
+    }
+
     /// The loop's notes after the opening hit up to the reach, against a
     /// beat grid from the opening of the length `end` gives: each note
     /// scores how near a beat it falls (a bell a twentieth of a beat wide,
@@ -652,13 +711,8 @@ impl<E: Event> Ctx<'_, E> {
         let rate = f64::from(self.ask.rate);
         let sigma = (beat * 0.05).clamp(0.010 * rate, 0.030 * rate);
         let from = self.ask.start + self.lead;
-        let to = self.ask.tap.saturating_sub(self.ask.reach);
         let (mut sum, mut wsum) = (0.0, 0.0);
-        let after = self.opening.map_or(0, |o| o.1);
-        for x in self.notes[after..]
-            .iter()
-            .filter(|x| x.frame() >= from && x.frame() < to)
-        {
+        for x in self.beat() {
             let t = (x.frame() - from) as f64;
             let off = t - (t / beat).round() * beat;
             let w = x.weight();
@@ -882,6 +936,73 @@ mod tests {
         log.lost(10_000 + ms(1000.0));
         let d = decide(&log, &ask(4060.0, 4160.0, 120.0), &bars_at);
         assert_eq!(d.verdict, Verdict::Moved);
+    }
+
+    #[test]
+    fn a_soft_note_just_ahead_of_the_first_kick_is_part_of_the_opening_hit() {
+        // Two bars at 120 BPM, the first hat played 35 ms ahead of the
+        // first kick (a flam), and the downbeat the kick alone. Without
+        // the flam the soft hat alone would be the opening, and the kick
+        // on the downbeat nothing like it.
+        let mut notes = beat(120.0, 2, 0.0, &|k| if k == 0 { 35.0 } else { 0.0 });
+        notes.retain(|n| {
+            !(n.key == 42 && (n.frame == 10_000 + ms(35.0) || n.frame == 10_000 + ms(4000.0)))
+        });
+        notes.push(note(0.0, 42, 60));
+        notes.sort_by_key(|n| n.frame);
+        let d = decide(&log_of(&notes), &ask(4060.0, 4160.0, 120.0), &bars_at);
+        assert_eq!(
+            (d.verdict, d.end),
+            (Verdict::Moved, 10_000 + ms(4000.0)),
+            "{d:?}"
+        );
+        assert_eq!(d.lead, 0, "the loop starts on the hat, its first note");
+        assert!(
+            d.best.unwrap().onset > 0.9,
+            "the kick is the opening's: {d:?}"
+        );
+    }
+
+    #[test]
+    fn far_from_the_tap_a_hit_moves_it_only_when_the_beat_backs_it() {
+        // Half time at 174 BPM, two bars: kick on 1 and on the "and" of 4,
+        // snare on 3, hats on the 8ths. The reach is a 16th (86 ms).
+        let eighth = 30_000.0 / 174.0;
+        let mut notes = Vec::new();
+        for k in 0..16 {
+            let t = k as f64 * eighth;
+            match k % 8 {
+                0 => notes.push(note(t, 36, 120)),
+                4 => notes.push(note(t, 38, 118)),
+                // The pickup, played a little late.
+                7 => notes.push(note(t + 12.0, 36, 110)),
+                _ => {}
+            }
+            notes.push(note(t, 42, 60));
+        }
+        let downbeat = 16.0 * eighth;
+        // You stop before the downbeat and tap 80 ms early: the pickup is
+        // within the reach, at its far edge, and sounds like the first
+        // kick, but the beat doesn't fit a loop that ends there.
+        let a = ask(downbeat - 80.0, downbeat - 80.0 + 86.0, 174.0);
+        let d = decide(&log_of(&notes), &a, &bars_at);
+        let b = d.best.unwrap();
+        assert!(
+            b.onset > 0.9 && b.score >= THRESHOLD,
+            "it would have won: {d:?}"
+        );
+        assert!(b.end.abs_diff(a.tap) as f64 > FAR * a.reach as f64, "{d:?}");
+        assert!(b.rhythm < BEAT_BACKS, "{d:?}");
+        assert_eq!((d.verdict, d.end), (Verdict::NotClear, a.tap), "{d:?}");
+        // The downbeat played, and the tap 60 ms late: it moves there.
+        notes.push(note(downbeat, 36, 120));
+        let a = ask(downbeat + 60.0, downbeat + 146.0, 174.0);
+        let d = decide(&log_of(&notes), &a, &bars_at);
+        assert_eq!(
+            (d.verdict, d.end),
+            (Verdict::Moved, 10_000 + ms(downbeat)),
+            "{d:?}"
+        );
     }
 
     #[test]

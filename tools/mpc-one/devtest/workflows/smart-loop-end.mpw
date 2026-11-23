@@ -1,0 +1,106 @@
+title Smart loop end: free first loops tapped late, offered and snapped on Suggest, closed on the end you played on Auto
+covers smart-end
+# Tempo from the first loop on: each free first loop's length sets the
+# song's tempo. Two bars of kick (pad 1) and snare (pad 3) at about 120 BPM,
+# then the next bar's first kick and REC a little after it, late on purpose.
+# On the MPC this shows smart loop end on its own timing: the pads' frames,
+# Auto's wait to the end of the reach, and snaps landing on the downbeat.
+wait 1
+tap header tab Looper
+# MENU: Tempo from the first loop On (row 7), Smart loop end Suggest (row 8:
+# down to Off, then one up).
+button MENU
+wheel 6
+button +
+wheel 1
+button -
+button -
+button +
+button MENU
+wait 0.5
+tap leditor bars Free
+wait 0.5
+mark suggest
+button REC
+pad 1 120
+wait 0.39
+pad 3 100
+wait 0.39
+pad 1 120
+wait 0.39
+pad 3 100
+wait 0.39
+pad 1 120
+wait 0.39
+pad 3 100
+wait 0.39
+pad 1 120
+wait 0.39
+pad 3 100
+wait 0.39
+pad-down 1 120
+wait 0.06
+button REC
+pad-up 1
+wait 1
+expect smart loop end offers the end you played
+expect looper: Loop 1 is 2 bars at
+expect time: Loop 1 on Loops A, row 1, playing
+# Snap lands on the loop's next downbeat, with the tempo; Use my tap goes
+# back; UNDO then has nothing left, and SHIFT + UNDO snaps again.
+tap leditor chip-act Snap
+wait 4.5
+expect looper: Loop 1: snapped the start
+tap leditor chip-act Use my tap
+wait 4.5
+expect looper: Loop 1: Undo: the start
+button UNDO
+wait 1
+button SHIFT + UNDO
+wait 4.5
+expect looper: Loop 1: Redo: the start
+expect-not refused
+mark auto
+button STOP
+button STOP
+tap leditor clear Clear
+wait 0.5
+# MENU: Smart loop end Auto (row 8, one up from Suggest).
+button MENU
+wheel 7
+button +
+button +
+button MENU
+wait 0.5
+# REC a moment before the first kick: Auto starts the loop on it.
+button REC
+wait 0.05
+pad 1 120
+wait 0.39
+pad 3 100
+wait 0.39
+pad 1 120
+wait 0.39
+pad 3 100
+wait 0.39
+pad 1 120
+wait 0.39
+pad 3 100
+wait 0.39
+pad 1 120
+wait 0.39
+pad 3 100
+wait 0.39
+pad-down 1 120
+wait 0.04
+button REC
+pad-up 1
+wait 1
+expect smart loop end closed it on the end you played, and started it on your first hit
+expect the song starts at that tempo
+tap leditor chip-act Use my tap
+wait 4.5
+expect looper: Loop 1: back to your tap
+expect-not refused
+button STOP
+button STOP
