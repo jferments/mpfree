@@ -21,7 +21,14 @@
 //! minimal|groove|jazzish` (the clip's style for the tests that don't
 //! name one; Minimal, the default style, unless set), `--bpm N`, `--swing
 //! 1/8:58` (the swing the clip plays with; straight unless set), `--role
-//! melody|bass`.
+//! melody|bass`, `--sounds a|b|now|round2|plain` (which sounds play: the
+//! two sets on trial in S0, the set round 3 used, the set round 2 used, or
+//! plain keys with no drums, pad or effects, to check the notes alone).
+//! Every file is brought to the same loudness (-18 LUFS), so files compare
+//! fairly; with `a`, `b` and `plain` each part is also set by how loud it
+//! sounds against the melody, not by a fixed gain. With `EXPLAIN=1` in the
+//! environment, the long listen's two runs are explained on stderr: the key
+//! read, the chords, and each bar's plan with every note's role.
 //!
 //! For each phrase it writes these cases, every one a WAV and a MIDI file
 //! of what is heard (swing applied), and lists them in report.txt and
@@ -40,11 +47,24 @@
 //! | motif | one | Continue by 16 bars: do you hear your motif? |
 //! | long | one | Continue by 16 bars twice (about 32 bars), with the chords as a quiet pad |
 //!
-//! Every file plays on the same sounds at the same level (no file is made
-//! louder than another): the melody on Keys "Mellow Tines" (a bass on
-//! Pluck "Upright Bass"), a plain beat on the drum synth's "Tight Kit", and
-//! in `long` only the chords on Strings "Ballad Pad". The pairs have no
-//! chords under them, so neither side is helped by the composer's own.
+//! Every file of a phrase plays on the same sounds at the same level (no
+//! file is made louder than another), picked for the phrase's style: the
+//! melody on Keys "Funk Clav" (Groove), Keys "Soft Tines" (Minimal),
+//! Wind "Warm Clarinet" (a waltz) or Wind "Tenor Sax" (Jazz-ish), a bass
+//! on Pluck "Upright Bass"; a drummer on the style's kit (House, Boom Bap
+//! or Tight) with fills, ghost notes and crashes; a plate reverb and a
+//! dotted-1/8 echo; and in `long` only the chords on Strings "Ballad Pad"
+//! and a bass line from them (the chord's own third and fifth). Each half
+//! of the long listen plays over the chords it was written over. The
+//! pairs have no chords under them, so neither side is helped by the
+//! composer's own.
+//! `--parts` makes the Add a part listening gate (S2) instead: rows
+//! played twice through, three ways, blind (parts added by role, every part
+//! on Support, and the root on every kick with a block chord on each
+//! change). With `--demo` the rows are the riff with its beat, the tune
+//! alone, the riff's beat alone and the swung line with its beat; with
+//! `--midi` your clip with the style's beat.
+//!
 //! It never touches any device: it reads only the MIDI file given and
 //! writes only into its one new folder.
 #![forbid(unsafe_code)]
@@ -52,25 +72,53 @@
 use mpfree_compose::baseline::{
     motif_repeated, regroove, simpler, try_bar_one_sided, Feel, Simpler,
 };
+use mpfree_compose::critic::{judge_continue, Verdict};
+use mpfree_compose::draft::drafts;
+use mpfree_compose::style::{BassLine, DrumMap};
 use mpfree_compose::{
-    continue_notes, try_bar, Continue, Continued, InstrumentKind, PlainNote, Settings, Source,
-    Style, GROOVE, JAZZISH, MINIMAL,
+    add_part, continue_notes, first_engine, try_bar, AddPart, Added, Continue, Continued, DrumHit,
+    Heard, InstrumentKind, PlainNote, Relation, Role, Row, RowPart, Settings, Source, Style,
+    ToHear, GROOVE, JAZZISH, MINIMAL,
 };
-use mpfree_context::chord::ChordTimeline;
-use mpfree_context::groove::STEP;
+use mpfree_context::chord::{Chord, ChordSpan, ChordTimeline, Heard as ChordHeard, Quality, Tone};
+use mpfree_context::groove::{Lane, STEP};
 use mpfree_context::listen::{listen, Played};
 use mpfree_context::{MusicalContext, PartRole, ReadBudget};
+use mpfree_fx::ids::plate;
+use mpfree_fx::{Delay, Plate};
 use mpfree_midi::smf::{self, Smf, SmfTrack};
 use mpfree_midi::Msg;
 use mpfree_node::{Ctx, Node, NodeEvent, Timed};
 use mpfree_seq::Note;
-use mpfree_synth::{Drums, Keys, Pluck, Strings};
+use mpfree_synth::{Bass, Drums, Keys, Pluck, Poly, Strings, Wind};
 use mpfree_transport::time::{Meter, Swing, Tick, PPQ};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 const RATE: u32 = 48_000;
 const BLOCK: usize = 128;
+
+/// Which sounds the files play (`--sounds`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Sounds {
+    /// The two sets on trial in S0, each part set by how loud it sounds.
+    A,
+    B,
+    /// The sounds and fixed gains of round 3, and of round 2.
+    Now,
+    Round2,
+    /// Melody and bass on plain keys, no drums, pad or effects.
+    Plain,
+}
+
+static SOUNDS: std::sync::OnceLock<Sounds> = std::sync::OnceLock::new();
+
+fn sounds() -> Sounds {
+    *SOUNDS.get().unwrap_or(&Sounds::A)
+}
+
+/// The loudness every file is brought to, in LUFS.
+const FILE_LUFS: f64 = -18.0;
 /// Seconds after the last bar, for the release.
 const TAIL: f64 = 2.0;
 /// Bars Continue adds in the short cases.
@@ -81,6 +129,7 @@ const MOST_BARS: usize = 8;
 // ---------------------------------------------------------------- phrases
 
 /// A clip to carry on: its notes as written, and how it plays.
+#[derive(Clone)]
 struct Phrase {
     slug: String,
     name: String,
@@ -453,6 +502,28 @@ struct Take {
     from_bar: usize,
     to_bar: usize,
     pad: Option<ChordTimeline>,
+    /// Parts added to a row (S2), each on its own sound.
+    extra: Vec<Extra>,
+    /// Whether the phrase's drummer plays.
+    drummer: bool,
+}
+
+/// What an added part is, for its sound.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ExtraKind {
+    Bass,
+    Chords,
+    Drums,
+}
+
+/// A note of an added part: (start, length, pitch, velocity), in ticks
+/// from the clip's start.
+type NoteOf = (Tick, Tick, u8, u8);
+
+/// An added part's notes.
+struct Extra {
+    kind: ExtraKind,
+    notes: Vec<NoteOf>,
 }
 
 struct Case {
@@ -498,10 +569,34 @@ fn order(n: usize, seed: u64, case: &str) -> Vec<usize> {
     idx
 }
 
-fn finish(mut c: Case, seed: u64) -> Case {
+fn finish(c: Case, seed: u64) -> Case {
+    let ord = order(c.takes.len(), seed, &c.id);
+    finish_in(c, &ord)
+}
+
+/// Three takes over several cases in a Latin square, so no way sits in the
+/// same place in every case: case `k` of a set, the square turned by the
+/// seed.
+fn finish_square(c: Case, seed: u64, k: usize) -> Case {
+    const SQUARES: [[usize; 3]; 6] = [
+        [0, 1, 2],
+        [2, 0, 1],
+        [1, 2, 0],
+        [0, 2, 1],
+        [1, 0, 2],
+        [2, 1, 0],
+    ];
+    if c.takes.len() != 3 {
+        return finish(c, seed);
+    }
+    let turn = order(6, seed, "square")[0];
+    let ord = SQUARES[3 * ((k / 3 + turn) % 2) + (k + turn) % 3];
+    finish_in(c, &ord)
+}
+
+fn finish_in(mut c: Case, ord: &[usize]) -> Case {
     let n = c.takes.len();
     if n > 1 {
-        let ord = order(n, seed, &c.id);
         let mut takes: Vec<Option<Take>> = c.takes.into_iter().map(Some).collect();
         c.takes = ord
             .iter()
@@ -583,6 +678,8 @@ fn cases(p: &Phrase, seed: u64) -> Made {
                         from_bar: 0,
                         to_bar: short_to,
                         pad: None,
+                        extra: Vec::new(),
+                        drummer: true,
                     },
                     Take {
                         what: words.to_string(),
@@ -591,6 +688,8 @@ fn cases(p: &Phrase, seed: u64) -> Made {
                         from_bar: 0,
                         to_bar: short_to,
                         pad: None,
+                        extra: Vec::new(),
+                        drummer: true,
                     },
                 ],
                 labels: Vec::new(),
@@ -622,6 +721,8 @@ fn cases(p: &Phrase, seed: u64) -> Made {
                         from_bar: 0,
                         to_bar: short_to,
                         pad: None,
+                        extra: Vec::new(),
+                        drummer: true,
                     },
                     Take {
                         what: format!("random notes in {}'s scale and rhythm", style.name),
@@ -630,6 +731,8 @@ fn cases(p: &Phrase, seed: u64) -> Made {
                         from_bar: 0,
                         to_bar: short_to,
                         pad: None,
+                        extra: Vec::new(),
+                        drummer: true,
                     },
                 ],
                 labels: Vec::new(),
@@ -652,6 +755,8 @@ fn cases(p: &Phrase, seed: u64) -> Made {
                     from_bar: 0,
                     to_bar: short_to,
                     pad: None,
+                    extra: Vec::new(),
+                    drummer: true,
                 }),
                 Err(e) => fail(
                     "styles",
@@ -714,6 +819,8 @@ fn cases(p: &Phrase, seed: u64) -> Made {
                         from_bar: 0,
                         to_bar: short_to,
                         pad: None,
+                        extra: Vec::new(),
+                        drummer: true,
                     },
                     Take {
                         what: words.clone(),
@@ -722,6 +829,8 @@ fn cases(p: &Phrase, seed: u64) -> Made {
                         from_bar: 0,
                         to_bar: short_to,
                         pad: None,
+                        extra: Vec::new(),
+                        drummer: true,
                     },
                 ],
                 labels: Vec::new(),
@@ -754,6 +863,8 @@ fn cases(p: &Phrase, seed: u64) -> Made {
                         from_bar: 0,
                         to_bar: long_to,
                         pad: None,
+                        extra: Vec::new(),
+                        drummer: true,
                     },
                     Take {
                         what: "a four-bar motif repeated with small random changes".into(),
@@ -762,6 +873,8 @@ fn cases(p: &Phrase, seed: u64) -> Made {
                         from_bar: 0,
                         to_bar: long_to,
                         pad: None,
+                        extra: Vec::new(),
+                        drummer: true,
                     },
                 ],
                 labels: Vec::new(),
@@ -838,6 +951,8 @@ fn cases(p: &Phrase, seed: u64) -> Made {
                                 from_bar: bar - 1,
                                 to_bar: bar + 2,
                                 pad: None,
+                                extra: Vec::new(),
+                                drummer: true,
                             },
                             Take {
                                 what: "tried again without looking at the bar after".into(),
@@ -846,6 +961,8 @@ fn cases(p: &Phrase, seed: u64) -> Made {
                                 from_bar: bar - 1,
                                 to_bar: bar + 2,
                                 pad: None,
+                                extra: Vec::new(),
+                                drummer: true,
                             },
                         ],
                         labels: Vec::new(),
@@ -873,6 +990,8 @@ fn cases(p: &Phrase, seed: u64) -> Made {
                 from_bar: 0,
                 to_bar: long_to,
                 pad: None,
+                extra: Vec::new(),
+                drummer: true,
             }],
             labels: Vec::new(),
         }),
@@ -899,6 +1018,8 @@ fn cases(p: &Phrase, seed: u64) -> Made {
                 from_bar: 0,
                 to_bar: bars,
                 pad: Some(chords),
+                extra: Vec::new(),
+                drummer: true,
             }],
             labels: Vec::new(),
         }),
@@ -909,6 +1030,553 @@ fn cases(p: &Phrase, seed: u64) -> Made {
         cases: out.into_iter().map(|c| finish(c, seed)).collect(),
         notes,
     }
+}
+
+/// `--gate`: the S1 listening gate for one phrase. Your bars, then 8 new
+/// bars three ways, blind, each with its own chords as a quiet pad and
+/// bass: music first (S1), the first engine, and your bars looped over
+/// your chords looped (the plain loop to beat).
+fn gate_cases(p: &Phrase, seed: u64) -> Made {
+    const NEW: u8 = 8;
+    let clip = clip_of(&p.notes, p.bars, p.meter);
+    let yours = yours_as_notes(&p.notes);
+    let mut notes = String::new();
+    let _ = writeln!(
+        notes,
+        "{}: {} bars of {} at {:.0} BPM; read as {}; style {}; seed {seed}",
+        p.name,
+        p.bars,
+        meter_words(p.meter),
+        p.bpm,
+        clip.context.key.words(),
+        style_words(&p.style)
+    );
+    let s = settings(p.style, NEW, seed);
+    let req = request(p, &clip, &s);
+    let to_bar = p.bars + usize::from(NEW);
+    let made = (|| -> Result<Case, String> {
+        let s1 = drafts(&req).map_err(|e| e.words())?.remove(0);
+        let first = first_engine(&req).map_err(|e| e.words())?;
+        let _ = writeln!(
+            notes,
+            "  S1 draft {}: {}\n  S1 critic: {}\n  first engine critic: {}",
+            s1.number + 1,
+            s1.sketch
+                .gestures
+                .iter()
+                .map(|g| g.words())
+                .collect::<Vec<_>>()
+                .join(", "),
+            s1.verdict.words(),
+            judge_continue(&req, &first.notes, &first.chords).words()
+        );
+        if std::env::var_os("EXPLAIN").is_some() {
+            show(p, "S1", &s1.made, &s1.sketch.gestures);
+            show(p, "first", &first, &[]);
+        }
+        let looped = simpler(&req, Simpler::Repeat);
+        let take = |what: &str, mpfree: bool, new: &[Note], pad: ChordTimeline| Take {
+            what: what.to_string(),
+            mpfree,
+            notes: whole(&yours, new),
+            from_bar: 0,
+            to_bar,
+            pad: Some(pad),
+            extra: Vec::new(),
+            drummer: true,
+        };
+        Ok(Case {
+            id: format!("{}-gate", p.slug),
+            phrase: p.name.clone(),
+            test: "gate",
+            question: "Which would you keep?",
+            about: format!(
+                "your {} bars, then 8 new bars in {}",
+                p.bars,
+                style_words(&p.style)
+            ),
+            takes: vec![
+                take(
+                    "music first (S1)",
+                    true,
+                    &s1.made.notes,
+                    s1.made.chords.clone(),
+                ),
+                take("first engine", true, &first.notes, first.chords.clone()),
+                take(
+                    "your bars looped, over your chords looped",
+                    false,
+                    &looped,
+                    looped_chords(
+                        &first.chords,
+                        p.bars as Tick * p.meter.bar_ticks(),
+                        to_bar as Tick * p.meter.bar_ticks(),
+                    ),
+                ),
+            ],
+            labels: Vec::new(),
+        })
+    })();
+    let cases = match made {
+        Ok(c) => vec![finish(c, seed)],
+        Err(e) => {
+            let _ = writeln!(notes, "  gate: left out, {e}");
+            Vec::new()
+        }
+    };
+    Made { cases, notes }
+}
+
+// ------------------------------------------------------------ S2: parts
+
+/// A row for the parts gate: a phrase looped to four bars or more, with
+/// its tune or without, with the phrase's beat or without.
+struct GateRow {
+    phrase: Phrase,
+    tune: bool,
+    beat: bool,
+    /// Chords picked for the row, one per bar of the phrase, as you would
+    /// set them on its Harmony line; none to play over the chords heard.
+    picked: Vec<Chord>,
+}
+
+/// The rows `--parts --demo` plays: the riff with its beat, the F major
+/// tune alone, the riff's beat alone, and the swung line with its beat.
+/// The riff's chords are picked (Cm7, then Fm7: heard alone, the riff reads
+/// as one Fm7 for both bars), so the parts have a change to lead into; the
+/// others play over the chords heard.
+fn gate_rows(phrases: Vec<Phrase>) -> Vec<GateRow> {
+    let riff_chords = vec![
+        Chord::new(0, Quality::Minor7),
+        Chord::new(5, Quality::Minor7),
+    ];
+    let mut rows = Vec::new();
+    for p in phrases {
+        match p.slug.as_str() {
+            "riff" => {
+                rows.push(GateRow {
+                    phrase: Phrase {
+                        slug: "riff".into(),
+                        name: format!("{}, with its beat", p.name),
+                        ..p.clone()
+                    },
+                    tune: true,
+                    beat: true,
+                    picked: riff_chords.clone(),
+                });
+                rows.push(GateRow {
+                    phrase: Phrase {
+                        slug: "beat".into(),
+                        name: "the riff's beat alone".into(),
+                        ..p
+                    },
+                    tune: false,
+                    beat: true,
+                    picked: riff_chords.clone(),
+                });
+            }
+            "tune" => rows.push(GateRow {
+                phrase: Phrase {
+                    name: format!("{}, alone", p.name),
+                    ..p
+                },
+                tune: true,
+                beat: false,
+                picked: Vec::new(),
+            }),
+            "swung" => rows.push(GateRow {
+                phrase: Phrase {
+                    name: format!("{}, with its beat", p.name),
+                    ..p
+                },
+                tune: true,
+                beat: true,
+                picked: Vec::new(),
+            }),
+            _ => {}
+        }
+    }
+    rows
+}
+
+/// The drummer's hits over `bars` bars, by lane, as a row hears them.
+fn beat_hits(p: &Phrase, bars: usize) -> Vec<DrumHit> {
+    let bar = p.meter.bar_ticks();
+    let mut v = Vec::new();
+    for b in 0..bars {
+        for (tick, note, velocity) in drummer(p, b) {
+            let lane = match note {
+                KICK => Lane::Kick,
+                SNARE | CLAP | RIM => Lane::Snare,
+                HAT | OPEN_HAT | RIDE | CYMBAL => Lane::Hats,
+                _ => Lane::Other,
+            };
+            v.push(DrumHit {
+                at: b as Tick * bar + tick,
+                lane,
+                velocity,
+            });
+        }
+    }
+    v
+}
+
+/// The pads a drum part added to the row plays: the phrase's kit, the
+/// ride for Jazz-ish's hats and the clap for the house kit's backbeat.
+fn kit_pads(p: &Phrase) -> [Option<u8>; 4] {
+    let (snare, hats) = match p.style.bass.drums {
+        DrumMap::Ride => (SNARE, RIDE),
+        DrumMap::FourOnTheFloor => (CLAP, HAT),
+        _ => (SNARE, HAT),
+    };
+    [Some(KICK), Some(snare), Some(hats), Some(TOM_MID)]
+}
+
+/// What the row is heard from, kept so each added part can be heard by
+/// the next.
+struct RowSource<'a> {
+    p: &'a Phrase,
+    parts: Vec<RowPart>,
+    length: Tick,
+    context: &'a MusicalContext,
+}
+
+impl RowSource<'_> {
+    /// Add a part by `relation` to the row as it is, keep it in the row,
+    /// and say what the critic found.
+    fn add(
+        &mut self,
+        part: PartRole,
+        relation: Relation,
+        seed: u64,
+        notes: &mut String,
+    ) -> Result<Added, String> {
+        let row = Row::hear(&ToHear {
+            parts: &self.parts,
+            length: self.length,
+            meter: self.p.meter,
+            key: &self.context.key,
+            played_pcs: self.context.played_pcs,
+            chords: &self.context.chords,
+            groove: None,
+            lead: None,
+        });
+        let s = settings(self.p.style, 8, seed);
+        let a = add_part(&AddPart {
+            row: &row,
+            part,
+            relation,
+            settings: &s,
+            kind: match part {
+                PartRole::Bass => InstrumentKind::Bass,
+                PartRole::Chords => InstrumentKind::Chords,
+                PartRole::Drums => InstrumentKind::Percussive,
+                PartRole::Melody => InstrumentKind::OneNote,
+            },
+            pads: kit_pads(self.p),
+            swing: self.p.swing,
+        })
+        .map_err(|e| e.words().to_string())?;
+        let _ = writeln!(
+            notes,
+            "    {part:?} on {}: draft {}, {} notes; {}",
+            relation.words(),
+            a.draft + 1,
+            a.events.len(),
+            a.verdict.words().replace('\n', "; ")
+        );
+        self.parts.push(RowPart {
+            role: part,
+            heard: if part == PartRole::Drums {
+                Heard::Hits(
+                    a.events
+                        .iter()
+                        .map(|e| DrumHit {
+                            at: e.at,
+                            lane: match e.role {
+                                Role::Drum(l) => l,
+                                _ => Lane::Other,
+                            },
+                            velocity: e.velocity,
+                        })
+                        .collect(),
+                )
+            } else {
+                Heard::Notes(
+                    a.events
+                        .iter()
+                        .map(|e| PlainNote {
+                            at: e.at,
+                            len: e.len,
+                            pitch: e.pitch,
+                            velocity: e.velocity,
+                        })
+                        .collect(),
+                )
+            },
+        });
+        Ok(a)
+    }
+}
+
+/// A part's notes over `passes` times through a row `length` long.
+fn looped(notes: impl Iterator<Item = NoteOf> + Clone, length: Tick, passes: usize) -> Vec<NoteOf> {
+    (0..passes as Tick)
+        .flat_map(|k| {
+            notes
+                .clone()
+                .map(move |(at, len, p, v)| (at + k * length, len, p, v))
+        })
+        .collect()
+}
+
+fn events_of(a: &Added) -> impl Iterator<Item = NoteOf> + Clone + '_ {
+    a.events.iter().map(|e| (e.at, e.len, e.pitch, e.velocity))
+}
+
+/// The simple way: the chord's root on every kick, held to the next, and
+/// a block chord held through each chord.
+fn simple_parts(
+    chords: &ChordTimeline,
+    kicks: &[Tick],
+    length: Tick,
+) -> (Vec<NoteOf>, Vec<NoteOf>) {
+    let mut bass = Vec::new();
+    for (i, &k) in kicks.iter().enumerate() {
+        let next = kicks.get(i + 1).copied().unwrap_or(length);
+        let Some(c) = chords.span_at(k).and_then(|sp| sp.answer.chord()) else {
+            continue;
+        };
+        let pitch = 36 + c.root;
+        bass.push((k, ((next - k) * 9 / 10).max(STEP), pitch, 100));
+    }
+    let mut block = Vec::new();
+    for span in chords.spans() {
+        let Some(c) = span.answer.chord() else {
+            continue;
+        };
+        // Root position from C3 to B3, under most tunes.
+        let root = 48 + i32::from(c.root);
+        for pc in 0..12 {
+            if c.pcs() & (1 << pc) != 0 {
+                let pitch = root + (pc - i32::from(c.root)).rem_euclid(12);
+                block.push((
+                    span.start,
+                    (span.end().min(length) - span.start - STEP / 2).max(STEP),
+                    pitch as u8,
+                    76,
+                ));
+            }
+        }
+    }
+    (bass, block)
+}
+
+/// `--parts`: the S2 listening gate for one row, played twice through,
+/// three ways, blind: parts added by S2 (a bass on Support, chords on
+/// Answer, or on Interlock with no tune, and over a tune alone the drums
+/// first, on Support), the simple way (the chord's root on every kick and
+/// a block chord on each change, with the phrase's own drummer), and S2
+/// with every part on Support (roles off).
+fn parts_cases(r: &GateRow, seed: u64, k: usize) -> Made {
+    const PASSES: usize = 2;
+    let p = &r.phrase;
+    let reps = 4usize.div_ceil(p.bars).max(1);
+    let bars = p.bars * reps;
+    let bar = p.meter.bar_ticks();
+    let length = bars as Tick * bar;
+    let phrase_len = p.bars as Tick * bar;
+    let tune: Vec<PlainNote> = (0..reps as Tick)
+        .flat_map(|k| {
+            p.notes.iter().map(move |n| PlainNote {
+                at: n.at + k * phrase_len,
+                ..*n
+            })
+        })
+        .collect();
+    // The chords: the phrase's own read, or the ones picked, looped with
+    // it (contract 4).
+    let mut clip = clip_of(&p.notes, p.bars, p.meter);
+    let chords = if r.picked.is_empty() {
+        clip.context.chords.clone()
+    } else {
+        let v: Vec<(Chord, Tick)> = r.picked.iter().map(|&c| (c, bar)).collect();
+        ChordTimeline::of(&v, ChordHeard::Set)
+    };
+    clip.context.chords = looped_chords(&chords, phrase_len, length);
+    let beat = beat_hits(p, bars);
+    let mut notes = String::new();
+    let chord_words = format!(
+        "{} {}",
+        if r.picked.is_empty() {
+            "chords heard:"
+        } else {
+            "chords picked:"
+        },
+        chords.names()
+    );
+    let _ = writeln!(
+        notes,
+        "{}: {bars} bars of {} at {:.0} BPM; read as {}; {chord_words}; style {}; seed {seed}",
+        p.name,
+        meter_words(p.meter),
+        p.bpm,
+        clip.context.key.words(),
+        style_words(&p.style)
+    );
+    let start = || -> RowSource {
+        let mut parts = Vec::new();
+        if r.tune {
+            parts.push(RowPart {
+                role: PartRole::Melody,
+                heard: Heard::Notes(tune.clone()),
+            });
+        }
+        if r.beat {
+            parts.push(RowPart {
+                role: PartRole::Drums,
+                heard: Heard::Hits(beat.clone()),
+            });
+        }
+        RowSource {
+            p,
+            parts,
+            length,
+            context: &clip.context,
+        }
+    };
+    let melody: Vec<Note> = if r.tune {
+        yours_as_notes(&looped_plain(&tune, length, PASSES))
+    } else {
+        Vec::new()
+    };
+    let to_bar = bars * PASSES;
+    let take = |what: &str, mpfree: bool, extra: Vec<Extra>, drummer: bool| Take {
+        what: what.to_string(),
+        mpfree,
+        notes: melody.clone(),
+        from_bar: 0,
+        to_bar,
+        pad: None,
+        extra,
+        drummer,
+    };
+    let made = (|| -> Result<Case, String> {
+        let chord_role = if r.tune {
+            Relation::Answer
+        } else {
+            Relation::Interlock
+        };
+        let mut ways = Vec::new();
+        for (what, roles_off) in [("S2 parts", false), ("S2, every part on Support", true)] {
+            let _ = writeln!(notes, "  {what}:");
+            let mut src = start();
+            let mut extra = Vec::new();
+            if !r.beat {
+                let d = src.add(PartRole::Drums, Relation::Support, seed, &mut notes)?;
+                extra.push(Extra {
+                    kind: ExtraKind::Drums,
+                    notes: looped(events_of(&d), length, PASSES),
+                });
+            }
+            let b = src.add(PartRole::Bass, Relation::Support, seed, &mut notes)?;
+            let c = src.add(
+                PartRole::Chords,
+                if roles_off {
+                    Relation::Support
+                } else {
+                    chord_role
+                },
+                seed,
+                &mut notes,
+            )?;
+            extra.push(Extra {
+                kind: ExtraKind::Bass,
+                notes: looped(events_of(&b), length, PASSES),
+            });
+            extra.push(Extra {
+                kind: ExtraKind::Chords,
+                notes: looped(events_of(&c), length, PASSES),
+            });
+            ways.push(take(what, true, extra, r.beat));
+        }
+        let mut kicks: Vec<Tick> = beat
+            .iter()
+            .filter(|h| h.lane == Lane::Kick)
+            .map(|h| h.at)
+            .collect();
+        kicks.sort_unstable();
+        kicks.dedup();
+        let (bass, block) = simple_parts(&clip.context.chords, &kicks, length);
+        let simple = take(
+            "the simple way: the root on every kick, a block chord on each change",
+            false,
+            vec![
+                Extra {
+                    kind: ExtraKind::Bass,
+                    notes: looped(bass.iter().copied(), length, PASSES),
+                },
+                Extra {
+                    kind: ExtraKind::Chords,
+                    notes: looped(block.iter().copied(), length, PASSES),
+                },
+            ],
+            true,
+        );
+        let roles_off = ways.pop().expect("two ways");
+        let s2 = ways.pop().expect("two ways");
+        Ok(Case {
+            id: format!("{}-parts", p.slug),
+            phrase: p.name.clone(),
+            test: "parts",
+            question: "Which would you keep?",
+            about: format!(
+                "{} in {}, {bars} bars twice through, with a bass and chords{}; {chord_words}",
+                p.name,
+                style_words(&p.style),
+                if r.beat { "" } else { " (and drums)" }
+            ),
+            takes: vec![s2, simple, roles_off],
+            labels: Vec::new(),
+        })
+    })();
+    let cases = match made {
+        Ok(c) => vec![finish_square(c, seed, k)],
+        Err(e) => {
+            let _ = writeln!(notes, "  parts: left out, {e}");
+            Vec::new()
+        }
+    };
+    Made { cases, notes }
+}
+
+fn looped_plain(notes: &[PlainNote], length: Tick, passes: usize) -> Vec<PlainNote> {
+    (0..passes as Tick)
+        .flat_map(|k| {
+            notes.iter().map(move |n| PlainNote {
+                at: n.at + k * length,
+                ..*n
+            })
+        })
+        .collect()
+}
+
+/// The chords under your bars (up to `yours`), round and round to `to`.
+fn looped_chords(chords: &ChordTimeline, yours: Tick, to: Tick) -> ChordTimeline {
+    let mut spans: Vec<ChordSpan> = Vec::new();
+    let mut off = 0;
+    while off < to {
+        for s in chords.spans().iter().filter(|s| s.start < yours) {
+            let start = s.start + off;
+            if start >= to {
+                break;
+            }
+            let len = s.len.min(yours - s.start).min(to - start);
+            spans.push(ChordSpan { start, len, ..*s });
+        }
+        off += yours.max(1);
+    }
+    ChordTimeline::new(spans).unwrap_or_else(|_| chords.clone())
 }
 
 fn long(
@@ -934,7 +1602,106 @@ fn long(
     let again = clip_of(&as_played, bars, p.meter);
     let s = settings(p.style, 16, seed_b);
     let second: Continued = continue_notes(&request(p, &again, &s)).map_err(|e| e.words())?;
-    Ok((whole(&all, &second.notes), bars + 16, second.chords))
+    let chords = joined_chords(
+        &first.chords,
+        &second.chords,
+        bars as Tick * p.meter.bar_ticks(),
+    );
+    if std::env::var_os("EXPLAIN").is_some() {
+        explain(p, "first", &clip.context, &first);
+        explain(p, "second", &again.context, &second);
+    }
+    Ok((whole(&all, &second.notes), bars + 16, chords))
+}
+
+/// With `EXPLAIN` set, one run of the long listen on stderr: the key it
+/// read, the chords it heard in the bars it was given, and each bar's plan
+/// (job, source, shift, tension, activity), chords, and every note's 1/16
+/// step, role and length with the pitch played. How round 2's faults were
+/// found.
+fn explain(p: &Phrase, run: &str, heard: &MusicalContext, c: &Continued) {
+    let bar = p.meter.bar_ticks();
+    let step = PPQ as Tick / 4;
+    let spans = |tl: &ChordTimeline| -> String {
+        tl.spans()
+            .iter()
+            .map(|s| {
+                let b = |t: Tick| t as f64 / bar as f64 + 1.0;
+                let name = s.answer.chord().map_or("?".into(), |c| c.name());
+                format!("{:.1}-{:.1}:{name}", b(s.start), b(s.end()))
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    eprintln!(
+        "KEY {} {run} {} | heard: {}",
+        p.slug,
+        heard.key.words(),
+        spans(&heard.chords)
+    );
+    eprintln!("CHORDS {} {run} {}", p.slug, spans(&c.chords));
+    for (b, bp) in c.plan.iter().enumerate() {
+        let (from, to) = (b as Tick * bar, (b as Tick + 1) * bar);
+        let chords: Vec<String> = c
+            .chords
+            .spans()
+            .iter()
+            .filter(|s| s.start < to && s.end() > from)
+            .map(|s| s.answer.chord().map_or("?".into(), |c| c.name()))
+            .collect();
+        let notes: Vec<String> = c
+            .part
+            .decisions
+            .iter()
+            .filter(|d| (from..to).contains(&d.at))
+            .map(|d| format!("{}:{:?}/{}", (d.at - from) / step, d.role, d.len / step))
+            .collect();
+        let pitches: Vec<String> = c
+            .events
+            .iter()
+            .filter(|e| (from..to).contains(&e.at))
+            .map(|e| e.pitch.to_string())
+            .collect();
+        eprintln!(
+            "EXPLAIN {} {run} bar{} {:?} src{} sh{} t{:.2} a{:.2} [{}] {} | {}",
+            p.slug,
+            b + 1,
+            bp.job,
+            bp.source,
+            bp.shift,
+            bp.tension,
+            bp.activity,
+            chords.join(","),
+            notes.join(" "),
+            pitches.join(" ")
+        );
+    }
+}
+
+/// The chords each half of the long listen was written over: the first
+/// run's up to `cut` (its own bars as heard and the chords it suggested),
+/// the second run's after. The second run's reading of the first run's
+/// notes is not what those notes were written over, and played under them
+/// it clashes.
+fn joined_chords(first: &ChordTimeline, second: &ChordTimeline, cut: Tick) -> ChordTimeline {
+    let mut spans: Vec<ChordSpan> = first
+        .spans()
+        .iter()
+        .filter(|s| s.start < cut)
+        .map(|s| ChordSpan {
+            len: s.len.min(cut - s.start),
+            ..*s
+        })
+        .collect();
+    spans.extend(second.spans().iter().filter(|s| s.end() > cut).map(|s| {
+        let start = s.start.max(cut);
+        ChordSpan {
+            start,
+            len: s.end() - start,
+            ..*s
+        }
+    }));
+    ChordTimeline::new(spans).unwrap_or_else(|_| second.clone())
 }
 
 fn grid_words(grid: u32) -> &'static str {
@@ -958,11 +1725,24 @@ fn frame(p: &Phrase, tick: f64) -> u64 {
 struct Part {
     node: Box<dyn Node>,
     gain: f32,
+    /// How much goes to the reverb and the echo.
+    reverb: f32,
+    delay: f32,
     /// (frame, note-off before note-on at the same frame, event)
     events: Vec<(u64, u8, NodeEvent)>,
 }
 
 impl Part {
+    fn new(node: Box<dyn Node>, gain: f32, reverb: f32, delay: f32) -> Part {
+        Part {
+            node,
+            gain,
+            reverb,
+            delay,
+            events: Vec::new(),
+        }
+    }
+
     fn note(&mut self, on: u64, off: u64, note: u8, velocity: u8) {
         self.events
             .push((on, 1, NodeEvent::NoteOn { note, velocity }));
@@ -971,18 +1751,104 @@ impl Part {
     }
 }
 
-fn melody_sound(role: PartRole) -> Box<dyn Node> {
-    match role {
-        PartRole::Bass => {
-            let mut s = Pluck::new(RATE);
-            s.load_preset(preset(Pluck::presets(), "Upright Bass", |p| p.name));
+/// The melody's sound, picked for the phrase's style and the sound set:
+/// the same in every file of a phrase. A bass plays on Pluck "Upright Bass".
+fn melody_sound(p: &Phrase) -> Box<dyn Node> {
+    use Sounds::*;
+    let set = sounds();
+    if set == Plain {
+        return keys("Ballad");
+    }
+    if p.role == PartRole::Bass {
+        return pluck("Upright Bass");
+    }
+    // Riff (Groove), swung line (Jazz-ish), waltz, tune (Minimal).
+    match (p.style.bass.drums, p.meter.beats, set) {
+        (DrumMap::BoomBap, _, B) => keys("Soft Clav"),
+        (DrumMap::BoomBap, _, _) => keys("Funk Clav"),
+        (DrumMap::Ride, _, Round2) => keys("Mellow Tines"),
+        (DrumMap::Ride, _, B) => pluck("Vibes"),
+        (DrumMap::Ride, _, _) => wind("Tenor Sax"),
+        (_, 3, Round2) => pluck("Nylon"),
+        (_, 3, B) => wind("Concert Flute"),
+        (_, 3, _) => wind("Warm Clarinet"),
+        (_, _, Round2) => {
+            let mut s = Poly::new(RATE);
+            s.load_preset(preset(Poly::presets(), "Harmonic Pluck", |p| p.name));
             Box::new(s)
         }
-        _ => {
-            let mut s = Keys::new(RATE);
-            s.load_preset(preset(Keys::presets(), "Mellow Tines", |p| p.name));
+        (_, _, Now) => keys("Soft Tines"),
+        (_, _, B) => pluck("Marimba"),
+        (_, _, _) => keys("Stage Tines"),
+    }
+}
+
+fn keys(name: &str) -> Box<dyn Node> {
+    let mut s = Keys::new(RATE);
+    s.load_preset(preset(Keys::presets(), name, |p| p.name));
+    Box::new(s)
+}
+
+fn pluck(name: &str) -> Box<dyn Node> {
+    let mut s = Pluck::new(RATE);
+    s.load_preset(preset(Pluck::presets(), name, |p| p.name));
+    Box::new(s)
+}
+
+fn wind(name: &str) -> Box<dyn Node> {
+    let mut s = Wind::new(RATE);
+    s.load_preset(preset(Wind::presets(), name, |p| p.name));
+    Box::new(s)
+}
+
+/// The bass under the long listen, for the phrase's style. In the S0 sets
+/// the synth basses answer velocity over 24 dB instead of their presets'
+/// 12, so a bass line's accents can be heard.
+fn bass_sound(p: &Phrase) -> Box<dyn Node> {
+    if sounds() == Sounds::Plain {
+        return keys("Ballad");
+    }
+    let name = match p.style.bass.line {
+        BassLine::Walking => return pluck("Upright Bass"),
+        BassLine::Sixteenths => "Funk Bass",
+        BassLine::Offbeat => "Round Mono",
+    };
+    let mut s = Bass::new(RATE);
+    s.load_preset(preset(Bass::presets(), name, |p| p.name));
+    if matches!(sounds(), Sounds::A | Sounds::B) {
+        s.set_param(mpfree_synth::bass_params::VELOCITY, 24.0);
+    }
+    Box::new(s)
+}
+
+/// Chords added to a row: held on a pad for Minimal, on tines otherwise.
+fn chord_sound(p: &Phrase) -> Box<dyn Node> {
+    if sounds() == Sounds::Plain {
+        return keys("Ballad");
+    }
+    match p.style.bass.comping {
+        mpfree_compose::style::Comping::Pad => {
+            let mut s = Strings::new(RATE);
+            s.load_preset(preset(Strings::presets(), "Ballad Pad", |p| p.name));
             Box::new(s)
         }
+        _ => keys("Mellow Tines"),
+    }
+}
+
+/// The phrase's kit, for drums added to a row.
+fn kit(p: &Phrase) -> Box<dyn Node> {
+    let mut d = Drums::new(RATE);
+    d.load_preset(preset(Drums::presets(), kit_name(p), |k| k.name));
+    Box::new(d)
+}
+
+/// The drum kit for the phrase's style.
+fn kit_name(p: &Phrase) -> &'static str {
+    match (p.style.bass.drums, p.meter.beats) {
+        (DrumMap::BoomBap, _) => "Boom Bap Kit",
+        (DrumMap::FourOnTheFloor, 4) => "House Kit",
+        _ => "Tight Kit",
     }
 }
 
@@ -992,82 +1858,331 @@ fn preset<'a, P>(all: &'a [P], name: &str, name_of: impl Fn(&P) -> &str) -> &'a 
         .unwrap_or_else(|| panic!("no preset {name}"))
 }
 
-/// The case's take as heard: the melody, a plain beat, and the pad if any.
+// Pads of the factory kits (pad 1 is note 36).
+const KICK: u8 = 36;
+const SNARE: u8 = 37;
+const CLAP: u8 = 38;
+const HAT: u8 = 39;
+const OPEN_HAT: u8 = 40;
+const TOM_LOW: u8 = 41;
+const TOM_MID: u8 = 42;
+const TOM_HIGH: u8 = 43;
+const RIM: u8 = 44;
+/// The House Kit's ride.
+const RIDE: u8 = 45;
+/// Pad 11: the crash (House, Boom Bap), the long cymbal (Tight, played as
+/// a ride).
+const CYMBAL: u8 = 46;
+
+/// A small stable hash, for the drummer's humanize.
+fn hash(a: u64, b: u64, c: u64) -> u64 {
+    let mut h = 0x9e37_79b9_7f4a_7c15u64 ^ a.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    for x in [b, c] {
+        h ^= x.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        h = h.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+        h ^= h >> 31;
+    }
+    h
+}
+
+/// One bar of a drummer for the phrase's style: (tick in the bar, pad,
+/// velocity), on the 1/16 grid. A crash every eight bars, a fill before
+/// every fourth bar line, accents, ghost notes and an open hat now and
+/// then. The same in every file of a phrase, so neither side of a pair
+/// is helped by it.
+fn drummer(p: &Phrase, bar: usize) -> Vec<(Tick, u8, u8)> {
+    let s = PPQ as Tick / 4;
+    let steps = (p.meter.bar_ticks() / s).max(1) as usize;
+    let fill = bar % 4 == 3;
+    let crash = bar.is_multiple_of(8);
+    let mut h: Vec<(usize, u8, u8)> = Vec::new();
+    match (p.style.bass.drums, steps) {
+        (DrumMap::FourOnTheFloor, 16) => {
+            for (k, v) in [(0, 112), (4, 100), (8, 108), (12, 100)] {
+                h.push((k, KICK, v));
+            }
+            h.push((4, CLAP, 100));
+            h.push((12, CLAP, 104));
+            for st in 0..16 {
+                if fill && st >= 12 {
+                    continue;
+                }
+                if st % 4 == 2 {
+                    h.push((st, OPEN_HAT, if st == 14 { 86 } else { 76 }));
+                } else if st % 2 == 1 {
+                    h.push((st, HAT, if st % 4 == 3 { 52 } else { 40 }));
+                }
+            }
+            if bar % 2 == 1 && !fill {
+                h.push((15, KICK, 62));
+            }
+            if fill {
+                for (i, st) in (12..16).enumerate() {
+                    h.push((st, SNARE, 58 + 14 * i as u8));
+                }
+            } else {
+                h.push((2, RIDE, 50));
+                h.push((10, RIDE, 50));
+            }
+        }
+        (DrumMap::BoomBap, 16) => {
+            let a = bar.is_multiple_of(2);
+            let kicks: &[(usize, u8)] = if a {
+                &[(0, 112), (6, 92), (10, 102)]
+            } else {
+                &[(0, 112), (3, 78), (8, 104), (14, 86)]
+            };
+            for &(k, v) in kicks {
+                if !(fill && k >= 12) {
+                    h.push((k, KICK, v));
+                }
+            }
+            h.push((4, SNARE, 110));
+            let ghosts: &[usize] = if a { &[7, 15] } else { &[6, 11] };
+            for &g in ghosts {
+                if !(fill && g >= 12) {
+                    h.push((g, SNARE, 34 + (hash(bar as u64, g as u64, 7) % 10) as u8));
+                }
+            }
+            let open = !a && !fill;
+            for st in 0..16 {
+                if fill && st >= 12 {
+                    continue;
+                }
+                if open && st == 14 {
+                    h.push((st, OPEN_HAT, 74));
+                    continue;
+                }
+                let v = match st % 4 {
+                    0 => 88,
+                    2 => 70,
+                    _ => 44,
+                };
+                h.push((st, HAT, v));
+            }
+            if fill {
+                h.push((12, SNARE, 112));
+                h.push((13, TOM_HIGH, 84));
+                h.push((14, TOM_MID, 92));
+                h.push((15, TOM_LOW, 100));
+            } else {
+                h.push((12, SNARE, 108));
+            }
+        }
+        (DrumMap::Ride, 16) => {
+            // Ding, ding-a ding, ding-a: the swing comes from the clip.
+            for (st, v) in [(0, 86), (4, 100), (6, 66), (8, 84), (12, 100), (14, 66)] {
+                h.push((st, CYMBAL, v));
+            }
+            h.push((4, HAT, 58));
+            h.push((12, HAT, 58));
+            for st in [0, 4, 8, 12] {
+                h.push((st, KICK, 34));
+            }
+            // The snare comps on a couple of off-beats.
+            let offs = [2usize, 6, 10, 14];
+            for (i, &st) in offs.iter().enumerate() {
+                let r = hash(bar as u64, i as u64, 11) % 100;
+                if r < 30 && !(fill && st >= 10) {
+                    h.push((st, SNARE, 44 + (r % 20) as u8));
+                }
+            }
+            if fill {
+                h.push((10, SNARE, 78));
+                h.push((14, SNARE, 88));
+                h.push((14, KICK, 80));
+            }
+        }
+        (_, 12) => {
+            // A waltz: the bass drum on one, the rim on two and three.
+            h.push((0, KICK, 100));
+            h.push((4, RIM, 58));
+            h.push((8, RIM, 62));
+            for st in (0..12).step_by(2) {
+                if fill && st >= 8 {
+                    continue;
+                }
+                h.push((st, HAT, if st % 4 == 0 { 54 } else { 38 }));
+            }
+            if bar % 2 == 1 && !fill {
+                h.push((10, KICK, 58));
+            }
+            if fill {
+                h.push((8, SNARE, 66));
+                h.push((10, SNARE, 74));
+                h.push((11, SNARE, 84));
+            }
+        }
+        _ => {
+            // Any other meter: a plain beat.
+            let beat = steps / usize::from(p.meter.beats.max(1));
+            h.push((0, KICK, 110));
+            for b in 1..usize::from(p.meter.beats) {
+                h.push((b * beat, SNARE, 90));
+            }
+            for st in (0..steps).step_by(2) {
+                h.push((st, HAT, if st % beat.max(1) == 0 { 80 } else { 56 }));
+            }
+        }
+    }
+    if crash {
+        h.retain(|&(st, n, _)| !(st == 0 && matches!(n, HAT | OPEN_HAT | RIDE)));
+        h.push((0, CYMBAL, 96));
+    }
+    // A little humanize: velocity within about 5 either way, timing
+    // within a 1/128 (the same every run).
+    h.into_iter()
+        .map(|(st, n, v)| {
+            let r = hash(bar as u64, st as u64, u64::from(n));
+            let dv = (r % 11) as i32 - 5;
+            let dt = ((r >> 8) % 9) as Tick - 4;
+            let tick = (st as Tick * s + dt * PPQ as Tick / 256).max(0);
+            (tick, n, (i32::from(v) + dv).clamp(1, 127) as u8)
+        })
+        .collect()
+}
+
+/// A bass line under the long listen, from the chords, as the style's bass
+/// plays: a root on every off-beat (Minimal), roots and fifths with the
+/// kick (Groove), or walking quarter notes into each chord (Jazz-ish).
+fn bass_line(p: &Phrase, chords: &ChordTimeline, from: Tick, to: Tick) -> Vec<NoteOf> {
+    let beat = p.meter.beat_ticks();
+    let bar = p.meter.bar_ticks();
+    let s = PPQ as Tick / 4;
+    let chord_at = |t: Tick| -> Option<Chord> {
+        chords
+            .spans()
+            .iter()
+            .find(|c| c.contains(t))
+            .and_then(|c| c.answer.chord())
+    };
+    // From E2 up to D#3.
+    let root_at = |t: Tick| chord_at(t).map(|c| 40 + (i32::from(c.root) - 4).rem_euclid(12));
+    // The chord's own third and fifth above the root (a diminished
+    // chord's fifth is flat), so the bass never plays outside its chord.
+    let above = |t: Tick, r: i32, tone: Tone| {
+        chord_at(t).map_or(r + 7, |c| {
+            r + (i32::from(c.tone(tone)) - i32::from(c.root)).rem_euclid(12)
+        })
+    };
+    let mut out = Vec::new();
+    let mut t = from - from.rem_euclid(bar);
+    while t < to {
+        match p.style.bass.line {
+            BassLine::Offbeat => {
+                for b in 0..Tick::from(p.meter.beats) {
+                    let at = t + b * beat + beat / 2;
+                    if let Some(r) = root_at(at) {
+                        out.push((at, beat / 2 - s / 2, r as u8, 96));
+                    }
+                }
+            }
+            BassLine::Sixteenths => {
+                let steps: &[(Tick, Tick, bool)] = if (t / bar) % 2 == 0 {
+                    &[(0, 5, false), (6, 2, false), (10, 3, true), (14, 2, false)]
+                } else {
+                    &[(0, 3, false), (3, 2, true), (8, 4, false), (14, 2, true)]
+                };
+                for &(st, len, fif) in steps {
+                    let at = t + st * s;
+                    if at >= t + bar {
+                        continue;
+                    }
+                    if let Some(r) = root_at(at) {
+                        let n = if fif { above(at, r, Tone::Fifth) } else { r };
+                        out.push((at, len * s - s / 3, n as u8, if st == 0 { 104 } else { 88 }));
+                    }
+                }
+            }
+            BassLine::Walking => {
+                let beats = Tick::from(p.meter.beats);
+                for b in 0..beats {
+                    let at = t + b * beat;
+                    let Some(r) = root_at(at) else { continue };
+                    let next = root_at(at + beat).unwrap_or(r);
+                    let n = if b == 0 {
+                        r
+                    } else if b + 1 == beats || root_at(at + beat) != root_at(at) {
+                        // A half step into the next chord's root.
+                        next + if next > r { -1 } else { 1 }
+                    } else if b % 2 == 1 {
+                        above(at, r, Tone::Third)
+                    } else {
+                        above(at, r, Tone::Fifth)
+                    };
+                    out.push((
+                        at,
+                        beat - s / 2,
+                        n.clamp(28, 60) as u8,
+                        if b == 0 { 100 } else { 86 },
+                    ));
+                }
+            }
+        }
+        t += bar;
+    }
+    out.retain(|n| n.0 >= from && n.0 < to);
+    out
+}
+
+/// The case's take as heard: the melody, a drummer, and in the long
+/// listen the chords as a pad and a bass, through a plate reverb and a
+/// tempo-synced echo.
 fn render(p: &Phrase, t: &Take) -> (Vec<f32>, Vec<f32>, Smf) {
     let bar = p.meter.bar_ticks();
     let from = t.from_bar as Tick * bar;
     let to = t.to_bar as Tick * bar;
     let start = frame(p, from as f64);
     let at = |tick: Tick| frame(p, tick as f64).saturating_sub(start);
-    let mut melody = Part {
-        node: melody_sound(p.role),
-        gain: 1.0,
-        events: Vec::new(),
+    // The fixed gains of rounds 2 and 3 (the clav and the sax are louder
+    // than the other sounds); the S0 sets work their gains out below.
+    let level = match (sounds(), p.style.bass.drums, p.meter.beats) {
+        (Sounds::Round2, DrumMap::BoomBap, _) => 0.7,
+        (Sounds::Round2, _, _) => 1.0,
+        (_, DrumMap::BoomBap, _) => 0.6,
+        (_, DrumMap::Ride, _) => 0.55,
+        (_, _, 3) => 0.8,
+        _ => 1.0,
     };
+    let mut melody = Part::new(melody_sound(p), level, 0.22, 0.16);
     let mut midi_melody: Vec<(u64, Msg)> = Vec::new();
     let heard_tick = |tick: Tick| {
         (p.swing.apply(tick as f64) - p.swing.apply(from as f64))
             .round()
             .max(0.0) as u64
     };
+    let midi_note =
+        |track: &mut Vec<(u64, Msg)>, ch: u8, on: Tick, off: Tick, note: u8, vel: u8| {
+            track.push((heard_tick(on), Msg::NoteOn { ch, note, vel }));
+            track.push((heard_tick(off), Msg::NoteOff { ch, note, vel: 0 }));
+        };
     for n in &t.notes {
         if n.tick < from || n.tick >= to {
             continue;
         }
         let end = (n.tick + n.len.max(1)).min(to);
         melody.note(at(n.tick), at(end), n.note, n.velocity);
-        midi_melody.push((
-            heard_tick(n.tick),
-            Msg::NoteOn {
-                ch: 0,
-                note: n.note,
-                vel: n.velocity,
-            },
-        ));
-        midi_melody.push((
-            heard_tick(end),
-            Msg::NoteOff {
-                ch: 0,
-                note: n.note,
-                vel: 0,
-            },
-        ));
+        midi_note(&mut midi_melody, 0, n.tick, end, n.note, n.velocity);
     }
-    // A plain beat, the same in every file of a phrase.
-    let mut drums = Part {
-        node: {
+    // A drummer, the same in every file of a phrase.
+    let mut drums = Part::new(
+        {
             let mut d = Drums::new(RATE);
-            d.load_preset(preset(Drums::presets(), "Tight Kit", |k| k.name));
+            d.load_preset(preset(Drums::presets(), kit_name(p), |k| k.name));
             Box::new(d)
         },
-        gain: 0.45,
-        events: Vec::new(),
-    };
+        0.5,
+        0.05,
+        0.0,
+    );
     let mut midi_drums: Vec<(u64, Msg)> = Vec::new();
-    let beat = bar / Tick::from(p.meter.beats.max(1));
-    let eighths = (bar / (PPQ as Tick / 2)).max(1);
     for b in t.from_bar..t.to_bar {
+        if !t.drummer {
+            break;
+        }
         let b0 = b as Tick * bar;
-        let mut hits: Vec<(Tick, u8, u8)> = Vec::new();
-        hits.push((b0, 36, 112));
-        match p.meter.beats {
-            4 => {
-                hits.push((b0 + 2 * beat, 36, 100));
-                hits.push((b0 + beat, 37, 104));
-                hits.push((b0 + 3 * beat, 37, 108));
-            }
-            3 => {
-                hits.push((b0 + beat, 37, 70));
-                hits.push((b0 + 2 * beat, 37, 66));
-            }
-            n => hits.push((b0 + Tick::from(n.max(2) - 1) * beat, 37, 104)),
-        }
-        for e in 0..eighths {
-            let tick = b0 + e * (PPQ as Tick / 2);
-            hits.push((tick, 39, if e % 2 == 0 { 84 } else { 58 }));
-        }
-        for (tick, note, vel) in hits {
-            let on = at(tick);
+        for (tick, note, vel) in drummer(p, b) {
+            let on = at(b0 + tick);
             drums.events.push((
                 on,
                 1,
@@ -1079,29 +2194,32 @@ fn render(p: &Phrase, t: &Take) -> (Vec<f32>, Vec<f32>, Smf) {
             drums
                 .events
                 .push((on + 2_000, 0, NodeEvent::NoteOff { note }));
-            midi_drums.push((heard_tick(tick), Msg::NoteOn { ch: 9, note, vel }));
-            midi_drums.push((
-                heard_tick(tick) + 120,
-                Msg::NoteOff {
-                    ch: 9,
-                    note,
-                    vel: 0,
-                },
-            ));
+            midi_note(&mut midi_drums, 9, b0 + tick, b0 + tick + 120, note, vel);
         }
     }
+    // How far under the melody each part sits in the S0 sets, in LU.
+    let (drums_lu, bass_lu) = match p.style.bass.drums {
+        DrumMap::BoomBap => (-3.0, -3.0),
+        DrumMap::Ride => (-6.0, -5.0),
+        _ => (-4.0, -4.0),
+    };
     let mut parts = vec![melody, drums];
-    // The chords, as a quiet pad, for the long listen.
+    let mut below: Vec<f64> = vec![0.0, drums_lu];
+    // Plain keys play only the melody and the basses.
+    let mut drum_or_pad = vec![false, true];
+    let mut midi_bass: Vec<(u64, Msg)> = Vec::new();
+    // The chords, as a quiet pad, and a bass, for the long listen.
     if let Some(chords) = &t.pad {
-        let mut pad = Part {
-            node: {
+        let mut pad = Part::new(
+            {
                 let mut s = Strings::new(RATE);
                 s.load_preset(preset(Strings::presets(), "Ballad Pad", |p| p.name));
                 Box::new(s)
             },
-            gain: 0.3,
-            events: Vec::new(),
-        };
+            0.26,
+            0.3,
+            0.0,
+        );
         for span in chords.spans() {
             let Some(c) = span.answer.chord() else {
                 continue;
@@ -1115,18 +2233,75 @@ fn render(p: &Phrase, t: &Take) -> (Vec<f32>, Vec<f32>, Smf) {
             for pc in 0..12 {
                 if c.pcs() & (1 << pc) != 0 {
                     let pitch = root + (pc - i32::from(c.root)).rem_euclid(12);
-                    pad.note(at(s0), at(s1), pitch as u8, 70);
+                    pad.note(at(s0), at(s1), pitch as u8, 64);
                 }
             }
         }
+        let mut bass = Part::new(bass_sound(p), 0.55, 0.0, 0.0);
+        for (on, len, note, vel) in bass_line(p, chords, from, to) {
+            let off = (on + len.max(1)).min(to);
+            bass.note(at(on), at(off), note, vel);
+            midi_note(&mut midi_bass, 1, on, off, note, vel);
+        }
         parts.push(pad);
+        below.push(-11.0);
+        drum_or_pad.push(true);
+        parts.push(bass);
+        below.push(bass_lu);
+        drum_or_pad.push(false);
+    }
+    // Parts added to a row (S2), each on its own sound.
+    let mut midi_extra: Vec<(&'static str, Vec<(u64, Msg)>)> = Vec::new();
+    for x in &t.extra {
+        let (node, gain, reverb, delay, ch, name, lu): (
+            Box<dyn Node>,
+            f32,
+            f32,
+            f32,
+            u8,
+            &str,
+            f64,
+        ) = match x.kind {
+            ExtraKind::Bass => (bass_sound(p), 0.55, 0.0, 0.0, 1, "Bass", bass_lu),
+            ExtraKind::Chords => (chord_sound(p), 0.3, 0.25, 0.04, 2, "Chords", -7.0),
+            ExtraKind::Drums => (kit(p), 0.5, 0.05, 0.0, 9, "Drums", drums_lu),
+        };
+        let mut part = Part::new(node, gain, reverb, delay);
+        let mut track = Vec::new();
+        for &(on, len, note, vel) in &x.notes {
+            if on < from || on >= to {
+                continue;
+            }
+            let off = if x.kind == ExtraKind::Drums {
+                on + 120
+            } else {
+                (on + len.max(1)).min(to)
+            };
+            part.note(at(on), at(off), note, vel);
+            midi_note(&mut track, ch, on, off, note, vel);
+        }
+        parts.push(part);
+        below.push(lu);
+        drum_or_pad.push(x.kind == ExtraKind::Drums);
+        midi_extra.push((name, track));
     }
     let frames = (at(to) as f64 + TAIL * f64::from(RATE)) as usize;
     let frames = frames.div_ceil(BLOCK) * BLOCK;
-    let (mut left, mut right) = (vec![0.0f32; frames], vec![0.0f32; frames]);
     let (mut l, mut r) = (vec![0.0f32; BLOCK], vec![0.0f32; BLOCK]);
+    let ctx_at = |pos: usize| Ctx {
+        rate: RATE,
+        frame: pos as u64,
+        bpm: p.bpm,
+        beats: pos as f64 / f64::from(RATE) * p.bpm / 60.0,
+        playing: true,
+        sidechain: None,
+    };
+    // Each part on its own first, so the mix can be set by how loud each
+    // part sounds.
+    let mut dry: Vec<(Vec<f32>, Vec<f32>)> = Vec::new();
     let mut buf = Vec::new();
     for part in &mut parts {
+        let (mut pl, mut pr) = (vec![0.0f32; frames], vec![0.0f32; frames]);
         part.events.sort_by_key(|e| (e.0, e.1));
         part.node.prepare(RATE, BLOCK);
         let mut i = 0;
@@ -1139,11 +2314,92 @@ fn render(p: &Phrase, t: &Take) -> (Vec<f32>, Vec<f32>, Smf) {
             }
             l.fill(0.0);
             r.fill(0.0);
-            part.node
-                .process(&Ctx::new(RATE, pos as u64), &buf, &mut l, &mut r);
+            part.node.process(&ctx_at(pos), &buf, &mut l, &mut r);
+            pl[pos..pos + BLOCK].copy_from_slice(&l);
+            pr[pos..pos + BLOCK].copy_from_slice(&r);
+        }
+        dry.push((pl, pr));
+    }
+    // The S0 sets: every part sits a set number of LU under the melody,
+    // whatever its preset's own level (parts: melody, drums, then pad and
+    // bass on the long listen). Plain keys keep only the melody and bass.
+    if matches!(sounds(), Sounds::A | Sounds::B | Sounds::Plain) {
+        // Set against the melody; with no melody (a beat alone), against
+        // where the melody would be over the drums.
+        let mut melody = loudness(&dry[0].0, &dry[0].1);
+        if !melody.is_finite() {
+            melody = (1..parts.len())
+                .find_map(|k| {
+                    let lu = loudness(&dry[k].0, &dry[k].1);
+                    (lu.is_finite() && drum_or_pad[k] && below[k] == drums_lu)
+                        .then_some(lu - drums_lu)
+                })
+                .unwrap_or(melody);
+        }
+        for (k, part) in parts.iter_mut().enumerate() {
+            let lu = loudness(&dry[k].0, &dry[k].1);
+            part.gain = if sounds() == Sounds::Plain && drum_or_pad[k] {
+                0.0
+            } else if melody.is_finite() && lu.is_finite() {
+                10f64.powf((melody + below.get(k).copied().unwrap_or(-6.0) - lu) / 20.0) as f32
+            } else {
+                part.gain
+            };
+            if sounds() == Sounds::Plain {
+                part.reverb = 0.0;
+                part.delay = 0.0;
+            }
+        }
+    }
+    let (mut left, mut right) = (vec![0.0f32; frames], vec![0.0f32; frames]);
+    let (mut rev_l, mut rev_r) = (vec![0.0f32; frames], vec![0.0f32; frames]);
+    let (mut del_l, mut del_r) = (vec![0.0f32; frames], vec![0.0f32; frames]);
+    for (part, (pl, pr)) in parts.iter().zip(&dry) {
+        for k in 0..frames {
+            let (a, b) = (pl[k] * part.gain, pr[k] * part.gain);
+            left[k] += a;
+            right[k] += b;
+            rev_l[k] += a * part.reverb;
+            rev_r[k] += b * part.reverb;
+            del_l[k] += a * part.delay;
+            del_r[k] += b * part.delay;
+        }
+    }
+    // The echo: a dotted 1/8, a few soft repeats, dark; a little of it
+    // into the reverb too.
+    let mut echo = Delay::new();
+    for (id, v) in [(0u16, 7.0), (2, 32.0), (3, 1.0), (4, 3_500.0), (6, 100.0)] {
+        echo.set_param(id, v);
+    }
+    let mut plate = Plate::new();
+    for (id, v) in [
+        (plate::PREDELAY, 18.0),
+        (plate::DECAY, 2_200.0),
+        (plate::DAMPING, 45.0),
+        (plate::LOW_CUT, 180.0),
+        (plate::MIX, 100.0),
+    ] {
+        plate.set_param(id, v);
+    }
+    let fx: [(&mut dyn Node, bool); 2] = [(&mut echo, true), (&mut plate, false)];
+    for (node, is_echo) in fx {
+        node.prepare(RATE, BLOCK);
+        for pos in (0..frames).step_by(BLOCK) {
+            let (src_l, src_r) = if is_echo {
+                (&del_l, &del_r)
+            } else {
+                (&rev_l, &rev_r)
+            };
+            l.copy_from_slice(&src_l[pos..pos + BLOCK]);
+            r.copy_from_slice(&src_r[pos..pos + BLOCK]);
+            node.process(&ctx_at(pos), &[], &mut l, &mut r);
             for k in 0..BLOCK {
-                left[pos + k] += l[k] * part.gain;
-                right[pos + k] += r[k] * part.gain;
+                left[pos + k] += l[k];
+                right[pos + k] += r[k];
+                if is_echo {
+                    rev_l[pos + k] += l[k] * 0.3;
+                    rev_r[pos + k] += r[k] * 0.3;
+                }
             }
         }
     }
@@ -1160,6 +2416,18 @@ fn render(p: &Phrase, t: &Take) -> (Vec<f32>, Vec<f32>, Smf) {
         name: "Beat".into(),
         events: midi_drums,
     });
+    if !midi_bass.is_empty() {
+        tracks.push(SmfTrack {
+            name: "Bass line".into(),
+            events: midi_bass,
+        });
+    }
+    for (name, events) in midi_extra {
+        tracks.push(SmfTrack {
+            name: name.into(),
+            events,
+        });
+    }
     let length = heard_tick(to);
     let smf = Smf {
         name: t.what.clone(),
@@ -1168,7 +2436,65 @@ fn render(p: &Phrase, t: &Take) -> (Vec<f32>, Vec<f32>, Smf) {
         tracks,
         end: length,
     };
+    // Every file at the same loudness, so files compare fairly; the
+    // writer's fixed LEVEL is taken into account.
+    let lu = loudness(&left, &right);
+    if lu.is_finite() {
+        let g = (10f64.powf((FILE_LUFS - lu) / 20.0) / f64::from(LEVEL)) as f32;
+        for x in left.iter_mut().chain(right.iter_mut()) {
+            *x *= g;
+        }
+    }
     (left, right, smf)
+}
+
+/// Integrated loudness in LUFS (ITU-R BS.1770-4: K-weighting at 48 kHz,
+/// 400 ms blocks overlapping by three quarters, the absolute gate at -70
+/// and the relative gate 10 LU under); minus infinity for silence.
+fn loudness(left: &[f32], right: &[f32]) -> f64 {
+    fn weigh(x: &[f32]) -> Vec<f64> {
+        let (b0, b1, b2) = (
+            1.535_124_859_586_97,
+            -2.691_696_189_406_38,
+            1.198_392_810_852_85,
+        );
+        let (a1, a2) = (-1.690_659_293_182_41, 0.732_480_774_215_85);
+        let (d1, d2) = (-1.990_047_454_833_98, 0.990_072_250_366_21);
+        let (mut x1, mut x2, mut y1, mut y2) = (0.0, 0.0, 0.0, 0.0);
+        let (mut u1, mut u2, mut z1, mut z2) = (0.0, 0.0, 0.0, 0.0);
+        x.iter()
+            .map(|&v| {
+                let v = f64::from(v);
+                let y = b0 * v + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+                (x2, x1, y2, y1) = (x1, v, y1, y);
+                let z = y - 2.0 * u1 + u2 - d1 * z1 - d2 * z2;
+                (u2, u1, z2, z1) = (u1, y, z1, z);
+                z
+            })
+            .collect()
+    }
+    let (wl, wr) = (weigh(left), weigh(right));
+    let block = (0.4 * f64::from(RATE)) as usize;
+    let mut power = Vec::new();
+    let mut at = 0;
+    while at + block <= wl.len() {
+        let sum: f64 = wl[at..at + block]
+            .iter()
+            .chain(&wr[at..at + block])
+            .map(|v| v * v)
+            .sum();
+        power.push(sum / block as f64);
+        at += block / 4;
+    }
+    let lufs = |z: f64| -0.691 + 10.0 * z.max(1e-30).log10();
+    let mean = |zs: &[f64]| zs.iter().sum::<f64>() / zs.len() as f64;
+    let loud: Vec<f64> = power.into_iter().filter(|&z| lufs(z) > -70.0).collect();
+    if loud.is_empty() {
+        return f64::NEG_INFINITY;
+    }
+    let gate = lufs(mean(&loud)) - 10.0;
+    let kept: Vec<f64> = loud.into_iter().filter(|&z| lufs(z) > gate).collect();
+    lufs(mean(&kept))
 }
 
 /// The same fixed level for every file, with a soft knee instead of
@@ -1312,7 +2638,7 @@ fn write_all(
     let _ = writeln!(answers, "\n]}}");
     let _ = writeln!(
         report,
-        "Every file is at the same level (x{LEVEL}, with a soft knee from -1.9 dBFS instead of clipping); the loudest peak was {:.1} dBFS.",
+        "Every file is at the same loudness ({FILE_LUFS} LUFS, with a soft knee from -1.9 dBFS instead of clipping); the loudest peak was {:.1} dBFS.",
         20.0 * peaks.max(1e-9).log10()
     );
     std::fs::write(dir.join("report.txt"), &report).map_err(|e| e.to_string())?;
@@ -1365,8 +2691,151 @@ fn swing_by_text(s: &str) -> Option<Swing> {
     Swing::new(grid, amount.parse().ok()?)
 }
 
+/// `--critic N`: each phrase carried on by 8 bars on seeds 1 to N, by
+/// mpfree and by the simpler ways, judged by the critic; how many pass
+/// each check, and what it found on seed 1. Writes nothing.
+fn critic_table(phrases: &[Phrase], seeds: u64) -> Result<(), String> {
+    const NAMES: [&str; 6] = [
+        "somewhere",
+        "lands",
+        "breathes",
+        "yours",
+        "repeats",
+        "flows",
+    ];
+    println!(
+        "{:28} {:>10} {:>6} {:>9} {:>6} {:>8} {:>6} {:>7}",
+        "phrase / way", "somewhere", "lands", "breathes", "yours", "repeats", "flows", "all 6"
+    );
+    for p in phrases {
+        let clip = clip_of(&p.notes, p.bars, p.meter);
+        let mut tally: Vec<(&str, [u64; 7], Option<Verdict>)> = vec![
+            ("music first (S1)", [0; 7], None),
+            ("first engine", [0; 7], None),
+            ("moved in the scale", [0; 7], None),
+            ("repeated", [0; 7], None),
+        ];
+        for seed in 1..=seeds {
+            let s = settings(p.style, 8, seed);
+            let req = request(p, &clip, &s);
+            let made = first_engine(&req).map_err(|e| e.words())?;
+            let s1 = drafts(&req).map_err(|e| e.words())?;
+            let best = &s1[0];
+            if seed == 1 {
+                println!(
+                    "  {} seed 1, S1 draft {} of {}: {} | {}",
+                    p.slug,
+                    best.number + 1,
+                    s1.len(),
+                    best.sketch
+                        .gestures
+                        .iter()
+                        .map(|g| g.words())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    s1.iter()
+                        .map(|d| format!("draft {} passes {}", d.number + 1, d.verdict.passed()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+            if seed == 1 && std::env::var_os("EXPLAIN").is_some() {
+                show(p, "S1", &best.made, &best.sketch.gestures);
+                show(p, "first", &made, &[]);
+            }
+            let ways = [
+                best.made.notes.clone(),
+                made.notes.clone(),
+                simpler(&req, Simpler::Moved),
+                simpler(&req, Simpler::Repeat),
+            ];
+            let chords = [&best.made.chords, &made.chords, &made.chords, &made.chords];
+            for ((t, notes), chords) in tally.iter_mut().zip(ways.iter()).zip(chords) {
+                let v = judge_continue(&req, notes, chords);
+                let passes = v.checks().map(|(_, c)| c.pass);
+                for (k, &ok) in passes.iter().enumerate() {
+                    t.1[k] += u64::from(ok);
+                }
+                t.1[6] += u64::from(v.passed() == 6);
+                if t.2.is_none() {
+                    t.2 = Some(v);
+                }
+            }
+        }
+        for (way, n, _) in &tally {
+            println!(
+                "{:28} {:>10} {:>6} {:>9} {:>6} {:>8} {:>6} {:>7}",
+                format!("{} / {way}", p.slug),
+                n[0],
+                n[1],
+                n[2],
+                n[3],
+                n[4],
+                n[5],
+                n[6]
+            );
+        }
+        for (way, _, v) in &tally {
+            if let Some(v) = v {
+                println!("  seed 1, {way}: {}", v.words());
+            }
+        }
+    }
+    println!("(out of {seeds} seeds each; checks: {})", NAMES.join(", "));
+    Ok(())
+}
+
+/// With `EXPLAIN` and `--critic`: one result bar by bar, its chords, its
+/// gesture, each note as step:scale place/length in 1/16s, and the notes
+/// as played.
+fn show(p: &Phrase, what: &str, c: &Continued, gestures: &[mpfree_compose::sketch::Gesture]) {
+    const NAMES: [&str; 12] = [
+        "C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B",
+    ];
+    let bar = p.meter.bar_ticks();
+    let step = PPQ as Tick / 4;
+    let bars = (c.to / bar) as usize;
+    for b in 0..bars {
+        let (from, to) = (b as Tick * bar, (b as Tick + 1) * bar);
+        let chords: Vec<String> = c
+            .chords
+            .spans()
+            .iter()
+            .filter(|s| s.start < to && s.end() > from)
+            .map(|s| s.answer.chord().map_or("?".into(), |c| c.name()))
+            .collect();
+        let g = b
+            .checked_sub(p.bars)
+            .and_then(|i| gestures.get(i))
+            .map_or(if b < p.bars { "yours" } else { "" }, |g| g.words());
+        let steps = (bar / step) as i32;
+        let notes: Vec<String> = c
+            .line
+            .notes
+            .iter()
+            .filter(|m| m.on.div_euclid(steps) == b as i32)
+            .map(|m| format!("{}:{}/{}", m.on - b as i32 * steps, m.pos, m.len))
+            .collect();
+        let pitches: Vec<String> = c
+            .events
+            .iter()
+            .filter(|e| (from..to).contains(&e.at))
+            .map(|e| format!("{}{}", NAMES[usize::from(e.pitch % 12)], e.pitch / 12 - 1))
+            .collect();
+        println!(
+            "    {} {what} bar {:2} {:11} [{}] {} | {}",
+            p.slug,
+            b + 1,
+            g,
+            chords.join(","),
+            notes.join(" "),
+            pitches.join(" ")
+        );
+    }
+}
+
 const USAGE: &str = "usage: listen --demo | --midi FILE [--track N] [--from BAR] [--bars N] [--all-notes] \
-[--style minimal|groove|jazzish] [--bpm N] [--swing 1/8:58] [--role melody|bass] [--seed N] [--out DIR]";
+[--style minimal|groove|jazzish] [--bpm N] [--swing 1/8:58] [--role melody|bass] [--sounds a|b|now|round2|plain] [--seed N] [--gate | --parts] [--out DIR] | --critic N (--demo | --midi FILE)";
 
 fn run(args: &[String]) -> Result<(), String> {
     let mut demo = false;
@@ -1381,6 +2850,9 @@ fn run(args: &[String]) -> Result<(), String> {
     let mut bpm = None;
     let mut swing = Swing::default();
     let mut role = PartRole::Melody;
+    let mut critic: Option<u64> = None;
+    let mut gate = false;
+    let mut parts = false;
     let mut i = 0;
     let value = |i: &mut usize| -> Result<String, String> {
         *i += 1;
@@ -1391,6 +2863,15 @@ fn run(args: &[String]) -> Result<(), String> {
     while i < args.len() {
         match args[i].as_str() {
             "--demo" => demo = true,
+            "--gate" => gate = true,
+            "--parts" => parts = true,
+            "--critic" => {
+                critic = Some(
+                    value(&mut i)?
+                        .parse()
+                        .map_err(|_| "--critic takes a number of seeds")?,
+                )
+            }
             "--midi" => midi = Some(PathBuf::from(value(&mut i)?)),
             "--out" => out = Some(PathBuf::from(value(&mut i)?)),
             "--seed" => {
@@ -1435,6 +2916,17 @@ fn run(args: &[String]) -> Result<(), String> {
                     "--swing {v}: 1/8 or 1/16, then 50 to 75, as 1/8:58"
                 ))?;
             }
+            "--sounds" => {
+                let set = match value(&mut i)?.as_str() {
+                    "a" => Sounds::A,
+                    "b" => Sounds::B,
+                    "now" => Sounds::Now,
+                    "round2" => Sounds::Round2,
+                    "plain" => Sounds::Plain,
+                    v => return Err(format!("--sounds {v}: a, b, now, round2 or plain")),
+                };
+                let _ = SOUNDS.set(set);
+            }
             "--role" => {
                 role = match value(&mut i)?.as_str() {
                     "melody" => PartRole::Melody,
@@ -1455,6 +2947,26 @@ fn run(args: &[String]) -> Result<(), String> {
     }
     if !(1..=MOST_BARS).contains(&bars) {
         return Err(format!("--bars takes 1 to {MOST_BARS}"));
+    }
+    if let Some(seeds) = critic {
+        let phrases = if let Some(path) = &midi {
+            let (mut p, _) = midi_phrase(
+                path,
+                track,
+                from,
+                bars,
+                all_notes,
+                bpm,
+                swing,
+                style.unwrap_or(MINIMAL),
+                role,
+            )?;
+            p.role = role;
+            vec![p]
+        } else {
+            demo_phrases()
+        };
+        return critic_table(&phrases, seeds);
     }
     let dir = out.unwrap_or_else(|| {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
@@ -1494,10 +3006,41 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         (ps, "The four built-in phrases.".to_string())
     };
+    if parts {
+        let rows = if demo {
+            gate_rows(phrases)
+        } else {
+            phrases
+                .into_iter()
+                .map(|p| GateRow {
+                    phrase: Phrase {
+                        name: format!("{}, with a beat", p.name),
+                        ..p
+                    },
+                    tune: true,
+                    beat: true,
+                    picked: Vec::new(),
+                })
+                .collect()
+        };
+        let made: Vec<(Phrase, Made)> = rows
+            .into_iter()
+            .enumerate()
+            .map(|(k, r)| {
+                let m = parts_cases(&r, seed, k);
+                (r.phrase, m)
+            })
+            .collect();
+        return write_all(&made, &dir, seed, &header);
+    }
     let made: Vec<(Phrase, Made)> = phrases
         .into_iter()
         .map(|p| {
-            let m = cases(&p, seed);
+            let m = if gate {
+                gate_cases(&p, seed)
+            } else {
+                cases(&p, seed)
+            };
             (p, m)
         })
         .collect();

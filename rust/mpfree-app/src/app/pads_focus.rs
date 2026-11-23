@@ -15,17 +15,37 @@
 //! the project (the `pads` part, [`App::pads_part`]); a new project, or one
 //! saved before, follows the track.
 //!
-//! **What never moves the pads** (rule 1): arming or selecting a track, a
-//! row tapped in REC's list, or REC. What does: Follow track; a kit picked
-//! for the selected track in the list of kits (a choice of what the pads
-//! play, as on the MPC: the pads follow the track and play it); a project
-//! opened (its own focus); and the arp (below).
+//! **Nothing implicit moves the pads** (rule 1, and the one rule of the
+//! sampler refactor's step 15b): arming or selecting a track, a row tapped
+//! in REC's list, REC, a kit picked for the selected track (the pads that
+//! follow the track play its new kit; a choice of their own, a bank's own
+//! and the layers stay), or an instrument gone from the list (its entry
+//! stays, missing, below), or the arp (below). What does: a choice you
+//! make for the pads, Follow track, and a project opened (its own map).
+//!
+//! **One pad map** (sampler step 15b, [`PadMap`]; the plan's "Step 15,
+//! revised after the 23 Nov review", Jay's go 23 Nov 09:02 UTC): what the
+//! pads play is one small value, the base for every bank, each bank's own
+//! entry and the layers (app/pad_layers.rs), kept, saved and restored
+//! whole (the list of synths' Cancel). A hit resolves bank entry, then
+//! base; each layer that reaches the bank adds its sound. The base can be
+//! a whole kit of the list ([`App::pads_kit`]): the pads play its pads on
+//! their own, the page they are on, while the selected track plays
+//! something else, and REC records it on a track nobody set up, which then
+//! plays that kit ([`App::rec_kit_on`]). An entry whose instrument the
+//! list hasn't got (gone, or a project's that names one it doesn't have)
+//! keeps its place, missing, said once: the bank plays the base
+//! meanwhile, a missing base the track's instrument, a missing layer
+//! nothing. A kit's source bank (`from C`) and a layer's reach (`bank B`)
+//! are in the map and its saved form; the screens that set them come with
+//! steps 15e and 15f.
 //!
 //! **How the audio loop plays them** (`main.rs`, `preview_on`): while the
 //! selected track plays the shared synth itself, the pads play it the
 //! usual way, through the arp and the recorder, as the track's; while it
 //! plays anything else, the loop plays the pad hits on the synth before the
-//! arp and the recorder see them, so nothing records them there.
+//! track's arp and the recorder see them (through the pads' arp while the
+//! arp is on, below), so nothing records them there.
 //!
 //! **REC** (rule 3, step 1's way with today's per-track instruments): while
 //! the pads have the synth and the armed track plays something else, REC
@@ -59,18 +79,18 @@
 //! kit's pages: while the selected track plays the shared synth, PAD BANK
 //! picks its layout's banks instead (Jay, 20 Nov 09:55Z), and the banks'
 //! own wait. Follow track gives every bank back to the track. The banks'
-//! own are saved in the pads part (`bank B instrument 3`), written only
-//! while a bank has one, so a project without stays readable by builds
-//! from before.
+//! own are saved in the pads part with the map (`bank B instrument 3`).
 //!
-//! **The arp** (point C): the arp plays through the selected track, so
-//! while the pads have the synth over a track that plays something else,
-//! it can't play them: the button won't choose the synth while the arp
-//! plays the pads (NOTE REPEAT held, Latch, or the Arp panel), and the arp
-//! starting there gives the pads back to the track
-//! ([`App::arp_ends_pads_synth`]). So a take never goes through an arp the
-//! try-out didn't. Over a track that plays the synth, the arp plays it as
-//! the track's. The arp by instrument comes with a later step.
+//! **The arp** (sampler step 15c): NOTE REPEAT, Latch and the arp play
+//! what the pads play, and never give the pads back. While the pads play
+//! through the selected track, the track's arp plays them as before. While
+//! they play an instrument on their own (a synth, a whole kit, a bank's
+//! own), the pads' arp in the audio loop (`main.rs`, `PadsArp`) takes the
+//! hits instead: the selected track's arp as the Arp panel sets it, on an
+//! engine of its own, playing that instrument: a kit's pads, a synth's
+//! notes (its pad layout's), a host instrument's pads. Its notes end
+//! where they started when the pads move to another instrument. Layers
+//! play each hit once, as pressed (through the arp with step 15f).
 
 use super::{App, Effect};
 use crate::instrument_list::InstrumentId;
@@ -90,71 +110,158 @@ pub enum PadFocus {
     Instrument(InstrumentId),
 }
 
-/// The pads part's first line ([`crate::project::PADS`]).
-pub const PADS_FORMAT: &str = "mpfree-pads 1";
+/// The most kits REC can record besides the armed track's: the pad map's
+/// base, a bank's own each (sampler step 15c) and its layers, and the
+/// kits the MIDI routes name (step 15f).
+pub const MAP_KITS: usize =
+    1 + super::KIT_PAGES + super::pad_layers::MORE + super::route_synths::ROUTE_SYNTHS;
+
+/// The most sounds of the pad map REC records besides the first: its base
+/// and each bank's own ([`App::rec_map_sounds`]).
+pub const MAP_MORE: usize = 1 + super::KIT_PAGES;
+
+/// The pads part's first line ([`crate::project::PADS`]): version 2,
+/// the pad map (sampler step 15b), with the layers in it.
+pub const PADS_FORMAT: &str = "mpfree-pads 2";
 
 impl PadFocus {
     /// The shared synth, chosen for the pads.
     pub const SYNTH: PadFocus = PadFocus::Instrument(InstrumentId::SHARED_SYNTH);
 
-    /// The pads part: its first line, then `play track` or `play
-    /// instrument 1`.
-    pub fn text(self) -> String {
+    /// The words after `play` or a bank's letter: `track`, `instrument 3`.
+    fn words(self) -> String {
         match self {
-            PadFocus::Track => format!("{PADS_FORMAT}\nplay track\n"),
-            PadFocus::Instrument(id) => format!("{PADS_FORMAT}\nplay instrument {id}\n"),
+            PadFocus::Track => "track".to_string(),
+            PadFocus::Instrument(id) => format!("instrument {id}"),
         }
     }
 }
 
-/// The pads part as saved: what every bank plays, then what a bank plays
-/// of its own (step 6c).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct PadsPart {
-    /// What every bank plays ([`PadFocus::text`]'s line).
-    pub all: PadFocus,
-    /// What bank A to H plays of its own (None: what every bank plays).
-    pub banks: [Option<PadFocus>; super::KIT_PAGES],
+/// A bank's own entry in the pad map (step 6c's bank's own, sampler step
+/// 15b): what bank A to H plays ahead of the base.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BankEntry {
+    /// The track's instrument, or one of the project's list.
+    pub play: PadFocus,
+    /// For a kit, the bank of it this bank plays (bank E playing kit 3's
+    /// bank A, step 15e); None: the same bank, as a whole kit plays.
+    pub from: Option<u8>,
 }
 
-impl PadsPart {
-    /// The part: [`PadFocus::text`], then a line for each bank with one of
-    /// its own: `bank B track`, `bank B instrument 3`.
+impl BankEntry {
+    /// What a bank's own pick plays, from the same bank.
+    pub const fn of(play: PadFocus) -> BankEntry {
+        BankEntry { play, from: None }
+    }
+}
+
+/// A layer in the pad map (step 11a's layers, sampler step 15b): one more
+/// instrument each hit plays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LayerEntry {
+    /// The instrument of the project's list it plays.
+    pub id: InstrumentId,
+    /// The bank it plays on alone; None: every bank (today's layers).
+    pub reach: Option<u8>,
+    /// For a kit (step 15f), the bank of it the layer plays; None: the
+    /// bank the pads are on.
+    pub from: Option<u8>,
+}
+
+impl LayerEntry {
+    /// A layer on every bank.
+    pub const fn every(id: InstrumentId) -> LayerEntry {
+        LayerEntry {
+            id,
+            reach: None,
+            from: None,
+        }
+    }
+
+    /// Whether the layer plays on bank `b`.
+    pub fn reaches(self, b: usize) -> bool {
+        self.reach.is_none_or(|r| usize::from(r) == b)
+    }
+}
+
+/// The pad map (sampler step 15b, "one pad map"; the plan's "Step 15,
+/// revised after the 23 Nov review", Jay's go of 23 Nov 09:02 UTC): what
+/// the pads play, in one small value the app keeps, saves and changes
+/// only when you do. A hit resolves bank entry, then base; each layer
+/// that reaches the bank adds its own sound. An entry whose instrument
+/// the project's list hasn't got is kept, missing: that bank plays the
+/// base meanwhile (a missing base: the track's instrument), and a missing
+/// layer is silent. Fixed size, no heap.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PadMap {
+    /// What every bank without an entry plays: Follow track, or an
+    /// instrument of the list (a synth or a whole kit).
+    pub base: PadFocus,
+    /// Bank A to H's own entry.
+    pub banks: [Option<BankEntry>; super::KIT_PAGES],
+    /// The layers, packed in order.
+    pub layers: [Option<LayerEntry>; super::pad_layers::MORE],
+}
+
+impl PadMap {
+    /// The pads part: its first line, `play track` or `play instrument 1`,
+    /// a line for each bank with an entry (`bank B instrument 7`, `bank B
+    /// instrument 7 from C`, `bank C track`), then a line per layer
+    /// (`layer instrument 9`, `layer instrument 9 bank B from A`).
     pub fn text(&self) -> String {
-        let mut text = self.all.text();
-        for (b, f) in self.banks.iter().enumerate() {
-            let Some(f) = f else { continue };
-            let letter = super::bank_letter(b);
-            match f {
-                PadFocus::Track => text.push_str(&format!("bank {letter} track\n")),
-                PadFocus::Instrument(id) => {
-                    text.push_str(&format!("bank {letter} instrument {id}\n"));
-                }
-            }
+        let mut text = format!("{PADS_FORMAT}\nplay {}\n", self.base.words());
+        for (b, e) in self.banks.iter().enumerate() {
+            let Some(e) = e else { continue };
+            text.push_str(&format!(
+                "bank {} {}{}\n",
+                super::bank_letter(b),
+                e.play.words(),
+                from_words(e.from)
+            ));
+        }
+        for l in self.layers.iter().flatten() {
+            let reach = l
+                .reach
+                .map(|r| format!(" bank {}", super::bank_letter(usize::from(r))))
+                .unwrap_or_default();
+            text.push_str(&format!(
+                "layer instrument {}{reach}{}\n",
+                l.id,
+                from_words(l.from)
+            ));
         }
         text
     }
 
-    /// The part read back ([`PadsPart::text`]); Err says why it doesn't
-    /// read: another first line, a line it doesn't know, an instrument
-    /// number that can't be one, what the pads play said twice or not at
-    /// all, a bank past H or said twice. Whether the project's list has
-    /// the instruments is [`App::open_pads`]'s to check.
-    pub fn parse(text: &str) -> Result<PadsPart, String> {
+    /// The part read back ([`PadMap::text`]); Err says why it doesn't
+    /// read: another first line (an older version), a line it doesn't
+    /// know, an instrument number that can't be one, what the pads play
+    /// said twice or not at all, a bank past H or said twice, a layer said
+    /// twice or more than [`super::pad_layers::MORE`]. Whether the
+    /// project's list has the instruments is [`App::open_pads`]'s to say:
+    /// an entry it hasn't got is kept, missing.
+    pub fn parse(text: &str) -> Result<PadMap, String> {
         let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
         match lines.next() {
             Some(PADS_FORMAT) => {}
             Some(other) => return Err(format!("its first line is \"{other}\"")),
             None => return Err("it is empty".to_string()),
         }
+        let bad = |line: &str| format!("\"{line}\" doesn't read");
         let instrument = |line: &str, n: &str| {
             n.parse()
                 .ok()
                 .and_then(InstrumentId::from_number)
-                .ok_or_else(|| format!("\"{line}\" doesn't read"))
+                .ok_or_else(|| bad(line))
         };
-        let mut part = PadsPart::default();
-        let mut all = None;
+        let bank = |line: &str, letter: &str| {
+            bank_of_letter(letter)
+                .map(|b| b as u8)
+                .ok_or_else(|| bad(line))
+        };
+        let mut map = PadMap::default();
+        let mut base = None;
+        let mut layers = 0;
         for line in lines {
             let words: Vec<&str> = line.split_whitespace().collect();
             match words.as_slice() {
@@ -163,28 +270,58 @@ impl PadsPart {
                         ["play", "instrument", n] => PadFocus::Instrument(instrument(line, n)?),
                         _ => PadFocus::Track,
                     };
-                    if all.replace(f).is_some() {
+                    if base.replace(f).is_some() {
                         return Err("it says twice what the pads play".to_string());
                     }
                 }
                 ["bank", letter, rest @ ..] => {
-                    let b =
-                        bank_of_letter(letter).ok_or_else(|| format!("\"{line}\" doesn't read"))?;
-                    let f = match rest {
-                        ["track"] => PadFocus::Track,
-                        ["instrument", n] => PadFocus::Instrument(instrument(line, n)?),
-                        _ => return Err(format!("\"{line}\" doesn't read")),
+                    let b = usize::from(bank(line, letter)?);
+                    let (play, from) = match rest {
+                        ["track"] => (PadFocus::Track, None),
+                        ["instrument", n] => (PadFocus::Instrument(instrument(line, n)?), None),
+                        ["instrument", n, "from", f] => (
+                            PadFocus::Instrument(instrument(line, n)?),
+                            Some(bank(line, f)?),
+                        ),
+                        _ => return Err(bad(line)),
                     };
-                    if part.banks[b].replace(f).is_some() {
+                    if map.banks[b].replace(BankEntry { play, from }).is_some() {
                         return Err(format!("it says twice what bank {letter} plays"));
                     }
                 }
-                _ => return Err(format!("\"{line}\" doesn't read")),
+                ["layer", "instrument", n, rest @ ..] => {
+                    let id = instrument(line, n)?;
+                    let (reach, from) = match rest {
+                        [] => (None, None),
+                        ["bank", r] => (Some(bank(line, r)?), None),
+                        ["from", f] => (None, Some(bank(line, f)?)),
+                        ["bank", r, "from", f] => (Some(bank(line, r)?), Some(bank(line, f)?)),
+                        _ => return Err(bad(line)),
+                    };
+                    if map.layers.iter().flatten().any(|l| l.id == id) {
+                        return Err(format!("it names instrument {id} twice as a layer"));
+                    }
+                    let Some(slot) = map.layers.get_mut(layers) else {
+                        return Err(format!(
+                            "it has more than {} layers, the most the pads play",
+                            super::pad_layers::MORE
+                        ));
+                    };
+                    *slot = Some(LayerEntry { id, reach, from });
+                    layers += 1;
+                }
+                _ => return Err(bad(line)),
             }
         }
-        part.all = all.ok_or_else(|| "it doesn't say what the pads play".to_string())?;
-        Ok(part)
+        map.base = base.ok_or_else(|| "it doesn't say what the pads play".to_string())?;
+        Ok(map)
     }
+}
+
+/// ` from C` for a kit's source bank, else nothing.
+fn from_words(from: Option<u8>) -> String {
+    from.map(|f| format!(" from {}", super::bank_letter(usize::from(f))))
+        .unwrap_or_default()
 }
 
 /// Bank `A` to `H` (0 to 7), as [`super::bank_letter`] writes it.
@@ -265,28 +402,102 @@ pub struct RecPlan {
     /// The armed track plays the pads' synth already (`take` is it): only
     /// the layers want a place.
     pub ready: bool,
-    /// Where REC records each of the pads' layers beyond the first (step
-    /// 11c), in their order, then each synth a MIDI route names (step
-    /// 11e, [`App::rec_more_synths`]); None where there is none.
+    /// The kit place the pads play (sampler step 15): the track REC
+    /// records on plays that kit; `synth` is then a stand-in name ("the
+    /// pads' kit") the screen replaces with the kit's.
+    pub kit: Option<usize>,
+    /// Where REC records each sound besides the first: the pads' layers
+    /// beyond the first (step 11c), in their order, then each synth a MIDI
+    /// route names (step 11e), then the pads' base and each bank's own
+    /// (sampler step 15c) ([`App::rec_more_sounds`]); None where there is
+    /// none.
     pub layers: [Option<LayerTake>; super::REC_MORE],
 }
 
-/// Where REC records one of the pads' layers (the instrument redesign's
-/// step 11c): as the first, where its synth lives. An armed track that
-/// plays it already (one REC records too, or the armed track the first
-/// moves the arm from), else a free track pointed at it, else a new one;
-/// `Full` when the project holds no more, and that layer isn't recorded.
-/// Never `Pinned`: the pin is the first's.
+/// One sound of the pad map that REC records (sampler step 15c, "REC
+/// records what is heard"): a synth, by its holder in the instrument host
+/// (None for the shared synth), or a kit, by its kit place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecSound {
+    Synth(Option<usize>),
+    Kit(usize),
+}
+
+/// Where a sound REC records besides the first comes from in the pad map
+/// or the routes, for what REC says of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecFrom {
+    /// A layer of the pads (its slot in the map, step 11c).
+    Layer(usize),
+    /// A synth a MIDI route names (its row, step 11e).
+    Route(usize),
+    /// What every bank without its own plays (sampler step 15c).
+    Base,
+    /// Bank A to H's own (sampler step 15c).
+    Bank(usize),
+}
+
+/// One sound REC records besides the first ([`App::rec_more_sounds`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecMore {
+    /// Its name ("Pluck"; "a kit" for a kit, which the app has no name
+    /// for).
+    pub name: &'static str,
+    pub sound: RecSound,
+    pub from: RecFrom,
+}
+
+impl RecMore {
+    /// The sound as REC names it: "Pluck" for a layer, "FM" for a route's
+    /// synth, "Bank B's FM", "Bank C's kit", "the pads' Poly".
+    pub fn said(self) -> String {
+        match self.from {
+            RecFrom::Layer(_) | RecFrom::Route(_) => self.name.to_string(),
+            RecFrom::Base => format!("the pads' {}", self.short()),
+            RecFrom::Bank(b) => format!("Bank {}'s {}", super::bank_letter(b), self.short()),
+        }
+    }
+
+    /// "FM", or "kit" for a kit.
+    fn short(self) -> &'static str {
+        match self.sound {
+            RecSound::Kit(_) => "kit",
+            RecSound::Synth(_) => self.name,
+        }
+    }
+}
+
+/// Where REC records one sound besides the first: one of the pads' layers
+/// (the instrument redesign's step 11c), a synth a MIDI route names (step
+/// 11e), or, from sampler step 15c, the pads' base or a bank's own. As the
+/// first, where it lives: an armed track that plays it already (one REC
+/// records too, or the armed track the first moves the arm from), else a
+/// free track pointed at it, else a new one; `Full` when the project
+/// holds no more, and REC records nothing. Never `Pinned`: the pin is the
+/// first's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LayerTake {
     pub take: SynthTake,
-    /// The layer's synth's name ("Pluck").
+    /// Its name ("Pluck"), as [`RecMore::name`].
     pub synth: &'static str,
-    /// Its holder in the instrument host, as [`RecPlan::holder`]; None for
-    /// the shared synth.
-    pub holder: Option<usize>,
-    /// The track plays the synth already: nothing on it changes.
+    /// What it plays.
+    pub sound: RecSound,
+    /// Where it comes from.
+    pub from: RecFrom,
+    /// The track plays it already: nothing on it changes.
     pub plays: bool,
+}
+
+impl LayerTake {
+    /// The sound as REC names it ([`RecMore::said`]).
+    pub fn said(self) -> String {
+        RecMore {
+            name: self.synth,
+            sound: self.sound,
+            from: self.from,
+        }
+        .said()
+    }
 }
 
 impl RecPlan {
@@ -297,15 +508,31 @@ impl RecPlan {
     /// as it is, with a synth a MIDI route names (step 11e). `name` gives
     /// a track's name ("Bass" for one you named).
     pub fn chip(self, name: impl Fn(usize) -> String) -> String {
+        self.chip_as(self.synth, name)
+    }
+
+    /// [`RecPlan::chip`] with `what` for the pads' synth: a kit's name
+    /// (sampler step 15), which the screen has. A sound with no track
+    /// (the project holds no more) makes it "No free track · Bank B's FM":
+    /// REC records nothing then (sampler step 15c).
+    pub fn chip_as(self, what: &str, name: impl Fn(usize) -> String) -> String {
         let more = self.more();
         let first = match self.take {
             // The armed track as it is (a kit), with a route's synth.
-            SynthTake::On(t) if self.synth.is_empty() => name(t),
-            SynthTake::On(t) => format!("{} · {}", name(t), self.synth),
-            SynthTake::New => format!("New track · {}", self.synth),
+            SynthTake::On(t) if what.is_empty() => name(t),
+            SynthTake::On(t) => format!("{} · {what}", name(t)),
+            SynthTake::New => format!("New track · {what}"),
             SynthTake::Pinned { track, .. } => return format!("{} · not free", name(track)),
-            SynthTake::Full => return format!("No free track · {}", self.synth),
+            SynthTake::Full => return format!("No free track · {what}"),
         };
+        if let Some(l) = self
+            .layers
+            .iter()
+            .flatten()
+            .find(|l| l.take == SynthTake::Full)
+        {
+            return format!("No free track · {}", l.said());
+        }
         if more == 0 {
             first
         } else {
@@ -323,30 +550,31 @@ impl RecPlan {
     }
 }
 
-/// Where REC records the pads' layers beyond the first (step 11c), in
-/// order: an armed track that plays a layer's synth already, from
-/// `candidates` (a bit each: the other armed tracks, and the armed one
-/// when the first moves the arm from it), else the first free track, else
-/// a new one while the project holds more. `first` is the track the
-/// first records on (None: a new one). `plays` says whether a track plays
-/// a layer (its holder, None for the shared synth); `fits` whether a
-/// track is free ([`unfit`] says None). Allocates nothing.
+/// Where REC records each sound besides the first ([`App::rec_more_sounds`]:
+/// the pads' layers, step 11c, the routes' synths, step 11e, the pads'
+/// base and banks' own, sampler step 15c), in order: an armed track that
+/// plays it already, from `candidates` (a bit each: the other armed
+/// tracks, and the armed one when the first moves the arm from it), else
+/// the first free track, else a new one while the project holds more.
+/// `first` is the track the first records on (None: a new one). `plays`
+/// says whether a track plays a sound; `fits` whether a track is free
+/// ([`unfit`] says None). Allocates nothing.
 pub fn layer_takes(
-    layers: [Option<(&'static str, Option<usize>)>; super::REC_MORE],
+    more: [Option<RecMore>; super::REC_MORE],
     tracks: usize,
     first: Option<usize>,
     candidates: u128,
-    plays: impl Fn(usize, Option<usize>) -> bool,
+    plays: impl Fn(usize, RecSound) -> bool,
     fits: impl Fn(usize) -> bool,
 ) -> [Option<LayerTake>; super::REC_MORE] {
     let bit = |t: usize| 1u128.checked_shl(t as u32).unwrap_or(0);
     let mut used = first.map_or(0, bit);
-    // New tracks the plan adds: the first's, then the layers'.
+    // New tracks the plan adds: the first's, then the others'.
     let mut news = usize::from(first.is_none());
-    layers.map(|l| {
-        let (synth, holder) = l?;
+    more.map(|m| {
+        let m = m?;
         let armed = (0..tracks.min(128))
-            .find(|&t| candidates & bit(t) != 0 && used & bit(t) == 0 && plays(t, holder));
+            .find(|&t| candidates & bit(t) != 0 && used & bit(t) == 0 && plays(t, m.sound));
         let (take, plays) = if let Some(t) = armed {
             (SynthTake::On(t), true)
         } else if let Some(t) = (0..tracks).find(|&t| used & bit(t) == 0 && fits(t)) {
@@ -362,8 +590,9 @@ pub fn layer_takes(
         }
         Some(LayerTake {
             take,
-            synth,
-            holder,
+            synth: m.name,
+            sound: m.sound,
+            from: m.from,
             plays,
         })
     })
@@ -395,11 +624,101 @@ pub fn synth_track(
 
 impl App {
     /// What the pads play now: the selected track's instrument, or one
-    /// chosen for them; on a bank with one of its own (step 6c), that.
+    /// chosen for them; on a bank with one of its own (step 6c), that. A
+    /// missing entry (its instrument gone from the list, sampler step 15b)
+    /// plays the base meanwhile, and a missing base the track's.
     pub fn pads_focus(&self) -> PadFocus {
         self.pads_bank()
-            .and_then(|b| self.bank_focus[b])
-            .unwrap_or(self.pads_focus)
+            .and_then(|b| self.bank_play(b))
+            .unwrap_or(self.base_now())
+    }
+
+    /// The pad map as it is, missing entries and all (sampler step 15b).
+    #[cfg(test)]
+    pub fn pad_map(&self) -> PadMap {
+        self.pad_map
+    }
+
+    /// Whether `f` can play: the track's instrument, or one the project's
+    /// list has (else its entry is missing).
+    fn listed(&self, f: PadFocus) -> bool {
+        match f {
+            PadFocus::Instrument(id) => self.instrument_list.kind(id).is_some(),
+            PadFocus::Track => true,
+        }
+    }
+
+    /// The base as it plays: the track's instrument while it is missing.
+    pub(super) fn base_now(&self) -> PadFocus {
+        Some(self.pad_map.base)
+            .filter(|&f| self.listed(f))
+            .unwrap_or(PadFocus::Track)
+    }
+
+    /// What bank `b`'s own entry plays, if it has one that isn't missing.
+    pub(super) fn bank_play(&self, b: usize) -> Option<PadFocus> {
+        self.pad_map
+            .banks
+            .get(b)
+            .copied()
+            .flatten()
+            .map(|e| e.play)
+            .filter(|&f| self.listed(f))
+    }
+
+    /// The map's entries the project's list hasn't got, a bit each: the
+    /// base 0, bank A to H 1 to 8, the layers after. Allocates nothing.
+    fn missing(&self) -> u16 {
+        let base = u16::from(!self.listed(self.pad_map.base));
+        let banks = (0..super::KIT_PAGES)
+            .filter(|&b| self.pad_map.banks[b].is_some_and(|e| !self.listed(e.play)))
+            .fold(0, |bits, b| bits | 1 << (1 + b));
+        let layers = (0..super::pad_layers::MORE)
+            .filter(|&l| {
+                self.pad_map.layers[l].is_some_and(|e| !self.listed(PadFocus::Instrument(e.id)))
+            })
+            .fold(0, |bits, l| bits | 1 << (1 + super::KIT_PAGES + l));
+        base | banks | layers
+    }
+
+    /// What newly missing entries (`bits`, as [`App::missing`]) mean, said
+    /// once: each keeps its place in the map until you replace it or
+    /// Follow track clears the map, and plays the base (a bank), the
+    /// track's instrument (the base) or nothing (a layer) meanwhile.
+    fn say_missing(&self, bits: u16, how: &str) -> Vec<String> {
+        let mut notes = Vec::new();
+        let id_of = |f: PadFocus| match f {
+            PadFocus::Instrument(id) => id.to_string(),
+            PadFocus::Track => String::new(),
+        };
+        if bits & 1 != 0 {
+            notes.push(format!(
+                "The pads' instrument {} {how}: they play Track {}'s instrument until you pick another (Follow track clears it)",
+                id_of(self.pad_map.base),
+                self.track + 1
+            ));
+        }
+        for b in 0..super::KIT_PAGES {
+            if bits >> (1 + b) & 1 == 0 {
+                continue;
+            }
+            let id = self.pad_map.banks[b].map_or(String::new(), |e| id_of(e.play));
+            notes.push(format!(
+                "Bank {}'s instrument {id} {how}: the bank plays what the other banks play until you pick another",
+                super::bank_letter(b)
+            ));
+        }
+        let layers = (bits >> (1 + super::KIT_PAGES)).count_ones();
+        if layers == 1 {
+            notes.push(format!(
+                "A layer's instrument {how}: the pads play the others"
+            ));
+        } else if layers > 1 {
+            notes.push(format!(
+                "{layers} layers' instruments {how}: the pads play the others"
+            ));
+        }
+        notes
     }
 
     /// The bank the pads are on when it plays something of its own (step
@@ -408,8 +727,26 @@ impl App {
     /// then).
     pub fn pads_bank(&self) -> Option<usize> {
         let b = self.pad_page;
-        (self.pad_layout.is_none() && self.bank_focus.get(b).copied().flatten().is_some())
-            .then_some(b)
+        (self.pad_layout.is_none() && self.bank_play(b).is_some()).then_some(b)
+    }
+
+    /// The bank of kit pads the 16 pads play now: the source bank of the
+    /// bank's own kit while the pads are on a bank that has one (sampler
+    /// step 15e: bank D playing kit 3's bank A, "bank D instrument 9 from
+    /// A"), else the bank they are on. A pad hit, its colours, its flash,
+    /// REC and the Sample page all take the kit pad of this bank.
+    pub fn kit_page(&self) -> usize {
+        self.pads_bank()
+            .and_then(|b| self.pad_map.banks.get(b).copied().flatten())
+            .filter(|e| match e.play {
+                PadFocus::Instrument(id) => matches!(
+                    self.instrument_list.kind(id),
+                    Some(crate::instrument_list::Kind::Kit { .. })
+                ),
+                PadFocus::Track => false,
+            })
+            .and_then(|e| e.from)
+            .map_or(self.pad_page, |f| usize::from(f).min(super::KIT_PAGES - 1))
     }
 
     /// Whether the banks' own apply now ([`App::pads_bank`]): on a kit's
@@ -427,13 +764,13 @@ impl App {
     pub fn pads_who(&self, plays: impl Fn(PadFocus) -> bool) -> (bool, u8) {
         // What every bank plays, its layers too (step 11b).
         let all =
-            plays(self.pads_focus) || self.pad_layers().any(|id| plays(PadFocus::Instrument(id)));
+            plays(self.base_now()) || self.pad_layers().any(|id| plays(PadFocus::Instrument(id)));
         if !self.banks_apply() {
             return (all, 0);
         }
-        let every = self.bank_focus.iter().any(Option::is_none) && all;
+        let every = self.pad_map.banks.iter().any(Option::is_none) && all;
         let banks = (0..super::KIT_PAGES)
-            .filter(|&b| self.bank_focus[b].is_some_and(&plays))
+            .filter(|&b| self.bank_play(b).is_some_and(&plays))
             .fold(0u8, |bits, b| bits | 1 << b);
         (every, banks)
     }
@@ -448,7 +785,7 @@ impl App {
     /// What bank `b` plays of its own (None: what every bank plays).
     #[cfg(test)]
     pub fn bank_focus(&self, b: usize) -> Option<PadFocus> {
-        self.bank_focus.get(b).copied().flatten()
+        self.bank_play(b)
     }
 
     /// The pads went to another bank (`was`: the page before): the list of
@@ -471,7 +808,7 @@ impl App {
     pub(super) fn banks_hold(&self, holder: usize) -> bool {
         let n = holder.checked_sub(crate::instruments::TRACKS);
         self.bank_to.iter().any(|&t| t.is_some() && t == n)
-            || self.bank_focus.iter().flatten().any(|f| match f {
+            || self.pad_map.banks.iter().flatten().any(|e| match &e.play {
                 PadFocus::Instrument(id) => {
                     self.instrument_list.kind(*id).and_then(|k| k.holder()) == Some(holder)
                 }
@@ -496,6 +833,19 @@ impl App {
         }
     }
 
+    /// The kit place chosen for the pads (sampler step 15): a kit of the
+    /// project's list. None while they follow the track or play a synth,
+    /// or once the list hasn't got it.
+    pub fn pads_kit(&self) -> Option<usize> {
+        match self.pads_focus() {
+            PadFocus::Instrument(id) => match self.instrument_list.kind(id)? {
+                crate::instrument_list::Kind::Kit { kit } => Some(kit),
+                _ => None,
+            },
+            PadFocus::Track => None,
+        }
+    }
+
     /// The instrument chosen for the pads that the host holds, as the
     /// audio loop last said ("FM"), for the screen.
     pub fn pads_held(&self) -> Option<crate::instruments::Held> {
@@ -505,51 +855,48 @@ impl App {
     /// The project's list of instruments as the audio loop has it now
     /// (copied: it holds no heap). A free place given a synth for the
     /// pads ([`App::pick_pads_synth`]) is what they play once it has an
-    /// id; an instrument chosen for them that has gone from the list gives
-    /// them back to the track, said. Nothing to do, nothing allocated.
+    /// id. An entry of the pad map whose instrument has gone from the list
+    /// stays, missing (sampler step 15b: nothing implicit changes the
+    /// pads), said once: a bank plays the base meanwhile, the base the
+    /// track's instrument, a layer nothing. Nothing to do, nothing
+    /// allocated.
     pub fn set_instrument_list(
         &mut self,
         list: &crate::instrument_list::InstrumentList,
     ) -> Vec<Effect> {
-        self.instrument_list.clone_from(list);
         let was = self.pads_focus();
-        let mut fx = Vec::new();
-        // A bank's synth that has its id now, or one gone (step 6c).
+        let missing = self.missing();
+        self.instrument_list.clone_from(list);
+        // A synth given a free place for a bank (step 6c), the pads or a
+        // layer (step 11a) that has its id now.
         for b in 0..super::KIT_PAGES {
             if let Some(id) = self.bank_to[b].and_then(|n| list.free_of(n)) {
                 self.bank_to[b] = None;
-                self.bank_focus[b] = Some(PadFocus::Instrument(id));
-            }
-            if let Some(PadFocus::Instrument(id)) = self.bank_focus[b] {
-                if list.kind(id).is_none() {
-                    self.bank_focus[b] = None;
-                    self.project_edit = true;
-                    fx.push(Effect::Note(format!(
-                        "Bank {}'s synth is gone: the bank plays what the other banks play",
-                        super::bank_letter(b)
-                    )));
-                }
+                self.pad_map.banks[b] = Some(BankEntry::of(PadFocus::Instrument(id)));
             }
         }
         if let Some(id) = self.pads_to.and_then(|n| list.free_of(n)) {
             self.pads_to = None;
-            self.pads_focus = PadFocus::Instrument(id);
+            self.pad_map.base = PadFocus::Instrument(id);
         }
-        if let PadFocus::Instrument(id) = self.pads_focus {
-            if list.kind(id).is_none() {
-                fx.extend(self.pads_back(|t| {
-                    format!("The pads' synth is gone: they follow the track and play Track {t}'s instrument")
-                }));
-            }
-        }
-        // A layer's synth that has its id now, or one gone (step 11a); none
-        // left to say once the pads' own synth went (Follow track gave
-        // them up).
-        fx.extend(self.layers_follow_list());
-        if self.pads_focus() != was && !fx.iter().any(|e| matches!(e, Effect::PadsFocus(_))) {
+        self.layers_follow_list();
+        let gone = self.missing() & !missing;
+        let mut fx: Vec<Effect> = self
+            .say_missing(gone, "is gone")
+            .into_iter()
+            .map(Effect::Note)
+            .collect();
+        if self.pads_focus() != was {
             fx.insert(0, Effect::PadsFocus(self.pads_focus()));
         }
         fx
+    }
+
+    /// The list of a project being opened, before its pads part
+    /// ([`App::open_pads`]): copied, with nothing said of the map it
+    /// replaces.
+    pub fn open_list(&mut self, list: &crate::instrument_list::InstrumentList) {
+        self.instrument_list.clone_from(list);
     }
 
     /// The free places whose instrument nothing plays any more (not the
@@ -567,7 +914,7 @@ impl App {
                 continue;
             };
             let sent = (0..mpfree_seq::MAX_TRACKS).any(|t| self.track_send(t) == Some(holder));
-            let all = match self.pads_focus {
+            let all = match self.base_now() {
                 PadFocus::Instrument(id) => self.instrument_list.kind(id).and_then(|k| k.holder()),
                 PadFocus::Track => None,
             };
@@ -608,15 +955,9 @@ impl App {
         if self.pad_layout.is_some() || self.track_plays_instrument(self.track) {
             return Vec::new();
         }
-        if self.generating() {
-            return vec![Effect::Tell(
-                "The pads play the synth as pressed: let go of NOTE REPEAT or Latch, or close the Arp panel, first"
-                    .into(),
-            )];
-        }
         // A pad held on the kit now still lets go there: the audio loop
         // plays on the synth only the hits that start from here.
-        self.pads_focus = PadFocus::SYNTH;
+        self.pad_map.base = PadFocus::SYNTH;
         self.project_edit = true;
         vec![
             Effect::PadsFocus(self.pads_focus()),
@@ -632,16 +973,6 @@ impl App {
     /// chip): the pads play the selected track's instrument again.
     pub fn pads_follow_track(&mut self) -> Vec<Effect> {
         self.pads_back(|t| format!("The pads follow the track: Track {t}'s instrument"))
-    }
-
-    /// A kit picked for the selected track in the list of kits (or turned
-    /// with SHIFT + the wheel): a choice of what the pads play, so they
-    /// follow the track again and play it, as on the MPC. Nothing (and no
-    /// allocation) while they follow it already.
-    pub fn kit_pick_follows_track(&mut self) -> Vec<Effect> {
-        self.pads_back(|t| {
-            format!("Kit picked: the pads follow the track and play Track {t}'s kit")
-        })
     }
 
     /// REC while the pads play a synth picked in the list of synths (step
@@ -700,34 +1031,6 @@ impl App {
         ]
     }
 
-    /// Once a period: the arp plays the pads now (NOTE REPEAT, Latch or
-    /// the Arp panel) while they have the synth over a track that plays
-    /// something else, so the pads follow the track again and play its
-    /// instrument through the arp, as a take would. Nothing (and no
-    /// allocation) otherwise: over a track that plays the synth the arp
-    /// plays it.
-    pub fn arp_ends_pads_synth(&mut self) -> Vec<Effect> {
-        // The shared synth over a track that plays something else (no
-        // synth layout on the pads), or an instrument of the host's that
-        // the track doesn't play.
-        let over = match self.pads_focus() {
-            PadFocus::Track => false,
-            _ if self.pads_chose_synth() => self.pad_layout.is_none(),
-            PadFocus::Instrument(_) => self
-                .pads_holder()
-                .is_some_and(|h| self.track_owner(self.track) != Some(h)),
-        };
-        // Layers (step 11a) play the pads as pressed, which the arp
-        // doesn't.
-        let over = over || (self.has_layers() && self.layers_apply());
-        if !over || !self.generating() {
-            return Vec::new();
-        }
-        self.pads_back(|t| {
-            format!("The arp plays Track {t}'s instrument: the pads follow the track")
-        })
-    }
-
     /// The holder whose instrument track `track` plays: its own, else the
     /// one it sends to, as the audio loop last said.
     pub fn track_owner(&self, track: usize) -> Option<usize> {
@@ -757,6 +1060,169 @@ impl App {
         self.synth_tracks = tracks;
     }
 
+    /// The tracks that play each kit the pad map names (its base, the
+    /// banks' own and its layers, sampler steps 15, 15c and 15f) and each
+    /// kit a MIDI route names (15f), as the audio loop has them
+    /// (`on_kit`: `TrackKits::on_kit`, a bit each). Allocates nothing.
+    pub fn set_kit_tracks(&mut self, on_kit: impl Fn(usize) -> u128) {
+        let mut out = [(usize::MAX, 0); MAP_KITS];
+        let mut n = 0;
+        for k in self.map_kits() {
+            if n < MAP_KITS && !out[..n].iter().any(|e| e.0 == k) {
+                out[n] = (k, on_kit(k));
+                n += 1;
+            }
+        }
+        self.kit_tracks = out;
+    }
+
+    /// The kit places the pad map names that the list has: its base, then
+    /// the banks' own, then its layers, then the kits the MIDI routes name
+    /// (sampler step 15f).
+    fn map_kits(&self) -> impl Iterator<Item = usize> + '_ {
+        let base = std::iter::once(self.pad_map.base);
+        let banks = self.pad_map.banks.iter().flatten().map(|e| e.play);
+        let layers = self.pad_map.layers.iter().flatten();
+        let layers = layers.map(|l| PadFocus::Instrument(l.id));
+        let routes = self.route_synths.iter().flatten();
+        let routes = routes.map(|&id| PadFocus::Instrument(id));
+        base.chain(banks)
+            .chain(layers)
+            .chain(routes)
+            .filter_map(|f| match self.sound_of(f)? {
+                RecSound::Kit(k) => Some(k),
+                RecSound::Synth(_) => None,
+            })
+    }
+
+    /// Whether track `track` plays kit place `kit`, one the pad map names,
+    /// with no instrument of its own or a send over it: REC records that
+    /// kit there as it is (sampler steps 15 and 15c).
+    pub fn plays_kit(&self, track: usize, kit: usize) -> bool {
+        track < 128
+            && self
+                .kit_tracks
+                .iter()
+                .any(|&(k, tracks)| k == kit && tracks >> track & 1 == 1)
+            && !self.track_plays_instrument(track)
+    }
+
+    /// Whether track `track` plays the kit chosen for the pads, with no
+    /// instrument of its own or a send over it: REC records the pads there
+    /// as they are (sampler step 15).
+    pub fn plays_pads_kit(&self, track: usize) -> bool {
+        self.pads_kit().is_some_and(|k| self.plays_kit(track, k))
+    }
+
+    /// What `f` plays as a sound REC records (sampler step 15c): the shared
+    /// synth, a synth by its holder, a kit by its place; None for the
+    /// track's instrument, or one the list hasn't got.
+    pub fn sound_of(&self, f: PadFocus) -> Option<RecSound> {
+        let PadFocus::Instrument(id) = f else {
+            return None;
+        };
+        Some(match self.instrument_list.kind(id)? {
+            crate::instrument_list::Kind::SharedSynth => RecSound::Synth(None),
+            crate::instrument_list::Kind::Kit { kit } => RecSound::Kit(kit),
+            k => RecSound::Synth(Some(k.holder()?)),
+        })
+    }
+
+    /// The name REC gives what `f` plays: the synth's ("FM"), "a kit".
+    pub(super) fn sound_name(&self, f: PadFocus) -> &'static str {
+        match (f, self.sound_of(f)) {
+            (_, Some(RecSound::Kit(_))) => "a kit",
+            (PadFocus::Instrument(id), _) => self.instrument_name(id),
+            (PadFocus::Track, _) => "the track's instrument",
+        }
+    }
+
+    /// What the pads play now as a sound REC records ([`App::sound_of`]
+    /// of [`App::pads_focus`]); None while they follow the track.
+    pub fn pads_sound(&self) -> Option<RecSound> {
+        self.sound_of(self.pads_focus())
+    }
+
+    /// Whether track `track` plays `sound`, as the audio loop last said:
+    /// a synth ([`App::track_plays_synth`]) or a kit the map names
+    /// ([`App::plays_kit`]).
+    pub fn track_plays(&self, track: usize, sound: RecSound) -> bool {
+        match sound {
+            RecSound::Synth(holder) => self.track_plays_synth(track, holder),
+            RecSound::Kit(kit) => self.plays_kit(track, kit),
+        }
+    }
+
+    /// Whether a bank has its own now (sampler step 15c): while it does,
+    /// REC keeps the arm where it is, so the banks that follow the track
+    /// go on playing what they played, and records the pads' base on a
+    /// track of its own like every bank's own ([`App::rec_map_sounds`]).
+    pub fn map_has_banks(&self) -> bool {
+        self.banks_apply() && (0..super::KIT_PAGES).any(|b| self.bank_play(b).is_some())
+    }
+
+    /// The sounds of the pad map REC records besides the first (sampler
+    /// step 15c): while a bank has its own ([`App::map_has_banks`]), the
+    /// base, then each bank's own, A to H, each sound once (a bank's own
+    /// that follows the track records on the armed track). None of them
+    /// otherwise: the base is the first. Allocates nothing.
+    pub fn rec_map_sounds(&self) -> [Option<RecMore>; MAP_MORE] {
+        let mut out = [None; MAP_MORE];
+        if !self.map_has_banks() {
+            return out;
+        }
+        let entries = std::iter::once((RecFrom::Base, self.base_now())).chain(
+            (0..super::KIT_PAGES).filter_map(|b| self.bank_play(b).map(|f| (RecFrom::Bank(b), f))),
+        );
+        let mut n = 0;
+        for (from, f) in entries {
+            let Some(sound) = self.sound_of(f) else {
+                continue;
+            };
+            if n < MAP_MORE
+                && !out[..n]
+                    .iter()
+                    .flatten()
+                    .any(|m: &RecMore| m.sound == sound)
+            {
+                out[n] = Some(RecMore {
+                    name: self.sound_name(f),
+                    sound,
+                    from,
+                });
+                n += 1;
+            }
+        }
+        out
+    }
+
+    /// REC while the pads have a kit the armed track doesn't play
+    /// (sampler step 15): track `track` (0 based) plays that kit from now
+    /// on, as picking it in the list of kits does ([`Effect::KitOnTrack`]),
+    /// so the take plays the kit that was heard. The pads keep it (rule
+    /// 1). The caller arms `track`, which it added for this take when
+    /// `added`.
+    pub fn rec_kit_on(&mut self, track: usize, kit: usize, added: bool) -> Vec<Effect> {
+        let new = if added { "a new track, " } else { "" };
+        self.project_edit = true;
+        if track < 128 {
+            // Before the audio loop says so: the press that follows
+            // records there.
+            if let Some(e) = self.kit_tracks.iter_mut().find(|e| e.0 == kit) {
+                e.1 |= 1 << track;
+            } else if let Some(e) = self.kit_tracks.iter_mut().find(|e| e.0 == usize::MAX) {
+                *e = (kit, 1 << track);
+            }
+        }
+        vec![
+            Effect::KitOnTrack { track, kit },
+            Effect::Note(format!(
+                "REC records the pads' kit on {new}Track {}: the track plays the same kit as the pads",
+                track + 1
+            )),
+        ]
+    }
+
     /// Whether track `track` plays the synth the pads have: the shared
     /// synth, with no instrument of its own or MIDI output over it. REC
     /// records the pads there as they are.
@@ -767,76 +1233,47 @@ impl App {
             && !self.track_plays_instrument(track)
     }
 
-    /// The pads part of the project ([`PadFocus::text`]).
+    /// The pads part of the project: the pad map ([`PadMap::text`]), its
+    /// layers and missing entries too.
     pub fn pads_part(&self) -> String {
-        PadsPart {
-            all: self.pads_focus,
-            banks: self.bank_focus,
-        }
-        .text()
+        self.pad_map.text()
     }
 
-    /// A project's pads part (None: New, or a project saved before it had
-    /// one: the pads follow the track). A part that doesn't read, or names
-    /// an instrument the project's list hasn't got
-    /// ([`App::set_instrument_list`] first), is said, and the pads follow
+    /// A project's pads part (None: New: the pads follow the track), after
+    /// its list ([`App::open_list`]). An entry naming an instrument the
+    /// list hasn't got is kept, missing, and said: that bank plays the
+    /// base, the base the track's instrument, a layer nothing, until you
+    /// pick another. A part that doesn't read is said, and the pads follow
     /// the track.
     pub fn open_pads(&mut self, text: Option<&str>) -> (Vec<String>, Vec<Effect>) {
         let mut notes = Vec::new();
         self.pads_to = None;
         self.bank_to = [None; super::KIT_PAGES];
-        // The layers come after, from their own part (`open_pad_layers`).
-        self.clear_layers();
-        let listed = |f: &PadFocus| match f {
-            PadFocus::Instrument(id) => self.instrument_list.kind(*id).is_some(),
-            PadFocus::Track => true,
-        };
-        let part = match text.map(PadsPart::parse) {
-            None => PadsPart::default(),
-            Some(Ok(PadsPart {
-                all: PadFocus::Instrument(id),
-                ..
-            })) if self.instrument_list.kind(id).is_none() => {
-                notes.push(format!(
-                    "project: the pads part wasn't opened (instrument {id} isn't in the project's list); the pads follow the track"
-                ));
-                PadsPart::default()
-            }
-            Some(Ok(mut p)) => {
-                // A bank's instrument the list hasn't got: that bank plays
-                // what the others play, said; the rest opens.
-                for b in 0..super::KIT_PAGES {
-                    if let Some(f) = p.banks[b].filter(|f| !listed(f)) {
-                        let PadFocus::Instrument(id) = f else {
-                            continue;
-                        };
-                        notes.push(format!(
-                            "project: bank {}'s instrument {id} isn't in the project's list; the bank plays what the other banks play",
-                            super::bank_letter(b)
-                        ));
-                        p.banks[b] = None;
-                    }
-                }
-                p
-            }
+        self.layer_to = [None; super::pad_layers::MORE];
+        self.pad_map = match text.map(PadMap::parse) {
+            None => PadMap::default(),
+            Some(Ok(map)) => map,
             Some(Err(why)) => {
                 notes.push(format!(
                     "project: the pads part wasn't opened ({why}); the pads follow the track"
                 ));
-                PadsPart::default()
+                PadMap::default()
             }
         };
-        self.pads_focus = part.all;
-        self.bank_focus = part.banks;
+        notes.extend(
+            self.say_missing(self.missing(), "isn't in the project's list")
+                .into_iter()
+                .map(|n| format!("project: {n}")),
+        );
         (notes, vec![Effect::PadsFocus(self.pads_focus())])
     }
 
     /// The pads follow the selected track again, saying what `why` writes.
     /// Nothing (and no allocation) when they do already.
     pub(super) fn pads_back(&mut self, why: impl FnOnce(usize) -> String) -> Vec<Effect> {
-        let banks =
-            self.bank_focus.iter().any(Option::is_some) || self.bank_to.iter().any(Option::is_some);
-        if self.pads_focus == PadFocus::Track
+        let banks = self.pad_map.banks.iter().any(Option::is_some)
+            || self.bank_to.iter().any(Option::is_some);
+        if self.pad_map.base == PadFocus::Track
             && self.pads_to.is_none()
             && !banks
             && !self.has_layers()
@@ -845,9 +1282,8 @@ impl App {
         }
         // Every bank too (step 6c), and the layers (step 11a): Follow
         // track is the pads following the track.
-        self.pads_focus = PadFocus::Track;
+        self.pad_map = PadMap::default();
         self.pads_to = None;
-        self.bank_focus = [None; super::KIT_PAGES];
         self.bank_to = [None; super::KIT_PAGES];
         self.clear_layers();
         self.project_edit = true;

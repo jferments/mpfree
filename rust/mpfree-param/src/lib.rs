@@ -169,6 +169,14 @@ pub enum Owner {
     /// moves the XY pad across or up as a finger does. Its parameter ids
     /// are in [`play`]. Locks, macros and the mod matrix never target it.
     Play,
+    /// A set being played, for MIDI Learn's remote control (live shows
+    /// B1, the Learn section's Show card): a learned footswitch or button
+    /// arms the next song or the one before, goes, cancels, goes back to
+    /// the set's order, stops everything (Panic) or turns the click on or
+    /// off. It acts in every project while a set is open. Its parameter
+    /// ids are in [`show`]. Locks, macros and the mod matrix never target
+    /// it.
+    Show,
 }
 
 /// [`Owner::Midi`]'s parameters: a track's controllers, pitch bend and
@@ -357,6 +365,12 @@ pub mod looper {
     pub const CAPTURE: u16 = 5;
     /// The picked loop's Clear (Undo brings it back).
     pub const CLEAR: u16 = 6;
+    /// Smart loop end's Snap on the picked loop: what the chip's Snap
+    /// does, or Snap anyway while the hint line asks.
+    pub const SNAP: u16 = 7;
+    /// Smart loop end's Use my tap on the picked loop: back where you
+    /// tapped (or pressed), or Not now while the hint line asks.
+    pub const USE_MY_TAP: u16 = 8;
     /// The loops the ids below count to (`mpfree_looper::MAX_LOOPS`).
     pub const LOOPS: u16 = 8;
     const KEY: u16 = 0x100;
@@ -383,6 +397,8 @@ pub mod looper {
         Redo,
         Capture,
         Clear,
+        Snap,
+        UseMyTap,
     }
 
     /// Loop `n`'s key (0 is Loop 1).
@@ -419,6 +435,8 @@ pub mod looper {
                 REDO => Looper::Redo,
                 CAPTURE => Looper::Capture,
                 CLEAR => Looper::Clear,
+                SNAP => Looper::Snap,
+                USE_MY_TAP => Looper::UseMyTap,
                 _ => return None,
             },
             KEY if n < LOOPS => Looper::Key(Which::Loop(n as u8)),
@@ -448,6 +466,8 @@ pub mod looper {
             Looper::Redo => "Redo".to_string(),
             Looper::Capture => "Capture".to_string(),
             Looper::Clear => "Clear".to_string(),
+            Looper::Snap => "Snap".to_string(),
+            Looper::UseMyTap => "Use my tap".to_string(),
         })
     }
 }
@@ -535,7 +555,11 @@ pub mod arp {
     pub const SWING: u16 = 2;
     /// The octaves an order climbs, 1 to 4.
     pub const OCTAVES: u16 = 3;
-    /// Every one, in Q-Link order, with its name.
+    /// The Modifier, 0 to 100 %: a learned knob pushes the arp with it while
+    /// the Modifier's controller is "Learned knob" (mpfree-arp's
+    /// `modifier.rs`). Not a Q-Link.
+    pub const MODIFIER: u16 = 4;
+    /// The four the Q-Links turn, in Q-Link order, with their names.
     pub const ALL: [(u16, &str); 4] = [
         (RATE, "Rate"),
         (GATE, "Gate"),
@@ -545,6 +569,9 @@ pub mod arp {
 
     /// The name of parameter `id`, if it is one.
     pub fn name(id: u16) -> Option<&'static str> {
+        if id == MODIFIER {
+            return Some("Modifier");
+        }
         ALL.iter().find(|(i, _)| *i == id).map(|(_, n)| *n)
     }
 }
@@ -563,12 +590,68 @@ pub mod play {
     pub const XY_ACROSS: u16 = 2;
     /// The XY pad up, 0 (bottom) to 1 (top).
     pub const XY_UP: u16 = 3;
+    /// The XY pad's Hold: a press switches it (a layout of yours).
+    pub const XY_HOLD: u16 = 4;
+    /// The XY pad's next layout: a press plays the next of this song's
+    /// layouts of yours (the next ready-made one while there are none).
+    pub const XY_NEXT: u16 = 5;
+    /// The XY pad's layout before, as [`XY_NEXT`] the other way.
+    pub const XY_BACK: u16 = 6;
     /// Every one, in the order the Learn section lists them, with its name.
-    pub const ALL: [(u16, &str); 4] = [
+    pub const ALL: [(u16, &str); 7] = [
         (SWING, "Swing"),
         (FILTER, "Filter"),
         (XY_ACROSS, "XY across"),
         (XY_UP, "XY up"),
+        (XY_HOLD, "XY Hold"),
+        (XY_NEXT, "XY layout next"),
+        (XY_BACK, "XY layout back"),
+    ];
+
+    /// Whether `id` is a press (a button, a key, a footswitch), not a
+    /// value: the XY pad's Hold and its layout buttons.
+    pub const fn is_press(id: u16) -> bool {
+        matches!(id, XY_HOLD | XY_NEXT | XY_BACK)
+    }
+
+    /// The name of parameter `id`, if it is one.
+    pub fn name(id: u16) -> Option<&'static str> {
+        ALL.iter().find(|(i, _)| *i == id).map(|(_, n)| *n)
+    }
+}
+
+/// [`Owner::Show`]'s parameters: the set's controls, for MIDI Learn (live
+/// shows B1). Each is a press: it acts when the control goes on, once
+/// (a second press within 50 ms is the same press). Learned controls are
+/// saved with these numbers in the rig, so they never change: a new
+/// control takes the next number.
+pub mod show {
+    /// Arm the song after the one armed (or after the song playing); a
+    /// second press goes.
+    pub const NEXT_SONG: u16 = 0;
+    /// Arm the song before.
+    pub const PREVIOUS_SONG: u16 = 1;
+    /// Go to the armed song (during Let it finish: go now).
+    pub const GO: u16 = 2;
+    /// Drop the armed song, leaving the music as it is.
+    pub const CANCEL_NEXT: u16 = 3;
+    /// Arm the song after the one playing in the set's order.
+    pub const BACK_TO_ORDER: u16 = 4;
+    /// Stop everything, as SHIFT + STOP does, and send notes off on every
+    /// MIDI out.
+    pub const PANIC: u16 = 5;
+    /// Turn the click on or off, as SHIFT + PLAY START does.
+    pub const CLICK: u16 = 6;
+    /// Every one, in the order the Learn section's Show card lists them,
+    /// with its name.
+    pub const ALL: [(u16, &str); 7] = [
+        (NEXT_SONG, "Next song"),
+        (PREVIOUS_SONG, "Previous song"),
+        (GO, "Go"),
+        (CANCEL_NEXT, "Cancel next"),
+        (BACK_TO_ORDER, "Back to the set order"),
+        (PANIC, "Panic"),
+        (CLICK, "Click"),
     ];
 
     /// The name of parameter `id`, if it is one.
@@ -765,6 +848,7 @@ impl fmt::Display for Owner {
             Owner::Looper => f.write_str("looper"),
             Owner::Perform => f.write_str("perform"),
             Owner::Play => f.write_str("play"),
+            Owner::Show => f.write_str("show"),
             o => {
                 let (t, on) = o.split().expect("every other owner is on a track");
                 write!(f, "t{t}.{on}")
@@ -850,6 +934,7 @@ fn owner(words: &[&str]) -> Option<Owner> {
         ["looper"] => Some(Owner::Looper),
         ["perform"] => Some(Owner::Perform),
         ["play"] => Some(Owner::Play),
+        ["show"] => Some(Owner::Show),
         [w] => num(w, "macro")
             .map(Owner::Macro)
             .or_else(|| num(w, "mod").map(Owner::Mod))
@@ -928,6 +1013,7 @@ mod tests {
             Owner::Looper,
             Owner::Perform,
             Owner::Play,
+            Owner::Show,
         ];
         for s in strips {
             v.push(Owner::Strip(s));
@@ -986,6 +1072,8 @@ mod tests {
             ),
             (ParamAddr::new(Owner::Play, play::SWING), "play.0"),
             (ParamAddr::new(Owner::Play, play::XY_UP), "play.3"),
+            (ParamAddr::new(Owner::Show, show::NEXT_SONG), "show.0"),
+            (ParamAddr::new(Owner::Show, show::CLICK), "show.6"),
         ];
         for (a, s) in cases {
             assert_eq!(a.to_string(), s);
@@ -1084,12 +1172,14 @@ mod tests {
                 looper::REDO,
                 looper::CAPTURE,
                 looper::CLEAR,
+                looper::SNAP,
+                looper::USE_MY_TAP,
                 looper::key(0),
                 looper::key(7),
                 looper::mute(0),
                 looper::mute(7),
             ],
-            [0, 1, 2, 3, 4, 5, 6, 0x100, 0x107, 0x200, 0x207]
+            [0, 1, 2, 3, 4, 5, 6, 7, 8, 0x100, 0x107, 0x200, 0x207]
         );
         assert_eq!(
             looper::of(looper::key(2)),
@@ -1106,7 +1196,7 @@ mod tests {
         assert_eq!(looper::of(looper::key(8)), None, "8 loops");
         assert_eq!(looper::of(looper::mute(8)), None, "8 loops");
         assert_eq!(looper::of(0x1FF), None);
-        assert_eq!(looper::of(7), None);
+        assert_eq!(looper::of(9), None);
         for w in [Which::Picked, Which::Loop(0), Which::Loop(7)] {
             assert_eq!(looper::of(looper::key_of(w)), Some(Looper::Key(w)));
             assert_eq!(looper::of(looper::mute_of(w)), Some(Looper::Mute(w)));
@@ -1121,7 +1211,9 @@ mod tests {
                 assert!(names.insert(looper::name(id).unwrap()), "{id}");
             }
         }
-        assert_eq!(seen.len(), 7 + 2 * 8);
+        assert_eq!(seen.len(), 9 + 2 * 8);
+        assert_eq!(looper::name(looper::SNAP).unwrap(), "Snap");
+        assert_eq!(looper::name(looper::USE_MY_TAP).unwrap(), "Use my tap");
         assert_eq!(looper::name(looper::key(2)).unwrap(), "Loop 3 key");
         assert_eq!(
             looper::name(looper::PICKED_KEY).unwrap(),
@@ -1230,12 +1322,35 @@ mod tests {
     #[test]
     fn plays_ids_stay_put() {
         assert_eq!(
-            [play::SWING, play::FILTER, play::XY_ACROSS, play::XY_UP],
-            [0, 1, 2, 3]
+            [
+                play::SWING,
+                play::FILTER,
+                play::XY_ACROSS,
+                play::XY_UP,
+                play::XY_HOLD,
+                play::XY_NEXT,
+                play::XY_BACK
+            ],
+            [0, 1, 2, 3, 4, 5, 6]
         );
         assert_eq!(play::name(play::XY_ACROSS), Some("XY across"));
-        assert_eq!(play::name(4), None);
+        assert_eq!(play::name(play::XY_HOLD), Some("XY Hold"));
+        assert!(play::is_press(play::XY_NEXT) && !play::is_press(play::XY_UP));
+        assert_eq!(play::name(99), None);
         assert_eq!(Owner::Play.track(), None);
+    }
+
+    /// The Show card's ids are a saved format too.
+    #[test]
+    fn shows_ids_stay_put() {
+        let ids: Vec<u16> = show::ALL.iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids, [0, 1, 2, 3, 4, 5, 6]);
+        assert_eq!(
+            show::name(show::BACK_TO_ORDER),
+            Some("Back to the set order")
+        );
+        assert_eq!(show::name(7), None);
+        assert_eq!(Owner::Show.track(), None);
     }
 
     #[test]

@@ -77,6 +77,19 @@ fn lane_rows(mix: &mut mixing::MixHost, ask: gui::LaneRowsAsk, out: &mut Out) {
     }
 }
 
+/// The setting a SHIFT + touch on a value names (layout spec 4d): a knob
+/// on the Synth tab is track `t`'s synth's, an arp slider its arp's, and a
+/// pad's setting on the Sample or Pads tab its kit's (`t` the armed track).
+pub fn learn_addr(v: gui::LearnValue, t: u8) -> mpfree_play::mpfree_param::ParamAddr {
+    use mpfree_play::mpfree_param::{Owner, ParamAddr};
+    match v {
+        gui::LearnValue::Param(a) => a,
+        gui::LearnValue::Synth(id) => ParamAddr::new(Owner::Inst(t), id),
+        gui::LearnValue::Arp(id) => ParamAddr::new(Owner::Arp(t), id),
+        gui::LearnValue::Pad { pad, field } => ParamAddr::new(Owner::Pad(t, pad), field),
+    }
+}
+
 /// The engines the control side reaches, borrowed for one action or effect.
 pub struct Desk<'a> {
     pub app: &'a mut app::App,
@@ -119,6 +132,16 @@ impl Desk<'_> {
         } = self;
         let max_db = *max_db;
         match a {
+            gui::FromUi::ShowState(open, showing) => app.set_show_state(open, showing),
+            // The Show view's Click switch: as a learned Click control.
+            gui::FromUi::ShowControl(id) => {
+                if let Some(e) = app.show_press(id) {
+                    fx.extend(e);
+                }
+            }
+            // The Show view's MENU > Open the Set editor: BROWSE, on the
+            // Sets place the screen has put up.
+            gui::FromUi::OpenSetEditor => fx.extend(app.open_browser()),
             gui::FromUi::LevelDb(db) => {
                 **level_db = db.clamp(LEVEL_MIN_DB, max_db);
                 mix.set_level(**level_db);
@@ -202,22 +225,7 @@ impl Desk<'_> {
             // arp slider the armed track's arp's, and a pad's setting on
             // the Sample or Pads tab the armed track's kit's.
             gui::FromUi::LearnValue(v) => {
-                use mpfree_play::mpfree_param::{Owner, ParamAddr};
-                let addr = match v {
-                    gui::LearnValue::Param(a) => a,
-                    gui::LearnValue::Synth(id) => {
-                        let t = u8::try_from(app.track()).unwrap_or(u8::MAX);
-                        ParamAddr::new(Owner::Inst(t), id)
-                    }
-                    gui::LearnValue::Arp(id) => {
-                        let t = u8::try_from(app.track()).unwrap_or(u8::MAX);
-                        ParamAddr::new(Owner::Arp(t), id)
-                    }
-                    gui::LearnValue::Pad { pad, field } => {
-                        let t = u8::try_from(app.track()).unwrap_or(u8::MAX);
-                        ParamAddr::new(Owner::Pad(t, pad), field)
-                    }
-                };
+                let addr = learn_addr(v, u8::try_from(app.track()).unwrap_or(u8::MAX));
                 if music.armed() == Some(addr) && music.waits() {
                     music.disarm();
                 } else {
@@ -554,6 +562,16 @@ impl Desk<'_> {
             },
             // Put on Audio track (the one Sample page's step 6): where it
             // went, or why not, said in place of the hint.
+            // Put in a cell (audio tracks phase 2): the whole sound as a
+            // clip in an audio track's cell; the clip goes in once the
+            // sound is in (the main loop).
+            gui::FromUi::SampleToAudio(s) if s.cell => {
+                let (Ok(line) | Err(line)) = put_in_cell(time, tracks, out, *s);
+                out.note(&format!("audio tracks: {line}"));
+                if !line.is_empty() {
+                    out.show(gui::ToUi::Tell(line));
+                }
+            }
             gui::FromUi::SampleToAudio(s) => {
                 // No audio track with room: a new one at the end of the
                 // track list (phase 1a), as + Track adds it.
@@ -688,6 +706,7 @@ impl Desk<'_> {
             | gui::FromUi::PreviewStop
             | gui::FromUi::SaveBrowserLists(_)
             | gui::FromUi::ScreenPicture(_)
+            | gui::FromUi::SaveReport(_)
             | gui::FromUi::PluginsChanged
             | gui::FromUi::SampleView(_)
             | gui::FromUi::SampleInput(_)
@@ -696,6 +715,8 @@ impl Desk<'_> {
             | gui::FromUi::SampleGrains(_)
             | gui::FromUi::SaveProject
             | gui::FromUi::OpenProject(_)
+            | gui::FromUi::SongEnd(_)
+            | gui::FromUi::SongEndReset
             | gui::FromUi::OpenLoops(_)
             | gui::FromUi::OpenAudio(_)
             | gui::FromUi::AudioFiles(_)
@@ -711,7 +732,9 @@ impl Desk<'_> {
             // Controller mode's chip: the I/O model and MIDI out's.
             | gui::FromUi::ControllerOff
             // The Q-Links' values, for MIDI Follow's Send values back.
-            | gui::FromUi::QLinkValues(_)) => return Some(a),
+            | gui::FromUi::QLinkValues(_)
+            // Your XY layouts: the loop names each setting (xy_song.rs).
+            | gui::FromUi::Xy(_)) => return Some(a),
         }
         None
     }
@@ -869,6 +892,8 @@ impl Desk<'_> {
             app::Effect::ClearLogs => out.show(gui::ToUi::ClearLogs),
             app::Effect::ClearConsole => out.show(gui::ToUi::ClearConsole),
             app::Effect::TouchLab => out.show(gui::ToUi::TouchLab),
+            app::Effect::SetMenu(m) => out.show(gui::ToUi::SetMenu(m)),
+            app::Effect::ShowKey(k) => out.show(gui::ToUi::ShowKey(k)),
             app::Effect::CalibrateTouch => out.show(gui::ToUi::CalibrateTouch),
             app::Effect::TouchWheel(d) => out.show(gui::ToUi::TouchWheel(d)),
             app::Effect::TouchStep(d) => out.show(gui::ToUi::TouchStep(d)),
@@ -953,6 +978,7 @@ impl Desk<'_> {
             | app::Effect::TrackCopy { .. }
             | app::Effect::PadsFocus(_)
             | app::Effect::SynthOnTrack(_)
+            | app::Effect::KitOnTrack { .. }
             | app::Effect::SixteenLevels
             | app::Effect::PadRec(_)
             | app::Effect::Bank { .. }
@@ -999,6 +1025,44 @@ fn audio_strip_switch(
     said
 }
 
+/// Put in a cell (audio tracks phase 2): sound `s` goes in the cell
+/// [`time::TimeHost::cell_for_sound`] picks, or a new audio track's first
+/// (added as + Track adds one) when no audio track has an empty cell. Ok
+/// is the line while it comes in; Err why not.
+fn put_in_cell(
+    time: &mut time::TimeHost,
+    tracks: &mut audiotracks::TrackHost,
+    out: &mut Out,
+    s: audiotracks::Sound,
+) -> Result<String, String> {
+    let track = match time.cell_for_sound() {
+        Some((t, _)) => Some(t),
+        None if tracks.free_slot().is_some() => {
+            match time.act(mpfree_time_ui::view::TimeAction::AddAudioTrack) {
+                Ok(line) => out.note(&format!("time: {line}")),
+                Err(e) => out.note(&format!("time: {e}")),
+            }
+            tracks.sync(time.project(), time.silenced(), true);
+            let p = time.project();
+            p.tracks
+                .len()
+                .checked_sub(1)
+                .filter(|&t| p.tracks[t].is_audio())
+        }
+        None => None,
+    };
+    let Some(track) = track else {
+        tracks.host.drop_audio(s.audio);
+        return Err(format!(
+            "Put in a cell: every audio track's cells are full, and there is no room for another audio track ({} at most)",
+            mpfree_audiotracks::MAX_TRACKS
+        ));
+    };
+    tracks
+        .bring_to_cell(s, track, time.project())
+        .map_err(|e| format!("Put in a cell: {e}"))
+}
+
 pub fn take_waits(app: &app::App, time: &time::TimeHost, looper: &looping::LoopHost) -> bool {
     let now = rec_now(time, looper);
     now.taking() || now.loop_armed || app.rec.ready.is_some() || app.rec.pad.is_some()
@@ -1011,15 +1075,21 @@ pub const KEEP_WAITS: &str = "Finish the take first: Keep keeps what just played
 
 /// The recording plan ([`app::RecPlan`], the redesign's step 5b): where
 /// REC or OVERDUB on the notes would record the pads' synth (the shared
-/// one, or from step 6 a synth picked in the list of synths) and, from step
-/// 11c, each of their layers, then (step 11e) each synth a MIDI route
-/// names, over the armed track as it is while the pads play its kit; or
-/// None when they'd record the armed track as it is (the pads follow the
-/// track and no route names a synth, the armed track plays the synth
-/// itself and every layer and route synth has an armed track that plays
-/// it, or REC records only the loop). REC uses it ([`rec_synth`]) and the REC chip
-/// names it before you press (`main.rs` and the smoke session send it
-/// when it changes), so the two can't disagree. Changes nothing, and
+/// one, or from step 6 a synth picked in the list of synths, or a kit) and,
+/// from step 11c, each of their layers, then (step 11e) each synth a MIDI
+/// route names, then (sampler step 15c) the pads' base and each bank's
+/// own: every sound the pad map plays, each on a track of its own
+/// ([`app::App::rec_more_sounds`]). While a bank has its own
+/// ([`app::App::map_has_banks`]) the first is the armed track as it is, so
+/// the banks that follow the track go on playing what they played and the
+/// base is one of the others; so it is while the pads play the armed
+/// track's kit (or its MIDI out) and a route names a synth (`synth`
+/// empty). None when they'd record the armed track as it is (the pads
+/// follow the track and nothing else plays, the armed track plays the
+/// first itself and every other sound has an armed track that plays it,
+/// or REC records only the loop). REC uses it ([`rec_synth`]) and the REC
+/// chip names it before you press (`main.rs` and the smoke session send
+/// it when it changes), so the two can't disagree. Changes nothing, and
 /// allocates nothing.
 pub fn rec_plan(
     app: &app::App,
@@ -1029,14 +1099,20 @@ pub fn rec_plan(
     use crate::rec_arm::Target;
     use app::SynthTake;
     let armed = time.armed().unwrap_or(0);
-    // The pads' synth; or, while they play the armed track's kit (or its
-    // MIDI out), that track as it is when a MIDI route names a synth to
-    // record (step 11e): `synth` empty.
-    let (holder, synth, kit) = if app.pads_chose_synth() {
+    let more = app.rec_more_sounds();
+    let as_is = app.map_has_banks();
+    let pads_kit = app.pads_kit().filter(|_| !as_is);
+    let (holder, synth, kit) = if as_is {
+        (None, "", true)
+    } else if app.pads_chose_synth() {
         (None, app.pads_synth_name(), false)
     } else if let Some(h) = app.pads_holder() {
         (Some(h), app.pads_held()?.name, false)
-    } else if app.routes_record() {
+    } else if pads_kit.is_some() {
+        // A kit chosen for the pads (sampler step 15): recorded where it
+        // plays, as a synth; the screen names it.
+        (None, "the pads' kit", false)
+    } else if more.iter().any(Option::is_some) {
         (None, "", true)
     } else {
         return None;
@@ -1047,7 +1123,11 @@ pub fn rec_plan(
     }
     let project = time.project();
     let app_side = |t: usize| track_set_up(app, mix, t);
-    let ready = kit || app.track_plays_synth(armed, holder);
+    let ready = kit
+        || match pads_kit {
+            Some(_) => app.plays_pads_kit(armed),
+            None => app.track_plays_synth(armed, holder),
+        };
     let take = if ready {
         SynthTake::On(armed)
     } else {
@@ -1058,32 +1138,33 @@ pub fn rec_plan(
         synth,
         holder,
         ready,
+        kit: pads_kit,
         layers: [None; app::REC_MORE],
     };
     let first = match take {
         SynthTake::On(t) => Some(t),
         SynthTake::New => None,
-        // Nowhere for the first: nothing records, the layers neither.
+        // Nowhere for the first: nothing records, the others neither.
         SynthTake::Pinned { .. } | SynthTake::Full => return Some(plan),
     };
     let bit = |t: usize| 1u128.checked_shl(t as u32).unwrap_or(0);
     let also = time.also();
-    // The armed track can record a layer it plays when the first moves
-    // the arm from it.
+    // The armed track can record another sound it plays when the first
+    // moves the arm from it.
     let candidates = if first == Some(armed) {
         also
     } else {
         also | bit(armed)
     };
     plan.layers = app::layer_takes(
-        app.rec_more_synths(),
+        more,
         project.tracks.len(),
         first,
         candidates,
-        |t, h| app.track_plays_synth(t, h),
+        |t, sound| app.track_plays(t, sound),
         |t| app::unfit(project, t, app_side).is_none(),
     );
-    // Every layer armed where it plays already: REC as it is.
+    // Every other sound armed where it plays already: REC as it is.
     let set =
         |l: &app::LayerTake| matches!(l.take, SynthTake::On(t) if l.plays && also & bit(t) != 0);
     if ready && plan.layers.iter().flatten().all(set) {
@@ -1119,18 +1200,21 @@ fn track_set_up(app: &app::App, mix: &mixing::MixHost, t: usize) -> Option<&'sta
 /// app/pads_focus.rs). A track nobody set up gets the synth and is armed
 /// (the selected one, the first one, or a new one added at the end): the
 /// shared synth as its Synth kit, or a synth picked in the list of synths
-/// (step 6) by a send to it. Each of the pads' layers (step 11c) gets a
-/// track the same way, armed with it as a track SHIFT + a tap in REC's
-/// list arms (#639), so the takes share one number and one UNDO; a layer
-/// with an armed track that plays it already keeps it. The press comes
-/// again once they play them. None when the press is REC's own: no synth
-/// chosen for the pads, the armed track playing it already and every
-/// layer armed where it plays (a layer with no place is said then), the
+/// (step 6) by a send to it. Each other sound of the plan (the pads'
+/// layers, step 11c; the routes' synths, step 11e; the pads' base and
+/// banks' own, sampler step 15c) gets a track the same way, armed with it
+/// as a track SHIFT + a tap in REC's list arms (#639), so the takes share
+/// one number and one UNDO; one with an armed track that plays it already
+/// keeps it. The press comes again once they play them. None when the
+/// press is REC's own: no synth chosen for the pads, the armed track
+/// playing it already and every other sound armed where it plays, the
 /// loop armed (it records what is heard), or a take already going or
-/// ready. `Some(empty)` when nowhere fits (a pinned arm on a track set
-/// up, or a full project): the line says why and nothing changes. The arp
-/// playing the pads now gives them back to the track first, and REC is
-/// REC's own.
+/// ready. `Some(empty)` when a sound has no track it can use (a pinned
+/// arm on a track set up, a full project, more tracks than record at
+/// once): the line names it and nothing changes (sampler step 15c). The
+/// arp never gives the pads back (sampler step 15c): with it on, the
+/// take's track plays them through its arp, and the pads' arp's notes on
+/// what they play on their own go to that sound's track.
 #[allow(clippy::too_many_arguments)]
 fn rec_synth(
     app: &mut app::App,
@@ -1149,14 +1233,6 @@ fn rec_synth(
     }
     let plan = rec_plan(app, time, mix)?;
     let armed = time.armed().unwrap_or(0);
-    // The arp came on this period: the pads play the track again, through
-    // it, before the take starts (`App::arp_ends_pads_synth`).
-    let ended = app.arp_ends_pads_synth();
-    if !ended.is_empty() {
-        let mut fx = ended;
-        fx.push(app::Effect::Rec(p));
-        return Some(fx);
-    }
     let name = plan.synth;
     let tell = |out: &mut Out, s: String| {
         out.note(&s);
@@ -1173,21 +1249,24 @@ fn rec_synth(
     let mut room = crate::time::MAX_ALSO.saturating_sub(also_was.count_ones() as usize);
     let mut work = [None; app::REC_MORE];
     let mut left_out = Vec::new();
+    // A sound with no track it can use: REC records nothing (sampler step
+    // 15c: what is recorded is what is heard, all of it or none).
+    let mut cant = Vec::new();
     for (slot, l) in work.iter_mut().zip(plan.layers.iter().flatten()) {
         let arm = !matches!(l.take, SynthTake::On(t) if also_was & bit(t) != 0);
         match l.take {
-            SynthTake::Full => left_out.push(format!(
-                "{} isn't recorded: no free track, and the project holds no more",
-                l.synth
+            SynthTake::Full => cant.push(format!(
+                "{} has no track (no free track, and the project holds no more)",
+                l.said()
             )),
             _ if l.plays && !arm => {}
             _ if arm && app.rec.pad.is_some() => left_out.push(format!(
                 "{} isn't recorded: a pad take records alone",
-                l.synth
+                l.said()
             )),
-            _ if arm && room == 0 => left_out.push(format!(
-                "{} isn't recorded: {} tracks at most record at once, SHIFT + a tap in REC's list lets go of one",
-                l.synth,
+            _ if arm && room == 0 => cant.push(format!(
+                "{} has no track ({} tracks at most record at once: SHIFT + a tap in REC's list lets go of one)",
+                l.said(),
                 crate::time::MAX_ALSO + 1
             )),
             _ => {
@@ -1195,6 +1274,10 @@ fn rec_synth(
                 *slot = Some(*l);
             }
         }
+    }
+    if !cant.is_empty() {
+        tell(out, format!("REC records nothing: {}", cant.join("; ")));
+        return Some(Vec::new());
     }
     if plan.ready && work.iter().all(Option::is_none) {
         // Nothing to set up: REC records what it can, and says what not.
@@ -1271,7 +1354,7 @@ fn rec_synth(
                         out,
                         format!(
                             "No free track to record {} on, and no new one could be added",
-                            l.synth
+                            l.said()
                         ),
                     );
                     return Some(fx);
@@ -1291,9 +1374,10 @@ fn rec_synth(
         ));
     }
     if !plan.ready {
-        fx.extend(match plan.holder {
-            None => app.rec_synth_on(t, added),
-            Some(h) => app.rec_send_on(t, h, added),
+        fx.extend(match (plan.kit, plan.holder) {
+            (Some(kit), _) => app.rec_kit_on(t, kit, added),
+            (None, None) => app.rec_synth_on(t, added),
+            (None, Some(h)) => app.rec_send_on(t, h, added),
         });
     }
     // Each layer's track plays its synth and is armed too, with the other
@@ -1304,9 +1388,10 @@ fn rec_synth(
             continue;
         };
         if !l.plays {
-            fx.extend(match l.holder {
-                None => app.rec_synth_on(lt, added),
-                Some(h) => app.rec_send_on(lt, h, added),
+            fx.extend(match l.sound {
+                app::RecSound::Synth(None) => app.rec_synth_on(lt, added),
+                app::RecSound::Synth(Some(h)) => app.rec_send_on(lt, h, added),
+                app::RecSound::Kit(k) => app.rec_kit_on(lt, k, added),
             });
         }
         if app.rec.also & bit(lt) == 0 {
@@ -1669,9 +1754,10 @@ pub fn perform_remote(
 /// A learned control on the looper (its footswitch; `remote::LooperAct`),
 /// on any page: a loop's key does what its pad does ([`perform_pad_on`]),
 /// a mute mutes the loop or lets it play, Next loop picks the next one,
-/// Capture is the Looper tab's, and Undo, Redo and Clear are the Looper
-/// tab's buttons, on the picked loop. Its hold clears the loop through
-/// [`perform_pad_held`].
+/// Capture is the Looper tab's, Undo, Redo and Clear are the Looper
+/// tab's buttons, on the picked loop, and Snap and Use my tap are smart
+/// loop end's ([`looping::LoopHost::choose`]). Its hold clears the loop
+/// through [`perform_pad_held`].
 pub fn looper_remote(
     app: &mut app::App,
     time: &time::TimeHost,
@@ -1700,6 +1786,12 @@ pub fn looper_remote(
         LooperAct::Press(Looper::Undo) => app.looper_tap(B_UNDO),
         LooperAct::Press(Looper::Redo) => app.looper_tap(B_REDO),
         LooperAct::Press(Looper::Clear) => app.looper_tap(B_CLEAR),
+        LooperAct::Press(Looper::Snap) => {
+            vec![app::Effect::Looper(LoopAction::Choose(looping::Side::Snap))]
+        }
+        LooperAct::Press(Looper::UseMyTap) => {
+            vec![app::Effect::Looper(LoopAction::Choose(looping::Side::Tap))]
+        }
         // Keys and mutes come as Key and Mute.
         LooperAct::Press(Looper::Key(_) | Looper::Mute(_)) => Vec::new(),
     }
@@ -1709,17 +1801,18 @@ pub fn looper_remote(
 /// card; `remote::PlayMoves`), on any page: its Swing and Drums filter
 /// as its Q-Links turn them (the project's, so the work is unsaved), and
 /// its XY pad as a finger moves it, the pad on the screen following.
-/// Nothing when nothing moved.
+/// The XY pad's buttons pressed come back for the caller, which has your
+/// layouts (`main.rs`'s `xy_pressed`). Nothing when nothing moved.
 pub fn play_remote(
     time: &time::TimeHost,
     mix: &mut mixing::MixHost,
     out: &mut Out,
     moves: &mut crate::remote::PlayMoves,
-) -> Vec<app::Effect> {
+) -> (Vec<app::Effect>, crate::remote::XyPresses) {
     use mpfree_transport::{time::Swing, Command};
     let mut fx = Vec::new();
-    if *moves == crate::remote::PlayMoves::default() {
-        return fx;
+    if moves.idle() {
+        return (fx, crate::remote::XyPresses::default());
     }
     let swing = time.info().swing;
     let acts = moves.take(play_now(time, mix));
@@ -1741,7 +1834,7 @@ pub fn play_remote(
         mix.play(mixing::PlayFx::Xy { x, y, down });
         out.show(gui::ToUi::PlayXy { x, y, down });
     }
-    fx
+    (fx, acts.xy_presses)
 }
 
 /// What Play's learned controls read (`remote::Now`): the swing, the
@@ -2206,8 +2299,8 @@ mod tests {
     /// clip changes, the pads keep the synth, and the next press records
     /// there; with the loop armed REC is the loop's as ever. A track with a kit or MIDI output picked or mixer
     /// settings is passed over; with none free a new track is added; a
-    /// pinned arm stays, and REC goes nowhere, saying why. The arp come on
-    /// gives the pads back to the track, and REC is REC's own.
+    /// pinned arm stays, and REC goes nowhere, saying why. The arp on
+    /// changes none of it (sampler step 15c).
     #[test]
     fn rec_while_the_pads_play_the_synth_records_it_on_a_track_nobody_set_up() {
         use crate::rec_arm::{Press, Target};
@@ -2332,21 +2425,20 @@ mod tests {
             .iter()
             .any(|e| matches!(e, app::Effect::Note(n) if n.contains("on a new track, Track"))));
         assert_eq!(time.project().tracks[0], drums, "the drums unchanged");
-        // The arp on: the try-out ends and REC is REC's own next period.
+        // The arp on (sampler step 15c): it never gives the pads back, and
+        // REC records the synth as without it, on a new track again.
         time.act(mpfree_time_ui::TimeAction::Arm(Some(0))).unwrap();
         assert!(app.pads_chose_synth());
         app.toggle_panel();
         assert!(app.generating());
-        let fx = rec(&mut app, &mut time, &mut mix, &mut out).expect("the arp's end");
-        assert_eq!(
-            fx[0],
-            app::Effect::PadsFocus(app::PadFocus::Track),
+        let count = time.track_count();
+        let fx = rec(&mut app, &mut time, &mut mix, &mut out).expect("the synth's take");
+        assert_eq!(to(&fx), Some(count), "{fx:?}");
+        assert!(
+            !fx.iter().any(|e| matches!(e, app::Effect::PadsFocus(_))),
             "{fx:?}"
         );
-        assert_eq!(to(&fx), None);
-        assert_eq!(fx.last(), Some(&app::Effect::Rec(Press::Rec)));
-        assert!(!app.pads_chose_synth());
-        assert_eq!(rec(&mut app, &mut time, &mut mix, &mut out), None);
+        assert!(app.pads_chose_synth(), "the pads keep the synth");
     }
 
     /// The audio tracks rethink, phase 1b: an audio track's strip's M and

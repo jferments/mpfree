@@ -98,6 +98,13 @@ pub(super) struct Vary {
     /// A mono pad's glide: the cents the voice starts from its pitch, and
     /// slides back from over the pad's glide time (sampler R5.5).
     pub(super) glide_cents: f32,
+    /// A keygroup note in its kit's tuning: the cents its key sounds from
+    /// its 12-TET pitch (0.0 in 12-TET), which the voice follows when the
+    /// tuning changes ([`Voice::tuned`]). None for anything else.
+    pub(super) tuned: Option<f32>,
+    /// Cents on top of `semis` that the voice keeps: a 16 Levels Tune
+    /// step's interval in its kit's tuning.
+    pub(super) cents: f32,
 }
 
 impl Vary {
@@ -203,6 +210,9 @@ impl Engine {
         } else {
             Vary {
                 semis: i32::from(note) - i32::from(k.root),
+                tuned: vp
+                    .tuned()
+                    .then(|| self.tunings[self.at].offset(f32::from(note))),
                 ..Vary::default()
             }
         };
@@ -258,8 +268,10 @@ impl Engine {
         let pad = p as u8;
         // A sliced pad plays each note's slice at its own pitch.
         let glide = m.glide_ms > 0.0 && !sliced && (over || !m.glide_held);
+        // Where the note sounds, as a 12-TET note: with its kit's tuning.
+        let to = f32::from(note) + vary.tuned.unwrap_or(0.0) / 100.0;
         if m.legato && over && !sliced && self.legato_to(p, note, vary, glide) {
-            self.mono_at[at * PADS + p] = Some(f32::from(note));
+            self.mono_at[at * PADS + p] = Some(to);
             return;
         }
         let from = self.mono_pitch(pad).or(self.mono_at[at * PADS + p]);
@@ -270,15 +282,16 @@ impl Engine {
         }
         if glide {
             if let Some(from) = from {
-                vary.glide_cents = (from - f32::from(note)) * 100.0;
+                vary.glide_cents = (from - to) * 100.0;
             }
         }
         self.note_on(pad, velocity, note, vary);
-        self.mono_at[at * PADS + p] = Some(f32::from(note));
+        self.mono_at[at * PADS + p] = Some(to);
     }
 
-    /// Where mono pad `pad`'s pitch is now, as a note (with what is left
-    /// of a glide): a sounding, pitched voice of a key's.
+    /// Where mono pad `pad`'s pitch is now, as a 12-TET note (with its
+    /// tuning's offset and what is left of a glide): a sounding, pitched
+    /// voice of a key's.
     pub(super) fn mono_pitch(&self, pad: u8) -> Option<f32> {
         let at = self.at;
         self.pool.iter().find_map(|(v, _)| {
@@ -288,7 +301,9 @@ impl Engine {
                 && v.pad == pad
                 && v.note != NO_NOTE
                 && v.motion.pitched)
-                .then(|| f32::from(v.note) + v.motion.glide_cents / 100.0)
+                .then(|| {
+                    f32::from(v.note) + (v.tuned.unwrap_or(0.0) + v.motion.glide_cents) / 100.0
+                })
         })
     }
 
@@ -321,8 +336,19 @@ impl Engine {
                 continue;
             }
             if v.motion.pitched {
-                let from = (f32::from(v.note) - f32::from(note)) * 100.0 + v.motion.glide_cents;
-                let octaves = (f64::from(note) - f64::from(v.note)) / 12.0;
+                let mut from = (f32::from(v.note) - f32::from(note)) * 100.0 + v.motion.glide_cents;
+                let mut octaves = (f64::from(note) - f64::from(v.note)) / 12.0;
+                // In its kit's tuning, from the old key's tuned pitch to
+                // the new one's.
+                v.key_cents += (f32::from(note) - f32::from(v.note)) * 100.0;
+                if let (Some(was), Some(now)) = (v.tuned, vary.tuned) {
+                    if was != now {
+                        from += was - now;
+                        octaves += f64::from(now - was) / 1200.0;
+                        v.key_cents += now - was;
+                    }
+                    v.tuned = Some(now);
+                }
                 v.plain_step = ((v.plain_step as f64 * octaves.exp2()).round() as i64).max(1);
                 v.base_step = v.plain_step;
                 let m = &mut v.motion;
@@ -666,7 +692,13 @@ impl Engine {
                 } else {
                     v.grain_hit
                 };
-                let to = now + (vary.semis - v.grain_key) as f32;
+                let mut to = now + (vary.semis - v.grain_key) as f32;
+                v.key_cents += (vary.semis - v.grain_key) as f32 * 100.0;
+                if let (Some(was), Some(key)) = (v.tuned, vary.tuned) {
+                    to += (key - was) / 100.0;
+                    v.key_cents += key - was;
+                    v.tuned = Some(key);
+                }
                 v.glide_to = to;
                 v.glide_step = (to - v.grain_hit) / glide.max(1) as f32;
                 v.glide_left = glide;
@@ -876,7 +908,7 @@ impl Engine {
         // The pad's live settings and locks, where set, in place of its own.
         let kit_live = &self.lives[at];
         let live = kit_live.row(p);
-        let program = kit_live.program_for(note);
+        let program = kit_live.program_tuned(note, vary.tuned, &self.tunings[at]);
         let set = |f: PadField| Some(live[f as usize]).filter(|x| !x.is_nan());
         let mut amp = vp.amp;
         if let Some(ms) = set(PadField::Attack) {
@@ -940,8 +972,13 @@ impl Engine {
                 program[ProgramField::Tune as usize],
             )
         };
-        // A slice's own pitch repitches it, warped or not.
-        let tune = tune + own.cents;
+        // A slice's own pitch repitches it, warped or not; and a key's, or
+        // a 16 Levels step's, in its kit's tuning, as its semitones do.
+        let mut tune = tune + own.cents;
+        let tuned = vary.tuned.unwrap_or(0.0) + vary.cents;
+        if tuned != 0.0 {
+            tune += tuned;
+        }
         // A gliding layer's voice starts from the pad's last key.
         let hit = semis as f32 + tune / 100.0;
         let from = if granular && l.glide > 0 && p < PADS {
@@ -1082,6 +1119,11 @@ impl Engine {
                 && lp.is_some()
                 && !reverse
                 && matches!(mode, PlayMode::Loop | PlayMode::Toggle | PlayMode::Gate),
+            // Not round its loop yet; the render works out what reads
+            // straight ([`Voice::refresh_fast`]).
+            wrapped: false,
+            fast_lo: 0,
+            fast_hi: 0,
             fade_in,
             fade_out,
             gain_l,
@@ -1127,6 +1169,8 @@ impl Engine {
             warp_bpm: l.warp_bpm,
             plain_step: plain,
             note,
+            tuned: vary.tuned,
+            key_cents: semis as f32 * 100.0 + tuned,
             by: vary.by.unwrap_or(p as u8),
             latch: vp.latch,
             audition: vary.slice.is_some(),
@@ -1162,6 +1206,7 @@ impl Engine {
             },
             hits: l.hits.as_ref().filter(|c| c.get().is_some()).cloned(),
             grain_clean: !vp.vintage,
+            vintage: vp.vintage,
             bl_step: 0,
             bl_octave: 0,
             bl_reach: Reach::default(),
@@ -1171,6 +1216,9 @@ impl Engine {
             layer_grain: l.grain,
             jump: [0.0; 2],
             jump_left: 0,
+            last_read: None,
+            xf_from: Heard::Exact,
+            xf_left: 0,
             motion,
         };
         if self.tape != 1.0 {

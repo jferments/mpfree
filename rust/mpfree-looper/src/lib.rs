@@ -81,34 +81,44 @@
 //!   each is the other's last step; undoing a layer that made a loop of
 //!   its own clears that loop.
 //!
-//! The memory is allocated once, in [`Looper::new`]. [`Looper::command`]
-//! and [`Looper::process`] never allocate, lock or panic, and give the same
-//! output for any period size.
+//! The memory is allocated once, in [`Looper::new`]. [`Looper::command`],
+//! [`Looper::process`] and [`Looper::process_each`] never allocate, lock or
+//! panic, and give the same output for any period size. `process_each`
+//! keeps each loop's sound apart ([`LoopOuts`]), for a host that gives
+//! each loop a channel of its own; their sum is `process`'s mix, bit for
+//! bit.
 
 #![forbid(unsafe_code)]
 
 pub mod ends;
+pub mod find;
 pub mod heard;
+pub mod hits;
+mod outs;
 pub mod print;
 pub mod reading;
 pub mod save;
 mod view;
 
-pub use ends::{Candidate, InnerBeat, NoteStart, Verdict};
+pub use ends::{Candidate, Event, EventLog, InnerBeat, NoteStart, Verdict};
 pub use heard::{Take, HEARD_SECONDS};
+pub use outs::LoopOuts;
 pub use reading::{
     read_bars, read_bars_with, Reading, Sure, TempoHint, TempoKind, LOOP_MAX_BPM, LOOP_MIN_BPM,
 };
 pub use save::{LayerFile, LoopFile};
 
 use ends::NoteLog;
+use find::FindJob;
 use heard::Heard;
+use hits::{HitLog, HitTrack};
 
 use view::{Cursor, View};
 
 use std::ops::Index;
 
 use mpfree_transport::time::{Tick, PPQ};
+use mpfree_transport::transport::MAX_PERIOD;
 use mpfree_transport::{Block, Mark, Span, State};
 
 /// Frames of every fade: the loop point, punch in and out, start, stop,
@@ -257,6 +267,12 @@ pub enum Command {
     /// ([`Status::closing`]), then closes on the end it found (or the
     /// tap), with the loop and the song already that far in.
     SetSmartEnd(SmartEnd),
+    /// Whether smart loop end listens for hits in what is recorded (true:
+    /// the line input or a mix, [`hits`], weighed on the finder's thread,
+    /// [`find`]) or weighs the notes played ([`Looper::note`]; false, the
+    /// default: the pads and MIDI). The beat inside a free first loop
+    /// comes from the same. For every loop.
+    SmartByEar(bool),
     /// Fade old: the share of the older audio that stays each time the loop
     /// comes round while overdubbing, 0 to 1 (1, the default, fades
     /// nothing; 0.88 keeps 88 % a pass). The older layers turn down by it
@@ -686,6 +702,33 @@ pub const OVERDUB_AT_ONCE: &str = "the overdub started at once";
 /// tap can't be heard.
 pub const OFFER_MS: f64 = 5.0;
 
+/// By ear, how long Auto waits past its reach for the finder's answer
+/// (ms) before it keeps your tap; the loop and the song start that far
+/// in, so nothing is heard late.
+pub const FIND_WAIT_AUTO_MS: f64 = 30.0;
+/// How long Suggest waits for it.
+pub const FIND_WAIT_SUGGEST_MS: f64 = 250.0;
+
+/// `ms` milliseconds in frames at `rate`.
+fn ms_frames(rate: u32, ms: f64) -> u64 {
+    (ms * f64::from(rate) / 1000.0).round() as u64
+}
+
+/// Smart loop end by ear: a decision asked of the finder for loop `k`'s
+/// take `gen` ([`Looper::find_job`], [`Looper::found`]).
+#[derive(Clone, Copy, Debug)]
+struct Finding {
+    k: usize,
+    gen: u64,
+    ask: ends::Ask,
+    bars: u32,
+    /// The frame by which it must have answered, else the tap stands.
+    due: u64,
+    /// Handed to the host for the finder.
+    sent: bool,
+    answer: Option<ends::Decision>,
+}
+
 /// How far a free first loop's start and end are, or move, from your
 /// press and your closing tap, in frames
 /// ([`Status::offer`], [`Status::moved`], [`Step::Snap`]).
@@ -825,6 +868,14 @@ pub struct Stats {
     /// Auto with Then: Overdub: overdubs that began with what you played
     /// after the loop's end while Auto listened.
     pub handoffs: u64,
+    /// Smart loop end by ear: hits the hit track heard; decisions asked
+    /// of the finder, answered in time, too late (the tap stood), and
+    /// answers for a take that had gone (dropped).
+    pub hits_heard: u64,
+    pub finds_asked: u64,
+    pub finds_answered: u64,
+    pub finds_late: u64,
+    pub finds_stale: u64,
 }
 
 /// What the screen shows of one loop.
@@ -2224,9 +2275,19 @@ pub struct Looper {
     smart: SmartEnd,
     notes: NoteLog,
     smart_out: Option<SmartNote>,
+    /// Smart loop end listens ([`Command::SmartByEar`]): the hit track,
+    /// the hits it heard, and the finder's ask under way.
+    by_ear: bool,
+    track: HitTrack,
+    hits: HitLog,
+    find: Option<Finding>,
+    find_gen: u64,
     /// The last period's last span: where the song goes from here, for a
     /// snap's downbeat ([`Looper::snap_plan`]).
     last_span: Option<Span>,
+    /// What each loop and Listen played in the last period, apart
+    /// ([`Looper::process_each`]).
+    outs: LoopOuts,
 }
 
 impl Looper {
@@ -2261,8 +2322,14 @@ impl Looper {
             free_open: false,
             smart: SmartEnd::Off,
             notes: NoteLog::new(),
+            by_ear: false,
+            track: HitTrack::new(rate),
+            hits: HitLog::new(),
+            find: None,
+            find_gen: 0,
             smart_out: None,
             last_span: None,
+            outs: LoopOuts::new(MAX_PERIOD as usize),
         }
     }
 
@@ -2324,8 +2391,9 @@ impl Looper {
         Some((l.n, l.layer, l.pos as f32 / len as f32))
     }
 
-    /// One period of Listen, added to `out` (n frames, interleaved).
-    fn play_listen(&mut self, block: &Block, n: usize, out: &mut [f32]) {
+    /// One period of Listen, into its own buffer of `outs` (n frames,
+    /// interleaved).
+    fn play_listen(&mut self, block: &Block, n: usize, outs: &mut LoopOuts) {
         let Some(mut ls) = self.listen else {
             return;
         };
@@ -2351,6 +2419,7 @@ impl Looper {
         let level = l.level;
         let len = l.len;
         let step = 1.0 / FADE as f32;
+        let out = outs.listen_mut(ls.n);
         let mut f = 0;
         while f < n {
             let k = RUN.min(n - f).min(len - ls.pos);
@@ -2433,6 +2502,7 @@ impl Looper {
     pub fn stats(&self) -> Stats {
         Stats {
             handoffs: self.loops.iter().map(|l| l.handoffs).sum(),
+            hits_heard: self.track.found,
             ..self.stats
         }
     }
@@ -2965,11 +3035,43 @@ impl Looper {
 
     /// Run one period: `input` is the line input and `out` the mix, both
     /// interleaved stereo with `block.frames` frames. The loops are added
-    /// to `out`; nothing else is changed.
+    /// to `out`; nothing else is changed. The same as
+    /// [`Looper::process_each`] then [`LoopOuts::mix_into`] on `out`.
     pub fn process(&mut self, block: &Block, input: &[f32], out: &mut [f32]) {
+        let mut outs = std::mem::take(&mut self.outs);
         let n = (block.frames as usize)
             .min(input.len() / 2)
-            .min(out.len() / 2);
+            .min(out.len() / 2)
+            .min(outs.capacity());
+        self.period(block, input, n, &mut outs);
+        outs.mix_into(out);
+        self.outs = outs;
+    }
+
+    /// Run one period as [`Looper::process`] does, but keep each loop's
+    /// sound apart: [`Looper::outs`] then holds what each loop played and
+    /// what Listen played, and their [`LoopOuts::mix_into`] is the mix
+    /// `process` would have added, bit for bit. `input` is the line input,
+    /// interleaved stereo with `block.frames` frames ([`MAX_PERIOD`] at
+    /// most).
+    pub fn process_each(&mut self, block: &Block, input: &[f32]) {
+        let mut outs = std::mem::take(&mut self.outs);
+        let n = (block.frames as usize)
+            .min(input.len() / 2)
+            .min(outs.capacity());
+        self.period(block, input, n, &mut outs);
+        self.outs = outs;
+    }
+
+    /// What each loop and Listen played in the last period
+    /// ([`Looper::process_each`]).
+    pub fn outs(&self) -> &LoopOuts {
+        &self.outs
+    }
+
+    /// One period of `n` frames, each loop into its own buffer of `outs`.
+    fn period(&mut self, block: &Block, input: &[f32], n: usize, outs: &mut LoopOuts) {
+        outs.begin(n);
         self.now = block.start_frame;
         self.last_span = block.spans().last().copied();
         if let Some(s) = block.spans().first() {
@@ -2978,6 +3080,13 @@ impl Looper {
         }
         self.heard.hear(block, input, n);
         self.apply_commands();
+        // Smart loop end by ear: the hit track listens while a free first
+        // pass may need it.
+        if self.by_ear && self.wants_notes() {
+            let latency = self.loops.first().map_or(0, |l| l.latency);
+            self.track
+                .hear(block.start_frame, &input[..2 * n], latency, &mut self.hits);
+        }
         // A loop armed with the song playing starts no sooner than
         // LEAD_BEATS after the tap; armed while stopped or counting in,
         // on the bar PLAY starts on (with the pads' pattern, SHIFT + Arm).
@@ -2994,7 +3103,7 @@ impl Looper {
         self.place_hits(block);
         self.close_free(block);
         self.tend_captures();
-        self.play_listen(block, n, out);
+        self.play_listen(block, n, outs);
         // A loop with sound soloed: the others fall silent.
         let any_solo = self.loops.iter().any(|l| l.solo && l.phase != Phase::Empty);
         for l in &mut self.loops {
@@ -3077,6 +3186,7 @@ impl Looper {
             .iter()
             .enumerate()
             .fold(0u32, |m, (k, l)| m | (u32::from(l.resample) << k));
+        outs.set_resampling(rs);
         let markers = block.markers();
         let mut m = 0;
         for span in block.spans() {
@@ -3128,7 +3238,6 @@ impl Looper {
                 for (j, t) in ticks[..frames].iter_mut().enumerate() {
                     *t = span.tick_at(f + j as u64);
                 }
-                let mut ys = [[0.0f32; 2]; RUN];
                 let run = Run {
                     from: i,
                     ticks: &ticks[..frames],
@@ -3136,32 +3245,45 @@ impl Looper {
                     f,
                     playing,
                 };
+                // Each loop adds its frames to its own buffer; a quiet one
+                // has none to add.
                 for (k, l) in loops.iter_mut().enumerate() {
-                    if rs & (1 << k) == 0 {
+                    if rs & (1 << k) == 0 && !l.quiet() {
                         let (p, waiting) = (prints[k].now.as_ref(), prints[k].next.is_some());
-                        l.run(store, stats, k, &run, p, waiting, &mut ys[..frames]);
+                        l.run(
+                            store,
+                            stats,
+                            k,
+                            &run,
+                            p,
+                            waiting,
+                            outs.run_mut(k, off, frames),
+                        );
                     }
                 }
                 if rs != 0 {
+                    // What the others played in the run, summed as the mix
+                    // sums them.
                     let mut heard = [0.0f32; 2 * RUN];
-                    for (j, y) in ys[..frames].iter().enumerate() {
-                        heard[2 * j] = y[0];
-                        heard[2 * j + 1] = y[1];
-                    }
+                    outs.sum_into(!rs, off, &mut heard[..2 * frames]);
                     let run = Run {
                         input: &heard[..2 * frames],
                         ..run
                     };
                     for (k, l) in loops.iter_mut().enumerate() {
-                        if rs & (1 << k) != 0 {
+                        if rs & (1 << k) != 0 && !l.quiet() {
                             let (p, waiting) = (prints[k].now.as_ref(), prints[k].next.is_some());
-                            l.run(store, stats, k, &run, p, waiting, &mut ys[..frames]);
+                            l.run(
+                                store,
+                                stats,
+                                k,
+                                &run,
+                                p,
+                                waiting,
+                                outs.run_mut(k, off, frames),
+                            );
                         }
                     }
-                }
-                for (j, y) in ys[..frames].iter().enumerate() {
-                    out[2 * (off + j)] += y[0];
-                    out[2 * (off + j) + 1] += y[1];
                 }
                 i = end;
             }
@@ -3208,6 +3330,13 @@ impl Looper {
     /// until a print is in).
     pub fn take_tempo(&mut self) -> Option<(usize, Reading, u64, Tick)> {
         self.tempo_out.take()
+    }
+
+    /// The tempo the song takes from the next period, while
+    /// [`Looper::take_tempo`] hasn't been taken: a free first pass closed
+    /// in this one.
+    pub fn tempo_coming(&self) -> Option<f64> {
+        self.tempo_out.as_ref().map(|(_, r, _, _)| r.bpm)
     }
 
     /// What smart loop end made of a closing tap ([`Command::SetSmartEnd`]),
@@ -3379,6 +3508,7 @@ impl Looper {
         // start looks there) on.
         let reach = ends::reach(self.rate, f64::NAN);
         self.notes.keep_from(rec_from.saturating_sub(reach));
+        self.hits.keep_from(rec_from.saturating_sub(reach));
     }
 
     /// Each free first pass asked to close ([`Loop::ending`]) closes on
@@ -3387,9 +3517,15 @@ impl Looper {
     /// stopped in, and its reading for the host ([`Looper::take_tempo`]).
     fn close_free(&mut self, block: &Block) {
         let end = block.start_frame + u64::from(block.frames);
+        self.forget_stale_find();
         self.tend_smart(end);
-        if (!self.notes.is_empty() || self.notes.dropped() > 0) && !self.wants_notes() {
-            self.notes.clear();
+        if !self.wants_notes() {
+            if !self.notes.is_empty() || self.notes.dropped() > 0 {
+                self.notes.clear();
+            }
+            if !self.hits.is_empty() || self.hits.dropped() > 0 {
+                self.hits.clear();
+            }
         }
         if !self.free_open {
             return;
@@ -3431,13 +3567,24 @@ impl Looper {
             // The reading with the beat inside the loop as evidence: the
             // notes played into it.
             let heard = |len: usize| {
-                let inner = InnerBeat::new(&self.notes, rate, rec_from, len, bar, beat);
-                read_bars_with(len, rate, bar, said, Some(hint), &|b| inner.fit(b))
+                if self.by_ear {
+                    let inner = InnerBeat::new(&self.hits, rate, rec_from, len, bar, beat);
+                    read_bars_with(len, rate, bar, said, Some(hint), &|b| inner.fit(b))
+                } else {
+                    let inner = InnerBeat::new(&self.notes, rate, rec_from, len, bar, beat);
+                    read_bars_with(len, rate, bar, said, Some(hint), &|b| inner.fit(b))
+                }
             };
             // Auto listens on to the end of the reach first.
             let mut auto = None;
             let (len, reading, lead) = if self.smart == SmartEnd::Auto {
-                if end < tap + reach {
+                // By ear, what is heard reaches the writer a latency later.
+                let behind = if self.by_ear {
+                    u64::from(self.loops[k].latency)
+                } else {
+                    0
+                };
+                if end < tap + reach + behind {
                     self.loops[k].closing = true;
                     open = true;
                     continue;
@@ -3447,13 +3594,26 @@ impl Looper {
                     start: rec_from,
                     tap,
                     reach,
-                    heard_to: end,
+                    heard_to: end - behind,
                     bar,
                     beat,
                 };
                 let tap_reading = heard(tap_len).unwrap_or(tap_reading);
                 let bars = tap_reading.bars;
-                let d = ends::decide(&self.notes, &ask, &|_| Some(bars));
+                let d = if self.by_ear {
+                    // By ear: the finder's answer, waited for a little.
+                    let wait = ms_frames(rate, FIND_WAIT_AUTO_MS);
+                    match self.find_for(k, ask, bars, end, wait) {
+                        Some(d) => d,
+                        None => {
+                            self.loops[k].closing = true;
+                            open = true;
+                            continue;
+                        }
+                    }
+                } else {
+                    ends::decide(&self.notes, &ask, &|_| Some(bars))
+                };
                 // A smart start (your first hit came just after REC) needs
                 // what was heard after the end kept: room for it.
                 let room = d.lead > 0
@@ -3464,9 +3624,15 @@ impl Looper {
                     );
                 let first = rec_from + d.lead;
                 let from_hit = |to: u64| reread((to - first) as usize, rate, bar, &tap_reading);
+                // Moved, the beat's fit is the loop's as it now ends (the
+                // reading weighed it at the tap's length).
                 let moved = (d.verdict == Verdict::Moved)
                     .then(|| from_hit(d.end))
-                    .flatten();
+                    .flatten()
+                    .map(|r| Reading {
+                        beat: r.beat.and(d.best.map(|b| b.rhythm)),
+                        ..r
+                    });
                 // The loop's length and its start in the pass. Ends are
                 // measured from the first hit: with no smart start the loop
                 // is as long from the press.
@@ -3481,7 +3647,7 @@ impl Looper {
                         let why = SmartOutcome::Kept(if d.verdict == Verdict::Moved {
                             "too short a loop"
                         } else {
-                            d.verdict.why()
+                            d.verdict.why_by(self.by_ear)
                         });
                         match from_hit(tap).filter(|_| room) {
                             // On your first hit, ending on your tap.
@@ -3570,19 +3736,33 @@ impl Looper {
             if end < w.tap + w.reach + u64::from(self.loops[k].rec_latency) {
                 continue;
             }
-            self.loops[k].smart_wait = None;
             let (rate, bar) = (self.rate, w.bar);
             let ask = ends::Ask {
                 rate,
                 start: w.start,
                 tap: w.tap,
                 reach: w.reach,
-                heard_to: end,
+                // (By ear, what the writer has: a latency behind.)
+                heard_to: if self.by_ear {
+                    end.saturating_sub(u64::from(self.loops[k].rec_latency))
+                } else {
+                    end
+                },
                 bar,
                 beat: w.beat,
             };
             let bars = w.reading.bars;
-            let d = ends::decide(&self.notes, &ask, &|_| Some(bars));
+            let d = if self.by_ear {
+                // By ear: the finder's answer, once it comes.
+                let wait = ms_frames(rate, FIND_WAIT_SUGGEST_MS);
+                match self.find_for(k, ask, bars, end, wait) {
+                    Some(d) => d,
+                    None => continue,
+                }
+            } else {
+                ends::decide(&self.notes, &ask, &|_| Some(bars))
+            };
+            self.loops[k].smart_wait = None;
             let by = d.moved_by(w.tap);
             let audible = |f: i64| f.unsigned_abs() as f64 * 1000.0 / f64::from(rate) >= OFFER_MS;
             let first = w.start + d.lead;
@@ -3611,7 +3791,7 @@ impl Looper {
                     SmartOutcome::Kept("that end is outside what the loop kept")
                 }
                 Verdict::Moved => SmartOutcome::Offered(found.end),
-                v => SmartOutcome::Kept(v.why()),
+                v => SmartOutcome::Kept(v.why_by(self.by_ear)),
             };
             if !found.is_none() {
                 l.found = Some(found);
@@ -3620,6 +3800,149 @@ impl Looper {
             }
             self.smart_said(k, w.tap, outcome, found.start, d.best, d.second);
         }
+    }
+
+    /// Smart loop end by ear: loop `k`'s decision on `ask` from the
+    /// finder once it has answered, asking it first (the host hands the
+    /// ask over, [`Looper::find_job`]). None while it waits, until `wait`
+    /// frames past the period that asked (`now`); then your tap stands
+    /// ([`find::late`]). Counted either way.
+    fn find_for(
+        &mut self,
+        k: usize,
+        ask: ends::Ask,
+        bars: u32,
+        now: u64,
+        wait: u64,
+    ) -> Option<ends::Decision> {
+        match self.find {
+            Some(f) if f.k == k => {
+                if let Some(d) = f.answer {
+                    self.find = None;
+                    self.stats.finds_answered += 1;
+                    Some(d)
+                } else if now >= f.due {
+                    self.find = None;
+                    self.stats.finds_late += 1;
+                    Some(find::late(&f.ask))
+                } else {
+                    None
+                }
+            }
+            _ => {
+                self.find_gen += 1;
+                self.find = Some(Finding {
+                    k,
+                    gen: self.find_gen,
+                    ask,
+                    bars,
+                    due: now + wait,
+                    sent: false,
+                    answer: None,
+                });
+                self.stats.finds_asked += 1;
+                None
+            }
+        }
+    }
+
+    /// The finder's ask is dropped once its take no longer waits for it
+    /// (cleared, thrown away, its overdub started): a late answer to it
+    /// is stale.
+    fn forget_stale_find(&mut self) {
+        let Some(f) = self.find else {
+            return;
+        };
+        let l = &self.loops[f.k];
+        let waits = l.smart_wait.is_some() || (l.free && l.phase == Phase::Recording);
+        if !waits {
+            self.find = None;
+        }
+    }
+
+    /// Smart loop end by ear wants the finder: `job` gets the take's
+    /// generation, the ask, the hits heard, and the first pass's audio
+    /// round the opening hit and round the reach of the tap, and true,
+    /// once per ask. The host hands it to the finder's thread
+    /// ([`find::find`]) and its answer back ([`Looper::found`]).
+    /// Allocation-free.
+    pub fn find_job(&mut self, job: &mut FindJob) -> bool {
+        let Some(f) = self.find.as_mut().filter(|f| !f.sent) else {
+            return false;
+        };
+        f.sent = true;
+        let f = *f;
+        job.gen = f.gen;
+        job.ask = f.ask;
+        job.bars = f.bars;
+        job.hits.clone_from(&self.hits);
+        job.answer = None;
+        job.line_up = 0.0;
+        let opening = {
+            let mut buf = [hits::Hit::NONE; ends::HEAD + ends::TAIL];
+            let n = self.hits.sorted(&mut buf);
+            buf[..n]
+                .iter()
+                .map(|h| h.frame)
+                .find(|&x| x >= f.ask.start && x <= f.ask.start + f.ask.reach)
+                .unwrap_or(f.ask.start)
+        };
+        job.open_from = FindJob::open_from_for(opening);
+        job.open_len = self.kept_mono(f.k, job.open_from, f.ask.heard_to, &mut job.open);
+        job.near_from = FindJob::near_from_for(f.ask.tap, f.ask.reach);
+        job.near_len = self.kept_mono(f.k, job.near_from, f.ask.heard_to, &mut job.near);
+        true
+    }
+
+    /// Whether the looper has asked the finder something the host hasn't
+    /// taken yet ([`Looper::find_job`]): an ask that waits for the job to
+    /// come back from the finder's thread.
+    pub fn find_wanted(&self) -> bool {
+        self.find.is_some_and(|f| !f.sent)
+    }
+
+    /// The finder's answer to `job`: kept for its take if the looper still
+    /// waits for it (the next period uses it), else dropped as stale.
+    pub fn found(&mut self, job: &FindJob) {
+        match self.find.as_mut() {
+            Some(f) if f.gen == job.gen && f.answer.is_none() => f.answer = job.answer,
+            _ => self.stats.finds_stale += 1,
+        }
+    }
+
+    /// Loop `k`'s first pass as recorded, from song frame `from`, in
+    /// `out` as mono (the channels' mean), up to song frame `to`: how many
+    /// frames from the first are heard (0 before what it kept; silence
+    /// after). While it records or after. Allocation-free.
+    fn kept_mono(&self, k: usize, from: u64, to: u64, out: &mut [f32]) -> usize {
+        out.fill(0.0);
+        let Some(l) = self.loops.get(k) else {
+            return 0;
+        };
+        // Frame 0 of what it kept is KEEP_BEFORE before its first.
+        let base = l.rec_from as i64 - KEEP_BEFORE as i64;
+        let (v0, vn) = if l.phase == Phase::Recording {
+            (0, KEEP_BEFORE + l.written)
+        } else {
+            l.slots[0].valid
+        };
+        let blocks = self.store.blocks_of(k, 0);
+        let mut heard = 0;
+        for (i, y) in out.iter_mut().enumerate() {
+            let f = from + i as u64;
+            let q = f as i64 - base;
+            if f >= to || q >= (v0 + vn) as i64 {
+                break;
+            }
+            if q < v0 as i64 {
+                continue;
+            }
+            let q = q as usize;
+            let x = self.store.frame(blocks, q / BLOCK, q % BLOCK);
+            *y = 0.5 * (x[0] + x[1]);
+            heard = i + 1;
+        }
+        heard
     }
 
     /// Smart loop end's word on loop `k`'s tap, for the host, counted.
@@ -3863,6 +4186,13 @@ impl Looper {
             Queued::Loop(Command::TempoFromLoop(on)) => self.free_tempo = on,
             Queued::Loop(Command::TempoMeant(on)) => self.tempo_meant = on,
             Queued::Loop(Command::SetSmartEnd(m)) => self.smart = m,
+            Queued::Loop(Command::SmartByEar(on)) => {
+                if on != self.by_ear {
+                    self.by_ear = on;
+                    self.hits.clear();
+                    self.find = None;
+                }
+            }
             // A capture under way: again, Undo or Clear call it off.
             Queued::Loop(
                 Command::Capture(_)
@@ -4560,6 +4890,7 @@ impl Loop {
                 | Command::TempoFromLoop(_)
                 | Command::TempoMeant(_)
                 | Command::SetSmartEnd(_)
+                | Command::SmartByEar(_)
                 | Command::SetFadeOld(_)
                 | Command::SetLatency(_)
                 | Command::SetLevel(_)
@@ -4657,7 +4988,8 @@ impl Loop {
             | Command::StartsByEar(_)
             | Command::TempoFromLoop(_)
             | Command::TempoMeant(_)
-            | Command::SetSmartEnd(_) => {}
+            | Command::SetSmartEnd(_)
+            | Command::SmartByEar(_) => {}
             Command::SetFadeOld(k) if k.is_finite() => self.fade_old = k.clamp(0.0, 1.0),
             Command::SetFadeOld(_) => {}
             Command::SetLatency(l) => self.latency = l,
@@ -6799,9 +7131,17 @@ impl Loop {
         }
     }
 
-    /// The loop's part of a run: each frame's output is added to `ys`.
-    /// Frame by frame while anything moves (writers, fades, a jump); once
-    /// the loop is still, the rest of the run in one go.
+    /// Nothing to play and nothing coming in: empty, with no load and no
+    /// layer copying in. Its run would do nothing ([`Loop::run`]), so it
+    /// isn't run.
+    fn quiet(&self) -> bool {
+        self.phase == Phase::Empty && !self.loading && !self.adding
+    }
+
+    /// The loop's part of a run: each frame's output is added to `ys`,
+    /// once a frame (so a buffer of its own holds exactly what it played:
+    /// [`LoopOuts`]). Frame by frame while anything moves (writers, fades,
+    /// a jump); once the loop is still, the rest of the run in one go.
     #[allow(clippy::too_many_arguments)]
     fn run(
         &mut self,

@@ -256,6 +256,11 @@ pub const SETUP_FILES: &[(&str, u16, &str)] = &[
         include_str!("../../../tools/mpc-one/stick/setup-format.sh"),
     ),
     (
+        "/etc/mpfree-test/setup-sd-card.sh",
+        0o755,
+        include_str!("../../../tools/mpc-one/stick/setup-sd-card.sh"),
+    ),
+    (
         "/etc/systemd/system/mpfree-setup-backup.service",
         0o644,
         include_str!("../../../tools/mpc-one/stick/mpfree-setup-backup.service"),
@@ -269,6 +274,16 @@ pub const SETUP_FILES: &[(&str, u16, &str)] = &[
         "/etc/systemd/system/mpfree-setup-format.service",
         0o644,
         include_str!("../../../tools/mpc-one/stick/mpfree-setup-format.service"),
+    ),
+    (
+        "/etc/systemd/system/mpfree-setup-sd-card.service",
+        0o644,
+        include_str!("../../../tools/mpc-one/stick/mpfree-setup-sd-card.service"),
+    ),
+    (
+        "/etc/systemd/system/mpfree-setup-sd-card.path",
+        0o644,
+        include_str!("../../../tools/mpc-one/stick/mpfree-setup-sd-card.path"),
     ),
     (
         "/etc/systemd/system/mpfree-test-splash.service.d/mpfree-setup.conf",
@@ -301,6 +316,10 @@ pub const SETUP_LINKS: &[(&str, &str)] = &[
     (
         "/etc/systemd/system/sysinit.target.wants/mpfree-setup-format.service",
         "/etc/systemd/system/mpfree-setup-format.service",
+    ),
+    (
+        "/etc/systemd/system/sysinit.target.wants/mpfree-setup-sd-card.path",
+        "/etc/systemd/system/mpfree-setup-sd-card.path",
     ),
 ];
 
@@ -408,9 +427,19 @@ mod tests {
     }
 
     #[test]
-    fn setup_programs_come_from_both_scripts() {
+    fn setup_programs_come_from_every_script() {
         let p = setup_programs();
-        for name in ["udevadm", "sha256sum", "dd", "mke2fs", "od"] {
+        for name in [
+            "udevadm",
+            "sha256sum",
+            "dd",
+            "mke2fs",
+            "od",
+            "mount",
+            "umount",
+            "dmesg",
+            "rmdir",
+        ] {
             assert!(p.contains(&name), "{name}");
         }
         assert!(!p.contains(&"blockdev"), "Akai's system has none");

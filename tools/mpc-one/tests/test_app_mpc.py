@@ -99,6 +99,11 @@ LIBRARY_NEEDLES = (
     # (Library::path, links refused) through write_synced (project.rs's O_NOFOLLOW open above), then renames
     # it over manifest.txt. Nothing else in the folder is touched; a cut-off .part is overwritten next time.
     ("mpfree-library/manifest.rs", "fs::rename(&part, dir.join(MANIFEST_FILE))?;"),
+    # A set list (sets.rs; live shows B1, 22 Nov 2026): BROWSE's Sets place saves a set after each change as
+    # Sets/<name>.set.part (Library::path: the Sets place, a name valid_name takes, links refused) through
+    # write_synced (project.rs's O_NOFOLLOW open above), then renames it over Sets/<name>.set. save_set refuses
+    # any path that isn't a .set file in Sets. New set, Rename, Copy and Delete use the library's own (listed).
+    ("mpfree-library/sets.rs", "fs::rename(&part, &path)?;"),
     # Kit files (kit.rs; the browser thread, 16 Nov 2026): Save kit in BROWSE's Kits place or the Pads tab's
     # picker builds the kit in a hidden .kit-<id>-<name> folder beside where it goes (in Kits, Samples ...;
     # never Projects or the Trash: check_writable), each file made new (create_new, O_NOFOLLOW) with a name
@@ -1336,7 +1341,15 @@ class StaticTests(unittest.TestCase):
                     # cut-off run left there are moved into the library's Recordings place under a free name
                     # (never over a file), regular files only (symlink_metadata).
                     ("mpfree-audiotracks/files.rs", "let _ = std::fs::remove_file(old);"),
-                    ("mpfree-audiotracks/files.rs", "std::fs::rename(&from, &to)?;")} \
+                    ("mpfree-audiotracks/files.rs", "std::fs::rename(&from, &to)?;"),
+                    # The SD card's read-only window, the pad player's side (sd_card.rs, SD card step S1): its
+                    # request and close are small files in /run/mpfree-app (RAM, Paths::on_the_stick with
+                    # REPORT_DIR), written whole under a hidden name there (one an earlier try left removed
+                    # first) and renamed in; a request nobody picked up in time is taken back. The card itself
+                    # is mounted read-only by the stick's root service and never opened for writing here.
+                    ("mpfree-app/sd_card.rs", "match fs::remove_file(&tmp) {"),
+                    ("mpfree-app/sd_card.rs", "fs::rename(&tmp, path)"),
+                    ("mpfree-app/sd_card.rs", "let _ = fs::remove_file(&paths.request);")} \
                    | set(LIBRARY_NEEDLES) | set(PLUGIN_STORE_NEEDLES)
         for name, code in self.program_sources():
             for line in code.splitlines():
@@ -1415,12 +1428,18 @@ class StaticTests(unittest.TestCase):
             "o.read(true).write(true);",
             "o.create_new(true);",
             "o.create(true).truncate(true);",
+            # sd_card.rs: the SD card window's request and close, made new under a hidden name in
+            # /run/mpfree-app (RAM) and renamed in; and the counter the pad player moves while the card is open,
+            # /run/mpfree-app/sd-card.alive, never through a link (O_NOFOLLOW), written in place
+            "let mut f = OpenOptions::new().write(true).create_new(true).mode(0o644).open(&tmp)?;",
+            "let alive = OpenOptions::new().write(true).create(true).truncate(false).custom_flags(libc::O_NOFOLLOW)"
+            ".mode(0o644).open(&paths.alive);",
         )
         expected += LIBRARY_OPENS + PLUGIN_STORE_OPENS
         self.assertEqual(sorted(texts), sorted(expected), "\n".join(texts))
         files = {name for name, _ in found}
         self.assertEqual(files, {"mpfree-app/main.rs", "mpfree-app/crash.rs", "mpfree-app/alsa.rs", "mpfree-ui/fb.rs",
-                                 "mpfree-app/midi_log.rs",
+                                 "mpfree-app/midi_log.rs", "mpfree-app/sd_card.rs",
                                  "mpfree-app/setup.rs", "mpfree-app/imagecopy.rs", "mpfree-store/lib.rs",
                                  "mpfree-library/lib.rs", "mpfree-library/project.rs", "mpfree-library/kit.rs",
                                  "mpfree-mpcstore/install.rs", "mpfree-stream/fsio.rs"}, files)

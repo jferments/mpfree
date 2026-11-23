@@ -133,6 +133,9 @@ pub fn revision(clip: &Clip) -> Revision {
         // Mutate's restore point: Restore changes the notes, which are in.
         original: _,
         holds,
+        // An audio clip's regions: the composer reads notes, and an audio
+        // clip has none.
+        audio: _,
         // The synth its locks were made for: locks are out, so it is too.
         made_for: _,
     } = clip;

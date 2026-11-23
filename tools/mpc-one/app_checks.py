@@ -625,6 +625,28 @@ CHECKS = (
          "the_looper_tab_plays_loops_and_works_layers"],
         needs=['Q-LINK']),
     Check(
+        "smart-end", "Smart loop end: a late tap closes on the downbeat you played",
+        "smart loop end, step 4: your own takes on the MPC's pads, Suggest then Auto (state-changing only in the "
+        "app; it ends with Loop 1 cleared)", "hands",
+        ["1. Tap Looper at the top. If Loop 1 has a wave, tap its name, then Clear. Tap Free under its bars.",
+         "2. Press MENU, set Tempo from the first loop to On and Smart loop end to Suggest, then press MENU.",
+         "3. Press REC and play kick and snare on the pads, steady, for two bars. Hit the next bar's first kick",
+         "   and press REC just after it, a little late: the chip under the loop offers the end you played.",
+         "4. Tap Snap: the loop closes on your kick at its next downbeat. Tap Use my tap: it goes back.",
+         "5. Press STOP twice and tap Clear. In MENU set Smart loop end to Auto, then play step 3 again:",
+         "   the loop closes on your kick by itself. Press STOP twice, then Clear."],
+        [("Suggest offered the end you played", seen(r"^looper: Loop \d+: .*smart loop end offers the end you played")),
+         ("Snap moved the loop", seen(r"^looper: Loop \d+: snapped ")),
+         ("Use my tap went back", seen(r"^looper: Loop \d+: (Undo: |back to your tap)")),
+         ("Auto closed it on the end you played",
+          seen(r"^looper: Loop \d+: .*smart loop end closed it on the end you played"))],
+        "Did each loop go round right on the kick you played, with no click or hiccup at the loop point?",
+        ["auto_smart_loop_end_closes_on_the_hit_you_played_again",
+         "a_snap_changes_the_loop_and_the_tempo_on_its_downbeat_and_undo_takes_it_back",
+         "the_chip_snaps_and_the_loop_point_view_swaps_and_keeps_a_side",
+         "the_chip_says_what_smart_loop_end_found_or_did_and_offers_the_way_back",
+         "auto_starts_a_loop_on_the_first_hit_after_rec"]),
+    Check(
         "perform-pages", "The Perform set: PAD BANK B puts Play's throws on the pads",
         "The Play, Pads and Sequencer redesign's step 6a (board 7): pages of pad actions saved with the project, "
         "page A the loop keys, page B the throws (state-changing only in the app)", "hands",

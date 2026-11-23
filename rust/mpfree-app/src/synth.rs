@@ -2083,6 +2083,54 @@ impl Synth {
         true
     }
 
+    /// The XY pad's hand on parameter `id` of the engine on the pads (a
+    /// layout of yours plays it by Set, `xy_own.rs`): `Some` holds it at
+    /// the value, over the clips' locks when `over` (a track records);
+    /// `None` lets go, back to its lock or its own value as they are now
+    /// (locks.rs). The sound's own value is left alone. False for a
+    /// parameter the pad can't hold: one the engine doesn't have, a meter,
+    /// Drums' pad notes and models, or a full table.
+    pub fn pad_hand(&mut self, id: u16, value: Option<f32>, over: bool) -> bool {
+        let e = self.settings.engine;
+        let key = lock_key(e, id);
+        let Some(value) = value else {
+            if let Some(v) = self.locks.release(key) {
+                self.node_mut().set_param(id, v);
+            }
+            return true;
+        };
+        let smooth = match self
+            .node()
+            .params()
+            .iter()
+            .find(|p| p.id == id && !p.readonly)
+        {
+            Some(p) if !(e == Engine::Drums && moves_drum_pads(id)) => crate::locks::glides(p),
+            _ => return false,
+        };
+        let now = self.node().param(id);
+        match self.locks.press(key, value, now, smooth, over) {
+            crate::locks::Pressed::Set(v) => {
+                self.node_mut().set_param(id, v);
+                true
+            }
+            crate::locks::Pressed::Kept => true,
+            crate::locks::Pressed::Full => false,
+        }
+    }
+
+    /// Parameter `id` of the engine on the pads under the XY pad's hand:
+    /// what a let-go goes back to now (its lock, else its own value), and
+    /// its own value.
+    pub fn pad_beneath(&self, id: u16) -> (f32, f32) {
+        let key = lock_key(self.settings.engine, id);
+        let now = self.node().param(id);
+        (
+            self.locks.beneath(key).unwrap_or(now),
+            self.locks.own(key).unwrap_or(now),
+        )
+    }
+
     /// Each track's lasting id (`mpfree_seq::TrackId`, 0 for none), by
     /// track: when two tracks on the synth lock one knob, the lowest owns
     /// it (step 4b, locks.rs).
@@ -2664,6 +2712,48 @@ mod tests {
         }
         assert!(fresh_node("mpfree.nothing", &[], &[], 48_000).is_none());
         assert!(fresh_node("mpfree.poly", &[], &[0.5], 48_000).is_none());
+    }
+
+    /// Auto-sample records a patch in 12-TET whatever the song's tuning
+    /// (tunings plan T3): its copy is made from the patch's values and
+    /// design, which a tuning doesn't touch, and starts in 12-TET, so a
+    /// keygroup made from it plays the tuning once, not twice.
+    #[test]
+    fn an_auto_sample_copy_plays_in_12_tet_whatever_the_tuning() {
+        let a432 = TuningPick {
+            a4_hz: 432,
+            ..TuningPick::default()
+        };
+        for engine in [
+            Engine::Poly,
+            Engine::Fm,
+            Engine::Drums,
+            Engine::Pluck,
+            Engine::Keys,
+            Engine::Drawbar,
+            Engine::Squelch,
+            Engine::Analog,
+            Engine::Strings,
+            Engine::Bass,
+            Engine::Wind,
+            Engine::Choir,
+        ] {
+            let mut s = Synth::new(48_000);
+            with(&mut s, |p| p.engine = engine);
+            let n = s.notes(0)[0];
+            let in_12 = note(s.node_mut(), n);
+            let plain = s.state();
+            with(&mut s, |p| p.tuning = a432);
+            let st = s.state();
+            let name = st.info.name;
+            assert_eq!(st.extras, plain.extras, "{name}");
+            assert_eq!(st.values, plain.values, "{name}");
+            if engine != Engine::Drums {
+                assert_ne!(note(s.node_mut(), n), in_12, "{name} plays the tuning");
+            }
+            let mut copy = fresh_node(st.info.id, &st.extras, &st.values, 48_000).unwrap();
+            assert_eq!(note(copy.as_mut(), n), in_12, "{name} records in 12-TET");
+        }
     }
 
     #[test]
@@ -3599,14 +3689,11 @@ mod tests {
         assert_eq!(s.poly.active_voices(), 0, "Poly's release ended");
         assert_eq!(s.fm.active_voices(), 1);
         // The Synth tab edits FM now.
+        let poly_level = s.poly.param(pp::LEVEL);
         let id = mpfree_synth::fm_params::LEVEL;
         s.set(id, -6.0);
         assert_eq!(s.value(id), -6.0);
-        assert_eq!(
-            s.poly.param(pp::LEVEL),
-            Poly::new(44_100).param(pp::LEVEL),
-            "Poly untouched"
-        );
+        assert_eq!(s.poly.param(pp::LEVEL), poly_level, "Poly untouched");
         assert_eq!(s.load_preset(2), Some("Bell Tower"));
         assert_eq!(s.preset_count(), Fm::presets().len());
         assert_eq!(s.kit_view().name, "Synth: FM");

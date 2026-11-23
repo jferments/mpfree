@@ -209,9 +209,10 @@ with `--quick`) at 128 frames and 44.1 kHz:
   a block through the full voice loop and take 39,000 through the plain
   path; 64 take 74,000. "Stream voices" are `mpfree-stream`'s cursors
   reading streamed sounds (disk streaming's P3, step 3), for the
-  sampler's voice limit: 64 voices at 1.5 times their rate take 1.1 M
-  instructions a block with Hermite and 6.4 M band-limited (8.2 M at 3
-  times, 11.8 M with 16 crossings a side); 16 stems at the engine's rate
+  sampler's voice limit: 64 voices at 1.5 times their rate take 3.7 M
+  instructions a block with the 8-point read (1.8 M at 0.75 times; Hermite,
+  before DSP quality step 1.7, took 1.1 M) and 6.4 M band-limited (8.2 M at
+  3 times, 11.8 M with 16 crossings a side); 16 stems at the engine's rate
   take 65,000. On the workstation 64 band-limited voices are 18 % of a
   period, so on the MPC fewer fit in the sampler's 25 %: the device round
   measures it, and the sampler sets the limit.
@@ -530,8 +531,13 @@ to 18 bars in Jazz-ish 1.8 ms (3.2 ms); Try again on one bar of 18 0.13 ms;
 Continue on a clip in a project, 2 to 6 bars, 0.75 ms. With the
 calibration file (this machine times 9.3) that is about 18 ms on the MPC
 for an 18-bar Continue (23 ms), 1.3 ms for a Try again and 40 ms for the
-whole reading budget (64 ms): far under what a press can feel. The
-device's own numbers come from its bench round once `host_bench_mpc.py`
+whole reading budget (64 ms): far under what a press can feel. Since
+Continue makes music first (S1, 23 Nov; a cloud machine about 1.35 times
+slower than the workstation at the reading): Continue from 2 to 10 bars
+in Groove 3.0 ms (four whole drafts), from 2 to 18 bars in Jazz-ish
+2.8 ms (two drafts; 6.9 ms worst), Try again on one bar 0.02 ms, and a
+clip in a project 1.5 ms; by the same calibration about 20 ms on the MPC
+for an 8-bar Continue and about 50 ms at worst. The device's own numbers come from its bench round once `host_bench_mpc.py`
 runs `--compose` (not yet: round 2's runbook was rehearsed without it).
 
 ### Lanes (`--lanes`)
@@ -553,6 +559,45 @@ one core and on two. Eight synth tracks of eight engines in the track host play 
 one core, two and three (with `--lane-cores A,B` the third core is the
 first from 1 that is neither A nor B: 1 on the MPC), placed by what each
 costs ([Track host](track-host.md#other-cores-lanes)).
+
+### Stem separation (`--stems`)
+
+```text
+cargo run --release -p mpfree-bench -- --stems
+```
+
+The stem separation ([Stem separation](stems.md)) on Spleeter's real
+shapes with seeded weights (they cost what Deezer's do, so no model file
+is needed), on 30 s of seeded noise (three segments). It is not a period
+case: the separation is a background job. In order:
+
+1. Its two NEON kernels against their plain twins, bit for bit (300 GEMM
+   calls, all 65,536 halves): `stems: NEON matches plain`, or `stems: NEON
+   differs from plain` and exit code 1. On a machine without NEON it says
+   so and goes on.
+2. The free memory (`MemAvailable`): below 400 MB it prints `stems:
+   skipped, only N MB free` and exits 0, so it can never push the MPC into
+   swap or the OOM killer.
+3. The GEMM kernel alone on core 0, its data in the L1 cache, NEON and
+   plain (a quarter of a second each): the most the U-Nets could do a
+   core. Their own rate in the runs below, against twice this, says how
+   much of their time goes outside the kernel (gathering patches, batch
+   norms, unpacking).
+4. Four runs, each with its seconds by stage, the kernel's multiply-adds a
+   second, the memory promised and the peak so far (`VmHWM`), and the
+   stems' levels: the job's setting (two threads on cores 0 and 1, 1024
+   bins), one thread on core 0, the kernels off (their twins) on two, and
+   full band (1536 bins) on two. It pins its own threads, as `--lanes`
+   does, and prints `not pinned (reason)` if a pin is refused.
+5. The CPU's temperature and clock before and after (from `/sys`, read
+   only), the kernels' A/B, and `stems: estimate`: a 10 s and a 60 s sample
+   at both bands, from the measured rates plus 2.6 s assumed for loading
+   the model.
+
+On the workstation (23 Nov, a 2.1 GHz Xeon VM) it takes about 30 s: the
+job's setting 5.3 s for the 30 s, one thread 9.7 s, full band 9.0 s; peak
+memory 197 MB. On the MPC it is about 4 minutes (the plan's estimate),
+and `host_bench_mpc.py` runs it for the default build after `--plain`.
 
 ### The cost model
 

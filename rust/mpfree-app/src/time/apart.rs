@@ -38,8 +38,9 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use mpfree_seq::loops::{LoopNow, LoopPlan};
-use mpfree_seq::{Project, LOOPS, MAX_TRACKS};
+use mpfree_seq::{Project, RecId, TrackId, LOOPS, MAX_TRACKS};
 use mpfree_time_ui::view::{MuteWait, TimeState};
+use mpfree_transport::time::Tick;
 
 use super::control::{MuteLight, TimeControl};
 use super::StepsData;
@@ -96,6 +97,9 @@ pub enum Told {
     /// Lines for the log, one each: what the looper's loops did on the
     /// grid ([`TimeControl::loops_are`]).
     Notes(Vec<String>),
+    /// What Rec song put on audio tracks' lanes: its song edit and the
+    /// blocks' spans ([`TimeControl::take_song_placed`]).
+    SongPlaced(u32, Vec<(TrackId, Tick, Tick)>),
 }
 
 /// An ask: run on the control half, perhaps with something to tell.
@@ -175,6 +179,8 @@ pub struct Heavy {
     pub mute_wait: Option<MuteWait>,
     /// The time engine's part of the status line.
     pub describe: String,
+    /// The recordings audio clips name ([`TimeControl::recordings`]).
+    pub recordings: Vec<RecId>,
 }
 
 impl Heavy {
@@ -185,6 +191,7 @@ impl Heavy {
             state: c.state(),
             mute_wait: c.mute_wait().cloned(),
             describe: c.describe(),
+            recordings: c.recordings(),
         }
     }
 }
@@ -232,6 +239,8 @@ pub struct Apart {
     steps_changed: bool,
     said: Vec<(Say, Result<String, String>)>,
     notes: VecDeque<String>,
+    /// What Rec song put on audio tracks' lanes, oldest first.
+    placed: VecDeque<super::SongPlaced>,
     pub counts: Counts,
     /// What the facade last sent of the inputs it gives every period, so
     /// only a change goes: the app's tempo, whether a take records.
@@ -297,6 +306,7 @@ impl Apart {
             steps_changed: false,
             said: Vec::with_capacity(KEPT),
             notes: VecDeque::with_capacity(KEPT),
+            placed: VecDeque::new(),
             counts: Counts::default(),
             tempo: None,
             taking: None,
@@ -408,6 +418,7 @@ impl Apart {
                 Ok(Told::Said(say, r)) => self.said.push((say, r)),
                 Ok(Told::Note(line)) => self.notes.push_back(line),
                 Ok(Told::Notes(lines)) => self.notes.extend(lines),
+                Ok(Told::SongPlaced(n, spans)) => self.placed.push_back((n, spans)),
                 Err(_) => return,
             }
         }
@@ -424,6 +435,12 @@ impl Apart {
     pub fn take_note(&mut self) -> Option<String> {
         self.drain_told();
         self.notes.pop_front()
+    }
+
+    /// What Rec song put on audio tracks' lanes, oldest first.
+    pub fn take_placed(&mut self) -> Option<super::SongPlaced> {
+        self.drain_told();
+        self.placed.pop_front()
     }
 
     pub fn take_changed(&mut self) -> bool {
@@ -530,6 +547,9 @@ impl Thread {
             c.poll();
             if let Some(line) = c.take_later_note() {
                 self.unsent.push_back(Told::Note(line));
+            }
+            if let Some((n, spans)) = c.take_song_placed() {
+                self.unsent.push_back(Told::SongPlaced(n, spans));
             }
             while let Some(t) = self.unsent.pop_front() {
                 match self.tell.try_send(t) {

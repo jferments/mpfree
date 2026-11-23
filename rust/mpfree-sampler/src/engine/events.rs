@@ -108,6 +108,18 @@ pub enum Event {
         field: PadField,
         value: f32,
     },
+    /// The XY pad's hand on pad `pad`'s `field` (a layout of yours plays it
+    /// by Set): `value` plays in place of the pad's own, its live value and
+    /// its lock, until NaN lets go. With `over` false (not recording) a
+    /// step's lock still plays over it, as the mod engine's hand rule says.
+    /// It stays through a new view; playing voices follow it as they
+    /// follow a live value.
+    PadHand {
+        pad: u8,
+        field: PadField,
+        value: f32,
+        over: bool,
+    },
     /// Moves every pad at once by an offset on its own setting (or on its
     /// live one): see [`ProgramField`]. 0 or NaN is no offset. New voices
     /// start with it and playing voices follow every field. It stays when
@@ -190,6 +202,7 @@ impl Event {
             Event::PadLive { pad, field, .. } => Some((1, pad, field as u8)),
             Event::ProgramLive { field, .. } => Some((2, 0, field as u8)),
             Event::Bend { .. } => Some((3, 0, 0)),
+            Event::PadHand { pad, field, .. } => Some((4, pad, field as u8)),
             _ => None,
         }
     }
@@ -318,12 +331,16 @@ impl ProgramField {
 }
 
 /// The live settings: each pad's [`PadField`]s (NaN where the pad's own
-/// applies), its step locks under them, the program's offsets, and the
-/// pitch wheel's bend on the keygroups.
+/// applies), its step locks under them, the XY pad's hand over both, the
+/// program's offsets, and the pitch wheel's bend on the keygroups.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Live {
     pub(super) pads: [[f32; PadField::COUNT]; PADS],
     pub(super) locks: [[f32; PadField::COUNT]; PADS],
+    /// The XY pad's hand ([`Event::PadHand`]), and whether it holds over
+    /// the locks.
+    pub(super) hands: [[f32; PadField::COUNT]; PADS],
+    pub(super) over: [[bool; PadField::COUNT]; PADS],
     pub(super) program: [f32; ProgramField::COUNT],
     /// Cents the keygroups' notes move by ([`Event::Bend`]).
     pub(super) bend: f32,
@@ -331,6 +348,18 @@ pub(super) struct Live {
 
 impl Live {
     pub(super) const OWN: [[f32; PadField::COUNT]; PADS] = [[f32::NAN; PadField::COUNT]; PADS];
+
+    /// Nothing live, locked or held: every pad's own settings play.
+    pub(super) const fn new() -> Live {
+        Live {
+            pads: Live::OWN,
+            locks: Live::OWN,
+            hands: Live::OWN,
+            over: [[false; PadField::COUNT]; PADS],
+            program: [0.0; ProgramField::COUNT],
+            bend: 0.0,
+        }
+    }
 
     /// The program's offsets as a voice playing `note` hears them: a
     /// keygroup's note (below [`LEVEL_NOTE`]: not a pad hit, [`NO_NOTE`],
@@ -343,16 +372,25 @@ impl Live {
         program
     }
 
-    /// Pad `p`'s settings in place of its own: each field's live value,
-    /// else its lock (NaN where neither is set).
+    /// Pad `p`'s settings in place of its own: each field's XY hand (over
+    /// a lock only while it holds over the locks), else its live value,
+    /// else its lock (NaN where none is set).
     pub(super) fn row(&self, p: usize) -> [f32; PadField::COUNT] {
-        let (Some(live), Some(locks)) = (self.pads.get(p), self.locks.get(p)) else {
+        let (Some(live), Some(locks), Some(hands), Some(over)) = (
+            self.pads.get(p),
+            self.locks.get(p),
+            self.hands.get(p),
+            self.over.get(p),
+        ) else {
             return [f32::NAN; PadField::COUNT];
         };
         let mut out = *live;
-        for (o, l) in out.iter_mut().zip(locks) {
-            if o.is_nan() {
-                *o = *l;
+        for (f, o) in out.iter_mut().enumerate() {
+            let (hand, lock) = (hands[f], locks[f]);
+            if !hand.is_nan() && (over[f] || lock.is_nan()) {
+                *o = hand;
+            } else if o.is_nan() {
+                *o = lock;
             }
         }
         out
@@ -565,7 +603,7 @@ impl Engine {
                 Target::Own(_) => self.hit(pad, velocity),
                 Target::Key(note) => self.key(note, velocity),
                 Target::Level { pad: p, by, k } => {
-                    self.note_on(p, velocity, LEVEL_NOTE + k, Vary::level(by, k))
+                    self.note_on(p, velocity, LEVEL_NOTE + k, self.level_vary(p, by, k))
                 }
             },
             Event::NoteOff { pad } => match self.target(pad) {
@@ -624,6 +662,12 @@ impl Engine {
             Event::TakeOff => self.release(|v| v.pad == TAKE_PAD),
             Event::PadLive { pad, field, value } => self.pad_live(pad, field, value),
             Event::PadLock { pad, field, value } => self.pad_lock(pad, field, value),
+            Event::PadHand {
+                pad,
+                field,
+                value,
+                over,
+            } => self.pad_hand(pad, field, value, over),
             Event::ProgramLive { field, value } => self.program_live(field, value),
             Event::Bend { cents } => self.bend(cents),
             Event::LiveChop { pad } => {
@@ -709,15 +753,34 @@ impl Engine {
         self.follow_pad(pad, field);
     }
 
+    /// [`Event::PadHand`]: the table, then the playing voices of the pad.
+    pub(super) fn pad_hand(&mut self, pad: u8, field: PadField, value: f32, over: bool) {
+        let live = &mut self.lives[self.at];
+        let (Some(row), Some(o)) = (
+            live.hands.get_mut(usize::from(pad)),
+            live.over.get_mut(usize::from(pad)),
+        ) else {
+            return;
+        };
+        row[field as usize] = if value.is_nan() {
+            f32::NAN
+        } else {
+            field.clamp(value)
+        };
+        o[field as usize] = over;
+        self.follow_pad(pad, field);
+    }
+
     /// Pad `pad`'s playing voices go where its settings now say, if they
     /// follow `field`.
     pub(super) fn follow_pad(&mut self, pad: u8, field: PadField) {
         if field.follows() {
             let at = self.at;
             let (live, row) = (&self.lives[at], self.lives[at].row(usize::from(pad)));
+            let t = &self.tunings[at];
             for (v, _) in self.pool.iter_mut() {
                 if v.active && usize::from(v.kit) == at && v.pad == pad {
-                    retarget(v, &row, &live.program_for(v.note));
+                    retarget(v, &row, &live.program_of(v, t));
                 }
             }
         }
@@ -727,12 +790,12 @@ impl Engine {
     pub(super) fn program_live(&mut self, field: ProgramField, value: f32) {
         let at = self.at;
         self.lives[at].program[field as usize] = field.clamp(value);
-        let live = &self.lives[at];
+        let (live, t) = (&self.lives[at], &self.tunings[at]);
         for (v, _) in self.pool.iter_mut() {
             // The pads' voices and the take's (no live values of its own).
             let p = usize::from(v.pad);
             if v.active && usize::from(v.kit) == at && (p < PADS || v.pad == TAKE_PAD) {
-                retarget(v, &live.row(p), &live.program_for(v.note));
+                retarget(v, &live.row(p), &live.program_of(v, t));
             }
         }
     }
@@ -749,11 +812,11 @@ impl Engine {
             return;
         }
         self.lives[at].bend = cents;
-        let live = &self.lives[at];
+        let (live, t) = (&self.lives[at], &self.tunings[at]);
         for (v, _) in self.pool.iter_mut() {
             let p = usize::from(v.pad);
             if v.active && usize::from(v.kit) == at && p < PADS && v.note < LEVEL_NOTE {
-                retarget(v, &live.row(p), &live.program_for(v.note));
+                retarget(v, &live.row(p), &live.program_of(v, t));
             }
         }
     }
@@ -785,6 +848,13 @@ impl Engine {
     /// [`Engine::pad_lock_value`] of kit `kit`'s pad.
     pub fn kit_pad_lock_value(&self, kit: usize, pad: u8, field: PadField) -> Option<f32> {
         let x = self.lives.get(kit)?.locks.get(usize::from(pad))?[field as usize];
+        (!x.is_nan()).then_some(x)
+    }
+
+    /// The XY pad's hand on kit `kit`'s pad `pad`'s `field`
+    /// ([`Event::PadHand`]), if it holds one.
+    pub fn kit_pad_hand_value(&self, kit: usize, pad: u8, field: PadField) -> Option<f32> {
+        let x = self.lives.get(kit)?.hands.get(usize::from(pad))?[field as usize];
         (!x.is_nan()).then_some(x)
     }
 

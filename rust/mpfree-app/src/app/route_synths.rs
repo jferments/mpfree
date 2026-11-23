@@ -21,13 +21,22 @@
 //!   track of its own, an armed track that plays its synth, else a free
 //!   one pointed at it, else a new one, armed with the first in one take
 //!   and named on the REC chip before you press ("REC → Track 1 + 1
-//!   more"; [`App::rec_more_synths`]). The audio loop gives the route's
+//!   more"; [`App::rec_more_sounds`]). The audio loop gives the route's
 //!   keys to that track ([`App::route_recs`]).
 //! - **Saved** on the route's line by the synth's number (`route =
 //!   instrument 4 < MIDI · ch 2`, `mpfree_midi::setup::TrackRoute`); a
 //!   build from before names the line it can't read and leaves it out.
+//! - **A kit** (sampler step 15f): a route can name a kit of the list of
+//!   instruments by its number too ([`App::route_synth_kits`]). Each note
+//!   plays the kit as its Keys play sends it: the pad that sends it (the
+//!   MPC note map, any bank) or the keygroups that hold it
+//!   (`RouteSynths::kit_key` in `main.rs`); the wheel bends its
+//!   keygroups. REC records it on a track of its own pointed at the kit,
+//!   each note as that kit takes it. The Routing card lists synths only
+//!   until step 15e's pickers; a project's setup can name a kit.
 
 use super::pad_layers::MORE;
+use super::pads_focus::{PadFocus, RecFrom, RecMore, RecSound};
 use super::App;
 use crate::instrument_list::{InstrumentId, Kind};
 
@@ -35,8 +44,9 @@ use crate::instrument_list::{InstrumentId, Kind};
 pub const ROUTE_SYNTHS: usize = crate::instruments::ROUTE_SYNTHS;
 
 /// What REC may record besides the first: the pads' layers, then the
-/// synths the routes name.
-pub const REC_MORE: usize = MORE + ROUTE_SYNTHS;
+/// synths the routes name, then the pads' base and banks' own (sampler
+/// step 15c).
+pub const REC_MORE: usize = MORE + ROUTE_SYNTHS + super::pads_focus::MAP_MORE;
 
 impl App {
     /// The synths the routes name now, by the project's instrument number
@@ -58,6 +68,17 @@ impl App {
             .map(|id| id.and_then(|id| self.instrument_holder(id)))
     }
 
+    /// The kit each route row names (sampler step 15f), by its place in
+    /// the list of kits (None: no route there, a synth, or one the list
+    /// hasn't got). Allocates nothing.
+    pub fn route_synth_kits(&self) -> [Option<u8>; ROUTE_SYNTHS] {
+        self.route_synths
+            .map(|id| match self.instrument_list.kind(id?)? {
+                Kind::Kit { kit } => Some(kit.min(usize::from(u8::MAX)) as u8),
+                _ => None,
+            })
+    }
+
     /// The route rows that play the shared synth, a bit each.
     pub fn route_synth_shared(&self) -> u8 {
         (0..ROUTE_SYNTHS)
@@ -70,54 +91,85 @@ impl App {
         self.route_synth_holders().contains(&Some(holder))
     }
 
-    /// The synths the routes name, for REC, row by row: each one's name
-    /// and holder (None for the shared synth). One the project's list
-    /// hasn't got is left out.
-    fn route_rec_synths(&self) -> [Option<(&'static str, Option<usize>)>; ROUTE_SYNTHS] {
-        self.route_synths.map(|id| {
-            let id = id?;
-            match self.instrument_list.kind(id)? {
-                Kind::SharedSynth => Some((self.instrument_name(id), None)),
-                k => k.holder().map(|h| (self.instrument_name(id), Some(h))),
-            }
+    /// The synths the routes name, for REC, row by row (step 11e), and the
+    /// kits (sampler step 15f). One the project's list hasn't got is left
+    /// out.
+    fn route_rec_synths(&self) -> [Option<RecMore>; ROUTE_SYNTHS] {
+        std::array::from_fn(|j| {
+            let f = PadFocus::Instrument(self.route_synths[j]?);
+            Some(RecMore {
+                name: self.sound_name(f),
+                sound: self
+                    .sound_of(f)
+                    .filter(|s| matches!(s, RecSound::Synth(_) | RecSound::Kit(_)))?,
+                from: RecFrom::Route(j),
+            })
         })
     }
 
-    /// Whether REC has a synth a route names to record.
-    pub fn routes_record(&self) -> bool {
-        self.route_rec_synths().iter().any(Option::is_some)
-    }
-
-    /// What REC records besides the first (steps 11c and 11e), in order:
-    /// the pads' layers that play now ([`App::pads_layer_synths`]), then
-    /// the synths the routes name, row by row. Allocates nothing.
-    pub fn rec_more_synths(&self) -> [Option<(&'static str, Option<usize>)>; REC_MORE] {
-        let layers = self.pads_layer_synths();
+    /// What REC records besides the first (steps 11c and 11e, sampler step
+    /// 15c), in order: the pads' layers ([`App::pads_layer_sounds`]), then
+    /// the synths the routes name, row by row, then the pads' base and
+    /// each bank's own ([`App::rec_map_sounds`]) that isn't a layer
+    /// already. A route's synth that the pads play too gets a track of its
+    /// own, as since step 11e, so its take never mixes with the pads'.
+    /// Allocates nothing.
+    pub fn rec_more_sounds(&self) -> [Option<RecMore>; REC_MORE] {
+        let layers = self.pads_layer_sounds();
         let routes = self.route_rec_synths();
-        std::array::from_fn(|i| {
+        let map = self.rec_map_sounds();
+        let mut out: [Option<RecMore>; REC_MORE] = std::array::from_fn(|i| {
             if i < MORE {
                 layers[i]
-            } else {
+            } else if i < MORE + ROUTE_SYNTHS {
                 routes[i - MORE]
+            } else {
+                None
             }
-        })
+        });
+        let mut at = MORE + ROUTE_SYNTHS;
+        for m in map.into_iter().flatten() {
+            if !out[..MORE].iter().flatten().any(|o| o.sound == m.sound) {
+                out[at] = Some(m);
+                at += 1;
+            }
+        }
+        out
     }
 
-    /// The track each of [`App::rec_more_synths`] records on: one of the
+    /// The track each of [`App::rec_more_sounds`] records on: one of the
     /// other armed tracks (`also`, a bit each: `TimeHost::also`) that
-    /// plays its synth, each a track of its own, as REC sets them up
-    /// (`desk.rs`, `rec_synth`). None: nothing there, or no such track.
-    /// Allocates nothing.
+    /// plays it, each a track of its own, as REC sets them up (`desk.rs`,
+    /// `rec_synth`). None: nothing there, or no such track. Allocates
+    /// nothing.
     pub fn rec_more_tracks(&self, also: u128) -> [Option<u8>; REC_MORE] {
         let mut used = 0u128;
-        self.rec_more_synths().map(|l| {
-            let (_, holder) = l?;
+        self.rec_more_sounds().map(|m| {
+            let m = m?;
             let t = (0..128).find(|&t| {
-                also >> t & 1 == 1 && used >> t & 1 == 0 && self.track_plays_synth(t, holder)
+                also >> t & 1 == 1 && used >> t & 1 == 0 && self.track_plays(t, m.sound)
             })?;
             used |= 1 << t;
             Some(t as u8)
         })
+    }
+
+    /// The track recording what the pads play now while they play it on
+    /// their own (sampler step 15c): the armed track REC set up for the
+    /// pads' base or the bank's own they are on ([`App::rec_more_tracks`]),
+    /// or for a layer of the same sound; never a route's. None while they
+    /// follow the track, while no armed track plays it, and while it is a
+    /// layer that plays now (the layer's track takes the hits then). The
+    /// audio loop gives it the hits, the keys that play it and the pads'
+    /// arp's notes. Allocates nothing.
+    pub fn pads_own_rec(&self, also: u128) -> Option<u8> {
+        let sound = self.pads_sound()?;
+        let more = self.rec_more_sounds();
+        let tracks = self.rec_more_tracks(also);
+        let pads = |m: &RecMore| !matches!(m.from, RecFrom::Route(_)) && m.sound == sound;
+        let i = (0..REC_MORE).find(|&i| more[i].as_ref().is_some_and(pads))?;
+        let layer_now = matches!(more[i], Some(RecMore { from: RecFrom::Layer(l), .. }) if self.layer_plays_now(l));
+        tracks[i].filter(|_| !layer_now)
     }
 
     /// The track each route row's keys go into now

@@ -2026,10 +2026,11 @@ mod tests {
     /// and FM: bank B plays FM, named "Pads B: FM" in the header, while
     /// Track 1 keeps its kit. PAD BANK A gives the pads the kit again (FM
     /// stays, as bank B points at it) and B gives them FM; REC there
-    /// records FM on a free track, and the project's pads part keeps the
-    /// bank's line. The Synth tab's hint then says who plays FM: "the
-    /// pads, Track 2" while Track 2 is picked (the pads follow it on the
-    /// other banks), "pads bank B, Track 2" once Track 1 is again.
+    /// records FM on a free track armed with Track 1, which stays armed so
+    /// the other banks go on playing its kit (sampler step 15c: "REC →
+    /// Track 1 + 1 more"), and the project's pads part keeps the bank's
+    /// line. The Synth tab's hint then says who plays FM: "pads bank B,
+    /// Track 2".
     #[test]
     fn bank_b_only_plays_fm_on_bank_b_and_the_kit_on_the_others() {
         use crate::instruments::free;
@@ -2079,34 +2080,26 @@ mod tests {
                 Some("FM"),
                 "FM stays for bank B"
             );
-            // Bank B again: FM, and REC records it on Track 2.
+            // Bank B again: FM, and REC records it on Track 2, armed with
+            // Track 1, which stays armed (sampler step 15c).
             s.button("PAD BANK B/F").run_periods(2).settle();
             assert_eq!(s.mix.instruments.pads_play_at(), Some(free(0)));
             s.run_periods(1).settle();
-            assert_eq!(rec_chip(&s), "REC → Track 2 · FM");
+            assert_eq!(rec_chip(&s), "REC → Track 1 + 1 more");
             s.button("REC").settle();
             s.run_periods(2).settle();
             assert_eq!(s.mix.instruments.send(1), Some(free(0)), "the same FM");
+            assert_eq!(s.time.armed(), Some(0), "the arm stays on Track 1");
+            assert_eq!(s.time.also(), 1 << 1, "Track 2 armed too");
+            assert_eq!(s.app.track(), 0, "the other banks play Track 1's kit");
             assert_eq!(s.app.pad_page(), 1, "REC never moves the pads");
             assert!(
                 s.app.pads_part().contains("\nbank B instrument "),
                 "{}",
                 s.app.pads_part()
             );
-            // Who plays FM (step 8). REC picked Track 2, so the other
-            // banks follow it to FM: the pads, every bank.
+            // Who plays FM (step 8): bank B alone of the pads, and Track 2.
             s.button("STOP").settle();
-            s.run_for(crate::gui::TELL_SECONDS as f64 + 0.5).settle();
-            assert!(
-                s.hint().starts_with("FM: the pads, Track 2"),
-                "{}",
-                s.hint()
-            );
-            // Track 1 picked again: bank B alone of the pads, and Track 2.
-            let pick = mpfree_time_ui::TimeAction::Pick(0);
-            s.route(crate::gui::FromUi::Time(pick));
-            s.run_periods(2).settle();
-            assert_eq!(s.app.track(), 0);
             assert_eq!(s.mix.instruments.pads_play_at(), Some(free(0)));
             s.run_for(crate::gui::TELL_SECONDS as f64 + 0.5).settle();
             assert!(
@@ -2257,7 +2250,7 @@ mod tests {
             assert_eq!(s.mix.instruments.send(2), Some(free(1)), "Track 3: Pluck");
             assert_eq!(s.time.also(), 1 << 2, "Track 3 armed too");
             assert_eq!(s.app.rec.ready, Some(Take::Replace));
-            assert_eq!(s.app.pads_layer_recs(s.time.also())[0], Some(2));
+            assert_eq!(s.app.pads_layer_recs(s.time.also())[0], Some((2, None)));
             // PLAY: the hits and a key go into both tracks.
             s.button("PLAY");
             let end = s.t() + 4.0;
@@ -2519,7 +2512,7 @@ mod tests {
             s.press("synth-pick", "keep", "").run_periods(2).settle();
             assert_eq!(s.mix.instruments.pads_play_at(), Some(free(0)));
             s.press("header", "tab", "Arrange").settle();
-            s.press("clips", "song", "Song").settle();
+            s.press("clips", "view", "Song").settle();
             s.press("song", "button", "Play song").settle();
             assert!(s.time.song_on());
             let audio = |s: &mut Session, a| {
@@ -2692,7 +2685,7 @@ mod tests {
             // input; its next take's file is made as it arms.
             s.line_in(Some(440.0));
             s.press("header", "tab", "Arrange").settle();
-            s.press("clips", "song", "Song").settle();
+            s.press("clips", "view", "Song").settle();
             s.press("song", "button", "Play song").settle();
             s.press("song", "add-track", "+ Track").settle();
             s.press("song", "add-kind", "Audio track")
@@ -2783,8 +2776,9 @@ mod tests {
     /// drum clip plays on Track 1 while the pads play Poly, chosen on the
     /// Synth tab. Selecting other tracks and tapping a row of REC's list
     /// never move the pads, the header names them on every page, and no
-    /// track or clip changes; a kit picked for the selected track, or the
-    /// header's chip (Follow track), gives the pads back to the track.
+    /// track or clip changes; a kit picked for the selected track leaves
+    /// the pads on Poly (sampler step 15b), and the header's chip (Follow
+    /// track) gives them back to the track.
     #[test]
     fn the_pads_play_poly_while_a_drum_clip_plays_on_whichever_track_is_selected() {
         use crate::app::PadFocus;
@@ -2865,13 +2859,17 @@ mod tests {
                 .filter(|c| c.widget == "kits" && c.target.id == "row")
                 .collect();
             s.press_target(&rows[1].target).run_for(0.2);
-            assert_eq!(s.app.pads_focus(), PadFocus::Track);
             assert_eq!(s.track_kits.entry(1), 1, "Track 2 plays kit 2");
-            assert_eq!(s.kit, 1, "and the pads with it");
-            // Chosen again, then the header's chip: Follow track.
+            assert_eq!(s.kit, 1, "the armed track's kit");
+            assert!(
+                s.app.pads_chose_synth(),
+                "a kit picked for the track never moves the pads (step 15b)"
+            );
+            let before = s.previewed.len();
+            s.pad(1, 90, 0.05);
+            assert_eq!(s.previewed.len(), before + 1, "the pads still play Poly");
+            // The header's chip: Follow track.
             s.press("header", "tab", "Synth").settle();
-            s.press("synth-pads-head", "play", "").settle();
-            assert!(s.app.pads_chose_synth(), "{}", s.hint());
             s.press("header", "chip", "Pads: Poly").settle();
             assert_eq!(s.app.pads_focus(), PadFocus::Track);
             assert!(s.control("header", "chip", "Pads: Poly").is_none());
@@ -5269,6 +5267,215 @@ mod tests {
             assert_eq!(s.synth.state().own.as_deref(), Some(saved.as_str()));
             assert_eq!(s.view(), View::Synth);
             let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
+    /// Your own XY layouts (the XY plan's phase 2): + New layout plays an
+    /// empty one and opens Setup; + across raises the banner, which stays
+    /// on the mixer; SHIFT + a touch on a fader joins it there (not MIDI
+    /// Learn) and Done keeps it; on the full-screen pad a finger moves the
+    /// fader and Go back gives it back; the song keeps the layout.
+    #[test]
+    fn a_layout_of_yours_gathers_a_fader_and_the_pad_plays_it() {
+        on_big_stack(|| {
+            use crate::xy_widgets::XY_BANNER;
+            use mpfree_ui::Touch;
+            let drums = StripId::Track(0);
+            let volume = |s: &Session| s.mix.mixer.param(drums, mpfree_fx::ids::mixer::VOLUME);
+            let mut s = Session::new();
+            s.play_view("All");
+            s.press(crate::play_page::XY, "xy-chip", "").settle();
+            assert_eq!(s.page(), crate::xy_list::XY_PAGE);
+            s.press(crate::xy_list::XY_LIST, "new", "+ New layout")
+                .settle();
+            assert_eq!(s.page(), crate::xy_setup::XY_SETUP_PAGE);
+            assert_eq!(s.xy_yours.playing, Some(0));
+            assert_eq!(s.xy_yours.yours[0].layout.name, "Layout 1");
+
+            // + across: the banner, on every page.
+            s.press(crate::xy_setup::XY_SETUP, "plus", "+ across")
+                .settle();
+            assert!(s.xy_yours.wait.is_some());
+            s.press("header", "tab", "Mix").settle();
+            assert!(
+                s.control(XY_BANNER, "done", "Done").is_some(),
+                "on the mixer too"
+            );
+            s.button_edge("SHIFT", true);
+            s.press("mixer", "fader", "Drums fader").settle();
+            s.button_edge("SHIFT", false);
+            let across = &s.xy_yours.yours[0].layout.across.targets;
+            assert_eq!(across.len(), 1, "the fader joined across");
+            s.press(XY_BANNER, "done", "Done").settle();
+            assert!(s.xy_yours.wait.is_none());
+            assert!(
+                s.control(XY_BANNER, "done", "Done").is_none(),
+                "the banner went"
+            );
+
+            // The full-screen pad plays it: the fader follows the finger,
+            // and Go back gives it back.
+            let before = volume(&s);
+            s.button_with("SHIFT", "NEXT SEQ").settle();
+            assert_eq!(s.page(), crate::play_page::XY_FULL_PAGE);
+            let pad = s
+                .control(crate::play_page::XY, "xy", "")
+                .expect("the pad")
+                .target
+                .rect;
+            let (x, y) = (pad.x + pad.w / 10, pad.y + pad.h / 2);
+            if let Some(a) = s.screen.touch(9, Touch::Down, x, y) {
+                s.route(a);
+            }
+            s.run_for(0.3);
+            let held = volume(&s);
+            assert!(
+                (held - before).abs() > 0.05,
+                "the pad moved the fader: {before} → {held}"
+            );
+            if let Some(a) = s.screen.touch(9, Touch::Up, x, y) {
+                s.route(a);
+            }
+            s.run_for(1.0);
+            assert!(
+                (volume(&s) - before).abs() < 0.01,
+                "Go back: {before} again, not {}",
+                volume(&s)
+            );
+
+            // Let go: Stay. The fader stays where the finger lifts, and
+            // UNDO puts it back.
+            s.press(crate::xy_widgets::XY_BAR, "xy-bar", "Let go: Go back")
+                .settle();
+            assert!(s.xy_yours.yours[0].stays());
+            if let Some(a) = s.screen.touch(9, Touch::Down, x, y) {
+                s.route(a);
+            }
+            s.run_for(0.3);
+            if let Some(a) = s.screen.touch(9, Touch::Up, x, y) {
+                s.route(a);
+            }
+            s.run_for(0.5).settle();
+            let stayed = volume(&s);
+            assert!((stayed - held).abs() < 0.01, "Stay: {held}, not {stayed}");
+            s.button("UNDO").settle();
+            s.run_for(0.2);
+            assert!(
+                (volume(&s) - before).abs() < 0.01,
+                "UNDO: {before} again, not {}",
+                volume(&s)
+            );
+
+            // The song keeps it.
+            let text = s.xy_yours.text();
+            assert!(text.starts_with("xy 1\nlayout\tLayout 1\n"), "{text}");
+            assert!(text.contains("playing\t0"), "{text}");
+        });
+    }
+
+    /// A synth's own setting on a layout of yours (the XY plan's phase 2,
+    /// "a synth's settings gain the hand layer"): SHIFT + a touch on a
+    /// Synth tab knob joins it; the pad plays it without changing its own
+    /// value, Go back gives that back, Stay keeps the pad's, and UNDO
+    /// puts it back.
+    #[test]
+    fn a_layout_of_yours_plays_a_synths_knob_and_lets_go_of_it() {
+        use mpfree_synth_ui::view as synth_view;
+        on_big_stack(|| {
+            use crate::xy_widgets::XY_BANNER;
+            use mpfree_ui::Touch;
+            let mut s = Session::new();
+            s.play_view("All");
+            s.press(crate::play_page::XY, "xy-chip", "").settle();
+            s.press(crate::xy_list::XY_LIST, "new", "+ New layout")
+                .settle();
+            s.press(crate::xy_setup::XY_SETUP, "plus", "+ across")
+                .settle();
+            s.press("header", "tab", "Synth").settle();
+            let knob = s
+                .controls()
+                .into_iter()
+                .find(|o| o.widget == synth_view::TILES && o.target.id == "knob")
+                .expect("a knob on the Synth tab")
+                .target;
+            s.button_edge("SHIFT", true);
+            s.press_target(&knob).settle();
+            s.button_edge("SHIFT", false);
+            let across = s.xy_yours.yours[0].layout.across.targets.clone();
+            assert_eq!(across.len(), 1, "the knob joined across: {:?}", s.lines);
+            let addr = across[0].addr;
+            assert!(
+                matches!(addr.owner, mpfree_play::mpfree_param::Owner::Inst(_)),
+                "{addr:?}"
+            );
+            s.press(XY_BANNER, "done", "Done").settle();
+            let value = |s: &Session| s.synth.value(addr.param);
+            let before = value(&s);
+
+            // The pad plays it; its own value stays as it was.
+            s.button_with("SHIFT", "NEXT SEQ").settle();
+            assert_eq!(s.page(), crate::play_page::XY_FULL_PAGE);
+            let pad = s
+                .control(crate::play_page::XY, "xy", "")
+                .expect("the pad")
+                .target
+                .rect;
+            // The far end from where the knob is now.
+            let from = across[0].from;
+            let to = across[0].to;
+            let unit = |v: f32| ((v - from) / (to - from)).clamp(0.0, 1.0);
+            let x = if unit(before) > 0.5 {
+                pad.x + pad.w / 20
+            } else {
+                pad.x + pad.w * 19 / 20
+            };
+            let y = pad.y + pad.h / 2;
+            if let Some(a) = s.screen.touch(9, Touch::Down, x, y) {
+                s.route(a);
+            }
+            s.run_for(0.3);
+            let held = value(&s);
+            assert!(
+                (held - before).abs() > 0.05 * (to - from).abs(),
+                "the pad moved the knob: {before} → {held}"
+            );
+            assert!(s.mix.xy_own().holding() > 0, "held by the pad's hand");
+            if let Some(a) = s.screen.touch(9, Touch::Up, x, y) {
+                s.route(a);
+            }
+            s.run_for(1.0);
+            assert!(
+                (value(&s) - before).abs() < 1e-3 * (1.0 + before.abs()),
+                "Go back: {before} again, not {}",
+                value(&s)
+            );
+            assert_eq!(s.mix.xy_own().holding(), 0, "let go");
+
+            // Stay keeps the pad's value as the knob's own; UNDO gives the
+            // old one back.
+            s.press(crate::xy_widgets::XY_BAR, "xy-bar", "Let go: Go back")
+                .settle();
+            if let Some(a) = s.screen.touch(9, Touch::Down, x, y) {
+                s.route(a);
+            }
+            s.run_for(0.3);
+            if let Some(a) = s.screen.touch(9, Touch::Up, x, y) {
+                s.route(a);
+            }
+            s.run_for(0.5).settle();
+            let stayed = value(&s);
+            assert!(
+                (stayed - held).abs() < 1e-3 * (1.0 + held.abs()),
+                "Stay: {held}, not {stayed}"
+            );
+            assert_eq!(s.mix.xy_own().holding(), 0, "nothing stays held");
+            s.button("UNDO").settle();
+            s.run_for(0.2);
+            assert!(
+                (value(&s) - before).abs() < 1e-3 * (1.0 + before.abs()),
+                "UNDO: {before} again, not {}",
+                value(&s)
+            );
         });
     }
 }

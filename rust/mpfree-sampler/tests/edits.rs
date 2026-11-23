@@ -173,6 +173,35 @@ fn a_loop_moved_on_is_heard_on_this_pass() {
     assert!(at[8000..].iter().all(|f| (5999.5..12_000.5).contains(f)));
 }
 
+/// A loop whose start moves on past a pitched voice that has already been
+/// round it: up to the new start the voice reads the recording, as it
+/// would have before it ever wrapped, not the old loop's last frames
+/// folded in. The ramp plays on with no step at the edit.
+#[test]
+fn a_loop_start_moved_past_a_voice_that_went_round_plays_on_smoothly() {
+    let s = ramp();
+    let mut p = kit(&s, PlayMode::Loop, Some((1000, 5000, LoopMode::Forward)));
+    p.edit_pad(0, None, |pad| pad.tune_cents = 50).unwrap();
+    let mut e = engine(&p);
+    hold(&mut e);
+    // A quarter tone up, about 1.03 frames a frame: round the loop at
+    // about 4860 frames, and at 5100 it plays near frame 1250.
+    let (before, _) = run(&mut e, 5100);
+    let (_, view) = edited(&p, |pad| set_loop(pad, 3000, 5000));
+    drop(e.edit_view(view));
+    let (after, _) = run(&mut e, 1000);
+    let x: Vec<f32> = before[4900..].iter().chain(&after).copied().collect();
+    let d: Vec<f32> = x.windows(2).map(|w| w[1] - w[0]).collect();
+    let typical = d[600];
+    assert!(typical > 0.0, "the ramp climbs: {typical}");
+    for (k, &dk) in d.iter().enumerate() {
+        assert!(
+            (dk - typical).abs() < typical * 0.5,
+            "frame {k} from 4900: a step of {dk} (a frame's is {typical})"
+        );
+    }
+}
+
 #[test]
 fn another_kit_or_another_sound_leaves_the_voice_as_it_began() {
     let s = ramp();

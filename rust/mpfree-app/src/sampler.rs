@@ -37,8 +37,8 @@ use std::time::Instant;
 
 use mpfree_sampler::dsp::Ahdsr;
 use mpfree_sampler::engine::{
-    CloudState, Engine, EngineView, Event, GrainView, LaneConfig, LaneSetup, LaneStats, PadField,
-    PadOut, MAX_GRAINS, TAKE_PAD,
+    CloudState, Engine, EngineView, Event, GrainView, KitKeys, LaneConfig, LaneSetup, LaneStats,
+    PadField, PadOut, MAX_GRAINS, TAKE_PAD,
 };
 use mpfree_sampler::model::{
     GrainParams, Layer, Pad, PadKind, PlayMode, PressureRoute, PressureTarget, Project, Region,
@@ -174,8 +174,42 @@ pub struct Player {
     /// What each kit's pads of another kind do ([`pad_routes`]), by kit:
     /// swapped in with the kit's view, never made or freed here.
     routes: Vec<Vec<Option<PadRoute>>>,
+    /// How notes reach each kit ([`KitKeys`], its Keys play), by kit:
+    /// taken from the kit's view as it is swapped in.
+    keys: Vec<KitKeys>,
+    /// Where each kit's held notes went down ([`NoteTo`], packed by
+    /// [`NoteTo::pack`]), note by note, by kit, so a let-go and pressure go
+    /// where the note went whatever Keys play and the pads' notes say by
+    /// then ([`Player::note_off_to`]).
+    notes_down: Vec<[u8; 128]>,
     /// The empty kit slots kept after the others ([`USER_KITS`]).
     users: std::ops::Range<usize>,
+}
+
+/// Where a note reaching a kit goes, by the kit's Keys play (sampler
+/// step 15, live shows decision 6): the pad that sends it (the MPC note
+/// map, `mpfree_midi::profile::kit_pad_of_note`: C#2 is A1, in any bank),
+/// or the keygroups that hold it, as a key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoteTo {
+    /// Kit pad 0 to 127, as its kind has it.
+    Pad(usize),
+    /// Through the keygroups, at this pitch.
+    Keys(u8),
+}
+
+impl NoteTo {
+    /// A note not held ([`Player::note_on_to`] keeps the rest packed in a
+    /// byte: a pad as itself, the keygroups as [`NoteTo::KEYS`]).
+    const UP: u8 = u8::MAX;
+    const KEYS: u8 = u8::MAX - 1;
+
+    fn pack(self) -> u8 {
+        match self {
+            NoteTo::Pad(p) => p.min(PADS - 1) as u8,
+            NoteTo::Keys(_) => NoteTo::KEYS,
+        }
+    }
 }
 
 /// What each track plays when it has no instrument of its own: an entry
@@ -292,6 +326,19 @@ impl TrackKits {
             .fold(0, |bits, (t, _)| bits | 1 << t)
     }
 
+    /// The tracks that play kit `kit`, a bit each (none for the synth's
+    /// entry). Never allocates.
+    pub fn on_kit(&self, kit: usize) -> u128 {
+        if kit >= usize::from(self.synth) {
+            return 0;
+        }
+        self.entries
+            .iter()
+            .enumerate()
+            .filter(|&(_, &e)| usize::from(e) == kit)
+            .fold(0, |bits, (t, _)| bits | 1 << t)
+    }
+
     /// Whether track `track` plays the synth.
     pub fn plays_synth(&self, track: usize) -> bool {
         self.entry(track) == usize::from(self.synth)
@@ -322,6 +369,65 @@ impl TrackKits {
             }
         }
         homes
+    }
+}
+
+/// The kits played as notes, like a synth ([`KitKeys::takes_notes`]: keys
+/// play the keygroups and the pads play notes), each with the note its pad
+/// A1 plays: a track playing one is a notes track (sampler step 15c, part
+/// 3). Its takes hold notes, its arp works in notes and the pads and keys
+/// press notes into it, so a key no pad reaches goes through the arp and
+/// records too. Read from the player each period ([`KitNotes::of`]); fixed
+/// size, never allocates.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct KitNotes {
+    from: [Option<u8>; MAX_KITS + 1],
+}
+
+impl KitNotes {
+    /// The kits `player` plays as notes now, the Grains kit counted.
+    pub fn of(player: &Player) -> KitNotes {
+        let mut notes = KitNotes::default();
+        for k in 0..player.engine.kits().min(MAX_KITS + 1) {
+            let keys = player.kit_keys(k);
+            notes.from[k] = keys.pads_from.filter(|_| keys.takes_notes());
+        }
+        notes
+    }
+
+    /// Kit `kit` is played as notes from `from` (pad A1's note), or not
+    /// (None). A kit out of range changes nothing.
+    #[cfg(test)]
+    pub fn set(&mut self, kit: usize, from: Option<u8>) {
+        if let Some(f) = self.from.get_mut(kit) {
+            *f = from;
+        }
+    }
+
+    /// The note pad A1 of the kit track `track` plays sounds, while that
+    /// kit is played as notes; None for a kit played by its pads, the
+    /// synth, or a track out of range.
+    pub fn of_track(&self, kits: &TrackKits, track: usize) -> Option<u8> {
+        if track >= mpfree_seq::MAX_TRACKS {
+            return None;
+        }
+        self.from.get(kits.kit_of(track)?).copied().flatten()
+    }
+
+    /// The note kit pad `pad` (bank × 16 + place) plays on track `track`'s
+    /// kit while it is played as notes, else None.
+    pub fn note(&self, kits: &TrackKits, track: usize, pad: usize) -> Option<u8> {
+        let n = usize::from(self.of_track(kits, track)?) + pad;
+        (pad < mpfree_sampler::model::PADS && n < 128).then_some(n as u8)
+    }
+
+    /// The tracks, of the first `tracks`, whose kit is played as notes, a
+    /// bit each.
+    #[cfg(test)]
+    pub fn tracks(&self, kits: &TrackKits, tracks: usize) -> u128 {
+        (0..tracks.min(128))
+            .filter(|&t| self.of_track(kits, t).is_some())
+            .fold(0, |bits, t| bits | 1 << t)
     }
 }
 
@@ -634,6 +740,10 @@ impl Player {
             engine.set_kit_view(k, view.expect("built above"));
         }
         let routes = projects.iter().map(pad_routes).collect();
+        // The factory kits, the Grains kit and the empty ones hold drum
+        // pads only: their keys play pads until a view says otherwise.
+        let keys = vec![KitKeys::PADS; projects.len()];
+        let notes_down = vec![[NoteTo::UP; 128]; projects.len()];
         Ok(Player {
             engine,
             kit: 0,
@@ -641,6 +751,8 @@ impl Player {
             peak_grains: 0,
             projects,
             routes,
+            keys,
+            notes_down,
             users: first_user..kits.len(),
         })
     }
@@ -712,6 +824,9 @@ impl Player {
         if let Some(routes) = self.routes.get_mut(swap.kit) {
             std::mem::swap(routes, &mut swap.routes);
         }
+        if let Some(keys) = self.keys.get_mut(swap.kit) {
+            *keys = view.keys();
+        }
         // A chop can put sounds on pads that had none (and undo take them
         // away); a pad of another kind plays too.
         if let Some(has) = self.sounds.get_mut(swap.kit) {
@@ -729,6 +844,63 @@ impl Player {
     /// Never allocates.
     pub fn pad_route(&self, kit: usize, pad: usize) -> Option<&PadRoute> {
         self.routes.get(kit)?.get(pad)?.as_ref()
+    }
+
+    /// How notes reach kit `kit` (its Keys play, as its view has it);
+    /// drum pads for a kit out of range. Never allocates.
+    pub fn kit_keys(&self, kit: usize) -> KitKeys {
+        self.keys.get(kit).copied().unwrap_or(KitKeys::PADS)
+    }
+
+    /// Where note `note` goes on kit `kit` ([`NoteTo`]), by its Keys play:
+    /// the pad that sends it (the MPC note map) unless the keygroups take
+    /// the note. On a kit played as notes ([`KitKeys::takes_notes`]) a key
+    /// the pads reach goes through the pad that plays its note, which
+    /// plays it through the keygroups, so the track's arp, Note Repeat and
+    /// REC take it as they take that pad. Never allocates.
+    pub fn note_to(&self, kit: usize, note: u8) -> NoteTo {
+        let note = note.min(127);
+        let keys = self.kit_keys(kit);
+        if !keys.to_keygroups(note) {
+            return NoteTo::Pad(mpfree_midi::profile::kit_pad_of_note(note));
+        }
+        match keys.pad_of_note(note).filter(|_| keys.takes_notes()) {
+            Some(pad) => NoteTo::Pad(usize::from(pad)),
+            None => NoteTo::Keys(note),
+        }
+    }
+
+    /// [`Player::note_to`] for a note going down on kit `kit`, kept so its
+    /// let-go and pressure go the same way ([`Player::note_off_to`]).
+    /// Never allocates.
+    pub fn note_on_to(&mut self, kit: usize, note: u8) -> NoteTo {
+        let to = self.note_to(kit, note);
+        if let Some(down) = self.notes_down.get_mut(kit) {
+            down[usize::from(note.min(127))] = to.pack();
+        }
+        to
+    }
+
+    /// Where note `note`'s let-go goes on kit `kit`: where it went down
+    /// ([`Player::note_on_to`]), which it forgets; as it would go now if
+    /// it never went down. Never allocates.
+    pub fn note_off_to(&mut self, kit: usize, note: u8) -> NoteTo {
+        let to = self.note_held_to(kit, note);
+        if let Some(down) = self.notes_down.get_mut(kit) {
+            down[usize::from(note.min(127))] = NoteTo::UP;
+        }
+        to
+    }
+
+    /// Where a held note `note`'s pressure goes on kit `kit`: where it
+    /// went down, else as it would go now. Never allocates.
+    pub fn note_held_to(&self, kit: usize, note: u8) -> NoteTo {
+        let n = note.min(127);
+        match self.notes_down.get(kit).map(|d| d[usize::from(n)]) {
+            Some(NoteTo::KEYS) => NoteTo::Keys(n),
+            Some(p) if p != NoteTo::UP => NoteTo::Pad(usize::from(p)),
+            _ => self.note_to(kit, n),
+        }
     }
 
     /// Every synth-voice pad (the Instrument kind) of every kit, as the
@@ -882,15 +1054,16 @@ impl Player {
             )
     }
 
-    /// Plays `note` on the playing kit's keygroups, `offset` frames into
-    /// the next render, as a key of a keyboard would (the Play tab's
-    /// keyboard). Returns false at velocity 0, or if the engine's queue was
-    /// full and refused it (counted there).
-    pub fn key_at(&mut self, note: u8, velocity: u8, offset: u32) -> bool {
+    /// Plays `note` on kit `kit`'s keygroups, `offset` frames into the next
+    /// render, as a key of a keyboard would: a keyboard's note, a routed
+    /// key, a clip's note or the Sample tab's keys (sampler step 15).
+    /// Returns false at velocity 0, or if the engine's queue was full and
+    /// refused it (counted there).
+    pub fn key_kit_at(&mut self, kit: usize, note: u8, velocity: u8, offset: u32) -> bool {
         let velocity = engine_velocity(velocity);
         velocity > 0
             && self.engine.schedule_for(
-                self.kit,
+                kit,
                 offset,
                 Event::Key {
                     note: note.min(127),
@@ -899,10 +1072,11 @@ impl Player {
             )
     }
 
-    /// The key `note` was let go, `offset` frames into the next render.
-    pub fn key_off_at(&mut self, note: u8, offset: u32) {
+    /// The key `note` was let go on kit `kit`, `offset` frames into the
+    /// next render.
+    pub fn key_off_kit_at(&mut self, kit: usize, note: u8, offset: u32) {
         self.engine.schedule_for(
-            self.kit,
+            kit,
             offset,
             Event::KeyOff {
                 note: note.min(127),
@@ -946,6 +1120,13 @@ impl Player {
             let cents = value.clamp(-1.0, 1.0) * KEY_BEND_CENTS;
             self.engine.schedule_for(kit, 0, Event::Bend { cents });
         }
+    }
+
+    /// The voices kit `kit`'s pad `pad` plays now, not counting those
+    /// fading out.
+    #[cfg(test)]
+    pub fn kit_pad_voices(&self, kit: usize, pad: usize) -> usize {
+        u8::try_from(pad).map_or(0, |p| self.engine.kit_pad_voices(kit, p))
     }
 
     /// [`Player::release_at`] on kit `kit`. Always lands, even with the
@@ -1008,6 +1189,48 @@ impl Player {
                     value: value.unwrap_or(f32::NAN),
                 },
             )
+    }
+
+    /// The XY pad's hand on kit `kit`'s pad `pad`'s `field` (`Some`: a
+    /// layout of yours plays it by Set, `xy_own.rs`), or its let-go
+    /// (`None`), before the next render: over the pad's own, its live
+    /// value and its step lock (over the lock only when `over`, a track
+    /// recording). False for no such pad.
+    pub fn pad_hand(
+        &mut self,
+        kit: usize,
+        pad: usize,
+        field: PadField,
+        value: Option<f32>,
+        over: bool,
+    ) -> bool {
+        if pad >= PADS || (value.is_some() && !self.has_sound(kit, pad)) {
+            return false;
+        }
+        self.engine.apply_for(
+            kit,
+            Event::PadHand {
+                pad: pad as u8,
+                field,
+                value: value.unwrap_or(f32::NAN),
+                over,
+            },
+        );
+        true
+    }
+
+    /// What kit `kit`'s pad `pad`'s `field` plays under the XY pad's hand:
+    /// its live value, else its step lock, else its own. None for a pad
+    /// without a sound.
+    pub fn pad_beneath(&self, kit: usize, pad: usize, field: PadField) -> Option<f32> {
+        let p = u8::try_from(pad).ok()?;
+        let own = self.pad_own(kit, pad, field)?;
+        Some(
+            self.engine
+                .kit_pad_live_value(kit, p, field)
+                .or_else(|| self.engine.kit_pad_lock_value(kit, p, field))
+                .unwrap_or(own),
+        )
     }
 
     /// Plays source frames `start..end` of pad `pad`'s layer `layer` once,
@@ -1085,6 +1308,23 @@ impl Player {
         }
     }
 
+    /// Every kit's tuning (tunings plan T3: the song's, until each kit can
+    /// have its own): their keygroups, the pads playing notes and 16 Levels
+    /// of Tune play it, playing notes moving there; pad hits and slices
+    /// don't ([`Engine::set_tuning`]). Never allocates; cheap for a kit
+    /// already in it, so call it when the song's tuning may have changed.
+    pub fn set_tuning(&mut self, tuning: &mpfree_tuning::Tuning) {
+        for k in 0..self.engine.kits() {
+            self.engine.set_tuning(k, tuning);
+        }
+    }
+
+    /// Kit `kit`'s tuning (None out of range).
+    #[cfg(test)]
+    pub fn kit_tuning(&self, kit: usize) -> Option<&mpfree_tuning::Tuning> {
+        self.engine.kit_tuning(kit)
+    }
+
     /// The project tempo, for warped pads (cheap when it hasn't moved:
     /// call it every period).
     pub fn set_tempo(&mut self, bpm: f64) {
@@ -1103,6 +1343,9 @@ impl Player {
     /// release).
     pub fn stop_all(&mut self) {
         self.engine.apply(Event::AllOff);
+        for down in &mut self.notes_down {
+            down.fill(NoteTo::UP);
+        }
     }
 
     /// The pads whose hit keeps a latched sound playing, as bits (pad `k`
@@ -1674,6 +1917,139 @@ mod tests {
         assert_eq!(p.engine.kit_bend(1), 0.0);
     }
 
+    /// Keys play (sampler step 15): a note reaches a kit as its Keys play
+    /// says, the pad that sends it or the keygroups that hold it, and its
+    /// let-go and pressure go where it went down whatever the kit says by
+    /// then.
+    #[test]
+    fn notes_reach_a_kit_by_its_keys_play_and_let_go_where_they_went() {
+        use mpfree_midi::profile::kit_pad_of_note;
+        use mpfree_sampler::model::{Keys, KeysPlay, PadsPlay};
+        let mut ks = kits();
+        let mut p = Player::new(&mut ks, &NOTES, 44_100).unwrap();
+        assert_eq!(p.note_to(0, 40), NoteTo::Pad(kit_pad_of_note(40)));
+        let mut projects = p.take_projects();
+        let swap = |p: &mut Player, project: &Project| {
+            let mut s = Box::new(ViewSwap {
+                kit: 0,
+                view: Some(EngineView::build(project, 44_100)),
+                routes: pad_routes(project),
+            });
+            let (ok, calls) = crate::sys::alloc_count::calls(|| p.swap_view(&mut s));
+            assert!(ok);
+            assert_eq!(calls, 0, "Keys play swaps in with the view");
+        };
+        // The snare on pad 6 becomes a keygroup over C2 to B3: with drums
+        // too, the kit stays on Pads.
+        projects[0]
+            .edit_pad(5, None, |pad| {
+                pad.keys = Some(Keys {
+                    lo: 36,
+                    hi: 59,
+                    root: 48,
+                })
+            })
+            .unwrap();
+        swap(&mut p, &projects[0]);
+        assert_eq!(p.kit_keys(0).play, KeysPlay::Pads);
+        assert_eq!(p.note_to(0, 40), NoteTo::Pad(kit_pad_of_note(40)));
+        // Both: the keygroup's notes play it, the rest their pads.
+        projects[0].set_keys_play(Some(KeysPlay::Both));
+        swap(&mut p, &projects[0]);
+        assert_eq!(p.note_to(0, 40), NoteTo::Keys(40));
+        assert_eq!(p.note_to(0, 61), NoteTo::Pad(kit_pad_of_note(61)));
+        assert!(p.key_kit_at(0, 40, 127, 0));
+        assert!(run(&mut p, 10).1 > 0.01, "the keygroup sounds");
+        // A held note lets go where it went, though Keys play moved since.
+        assert_eq!(p.note_on_to(0, 40), NoteTo::Keys(40));
+        projects[0].set_keys_play(Some(KeysPlay::Pads));
+        swap(&mut p, &projects[0]);
+        assert_eq!(p.note_held_to(0, 40), NoteTo::Keys(40));
+        assert_eq!(p.note_off_to(0, 40), NoteTo::Keys(40));
+        assert_eq!(
+            p.note_off_to(0, 40),
+            NoteTo::Pad(kit_pad_of_note(40)),
+            "once"
+        );
+        // Keygroups with the pads playing notes from C2: a note the pads
+        // reach goes through the pad that plays it, one below them to the
+        // keygroups; a held one lets go on its pad though the pads moved.
+        projects[0].set_keys_play(Some(KeysPlay::Keygroups));
+        projects[0]
+            .set_pads_play(PadsPlay::Keys { from: 36 })
+            .unwrap();
+        swap(&mut p, &projects[0]);
+        assert!(p.kit_keys(0).takes_notes());
+        assert_eq!(p.note_to(0, 30), NoteTo::Keys(30));
+        assert_eq!(p.note_on_to(0, 40), NoteTo::Pad(4));
+        projects[0]
+            .set_pads_play(PadsPlay::Keys { from: 38 })
+            .unwrap();
+        swap(&mut p, &projects[0]);
+        assert_eq!(p.note_to(0, 40), NoteTo::Pad(2));
+        assert_eq!(p.note_held_to(0, 40), NoteTo::Pad(4));
+        // A panic forgets every held note; another kit never knew it.
+        p.note_on_to(0, 30);
+        p.stop_all();
+        assert_eq!(p.note_off_to(0, 30), NoteTo::Keys(30));
+        assert_eq!(p.note_off_to(0, 40), NoteTo::Pad(2));
+        assert_eq!(p.note_to(1, 40), NoteTo::Pad(kit_pad_of_note(40)));
+        assert_eq!(p.note_to(99, 40), NoteTo::Pad(kit_pad_of_note(40)));
+    }
+
+    /// A kit played as notes (keys on the keygroups, the pads playing
+    /// notes) makes the tracks that play it notes tracks (sampler step
+    /// 15c, part 3); Both, or pads playing their own sounds, doesn't.
+    #[test]
+    fn a_kit_played_as_notes_makes_its_tracks_notes_tracks() {
+        use mpfree_sampler::model::{Keys, KeysPlay, PadsPlay};
+        let mut ks = kits();
+        let mut p = Player::new(&mut ks, &NOTES, 44_100).unwrap();
+        let mut kits = TrackKits::new(p.kits());
+        assert!(kits.set(1, 0) && kits.set(2, 1) && kits.set(3, kits.synth()));
+        assert_eq!(KitNotes::of(&p), KitNotes::default(), "drum kits");
+        let mut projects = p.take_projects();
+        let swap = |p: &mut Player, project: &Project| {
+            let mut s = Box::new(ViewSwap {
+                kit: 0,
+                view: Some(EngineView::build(project, 44_100)),
+                routes: pad_routes(project),
+            });
+            assert!(p.swap_view(&mut s));
+        };
+        projects[0]
+            .edit_pad(5, None, |pad| {
+                pad.keys = Some(Keys {
+                    lo: 36,
+                    hi: 59,
+                    root: 48,
+                })
+            })
+            .unwrap();
+        projects[0]
+            .set_pads_play(PadsPlay::Keys { from: 36 })
+            .unwrap();
+        projects[0].set_keys_play(Some(KeysPlay::Both));
+        swap(&mut p, &projects[0]);
+        assert_eq!(KitNotes::of(&p), KitNotes::default(), "Both");
+        projects[0].set_keys_play(Some(KeysPlay::Keygroups));
+        swap(&mut p, &projects[0]);
+        let notes = KitNotes::of(&p);
+        // Every track plays kit 1 but the one on kit 2 and the synth's.
+        assert_eq!(notes.tracks(&kits, 8), 0b1111_0011);
+        assert_eq!(notes.of_track(&kits, 1), Some(36));
+        assert_eq!(notes.of_track(&kits, 2), None, "kit 2");
+        assert_eq!(notes.of_track(&kits, 3), None, "the synth");
+        assert_eq!(notes.of_track(&kits, 200), None);
+        assert_eq!(notes.note(&kits, 1, 0), Some(36));
+        assert_eq!(notes.note(&kits, 1, 17), Some(53), "bank B's pad 2");
+        assert_eq!(notes.note(&kits, 1, 100), None, "past note 127");
+        // The pads playing their own sounds again: not as notes.
+        projects[0].set_pads_play(PadsPlay::Pads).unwrap();
+        swap(&mut p, &projects[0]);
+        assert_eq!(KitNotes::of(&p).tracks(&kits, 8), 0);
+    }
+
     #[test]
     fn sixteen_kits_leave_no_room_for_grains() {
         let one = kit::build(&[(NOTES[0], "Kick", &tone(100, 0.01)[..])]);
@@ -1875,7 +2251,7 @@ mod tests {
         let mut projects = player.take_projects();
         let loud = |p: &mut Player| run(p, 8).0.iter().any(|s| s.abs() > 0.01);
         // No keygroups yet: a key plays nothing.
-        assert!(player.key_at(60, 100, 0));
+        assert!(player.key_kit_at(0, 60, 100, 0));
         assert!(!loud(&mut player));
         let pads: Vec<usize> = (0..16).filter(|&p| player.has_sound(0, p)).collect();
         let roots: Vec<(usize, u8)> = pads.iter().map(|&p| (p, 48 + p as u8)).collect();
@@ -1886,10 +2262,10 @@ mod tests {
             routes: pad_routes(&projects[0]),
         };
         assert!(player.swap_view(&mut swap));
-        assert!(player.key_at(60, 100, 0));
+        assert!(player.key_kit_at(0, 60, 100, 0));
         assert!(loud(&mut player));
-        player.key_off_at(60, 0);
-        assert!(!player.key_at(60, 0, 0), "velocity 0 plays nothing");
+        player.key_off_kit_at(0, 60, 0);
+        assert!(!player.key_kit_at(0, 60, 0, 0), "velocity 0 plays nothing");
     }
 
     #[test]

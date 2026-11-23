@@ -83,7 +83,7 @@ use mpfree_seq::mpfree_moves::{Kind, Map, Point, Target};
 use mpfree_seq::steps::{Edit, MovesEdit};
 use mpfree_seq::{
     take_out_each, touch_room, Clip, ClipId, ClipSettings, DestId, Lock, ModelError, Note, Project,
-    Scene, SceneSettings, Touch, TouchKeep, TouchPoint, Track, MAX_TRACKS, ROWS,
+    RecId, Scene, SceneSettings, Touch, TouchKeep, TouchPoint, Track, MAX_TRACKS, ROWS,
 };
 use mpfree_transport::time::Tick;
 
@@ -157,6 +157,35 @@ pub enum SongChange {
         track: usize,
         start: Tick,
     },
+    /// Rec song's recording into the song (live to song): `placements`
+    /// blocks put in, and the song's lanes' points with them.
+    RecSong {
+        placements: usize,
+    },
+    /// A recording on audio track `track`'s lane cut the blocks under it,
+    /// the first from song tick `start` (audio tracks phase 2, step 2d).
+    Recorded {
+        track: usize,
+        start: Tick,
+    },
+    /// Split at the playhead (the Arrange refactor's phase 6): the block
+    /// on `track` cut at song tick `at`, or (`track` None) every block
+    /// across it. Duplicate is a `Copied`.
+    Split {
+        track: Option<usize>,
+        at: Tick,
+    },
+    /// A block on `track`, from `start` now, trimmed from the left
+    /// (phase 6).
+    Trimmed {
+        track: usize,
+        start: Tick,
+    },
+    /// What the block on `track` at `start` plays slid under it (phase 6).
+    Slid {
+        track: usize,
+        start: Tick,
+    },
     /// Scenes → song: `rows` rows onto the song's end.
     Scenes {
         rows: usize,
@@ -186,6 +215,14 @@ pub enum SongChange {
     /// at song tick `at` (where it was, for one taken away).
     Marker {
         at: Tick,
+    },
+    /// The song's parts that follow row `row` (a linked list's sections
+    /// made from it, not changed in the song) made again from it, after a
+    /// clip went into the row or left it with no take of its own to ride
+    /// on (a new clip REC put in an empty cell). Otherwise the parts ride
+    /// on the clip's take ([`Take::followed`]).
+    Followed {
+        row: usize,
     },
 }
 
@@ -273,6 +310,13 @@ pub struct Take {
     pub dropped: Option<ClipDrop>,
     /// A Song view edit ([`Takes::song_edit`]).
     pub song: Option<Box<SongEdit>>,
+    /// The song's parts that follow a row the take put a clip in or took
+    /// one out of, made again from it ([`Takes::follow`], the Arrange
+    /// refactor's follow-up to 4b): the song before and after, both as
+    /// the take's own changes left it. Undo takes it back first and redo
+    /// puts it back last, so the take's own changes to the song (a deleted
+    /// clip kept by the song) are on the far side of it either way.
+    pub followed: Option<Box<SongEdit>>,
     /// A clip's settings changed ([`Takes::set_clip`]), as (track, slot,
     /// before, after).
     pub settings: Option<(usize, usize, ClipSettings, ClipSettings)>,
@@ -297,6 +341,24 @@ pub struct Take {
     pub rows: Option<Box<RowsEdit>>,
 }
 
+impl Take {
+    /// The clips it holds: put in, taken out (a drop's, a replace's and
+    /// Song to scenes' among them), a track it added, and the song before
+    /// and after a song edit.
+    fn clips(&self) -> impl Iterator<Item = &Clip> + '_ {
+        let cells = self.made.iter().chain(&self.removed).map(|(_, _, c)| c);
+        let song = self
+            .song
+            .iter()
+            .flat_map(|e| e.before.clips.iter().chain(e.after.clips.iter()));
+        let track = self
+            .track_added
+            .iter()
+            .flat_map(|(_, t)| t.slots.iter().map(|(_, c)| c));
+        cells.chain(song).chain(track)
+    }
+}
+
 /// Why a take put a whole clip in place of another ([`Take::replaced`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Replaced {
@@ -306,6 +368,13 @@ pub enum Replaced {
     Mutate,
     /// Restore: the clip as it was before its first Mutate (S6).
     Restore,
+    /// Fit to tempo on an audio clip's card: the clip on fitted copies of
+    /// its recordings, made at the project's tempo (audio tracks phase 2).
+    Fit,
+    /// An audio clip's card: its length, gain or name (audio tracks phase
+    /// 2, [`Takes::set_audio_clip`]); its other settings are a note
+    /// clip's ([`Takes::set_clip`]).
+    Settings,
     /// Convert to notes: a clip that followed the pads, now of the notes
     /// it played (step sequencer refactor E1, `mpfree_seq::convert`).
     Convert,
@@ -881,6 +950,41 @@ impl Takes {
         self.song_edit_joining(project, change, before, None)
     }
 
+    /// The song's parts that follow row `row` made again from it, by the
+    /// caller, after take `number` put a clip in the row or took one out
+    /// (`before` is the song as that take left it): the parts ride on that
+    /// take ([`Take::followed`]) when it is the latest, so one UNDO takes
+    /// back both; else (`number` None or not the latest: a new clip REC
+    /// put in an empty cell, which is no take) they are a take of their
+    /// own ([`SongChange::Followed`]). The number of the take they are in.
+    pub fn follow(
+        &mut self,
+        project: &Project,
+        number: Option<u32>,
+        row: usize,
+        before: Arrangement,
+    ) -> u32 {
+        let latest = self
+            .done
+            .last_mut()
+            .filter(|t| Some(t.number) == number && self.undone.is_empty());
+        let Some(take) = latest else {
+            return self.song_edit(project, SongChange::Followed { row }, before);
+        };
+        match take.followed.as_mut() {
+            // Again within the same take: the song before the first.
+            Some(e) => e.after = project.arrangement.clone(),
+            None => {
+                take.followed = Some(Box::new(SongEdit {
+                    change: SongChange::Followed { row },
+                    before,
+                    after: project.arrangement.clone(),
+                }));
+            }
+        }
+        take.number
+    }
+
     /// [`Takes::song_edit`], where `join` names what is being turned (a
     /// tempo point's tempo on the wheel): the edit joins the latest take
     /// instead when that is a song edit with the same key, nothing was
@@ -986,6 +1090,61 @@ impl Takes {
             edited: true,
             join,
             settings: Some((track, slot, from, to)),
+            ..Take::default()
+        });
+        Ok(number)
+    }
+
+    /// An audio clip's card (audio tracks phase 2): put `clip`, the same
+    /// clip with another length, gain or name, in place of clip `slot` of
+    /// `track`, as [`Takes::replace_clip`] does for [`Replaced::Settings`].
+    /// `join` as for [`Takes::set_clip`]: a change joins the latest take
+    /// instead when that is a change of the same clip with the same key
+    /// and nothing undone since, so the wheel turned through many values
+    /// is one undo, back to the clip before the first. The edit's number;
+    /// `BadSlot` if the slot is empty, `clip`'s own refusals as they are;
+    /// nothing changes on an error, nor when `clip` is what it has.
+    pub fn set_audio_clip(
+        &mut self,
+        project: &mut Project,
+        track: usize,
+        slot: usize,
+        clip: Clip,
+        join: Option<u64>,
+    ) -> Result<u32, ModelError> {
+        clip.check()?;
+        let s = slot_mut(project, track, slot)
+            .filter(|s| s.is_some())
+            .ok_or(ModelError::BadSlot)?;
+        let clip = Clip {
+            id: s.as_ref().map_or(clip.id, |c| c.id),
+            ..clip
+        };
+        if s.as_ref() == Some(&clip) {
+            return Ok(self.edits);
+        }
+        let joins = join.is_some()
+            && self.undone.is_empty()
+            && self.done.last().is_some_and(|t| {
+                t.join == join
+                    && t.replaced == Some(Replaced::Settings)
+                    && t.made.first().is_some_and(|m| (m.0, m.1) == (track, slot))
+            });
+        let now = s.replace(clip.clone()).expect("checked");
+        if joins {
+            let take = self.done.last_mut().expect("checked");
+            take.made[0].2 = clip;
+            return Ok(take.number);
+        }
+        self.edits += 1;
+        let number = self.edits;
+        self.push(Take {
+            number,
+            edited: true,
+            join,
+            replaced: Some(Replaced::Settings),
+            removed: vec![(track, slot, now)],
+            made: vec![(track, slot, clip)],
             ..Take::default()
         });
         Ok(number)
@@ -1267,6 +1426,11 @@ impl Takes {
     /// longer has room or reach for them (it was shortened), are skipped.
     pub fn undo(&mut self, project: &mut Project) -> Option<u32> {
         let mut take = self.done.pop()?;
+        if let Some(e) = take.followed.as_deref() {
+            if project.arrangement == e.after {
+                project.arrangement = e.before.clone();
+            }
+        }
         remove_each(project, &take.added);
         for (track, slot, lock) in take.locks_added.iter().rev() {
             if let Some(c) = clip(project, *track, *slot) {
@@ -1446,6 +1610,11 @@ impl Takes {
                 }
             }
         }
+        if let Some(e) = take.followed.as_deref() {
+            if project.arrangement == e.before {
+                project.arrangement = e.after.clone();
+            }
+        }
         let n = take.number;
         self.done.push(take);
         Some(n)
@@ -1580,6 +1749,23 @@ impl Takes {
     pub fn clear(&mut self) {
         self.done.clear();
         self.undone.clear();
+        self.evicted = None;
+        self.cleared.clear();
+    }
+
+    /// The recordings the audio clips of its takes name (the audio tracks
+    /// rethink, phase 2): what UNDO or REDO could bring back, or taking
+    /// back an edit that could not go in ([`Takes::withdraw`]), each as
+    /// often as it is named. With [`Project::recordings`], what the audio
+    /// tracks keep.
+    pub fn recordings(&self) -> impl Iterator<Item = RecId> + '_ {
+        self.done
+            .iter()
+            .chain(&self.undone)
+            .chain(&self.evicted)
+            .chain(&self.cleared)
+            .flat_map(Take::clips)
+            .flat_map(Clip::recordings)
     }
 
     /// The entry for recorded take `number`: an earlier one still being
@@ -1725,6 +1911,50 @@ mod tests {
         p
     }
 
+    /// A deleted audio clip's recording stays named while UNDO, REDO or
+    /// a withdraw could bring the clip back, and goes once the history
+    /// lets go of it; a copy names the same recording.
+    #[test]
+    fn a_deleted_clips_recording_stays_while_undo_can_bring_it_back() {
+        use mpfree_seq::{AudioClip, RecId};
+        let mut p = Project::new();
+        let mut t = Track::new_audio("a", 0);
+        let mut clip = Clip::new("v", 3840);
+        clip.audio = Some(AudioClip::of(RecId(7), 0, 88_200, 3840, 120.0));
+        t.slots[0] = Some(clip.clone());
+        p.tracks.push(t);
+        p.check().unwrap();
+        let names = |p: &Project, k: &Takes| {
+            let mut v: Vec<RecId> = p.recordings().chain(k.recordings()).collect();
+            v.sort();
+            v.dedup();
+            v
+        };
+        let mut k = Takes::new(1);
+        assert_eq!(names(&p, &k), [RecId(7)]);
+        // A copy names the same recording.
+        k.paste_clip(&mut p, 0, 1, clip.copied()).unwrap();
+        assert_eq!(p.recordings().collect::<Vec<_>>(), [RecId(7), RecId(7)]);
+        k.remove_clip(&mut p, 0, 1).unwrap();
+        k.remove_clip(&mut p, 0, 0).unwrap();
+        assert_eq!(p.recordings().count(), 0);
+        assert_eq!(names(&p, &k), [RecId(7)], "UNDO could bring it back");
+        k.undo(&mut p);
+        assert_eq!(p.recordings().collect::<Vec<_>>(), [RecId(7)]);
+        k.redo(&mut p);
+        assert_eq!(names(&p, &k), [RecId(7)], "and again");
+        // The next edit puts the removal out of a history of one (a
+        // withdraw could still bring it back); the one after lets it go.
+        let mut n = Clip::new("n", 3840);
+        n.audio = Some(AudioClip::of(RecId(9), 0, 44_100, 3840, 120.0));
+        k.paste_clip(&mut p, 0, 2, n.clone()).unwrap();
+        assert_eq!(names(&p, &k), [RecId(7), RecId(9)]);
+        k.paste_clip(&mut p, 0, 3, n).unwrap();
+        assert_eq!(names(&p, &k), [RecId(9)], "the history let go of it");
+        k.clear();
+        assert_eq!(k.recordings().count(), 0);
+    }
+
     fn taken(tick: i64, take: u32) -> Taken {
         Taken {
             track: 0,
@@ -1861,6 +2091,52 @@ mod tests {
         assert!(!old.notes.iter().any(|n| n.tick == 300), "D out");
     }
 
+    /// An audio clip's card: its gain turned is one take back to the clip
+    /// before the turn, its name another, and the clip keeps its id.
+    #[test]
+    fn an_audio_clips_gain_turned_is_one_take() {
+        use mpfree_seq::{AudioClip, RecId};
+        let mut p = Project::new();
+        let mut track = Track::new_audio("a", 0);
+        let mut clip = Clip::new("v", 3840);
+        clip.audio = Some(AudioClip::of(RecId(7), 0, 88_200, 3840, 120.0));
+        track.slots[0] = Some(clip);
+        p.tracks.push(track);
+        let mut t = Takes::default();
+        let c = |p: &Project| p.tracks[0].slots[0].clone().unwrap();
+        let first = c(&p);
+        let gained = |g: f32| {
+            let mut c = first.clone();
+            c.audio.as_mut().unwrap().gain = g;
+            c
+        };
+        assert_eq!(t.set_audio_clip(&mut p, 0, 0, gained(1.5), Some(9)), Ok(1));
+        assert_eq!(t.set_audio_clip(&mut p, 0, 0, gained(2.0), Some(9)), Ok(1));
+        assert_eq!(t.done().len(), 1);
+        assert_eq!(t.done()[0].replaced, Some(Replaced::Settings));
+        // Nothing new: no take.
+        assert_eq!(t.set_audio_clip(&mut p, 0, 0, gained(2.0), Some(9)), Ok(1));
+        let mut named = gained(2.0);
+        named.name = "Riff".into();
+        assert_eq!(t.set_audio_clip(&mut p, 0, 0, named, None), Ok(2));
+        assert_eq!(c(&p).id, first.id);
+        // Out of range: refused, the clip as it was.
+        assert!(t
+            .set_audio_clip(&mut p, 0, 0, gained(9.0), Some(9))
+            .is_err());
+        assert_eq!(
+            t.set_audio_clip(&mut p, 0, 1, gained(1.0), None),
+            Err(ModelError::BadSlot)
+        );
+        assert_eq!(c(&p).name, "Riff");
+        t.undo(&mut p);
+        assert_eq!(c(&p), gained(2.0));
+        t.undo(&mut p);
+        assert_eq!(c(&p), first);
+        t.redo(&mut p);
+        assert_eq!(c(&p), gained(2.0));
+    }
+
     /// The clip settings card: a change is an edit of its own, a turn of
     /// one setting joins one, and undo and redo put the settings back
     /// while the clip still has the ones they were given.
@@ -1968,6 +2244,52 @@ mod tests {
         assert_eq!(p.clip(0, 0).map(|c| c.name.as_str()), Some("new"));
         assert_eq!(played(&p).as_deref(), Some("c"));
         p.check().unwrap();
+    }
+
+    /// The song's parts following a row ride on the take that changed the
+    /// row ([`Takes::follow`]): undo takes them back first and redo puts
+    /// them back last, so the take's own change to the song (a deleted
+    /// clip the song kept) is on their far side either way, and one UNDO
+    /// takes back both. With no take of its own to ride on, the follow is
+    /// a song take.
+    #[test]
+    fn the_parts_a_row_change_brings_ride_on_its_take() {
+        use mpfree_seq::arrange::Placement;
+        let mut p = project();
+        p.give_clip_ids();
+        p.arrangement
+            .place(Placement::of(&p.tracks, 0, 0, 0, 7680))
+            .unwrap();
+        let before = p.clone();
+        let mut t = Takes::default();
+        let n = t.remove_clip(&mut p, 0, 0).unwrap();
+        // The song kept the clip; then the parts, which no longer play it,
+        // let it go.
+        assert!(!p.arrangement.clips.is_empty());
+        let kept = p.arrangement.clone();
+        p.arrangement.placements.clear();
+        p.arrangement.drop_unplayed();
+        let after = p.clone();
+        assert_eq!(t.follow(&p, Some(n), 0, kept), n);
+        assert_eq!(t.done().len(), 1, "on the delete's take");
+        t.undo(&mut p);
+        assert_eq!(p, before);
+        t.redo(&mut p);
+        assert_eq!(p, after);
+        t.undo(&mut p);
+        assert_eq!(p, before);
+        // No take to ride on: a song take of its own.
+        let was = p.arrangement.clone();
+        p.arrangement.placements.clear();
+        let m = t.follow(&p, None, 2, was);
+        assert_eq!(t.done().len(), 1);
+        let e = t.done()[0].song.as_deref().unwrap();
+        assert_eq!(
+            (m, e.change),
+            (t.done()[0].number, SongChange::Followed { row: 2 })
+        );
+        t.undo(&mut p);
+        assert_eq!(p, before);
     }
 
     /// Arrange 1.3: a song undo step keeps the song's blocks, not its

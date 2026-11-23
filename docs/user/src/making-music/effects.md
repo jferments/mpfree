@@ -43,6 +43,9 @@ Touch a control on the page and the **Modulate** row under the page names it. Th
 - Tap a **macro number** (1 to 8) to have that macro move the control, and tap it again to take it off. The control shows the macro's badge (**M2**) at its corner.
 - Tap **Learn**, then turn a Q-Link, or move a knob or fader on your keyboard, to give the control a control of its own (see [MIDI Learn](midi-and-cv.md#midi-learn)).
 - Tap **+ LFO** or **+ Follower** to have an LFO or an envelope follower move it. A ring round the knob shows how far it moves. The row opens the control's **mod rows** over the page: drag a row's bar to set how far and which way it moves the control, and tap **x** to take it off. The line under the control's name says what moves it ("LFO 1 · +30 %"); tap it to open the rows again. A touch anywhere else closes them. A switch takes macros only.
+- Tap **XY →** or **XY ↑** to put the control on the XY pad's across or up, over its whole range (see [Your own XY layouts](xy-layouts.md#from-the-chain-editor)). The chip is lit while it is there; tap it again to take it off.
+
+{{shot: chain-xy | Drive on the XY pad's across and Tone on its up: each wears X→ or Y↑, an arc for the stretch the pad covers and a dot where it is now. Tone is touched, so XY ↑ is lit.}}
 
 ### Listening to another track: the sidechain
 
@@ -512,7 +515,7 @@ Each plugin runs on its own, apart from the rest of MPFree, so a plugin that cra
 - If a plugin crashes, MPFree starts it again with the settings it had a few seconds before.
 - If it crashes four times in a minute, MPFree leaves it off and the strip plays dry. Remove it and add it again to try once more.
 
-Each of these is written in the Events log, so nothing goes wrong without your being told.
+Each of these is written in the Events log, so nothing goes wrong without your being told. A crash also turns the status chip red, and System status lists it under Plugins ([A plugin stopped](../reference/when-something-goes-wrong.md#a-plugin-stopped)).
 
 Some plugins keep files of their own: Surge XT its user folder, Dexed its cartridges. MPFree gives them the folder `files/plugin-home/` on the stick, so they never write anywhere else. To reset every plugin's own files, delete that folder from a computer.
 

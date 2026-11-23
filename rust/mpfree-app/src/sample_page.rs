@@ -172,8 +172,11 @@ pub const NAME_MAX: usize = 32;
 const PLAY_PREFIX: &str = "smp-play-";
 const PADS_PREFIX: &str = "smp-pads-";
 const AUTO_PREFIX: &str = "smp-auto-";
-/// A Q-Link resting this long ends its turn: the next one is a new undo step.
-const TURN_REST: Duration = Duration::from_secs(1);
+/// A Q-Link resting this long, in seconds, ends its turn: the next one is a
+/// new undo step. Timed on the screen's clock ([`SamplePage::tick`]'s
+/// `dt`), so a script's `wait 1` is a rest however fast the machine plays
+/// it.
+const TURN_REST_S: f32 = 1.0;
 
 /// A grain start (0 to 1 across `region`) to the Position row's step
 /// (0.1 %), as a turn would leave it, while that step is under a quarter of
@@ -258,6 +261,8 @@ struct Span {
     end: u64,
     cuts: Vec<u64>,
     bpm: f64,
+    /// Put in a cell: whole, as a clip ([`crate::audiotracks::Sound::cell`]).
+    cell: bool,
 }
 
 /// What a Put on audio track job sends back.
@@ -314,6 +319,7 @@ fn copy_for_audio(
         audio,
         cuts,
         bpm: span.bpm,
+        cell: span.cell,
     })))
 }
 
@@ -955,7 +961,9 @@ pub struct SamplePage {
     /// The bank of the kit on the pads (PAD BANK, the Pads tab's strip);
     /// None while the synth has them.
     pad_page: Option<usize>,
-    last_turn: Option<Instant>,
+    /// Seconds on the screen's clock since the last Q-Link or wheel turn;
+    /// None once the turn has ended ([`Self::lift`]).
+    since_turn: Option<f32>,
     gesture: Option<Gesture>,
     /// A Play page Q-Link turning a pad: the pad, the knob and the turn's
     /// undo id (one undo step a turn).
@@ -1139,6 +1147,10 @@ pub struct SamplePage {
     assign: Option<LoadedSound>,
     /// Send to pad: the kit and pad whose copy goes on the next pad hit.
     sending: Option<(usize, usize)>,
+    /// The kit the selected track plays ([`SamplePage::set_track_kit`]):
+    /// Load to pad and Send to pad say so when a hit lands them on
+    /// another (the kit the pads play on their own, sampler step 15d).
+    track_kit: usize,
     /// The take kept on the page that the Wave page shows (one-page step
     /// 2b), by its place in the kit's [`Project::takes`]; None: the pad.
     open: Option<usize>,
@@ -1158,6 +1170,10 @@ pub struct SamplePage {
     /// why not now. None until the app says, and then the Slice tool has
     /// no New kit.
     new_kit: Option<Result<usize, String>>,
+    /// Put in a cell's cell, as the app picks it from the Clips grid
+    /// ([`SamplePage::set_audio_cell`]): the audio track's name and row;
+    /// None: a new audio track.
+    audio_cell: Option<(String, usize)>,
     /// A chop to a new kit just made, for the app to put on a new track
     /// ([`SamplePage::take_new_kit_track`]).
     new_kit_track: Option<NewKitTrack>,
@@ -1258,7 +1274,7 @@ impl SamplePage {
             auditioning: None,
             synth: false,
             pad_page: Some(0),
-            last_turn: None,
+            since_turn: None,
             gesture: None,
             play_turn: None,
             learn_turn: None,
@@ -1337,6 +1353,7 @@ impl SamplePage {
             loading: None,
             assign: None,
             sending: None,
+            track_kit: 0,
             open: None,
             sending_take: None,
             take_held: None,
@@ -1344,6 +1361,7 @@ impl SamplePage {
             exports: Vec::new(),
             wanted_kit: None,
             new_kit: None,
+            audio_cell: None,
             new_kit_track: None,
             new_kit_pad: None,
         };
@@ -1457,6 +1475,10 @@ impl SamplePage {
         if self.sending.take().is_some() || self.sending_take.take().is_some() {
             self.lines
                 .push("sample: Send to pad called off (another kit)".into());
+            self.told.push(format!(
+                "Send to pad called off: the page moved to {}. Press it again there",
+                self.kit_text_of(k)
+            ));
         }
         // The takes kept are the kit's: the new kit's pad shows.
         self.open = None;
@@ -1515,6 +1537,32 @@ impl SamplePage {
         }
         self.hit(pad);
         self.hit_velocity(ui, pad, velocity);
+    }
+
+    /// The kit the selected track plays (the screen's [`ToUi::Kit`]).
+    ///
+    /// [`ToUi::Kit`]: crate::gui::ToUi::Kit
+    pub fn set_track_kit(&mut self, k: usize) {
+        self.track_kit = k;
+    }
+
+    /// Load to pad or Send to pad (`what`) landed on pad `pad` of kit
+    /// `kit`: when that isn't the selected track's kit (the pads play one
+    /// of their own), the hint says which kit it went on (sampler step
+    /// 15d: they land where the hit pad's sound lives, and say so).
+    fn say_where(&mut self, kit: usize, pad: usize, what: &str) {
+        let landed = self
+            .projects
+            .get(kit)
+            .and_then(|p| p.pad(pad))
+            .is_some_and(|p| !p.layers.is_empty());
+        if kit != self.track_kit && landed {
+            self.told.push(format!(
+                "{what} on pad {} of {}, the kit that pad plays",
+                self.pad_text(kit, pad),
+                self.kit_text_of(kit)
+            ));
+        }
     }
 
     /// Whether the Play tab shows, at a row that pad hits edit (Stops or
@@ -1626,13 +1674,16 @@ impl SamplePage {
             return;
         }
         if let Some(l) = self.assign.take() {
-            // Load to pad: this hit picks the pad.
+            // Load to pad: this hit picks the pad, on the kit it played.
             let kit = self.kit;
             self.keep_loaded(ui, kit, pad, l);
+            self.say_where(kit, pad, "Loaded");
         }
         if let Some((kit, from)) = self.sending.take() {
             // Send to pad: this hit picks the pad the copy goes on.
-            self.send(ui, kit, from, pad);
+            if self.send(ui, kit, from, pad) {
+                self.say_where(kit, pad, "Sent");
+            }
         }
         if let Some((kit, take)) = self.sending_take.take() {
             // Send to pad with a take shown: it goes on this pad.
@@ -2271,6 +2322,7 @@ impl SamplePage {
             let cs = Arc::make_mut(cs);
             cs.files = self.files;
             cs.audio = true;
+            cs.cell = self.audio_cell.clone();
             cs.new_kit = self
                 .new_kit
                 .as_ref()
@@ -2703,15 +2755,15 @@ impl SamplePage {
     }
 
     /// Send to pad: a copy of pad `from` of kit `kit` (its sound and every
-    /// edit) onto pad `to`, one undo step.
-    fn send(&mut self, ui: &mut Ui, kit: usize, from: usize, to: usize) {
+    /// edit) onto pad `to`, one undo step. Whether it was sent.
+    fn send(&mut self, ui: &mut Ui, kit: usize, from: usize, to: usize) -> bool {
         send::show(ui, true, false);
         if kit != self.kit || to == from || to >= PADS {
             self.lines.push("sample: Send to pad called off".into());
-            return;
+            return false;
         }
         let Some(copy) = self.projects.get(kit).and_then(|p| p.pad(from)).cloned() else {
-            return;
+            return false;
         };
         let mut none = Vec::new();
         self.act_pads(
@@ -2728,6 +2780,7 @@ impl SamplePage {
             self.pad_text(kit, from),
             self.pad_text(kit, to)
         ));
+        true
     }
 
     /// COPY held and pads hit on the MPC (the MPC's COPY): a copy of pad
@@ -3086,6 +3139,7 @@ impl SamplePage {
             layer,
             name,
             bounds,
+            cell,
         } = a
         else {
             return;
@@ -3117,9 +3171,11 @@ impl SamplePage {
             );
             return;
         }
+        // Put in a cell: the whole sound, Start to End, in one clip.
+        let cell = *cell;
         let cuts: Vec<u64> = bounds[1..bounds.len() - 1]
             .iter()
-            .filter(|&&c| start < c && c < end)
+            .filter(|&&c| !cell && start < c && c < end)
             .map(|&c| c - start)
             .collect();
         // Its tempo, for the Song view's Fit to tempo.
@@ -3135,7 +3191,7 @@ impl SamplePage {
         };
         let rate = self.rate;
         let need = to_audio_need((end - start) * ch, s.rate(), rate);
-        let key = Key::new(TO_AUDIO, job_id((s.id().0, start, end)));
+        let key = Key::new(TO_AUDIO, job_id((s.id().0, start, end, cell)));
         let (tx, why) = (self.to_audio.0.clone(), self.to_audio.0.clone());
         let (made, refused) = (name.clone(), name.clone());
         self.jobs.submit(
@@ -3145,6 +3201,7 @@ impl SamplePage {
                     end,
                     cuts,
                     bpm,
+                    cell,
                 };
                 if let Some(t) = copy_for_audio(&s, span, rate, made, run) {
                     let _ = tx.send(t);
@@ -3440,6 +3497,17 @@ impl SamplePage {
         }
     }
 
+    /// Where Put in a cell would put the sound now (audio tracks phase 2),
+    /// as the app picks it from the Clips grid: the audio track's name and
+    /// row, or None for a new audio track. The Slice tool's main button
+    /// names it.
+    pub fn set_audio_cell(&mut self, ui: &mut Ui, cell: Option<(String, usize)>) {
+        if self.audio_cell != cell {
+            self.audio_cell = cell;
+            self.refresh(ui);
+        }
+    }
+
     /// A chop to a new kit made since the last call: the app adds a track,
     /// and once it is armed gives it the kit and the phrase.
     pub fn take_new_kit_track(&mut self) -> Option<NewKitTrack> {
@@ -3680,6 +3748,12 @@ impl SamplePage {
         self.command(&cmd)
     }
 
+    /// The kit place whose id is `id`, as the audio loop last said
+    /// (sampler step 15); None for an instrument that isn't a kit.
+    pub fn kit_of_id(&self, id: InstrumentId) -> Option<usize> {
+        self.kit_ids.kit(id, self.projects.len())
+    }
+
     /// Kit `kit`'s id in the project's list: refused when the place has
     /// none (no kit there).
     fn kit_id(&self, kit: usize) -> Result<InstrumentId, sampler_commands::Refused> {
@@ -3857,7 +3931,7 @@ impl SamplePage {
                 id
             }
         };
-        self.last_turn = Some(Instant::now());
+        self.since_turn = Some(0.0);
         let turn = Change::Turn {
             pad,
             knob: which,
@@ -3876,7 +3950,7 @@ impl SamplePage {
     /// A learned MIDI control (MIDI Learn) set kit `kit`'s pad `pad`'s own
     /// `field` to `value`, in the field's units ([`scene::own`]'s), as the
     /// Play tab's knob sets it: one undo step a turn, a turn after a rest
-    /// ([`TURN_REST`]) or of another setting a new one. The kit's new view
+    /// ([`TURN_REST_S`]) or of another setting a new one. The kit's new view
     /// goes to the audio thread; the engine's live rows (the Q-Links'
     /// values, the clips' locks) are left alone. Nothing for a pad without
     /// a sound, or a value it has already.
@@ -3952,14 +4026,10 @@ impl SamplePage {
 
     /// A Q-Link or the wheel turned: a turn after a rest is a new undo step.
     fn turned(&mut self) {
-        let now = Instant::now();
-        if self
-            .last_turn
-            .is_some_and(|t| now.duration_since(t) >= TURN_REST)
-        {
+        if self.since_turn.is_some_and(|s| s >= TURN_REST_S) {
             self.lift();
         }
-        self.last_turn = Some(now);
+        self.since_turn = Some(0.0);
     }
 
     /// The data wheel: zoom round the marker last moved or the slice picked
@@ -5446,7 +5516,7 @@ impl SamplePage {
         if let Some(tab) = self.pads.as_mut() {
             tab.lift();
         }
-        self.last_turn = None;
+        self.since_turn = None;
         self.play_turn = None;
         self.learn_turn = None;
         let Some(g) = self.gesture.take() else { return };
@@ -5608,6 +5678,7 @@ impl SamplePage {
             _ if i.chop && i.pads > 0 => format!("Chop to {}", pads(i.pads)),
             _ if i.pads_play && i.pads > 0 => format!("Keys on {}", pads(i.pads)),
             _ if i.pads_play => "What the pads play".to_string(),
+            _ if i.keys_play => "What keys play".to_string(),
             _ if i.sources > 0 && i.pads > 0 => format!("New sample on {}", pads(i.pads)),
             _ if i.sources > 0 => "New sample".to_string(),
             _ if i.chop => "New chop".to_string(),
@@ -7100,6 +7171,9 @@ impl SamplePage {
     /// About 30 times a second: polls the take (when it ends it lands on
     /// its pad) and, while the page is `showing`, draws it into the wave.
     pub fn tick(&mut self, ui: &mut Ui, dt: f32, showing: bool) {
+        if let Some(s) = self.since_turn.as_mut() {
+            *s += dt.max(0.0);
+        }
         self.poll_take(ui);
         self.watch_pad_run();
         if let Some((_, left)) = self.here_no.as_mut() {
@@ -9339,6 +9413,7 @@ mod tests {
                     end: 21_000,
                     cuts: vec![5000, 10_000],
                     bpm: 120.0,
+                    cell: false,
                 };
                 let _ = tx.send(copy_for_audio(&s, span, 44_100, "Half".into(), run));
             },

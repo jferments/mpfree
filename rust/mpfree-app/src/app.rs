@@ -44,8 +44,13 @@ pub use arp::{
 };
 pub use mapper::{Code, MapView, Mark};
 use mpfree_arp::scale::pads::Pad as PadNotes;
-pub use pad_layers::layer_names;
-pub use pads_focus::{layer_takes, synth_track, unfit, LayerTake, PadFocus, RecPlan, SynthTake};
+pub use pad_layers::{layer_names, LayerRec};
+pub use pads_focus::{
+    layer_takes, synth_track, unfit, BankEntry, LayerEntry, LayerTake, PadFocus, PadMap, RecPlan,
+    RecSound, SynthTake,
+};
+#[cfg(test)]
+use pads_focus::{RecFrom, RecMore};
 pub use route_synths::REC_MORE;
 pub use step_pads::StepPads;
 pub use synth_pads::{sent_name, SynthItem};
@@ -710,8 +715,17 @@ pub struct Settings {
     pub screen_velocity: u8,
     pub rate: Rate,
     pub bpm: f64,
-    /// How Latch keeps pads: Replace (a fresh press starts over) or Toggle.
+    /// How Latch keeps pads: Replace (a fresh press starts over), Toggle
+    /// or Add (every press stays until Latch goes).
     pub latch_mode: LatchMode,
+    /// The sustain pedal latches the armed track's arp while it plays
+    /// (Repeat, Arp or Pattern): down is Latch on, up lets go (the MPC's
+    /// Sustain Pedal Latches, 3.10.1 guide p. 83).
+    pub pedal_latches: bool,
+    /// Quick advance (live shows B1, layout spec 5): with a set playing
+    /// and the transport stopped, one press of Next song goes. Off, it
+    /// arms and a second press goes, stopped too.
+    pub quick_advance: bool,
     /// Audio buffer in periods of 128 frames: 3 as Akai's app, or 2.
     pub periods: u32,
     pub show_pressure: bool,
@@ -748,7 +762,8 @@ pub struct Settings {
     /// starts the song) when it closes. Off by default; kept in Prefs.
     pub loop_tempo: bool,
     /// The looper's options "Smart loop end": when tempo from the first
-    /// loop closes a loop played on the pads, Suggest (the default)
+    /// loop closes a loop played on the pads (or heard in the line input
+    /// or a mix, by ear), Suggest (the default)
     /// closes on your tap and offers the downbeat you played, Auto
     /// listens a moment on and closes on it, Off keeps your tap. Kept in
     /// Prefs.
@@ -848,6 +863,8 @@ impl Default for Settings {
             rate: Rate::Sixteenth,
             bpm: 120.0,
             latch_mode: LatchMode::Replace,
+            pedal_latches: false,
+            quick_advance: false,
             periods: 3,
             show_pressure: false,
             midi_paused: false,
@@ -919,6 +936,10 @@ pub enum Item {
     Curve,
     ScreenVelocity,
     LatchMode,
+    /// Prefs and the arp's options: the sustain pedal latches the arp.
+    PedalLatch,
+    /// Prefs: Quick advance, Off or On (live shows B1).
+    QuickAdvance,
     Buffer,
     FindButtons,
     /// Prefs: opens the touch screen section.
@@ -935,6 +956,11 @@ pub enum Item {
     PrefsBack,
     CalibrateTouch,
     TouchLab,
+    /// The Show view's MENU (live shows B1): the Set editor, the set's
+    /// check, and closing the set.
+    SetEditor,
+    CheckSet,
+    CloseSet,
     DebugMode,
     /// Prefs: where the sound runs from the next start (cores.rs).
     SoundCores,
@@ -1000,6 +1026,9 @@ fn opens_something(item: Item) -> bool {
             | Item::PrefsBack
             | Item::CalibrateTouch
             | Item::TouchLab
+            | Item::SetEditor
+            | Item::CheckSet
+            | Item::CloseSet
             | Item::MapControls
             | Item::SystemInfo
             | Item::SystemStatus
@@ -1007,6 +1036,30 @@ fn opens_something(item: Item) -> bool {
             | Item::ClearConsole
     )
 }
+
+/// The Show view's MENU rows (live shows B1, layout spec 4p).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SetMenu {
+    /// Open the Set editor on the set playing.
+    Editor,
+    /// Check the set now.
+    Check,
+    /// Close the set: the song playing stays open as a plain project.
+    Close,
+}
+
+/// The wheel, its push and - / + on the Show view (live shows B1), for
+/// the screen's set player.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShowKey {
+    /// The wheel or - / +: arm the song after (+1) or before (-1).
+    Step(i32),
+    /// The wheel's push: Go.
+    Push,
+}
+
+/// The Show view's MENU rows.
+const SHOW_OPTIONS: [Item; 3] = [Item::SetEditor, Item::CheckSet, Item::CloseSet];
 
 /// The menu on screen: its rows (name, value), the selected row and help.
 #[derive(Clone, Debug, PartialEq)]
@@ -1251,6 +1304,12 @@ pub enum Effect {
     /// synth from now on (the Synth kit, as a pick in the list of kits), so
     /// the take plays the one instance that was heard (app/pads_focus.rs).
     SynthOnTrack(usize),
+    /// REC while a kit is chosen for the pads (sampler step 15): this
+    /// track plays that kit from now on, as a pick in the list of kits.
+    KitOnTrack {
+        track: usize,
+        kit: usize,
+    },
     /// The mixer opened on a view, or closed (`None`): the audio thread
     /// sends the panel its state only while it is open.
     Mixer(Option<mpfree_mixer_ui::MixView>),
@@ -1411,6 +1470,11 @@ pub enum Effect {
     Quit,
     /// Open the Touch lab page (it starts at its first step).
     TouchLab,
+    /// One of the Show view's MENU rows (live shows B1), for the screen's
+    /// set player.
+    SetMenu(SetMenu),
+    /// The wheel, its push or - / + on the Show view (live shows B1).
+    ShowKey(ShowKey),
     /// Open the Calibrate touch page (four corner taps).
     CalibrateTouch,
     /// Prefs > Backup and Akai kits: at the next start, a new backup of
@@ -1626,6 +1690,10 @@ pub struct App {
     view: View,
     /// The page to go back to from Console, Options or the guide.
     back: View,
+    /// A set is open, and the Show view shows (live shows B1): MENU on
+    /// Arrange gives the Show view's rows.
+    set_open: bool,
+    show_view: bool,
     /// What the chain editor's Back goes back to (the mixer, or the page
     /// it opened on), and the macros panel's.
     chain_back: View,
@@ -1643,6 +1711,8 @@ pub struct App {
     tap_light: bool,
     /// The part of Prefs on screen: the main rows or one of its sections.
     prefs_section: PrefsSection,
+    /// The arp options show the Modifier's section.
+    mod_section: bool,
     /// The first-start setup's state for Prefs > Backup and Akai kits;
     /// None where the stick has no setup (not the creator's, or no data
     /// folder).
@@ -1747,6 +1817,14 @@ pub struct App {
     /// What the arp screens were last sent: the step and the notes, and
     /// whether anything else changed since.
     sent_step: u64,
+    /// The Modifier's push the arp screens last showed, in percent, and
+    /// the settings it played (they redraw when either moves).
+    sent_push: (u8, mpfree_arp::Settings),
+    /// Where the sustain pedal went down, while it is down
+    /// ([`App::arp_pedal`]).
+    pedal_down: Option<arp::PedalTo>,
+    /// Latch as it was before the sustain pedal latched the arp.
+    pedal_latch: Option<bool>,
     sent_notes: mpfree_arp::NoteSet,
     arp_dirty: bool,
     /// The transport is rolling (the audio loop says each period).
@@ -1788,9 +1866,13 @@ pub struct App {
     /// notes, as with the synth's layout; everything else about the pads
     /// stays as on a kit.
     arp_layout: Option<[PadNotes; 16]>,
-    /// What the pads play: the selected track's instrument, or one chosen
-    /// for them ([`App::pads_focus`]).
-    pads_focus: PadFocus,
+    /// What the pads play, in one value (the pad map, sampler step 15b,
+    /// app/pads_focus.rs): the base for every bank (the selected track's
+    /// instrument, or one chosen for them, [`App::pads_focus`]), a bank's
+    /// own entry (step 6c's, the design's rule 10, "a bank points at an
+    /// instrument; it holds nothing") and the layers (step 11a,
+    /// app/pad_layers.rs). Only a choice of yours changes it.
+    pad_map: PadMap,
     /// The project's list of instruments as the audio loop last said
     /// ([`App::set_instrument_list`]): what an instrument chosen for the
     /// pads is, and where it is held (step 6).
@@ -1798,17 +1880,9 @@ pub struct App {
     /// A free place given a synth for the pads, waiting for its id in the
     /// list: the pads play it once it has one (step 6).
     pads_to: Option<usize>,
-    /// What each pad bank plays of its own (step 6c, the design's rule
-    /// 10, "a bank points at an instrument; it holds nothing"): None for
-    /// what every bank plays (`pads_focus`), else the track's instrument
-    /// or one of the list's ([`App::pads_focus`]).
-    bank_focus: [Option<PadFocus>; KIT_PAGES],
     /// A free place given a synth for one bank, waiting for its id in the
     /// list, as `pads_to` for every bank.
     bank_to: [Option<usize>; KIT_PAGES],
-    /// The synths the pads play beyond the first (step 11a, app/pad_layers.rs),
-    /// packed in order.
-    pad_layers: [Option<crate::instrument_list::InstrumentId>; pad_layers::MORE],
     /// A free place given a layer's synth, waiting for its id in the list,
     /// as `pads_to`.
     layer_to: [Option<usize>; pad_layers::MORE],
@@ -1820,6 +1894,11 @@ pub struct App {
     /// The tracks that play the shared synth, a bit each
     /// ([`App::set_synth_tracks`]).
     synth_tracks: u128,
+    /// The tracks that play each kit the pad map names (sampler step 15,
+    /// its base and banks from step 15c, its layers and the routes' kits
+    /// from 15f, [`App::set_kit_tracks`]): the
+    /// kit place and a bit for each track; the rest `(usize::MAX, 0)`.
+    kit_tracks: [(usize, u128); pads_focus::MAP_KITS],
     /// The tracks with a kit or a MIDI output picked, a bit each
     /// ([`App::set_configured`]).
     configured: u128,
@@ -1864,6 +1943,8 @@ pub struct App {
 const PREFS_ROWS: &[Item] = &[
     Item::Curve,
     Item::LatchMode,
+    Item::PedalLatch,
+    Item::QuickAdvance,
     Item::Buffer,
     Item::FindButtons,
     Item::DebugMode,
@@ -1981,9 +2062,14 @@ impl App {
             pattern_file: false,
             qlink_turns: [0; 4],
             sent_step: 0,
+            sent_push: (0, mpfree_arp::Settings::default()),
+            pedal_down: None,
+            pedal_latch: None,
             sent_notes,
             arp_dirty: true,
             rolling: false,
+            set_open: false,
+            show_view: false,
             perform: false,
             rec: crate::rec_arm::RecArm::default(),
             lights_shown: Self::startup_transport_lights(),
@@ -1995,16 +2081,15 @@ impl App {
             outline: false,
             pad_layout: None,
             arp_layout: None,
-            pads_focus: PadFocus::Track,
+            pad_map: PadMap::default(),
             instrument_list: crate::instrument_list::InstrumentList::new(),
             pads_to: None,
-            bank_focus: [None; KIT_PAGES],
             bank_to: [None; KIT_PAGES],
-            pad_layers: [None; pad_layers::MORE],
             layer_to: [None; pad_layers::MORE],
             route_synths: [None; route_synths::ROUTE_SYNTHS],
             synth_pick: None,
             synth_tracks: 0,
+            kit_tracks: [(usize::MAX, 0); pads_focus::MAP_KITS],
             configured: 0,
             pad_pressed: [PadNotes::default(); 16],
             note_holds: [0; 128],
@@ -2012,6 +2097,7 @@ impl App {
             mapper: mapper::Mapper::default(),
             swallowed: [false; 128],
             prefs_section: PrefsSection::Main,
+            mod_section: false,
             setup: None,
             menu_editing: false,
             page_editing: false,
@@ -2051,6 +2137,50 @@ impl App {
     /// tells it each period).
     pub fn set_rolling(&mut self, rolling: bool) {
         self.rolling = rolling;
+    }
+
+    /// A set is open, and whether the Show view shows (the screen tells
+    /// it, live shows B1): MENU on the Show view gives its own rows.
+    pub fn set_show_state(&mut self, open: bool, showing: bool) {
+        self.set_open = open;
+        self.show_view = open && showing;
+    }
+
+    /// A set is open (the screen says, live shows B1).
+    pub fn set_open(&self) -> bool {
+        self.set_open
+    }
+
+    /// A learned Show control that is the app's own (live shows B1):
+    /// Panic is SHIFT + STOP's (stop, silence everything, back to bar 1),
+    /// Click is SHIFT + PLAY START's. None for the set player's controls,
+    /// which the screen takes.
+    pub fn show_press(&mut self, id: u16) -> Option<Vec<Effect>> {
+        use mpfree_play::mpfree_param::show;
+        match id {
+            show::PANIC => {
+                let mut fx = self.stop();
+                fx.push(Effect::Time(TimeAction::Transport(Command::StopAndRewind)));
+                fx.push(Effect::Tell(
+                    "Panic: stopped, every sound silenced".to_string(),
+                ));
+                Some(fx)
+            }
+            show::CLICK => {
+                self.settings.metronome = !self.settings.metronome;
+                self.save_dirty = true;
+                let mut fx = vec![
+                    self.metronome(),
+                    Effect::Tell(format!(
+                        "Click {}",
+                        if self.settings.metronome { "on" } else { "off" }
+                    )),
+                ];
+                fx.push(Effect::Settings(self.settings.clone()));
+                Some(fx)
+            }
+            _ => None,
+        }
     }
 
     /// Whether the transport rolls, as the audio loop last told it.
@@ -2172,15 +2302,16 @@ impl App {
     }
 
     /// The kit pad that pad `slot` (0 to 15) plays: the one it pressed
-    /// while held, else the page's, 16 * page + slot. With the synth's
-    /// pad layout on the pads, the slot itself.
+    /// while held, else the page's, 16 * page + slot, the page being the
+    /// source bank of a bank's own kit ([`App::kit_page`], sampler step
+    /// 15e). With the synth's pad layout on the pads, the slot itself.
     pub fn kit_pad(&self, slot: usize) -> usize {
         if self.pad_layout.is_some() {
             return slot;
         }
         match self.kit_held.get(slot).copied().flatten() {
             Some(k) => usize::from(k),
-            None => self.pad_page * 16 + slot,
+            None => self.kit_page() * 16 + slot,
         }
     }
 
@@ -2955,6 +3086,12 @@ impl App {
         self.repeat_held || self.latched
     }
 
+    /// Whether the arp keeps its own swing, not the transport's (the
+    /// pads' arp takes it, main.rs `PadsArp`).
+    pub fn arp_own_swing(&self) -> bool {
+        !self.swing_from_transport
+    }
+
     /// The engine makes notes of its own (Repeat, Arp or Pattern), so a hit
     /// may sound later than the press, and latched pads stay lit.
     pub fn generating(&self) -> bool {
@@ -3550,6 +3687,9 @@ impl App {
             {
                 // MENU in a Prefs section: back to the main rows.
                 fx.extend(self.leave_prefs_section());
+            } else if !shift && self.view == View::Options && self.mod_section {
+                // And in the arp options' Modifier section.
+                fx.extend(self.leave_mod_section());
             } else if shift {
                 fx.extend(self.toggle(View::Prefs));
             } else if self.view == View::System {
@@ -3664,6 +3804,10 @@ impl App {
                 }));
             } else if self.view == View::SystemStatus {
                 fx.push(Effect::StatusPage(StatusKey::Step(d)));
+            } else if self.view == View::Arrange && self.show_view && !shift {
+                // The Show view (live shows B1): the song after or before
+                // is armed, as the wheel arms it.
+                fx.push(Effect::ShowKey(ShowKey::Step(d)));
             } else if self.view.sampler() && shift {
                 // SHIFT + - / +: zoom the waveform (Wave, Warp, Chop).
                 fx.push(Effect::SampleWheel(d));
@@ -4062,6 +4206,11 @@ impl App {
                 let last = (self.items().len() as i32 - 1).max(0);
                 self.select((self.selected as i32 + delta).clamp(0, last) as usize)
             }
+            // The Show view (live shows B1): the wheel arms the song after
+            // or before; SHIFT + wheel keeps scrolling Arrange's views.
+            View::Arrange if self.show_view && !self.shift && !self.repeat_held => {
+                vec![Effect::ShowKey(ShowKey::Step(delta.signum()))]
+            }
             // The outline (Jay, 13 Nov): on Play and the Looper tab the
             // wheel always moves it (it no longer steps the kit: the PAD
             // BANK buttons do); on the mixer, the chain editor and the
@@ -4244,6 +4393,7 @@ impl App {
         if self.in_menu() {
             self.selected = 0;
             self.prefs_section = PrefsSection::Main;
+            self.mod_section = false;
             fx.push(self.menu_view());
         }
         fx.push(Effect::Show(v));
@@ -4396,6 +4546,7 @@ impl App {
     pub fn options_button(&mut self) -> Vec<Effect> {
         match self.view {
             View::Prefs if self.prefs_section != PrefsSection::Main => self.leave_prefs_section(),
+            View::Options if self.mod_section => self.leave_mod_section(),
             View::Prefs => self.toggle(View::Prefs),
             View::System => self.show(View::Prefs),
             // MENU closes System status, back to the page under it.
@@ -4805,7 +4956,9 @@ impl App {
             // The full-screen touch checks, also in Prefs > Touch screen.
             (_, View::Touch) => &[Item::CalibrateTouch, Item::TouchLab],
             (_, View::Console) => &[Item::ConsoleFollow, Item::ClearConsole],
+            (_, View::Arp) if self.mod_section => &arp::MOD_ROWS,
             (_, View::Arp) => &arp::ARP_OPTIONS,
+            (_, View::Arrange) if self.show_view => &SHOW_OPTIONS,
             (_, View::Synth) => &synth_pads::SYNTH_OPTIONS,
             _ => &[
                 Item::Rate,
@@ -4845,8 +4998,17 @@ impl App {
                 "Latch keeps pads",
                 match s.latch_mode {
                     LatchMode::Toggle => "Toggle".to_string(),
+                    LatchMode::Add => "Add".to_string(),
                     _ => "Replace".to_string(),
                 },
+            ),
+            Item::PedalLatch => (
+                "Sustain pedal latches",
+                if s.pedal_latches { "On" } else { "Off" }.to_string(),
+            ),
+            Item::QuickAdvance => (
+                "Quick advance",
+                if s.quick_advance { "On" } else { "Off" }.to_string(),
             ),
             Item::Buffer => (
                 "Audio buffer",
@@ -4872,6 +5034,9 @@ impl App {
             Item::PrefsBack => ("Back to Prefs", "Back".to_string()),
             Item::CalibrateTouch => ("Calibrate touch", "Start".to_string()),
             Item::TouchLab => ("Touch lab", "Open".to_string()),
+            Item::SetEditor => ("Open the Set editor", "Open".to_string()),
+            Item::CheckSet => ("Check the set", "Check".to_string()),
+            Item::CloseSet => ("Close the set", "Close".to_string()),
             Item::DebugMode => (
                 "Show developer tools",
                 if s.debug_mode { "On" } else { "Off" }.to_string(),
@@ -5032,11 +5197,28 @@ impl App {
                 "The touchscreen cannot sense how hard you tap.",
             ],
             Item::LatchMode => vec![
-                "With Latch on (NOTE REPEAT twice, or SHIFT +",
-                "NOTE REPEAT), pads keep repeating after you",
-                "let go.",
+                "With Latch on (NOTE REPEAT twice, SHIFT +",
+                "NOTE REPEAT, or the sustain pedal), pads keep",
+                "repeating after you let go.",
                 "Replace: a fresh press starts a new set.",
                 "Toggle: each press adds or removes that pad.",
+                "Add: every press stays until Latch goes.",
+            ],
+            Item::PedalLatch => vec![
+                "On: while the arp plays (Repeat, Arp or",
+                "Pattern), the sustain pedal latches it: hold",
+                "the pedal and what you play keeps going after",
+                "you let go; lift it and the notes you aren't",
+                "holding stop. The pedal then doesn't hold the",
+                "sound's notes. Direct, the pedal sustains as",
+                "it always does.",
+            ],
+            Item::QuickAdvance => vec![
+                "While a set plays: how Next song goes.",
+                "Off: Next song arms the next song and a",
+                "second press goes, while stopped too.",
+                "On: with the transport stopped, one press",
+                "goes.",
             ],
             Item::Buffer => vec![
                 "How much sound is queued ahead of the speakers.",
@@ -5087,6 +5269,20 @@ impl App {
                 "touches land where you touch. This version",
                 "only reports and logs the result; nothing",
                 "is saved. Exit or MENU leaves it.",
+            ],
+            Item::SetEditor => vec![
+                "Opens the set playing in BROWSE's Sets place:",
+                "its songs, how each starts and ends, its notes.",
+                "The song playing plays on.",
+            ],
+            Item::CheckSet => vec![
+                "The quick check on every song of the set: every",
+                "part reads, every file is there and unchanged,",
+                "and the keyboards each needs are connected.",
+            ],
+            Item::CloseSet => vec![
+                "Ends the set. The song playing stays open as a",
+                "plain project, and the Show view goes.",
             ],
             Item::TouchLab => vec![
                 "Timed touchscreen tests: taps, long presses,",
@@ -5231,12 +5427,12 @@ impl App {
             ],
             Item::SmartEnd => vec![
                 "When tempo from the first loop closes a loop",
-                "you played on the pads or keys. Suggest: it",
-                "closes on your tap, then offers the downbeat",
-                "you played if your tap was off it. Auto: it",
-                "listens a moment past your tap and closes on",
-                "the downbeat you played; the song starts in",
-                "step. Off: it closes on your tap.",
+                "on the pads, keys, line input or a mix.",
+                "Suggest: it closes on your tap, then offers",
+                "the downbeat you played if your tap was off",
+                "it. Auto: it listens a moment past your tap",
+                "and closes on the downbeat you played; the",
+                "song starts in step. Off: your tap stands.",
             ],
             Item::LoopMemory => vec![
                 "How much sound the loops can hold, all",
@@ -5299,6 +5495,7 @@ impl App {
                 "Prefs · Backup and Akai kits".to_string()
             }
             (View::Prefs, _) => "Prefs".to_string(),
+            (_, View::Arp) if self.mod_section => "Arp options · Modifier".to_string(),
             (_, View::Arp) => "Arp options".to_string(),
             (_, View::Debug) => "MIDI log options".to_string(),
             (
@@ -5467,6 +5664,10 @@ impl App {
         if !self.in_menu() && self.view == View::Chain {
             return vec![Effect::ChainPush];
         }
+        // The Show view (live shows B1): the push is Go.
+        if !self.in_menu() && self.view == View::Arrange && self.show_view {
+            return vec![Effect::ShowKey(ShowKey::Push)];
+        }
         if !self.in_menu() {
             // A page with rows: open the highlighted row for the wheel, or
             // close it again (RowKey).
@@ -5553,13 +5754,21 @@ impl App {
                 s.screen_velocity = (s.screen_velocity as i32 + 10 * d).clamp(10, 127) as u8
             }
             Item::LatchMode => {
-                s.latch_mode = if s.latch_mode == LatchMode::Toggle {
-                    LatchMode::Replace
-                } else {
-                    LatchMode::Toggle
-                };
+                s.latch_mode = cycle(
+                    &[LatchMode::Replace, LatchMode::Toggle, LatchMode::Add],
+                    s.latch_mode,
+                    d,
+                );
                 self.update_engine();
             }
+            Item::PedalLatch => {
+                s.pedal_latches = d > 0;
+                // Turned off under a held pedal: the pedal lets go now.
+                if !s.pedal_latches {
+                    fx.extend(self.pedal_lets_go());
+                }
+            }
+            Item::QuickAdvance => s.quick_advance = !s.quick_advance,
             Item::Buffer => {
                 let p = (s.periods as i32 + d).clamp(2, 3) as u32;
                 if p != s.periods {
@@ -5619,6 +5828,16 @@ impl App {
             Item::PrefsBack => return self.leave_prefs_section(),
             Item::CalibrateTouch => return vec![Effect::CalibrateTouch],
             Item::TouchLab => return vec![Effect::TouchLab],
+            Item::SetEditor | Item::CheckSet | Item::CloseSet => {
+                let m = match item {
+                    Item::SetEditor => SetMenu::Editor,
+                    Item::CheckSet => SetMenu::Check,
+                    _ => SetMenu::Close,
+                };
+                let mut fx = self.show(self.back);
+                fx.push(Effect::SetMenu(m));
+                return fx;
+            }
             Item::SystemInfo => return self.show(View::System),
             Item::SystemStatus => return self.show(View::SystemStatus),
             Item::DebugMode => fx.extend(self.set_debug_mode(d > 0)),
@@ -6054,7 +6273,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mpfree_arp::{EventKind, Order};
+    use mpfree_arp::{EventKind, ModSource, Order};
     use mpfree_arp_ui::view::{ArpAction, PatternButton};
     use mpfree_arp_ui::workspace::WsAction;
 
@@ -6840,6 +7059,61 @@ mod tests {
     /// Where `item` sits in the menu on screen.
     fn row(app: &App, item: Item) -> usize {
         app.row_of(item).expect("row shown")
+    }
+
+    /// The Show view (live shows B1): the wheel and - / + arm the song
+    /// after or before, the wheel's push is Go, MENU has the view's own
+    /// rows, which go back to it and tell the screen, and the learned
+    /// Panic and Click are the app's own controls.
+    #[test]
+    fn the_show_view_takes_the_wheel_its_push_and_menu() {
+        use mpfree_play::mpfree_param::show;
+        let mut app = App::new(44_100, false);
+        app.map.menu = Some(MENU);
+        app.open_tab(View::Arrange);
+        let show_keys = |fx: &[Effect]| fx.iter().any(|e| matches!(e, Effect::ShowKey(_)));
+        // A set open but another of Arrange's views up: as before.
+        app.set_show_state(true, false);
+        assert!(!show_keys(&app.wheel(1)));
+        assert!(!show_keys(&press(&mut app, button::DATA_PUSH)));
+        app.set_show_state(true, true);
+        assert_eq!(app.wheel(3), [Effect::ShowKey(ShowKey::Step(1))]);
+        assert_eq!(app.wheel(-1), [Effect::ShowKey(ShowKey::Step(-1))]);
+        assert_eq!(
+            press(&mut app, button::PLUS),
+            [Effect::ShowKey(ShowKey::Step(1))]
+        );
+        assert_eq!(
+            press(&mut app, button::MINUS),
+            [Effect::ShowKey(ShowKey::Step(-1))]
+        );
+        assert_eq!(
+            press(&mut app, button::DATA_PUSH),
+            [Effect::ShowKey(ShowKey::Push)]
+        );
+        // SHIFT + wheel still scrolls.
+        let fx = held(&mut app, button::SHIFT, |a| a.wheel(1));
+        assert!(!show_keys(&fx), "{fx:?}");
+        // MENU: Open the Set editor, Check the set, Close the set.
+        press(&mut app, MENU);
+        assert_eq!(app.view(), View::Options);
+        assert_eq!(app.items(), &SHOW_OPTIONS);
+        let fx = app.step_item(row(&app, Item::CloseSet), 1);
+        assert!(fx.contains(&Effect::SetMenu(SetMenu::Close)), "{fx:?}");
+        assert_eq!(app.view(), View::Arrange);
+        // The set closed: Arrange's own rows and wheel again.
+        app.set_show_state(false, true);
+        assert!(!show_keys(&app.wheel(1)));
+        press(&mut app, MENU);
+        assert_ne!(app.items(), &SHOW_OPTIONS);
+        // Learned Panic and Click are the app's; the rest the screen's.
+        let click = app.settings.metronome;
+        assert!(app.show_press(show::CLICK).is_some());
+        assert_ne!(app.settings.metronome, click);
+        let fx = app.show_press(show::PANIC).unwrap();
+        assert!(fx.contains(&Effect::Time(TimeAction::Transport(Command::StopAndRewind))));
+        assert!(app.show_press(show::GO).is_none());
+        assert!(app.show_press(show::NEXT_SONG).is_none());
     }
 
     #[test]
@@ -8355,7 +8629,7 @@ mod tests {
         let text = app.pads_part();
         assert_eq!(
             text,
-            format!("mpfree-pads 1\nplay track\nbank B instrument {fm}\n")
+            format!("mpfree-pads 2\nplay track\nbank B instrument {fm}\n")
         );
         let mut other = ready();
         other.set_instrument_list(&list);
@@ -8366,22 +8640,25 @@ mod tests {
         other.set_pad_page(1);
         assert_eq!(other.pads_holder(), Some(free(0)));
         let (notes, _) = other.open_pads(Some(
-            "mpfree-pads 1\nplay track\nbank B track\nbank C instrument 9\n",
+            "mpfree-pads 2\nplay track\nbank B track\nbank C instrument 9\n",
         ));
         assert!(
-            matches!(&notes[..], [n] if n.contains("bank C's instrument 9 isn't in the project's list")),
+            matches!(&notes[..], [n] if n.contains("Bank C's instrument 9 isn't in the project's list")),
             "{notes:?}"
         );
         assert_eq!(other.bank_focus(1), Some(PadFocus::Track), "the rest opens");
+        // Kept, missing (sampler step 15b): bank C plays the base meanwhile.
         assert_eq!(other.bank_focus(2), None);
+        assert!(other.pad_map().banks[2].is_some());
+        assert!(other.pads_part().contains("\nbank C instrument 9\n"));
         for (bad, why) in [
-            ("mpfree-pads 1\nplay track\nbank I track\n", "doesn't read"),
-            ("mpfree-pads 1\nplay track\nbank B drums\n", "doesn't read"),
+            ("mpfree-pads 2\nplay track\nbank I track\n", "doesn't read"),
+            ("mpfree-pads 2\nplay track\nbank B drums\n", "doesn't read"),
             (
-                "mpfree-pads 1\nplay track\nbank B track\nbank B track\n",
+                "mpfree-pads 2\nplay track\nbank B track\nbank B track\n",
                 "twice what bank B plays",
             ),
-            ("mpfree-pads 1\nbank B track\n", "doesn't say"),
+            ("mpfree-pads 2\nbank B track\n", "doesn't say"),
         ] {
             let (notes, _) = other.open_pads(Some(bad));
             assert!(
@@ -8435,7 +8712,7 @@ mod tests {
         app.close_synth_pick(true);
         assert_eq!(
             app.pads_part(),
-            "mpfree-pads 1\nplay instrument 1\nbank B track\n"
+            "mpfree-pads 2\nplay instrument 1\nbank B track\n"
         );
         assert_eq!(
             app.put_away_free()[0],
@@ -8448,18 +8725,30 @@ mod tests {
         assert!(app.pads_chose_synth(), "bank A plays the shared synth");
         // Follow track: every bank.
         app.pads_follow_track();
-        assert_eq!(app.pads_part(), "mpfree-pads 1\nplay track\n");
-        // A bank's synth gone from the list: said, the bank plays what the
-        // others play.
+        assert_eq!(app.pads_part(), "mpfree-pads 2\nplay track\n");
+        // A bank's synth gone from the list: its entry stays, missing
+        // (sampler step 15b), said once; the bank plays what the others
+        // play meanwhile, and again once the synth is back.
         other.open_pads(Some(&text));
+        other.set_pad_page(1);
         let fx = other.set_instrument_list(&InstrumentList::new());
-        assert!(
-            fx.contains(&Effect::Note(
-                "Bank B's synth is gone: the bank plays what the other banks play".into()
-            )),
-            "{fx:?}"
+        assert_eq!(
+            fx,
+            [
+                Effect::PadsFocus(PadFocus::Track),
+                Effect::Note(format!(
+                    "Bank B's instrument {fm} is gone: the bank plays what the other banks play until you pick another"
+                ))
+            ]
         );
         assert_eq!(other.bank_focus(1), None);
+        assert!(
+            other.set_instrument_list(&InstrumentList::new()).is_empty(),
+            "once"
+        );
+        assert_eq!(other.pads_part(), text, "kept");
+        let fx = other.set_instrument_list(&list);
+        assert_eq!(fx, [Effect::PadsFocus(PadFocus::Instrument(fm))]);
     }
 
     /// The pads part: what the pads play is saved with the project, and
@@ -8467,11 +8756,11 @@ mod tests {
     #[test]
     fn the_pads_focus_is_saved_and_a_part_that_doesnt_read_is_said() {
         let mut app = ready();
-        assert_eq!(app.pads_part(), "mpfree-pads 1\nplay track\n");
+        assert_eq!(app.pads_part(), "mpfree-pads 2\nplay track\n");
         app.open_tab(View::Synth);
         app.toggle_pads_synth();
         let text = app.pads_part();
-        assert_eq!(text, "mpfree-pads 1\nplay instrument 1\n");
+        assert_eq!(text, "mpfree-pads 2\nplay instrument 1\n");
         let mut other = ready();
         let (notes, fx) = other.open_pads(Some(&text));
         assert!(notes.is_empty(), "{notes:?}");
@@ -8482,15 +8771,11 @@ mod tests {
         assert!(notes.is_empty());
         assert_eq!(fx, [Effect::PadsFocus(PadFocus::Track)]);
         for (bad, why) in [
-            ("mpfree-pads 2\nplay track\n", "its first line is"),
-            (
-                "mpfree-pads 1\nplay instrument 2\n",
-                "instrument 2 isn't in the project's list",
-            ),
-            ("mpfree-pads 1\nplay instrument 0\n", "doesn't read"),
-            ("mpfree-pads 1\nplay drums\n", "doesn't read"),
-            ("mpfree-pads 1\nplay track\nplay track\n", "twice"),
-            ("mpfree-pads 1\n", "doesn't say"),
+            ("mpfree-pads 1\nplay track\n", "its first line is"),
+            ("mpfree-pads 2\nplay instrument 0\n", "doesn't read"),
+            ("mpfree-pads 2\nplay drums\n", "doesn't read"),
+            ("mpfree-pads 2\nplay track\nplay track\n", "twice"),
+            ("mpfree-pads 2\n", "doesn't say"),
         ] {
             other.open_pads(Some(&text));
             let (notes, fx) = other.open_pads(Some(bad));
@@ -8500,11 +8785,20 @@ mod tests {
             );
             assert_eq!(fx, [Effect::PadsFocus(PadFocus::Track)], "{bad:?}");
         }
+        // An instrument the list hasn't got: kept, missing (sampler step
+        // 15b), said; the pads play the track's instrument meanwhile.
+        let (notes, fx) = other.open_pads(Some("mpfree-pads 2\nplay instrument 2\n"));
+        assert!(
+            matches!(&notes[..], [n] if n.contains("The pads' instrument 2 isn't in the project's list")),
+            "{notes:?}"
+        );
+        assert_eq!(fx, [Effect::PadsFocus(PadFocus::Track)]);
+        assert_eq!(other.pads_part(), "mpfree-pads 2\nplay instrument 2\n");
         // An instrument the project's list has: a free place's (step 6).
         let mut list = crate::instrument_list::InstrumentList::new();
         list.follow_free(1);
         other.set_instrument_list(&list);
-        let (notes, fx) = other.open_pads(Some("mpfree-pads 1\nplay instrument 2\n"));
+        let (notes, fx) = other.open_pads(Some("mpfree-pads 2\nplay instrument 2\n"));
         assert!(notes.is_empty(), "{notes:?}");
         let id = list.free_of(0).expect("an id");
         assert_eq!(fx, [Effect::PadsFocus(PadFocus::Instrument(id))]);
@@ -8602,6 +8896,7 @@ mod tests {
             synth: "Poly",
             holder: None,
             ready: false,
+            kit: None,
             layers: [None; REC_MORE],
         };
         assert_eq!(plan(SynthTake::On(2)).chip(name), "Track 3 · Poly");
@@ -8618,21 +8913,24 @@ mod tests {
         assert_eq!(plan(SynthTake::Full).chip(name), "No free track · Poly");
         // Layers (step 11c): the first by name, the rest counted; a layer
         // with no place isn't.
-        let layer = |take| {
+        let layer = |take, from| {
             Some(LayerTake {
                 take,
                 synth: "Pluck",
-                holder: Some(3),
+                sound: RecSound::Synth(Some(3)),
+                from,
                 plays: false,
             })
         };
         let mut two = plan(SynthTake::On(1));
-        two.layers[0] = layer(SynthTake::On(2));
+        two.layers[0] = layer(SynthTake::On(2), RecFrom::Layer(0));
         assert_eq!(two.chip(name), "Bass · Poly + 1 more");
-        two.layers[1] = layer(SynthTake::New);
+        two.layers[1] = layer(SynthTake::New, RecFrom::Layer(1));
         assert_eq!(two.chip(name), "Bass · Poly + 2 more");
-        two.layers[1] = layer(SynthTake::Full);
-        assert_eq!(two.chip(name), "Bass · Poly + 1 more");
+        // A sound with no track: REC records nothing, and the chip names
+        // it (sampler step 15c).
+        two.layers[1] = layer(SynthTake::Full, RecFrom::Bank(1));
+        assert_eq!(two.chip(name), "No free track · Bank B's Pluck");
         let mut pinned = two;
         pinned.take = SynthTake::Pinned {
             track: 0,
@@ -8648,11 +8946,12 @@ mod tests {
     #[test]
     fn each_layer_records_where_its_synth_plays_or_on_a_free_track() {
         let mut layers = [None; REC_MORE];
-        layers[0] = Some(("Pluck", Some(130)));
-        layers[1] = Some(("Poly", None));
+        let more = |name, sound, from| Some(RecMore { name, sound, from });
+        layers[0] = more("Pluck", RecSound::Synth(Some(130)), RecFrom::Layer(0));
+        layers[1] = more("Poly", RecSound::Synth(None), RecFrom::Base);
         // Tracks 0 to 4: Track 3 plays Pluck; Tracks 2 and 4 are free.
-        let plays = |t: usize, h: Option<usize>| match h {
-            Some(130) => t == 3,
+        let plays = |t: usize, s: RecSound| match s {
+            RecSound::Synth(Some(130)) => t == 3,
             _ => false,
         };
         let fits = |t: usize| t == 2 || t == 4;
@@ -8676,51 +8975,31 @@ mod tests {
         assert_eq!(take(got[1]), Some((SynthTake::Full, false)));
     }
 
-    /// The arp and the synth chosen for the pads (the design review of 20
-    /// Nov, point C): over a track that plays a kit the pads play the
-    /// synth as pressed, so the button won't choose it while the arp plays
-    /// the pads, and the arp coming on there gives the pads back to the
-    /// track; a take then never goes through an arp the try-out didn't.
-    /// Over a track that plays the synth, the arp plays it.
+    /// The arp and the synth chosen for the pads (sampler step 15c, after
+    /// the design review of 20 Nov, point C): NOTE REPEAT, Latch and the
+    /// arp never give the pads back, and the button chooses the synth with
+    /// the arp on; the pads' arp in the audio loop plays it (main.rs,
+    /// `PadsArp`). Over a track that plays the synth, the track's arp
+    /// plays it, as before.
     #[test]
-    fn the_arp_and_the_synth_on_the_pads_never_play_apart() {
+    fn the_arp_never_gives_the_pads_back() {
         let mut app = ready();
         app.open_tab(View::Synth);
         app.toggle_pads_synth();
         assert!(app.pads_chose_synth());
-        assert!(app.arp_ends_pads_synth().is_empty(), "no arp, no change");
-        // NOTE REPEAT held: the arp plays the pads, through the track's kit.
+        // NOTE REPEAT held: the pads keep the synth.
         app.button(REPEAT, true, 0.0);
         assert!(app.generating());
-        let fx = app.arp_ends_pads_synth();
-        assert_eq!(fx[0], Effect::PadsFocus(PadFocus::Track), "{fx:?}");
-        assert!(
-            matches!(&fx[1], Effect::Note(n) if n == "The arp plays Track 1's instrument: the pads follow the track"),
-            "{fx:?}"
-        );
+        assert!(app.pads_chose_synth());
+        // Held still: the button gives the pads back when you press it, and
+        // chooses the synth again.
+        app.toggle_pads_synth();
         assert!(!app.pads_chose_synth() && app.pads_play_kit());
-        // Held still: the button won't choose the synth, and says why.
         let fx = app.toggle_pads_synth();
-        assert!(
-            matches!(&fx[..], [Effect::Tell(t)] if t.contains("NOTE REPEAT")),
-            "{fx:?}"
-        );
-        assert!(!app.pads_chose_synth());
+        assert!(app.pads_chose_synth(), "{fx:?}");
         app.button(REPEAT, false, 0.0);
         assert!(!app.generating());
-        app.toggle_pads_synth();
-        assert!(app.pads_chose_synth(), "the arp let go: it chooses");
-        // The selected track plays the synth (its layout on the pads): the
-        // arp plays it, and the pads keep it.
-        use mpfree_arp::scale::pads::{layout, PadLayout, PadSetup};
-        app.set_pad_layout(Some(layout(&PadSetup {
-            layout: PadLayout::Chromatic,
-            ..PadSetup::default()
-        })));
-        app.button(REPEAT, true, 0.0);
-        assert!(app.generating());
-        assert!(app.arp_ends_pads_synth().is_empty());
-        assert!(app.pads_chose_synth());
+        assert!(app.pads_chose_synth(), "the arp let go: nothing moves");
     }
 
     /// Step 4: the Instrument row offers the other tracks' own
@@ -9799,7 +10078,10 @@ mod tests {
                 "Chords take turns",
                 "Strum",
                 "New notes restart",
-                "Swing from"
+                "Swing from",
+                "Modifier",
+                "Latch keeps pads",
+                "Sustain pedal latches"
             ]
         );
         assert_eq!(m.rows[10].1, "Transport");
@@ -9993,6 +10275,302 @@ mod tests {
         assert_eq!(gaps(false, Some((240, 75)), true), straight);
         let free = gaps(true, Some((240, 75)), false);
         assert!(free.iter().all(|&g| g.abs_diff(5512) <= 1), "{free:?}");
+    }
+
+    /// The Modifier (MPC 3.10.1 guide pp. 83-84): a keyboard's mod wheel
+    /// pushes the armed track's arp by the amounts its options set, from
+    /// the next step, and the screens hear the push; other controllers,
+    /// and the wheel with another source, push nothing.
+    #[test]
+    fn the_mod_wheel_pushes_the_armed_tracks_arp() {
+        use mpfree_node::Ctl;
+        let mut app = ready();
+        app.toggle_panel();
+        app.arp_action(ArpAction::Mode(Mode::Arp));
+        assert_eq!(app.arp.modifier.source, ModSource::Off);
+        app.arp_controller(Ctl::ModWheel, 1.0);
+        assert_eq!(app.eng().live().rate, Rate::Sixteenth, "off: no push");
+        // MENU: the Modifier's row, stepped to the mod wheel.
+        app.step_arp_item(ArpItem::ModSource, 1);
+        assert_eq!(app.arp.modifier.source, ModSource::ModWheel);
+        assert_eq!(app.eng().settings().modifier.source, ModSource::ModWheel);
+        app.arp_poll();
+        app.arp_controller(Ctl::Breath, 1.0);
+        app.arp_controller(Ctl::Sustain, 1.0);
+        assert_eq!(app.eng().modifier(), 0.0);
+        assert!(app.arp_poll().is_none(), "nothing moved");
+        app.arp_controller(Ctl::ModWheel, 1.0);
+        // The defaults: two rates faster and an octave more.
+        let live = app.eng().live();
+        assert_eq!((live.rate, live.octaves), (Rate::ThirtySecond, 2));
+        assert_eq!(app.arp.rate, Rate::Sixteenth, "the setting stays");
+        let Some(Effect::Arp(v)) = app.arp_poll() else {
+            panic!("the screens hear the push");
+        };
+        assert_eq!((v.push, v.live.rate), (1.0, Rate::ThirtySecond));
+        app.arp_controller(Ctl::ModWheel, 0.0);
+        assert_eq!(app.eng().live(), app.eng().settings(), "let back");
+        // The rows say what they push, in words.
+        assert_eq!(
+            app.arp_item_text(ArpItem::ModRate),
+            ("Pushes rate", "+2 steps faster".to_string())
+        );
+        app.step_arp_item(ArpItem::ModOctaves, -1);
+        app.step_arp_item(ArpItem::ModOctaves, -1);
+        assert_eq!(app.arp_item_text(ArpItem::ModOctaves).1, "-1 octave");
+        app.step_arp_item(ArpItem::ModGate, -1);
+        assert_eq!(app.arp_item_text(ArpItem::ModGate).1, "-5 %");
+        for _ in 0..12 {
+            app.step_arp_item(ArpItem::ModRolls, 1);
+        }
+        assert_eq!(app.arp_item_text(ArpItem::ModRolls).1, "+7 hits a step");
+        app.step_arp_item(ArpItem::ModAccents, 1);
+        assert_eq!(app.arp_item_text(ArpItem::ModAccents).1, "10 % of steps");
+        assert!(app.take_project_edit(), "the Modifier is the song's");
+    }
+
+    /// A knob MIDI Learn gives the Modifier (`mpfree_param::arp::MODIFIER`)
+    /// pushes its track's arp while the Modifier's controller is Learned
+    /// knob, and reads back where it is.
+    #[test]
+    fn a_learned_knob_pushes_the_modifier() {
+        use mpfree_play::mpfree_param::arp as ids;
+        let mut app = ready();
+        let (info, v) = app.arp_param(0, ids::MODIFIER).unwrap();
+        assert_eq!((info.name, v), ("Modifier", 0.0));
+        assert!(app.set_arp_param(0, ids::MODIFIER, 100.0).is_empty());
+        assert_eq!(app.eng().modifier(), 0.0, "not the Modifier's controller");
+        for _ in 0..5 {
+            app.step_arp_item(ArpItem::ModSource, 1);
+        }
+        assert_eq!(app.arp.modifier.source, ModSource::Knob);
+        app.set_arp_param(0, ids::MODIFIER, 50.0);
+        assert_eq!(app.eng().modifier(), 0.5);
+        assert_eq!(app.arp_param(0, ids::MODIFIER).unwrap().1, 50.0);
+        // Another track's knob: that track's arp.
+        assert_eq!(app.arp_param(2, ids::MODIFIER).unwrap().1, 0.0);
+        assert!(app
+            .arp_param(mpfree_seq::MAX_TRACKS, ids::MODIFIER)
+            .is_none());
+    }
+
+    /// A tap on the Modifier box opens the arp's options on its row; the
+    /// pedal's and Latch's rows are there too.
+    #[test]
+    fn the_modifier_box_opens_its_options() {
+        let mut app = ready();
+        app.toggle_panel();
+        app.arp_action(ArpAction::Modifier);
+        assert_eq!(app.view(), View::Options);
+        assert_eq!(app.items(), arp::MOD_ROWS);
+        assert_eq!(app.items()[app.selected], Item::Arp(ArpItem::ModSource));
+        let Effect::Menu(m) = app.menu_view() else {
+            panic!()
+        };
+        assert_eq!(m.title, "Arp options · Modifier");
+        // MENU (or Back): the arp options, on the Modifier's row, with
+        // the pedal's and Latch's rows.
+        press(&mut app, MENU);
+        assert_eq!(app.view(), View::Options);
+        assert_eq!(app.items(), arp::ARP_OPTIONS);
+        assert_eq!(app.items()[app.selected], Item::Arp(ArpItem::ModSection));
+        assert_eq!(app.item_text(Item::Arp(ArpItem::ModSection)).1, "Off");
+        assert!(app.row_of(Item::PedalLatch).is_some());
+        assert!(app.row_of(Item::LatchMode).is_some());
+        // Its arrow opens the section again; Back leaves it.
+        let at = app.selected;
+        app.step_item(at, 1);
+        assert_eq!(app.items(), arp::MOD_ROWS);
+        app.options_button();
+        assert_eq!(app.items(), arp::ARP_OPTIONS);
+        // MENU closes the options as before; opened again, they start
+        // at the top, not in the section.
+        app.arp_action(ArpAction::Modifier);
+        press(&mut app, MENU);
+        press(&mut app, MENU);
+        assert_eq!(app.view(), View::Arp);
+        press(&mut app, MENU);
+        assert_eq!(app.items(), arp::ARP_OPTIONS);
+    }
+
+    /// The sustain pedal latches the arp (the MPC's Sustain Pedal Latches,
+    /// 3.10.1 guide p. 83) only with Prefs' row on and the arp playing;
+    /// it comes up where it went down.
+    #[test]
+    fn the_sustain_pedal_latches_the_arp_when_prefs_say_so() {
+        use mpfree_node::Ctl;
+        let mut app = ready();
+        app.toggle_panel();
+        app.arp_action(ArpAction::Mode(Mode::Arp));
+        // Off in Prefs: the sound's pedal, as before.
+        assert!(app.arp_pedal(Ctl::Sustain, 1.0).is_none());
+        assert!(app.arp_pedal(Ctl::Sustain, 0.0).is_none());
+        // The arp's options have the row (the arp plays on under them).
+        press(&mut app, MENU);
+        let at = app.row_of(Item::PedalLatch).unwrap();
+        app.step_item(at, 1);
+        assert!(app.settings.pedal_latches);
+        assert_eq!(app.item_text(Item::PedalLatch).1, "On");
+        // Other controllers aren't the pedal.
+        assert!(app.arp_pedal(Ctl::ModWheel, 1.0).is_none());
+        // Down: Latch on; a half pedal's next values stay with the arp.
+        let fx = app.arp_pedal(Ctl::Sustain, 1.0).expect("the arp's");
+        assert!(fx.contains(&Effect::Note("Latch on (sustain pedal)".into())));
+        assert!(app.latched);
+        assert_eq!(app.eng().latch(), app.settings.latch_mode);
+        assert_eq!(app.arp_pedal(Ctl::Sustain, 0.8), Some(Vec::new()));
+        app.pad_down(0, 100);
+        app.pad_up(0);
+        assert!(!app.eng().active().is_empty(), "latched by the pedal");
+        // Up: Latch as it was, and the notes let go stop.
+        assert!(app.arp_pedal(Ctl::Sustain, 0.0).is_some());
+        assert!(!app.latched);
+        assert!(app.eng().active().is_empty());
+        // Latched already: the pedal leaves it latched.
+        app.toggle_latch();
+        app.arp_pedal(Ctl::Sustain, 1.0).unwrap();
+        app.arp_pedal(Ctl::Sustain, 0.0).unwrap();
+        assert!(app.latched);
+        app.toggle_latch();
+        // Down to the sound (Direct), then the arp plays: the pedal's
+        // values stay the sound's until it comes up.
+        app.arp_action(ArpAction::Mode(Mode::Direct));
+        assert!(app.arp_pedal(Ctl::Sustain, 1.0).is_none());
+        app.arp_action(ArpAction::Mode(Mode::Arp));
+        assert!(app.arp_pedal(Ctl::Sustain, 0.9).is_none());
+        assert!(app.arp_pedal(Ctl::Sustain, 0.0).is_none());
+        assert!(!app.latched);
+        // Another track armed under the pedal: its latch lets go there.
+        app.arp_pedal(Ctl::Sustain, 1.0).unwrap();
+        app.set_track(2);
+        app.set_track(0);
+        assert!(!app.latched, "let go on the old track");
+        app.set_track(2);
+        assert!(
+            app.arp_pedal(Ctl::Sustain, 0.0).is_none(),
+            "the new track's"
+        );
+        // Prefs turned off under a held pedal lets go too.
+        app.set_track(0);
+        app.arp_pedal(Ctl::Sustain, 1.0).unwrap();
+        app.show(View::Prefs);
+        let at = app.row_of(Item::PedalLatch).unwrap();
+        app.step_item(at, -1);
+        assert!(!app.latched);
+    }
+
+    /// A keyboard's aftertouch on the keys held reaches the arp while the
+    /// pads play notes, so a Modifier on pressure follows it.
+    #[test]
+    fn key_pressure_pushes_a_modifier_on_pressure() {
+        use mpfree_arp::scale::pads::{layout, PadLayout, PadSetup};
+        let mut app = ready();
+        app.set_arp_layout(Some(layout(&PadSetup {
+            layout: PadLayout::Chromatic,
+            ..PadSetup::default()
+        })));
+        app.toggle_panel();
+        app.arp_action(ArpAction::Mode(Mode::Arp));
+        app.step_arp_item(ArpItem::ModSource, 1);
+        app.step_arp_item(ArpItem::ModSource, 1);
+        assert_eq!(app.arp.modifier.source, ModSource::Pressure);
+        app.key_pressure(61, 127);
+        assert_eq!(app.eng().modifier(), 0.0, "a key not held");
+        app.key_down(61, 90);
+        app.key_pressure(61, 127);
+        assert_eq!(app.eng().modifier(), 1.0);
+        app.key_up(61);
+        assert_eq!(app.eng().modifier(), 0.0, "let go: nothing pressed");
+    }
+
+    /// The manual's drum example: Note Repeat on a pad, the Modifier on
+    /// Pressure adding rolls with no rate push. Pressing harder into the
+    /// pad rolls it; easing off, or letting go, takes the rolls back. The
+    /// rate stays as set throughout.
+    #[test]
+    fn pad_pressure_rolls_note_repeat() {
+        let mut app = ready();
+        app.toggle_panel();
+        app.arp_action(ArpAction::Mode(Mode::Repeat));
+        app.step_arp_item(ArpItem::ModSource, 1);
+        app.step_arp_item(ArpItem::ModSource, 1);
+        assert_eq!(app.arp.modifier.source, ModSource::Pressure);
+        for _ in 0..2 {
+            app.step_arp_item(ArpItem::ModRate, -1);
+        }
+        app.step_arp_item(ArpItem::ModOctaves, -1);
+        for _ in 0..3 {
+            app.step_arp_item(ArpItem::ModRolls, 1);
+        }
+        let m = app.arp.modifier;
+        assert_eq!((m.rate, m.octaves, m.rolls), (0, 0, 3));
+        app.pressure(2, 127);
+        assert_eq!(app.eng().modifier(), 0.0, "a pad not held presses nothing");
+        app.pad_down(2, 100);
+        app.pressure(2, 127);
+        assert_eq!(app.eng().modifier(), 1.0);
+        assert_eq!(app.eng().rolls(), 3);
+        assert_eq!(app.eng().live().rate, app.arp.rate, "the rate stays");
+        app.pressure(2, 20);
+        assert_eq!(app.eng().rolls(), 0, "eased off");
+        app.pressure(2, 127);
+        assert_eq!(app.eng().rolls(), 3);
+        app.pad_up(2);
+        assert_eq!(app.eng().modifier(), 0.0, "let go: nothing pressed");
+        assert_eq!(app.eng().rolls(), 0);
+    }
+
+    /// Prefs' Latch keeps pads steps through Replace, Toggle and Add, and
+    /// both latch rows come back at the next start.
+    #[test]
+    fn latch_add_and_the_pedal_latch_are_kept() {
+        let mut app = ready();
+        app.show(View::Prefs);
+        let at = app.row_of(Item::LatchMode).unwrap();
+        app.step_item(at, 1);
+        app.step_item(at, 1);
+        assert_eq!(app.settings.latch_mode, LatchMode::Add);
+        assert_eq!(app.item_text(Item::LatchMode).1, "Add");
+        app.step_item(at, 1);
+        assert_eq!(app.settings.latch_mode, LatchMode::Add, "the last");
+        app.settings.pedal_latches = true;
+        let kept = app.app_settings();
+        assert_eq!(kept.get_str("latch-keeps-pads"), Some("add"));
+        let mut next = App::new(44_100, false);
+        next.restore(&kept, &mpfree_store::Settings::default());
+        assert_eq!(next.settings.latch_mode, LatchMode::Add);
+        assert!(next.settings.pedal_latches);
+    }
+
+    /// The Modifier is kept with the project, per track; a push out of
+    /// range is said and left at its default.
+    #[test]
+    fn the_modifier_is_kept_with_the_project() {
+        let mut app = ready();
+        app.step_arp_item(ArpItem::ModSource, 1);
+        app.step_arp_item(ArpItem::ModRolls, 1);
+        app.step_arp_item(ArpItem::ModRolls, 1);
+        let part = app.arp_part();
+        for line in [
+            "modifier = modwheel",
+            "modifier-push = rate 2 octaves 1 gate 0 swing 0 rolls 2 accents 0",
+        ] {
+            assert!(part.lines().any(|l| l == line), "{line}: {part}");
+        }
+        let mut next = ready();
+        let (notes, _) = next.open_arp(Some(&part));
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(next.arp.modifier, app.arp.modifier);
+        assert_eq!(next.eng().settings().modifier, app.arp.modifier);
+        let (notes, _) = next.open_arp(Some(
+            "mpfree-arp 1\ntrack 1\nmodifier = knob\nmodifier-push = rate 9\n",
+        ));
+        assert!(
+            notes[0].contains("track 1 modifier-push = rate 9"),
+            "{notes:?}"
+        );
+        assert_eq!(next.arp.modifier.source, ModSource::Knob);
+        assert_eq!(next.arp.modifier.rate, 2, "left at its default");
     }
 
     /// MIDI Learn turns a track's arp as its Q-Links do: the armed
@@ -12016,84 +12594,121 @@ mod tests {
         // Follow track: gone.
         app.pads_follow_track();
         assert!(!app.has_layers() && !app.pads_layer_synth());
-        // The arp starting gives them up too.
+        // The arp starting keeps them (sampler step 15c), and a layer can
+        // be added with it on.
         app.toggle_pad_layer(fm);
-        app.toggle_pad_layer(shared);
-        assert!(app.has_layers());
         app.button(REPEAT, true, 0.0);
-        let fx = app.arp_ends_pads_synth();
-        assert_eq!(fx[0], Effect::PadsFocus(PadFocus::Track), "{fx:?}");
+        assert!(app.generating());
         assert!(!app.has_layers());
-        let fx = app.toggle_pad_layer(fm);
-        assert!(
-            matches!(&fx[..], [Effect::Tell(t)] if t.contains("NOTE REPEAT")),
-            "{fx:?}"
-        );
+        app.toggle_pad_layer(shared);
+        assert!(app.has_layers() && app.pads_layer_synth());
+        assert_eq!(app.pads_focus(), PadFocus::Instrument(fm));
     }
 
-    /// Step 11a: the layers are saved in a part of their own, after the
-    /// pads part, so a build from before plays the first only; read back
-    /// with the list, a layer the list hasn't got or a part that doesn't
-    /// read is said and left out.
+    /// Sampler step 15b: the layers are saved in the pads part with the
+    /// rest of the pad map, and come back with it; a layer the list hasn't
+    /// got stays in the map, missing and silent, said; a part that doesn't
+    /// read is said and the pads follow the track.
     #[test]
-    fn the_pad_layers_part_saves_and_opens_with_the_pads_part() {
+    fn the_layers_save_and_open_with_the_pad_map() {
         use crate::instrument_list::{InstrumentId, InstrumentList};
         let mut app = ready();
         let mut list = InstrumentList::new();
         list.follow_free(0b11);
         let (fm, pluck) = (list.free_of(0).unwrap(), list.free_of(1).unwrap());
         app.set_instrument_list(&list);
-        assert_eq!(app.pad_layers_part(), "", "none: no part");
+        assert_eq!(app.pads_part(), "mpfree-pads 2\nplay track\n");
         app.toggle_pad_layer(fm);
         app.toggle_pad_layer(pluck);
         app.toggle_pad_layer(InstrumentId::SHARED_SYNTH);
-        let (pads, layers) = (app.pads_part(), app.pad_layers_part());
-        assert_eq!(pads, format!("mpfree-pads 1\nplay instrument {fm}\n"));
+        let pads = app.pads_part();
         assert_eq!(
-            layers,
-            format!("mpfree-pad-layers 1\nlayer instrument {pluck}\nlayer instrument 1\n")
+            pads,
+            format!(
+                "mpfree-pads 2\nplay instrument {fm}\nlayer instrument {pluck}\nlayer instrument 1\n"
+            )
         );
         let mut other = ready();
-        other.set_instrument_list(&list);
-        other.open_pads(Some(&pads));
-        assert!(other.open_pad_layers(Some(&layers)).is_empty());
+        other.open_list(&list);
+        let (notes, _) = other.open_pads(Some(&pads));
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(other.pad_map(), app.pad_map());
         assert_eq!(
             other.pad_layers().collect::<Vec<_>>(),
             [pluck, InstrumentId::SHARED_SYNTH]
         );
-        // A build from before reads the pads part alone: the first.
-        other.open_pads(Some(&pads));
-        assert!(!other.has_layers());
-        assert_eq!(other.pads_focus(), PadFocus::Instrument(fm));
-        let notes = other.open_pad_layers(Some(&format!(
-            "mpfree-pad-layers 1\nlayer instrument 9\nlayer instrument {fm}\nlayer instrument {pluck}\n"
+        // A layer the list hasn't got: kept, silent, said.
+        let (notes, _) = other.open_pads(Some(&format!(
+            "mpfree-pads 2\nplay instrument {fm}\nlayer instrument 9\nlayer instrument {pluck}\n"
         )));
         assert!(
-            notes[0].contains("instrument 9 isn't in the project's list"),
+            matches!(&notes[..], [n] if n.contains("A layer's instrument isn't in the project's list")),
             "{notes:?}"
         );
-        assert!(notes[1].contains("what the pads play first"), "{notes:?}");
-        assert_eq!(other.pad_layers().collect::<Vec<_>>(), [pluck]);
+        assert_eq!(other.pad_layers().count(), 2, "kept");
+        assert_eq!(other.pads_layer_holders()[0], None, "silent");
+        assert!(other.pads_layer_holders()[1].is_some());
+        assert!(other.pads_part().contains("layer instrument 9\n"), "saved");
         for (bad, why) in [
-            ("mpfree-pad-layers 2\n", "its first line"),
-            ("mpfree-pad-layers 1\nlayer kit 2\n", "doesn't read"),
-            ("mpfree-pad-layers 1\nlayer instrument 3\nlayer instrument 3\n", "twice"),
+            ("mpfree-pads 1\nplay track\n", "its first line"),
+            ("mpfree-pads 2\nplay track\nlayer kit 2\n", "doesn't read"),
             (
-                "mpfree-pad-layers 1\nlayer instrument 3\nlayer instrument 4\nlayer instrument 5\nlayer instrument 6\n",
-                "3 more at most",
+                "mpfree-pads 2\nplay track\nlayer instrument 3\nlayer instrument 3\n",
+                "twice",
+            ),
+            (
+                "mpfree-pads 2\nplay track\nlayer instrument 3\nlayer instrument 4\nlayer instrument 5\nlayer instrument 6\n",
+                "more than 3 layers",
             ),
         ] {
-            let notes = other.open_pad_layers(Some(bad));
+            let (notes, _) = other.open_pads(Some(bad));
             assert!(
-                matches!(&notes[..], [n] if n.contains(why) && n.contains("the pads play one synth")),
+                matches!(&notes[..], [n] if n.contains(why) && n.contains("the pads follow the track")),
                 "{bad:?}: {notes:?}"
             );
             assert!(!other.has_layers());
+            assert_eq!(other.pad_map(), PadMap::default());
         }
-        // The pads follow the track: no layers.
-        other.open_pads(Some("mpfree-pads 1\nplay track\n"));
-        let notes = other.open_pad_layers(Some(&layers));
-        assert!(notes[0].contains("the pads follow the track"), "{notes:?}");
-        assert!(!other.has_layers());
+    }
+
+    /// Sampler step 15b: the pad map's saved form carries every entry: a
+    /// whole kit as the base, a bank's own with a kit's source bank, a
+    /// layer on one bank, and reads back the same.
+    #[test]
+    fn the_pad_map_reads_back_what_it_writes() {
+        use crate::instrument_list::InstrumentId;
+        let id = |n| InstrumentId::from_number(n).unwrap();
+        let mut map = PadMap {
+            base: PadFocus::Instrument(id(7)),
+            ..PadMap::default()
+        };
+        map.banks[1] = Some(BankEntry {
+            play: PadFocus::Instrument(id(9)),
+            from: Some(0),
+        });
+        map.banks[2] = Some(BankEntry::of(PadFocus::Track));
+        map.layers[0] = Some(LayerEntry::every(id(3)));
+        map.layers[1] = Some(LayerEntry {
+            id: id(4),
+            reach: Some(1),
+            from: Some(2),
+        });
+        let text = map.text();
+        assert_eq!(
+            text,
+            "mpfree-pads 2\nplay instrument 7\nbank B instrument 9 from A\nbank C track\nlayer instrument 3\nlayer instrument 4 bank B from C\n"
+        );
+        assert_eq!(PadMap::parse(&text), Ok(map));
+        assert!(map.layers[1].unwrap().reaches(1) && !map.layers[1].unwrap().reaches(0));
+        for bad in [
+            "mpfree-pads 2\nbank B track\n",
+            "mpfree-pads 2\nplay track\nplay track\n",
+            "mpfree-pads 2\nplay track\nbank I track\n",
+            "mpfree-pads 2\nplay track\nbank B track\nbank B track\n",
+            "mpfree-pads 2\nplay track\nbank B instrument 9 from Z\n",
+            "mpfree-pads 2\nplay track\nlayer instrument 3 from\n",
+        ] {
+            assert!(PadMap::parse(bad).is_err(), "{bad:?}");
+        }
     }
 }

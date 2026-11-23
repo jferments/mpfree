@@ -1,0 +1,9 @@
+[package]
+name = "mpfree-stems"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Stem separation for the MPFree sampler: Deezer's Spleeter 4-stem networks (MIT) in Rust, a segment at a time, in steps a worker thread can run"
+
+[dependencies]
+mpfree-simd = { path = "../mpfree-simd" }

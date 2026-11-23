@@ -1,6 +1,6 @@
 # The automated device suite: workflows and benchmarks on the MPC
 
-**As of 2026-11-19** · **Asked for by** the owner, 19 Nov 06:46Z: test everything merged to `main` in the next device round with as little hand work as possible, through realistic workflows that use several tools together, and measure what it costs on the MPC. · **Code:** [`rust/mpfree-app/src/script.rs`](../../../rust/mpfree-app/src/script.rs) (the script player), [`smoke/scripts.rs`](../../../rust/mpfree-app/src/smoke/scripts.rs) (the same scripts in CI), [`tools/mpc-one/devtest/workflows/`](../../../tools/mpc-one/devtest/workflows/), [`host_devtest_mpc.py`](../../../tools/mpc-one/host_devtest_mpc.py), [`host_bench_mpc.py`](../../../tools/mpc-one/host_bench_mpc.py), [`devtest_report.py`](../../../tools/mpc-one/devtest_report.py).
+**As of 2026-11-19** · **Asked for by** the owner, 19 Nov 06:46Z: test everything merged to `main` in the next device round with as little hand work as possible, through realistic workflows that use several tools together, and measure what it costs on the MPC. · **Code:** [`rust/mpfree-app/src/script.rs`](../../../rust/mpfree-app/src/script.rs) (the script player), [`smoke/scripts.rs`](../../../rust/mpfree-app/src/smoke/scripts.rs) (the same scripts in CI), [`tools/mpc-one/devtest/workflows/`](../../../tools/mpc-one/devtest/workflows/), [`host_devtest_mpc.py`](../../../tools/mpc-one/host_devtest_mpc.py), [`host_bench_mpc.py`](../../../tools/mpc-one/host_bench_mpc.py), [`devtest_report.py`](../../../tools/mpc-one/devtest_report.py). The stick test D3 plays its own workflows the same way, with their data on the stick ([`tools/mpc-one/streamtest/workflows/`](../../../tools/mpc-one/streamtest/workflows/), [`host_streamtest_mpc.py`](../../../tools/mpc-one/host_streamtest_mpc.py); [disk-streaming.md](../design/disk-streaming.md#d3-the-app-streaming-on-the-stick)).
 
 A device round used to be a person working through [device checks](device-checks.md) one by one: a few steps each, read from the log. Most of those steps were a musician's moves that software can make just as well. Now mpfree plays them itself. A **workflow** is a musician's session written down as steps. `mpfree play --script FILE` plays it on the MPC, and CI's UI smoke session plays the same file on every pull request. A workflow that passes in CI does what it says. On the MPC the same steps show what they cost on its own cores, screen and sound card, and whether anything clicks.
 
@@ -27,6 +27,7 @@ One step per line. `#` starts a comment. Each step takes its time, and then the 
 title A beat from scratch           the workflow's name in reports
 covers rec-arm, step-pads           the device checks it stands in for
 needs demo-songs                    the three demo songs in the run's library first
+needs stream-audio                  takes play from their files for this run (the stick test D3)
 wait 1.5                            seconds
 tap header tab Sequencer            widget, id, then the label exactly as the page has it
 button PLAY                         a hardware button by the mapper's name
@@ -60,7 +61,7 @@ A tap, an expect, a mark or the title may quote the app's own characters (`Speed
 
 ## The workflows
 
-About 7.5 minutes in all, plus heavy-load once more on each of the four sound-core settings (about 6 minutes). `covers` names the [device checks](device-checks.md) each one stands in for.
+About 8 minutes in all, plus heavy-load once more on each of the four sound-core settings (about 6 minutes). `covers` names the [device checks](device-checks.md) each one stands in for.
 
 | Workflow | What a musician does | Stands in for | About |
 |---|---|---|---|
@@ -71,6 +72,7 @@ About 7.5 minutes in all, plus heavy-load once more on each of the four sound-co
 | `sample-page` | A loop's end moved while it sounds, ping-pong, Slice, Warp (stretch and repitch), Grain with its LFO and presets, Keep last 4 bars, UNDO, then Edit pad from the Pads tab's row and from PROG EDIT | `sample-live-loop`, `sample-warp`, `grain-movement`, `grain-cloud-view`, `grain-presets`, `sample-edit-pad` | 33 s |
 | `songs` | The three demo songs opened from BROWSE, played through two scenes, a track muted on the bar, the tempo moved, saved, and the first opened again | `mute-queue`, `reload-on-the-bar`, `sample-r3-kit-per-track` | 2 min |
 | `heavy-load` | A full song, a loop recorded over it, the pads rolling, and a reverb, delay and chorus on the drums: half a minute of everything at once | `load`, `fx-busy` | 1.5 min |
+| `smart-loop-end` | Free first loops with Tempo from the first loop on, each two bars of kick and snare with REC pressed a little after the next bar's first kick. On Suggest the chip's Snap, Use my tap, UNDO and SHIFT + UNDO; on Auto, REC just before the first kick: the loop closes on the end played and starts on the first hit | `smart-end` | 35 s |
 
 ## The round's order
 
@@ -78,7 +80,7 @@ The hardware thread builds the stick and writes the round's runbook. These are t
 
 1. **Builds** (workstation): the `build-arm` and `build-bench` blocks as in the [second 3.10.1 round](firmware-3.10.1-round-2.md), from the commit the stick is made from. `build-arm` makes `rust/target/armv7-unknown-linux-gnueabihf/release/mpfree`, the program `host_devtest_mpc.py` copies.
 2. **The stick boots** on the hardware thread's blocks, and its checks pass.
-3. **The benchmark** (**RAM only**, about 50 minutes): `host_bench_mpc.py` as in Q8b. Since this change the default build also runs `--starts` (what a note costs as it starts) and `--plain --json default-plain.json` (every engine with the NEON kernels off, for the keep-or-drop A/B).
+3. **The benchmark** (**RAM only**, about 55 minutes): `host_bench_mpc.py` as in Q8b. Since this change the default build also runs `--starts` (what a note costs as it starts) and `--plain --json default-plain.json` (every engine with the NEON kernels off, for the keep-or-drop A/B). The default build also runs `--stems` (about 4 minutes and 200 MB of RAM: the stem separation's networks with seeded weights on 30 s of noise, its NEON kernels checked against their twins first, then four timed runs on cores 0 and 1; it skips itself if less than 400 MB is free; [Stem separation](../design/stems.md)). It passes when it shows `stems: NEON matches plain` and a `stems: estimate` line.
 
    ```bash
    cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run bench -- env MPFREE_ACCEPT_BENCH=YES python3 tools/mpc-one/host_bench_mpc.py
@@ -93,7 +95,7 @@ The hardware thread builds the stick and writes the round's runbook. These are t
    - **What it changes:** it talks only to the test build (port 2222, the stick's own host key) and runs the same read-only checks as the app step first, plus that the stick's kits are at `/run/mpfree-kits/kits.bin`. It copies `mpfree` and the workflows into `/run/mpfree-devtest` (RAM) and checks their hashes there. It stops our pad player and log display (`mpfree-test-app`, `mpfree-test-screen`: RAM state only; Akai's services are not running and are never touched) and starts whichever was running again at the end, also when a run fails or you press `q` or Ctrl-C. Each workflow runs `mpfree play --script … --kits /run/mpfree-kits/kits.bin --data /run/mpfree-devtest/data-NAME --gain-db -12`: its saves go to that RAM folder, so partition 4 is never opened, and the kits are only read.
    - **Hands off the MPC** while it plays: the workflows press the buttons and pads themselves. Keep the volume where you can hear it. The terminal shows each part (`mark` lines) as it starts. At the end of the default pass it asks one question: did anything click, drop out, stick or sound wrong.
    - **Then heavy-load on each sound-core setting** (`--sound-cores shared`, `core3`, `two`, `three`), the same steps each time. `s` at that prompt skips it.
-   - **Passes when** it ends `RESULT: 11 runs played.` and prints `pad player: active (started again)`. A workflow that fails is listed on a `FAILED:` line, and the next one still plays.
+   - **Passes when** it ends `RESULT: 12 runs played.` and prints `pad player: active (started again)`. A workflow that fails is listed on a `FAILED:` line, and the next one still plays.
    - **If it is cut off halfway** (the cable, `q`, Ctrl-C), it ends a workflow still running from `/run/mpfree-devtest` and starts the pad player again; if the cable is gone, the pad player starts at the next power-on. Nothing is left but RAM.
    - **Undo:** none needed. Switching the MPC off clears `/run`.
 
@@ -124,6 +126,8 @@ The other device checks are left out of a hands-off round unless an owner names 
    `MPFREE_SCRIPT_LINES=1` prints every line the session wrote, to write the `expect`s from.
 3. Add it to the `workflows!` list in `smoke/scripts.rs` (`every_workflow_file_has_its_test` fails until you do).
 4. The device round plays every file in the folder. `MPFREE_DEVTEST_ONLY=NAME` plays just one.
+
+A workflow for the stick test D3 goes in `tools/mpc-one/streamtest/workflows/` instead, says `needs stream-audio` (its takes record to files and play from them, for that run only), and is listed in `stream_workflows!`. CI plays it in a session that streams, with every wait over 1 s played as 1 s; `MPFREE_SCRIPT` does the same for a file that needs stream-audio. The device round's workflows never need it: their data folders are in RAM.
 
 ## What comes next
 

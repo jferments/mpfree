@@ -2,6 +2,7 @@
 //! block by block at the MPC's period. Setup allocates; the block function
 //! must not.
 
+use mpfree_arp::modifier::{ModSource, Modifier};
 use mpfree_audiotracks::host::COPY_SAMPLES;
 use mpfree_audiotracks::{
     AudioTracks, Command as TrackCommand, Input as TrackInput, Io as TrackIo, MAX_TRACKS,
@@ -2197,15 +2198,19 @@ pub fn all(rate: u32) -> Vec<Case> {
     }
     v.push(measured(|| note_edit(NoteEditCase::VelocityAndUndo)));
     v.push(measured(|| note_edit(NoteEditCase::TransposeAll)));
-    v.push(measured(|| live_arps(rate, 4)));
-    v.push(measured(|| live_arps(rate, 16)));
+    v.push(measured(|| live_arps(rate, 4, false)));
+    v.push(measured(|| live_arps(rate, 16, false)));
+    v.push(measured(|| live_arps(rate, 16, true)));
     v.push(measured(|| looper(rate, 60)));
     v.push(measured(|| looper_loops(rate, 60, false)));
     v.push(measured(|| looper_loops(rate, 60, true)));
+    v.push(measured(|| looper_by_ear(rate, 60)));
     v.push(measured(|| audio_tracks(rate, 0, false)));
     v.push(measured(|| audio_tracks(rate, 2, false)));
     v.push(measured(|| audio_tracks(rate, 2, true)));
-    v.push(measured(|| stream_voices(rate, 64, Read::Hermite, 1.5)));
+    v.push(measured(|| audio_clips(rate)));
+    v.push(measured(|| stream_voices(rate, 64, Read::Near, 0.75)));
+    v.push(measured(|| stream_voices(rate, 64, Read::Near, 1.5)));
     v.push(measured(|| stream_voices(rate, 64, Read::Sinc8, 1.5)));
     v.push(measured(|| stream_voices(rate, 64, Read::Sinc8, 3.0)));
     v.push(measured(|| stream_voices(rate, 64, Read::Sinc16, 1.5)));
@@ -4430,8 +4435,12 @@ impl Sink for RealPass {
 /// several tracks hold latched arps: each latched a 4-note chord (pressed
 /// on the pads through its arp) and plays it Up over 2 octaves in 32nds,
 /// following the transport (128 BPM, swung). The other arps idle. No clips:
-/// the Time case measures those.
-fn live_arps(rate: u32, n: usize) -> Case {
+/// the Time case measures those. `pushed`: each arp's Modifier is on the
+/// mod wheel (a rate step, an octave, gate, a roll and accents at its top)
+/// and the wheel moves every block, up and down over 64 blocks, so every
+/// arp works its pushed settings out again each block: the Modifier's
+/// worst case, a wheel never still.
+fn live_arps(rate: u32, n: usize, pushed: bool) -> Case {
     let mut t = Transport::new(rate, 128.0).expect("transport");
     t.command(
         0,
@@ -4444,10 +4453,24 @@ fn live_arps(rate: u32, n: usize) -> Case {
     let mut arps = Box::new(TrackArps::new(rate, 128.0));
     for track in 0..n {
         let e = arps.engine(track).expect("an arp");
+        let modifier = if pushed {
+            Modifier {
+                source: ModSource::ModWheel,
+                rate: 1,
+                octaves: 1,
+                gate: 30,
+                swing: 0,
+                rolls: 1,
+                accents: 30,
+            }
+        } else {
+            Modifier::default()
+        };
         e.set_settings(mpfree_arp::Settings {
             mode: mpfree_arp::Mode::Arp,
             rate: mpfree_arp::Rate::ThirtySecond,
             octaves: 2,
+            modifier,
             ..mpfree_arp::Settings::default()
         });
         e.set_latch(mpfree_arp::LatchMode::Replace);
@@ -4456,12 +4479,35 @@ fn live_arps(rate: u32, n: usize) -> Case {
     let mut sink = TimeSink { notes: 0 };
     let mut player = Player::new();
     let mut block = TBlock::new();
+    let name = if pushed {
+        format!("Arps: {n} latched arps at 32nds, a mod wheel always moving")
+    } else {
+        format!("Arps: {n} latched arps at 32nds")
+    };
     Case {
-        name: format!("Arps: {n} latched arps at 32nds"),
+        name,
         module: "time",
-        what: "the per-track arps, n of 16 playing latched 4-note chords",
+        what: if pushed {
+            "the per-track arps, n of 16 playing latched 4-note chords, each Modifier pushed by a mod wheel that moves every block"
+        } else {
+            "the per-track arps, n of 16 playing latched 4-note chords"
+        },
         block: Box::new(move |b, l, r| {
             t.process(l.len() as u32, &mut block);
+            if pushed {
+                // Up and down over 64 blocks.
+                let k = (b % 64) as f32;
+                let wheel = if k < 32.0 {
+                    k / 31.0
+                } else {
+                    (63.0 - k) / 31.0
+                };
+                for track in 0..n {
+                    if let Some(e) = arps.engine(track) {
+                        e.control(ModSource::ModWheel, wheel);
+                    }
+                }
+            }
             if b == 0 {
                 for track in 0..n {
                     for k in 0..4u8 {
@@ -4524,6 +4570,91 @@ fn looper(rate: u32, seconds: u32) -> Case {
             out[..2 * n].fill(0.0);
             t.process(n as u32, &mut block);
             lp.process(&block, &line_in[..2 * n], &mut out[..2 * n]);
+            for (i, (a, c)) in l.iter_mut().zip(r.iter_mut()).enumerate() {
+                *a = out[2 * i];
+                *c = out[2 * i + 1];
+            }
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// Smart loop end by ear (step 3): a free first pass from the line input
+/// with Auto, over and over, 8 s a turn. Two bars of a beat at 120 BPM
+/// come in 80 ms after REC, REC again comes 40 ms after the next downbeat,
+/// and Auto closes the loop on the downbeat it heard and starts the song;
+/// the loop plays to the turn's end, then it is cleared and the song
+/// stopped. The hit track listens all through the pass. The finder answers
+/// in the period after it is asked, so one block a turn holds its work
+/// (in the app it runs on a thread of its own).
+fn looper_by_ear(rate: u32, seconds: u32) -> Case {
+    use mpfree_looper::find::{find, FindJob};
+    use mpfree_looper::hits::kit::Kit;
+    use mpfree_looper::SmartEnd;
+    let mut t = Transport::new(rate, 100.0).expect("transport");
+    let mut lp = Looper::new(rate, seconds);
+    for c in [
+        LooperCommand::TempoFromLoop(true),
+        LooperCommand::SetBars(None),
+        LooperCommand::SetSmartEnd(SmartEnd::Auto),
+        LooperCommand::SmartByEar(true),
+    ] {
+        lp.command(c);
+    }
+    let mut job = FindJob::new(mpfree_looper::ends::reach(rate, f64::NAN));
+    let turn = 8 * u64::from(rate);
+    let ms = move |m: u64| m * u64::from(rate) / 1000;
+    let (early, late) = (ms(80), ms(40));
+    let two_bars = 4 * u64::from(rate);
+    let mut beat = vec![0.0f32; 2 * turn as usize];
+    Kit::new(rate).beat(&mut beat, early as usize, 120.0, 2, &|_| 0.0);
+    let tap = early + two_bars + late;
+    let mut block = TBlock::new();
+    let (mut line_in, mut out) = (vec![0.0f32; 2 * MAX_BLOCK], vec![0.0f32; 2 * MAX_BLOCK]);
+    let (mut frame, mut from, mut tapped) = (0u64, 0u64, false);
+    Case {
+        name: format!("Looper ({seconds} s), a free first pass by ear with Auto"),
+        module: "looper",
+        what: "the hit track on a free first pass, Auto closing it on the downbeat heard",
+        block: Box::new(move |_, l, r| {
+            let n = l.len();
+            // (A tenth of a second between turns, for the clear.)
+            let at = frame.saturating_sub(from);
+            if frame == from {
+                lp.command(LooperCommand::Record);
+            }
+            if !tapped && at + n as u64 > tap {
+                lp.command(LooperCommand::Record);
+                tapped = true;
+            }
+            for i in 0..n {
+                let x = match frame >= from {
+                    true => beat.get(2 * (at as usize + i)).copied().unwrap_or(0.0),
+                    false => 0.0,
+                };
+                input_frame(&mut line_in, i, x, x);
+            }
+            out[..2 * n].fill(0.0);
+            t.process(n as u32, &mut block);
+            lp.process(&block, &line_in[..2 * n], &mut out[..2 * n]);
+            frame += n as u64;
+            if lp.find_job(&mut job) {
+                find(&mut job);
+                lp.found(&job);
+            }
+            if let Some((_, reading, at, into)) = lp.take_tempo() {
+                let pos = t.position();
+                let start = pos - pos.rem_euclid(t.meter().bar_ticks()) + into;
+                t.command(at, T::Locate(start));
+                t.command(at, T::SetTempo(reading.bpm));
+                t.command(at, T::Play);
+            }
+            if frame >= from + turn {
+                lp.command(LooperCommand::Clear);
+                t.command(frame, T::Stop);
+                from = frame + ms(100) / n as u64 * n as u64;
+                tapped = false;
+            }
             for (i, (a, c)) in l.iter_mut().zip(r.iter_mut()).enumerate() {
                 *a = out[2 * i];
                 *c = out[2 * i + 1];
@@ -4804,6 +4935,150 @@ fn audio_tracks(rate: u32, recording: usize, files: bool) -> Case {
             if files {
                 serve(&mut a, COPY_SAMPLES);
             }
+            for (i, (x, y)) in ol.iter_mut().zip(or.iter_mut()).enumerate() {
+                *x = out[2 * i];
+                *y = out[2 * i + 1];
+            }
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// Audio clips (phase 2, step 2b): every track looping a 2-bar clip of two
+/// regions (a comp boundary in the middle), and launching another on every
+/// bar line (the tracks taking turns through 3 clips), so each bar every
+/// track crossfades a launch over the old clip's fade out, as the
+/// arranger's player says it.
+fn audio_clips(rate: u32) -> Case {
+    use mpfree_audiotracks::save::TakeFile;
+    use mpfree_audiotracks::{Answer, Change, ClipPlay, ClipRegion, Plays, RecordingId};
+    const CLIPS: usize = 3;
+    let bar = 4 * i64::from(PPQ);
+    let bar_frames = 2 * u64::from(rate); // 120 BPM
+    let mut t = Transport::new(rate, 120.0).expect("transport");
+    let mut a = AudioTracks::new(rate, 60);
+    // Three recordings of 2 bars and a half, stereo, from the bench's
+    // input.
+    let prog = program(rate);
+    let frames = (5 * rate / 2) as usize * 2;
+    for k in 0..CLIPS as u16 {
+        let (mut l, mut r) = (vec![0.0f32; frames], vec![0.0f32; frames]);
+        prog.play(u64::from(k) * 7 * u64::from(rate), &mut l, &mut r);
+        let audio = l.iter().zip(&r).flat_map(|(x, y)| [*x, *y]).collect();
+        let f = TakeFile {
+            id: k,
+            rec: RecordingId(1 + u128::from(k)),
+            track: 0,
+            group: k,
+            pass: 0,
+            bpm: 120.0,
+            anchor: 0.0,
+            frames,
+            channels: 2,
+            file: String::new(),
+            path: None,
+            audio,
+        };
+        assert!(a.load_take(f).is_ok(), "a take loads");
+    }
+    let regions: Vec<[ClipRegion; 2]> = (0..CLIPS as u16)
+        .map(|k| {
+            let r = ClipRegion {
+                start: 0,
+                end: bar,
+                rec: RecordingId(1 + u128::from(k)),
+                src: 0,
+                phase: 0.0,
+                gain: 1.0,
+                fade_in: 0,
+                fade_out: 0,
+                into: 0,
+                left: 0,
+            };
+            let later = i64::from(rate) / 3;
+            [
+                r,
+                ClipRegion {
+                    start: bar,
+                    end: 2 * bar,
+                    src: bar_frames as i64 + later,
+                    ..r
+                },
+            ]
+        })
+        .collect();
+    let mut block = TBlock::new();
+    let n = MAX_BLOCK;
+    let (line_in, mut out) = (vec![0.0f32; 2 * n], vec![0.0f32; 2 * n]);
+    let mut frame = 0u64;
+    while a.loading() > 0 {
+        t.process(n as u32, &mut block);
+        let map = *t.tempo_map();
+        a.process(&block, &map, &line_in, &mut out);
+        frame += n as u64;
+    }
+    t.command(frame, T::PlayStart);
+    let start = frame;
+    let mut tr = t;
+    Case {
+        name: format!("Audio tracks: {MAX_TRACKS} tracks of 2-bar clips launched every bar"),
+        module: "looper",
+        what: "a launch on every track on every bar line, crossfading",
+        block: Box::new(move |_, ol, or| {
+            let n = ol.len();
+            // The clip track `k` plays in bar `b`, from its line.
+            let plays = |k: usize, b: u64| {
+                let c = (b as usize + k) % CLIPS;
+                Plays::Clip(ClipPlay {
+                    regions: &regions[c],
+                    origin: (b as i64 * bar) as f64,
+                    len: 2 * bar,
+                    last_frame: 2 * bar_frames as i64,
+                    gain: 1.0,
+                    clip: c as u32 + 1,
+                    stamp: 1,
+                })
+            };
+            let since = frame.saturating_sub(start);
+            let b0 = since.saturating_sub(1) / bar_frames;
+            // A bar line in this block: every track launches there.
+            let line = (b0 + 1) * bar_frames;
+            let mut changes = [[Change {
+                frame: 0,
+                tick: 0.0,
+                plays: Plays::Nothing,
+                muted: false,
+                ring: false,
+            }; 1]; MAX_TRACKS];
+            let mut answers = [Answer::default(); MAX_TRACKS];
+            for (k, (ans, ch)) in answers.iter_mut().zip(changes.iter_mut()).enumerate() {
+                let mut c = 0;
+                if frame > start && (since..since + n as u64).contains(&line) {
+                    ch[0] = Change {
+                        frame: (line - since) as u32,
+                        tick: ((b0 + 1) as i64 * bar) as f64,
+                        plays: plays(k, b0 + 1),
+                        muted: false,
+                        ring: false,
+                    };
+                    c = 1;
+                }
+                *ans = Answer {
+                    start: if frame > start {
+                        plays(k, b0)
+                    } else {
+                        Plays::Song
+                    },
+                    muted: false,
+                    changes: &ch[..c],
+                    superseded: 0,
+                };
+            }
+            out[..2 * n].fill(0.0);
+            tr.process(n as u32, &mut block);
+            let map = *tr.tempo_map();
+            a.process_with(&block, &map, &line_in[..2 * n], &mut out[..2 * n], &answers);
+            frame += n as u64;
             for (i, (x, y)) in ol.iter_mut().zip(or.iter_mut()).enumerate() {
                 *x = out[2 * i];
                 *y = out[2 * i + 1];
@@ -5369,12 +5644,20 @@ pub fn lanes(rate: u32, worker: Option<usize>, third: Option<usize>) -> Vec<Case
                 lane_wait(),
             )
         }),
-        measured(|| native_split("Sampler 24 voices split natively, one core", rate, None)),
+        measured(|| {
+            native_split(
+                "Sampler 24 voices split natively, one core",
+                rate,
+                None,
+                lane_wait(),
+            )
+        }),
         measured(|| {
             native_split(
                 "Sampler 24 voices split natively, 2 cores, worker sleeps",
                 rate,
                 Some(config(false)),
+                lane_wait(),
             )
         }),
         measured(|| {
@@ -5382,6 +5665,7 @@ pub fn lanes(rate: u32, worker: Option<usize>, third: Option<usize>) -> Vec<Case
                 "Sampler 24 voices split natively, 2 cores, worker spins",
                 rate,
                 Some(config(true)),
+                lane_wait(),
             )
         }),
         measured(|| {
@@ -5669,8 +5953,9 @@ fn split_sampler(name: &str, rate: u32, lane: Option<LaneConfig>, wait: Duration
 /// The [`sampler`] case with the engine's own split (`Engine::split`):
 /// one engine of 24 voices, the second 12 rendered on a lane, every hit,
 /// choke and steal still seeing all 24. `lane` None: the lane runs on this
-/// thread, which is the same work on one core.
-fn native_split(name: &str, rate: u32, lane: Option<LaneConfig>) -> Case {
+/// thread, which is the same work on one core. Each block waits up to
+/// `wait` for the lane.
+fn native_split(name: &str, rate: u32, lane: Option<LaneConfig>, wait: Duration) -> Case {
     let allow = Allow {
         steals: true,
         grains: true,
@@ -5696,7 +5981,7 @@ fn native_split(name: &str, rate: u32, lane: Option<LaneConfig>) -> Case {
             for ev in hits.at(b).into_iter().flatten() {
                 e.apply(ev);
             }
-            e.render_until(l, r, Instant::now() + lane_wait());
+            e.render_until(l, r, Instant::now() + wait);
         }),
         mem_bytes: 0,
     }
@@ -5783,7 +6068,7 @@ fn stream_voices(rate: u32, n: usize, read: Read, speed: f64) -> Case {
         .collect();
     let mut out = vec![0.0f32; MAX_BLOCK * 2];
     let read_name = match read {
-        Read::Hermite => "Hermite",
+        Read::Near => "8-point",
         Read::Sinc8 => "band-limited",
         Read::Sinc16 => "band-limited 16",
     };
@@ -5869,8 +6154,8 @@ mod tests {
             600,
         );
         same_blocks(
-            native_split("one", 44_100, None),
-            native_split("two", 44_100, lane()),
+            native_split("one", 44_100, None, wait),
+            native_split("two", 44_100, lane(), wait),
             600,
         );
         same_blocks(
@@ -5926,9 +6211,9 @@ mod tests {
 
     #[test]
     fn the_live_arps_case_plays_every_busy_arp() {
-        let mut four = measured(|| live_arps(44_100, 4));
+        let mut four = measured(|| live_arps(44_100, 4, false));
         let (l4, _) = run(&mut four, 1_000);
-        let mut all = measured(|| live_arps(44_100, 16));
+        let mut all = measured(|| live_arps(44_100, 16, false));
         let (l16, _) = run(&mut all, 1_000);
         // About 3 s at 128 BPM: some 50 32nds, an on and an off each.
         assert!(l4[0] > 300.0, "{}", l4[0]);
@@ -5938,6 +6223,10 @@ mod tests {
             l16[0],
             l4[0]
         );
+        // The moving wheel pushes them: faster, with rolls, so more notes.
+        let mut pushed = measured(|| live_arps(44_100, 16, true));
+        let (lp, _) = run(&mut pushed, 1_000);
+        assert!(lp[0] > l16[0] * 1.2, "{} against {}", lp[0], l16[0]);
     }
 
     #[test]
