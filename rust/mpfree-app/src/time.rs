@@ -9564,6 +9564,96 @@ mod tests {
         assert_eq!(c.locks.iter().filter(|l| l.tick == 1920).count(), 2);
     }
 
+    /// A lock on the synth pastes into another track's clip when that
+    /// track plays the same synth (refactor F1), not when it plays
+    /// another, nor into a clip whose synth locks were made for another.
+    #[test]
+    fn a_synth_lock_pastes_onto_a_track_that_plays_the_same_synth() {
+        use mpfree_node::Node;
+        use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_seq::Lock;
+        use mpfree_time_ui::editor::EditAction as E;
+        let poly = crate::synth::engine_node("mpfree.poly", RATE).unwrap();
+        let fm = crate::synth::engine_node("mpfree.fm", RATE).unwrap();
+        let of = |n: &dyn Node| -> Option<InstRef> { Some((n.info(), n.params())) };
+        let cutoff = poly.params().iter().find(|p| p.name == "Cutoff").unwrap();
+        let cut = RelAddr::new(OnTrack::Inst, cutoff.id);
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.set_instruments(&[of(&*poly), of(&*poly), of(&*fm)]);
+        h.step_action(StepAction::Tap {
+            pad: 0,
+            step: 0,
+            velocity: 100,
+        })
+        .unwrap();
+        {
+            let c = h.control.project.tracks[0].slots[0].as_mut().unwrap();
+            let note = c.notes[0].note;
+            c.add_lock(Lock::new(0, Some(note), cut, 0.7)).unwrap();
+        }
+        for t in [1, 2] {
+            h.control.project.tracks[t].slots[0] = Some(Clip::new("Verse", 3840));
+        }
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        // The lock put in by hand gets its tag with the first action, so
+        // the picture moves on once.
+        let why = h.act(TimeAction::Edit(E::Paste { tick: 0 })).unwrap_err();
+        assert!(why.contains("nothing copied yet"), "{why}");
+        let st = h.state().edit.unwrap();
+        h.act(TimeAction::Edit(E::Copy {
+            index: 0,
+            rev: st.rev,
+        }))
+        .unwrap();
+        let paste = |h: &mut TimeHost, track: usize| {
+            h.act(TimeAction::Arm(Some(track))).unwrap();
+            h.act(TimeAction::Edit(E::Open)).unwrap();
+            h.act(TimeAction::Edit(E::Paste { tick: 480 })).unwrap()
+        };
+        // Track 2 plays Poly too: the lock comes, and the clip's locks are
+        // now made for Poly.
+        let said = paste(&mut h, 1);
+        assert!(!said.contains("left out"), "{said}");
+        let c = h.control.project.clip(1, 0).unwrap();
+        assert_eq!(c.locks.len(), 1);
+        assert_eq!(c.locks[0].addr, cut);
+        assert_eq!(
+            c.made_for.as_ref().map(|m| m.node.as_str()),
+            Some("mpfree.poly")
+        );
+        // Track 3 plays FM: left out, and said.
+        let said = paste(&mut h, 2);
+        let fm_track = h.control.project.tracks[2].name.clone();
+        assert!(
+            said.ends_with(&format!(
+                "1 lock left out, as {fm_track} may not have its setting: \
+                 1 on the instrument (made for Poly, {fm_track} plays FM)"
+            )),
+            "{said}"
+        );
+        assert!(h.control.project.clip(2, 0).unwrap().locks.is_empty());
+        // A clip on track 2 whose synth locks were made for FM takes none
+        // of Poly's.
+        h.act(TimeAction::Undo).unwrap();
+        h.act(TimeAction::Arm(Some(1))).unwrap();
+        h.act(TimeAction::Undo).unwrap();
+        {
+            let c = h.control.project.tracks[1].slots[0].as_mut().unwrap();
+            c.add_lock(Lock::new(960, None, cut, 0.1)).unwrap();
+            c.made_for = Some(mpfree_seq::inst::Inst {
+                node: "mpfree.fm".into(),
+                name: "FM".into(),
+                params: vec![],
+            });
+        }
+        let said = paste(&mut h, 1);
+        assert!(
+            said.ends_with("1 on the instrument (Verse's are made for FM)"),
+            "{said}"
+        );
+        assert_eq!(h.control.project.clip(1, 0).unwrap().locks.len(), 1);
+    }
+
     /// An editor edit that what plays can't follow (the play view would not
     /// build) is taken back from the clip and the takes, as a step edit is.
     #[test]

@@ -48,12 +48,15 @@
 //! after. Put into a clip, their pressure comes in as new runs at the end
 //! of that clip's pressure (a note never names another clip's runs), and
 //! their locks come where the clip's track has the same setting
-//! ([`same_setting`]); the rest are left out and named ([`Carried::left`]).
+//! ([`same_setting`]: an instrument lock where the track plays the
+//! instrument it was made for, refactor F1); the rest are left out and
+//! named ([`Carried::left`]).
 //! A copied lock takes the place of a lock already in its place, as a
 //! clip keeps one lock in each. Pad hits go only into a clip of pad hits,
 //! and notes into a clip of notes ([`Holds`]): a kit's pad 3 is no MIDI
 //! note 3.
 
+use crate::inst::Inst;
 use crate::steps::{moves_edit, Edit};
 use crate::{
     touch_room, Clip, Holds, Lock, Note, Touch, TouchPoint, MAX_CLIP_TICKS, MAX_LOCKS, MAX_NOTES,
@@ -755,22 +758,53 @@ pub fn carry(
     })
 }
 
-/// Whether a lock on `addr`, copied from a clip of a track whose MIDI
-/// effects were `from`, sets the same thing on the track that gets it,
-/// whose MIDI effects are `to` (`same_track` when it is the same track).
-/// On the same track it always does. On another, a lock on what every
+/// A track as a copied lock sees it (plan 1B.4): its MIDI effects, and
+/// the instrument its instrument locks are for (refactor F1). For the
+/// copy, what the copied clip's instrument locks were made for
+/// ([`Clip::made_for`], else what its track played then); for the track
+/// a paste goes to, the instrument it plays now ([`crate::Track::plays`]).
+/// None where it isn't known.
+#[derive(Clone, Copy, Debug)]
+pub struct TrackSettings<'a> {
+    pub fx: &'a TrackFx,
+    pub inst: Option<&'a Inst>,
+}
+
+/// Whether a lock on `addr`, copied from a clip of track `from`, sets the
+/// same thing on track `to` (`same_track` when it is the same track).
+/// On the same track it does, but for an instrument lock made for another
+/// instrument than the track plays now. On another, a lock on what every
 /// track has alike does: its mixer strip's own settings, its sequencer
-/// settings and its arp (fixed id tables); and one on a MIDI effect when
-/// that track has an effect of the same kind under the same id. A lock on
-/// the instrument, a kit pad, an insert or MIDI out does only on the same
-/// track: another track may play another instrument, its strip holds its
-/// own inserts, and its MIDI out may go to another device's port and
-/// channel, where the same controller turns something else.
-pub fn same_setting(same_track: bool, from: &TrackFx, to: &TrackFx, addr: RelAddr) -> bool {
-    if same_track {
-        return true;
-    }
+/// settings and its arp (fixed id tables); one on a MIDI effect when that
+/// track has an effect of the same kind under the same id; and one on the
+/// instrument when that track plays the same kind of instrument the lock
+/// was made for and the control has the name it was made with (refactor
+/// F1; a name not known on either side is taken as the same, as
+/// [`Clip::param_plays`] does). A lock on a kit pad, an insert or MIDI
+/// out does only on the same track: another track may play another kit,
+/// its strip holds its own inserts, and its MIDI out may go to another
+/// device's port and channel, where the same controller turns something
+/// else.
+pub fn same_setting(
+    same_track: bool,
+    from: TrackSettings,
+    to: TrackSettings,
+    addr: RelAddr,
+) -> bool {
     match addr.on {
+        OnTrack::Inst => match (from.inst, to.inst) {
+            (Some(made), Some(now)) => {
+                made.node == now.node
+                    && match (made.param_name(addr.param), now.param_name(addr.param)) {
+                        (Some(a), Some(b)) => a == b,
+                        _ => true,
+                    }
+            }
+            // An instrument not known (an older clip, a track the app
+            // hasn't told of): only on its own track, as before.
+            _ => same_track,
+        },
+        _ if same_track => true,
         OnTrack::Strip | OnTrack::Seq | OnTrack::Arp => true,
         OnTrack::NoteFx(id) => {
             let kind = |fx: &TrackFx| {
@@ -778,9 +812,9 @@ pub fn same_setting(same_track: bool, from: &TrackFx, to: &TrackFx, addr: RelAdd
                     .and_then(|p| fx.slots[p])
                     .map(|s| std::mem::discriminant(&s.fx))
             };
-            kind(from).is_some() && kind(from) == kind(to)
+            kind(from.fx).is_some() && kind(from.fx) == kind(to.fx)
         }
-        OnTrack::Inst | OnTrack::Pad(_) | OnTrack::Insert(_) | OnTrack::Midi => false,
+        OnTrack::Pad(_) | OnTrack::Insert(_) | OnTrack::Midi => false,
     }
 }
 
@@ -1458,6 +1492,11 @@ mod tests {
     /// new runs after that clip's own, a lock the track may not have is
     /// left out and named, and a copied lock takes its place's lock. One
     /// take, which undoes; refused whole when the clip has no room.
+    /// A track with MIDI effects `fx` and no instrument known.
+    fn at(fx: &TrackFx) -> TrackSettings<'_> {
+        TrackSettings { fx, inst: None }
+    }
+
     #[test]
     fn notes_copied_carry_their_pressure_and_the_locks_their_track_has() {
         use mpfree_notefx::fx::{Fx, Velocity};
@@ -1530,7 +1569,7 @@ mod tests {
         let there = Lock::new(0, Some(38), level, 0.9);
         b.add_lock(there).unwrap();
         let fx = TrackFx::default();
-        let other = |l: &Lock| same_setting(false, &fx, &fx, l.addr);
+        let other = |l: &Lock| same_setting(false, at(&fx), at(&fx), l.addr);
         let c = carry(&b, &copied, 3600, other).unwrap();
         assert_eq!(
             c.left,
@@ -1555,7 +1594,10 @@ mod tests {
         back.apply(&c.edit.inverse()).unwrap();
         assert_eq!((back.notes.len(), back.locks.clone()), (1, vec![there]));
         // Into the same track's clip, every lock comes.
-        let c = carry(&b, &copied, 0, |l| same_setting(true, &fx, &fx, l.addr)).unwrap();
+        let c = carry(&b, &copied, 0, |l| {
+            same_setting(true, at(&fx), at(&fx), l.addr)
+        })
+        .unwrap();
         assert!(c.left.is_empty());
         assert_eq!(c.edit.add_locks.len(), 2);
 
@@ -1584,7 +1626,10 @@ mod tests {
 
         // What another track has alike, and its MIDI effects by id.
         for on in [OnTrack::Strip, OnTrack::Seq, OnTrack::Arp] {
-            assert!(same_setting(false, &fx, &fx, RelAddr::new(on, 3)), "{on:?}");
+            assert!(
+                same_setting(false, at(&fx), at(&fx), RelAddr::new(on, 3)),
+                "{on:?}"
+            );
         }
         for on in [
             OnTrack::Inst,
@@ -1593,19 +1638,69 @@ mod tests {
             OnTrack::Midi,
         ] {
             assert!(
-                !same_setting(false, &fx, &fx, RelAddr::new(on, 3)),
+                !same_setting(false, at(&fx), at(&fx), RelAddr::new(on, 3)),
                 "{on:?}"
             );
-            assert!(same_setting(true, &fx, &fx, RelAddr::new(on, 3)), "{on:?}");
+            assert!(
+                same_setting(true, at(&fx), at(&fx), RelAddr::new(on, 3)),
+                "{on:?}"
+            );
         }
         let mut vel = TrackFx::default();
         vel.add(Fx::Velocity(Velocity::default())).unwrap();
         let mut moved = TrackFx::default();
         moved.add(Fx::Transpose { semitones: 2 }).unwrap();
         let fx1 = RelAddr::new(OnTrack::NoteFx(1), 0);
-        assert!(same_setting(false, &vel, &vel.clone(), fx1));
-        assert!(!same_setting(false, &vel, &moved, fx1), "another kind");
-        assert!(!same_setting(false, &vel, &fx, fx1), "none there");
-        assert!(!same_setting(false, &fx, &fx, fx1));
+        assert!(same_setting(false, at(&vel), at(&vel.clone()), fx1));
+        assert!(
+            !same_setting(false, at(&vel), at(&moved), fx1),
+            "another kind"
+        );
+        assert!(!same_setting(false, at(&vel), at(&fx), fx1), "none there");
+        assert!(!same_setting(false, at(&fx), at(&fx), fx1));
+
+        // An instrument lock goes to a track that plays the same kind of
+        // instrument, its control named the same (refactor F1).
+        let poly = |name: &str| Inst {
+            node: "mpfree.poly".into(),
+            name: "Poly".into(),
+            params: vec![(3, name.into())],
+        };
+        let fm = Inst {
+            node: "mpfree.fm".into(),
+            name: "FM".into(),
+            params: vec![(3, "Ratio".into())],
+        };
+        let inst = |made: Option<&Inst>, now: Option<&Inst>, same| {
+            let side = |inst| TrackSettings { fx: &fx, inst };
+            same_setting(same, side(made), side(now), RelAddr::new(OnTrack::Inst, 3))
+        };
+        let (cutoff, drive) = (poly("Cutoff"), poly("Drive"));
+        let unnamed = Inst {
+            params: vec![],
+            ..cutoff.clone()
+        };
+        assert!(
+            inst(Some(&cutoff), Some(&poly("Cutoff")), false),
+            "the same synth"
+        );
+        assert!(!inst(Some(&cutoff), Some(&fm), false), "another synth");
+        assert!(
+            !inst(Some(&cutoff), Some(&fm), true),
+            "nor on its own track, now playing another"
+        );
+        assert!(
+            !inst(Some(&cutoff), Some(&drive), false),
+            "a control renamed"
+        );
+        assert!(
+            inst(Some(&unnamed), Some(&cutoff), false),
+            "a name not known"
+        );
+        assert!(
+            !inst(None, Some(&cutoff), false) && inst(None, Some(&cutoff), true),
+            "made for what isn't known: its own track only"
+        );
+        assert!(!inst(Some(&cutoff), None, false) && inst(Some(&cutoff), None, true));
     }
 }

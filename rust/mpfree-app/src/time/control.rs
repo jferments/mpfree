@@ -238,18 +238,22 @@ pub struct MuteLight {
 
 /// Notes copied in the note editor (piano roll plan 1B.4): the copy, the
 /// track it came from by its lasting id with its MIDI effects as they
-/// were then, and how the hint line says it ("4 notes from Verse").
+/// were then, the instrument its instrument locks were made for (the
+/// clip's `made_for`, else what the track played; refactor F1), and how
+/// the hint line says it ("4 notes from Verse").
 #[derive(Clone, Debug)]
 struct NoteCopy {
     copied: Copied,
     from: TrackId,
     fx: TrackFx,
+    inst: Option<mpfree_seq::inst::Inst>,
     said: String,
 }
 
 /// What a paste into `track` left out, for its line: how many locks, and
-/// on what, since the track may not have those settings.
-fn left_out(left: &[Lock], track: &str) -> String {
+/// on what, since the track may not have those settings; for instrument
+/// locks, why, when it is known (`inst_why`, refactor F1).
+fn left_out(left: &[Lock], track: &str, inst_why: Option<&str>) -> String {
     use mpfree_seq::mpfree_param::OnTrack;
     // What each is on, as one and as many, in this order.
     let kind = |on: OnTrack| match on {
@@ -270,7 +274,11 @@ fn left_out(left: &[Lock], track: &str) -> String {
         .filter_map(|k| {
             let n = left.iter().filter(|l| kind(l.addr.on) == k).count();
             let (one, many) = ON[k];
-            (n > 0).then(|| format!("{n} on {}", if n == 1 { one } else { many }))
+            let why = match inst_why {
+                Some(why) if k == 0 => format!(" ({why})"),
+                _ => String::new(),
+            };
+            (n > 0).then(|| format!("{n} on {}{why}", if n == 1 { one } else { many }))
         })
         .collect();
     let n = left.len();
@@ -2747,12 +2755,15 @@ impl TimeControl {
         };
         // COPY + a note: the editor picked what goes, and the copy is
         // kept here, apart from the clip (plan 1B.4).
-        let copied = matches!(a, EditAction::Copy { .. })
-            .then(|| (notes::copy(clip, &ed.sel), clip.name.clone()));
+        let copied = matches!(a, EditAction::Copy { .. }).then(|| {
+            let made = clip.made_for.clone();
+            (notes::copy(clip, &ed.sel), clip.name.clone(), made)
+        });
         self.changed = true;
-        if let Some((copied, name)) = copied {
+        if let Some((copied, name, made)) = copied {
             let track = &self.project.tracks[ed.track];
             let (from, fx) = (track.id, track.note_fx);
+            let inst = made.or_else(|| track.plays.get().cloned());
             self.editor = Some(ed);
             if copied.notes.is_empty() {
                 return Err("copy: that note is gone, so nothing was copied".into());
@@ -2766,6 +2777,7 @@ impl TimeControl {
                 copied,
                 from,
                 fx,
+                inst,
                 said,
             });
             return Ok(line);
@@ -2888,7 +2900,23 @@ impl TimeControl {
         })?;
         let mut line = format!("paste: {} into {} on {}", c.said, clip.name, to.name);
         if !carried.left.is_empty() {
-            line += &left_out(&carried.left, &to.name);
+            // Why instrument locks stayed out, when it is known (refactor
+            // F1): made for another instrument than the track plays, or
+            // the clip's own are for another.
+            let plays = to.plays.get();
+            let inst_why = match (c.inst.as_ref(), plays, clip.made_for.as_ref()) {
+                (Some(made), Some(now), _) if made.node != now.node => Some(format!(
+                    "made for {}, {} plays {}",
+                    made.name, to.name, now.name
+                )),
+                (_, Some(now), Some(own))
+                    if own.node != now.node && clip.inst_params().next().is_some() =>
+                {
+                    Some(format!("{}'s are made for {}", clip.name, own.name))
+                }
+                _ => None,
+            };
+            line += &left_out(&carried.left, &to.name, inst_why.as_deref());
         }
         Ok(Editor::pasted(carried.edit, line))
     }
@@ -2916,7 +2944,23 @@ impl TimeControl {
             .clip(track, slot)
             .ok_or("edit: the clip is gone")?;
         let same = to.id == c.from;
-        let keep = |l: &Lock| notes::same_setting(same, &c.fx, &to.note_fx, l.addr);
+        let plays = to.plays.get();
+        let from = notes::TrackSettings {
+            fx: &c.fx,
+            inst: c.inst.as_ref(),
+        };
+        let there = notes::TrackSettings {
+            fx: &to.note_fx,
+            inst: plays,
+        };
+        // A clip's instrument locks are all made for one instrument
+        // (refactor F1): one for the track's goes only into a clip whose
+        // own are for it too, or that has none.
+        let keep = |l: &Lock| {
+            notes::same_setting(same, from, there, l.addr)
+                && (l.addr.on != mpfree_seq::mpfree_param::OnTrack::Inst
+                    || clip.inst_refuses(l.addr.param, plays).is_none())
+        };
         Ok(notes::carry(clip, &c.copied, tick, keep))
     }
 
