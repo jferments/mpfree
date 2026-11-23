@@ -622,19 +622,28 @@ fn a_recorder_run_saves_every_take_whole_and_puts_the_writeback_limit_back() {
         assert!(text.contains(want), "missing {want:?} in\n{text}");
     }
     // The real-time class needs root (or CAP_SYS_NICE): without it step
-    // 10 is left out, saying why, and every other step runs.
-    let left: Vec<&str> = text.lines().filter(|l| l.contains("left out")).collect();
+    // 10 is left out, saying why (under the step, and in its summary row),
+    // and every other step runs.
+    let left: Vec<&str> = text
+        .lines()
+        .filter(|l| l.starts_with("  left out: "))
+        .collect();
     let ran = match left.as_slice() {
         [] => {
             assert!(
                 text.contains("  disk priority: the streams' reads real-time 4, the recorder's thread as found;"),
                 "{text}"
             );
+            assert!(!text.contains("left out"), "{text}");
             10
         }
         [one] => {
             assert!(
                 one.starts_with("  left out: the disk priority real-time 4 could not be set: "),
+                "{text}"
+            );
+            assert!(
+                text.contains("    10  left out: the disk priority real-time 4 could not be set: "),
                 "{text}"
             );
             9
