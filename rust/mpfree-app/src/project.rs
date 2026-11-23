@@ -157,12 +157,19 @@ pub const LINKED_SONG_LIST: &str = "linked-song-list";
 /// build would skip the scene's `keep` line and stop those tracks at the
 /// scene change, so it must not open it.
 pub const SCENE_KEEP: &str = "scene-keep";
+
+/// A project with a learned control that names a kit's pad or a synth by
+/// its number in the list of instruments (sampler step 16,
+/// `Owner::KitPad`, `Owner::Sound`): an older build can't read those
+/// `learn` lines, and would drop them at its next save.
+pub const LEARN_BY_INSTRUMENT: &str = "learn-by-instrument";
 /// The features this build has, of those a project can need.
 pub const KNOWN_NEEDS: &[&str] = &[
     SYNTHS_WITHOUT_TRACKS,
     AUDIO_TRACKS,
     LINKED_SONG_LIST,
     SCENE_KEEP,
+    LEARN_BY_INSTRUMENT,
 ];
 
 // ------------------------------------------------------------ the loop's side
@@ -316,6 +323,19 @@ fn parse_swing(v: &str) -> Option<mpfree_transport::time::Swing> {
     mpfree_transport::time::Swing::new(g.trim().parse().ok()?, a.trim().parse().ok()?)
 }
 
+/// Whether the MIDI part `text` has a learned control that names a kit's
+/// pad or a synth by its number in the list (sampler step 16): what the
+/// [`LEARN_BY_INSTRUMENT`] need is written for.
+pub fn learns_by_instrument(text: &str) -> bool {
+    use mpfree_play::mpfree_param::Owner;
+    text.lines()
+        .filter_map(|l| {
+            let (k, v) = l.split_once('=')?;
+            (k.trim() == "learn").then(|| mpfree_midi::learn::Saved::parse(v.trim()))?
+        })
+        .any(|l| matches!(l.target.owner, Owner::KitPad(..) | Owner::Sound(_)))
+}
+
 /// The project as text, from what the loop collected and the screen's own
 /// parts (`extra`: the sampler's, the I/O setup's, the loops').
 pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
@@ -359,6 +379,13 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
     }
     if c.clips.scenes.iter().any(|s| s.keep != 0) {
         needs.push(SCENE_KEEP);
+    }
+    let midi = parts
+        .iter()
+        .find(|(k, _)| k == MIDI)
+        .map(|(_, t)| t.as_str());
+    if midi.is_some_and(learns_by_instrument) {
+        needs.push(LEARN_BY_INSTRUMENT);
     }
     if !needs.is_empty() {
         extra.push((NEEDS_KEY.to_string(), needs.join(" ")));
@@ -3156,6 +3183,42 @@ mod tests {
         let (snap, line) = needs(&c);
         assert_eq!(line.as_deref(), Some(SCENE_KEEP));
         assert_eq!(check(&snap), Ok(FORMAT));
+    }
+
+    /// Sampler step 16: a learned control that names a kit's pad or a
+    /// synth by its number in the list (`kit9.pad5.2`, `i9.12`) makes the
+    /// project need `learn-by-instrument`, since an older build can't read
+    /// those lines; one by track, or kept for every project, doesn't.
+    #[test]
+    fn a_control_learned_by_instrument_says_the_project_needs_it() {
+        let line = |target: &str| {
+            format!("learn = any | ch 1 | cc 74 | {target} | 0.0000 1.0000 | absolute | jump\n")
+        };
+        let midi = |lines: &str| (MIDI.to_string(), format!("mpfree-midi 1\n{lines}"));
+        let needs = |extra: Vec<(String, String)>| {
+            let c = collected(String::new(), InstrumentList::new().text());
+            let snap = snapshot(&c, extra);
+            let line = snap
+                .meta
+                .extra
+                .iter()
+                .find(|(k, _)| k == NEEDS_KEY)
+                .map(|(_, v)| v.clone());
+            (snap, line)
+        };
+        assert_eq!(needs(vec![midi(&line("t3.pad5.2"))]).1, None);
+        assert_eq!(needs(vec![midi(&line("t3.inst.12"))]).1, None);
+        let rig = line("i9.12").replace("learn =", "learn-rig =");
+        assert_eq!(needs(vec![midi(&rig)]).1, None, "only the project's own");
+        for target in ["kit9.pad5.2", "i9.12"] {
+            let (snap, line) = needs(vec![midi(&line(target))]);
+            assert_eq!(line.as_deref(), Some(LEARN_BY_INSTRUMENT), "{target}");
+            assert_eq!(check(&snap), Ok(FORMAT));
+        }
+        assert!(mpfree_midi::learn::Saved::parse(
+            "any | ch 1 | cc 74 | kit9.pad5.2 | 0.0000 1.0000 | absolute | jump"
+        )
+        .is_some());
     }
 
     /// Phase 0's gate (docs/dev/design/project-safety.md): a project that

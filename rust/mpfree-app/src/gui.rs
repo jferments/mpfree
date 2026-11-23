@@ -2149,15 +2149,18 @@ pub enum LearnValue {
     /// A mixer strip's fader, pan or send, an effect's knob on the chain
     /// editor, or a macro's knob.
     Param(ParamAddr),
-    /// A knob of the synth the Synth tab shows (the selected track's), by
-    /// its parameter id.
+    /// A knob of the synth the Synth tab shows (the selected track's, or
+    /// the one the pads play), by its parameter id. Learn names the
+    /// instrument itself (sampler step 16), so the knob stays on it.
     Synth(u16),
     /// One of the armed track's arp settings its Q-Links turn, by its id
     /// in `mpfree_param::arp`.
     Arp(u16),
     /// A setting of a pad of the kit the Sample and Pads tabs show (the
-    /// armed track's): the pad, and the setting's `PadField` number.
-    Pad { pad: u8, field: u16 },
+    /// kit the last hit played, else the armed track's; sampler step 15d):
+    /// its kit place, the pad, and the setting's `PadField` number. Learn
+    /// names the kit itself (sampler step 16), so the knob stays on it.
+    Pad { kit: u8, pad: u8, field: u16 },
 }
 
 /// A track asked of the time engine for a kit: by "+ Kit track", or by a
@@ -14125,6 +14128,7 @@ impl Player {
         // the Pads tab's Level, Pan or Tune.
         if let Some((pad, field)) = self.sample.learn_field(w, t) {
             return Some(LearnValue::Pad {
+                kit: u8::try_from(self.sample.kit()).ok()?,
                 pad: u8::try_from(pad).ok()?,
                 field: field as u16,
             });
@@ -25985,6 +25989,7 @@ mod tests {
         };
         let learn = |field: PadField| {
             [FromUi::LearnValue(LearnValue::Pad {
+                kit: 0,
                 pad: pad as u8,
                 field: field as u16,
             })]

@@ -2149,6 +2149,47 @@ mod tests {
         });
     }
 
+    /// Sampler step 16: SHIFT + a touch on a pad's setting learns the kit
+    /// the Sample page shows by its number in the list, not the track; a
+    /// touch on a synth knob learns the instrument the Synth tab shows
+    /// (the shared synth here). The same touch again cancels.
+    #[test]
+    fn a_touch_learns_the_kit_and_the_synth_the_screen_shows() {
+        use crate::gui::{FromUi, LearnValue};
+        use mpfree_play::mpfree_param::{Owner, ParamAddr};
+        on_big_stack(|| {
+            let mut session = Session::new();
+            let s = &mut session;
+            s.make_sounds();
+            s.run_periods(2);
+            let kit_2 = s.instrument_list.of_kit(1).expect("kit 2 has an id");
+            let n = u16::try_from(kit_2.number()).unwrap();
+            assert_eq!(
+                s.track_kits.kit_of(s.app.track()),
+                Some(0),
+                "the track plays kit 1"
+            );
+            let pad = LearnValue::Pad {
+                kit: 1,
+                pad: 4,
+                field: 2,
+            };
+            s.route(FromUi::LearnValue(pad));
+            assert_eq!(
+                s.music.armed(),
+                Some(ParamAddr::new(Owner::KitPad(n, 4), 2))
+            );
+            s.route(FromUi::LearnValue(pad));
+            assert_eq!(s.music.armed(), None, "the same touch cancels");
+            s.route(FromUi::LearnValue(LearnValue::Synth(7)));
+            assert_eq!(
+                s.music.armed(),
+                Some(ParamAddr::new(Owner::Sound(1), 7)),
+                "the shared synth, instrument 1"
+            );
+        });
+    }
+
     /// Sampler step 15c: NOTE REPEAT while the pads play a kit on their
     /// own repeats that kit's pad (the pads' arp), never the track's, and
     /// the pads keep the kit; let go, the repeats stop. Held again, Follow

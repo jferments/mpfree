@@ -29,6 +29,8 @@
 //! |---|---|
 //! | track 3's instrument, parameter 12 | `t3.inst.12` |
 //! | track 3, sampler pad 5, parameter 2 | `t3.pad5.2` |
+//! | kit 9's pad 5 (the kit's instrument number), parameter 2, whichever track plays it (MIDI Learn) | `kit9.pad5.2` |
+//! | instrument 9's parameter 12, whichever track plays it (MIDI Learn) | `i9.12` |
 //! | mixer track 7's strip, volume (0): sequencer track 3's own ([`track_strip`]; the Drums strip, `t0`, is track 0's) | `t7.mix.0` |
 //! | bus 2, the insert with slot id 7, parameter 4 | `bus2.fx7.4` |
 //! | input 0 / pad channel 9 / return 1 / master strip | `in0.mix.0` / `ps9.mix.0` / `ret1.mix.0` / `master.mix.0` |
@@ -107,6 +109,16 @@ pub enum Owner {
     /// A sampler pad's sound on a drum track: `(track, pad)`. A value set
     /// here applies to the voice that starts on that frame.
     Pad(u8, u8),
+    /// A kit's pad by the kit's instrument number in its project's list
+    /// and the pad, whichever track plays the kit (sampler step 16): what
+    /// MIDI Learn names a pad's setting by, so a learned knob stays on its
+    /// kit when a track picks another. Its parameters are [`Owner::Pad`]'s.
+    KitPad(u16, u8),
+    /// An instrument of the project's list by its number, whichever track
+    /// plays it (sampler step 16): what MIDI Learn names a synth's knob by,
+    /// so it stays on that synth when a track picks another. Its
+    /// parameters are [`Owner::Inst`]'s.
+    Sound(u16),
     /// A mixer strip's own controls (volume, pan, sends ...).
     Strip(Strip),
     /// An insert on a strip, named by its slot id: a number the chain
@@ -765,6 +777,8 @@ impl fmt::Display for Owner {
             Owner::Looper => f.write_str("looper"),
             Owner::Perform => f.write_str("perform"),
             Owner::Play => f.write_str("play"),
+            Owner::KitPad(k, p) => write!(f, "kit{k}.pad{p}"),
+            Owner::Sound(n) => write!(f, "i{n}"),
             o => {
                 let (t, on) = o.split().expect("every other owner is on a track");
                 write!(f, "t{t}.{on}")
@@ -853,8 +867,12 @@ fn owner(words: &[&str]) -> Option<Owner> {
         [w] => num(w, "macro")
             .map(Owner::Macro)
             .or_else(|| num(w, "mod").map(Owner::Mod))
-            .or_else(|| num(w, "morph").map(Owner::Morph)),
+            .or_else(|| num(w, "morph").map(Owner::Morph))
+            .or_else(|| num(w, "i").map(Owner::Sound)),
         [s, what] => {
+            if let Some(k) = num(s, "kit") {
+                return Some(Owner::KitPad(k, num(what, "pad")?));
+            }
             let s = strip(s)?;
             if what == "mix" {
                 return Some(Owner::Strip(s));
@@ -914,6 +932,10 @@ mod tests {
             Owner::Inst(0),
             Owner::Inst(63),
             Owner::Pad(3, 5),
+            Owner::KitPad(1, 0),
+            Owner::KitPad(u16::MAX, 127),
+            Owner::Sound(1),
+            Owner::Sound(u16::MAX),
             Owner::Arp(1),
             Owner::Seq(2),
             Owner::NoteFx(3, 2),
@@ -952,6 +974,8 @@ mod tests {
         let cases = [
             (ParamAddr::new(Owner::Inst(3), 12), "t3.inst.12"),
             (ParamAddr::new(Owner::Pad(3, 5), 2), "t3.pad5.2"),
+            (ParamAddr::new(Owner::KitPad(9, 5), 2), "kit9.pad5.2"),
+            (ParamAddr::new(Owner::Sound(9), 12), "i9.12"),
             (ParamAddr::new(Owner::Strip(Strip::Track(3)), 0), "t3.mix.0"),
             (
                 ParamAddr::new(Owner::Insert(Strip::Bus(2), 7), 4),
@@ -1218,6 +1242,14 @@ mod tests {
             "t3.midi3.7",
             "play0.1",
             "t1.play.0",
+            "kit9.inst.1",
+            "kit.pad1.0",
+            "kit9.pad.0",
+            "kit70000.pad1.0",
+            "kit9.pad1",
+            "i.1",
+            "i9.pad1.0",
+            "i70000.1",
         ] {
             assert!(s.parse::<ParamAddr>().is_err(), "{s:?} should not parse");
         }
