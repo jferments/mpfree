@@ -32,11 +32,11 @@ use std::collections::BTreeMap;
 use crate::editor::zoom::RollView;
 use crate::editor::{
     box_of, chord_name, drop_of, edit_rows, knob_name, length_name, lit_scale, note_name, pads,
-    position_name, step_name, ChordShape, EditAction, Editor, Fold, LaneShow, Lens, LockMark,
-    LockSetting, NoteBox, NoteGrid, NoteTool, Tool, ToolAct, ToolBar, ToolKind, ADD, CHORD_MAJOR,
-    CHORD_MENU, CHORD_MINOR, EDIT_BUTTON, FIELDS, LOCK_LANES, MENU, PEN, PRESSURE_END,
-    PRESSURE_LANE, ROOT_MENU, SCALE_MENU, SNAP_AUTO_T, START_HANDLE, STEP_FALLBACK, TOOL_BUTTONS,
-    TOOL_CANCEL, TOOL_DONE, TOOL_OPTION,
+    position_name, step_name, ChordShape, EditAction, Editor, Fold, Hearing, LaneShow, Lens,
+    LockMark, LockSetting, NoteBox, NoteGrid, NoteTool, Tool, ToolAct, ToolBar, ToolKind, ADD,
+    CHORD_MAJOR, CHORD_MENU, CHORD_MINOR, EDIT_BUTTON, FIELDS, LOCK_LANES, MENU, PADS_WRITE, PEN,
+    PRESSURE_END, PRESSURE_LANE, ROOT_MENU, SCALE_MENU, SNAP_AUTO_T, START_HANDLE, STEP_FALLBACK,
+    TOOL_BUTTONS, TOOL_CANCEL, TOOL_DONE, TOOL_OPTION,
 };
 use crate::list::{
     ListRow, SongListView, LIST_ADD, LIST_CLIPS, LIST_LINK, LIST_LINK_CLOSE, LIST_LINK_FROM_LIST,
@@ -2196,6 +2196,8 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             // A touch naming a note carries the picture it was made on.
             let rev = st.edit.as_ref().map_or(0, |e| e.rev);
             match *kind {
+                // The Pads write chip (plan 1C.2).
+                EventKind::Tab(PADS_WRITE) => EditAction::PadsWrite,
                 // The open tool's bar (plan 2B.3).
                 EventKind::Tab(k) if k >= TOOL_BUTTONS => {
                     EditAction::Tool(match k - TOOL_BUTTONS {
@@ -4965,6 +4967,7 @@ pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
     // What a drawn note puts in (plan 2B.2).
     g.chord = ed.chord;
     g.minor = ed.minor;
+    g.pads_write = ed.pads_write;
     g.tool_bar = ed.open_tool.map(|t| ToolBar {
         name: t.kind.name(),
         hint: match preview {
@@ -5035,6 +5038,10 @@ pub struct TimePage {
     /// 2A.1). The screen's own, the same for every clip; its chip, fold
     /// and top edge change it on the roll, which the page reads back.
     pub edit_lane: LaneShow,
+    /// The note editor's Sound chip (plan 1C.2): the screen's own, the
+    /// same for every clip; a tap steps it on the roll, which the page
+    /// reads back.
+    pub edit_hearing: Hearing,
     /// What the page asks of the time engine on its own (Snap Auto's
     /// division); the app sends them ([`TimePage::take_asks`]).
     asks: Vec<TimeAction>,
@@ -5606,6 +5613,7 @@ impl TimePage {
                 f => self.folds.insert(shown, f),
             };
             self.edit_lane = g.lane;
+            self.edit_hearing = g.hearing;
         }
         match &st.edit {
             Some(e) if self.edit_built.as_ref().is_some_and(|b| same_edit(b, e)) => {
@@ -5626,6 +5634,7 @@ impl TimePage {
                 let mut grid = note_grid(e, st);
                 grid.drawer = self.edit_drawer;
                 grid.lane = self.edit_lane;
+                grid.hearing = self.edit_hearing;
                 grid.view = key
                     .and_then(|k| self.views.get(&k).copied())
                     .unwrap_or_default();

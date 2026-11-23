@@ -1079,6 +1079,14 @@ impl TimeHost {
         }
     }
 
+    /// The note editor is open with Pads write on (piano roll plan 1C.2).
+    pub fn pads_write(&self) -> bool {
+        match &self.control {
+            Half::Here(c) => c.pads_write(),
+            Half::Apart(a) => a.light.pads_write,
+        }
+    }
+
     /// The loop playing (or launched) on Loop track `t`, for OVERDUB with
     /// a cell of it armed.
     pub fn loop_on(&self, t: usize) -> Option<usize> {
@@ -10829,6 +10837,69 @@ mod tests {
                 set: vec![(first, 1.0)],
             }))
             .is_err());
+    }
+
+    /// Pads write (piano roll plan 1C.2) through the time engine: two
+    /// pads held together write one chord at the cursor, one UNDO takes
+    /// it back, and the cursor steps once, when the last lets go; the
+    /// switch is off whenever the editor opens.
+    #[test]
+    fn a_chord_on_the_pads_is_one_cursor_step_and_one_undo() {
+        use mpfree_time_ui::editor::EditAction as E;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.step_action(StepAction::Tap {
+            pad: 0,
+            step: 0,
+            velocity: 100,
+        })
+        .unwrap();
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        assert!(!h.pads_write(), "off as it opens");
+        let pad = |key: u8, down: bool| {
+            TimeAction::Edit(E::Pad {
+                key,
+                hit: key + 4,
+                notes: Vec::new(),
+                velocity: 100,
+                down,
+            })
+        };
+        let edit = |h: &mut TimeHost| {
+            h.take_changed();
+            h.state().edit.unwrap()
+        };
+        // Off: a pad picks its notes and writes nothing.
+        h.act(pad(0, true)).unwrap();
+        h.act(pad(0, false)).unwrap();
+        assert_eq!(edit(&mut h).clip.notes.len(), 1);
+        h.act(TimeAction::Edit(E::PadsWrite)).unwrap();
+        assert!(h.pads_write());
+        // Step 2 of the clip: the cursor a 1/16 on.
+        h.act(TimeAction::Edit(E::Cursor(1))).unwrap();
+        let at = edit(&mut h).editor.cursor;
+        h.act(pad(0, true)).unwrap();
+        h.act(pad(1, true)).unwrap();
+        h.act(pad(0, false)).unwrap();
+        assert_eq!(edit(&mut h).editor.cursor, at, "a pad still held");
+        h.act(pad(1, false)).unwrap();
+        let e = edit(&mut h);
+        let mut written: Vec<(i64, u8)> = e
+            .clip
+            .notes
+            .iter()
+            .filter(|n| n.tick == at)
+            .map(|n| (n.tick, n.note))
+            .collect();
+        written.sort_unstable();
+        assert_eq!(written, [(at, 4), (at, 5)]);
+        assert!(e.editor.cursor > at, "the cursor stepped once");
+        // One UNDO takes the whole chord back.
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(edit(&mut h).clip.notes.len(), 1);
+        // Closed and opened again: off.
+        h.act(TimeAction::Edit(E::Button(0))).unwrap();
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        assert!(!h.pads_write());
     }
 
     #[test]

@@ -1089,6 +1089,12 @@ impl TimeControl {
             .is_some_and(|ed| self.project.clip(ed.track, ed.slot).is_some())
     }
 
+    /// The note editor is open with Pads write on (piano roll plan 1C.2):
+    /// the pads write at its cursor.
+    pub fn pads_write(&self) -> bool {
+        self.editing() && self.editor.as_ref().is_some_and(|ed| ed.pads_write)
+    }
+
     /// The Loop cell armed on the grid while it is still an empty cell of
     /// a Loop track (`TimeAction::LoopCell`): the next loop recorded
     /// lands there.

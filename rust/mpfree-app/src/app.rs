@@ -3900,6 +3900,12 @@ impl App {
         self.notes_open
     }
 
+    /// The Sequencer tab shows the note editor (its Notes view): the pads
+    /// pick and write there (piano roll plan 1C.2).
+    pub fn notes_shown(&self) -> bool {
+        self.view == View::Sequencer && self.notes_open
+    }
+
     /// A page from a mode button: shown, unless it shows already.
     fn go(&mut self, v: View) -> Vec<Effect> {
         if self.view == v {
