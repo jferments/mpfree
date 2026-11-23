@@ -686,6 +686,39 @@ mod tests {
         assert_eq!(t, [4 * STEP, 5 * STEP]);
     }
 
+    /// The XY pad's hand holds the rate over the one as set, as a
+    /// Modifier's push does, so while it holds a phrase plays faster or
+    /// slower by the same ratio, from where it is, and as written again
+    /// when the pad lets go. The settings as set stay as they are.
+    #[test]
+    fn the_xy_pads_hand_on_the_rate_moves_a_phrases_speed_until_it_lets_go() {
+        let place = |r: Rate| Rate::ALL.iter().position(|x| *x == r).unwrap() as f32;
+        let starts = |e: &mut Engine, frames: u64| -> Vec<u64> {
+            ons(&run(e, frames, 128)).iter().map(|(t, _)| *t).collect()
+        };
+        let mut e = phrase_engine(EVERY_SIXTEENTH, Settings::default());
+        let set = e.settings();
+        assert_eq!(set.rate, Rate::Sixteenth);
+        e.press(60, 100);
+        assert_eq!(starts(&mut e, 2 * STEP), [0, STEP]);
+        // Held at 1/32 over the 1/16 as set: twice as fast.
+        e.hold(HandOn::Rate, Some(place(Rate::ThirtySecond)));
+        assert_eq!(phrase_speed(&e.settings(), &e.live()), 2.0);
+        assert_eq!(e.settings(), set, "the settings as set stay");
+        assert_eq!(
+            starts(&mut e, 2 * STEP),
+            [2 * STEP, 2 * STEP + STEP / 2, 3 * STEP, 3 * STEP + STEP / 2]
+        );
+        // Held at 1/8: half speed, from where the phrase is.
+        e.hold(HandOn::Rate, Some(place(Rate::Eighth)));
+        assert_eq!(phrase_speed(&e.settings(), &e.live()), 0.5);
+        assert_eq!(starts(&mut e, 4 * STEP), [4 * STEP, 6 * STEP]);
+        // Let go: as written again.
+        e.hold(HandOn::Rate, None);
+        assert_eq!(e.live(), set);
+        assert_eq!(starts(&mut e, 2 * STEP), [8 * STEP, 9 * STEP]);
+    }
+
     /// With Octaves above 1, each time through the phrase climbs an octave,
     /// then starts again from the bottom.
     #[test]

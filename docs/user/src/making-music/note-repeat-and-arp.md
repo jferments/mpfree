@@ -156,7 +156,7 @@ In the list, each phrase shows its length and its notes drawn small. The phrases
 - **In key** moves the phrase onto a scale, so every note belongs. It follows the arp's own **Scale** if you set one (see [Arp options](#arp-options)), otherwise the scale the pads play; the key is named beside the switch. With no scale anywhere it plays by semitones, as Exact does.
 - **Exact** plays the phrase's notes as written, counted in semitones from the note you hold, whatever the key.
 
-A phrase written in triplets is never swung: its Swing slider goes faint and reads "straight". Gate, Swing and Octaves learn a knob as on the other tabs; **Speed** can't learn one yet.
+A phrase written in triplets is never swung: its Swing slider goes faint and reads "straight". Gate, Swing and Octaves learn a knob as on the other tabs; **Speed** can't learn one yet. The same goes for the [XY pad](xy-layouts.md#the-arp-on-the-pad): a layout of yours can hold a phrase's Gate, Swing and Octaves, but not its Speed yet. A layout that holds the arp's Rate plays a phrase faster or slower while your finger is down, and the phrase goes back to its own speed when you lift, even with Let go: Stay.
 
 #### Changing phrase while one plays
 
