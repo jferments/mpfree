@@ -35,6 +35,7 @@
 
 use mpfree_analysis::pitch::note_name;
 use mpfree_sampler::engine::CloudState;
+use mpfree_sampler::grain_field::GrainField;
 use mpfree_sampler::grain_presets;
 use mpfree_sampler::model::{
     GrainFilter, GrainFilterKind, GrainMode, GrainParams, GrainQuality, GrainSprayShape,
@@ -226,6 +227,53 @@ pub const MOTION_ROWS: [Row; 10] = [
 ];
 
 impl Row {
+    /// The grain setting the row turns as a parameter, for MIDI Learn
+    /// (sampler refactor step 17): the rows with a range. None for a
+    /// choice, a switch or a button.
+    pub fn field(self) -> Option<GrainField> {
+        Some(match self {
+            Row::Position => GrainField::Position,
+            Row::Spray => GrainField::Spray,
+            Row::Size => GrainField::Size,
+            Row::Density => GrainField::Density,
+            Row::Pitch => GrainField::Pitch,
+            Row::PitchSpray => GrainField::PitchSpray,
+            Row::Scan => GrainField::Scan,
+            Row::Reverse => GrainField::Reverse,
+            Row::Spread => GrainField::Spread,
+            Row::Level => GrainField::Level,
+            Row::Timing => GrainField::Timing,
+            Row::SizeSpray => GrainField::SizeSpray,
+            Row::LevelSpray => GrainField::LevelSpray,
+            Row::Cutoff => GrainField::Cutoff,
+            Row::Resonance => GrainField::Resonance,
+            Row::FilterSpray => GrainField::FilterSpray,
+            Row::LfoRate => GrainField::LfoRate,
+            Row::LfoDepth => GrainField::LfoDepth,
+            Row::EnvDepth => GrainField::EnvDepth,
+            Row::EnvAttack => GrainField::EnvAttack,
+            Row::EnvDecay => GrainField::EnvDecay,
+            Row::EnvSustain => GrainField::EnvSustain,
+            Row::Mode
+            | Row::GrainMode
+            | Row::Preset
+            | Row::PresetMore
+            | Row::SprayShape
+            | Row::Shape
+            | Row::Quantise
+            | Row::Sync
+            | Row::Filter
+            | Row::KeySize
+            | Row::KeyScan
+            | Row::Glide
+            | Row::Quality
+            | Row::LfoTo
+            | Row::LfoShape
+            | Row::LfoSync
+            | Row::EnvTo => return None,
+        })
+    }
+
     /// The Grains view's rows for a cloud, in the panel's order (which the
     /// wheel walks): Cloud's, then Shape's, then the Q-Links'. A grain
     /// mode shows some of them ([`Row::shown`]), in this order.

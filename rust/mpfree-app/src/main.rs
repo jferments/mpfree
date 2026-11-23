@@ -4718,11 +4718,24 @@ fn pad_describe(
     pad: u8,
     param: u16,
 ) -> Option<(mpfree_node::ParamInfo, f32)> {
-    let field = sampler::pad_field(param)?;
+    let p = sampler::PadParam::of(param)?;
     let pad = usize::from(pad);
-    let v = player.pad_own(kit, pad, field)?;
-    let info = sampler::pad_info(field, player.pad_slices(kit, pad));
+    let v = player.pad_param_now(kit, pad, p)?;
+    let info = p.info(player.pad_slices(kit, pad));
     Some((info, info.clamp(v)))
+}
+
+/// A kit pad's parameter as the I/O view names it: "Tune (A5, Kit 2)",
+/// or a layer's grain setting "Grain size (A5 layer 2, Kit 2)" (sampler
+/// refactor step 17), with `whose` the kit or the track.
+fn pad_label(param: u16, pad: u8, whose: &str) -> String {
+    let p = sampler::PadParam::of(param);
+    let name = p.map_or("?", |p| p.info(1).name);
+    let pad = mpfree_midi::profile::pad_name(usize::from(pad));
+    match p.and_then(sampler::PadParam::layer_shown) {
+        Some(l) => format!("{name} ({pad} layer {l}, {whose})"),
+        None => format!("{name} ({pad}, {whose})"),
+    }
 }
 
 /// Track `t`'s synth's parameter `param` with its value now: the
@@ -4788,11 +4801,7 @@ fn learn_label(
                 Some(Named::Kit(k)) => format!("Kit {}", k + 1),
                 _ => format!("instrument {n}, gone"),
             };
-            return format!(
-                "{} ({}, {kit})",
-                sampler::pad_field(addr.param).map_or("?", |f| sampler::pad_info(f, 1).name),
-                mpfree_midi::profile::pad_name(usize::from(pad)),
-            );
+            return pad_label(addr.param, pad, &kit);
         }
         Owner::Arp(t) => {
             return format!(
@@ -4801,14 +4810,7 @@ fn learn_label(
                 track_name(time.project(), t)
             )
         }
-        Owner::Pad(t, pad) => {
-            return format!(
-                "{} ({}, {})",
-                sampler::pad_field(addr.param).map_or("?", |f| sampler::pad_info(f, 1).name),
-                mpfree_midi::profile::pad_name(usize::from(pad)),
-                track_name(time.project(), t)
-            )
-        }
+        Owner::Pad(t, pad) => return pad_label(addr.param, pad, &track_name(time.project(), t)),
         Owner::Transport => return transport::name(addr.param).unwrap_or("?").to_string(),
         Owner::Clips => return clips_label(time.project(), addr.param),
         Owner::Looper => {
@@ -5066,18 +5068,25 @@ fn record_learned(
     value: f32,
     recording: bool,
 ) {
-    use mpfree_play::mpfree_param::{Owner, Strip};
-    let locks = matches!(
-        addr.owner,
-        Owner::Inst(_)
-            | Owner::Pad(..)
-            | Owner::Strip(Strip::Track(_))
-            | Owner::Insert(Strip::Track(_), _)
-            | Owner::NoteFx(..)
-            | Owner::Midi(_)
-    );
-    if recording && locks && value.is_finite() {
+    if recording && learn_records(addr) && value.is_finite() {
         time.knob(0, addr, value);
+    }
+}
+
+/// Whether a learned control's move on `addr` records as a lock
+/// ([`record_learned`]): a parameter on a track that a clip's lock plays.
+/// A layer's grain setting has no step lock yet (sampler refactor step 17
+/// brings them in its second part), so it records nothing.
+fn learn_records(addr: mpfree_play::mpfree_param::ParamAddr) -> bool {
+    use mpfree_play::mpfree_param::{pad, Owner, Strip};
+    match addr.owner {
+        Owner::Pad(..) => pad::layer_of(addr.param).is_none(),
+        Owner::Inst(_)
+        | Owner::Strip(Strip::Track(_))
+        | Owner::Insert(Strip::Track(_), _)
+        | Owner::NoteFx(..)
+        | Owner::Midi(_) => true,
+        _ => false,
     }
 }
 
@@ -9828,7 +9837,7 @@ fn player_session(
     let mut learn_misses = 0u64;
     // Learned controls' kit pad settings this pass, for the screen
     // (`ToUi::PadsLearned`).
-    let mut pads_learned: Vec<(usize, u8, mpfree_sampler::engine::PadField, f32)> = Vec::new();
+    let mut pads_learned: Vec<(usize, u8, sampler::PadParam, f32)> = Vec::new();
     // Learned controls on the transport (remote.rs): the presses they hold,
     // and whether the log said a learned tempo waits for a followed clock.
     let mut remote = remote::Remote::new();
@@ -11537,7 +11546,7 @@ fn player_session(
                         .and_then(|(kit, pad)| {
                             Some((pad_describe(&player, kit, pad, w.target.param)?, (kit, pad)))
                         })
-                        .zip(sampler::pad_field(w.target.param));
+                        .zip(sampler::PadParam::of(w.target.param));
                     match to {
                         Some((((info, _), (kit, pad)), field)) => {
                             let value = info.from_unit(w.value);
@@ -18772,6 +18781,81 @@ mod tests {
             at(0, 7)
         )
         .is_none());
+    }
+
+    /// Sampler refactor step 17: a layer's grain setting is a pad's
+    /// parameter from 256 (`mpfree_param::pad::layer`), named with its
+    /// layer and read from the kit's view as edited. A layer the pad
+    /// hasn't got reads nothing, and a move on one records no lock yet.
+    #[test]
+    fn a_layers_grain_setting_is_named_and_read_for_learn() {
+        use mpfree_play::mpfree_param::{pad, Owner, ParamAddr};
+        use mpfree_sampler::grain_field::GrainField;
+        let mix = mixing::MixHost::new(44_100, 0.0, 6.0);
+        let synth = synth::Synth::new(44_100);
+        let app = app::App::new(44_100, false);
+        let time = time::TimeHost::new(44_100, 120.0).unwrap();
+        let tone: Vec<i16> = (0..2_000)
+            .flat_map(|i| [((i as f32 * 0.03).sin() * 12_000.0) as i16; 2])
+            .collect();
+        let kick = kit::build(&[(mpc_one::PAD_NOTES[4], "Kick", &tone[..])]);
+        let mut ks = kit::parse_kits(&kit::build_kits(&[("House", kick)])).unwrap();
+        let player = sampler::Player::new(&mut ks, &mpc_one::PAD_NOTES, 44_100).unwrap();
+        let kits = sampler::TrackKits::new(1);
+        let listed = instrument_list::InstrumentList::new();
+        let grain = |layer, f: GrainField| pad::layer(layer, f as u8).unwrap();
+        let at = |layer, f| ParamAddr::new(Owner::Pad(0, 4), grain(layer, f));
+        assert_eq!(
+            sampler::PadParam::of(grain(0, GrainField::Size)),
+            Some(sampler::PadParam::Grain {
+                layer: 0,
+                field: GrainField::Size
+            })
+        );
+        assert_eq!(
+            sampler::PadParam::of(pad::LAYER_BASE + 63),
+            None,
+            "no such setting"
+        );
+        let first = time.project().tracks[0].name.clone();
+        assert_eq!(
+            learn_label(&mix, &synth, &time, &listed, at(0, GrainField::Size)),
+            format!("Grain size (A5 layer 1, {first})")
+        );
+        let pads = |owner, id| {
+            let (kit, pad) = learned_kit(&listed, &kits, owner)?;
+            pad_describe(&player, kit, pad, id)
+        };
+        let read = |addr| {
+            learn_describe(
+                &mix,
+                &synth,
+                &app,
+                &listed,
+                &pads,
+                remote::Now::default(),
+                addr,
+            )
+        };
+        let (info, ms) = read(at(0, GrainField::Size)).unwrap();
+        assert_eq!((info.name, info.min, info.max), ("Grain size", 2.0, 2000.0));
+        assert_eq!(info.id, grain(0, GrainField::Size));
+        assert_eq!(ms, 80.0, "the layer's own, as edited");
+        let (info, db) = read(at(0, GrainField::Level)).unwrap();
+        assert_eq!((info.name, db), ("Grain level", 0.0));
+        assert!(read(at(1, GrainField::Size)).is_none(), "one layer");
+        assert!(
+            read(ParamAddr::new(Owner::Pad(0, 5), grain(0, GrainField::Size))).is_none(),
+            "no sound"
+        );
+        // While recording, a pad's own setting goes to the recorder as a
+        // lock would; a layer's grain setting doesn't yet.
+        assert!(!learn_records(at(0, GrainField::Size)));
+        let own = ParamAddr::new(
+            Owner::Pad(0, 4),
+            mpfree_sampler::engine::PadField::Tune as u16,
+        );
+        assert!(learn_records(own));
     }
 
     /// A kit pad's own setting is named by its pad and the project's
