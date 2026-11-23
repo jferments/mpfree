@@ -102,6 +102,7 @@ Every design page opens with a **Status** line (proposal, approved, built, on ma
 - [Sampler design](design/sampler-design.md): how MPFree records, chops, edits, assigns and plays samples, including granular tools (proposal, 2026-11-10).
 - [Sampler feature map](design/sampler-features.md): every MPC sampler feature rebuilt with a better UI, what other samplers add, and what makes a sampler great for production and performance (proposal, 2026-11-10).
 - [Sampler architecture](design/sampler-architecture.md): crates, threads, data flow, real-time rules, algorithms and files for the sampler, and the sound files it loads (WAV, AIFF, and FLAC with our own decoder in `rust/mpfree-flac`) (proposal, 2026-11-10).
+- [Stem separation](design/stems.md): splitting a sound into vocals, drums, bass and other with Deezer's Spleeter 4-stem networks (MIT) in Rust, a segment at a time, in steps a job can stop between, with its memory promised before it starts; the model file made from Deezer's checkpoint without TensorFlow, weights as halves, every layer a GEMM on `mpfree-simd`, checked against Spleeter's own output (`rust/mpfree-stems`, engine only, 2026-11-23).
 
 ### Performance
 

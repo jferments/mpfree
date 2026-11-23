@@ -880,6 +880,7 @@ dependencies = [
  "mpfree-seq",
  "mpfree-simd",
  "mpfree-status",
+ "mpfree-stems",
  "mpfree-stream",
  "mpfree-synth",
  "mpfree-time-ui",
