@@ -21,6 +21,15 @@
 //!   passes need, and named after the row.
 //! - **+ Add a scene**: room for one pass of the next row with clips after
 //!   the picked section (at the end with none), made from that row.
+//! - **Back to the scene** (4b.3), on a section changed in the song: made
+//!   from its row again, as many passes of the row as now fit its bars
+//!   best (half way, the fewer; one at least), with room put in or bars
+//!   taken out at its end when they don't fit exactly. It follows its
+//!   scene again.
+//!
+//! An edit of the song inside a section that follows its scene makes it
+//! the song's own (`Arrangement::mark_changed`): the list's edits leave
+//! it as it is, its passes plain bars, until Back to the scene.
 //!
 //! The Song row (the song's bars before its first marker) is the song's
 //! own: it can be taken out, but it stays first, has no scene and plays
@@ -35,6 +44,8 @@
 //! into the blocks: the scenes' mutes, which a linked song brings in as
 //! each section starts instead (4b.4), and a legato clip taking over the
 //! clip playing before it.
+
+use std::cmp::Ordering;
 
 use mpfree_play::SongChange;
 use mpfree_seq::arrange::{scene_length, scene_title, song_sections, FromScene, SongSection};
@@ -114,6 +125,7 @@ pub fn edits_steps(a: &TimeAction) -> bool {
             | TimeAction::ListAdd
             | TimeAction::ListRemove(_)
             | TimeAction::ListMove { .. }
+            | TimeAction::ListBack(_)
     )
 }
 
@@ -363,6 +375,61 @@ impl TimeControl {
                         "song list: step {} plays {name}, at {}; the song after it moved on (UNDO takes it out)",
                         k + 1,
                         bar_beat(at, self.info.meter)
+                    ),
+                    ..LinkedEdit::nothing(String::new())
+                })
+            }
+            TimeAction::ListBack(step) => {
+                let s = part(step)?;
+                let name = step_name(p, s);
+                let from = match s.scene {
+                    _ if s.marker.is_none() => return Err(SONG_ROW.into()),
+                    None => return Err(format!("song list: {name} has no scene")),
+                    Some(f) if !f.changed => {
+                        return Err(format!("song list: {name} follows its scene already"))
+                    }
+                    Some(f) => f,
+                };
+                if !p.row_filled(from.row) {
+                    return Err(format!(
+                        "song list: {} has no clips now: make one on the grid first",
+                        scene_title(p, from.row)
+                    ));
+                }
+                // As many passes as fit its bars best (half way, the
+                // fewer), one at least.
+                let pass = scene_length(p, from.row, bar);
+                let span = s.end - s.start;
+                let passes =
+                    ((2 * span + pass - 1) / (2 * pass)).clamp(1, Tick::from(MAX_TIMES)) as u16;
+                let len = pass * Tick::from(passes);
+                let times = if passes > 1 {
+                    format!(" ×{passes}")
+                } else {
+                    String::new()
+                };
+                let moved = match len.cmp(&span) {
+                    Ordering::Greater => "; the song after it moved on",
+                    Ordering::Less => "; the song after it moved up",
+                    Ordering::Equal => "",
+                };
+                Ok(LinkedEdit {
+                    time: resize(s, len),
+                    marker: Some(MarkerAfter {
+                        at: s.start,
+                        name: None,
+                        scene: Some(FromScene::following(from.row, pass)),
+                        passes,
+                    }),
+                    remake: Some(Remake {
+                        at: s.start,
+                        len,
+                        row: from.row,
+                        passes,
+                    }),
+                    pick: Some(step),
+                    said: format!(
+                        "song list: {name} plays its scene again{times}{moved} (UNDO takes it back)"
                     ),
                     ..LinkedEdit::nothing(String::new())
                 })

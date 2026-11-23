@@ -8848,6 +8848,232 @@ mod tests {
         assert_eq!(h.control.project.arrangement, was);
     }
 
+    /// The linked list's rows as (name, scene, times, bars, changed).
+    fn linked_rows(h: &TimeHost) -> Vec<(String, Option<usize>, u16, i64, bool)> {
+        h.state()
+            .list
+            .iter()
+            .map(|r| (r.name.clone(), r.scene, r.times, r.bars, r.changed))
+            .collect()
+    }
+
+    /// Arrange 4b.3: an edit inside a part on the Song view makes it the
+    /// song's own: changed in the song, × 1, its bars as they were, and
+    /// the log says how to take it back. The list's edits leave it as it
+    /// is: moved, repeated whole. Back to the scene makes it from its
+    /// scene again, the song as List → song lays it, as one UNDO; on a
+    /// part that follows its scene it says so and changes nothing.
+    #[test]
+    fn an_edit_inside_a_part_makes_it_the_songs_own_until_back_to_the_scene() {
+        use mpfree_time_ui::{BarsEdit, MarkerEdit};
+        const B: Tick = 3840;
+        let mut h = linked_grid();
+        for a in [
+            TimeAction::ListAdd,
+            TimeAction::ListAdd,
+            TimeAction::ListAdd,
+            TimeAction::ListTimes { step: 1, delta: 1 },
+        ] {
+            h.act(a).unwrap();
+        }
+        // Intro bar 1, Verse × 2 bars 2 to 5, Chorus bars 6 to 9.
+        laid_as(&h, &[(0, 1), (1, 2), (2, 1)]);
+        let laid = h.control.project.arrangement.clone();
+        for k in [0, 1] {
+            let e = h.act(TimeAction::ListBack(k)).unwrap_err();
+            assert!(e.ends_with("follows its scene already"), "{e}");
+        }
+        assert_eq!(h.control.project.arrangement, laid);
+        // The Verse's bass taken out on the Song view.
+        let bass = laid
+            .placements
+            .iter()
+            .position(|p| p.track == 1 && p.start == B)
+            .unwrap();
+        assert_eq!(
+            h.act(TimeAction::DeletePlacement(bass)).unwrap(),
+            "song: Verse is the song's own now: Back to the scene on the song list puts the scene's clips back"
+        );
+        let own = h.control.project.arrangement.clone();
+        assert_eq!(
+            linked_rows(&h),
+            [
+                ("Intro".into(), Some(0), 1, 1, false),
+                ("Verse".into(), Some(1), 1, 4, true),
+                ("Chorus".into(), Some(2), 1, 4, false),
+            ]
+        );
+        // Moved and back, the Chorus put before it and taken out again,
+        // × 2 (its whole four bars again) and back: as it was each time,
+        // still the song's own.
+        for (a, back) in [
+            (
+                TimeAction::ListMove { step: 1, to: 0 },
+                TimeAction::ListMove { step: 0, to: 2 },
+            ),
+            (
+                TimeAction::ListMove { step: 2, to: 1 },
+                TimeAction::ListMove { step: 1, to: 3 },
+            ),
+            (
+                TimeAction::ListTimes { step: 1, delta: 1 },
+                TimeAction::ListTimes { step: 1, delta: -1 },
+            ),
+        ] {
+            h.act(a.clone()).unwrap();
+            assert!(
+                linked_rows(&h).iter().any(|r| r.0 == "Verse" && r.4),
+                "{a:?}"
+            );
+            h.act(back).unwrap();
+            assert_eq!(h.control.project.arrangement, own, "{a:?}");
+        }
+        h.act(TimeAction::ListTimes { step: 1, delta: 1 }).unwrap();
+        assert_eq!(linked_rows(&h)[1], ("Verse".into(), Some(1), 2, 8, true));
+        h.act(TimeAction::Undo).unwrap();
+        // Back to the scene: two passes fit its four bars, as before.
+        assert_eq!(
+            h.act(TimeAction::ListBack(1)).unwrap(),
+            "song list: Verse plays its scene again ×2 (UNDO takes it back)"
+        );
+        assert_eq!(h.control.project.arrangement, laid);
+        laid_as(&h, &[(0, 1), (1, 2), (2, 1)]);
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.control.project.arrangement, own);
+        h.act(TimeAction::Redo).unwrap();
+        assert_eq!(h.control.project.arrangement, laid);
+        // A bar of room put in it on the Song view: five bars, the song's
+        // own; back to the scene, two passes again, the bar taken out.
+        h.act(TimeAction::SongBars(BarsEdit::Insert {
+            at: 2 * B,
+            bars: 1,
+        }))
+        .unwrap();
+        assert_eq!(linked_rows(&h)[1], ("Verse".into(), Some(1), 1, 5, true));
+        assert_eq!(
+            h.act(TimeAction::ListBack(1)).unwrap(),
+            "song list: Verse plays its scene again ×2; the song after it moved up (UNDO takes it back)"
+        );
+        assert_eq!(h.control.project.arrangement, laid);
+        // The Song row, and a part with no scene, have none to go back to.
+        h.act(TimeAction::SongMarker(MarkerEdit::Move {
+            index: 0,
+            at: B / 2,
+        }))
+        .unwrap();
+        let e = h.act(TimeAction::ListBack(0)).unwrap_err();
+        assert!(e.contains("add a marker"), "{e}");
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// Arrange 4b.3: the Song view's edits move the list. A part dragged
+    /// along the ruler moves as its grip does, and back again it is as it
+    /// was (a round trip); a copy is a part of its own that still follows
+    /// its scene; a marker put inside a part makes the bars before it the
+    /// song's own, and the bars after it a part of their own.
+    #[test]
+    fn the_song_views_section_edits_move_the_linked_list() {
+        use mpfree_time_ui::MarkerEdit;
+        const B: Tick = 3840;
+        let three = || {
+            let mut h = linked_grid();
+            for _ in 0..3 {
+                h.act(TimeAction::ListAdd).unwrap();
+            }
+            h
+        };
+        let mut h = three();
+        let mut g = three();
+        let laid = h.control.project.arrangement.clone();
+        h.act(TimeAction::MoveSection {
+            marker: 2,
+            gap: 0,
+            copy: false,
+        })
+        .unwrap();
+        g.act(TimeAction::ListMove { step: 2, to: 0 }).unwrap();
+        assert_eq!(h.control.project.arrangement, g.control.project.arrangement);
+        laid_as(&h, &[(2, 1), (0, 1), (1, 1)]);
+        h.act(TimeAction::ListMove { step: 0, to: 3 }).unwrap();
+        assert_eq!(h.control.project.arrangement, laid);
+        // The Chorus (bars 4 to 7) copied after itself: its blocks join
+        // their copies, and both parts hold what the Chorus plays.
+        h.act(TimeAction::MoveSection {
+            marker: 2,
+            gap: 3,
+            copy: true,
+        })
+        .unwrap();
+        assert_eq!(
+            linked_rows(&h),
+            [
+                ("Intro".into(), Some(0), 1, 1, false),
+                ("Verse".into(), Some(1), 1, 2, false),
+                ("Chorus".into(), Some(2), 1, 4, false),
+                ("Chorus".into(), Some(2), 1, 4, false),
+            ]
+        );
+        // A marker half way through the copy (bars 8 to 11).
+        assert_eq!(
+            h.act(TimeAction::SongMarker(MarkerEdit::Add(9 * B))).unwrap(),
+            "song: Chorus is the song's own now: Back to the scene on the song list puts the scene's clips back"
+        );
+        let rows = linked_rows(&h);
+        assert_eq!(rows[3], ("Chorus".into(), Some(2), 1, 2, true));
+        assert_eq!(
+            (rows[4].1, rows[4].2, rows[4].3, rows[4].4),
+            (None, 1, 2, false)
+        );
+        assert_eq!(rows.len(), 5);
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// Arrange 4b.3: Scenes → song on a linked list puts the rows after
+    /// its last part, past the silence a part that follows its scene may
+    /// end with, so the part isn't cut.
+    #[test]
+    fn scenes_to_song_on_a_linked_list_goes_after_its_last_part() {
+        use mpfree_seq::arrange::{FromScene, Placement};
+        const B: Tick = 3840;
+        let mut h = linked_grid();
+        let p = &mut h.control.project;
+        // The Intro's bar, then three bars of its silence.
+        let song = &mut p.arrangement;
+        song.place(Placement::of(&p.tracks, 0, 0, 0, B)).unwrap();
+        song.mark(0, "Intro").unwrap();
+        song.markers[0].scene = Some(FromScene::following(0, 4 * B));
+        h.act(TimeAction::ScenesToSong).unwrap();
+        let song = &h.control.project.arrangement;
+        assert_eq!(song.markers[1].at, 4 * B);
+        assert_eq!(song.markers[0].scene, Some(FromScene::following(0, 4 * B)));
+    }
+
+    /// Arrange 4b.3: Rec song over a part that follows its scene makes it
+    /// the song's own when the recording goes in.
+    #[test]
+    fn rec_song_over_a_part_makes_it_the_songs_own() {
+        const B: Tick = 3840;
+        let mut h = linked_grid();
+        let mut pads = Fake::default();
+        h.act(TimeAction::ListAdd).unwrap();
+        h.act(TimeAction::ListAdd).unwrap();
+        // The Chorus played over the Verse (bars 2 and 3), recorded.
+        h.command(Command::Locate(B));
+        h.act(TimeAction::LaunchScene(2)).unwrap();
+        h.act(TimeAction::RecSong(true)).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        h.command(Command::Stop);
+        run(&mut h, &mut pads, BAR, &[]);
+        let note = h.take_later_note().unwrap();
+        assert_eq!(
+            note,
+            "rec song: Verse is the song's own now: Back to the scene on the song list puts the scene's clips back"
+        );
+        assert!(linked_rows(&h)[1].4);
+        assert!(!linked_rows(&h)[0].4);
+    }
+
     /// Save state and Reload clip (sequencer S4): the saved state comes
     /// back on the launch line while the clip plays, at once while the
     /// transport is stopped; UNDO takes a reload back; asked again while

@@ -18,7 +18,9 @@
 //!
 //! Linked to the song (the Arrange refactor's phase 4b) the rows are the
 //! song's parts; the song's bars before its first marker are the first
-//! row, "Song", in faint words and with no grip: it stays first.
+//! row, "Song", in faint words and with no grip: it stays first. A part
+//! edited in the song says "● changed in the song" where the pass shows
+//! while it plays, and Back to the scene takes List → song's place.
 
 use std::cell::Cell;
 
@@ -47,6 +49,10 @@ pub struct ListRow {
     /// A linked list's Song row: the song's bars before its first marker,
     /// in faint words and with no grip (it stays first; phase 4b).
     pub lead: bool,
+    /// A linked list's part edited in the song (phase 4b.3): "● changed
+    /// in the song" at its right, and Back to the scene puts its scene's
+    /// clips back.
+    pub changed: bool,
 }
 
 /// `Toggle(k)` from the title line and the buttons.
@@ -100,6 +106,9 @@ pub struct SongListView {
     pub looped: bool,
     /// Room for another step.
     pub can_add: bool,
+    /// Linked to the song (phase 4b): Back to the scene takes List →
+    /// song's place.
+    pub linked: bool,
     /// The last conversion's report card, open over the list (the
     /// Arrange refactor's 4.3): it takes the list's touches and targets.
     pub report: Option<ReportCard>,
@@ -266,6 +275,30 @@ impl SongListView {
     pub fn button_rects(r: Rect) -> [Rect; 3] {
         SongListView::geo(r).buttons
     }
+
+    /// Button `k`'s word: linked to the song, Back to the scene takes List
+    /// → song's place.
+    fn button_word(&self, k: usize) -> &'static str {
+        if k == 0 && self.linked {
+            "Back to the scene"
+        } else {
+            BUTTONS[k].0
+        }
+    }
+
+    /// Whether button `k` does something now: List → song with a step,
+    /// Back to the scene with a part changed in the song picked, the
+    /// others with a pick.
+    fn usable(&self, k: usize) -> bool {
+        match k {
+            0 if self.linked => self
+                .picked
+                .and_then(|p| self.rows.get(p))
+                .is_some_and(|row| row.changed),
+            0 => !self.rows.is_empty(),
+            _ => self.picked.is_some(),
+        }
+    }
 }
 
 impl Widget for SongListView {
@@ -428,6 +461,17 @@ impl Widget for SongListView {
                     t.warn,
                     "next",
                 );
+            } else if row.changed {
+                let dot = Rect::new(tail.x, tail.y + tail.h / 2 - 4, 8, 8);
+                cx.canvas.fill_round_rect(dot, 4, t.warn);
+                cx.text(
+                    FontId::Bold,
+                    t.size_small - 1.0,
+                    Rect::new(tail.x + 14, tail.y, tail.w - 14, tail.h),
+                    Align::Left,
+                    t.warn,
+                    "changed in the song",
+                );
             }
         }
         // Where the dragged step lands: a line across the list, with a dot
@@ -478,7 +522,7 @@ impl Widget for SongListView {
             );
         }
         for (k, b) in SongListView::button_rects(r).iter().enumerate() {
-            let usable = k == 0 && !self.rows.is_empty() || k > 0 && self.picked.is_some();
+            let usable = self.usable(k);
             cx.canvas
                 .fill_round_rect(*b, t.round(10), if usable { t.raised } else { t.surface });
             cx.text(
@@ -487,7 +531,7 @@ impl Widget for SongListView {
                 *b,
                 Align::Center,
                 t.button_ink(usable),
-                BUTTONS[k].0,
+                self.button_word(k),
             );
         }
         if let Some(card) = &self.report {
@@ -555,8 +599,9 @@ impl Widget for SongListView {
             out.push(Target::tap("add", 0, "+ Add a scene", add).disabled_if(!self.can_add));
         }
         for (k, b) in SongListView::button_rects(r).iter().enumerate() {
-            let usable = k == 0 && !self.rows.is_empty() || k > 0 && self.picked.is_some();
-            out.push(Target::tap("button", k, BUTTONS[k].0, *b).disabled_if(!usable));
+            out.push(
+                Target::tap("button", k, self.button_word(k), *b).disabled_if(!self.usable(k)),
+            );
         }
         out
     }
@@ -805,5 +850,31 @@ mod tests {
         );
         let t = l.targets(r);
         assert_eq!(t.iter().filter(|t| t.id == "grip").count(), 3);
+    }
+
+    /// Linked to the song (Arrange 4b.3), Back to the scene takes List →
+    /// song's place, lit only for a part changed in the song, picked.
+    #[test]
+    fn linked_back_to_the_scene_is_lit_for_a_changed_part_picked() {
+        let r = Rect::new(12, 128, 854, 622);
+        let mut l = list(3);
+        let first = |l: &SongListView| -> (String, bool) {
+            let t = l.targets(r);
+            let b = t.iter().find(|t| t.id == "button" && t.index == 0).unwrap();
+            (b.label.clone(), b.enabled)
+        };
+        assert_eq!(first(&l), ("List → song".into(), true));
+        l.linked = true;
+        assert_eq!(first(&l), ("Back to the scene".into(), false));
+        l.picked = Some(1);
+        assert_eq!(first(&l), ("Back to the scene".into(), false));
+        l.rows[1].changed = true;
+        assert_eq!(first(&l), ("Back to the scene".into(), true));
+        let b = SongListView::button_rects(r)[0];
+        let (x, y) = (b.x + b.w / 2, b.y + b.h / 2);
+        assert_eq!(
+            l.touch(1, Touch::Down, x, y, r),
+            Some(EventKind::Toggle(LIST_TO_SONG))
+        );
     }
 }

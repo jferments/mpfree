@@ -1390,6 +1390,9 @@ pub enum TimeAction {
         step: usize,
         to: usize,
     },
+    /// Back to the scene (a linked list, the Arrange refactor's 4b.3):
+    /// step `k`'s part, changed in the song, made from its scene again.
+    ListBack(usize),
     /// The list goes round after its last step, or stops.
     ListLoop(bool),
     /// The list onto the end of the song, played offline through Rec song
@@ -2176,6 +2179,11 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             LIST_ADD => {
                 (st.list.len() < mpfree_seq::scenes::MAX_LIST_STEPS).then_some(TimeAction::ListAdd)
             }
+            // Linked to the song, Back to the scene takes its place.
+            LIST_TO_SONG if st.list_linked => st
+                .list_pick
+                .filter(|&k| st.list.get(k).is_some_and(|r| r.changed))
+                .map(TimeAction::ListBack),
             LIST_TO_SONG => (!st.list.is_empty()).then_some(TimeAction::ListToSong),
             LIST_PLAY => st.list_pick.map(TimeAction::ListPlay),
             LIST_REMOVE => st.list_pick.map(TimeAction::ListRemove),
@@ -2354,6 +2362,14 @@ pub fn why_not(ev: &UiEvent, st: &TimeState) -> Option<String> {
         }),
         (SONG_LIST, EventKind::Toggle(LIST_PLAY | LIST_REMOVE)) if st.list_pick.is_none() => {
             Some("Tap a step first".to_string())
+        }
+        (SONG_LIST, EventKind::Toggle(LIST_TO_SONG)) if st.list_linked => {
+            Some(match st.list_pick.and_then(|k| st.list.get(k)) {
+                None => "Tap a part first".to_string(),
+                Some(r) if r.lead => "Song has no scene".to_string(),
+                Some(r) if r.scene.is_none() => format!("{} has no scene", r.name),
+                Some(r) => format!("{} follows its scene already", r.name),
+            })
         }
         (SONG_LIST, EventKind::Toggle(LIST_TO_SONG)) => {
             Some("Add a scene to the list first".to_string())
@@ -4940,6 +4956,7 @@ impl TimePage {
                 && l.picked == st.list_pick
                 && l.looped == st.list_looped
                 && l.can_add == can_add
+                && l.linked == st.list_linked
         });
         if !same_list {
             if let Some(l) = ui.get_mut::<SongListView>(SONG_LIST) {
@@ -4948,6 +4965,7 @@ impl TimePage {
                 l.picked = st.list_pick;
                 l.looped = st.list_looped;
                 l.can_add = can_add;
+                l.linked = st.list_linked;
             }
         }
         // The conversion report card, over the list too (a new report
@@ -6220,6 +6238,31 @@ mod tests {
             ui.get::<SongListView>(SONG_LIST).unwrap().title,
             "Song list · linked to the song · 2 parts · 10 bars · 0:20"
         );
+        // Back to the scene takes List → song's place (4b.3): for a part
+        // changed in the song, picked; otherwise it says why.
+        let back = EventKind::Toggle(LIST_TO_SONG);
+        let pick = st.list_pick;
+        st.list_pick = None;
+        assert_eq!(list(back.clone(), &st), None);
+        assert_eq!(why(back.clone(), &st).as_deref(), Some("Tap a part first"));
+        st.list_pick = Some(1);
+        assert_eq!(list(back.clone(), &st), None);
+        assert_eq!(
+            why(back.clone(), &st).as_deref(),
+            Some("Drop follows its scene already")
+        );
+        st.list[1].changed = true;
+        assert_eq!(list(back.clone(), &st), Some(TimeAction::ListBack(1)));
+        st.list[1].changed = false;
+        st.list_pick = Some(0);
+        st.list[0].scene = None;
+        assert_eq!(
+            why(back.clone(), &st).as_deref(),
+            Some("Intro has no scene")
+        );
+        st.list[0].lead = true;
+        assert_eq!(why(back, &st).as_deref(), Some("Song has no scene"));
+        (st.list[0].lead, st.list[0].scene, st.list_pick) = (false, Some(0), pick);
         st.list_linked = false;
         // The Clip tab keeps the list.
         page.clip_card = true;

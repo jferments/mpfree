@@ -37,7 +37,7 @@ use mpfree_play::{
 };
 use mpfree_play::{MOVE_POINTS, TOUCH_POINTS};
 use mpfree_seq::arrange::{
-    list_spans, scene_title, song_sections, song_to_scenes, Difference, Differs,
+    list_spans, scene_title, song_sections, song_to_scenes, Arrangement, Difference, Differs,
 };
 use mpfree_seq::loops::{self, LoopNow, LoopPlan};
 use mpfree_seq::mpfree_moves::{Kind, MoveLog};
@@ -4007,6 +4007,7 @@ impl TimeControl {
             | TimeAction::ListAdd
             | TimeAction::ListRemove(_)
             | TimeAction::ListMove { .. }
+            | TimeAction::ListBack(_)
             | TimeAction::ListLoop(_)
             | TimeAction::ListToSong
             | TimeAction::ScenesToSong
@@ -4039,9 +4040,9 @@ impl TimeControl {
                 let audio = self.audio_moves
                     && (matches!(a, TimeAction::MoveSection { .. } | TimeAction::SongBars(_))
                         || edits_steps(&a));
-                let edited = if edits_steps(&a)
-                    || matches!(a, TimeAction::ListLoop(_) | TimeAction::ListToSong)
-                {
+                let list = edits_steps(&a)
+                    || matches!(a, TimeAction::ListLoop(_) | TimeAction::ListToSong);
+                let edited = if list {
                     self.edit_list(a, bar)
                 } else {
                     self.edit_song(a, bar)
@@ -4052,6 +4053,14 @@ impl TimeControl {
                         self.project.arrangement = before;
                         return Err(e);
                     }
+                };
+                // An edit inside a section that followed its scene makes it
+                // the song's own (4b.3); a linked list's edits say what
+                // they make of their sections themselves.
+                let line = if list {
+                    line
+                } else {
+                    self.mark_own(&before, bar, line, "song: ")
                 };
                 if let Err(e) = self.compile() {
                     self.project.arrangement = before;
@@ -4182,6 +4191,30 @@ impl TimeControl {
         })
     }
 
+    /// After an edit of the song that isn't a linked list's own (`before`
+    /// the song before it, bars of `bar` ticks): the sections it changed
+    /// inside that followed their scenes are the song's own now
+    /// ([`Arrangement::mark_changed`], the Arrange refactor's 4b.3). On a
+    /// linked list the log line (`line`) says so instead, after `head`,
+    /// and where to take it back.
+    fn mark_own(&mut self, before: &Arrangement, bar: Tick, line: String, head: &str) -> String {
+        let song = &mut self.project.arrangement;
+        let marked = song.mark_changed(&self.project.tracks, before, bar);
+        let names: Vec<&str> = marked
+            .iter()
+            .map(|&k| song.markers[k].name.as_str())
+            .collect();
+        let who = match names.split_last() {
+            _ if !song.list.linked => return line,
+            None => return line,
+            Some((last, [])) => format!("{last} is"),
+            Some((last, rest)) => format!("{} and {last} are", rest.join(", ")),
+        };
+        format!(
+            "{head}{who} the song's own now: Back to the scene on the song list puts the scene's clips back"
+        )
+    }
+
     /// Live to song: the passes recorded so far into the song, compiled
     /// in. A line for the log.
     fn keep_song(&mut self) -> Result<String, String> {
@@ -4196,15 +4229,19 @@ impl TimeControl {
         // New placements shift the indices.
         self.selected = None;
         self.section = None;
+        // Recorded over a section that followed its scene: the song's own
+        // now (4b.3).
+        let line = format!(
+            "{} placements and {} morph points into the song",
+            r.placements, r.morph_points
+        );
+        let line = self.mark_own(&before, self.info.meter.bar_ticks(), line, "");
         if let Err(e) = self.compile() {
             self.project.arrangement = before;
             self.compile()?;
             return Err(e);
         }
-        Ok(format!(
-            "{} placements and {} morph points into the song",
-            r.placements, r.morph_points
-        ))
+        Ok(line)
     }
 
     /// The Song view's edits of the arrangement (and, for Song → scenes,
@@ -4865,6 +4902,9 @@ impl TimeControl {
                     Some(SongChange::List),
                 ))
             }
+            TimeAction::ListBack(_) => {
+                Err("song list: Back to the scene is for a list linked to the song".into())
+            }
             TimeAction::ListToSong => {
                 if n == 0 {
                     return Err("list → song: the list is empty".into());
@@ -4904,7 +4944,16 @@ impl TimeControl {
         title: &str,
         lead: &str,
     ) -> Result<(Tick, String), String> {
-        let end = self.project.arrangement.end();
+        // After the song's end, and on a linked list after its last part
+        // (one that follows its scene may run on past its blocks), so no
+        // part is cut.
+        let song = &self.project.arrangement;
+        let parts = if song.list.linked {
+            song.parts(bar).last().map_or(0, |s| s.end)
+        } else {
+            0
+        };
+        let end = song.end().max(parts);
         let at = (end + bar - 1) / bar.max(1) * bar;
         let played = super::offline::play_rows(&self.project, steps, at, bar)?;
         let made = format!(
@@ -6298,6 +6347,7 @@ impl TimeControl {
                 playing: pass.filter(|p| p.0 == k).map(|p| (p.1, p.2)),
                 waiting: waiting == Some(k),
                 lead: false,
+                changed: false,
             })
             .collect()
     }
@@ -6329,6 +6379,7 @@ impl TimeControl {
                     playing,
                     waiting: false,
                     lead: s.marker.is_none(),
+                    changed: s.scene.is_some_and(|f| f.changed),
                 }
             })
             .collect()

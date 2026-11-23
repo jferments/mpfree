@@ -17925,6 +17925,7 @@ fn sample_list_state() -> Result<TimeState, String> {
                 playing: (k == 3).then_some((3, 0.62)),
                 waiting: false,
                 lead: false,
+                changed: false,
             };
             starts += r.bars;
             r
@@ -17936,8 +17937,8 @@ fn sample_list_state() -> Result<TimeState, String> {
 
 /// The song list linked to the song (the Arrange refactor's phase 4b):
 /// the song's seven parts, the Song row (its bars before the first
-/// marker) first, the Verse playing its third pass of four, the Drop
-/// picked.
+/// marker) first, the Verse playing its third pass of four, the first
+/// Drop changed in the song and picked (Back to the scene lit).
 fn sample_linked_list_state() -> Result<TimeState, String> {
     use mpfree_time_ui::list::ListRow;
     let mut st = sample_list_state()?;
@@ -17946,9 +17947,10 @@ fn sample_linked_list_state() -> Result<TimeState, String> {
         ("Song", None, 1, 2),
         ("Intro", Some(0), 2, 8),
         ("Verse", Some(1), 4, 16),
-        ("Drop", Some(3), 2, 8),
-        ("Break", Some(4), 1, 8),
+        // Changed in the song: × 1, its bars its own (4b.3).
         ("Drop", Some(3), 1, 4),
+        ("Break", Some(4), 1, 8),
+        ("Drop", Some(3), 2, 8),
         ("Outro", Some(5), 1, 4),
     ];
     let mut starts = 1;
@@ -17965,6 +17967,7 @@ fn sample_linked_list_state() -> Result<TimeState, String> {
                 playing: (k == 2).then_some((3, 0.62)),
                 waiting: false,
                 lead: k == 0,
+                changed: k == 3,
             };
             starts += bars;
             r

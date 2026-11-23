@@ -7398,6 +7398,7 @@ fn time_action(
         | TimeAction::ListAdd
         | TimeAction::ListRemove(_)
         | TimeAction::ListMove { .. }
+        | TimeAction::ListBack(_)
         | TimeAction::Undo
         | TimeAction::Redo
             if tracks.host.tracks.has_regions() || tracks.host.tracks.has_song_steps() =>
