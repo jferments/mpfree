@@ -163,7 +163,16 @@ The model is in `rust/mpfree-seq/src/arrange.rs`, song-mode playback in `rust/mp
 
 ## The Song view (`mpfree-time-ui`)
 
-On the Clips page, the **Song ›** button at the right of the grid's title swaps the grid for the Song view, and its **Clips** button swaps back.
+**The view chip** (the Arrange refactor's phase 5): each of Arrange's three views (the grid, the Song view, the song list) has the same chip at the left of its title line, **Clips | List | Song** (`widgets::view_chip_rect`, three `VIEW_PART_W` parts, `paint_view_chip`; `view_title` draws it and the title after it), the view shown lit. A touch on another part gives each widget's own event: the grid's `Toggle(slots + 1)` (Song, `TimeAction::SongView(true)`) and `Toggle(slots + LIST_VIEW)` (List, `ListView(true)`); the Song view's `Tab(song::CLIPS)` and `Tab(song::LIST)`; the list's `Toggle(LIST_CLIPS)` and `Toggle(LIST_SONG)`. Their targets are all "view", labelled with the part. It replaced the view's name in the title and the grid's "Song ›", the Song view's List and bottom-row Clips, and the list's Clips and Song buttons; the Song view's bottom-row place 0 is zero-wide until phase 6's Split takes it.
+
+**What each track plays** (D3, phase 5.1) comes from the player's launches and cues, as `TimeState` carries them, never from the screen's own guesses:
+
+- `TimeState::plays(track)` is `Plays::Clip(slot)` once the launched clip has started (its origin at or before the playhead), else in song mode `Plays::Song` when the song has something for the track (`song_has`: a block on its lane, or an audio track's region), else `Plays::Nothing`. A muted track still says what it would play.
+- `TimeState::song_mark(track)` is the grid header's SONG tag (`GridTrack::song`, `widgets::SongMark`): `Plays` (filled) while the track plays the song, `Under` (outlined) while a clip plays over it, `None` with song mode off or nothing in the song for it. It sits at the right of the header's second line, or of the name line when there is none or a mute waits there.
+- A playing cell with a cue waiting (`GridCell::cued`) has its detail in amber: "until 6.1" (another clip), "stops 6.1", or "to song 6.1" for a stop in song mode on a track the song has something for (the player gives the track the song again after it, `Player` "goes back to the song"). In Perform a stop also counts down on the playing cell (`GridCell::countdown`, the same 1/64 steps as a queued cell's bar), left of its ring.
+- `TimeState::lanes_over()` gives the Song view the clips launched over the song (`song::LaneOver`, `SongLanes::over`): the clip playing, from its origin to its cue's line while one waits (`back` when the cue is a stop, so the song comes back there), and the clip waiting, from its line. `SongLanes::paint_over` hatches the lane's span (the song waits, silent), draws the clip as a band in the track's colour with a green edge, a dashed amber line where the song comes back, and a waiting clip as a dashed amber outline.
+
+**Empty cells act on the lift** (phase 5.4, decision 4). A finger down on an empty cell is held (`ClipGrid::empty`); it gives `Select` on the lift, and nothing once it has moved `LIFT_PX` or is cancelled, so a drag or a scroll that starts there makes no clip. In Perform the app's guard (`Player::watch_guard`, the half-second hold that guards Delete) takes an empty cell of a note track too (`Player::empty_cell`: not a Loop track's, whose tap only arms, nor an audio track's): a tap makes nothing and the hint line says `MAKE_HINT`; held `GUARD_HOLD` it presses the cell, and `NewClip` follows. Make keeps one tap.
 
 - **The lanes.** Each track is a lane, its name on the left with what it plays under it when the lane is at least 34 px tall (`SongLanes::sounds`, from `TrackInfo::sound`; with take lanes open the names stand alone). Each placement is a block in the track's colour, with its clip's name. A unique placement has a small dot in its corner, and the selected one has an accent outline. After the last track's lane, "+ Track" adds a track (`Tab(song::ADD_TRACK)`, `TimeAction::AddTrack`, as on the grid) while the project has fewer than 128 (`SongLanes::can_add_track`). It opens a small chooser under it (over it when there is no room): Note track, Audio track, Loop track (`song::ADD_KINDS`, `Tab(ADD_NOTE)`, `Tab(ADD_AUDIO)`, `Tab(ADD_LOOP)`; a touch off it is `Tab(ADD_CLOSE)`). `TimePage::chooser` turns a row into `TimeAction::AddTrack`, `AddAudioTrack` or `AddLoopTrack`, and SHIFT + "+ Track" still adds a Loop track at once. The new track's lane comes into view (`TimePage::reveal`). An audio track's lane sits in its place among the tracks (below).
 - **The ruler** shows the bar numbers and the markers' names in amber, and the playhead is a line over every lane (green while song mode is on).
@@ -177,14 +186,13 @@ On the Clips page, the **Song ›** button at the right of the grid's title swap
   - Held within 28 px of the left or right edge, the bars scroll one way, every 400 ms while it moves there: `Tab(BARS_BACK)` or `Tab(BARS_ON)`, which `TimePage::page_tracks` takes.
   - The wheel. Arrange has no outline (the wheel picks the record row), so with a block or a section picked the wheel's push grabs it instead of opening the row (`Player::song_grab`): a turn moves the block a beat (`MovePlacement`), or the section a place (`MoveSection`), and the next push lets go.
   - The hint line follows the pick (`view::song_hint`).
-- **The buttons along the bottom:**
-  - **Clips** goes back to the grid.
+- **The buttons along the bottom** (the first place, where Clips was, is empty until Split):
   - **Song on/off** turns song mode on or off.
   - **Scenes → song** adds every row with a clip to the end of the song, from the next bar line after it.
   - **Song → scenes** puts the song's sections into empty rows.
   - A conversion that plays differently opens the report card over the view (above); an exact one says so on the hint line.
   - **Make unique** and **Delete** act on the selected placement, and are dim when nothing is selected.
-- **Rec song** sits at the right of the title line on the Song view, and beside the Song › button on the grid. It is red while armed.
+- **Rec song** sits at the right of the title line on the Song view and on the grid. It is red while armed.
 
 ### Audio lanes (layout spec 4c)
 
