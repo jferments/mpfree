@@ -147,8 +147,8 @@ fn a_ladder_at_full_resonance_sings_at_its_cutoff_at_a_steady_level() {
 
 #[test]
 fn drive_adds_harmonics_and_keeps_the_level() {
-    // -12 dBFS at the filter (the pad's centre pan takes 3 dB).
-    let s = sine(200.0, 0.25 * std::f32::consts::SQRT_2);
+    // -12 dBFS at the filter (the pad's level and pan come after it).
+    let s = sine(200.0, 0.25);
     let clean = filter(FilterKind::Ladder, 4, 18_000.0, 0.0, 0.0);
     let driven = Filter {
         drive_db: MAX_DRIVE_DB,
@@ -172,6 +172,44 @@ fn drive_adds_harmonics_and_keeps_the_level() {
     let x = played(&loud, driven, 1.0);
     let peak = x.iter().fold(0.0f32, |m, v| m.max(v.abs()));
     assert!(peak < 0.5, "{peak}");
+}
+
+/// `seconds` of the pad at `level_db`, hit at `velocity`.
+fn played_with(s: &Source, f: Filter, level_db: f32, velocity: u8, seconds: f32) -> Vec<f32> {
+    let mut p = project(s, f);
+    let mut pad = p.pad(0).cloned().unwrap();
+    pad.level_db = level_db;
+    p.set_pad(0, Some(pad), None).unwrap();
+    let mut e = Engine::new(RATE, 8);
+    e.set_view(EngineView::build(&p, RATE));
+    e.apply(Event::NoteOn { pad: 0, velocity });
+    run(&mut e, (seconds * RATE as f32) as usize)
+}
+
+#[test]
+fn the_filter_hears_the_sound_before_the_pads_level_and_velocity() {
+    // A driven, resonant Ladder's harmonics follow how hard the sound
+    // drives it, so they show where the gains are: the pad's level and a
+    // hit's velocity come after the filter (filter gap plan F2), so a
+    // quieter pad or a softer hit is only quieter, driven just as hard.
+    let s = sine(200.0, 0.25);
+    let driven = filter(FilterKind::Ladder, 4, 2_000.0, 0.5, 12.0);
+    let h3 = |x: &[f32]| db(level_at(x, 600.0) / level_at(x, 200.0));
+    let full = played_with(&s, driven, 0.0, 127, 1.0);
+    let (full_rms, full_h3) = (rms(steady(&full)), h3(steady(&full)));
+    assert!(full_h3 > -40.0, "driven: {full_h3}");
+    for (level_db, velocity) in [(-12.0, 127), (0.0, 40)] {
+        let soft = played_with(&s, driven, level_db, velocity, 1.0);
+        let (soft_rms, soft_h3) = (rms(steady(&soft)), h3(steady(&soft)));
+        assert!(
+            soft_rms < 0.5 * full_rms,
+            "{level_db} dB, velocity {velocity}: {soft_rms} against {full_rms}"
+        );
+        assert!(
+            (soft_h3 - full_h3).abs() < 0.01,
+            "{level_db} dB, velocity {velocity}: third harmonic {soft_h3} against {full_h3}"
+        );
+    }
 }
 
 #[test]
@@ -364,4 +402,193 @@ fn a_cut_stops_the_combs_ringing() {
     });
     let _ = run(&mut e, 4_000);
     assert_eq!(e.active_voices(), 0);
+}
+
+/// A pad of `layers` stacked (every one plays), each a sound at a level
+/// (dB), through `f`.
+fn layered(layers: &[(&Source, f32)], f: Filter) -> Project {
+    let mut p = Project::new();
+    let mut pad: Option<Pad> = None;
+    for &(s, level_db) in layers {
+        p.add_source(s.clone());
+        let mut l = Layer::new(Region::whole(s));
+        l.level_db = level_db;
+        match pad.as_mut() {
+            None => pad = Some(Pad::new("p", l)),
+            Some(pd) => pd.layers.push(l),
+        }
+    }
+    let mut pad = pad.unwrap();
+    pad.filter = f;
+    p.set_pad(0, Some(pad), None).unwrap();
+    p
+}
+
+/// `frames` of pad 0 of `p` hit at full velocity.
+fn hit(p: &Project, frames: usize) -> Vec<f32> {
+    let mut e = Engine::new(RATE, 8);
+    e.set_view(EngineView::build(p, RATE));
+    e.apply(Event::NoteOn {
+        pad: 0,
+        velocity: 127,
+    });
+    run(&mut e, frames)
+}
+
+fn worst(a: &[f32], b: &[f32]) -> f32 {
+    a.iter()
+        .zip(b)
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0, f32::max)
+}
+
+#[test]
+fn a_hits_layers_mix_before_one_filter() {
+    // The layers a hit plays are mixed, each at its own level, and the
+    // mix goes through one filter (filter gap plan F2c). Quiet enough
+    // that the resonance guard stays out, the filter is linear: the hit
+    // is its layers' sum, each filtered alone.
+    let f = filter(FilterKind::LowPass, 2, 800.0, 0.4, 0.0);
+    let (a, b) = (sine(220.0, 0.02), sine(1_500.0, 0.02));
+    let n = RATE as usize / 2;
+    let both = hit(&layered(&[(&a, 0.0), (&b, -6.0)], f), n);
+    let one = hit(&layered(&[(&a, 0.0)], f), n);
+    let two = hit(&layered(&[(&b, -6.0)], f), n);
+    let sum: Vec<f32> = one.iter().zip(&two).map(|(x, y)| x + y).collect();
+    let peak = sum.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+    assert!(peak > 0.005, "{peak}");
+    assert!(worst(&both, &sum) < 1e-3 * peak, "{}", worst(&both, &sum));
+    // And one filter it is: through a driven Ladder, two tones
+    // intermodulate (a tone at 2 x 200 - 300 = 100 Hz), as they would
+    // through one filter, never through one each.
+    let drive = filter(FilterKind::Ladder, 4, 2_000.0, 0.3, 12.0);
+    let (lo, hi) = (sine(200.0, 0.25), sine(300.0, 0.25));
+    let mixed = hit(&layered(&[(&lo, 0.0), (&hi, 0.0)], drive), RATE as usize);
+    let apart: Vec<f32> = hit(&layered(&[(&lo, 0.0)], drive), RATE as usize)
+        .iter()
+        .zip(&hit(&layered(&[(&hi, 0.0)], drive), RATE as usize))
+        .map(|(x, y)| x + y)
+        .collect();
+    let im = |x: &[f32]| db(level_at(steady(x), 100.0) / level_at(steady(x), 200.0));
+    assert!(im(&mixed) > -45.0, "one filter: {}", im(&mixed));
+    assert!(im(&apart) < -80.0, "a filter each: {}", im(&apart));
+}
+
+#[test]
+fn a_hit_plays_on_while_any_of_its_layers_does() {
+    // One layer's sound is short, the other's long, the short one first
+    // or second: the hit's filter goes on with the long one until it
+    // ends, then the voices end. Where the short one ends, the filter
+    // rings out what it held of it (a layer alone is cut there): the hit
+    // is its layers filtered alone before that and once the ringing has
+    // died away, and has no step between.
+    let f = filter(FilterKind::LowPass, 2, 800.0, 0.4, 0.0);
+    let ends = RATE as usize / 10;
+    let short = source(ends, |i| {
+        0.02 * (i as f32 * 220.0 * TAU / RATE as f32).sin()
+    });
+    let long = source(RATE as usize * 6 / 10, |i| {
+        0.02 * (i as f32 * 330.0 * TAU / RATE as f32).sin()
+    });
+    let n = RATE as usize * 8 / 10;
+    let sum: Vec<f32> = hit(&layered(&[(&short, 0.0)], f), n)
+        .iter()
+        .zip(&hit(&layered(&[(&long, 0.0)], f), n))
+        .map(|(x, y)| x + y)
+        .collect();
+    let step = |x: &[f32]| {
+        x.windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0f32, f32::max)
+    };
+    for order in [[&short, &long], [&long, &short]] {
+        let p = layered(&[(order[0], 0.0), (order[1], 0.0)], f);
+        let mut e = Engine::new(RATE, 8);
+        e.set_view(EngineView::build(&p, RATE));
+        e.apply(Event::NoteOn {
+            pad: 0,
+            velocity: 127,
+        });
+        let out = run(&mut e, n);
+        let rung = ends + RATE as usize / 20;
+        assert!(worst(&out[..ends], &sum[..ends]) < 1e-5);
+        assert!(worst(&out[rung..], &sum[rung..]) < 1e-5);
+        assert!(
+            step(&out[ends - 100..ends + 100]) < 1.2 * step(&out[ends - 1_000..ends - 100]),
+            "a step where the short one ends"
+        );
+        assert!(rms(&out[RATE as usize / 5..RATE as usize / 2]) > 0.005);
+        assert_eq!(e.active_voices(), 0, "the hit ends with its last layer");
+    }
+}
+
+#[test]
+fn a_layers_level_moved_while_it_plays_moves_that_layer_alone() {
+    // The layers share a filter, but a level edit of one, the first or
+    // another, glides that one to its new level: once there, the hit plays
+    // as a hit at the new levels does.
+    let f = filter(FilterKind::LowPass, 2, 800.0, 0.4, 0.0);
+    let (a, b) = (sine(220.0, 0.02), sine(1_500.0, 0.02));
+    let p = layered(&[(&a, 0.0), (&b, 0.0)], f);
+    let at = RATE as usize / 5;
+    for moved in 0..2 {
+        let mut q = p.clone();
+        let mut pad = q.pad(0).unwrap().clone();
+        pad.layers[moved].level_db = -12.0;
+        q.set_pad(0, Some(pad), None).unwrap();
+        let mut e = Engine::new(RATE, 8);
+        e.set_view(EngineView::build(&p, RATE));
+        e.apply(Event::NoteOn {
+            pad: 0,
+            velocity: 127,
+        });
+        let before = run(&mut e, at);
+        drop(e.edit_view(EngineView::build(&q, RATE)));
+        let after = run(&mut e, at);
+        let want = hit(&q, 2 * at);
+        // 0.1 s on, past the glide and the filter's memory of before.
+        let from = RATE as usize / 10;
+        let off = worst(&after[from..], &want[at + from..]);
+        assert!(off < 1e-3 * rms(&want[at..]), "layer {moved}: {off}");
+        // No step as it moves.
+        let d = |x: &[f32]| {
+            x.windows(2)
+                .map(|w| (w[1] - w[0]).abs())
+                .fold(0.0f32, f32::max)
+        };
+        let around = [&before[at - 64..], &after[..2_000]].concat();
+        assert!(d(&around) < 1.2 * d(&before[at / 2..]), "layer {moved}");
+    }
+}
+
+#[test]
+fn an_edit_reaches_a_hit_whose_first_layer_has_ended() {
+    // The first layer's sound ends; its voice filters the other layer's
+    // on, and the pad's cutoff turned then reaches that filter.
+    let f = filter(FilterKind::LowPass, 2, 800.0, 0.4, 0.0);
+    let short = source(RATE as usize / 10, |i| {
+        0.02 * (i as f32 * 220.0 * TAU / RATE as f32).sin()
+    });
+    let long = sine(1_500.0, 0.02);
+    let p = layered(&[(&short, 0.0), (&long, 0.0)], f);
+    let mut q = p.clone();
+    let mut pad = q.pad(0).unwrap().clone();
+    pad.filter.cutoff_hz = 3_000.0;
+    q.set_pad(0, Some(pad), None).unwrap();
+    let mut e = Engine::new(RATE, 8);
+    e.set_view(EngineView::build(&p, RATE));
+    e.apply(Event::NoteOn {
+        pad: 0,
+        velocity: 127,
+    });
+    let at = RATE as usize / 5;
+    let _ = run(&mut e, at);
+    drop(e.edit_view(EngineView::build(&q, RATE)));
+    let after = run(&mut e, at);
+    let want = hit(&layered(&[(&long, 0.0)], q.pad(0).unwrap().filter), 2 * at);
+    let from = RATE as usize / 10;
+    let off = worst(&after[from..], &want[at + from..]);
+    assert!(off < 1e-3 * rms(&want[at..]), "{off}");
+    // At 3 kHz the 1.5 kHz tone passes louder than at 800 Hz.
+    assert!(rms(&after[from..]) > 2.0 * rms(&hit(&layered(&[(&long, 0.0)], f), 2 * at)[at..]));
 }

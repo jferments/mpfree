@@ -2,10 +2,14 @@
 # theme: THEME PAGE COUNT # REASON. Checked by tests/theme_contrast.rs; the
 # counts may only go down. Write them with
 #     MPFREE_LINT_BLESS=1 cargo test -p mpfree-app --test theme_contrast
+abletown arp-pattern 1 # the Pattern mode's Edit pattern and Record on pads buttons, as before this change; none of the pattern list's
+abletown arp-pattern-mine 1 # the Pattern mode's Edit pattern and Record on pads buttons, as before this change; none of the pattern list's
+abletown arp-pattern-rolls 1 # the Pattern mode's Edit pattern and Record on pads buttons, as before this change; none of the pattern list's
 abletown arp-workspace-record 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown arrange-instruments 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown browser 2 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown browser-samples 6 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown browser-xy-layouts 2 # as browser (the same runs: each row's star while not starred)
 abletown chain 6 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown chain-comp 3 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown chain-notes 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
@@ -59,6 +63,7 @@ console arrange-song-tempo 1 # before the theme refactor (phase 0 baseline)
 console browser 3 # before the theme refactor (phase 0 baseline)
 console browser-kits 1 # before the theme refactor (phase 0 baseline)
 console browser-samples 7 # before the theme refactor (phase 0 baseline)
+console browser-xy-layouts 3 # as browser (the same runs: each row's star while not starred)
 console chain 1 # before the theme refactor (phase 0 baseline)
 console chain-sidechain-list 1 # before the theme refactor (phase 0 baseline)
 console chain-xy 1 # as chain (the same page and runs; the XY marks add none)
@@ -135,6 +140,7 @@ console pads-perform-scenes 7 # a window page: its empty cells' faint "empty", t
 console pads-types 17 # before the theme refactor (phase 0 baseline)
 console play 1 # before the theme refactor (phase 0 baseline)
 console play-controller 1 # before the theme refactor (phase 0 baseline)
+console play-keys 1 # the Play page's own runs (Capture, the loop row's + marks, the master scale), as on play (live shows C1)
 console play-macros 1 # before the theme refactor (phase 0 baseline)
 console play-pad-types 4 # before the theme refactor (phase 0 baseline)
 console play-rec-both 1 # before the theme refactor (phase 0 baseline)
@@ -198,6 +204,7 @@ default arrange-instruments 1 # before the theme refactor (phase 0 baseline)
 default browser 3 # before the theme refactor (phase 0 baseline)
 default browser-kits 1 # before the theme refactor (phase 0 baseline)
 default browser-samples 7 # before the theme refactor (phase 0 baseline)
+default browser-xy-layouts 3 # as browser (the same runs: each row's star while not starred)
 default chain 2 # before the theme refactor (phase 0 baseline)
 default chain-comp 1 # before the theme refactor (phase 0 baseline)
 default chain-sidechain 1 # before the theme refactor (phase 0 baseline)
@@ -277,6 +284,7 @@ default pads-types 17 # before the theme refactor (phase 0 baseline)
 default play 9 # before the theme refactor (phase 0 baseline)
 default play-all-loop 4 # before the theme refactor (phase 0 baseline)
 default play-controller 9 # before the theme refactor (phase 0 baseline)
+default play-keys 9 # the Play page's own runs (Capture, the loop row's + marks, the master scale), as on play (live shows C1)
 default play-loop 8 # before the theme refactor (phase 0 baseline)
 default play-macros 9 # before the theme refactor (phase 0 baseline)
 default play-pad-types 9 # before the theme refactor (phase 0 baseline)
@@ -327,6 +335,7 @@ default xy-banner 1 # the Synth tab's own runs under the XY banner (as synth); t
 light arrange-instruments 1 # Light (phase 4): faint text, under 3:1 in Default too
 light browser 2 # Light (phase 4): faint text, under 3:1 in Default too
 light browser-samples 6 # Light (phase 4): faint text, under 3:1 in Default too
+light browser-xy-layouts 2 # as browser (the same runs: each row's star while not starred)
 light chain 1 # Light (phase 4): faint text, under 3:1 in Default too
 light chain-xy 1 # as chain (the same page and runs; the XY marks add none)
 light clips 6 # Light (phase 4): faint text, under 3:1 in Default too
@@ -356,10 +365,14 @@ light synth-pads-preview 1 # Light (phase 4): faint text, under 3:1 in Default t
 light synth-table 3 # Light (phase 4): faint text, under 3:1 in Default too
 light synth-voice 2 # Light (phase 4): faint text, under 3:1 in Default too
 light xy-banner 1 # the Synth tab's own runs under the XY banner (as synth); the banner's text reads
+slate arp-pattern 2 # the Pattern mode's Edit pattern and Record on pads buttons, as before this change; none of the pattern list's
+slate arp-pattern-mine 2 # the Pattern mode's Edit pattern and Record on pads buttons, as before this change; none of the pattern list's
+slate arp-pattern-rolls 2 # the Pattern mode's Edit pattern and Record on pads buttons, as before this change; none of the pattern list's
 slate arp-workspace-record 3 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
 slate arrange-instruments 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
 slate browser 2 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
 slate browser-samples 6 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate browser-xy-layouts 2 # as browser (the same runs: each row's star while not starred)
 slate chain 2 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
 slate chain-comp 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
 slate chain-notes 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
@@ -400,6 +413,9 @@ slate synth-xy 3 # as synth-filter (the same page and runs; the XY marks add non
 slate xy-banner 2 # the Synth tab's own runs under the XY banner (as synth); the banner's text reads
 spaceship arp-modifier 5 # the same runs as arp-panel (the master bar's scale), none of the Modifier's
 spaceship arp-panel 5 # before the theme refactor (phase 0 baseline)
+spaceship arp-pattern 7 # the master bar's scale (as arp-panel), the faded Original and a rest in the step strip; none of the pattern list's
+spaceship arp-pattern-mine 6 # the master bar's scale (as arp-panel), the faded Original and a rest in the step strip; none of the pattern list's
+spaceship arp-pattern-rolls 6 # the master bar's scale (as arp-panel), the faded Original and a rest in the step strip; none of the pattern list's
 spaceship arp-quick-band 18 # before the theme refactor (phase 0 baseline)
 spaceship arp-quick-band-pushed 18 # the same runs as arp-quick-band (the Play page under the band), none of the Modifier's
 spaceship arp-workspace-record 18 # before the theme refactor (phase 0 baseline)
@@ -441,6 +457,7 @@ spaceship arrange-song-zoom-64 18 # new screen (Arrange 6.4): arrange-song's fai
 spaceship browser 3 # before the theme refactor (phase 0 baseline)
 spaceship browser-kits 1 # before the theme refactor (phase 0 baseline)
 spaceship browser-samples 22 # before the theme refactor (phase 0 baseline)
+spaceship browser-xy-layouts 3 # as browser (the same runs: each row's star while not starred)
 spaceship browser-set-song 4 # the Fade row, faint while Ends isn't Fade (live shows B1)
 spaceship chain 3 # before the theme refactor (phase 0 baseline)
 spaceship chain-comp 3 # before the theme refactor (phase 0 baseline)
@@ -526,9 +543,12 @@ spaceship play 18 # before the theme refactor (phase 0 baseline)
 spaceship play-16-levels 5 # before the theme refactor (phase 0 baseline)
 spaceship play-all-loop 13 # before the theme refactor (phase 0 baseline)
 spaceship play-controller 18 # before the theme refactor (phase 0 baseline)
+spaceship play-keys 18 # the Play page's own runs (Capture, the loop row's + marks, the master scale), as on play (live shows C1)
 spaceship play-loop 17 # before the theme refactor (phase 0 baseline)
 spaceship play-macros 18 # before the theme refactor (phase 0 baseline)
 spaceship play-pad-types 24 # before the theme refactor (phase 0 baseline)
+spaceship play-patch-edit 5 # the Play frame's master scale, as play-xy-list; none of the patch page's own (live shows C1)
+spaceship play-patches 5 # the Play frame's master scale, as play-xy-list; none of the patch page's own (live shows C1)
 spaceship play-rec-both 18 # before the theme refactor (phase 0 baseline)
 spaceship play-rec-list 6 # before the theme refactor (phase 0 baseline)
 spaceship play-rec-pad 18 # before the theme refactor (phase 0 baseline)
@@ -600,6 +620,7 @@ spaceship xy-banner 1 # the Synth tab's own runs under the XY banner (as synth);
 synthwave arrange-instruments 1 # before the theme refactor (phase 0 baseline)
 synthwave browser 2 # before the theme refactor (phase 0 baseline)
 synthwave browser-samples 6 # before the theme refactor (phase 0 baseline)
+synthwave browser-xy-layouts 2 # as browser (the same runs: each row's star while not starred)
 synthwave chain 1 # before the theme refactor (phase 0 baseline)
 synthwave chain-xy 1 # as chain (the same page and runs; the XY marks add none)
 synthwave clips 6 # before the theme refactor (phase 0 baseline)

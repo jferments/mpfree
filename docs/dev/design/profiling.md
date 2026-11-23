@@ -327,11 +327,14 @@ with `--quick`) at 128 frames and 44.1 kHz:
   allocations (the rest of the page's update and the text), 0.53 ms. A
   song of 16 blocks costs 3.8 million, so the longest song now costs only
   for the extra blocks it shows (about 60 in view, against 16). Most of
-  what is left is the whole page painted again for a playhead that moved;
-  drawing the playhead alone is a later step. Its count in
-  `instructions.txt` was taken with CI's pinned toolchain on the build
-  container, which gave the three Arrange cases' counts to within 0.05 %
-  of CI's.
+  what was left was the whole page painted again for a playhead that
+  moved. Phase 6's zoom chip and block tools took it to 5.8 million;
+  since then a frame that only moves the playhead paints the two strips
+  its line left and reached (`SongLanes::changed_parts`, see
+  [arrange.md](arrange.md)), and the case is 1.8 million instructions
+  (7 frames of 8 paint strips, the 8th scrolls and paints whole), counted
+  on the build container. Its line in `instructions.txt` is re-taken from
+  the count CI prints for it, as the near-5 % rows are.
 - **screen, the piano roll (piano roll plan 0C.3):** six "Piano roll: ..."
   cases draw the note editor on the full clip of the step cases (8,192
   notes, 8 bars), a frame a block, at the MPC's size, with the transport
@@ -389,7 +392,11 @@ with `--quick`) at 128 frames and 44.1 kHz:
   sequencer's to make faster. Like the other new cases, their counts go
   into `instructions.txt` from CI's first run after they merge.
 - **looper:** 60 s of looper memory, recording a 2-bar first pass from the
-  input, then overdubbing layer after layer with an undo every 30 s.
+  input, then overdubbing layer after layer with an undo every 30 s. Also
+  every loop playing (plain and half edited), a free first pass by ear,
+  and four free loops playing on with the song stopped ([free
+  loops](looper.md#free-loops); counted on the cloud container, where the
+  other playing cases read within 0.5 % of their rows).
 - **mix:** the mixer (from the FX thread) idle, and routing 12 tracks and 8
   pads, and 16 tracks and 32 pads, with no inserts. The pad player's own
   summing, meters and output copy are measured on the device by its "CPU by
@@ -772,7 +779,10 @@ data side is here:
   work, log lines, the meters and panels sent to the screen, the copy to the
   card's format), which the outside review of 12 Nov named as the first
   thing to move off the audio thread. It has no budget yet, so it is shown
-  on its worst block, dim, until the control thread moves it.
+  on its worst block, dim, until the control thread moves it. The same
+  windows feed System status's Sound numbers in musicians' words
+  (`engines::shares`: each stage's mean as a share of the period, adding up
+  to about the status chip's CPU; [status.md](status.md)).
 - **Slow periods outside the engines** (`parts.rs`): the `control` row is
   one number, so the loop also times its own parts outside the engines
   (screen actions, MIDI in and buttons, app and effects, pads and lights,

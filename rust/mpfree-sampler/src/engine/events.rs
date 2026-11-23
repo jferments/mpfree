@@ -244,10 +244,18 @@ pub enum PadField {
     /// in ms (1 to 10 000), for new voices.
     PitchEnv = 10,
     PitchDecay = 11,
+    /// The filter's Drive in dB (0 to [`crate::dsp::MAX_DRIVE_DB`]; only
+    /// the Ladder hears it), playing voices at once (the filter gap plan's
+    /// F3).
+    Drive = 12,
+    /// How far the filter envelope moves the cutoff at its top, in octaves
+    /// (-[`crate::dsp::MAX_ENV_OCTAVES`] to +): playing voices follow it
+    /// (F3).
+    EnvDepth = 13,
 }
 
 impl PadField {
-    pub const COUNT: usize = 12;
+    pub const COUNT: usize = 14;
     pub const ALL: [PadField; PadField::COUNT] = [
         PadField::Level,
         PadField::Pan,
@@ -261,10 +269,12 @@ impl PadField {
         PadField::LfoDepth,
         PadField::PitchEnv,
         PadField::PitchDecay,
+        PadField::Drive,
+        PadField::EnvDepth,
     ];
 
     /// Whether playing voices follow it (Level, Pan, Cutoff, Resonance,
-    /// LFO depth); the others reach new voices only.
+    /// LFO depth, Drive, envelope depth); the others reach new voices only.
     pub fn follows(self) -> bool {
         matches!(
             self,
@@ -273,6 +283,8 @@ impl PadField {
                 | PadField::Cutoff
                 | PadField::Resonance
                 | PadField::LfoDepth
+                | PadField::Drive
+                | PadField::EnvDepth
         )
     }
 
@@ -289,6 +301,8 @@ impl PadField {
             PadField::LfoDepth => (-1.0, 1.0),
             PadField::PitchEnv => (-PITCH_ENV_ST, PITCH_ENV_ST),
             PadField::PitchDecay => (*PITCH_DECAY_MS.start(), *PITCH_DECAY_MS.end()),
+            PadField::Drive => (0.0, crate::dsp::MAX_DRIVE_DB),
+            PadField::EnvDepth => (-crate::dsp::MAX_ENV_OCTAVES, crate::dsp::MAX_ENV_OCTAVES),
         };
         x.clamp(lo, hi)
     }

@@ -152,20 +152,42 @@ The MPC's own **Internal** drive (partition 8, Akai's `/data`, also mounted by A
 
 Probably one script, `setup-internal-drive.sh`, sharing the backup's window functions, with the same kind of fake-kernel tests as `test_sd_card_window.py`. The creator puts it on the stick with a `.path` and `.service` pair like S1's.
 
-**Akai's journal.** Akai mounts partition 8 read-write. After a clean shutdown its journal is empty. After a cut, ext4 marks it `needs_recovery` (feature_incompat bit `0x4`, which the reader accepts), and the newest changes may be only in the journal. MPFree reads the filesystem as it stands, without them. So when the bit is set, the window's status says `journal=unclean`, the place opens anyway, and the line under the list says "The MPC wasn't shut down cleanly last time: the newest files may be missing here. Start Akai's MPC software once to tidy it." A file whose blocks don't read as a sound, a kit or a project fails to load and says so. Nothing is ever written.
+**Akai's journal.** Akai mounts partition 8 read-write. After a clean shutdown its journal is empty. After a cut, ext4 marks it `needs_recovery` (feature_incompat bit `0x4`, which the reader accepts and reports as `Ext4::needs_recovery()`), and the newest changes may be only in the journal. MPFree reads the filesystem as it stands, without them. So when the bit is set, the window's status says `journal=unclean`, the place opens anyway, and the line under the list says "The MPC wasn't shut down cleanly last time: the newest files may be missing here. Start Akai's MPC software once to tidy it." A file whose blocks don't read as a sound, a kit or a project fails to load and says so. Nothing is ever written.
+
+**A damaged drive.** The reader bounds every count it reads, so a damaged filesystem gives an error, not a panic or a hang. Its host tests hold it to that: `a_damaged_image_gives_an_error_not_a_panic_or_a_hang` changes a small image's superblock, group descriptors, used inodes and folder blocks at random, 3000 images a run, and reads each as the place would (270,000 such images with other seeds, in debug and release, gave no panic and no hang; the last 60,000 read every file as a stream too); `a_folder_linked_back_to_the_root_ends_the_walk_with_an_error` shows a folder linked back to the root twice ends a walk at 64 folders deep, at once. The reader also refuses a superblock whose last block's place in bytes wouldn't fit in 64 bits, so no offset it works out can overflow, however a damaged inode points.
+
+One limit is the caller's: a damaged inode can claim a size its blocks don't hold, and the reader reads what isn't held as zeros. It must, because a file with holes is no sign of damage: `mke2fs -d` itself stores a block of silence as a hole. So refusing holes would refuse real sounds. Instead the place treats a sound on the drive as the Sample page treats a file. It gets the same length check: `mpfree_sampler::wav::MAX_SAMPLES` × 8 bytes, plus 1 MiB. It gets the same memory promise: `memory::reserve` with `decode_peak`, from the sound's header, read first through `Ext4::open_file`. So a claimed size never takes memory the MPC hasn't got, and at worst a damaged sound loads as silence.
 
 **The place.** The library is built on real folders. The internal drive is an image read through the reader, so it can't be a library folder.
 
-- **Listing:** the place gets its rows from the reader, as the Plugins place gets its rows from the app: `mpfree-library` gains a read-only `Volume` behind `Place::Internal`, with `list(loc)` from `read_dir` and the inodes' sizes and times, and `read(loc)` from `read_file` (up to `MAX_WHOLE_FILE`). `check_writable` refuses `Place::Internal`, as it does the SD card.
+- **Listing:** the place gets its rows from the reader, as the Plugins place gets its rows from the app: `mpfree-library` gains a read-only `Volume` behind `Place::Internal`, with `list(loc)` from `read_dir` and the inodes' sizes and times, and `open(loc)` from `open_file`: a stream (`Read` and `Seek`, holes as zeros), so the loader reads a sound's header, promises its memory, then reads it whole. `check_writable` refuses `Place::Internal`, as it does the SD card.
 - **Hidden:** Akai's own folders are left out of the top folder: `system` (Akai's `/etc` and `/var` layers), `lost+found`, and names starting with a dot. Links and special files are never shown or followed.
-- **Load, Audition and Copy** read the bytes through the volume on the library's worker: a sound is read into memory and handed to the loader as bytes (`LoadSample` with the bytes instead of a path), so nothing is copied anywhere first. Copy, then Paste in a library place, writes the bytes with `Library::write_new`.
+- **Load, Audition and Copy** read the bytes through the volume on the library's worker: a sound is read into memory, once its memory is promised (above), and handed to the loader as bytes (`LoadSample` with the bytes instead of a path), so nothing is copied anywhere first. Copy, then Paste in a library place, writes the bytes with `Library::write_new`.
 - **Akai's own files:** the MPC's projects (`.xpj`) and programs (`.xpm`) open with [`mpfree-mpc-import`](../../../rust/mpfree-mpc-import/src/lib.rs) (sounds and patterns only, decisions), reading each sample the program names through the same volume. That is S3's second part.
 - **Its look:** the SD card place's (read-only path line, Copy only, no stars). Its own screens go to Jay first, as the SD card's did.
 
 **Unverified, to settle before it is built:**
-- Which top folders Akai's browser shows on the Internal drive. A read-only listing of partition 8's top folder from the owner's eMMC backup (on the workstation, with `debugfs -R ls`) answers it without the MPC.
-- Whether Akai's partition 8 uses features the reader refuses (`INCOMPAT_KNOWN`). The same backup answers it (`dumpe2fs -h`).
-- How long the reader takes to list a folder of a few thousand samples on the eMMC (htree folders are read whole). A host test on an image of that size first.
+- Which top folders Akai's browser shows on the Internal drive.
+- Whether Akai's partition 8 uses features the reader refuses (`INCOMPAT_KNOWN`).
+- Whether its folders and files all read with MPFree's reader, and how many sounds have holes.
+
+The owner's eMMC backup answers all three on the workstation, without the MPC, through [`mpfree-ext4-survey`](../../../rust/mpfree-diskimage/src/bin/mpfree-ext4-survey.rs). `mpfree-ext4-survey --newest-backup` opens the newest `~/mpfree-backups/mpc-one-emmc-*/mmcblk0.img` read-only and finds the partition named `data` by its GPT. It reads that partition with the reader the place will use and reports:
+- its feature words, by name, and whether the reader opens it;
+- the journal's state;
+- the top folder, marking what the place leaves out;
+- counts of files, folders, hashed folders and links, and how deep the folders go;
+- the largest folder and how long it took to list;
+- the files' endings and the sounds against the place's limit;
+- how many WAVs start with a WAVE header;
+- the files with holes;
+- every file read whole as a stream, with the time and any error.
+
+It prints names and counts, never a file's contents. Its tests run it on a GPT disk image whose `data` partition `mke2fs -d` made like the Internal drive, with:
+- 600 sounds in a hashed folder;
+- a sound with silence stored as a hole;
+- Akai's `system` folder;
+- a link and a hidden file.
+- How long the reader takes to list a folder of a few thousand samples on the eMMC (htree folders are read whole). On the host, `lists_a_hashed_folder_of_thousands_of_files` lists a hashed folder of 5000 files whole, each with its size, in about 3 ms from an image the host has cached. The eMMC's own reads are what is left to measure, on the MPC.
 
 **Passes when,** on the MPC with Jay's go and a rehearsed block: the place lists the Internal drive, a sound from it loads and plays, Copy and Paste put it in the library, the counters stay unchanged, and the boot hashes are the same before and after.
 

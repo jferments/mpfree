@@ -338,6 +338,8 @@ pub struct Session {
     xy_opening: bool,
     /// Stay's turns on a layout of yours, for UNDO (main.rs's own).
     xy_turns: crate::xy_song::XyTurns,
+    /// The XY pad's gestures recording (`xy_rec.rs`).
+    xy_rec: crate::xy_rec::XyRec,
     /// Play's learned controls (Learn's Play card) between periods, as
     /// main.rs keeps them: the XY pad's buttons press once past the
     /// middle.
@@ -486,6 +488,7 @@ impl Session {
             xy_yours: crate::xy_song::XySong::default(),
             xy_opening: false,
             xy_turns: undo::Turns::default(),
+            xy_rec: crate::xy_rec::XyRec::new(),
             play_moves: crate::remote::PlayMoves::default(),
             synth_turns: undo::Turns::default(),
             presets: crate::presets::TrackPresets::default(),
@@ -1180,6 +1183,20 @@ impl Session {
         self.run_periods(2)
     }
 
+    /// A control learned on Next or Previous patch (`id`, the Play card's;
+    /// live shows C1) moved to `value` (0 to 1), as player_session takes
+    /// MIDI Learn's: on any page, a press stepping the song's patches, and
+    /// the hint line saying why when there is nowhere to go.
+    pub fn patch_footswitch(&mut self, id: u16, value: f32) -> &mut Session {
+        if let Some((d, hands_up)) = self.remote.patch_write(id, value) {
+            if let Some(why) = crate::desk::step_patch(&mut self.music, d, hands_up) {
+                self.out.show(ToUi::Tell(why));
+            }
+        }
+        self.out.show(ToUi::Keys(Box::new(self.music.keys_now())));
+        self.run_periods(2)
+    }
+
     /// A key learned on Perform parameter `id` (Learn a key) moved to
     /// `value` (0 to 1), as player_session takes MIDI Learn's: on any page.
     pub fn perform_key(&mut self, id: u16, value: f32) -> &mut Session {
@@ -1219,6 +1236,21 @@ impl Session {
         self
     }
 
+    /// Program change in: Picks a patch (live shows C1), at once or,
+    /// `waits`, when every key and pedal is up.
+    pub fn program_picks_patches(&mut self, waits: bool) -> &mut Session {
+        let io = std::sync::Arc::new(std::sync::Mutex::new(mpfree_midi_ui::IoModel::default()));
+        {
+            let mut m = io.lock().unwrap();
+            m.setup.program_in = mpfree_midi::setup::ProgramIn::Patch;
+            m.setup.program_waits = waits;
+            m.gen += 1;
+        }
+        let t = self.t();
+        self.music.sync(&io, t);
+        self
+    }
+
     /// Bytes from other gear on the 5-pin MIDI In, as the sound loop takes
     /// them: what MMC and program changes do (the Sync section's).
     pub fn midi_from_gear(&mut self, bytes: &[u8]) -> &mut Session {
@@ -1229,6 +1261,21 @@ impl Session {
         let fx = crate::desk::remote_in(&mut self.music, &self.time, &mut self.app, &mut self.out);
         self.fx.extend(fx);
         self.run_periods(2)
+    }
+
+    /// A keyboard on the 5-pin MIDI In played `bytes`, as the sound loop
+    /// takes them while the song has patches (live shows C1): what the
+    /// patch sent, by track (or route row past `SYNTH_ROUTES`), and the
+    /// screen told what the keys do, as main.rs tells it.
+    pub fn keys_from_gear(&mut self, bytes: &[u8]) -> Vec<(u8, crate::midi_in::Key)> {
+        let t = self.t();
+        let mut keys = Vec::new();
+        self.music
+            .bytes(crate::midi_in::DIN, bytes, t, &mut keys, &mut |_| {});
+        let sent: Vec<_> = self.music.take_patched().collect();
+        self.out.show(ToUi::Keys(Box::new(self.music.keys_now())));
+        self.run_periods(2);
+        sent
     }
 
     /// The controller the Perform pads' learned keys came from went away.
@@ -1625,8 +1672,8 @@ impl Session {
             }
             self.xy_show();
         }
-        // The XY pad's hand on a synth's and a pad's own settings, as
-        // main.rs: to their owners before they play.
+        // The XY pad's hand on a synth's, a pad's and an arp's own
+        // settings, as main.rs: to their owners before they play.
         if self.mix.xy_own().holding() > 0 {
             let mut hands = self.mix.take_xy_own();
             let (mut kept, mut pads_learned, mut turned) = (Vec::new(), Vec::new(), false);
@@ -1637,17 +1684,35 @@ impl Session {
                 kits: &self.track_kits,
                 pads_learned: &mut pads_learned,
                 synth_turned: &mut turned,
+                app: Some(&mut self.app),
+                arp_fx: Vec::new(),
             };
             hands.apply(PERIOD as u32, &mut side, |a, before, after| {
                 kept.push((a, before, after))
             });
+            let arp_fx = side.arp_fx;
             self.mix.put_xy_own(hands, &kept);
+            self.fx.extend(arp_fx);
             self.own_told(pads_learned, turned);
         }
         // The XY pad's Stay: the settings it kept at a lift, one UNDO step.
         if let Some((key, from, to)) = crate::xy_song::kept_turn(self.mix.take_xy_kept()) {
             let now = self.now();
             self.xy_turns.turned(key, from, to, now);
+        }
+        // The XY pad's Set moves record where `xy_rec.rs` says, as main.rs.
+        {
+            let (sounds, kits) = (&self.sounds, &self.track_kits);
+            let pads =
+                |t: u8, pad: u8, id: u16| crate::pad_describe(sounds.as_ref()?, kits, t, pad, id);
+            crate::xy_record(
+                &mut self.xy_rec,
+                &mut self.mix,
+                &self.synth,
+                &self.app,
+                &pads,
+                &mut self.time,
+            );
         }
         // The list of instruments follows the tracks' own and the free
         // places' (step 6), as main.rs's period does: the app hears of it,
@@ -2365,6 +2430,18 @@ impl Session {
         if let Some(m) = o.mix.take() {
             self.mix.open(m);
         }
+        // Its patches, and the keys play its patch 1, as main.rs (live
+        // shows C1).
+        self.music.patches_stopped();
+        if let Some(p) = o.patches.as_mut() {
+            self.music.swap_patches(p);
+        }
+        if !self
+            .music
+            .pick_patch(Some(0), mpfree_patch::keys::When::Now)
+        {
+            self.music.pick_patch(None, mpfree_patch::keys::When::Now);
+        }
         if let Some((options, sounds)) = o.synth.take() {
             for line in self.synth.set_sounds(&sounds) {
                 self.out.note(&line);
@@ -2631,6 +2708,9 @@ impl Session {
                     self.out.show(ToUi::Tell(line));
                 }
                 self.out.show(v);
+                if let Some((name, text)) = self.xy_yours.saving.take() {
+                    self.out.show(ToUi::XyLayoutText { name, text });
+                }
             }
             FromUi::SaveProject => self.save_asked = true,
             FromUi::OpenProject(o) => self.open_project(o),
@@ -2668,6 +2748,15 @@ impl Session {
                 }
             }
             // The sampler's and the store's: nothing to check here.
+            // The song's patches (live shows C1), as main.rs takes them:
+            // the old ones go back to the screen.
+            FromUi::Patches(mut p) => {
+                self.music.swap_patches(&mut p);
+                self.out.show(ToUi::PatchesBack(p));
+            }
+            FromUi::PickPatch(to) => {
+                self.music.pick_patch(to, mpfree_patch::keys::When::Now);
+            }
             FromUi::SaveTouch(_)
             | FromUi::Slice { .. }
             | FromUi::SampleLiveChop { .. }
@@ -2741,8 +2830,11 @@ impl Session {
                                         kits: &self.track_kits,
                                         pads_learned: &mut pads_learned,
                                         synth_turned: &mut turned,
+                                        app: Some(&mut self.app),
+                                        arp_fx: Vec::new(),
                                     };
                                     crate::xy_own::OwnSide::keep(&mut side, addr, v);
+                                    self.fx.extend(side.arp_fx);
                                 } else {
                                     self.panels.set_param(&mut self.mix, addr, v, false);
                                 }

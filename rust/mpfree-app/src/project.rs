@@ -87,6 +87,9 @@ pub const INSTRUMENT_LIST: &str = "instrument-list";
 pub const PADS: &str = "pads";
 /// The Song view's audio tracks and their takes ([`audio_part`]).
 pub const AUDIOTRACKS: &str = "audiotracks";
+/// The song's patches (live shows C1, `mpfree_patch::Patches`): what the
+/// keys play. Written only while there are some.
+pub const PATCHES: &str = "patches";
 
 /// The mixer part's first line.
 pub const MIXER_FORMAT: &str = "mpfree-mixer 1";
@@ -133,7 +136,10 @@ pub const FORMAT: u32 = mpfree_library::project::PARTS_FORMAT;
 /// build that lacks one doesn't open the project, and says which
 /// ([`check`]; docs/dev/design/project-safety.md). Written while the
 /// project has a synth that no track has ([`SYNTHS_WITHOUT_TRACKS`]), an
-/// audio track ([`AUDIO_TRACKS`]), or an audio clip ([`AUDIO_CLIPS`]).
+/// audio track ([`AUDIO_TRACKS`]), an audio clip ([`AUDIO_CLIPS`]), a
+/// linked song list ([`LINKED_SONG_LIST`]), a scene that keeps a track
+/// playing ([`SCENE_KEEP`]), patches ([`PATCHES_NEED`]), a free loop
+/// ([`FREE_LOOPS`]) or a scene that sets the tempo ([`SCENE_TEMPO`]).
 pub const NEEDS_KEY: &str = "needs";
 /// A project with a synth in a free place (the instrument redesign's step
 /// 6: one picked for the pads, no track's): an older build would read the
@@ -157,11 +163,19 @@ pub const AUDIO_CLIPS: &str = "audio-clips";
 /// lose them. The clips part is `mpfree-clips 4` too, which such a build
 /// doesn't read; the line says it in words before anything is read.
 pub const LINKED_SONG_LIST: &str = "linked-song-list";
+/// A project with patches (live shows C1): an older build would play the
+/// keys as routed, unsaid, and drop the patches on its next save.
+pub const PATCHES_NEED: &str = "patches";
 /// A project with a scene whose empty cells keep playing on some track
 /// (the Arrange refactor's 5.2, `mpfree_seq::Scene::keep`): an older
 /// build would skip the scene's `keep` line and stop those tracks at the
 /// scene change, so it must not open it.
 pub const SCENE_KEEP: &str = "scene-keep";
+/// A project with a free loop (Sync: Free, [`mpfree_looper::Clock::Free`]):
+/// an older build would read its loop line's `clock=free` as nothing and
+/// play it as a song loop, in the song's time and at its tempo, and lose
+/// the free clock's line.
+pub const FREE_LOOPS: &str = "free-loops";
 /// A project with a scene that sets the tempo (the Arrange refactor's
 /// 5.2b, `mpfree_seq::Scene::tempo`): an older build would skip the
 /// scene's `bpm` line and play on at the tempo before, so it must not
@@ -173,7 +187,9 @@ pub const KNOWN_NEEDS: &[&str] = &[
     AUDIO_TRACKS,
     AUDIO_CLIPS,
     LINKED_SONG_LIST,
+    PATCHES_NEED,
     SCENE_KEEP,
+    FREE_LOOPS,
     SCENE_TEMPO,
 ];
 
@@ -283,6 +299,13 @@ pub struct Opening {
     /// Which project track each of the audio engine's tracks plays
     /// ([`audio_slots`]): set as the tracks are emptied.
     pub audio_slots: crate::audiotracks::Slots,
+    /// Its patches as the audio loop plays them (none: the keys play as
+    /// routed). The loop swaps them in, and the old ones come back in the
+    /// box.
+    pub patches: Option<Box<crate::patch_in::PatchRig>>,
+    /// Its patches as the screen keeps them, taken out before the box goes
+    /// to the audio loop.
+    pub patch_list: mpfree_patch::Patches,
 }
 
 impl std::fmt::Debug for Opening {
@@ -379,8 +402,17 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
     if c.clips.arrangement.uses_sections() {
         needs.push(LINKED_SONG_LIST);
     }
+    if parts.iter().any(|(k, _)| k == PATCHES) {
+        needs.push(PATCHES_NEED);
+    }
     if c.clips.scenes.iter().any(|s| s.keep != 0) {
         needs.push(SCENE_KEEP);
+    }
+    if parts
+        .iter()
+        .any(|(name, text)| name == LOOPER && has_free_loops(text))
+    {
+        needs.push(FREE_LOOPS);
     }
     if c.clips.scenes.iter().any(|s| s.tempo.is_some()) {
         needs.push(SCENE_TEMPO);
@@ -397,6 +429,15 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
         },
         parts,
     }
+}
+
+/// Whether the looper's part `text` holds a free loop.
+fn has_free_loops(text: &str) -> bool {
+    mpfree_looper::save::from_text(text).is_ok_and(|s| {
+        s.loops
+            .iter()
+            .any(|(_, f)| f.clock == mpfree_looper::Clock::Free)
+    })
 }
 
 /// Whether this build can open `snap` whole, checked before anything
@@ -459,7 +500,7 @@ fn check_against(snap: &Snapshot, known: &[&str]) -> Result<u32, String> {
     // song, so one that doesn't read is said and the pads follow the track
     // (`App::open_pads`).
     type Reads = fn(&str) -> Result<(), String>;
-    let checks: [(&str, Reads); 6] = [
+    let checks: [(&str, Reads); 7] = [
         (SAMPLER, |t| starts_with(t, mpfree_sampler::save::FORMAT)),
         (LOOPER, |t| mpfree_looper::save::from_text(t).map(drop)),
         (AUDIOTRACKS, |t| {
@@ -468,6 +509,11 @@ fn check_against(snap: &Snapshot, known: &[&str]) -> Result<u32, String> {
         (ARP, |t| starts_with(t, crate::app::ARP_HEADER)),
         (INSTRUMENT_LIST, |t| InstrumentList::parse(t).map(drop)),
         (TRACK_KITS, |t| track_kits_parse(t).map(drop)),
+        (PATCHES, |t| {
+            mpfree_patch::Patches::parse(t)
+                .map(drop)
+                .map_err(|e| e.to_string())
+        }),
     ];
     for (name, reads) in checks {
         if let Some(text) = snap.part(name) {
@@ -502,6 +548,7 @@ fn part_words(part: &str) -> String {
         INSTRUMENT_LIST => "list of instruments",
         PADS => "pads settings",
         AUDIOTRACKS => "audio tracks",
+        PATCHES => "patches",
         other => other,
     };
     format!("its {words}")
@@ -797,6 +844,13 @@ pub fn opening(
             tracks_play(picks, &instrument_list, &mut notes, &mut left_out)
         }
     };
+    // Its patches (live shows C1); none plays the keys as routed.
+    let patch_list = match snap.part(PATCHES) {
+        None => mpfree_patch::Patches::default(),
+        Some(text) => {
+            mpfree_patch::Patches::parse(text).map_err(|e| cant(PATCHES, e.to_string()))?
+        }
+    };
     Ok(Opening {
         tempo,
         swing,
@@ -819,6 +873,8 @@ pub fn opening(
         clear_loops: true,
         clear_audio: true,
         audio_slots: audio,
+        patches: Some(crate::patch_in::PatchRig::of(&patch_list)),
+        patch_list,
     })
 }
 
@@ -2580,6 +2636,7 @@ mod tests {
                     fade_old: 1.0,
                     speed: 0,
                     rate: 0,
+                    clock: mpfree_looper::Clock::Song,
                     layers,
                 },
             )
@@ -2599,6 +2656,7 @@ mod tests {
                 ),
                 one(3, vec![layer(vec![0.5; 4])]),
             ],
+            free_clock: None,
         };
         let (text, files) = loops_part(saved.clone());
         assert_eq!(files.len(), 2);
@@ -3333,6 +3391,41 @@ mod tests {
         assert_eq!(check(&snap), Ok(FORMAT));
     }
 
+    /// Patches (live shows C1): saved as their own part with a needs
+    /// line, so an older build refuses the project rather than drop them,
+    /// and opened back with a rig for the audio loop. A project without
+    /// patches has neither, and opens with none (not the last project's).
+    #[test]
+    fn a_projects_patches_save_with_a_needs_line_and_open_back() {
+        use mpfree_patch::{Layout, Patches};
+        let none = &crate::plugins::Plugins::none();
+        let c = collected(String::new(), InstrumentList::new().text());
+        let plain = snapshot(&c, Vec::new());
+        assert!(plain.part(PATCHES).is_none());
+        let o = opening(&plain, 44_100, "x", none).unwrap();
+        assert!(o.patch_list.list.is_empty());
+        assert!(o.patches.as_ref().is_some_and(|p| p.rig.is_empty()));
+        let mut split = Layout::BassAndKeys.patch("Split", "track 2");
+        split.zones[1].plays = "instrument 6".into();
+        let patches = Patches {
+            list: vec![Layout::Whole.patch("Piano", "track 1"), split],
+        };
+        let snap = snapshot(&c, vec![(PATCHES.to_string(), patches.to_text())]);
+        let needs = snap
+            .meta
+            .extra
+            .iter()
+            .find(|(k, _)| k == NEEDS_KEY)
+            .map(|(_, v)| v.as_str());
+        assert_eq!(needs, Some(PATCHES_NEED));
+        assert_eq!(check(&snap), Ok(FORMAT));
+        let o = opening(&snap, 44_100, "x", none).unwrap();
+        assert_eq!(o.patch_list, patches);
+        let rig = o.patches.as_ref().unwrap();
+        assert_eq!(rig.rig.len(), 2);
+        assert_eq!(rig.synths, [Some(6), None, None, None]);
+    }
+
     /// Phase 2: a project with an audio clip says it needs audio clips on
     /// project.txt's needs line. Phase 1's gate (its features: synths
     /// without tracks and audio tracks) refuses it in plain words before
@@ -3395,6 +3488,63 @@ mod tests {
         assert_eq!(check_against(&snap, &phase_1), Ok(FORMAT));
     }
 
+    /// A project with a free loop (Sync: Free) says it needs free loops,
+    /// so an older build doesn't open its free loops as song loops; with
+    /// song loops only, it needs nothing. This build opens it.
+    #[test]
+    fn a_project_with_a_free_loop_says_it_needs_free_loops() {
+        use mpfree_looper::save::{to_text, ClockFile, LayerFile, LoopFile, Saved};
+        use mpfree_looper::Clock;
+        let c = collected(String::new(), InstrumentList::new().text());
+        let part = |clock: Clock| {
+            let file = LoopFile {
+                frames: 2,
+                ticks: 96,
+                origin: 0,
+                level: 1.0,
+                muted: false,
+                bars: None,
+                after: mpfree_looper::After::Play,
+                starts: mpfree_looper::Starts::Bar,
+                fade_old: 1.0,
+                speed: 0,
+                rate: 0,
+                clock,
+                layers: vec![LayerFile {
+                    level: 1.0,
+                    pan: 0.0,
+                    muted: false,
+                    solo: false,
+                    faded: 1.0,
+                    file: "loop-1.wav".into(),
+                    audio: Vec::new(),
+                }],
+            };
+            let saved = Saved {
+                rate: 44_100,
+                selected: 0,
+                loops: vec![(0, file)],
+                free_clock: (clock == Clock::Free).then_some(ClockFile {
+                    bpm: 97.5,
+                    meter: mpfree_transport::Meter::new(4, 4).unwrap(),
+                    top: 0,
+                }),
+            };
+            snapshot(&c, vec![(LOOPER.to_string(), to_text(&saved))])
+        };
+        let needs = |snap: &Snapshot| {
+            snap.meta
+                .extra
+                .iter()
+                .find(|(k, _)| k == NEEDS_KEY)
+                .map(|(_, v)| v.clone())
+        };
+        assert_eq!(needs(&part(Clock::Song)), None, "song loops need nothing");
+        let free = part(Clock::Free);
+        assert_eq!(needs(&free).as_deref(), Some(FREE_LOOPS));
+        assert_eq!(check(&free), Ok(FORMAT));
+    }
+
     /// Phase 0's gate (docs/dev/design/project-safety.md): a project that
     /// needs something this build hasn't got, or has a part this build
     /// can't read (clips saved as `mpfree-clips 9` here, as an
@@ -3438,6 +3588,11 @@ mod tests {
                 "its audio tracks can't be read (",
             ),
             (ARP, "mpfree-arp 2\n", "its arps can't be read ("),
+            (
+                PATCHES,
+                "mpfree-patches 1\npatch = Lead\nzone = track 1\nkeys = 60 40\n",
+                "its patches can't be read (",
+            ),
             (
                 INSTRUMENTS,
                 "mpfree-instruments 9\n",

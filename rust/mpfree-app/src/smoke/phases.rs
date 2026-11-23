@@ -1434,10 +1434,13 @@ mod looper {
             // In a bar's last beat it waits for the bar line, Loop 3's
             // ring waiting as an armed one; a tap on it calls it off.
             let end = s.t() + 2.5;
-            while !s.looper.looper.capture_waits() && s.t() < end {
+            while !s.looper.looper.capture_waits(mpfree_looper::Clock::Song) && s.t() < end {
                 s.run_periods(1);
             }
-            assert!(s.looper.looper.capture_waits(), "a bar's last beat");
+            assert!(
+                s.looper.looper.capture_waits(mpfree_looper::Clock::Song),
+                "a bar's last beat"
+            );
             s.button_with("SHIFT", "REC");
             let l3 = |s: &Session| s.looper.looper.loop_status(2).unwrap();
             assert_eq!(l3(&s).capturing, Some(0.0), "waits for the bar line");
@@ -1774,6 +1777,123 @@ mod looper {
             );
             assert!((s.time.info().bpm - tap_bpm).abs() < 1e-9);
             assert_eq!(s.looper.snaps_refused, 0);
+        });
+    }
+
+    /// Free loops' step F3: a free first loop (Sync: Free) closed 40 ms
+    /// late with Suggest gets its offer too. Snap changes its end and the
+    /// free clock's tempo together on its next downbeat, with nothing
+    /// asked of the time engine: the song's tempo, and the app's, never
+    /// move, and recordings on the audio tracks (which follow the song)
+    /// aren't asked about. UNDO takes it back the same way.
+    #[test]
+    fn a_free_loops_snap_changes_the_free_clocks_tempo_and_not_the_songs() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let said = s
+                .looper
+                .command(mpfree_looper::Command::SetClock(mpfree_looper::Clock::Free));
+            assert!(said.contains("sync: free"), "{said}");
+            let song_bpm = s.time.info().bpm;
+            let (by, tap, _, between) = closed_late(&mut s);
+            assert_eq!(status(&s).clock, mpfree_looper::Clock::Free);
+            let free_bpm = s.looper.looper.free_clock().expect("its clock").bpm;
+            assert_eq!(s.time.info().bpm, song_bpm, "a free loop sets no tempo");
+            s.recorded_audio = Some(true);
+            s.looper.snap(mpfree_looper::Snap::Found);
+            let until_moved = |s: &mut Session, moved: Option<mpfree_looper::Shift>| {
+                let end = s.t() + 3.0;
+                while status(s).moved != moved && s.t() < end {
+                    assert_eq!(s.time.info().bpm, song_bpm, "the song's tempo never moves");
+                    s.run_periods(1);
+                }
+                assert_eq!(status(s).moved, moved, "{:?}", s.said());
+                assert_eq!(s.time.info().bpm, song_bpm, "the song's tempo never moves");
+            };
+            until_moved(&mut s, Some(by));
+            assert_eq!(s.looper.snap_asking(), None, "nothing asked");
+            let st = status(&s);
+            assert_eq!(st.frames as i64, tap as i64 + by.longer());
+            assert!(
+                st.frames.abs_diff(between) <= crate::PERIOD,
+                "{}",
+                st.frames
+            );
+            let said = s.said();
+            let line = said
+                .iter()
+                .find(|l| l.starts_with("looper: Loop 1: snapped "))
+                .unwrap_or_else(|| panic!("{said:?}"));
+            assert!(line.contains(" ms earlier: 1 bar, free at "), "{line}");
+            s.run_for(0.1);
+            let c = s.looper.looper.free_clock().unwrap();
+            assert!(c.running && c.bpm > free_bpm, "{} after {free_bpm}", c.bpm);
+            assert_eq!(s.time.info().bpm, song_bpm, "the song's tempo stays");
+            assert_eq!(s.app.settings.bpm, song_bpm, "and the app's");
+            assert_eq!(s.time.tempo_map().segments().len(), 1);
+            // UNDO goes back on a downbeat too, with the tap's tempo.
+            s.button("UNDO");
+            until_moved(&mut s, None);
+            s.run_for(0.1);
+            assert_eq!(status(&s).frames, tap);
+            assert_eq!(status(&s).offer, Some(by), "on offer again");
+            let c = s.looper.looper.free_clock().unwrap();
+            assert!((c.bpm - free_bpm).abs() < 1e-9, "{} {free_bpm}", c.bpm);
+            assert_eq!(s.time.info().bpm, song_bpm);
+            assert_eq!(s.looper.snaps_refused, 0);
+        });
+    }
+
+    /// Free loops' step F3, both clocks at once: a free Loop 1 and a song
+    /// Loop 2, each closed 40 ms late with Suggest, each snapped with the
+    /// other playing. Neither is in the other's way: Loop 2's snap changes
+    /// the song's tempo and leaves the free clock, and Loop 1, as they
+    /// were; Loop 1's changes the free clock's tempo and leaves the
+    /// song's.
+    #[test]
+    fn a_free_loop_and_a_song_loop_snap_without_holding_each_other_back() {
+        on_big_stack(|| {
+            use mpfree_looper::{Clock, Command, Snap};
+            let mut s = Session::new();
+            s.looper.command(Command::SetClock(Clock::Free));
+            let (by1, tap1, _, _) = closed_late(&mut s);
+            let free_bpm = s.looper.looper.free_clock().expect("its clock").bpm;
+            // Loop 2 on the song's clock, closed late the same way: its
+            // length sets the song's tempo, and the song starts.
+            assert_eq!(s.looper.select(1), "looper: loop 2 picked (empty)");
+            assert_eq!(
+                s.looper.command(Command::SetClock(Clock::Song)),
+                "looper: sync: the song"
+            );
+            let (by2, tap2, tap_bpm, _) = closed_late(&mut s);
+            assert_eq!(status(&s).clock, Clock::Song);
+            // Loop 2's snap moves the song's tempo, with Loop 1 playing.
+            s.looper.snap(Snap::Found);
+            until_moved(&mut s, Some(by2));
+            assert_eq!(status(&s).frames as i64, tap2 as i64 + by2.longer());
+            let song_bpm = s.time.info().bpm;
+            assert!(song_bpm > tap_bpm, "{song_bpm} after {tap_bpm}");
+            let c = s.looper.looper.free_clock().unwrap();
+            assert!(c.running && c.bpm == free_bpm, "as it was: {c:?}");
+            let l1 = s.looper.looper.loop_status(0).unwrap();
+            assert_eq!(
+                (l1.phase, l1.frames, l1.moved),
+                (Phase::Playing, tap1, None)
+            );
+            // Loop 1's moves the free clock's, with Loop 2 playing (picked
+            // with a period to land in, as a press comes a frame later).
+            s.looper.select(0);
+            s.run_periods(1);
+            assert_eq!(s.looper.looper.selected(), 0);
+            s.looper.snap(Snap::Found);
+            until_moved(&mut s, Some(by1));
+            assert_eq!(status(&s).frames as i64, tap1 as i64 + by1.longer());
+            let c = s.looper.looper.free_clock().unwrap();
+            assert!(c.running && c.bpm > free_bpm, "{} after {free_bpm}", c.bpm);
+            assert_eq!(s.time.info().bpm, song_bpm, "the song's tempo stays");
+            let l2 = s.looper.looper.loop_status(1).unwrap();
+            assert_eq!((l2.phase, l2.moved), (Phase::Playing, Some(by2)));
+            assert_eq!(s.looper.snaps_refused, 0, "{:?}", s.said());
         });
     }
 

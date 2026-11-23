@@ -526,6 +526,26 @@ const SHIFT_MENU_HINT: &str =
 const NO_LIBRARY_HINT: &str =
     "No library: the app was started without a data folder, so nothing can be saved or opened   ·   BROWSE closes";
 
+/// Save to browser and From the browser without a library (no --data).
+const XY_NO_LIBRARY: &str =
+    "The browser has no library this run (started without a data folder): no XY layouts are saved or read";
+
+/// The hint line while From the browser's picker shows.
+const XY_BROWSE_HINT: &str =
+    "Wheel: move   ·   push: Load, one of your layouts in this song, playing   ·   \
+     BROWSE or Cancel: back to the XY pad";
+
+/// The XY pad's list's From the browser ([`Player`]'s `xy_browse`).
+#[derive(Default)]
+struct XyBrowse {
+    /// Asked for: the picker opens when the browser shows.
+    pending: bool,
+    /// The picker is open.
+    open: bool,
+    /// A layout's file being read, with its name.
+    reading: Option<(std::sync::mpsc::Receiver<Result<String, String>>, String)>,
+}
+
 /// After an open lands, the engines' news for this long is the open's
 /// own, not an edit.
 const OPEN_SETTLE: Duration = Duration::from_millis(1500);
@@ -717,6 +737,8 @@ enum HistoryOf {
     Perform,
     /// The Synth tab's or the mixer's turns, which the app keeps.
     Turns(UndoOn),
+    /// The song's patches, on the patch screens (live shows C1).
+    Patches,
 }
 
 /// The undo history open over a page: whose, the page to go back to, and
@@ -782,6 +804,8 @@ enum TypeTo {
     /// A song marker's name (the Song view's Rename, a section picked;
     /// Arrange 3.3).
     MarkerName(usize),
+    /// A patch's name (the patch editor's name tapped; live shows C1).
+    PatchName(usize),
     /// An audio clip's name, as (track, slot): its card's Name row
     /// (layout spec 4j).
     ClipName(usize, usize),
@@ -799,6 +823,7 @@ impl TypeTo {
                 | TypeTo::SceneName(_)
                 | TypeTo::PerformPage(_)
                 | TypeTo::MarkerName(_)
+                | TypeTo::PatchName(_)
                 | TypeTo::ClipName(..)
                 | TypeTo::XyNames(_)
         )
@@ -1149,6 +1174,12 @@ pub enum ToUi {
     KitIds(Box<crate::instrument_list::KitIds>),
     /// An open done: the engines it replaced, to free here.
     ProjectBack(Box<crate::project::Opening>),
+    /// The song's patches as the audio loop played them before an edit
+    /// ([`FromUi::Patches`]), to free here.
+    PatchesBack(Box<crate::patch_in::PatchRig>),
+    /// What the keys do now (live shows C1): the patch playing, a pick
+    /// waiting for the hands, the keys down. Sent when it changes.
+    Keys(Box<crate::patch_screen::KeysNow>),
     /// How a set's song's ending stands (live shows B1, song_end.rs).
     SongEnd(crate::song_end::News),
     /// A learned Show control was pressed (live shows B1): its id in
@@ -1324,6 +1355,12 @@ pub enum ToUi {
     /// change ([`crate::xy_song`]): the XY pad's list, Setup, the waiting
     /// banner, the bar under the pad.
     Xy(Box<crate::xy_song::XyView>),
+    /// Save to browser's answer: one of your XY layouts as text, for the
+    /// browser to keep (Instruments › XY pad).
+    XyLayoutText {
+        name: String,
+        text: String,
+    },
     /// Q-LINK: the Q-Link column's next bank.
     QLinkBank,
     /// SHIFT + Q-LINK: the Q-Link column's previous bank.
@@ -1523,6 +1560,8 @@ pub enum ToUi {
     },
     /// Open the Touch lab page; any `Show` closes it again.
     TouchLab,
+    /// Open Play's patch list (Play's MENU, live shows C1).
+    PatchList,
     /// Open the Calibrate touch page; any `Show` closes it again.
     CalibrateTouch,
     /// The touch tuning kept in the store (at the start).
@@ -1719,6 +1758,13 @@ pub enum FromUi {
     /// Start an export: the pass plays the range into its files
     /// (export.rs); it comes back as `ToUi::ExportOver`.
     Export(Box<crate::export::Run>),
+    /// The song's patches after an edit on the patch screens (live shows
+    /// C1): the audio loop plays them from now on and sends the old ones
+    /// back ([`ToUi::PatchesBack`]).
+    Patches(Box<crate::patch_in::PatchRig>),
+    /// The keys play patch N (from 0; None: as routed), at once: a tap
+    /// on the patch list or its wheel.
+    PickPatch(Option<usize>),
     /// Open a project (or a new one): the pieces built here, swapped in
     /// between two periods (project.rs).
     OpenProject(Box<crate::project::Opening>),
@@ -2446,6 +2492,13 @@ pub struct Player {
     browser: Option<Box<mpfree_browser_ui::Browser>>,
     /// The I/O view's model (its MIDI setup is the project's `midi` part).
     io_model: Option<mpfree_midi_ui::Shared>,
+    /// The song's patches (live shows C1, the project's `patches` part):
+    /// what the keys play. The audio loop plays its own copy
+    /// (`patch_in::PatchRig`).
+    patches: mpfree_patch::Patches,
+    /// The patch screens: which shows, the zone picked, their UNDO, and
+    /// what the keys do now (gui/patches.rs).
+    patch: crate::patch_screen::PatchScreen,
     /// The parts New project goes back to, once the audio loop sent them.
     project_defaults: Option<crate::project::Defaults>,
     /// The plugins an open makes a project's plugin effects and synths
@@ -2567,6 +2620,10 @@ pub struct Player {
     midi_load: Option<std::sync::mpsc::Receiver<Result<crate::midi_file::MidiImport, String>>>,
     /// The preset picker the Synth tab's title opens (presets.rs).
     preset_picker: crate::presets::Picker,
+    /// The XY pad's list's From the browser: the browser opens on your
+    /// saved XY layouts (`pending` until it shows), and the file Load
+    /// picked is read on a thread of its own.
+    xy_browse: XyBrowse,
     /// MPFree's own kits being written into the library (bundled.rs), and
     /// whether this run has looked whether they need to be.
     bundling: Option<std::sync::mpsc::Receiver<Result<usize, String>>>,
@@ -2931,6 +2988,14 @@ impl Player {
         );
         ui.add(crate::xy_list::XY_LIST, crate::xy_list::XyList::new(0));
         ui.add(
+            crate::patch_page::LIST,
+            crate::patch_page::PatchList::default(),
+        );
+        ui.add(
+            crate::patch_page::EDIT,
+            crate::patch_page::PatchEditor::default(),
+        );
+        ui.add(
             crate::xy_widgets::XY_BAR,
             crate::xy_widgets::XyBar::default(),
         );
@@ -3002,6 +3067,16 @@ impl Player {
             &play_page::frame(&format!("{}:*", crate::xy_list::XY_LIST)),
         )
         .expect("the XY pad's list");
+        ui.add_page(
+            crate::patch_page::LIST_PAGE,
+            &play_page::frame(&format!("{}:*", crate::patch_page::LIST)),
+        )
+        .expect("the patch list");
+        ui.add_page(
+            crate::patch_page::EDIT_PAGE,
+            &play_page::frame(&format!("{}:*", crate::patch_page::EDIT)),
+        )
+        .expect("the patch editor");
         ui.add_page(play_page::XY_FULL_PAGE, &play_page::xy_full_layout())
             .expect("the XY pad full screen");
         ui.add_page(
@@ -3204,6 +3279,8 @@ impl Player {
             sample,
             browser: None,
             io_model: None,
+            patches: mpfree_patch::Patches::default(),
+            patch: crate::patch_screen::PatchScreen::default(),
             project_defaults: None,
             project_plugins: std::sync::Arc::new(crate::plugins::Plugins::none()),
             drive: None,
@@ -3246,6 +3323,7 @@ impl Player {
             preview_load: None,
             midi_load: None,
             preset_picker: crate::presets::Picker::default(),
+            xy_browse: XyBrowse::default(),
             bundling: None,
             bundle_looked: false,
             arp_panel,
@@ -4860,6 +4938,10 @@ impl Player {
             });
             held_title = format!("Q-Links · Controller {}", c.bank_words());
             (held_title.as_str(), cards)
+        } else if let Some(cards) = self.patch_qlinks() {
+            // The patch editor: the picked zone's ends, transpose and
+            // softest velocity (layout spec 4q).
+            ("Q-Links · Patch", cards)
         } else if let Some(cards) = self.xy_setup_cards() {
             // XY Setup: the picked setting's range and curve, the glide.
             ("Q-Links · XY setup", cards)
@@ -5946,10 +6028,11 @@ impl Player {
             println!("play view: {}", v.name());
         }
         // A view picked closes the REC chip's target list, the XY pad's
-        // list and the XY pad full screen.
+        // list, the XY pad full screen and the patch screens.
         self.rec_list = false;
         self.xy_list = false;
         self.xy_full = false;
+        self.patch.open = crate::patch_screen::Open::Closed;
         self.xy_setup = false;
         self.play.view = v;
         if v != PlayView::Beats {
@@ -6144,6 +6227,7 @@ impl Player {
     fn toggle_xy_list(&mut self) {
         self.xy_list = !self.xy_list && self.view == View::Play;
         self.rec_list = false;
+        self.patch.open = crate::patch_screen::Open::Closed;
         self.xy_setup = false;
         let picked = self.play.xy_effect.map_or(0, |k| k + 1);
         if let Some(l) = self
@@ -6158,12 +6242,76 @@ impl Player {
         self.refresh_hint();
     }
 
+    /// Setup's Save to browser: only with a library to save in.
+    fn xy_can_save(&mut self) -> bool {
+        if self.browser.is_none() {
+            self.tell(XY_NO_LIBRARY);
+        }
+        self.browser.is_some()
+    }
+
+    /// The XY pad's list's From the browser: the list closes and the
+    /// browser opens on your saved XY layouts (Load plays one, as one of
+    /// yours; Cancel or BROWSE comes back).
+    fn xy_from_browser(&mut self) -> Option<FromUi> {
+        if self.browser.is_none() {
+            self.tell(XY_NO_LIBRARY);
+            return None;
+        }
+        self.toggle_xy_list();
+        self.xy_browse.pending = true;
+        Some(FromUi::PresetPicker(true))
+    }
+
+    /// Another page shows: From the browser's picker, asked for or open,
+    /// is put away.
+    fn leave_xy_browse(&mut self) {
+        self.xy_browse.pending = false;
+        if !std::mem::take(&mut self.xy_browse.open) {
+            return;
+        }
+        let Some(b) = self.browser.as_mut() else {
+            return;
+        };
+        b.cancel_picker();
+        for a in b.take_actions() {
+            self.browse_action(a);
+        }
+    }
+
+    /// A layout's file From the browser read: to your layouts, or why not.
+    fn poll_xy_file(&mut self) {
+        use std::sync::mpsc::TryRecvError;
+        let Some((rx, _)) = &self.xy_browse.reading else {
+            return;
+        };
+        let got = match rx.try_recv() {
+            Ok(t) => t,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => Err("its thread stopped".to_string()),
+        };
+        let Some((_, file)) = self.xy_browse.reading.take() else {
+            return;
+        };
+        match got {
+            Ok(text) => self
+                .outbox
+                .push(FromUi::Xy(crate::xy_song::XyAction::Import { file, text })),
+            Err(e) => {
+                let line = format!("{file} wasn't read: {e}");
+                self.say(format!("browser: {line}"));
+                self.tell(&line);
+            }
+        }
+    }
+
     /// SHIFT + NEXT SEQ (the app has shown Play first): the XY pad full
     /// screen in place of Play's view, or back to the view from it.
     fn toggle_xy_full(&mut self) {
         self.xy_full = !self.xy_full && self.view == View::Play;
         self.xy_list = false;
         self.rec_list = false;
+        self.patch.open = crate::patch_screen::Open::Closed;
         self.xy_setup = false;
         if self.view == View::Play {
             self.show_view(self.view);
@@ -6198,6 +6346,7 @@ impl Player {
         if self.view != View::Play {
             return;
         }
+        self.patch.open = crate::patch_screen::Open::Closed;
         self.xy_list = false;
         self.rec_list = false;
         self.xy_full = true;
@@ -6351,6 +6500,7 @@ impl Player {
                     self.name_xy_layout(layout, &view);
                     None
                 }
+                SetupAct::Save => self.xy_can_save().then_some(XyAction::Save(layout)),
                 SetupAct::Delete => {
                     self.close_xy_setup();
                     Some(XyAction::Delete(layout))
@@ -6426,6 +6576,7 @@ impl Player {
             }
         }
         self.play.set_yours(mine.as_ref());
+        self.play.set_xy_hold(v.hold && mine.is_some());
         match mine {
             Some(m) => {
                 if let Some(w) = self
@@ -6471,6 +6622,7 @@ impl Player {
     fn toggle_rec_list(&mut self) {
         self.rec_list = !self.rec_list;
         self.xy_list = false;
+        self.patch.open = crate::patch_screen::Open::Closed;
         self.refresh_rec_list();
         if self.play_frame() {
             self.show_view(self.view);
@@ -6962,6 +7114,7 @@ impl Player {
         let mut look = self.play.transport_look();
         look.rec = Some(self.refresh_rec_chip());
         look.pads = self.pads_play();
+        look.keys = self.patch_keys_look();
         if self
             .ui
             .get::<PlayTransport>(play_page::TRANSPORT)
@@ -7057,12 +7210,15 @@ impl Player {
         if let Some(xy) = self.ui.get::<XyPad>(play_page::XY) {
             let mut probe = XyPad::default();
             self.play.fill_xy(&mut probe);
-            // A finger on the pad puts the dot; otherwise it glides home.
-            let at = (!xy.on).then_some((probe.x, probe.y));
+            // A finger on the pad puts the dot, unless it moves the pad
+            // from where it is; otherwise it glides home.
+            let from_here = self.play.xy_from_here();
+            let at = (!xy.on || from_here).then_some((probe.x, probe.y));
             let changed = xy.label != probe.label
                 || xy.chip != probe.chip
                 || xy.x_axis != probe.x_axis
                 || xy.y_axis != probe.y_axis
+                || xy.from_here != from_here
                 || at.is_some_and(|a| a != (xy.x, xy.y));
             if changed {
                 if let Some(xy) = self.ui.get_mut::<XyPad>(play_page::XY) {
@@ -7070,6 +7226,7 @@ impl Player {
                     xy.chip = probe.chip;
                     xy.x_axis = probe.x_axis;
                     xy.y_axis = probe.y_axis;
+                    xy.from_here = from_here;
                     if let Some((x, y)) = at {
                         (xy.x, xy.y) = (x, y);
                     }
@@ -7110,6 +7267,8 @@ impl Player {
                 crate::rec_list::REC_PAGE
             } else if self.xy_list && self.view == View::Play {
                 crate::xy_list::XY_PAGE
+            } else if self.patch_showing() {
+                self.patch_page()
             } else if self.xy_setup && self.view == View::Play {
                 crate::xy_setup::XY_SETUP_PAGE
             } else if self.xy_full && self.view == View::Play {
@@ -7909,7 +8068,7 @@ impl Player {
         let mode = self.arp.settings.mode;
         let wheel = match mode {
             Mode::Arp => "order",
-            Mode::Pattern => "pattern",
+            Mode::Pattern => "pattern   ·   SHIFT + wheel: group",
             Mode::Direct | Mode::Repeat => "rate",
         };
         let text = if self.power.is_some() {
@@ -8022,6 +8181,11 @@ impl Player {
             REC_LIST_HINT.to_string()
         } else if self.ready && self.view == View::Play && self.xy_list {
             XY_LIST_HINT.to_string()
+        } else if self.ready && self.patch_showing() {
+            match self.patch.open {
+                crate::patch_screen::Open::Edit(_) => patches::EDIT_HINT.to_string(),
+                _ => patches::LIST_HINT.to_string(),
+            }
         } else if self.ready && self.view == View::Play && self.xy_setup {
             XY_SETUP_HINT.to_string()
         } else if self.ready && self.view == View::Play && self.xy_full {
@@ -8316,6 +8480,7 @@ impl Player {
                 View::Pattern => self.workspace.hint().to_string(),
                 View::Browser if self.browser.is_none() => NO_LIBRARY_HINT.to_string(),
                 View::Browser if self.preset_picker.open => self.preset_picker.hint(),
+                View::Browser if self.xy_browse.open => XY_BROWSE_HINT.to_string(),
                 View::Browser
                     if self
                         .browser
@@ -8556,6 +8721,10 @@ impl Player {
                 self.perform_undo(redo);
                 return;
             }
+            Some(HistoryOf::Patches) => {
+                self.patch_undo(redo);
+                return;
+            }
             Some(HistoryOf::Sample) => {
                 let before = self.sample.page();
                 self.sample.undo(&mut self.ui, redo);
@@ -8584,6 +8753,9 @@ impl Player {
     /// the kit's edits on the Sample and Pads tabs, and the turns on the
     /// Synth tab and the mixer. None elsewhere.
     fn undo_source(&self) -> Option<HistoryOf> {
+        if self.patch_showing() {
+            return Some(HistoryOf::Patches);
+        }
         Some(match self.view {
             // The XY pad full screen and Setup: Stay's turns.
             View::Play if self.xy_full || self.xy_setup => HistoryOf::Turns(UndoOn::Xy),
@@ -8705,6 +8877,10 @@ impl Player {
                 let (rows, now) = self.perform.history_rows(&self.perform_names());
                 Some((title("Perform set"), rows, now))
             }
+            HistoryOf::Patches => {
+                let (rows, now) = self.patch_history();
+                Some((title("Patches"), rows, now))
+            }
             HistoryOf::Turns(_) => None,
         }
     }
@@ -8751,6 +8927,11 @@ impl Player {
                     self.perform_undo(redo);
                 }
             }
+            HistoryOf::Patches => {
+                for _ in 0..n {
+                    self.patch_undo(redo);
+                }
+            }
             HistoryOf::Turns(on) => {
                 self.outbox
                     .extend((0..n).map(|_| FromUi::UndoOn { on, redo }));
@@ -8766,6 +8947,11 @@ impl Player {
     /// control to control, press the control it is on, or grab a value and
     /// turn it.
     fn nav(&mut self, n: Nav) {
+        // The patch list takes the wheel: it moves the tile picked, the
+        // push picks it, - / + the patch before or after.
+        if self.patch_nav(n) {
+            return;
+        }
         // The step size list takes the wheel: it moves the row picked,
         // and the push gives the steps that size.
         if self.size_list {
@@ -9076,6 +9262,7 @@ impl Player {
             Some(HistoryOf::Takes) => !self.time.done.is_empty(),
             Some(HistoryOf::Sample) => self.sample.can_undo(),
             Some(HistoryOf::Perform) => self.perform.can_undo(),
+            Some(HistoryOf::Patches) => self.patch.can_undo(),
             Some(HistoryOf::Turns(UndoOn::Synth)) => self.turns_ready.0,
             Some(HistoryOf::Turns(UndoOn::Mixer)) => self.turns_ready.1,
             Some(HistoryOf::Turns(UndoOn::Xy)) => self.turns_ready.2,
@@ -9388,6 +9575,7 @@ impl Player {
             free: self.mem_free,
             stick: self.drive.as_ref().and_then(|d| d.get()).flatten(),
             heat: self.heat,
+            engines: self.engines.as_deref().and_then(crate::engines::shares),
         }
     }
 
@@ -9948,6 +10136,7 @@ impl Player {
             | TypeTo::SceneName(_)
             | TypeTo::PerformPage(_)
             | TypeTo::MarkerName(_)
+            | TypeTo::PatchName(_)
             | TypeTo::ClipName(..)
             | TypeTo::XyNames(_) => None,
         }
@@ -9969,6 +10158,11 @@ impl Player {
             let (_, name) = names.into_iter().next()?;
             let acts = self.perform.rename(page, &name);
             self.perform_acts(acts);
+            return None;
+        }
+        if let Some(TypeTo::PatchName(i)) = to {
+            let (_, name) = names.into_iter().next()?;
+            self.patch_named(i, &name);
             return None;
         }
         if let Some(TypeTo::XyNames(layout)) = to {
@@ -10475,7 +10669,9 @@ impl Player {
                 }
             }
             ToUi::PlayQLink(k, ticks) => {
-                if self.xy_setup_showing() {
+                if self.patch_qlink(k, ticks) {
+                    // The patch editor's zone.
+                } else if self.xy_setup_showing() {
                     // XY Setup: the picked setting's range and curve.
                     self.xy_setup_qlink(k, ticks);
                 } else if self.play.held.is_some()
@@ -10525,7 +10721,7 @@ impl Player {
                 // MAIN on Play: one view, All, so nothing to step through.
                 self.show_play_view(v.unwrap_or(PlayView::All));
             }
-            // With a set open (layout spec 4p): MAIN from another page goes
+            // With a set open (layout spec 4q): MAIN from another page goes
             // to the Show view, and on Arrange goes Show, Clips, Song, the
             // song list, round.
             ToUi::ArrangeView(v) if self.set_play.is_some() => {
@@ -10745,6 +10941,17 @@ impl Player {
                 self.refresh_qlinks();
             }
             ToUi::Xy(v) => self.apply_xy(*v),
+            ToUi::XyLayoutText { name, text } => match self.browser.as_mut() {
+                Some(b) => {
+                    b.save_xy_layout(&name, text);
+                    // An inline browser (the tests') has saved already;
+                    // the worker's answer comes with a later step.
+                    for a in b.take_actions() {
+                        self.browse_action(a);
+                    }
+                }
+                None => self.tell(XY_NO_LIBRARY),
+            },
             ToUi::Learning(name) => {
                 if self.learning != name {
                     self.learning = name;
@@ -10867,6 +11074,8 @@ impl Player {
             // The engines an open replaced: freed here. The open is in:
             // nothing is unsaved (its own news in the next moments isn't
             // an edit).
+            ToUi::PatchesBack(old) => drop(old),
+            ToUi::Keys(now) => self.patch_keys(*now),
             ToUi::ProjectBack(old) => {
                 drop(old);
                 self.opens_out = self.opens_out.saturating_sub(1);
@@ -11263,6 +11472,7 @@ impl Player {
                 self.refill_sounds();
             }
             ToUi::TouchLab => self.open_touch_page("touchlab", "Touch lab"),
+            ToUi::PatchList => self.open_patch_list(),
             ToUi::CalibrateTouch => self.open_touch_page("calibrate", "Calibrate touch"),
             ToUi::TouchTuning(t) => {
                 self.saved_tuning = t;
@@ -11420,6 +11630,7 @@ impl Player {
                 self.sample.set_tempo(self.time.transport.bpm);
                 self.refresh_edit_pads();
                 self.time_page.update(&mut self.ui, &self.time);
+                self.retell_held_note();
                 self.refresh_show();
                 self.play.set_transport(self.time.transport);
                 self.refresh_play();
@@ -12256,6 +12467,12 @@ impl Player {
             }
             // Also BROWSE's Load on a preset in Instruments: onto the Synth
             // tab's sound, if it is that engine's.
+            // One of the XY pad's layouts (From the browser, or BROWSE's
+            // Load on one): read, then one of yours in this song.
+            A::LoadPreset { loc, path, engine } if engine == mpfree_browser_ui::XY_FOLDER => {
+                let name = mpfree_library::preset_name(loc.name()).to_string();
+                self.xy_browse.reading = Some((crate::presets::read_in_background(path), name));
+            }
             A::LoadPreset { loc, path, engine } => {
                 let name = mpfree_library::preset_name(loc.name()).to_string();
                 self.preset_picker.read(path, engine, name, true);
@@ -12288,10 +12505,21 @@ impl Player {
                     .push(FromUi::Preset(crate::presets::Ask::Saved(name)));
             }
             A::PickerClosed { .. } => {
-                if self.preset_picker.closed() {
+                if self.preset_picker.closed() || std::mem::take(&mut self.xy_browse.open) {
                     self.outbox.push(FromUi::PresetPicker(false));
                 }
                 self.refresh_hint();
+            }
+            // Setup's Save to browser, answered.
+            A::XyLayoutSaved { name, .. } => {
+                self.say(format!("browser: saved the XY layout {name}"));
+                self.tell(&format!(
+                    "Saved {name} to the browser (Instruments › XY pad): From the browser on the XY pad's list plays it in another song"
+                ));
+            }
+            A::XyLayoutNotSaved(line) => {
+                self.say(format!("browser: {line}"));
+                self.tell(&line);
             }
             // Kit files (mpfree_library::kit): a kit loads in place of the
             // kit the pads play; Save kit saves that kit as a kit folder.
@@ -12912,6 +13140,11 @@ impl Player {
                 mpfree_midi_ui::MidiPart(m.clone()).save(),
             ));
         }
+        // Only while the song has patches: one without plays its keys as
+        // before, and opens in any build.
+        if !self.patches.list.is_empty() {
+            extra.push((crate::project::PATCHES.to_string(), self.patches.to_text()));
+        }
         let mut samples: Vec<_> = sounds
             .into_iter()
             .map(|(file, src)| {
@@ -13065,6 +13298,9 @@ impl Player {
             );
         }
         self.open_midi(snap.part(crate::project::MIDI));
+        // Its patches: the screen keeps the list, the loop plays the rig.
+        self.patches = std::mem::take(&mut o.patch_list);
+        self.patches_opened();
         self.opens_out += 1;
         self.outbox.push(FromUi::OpenProject(Box::new(o)));
         // No kits saved: the factory kits, as New has them.
@@ -13554,12 +13790,7 @@ impl Player {
             beats: u32::from(t.meter.beats),
             click: self.settings.metronome,
             count_in: t.count_in,
-            keyboards: self
-                .rig()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|r| (r.name, r.connected))
-                .collect(),
+            keyboards: self.show_keyboards(),
             autosave_waiting: self.autosave_held(),
         };
         let v = sp.view(&now);
@@ -14464,6 +14695,7 @@ impl Player {
                 | FromUi::SynthPickOpen
                 | FromUi::OptionsButton
                 | FromUi::PlayOnPads
+                | FromUi::PickPatch(_)
                 | FromUi::FollowTrack
                 | FromUi::Preview(_)
                 | FromUi::PreviewStop
@@ -14506,6 +14738,7 @@ impl Player {
     fn show_view(&mut self, v: View) {
         if v != View::Browser {
             self.leave_preset_picker();
+            self.leave_xy_browse();
         }
         if v != View::Synth && self.synth_pick.is_some() {
             // The app closed it too (another page keeps the pick).
@@ -14543,6 +14776,7 @@ impl Player {
         if v != View::Play {
             self.xy_list = false;
             self.xy_full = false;
+            self.patch.open = crate::patch_screen::Open::Closed;
             self.xy_setup = false;
         }
         let followed = self.play_follows(v);
@@ -14557,6 +14791,7 @@ impl Player {
                 crate::rec_list::REC_PAGE.to_string()
             }
             View::Play if self.xy_list && self.ready => crate::xy_list::XY_PAGE.to_string(),
+            View::Play if self.patch_showing() && self.ready => self.patch_page().to_string(),
             View::Play if self.xy_setup && self.ready => crate::xy_setup::XY_SETUP_PAGE.to_string(),
             View::Play if self.xy_full && self.ready => play_page::XY_FULL_PAGE.to_string(),
             View::Play | View::Sequencer => self
@@ -14632,6 +14867,10 @@ impl Player {
                         b.take_actions();
                     }
                     self.preset_picker.opened(b);
+                    if std::mem::take(&mut self.xy_browse.pending) {
+                        b.open_picker(mpfree_browser_ui::Pick::XyLayout);
+                        self.xy_browse.open = true;
+                    }
                 } else {
                     self.say("browser: no library (the app was started without --data); nothing can be saved or opened".to_string());
                 }
@@ -15192,6 +15431,25 @@ impl Player {
         }
     }
 
+    /// A note held on the roll while the wheel turns its velocity (piano
+    /// roll plan 1C.3): the hint line says the velocity the clip has
+    /// now, as each turn's edit comes back.
+    fn retell_held_note(&mut self) {
+        let Some(h) = self.ui.held() else {
+            return;
+        };
+        let told = self.told.as_ref().map(|(t, _, _)| t.clone());
+        if h.widget != time_view::NOTES || !told.as_ref().is_some_and(|t| t.ends_with(HELD_TOLD)) {
+            return;
+        }
+        if let Some(text) = self
+            .held_value(&h)
+            .filter(|t| told.as_ref() != Some(&tell_text(t)))
+        {
+            self.tell(&text);
+        }
+    }
+
     /// The held finger's touch is the wheel's now: a macro card's long
     /// press or the tempo's tap ends, as if the finger had lifted.
     fn held_used(&mut self) {
@@ -15208,6 +15466,15 @@ impl Player {
     fn held_value(&self, h: &mpfree_ui::PageTarget) -> Option<String> {
         if h.widget == synth_view::TILES {
             return self.synth.as_ref()?.wheel_text();
+        }
+        if h.widget == time_view::NOTES && h.target.id == mpfree_time_ui::editor::HELD_NOTE {
+            // A note on the roll (piano roll plan 1C.3): its velocity, or
+            // the picks' with it.
+            let v = self
+                .ui
+                .get::<NoteGrid>(time_view::NOTES)?
+                .held_velocity(h.target.index)?;
+            return Some(format!("{v}{HELD_TOLD}"));
         }
         if mpfree_chain_ui::ChainView::is_note_setting(&h.target) {
             // A MIDI effect's setting: the page knows its value.
@@ -15700,6 +15967,11 @@ impl Player {
             self.print_sample_lines();
             return None;
         }
+        // The patch screens (ERASE + a lane is the editor's own).
+        if ev.widget == crate::patch_page::LIST || ev.widget == crate::patch_page::EDIT {
+            self.patch_event(&ev);
+            return None;
+        }
         if self.status.erase {
             if let Some(answer) = self.erase_tap(&ev) {
                 return answer;
@@ -15825,6 +16097,11 @@ impl Player {
             (play_page::TRANSPORT, EventKind::Select(crate::play_widgets::TAP_BPM)) => {
                 Some(FromUi::TapTempo)
             }
+            // KEYS PLAY: the patch list (live shows C1).
+            (play_page::TRANSPORT, EventKind::Select(crate::play_widgets::TAP_KEYS)) => {
+                self.toggle_patch_list();
+                None
+            }
             // What the pads play: the list of kits. In controller mode the
             // pads play the gear, and the Controller chip gives them back.
             (play_page::TRANSPORT, EventKind::Select(crate::play_widgets::TAP_PADS)) => {
@@ -15892,10 +16169,12 @@ impl Player {
                 self.toggle_xy_list();
                 Some(FromUi::Xy(crate::xy_song::XyAction::Play(col)))
             }
-            (crate::xy_list::XY_LIST, EventKind::Cell { row: 2, .. }) => {
+            (crate::xy_list::XY_LIST, EventKind::Cell { row: 2, col: 0 }) => {
                 self.open_xy_setup();
                 Some(FromUi::Xy(crate::xy_song::XyAction::New))
             }
+            // From the browser: the browser opens on your saved layouts.
+            (crate::xy_list::XY_LIST, EventKind::Cell { row: 2, .. }) => self.xy_from_browser(),
             // The full-screen pad's Hold, Let go and Setup.
             (crate::xy_widgets::XY_BAR, EventKind::Toggle(i)) => self.xy_bar(i),
             (crate::xy_setup::XY_SETUP, EventKind::Select(0)) => {
@@ -15975,7 +16254,9 @@ impl Player {
                 if matches!(self.view, View::Play | View::Sequencer | View::Arrange)
                     && !self.band_showing() =>
             {
-                if !self.audio_qlink(index, delta) {
+                if self.patch_qlink(index, delta) {
+                    // The patch editor's zone.
+                } else if !self.audio_qlink(index, delta) {
                     self.play_qlink(index, delta);
                 }
                 None
@@ -17045,6 +17326,7 @@ impl Player {
         self.poll_plugins();
         self.poll_preview();
         self.poll_preset_file();
+        self.poll_xy_file();
         self.poll_sound_track();
         self.poll_midi();
         self.poll_loops();
@@ -18768,6 +19050,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::ClearLogs => p.apply(ToUi::ClearLogs),
             Effect::ClearConsole => p.apply(ToUi::ClearConsole),
             Effect::TouchLab => p.apply(ToUi::TouchLab),
+            Effect::PatchList => p.apply(ToUi::PatchList),
             Effect::SetMenu(m) => p.apply(ToUi::SetMenu(m)),
             Effect::ShowKey(k) => p.apply(ToUi::ShowKey(k)),
             Effect::CalibrateTouch => p.apply(ToUi::CalibrateTouch),
@@ -20076,6 +20359,47 @@ fn browser_presets(fonts: Fonts) -> Result<Player, String> {
     built
 }
 
+/// The XY pad's list's From the browser (layout spec 4o): the browser on
+/// the XY layouts saved from other songs, Wobble picked. Over a library
+/// filled in a scratch folder, three layouts saved in it.
+fn browser_xy_layouts(fonts: Fonts) -> Result<Player, String> {
+    use mpfree_browser_ui::sample::fill;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir =
+        std::env::temp_dir().join(format!("mpfree-browser-xy-{}-{nanos}", std::process::id()));
+    let built = (|| {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let lib = fill(&dir)?;
+        for name in ["Breakdown", "Squelch", "Wobble"] {
+            let text = format!("xy 1\nlayout\t{name}\nend\n");
+            lib.save_preset(mpfree_browser_ui::XY_FOLDER, name, &text, false)
+                .map_err(|e| format!("{name}: {e}"))?;
+        }
+        let mut p = sample_player(fonts);
+        p.set_browser(mpfree_browser_ui::Browser::inline(lib), "");
+        p.apply(ToUi::Show(View::Play));
+        p.toggle_xy_list();
+        let asked = p.on_event(UiEvent {
+            widget: crate::xy_list::XY_LIST.into(),
+            kind: EventKind::Cell { row: 2, col: 1 },
+        });
+        if asked != Some(FromUi::PresetPicker(true)) {
+            return Err(format!("From the browser asked for {asked:?}"));
+        }
+        p.apply(ToUi::Show(View::Browser));
+        let b = p.browser.as_mut().ok_or("no browser")?;
+        b.dial(2);
+        p.step_browser();
+        p.take_actions();
+        Ok(p)
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    built
+}
+
 /// The whole browser (BROWSE) in Kits with the Boom bap kit picked: Load
 /// on Drums (the armed track) and New track with this kit. Over a library
 /// filled in a scratch folder (removed again once the browser has read
@@ -20601,6 +20925,19 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     full.refresh_play();
     full.toggle_xy_full();
     out.push(("play-xy-full", full));
+    // Patches (live shows C1, layout spec 4q): KEYS PLAY on the transport
+    // bar, the patch list from it, and the editor with three keys held.
+    let mut keys = sample_player(fonts());
+    patches::sample(&mut keys);
+    out.push(("play-keys", keys));
+    let mut list = sample_player(fonts());
+    patches::sample(&mut list);
+    list.toggle_patch_list();
+    out.push(("play-patches", list));
+    let mut edit = sample_player(fonts());
+    patches::sample(&mut edit);
+    patches::sample_edit(&mut edit);
+    out.push(("play-patch-edit", edit));
     // Your XY layouts (the XY controller plan's phase 2, boards 1 to 4 of
     // the mockups approved 23 Nov 10:34Z): the list with two of yours,
     // Squelch playing full screen, its Setup with a setting picked, and
@@ -21242,7 +21579,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     let mut console = sample_player(fonts());
     console.apply(ToUi::Show(View::Console));
     out.push(("syslog", console));
-    use mpfree_controller::mpc_one::button::{MENU, NOTE_REPEAT, PLUS};
+    use mpfree_controller::mpc_one::button::{MENU, NOTE_REPEAT, PLUS, SHIFT};
     let mut app = sample_app();
     for (name, shift) in [("prefs", true), ("options", false)] {
         let mut p = sample_player(fonts());
@@ -23225,6 +23562,11 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         Ok(presets) => out.push(("browser-presets", presets)),
         Err(e) => eprintln!("browser-presets: not drawn ({e})"),
     }
+    // From the browser on the XY pad's list: your saved XY layouts.
+    match browser_xy_layouts(fonts()) {
+        Ok(xy) => out.push(("browser-xy-layouts", xy)),
+        Err(e) => eprintln!("browser-xy-layouts: not drawn ({e})"),
+    }
     // The whole browser in Kits, Boom bap picked: New track with this kit.
     match browser_kits(fonts()) {
         Ok(kits) => out.push(("browser-kits", kits)),
@@ -23307,12 +23649,13 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         widget: mpfree_sampler_ui::play_tab::SECTIONS.into(),
         kind: EventKind::Tab(2),
     });
+    // Off, LP 1-pole, LP 2-pole.
     let filter = mpfree_sampler_ui::play_tab::Row::Filter.place();
     play.on_event(UiEvent {
         widget: mpfree_sampler_ui::play_tab::LIST.into(),
         kind: EventKind::Step {
             index: filter,
-            delta: 1,
+            delta: 2,
         },
     });
     play.on_event(UiEvent {
@@ -23856,14 +24199,14 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         out.push(("pads-edit-mono", mono));
     }
     // The Filter section's Ladder, resonant and driven 12 dB (sampler
-    // R5.6): Filter steps Off, LP2, LP4, HP2, HP4, BP2, BP4, Notch2, Notch4,
-    // Ladder.
+    // R5.6): Filter steps Off, LP 1 to 8-pole (six), HP the same, BP 2 to
+    // 8-pole (four), Notch2, Notch4, Peak, Ladder.
     {
         use mpfree_sampler_ui::play_tab::{Row, LIST};
         let mut ladder = sample_sampler(fonts());
         edit_pad(&mut ladder);
         for (row, delta) in [
-            (Row::Filter, 9),
+            (Row::Filter, 20),
             (Row::Cutoff, -3),
             (Row::Resonance, 14),
             (Row::Drive, 4),
@@ -24196,6 +24539,50 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     }
     run_arp(&mut panel, &mut app, 3 * 5513 + 2000);
     out.push(("arp-panel", panel));
+    // The Arp panel in Pattern mode over pads 1 3 5, latched: the starters
+    // with Climb picked; Snare build in the Rolls group (SHIFT + wheel
+    // three groups on, then the wheel); two patterns of the owner's.
+    for (name, shift_turns, turns, mine) in [
+        ("arp-pattern", 0, 3, false),
+        ("arp-pattern-rolls", 3, 1, false),
+        ("arp-pattern-mine", 0, 75, true),
+    ] {
+        let mut pat = quiet_player(fonts());
+        let mut app = sample_app();
+        let mut fx = Vec::new();
+        if mine {
+            fx.extend(app.load_patterns(
+                "Skip = 1 . 3 2 . 3 x:2 .\nLift = 1 2 3 4 | oct 0 0 1 | vel 110 70\n",
+            ));
+        }
+        fx.extend(app.button(NOTE_REPEAT, true, 0.0));
+        fx.extend(app.button(MENU, true, 0.0));
+        fx.extend(app.button(MENU, false, 0.0));
+        fx.extend(app.button(NOTE_REPEAT, false, 0.0));
+        fx.extend(app.button(PLUS, true, 0.0));
+        fx.extend(app.button(PLUS, true, 0.0));
+        fx.extend(app.arp_action(ArpAction::Latch));
+        if shift_turns > 0 {
+            fx.extend(app.button(SHIFT, true, 0.0));
+            for _ in 0..shift_turns {
+                fx.extend(app.wheel(1));
+            }
+            fx.extend(app.button(SHIFT, false, 0.0));
+        }
+        for _ in 0..turns {
+            fx.extend(app.wheel(1));
+        }
+        for pad in [0, 2, 4] {
+            fx.extend(app.pad_down(pad, 100));
+        }
+        for pad in [0, 2, 4] {
+            app.pad_up(pad);
+        }
+        fx.push(app.arp_view());
+        apply_effects(&mut pat, fx);
+        run_arp(&mut pat, &mut app, 4 * 5513 + 2000);
+        out.push((name, pat));
+    }
     // The same, with the Modifier on the mod wheel (rate +2, an octave
     // and the gate +30 at its top), the wheel 80 % up: 1/16 → 1/32,
     // 2 → 3 octaves, 50 → 74 %.
@@ -24274,6 +24661,8 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
 fn button_play() -> u8 {
     mpfree_controller::mpc_one::button::PLAY
 }
+
+mod patches;
 
 #[cfg(test)]
 mod tests {
@@ -25411,9 +25800,16 @@ mod tests {
                     .unwrap();
             (r.x + r.w / 2, r.y + r.h / 2)
         };
+        // A finger on a note tells the app it holds a value the wheel
+        // turns (piano roll plan 1C.3): the tap goes after that.
         let tap = |p: &mut Player, (x, y): (i32, i32)| {
             let down = p.touch(1, Touch::Down, x, y);
-            down.or(p.touch(1, Touch::Up, x, y))
+            let up = p.touch(1, Touch::Up, x, y);
+            down.or(up).or_else(|| {
+                p.take_actions()
+                    .into_iter()
+                    .find(|a| !matches!(a, FromUi::Held(_)))
+            })
         };
         let empty = cell(&p, 1, 0);
         assert_eq!(
@@ -25650,6 +26046,49 @@ mod tests {
                 to: 1200
             })))
         );
+        // A finger on a note and the wheel (piano roll plan 1C.3): the
+        // wheel goes to it, its first detent naming the note and later
+        // ones only the hold; the hint line says the velocity as each
+        // edit comes back, and the lift taps nothing.
+        timed(&mut p);
+        assert!(p.touch(1, Touch::Down, nx, ny).is_none());
+        assert!(p.take_actions().contains(&FromUi::Held(true)));
+        p.apply(ToUi::Held {
+            delta: 2,
+            fine: false,
+        });
+        let held_turn = |index, ticks, first| {
+            FromUi::Time(TimeAction::Edit(EditAction::Held {
+                index,
+                rev: 0,
+                ticks,
+                fine: false,
+                turn: 1,
+                first,
+            }))
+        };
+        assert_eq!(timed(&mut p), vec![held_turn(1, 2, true)]);
+        let said = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert_eq!(said(&p), "Velocity 90 · the wheel turns it while you hold");
+        let mut back = p.time.clone();
+        if let Some(e) = back.edit.as_mut() {
+            let mut c = (*e.clip).clone();
+            c.notes[1].velocity = 92;
+            e.clip = c.into();
+            e.editor.sel = vec![1];
+        }
+        p.apply(ToUi::Time(Box::new(back)));
+        assert_eq!(said(&p), "Velocity 92 · the wheel turns it while you hold");
+        p.apply(ToUi::Held {
+            delta: -1,
+            fine: false,
+        });
+        assert_eq!(
+            timed(&mut p),
+            vec![held_turn(mpfree_time_ui::editor::HELD_PICKS, -1, false)]
+        );
+        assert!(p.touch(1, Touch::Up, nx, ny).is_none());
+        assert!(timed(&mut p).is_empty(), "no tap");
         // COPY held (piano roll plan 1B.4): a tap on a note copies the
         // picked notes (or that one), a tap on empty roll pastes them
         // there, and the hint line says so.
@@ -34096,6 +34535,7 @@ mod tests {
                     fade_old: 1.0,
                     speed: 0,
                     rate: 0,
+                    clock: mpfree_looper::Clock::Song,
                     layers: vec![mpfree_looper::save::LayerFile {
                         level: 0.5,
                         pan: -0.25,
@@ -34107,6 +34547,7 @@ mod tests {
                     }],
                 },
             )],
+            free_clock: None,
         };
         // Audio 2 with a region of a mono take, as the tracks' save gives it.
         let take: Vec<f32> = (0..4410).map(|k| (k % 89) as f32 / 300.0).collect();

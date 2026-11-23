@@ -102,20 +102,26 @@ In Arp mode the data wheel picks the **order** the held notes play in, from elev
 
 ### Patterns
 
-In Pattern mode the wheel picks a **pattern**. MPFree comes with ten:
+In Pattern mode the list holds MPFree's **74 patterns**, in nine groups, and yours after them. The groups are tabs along the top of the list: tap one and its first pattern plays. The wheel picks a pattern, and **SHIFT + wheel** jumps to the next group (or back to the start of this one, then the one before).
 
-| Pattern | Feel |
+{{shot: arp-pattern-rolls | The Rolls group, with Snare build picked: each row shows the rhythm of its first bar, and its steps as text at the right.}}
+
+Each row has a picture of the pattern's first bar, so you can see its rhythm before you hear it: a block for each hit, a tall orange block for an accent, thin bars for a roll (several hits in one step), three small blocks for the whole chord at once, a faint block for a step that plays only sometimes, a bar for a tie and a dot for a rest. Patterns longer than a bar say how many steps they have.
+
+| Group | What's in it |
 |---|---|
-| Straight | Every step, the held notes in turn |
-| Gallop | Two hits, a rest, a hit |
-| Bounce | First, third, second, third note |
-| Climb | Three notes, then the same an octave up and two up |
-| Pulse | Accents and soft notes in a pumping pulse |
-| Stabs | Chord stabs with rests between |
-| Rolls | Single hits, then quick rolls of two and three |
-| Drift | Loose: random notes, chance steps and ties |
-| Three over four | A three-note octave figure across a four-step bar, with its own accents |
-| Climbing line | One held note becomes a scale line going up and back |
+| Starters | The first ten: straight steps, a gallop, bounces, climbs, stabs and rolls |
+| Chords | The whole chord in rhythm: offbeats, two and four, tresillo, clave, Charleston, two-step, long chords, a funk comp |
+| Gates | The chord chopped and pumped: a trance gate, a sidechain-style pump, stutters, swells |
+| Rolls | Rolls for hats and snares: trap hats, a snare build, triplet rolls, a four-bar fill |
+| Riffs | The low note does the work: gallops, chugs, palm mutes, a breakdown, tremolo |
+| Lines | Melodic shapes over the chord: spirals, octave leaps, a waterfall, a pentatonic run |
+| Bass | Bass lines from the lowest note: disco octaves, rolling, acid, sub, walking |
+| Polymeter | Lanes and lengths that loop against the bar: five over four, Euclidean rhythms, dotted eighths |
+| Chance | Never quite the same bar twice: sparse hits, ghost notes, random notes and rolls |
+| My patterns | Yours: patterns from your patterns file that aren't MPFree's (a pattern you save in the workspace keeps its place in its group) |
+
+Every pattern plays the notes you hold, so it follows your chord. [Arp patterns](../reference/arp-patterns.md) lists all 74 and what each one plays.
 
 Under the list, four buttons work on the pattern:
 
@@ -170,6 +176,8 @@ The push follows the controller smoothly: halfway up pushes about half as far. A
 > [!TIP]
 > On a drum kit: Note Repeat on the hi-hat, Controller **Pressure**, **Adds rolls** +3, and Pushes rate 0. Press harder into the pad and the hats roll.
 
+The [XY pad](xy-layouts.md#the-arp-on-the-pad) can push the arp too: put the **Modifier** box on a layout of yours, and sliding your finger along pushes the arp by the Modifier's amounts, even with no controller picked. A layout can also hold the arp's rate, gate, swing or octaves where your finger puts them, and let go when you lift.
+
 ## Scales and chords
 
 MPFree has nearly 50 scales, from Major and Minor and the church modes through harmonic and melodic minor, pentatonics and blues, to bebop scales and Japanese scales such as Hirajoshi and In-sen. Pick one with **Scale** and its first note with **Scale root**.
@@ -210,4 +218,4 @@ Drag a cell up or down, or select it and turn the data wheel, to change it. **Ro
 > Saved patterns are kept on the MPFree stick, so they are still there after you switch off. Each track's arp, with its pattern as you left it, is saved in your project too, and comes back when you open it. See [Saving your work](saving.md).
 
 > [!MPC]
-> On the MPC, Note Repeat and the arpeggiator share one window: hold **NOTE REPEAT**, tap **Arp**, and pick its Action (Arp, Note Repeat, Rhythm or Pattern). In MPFree NOTE REPEAT's – and + switch between repeat, arp and pattern while you play, and the Arp panel takes the middle of the Play page while the transport bar, the master bar and the Q-Links stay on screen. Latch is a double press of NOTE REPEAT. The MPC's arpeggiator modifiers let several controllers push it at once; MPFree's Modifier takes one controller per track, can push the other way too (slower, fewer octaves, shorter notes), and adds rolls and accents. The MPC's Rhythm and Pattern actions play patterns from its own lists; MPFree's patterns are your own, written step by step or tapped in, with ratchets, chance, ties and octave jumps.
+> On the MPC, Note Repeat and the arpeggiator share one window: hold **NOTE REPEAT**, tap **Arp**, and pick its Action (Arp, Note Repeat, Rhythm or Pattern). In MPFree NOTE REPEAT's – and + switch between repeat, arp and pattern while you play, and the Arp panel takes the middle of the Play page while the transport bar, the master bar and the Q-Links stay on screen. Latch is a double press of NOTE REPEAT. The MPC's arpeggiator modifiers let several controllers push it at once; MPFree's Modifier takes one controller per track, can push the other way too (slower, fewer octaves, shorter notes), and adds rolls and accents. The MPC's Rhythm action plays the held chord in a rhythm from its list; MPFree's Chords and Gates groups do the same, and every one of its 74 patterns follows the notes you hold. You can also write your own step by step or tap them in, with ratchets, chance, ties and octave jumps.

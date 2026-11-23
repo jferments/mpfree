@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use mpfree_sampler::dsp::{Ahdsr, Filter, FilterKind};
 use mpfree_sampler::model::*;
-use mpfree_sampler::save::{from_text, to_text, FORMAT};
+use mpfree_sampler::save::{from_text, to_text, FILTERS_VERSION, FORMAT};
 use mpfree_sampler::wav;
 
 const RATE: u32 = 44_100;
@@ -381,6 +381,97 @@ fn an_older_or_newer_builds_text_still_opens() {
     assert!(opened.kits.len() <= 2);
 }
 
+/// The pad filters' version (the filter gap plan's F2): a save says which
+/// filters it was made with, and a kit saved before them whose pads use a
+/// filter that changed opens as saved, with a note that its filtered pads
+/// may sound different. One without such a pad, or saved now, opens
+/// without one.
+#[test]
+fn a_kit_saved_before_the_filter_rework_opens_with_a_note() {
+    let s = noise(3_000, 2, 4, "Bass");
+    let file = wav::file_name(&s);
+    let bytes = wav::bytes(&s);
+    let old = |kind: &str| {
+        format!(
+            "{FORMAT}\nkits = 1\nkit.0.name = Old\nkit.0.sources = 1\n\
+             kit.0.source.0.file = {file}\nkit.0.pad.0.layers = 1\nkit.0.pad.0.layer.0.source = 0\n\
+             kit.0.pad.0.filter.kind = {kind}\nkit.0.pad.0.filter.poles = 4\n\
+             kit.0.pad.0.filter.cutoff_hz = 1000\n"
+        )
+    };
+    let open = |text: &str| from_text(text, &mut |_| wav::read("Bass", &bytes)).unwrap();
+    let opened = open(&old("low-pass"));
+    assert_eq!(opened.notes.len(), 1, "{:?}", opened.notes);
+    assert!(opened.notes[0].starts_with("Old: saved before the pad filters were reworked"));
+    // The settings are as saved.
+    let pad = opened.kits[0].1.pad(0).unwrap();
+    assert_eq!(pad.filter.kind, FilterKind::LowPass);
+    assert_eq!((pad.filter.poles, pad.filter.cutoff_hz), (4, 1000.0));
+    // A Comb plays as it did: no note.
+    assert!(open(&old("comb")).notes.is_empty());
+    // Saved now, the same kit says its version and opens without a note.
+    let (text, files) = save(&[("New", &opened.kits[0].1)], 0);
+    assert!(
+        text.contains(&format!("\nfilters = {FILTERS_VERSION}\n")),
+        "{text}"
+    );
+    let again = from_text(&text, &mut |f| wav::read("x", &files[f])).unwrap();
+    assert!(again.notes.is_empty(), "{:?}", again.notes);
+
+    // Saved with F2's filters (version 2): only a 4-pole band-pass, which
+    // F4 changed, gets a note, and it says so.
+    let v2 = |kind: &str, poles: u8| {
+        old(kind)
+            .replace("kits = 1\n", "kits = 1\nfilters = 2\n")
+            .replace("filter.poles = 4", &format!("filter.poles = {poles}"))
+    };
+    let notes = open(&v2("band-pass", 4)).notes;
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].starts_with("Old: saved before the band-pass slopes were reworked"));
+    for (kind, poles) in [("band-pass", 2), ("low-pass", 4), ("notch", 4)] {
+        let notes = open(&v2(kind, poles)).notes;
+        assert!(notes.is_empty(), "{kind} {poles}: {notes:?}");
+    }
+    // Saved before F2, the one note covers it.
+    assert_eq!(open(&old("band-pass")).notes.len(), 1);
+}
+
+/// The slopes and the Peak (the filter gap plan's F4) save and open as
+/// set.
+#[test]
+fn every_slope_and_the_peak_save_and_open() {
+    let s = noise(3_000, 2, 4, "Bass");
+    let mut p = Project::new();
+    p.add_source(s.clone());
+    let kinds = [
+        (FilterKind::LowPass, 1),
+        (FilterKind::LowPass, 3),
+        (FilterKind::LowPass, 8),
+        (FilterKind::HighPass, 6),
+        (FilterKind::BandPass, 8),
+        (FilterKind::Peak, 2),
+    ];
+    for (i, (kind, poles)) in kinds.into_iter().enumerate() {
+        let mut pad = Pad::new("p", Layer::new(Region::whole(&s)));
+        pad.filter.kind = kind;
+        pad.filter.poles = poles;
+        pad.filter.resonance = 0.4;
+        p.set_pad(i, Some(pad), None).unwrap();
+    }
+    let (text, files) = save(&[("Slopes", &p)], 0);
+    assert!(text.contains("filter.kind = peak"), "{text}");
+    let again = from_text(&text, &mut |f| wav::read("x", &files[f])).unwrap();
+    assert!(again.notes.is_empty(), "{:?}", again.notes);
+    for (i, (kind, poles)) in kinds.into_iter().enumerate() {
+        let f = again.kits[0].1.pad(i).unwrap().filter;
+        assert_eq!(
+            (f.kind, f.poles, f.resonance),
+            (kind, poles, 0.4),
+            "pad {i}"
+        );
+    }
+}
+
 #[test]
 fn names_with_line_breaks_stay_on_their_line() {
     let s = pcm(1_000, "Line\nbreak\t= in it");
@@ -552,8 +643,9 @@ fn lfo_pitch_envelope_and_velocity_routes_save_and_open() {
     );
 }
 
-/// A pad's Mono, Legato and Glide (sampler R5.5) save and open; a kit saved
-/// before them opens with them off.
+/// A pad's Mono, Legato and Glide (sampler R5.5) and Continue (the filter
+/// gap plan's F3) save and open; a kit saved before them opens with them
+/// off.
 #[test]
 fn mono_legato_and_glide_save_and_open() {
     let s = noise(3_000, 2, 6, "Bass");
@@ -566,6 +658,7 @@ fn mono_legato_and_glide_save_and_open() {
         legato: true,
         glide_ms: 120.0,
         glide_held: true,
+        env_continue: true,
     };
     p.set_pad(5, Some(pd), None).unwrap();
     let (text, files) = save(&[("Bass", &p)], 0);
@@ -574,6 +667,7 @@ fn mono_legato_and_glide_save_and_open() {
         "kit.0.pad.5.mono.legato = yes",
         "kit.0.pad.5.mono.glide_ms = 120",
         "kit.0.pad.5.mono.glide_held = yes",
+        "kit.0.pad.5.mono.env_continue = yes",
     ] {
         assert!(text.lines().any(|l| l == line), "{line} in\n{text}");
     }
@@ -591,6 +685,71 @@ fn mono_legato_and_glide_save_and_open() {
         .map(|l| format!("{l}\n"))
         .collect();
     assert_eq!(read(&old).pad(5).unwrap().mono, Mono::default());
+}
+
+/// What moves a pad's filter per hit (the filter gap plan's F3) saves and
+/// opens: key tracking, velocity on the cutoff (below 0 too), on the
+/// envelope's depth and on its attack, and the random on the cutoff and
+/// resonance. A kit saved before them opens with none.
+#[test]
+fn the_filter_per_hit_settings_save_and_open() {
+    let s = noise(3_000, 2, 9, "Keys");
+    let mut p = Project::new();
+    p.add_source(s.clone());
+    let mut pd = Pad::new("Keys", Layer::new(Region::whole(&s)));
+    pd.filter.kind = FilterKind::LowPass;
+    pd.filter.cutoff_hz = 900.0;
+    pd.vel_to_cutoff = -0.5;
+    pd.key_track = 0.75;
+    pd.vel_to_env = 0.25;
+    pd.vel_to_attack = 0.5;
+    pd.cutoff_random = 0.125;
+    pd.res_random = 1.0;
+    p.set_pad(3, Some(pd), None).unwrap();
+    let (text, files) = save(&[("Keys", &p)], 0);
+    for line in [
+        "kit.0.pad.3.vel_to_cutoff = -0.5",
+        "kit.0.pad.3.key_track = 0.75",
+        "kit.0.pad.3.vel_to_env = 0.25",
+        "kit.0.pad.3.vel_to_attack = 0.5",
+        "kit.0.pad.3.cutoff_random = 0.125",
+        "kit.0.pad.3.res_random = 1",
+    ] {
+        assert!(text.lines().any(|l| l == line), "{line} in\n{text}");
+    }
+    let read = |text: &str| {
+        from_text(text, &mut |f| wav::read("x", &files[f]))
+            .unwrap()
+            .kits
+            .remove(0)
+            .1
+    };
+    assert_same(&read(&text), &p);
+    let new = [
+        "key_track",
+        "vel_to_env",
+        "vel_to_attack",
+        "cutoff_random",
+        "res_random",
+    ];
+    let old: String = text
+        .lines()
+        .filter(|l| !new.iter().any(|k| l.contains(&format!(".{k} = "))))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    let back = read(&old);
+    let b = back.pad(3).unwrap();
+    assert_eq!(
+        (
+            b.key_track,
+            b.vel_to_env,
+            b.vel_to_attack,
+            b.cutoff_random,
+            b.res_random,
+            b.vel_to_cutoff
+        ),
+        (0.0, 0.0, 0.0, 0.0, 0.0, -0.5)
+    );
 }
 
 #[test]

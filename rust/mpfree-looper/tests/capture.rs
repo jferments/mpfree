@@ -8,7 +8,7 @@
 //! 22.05 kHz at 240 BPM in 4/4 makes a bar exactly 22 050 frames (1 s)
 //! and a beat 5 512.5.
 
-use mpfree_looper::{Command as L, Looper, Phase, FADE};
+use mpfree_looper::{Clock, Command as L, Looper, Phase, FADE};
 use mpfree_transport::{Block, Command as T, Transport};
 
 const RATE: u32 = 22_050;
@@ -155,7 +155,7 @@ fn capture_takes_the_last_bars_played_and_plays_them_in_time() {
 fn pressed_in_a_bars_last_beat_it_waits_for_the_bar_line() {
     // Bar 3, beat 4.
     let mut r = played(64, 2 * BAR + 17_000);
-    assert!(r.l.capture_waits());
+    assert!(r.l.capture_waits(Clock::Song));
     r.cmd(L::Capture(2));
     r.run(3 * BAR - 256);
     assert_eq!(r.l.status().capturing, Some(0.0), "waits for bar 4");
@@ -205,17 +205,17 @@ fn fewer_bars_when_fewer_were_played_and_none_before_a_whole_bar() {
     let s = r.l.status();
     assert_eq!((s.phase, s.capturing), (Phase::Empty, None));
     assert_eq!(r.l.stats().refused, 1);
-    assert!(r.l.capture_take(2).is_none());
+    assert!(r.l.capture_take(Clock::Song, 2).is_none());
     // A bar and a half: one bar, though four were asked for.
     r.run(BAR + BAR / 2);
-    assert_eq!(r.l.capture_take(4).map(|t| t.bars), Some(1));
+    assert_eq!(r.l.capture_take(Clock::Song, 4).map(|t| t.bars), Some(1));
     r.cmd(L::Capture(4));
     r.until_playing(BAR);
     let s = r.l.status();
     assert_eq!((s.frames, s.origin), (BAR as usize, 0));
     // Three bars: two of the four (halving).
     let mut r = played(64, 3 * BAR + 100);
-    assert_eq!(r.l.capture_take(4).map(|t| t.bars), Some(2));
+    assert_eq!(r.l.capture_take(Clock::Song, 4).map(|t| t.bars), Some(2));
     // A stop in between: the bars since PLAY only.
     assert!(r.t.command(0, T::Stop));
     r.run(r.frame + BAR);
@@ -223,21 +223,24 @@ fn fewer_bars_when_fewer_were_played_and_none_before_a_whole_bar() {
     r.run(r.frame + BAR);
     // Started again just after bar 4's line: bar 5's is the only one
     // since, so no whole bar.
-    assert!(r.l.capture_take(1).is_none(), "not across the stop");
+    assert!(
+        r.l.capture_take(Clock::Song, 1).is_none(),
+        "not across the stop"
+    );
     r.run(r.frame + BAR);
-    assert_eq!(r.l.capture_take(4).map(|t| t.bars), Some(1));
+    assert_eq!(r.l.capture_take(Clock::Song, 4).map(|t| t.bars), Some(1));
 }
 
 #[test]
 fn a_new_input_forgets_what_was_heard_before() {
     let mut r = played(64, 3 * BAR + 6_000);
-    assert_eq!(r.l.capture_take(2).map(|t| t.bars), Some(2));
+    assert_eq!(r.l.capture_take(Clock::Song, 2).map(|t| t.bars), Some(2));
     r.cmd(L::NewInput);
     r.run(r.frame + 64);
-    assert!(r.l.capture_take(2).is_none());
+    assert!(r.l.capture_take(Clock::Song, 2).is_none());
     // Bars 5 and 6 played since: one whole bar after the change.
     r.run(5 * BAR + 100);
-    let t = r.l.capture_take(2).expect("a bar");
+    let t = r.l.capture_take(Clock::Song, 2).expect("a bar");
     assert_eq!((t.bars, t.origin), (1, 4 * BAR_TICKS));
 }
 
@@ -298,7 +301,7 @@ fn capture_to_takes_bars_ending_on_any_bar_line_still_kept() {
     // long gone from "the last bars", are still kept.
     let mut r = played(64, 8 * BAR + 6_000);
     let end = 5 * BAR_TICKS;
-    let t = r.l.capture_take_to(end, 3).expect("kept");
+    let t = r.l.capture_take_to(Clock::Song, end, 3).expect("kept");
     assert_eq!(
         (t.bars, t.origin, t.ticks),
         (3, 2 * BAR_TICKS, 3 * BAR_TICKS)
@@ -319,7 +322,7 @@ fn capture_to_takes_bars_ending_on_any_bar_line_still_kept() {
     // A bar line never heard (or no longer kept) is refused.
     r.cmd(L::Clear);
     r.run(r.frame + 2 * FADE as u64);
-    assert_eq!(r.l.capture_take_to(BAR_TICKS / 2, 1), None);
+    assert_eq!(r.l.capture_take_to(Clock::Song, BAR_TICKS / 2, 1), None);
     let refused = r.l.stats().refused;
     r.cmd(L::CaptureTo(BAR_TICKS / 2, 1));
     r.run(r.frame + 64);

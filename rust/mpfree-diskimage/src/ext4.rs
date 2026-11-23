@@ -11,7 +11,7 @@
 //! gives an error, not a hang.
 
 use crate::{bad, le16, le32, ReadAt};
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 
 pub const ROOT: u32 = 2;
 
@@ -24,6 +24,9 @@ const INCOMPAT_ENCRYPT: u32 = 0x10000;
 const INCOMPAT_COMPRESSION: u32 = 0x1;
 const INCOMPAT_JOURNAL_DEV: u32 = 0x8;
 const INCOMPAT_DIRDATA: u32 = 0x1000;
+/// The journal holds changes not yet written to the filesystem itself (the
+/// system that last mounted it was cut off). This reader never replays it.
+const INCOMPAT_RECOVER: u32 = 0x4;
 /// Incompatible features this reader handles; any other one stops it.
 const INCOMPAT_KNOWN: u32 =
     0x2 | 0x4 | 0x10 | 0x40 | 0x80 | 0x100 | 0x200 | 0x400 | 0x2000 | 0x4000 | 0x8000 | 0x20000;
@@ -50,6 +53,8 @@ pub const MAX_WHOLE_FILE: u64 = 1 << 30;
 pub const MAX_STREAMED_FILE: u64 = 1 << 40;
 /// How many blocks of a file [`Ext4::copy_file`] maps at a time.
 const WINDOW_BLOCKS: u64 = 1 << 16;
+/// The most blocks one read of a [`FileReader`] maps and reads.
+const READ_RUN: u64 = 256;
 const MAX_EXTENT_DEPTH: u16 = 5;
 const MAX_DIR_BYTES: u64 = 256 << 20;
 
@@ -233,6 +238,13 @@ impl<R: ReadAt> Ext4<R> {
         if groups64 == 0 || groups64 > 1 << 24 {
             return Err(bad(format!("{groups64} block groups is implausible")));
         }
+        // So no block's place in the image (block × size, plus a little)
+        // can overflow, however a damaged inode or folder points.
+        if blocks_count > (1u64 << 62) / block_size {
+            return Err(bad(format!(
+                "{blocks_count} blocks of {block_size} bytes is implausible"
+            )));
+        }
         let groups = groups64 as u32;
         if (groups as u64) * (inodes_per_group as u64) < inodes_count as u64 {
             return Err(bad("the inode count does not fit the groups"));
@@ -318,6 +330,14 @@ impl<R: ReadAt> Ext4<R> {
         let mut b = vec![0u8; self.block_size as usize];
         self.read(&mut b, n * self.block_size)?;
         Ok(b)
+    }
+
+    /// Whether the filesystem's journal still holds changes (the system
+    /// that last mounted it read-write was cut off before it unmounted).
+    /// They are not replayed here, so the newest files and changes may be
+    /// missing from what this reader sees.
+    pub fn needs_recovery(&self) -> bool {
+        self.feature_incompat & INCOMPAT_RECOVER != 0
     }
 
     /// Inode number `ino`.
@@ -546,6 +566,29 @@ impl<R: ReadAt> Ext4<R> {
             first += n;
         }
         Ok(ino.size)
+    }
+
+    /// A regular file as a stream: [`Read`] and [`Seek`] over its contents,
+    /// holes read as zeros, a run of blocks at a time. So a caller can read
+    /// a sound's header (to promise the memory its sound needs) before it
+    /// reads the sound, or stream a long one, without holding it whole.
+    pub fn open_file(&self, ino: &Inode) -> io::Result<FileReader<'_, R>> {
+        let inline = if ino.flags & FLAG_INLINE_DATA != 0
+            && self.feature_incompat & INCOMPAT_INLINE_DATA != 0
+        {
+            Some(self.inline(ino)?)
+        } else {
+            if ino.size.div_ceil(self.block_size) > MAX_STREAMED_FILE / self.block_size + 4 {
+                return Err(bad(format!("inode {} is implausibly large", ino.ino)));
+            }
+            None
+        };
+        Ok(FileReader {
+            fs: self,
+            ino: ino.clone(),
+            pos: 0,
+            inline,
+        })
     }
 
     /// A regular file's contents, whole (at most [`MAX_WHOLE_FILE`] bytes).
@@ -791,6 +834,98 @@ fn parse_xattrs(entries: &[u8], base: &[u8], out: &mut Vec<(String, Vec<u8>)>) -
     Err(bad("too many extended attributes"))
 }
 
+/// A regular file in the image, read as a stream ([`Ext4::open_file`]).
+pub struct FileReader<'a, R> {
+    fs: &'a Ext4<R>,
+    ino: Inode,
+    pos: u64,
+    /// The contents, when the inode holds them itself (inline data).
+    inline: Option<Vec<u8>>,
+}
+
+impl<R> FileReader<'_, R> {
+    /// The file's size, in bytes.
+    pub fn len(&self) -> u64 {
+        self.ino.size
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ino.size == 0
+    }
+}
+
+impl<R: ReadAt> Read for FileReader<'_, R> {
+    /// Up to one run of blocks: consecutive on disk, or all holes.
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let size = self.ino.size;
+        if buf.is_empty() || self.pos >= size {
+            return Ok(0);
+        }
+        let want = (buf.len() as u64).min(size - self.pos);
+        if let Some(d) = &self.inline {
+            // `inline` holds exactly `size` bytes.
+            let at = self.pos as usize;
+            let n = want as usize;
+            buf[..n].copy_from_slice(&d[at..at + n]);
+            self.pos += want;
+            return Ok(n);
+        }
+        let fs = self.fs;
+        let bs = fs.block_size;
+        let off = self.pos % bs;
+        let blocks = (off + want).div_ceil(bs).min(READ_RUN);
+        let map = fs.map_window(&self.ino, self.pos / bs, blocks)?;
+        let mut run = 1;
+        while run < map.len()
+            && if map[0] == 0 {
+                map[run] == 0
+            } else {
+                map[run] == map[0] + run as u64
+            }
+        {
+            run += 1;
+        }
+        let n = (run as u64 * bs - off).min(want) as usize;
+        if map[0] == 0 {
+            buf[..n].fill(0);
+        } else {
+            if map[0] + run as u64 > fs.blocks_count {
+                return Err(bad(format!(
+                    "inode {}: data outside the filesystem",
+                    self.ino.ino
+                )));
+            }
+            fs.read(&mut buf[..n], map[0] * bs + off)?;
+        }
+        self.pos += n as u64;
+        Ok(n)
+    }
+}
+
+impl<R> Seek for FileReader<'_, R> {
+    /// Anywhere from the start on; past the end, reads give nothing.
+    fn seek(&mut self, to: SeekFrom) -> io::Result<u64> {
+        let (base, by) = match to {
+            SeekFrom::Start(n) => {
+                self.pos = n;
+                return Ok(n);
+            }
+            SeekFrom::End(d) => (self.ino.size, d),
+            SeekFrom::Current(d) => (self.pos, d),
+        };
+        match base.checked_add_signed(by) {
+            Some(n) => {
+                self.pos = n;
+                Ok(n)
+            }
+            None => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a seek before the start of the file",
+            )),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -898,6 +1033,28 @@ mod tests {
                     let mut got = Vec::new();
                     fs.copy_file_by(ino, &mut got, window)?;
                     assert!(got == want, "{path}: differs with a window of {window}");
+                }
+                // Read as a stream, 1000 bytes at a time (reads cutting
+                // through blocks, extents and holes), and from seeks: the
+                // same.
+                let mut r = fs.open_file(ino)?;
+                assert_eq!(r.len(), want.len() as u64, "{path}");
+                let mut got = Vec::new();
+                let mut chunk = [0u8; 1000];
+                loop {
+                    let n = r.read(&mut chunk)?;
+                    if n == 0 {
+                        break;
+                    }
+                    got.extend_from_slice(&chunk[..n]);
+                }
+                assert!(got == want, "{path}: differs as a stream");
+                let len = want.len();
+                for at in [0, 1, len / 2, len.saturating_sub(5), len, len + 7] {
+                    assert_eq!(r.seek(SeekFrom::Start(at as u64))?, at as u64);
+                    let mut tail = Vec::new();
+                    r.read_to_end(&mut tail)?;
+                    assert!(tail == want[at.min(len)..], "{path}: differs from {at}");
                 }
             }
             Ok(())
@@ -1045,6 +1202,36 @@ mod tests {
         assert_eq!(check.seen, marks.len());
         // Reading it whole into memory is still refused.
         assert!(fs.read_file(&ino).is_err());
+        // As a stream, each mark is where it was written, past 4 GiB too,
+        // found by a seek from the start, from the end and from here; and
+        // a seek before the start is refused, leaving the place unchanged.
+        let mut r = fs.open_file(&ino).unwrap();
+        for (at, bytes) in marks {
+            let mut got = vec![0u8; bytes.len()];
+            r.seek(SeekFrom::Start(at)).unwrap();
+            r.read_exact(&mut got).unwrap();
+            assert_eq!(got, bytes, "at {at}");
+            let back = len as i64 - at as i64;
+            assert_eq!(r.seek(SeekFrom::End(-back)).unwrap(), at);
+            r.read_exact(&mut got).unwrap();
+            assert_eq!(got, bytes, "{back} from the end");
+            let here = at + bytes.len() as u64;
+            assert_eq!(
+                r.seek(SeekFrom::Current(-(bytes.len() as i64))).unwrap(),
+                at
+            );
+            r.read_exact(&mut got).unwrap();
+            assert_eq!(got, bytes, "back from {here}");
+        }
+        let mut hole = [7u8; 64];
+        r.seek(SeekFrom::Start(3 << 30)).unwrap();
+        r.read_exact(&mut hole).unwrap();
+        assert_eq!(hole, [0u8; 64], "a hole reads as zeros");
+        let e = r.seek(SeekFrom::Current(-(4 << 30))).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(r.stream_position().unwrap(), (3 << 30) + 64);
+        assert_eq!(r.seek(SeekFrom::End(10)).unwrap(), len + 10);
+        assert_eq!(r.read(&mut hole).unwrap(), 0, "nothing past the end");
     }
 
     #[test]
@@ -1056,5 +1243,429 @@ mod tests {
         sb[1024 + 0x39] = 0xEF;
         sb[1024 + 0x18] = 9; // absurd block size
         assert!(Ext4::open(&sb).is_err());
+        // 2^48 blocks of 64 KiB: each group plausible, but the last block's
+        // place in bytes would not fit in 64 bits.
+        let mut sb = vec![0u8; 8192];
+        let put = |sb: &mut [u8], at: usize, v: u32| {
+            sb[1024 + at..1024 + at + 4].copy_from_slice(&v.to_le_bytes())
+        };
+        sb[1024 + 0x38] = 0x53;
+        sb[1024 + 0x39] = 0xEF;
+        put(&mut sb, 0x18, 6); // 64 KiB blocks
+        put(&mut sb, 0x4C, 1); // revision 1
+        sb[1024 + 0x58] = 0; // 256-byte inodes
+        sb[1024 + 0x59] = 1;
+        put(&mut sb, 0x60, INCOMPAT_64BIT);
+        put(&mut sb, 0x150, 1 << 16); // blocks, high half
+        put(&mut sb, 0x20, 1 << 31); // blocks per group
+        put(&mut sb, 0x28, 1); // inodes per group
+        put(&mut sb, 0x00, 1); // inodes
+        let e = Ext4::open(&sb).err().unwrap().to_string();
+        assert!(
+            e.contains("281474976710656 blocks of 65536 bytes is implausible"),
+            "{e}"
+        );
+    }
+
+    /// A folder of thousands of sounds (as on the MPC's Internal drive) is
+    /// a hashed folder: it lists whole, every name once, each inode read.
+    /// SD card step S3's listing, on the host first.
+    #[test]
+    fn lists_a_hashed_folder_of_thousands_of_files() {
+        let Some(tool) = mke2fs() else {
+            eprintln!("mke2fs not installed; skipping");
+            return;
+        };
+        let scratch =
+            Scratch(std::env::temp_dir().join(format!("mpfree-ext4-many-{}", std::process::id())));
+        let src = scratch.0.join("src");
+        let many = src.join("Samples").join("Drums");
+        std::fs::create_dir_all(&many).unwrap();
+        const N: usize = 5000;
+        for i in 0..N {
+            std::fs::write(
+                many.join(format!("Kick {i:04}.wav")),
+                pattern(64 + i % 300, i as u32),
+            )
+            .unwrap();
+        }
+        let img = scratch.0.join("many.img");
+        std::fs::File::create(&img)
+            .unwrap()
+            .set_len(64 << 20)
+            .unwrap();
+        let out = Command::new(tool)
+            .args([
+                "-q",
+                "-F",
+                "-t",
+                "ext4",
+                "-b",
+                "4096",
+                "-E",
+                "root_owner=0:0",
+                "-d",
+            ])
+            .arg(&src)
+            .arg(&img)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "mke2fs: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        // mke2fs -d writes folders plainly; the kernel indexes one as it
+        // grows, as e2fsck -D does here.
+        let e2fsck = ["/usr/sbin/e2fsck", "/sbin/e2fsck"]
+            .into_iter()
+            .find(|p| Path::new(p).exists());
+        let Some(e2fsck) = e2fsck else {
+            eprintln!("e2fsck not installed; skipping");
+            return;
+        };
+        let out = Command::new(e2fsck)
+            .args(["-f", "-y", "-D"])
+            .arg(&img)
+            .output()
+            .unwrap();
+        // 0: nothing changed, 1: corrected (the folders indexed).
+        assert!(
+            matches!(out.status.code(), Some(0 | 1)),
+            "e2fsck: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        let fs = Ext4::open(std::fs::File::open(&img).unwrap()).unwrap();
+        assert!(!fs.needs_recovery());
+        let t = std::time::Instant::now();
+        let dir = fs.lookup("/Samples/Drums").unwrap().unwrap();
+        assert!(dir.is_dir());
+        // e2fsck -D has made a folder this big hashed (htree).
+        assert_ne!(dir.flags & 0x1000, 0, "not a hashed folder");
+        let entries = fs.read_dir(&dir).unwrap();
+        let mut names = Vec::new();
+        let mut sizes = 0u64;
+        for e in &entries {
+            let name = String::from_utf8_lossy(&e.name).into_owned();
+            if name == "." || name == ".." {
+                continue;
+            }
+            sizes += fs.inode(e.ino).unwrap().size;
+            names.push(name);
+        }
+        let took = t.elapsed();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), N);
+        assert_eq!(names[0], "Kick 0000.wav");
+        assert_eq!(sizes, (0..N).map(|i| 64 + (i % 300) as u64).sum::<u64>());
+        eprintln!("{N} files listed with their sizes in {took:?}");
+    }
+
+    /// A journal left with changes in it (Akai's system cut off while the
+    /// Internal drive was mounted) is said, and the filesystem still reads
+    /// as it stands, the journal not replayed.
+    #[test]
+    fn says_when_the_journal_still_holds_changes() {
+        let Some(tool) = mke2fs() else {
+            eprintln!("mke2fs not installed; skipping");
+            return;
+        };
+        let debugfs = ["/usr/sbin/debugfs", "/sbin/debugfs"]
+            .into_iter()
+            .find(|p| Path::new(p).exists());
+        let Some(debugfs) = debugfs else {
+            eprintln!("debugfs not installed; skipping");
+            return;
+        };
+        let scratch = Scratch(
+            std::env::temp_dir().join(format!("mpfree-ext4-journal-{}", std::process::id())),
+        );
+        let src = scratch.0.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("Kick.wav"), pattern(5000, 3)).unwrap();
+        let img = scratch.0.join("j.img");
+        std::fs::File::create(&img)
+            .unwrap()
+            .set_len(16 << 20)
+            .unwrap();
+        let out = Command::new(tool)
+            .args(["-q", "-F", "-t", "ext4", "-E", "root_owner=0:0", "-d"])
+            .arg(&src)
+            .arg(&img)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "mke2fs: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let out = Command::new(debugfs)
+            .args(["-w", "-R", "feature needs_recovery"])
+            .arg(&img)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "debugfs: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let fs = Ext4::open(std::fs::File::open(&img).unwrap()).unwrap();
+        assert!(fs.needs_recovery());
+        let ino = fs.lookup("/Kick.wav").unwrap().unwrap();
+        assert_eq!(fs.read_file(&ino).unwrap(), pattern(5000, 3));
+    }
+
+    /// What the pad player would do with a damaged Internal drive: open it,
+    /// walk every folder, read every link, attribute and file a sound could
+    /// be. Errors are fine; a panic or a hang is not. Files the place would
+    /// refuse as too big for a sound (over 64 MiB) are not read.
+    fn exercise(b: &[u8]) {
+        let Ok(fs) = Ext4::open(b) else { return };
+        let _ = fs.needs_recovery();
+        let mut files = Vec::new();
+        let _ = fs.walk(&mut |_, ino| {
+            match ino.kind() {
+                Some(Kind::File) => files.push(ino.clone()),
+                Some(Kind::Symlink) => {
+                    let _ = fs.read_link(ino);
+                }
+                _ => {}
+            }
+            let _ = fs.xattrs(ino);
+            Ok(())
+        });
+        for ino in &files {
+            if ino.size <= 64 << 20 {
+                let _ = fs.read_file(ino);
+            }
+            // As a stream, from its middle and near its end, a little of it.
+            if let Ok(mut r) = fs.open_file(ino) {
+                for at in [SeekFrom::Start(ino.size / 2), SeekFrom::End(-3000)] {
+                    if r.seek(at).is_ok() {
+                        let mut got = Vec::new();
+                        let _ = (&mut r).take(4096).read_to_end(&mut got);
+                    }
+                }
+            }
+        }
+        for path in ["/Samples/Drums/Kick 0042.wav", "/Samples/nope", "/link"] {
+            if let Ok(Some(ino)) = fs.lookup(path) {
+                let _ = fs.read_dir(&ino);
+            }
+        }
+    }
+
+    /// A damaged image gives an error, never a panic or a hang (the
+    /// module's promise): a small image's structures (its superblock, group
+    /// descriptors, used inodes and folder blocks) changed at random, a few
+    /// bytes at a time, 3000 times over, each read as the pad player would
+    /// read the MPC's Internal drive. Folders hashed (htree) where e2fsck is
+    /// there to index them.
+    #[test]
+    fn a_damaged_image_gives_an_error_not_a_panic_or_a_hang() {
+        let Some(tool) = mke2fs() else {
+            eprintln!("mke2fs not installed; skipping");
+            return;
+        };
+        let scratch = Scratch(
+            std::env::temp_dir().join(format!("mpfree-ext4-damage-{}", std::process::id())),
+        );
+        let src = scratch.0.join("src");
+        let drums = src.join("Samples").join("Drums");
+        std::fs::create_dir_all(&drums).unwrap();
+        for i in 0..300 {
+            std::fs::write(
+                drums.join(format!("Kick {i:04}.wav")),
+                pattern(100 + (i * 37) % 9000, i as u32),
+            )
+            .unwrap();
+        }
+        std::fs::write(src.join("Samples").join("Long.wav"), pattern(300 << 10, 7)).unwrap();
+        std::fs::create_dir_all(src.join("Projects/Song/Song_[ProjectData]")).unwrap();
+        std::fs::write(src.join("Projects/Song.xpj"), pattern(3000, 9)).unwrap();
+        std::os::unix::fs::symlink("Samples/Long.wav", src.join("link")).unwrap();
+        std::os::unix::fs::symlink("y".repeat(120), src.join("long-link")).unwrap();
+        let img = scratch.0.join("small.img");
+        std::fs::File::create(&img)
+            .unwrap()
+            .set_len(4 << 20)
+            .unwrap();
+        let out = Command::new(tool)
+            .args(["-q", "-F", "-t", "ext4", "-b", "1024", "-N", "512"])
+            .args(["-E", "root_owner=0:0", "-d"])
+            .arg(&src)
+            .arg(&img)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "mke2fs: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        if let Some(e2fsck) = ["/usr/sbin/e2fsck", "/sbin/e2fsck"]
+            .into_iter()
+            .find(|p| Path::new(p).exists())
+        {
+            let out = Command::new(e2fsck)
+                .args(["-f", "-y", "-D"])
+                .arg(&img)
+                .output()
+                .unwrap();
+            assert!(matches!(out.status.code(), Some(0 | 1)));
+        }
+        let image = std::fs::read(&img).unwrap();
+        // Undamaged, it reads whole. Where its structures are, to damage:
+        // the superblock, the group descriptors, every used inode and every
+        // folder's blocks.
+        let fs = Ext4::open(&image[..]).unwrap();
+        let drums_dir = fs.lookup("/Samples/Drums").unwrap().unwrap();
+        assert_eq!(fs.read_dir(&drums_dir).unwrap().len(), 300);
+        let bs = fs.block_size as usize;
+        let mut inodes: Vec<std::ops::Range<usize>> = Vec::new();
+        let mut folders: Vec<std::ops::Range<usize>> = Vec::new();
+        let mut used: Vec<Inode> = (1..=11).filter_map(|i| fs.inode(i).ok()).collect();
+        fs.walk(&mut |_, ino| {
+            used.push(ino.clone());
+            Ok(())
+        })
+        .unwrap();
+        for ino in &used {
+            let g = ((ino.ino - 1) / fs.inodes_per_group) as usize;
+            let i = ((ino.ino - 1) % fs.inodes_per_group) as usize;
+            let at = fs.inode_tables[g] as usize * bs + i * fs.inode_size as usize;
+            inodes.push(at..at + fs.inode_size as usize);
+            if ino.is_dir() {
+                let n = ino.size.div_ceil(fs.block_size);
+                for b in fs.map_window(ino, 0, n).unwrap() {
+                    if b != 0 {
+                        folders.push(b as usize * bs..(b as usize + 1) * bs);
+                    }
+                }
+            }
+        }
+        let gdt = 2048..2048 + fs.groups as usize * 64;
+        drop(fs);
+        let superblock = 1024..2048;
+        let places = [vec![superblock], vec![gdt], inodes, folders];
+        assert!(places[3].len() > 4, "the folders' blocks: {:?}", places[3]);
+        let mut rng = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move |n: usize| {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            (rng % n as u64) as usize
+        };
+        let image = std::sync::Arc::new(image);
+        let (mut panics, mut hangs) = (Vec::new(), Vec::new());
+        let started = std::time::Instant::now();
+        const ROUNDS: usize = 3000;
+        for round in 0..ROUNDS {
+            let mut b = image.to_vec();
+            let mut changed = Vec::new();
+            for _ in 0..1 + next(4) {
+                let kind = &places[next(places.len())];
+                let r = &kind[next(kind.len())];
+                let at = r.start + next(r.len());
+                b[at] ^= 1 + next(255) as u8;
+                changed.push(at);
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let r = std::panic::catch_unwind(|| exercise(&b));
+                let _ = tx.send(r.is_ok());
+            });
+            match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+                Ok(true) => {}
+                Ok(false) => panics.push((round, changed)),
+                Err(_) => hangs.push((round, changed)),
+            }
+        }
+        eprintln!(
+            "{ROUNDS} damaged images read in {:?}: {} panics, {} over 10 s",
+            started.elapsed(),
+            panics.len(),
+            hangs.len()
+        );
+        assert!(
+            panics.is_empty(),
+            "panicked (round, bytes changed): {panics:?}"
+        );
+        assert!(
+            hangs.is_empty(),
+            "over 10 s (round, bytes changed): {hangs:?}"
+        );
+    }
+
+    /// A damaged folder that links back to the root, twice, would make a
+    /// walk that followed both links grow without end; the walk stops at
+    /// 64 folders deep with an error instead, at once.
+    #[test]
+    fn a_folder_linked_back_to_the_root_ends_the_walk_with_an_error() {
+        let Some(tool) = mke2fs() else {
+            eprintln!("mke2fs not installed; skipping");
+            return;
+        };
+        let Some(debugfs) = ["/usr/sbin/debugfs", "/sbin/debugfs"]
+            .into_iter()
+            .find(|p| Path::new(p).exists())
+        else {
+            eprintln!("debugfs not installed; skipping");
+            return;
+        };
+        let scratch =
+            Scratch(std::env::temp_dir().join(format!("mpfree-ext4-loop-{}", std::process::id())));
+        let src = scratch.0.join("src");
+        std::fs::create_dir_all(src.join("Projects/Song")).unwrap();
+        std::fs::write(src.join("Projects/a.txt"), b"hi\n").unwrap();
+        let img = scratch.0.join("loop.img");
+        std::fs::File::create(&img)
+            .unwrap()
+            .set_len(4 << 20)
+            .unwrap();
+        let out = Command::new(tool)
+            .args([
+                "-q",
+                "-F",
+                "-t",
+                "ext4",
+                "-b",
+                "1024",
+                "-E",
+                "root_owner=0:0",
+                "-d",
+            ])
+            .arg(&src)
+            .arg(&img)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        for name in ["up1", "up2"] {
+            let out = Command::new(debugfs)
+                .args(["-w", "-R", &format!("link / /Projects/{name}")])
+                .arg(&img)
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+        }
+        let fs = Ext4::open(std::fs::File::open(&img).unwrap()).unwrap();
+        let projects = fs.lookup("/Projects").unwrap().unwrap();
+        let names: Vec<_> = fs
+            .read_dir(&projects)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.ino)
+            .collect();
+        assert_eq!(names.iter().filter(|&&i| i == ROOT).count(), 2, "{names:?}");
+        let mut seen = 0u64;
+        let started = std::time::Instant::now();
+        let r = fs.walk(&mut |_, _| {
+            seen += 1;
+            Ok(())
+        });
+        let e = r.unwrap_err().to_string();
+        assert!(e.contains("folders nest more than 64 deep"), "{e}");
+        assert!(seen < 10_000, "{seen} entries before it stopped");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 }

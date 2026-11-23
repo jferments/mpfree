@@ -80,6 +80,16 @@
 //!   layer stays). Undo in either loop takes a move back in both while
 //!   each is the other's last step; undoing a layer that made a loop of
 //!   its own clears that loop.
+//! - **Free loops** ([`Clock::Free`]): a loop can keep time with the
+//!   looper's free clock ([`FreeClock`]) instead of the song's. It plays
+//!   on when the song stops, keeps its place when the song locates and its
+//!   tempo when the song's changes, and records with the song stopped, at
+//!   once or in your own time. Every free loop keeps time with the one free
+//!   clock, which the first sets: a copy of the song's clock from the bar
+//!   line it starts on, or the tempo its length reads as. STOP with the
+//!   song stopped stops them ([`Command::FreeStop`] while it plays), and
+//!   PLAY starts them again from the free clock's bar 1
+//!   ([`Command::FreePlay`]).
 //!
 //! The memory is allocated once, in [`Looper::new`]. [`Looper::command`],
 //! [`Looper::process`] and [`Looper::process_each`] never allocate, lock or
@@ -117,9 +127,9 @@ use view::{Cursor, View};
 
 use std::ops::Index;
 
-use mpfree_transport::time::{Tick, PPQ};
+use mpfree_transport::time::{ticks_in, Tick, PPQ};
 use mpfree_transport::transport::MAX_PERIOD;
-use mpfree_transport::{Block, Mark, Span, State};
+use mpfree_transport::{Block, Mark, Meter, Span, State, Swing};
 
 /// Frames of every fade: the loop point, punch in and out, start, stop,
 /// mute, undo and clear (about 5.8 ms at 44.1 kHz).
@@ -174,6 +184,11 @@ const STEP: f32 = 1.0 / FADE as f32;
 /// input runs on without a break there, so a short fade is enough, and the
 /// downbeat's attack is kept (about 0.7 ms at 44.1 kHz).
 pub const HANDOFF_FADE: usize = 32;
+/// The most loop frames the overdub writer moves on from one frame to the
+/// next while the song plays on: the song at its fastest (400 BPM) over a
+/// loop recorded at its slowest (20 BPM) moves 20. Further than that, or
+/// back, the song jumped ([`Loop::od_jump`]).
+const MAX_STEP: usize = 32;
 /// A table entry with no block.
 const NONE: u16 = u16::MAX;
 /// An overdub whose input never went over this (-60 dB) took silence, and
@@ -227,6 +242,24 @@ pub enum Command {
     SetAfter(After),
     /// When the loop's next first pass starts once armed (see [`Starts`]).
     SetStarts(Starts),
+    /// The clock the loop keeps time with (see [`Clock`]): the song's, or
+    /// the looper's free clock. Only while the loop is empty (refused,
+    /// counted, once it is armed or holds a loop); it stays through Clear,
+    /// as Starts does.
+    SetClock(Clock),
+    /// Stop the free loops ([`Clock::Free`]) on the period's first frame:
+    /// the free clock stops and goes back to its bar 1, so they stop at
+    /// their tops, fading out. A first pass under way keeps what was
+    /// played, as STOP keeps it on a song loop; an overdub ends; an armed
+    /// free loop lets go; a free first pass in your own time takes it as
+    /// its closing tap, and the free clock it sets starts stopped. STOP
+    /// with the song stopped does the same. For every free loop.
+    FreeStop,
+    /// Play the stopped free loops from their tops: on the period's first
+    /// frame with the song stopped, or while it plays on its next bar line,
+    /// no sooner than [`LEAD_BEATS`] after (the song stopping first starts
+    /// them then). PLAY starts them with the song. For every free loop.
+    FreePlay,
     /// A note played on song frame `frame` (a pad hit, which the host
     /// sees before the looper hears it): starts a loop armed to start
     /// when you play ([`Starts::Play`]) that isn't listening by ear
@@ -316,13 +349,23 @@ pub enum Command {
     /// silent, then plays in time with the song, fading in, as a load
     /// does ([`Status::capturing`]). Again, Undo or Clear call it off.
     /// Refused when the loop isn't empty or no whole bar was heard.
+    ///
+    /// A free loop ([`Clock::Free`]) takes the free clock's bars while
+    /// the free clock is set: those of its run since it last started (as
+    /// far as it stopped, once stopped), worked out from the clock, so
+    /// nothing more is kept; then it plays on the free clock. With no
+    /// free clock it takes the song's bars and sets the free clock from
+    /// them: a copy of the song's while the song plays on as it did over
+    /// them, so the loop plays as a song loop would until the song stops
+    /// or changes; else at the tempo they make, from their end. Refused
+    /// when the free clock there is hasn't run since it was set.
     Capture(u32),
     /// Empty: as [`Command::Capture`], but the bars end on the bar line
-    /// heard on song tick `.0` (in the song as it last played on
-    /// unbroken), however long ago, so What you played's window can take
-    /// any bars still kept: `.1` of them, fewer (halving) when fewer fit.
-    /// Refused when that bar line isn't kept. Again, Undo or Clear call
-    /// it off, as for Capture.
+    /// heard on tick `.0` (of the song as it last played on unbroken, or
+    /// of the free clock's run for a free loop), however long ago, so
+    /// What you played's window can take any bars still kept: `.1` of
+    /// them, fewer (halving) when fewer fit. Refused when that bar line
+    /// isn't kept. Again, Undo or Clear call it off, as for Capture.
     CaptureTo(Tick, u32),
     /// The input is another source now: Capture forgets what it heard
     /// before. For every loop.
@@ -635,6 +678,222 @@ pub enum Overdubs {
     /// One pass, then the loop plays by itself: the overdub ends where it
     /// started, its end crossfading into its start.
     Once,
+}
+
+/// The clock a loop keeps time with: the Looper tab's Sync setting
+/// ([`Command::SetClock`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Clock {
+    /// The song's, the transport: the loop starts and ends on the song's
+    /// bar lines, follows its position through stops, locates and its own
+    /// loop, and plays at its tempo.
+    #[default]
+    Song,
+    /// The looper's free clock ([`FreeClock`]): the loop plays on when the
+    /// song stops, keeps its place when the song locates and its tempo
+    /// when the song's changes, and records with the song stopped, at once
+    /// or in your own time. Every free loop keeps time with the one free
+    /// clock, so they stay together.
+    Free,
+}
+
+/// The looper's free clock: the time the free loops keep ([`Clock::Free`],
+/// [`Looper::free_clock`]). The first free loop sets it: with the song
+/// playing, a copy of the song's clock from the bar line the loop starts
+/// on, so the loop plays exactly as a song loop does until the song stops,
+/// locates or changes tempo; with nothing playing, the tempo its length
+/// reads as ([`read_bars`]), its bar 1 on the loop's start. It lasts while
+/// a free loop holds audio. It never locates and never changes tempo:
+/// only the free loops' own Stop and Play ([`Command::FreeStop`],
+/// [`Command::FreePlay`]), STOP with the song stopped ([`Mark::Panic`])
+/// and PLAY ([`Mark::Started`]) stop and start it. A stop takes it back to
+/// its bar 1 (`top`), so the free loops start again where they started,
+/// together, each in its place against the others.
+///
+/// While it runs, tick `t` falls on frame `anchor_frame + round(frames
+/// from anchor_tick to t)` at `bpm`, as on the transport's spans
+/// ([`Span`]), from `anchor_frame` on (a clock set to start on a frame to
+/// come is still at `anchor_tick` before it). Stopped, it rests at `top`.
+/// A plain value: copy it to ask it where it is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FreeClock {
+    pub anchor_frame: u64,
+    pub anchor_tick: Tick,
+    pub bpm: f64,
+    pub rate: u32,
+    pub meter: Meter,
+    pub running: bool,
+    /// Its bar 1: where a stop takes it back to, and a start runs from.
+    pub top: Tick,
+}
+
+impl FreeClock {
+    /// A clock at rest on its bar 1, `top`.
+    pub fn stopped(bpm: f64, rate: u32, meter: Meter, top: Tick) -> FreeClock {
+        FreeClock {
+            anchor_frame: 0,
+            anchor_tick: top,
+            bpm,
+            rate,
+            meter,
+            running: false,
+            top,
+        }
+    }
+
+    /// The song's clock in `span` (which must be rolling), copied exactly,
+    /// its bar 1 on `top`: it gives the same ticks on the same frames as
+    /// the song for as long as the song keeps that anchor and tempo.
+    fn of_song(span: &Span, top: Tick) -> FreeClock {
+        FreeClock {
+            anchor_frame: span.anchor_frame,
+            anchor_tick: span.anchor_tick,
+            bpm: span.bpm,
+            rate: span.rate,
+            meter: span.meter,
+            running: true,
+            top,
+        }
+    }
+
+    /// Whether it runs on absolute frame `frame`.
+    pub fn rolls_at(&self, frame: u64) -> bool {
+        self.running && frame >= self.anchor_frame
+    }
+
+    /// Where it is on absolute frame `frame`, with the fraction, worked out
+    /// as [`Span::tick_at`] works out the song's: `anchor_tick` while it
+    /// doesn't run.
+    pub fn tick_at(&self, frame: u64) -> f64 {
+        if !self.rolls_at(frame) {
+            return self.anchor_tick as f64;
+        }
+        self.anchor_tick as f64
+            + ticks_in(frame as f64 - self.anchor_frame as f64, self.bpm, self.rate)
+    }
+
+    /// The clock over `len` frames from absolute frame `frame`, which is
+    /// `offset` into its period, as one of the transport's spans: playing
+    /// while it runs, stopped where it rests when not. Free loops get their
+    /// bar lines and their place from it as song loops get theirs from the
+    /// transport's.
+    pub fn span(&self, offset: u32, len: u32, frame: u64) -> Span {
+        let rolling = self.rolls_at(frame);
+        Span {
+            offset,
+            len,
+            frame,
+            state: if rolling {
+                State::Playing
+            } else {
+                State::Stopped
+            },
+            overdub: false,
+            anchor_frame: if rolling { self.anchor_frame } else { 0 },
+            anchor_tick: self.anchor_tick,
+            bpm: self.bpm,
+            rate: self.rate,
+            swing: Swing::default(),
+            meter: self.meter,
+        }
+    }
+
+    /// Its next bar line on or after absolute frame `frame`, while it
+    /// runs: the bar's tick and the frame it falls on, as the transport
+    /// places the song's ([`Span::lines`]).
+    pub fn next_bar(&self, frame: u64) -> Option<(Tick, u64)> {
+        if !self.running {
+            return None;
+        }
+        let from = frame.max(self.anchor_frame);
+        let bar = self.meter.bar_ticks().max(1);
+        // A span a bar and a little long holds the next line.
+        let frames = bar as f64 * 60.0 * f64::from(self.rate) / (self.bpm * f64::from(PPQ));
+        let len = (frames.ceil() as u64 + 2).min(u64::from(u32::MAX)) as u32;
+        let span = self.span(0, len, from);
+        span.lines(bar)
+            .next()
+            .map(|(t, o)| (t, from + u64::from(o)))
+    }
+
+    /// While it runs: the frame its tick `t` falls on (at or after its
+    /// anchor), as its spans place it, bit for bit.
+    pub fn frame_of(&self, t: Tick) -> Option<u64> {
+        (self.running && t >= self.anchor_tick)
+            .then(|| self.span(0, 1, self.anchor_frame).frame_of(t as f64))
+    }
+
+    /// While it runs: its newest bar line on a frame before `at` and at
+    /// or after `since` (once heard by `at`, in its run since then), as
+    /// its tick and frame.
+    fn line_before(&self, at: u64, since: u64) -> Option<(Tick, u64)> {
+        if !self.running || at <= self.anchor_frame.max(since) {
+            return None;
+        }
+        let bar = self.meter.bar_ticks().max(1);
+        let mut t = (self.tick_at(at - 1).floor() as Tick).div_euclid(bar) * bar;
+        while let Some(f) = self.frame_of(t).filter(|&f| f >= since) {
+            if f < at {
+                return Some((t, f));
+            }
+            t -= bar;
+        }
+        None
+    }
+
+    /// While it runs: the bar line coming after absolute frame `at`, when
+    /// `at` is in a bar's last beat (a Capture then waits for it).
+    fn last_beat_line(&self, at: u64) -> Option<Tick> {
+        if !self.rolls_at(at) {
+            return None;
+        }
+        let (bar, beat) = (self.meter.bar_ticks().max(1), self.meter.beat_ticks());
+        let now = self.tick_at(at);
+        let line = (now / bar as f64).floor() as Tick * bar;
+        (now - line as f64 >= (bar - beat) as f64).then_some(line + bar)
+    }
+
+    /// Started on absolute frame `f`, from its bar 1.
+    fn start_at(&mut self, f: u64) {
+        self.anchor_frame = f;
+        self.anchor_tick = self.top;
+        self.running = true;
+    }
+
+    /// Stopped, back on its bar 1.
+    fn stop(&mut self) {
+        *self = FreeClock::stopped(self.bpm, self.rate, self.meter, self.top);
+    }
+}
+
+/// Each frame's place on a clock, from absolute frame `f` on: a clock
+/// anchored at `anchor_tick` on `anchor_frame` at `bpm` and `rate`, as
+/// [`Span::tick_at`] and [`FreeClock::tick_at`] work it out, bit for bit
+/// (`anchor_tick` throughout while it doesn't run). Out of line, so that
+/// its loop stays one the compiler vectorises: inline in
+/// [`Looper::process`] it can lose that when the code round it changes
+/// (it did with the free clock, at a cost of 3 000 instructions a period).
+#[inline(never)]
+fn fill_ticks(out: &mut [f64], rolling: bool, clock: (u64, Tick, f64, u32), f: u64) {
+    let (anchor_frame, anchor_tick, bpm, rate) = clock;
+    if !rolling {
+        out.fill(anchor_tick as f64);
+        return;
+    }
+    for (j, t) in out.iter_mut().enumerate() {
+        *t = anchor_tick as f64 + ticks_in((f + j as u64) as f64 - anchor_frame as f64, bpm, rate);
+    }
+}
+
+/// Where a loop `len_ticks` long that starts on tick `origin` is when its
+/// clock is on tick `tick`: 0 at its start, to 1 at its end. Every loop
+/// works out its place so, from the song's clock or the free one
+/// ([`Clock`]).
+pub fn place(tick: f64, origin: Tick, len_ticks: Tick) -> f64 {
+    if len_ticks <= 0 {
+        return 0.0;
+    }
+    rem_ticks(tick - origin as f64, len_ticks as f64) / len_ticks as f64
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -969,6 +1228,10 @@ pub struct Status {
     pub capturing: Option<f32>,
     /// When its next first pass starts ([`Command::SetStarts`]).
     pub starts: Starts,
+    /// The clock it keeps time with ([`Command::SetClock`]). A free loop's
+    /// `origin`, `ticks`, `starts_on` and `cue` are the free clock's ticks
+    /// ([`Looper::free_clock`]).
+    pub clock: Clock,
     /// Armed to start when you play, and no note yet: it is listening.
     /// Once a note comes it waits for its bar line (or for the song to
     /// start) as an armed loop does.
@@ -980,7 +1243,10 @@ pub struct Status {
     /// Its first pass records free and its length will set the tempo
     /// ([`Command::TempoFromLoop`]): recording so, or, with the song
     /// stopped and the setting on, empty (Record would start it so) or
-    /// listening (the note it waits for would).
+    /// listening (the note it waits for would). A free loop
+    /// ([`Clock::Free`]) records so with nothing playing and no free clock
+    /// yet, whatever the setting, and its length sets the free clock's
+    /// tempo, not the song's.
     pub free: bool,
     /// Where the loop lies in the audio its first pass kept, while the
     /// loop is that pass alone and unedited, so that [`Edit::Move`],
@@ -1806,6 +2072,18 @@ struct Loop {
     /// The slot it writes.
     od_layer: usize,
     od_in: usize,
+    /// The loop frame it wrote last, and what it wrote there: the song
+    /// slower than the loop was recorded brings it to a frame again, and
+    /// faster takes it past frames, which it fills ([`Loop::write_overdub`]).
+    od_q: usize,
+    od_y: [f32; 2],
+    /// Frames since the song jumped under it, for its fade-in at the new
+    /// place (`FADE`: none).
+    od_rise: usize,
+    /// Its slot's count of frames recorded when it last went back over
+    /// them (the song jumped back): the frames after that it has recorded
+    /// once, and only those fade out where it was at the next jump.
+    od_fresh_from: usize,
     /// Frames of the writer's fade-in.
     od_fade: usize,
     od_stop_in: Option<u32>,
@@ -1942,6 +2220,14 @@ struct Loop {
     /// ([`Command::StartsByEar`]).
     starts: Starts,
     by_ear: bool,
+    /// The clock it keeps time with ([`Clock`]), and, for a free loop that
+    /// holds audio, which free clock it was made on (they are numbered as
+    /// they are set: `FreeTime::gen`).
+    clock: Clock,
+    clock_gen: u32,
+    /// STOP closed its free first pass in your own time: the free clock
+    /// that pass sets starts stopped.
+    stop_close: bool,
     /// Armed to start when you play: the song frame a note was played on,
     /// not placed on a bar line yet ([`Looper::place_hits`]).
     hit: Option<u64>,
@@ -1996,6 +2282,24 @@ struct Loop {
     snap_frame: u64,
 }
 
+/// The bar lines around a note: the last one at or before it and the
+/// next, each as its tick and frame ([`Heard::around`] for the song's,
+/// [`free_around`] for the free clock's).
+type Around = (Option<(Tick, u64)>, Option<(Tick, u64)>);
+
+/// The free clock's bar lines around frame `p` (a note), as
+/// [`Heard::around`] gives the song's: the last one at or before `p`
+/// (None when `p` came before the clock started, or before its first
+/// line), and the next.
+fn free_around(c: &FreeClock, p: u64) -> Around {
+    let after = c.next_bar(p.saturating_add(1));
+    let before = after.filter(|_| c.rolls_at(p)).and_then(|(t, _)| {
+        let t = t - c.meter.bar_ticks().max(1);
+        (t >= c.anchor_tick).then(|| (t, c.span(0, 0, p).frame_of(t as f64)))
+    });
+    (before, after)
+}
+
 /// A closed free first pass waiting for smart loop end's decision.
 #[derive(Clone, Copy, Debug)]
 struct SmartWait {
@@ -2032,14 +2336,35 @@ struct Fill {
 }
 
 /// A capture waiting ([`Command::Capture`]): the bars asked for, the bar
-/// line it ends on (counted as [`Heard`] counts them), whether that line
-/// is still to come, and once it has come, the take.
+/// line it ends on, whether that line is still to come, and once it has
+/// come, the take.
 #[derive(Clone, Copy, Debug)]
 struct Capture {
     bars: u32,
-    end: u64,
+    end: CaptureEnd,
     wait: bool,
     take: Option<Take>,
+}
+
+/// The bar line a capture ends on: one of the song's, counted as
+/// [`Heard`] counts them (a free loop with no free clock yet takes the
+/// song's bars, and the free clock is set from them); or, while the free
+/// clock runs, one of its own for a free loop: its tick, and the clock's
+/// number and the frame it last started on (`FreeTime::gen`,
+/// `FreeTime::jump`), so that a capture on a clock since stopped or set
+/// again is refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CaptureEnd {
+    Song(u64),
+    Free { end: Tick, gen: u32, since: u64 },
+}
+
+/// Whose bar lines a capture takes ([`Looper::capture_bars`]): the
+/// song's, as [`Heard`] keeps them, or a run of the free clock's.
+#[derive(Clone, Copy, Debug)]
+enum CaptureBars {
+    Song,
+    Free(FreeRun),
 }
 
 /// One of a loop's layers being copied into another loop: its slot, the
@@ -2097,6 +2422,10 @@ impl Loop {
         od_open: false,
         od_layer: 0,
         od_in: 0,
+        od_q: 0,
+        od_y: [0.0; 2],
+        od_rise: FADE,
+        od_fresh_from: 0,
         od_fade: FADE,
         od_stop_in: None,
         od_out: 0,
@@ -2176,6 +2505,9 @@ impl Loop {
         ld_heard: None,
         starts: Starts::Bar,
         by_ear: false,
+        clock: Clock::Song,
+        clock_gen: 0,
+        stop_close: false,
         hit: None,
         pending: None,
         just_armed: false,
@@ -2203,6 +2535,49 @@ impl Loop {
             && !self.resample
             && self.hit.is_none()
             && self.pending.is_none()
+    }
+
+    /// Whether it goes by the free clock now (`rolling`: whether that
+    /// runs): a free loop, unless it is armed while the free clock doesn't
+    /// run, when it waits for the song's bar line (or, with nothing
+    /// playing, starts at once or on your note) as a song loop waits.
+    fn on_free(&self, rolling: bool) -> bool {
+        self.clock == Clock::Free && (rolling || self.phase != Phase::Armed)
+    }
+
+    /// The run it plays from in [`Looper::process`]: `free_run` (the free
+    /// clock's ticks for the same frames) while it goes by the free clock
+    /// (`any_free`: some free loop holds, starts or loads one; `rolling`:
+    /// the free clock runs), else the song's `run`. One place for the
+    /// choice, so that whatever cuts a loop's run further (audio tracks'
+    /// play runs) starts from the run this gives.
+    #[inline]
+    fn run_from<'r, 'a>(
+        &self,
+        any_free: bool,
+        rolling: bool,
+        run: &'r Run<'a>,
+        free_run: &'r Run<'a>,
+    ) -> &'r Run<'a> {
+        if any_free && self.on_free(rolling) {
+            free_run
+        } else {
+            run
+        }
+    }
+
+    /// A free loop with audio, or with audio coming in: the free clock
+    /// lasts while one does.
+    fn holds_free(&self) -> bool {
+        self.clock == Clock::Free
+            && (!matches!(self.phase, Phase::Empty | Phase::Armed) || self.loading || self.adding)
+    }
+
+    /// An armed loop lets go: empty again (Record pressed again).
+    fn disarm(&mut self) {
+        self.phase = Phase::Empty;
+        self.resample = false;
+        self.unhear();
     }
 
     /// Forget a note heard or placed (the loop listens again, if armed).
@@ -2285,9 +2660,226 @@ pub struct Looper {
     /// The last period's last span: where the song goes from here, for a
     /// snap's downbeat ([`Looper::snap_plan`]).
     last_span: Option<Span>,
+    /// The free clock and what waits on it ([`FreeTime`]).
+    free_time: FreeTime,
+    /// The free clock's ticks for a run (as `process` works out the
+    /// song's), kept here so that a period without free loops doesn't
+    /// clear them.
+    free_ticks: [f64; RUN],
     /// What each loop and Listen played in the last period, apart
     /// ([`Looper::process_each`]).
     outs: LoopOuts,
+}
+
+/// The looper's side of the free loops ([`Clock::Free`]).
+#[derive(Clone, Copy, Debug)]
+struct FreeTime {
+    /// The free clock, while a free loop holds audio, and how many have
+    /// been set: each free loop knows the one it was made on
+    /// (`Loop::clock_gen`). The one that went with the last free loop
+    /// cleared waits with its number, so that Undo can bring it back with
+    /// that loop.
+    clock: Option<FreeClock>,
+    gen: u32,
+    kept: Option<(FreeClock, u32)>,
+    /// Play for the stopped free loops, pressed while the song plays: they
+    /// start on the song's next bar line after song tick `.0` and not
+    /// before `.1`, a beat on (NaN until the period's first span gives
+    /// them: then the next line).
+    cue: Option<(f64, f64)>,
+    /// The frame the free clock last started on: a free loop's place jumps
+    /// there (and crossfades, if it was still sounding).
+    jump: u64,
+    /// Once it has stopped: the clock as it ran, its number, and the frame
+    /// it stopped on, so that Capture can still take the bars it ran
+    /// ([`Looper::free_run`]) until it starts again or another is set.
+    ran: Option<(FreeClock, u32, u64)>,
+}
+
+/// A run of the free clock, for a capture into a free loop
+/// ([`Looper::free_run`]): the clock as it runs (or ran), the frame the
+/// run began on ([`FreeTime::jump`]), and, once it has stopped, the frame
+/// it stopped on.
+#[derive(Clone, Copy, Debug)]
+struct FreeRun {
+    clock: FreeClock,
+    since: u64,
+    until: Option<u64>,
+}
+
+impl FreeRun {
+    /// The frame its bar lines are heard up to, at absolute frame `at`.
+    fn end(&self, at: u64) -> u64 {
+        self.until.map_or(at, |u| at.min(u))
+    }
+
+    /// Its newest bar line heard by absolute frame `at`, as its tick and
+    /// frame.
+    fn last_line(&self, at: u64) -> Option<(Tick, u64)> {
+        self.clock.line_before(self.end(at), self.since)
+    }
+
+    /// While it runs and absolute frame `at` is in a bar's last beat: the
+    /// bar line coming, which a capture then waits for.
+    fn coming_line(&self, at: u64) -> Option<Tick> {
+        self.until
+            .is_none()
+            .then(|| self.clock.last_beat_line(at))?
+    }
+
+    /// The frame of its bar line on tick `t`, if `t` is one (a multiple of
+    /// a bar) heard in this run by absolute frame `at`.
+    fn line_heard(&self, t: Tick, at: u64) -> Option<u64> {
+        let bar = self.clock.meter.bar_ticks().max(1);
+        self.clock
+            .frame_of(t)
+            .filter(|&f| t.rem_euclid(bar) == 0 && f >= self.since && f < self.end(at))
+    }
+}
+
+impl FreeTime {
+    /// Whether the free clock runs on absolute frame `f`.
+    fn rolls_at(&self, f: u64) -> bool {
+        self.clock.is_some_and(|c| c.rolls_at(f))
+    }
+
+    /// The stopped free clock starts on frame `f` from its top, and the
+    /// free loops with it.
+    fn start(&mut self, f: u64) {
+        self.cue = None;
+        if let Some(c) = self.clock.as_mut().filter(|c| !c.running) {
+            c.start_at(f);
+            self.jump = f;
+        }
+    }
+
+    /// A free loop's first pass begins on the song's bar line `line` (its
+    /// tick and frame) in `span`: the free clock is set there as a copy of
+    /// the song's (with none yet: a new one), or the stopped one starts
+    /// there from its top, keeping its tempo (the stopped free loops come
+    /// in with it). Gives the clock, and the line on it.
+    fn set_on_song(&mut self, span: &Span, line: (Tick, u64)) -> (FreeClock, (Tick, u64)) {
+        self.cue = None;
+        let c = match self.clock.as_mut() {
+            Some(c) => {
+                c.start_at(line.1);
+                *c
+            }
+            None => {
+                self.gen = self.gen.wrapping_add(1);
+                *self.clock.insert(FreeClock::of_song(span, line.0))
+            }
+        };
+        self.jump = line.1;
+        (c, (c.top, line.1))
+    }
+
+    /// The free clock stops on frame `f` and goes back to its bar 1 (STOP
+    /// with the song stopped, or the free loops' own Stop). Each free loop
+    /// on it hears it stop there as a song loop hears STOP: a first pass
+    /// keeps what was played (as far as the next bar line), an overdub
+    /// ends, and they fade out. A free loop armed to start on a bar line
+    /// lets go (nothing plays to start it), one waiting for your note
+    /// listens again, and a free first pass in your own time takes it as
+    /// its closing tap: the free clock it sets starts stopped.
+    fn stop(&mut self, loops: &mut [Loop], store: &mut Store, stats: &mut Stats, f: u64) {
+        self.cue = None;
+        let rolling = self.rolls_at(f);
+        let tick = self.clock.map_or(0.0, |c| c.tick_at(f)).floor() as Tick;
+        for (k, l) in loops.iter_mut().enumerate() {
+            if l.clock != Clock::Free {
+                continue;
+            }
+            match l.phase {
+                Phase::Armed if l.starts == Starts::Bar || l.resample => l.disarm(),
+                Phase::Armed => l.unhear(),
+                Phase::Recording if l.free => {
+                    l.ending = true;
+                    l.stop_close = true;
+                }
+                _ if rolling => l.marker(store, stats, k, Mark::Stopped { tick }, f),
+                _ => {}
+            }
+        }
+        if let Some(c) = self.clock.as_mut() {
+            // Capture can still take the bars it ran.
+            self.ran = rolling.then_some((*c, self.gen, f));
+            c.stop();
+        }
+    }
+
+    /// A free loop's snap due by frame `f` (a run's first: runs are cut on
+    /// it) lands there, and the free clock takes its tempo there, anchored
+    /// on the loop's downbeat, which is its bar 1 from now on (the loop is
+    /// the only free loop with sound, [`Looper::snap_plan`]): so the loop
+    /// plays on in its place, as a song loop does when the song's tempo
+    /// changes with it. With the free clock not running there, it doesn't
+    /// land.
+    fn land_snaps(&mut self, loops: &mut [Loop], stats: &mut Stats, f: u64) {
+        for l in loops.iter_mut() {
+            if l.clock != Clock::Free || l.snap_frame > f {
+                continue;
+            }
+            if !self.rolls_at(f) {
+                l.drop_snap(stats);
+                continue;
+            }
+            l.land_snap(stats);
+            let Some(p) = l.snap_done.filter(|d| d.landed).map(|d| d.plan) else {
+                continue;
+            };
+            // (Anchored there, it places no bar line before it: Capture
+            // takes no bars at the old tempo.)
+            if let Some(c) = self.clock.as_mut() {
+                c.anchor_frame = f;
+                c.anchor_tick = p.tick;
+                c.bpm = p.bpm;
+                c.top = p.tick;
+            }
+        }
+    }
+
+    /// What the song's marks do to the free loops, which hear only the
+    /// free clock: STOP with the song stopped stops it
+    /// ([`FreeTime::stop`]); PLAY starts it, stopped, from its top; the
+    /// song stopping lets go of a free loop armed to start on the song's
+    /// bar line (one waiting for your note listens on) and starts the free
+    /// loops a Play waits to start; a locate or the song's own loop lets
+    /// that Play start on the next bar line.
+    fn mark(
+        &mut self,
+        loops: &mut [Loop],
+        store: &mut Store,
+        stats: &mut Stats,
+        mark: Mark,
+        f: u64,
+    ) {
+        match mark {
+            Mark::Panic => self.stop(loops, store, stats, f),
+            Mark::Started { .. } => self.start(f),
+            Mark::Stopped { .. } => {
+                let rolling = self.rolls_at(f);
+                for l in loops.iter_mut() {
+                    if l.clock == Clock::Free
+                        && l.phase == Phase::Armed
+                        && !rolling
+                        && (l.starts == Starts::Bar || l.resample)
+                    {
+                        l.disarm();
+                    }
+                }
+                if self.cue.is_some() {
+                    self.start(f);
+                }
+            }
+            Mark::Located { .. } | Mark::Looped { .. } => {
+                if let Some(cue) = self.cue.as_mut() {
+                    *cue = (f64::MIN, f64::MIN);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 impl Looper {
@@ -2329,6 +2921,15 @@ impl Looper {
             find_gen: 0,
             smart_out: None,
             last_span: None,
+            free_time: FreeTime {
+                clock: None,
+                gen: 0,
+                kept: None,
+                cue: None,
+                jump: u64::MAX,
+                ran: None,
+            },
+            free_ticks: [0.0; RUN],
             outs: LoopOuts::new(MAX_PERIOD as usize),
         }
     }
@@ -2345,16 +2946,15 @@ impl Looper {
         self.push(Queued::Layer(id, c))
     }
 
-    /// Select loop `n` (0 to [`MAX_LOOPS`] - 1) for the commands queued
-    /// after this. False (and counted) if the queue is full.
     /// Listen: play loop `n` alone from its start, round and round, while
     /// the song is stopped: the whole loop as heard (its layers' levels,
     /// mutes and solos), or with `layer` ([`LayerInfo::id`]) that layer on
     /// its own, even when muted. It plays at the speed it was recorded,
     /// through the loop's level. It stops with [`Looper::stop_listening`],
-    /// or by itself when the song starts or the loop records or empties.
-    /// Refused (false) while the song plays, or for a loop with nothing
-    /// to play.
+    /// or by itself when the song starts or the loop records or empties
+    /// (a free loop's: when the free clock starts). Refused (false) while
+    /// the song plays, for a free loop while the free clock runs (it plays
+    /// anyway), or for a loop with nothing to play.
     pub fn listen(&mut self, n: usize, layer: Option<u8>) -> bool {
         let Some(l) = self.loops.get(n) else {
             return false;
@@ -2363,7 +2963,9 @@ impl Looper {
             && l.len > 0
             && !l.merging
             && layer.is_none_or(|id| l.order[..l.in_order].contains(&id));
-        if !self.stopped || !playable {
+        // (A free loop plays by itself while the free clock runs.)
+        let free_plays = l.clock == Clock::Free && self.free_time.clock.is_some_and(|c| c.running);
+        if !self.stopped || !playable || free_plays {
             return false;
         }
         self.listen = Some(Listen {
@@ -2397,8 +2999,9 @@ impl Looper {
         let Some(mut ls) = self.listen else {
             return;
         };
-        let stopped = block.spans().iter().all(|s| s.state == State::Stopped);
         let l = &self.loops[ls.n];
+        let stopped = block.spans().iter().all(|s| s.state == State::Stopped)
+            && !(l.clock == Clock::Free && self.free_time.clock.is_some_and(|c| c.running));
         let still = l.phase == Phase::Playing
             && l.len > 0
             && !l.merging
@@ -2445,6 +3048,8 @@ impl Looper {
         self.listen = Some(ls);
     }
 
+    /// Select loop `n` (0 to [`MAX_LOOPS`] - 1) for the commands queued
+    /// after this. False (and counted) if the queue is full.
     pub fn select_loop(&mut self, n: usize) -> bool {
         self.push(Queued::Select(n))
     }
@@ -2565,7 +3170,12 @@ impl Looper {
                 .then_some(l.tap_lead)
                 .flatten()
                 .map(|(tap, until)| {
-                    let bar = self.bar_ticks.max(1) as f64;
+                    // (A free loop on the free clock counts its bars.)
+                    let bar = match self.free_time.clock {
+                        Some(c) if l.on_free(c.rolls_at(self.now)) => c.meter.bar_ticks(),
+                        _ => self.bar_ticks,
+                    };
+                    let bar = bar.max(1) as f64;
                     let line = (tap / bar).ceil() * bar;
                     (if line > tap && line < until {
                         (until / bar).ceil() * bar
@@ -2586,6 +3196,7 @@ impl Looper {
                     .then(|| l.ld_done as f32 / l.ld_frames.max(1) as f32)
             },
             starts: l.starts,
+            clock: l.clock,
             listening: l.listening(),
             lead: l.bounds_now().map_or(l.lead, |(start, src)| src - start),
             free: l.free
@@ -2665,6 +3276,7 @@ impl Looper {
             fade_old: l.fade_old,
             speed: l.speed,
             rate: l.rate,
+            clock: l.clock,
             layers,
         })
     }
@@ -2705,14 +3317,15 @@ impl Looper {
     /// Put a saved loop back into loop `n`, which must be empty: its
     /// settings now, and its layers once their audio has copied in (at
     /// [`LOAD_SPEED`]); then it fades in, in time with the song, from
-    /// `origin`. Takes its memory now. Its commands wait while it copies,
+    /// `origin` (a free loop: in time with the free clock, which must be
+    /// open, [`Looper::open_free_clock`]). Takes its memory now. Its commands wait while it copies,
     /// except Clear (which calls it off), Mute and the settings. The
     /// [`LoopFile`] waits in [`Looper::take_loaded`] once done, so that
     /// its audio is not freed here. Does not allocate. Gives `f` back if
     /// the loop is not empty, the last load has not been collected, the
     /// loop number is past [`MAX_LOOPS`], there are no layers or more
-    /// than `MAX_LAYERS - 1`, a layer is shorter than `frames`, or the
-    /// memory is short.
+    /// than `MAX_LAYERS - 1`, a layer is shorter than `frames`, the
+    /// memory is short, or it is a free loop and there is no free clock.
     pub fn load(&mut self, n: usize, f: LoopFile) -> Result<(), LoopFile> {
         let Some(l) = self.loops.get_mut(n) else {
             return Err(f);
@@ -2726,7 +3339,8 @@ impl Looper {
             && f.ticks > 0
             && !f.layers.is_empty()
             && f.layers.len() < MAX_LAYERS
-            && f.layers.iter().all(|y| y.audio.len() >= 2 * f.frames);
+            && f.layers.iter().all(|y| y.audio.len() >= 2 * f.frames)
+            && (f.clock == Clock::Song || self.free_time.clock.is_some());
         if !ok {
             return Err(f);
         }
@@ -2760,6 +3374,8 @@ impl Looper {
         l.fade_old = f.fade_old.clamp(0.0, 1.0);
         l.speed = f.speed.clamp(-1, 1);
         l.rate = f.rate.clamp(-2, 2);
+        l.clock = f.clock;
+        l.clock_gen = self.free_time.gen;
         l.loading = true;
         l.ld_layers = f.layers.len();
         l.ld_frames = f.frames;
@@ -2772,36 +3388,77 @@ impl Looper {
         Ok(())
     }
 
-    /// What a Capture of `bars` would take now ([`Command::Capture`]):
-    /// the bars ending on the last bar line heard (pressed in a bar's last
-    /// beat, it waits for the next one instead), read with the selected
-    /// loop's latency. None when not even one whole bar was heard.
-    pub fn capture_take(&self, bars: u32) -> Option<Take> {
-        let end = self.heard.lines().checked_sub(1)?;
-        self.heard
-            .take(end, bars, self.loops[self.selected].latency)
+    /// What a Capture of `bars` into an empty loop on `clock` would take
+    /// now ([`Command::Capture`]), on the bars it would take
+    /// ([`Looper::capture_bars`]: the song's, or for a free loop while
+    /// the free clock is set, its own): the bars ending on the last bar
+    /// line heard (pressed in a bar's last beat, it waits for the next one
+    /// instead), read with the loops' latency. None when not even one
+    /// whole bar was heard.
+    pub fn capture_take(&self, clock: Clock, bars: u32) -> Option<Take> {
+        let latency = self.loops[self.selected].latency;
+        match self.capture_bars(clock)? {
+            CaptureBars::Song => {
+                let end = self.heard.lines().checked_sub(1)?;
+                self.heard.take(end, bars, latency)
+            }
+            CaptureBars::Free(run) => {
+                let (end, _) = run.last_line(self.heard.at())?;
+                self.free_take(&run, end, bars, latency)
+            }
+        }
     }
 
-    /// What [`Command::CaptureTo`] would take now, for the selected loop:
-    /// `bars` ending on the bar line heard on tick `end`.
-    pub fn capture_take_to(&self, end: Tick, bars: u32) -> Option<Take> {
-        let end = self.heard.line_at(end)?;
-        self.heard
-            .take(end, bars, self.loops[self.selected].latency)
+    /// What [`Command::CaptureTo`] would take now, into an empty loop on
+    /// `clock`: `bars` ending on the bar line heard on tick `end` (of the
+    /// song, or of the free clock, as for [`Looper::capture_take`]).
+    pub fn capture_take_to(&self, clock: Clock, end: Tick, bars: u32) -> Option<Take> {
+        let latency = self.loops[self.selected].latency;
+        match self.capture_bars(clock)? {
+            CaptureBars::Song => {
+                let end = self.heard.line_at(end)?;
+                self.heard.take(end, bars, latency)
+            }
+            CaptureBars::Free(run) => self.free_take(&run, end, bars, latency),
+        }
     }
 
-    /// A Capture now would wait for the bar line coming: the song plays
-    /// and is in a bar's last beat.
-    pub fn capture_waits(&self) -> bool {
-        self.heard.in_last_beat()
+    /// A Capture into an empty loop on `clock` now would wait for the bar
+    /// line coming: the song plays (for a free loop while the free clock
+    /// is set, the free clock runs) and is in a bar's last beat.
+    pub fn capture_waits(&self, clock: Clock) -> bool {
+        match self.capture_bars(clock) {
+            Some(CaptureBars::Song) => self.heard.in_last_beat(),
+            Some(CaptureBars::Free(run)) => run.coming_line(self.heard.at()).is_some(),
+            None => false,
+        }
     }
 
-    /// The bar lines of the song as it last played on unbroken (since it
-    /// started, jumped or looped), the newest up to `out.len()`, oldest
-    /// first: each one's tick and the frame it fell on. Returns how many.
-    /// With [`Looper::heard_at`], where What you played puts its bars.
-    pub fn heard_lines(&self, out: &mut [(Tick, u64)]) -> usize {
-        self.heard.recent(out)
+    /// The bar lines a capture into an empty loop on `clock` counts, the
+    /// newest up to `out.len()`, oldest first: each one's tick and the
+    /// frame it fell on. Returns how many. The song's as it last played
+    /// on unbroken (since it started, jumped or looped); for a free loop
+    /// while the free clock is set, the free clock's since it last
+    /// started. With [`Looper::heard_at`], where What you played puts its
+    /// bars.
+    pub fn heard_lines(&self, clock: Clock, out: &mut [(Tick, u64)]) -> usize {
+        match self.capture_bars(clock) {
+            Some(CaptureBars::Song) => self.heard.recent(out),
+            Some(CaptureBars::Free(run)) => {
+                let at = self.heard.at();
+                let bar = run.clock.meter.bar_ticks().max(1);
+                let mut n = 0;
+                let mut line = run.last_line(at);
+                while let Some((t, f)) = line.filter(|_| n < out.len()) {
+                    out[n] = (t, f);
+                    n += 1;
+                    line = run.line_heard(t - bar, at).map(|f| (t - bar, f));
+                }
+                out[..n].reverse();
+                n
+            }
+            None => 0,
+        }
     }
 
     /// The frame after the last one the looper heard (the end of the
@@ -3080,6 +3737,9 @@ impl Looper {
         }
         self.heard.hear(block, input, n);
         self.apply_commands();
+        if self.free_time.clock.is_some() || self.loops.iter().any(|l| l.clock == Clock::Free) {
+            self.tend_free();
+        }
         // Smart loop end by ear: the hit track listens while a free first
         // pass may need it.
         if self.by_ear && self.wants_notes() {
@@ -3090,14 +3750,27 @@ impl Looper {
         // A loop armed with the song playing starts no sooner than
         // LEAD_BEATS after the tap; armed while stopped or counting in,
         // on the bar PLAY starts on (with the pads' pattern, SHIFT + Arm).
+        // A free loop armed while the free clock runs counts its beat on
+        // that clock. Play for the free loops pressed while the song plays
+        // waits as long.
         if let Some(s) = block.spans().first() {
             let rolling = matches!(s.state, State::Playing | State::Recording);
             let tap = s.tick_at(s.frame);
             let until = tap + (LEAD_BEATS * s.meter.beat_ticks()) as f64;
+            let free = self.free_time.clock.filter(|c| c.rolls_at(s.frame));
             for l in &mut self.loops {
                 if std::mem::take(&mut l.just_armed) && l.phase == Phase::Armed {
-                    l.tap_lead = rolling.then_some((tap, until));
+                    l.tap_lead = match free.filter(|_| l.clock == Clock::Free) {
+                        Some(c) => {
+                            let tap = c.tick_at(s.frame);
+                            Some((tap, tap + (LEAD_BEATS * c.meter.beat_ticks()) as f64))
+                        }
+                        None => rolling.then_some((tap, until)),
+                    };
                 }
+            }
+            if let Some(cue) = self.free_time.cue.as_mut().filter(|c| c.0.is_nan()) {
+                *cue = (tap, until);
             }
         }
         self.place_hits(block);
@@ -3123,6 +3796,8 @@ impl Looper {
             prints,
             loads,
             heard,
+            free_time,
+            free_ticks,
             ..
         } = self;
         let end = block.start_frame + n as u64;
@@ -3187,13 +3862,24 @@ impl Looper {
             .enumerate()
             .fold(0u32, |m, (k, l)| m | (u32::from(l.resample) << k));
         outs.set_resampling(rs);
+        // Free loops keep time with the free clock: each run gets its ticks
+        // too, its bar lines cut the runs, and of the song's marks they
+        // hear only what [`FreeTime::mark`] makes of them. With no free
+        // loop holding, starting or loading a loop, none of that runs, and
+        // the song's loops run as they always have.
+        let any_free = loops
+            .iter()
+            .any(|l| l.clock == Clock::Free && (l.phase != Phase::Empty || l.loading || l.adding));
+        // Free bar lines before this frame have been handed out.
+        let mut free_done = block.start_frame;
         let markers = block.markers();
         let mut m = 0;
         for span in block.spans() {
             let bar = span.meter.bar_ticks();
-            let watch_bars = loops
-                .iter()
-                .any(|l| matches!(l.phase, Phase::Armed | Phase::Recording) || l.cue.is_some());
+            let watch_bars = free_time.cue.is_some()
+                || loops
+                    .iter()
+                    .any(|l| matches!(l.phase, Phase::Armed | Phase::Recording) || l.cue.is_some());
             let mut lines = span.lines(bar);
             let mut next = if watch_bars { lines.next() } else { None };
             // Playing or recording: the loops sound. Counting in: the clock
@@ -3208,8 +3894,15 @@ impl Looper {
                 }
                 let f = span.frame + i as u64;
                 while m < markers.len() && markers[m].frame <= f {
+                    let (mark, at) = (markers[m].mark, markers[m].frame);
+                    let rolling = free_time.rolls_at(at);
                     for (k, l) in loops.iter_mut().enumerate() {
-                        l.marker(store, stats, k, markers[m].mark, markers[m].frame);
+                        if !(any_free && l.on_free(rolling)) {
+                            l.marker(store, stats, k, mark, at);
+                        }
+                    }
+                    if any_free {
+                        free_time.mark(loops, store, stats, mark, at);
                     }
                     m += 1;
                 }
@@ -3218,11 +3911,58 @@ impl Looper {
                         break;
                     }
                     if o as usize == off {
+                        let rolling = free_time.rolls_at(f);
                         for (k, l) in loops.iter_mut().enumerate() {
-                            l.bar_line(store, stats, k, span, t, f);
+                            if !any_free || l.clock == Clock::Song {
+                                l.bar_line(store, stats, k, span, t, f);
+                            } else if !l.on_free(rolling) && t >= 0 && playing {
+                                // A free loop waiting for the song's bar
+                                // line: it starts here, setting the free
+                                // clock from the song's (or starting it).
+                                if let Some((rec_from, lead)) = l.starts_on(span, t, f) {
+                                    let (c, line) = free_time.set_on_song(span, (t, f));
+                                    let fs = c.span(off as u32, (span_len - i) as u32, f);
+                                    l.clock_gen = free_time.gen;
+                                    l.begin_first(store, k, &fs, line, rec_from, lead, f);
+                                    free_done = free_done.min(f);
+                                }
+                            }
+                        }
+                        // Play pressed for the stopped free loops: they
+                        // start here, a beat or more after it.
+                        if let Some((tap, until)) = free_time.cue {
+                            let t = t as f64;
+                            if playing && t >= 0.0 && !(t > tap && t < until) {
+                                free_time.start(f);
+                                free_done = free_done.min(f);
+                            }
                         }
                     }
                     next = lines.next();
+                }
+                // The free clock's bar lines, for the free loops on it.
+                let mut free_next = None;
+                if any_free {
+                    if let Some(c) = free_time.clock.filter(|c| c.running) {
+                        let watch = loops.iter().any(|l| {
+                            l.on_free(true)
+                                && (matches!(l.phase, Phase::Armed | Phase::Recording)
+                                    || l.cue.is_some())
+                        });
+                        if watch {
+                            free_next = c.next_bar(f.max(free_done));
+                            if let Some((t, _)) = free_next.filter(|&(_, at)| at == f) {
+                                let fs = c.span(off as u32, (span_len - i) as u32, f);
+                                for (k, l) in loops.iter_mut().enumerate() {
+                                    if l.on_free(true) {
+                                        l.bar_line(store, stats, k, &fs, t, f);
+                                    }
+                                }
+                                free_done = f + 1;
+                                free_next = c.next_bar(f + 1);
+                            }
+                        }
+                    }
                 }
                 // A run of frames up to the next bar line or marker: the
                 // loops are independent in it, so each runs it in turn.
@@ -3233,10 +3973,39 @@ impl Looper {
                 if m < markers.len() {
                     end = end.min((markers[m].frame - span.frame) as usize);
                 }
+                if any_free {
+                    if let Some((_, at)) = free_next {
+                        end = end.min((at - span.frame) as usize);
+                    }
+                    // A free clock set to start on a frame to come.
+                    if let Some(c) = free_time.clock.filter(|c| c.running && c.anchor_frame > f) {
+                        end = end.min((c.anchor_frame - span.frame) as usize);
+                    }
+                    // A free loop's snap, which changes the free clock's tempo
+                    // on its frame ([`FreeTime::land_snaps`]).
+                    for l in loops.iter().filter(|l| l.clock == Clock::Free) {
+                        if l.snap_frame > f && l.snap_frame != u64::MAX {
+                            end = end.min((l.snap_frame - span.frame) as usize);
+                        }
+                    }
+                }
                 let frames = end - i;
                 let mut ticks = [0.0f64; RUN];
-                for (j, t) in ticks[..frames].iter_mut().enumerate() {
-                    *t = span.tick_at(f + j as u64);
+                let song = (span.anchor_frame, span.anchor_tick, span.bpm, span.rate);
+                fill_ticks(&mut ticks[..frames], span.state.rolling(), song, f);
+                if any_free {
+                    free_time.land_snaps(loops, stats, f);
+                }
+                let free_rolling = any_free && free_time.rolls_at(f);
+                if any_free {
+                    let ft = &mut free_ticks[..frames];
+                    match free_time.clock {
+                        Some(c) => {
+                            let free = (c.anchor_frame, c.anchor_tick, c.bpm, c.rate);
+                            fill_ticks(ft, free_rolling, free, f);
+                        }
+                        None => ft.fill(0.0),
+                    }
                 }
                 let run = Run {
                     from: i,
@@ -3245,20 +4014,21 @@ impl Looper {
                     f,
                     playing,
                 };
+                // The free loops' run: the same frames on the free clock. Its
+                // place can jump only where the clock starts.
+                let free_run = Run {
+                    from: usize::from(f != free_time.jump),
+                    ticks: &free_ticks[..frames],
+                    playing: free_rolling,
+                    ..run
+                };
                 // Each loop adds its frames to its own buffer; a quiet one
                 // has none to add.
                 for (k, l) in loops.iter_mut().enumerate() {
                     if rs & (1 << k) == 0 && !l.quiet() {
                         let (p, waiting) = (prints[k].now.as_ref(), prints[k].next.is_some());
-                        l.run(
-                            store,
-                            stats,
-                            k,
-                            &run,
-                            p,
-                            waiting,
-                            outs.run_mut(k, off, frames),
-                        );
+                        let r = l.run_from(any_free, free_rolling, &run, &free_run);
+                        l.run(store, stats, k, r, p, waiting, outs.run_mut(k, off, frames));
                     }
                 }
                 if rs != 0 {
@@ -3270,18 +4040,15 @@ impl Looper {
                         input: &heard[..2 * frames],
                         ..run
                     };
+                    let free_run = Run {
+                        input: &heard[..2 * frames],
+                        ..free_run
+                    };
                     for (k, l) in loops.iter_mut().enumerate() {
                         if rs & (1 << k) != 0 && !l.quiet() {
                             let (p, waiting) = (prints[k].now.as_ref(), prints[k].next.is_some());
-                            l.run(
-                                store,
-                                stats,
-                                k,
-                                &run,
-                                p,
-                                waiting,
-                                outs.run_mut(k, off, frames),
-                            );
+                            let r = l.run_from(any_free, free_rolling, &run, &free_run);
+                            l.run(store, stats, k, r, p, waiting, outs.run_mut(k, off, frames));
                         }
                     }
                 }
@@ -3289,8 +4056,15 @@ impl Looper {
             }
         }
         while m < markers.len() {
+            let (mark, at) = (markers[m].mark, markers[m].frame);
+            let rolling = free_time.rolls_at(at);
             for (k, l) in loops.iter_mut().enumerate() {
-                l.marker(store, stats, k, markers[m].mark, markers[m].frame);
+                if !(any_free && l.on_free(rolling)) {
+                    l.marker(store, stats, k, mark, at);
+                }
+            }
+            if any_free {
+                free_time.mark(loops, store, stats, mark, at);
             }
             m += 1;
         }
@@ -3358,12 +4132,29 @@ impl Looper {
     /// loop isn't playing as it was left, it plays at another speed, it is
     /// already read as those bars, or the new length is outside what was
     /// kept or the tempo range. Changes nothing.
+    ///
+    /// A free loop's ([`Clock::Free`]) is worked out against the free
+    /// clock, whose tempo it changes instead of the song's: the host hands
+    /// it straight to [`Looper::snap_at`], with nothing to ask of the time
+    /// engine. Or why not: the free loops aren't playing, or another free
+    /// loop has sound (its tempo would change under it).
     pub fn snap_plan(&self, n: usize, s: Snap, after: u64) -> Result<SnapPlan, &'static str> {
         let l = self.loops.get(n).ok_or("there is no such loop")?;
-        let span = self
-            .last_span
-            .filter(|s| matches!(s.state, State::Playing | State::Recording))
-            .ok_or("the song isn't playing")?;
+        let span = if l.clock == Clock::Free {
+            if (0..self.loops.len()).any(|k| k != n && self.loops[k].holds_free()) {
+                return Err("another free loop has sound");
+            }
+            let at = self.heard.at();
+            self.free_time
+                .clock
+                .filter(|c| c.rolls_at(at))
+                .map(|c| c.span(0, 0, at))
+                .ok_or("the free loops aren't playing")?
+        } else {
+            self.last_span
+                .filter(|s| matches!(s.state, State::Playing | State::Recording))
+                .ok_or("the song isn't playing")?
+        };
         if l.phase != Phase::Playing || l.od_open || l.busy() {
             return Err("the loop is busy");
         }
@@ -3413,7 +4204,10 @@ impl Looper {
     /// waits for nothing else (commands that change it wait until it has
     /// landed). Call it before [`Looper::process`] runs the period its
     /// frame falls in. False if the loop has changed since (counted, and
-    /// said by [`Looper::take_snap`]). Allocation-free.
+    /// said by [`Looper::take_snap`]). Allocation-free. A free loop's
+    /// needs no time engine: the free clock takes its tempo on that frame
+    /// as the snap lands, its bar 1 on the loop's downbeat (if the free
+    /// loops have stopped by then, it doesn't land).
     pub fn snap_at(&mut self, p: SnapPlan) -> bool {
         let Some(l) = self.loops.get_mut(p.n) else {
             return false;
@@ -3462,31 +4256,41 @@ impl Looper {
     /// that arms the loop counts: the period's end forgets what nothing
     /// needs, [`Looper::wants_notes`].)
     fn takes_notes(&self) -> bool {
-        self.free_tempo || self.loops.iter().any(|l| l.smart_wait.is_some())
+        self.free_tempo
+            || self
+                .loops
+                .iter()
+                .any(|l| l.smart_wait.is_some() || l.clock == Clock::Free)
     }
 
     /// Whether the notes are wanted: a free first pass may be armed or
     /// recording (its reading weighs the beat inside it, and smart loop
     /// end, when on, its end), or one waits for smart loop end's decision.
     fn wants_notes(&self) -> bool {
-        self.loops.iter().any(|l| l.smart_wait.is_some())
-            || (self.free_tempo
-                && self
-                    .loops
-                    .iter()
-                    .any(|l| l.phase == Phase::Armed || (l.free && l.phase == Phase::Recording)))
+        self.loops.iter().any(|l| {
+            l.smart_wait.is_some()
+                || ((self.free_tempo || l.clock == Clock::Free)
+                    && (l.phase == Phase::Armed || (l.free && l.phase == Phase::Recording)))
+        })
     }
 
-    /// Whether loop `k`, recording a first pass now, would record free
-    /// ([`Command::TempoFromLoop`]): on, not resampling, and every other
-    /// loop empty (nothing loading, copying in or capturing). Its Length
-    /// doesn't matter: a bar count is the bars at the tempo you play.
+    /// Whether loop `k`, recording a first pass now with the song stopped,
+    /// would record free ([`Command::TempoFromLoop`]): on, not resampling,
+    /// and every other song loop empty (nothing loading, copying in or
+    /// capturing; free loops don't count). Its Length doesn't matter: a bar
+    /// count is the bars at the tempo you play. A free loop records free
+    /// whenever there is no free clock yet (and it isn't resampling): its
+    /// length sets the free clock.
     fn frees(&self, k: usize) -> bool {
         let l = &self.loops[k];
+        if l.clock == Clock::Free {
+            return !l.resample && self.free_time.clock.is_none();
+        }
         self.free_tempo
             && !l.resample
             && self.loops.iter().enumerate().all(|(i, o)| {
                 i == k
+                    || o.clock == Clock::Free
                     || (o.phase == Phase::Empty && !o.loading && !o.adding && o.capture.is_none())
             })
     }
@@ -3509,6 +4313,116 @@ impl Looper {
         let reach = ends::reach(self.rate, f64::NAN);
         self.notes.keep_from(rec_from.saturating_sub(reach));
         self.hits.keep_from(rec_from.saturating_sub(reach));
+    }
+
+    /// The free clock, while a free loop holds audio ([`FreeClock`]): its
+    /// tempo, meter and bar 1, and whether it runs. None otherwise.
+    pub fn free_clock(&self) -> Option<FreeClock> {
+        self.free_time.clock
+    }
+
+    /// A project's free clock back ([`save::Saved::free_clock`]): at `bpm`
+    /// in `meter`, stopped on its bar 1, `top`, for the project's free
+    /// loops to load onto ([`Looper::load`]) before the next period, so
+    /// that they open stopped at their tops. Refused (false) while a free
+    /// loop holds audio or loads, or for a tempo that isn't one. A free
+    /// clock no loop holds any more (the last free loop just faded out:
+    /// it goes with the next period) gives way to it, and Undo no longer
+    /// brings back the loops made on that one.
+    pub fn open_free_clock(&mut self, bpm: f64, meter: Meter, top: Tick) -> bool {
+        if self.loops.iter().any(Loop::holds_free) || !(bpm.is_finite() && bpm > 0.0) {
+            return false;
+        }
+        let ft = &mut self.free_time;
+        ft.gen = ft.gen.wrapping_add(1);
+        ft.clock = Some(FreeClock::stopped(bpm, self.rate, meter, top));
+        ft.kept = None;
+        ft.cue = None;
+        true
+    }
+
+    /// Once a period, before anything plays: the free clock goes once no
+    /// free loop holds audio (it waits for Undo, [`FreeTime::kept`]), and
+    /// a free loop armed on the bar starts at once while nothing plays: on
+    /// the stopped free clock, which starts from its top with it (the
+    /// stopped free loops come in), or with no free clock yet, in your own
+    /// time ([`Looper::begin_free`]), its length then setting the free
+    /// clock. (Waiting for your note, it starts on the note,
+    /// [`Looper::place_hits`]. Recording what the loops play, it waits for
+    /// the song or the free loops to play.)
+    fn tend_free(&mut self) {
+        let ft = &mut self.free_time;
+        if ft.clock.is_some() && !self.loops.iter().any(Loop::holds_free) {
+            ft.kept = ft.clock.take().map(|c| (c, ft.gen));
+            ft.cue = None;
+        }
+        // Every free loop with audio is on the clock there is (it went only
+        // once none held any): a loop cleared now is kept as made on it.
+        for l in &mut self.loops {
+            if l.clock == Clock::Free {
+                l.clock_gen = ft.gen;
+            }
+        }
+        if !self.stopped || self.free_time.rolls_at(self.now) {
+            return;
+        }
+        for k in 0..self.loops.len() {
+            let l = &self.loops[k];
+            if l.clock == Clock::Free
+                && l.phase == Phase::Armed
+                && l.starts == Starts::Bar
+                && !l.resample
+            {
+                self.begin_free_loop(k, self.now);
+            }
+        }
+    }
+
+    /// Free loop `k`, armed, starts with nothing playing, its first frame
+    /// played on song frame `rec_from` (the period's first, or your
+    /// note): on the free clock, which starts from its top on the later
+    /// of this period's first frame and that one (the stopped free loops
+    /// start with it), or, with no free clock, in your own time
+    /// ([`Looper::begin_free`]).
+    fn begin_free_loop(&mut self, k: usize, rec_from: u64) {
+        let now = self.now;
+        let ft = &mut self.free_time;
+        let Some(c) = ft.clock.as_mut() else {
+            self.begin_free(k, rec_from);
+            return;
+        };
+        let at = rec_from.max(now);
+        c.start_at(at);
+        ft.jump = at;
+        ft.cue = None;
+        let c = *c;
+        let l = &mut self.loops[k];
+        l.clock_gen = ft.gen;
+        l.begin_first(
+            &mut self.store,
+            k,
+            &c.span(0, 0, at),
+            (c.top, at),
+            rec_from,
+            0,
+            now,
+        );
+    }
+
+    /// Play for the stopped free loops ([`Command::FreePlay`]): from their
+    /// tops on this period's first frame with the song stopped, or, while
+    /// it plays, on its next bar line a beat or more on (the period's first
+    /// span says where that is).
+    fn free_play(&mut self) {
+        let ft = &mut self.free_time;
+        if !ft.clock.is_some_and(|c| !c.running) {
+            return;
+        }
+        if self.stopped {
+            ft.start(self.now);
+        } else if ft.cue.is_none() {
+            ft.cue = Some((f64::NAN, f64::NAN));
+        }
     }
 
     /// Each free first pass asked to close ([`Loop::ending`]) closes on
@@ -3661,8 +4575,15 @@ impl Looper {
             } else {
                 (len, heard(len).unwrap_or(reading), 0)
             };
+            // A song loop's bars count from the start of the bar the song
+            // stopped in; a free loop's from the free clock's bar 1.
+            let free_loop = self.loops[k].clock == Clock::Free;
             let pos = span.ticks().start;
-            let origin = pos - pos.rem_euclid(bar);
+            let origin = if free_loop {
+                0
+            } else {
+                pos - pos.rem_euclid(bar)
+            };
             let ticks = i64::from(reading.bars) * bar;
             let t = origin + ticks;
             let l = &mut self.loops[k];
@@ -3671,6 +4592,8 @@ impl Looper {
             l.origin = origin;
             l.bar = bar;
             l.end_tick = Some(t);
+            // (Suggest's offer moves the song's tempo, or a free loop's the
+            // free clock's.)
             if self.smart == SmartEnd::Suggest {
                 l.smart_wait = Some(SmartWait {
                     tap,
@@ -3714,7 +4637,34 @@ impl Looper {
                 };
                 self.smart_said(k, tap, outcome, start as i64, best, second);
             }
-            self.tempo_out = Some((k, reading, end, into.clamp(0, ticks - 1)));
+            let into = into.clamp(0, ticks - 1);
+            if !free_loop {
+                self.tempo_out = Some((k, reading, end, into));
+                continue;
+            }
+            // A free loop sets the free clock instead, and the song never
+            // hears of it: the tempo the loop's length read as, bar 1 on
+            // its start, running from the frame it comes round on (as far
+            // in as Auto listened on past its end), or, closed by STOP,
+            // stopped on its bar 1.
+            let mut c = FreeClock {
+                anchor_frame: end,
+                anchor_tick: origin + into,
+                bpm: reading.bpm,
+                rate,
+                meter: span.meter,
+                running: true,
+                top: origin,
+            };
+            let l = &mut self.loops[k];
+            if std::mem::take(&mut l.stop_close) {
+                c.stop();
+            }
+            let ft = &mut self.free_time;
+            ft.gen = ft.gen.wrapping_add(1);
+            ft.clock = Some(c);
+            ft.jump = end;
+            l.clock_gen = ft.gen;
         }
         self.free_open = open;
     }
@@ -3992,9 +4942,20 @@ impl Looper {
             let Some(span) = block.spans().first() else {
                 continue;
             };
+            let free = self.loops[k].clock == Clock::Free;
+            // A free loop while the free clock runs: on its bar lines.
+            let now = block.start_frame;
+            if let Some(c) = self.free_time.clock.filter(|c| free && c.rolls_at(now)) {
+                let fs = c.span(0, block.frames, now);
+                self.place_on(k, p, &fs, free_around(&c, p), now);
+                continue;
+            }
             match span.state {
                 State::Playing | State::Recording => self.place_hit(k, p, block),
                 State::CountIn => self.loops[k].pending = Some((p, true)),
+                // A free loop with nothing playing: on the stopped free
+                // clock, or in your own time.
+                State::Stopped if free => self.begin_free_loop(k, p),
                 // Tempo from the loop: it records free from the note.
                 State::Stopped if self.frees(k) => self.begin_free(k, p),
                 State::Stopped => {
@@ -4015,9 +4976,17 @@ impl Looper {
         else {
             return;
         };
+        let around = self.heard.around(p).unwrap_or((None, None));
+        self.place_on(k, p, span, around, block.start_frame);
+    }
+
+    /// Loop `k`, a note played on song frame `p`, on the bar lines of
+    /// `span` (the song's, or the free clock's), `around` being the last
+    /// one at or before the note and the next: it starts on the nearest,
+    /// `now` being the period's first frame.
+    fn place_on(&mut self, k: usize, p: u64, span: &Span, around: Around, now: u64) {
         let bar = span.meter.bar_ticks();
-        let now = block.start_frame;
-        let (before, after) = self.heard.around(p).unwrap_or((None, None));
+        let (before, after) = around;
         // The line to start on, and whether the note is a pickup before it.
         let (line, pickup) = match before {
             Some((t, f)) => {
@@ -4058,8 +5027,35 @@ impl Looper {
         } else {
             (line.1, 0)
         };
+        self.begin_on(k, span, line, rec_from, lead, now);
+    }
+
+    /// Loop `k`'s first pass begins on bar line `line` of `span`, the clock
+    /// it goes by ([`Loop::begin_first`]). A free loop that waited for the
+    /// song's bar line sets the free clock there first
+    /// ([`FreeTime::set_on_song`]), and begins on that.
+    fn begin_on(
+        &mut self,
+        k: usize,
+        span: &Span,
+        line: (Tick, u64),
+        rec_from: u64,
+        lead: usize,
+        write_at: u64,
+    ) {
+        let ft = &mut self.free_time;
         let l = &mut self.loops[k];
-        l.begin_first(&mut self.store, k, span, line, rec_from, lead, now);
+        if l.clock == Clock::Free {
+            if !ft.rolls_at(self.now) {
+                let (c, at) = ft.set_on_song(span, line);
+                l.clock_gen = ft.gen;
+                let fs = c.span(0, 0, line.1);
+                l.begin_first(&mut self.store, k, &fs, at, rec_from, lead, write_at);
+                return;
+            }
+            l.clock_gen = ft.gen;
+        }
+        l.begin_first(&mut self.store, k, span, line, rec_from, lead, write_at);
     }
 
     fn apply_commands(&mut self) {
@@ -4077,6 +5073,16 @@ impl Looper {
             // while it copies calls the overdub off).
             if !waiting && matches!(q, Queued::Loop(Command::Overdub | Command::Record)) {
                 let s = self.selected;
+                // On a stopped free loop: the free loops play from their
+                // tops, and the overdub starts with them.
+                let l = &self.loops[s];
+                if l.clock == Clock::Free
+                    && l.phase == Phase::Playing
+                    && !l.od_open
+                    && !self.free_time.rolls_at(self.now)
+                {
+                    self.free_play();
+                }
                 let l = &self.loops[s];
                 if l.fitting && l.fit_overdub {
                     self.loops[s].fit_overdub = false;
@@ -4184,6 +5190,40 @@ impl Looper {
                 }
             }
             Queued::Loop(Command::TempoFromLoop(on)) => self.free_tempo = on,
+            Queued::Loop(Command::FreeStop) => {
+                let now = self.now;
+                self.free_time
+                    .stop(&mut self.loops, &mut self.store, &mut self.stats, now);
+            }
+            Queued::Loop(Command::FreePlay) => self.free_play(),
+            // A cleared free loop comes back with the free clock it was
+            // made on: the one there is, or the one that went with it. Not
+            // once another has been set.
+            Queued::Loop(Command::Undo)
+                if self.loops[s].phase == Phase::Empty
+                    && !self.loops[s].capturing()
+                    && !self.loops[s].loading
+                    && !self.loops[s].adding
+                    && self.store.has_kept(s)
+                    && self.store.kept[s].clock == Clock::Free =>
+            {
+                let gen = self.store.kept[s].clock_gen;
+                let ft = &mut self.free_time;
+                let back = match (ft.clock, ft.kept) {
+                    (Some(_), _) => ft.gen == gen,
+                    (None, Some((c, g))) if g == gen => {
+                        ft.clock = Some(c);
+                        ft.kept = None;
+                        true
+                    }
+                    (None, _) => false,
+                };
+                if back {
+                    self.loops[s].apply(&mut self.store, &mut self.stats, s, Command::Undo);
+                } else {
+                    self.stats.refused += 1;
+                }
+            }
             Queued::Loop(Command::TempoMeant(on)) => self.tempo_meant = on,
             Queued::Loop(Command::SetSmartEnd(m)) => self.smart = m,
             Queued::Loop(Command::SmartByEar(on)) => {
@@ -4288,6 +5328,101 @@ impl Looper {
         self.loops[s].reclaim(&mut self.store, s);
     }
 
+    /// The free clock's run a capture into a free loop takes bars from: as
+    /// it runs, or, once it has stopped, as it last ran (up to the frame
+    /// it stopped on) while that is the clock there is. None with no free
+    /// clock, or one that hasn't run since it was set.
+    fn free_run(&self) -> Option<FreeRun> {
+        let ft = &self.free_time;
+        let c = ft.clock?;
+        if c.running {
+            return Some(FreeRun {
+                clock: c,
+                since: ft.jump,
+                until: None,
+            });
+        }
+        let (clock, _, until) = ft.ran.filter(|r| r.1 == ft.gen)?;
+        Some(FreeRun {
+            clock,
+            since: ft.jump,
+            until: Some(until),
+        })
+    }
+
+    /// Whose bar lines a capture into an empty loop on `clock` takes: the
+    /// song's for a song loop, and for a free loop while no free clock is
+    /// set (the free clock is then set from them); the free clock's run
+    /// for a free loop while one is ([`Looper::free_run`]). None while the
+    /// free clock there is hasn't run (its free loops would not hear the
+    /// bars).
+    fn capture_bars(&self, clock: Clock) -> Option<CaptureBars> {
+        match (clock, self.free_time.clock) {
+            (Clock::Song, _) | (Clock::Free, None) => Some(CaptureBars::Song),
+            (Clock::Free, Some(_)) => self.free_run().map(CaptureBars::Free),
+        }
+    }
+
+    /// The bar line a capture into an empty loop on `clock` ends on
+    /// ([`Looper::capture_bars`]), and whether it is still to come: with
+    /// `to`, the one heard on that tick, else the last one heard, or the
+    /// one coming in a bar's last beat. None with no such line.
+    fn capture_end(&self, clock: Clock, to: Option<Tick>) -> Option<(CaptureEnd, bool)> {
+        match self.capture_bars(clock)? {
+            CaptureBars::Song => match to {
+                None => {
+                    let wait = self.heard.in_last_beat();
+                    match (self.heard.lines(), wait) {
+                        (n, true) => Some((CaptureEnd::Song(n), true)),
+                        (0, false) => None,
+                        (n, false) => Some((CaptureEnd::Song(n - 1), false)),
+                    }
+                }
+                Some(t) => self.heard.line_at(t).map(|i| (CaptureEnd::Song(i), false)),
+            },
+            CaptureBars::Free(run) => {
+                let at = self.heard.at();
+                let free = |end| CaptureEnd::Free {
+                    end,
+                    gen: self.free_time.gen,
+                    since: run.since,
+                };
+                match to {
+                    None => match run.coming_line(at) {
+                        Some(coming) => Some((free(coming), true)),
+                        None => run.last_line(at).map(|(t, _)| (free(t), false)),
+                    },
+                    Some(t) => run.line_heard(t, at).map(|_| (free(t), false)),
+                }
+            }
+        }
+    }
+
+    /// `bars` whole bars of the free clock's `run` ending on its bar line
+    /// on tick `end`, read `latency` late: fewer (halving) as
+    /// [`Heard::take`] gives them. None unless that line was heard in the
+    /// run.
+    fn free_take(&self, run: &FreeRun, end: Tick, bars: u32, latency: u32) -> Option<Take> {
+        let e = run.line_heard(end, self.heard.at())?;
+        let c = &run.clock;
+        let bar = c.meter.bar_ticks().max(1);
+        let mut k = bars.max(1);
+        loop {
+            let start = end - i64::from(k) * bar;
+            if let Some(t) = c
+                .frame_of(start)
+                .filter(|&f| f >= run.since)
+                .and_then(|f| self.heard.take_lines((start, f), (end, e), k, latency))
+            {
+                return Some(t);
+            }
+            if k == 1 {
+                return None;
+            }
+            k /= 2;
+        }
+    }
+
     /// Capture into loop `s` ([`Command::Capture`]): it waits for its bar
     /// line (the last one heard, or, pressed in a bar's last beat, the one
     /// coming); [`Looper::tend_captures`] takes it from there.
@@ -4295,30 +5430,18 @@ impl Looper {
     /// one coming, in a bar's last beat), or on the one heard on tick
     /// `to`.
     fn start_capture(&mut self, s: usize, bars: u32, to: Option<Tick>) {
-        let (end, wait) = match to {
-            None => {
-                let wait = self.heard.in_last_beat();
-                let lines = self.heard.lines();
-                match (lines, wait) {
-                    (_, true) => (Some(lines), true),
-                    (0, false) => (None, false),
-                    (n, false) => (Some(n - 1), false),
-                }
-            }
-            Some(t) => (self.heard.line_at(t), false),
-        };
-        let l = &mut self.loops[s];
-        let Some(end) = end.filter(|_| {
-            l.phase == Phase::Empty
-                && !l.clearing
-                && !l.loading
-                && !l.adding
-                && self.loads[s].is_none()
-                && bars > 0
-        }) else {
+        let l = &self.loops[s];
+        let empty = l.phase == Phase::Empty
+            && !l.clearing
+            && !l.loading
+            && !l.adding
+            && self.loads[s].is_none()
+            && bars > 0;
+        let Some((end, wait)) = self.capture_end(l.clock, to).filter(|_| empty) else {
             self.stats.refused += 1;
             return;
         };
+        let l = &mut self.loops[s];
         l.capture = Some(Capture {
             bars,
             end,
@@ -4345,29 +5468,64 @@ impl Looper {
     /// or None once it copies in or is refused.
     fn tend_capture(&mut self, k: usize, mut c: Capture) -> Option<Capture> {
         let h = &self.heard;
-        if c.wait {
-            if h.lines() > c.end {
-                c.wait = false;
-            } else if h.playing() {
-                return Some(c);
-            } else if c.end > 0 {
-                // The song stopped before that bar line: the bars before.
-                c.wait = false;
-                c.end -= 1;
-            } else {
-                self.stats.refused += 1;
-                return None;
+        let latency = self.loops[k].latency;
+        let take = match c.end {
+            CaptureEnd::Song(mut end) => {
+                if c.wait {
+                    if h.lines() > end {
+                        c.wait = false;
+                    } else if h.playing() {
+                        return Some(c);
+                    } else if end > 0 {
+                        // The song stopped before that bar line: the bars
+                        // before.
+                        c.wait = false;
+                        end -= 1;
+                        c.end = CaptureEnd::Song(end);
+                    } else {
+                        self.stats.refused += 1;
+                        return None;
+                    }
+                }
+                c.take.or_else(|| h.take(end, c.bars, latency))
             }
-        }
-        let Some(t) = c
-            .take
-            .or_else(|| h.take(c.end, c.bars, self.loops[k].latency))
-        else {
+            CaptureEnd::Free {
+                mut end,
+                gen,
+                since,
+            } => {
+                // Its bars are the free clock's run they were heard in: not
+                // once it has started again or another clock is set.
+                let Some(run) = self
+                    .free_run()
+                    .filter(|r| self.free_time.gen == gen && r.since == since)
+                else {
+                    self.stats.refused += 1;
+                    return None;
+                };
+                if c.wait {
+                    match run.line_heard(end, h.at()) {
+                        Some(_) => c.wait = false,
+                        None if run.until.is_none() => return Some(c),
+                        None => {
+                            // The free loops stopped before that bar line:
+                            // the bars before.
+                            c.wait = false;
+                            end -= run.clock.meter.bar_ticks().max(1);
+                            c.end = CaptureEnd::Free { end, gen, since };
+                        }
+                    }
+                }
+                c.take
+                    .or_else(|| self.free_take(&run, end, c.bars, latency))
+            }
+        };
+        let Some(t) = take else {
             self.stats.refused += 1;
             return None;
         };
         c.take = Some(t);
-        if h.at() < t.start + t.frames as u64 {
+        if self.heard.at() < t.start + t.frames as u64 {
             // Its last frames are still to be heard.
             return Some(c);
         }
@@ -4375,6 +5533,23 @@ impl Looper {
         if self.store.available() < need {
             self.stats.refused += 1;
             return None;
+        }
+        // A free loop takes the free clock its bars were on; with none, the
+        // song's bars set it, as a free loop recorded with the song does.
+        if self.loops[k].clock == Clock::Free {
+            match c.end {
+                CaptureEnd::Free { gen, .. } => self.loops[k].clock_gen = gen,
+                CaptureEnd::Song(_) if self.free_time.clock.is_none() => {
+                    self.set_free_clock_from(&t, latency);
+                    self.loops[k].clock_gen = self.free_time.gen;
+                }
+                // Another free loop set it meanwhile, maybe at another
+                // tempo: the song's bars can't go on it.
+                CaptureEnd::Song(_) => {
+                    self.stats.refused += 1;
+                    return None;
+                }
+            }
         }
         // It takes the place of the loop kept for Undo.
         self.store.drop_kept(k);
@@ -4403,6 +5578,49 @@ impl Looper {
         None
     }
 
+    /// The free clock set from the song's bars `t` that a free loop
+    /// captured (read `latency` late), bar 1 on their start: a copy of the
+    /// song's clock while the song still plays on the one they were on,
+    /// so the loop plays sample for sample as a song loop would until the
+    /// song stops or changes; else at the tempo their frames make, running
+    /// on from their end while the song plays, or with the song stopped,
+    /// stopped on its bar 1 (the loop waits for Play, as a song loop
+    /// captured then waits for PLAY).
+    fn set_free_clock_from(&mut self, t: &Take, latency: u32) {
+        let first = t.start - u64::from(latency);
+        let end = (first + t.frames as u64, t.origin + t.ticks);
+        let song = self.last_span.filter(|sp| {
+            sp.state.rolling()
+                && sp.frame_of(t.origin as f64) == first
+                && sp.frame_of(end.1 as f64) == end.0
+        });
+        let (c, from) = match song {
+            Some(sp) => (FreeClock::of_song(&sp, t.origin), first),
+            None => {
+                let mut c = FreeClock {
+                    anchor_frame: end.0,
+                    anchor_tick: end.1,
+                    bpm: t.ticks as f64 * 60.0 * f64::from(self.rate)
+                        / (f64::from(PPQ) * t.frames.max(1) as f64),
+                    rate: self.rate,
+                    meter: self.last_span.map(|sp| sp.meter).unwrap_or_default(),
+                    running: true,
+                    top: t.origin,
+                };
+                if !self.last_span.is_some_and(|sp| sp.state.rolling()) {
+                    c.stop();
+                }
+                (c, end.0)
+            }
+        };
+        let ft = &mut self.free_time;
+        ft.gen = ft.gen.wrapping_add(1);
+        ft.clock = Some(c);
+        ft.kept = None;
+        ft.cue = None;
+        ft.jump = from;
+    }
+
     /// Start a layer's copy between loops ([`Looper::copy_layer`]).
     fn start_copy(&mut self, from: usize, id: u8, to: usize, keep: bool) {
         let slot = id as usize;
@@ -4421,7 +5639,13 @@ impl Looper {
             && !dst.loading
             && !dst.adding
             && self.loads[to].is_none();
-        let onto = free(dst) && dst.len_ticks == src.len_ticks && dst.in_order < MAX_LAYERS - 1;
+        // Onto a loop on the same clock (the same free clock, for free
+        // loops) and as long; an empty loop becomes one like the source.
+        let onto = free(dst)
+            && dst.len_ticks == src.len_ticks
+            && dst.clock == src.clock
+            && (src.clock == Clock::Song || dst.clock_gen == src.clock_gen)
+            && dst.in_order < MAX_LAYERS - 1;
         if from == to || !free(src) || !(empty || onto) {
             self.stats.refused += 1;
             return;
@@ -4429,6 +5653,7 @@ impl Looper {
         let s = src.slots[slot];
         let (len, ticks, origin, layers) = (src.len, src.len_ticks, src.origin, src.layers());
         let (speed, rate) = (src.speed, src.rate);
+        let (clock, clock_gen) = (src.clock, src.clock_gen);
         let l = &mut self.loops[to];
         let k = if empty {
             // The layer's loop takes the place of one kept for Undo.
@@ -4446,9 +5671,12 @@ impl Looper {
         };
         let frames = if empty { len } else { l.len };
         if empty {
-            // It takes the layer's loop's speed with its length.
+            // It takes the layer's loop's speed with its length, and its
+            // clock.
             l.speed = speed;
             l.rate = rate;
+            l.clock = clock;
+            l.clock_gen = clock_gen;
         }
         let mut new = Slot {
             valid: (0, frames),
@@ -4885,6 +6113,9 @@ impl Loop {
                 | Command::SetBars(_)
                 | Command::SetAfter(_)
                 | Command::SetStarts(_)
+                | Command::SetClock(_)
+                | Command::FreeStop
+                | Command::FreePlay
                 | Command::Played(_)
                 | Command::StartsByEar(_)
                 | Command::TempoFromLoop(_)
@@ -4983,8 +6214,18 @@ impl Loop {
                     self.unhear();
                 }
             }
+            Command::SetClock(c) => {
+                if self.phase == Phase::Empty && !self.loading && !self.adding && !self.capturing()
+                {
+                    self.clock = c;
+                } else if c != self.clock {
+                    stats.refused += 1;
+                }
+            }
             // The looper hands these to every loop.
-            Command::Played(_)
+            Command::FreeStop
+            | Command::FreePlay
+            | Command::Played(_)
             | Command::StartsByEar(_)
             | Command::TempoFromLoop(_)
             | Command::TempoMeant(_)
@@ -6133,6 +7374,7 @@ impl Loop {
         self.lead = 0;
         self.fill = None;
         self.free = false;
+        self.stop_close = false;
         self.forget_smart();
     }
 
@@ -6270,6 +7512,21 @@ impl Loop {
             stats.refused += 1;
         }
         self.snap_done = Some(SnapDone { plan: p, landed });
+    }
+
+    /// The snap waiting can't land (a free loop's, the free loops stopped
+    /// before its frame): said ([`SnapDone`]) and counted.
+    #[cold]
+    #[inline(never)]
+    fn drop_snap(&mut self, stats: &mut Stats) {
+        self.snap_frame = u64::MAX;
+        if let Some(plan) = self.snap.take() {
+            stats.refused += 1;
+            self.snap_done = Some(SnapDone {
+                plan,
+                landed: false,
+            });
+        }
     }
 
     fn abort(&mut self, stats: &mut Stats) {
@@ -6903,6 +8160,10 @@ impl Loop {
         self.od_handoff = false;
         self.od_layer = k;
         self.od_in = 0;
+        self.od_q = 0;
+        self.od_y = [0.0; 2];
+        self.od_rise = FADE;
+        self.od_fresh_from = 0;
         self.od_fade = fade;
         self.od_stop_in = None;
         self.od_once = self.overdubs == Overdubs::Once;
@@ -6996,7 +8257,14 @@ impl Loop {
     /// writer to finish (it runs `latency` frames behind, so this input is
     /// still the first pass), and while the transport is stopped (Overdub
     /// pressed before Play); it fades out when the transport stops.
-    fn overdub_frame(&mut self, store: &mut Store, me: usize, x: [f32; 2], playing: bool) {
+    fn overdub_frame(
+        &mut self,
+        store: &mut Store,
+        stats: &mut Stats,
+        me: usize,
+        x: [f32; 2],
+        playing: bool,
+    ) {
         if self.first_open {
             return;
         }
@@ -7010,7 +8278,7 @@ impl Loop {
             }
             self.od_stop_in = Some(0);
         }
-        self.write_overdub(store, me, x);
+        self.write_overdub(store, stats, me, x);
     }
 
     /// Smart loop end's Auto with Then: Overdub, at the overdub's first
@@ -7064,13 +8332,37 @@ impl Loop {
         self.handoffs += 1;
     }
 
-    fn write_overdub(&mut self, store: &mut Store, me: usize, x: [f32; 2]) {
+    /// The overdub writer's frame: input `x` on the loop frame `latency`
+    /// before the playhead. A layer plays only the frames its overdub
+    /// recorded (`Slot::valid`, one stretch from where it began), never
+    /// what a reused block held before, so the writer goes from frame to
+    /// frame of the loop, whatever the song's tempo: the song slower than
+    /// the loop was recorded brings it to a frame again (the frame keeps
+    /// the input it took first), faster takes it past frames (they take
+    /// what lies between the inputs either side), and a jump goes to
+    /// [`Loop::od_jump`]. At the loop's own tempo it moves a frame a frame.
+    fn write_overdub(&mut self, store: &mut Store, stats: &mut Stats, me: usize, x: [f32; 2]) {
         let len = self.len;
+        let q = ((self.pos - f64::from(self.latency))
+            .rem_euclid(len as f64)
+            .round() as usize)
+            % len;
+        // The loop frames on from the one it wrote last.
+        let was = self.od_q;
+        let mut step = if q >= was { q - was } else { q + len - was };
+        if self.slots[self.od_layer].valid.1 > 0 && step > MAX_STEP {
+            if !self.od_jump(store, stats, me, q) {
+                return;
+            }
+            step = 1;
+        }
+        let k = self.od_layer;
         // One pass: it punches out `latency` frames early, so that its
-        // fade-out starts on the frame it started on.
+        // fade-out starts on the frame it started on (counted in the loop
+        // frames it has recorded).
         if self.od_once
             && self.od_stop_in.is_none()
-            && self.od_in >= len.saturating_sub(self.latency as usize).max(1)
+            && self.slots[k].valid.1 >= len.saturating_sub(self.latency as usize).max(1)
         {
             self.punch_out();
         }
@@ -7079,6 +8371,11 @@ impl Loop {
         } else {
             1.0
         };
+        // Fading in where the song jumped it to.
+        if self.od_rise < FADE {
+            g = g.min((self.od_rise as f32 + 0.5) * STEP);
+            self.od_rise += 1;
+        }
         self.od_in += 1;
         self.od_peak = self.od_peak.max(x[0].abs()).max(x[1].abs());
         let mut last = false;
@@ -7091,43 +8388,144 @@ impl Loop {
             Some(left) => self.od_stop_in = Some(left - 1),
             None => {}
         }
-        let q = ((self.pos - f64::from(self.latency))
-            .rem_euclid(len as f64)
-            .round() as usize)
-            % len;
-        let k = self.od_layer;
-        let (start, count) = self.slots[k].valid;
         let y = [x[0] * g, x[1] * g];
-        if count == 0 {
+        let first = self.slots[k].valid.1 == 0;
+        if first {
             if self.od_handoff {
                 self.hand_off(store, me, q, x, y);
             } else {
                 self.slots[k].valid = (q, 1);
                 store.set(me, k, q, y);
             }
-        } else if count < len {
-            self.slots[k].valid = (start, count + 1);
-            store.set(me, k, q, y);
-        } else if self.slots[k].replace.is_some() {
+        } else if step == 1 {
+            self.od_put(store, me, q, y, g);
+        } else if step > 1 {
+            let y0 = self.od_y;
+            for i in 1..step {
+                let w = i as f32 / step as f32;
+                let t = if was + i >= len {
+                    was + i - len
+                } else {
+                    was + i
+                };
+                let v = [y0[0] + (y[0] - y0[0]) * w, y0[1] + (y[1] - y0[1]) * w];
+                self.od_put(store, me, t, v, g);
+            }
+            self.od_put(store, me, q, y, g);
+        }
+        if first || step != 0 {
+            self.od_q = q;
+            self.od_y = y;
+        }
+        if last {
+            self.close_overdub(store, me);
+        }
+    }
+
+    /// Frame `t` of the overdub's layer takes `y`, its input at gain `g`:
+    /// the frame after what it has recorded, or, once it has gone round
+    /// the loop or the song took it back, a frame it recorded before, which
+    /// it adds to (over a Replace's earlier passes it crossfades, and Fade
+    /// old keeps their share).
+    #[inline]
+    fn od_put(&mut self, store: &mut Store, me: usize, t: usize, y: [f32; 2], g: f32) {
+        let (len, k) = (self.len, self.od_layer);
+        let (start, count) = self.slots[k].valid;
+        if count < len {
+            let end = if start + count >= len {
+                start + count - len
+            } else {
+                start + count
+            };
+            if t == end {
+                self.slots[k].valid = (start, count + 1);
+                store.set(me, k, t, y);
+                return;
+            }
+            // Back over what it recorded: the song jumped back.
+            self.od_fresh_from = count;
+        }
+        if self.slots[k].replace.is_some() {
             // Replace: a later pass takes the place of the earlier ones,
             // crossfading into them as it fades out.
-            let was = store.get(me, k, q);
+            let was = store.get(me, k, t);
             store.set(
                 me,
                 k,
-                q,
+                t,
                 [was[0] * (1.0 - g) + y[0], was[1] * (1.0 - g) + y[1]],
             );
         } else if self.fade_old < 1.0 {
             // Fade old: this layer's earlier passes keep their share.
-            let was = store.get(me, k, q);
+            let was = store.get(me, k, t);
             let f = self.fade_old;
-            store.set(me, k, q, [was[0] * f + y[0], was[1] * f + y[1]]);
+            store.set(me, k, t, [was[0] * f + y[0], was[1] * f + y[1]]);
         } else {
-            store.add(me, k, q, y);
+            store.add(me, k, t, y);
         }
-        if last {
-            self.close_overdub(store, me);
+    }
+
+    /// The song jumped under the overdub (a locate, or the song's loop
+    /// going round where this loop doesn't fit it), to loop frame `q`.
+    /// Into what it has recorded, or on from its end, it records on there,
+    /// fading in and adding to what it recorded, and what it recorded last
+    /// fades out where it was. Past what it has recorded, before it has
+    /// gone round the loop, a layer would hold frames it never recorded:
+    /// it ends where it was (faded out), and a new overdub records from
+    /// the new place, as Overdub pressed twice would (Once, or punching
+    /// out already, it just ends). Hardly begun (under a fade), it starts
+    /// again at the new place. False if it ended and records nothing more.
+    #[cold]
+    #[inline(never)]
+    fn od_jump(&mut self, store: &mut Store, stats: &mut Stats, me: usize, q: usize) -> bool {
+        let (len, k) = (self.len, self.od_layer);
+        let (start, count) = self.slots[k].valid;
+        self.od_rise = 0;
+        if count >= len {
+            return true;
+        }
+        let d = if q >= start {
+            q - start
+        } else {
+            q + len - start
+        };
+        let ending = self.od_stop_in.is_some();
+        if d <= count && !ending {
+            self.fade_back(store, me);
+            return true;
+        }
+        if count < FADE && !ending {
+            self.slots[k].valid = (0, 0);
+            self.od_fresh_from = 0;
+            return true;
+        }
+        self.fade_back(store, me);
+        let again = !ending && !self.od_once;
+        self.close_overdub(store, me);
+        if again {
+            self.open_overdub(store, stats, me, FADE);
+        }
+        self.od_open
+    }
+
+    /// What the overdub recorded last, up to where it is, fades out there,
+    /// as a punch-out fades it: the song jumped it elsewhere. Only frames
+    /// it recorded once (where it went back over what it recorded, what
+    /// it added to is left as it is).
+    #[cold]
+    fn fade_back(&mut self, store: &mut Store, me: usize) {
+        let (len, k) = (self.len, self.od_layer);
+        let (start, count) = self.slots[k].valid;
+        if count == 0 || count >= len || self.od_q != (start + count - 1) % len {
+            return;
+        }
+        let n = self.od_out_len.min(count - self.od_fresh_from.min(count));
+        let last = self.od_q;
+        for i in 0..n {
+            let t = if last >= i { last - i } else { last + len - i };
+            let w = (i as f32 + 0.5) / n as f32;
+            let v = store.get(me, k, t);
+            store.set(me, k, t, [v[0] * w, v[1] * w]);
         }
     }
 
@@ -7239,7 +8637,7 @@ impl Loop {
             ys[j][0] += v[0];
             ys[j][1] += v[1];
             if self.od_open {
-                self.overdub_frame(store, me, x, r.playing);
+                self.overdub_frame(store, stats, me, x, r.playing);
             }
             j += 1;
         }

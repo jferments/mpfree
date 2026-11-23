@@ -102,6 +102,7 @@
 44852	Limiter
 98264	Limiter (true peak)
 221974	Lo-fi
+129410	Looper (60 s), 4 free loops of 2 layers playing on, the song stopped
 294259	Looper (60 s), 8 loops of 3 layers playing
 417853	Looper (60 s), 8 loops of 3 layers playing, half edited
 34896	Looper (60 s), a free first pass by ear with Auto
@@ -187,24 +188,25 @@
 12921	Ring mod
 145867	Room reverb
 108213	Rotary
-560208	Sampler x16 held
-1515282	Sampler x16 held up
-1764508	Sampler x16 held up, 16-bit sound
-610813	Sampler x16 held, 16-bit sound
-1336420	Sampler x16 held, LFO and pitch envelope
+617430	Sampler x16 held
+1587200	Sampler x16 held up
+1838424	Sampler x16 held up, 16-bit sound
+669942	Sampler x16 held, 16-bit sound
+1489849	Sampler x16 held, LFO and pitch envelope
 881875	Sampler x16 held, comb
-1560743	Sampler x16 held, driven ladder
-665313	Sampler x16 held, vowel
-1453656	Sampler, 20 pads
-2036444	Sampler, 20 pads + master grains
-78172	Sampler, 4 drum kits, 64 voices
-40641	Sampler, drum kit, 24 voices
-43007	Sampler, drum kit, 24 voices, 16-bit sounds
-80116	Sampler, drum kit, 64 voices
-842186	Sampler, the 16 sample pads alone
+1794930	Sampler x16 held, driven ladder
+721696	Sampler x16 held, vowel
+488150	Sampler x4 held, 4 layers each
+1402092	Sampler, 20 pads
+1985137	Sampler, 20 pads + master grains
+80602	Sampler, 4 drum kits, 64 voices
+42339	Sampler, drum kit, 24 voices
+44830	Sampler, drum kit, 24 voices, 16-bit sounds
+82504	Sampler, drum kit, 64 voices
+802604	Sampler, the 16 sample pads alone
 630801	Sampler, the 4 granular pads alone
 5519410	Song view: 4,096 blocks, a frame while the song plays
-4085464	Song: sampler, 2 synths, mixer+FX, time, looper
+4034169	Song: sampler, 2 synths, mixer+FX, time, looper
 261927	Sound Keys Init with Ensemble, 8 voices
 137967	Spring reverb
 58563	Squelch Acid Line, a line
@@ -234,7 +236,7 @@
 87944	Tape delay
 8952	Time with trig conditions and ratchets, 8 clips, arp
 29520	Time: 16 tracks of ratchets, 8 locks a step
-43626	Time: 8 clips, 4 tracks 90 ms ahead
+45814	Time: 8 clips, 4 tracks 90 ms ahead
 15539	Time: recording 3 armed tracks, 8 clips
 9378	Time: transport, 8 clips, arp
 61662	Track host alone, 16 tracks, 8 events each per block

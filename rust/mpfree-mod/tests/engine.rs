@@ -1400,3 +1400,66 @@ fn the_xy_pads_host_sources_push_both_ways() {
     assert!(!text.contains(&format!("host{n}")), "{text}");
     assert!(text.contains("row.0 = lfo0"), "{text}");
 }
+
+/// The XY pad's Set recorded over a running LFO plays back as heard (the
+/// XY plan's phase 3): what records is the hand's value, not the
+/// setting's, and a lane plays where the hand did, under the matrix, so
+/// the LFO adds on top of the lane exactly as it did on top of the hand.
+#[test]
+fn a_hands_moves_played_back_as_a_lane_over_an_lfo_sound_the_same() {
+    let lfo = |e: &mut ModEngine| {
+        e.add_row(Row {
+            source: Source::Lfo(0),
+            via: None,
+            target: mix(),
+            depth: 0.25,
+        })
+        .unwrap();
+    };
+    // A gesture: 30 % up to 70 % over half a second, every 10 ms.
+    let moves: Vec<(u64, f32)> = (0..50)
+        .map(|i| (4_800 + i * 480, 30.0 + 40.0 * i as f32 / 49.0))
+        .collect();
+    let mut live = engine();
+    lfo(&mut live);
+    let hand: Vec<(u64, ModEvent)> = moves
+        .iter()
+        .map(|&(at, value)| {
+            (
+                at,
+                ModEvent::Touch {
+                    addr: mix(),
+                    value,
+                    over_locks: false,
+                },
+            )
+        })
+        .collect();
+    let heard = run(&mut live, 33_600, 128, &hand, None);
+    let mut again = engine();
+    lfo(&mut again);
+    let lane: Vec<(u64, ModEvent)> = moves
+        .iter()
+        .map(|&(at, value)| (at, ModEvent::Lane { addr: mix(), value }))
+        .collect();
+    let played = run(&mut again, 33_600, 128, &lane, None);
+    let of = |log: &Log| -> Vec<(u64, f32)> {
+        log.iter()
+            .filter(|x| x.1 == mix() && x.0 >= 4_800)
+            .map(|x| (x.0, x.2))
+            .collect()
+    };
+    assert!(of(&heard).len() > 100, "the LFO moves it every tick");
+    assert_eq!(of(&played), of(&heard));
+    // And the LFO is in it: past the last move the hand holds 70 %, and
+    // what sounds sweeps around it.
+    let tail: Vec<f32> = of(&heard)
+        .iter()
+        .filter(|x| x.0 > 28_320)
+        .map(|x| x.1)
+        .collect();
+    assert!(
+        tail.len() > 10 && tail.iter().all(|v| (v - 70.0).abs() > 5.0),
+        "{tail:?}"
+    );
+}

@@ -430,6 +430,12 @@ impl ModMix {
         true
     }
 
+    /// Whether a newer gesture (a knob turned) took `addr` from the XY
+    /// pad's, so the pad's moves of it play nothing until its let-go.
+    pub fn pad_lost(&self, addr: ParamAddr) -> bool {
+        self.hands.lost(Hand::Pad, addr)
+    }
+
     /// The XY pad lets go of `addr` over `frames` (Go back:
     /// `ModEvent::LetGo`), if it still holds it.
     pub fn pad_let_go(&mut self, addr: ParamAddr, frames: u32) {

@@ -9,7 +9,10 @@
 //! start when you play (by ear and on a pad, the song stopped, playing and
 //! counting in, a start refused); and free first passes that set the
 //! tempo (on the bar and from a note, closed too soon, one thrown away by
-//! PLAY).
+//! PLAY); and free loops (the free clock set from the song and in your
+//! own time, the song stopping under them, STOP and PLAY, their own Stop
+//! and Play, a free loop from a note, Clear and Undo of the last one, a
+//! free loop's snap and a capture on the free clock's bars).
 //!
 //! This test file is its own program, so its global allocator (the only
 //! unsafe code here, a pass-through to the system allocator) does not
@@ -21,7 +24,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 use mpfree_looper::{
-    After, Command as L, Edit as E, LayerCommand as Lc, Looper, NoteStart, Overdubs, Phase,
+    After, Clock, Command as L, Edit as E, LayerCommand as Lc, Looper, NoteStart, Overdubs, Phase,
     SmartEnd, Snap, SnapPlan, Starts, MAX_LOOPS,
 };
 use mpfree_transport::{Block, Command as T, Transport};
@@ -659,6 +662,250 @@ fn free_pass_without_allocating(mode: SmartEnd) {
         assert!(l.stats().handoffs >= 1, "{:?}", l.stats());
     }
     assert!(l.stats().aborted >= 1, "PLAY threw one away");
+}
+
+/// Free loops ([`Clock::Free`]): one recorded with the song sets the free
+/// clock from it and plays on when the song stops; STOP again stops it
+/// and PLAY starts it; their own Stop and Play, with the song playing (on
+/// its bar line) and stopped; a second free loop on the free clock's bars;
+/// both cleared (the clock goes) and one brought back with Undo (and the
+/// clock with it); one in your own time setting a new clock; one started
+/// by a note on the free clock's bar line: at every period size, without
+/// allocating.
+#[test]
+fn free_loops_never_allocate() {
+    const RATE: u32 = 44_100;
+    let mut t = Transport::new(RATE, 120.0).unwrap();
+    let mut l = Looper::new(RATE, 40);
+    let mut b = Block::new();
+    let mut input = vec![0.0f32; 2 * 4096];
+    let mut out = vec![0.0f32; 2 * 4096];
+    let sizes = [1usize, 7, 128, 333, 4096, 64, 256];
+    // What was seen: the free clock set from the song (at its tempo), the
+    // free loops playing on with the song stopped, the clock stopped,
+    // gone, back, and set in your own time; and which loops played.
+    let mut from_song = false;
+    let mut on_alone = false;
+    let mut stopped = false;
+    let mut gone = false;
+    let mut back = false;
+    let mut own_time = false;
+    let mut playing = 0u32;
+    let mut overdubbed = false;
+    let mut undone = false;
+    watch(true);
+    for k in 0..4 {
+        let _ = l.select_loop(k);
+        let _ = l.command(L::SetClock(Clock::Free));
+        let _ = l.command(L::SetBars(Some(1)));
+    }
+    let _ = l.select_loop(0);
+    let _ = l.command(L::Record);
+    let _ = t.command(0, T::Play);
+    for i in 0..4200u64 {
+        let f = t.frame();
+        match i {
+            // The song stops: loop 0 plays on. STOP again stops it; PLAY
+            // starts the song and it.
+            500 => {
+                let _ = t.command(f, T::Stop);
+            }
+            700 => {
+                let _ = t.command(f, T::Stop);
+            }
+            800 => {
+                let _ = t.command(f, T::Play);
+            }
+            // Stop and Play for the free loops while the song plays: Play
+            // waits for the song's bar line.
+            1000 => {
+                let _ = l.command(L::FreeStop);
+            }
+            1050 => {
+                let _ = l.command(L::FreePlay);
+            }
+            // Loop 1 on the free clock's bars, until a tap.
+            1300 => {
+                let _ = l.select_loop(1);
+                let _ = l.command(L::SetBars(None));
+                let _ = l.command(L::Record);
+            }
+            1500 => {
+                let _ = l.command(L::Record);
+            }
+            // The song stops; both cleared (the free clock goes), and loop
+            // 1 back with Undo (the clock with it); STOP stops them.
+            1700 => {
+                let _ = t.command(f, T::Stop);
+                let _ = l.command(L::Clear);
+                let _ = l.select_loop(0);
+                let _ = l.command(L::Clear);
+            }
+            1800 => {
+                let _ = l.select_loop(1);
+                let _ = l.command(L::Undo);
+            }
+            2000 => {
+                let _ = t.command(f, T::Stop);
+            }
+            // Cleared again; loop 2 in your own time, which sets a new
+            // free clock.
+            2100 => {
+                let _ = l.command(L::Clear);
+            }
+            2200 => {
+                let _ = l.select_loop(2);
+                let _ = l.command(L::SetBars(None));
+                let _ = l.command(L::Record);
+            }
+            2400 => {
+                let _ = l.command(L::Record);
+            }
+            // Loop 3 waits for a note, and starts on the free clock's bar
+            // line nearest it.
+            2600 => {
+                let _ = l.select_loop(3);
+                let _ = l.command(L::SetStarts(Starts::Play));
+                let _ = l.command(L::Record);
+            }
+            2700 => {
+                let _ = l.command(L::Played(f));
+            }
+            // Their own Stop and Play with the song stopped, at once; then
+            // the song plays beside them, and loop 3 takes an overdub,
+            // undone, and is cleared.
+            3000 => {
+                let _ = l.command(L::FreeStop);
+            }
+            3100 => {
+                let _ = l.command(L::FreePlay);
+            }
+            3300 => {
+                let _ = t.command(f, T::Play);
+            }
+            3400 | 3500 => {
+                let _ = l.command(L::Overdub);
+            }
+            3600 => {
+                let _ = l.command(L::Undo);
+            }
+            3800 => {
+                let _ = l.command(L::Clear);
+            }
+            _ => {}
+        }
+        let n = sizes[(i % sizes.len() as u64) as usize];
+        for k in 0..n {
+            let x = 0.2 * (((i as usize + k) % 23) as f32 - 11.0) / 11.0;
+            input[2 * k] = x;
+            input[2 * k + 1] = -x;
+        }
+        out[..2 * n].fill(0.0);
+        assert!(t.process(n as u32, &mut b));
+        l.process(&b, &input[..2 * n], &mut out[..2 * n]);
+        let song_stopped = t.state() == mpfree_transport::State::Stopped;
+        match l.free_clock() {
+            Some(c) => {
+                from_song |= c.bpm == 120.0 && c.running && !song_stopped;
+                on_alone |= c.running && song_stopped && i < 1700;
+                stopped |= !c.running;
+                back |= gone && i < 2100;
+                own_time |= c.bpm != 120.0 && c.running;
+            }
+            None => gone |= i >= 1700,
+        }
+        for k in 0..4 {
+            let s = l.loop_status(k).unwrap();
+            playing |= u32::from(s.phase == Phase::Playing) << k;
+            if k == 3 {
+                overdubbed |= s.layers == 2;
+                undone |= overdubbed && s.layers == 1 && s.redo == 1;
+            }
+        }
+        let _ = l.take_tempo();
+        let _ = l.stats();
+    }
+    watch(false);
+    assert_eq!(calls(), 0, "allocated with free loops");
+    assert!(
+        from_song && on_alone && stopped && gone && back && own_time,
+        "{from_song} {on_alone} {stopped} {gone} {back} {own_time}"
+    );
+    assert_eq!(playing, 0b1111, "loops playing: {playing:b}");
+    assert!(overdubbed && undone, "loop 3 overdubbed and undone");
+    assert_eq!(l.loop_status(3).unwrap().phase, Phase::Empty, "and cleared");
+    assert_eq!(l.loop_status(2).unwrap().phase, Phase::Playing);
+    assert!(l.free_clock().is_some_and(|c| c.running));
+    assert_eq!(l.stats().refused, 0, "{:?}", l.stats());
+}
+
+/// A free loop read as other bars (a snap that changes the free clock's
+/// tempo on its downbeat), then a capture into another free loop on the
+/// free clock's bars, asked about first as What you played asks, at odd
+/// period sizes: nothing allocates.
+#[test]
+fn free_snaps_and_captures_never_allocate() {
+    const RATE: u32 = 44_100;
+    let mut t = Transport::new(RATE, 120.0).unwrap();
+    let mut l = Looper::new(RATE, 40);
+    let mut b = Block::new();
+    let mut input = vec![0.0f32; 2 * 4096];
+    let mut out = vec![0.0f32; 2 * 4096];
+    let mut lines = [(0i64, 0u64); 16];
+    let sizes = [1usize, 7, 128, 333, 4096, 64, 256];
+    let (mut planned, mut landed, mut took, mut captured) = (false, false, false, false);
+    watch(true);
+    // The song stopped: a free pass in your own time sets the free clock.
+    let _ = l.command(L::SetClock(Clock::Free));
+    let _ = l.command(L::SetBars(None));
+    let _ = l.command(L::Record);
+    for i in 0..2400u64 {
+        match i {
+            300 => {
+                let _ = l.command(L::Record);
+            }
+            600 => {
+                let s = l.loop_status(0).unwrap();
+                let bar = l.free_clock().unwrap().meter.bar_ticks();
+                let bars = (s.ticks / bar) as u32;
+                if let Ok(p) = l.snap_plan(0, Snap::Bars(bars + 1), t.frame()) {
+                    planned = l.snap_at(p);
+                }
+            }
+            1500 => {
+                took = l.capture_take(Clock::Free, 1).is_some();
+                let _ = l.heard_lines(Clock::Free, &mut lines);
+                let _ = l.capture_waits(Clock::Free);
+                let _ = l.select_loop(1);
+                let _ = l.command(L::SetClock(Clock::Free));
+                let _ = l.command(L::Capture(1));
+            }
+            _ => {}
+        }
+        let n = sizes[(i % sizes.len() as u64) as usize];
+        for k in 0..n {
+            let x = 0.2 * (((i as usize + k) % 23) as f32 - 11.0) / 11.0;
+            input[2 * k] = x;
+            input[2 * k + 1] = -x;
+        }
+        out[..2 * n].fill(0.0);
+        assert!(t.process(n as u32, &mut b));
+        l.process(&b, &input[..2 * n], &mut out[..2 * n]);
+        if let Some(d) = l.take_snap() {
+            landed |= d.landed;
+        }
+        let s = l.loop_status(1).unwrap();
+        captured |= s.phase == Phase::Playing && s.clock == Clock::Free;
+        let _ = l.take_tempo();
+        let _ = l.stats();
+    }
+    watch(false);
+    assert_eq!(calls(), 0, "allocated");
+    assert!(
+        planned && landed && took && captured,
+        "{planned} {landed} {took} {captured}"
+    );
+    assert_eq!(l.stats().refused, 0, "{:?}", l.stats());
 }
 
 /// Smart loop end by ear, in Suggest and Auto: the hit track listening to

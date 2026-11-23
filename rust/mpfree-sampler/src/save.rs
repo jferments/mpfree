@@ -41,6 +41,19 @@ use crate::model::*;
 /// The first line.
 pub const FORMAT: &str = "mpfree-sampler 1";
 
+/// The pad filters' version, written as `filters` (the filter gap plan's
+/// F2 and F4; design: `docs/dev/design/fx-filter.md`). 1, or no line:
+/// saved before 23 Nov 2026, when a Cutoff was not the -3 dB point (a
+/// 4-pole low-pass at 1 kHz was 3 dB down at 435 Hz), Resonance ran
+/// linearly to Q 20 with nothing holding a loud sound back, and the filter
+/// came after the amp envelope. 2: a 4-pole band-pass was two resonant
+/// stages, so its centre rang up twice the 2-pole's in dB (64 dB at full
+/// Resonance). 3: the filters as they are now, a band-pass's centre the
+/// 2-pole's at every slope. An older kit opens with its settings as they
+/// were (the knobs mean what they say now), and a note says which of its
+/// filtered pads may sound different.
+pub const FILTERS_VERSION: u32 = 3;
+
 /// What [`from_text`] gives back.
 #[derive(Debug, Default)]
 pub struct Opened {
@@ -48,7 +61,7 @@ pub struct Opened {
     pub kits: Vec<(String, Project)>,
     /// The kit the pads were playing.
     pub kit: usize,
-    /// What was left out, and why, one line each.
+    /// What was left out or changed on the way in, and why, one line each.
     pub notes: Vec<String>,
 }
 
@@ -66,6 +79,7 @@ pub fn to_text(
     };
     w.line("kits", kits.len());
     w.line("kit", kit);
+    w.line("filters", FILTERS_VERSION);
     for (k, (name, p)) in kits.iter().enumerate() {
         w.at = format!("kit.{k}.");
         w.line("name", one_line(name));
@@ -177,16 +191,55 @@ pub fn from_text(
     let mut out = Opened::default();
     let count: usize = r.get("kits").unwrap_or(0);
     out.kit = r.get("kit").unwrap_or(0);
+    let filters: u32 = r.get("filters").unwrap_or(1);
     // Kits come from a part of at most a few MiB: a count past what the
     // text could hold is a broken file, not a reason to loop.
     for k in 0..count.min(map.len()) {
         r.at = format!("kit.{k}.");
         let name = r.text("name").unwrap_or_default();
         let p = read_kit(&mut r, &name, &mut files, read);
+        if filters < 2 && has_changed_filter(&p) {
+            r.notes.push(format!(
+                "{name}: saved before the pad filters were reworked, so its filtered \
+                 pads may sound brighter (a Cutoff is now where the sound is 3 dB down) \
+                 and more resonant, with a loud sound's ring held back; check them by ear"
+            ));
+        } else if filters < 3 && has_steep_band_pass(&p) {
+            r.notes.push(format!(
+                "{name}: saved before the band-pass slopes were reworked, so its 4-pole \
+                 band-pass pads ring less at high Resonance (their centre now peaks as \
+                 the 2-pole's does); check them by ear"
+            ));
+        }
         out.kits.push((name, p));
     }
     out.notes = r.notes;
     Ok(out)
+}
+
+/// Whether a pad of `p` has a filter type F2 changed: the low-pass,
+/// high-pass, band-pass and notch (now the Filter effect's multimode
+/// filter), and the Ladder (now before the amp envelope, and with Drive
+/// inside its twice-the-rate path). The Vowel and the Comb play as before.
+fn has_changed_filter(p: &Project) -> bool {
+    (0..PADS).filter_map(|i| p.pad(i)).any(|pad| {
+        matches!(
+            pad.filter.kind,
+            FilterKind::LowPass
+                | FilterKind::HighPass
+                | FilterKind::BandPass
+                | FilterKind::Notch
+                | FilterKind::Ladder
+        )
+    })
+}
+
+/// Whether a pad of `p` has a 4-pole band-pass, which F4 changed: its
+/// first stage is now a broad one, so its centre is the 2-pole's.
+fn has_steep_band_pass(p: &Project) -> bool {
+    (0..PADS)
+        .filter_map(|i| p.pad(i))
+        .any(|pad| pad.filter.kind == FilterKind::BandPass && pad.filter.poles >= 4)
 }
 
 fn read_kit(
@@ -669,6 +722,7 @@ const FILTERS: &[(&str, FilterKind)] = &[
     ("ladder", FilterKind::Ladder),
     ("vowel", FilterKind::Vowel),
     ("comb", FilterKind::Comb),
+    ("peak", FilterKind::Peak),
 ];
 const PRESSURE: &[(&str, PressureTarget)] = &[
     ("off", PressureTarget::Off),
@@ -1111,6 +1165,11 @@ fn visit_pad<F: Fields>(f: &mut F, p: &mut Pad) {
         lfo,
         pitch_env,
         vel_to_cutoff,
+        key_track,
+        vel_to_env,
+        vel_to_attack,
+        cutoff_random,
+        res_random,
         vel_to_pitch,
         mono,
         kind,
@@ -1194,6 +1253,12 @@ fn visit_pad<F: Fields>(f: &mut F, p: &mut Pad) {
         f.num("decay_ms", decay_ms);
     });
     f.num("vel_to_cutoff", vel_to_cutoff);
+    // Saves before the filter gap plan's F3 open with none of these.
+    f.num("key_track", key_track);
+    f.num("vel_to_env", vel_to_env);
+    f.num("vel_to_attack", vel_to_attack);
+    f.num("cutoff_random", cutoff_random);
+    f.num("res_random", res_random);
     f.num("vel_to_pitch", vel_to_pitch);
     f.scope("mono", |f| {
         let Mono {
@@ -1201,11 +1266,13 @@ fn visit_pad<F: Fields>(f: &mut F, p: &mut Pad) {
             legato,
             glide_ms,
             glide_held,
+            env_continue,
         } = mono;
         f.flag("on", on);
         f.flag("legato", legato);
         f.num("glide_ms", glide_ms);
         f.flag("glide_held", glide_held);
+        f.flag("env_continue", env_continue);
     });
     visit_kind(f, kind);
     f.flag("on_launch", on_launch);

@@ -1,34 +1,38 @@
-//! The XY pad's hand on a synth's and a pad's own settings (the XY
-//! controller plan, phase 2: "a synth's settings (locks.rs) and a pad's
+//! The XY pad's hand on a synth's, a pad's and an arp's own settings (the
+//! XY controller plan, phase 2: "a synth's settings (locks.rs) and a pad's
 //! sound (the sampler's pad locks) gain the same hand layer").
 //!
 //! A layout of yours plays the mod engine's settings straight through
 //! `ModMix` (`xy_play.rs`). A synth's settings (`Owner::Inst`: the synth
-//! on the pads, a track's own instrument) and a kit pad's own settings
-//! (`Owner::Pad`) live outside the mixer, so the pad's moves on them wait
-//! here, one entry a setting, and the sound loop hands each period's to
-//! their owners before they play ([`OwnHands::apply`], `main.rs`):
+//! on the pads, a track's own instrument), a kit pad's own settings
+//! (`Owner::Pad`) and a track's arp's (`Owner::Arp`: rate, gate, swing,
+//! octaves and the Modifier's push) live outside the mixer, so the pad's
+//! moves on them wait here, one entry a setting, and the sound loop hands
+//! each period's to their owners before they play ([`OwnHands::apply`],
+//! `main.rs`):
 //!
 //! - **While held** the pad's value plays and the setting's own value is
 //!   left alone: `locks::Under::press` for a synth's, the sampler's
-//!   `Event::PadHand` for a pad's. It holds over a step's lock while a
-//!   track records; otherwise the lock plays over it, as for the mixer.
+//!   `Event::PadHand` for a pad's, `mpfree_arp::hand` for an arp's. It
+//!   holds over a step's lock while a track records; otherwise the lock
+//!   plays over it, as for the mixer.
 //! - **Go back** glides from where the pad left it to what is underneath
 //!   as it is by then (a lock, or the setting's own value), over the
 //!   layout's glide, then lets go.
 //! - **Stay** makes the pad's value the setting's own, as a turn of its
 //!   knob would (the Synth tab's turn; a pad's own setting on its kit, as
-//!   a learned control sets it), for one UNDO step with the rest of the
-//!   lift. The hand stays on until the setting's own value has arrived (a
-//!   pad's comes back from the screen with the kit's next view), so
-//!   nothing jumps, and never longer than [`SETTLE_S`].
+//!   a learned control sets it; an arp's as a learned control sets it),
+//!   for one UNDO step with the rest of the lift. The hand stays on until
+//!   the setting's own value has arrived (a pad's comes back from the
+//!   screen with the kit's next view), so nothing jumps, and never longer
+//!   than [`SETTLE_S`].
 //! - **Letting go always goes through:** a let-go is a state on the
 //!   setting's own entry, not a message, so it never needs room in a
 //!   queue, and the table has room for a layout's settings twice over (a
 //!   new layout's while the last one's glide back).
 //!
-//! An Add setting can't push a synth's or a pad's own setting yet (they
-//! don't go through the mod engine): Setup greys Add on them
+//! An Add setting can't push a synth's, a pad's or an arp's own setting
+//! yet (they don't go through the mod engine): Setup greys Add on them
 //! (`xy_song::NO_ADD`). Nothing here allocates.
 
 use mpfree_play::mpfree_param::{Owner, ParamAddr};
@@ -41,13 +45,14 @@ pub const MAX: usize = 2 * mpfree_xy::SLOTS;
 /// value to arrive, in seconds.
 pub const SETTLE_S: f32 = 1.0;
 
-/// Whether `addr` is a synth's or a pad's own setting: one the pad's hand
-/// reaches here, not through the mod engine.
+/// Whether `addr` is a synth's, a pad's or an arp's own setting: one the
+/// pad's hand reaches here, not through the mod engine.
 pub fn is_own(addr: ParamAddr) -> bool {
-    matches!(addr.owner, Owner::Inst(_) | Owner::Pad(..))
+    matches!(addr.owner, Owner::Inst(_) | Owner::Pad(..) | Owner::Arp(_))
 }
 
-/// Where a synth's and a pad's own settings live: the sound loop's side.
+/// Where a synth's, a pad's and an arp's own settings live: the sound
+/// loop's side.
 pub trait OwnSide {
     /// The pad's hand holds `addr` at `value` (`Some`), over the locks
     /// when `over`, or lets go of it (`None`). False when nothing holds
@@ -56,9 +61,10 @@ pub trait OwnSide {
     /// What `addr` goes back to if the pad lets go now (its lock, else
     /// its own value), and its own value. None: it isn't there.
     fn beneath(&self, addr: ParamAddr) -> Option<(f32, f32)>;
-    /// Stay: `value` becomes `addr`'s own, as a turn of its knob. False
+    /// Stay: `value` becomes `addr`'s own, as a turn of its knob. The
+    /// value it became (a stepped setting's step: an arp's rate), or None
     /// when it can't (it isn't there).
-    fn keep(&mut self, addr: ParamAddr, value: f32) -> bool;
+    fn keep(&mut self, addr: ParamAddr, value: f32) -> Option<f32>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -222,9 +228,11 @@ impl OwnHands {
                 State::Keep => {
                     let before = side.beneath(e.addr).map(|(_, own)| own);
                     side.hold(e.addr, Some(e.value), e.over);
-                    match before {
-                        Some(before) if side.keep(e.addr, e.value) => {
-                            kept(e.addr, before, e.value);
+                    let now = before.and_then(|b| Some((b, side.keep(e.addr, e.value)?)));
+                    match now {
+                        Some((before, v)) => {
+                            e.value = v;
+                            kept(e.addr, before, v);
                             e.state = State::Settle { left: self.settle };
                             Self::settled(side, e, 0)
                         }
@@ -263,7 +271,7 @@ impl OwnHands {
     /// The status line's words.
     pub fn describe(&self) -> String {
         format!(
-            "XY on a synth's or a pad's own settings: {} held, {} unreached, {} with no room",
+            "XY on a synth's, a pad's or an arp's own settings: {} held, {} unreached, {} with no room",
             self.holding(),
             self.unreached,
             self.full
@@ -323,13 +331,13 @@ mod tests {
             let own = Self::get(&self.own, addr)?;
             Some((Self::get(&self.lock, addr).unwrap_or(own), own))
         }
-        fn keep(&mut self, addr: ParamAddr, value: f32) -> bool {
+        fn keep(&mut self, addr: ParamAddr, value: f32) -> Option<f32> {
             if self.late == 0 {
                 Self::put(&mut self.own, addr, Some(value));
             } else {
                 self.waiting.push((addr, value, self.late));
             }
-            true
+            Some(value)
         }
     }
 
@@ -362,9 +370,10 @@ mod tests {
     }
 
     #[test]
-    fn only_a_synths_and_a_pads_own_settings_are_here() {
+    fn only_a_synths_a_pads_and_an_arps_own_settings_are_here() {
         assert!(is_own(cutoff()));
         assert!(is_own(ParamAddr::new(Owner::Pad(0, 4), 1)));
+        assert!(is_own(ParamAddr::new(Owner::Arp(2), 1)));
         assert!(!is_own(ParamAddr::new(
             Owner::Strip(mpfree_play::mpfree_param::Strip::Master),
             0

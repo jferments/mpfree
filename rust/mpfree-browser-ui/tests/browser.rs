@@ -859,6 +859,68 @@ fn loading_from_the_preset_picker_closes_it() {
     assert_eq!(names(&b), ["Glass bell"]);
 }
 
+/// Setup's Save to browser keeps the XY pad's layouts under Instruments,
+/// and the XY pad's list's From the browser picks one; the synth's preset
+/// pickers never list them.
+#[test]
+fn the_xy_layouts_picker_lists_saved_layouts_and_hands_one_over() {
+    use mpfree_browser_ui::{NO_XY_LAYOUTS, XY_FOLDER};
+    let (mut b, lib) = browser();
+    // Before any was saved: the picker says so, without an error.
+    b.open_picker(Pick::XyLayout);
+    let s = b.screen();
+    assert_eq!(s.title, "XY layouts");
+    assert!(s.rows.is_empty());
+    assert_eq!(s.status, Some((NO_XY_LAYOUTS.to_string(), false)));
+    b.cancel_picker();
+    b.take_actions();
+    // Saved, and saved again: the one before goes to the Trash.
+    b.save_xy_layout("Squelch", "xy 1\nlayout\tSquelch\n".into());
+    let a = b.take_actions();
+    assert!(
+        a.iter()
+            .any(|a| matches!(a, BrowseAction::XyLayoutSaved { name, loc }
+            if name == "Squelch" && loc.name() == "Squelch.preset")),
+        "{a:?}"
+    );
+    let trashed = lib.trash().unwrap().len();
+    b.save_xy_layout("Squelch", "xy 1\nlayout\tSquelch\nend\n".into());
+    assert!(b
+        .take_actions()
+        .iter()
+        .any(|a| matches!(a, BrowseAction::XyLayoutSaved { .. })));
+    let file = Loc::top(Place::Instruments)
+        .join(XY_FOLDER)
+        .unwrap()
+        .join("Squelch.preset")
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(lib.file_path(&file).unwrap()).unwrap(),
+        "xy 1\nlayout\tSquelch\nend\n"
+    );
+    assert_eq!(lib.trash().unwrap().len(), trashed + 1, "the first one");
+    // From the browser: the layouts by name; Load hands the file over.
+    b.open_picker(Pick::XyLayout);
+    assert_eq!(names(&b), ["Squelch"]);
+    let d = b.screen().detail;
+    assert_eq!(d.kind, "XY layout");
+    assert!(!d.lines.iter().any(|(k, _)| k == "Engine"), "{:?}", d.lines);
+    b.push();
+    let a = b.take_actions();
+    assert!(
+        matches!(&a[0], BrowseAction::LoadPreset { engine, loc, .. }
+            if engine == XY_FOLDER && *loc == file),
+        "{a:?}"
+    );
+    assert_eq!(a.last(), Some(&BrowseAction::PickerClosed { loaded: true }));
+    // A synth's preset picker over every engine leaves them out.
+    b.open_picker(Pick::Preset {
+        engine: String::new(),
+    });
+    assert!(!names(&b).iter().any(|n| n == XY_FOLDER), "{:?}", names(&b));
+    b.cancel_picker();
+}
+
 #[test]
 fn the_sample_picker_loads_one_sound_for_the_pad() {
     let (mut b, _) = browser();

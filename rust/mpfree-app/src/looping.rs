@@ -36,10 +36,10 @@ use mpfree_looper::find::{find, FindJob};
 use mpfree_looper::print::{frames_at, PrintJob};
 use mpfree_looper::save::Saved;
 use mpfree_looper::{
-    Bounce, Candidate, Command, Edit, History, LayerCommand, LayerInfo, LoopFile, Looper, Memory,
-    NoteStart, Phase, Print, Reading, Shift, SmartEnd, SmartNote, SmartOutcome, Snap, SnapDone,
-    SnapPlan, Starts, Stats, Status, Step, Sure, Take, HEARD_SECONDS, LOOP_MAX_BPM, LOOP_MIN_BPM,
-    MAX_LAYERS, MAX_LOOPS,
+    Bounce, Candidate, Clock, Command, Edit, History, LayerCommand, LayerInfo, LoopFile, Looper,
+    Memory, NoteStart, Phase, Print, Reading, Shift, SmartEnd, SmartNote, SmartOutcome, Snap,
+    SnapDone, SnapPlan, Starts, Stats, Status, Step, Sure, Take, HEARD_SECONDS, LOOP_MAX_BPM,
+    LOOP_MIN_BPM, MAX_LAYERS, MAX_LOOPS,
 };
 use mpfree_seq::loops::{LoopNow, LoopPlan};
 use mpfree_transport::time::{Tick, PPQ};
@@ -1427,6 +1427,11 @@ pub struct LoopHost {
     /// Snap anyway ([`LoopHost::snap_anyway`]).
     snap_want: Option<(usize, Snap, bool)>,
     snap_wait: Option<(SnapPlan, u32)>,
+    /// A free loop's snap, worked out: it changes the free clock's tempo,
+    /// not the song's, so it asks nothing of the time engine, and goes to
+    /// the looper in the period its frame falls in, as the time engine
+    /// commits a song loop's (until then the loop is as it was).
+    free_snap: Option<SnapPlan>,
     /// A snap that would change the tempo under recorded audio (the audio
     /// tracks' recordings), waiting for Snap anyway or Not now: the hint
     /// line asks ([`LoopHost::snap_asking`]).
@@ -1471,6 +1476,9 @@ pub struct LoopHost {
     /// first). A loop picked, or recorded, while empty takes it, so the
     /// choice sticks from loop to loop.
     starts: Starts,
+    /// Sync, for every empty loop, sticking as Starts does: the song's
+    /// clock at first, or the free loops' ([`Clock::Free`]).
+    clock: Clock,
     /// What you played's window, moved or resized: the bar line its bars
     /// end on (None: the newest, keeping up as the song plays) and how
     /// many ([`LoopHost::set_capture_span`]). None: the Length's bars.
@@ -1815,16 +1823,19 @@ impl Printer {
         }
     }
 
-    /// One period's look after the looper ran at `bpm`: hand over what
-    /// the worker made, take a finished bounce to it, drop old prints, and
-    /// start the next print a loop needs (or take away one it no longer
-    /// does). Cheap when nothing changes. It allocates nothing itself;
-    /// a message to the worker can (a block of the channel, now and then),
-    /// and only goes when a print starts, arrives or is dropped.
+    /// One period's look after the looper ran at `bpm` (the song's
+    /// tempo; a free loop goes by the free clock's, [`tempo_of`]): hand
+    /// over what the worker made, take a finished bounce to it, drop old
+    /// prints, and start the next print a loop needs (or take away one it
+    /// no longer does). Cheap when nothing changes. It allocates nothing
+    /// itself; a message to the worker can (a block of the channel, now
+    /// and then), and only goes when a print starts, arrives or is
+    /// dropped.
     fn tend(&mut self, looper: &mut Looper, bpm: f64) {
         if self.tx.is_none() || bpm.is_nan() || bpm <= 0.0 {
             return;
         }
+        let free = looper.free_clock().map(|c| c.bpm);
         for n in 0..MAX_LOOPS {
             if let Some(p) = looper.take_print(n) {
                 self.send(ToPrinter::Drop(Some(p), Vec::new()));
@@ -1848,7 +1859,9 @@ impl Printer {
                     };
                     let now = looper.loop_status(n);
                     let wanted = now.is_some_and(|s| {
-                        s.version == p.version && Some(frames) == want(&s, bpm, self.rate)
+                        s.version == p.version
+                            && Some(frames)
+                                == tempo_of(&s, bpm, free).and_then(|b| want(&s, b, self.rate))
                     });
                     if !wanted {
                         self.stale += 1;
@@ -1889,7 +1902,7 @@ impl Printer {
                 break;
             };
             let have = looper.print_info(n);
-            match want(&s, bpm, self.rate) {
+            match tempo_of(&s, bpm, free).and_then(|b| want(&s, b, self.rate)) {
                 None if have.is_some() && s.phase == Phase::Playing => {
                     let _ = looper.print(n, None);
                 }
@@ -1926,6 +1939,16 @@ impl Printer {
             self.asked = true;
             self.send(ToPrinter::Buffer(samples));
         }
+    }
+}
+
+/// The tempo loop `s` plays at: a free loop ([`Clock::Free`]) the free
+/// clock's, `free` (None without one), so a tempo change in the song never
+/// asks for a print of it; any other the song's, `song`.
+fn tempo_of(s: &Status, song: f64, free: Option<f64>) -> Option<f64> {
+    match s.clock {
+        Clock::Free => free,
+        Clock::Song => Some(song),
     }
 }
 
@@ -1979,6 +2002,7 @@ impl LoopHost {
             snap_want: None,
             snap_ask: None,
             snap_wait: None,
+            free_snap: None,
             side_want: None,
             ab: None,
             kept: None,
@@ -1991,6 +2015,7 @@ impl LoopHost {
             tempos_refused: 0,
             match_pattern: false,
             starts: Starts::Bar,
+            clock: Clock::Song,
             capture_span: None,
             pattern_bars: None,
             last_rolling: false,
@@ -2169,15 +2194,32 @@ impl LoopHost {
     /// Load saved loops (`save::from_text`, each layer's audio from its
     /// WAV with `save::from_wav`) into the loops they came
     /// from, which must be empty: each copies in while silent, then fades
-    /// in, in time with the song. A loop that is not empty keeps what it
-    /// has (its saved one is dropped on the worker).
+    /// in, in time with the song. Free loops load onto the saved free
+    /// clock, opened first, stopped: they open stopped at their tops, as
+    /// a project opens with nothing launched. A loop that is not empty
+    /// keeps what it has (its saved one is dropped on the worker), and
+    /// free loops can't load while free loops still hold the free clock.
     pub fn load(&mut self, saved: Saved) -> String {
-        let (mut done, mut kept) = (Vec::new(), Vec::new());
+        let clock = saved
+            .free_clock
+            .filter(|c| self.looper.open_free_clock(c.bpm, c.meter, c.top));
+        let (mut done, mut kept, mut free, mut unclocked) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for (n, f) in saved.loops {
+            let on_free = f.clock == Clock::Free;
             match self.looper.load(n, f) {
-                Ok(()) => done.push((n + 1).to_string()),
+                Ok(()) => {
+                    done.push((n + 1).to_string());
+                    if on_free {
+                        free.push((n + 1).to_string());
+                    }
+                }
                 Err(f) => {
-                    kept.push((n + 1).to_string());
+                    if on_free && clock.is_none() {
+                        unclocked.push((n + 1).to_string());
+                    } else {
+                        kept.push((n + 1).to_string());
+                    }
                     self.printer.send(ToPrinter::DropLoop(f));
                 }
             }
@@ -2188,10 +2230,26 @@ impl LoopHost {
         if done.is_empty() {
             note = "looper: no loops to load".into();
         }
+        if let Some(c) = clock.filter(|_| !free.is_empty()) {
+            note += &format!(
+                "; loops {} are free loops, stopped at their tops: PLAY starts them with \
+                 the song ({:.2} BPM in {}/{})",
+                free.join(", "),
+                c.bpm,
+                c.meter.beats,
+                c.meter.unit
+            );
+        }
         if !kept.is_empty() {
             note += &format!(
                 "; loops {} were not empty and kept what they had",
                 kept.join(", ")
+            );
+        }
+        if !unclocked.is_empty() {
+            note += &format!(
+                "; free loops {} weren't loaded: other free loops still hold the free clock",
+                unclocked.join(", ")
             );
         }
         if saved.rate != self.rate {
@@ -2234,6 +2292,10 @@ impl LoopHost {
                         loops: (0..MAX_LOOPS)
                             .filter_map(|n| self.looper.loop_file(n).map(|f| (n, f)))
                             .collect(),
+                        free_clock: self
+                            .looper
+                            .free_clock()
+                            .map(|c| mpfree_looper::save::ClockFile::of(&c)),
                     };
                     self.printer.send(ToPrinter::Size(saved));
                     Some(Saving::Sizing { at: self.shapes() })
@@ -2329,18 +2391,38 @@ impl LoopHost {
             // A new Length: What you played's window takes it.
             self.capture_span = None;
         }
-        // Starts sticks: every empty loop records as it was last set.
+        // Starts and Sync stick: every empty loop records as they were
+        // last set.
         if let Command::SetStarts(w) = c {
             self.starts = w;
         }
-        if c == Command::Record
-            && empty
-            && self
-                .looper
-                .loop_status(self.picked)
-                .is_some_and(|s| s.starts != self.starts)
-        {
-            self.looper.command(Command::SetStarts(self.starts));
+        if let Command::SetClock(k) = c {
+            if k != self.clock {
+                // What you played counts the other clock's bars now.
+                self.capture_span = None;
+            }
+            self.clock = k;
+            // A loop with sound, or sound coming in, keeps its own: the
+            // looper would refuse it.
+            let takes = self.looper.loop_status(self.picked).is_some_and(|s| {
+                s.phase == Phase::Empty
+                    && s.loading.is_none()
+                    && s.copying.is_none()
+                    && s.capturing.is_none()
+            });
+            if !takes {
+                let sync = match k {
+                    Clock::Song => "the song",
+                    Clock::Free => "free",
+                };
+                return format!(
+                    "looper: sync: {sync} from the next empty loop on (loop {} keeps its own)",
+                    self.picked + 1
+                );
+            }
+        }
+        if c == Command::Record && empty {
+            self.sticky_settings(self.picked);
         }
         if self.match_pattern
             && c == Command::Record
@@ -2370,6 +2452,14 @@ impl LoopHost {
             (Command::Undo | Command::Redo, Phase::Playing) if moved.is_some() => {
                 moved.unwrap_or_default()
             }
+            (Command::Record, Phase::Empty) if s.clock == Clock::Free && !self.resample => {
+                self.free_record_words(&s)
+            }
+            (Command::Record, Phase::Recording) if s.clock == Clock::Free && s.free => format!(
+                "Record during the free loop's first pass: it closes (once it is {} at \
+                 {LOOP_MAX_BPM:.0} BPM), and its length sets the free loops' tempo",
+                shortest_words(s.bars)
+            ),
             (Command::Record, Phase::Empty) if s.starts == Starts::Play && !self.resample => {
                 format!(
                     "Record: armed, the first pass starts when you play {} ({})",
@@ -2496,6 +2586,12 @@ impl LoopHost {
                     "off"
                 }
             ),
+            (Command::SetClock(Clock::Song), _) => "sync: the song".to_string(),
+            (Command::SetClock(Clock::Free), _) => {
+                "sync: free (the loop keeps its own time)".to_string()
+            }
+            (Command::FreeStop, _) => "free loops: stop, at their tops".to_string(),
+            (Command::FreePlay, _) => "free loops: play from their tops".to_string(),
             (Command::SetSmartEnd(m), _) => format!("smart loop end: {}", smart_end_text(m)),
             (Command::SmartByEar(on), _) => format!(
                 "smart loop end listens to {}",
@@ -2560,6 +2656,50 @@ impl LoopHost {
             return format!("looper: {what}: NOT done, the command queue is full");
         }
         format!("looper: {what}")
+    }
+
+    /// What Record does on an empty free loop `s` ([`Clock::Free`]), for
+    /// the log: with nothing playing and no free clock yet, a pass in
+    /// your own time whose length sets the free clock; else the free
+    /// clock's bar lines, or the song's while the song plays and the free
+    /// clock doesn't (the free clock is set, or starts, there). The song
+    /// never starts or stops for it.
+    fn free_record_words(&self, s: &Status) -> String {
+        let starts = |now: &str| match s.starts {
+            Starts::Play => format!(
+                "Record: armed, the first pass starts when you play {}",
+                self.first_note()
+            ),
+            Starts::Bar => format!("Record: {now}"),
+        };
+        match self.looper.free_clock() {
+            None if s.free => format!(
+                "{}, free in your own time ({}): REC again closes it, and its length sets \
+                 the free loops' tempo (the song stays stopped)",
+                starts("the first pass records from now"),
+                free_words(s.bars)
+            ),
+            None => format!(
+                "{} ({}), and the free loops take the song's tempo there",
+                starts("armed, the free loop's first pass starts on the song's next bar line"),
+                bars_text(s.bars)
+            ),
+            Some(c) if c.running => format!(
+                "{} ({})",
+                starts("armed, the free loop's first pass starts on the free loops' next bar line"),
+                bars_text(s.bars)
+            ),
+            Some(_) if self.last_rolling => format!(
+                "{} ({}), and the stopped free loops start with it",
+                starts("armed, the free loop's first pass starts on the song's next bar line"),
+                bars_text(s.bars)
+            ),
+            Some(_) => format!(
+                "{} ({}), and the stopped free loops start with it",
+                starts("the free loop's first pass records from now"),
+                bars_text(s.bars)
+            ),
+        }
     }
 
     /// What Undo or Redo does when the step it takes back (or brings
@@ -2666,15 +2806,32 @@ impl LoopHost {
             );
         }
         self.picked = n;
-        // An empty loop takes Starts as it was last set (it shows it).
+        // An empty loop takes Starts and Sync as they were last set (it
+        // shows them).
         if self
             .looper
             .loop_status(n)
-            .is_some_and(|s| s.phase == Phase::Empty && s.starts != self.starts)
+            .is_some_and(|s| s.phase == Phase::Empty)
         {
-            self.looper.command(Command::SetStarts(self.starts));
+            self.sticky_settings(n);
         }
         format!("looper: loop {} picked ({what})", n + 1)
+    }
+
+    /// Empty loop `n`, picked, takes Starts and Sync as they were last
+    /// set, where it differs (a loop that is copying in or capturing
+    /// keeps its Sync: the looper refuses it).
+    fn sticky_settings(&mut self, n: usize) {
+        let Some(s) = self.looper.loop_status(n) else {
+            return;
+        };
+        if s.starts != self.starts {
+            self.looper.command(Command::SetStarts(self.starts));
+        }
+        let busy = s.loading.is_some() || s.copying.is_some() || s.capturing.is_some();
+        if s.clock != self.clock && !busy {
+            self.looper.command(Command::SetClock(self.clock));
+        }
     }
 
     /// Loop `n`'s mute turned over (the picked loop's with None), leaving
@@ -2687,10 +2844,17 @@ impl LoopHost {
     pub fn stop_waiting(&mut self) -> Option<String> {
         let picked = self.picked;
         let mut said = Vec::new();
+        // Free loops on the free clock while it runs wait for nothing:
+        // STOP stops them first (as it stops the song first), and their
+        // overdubs and armed passes then wait for PLAY as the song's do.
+        let free_runs = self.looper.free_clock().is_some_and(|c| c.running);
         for n in 0..MAX_LOOPS {
             let Some(s) = self.looper.loop_status(n) else {
                 continue;
             };
+            if free_runs && s.clock == Clock::Free {
+                continue;
+            }
             let (c, what) = match s.phase {
                 Phase::Overdubbing => (Command::Overdub, "the overdub waiting for PLAY is off"),
                 Phase::Armed => (Command::Record, "disarmed"),
@@ -2856,13 +3020,20 @@ impl LoopHost {
     /// ([`crate::time::TimeHost::loops_are`]): which have a first pass, how
     /// long and from where. None while an open's loops are going out or
     /// coming in, so a project's cells aren't emptied by the old loops
-    /// fading out.
+    /// fading out. A free loop ([`Clock::Free`]) is told as none: it stays
+    /// off the grid and the song (in no cell, so the plan leaves it on and
+    /// the looper alone says when it plays), as its bars aren't the
+    /// song's.
     pub fn grid_now(&self) -> Option<[LoopNow; MAX_LOOPS]> {
         if self.opening() {
             return None;
         }
         Some(std::array::from_fn(|n| match self.looper.loop_status(n) {
-            Some(s) if matches!(s.phase, Phase::Playing | Phase::Overdubbing) && s.ticks > 0 => {
+            Some(s)
+                if matches!(s.phase, Phase::Playing | Phase::Overdubbing)
+                    && s.ticks > 0
+                    && s.clock == Clock::Song =>
+            {
                 LoopNow {
                     pass: true,
                     ticks: s.ticks,
@@ -3746,24 +3917,48 @@ impl LoopHost {
     fn span(&self) -> Option<(Option<Tick>, u32)> {
         let (end, bars) = self.capture_span?;
         match end {
-            Some(t) => self.looper.capture_take_to(t, 1).map(|_| (end, bars)),
+            Some(t) => self
+                .looper
+                .capture_take_to(self.clock, t, 1)
+                .map(|_| (end, bars)),
             None => Some((None, bars)),
         }
     }
 
     /// What Capture would take now, `bars` of it: up to the window's bar
-    /// line when it was moved back, else up to the newest.
+    /// line when it was moved back, else up to the newest. On the clock
+    /// the loop it goes into takes (Sync as last set): a free loop's are
+    /// the free clock's bars while it is set.
     fn capture_take_now(&self, bars: u32) -> Option<Take> {
         match self.span().and_then(|s| s.0) {
-            Some(end) => self.looper.capture_take_to(end, bars),
-            None => self.looper.capture_take(bars),
+            Some(end) => self.looper.capture_take_to(self.clock, end, bars),
+            None => self.looper.capture_take(self.clock, bars),
         }
     }
 
     /// A Capture now would wait for the bar line coming: the window keeps
-    /// up with the song, which is in a bar's last beat.
+    /// up with the song (or the free loops), which is in a bar's last
+    /// beat.
     fn capture_waits_now(&self) -> bool {
-        self.span().and_then(|s| s.0).is_none() && self.looper.capture_waits()
+        self.span().and_then(|s| s.0).is_none() && self.looper.capture_waits(self.clock)
+    }
+
+    /// The bars a Capture now counts in, for What you played and the log:
+    /// for a free loop (Sync: Free) while the free clock is set, the free
+    /// clock's, numbered from its bar 1 (where the free loops start);
+    /// else the song's. Their tempo, a bar's ticks and bar 1's tick.
+    fn capture_grid(&self) -> (f64, Tick, Tick) {
+        match (self.clock, self.looper.free_clock()) {
+            (Clock::Free, Some(c)) => (c.bpm, c.meter.bar_ticks(), c.top),
+            _ => (self.bpm, self.bar_ticks, 0),
+        }
+    }
+
+    /// The bar a Capture's tick `t` starts, numbered in its bars
+    /// ([`LoopHost::capture_grid`]).
+    fn capture_bar(&self, t: Tick) -> i64 {
+        let (_, bar, top) = self.capture_grid();
+        (t - top).div_euclid(bar.max(1)) + 1
     }
 
     /// What you played's window moved or resized on the Looper tab:
@@ -3774,8 +3969,8 @@ impl LoopHost {
     pub fn set_capture_span(&mut self, end: Option<i64>, bars: u32) -> String {
         let bars = bars.clamp(1, HEARD_MAX_BARS);
         let mut lines = [(0 as Tick, 0u64); HEARD_MAX_BARS as usize + 1];
-        let n = self.looper.heard_lines(&mut lines);
-        let number = |t: Tick| t.div_euclid(self.bar_ticks.max(1)) + 1;
+        let n = self.looper.heard_lines(self.clock, &mut lines);
+        let number = |t: Tick| self.capture_bar(t);
         let newest = n.checked_sub(1).map(|i| number(lines[i].0));
         let pinned = match end {
             Some(e) if Some(e) != newest => match lines[..n].iter().find(|l| number(l.0) == e) {
@@ -3807,8 +4002,9 @@ impl LoopHost {
             return w;
         }
         let now = self.looper.heard_at();
-        let bar = self.bar_ticks.max(1) as f64 / f64::from(PPQ) * 60.0 / self.bpm.max(1.0)
-            * f64::from(self.rate);
+        let (bpm, bar_ticks, _) = self.capture_grid();
+        let bar =
+            bar_ticks.max(1) as f64 / f64::from(PPQ) * 60.0 / bpm.max(1.0) * f64::from(self.rate);
         // Room for the window to grow to four times its unit (the
         // pattern), and a bar more than it takes.
         let into = self.capture_into();
@@ -3842,8 +4038,8 @@ impl LoopHost {
             };
         }
         let mut lines = [(0 as Tick, 0u64); HEARD_MAX_BARS as usize + 1];
-        let n = self.looper.heard_lines(&mut lines);
-        let number = |t: Tick| t.div_euclid(self.bar_ticks.max(1)) + 1;
+        let n = self.looper.heard_lines(self.clock, &mut lines);
+        let number = |t: Tick| self.capture_bar(t);
         for &(t, f) in &lines[..n] {
             if f as f64 >= from && w.n_lines < w.lines.len() {
                 w.lines[w.n_lines] = (number(t), x(f));
@@ -3896,6 +4092,9 @@ impl LoopHost {
         let pinned = span.and_then(|s| s.0);
         let waits = self.capture_waits_now();
         let take = self.capture_take_now(asked);
+        // A free loop takes the free clock's bars while it is set.
+        let free = self.clock == Clock::Free;
+        let on_free = free && self.looper.free_clock().is_some();
         let Some(t) = take.or(waits.then_some(Take {
             bars: asked,
             start: 0,
@@ -3903,6 +4102,12 @@ impl LoopHost {
             ticks: 0,
             origin: 0,
         })) else {
+            if on_free {
+                return "looper: Capture: no whole bar of the free loops heard yet: it takes the \
+                        bars they have played since they last started (and since Records from \
+                        changed)"
+                    .to_string();
+            }
             return "looper: Capture: no whole bar heard yet: it takes the bars the song has \
                     played since PLAY (and since Records from changed)"
                 .to_string();
@@ -3922,6 +4127,9 @@ impl LoopHost {
             }
             self.picked = n;
         }
+        // It records as a loop recorded now would: Sync as last set (the
+        // bars above were counted on that clock), and Starts.
+        self.sticky_settings(n);
         let c = match pinned {
             Some(end) => Command::CaptureTo(end, asked),
             None => Command::Capture(asked),
@@ -3931,22 +4139,27 @@ impl LoopHost {
         }
         // The window goes back to the Length's bars, keeping up.
         self.capture_span = None;
-        let number = |tick: Tick| tick.div_euclid(self.bar_ticks.max(1)) + 1;
+        let sync = if free { ", free" } else { "" };
         if take.is_none() || waits {
             return format!(
-                "looper: Capture: on the bar line coming, the last {} become Loop {}",
+                "looper: Capture: on the bar line coming, the last {} become Loop {}{sync}",
                 bars_words_n(asked),
                 n + 1
             );
         }
+        let since = if on_free {
+            "since the free loops started"
+        } else {
+            "since PLAY"
+        };
         let fewer = match (t.bars < asked, span.is_some()) {
             (false, _) => String::new(),
-            (true, false) => format!(" (its Length asks {asked}: fewer were played since PLAY)"),
+            (true, false) => format!(" (its Length asks {asked}: fewer were played {since})"),
             (true, true) => format!(" (the window asks {asked}: fewer were played or kept)"),
         };
         format!(
-            "looper: Capture: {} become Loop {}{fewer}",
-            bars_words(number(t.origin), t.bars),
+            "looper: Capture: {} become Loop {}{sync}{fewer}",
+            bars_words(self.capture_bar(t.origin), t.bars),
             n + 1
         )
     }
@@ -4024,9 +4237,17 @@ impl LoopHost {
 
     /// Loop `n` listening for a pad records free when it hears one
     /// ([`Status::free`]): the note doesn't start the song; closing the
-    /// pass does.
+    /// pass does (a song loop's), or sets the free clock (a free loop's).
     pub fn records_free(&self, n: usize) -> bool {
         self.looper.loop_status(n).is_some_and(|s| s.free)
+    }
+
+    /// Loop `n` keeps time with the free clock (Sync: Free,
+    /// [`Clock::Free`]): a note that starts it never starts the song.
+    pub fn on_free_clock(&self, n: usize) -> bool {
+        self.looper
+            .loop_status(n)
+            .is_some_and(|s| s.clock == Clock::Free)
     }
 
     /// After the looper's period: a free first pass closed, so the song
@@ -4319,15 +4540,38 @@ impl LoopHost {
     /// [`LoopHost::run`]: a snap asked for is worked out
     /// ([`Looper::snap_plan`]) and its tempo asked of the time engine on
     /// the loop's next downbeat ([`TimeHost::timing_change`]): refused
-    /// while another loop has sound (its tempo would change under it), or
-    /// whatever the time engine refuses. While `audio` (recorded audio,
-    /// the audio tracks' regions, would play out of step) it asks first
-    /// ([`LoopHost::snap_asking`]) and goes ahead on Snap anyway. Once the
-    /// time engine commits it, the loop is told to change on the same
-    /// frame ([`Looper::snap_at`]); if the loop changes first, the tempo is
-    /// taken back. A refusal: the line for the log and the screen,
-    /// counted.
+    /// while another song loop has sound (its tempo would change under it;
+    /// a free loop keeps the free clock's), or whatever the time engine
+    /// refuses. While `audio` (recorded audio, the audio tracks' regions,
+    /// would play out of step) it asks first ([`LoopHost::snap_asking`])
+    /// and goes ahead on Snap anyway. Once the time engine commits it, the
+    /// loop is told to change on the same frame ([`Looper::snap_at`]); if
+    /// the loop changes first, the tempo is taken back. A free loop's
+    /// changes the free clock's tempo instead: no other loop but a free
+    /// one is in its way, nothing is asked of the time engine, and the
+    /// looper gets the plan in the period its frame falls in. A refusal:
+    /// the line for the log and the screen, counted.
     pub fn tend_snap(&mut self, time: &mut TimeHost, audio: bool) -> Option<(String, bool)> {
+        if let Some(p) = self.free_snap {
+            if self
+                .looper
+                .loop_status(p.n)
+                .is_none_or(|s| s.version != p.version)
+            {
+                self.free_snap = None;
+                return Some(self.snap_refused(
+                    p.n,
+                    p.snap,
+                    "the loop changed before its downbeat",
+                ));
+            }
+            if p.at < time.next_frame() + PERIOD as u64 {
+                // Said once it has landed (take_snap).
+                self.free_snap = None;
+                self.looper.snap_at(p);
+            }
+            return None;
+        }
         if let Some((p, ticket)) = self.snap_wait {
             if self
                 .looper
@@ -4376,12 +4620,31 @@ impl LoopHost {
             }
         }
         let (n, s, anyway) = self.snap_want.take()?;
+        // A free loop's snap changes the free clock's tempo, not the
+        // song's: song loops and the audio tracks aren't in its way, the
+        // looper says if another free loop is, and there is nothing to ask
+        // the time engine.
+        if self
+            .looper
+            .loop_status(n)
+            .is_some_and(|st| st.clock == Clock::Free)
+        {
+            return match self.looper.snap_plan(n, s, time.next_frame()) {
+                Ok(p) => {
+                    self.free_snap = Some(p);
+                    None
+                }
+                Err(why) => Some(self.snap_refused(n, s, why)),
+            };
+        }
+        // Another song loop with sound would change tempo under it; a
+        // free loop keeps the free clock's.
         let others = (0..MAX_LOOPS)
             .filter(|&k| k != n)
             .filter_map(|k| self.looper.loop_status(k))
-            .any(|st| st.phase != Phase::Empty);
+            .any(|st| st.phase != Phase::Empty && st.clock == Clock::Song);
         if others {
-            return Some(self.snap_refused(n, s, "another loop has sound"));
+            return Some(self.snap_refused(n, s, "another song loop has sound"));
         }
         let p = match self.looper.snap_plan(n, s, time.next_frame()) {
             Ok(p) => p,
@@ -4445,21 +4708,33 @@ impl LoopHost {
             return (None, None);
         };
         let n = p.n + 1;
+        // A free loop's snap changes the free clock's tempo, never the
+        // song's.
+        let free = self
+            .looper
+            .loop_status(p.n)
+            .is_some_and(|s| s.clock == Clock::Free);
+        let song_bpm = (!free).then_some(p.bpm);
         if !landed {
             self.snaps_refused += 1;
+            let why = if free {
+                "the loop changed, or the free loops stopped first"
+            } else {
+                "the loop changed (the tempo did)"
+            };
             return (
                 Some((
                     format!(
-                        "looper: Loop {n}: {} didn't land: the loop changed (the tempo did)",
+                        "looper: Loop {n}: {} didn't land: {why}",
                         snap_name(p.snap, self.reads_again(p.snap))
                     ),
                     true,
                 )),
-                Some(p.bpm),
+                song_bpm,
             );
         }
         let Some(s) = self.looper.loop_status(p.n) else {
-            return (None, Some(p.bpm));
+            return (None, song_bpm);
         };
         // A/B: the other side on the next downbeat. Its swaps go in the
         // log, not on the screen.
@@ -4470,7 +4745,11 @@ impl LoopHost {
                 None => self.ab = None,
             }
         }
-        let bars = ticks_text(s.ticks, self.bar_ticks);
+        let bar_ticks = match self.looper.free_clock().filter(|_| free) {
+            Some(c) => c.meter.bar_ticks(),
+            None => self.bar_ticks,
+        };
+        let bars = ticks_text(s.ticks, bar_ticks);
         let moves = shift_text(p.by, self.rate);
         // Landed: an Undo's step is the next Redo's now, and the other way.
         let h = self.looper.history();
@@ -4485,15 +4764,16 @@ impl LoopHost {
             Snap::Undo => format!("Undo: {moves}"),
             Snap::Redo => format!("Redo: {moves}"),
         };
+        let at = if free { ", free at" } else { " at" };
         (
             Some((
                 format!(
-                    "looper: Loop {n}: {what}: {bars} at {:.2} BPM, from its downbeat",
+                    "looper: Loop {n}: {what}: {bars}{at} {:.2} BPM, from its downbeat",
                     p.bpm
                 ),
                 !swapping,
             )),
-            Some(p.bpm),
+            song_bpm,
         )
     }
 
@@ -6867,6 +7147,299 @@ mod tests {
             assert!(start.elapsed().as_secs() < 60);
         }
         assert!((0..MAX_LOOPS).all(|n| h.looper.loop_status(n).unwrap().phase == Phase::Empty));
+    }
+
+    /// Sync sticks from loop to loop, as Starts does: set on one empty
+    /// loop, the next empty loop picked takes it and records with it (with
+    /// nothing playing, in your own time, as the log says); a loop that
+    /// has sound keeps its own.
+    #[test]
+    fn sync_sticks_for_every_empty_loop() {
+        let mut h = LoopHost::new(44_100, 8);
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        let mut b = Block::new();
+        let mut run = |h: &mut LoopHost, periods: u64| {
+            for _ in 0..periods {
+                assert!(t.process(PERIOD as u32, &mut b));
+                let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+                h.period(&b, &mut l, &mut r);
+            }
+        };
+        run(&mut h, 1);
+        assert_eq!(h.looper.status().clock, Clock::Song, "the song's at first");
+        assert_eq!(
+            h.command(Command::SetClock(Clock::Free)),
+            "looper: sync: free (the loop keeps its own time)"
+        );
+        run(&mut h, 1);
+        assert_eq!(h.looper.status().clock, Clock::Free);
+        h.select(3);
+        run(&mut h, 1);
+        assert_eq!(h.looper.status().clock, Clock::Free, "loop 4 shows it");
+        h.select(5);
+        run(&mut h, 1);
+        let said = h.command(Command::Record);
+        assert!(
+            said.contains("free in your own time") && said.contains("the song stays stopped"),
+            "{said}"
+        );
+        run(&mut h, 1);
+        let s = h.looper.loop_status(5).unwrap();
+        assert_eq!(
+            (s.phase, s.clock, s.free),
+            (Phase::Recording, Clock::Free, true)
+        );
+        // Back to the song's, set on the loop recording: it keeps its own
+        // (nothing is refused), and the next empty loop takes the song's.
+        let said = h.command(Command::SetClock(Clock::Song));
+        assert!(
+            said.contains("from the next empty loop on (loop 6 keeps its own)"),
+            "{said}"
+        );
+        h.select(7);
+        run(&mut h, 1);
+        assert_eq!(h.looper.status().clock, Clock::Song);
+        assert_eq!(
+            h.looper.loop_status(5).unwrap().clock,
+            Clock::Free,
+            "recording: kept"
+        );
+        assert_eq!(h.looper.stats().refused, 0);
+    }
+
+    /// A free loop keeps its own tempo: when the song's tempo changes, the
+    /// printer asks for no print of it (one made at the song's tempo and
+    /// played on the free clock would change its pitch) and it plays on
+    /// at its pitch; a Speed print of it is made at the free clock's
+    /// tempo.
+    #[test]
+    fn a_free_loop_gets_no_print_when_the_songs_tempo_changes() {
+        let mut h = LoopHost::new(44_100, 30);
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        let mut b = Block::new();
+        h.command(Command::SetClock(Clock::Free));
+        h.command(Command::SetBars(Some(1)));
+        h.command(Command::Record);
+        t.command(0, T::Play);
+        // 441 Hz: 100 frames a cycle.
+        let sine = |f: u64| 0.5 * (f as f64 * std::f64::consts::TAU / 100.0).sin() as f32;
+        let mut f = 0u64;
+        let mut period = |h: &mut LoopHost, t: &mut Transport, b: &mut Block, rec: bool| {
+            assert!(t.process(PERIOD as u32, b));
+            let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+            if rec {
+                for i in 0..PERIOD {
+                    l[i] = sine(f + i as u64);
+                    r[i] = l[i];
+                }
+            }
+            h.take_pads(&l, &r);
+            let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+            h.period(b, &mut l, &mut r);
+            f += PERIOD as u64;
+            l
+        };
+        while h.looper.status().phase != Phase::Playing {
+            period(&mut h, &mut t, &mut b, true);
+        }
+        let s = h.looper.status();
+        assert_eq!((s.frames, s.clock), (88_200, Clock::Free));
+        t.command(t.frame(), T::SetTempo(100.0));
+        for _ in 0..200 {
+            period(&mut h, &mut t, &mut b, false);
+        }
+        assert_eq!(t.bpm(), 100.0, "the song's tempo changed");
+        assert!(
+            !h.printer.asked && h.printer.doing.is_none() && !h.looper.status().printed,
+            "no print: {}",
+            h.describe()
+        );
+        let ups = |out: &[f32]| {
+            let x: Vec<usize> = (1..out.len())
+                .filter(|&i| out[i - 1] < 0.0 && out[i] >= 0.0)
+                .collect();
+            (x.len() - 1) as f64 * 44_100.0 / (x[x.len() - 1] - x[0]) as f64
+        };
+        let mut out = Vec::new();
+        for _ in 0..30 {
+            out.extend(period(&mut h, &mut t, &mut b, false));
+        }
+        let pitch = ups(&out);
+        assert!((pitch - 441.0).abs() < 2.0, "pitch {pitch}");
+        // Speed: an octave down, two bars at the free clock's 120 BPM.
+        h.command(Command::Edit(Edit::Speed(-1)));
+        let start = std::time::Instant::now();
+        let wanted = loop {
+            if let Some(w) = h.printer.doing {
+                break w;
+            }
+            assert!(start.elapsed().as_secs() < 60, "no print: {}", h.describe());
+            period(&mut h, &mut t, &mut b, false);
+            std::thread::sleep(std::time::Duration::from_micros(200));
+        };
+        assert_eq!(wanted.frames, frames_at(2 * 3_840, 120.0, 44_100));
+        assert_eq!(wanted.frames, 176_400);
+    }
+
+    /// Free loops saved with the project open on their clock, stopped at
+    /// their tops, as a project opens with nothing launched, and stay off
+    /// the Loop tracks' grid. The open loads them as soon as the old free
+    /// loop is empty (its clock goes only with the next period), and
+    /// PLAY starts them with the song.
+    #[test]
+    fn free_loops_saved_with_the_project_open_stopped_on_their_clock() {
+        let mut h = LoopHost::new(44_100, 20);
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        let mut b = Block::new();
+        h.command(Command::SetClock(Clock::Free));
+        h.command(Command::SetBars(Some(1)));
+        h.command(Command::Record);
+        t.command(0, T::Play);
+        let mut f = 0u64;
+        while h.looper.status().phase != Phase::Playing {
+            assert!(t.process(PERIOD as u32, &mut b));
+            let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+            for i in 0..PERIOD {
+                l[i] = 0.3 * ((f + i as u64) as f64 * 0.0628).sin() as f32;
+                r[i] = -l[i];
+            }
+            h.take_pads(&l, &r);
+            let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+            h.period(&b, &mut l, &mut r);
+            f += PERIOD as u64;
+        }
+        // The song stops; the free loop plays on, off the grid.
+        t.command(t.frame(), T::Stop);
+        let out = run_host(&mut h, &mut t, &mut b, 400);
+        assert!(
+            out[out.len() / 2..].iter().any(|&v| v != 0.0),
+            "it plays on"
+        );
+        assert_eq!(t.state(), mpfree_transport::State::Stopped);
+        assert!(!h.grid_now().unwrap()[0].pass, "in no cell");
+        h.save();
+        let saved = saved_from(&mut h, &mut t, &mut b);
+        let clock = saved.free_clock.expect("its clock is saved");
+        let (_, file) = &saved.loops[0];
+        assert_eq!(file.clock, Clock::Free);
+        assert_eq!(
+            (clock.bpm, clock.top),
+            (120.0, file.origin),
+            "bar 1: its start"
+        );
+        // Opened again: every loop empties, then the project's go in.
+        h.clear_all();
+        h.open(saved);
+        let start = std::time::Instant::now();
+        let line = loop {
+            run_host(&mut h, &mut t, &mut b, 1);
+            if let Some(line) = h.tend_open() {
+                break line;
+            }
+            assert!(start.elapsed().as_secs() < 60, "the loops never went in");
+        };
+        assert!(
+            line.contains("loops 1 are free loops, stopped at their tops"),
+            "{line}"
+        );
+        assert!(line.contains("120.00 BPM in 4/4"), "{line}");
+        let out = run_host(&mut h, &mut t, &mut b, 400);
+        let s = h.looper.loop_status(0).unwrap();
+        assert_eq!(
+            (s.phase, s.clock, s.loading),
+            (Phase::Playing, Clock::Free, None)
+        );
+        assert!(out.iter().all(|&v| v == 0.0), "stopped at its top");
+        assert_eq!(s.position, 0.0);
+        assert!(h.looper.free_clock().is_some_and(|c| !c.running));
+        assert!(!h.grid_now().unwrap()[0].pass, "in no cell");
+        // PLAY: the song, and the free loop with it from its top.
+        t.command(t.frame(), T::Play);
+        let out = run_host(&mut h, &mut t, &mut b, 200);
+        assert!(out.iter().any(|&v| v != 0.0), "it plays");
+        assert!(h.looper.free_clock().is_some_and(|c| c.running));
+    }
+
+    /// Capture with Sync: Free, the picked loop playing: it goes into the
+    /// first empty loop, which takes Sync as last set though it was never
+    /// picked, and takes the free clock's last bars (the song has
+    /// stopped; its own last bars are long gone by), which What you
+    /// played numbers from the free clock's bar 1, where the free loops
+    /// started.
+    #[test]
+    fn capture_with_sync_free_takes_the_free_loops_bars_into_a_free_loop() {
+        const BAR: u64 = 88_200;
+        const BAR_TICKS: Tick = 3_840;
+        let mut h = LoopHost::new(44_100, 20);
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        let mut b = Block::new();
+        h.command(Command::SetLatency(0));
+        h.command(Command::SetClock(Clock::Free));
+        h.command(Command::SetBars(Some(1)));
+        t.command(0, T::Play);
+        let mut run = |h: &mut LoopHost, t: &mut Transport, to: u64, out: &mut Vec<(f32, f32)>| {
+            while (out.len() as u64) < to {
+                let frame = out.len() as u64;
+                assert!(t.process(PERIOD as u32, &mut b));
+                let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+                for f in 0..PERIOD {
+                    (l[f], r[f]) = pads_at(frame + f as u64);
+                }
+                h.take_pads(&l, &r);
+                let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+                h.period(&b, &mut l, &mut r);
+                out.extend(l.iter().copied().zip(r.iter().copied()));
+            }
+        };
+        let mut out = Vec::new();
+        // Record half a bar in: the free loop starts on bar 2's line, the
+        // free clock's bar 1.
+        run(&mut h, &mut t, BAR / 2, &mut out);
+        h.command(Command::Record);
+        while h.looper.status().phase != Phase::Playing {
+            let to = out.len() as u64 + PERIOD as u64;
+            run(&mut h, &mut t, to, &mut out);
+        }
+        assert_eq!(h.looper.free_clock().map(|c| c.top), Some(BAR_TICKS));
+        // The song stops (its last bar line: bar 4's); the free loop plays
+        // on, and its clock with it, on the song's old bar lines.
+        run(&mut h, &mut t, 3 * BAR + 1_000, &mut out);
+        t.command(t.frame(), T::Stop);
+        // Bar 7, beat 2, of the song as it would have gone on.
+        run(&mut h, &mut t, 6 * BAR + 30_000, &mut out);
+        assert!(h.looper.free_clock().unwrap().running);
+        let v = h.view(120.0);
+        assert_eq!(
+            v.capture_into.map(|i| i.0),
+            Some(1),
+            "loop 2, the first empty"
+        );
+        let lines: Vec<i64> = v.heard.lines[..v.heard.n_lines]
+            .iter()
+            .map(|l| l.0)
+            .collect();
+        // The song's bars 2 to 7 are the free clock's 1 to 6.
+        assert_eq!(lines, [1, 2, 3, 4, 5, 6], "the free clock's bar lines");
+        let (_, _, from, bars) = v.heard.take.expect("a take");
+        assert_eq!(from + i64::from(bars), 6, "up to its last line");
+        let said = h.capture();
+        assert!(said.ends_with("become Loop 2, free"), "{said}");
+        let end = out.len() as u64 + 8_192;
+        run(&mut h, &mut t, end, &mut out);
+        let s = h.looper.loop_status(1).unwrap();
+        assert_eq!(
+            (s.phase, s.clock, s.capturing),
+            (Phase::Playing, Clock::Free, None)
+        );
+        assert_eq!(
+            (s.origin, s.ticks),
+            (
+                (6 - i64::from(bars)) * BAR_TICKS,
+                i64::from(bars) * BAR_TICKS
+            ),
+            "the free clock's bars, not the song's"
+        );
+        assert_eq!(h.looper.stats().refused, 0);
     }
 
     #[test]

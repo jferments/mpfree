@@ -669,7 +669,7 @@ const DB_TOP: f32 = 24.0;
 const DB_BOTTOM: f32 = -36.0;
 
 /// The filter's gain in dB at `hz`, as the pad's state-variable filter
-/// shapes it (4 poles are two 2-pole stages), or its ladder or its two
+/// shapes it at its slope (the Peak too), or its ladder or its two
 /// formants (sampler R5.6).
 pub fn filter_db(f: &Filter, hz: f32) -> f32 {
     match f.kind {
@@ -679,18 +679,7 @@ pub fn filter_db(f: &Filter, hz: f32) -> f32 {
         FilterKind::Comb => return comb_db(f.cutoff_hz, f.resonance, hz),
         _ => {}
     }
-    let w = hz / f.cutoff_hz.max(1.0);
-    let k = 2.0 - 1.95 * f.resonance.clamp(0.0, 1.0);
-    let den = (1.0 - w * w).powi(2) + (k * w).powi(2);
-    let power = match f.kind {
-        FilterKind::LowPass => 1.0 / den,
-        FilterKind::BandPass => w * w / den,
-        FilterKind::HighPass => w.powi(4) / den,
-        FilterKind::Notch => (1.0 - w * w).powi(2) / den,
-        FilterKind::Off | FilterKind::Ladder | FilterKind::Vowel | FilterKind::Comb => 1.0,
-    };
-    let stages = if f.poles >= 4 { 2.0 } else { 1.0 };
-    10.0 * power.max(1e-12).log10() * stages
+    mpfree_sampler::dsp::svf_db(f, hz)
 }
 
 /// The filter's response on a log frequency axis, with a dot at the

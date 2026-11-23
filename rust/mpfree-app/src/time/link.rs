@@ -286,6 +286,9 @@ pub enum ToControl {
     PlayedOn(u8, u32, Event, Took),
     /// A Perform FX move, for the move log.
     Moved(u32, Input),
+    /// A setting the XY pad moved (or let go of) for the song's lanes,
+    /// while Rec song records (`xy_rec.rs`).
+    SongMoved(u32, Input),
     /// A cue started on its bar line.
     Started(Started),
     /// A mute cue landed on its line (the mute queue).
