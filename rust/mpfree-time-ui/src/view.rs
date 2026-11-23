@@ -34,8 +34,8 @@ use crate::editor::{
     box_of, chord_name, drop_of, edit_rows, knob_name, length_name, lit_scale, pads, position_name,
     sound_name, step_name, ChordShape, EditAction, Editor, Fold, GhostLayer, Hearing, LaneShow,
     Lens, LockMark, LockSetting, NoteBox, NoteGrid, NoteTool, ShowOffer, Tool, ToolAct, ToolBar,
-    ToolKind, ADD, CHORD_MAJOR, CHORD_MENU, CHORD_MINOR, EDIT_BUTTON, ERASE_SWEEP, FIELDS,
-    GHOST_MOST, GHOST_TAP, LOCK_LANES, MENU, PADS_WRITE, PEN, PRESSURE_END, PRESSURE_LANE,
+    ToolKind, ADD, CHORD_MAJOR, CHORD_MENU, CHORD_MINOR, CLIP_END, EDIT_BUTTON, ERASE_SWEEP,
+    FIELDS, GHOST_MOST, GHOST_TAP, LOCK_LANES, MENU, PADS_WRITE, PEN, PRESSURE_END, PRESSURE_LANE,
     ROOT_MENU, SCALE_MENU, SHOW_MENU, SHOW_NONE, SNAP_AUTO_T, START_HANDLE, STEP_FALLBACK,
     TOOL_BUTTONS, TOOL_CANCEL, TOOL_DONE, TOOL_OPTION,
 };
@@ -2484,6 +2484,11 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                         len: to - from,
                     },
                 },
+                // The clip's end handle (plan 1A.2).
+                EventKind::Stretch {
+                    index: CLIP_END,
+                    to,
+                } => EditAction::Length { to },
                 EventKind::Stretch { index, to } => EditAction::Resize {
                     index: index % START_HANDLE,
                     rev,
@@ -5898,7 +5903,12 @@ pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
         .collect();
     g.step = step;
     g.locks = c.locks.iter().map(LockMark::of).collect();
-    g.lock_step = mpfree_seq::notes::steps_grid(c).size();
+    // The clip's Steps step size: where its locks sit, and what its end
+    // handle snaps to and stops at (plan 1A.2).
+    let steps = mpfree_seq::notes::steps_grid(c);
+    g.lock_step = steps.size();
+    g.shortest = mpfree_seq::notes::shortest_steps(c, steps) as Tick * steps.size();
+    g.longest = steps.max_steps() as Tick * steps.size();
     g.lock_settings = e.locks.clone();
     g.length = c.length;
     g.bar = e.bar;
@@ -6231,6 +6241,14 @@ impl TimePage {
     pub fn tick(&mut self, ui: &mut Ui, st: &TimeState, dt: f32) -> bool {
         if self.edit_hidden || st.edit.is_none() {
             return false;
+        }
+        // The clip's end handle held at the roll's edge (plan 1A.2): the
+        // end goes on and the roll scrolls, drawn again.
+        if ui.get::<NoteGrid>(NOTES).is_some_and(|g| g.end_at_edge()) {
+            if let Some(g) = ui.get_mut::<NoteGrid>(NOTES) {
+                g.grow_end(dt);
+            }
+            return true;
         }
         // Quietly: the hold's timer draws nothing (the pick comes back
         // with the clip), and `get_mut` every frame would redraw the roll
@@ -6988,6 +7006,14 @@ mod tests {
         assert_eq!(
             ev(EventKind::Cell { row: ADD, col: 3 }),
             edit(EditAction::Add { index: 3, rev: 0 })
+        );
+        // The clip's end handle (plan 1A.2).
+        assert_eq!(
+            ev(EventKind::Stretch {
+                index: CLIP_END,
+                to: 7680
+            }),
+            edit(EditAction::Length { to: 7680 })
         );
         // ERASE + a drag (plan 1B.5): the notes it crossed.
         assert_eq!(

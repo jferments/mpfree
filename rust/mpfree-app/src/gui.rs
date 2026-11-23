@@ -24025,6 +24025,26 @@ mod tests {
         );
         held.erase = false;
         p.apply(ToUi::Status(held));
+        // The clip's end handle on the ruler (piano roll plan 1A.2):
+        // dragged in, the clip shorter, to no less than just after the
+        // last note start (step 5 here).
+        use mpfree_ui::ui::Widget as _;
+        let end =
+            p.ui.get::<NoteGrid>(time_view::NOTES)
+                .unwrap()
+                .targets(area)
+                .into_iter()
+                .find(|t| t.id == "end")
+                .expect("the end handle");
+        let (x, y) = (end.rect.x + end.rect.w / 2, end.rect.y + end.rect.h / 2);
+        assert!(p.touch(1, Touch::Down, x, y).is_none());
+        assert!(p.touch(1, Touch::Move, area.x, y).is_none());
+        assert_eq!(
+            p.touch(1, Touch::Up, area.x, y),
+            Some(FromUi::Time(TimeAction::Edit(EditAction::Length {
+                to: 1200
+            })))
+        );
         // COPY held (piano roll plan 1B.4): a tap on a note copies the
         // picked notes (or that one), a tap on empty roll pastes them
         // there, and the hint line says so.

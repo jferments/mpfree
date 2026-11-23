@@ -1895,6 +1895,23 @@ pub fn steps_grid(clip: &Clip) -> Grid {
         .expect("a 1/16 is a step size")
 }
 
+/// The fewest steps of `grid` the Steps' length edit ([`Grid::resize`],
+/// their D2) can make `clip` with no note or lock taken out: one past the
+/// step of its last note start or lock, at least 1. A note or lock played
+/// early on step 0 (half a step or less before the clip comes round) is
+/// step 0's. The note editor's end handle stops there (piano roll plan
+/// 1A.2); notes may still run past the end.
+pub fn shortest_steps(clip: &Clip, grid: Grid) -> usize {
+    clip.notes
+        .iter()
+        .map(|n| n.tick)
+        .chain(clip.locks.iter().map(|l| l.tick))
+        .map(|t| grid.place(clip.length, t).0 + 1)
+        .max()
+        .unwrap_or(1)
+        .max(1)
+}
+
 /// Where a lock of `addr` on a note of pitch `note` sits (piano roll plan
 /// 3A.2), as (step row) for [`Grid::lock`]: the note's own pitch when
 /// `own` (a lock of that setting already sits on its pitch in its step),
@@ -3381,5 +3398,33 @@ mod tests {
         let mut full = c.clone();
         full.touch.resize(crate::MAX_TOUCH_POINTS, p(0, 0));
         assert_eq!(draw_touch(&full, &[0], &[(100, 99)], 200), None);
+    }
+    /// The end handle's stop (piano roll plan 1A.2): one past the step of
+    /// the last note start or lock, a note nudged late counting as the
+    /// step it rounds to and one early on step 0 as step 0's; the Steps'
+    /// length edit to it takes nothing out, and a step shorter would.
+    #[test]
+    fn the_shortest_a_clip_can_be_keeps_every_note_start_and_lock() {
+        let grid = Grid::new(240).unwrap();
+        let mut c = clip(&[(0, 240, 36), (350, 1920, 38)]);
+        // 350 rounds to step 1: two steps, though the note runs on.
+        assert_eq!(shortest_steps(&c, grid), 2);
+        let cut = RelAddr::new(OnTrack::Inst, 1);
+        c.add_lock(Lock::new(960, Some(36), cut, 0.5)).unwrap();
+        assert_eq!(shortest_steps(&c, grid), 5);
+        // Early on step 0: it plays before the clip comes round.
+        c.add_note(Note::new(3830, 120, 40, 100)).unwrap();
+        assert_eq!(shortest_steps(&c, grid), 5);
+        let e = grid.resize(&c, 5, false);
+        assert!(e
+            .erase
+            .iter()
+            .all(|n| e.add.iter().any(|m| m.note == n.note)));
+        assert!(e.erase_locks.is_empty());
+        let d = applied(&c, &e);
+        assert_eq!(d.length, 5 * 240);
+        assert_eq!(d.notes.len(), 3, "the early note stays before the end");
+        assert_eq!(grid.resize(&c, 4, false).erase_locks.len(), 1);
+        assert_eq!(shortest_steps(&Clip::new("t", 960), grid), 1);
     }
 }
