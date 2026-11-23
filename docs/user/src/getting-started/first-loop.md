@@ -49,7 +49,7 @@ The looper can record the **INPUTS** on the back of the MPC instead: a synth, a 
 The **Looper** tab (**SHIFT + SAMPLER**) is where a loop is shaped: the same eight rings across the top, and the picked loop laid out underneath with a lane per layer, its level and pan, and its recording settings. Press **SHIFT + SAMPLER** again there and the pads play the loops instead of the kit. See [Recording loops](../making-music/looping.md).
 
 > [!MPC]
-> On the MPC the Looper is a separate screen with one loop, which can run free of the transport (Sync off) and start when the input passes a threshold. In MPFree loops follow the song's tempo and bar lines, sit on the Play page next to your pattern, and can record MPFree's own pads and synth as well as the inputs. Up to eight loops can play at once.
+> On the MPC the Looper is a separate screen with one loop, its length set in bars before you record. With Sync off it records and plays while the sequencer is stopped, and only then can it start when the input passes a threshold. In MPFree loops follow the song's tempo and bar lines, sit on the Play page next to your pattern, and can record MPFree's own pads and synth as well as the inputs. A loop can also wait for your first note, or for the first sound on the line input. Up to eight loops can play at once.
 
 > [!TIP]
 > Line input is off every time MPFree starts, so you never hear a noisy input you forgot was plugged in.
