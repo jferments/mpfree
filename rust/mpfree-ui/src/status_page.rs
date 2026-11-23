@@ -15,6 +15,7 @@
 //!   ended folds to a line, and a tap opens it. Then the system's own
 //!   numbers.
 //! - **Now | This session**, at the top right.
+//! - **Save a report**, at the foot of the cards panel on every system.
 
 use crate::geom::Rect;
 use crate::text::{Align, FontId};
@@ -29,6 +30,8 @@ pub const SESSION: usize = 101;
 pub const CARD: usize = 200;
 /// `Tab(BUTTON + i)`: card `i`'s button.
 pub const BUTTON: usize = 300;
+/// `Tab(SAVE_REPORT)`: Save a report, at the foot of the cards panel.
+pub const SAVE_REPORT: usize = 400;
 
 /// The head's height, and a system row's.
 const HEAD_H: i32 = 76;
@@ -117,6 +120,15 @@ impl StatusPage {
         r.take_top(HEAD_H).0
     }
 
+    /// A meter's width on the head: 150 px, or 128 when there are four.
+    fn meter_w(n: usize) -> i32 {
+        if n > 3 {
+            128
+        } else {
+            150
+        }
+    }
+
     fn switch_rects(r: Rect) -> (Rect, Rect) {
         let head = Self::head_rect(r).inset(12);
         let (w, h) = (150, 44);
@@ -136,9 +148,23 @@ impl StatusPage {
         body.take_left(SYSTEMS_W + 12).1
     }
 
+    /// Save a report's button, at the foot of the cards panel, on the
+    /// right.
+    fn report_rect(r: Rect) -> Rect {
+        let inner = Self::cards_area(r).inset(12);
+        Rect::new(inner.right() - 200, inner.bottom() - 44, 200, 44)
+    }
+
+    /// The cards and numbers stop above Save a report.
+    fn cards_inner(r: Rect) -> Rect {
+        let inner = Self::cards_area(r).inset(12);
+        let foot = Self::report_rect(r).y - 8;
+        Rect::new(inner.x, inner.y, inner.w, foot - inner.y)
+    }
+
     /// Each card's place, and its button's, as far as they fit.
     fn card_rects(&self, cx: &mut PaintCx, r: Rect) -> Vec<(Rect, Option<Rect>)> {
-        let area = Self::cards_area(r).inset(12);
+        let area = Self::cards_inner(r);
         let mut y = area.y;
         let mut out = Vec::new();
         for (i, c) in self.view.cards.iter().enumerate() {
@@ -196,16 +222,34 @@ impl Widget for StatusPage {
         cx.panel(head);
         let inner = head.inset(16);
         let (now_r, session_r) = Self::switch_rects(r);
+        // The meters from the switch leftwards, narrower when there are
+        // four (CPU, RAM, the stick and the temperature); the words have
+        // the room left of them.
+        let w = Self::meter_w(v.meters.len());
+        let n = v.meters.len() as i32;
+        let meters_x = now_r.x - 16 - n * (w + 8) + 8;
+        let room = if n > 0 {
+            meters_x - 16 - inner.x
+        } else {
+            inner.w
+        };
         let (title, _) = inner.take_top(36);
+        let title = Rect::new(title.x, title.y, room, title.h);
+        // A long title steps down a size before it is cut short.
+        let px = if cx.measure(FontId::Bold, t.size_title, &v.head) > room {
+            t.size_body
+        } else {
+            t.size_title
+        };
         cx.text(
             FontId::Bold,
-            t.size_title,
+            px,
             title,
             Align::Left,
             t.tone(v.head_tone),
             &v.head,
         );
-        let counts = Rect::new(inner.x, inner.y + 38, inner.w, 22);
+        let counts = Rect::new(inner.x, inner.y + 38, room, 22);
         cx.text(
             FontId::Sans,
             t.size_small,
@@ -216,7 +260,6 @@ impl Widget for StatusPage {
         );
         let mut mx = now_r.x - 16;
         for (name, value, full, tone) in v.meters.iter().rev() {
-            let w = 150;
             let m = Rect::new(mx - w, inner.y, w, inner.h);
             let (label, bar) = m.take_top(m.h - 12);
             cx.text(
@@ -310,7 +353,17 @@ impl Widget for StatusPage {
         // The picked system's cards, then its numbers.
         let area = Self::cards_area(r);
         cx.panel(area);
-        let inner = area.inset(12);
+        let inner = Self::cards_inner(r);
+        let save = Self::report_rect(r);
+        cx.canvas.fill_round_rect(save, t.round(10), t.raised);
+        cx.text(
+            FontId::Bold,
+            t.size_small,
+            save,
+            Align::Center,
+            t.button_ink(true),
+            "Save a report",
+        );
         if v.cards.is_empty() {
             let line = inner.take_top(36).0;
             let words = if v.now_only {
@@ -407,6 +460,9 @@ impl Widget for StatusPage {
         if session.contains(x, y) {
             return Some(EventKind::Tab(SESSION));
         }
+        if Self::report_rect(r).contains(x, y) {
+            return Some(EventKind::Tab(SAVE_REPORT));
+        }
         if let Some(i) =
             (0..self.view.systems.len()).find(|&i| Self::system_rect(r, i).contains(x, y))
         {
@@ -440,6 +496,12 @@ impl Widget for StatusPage {
             Target::tap("switch", NOW, "Now", now).disabled_if(self.view.now_only),
             Target::tap("switch", SESSION, "This session", session)
                 .disabled_if(!self.view.now_only),
+            Target::tap(
+                "save-report",
+                SAVE_REPORT,
+                "Save a report",
+                Self::report_rect(r),
+            ),
         ];
         for (i, s) in self.view.systems.iter().enumerate() {
             out.push(
@@ -539,6 +601,10 @@ mod tests {
             ids.contains(&("card", 1)),
             "the ended card opens with a tap"
         );
+        assert!(
+            ids.iter().any(|(id, _)| *id == "save-report"),
+            "Save a report, on every system"
+        );
         for t in targets {
             let (x, y) = (t.rect.x + t.rect.w / 2, t.rect.y + t.rect.h / 2);
             let e = p.touch(1, Touch::Up, x, y, AREA);
@@ -546,6 +612,7 @@ mod tests {
                 "switch" => EventKind::Tab(t.index),
                 "system" => EventKind::Select(t.index),
                 "card-button" => EventKind::Tab(BUTTON + t.index),
+                "save-report" => EventKind::Tab(SAVE_REPORT),
                 _ => EventKind::Tab(CARD + t.index),
             };
             assert_eq!(e, Some(want), "{}", t.id);

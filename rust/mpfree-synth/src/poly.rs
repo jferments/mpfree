@@ -47,7 +47,7 @@ use crate::expr::{expr_coef, NoteExprs, VoiceExpr};
 use crate::osc::{self, Classic, Shape, Super, SAWS};
 use crate::params::*;
 use crate::pressure::{lfo_gate, swell_gain, Depths, Slot, MAX_TARGETS};
-use crate::table_osc::{self, Run, Warp, WARP_FM};
+use crate::table_osc::{self, Restart, Run, Warp, WARP_FM};
 use crate::voice::{
     routed, Adsr, Channel, DcBlock, Inputs, Lfo, Priority, Route, Source, VelCurve,
 };
@@ -164,6 +164,8 @@ struct Voice {
     tlv: [u8; 2],
     tpos: [f32; 2],
     run: [Run; 2],
+    /// Each Table wave's sync restart this control step (DSP quality 1.1).
+    restart: [Restart; 2],
     warp: [Warp; 2],
     last: [f32; UNISON_MAX],
     tsnap: bool,
@@ -230,6 +232,7 @@ impl Voice {
             tlv: [0; 2],
             tpos: [0.0; 2],
             run: [Run::default(); 2],
+            restart: [Restart::default(); 2],
             warp: [Warp::Off; 2],
             last: [0.0; UNISON_MAX],
             tsnap: true,
@@ -443,9 +446,11 @@ impl Poly {
         };
         let (cards, mut start) = Cards::draw();
         let drift = Drift::new(&mut start);
-        // Wavetable's tables: built on the first call in the process, here
-        // on the control thread, never on the audio thread.
+        // Wavetable's tables and the sync restart's residuals: built on the
+        // first call in the process, here on the control thread, never on
+        // the audio thread.
         let f = factory();
+        table_osc::edges();
         let mut s = Poly {
             rate,
             values,
@@ -573,7 +578,9 @@ impl Poly {
             for v in self.voices.iter_mut().filter(|v| v.state != State::Free) {
                 v.tlv[o] = v.tlv[o].min(tab.levels().len() as u8 - 1);
                 v.tpos[o] = v.tpos[o].min(last);
-                v.run[o] = Run::new(tab, usize::from(v.tlv[o]), v.tpos[o], v.tpos[o]);
+                let lv = usize::from(v.tlv[o]);
+                v.run[o] = Run::new(tab, lv, v.tpos[o], v.tpos[o]);
+                v.restart[o].update(v.warp[o], &v.run[o], tab, lv, true);
             }
         }
     }
@@ -1662,14 +1669,17 @@ impl Poly {
         // The drive's and the distortion's level corrections, from the
         // step just rendered.
         let mut level = if v.drive_amt > 0.0 {
-            v.drive_level.step(CTRL, rate_bits)
+            v.drive_level
+                .step_late(CTRL, rate_bits, soft_quiet_gain(v.drive_gain, v.drive_amt))
         } else {
             v.drive_level.clear();
             v.drive_aa = [DriveAa::default(); 2];
             1.0
         };
         if v.dist_amt > 0.0 {
-            level *= v.dist_level.step(CTRL, rate_bits);
+            level *=
+                v.dist_level
+                    .step_late(CTRL, rate_bits, soft_quiet_gain(v.dist_gain, v.dist_amt));
         } else if dist_was > 0.0 {
             // Off: nothing more is summed, so one clear does.
             v.dist_level.clear();
@@ -1838,7 +1848,7 @@ impl Poly {
             // Most sounds have no distortion: one test a step skips it.
             let (dk, dn) = if v.drive_amt > 0.0 {
                 let lv = mix_level(s.unison, [s.lvl1, s.lvl2], v.sub, v.noise);
-                drive_scales(v.drive_gain, lv)
+                soft_scales(v.drive_gain, lv)
             } else {
                 (1.0, 1.0)
             };
@@ -1853,7 +1863,7 @@ impl Poly {
             v.filt[0].run(mode, &v.coefs, l);
             let dist = if v.dist_amt > 0.0 {
                 let lv = mix_level(s.unison, [s.lvl1, s.lvl2], v.sub, v.noise);
-                let (ek, en) = drive_scales(v.dist_gain, lv);
+                let (ek, en) = soft_scales(v.dist_gain, lv);
                 drive_run_level_aa(l, ek, en, v.dist_amt, &mut v.dist_level, &mut v.dist_aa[0]);
                 Some((ek, en))
             } else {
@@ -1928,6 +1938,7 @@ fn table_stacks(
     for o in 0..2 {
         if s.table[o] {
             v.run[o].t = t_end[o];
+            v.warp[o].advance(a.len());
         }
     }
 }
@@ -2063,7 +2074,18 @@ fn osc_into<const ADD: bool>(
         )
     };
     if s.table[o] {
-        return table_osc::render::<ADD>(&v.run[o], t, d, v.warp[o], fm, buf, ph, di, level);
+        return table_osc::render::<ADD>(
+            &v.run[o],
+            &v.restart[o],
+            t,
+            d,
+            v.warp[o],
+            fm,
+            buf,
+            ph,
+            di,
+            level,
+        );
     }
     let lv = usize::from(lv);
     if shape == Shape::Supersaw {
@@ -2181,7 +2203,13 @@ fn table_control(
         let at = pos.clamp(0.0, 1.0) * (tab.frames() - 1) as f32;
         let from = if v.tsnap { at } else { v.tpos[o] };
         v.tpos[o] = at;
-        let warp = Warp::new(t.modes[o], t.warp[o] + fe * t.env_warp + p_warp + m_warp);
+        // A sync ratio glides across the step from where it stood, except
+        // at a note's start.
+        let mut warp = Warp::new(t.modes[o], t.warp[o] + fe * t.env_warp + p_warp + m_warp);
+        let sync = matches!(warp, Warp::Sync { .. });
+        if sync && !v.tsnap {
+            warp = warp.glide_from(v.warp[o]);
+        }
         v.warp[o] = warp;
         // The level for the fastest stack, sped up by the warp.
         let dts = if o == 0 { &v.dt1 } else { &v.dt2 };
@@ -2189,6 +2217,12 @@ fn table_control(
         let lv = tab.level_for(top);
         v.tlv[o] = lv as u8;
         v.run[o] = Run::new(tab, lv, from, at);
+        // Only a sync read looks at its restart (what it holds stays
+        // good for when sync comes back: it's keyed to the frames, the
+        // ratio and the crossfade).
+        if sync {
+            v.restart[o].update(warp, &v.run[o], tab, lv, v.tsnap);
+        }
     }
     v.tsnap = false;
 }

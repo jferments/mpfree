@@ -40,7 +40,7 @@
 //!   layers ([`App::synth_pick_layer`]).
 
 use super::pad_layers::{MORE, PAD_LAYERS};
-use super::{App, Effect, PadFocus, View};
+use super::{App, BankEntry, Effect, PadFocus, PadMap, View};
 use crate::instrument_list::InstrumentId;
 use crate::instruments::{free, Held, FREE, SLOTS};
 use crate::synth::Engine;
@@ -74,9 +74,9 @@ pub struct SynthPickView {
 /// Cancel, and the free place they played then, kept until it closes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct SynthPick {
-    had: PadFocus,
-    /// What each bank played of its own then (step 6c).
-    had_banks: [Option<PadFocus>; super::KIT_PAGES],
+    /// The pad map then (sampler step 15b): every bank's, each bank's own
+    /// (step 6c) and the layers (step 11b).
+    had: PadMap,
     /// The free places that held an instrument then, a bit each: a tap
     /// never puts a synth in one, so Cancel finds them as they were.
     kept: u16,
@@ -88,8 +88,6 @@ pub(super) struct SynthPick {
     /// Layer (step 11b): a tap adds a synth to what the pads play or
     /// takes it off.
     layer: bool,
-    /// The layers the pads had when it opened, for Cancel.
-    had_layers: [Option<InstrumentId>; MORE],
 }
 
 /// What each built-in synth is good for, in musicians' words (the manual's
@@ -146,9 +144,9 @@ impl App {
     fn pick_place(&self, bank: Option<usize>) -> Option<usize> {
         let kept = self.synth_pick.map_or(0, |p| p.kept);
         let sent = |h: usize| (0..mpfree_seq::MAX_TRACKS).any(|t| self.track_send(t) == Some(h));
-        let all = Self::place_of(self.focus_holder(Some(self.pads_focus)));
+        let all = Self::place_of(self.focus_holder(Some(self.pad_map.base)));
         let of_bank =
-            |b: usize| self.bank_to[b].or(Self::place_of(self.focus_holder(self.bank_focus[b])));
+            |b: usize| self.bank_to[b].or(Self::place_of(self.focus_holder(self.bank_play(b))));
         let (now, busy) = match bank {
             None => (
                 self.pads_to.or(all),
@@ -278,8 +276,8 @@ impl App {
         // What the pads play now, on the bank they are on: a place waiting
         // for its id first.
         let page = self.pad_page;
-        let own =
-            self.banks_apply() && (self.bank_to[page].is_some() || self.bank_focus[page].is_some());
+        let own = self.banks_apply()
+            && (self.bank_to[page].is_some() || self.pad_map.banks[page].is_some());
         let waiting = if own {
             self.bank_to[page]
         } else {
@@ -329,15 +327,13 @@ impl App {
             .filter(|&n| self.track_sound(free(n)).is_some())
             .fold(0u16, |m, n| m | 1 << n);
         self.synth_pick = Some(SynthPick {
-            had: self.pads_focus,
-            had_banks: self.bank_focus,
+            had: self.pad_map,
             kept,
             had_choice: None,
             // On a bank with its own, the next tap changes that bank.
             bank_only: self.pads_bank().is_some(),
             // With layers, the next tap adds or takes off one (step 11b).
             layer: self.has_layers() && self.pads_bank().is_none(),
-            had_layers: self.pad_layers,
         });
         let view = self.synth_pick_view();
         if let (Some(p), Some(v)) = (self.synth_pick.as_mut(), view.as_ref()) {
@@ -386,11 +382,11 @@ impl App {
     /// play. Nothing (and no allocation) when it does already.
     fn bank_follows_track(&mut self, b: usize) -> Vec<Effect> {
         // None is "what every bank plays": the track's, while they follow it.
-        let to = (self.pads_focus != PadFocus::Track).then_some(PadFocus::Track);
-        if self.bank_focus[b] == to && self.bank_to[b].is_none() {
+        let to = (self.pad_map.base != PadFocus::Track).then_some(BankEntry::of(PadFocus::Track));
+        if self.pad_map.banks[b] == to && self.bank_to[b].is_none() {
             return Vec::new();
         }
-        self.bank_focus[b] = to;
+        self.pad_map.banks[b] = to;
         self.bank_to[b] = None;
         self.project_edit = true;
         vec![
@@ -427,14 +423,15 @@ impl App {
         // Where the choice points now: every bank's, or the bank's own.
         let points = match bank {
             None => {
-                self.pads_to == Some(n) || self.focus_holder(Some(self.pads_focus)) == Some(holder)
+                self.pads_to == Some(n)
+                    || self.focus_holder(Some(self.pad_map.base)) == Some(holder)
             }
             Some(b) => {
-                self.bank_to[b] == Some(n) || self.focus_holder(self.bank_focus[b]) == Some(holder)
+                self.bank_to[b] == Some(n) || self.focus_holder(self.bank_play(b)) == Some(holder)
             }
         };
-        let banks_own =
-            self.bank_focus.iter().any(Option::is_some) || self.bank_to.iter().any(Option::is_some);
+        let banks_own = self.pad_map.banks.iter().any(Option::is_some)
+            || self.bank_to.iter().any(Option::is_some);
         // With Layer off a tap plays the synth alone (step 11b).
         let layered = bank.is_none() && self.has_layers();
         if self.track_sound(holder).map(|h| h.id) == Some(id)
@@ -460,7 +457,7 @@ impl App {
                     self.pads_to = Some(n);
                 }
                 // Every bank: a bank's own is given up, and the layers.
-                self.bank_focus = [None; super::KIT_PAGES];
+                self.pad_map.banks = [None; super::KIT_PAGES];
                 self.bank_to = [None; super::KIT_PAGES];
                 self.clear_layers();
             }
@@ -503,7 +500,7 @@ impl App {
             )];
         }
         // One of them already: off.
-        let first = match self.pads_focus {
+        let first = match self.pad_map.base {
             PadFocus::Instrument(f) => Some(f),
             PadFocus::Track => None,
         };
@@ -569,7 +566,7 @@ impl App {
             ))];
         };
         let was = self.pads_focus();
-        self.pads_focus = PadFocus::Instrument(chosen);
+        self.pad_map.base = PadFocus::Instrument(chosen);
         let holder = free(n);
         self.set_track_sound(
             holder,
@@ -606,29 +603,16 @@ impl App {
             return Vec::new();
         };
         let mut fx = Vec::new();
-        let listed = |f: PadFocus| match f {
-            PadFocus::Instrument(id) => self.instrument_list.kind(id).is_some(),
-            PadFocus::Track => true,
-        };
-        let back = listed(pick.had);
-        let banks = pick.had_banks.map(|f| f.filter(|&f| listed(f)));
-        let layers = pick
-            .had_layers
-            .map(|l| l.filter(|&id| self.instrument_list.kind(id).is_some()));
-        let moved = self.pads_focus != pick.had
+        // The map as it was, a missing entry too (sampler step 15b).
+        let moved = self.pad_map != pick.had
             || self.pads_to.is_some()
-            || self.bank_focus != banks
             || self.bank_to.iter().any(Option::is_some)
-            || self.pad_layers != layers
             || self.layer_to.iter().any(Option::is_some);
-        if !keep && moved && back {
-            self.pads_focus = pick.had;
+        if !keep && moved {
+            self.pad_map = pick.had;
             self.pads_to = None;
-            self.bank_focus = banks;
             self.bank_to = [None; super::KIT_PAGES];
-            self.clear_layers();
-            self.pad_layers = layers;
-            self.pack_layers();
+            self.layer_to = [None; MORE];
             self.project_edit = true;
             fx.push(Effect::PadsFocus(self.pads_focus()));
         }

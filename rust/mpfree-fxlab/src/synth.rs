@@ -1056,6 +1056,51 @@ fn num(v: f64) -> String {
 /// Velocities for the level and tone curves.
 const VELS: [u8; 5] = [20, 40, 64, 100, 127];
 
+/// When L2's chords start: seconds from the start of the render, and how
+/// many short notes come and go before each (6 s before it, so they have
+/// died away). The chord's peak moves with what the voices are doing when
+/// it starts: an LFO's phase, free-running oscillators, which voice card
+/// each note lands on, a pluck's noise. One chord can miss a clip another
+/// makes, so the row takes the loudest of these.
+const CHORD8_TRIALS: [(f64, usize); 8] = [
+    (0.0, 0),
+    (0.413, 2),
+    (0.051, 4),
+    (0.097, 6),
+    (0.131, 0),
+    (0.29, 2),
+    (0.51, 4),
+    (0.77, 6),
+];
+
+/// L2: the sample peak, dBFS, of the loudest of [`CHORD8_TRIALS`]' 8-note
+/// chords at full velocity (major sevenths over two octaves from an
+/// octave under `base`, held a second), each on a fresh node from `make`.
+fn chord8_peak(make: &dyn Fn() -> Box<dyn Node>, rate: u32, base: u8) -> f64 {
+    let mut loudest = -140.0f64;
+    for (at, warm) in CHORD8_TRIALS {
+        let mut notes: Vec<(u8, u8, f64, f64)> = (0..warm)
+            .map(|w| (base + w as u8, 100, 0.1 * w as f64, 0.05))
+            .collect();
+        let at = if warm > 0 { at + 6.0 } else { at };
+        notes.extend(
+            [0u8, 4, 7, 11, 12, 16, 19, 23]
+                .iter()
+                .map(|&k| (base - 12 + k, 127, at, 1.0)),
+        );
+        let c8 = render(
+            make().as_mut(),
+            rate,
+            frames(at + 2.0, rate),
+            &score(rate, &notes),
+        );
+        let from = frames(at, rate);
+        let chord = Stereo::new(c8.left[from..].to_vec(), c8.right[from..].to_vec(), rate);
+        loudest = loudest.max(loudness::sample_peak(&chord));
+    }
+    loudest
+}
+
 fn preset_rows(rows: &mut Vec<Row>, e: Engine, i: usize, name: &str, rate: u32) {
     let subject = format!("{}[{name}]", e.name());
     let make = || e.make(i, rate);
@@ -1124,23 +1169,13 @@ fn preset_rows(rows: &mut Vec<Row>, e: Engine, i: usize, name: &str, rate: u32) 
         0.0,
     );
 
-    // L2: eight notes at full velocity.
-    let chord8: Vec<(u8, u8, f64, f64)> = [0u8, 4, 7, 11, 12, 16, 19, 23]
-        .iter()
-        .map(|&k| (base - 12 + k, 127, 0.0, 1.0))
-        .collect();
-    let c8 = render(
-        make().as_mut(),
-        rate,
-        frames(2.0, rate),
-        &score(rate, &chord8),
-    );
+    // L2: eight notes at full velocity, the loudest of a few such chords.
     put(
         rows,
         "L2",
         &subject,
         "chord8_peak_dbfs",
-        loudness::sample_peak(&c8).max(-140.0),
+        chord8_peak(&make, rate, base),
         Better::Lower,
         Some(0.0),
         0.5,

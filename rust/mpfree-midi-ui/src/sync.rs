@@ -147,7 +147,36 @@ impl Form for Sync {
                 "program 1 launches scene 1, 2 scene 2, and so on",
                 Tone::Normal,
             ),
+            ProgramIn::Patch => program.note(
+                "program 1 picks patch 1, 2 patch 2, and so on",
+                Tone::Normal,
+            ),
         });
+        // Live shows C1: the line under it says when the patch changes,
+        // as Next patch's Switches on Learn's Play card.
+        if s.program_in == ProgramIn::Patch {
+            let switches = Row::item("program-switches", "Switches").field(Field::choice(
+                "Switches",
+                if s.program_waits {
+                    "When your hands are up"
+                } else {
+                    "At once"
+                },
+                s.program_waits as usize,
+                2,
+            ));
+            rows.push(if s.program_waits {
+                switches.note(
+                    "the patch changes once every key and pedal is up",
+                    Tone::Normal,
+                )
+            } else {
+                switches.note(
+                    "the patch changes as the program change comes in",
+                    Tone::Normal,
+                )
+            });
+        }
         rows.push(Row::heading("Clock out", vec!["Sends"]));
         for (name, live) in ports(m) {
             if live.is_some_and(|l| !l.has_out) {
@@ -201,6 +230,13 @@ impl Form for Sync {
                     return false;
                 }
                 m.setup.mmc_in = !m.setup.mmc_in;
+                true
+            }
+            "program-switches" => {
+                if delta == 0 || m.setup.program_in != ProgramIn::Patch {
+                    return false;
+                }
+                m.setup.program_waits = !m.setup.program_waits;
                 true
             }
             "program" => {
@@ -391,6 +427,26 @@ mod tests {
             row(&s, "program").note,
             "program 1 launches scene 1, 2 scene 2, and so on"
         );
+        // Picks a patch (live shows C1), with its Switches on the line
+        // under it.
+        let has = |s: &crate::Shared, key: &str| {
+            Sync.rows(&s.lock().unwrap(), Duration::ZERO)
+                .iter()
+                .any(|r| r.key == key)
+        };
+        assert!(!has(&s, "program-switches"));
+        assert!(!Sync.step(&mut s.lock().unwrap(), "program-switches", 0, 1));
+        assert!(Sync.step(&mut s.lock().unwrap(), "program", 0, 1));
+        assert_eq!(s.lock().unwrap().setup.program_in, ProgramIn::Patch);
+        let r = row(&s, "program");
+        assert_eq!(r.fields[0].text, "Picks a patch");
+        assert_eq!(r.note, "program 1 picks patch 1, 2 patch 2, and so on");
+        assert_eq!(row(&s, "program-switches").fields[0].text, "At once");
+        assert!(Sync.step(&mut s.lock().unwrap(), "program-switches", 0, 1));
+        assert!(s.lock().unwrap().setup.program_waits);
+        let r = row(&s, "program-switches");
+        assert_eq!(r.fields[0].text, "When your hands are up");
+        assert_eq!(r.note, "the patch changes once every key and pedal is up");
         // A tap on the last choice goes round.
         assert!(Sync.step(&mut s.lock().unwrap(), "program", 0, 1));
         assert_eq!(s.lock().unwrap().setup.program_in, ProgramIn::Off);

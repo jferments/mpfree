@@ -22,6 +22,12 @@ pub enum Job {
     Chords = 9,
     Drums = 10,
     Variation = 11,
+    /// The phrase plan (revision 3, S1).
+    Sketch = 12,
+    /// Rhythm cells and their named changes (revision 3, S2).
+    Cells = 13,
+    /// Add a part: its notes and drafts (revision 3, S2).
+    AddPart = 14,
 }
 
 /// The names a roll is drawn from.

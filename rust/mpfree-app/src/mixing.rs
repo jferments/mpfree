@@ -661,6 +661,15 @@ pub struct MixHost {
     /// Lifts the pad's state on the screen did, its lift action not having
     /// come (counted for the status line).
     xy_found_up: u64,
+    /// A layout of yours on the XY pad (`xy_play.rs`): while one plays,
+    /// the pad's gestures play it through the hand layer.
+    xy_play: crate::xy_play::XyPlay,
+    /// Frames until a learned control's gesture on a layout of yours ends
+    /// (`HAND_S` after its last move; 0: none going).
+    xy_midi_left: u32,
+    /// A track records (`main.rs` says so each loop): the XY pad's hand
+    /// beats a step's lock, and Stay keeps no value.
+    recording: bool,
     /// Perform pads' throws held while their strip's Perform FX is being
     /// put on: each plays when it lands ([`MixHost::poll_built`]).
     waiting: [Option<Waiting>; WAITING],
@@ -957,6 +966,9 @@ impl MixHost {
             xy_new: false,
             xy_late: None,
             xy_found_up: 0,
+            xy_play: crate::xy_play::XyPlay::new(rate),
+            xy_midi_left: 0,
+            recording: false,
             waiting: [None; WAITING],
             throw_said: Vec::new(),
             perform_want: Vec::new(),
@@ -1224,6 +1236,9 @@ impl MixHost {
         self.xy_gesture.clear();
         self.xy_on = [false; 2];
         self.xy_late = None;
+        self.xy_midi_left = 0;
+        let mut reach = crate::xy_play::ModReach::new(&mut self.modu, &self.mixer, false);
+        self.xy_play.cancel(&mut reach);
         // An old project's pad mutes, for the tracks to take as it opens.
         self.old_pads = Some((load.old_pad_mutes, load.old_pad_solos)).filter(|&(m, s)| m | s != 0);
         self.opening = Some(Box::new(Open {
@@ -1653,6 +1668,9 @@ impl MixHost {
             PlayFx::Xy { x, y, down } => self.xy(mpfree_xy::Device::Midi, x, y, down),
             PlayFx::XyEffect(pick) => {
                 use mpfree_fx::xyfx::ids as xy;
+                if self.xy_play.playing() {
+                    self.xy_yours(None);
+                }
                 let pick = pick.filter(|&k| k < XY_START.len());
                 self.xy_effect = pick;
                 match (pick, self.xy_slot()) {
@@ -1698,6 +1716,10 @@ impl MixHost {
     /// gesture holds the pad.
     fn xy(&mut self, device: mpfree_xy::Device, x: f32, y: f32, down: bool) {
         use mpfree_xy::{Phase, Step, XyInput};
+        if self.xy_play.playing() {
+            self.xy_on_yours(device, x, y, down);
+            return;
+        }
         let d = usize::from(device != mpfree_xy::Device::Screen);
         let was = self.xy_on[d];
         if !down && !was {
@@ -1745,6 +1767,169 @@ impl MixHost {
                 self.play_xy(x, y, false);
             }
         }
+    }
+
+    /// The XY pad on a layout of yours (`xy_play.rs`): `device` put it at
+    /// `x`, `y`, held or not. A learned control's moves each hold the pad,
+    /// and its gesture ends `HAND_S` after its last move (it has no lift
+    /// of its own); the screen's lift is its own. The gesture that owns
+    /// the pad plays, as for the ready-made layouts.
+    fn xy_on_yours(&mut self, device: mpfree_xy::Device, x: f32, y: f32, down: bool) {
+        use mpfree_xy::{Phase, Step, XyInput};
+        let midi = device != mpfree_xy::Device::Screen;
+        let down = if midi && down {
+            let rate = self.modu.engine().rate();
+            self.xy_midi_left = crate::xy_play::frames(rate, crate::locks::HAND_S * 1000.0);
+            true
+        } else {
+            down
+        };
+        let d = usize::from(midi);
+        let was = self.xy_on[d];
+        if !down && !was {
+            // Not held outside a gesture (a glide home): a layout of yours
+            // has none.
+            return;
+        }
+        self.xy_on[d] = down;
+        let phase = match (was, down) {
+            (false, true) => Phase::Begin,
+            (true, true) => Phase::Move,
+            _ => Phase::End,
+        };
+        self.xy_seq = self.xy_seq.wrapping_add(1);
+        let input = XyInput::new(device, 0, self.xy_seq, 0, phase, x, y);
+        let step = self.xy_gesture.input(&input);
+        let recording = self.recording;
+        let mut reach = crate::xy_play::ModReach::new(&mut self.modu, &self.mixer, recording);
+        match step {
+            None => {}
+            Some(Step::Begin { x, y }) => {
+                // The other controller's gesture lost the pad: this one
+                // takes it, from where it is.
+                if self.xy_play.down() {
+                    self.xy_play.end(&mut reach, recording);
+                }
+                self.xy_play.begin(&mut reach, x, y, |a| a)
+            }
+            Some(Step::Move { x, y }) => self.xy_play.moved(&mut reach, x, y),
+            Some(Step::End { x, y }) => {
+                self.xy_play.moved(&mut reach, x, y);
+                self.xy_play.end(&mut reach, recording);
+            }
+        }
+    }
+
+    /// A learned control's gesture on a layout of yours ends: still for
+    /// `HAND_S` (it has no lift of its own).
+    fn xy_midi_ends(&mut self) {
+        use mpfree_xy::{Phase, Step, XyInput};
+        self.xy_on[1] = false;
+        self.xy_seq = self.xy_seq.wrapping_add(1);
+        let (x, y) = self.xy_play.position();
+        let input = XyInput::new(mpfree_xy::Device::Midi, 0, self.xy_seq, 0, Phase::End, x, y);
+        if let Some(Step::End { .. }) = self.xy_gesture.input(&input) {
+            let recording = self.recording;
+            let mut reach = crate::xy_play::ModReach::new(&mut self.modu, &self.mixer, recording);
+            self.xy_play.end(&mut reach, recording);
+        }
+    }
+
+    /// The XY pad plays `layout`, a layout of yours (None: back to the
+    /// ready-made one picked). Whatever the pad held lets go first, at
+    /// once: a ready-made layout's finger lifts (an XY FX closes), and a
+    /// layout of yours lets go of everything, even with Hold on.
+    pub fn xy_yours(&mut self, layout: Option<mpfree_xy::Compiled>) {
+        if !self.xy_play.playing() && self.xy_gesture.held() {
+            let (x, y) = self.xy_at();
+            self.play_xy(x, y, false);
+        }
+        self.xy_gesture.clear();
+        self.xy_on = [false; 2];
+        self.xy_late = None;
+        self.xy_midi_left = 0;
+        let mut reach = crate::xy_play::ModReach::new(&mut self.modu, &self.mixer, self.recording);
+        self.xy_play.load(&mut reach, layout);
+    }
+
+    /// What an action on your layouts asks of the mixer
+    /// (`xy_song::XySong::act`): a layout to play (a copy of an XY FX's
+    /// sets the XY FX's effect first), Hold.
+    pub fn xy_done(&mut self, d: crate::xy_song::Done) {
+        if let Some(load) = d.load {
+            if let Some((_, Some(k))) = load {
+                self.xy_fx_effect(k);
+            }
+            self.xy_yours(load.map(|(c, _)| c));
+        }
+        if let Some(on) = d.hold {
+            if self.xy_play.playing() {
+                self.xy_hold(on);
+            }
+        }
+    }
+
+    /// Whether Hold is on (a layout of yours).
+    pub fn xy_held(&self) -> bool {
+        self.xy_play.playing() && self.xy_play.hold()
+    }
+
+    /// Ready-made layout `pick` (None: Filter + echo) as a layout of yours
+    /// called `name`, on its insert: Setup on it. None while its effect
+    /// isn't on the master.
+    pub fn xy_ready(&self, pick: Option<usize>, name: &str) -> Option<crate::xy_song::Mine> {
+        let slot = match pick {
+            Some(_) => self.xy_slot()?,
+            None => PERFORM_SLOT,
+        };
+        let uid = self.mixer.chain(StripId::Master)?.uid(slot)?;
+        let layout = crate::xy_layouts::layout(pick, uid, name);
+        let glide_ms = match layout.lift {
+            mpfree_xy::Lift::GoBack { snap_ms } => snap_ms,
+            mpfree_xy::Lift::Stay => crate::xy_song::NEW_GLIDE_MS,
+        };
+        Some(crate::xy_song::Mine {
+            layout,
+            glide_ms,
+            names: Vec::new(),
+            fx: pick,
+        })
+    }
+
+    /// The master's XY FX plays effect `k` (a copy of its layout plays).
+    fn xy_fx_effect(&mut self, k: usize) {
+        use mpfree_fx::xyfx::ids as xy;
+        if let Some(slot) = self.xy_slot() {
+            self.insert(StripId::Master, slot, xy::EFFECT, k as f32);
+        }
+    }
+
+    /// Hold on the XY pad (a layout of yours): while on, a lift leaves the
+    /// pad in charge of its settings; turned off, the pad lets go as its
+    /// layout says.
+    pub fn xy_hold(&mut self, on: bool) {
+        let recording = self.recording;
+        let mut reach = crate::xy_play::ModReach::new(&mut self.modu, &self.mixer, recording);
+        self.xy_play.set_hold(&mut reach, on, recording);
+    }
+
+    /// Whether a track records: the XY pad's hand beats a step's lock
+    /// then, and Stay keeps no value (`main.rs`, each loop).
+    pub fn set_recording(&mut self, recording: bool) {
+        self.recording = recording;
+    }
+
+    /// Stay's turns on a layout of yours since the last call, as one UNDO
+    /// step: each setting, its own value before and after.
+    pub fn take_xy_kept(&mut self) -> std::vec::Drain<'_, (ParamAddr, f32, f32)> {
+        self.xy_play.take_kept()
+    }
+
+    /// The XY pad on a layout of yours as the sound loop has it (the
+    /// tests').
+    #[cfg(test)]
+    pub fn xy_play(&self) -> &crate::xy_play::XyPlay {
+        &self.xy_play
     }
 
     /// The XY pad's layout as it plays now (`xy_layouts.rs`): the XY FX
@@ -1822,8 +2007,12 @@ impl MixHost {
         let g = &self.xy_gesture;
         format!(
             "XY pad: {} gestures taken by the other controller's, {} moves ignored (another touch held it), \
-             {} out of order, {} lifts found from the screen's state",
-            g.taken, g.ignored, g.stale, self.xy_found_up
+             {} out of order, {} lifts found from the screen's state; {}",
+            g.taken,
+            g.ignored,
+            g.stale,
+            self.xy_found_up,
+            self.xy_play.describe()
         )
     }
 
@@ -1870,6 +2059,9 @@ impl MixHost {
     /// and echo up. For MIDI Learn's XY across and up, which move one way
     /// and leave the other where it is.
     pub fn xy_at(&self) -> (f32, f32) {
+        if self.xy_play.playing() {
+            return self.xy_play.position();
+        }
         let rest = crate::xy_layouts::pad(self.xy_effect).rest();
         let Some(layout) = self.xy_layout() else {
             return rest;
@@ -2877,6 +3069,19 @@ impl MixHost {
             }
         }
         self.xy_new = false;
+        // A layout of yours: a learned control's gesture ends HAND_S after
+        // its last move, and pushes glide away.
+        if self.xy_play.playing() {
+            if self.xy_midi_left > 0 {
+                self.xy_midi_left = self.xy_midi_left.saturating_sub(PERIOD as u32);
+                if self.xy_midi_left == 0 && self.xy_on[1] {
+                    self.xy_midi_ends();
+                }
+            }
+            let mut reach =
+                crate::xy_play::ModReach::new(&mut self.modu, &self.mixer, self.recording);
+            self.xy_play.tick(&mut reach, PERIOD as u32);
+        }
         // The audio tracks are in already, each on its own channel
         // (`audiotracks::TrackHost::play_into`): the Audio strip hears
         // nothing since phase 1b.
@@ -5234,5 +5439,236 @@ mod tests {
             (c.rate, c.frame, c.bpm, c.playing),
             (RATE, 128, 97.0, false)
         );
+    }
+
+    /// A pan on track `t`'s strip.
+    fn pan(t: usize) -> ParamAddr {
+        ParamAddr::new(
+            Owner::Strip(mpfree_play::mpfree_param::Strip::Track(t as u8)),
+            mx::PAN,
+        )
+    }
+
+    fn pan_now(h: &MixHost, t: usize) -> f32 {
+        h.mixer.param(StripId::Track(t), mx::PAN)
+    }
+
+    fn pad(h: &mut MixHost, x: f32, y: f32, down: bool) {
+        h.play_screen(PlayFx::Xy { x, y, down });
+    }
+
+    /// Periods for `ms` of sound.
+    fn ms(ms: f32) -> usize {
+        (RATE as f32 * ms / 1000.0 / PERIOD as f32).ceil() as usize + 1
+    }
+
+    /// A layout of yours (the XY controller plan, phase 2): Drums' pan set
+    /// across, from -100 to 100, gliding back over 100 ms.
+    fn yours(lift: mpfree_xy::Lift) -> mpfree_xy::Compiled {
+        let mut l = mpfree_xy::Layout::new("Test");
+        l.put(false, mpfree_xy::Target::linear(pan(DRUMS), -100.0, 100.0))
+            .unwrap();
+        l.lift = lift;
+        l.compile().unwrap()
+    }
+
+    /// The setup the tests share: Drums' pan turned to 20 (its own value),
+    /// and `layout` on the pad.
+    fn playing(layout: mpfree_xy::Compiled) -> MixHost {
+        let mut h = MixHost::new(RATE, 0.0, 0.0);
+        run(&mut h, 10, 0.0, 0.0);
+        h.set(StripId::Track(DRUMS), mx::PAN, 20.0);
+        run(&mut h, 1, 0.0, 0.0);
+        assert_eq!(pan_now(&h, DRUMS), 20.0);
+        h.xy_yours(Some(layout));
+        assert!(h.xy_play().playing());
+        h
+    }
+
+    /// The pad's hand holds a Set setting, leaving its own value alone,
+    /// and Go back glides it back to its own value as it is by then.
+    #[test]
+    fn a_layout_of_yours_holds_its_settings_and_goes_back_to_their_own_values() {
+        let mut h = playing(yours(mpfree_xy::Lift::GoBack { snap_ms: 100.0 }));
+        pad(&mut h, 1.0, 0.5, true);
+        run(&mut h, 2, 0.0, 0.0);
+        assert_eq!(pan_now(&h, DRUMS), 100.0, "the pad holds it");
+        assert_eq!(
+            h.modu.engine().base(pan(DRUMS)),
+            Some(20.0),
+            "its own value stays"
+        );
+        pad(&mut h, 0.75, 0.5, true);
+        run(&mut h, 1, 0.0, 0.0);
+        assert_eq!(pan_now(&h, DRUMS), 50.0);
+        // The own value turned meanwhile: the pad lets go to it.
+        h.set(StripId::Track(DRUMS), mx::PAN, -40.0);
+        run(&mut h, 1, 0.0, 0.0);
+        assert_eq!(pan_now(&h, DRUMS), 50.0, "the pad still holds it");
+        pad(&mut h, 0.75, 0.5, false);
+        run(&mut h, ms(50.0), 0.0, 0.0);
+        let mid = pan_now(&h, DRUMS);
+        assert!(mid < 50.0 && mid > -40.0, "gliding back: {mid}");
+        run(&mut h, ms(100.0), 0.0, 0.0);
+        assert_eq!(pan_now(&h, DRUMS), -40.0, "back to its own value");
+        assert!(!h.modu.engine().is_touched(pan(DRUMS)));
+        assert_eq!(h.take_xy_kept().count(), 0, "Go back keeps nothing");
+    }
+
+    /// Stay keeps the pad's values as the settings' own, one UNDO step;
+    /// while recording it keeps nothing and lets go.
+    #[test]
+    fn stay_keeps_the_pads_values_as_their_own_except_while_recording() {
+        let mut h = playing(yours(mpfree_xy::Lift::Stay));
+        pad(&mut h, 0.25, 0.5, true);
+        run(&mut h, 1, 0.0, 0.0);
+        pad(&mut h, 0.25, 0.5, false);
+        run(&mut h, 2, 0.0, 0.0);
+        assert_eq!(pan_now(&h, DRUMS), -50.0, "it stays");
+        assert_eq!(h.modu.engine().base(pan(DRUMS)), Some(-50.0), "its own now");
+        assert!(!h.modu.engine().is_touched(pan(DRUMS)));
+        let kept: Vec<_> = h.take_xy_kept().collect();
+        assert_eq!(kept, [(pan(DRUMS), 20.0, -50.0)], "for one UNDO step");
+        // Recording: the move would go into the recording, so the own value
+        // stays as it was.
+        h.set_recording(true);
+        pad(&mut h, 1.0, 0.5, true);
+        run(&mut h, 1, 0.0, 0.0);
+        assert_eq!(pan_now(&h, DRUMS), 100.0);
+        pad(&mut h, 1.0, 0.5, false);
+        run(&mut h, 2, 0.0, 0.0);
+        assert_eq!(pan_now(&h, DRUMS), -50.0);
+        assert_eq!(h.take_xy_kept().count(), 0);
+    }
+
+    /// Add pushes a setting from wherever it is, by a row from the pad's
+    /// own host source, and its push always glides away on a lift, even
+    /// with Stay: Stay leaves Add settings alone.
+    #[test]
+    fn an_add_setting_pushes_from_where_it_is_and_stay_leaves_it_alone() {
+        let mut l = mpfree_xy::Layout::new("Push");
+        l.put(true, mpfree_xy::Target::add(pan(LOOP), 0.0, 0.25))
+            .unwrap();
+        l.put(false, mpfree_xy::Target::linear(pan(DRUMS), -100.0, 100.0))
+            .unwrap();
+        l.lift = mpfree_xy::Lift::Stay;
+        let mut h = playing(l.compile().unwrap());
+        h.set(StripId::Track(LOOP), mx::PAN, 10.0);
+        run(&mut h, 1, 0.0, 0.0);
+        let n = crate::xy_play::source(mpfree_xy::TARGETS);
+        assert!(
+            h.modu
+                .engine()
+                .rows()
+                .any(|r| r.source == mpfree_mod::Source::Host(n) && r.target == pan(LOOP)),
+            "a row from its own source"
+        );
+        pad(&mut h, 0.5, 1.0, true);
+        run(&mut h, 2, 0.0, 0.0);
+        // A quarter of the travel (-100 to 100) is 50.
+        assert!(
+            (pan_now(&h, LOOP) - 60.0).abs() < 0.01,
+            "{}",
+            pan_now(&h, LOOP)
+        );
+        assert_eq!(h.modu.engine().base(pan(LOOP)), Some(10.0));
+        pad(&mut h, 0.5, 1.0, false);
+        run(&mut h, ms(crate::xy_play::PUSH_AWAY_MS + 20.0), 0.0, 0.0);
+        assert_eq!(pan_now(&h, LOOP), 10.0, "the push glided away");
+        assert_eq!(h.modu.engine().base(pan(LOOP)), Some(10.0), "untouched");
+        let kept: Vec<_> = h.take_xy_kept().collect();
+        assert_eq!(
+            kept,
+            [(pan(DRUMS), 20.0, 0.0)],
+            "only the Set setting stays"
+        );
+        // Another layout takes the pad: the row goes with the old one.
+        h.xy_yours(Some(yours(mpfree_xy::Lift::Stay)));
+        assert!(!h
+            .modu
+            .engine()
+            .rows()
+            .any(|r| r.source == mpfree_mod::Source::Host(n)));
+        assert!(
+            !h.modu.save().contains("host"),
+            "the pad's rows are never saved"
+        );
+    }
+
+    /// Hold keeps the pad in charge after a lift until it is turned off;
+    /// switching layouts lets go of everything even with Hold on.
+    #[test]
+    fn hold_keeps_the_settings_until_it_is_off_but_a_switch_lets_go() {
+        let mut h = playing(yours(mpfree_xy::Lift::GoBack { snap_ms: 0.0 }));
+        h.xy_hold(true);
+        pad(&mut h, 0.0, 0.5, true);
+        pad(&mut h, 0.0, 0.5, false);
+        run(&mut h, 4, 0.0, 0.0);
+        assert_eq!(pan_now(&h, DRUMS), -100.0, "held after the lift");
+        h.xy_hold(false);
+        run(&mut h, 1, 0.0, 0.0);
+        assert_eq!(pan_now(&h, DRUMS), 20.0, "Hold off: it goes back");
+        h.xy_hold(true);
+        pad(&mut h, 1.0, 0.5, true);
+        pad(&mut h, 1.0, 0.5, false);
+        run(&mut h, 1, 0.0, 0.0);
+        assert_eq!(pan_now(&h, DRUMS), 100.0);
+        // Picking a ready-made layout lets go of it all, Hold or not.
+        h.play(PlayFx::XyEffect(None));
+        run(&mut h, 1, 0.0, 0.0);
+        assert!(!h.xy_play().playing());
+        assert_eq!(pan_now(&h, DRUMS), 20.0);
+        assert!(!h.modu.engine().is_touched(pan(DRUMS)));
+    }
+
+    /// A learned control has no lift: on a layout of yours its gesture
+    /// ends half a second after its last move.
+    #[test]
+    fn a_learned_controls_gesture_on_a_layout_of_yours_ends_after_it_is_still() {
+        let mut h = playing(yours(mpfree_xy::Lift::GoBack { snap_ms: 0.0 }));
+        h.play(PlayFx::Xy {
+            x: 1.0,
+            y: 0.5,
+            down: true,
+        });
+        run(&mut h, ms(400.0), 0.0, 0.0);
+        assert_eq!(pan_now(&h, DRUMS), 100.0, "still held");
+        // A move starts the half second again.
+        h.play(PlayFx::Xy {
+            x: 0.75,
+            y: 0.5,
+            down: true,
+        });
+        run(&mut h, ms(400.0), 0.0, 0.0);
+        assert_eq!(pan_now(&h, DRUMS), 50.0);
+        run(&mut h, ms(150.0), 0.0, 0.0);
+        assert_eq!(pan_now(&h, DRUMS), 20.0, "let go half a second after");
+        assert!(!h.xy_play().down());
+    }
+
+    /// While recording, a knob turned on a setting the pad holds takes it
+    /// (the newest gesture wins); the pad's moves are ignored and its lift
+    /// doesn't let go of the knob's hold.
+    #[test]
+    fn a_knob_takes_a_setting_from_the_pad_and_the_pads_lift_leaves_it() {
+        let mut h = playing(yours(mpfree_xy::Lift::GoBack { snap_ms: 0.0 }));
+        h.set_recording(true);
+        pad(&mut h, 1.0, 0.5, true);
+        run(&mut h, 1, 0.0, 0.0);
+        assert!(h
+            .modu
+            .hand(crate::hand::Hand::Midi, pan(DRUMS), -60.0, true));
+        run(&mut h, 1, 0.0, 0.0);
+        assert_eq!(pan_now(&h, DRUMS), -60.0, "the knob took it");
+        pad(&mut h, 0.9, 0.5, true);
+        run(&mut h, 1, 0.0, 0.0);
+        assert_eq!(pan_now(&h, DRUMS), -60.0, "the pad's moves are ignored");
+        pad(&mut h, 0.9, 0.5, false);
+        run(&mut h, 1, 0.0, 0.0);
+        assert_eq!(pan_now(&h, DRUMS), -60.0, "the pad's lift leaves it");
+        assert!(h.modu.engine().is_touched(pan(DRUMS)));
+        // The knob lets go half a second after its last move.
+        run(&mut h, ms(550.0), 0.0, 0.0);
+        assert_eq!(pan_now(&h, DRUMS), 20.0);
     }
 }

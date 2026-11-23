@@ -113,6 +113,9 @@ amp-env.decay = 600
 amp-env.sustain = 60
 amp-env.release = 200
 
+# Output
+output.level = -1
+
 mpfree-preset = 2
 engine = mpfree.wavetable
 name = Digital Bell
@@ -141,6 +144,9 @@ mod-env.vel-to-pos = 30
 amp-env.decay = 1800
 amp-env.sustain = 0
 amp-env.release = 1200
+
+# Output
+output.level = -3
 
 # Pressure
 pressure.to-1 = Warp
@@ -272,6 +278,9 @@ mod-env.to-warp = 45
 amp-env.decay = 1400
 amp-env.sustain = 30
 amp-env.release = 500
+
+# Output
+output.level = -1.5
 
 # Pressure
 pressure.to-1 = Warp
