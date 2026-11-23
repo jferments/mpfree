@@ -626,7 +626,7 @@ impl Widget for PatchList {
                     13.0,
                     Rect::new(body.x + 4, y, body.w, 20),
                     Align::Left,
-                    t.text_faint,
+                    t.text_dim,
                     if self.layouts.is_some() {
                         "Pick each zone's instrument in the editor after."
                     } else {
@@ -1267,7 +1267,8 @@ impl PatchEditor {
             ("–", "+")
         };
         let side = STEP_H.min(b.w / 4);
-        let ink = if look.enabled { t.text } else { t.text_faint };
+        // A stepper that can't change reads as dim, as a button that can't be used.
+        let ink = t.button_ink(look.enabled);
         if is_list(row) {
             cx.text(
                 FontId::Bold,
