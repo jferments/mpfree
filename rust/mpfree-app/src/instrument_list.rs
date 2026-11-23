@@ -27,6 +27,13 @@
 //!   the place holds an instrument, and loses it for good once taken out
 //!   ([`Kind::Free`], [`InstrumentList::follow_free`]). Its sound is in
 //!   the instruments part by its place.
+//! - **Kits** (the sampler refactor's step 14): every kit is an instrument
+//!   in its own right, so each kit place of the sampler (the factory
+//!   kits, Grains and the empty kits kept for New kit, fixed while MPFree
+//!   runs) has an id from the moment the project has it
+//!   ([`Kind::Kit`], [`InstrumentList::follow_kits`]). A kit loaded into
+//!   its place keeps the place's id, as a new sound in a track's own
+//!   instrument keeps its. Its sounds are the sampler part's, by place.
 //!
 //! The list says what an instrument is, not how it sounds now or whether
 //! it is playing: the running engines are `synth::Synth` and the track
@@ -42,13 +49,18 @@
 use std::fmt;
 
 /// The instrument list part's first line.
-pub const FORMAT: &str = "mpfree-instrument-list 1";
+/// 2 since kits are in the list (the sampler refactor's step 14); a
+/// part of format 1 is refused, as its project is.
+pub const FORMAT: &str = "mpfree-instrument-list 2";
 
 /// The tracks that can have their own instrument.
 pub const TRACKS: usize = crate::instruments::TRACKS;
 
 /// The free places (step 6).
 pub const FREE: usize = crate::instruments::FREE;
+
+/// The sampler's kit places (step 14): the most kits the engine holds.
+pub const KITS: usize = mpfree_sampler::engine::MAX_KITS;
 
 // A bit for each track in `follow`.
 const _: () = assert!(TRACKS <= u128::BITS as usize);
@@ -93,15 +105,20 @@ pub enum Kind {
     /// place's block of the instruments part, and it sounds on the place's
     /// own strip (`mixing::free_channel`).
     Free { place: usize },
+    /// The kit in the sampler's kit place `kit` (from 0): its sounds are
+    /// the sampler part's kit of that place, and it sounds on the pad
+    /// channels or the channel of the first track that plays it
+    /// (`TrackKits::homes`).
+    Kit { kit: usize },
 }
 
 impl Kind {
     /// Its holder in the instrument host (`instruments::Instruments`): a
     /// track, or a free place (`instruments::free`). None for the shared
-    /// synth, which the host doesn't hold.
+    /// synth and a kit, which the host doesn't hold.
     pub fn holder(self) -> Option<usize> {
         match self {
-            Kind::SharedSynth => None,
+            Kind::SharedSynth | Kind::Kit { .. } => None,
             Kind::Own { track } => Some(track),
             Kind::Free { place } => Some(crate::instruments::free(place)),
         }
@@ -116,9 +133,49 @@ pub struct InstrumentList {
     own: [u32; TRACKS],
     /// Free place `n`'s instrument's id (0: it holds none).
     free: [u32; FREE],
+    /// Kit place `k`'s id (0: the sampler hasn't that place).
+    kits: [u32; KITS],
     /// The id the next instrument gets: past every id the project ever
     /// gave, so none is given twice.
     next: u32,
+}
+
+/// Every kit place's id in a project's list of instruments, by place
+/// ([`InstrumentList::kit_ids`]): what the Sample page names its kits by
+/// in its commands (sampler refactor phase 3, step 14), as the audio
+/// loop last said. It holds no heap.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KitIds([u32; KITS]);
+
+impl KitIds {
+    /// The id of the kit in place `kit`, if the list gives that place one.
+    pub fn of(&self, kit: usize) -> Option<InstrumentId> {
+        self.0.get(kit).and_then(|&o| InstrumentId::from_number(o))
+    }
+
+    /// The place, among the first `kits`, of the kit that answers to `id`:
+    /// None for an id that isn't a kit's, or a kit's past `kits`.
+    pub fn kit(&self, id: InstrumentId, kits: usize) -> Option<usize> {
+        self.0[..kits.min(KITS)].iter().position(|&o| o == id.0)
+    }
+
+    /// How many places from `kits` on have an id.
+    pub fn listed_from(&self, kits: usize) -> usize {
+        self.0
+            .get(kits..)
+            .map_or(0, |o| o.iter().filter(|&&o| o != 0).count())
+    }
+}
+
+/// Every place's id as a new project's list gives them
+/// ([`InstrumentList::follow_kits`] with every place there): what the
+/// Sample page goes by until the audio loop says the project's.
+impl Default for KitIds {
+    fn default() -> KitIds {
+        let mut list = InstrumentList::new();
+        list.follow_kits(KITS);
+        list.kit_ids()
+    }
 }
 
 impl Default for InstrumentList {
@@ -128,13 +185,13 @@ impl Default for InstrumentList {
 }
 
 impl InstrumentList {
-    /// A new project's list, and an old project's (saved before
-    /// instruments had ids) before its tracks' own instruments get theirs:
-    /// the shared synth as instrument 1.
+    /// A new project's list before its kits get their ids
+    /// ([`InstrumentList::follow_kits`]): the shared synth as instrument 1.
     pub fn new() -> InstrumentList {
         InstrumentList {
             own: [0; TRACKS],
             free: [0; FREE],
+            kits: [0; KITS],
             next: 2,
         }
     }
@@ -147,8 +204,24 @@ impl InstrumentList {
         if let Some(track) = self.own.iter().position(|&o| o == id.0) {
             return Some(Kind::Own { track });
         }
-        let place = self.free.iter().position(|&o| o == id.0)?;
-        Some(Kind::Free { place })
+        if let Some(place) = self.free.iter().position(|&o| o == id.0) {
+            return Some(Kind::Free { place });
+        }
+        let kit = self.kits.iter().position(|&o| o == id.0)?;
+        Some(Kind::Kit { kit })
+    }
+
+    /// The id of the kit in kit place `kit`, if the sampler has that place.
+    pub fn of_kit(&self, kit: usize) -> Option<InstrumentId> {
+        self.kits
+            .get(kit)
+            .and_then(|&o| InstrumentId::from_number(o))
+    }
+
+    /// Every kit place's id, by place: what the Sample page names its
+    /// kits by in its commands.
+    pub fn kit_ids(&self) -> KitIds {
+        KitIds(self.kits)
     }
 
     /// The id of the instrument in free place `place`, if it holds one.
@@ -224,19 +297,43 @@ impl InstrumentList {
         changed
     }
 
+    /// The sampler has `kits` kit places (they never move while MPFree
+    /// runs): each of the first `kits` without an id gets the next one, in
+    /// order, and a place past them loses its id for good. True if any
+    /// changed. Never allocates.
+    pub fn follow_kits(&mut self, kits: usize) -> bool {
+        let mut changed = false;
+        for (k, o) in self.kits.iter_mut().enumerate() {
+            match (k < kits, *o) {
+                (true, 0) => {
+                    *o = self.next;
+                    self.next = self.next.saturating_add(1);
+                    changed = true;
+                }
+                (false, id) if id != 0 => {
+                    *o = 0;
+                    changed = true;
+                }
+                _ => {}
+            }
+        }
+        changed
+    }
+
     /// The list as its part's text, by id:
     ///
     /// ```text
-    /// mpfree-instrument-list 1
-    /// next 4
+    /// mpfree-instrument-list 2
+    /// next 6
     /// instrument 1 shared-synth
-    /// instrument 2 own track 3
-    /// instrument 3 own track 5
-    /// instrument 4 free 1
+    /// instrument 2 kit 1
+    /// instrument 3 kit 2
+    /// instrument 4 own track 3
+    /// instrument 5 free 1
     /// ```
     ///
-    /// Tracks and free places are numbered from 1, as the screen shows
-    /// them.
+    /// Tracks, free places and kits are numbered from 1, as the screen
+    /// shows them.
     pub fn text(&self) -> String {
         use std::fmt::Write as _;
         let mut s = format!(
@@ -244,24 +341,18 @@ impl InstrumentList {
             self.next,
             InstrumentId::SHARED_SYNTH
         );
-        // By id: (id, false, track) for a track's own, (id, true, place)
-        // for a free place's.
-        let mut all: Vec<(u32, bool, usize)> = (0..TRACKS)
-            .filter(|&t| self.own[t] != 0)
-            .map(|t| (self.own[t], false, t))
-            .chain(
-                (0..FREE)
-                    .filter(|&n| self.free[n] != 0)
-                    .map(|n| (self.free[n], true, n)),
-            )
+        // By id, each with what it is.
+        let own = (0..TRACKS).map(|t| (self.own[t], "own track", t));
+        let free = (0..FREE).map(|n| (self.free[n], "free", n));
+        let kits = (0..KITS).map(|k| (self.kits[k], "kit", k));
+        let mut all: Vec<(u32, &str, usize)> = own
+            .chain(free)
+            .chain(kits)
+            .filter(|&(id, ..)| id != 0)
             .collect();
         all.sort_unstable();
-        for (id, free, at) in all {
-            if free {
-                let _ = writeln!(s, "instrument {id} free {}", at + 1);
-            } else {
-                let _ = writeln!(s, "instrument {id} own track {}", at + 1);
-            }
+        for (id, what, at) in all {
+            let _ = writeln!(s, "instrument {id} {what} {}", at + 1);
         }
         s
     }
@@ -320,6 +411,19 @@ impl InstrumentList {
                         _ => None,
                     }
                 }
+                ["instrument", n, "kit", k] => {
+                    let place = k.parse::<usize>().ok().filter(|&k| (1..=KITS).contains(&k));
+                    match (id(n), place) {
+                        (Some(i), Some(k)) if i != InstrumentId::SHARED_SYNTH => {
+                            if list.kits[k - 1] != 0 {
+                                return Err(format!("kit {k} has two ids"));
+                            }
+                            list.kits[k - 1] = i.0;
+                            Some(i)
+                        }
+                        _ => None,
+                    }
+                }
                 _ => None,
             };
             let Some(id) = id else {
@@ -358,7 +462,7 @@ mod tests {
         assert_eq!(l.own_of(0), None);
         assert_eq!(
             l.text(),
-            "mpfree-instrument-list 1\nnext 2\ninstrument 1 shared-synth\n"
+            "mpfree-instrument-list 2\nnext 2\ninstrument 1 shared-synth\n"
         );
         assert_eq!(InstrumentList::parse(&l.text()), Ok(l));
         assert_eq!(InstrumentId::from_number(0), None);
@@ -395,7 +499,7 @@ mod tests {
         assert_eq!(l.own_of(127), Some(InstrumentId(5)));
         assert_eq!(
             l.text(),
-            "mpfree-instrument-list 1\nnext 6\ninstrument 1 shared-synth\n\
+            "mpfree-instrument-list 2\nnext 6\ninstrument 1 shared-synth\n\
              instrument 3 own track 5\ninstrument 4 own track 3\ninstrument 5 own track 128\n"
         );
         assert_eq!(InstrumentList::parse(&l.text()), Ok(l));
@@ -421,7 +525,7 @@ mod tests {
         assert!(!l.follow_free(1 << 1), "the same places: nothing changes");
         assert_eq!(
             l.text(),
-            "mpfree-instrument-list 1\nnext 4\ninstrument 1 shared-synth\n\
+            "mpfree-instrument-list 2\nnext 4\ninstrument 1 shared-synth\n\
              instrument 2 own track 4\ninstrument 3 free 2\n"
         );
         assert_eq!(InstrumentList::parse(&l.text()), Ok(l.clone()));
@@ -443,11 +547,86 @@ mod tests {
         .contains("twice"));
     }
 
+    /// Step 14: every kit place gets an id, in order, with the tracks'
+    /// own and the free places' in one numbering; a kit keeps its id, a
+    /// place the sampler no longer has loses it for good, and the text
+    /// reads back.
+    #[test]
+    fn every_kit_place_has_an_id() {
+        let mut l = InstrumentList::new();
+        assert!(l.follow_kits(3));
+        assert_eq!(
+            (l.of_kit(0), l.of_kit(2), l.of_kit(3)),
+            (Some(InstrumentId(2)), Some(InstrumentId(4)), None)
+        );
+        assert_eq!(l.kind(InstrumentId(3)), Some(Kind::Kit { kit: 1 }));
+        assert_eq!(Kind::Kit { kit: 1 }.holder(), None);
+        assert!(!l.follow_kits(3), "the same places: nothing changes");
+        assert!(l.follow(1 << 0));
+        assert_eq!(l.own_of(0), Some(InstrumentId(5)));
+        let ids = l.kit_ids();
+        assert_eq!(
+            (0..4).map(|k| ids.of(k)).collect::<Vec<_>>(),
+            [
+                Some(InstrumentId(2)),
+                Some(InstrumentId(3)),
+                Some(InstrumentId(4)),
+                None
+            ]
+        );
+        assert_eq!(
+            (ids.kit(InstrumentId(4), 3), ids.kit(InstrumentId(4), 2)),
+            (Some(2), None)
+        );
+        assert_eq!(
+            ids.kit(InstrumentId(5), KITS),
+            None,
+            "track 1's own is no kit"
+        );
+        assert_eq!(ids.kit(InstrumentId::SHARED_SYNTH, KITS), None);
+        assert_eq!(
+            (
+                ids.listed_from(1),
+                ids.listed_from(3),
+                ids.listed_from(KITS)
+            ),
+            (2, 0, 0)
+        );
+        assert_eq!(
+            KitIds::default().of(KITS - 1),
+            InstrumentId::from_number(KITS as u32 + 1)
+        );
+        assert_eq!(
+            l.text(),
+            "mpfree-instrument-list 2\nnext 6\ninstrument 1 shared-synth\n\
+             instrument 2 kit 1\ninstrument 3 kit 2\ninstrument 4 kit 3\ninstrument 5 own track 1\n"
+        );
+        assert_eq!(InstrumentList::parse(&l.text()), Ok(l.clone()));
+        assert!(l.follow_kits(2), "a build with fewer kits");
+        assert_eq!((l.of_kit(2), l.kind(InstrumentId(4))), (None, None));
+        assert!(l.follow_kits(4), "and more again: new ids, never 4");
+        assert_eq!(
+            (l.of_kit(2), l.of_kit(3)),
+            (Some(InstrumentId(6)), Some(InstrumentId(7)))
+        );
+        let refused = |body: &str| InstrumentList::parse(&format!("{FORMAT}\n{body}")).unwrap_err();
+        let head = "next 9\ninstrument 1 shared-synth\n";
+        assert!(refused(&format!("{head}instrument 2 kit 0\n")).contains("can't read"));
+        assert!(refused(&format!("{head}instrument 2 kit 129\n")).contains("can't read"));
+        assert!(refused(&format!("{head}instrument 1 kit 1\n")).contains("can't read"));
+        assert!(
+            refused(&format!("{head}instrument 2 kit 1\ninstrument 3 kit 1\n")).contains("two ids")
+        );
+        assert!(
+            refused(&format!("{head}instrument 2 kit 1\ninstrument 2 free 1\n")).contains("twice")
+        );
+    }
+
     /// The counter is kept: a list whose project once gave out higher ids
     /// comes back with the same next number, so none is given twice.
     #[test]
     fn the_next_id_is_kept_through_the_text() {
-        let text = "mpfree-instrument-list 1\nnext 7\ninstrument 1 shared-synth\n";
+        let text = "mpfree-instrument-list 2\nnext 7\ninstrument 1 shared-synth\n";
         let mut l = InstrumentList::parse(text).expect("reads");
         assert_eq!(l.text(), text);
         assert!(l.follow(1));
@@ -459,7 +638,8 @@ mod tests {
     fn a_list_that_does_not_hold_together_is_refused() {
         let refused = |body: &str| InstrumentList::parse(&format!("{FORMAT}\n{body}")).unwrap_err();
         let synth = "instrument 1 shared-synth\n";
-        assert!(InstrumentList::parse("mpfree-instrument-list 2\nnext 2\n").is_err());
+        assert!(InstrumentList::parse("mpfree-instrument-list 1\nnext 2\n").is_err());
+        assert!(InstrumentList::parse("mpfree-instrument-list 3\nnext 2\n").is_err());
         assert!(refused(synth).contains("next"));
         assert!(refused(&format!("next 2\nnext 3\n{synth}")).contains("can't read"));
         assert!(refused(&format!("next 1\n{synth}")).contains("can't read"));

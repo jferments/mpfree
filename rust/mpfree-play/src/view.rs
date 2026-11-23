@@ -475,7 +475,43 @@ impl ClipView {
         if self.notes.len() >= MAX_NOTES || !n.fits(self.length, &self.touch) {
             return true;
         }
+        n.group = self.recorded_group(&n);
         self.add_note(&n)
+    }
+
+    /// The trigger group recorded note `n` goes in with, as
+    /// `mpfree_seq::groups::settle_recorded` settles it in the clip: none
+    /// in a clip of pad hits; its own number when its tick has no trigger
+    /// of that number, or one with its chance, condition and on; else the
+    /// first free number there. Its tick's notes sit together at its
+    /// place, so only they are looked at. Real-time safe.
+    fn recorded_group(&self, n: &Note) -> u8 {
+        if !self.holds_notes || n.group == 0 {
+            return 0;
+        }
+        let local = self.note_view(n).local;
+        let from = self.notes.partition_point(|x| x.local < local);
+        let mut used = [0u128; 2];
+        let mut there = None;
+        for x in self.notes[from..]
+            .iter()
+            .take_while(|x| x.local == local)
+            .filter(|x| x.src.tick == n.tick && x.src.group != 0)
+        {
+            let g = x.src.group;
+            used[usize::from(g >> 7)] |= 1 << (g & 127);
+            if g == n.group && there.is_none() {
+                there = Some((x.src.chance, x.src.cond, x.src.on));
+            }
+        }
+        let taken = |g: u8| used[usize::from(g >> 7)] & (1 << (g & 127)) != 0;
+        if !taken(n.group) || there == Some((n.chance, n.cond, n.on)) {
+            return n.group;
+        }
+        mpfree_seq::groups::JOINED_GROUPS
+            .clone()
+            .find(|&g| !taken(g))
+            .unwrap_or(0)
     }
 
     /// A recorded lock, decided here as the clip decides it
@@ -1556,6 +1592,7 @@ fn note_hash(v: &NoteView) -> u64 {
         on,
         ramp,
         join,
+        group,
     } = src;
     let mut h = Fnv::new();
     h.word(local.to_bits());
@@ -1574,7 +1611,9 @@ fn note_hash(v: &NoteView) -> u64 {
     );
     cond.hash(&mut h);
     touch.hash(&mut h);
-    join.hash(&mut h);
+    // One word for both: a word a note is what compiling the big song
+    // costs (the Arrange bench).
+    h.word(join as u64 | u64::from(group) << 8);
     h.done()
 }
 
@@ -2215,6 +2254,7 @@ mod tests {
                 on: true,
                 ramp: 0,
                 join: mpfree_seq::Join::Attack,
+                group: 0,
             },
             Note {
                 tick: 0,
@@ -2228,6 +2268,7 @@ mod tests {
                 on: true,
                 ramp: 0,
                 join: mpfree_seq::Join::Attack,
+                group: 0,
             },
             Note {
                 tick: 950,
@@ -2241,6 +2282,7 @@ mod tests {
                 on: true,
                 ramp: 0,
                 join: mpfree_seq::Join::Attack,
+                group: 0,
             },
         ];
         c.quantise = Quantise::new(240, 100);
@@ -2437,6 +2479,49 @@ mod tests {
         assert_eq!(v, fresh(&clip), "taken out");
     }
 
+    /// A recorded note of a trigger group goes in place in the group the
+    /// clip gives it (`groups::settle_recorded`): joining the trigger on
+    /// its tick that has its settings, beside one with others.
+    #[test]
+    fn a_recorded_notes_group_in_place_is_the_one_the_clip_gives_it() {
+        let mut clip = Clip::new("chords", 1920);
+        clip.holds = mpfree_seq::Holds::Notes;
+        clip.quantise = Quantise::new(240, 100);
+        clip.notes = vec![
+            Note {
+                chance: 50,
+                group: 5,
+                ..Note::new(240, 120, 60, 100)
+            },
+            Note {
+                group: 5,
+                ..Note::new(480, 120, 60, 100)
+            },
+            // Another tick quantised onto the same place: not its trigger.
+            Note {
+                chance: 25,
+                group: 5,
+                ..Note::new(470, 120, 61, 100)
+            },
+        ];
+        let fresh = |c: &Clip| view_of(c, None, None, 2, 0, 0);
+        let mut v = fresh(&clip);
+        v.make_room(4, 4);
+        for (tick, want) in [(240, 129), (480, 5), (720, 5)] {
+            let n = Note {
+                group: 5,
+                ..Note::new(tick, 120, 64, 90)
+            };
+            assert!(v.record_note(n, &[]));
+            let mut settled = [n];
+            mpfree_seq::groups::settle_recorded(&clip, &mut settled);
+            assert_eq!(settled[0].group, want, "tick {tick}");
+            clip.notes.push(settled[0]);
+            assert_eq!(v, fresh(&clip), "tick {tick}");
+        }
+        assert!(clip.groups_ok());
+    }
+
     #[test]
     fn every_part_of_what_a_clip_plays_is_in_its_stamp() {
         use mpfree_param::OnTrack;
@@ -2503,6 +2588,7 @@ mod tests {
             ("off", Box::new(|c| c.notes[0].on = false)),
             ("ramp", Box::new(|c| c.notes[0].ramp = -3)),
             ("join", Box::new(|c| c.notes[0].join = Join::Slide)),
+            ("trigger group", Box::new(|c| c.notes[0].group = 3)),
             ("lock tick", Box::new(|c| c.locks[0].tick = 10)),
             ("lock sound", Box::new(|c| c.locks[0].sound = Some(0))),
             (

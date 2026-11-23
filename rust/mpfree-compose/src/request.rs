@@ -16,7 +16,7 @@ use crate::event::{Event, Part, PartId, Source};
 use crate::keep::{clip_notes, continuation, KeepError};
 use crate::phrase::{continue_line, decisions, try_again, Line, Phrasing};
 use crate::plan::{plan, BarPlan};
-use crate::playing::{play, timing};
+use crate::playing::{play, timing, Touch};
 use crate::preview::Proposal;
 use crate::profile::InstrumentKind;
 use crate::progression::progression;
@@ -101,12 +101,12 @@ impl From<KeepError> for Refused {
 }
 
 /// Your bars: the clip's length in whole bars.
-fn your_bars(req: &Continue) -> usize {
+pub(crate) fn your_bars(req: &Continue) -> usize {
     let bar = req.meter.bar_ticks().max(1);
     ((req.length.max(1) + bar - 1) / bar) as usize
 }
 
-fn phrasing<'a>(req: &Continue<'a>, chords: &'a ChordTimeline) -> Phrasing<'a> {
+pub(crate) fn phrasing<'a>(req: &Continue<'a>, chords: &'a ChordTimeline) -> Phrasing<'a> {
     let ctx = req.context;
     let mut ph = Phrasing::new(
         &ctx.key,
@@ -124,7 +124,17 @@ fn phrasing<'a>(req: &Continue<'a>, chords: &'a ChordTimeline) -> Phrasing<'a> {
 
 /// The line's new bars as a played part, and its notes as Keep writes
 /// them.
-fn perform(
+/// Your touch, from the notes you played (not mpfree's or a pattern's).
+pub(crate) fn touch(req: &Continue) -> Touch {
+    Touch::of(
+        req.notes
+            .iter()
+            .filter(|(_, s)| s.learnable())
+            .map(|(n, _)| n),
+    )
+}
+
+pub(crate) fn perform(
     req: &Continue,
     ph: &Phrasing,
     plan: &[BarPlan],
@@ -155,6 +165,7 @@ fn perform(
         &s.style,
         req.meter,
         s.keeps.accents,
+        &touch(req),
     );
     timing(
         &mut part,

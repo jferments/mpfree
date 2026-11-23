@@ -4,6 +4,10 @@
 //! change later re-fits the notes and keeps how they were played
 //! (contract 2).
 //!
+//! - **Your touch** ([`Touch`]): the level and the note lengths start from
+//!   how you played your bars, so the new bars sound like the same player
+//!   carrying on; the style moves them only a little where you played
+//!   enough notes to go by, and decides where you played few.
 //! - **Loudness**: the style's level and accents per 1/16, a rise and fall
 //!   over every four bars, the bar's tension, how colourful the note is
 //!   over its chord (melodic charge), contour peaks and notes after a
@@ -28,7 +32,8 @@ use mpfree_transport::time::{Meter, Swing, Tick};
 use crate::dice::{DiceName, Job};
 use crate::event::{Event, Part};
 use crate::plan::{BarJob, BarPlan};
-use crate::style::Style;
+use crate::realize::PlainNote;
+use crate::style::{PlayingStyle, Style};
 use crate::timing::{drift_on, ms_to_ticks, Timing};
 
 /// Velocity per decibel, roughly, on a synth's velocity curve.
@@ -53,6 +58,85 @@ fn charge(iv: i32) -> f64 {
     }
 }
 
+/// How you played your bars: the level and articulation the new notes
+/// start from. The first renders for the listening tests played the new
+/// bars as another player, louder than the riff and shorter (Groove's
+/// level and gate against a legato riff played softer), so the style now
+/// only leans on your touch.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Touch {
+    /// Your notes' mean velocity.
+    pub level: f64,
+    /// Your notes' length as a share of the gap to the next note start
+    /// (the median, at most 1).
+    pub gate: f64,
+    /// How much your touch counts against the style's: 0 (nothing to go
+    /// by) to [`Touch::MOST`] (eight notes or more).
+    pub weight: f64,
+}
+
+impl Touch {
+    /// Nothing heard: the style's level and gate.
+    pub const NONE: Touch = Touch {
+        level: 0.0,
+        gate: 0.0,
+        weight: 0.0,
+    };
+    /// The most your touch counts: the style keeps a quarter.
+    pub const MOST: f64 = 0.75;
+
+    /// Your touch from the notes you played.
+    pub fn of<'a>(notes: impl IntoIterator<Item = &'a PlainNote>) -> Touch {
+        let mut ns: Vec<&PlainNote> = notes.into_iter().collect();
+        if ns.is_empty() {
+            return Touch::NONE;
+        }
+        ns.sort_by_key(|n| n.at);
+        let level = ns.iter().map(|n| f64::from(n.velocity)).sum::<f64>() / ns.len() as f64;
+        let mut shares: Vec<f64> = ns
+            .iter()
+            .filter_map(|n| {
+                let next = ns.iter().find(|m| m.at > n.at)?;
+                Some((n.len as f64 / (next.at - n.at) as f64).min(1.0))
+            })
+            .collect();
+        if shares.is_empty() {
+            return Touch {
+                level,
+                gate: 0.0,
+                weight: 0.0,
+            };
+        }
+        shares.sort_by(f64::total_cmp);
+        let gate = shares[shares.len() / 2];
+        let weight = Touch::MOST * (shares.len().min(8) as f64 / 8.0);
+        Touch {
+            level,
+            gate,
+            weight,
+        }
+    }
+
+    /// The style's gate, leaned toward yours.
+    pub fn gate(&self, p: &PlayingStyle) -> f64 {
+        f64::from(p.gate) + (self.gate - f64::from(p.gate)) * self.weight
+    }
+
+    /// New notes' velocities, moved together so their mean leans toward
+    /// your level: the style's accents and the rules keep their shape
+    /// around it.
+    pub fn lean(&self, velocities: &mut [f64]) {
+        if velocities.is_empty() || self.weight == 0.0 {
+            return;
+        }
+        let mean = velocities.iter().sum::<f64>() / velocities.len() as f64;
+        let shift = (self.level - mean) * self.weight;
+        for v in velocities {
+            *v += shift;
+        }
+    }
+}
+
 /// The drum lane a part's notes sit with: a bass with the kick, the rest
 /// with the hats.
 pub const fn lane_of(role: PartRole) -> Lane {
@@ -65,6 +149,7 @@ pub const fn lane_of(role: PartRole) -> Lane {
 /// The loudness and length rules on a part's notes. `events` are the
 /// part's decisions realised (the same order), so the rules can hear the
 /// pitches; the results go into the decisions.
+#[allow(clippy::too_many_arguments)]
 pub fn play(
     part: &mut Part,
     events: &[Event],
@@ -73,6 +158,7 @@ pub fn play(
     style: &Style,
     meter: Meter,
     keep_accents: bool,
+    touch: &Touch,
 ) {
     let n = part.decisions.len().min(events.len());
     if n == 0 {
@@ -84,6 +170,7 @@ pub fn play(
     let beat = meter.beat_ticks().max(1);
     let centre = events[..n].iter().map(|e| f64::from(e.pitch)).sum::<f64>() / n as f64;
     let range = f64::from(p.velocity_range);
+    let mut loud = vec![0.0; n];
     for i in 0..n {
         let e = events[i];
         let at = part.decisions[i].at;
@@ -116,7 +203,7 @@ pub fn play(
         // Length.
         let gap = next.map_or(e.len, |x| x.at - at).max(1);
         let slot = e.len.min(gap);
-        let mut gate = f64::from(p.gate);
+        let mut gate = touch.gate(p);
         if next.is_some_and(|x| x.pitch == e.pitch) {
             gate *= 0.8;
         }
@@ -132,10 +219,13 @@ pub fn play(
             (slot as f64 * gate) as Tick
         };
 
-        let d = &mut part.decisions[i];
-        d.len = len.max(STEP / 3);
-        if !keep_accents {
-            d.velocity = (base + v * k).round().clamp(20.0, 127.0) as u8;
+        part.decisions[i].len = len.max(STEP / 3);
+        loud[i] = base + v * k;
+    }
+    if !keep_accents {
+        touch.lean(&mut loud);
+        for (d, v) in part.decisions.iter_mut().zip(loud) {
+            d.velocity = v.round().clamp(20.0, 127.0) as u8;
         }
     }
 }
@@ -279,6 +369,7 @@ mod tests {
             &MINIMAL,
             Meter::default(),
             false,
+            &Touch::NONE,
         );
         let v: Vec<u8> = part.decisions.iter().map(|d| d.velocity).collect();
         let len: Vec<Tick> = part.decisions.iter().map(|d| d.len).collect();
@@ -301,6 +392,7 @@ mod tests {
             &MINIMAL,
             Meter::default(),
             true,
+            &Touch::NONE,
         );
         assert!(kept.decisions.iter().all(|d| d.velocity == 90));
         assert!(kept.decisions.iter().all(|d| d.source == Source::Mpfree));
@@ -319,6 +411,7 @@ mod tests {
                 &GROOVE,
                 Meter::default(),
                 false,
+                &Touch::NONE,
             );
             let v: Vec<i32> = part
                 .decisions
@@ -328,6 +421,56 @@ mod tests {
             v.iter().max().unwrap() - v.iter().min().unwrap()
         };
         assert!(spread(InstrumentKind::Chordal) > spread(InstrumentKind::OneNote));
+    }
+
+    #[test]
+    fn the_new_notes_start_from_your_touch() {
+        // A soft legato phrase: nine notes, each held to the next.
+        let yours: Vec<PlainNote> = (0..9)
+            .map(|i| PlainNote {
+                at: i * BEAT / 2,
+                len: BEAT / 2,
+                pitch: 60 + (i % 3) as u8,
+                velocity: 64,
+            })
+            .collect();
+        let touch = Touch::of(&yours);
+        assert_eq!(touch.level, 64.0);
+        assert_eq!(touch.gate, 1.0);
+        assert!((touch.weight - Touch::MOST).abs() < 1e-9, "{touch:?}");
+        // Too few notes to go by: the style decides.
+        assert_eq!(Touch::of(&yours[..1]).weight, 0.0);
+        assert_eq!(Touch::of(&[]), Touch::NONE);
+
+        let played = |touch: &Touch| {
+            let (mut part, ev, plan) = line(&GROOVE);
+            play(
+                &mut part,
+                &ev,
+                &plan,
+                &chords(),
+                &GROOVE,
+                Meter::default(),
+                false,
+                touch,
+            );
+            let n = part.decisions.len() as f64;
+            let v = part
+                .decisions
+                .iter()
+                .map(|d| f64::from(d.velocity))
+                .sum::<f64>()
+                / n;
+            (v, part.decisions[0].len)
+        };
+        let (style_v, style_len) = played(&Touch::NONE);
+        let (your_v, your_len) = played(&touch);
+        // Softer, by three quarters of the way from Groove's level to yours.
+        let lean = (style_v - your_v) / (style_v - 64.0);
+        assert!((lean - Touch::MOST).abs() < 0.05, "{style_v} -> {your_v}");
+        // Longer: Groove's gate leans toward your legato.
+        assert!(your_len > style_len, "{style_len} -> {your_len}");
+        assert!(your_len <= BEAT / 2, "never past the next note");
     }
 
     #[test]

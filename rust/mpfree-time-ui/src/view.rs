@@ -135,10 +135,14 @@ pub const CLIPS_HINT: &str =
 pub const CLIPS_CARD_HINT: &str =
     "Clip: the armed track's playing clip   ·   wheel: pick a row, - / +: change it   ·   SHIFT + ‹ ›: Length and Speed halve or double   ·   COPY + a clip, then an empty slot: a copy";
 
-/// The hint line under the Clips grid with the Clip tab: an audio
+/// The hint line under the Clips grid with the Clip tab: Convert to
+/// notes' preview while it is open on the focused clip (E1); an audio
 /// clip's card says what Fit to tempo makes at the project's tempo
-/// (layout spec 4j).
+/// (layout spec 4j); else [`CLIPS_CARD_HINT`].
 pub fn clip_card_hint(st: &TimeState) -> String {
+    if let Some(c) = st.converting() {
+        return c.line.clone();
+    }
     match focused_audio(st) {
         Some(_) => format!(
             "Clip: the armed track's playing clip   ·   wheel: pick a row, - / +: change it   ·   \
@@ -282,7 +286,7 @@ pub const OTHERS: [FollowAction; 9] = [
     FollowAction::Stop,
 ];
 /// The clip settings card's rows, top to bottom.
-pub const CLIP_ROWS: [&str; 13] = [
+pub const CLIP_ROWS: [&str; 14] = [
     "Length",
     "Speed",
     "Swing",
@@ -296,12 +300,19 @@ pub const CLIP_ROWS: [&str; 13] = [
     "Bank",
     "Direction",
     "Mutate",
+    "Melody",
 ];
 /// The clip card's Direction row (S6).
 pub const CLIP_DIRECTION: usize = 11;
 /// The clip card's Mutate row (S6): › a new variation of the clip's
 /// notes, SHIFT + › a bolder one, ‹ the original back.
 pub const CLIP_MUTATE: usize = 12;
+/// The clip card's Melody row (step sequencer refactor E1): "pads" (it
+/// follows the pads: pad hits, playing whatever those pads play now) or
+/// "notes" (it uses notes, each keeping its pitch); › on
+/// a clip that follows the pads on a track whose instrument plays notes
+/// previews Convert to notes (`TimeAction::ConvertPreview`).
+pub const CLIP_MELODY: usize = 13;
 
 /// An audio clip's card's rows, top to bottom (layout spec 4j): Speed,
 /// Swing, Quantise, Strength, Program, Bank, Direction and Mutate don't
@@ -496,6 +507,9 @@ pub struct ClipInfo {
     /// The variation of its notes it plays, kept beside its original
     /// (`Clip::variation`, S6's Mutate); None when it keeps none.
     pub variation: Option<u32>,
+    /// Its notes are pitches, not pad hits (`Clip::holds`, step 5c): the
+    /// clip card's Melody row (step sequencer refactor E1).
+    pub holds_notes: bool,
     /// An audio clip's facts, for its cell and card (audio tracks phase
     /// 2); None for a note or loop clip.
     pub audio: Option<AudioCellInfo>,
@@ -744,6 +758,7 @@ impl TakeRow {
                 Replaced::Restore => "restore",
                 Replaced::Fit => "fit",
                 Replaced::Settings => "settings",
+                Replaced::Convert => "convert",
             }
         } else if self.deleted {
             "delete"
@@ -892,6 +907,11 @@ pub struct TimeState {
     /// Reloads waiting for their launch line, as (track, slot, the line's
     /// song tick).
     pub reloads: Vec<(usize, usize, Tick)>,
+    /// Convert to notes' preview, while it is open (step sequencer
+    /// refactor E1): the clip card's buttons are Cancel and Convert, and
+    /// the hint line says what it would do, while it shows the focused
+    /// clip.
+    pub converting: Option<Converting>,
     /// The scene playing's follow action, for Perform's NEXT (S4). The
     /// app sets it.
     pub follow_next: Option<FollowNext>,
@@ -1145,6 +1165,7 @@ impl TimeState {
                                 gain: a.gain,
                                 ..AudioCellInfo::default()
                             }),
+                            holds_notes: c.holds == mpfree_seq::Holds::Notes,
                         })
                     })
                     .collect(),
@@ -1191,6 +1212,7 @@ impl TimeState {
             audio_focus: None,
             saved: Vec::new(),
             reloads: Vec::new(),
+            converting: None,
             placements: project
                 .arrangement
                 .placements
@@ -1276,6 +1298,13 @@ impl TimeState {
             .map(|l| l.slot)
             .or_else(|| tr.slots.iter().position(Option::is_some))?;
         self.clip(track, slot).is_some().then_some((track, slot))
+    }
+
+    /// Convert to notes' preview on the focused clip (E1); None when none
+    /// is open on it.
+    pub fn converting(&self) -> Option<&Converting> {
+        let f = self.focus()?;
+        self.converting.as_ref().filter(|c| (c.track, c.slot) == f)
     }
 
     fn track_name(&self, track: usize) -> String {
@@ -1485,6 +1514,22 @@ pub enum TimeAction {
         row: u8,
         set: AudioSet,
     },
+    /// Convert to notes' preview (step sequencer refactor E1,
+    /// `mpfree_seq::convert`): what converting a clip that follows the
+    /// pads would make, or every reason it can't; nothing changes.
+    ConvertPreview {
+        track: usize,
+        slot: usize,
+    },
+    /// Convert to notes, after its preview: the clip uses notes, playing
+    /// what it plays now, as an edit UNDO takes back. Refused if the clip
+    /// or the pads changed since the preview.
+    Convert {
+        track: usize,
+        slot: usize,
+    },
+    /// Close Convert to notes' preview.
+    ConvertCancel,
     /// Put these rows on the morph's A and B (loaded again if it is on).
     MorphRows {
         a: usize,
@@ -2459,6 +2504,13 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
         (SCENE_CARD, EventKind::Toggle(SCENE_MUTES_NOW)) => scene_mutes_now(st).ok(),
         (CLIP_CARD, EventKind::Toggle(b)) => {
             let (track, slot) = st.focus()?;
+            if let Some(c) = st.converting() {
+                return match b {
+                    0 => Some(TimeAction::ConvertCancel),
+                    1 if c.ok => Some(TimeAction::Convert { track, slot }),
+                    _ => None,
+                };
+            }
             if st.clip(track, slot)?.audio.is_some() {
                 return (*b == 0 && fit_refused(st, track, slot).is_none())
                     .then_some(TimeAction::FitClip { track, slot });
@@ -3017,10 +3069,26 @@ pub fn clip_rows(st: &TimeState) -> Vec<OptionRow> {
                 name: CLIP_ROWS[CLIP_MUTATE].to_string(),
                 value: mutate_value(c),
             });
+            rows.push(OptionRow {
+                name: CLIP_ROWS[CLIP_MELODY].to_string(),
+                value: melody_value(c),
+            });
             rows
         }
         None => Vec::new(),
     }
+}
+
+/// The clip card's Melody row's value (E1): "pads" (it follows the pads)
+/// or "notes" (it uses notes); "—" on a loop's cell. Short, to fit the
+/// row's value at 250 px.
+pub fn melody_value(c: &ClipInfo) -> String {
+    match (c.looped, c.holds_notes) {
+        (Some(_), _) => "—",
+        (None, true) => "notes",
+        (None, false) => "pads",
+    }
+    .to_string()
 }
 
 /// The clip card's Mutate row's value (S6): "original" until the clip is
@@ -3042,6 +3110,14 @@ pub fn card_buttons(st: &TimeState) -> Vec<OptionButton> {
     let Some((track, slot)) = st.focus() else {
         return Vec::new();
     };
+    // Convert to notes' preview (E1): Cancel, and Convert when it can.
+    if let Some(c) = st.converting() {
+        let mut b = vec![OptionButton::new("Cancel", true)];
+        if c.ok {
+            b.push(OptionButton::new("Convert", true));
+        }
+        return b;
+    }
     if let Some(b) = fit_button(st, track, slot) {
         return vec![b];
     }
@@ -3811,6 +3887,19 @@ fn settings_step(st: &TimeState, index: usize, delta: i32) -> Result<TimeAction,
         CLIP_MUTATE => {
             Err("The clip plays its original: › mutates it, and ‹ then brings this back".into())
         }
+        // Convert to notes (E1): › previews it on a clip that follows the
+        // pads on a track whose instrument plays notes; the rest say why.
+        CLIP_MELODY if c.holds_notes => {
+            Err("The clip uses notes: each keeps its pitch, whatever the pads play".into())
+        }
+        CLIP_MELODY if !st.tracks.get(track).is_some_and(|t| t.melodic) => {
+            Err("The clip follows the pads: on a kit a clip always does".into())
+        }
+        CLIP_MELODY if d > 0 => Ok(TimeAction::ConvertPreview { track, slot }),
+        CLIP_MELODY => Err(
+            "The clip follows the pads: it plays whatever they play now. › shows what Convert to notes would do"
+                .into(),
+        ),
         _ => Err(String::new()),
     }
 }
@@ -4066,6 +4155,7 @@ fn take_detail(st: &TimeState, row: &TakeRow) -> String {
         (Some(Replaced::Restore), _) => return "the original".into(),
         (Some(Replaced::Fit), _) => return "to tempo".into(),
         (Some(Replaced::Settings), _) => return "clip settings".into(),
+        (Some(Replaced::Convert), _) => return "converted to notes".into(),
         (None, _) => {}
     }
     if row.deleted {
@@ -4503,6 +4593,17 @@ pub fn list_title(st: &TimeState) -> String {
         secs / 60,
         secs % 60
     )
+}
+
+/// Convert to notes' preview (E1), open on clip `slot` of `track`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Converting {
+    pub track: usize,
+    pub slot: usize,
+    /// It would convert now: nothing to fix and the transport stopped.
+    pub ok: bool,
+    /// What it would make, or every reason it can't: the hint line.
+    pub line: String,
 }
 
 /// The scene playing's follow action, for Perform's NEXT (S4): on song
@@ -5820,6 +5921,7 @@ mod tests {
                 on: true,
                 ramp: 0,
                 join: mpfree_seq::Join::Attack,
+                group: 0,
             })
             .unwrap();
             t.slots[0] = Some(c);
@@ -8103,7 +8205,8 @@ mod tests {
                 "Program off",
                 "Bank —",
                 "Direction Forward",
-                "Mutate —"
+                "Mutate —",
+                "Melody pads"
             ]
         );
         let step = |st: &TimeState, index: usize, delta: i32| {
@@ -8479,6 +8582,73 @@ mod tests {
         assert!(card_action(&st, CLIP_MUTATE, 1, false)
             .unwrap_err()
             .contains("loop cell"));
+    }
+
+    /// The clip card's Melody row (step sequencer refactor E1): "pads" or
+    /// "notes"; › on a synth track's clip that follows the pads previews
+    /// Convert to notes, and the rest say why. While the
+    /// preview is open the buttons are Cancel, and Convert when it can,
+    /// and the hint line says what it would do.
+    #[test]
+    fn the_clip_cards_melody_row_previews_convert_to_notes() {
+        let mut st = state();
+        st.armed = Some(1);
+        let shown = |st: &TimeState| clip_rows(st)[CLIP_MELODY].value.clone();
+        assert_eq!(clip_rows(&st)[CLIP_MELODY].name, "Melody");
+        assert_eq!(shown(&st), "pads");
+        // A kit's clip always follows the pads.
+        assert!(card_action(&st, CLIP_MELODY, 1, false)
+            .unwrap_err()
+            .contains("on a kit a clip always does"));
+        st.tracks[1].melodic = true;
+        let preview = Ok(TimeAction::ConvertPreview { track: 1, slot: 1 });
+        assert_eq!(card_action(&st, CLIP_MELODY, 1, false), preview);
+        assert!(card_action(&st, CLIP_MELODY, -1, false)
+            .unwrap_err()
+            .contains("› shows what Convert to notes would do"));
+        // The preview open: Cancel and Convert, its words on the hint line.
+        let toggle = |st: &TimeState, b| action(&ev(CLIP_CARD, EventKind::Toggle(b)), st);
+        assert_eq!(
+            toggle(&st, 0),
+            Some(TimeAction::SaveState { track: 1, slot: 1 })
+        );
+        st.converting = Some(Converting {
+            track: 1,
+            slot: 1,
+            ok: true,
+            line: "Convert to notes: 4 pad hits become 6 notes".to_string(),
+        });
+        let labels = |st: &TimeState| -> Vec<String> {
+            card_buttons(st).into_iter().map(|b| b.label).collect()
+        };
+        assert_eq!(labels(&st), ["Cancel", "Convert"]);
+        assert_eq!(
+            clip_card_hint(&st),
+            "Convert to notes: 4 pad hits become 6 notes"
+        );
+        assert_eq!(toggle(&st, 0), Some(TimeAction::ConvertCancel));
+        assert_eq!(
+            toggle(&st, 1),
+            Some(TimeAction::Convert { track: 1, slot: 1 })
+        );
+        // It can't: Cancel alone.
+        st.converting.as_mut().unwrap().ok = false;
+        assert_eq!(labels(&st), ["Cancel"]);
+        assert_eq!(toggle(&st, 1), None);
+        // On another clip it shows nothing.
+        st.armed = Some(0);
+        assert_eq!(clip_card_hint(&st), CLIPS_CARD_HINT);
+        assert_ne!(labels(&st), ["Cancel"]);
+        // A clip of notes keeps its pitches; a loop's cell has no melody.
+        st.armed = Some(1);
+        st.converting = None;
+        st.tracks[1].slots[1].as_mut().unwrap().holds_notes = true;
+        assert_eq!(shown(&st), "notes");
+        assert!(card_action(&st, CLIP_MELODY, 1, false)
+            .unwrap_err()
+            .contains("uses notes"));
+        st.tracks[1].slots[1].as_mut().unwrap().looped = Some(0);
+        assert_eq!(shown(&st), "—");
     }
 
     #[test]

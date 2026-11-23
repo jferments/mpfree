@@ -10,8 +10,8 @@
 //! | `clips` | the time engine | [`mpfree_seq::save`]: tracks, clips, scenes, the song | a new [`TimeHost`] built on the screen thread and swapped in |
 //! | `mixer` | the mixer | [`mixer_text`]: every strip's controls, each insert with its parameters (and a plugin's state) | [`mixer_load`] builds the effects on the screen thread (a plugin through the rack, in its own process); [`MixHost::open`] swaps them in over a few periods |
 //! | `instruments` | each track's own instrument (`instruments.rs`) | [`instruments_text`]: each track's instrument with its parameters (and a plugin's state) | [`instruments_load`] makes them on the screen thread; the audio loop puts them in |
-//! | `track-kits` | what each track plays (`sampler::TrackKits`) | `TrackKits::text`: the tracks that play another kit than kit 1, or an instrument by its id | [`track_kits_parse`]; the audio loop sets them |
-//! | `instrument-list` | the project's instruments ([`InstrumentList`]) | [`InstrumentList::text`]: each instrument's lasting id and what it is, and the next id | [`InstrumentList::parse`] on the screen thread; the audio loop swaps it in |
+//! | `track-kits` | what each track plays (`sampler::TrackKits`) | [`track_kits_text`]: each track that plays another instrument than kit 1, by its id | [`track_kits_parse`]; the audio loop sets them |
+//! | `instrument-list` | the project's instruments ([`InstrumentList`]): the shared synth, the tracks' own, the free places' and the kits | [`InstrumentList::text`]: each instrument's lasting id and what it is, and the next id | [`InstrumentList::parse`] on the screen thread; the audio loop swaps it in and gives kit places it lacks their ids |
 //! | `mod` | the mod engine | `ModMix::save` | `ModMix::load`, once the inserts are in |
 //! | `synth` | the synth | [`synth_text`]: the Synth tab's options and every engine's sound | the options go through the app (as at start), the sounds onto the engines |
 //! | `sampler` | the Sample tab | `SamplePage::save_part`, with its sounds in `samples/` | `SamplePage::open_part` |
@@ -24,9 +24,10 @@
 //! | `audiotracks` | the audio tracks | [`audio_part`]: each track's settings and regions, a WAV a take in `samples/` | [`audio_open`] on a thread, then [`crate::audiotracks::TrackHost::open`] |
 //!
 //! The project's tempo is `project.txt`'s `tempo`, and its format
-//! ([`FORMAT_KEY`]) says what the parts mean together: 2 since
-//! instruments have ids; a project with no format line is from before,
-//! and opens as it played ([`opening`]).
+//! ([`FORMAT_KEY`]) says what the parts mean together: 3 since kits are
+//! instruments with ids. A project of an older format is refused, not
+//! converted ([`check`]): mpfree is early, and no project made before
+//! needs keeping (Jay, 22 Nov 2026).
 //!
 //! **Saving** (SHIFT + BROWSE, or Save in the browser): the screen asks
 //! the audio loop ([`crate::gui::FromUi::SaveProject`]); the loop copies what
@@ -111,22 +112,21 @@ fn instruments_version(line: &str) -> Option<u32> {
         .ok()?;
     (1..=mpfree_node::preset::VERSION).contains(&v).then_some(v)
 }
-/// The first line of the track kits part. Version 2 names an instrument
-/// by its id (`track 4 instrument 1`); version 1, from before instruments
-/// had ids, said `track 4 synth` for the shared synth, and is still read.
-pub const TRACK_KITS_FORMAT: &str = "mpfree-track-kits 2";
-/// The track kits part's first line before instruments had ids.
-const TRACK_KITS_V1: &str = "mpfree-track-kits 1";
+/// The first line of the track kits part. Version 3 names every
+/// instrument a track plays by its id, a kit's too (`track 4 instrument
+/// 7`).
+pub const TRACK_KITS_FORMAT: &str = "mpfree-track-kits 3";
 
-/// `project.txt`'s line for what the parts mean together: `format = 2`.
-/// No line is format 1: saved before instruments had ids (the instrument
-/// redesign's step 2a), with no list of instruments and the track kits
-/// part's version 1. The library's own first line (`mpfree-project 1`) is
-/// the folder's format; this one is the app's.
-pub const FORMAT_KEY: &str = "format";
-/// The project format this build writes, and the newest it knows. A
-/// project of a newer format doesn't open ([`check`]).
-pub const FORMAT: u32 = 2;
+/// `project.txt`'s line for what the parts mean together: `format = 3`.
+/// Format 3 has kits in the list of instruments (the sampler refactor's
+/// step 14); 2 had ids for synths only (the instrument redesign's step
+/// 2a), and no line was format 1. The library's own first line
+/// (`mpfree-project 1`) is the folder's format; this one is the app's,
+/// kept in the library so the MPC importer writes it too.
+pub const FORMAT_KEY: &str = mpfree_library::project::PARTS_FORMAT_KEY;
+/// The project format this build writes, and the only one it opens: an
+/// older or a newer project is refused ([`check`]).
+pub const FORMAT: u32 = mpfree_library::project::PARTS_FORMAT;
 /// `project.txt`'s line naming what a project needs that an older build
 /// hasn't got, by feature, space-separated (`needs = audio-tracks`). A
 /// build that lacks one doesn't open the project, and says which
@@ -382,7 +382,8 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
 }
 
 /// Whether this build can open `snap` whole, checked before anything
-/// changes: its format ([`FORMAT_KEY`], 1 with no line), what it needs
+/// changes: its format ([`FORMAT_KEY`], 1 with no line, and only
+/// [`FORMAT`] opens), what it needs
 /// ([`NEEDS_KEY`]), and each part that is read later or elsewhere (the
 /// kits, the loops, the audio tracks, the arps, the list of instruments,
 /// what the tracks play). Gives the format, or why not, in
@@ -398,10 +399,19 @@ pub fn check(snap: &Snapshot) -> Result<u32, String> {
 /// build's gate answers, for the tests.
 fn check_against(snap: &Snapshot, known: &[&str]) -> Result<u32, String> {
     let format = match snap.meta.extra.iter().find(|(k, _)| k == FORMAT_KEY) {
-        None => 1,
+        None => {
+            return Err(format!(
+                "it was saved by an older MPFree, which this one doesn't open (project format 1; this one opens {FORMAT})"
+            ))
+        }
         Some((_, v)) => match v.trim().parse::<u32>() {
-            Ok(f) if (1..=FORMAT).contains(&f) => f,
-            Ok(f) if f > FORMAT => {
+            Ok(FORMAT) => FORMAT,
+            Ok(f) if f < FORMAT => {
+                return Err(format!(
+                    "it was saved by an older MPFree, which this one doesn't open (project format {f}; this one opens {FORMAT})"
+                ))
+            }
+            Ok(f) => {
                 return Err(format!(
                     "it was saved by a newer MPFree (project format {f}; this one opens up to {FORMAT}). Update MPFree to open it"
                 ))
@@ -501,21 +511,16 @@ pub fn is_complete(snap: &Snapshot) -> bool {
         .all(|name| snap.part(name).is_some())
 }
 
-/// The project's list of instruments. A project saved before instruments
-/// had ids (format 1) has none: its shared synth is instrument 1, as in a
-/// new project. A list that is missing from a newer project is said, and
-/// the new project's list is used; one that doesn't read stops the open
-/// ([`check`]).
-fn instrument_list(snap: &Snapshot, format: u32, notes: &mut Vec<String>) -> InstrumentList {
+/// The project's list of instruments. One that is missing is said, and
+/// the new project's list is used (the audio loop gives the kits their
+/// ids); one that doesn't read stops the open ([`check`]).
+fn instrument_list(snap: &Snapshot, notes: &mut Vec<String>) -> InstrumentList {
     match snap.part(INSTRUMENT_LIST) {
-        None if format < 2 => InstrumentList::new(),
-        None => {
-            notes.push(
-                "project: its list of instruments is missing; the synth is instrument 1"
-                    .to_string(),
-            );
-            InstrumentList::new()
-        }
+        // New project's list, said only where something named an
+        // instrument of the missing one by its id (a track's pick, its own
+        // instrument's id): an MPC program brought in by
+        // `mpfree-mpc-import` has only its kit, and nothing to say.
+        None => InstrumentList::new(),
         Some(text) => InstrumentList::parse(text).unwrap_or_else(|e| {
             notes.push(format!(
                 "project: its list of instruments wasn't opened ({e}); the synth is instrument 1"
@@ -527,18 +532,16 @@ fn instrument_list(snap: &Snapshot, format: u32, notes: &mut Vec<String>) -> Ins
 
 /// The tracks' own instruments in the list (step 2b): each track the
 /// instruments part gave one (`held`, a bit each) keeps the id the list
-/// gives it, or gets a new one: silently in a project saved before
-/// instruments had ids, said in a newer one. An id whose track has no
+/// gives it, or gets a new one, said. An id whose track has no
 /// instrument (it wasn't in the part, or couldn't be made) is gone from
 /// the list, said.
-fn own_ids(list: &mut InstrumentList, held: u128, format: u32, notes: &mut Vec<String>) {
+fn own_ids(list: &mut InstrumentList, held: u128, notes: &mut Vec<String>) {
     let tracks = 0..crate::instrument_list::TRACKS;
-    let said = format >= 2;
     let mut missing = 0u128;
     for t in tracks.clone() {
         match (held >> t & 1 == 1, list.own_of(t)) {
             (true, None) => missing |= 1 << t,
-            (false, Some(id)) if said => notes.push(format!(
+            (false, Some(id)) => notes.push(format!(
                 "project: instrument {id} (track {}'s own) isn't there, so it is gone from the list",
                 t + 1
             )),
@@ -546,7 +549,7 @@ fn own_ids(list: &mut InstrumentList, held: u128, format: u32, notes: &mut Vec<S
         }
     }
     list.follow(held);
-    for t in tracks.filter(|&t| said && missing >> t & 1 == 1) {
+    for t in tracks.filter(|&t| missing >> t & 1 == 1) {
         if let Some(id) = list.own_of(t) {
             notes.push(format!(
                 "project: track {}'s own instrument had no id in the list; it is instrument {id} now",
@@ -584,26 +587,25 @@ fn free_ids(list: &mut InstrumentList, held: u16, notes: &mut Vec<String>) {
     }
 }
 
-/// What the tracks play, from the track kits part's picks: a kit as it
-/// is, and an instrument by its id: the shared synth (None in the first
-/// list), or another track's own instrument (step 4) or a free place's
-/// (step 6), a send in the second list (the track and the instrument's
-/// holder, `instruments::free` for a free place). A track whose
-/// instrument the list hasn't got, or that points at its own, is left
-/// out, so it plays its kit, and said.
+/// What the tracks play, from the track kits part's picks, each an
+/// instrument by its id: a kit or the shared synth (`Some(kit)` or None in
+/// the first list), or another track's own instrument (step 4) or a free
+/// place's (step 6), a send in the second list (the track and the
+/// instrument's holder, `instruments::free` for a free place). A track
+/// whose instrument the list hasn't got, or that points at its own, is
+/// left out, so it plays its kit (kit 1 when it has no other), and said.
 #[allow(clippy::type_complexity)]
 fn tracks_play(
-    picks: Vec<(usize, TrackPick)>,
+    picks: Vec<(usize, InstrumentId)>,
     list: &InstrumentList,
     notes: &mut Vec<String>,
     left_out: &mut Vec<String>,
 ) -> (Vec<(usize, Option<usize>)>, Vec<(usize, usize)>) {
     let mut out = Vec::with_capacity(picks.len());
     let mut sends = Vec::new();
-    for (track, pick) in picks {
-        match pick {
-            TrackPick::Kit(k) => out.push((track, Some(k))),
-            TrackPick::Instrument(id) => match list.kind(id) {
+    for (track, id) in picks {
+        match list.kind(id) {
+                Some(Kind::Kit { kit }) => out.push((track, Some(kit))),
                 Some(Kind::SharedSynth) => out.push((track, None)),
                 Some(Kind::Own { track: of }) if of != track => sends.push((track, of)),
                 Some(Kind::Free { place }) => {
@@ -620,27 +622,35 @@ fn tracks_play(
                     ));
                     left_out.push(format!("what track {} plays", track + 1));
                 }
-            },
         }
     }
     (out, sends)
 }
 
-/// The track kits part with the sends (step 4): [`TrackKits::text`]'s
-/// lines, then `track 6 instrument 2` for each track that plays another
-/// track's own instrument or a free place's, by that instrument's id in
-/// `list`.
+/// The track kits part: `track 6 instrument 2` for what each track plays
+/// by the instrument's id in `list`: its entry when it isn't kit 1 (a kit,
+/// or the shared synth: [`TrackKits::entry`]), then another track's own
+/// instrument or a free place's when it plays one by a send (step 4),
+/// which sounds over its entry until the send ends. A track's own
+/// instrument is the instruments part's. Only the first line while every
+/// track plays kit 1, so the part isn't saved.
 ///
-/// [`TrackKits::text`]: crate::sampler::TrackKits::text
+/// [`TrackKits::entry`]: crate::sampler::TrackKits::entry
 pub fn track_kits_text(
     kits: &crate::sampler::TrackKits,
     inst: &crate::instruments::Instruments,
     list: &InstrumentList,
 ) -> String {
     use std::fmt::Write as _;
-    let mut s = kits.text();
+    let mut s = format!("{TRACK_KITS_FORMAT}\n");
     for t in 0..crate::instruments::TRACKS {
-        if let Some(id) = inst.send(t).and_then(|o| list.of_holder(o)) {
+        let entry = match kits.kit_of(t) {
+            Some(0) => None,
+            Some(k) => list.of_kit(k),
+            None => Some(InstrumentId::SHARED_SYNTH),
+        };
+        let sent = inst.send(t).and_then(|o| list.of_holder(o));
+        for id in [entry, sent].into_iter().flatten() {
             let _ = writeln!(s, "track {} instrument {id}", t + 1);
         }
     }
@@ -671,7 +681,7 @@ pub fn opening(
         .and_then(|(_, v)| parse_swing(v));
     let mut note_fx = None;
     let mut audio = crate::audiotracks::Slots::default();
-    let format = check(snap)?;
+    check(snap)?;
     let since_4b = saved_since_4b(snap);
     let cant = |part: &str, e: String| format!("{} can't be read ({e})", part_words(part));
     let time = match snap.part(CLIPS) {
@@ -749,13 +759,13 @@ pub fn opening(
     if let Some(m) = mix.as_mut() {
         m.track1_own = instruments.iter().flatten().any(|l| l.track == 0);
     }
-    let mut instrument_list = instrument_list(snap, format, &mut notes);
+    let mut instrument_list = instrument_list(snap, &mut notes);
     let held = instruments
         .iter()
         .flatten()
         .filter(|l| l.track < crate::instrument_list::TRACKS)
         .fold(0u128, |bits, l| bits | 1 << l.track);
-    own_ids(&mut instrument_list, held, format, &mut notes);
+    own_ids(&mut instrument_list, held, &mut notes);
     let held_free = instruments
         .iter()
         .flatten()
@@ -797,48 +807,31 @@ pub fn opening(
 
 // ------------------------------------------------------------ what the tracks play
 
-/// What a track plays, as the track kits part names it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TrackPick {
-    /// A kit, from 0.
-    Kit(usize),
-    /// An instrument of the project's list, by its id.
-    Instrument(InstrumentId),
-}
-
-/// Reads the track kits part (`sampler::TrackKits::text`):
+/// Reads the track kits part ([`track_kits_text`]):
 ///
 /// ```text
-/// mpfree-track-kits 2
-/// track 2 kit 3
+/// mpfree-track-kits 3
+/// track 2 instrument 4
 /// track 4 instrument 1
 /// ```
 ///
-/// Tracks and kits are numbered from 1, as the screen shows them; gives
-/// them from 0. A part of version 1 (saved before instruments had ids)
-/// says `track 4 synth` for the shared synth, read as its id. A track or
-/// kit past what there is now is the audio loop's to refuse, and an
-/// instrument the list hasn't got the opener's ([`opening`]).
-pub fn track_kits_parse(text: &str) -> Result<Vec<(usize, TrackPick)>, String> {
+/// Tracks are numbered from 1, as the screen shows them; gives them from
+/// 0, each with the instrument it plays by its id: a kit, the shared
+/// synth, another track's own instrument or a free place's. A track past
+/// what there is now is the audio loop's to refuse, and an instrument the
+/// list hasn't got the opener's ([`opening`]).
+pub fn track_kits_parse(text: &str) -> Result<Vec<(usize, InstrumentId)>, String> {
     let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
-    let v1 = match lines.next() {
-        Some(TRACK_KITS_FORMAT) => false,
-        Some(TRACK_KITS_V1) => true,
-        _ => return Err(format!("not a {TRACK_KITS_FORMAT} part")),
-    };
+    if lines.next() != Some(TRACK_KITS_FORMAT) {
+        return Err(format!("not a {TRACK_KITS_FORMAT} part"));
+    }
     let mut picks = Vec::new();
     for line in lines {
         let w: Vec<&str> = line.split_whitespace().collect();
         let number = |s: &str| s.parse::<usize>().ok().filter(|&n| n >= 1).map(|n| n - 1);
         let instrument = |s: &str| s.parse().ok().and_then(InstrumentId::from_number);
         let pick = match w.as_slice() {
-            ["track", t, "kit", k] => number(t).zip(number(k).map(TrackPick::Kit)),
-            ["track", t, "synth"] if v1 => {
-                number(t).map(|t| (t, TrackPick::Instrument(InstrumentId::SHARED_SYNTH)))
-            }
-            ["track", t, "instrument", i] if !v1 => {
-                number(t).zip(instrument(i).map(TrackPick::Instrument))
-            }
+            ["track", t, "instrument", i] => number(t).zip(instrument(i)),
             _ => None,
         };
         match pick {
@@ -2909,9 +2902,17 @@ mod tests {
             loops: None,
             audio: None,
         };
-        // Nine kits, so the synth is entry 9.
+        // Nine kits, so the synth is entry 9; the kits are instruments 2
+        // to 10 in the list.
         let mut kits = crate::sampler::TrackKits::new(9);
-        let none = kits.text();
+        let mut list = InstrumentList::new();
+        list.follow_kits(9);
+        let inst = crate::instruments::Instruments::new(44_100, 128);
+        let c = |track_kits: String| Collected {
+            instrument_list: list.text(),
+            ..c(track_kits)
+        };
+        let none = track_kits_text(&kits, &inst, &list);
         let snap = snapshot(&c(none), Vec::new());
         assert!(
             snap.part(TRACK_KITS).is_none(),
@@ -2920,7 +2921,11 @@ mod tests {
         let o = opening(&snap, 44_100, "a test", &crate::plugins::Plugins::none()).unwrap();
         assert!(o.track_kits.is_empty());
         assert!(kits.set(1, 2) && kits.set(3, 9));
-        let picks = kits.text();
+        let picks = track_kits_text(&kits, &inst, &list);
+        assert_eq!(
+            picks,
+            format!("{TRACK_KITS_FORMAT}\ntrack 2 instrument 4\ntrack 4 instrument 1\n")
+        );
         let snap = snapshot(&c(picks), Vec::new());
         assert!(snap.part(TRACK_KITS).is_some());
         let o = opening(&snap, 44_100, "a test", &crate::plugins::Plugins::none()).unwrap();
@@ -2928,17 +2933,18 @@ mod tests {
         let mut snap = snap;
         for (name, text) in &mut snap.parts {
             if name == TRACK_KITS {
-                text.push_str("track two kit 1\n");
+                text.push_str("track two instrument 2\n");
             }
         }
         // A line that doesn't read: the project doesn't open (phase 0).
         let why = opening(&snap, 44_100, "a test", &crate::plugins::Plugins::none()).err();
         assert_eq!(
             why.as_deref(),
-            Some("its list of what its tracks play can't be read (can't read \"track two kit 1\")")
+            Some("its list of what its tracks play can't be read (can't read \"track two instrument 2\")")
         );
-        assert!(track_kits_parse("mpfree-track-kits 3\n").is_err());
-        assert!(track_kits_parse(&format!("{TRACK_KITS_FORMAT}\ntrack 0 kit 1\n")).is_err());
+        assert!(track_kits_parse("mpfree-track-kits 2\n").is_err());
+        assert!(track_kits_parse(&format!("{TRACK_KITS_FORMAT}\ntrack 0 instrument 2\n")).is_err());
+        assert!(track_kits_parse(&format!("{TRACK_KITS_FORMAT}\ntrack 1 kit 1\n")).is_err());
     }
 
     /// The parts a test project saves: what a save collects, with these
@@ -2982,62 +2988,50 @@ mod tests {
             .collect()
     }
 
-    /// Instrument redesign step 2a: a project saved before instruments
-    /// had ids (no format line, no list of instruments, and `track 4
-    /// synth` in the track kits part's version 1, as the build before
-    /// wrote it) opens with the same tracks on the same kits and the
-    /// synth, saying nothing: nothing was lost. Saved again it is format
-    /// 2, lists the shared synth as instrument 1 and points track 4 at it
-    /// by that id; opened again, every track plays what it played.
+    /// Sampler refactor step 14: a project saved before kits were
+    /// instruments (format 2, its tracks' kits by place), before
+    /// instruments had ids (no format line), or by a newer mpfree, is
+    /// refused in plain words, and nothing changes (Jay, 22 Nov: refused,
+    /// not converted).
     #[test]
-    fn a_project_from_before_instrument_ids_opens_and_saves_as_it_played() {
+    fn a_project_of_another_format_is_refused() {
         let none = &crate::plugins::Plugins::none();
-        let mut old = snapshot(
-            &collected(
-                "mpfree-track-kits 1\ntrack 2 kit 3\ntrack 4 synth\n".to_string(),
-                String::new(),
-            ),
-            Vec::new(),
-        );
-        old.meta.extra.retain(|(k, _)| k != FORMAT_KEY);
-        assert!(old.part(INSTRUMENT_LIST).is_none() && old.part(TRACK_KITS).is_some());
-        let o = opening(&old, 44_100, "an old project", none).unwrap();
-        assert_eq!(o.track_kits, [(1, Some(2)), (3, None)]);
-        assert_eq!(o.instrument_list, InstrumentList::new());
-        assert!(instrument_notes(&o).is_empty(), "{:?}", o.notes);
-
-        // Saved again, as the audio loop takes and collects it.
-        let mut kits = crate::sampler::TrackKits::new(9);
-        for &(track, kit) in &o.track_kits {
-            assert!(kits.set(track, kit.unwrap_or(kits.synth())));
+        let old = |format: Option<&str>| {
+            let mut snap = snapshot(
+                &collected(
+                    "mpfree-track-kits 2\ntrack 2 kit 3\ntrack 4 instrument 1\n".to_string(),
+                    "mpfree-instrument-list 1\nnext 2\ninstrument 1 shared-synth\n".to_string(),
+                ),
+                Vec::new(),
+            );
+            snap.meta.extra.retain(|(k, _)| k != FORMAT_KEY);
+            if let Some(f) = format {
+                snap.meta
+                    .extra
+                    .push((FORMAT_KEY.to_string(), f.to_string()));
+            }
+            snap
+        };
+        for (format, n) in [(Some("2"), 2), (None, 1)] {
+            assert_eq!(
+                opening(&old(format), 44_100, "an old project", none).err(),
+                Some(format!(
+                    "it was saved by an older MPFree, which this one doesn't open (project format {n}; this one opens {FORMAT})"
+                ))
+            );
         }
-        let snap = snapshot(
-            &collected(kits.text(), o.instrument_list.text()),
-            Vec::new(),
-        );
-        assert!(snap
-            .meta
-            .extra
-            .contains(&(FORMAT_KEY.to_string(), FORMAT.to_string())));
         assert_eq!(
-            snap.part(TRACK_KITS),
-            Some("mpfree-track-kits 2\ntrack 2 kit 3\ntrack 4 instrument 1\n")
+            opening(&old(Some("4")), 44_100, "a newer one", none).err(),
+            Some(format!(
+                "it was saved by a newer MPFree (project format 4; this one opens up to {FORMAT}). Update MPFree to open it"
+            ))
         );
-        assert_eq!(
-            snap.part(INSTRUMENT_LIST),
-            Some("mpfree-instrument-list 1\nnext 2\ninstrument 1 shared-synth\n")
-        );
-        let again = opening(&snap, 44_100, "it again", none).unwrap();
-        assert_eq!(again.track_kits, o.track_kits);
-        assert_eq!(again.instrument_list, o.instrument_list);
-        assert!(instrument_notes(&again).is_empty(), "{:?}", again.notes);
     }
 
-    /// A track pointing at an instrument the list hasn't got plays its kit
-    /// (kit 1 here), said; the others keep theirs. Each version of the
-    /// track kits part has its own word for the shared synth: a part mixing
-    /// them doesn't read, and the project doesn't open (phase 0: never half
-    /// a project).
+    /// A track pointing at an instrument the list hasn't got plays its kit,
+    /// said; the others keep theirs. A line in an older part's words (a kit
+    /// by its place, `synth`) doesn't read, and the project doesn't open
+    /// (phase 0: never half a project).
     #[test]
     fn a_track_whose_instrument_is_not_listed_plays_kit_1_and_says_so() {
         let none = &crate::plugins::Plugins::none();
@@ -3057,7 +3051,8 @@ mod tests {
         );
         for kits in [
             format!("{TRACK_KITS_FORMAT}\ntrack 3 synth\n"),
-            "mpfree-track-kits 1\ntrack 3 instrument 1\n".to_string(),
+            format!("{TRACK_KITS_FORMAT}\ntrack 3 kit 2\n"),
+            "mpfree-track-kits 2\ntrack 3 instrument 1\n".to_string(),
             format!("{TRACK_KITS_FORMAT}\ntrack 3 instrument 0\n"),
         ] {
             let snap = snapshot(&collected(kits.clone(), list.clone()), Vec::new());
@@ -3069,11 +3064,11 @@ mod tests {
         }
     }
 
-    /// Every save and New project is format 2 with the list of
-    /// instruments. A format 2 project with no list is said and opens with
-    /// the new project's list. A newer format, a format line that doesn't
-    /// read, and a list that doesn't read stop the open, in plain words
-    /// (phase 0).
+    /// Every save and New project is format 3 with the list of
+    /// instruments. A project with no list opens with the new project's
+    /// list, saying nothing for it (the track on the shared synth still
+    /// plays it, by id 1). A format line that doesn't read and a list that
+    /// doesn't read stop the open, in plain words (phase 0).
     #[test]
     fn the_project_format_and_the_list_are_written_and_a_problem_is_said() {
         let none = &crate::plugins::Plugins::none();
@@ -3111,45 +3106,39 @@ mod tests {
             opening(&snap, 44_100, "x", none)
         };
         let list = InstrumentList::new().text();
-        let o = with(Some("2"), None).unwrap();
-        assert!(
-            o.notes
-                .iter()
-                .any(|n| n.contains("its list of instruments is missing")),
-            "{:?}",
-            o.notes
-        );
+        let o = with(Some("3"), None).unwrap();
+        assert!(instrument_notes(&o).is_empty(), "{:?}", o.notes);
         assert_eq!(o.instrument_list, InstrumentList::new());
         assert_eq!(o.track_kits, [(3, None)]);
-        let newer = format!("{}", FORMAT + 1);
-        for (format, list, why) in [
-            (
-                Some(newer.as_str()),
-                Some(list.as_str()),
-                format!(
-                    "it was saved by a newer MPFree (project format {}; this one opens up to \
-                     {FORMAT}). Update MPFree to open it",
-                    FORMAT + 1
+        // An MPC program brought in by mpfree-mpc-import: the format line
+        // and its kit, nothing else. It opens, saying nothing.
+        let imported = mpfree_library::Snapshot {
+            meta: mpfree_library::Meta {
+                extra: vec![(FORMAT_KEY.to_string(), FORMAT.to_string())],
+                ..Default::default()
+            },
+            parts: vec![(
+                "sampler".to_string(),
+                mpfree_sampler::save::to_text(
+                    &[("Kit", &mpfree_sampler::model::Project::new())],
+                    0,
+                    &mpfree_sampler::wav::file_name,
                 ),
-            ),
-            (
-                Some("two"),
-                Some(list.as_str()),
-                "its format line (\"two\") can't be read".to_string(),
-            ),
-        ] {
-            assert_eq!(with(format, list).err(), Some(why));
-        }
-        let why = with(Some("2"), Some("mpfree-instrument-list 1\n"))
+            )],
+        };
+        let o = opening(&imported, 44_100, "x", none).expect("an imported program opens");
+        assert!(o.notes.is_empty() && o.left_out.is_empty(), "{:?}", o.notes);
+        assert_eq!(
+            with(Some("two"), Some(list.as_str())).err(),
+            Some("its format line (\"two\") can't be read".to_string())
+        );
+        let why = with(Some("3"), Some("mpfree-instrument-list 1\n"))
             .err()
             .unwrap_or_default();
         assert!(
             why.starts_with("its list of instruments can't be read"),
             "{why}"
         );
-        // Format 1 with no list is an old project: nothing to say.
-        let o = with(None, None).unwrap();
-        assert!(instrument_notes(&o).is_empty(), "{:?}", o.notes);
     }
 
     /// Phase 2: every recording an audio clip names must be among the
@@ -3485,12 +3474,14 @@ mod tests {
         inst.set_send(5, Some(1)).unwrap();
         let mut list = InstrumentList::new();
         list.follow(inst.held_tracks());
+        // Four kits, instruments 3 to 6 after track 2's.
+        list.follow_kits(4);
         let mut kits = crate::sampler::TrackKits::new(4);
         kits.set(5, 2);
         let text = track_kits_text(&kits, &inst, &list);
         assert_eq!(
             text,
-            format!("{TRACK_KITS_FORMAT}\ntrack 6 kit 3\ntrack 6 instrument 2\n")
+            format!("{TRACK_KITS_FORMAT}\ntrack 6 instrument 5\ntrack 6 instrument 2\n")
         );
         let mut c = collected(text.clone(), list.text());
         c.instruments = instruments_text(&inst);
@@ -3555,38 +3546,28 @@ mod tests {
         assert_eq!(o.sends, [(5, free(2))]);
     }
 
-    /// Step 2b: the tracks' own instruments join the list. In a project
-    /// saved before instruments had ids they get the next ids in track
-    /// order, saying nothing; saved again the list names each one's
-    /// track, and opened again every one keeps its id.
+    /// Step 2b: the tracks' own instruments join the list, each by its
+    /// id. Saved, the list names each one's track, and opened again every
+    /// one keeps its id, saying nothing.
     #[test]
     fn the_tracks_own_instruments_get_ids_that_come_back() {
         let none = &crate::plugins::Plugins::none();
-        let mut c = collected(String::new(), String::new());
+        let mut list = InstrumentList::new();
+        list.follow(1 << 1 | 1 << 3);
+        let mut c = collected(String::new(), list.text());
         c.instruments = fm_on_2_and_poly_on_4();
-        let mut old = snapshot(&c, Vec::new());
-        old.meta.extra.retain(|(k, _)| k != FORMAT_KEY);
-        let o = opening(&old, 44_100, "an old project", none).unwrap();
-        assert_eq!(o.instruments.iter().flatten().count(), 2);
-        let id = InstrumentId::from_number;
-        assert_eq!(
-            (o.instrument_list.own_of(1), o.instrument_list.own_of(3)),
-            (id(2), id(3))
-        );
-        assert!(instrument_notes(&o).is_empty(), "{:?}", o.notes);
-
-        c.instrument_list = o.instrument_list.text();
         let snap = snapshot(&c, Vec::new());
         assert_eq!(
             snap.part(INSTRUMENT_LIST),
             Some(
-                "mpfree-instrument-list 1\nnext 4\ninstrument 1 shared-synth\n\
+                "mpfree-instrument-list 2\nnext 4\ninstrument 1 shared-synth\n\
                  instrument 2 own track 2\ninstrument 3 own track 4\n"
             )
         );
-        let again = opening(&snap, 44_100, "it again", none).unwrap();
-        assert_eq!(again.instrument_list, o.instrument_list);
-        assert!(instrument_notes(&again).is_empty(), "{:?}", again.notes);
+        let o = opening(&snap, 44_100, "it", none).unwrap();
+        assert_eq!(o.instruments.iter().flatten().count(), 2);
+        assert_eq!(o.instrument_list, list);
+        assert!(instrument_notes(&o).is_empty(), "{:?}", o.notes);
     }
 
     /// A newer project whose list and instruments part disagree: a track's
@@ -3599,7 +3580,7 @@ mod tests {
         let none = &crate::plugins::Plugins::none();
         let mut c = collected(
             format!("{TRACK_KITS_FORMAT}\ntrack 7 instrument 5\ntrack 2 instrument 5\n"),
-            "mpfree-instrument-list 1\nnext 9\ninstrument 1 shared-synth\n\
+            "mpfree-instrument-list 2\nnext 9\ninstrument 1 shared-synth\n\
              instrument 5 own track 2\ninstrument 6 own track 6\n"
                 .to_string(),
         );

@@ -29,3 +29,5 @@ mpfree-simd = { path = "../mpfree-simd" }
 mpfree-time-ui = { path = "../mpfree-time-ui" }
 mpfree-stream = { path = "../mpfree-stream" }
 mpfree-ui = { path = "../mpfree-ui" }
+mpfree-compose = { path = "../mpfree-compose" }
+mpfree-context = { path = "../mpfree-context" }

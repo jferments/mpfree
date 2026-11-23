@@ -92,6 +92,7 @@ jobs:
           bash -n tools/mpc-one/lib/neighbor-identity.sh
           bash -n tools/mpc-one/tests/test-neighbor-identity.sh
           bash -n tools/build-usb-creator.sh
+          sh -n tools/ci/slice_report.sh
       - name: Test neighbor MAC extraction against deterministic fixtures
         run: bash tools/mpc-one/tests/test-neighbor-identity.sh
       - name: Test the eMMC backup against a fake MPC under BusyBox (no device)
@@ -837,6 +838,10 @@ jobs:
         # some create them with create_new, so leftovers fail the next job.
         run: find /tmp -maxdepth 1 -name 'mpfree-*' -user "$(id -u)" -exec rm -rf {} +
       - uses: actions/checkout@v4
+      - name: The mpfree slice's memory and CPU at the start (report only)
+        if: runner.environment == 'self-hosted'
+        # All four runners share one memory limit; over it, every mpfree job slows at once.
+        run: sh tools/ci/slice_report.sh start
       - name: Keep the Cargo target between runs (self-hosted only)
         if: runner.environment == 'self-hosted'
         run: |
@@ -872,8 +877,11 @@ jobs:
         # release builds come from the steps below (the bench, the renders,
         # the ARM program and its tests). Both debug and release took 15 of
         # this job's 57 minutes (train 42, 14 Nov).
+        # Every crate but the app: the app's own tests run in app-tests beside
+        # this job (23 Nov). Cargo runs one test program at a time, so the
+        # app's 13 minutes and the other crates' 13 came one after the other.
         run: |
-          cargo test --manifest-path rust/Cargo.toml --workspace --all-targets --locked
+          cargo test --manifest-path rust/Cargo.toml --workspace --exclude mpfree-app --all-targets --locked
           cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-render
       - name: No allocation on any engine's audio path (mpfree-bench)
         # Exits 2 if an engine allocates inside its audio callback. The timings
@@ -1102,6 +1110,63 @@ jobs:
           python3 tests/check_cpp_rust_wav_parity.py \
             --cpp build/mpfree-render \
             --rust rust/target/release/mpfree-render
+      - name: The mpfree slice's memory and CPU at the end (report only)
+        if: always() && runner.environment == 'self-hosted'
+        run: sh tools/ci/slice_report.sh end
+  app-tests:
+    name: The app's own tests, natively (debug; the control sweep over every screen)
+    if: github.event.pull_request.draft != true
+    needs: instructions
+    # Split from the rust job's test step (23 Nov 2026, Joshi: make the runs
+    # shorter). The app's unit tests take about 13 minutes on their own, nearly
+    # all of it the control sweep (smoke::tests); the other crates' tests take
+    # about 13 more, and cargo runs one test program after another, so the two
+    # halves now run side by side on two runners.
+    runs-on: [self-hosted, linux, x64, mpfree-ci]
+    timeout-minutes: 120
+    env:
+      # Not `rustup default`: the runner account is shared with other projects.
+      RUSTUP_TOOLCHAIN: stable
+      MPFREE_CARGO_TARGET_BUDGET_GIB: 15
+    steps:
+      - name: Clear the last job's /tmp files (self-hosted only)
+        if: runner.environment == 'self-hosted'
+        run: find /tmp -maxdepth 1 -name 'mpfree-*' -user "$(id -u)" -exec rm -rf {} +
+      - uses: actions/checkout@v4
+      - name: The mpfree slice's memory and CPU at the start (report only)
+        if: runner.environment == 'self-hosted'
+        # All four runners share one memory limit; over it, every mpfree job slows at once.
+        run: sh tools/ci/slice_report.sh start
+      - name: Keep the Cargo target between runs (self-hosted only)
+        if: runner.environment == 'self-hosted'
+        run: |
+          # The rust job's target: the same debug build, and a runner runs one job at a time.
+          all="$RUNNER_WORKSPACE/cargo-target"
+          t="$all/rust"
+          mkdir -p "$t"
+          used=$(du -s -BG "$all" | cut -f1 | tr -d G)
+          if [ "$used" -gt "$MPFREE_CARGO_TARGET_BUDGET_GIB" ]; then
+            echo "Cargo targets hold ${used} GiB, over ${MPFREE_CARGO_TARGET_BUDGET_GIB}: starting rust afresh"
+            rm -rf "$t" && mkdir -p "$t"
+          fi
+          rm -rf rust/target && ln -s "$t" rust/target
+          echo "CARGO_TARGET_DIR=$t" >> "$GITHUB_ENV"
+      - name: Put the runner account's rustup on PATH (self-hosted only)
+        if: runner.environment == 'self-hosted'
+        run: echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"
+      - name: Install Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustc --version
+          cargo --version
+      - name: Test the app natively (debug, every target)
+        # A step limit under the job's, so a hang fails with its log kept
+        # (libtest names each test running over 60 s).
+        timeout-minutes: 90
+        run: cargo test --manifest-path rust/Cargo.toml -p mpfree-app --all-targets --locked
+      - name: The mpfree slice's memory and CPU at the end (report only)
+        if: always() && runner.environment == 'self-hosted'
+        run: sh tools/ci/slice_report.sh end
   rust-arm:
     name: ARMv7 hard-float cross-builds and the plugin sandbox under qemu (do not deploy)
     if: github.event.pull_request.draft != true
@@ -1128,6 +1193,10 @@ jobs:
         # some create them with create_new, so leftovers fail the next job.
         run: find /tmp -maxdepth 1 -name 'mpfree-*' -user "$(id -u)" -exec rm -rf {} +
       - uses: actions/checkout@v4
+      - name: The mpfree slice's memory and CPU at the start (report only)
+        if: runner.environment == 'self-hosted'
+        # All four runners share one memory limit; over it, every mpfree job slows at once.
+        run: sh tools/ci/slice_report.sh start
       - name: Keep the Cargo target between runs (self-hosted only)
         if: runner.environment == 'self-hosted'
         run: |
@@ -1419,22 +1488,48 @@ jobs:
           # tests each need 1-2 GiB on their own (measured one by one on the host, 20 Nov), so two
           # of them at once ran out of memory ("memory allocation of 1840704 bytes failed",
           # SIGABRT: trains 117, 118 and 125, at 8 and at 4 tests at a time). Everything else runs
-          # eight at a time without them, then the three run one after another.
+          # eight at a time without them. The three then run as three programs at once, each under
+          # its own qemu-arm with its own 4 GiB, beside the preview: one after another they took
+          # 8 of this step's 19 minutes (4, 2 and 2; 22 Nov), so at once they take about 4.
           big="gui::tests::every_sample_screen_plays_back_the_same_from_its_display_list gui::tests::no_page_redraws_while_idle gui::tests::every_sample_screen_draws"
           big_skip=
           for t in $big; do big_skip="$big_skip --skip $t"; done
           RUSTFLAGS= QEMU_LD_PREFIX=/usr/arm-linux-gnueabihf \
             cargo test --manifest-path rust/Cargo.toml --release --locked \
             --target armv7-unknown-linux-gnueabihf -p mpfree-app --bin mpfree -- --test-threads=8 $skip $big_skip
+          # The same test program cargo just ran (built, so this only names it). Run without cargo,
+          # whose lock on the target would let only one of them run at a time; from the app's
+          # folder, as cargo runs it.
+          tests=$(RUSTFLAGS= cargo test --manifest-path rust/Cargo.toml --release --locked \
+            --target armv7-unknown-linux-gnueabihf -p mpfree-app --bin mpfree --no-run \
+            --message-format=json \
+            | python3 -c 'import json,sys
+          for l in sys.stdin:
+              m = json.loads(l)
+              if m.get("reason") == "compiler-artifact" and m.get("profile", {}).get("test") and m.get("executable"):
+                  print(m["executable"])')
+          [ "$(printf '%s\n' "$tests" | wc -l)" = 1 ] && [ -x "$tests" ]
+          logs="$RUNNER_TEMP/arm-big"
+          rm -rf "$logs" && mkdir -p "$logs"
+          pids=
           for t in $big; do
-            RUSTFLAGS= QEMU_LD_PREFIX=/usr/arm-linux-gnueabihf \
-              cargo test --manifest-path rust/Cargo.toml --release --locked \
-              --target armv7-unknown-linux-gnueabihf -p mpfree-app --bin mpfree -- --test-threads=1 --exact "$t"
+            ( cd rust/mpfree-app && QEMU_LD_PREFIX=/usr/arm-linux-gnueabihf \
+                qemu-arm "$tests" --test-threads=1 --exact "$t" ) > "$logs/$t.log" 2>&1 &
+            pids="$pids $!"
           done
           # The host-only preview under qemu: draws sample screens into new PNG files, touches no device.
           # It took 110-115 s on the self-hosted runners with four mpfree jobs sharing the CPU
           # (2026-11-11) and two runs hit a 120 s limit, so the limit is 600 s; it only stops a hang.
-          timeout 600 qemu-arm "$static" --preview "$RUNNER_TEMP/app-preview"
+          timeout 600 qemu-arm "$static" --preview "$RUNNER_TEMP/app-preview" > "$logs/preview.log" 2>&1 &
+          pids="$pids $!"
+          failed=0
+          for p in $pids; do wait "$p" || failed=1; done
+          for f in "$logs"/*.log; do echo "::group::${f##*/}"; cat "$f"; echo "::endgroup::"; done
+          for t in $big; do
+            # Each ran exactly one test, and it passed (an --exact name that matched nothing passes too).
+            grep -q '^test result: ok\. 1 passed; 0 failed' "$logs/$t.log" || { echo "FAIL: $t"; failed=1; }
+          done
+          [ "$failed" = 0 ]
           for n in console loading loading-failed play debug syslog prefs options guide touchlab calibrate prefs-touch; do
             head -c 8 "$RUNNER_TEMP/app-preview/$n.png" | od -An -tx1 | grep -q '89 50 4e 47 0d 0a 1a 0a'
           done
@@ -1523,6 +1618,9 @@ jobs:
           echo "not a font" > "$t/bad.ttf"
           run1 --font "$t/bad.ttf"; grep -q 'using the built-in block letters' "$t/out.txt"
           echo "PASS: title fonts under qemu"
+      - name: The mpfree slice's memory and CPU at the end (report only)
+        if: always() && runner.environment == 'self-hosted'
+        run: sh tools/ci/slice_report.sh end
   splash-gl:
     name: SDL3/GLES startup screen (desktop build, headless render)
     if: github.event.pull_request.draft != true

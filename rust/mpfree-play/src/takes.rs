@@ -342,6 +342,9 @@ pub enum Replaced {
     /// 2, [`Takes::set_audio_clip`]); its other settings are a note
     /// clip's ([`Takes::set_clip`]).
     Settings,
+    /// Convert to notes: a clip that followed the pads, now of the notes
+    /// it played (step sequencer refactor E1, `mpfree_seq::convert`).
+    Convert,
 }
 
 /// A scene editor change: row `row`'s settings before and after.
@@ -452,12 +455,22 @@ impl Takes {
     }
 
     /// Add a recorded note to its clip and remember it with its take.
-    /// `BadSlot` if the clip is gone; the clip's own refusals as they are.
+    /// A pad's note joins its trigger on its tick
+    /// (`mpfree_seq::groups::settle_recorded`). `BadSlot` if the clip is
+    /// gone; the clip's own refusals as they are.
     pub fn add(&mut self, project: &mut Project, k: &Taken) -> Result<(), ModelError> {
+        self.put(project, k).map(|_| ())
+    }
+
+    /// [`Takes::add`]: the note as added.
+    fn put(&mut self, project: &mut Project, k: &Taken) -> Result<Note, ModelError> {
         let clip = clip(project, k.track, k.slot).ok_or(ModelError::BadSlot)?;
-        clip.add_note(k.note)?;
-        self.entry(k.take).added.push((k.track, k.slot, k.note));
-        Ok(())
+        let mut note = [k.note];
+        mpfree_seq::groups::settle_recorded(clip, &mut note);
+        let [note] = note;
+        clip.add_note(note)?;
+        self.entry(k.take).added.push((k.track, k.slot, note));
+        Ok(note)
     }
 
     /// [`Takes::add`] for a recorded note with its pad pressure, `points`
@@ -481,7 +494,7 @@ impl Takes {
             Err(_) => (Touch::NONE, false),
         };
         note.touch = touch;
-        self.add(project, &Taken { note, ..*k })?;
+        let note = self.put(project, &Taken { note, ..*k })?;
         Ok((note, kept))
     }
 
@@ -1208,6 +1221,7 @@ impl Takes {
         if room {
             c.touch.extend_from_slice(touch);
         }
+        mpfree_seq::groups::settle_recorded(c, &mut notes);
         for (i, n) in notes.iter().enumerate() {
             if let Err(e) = c.add_note(*n) {
                 c.notes.truncate(before);
@@ -1228,10 +1242,12 @@ impl Takes {
     /// names what is being turned (such as `steps::Change::key`): an edit
     /// joins the latest take instead when that is an edit of the same clip
     /// with the same key and nothing undone since, so a Q-Link turned
-    /// through many values is one undo. The edit's number. `BadSlot` if
-    /// the clip is gone; `MissingNote` or the clip's own refusals as they
-    /// are; nothing changes on an error. An empty edit changes nothing and
-    /// makes no take.
+    /// through many values is one undo. A change to the shared settings
+    /// of some notes of a trigger group reaches the rest of its notes
+    /// (`mpfree_seq::groups::follow`), in the same take. The edit's
+    /// number. `BadSlot` if the clip is gone; `MissingNote` or the clip's
+    /// own refusals as they are; nothing changes on an error. An empty
+    /// edit changes nothing and makes no take.
     pub fn edit(
         &mut self,
         project: &mut Project,
@@ -1244,6 +1260,9 @@ impl Takes {
         if edit.is_empty() {
             return Ok(self.edits);
         }
+        // A change to some notes of a trigger group is a change to all.
+        let whole = mpfree_seq::groups::follow(c, edit);
+        let edit = whole.as_ref().unwrap_or(edit);
         c.apply(edit)?;
         let same_clip = |t: &Take| {
             t.added
@@ -1871,6 +1890,7 @@ mod tests {
                 on: true,
                 ramp: 0,
                 join: mpfree_seq::Join::Attack,
+                group: 0,
             },
             take,
         }
@@ -2806,6 +2826,7 @@ mod tests {
             on: true,
             ramp: 0,
             join: mpfree_seq::Join::Attack,
+            group: 0,
         })
         .unwrap();
         assert_eq!(t.capture_clip(&mut p, 0, 1, c.clone()), Ok(1));
@@ -2837,6 +2858,7 @@ mod tests {
                 on: true,
                 ramp: 0,
                 join: mpfree_seq::Join::Attack,
+                group: 0,
             })
             .unwrap();
         assert_eq!(t.undo(&mut p), Some(1));
@@ -2910,6 +2932,7 @@ mod tests {
             on: true,
             ramp: 0,
             join: mpfree_seq::Join::Attack,
+            group: 0,
         };
         let pressed = |tick, first| Note {
             touch: Touch { first, len: 2 },

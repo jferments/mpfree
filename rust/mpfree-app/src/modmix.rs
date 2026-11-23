@@ -47,6 +47,7 @@
 //! [`ModMix::new`]; set-up changes and saving run on the same loop between
 //! periods, as the mixer panel's edits do, and may.
 
+use crate::hand::{Hand, Hands, Move};
 use mpfree_fx::mpfree_node::{Ctx, NodeEvent, ParamInfo, Timed};
 use mpfree_fx::{mixer_param_applies as param_applies, strip_params, Mixer, StripId};
 use mpfree_mod::{
@@ -78,6 +79,8 @@ pub struct ModMix {
     /// Values that found the period's events full and took the place of an
     /// earlier value for the same setting.
     merged: u64,
+    /// Who holds which setting by hand (`hand.rs`).
+    hands: Hands,
     /// The tracks' MIDI effects, for their settings' descriptions.
     note_fx: Box<[TrackFx; MAX_TRACKS]>,
     /// This period's values on MIDI effect settings, for the time engine.
@@ -147,6 +150,7 @@ impl ModMix {
             dropped: 0,
             late: 0,
             merged: 0,
+            hands: Hands::new(rate),
             note_fx: Box::new([TrackFx::default(); MAX_TRACKS]),
             note_values: Vec::with_capacity(NOTE_VALUES),
             midi_values: Vec::with_capacity(MIDI_VALUES),
@@ -268,13 +272,19 @@ impl ModMix {
     pub fn describe(&self) -> String {
         format!(
             "mod: {} targets, {} values sent, {} with no place in the mixer, {} events dropped, \
-             {} let-gos kept aside, {} values merged",
+             {} let-gos kept aside, {} values merged; hands: {} held, {} taken by a newer \
+             gesture, {} moves ignored, {} MIDI gestures ended, {} with no room",
             self.engine.targets().count(),
             self.engine.stats().sent,
             self.unrouted,
             self.dropped,
             self.late,
-            self.merged
+            self.merged,
+            self.hands.holding(),
+            self.hands.taken,
+            self.hands.ignored,
+            self.hands.ended,
+            self.hands.full
         )
     }
 
@@ -287,6 +297,7 @@ impl ModMix {
 
     /// Lets go of every hand, lock and lane at once: a project is opening.
     pub fn let_go_all(&mut self) {
+        self.hands.clear();
         self.events.retain(|e| {
             !matches!(
                 e.ev,
@@ -350,12 +361,14 @@ impl ModMix {
         }
     }
 
-    /// A hand on a control (a knob on the chain editor, a macro, the
-    /// morph), by `ModEvent::hand`'s rule: a `Set`, or a `Touch` that beats
-    /// the step locks while `recording`. False when the engine doesn't
-    /// hold `addr`: then the host sets it itself (nothing can lock or
-    /// modulate a parameter the engine doesn't hold).
-    pub fn hand(&mut self, addr: ParamAddr, value: f32, recording: bool) -> bool {
+    /// `who`'s hand on a control (a knob on the chain editor, a macro, the
+    /// morph, a learned MIDI control), by `ModEvent::hand`'s rule: a `Set`,
+    /// or a `Touch` that beats the step locks while `recording`. A touch
+    /// has an owner (`hand.rs`): a new gesture takes the setting, and a
+    /// hand that lost it is ignored. False when the engine doesn't hold
+    /// `addr`: then the host sets it itself (nothing can lock or modulate
+    /// a parameter the engine doesn't hold).
+    pub fn hand(&mut self, who: Hand, addr: ParamAddr, value: f32, recording: bool) -> bool {
         // A learned knob on outside gear: only the engine sends it.
         if matches!(addr.owner, Owner::Midi(_)) {
             self.hold_midi(addr);
@@ -363,15 +376,32 @@ impl ModMix {
         if !self.engine.is_target(addr) {
             return false;
         }
-        self.queue(0, ModEvent::hand(addr, value, false, recording));
+        let ev = match ModEvent::hand(addr, value, false, recording) {
+            ev @ ModEvent::Touch { .. } => match self.hands.moved(who, addr, value) {
+                Move::Took | Move::Again => ev,
+                Move::Same | Move::Lost => return true,
+                // No room to keep who holds it: a plain value, which
+                // never needs letting go.
+                Move::Full => ModEvent::Set { addr, value },
+            },
+            ev => ev,
+        };
+        self.queue(0, ev);
         true
     }
 
-    /// The hand let go of `addr` (nothing happens after a plain `Set`).
-    pub fn release(&mut self, addr: ParamAddr) {
-        if self.engine.is_target(addr) {
+    /// `who`'s hand let go of `addr` (nothing happens after a plain
+    /// `Set`). Only the hand that holds it lets it go.
+    pub fn release(&mut self, who: Hand, addr: ParamAddr) {
+        if self.engine.is_target(addr) && self.hands.release(who, addr) {
             self.queue(0, ModEvent::Untouch { addr });
         }
+    }
+
+    /// Who holds what by hand (`hand.rs`; the tests').
+    #[cfg(test)]
+    pub fn hands(&self) -> &Hands {
+        &self.hands
     }
 
     /// A set-up change from the chain editor or the macros panel. A
@@ -396,6 +426,7 @@ impl ModMix {
         for a in gone {
             self.engine.remove_target(a);
         }
+        self.hands.forget(owner);
     }
 
     /// The set-up as `key = value` lines: [`ModEngine::save`]'s, then the
@@ -620,6 +651,12 @@ impl ModMix {
     /// Runs one period of `len` frames before the mixer's: what changed
     /// goes into the mixer's queues on its frame.
     pub fn process(&mut self, ctx: &Ctx, len: usize, mixer: &mut Mixer) {
+        // A learned MIDI control's gesture ends HAND_S after its last move:
+        // it lets go first this period (a let-go never needs a slot).
+        self.hands.tick(len as u32);
+        while let Some(addr) = self.hands.take_ended() {
+            self.queue(0, ModEvent::Untouch { addr });
+        }
         let unrouted = &mut self.unrouted;
         let notes = &mut self.note_values;
         let midi = &mut self.midi_values;
@@ -924,7 +961,7 @@ mod tests {
         assert!(values(&mut h).is_empty());
         // A hand (a learned knob): held if it wasn't, and sent.
         let bend = ParamAddr::new(Owner::Midi(0), mpfree_play::mpfree_param::midi::BEND);
-        assert!(h.modu.hand(bend, -4000.0, false));
+        assert!(h.modu.hand(Hand::Screen, bend, -4000.0, false));
         assert!(h.modu.set(cc, 90.0));
         run(&mut h, 4, 12);
         assert_eq!(values(&mut h), [(0, bend, -4000.0), (0, cc, 90.0)]);
@@ -984,7 +1021,7 @@ mod tests {
         // Drums' while recording.
         h.lock(0, vol(LOOP), Some(-18.0));
         assert!(h.modu.hold(&h.mixer, vol(DRUMS)));
-        assert!(h.modu.hand(vol(DRUMS), -12.0, true));
+        assert!(h.modu.hand(Hand::Screen, vol(DRUMS), -12.0, true));
         run(&mut h, 4, 0);
         assert!((level(&h, LOOP) + 18.0).abs() < 0.01);
         assert!((level(&h, DRUMS) + 12.0).abs() < 0.01);
@@ -995,7 +1032,7 @@ mod tests {
         }
         // ...then the lock ends and the hand lets go: neither is lost.
         h.lock(0, vol(LOOP), None);
-        h.modu.release(vol(DRUMS));
+        h.modu.release(Hand::Screen, vol(DRUMS));
         // One more move of the crossfader takes the last one's place.
         h.modu.morph_to(0.0);
         // A source's value has no setting to merge into: dropped.
@@ -1023,16 +1060,93 @@ mod tests {
         let (loop_was, drums_was) = (level(&h, LOOP), level(&h, DRUMS));
         h.lock(0, vol(LOOP), Some(-18.0));
         assert!(h.modu.hold(&h.mixer, vol(DRUMS)));
-        assert!(h.modu.hand(vol(DRUMS), -12.0, true));
+        assert!(h.modu.hand(Hand::Screen, vol(DRUMS), -12.0, true));
         run(&mut h, 4, 0);
         // A hand queued in the same period goes too.
-        assert!(h.modu.hand(vol(DRUMS), -20.0, true));
+        assert!(h.modu.hand(Hand::Screen, vol(DRUMS), -20.0, true));
         h.modu.let_go_all();
         run(&mut h, 40, 4);
         assert!(!h.modu.engine().is_locked(vol(LOOP)));
         assert!(!h.modu.engine().is_touched(vol(DRUMS)));
         assert!((level(&h, LOOP) - loop_was).abs() < 0.01);
         assert!((level(&h, DRUMS) - drums_was).abs() < 0.01);
+    }
+
+    /// The periods in `s` seconds, rounded up.
+    fn periods(s: f32) -> u64 {
+        (s * RATE as f32 / PERIOD as f32).ceil() as u64
+    }
+
+    #[test]
+    fn a_learned_control_turned_while_recording_lets_go_half_a_second_after_its_last_move() {
+        let mut h = MixHost::new(RATE, 0.0, 6.0);
+        let level = |h: &MixHost| h.mixer.param(StripId::Track(DRUMS), mx::VOLUME);
+        let was = level(&h);
+        // A step's lock on the Drums' fader; a learned knob turns it while
+        // recording, over the lock.
+        h.lock(0, vol(DRUMS), Some(-18.0));
+        assert!(h.modu.hand(Hand::Midi, vol(DRUMS), -12.0, true));
+        run(&mut h, 4, 0);
+        assert!((level(&h) + 12.0).abs() < 0.01);
+        // Turned again a little later: the hold runs from the last move.
+        run(&mut h, periods(0.3), 4);
+        assert!(h.modu.hand(Hand::Midi, vol(DRUMS), -10.0, true));
+        let mut at = 4 + periods(0.3);
+        // The same value again isn't a move.
+        run(&mut h, periods(0.3), at);
+        at += periods(0.3);
+        assert!(h.modu.hand(Hand::Midi, vol(DRUMS), -10.0, true));
+        run(&mut h, periods(0.15), at);
+        at += periods(0.15);
+        assert!(h.modu.engine().is_touched(vol(DRUMS)), "still held");
+        assert!((level(&h) + 10.0).abs() < 0.01);
+        // Half a second after the last move it lets go, back to the lock.
+        run(&mut h, periods(0.1), at);
+        at += periods(0.1);
+        assert!(!h.modu.engine().is_touched(vol(DRUMS)));
+        assert!((level(&h) + 18.0).abs() < 0.01, "{}", level(&h));
+        assert_eq!(h.modu.hands().ended, 1);
+        // The lock ends: the fader's own value, untouched by the knob.
+        h.lock(0, vol(DRUMS), None);
+        run(&mut h, 40, at);
+        assert!((level(&h) - was).abs() < 0.01);
+        assert!(h.modu.describe().contains("1 MIDI gestures ended"));
+    }
+
+    #[test]
+    fn only_the_hand_that_holds_a_setting_lets_it_go() {
+        let mut h = MixHost::new(RATE, 0.0, 6.0);
+        let level = |h: &MixHost| h.mixer.param(StripId::Track(DRUMS), mx::VOLUME);
+        assert!(h.modu.hold(&h.mixer, vol(DRUMS)));
+        let was = level(&h);
+        // A finger on the chain editor's knob while recording...
+        assert!(h.modu.hand(Hand::Screen, vol(DRUMS), -12.0, true));
+        run(&mut h, 4, 0);
+        // ...then a learned knob takes it: the newest gesture wins.
+        assert!(h.modu.hand(Hand::Midi, vol(DRUMS), -20.0, true));
+        run(&mut h, 4, 4);
+        assert!((level(&h) + 20.0).abs() < 0.01);
+        // The finger moves on: ignored, the knob holds it.
+        assert!(h.modu.hand(Hand::Screen, vol(DRUMS), -6.0, true));
+        run(&mut h, 4, 8);
+        assert!((level(&h) + 20.0).abs() < 0.01, "{}", level(&h));
+        // The finger lifts: not its to let go.
+        h.modu.release(Hand::Screen, vol(DRUMS));
+        run(&mut h, 4, 12);
+        assert!(h.modu.engine().is_touched(vol(DRUMS)));
+        assert_eq!((h.modu.hands().taken, h.modu.hands().ignored), (1, 1));
+        // The knob's gesture ends: let go.
+        run(&mut h, periods(0.5), 16);
+        assert!(!h.modu.engine().is_touched(vol(DRUMS)));
+        assert!((level(&h) - was).abs() < 0.01);
+        // A new touch from the screen holds it again, and lets it go.
+        assert!(h.modu.hand(Hand::Screen, vol(DRUMS), -3.0, true));
+        run(&mut h, 4, 16 + periods(0.5));
+        assert!((level(&h) + 3.0).abs() < 0.01);
+        h.modu.release(Hand::Screen, vol(DRUMS));
+        run(&mut h, 4, 20 + periods(0.5));
+        assert!(!h.modu.engine().is_touched(vol(DRUMS)));
+        assert_eq!(h.modu.hands().holding(), 0);
     }
 
     #[test]
