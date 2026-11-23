@@ -8610,8 +8610,12 @@ impl Player {
                                        self.synth.as_ref().map_or("The plugin", |p| p.state.info.name)),
                 View::Synth if self.pads_panel.is_some() => format!("Tap a row: pick its sound   ·   Follow base: the bank plays the base again   ·   \
                                         UNDO: the last change here   ·   Done or a tab: close   ·   {stop}"),
+                View::Synth if self.synth_pick.as_ref().is_some_and(|p| p.layer && p.kits) => format!("Layer: a tap adds a kit to the pads or takes it off, up to 4   ·   \
+                                        Keep: the pads keep them   ·   Cancel: what they played   ·   No track changes   ·   {stop}"),
                 View::Synth if self.synth_pick.as_ref().is_some_and(|p| p.layer) => format!("Layer: a tap adds a synth to the pads or takes it off, up to 4   ·   \
                                         Keep: the pads keep them   ·   Cancel: what they played   ·   No track changes   ·   {stop}"),
+                View::Synth if self.synth_pick.as_ref().is_some_and(|p| p.kits) => format!("Tap a kit: the pads play it now   ·   \
+                                        Keep: the pads keep it   ·   Cancel: what they played   ·   No track changes   ·   {stop}"),
                 View::Synth if self.synth_pick.is_some() => format!("Tap a synth: the pads play it now   ·   \
                                         Keep: the pads keep it   ·   Cancel: what they played   ·   No track changes   ·   {stop}"),
                 View::Synth if self.pads_layers.is_some() => {
@@ -23128,6 +23132,38 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     layers.apply(ToUi::PadsHost(Some("FM")));
     layers.apply(ToUi::PadsLayers(a.pads_layer_names()));
     out.push(("synth-pick-layers", layers));
+    // The list's Kits side (sampler step 15e, boards 1 and 2): Track 1's
+    // kit first, then each kit with its pads and banks, the empty ones last.
+    // Track 1 plays kit 1 and Track 2 kit 2, so their tiles name them.
+    let mut kits = sample_player(fonts());
+    sample_kit_tracks(&mut kits);
+    let mut a = sample_app();
+    let mut fx = a.open_tab(View::Synth);
+    fx.extend(a.open_synth_pick());
+    fx.extend(a.set_instrument_list(&listed));
+    fx.extend(a.synth_pick_side(true));
+    apply_effects(&mut kits, fx);
+    out.push(("synth-pick-kits", kits));
+    // What the pads play (step 15e, board 3), opened by the Pads chip: FM
+    // for every bank and Pluck layered on it, each row with what it plays.
+    let mut map = sample_player(fonts());
+    let mut a = sample_app();
+    let mut fx = a.open_tab(View::Synth);
+    fx.extend(a.open_synth_pick());
+    fx.extend(a.pick_pads_synth(2));
+    let mut two = crate::instrument_list::InstrumentList::new();
+    two.follow_free(1);
+    fx.extend(a.set_instrument_list(&two));
+    fx.extend(a.synth_pick_layer(true));
+    fx.extend(a.pick_pads_synth(4));
+    two.follow_free(0b11);
+    fx.extend(a.set_instrument_list(&two));
+    fx.extend(a.close_synth_pick(true));
+    fx.extend(a.open_pad_map());
+    apply_effects(&mut map, fx);
+    map.apply(ToUi::PadsHost(Some("FM")));
+    map.apply(ToUi::PadsLayers(a.pads_layer_names()));
+    out.push(("pad-map", map));
     // The mixer with two tracks playing their own instruments: Poly on
     // track 1 in the Drums strip, named "Track 1" for it, and FM on track 2
     // in its own channel after Synth and Loop.
