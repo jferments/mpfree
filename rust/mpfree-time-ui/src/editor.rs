@@ -270,6 +270,12 @@ pub const HELD_FINE: usize = 2;
 /// The note a hold's first detent names when the hold picked it (and
 /// taps may have added more): the picks as they are ([`EditAction::Held`]).
 pub const HELD_PICKS: usize = usize::MAX;
+/// The id of the note a finger holds under the wheel ([`NoteGrid`]'s
+/// `Widget::held`): not the roll's `note` targets' own, since a turn's
+/// edit moves the note in the clip's order and the `Ui` follows a held
+/// target by id and index; with an id of its own the grabbed outline
+/// stays on the note held.
+pub const HELD_NOTE: &str = "held-note";
 
 /// How the editor shows the clip.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -6870,7 +6876,7 @@ impl Widget for NoteGrid {
         let nr = self
             .note_rect_in(&g, i)
             .map_or(Rect::new(x, y, 1, 1), |nr| nr.intersect(g.roll));
-        Some(Target::tap("note", i, format!("note {}", i + 1), nr))
+        Some(Target::tap(HELD_NOTE, i, format!("note {}", i + 1), nr))
     }
 
     /// The wheel turned `delta` detents with a finger on note `t` (plan
@@ -6881,7 +6887,7 @@ impl Widget for NoteGrid {
     /// picked and other notes tapped in, the picks); later ones only the
     /// hold. None once the finger is doing something else (a pinch).
     fn held_step(&mut self, t: &Target, delta: i32, fine: bool, _r: Rect) -> Option<EventKind> {
-        if t.id != "note" || delta == 0 {
+        if t.id != HELD_NOTE || delta == 0 {
             return None;
         }
         let index = match self.hand {
@@ -10207,7 +10213,11 @@ mod tests {
         let (n0, n1) = (g.note_rect(R, 0).unwrap(), g.note_rect(R, 1).unwrap());
         let ((x0, y0), (x1, y1)) = (mid(n0), mid(n1));
         let t = g.held(x1, y1, R).expect("the note is held");
-        assert_eq!((t.id, t.index), ("note", 1));
+        assert_eq!((t.id, t.index), (HELD_NOTE, 1));
+        assert!(
+            !g.targets(R).iter().any(|n| n.id == HELD_NOTE),
+            "its own id, which no target of the roll has"
+        );
         assert_eq!(g.held(x1, y1 - 200, R), None, "empty roll");
         g.erase = true;
         assert_eq!(g.held(x1, y1, R), None, "ERASE held");

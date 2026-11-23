@@ -13817,7 +13817,7 @@ impl Player {
         if h.widget == synth_view::TILES {
             return self.synth.as_ref()?.wheel_text();
         }
-        if h.widget == time_view::NOTES && h.target.id == "note" {
+        if h.widget == time_view::NOTES && h.target.id == mpfree_time_ui::editor::HELD_NOTE {
             // A note on the roll (piano roll plan 1C.3): its velocity, or
             // the picks' with it.
             let v = self
