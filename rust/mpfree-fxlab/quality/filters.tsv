@@ -330,12 +330,12 @@ filters/sampler band-pass 2-pole[5 kHz, resonance 0.9]/below_cutoff_err_db	0
 filters/sampler band-pass 2-pole[5 kHz, resonance 0.9]/err_18_20k_db	0
 filters/sampler band-pass 2-pole[5 kHz, resonance 0]/below_cutoff_err_db	0
 filters/sampler band-pass 2-pole[5 kHz, resonance 0]/err_18_20k_db	0
-filters/sampler band-pass 2-pole[LFO]/over_held_peak_db	-0.1753
-filters/sampler band-pass 2-pole[LFO]/step_noise_db	0.0047
-filters/sampler band-pass 2-pole[audio-rate cutoff]/over_held_peak_db	0.6233
-filters/sampler band-pass 2-pole[audio-rate resonance]/over_held_peak_db	-0.2668
-filters/sampler band-pass 2-pole[envelope]/over_held_peak_db	0.2149
-filters/sampler band-pass 2-pole[envelope]/step_noise_db	1.9749
+filters/sampler band-pass 2-pole[LFO]/over_held_peak_db	-0.2058
+filters/sampler band-pass 2-pole[LFO]/step_noise_db	0
+filters/sampler band-pass 2-pole[audio-rate cutoff]/over_held_peak_db	0.9827
+filters/sampler band-pass 2-pole[audio-rate resonance]/over_held_peak_db	-1.7673
+filters/sampler band-pass 2-pole[envelope]/over_held_peak_db	3.8768
+filters/sampler band-pass 2-pole[envelope]/step_noise_db	2.1811
 filters/sampler band-pass 4-pole[10 kHz, resonance 0.5]/below_cutoff_err_db	0
 filters/sampler band-pass 4-pole[10 kHz, resonance 0.5]/err_18_20k_db	0
 filters/sampler band-pass 4-pole[10 kHz, resonance 0.9]/below_cutoff_err_db	0.0004
@@ -352,12 +352,12 @@ filters/sampler band-pass 4-pole[15 kHz, resonance 0]/err_18_20k_db	0
 filters/sampler band-pass 4-pole[5 kHz, resonance 0.5]/below_cutoff_err_db	0
 filters/sampler band-pass 4-pole[5 kHz, resonance 0.9]/below_cutoff_err_db	0.0006
 filters/sampler band-pass 4-pole[5 kHz, resonance 0]/below_cutoff_err_db	0
-filters/sampler band-pass 4-pole[LFO]/over_held_peak_db	-0.0959
-filters/sampler band-pass 4-pole[LFO]/step_noise_db	0.9215
+filters/sampler band-pass 4-pole[LFO]/over_held_peak_db	-2.0492
+filters/sampler band-pass 4-pole[LFO]/step_noise_db	0.1579
 filters/sampler band-pass 4-pole[audio-rate cutoff]/over_held_peak_db	0.3392
-filters/sampler band-pass 4-pole[audio-rate resonance]/over_held_peak_db	1.1964
-filters/sampler band-pass 4-pole[envelope]/over_held_peak_db	0.4176
-filters/sampler band-pass 4-pole[envelope]/step_noise_db	2.5828
+filters/sampler band-pass 4-pole[audio-rate resonance]/over_held_peak_db	-3.1149
+filters/sampler band-pass 4-pole[envelope]/over_held_peak_db	2.0732
+filters/sampler band-pass 4-pole[envelope]/step_noise_db	2.5792
 filters/sampler high-pass 2-pole[10 kHz, resonance 0.5]/below_cutoff_err_db	0
 filters/sampler high-pass 2-pole[10 kHz, resonance 0.5]/err_18_20k_db	0
 filters/sampler high-pass 2-pole[10 kHz, resonance 0.9]/below_cutoff_err_db	0
@@ -378,11 +378,11 @@ filters/sampler high-pass 2-pole[5 kHz, resonance 0.9]/err_18_20k_db	0
 filters/sampler high-pass 2-pole[5 kHz, resonance 0]/below_cutoff_err_db	0
 filters/sampler high-pass 2-pole[5 kHz, resonance 0]/err_18_20k_db	0
 filters/sampler high-pass 2-pole[LFO]/over_held_peak_db	-0.2729
-filters/sampler high-pass 2-pole[LFO]/step_noise_db	0.005
+filters/sampler high-pass 2-pole[LFO]/step_noise_db	0.0107
 filters/sampler high-pass 2-pole[audio-rate cutoff]/over_held_peak_db	1.0269
-filters/sampler high-pass 2-pole[audio-rate resonance]/over_held_peak_db	-0.8698
-filters/sampler high-pass 2-pole[envelope]/over_held_peak_db	-0.339
-filters/sampler high-pass 2-pole[envelope]/step_noise_db	1.9753
+filters/sampler high-pass 2-pole[audio-rate resonance]/over_held_peak_db	-1.4414
+filters/sampler high-pass 2-pole[envelope]/over_held_peak_db	1.2226
+filters/sampler high-pass 2-pole[envelope]/step_noise_db	2.1813
 filters/sampler high-pass 4-pole[10 kHz, resonance 0.5]/below_cutoff_err_db	0
 filters/sampler high-pass 4-pole[10 kHz, resonance 0.5]/err_18_20k_db	0
 filters/sampler high-pass 4-pole[10 kHz, resonance 0.9]/below_cutoff_err_db	0
@@ -403,10 +403,10 @@ filters/sampler high-pass 4-pole[5 kHz, resonance 0.9]/err_18_20k_db	0
 filters/sampler high-pass 4-pole[5 kHz, resonance 0]/below_cutoff_err_db	0
 filters/sampler high-pass 4-pole[5 kHz, resonance 0]/err_18_20k_db	0
 filters/sampler high-pass 4-pole[LFO]/over_held_peak_db	-0.1239
-filters/sampler high-pass 4-pole[LFO]/step_noise_db	0.005
-filters/sampler high-pass 4-pole[audio-rate cutoff]/over_held_peak_db	1.0485
-filters/sampler high-pass 4-pole[audio-rate resonance]/over_held_peak_db	-0.8735
-filters/sampler high-pass 4-pole[envelope]/over_held_peak_db	-0.2205
+filters/sampler high-pass 4-pole[LFO]/step_noise_db	0.0033
+filters/sampler high-pass 4-pole[audio-rate cutoff]/over_held_peak_db	1.3042
+filters/sampler high-pass 4-pole[audio-rate resonance]/over_held_peak_db	-2.0173
+filters/sampler high-pass 4-pole[envelope]/over_held_peak_db	0.5196
 filters/sampler high-pass 4-pole[envelope]/step_noise_db	1.5624
 filters/sampler low-pass 2-pole[10 kHz, resonance 0.5]/below_cutoff_err_db	0
 filters/sampler low-pass 2-pole[10 kHz, resonance 0.5]/err_18_20k_db	0
@@ -425,11 +425,11 @@ filters/sampler low-pass 2-pole[5 kHz, resonance 0.5]/below_cutoff_err_db	0
 filters/sampler low-pass 2-pole[5 kHz, resonance 0.9]/below_cutoff_err_db	0
 filters/sampler low-pass 2-pole[5 kHz, resonance 0]/below_cutoff_err_db	0
 filters/sampler low-pass 2-pole[LFO]/over_held_peak_db	-0.2679
-filters/sampler low-pass 2-pole[LFO]/step_noise_db	0.005
-filters/sampler low-pass 2-pole[audio-rate cutoff]/over_held_peak_db	-0.0387
-filters/sampler low-pass 2-pole[audio-rate resonance]/over_held_peak_db	0.122
-filters/sampler low-pass 2-pole[envelope]/over_held_peak_db	2.0346
-filters/sampler low-pass 2-pole[envelope]/step_noise_db	1.9752
+filters/sampler low-pass 2-pole[LFO]/step_noise_db	0
+filters/sampler low-pass 2-pole[audio-rate cutoff]/over_held_peak_db	-0.3976
+filters/sampler low-pass 2-pole[audio-rate resonance]/over_held_peak_db	-2.0877
+filters/sampler low-pass 2-pole[envelope]/over_held_peak_db	2.6635
+filters/sampler low-pass 2-pole[envelope]/step_noise_db	2.1812
 filters/sampler low-pass 4-pole[10 kHz, resonance 0.5]/below_cutoff_err_db	0
 filters/sampler low-pass 4-pole[10 kHz, resonance 0.9]/below_cutoff_err_db	0
 filters/sampler low-pass 4-pole[10 kHz, resonance 0]/below_cutoff_err_db	0
@@ -443,11 +443,11 @@ filters/sampler low-pass 4-pole[15 kHz, resonance 0]/err_18_20k_db	0
 filters/sampler low-pass 4-pole[5 kHz, resonance 0.5]/below_cutoff_err_db	0
 filters/sampler low-pass 4-pole[5 kHz, resonance 0.9]/below_cutoff_err_db	0
 filters/sampler low-pass 4-pole[5 kHz, resonance 0]/below_cutoff_err_db	0
-filters/sampler low-pass 4-pole[LFO]/over_held_peak_db	-0.2785
-filters/sampler low-pass 4-pole[LFO]/step_noise_db	0.0016
-filters/sampler low-pass 4-pole[audio-rate cutoff]/over_held_peak_db	-0.3432
-filters/sampler low-pass 4-pole[audio-rate resonance]/over_held_peak_db	-2.1326
-filters/sampler low-pass 4-pole[envelope]/over_held_peak_db	2.8577
+filters/sampler low-pass 4-pole[LFO]/over_held_peak_db	-0.9814
+filters/sampler low-pass 4-pole[LFO]/step_noise_db	0.041
+filters/sampler low-pass 4-pole[audio-rate cutoff]/over_held_peak_db	-0.8137
+filters/sampler low-pass 4-pole[audio-rate resonance]/over_held_peak_db	-5.452
+filters/sampler low-pass 4-pole[envelope]/over_held_peak_db	3.7812
 filters/sampler low-pass 4-pole[envelope]/step_noise_db	1.5276
 filters/sampler notch 2-pole[10 kHz, resonance 0.5]/below_cutoff_err_db	0
 filters/sampler notch 2-pole[10 kHz, resonance 0.5]/err_18_20k_db	0

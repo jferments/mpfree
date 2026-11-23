@@ -1349,6 +1349,10 @@ fn dj_corner(pos: f32) -> f32 {
 }
 
 /// Sets the DJ filter's stage for `pos` and `res` (both -1 or 0 to 1).
+/// Kept out of line: inlined (as the stage's `set` is since it moved to
+/// `mpfree-filter`), it made the DJ filter's every frame, mostly with the
+/// knob still, cost 9.5 % more.
+#[inline(never)]
 fn dj_set(f: &mut Svf, pos: f32, res: f32, rate: u32) {
     let mode = if pos < 0.0 {
         SvfMode::LowPass

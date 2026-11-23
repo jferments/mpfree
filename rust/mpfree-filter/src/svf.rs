@@ -314,28 +314,40 @@ impl Svf {
         self.m0 * v0 + self.m1 * v1 + self.m2 * v2
     }
 
-    /// One frame of both channels, for a host that flushes the states every
-    /// few frames itself ([`Svf::flush_below`]) rather than on every
-    /// sample: the band-pass state bending at `knee` as in
-    /// [`Svf::run_bounded`] (an infinite `knee` leaves it linear), both
-    /// channels sharing the coefficients. A voice's path, so it is inlined
-    /// into the voice's loop; it takes and gives a pair rather than an
-    /// array, which the compiler packs into one integer register and back.
+    /// One frame of both channels, linear, for a host that flushes the
+    /// states every few frames itself ([`Svf::flush_below`]) rather than on
+    /// every sample, both channels sharing the coefficients: the outputs
+    /// and the larger band-pass state, which is what a resonance rings up
+    /// (`Q` times the input at the cutoff), for a guard on its level
+    /// ([`crate::multi::Multi`]). A voice's path, so it is inlined into the
+    /// voice's loop; it takes and gives values rather than an array, which
+    /// the compiler packs into one integer register and back.
     #[inline(always)]
-    pub fn step_stereo(&mut self, l: f32, r: f32, knee: f32, room: f32) -> (f32, f32) {
-        (self.step(0, l, knee, room), self.step(1, r, knee, room))
+    pub fn step_stereo_peak(&mut self, l: f32, r: f32) -> (f32, f32, f32) {
+        let (yl, bl) = self.step(0, l);
+        let (yr, br) = self.step(1, r);
+        (yl, yr, bl.abs().max(br.abs()))
     }
 
-    /// One sample of channel `ch` for [`Svf::step_stereo`].
+    /// [`Svf::step_stereo_peak`] without the band-pass level.
     #[inline(always)]
-    fn step(&mut self, ch: usize, x: f32, knee: f32, room: f32) -> f32 {
+    pub fn step_stereo(&mut self, l: f32, r: f32) -> (f32, f32) {
+        (self.step(0, l).0, self.step(1, r).0)
+    }
+
+    /// One sample of channel `ch`, linear, and its band-pass state.
+    /// [`Svf::run`]'s filter with the low-pass worked out as
+    /// [`Svf::run_bounded`] works it (`v2 = ic2 + g v1`, a multiply fewer:
+    /// the same filter, to the rounding), and no flush.
+    #[inline(always)]
+    fn step(&mut self, ch: usize, x: f32) -> (f32, f32) {
         let (ic1, ic2) = (self.ic1[ch], self.ic2[ch]);
         let v3 = x - ic2;
-        let v1 = bend(self.a1 * ic1 + self.a2 * v3, knee, room);
+        let v1 = self.a1 * ic1 + self.a2 * v3;
         let v2 = ic2 + self.g * v1;
         self.ic1[ch] = 2.0 * v1 - ic1;
         self.ic2[ch] = 2.0 * v2 - ic2;
-        self.m0 * x + self.m1 * v1 + self.m2 * v2
+        (self.m0 * x + self.m1 * v1 + self.m2 * v2, v1)
     }
 
     /// [`Svf::run_bounded`] with a hard ceiling instead of the bend: the
@@ -485,25 +497,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_stereo_step_is_the_bounded_run() {
+    fn the_stereo_step_is_the_linear_run() {
         // Without the flush (nothing here is tiny), both channels as
-        // run_bounded runs each, to the rounding of v2's form.
+        // run_bounded with no knee runs each (the same form of v2), and the
+        // level it gives is the larger band-pass state.
         let mut a = Svf::default();
         a.set(SvfMode::LowPass, 2_000.0, 12.0, 0.0, 44_100);
-        let mut b = a;
+        let (mut b, mut c) = (a, a);
         for n in 0..2_000 {
             let x = [
                 ((n * 37) % 17) as f32 / 8.0 - 1.0,
                 ((n * 11) % 13) as f32 / 6.0 - 1.0,
             ];
-            let y = a.step_stereo(x[0], x[1], 0.35, 0.3);
+            let (l, r, peak) = a.step_stereo_peak(x[0], x[1]);
             let z = [
-                b.run_bounded(0, x[0], 0.35, 0.3),
-                b.run_bounded(1, x[1], 0.35, 0.3),
+                b.run_bounded(0, x[0], f32::INFINITY, 1.0),
+                b.run_bounded(1, x[1], f32::INFINITY, 1.0),
             ];
-            assert_eq!(y.0.to_bits(), z[0].to_bits(), "{n}");
-            assert_eq!(y.1.to_bits(), z[1].to_bits(), "{n}");
+            assert_eq!(l.to_bits(), z[0].to_bits(), "{n}");
+            assert_eq!(r.to_bits(), z[1].to_bits(), "{n}");
+            assert_eq!(c.step_stereo(x[0], x[1]), (l, r), "{n}");
+            assert!(peak >= 0.0 && peak.is_finite(), "{n}");
         }
+    }
+
+    #[test]
+    fn the_stereo_peak_is_the_band_pass_state() {
+        // A sine on the cutoff: the band-pass state rings to Q times it.
+        let mut a = Svf::default();
+        a.set(SvfMode::LowPass, 1_000.0, 8.0, 0.0, 44_100);
+        let mut most = 0.0f32;
+        for n in 0..44_100 {
+            let x = 0.01 * (std::f32::consts::TAU * 1_000.0 * n as f32 / 44_100.0).sin();
+            let (_, _, peak) = a.step_stereo_peak(x, x);
+            if n > 22_050 {
+                most = most.max(peak);
+            }
+        }
+        assert!((most / 0.01 - 8.0).abs() < 0.1, "{most}");
     }
 
     #[test]

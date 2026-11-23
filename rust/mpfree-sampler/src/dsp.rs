@@ -991,8 +991,9 @@ pub const DRAW_RATE: u32 = 44_100;
 
 /// A state-variable type's curve at `hz` (dB), for drawing: its multimode
 /// filter's exact response at [`DRAW_RATE`]
-/// ([`mpfree_filter::multi::response_db`]), so the curve is what is heard
-/// for any sound short of the loud ones that bend its resonance.
+/// ([`mpfree_filter::multi::response_db`]), so the curve is what is heard,
+/// short of a loud sound's ring that the resonance guard holds back
+/// ([`Multi::guard`]).
 pub fn svf_db(f: &Filter, hz: f32) -> f32 {
     mpfree_filter::multi::response_db(
         svf_mode(f.kind),
@@ -1008,9 +1009,10 @@ pub fn svf_db(f: &Filter, hz: f32) -> f32 {
 /// [`Filter`] and run a frame at a time. The low-pass, high-pass,
 /// band-pass and notch are the Filter effect's multimode filter
 /// ([`Multi`]: Butterworth at Resonance 0, so the cutoff is the -3 dB
-/// point; Q up to 40, the resonant stages' band-pass states bending as a
-/// loud sound pushes them, and each new cutoff glided to over the frames
-/// until the next). The Ladder, Vowel and Comb are the pad's own. The
+/// point; Q up to 40; linear, with a resonance guard that damps a loud
+/// sound's ring as it passes a knee, so nothing bends and no DC is made;
+/// each new cutoff glided to over the frames until the next).
+/// The Ladder, Vowel and Comb are the pad's own. The
 /// sampler's voices and the quality lab's pad filter both run this, so the
 /// lab measures what plays.
 #[derive(Clone, Debug)]
@@ -1038,17 +1040,23 @@ impl Default for VoiceFilter {
 }
 
 impl VoiceFilter {
-    /// Zeros the states too small to hear (see [`Svf::flush`]): the
-    /// multimode filter's once both of a channel's are under [`QUIET`]
-    /// ([`Multi::flush_below`]); the Comb flushes as it goes. Run every
-    /// few frames.
+    /// Every `frames` frames, before any new setting: zeros the states too
+    /// small to hear (see [`Svf::flush`]), the multimode filter's once both
+    /// of a channel's are under [`QUIET`] ([`Multi::flush_below`]; the Comb
+    /// flushes as it goes), and runs the multimode filter's resonance guard
+    /// ([`Multi::guard`]): its window of a loud ring's peak, letting the
+    /// damping go as the sound quietens (a ring rising past it is damped
+    /// in its own frame).
     #[inline]
-    pub fn flush(&mut self, kind: FilterKind) {
+    pub fn tick(&mut self, kind: FilterKind, frames: u32) {
         match kind {
             FilterKind::Off | FilterKind::Comb => {}
             FilterKind::Ladder => self.ladder.flush(),
             FilterKind::Vowel => self.vowel.iter_mut().for_each(Svf::flush),
-            _ => self.multi.flush_below(QUIET),
+            _ => {
+                self.multi.flush_below(QUIET);
+                self.multi.guard(frames);
+            }
         }
     }
 

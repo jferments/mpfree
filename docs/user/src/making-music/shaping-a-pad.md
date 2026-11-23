@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-sampler/src/model.rs rust/mpfree-sampler-ui/src/play_tab.rs rust/mpfree-sampler-ui/src/sound_panel.rs rust/mpfree-sampler-ui/src/grain_tab.rs rust/mpfree-sampler-ui/src/grain_tool.rs rust/mpfree-sampler-ui/src/keys_widgets.rs rust/mpfree-grain rust/mpfree-app/src/sample_page.rs
-checked: 2026-11-23 27484a97
+checked: 2026-11-23 05a841c
 -->
 
 # Shaping how a pad plays
@@ -49,7 +49,7 @@ A kit saved before 23 November 2026 opens with a note if its pads use a low pass
 
 The **Filter** selector steps through the types:
 
-- **LP**, **HP** and **BP** (low pass, high pass, band pass), each **2-pole** (gentle, 12 dB an octave) or **4-pole** (steep, 24 dB an octave). Low pass darkens, high pass thins, band pass keeps a slice around the cutoff. The Cutoff is where the filter starts to bite: with Resonance at 0, a low pass or high pass set to 1 kHz is 3 dB down at 1 kHz at either slope, so the number is what you hear. Resonance adds a peak at the Cutoff, up to a long ring at 100 %. A loud sound pushes that peak back instead of past full scale, while a quiet one still rings out clearly. The filter envelope and the LFO move the Cutoff smoothly, sample by sample.
+- **LP**, **HP** and **BP** (low pass, high pass, band pass), each **2-pole** (gentle, 12 dB an octave) or **4-pole** (steep, 24 dB an octave). Low pass darkens, high pass thins, band pass keeps a slice around the cutoff. The Cutoff is where the filter starts to bite: with Resonance at 0, a low pass or high pass set to 1 kHz is 3 dB down at 1 kHz at either slope, so the number is what you hear. Resonance adds a peak at the Cutoff, up to a long ring at 100 %. A loud sound's ring is held back near full scale instead of running past it, cleanly, without adding grit or pushing the sound off centre, while a quiet one still rings out in full. The filter envelope and the LFO move the Cutoff smoothly, sample by sample.
 - **Notch** (2-pole or 4-pole): the opposite of band pass. It takes out a band around the cutoff and leaves the rest, for a hollow, phasey sound; sweep it with the envelope or the LFO. 4-pole takes out a wider band.
 - **Ladder**: a 4-pole low pass in the style of the classic analog synth filter, warm and round. Its Resonance sings: turned right up, it rings at the cutoff on its own, at a steady level, however long you hold the note. **Drive** pushes the sound into the filter harder, from Off up to 24 dB, for grit and growl. It keeps the level of an ordinary sound about the same as you turn it, so turning it up adds bite rather than volume, and it stays clean of the harsh, out-of-tune fizz cheap drives add on high notes. Drive is the Ladder's alone: on another type its knob is faint and says so.
 - **Vowel**: two narrow peaks where a voice has them, so the sound "says" a vowel. Cutoff picks the vowel: from 200 Hz and below it says "oo", then "oh", "ah" and "eh", up to "ee" from 5 kHz, sliding smoothly between them, and the Cutoff's value names the vowel ("1.00 kHz · ah"). Resonance makes the peaks narrower and more nasal. Sweep the Cutoff with the filter envelope or the LFO and a pad talks: "oo-ah" on each hit. It works best on rich sounds (pads, saws, choirs, breaks); a pure tone right on a peak comes out louder.

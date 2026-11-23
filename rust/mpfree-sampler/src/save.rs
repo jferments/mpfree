@@ -199,7 +199,7 @@ pub fn from_text(
             r.notes.push(format!(
                 "{name}: saved before the pad filters were reworked, so its filtered \
                  pads may sound brighter (a Cutoff is now where the sound is 3 dB down) \
-                 and full Resonance holds loud sounds back; check them by ear"
+                 and more resonant, with a loud sound's ring held back; check them by ear"
             ));
         }
         out.kits.push((name, p));

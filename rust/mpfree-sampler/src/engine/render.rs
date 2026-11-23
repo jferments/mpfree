@@ -347,12 +347,14 @@ pub(super) fn motion_step(v: &mut Voice) {
 /// skips the `exp2` and `tan`. A state-variable type glides to the new
 /// cutoff over the [`FILTER_STEP`] frames until the next ([`VoiceFilter`]),
 /// so an envelope or LFO moves it every frame.
-/// It also flushes the filter's state: ringing out on silence, the filter
-/// reaches exact zeros instead of denormals (here, out of the per-frame
-/// loop, it costs nothing measurable).
+/// It also flushes the filter's state (ringing out on silence, the filter
+/// reaches exact zeros instead of denormals) and runs the state-variable
+/// types' resonance guard's window, which lets a loud ring's damping go
+/// as the sound quietens ([`VoiceFilter::tick`]); here, out of the
+/// per-frame loop, both cost nothing measurable.
 #[inline(never)]
 pub(super) fn retune(v: &mut Voice, f: Filter, e: f32, rate: f32) {
-    v.filt.flush(f.kind);
+    v.filt.tick(f.kind, FILTER_STEP);
     let moved = v.press_fc * v.motion.fc;
     let key = (e.to_bits(), moved.to_bits());
     if v.filter_key == Some(key) {

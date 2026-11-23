@@ -36,6 +36,16 @@
 //!   harmonic of the tone. At most -65 dB, as S6 (whose Ladder is open, so
 //!   its loop hardly works). The drive's curve runs at twice the rate; the
 //!   loop's own curve does not, which the 10 kHz row shows.
+//! - **PF8, a loud sound stays centred:** a centred sawtooth at full scale
+//!   and about 1.8 kHz (a whole number of frames a cycle, so its cycles
+//!   average to 0) under a 2 kHz cutoff, every state-variable type at 2
+//!   and 4 poles, at Resonance 0.3 and 1: the output's DC over whole
+//!   cycles once settled, as if the pad passed the sound at unity. At
+//!   most -60 dBFS, as the delay's D4. A filter that bends its states
+//!   inside the loop makes DC of a loud, lopsided wave (the bounded
+//!   filter did: -18 dBFS at Resonance 0.3); the resonance guard keeps the
+//!   filter linear. The Ladder's rows, at Drive 0 and 12 dB, have no target
+//!   yet: its drive's curve makes some DC, which step F6 rebuilds.
 //!
 //! DSP quality's measures (`crate::filters`, Y1a to Y2b) hold the pad's
 //! filter to the curve its page draws, and cover two things the effect's
@@ -145,6 +155,7 @@ pub(super) fn rows(rows: &mut Vec<Row>, rate: u32) {
     loud(rows, rate);
     quiet(rows, rate);
     driven(rows, rate);
+    centred(rows, rate);
 }
 
 // ---------------------------------------------------------------------------
@@ -381,9 +392,93 @@ fn driven(rows: &mut Vec<Row>, rate: u32) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// PF8: a loud sound stays centred.
+
+/// A sawtooth at full scale and about `hz`, `frames` long: a whole number
+/// of frames a cycle, and centred, so that any whole number of its cycles
+/// averages to 0. Also its cycle, in frames.
+fn centred_saw(hz: f64, frames: usize, rate: u32) -> (Vec<f64>, usize) {
+    let cycle = (f64::from(rate) / hz).round() as usize;
+    let x = (0..frames)
+        .map(|n| (2 * (n % cycle) + 1) as f64 / cycle as f64 - 1.0)
+        .collect();
+    (x, cycle)
+}
+
+fn centred(rows: &mut Vec<Row>, rate: u32) {
+    let settle = rate as usize / 2;
+    let cycle = (f64::from(rate) / 1_800.0).round() as usize;
+    // Half a second of whole cycles after it settles.
+    let n = rate as usize / 2 / cycle * cycle;
+    let (x, _) = centred_saw(1_800.0, settle + n, rate);
+    let dry = through(&x, None, rate, settle + n);
+    // As if the pad passed the sound at unity.
+    let unity = rms_of(&x[settle..]) / rms_of(&dry[settle..]).max(1e-30);
+    let dc_dbfs = |f: Filter| {
+        let y = through(&x, Some(f), rate, settle + n);
+        let dc = y[settle..].iter().sum::<f64>() / n as f64;
+        floor(20.0 * (unity * dc.abs()).max(1e-15).log10())
+    };
+    for (kind, poles) in [
+        (FilterKind::LowPass, 2u8),
+        (FilterKind::LowPass, 4),
+        (FilterKind::HighPass, 2),
+        (FilterKind::HighPass, 4),
+        (FilterKind::BandPass, 2),
+        (FilterKind::BandPass, 4),
+        (FilterKind::Notch, 2),
+        (FilterKind::Notch, 4),
+    ] {
+        for res in [0.3f32, 1.0] {
+            put(
+                rows,
+                "PF8",
+                format!(
+                    "pad filter[{}, 2 kHz, resonance {res}, 1.8 kHz sawtooth at 0 dBFS]",
+                    kind_name(kind, poles)
+                ),
+                "dc_dbfs",
+                dc_dbfs(filter(kind, poles, 2_000.0, res)),
+                Better::Lower,
+                Some(-60.0),
+                1.0,
+            );
+        }
+    }
+    for drive_db in [0.0f32, 12.0] {
+        put(
+            rows,
+            "PF8",
+            format!(
+                "pad filter[ladder, 2 kHz, resonance 0.5, {drive_db} dB, 1.8 kHz sawtooth at 0 dBFS]"
+            ),
+            "dc_dbfs",
+            dc_dbfs(Filter {
+                drive_db,
+                ..filter(FilterKind::Ladder, 4, 2_000.0, 0.5)
+            }),
+            Better::Lower,
+            None,
+            1.0,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_centred_sawtooth_averages_to_zero_over_its_cycles() {
+        let (x, cycle) = centred_saw(1_800.0, 10_000, 44_100);
+        assert_eq!(cycle, 25);
+        let n = 10_000 / cycle * cycle;
+        let mean = x[..n].iter().sum::<f64>() / n as f64;
+        assert!(mean.abs() < 1e-12, "{mean}");
+        assert!(x.iter().all(|v| v.abs() < 1.0));
+        assert!(x.iter().cloned().fold(0.0f64, f64::max) > 0.95);
+    }
 
     #[test]
     fn the_butterworth_is_3_db_down_at_its_cutoff_and_falls_6_db_a_pole() {

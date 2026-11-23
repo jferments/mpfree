@@ -336,8 +336,9 @@ fn subjects(rate: u32) -> Vec<Subject> {
 /// The sampler's filter as a voice runs it: the voice's own
 /// [`VoiceFilter`], set as `mpfree_sampler::engine`'s `retune` sets it and
 /// run on the left channel, so that it can be set every frame as well as
-/// every [`PAD_STEP`] frames. Each set first flushes the states too small
-/// to hear, as the voice's does.
+/// every [`PAD_STEP`] frames. Each set first ticks the filter over the
+/// frames since the last (flushing the states too small to hear and running
+/// the resonance guard), as the voice's retune does.
 struct PadMirror {
     f: PadFilter,
     rate: f32,
@@ -364,7 +365,7 @@ impl PadMirror {
     }
 
     fn set(&mut self, fc: f32, resonance: f32) {
-        self.filt.flush(self.f.kind);
+        self.filt.tick(self.f.kind, self.glide);
         let key = (fc.to_bits(), resonance.to_bits());
         if self.last == Some(key) {
             return;
