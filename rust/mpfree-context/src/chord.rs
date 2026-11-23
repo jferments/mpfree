@@ -362,10 +362,38 @@ impl ChordTimeline {
         }
     }
 
+    /// Round and round from tick 0 to `to` (a line shorter than its row
+    /// loops over it), the last span cut. Empty stays empty.
+    pub fn looped(&self, to: Tick) -> ChordTimeline {
+        let len = self.len();
+        if len <= 0 {
+            return ChordTimeline::default();
+        }
+        let mut spans = Vec::new();
+        let mut off = 0;
+        while off < to {
+            for s in &self.spans {
+                if off + s.start >= to {
+                    break;
+                }
+                spans.push(ChordSpan {
+                    start: off + s.start,
+                    len: s.len.min(to - off - s.start),
+                    ..*s
+                });
+            }
+            off += len;
+        }
+        ChordTimeline { spans }
+    }
+
     /// Heard again (contract 4's Harmony line): `heard` is a new reading
     /// of the row. Chords the musician set stay where they are; elsewhere
-    /// a chord heard now wins; where nothing clear is heard a suggested
-    /// chord stays, and a chord heard before goes (its notes are gone).
+    /// a chord heard now wins where it says something new, but where it
+    /// only says less (every note of it is in the chord the line had, as
+    /// a bass made over Cm7 is heard as Cm) the line keeps its chord;
+    /// where nothing clear is heard a suggested chord stays, and a chord
+    /// heard before goes (its notes are gone).
     /// The line is as long as the new reading, or as before when nothing
     /// was read; a line set shorter than the reading isn't stretched:
     /// past its end the reading speaks.
@@ -393,8 +421,13 @@ impl ChordTimeline {
             let (a, b) = (w[0], w[1]);
             let old = self.span_at(a);
             let new = heard.span_at(a);
+            let says_less = |o: &ChordSpan, n: &ChordSpan| match (o.answer, n.answer) {
+                (ChordAnswer::Chord(o), ChordAnswer::Chord(n)) => n.pcs() & !o.pcs() == 0,
+                _ => false,
+            };
             let (pick, from) = match (old, new) {
                 (Some(o), _) if o.heard == Heard::Set => (*o, (0, o.start)),
+                (Some(o), Some(n)) if says_less(o, n) => (*o, (0, o.start)),
                 (_, Some(n)) if n.answer.chord().is_some() => (
                     ChordSpan {
                         heard: Heard::Heard,
@@ -539,6 +572,22 @@ mod tests {
         ));
         assert_eq!(gone.names(), "no clear chord");
 
+        // A bass made over suggested Cm7 Fm7 is heard as Cm Fm: the
+        // line keeps its sevenths; a chord that says something new wins.
+        let bass = ChordTimeline::of(
+            &[
+                (Chord::new(0, Quality::Minor), BAR),
+                (Chord::new(5, Quality::Minor), BAR),
+            ],
+            Heard::Heard,
+        );
+        assert_eq!(suggested.rehear(&bass), suggested);
+        let other = ChordTimeline::of(
+            &[(Chord::new(0, Quality::Minor), BAR), (ab(), BAR)],
+            Heard::Heard,
+        );
+        assert_eq!(suggested.rehear(&other).names(), "Cm7 Abmaj7");
+
         // Two spans of one chord heard apart stay apart.
         let twice = ChordTimeline::of(&[(cm7(), BAR), (cm7(), BAR)], Heard::Heard);
         assert_eq!(ChordTimeline::default().rehear(&twice).spans().len(), 2);
@@ -549,6 +598,11 @@ mod tests {
         assert_eq!(ChordTimeline::default().rehear(&sure), twice);
         assert_eq!(sure.plain(), twice);
         assert_eq!(twice.cut(BAR + 10).len(), BAR + 10);
+        let looped =
+            ChordTimeline::of(&[(cm7(), BAR), (fm7(), BAR)], Heard::Heard).looped(5 * BAR / 2);
+        assert_eq!(looped.names(), "Cm7 Fm7 Cm7");
+        assert_eq!(looped.len(), 5 * BAR / 2);
+        assert!(ChordTimeline::default().looped(BAR).is_empty());
         assert_eq!(twice.cut(BAR).spans().len(), 1);
     }
 

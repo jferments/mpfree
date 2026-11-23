@@ -491,7 +491,10 @@ fn chords_edit(
     };
     after.check()?;
     let before = whole_scene(project, row).chords;
-    Ok((before != after.chords).then(|| ChordsEdit {
+    if before == after.chords {
+        return Ok(None);
+    }
+    Ok(Some(ChordsEdit {
         row,
         before,
         after: after.chords,

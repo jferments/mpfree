@@ -1660,6 +1660,7 @@ fn continue_sample(picks: bool) -> Result<TimeState, String> {
         meter: Default::default(),
         bpm: BPM,
         budget: ReadBudget::default(),
+        row: None,
     };
     let (mut proposal, mut made) =
         continue_clip(&on, &settings, InstrumentKind::OneNote).map_err(|r| r.words())?;

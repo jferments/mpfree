@@ -465,6 +465,7 @@ fn request<'a>(p: &Phrase, clip: &'a Clip, settings: &'a Settings) -> Continue<'
         bpm: p.bpm,
         swing: p.swing,
         loops: true,
+        row_length: 0,
     }
 }
 
