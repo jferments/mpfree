@@ -251,12 +251,12 @@ impl Warps {
     /// Keeps a finished copy. Past the budget, the least recently used
     /// copies the project doesn't want at this tempo go first; the ones it
     /// wants are never dropped.
-    pub fn insert(&mut self, key: CopyKey, data: Vec<f32>, project: &Project) {
+    pub fn insert(&mut self, key: CopyKey, data: impl Into<Arc<[f32]>>, project: &Project) {
         self.insert_for(key, data, std::slice::from_ref(project));
     }
 
     /// As [`Warps::insert`], keeping what any of `projects` wants.
-    pub fn insert_for(&mut self, key: CopyKey, data: Vec<f32>, projects: &[Project]) {
+    pub fn insert_for(&mut self, key: CopyKey, data: impl Into<Arc<[f32]>>, projects: &[Project]) {
         self.clock += 1;
         self.copies.retain(|c| c.key != key);
         self.copies.push(Copy {
@@ -368,8 +368,12 @@ impl JobSpec {
 /// What a [`Worker`] hands back.
 #[derive(Debug)]
 pub enum Done {
-    /// The copy for the key, and how long it took.
-    Copy(CopyKey, Vec<f32>, Duration),
+    /// The copy for the key, and how long it took. Made shareable on the
+    /// worker, inside its job's memory promise: turning a `Vec` into an
+    /// `Arc<[f32]>` copies it, and on the screen's thread that copy came
+    /// after the promise ended, beside the next job's (train 147's CI held
+    /// a copy's 21 MB over the memory test's limit that way).
+    Copy(CopyKey, Arc<[f32]>, Duration),
     Failed(CopyKey, StretchError),
     /// Dropped before it finished: by [`Worker::cancel`], or for a newer
     /// copy of the same region (another tempo, other pins).
@@ -456,8 +460,11 @@ impl Worker {
                                 break Done::Cancelled(key);
                             }
                             if job.run(WORKER_STEP).finished {
+                                // The job (and the source's part it held)
+                                // goes first, so the copy into an Arc fits
+                                // in what the job promised.
                                 let out = job.into_output().unwrap_or_default();
-                                break Done::Copy(key, out, t.elapsed());
+                                break Done::Copy(key, Arc::from(out), t.elapsed());
                             }
                         },
                     }

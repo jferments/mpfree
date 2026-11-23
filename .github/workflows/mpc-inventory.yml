@@ -863,6 +863,10 @@ jobs:
           rustc --version
           cargo --version
       - name: Test Rust core natively (debug, once)
+        # A step limit under the job's: a test that hangs fails here with its
+        # log kept (libtest names each test running over 60 s), where the
+        # job's own 2 hour limit kept no log (train 147, 23 Nov). 14-27 min.
+        timeout-minutes: 60
         # Once, in debug, where overflow checks and debug assertions run; the
         # release builds come from the steps below (the bench, the renders,
         # the ARM program and its tests). Both debug and release took 15 of
@@ -1371,6 +1375,8 @@ jobs:
           MPFREE_CATALOG_CACHE="${RUNNER_WORKSPACE:-$RUNNER_TEMP}/mpfree-catalog" \
             bash tools/mpc-plugins/catalog-check.sh
       - name: Build and check the static mpfree program for the kexec test boot (do not deploy)
+        # As the host tests' step: a hang fails here with its log kept. 19 min.
+        timeout-minutes: 60
         env:
           CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
           CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_RUNNER: qemu-arm
