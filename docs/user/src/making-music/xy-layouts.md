@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-app/src/xy_song.rs rust/mpfree-app/src/xy_setup.rs rust/mpfree-app/src/xy_widgets.rs rust/mpfree-app/src/xy_list.rs rust/mpfree-app/src/xy_play.rs rust/mpfree-app/src/xy_own.rs
+covers: rust/mpfree-app/src/xy_song.rs rust/mpfree-app/src/xy_setup.rs rust/mpfree-app/src/xy_widgets.rs rust/mpfree-app/src/xy_list.rs rust/mpfree-app/src/xy_play.rs rust/mpfree-app/src/xy_own.rs rust/mpfree-app/src/xy_rec.rs
 checked: 2026-11-23 a9ea20d
 -->
 
@@ -105,3 +105,18 @@ Under the full-screen pad (**SHIFT + NEXT SEQ**) are three buttons:
 UNDO on the full-screen pad and in Setup undoes what Stay left behind, one lift at a time. Hold UNDO to see the list.
 
 A button, a key or a footswitch on your controller can switch Hold and step through your layouts: learn it on **XY Hold**, **XY layout next** or **XY layout back** in the [Learn section's Play card](midi-and-cv.md#plays-swing-filter-and-xy-pad-from-your-controller).
+
+## Recording the pad
+
+While the music plays, what the pad moves can record, as smooth moves you hear back as you played them. This works for the ready-made layouts and for yours alike. Where each move goes depends on whose setting it is:
+
+- **REC records a track's own sounds into its clip.** While REC records a track, the pad's moves of that track's own sounds go into the clip it records: the synth it plays (even one another track plays too), its pads' own settings, its mixer strip and effects, its MIDI effects, its arp and its outside gear. The clip plays them back each time it plays, and UNDO takes them away with the take.
+- **Rec song records the rest into the song.** With **Rec song** on (in the REC chip's list), the pad's moves of anything else (the master and its effects, a bus, a return, another track's settings) go into the song's own lanes, as the morph crossfader's moves do, and song mode plays them back. With Rec song on and REC not recording, everything the pad moves goes into the song, the track's own sounds too. They go in when the music stops, as one UNDO step, and the line says how many moves came in ("… 3 XY pad moves").
+- **With neither on**, nothing records. The ready-made layouts play the master's effects, so they record only with Rec song.
+
+A few things to know:
+
+- **What records is your hand, not the setting.** If an LFO or a step lock moves the setting too, the recording keeps only what the pad did, so it plays back with the LFO on top again, as you heard it.
+- **Follow the selected track** changes what the pad plays, never where it records: each setting goes where its own track says.
+- **Punching in or out mid-move:** if REC punches in or out, or Rec song comes on, while your finger is moving, the move ends where it was going and carries on where it goes now.
+- **Add settings don't record yet:** their push plays live but isn't kept. Set settings record.

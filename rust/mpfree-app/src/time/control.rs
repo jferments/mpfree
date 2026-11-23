@@ -44,7 +44,7 @@ use mpfree_seq::arrange::{
     ScenesRefused, SongSound,
 };
 use mpfree_seq::loops::{self, LoopNow, LoopPlan};
-use mpfree_seq::mpfree_moves::{Kind, MoveLog};
+use mpfree_seq::mpfree_moves::{Input, Kind, MoveLog};
 use mpfree_seq::notes::{self, CarryError, Copied};
 use mpfree_seq::scenes::{MAX_LIST_STEPS, MAX_TIMES};
 use mpfree_seq::steps::{size_name, Edit, Grid, DEFAULT_SIZE};
@@ -414,6 +414,10 @@ pub fn retime_of(edit: &TimeEdit) -> Option<Retime> {
     Retime::new(&pieces)
 }
 
+/// The XY pad's moves for the song that one period can bring (a value and
+/// a let-go for each of a layout's settings, twice over).
+const SONG_MOVES: usize = mpfree_xy::SLOTS * 4;
+
 pub struct TimeControl {
     pub(super) project: Project,
     pub(super) launches: Vec<Launch>,
@@ -593,6 +597,12 @@ pub struct TimeControl {
     /// gestures with the spans they were played in.
     capture: Box<Capture>,
     move_log: Box<MoveLog>,
+    /// The XY pad's moves for the song's lanes this period (offset and
+    /// move), for the song recorder once the period's block is in.
+    song_moves: Vec<(u32, Input)>,
+    /// XY pad moves for the song with no room in one period (counted in
+    /// [`TimeControl::dropped`]).
+    song_moves_lost: u64,
     /// What CAPTURE would keep, as the screen last showed it.
     pending: Option<Pending>,
     /// The transport as the audio half's last period left it.
@@ -809,6 +819,8 @@ impl TimeControl {
             costs: Costs::default(),
             capture: Box::new(Capture::new()),
             move_log: Box::new(MoveLog::new()),
+            song_moves: Vec::with_capacity(SONG_MOVES),
+            song_moves_lost: 0,
             pending: None,
             info,
             counts: Counts::default(),
@@ -1333,6 +1345,13 @@ impl TimeControl {
                     self.capture.input_on(track, offset, event, took);
                 }
                 ToControl::Moved(offset, input) => self.move_log.input(offset, input),
+                ToControl::SongMoved(offset, input) => {
+                    if self.song_moves.len() < SONG_MOVES {
+                        self.song_moves.push((offset, input));
+                    } else {
+                        self.song_moves_lost += 1;
+                    }
+                }
                 ToControl::Started(st) => self.started.push(st),
                 ToControl::MuteLanded(l) => self.landed.push(l),
                 ToControl::Touch(points, n) => {
@@ -1423,6 +1442,22 @@ impl TimeControl {
         self.song_rec
             .song_blocks(self.project.arrangement.placements.len());
         self.song_rec.period(&self.block, &self.started);
+        // The XY pad's moves, on the song tick of their frame.
+        for (offset, input) in self.song_moves.drain(..) {
+            let at = self
+                .block
+                .spans()
+                .iter()
+                .filter(|s| s.state.rolling())
+                .find(|s| offset < s.offset + s.len)
+                .map(|s| {
+                    let frame = s.frame + u64::from(offset.saturating_sub(s.offset));
+                    s.tick_at(frame).floor() as Tick
+                });
+            if let Some(at) = at {
+                self.song_rec.moved(at, input);
+            }
+        }
         if let Some(used) = self.song_rec.take_warning() {
             let limit = self.song_rec.limit();
             self.note_later(format!(
@@ -1570,10 +1605,11 @@ impl TimeControl {
         }
     }
 
-    /// Notes this half lost: past CAPTURE's input table. What passing
-    /// between the halves lost is in [`TimeControl::describe`].
+    /// Notes this half lost: past CAPTURE's input table, and the XY pad's
+    /// moves for the song past a period's room. What passing between the
+    /// halves lost is in [`TimeControl::describe`].
     pub fn dropped(&self) -> u64 {
-        self.capture.dropped()
+        self.capture.dropped() + self.song_moves_lost
     }
 
     /// Messages this half lost on the way between the halves: to the
@@ -5278,10 +5314,21 @@ impl TimeControl {
         self.section = None;
         // Recorded over a section that followed its scene: the song's own
         // now (4b.3).
-        let line = format!(
+        let mut line = format!(
             "{} placements and {} morph points into the song",
             r.placements, r.morph_points
         );
+        // The XY pad's moves (phase 3): said only when it moved something.
+        if r.moves + r.moves_lost > 0 {
+            let s = if r.moves == 1 { "" } else { "s" };
+            line.push_str(&format!(", {} XY pad move{s}", r.moves));
+            if r.moves_lost > 0 {
+                line.push_str(&format!(
+                    " ({} left out: no room in the song's lanes)",
+                    r.moves_lost
+                ));
+            }
+        }
         let line = self.mark_own(&before, self.info.meter.bar_ticks(), line, "");
         if let Err(e) = self.compile() {
             self.project.arrangement = before;

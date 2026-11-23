@@ -2,13 +2,14 @@
 //! launch grid plays (launches, scenes with their mutes, stops, a launch
 //! over the song) is recorded into the arrangement, and the song then
 //! plays back exactly the same notes on the same frames, at any period
-//! size. A loop pass records over the last, and the morph's moves go into
-//! the song's lane.
+//! size. A loop pass records over the last, and the morph's moves and the
+//! XY pad's go into the song's lanes.
 
 use mpfree_perform::{Perform, SongRecorder, When};
 use mpfree_play::{Cue, Event, Launch, Out, PlayView, Player, Sink, SONG_TRACK};
 use mpfree_seq::arrange::{MAX_PLACEMENTS, MORPH_LANE};
-use mpfree_seq::mpfree_param::ParamAddr;
+use mpfree_seq::mpfree_moves::{Input, Map, Target};
+use mpfree_seq::mpfree_param::{Owner, ParamAddr, Strip};
 use mpfree_seq::{Clip, MorphRows, Note, Placement, Project, Track};
 use mpfree_transport::time::Tick;
 use mpfree_transport::{Block, Command, Transport};
@@ -39,6 +40,8 @@ enum Act {
     Morph(f32, (usize, usize)),
     /// A track muted or heard again at once (not by a scene).
     Mute(usize, bool),
+    /// The XY pad moves a setting to a value, or lets go of it (None).
+    Xy(ParamAddr, Option<f32>),
 }
 
 /// Notes only: what is heard.
@@ -120,6 +123,17 @@ fn jam_with_room(
                 Act::Mute(track, on) => {
                     project.tracks[track].mute = on;
                     rec.mute(track, on, t.position());
+                }
+                Act::Xy(addr, value) => {
+                    let input = match value {
+                        Some(value) => Input::Move {
+                            addr,
+                            value,
+                            map: Map::linear(0.0, 1.0),
+                        },
+                        None => Input::End { addr },
+                    };
+                    rec.moved(t.position(), input);
                 }
             }
             next += 1;
@@ -372,6 +386,84 @@ fn morph_moves_go_into_the_songs_lane_and_play_back() {
     // A pass with no move leaves the lane as it was.
     let (_, again) = jam(&song, &[launch(0, 0)], &[], &commands, at(BAR), 64);
     assert_eq!(again.arrangement.lanes, song.arrangement.lanes);
+}
+
+/// The XY pad's moves of a setting go into the song's lane for it while
+/// Rec song records, over what the lane had only where they moved, and
+/// the song plays them back on its own track. A stop ends a gesture still
+/// moving.
+#[test]
+fn the_xy_pads_moves_go_into_the_songs_lanes_and_play_back() {
+    let p = project();
+    let wet = ParamAddr::new(Owner::Strip(Strip::Master), 3);
+    let drive = ParamAddr::new(Owner::Strip(Strip::Return(0)), 1);
+    let acts = [
+        (at(BAR), Act::Xy(wet, Some(0.2))),
+        (at(BAR + 960), Act::Xy(wet, Some(0.6))),
+        (at(BAR + 1920), Act::Xy(wet, None)),
+        // Still moving when the transport stops.
+        (at(2 * BAR), Act::Xy(drive, Some(0.9))),
+    ];
+    let commands = [(0, Command::Play), (at(3 * BAR), Command::Stop)];
+    let (_, song) = jam(&p, &[launch(0, 0)], &acts, &commands, at(4 * BAR), 64);
+    let lane = song.arrangement.lanes.lane(Target::Fixed(wet)).unwrap();
+    let near = |tick: i64, want: f32| (lane.value_at(tick as f64).unwrap() - want).abs() < 0.01;
+    assert_eq!(
+        lane.value_at((BAR - 10) as f64),
+        None,
+        "free before the move"
+    );
+    assert!(near(BAR + 3, 0.2));
+    assert!(near(BAR + 960 + 3, 0.6));
+    assert_eq!(
+        lane.value_at((BAR + 1920 + 10) as f64),
+        None,
+        "free after the lift"
+    );
+    let drive_lane = song.arrangement.lanes.lane(Target::Fixed(drive)).unwrap();
+    assert!((drive_lane.value_at((2 * BAR + 100) as f64).unwrap() - 0.9).abs() < 0.01);
+    assert_eq!(
+        drive_lane.value_at((3 * BAR + 100) as f64),
+        None,
+        "the stop ended it"
+    );
+    // The song plays it on its own track.
+    let heard: Vec<f32> = replay(&song, &commands, at(3 * BAR), 64)
+        .into_iter()
+        .filter_map(|(_, t, e)| match e {
+            Event::Lane { addr, value } if t == SONG_TRACK && addr == wet => Some(value),
+            _ => None,
+        })
+        .collect();
+    assert!(heard.iter().any(|v| (v - 0.6).abs() < 0.01), "{heard:?}");
+    // Another pass moving it in bar 3 leaves bar 2's move as it was.
+    let again = [
+        (at(2 * BAR + 960), Act::Xy(wet, Some(1.0))),
+        (at(2 * BAR + 1920), Act::Xy(wet, None)),
+    ];
+    let (_, twice) = jam(&song, &[launch(0, 0)], &again, &commands, at(4 * BAR), 64);
+    let lane = twice.arrangement.lanes.lane(Target::Fixed(wet)).unwrap();
+    assert!((lane.value_at((BAR + 960 + 3) as f64).unwrap() - 0.6).abs() < 0.01);
+    assert!((lane.value_at((2 * BAR + 960 + 3) as f64).unwrap() - 1.0).abs() < 0.01);
+}
+
+/// A gesture still moving when the transport jumps goes on from where it
+/// lands, in the next pass.
+#[test]
+fn an_xy_gesture_goes_on_across_a_jump() {
+    let p = project();
+    let wet = ParamAddr::new(Owner::Strip(Strip::Master), 3);
+    let acts = [(at(BAR), Act::Xy(wet, Some(0.4)))];
+    let commands = [
+        (0, Command::Play),
+        (at(2 * BAR), Command::Locate(0)),
+        (at(3 * BAR), Command::Stop),
+    ];
+    let (_, song) = jam(&p, &[launch(0, 0)], &acts, &commands, at(4 * BAR), 64);
+    let lane = song.arrangement.lanes.lane(Target::Fixed(wet)).unwrap();
+    // The second pass (bar 1 again) held it at 0.4 from where it landed.
+    assert!((lane.value_at((BAR / 2) as f64).unwrap() - 0.4).abs() < 0.01);
+    assert!((lane.value_at((BAR + 100) as f64).unwrap() - 0.4).abs() < 0.01);
 }
 
 #[test]
