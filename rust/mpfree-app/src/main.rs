@@ -8136,10 +8136,21 @@ fn player_session(
     // Dev's "Audio tracks from their files" (off by default): started
     // before the takes record to files, so the writer waits for playback's
     // reads; the screen opens projects without reading their takes then.
-    if app.settings.stream_audio {
+    // A script that needs stream-audio has it for its run only (the saved
+    // setting stays as it is).
+    let script_streams = o
+        .workflow
+        .as_ref()
+        .is_some_and(|w| w.needs.iter().any(|n| n == script::STREAM_AUDIO));
+    if app.settings.stream_audio || script_streams {
         if let Some(bytes) = tracks.stream(audio_memory.seconds()) {
             out.say(&format!(
-                "audio tracks: takes play from their files (Dev, MENU: Audio tracks from their files), through a {} MB cache",
+                "audio tracks: takes play from their files ({}), through a {} MB cache",
+                if app.settings.stream_audio {
+                    "Dev, MENU: Audio tracks from their files"
+                } else {
+                    "the script needs stream-audio, for this run"
+                },
                 bytes >> 20
             ));
         }
