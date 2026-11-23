@@ -494,7 +494,11 @@ pub(crate) fn went_to(m: &IoModel, to: To) -> (String, Went) {
             format!(
                 "picked patch {}{}",
                 u16::from(patch) + 1,
-                if waits { ", when your hands are up" } else { "" }
+                if waits {
+                    ", when your hands are up"
+                } else {
+                    ""
+                }
             ),
             Went::Took,
         ),

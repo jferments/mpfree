@@ -1032,7 +1032,10 @@ mod tests {
     #[test]
     fn each_keyboard_shows_the_zones_that_reach_it() {
         let mut s = PatchScreen::default();
-        assert_eq!(s.keyboard_look(&Patches::default(), &insts(), "KeyLab 61"), None);
+        assert_eq!(
+            s.keyboard_look(&Patches::default(), &insts(), "KeyLab 61"),
+            None
+        );
         let mut p = chorus();
         p.zones[2].keyboard = mpfree_patch::Keyboard::Port {
             name: "KeyLab 61".into(),

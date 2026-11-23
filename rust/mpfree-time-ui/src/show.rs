@@ -455,13 +455,12 @@ fn paint_bars(cx: &mut PaintCx, t: &Theme, r: Rect, bars: &[KeyBar]) {
         let h = ((r.h - gap * (rows - 1)) / rows).max(1);
         let x0 = r.x + i32::from(b.from.min(1000)) * r.w / 1000;
         let x1 = r.x + i32::from(b.to.min(1000)) * r.w / 1000;
-        let bar = Rect::new(
-            x0,
-            r.y + i32::from(b.row) * (h + gap),
-            (x1 - x0).max(2),
-            h,
-        );
-        let ink = if b.missing { t.bad } else { t.swatch(b.color).fill };
+        let bar = Rect::new(x0, r.y + i32::from(b.row) * (h + gap), (x1 - x0).max(2), h);
+        let ink = if b.missing {
+            t.bad
+        } else {
+            t.swatch(b.color).fill
+        };
         cx.canvas.fill_round_rect(bar, (h / 2).min(2), ink);
     }
 }

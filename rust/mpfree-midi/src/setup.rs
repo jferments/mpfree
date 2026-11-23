@@ -2568,7 +2568,10 @@ mod tests {
         );
         let (back, w) = MidiSetup::parse(&text);
         assert!(w.is_empty(), "{w:?}");
-        assert_eq!((back.program_in, back.program_waits), (ProgramIn::Patch, true));
+        assert_eq!(
+            (back.program_in, back.program_waits),
+            (ProgramIn::Patch, true)
+        );
         assert!(!m.rig().program_waits);
     }
 

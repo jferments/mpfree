@@ -732,7 +732,8 @@ fn looper_rects(l: &Layout) -> ([Rect; 2], [Rect; 7]) {
 /// first row; Next patch is the second row's fourth place (the XY pad's
 /// Hold and layout buttons take its first three) and Previous patch
 /// starts the third (live shows C1).
-const PLAY_PLACES: [(i32, usize); play::ALL.len()] = [(0, 0), (0, 1), (0, 2), (0, 3), (1, 3), (2, 0)];
+const PLAY_PLACES: [(i32, usize); play::ALL.len()] =
+    [(0, 0), (0, 1), (0, 2), (0, 3), (1, 3), (2, 0)];
 
 /// Play's card's buttons, on the same grid ([`PLAY_PLACES`]).
 fn play_rects(l: &Layout) -> [Rect; play::ALL.len()] {
@@ -3233,7 +3234,10 @@ mod tests {
         };
         let (swing, up, next, previous) = (rect(&s, 0), rect(&s, 3), rect(&s, 4), rect(&s, 5));
         assert_eq!((next.x, previous.x), (up.x, swing.x));
-        assert!(next.y > up.bottom() && previous.y > next.bottom(), "{next:?} {previous:?}");
+        assert!(
+            next.y > up.bottom() && previous.y > next.bottom(),
+            "{next:?} {previous:?}"
+        );
         fits(&s, AREA);
         fits(&s, WIDE);
         assert_eq!(tap(&mut s, "learn-play-pick", 4), IoReply::Redraw);
@@ -3260,14 +3264,23 @@ mod tests {
         let shown = ids(&s, AREA);
         assert!(shown.contains(&"learn-switches") && !shown.contains(&"learn-takeover"));
         let k = s.qlinks().unwrap();
-        assert_eq!((k[3].label.as_str(), k[3].text.as_str()), ("Switches", "At once"));
+        assert_eq!(
+            (k[3].label.as_str(), k[3].text.as_str()),
+            ("Switches", "At once")
+        );
         assert_eq!(tap(&mut s, "learn-switches", 1), IoReply::Redraw);
         let target = |m: &Shared| m.lock().unwrap().setup.learned_at(n - 1).unwrap().1.target;
-        assert_eq!(target(&m), ParamAddr::new(Owner::Play, play::PREVIOUS_PATCH_HANDS_UP));
+        assert_eq!(
+            target(&m),
+            ParamAddr::new(Owner::Play, play::PREVIOUS_PATCH_HANDS_UP)
+        );
         assert_eq!(s.qlinks().unwrap()[3].text, "Hands up");
         // The fourth Q-Link turns it back.
         assert_eq!(s.qlink_turn(3, -1, false), IoReply::Redraw);
-        assert_eq!(target(&m), ParamAddr::new(Owner::Play, play::PREVIOUS_PATCH));
+        assert_eq!(
+            target(&m),
+            ParamAddr::new(Owner::Play, play::PREVIOUS_PATCH)
+        );
         assert_eq!(tap(&mut s, "learn-switches", 0), IoReply::Handled);
     }
 

@@ -3744,14 +3744,18 @@ mod tests {
         assert_eq!(m.keys_at().0, Some(1));
         assert_eq!(m.take_patched().collect::<Vec<_>>(), [(1, down(60))]);
         assert!(
-            lines.iter().any(|l| l.ends_with("C0 01 = program 2 · ch 1 (picks patch 2)")),
+            lines
+                .iter()
+                .any(|l| l.ends_with("C0 01 = program 2 · ch 1 (picks patch 2)")),
             "{lines:?}"
         );
         // Program 5: the song has two.
         let (_, lines) = run(&mut m, DIN, &[0xC0, 4]);
         assert_eq!(m.keys_at().0, Some(1));
         assert!(
-            lines.iter().any(|l| l.ends_with("(the song has no patch 5)")),
+            lines
+                .iter()
+                .any(|l| l.ends_with("(the song has no patch 5)")),
             "{lines:?}"
         );
         // Waiting for the hands: the key held keeps patch 2 until it's up.
@@ -3765,7 +3769,9 @@ mod tests {
         assert_eq!(m.keys_at().0, Some(1));
         assert_eq!(m.keys_at().1, Some(Some(0)));
         assert!(
-            lines.iter().any(|l| l.ends_with("(picks patch 1 when your hands are up)")),
+            lines
+                .iter()
+                .any(|l| l.ends_with("(picks patch 1 when your hands are up)")),
             "{lines:?}"
         );
         let _ = run(&mut m, DIN, &[0x80, 60, 0]);

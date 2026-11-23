@@ -16135,7 +16135,9 @@ mod tests {
         assert_eq!(name(play::FILTER), "Play · Filter");
         assert_eq!(name(play::XY_ACROSS), "Play · XY across");
         assert_eq!(name(play::XY_UP), "Play · XY up");
-        assert_eq!(name(9), "Play · ?");
+        assert_eq!(name(play::NEXT_PATCH), "Play · Next patch");
+        assert_eq!(name(play::PREVIOUS_PATCH_HANDS_UP), "Play · Previous patch");
+        assert_eq!(name(99), "Play · ?");
         let now = desk::play_now(&time, &mix);
         assert_eq!((now.swing, now.drums_filter, now.xy), (50, 0.0, (0.5, 0.0)));
         let read = |id| learn_describe(&mix, &synth, &app, &|_, _, _| None, now, at(id));
@@ -16145,7 +16147,7 @@ mod tests {
             ("Swing", 50.0, 75.0, 50.0)
         );
         assert_eq!(read(play::XY_ACROSS).unwrap().1, 0.5);
-        assert!(read(9).is_none());
+        assert!(read(99).is_none());
         assert!(!midi_in::key_toggles(at(play::XY_UP)));
     }
 

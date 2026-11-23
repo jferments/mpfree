@@ -600,13 +600,8 @@ pub mod play {
 
     /// The name of parameter `id`, if it is one.
     pub fn name(id: u16) -> Option<&'static str> {
-        let id = patch_step(id).map_or(id, |(d, _)| {
-            if d > 0 {
-                NEXT_PATCH
-            } else {
-                PREVIOUS_PATCH
-            }
-        });
+        let id =
+            patch_step(id).map_or(id, |(d, _)| if d > 0 { NEXT_PATCH } else { PREVIOUS_PATCH });
         ALL.iter().find(|(i, _)| *i == id).map(|(_, n)| *n)
     }
 
@@ -1342,7 +1337,10 @@ mod tests {
         // and When your hands are up, both with the one name.
         assert_eq!(play::name(play::NEXT_PATCH_HANDS_UP), Some("Next patch"));
         assert_eq!(play::name(play::PREVIOUS_PATCH), Some("Previous patch"));
-        assert_eq!(play::patch_step(play::PREVIOUS_PATCH_HANDS_UP), Some((-1, true)));
+        assert_eq!(
+            play::patch_step(play::PREVIOUS_PATCH_HANDS_UP),
+            Some((-1, true))
+        );
         assert_eq!(play::patch_step(play::SWING), None);
         assert_eq!(
             play::with_hands_up(play::NEXT_PATCH, true),

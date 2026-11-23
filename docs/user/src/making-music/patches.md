@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-patch rust/mpfree-app/src/patch_in.rs rust/mpfree-app/src/patch_page.rs rust/mpfree-app/src/patch_screen.rs rust/mpfree-app/src/gui/patches.rs
-checked: 2026-11-23 9465243
+checked: 2026-11-23 a1888af4
 -->
 
 # Patches: splits and layers for your keyboard
@@ -74,9 +74,27 @@ Turn the wheel to pick a row and press **-** or **+** to change it, or drag the 
 
 Every change is one step of **UNDO**, and **UNDO** brings back a zone or a patch you removed. **Delete** asks first: tap it again to delete the patch.
 
+### Switching from a footswitch
+
+A footswitch or a button on your controller can step through the song's patches, so you never reach for the screen. In **Mix > I/O > Learn**, tap **Play** by the heading, tap **Next patch** or **Previous patch**, then press the footswitch (see [Play's swing, filter and XY pad from your controller](midi-and-cv.md#plays-swing-filter-and-xy-pad-from-your-controller)).
+
+- **Next patch** picks the patch after the one playing, and **Previous patch** the one before. They stop at the first and the last patch, and from **Keys as routed** Next patch picks patch 1. Where there is nowhere to go, the hint line says why.
+- They work on every page, in every project, while the song has patches. They are kept in **Rig**, as the rest of Play's card is.
+- The learned footswitch's card has **Switches** in place of Takeover: **At once** (the default) changes the patch as you press; **Hands up** waits until every key and pedal is up, so a chord you are holding finishes on the old patch first. While it waits, **KEYS PLAY** shows both names, outlined amber. A second press while it waits steps on from the patch it is waiting for.
+
+### Switching with a program change
+
+Many keyboards send a **program change** when you press a patch or preset button. In the **Sync** section, under **From other gear**, set **Program change in** to **Picks a patch**: program 1 picks patch 1, program 2 patch 2, and so on, on any channel. The number on each tile in the patch list, and in the editor ("patch 3 · program change 3"), is the program that picks it. The switch happens as the program change comes in, so a key you play right after it plays the new patch.
+
+The **Switches** row under it chooses **At once** or **When your hands are up**, as a footswitch's does. A program past the song's last patch does nothing, and the MIDI monitor says so (*nothing: the song has no patch 9*). A port set to ignore program changes picks nothing.
+
+### On the Show view
+
+While a [set](set-lists.md) plays, the Show view's **Your keyboards play** card names the patch each keyboard plays ("KeyLab 61 · Chorus split"), with a strip of the zones that reach that keyboard. A zone set to one keyboard shows only on that keyboard's line.
+
 ## What's coming
 
-Switching patches from a footswitch (**Next patch** and **Previous patch** with [MIDI Learn](midi-and-cv.md#midi-learn)) or with a program change from your keyboard is coming next, each able to wait until your hands are up. After that: scenes and song sections that pick a patch, recording with a patch (one track per zone), and pads and knobs that change with the patch.
+Scenes and song sections that pick a patch, recording with a patch (one track per zone), and pads and knobs that change with the patch.
 
 > [!MPC]
 > On the MPC, a keyboard plays the track that's selected, or the tracks set to its MIDI input. In MPFree a patch splits and layers one keyboard over several of the song's instruments, and you switch the whole setup with one tap.

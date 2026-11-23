@@ -2071,18 +2071,18 @@ pub fn remote_in(
 /// Learn section's Play card, live shows C1), at once or when every key
 /// and pedal is up. None when it picked one (KEYS PLAY shows it); else
 /// why it didn't, for the hint line.
-pub fn step_patch(
-    music: &mut crate::midi_in::MusicIn,
-    d: i32,
-    hands_up: bool,
-) -> Option<String> {
+pub fn step_patch(music: &mut crate::midi_in::MusicIn, d: i32, hands_up: bool) -> Option<String> {
     use mpfree_patch::keys::When;
     let when = if hands_up { When::HandsUp } else { When::Now };
     let (playing, waiting, _) = music.keys_at();
     if music.step_patch(d, when).is_some() {
         return None;
     }
-    let what = if d > 0 { "Next patch" } else { "Previous patch" };
+    let what = if d > 0 {
+        "Next patch"
+    } else {
+        "Previous patch"
+    };
     Some(match waiting.unwrap_or(playing) {
         _ if music.patch_count() == 0 => format!("{what}: this song has no patches yet"),
         None => format!("{what}: the keys play as routed, and Next patch picks patch 1"),

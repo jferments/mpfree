@@ -3404,7 +3404,11 @@ mod tests {
                 s.press(LIST, "layout", layout).settle();
                 s.press(EDIT, "back", "‹ Patches").settle();
             }
-            assert!(keys_play(&mut s).contains("2 · Patch 2"), "{}", keys_play(&mut s));
+            assert!(
+                keys_play(&mut s).contains("2 · Patch 2"),
+                "{}",
+                keys_play(&mut s)
+            );
             s.press(LIST, "close", "Close").settle();
             // Previous patch, then past the first.
             let press = |s: &mut Session, id| {
@@ -3412,19 +3416,31 @@ mod tests {
                 s.patch_footswitch(id, 0.0).settle();
             };
             press(&mut s, play::PREVIOUS_PATCH);
-            assert!(keys_play(&mut s).contains("1 · Patch 1"), "{}", keys_play(&mut s));
+            assert!(
+                keys_play(&mut s).contains("1 · Patch 1"),
+                "{}",
+                keys_play(&mut s)
+            );
             press(&mut s, play::PREVIOUS_PATCH);
             assert_eq!(s.hint(), "Previous patch: patch 1 is the song's first");
             // Next patch set to wait for the hands: C4 held keeps patch 1.
             let _ = s.keys_from_gear(&[0x90, 60, 90]);
             press(&mut s, play::NEXT_PATCH_HANDS_UP);
-            assert!(keys_play(&mut s).contains("Patch 1 → Patch 2"), "{}", keys_play(&mut s));
+            assert!(
+                keys_play(&mut s).contains("Patch 1 → Patch 2"),
+                "{}",
+                keys_play(&mut s)
+            );
             assert_eq!(
                 s.keys_from_gear(&[0x80, 60, 0]),
                 [(0, Key::Up { note: 60 })],
                 "C4 ends on patch 1"
             );
-            assert!(keys_play(&mut s).contains("2 · Patch 2"), "{}", keys_play(&mut s));
+            assert!(
+                keys_play(&mut s).contains("2 · Patch 2"),
+                "{}",
+                keys_play(&mut s)
+            );
             press(&mut s, play::NEXT_PATCH);
             assert_eq!(s.hint(), "Next patch: patch 2 is the song's last");
             // Program change in: Picks a patch. Program 1, then a key: patch
@@ -3441,7 +3457,11 @@ mod tests {
                     }
                 )]
             );
-            assert!(keys_play(&mut s).contains("1 · Patch 1"), "{}", keys_play(&mut s));
+            assert!(
+                keys_play(&mut s).contains("1 · Patch 1"),
+                "{}",
+                keys_play(&mut s)
+            );
             let _ = s.keys_from_gear(&[0x80, 36, 0]);
         });
     }

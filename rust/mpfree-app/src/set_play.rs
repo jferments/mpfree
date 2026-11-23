@@ -75,7 +75,6 @@ pub enum Do {
     NotStarted,
 }
 
-
 /// A keyboard the rig knows (live shows B1), by the name the musician
 /// gave it, and the song's patch on it (C1).
 #[derive(Clone, Debug, Default, PartialEq)]

@@ -166,9 +166,15 @@ impl Form for Sync {
                 2,
             ));
             rows.push(if s.program_waits {
-                switches.note("the patch changes once every key and pedal is up", Tone::Normal)
+                switches.note(
+                    "the patch changes once every key and pedal is up",
+                    Tone::Normal,
+                )
             } else {
-                switches.note("the patch changes as the program change comes in", Tone::Normal)
+                switches.note(
+                    "the patch changes as the program change comes in",
+                    Tone::Normal,
+                )
             });
         }
         rows.push(Row::heading("Clock out", vec!["Sends"]));

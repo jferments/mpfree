@@ -437,7 +437,11 @@ impl Keys {
             None if d > 0 => 0,
             None => return None,
             Some(i) => {
-                let to = if d > 0 { (i + 1).min(n - 1) } else { i.saturating_sub(1) };
+                let to = if d > 0 {
+                    (i + 1).min(n - 1)
+                } else {
+                    i.saturating_sub(1)
+                };
                 if to == i {
                     return None;
                 }
