@@ -7,7 +7,18 @@
 //! [`TouchHold`] passes a touch on at once, and a release only once the
 //! finger has stayed off for [`HOLD`] seconds. A touch inside that time is
 //! the same hold: it is counted as a bounce and passed on as nothing.
+//!
+//! A turn with no finger on the knob (MIDI Follow's controller turning
+//! the Q-Links, or a sensor that missed the touch) is a gesture with no
+//! end of its own: it ends [`HAND_S`] after its last turn, passed on as a
+//! release the same way (the XY controller plan, phase 1: a knob turned
+//! while recording lets go of its setting, and a run of turns is one undo
+//! step). A touch while it runs takes it over: the finger's release ends
+//! it then.
+//!
 //! Pure logic, no I/O and no allocation (it runs on the audio thread).
+
+use crate::locks::HAND_S;
 
 /// How long a finger must stay off before the release counts, in seconds.
 pub const HOLD: f64 = 0.15;
@@ -19,10 +30,15 @@ pub struct TouchHold {
     held: [bool; 4],
     /// When the sensor last let go, while the release waits to count.
     off_since: [Option<f64>; 4],
+    /// When the last turn with no finger on the knob came, while its
+    /// gesture runs.
+    turned_at: [Option<f64>; 4],
     /// Touches passed on.
     pub touches: u64,
     /// Releases that a touch inside [`HOLD`] took back.
     pub bounces: u64,
+    /// Runs of turns with no finger that ended after [`HAND_S`].
+    pub untouched: u64,
 }
 
 impl TouchHold {
@@ -33,6 +49,8 @@ impl TouchHold {
             return false;
         }
         if touched {
+            // A finger takes over a run of turns without one.
+            self.turned_at[k] = None;
             if self.off_since[k].take().is_some() {
                 self.bounces += 1;
                 return false;
@@ -51,8 +69,17 @@ impl TouchHold {
         }
     }
 
-    /// The knobs whose finger has now been off for [`HOLD`] seconds: their
-    /// releases, to pass on now (each once).
+    /// Knob `k` turned at `t` seconds. With no finger on it, the turn's
+    /// gesture runs until [`HAND_S`] after the last one.
+    pub fn turned(&mut self, k: usize, t: f64) {
+        if k < 4 && !self.held[k] {
+            self.turned_at[k] = Some(t);
+        }
+    }
+
+    /// The knobs whose finger has now been off for [`HOLD`] seconds, or
+    /// whose turns with no finger stopped [`HAND_S`] ago: their releases,
+    /// to pass on now (each once).
     pub fn due(&mut self, t: f64) -> [bool; 4] {
         let mut out = [false; 4];
         for (k, o) in out.iter_mut().enumerate() {
@@ -62,6 +89,11 @@ impl TouchHold {
                 self.held[k] = false;
                 *o = true;
             }
+            if self.turned_at[k].is_some_and(|at| t - at >= f64::from(HAND_S) - 1e-6) {
+                self.turned_at[k] = None;
+                self.untouched += 1;
+                *o = true;
+            }
         }
         out
     }
@@ -69,10 +101,12 @@ impl TouchHold {
     /// One line for the status log.
     pub fn describe(&self) -> String {
         format!(
-            "Q-Link touch: {} touches, {} bounces held (a release shorter than {} ms)",
+            "Q-Link touch: {} touches, {} bounces held (a release shorter than {} ms), \
+             {} runs of turns with no finger let go",
             self.touches,
             self.bounces,
-            (HOLD * 1000.0).round()
+            (HOLD * 1000.0).round(),
+            self.untouched
         )
     }
 }
@@ -125,5 +159,31 @@ mod tests {
         assert_eq!(h.due(0.1 + HOLD), [true, false, false, false]);
         assert!(!h.event(9, true, 0.0));
         assert!(h.describe().contains("2 touches, 0 bounces held"));
+    }
+
+    #[test]
+    fn turns_with_no_finger_let_go_half_a_second_after_the_last() {
+        let half = f64::from(HAND_S);
+        let mut h = TouchHold::default();
+        // MIDI Follow turns Q-Link 2 twice, no finger on it.
+        h.turned(1, 1.0);
+        h.turned(1, 1.3);
+        assert_eq!(h.due(1.0 + half), [false; 4], "from the last turn");
+        assert_eq!(h.due(1.3 + half), [false, true, false, false]);
+        assert_eq!(h.due(5.0), [false; 4], "once");
+        // A turn under a finger waits for the finger.
+        assert!(h.event(0, true, 6.0));
+        h.turned(0, 6.1);
+        assert_eq!(h.due(6.1 + half), [false; 4]);
+        // A finger that lands on a run of turns takes it over.
+        h.turned(2, 7.0);
+        assert!(h.event(2, true, 7.1));
+        assert_eq!(h.due(7.0 + half), [false; 4]);
+        assert!(!h.event(2, false, 8.0));
+        assert_eq!(h.due(8.0 + HOLD), [false, false, true, false]);
+        h.turned(9, 9.0);
+        assert!(h
+            .describe()
+            .contains("1 runs of turns with no finger let go"));
     }
 }

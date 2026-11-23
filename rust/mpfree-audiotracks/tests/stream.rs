@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use mpfree_audiotracks::save::{wav, TakeFile};
-use mpfree_audiotracks::{AudioTracks, Command as A, Input, Io, Monitor};
+use mpfree_audiotracks::{AudioTracks, Command as A, Input, Io, Monitor, CHUNK};
 use mpfree_stream::coord::{serve, Coordinator, Device, HoldTier, Plan, ReadReply, ReadReq};
 use mpfree_stream::player::{Config, Player};
 use mpfree_transport::{Block, Command as T, Transport};
@@ -81,7 +81,12 @@ impl Rig {
     /// Tracks with 20 s of memory; with a player and its coordinator, on
     /// a stick answering `delay` periods late, if given.
     fn new(delay: Option<u64>) -> Rig {
-        let mut a = AudioTracks::new(RATE, 20);
+        Rig::with_memory(delay, 20)
+    }
+
+    /// [`Rig::new`] with memory for `seconds` of stereo.
+    fn with_memory(delay: Option<u64>, seconds: u32) -> Rig {
+        let mut a = AudioTracks::new(RATE, seconds);
         let clock = Arc::new(AtomicU64::new(0));
         let c = delay.map(|delay| {
             let cfg = Config {
@@ -240,7 +245,12 @@ fn a_take_moves_to_its_file_while_the_song_plays_and_the_sound_never_changes() {
     let files = r.open_files(&dir);
     let got = play_song(&mut r, |r| {
         for &(take, rec, gen) in &files {
-            assert!(r.a.command(A::OnFile { take, rec, gen }));
+            assert!(r.a.command(A::OnFile {
+                take,
+                rec,
+                gen,
+                growing: false,
+            }));
         }
     });
     assert!(got == before, "the move changed the sound");
@@ -275,7 +285,12 @@ fn a_move_waits_until_the_frames_at_the_playhead_are_in_the_cache() {
     session(&mut r);
     let files = r.open_files(&dir);
     for &(take, rec, gen) in &files {
-        r.a.command(A::OnFile { take, rec, gen });
+        r.a.command(A::OnFile {
+            take,
+            rec,
+            gen,
+            growing: false,
+        });
     }
     // Stopped at bar 1, where the song's first regions are: nothing
     // moves until their frames have come.
@@ -429,7 +444,8 @@ fn a_file_that_doesnt_match_its_take_keeps_it_in_memory_and_is_closed() {
     assert!(r.a.command(A::OnFile {
         take: k.id,
         rec: k.rec,
-        gen: tag.gen
+        gen: tag.gen,
+        growing: false,
     }));
     r.run_to(r.frame + 8 * P as u64);
     assert_eq!(r.a.stats().mismatched, 1);
@@ -452,6 +468,7 @@ fn a_file_that_doesnt_match_its_take_keeps_it_in_memory_and_is_closed() {
         take: other.id,
         rec: k.rec,
         gen: tag.gen,
+        growing: false,
     });
     let mut bare = Rig::new(None);
     session(&mut bare);
@@ -459,6 +476,7 @@ fn a_file_that_doesnt_match_its_take_keeps_it_in_memory_and_is_closed() {
         take: k.id,
         rec: k.rec,
         gen: 1,
+        growing: false,
     });
     r.run_to(r.frame + P as u64);
     bare.run_to(bare.frame + P as u64);
@@ -546,7 +564,12 @@ fn generated_edits_play_the_same_from_the_files_as_from_memory() {
         let c = r.c.as_mut().unwrap();
         c.hold_all(&parts, None, HoldTier::Pinned).unwrap();
         for &(take, rec, gen) in &files {
-            r.a.command(A::OnFile { take, rec, gen });
+            r.a.command(A::OnFile {
+                take,
+                rec,
+                gen,
+                growing: false,
+            });
         }
         r.run_until(|r| {
             let p = r.a.player().unwrap();
@@ -602,4 +625,279 @@ fn generated_edits_play_the_same_from_the_files_as_from_memory() {
         assert!(takes.iter().all(|&t| r.a.on_file(t)));
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// Track 0 (mono) and track 2 (stereo) record `bars` bars together from
+/// [`START`], then disarm; then silence in, stopped at bar 1.
+fn long_session(r: &mut Rig, bars: u64) {
+    r.a.command(A::Arm(0, true));
+    r.a.command(A::Arm(2, true));
+    r.a.command(A::SetInput(2, Input::Stereo));
+    r.t.command(START, T::Record);
+    r.t.command(START + bars * BAR, T::Stop);
+    r.run_to(START + bars * BAR + 200);
+    r.a.command(A::Arm(0, false));
+    r.a.command(A::Arm(2, false));
+    r.live = false;
+    r.t.command(r.frame + 10, T::StopAndRewind);
+    r.run_to(r.frame + 2 * P as u64);
+}
+
+/// Play the song from bar 1 for `bars` bars: the frames played.
+fn play_bars(r: &mut Rig, bars: u64) -> Vec<f32> {
+    let from = r.out.len();
+    let p = r.frame;
+    r.t.command(p, T::PlayStart);
+    r.run_to(p + bars * BAR);
+    r.t.command(r.frame, T::StopAndRewind);
+    r.run_to(r.frame + 4 * P as u64);
+    r.out[from..].to_vec()
+}
+
+/// A take's file as the writer makes it while it records: a WAV header
+/// whose sizes say "to the end of the file", then the audio so far.
+fn open_header(channels: usize) -> Vec<u8> {
+    let mut h = wav(&[], channels, RATE);
+    h[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+    h[40..44].copy_from_slice(&u32::MAX.to_le_bytes());
+    h
+}
+
+fn bytes_of(audio: &[f32]) -> Vec<u8> {
+    audio.iter().flat_map(|v| v.to_le_bytes()).collect()
+}
+
+/// Frames in one of the stream cache's units, for a take of `channels`.
+fn unit_frames(channels: usize) -> usize {
+    mpfree_stream::player::UNIT / channels
+}
+
+#[test]
+fn a_take_whose_file_holds_only_its_start_plays_the_same_and_gives_that_memory_back() {
+    let dir = scratch("part");
+    let mut want = Rig::new(None);
+    long_session(&mut want, 4);
+    let song = play_song(&mut want, |_| {});
+    assert!(loud(&song) > BAR as usize, "the song plays");
+
+    let mut r = Rig::new(Some(4));
+    long_session(&mut r, 4);
+    let used = r.a.memory().used;
+    let mut files = Vec::new();
+    for k in r.a.takes().collect::<Vec<_>>() {
+        let mut audio = vec![0.0f32; k.frames * k.channels];
+        assert_eq!(r.a.read_take(k.id, 0, &mut audio), Some(k.frames));
+        // A chunk and a half of it on the file so far.
+        let per = CHUNK / k.channels;
+        let n = per + per / 2;
+        let path = dir.join(format!("take_{}.wav", k.id));
+        let mut b = open_header(k.channels);
+        b.extend(bytes_of(&audio[..n * k.channels]));
+        std::fs::write(&path, b).unwrap();
+        let c = r.c.as_mut().unwrap();
+        let tag = c.open_growing(k.id, &path, n as u64).unwrap();
+        assert!(r.a.command(A::OnFile {
+            take: k.id,
+            rec: k.rec,
+            gen: tag.gen,
+            growing: true,
+        }));
+        files.push((k, path, audio, n));
+    }
+    // The whole chunk each file holds goes from the pool.
+    let per = |k: &mpfree_audiotracks::TakeInfo| CHUNK / k.channels;
+    r.run_until(|r| {
+        files
+            .iter()
+            .all(|(k, ..)| r.a.file_frames(k.id) == Some(per(k)))
+    });
+    assert_eq!(r.a.memory().used, used - 2 * CHUNK);
+    for (k, ..) in &files {
+        assert!(!r.a.on_file(k.id));
+        // What is on the file isn't read from the pool any more.
+        assert_eq!(r.a.read_take(k.id, per(k) - 1, &mut [0.0; 4]), None);
+        assert_eq!(
+            r.a.read_take(k.id, per(k), &mut [0.0; 2]),
+            Some(2 / k.channels)
+        );
+    }
+    let got = play_song(&mut r, |_| {});
+    assert!(
+        got == song,
+        "part from the file, part from memory: the same"
+    );
+    assert_eq!(r.missed(), 0);
+
+    // The rest written: each file holds all of its take, which plays from
+    // there alone, the pool free.
+    for (k, path, audio, n) in &files {
+        let mut f = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+        std::io::Write::write_all(&mut f, &bytes_of(&audio[n * k.channels..])).unwrap();
+        r.c.as_mut().unwrap().grow(k.id, k.frames as u64).unwrap();
+    }
+    r.run_until(|r| files.iter().all(|(k, ..)| r.a.on_file(k.id)));
+    assert_eq!(r.a.memory().used, 0);
+    let got = play_song(&mut r, |_| {});
+    assert!(got == song, "from the files alone: the same");
+    assert_eq!(r.missed(), 0);
+    assert_eq!(r.a.stats().mismatched, 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The writer's side of a take recording, as a test plays it: each
+/// period the frames recorded since go on the file, and whole units of
+/// them count as committed: the file opens growing at the first, and
+/// grows by each after.
+struct Writer {
+    id: u16,
+    path: PathBuf,
+    written: usize,
+    committed: usize,
+    gen: Option<u32>,
+}
+
+impl Writer {
+    fn feed(&mut self, r: &mut Rig) {
+        let k = r.a.take(self.id).unwrap();
+        let ch = k.channels;
+        let mut buf = vec![0.0f32; (k.frames - self.written) * ch];
+        let n = r.a.read_take(self.id, self.written, &mut buf).unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&self.path)
+            .unwrap();
+        std::io::Write::write_all(&mut f, &bytes_of(&buf[..n * ch])).unwrap();
+        self.written += n;
+        let unit = unit_frames(ch);
+        let committed = if k.recording {
+            self.written / unit * unit
+        } else {
+            self.written
+        };
+        if committed <= self.committed {
+            return;
+        }
+        self.committed = committed;
+        let c = r.c.as_mut().unwrap();
+        match self.gen {
+            None => {
+                let tag = c
+                    .open_growing(self.id, &self.path, committed as u64)
+                    .unwrap();
+                self.gen = Some(tag.gen);
+                assert!(r.a.command(A::OnFile {
+                    take: self.id,
+                    rec: k.rec,
+                    gen: tag.gen,
+                    growing: true,
+                }));
+            }
+            Some(_) => c.grow(self.id, committed as u64).unwrap(),
+        }
+    }
+}
+
+/// Track 2 (stereo) records `bars` bars from [`START`]; with a file
+/// written as it records, if `dir` is given. Then stopped at bar 1.
+fn record_stereo(r: &mut Rig, bars: u64, dir: Option<&Path>) -> Option<Writer> {
+    r.a.command(A::Arm(2, true));
+    r.a.command(A::SetInput(2, Input::Stereo));
+    r.t.command(START, T::Record);
+    r.t.command(START + bars * BAR, T::Stop);
+    let mut w: Option<Writer> = None;
+    while r.frame < START + bars * BAR + 200 {
+        r.period();
+        if let (None, Some(dir), Some(k)) = (&w, dir, r.a.takes().find(|k| k.recording)) {
+            let path = dir.join(format!("take_{}.wav", k.id));
+            std::fs::write(&path, open_header(k.channels)).unwrap();
+            w = Some(Writer {
+                id: k.id,
+                path,
+                written: 0,
+                committed: 0,
+                gen: None,
+            });
+        }
+        if let Some(w) = &mut w {
+            w.feed(r);
+        }
+    }
+    r.a.command(A::Arm(2, false));
+    r.live = false;
+    r.t.command(r.frame + 10, T::StopAndRewind);
+    r.run_to(r.frame + 2 * P as u64);
+    if let Some(w) = &mut w {
+        // Finished: the last frames on the file, which holds them all.
+        w.feed(r);
+    }
+    w
+}
+
+#[test]
+fn a_recording_longer_than_memory_gives_its_memory_back_as_its_file_holds_it() {
+    let dir = scratch("long");
+    // 30 s of stereo into memory for 20: cut short.
+    let mut short = Rig::new(Some(4));
+    record_stereo(&mut short, 30, None);
+    assert_eq!(short.a.stats().full, 1);
+    // Room for it all: what it should be.
+    let mut want = Rig::with_memory(None, 40);
+    record_stereo(&mut want, 30, None);
+    assert_eq!(want.a.stats().full, 0);
+    let song = play_bars(&mut want, 31);
+    let k = want.a.takes().next().unwrap();
+    assert!(k.frames > 30 * BAR as usize);
+
+    let mut r = Rig::new(Some(4));
+    let w = record_stereo(&mut r, 30, Some(&dir)).unwrap();
+    assert_eq!(r.a.stats().full, 0, "never out of memory");
+    assert_eq!(r.a.take(w.id).unwrap().frames, k.frames);
+    r.run_until(|r| r.a.on_file(w.id));
+    assert_eq!(r.a.memory().used, 0);
+    let got = play_bars(&mut r, 31);
+    assert!(got == song, "played from its file, all of it");
+    assert_eq!(r.missed(), 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_growing_file_that_doesnt_fit_its_take_is_closed_with_nothing_given_back() {
+    let dir = scratch("misfit");
+    let mut r = Rig::new(Some(4));
+    long_session(&mut r, 2);
+    let used = r.a.memory().used;
+    let takes: Vec<_> = r.a.takes().collect();
+    let mut gens = Vec::new();
+    for k in &takes {
+        // The mono take's file is stereo; the stereo take's holds more
+        // frames than the take.
+        let (ch, frames) = if k.channels == 1 {
+            (2, CHUNK)
+        } else {
+            (2, k.frames + 10)
+        };
+        let path = dir.join(format!("take_{}.wav", k.id));
+        let mut b = open_header(ch);
+        b.extend(bytes_of(&vec![0.25f32; frames * ch]));
+        std::fs::write(&path, b).unwrap();
+        let c = r.c.as_mut().unwrap();
+        let tag = c.open_growing(k.id, &path, frames as u64).unwrap();
+        assert!(r.a.command(A::OnFile {
+            take: k.id,
+            rec: k.rec,
+            gen: tag.gen,
+            growing: true,
+        }));
+        gens.push((k.id, tag.gen));
+    }
+    r.run_until(|r| r.a.stats().mismatched == 2);
+    assert_eq!(r.a.memory().used, used, "nothing given back");
+    for k in &takes {
+        assert_eq!(r.a.file_frames(k.id), Some(0));
+    }
+    let closes: Vec<_> = std::iter::from_fn(|| r.a.take_io()).collect();
+    for (take, gen) in gens {
+        assert!(closes.contains(&Io::Close { take, gen }), "{closes:?}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }

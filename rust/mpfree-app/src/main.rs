@@ -111,6 +111,7 @@ mod export;
 mod expr_rec;
 mod fxmodes;
 mod gui;
+mod hand;
 mod imagecopy;
 mod instrument_list;
 mod instruments;
@@ -3164,9 +3165,9 @@ fn live_erase_starts(app: &app::App, time: &time::TimeHost) -> bool {
 /// playhead reaches them, until the pad or ERASE is let go; it neither
 /// sounds nor records. What to tell.
 fn live_erase(time: &mut time::TimeHost, pad: usize) -> Option<app::Effect> {
-    let note = u8::try_from(pad).ok()?;
+    let p = u8::try_from(pad).ok()?;
     let first = !time.erasing();
-    time.erase_sound(note, true);
+    time.erase_sound(p, true);
     first.then(|| {
         app::Effect::Tell(format!(
             "ERASE: pad {}'s notes come out of the armed track's clip as the playhead passes them; UNDO brings them back",
@@ -7336,6 +7337,9 @@ fn time_action(
             | TimeAction::ClipLength { .. }
             | TimeAction::Mutate { .. }
             | TimeAction::Restore { .. }
+            | TimeAction::ConvertPreview { .. }
+            | TimeAction::Convert { .. }
+            | TimeAction::ConvertCancel
             | TimeAction::CopyClip { .. }
             | TimeAction::PasteClip { .. }
             | TimeAction::DropClip { .. }
@@ -7562,8 +7566,9 @@ fn synth_status(synth: &synth::Synth, time: &RenderTime) -> String {
 /// The notes each of track `track`'s 16 pads plays, as a clip of notes on
 /// the track reads them (step 5c): what the pad plays on the track's own
 /// synth (or the one it plays) or on the shared synth, a chord's root
-/// last, or a kit pad's note in bank A. A pad that plays nothing keeps its
-/// own number. Never allocates.
+/// last, or a kit pad's note in bank A. A pad that plays nothing (its
+/// notes outside 0 to 127) has none, and the grid shows its row on its own
+/// number. Never allocates.
 fn pad_rows(
     own: &instruments::Instruments,
     synth: &synth::Synth,
@@ -7581,6 +7586,25 @@ fn pad_rows(
         }
     }
     rows
+}
+
+/// The tracks whose takes hold notes, a bit each (instrument redesign
+/// step 5c): one whose own instrument, or the one it plays of another
+/// track's, plays notes, not the Drums engine's sounds; or one that plays
+/// the shared synth while it plays notes (step sequencer refactor E4).
+/// Never allocates.
+fn notes_tracks(
+    own: &instruments::Instruments,
+    kits: &sampler::TrackKits,
+    synth: &synth::Synth,
+    tracks: usize,
+) -> u128 {
+    if !synth.plays_notes() {
+        return own.note_tracks();
+    }
+    (0..tracks.min(128))
+        .filter(|&t| !own.plays(t) && kits.plays_synth(t))
+        .fold(own.note_tracks(), |bits, t| bits | 1 << t)
 }
 
 /// Whether track `track`'s arp works in notes (step 5d): its own synth
@@ -7820,8 +7844,11 @@ fn player_session(
     // The project's instruments, each with its lasting id (the shared
     // synth is instrument 1). Made here, before the sound starts; an open
     // swaps in the project's, and this one goes back to be freed on the
-    // screen thread.
+    // screen thread. Each kit place has its id (phase 3 step 14): the
+    // places are fixed while mpfree runs.
     let mut listed = instrument_list::InstrumentList::new();
+    listed.follow_kits(drum_kits);
+    out.show(gui::ToUi::KitIds(Box::new(listed.kit_ids())));
     // The time engine's REDOs seen so far: a track one brings back gets its
     // kit back (`TrackKits::follow`).
     let mut redos_seen = 0u64;
@@ -8751,10 +8778,14 @@ fn player_session(
                 gui::FromUi::TrackInstrument(track) => {
                     out.note(&format!("arrange: no track {}", track + 1));
                 }
-                // A MIDI file from BROWSE: its tracks as clips, each note on
-                // the pad that plays it (midi_file.rs).
+                // A MIDI file from BROWSE: its tracks as clips, as a take
+                // there would hold them: notes on a track that plays notes,
+                // else each note on the pad that plays it (midi_file.rs).
                 gui::FromUi::MidiFile(m) => {
-                    let r = midi_file::put(&mut time, &m, |t, n| {
+                    let notes =
+                        notes_tracks(&mix.instruments, &track_kits, &synth, time.track_count());
+                    let notes_on = |t: usize| t < 128 && notes >> t & 1 == 1;
+                    let r = midi_file::put(&mut time, &m, notes_on, |t, n| {
                         let synth_has = track_kits.plays_synth(t).then_some(&*synth);
                         midi_file::pad_on_track(&mix.instruments, synth_has, t, n)
                     });
@@ -9085,7 +9116,19 @@ fn player_session(
                     }
                     // The project's list of instruments; the old one goes
                     // back in the box, to be freed on the screen thread.
+                    // Every kit place here has an id: one the project
+                    // hadn't got gets a new one, and a kit's past the
+                    // places here is gone (a track that played it was
+                    // said above).
                     std::mem::swap(&mut listed, &mut o.instrument_list);
+                    let gone = listed.kit_ids().listed_from(drum_kits);
+                    if gone > 0 {
+                        out.note(&format!(
+                            "project: {gone} of its kits aren't here ({drum_kits} kits), so they are gone from its list of instruments"
+                        ));
+                    }
+                    listed.follow_kits(drum_kits);
+                    out.show(gui::ToUi::KitIds(Box::new(listed.kit_ids())));
                     if let Some((options, sounds)) = o.synth.take() {
                         for line in synth.set_sounds(&sounds) {
                             out.note(&line);
@@ -10556,6 +10599,9 @@ fn player_session(
                 }
                 Some(ControlEvent::DataWheel { delta }) => fx.extend(app.wheel(delta as i32)),
                 Some(ControlEvent::QLinkTurn { knob, delta }) => {
+                    // A turn with no finger on the knob (MIDI Follow) lets
+                    // go half a second after the last (qlink_touch.rs).
+                    touch_hold.turned(knob as usize, t);
                     // On the Synth page Q-Links 1-4 turn the marked knobs; while NOTE REPEAT is held
                     // or the Arp panel is open they set the arp; otherwise Q-Link 1 is the level.
                     let public = MIDI_PORTS[m.port].1 == "Public" && m.bytes.len() == 3;
@@ -10665,8 +10711,9 @@ fn player_session(
             parts.item(parts::MIDI_IN, t_item, &event);
         }
         parts.lap(parts::MIDI_IN);
-        // Letting go of a Q-Link unlights its card, and ends a turn on the
-        // Sample page (one undo step).
+        // Letting go of a Q-Link unlights its card, ends a turn on the
+        // Sample page (one undo step) and lets go of a knob's setting; so
+        // do turns with no finger, half a second after the last.
         for (k, _) in touch_hold.due(t).iter().enumerate().filter(|(_, &d)| d) {
             out.show(gui::ToUi::QLinkTouch(k, false));
             if app.view().sampler() {
@@ -11504,8 +11551,10 @@ fn player_session(
         );
         time.set_instruments(&inst_now[..n]);
         // A take on a track whose instrument plays notes records notes
-        // (instrument redesign step 5c).
-        time.set_notes_tracks(mix.instruments.note_tracks());
+        // (instrument redesign step 5c), the shared synth's too (step
+        // sequencer refactor E4).
+        let n = time.track_count();
+        time.set_notes_tracks(notes_tracks(&mix.instruments, &track_kits, &synth, n));
         // A clip of notes shows each pad's note on the step grid's pad
         // rows: the root of what the pad plays on the track's own synth or
         // the shared synth, or a kit pad's note (step 5c).
@@ -12367,6 +12416,9 @@ fn player_session(
         }
         if let Some(line) = tracks.take_file_line() {
             out.note(&line);
+        }
+        while let Some(r) = tracks.take_problem() {
+            out.show(gui::ToUi::Problem(r));
         }
         if let Some(what) = tracks.take_left_out() {
             out.left_out(what);
@@ -13981,6 +14033,38 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    /// Step sequencer refactor E4: a take on a track that plays the shared
+    /// synth holds notes while the synth plays notes, as one on a track's
+    /// own synth does; a track on a kit holds pads.
+    #[test]
+    fn a_track_on_the_shared_synth_records_notes() {
+        let synth = synth::Synth::new(RATE);
+        let mut kits = sampler::TrackKits::new(1);
+        assert!(kits.set(2, kits.synth()));
+        let mut mix = mixing::MixHost::new(RATE, 0.0, 6.0);
+        // Track 4 plays its own Poly.
+        let engine = synth::Engine::Poly;
+        let (id, extras, values) = synth.sound_of(engine);
+        let made = instruments::make(
+            &plugins::Plugins::none(),
+            id,
+            &extras,
+            &values,
+            RATE,
+            PERIOD,
+        )
+        .unwrap();
+        let pads = synth.pads_for(engine);
+        let tuning = synth.tuning_now();
+        assert!(mix.instruments.put(3, made, pads, &tuning).is_ok());
+        assert!(synth.plays_notes());
+        assert_eq!(
+            notes_tracks(&mix.instruments, &kits, &synth, 8),
+            1 << 2 | 1 << 3,
+            "Track 3 on the shared synth, Track 4 on its own"
+        );
     }
 
     /// Finding 9 of the step sequencer refactor (20 Nov 2026): two tracks

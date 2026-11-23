@@ -28,7 +28,7 @@ use std::sync::mpsc;
 
 use mpfree_midi::msg::Msg;
 use mpfree_midi::smf::{self, Timing};
-use mpfree_seq::{Clip, Note, MAX_CLIP_TICKS, MAX_NOTES, MIN_CLIP_TICKS};
+use mpfree_seq::{Clip, Holds, Note, MAX_CLIP_TICKS, MAX_NOTES, MIN_CLIP_TICKS};
 use mpfree_transport::time::Tick;
 
 /// Clips one file puts on tracks at most: the armed track and the 15
@@ -254,19 +254,22 @@ fn read_file(path: &std::path::Path) -> Result<Vec<u8>, String> {
 pub struct Made {
     /// (track, clip), in the file's order.
     pub clips: Vec<(usize, Clip)>,
-    /// Notes no pad plays on their track.
+    /// Notes no pad plays on their track of pads.
     pub unplayed: usize,
     /// Parts past the project's last track.
     pub no_track: usize,
 }
 
-/// Each part of `m` as a clip on track `first + i` (of `tracks`), its notes
-/// as `pad(track, note)` says (None: no pad plays it). A part none of
-/// whose notes a pad plays makes no clip.
+/// Each part of `m` as a clip on track `first + i` (of `tracks`), as a
+/// take there would hold it (docs/dev/design/recording.md): on a track
+/// whose instrument plays notes (`notes_on`), a clip of notes, each note
+/// as it is; on a track of pads, each note as `pad(track, note)` says
+/// (None: no pad plays it). A part with nothing kept makes no clip.
 pub fn clips(
     m: &MidiImport,
     first: usize,
     tracks: usize,
+    notes_on: impl Fn(usize) -> bool,
     pad: impl Fn(usize, u8) -> Option<u8>,
 ) -> Made {
     let mut made = Made {
@@ -280,9 +283,18 @@ pub fn clips(
             made.no_track += 1;
             continue;
         }
+        let notes = notes_on(track);
         let mut c = Clip::new(&p.name, m.length);
+        if notes {
+            c.holds = Holds::Notes;
+        }
         for n in &p.notes {
-            let Some(at) = pad(track, n.note) else {
+            let at = if notes {
+                Some(n.note & 0x7F)
+            } else {
+                pad(track, n.note)
+            };
+            let Some(at) = at else {
                 made.unplayed += 1;
                 continue;
             };
@@ -328,15 +340,16 @@ pub fn pad_playing<'a>(note: u8, notes: impl Fn(usize) -> &'a [u8]) -> Option<u8
 }
 
 /// Puts `m` on the armed track (track 1 if none is) and the tracks after
-/// it, through `pad` (see [`clips`]), as one take. The line to say: what
-/// went where and what was left out, or why nothing went in.
+/// it, as notes or through `pad` (see [`clips`]), as one take. The line to
+/// say: what went where and what was left out, or why nothing went in.
 pub fn put(
     time: &mut crate::time::TimeHost,
     m: &MidiImport,
+    notes_on: impl Fn(usize) -> bool,
     pad: impl Fn(usize, u8) -> Option<u8>,
 ) -> Result<String, String> {
     let first = time.armed().unwrap_or(0);
-    let made = clips(m, first, time.track_count(), pad);
+    let made = clips(m, first, time.track_count(), notes_on, pad);
     let name = &m.file;
     if made.clips.is_empty() {
         return Err(format!(
@@ -559,13 +572,19 @@ mod tests {
         let synth: Vec<[u8; 1]> = (0..16u8)
             .map(|p| if p == 4 { [40] } else { [p + 70] })
             .collect();
-        let made = clips(&m, 0, 2, |t, n| {
-            if t == 0 {
-                kit(n)
-            } else {
-                pad_playing(n, |p| &synth[p])
-            }
-        });
+        let made = clips(
+            &m,
+            0,
+            2,
+            |_| false,
+            |t, n| {
+                if t == 0 {
+                    kit(n)
+                } else {
+                    pad_playing(n, |p| &synth[p])
+                }
+            },
+        );
         assert_eq!(made.clips.len(), 2);
         let drums = &made.clips[0].1;
         assert_eq!(made.clips[0].0, 0);
@@ -581,8 +600,25 @@ mod tests {
         // G1 (43) plays no pad of the synth.
         assert_eq!((made.unplayed, made.no_track), (1, 0));
         // From the last track: the bass has nowhere to go.
-        let made = clips(&m, 1, 2, |_, n| kit(n));
+        let made = clips(&m, 1, 2, |_| false, |_, n| kit(n));
         assert_eq!((made.clips.len(), made.no_track), (1, 1));
+    }
+
+    /// Step sequencer refactor E4: on a track whose instrument plays notes
+    /// a part comes in as a clip of notes, every note as it is, as a take
+    /// there would hold it; a track of pads still gets its pads.
+    #[test]
+    fn on_a_track_that_plays_notes_a_file_keeps_its_notes() {
+        let m = import("Sequence01.mid", &mpc_export()).unwrap();
+        let kit = |n: u8| Some(mpfree_midi::profile::kit_pad_of_note(n) as u8);
+        let made = clips(&m, 0, 2, |t| t == 1, |_, n| kit(n));
+        assert_eq!(made.clips.len(), 2);
+        let (drums, bass) = (&made.clips[0].1, &made.clips[1].1);
+        assert_eq!(drums.holds, Holds::Hits);
+        assert_eq!(bass.holds, Holds::Notes);
+        let notes: Vec<u8> = bass.notes.iter().map(|n| n.note).collect();
+        assert_eq!(notes, [40, 43], "G1 too, which no pad plays");
+        assert_eq!(made.unplayed, 0);
     }
 
     #[test]
@@ -592,7 +628,13 @@ mod tests {
         let mut h = TimeHost::new(48_000, 120.0).unwrap();
         h.act(TimeAction::Arm(Some(2))).unwrap();
         let m = import("Sequence01.mid", &mpc_export()).unwrap();
-        let line = put(&mut h, &m, |_, n| mpfree_controller::mpc_one::pad_index(n)).unwrap();
+        let line = put(
+            &mut h,
+            &m,
+            |_| false,
+            |_, n| mpfree_controller::mpc_one::pad_index(n),
+        )
+        .unwrap();
         assert_eq!(
             line,
             "MIDI file Sequence01.mid: 2 clips with 4 notes, from slot 1 of Track 3 \
@@ -610,7 +652,7 @@ mod tests {
         h.act(TimeAction::Undo).unwrap();
         assert!(h.project().tracks[2].slots[0].is_none());
         assert!(h.project().tracks[3].slots[0].is_none());
-        let e = put(&mut h, &m, |_, _| None).unwrap_err();
+        let e = put(&mut h, &m, |_| false, |_, _| None).unwrap_err();
         assert!(e.contains("no pad plays its notes on Track 3"), "{e}");
     }
 }

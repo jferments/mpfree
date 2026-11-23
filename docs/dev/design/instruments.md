@@ -4,23 +4,25 @@ checked: 2026-11-20 c5b97009
 -->
 # Instruments apart from tracks
 
-**Status:** step 1 on main (Play on the pads, #722, train 124, 20 Nov 2026); step 2a built (the shared synth as instrument 1 of the project's list, project format 2, `rust/mpfree-app/src/instrument_list.rs`, 20 Nov 2026); step 2b built (the tracks' own instruments in the list, 20 Nov 2026); step 2c built (tracks get lasting ids, `rust/mpfree-seq`, 20 Nov 2026); step 3 built (pad focus: the synth chosen for the pads stays whichever track is selected, saved with the project, `app/pads_focus.rs`, 20 Nov 2026); step 4a built (a track plays another track's own instrument, `instruments.rs`, 20 Nov 2026); step 4b built (knob owners, `locks.rs`, 20 Nov 2026); step 4c built (Duplicate: a copy of another track's instrument as its own; New instrument track: the preset picker's New track, 20 Nov 2026); step 4d's audit done and the instrument channels named for their instruments (20 Nov 2026); a clip's "this track's strip" follows the track's instrument (`time/strips.rs`, 20 Nov 2026); step 5a built (the shared synth ends notes by source: the pads, a track's arp, a track's clip, 20 Nov 2026); steps 5b to 5d built (one recording plan behind the REC chip and REC, clips of notes, arps in notes, 20 Nov 2026); step 6 built (free places for synths with no track, the list of synths for the pads, and banks that play a synth of their own, built on the recommended answer to Jay's open card about where a bank is given its instrument, 20 Nov 2026); step 7 built except a MIDI route to an instrument and scripts (keys play a track's own synth by note and what the pads play, 20 Nov 2026); step 8 built in part (stems per instrument by default, the Synth tab says who plays its synth; layers wait for a place on the screen, 20 Nov 2026); step 9 built (an audio track records an instrument, a submix or the master from inside, before or after its effects, 20 Nov 2026); step 10 built (pad mutes on one track, on every kit and bank, as Jay chose on his card of 22 Nov 2026). Jay approved the plan and its five answers on 20 Nov 2026 (11:16 UTC). The plan, its rules and the reviews it went through: "Instruments, pads and tracks: the redesign" (https://claude.ai/artifact/A2iE1bDqPxk2uSJABCgTJg). Nothing here has run on the MPC One yet.
+**Status:** step 1 on main (Play on the pads, #722, train 124, 20 Nov 2026); step 2a built (the shared synth as instrument 1 of the project's list, project format 2, `rust/mpfree-app/src/instrument_list.rs`, 20 Nov 2026); step 2b built (the tracks' own instruments in the list, 20 Nov 2026); step 2c built (tracks get lasting ids, `rust/mpfree-seq`, 20 Nov 2026); step 3 built (pad focus: the synth chosen for the pads stays whichever track is selected, saved with the project, `app/pads_focus.rs`, 20 Nov 2026); step 4a built (a track plays another track's own instrument, `instruments.rs`, 20 Nov 2026); step 4b built (knob owners, `locks.rs`, 20 Nov 2026); step 4c built (Duplicate: a copy of another track's instrument as its own; New instrument track: the preset picker's New track, 20 Nov 2026); step 4d's audit done and the instrument channels named for their instruments (20 Nov 2026); a clip's "this track's strip" follows the track's instrument (`time/strips.rs`, 20 Nov 2026); step 5a built (the shared synth ends notes by source: the pads, a track's arp, a track's clip, 20 Nov 2026); steps 5b to 5d built (one recording plan behind the REC chip and REC, clips of notes, arps in notes, 20 Nov 2026); step 6 built (free places for synths with no track, the list of synths for the pads, and banks that play a synth of their own, built on the recommended answer to Jay's open card about where a bank is given its instrument, 20 Nov 2026); step 7 built except a MIDI route to an instrument and scripts (keys play a track's own synth by note and what the pads play, 20 Nov 2026); step 8 built in part (stems per instrument by default, the Synth tab says who plays its synth; layers wait for a place on the screen, 20 Nov 2026); step 9 built (an audio track records an instrument, a submix or the master from inside, before or after its effects, 20 Nov 2026); step 10 built (pad mutes on one track, on every kit and bank, as Jay chose on his card of 22 Nov 2026); kits joined the list in the sampler refactor's step 14 (every kit with a lasting id, tracks' picks saved by id only, project format 3, older projects refused, 23 Nov 2026: [below](#kits-in-the-list-sampler-refactor-step-14)). Jay approved the plan and its five answers on 20 Nov 2026 (11:16 UTC). The plan, its rules and the reviews it went through: "Instruments, pads and tracks: the redesign" (https://claude.ai/artifact/A2iE1bDqPxk2uSJABCgTJg). Nothing here has run on the MPC One yet.
 
 ## The model
 
 Jay's rule (20 Nov 2026): **instruments make the sound, tracks organize and record performances, and the pads are controllers that play instruments.** A track is a place you record to. The pads, MIDI and scripts play instruments; tracks record what is played and play it back to instruments; every instrument's sound goes to the mixer, recorded or not. So the code names and routes by instrument, never by track, and a track's mixer channel is not an instrument's output.
 
-Today an instrument belongs to a track: a track plays a kit, the shared synth (the Synth kit) or its own instrument (`instruments.rs`), and the pads play the armed track's. The redesign takes that apart in steps, each of which ships on its own, keeps old projects playing as they did, and gives the musician something they couldn't do before:
+Before the redesign an instrument belonged to a track: a track played a kit, the shared synth (the Synth kit) or its own instrument (`instruments.rs`), and the pads played the armed track's. The redesign takes that apart in steps, each of which ships on its own, keeps old projects playing as they did, and gives the musician something they couldn't do before:
 
 1. **Try a synth on the pads** (on main): Play on the pads plays the shared synth while the armed track keeps its kit, and REC records it on a track nobody set up ([rec-arm.md](rec-arm.md), `app/pads_focus.rs`).
 2. **Instrument identities** (this page, below): instruments get lasting ids in a list in the project. No visible change.
 3. **Pad focus** (built, below): the pads follow the selected track or play an instrument chosen for them, which stays whichever track is selected.
 4. **Tracks send to instruments** (4a built, below): a track plays any instrument, several share one; each knob has one owner at a time (4b); Duplicate and New instrument track (4c, built); instrument channels in the mixer (4d).
 5. **Recording by source** (built, below), with one recording plan behind both the REC chip and REC.
-6. **The list of synths and banks** (built, below; the banks' place on screen waits on Jay's card).
-7. **MIDI and scripts play instruments** (keys built, below; MIDI routes and scripts later).
-8. **Layers, mutes and stems by instrument** (stems and who plays built, below; layers later).
+6. **The list of synths and banks** (built, below; Jay took the banks' way in as built, 22 Nov).
+7. **MIDI and scripts play instruments** (keys built, below, and routes that name a synth in step 11e; scripts later).
+8. **Layers, mutes and stems by instrument** (stems and who plays built, below; layers in step 11).
 9. **Audio points** (built, below): an audio track records from inside the mix.
+10. **Pad mutes on every kit and bank** (built, below): a pad mute is the track's, on any kit and bank.
+11. **Layers, a track's line, routes that name a synth** (built, below): the pieces of steps 7 and 8 that waited for a place on the screen or a way to record.
 
 ## Step 2: instrument identities
 
@@ -33,6 +35,8 @@ The step goes in three slices, each proven with the shared Poly before the next:
 - **2a (built):** the shared synth becomes instrument 1 of the project's list, and tracks on it point at it by that id. It saves, loads and plays exactly as before.
 - **2b (built):** the tracks' own instruments join the list, each with its own id.
 - **2c (built):** tracks get lasting ids too, so knob owners (step 4) and anything else that must survive moving tracks has something steady to point at.
+
+What 2a and 2b say about older projects opening (format 1, the track kits part's version 1) held until the sampler refactor's step 14 (23 Nov 2026), which made the project format 3 and refuses every older one: [Kits in the list](#kits-in-the-list-sampler-refactor-step-14).
 
 ### 2a as built
 
@@ -80,6 +84,36 @@ What plays is unchanged: the track kits a project opens with are the same as bef
 - **Saved in the clips part:** `nexttrack <n>` before the tracks and `id <n>` after each track's name. An older build skips both lines. A project without them gets 1, 2, 3 ... as it opens, saying nothing; one that has `nexttrack` but a track without an id, or two sharing one, gets new ones for those, said (`project::opening`).
 - **Nothing reads them yet.** Tracks can't be moved or deleted from the middle today (UNDO takes away only the last added), so a track's place still names it, and the list of instruments, the track kits and the instruments part keep naming tracks by place. Step 4's knob owners are the first to use the ids (their priority), and anything that lets tracks move will switch those parts to ids as it goes in. `Project::track_with(id)` finds a track by its id.
 - **Tests:** `mpfree_seq` `track_id_tests::tracks_get_lasting_ids_that_are_never_given_twice`, `save::track_id_tests::track_ids_and_the_next_id_come_back`; `mpfree_play` `takes::tests::an_added_track_has_a_lasting_id_that_undo_and_redo_keep`; `project::tests::tracks_get_lasting_ids_as_a_project_opens`; the whole-session test above also checks that an old song's tracks get 1, 2, 3 ... and keep them through a save and an open.
+
+## Kits in the list (sampler refactor step 14)
+
+The sampler refactor's phase 3, as revised and approved on 23 Nov 2026, makes kits instruments; its step 14 puts them in this list ([sampler-architecture.md](sampler-architecture.md#kits-in-the-list-of-instruments-step-14)).
+
+- **Every kit place has an id** (`Kind::Kit { kit }`, `InstrumentList::of_kit`, `follow_kits`). The places are fixed while mpfree runs, so the audio loop gives them ids when it makes its list and again after each open; a new project's list gets them then, after any track's own. The part:
+
+  ```text
+  mpfree-instrument-list 2
+  next 6
+  instrument 1 shared-synth
+  instrument 2 kit 1
+  instrument 3 kit 2
+  instrument 4 kit 3
+  instrument 5 own track 1
+  ```
+
+- **Tracks name what they play by id only**, entry and send alike (`mpfree-track-kits 3`):
+
+  ```text
+  mpfree-track-kits 3
+  track 2 instrument 3
+  track 4 instrument 1
+  track 6 instrument 4
+  track 6 instrument 5
+  ```
+
+  Track 2 plays kit 2, track 4 the shared synth, and track 6 kit 3 under track 1's own instrument, which it sends to (written entry first, then the send, as 4a's two lines were).
+- **The project format is 3**, and a project with an older format, or none, is refused before anything changes ([Project safety](project-safety.md)): "it was saved by an older MPFree, which this one doesn't open (project format 2; this one opens 3)". There are no serious projects yet (the owner, 22 Nov 2026), so nothing converts the older parts; the older list and track kits versions are refused too.
+- **The Sample page's commands** name a kit by its id here (`ToUi::KitIds`).
 
 ## Step 3: pad focus
 
@@ -220,9 +254,9 @@ Agreed with the step sequencer refactor and the arrange refactor (20 Nov): the k
 
 ### 5c as built (takes of notes)
 
-- **Which takes hold notes.** The main loop tells the time engine each pass which tracks play notes (`TimeHost::set_notes_tracks`, from `Instruments::note_tracks`: a track's own instrument or the one it plays of another track's, not the Drums engine). A new clip REC makes for a take on one (`TimeControl::take_holds`: the armed track's new clip, `TimeAction::NewClip`) holds notes (since 5d, through its arp too). A take into a clip that is already there records in that clip's kind, so an old clip of hits stays one. Other armed tracks' new clips, CAPTURE and the shared synth's tracks keep pad hits.
+- **Which takes hold notes.** The main loop tells the time engine each pass which tracks play notes (`TimeHost::set_notes_tracks`, from `Instruments::note_tracks`: a track's own instrument or the one it plays of another track's, not the Drums engine). A new clip REC makes for a take on one (`TimeControl::take_holds`: the armed track's new clip, `TimeAction::NewClip`) holds notes (since 5d, through its arp too). A take into a clip that is already there records in that clip's kind, so an old clip of hits stays one. Since E4 every other path follows the same rule: other armed tracks' new clips, CAPTURE and the shared synth's tracks keep notes too (`notes_tracks` in main.rs adds the tracks on the shared synth), as [recording.md](recording.md) sets out path by path.
 - **What a live note records.** `Pads::live` returns what it heard both ways (`time::Heard`): the pad, for a take of hits, CAPTURE's history and the Play page's timing, and the notes as written (before the live transpose), up to a pad's four. `SeqPads` gives the layout's note (one no pad has still records), a pad's notes from the track's pad map (`Instruments::pad_notes`), the synth's layout while the track plays the synth, or a kit pad's note as MIDI in and out read it (`SeqPads::pad_notes`). The audio half records the notes when the armed track's clip holds notes (`NowPlaying::holds_notes`), keeps which notes each pad started, and puts the pad's pressure on each (`TimeAudio::pad_pressure`).
-- **Counted, not recorded:** pads as pressed into a clip of notes that come with no notes (since 5d the app gives them), and routed keys for another armed track playing a clip of notes, both of which come only as pads. They count with the notes dropped, which the status line shows.
+- **Counted, not recorded:** pads as pressed into a clip of notes that come with no notes (since 5d the app gives them), and a routed key for another armed track playing a clip of notes whose pad plays no note there. They count with the notes dropped, which the status line shows. Since E4 a routed key records the notes its pad plays on its track (`TimeAudio::routed_heard`, from the track's `PadRows`), so routes, pad layers and route synths, which all arrive there, follow.
 - **The smoke session's fake pads** record pads (their notes are the pad numbers), so the session doesn't set the tracks that play notes and its takes stay pad hits.
 - **Tests:** `time::tests::a_take_on_a_track_that_plays_notes_records_its_notes` (a pad's chord records its notes, each with the pad's pressure; a track playing no notes, or through its arp, records the pad), `time::tests::pads_as_pressed_into_a_clip_of_notes_are_counted_not_recorded`, and `tests::a_live_pad_records_as_its_pad_or_as_its_notes` (an own instrument's pad map, a kit's note).
 
@@ -234,7 +268,7 @@ The Play page, the Sequencer's Steps, the step pads and the Q-Links all name a p
 - **Shown by pad.** `TimeControl::steps` asks the step sequencer's `Grid::shown(clip, pads)` (B2) for the clip's rows with the pads' roots as the pad rows (`rows_of`: the pads themselves on a clip of hits), then names each pad row, its locks and their values by the pad. Notes no pad plays keep rows under their own notes, past the pads, which the Play page and the Sequencer don't draw yet.
 - **Edited by note.** On a clip of notes `step_action` takes an action on a pad's row on each of the pad's notes, root first, as one edit with the root's undo key (`on_notes`, joining with `Edit::join`, now public), so a pad of chords steps its whole chord as a pad hit would: a step's change, locks, clears and copies take every note; a tap takes the chord off when its root is on the step, else puts the missing notes on; the Note knob puts the step on the other pad's notes, each as the root was, its locks with it (`swap`); and keys entered on the line are their pads' notes, up to eight. The log names the row by its root ("step 1 of note D4").
 - **New patterns:** the first tap on a track with no clip makes a pattern that holds what a take there would (`take_holds`), so a track with its own synth gets a clip of notes.
-- **Known edges:** live erase (ERASE held on a pad) still matches a clip of notes by the pad's number, not its notes; a note from 0 to 15 that no pad plays shares a key with a pad's row; a pad of chords' row shows its root's steps, so a step with the chord's other notes but not its root shows nowhere. Rows for the notes no pad plays come with the step sequencer's later phases.
+- **Known edges:** a note from 0 to 15 that no pad plays shares a key with a pad's row; a pad of chords' row shows its root's steps, so a step with the chord's other notes but not its root shows nowhere. Rows for the notes no pad plays come with the step sequencer's later phases.
 - **Tests:** `time::tests::a_clip_of_notes_shows_its_pads_notes_on_the_pad_rows` (a tap adds the pad's note, the Note knob moves to another pad's note, a note no pad plays keeps its own row, a track playing no notes still gets pad hits), `time::tests::a_pad_of_chords_steps_its_whole_chord_on_a_clip_of_notes` (tap on and off, a change and its undo, the Note knob to a single note and back, keys on the line) and `tests::the_grids_pad_rows_are_the_notes_the_pads_play` (an own synth's, the shared synth's and a kit's).
 
 ### 5d as built (one path through the arp)
@@ -300,9 +334,9 @@ The plan's step 7: "MIDI in and scripts play instruments. A MIDI input or a Rhai
 - **Said:** the MIDI monitor's "Went to" reads "the pads' synth" (`KeysPlay::PadsSynth`, `mpfree_midi::monitor::To::Pads`), and so does the Routing card's last line for the port.
 - **Test:** `smoke::workflows::tests::a_keyboard_plays_the_synth_the_pads_play_on_their_own` (FM picked in the list: two keys play it by note, one no pad has; a key held as REC points Track 2 at the same FM ends on FM; then the shared synth chosen for the pads takes the keys too).
 
-### Not built yet in step 7
+### Not built in step 7
 
-- **A route that names an instrument.** A route in the Routing section names a track, and a track plays any instrument (step 4's sends, step 6's free places), so a keyboard on a route already reaches any instrument through a track that plays it, and its takes have a track to go to. A route naming an instrument with no track would play it live but leave REC nothing to record into; it waits until the recording plan covers routes.
+- **A route that names an instrument** waited here: a route named a track, and one naming an instrument with no track would have left REC nothing to record into. Step 11e built it once the recording plan covered routes ([11e as built](#11e-as-built-a-midi-route-that-names-a-synth)): REC records such a synth on a track of its own.
 - **Scripts.** They wait on the scripting mode (a separate `mpfree-script` program sending step lines, on Jay's list after device round 2). When it comes, a script is a player like the keys: unrouted, it plays what the pads play (7b's `KeysOnPads` path); its events carry a source of their own for the recorder (rule 4).
 
 ## Step 8: layers, who plays what, mute and solo scopes, stems

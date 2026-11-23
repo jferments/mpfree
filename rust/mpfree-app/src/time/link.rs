@@ -18,8 +18,9 @@
 
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 
+use mpfree_capture::Took;
 use mpfree_notefx::{Chain, Slot};
-use mpfree_play::{Event, MuteLanded, PlayView, Rec, Started};
+use mpfree_play::{Event, MuteLanded, PadRows, PlayView, Rec, Started};
 pub use mpfree_play::{InPlace, MAX_IN_PLACE};
 use mpfree_seq::mpfree_moves::{Input, Kind};
 use mpfree_seq::{DestId, TouchPoint, MAX_TRACKS};
@@ -158,6 +159,11 @@ pub enum ToAudio {
     Tracks { n: usize, armed: Option<usize> },
     /// One track's settings changed.
     Track(usize, TrackSet),
+    /// The notes each of one track's 16 pads plays changed
+    /// (`TimeControl::set_pad_rows`): a key routed to it, which comes as a
+    /// pad, records these on a clip of notes (refactor E4), and live erase
+    /// erases them.
+    Pads(usize, PadRows),
     /// One place of a track's MIDI effects changed (`Track::note_fx`):
     /// its effect and the effect's id on the track (what names its
     /// settings for the mod engine).
@@ -271,13 +277,13 @@ pub struct PeriodEnd {
 /// From the audio half, in the order things happened. A period's
 /// messages end with its [`ToControl::Period`].
 pub enum ToControl {
-    /// A pad note played, `offset` frames into the coming or current
-    /// period, for CAPTURE's history.
-    Played(u32, Event),
-    /// A key a route played on a track that isn't armed, as the pad that
-    /// plays its note there, for CAPTURE's history: (track, offset,
-    /// event).
-    PlayedOn(u8, u32, Event),
+    /// A note played on the armed track, `offset` frames into the coming
+    /// or current period, for CAPTURE's history: a pad or a note, and
+    /// whether the same touch comes as the other kind too (refactor E4).
+    Played(u32, Event, Took),
+    /// A key a route played on a track that isn't armed, for CAPTURE's
+    /// history, as [`ToControl::Played`]: (track, offset, event, kind).
+    PlayedOn(u8, u32, Event, Took),
     /// A Perform FX move, for the move log.
     Moved(u32, Input),
     /// A cue started on its bar line.

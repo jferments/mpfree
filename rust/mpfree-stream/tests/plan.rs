@@ -652,15 +652,15 @@ fn whole_files_wait_while_playback_has_less_cushion_than_a_stall() {
 }
 
 #[test]
-fn background_reads_stop_past_three_quarters_of_capture_memory() {
+fn background_reads_wait_while_anything_records() {
     let dir = folder("pressure");
     let kit = dir.join("kit.bin");
     fs::write(&kit, vec![5u8; 300_000]).expect("write");
     let mut rig = Rig::new(small(), Plan::default());
     rig.c.new_project();
     let gate = rig.c.gate();
-    // A recording's capture memory is 80% full.
-    gate.set_capture_fill(0.8);
+    // A take is recording.
+    gate.set_recording(true);
     let later = rig.c.read_file(&kit, JobTier::Background).expect("opens");
     let next = rig.c.read_file(&kit, JobTier::NextSong).expect("opens");
     let mut got = None;
@@ -677,8 +677,8 @@ fn background_reads_stop_past_three_quarters_of_capture_memory() {
         rig.c.step();
         assert!(rig.c.take_job(later).is_none());
     }
-    // The stick caught up: background work goes on.
-    gate.set_capture_fill(0.3);
+    // Every take is saved: background work goes on.
+    gate.set_recording(false);
     let mut got = None;
     for _ in 0..100 {
         rig.c.step();

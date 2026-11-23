@@ -170,6 +170,17 @@ impl Default for Slots {
 
 impl Slots {
     /// The engine track that plays project track `id`.
+    /// A report about engine track `p.track` made about the project
+    /// track it plays, by its lasting id (`Subject::audio_track`); one
+    /// about no track, or an engine track playing none, is about the
+    /// whole system.
+    pub fn name_problem(&self, p: mpfree_audiotracks::files::Problem) -> mpfree_status::Report {
+        match p.track.and_then(|s| self.0.get(s)) {
+            Some(id) if id.is_given() => p.report.about(mpfree_status::Subject::audio_track(id.0)),
+            _ => p.report,
+        }
+    }
+
     pub fn slot_of(&self, id: TrackId) -> Option<usize> {
         if !id.is_given() {
             return None;
@@ -405,10 +416,20 @@ impl TrackHost {
     fn tend_files(&mut self) {
         if let Some(dir) = self.files_dir.take() {
             let cfg = mpfree_audiotracks::files::WriterConfig::default();
-            if let Err(dir) = self.host.record_to(dir, cfg) {
-                self.files_dir = Some(dir);
+            match self.host.record_to(dir, cfg) {
+                // The drive is looked at for System status from now on.
+                Ok(()) => self.host.watch_drive(drive_room),
+                Err(dir) => self.files_dir = Some(dir),
             }
         }
+    }
+
+    /// The next report for System status about the takes' files, the
+    /// drive and streaming (phase 3b step 5d), about the audio track by
+    /// its lasting id when it is about one. Does not allocate.
+    pub fn take_problem(&mut self) -> Option<mpfree_status::Report> {
+        let p = self.host.take_problem()?;
+        Some(self.slots.name_problem(p))
     }
 
     /// A project save finished into `samples` (the project's `samples/`):
@@ -2122,11 +2143,52 @@ impl crate::time::SongAudio for TrackHost {
     }
 }
 
+/// How full and writable the drive holding `dir` is, for System status
+/// (`statvfs`, reads only; it may wait on a failing drive, so the audio
+/// tracks call it on a thread of their own).
+fn drive_room(dir: &std::path::Path) -> Option<mpfree_audiotracks::files::Room> {
+    crate::sys::drive_room(dir)
+        .map(|(writable, free)| mpfree_audiotracks::files::Room { writable, free })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use mpfree_transport::{Command as T, State, Transport};
     use std::time::{Duration, Instant};
+
+    /// A take's problem names the project track its engine track plays,
+    /// by its lasting id, so System status can name it; with no track, or
+    /// none playing there, it is about the whole system.
+    #[test]
+    fn a_take_s_problem_is_about_its_project_track() {
+        use mpfree_audiotracks::files::Problem;
+        use mpfree_status::{kinds, Report, Subject};
+        let mut slots = Slots::default();
+        slots.0[2] = TrackId(7);
+        let at_risk = Report::began(&kinds::RECORDING_AT_RISK);
+        let named = |track| {
+            slots.name_problem(Problem {
+                report: at_risk,
+                track,
+            })
+        };
+        assert_eq!(named(Some(2)).subject, Subject::audio_track(7));
+        assert_eq!(named(Some(3)).subject, Subject::NONE);
+        assert_eq!(named(None).subject, Subject::NONE);
+        assert_eq!(named(Some(MAX_TRACKS + 4)).subject, Subject::NONE);
+        assert_eq!(named(Some(2)).kind, &kinds::RECORDING_AT_RISK);
+    }
+
+    /// The drive's room as statvfs gives it: a folder that is there is
+    /// on a drive that answers, one that isn't answers nothing.
+    #[test]
+    fn the_drive_s_room_is_read_for_a_folder_there_and_none_for_one_gone() {
+        let here = std::env::temp_dir();
+        let room = drive_room(&here).expect("the temp folder's drive answers");
+        assert!(room.free > 0);
+        assert!(drive_room(&here.join("mpfree-no-such-folder-here")).is_none());
+    }
 
     const RATE: u32 = 44_100;
 
