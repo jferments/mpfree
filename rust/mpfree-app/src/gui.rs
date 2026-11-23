@@ -6471,6 +6471,7 @@ impl Player {
             }
         }
         self.play.set_yours(mine.as_ref());
+        self.play.set_xy_hold(v.hold && mine.is_some());
         match mine {
             Some(m) => {
                 if let Some(w) = self

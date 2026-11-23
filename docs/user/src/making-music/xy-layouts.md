@@ -98,7 +98,7 @@ Under the full-screen pad (**SHIFT + NEXT SEQ**) are three buttons:
 
 {{shot: play-xy-full-yours | Squelch on the full-screen pad, with Hold, Let go and Setup under it.}}
 
-- **Hold** keeps the pad in charge when you lift your finger: the settings stay where they are until you turn Hold off, and then they let go as the layout says. It works on layouts of yours. STOP pressed while the music is stopped turns it off.
+- **Hold** keeps the pad in charge when you lift your finger: the settings and the dot stay where they are until you turn Hold off, and then they let go as the layout says. It works on layouts of yours. STOP pressed while the music is stopped turns it off.
 - **Let go: Go back** or **Let go: Stay** switches what the pad does when you lift. On a ready-made layout, a tap makes a copy of it yours with the other choice.
 - **Setup** opens Setup for the layout playing (on a ready-made one, a copy becomes yours first).
 
