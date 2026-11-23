@@ -65,11 +65,40 @@ pub const EDIT_BUTTONS: [&str; 8] = [
     "Grid",
     "Draw",
     "Snap",
-    "All",
+    "Select",
     "Duplicate",
     "Delete",
     "Edit",
 ];
+/// [`EDIT_BUTTONS`]' Select: opens and closes the Select menu (the
+/// roll's own; plan 1B.3).
+pub const SELECT_BUTTON: usize = 4;
+/// The Select menu (plan 1B.3), its first column then its second: what
+/// to pick, Add to pick (a switch: taps and boxes add to the picks), Fit
+/// to picked (the view, the roll's own), then the filters, each picking
+/// from the whole clip.
+pub const SELECT_ITEMS: [&str; 13] = [
+    "All",
+    "None",
+    "Invert",
+    "Add to pick",
+    "Fit to picked",
+    "Same pitch",
+    "Pitch range",
+    "Time range",
+    "Quiet notes",
+    "Loud notes",
+    "With a condition",
+    "With repeats",
+    "Overlapping",
+];
+/// [`SELECT_ITEMS`]' Add to pick and Fit to picked; the filters start
+/// after them, in the menu's second column.
+pub const SELECT_ADD: usize = 3;
+pub const SELECT_FIT: usize = 4;
+pub const SELECT_FILTERS: usize = 5;
+/// A Select menu item tapped: `Tab`'s index is this plus the item's.
+pub const MENU: usize = 100;
 /// [`EDIT_BUTTONS`]' last: Edit, which opens the Edit options' drawer
 /// (the page's own; [`crate::view::TimePage::edit_drawer`]).
 pub const EDIT_BUTTON: usize = 7;
@@ -279,6 +308,8 @@ pub enum EditAction {
     /// Timing Correct: the TC button, and Correct in the Edit options'
     /// drawer. The picked notes, or all of them with none picked.
     Correct,
+    /// An item of the Select menu, [`SELECT_ITEMS`]`[k]` (plan 1B.3).
+    Choose(usize),
 }
 
 impl EditAction {
@@ -365,6 +396,10 @@ pub struct Editor {
     /// the picks were cleared ([`Editor::follow`]); the legend says so
     /// until the next touch.
     pub cleared: bool,
+    /// Add to pick (plan 1B.3): a tap, a box or a filter adds to the
+    /// picks (a tap on a picked note takes it out) in place of replacing
+    /// them.
+    pub add: bool,
 }
 
 impl Editor {
@@ -405,6 +440,7 @@ impl Editor {
             euclid: Euclid::default(),
             velocity: DRAW_VELOCITY,
             cleared: false,
+            add: false,
         }
     }
 
@@ -501,6 +537,116 @@ impl Editor {
         s.sort_unstable();
         s.dedup();
         s
+    }
+
+    /// The picks after picking `new`: in place of `sel`, or added to it
+    /// with Add to pick, in order and once each.
+    fn picks_with(&self, sel: Vec<usize>, new: Vec<usize>) -> Vec<usize> {
+        if !self.add {
+            return new;
+        }
+        let mut all = [sel, new].concat();
+        all.sort_unstable();
+        all.dedup();
+        all
+    }
+
+    /// Select menu item `k` ([`SELECT_ITEMS`], plan 1B.3) on `clip`, the
+    /// picks `sel` before it. The filters pick from the whole clip, in
+    /// place of the picks or added to them with Add to pick; the ranges
+    /// and Same pitch work from the picks (Same pitch from the sound
+    /// worked on with none). Nothing changes in the clip.
+    fn choose(&mut self, k: usize, clip: &Clip, sel: Vec<usize>) -> Done {
+        let notes = &clip.notes;
+        let all = 0..notes.len();
+        let which = |f: &dyn Fn(&Note) -> bool| -> Vec<usize> {
+            all.clone().filter(|&i| f(&notes[i])).collect()
+        };
+        let name = SELECT_ITEMS.get(k).copied().unwrap_or("");
+        let first = || sel.iter().map(|&i| notes[i]);
+        let new = match k {
+            0 => all.clone().collect(),
+            1 => Vec::new(),
+            2 => all.clone().filter(|i| !sel.contains(i)).collect(),
+            SELECT_ADD => {
+                self.add = !self.add;
+                let on = if self.add { "on" } else { "off" };
+                return Done::line(format!("edit: add to pick {on}"));
+            }
+            SELECT_FIT => return Done::default(),
+            5 => {
+                let mut pitches: Vec<u8> = first().map(|n| n.note).collect();
+                if pitches.is_empty() {
+                    pitches.push(self.sound);
+                }
+                which(&|n| pitches.contains(&n.note))
+            }
+            6 | 7 if sel.is_empty() => {
+                return Done::line(format!(
+                    "edit: pick notes first for {}",
+                    name.to_lowercase()
+                ))
+            }
+            6 => {
+                let lo = first().map(|n| n.note).min().unwrap_or(0);
+                let hi = first().map(|n| n.note).max().unwrap_or(127);
+                which(&|n| (lo..=hi).contains(&n.note))
+            }
+            7 => {
+                let from = first().map(|n| n.tick).min().unwrap_or(0);
+                let to = first().map(|n| n.tick + n.len.max(1)).max().unwrap_or(0);
+                which(&|n| (from..to).contains(&n.tick))
+            }
+            // Quiet and loud: either side of halfway between the clip's
+            // softest and loudest notes.
+            8 | 9 => {
+                let lo = notes.iter().map(|n| n.velocity).min().unwrap_or(0);
+                let hi = notes.iter().map(|n| n.velocity).max().unwrap_or(0);
+                let mid = (u16::from(lo) + u16::from(hi)) / 2;
+                if k == 8 {
+                    which(&|n| u16::from(n.velocity) < mid)
+                } else {
+                    which(&|n| u16::from(n.velocity) > mid)
+                }
+            }
+            10 => which(&|n| n.cond != Cond::Always),
+            11 => which(&|n| n.ratchet > 1),
+            // Overlapping: a note sounding over another of its pitch.
+            12 => {
+                let mut by: Vec<usize> = all.clone().collect();
+                by.sort_by_key(|&i| (notes[i].note, notes[i].tick));
+                let mut over = vec![false; notes.len()];
+                let mut end: Option<(u8, Tick, usize)> = None;
+                for &i in &by {
+                    let n = notes[i];
+                    match end {
+                        Some((p, e, j)) if p == n.note && n.tick < e => {
+                            over[i] = true;
+                            over[j] = true;
+                            if n.tick + n.len.max(1) > e {
+                                end = Some((p, n.tick + n.len.max(1), i));
+                            }
+                        }
+                        _ => end = Some((n.note, n.tick + n.len.max(1), i)),
+                    }
+                }
+                all.clone().filter(|&i| over[i]).collect()
+            }
+            _ => return Done::default(),
+        };
+        if let Some(&i) = new.first() {
+            self.worked_on(notes[i]);
+        }
+        self.sel = if k <= 2 {
+            new
+        } else {
+            self.picks_with(sel, new)
+        };
+        Done::line(format!(
+            "edit: {} picked ({})",
+            self.sel.len(),
+            name.to_lowercase()
+        ))
     }
 
     /// Carry out `a` on `clip` (see [`Done`]). Only selection and
@@ -602,7 +748,11 @@ impl Editor {
             // Its sound is the one worked on, its velocity the next drawn.
             EditAction::Note { index: i, .. } if i < clip.notes.len() => {
                 if !sel.contains(&i) {
-                    self.sel = vec![i];
+                    self.sel = if self.add {
+                        [sel, vec![i]].concat()
+                    } else {
+                        vec![i]
+                    };
                 }
                 self.worked_on(clip.notes[i]);
                 return Done::default();
@@ -621,6 +771,19 @@ impl Editor {
                         true,
                         format!("edit: note {} taken out", note_name(n.note)),
                     )
+                } else if self.add {
+                    // Add to pick: in, or out again.
+                    self.sel = sel;
+                    match self.sel.iter().position(|&s| s == i) {
+                        Some(k) => {
+                            self.sel.remove(k);
+                        }
+                        None => {
+                            self.sel.push(i);
+                            self.worked_on(n);
+                        }
+                    }
+                    return Done::line(format!("edit: {} picked", self.sel.len()));
                 } else {
                     self.sel = vec![i];
                     self.worked_on(n);
@@ -662,15 +825,16 @@ impl Editor {
             } => {
                 let (lo, hi) = (low.min(high), low.max(high));
                 let (a, b) = (from.min(to), from.max(to).max(from.min(to) + 1));
-                self.sel = (0..clip.notes.len())
+                let boxed: Vec<usize> = (0..clip.notes.len())
                     .filter(|&i| {
                         let n = clip.notes[i];
                         (lo..=hi).contains(&n.note) && n.tick < b && n.tick + n.len.max(1) > a
                     })
                     .collect();
-                if let Some(&i) = self.sel.first() {
+                if let Some(&i) = boxed.first() {
                     self.worked_on(clip.notes[i]);
                 }
+                self.sel = self.picks_with(sel, boxed);
                 return Done::line(format!("edit: {} picked", self.sel.len()));
             }
             // A handle: the start or the end of the picks, or of the note
@@ -764,6 +928,7 @@ impl Editor {
                 true,
                 String::new(),
             ),
+            EditAction::Choose(k) => return self.choose(k, clip, sel),
             EditAction::PickRow(r) => {
                 self.row = r.min(EDIT_ROWS.len() - 1);
                 return Done::default();
@@ -1446,6 +1611,11 @@ pub struct NoteGrid {
     /// The Edit options' drawer is open (the page's): the Edit button is
     /// lit.
     pub drawer: bool,
+    /// Add to pick is on (the editor's, plan 1B.3): lit in the Select
+    /// menu, and the Select button lit.
+    pub add: bool,
+    /// The Select menu is open over the roll (the roll's own, plan 1B.3).
+    pub menu: bool,
     /// Pad rows (Pad 1 to 16) in place of note names.
     pub pads: bool,
     pub playhead: Option<Tick>,
@@ -1651,6 +1821,8 @@ impl Default for NoteGrid {
         NoteGrid {
             title: "Edit".into(),
             legend: String::new(),
+            add: false,
+            menu: false,
             notes: Vec::new(),
             length: 4 * PPQ as Tick,
             bar: 4 * PPQ as Tick,
@@ -1708,8 +1880,8 @@ impl NoteGrid {
             && self.playhead == other.playhead
             && self.title == other.title
             && self.legend == other.legend
-            && (self.length, self.bar, self.pads, self.drawer)
-                == (other.length, other.bar, other.pads, other.drawer)
+            && (self.length, self.bar, self.pads, self.drawer, self.add)
+                == (other.length, other.bar, other.pads, other.drawer, other.add)
             && self.view == other.view
             && (self.snap, self.tool, self.lens, self.first)
                 == (other.snap, other.tool, other.lens, other.first)
@@ -1747,12 +1919,13 @@ impl NoteGrid {
                 None => hand = Hand::Idle,
             }
         }
-        let (overview_tap, empty_tap) = (self.overview_tap, self.empty_tap);
+        let (overview_tap, empty_tap, menu) = (self.overview_tap, self.empty_tap, self.menu);
         *self = NoteGrid {
             drag,
             hand,
             overview_tap,
             empty_tap,
+            menu,
             ..other
         };
     }
@@ -2021,13 +2194,11 @@ impl NoteGrid {
 
     /// What button `k` says: some show a state.
     pub fn button_label(&self, k: usize) -> String {
-        let any = self.notes.iter().any(|n| n.selected);
         match k {
             1 => self.lens.name().into(),
             // Snap Auto names itself ("Auto · 1/16").
             3 if self.snap_name.starts_with("Auto") => self.snap_name.clone(),
             3 => format!("Snap {}", self.snap_name),
-            4 => if any { "None" } else { "All" }.into(),
             _ => EDIT_BUTTONS.get(k).copied().unwrap_or("").into(),
         }
     }
@@ -2278,6 +2449,72 @@ impl NoteGrid {
             );
         }
         cx.canvas.set_clip(was);
+    }
+
+    /// The Select menu's items (plan 1B.3), in [`SELECT_ITEMS`]' order:
+    /// two columns of 40 px rows over the roll, standing on the buttons
+    /// above Select, what to pick on the left and the filters on the
+    /// right.
+    fn menu_rects(&self, r: Rect) -> Vec<Rect> {
+        const W: i32 = 210;
+        const H: i32 = 40;
+        const PAD: i32 = 8;
+        let rows = (SELECT_ITEMS.len() - SELECT_FILTERS).max(SELECT_FILTERS) as i32;
+        let (pw, ph) = (3 * PAD + 2 * W, 2 * PAD + rows * (H + 4) - 4);
+        let g = self.geo(r);
+        let b = self.button_rects(r)[SELECT_BUTTON];
+        let x = b.x.min(r.right() - pw).max(r.x);
+        let y = (g.tools.y - GAP - ph).max(r.y);
+        (0..SELECT_ITEMS.len())
+            .map(|k| {
+                let (col, row) = match k < SELECT_FILTERS {
+                    true => (0, k as i32),
+                    false => (1, (k - SELECT_FILTERS) as i32),
+                };
+                Rect::new(x + PAD + col * (W + PAD), y + PAD + row * (H + 4), W, H)
+            })
+            .collect()
+    }
+
+    /// The Select menu: a panel of its items, Add to pick lit while on.
+    fn paint_menu(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        let items = self.menu_rects(r);
+        let (Some(first), Some(last)) = (items.first(), items.last()) else {
+            return;
+        };
+        let right = items
+            .iter()
+            .map(|m| m.right())
+            .max()
+            .unwrap_or(first.right());
+        let bottom = items
+            .iter()
+            .map(|m| m.bottom())
+            .max()
+            .unwrap_or(last.bottom());
+        let panel = Rect::new(
+            first.x - 8,
+            first.y - 8,
+            right - first.x + 16,
+            bottom - first.y + 16,
+        );
+        cx.canvas.fill_round_rect(panel, t.round(12), t.surface);
+        cx.canvas
+            .stroke_round_rect(panel, t.round(12), 1, t.outline);
+        for (k, m) in items.iter().enumerate() {
+            let lit = k == SELECT_ADD && self.add;
+            let fill = if lit { t.accent } else { t.raised };
+            cx.canvas.fill_round_rect(*m, t.round(8), fill);
+            cx.text(
+                FontId::Sans,
+                t.size_small,
+                *m,
+                Align::Center,
+                t.ink_on(fill),
+                SELECT_ITEMS[k],
+            );
+        }
     }
 
     /// While a note moves or a handle drags (plan 1B.2), what it will be,
@@ -2711,6 +2948,7 @@ impl Widget for NoteGrid {
         for (k, br) in self.button_rects(r).iter().enumerate() {
             let lit = (k == 1 && self.lens != Lens::Grid)
                 || (k == 2 && self.tool != Tool::Select)
+                || (k == SELECT_BUTTON && (self.menu || self.add))
                 || (k == 7 && self.drawer);
             let fill = if lit { t.picked() } else { t.raised };
             let ink = if lit { t.on_picked() } else { t.text };
@@ -2724,6 +2962,9 @@ impl Widget for NoteGrid {
                 &self.button_label(k),
             );
         }
+        if self.menu {
+            self.paint_menu(cx, r);
+        }
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
@@ -2734,6 +2975,13 @@ impl Widget for NoteGrid {
             .enumerate()
             .map(|(k, b)| Target::tap("button", k, self.button_label(k), *b))
             .collect();
+        // The Select menu covers the rest while it is open.
+        if self.menu {
+            for (k, mr) in self.menu_rects(r).into_iter().enumerate() {
+                out.push(Target::tap("select", k, SELECT_ITEMS[k], mr));
+            }
+            return out;
+        }
         if matches!(self.lens, Lens::Tracker | Lens::List) {
             let id = if self.lens == Lens::Tracker {
                 "tracker-row"
@@ -3460,7 +3708,26 @@ impl NoteGrid {
 
     /// A finger coming down alone.
     fn down(&mut self, f: u64, x: i32, y: i32, r: Rect, g: &Geo) -> Option<EventKind> {
+        // The Select menu, while open: an item, or a touch anywhere else
+        // closes it and does nothing more (plan 1B.3).
+        if self.menu {
+            let item = self.menu_rects(r).iter().position(|m| m.contains(x, y));
+            self.menu = item == Some(SELECT_ADD);
+            return match item {
+                Some(SELECT_FIT) => {
+                    self.fit(g);
+                    Some(self.view_event())
+                }
+                Some(k) => Some(EventKind::Tab(MENU + k)),
+                None => None,
+            };
+        }
         if let Some(k) = self.button_rects(r).iter().position(|b| b.contains(x, y)) {
+            // Select opens its menu: the roll's own.
+            if k == SELECT_BUTTON {
+                self.menu = true;
+                return None;
+            }
             return Some(EventKind::Tab(k));
         }
         if self.lens == Lens::Tracker {
@@ -3927,6 +4194,92 @@ mod tests {
             .rev(),
             Some(7)
         );
+    }
+
+    /// The Select menu (plan 1B.3): All, None and Invert; the filters,
+    /// each picking from the whole clip (Same pitch and the ranges from
+    /// the picks); Add to pick making taps, boxes and filters add.
+    #[test]
+    fn the_select_menu_picks_by_filter_and_add_to_pick_adds() {
+        let mut c = clip(&[
+            (0, 240, 60),
+            (240, 240, 62),
+            (480, 960, 60),
+            (960, 240, 60),
+            (1920, 240, 72),
+        ]);
+        c.notes[1].velocity = 30;
+        c.notes[4].velocity = 127;
+        c.notes[2].cond = Cond::Fill;
+        c.notes[3].ratchet = 3;
+        let mut ed = Editor::new(0, 0, &c);
+        let pick = |ed: &mut Editor, k: usize| ed.act(EditAction::Choose(k), &c);
+        let picked = |ed: &mut Editor, k: usize| {
+            pick(ed, k);
+            let mut s = ed.sel.clone();
+            s.sort_unstable();
+            s
+        };
+        assert_eq!(picked(&mut ed, 0), [0, 1, 2, 3, 4], "All");
+        assert_eq!(picked(&mut ed, 1), Vec::<usize>::new(), "None");
+        ed.sel = vec![0, 1];
+        assert_eq!(picked(&mut ed, 2), [2, 3, 4], "Invert");
+        // Same pitch: the picks' pitches, or the sound worked on.
+        ed.sel = vec![1];
+        assert_eq!(picked(&mut ed, 5), [1]);
+        ed.sel = vec![0];
+        assert_eq!(picked(&mut ed, 5), [0, 2, 3]);
+        assert_eq!(pick(&mut ed, 5).line, "edit: 3 picked (same pitch)");
+        // The ranges work from the picks, and say so with none.
+        ed.sel = vec![1, 4];
+        assert_eq!(picked(&mut ed, 6), [1, 4], "62 to 72 leaves the 60s");
+        ed.sel = vec![0, 4];
+        assert_eq!(picked(&mut ed, 6), [0, 1, 2, 3, 4], "60 to 72");
+        ed.sel = vec![1];
+        assert_eq!(picked(&mut ed, 6), [1]);
+        ed.sel = vec![0, 1];
+        assert_eq!(picked(&mut ed, 7), [0, 1], "starting from 0 to 480");
+        ed.sel.clear();
+        assert_eq!(
+            pick(&mut ed, 7).line,
+            "edit: pick notes first for time range"
+        );
+        // Quiet and loud: either side of halfway (30 to 127).
+        assert_eq!(picked(&mut ed, 8), [1]);
+        assert_eq!(picked(&mut ed, 9), [0, 2, 3, 4]);
+        assert_eq!(picked(&mut ed, 10), [2], "with a condition");
+        assert_eq!(picked(&mut ed, 11), [3], "with repeats");
+        // Overlapping: the long note and the two of its pitch it covers
+        // (the first only touches its start, the last starts under it).
+        assert_eq!(picked(&mut ed, 12), [2, 3]);
+        // Add to pick: a switch; then a tap adds or takes out, a box and
+        // a filter add.
+        assert_eq!(pick(&mut ed, SELECT_ADD).line, "edit: add to pick on");
+        assert!(ed.add);
+        ed.sel = vec![4];
+        ed.act(EditAction::Tap { index: 1, rev: 0 }, &c);
+        assert_eq!(ed.sel, [4, 1]);
+        ed.act(EditAction::Tap { index: 4, rev: 0 }, &c);
+        assert_eq!(ed.sel, [1]);
+        ed.act(
+            EditAction::Pick {
+                from: 0,
+                to: 100,
+                low: 0,
+                high: 127,
+            },
+            &c,
+        );
+        assert_eq!(ed.sel, [0, 1]);
+        assert_eq!(picked(&mut ed, 11), [0, 1, 3]);
+        ed.act(EditAction::Note { index: 4, rev: 0 }, &c);
+        assert_eq!(ed.sel.len(), 4, "a hold adds too");
+        // All, None and Invert are whole picks either way.
+        assert_eq!(picked(&mut ed, 1), Vec::<usize>::new());
+        pick(&mut ed, SELECT_ADD);
+        assert!(!ed.add);
+        // Fit to picked is the roll's: nothing here.
+        assert_eq!(pick(&mut ed, SELECT_FIT), Done::default());
     }
 
     #[test]
@@ -4905,6 +5258,72 @@ mod tests {
             g.touch(9, Touch::Up, near.0, near.1, R),
             Some(EventKind::Cell { row: 50, .. })
         ));
+    }
+
+    /// Select opens its menu over the roll (plan 1B.3): an item sends
+    /// its pick and closes it, Add to pick keeps it open, Fit to picked
+    /// moves the view, and a touch anywhere else only closes it.
+    #[test]
+    fn the_select_button_opens_its_menu_over_the_roll() {
+        let mut g = grid();
+        let b = g.button_rects(R)[SELECT_BUTTON];
+        assert_eq!(g.button_label(SELECT_BUTTON), "Select");
+        let before = painted(&g);
+        assert_eq!(g.touch(1, Touch::Down, mid(b).0, mid(b).1, R), None);
+        g.touch(1, Touch::Up, mid(b).0, mid(b).1, R);
+        assert!(g.menu);
+        assert!(differ_in(&before, &painted(&g), g.geo(R).roll), "it shows");
+        let items: Vec<Target> = g
+            .targets(R)
+            .into_iter()
+            .filter(|t| t.id == "select")
+            .collect();
+        assert_eq!(items.len(), SELECT_ITEMS.len());
+        assert!(
+            g.targets(R)
+                .iter()
+                .all(|t| t.id == "select" || t.id == "button"),
+            "it covers the roll"
+        );
+        let at = |k: usize| mid(items[k].rect);
+        let (x, y) = at(5);
+        assert_eq!(
+            g.touch(2, Touch::Down, x, y, R),
+            Some(EventKind::Tab(MENU + 5))
+        );
+        g.touch(2, Touch::Up, x, y, R);
+        assert!(!g.menu, "closed after a pick");
+        // Add to pick keeps it open.
+        g.touch(3, Touch::Down, mid(b).0, mid(b).1, R);
+        g.touch(3, Touch::Up, mid(b).0, mid(b).1, R);
+        let (x, y) = at(SELECT_ADD);
+        assert_eq!(
+            g.touch(4, Touch::Down, x, y, R),
+            Some(EventKind::Tab(MENU + SELECT_ADD))
+        );
+        g.touch(4, Touch::Up, x, y, R);
+        assert!(g.menu);
+        // Fit to picked: the view, the menu closed.
+        let (x, y) = at(SELECT_FIT);
+        assert!(matches!(
+            g.touch(5, Touch::Down, x, y, R),
+            Some(EventKind::View { .. })
+        ));
+        g.touch(5, Touch::Up, x, y, R);
+        assert!(!g.menu);
+        // A touch elsewhere only closes it: no note goes in.
+        g.menu = true;
+        let n0 = g.note_rect(R, 0).unwrap();
+        let (x, y) = mid(n0);
+        assert_eq!(g.touch(6, Touch::Down, x, y, R), None);
+        assert_eq!(g.touch(6, Touch::Up, x, y, R), None);
+        assert!(!g.menu);
+        // A new picture keeps it as it is; Add to pick lights Select.
+        g.menu = true;
+        let mut next = grid();
+        next.add = true;
+        g.show(next);
+        assert!(g.menu && g.add);
     }
 
     #[test]
