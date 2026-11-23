@@ -4213,7 +4213,9 @@ impl Widget for XyPad {
         match phase {
             Touch::Down | Touch::Move => {
                 if phase == Touch::Down {
-                    if !pad.contains(x, y) {
+                    // The first finger owns the pad until it lifts: another
+                    // one landing does nothing, as in `mpfree_xy::Gesture`.
+                    if !pad.contains(x, y) || self.finger.is_some_and(|f| f != finger) {
                         return None;
                     }
                     self.finger = Some(finger);
@@ -5078,10 +5080,17 @@ mod tests {
             panic!("xy");
         };
         assert!(x == 1.0 && y == 1.0 && xy.on);
+        // A second finger lands, moves and lifts: the first owns the pad.
+        assert_eq!(xy.touch(2, Touch::Down, p.x + 5, p.y + 5, r), None);
+        assert_eq!(xy.touch(2, Touch::Move, p.x + 9, p.y + 9, r), None);
+        assert_eq!(xy.touch(2, Touch::Up, p.x + 9, p.y + 9, r), None);
+        assert!(xy.on);
         assert!(matches!(
             xy.touch(1, Touch::Up, 0, 0, r),
             Some(EventKind::Xy { down: false, .. })
         ));
         assert!(!xy.on);
+        // Then another finger may take it.
+        assert!(xy.touch(2, Touch::Down, p.x + 5, p.y + 5, r).is_some());
     }
 }

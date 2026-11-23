@@ -30,8 +30,8 @@ mod board;
 pub mod kinds;
 
 pub use board::{
-    Board, Change, ChipView, EventView, ProblemState, ProblemView, SystemView, Window, CHANGES,
-    EVENTS, NOW_FOR, OPEN, SETTLE_OFF, SETTLE_ON,
+    Board, Change, ChipLook, ChipView, EventView, ProblemState, ProblemView, SystemView, Window,
+    CHANGES, EVENTS, NOW_FOR, OPEN, RAM_BUSY_PCT, RAM_FULL_PCT, SETTLE_OFF, SETTLE_ON,
 };
 
 /// The nine parts of the instrument a problem belongs to, in the order the

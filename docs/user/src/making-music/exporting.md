@@ -94,4 +94,4 @@ Each choice is said with the result, for example "3 WAV files (16-bit, 48 kHz)".
 If you cancel, or the export can't finish (the stick is full or too slow, or an effect that delays the sound, such as a limiter with look-ahead, is added or taken out while it runs), the export stops and removes the files it had started. The panel says why.
 
 > [!MPC]
-> On the MPC, Export as audio makes a mixdown or one stem per track from a sequence or song in real time or faster, and lets you pick the bit depth and rate. MPFree makes the mixdown, the stems (per track, or per mixer channel in one pass) and a MIDI file in one go, listens on its own when the song plays outside gear, and keeps your usual format in Prefs.
+> On the MPC, Audio Mixdown renders a sequence or song as one stereo mix or a file per track (and per submix and return), as WAV, AIFF, MP3, FLAC or OGG, at the bit depth and rate you pick. MPFree makes the mixdown, the stems (per track, or per mixer channel in one pass) and a MIDI file in one go, listens on its own when the song plays outside gear, and keeps your usual format in Prefs.

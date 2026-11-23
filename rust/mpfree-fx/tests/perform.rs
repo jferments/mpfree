@@ -7,8 +7,8 @@ use std::f32::consts::PI;
 
 use mpfree_fx::mpfree_node::{check_params, Ctx, Node, NodeEvent, Timed, MAX_BLOCK};
 use mpfree_fx::{
-    ids, perform_state, Perform, XyPad, PERFORM_EFFECTS, PERFORM_LENGTHS, PERFORM_LET_GO,
-    PERFORM_PLAYS, PERFORM_SLOTS, PERFORM_STARTS,
+    ids, perform_state, Perform, PERFORM_EFFECTS, PERFORM_LENGTHS, PERFORM_LET_GO, PERFORM_PLAYS,
+    PERFORM_SLOTS, PERFORM_STARTS,
 };
 
 const RATE: u32 = 48_000;
@@ -609,44 +609,6 @@ fn the_echo_knob_sends_into_the_echo_and_its_tail_rings_out() {
     assert!(first > 0.05, "first repeat {first}");
     assert!(second > 0.01 && second < first, "second repeat {second}");
     assert!(between < 1e-3, "nothing between {between}");
-}
-
-#[test]
-fn the_xy_pad_plays_two_parameters_and_snaps_back_or_holds() {
-    let mut xy = XyPad::perform();
-    assert!(xy.at_rest());
-    assert_eq!(
-        xy.values(),
-        [(ids::perform::DJ_FILTER, 0.0), (ids::perform::ECHO, 0.0)]
-    );
-    // A finger at the top right: high-pass all the way, echo full.
-    xy.touch(1.0, 1.0);
-    assert_eq!(
-        xy.values(),
-        [
-            (ids::perform::DJ_FILTER, 100.0),
-            (ids::perform::ECHO, 100.0)
-        ]
-    );
-    assert!(!xy.tick(10.0), "no glide under a finger");
-    // Lifted: back to rest within five glide times, a frame at a time.
-    xy.release();
-    let mut ms = 0.0;
-    while xy.tick(16.0) {
-        ms += 16.0;
-        assert!(ms < 5.0 * xy.snap_ms + 32.0, "still gliding after {ms} ms");
-    }
-    assert!(xy.at_rest());
-    // With Hold on it stays where the finger left it, until Hold goes off.
-    xy.set_hold(true);
-    xy.touch(0.25, 0.5);
-    xy.release();
-    assert!(!xy.tick(100.0));
-    assert_eq!(xy.values()[0], (ids::perform::DJ_FILTER, -50.0));
-    xy.set_hold(false);
-    assert!(xy.tick(16.0));
-    let (x, y) = xy.position();
-    assert!(x > 0.25 && x < 0.5 && y < 0.5, "gliding back: {x}, {y}");
 }
 
 fn hold(k: usize, on: bool) -> NodeEvent {
