@@ -32,8 +32,8 @@ use std::collections::BTreeMap;
 use crate::editor::zoom::RollView;
 use crate::editor::{
     box_of, drop_of, edit_rows, length_name, note_name, pads, position_name, step_name, EditAction,
-    Editor, Lens, LockMark, NoteBox, NoteGrid, Tool, ADD, EDIT_BUTTON, KNOBS, MENU, PEN,
-    SNAP_AUTO_T, START_HANDLE, STEP_FALLBACK,
+    Editor, LaneShow, Lens, LockMark, NoteBox, NoteGrid, Tool, ADD, EDIT_BUTTON, FIELDS, KNOBS,
+    MENU, PEN, SNAP_AUTO_T, START_HANDLE, STEP_FALLBACK,
 };
 use crate::list::{
     ListRow, SongListView, LIST_ADD, LIST_CLIPS, LIST_LINK, LIST_LINK_CLOSE, LIST_LINK_FROM_LIST,
@@ -2185,7 +2185,11 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                         notes,
                     }
                 }
-                EventKind::Value(v) => EditAction::Velocity(v),
+                EventKind::Values { index, ref set } => EditAction::Lane {
+                    field: *FIELDS.get(index)?,
+                    rev,
+                    set: set.clone(),
+                },
                 _ => return None,
             }
         })),
@@ -4863,6 +4867,10 @@ pub struct TimePage {
     /// screen's own, so the zoom and scroll are as you left them when you
     /// come back to a clip (piano roll plan 1A.1). Never saved.
     views: BTreeMap<(usize, usize), RollView>,
+    /// The lane under the roll: which, how tall, folded or not (plan
+    /// 2A.1). The screen's own, the same for every clip; its chip, fold
+    /// and top edge change it on the roll, which the page reads back.
+    pub edit_lane: LaneShow,
     /// What the page asks of the time engine on its own (Snap Auto's
     /// division); the app sends them ([`TimePage::take_asks`]).
     asks: Vec<TimeAction>,
@@ -5429,6 +5437,7 @@ impl TimePage {
             if let Some(v) = self.views.get_mut(&shown) {
                 *v = g.view;
             }
+            self.edit_lane = g.lane;
         }
         match &st.edit {
             Some(e) if self.edit_built.as_ref().is_some_and(|b| same_edit(b, e)) => {
@@ -5448,6 +5457,7 @@ impl TimePage {
             Some(e) => {
                 let mut grid = note_grid(e, st);
                 grid.drawer = self.edit_drawer;
+                grid.lane = self.edit_lane;
                 grid.view = key
                     .and_then(|k| self.views.get(&k).copied())
                     .unwrap_or_default();

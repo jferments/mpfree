@@ -21,14 +21,18 @@
 
 use mpfree_ui::{Align, Color, FontId, PaintCx, Rect, Touch};
 
-/// How a lane draws its values. Only bars so far; a ratchet's hits as
-/// ticks and a pressure line inside a note are room left for the piano
-/// roll.
+/// How a lane draws its values: bars from the foot, or from the middle
+/// for a value either side of 0 (a repeat's velocity ramp, piano roll
+/// plan 2A.1). A pressure line inside a note is room left for the piano
+/// roll's phase 3.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LaneStyle {
     /// A bar per value, as tall as the value, from the lane's foot.
     #[default]
     Bars,
+    /// A bar per value from the height of 0 (the foot if 0 is out of the
+    /// range), up for a value over 0 and down for one under it.
+    Centred,
 }
 
 /// One bar: where it is across the lane and its value.
@@ -214,22 +218,40 @@ impl Lane {
         s.at = (x, y);
     }
 
-    /// Draw the lane in `r`, its bars in `colour` (from the theme), each
-    /// as tall as its value from the lane's foot, the stroke's values in
-    /// place of theirs while it draws.
-    pub fn paint(&self, cx: &mut PaintCx, r: Rect, colour: Color) {
-        let t = cx.theme.clone();
-        let LaneStyle::Bars = self.style;
+    /// The height in the lane `r` that value `v` reaches: the foot for
+    /// `min`, the top of the bars for `max`.
+    pub fn y_of(&self, v: i32, r: Rect) -> i32 {
         let room = (r.h - LABEL_H).max(1);
         let span = (self.max - self.min).max(1);
-        // The foot, faint, under every bar.
-        cx.canvas
-            .fill_rect(Rect::new(r.x, r.bottom() - 1, r.w, 1), t.text_faint);
+        r.bottom() - (v.clamp(self.min, self.max) - self.min) * room / span
+    }
+
+    /// Draw the lane in `r`, its bars in `colour` (from the theme), each
+    /// as tall as its value from the lane's foot (or from 0's height,
+    /// [`LaneStyle::Centred`]), the stroke's values in place of theirs
+    /// while it draws.
+    pub fn paint(&self, cx: &mut PaintCx, r: Rect, colour: Color) {
+        let t = cx.theme.clone();
+        let base = match self.style {
+            LaneStyle::Bars => r.bottom(),
+            LaneStyle::Centred if self.min < 0 && self.max > 0 => self.y_of(0, r),
+            LaneStyle::Centred => r.bottom(),
+        };
+        // The foot (or 0's line), faint, under every bar.
+        cx.canvas.fill_rect(
+            Rect::new(r.x, base.min(r.bottom()) - 1, r.w, 1),
+            t.text_faint,
+        );
         for (k, b) in self.bars.iter().enumerate() {
             let v = self.shown(k).unwrap_or(b.value).clamp(self.min, self.max);
-            let h = ((v - self.min) * room / span).max(2);
+            let top = self.y_of(v, r);
+            let (y, h) = match top < base {
+                true => (top, (base - top).max(2)),
+                false => (base, (top - base).max(2)),
+            };
+            let y = y.min(r.bottom() - h);
             let w = (b.w - 4).max(2);
-            let bar = Rect::new(b.x + (b.w - w) / 2, r.bottom() - h, w, h);
+            let bar = Rect::new(b.x + (b.w - w) / 2, y, w, h);
             let fill = if b.dim {
                 colour.mix(t.surface, 0.6)
             } else {
@@ -357,6 +379,45 @@ mod tests {
             LaneTouch::Done(vec![])
         );
         assert!(l.bars.iter().all(|b| b.value == 64));
+    }
+
+    /// A centred lane (a ramp, -126 to 126) draws each bar from 0's
+    /// height, up for a value over 0 and down for one under it; a finger
+    /// on that line sets about 0.
+    #[test]
+    fn a_centred_lane_draws_from_its_middle() {
+        use mpfree_ui::{Fonts, SoftCanvas, Theme};
+        let r = Rect::new(0, 0, 200, 94);
+        let mut l = Lane::new(-126, 126, 1);
+        l.style = LaneStyle::Centred;
+        l.set_bars(
+            [(20, 100), (100, -100)]
+                .into_iter()
+                .map(|(x, value)| Bar {
+                    x,
+                    w: 20,
+                    value,
+                    ..Bar::default()
+                })
+                .collect(),
+        );
+        let zero = l.y_of(0, r);
+        assert!(l.value_at(zero, r).abs() <= 2, "about 0 at the line");
+        let theme = Theme::dark();
+        let mut c = SoftCanvas::new(r.w, r.h);
+        let mut fonts = Fonts::embedded();
+        l.paint(
+            &mut PaintCx {
+                canvas: &mut c,
+                theme: &theme,
+                fonts: &mut fonts,
+            },
+            r,
+            theme.accent,
+        );
+        let lit = |x: i32, y: i32| c.pixel(x, y) == c.pixel(30, zero - 10);
+        assert!(lit(30, zero - 20) && !lit(30, zero + 20), "up from 0");
+        assert!(lit(110, zero + 20) && !lit(110, zero - 20), "down from 0");
     }
 
     #[test]

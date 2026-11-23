@@ -128,12 +128,12 @@
 37002	Perform FX, the 16 pads in turn
 107805	Phaser (12 stages)
 66460	Phaser (4 stages)
-27008490	Piano roll: 8,192 notes with pressure, built and drawn
-19772362	Piano roll: 8,192 notes, a frame while it plays
-21200269	Piano roll: 8,192 notes, built and drawn
-20735935	Piano roll: 8,192 notes, scrolled a sixteenth a frame
-45973284	Piano roll: 8,192 notes, zoomed from a bar to the whole clip
-21187311	Piano roll: two clips of 8,192 notes, switched each frame
+19779657	Piano roll: 8,192 notes with pressure, built and drawn
+12502497	Piano roll: 8,192 notes, a frame while it plays
+13937694	Piano roll: 8,192 notes, built and drawn
+13015180	Piano roll: 8,192 notes, scrolled a sixteenth a frame
+22717836	Piano roll: 8,192 notes, zoomed from a bar to the whole clip
+13924546	Piano roll: two clips of 8,192 notes, switched each frame
 74424	Pitch correct
 71972	Pitch shifter
 155797	Plate reverb

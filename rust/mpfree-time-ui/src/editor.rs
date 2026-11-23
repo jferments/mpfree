@@ -23,8 +23,12 @@
 //!   the step's line (the app draws the editor's sound there);
 //! - a note dragged: when the finger lifts, `Marker { index, frame }`,
 //!   the move packed into `frame` ([`drop_frame`], [`drop_of`]);
-//! - the velocity lane: `Value(v)`, 0 to 1, as the finger goes down and
-//!   moves;
+//! - a lane under the roll (Velocity, Chance or Repeats, as its chip
+//!   picks; SHIFT + a stroke on Repeats sets the ramp): `Values { index,
+//!   set }` once, when the finger lifts, `index` the lane's place in
+//!   [`FIELDS`] and `set` each note the stroke changed with its new value
+//!   (piano roll plan 2A.1); the chip, its fold and the lane's top edge
+//!   are the screen's own (`View`);
 //! - the buttons along the bottom: `Tab(k)` for [`EDIT_BUTTONS`]`[k]`
 //!   (the last, Edit, opens the Edit options' drawer: the page's own);
 //! - the view moved (a pinch, two fingers, a finger on the ruler, the
@@ -57,7 +61,8 @@ use std::time::{Duration, Instant};
 use gesture::Pinch;
 use zoom::RollView;
 
-use mpfree_seq::notes::{self, Snap, Tc, TcKind, Which, DIVISIONS};
+use crate::lane::{Bar, Lane, LaneStyle, LaneTouch};
+use mpfree_seq::notes::{self, Field, Snap, Tc, TcKind, Which, DIVISIONS};
 use mpfree_seq::steps::{Edit, Euclid, Grid, MAX_EUCLID_STEPS};
 use mpfree_seq::{Clip, Cond, Join, Lock, Note, TouchPoint};
 use mpfree_transport::time::{Tick, PPQ};
@@ -172,14 +177,13 @@ pub const KNOBS: [&str; 4] = ["Position", "Length", "Semitones", "Velocity"];
 /// A Q-Link turn's join key, apart from every row's: a turn's detents on
 /// any knob make one undoable take, its number in the key's top bits.
 const TURN_KEY: u64 = 0x80;
-/// Join keys, so turning a row or dragging the velocity lane makes one
-/// undoable take.
+/// Join keys, so turning a row makes one undoable take.
 const JOIN: u64 = 0xED17_0000_0000;
 
 /// How the editor shows the clip.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Lens {
-    /// The piano roll, with the velocity lane.
+    /// The piano roll, with a lane under it.
     #[default]
     Grid,
     /// One row per note, in time order.
@@ -239,7 +243,7 @@ impl Tool {
 }
 
 /// A touch on the editor, for the app to carry out (see the module notes).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum EditAction {
     /// Open the editor on the clip the Play page's steps show.
     Open,
@@ -301,8 +305,15 @@ pub enum EditAction {
         ticks: Tick,
         notes: i32,
     },
-    /// The velocity lane: the selection's velocity, 0 to 1.
-    Velocity(f32),
+    /// A stroke along a lane under the roll, as its finger lifted (plan
+    /// 2A.1): each note it changed, by its index on the picture of
+    /// revision `rev`, with its new value of `field`. One edit and one
+    /// take, however many notes; the picks stay as they were.
+    Lane {
+        field: Field,
+        rev: u64,
+        set: Vec<(usize, i32)>,
+    },
     /// An Edit option stepped.
     Row { row: usize, delta: i32 },
     /// An Edit option picked (the wheel steps it).
@@ -362,6 +373,7 @@ impl EditAction {
             | EditAction::Add { rev, .. }
             | EditAction::Resize { rev, .. }
             | EditAction::Copy { rev, .. }
+            | EditAction::Lane { rev, .. }
             | EditAction::Drop { rev, .. } => Some(rev),
             _ => None,
         }
@@ -996,18 +1008,36 @@ impl Editor {
                     format!("edit: {} notes moved", moved.len()),
                 )
             }
-            // One a drag of the velocity lane (sent when the finger lifts),
-            // so each drag is its own take.
-            EditAction::Velocity(v) => (
-                notes::set_velocity(clip, &sel, {
-                    self.velocity = lane_velocity(v);
-                    self.velocity
-                }),
-                None,
-                true,
-                true,
-                String::new(),
-            ),
+            // A stroke along a lane: one take, every note it crossed
+            // its own value. The picks stay on their notes, changed or
+            // not, and no other note is picked.
+            EditAction::Lane { field, set, .. } => {
+                let edit = notes::set_values(clip, field, &set);
+                if field == Field::Velocity {
+                    if let Some(&(_, v)) = set.last() {
+                        self.velocity = v.clamp(1, 127) as u8;
+                    }
+                }
+                let kept = kept
+                    .iter()
+                    .map(|n| match edit.erase.iter().position(|e| e == n) {
+                        Some(j) => edit.add[j],
+                        None => *n,
+                    })
+                    .collect();
+                let n = edit.erase.len();
+                let line = match n {
+                    0 => String::new(),
+                    1 => format!("edit: 1 note's {}", field.name().to_lowercase()),
+                    _ => format!("edit: {n} notes' {}", field.name().to_lowercase()),
+                };
+                return Done {
+                    edit,
+                    line,
+                    kept,
+                    ..Done::default()
+                };
+            }
             EditAction::Choose(k) => return self.choose(k, clip, sel),
             // The app keeps the copy and makes the paste.
             EditAction::Copy { index, .. } => {
@@ -1557,10 +1587,83 @@ fn refind(old: &[NoteBox], new: &[NoteBox], i: usize) -> Option<usize> {
     new.iter().position(|m| key(m) == key(n))
 }
 
-/// The velocity the lane's value `v` (0 to 1, [`EditAction::Velocity`])
-/// sets: 1 to 127.
-pub fn lane_velocity(v: f32) -> u8 {
-    (1.0 + v.clamp(0.0, 1.0) * 126.0).round() as u8
+/// The lanes as [`EventKind::Values`] numbers them: its `index` is a
+/// field's place here (the ramp is the Repeats lane with SHIFT).
+pub const FIELDS: [Field; 4] = [Field::Velocity, Field::Chance, Field::Repeats, Field::Ramp];
+
+/// A caret 9 px wide centred on (`x`, `y`), pointing up or down (the ▾ of
+/// a chip, drawn as the step size chip draws its own).
+fn paint_caret(cx: &mut PaintCx, x: i32, y: i32, up: bool, c: Color) {
+    for k in 0..5 {
+        let row = if up { y + 2 - k } else { y - 2 + k };
+        cx.canvas
+            .fill_rect(Rect::new(x - 4 + k, row, 9 - 2 * k, 1), c);
+    }
+}
+
+/// Notes whose starts are this close on screen (px) share a bar of the
+/// lane, as notes that start together do: a strum's.
+const PLACE_PX: i32 = 3;
+
+/// Where the lane's bars stand in its strip: a little in from its top and
+/// its foot.
+fn lane_body(g: &Geo) -> Rect {
+    Rect::new(g.vel.x, g.vel.y + 2, g.vel.w, (g.vel.h - 5).max(0))
+}
+
+/// Note `n`'s value of `field`.
+fn box_value(field: Field, n: &NoteBox) -> i32 {
+    match field {
+        Field::Velocity => i32::from(n.velocity),
+        Field::Chance => i32::from(n.chance),
+        Field::Repeats => i32::from(n.ratchet),
+        Field::Ramp => i32::from(n.ramp),
+    }
+}
+
+/// What a bar of the lane says over it: the velocity, the chance in
+/// percent, the repeats with ↑ or ↓ for a `ramp` that rises or falls, or
+/// the ramp itself.
+fn lane_label(field: Field, v: i32, ramp: i8) -> String {
+    match field {
+        Field::Velocity => v.to_string(),
+        Field::Chance => format!("{v}%"),
+        Field::Repeats if v > 1 && ramp > 0 => format!("{v}↑"),
+        Field::Repeats if v > 1 && ramp < 0 => format!("{v}↓"),
+        Field::Repeats => v.to_string(),
+        Field::Ramp if v > 0 => format!("+{v}"),
+        Field::Ramp => v.to_string(),
+    }
+}
+
+/// The lane under the roll (piano roll plan 2A.1): which one its chip
+/// picked, how tall its top edge was dragged, and whether its chip's ▾
+/// folded it away. The screen's own, kept by the page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LaneShow {
+    pub field: Field,
+    pub h: i32,
+    pub folded: bool,
+}
+
+impl Default for LaneShow {
+    fn default() -> LaneShow {
+        LaneShow {
+            field: Field::Velocity,
+            h: VEL_H,
+            folded: false,
+        }
+    }
+}
+
+/// A finger drawing along the lane: the lane as it was when it went down
+/// (its bars, one for each place where notes start), and the notes each
+/// bar sets.
+#[derive(Clone, Debug, PartialEq)]
+struct Stroke {
+    field: Field,
+    lane: Lane,
+    notes: Vec<Vec<usize>>,
 }
 
 /// A box pick's lowest and highest rows, from its `Span`'s index
@@ -1791,6 +1894,14 @@ pub struct NoteGrid {
     /// The notes' pad pressure, each [`NoteBox::touch`] a run of it, timed
     /// in clip ticks from its note's start (as `Clip::touch`).
     pub touch: Vec<TouchPoint>,
+    /// The lane under the roll (the page's, plan 2A.1): its chip, fold
+    /// and top edge change it here, and the page keeps it.
+    pub lane: LaneShow,
+    /// SHIFT was held as the last finger came down (the app's): a stroke
+    /// along the Repeats lane sets the ramp.
+    pub fine: bool,
+    /// A finger drawing along the lane.
+    stroke: Option<Stroke>,
     drag: Option<Drag>,
     /// What the fingers that aren't dragging a note are doing.
     hand: Hand,
@@ -1802,8 +1913,8 @@ pub struct NoteGrid {
     kept: Kept,
 }
 
-/// What fingers on the roll are doing, besides dragging a note or the
-/// velocity lane ([`Drag`]).
+/// What fingers on the roll are doing, besides dragging a note ([`Drag`])
+/// or drawing along the lane ([`Stroke`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Hand {
     Idle,
@@ -1867,6 +1978,14 @@ enum Hand {
     },
     /// Two fingers moving the view ([`gesture`]).
     Pinch(Pinch),
+    /// A finger on the lane's top edge (plan 2A.1): the lane is as tall
+    /// as it was (`from`) plus how far the finger went up from `y0`.
+    Edge {
+        finger: u64,
+        now: (i32, i32),
+        y0: i32,
+        from: i32,
+    },
     /// A finger left from a pinch: it does nothing until it lifts, or a
     /// second finger joins it for another pinch.
     Spent {
@@ -1913,9 +2032,6 @@ struct Drag {
     now: (i32, i32),
     ticks: Tick,
     notes: i32,
-    /// The finger is in the velocity lane: the value under it, 0 to 1,
-    /// shown on the picked notes and sent once, when it lifts.
-    lane: Option<f32>,
     /// The finger drags a handle (plan 1B.2): the note's start (true) or
     /// its end, by `ticks`; `notes` stays 0.
     handle: Option<bool>,
@@ -1938,7 +2054,15 @@ const RULER_H: i32 = 22;
 /// at its right end.
 const OVERVIEW_H: i32 = 32;
 const FOLLOW_W: i32 = 104;
+/// The lane under the roll opens this tall; its top edge drags it from
+/// [`LANE_MIN`] to [`LANE_MAX`], and folded it is [`LANE_FOLDED`].
 const VEL_H: i32 = 64;
+const LANE_MIN: i32 = 48;
+const LANE_MAX: i32 = 200;
+const LANE_FOLDED: i32 = 26;
+/// The lane's top edge answers a finger this far into the lane, besides
+/// the gap over it.
+const EDGE_IN: i32 = 4;
 const TOOLS_H: i32 = 48;
 const GAP: i32 = 6;
 /// About how many rows the roll shows in the note editor.
@@ -1994,6 +2118,9 @@ impl Default for NoteGrid {
             step: STEP_FALLBACK,
             locks: Vec::new(),
             touch: Vec::new(),
+            lane: LaneShow::default(),
+            fine: false,
+            stroke: None,
             drag: None,
             hand: Hand::Idle,
             overview_tap: None,
@@ -2012,15 +2139,16 @@ struct Geo {
     ruler: Rect,
     keys: Rect,
     roll: Rect,
+    /// The lane's bars (folded: its strip), its chip in the key column
+    /// with the ▾ that folds it under, and its top edge's grip (empty
+    /// when folded or off the roll).
     vel: Rect,
+    chip: Rect,
+    fold: Rect,
+    edge: Rect,
     tools: Rect,
     /// The view kept within this roll ([`RollView::clamp`]).
     v: RollView,
-}
-
-/// The velocity lane's value at `y`, 0 (its bottom) to 1 (its top).
-fn lane_value(g: &Geo, y: i32) -> f32 {
-    f32::from((g.vel.bottom() - 3 - y).clamp(0, g.vel.h - 6) as u16) / (g.vel.h - 6).max(1) as f32
 }
 
 impl NoteGrid {
@@ -2045,6 +2173,7 @@ impl NoteGrid {
             && self.step == other.step
             && self.locks == other.locks
             && self.touch == other.touch
+            && self.lane == other.lane
     }
 
     /// Note `i`'s pressure, empty for none.
@@ -2061,8 +2190,10 @@ impl NoteGrid {
     /// gone, so its lift never acts on another note.
     pub fn show(&mut self, other: NoteGrid) {
         let (mut drag, mut hand) = (self.drag, self.hand);
+        // A stroke names the notes it was drawn over: other notes end it.
+        let stroke = self.stroke.take().filter(|_| other.notes == self.notes);
         let refind = |i: usize| refind(&self.notes, &other.notes, i);
-        if let Some(d) = drag.as_mut().filter(|d| d.lane.is_none()) {
+        if let Some(d) = drag.as_mut() {
             match refind(d.index) {
                 Some(i) => d.index = i,
                 None => drag = None,
@@ -2075,7 +2206,10 @@ impl NoteGrid {
             }
         }
         let (overview_tap, empty_tap, menu) = (self.overview_tap, self.empty_tap, self.menu);
+        let fine = self.fine;
         *self = NoteGrid {
+            stroke,
+            fine,
             drag,
             hand,
             overview_tap,
@@ -2094,7 +2228,7 @@ impl NoteGrid {
         let (vel, rest) = if !roll_lens {
             (Rect::new(rest.x, rest.bottom(), rest.w, 0), rest)
         } else {
-            let (v, rest) = rest.take_bottom(VEL_H);
+            let (v, rest) = rest.take_bottom(self.lane_h(rest.h));
             (v, Rect::new(rest.x, rest.y, rest.w, rest.h - GAP))
         };
         let (strip, rest) = if roll_lens {
@@ -2106,6 +2240,9 @@ impl NoteGrid {
         let (ruler, rest) = rest.take_top(RULER_H);
         let (keys, roll) = rest.take_left(KEYS_W);
         let follow = Rect::new(roll.right() - FOLLOW_W, strip.y, FOLLOW_W, strip.h);
+        let none = Rect::new(0, 0, 0, 0);
+        let open = roll_lens && !self.lane.folded;
+        let chip_h = if open { 28.min(vel.h) } else { vel.h };
         Geo {
             overview: Rect::new(roll.x, strip.y, (roll.w - FOLLOW_W - 6).max(0), strip.h),
             fit: Rect::new(keys.x, strip.y, keys.w - 6, strip.h),
@@ -2118,9 +2255,32 @@ impl NoteGrid {
             keys,
             roll,
             vel: Rect::new(roll.x, vel.y, roll.w, vel.h),
+            chip: match roll_lens {
+                true => Rect::new(keys.x, vel.y, keys.w - 6, chip_h),
+                false => none,
+            },
+            fold: match open {
+                true => Rect::new(keys.x, vel.y + 30, keys.w - 6, (vel.h - 30).clamp(0, 24)),
+                false => none,
+            },
+            edge: match open {
+                true => Rect::new(roll.x, vel.y - GAP, roll.w, GAP + EDGE_IN),
+                false => none,
+            },
             tools,
             v: self.view.clamped(roll, self.length, self.rows()),
         }
+    }
+
+    /// How tall the lane is, with `room` for the roll, the strips over it
+    /// and the lane: folded, or as its top edge left it, keeping the roll
+    /// four 40 px rows at least.
+    fn lane_h(&self, room: i32) -> i32 {
+        if self.lane.folded {
+            return LANE_FOLDED;
+        }
+        let most = (room - GAP - OVERVIEW_H - 4 - RULER_H - 160).clamp(LANE_MIN, LANE_MAX);
+        self.lane.h.clamp(LANE_MIN, most)
     }
 
     /// How many rows the roll has: 16 pads, or 128 notes.
@@ -2370,8 +2530,7 @@ impl NoteGrid {
             g.v.tick_at(g.roll, g.roll.x),
             g.v.tick_at(g.roll, g.roll.right()) + 1,
         );
-        let dragging = self.drag.is_some_and(|d| d.lane.is_none());
-        if dragging || (from <= 0 && to >= self.length) {
+        if self.drag.is_some() || (from <= 0 && to >= self.length) {
             return (0..self.notes.len()).collect();
         }
         self.index().near(from, to)
@@ -2513,22 +2672,13 @@ impl NoteGrid {
         cx.canvas.set_clip(was);
         self.paint_overview(cx, g);
         cx.canvas.set_clip(was.intersect(g.roll));
-        // The notes as they will play, then the velocity lane under them.
+        // The notes as they will play, then the lane under them.
         let top = t.accent;
         let shade = |v: u8| t.raised.mix(self.color, 0.35 + 0.65 * f32::from(v) / 127.0);
-        // The velocity lane dragged: the picked notes as they would be.
-        let preview = self.drag.and_then(|d| d.lane).map(lane_velocity);
-        let vel_of = |n: &NoteBox| match preview {
-            Some(v) if n.selected => NoteBox { velocity: v, ..*n },
-            _ => *n,
-        };
         let shown = self.in_view(g);
         // While notes move or a handle drags, where they were: an outline
         // under where they go (plan 1B.2).
-        if let Some(d) = self
-            .drag
-            .filter(|d| d.lane.is_none() && (d.ticks, d.notes) != (0, 0))
-        {
+        if let Some(d) = self.drag.filter(|d| (d.ticks, d.notes) != (0, 0)) {
             for &i in &shown {
                 if self.moves(d, i) {
                     if let Some(was) = self.rect_of(g, i, false) {
@@ -2541,7 +2691,7 @@ impl NoteGrid {
             let Some(nr) = self.note_rect_in(g, i) else {
                 continue;
             };
-            let n = &vel_of(&self.notes[i]);
+            let n = &self.notes[i];
             let fill = shade(n.velocity);
             if !n.on {
                 // Off: its place and settings kept, nothing played.
@@ -2588,49 +2738,14 @@ impl NoteGrid {
             }
         }
         self.paint_readout(cx, g);
+        // The lane, its chip and its top edge's grip (in the gap over it).
         cx.canvas.set_clip(was.intersect(Rect::new(
             g.keys.x,
-            g.vel.y,
+            g.vel.y - GAP,
             g.keys.w + g.vel.w,
-            g.vel.h,
+            g.vel.h + GAP,
         )));
-        cx.canvas.fill_round_rect(g.vel, 6, t.surface);
-        let lane = |v: u8| (f32::from(v) / 127.0 * (g.vel.h - 6) as f32).round() as i32;
-        for &i in &shown {
-            let n = &vel_of(&self.notes[i]);
-            let x = self.x_of(g, n.tick);
-            let h = lane(n.velocity);
-            let c = if n.selected {
-                top
-            } else if n.on {
-                self.color
-            } else {
-                t.outline
-            };
-            cx.canvas
-                .fill_rect(Rect::new(x, g.vel.bottom() - 3 - h, 4, h.max(1)), c);
-            // A ratchet's later hits, thinner, at their own velocities.
-            let hits = i64::from(n.ratchet.max(1));
-            for k in 1..hits {
-                let at = n.tick + n.len * k / hits;
-                if at >= self.length {
-                    break;
-                }
-                let h = lane(mpfree_seq::ramped(n.velocity, n.ramp, k as u8, n.ratchet));
-                cx.canvas.fill_rect(
-                    Rect::new(self.x_of(g, at), g.vel.bottom() - 3 - h, 2, h.max(1)),
-                    c.mix(t.surface, 0.3),
-                );
-            }
-        }
-        cx.text(
-            FontId::Sans,
-            t.size_small - 2.0,
-            Rect::new(g.keys.x, g.vel.y, g.keys.w - 6, g.vel.h),
-            Align::Right,
-            t.text_faint,
-            "Vel",
-        );
+        self.paint_lane(cx, g);
         let lines = was.intersect(Rect::new(
             g.roll.x,
             g.ruler.y,
@@ -2726,11 +2841,149 @@ impl NoteGrid {
         }
     }
 
+    /// The lane under the roll (plan 2A.1): its chip in the key column
+    /// (the lane's name; folded, a caret up after it), the ▾ that folds it,
+    /// the grip on its top edge, and its bars as [`NoteGrid::lane_of`]
+    /// makes them, the stroke's while a finger draws. On Velocity a
+    /// ratchet's later hits stand beside their note's bar, thinner, at
+    /// their own velocities.
+    fn paint_lane(&self, cx: &mut PaintCx, g: &Geo) {
+        let t = cx.theme.clone();
+        let field = self.stroke.as_ref().map_or(self.lane.field, |s| s.field);
+        let name = match field {
+            Field::Velocity => "Vel",
+            f => f.name(),
+        };
+        if !g.chip.is_empty() {
+            // Folded, a caret up after the name says a tap opens it.
+            let ink = t.ink_on(t.raised);
+            let (text, caret) = match self.lane.folded {
+                true => (Rect::new(g.chip.x, g.chip.y, g.chip.w - 12, g.chip.h), true),
+                false => (g.chip, false),
+            };
+            cx.canvas.fill_round_rect(g.chip, 6, t.raised);
+            cx.text(
+                FontId::Sans,
+                t.size_small - 2.0,
+                text,
+                Align::Center,
+                ink,
+                name,
+            );
+            if caret {
+                let y = g.chip.y + g.chip.h / 2;
+                paint_caret(cx, g.chip.right() - 12, y, true, ink);
+            }
+        }
+        if !g.fold.is_empty() {
+            let (x, y) = (g.fold.x + g.fold.w / 2, g.fold.y + g.fold.h / 2);
+            paint_caret(cx, x, y, false, t.text_dim);
+        }
+        cx.canvas.fill_round_rect(g.vel, 6, t.surface);
+        if self.lane.folded {
+            return;
+        }
+        if !g.edge.is_empty() {
+            let grip = Rect::new(g.edge.x + g.edge.w / 2 - 20, g.vel.y - 4, 40, 3);
+            cx.canvas.fill_round_rect(grip, 1, t.text_faint);
+        }
+        let body = lane_body(g);
+        let lane = match &self.stroke {
+            Some(st) => st.lane.clone(),
+            None => self.lane_of(g, field).0,
+        };
+        lane.paint(cx, body, self.color);
+        if field != Field::Velocity {
+            return;
+        }
+        for &i in &self.in_view(g) {
+            let n = &self.notes[i];
+            let hits = i64::from(n.ratchet.max(1));
+            for k in 1..hits {
+                let at = n.tick + n.len * k / hits;
+                if at >= self.length {
+                    break;
+                }
+                let v = mpfree_seq::ramped(n.velocity, n.ramp, k as u8, n.ratchet);
+                let y = lane.y_of(i32::from(v), body);
+                cx.canvas.fill_rect(
+                    Rect::new(self.x_of(g, at), y, 2, (body.bottom() - y).max(1)),
+                    self.color.mix(t.surface, 0.3),
+                );
+            }
+        }
+    }
+
+    /// The lane for `field` as the roll shows it now (plan 2A.1): a bar
+    /// for each place in view where notes start (starts closer than
+    /// [`PLACE_PX`] share one, as a strum's do), as wide as the room to
+    /// the next place (6 to 28 px), and the notes each bar sets: the
+    /// picked ones there when any are, else all of them, so of notes that
+    /// start together one picked is set alone. A bar's value is the
+    /// highest of its notes' (on the ramp the farthest from 0); it is
+    /// outlined when they are picked, and faint when every one is off
+    /// (or, on the ramp, none repeats).
+    fn lane_of(&self, g: &Geo, field: Field) -> (Lane, Vec<Vec<usize>>) {
+        let (lo, hi) = field.range();
+        let mut lane = Lane::new(lo, hi, 1);
+        if field == Field::Ramp {
+            lane.style = LaneStyle::Centred;
+        }
+        let mut starts: Vec<(Tick, usize)> = self
+            .in_view(g)
+            .into_iter()
+            .filter_map(|i| {
+                let n = self.notes.get(i)?;
+                let x = self.x_of(g, n.tick);
+                (x >= g.roll.x && x < g.roll.right()).then_some((n.tick, i))
+            })
+            .collect();
+        starts.sort_unstable();
+        let mut places: Vec<(Tick, Vec<usize>)> = Vec::new();
+        for (t, i) in starts {
+            match places.last_mut() {
+                Some((at, all)) if self.x_of(g, t) - self.x_of(g, *at) < PLACE_PX => all.push(i),
+                _ => places.push((t, vec![i])),
+            }
+        }
+        let xs: Vec<i32> = places.iter().map(|(t, _)| self.x_of(g, *t)).collect();
+        let mut bars = Vec::with_capacity(places.len());
+        let mut notes = Vec::with_capacity(places.len());
+        for (k, (_, all)) in places.into_iter().enumerate() {
+            let picked: Vec<usize> = all
+                .iter()
+                .copied()
+                .filter(|&i| self.notes[i].selected)
+                .collect();
+            let set = if picked.is_empty() { all } else { picked };
+            let x = xs[k];
+            let next = xs.get(k + 1).copied().unwrap_or(g.roll.right());
+            let w = (next - x).clamp(6, 28).min(g.roll.right() - x).max(2);
+            let boxes = || set.iter().map(|&i| &self.notes[i]);
+            let value = boxes()
+                .map(|n| box_value(field, n))
+                .max_by_key(|v| if field == Field::Ramp { v.abs() } else { *v })
+                .unwrap_or(lo);
+            let ramp = boxes().next().map_or(0, |n| n.ramp);
+            bars.push(Bar {
+                x,
+                w,
+                value,
+                picked: boxes().any(|n| n.selected),
+                dim: boxes().all(|n| !n.on || (field == Field::Ramp && n.ratchet <= 1)),
+                label: lane_label(field, value, ramp),
+            });
+            notes.push(set);
+        }
+        lane.set_bars(bars);
+        (lane, notes)
+    }
+
     /// While a note moves or a handle drags (plan 1B.2), what it will be,
     /// in words, above the finger: the moved note's position and row, or
     /// the start and the length a handle leaves.
     fn paint_readout(&self, cx: &mut PaintCx, g: &Geo) {
-        let Some(d) = self.drag.filter(|d| d.lane.is_none()) else {
+        let Some(d) = self.drag else {
             return;
         };
         let Some((tick, len, note)) = self.notes.get(d.index).and_then(|n| self.dragged(d, n))
@@ -3213,8 +3466,19 @@ impl Widget for NoteGrid {
             }
             return out;
         }
-        if !g.vel.is_empty() {
-            out.push(Target::drag("velocity", 0, "velocity lane", g.vel).towards(0, -g.vel.h / 3));
+        if !g.vel.is_empty() && !self.lane.folded {
+            // From near the foot to near the top, so the bars it crosses
+            // change.
+            let body = lane_body(&g);
+            let foot = Rect::new(body.x, body.bottom() - 8, body.w, 6);
+            out.push(Target::drag("lane", 0, self.lane.field.name(), foot).towards(0, 10 - body.h));
+            out.push(Target::drag("lane-edge", 0, "lane's top edge", g.edge).towards(0, -24));
+        }
+        if !g.chip.is_empty() {
+            out.push(Target::tap("lane-chip", 0, "lane", g.chip));
+        }
+        if !g.fold.is_empty() {
+            out.push(Target::tap("lane-fold", 0, "fold the lane", g.fold));
         }
         if !g.overview.is_empty() {
             out.push(Target::tap("fit", 0, "Fit", g.fit));
@@ -3274,6 +3538,25 @@ impl Widget for NoteGrid {
     /// nothing else.
     fn touch(&mut self, f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         let g = self.geo(r);
+        // A stroke along the lane is its finger's alone: its lift sends
+        // what it changed, once, and another finger coming down calls it
+        // off with nothing sent (and does nothing else).
+        if let Some(st) = self.stroke.as_mut() {
+            let LaneTouch::Done(changed) = st.lane.touch(f, phase, x, y, lane_body(&g)) else {
+                return None;
+            };
+            let st = self.stroke.take()?;
+            let set: Vec<(usize, i32)> = changed
+                .into_iter()
+                .flat_map(|(b, v)| st.notes.get(b).into_iter().flatten().map(move |&i| (i, v)))
+                .collect();
+            let index = FIELDS.iter().position(|&f| f == st.field)?;
+            return (!set.is_empty()).then_some(EventKind::Values { index, set });
+        }
+        // A finger on the lane's top edge: other fingers do nothing.
+        if matches!(self.hand, Hand::Edge { finger, .. } if finger != f) {
+            return None;
+        }
         let mine = self.finger_now().is_some_and(|(o, ..)| o == f);
         let busy = self.finger_now().is_some() || matches!(self.hand, Hand::Pinch(_));
         match phase {
@@ -3360,7 +3643,6 @@ impl Widget for NoteGrid {
                             now: (x, y),
                             ticks: 0,
                             notes: 0,
-                            lane: None,
                             handle: None,
                         });
                     }
@@ -3491,17 +3773,22 @@ impl Widget for NoteGrid {
                         };
                         return None;
                     }
+                    // The lane's top edge follows the finger.
+                    Hand::Edge {
+                        finger, y0, from, ..
+                    } => {
+                        self.lane.h = (from + y0 - y).clamp(LANE_MIN, LANE_MAX);
+                        self.hand = Hand::Edge {
+                            finger,
+                            now: (x, y),
+                            y0,
+                            from,
+                        };
+                        return None;
+                    }
                     _ => {}
                 }
                 let d = self.drag?;
-                if d.lane.is_some() {
-                    self.drag = Some(Drag {
-                        lane: Some(lane_value(&g, y)),
-                        now: (x, y),
-                        ..d
-                    });
-                    return None;
-                }
                 let n = self.notes.get(d.index)?;
                 let raw = g.v.tick_at(g.roll, x) - g.v.tick_at(g.roll, d.x);
                 if let Some(start) = d.handle {
@@ -3535,6 +3822,16 @@ impl Widget for NoteGrid {
             Touch::Up | Touch::Cancel => {
                 let up = phase == Touch::Up;
                 match self.hand {
+                    // The lane keeps the height the roll gave it room for;
+                    // a cancel puts it back.
+                    Hand::Edge { from, .. } => {
+                        self.hand = Hand::Idle;
+                        self.lane.h = match up {
+                            true => self.geo(r).vel.h,
+                            false => from,
+                        };
+                        return Some(self.view_event());
+                    }
                     Hand::Pinch(p) => {
                         // The other finger stays: it does nothing more
                         // until it lifts or another finger joins it.
@@ -3621,9 +3918,6 @@ impl Widget for NoteGrid {
                 if !up {
                     return None;
                 }
-                if let Some(v) = d.lane {
-                    return Some(EventKind::Value(v));
-                }
                 if let Some(start) = d.handle {
                     let flag = if start { START_HANDLE } else { 0 };
                     return (d.ticks != 0).then_some(EventKind::Stretch {
@@ -3668,9 +3962,6 @@ impl NoteGrid {
     /// Note `i` moves with drag `d`: the picked notes when the note
     /// dragged is one of them, else the note dragged alone.
     fn moves(&self, d: Drag, i: usize) -> bool {
-        if d.lane.is_some() {
-            return false;
-        }
         match self.notes.get(d.index) {
             Some(n) if n.selected => self.notes.get(i).is_some_and(|m| m.selected),
             _ => i == d.index,
@@ -3730,6 +4021,7 @@ impl NoteGrid {
             | Hand::Holding { finger, now, .. }
             | Hand::Wait { finger, now, .. }
             | Hand::Scroll { finger, now, .. }
+            | Hand::Edge { finger, now, .. }
             | Hand::Spent { finger, now } => Some((finger, now.0, now.1)),
             Hand::Idle | Hand::Pinch(_) => None,
         }
@@ -3797,11 +4089,7 @@ impl NoteGrid {
     /// The picked notes in view that show handles, with them: none while
     /// more than [`MAX_HANDLES`] are, or while a note is moved.
     fn handles(&self, g: &Geo) -> Vec<(usize, [Rect; 2])> {
-        if self.lens != Lens::Grid
-            || self
-                .drag
-                .is_some_and(|d| d.lane.is_none() && d.handle.is_none())
-        {
+        if self.lens != Lens::Grid || self.drag.is_some_and(|d| d.handle.is_none()) {
             return Vec::new();
         }
         let picked: Vec<usize> = self
@@ -3999,20 +4287,46 @@ impl NoteGrid {
             };
             return None;
         }
-        if g.vel.contains(x, y) {
-            // Shown as the finger moves, sent once when it lifts: one
-            // edit, one UNDO.
-            self.drag = Some(Drag {
+        // The lane's chip steps to the next lane (or opens it, folded),
+        // its ▾ folds it under, and its top edge drags its height: the
+        // screen's own (plan 2A.1).
+        if g.chip.contains(x, y) {
+            if self.lane.folded {
+                self.lane.folded = false;
+            } else {
+                let k = Field::LANES.iter().position(|&l| l == self.lane.field);
+                self.lane.field = Field::LANES[k.map_or(0, |k| (k + 1) % Field::LANES.len())];
+            }
+            return Some(self.view_event());
+        }
+        if g.fold.contains(x, y) {
+            self.lane.folded = true;
+            return Some(self.view_event());
+        }
+        if g.edge.contains(x, y) {
+            self.hand = Hand::Edge {
                 finger: f,
-                index: 0,
-                x,
-                y,
                 now: (x, y),
-                ticks: 0,
-                notes: 0,
-                lane: Some(lane_value(g, y)),
-                handle: None,
-            });
+                y0: y,
+                from: g.vel.h,
+            };
+            return None;
+        }
+        if g.vel.contains(x, y) {
+            // Drawn along as the finger moves, sent once when it lifts:
+            // one edit, one UNDO. SHIFT on Repeats draws the ramp.
+            if self.lane.folded {
+                return None;
+            }
+            let field = match self.lane.field {
+                Field::Repeats if self.fine => Field::Ramp,
+                l => l,
+            };
+            let (mut lane, notes) = self.lane_of(g, field);
+            if !lane.bars.is_empty() {
+                lane.touch(f, Touch::Down, x, y, lane_body(g));
+                self.stroke = Some(Stroke { field, lane, notes });
+            }
             return None;
         }
         if !g.roll.contains(x, y) {
@@ -4031,7 +4345,6 @@ impl NoteGrid {
                     now: (x, y),
                     ticks: 0,
                     notes: 0,
-                    lane: None,
                     handle: Some(start),
                 });
                 return None;
@@ -4678,8 +4991,16 @@ mod tests {
         assert!(c.notes.iter().all(|n| n.velocity == 96));
         run(&mut ed, &mut c, EditAction::Row { row: 9, delta: 1 });
         assert!(c.notes.iter().all(|n| n.len == 480));
-        run(&mut ed, &mut c, EditAction::Velocity(1.0));
+        // A lane's stroke: each note its value, the picks kept on them.
+        let set = ed.sel.iter().map(|&i| (i, 127)).collect();
+        let lane = EditAction::Lane {
+            field: Field::Velocity,
+            rev: 0,
+            set,
+        };
+        let d = run(&mut ed, &mut c, lane);
         assert!(c.notes.iter().all(|n| n.velocity == 127));
+        assert_eq!((d.join, ed.sel.len(), ed.velocity), (None, 2, 127));
         let rows = edit_rows(&ed, &c);
         assert_eq!(rows.len(), EDIT_ROWS.len());
         assert_eq!(rows[7].value, "mixed");
@@ -5320,16 +5641,16 @@ mod tests {
             g.touch(3, Touch::Up, empty.0, empty.1, R),
             Some(EventKind::Cell { row: 50, .. })
         ));
-        // The velocity lane: a second finger stops it, and nothing is sent.
+        // The lane: a second finger stops its stroke, and nothing is sent.
         let v = g.geo(R).vel;
-        assert_eq!(g.touch(4, Touch::Down, v.x + 10, v.y + 3, R), None);
-        assert!(g.drag.is_some());
+        assert_eq!(g.touch(4, Touch::Down, v.x + 2, v.y + 20, R), None);
+        assert!(g.stroke.is_some());
         assert_eq!(g.touch(5, Touch::Down, v.x + 40, v.y + 3, R), None);
-        assert_eq!(g.drag, None);
+        assert_eq!(g.stroke, None);
         assert_eq!(g.touch(4, Touch::Move, v.x + 10, v.bottom(), R), None);
         assert!(!matches!(
             g.touch(4, Touch::Up, v.x + 10, v.bottom(), R),
-            Some(EventKind::Value(_))
+            Some(EventKind::Values { .. })
         ));
         assert_eq!(g.touch(5, Touch::Up, v.x + 40, v.y + 3, R), None);
         g.view = view;
@@ -5701,33 +6022,121 @@ mod tests {
         assert_eq!(g.note_rect(R, 1), Some(n1), "back in place once dropped");
     }
 
+    /// The lane under the roll (plan 2A.1): a bar for each place where
+    /// notes start, a stroke drawn along it and sent once, as the finger
+    /// lifts, with each note's own value; of notes that start together a
+    /// picked one is set alone; the chip steps through Velocity, Chance
+    /// and Repeats, SHIFT on Repeats draws the ramp, the ▾ folds it and
+    /// the top edge makes it taller. Then the list.
     #[test]
-    fn the_velocity_lane_and_the_list() {
+    fn the_lane_sets_each_note_along_a_stroke() {
         let mut g = grid();
-        let v = g.geo(R).vel;
-        // A drag of the lane is shown on the picked notes as the finger
-        // moves, and sent once, as the finger lifts: one edit.
+        // A chord at 0: note 0 and a third note, not picked.
+        g.notes.push(NoteBox::of(&Note::new(0, 240, 55, 90), false));
+        let geo = g.geo(R);
+        let (v, body) = (geo.vel, lane_body(&geo));
+        let (lane, notes) = g.lane_of(&geo, Field::Velocity);
+        assert_eq!(notes, vec![vec![0, 2], vec![1]], "two places");
+        assert_eq!(lane.bars[0].value, 100, "the loudest of the chord");
+        assert!(lane.bars[1].picked && !lane.bars[0].picked);
+        // A stroke from the first place's foot to the second's top: shown
+        // as it goes, sent once on the lift, each note its own value.
+        let (x0, x1) = (lane.bars[0].x + 2, lane.bars[1].x + 2);
         let painted_before = painted(&g);
-        assert_eq!(g.touch(1, Touch::Down, v.x + 10, v.y + 3, R), None);
-        assert_eq!(g.drag.and_then(|d| d.lane).map(lane_velocity), Some(127));
-        assert_eq!(g.touch(1, Touch::Move, v.x + 10, v.bottom(), R), None);
-        assert_eq!(g.drag.and_then(|d| d.lane), Some(0.0));
+        assert_eq!(g.touch(1, Touch::Down, x0, body.bottom() - 1, R), None);
+        assert_eq!(g.touch(1, Touch::Move, x1, body.y + 14, R), None);
         assert!(
             differ_in(&painted_before, &painted(&g), v),
-            "the picked note's bar follows the finger"
+            "the bars follow the finger"
         );
+        let Some(EventKind::Values { index, set }) = g.touch(1, Touch::Up, x1, body.y + 14, R)
+        else {
+            panic!("a stroke sends what it changed");
+        };
+        assert_eq!(FIELDS[index], Field::Velocity);
+        // The chord's notes share their place's value, low on a rising
+        // line; the second place is at the top.
+        let ids: Vec<usize> = set.iter().map(|s| s.0).collect();
+        assert_eq!(ids, [0, 2, 1]);
+        assert!(set[0].1 == set[1].1 && set[0].1 < 30, "{set:?}");
+        assert_eq!(set[2].1, 127);
+        assert_eq!(g.stroke, None);
+        // One of the chord picked: that one alone is set.
+        g.notes[2].selected = true;
+        g.touch(2, Touch::Down, x0, body.y + 14, R);
+        let Some(EventKind::Values { set, .. }) = g.touch(2, Touch::Up, x0, body.y + 14, R) else {
+            panic!();
+        };
+        assert_eq!(set, vec![(2, 127)]);
+        // The chip: Chance, then Repeats, then back to Velocity; the
+        // screen's own (a View).
+        let chip = mid(geo.chip);
+        assert!(matches!(
+            g.touch(3, Touch::Down, chip.0, chip.1, R),
+            Some(EventKind::View { .. })
+        ));
+        g.touch(3, Touch::Up, chip.0, chip.1, R);
+        assert_eq!(g.lane.field, Field::Chance);
+        let (lane, _) = g.lane_of(&geo, Field::Chance);
         assert_eq!(
-            g.touch(1, Touch::Up, v.x + 10, v.bottom(), R),
-            Some(EventKind::Value(0.0))
+            (lane.min, lane.max, lane.bars[1].label.as_str()),
+            (1, 100, "100%")
         );
-        assert_eq!(g.drag, None);
+        g.lane.field = Field::Repeats;
+        g.notes[1].ratchet = 3;
+        g.notes[1].ramp = -20;
+        let (lane, _) = g.lane_of(&geo, Field::Repeats);
+        assert_eq!((lane.max, lane.bars[1].label.as_str()), (8, "3↓"));
+        // SHIFT as the finger comes down on Repeats: the ramp, centred,
+        // only on a note that repeats.
+        g.fine = true;
+        g.touch(4, Touch::Down, x1, body.y + 14, R);
+        assert_eq!(g.stroke.as_ref().map(|s| s.field), Some(Field::Ramp));
+        assert_eq!(
+            g.stroke.as_ref().map(|s| s.lane.style),
+            Some(LaneStyle::Centred)
+        );
+        let Some(EventKind::Values { index, set }) = g.touch(4, Touch::Up, x1, body.y + 14, R)
+        else {
+            panic!();
+        };
+        assert_eq!((FIELDS[index], set), (Field::Ramp, vec![(1, 126)]));
+        g.fine = false;
+        // The ▾ folds the lane under, the roll taking the room; the chip
+        // opens it again.
+        let roll_h = geo.roll.h;
+        let fold = mid(geo.fold);
+        assert!(g.touch(5, Touch::Down, fold.0, fold.1, R).is_some());
+        g.touch(5, Touch::Up, fold.0, fold.1, R);
+        let folded = g.geo(R);
+        assert!(g.lane.folded && folded.roll.h > roll_h && folded.fold.is_empty());
+        assert_eq!(
+            g.touch(6, Touch::Down, folded.vel.x + 4, folded.vel.y + 4, R),
+            None
+        );
+        assert_eq!(g.stroke, None, "nothing to draw on folded");
+        g.touch(6, Touch::Up, folded.vel.x + 4, folded.vel.y + 4, R);
+        let chip = mid(folded.chip);
+        g.touch(7, Touch::Down, chip.0, chip.1, R);
+        g.touch(7, Touch::Up, chip.0, chip.1, R);
+        assert!(!g.lane.folded);
+        // The top edge: 40 px up makes it 40 px taller, kept on the lift.
+        let e = g.geo(R).edge;
+        assert_eq!(g.touch(8, Touch::Down, e.x + 100, e.y + 3, R), None);
+        g.touch(8, Touch::Move, e.x + 100, e.y - 37, R);
+        assert!(matches!(
+            g.touch(8, Touch::Up, e.x + 100, e.y - 37, R),
+            Some(EventKind::View { .. })
+        ));
+        assert_eq!(g.geo(R).vel.h, v.h + 40);
+        assert_eq!(g.lane.h, v.h + 40);
         g.lens = Lens::List;
         // Row 1 is the first note in time order.
         let row = g.list_rect(R, 2).unwrap();
-        assert_eq!(
-            g.touch(2, Touch::Down, mid(row).0, mid(row).1, R),
-            Some(EventKind::Select(1))
-        );
+        assert!(matches!(
+            g.touch(9, Touch::Down, mid(row).0, mid(row).1, R),
+            Some(EventKind::Select(_))
+        ));
         assert_eq!(g.button_label(1), "List", "the lens showing");
     }
 

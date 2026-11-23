@@ -523,6 +523,131 @@ pub fn set_velocity(clip: &Clip, sel: &[usize], v: u8) -> Edit {
     })
 }
 
+/// What a lane of the piano roll sets, a value on each note (piano roll
+/// plan 2A.1): its velocity, its chance, how many times it repeats (its
+/// ratchet) or its repeats' velocity ramp.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Field {
+    #[default]
+    Velocity,
+    Chance,
+    Repeats,
+    Ramp,
+}
+
+impl Field {
+    /// The lanes in the order their chip steps through them; the ramp is
+    /// the Repeats lane with SHIFT.
+    pub const LANES: [Field; 3] = [Field::Velocity, Field::Chance, Field::Repeats];
+
+    /// The lowest and highest value it takes: velocity 1 to 127, chance 1
+    /// to 100 %, repeats 1 to [`MAX_RATCHET`](crate::MAX_RATCHET), a ramp
+    /// -[`MAX_RAMP`](crate::MAX_RAMP) to [`MAX_RAMP`](crate::MAX_RAMP).
+    pub fn range(self) -> (i32, i32) {
+        match self {
+            Field::Velocity => (1, 127),
+            Field::Chance => (1, 100),
+            Field::Repeats => (1, i32::from(crate::MAX_RATCHET)),
+            Field::Ramp => (-i32::from(crate::MAX_RAMP), i32::from(crate::MAX_RAMP)),
+        }
+    }
+
+    /// Note `n`'s value of it.
+    pub fn of(self, n: &Note) -> i32 {
+        match self {
+            Field::Velocity => i32::from(n.velocity),
+            Field::Chance => i32::from(n.chance),
+            Field::Repeats => i32::from(n.ratchet),
+            Field::Ramp => i32::from(n.ramp),
+        }
+    }
+
+    /// `n` with its value of it set to `v`, kept within [`Field::range`].
+    /// None where that changes nothing, and for a ramp on a note that
+    /// doesn't repeat (one hit has nothing to ramp).
+    pub fn set(self, n: Note, v: i32) -> Option<Note> {
+        let (lo, hi) = self.range();
+        let v = v.clamp(lo, hi);
+        if v == self.of(&n) {
+            return None;
+        }
+        Some(match self {
+            Field::Velocity => Note {
+                velocity: v as u8,
+                ..n
+            },
+            Field::Chance => Note {
+                chance: v as u8,
+                ..n
+            },
+            Field::Repeats => Note {
+                ratchet: v as u8,
+                ..n
+            },
+            Field::Ramp if n.ratchet <= 1 => return None,
+            Field::Ramp => Note { ramp: v as i8, ..n },
+        })
+    }
+
+    /// As the lane's chip names it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Field::Velocity => "Velocity",
+            Field::Chance => "Chance",
+            Field::Repeats => "Repeats",
+            Field::Ramp => "Ramp",
+        }
+    }
+}
+
+/// Set each note `set` names (an index into the clip's notes) to its value
+/// of `field` (a stroke along one of the piano roll's lanes, plan 2A.1),
+/// kept within the field's range. A note named twice takes its last
+/// value; a note past the clip's, or one the value leaves as it was, is
+/// left out. A chance set on a note of a trigger group (a chord that
+/// rolls as one, [`crate::groups`]) is its whole trigger's, the last one
+/// the stroke gave any of its notes. One edit, however many notes.
+pub fn set_values(clip: &Clip, field: Field, set: &[(usize, i32)]) -> Edit {
+    let mut last: Vec<(usize, i32)> = Vec::with_capacity(set.len());
+    for &(i, v) in set.iter().rev() {
+        if i < clip.notes.len() && !last.iter().any(|&(j, _)| j == i) {
+            last.push((i, v));
+        }
+    }
+    if matches!(field, Field::Chance) && clip.holds == Holds::Notes {
+        // A trigger group's notes share one chance (`crate::groups`): the
+        // value its note was given last in the stroke, for every note of
+        // it, so a stroke across a chord never pulls it apart.
+        let mut shared: HashMap<(Tick, u8), i32> = HashMap::new();
+        for &(i, v) in set {
+            if let Some(n) = clip.notes.get(i).filter(|n| n.group != 0) {
+                shared.insert((n.tick, n.group), v);
+            }
+        }
+        if !shared.is_empty() {
+            last.retain(|&(i, _)| {
+                let n = &clip.notes[i];
+                n.group == 0 || !shared.contains_key(&(n.tick, n.group))
+            });
+            for (i, n) in clip.notes.iter().enumerate() {
+                if let Some(&v) = shared.get(&(n.tick, n.group)).filter(|_| n.group != 0) {
+                    last.push((i, v));
+                }
+            }
+        }
+    }
+    last.sort_unstable_by_key(|&(i, _)| i);
+    replace(
+        clip,
+        last.into_iter()
+            .filter_map(|(i, v)| {
+                let n = clip.notes[i];
+                field.set(n, v).map(|m| (n, m))
+            })
+            .collect(),
+    )
+}
+
 /// Change the `sel` notes' chance by `by` percent, each kept within 1 to
 /// 100.
 pub fn chance(clip: &Clip, sel: &[usize], by: i32) -> Edit {
@@ -1330,6 +1455,83 @@ mod tests {
         assert_eq!(on(&nudge(&c, &[0], -3, Snap::Off)), vec![238, 480]);
         // Round the clip's start.
         assert_eq!(on(&nudge(&c, &[1], -3, Snap::Relative(Q))), vec![250, 3600]);
+    }
+
+    #[test]
+    fn a_chance_stroke_gives_a_chord_that_rolls_as_one_one_chance() {
+        // A three-note chord that rolls as one (group 129) and a note of
+        // its own beside it.
+        let mut c = clip(&[(0, Q, 60), (0, Q, 64), (0, Q, 67), (Q, Q, 72)]);
+        c.holds = Holds::Notes;
+        for n in c.notes.iter_mut().take(3) {
+            n.group = 129;
+        }
+        // A stroke across the chord gives its notes 80, 40 and 60, and
+        // the note beside it 30: the chord takes the last, 60, all three.
+        let e = set_values(&c, Field::Chance, &[(0, 80), (1, 40), (2, 60), (3, 30)]);
+        let mut d = c.clone();
+        d.apply(&e).unwrap();
+        assert!(d.groups_ok());
+        let mut chances: Vec<(u8, u8)> = d.notes.iter().map(|n| (n.note, n.chance)).collect();
+        chances.sort_unstable();
+        assert_eq!(chances, [(60, 60), (64, 60), (67, 60), (72, 30)]);
+        // One note of the chord named: the whole chord takes it.
+        let e = set_values(&c, Field::Chance, &[(1, 25)]);
+        let mut d = c.clone();
+        d.apply(&e).unwrap();
+        assert!(d
+            .notes
+            .iter()
+            .filter(|n| n.group == 129)
+            .all(|n| n.chance == 25));
+        assert_eq!(d.notes.iter().filter(|n| n.group == 129).count(), 3);
+        // Velocity stays each note's own.
+        let e = set_values(&c, Field::Velocity, &[(0, 10), (1, 90)]);
+        let mut d = c.clone();
+        d.apply(&e).unwrap();
+        let mut v: Vec<(u8, u8)> = d.notes.iter().map(|n| (n.note, n.velocity)).collect();
+        v.sort_unstable();
+        assert_eq!(&v[..2], [(60, 10), (64, 90)]);
+    }
+
+    #[test]
+    fn a_lane_stroke_sets_each_note_it_names_in_one_edit() {
+        let mut c = clip(&[(0, 240, 36), (240, 240, 38), (480, 240, 40)]);
+        let cut = RelAddr::new(OnTrack::Inst, 1);
+        c.add_lock(Lock::new(240, Some(38), cut, 800.0)).unwrap();
+        let vels = |d: &Clip| [by(d, 36).velocity, by(d, 38).velocity, by(d, 40).velocity];
+        // A crescendo: each note its own value, one edit, the lock kept.
+        let e = set_values(&c, Field::Velocity, &[(0, 40), (1, 80), (2, 120)]);
+        assert_eq!(e.erase.len(), 3);
+        assert!(e.erase_locks.is_empty(), "no note moved: its locks stay");
+        let d = applied(&c, &e);
+        assert_eq!(vels(&d), [40, 80, 120]);
+        assert_eq!(d.locks.len(), 1);
+        // Kept in range, the last value for a note named twice, notes past
+        // the clip and unchanged notes left out.
+        let e = set_values(&c, Field::Velocity, &[(0, 300), (0, 0), (9, 50), (1, 100)]);
+        assert_eq!(vels(&applied(&c, &e)), [1, 100, 100]);
+        assert_eq!(e.erase.len(), 1, "the second was already 100");
+        assert!(set_values(&c, Field::Velocity, &[(2, 100)]).is_empty());
+        // Chance 1 to 100, repeats 1 to 8.
+        let d = applied(&c, &set_values(&c, Field::Chance, &[(0, 0), (1, 150)]));
+        assert_eq!((by(&d, 36).chance, by(&d, 38).chance), (1, 100));
+        let d = applied(&c, &set_values(&c, Field::Repeats, &[(0, 3), (1, 20)]));
+        assert_eq!(
+            (by(&d, 36).ratchet, by(&d, 38).ratchet),
+            (3, crate::MAX_RATCHET)
+        );
+        // A ramp only on a note that repeats.
+        let at = |d: &Clip, n: u8| d.notes.iter().position(|m| m.note == n).unwrap();
+        let e = set_values(&d, Field::Ramp, &[(at(&d, 36), -40), (at(&d, 40), 40)]);
+        let r = applied(&d, &e);
+        assert_eq!((by(&r, 36).ramp, by(&r, 40).ramp), (-40, 0));
+        assert_eq!(e.erase.len(), 1);
+        assert_eq!(Field::Ramp.range(), (-126, 126));
+        assert_eq!(
+            Field::LANES.map(Field::name),
+            ["Velocity", "Chance", "Repeats"]
+        );
     }
 
     #[test]
