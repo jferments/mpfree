@@ -784,6 +784,8 @@ dependencies = [
  "mpfree-chain-ui",
  "mpfree-clap",
  "mpfree-clap-testplug",
+ "mpfree-compose",
+ "mpfree-context",
  "mpfree-controller",
  "mpfree-core",
  "mpfree-diskimage",
@@ -1439,6 +1441,7 @@ version = "0.1.0"
 dependencies = [
  "mpfree-audiotracks",
  "mpfree-capture",
+ "mpfree-compose",
  "mpfree-play",
  "mpfree-seq",
  "mpfree-transport",

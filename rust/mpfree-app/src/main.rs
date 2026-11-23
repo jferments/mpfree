@@ -7346,6 +7346,7 @@ fn time_action(
             | TimeAction::ConvertPreview { .. }
             | TimeAction::Convert { .. }
             | TimeAction::ConvertCancel
+            | TimeAction::Continue(_)
             | TimeAction::CopyClip { .. }
             | TimeAction::PasteClip { .. }
             | TimeAction::DropClip { .. }
