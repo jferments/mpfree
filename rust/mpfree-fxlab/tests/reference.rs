@@ -19,10 +19,16 @@
 use mpfree_fxlab::reference;
 
 /// The cases whose 8x reference agreed with the 16x one at the first
-/// survey (55 of 96). Not listed: the drives and sync (still folding at
-/// 8x), Squelch's square, Analog's saw at C6 and C7 (fizz 3.7 dB apart
-/// near the floor), FM (feedback noise, the square's steps), and Strings
-/// and Drawbar's combo reed, whose off-harmonic energy grows with the rate.
+/// survey (55 of 96), less one, and Squelch's square since step 1.3 (its
+/// shaper now takes the plain saw, and its own jump gets the step). Not
+/// listed: the drives and sync (still folding at 8x), Analog's saw (C6 and
+/// C7 fizz 3.7 dB
+/// apart near the floor at the survey; C5 left at step 1.2, whose
+/// oscillators run flat to 0.48 of whatever rate they run at, so the 8x
+/// render's fizz rose from -81.8 to -76.5 dB against 16x's -80.8, both
+/// over the 44.1 kHz render's -81.3), FM (feedback noise, the square's
+/// steps), and Strings and Drawbar's combo reed, whose off-harmonic energy
+/// grows with the rate.
 const AGREES: &[&str] = &[
     "Poly saw, C5",
     "Poly saw, C6",
@@ -36,10 +42,12 @@ const AGREES: &[&str] = &[
     "Poly saw, distortion 24 dB, C5",
     "Poly saw, distortion 24 dB, C6",
     "Poly saw, distortion 24 dB, C7",
-    "Analog saw, C5",
     "Squelch saw, C5",
     "Squelch saw, C6",
     "Squelch saw, C7",
+    "Squelch square, C5",
+    "Squelch square, C6",
+    "Squelch square, C7",
     "Squelch saw, drive 100, C5",
     "Squelch saw, drive 100, C6",
     "Squelch saw, drive 100, C7",
@@ -123,5 +131,29 @@ fn y8_every_listed_reference_still_agrees_with_16x() {
     );
     for name in AGREES {
         assert!(rows.iter().any(|r| r.case == *name), "{name} is not a case");
+    }
+}
+
+/// Y3 (reported only, `docs/dev/design/dsp-quality.md`): Analog's
+/// poly-mod at full and each synth's fast filter envelope against their
+/// 8x references. Every number finite.
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "release only: cargo test --release --locked -p mpfree-fxlab --test reference"
+)]
+fn y3_audio_rate_moves_are_measured() {
+    let rows = reference::y3(true);
+    print!("{}", reference::y3_text(&rows));
+    for r in &rows {
+        for v in [
+            r.fizz_db,
+            r.ref_fizz_db,
+            r.harmonic_err_db,
+            r.envelope_err_db,
+            r.level_db,
+        ] {
+            assert!(v.is_finite(), "{}: a Y3 number is not finite", r.case);
+        }
     }
 }

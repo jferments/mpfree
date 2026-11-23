@@ -1516,6 +1516,12 @@ impl TimeAudio {
         self.follower.waits()
     }
 
+    /// The followed device's clock stopped arriving while it played
+    /// ([`Follower::lost`]).
+    pub fn clock_lost(&self) -> bool {
+        self.follower.lost()
+    }
+
     /// A take the app has ready, adding (true) or replacing: the leader's
     /// start records it.
     pub fn take_waits(&mut self, take: Option<bool>) {

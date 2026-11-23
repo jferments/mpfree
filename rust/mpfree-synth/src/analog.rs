@@ -8,15 +8,22 @@
 //!   seconds. Notes go to the cards in turn, as on the old instruments, so
 //!   a repeated chord lands on different cards.
 //! - **Oscillators.** Two per card, each a saw, a pulse, both, or a
-//!   triangle, band-limited with polyBLEP steps placed a sample late, so a
-//!   step anywhere in a sample (a wrap, a pulse edge, a sync reset) gets
-//!   both halves of its correction. Oscillator 1 can be synced to 2; a
-//!   square sub an octave under oscillator 1; white noise. The oscillators
-//!   run on while a card is silent, so each note starts at a different
-//!   phase.
+//!   triangle, band-limited with a 32-sample step (a Kaiser-windowed sinc
+//!   run up to one, tabled 256 points a sample) placed where each jump
+//!   falls between samples: in level at a wrap, a pulse edge (found against
+//!   the moving width) or a sync restart, in slope at the triangle's
+//!   corners and a restart. Each oscillator sounds 16 samples (0.36 ms)
+//!   late, so a step's correction reaches the samples before it as well as
+//!   after, and makes a control step's samples at a time. Oscillator 1 can
+//!   be synced to 2; a square sub an octave under oscillator 1; white
+//!   noise. The oscillators run on while a card is silent, so each note
+//!   starts at a different phase.
 //! - **Poly-mod.** Each card's filter envelope (**PMod env**) and its
 //!   oscillator 2 (**PMod osc 2**, at audio rate) go to oscillator 1's
-//!   pitch, its pulse width and the cutoff, as switched.
+//!   pitch, its pulse width and the cutoff, as switched. Sync and the
+//!   oscillator's poly-mod hear oscillator 2's plain wave within each
+//!   sample, the sample cut where it jumps; the cutoff hears its
+//!   band-limited output.
 //! - **Filter.** **LP 24**: four OTA stages, each `dv/dt = w tanh(x - v)`,
 //!   with the output fed back (k up to 4.1, so it whistles at 100), solved
 //!   with zero-delay feedback each sample, each stage's `tanh(d)/d` taken
@@ -41,6 +48,7 @@
 //! per-note expression are ignored. Nothing allocates after `new`.
 
 use std::f32::consts::PI;
+use std::sync::OnceLock;
 
 use mpfree_node::{
     Ctl, Ctx, Cull, Expr, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed, Tuning,
@@ -162,11 +170,27 @@ struct Shape {
 }
 
 impl Shape {
+    /// The wave for an oscillator's Wave setting.
     fn of(wave: f32) -> Shape {
+        Shape::kind(Shape::index(wave))
+    }
+
+    /// The Wave setting as an index: 0 saw, 1 pulse, 2 both, 3 triangle.
+    fn index(wave: f32) -> u8 {
         match wave as i32 {
+            k @ 1..=3 => k as u8,
+            _ => 0,
+        }
+    }
+
+    /// The wave for an index from [`Shape::index`].
+    #[inline(always)]
+    const fn kind(k: u8) -> Shape {
+        match k {
             1 => Shape {
+                saw: 0.0,
                 pulse: 1.0,
-                ..Shape::default()
+                tri: 0.0,
             },
             2 => Shape {
                 saw: BOTH,
@@ -174,26 +198,26 @@ impl Shape {
                 tri: 0.0,
             },
             3 => Shape {
+                saw: 0.0,
+                pulse: 0.0,
                 tri: 1.0,
-                ..Shape::default()
             },
             _ => Shape {
                 saw: 1.0,
-                ..Shape::default()
+                pulse: 0.0,
+                tri: 0.0,
             },
         }
     }
 
-    const SQUARE: Shape = Shape {
-        saw: 0.0,
-        pulse: 1.0,
-        tri: 0.0,
-    };
-
     /// The wave at phase `p` with no band limiting.
     #[inline(always)]
     fn naive(&self, p: f32, pw: f32) -> f32 {
-        let mut y = self.saw * (2.0 * p - 1.0);
+        let mut y = if self.saw != 0.0 {
+            self.saw * (2.0 * p - 1.0)
+        } else {
+            0.0
+        };
         if self.pulse != 0.0 {
             y += if p < pw { self.pulse } else { -self.pulse };
         }
@@ -202,118 +226,521 @@ impl Shape {
         }
         y
     }
-}
 
-/// A step of height `h` a distance `d` (0 to 1 samples) before the current
-/// sample: half its polyBLEP correction goes on the sample before, which
-/// has not been heard yet, half on this one.
-#[inline(always)]
-fn emit(h: f32, d: f32, pre: &mut f32, post: &mut f32) {
-    let d = d.clamp(0.0, 1.0);
-    let e = 1.0 - d;
-    *pre += 0.5 * h * d * d;
-    *post -= 0.5 * h * e * e;
-}
-
-/// Moves phase `p` on by `inc * span`, emitting the wave's steps (the
-/// saw's drop and the pulse's rise at the wrap, the pulse's fall at its
-/// width) at their distance before the sample, `base` plus the time from
-/// the step to the end of the span. Sets `wrap` to the wrap's distance.
-#[allow(clippy::too_many_arguments)]
-#[inline(always)]
-fn advance(
-    p: f32,
-    inc: f32,
-    span: f32,
-    base: f32,
-    pw: f32,
-    sh: Shape,
-    pre: &mut f32,
-    post: &mut f32,
-    wrap: &mut f32,
-) -> f32 {
-    let end = p + inc * span;
-    if sh.pulse != 0.0 && p < pw && end >= pw {
-        emit(-2.0 * sh.pulse, base + (end - pw) / inc, pre, post);
-    }
-    if end >= 1.0 {
-        let e = end - 1.0;
-        let d = base + e / inc;
-        *wrap = d;
-        emit(2.0 * (sh.pulse - sh.saw), d, pre, post);
-        if sh.pulse != 0.0 && e >= pw {
-            emit(-2.0 * sh.pulse, base + (e - pw) / inc, pre, post);
+    /// The wave's slope at phase `p`, a cycle.
+    #[inline(always)]
+    fn slope(&self, p: f32) -> f32 {
+        let mut s = 2.0 * self.saw;
+        if self.tri != 0.0 {
+            s += if p < 0.5 { 4.0 } else { -4.0 } * self.tri;
         }
-        return e;
+        s
     }
-    end
 }
 
-/// One oscillator: its phase, and the output held back a sample for the
-/// next step's correction.
-#[derive(Clone, Copy, Debug, Default)]
+/// Half the band-limited step's length in samples. Every oscillator sounds
+/// this many samples late, so a step's correction reaches the samples
+/// before it as well as after (DSP quality step 1.2).
+const HALF: usize = 16;
+/// The step's length, and the samples an oscillator keeps taking
+/// corrections.
+const TAPS: usize = 2 * HALF;
+/// Table rows a sample: where between two samples a step falls.
+const PER: usize = 256;
+
+/// The band-limited step, less the plain step it stands for, and its
+/// running integral (the correction for a jump in slope). The step is a
+/// Kaiser-windowed sinc (cutoff 0.48 of the rate, `HALF` samples each side,
+/// beta 7) run up to one. Row `i` holds the `TAPS` samples around a step
+/// `i / PER` of a sample before the newest sample, oldest first.
+struct Steps {
+    level: Box<[[f32; TAPS]]>,
+    ramp: Box<[[f32; TAPS]]>,
+}
+
+/// The step tables, built on the first call (allocates: `Analog::new` calls
+/// it, off the audio thread).
+fn steps() -> &'static Steps {
+    static STEPS: OnceLock<Steps> = OnceLock::new();
+    STEPS.get_or_init(build_steps)
+}
+
+fn build_steps() -> Steps {
+    // Sub-steps a table point, for the integrals.
+    const FINE: usize = 16;
+    let half = HALF as f64;
+    let i0 = |x: f64| {
+        let (mut s, mut t) = (1.0f64, 1.0f64);
+        for k in 1..40 {
+            t *= (x / (2.0 * k as f64)).powi(2);
+            s += t;
+        }
+        s
+    };
+    let beta = 7.0;
+    let kernel = |x: f64| {
+        let u = x / half;
+        if u.abs() >= 1.0 {
+            return 0.0;
+        }
+        let a = std::f64::consts::PI * 0.96 * x;
+        let sinc = if a.abs() < 1e-12 { 1.0 } else { a.sin() / a };
+        sinc * i0(beta * (1.0 - u * u).sqrt()) / i0(beta)
+    };
+    // The kernel's running integral (`s`) and the integral of that (`q`) at
+    // each table point, -HALF to HALF in steps of 1/PER.
+    let n = TAPS * PER;
+    let h = 1.0 / (PER * FINE) as f64;
+    let (mut s, mut q) = (vec![0.0f64; n + 1], vec![0.0f64; n + 1]);
+    let (mut acc, mut area) = (0.0f64, 0.0f64);
+    for k in 0..n {
+        for f in 0..FINE {
+            let x = -half + (k * FINE + f) as f64 * h + 0.5 * h;
+            let before = acc;
+            acc += kernel(x) * h;
+            area += 0.5 * (before + acc) * h;
+        }
+        s[k + 1] = acc;
+        q[k + 1] = area;
+    }
+    let total = acc;
+    let mid = HALF * PER;
+    let row = |i: usize, ramp: bool| -> [f32; TAPS] {
+        std::array::from_fn(|j| {
+            let k = j * PER + i;
+            let x = (k as f64 - mid as f64) / PER as f64;
+            if ramp {
+                (q[k] / total - x.max(0.0)) as f32
+            } else {
+                // Taps before the newest sample's are before the step.
+                (s[k] / total - if j >= HALF { 1.0 } else { 0.0 }) as f32
+            }
+        })
+    };
+    Steps {
+        level: (0..=PER).map(|i| row(i, false)).collect(),
+        ramp: (0..=PER).map(|i| row(i, true)).collect(),
+    }
+}
+
+/// Where an oscillator's wave jumped in a sample: its wrap and its pulse's
+/// fall, each as a distance before the sample (negative: none).
+#[derive(Clone, Copy, Debug)]
+struct Ev {
+    wrap: f32,
+    fall: f32,
+}
+
+impl Ev {
+    const NONE: Ev = Ev {
+        wrap: -1.0,
+        fall: -1.0,
+    };
+}
+
+/// Frames in a control step, as an index.
+const STEP: usize = CTRL as usize;
+/// An oscillator's window: the `TAPS` samples still taking corrections when
+/// a control step starts, then room for the step's own.
+const WIN: usize = TAPS + STEP;
+
+/// One oscillator: its phase, the pulse width it last played, and its
+/// window. In frame `i` of a control step the sample being made is
+/// `w[HALF + i]`, and a step's correction lands on `w[i..i + TAPS]`; when
+/// the step is done its first frames are what plays (so it sounds `HALF`
+/// samples late) and the window moves on.
+#[derive(Clone, Copy, Debug)]
 struct Osc {
     p: f32,
-    held: f32,
+    pw: f32,
+    w: [f32; WIN],
+}
+
+impl Default for Osc {
+    fn default() -> Osc {
+        Osc {
+            p: 0.0,
+            pw: 0.5,
+            w: [0.0; WIN],
+        }
+    }
 }
 
 impl Osc {
-    #[inline(always)]
-    fn step(&mut self, inc: f32, pw: f32, sh: Shape, wrap: &mut f32) -> f32 {
-        let mut post = 0.0;
-        self.p = advance(
-            self.p,
-            inc,
-            1.0,
-            0.0,
-            pw,
-            sh,
-            &mut self.held,
-            &mut post,
-            wrap,
-        );
-        let out = self.held;
-        self.held = sh.naive(self.p, pw) + post;
-        out
+    fn clear(&mut self) {
+        self.w = [0.0; WIN];
     }
 
-    /// A step that starts its cycle again at the master's wrap, `sync`
-    /// samples before the sample (negative: no wrap).
+    /// A jump of `h` in level and `g` in slope (a sample) a distance `d`
+    /// (0 to 1 samples) before frame `at`'s sample, spread over the `TAPS`
+    /// samples around it.
     #[inline(always)]
-    fn step_sync(&mut self, inc: f32, pw: f32, sh: Shape, sync: f32) -> f32 {
-        if sync < 0.0 {
-            let mut w = -1.0;
-            return self.step(inc, pw, sh, &mut w);
+    fn emit(&mut self, st: &Steps, at: usize, h: f32, g: f32, d: f32) {
+        let u = d.clamp(0.0, 1.0) * PER as f32;
+        let i = (u as usize).min(PER - 1);
+        let f = u - i as f32;
+        let w = &mut self.w[at.min(STEP - 1)..][..TAPS];
+        let mut add = |t: &[[f32; TAPS]], k: f32| {
+            for ((y, a), b) in w.iter_mut().zip(&t[i]).zip(&t[i + 1]) {
+                *y += k * (a + (b - a) * f);
+            }
+        };
+        if h != 0.0 {
+            add(&st.level, h);
         }
-        let mut post = 0.0;
-        let mut w = -1.0;
-        let before = advance(
-            self.p,
-            inc,
-            1.0 - sync,
-            sync,
-            pw,
-            sh,
-            &mut self.held,
-            &mut post,
-            &mut w,
-        );
-        let h = sh.naive(0.0, pw) - sh.naive(before, pw);
-        emit(h, sync, &mut self.held, &mut post);
-        self.p = advance(
-            0.0,
-            inc,
-            sync,
-            0.0,
-            pw,
-            sh,
-            &mut self.held,
-            &mut post,
-            &mut w,
-        );
-        let out = self.held;
-        self.held = sh.naive(self.p, pw) + post;
-        out
+        if g != 0.0 {
+            add(&st.ramp, g);
+        }
+    }
+
+    /// Moves the window on after a control step of `n` frames, whose
+    /// samples have been played.
+    #[inline(always)]
+    fn next(&mut self, n: usize) {
+        let mut keep = [0.0f32; TAPS];
+        keep.copy_from_slice(&self.w[n.min(STEP)..][..TAPS]);
+        self.w[..TAPS].copy_from_slice(&keep);
+        self.w[TAPS..].fill(0.0);
+    }
+
+    /// Moves phase `p` on at `inc` across `span` of frame `at`'s sample, a
+    /// span that ends `base` before the sample, the width moving from `pw0`
+    /// to `pw1`, correcting each step on the way: a pulse edge where the
+    /// phase meets the width, the wrap, the triangle's corners. Notes the
+    /// wrap and the fall in `ev`.
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
+    fn seg(
+        &mut self,
+        st: &Steps,
+        at: usize,
+        mut p: f32,
+        inc: f32,
+        span: f32,
+        base: f32,
+        pw0: f32,
+        pw1: f32,
+        sh: Shape,
+        ev: &mut Ev,
+    ) -> f32 {
+        let end = p + inc * span;
+        // Most samples: nothing to correct.
+        if end < 1.0
+            && (sh.tri == 0.0 || p >= 0.5 || end < 0.5)
+            && (sh.pulse == 0.0 || (p < pw0) == (end < pw1))
+        {
+            return end;
+        }
+        let dpw = if span > 0.0 { (pw1 - pw0) / span } else { 0.0 };
+        let mut t = 0.0f32;
+        for _ in 0..8 {
+            let rem = span - t;
+            let tw = if inc > 0.0 {
+                (1.0 - p) / inc
+            } else {
+                f32::INFINITY
+            };
+            let (mut te, mut he) = (f32::INFINITY, 0.0);
+            if sh.pulse != 0.0 {
+                let f0 = p - (pw0 + dpw * t);
+                let rate = inc - dpw;
+                if rate != 0.0 {
+                    let tau = -f0 / rate;
+                    if tau > 1e-6 && tau <= rem && tau < tw {
+                        te = tau;
+                        he = if f0 < 0.0 { -2.0 } else { 2.0 } * sh.pulse;
+                    }
+                }
+            }
+            let tc = if sh.tri != 0.0 && p < 0.5 {
+                (0.5 - p) / inc
+            } else {
+                f32::INFINITY
+            };
+            let next = te.min(tc).min(tw);
+            if next > rem {
+                p += inc * rem;
+                break;
+            }
+            p += inc * next;
+            t += next;
+            let d = base + (span - t);
+            if next == tw {
+                // Past the width before, under it after: the pulse rises.
+                ev.wrap = d;
+                p = 0.0;
+                self.emit(st, at, 2.0 * (sh.pulse - sh.saw), 8.0 * sh.tri * inc, d);
+            } else if next == te {
+                if he < 0.0 {
+                    ev.fall = d;
+                }
+                self.emit(st, at, he, 0.0, d);
+            } else {
+                p = 0.5;
+                self.emit(st, at, 0.0, -8.0 * sh.tri * inc, d);
+            }
+        }
+        p
+    }
+
+    /// A control step's `n` samples of wave `W` (a [`Shape::kind`]), the
+    /// increment and width starting at `inc` and `pw` and moving by `dinc`
+    /// and `dpw` a frame. With `REC`, notes its path in `rec` for
+    /// oscillator 1 to follow. Returns the increment and width the next
+    /// step starts at.
+    #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
+    fn run<const W: u8, const REC: bool>(
+        &mut self,
+        st: &Steps,
+        n: usize,
+        mut inc: f32,
+        dinc: f32,
+        mut pw: f32,
+        dpw: f32,
+        rec: &mut Rec,
+    ) -> (f32, f32) {
+        let sh = Shape::kind(W);
+        let n = n.min(STEP);
+        let (mut p, mut was) = (self.p, self.pw);
+        if REC {
+            rec.v[0] = sh.naive(p, was);
+        }
+        for i in 0..n {
+            let mut ev = Ev::NONE;
+            p = self.seg(st, i, p, inc, 1.0, 0.0, was, pw, sh, &mut ev);
+            was = pw;
+            let y = sh.naive(p, pw);
+            self.w[HALF + i] += y;
+            if REC {
+                rec.v[i + 1] = y;
+                rec.pw[i] = pw;
+                rec.ev[i] = ev;
+            }
+            inc += dinc;
+            pw += dpw;
+        }
+        self.p = p;
+        self.pw = was;
+        (inc, pw)
+    }
+
+    /// [`Osc::run`] for the wave `kind`.
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
+    fn run_kind<const REC: bool>(
+        &mut self,
+        kind: u8,
+        st: &Steps,
+        n: usize,
+        inc: f32,
+        dinc: f32,
+        pw: f32,
+        dpw: f32,
+        rec: &mut Rec,
+    ) -> (f32, f32) {
+        match kind {
+            1 => self.run::<1, REC>(st, n, inc, dinc, pw, dpw, rec),
+            2 => self.run::<2, REC>(st, n, inc, dinc, pw, dpw, rec),
+            3 => self.run::<3, REC>(st, n, inc, dinc, pw, dpw, rec),
+            _ => self.run::<0, REC>(st, n, inc, dinc, pw, dpw, rec),
+        }
+    }
+
+    /// A control step's `n` samples of wave `W` following oscillator 2,
+    /// whose path is in `rec`, as `f` says; otherwise as [`Osc::run`]. A
+    /// frame where oscillator 2 doesn't jump, under sync alone, is a plain
+    /// sample.
+    #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
+    fn run_follow<const W: u8>(
+        &mut self,
+        st: &Steps,
+        n: usize,
+        mut inc: f32,
+        dinc: f32,
+        mut pw: f32,
+        dpw: f32,
+        rec: &Rec,
+        f: &Follow,
+    ) -> (f32, f32) {
+        let sh = Shape::kind(W);
+        for i in 0..n.min(STEP) {
+            if !f.moves && rec.ev[i].wrap < 0.0 {
+                let mut ev = Ev::NONE;
+                let p = self.seg(st, i, self.p, inc, 1.0, 0.0, self.pw, pw, sh, &mut ev);
+                self.p = p;
+                self.pw = pw;
+                self.w[HALF + i] += sh.naive(p, pw);
+            } else {
+                self.step_moved(st, i, inc, pw, sh, rec, f);
+            }
+            inc += dinc;
+            pw += dpw;
+        }
+        (inc, pw)
+    }
+
+    /// [`Osc::run_follow`] for the wave `kind`.
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
+    fn run_follow_kind(
+        &mut self,
+        kind: u8,
+        st: &Steps,
+        n: usize,
+        inc: f32,
+        dinc: f32,
+        pw: f32,
+        dpw: f32,
+        rec: &Rec,
+        f: &Follow,
+    ) -> (f32, f32) {
+        match kind {
+            1 => self.run_follow::<1>(st, n, inc, dinc, pw, dpw, rec, f),
+            2 => self.run_follow::<2>(st, n, inc, dinc, pw, dpw, rec, f),
+            3 => self.run_follow::<3>(st, n, inc, dinc, pw, dpw, rec, f),
+            _ => self.run_follow::<0>(st, n, inc, dinc, pw, dpw, rec, f),
+        }
+    }
+
+    /// Frame `at`'s sample moved by oscillator 2 (`rec`, `f`): restarted
+    /// where it wraps (sync), its increment (`fm`, octaves) and width
+    /// (`pm_pw`) following its wave. The sample is cut where oscillator 2
+    /// jumps, so each jump lands where it happens and its corrections with
+    /// it.
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
+    fn step_moved(
+        &mut self,
+        st: &Steps,
+        at: usize,
+        inc: f32,
+        pw: f32,
+        sh: Shape,
+        rec: &Rec,
+        f: &Follow,
+    ) {
+        let at = at.min(STEP - 1);
+        let m = rec.ev[at];
+        // The cuts: (time from the sample's start, the wave just before and
+        // just after, a restart).
+        let mut cuts = [(0.0f32, 0.0f32, 0.0f32, false); 2];
+        let mut nc = 0;
+        if m.wrap >= 0.0 {
+            cuts[nc] = (1.0 - m.wrap, f.wrap.0, f.wrap.1, f.sync);
+            nc += 1;
+        }
+        if f.moves && m.fall >= 0.0 && f.sh.pulse != 0.0 {
+            let v = f.sh.naive(rec.pw[at], 1.0) - f.sh.pulse;
+            cuts[nc] = (1.0 - m.fall, v + f.sh.pulse, v - f.sh.pulse, false);
+            nc += 1;
+            if nc == 2 && cuts[1].0 < cuts[0].0 {
+                cuts.swap(0, 1);
+            }
+        }
+        let (start, end) = (rec.v[at], rec.v[at + 1]);
+        let (pw_from, pm_pw, fm) = (self.pw, f.pm_pw, f.fm);
+        let width = |t: f32, v: f32| {
+            let b = pw_from * (1.0 - t) + pw * t;
+            if pm_pw > 0.0 {
+                (b + pm_pw * v).clamp(0.05, 0.95)
+            } else {
+                b
+            }
+        };
+        let rate = |a: f32, b: f32| {
+            if fm > 0.0 {
+                (inc * exp2_fast(fm * 0.5 * (a + b))).min(0.45)
+            } else {
+                inc
+            }
+        };
+        let mut ev = Ev::NONE;
+        if nc == 0 {
+            // Oscillator 2 doesn't jump in this sample.
+            let i = rate(start, end);
+            let (w0, w1) = (width(0.0, start), width(1.0, end));
+            let p = self.seg(st, at, self.p, i, 1.0, 0.0, w0, w1, sh, &mut ev);
+            self.p = p;
+            self.pw = pw;
+            self.w[HALF + at] += sh.naive(p, w1);
+            return;
+        }
+        let mut p = self.p;
+        let (mut t0, mut v0) = (0.0f32, start);
+        let (mut inc_was, mut pw_was) = (inc, pw_from);
+        for k in 0..nc + 1 {
+            let (t1, v1) = if k < nc {
+                (cuts[k].0.clamp(t0, 1.0), cuts[k].1)
+            } else {
+                (1.0, end)
+            };
+            let i = rate(v0, v1);
+            let (w0, w1) = (width(t0, v0), width(t1, v1));
+            if k > 0 {
+                let q = if cuts[k - 1].3 { 0.0 } else { p };
+                let h = sh.naive(q, w0) - sh.naive(p, pw_was);
+                let g = sh.slope(q) * i - sh.slope(p) * inc_was;
+                self.emit(st, at, h, g, 1.0 - t0);
+                p = q;
+            }
+            p = self.seg(st, at, p, i, t1 - t0, 1.0 - t1, w0, w1, sh, &mut ev);
+            inc_was = i;
+            pw_was = w1;
+            if k < nc {
+                t0 = t1;
+                v0 = cuts[k].2;
+            }
+        }
+        self.p = p;
+        self.pw = pw;
+        self.w[HALF + at] += sh.naive(p, pw_was);
+    }
+}
+
+/// Oscillator 2's path through a control step, for oscillator 1 to follow:
+/// its plain wave where each frame starts (and where the last ends), its
+/// width and where it jumped in each frame.
+#[derive(Clone, Copy, Debug)]
+struct Rec {
+    v: [f32; STEP + 1],
+    pw: [f32; STEP],
+    ev: [Ev; STEP],
+}
+
+impl Rec {
+    const NONE: Rec = Rec {
+        v: [0.0; STEP + 1],
+        pw: [0.0; STEP],
+        ev: [Ev::NONE; STEP],
+    };
+}
+
+/// How oscillator 1 follows oscillator 2 in a control step: oscillator 2's
+/// wave, and its plain wave just before and after its wrap; sync; and the
+/// poly-mod into oscillator 1's pitch (octaves) and width.
+#[derive(Clone, Copy, Debug)]
+struct Follow {
+    sh: Shape,
+    wrap: (f32, f32),
+    sync: bool,
+    fm: f32,
+    pm_pw: f32,
+    moves: bool,
+}
+
+impl Follow {
+    fn of(fr: &Frame) -> Follow {
+        let Shape { saw, pulse, tri } = fr.sh2;
+        Follow {
+            sh: fr.sh2,
+            wrap: (saw - pulse - tri, pulse - saw - tri),
+            sync: fr.sync,
+            fm: fr.fm,
+            pm_pw: fr.pm_pw,
+            moves: fr.fm > 0.0 || fr.pm_pw > 0.0,
+        }
     }
 }
 
@@ -452,9 +879,9 @@ impl Voice {
         self.dvca = 0.0;
         self.vca_to = 0.0;
         self.cut = false;
-        self.o1.held = 0.0;
-        self.o2.held = 0.0;
-        self.sub.held = 0.0;
+        self.o1.clear();
+        self.o2.clear();
+        self.sub.clear();
     }
 
     /// The four OTA stages for input `x`, cutoff `g` and feedback `k`.
@@ -505,8 +932,10 @@ impl Voice {
 /// What every voice reads in a control step.
 #[derive(Clone, Copy, Debug, Default)]
 struct Frame {
-    sh1: Shape,
     sh2: Shape,
+    /// The waves as [`Shape::index`] gives them.
+    k1: u8,
+    k2: u8,
     l1: f32,
     l2: f32,
     lsub: f32,
@@ -707,6 +1136,136 @@ pub fn attack_shape(t: f32) -> f32 {
     ATTACK_TARGET * (1.0 - (1.0 - 1.0 / ATTACK_TARGET).powf(t))
 }
 
+/// The filter's settings for **Resonance** `r` (0 to 1): the four-pole's
+/// feedback, the two-pole's damping, and the band-pass's gain (its peak
+/// grows as 1/damping; half of that, in dB, is kept).
+#[inline]
+fn resonance_coefs(r: f32) -> (f32, f32, f32) {
+    let damp = SVF_DAMP_MAX * (SVF_DAMP_MIN / SVF_DAMP_MAX).powf(r);
+    (K_MAX * r, damp, damp.sqrt())
+}
+
+/// The oscillators' gain into the filter at **Drive** `drive` (0 to 100).
+#[inline]
+fn drive_gain(drive: f32) -> f32 {
+    IN_GAIN * exp2_fast(DRIVE_OCT * drive / 100.0)
+}
+
+/// What the amplifier makes up after `filter` (0 is LP 24) at feedback
+/// `k`: half the four-pole's passband loss to resonance.
+#[inline]
+fn makeup(filter: u8, k: f32) -> f32 {
+    if filter == 0 {
+        (1.0 + k).sqrt()
+    } else {
+        1.0
+    }
+}
+
+/// The highest cutoff at `fs`.
+#[inline]
+fn cutoff_max(fs: f32) -> f32 {
+    (fs * 0.45).min(20_000.0)
+}
+
+/// The filter's prewarped gain for a cutoff of `fc` Hz at `fs`, held
+/// between 16 Hz and `fmax`.
+#[inline]
+fn cutoff_g(fc: f32, fs: f32, fmax: f32) -> f32 {
+    (PI * fc.clamp(16.0, fmax) / fs).tan()
+}
+
+/// One voice card's filter on its own, for fxlab's filter measures (DSP
+/// quality Y1 and Y2): the voice's own solve, coefficients, drive and
+/// make-up, set from the panel's values with no envelope, tracking or
+/// modulation, in and out at the oscillators' level (the voice's
+/// amplifier and output level left out).
+#[derive(Clone, Copy, Debug)]
+pub struct FilterProbe {
+    v: Voice,
+    fs: f32,
+    filter: u8,
+    g: f32,
+    k: f32,
+    damp: f32,
+    bp_gain: f32,
+    in_gain: f32,
+    out: f32,
+    /// [`FilterProbe::glide`]'s targets and steps a sample.
+    g_to: f32,
+    dg: f32,
+    out_to: f32,
+    dout: f32,
+}
+
+impl FilterProbe {
+    /// A filter at rest at `rate`, set to LP 24 at 1 kHz.
+    pub fn new(rate: u32) -> FilterProbe {
+        let mut p = FilterProbe {
+            v: Voice::default(),
+            fs: rate.max(1) as f32,
+            filter: 0,
+            g: 0.0,
+            k: 0.0,
+            damp: 0.0,
+            bp_gain: 0.0,
+            in_gain: 1.0,
+            out: 1.0,
+            g_to: 0.0,
+            dg: 0.0,
+            out_to: 1.0,
+            dout: 0.0,
+        };
+        p.set(0.0, 1_000.0, 0.0, 0.0);
+        p
+    }
+
+    /// **Filter** `mode` (0 to 3: LP 24, LP 12, BP 12, HP 12), **Cutoff**
+    /// `cutoff` (Hz), **Resonance** and **Drive** (0 to 100). The state
+    /// carries on.
+    pub fn set(&mut self, mode: f32, cutoff: f32, resonance: f32, drive: f32) {
+        self.filter = (mode as u8).min(3);
+        (self.k, self.damp, self.bp_gain) = resonance_coefs(resonance / 100.0);
+        self.in_gain = drive_gain(drive);
+        self.out = makeup(self.filter, self.k) / self.in_gain;
+        self.g = cutoff_g(cutoff, self.fs, cutoff_max(self.fs));
+        (self.g_to, self.dg, self.out_to, self.dout) = (self.g, 0.0, self.out, 0.0);
+    }
+
+    /// One control step of `frames` samples, moved as a card moves: the
+    /// filter's gain in a straight line from the last step's target to
+    /// **Cutoff** `cutoff` (Hz), **Resonance** (0 to 100) at once, and its
+    /// make-up in a straight line (the amplifier's ramp). The mode and
+    /// drive stay.
+    pub fn glide(&mut self, cutoff: f32, resonance: f32, frames: u32) {
+        let per = frames.max(1) as f32;
+        // Last step's ramps have arrived: land exactly.
+        self.g = self.g_to;
+        self.out = self.out_to;
+        (self.k, self.damp, self.bp_gain) = resonance_coefs(resonance / 100.0);
+        self.g_to = cutoff_g(cutoff, self.fs, cutoff_max(self.fs));
+        self.dg = (self.g_to - self.g) / per;
+        self.out_to = makeup(self.filter, self.k) / self.in_gain;
+        self.dout = (self.out_to - self.out) / per;
+    }
+
+    /// One sample through the filter.
+    #[inline]
+    pub fn tick(&mut self, x: f32) -> f32 {
+        let x = x * self.in_gain;
+        let f = if self.filter == 0 {
+            self.v.ota(x, self.g, self.k)
+        } else {
+            self.v
+                .svf(x, self.g, self.damp, self.filter - 1, self.bp_gain)
+        };
+        let y = f * self.out;
+        self.g += self.dg;
+        self.out += self.dout;
+        y
+    }
+}
+
 /// The filter's small-signal gain at `hz` with the amplifier's make-up,
 /// for **Filter** `mode` (LP 24, LP 12, BP 12, HP 12), **Cutoff** `cutoff`
 /// (Hz) and **Resonance** `resonance` (0 to 100): four equal one-poles
@@ -791,6 +1350,8 @@ pub struct Analog {
 
 impl Analog {
     pub fn new(rate: u32) -> Analog {
+        // The step tables, built here off the audio thread.
+        steps();
         let mut values = [0.0; ID_SPACE];
         for p in PARAMS {
             values[p.id as usize] = p.default;
@@ -1250,12 +1811,12 @@ impl Analog {
             0.0
         };
         let sync = self.v(SYNC) > 0.5;
-        let r = self.v(RESONANCE) / 100.0;
+        let (k, damp, bp_gain) = resonance_coefs(self.v(RESONANCE) / 100.0);
         let filter = (self.v(FILTER_TYPE) as u8).min(3);
-        let damp = SVF_DAMP_MAX * (SVF_DAMP_MIN / SVF_DAMP_MAX).powf(r);
         Frame {
-            sh1: Shape::of(self.v(OSC1_WAVE)),
             sh2: Shape::of(self.v(OSC2_WAVE)),
+            k1: Shape::index(self.v(OSC1_WAVE)),
+            k2: Shape::index(self.v(OSC2_WAVE)),
             l1,
             l2,
             lsub: ls,
@@ -1266,12 +1827,10 @@ impl Analog {
             pm_pw,
             pm_cut,
             filter,
-            k: K_MAX * r,
+            k,
             damp,
-            // The band-pass's peak grows as 1/damping; half of that (in dB)
-            // is kept.
-            bp_gain: damp.sqrt(),
-            in_gain: IN_GAIN * exp2_fast(DRIVE_OCT * self.v(DRIVE) / 100.0),
+            bp_gain,
+            in_gain: drive_gain(self.v(DRIVE)),
             g_max: (PI * 0.45).tan(),
         }
     }
@@ -1375,13 +1934,8 @@ impl Analog {
         let kt = self.v(KEY_TRACK) / 100.0;
         let vf = self.v(VEL_FILTER) / 100.0;
         let va = self.v(VEL_AMP) / 100.0;
-        let comp = if fr.filter == 0 {
-            (1.0 + fr.k).sqrt()
-        } else {
-            1.0
-        };
-        let out = OUT_GAIN * comp / fr.in_gain;
-        let fmax = (fs * 0.45).min(20_000.0);
+        let out = OUT_GAIN * makeup(fr.filter, fr.k) / fr.in_gain;
+        let fmax = cutoff_max(fs);
         let mut sounding = 0;
 
         for c in 0..CARDS {
@@ -1464,8 +2018,7 @@ impl Analog {
                 + pm_env_cut * fe
                 + press_cut * v.press
                 + TONE_CUT_OCT * v.ex.tone;
-            let fc = exp2_fast(oct).clamp(16.0, fmax);
-            let g = (PI * fc / fs).tan();
+            let g = cutoff_g(exp2_fast(oct), fs, fmax);
             if fresh {
                 v.g = g;
             }
@@ -1503,45 +2056,63 @@ impl Analog {
         let n = to - from;
         let mut buf = [0.0f32; CTRL as usize];
         let fr = self.fr;
+        let st = steps();
+        let n = n.min(STEP);
+        let moved = fr.sync || fr.fm > 0.0 || fr.pm_pw > 0.0;
+        let mut rec = Rec::NONE;
+        let follow = Follow::of(&fr);
         for v in self.voices.iter_mut() {
             if v.state == FREE {
                 continue;
             }
-            for y in buf.iter_mut().take(n) {
-                let mut wrap = -1.0;
-                let o2 = if fr.need2 {
-                    v.o2.step(v.inc2, v.pw2, fr.sh2, &mut wrap)
+            // Each oscillator makes the step's samples on its own, oscillator
+            // 2 first: sync and poly-mod hear its wave as it is in each frame,
+            // its jumps where they fall; what plays from it (and moves the
+            // cutoff) is its band-limited output.
+            if fr.need2 {
+                let (inc, pw, dinc, dpw) = (v.inc2, v.pw2, v.dinc2, v.dpw2);
+                (v.inc2, v.pw2) = if moved {
+                    v.o2.run_kind::<true>(fr.k2, st, n, inc, dinc, pw, dpw, &mut rec)
                 } else {
-                    0.0
+                    v.o2.run_kind::<false>(fr.k2, st, n, inc, dinc, pw, dpw, &mut rec)
                 };
-                let inc1 = if fr.fm > 0.0 {
-                    (v.inc1 * exp2_fast(fr.fm * o2)).min(0.45)
-                } else {
-                    v.inc1
-                };
-                let pw1 = if fr.pm_pw > 0.0 {
-                    (v.pw1 + fr.pm_pw * o2).clamp(0.05, 0.95)
-                } else {
-                    v.pw1
-                };
-                let o1 = if fr.sync {
-                    v.o1.step_sync(inc1, pw1, fr.sh1, wrap)
-                } else {
-                    v.o1.step(inc1, pw1, fr.sh1, &mut wrap)
-                };
-                let mut x = o1 * fr.l1 + o2 * fr.l2;
+            } else {
+                for _ in 0..n {
+                    v.inc2 += v.dinc2;
+                    v.pw2 += v.dpw2;
+                }
+            }
+            let inc1 = v.inc1;
+            let (inc, pw, dinc, dpw) = (v.inc1, v.pw1, v.dinc1, v.dpw1);
+            (v.inc1, v.pw1) = if moved {
+                v.o1.run_follow_kind(fr.k1, st, n, inc, dinc, pw, dpw, &rec, &follow)
+            } else {
+                v.o1.run_kind::<false>(fr.k1, st, n, inc, dinc, pw, dpw, &mut rec)
+            };
+            if fr.lsub > 0.0 {
+                // An octave under oscillator 1: half its increment, exactly.
+                let (inc, dinc) = (inc1 * 0.5, v.dinc1 * 0.5);
+                v.sub.run::<1, false>(st, n, inc, dinc, 0.5, 0.0, &mut rec);
+            }
+            let mut xs = [0.0f32; STEP];
+            for (i, x) in xs.iter_mut().enumerate().take(n) {
+                let o2 = if fr.need2 { v.o2.w[i] } else { 0.0 };
+                let mut y = v.o1.w[i] * fr.l1 + o2 * fr.l2;
                 if fr.lsub > 0.0 {
-                    let mut w = -1.0;
-                    x += fr.lsub * v.sub.step(v.inc1 * 0.5, 0.5, Shape::SQUARE, &mut w);
+                    y += fr.lsub * v.sub.w[i];
                 }
                 if fr.lnoise > 0.0 {
                     v.noise ^= v.noise << 13;
                     v.noise ^= v.noise >> 17;
                     v.noise ^= v.noise << 5;
-                    x += fr.lnoise * ((v.noise as i32) as f32 * (1.0 / 2_147_483_648.0));
+                    y += fr.lnoise * ((v.noise as i32) as f32 * (1.0 / 2_147_483_648.0));
                 }
-                let x = x * fr.in_gain;
+                *x = y * fr.in_gain;
+            }
+            for (i, y) in buf.iter_mut().enumerate().take(n) {
+                let x = xs[i];
                 let g = if fr.pm_cut > 0.0 {
+                    let o2 = if fr.need2 { v.o2.w[i] } else { 0.0 };
                     (v.g * exp2_fast(fr.pm_cut * o2)).min(fr.g_max)
                 } else {
                     v.g
@@ -1554,10 +2125,13 @@ impl Analog {
                 *y += f * v.vca;
                 v.vca += v.dvca;
                 v.g += v.dg;
-                v.inc1 += v.dinc1;
-                v.inc2 += v.dinc2;
-                v.pw1 += v.dpw1;
-                v.pw2 += v.dpw2;
+            }
+            v.o1.next(n);
+            if fr.need2 {
+                v.o2.next(n);
+            }
+            if fr.lsub > 0.0 {
+                v.sub.next(n);
             }
         }
         let chorus = self.chorus.wet.value > 0.0 || self.chorus.wet.target > 0.0;

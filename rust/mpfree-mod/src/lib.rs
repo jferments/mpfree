@@ -28,9 +28,13 @@
 //!    of the above until it lets go ([`ModEvent::Untouch`]), except a
 //!    step's lock unless recording; locks keep landing underneath, so it
 //!    lets go to what they hold by then. [`ModEvent::hand`] picks `Touch`
-//!    or `Set` for a move.
+//!    or `Set` for a move. [`ModEvent::LetGo`] lets go over a glide
+//!    instead, from the hand's value to what is under it as it goes (the
+//!    XY pad's Go back).
 //! 6. **Matrix:** every row aimed at it adds `source × depth (× via)`,
-//!    and the sum is clamped to the knob's travel.
+//!    and the sum is clamped to the knob's travel. The XY pad's Add
+//!    settings push here, each by a row from one of its host sources
+//!    ([`XY_SOURCES`], -1 to 1).
 //!
 //! Macros and the morph position are targets too (`Owner::Macro`,
 //! `Owner::Morph`): they can be locked on a step, swept by an LFO, and
@@ -80,7 +84,7 @@ pub use bind::{Bank, Binding, Bindings, Moved, QLinkCard, Scope, Write, KNOBS};
 pub use engine::{
     parse_source, source_info, source_text, Change, LetGo, MacroMap, MapCurve, ModEngine, ModError,
     ModEvent, ModStats, ModTimed, Row, Source, DEFAULT_TICK, FOLLOWERS, HOST_SOURCES, LFOS, MACROS,
-    MACRO_TARGETS, MAX_ROWS, MAX_TARGETS,
+    MACRO_TARGETS, MAX_ROWS, MAX_TARGETS, XY_SOURCES,
 };
 pub use follow::Follower;
 pub use lfo::{Lfo, Shape};

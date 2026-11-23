@@ -3158,8 +3158,11 @@ impl crate::time::SongAudio for TrackHost {
 /// (`statvfs`, reads only; it may wait on a failing drive, so the audio
 /// tracks call it on a thread of their own).
 fn drive_room(dir: &std::path::Path) -> Option<mpfree_audiotracks::files::Room> {
-    crate::sys::drive_room(dir)
-        .map(|(writable, free)| mpfree_audiotracks::files::Room { writable, free })
+    crate::sys::drive_room(dir).map(|(writable, free, total)| mpfree_audiotracks::files::Room {
+        writable,
+        free,
+        total,
+    })
 }
 
 #[cfg(test)]
@@ -3198,6 +3201,7 @@ mod tests {
         let here = std::env::temp_dir();
         let room = drive_room(&here).expect("the temp folder's drive answers");
         assert!(room.free > 0);
+        assert!(room.total >= room.free, "{room:?}");
         assert!(drive_room(&here.join("mpfree-no-such-folder-here")).is_none());
     }
 

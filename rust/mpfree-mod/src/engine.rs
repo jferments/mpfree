@@ -18,8 +18,15 @@ pub const MACRO_TARGETS: usize = 8;
 pub const LFOS: usize = 8;
 /// Envelope followers per engine: `Owner::Mod(8)` to `Owner::Mod(11)`.
 pub const FOLLOWERS: usize = 4;
-/// Values the host sets (velocity, pressure, a touch strip...).
-pub const HOST_SOURCES: usize = 8;
+/// Values the host sets ([`ModEvent::Source`]): 0 to 7 for a
+/// controller's expression (velocity, pressure, a touch strip...), then
+/// [`XY_SOURCES`] for the XY pad's Add settings.
+pub const HOST_SOURCES: usize = 24;
+/// The host sources the XY pad claims for its Add settings (the XY
+/// controller plan, phase 2), one per setting: a layout that plays
+/// settings by Add pushes each by a matrix row from its own source, so
+/// the push sums with an LFO and keeps working under locks and moves.
+pub const XY_SOURCES: std::ops::Range<usize> = 8..HOST_SOURCES;
 /// Parameters one engine can look after (internal ones included).
 pub const MAX_TARGETS: usize = 512;
 /// Rows of the mod matrix.
@@ -42,11 +49,18 @@ pub enum Source {
     Follower(u8),
     /// A macro knob's value, 0 to 1.
     Macro(u8),
-    /// A value the host sets ([`ModEvent::Source`]), 0 to 1.
+    /// A value the host sets ([`ModEvent::Source`]): 0 to 1 for a
+    /// controller's expression, -1 to 1 for the XY pad's push (an Add
+    /// setting pushes down as well as up).
     Host(u8),
 }
 
 impl Source {
+    /// One of the XY pad's host sources ([`XY_SOURCES`]).
+    pub fn is_xy(self) -> bool {
+        matches!(self, Source::Host(n) if XY_SOURCES.contains(&(n as usize)))
+    }
+
     fn valid(self) -> bool {
         match self {
             Source::Lfo(n) => (n as usize) < LFOS,
@@ -152,7 +166,18 @@ pub enum ModEvent {
     Untouch {
         addr: ParamAddr,
     },
-    /// A host source's value, 0 to 1.
+    /// The hand lets go over `frames`: the target glides from the hand's
+    /// value to what the layers under it hold as it goes (a lock, a lane,
+    /// a macro, the morph, the base), so it lands where they are by then,
+    /// not where it started (the XY pad's Go back). A new touch takes it
+    /// over; an `Untouch` ends it at once. A switch, a stepped knob or 0
+    /// frames lets go at once, as `Untouch` does.
+    LetGo {
+        addr: ParamAddr,
+        frames: u32,
+    },
+    /// A host source's value: 0 to 1 for a controller's expression, -1 to
+    /// 1 for the XY pad's push ([`Source::Host`]).
     Source {
         n: u8,
         value: f32,
@@ -257,6 +282,9 @@ struct Target {
     /// A hand's value and knob position, and whether it beats a step's
     /// lock.
     touch: Option<(f32, f32, bool)>,
+    /// A hand letting go over time ([`ModEvent::LetGo`]): frames left and
+    /// in all (0 in all: none).
+    fade: (u32, u32),
     /// Let-gos waiting for the next block's first frame
     /// ([`ModEngine::let_go_later`]): [`LetGo::bit`]s.
     late: u8,
@@ -287,6 +315,7 @@ impl Target {
             lock: None,
             lane: false,
             touch: None,
+            fade: (0, 0),
             late: 0,
             scene: [None; 2],
             mac: None,
@@ -323,6 +352,14 @@ impl Target {
 
     fn is_switch(&self) -> bool {
         matches!(self.info.curve, Curve::Toggle | Curve::Choice(_))
+    }
+
+    /// The hand lets go now.
+    fn untouch(&mut self) {
+        if self.touch.take().is_some() {
+            self.dirty = true;
+        }
+        self.fade = (0, 0);
     }
 }
 
@@ -609,7 +646,8 @@ impl ModEngine {
         self.find(addr).is_some_and(|i| self.targets[i].moving())
     }
 
-    /// A hand holds it ([`ModEvent::Touch`] without its `Untouch` yet).
+    /// A hand holds it ([`ModEvent::Touch`] without its `Untouch` yet, or
+    /// letting go over a [`ModEvent::LetGo`]).
     pub fn is_touched(&self, addr: ParamAddr) -> bool {
         self.find(addr)
             .is_some_and(|i| self.targets[i].touch.is_some())
@@ -644,6 +682,7 @@ impl ModEngine {
     pub fn let_go_all(&mut self) {
         for t in &mut self.targets {
             let held = t.touch.take().is_some();
+            t.fade = (0, 0);
             let locked = t.lock.take().is_some();
             if held || locked {
                 t.dirty = true;
@@ -820,7 +859,8 @@ impl ModEngine {
         self.rows.iter().map(|r| r.row)
     }
 
-    /// A source's value now (-1 to 1 for an LFO, else 0 to 1).
+    /// A source's value now (-1 to 1 for an LFO and the XY pad's host
+    /// sources, else 0 to 1).
     pub fn source(&self, s: Source) -> f32 {
         match s {
             Source::Lfo(n) => self.lfo_out.get(n as usize).copied().unwrap_or(0.0),
@@ -966,7 +1006,10 @@ impl ModEngine {
                 );
             }
         }
-        for (i, r) in self.rows().enumerate() {
+        // The XY pad's rows belong to its layout, which makes them again
+        // when it plays: they aren't saved with the set-up.
+        let saved = self.rows().filter(|r| !r.source.is_xy());
+        for (i, r) in saved.enumerate() {
             let _ = writeln!(
                 out,
                 "row.{i} = {} {} {} {}",
@@ -1226,8 +1269,8 @@ impl ModEngine {
             if t.late & LetGo::Lock.bit() != 0 && t.lock.take().is_some() {
                 t.dirty = true;
             }
-            if t.late & LetGo::Touch.bit() != 0 && t.touch.take().is_some() {
-                t.dirty = true;
+            if t.late & LetGo::Touch.bit() != 0 {
+                t.untouch();
             }
             t.late = 0;
         }
@@ -1292,6 +1335,7 @@ impl ModEngine {
                     let t = &mut self.targets[i];
                     let v = t.info.clamp(value);
                     t.touch = Some((v, t.info.to_unit(v), over_locks));
+                    t.fade = (0, 0);
                     t.dirty = true;
                 }
                 None => {
@@ -1301,8 +1345,17 @@ impl ModEngine {
             },
             ModEvent::Untouch { addr } => {
                 if let Some(i) = self.find(addr) {
+                    self.targets[i].untouch();
+                }
+            }
+            ModEvent::LetGo { addr, frames } => {
+                if let Some(i) = self.find(addr) {
                     let t = &mut self.targets[i];
-                    if t.touch.take().is_some() {
+                    let smooth = !t.is_switch() && t.info.curve != Curve::Stepped;
+                    if frames == 0 || !smooth {
+                        t.untouch();
+                    } else if t.touch.is_some() {
+                        t.fade = (frames, frames);
                         t.dirty = true;
                     }
                 }
@@ -1310,7 +1363,7 @@ impl ModEngine {
             ModEvent::Source { n, value } => {
                 if let Some(h) = self.host.get_mut(n as usize) {
                     *h = if value.is_finite() {
-                        value.clamp(0.0, 1.0)
+                        value.clamp(-1.0, 1.0)
                     } else {
                         0.0
                     };
@@ -1345,9 +1398,19 @@ impl ModEngine {
             );
         }
         if full {
+            let tick = self.tick;
             for t in &mut self.targets {
                 if t.rows > 0 {
                     t.offset = 0.0;
+                }
+                if t.fade.1 > 0 {
+                    // A hand letting go moves on a tick, and is gone once
+                    // the glide is over.
+                    t.fade.0 = t.fade.0.saturating_sub(tick);
+                    if t.fade.0 == 0 {
+                        t.untouch();
+                    }
+                    t.dirty = true;
                 }
             }
             for r in &self.rows {
@@ -1425,8 +1488,15 @@ impl ModEngine {
         if let Some((h, hu, over_locks)) = t.touch {
             // A step's lock keeps its value under a hand, unless recording.
             if over_locks || t.lane || t.lock.is_none() {
-                u = hu;
-                exact = Some(h);
+                let (left, all) = t.fade;
+                if all > 0 {
+                    // Letting go: from the hand to what is under it now.
+                    u += (hu - u) * (left as f32 / all as f32);
+                    exact = None;
+                } else {
+                    u = hu;
+                    exact = Some(h);
+                }
             }
         }
         if t.rows > 0 {
