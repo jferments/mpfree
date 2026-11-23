@@ -110,6 +110,8 @@ Nothing opens the card until the pad player asks, so a stick with these units st
 
 Tests (`sd_card::tests`) run it against a stand-in service thread: open, the counter moving, close; an earlier opening's status (an empty slot, or open without its mount) not taken for this one's; an empty slot and a card it doesn't read; a request nobody answers, taken back; a stick without the service; a window taken over; a drop that closes; the counter and the close never written through a link.
 
+Its writes are all in its own `/run/mpfree-app`, and both review checks name them line by line: `test_app_mpc.py`'s write check, and CI's static no-write step (`mpc-inventory.yml`), which allows the app's file deletes only in the Plugins store and in `sd_card.rs`'s two (a request taken back, and its own half-written file). Its tests' stand-in mount lists don't name real devices (`/dev/mmc…`, `/dev/sd…`), which that step refuses anywhere in the app's code; a mount is found by its mount point alone.
+
 **What S0 settles before the Browser opens it:** whether Akai's kernel has `vfat` and `exfat` built in (or the stick preloads them, with the code pages FAT needs); how Akai's system mounted the card (the options to match); whether the card shows as one partition; and how long a card takes to answer after the bind (10 s allowed).
 
 ## Step S2: saving to the card (design, not built)
