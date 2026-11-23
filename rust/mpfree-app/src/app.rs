@@ -163,6 +163,10 @@ pub enum View {
     /// live test 3). Projects (New, Open, Save), samples and the rest. Not
     /// a tab.
     Browser,
+    /// System status (layout spec 2a): what is wrong, which part, what to
+    /// do. The status chip and Prefs > System status open it over the
+    /// page; the chip again, MENU or a tab closes it. Not a tab.
+    SystemStatus,
 }
 
 /// The header's tabs, in the order of the approved layout spec
@@ -265,7 +269,8 @@ impl View {
             | View::Prefs
             | View::System
             | View::Macros
-            | View::Browser => None,
+            | View::Browser
+            | View::SystemStatus => None,
             v => Some(v),
         }
     }
@@ -309,6 +314,7 @@ impl View {
             View::Chain => "FX chain",
             View::Macros => "Macros",
             View::Browser => "Browser",
+            View::SystemStatus => "System status",
         }
     }
 }
@@ -934,6 +940,7 @@ pub enum Item {
     SoundCores,
     MapControls,
     SystemInfo,
+    SystemStatus,
     Rate,
     Tempo,
     PadLevel,
@@ -995,6 +1002,7 @@ fn opens_something(item: Item) -> bool {
             | Item::TouchLab
             | Item::MapControls
             | Item::SystemInfo
+            | Item::SystemStatus
             | Item::ClearLogs
             | Item::ClearConsole
     )
@@ -1465,6 +1473,8 @@ pub enum Effect {
     /// A control for the browser while it shows (BROWSE, or the Pads
     /// tab's Browse view).
     Browse(BrowseKey),
+    /// A control for System status while it shows.
+    StatusPage(StatusKey),
     /// SHIFT + BROWSE: save the project (the audio loop gathers its
     /// engines' parts and the screen saves them).
     SaveProject,
@@ -1481,6 +1491,15 @@ pub enum Effect {
     /// FILL on or off from the coming period: notes with the FILL and
     /// !FILL trig conditions follow it.
     Fill(bool),
+}
+
+/// A hardware control for System status.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatusKey {
+    /// The wheel, or - / +: the next or previous system.
+    Step(i32),
+    /// The wheel's push: open the picked system's first card.
+    Open,
 }
 
 /// What a control does to the Pads tab's browser (Browse view).
@@ -1858,6 +1877,8 @@ const PREFS_ROWS: &[Item] = &[
     Item::LoopLatency,
     Item::SendsMidi,
     Item::SystemInfo,
+    // System status (layout spec 2a), as the status chip opens it.
+    Item::SystemStatus,
     Item::Appearance,
     Item::AtStart,
     Item::Export,
@@ -3597,6 +3618,9 @@ impl App {
             fx.push(Effect::Reset);
         } else if Some(note) == self.map.data_push && self.browsing() {
             fx.push(Effect::Browse(BrowseKey::Push));
+        } else if Some(note) == self.map.data_push && self.view == View::SystemStatus {
+            // System status: the push opens the picked system's first card.
+            fx.push(Effect::StatusPage(StatusKey::Open));
         } else if Some(note) == self.map.data_push {
             fx.extend(self.wheel_push());
         } else if Some(note) == self.map.minus || Some(note) == self.map.plus {
@@ -3638,6 +3662,8 @@ impl App {
                 } else {
                     BrowseKey::Back
                 }));
+            } else if self.view == View::SystemStatus {
+                fx.push(Effect::StatusPage(StatusKey::Step(d)));
             } else if self.view.sampler() && shift {
                 // SHIFT + - / +: zoom the waveform (Wave, Warp, Chop).
                 fx.push(Effect::SampleWheel(d));
@@ -4103,6 +4129,8 @@ impl App {
             View::Synth if self.shift => vec![Effect::SynthPage(delta.signum())],
             View::Browser if self.shift => vec![Effect::Browse(BrowseKey::Places(delta.signum()))],
             View::Browser => vec![Effect::Browse(BrowseKey::Wheel(delta))],
+            // System status: the wheel steps the systems.
+            View::SystemStatus => vec![Effect::StatusPage(StatusKey::Step(delta.signum()))],
             View::Sample | View::Pads if self.shift => vec![Effect::SamplePad(delta.signum())],
             // Pages with rows: the wheel picks a row, or, once the wheel's
             // push opened it, changes its value (RowKey).
@@ -4182,7 +4210,8 @@ impl App {
                 | View::Prefs
                 | View::System
                 | View::Macros
-                | View::Browser => self.back,
+                | View::Browser
+                | View::SystemStatus => self.back,
                 w => w,
             };
         }
@@ -4245,6 +4274,30 @@ impl App {
     /// over the page, or closes back to it, as BROWSE does.
     pub fn toggle_browser(&mut self) -> Vec<Effect> {
         self.toggle(View::Browser)
+    }
+
+    /// The status chip: System status opens over the page, or closes back
+    /// to it.
+    pub fn toggle_status(&mut self) -> Vec<Effect> {
+        self.toggle(View::SystemStatus)
+    }
+
+    /// A System status card's button: it does only what it says. Silence
+    /// all notes is STOP's second press (the latch goes too). Show what's
+    /// missing opens the browser, whose status line names what the project
+    /// left out. Open the last project comes here only when the screen
+    /// couldn't open it at once (the safe start's new project has changes):
+    /// the browser opens, where opening a project asks about them first.
+    pub fn status_action(&mut self, a: mpfree_status::Action) -> Vec<Effect> {
+        match a {
+            mpfree_status::Action::SilenceNotes => {
+                self.latched = false;
+                self.stop_sounds()
+            }
+            mpfree_status::Action::ShowMissing | mpfree_status::Action::OpenLastProject => {
+                self.show(View::Browser)
+            }
+        }
     }
 
     /// The Pads tab's Browse for: the browser opens over the page (its
@@ -4339,6 +4392,8 @@ impl App {
             View::Prefs if self.prefs_section != PrefsSection::Main => self.leave_prefs_section(),
             View::Prefs => self.toggle(View::Prefs),
             View::System => self.show(View::Prefs),
+            // MENU closes System status, back to the page under it.
+            View::SystemStatus => self.toggle(View::SystemStatus),
             View::Pattern => Vec::new(),
             _ => self.toggle(View::Options),
         }
@@ -4825,6 +4880,7 @@ impl App {
             ),
             Item::MapControls => ("Map controls", "Open".to_string()),
             Item::SystemInfo => ("System info", "Open".to_string()),
+            Item::SystemStatus => ("System status", "Open".to_string()),
             Item::Rate => ("Note repeat rate", s.rate.label().to_string()),
             Item::Tempo => ("Tempo", format!("{:.1} BPM", s.bpm)),
             Item::Metronome => (
@@ -5058,6 +5114,12 @@ impl App {
                 "operating system, the kernel and the",
                 "hardware it runs on, read when it opens.",
                 "MENU goes back to Prefs.",
+            ],
+            Item::SystemStatus => vec![
+                "What is wrong, if anything: each part of",
+                "the MPC and its problems, with what to try.",
+                "The status chip at the top right opens it",
+                "too. MENU closes it.",
             ],
             Item::Rate => vec![
                 "How often a held pad repeats with NOTE REPEAT",
@@ -5552,6 +5614,7 @@ impl App {
             Item::CalibrateTouch => return vec![Effect::CalibrateTouch],
             Item::TouchLab => return vec![Effect::TouchLab],
             Item::SystemInfo => return self.show(View::System),
+            Item::SystemStatus => return self.show(View::SystemStatus),
             Item::DebugMode => fx.extend(self.set_debug_mode(d > 0)),
             Item::SoundCores => {
                 let next = cycle(&SoundCores::ALL, s.sound_cores, d);

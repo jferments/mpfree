@@ -46,6 +46,9 @@ pub struct Look<'a> {
     /// The audio session isn't answering (the session chip's No reply or
     /// Stopped).
     pub session_lost: Option<bool>,
+    /// The pads play without Akai's setup (the session chip's yellow No
+    /// session: the session didn't start within 20 s).
+    pub no_setup: Option<bool>,
     /// The open project left parts out.
     pub parts_missing: Option<bool>,
     /// Part of the sound didn't get its core.
@@ -56,10 +59,11 @@ pub struct Look<'a> {
 }
 
 /// The states a look follows, each a kind that begins and ends.
-const STATES: [&Kind; 5] = [
+const STATES: [&Kind; 6] = [
     &kinds::NEAR_LIMIT,
     &kinds::MEMORY_LOW,
     &kinds::NO_SESSION,
+    &kinds::NO_SETUP,
     &kinds::PARTS_MISSING,
     &kinds::ONE_CORE,
 ];
@@ -70,7 +74,7 @@ pub struct Watch {
     /// The counters at the last look (None before the first).
     counts: Option<(u64, u64)>,
     /// Each of [`STATES`] reported going.
-    on: [bool; 5],
+    on: [bool; 6],
     /// Every port named missing this session: port `i` is `Subject(i + 1)`.
     ports: Vec<String>,
     /// Ports reported missing now, by their place in `ports`.
@@ -125,6 +129,7 @@ impl Watch {
             l.near_limit,
             memory,
             l.session_lost,
+            l.no_setup,
             l.parts_missing,
             l.one_core,
         ];
@@ -302,6 +307,13 @@ mod tests {
                 "began mpc/one-core"
             ]
         );
+        // The session chip's yellow No session, then the session late.
+        let setup = |on| Look {
+            no_setup: Some(on),
+            ..Look::default()
+        };
+        assert_eq!(look(&mut w, setup(true)), ["began controls/no-setup"]);
+        assert_eq!(look(&mut w, setup(false)), ["ended controls/no-setup"]);
     }
 
     #[test]

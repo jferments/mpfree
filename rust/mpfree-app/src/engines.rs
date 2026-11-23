@@ -177,15 +177,14 @@ pub fn read(shared: &EngineShared) -> Snapshot {
     s
 }
 
-/// The top bar's CPU chip: the audio thread's mean share of the period
-/// over the last window ("CPU 21 %"), coloured by its worst block against
-/// the audio thread's budget. None until the loop has published.
-pub fn cpu_chip(shared: &EngineShared) -> Option<(String, Tone)> {
+/// How much of the processor the sound used in the period's last window
+/// (%): the audio thread's mean share of the period, the status chip's
+/// CPU number ("CPU 21 %"; its colour comes from the board: System
+/// status). None until the loop has published.
+pub fn cpu_pct(shared: &EngineShared) -> Option<f64> {
     let (w, _) = read(shared)[PERIOD];
     let w = w.filter(|w| w.blocks > 0)?;
-    let mean = MPC.pct(w.mean_ns);
-    let t = judged(PERIOD, &w).1.map_or(Tone::Dim, tone);
-    Some((format!("CPU {mean:.0} %"), t))
+    Some(MPC.pct(w.mean_ns))
 }
 
 /// Whether the whole period's last window was Tight or Over against its

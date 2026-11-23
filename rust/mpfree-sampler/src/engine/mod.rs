@@ -280,6 +280,7 @@ impl Engine {
                     pads: Live::OWN,
                     locks: Live::OWN,
                     program: [0.0; ProgramField::COUNT],
+                    bend: 0.0,
                 };
                 kits
             ],
