@@ -84,6 +84,24 @@ pub enum Pick {
     /// Projects. Opening one replaces the work in progress, so it asks
     /// first when that has changed since it was last saved.
     Project,
+    /// The XY pad's layouts saved from another song (the XY pad's list's
+    /// From the browser, layout spec 4o): Load hands the file over with
+    /// [`BrowseAction::LoadPreset`], its `engine` [`XY_FOLDER`].
+    XyLayout,
+}
+
+/// The XY layouts picker's line before any was saved.
+pub const NO_XY_LAYOUTS: &str =
+    "No XY layouts saved yet: Save to browser in Setup keeps one for other songs";
+
+/// The folder under Instruments that Setup's Save to browser keeps the XY
+/// pad's layouts in, one `.preset` file each, as an engine's presets are
+/// kept (the app writes and reads the text).
+pub const XY_FOLDER: &str = "XY pad";
+
+/// Whether `loc` is in the XY pad's folder under Instruments.
+pub fn in_xy_folder(loc: &Loc) -> bool {
+    loc.place == Place::Instruments && loc.names().first().is_some_and(|n| n == XY_FOLDER)
 }
 
 impl Pick {
@@ -103,6 +121,7 @@ impl Pick {
             }
             Pick::Sample => &[Place::Samples, Place::Recordings],
             Pick::Project => &[Place::Projects],
+            Pick::XyLayout => &[Place::Instruments],
         };
         SOURCES
             .iter()
@@ -124,6 +143,9 @@ impl Pick {
                 .unwrap_or_else(|_| Loc::top(Place::Instruments)),
             Pick::Sample => Loc::top(Place::Samples),
             Pick::Project => Loc::top(Place::Projects),
+            Pick::XyLayout => Loc::top(Place::Instruments)
+                .join(XY_FOLDER)
+                .unwrap_or_else(|_| Loc::top(Place::Instruments)),
         }
     }
 
@@ -134,6 +156,7 @@ impl Pick {
             Pick::Preset { .. } => "Presets".into(),
             Pick::Sample => "Load a sound".into(),
             Pick::Project => "Open a project".into(),
+            Pick::XyLayout => "XY layouts".into(),
         }
     }
 
@@ -149,12 +172,15 @@ impl Pick {
                 matches!(r.kind, Kind::Folder | Kind::Preset)
                     && loc.place == Place::Instruments
                     && (engine.is_empty() || preset_engine(loc) == *engine)
+                    // The XY pad's layouts are not a synth's.
+                    && !in_xy_folder(loc)
             }
             Pick::Sample => {
                 matches!(r.kind, Kind::Folder | Kind::Audio(_))
                     && matches!(loc.place, Place::Samples | Place::Recordings)
             }
             Pick::Project => r.kind == Kind::Project,
+            Pick::XyLayout => matches!(r.kind, Kind::Folder | Kind::Preset) && in_xy_folder(loc),
         }
     }
 
@@ -499,6 +525,14 @@ pub enum BrowseAction {
         engine: String,
         name: String,
     },
+    /// One of the XY pad's layouts was saved ([`Browser::save_xy_layout`]),
+    /// `name` without its `.preset`.
+    XyLayoutSaved {
+        loc: Loc,
+        name: String,
+    },
+    /// It wasn't: the line saying why.
+    XyLayoutNotSaved(String),
     /// A picker closed (`loaded`: by loading or opening something, else
     /// by Cancel). The app hides the overlay.
     PickerClosed {
@@ -948,6 +982,9 @@ pub struct Browser {
     /// A preset being saved (engine, name, text), until the library says
     /// how it went: a name already there asks before replacing it.
     saving_preset: Option<(String, String, String)>,
+    /// One of the XY pad's layouts being saved, by name
+    /// ([`Browser::save_xy_layout`]).
+    saving_xy: Option<String>,
     /// The work in progress changed since it was last saved or opened.
     unsaved: bool,
     /// An open of autosave's project is under way: still unsaved once it
@@ -1042,6 +1079,7 @@ impl Browser {
             presets: Vec::new(),
             preset_now: PresetNow::default(),
             saving_preset: None,
+            saving_xy: None,
             unsaved: false,
             recovering: false,
             before_open: None,
@@ -1212,6 +1250,21 @@ impl Browser {
                     self.status = Some((format!("{name} wasn't saved: {e}"), true));
                     return;
                 }
+                if let Some(name) = self.saving_xy.take() {
+                    let line = format!("{name} wasn't saved to the browser: {e}");
+                    self.actions
+                        .push(BrowseAction::XyLayoutNotSaved(line.clone()));
+                    self.status = Some((line, true));
+                    return;
+                }
+                // The XY layouts picker before any was saved: its folder
+                // isn't there either.
+                if let Some(Pick::XyLayout) = &self.pick {
+                    if self.at_pick_root() && self.rows.is_empty() {
+                        self.status = Some((NO_XY_LAYOUTS.to_string(), false));
+                        return;
+                    }
+                }
                 // A preset picker for an engine with no presets saved yet:
                 // its folder isn't there, which is not a fault.
                 if let Some(Pick::Preset { engine }) = &self.pick {
@@ -1291,6 +1344,14 @@ impl Browser {
                         what: Confirm::ReplacePreset { engine, name, text },
                     };
                 }
+            }
+            Ok(Outcome::Preset(PresetSave::Saved(loc))) if in_xy_folder(&loc) => {
+                // Setup's Save to browser: one of the XY pad's layouts.
+                let name = mpfree_library::preset_name(loc.name()).to_string();
+                self.saving_xy = None;
+                self.remember(loc.clone());
+                self.actions.push(BrowseAction::XyLayoutSaved { loc, name });
+                self.refresh();
             }
             Ok(Outcome::Preset(PresetSave::Saved(loc))) => {
                 self.saving_preset = None;
@@ -1699,8 +1760,9 @@ impl Browser {
         rows.retain(|r| self.filter.shows(r.kind));
         if let Some(p) = &self.pick {
             rows.retain(|r| p.shows(r));
-            if matches!(p, Pick::Preset { .. }) {
-                // Presets by their names, as the Synth tab lists them.
+            if matches!(p, Pick::Preset { .. } | Pick::XyLayout) {
+                // Presets by their names, as the Synth tab lists them (and
+                // the XY pad's layouts, as its list does).
                 for r in rows.iter_mut().filter(|r| r.kind == Kind::Preset) {
                     r.name = mpfree_library::preset_name(&r.name).to_string();
                 }
@@ -2149,6 +2211,22 @@ impl Browser {
             name,
             text,
             replace,
+        });
+    }
+
+    /// Setup's Save to browser (layout spec 4o): saves `text`, one of the
+    /// XY pad's layouts as the app writes it, as `name` in
+    /// Instruments › [`XY_FOLDER`]. One saved before under that name goes
+    /// to the Trash first, so it can be put back. Answered with
+    /// [`BrowseAction::XyLayoutSaved`] or
+    /// [`BrowseAction::XyLayoutNotSaved`].
+    pub fn save_xy_layout(&mut self, name: &str, text: String) {
+        self.saving_xy = Some(name.to_string());
+        self.send(Job::SavePreset {
+            engine: XY_FOLDER.to_string(),
+            name: name.to_string(),
+            text,
+            replace: true,
         });
     }
 
@@ -3619,9 +3697,14 @@ impl Browser {
                 ..Detail::default()
             };
         };
+        let xy = r.kind == Kind::Preset && r.loc.as_ref().is_some_and(in_xy_folder);
         let mut d = Detail {
             title: r.name.clone(),
-            kind: kind_label(r.kind),
+            kind: if xy {
+                "XY layout".into()
+            } else {
+                kind_label(r.kind)
+            },
             ..Detail::default()
         };
         if let Some(from) = &r.trash_id.as_ref().and(Some(&r.detail)) {
@@ -3738,7 +3821,7 @@ impl Browser {
                 d.buttons = vec![Button::Rename, Button::Copy, Button::Cut, Button::Delete];
             }
             Kind::Preset => {
-                if let Some(e) = loc.map(preset_engine).filter(|e| !e.is_empty()) {
+                if let Some(e) = loc.map(preset_engine).filter(|e| !e.is_empty() && !xy) {
                     d.lines.push(("Engine".into(), e));
                 }
                 d.lines.push(("Size".into(), r.detail.clone()));

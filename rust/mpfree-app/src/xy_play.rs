@@ -77,12 +77,13 @@ pub trait Reach {
 
 /// Where setting `addr` of a layout that follows the selected track goes,
 /// with track `track` selected: a synth's setting means that track's
-/// synth; everything else stays where it is.
+/// synth, and an arp's that track's arp; everything else stays where it
+/// is.
 pub fn followed(addr: ParamAddr, track: u8) -> ParamAddr {
+    use mpfree_play::mpfree_param::Owner;
     match addr.owner {
-        mpfree_play::mpfree_param::Owner::Inst(_) => {
-            ParamAddr::new(mpfree_play::mpfree_param::Owner::Inst(track), addr.param)
-        }
+        Owner::Inst(_) => ParamAddr::new(Owner::Inst(track), addr.param),
+        Owner::Arp(_) => ParamAddr::new(Owner::Arp(track), addr.param),
         _ => addr,
     }
 }
@@ -144,8 +145,8 @@ impl Reach for ModReach<'_> {
         self.modu.pad_keep(addr, value)
     }
     fn row(&mut self, n: u8, addr: ParamAddr) -> bool {
-        // A synth's or a pad's own setting doesn't go through the mod
-        // engine: Add can't push it yet (Setup greys it).
+        // A synth's, a pad's or an arp's own setting doesn't go through
+        // the mod engine: Add can't push it yet (Setup greys it).
         !is_own(addr) && self.modu.pad_row(self.mixer, n, addr, 1.0).is_ok()
     }
     fn unrow(&mut self, n: u8, addr: ParamAddr) {
@@ -491,9 +492,9 @@ impl XyPlay {
         }
     }
 
-    /// A Stay turn on a synth's or a pad's own setting, which comes from
-    /// the sound loop once it has handed the setting on (`xy_own.rs`): it
-    /// joins the lift's UNDO step.
+    /// A Stay turn on a synth's, a pad's or an arp's own setting, which
+    /// comes from the sound loop once it has handed the setting on
+    /// (`xy_own.rs`): it joins the lift's UNDO step.
     pub fn add_kept(&mut self, addr: ParamAddr, before: f32, after: f32) {
         if self.kept.len() < self.kept.capacity() {
             self.kept.push((addr, before, after));
@@ -609,9 +610,11 @@ mod tests {
     /// Following the selected track moves a synth's settings to that
     /// track's synth and leaves the rest where they are.
     #[test]
-    fn a_following_layout_plays_the_selected_tracks_synth() {
+    fn a_following_layout_plays_the_selected_tracks_synth_and_arp() {
         let cutoff = ParamAddr::new(Owner::Inst(1), 3);
         assert_eq!(followed(cutoff, 4), ParamAddr::new(Owner::Inst(4), 3));
+        let gate = ParamAddr::new(Owner::Arp(1), 1);
+        assert_eq!(followed(gate, 4), ParamAddr::new(Owner::Arp(4), 1));
         let fx = insert(2, 3);
         assert_eq!(followed(fx, 4), fx);
         let pad = ParamAddr::new(Owner::Pad(1, 2), 3);

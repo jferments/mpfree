@@ -147,8 +147,8 @@ fn a_ladder_at_full_resonance_sings_at_its_cutoff_at_a_steady_level() {
 
 #[test]
 fn drive_adds_harmonics_and_keeps_the_level() {
-    // -12 dBFS at the filter (the pad's centre pan takes 3 dB).
-    let s = sine(200.0, 0.25 * std::f32::consts::SQRT_2);
+    // -12 dBFS at the filter (the pad's level and pan come after it).
+    let s = sine(200.0, 0.25);
     let clean = filter(FilterKind::Ladder, 4, 18_000.0, 0.0, 0.0);
     let driven = Filter {
         drive_db: MAX_DRIVE_DB,
@@ -172,6 +172,44 @@ fn drive_adds_harmonics_and_keeps_the_level() {
     let x = played(&loud, driven, 1.0);
     let peak = x.iter().fold(0.0f32, |m, v| m.max(v.abs()));
     assert!(peak < 0.5, "{peak}");
+}
+
+/// `seconds` of the pad at `level_db`, hit at `velocity`.
+fn played_with(s: &Source, f: Filter, level_db: f32, velocity: u8, seconds: f32) -> Vec<f32> {
+    let mut p = project(s, f);
+    let mut pad = p.pad(0).cloned().unwrap();
+    pad.level_db = level_db;
+    p.set_pad(0, Some(pad), None).unwrap();
+    let mut e = Engine::new(RATE, 8);
+    e.set_view(EngineView::build(&p, RATE));
+    e.apply(Event::NoteOn { pad: 0, velocity });
+    run(&mut e, (seconds * RATE as f32) as usize)
+}
+
+#[test]
+fn the_filter_hears_the_sound_before_the_pads_level_and_velocity() {
+    // A driven, resonant Ladder's harmonics follow how hard the sound
+    // drives it, so they show where the gains are: the pad's level and a
+    // hit's velocity come after the filter (filter gap plan F2), so a
+    // quieter pad or a softer hit is only quieter, driven just as hard.
+    let s = sine(200.0, 0.25);
+    let driven = filter(FilterKind::Ladder, 4, 2_000.0, 0.5, 12.0);
+    let h3 = |x: &[f32]| db(level_at(x, 600.0) / level_at(x, 200.0));
+    let full = played_with(&s, driven, 0.0, 127, 1.0);
+    let (full_rms, full_h3) = (rms(steady(&full)), h3(steady(&full)));
+    assert!(full_h3 > -40.0, "driven: {full_h3}");
+    for (level_db, velocity) in [(-12.0, 127), (0.0, 40)] {
+        let soft = played_with(&s, driven, level_db, velocity, 1.0);
+        let (soft_rms, soft_h3) = (rms(steady(&soft)), h3(steady(&soft)));
+        assert!(
+            soft_rms < 0.5 * full_rms,
+            "{level_db} dB, velocity {velocity}: {soft_rms} against {full_rms}"
+        );
+        assert!(
+            (soft_h3 - full_h3).abs() < 0.01,
+            "{level_db} dB, velocity {velocity}: third harmonic {soft_h3} against {full_h3}"
+        );
+    }
 }
 
 #[test]

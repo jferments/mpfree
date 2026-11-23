@@ -229,6 +229,8 @@ The push follows the controller smoothly: halfway up pushes about half as far. A
 > [!TIP]
 > On a drum kit: Note Repeat on the hi-hat, Controller **Pressure**, **Adds rolls** +3, and Pushes rate 0. Press harder into the pad and the hats roll.
 
+The [XY pad](xy-layouts.md#the-arp-on-the-pad) can push the arp too: put the **Modifier** box on a layout of yours, and sliding your finger along pushes the arp by the Modifier's amounts, even with no controller picked. A layout can also hold the arp's rate, gate, swing or octaves where your finger puts them, and let go when you lift.
+
 ## Scales and chords
 
 MPFree has nearly 50 scales, from Major and Minor and the church modes through harmonic and melodic minor, pentatonics and blues, to bebop scales and Japanese scales such as Hirajoshi and In-sen. Pick one with **Scale** and its first note with **Scale root**.

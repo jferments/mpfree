@@ -524,6 +524,26 @@ const SHIFT_MENU_HINT: &str =
 const NO_LIBRARY_HINT: &str =
     "No library: the app was started without a data folder, so nothing can be saved or opened   ·   BROWSE closes";
 
+/// Save to browser and From the browser without a library (no --data).
+const XY_NO_LIBRARY: &str =
+    "The browser has no library this run (started without a data folder): no XY layouts are saved or read";
+
+/// The hint line while From the browser's picker shows.
+const XY_BROWSE_HINT: &str =
+    "Wheel: move   ·   push: Load, one of your layouts in this song, playing   ·   \
+     BROWSE or Cancel: back to the XY pad";
+
+/// The XY pad's list's From the browser ([`Player`]'s `xy_browse`).
+#[derive(Default)]
+struct XyBrowse {
+    /// Asked for: the picker opens when the browser shows.
+    pending: bool,
+    /// The picker is open.
+    open: bool,
+    /// A layout's file being read, with its name.
+    reading: Option<(std::sync::mpsc::Receiver<Result<String, String>>, String)>,
+}
+
 /// After an open lands, the engines' news for this long is the open's
 /// own, not an edit.
 const OPEN_SETTLE: Duration = Duration::from_millis(1500);
@@ -1322,6 +1342,12 @@ pub enum ToUi {
     /// change ([`crate::xy_song`]): the XY pad's list, Setup, the waiting
     /// banner, the bar under the pad.
     Xy(Box<crate::xy_song::XyView>),
+    /// Save to browser's answer: one of your XY layouts as text, for the
+    /// browser to keep (Instruments › XY pad).
+    XyLayoutText {
+        name: String,
+        text: String,
+    },
     /// Q-LINK: the Q-Link column's next bank.
     QLinkBank,
     /// SHIFT + Q-LINK: the Q-Link column's previous bank.
@@ -2560,6 +2586,10 @@ pub struct Player {
     midi_load: Option<std::sync::mpsc::Receiver<Result<crate::midi_file::MidiImport, String>>>,
     /// The preset picker the Synth tab's title opens (presets.rs).
     preset_picker: crate::presets::Picker,
+    /// The XY pad's list's From the browser: the browser opens on your
+    /// saved XY layouts (`pending` until it shows), and the file Load
+    /// picked is read on a thread of its own.
+    xy_browse: XyBrowse,
     /// MPFree's own kits being written into the library (bundled.rs), and
     /// whether this run has looked whether they need to be.
     bundling: Option<std::sync::mpsc::Receiver<Result<usize, String>>>,
@@ -3241,6 +3271,7 @@ impl Player {
             preview_load: None,
             midi_load: None,
             preset_picker: crate::presets::Picker::default(),
+            xy_browse: XyBrowse::default(),
             bundling: None,
             bundle_looked: false,
             arp_panel,
@@ -6118,6 +6149,69 @@ impl Player {
         self.refresh_hint();
     }
 
+    /// Setup's Save to browser: only with a library to save in.
+    fn xy_can_save(&mut self) -> bool {
+        if self.browser.is_none() {
+            self.tell(XY_NO_LIBRARY);
+        }
+        self.browser.is_some()
+    }
+
+    /// The XY pad's list's From the browser: the list closes and the
+    /// browser opens on your saved XY layouts (Load plays one, as one of
+    /// yours; Cancel or BROWSE comes back).
+    fn xy_from_browser(&mut self) -> Option<FromUi> {
+        if self.browser.is_none() {
+            self.tell(XY_NO_LIBRARY);
+            return None;
+        }
+        self.toggle_xy_list();
+        self.xy_browse.pending = true;
+        Some(FromUi::PresetPicker(true))
+    }
+
+    /// Another page shows: From the browser's picker, asked for or open,
+    /// is put away.
+    fn leave_xy_browse(&mut self) {
+        self.xy_browse.pending = false;
+        if !std::mem::take(&mut self.xy_browse.open) {
+            return;
+        }
+        let Some(b) = self.browser.as_mut() else {
+            return;
+        };
+        b.cancel_picker();
+        for a in b.take_actions() {
+            self.browse_action(a);
+        }
+    }
+
+    /// A layout's file From the browser read: to your layouts, or why not.
+    fn poll_xy_file(&mut self) {
+        use std::sync::mpsc::TryRecvError;
+        let Some((rx, _)) = &self.xy_browse.reading else {
+            return;
+        };
+        let got = match rx.try_recv() {
+            Ok(t) => t,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => Err("its thread stopped".to_string()),
+        };
+        let Some((_, file)) = self.xy_browse.reading.take() else {
+            return;
+        };
+        match got {
+            Ok(text) => self
+                .outbox
+                .push(FromUi::Xy(crate::xy_song::XyAction::Import { file, text })),
+            Err(e) => {
+                let line = format!("{file} wasn't read: {e}");
+                self.say(format!("browser: {line}"));
+                self.tell(&line);
+            }
+        }
+    }
+
     /// SHIFT + NEXT SEQ (the app has shown Play first): the XY pad full
     /// screen in place of Play's view, or back to the view from it.
     fn toggle_xy_full(&mut self) {
@@ -6311,6 +6405,7 @@ impl Player {
                     self.name_xy_layout(layout, &view);
                     None
                 }
+                SetupAct::Save => self.xy_can_save().then_some(XyAction::Save(layout)),
                 SetupAct::Delete => {
                     self.close_xy_setup();
                     Some(XyAction::Delete(layout))
@@ -6386,6 +6481,7 @@ impl Player {
             }
         }
         self.play.set_yours(mine.as_ref());
+        self.play.set_xy_hold(v.hold && mine.is_some());
         match mine {
             Some(m) => {
                 if let Some(w) = self
@@ -7017,12 +7113,15 @@ impl Player {
         if let Some(xy) = self.ui.get::<XyPad>(play_page::XY) {
             let mut probe = XyPad::default();
             self.play.fill_xy(&mut probe);
-            // A finger on the pad puts the dot; otherwise it glides home.
-            let at = (!xy.on).then_some((probe.x, probe.y));
+            // A finger on the pad puts the dot, unless it moves the pad
+            // from where it is; otherwise it glides home.
+            let from_here = self.play.xy_from_here();
+            let at = (!xy.on || from_here).then_some((probe.x, probe.y));
             let changed = xy.label != probe.label
                 || xy.chip != probe.chip
                 || xy.x_axis != probe.x_axis
                 || xy.y_axis != probe.y_axis
+                || xy.from_here != from_here
                 || at.is_some_and(|a| a != (xy.x, xy.y));
             if changed {
                 if let Some(xy) = self.ui.get_mut::<XyPad>(play_page::XY) {
@@ -7030,6 +7129,7 @@ impl Player {
                     xy.chip = probe.chip;
                     xy.x_axis = probe.x_axis;
                     xy.y_axis = probe.y_axis;
+                    xy.from_here = from_here;
                     if let Some((x, y)) = at {
                         (xy.x, xy.y) = (x, y);
                     }
@@ -8301,6 +8401,7 @@ impl Player {
                 View::Pattern => self.workspace.hint().to_string(),
                 View::Browser if self.browser.is_none() => NO_LIBRARY_HINT.to_string(),
                 View::Browser if self.preset_picker.open => self.preset_picker.hint(),
+                View::Browser if self.xy_browse.open => XY_BROWSE_HINT.to_string(),
                 View::Browser
                     if self
                         .browser
@@ -10730,6 +10831,17 @@ impl Player {
                 self.refresh_qlinks();
             }
             ToUi::Xy(v) => self.apply_xy(*v),
+            ToUi::XyLayoutText { name, text } => match self.browser.as_mut() {
+                Some(b) => {
+                    b.save_xy_layout(&name, text);
+                    // An inline browser (the tests') has saved already;
+                    // the worker's answer comes with a later step.
+                    for a in b.take_actions() {
+                        self.browse_action(a);
+                    }
+                }
+                None => self.tell(XY_NO_LIBRARY),
+            },
             ToUi::Learning(name) => {
                 if self.learning != name {
                     self.learning = name;
@@ -12205,6 +12317,12 @@ impl Player {
             }
             // Also BROWSE's Load on a preset in Instruments: onto the Synth
             // tab's sound, if it is that engine's.
+            // One of the XY pad's layouts (From the browser, or BROWSE's
+            // Load on one): read, then one of yours in this song.
+            A::LoadPreset { loc, path, engine } if engine == mpfree_browser_ui::XY_FOLDER => {
+                let name = mpfree_library::preset_name(loc.name()).to_string();
+                self.xy_browse.reading = Some((crate::presets::read_in_background(path), name));
+            }
             A::LoadPreset { loc, path, engine } => {
                 let name = mpfree_library::preset_name(loc.name()).to_string();
                 self.preset_picker.read(path, engine, name, true);
@@ -12237,10 +12355,21 @@ impl Player {
                     .push(FromUi::Preset(crate::presets::Ask::Saved(name)));
             }
             A::PickerClosed { .. } => {
-                if self.preset_picker.closed() {
+                if self.preset_picker.closed() || std::mem::take(&mut self.xy_browse.open) {
                     self.outbox.push(FromUi::PresetPicker(false));
                 }
                 self.refresh_hint();
+            }
+            // Setup's Save to browser, answered.
+            A::XyLayoutSaved { name, .. } => {
+                self.say(format!("browser: saved the XY layout {name}"));
+                self.tell(&format!(
+                    "Saved {name} to the browser (Instruments › XY pad): From the browser on the XY pad's list plays it in another song"
+                ));
+            }
+            A::XyLayoutNotSaved(line) => {
+                self.say(format!("browser: {line}"));
+                self.tell(&line);
             }
             // Kit files (mpfree_library::kit): a kit loads in place of the
             // kit the pads play; Save kit saves that kit as a kit folder.
@@ -14455,6 +14584,7 @@ impl Player {
     fn show_view(&mut self, v: View) {
         if v != View::Browser {
             self.leave_preset_picker();
+            self.leave_xy_browse();
         }
         if v != View::Synth && self.synth_pick.is_some() {
             // The app closed it too (another page keeps the pick).
@@ -14577,6 +14707,10 @@ impl Player {
                         b.take_actions();
                     }
                     self.preset_picker.opened(b);
+                    if std::mem::take(&mut self.xy_browse.pending) {
+                        b.open_picker(mpfree_browser_ui::Pick::XyLayout);
+                        self.xy_browse.open = true;
+                    }
                 } else {
                     self.say("browser: no library (the app was started without --data); nothing can be saved or opened".to_string());
                 }
@@ -15787,10 +15921,12 @@ impl Player {
                 self.toggle_xy_list();
                 Some(FromUi::Xy(crate::xy_song::XyAction::Play(col)))
             }
-            (crate::xy_list::XY_LIST, EventKind::Cell { row: 2, .. }) => {
+            (crate::xy_list::XY_LIST, EventKind::Cell { row: 2, col: 0 }) => {
                 self.open_xy_setup();
                 Some(FromUi::Xy(crate::xy_song::XyAction::New))
             }
+            // From the browser: the browser opens on your saved layouts.
+            (crate::xy_list::XY_LIST, EventKind::Cell { row: 2, .. }) => self.xy_from_browser(),
             // The full-screen pad's Hold, Let go and Setup.
             (crate::xy_widgets::XY_BAR, EventKind::Toggle(i)) => self.xy_bar(i),
             (crate::xy_setup::XY_SETUP, EventKind::Select(0)) => {
@@ -16910,6 +17046,7 @@ impl Player {
         self.poll_plugins();
         self.poll_preview();
         self.poll_preset_file();
+        self.poll_xy_file();
         self.poll_sound_track();
         self.poll_midi();
         self.poll_loops();
@@ -19962,6 +20099,47 @@ fn browser_presets(fonts: Fonts) -> Result<Player, String> {
     built
 }
 
+/// The XY pad's list's From the browser (layout spec 4o): the browser on
+/// the XY layouts saved from other songs, Wobble picked. Over a library
+/// filled in a scratch folder, three layouts saved in it.
+fn browser_xy_layouts(fonts: Fonts) -> Result<Player, String> {
+    use mpfree_browser_ui::sample::fill;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir =
+        std::env::temp_dir().join(format!("mpfree-browser-xy-{}-{nanos}", std::process::id()));
+    let built = (|| {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let lib = fill(&dir)?;
+        for name in ["Breakdown", "Squelch", "Wobble"] {
+            let text = format!("xy 1\nlayout\t{name}\nend\n");
+            lib.save_preset(mpfree_browser_ui::XY_FOLDER, name, &text, false)
+                .map_err(|e| format!("{name}: {e}"))?;
+        }
+        let mut p = sample_player(fonts);
+        p.set_browser(mpfree_browser_ui::Browser::inline(lib), "");
+        p.apply(ToUi::Show(View::Play));
+        p.toggle_xy_list();
+        let asked = p.on_event(UiEvent {
+            widget: crate::xy_list::XY_LIST.into(),
+            kind: EventKind::Cell { row: 2, col: 1 },
+        });
+        if asked != Some(FromUi::PresetPicker(true)) {
+            return Err(format!("From the browser asked for {asked:?}"));
+        }
+        p.apply(ToUi::Show(View::Browser));
+        let b = p.browser.as_mut().ok_or("no browser")?;
+        b.dial(2);
+        p.step_browser();
+        p.take_actions();
+        Ok(p)
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    built
+}
+
 /// The whole browser (BROWSE) in Kits with the Boom bap kit picked: Load
 /// on Drums (the armed track) and New track with this kit. Over a library
 /// filled in a scratch folder (removed again once the browser has read
@@ -22899,6 +23077,11 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     match browser_presets(fonts()) {
         Ok(presets) => out.push(("browser-presets", presets)),
         Err(e) => eprintln!("browser-presets: not drawn ({e})"),
+    }
+    // From the browser on the XY pad's list: your saved XY layouts.
+    match browser_xy_layouts(fonts()) {
+        Ok(xy) => out.push(("browser-xy-layouts", xy)),
+        Err(e) => eprintln!("browser-xy-layouts: not drawn ({e})"),
     }
     // The whole browser in Kits, Boom bap picked: New track with this kit.
     match browser_kits(fonts()) {
@@ -33765,6 +33948,7 @@ mod tests {
                     fade_old: 1.0,
                     speed: 0,
                     rate: 0,
+                    clock: mpfree_looper::Clock::Song,
                     layers: vec![mpfree_looper::save::LayerFile {
                         level: 0.5,
                         pan: -0.25,
@@ -33776,6 +33960,7 @@ mod tests {
                     }],
                 },
             )],
+            free_clock: None,
         };
         // Audio 2 with a region of a mono take, as the tracks' save gives it.
         let take: Vec<f32> = (0..4410).map(|k| (k % 89) as f32 / 300.0).collect();

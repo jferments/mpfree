@@ -893,3 +893,49 @@ fn a_notes_own_slide_and_tone_move_only_that_note() {
     let oct = (s.card_cutoff(0) / cut).log2();
     assert!((oct - 1.0).abs() < 0.02, "tone 0.5 opens an octave: {oct}");
 }
+
+/// The pitch of `x` from its upward zero crossings (linear between
+/// samples), in Hz.
+fn crossing_hz(x: &[f32], rate: u32) -> f64 {
+    let mut first = None;
+    let (mut last, mut n) = (0.0, 0usize);
+    for i in 1..x.len() {
+        if x[i - 1] < 0.0 && x[i] >= 0.0 {
+            let t = (i - 1) as f64 + f64::from(-x[i - 1]) / f64::from(x[i] - x[i - 1]);
+            if first.is_none() {
+                first = Some(t);
+            } else {
+                n += 1;
+            }
+            last = t;
+        }
+    }
+    let first = first.expect("it rings");
+    n as f64 * f64::from(rate) / (last - first)
+}
+
+#[test]
+fn the_four_pole_sings_in_tune_at_full_resonance() {
+    // One small impulse at Resonance 100 and nothing else: the filter
+    // sings at its cutoff, within 10 cents, from the bass to the top. With
+    // the whole feedback straight it sang up to 181 cents flat (DSP
+    // quality step 2.2).
+    let rate = 44_100;
+    for fc in [110.0f32, 440.0, 1_760.0, 7_040.0] {
+        let mut p = mpfree_synth::analog::FilterProbe::new(rate);
+        p.set(0.0, fc, 100.0, 0.0);
+        let mut y = Vec::new();
+        for i in 0..rate as usize * 3 {
+            y.push(p.tick(if i == 0 { 0.01 } else { 0.0 }));
+        }
+        let tail = &y[rate as usize * 2..];
+        let f = crossing_hz(tail, rate);
+        let c = 1200.0 * (f / f64::from(fc)).log2();
+        assert!(
+            c.abs() < 10.0,
+            "sings at {f:.2} Hz for {fc} Hz ({c:.1} cents)"
+        );
+        let peak = tail.iter().fold(0f32, |m, v| m.max(v.abs()));
+        assert!(peak > 0.05 && peak < 1.0, "sings at {peak}");
+    }
+}

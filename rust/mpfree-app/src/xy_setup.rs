@@ -3,8 +3,9 @@
 //! it takes the whole view, and Done gives the pad back.
 //!
 //! - **The head:** SETUP, the layout's name (a tap types it, with its
-//!   directions' names), then **Delete** and **Done** (the accent) at the
-//!   right. Save to browser joins with the browser's layouts.
+//!   directions' names), then **Save to browser**, **Delete** and **Done**
+//!   (the accent) at the right. Save to browser keeps a copy in the
+//!   browser (Instruments › XY pad) for other songs.
 //! - **Each direction:** "ACROSS →" or "UP ↑", its name, "2 of 8", and
 //!   **+ across** or **+ up** (greyed at 8 of 8), which raises the waiting
 //!   banner.
@@ -68,6 +69,8 @@ pub enum SetupAct {
     Plus(bool),
     /// A name tapped: type them.
     Name,
+    /// Save to browser: a copy for other songs.
+    Save,
     Delete,
     Done,
 }
@@ -126,6 +129,7 @@ pub struct XySetup {
 /// The parts of Setup's place.
 struct Geo {
     name: Rect,
+    save: Rect,
     delete: Rect,
     done: Rect,
     list: Rect,
@@ -181,9 +185,11 @@ impl XySetup {
         let by = head.y + (head.h - 44) / 2;
         let done = Rect::new(head.right() - 120, by, 120, 44);
         let delete = Rect::new(done.x - 10 - 100, by, 100, 44);
+        let save = Rect::new(delete.x - 10 - 160, by, 160, 44);
         let name = Rect::new(head.x + 72, by, 260, 44);
         Geo {
             name,
+            save,
             delete,
             done,
             list,
@@ -545,6 +551,15 @@ impl Widget for XySetup {
             t.text_dim,
             "name",
         );
+        cx.canvas.fill_round_rect(g.save, t.round(10), t.raised);
+        cx.text(
+            FontId::Bold,
+            15.0,
+            g.save,
+            Align::Center,
+            t.text,
+            "Save to browser",
+        );
         cx.canvas.fill_round_rect(g.delete, t.round(10), t.raised);
         cx.text(
             FontId::Bold,
@@ -730,6 +745,7 @@ impl Widget for XySetup {
         let v = &self.view;
         let mut out = vec![
             Target::tap("name", 0, "Name", g.name),
+            Target::tap("save", 0, "Save to browser", g.save),
             Target::tap("delete", 0, "Delete", g.delete),
             Target::tap("done", 0, "Done", g.done),
         ];
@@ -881,6 +897,9 @@ impl Widget for XySetup {
         }
         if g.name.contains(x, y) {
             return self.acted(SetupAct::Name);
+        }
+        if g.save.contains(x, y) {
+            return self.acted(SetupAct::Save);
         }
         if g.delete.contains(x, y) {
             return self.acted(SetupAct::Delete);
@@ -1215,6 +1234,9 @@ mod tests {
         assert_eq!(tap(&mut ui, ("plus", 1)), [SetupAct::Plus(true)]);
         assert_eq!(tap(&mut ui, ("done", 0)), [SetupAct::Done]);
         assert_eq!(tap(&mut ui, ("name", 0)), [SetupAct::Name]);
+        assert_eq!(tap(&mut ui, ("save", 0)), [SetupAct::Save]);
+        let g = XySetup::geo(r);
+        assert!(g.name.right() + 10 <= g.save.x, "{:?} {:?}", g.name, g.save);
         // The curve list opens on the chip and picks.
         assert!(tap(&mut ui, ("curve", 0)).is_empty());
         assert_eq!(

@@ -11,6 +11,7 @@
 //! calls [`Engine::sync`] with a [`Clock`] before every `process` call, and
 //! while the transport plays the steps fall on its tick grid instead.
 
+use crate::hand::{Hand, HandOn};
 use crate::modifier::{self, ModSource, Modifier, Steps};
 use crate::notes::{Held, LatchMode, NoteSet, Notes, MAX_NOTES};
 use crate::pattern::{Pattern, Pick, Step};
@@ -704,6 +705,9 @@ pub struct Engine {
     live: Settings,
     /// Where the modifier's controller is, 0 to 1.
     amount: f32,
+    /// The XY pad's hand: settings it holds over the ones as set
+    /// ([`crate::hand`]).
+    hand: Hand,
     /// The modifier's stepped pushes, held near their edges.
     steps: Steps,
     /// Hits the modifier adds to every step.
@@ -785,6 +789,7 @@ impl Engine {
             settings: Settings::default(),
             live: Settings::default(),
             amount: 0.0,
+            hand: Hand::default(),
             steps: Steps::default(),
             rolls: 0,
             accents: 0,
@@ -839,10 +844,47 @@ impl Engine {
         self.live
     }
 
-    /// Where the modifier's controller is now, 0 to 1 (0 while the
-    /// modifier is off).
+    /// How far the modifier pushes now, 0 to 1 (0 while the modifier is
+    /// off): where its controller is, or the XY pad's hand while it holds
+    /// the push.
     pub fn modifier(&self) -> f32 {
+        match self.hand.held(HandOn::Modifier) {
+            Some(v) => v,
+            None if self.settings.modifier.source == ModSource::Off => 0.0,
+            None => self.amount,
+        }
+    }
+
+    /// Where the modifier's controller is now, 0 to 1, whatever the XY
+    /// pad's hand holds: what the push goes back to when the pad lets go.
+    pub fn controller(&self) -> f32 {
         self.amount
+    }
+
+    /// The XY pad's hand holds `on` at `value` ([`HandOn`]'s units: the
+    /// rate as its place in [`Rate::ALL`], the modifier's push 0 to 1), or
+    /// lets go of it (`None`). The settings as set stay as they are; the
+    /// steps play the held ones from the next step, as the modifier's
+    /// push does. A setting that a change as set took from the pad keeps
+    /// it until the pad lets go ([`crate::hand`]).
+    pub fn hold(&mut self, on: HandOn, value: Option<f32>) {
+        if self.hand.hold(on, value) {
+            self.relive();
+        }
+    }
+
+    /// What the XY pad's hand holds now.
+    pub fn hand(&self) -> &Hand {
+        &self.hand
+    }
+
+    /// Stay on the modifier's push: its controller is at `value` (0 to 1)
+    /// from here, as if it had moved there, until it next moves.
+    pub fn keep_push(&mut self, value: f32) {
+        if value.is_finite() {
+            self.amount = value.clamp(0.0, 1.0);
+            self.relive();
+        }
     }
 
     /// Hits the modifier adds to every step now.
@@ -907,7 +949,21 @@ impl Engine {
     /// while the transport plays.
     fn relive(&mut self) {
         let old = self.live;
-        let p = modifier::push(&self.settings, self.amount, &mut self.steps);
+        // The XY pad's hand: its settings over the ones as set, and its
+        // push over the controller's (the pad is the controller, even with
+        // none picked).
+        let mut base = self.hand.over(&self.settings);
+        let amount = match self.hand.held(HandOn::Modifier) {
+            Some(v) => {
+                if base.modifier.source == ModSource::Off {
+                    base.modifier.source = ModSource::Knob;
+                }
+                v
+            }
+            None => self.amount,
+        };
+        let mut p = modifier::push(&base, amount, &mut self.steps);
+        p.settings.modifier = self.settings.modifier;
         self.live = p.settings;
         self.rolls = p.rolls;
         self.accents = p.accents;
@@ -995,7 +1051,7 @@ impl Engine {
             anchor_tick: clock.anchor_tick,
             swing: clock
                 .swing
-                .filter(|_| !self.own_swing)
+                .filter(|_| !self.own_swing && self.hand.held(HandOn::Swing).is_none())
                 .map(|(grid, amount)| (grid.max(1), amount.clamp(50, 75))),
             bar_ticks: clock.bar_ticks.max(1),
         });
@@ -1042,6 +1098,8 @@ impl Engine {
             // moves, or the pressure held now.
             self.amount = 0.0;
         }
+        // A change to a setting the XY pad holds takes it from the pad.
+        self.hand.turned(&self.settings, &settings);
         self.settings = settings;
         if source == ModSource::Pressure {
             self.amount = self.pressure_amount();
@@ -3128,6 +3186,92 @@ mod tests {
         let back = run(&mut e, 2 * STEP, 128);
         let t: Vec<u64> = ons(&back).iter().map(|(t, _)| *t).collect();
         assert_eq!(t, [4 * STEP, 5 * STEP]);
+    }
+
+    /// The XY pad's hand: the steps play what it holds from the next step,
+    /// the settings as set never change, and let go the arp plays as set.
+    /// Its push wins over the wheel, and pushes even with no controller
+    /// picked; the wheel has the push back when it lets go.
+    #[test]
+    fn the_pads_hand_plays_over_the_settings_and_lets_go() {
+        let mut e = engine(Mode::Repeat);
+        let set = e.settings();
+        e.press(1, 100);
+        let first = run(&mut e, 2 * STEP, 128);
+        assert_eq!(ons(&first).len(), 2);
+        let rate = Rate::ALL
+            .iter()
+            .position(|r| *r == Rate::ThirtySecond)
+            .unwrap();
+        e.hold(HandOn::Rate, Some(rate as f32));
+        assert_eq!(e.live().rate, Rate::ThirtySecond);
+        assert_eq!(e.settings(), set, "the settings as set stay");
+        let held = run(&mut e, 2 * STEP, 128);
+        assert_eq!(ons(&held).len(), 4, "1/32s from the next step");
+        e.hold(HandOn::Rate, None);
+        assert_eq!(e.live(), set);
+        // The push, with no controller picked: the pad is the controller,
+        // by the Modifier's amounts (two rates faster at the top).
+        assert_eq!(set.modifier.source, ModSource::Off);
+        e.hold(HandOn::Modifier, Some(1.0));
+        assert_eq!(e.modifier(), 1.0);
+        assert_eq!(e.live().rate, Rate::ThirtySecond);
+        assert_eq!(e.live().modifier, set.modifier, "the Modifier as set");
+        e.hold(HandOn::Modifier, None);
+        assert_eq!((e.modifier(), e.live()), (0.0, set));
+        // Over the wheel: the wheel's moves wait for the let-go.
+        e.set_settings(Settings {
+            modifier: wheel(Modifier::default()),
+            ..set
+        });
+        e.control(ModSource::ModWheel, 0.5);
+        e.hold(HandOn::Modifier, Some(0.0));
+        assert_eq!(e.live().rate, Rate::Sixteenth, "the pad holds it at rest");
+        e.control(ModSource::ModWheel, 1.0);
+        assert_eq!(e.live().rate, Rate::Sixteenth);
+        assert_eq!(e.controller(), 1.0);
+        e.hold(HandOn::Modifier, None);
+        assert_eq!(e.live().rate, Rate::ThirtySecond, "the wheel has it back");
+        // Stay: the push stays where the pad left it until the wheel moves.
+        e.hold(HandOn::Modifier, Some(0.0));
+        e.keep_push(0.0);
+        e.hold(HandOn::Modifier, None);
+        assert_eq!(e.modifier(), 0.0);
+        e.control(ModSource::ModWheel, 1.0);
+        assert_eq!(e.modifier(), 1.0);
+    }
+
+    /// A change as set takes a held setting from the pad (a Q-Link turn),
+    /// and a held swing plays the arp's own while the transport swings.
+    #[test]
+    fn a_turn_takes_a_setting_from_the_pad_and_held_swing_is_the_arps() {
+        let mut e = engine(Mode::Arp);
+        let set = e.settings();
+        e.hold(HandOn::Gate, Some(90.0));
+        e.hold(HandOn::Octaves, Some(3.0));
+        assert_eq!((e.live().gate, e.live().octaves), (90, 3));
+        e.set_settings(Settings { gate: 20, ..set });
+        assert_eq!((e.live().gate, e.live().octaves), (20, 3), "the turn plays");
+        e.hold(HandOn::Gate, Some(95.0));
+        assert_eq!(e.live().gate, 20, "kept until the pad lets go");
+        assert_eq!(e.hand().held(HandOn::Gate), None);
+        e.hold(HandOn::Gate, None);
+        e.hold(HandOn::Gate, Some(95.0));
+        assert_eq!(e.live().gate, 95, "held again after a let-go");
+        // The transport swings at 66 %: the pad's swing plays instead.
+        let clock = Clock {
+            swing: Some((240, 66)),
+            ..Clock::playing(0, 0, 120.0)
+        };
+        e.sync(&clock);
+        assert_eq!(e.sync.as_ref().unwrap().swing, Some((240, 66)));
+        e.hold(HandOn::Swing, Some(55.0));
+        e.sync(&clock);
+        assert_eq!(e.sync.as_ref().unwrap().swing, None, "the arp's own swing");
+        assert_eq!(e.live().swing, 55);
+        e.hold(HandOn::Swing, None);
+        e.sync(&clock);
+        assert_eq!(e.sync.as_ref().unwrap().swing, Some((240, 66)));
     }
 
     /// Only the modifier's own controller moves it.

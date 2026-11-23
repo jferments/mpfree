@@ -34,6 +34,7 @@ Jay, 2026-11-11 23:16Z: BROWSE stays the full file manager, and each kind of thi
 | `Pick::Preset { engine }` | the Synth tab's title (`Browser::open_preset_picker`) | Factory (the engine's own presets, as the Synth tab lists them, no files), Yours (`Instruments/<engine>/`), and that engine's presets in Recent and Favourites | Each turn of the dial sends `TryFactoryPreset` or `TryPreset` so the preset can be played on the pads; Load sends `LoadFactoryPreset` or `LoadPreset`; Cancel sends `RevertPreset`; Save preset sends `SavePresetRequested`, answered with `Browser::save_preset` (below); New track sends `NewTrackWithPreset` (after `RevertPreset` if one was tried) |
 | `Pick::Sample` | the Sample page or a pad | Samples, Recordings, and sounds in Recent and Favourites | Auditions as you move; Load sends `LoadSample` for the pad it was opened for |
 | `Pick::Project` | Open project | Projects | Opening asks first while `set_unsaved(true)`: "Unsaved changes. Open ... anyway?" (the full browser asks too) |
+| `Pick::XyLayout` | the XY pad's list's From the browser (layout spec 4o) | `Instruments/XY pad/` (`XY_FOLDER`) and the XY layouts in Recent and Favourites; "No XY layouts saved yet" before any was saved | Load sends `LoadPreset` with `engine` `XY pad`, which the screen reads and sends to the sound loop as `XyAction::Import` (`xy_song.rs`); the detail calls them "XY layout". `Pick::Preset` never lists that folder |
 
 Every picker ends with `PickerClosed { loaded }`. BROWSE while a picker is open should call `cancel_picker`. The hint line is `PICKER_HINT`. Screens 12 to 14 in the previews.
 
@@ -48,6 +49,7 @@ library/
   Projects/<name>/        project.txt, parts/<owner>.txt, samples/<hash>.<ext>, versions/<id>/, manifest.txt
   Samples/  Kits/  Patterns/  Recordings/
   Instruments/<engine>/<name>.preset   user presets (Jay, 2026-11-11 22:47Z)
+  Instruments/XY pad/<name>.preset     the XY pad's layouts saved from Setup (XY phase 2)
   .trash/<id>/<name>      with origin.txt (where it was, when)
   .work/<owner>/          an engine's files for work not saved yet (Library::work_dir)
 ```
@@ -85,7 +87,7 @@ A folder of thousands of sounds (Akai's factory content, 4,338 in one folder on 
 
 ## Instrument presets
 
-`Instruments/` holds one folder per engine, named as the engine shows it (`Engine::name`: Poly, FM, Keys, Strings ...), with that engine's user presets as `<name>.preset` text files (`Sound::to_text`, with its effects and macros). The app turns a sound into preset text and back and does no file work of its own: `Library::save_preset` (`mpfree-library/src/preset.rs`, the worker's `Job::SavePreset`) makes the engine's folder if needed and writes whole or nothing; a name already there comes back as `PresetSave::Taken`, and the browser asks before saving again with `replace`, which moves the old file to the Trash first. Load on a preset sends `LoadPreset { loc, path, engine }`; in the full browser too, it goes on the Synth tab's sound if it is that engine's (else the screen says why).
+`Instruments/` holds one folder per engine, named as the engine shows it (`Engine::name`: Poly, FM, Keys, Strings ...), with that engine's user presets as `<name>.preset` text files (`Sound::to_text`, with its effects and macros). The app turns a sound into preset text and back and does no file work of its own: `Library::save_preset` (`mpfree-library/src/preset.rs`, the worker's `Job::SavePreset`) makes the engine's folder if needed and writes whole or nothing; a name already there comes back as `PresetSave::Taken`, and the browser asks before saving again with `replace`, which moves the old file to the Trash first. Load on a preset sends `LoadPreset { loc, path, engine }`; in the full browser too, it goes on the Synth tab's sound if it is that engine's (else the screen says why). The XY pad's layouts use the same files in `Instruments/XY pad/` (`XY_FOLDER`): Setup's Save to browser calls `Browser::save_xy_layout` with the layout's `xy` part text holding it alone, always with `replace` (the old file to the Trash), answered with `XyLayoutSaved` or `XyLayoutNotSaved`; a `LoadPreset` from that folder becomes one of your layouts in the song.
 
 A `.mid`, `.midi` or `.smf` file is `Kind::Midi` ("MIDI file"), wherever it is (Patterns, an export's folder in Recordings ...): Load sends `LoadMidi { loc, path }`, and the app reads it and puts its tracks on the armed track and the ones after it as clips ([MIDI file import](midi-io.md#midi-file-import)).
 
