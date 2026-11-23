@@ -117,6 +117,7 @@ mod heat;
 mod imagecopy;
 mod instrument_list;
 mod instruments;
+mod kernel_log;
 mod kit;
 mod locks;
 mod loop_row;
@@ -168,6 +169,7 @@ mod shed;
 mod skin_page;
 #[cfg(test)]
 mod smoke;
+mod status_report;
 mod status_screen;
 mod status_watch;
 mod step_keys;
@@ -3997,8 +3999,9 @@ fn player(o: &Options, timed: bool) -> Result<(), String> {
     // A scripted run is the app as a musician has it (STOP stops, it
     // doesn't end the run); only its length is the script's.
     let mut player = gui::Player::new(fonts, size, timed && o.workflow.is_none(), backdrop);
-    if last_run != crash::LastRun::Fine {
+    if let crash::LastRun::Crashed(why) = &last_run {
         player.safe_start();
+        player.set_crash_why(why.clone());
     }
     match load_theme(o) {
         Ok(t) => player.ui.set_theme(t),
@@ -4056,7 +4059,8 @@ fn player(o: &Options, timed: bool) -> Result<(), String> {
     .map_err(|e| format!("screen thread: {e}"))?;
     out.sink = Some(to_ui.clone());
     if !timed {
-        follow_journal(to_ui.clone());
+        let kernel = follow_kernel(to_ui.clone());
+        follow_journal(to_ui.clone(), kernel);
     }
     let result = player_session(o, &mut out, timed, &from_ui, &xy);
     if let Err(e) = &result {
@@ -4111,8 +4115,25 @@ fn read_patterns(path: &Path) -> Result<String, String> {
     Ok(text)
 }
 
-/// The system log, followed (`journalctl -f`, read-only) into the Console page.
-fn follow_journal(tx: SyncSender<gui::ToUi>) {
+/// The kernel's stick and memory errors, followed (read-only) onto the
+/// status board (`kernel_log`); without `/dev/kmsg`, what the system log's
+/// follower feeds them from.
+fn follow_kernel(tx: SyncSender<gui::ToUi>) -> Option<kernel_log::FromJournal> {
+    let lines = tx.clone();
+    kernel_log::follow(
+        move |l| {
+            println!("{l}");
+            let _ = io::stdout().flush();
+            let _ = lines.try_send(gui::ToUi::Line(l));
+        },
+        move |r| tx.send(gui::ToUi::Problem(r)).is_ok(),
+    )
+}
+
+/// The system log, followed (`journalctl -f`, read-only) into the Console page,
+/// and, when `/dev/kmsg` couldn't be read, its kernel lines to the status
+/// board's kernel watch.
+fn follow_journal(tx: SyncSender<gui::ToUi>, kernel: Option<kernel_log::FromJournal>) {
     let spawned = thread::Builder::new()
         .name("mpfree-journal".into())
         .spawn(move || {
@@ -4145,6 +4166,9 @@ fn follow_journal(tx: SyncSender<gui::ToUi>) {
             };
             for line in io::BufRead::lines(io::BufReader::new(stdout)) {
                 let Ok(l) = line else { break };
+                if let Some(k) = &kernel {
+                    k.line(&l);
+                }
                 if let Err(std::sync::mpsc::TrySendError::Disconnected(_)) =
                     tx.try_send(gui::ToUi::Console(l))
                 {
@@ -8282,6 +8306,7 @@ fn player_session(
     let mut views_swapped = 0u64;
     // All four PAD BANK buttons: the screen pictures' names this run.
     let mut picture_names = screen_picture::Names::default();
+    let mut report_names = status_report::Names::default();
     let mut recolour = false;
     let (mut shown_heads, mut heads_at) = (sampler::Playheads::default(), Instant::now());
     // The Grain tab's cloud box, while the audio thread holds it: filled and
@@ -9709,6 +9734,13 @@ fn player_session(
                 // the store (files/screens/).
                 gui::FromUi::ScreenPicture(png) => {
                     let line = screen_picture::save(&store, &mut picture_names, png);
+                    out.note(&line);
+                    out.show(gui::ToUi::Tell(line));
+                }
+                // System status's Save a report: to the store
+                // (files/reports/).
+                gui::FromUi::SaveReport(text) => {
+                    let line = status_report::save(&store, &mut report_names, text);
                     out.note(&line);
                     out.show(gui::ToUi::Tell(line));
                 }

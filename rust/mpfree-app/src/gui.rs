@@ -2039,6 +2039,9 @@ pub enum FromUi {
     /// The screen as a PNG file ([`ToUi::ScreenPicture`]), to save in the
     /// data folder; or why there is none.
     ScreenPicture(Result<Vec<u8>, String>),
+    /// System status's Save a report: the report's words, to save in the
+    /// data folder (`files/reports/`).
+    SaveReport(String),
     /// A touch on the chain editor, or a Q-Link turned while its knobs
     /// show (`modpanels::ChainHost::action`).
     Chain(ChainAction),
@@ -2348,6 +2351,11 @@ pub struct Player {
     /// The MPC's temperature and processor clock at the screen thread's
     /// last read (every 2 s, heat.rs).
     heat: Option<crate::heat::Heat>,
+    /// The last `status:` lines, in a report's words (no names someone
+    /// typed), for System status's Save a report.
+    status_log: std::collections::VecDeque<String>,
+    /// The last run's panic line, when this start is a safe start after one.
+    crash_why: Option<String>,
     /// BROWSE's Plugins place: the Open MPC catalog, installed plugins and
     /// zips on the stick (plugin_page.rs).
     plugin_page: crate::plugin_page::PluginPage,
@@ -3062,6 +3070,8 @@ impl Player {
             project_plugins: std::sync::Arc::new(crate::plugins::Plugins::none()),
             drive: None,
             heat: None,
+            status_log: std::collections::VecDeque::new(),
+            crash_why: None,
             plugin_page: crate::plugin_page::PluginPage::new(),
             plugins_hinted: false,
             track_sounds: [None; crate::instruments::HOLDERS],
@@ -8261,6 +8271,11 @@ impl Player {
         self.crashed = true;
     }
 
+    /// The last run's panic line, for System status's report.
+    pub fn set_crash_why(&mut self, why: Option<String>) {
+        self.crash_why = why;
+    }
+
     /// Shows `line` in place of the hint for [`TELL_SECONDS`].
     /// UNDO, or SHIFT + UNDO (`redo`), on a page whose history the screen
     /// picks (the Looper tab and the Sample and Pads tabs have theirs in
@@ -8892,13 +8907,7 @@ impl Player {
         let was = self.status_board.chip_look(self.ram_pct);
         self.status_board.seen(self.status_clock);
         self.status_lines();
-        let readings = crate::status_screen::Readings {
-            cpu_pct: self.engines.as_deref().and_then(crate::engines::cpu_pct),
-            ram_pct: self.ram_pct,
-            free: self.mem_free,
-            stick: self.drive.as_ref().and_then(|d| d.get()).flatten(),
-            heat: self.heat,
-        };
+        let readings = self.status_readings();
         let v = crate::status_screen::view(
             &self.status_board,
             &self.status_watch,
@@ -8924,8 +8933,16 @@ impl Player {
     /// A touch on System status: a system picked, the switch, a card's
     /// button (its job goes to the app).
     fn status_page_event(&mut self, kind: EventKind) -> Option<FromUi> {
-        use mpfree_ui::status_page::{BUTTON, CARD, NOW, SESSION};
+        use mpfree_ui::status_page::{BUTTON, CARD, NOW, SAVE_REPORT, SESSION};
         match kind {
+            // Save a report: its words go to the store (files/reports/).
+            EventKind::Tab(SAVE_REPORT) => {
+                let saved = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs());
+                let system = crate::sysinfo::read(std::path::Path::new("/"));
+                return Some(FromUi::SaveReport(self.status_report(&system, saved)));
+            }
             EventKind::Select(i) => {
                 self.status_place.picked = *mpfree_status::System::ALL.get(i)?;
             }
@@ -9014,6 +9031,10 @@ impl Player {
     fn status_lines(&mut self) {
         let watch = &self.status_watch;
         let mut lines = Vec::new();
+        let mut kept = Vec::new();
+        let since = self
+            .status_clock
+            .saturating_duration_since(self.status_start);
         let mut red = None;
         let hinted = &mut self.status_hinted;
         let (clock, on_page) = (self.status_clock, self.view == View::SystemStatus);
@@ -9035,6 +9056,23 @@ impl Player {
             } else {
                 ""
             };
+            // The report's copy: a track or a take by its number.
+            let safe = crate::status_report::about(c.subject, watch);
+            kept.push(crate::status_report::log_line(
+                since,
+                &if c.started {
+                    format!(
+                        "status: + {}{safe} ({}) {}{hidden}",
+                        c.kind.id, c.times, c.kind.title
+                    )
+                } else {
+                    format!(
+                        "status: - {}{safe} after {:.1} s",
+                        c.kind.id,
+                        c.lasted.as_secs_f32()
+                    )
+                },
+            ));
             lines.push(if c.started {
                 format!(
                     "status: + {}{about} ({}) {}{hidden}",
@@ -9053,8 +9091,46 @@ impl Player {
             #[cfg(test)]
             self.said_all.push(l);
         }
+        for l in kept {
+            if self.status_log.len() == crate::status_report::LINES {
+                self.status_log.pop_front();
+            }
+            self.status_log.push_back(l);
+        }
         if let Some(line) = red {
             self.tell_red(line);
+        }
+    }
+
+    /// System status's report: this session's problems, the page's
+    /// numbers, the MPC and MPFree, and the last status lines
+    /// (status_report.rs).
+    pub fn status_report(&self, system: &crate::sysinfo::SystemInfo, saved: u64) -> String {
+        let lines: Vec<String> = self.status_log.iter().cloned().collect();
+        let readings = self.status_readings();
+        crate::status_report::text(
+            &crate::status_report::Facts {
+                saved,
+                start: self.status_start,
+                now: self.status_clock,
+                system,
+                safe_start: self.crashed.then(|| self.crash_why.clone()),
+                readings: &readings,
+                lines: &lines,
+            },
+            &self.status_board,
+            &self.status_watch,
+        )
+    }
+
+    /// What System status reads besides the board.
+    fn status_readings(&self) -> crate::status_screen::Readings {
+        crate::status_screen::Readings {
+            cpu_pct: self.engines.as_deref().and_then(crate::engines::cpu_pct),
+            ram_pct: self.ram_pct,
+            free: self.mem_free,
+            stick: self.drive.as_ref().and_then(|d| d.get()).flatten(),
+            heat: self.heat,
         }
     }
 
@@ -31732,6 +31808,48 @@ mod tests {
     /// the worst system and marks every problem seen (the ring goes); a
     /// red problem's title goes on the hint line in red, once a minute; a
     /// card's button reaches the app; MENU closes the page.
+    /// After phase 3 (Jay's pick, 23 Nov 11:43Z): Save a report, at the
+    /// foot of System status's cards, hands the report's words to the
+    /// store, with the session's problems and its status lines.
+    #[test]
+    fn save_a_report_hands_its_words_to_the_store() {
+        let mut p = sample_status(Fonts::embedded());
+        p.take_actions();
+        p.apply(ToUi::Show(View::SystemStatus));
+        let mut c = SoftCanvas::new(SCREEN.0, SCREEN.1);
+        p.ui.paint(&mut c);
+        let r =
+            p.ui.targets()
+                .into_iter()
+                .find(|t| t.target.id == "save-report")
+                .expect("the button")
+                .target
+                .rect;
+        assert_eq!(p.touch(1, Touch::Down, r.x + 10, r.y + 10), None);
+        let text = match p.touch(1, Touch::Up, r.x + 10, r.y + 10) {
+            Some(FromUi::SaveReport(t)) => t,
+            other => panic!("{other:?}"),
+        };
+        assert!(text.starts_with("MPFree report\n"), "{text}");
+        assert!(
+            text.contains("red sound/dropout: The sound dropped out."),
+            "{text}"
+        );
+        assert!(text.contains("midi/port-missing (Juno-X)"), "{text}");
+        assert!(text.contains("A normal start."), "{text}");
+        assert!(
+            text.contains("] status: + sound/dropout"),
+            "the status lines: {text}"
+        );
+        // A safe start says so, with the crash's line.
+        p.safe_start();
+        p.set_crash_why(Some("thread 'main' at src/x.rs:1:1: boom".into()));
+        let system = crate::sysinfo::SystemInfo::default();
+        assert!(p
+            .status_report(&system, 0)
+            .contains("A safe start: the last run crashed (thread 'main' at src/x.rs:1:1: boom)."));
+    }
+
     #[test]
     fn the_status_chip_opens_system_status_and_red_problems_reach_the_hint_line() {
         use mpfree_status::{kinds, Report};

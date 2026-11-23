@@ -2386,7 +2386,8 @@ impl Session {
             | FromUi::SampleTake { .. }
             | FromUi::SampleKey { .. }
             | FromUi::SamplePadLive { .. }
-            | FromUi::SaveBrowserLists(_) => {}
+            | FromUi::SaveBrowserLists(_)
+            | FromUi::SaveReport(_) => {}
             FromUi::UndoHistory(on) => {
                 let (rows, now) = match on {
                     gui::UndoOn::Synth => self
