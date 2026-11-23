@@ -499,6 +499,10 @@ impl Session {
         s.out.show(ToUi::Synth(s.synth.state()));
         s.out
             .show(ToUi::KitIds(Box::new(s.instrument_list.kit_ids())));
+        // Simulated time runs far faster than it plays: smart loop end's
+        // finder answers in the period that asks, as its thread would in
+        // the time a period plays.
+        s.looper.finder.inline = true;
         // The app has the list from the first period, as main.rs's (its
         // `list_changed` starts true), kits and all.
         let fx = s.app.set_instrument_list(&s.instrument_list);
@@ -1917,6 +1921,7 @@ impl Session {
         }
         // `|`, not `||`: both flags are taken.
         if self.time.take_changed() | self.tracks.take_changed() {
+            self.tracks.keep_named(self.time.recordings());
             self.out.show(ToUi::Time(Box::new(crate::time_state(
                 &self.time,
                 &self.tracks,
@@ -2060,11 +2065,13 @@ impl Session {
         let silenced = self.time.silenced();
         self.tracks.sync(self.time.project(), silenced, false);
         self.tracks.feed_inside(&mut self.mix);
+        let time = &self.time;
         self.tracks.period(
-            self.time.block(),
-            self.time.tempo_map(),
-            self.time.song_on(),
+            time.block(),
+            time.tempo_map(),
+            time.song_on(),
             (&line, &line),
+            Some(&|p| time.audio(p)),
         );
         self.tracks.play_into(&mut self.mix);
         let mut played = 0;
@@ -2602,7 +2609,8 @@ impl Session {
             | FromUi::SampleTake { .. }
             | FromUi::SampleKey { .. }
             | FromUi::SamplePadLive { .. }
-            | FromUi::SaveBrowserLists(_) => {}
+            | FromUi::SaveBrowserLists(_)
+            | FromUi::SaveReport(_) => {}
             FromUi::UndoHistory(on) => {
                 let (rows, now) = match on {
                     gui::UndoOn::Synth => self

@@ -170,6 +170,21 @@ pub(super) fn parse_scheduler(text: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// Waits up to `wait` for no thread of this program to be called
+    /// `name`. A thread just joined can still be listed for a moment:
+    /// `join` returns once the kernel clears the thread's id, a little
+    /// before the kernel lets its task go.
+    fn gone(name: &str, wait: Duration) -> bool {
+        let t = Instant::now();
+        while thread_named(name, Duration::ZERO).is_some() {
+            if t.elapsed() >= wait {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        true
+    }
+
     #[test]
     fn priorities_are_coded_as_the_kernel_codes_them() {
         // include/uapi/linux/ioprio.h: IOPRIO_PRIO_VALUE(class, level).
@@ -222,7 +237,7 @@ mod tests {
         assert_eq!(get(id).unwrap(), IoPrio::BestEffort(7));
         tx.send(()).unwrap();
         h.join().unwrap();
-        assert_eq!(thread_named("prio-test-a", Duration::ZERO), None);
+        assert!(gone("prio-test-a", Duration::from_secs(2)));
         assert_eq!(
             thread_named("no-such-thread", Duration::from_millis(5)),
             None

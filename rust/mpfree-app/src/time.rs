@@ -65,6 +65,7 @@
 
 mod apart;
 mod audio;
+mod audio_wait;
 mod compose;
 mod control;
 mod follow;
@@ -88,6 +89,7 @@ use std::f32::consts::TAU;
 pub use apart::Say;
 use apart::{Apart, Told};
 pub use audio::TimeAudio;
+pub use audio_wait::{AudioNeed, CueKey};
 pub use control::EXACT;
 pub use control::{edits_steps, MuteLight, PadTap, SongAudio, TimeControl};
 pub use follow::Follow;
@@ -95,6 +97,14 @@ use link::Tracks;
 pub use mpfree_play::AheadCounts;
 pub use pad_wait::{DuePads, PadFrom, PadWait, MAX_WAITS};
 pub use timing::{Allowed, Answer, TimingChange};
+
+/// Each project audio track's regions as the spans of song ticks they
+/// cover, in order, by the track's lasting id (phase 2, step 2d).
+pub type AudioSpans = Vec<(mpfree_seq::TrackId, Vec<(Tick, Tick)>)>;
+
+/// Rec song's song edit that put blocks of audio clips in: its number,
+/// and each block's track and song ticks (phase 2, step 2d).
+pub type SongPlaced = (u32, Vec<(mpfree_seq::TrackId, Tick, Tick)>);
 
 /// Tracks in a new project.
 pub const TRACKS: usize = 8;
@@ -1122,6 +1132,81 @@ impl TimeHost {
         self.sent(r)
     }
 
+    /// Cues that launch audio wait until the start of their audio is held
+    /// in memory (`on`: takes stream from their files), or go as they are
+    /// (see `TimeControl::set_audio_waits`).
+    pub fn set_audio_waits(&mut self, on: bool) {
+        self.with(|c| c.set_audio_waits(on));
+        self.sent(());
+    }
+
+    /// What the cues waiting for their audio need held (see
+    /// `TimeControl::audio_needs`). Ask again when the state's
+    /// `audio_waits.needs_rev` rises.
+    pub fn audio_needs(&mut self) -> Vec<AudioNeed> {
+        self.with(|c| c.audio_needs().to_vec())
+    }
+
+    /// The audio `key`'s cues need is held (`ok`), or not yet (see
+    /// `TimeControl::audio_held`). False when nothing waits under `key`.
+    pub fn audio_held(&mut self, key: CueKey, ok: bool) -> bool {
+        let r = self.with(|c| c.audio_held(key, ok));
+        self.sent(r)
+    }
+
+    /// The audio held for `key` was given back before its cues landed (see
+    /// `TimeControl::audio_given_back`).
+    pub fn audio_given_back(&mut self, key: CueKey) -> bool {
+        let r = self.with(|c| c.audio_given_back(key));
+        self.sent(r)
+    }
+
+    /// To a cell and Put in a cell (audio tracks phase 2): `clip` in audio
+    /// track `track`'s first empty cell, as an edit UNDO takes away (see
+    /// `TimeControl::put_audio_clip`). The row it went in, or why not.
+    pub fn put_audio_clip(&mut self, track: usize, clip: Clip) -> Result<usize, String> {
+        let r = self.with(|c| c.put_audio_clip(track, clip));
+        self.sent(r)
+    }
+
+    /// Each audio track's regions as song tick spans (phase 2, step 2d):
+    /// a block is never dropped, moved or made longer over one (see
+    /// `TimeControl::set_audio_spans`).
+    pub fn set_audio_spans(&mut self, spans: AudioSpans) {
+        self.with(|c| c.set_audio_spans(spans));
+    }
+
+    /// Audio track `track` armed or disarmed by its own arm: the Clip tab
+    /// follows it (see `TimeControl::focus_audio`).
+    pub fn focus_audio(&mut self, track: usize, on: bool) {
+        self.with(|c| c.focus_audio(track, on));
+    }
+
+    /// Put in a cell's cell (audio tracks phase 2,
+    /// `mpfree_time_ui::view::pick_cell`), as (track, row); None: no audio
+    /// track has an empty cell.
+    pub fn cell_for_sound(&self) -> Option<(usize, usize)> {
+        let cells = self.project().tracks.iter().map(|t| {
+            let empty = t.slots.shown().position(|c| c.is_none());
+            (t.is_audio(), empty)
+        });
+        mpfree_time_ui::view::pick_cell(self.armed(), cells)
+    }
+
+    /// Fit to tempo's end (audio tracks phase 2): clip `slot` of `track`,
+    /// if still clip `id`, plays `audio`, as one edit UNDO takes back
+    /// (see `TimeControl::fit_clip`). Its name, or why not.
+    pub fn fit_clip(
+        &mut self,
+        track: usize,
+        slot: usize,
+        id: mpfree_seq::ClipId,
+        audio: mpfree_seq::AudioClip,
+    ) -> Result<String, String> {
+        let r = self.with(|c| c.fit_clip(track, slot, id, audio));
+        self.sent(r)
+    }
+
     /// A track's MIDI effects, as the chain editor's Notes stage set them
     /// (see `TimeControl::set_note_fx`). False if there is no such note
     /// track.
@@ -1540,6 +1625,21 @@ impl TimeHost {
         self.sent(r)
     }
 
+    /// A take, or an import placing regions, ended on audio track
+    /// `track`'s lane over song ticks `span`: the blocks under it are cut
+    /// there, as a song edit of its own, in the same period (audio tracks
+    /// phase 2, step 2d; [`TimeControl::audio_took`]). Its number, to tag
+    /// the take's undo step with, and the line to say; None when no block
+    /// was there.
+    pub fn audio_took(
+        &mut self,
+        track: mpfree_seq::TrackId,
+        span: (Tick, Tick),
+    ) -> Result<Option<(u32, String)>, String> {
+        let r = self.with(|c| c.audio_took(track, span));
+        self.sent(r)
+    }
+
     /// Whether the song's UNDO (`undo`), or its REDO, still reaches song
     /// edit `n` ([`TimeControl::song_reaches`]).
     pub fn song_reaches(&mut self, n: u32, undo: bool) -> bool {
@@ -1844,6 +1944,26 @@ impl TimeHost {
         self.sent(r)
     }
 
+    /// What Rec song last put on audio tracks' lanes, once: its song edit's
+    /// number and the blocks' spans by lasting id, for the audio tracks to
+    /// replace the regions under them as a step tagged with the number
+    /// (audio tracks phase 2, step 2d; [`TimeControl::take_song_placed`]).
+    /// Then [`TimeHost::tie_audio`] if they made one.
+    pub fn take_song_placed(&mut self) -> Option<SongPlaced> {
+        match &mut self.control {
+            Half::Here(c) => c.take_song_placed(),
+            Half::Apart(a) => a.take_placed(),
+        }
+    }
+
+    /// The audio tracks made a step tied to song edit `n`: the song's UNDO
+    /// and REDO of it go through them ([`TimeControl::tie_audio`]). False
+    /// when the song's history no longer holds `n`.
+    pub fn tie_audio(&mut self, n: u32) -> bool {
+        let r = self.with(|c| c.tie_audio(n));
+        self.sent(r)
+    }
+
     /// An old project's kit 1 pad mutes and solos set on each track in
     /// `tracks` ([`TimeControl::carry_pad_mutes`]): how many took them.
     pub fn carry_pad_mutes(&mut self, tracks: u128, mutes: u128, solos: u128) -> usize {
@@ -1879,6 +1999,16 @@ impl TimeHost {
         match &self.control {
             Half::Here(c) => c.muted(t),
             Half::Apart(a) => a.light.muted.get(t).copied().flatten(),
+        }
+    }
+
+    /// The recordings the project's audio clips, the clips UNDO or REDO
+    /// could bring back and the clip COPY holds name, sorted, each once
+    /// ([`TimeControl::recordings`]; apart, as last published).
+    pub fn recordings(&self) -> Vec<mpfree_seq::RecId> {
+        match &self.control {
+            Half::Here(c) => c.recordings(),
+            Half::Apart(a) => a.heavy.recordings.clone(),
         }
     }
 
@@ -2124,8 +2254,16 @@ impl TimeHost {
         self.audio.tempo_map()
     }
 
+    /// What audio track `track` (in the track list) played in the last
+    /// period: its clips, its song or nothing, each change on its frame
+    /// (audio tracks phase 2, step 2b). Call after [`TimeHost::period`].
+    pub fn audio(&self, track: usize) -> mpfree_play::AudioAnswer<'_> {
+        self.audio.audio(track)
+    }
+
     /// Song mode is on: the song plays on tracks with no clip launched.
-    /// Audio tracks play and record only then (layout spec 4c).
+    /// Audio tracks record only then (layout spec 4c), and play their song
+    /// regions only then; their clips play in both.
     pub fn song_on(&self) -> bool {
         match &self.control {
             Half::Here(c) => c.song_on(),
@@ -10064,7 +10202,7 @@ mod tests {
     #[test]
     fn convert_to_notes_previews_then_converts_in_one_undo() {
         use mpfree_seq::{Holds, Lock, Note};
-        use mpfree_time_ui::view::{card_buttons, clip_rows, clips_card_hint, CLIP_MELODY};
+        use mpfree_time_ui::view::{card_buttons, clip_card_hint, clip_rows, CLIP_MELODY};
         // Pad 1 a chord (root last), the others one note each, none shared.
         let mut rows = PadRows::PADS;
         for p in 1..16 {
@@ -10112,7 +10250,7 @@ mod tests {
         );
         let st = h.state();
         assert_eq!(names(&st), ["Cancel", "Convert"]);
-        assert_eq!(clips_card_hint(&st), line, "the hint line says it");
+        assert_eq!(clip_card_hint(&st), line, "the hint line says it");
         assert_eq!(h.project().clip(0, 0).unwrap(), &mutated);
         // The pads change: Convert refuses, and the preview closes.
         let mut moved = rows;
@@ -10482,6 +10620,49 @@ mod tests {
         assert_eq!(ticks(&h), [0, 960, 1920]);
         h.act(TimeAction::Undo).unwrap();
         assert_eq!(sorted(&h), c.notes);
+        // ERASE + a drag (piano roll plan 1B.5): the notes it crossed in
+        // one take, which one UNDO brings back; on an old picture,
+        // refused with nothing erased.
+        h.take_changed();
+        let rev = h.state().edit.unwrap().rev;
+        assert_eq!(
+            h.act(TimeAction::Edit(E::Sweep {
+                notes: vec![0, 2],
+                rev
+            }))
+            .unwrap(),
+            "edit: 2 notes erased"
+        );
+        assert_eq!(sorted(&h).len(), 1);
+        let said = h
+            .act(TimeAction::Edit(E::Sweep {
+                notes: vec![0],
+                rev,
+            }))
+            .unwrap_err();
+        assert!(
+            said.contains("the clip changed under your finger"),
+            "{said}"
+        );
+        assert_eq!(sorted(&h).len(), 1);
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(sorted(&h), c.notes);
+        // The clip's end handle (piano roll plan 1A.2): the Steps' length
+        // edit, one take; no shorter than just after the last note start.
+        let length = |h: &TimeHost| h.control.project.clip(0, 0).unwrap().length;
+        assert_eq!(
+            h.act(TimeAction::Edit(E::Length { to: 7680 })).unwrap(),
+            "edit: the clip is 32 steps long"
+        );
+        assert_eq!(length(&h), 7680);
+        assert_eq!(
+            h.act(TimeAction::Edit(E::Length { to: 960 })).unwrap(),
+            "edit: a note or lock starts on step 9: the clip can't end before it"
+        );
+        assert_eq!(length(&h), 7680);
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(length(&h), 3840);
+        assert_eq!(sorted(&h), c.notes);
         assert_eq!(
             h.act(TimeAction::Edit(E::Button(0))).unwrap(),
             "edit: closed"
@@ -10769,6 +10950,8 @@ mod tests {
             ChordShape, EditAction as E, ToolAct, ToolKind, STRUM_ROW, STRUM_TICKS,
         };
         let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        // A track that plays notes: its clip holds notes (plan 4.2).
+        h.set_notes_tracks(1);
         h.step_action(StepAction::Tap {
             pad: 0,
             step: 0,
@@ -11011,6 +11194,64 @@ mod tests {
         h.act(TimeAction::Edit(E::Button(0))).unwrap();
         h.act(TimeAction::Edit(E::Open)).unwrap();
         assert!(!h.pads_write());
+    }
+
+    /// Show (piano roll plan 4.1): the editor's other clips go to the
+    /// screen with their notes, one copy while unchanged; a faint note's
+    /// tap opens its clip, selects its track, and leaves the clip it left
+    /// showing in its place.
+    #[test]
+    fn show_sends_other_clips_and_a_faint_notes_tap_opens_its_clip() {
+        use mpfree_time_ui::editor::EditAction as E;
+        let mut h = host_with_a_clip();
+        h.act(TimeAction::AddTrack).unwrap();
+        let mut line = Clip::new("line", 3840);
+        line.notes = vec![mpfree_seq::Note::new(0, 480, 1, 90)];
+        h.control.project.tracks[1].slots[0] = Some(line);
+        h.control.project.give_clip_ids();
+        h.act(TimeAction::Arm(Some(0))).unwrap();
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        let edit = |h: &mut TimeHost| {
+            h.take_changed();
+            h.state().edit.unwrap()
+        };
+        let e = edit(&mut h);
+        assert_eq!((e.editor.track, e.editor.slot), (0, 0));
+        assert!(e.ghosts.is_empty());
+        h.act(TimeAction::Edit(E::Show { track: 1, slot: 0 }))
+            .unwrap();
+        let e = edit(&mut h);
+        assert_eq!(e.editor.show, [(1, 0)]);
+        assert_eq!(e.ghosts.len(), 1);
+        assert_eq!(
+            (
+                e.ghosts[0].clip.name.as_str(),
+                e.ghosts[0].track_name.as_str()
+            ),
+            ("line", h.state().tracks[1].name.as_str())
+        );
+        // Unchanged: the same copy.
+        h.act(TimeAction::Edit(E::Cursor(1))).unwrap();
+        let again = edit(&mut h);
+        assert!(std::sync::Arc::ptr_eq(
+            &e.ghosts[0].clip,
+            &again.ghosts[0].clip
+        ));
+        // The faint note's tap: that clip opens, its track selected, the
+        // beat behind it.
+        h.act(TimeAction::Edit(E::Switch { track: 1, slot: 0 }))
+            .unwrap();
+        let e = edit(&mut h);
+        assert_eq!((e.editor.track, e.editor.slot), (1, 0));
+        assert_eq!(e.editor.show, [(0, 0)]);
+        assert_eq!(e.ghosts[0].clip.name, "beat");
+        assert_eq!(h.state().track_pick, Some(1));
+        // A clip that's gone shows no more, and can't be opened.
+        h.act(TimeAction::DeleteClip { track: 0, slot: 0 }).unwrap();
+        assert!(edit(&mut h).ghosts.is_empty());
+        assert!(h
+            .act(TimeAction::Edit(E::Switch { track: 0, slot: 0 }))
+            .is_err());
     }
 
     #[test]
@@ -14336,6 +14577,872 @@ mod tests {
         notes.sort();
         assert_eq!(notes, vec![0, 62], "pad 1's chord came out");
         assert_eq!(h.dropped(), 0);
+    }
+
+    /// Cues that wait for their audio while takes stream from their files
+    /// (the audio tracks rethink's phase 2; `time/audio_wait.rs`).
+    mod audio_waits {
+        use super::*;
+        use mpfree_play::Cue;
+        use mpfree_seq::{AudioClip, ClipRegion, LaunchGrid, RecId};
+        use mpfree_time_ui::view::AudioWaitCounts;
+
+        /// A bar in ticks.
+        const TICKS: i64 = 3840;
+        const DRUMS: usize = 0;
+        const VOCAL: usize = 1;
+        /// A second at the tests' rate, in frames.
+        const SECOND: i64 = RATE as i64;
+
+        /// An audio clip `bars` long: recording `rec` from frame 0 on its
+        /// first bar, and recording 9 from frame 100,000 on its second.
+        fn audio_clip(name: &str, rec: u128, bars: i64) -> Clip {
+            let mut c = Clip::new(name, bars * TICKS);
+            let mut a = AudioClip::of(RecId(rec), 0, 200_000, TICKS, 120.0);
+            if bars > 1 {
+                a.regions
+                    .push(ClipRegion::new(TICKS, 2 * TICKS, RecId(9), 100_000));
+            }
+            c.audio = Some(a);
+            c
+        }
+
+        fn beat(name: &str) -> Clip {
+            let mut c = Clip::new(name, TICKS);
+            for k in 0..4 {
+                c.add_note(mpfree_seq::Note::new(k * 960, 240, 36, 100))
+                    .unwrap();
+            }
+            c
+        }
+
+        /// Drums playing their first clip and a vocal (an audio track) with
+        /// Verse (2 bars) and Chorus (1 bar), a quarter of a bar into the
+        /// song, with waits on or off.
+        fn host(waits: bool) -> (TimeHost, Fake) {
+            let mut p = Project::new();
+            let mut drums = Track::new("Drums", 1);
+            drums.slots[0] = Some(beat("Beat"));
+            drums.slots[1] = Some(beat("Fill"));
+            let mut vocal = Track::new_audio("Vocal", 2);
+            vocal.slots[0] = Some(audio_clip("Verse", 1, 2));
+            vocal.slots[1] = Some(audio_clip("Chorus", 2, 1));
+            p.tracks.push(drums);
+            p.tracks.push(vocal);
+            let mut h = TimeHost::with_project(RATE, 120.0, p).unwrap();
+            h.act(TimeAction::Launch {
+                track: DRUMS,
+                slot: 0,
+            })
+            .unwrap();
+            h.set_audio_waits(waits);
+            h.command(Command::Play);
+            let mut pads = Fake::default();
+            run(&mut h, &mut pads, BAR / 4, &[]);
+            (h, pads)
+        }
+
+        /// The clip `track` plays and the song tick it started on.
+        fn playing(h: &TimeHost, track: usize) -> Option<(usize, i64)> {
+            h.control
+                .launches
+                .iter()
+                .find(|l| l.track == track)
+                .map(|l| (l.slot, l.start))
+        }
+
+        fn cued_in_view(h: &TimeHost, track: usize) -> Option<Option<usize>> {
+            h.control.view().unwrap().cue(track)
+        }
+
+        fn counts(h: &TimeHost) -> (u64, u64, u64, u64, u64, u32) {
+            let c = h.state().audio_waits;
+            (
+                c.kept,
+                c.held,
+                c.moved,
+                c.cancelled,
+                c.given_back,
+                c.waiting,
+            )
+        }
+
+        fn launch(h: &mut TimeHost, track: usize, slot: usize) {
+            h.act(TimeAction::Launch { track, slot }).unwrap();
+        }
+
+        #[test]
+        fn with_streaming_off_or_no_audio_a_cue_goes_as_it_did() {
+            let (mut h, mut pads) = host(false);
+            launch(&mut h, VOCAL, 0);
+            assert!(h.audio_needs().is_empty());
+            assert_eq!(cued_in_view(&h, VOCAL), Some(Some(0)));
+            run(&mut h, &mut pads, BAR + BAR / 8, &[]);
+            assert_eq!(playing(&h, VOCAL), Some((0, TICKS)));
+            assert_eq!(h.state().audio_waits, AudioWaitCounts::default());
+            // Waits on: a cue that launches no audio still goes at once.
+            h.set_audio_waits(true);
+            launch(&mut h, DRUMS, 1);
+            assert!(h.audio_needs().is_empty());
+            assert_eq!(cued_in_view(&h, DRUMS), Some(Some(1)));
+            run(&mut h, &mut pads, 2 * BAR + BAR / 8, &[]);
+            assert_eq!(playing(&h, DRUMS), Some((1, 2 * TICKS)));
+            assert_eq!(counts(&h), (0, 0, 0, 0, 0, 0));
+        }
+
+        #[test]
+        fn a_cue_held_in_time_lands_on_its_line() {
+            let (mut h, mut pads) = host(true);
+            launch(&mut h, VOCAL, 0);
+            // Each region's first second, from its start.
+            let needs = h.audio_needs();
+            let key = needs[0].cue;
+            let got: Vec<_> = needs.iter().map(|n| (n.cue, n.rec, n.from, n.to)).collect();
+            assert_eq!(
+                got,
+                vec![
+                    (key, RecId(1), 0, SECOND),
+                    (key, RecId(9), 100_000, 100_000 + SECOND)
+                ]
+            );
+            // Cued, as the screens show it, but out of the view.
+            assert_eq!(
+                h.control.cues,
+                vec![Cue {
+                    track: VOCAL,
+                    slot: Some(0)
+                }]
+            );
+            assert_eq!(cued_in_view(&h, VOCAL), None);
+            assert_eq!(counts(&h), (1, 0, 0, 0, 0, 1));
+            run(&mut h, &mut pads, BAR / 2, &[]);
+            assert!(h.audio_held(key, true));
+            assert_eq!(cued_in_view(&h, VOCAL), Some(Some(0)));
+            run(&mut h, &mut pads, BAR + BAR / 8, &[]);
+            assert_eq!(playing(&h, VOCAL), Some((0, TICKS)), "on its line");
+            assert!(h.audio_needs().is_empty());
+            assert_eq!(counts(&h), (1, 1, 0, 0, 0, 0));
+            // A key no longer waiting answers false.
+            assert!(!h.audio_held(key, true));
+        }
+
+        #[test]
+        fn a_cue_not_held_moves_twice_then_is_cancelled() {
+            let (mut h, mut pads) = host(true);
+            launch(&mut h, VOCAL, 1);
+            let key = h.audio_needs()[0].cue;
+            assert!(h.audio_held(key, false), "not held yet: it waits");
+            run(&mut h, &mut pads, BAR + BAR / 8, &[]);
+            assert_eq!(playing(&h, VOCAL), None);
+            assert_eq!(h.control.cues.len(), 1, "still cued");
+            let said = h.take_later_note().unwrap();
+            assert!(
+                said.contains("audio not ready: Vocal: Chorus moves to bar 3"),
+                "{said}"
+            );
+            run(&mut h, &mut pads, 2 * BAR + BAR / 8, &[]);
+            let said = h.take_later_note().unwrap();
+            assert!(said.contains("moves to bar 4"), "{said}");
+            assert_eq!(counts(&h), (1, 0, 2, 0, 0, 1));
+            run(&mut h, &mut pads, 3 * BAR + BAR / 8, &[]);
+            let said = h.take_later_note().unwrap();
+            assert!(
+                said.contains("audio not ready: Vocal: Chorus cancelled after 2 moves"),
+                "{said}"
+            );
+            assert!(h.control.cues.is_empty());
+            assert!(h.audio_needs().is_empty());
+            assert_eq!(counts(&h), (1, 0, 2, 1, 0, 0));
+            run(&mut h, &mut pads, 5 * BAR, &[]);
+            assert_eq!(playing(&h, VOCAL), None, "never launched");
+        }
+
+        #[test]
+        fn a_hold_given_back_moves_the_cue_and_a_new_hold_lands_it() {
+            let (mut h, mut pads) = host(true);
+            launch(&mut h, VOCAL, 0);
+            let key = h.audio_needs()[0].cue;
+            assert!(h.audio_held(key, true));
+            run(&mut h, &mut pads, BAR * 3 / 4, &[]);
+            assert!(h.audio_given_back(key));
+            assert_eq!(cued_in_view(&h, VOCAL), None, "out of the view again");
+            let said = h.take_later_note().unwrap();
+            assert!(said.contains("Vocal: Verse moves to bar 3"), "{said}");
+            run(&mut h, &mut pads, BAR + BAR / 8, &[]);
+            assert_eq!(playing(&h, VOCAL), None);
+            assert!(h.audio_held(key, true));
+            run(&mut h, &mut pads, 2 * BAR + BAR / 8, &[]);
+            assert_eq!(playing(&h, VOCAL), Some((0, 2 * TICKS)));
+            assert_eq!(counts(&h), (1, 2, 1, 0, 1, 0));
+            // Nothing held waits under it now.
+            assert!(!h.audio_given_back(key));
+        }
+
+        #[test]
+        fn a_scenes_cues_wait_and_land_as_one() {
+            let (mut h, mut pads) = host(true);
+            h.act(TimeAction::LaunchScene(1)).unwrap();
+            let needs = h.audio_needs();
+            assert_eq!(needs.len(), 1, "the chorus's one region");
+            let key = needs[0].cue;
+            // The drums' cue launches no audio but waits with the scene.
+            assert_eq!(cued_in_view(&h, DRUMS), None);
+            assert_eq!(cued_in_view(&h, VOCAL), None);
+            assert_eq!(h.state().scene_cued, Some(1));
+            run(&mut h, &mut pads, BAR + BAR / 8, &[]);
+            assert_eq!(playing(&h, DRUMS), Some((0, 0)), "the beat plays on");
+            assert_eq!(playing(&h, VOCAL), None);
+            let said = h.take_later_note().unwrap();
+            assert!(said.contains("scene 2 moves to bar 3"), "{said}");
+            assert!(h.audio_held(key, true));
+            assert_eq!(cued_in_view(&h, DRUMS), Some(Some(1)));
+            run(&mut h, &mut pads, 2 * BAR + BAR / 8, &[]);
+            assert_eq!(playing(&h, DRUMS), Some((1, 2 * TICKS)));
+            assert_eq!(playing(&h, VOCAL), Some((1, 2 * TICKS)));
+            assert_eq!(h.state().scene_playing, Some(1));
+            assert_eq!(counts(&h), (1, 1, 1, 0, 0, 0));
+        }
+
+        #[test]
+        fn a_scene_cancelled_takes_all_its_cues_back() {
+            let (mut h, mut pads) = host(true);
+            h.act(TimeAction::LaunchScene(1)).unwrap();
+            run(&mut h, &mut pads, 3 * BAR + BAR / 8, &[]);
+            let said = h.take_later_note().unwrap();
+            assert!(said.contains("scene 2 cancelled after 2 moves"), "{said}");
+            assert!(h.control.cues.is_empty());
+            assert_eq!(h.state().scene_cued, None);
+            assert_eq!(playing(&h, DRUMS), Some((0, 0)));
+            assert_eq!(playing(&h, VOCAL), None);
+            // A launch after it isn't taken for the scene.
+            launch(&mut h, DRUMS, 1);
+            run(&mut h, &mut pads, 4 * BAR + BAR / 8, &[]);
+            assert_eq!(playing(&h, DRUMS), Some((1, 4 * TICKS)));
+            assert_eq!(h.state().scene_playing, None);
+        }
+
+        #[test]
+        fn at_now_a_cue_lands_once_held_and_gives_up_after_two_bars() {
+            let (mut h, mut pads) = host(true);
+            for slot in 0..2 {
+                h.control.project.tracks[VOCAL].slots[slot]
+                    .as_mut()
+                    .unwrap()
+                    .launch = Some(LaunchGrid::Now);
+            }
+            launch(&mut h, VOCAL, 0);
+            let key = h.audio_needs()[0].cue;
+            run(&mut h, &mut pads, BAR / 2, &[]);
+            assert_eq!(playing(&h, VOCAL), None);
+            let at = h.state().transport.position;
+            assert!(h.audio_held(key, true));
+            run(&mut h, &mut pads, BAR / 2 + BAR / 8, &[]);
+            let (slot, start) = playing(&h, VOCAL).unwrap();
+            assert_eq!(slot, 0);
+            assert!((at..at + 200).contains(&start), "{start} from {at}");
+            // Never held: it gives up two bars after it was decided.
+            launch(&mut h, VOCAL, 1);
+            let decided = pads.frame;
+            run(&mut h, &mut pads, decided + 2 * BAR - BAR / 8, &[]);
+            assert_eq!(h.control.cues.len(), 1, "still waiting");
+            run(&mut h, &mut pads, decided + 2 * BAR + BAR / 8, &[]);
+            let said = h.take_later_note().unwrap();
+            assert!(
+                said.contains("Vocal: Chorus cancelled after 2 bars"),
+                "{said}"
+            );
+            assert!(h.control.cues.is_empty());
+            assert_eq!(playing(&h, VOCAL).map(|p| p.0), Some(0));
+        }
+
+        #[test]
+        fn a_legato_cue_needs_its_audio_from_the_place_it_takes_over() {
+            let (mut h, mut pads) = host(true);
+            // The verse plays from bar 1; the chorus, legato on a 1/4 grid
+            // and two bars long, takes over its place on the next beat.
+            let mut chorus = audio_clip("Chorus", 2, 2);
+            chorus.legato = true;
+            chorus.launch = Some(LaunchGrid::Ticks(960));
+            h.control.project.tracks[VOCAL].slots[1] = Some(chorus);
+            h.control.project.give_clip_ids();
+            h.control.launches.push(mpfree_play::Launch {
+                track: VOCAL,
+                slot: 0,
+                origin: 0,
+                start: 0,
+            });
+            h.control.compile().unwrap();
+            launch(&mut h, VOCAL, 1);
+            let needs = h.audio_needs();
+            let got: Vec<_> = needs.iter().map(|n| (n.rec, n.from, n.to)).collect();
+            // The next beat is tick 1,920, a second into the first region:
+            // from there to its end; the second region from its start.
+            assert_eq!(
+                got,
+                vec![
+                    (RecId(2), SECOND, 2 * SECOND),
+                    (RecId(9), 100_000, 100_000 + SECOND)
+                ]
+            );
+            assert!(h.audio_held(needs[0].cue, true));
+            run(&mut h, &mut pads, BAR / 2 + BAR / 8, &[]);
+            assert_eq!(playing(&h, VOCAL).map(|p| p.0), Some(1));
+        }
+
+        #[test]
+        fn a_loop_jump_aims_a_waiting_cue_at_the_next_line_without_a_move() {
+            let (mut h, mut pads) = host(true);
+            h.command(Command::SetLoop(Some((0, 2 * TICKS))));
+            launch(&mut h, VOCAL, 0);
+            let key = h.audio_needs()[0].cue;
+            // Bar 2 plays without it (one move), then the loop goes back to
+            // bar 1: it aims at bar 2 again, still one move.
+            run(&mut h, &mut pads, 2 * BAR + BAR / 8, &[]);
+            assert_eq!(counts(&h).2, 1);
+            assert!(h.audio_held(key, true));
+            run(&mut h, &mut pads, 3 * BAR + BAR / 8, &[]);
+            assert_eq!(playing(&h, VOCAL), Some((0, TICKS)));
+            assert_eq!(counts(&h), (1, 1, 1, 0, 0, 0));
+        }
+    }
+
+    /// Audio clips in the grid (the audio tracks rethink's phase 2, step
+    /// 2c): To a cell's and Put in a cell's first empty cell, and audio
+    /// clips moved, copied and pasted between audio tracks only.
+    mod audio_cells {
+        use super::*;
+        use mpfree_seq::{AudioClip, RecId, SLOTS};
+
+        const DRUMS: usize = 0;
+        const VOCAL: usize = 1;
+        const GUITAR: usize = 2;
+
+        fn audio_clip(name: &str, rec: u128) -> Clip {
+            let mut c = Clip::new(name, 3840);
+            c.audio = Some(AudioClip::of(RecId(rec), 0, 88_200, 3840, 120.0));
+            c
+        }
+
+        /// Drums with a beat, Vocal (audio) with Verse, Guitar (audio)
+        /// empty.
+        fn host() -> TimeHost {
+            let mut p = Project::new();
+            let mut drums = Track::new("Drums", 1);
+            drums.slots[0] = Some(Clip::new("Beat", 3840));
+            let mut vocal = Track::new_audio("Vocal", 2);
+            vocal.slots[0] = Some(audio_clip("Verse", 1));
+            p.tracks.push(drums);
+            p.tracks.push(vocal);
+            p.tracks.push(Track::new_audio("Guitar", 3));
+            TimeHost::with_project(RATE, 120.0, p).unwrap()
+        }
+
+        fn name_at(h: &TimeHost, track: usize, slot: usize) -> Option<String> {
+            h.control.project.clip(track, slot).map(|c| c.name.clone())
+        }
+
+        #[test]
+        fn an_audio_clip_goes_in_its_tracks_first_empty_cell_and_undo_takes_it_out() {
+            let mut h = host();
+            assert_eq!(h.put_audio_clip(VOCAL, audio_clip("Hook", 2)), Ok(1));
+            assert_eq!(h.put_audio_clip(VOCAL, audio_clip("Ad libs", 3)), Ok(2));
+            assert_eq!(name_at(&h, VOCAL, 2).as_deref(), Some("Ad libs"));
+            let ids: Vec<_> = (0..3)
+                .filter_map(|s| h.control.project.clip(VOCAL, s).map(|c| c.id))
+                .collect();
+            assert!(ids[0] != ids[1] && ids[1] != ids[2], "each its own id");
+            // UNDO takes the last one out; the cell is free again.
+            h.act(TimeAction::Undo).unwrap();
+            assert_eq!(name_at(&h, VOCAL, 2), None);
+            assert_eq!(h.put_audio_clip(VOCAL, audio_clip("Ad libs", 3)), Ok(2));
+            // A full track, a note track and a note clip are refused, and
+            // nothing changes.
+            for _ in 3..SLOTS {
+                h.put_audio_clip(VOCAL, audio_clip("More", 4)).unwrap();
+            }
+            let full = h.put_audio_clip(VOCAL, audio_clip("One more", 5));
+            assert_eq!(full, Err("Vocal has no empty cell".to_string()));
+            let drums = h.put_audio_clip(DRUMS, audio_clip("Hook", 2));
+            assert_eq!(drums, Err("there is no audio track 1".to_string()));
+            let notes = h.put_audio_clip(GUITAR, Clip::new("Notes", 3840));
+            assert_eq!(notes, Err("Guitar takes audio clips only".to_string()));
+            assert!(h.control.project.tracks[GUITAR]
+                .slots
+                .iter()
+                .next()
+                .is_none());
+        }
+
+        /// Phase 2, step 2d (the Arrange thread's half): Scenes → song and
+        /// List → song play the rows offline through Rec song, and the
+        /// copy keeps its audio clips as audio clips, so an audio clip's
+        /// launch comes out as its block on its own track's lane, linked to
+        /// the clip, with no audio tracks host attached.
+        #[test]
+        fn the_rows_played_offline_keep_their_audio_clips_blocks() {
+            for a in [TimeAction::ScenesToSong, TimeAction::ListToSong] {
+                let mut h = host();
+                if a == TimeAction::ListToSong {
+                    h.act(TimeAction::ListAdd).unwrap();
+                }
+                let verse = h.control.project.clip(VOCAL, 0).unwrap().id;
+                let said = h.act(a.clone()).unwrap();
+                assert!(
+                    said.ends_with("exact. UNDO takes it back."),
+                    "{a:?}: {said}"
+                );
+                let blocks: Vec<_> = h
+                    .control
+                    .project
+                    .arrangement
+                    .placements
+                    .iter()
+                    .map(|p| (p.track, p.start, p.length))
+                    .collect();
+                assert_eq!(blocks, [(DRUMS, 0, 3840), (VOCAL, 0, 3840)], "{a:?}");
+                let p = &h.control.project.arrangement.placements[1];
+                assert_eq!(p.clip, verse, "{a:?}: the Verse clip itself");
+            }
+        }
+
+        /// The audio tracks, as far as a song edit tied to them goes: the
+        /// steps UNDO and REDO took back and brought back.
+        #[derive(Default)]
+        struct Tied {
+            undone: Vec<(u32, bool)>,
+            regions: Vec<(mpfree_seq::TrackId, Vec<mpfree_seq::ClipRegion>)>,
+        }
+
+        impl SongAudio for Tied {
+            fn busy(&self) -> Option<String> {
+                None
+            }
+            fn refused(&self, _: &mpfree_audiotracks::Retime) -> Option<String> {
+                None
+            }
+            fn moves(&self, _: &mpfree_audiotracks::Retime) -> bool {
+                false
+            }
+            fn retime(&mut self, _: u32, _: mpfree_audiotracks::Retime) -> bool {
+                false
+            }
+            fn step(&self, _: u32, _: bool) -> mpfree_audiotracks::SongStep {
+                mpfree_audiotracks::SongStep::Next
+            }
+            fn song_undo(&mut self, song: u32, undo: bool) {
+                self.undone.push((song, undo));
+            }
+            fn regions(&self) -> Vec<(mpfree_seq::TrackId, Vec<mpfree_seq::ClipRegion>)> {
+                self.regions.clone()
+            }
+        }
+
+        /// Phase 2, step 2d: what Rec song puts into the song is a song
+        /// edit UNDO takes back; the blocks it put on audio lanes are handed
+        /// to the audio tracks once, with the edit's number, to replace the
+        /// regions under them; once they say they made that step, the
+        /// song's UNDO and REDO take it back and bring it back too.
+        #[test]
+        fn rec_songs_blocks_are_one_undo_and_handed_to_the_audio_tracks() {
+            let mut h = host();
+            let mut pads = Fake::default();
+            h.act(TimeAction::LaunchScene(0)).unwrap();
+            h.act(TimeAction::RecSong(true)).unwrap();
+            h.command(Command::Play);
+            run(&mut h, &mut pads, 2 * BAR - 1000, &[]);
+            h.command(Command::Stop);
+            run(&mut h, &mut pads, 2 * BAR, &[]);
+            let note = h.take_later_note().unwrap();
+            assert!(note.starts_with("rec song: 2 placements"), "{note}");
+            let lanes = |h: &TimeHost| -> Vec<usize> {
+                let song = &h.control.project.arrangement;
+                song.placements.iter().map(|p| p.track).collect()
+            };
+            assert_eq!(lanes(&h), [DRUMS, VOCAL]);
+            let vocal = h.control.project.tracks[VOCAL].id;
+            let st = h.state();
+            let took = st.done.last().unwrap();
+            assert_eq!(took.word(), "rec song");
+            let n = took.number;
+            let end = h.control.project.arrangement.placements[1].end();
+            assert_eq!(h.take_song_placed(), Some((n, vec![(vocal, 0, end)])));
+            assert_eq!(h.take_song_placed(), None, "once");
+            // Untied, UNDO and REDO are the song's alone.
+            let mut tied = Tied::default();
+            h.act_with_audio(TimeAction::Undo, &mut tied).unwrap();
+            assert!(lanes(&h).is_empty());
+            h.act_with_audio(TimeAction::Redo, &mut tied).unwrap();
+            assert_eq!(lanes(&h), [DRUMS, VOCAL]);
+            assert!(tied.undone.is_empty());
+            // Tied: the audio tracks' step goes back and comes back too.
+            assert!(h.tie_audio(n));
+            h.act_with_audio(TimeAction::Undo, &mut tied).unwrap();
+            h.act_with_audio(TimeAction::Redo, &mut tied).unwrap();
+            assert_eq!(tied.undone, [(n, true), (n, false)]);
+            assert!(!h.tie_audio(n + 100), "no such edit");
+        }
+
+        /// Phase 2, step 2d: Song → scenes asks the audio tracks for the
+        /// song's regions, through act_with_audio, and each section's part
+        /// of a lane becomes an audio clip in the section's row; a section
+        /// a clip can't hold is refused by track and bars, and nothing
+        /// changes. Song → scenes through act alone has no regions.
+        #[test]
+        fn song_to_scenes_brings_the_songs_regions_in_as_audio_clips() {
+            use mpfree_seq::ClipRegion;
+            let bar = 3840;
+            let mut h = host();
+            let p = &mut h.control.project;
+            let beat = mpfree_seq::Placement::of(&p.tracks, DRUMS, 0, 0, 2 * bar);
+            p.arrangement.place(beat).unwrap();
+            p.arrangement.mark(bar, "Chorus").unwrap();
+            h.control.compile().unwrap();
+            let guitar = h.control.project.tracks[GUITAR].id;
+            let take = ClipRegion::new(bar / 2, 3 * bar / 2, RecId(5), 0);
+            let mut tied = Tied {
+                regions: vec![(guitar, vec![take])],
+                ..Tied::default()
+            };
+            let said = h
+                .act_with_audio(TimeAction::SongToScenes, &mut tied)
+                .unwrap();
+            assert!(said.starts_with("song → scenes: rows 2 to 3"), "{said}");
+            let audio = |h: &TimeHost, row: usize| {
+                let c = h.control.project.clip(GUITAR, row).unwrap();
+                (c.name.clone(), c.audio.clone().unwrap().regions)
+            };
+            let (name, regions) = audio(&h, 1);
+            assert_eq!(name, "Guitar 1");
+            assert_eq!(regions.len(), 1);
+            assert_eq!((regions[0].start, regions[0].end), (bar / 2, bar));
+            let (name, regions) = audio(&h, 2);
+            assert_eq!(name, "Guitar 2");
+            assert_eq!((regions[0].start, regions[0].end), (0, bar / 2));
+            assert_eq!(regions[0].src, regions[0].into as i64, "on from the cut");
+            // One UNDO takes the rows away.
+            h.act(TimeAction::Undo).unwrap();
+            assert!(h.control.project.clip(GUITAR, 1).is_none());
+            // 17 regions in the first section: refused by name, nothing
+            // changes.
+            tied.regions = vec![(
+                guitar,
+                (0..17)
+                    .map(|k| ClipRegion::new(k * 200, k * 200 + 100, RecId(5), 0))
+                    .collect(),
+            )];
+            let before = h.control.project.clone();
+            let err = h
+                .act_with_audio(TimeAction::SongToScenes, &mut tied)
+                .unwrap_err();
+            assert_eq!(
+                err,
+                "song → scenes: nothing changed: Guitar, bar 1: 17 regions, and a clip holds 16. Split the section, or bounce it first."
+            );
+            assert_eq!(h.control.project, before);
+            // Through act alone: no regions asked for, only the Beat.
+            h.act(TimeAction::SongToScenes).unwrap();
+            assert!(h.control.project.clip(GUITAR, 1).is_none());
+            assert!(h.control.project.clip(DRUMS, 1).is_some());
+        }
+
+        /// Phase 2, step 2d: a take over a block cuts the block at the
+        /// take's edges, as a song edit of its own whose number the audio
+        /// tracks tie their step to, so the song's UNDO and REDO take their
+        /// step back and bring it back. No block there, or a note track:
+        /// nothing to cut, nothing tied.
+        #[test]
+        fn a_take_over_a_block_cuts_it_and_its_undo_is_tied_to_the_takes() {
+            let bar = 3840;
+            let mut h = host();
+            let p = &mut h.control.project;
+            let mut verse = mpfree_seq::Placement::of(&p.tracks, VOCAL, 0, 0, 4 * bar);
+            verse.offset = 0;
+            p.arrangement.place(verse).unwrap();
+            let beat = mpfree_seq::Placement::of(&p.tracks, DRUMS, 0, 0, 4 * bar);
+            p.arrangement.place(beat).unwrap();
+            h.control.compile().unwrap();
+            let id = |h: &TimeHost, t: usize| h.control.project.tracks[t].id;
+            let lane = |h: &TimeHost, t: usize| -> Vec<(Tick, Tick, Tick)> {
+                let song = &h.control.project.arrangement;
+                song.placements
+                    .iter()
+                    .filter(|p| p.track == t)
+                    .map(|p| (p.start, p.length, p.offset))
+                    .collect()
+            };
+            let before = h.control.project.arrangement.clone();
+            // Nowhere near a block, or on a note track: nothing.
+            assert_eq!(h.audio_took(id(&h, GUITAR), (0, bar)), Ok(None));
+            assert_eq!(h.audio_took(id(&h, DRUMS), (0, bar)), Ok(None));
+            assert_eq!(h.audio_took(id(&h, VOCAL), (4 * bar, 5 * bar)), Ok(None));
+            assert_eq!(h.control.project.arrangement, before);
+            // Bars 2 and 3 recorded over Vocal's four-bar Verse: bar 1 and
+            // bar 4 stay, bar 4 playing on from where it was.
+            let (n, said) = h
+                .audio_took(id(&h, VOCAL), (bar, 3 * bar))
+                .unwrap()
+                .expect("a block was there");
+            assert_eq!(
+                said,
+                "song: the recording on Vocal at bar 2 cut the blocks under it"
+            );
+            assert_eq!(lane(&h, VOCAL), [(0, bar, 0), (3 * bar, bar, 0)]);
+            assert_eq!(lane(&h, DRUMS), [(0, 4 * bar, 0)], "another lane stays");
+            let st = h.state();
+            let took = st.done.last().unwrap();
+            assert_eq!((took.number, took.word()), (n, "recorded over"));
+            assert_eq!(
+                took.song,
+                Some(mpfree_play::SongChange::Recorded {
+                    track: VOCAL,
+                    start: bar
+                })
+            );
+            let cut = h.control.project.arrangement.clone();
+            // The song's UNDO takes the audio tracks' step back with it,
+            // and REDO brings it back.
+            let mut tied = Tied::default();
+            h.act_with_audio(TimeAction::Undo, &mut tied).unwrap();
+            assert_eq!(h.control.project.arrangement, before);
+            h.act_with_audio(TimeAction::Redo, &mut tied).unwrap();
+            assert_eq!(h.control.project.arrangement, cut);
+            assert_eq!(tied.undone, [(n, true), (n, false)]);
+        }
+
+        /// A take inside a block when the song holds all the blocks it
+        /// can: there's no room to cut it in two, so the recording wins and
+        /// the whole block goes, said and counted.
+        #[test]
+        fn a_take_inside_a_block_of_a_full_song_takes_the_whole_block() {
+            let bar = 3840;
+            let mut h = host();
+            let p = &mut h.control.project;
+            let n = mpfree_seq::arrange::MAX_PLACEMENTS - 1;
+            for k in 0..n {
+                let b = mpfree_seq::Placement::of(&p.tracks, DRUMS, 0, k as Tick * bar, bar);
+                p.arrangement.placements.push(b);
+            }
+            let verse = mpfree_seq::Placement::of(&p.tracks, VOCAL, 0, 0, 4 * bar);
+            p.arrangement.placements.push(verse);
+            h.control.compile().unwrap();
+            let vocal = h.control.project.tracks[VOCAL].id;
+            let (_, said) = h.audio_took(vocal, (bar, 2 * bar)).unwrap().unwrap();
+            assert!(said.contains("took the whole block"), "{said}");
+            let song = &h.control.project.arrangement;
+            assert!(song.placements.iter().all(|p| p.track == DRUMS));
+            assert_eq!(song.placements.len(), n);
+            assert!(h
+                .control
+                .describe()
+                .contains("1 recordings over a block took the whole block"));
+        }
+
+        /// Phase 2, step 2d: an audio clip's block moves between audio
+        /// tracks' lanes only, never over a region (the spans the audio
+        /// tracks hand over), and a note clip's block never onto an audio
+        /// track's lane. A refusal changes nothing.
+        #[test]
+        fn an_audio_block_stays_on_audio_lanes_and_never_covers_a_region() {
+            let mut h = host();
+            let bar = 3840;
+            let p = &mut h.control.project;
+            let verse = mpfree_seq::Placement::of(&p.tracks, VOCAL, 0, 0, bar);
+            let beat = mpfree_seq::Placement::of(&p.tracks, DRUMS, 0, 0, bar);
+            p.arrangement.place(verse).unwrap();
+            p.arrangement.place(beat).unwrap();
+            h.control.compile().unwrap();
+            let id = |t: usize| h.control.project.tracks[t].id;
+            let spans = vec![
+                (id(VOCAL), Vec::new()),
+                (id(GUITAR), vec![(2 * bar, 3 * bar), (5 * bar, 6 * bar)]),
+            ];
+            h.set_audio_spans(spans);
+            let mv = |index, track, start| TimeAction::MovePlacement {
+                index,
+                track,
+                start,
+                copy: false,
+            };
+            let song = |h: &TimeHost| h.control.project.arrangement.clone();
+            let before = song(&h);
+            // Drums' beat is placement 0, Vocal's Verse 1.
+            let err = h.act(mv(1, DRUMS, 4 * bar)).unwrap_err();
+            assert_eq!(
+                err,
+                "song: Verse stays where it was: an audio clip's block goes only on an audio track, and Drums isn't one"
+            );
+            let err = h.act(mv(0, VOCAL, 4 * bar)).unwrap_err();
+            assert_eq!(
+                err,
+                "song: Beat stays where it was: Vocal is an audio track, and it takes blocks of audio clips only"
+            );
+            let err = h.act(mv(1, GUITAR, 2 * bar - 960)).unwrap_err();
+            assert_eq!(
+                err,
+                "song: Verse can't go over the region at bar 3: a block and a region never overlap on a lane"
+            );
+            assert_eq!(song(&h), before, "nothing changed");
+            // A clear stretch of Guitar's lane takes it, and it plays the
+            // same clip.
+            h.act(mv(1, GUITAR, 3 * bar)).unwrap();
+            let moved = song(&h).placements[1].clone();
+            assert_eq!((moved.track, moved.start), (GUITAR, 3 * bar));
+            assert_eq!(moved.clip, before.placements[1].clip);
+            // Made longer over Guitar's next recording: refused.
+            let stretch = |length| TimeAction::StretchPlacement { index: 1, length };
+            let err = h.act(stretch(3 * bar)).unwrap_err();
+            assert_eq!(
+                err,
+                "song: Verse can't run over the region at bar 6: a block and a region never overlap on a lane"
+            );
+            h.act(stretch(2 * bar)).unwrap();
+            assert_eq!(song(&h).placements[1].length, 2 * bar);
+        }
+
+        /// An audio clip's card (layout spec 4j): a length cut keeps the
+        /// frames it cuts and a longer one brings them back, the gain and
+        /// the name are clip settings, and a row turned is one take.
+        #[test]
+        fn an_audio_clips_card_sets_its_length_gain_and_name_a_row_a_take() {
+            use mpfree_time_ui::view::AudioSet;
+            let mut h = host();
+            let set = |row, set| TimeAction::AudioClip {
+                track: VOCAL,
+                slot: 0,
+                row,
+                set,
+            };
+            let clip = |h: &TimeHost| h.control.project.clip(VOCAL, 0).unwrap().clone();
+            let region = |h: &TimeHost| clip(h).audio.unwrap().regions[0];
+            let first = region(&h);
+            // A beat shorter: the region ends there, the beat's frames (half
+            // a second at 120 BPM) kept in its left.
+            let said = h.act(set(0, AudioSet::Length(3 * 960))).unwrap();
+            assert_eq!(said, "clip: Verse · Length 3 beats (UNDO takes it back)");
+            let r = region(&h);
+            assert_eq!((clip(&h).length, r.end, r.left), (3 * 960, 3 * 960, 22_050));
+            assert_eq!(clip(&h).audio.unwrap().last_frame, 66_150);
+            // Back a beat: it grows back into what it was cut from.
+            h.act(set(0, AudioSet::Length(3840))).unwrap();
+            assert_eq!(region(&h), first);
+            assert_eq!(clip(&h).audio.unwrap().last_frame, 88_200);
+            // A bar longer: silence after; the turn is one take.
+            h.act(set(0, AudioSet::Length(2 * 3840))).unwrap();
+            assert_eq!((clip(&h).length, region(&h)), (2 * 3840, first));
+            assert_eq!(h.state().done.len(), 1, "the row turned: one take");
+            // Gain turned: another take; the name another.
+            h.act(set(5, AudioSet::Gain(2.0))).unwrap();
+            let said = h.act(set(5, AudioSet::Gain(1.5))).unwrap();
+            assert_eq!(said, "clip: Verse · Gain +3.5 dB (UNDO takes it back)");
+            h.act(set(6, AudioSet::Name(" Hook ".into()))).unwrap();
+            assert_eq!(clip(&h).name, "Hook");
+            assert_eq!(h.state().done.len(), 3);
+            let st = h.state();
+            assert_eq!(
+                mpfree_time_ui::view::take_title(&st, &st.done[1]),
+                "Settings 2 · Vocal / 1"
+            );
+            // Refused: an empty name, a gain out of range, a once clip's
+            // length; nothing changes.
+            assert!(h.act(set(6, AudioSet::Name("  ".into()))).is_err());
+            assert!(h.act(set(5, AudioSet::Gain(5.0))).is_err());
+            let mut s = clip(&h).settings();
+            s.once = true;
+            h.act(TimeAction::ClipSettings {
+                track: VOCAL,
+                slot: 0,
+                row: 8,
+                settings: s,
+            })
+            .unwrap();
+            assert!(h.act(set(0, AudioSet::Length(3840))).is_err());
+            assert_eq!(clip(&h).length, 2 * 3840);
+            // UNDO takes each back in turn.
+            h.act(TimeAction::Undo).unwrap();
+            h.act(TimeAction::Undo).unwrap();
+            assert_eq!(clip(&h).name, "Verse");
+            h.act(TimeAction::Undo).unwrap();
+            assert_eq!(clip(&h).audio.unwrap().gain, 1.0);
+            h.act(TimeAction::Undo).unwrap();
+            assert_eq!((clip(&h).length, region(&h)), (3840, first));
+        }
+
+        #[test]
+        fn audio_clips_move_copy_and_paste_between_audio_tracks_only() {
+            let mut h = host();
+            let drop = |from, to, copy| TimeAction::DropClip { from, to, copy };
+            // A copy onto another audio track names the same recording,
+            // with an id of its own.
+            h.act(drop((VOCAL, 0), (GUITAR, 2), true)).unwrap();
+            let (a, b) = (
+                h.control.project.clip(VOCAL, 0).unwrap().clone(),
+                h.control.project.clip(GUITAR, 2).unwrap().clone(),
+            );
+            assert_eq!(
+                (a.audio.as_ref(), a.name.as_str()),
+                (b.audio.as_ref(), "Verse")
+            );
+            assert_ne!(a.id, b.id);
+            // Moved within the audio tracks.
+            h.act(drop((GUITAR, 2), (VOCAL, 4), false)).unwrap();
+            assert_eq!(name_at(&h, VOCAL, 4).as_deref(), Some("Verse"));
+            assert_eq!(name_at(&h, GUITAR, 2), None);
+            // Never between an audio track and a note track, either way.
+            let e = h.act(drop((VOCAL, 0), (DRUMS, 3), false)).unwrap_err();
+            assert_eq!(
+                e,
+                "clips: Drums plays notes: an audio clip goes on an audio track"
+            );
+            let e = h.act(drop((DRUMS, 0), (GUITAR, 3), true)).unwrap_err();
+            assert_eq!(
+                e,
+                "clips: Guitar is an audio track: it takes audio clips only"
+            );
+            assert_eq!(
+                (name_at(&h, DRUMS, 3), name_at(&h, GUITAR, 3)),
+                (None, None)
+            );
+            // UNDO twice: the move, then the copy.
+            h.act(TimeAction::Undo).unwrap();
+            h.act(TimeAction::Undo).unwrap();
+            assert_eq!(
+                (name_at(&h, VOCAL, 4), name_at(&h, GUITAR, 2)),
+                (None, None)
+            );
+            // COPY and paste the same way.
+            h.act(TimeAction::CopyClip {
+                track: VOCAL,
+                slot: 0,
+            })
+            .unwrap();
+            h.act(TimeAction::PasteClip {
+                track: GUITAR,
+                slot: 5,
+            })
+            .unwrap();
+            assert_eq!(name_at(&h, GUITAR, 5).as_deref(), Some("Verse"));
+            let e = h.act(TimeAction::PasteClip {
+                track: DRUMS,
+                slot: 5,
+            });
+            assert_eq!(
+                e.unwrap_err(),
+                "paste: Drums plays notes: an audio clip goes on an audio track"
+            );
+            h.act(TimeAction::CopyClip {
+                track: DRUMS,
+                slot: 0,
+            })
+            .unwrap();
+            let e = h.act(TimeAction::PasteClip {
+                track: VOCAL,
+                slot: 5,
+            });
+            assert_eq!(
+                e.unwrap_err(),
+                "paste: Vocal is an audio track: it takes audio clips only"
+            );
+        }
     }
 
     // ------------------------------------------------ Continue (phase 1)

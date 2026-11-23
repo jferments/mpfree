@@ -1442,6 +1442,54 @@ pub fn write(clip: &Clip, notes: &[Note]) -> Edit {
     }
 }
 
+/// Another clip's notes as they sound against one pass of `into` (piano
+/// roll plan 4.1, other clips shown faintly behind the one edited),
+/// placed with the clips' own speeds: each played note of `other` at
+/// the song time it plays, from `phase` song ticks into `other`'s loop
+/// where the pass of `into` starts, on `into`'s ticks. A shorter clip
+/// comes round as often as it plays in the pass, a half-speed one is
+/// twice as long, and a note running past the pass's end is cut there.
+/// Only notes that start in the pass, in time order, at most `most`.
+/// Off notes play nothing and are left out; the play direction is taken
+/// as forward.
+pub fn placed(other: &Clip, into: &Clip, phase: f64, most: usize) -> Vec<Note> {
+    let period = other.speed.to_song(other.length as f64);
+    let pass = into.speed.to_song(into.length as f64);
+    if period <= 0.0 || pass <= 0.0 || !phase.is_finite() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for n in other.notes.iter().filter(|n| n.on && n.tick < other.length) {
+        let song_len = other.speed.to_song(n.len.max(1) as f64);
+        let mut at = (other.speed.to_song(n.tick as f64) - phase).rem_euclid(period);
+        while at < pass && out.len() < most {
+            let tick = into.speed.to_clip(at).round() as Tick;
+            let end = into.speed.to_clip(at + song_len).round() as Tick;
+            let end = end.min(into.length).max(tick + 1);
+            if tick < into.length {
+                out.push(Note {
+                    tick,
+                    len: end - tick,
+                    ..*n
+                });
+            }
+            at += period;
+        }
+    }
+    out.sort_by_key(|n| (n.tick, n.note));
+    out
+}
+
+/// How far into its loop, in song ticks, a clip that started its loop on
+/// song tick `origin` and repeats every `period` song ticks is at song
+/// tick `at`: `placed`'s phase for a pass starting at `at`.
+pub fn loop_phase(origin: f64, period: f64, at: f64) -> f64 {
+    if period <= 0.0 {
+        return 0.0;
+    }
+    (at - origin).rem_euclid(period)
+}
+
 /// The `sel` notes in chords (plan 2B.2): the notes that sound together,
 /// each chord lowest first, the chords in time. Taken by their starts, a
 /// note joins a chord while it starts before the chord's first note ends,
@@ -1845,6 +1893,23 @@ pub fn steps_grid(clip: &Clip) -> Grid {
         .filter(|_| SIZES.contains(&clip.step))
         .or_else(|| Grid::new(DEFAULT_SIZE))
         .expect("a 1/16 is a step size")
+}
+
+/// The fewest steps of `grid` the Steps' length edit ([`Grid::resize`],
+/// their D2) can make `clip` with no note or lock taken out: one past the
+/// step of its last note start or lock, at least 1. A note or lock played
+/// early on step 0 (half a step or less before the clip comes round) is
+/// step 0's. The note editor's end handle stops there (piano roll plan
+/// 1A.2); notes may still run past the end.
+pub fn shortest_steps(clip: &Clip, grid: Grid) -> usize {
+    clip.notes
+        .iter()
+        .map(|n| n.tick)
+        .chain(clip.locks.iter().map(|l| l.tick))
+        .map(|t| grid.place(clip.length, t).0 + 1)
+        .max()
+        .unwrap_or(1)
+        .max(1)
 }
 
 /// Where a lock of `addr` on a note of pitch `note` sits (piano roll plan
@@ -3018,6 +3083,58 @@ mod tests {
         assert_eq!(e.add[0].group, 0);
     }
 
+    /// Another clip placed against the one edited (plan 4.1): a clip at
+    /// half speed lines up where it is heard, twice as long; a shorter
+    /// clip comes round in the pass; the phase moves it; an off note is
+    /// left out, and a note past the pass's end is cut there.
+    #[test]
+    fn another_clip_lines_up_by_its_speed_and_where_its_loop_is() {
+        use crate::Speed;
+        let bar = 4 * 960;
+        // Edited: two bars at normal speed.
+        let into = Clip::new("Keys", 2 * bar);
+        // A one-bar bass at half speed: its bar plays over two.
+        let mut bass = clip(&[(0, 480, 36), (bar / 2, 480, 43)]);
+        bass.length = bar;
+        bass.speed = Speed::new(1, 2).unwrap();
+        let got: Vec<(Tick, Tick, u8)> = placed(&bass, &into, 0.0, 64)
+            .iter()
+            .map(|n| (n.tick, n.len, n.note))
+            .collect();
+        assert_eq!(got, [(0, 960, 36), (bar, 960, 43)]);
+        // A half-bar hat at normal speed comes round four times.
+        let mut hat = clip(&[(0, 120, 42)]);
+        hat.length = bar / 2;
+        let ticks: Vec<Tick> = placed(&hat, &into, 0.0, 64)
+            .iter()
+            .map(|n| n.tick)
+            .collect();
+        assert_eq!(ticks, [0, bar / 2, bar, 3 * bar / 2]);
+        // A quarter of a bar into the hat's loop: each hit a quarter
+        // earlier, the first coming round at the end.
+        let ticks: Vec<Tick> = placed(&hat, &into, f64::from(960), 64)
+            .iter()
+            .map(|n| n.tick)
+            .collect();
+        assert_eq!(ticks, [960, 960 + bar / 2, 960 + bar, 960 + 3 * bar / 2]);
+        // At most `most`.
+        assert_eq!(placed(&hat, &into, 0.0, 3).len(), 3);
+        // Off notes are left out; a long note is cut at the pass's end.
+        let mut pad = Clip::new("Pad", 2 * bar);
+        pad.add_note(Note::new(0, 240, 60, 100)).unwrap();
+        pad.add_note(Note::new(bar + bar / 2, 4 * bar, 64, 100))
+            .unwrap();
+        pad.notes[0].on = false;
+        let got: Vec<(Tick, Tick, u8)> = placed(&pad, &into, 0.0, 64)
+            .iter()
+            .map(|n| (n.tick, n.len, n.note))
+            .collect();
+        assert_eq!(got, [(bar + bar / 2, bar / 2, 64)]);
+        // The phase of a loop at a song tick.
+        assert_eq!(loop_phase(960.0, 1920.0, 960.0 + 1920.0 * 3.0 + 10.0), 10.0);
+        assert_eq!(loop_phase(0.0, 0.0, 99.0), 0.0);
+    }
+
     /// Chop cuts each picked note into equal pieces, each with its part
     /// of the pressure from the value held at its cut (Reset: none);
     /// Legato runs each note toward the next start by a share of the gap.
@@ -3281,5 +3398,33 @@ mod tests {
         let mut full = c.clone();
         full.touch.resize(crate::MAX_TOUCH_POINTS, p(0, 0));
         assert_eq!(draw_touch(&full, &[0], &[(100, 99)], 200), None);
+    }
+    /// The end handle's stop (piano roll plan 1A.2): one past the step of
+    /// the last note start or lock, a note nudged late counting as the
+    /// step it rounds to and one early on step 0 as step 0's; the Steps'
+    /// length edit to it takes nothing out, and a step shorter would.
+    #[test]
+    fn the_shortest_a_clip_can_be_keeps_every_note_start_and_lock() {
+        let grid = Grid::new(240).unwrap();
+        let mut c = clip(&[(0, 240, 36), (350, 1920, 38)]);
+        // 350 rounds to step 1: two steps, though the note runs on.
+        assert_eq!(shortest_steps(&c, grid), 2);
+        let cut = RelAddr::new(OnTrack::Inst, 1);
+        c.add_lock(Lock::new(960, Some(36), cut, 0.5)).unwrap();
+        assert_eq!(shortest_steps(&c, grid), 5);
+        // Early on step 0: it plays before the clip comes round.
+        c.add_note(Note::new(3830, 120, 40, 100)).unwrap();
+        assert_eq!(shortest_steps(&c, grid), 5);
+        let e = grid.resize(&c, 5, false);
+        assert!(e
+            .erase
+            .iter()
+            .all(|n| e.add.iter().any(|m| m.note == n.note)));
+        assert!(e.erase_locks.is_empty());
+        let d = applied(&c, &e);
+        assert_eq!(d.length, 5 * 240);
+        assert_eq!(d.notes.len(), 3, "the early note stays before the end");
+        assert_eq!(grid.resize(&c, 4, false).erase_locks.len(), 1);
+        assert_eq!(shortest_steps(&Clip::new("t", 960), grid), 1);
     }
 }

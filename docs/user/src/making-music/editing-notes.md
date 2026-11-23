@@ -25,7 +25,7 @@ The Notes view has the Arrange tab's transport bar along the top (**Stop**, **Pl
 
 ## The piano roll
 
-The notes are bars on a piano roll: higher notes higher up, time running left to right, longer notes longer. A drum clip shows its 16 pads instead of keys; a clip of notes on a synth track shows the keys even while it is empty. Under the roll, a lane shows how hard each note plays, how likely it is to play, how many times it repeats, or the picked notes' pressure (see [The lane under the roll](#the-lane-under-the-roll)). A note played with [pad pressure](clips.md#pad-pressure) shows it as a lighter shape along its bottom: it rises where you pressed harder and falls where you let up.
+The notes are bars on a piano roll: higher notes higher up, time running left to right, longer notes longer. A drum clip shows a row for each of the kit's pads instead of keys (see [Drum clips](#drum-clips)); a clip of notes on a synth track shows the keys even while it is empty. Under the roll, a lane shows how hard each note plays, how likely it is to play, how many times it repeats, or the picked notes' pressure (see [The lane under the roll](#the-lane-under-the-roll)). A note played with [pad pressure](clips.md#pad-pressure) shows it as a lighter shape along its bottom: it rises where you pressed harder and falls where you let up.
 
 Notes are drawn as they will play. A note whose step is off (tapped off on Steps) is only an outline: it keeps its place and settings and plays nothing. A note that repeats (a ratchet) shows each hit, lighter or darker as its velocity ramps, and each hit shows in the velocity lane too. A tied note has a short level mark just before it, and a sliding note a short slanting one.
 
@@ -35,7 +35,7 @@ Notes are drawn as they will play. A note whose step is off (tapped off on Steps
 - **The Select menu.** Tap **Select** for a menu over the roll. **All** picks every note, **None** lets them go, and **Invert** picks the notes that weren't picked instead of the ones that were. **Fit to picked** zooms the roll to the picked notes. The rest pick from the whole clip: **Same pitch** (every note at the pitch of the picked ones, or of the sound you last worked on), **Pitch range** (every note from the lowest picked note to the highest), **Time range** (every note starting from the first picked note to the end of the last; for both ranges, pick a few notes first), **Quiet notes** and **Loud notes** (softer, or harder, than halfway between the clip's softest and loudest), **With a condition**, **With repeats** (a ratchet), **Overlapping** (notes that sound over another note of the same pitch) and **Off the scale** (notes off the clip's scale, see [Scale](#scale)). Tap anywhere else to close the menu.
 - **Add to pick.** In the Select menu, **Add to pick** is a switch: while it is on, it and **Select** stay lit. Then a tap on a note adds it to the picks or takes it out (with Draw on, a short note still comes out), a box adds the notes in it, and the menu's choices add to the picks you have, so you can gather notes of several kinds: **Same pitch**, then a box somewhere else. Tap it again to turn it off. **All**, **None** and **Invert** always replace the picks.
 - **Nothing happens until you lift.** A finger on a note is a tap when it lifts, a hold once it has stayed still for 0.4 seconds, or a drag once it moves about 3 mm. Nothing goes in or comes out before your finger lifts.
-- **Erase.** Hold **ERASE** and tap a note to take it out, with Draw on or off.
+- **Erase.** Hold **ERASE** and tap a note to take it out, with Draw on or off. To take out several, hold **ERASE** and drag across them: each note your finger passes over is marked, with a count above your finger, and they all come out when you lift it, so one **UNDO** brings them all back. Drag along a row of hi-hats to clear it, or zigzag over a messy fill. A second finger on the roll calls it off.
 - **Copy and paste.** Hold **COPY** and tap a note: the picked notes are copied, or just that note if it isn't picked. Then hold **COPY** again and tap an empty spot, in this clip or in another track's clip: the copy goes in starting where you tap, each note keeping its pitch and its place after the first. The notes bring their pad pressure and their locks. A lock on the instrument comes into another track's clip when that track plays the same kind of instrument the lock was made for, so it turns the same control there; a clip's instrument locks are all for one instrument, so it doesn't come into a clip whose instrument locks are for another. A lock on a kit pad, an insert or MIDI out comes only into another clip of the same track, since another track may play another kit or send to other gear. The hint line says how many locks were left out and what they were on, and for instrument locks which instrument they were made for ("made for Poly, Lead plays FM"). Pad hits paste only into a clip of pad hits, and notes into a clip of notes. A chord whose notes play together or not at all (a chord pad's) stays one when you copy all of it, and stays apart from a chord already where it lands; copy only some of its notes and each of them rolls its own chance. The pasted notes are picked, and one **UNDO** takes the paste back. The copy stays until you copy again, so you can paste it as many times as you like. In the tracker, tap an empty line to paste there.
 - **Move them.** Drag a note to move it, along time and up or down in pitch. If it is picked, every picked note moves with it; if not, it moves on its own and is picked after. With **Auto** snap a move goes by whole grid steps and each note keeps its feel: a note played a little late stays a little late. With a fixed snap, the note you drag lands on a line. While you drag, the notes show where they will land, an outline shows where they were, and a box above your finger says where the note you hold lands ("2.3.000 · D3").
 - **Change their length.** A picked note has a handle at each end, just outside it; on a note too short to grab, the two handles hang just under it. Drag the right handle to change where the picked notes end, or the left one to change where they start (their ends stay put). The box above your finger shows the new length or start, and it all goes in when you lift. Handles show while up to 64 picked notes are on the screen; for more, use the **Length** option.
@@ -132,6 +132,38 @@ When you pick a note, draw one or move one, you hear it through the track's inst
 
 The **Sound** chip, left of **Pads write**, says when you hear them: **Sound: On** (always), **Sound: Stopped only** (only while the transport is stopped, so playing back stays clean) or **Sound: Off**. Tap it for the next. It stays as you set it for every clip. A track that sends to MIDI out plays nothing here.
 
+### Other clips behind
+
+**Show**, just left of **Pads write** over the roll, puts up to three other clips faintly behind the one you're editing, each in its track's colour, so you can write a bass line against the chords or check a new take against the old one. Tap it to open its menu:
+
+- **Plays with** marks the clips that play along with this one: on the same row of the clip grid, or playing now. They come first. Every other clip says **Reference**. A clip of notes offers other clips of notes, and a drum clip other drum clips.
+- **Tap a clip** to show it and again to take it off. **None** takes them all off. With three showing, take one off before you pick another. The chip says how many are showing, as in **Show: 2**, and a label at the top right of the roll names each one.
+- Each one sits **where it sounds** against this clip. When both are playing, they line up as they do right now. A clip that isn't playing lines up as if you'd launched it with this one, and when this clip isn't playing, both start from their tops. A shorter clip repeats across this one, and a clip at another speed is stretched to match.
+- **Tap a faint note** (with Draw off) to open its clip. The clip you were on goes behind it, so you can go back and forth with a tap. Where one of your own notes sits on top, the tap picks yours.
+- Hold **COPY** and tap a faint note to paste there, as on empty space. **ERASE** leaves faint notes alone: they aren't this clip's.
+
+Faint clips show on the piano roll only, not on the list or the tracker. Each time you open a clip from the Steps view, it starts with none showing.
+
+{{shot: sequencer-notes-ghosts | The Keys clip with Show: 2: the stab track's Pluck faintly in red between the chords, which plays with it, and Keys take 1 faintly behind the chords, for reference; the labels at the top right name both.}}
+
+{{shot: sequencer-notes-show | The Show menu open: None, then the bass track's two lines and Pluck marked Plays with, and Keys take 1 marked Reference; the two showing are lit.}}
+
+*Try it:* open an empty bass clip on the same row as your chords, tap **Show** and pick the chords (marked **Plays with**). Draw a note under the lowest note of each chord, then tap one of the chords' faint notes to open the chords with the bass behind them.
+
+### Drum clips
+
+A clip of pad hits, the kind a drum track records, shows a row for each pad of the kit in place of the keys: **A1** at the bottom up to **H16**, all 128 pads in their 8 banks. Each row says which pad it is and the kit's name for it, as in **A1 Kick** or **A2 Snare**, and a line marks where each bank starts. A track that plays a synth shows its notes on the keys as before; the clip's own kind decides, not the notes in it.
+
+- **PAD BANK** takes the roll to that bank's first pad, so **B** shows B1 and up, just as the pads go to bank B. Opening an empty drum clip starts on the bank the pads are on.
+- **Fold** on **Rows with notes** shows only the pads the clip uses, so a beat on pads all over the kit fits in a few rows.
+- Pinch to the smallest zoom (rows 24 pixels tall) to see more pads at once. For tapping in a beat step by step, **Steps** is still the quicker view.
+- A drum clip has no scale and no chords, so the **Scale** and **Chord** chips aren't there.
+- Everything else works as on the keys: draw, pick, drag a hit to another pad, change velocities in the lane, and write from the pads with **Pads write**.
+
+{{shot: sequencer-notes-drums | A bar of drums: rows A1 Kick up to A6 Rim, named after the kit's sounds, with the kick, snare, hats, clap and rim drawn on them.}}
+
+*Try it:* open a drum clip, press **PAD BANK B**, draw a hit on B1, then press **PAD BANK A** to go back to the kick and snare.
+
 ### Zoom and scroll
 
 Rows open at least 40 pixels tall, big enough for a fingertip, and the roll opens with the clip's notes filling them. A short clip opens whole; a long one opens on two bars from its first note.
@@ -142,6 +174,7 @@ Rows open at least 40 pixels tall, big enough for a fingertip, and the roll open
 - **The overview** over the ruler shows the whole clip with the part on screen outlined. Tap it to jump there, drag along it to move the window, or tap it twice quickly to see the whole clip.
 - **Fit**, left of the overview, fits the picked notes on screen, or every note when none are picked.
 - **Follow**, at the overview's right end, pages the roll along with the playhead while it is lit. Scrolling by hand turns it off.
+- **The clip's end** has a grip on the ruler. Drag it left to make the clip shorter, or right to make it longer: it goes by bars, or by steps once you've zoomed in far enough to aim at one (hold **SHIFT** as you touch it for steps at any zoom). A readout says the new length, and what would be past the new end is shaded. It stops just after the last note that starts or the last lock, so shortening never takes a note out; a long note may still run on past the end, as on the Steps view. To go past the edge of the screen, push the grip against the roll's right edge and hold it there: the clip grows a bar (or a step) at a time and the roll scrolls with it. Lift your finger to make the change, which is one **UNDO**, the same length change the Steps view makes.
 - **SHIFT + data wheel** scrolls the rows.
 
 The zoom and scroll stay with each clip: go to Steps or another clip and back, and the roll is as you left it.
@@ -162,7 +195,7 @@ Each clip can have a scale of its own, so a melody stays in key while you move a
 - **New notes land in key.** With a scale on, a note you draw or tap in on a row off the scale lands on the scale note nearest it (the lower one when two are as near). Hold **SHIFT** to put it exactly where you tap.
 - **Fit to scale.** The last row of the Edit options moves the picked notes, or every note when none are picked, onto the nearest scale note. Its value says how many notes are off the scale ("3 off"); turn the data wheel either way to fit them, and one **UNDO** takes it back.
 - **Find them.** **Off the scale** in the Select menu picks every note off the clip's scale.
-- **Pads.** A clip of pad hits has no scale, since its notes are pads rather than pitches: its chip says "Scale: none on pads". That includes an older clip on a synth track that follows the pads; convert it to notes first ([Melody: Convert to notes](clips.md#melody-convert-to-notes)) to give it a scale.
+- **Pads.** A drum clip has no scale, so the **Scale** chip isn't there (see [Drum clips](#drum-clips)). That includes an older clip on a synth track that follows the pads; convert it to notes first ([Melody: Convert to notes](clips.md#melody-convert-to-notes)) to give it a scale.
 
 {{shot: sequencer-notes-scales | The Scale menu open over the roll: the roots along the top, then the pads' scale and every other scale.}}
 

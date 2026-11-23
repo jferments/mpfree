@@ -74,6 +74,9 @@ pub const LIST_LINK: usize = 7;
 pub const LIST_LINK_FROM_LIST: usize = 8;
 pub const LIST_LINK_FROM_SONG: usize = 9;
 pub const LIST_LINK_CLOSE: usize = 10;
+/// Show, left of Link (or of the loop switch) while a set is open:
+/// back to the Show view (live shows B1).
+pub const LIST_SHOW: usize = 11;
 /// `Step { index: SCENE_STEP + k, delta }` steps step `k`'s scene;
 /// `Step { index: k, delta }` its times.
 pub const SCENE_STEP: usize = 0x1000;
@@ -123,6 +126,8 @@ pub struct SongListView {
     pub looped: bool,
     /// Room for another step.
     pub can_add: bool,
+    /// A set is open (live shows B1): Show, left of the loop switch.
+    pub show_button: bool,
     /// Linked to the song (phase 4b): Back to the scene takes List →
     /// song's place, and Link goes.
     pub linked: bool,
@@ -317,6 +322,16 @@ impl SongListView {
         Some((card, [first, second]))
     }
 
+    /// Where Show is, while a set is open: left of Link, or of the loop
+    /// switch while the list is linked.
+    pub fn show_rect(&self, r: Rect) -> Option<Rect> {
+        let looped = SongListView::loop_rect(r);
+        let right = self.link_rect(r).unwrap_or(looped);
+        let w = crate::widgets::SHOW_W;
+        self.show_button
+            .then(|| Rect::new(right.x - 8 - w, looped.y, w, looped.h))
+    }
+
     /// The buttons under the list: List → song, Play from here, Remove.
     pub fn button_rects(r: Rect) -> [Rect; 3] {
         SongListView::geo(r).buttons
@@ -366,7 +381,9 @@ impl Widget for SongListView {
         .chain(
             self.link_rect(r)
                 .map(|b| (b, "Link", self.link_choices.is_some())),
-        ) {
+        )
+        .chain(self.show_rect(r).map(|b| (b, "Show", false)))
+        {
             cx.canvas.fill_round_rect(b, t.round(10), t.raised);
             if lit {
                 cx.canvas.stroke_round_rect(b, t.round(10), 2, t.accent);
@@ -635,6 +652,9 @@ impl Widget for SongListView {
         if let Some(b) = link {
             out.push(Target::tap("link", 0, "Link", b));
         }
+        if let Some(b) = self.show_rect(r) {
+            out.push(Target::tap("show-view", 0, "Show", b));
+        }
         for (k, row) in self.rows.iter().enumerate() {
             let (Some(line), Some((scene, times))) = (self.line_rect(r, k), self.boxes(r, k))
             else {
@@ -763,6 +783,9 @@ impl Widget for SongListView {
         }
         if self.link_rect(r).is_some_and(|b| b.contains(x, y)) {
             return Some(EventKind::Toggle(LIST_LINK));
+        }
+        if self.show_rect(r).is_some_and(|b| b.contains(x, y)) {
+            return Some(EventKind::Toggle(LIST_SHOW));
         }
         for (k, b) in SongListView::button_rects(r).iter().enumerate() {
             if b.contains(x, y) {
@@ -896,6 +919,20 @@ mod tests {
         );
         let own = view_part_rect(chip, ArrangeView::List);
         assert_eq!(tap(&mut l, own.x + 3, own.y + 3), None);
+        // While a set is open, Show sits left of Link (left of the loop
+        // switch while the list is linked).
+        assert_eq!(l.show_rect(r), None);
+        l.show_button = true;
+        let show = l.show_rect(r).unwrap();
+        let link = l.link_rect(r).unwrap();
+        assert!(show.right() < link.x && show.w == 72, "{show:?}");
+        assert!(show.x > r.x + 200, "clear of the title: {show:?}");
+        assert!(l.targets(r).iter().any(|t| t.id == "show-view"));
+        assert_eq!(
+            tap(&mut l, show.x + 3, show.y + 3),
+            Some(EventKind::Toggle(LIST_SHOW))
+        );
+        l.show_button = false;
         // Every step and button is a target.
         let t = l.targets(r);
         assert_eq!(t.iter().filter(|t| t.id == "step").count(), 3);

@@ -717,6 +717,10 @@ pub struct Settings {
     pub bpm: f64,
     /// How Latch keeps pads: Replace (a fresh press starts over) or Toggle.
     pub latch_mode: LatchMode,
+    /// Quick advance (live shows B1, layout spec 5): with a set playing
+    /// and the transport stopped, one press of Next song goes. Off, it
+    /// arms and a second press goes, stopped too.
+    pub quick_advance: bool,
     /// Audio buffer in periods of 128 frames: 3 as Akai's app, or 2.
     pub periods: u32,
     pub show_pressure: bool,
@@ -753,7 +757,8 @@ pub struct Settings {
     /// starts the song) when it closes. Off by default; kept in Prefs.
     pub loop_tempo: bool,
     /// The looper's options "Smart loop end": when tempo from the first
-    /// loop closes a loop played on the pads, Suggest (the default)
+    /// loop closes a loop played on the pads (or heard in the line input
+    /// or a mix, by ear), Suggest (the default)
     /// closes on your tap and offers the downbeat you played, Auto
     /// listens a moment on and closes on it, Off keeps your tap. Kept in
     /// Prefs.
@@ -853,6 +858,7 @@ impl Default for Settings {
             rate: Rate::Sixteenth,
             bpm: 120.0,
             latch_mode: LatchMode::Replace,
+            quick_advance: false,
             periods: 3,
             show_pressure: false,
             midi_paused: false,
@@ -924,6 +930,8 @@ pub enum Item {
     Curve,
     ScreenVelocity,
     LatchMode,
+    /// Prefs: Quick advance, Off or On (live shows B1).
+    QuickAdvance,
     Buffer,
     FindButtons,
     /// Prefs: opens the touch screen section.
@@ -940,6 +948,11 @@ pub enum Item {
     PrefsBack,
     CalibrateTouch,
     TouchLab,
+    /// The Show view's MENU (live shows B1): the Set editor, the set's
+    /// check, and closing the set.
+    SetEditor,
+    CheckSet,
+    CloseSet,
     DebugMode,
     /// Prefs: where the sound runs from the next start (cores.rs).
     SoundCores,
@@ -1005,6 +1018,9 @@ fn opens_something(item: Item) -> bool {
             | Item::PrefsBack
             | Item::CalibrateTouch
             | Item::TouchLab
+            | Item::SetEditor
+            | Item::CheckSet
+            | Item::CloseSet
             | Item::MapControls
             | Item::SystemInfo
             | Item::SystemStatus
@@ -1012,6 +1028,30 @@ fn opens_something(item: Item) -> bool {
             | Item::ClearConsole
     )
 }
+
+/// The Show view's MENU rows (live shows B1, layout spec 4p).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SetMenu {
+    /// Open the Set editor on the set playing.
+    Editor,
+    /// Check the set now.
+    Check,
+    /// Close the set: the song playing stays open as a plain project.
+    Close,
+}
+
+/// The wheel, its push and - / + on the Show view (live shows B1), for
+/// the screen's set player.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShowKey {
+    /// The wheel or - / +: arm the song after (+1) or before (-1).
+    Step(i32),
+    /// The wheel's push: Go.
+    Push,
+}
+
+/// The Show view's MENU rows.
+const SHOW_OPTIONS: [Item; 3] = [Item::SetEditor, Item::CheckSet, Item::CloseSet];
 
 /// The menu on screen: its rows (name, value), the selected row and help.
 #[derive(Clone, Debug, PartialEq)]
@@ -1422,6 +1462,11 @@ pub enum Effect {
     Quit,
     /// Open the Touch lab page (it starts at its first step).
     TouchLab,
+    /// One of the Show view's MENU rows (live shows B1), for the screen's
+    /// set player.
+    SetMenu(SetMenu),
+    /// The wheel, its push or - / + on the Show view (live shows B1).
+    ShowKey(ShowKey),
     /// Open the Calibrate touch page (four corner taps).
     CalibrateTouch,
     /// Prefs > Backup and Akai kits: at the next start, a new backup of
@@ -1637,6 +1682,10 @@ pub struct App {
     view: View,
     /// The page to go back to from Console, Options or the guide.
     back: View,
+    /// A set is open, and the Show view shows (live shows B1): MENU on
+    /// Arrange gives the Show view's rows.
+    set_open: bool,
+    show_view: bool,
     /// What the chain editor's Back goes back to (the mixer, or the page
     /// it opened on), and the macros panel's.
     chain_back: View,
@@ -1876,6 +1925,7 @@ pub struct App {
 const PREFS_ROWS: &[Item] = &[
     Item::Curve,
     Item::LatchMode,
+    Item::QuickAdvance,
     Item::Buffer,
     Item::FindButtons,
     Item::DebugMode,
@@ -1996,6 +2046,8 @@ impl App {
             sent_notes,
             arp_dirty: true,
             rolling: false,
+            set_open: false,
+            show_view: false,
             perform: false,
             rec: crate::rec_arm::RecArm::default(),
             lights_shown: Self::startup_transport_lights(),
@@ -2062,6 +2114,50 @@ impl App {
     /// tells it each period).
     pub fn set_rolling(&mut self, rolling: bool) {
         self.rolling = rolling;
+    }
+
+    /// A set is open, and whether the Show view shows (the screen tells
+    /// it, live shows B1): MENU on the Show view gives its own rows.
+    pub fn set_show_state(&mut self, open: bool, showing: bool) {
+        self.set_open = open;
+        self.show_view = open && showing;
+    }
+
+    /// A set is open (the screen says, live shows B1).
+    pub fn set_open(&self) -> bool {
+        self.set_open
+    }
+
+    /// A learned Show control that is the app's own (live shows B1):
+    /// Panic is SHIFT + STOP's (stop, silence everything, back to bar 1),
+    /// Click is SHIFT + PLAY START's. None for the set player's controls,
+    /// which the screen takes.
+    pub fn show_press(&mut self, id: u16) -> Option<Vec<Effect>> {
+        use mpfree_play::mpfree_param::show;
+        match id {
+            show::PANIC => {
+                let mut fx = self.stop();
+                fx.push(Effect::Time(TimeAction::Transport(Command::StopAndRewind)));
+                fx.push(Effect::Tell(
+                    "Panic: stopped, every sound silenced".to_string(),
+                ));
+                Some(fx)
+            }
+            show::CLICK => {
+                self.settings.metronome = !self.settings.metronome;
+                self.save_dirty = true;
+                let mut fx = vec![
+                    self.metronome(),
+                    Effect::Tell(format!(
+                        "Click {}",
+                        if self.settings.metronome { "on" } else { "off" }
+                    )),
+                ];
+                fx.push(Effect::Settings(self.settings.clone()));
+                Some(fx)
+            }
+            _ => None,
+        }
     }
 
     /// Whether the transport rolls, as the audio loop last told it.
@@ -3682,6 +3778,10 @@ impl App {
                 }));
             } else if self.view == View::SystemStatus {
                 fx.push(Effect::StatusPage(StatusKey::Step(d)));
+            } else if self.view == View::Arrange && self.show_view && !shift {
+                // The Show view (live shows B1): the song after or before
+                // is armed, as the wheel arms it.
+                fx.push(Effect::ShowKey(ShowKey::Step(d)));
             } else if self.view.sampler() && shift {
                 // SHIFT + - / +: zoom the waveform (Wave, Warp, Chop).
                 fx.push(Effect::SampleWheel(d));
@@ -4079,6 +4179,11 @@ impl App {
             _ if self.in_menu() => {
                 let last = (self.items().len() as i32 - 1).max(0);
                 self.select((self.selected as i32 + delta).clamp(0, last) as usize)
+            }
+            // The Show view (live shows B1): the wheel arms the song after
+            // or before; SHIFT + wheel keeps scrolling Arrange's views.
+            View::Arrange if self.show_view && !self.shift && !self.repeat_held => {
+                vec![Effect::ShowKey(ShowKey::Step(delta.signum()))]
             }
             // The outline (Jay, 13 Nov): on Play and the Looper tab the
             // wheel always moves it (it no longer steps the kit: the PAD
@@ -4824,6 +4929,7 @@ impl App {
             (_, View::Touch) => &[Item::CalibrateTouch, Item::TouchLab],
             (_, View::Console) => &[Item::ConsoleFollow, Item::ClearConsole],
             (_, View::Arp) => &arp::ARP_OPTIONS,
+            (_, View::Arrange) if self.show_view => &SHOW_OPTIONS,
             (_, View::Synth) => &synth_pads::SYNTH_OPTIONS,
             _ => &[
                 Item::Rate,
@@ -4866,6 +4972,10 @@ impl App {
                     _ => "Replace".to_string(),
                 },
             ),
+            Item::QuickAdvance => (
+                "Quick advance",
+                if s.quick_advance { "On" } else { "Off" }.to_string(),
+            ),
             Item::Buffer => (
                 "Audio buffer",
                 format!(
@@ -4890,6 +5000,9 @@ impl App {
             Item::PrefsBack => ("Back to Prefs", "Back".to_string()),
             Item::CalibrateTouch => ("Calibrate touch", "Start".to_string()),
             Item::TouchLab => ("Touch lab", "Open".to_string()),
+            Item::SetEditor => ("Open the Set editor", "Open".to_string()),
+            Item::CheckSet => ("Check the set", "Check".to_string()),
+            Item::CloseSet => ("Close the set", "Close".to_string()),
             Item::DebugMode => (
                 "Show developer tools",
                 if s.debug_mode { "On" } else { "Off" }.to_string(),
@@ -5056,6 +5169,13 @@ impl App {
                 "Replace: a fresh press starts a new set.",
                 "Toggle: each press adds or removes that pad.",
             ],
+            Item::QuickAdvance => vec![
+                "While a set plays: how Next song goes.",
+                "Off: Next song arms the next song and a",
+                "second press goes, while stopped too.",
+                "On: with the transport stopped, one press",
+                "goes.",
+            ],
             Item::Buffer => vec![
                 "How much sound is queued ahead of the speakers.",
                 "3 periods is what Akai's app uses. 2 periods",
@@ -5105,6 +5225,20 @@ impl App {
                 "touches land where you touch. This version",
                 "only reports and logs the result; nothing",
                 "is saved. Exit or MENU leaves it.",
+            ],
+            Item::SetEditor => vec![
+                "Opens the set playing in BROWSE's Sets place:",
+                "its songs, how each starts and ends, its notes.",
+                "The song playing plays on.",
+            ],
+            Item::CheckSet => vec![
+                "The quick check on every song of the set: every",
+                "part reads, every file is there and unchanged,",
+                "and the keyboards each needs are connected.",
+            ],
+            Item::CloseSet => vec![
+                "Ends the set. The song playing stays open as a",
+                "plain project, and the Show view goes.",
             ],
             Item::TouchLab => vec![
                 "Timed touchscreen tests: taps, long presses,",
@@ -5249,12 +5383,12 @@ impl App {
             ],
             Item::SmartEnd => vec![
                 "When tempo from the first loop closes a loop",
-                "you played on the pads or keys. Suggest: it",
-                "closes on your tap, then offers the downbeat",
-                "you played if your tap was off it. Auto: it",
-                "listens a moment past your tap and closes on",
-                "the downbeat you played; the song starts in",
-                "step. Off: it closes on your tap.",
+                "on the pads, keys, line input or a mix.",
+                "Suggest: it closes on your tap, then offers",
+                "the downbeat you played if your tap was off",
+                "it. Auto: it listens a moment past your tap",
+                "and closes on the downbeat you played; the",
+                "song starts in step. Off: your tap stands.",
             ],
             Item::LoopMemory => vec![
                 "How much sound the loops can hold, all",
@@ -5485,6 +5619,10 @@ impl App {
         if !self.in_menu() && self.view == View::Chain {
             return vec![Effect::ChainPush];
         }
+        // The Show view (live shows B1): the push is Go.
+        if !self.in_menu() && self.view == View::Arrange && self.show_view {
+            return vec![Effect::ShowKey(ShowKey::Push)];
+        }
         if !self.in_menu() {
             // A page with rows: open the highlighted row for the wheel, or
             // close it again (RowKey).
@@ -5578,6 +5716,7 @@ impl App {
                 };
                 self.update_engine();
             }
+            Item::QuickAdvance => s.quick_advance = !s.quick_advance,
             Item::Buffer => {
                 let p = (s.periods as i32 + d).clamp(2, 3) as u32;
                 if p != s.periods {
@@ -5637,6 +5776,16 @@ impl App {
             Item::PrefsBack => return self.leave_prefs_section(),
             Item::CalibrateTouch => return vec![Effect::CalibrateTouch],
             Item::TouchLab => return vec![Effect::TouchLab],
+            Item::SetEditor | Item::CheckSet | Item::CloseSet => {
+                let m = match item {
+                    Item::SetEditor => SetMenu::Editor,
+                    Item::CheckSet => SetMenu::Check,
+                    _ => SetMenu::Close,
+                };
+                let mut fx = self.show(self.back);
+                fx.push(Effect::SetMenu(m));
+                return fx;
+            }
             Item::SystemInfo => return self.show(View::System),
             Item::SystemStatus => return self.show(View::SystemStatus),
             Item::DebugMode => fx.extend(self.set_debug_mode(d > 0)),
@@ -6858,6 +7007,61 @@ mod tests {
     /// Where `item` sits in the menu on screen.
     fn row(app: &App, item: Item) -> usize {
         app.row_of(item).expect("row shown")
+    }
+
+    /// The Show view (live shows B1): the wheel and - / + arm the song
+    /// after or before, the wheel's push is Go, MENU has the view's own
+    /// rows, which go back to it and tell the screen, and the learned
+    /// Panic and Click are the app's own controls.
+    #[test]
+    fn the_show_view_takes_the_wheel_its_push_and_menu() {
+        use mpfree_play::mpfree_param::show;
+        let mut app = App::new(44_100, false);
+        app.map.menu = Some(MENU);
+        app.open_tab(View::Arrange);
+        let show_keys = |fx: &[Effect]| fx.iter().any(|e| matches!(e, Effect::ShowKey(_)));
+        // A set open but another of Arrange's views up: as before.
+        app.set_show_state(true, false);
+        assert!(!show_keys(&app.wheel(1)));
+        assert!(!show_keys(&press(&mut app, button::DATA_PUSH)));
+        app.set_show_state(true, true);
+        assert_eq!(app.wheel(3), [Effect::ShowKey(ShowKey::Step(1))]);
+        assert_eq!(app.wheel(-1), [Effect::ShowKey(ShowKey::Step(-1))]);
+        assert_eq!(
+            press(&mut app, button::PLUS),
+            [Effect::ShowKey(ShowKey::Step(1))]
+        );
+        assert_eq!(
+            press(&mut app, button::MINUS),
+            [Effect::ShowKey(ShowKey::Step(-1))]
+        );
+        assert_eq!(
+            press(&mut app, button::DATA_PUSH),
+            [Effect::ShowKey(ShowKey::Push)]
+        );
+        // SHIFT + wheel still scrolls.
+        let fx = held(&mut app, button::SHIFT, |a| a.wheel(1));
+        assert!(!show_keys(&fx), "{fx:?}");
+        // MENU: Open the Set editor, Check the set, Close the set.
+        press(&mut app, MENU);
+        assert_eq!(app.view(), View::Options);
+        assert_eq!(app.items(), &SHOW_OPTIONS);
+        let fx = app.step_item(row(&app, Item::CloseSet), 1);
+        assert!(fx.contains(&Effect::SetMenu(SetMenu::Close)), "{fx:?}");
+        assert_eq!(app.view(), View::Arrange);
+        // The set closed: Arrange's own rows and wheel again.
+        app.set_show_state(false, true);
+        assert!(!show_keys(&app.wheel(1)));
+        press(&mut app, MENU);
+        assert_ne!(app.items(), &SHOW_OPTIONS);
+        // Learned Panic and Click are the app's; the rest the screen's.
+        let click = app.settings.metronome;
+        assert!(app.show_press(show::CLICK).is_some());
+        assert_ne!(app.settings.metronome, click);
+        let fx = app.show_press(show::PANIC).unwrap();
+        assert!(fx.contains(&Effect::Time(TimeAction::Transport(Command::StopAndRewind))));
+        assert!(app.show_press(show::GO).is_none());
+        assert!(app.show_press(show::NEXT_SONG).is_none());
     }
 
     #[test]

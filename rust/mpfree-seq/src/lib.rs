@@ -51,10 +51,13 @@
 //! **Mutate** ([`mutate`]) makes a variation of a clip's notes and keeps
 //! the clip as it was beside it ([`Clip::original`]), for Restore.
 //!
-//! Audio clips come in a later roadmap step.
+//! **Audio clips** ([`audio`], the audio tracks rethink's phase 2) are
+//! clips of an audio track whose content is regions of its recordings
+//! ([`Clip::audio`]) instead of notes.
 #![forbid(unsafe_code)]
 
 pub mod arrange;
+pub mod audio;
 pub mod convert;
 pub mod groups;
 pub mod inst;
@@ -69,6 +72,7 @@ pub mod time_edit;
 pub use arrange::{
     Arrangement, FromScene, Marker, MorphRows, Placement, SongClips, SongSection, TempoPoint,
 };
+pub use audio::{AudioClip, ClipRegion, RecId, MAX_CLIP_REGIONS};
 pub use mutate::{Amount, Original, Pitches};
 pub use scenes::{
     Follow, FollowAction, ListStep, Scene, SceneSettings, SongList, TrackProgram, MAX_SCENE_NAME,
@@ -956,6 +960,11 @@ pub struct Clip {
     pub original: Option<Box<Original>>,
     /// Whether its notes are pad hits or MIDI notes (step 5c).
     pub holds: Holds,
+    /// An audio track's clip: the regions of its recordings it plays
+    /// (the audio tracks rethink's phase 2, [`audio`]). Such a clip holds
+    /// nothing else a note clip holds, plays at normal speed, and lives on
+    /// an audio track; a clip on an audio track always has one.
+    pub audio: Option<AudioClip>,
     /// The instrument its instrument locks were made for, with the names
     /// of the controls they lock (step sequencer refactor F1,
     /// [`inst`]); None while it has none.
@@ -1044,11 +1053,16 @@ pub enum ModelError {
     /// A song's tempo point is before the start, out of range, too near
     /// another (a 1/16 at least) or one too many.
     BadTempo,
-    /// A clip or a song block on an audio track: until audio clips come
-    /// (the audio tracks rethink's phase 2), an audio track's cells are
-    /// empty and its song material is its regions, in the audio tracks
-    /// part.
+    /// A note or Loop clip, or its song block, on an audio track, or an
+    /// audio clip or its block on another kind of track: an audio track's
+    /// cells hold audio clips only ([`Clip::audio`]), and its lane holds
+    /// its regions (in the audio tracks part) and blocks of audio clips
+    /// (phase 2's step 2d).
     AudioTrack,
+    /// An audio clip out of range ([`AudioClip::check`]), or one that also
+    /// holds what a note clip holds (notes, locks, pressure, moves, a
+    /// loop, a speed, swing, quantise, a direction or a program).
+    BadAudioClip,
 }
 
 /// Take one item equal to each of `out` out of `from`, the first equal one
@@ -1203,6 +1217,7 @@ impl Clip {
             scale: None,
             original: None,
             holds: Holds::Hits,
+            audio: None,
             made_for: None,
         }
     }
@@ -1214,6 +1229,12 @@ impl Clip {
             id: ClipId::NONE,
             ..self.clone()
         }
+    }
+
+    /// The recordings it names, if it is an audio clip ([`Clip::audio`]),
+    /// in region order (one may repeat). A copy names the same ones.
+    pub fn recordings(&self) -> impl Iterator<Item = RecId> + '_ {
+        self.audio.iter().flat_map(AudioClip::recordings)
     }
 
     /// A Loop track's cell for loop `n` (0 based), `ticks` long: named
@@ -1393,6 +1414,23 @@ impl Clip {
         }
         if let Some(o) = &self.original {
             o.check(&self.touch)?;
+        }
+        if let Some(a) = &self.audio {
+            let plain = self.notes.is_empty()
+                && self.locks.is_empty()
+                && self.touch.is_empty()
+                && self.moves.is_empty()
+                && self.original.is_none()
+                && self.looped.is_none()
+                && self.speed == Speed::NORMAL
+                && self.swing.is_none()
+                && self.quantise.is_none()
+                && self.direction == Direction::Forward
+                && self.program.is_none();
+            if !plain {
+                return Err(ModelError::BadAudioClip);
+            }
+            a.check(self.length)?;
         }
         if (grouped || self.original.is_some()) && !self.groups_ok() {
             return Err(ModelError::BadGroup);
@@ -1719,8 +1757,9 @@ pub enum TrackKind {
     /// line input or the mix and plays what it recorded on its own mixer
     /// channel. Its recordings, regions and settings (input, monitor) are
     /// the audio tracks part's (`mpfree-audiotracks`), found by the
-    /// track's id. It holds no note clip and no song block: until audio
-    /// clips come (phase 2) its cells stay empty ([`ModelError::AudioTrack`]).
+    /// track's id. Its cells hold audio clips ([`Clip::audio`], phase 2)
+    /// and nothing else, and its lane blocks of audio clips beside its
+    /// regions (step 2d, [`ModelError::AudioTrack`]).
     Audio,
 }
 
@@ -1985,6 +2024,16 @@ impl Project {
             .max(song)
     }
 
+    /// The recordings its audio clips name, in their cells and the song's
+    /// own clips (each as often as it is named): what the project keeps
+    /// while it holds them (the audio tracks rethink, phase 2).
+    pub fn recordings(&self) -> impl Iterator<Item = RecId> + '_ {
+        self.cell_clips()
+            .map(|(_, _, c)| c)
+            .chain(self.arrangement.clips.iter())
+            .flat_map(Clip::recordings)
+    }
+
     /// Every clip in a cell, as (track, row, clip), in track and row
     /// order.
     pub fn cell_clips(&self) -> impl Iterator<Item = (usize, usize, &Clip)> {
@@ -2073,10 +2122,10 @@ impl Project {
     pub fn check(&self) -> Result<(), ModelError> {
         self.check_tracks()?;
         for t in &self.tracks {
-            if t.is_audio() && t.slots.clips().next().is_some() {
-                return Err(ModelError::AudioTrack);
-            }
             for c in t.slots.clips() {
+                if c.audio.is_some() != t.is_audio() {
+                    return Err(ModelError::AudioTrack);
+                }
                 c.check()?;
                 if c.looped.is_some() != t.is_loops() {
                     return Err(ModelError::BadLoop);
