@@ -1717,9 +1717,10 @@ pub fn perform_remote(
 /// A learned control on the looper (its footswitch; `remote::LooperAct`),
 /// on any page: a loop's key does what its pad does ([`perform_pad_on`]),
 /// a mute mutes the loop or lets it play, Next loop picks the next one,
-/// Capture is the Looper tab's, and Undo, Redo and Clear are the Looper
-/// tab's buttons, on the picked loop. Its hold clears the loop through
-/// [`perform_pad_held`].
+/// Capture is the Looper tab's, Undo, Redo and Clear are the Looper
+/// tab's buttons, on the picked loop, and Snap and Use my tap are smart
+/// loop end's ([`looping::LoopHost::choose`]). Its hold clears the loop
+/// through [`perform_pad_held`].
 pub fn looper_remote(
     app: &mut app::App,
     time: &time::TimeHost,
@@ -1748,6 +1749,12 @@ pub fn looper_remote(
         LooperAct::Press(Looper::Undo) => app.looper_tap(B_UNDO),
         LooperAct::Press(Looper::Redo) => app.looper_tap(B_REDO),
         LooperAct::Press(Looper::Clear) => app.looper_tap(B_CLEAR),
+        LooperAct::Press(Looper::Snap) => {
+            vec![app::Effect::Looper(LoopAction::Choose(looping::Side::Snap))]
+        }
+        LooperAct::Press(Looper::UseMyTap) => {
+            vec![app::Effect::Looper(LoopAction::Choose(looping::Side::Tap))]
+        }
         // Keys and mutes come as Key and Mute.
         LooperAct::Press(Looper::Key(_) | Looper::Mute(_)) => Vec::new(),
     }

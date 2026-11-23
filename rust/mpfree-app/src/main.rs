@@ -7269,6 +7269,11 @@ fn looper_action(
             looper.set_point_open(open);
             Vec::new()
         }
+        looping::LoopAction::Choose(side) => {
+            let line = looper.choose(side);
+            out.note(&line);
+            vec![app::Effect::Tell(line)]
+        }
         looping::LoopAction::CaptureSpan(end, bars) => {
             out.note(&looper.set_capture_span(end, bars));
             Vec::new()
@@ -18269,6 +18274,8 @@ mod tests {
         assert_eq!(name(looper::PICKED_MUTE), "Looper · picked loop's mute");
         assert_eq!(name(looper::NEXT_LOOP), "Looper · Next loop");
         assert_eq!(name(looper::CLEAR), "Looper · Clear");
+        assert_eq!(name(looper::SNAP), "Looper · Snap");
+        assert_eq!(name(looper::USE_MY_TAP), "Looper · Use my tap");
         assert_eq!(name(99), "Looper · ?");
         let now = remote::Now {
             picked: 2,

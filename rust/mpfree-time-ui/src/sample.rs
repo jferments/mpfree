@@ -1286,6 +1286,7 @@ pub fn clips_audio_state() -> Result<TimeState, String> {
             settings,
             variation: None,
             holds_notes: false,
+            holds: mpfree_seq::Holds::Hits,
             audio: Some(AudioCellInfo {
                 bpm: if name == "Riff" { 120.0 } else { 92.0 },
                 gain: 1.0,
@@ -1546,6 +1547,7 @@ pub fn notes_state(lens: crate::editor::Lens) -> Result<TimeState, String> {
         bar: BAR,
         answer: Default::default(),
         locks: Default::default(),
+        ghosts: Default::default(),
     }));
     Ok(state)
 }
@@ -1614,6 +1616,97 @@ pub fn notes_pads_state() -> Result<TimeState, String> {
     e.editor.pads_write = true;
     e.editor.cursor = BAR + 3 * BEAT;
     e.editor.sel.clear();
+    Ok(state)
+}
+
+/// The note editor on "Keys" with two other clips faintly behind it
+/// (piano roll plan 4.1): "Pluck", the stab track's line on the same row,
+/// which plays with it, and "Keys take 1", an earlier take of the chords
+/// on another row, shown for reference. The clips hold notes, so the Show
+/// menu offers those, the bass track's two lines (Sub line plays now) and
+/// none of the pad hits.
+pub fn notes_ghosts_state() -> Result<TimeState, String> {
+    const BASS: usize = 2;
+    let notes = |name: &str, length: Tick, notes: &[(Tick, Tick, u8)]| -> Result<Clip, String> {
+        let mut c = Clip::new(name, length);
+        for &(tick, len, note) in notes {
+            c.add_note(Note::new(tick, len, note, 96))
+                .map_err(|e| format!("{name}: {e:?}"))?;
+        }
+        c.holds = mpfree_seq::Holds::Notes;
+        Ok(c)
+    };
+    let mut s = playing()?;
+    let mut keys = keys_clip();
+    keys.holds = mpfree_seq::Holds::Notes;
+    // (tick, length, note): an answer between the chords and the tune.
+    let pluck = notes(
+        "Pluck",
+        2 * BAR,
+        &[
+            (2 * SIXTEENTH, SIXTEENTH, 63),
+            (5 * SIXTEENTH, SIXTEENTH, 65),
+            (10 * SIXTEENTH, SIXTEENTH, 68),
+            (14 * SIXTEENTH, SIXTEENTH, 67),
+            (BAR + 2 * SIXTEENTH, SIXTEENTH, 65),
+            (BAR + 5 * SIXTEENTH, SIXTEENTH, 67),
+            (BAR + 10 * SIXTEENTH, SIXTEENTH, 70),
+            (BAR + 13 * SIXTEENTH, SIXTEENTH, 68),
+        ],
+    )?;
+    // The chords as first played: a bar each, voiced lower.
+    let take = notes(
+        "Keys take 1",
+        2 * BAR,
+        &[
+            (0, BAR - 40, 55),
+            (0, BAR - 40, 60),
+            (0, BAR - 40, 63),
+            (BAR, BAR - 40, 58),
+            (BAR, BAR - 40, 62),
+            (BAR, BAR - 40, 65),
+        ],
+    )?;
+    let bass = notes(
+        "Bass line",
+        2 * BAR,
+        &[
+            (0, BEAT, 36),
+            (2 * BEAT, BEAT, 32),
+            (BAR, BEAT, 34),
+            (BAR + 2 * BEAT, BEAT, 31),
+        ],
+    )?;
+    let p = &mut s.project;
+    p.tracks[CHORDS].slots[1] = Some(keys.clone());
+    p.tracks[CHORDS].slots[3] = Some(take.clone());
+    p.tracks[STAB].slots[1] = Some(pluck.clone());
+    p.tracks[BASS].slots[1] = Some(bass);
+    if let Some(sub) = p.tracks[BASS].slots[0].as_mut() {
+        sub.holds = mpfree_seq::Holds::Notes;
+    }
+    let mut state = s.state();
+    let mut editor = crate::editor::Editor::new(CHORDS, 1, &keys);
+    editor.show = vec![(STAB, 1), (CHORDS, 3)];
+    let ghost = |track: usize, slot: usize, clip: Clip, name: &str| crate::view::Ghost {
+        track,
+        slot,
+        clip: clip.into(),
+        track_name: name.into(),
+    };
+    state.edit = Some(Box::new(crate::view::EditInfo {
+        editor,
+        clip: keys.into(),
+        rev: 0,
+        track_name: "Chords".into(),
+        bar: BAR,
+        answer: Default::default(),
+        locks: Default::default(),
+        ghosts: vec![
+            ghost(STAB, 1, pluck, "Stab"),
+            ghost(CHORDS, 3, take, "Chords"),
+        ],
+    }));
     Ok(state)
 }
 
@@ -1754,6 +1847,7 @@ pub fn tracker_state() -> Result<TimeState, String> {
         bar: BAR,
         answer: Default::default(),
         locks: Default::default(),
+        ghosts: Default::default(),
     }));
     Ok(state)
 }
