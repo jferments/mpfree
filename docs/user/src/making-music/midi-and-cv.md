@@ -335,17 +335,19 @@ These work on every page, whatever the pads are doing. A **Key** or a press star
 
 ### Play's swing, filter and XY pad from your controller
 
-{{shot: mixer-io-learn-play | The Learn section's Play card: Swing, Filter, XY across and XY up, each for a knob to learn.}}
+{{shot: mixer-io-learn-play | The Learn section's Play card: Swing, Filter, XY across and XY up, each for a knob to learn, and the XY pad's Hold and layout buttons, each for a button.}}
 
 A knob or fader on your controller can turn the Play page's **Swing** and **Filter**, and two of them can move the **XY pad**, so you can play them without looking at the screen. On Play, SHIFT and a touch on these keeps its own job, so they are learned here instead. In the Learn section, tap **Play** by the heading, tap one, then move the knob:
 
 - **Swing**: from straight (50 %) to the most swing (75 %), as Play's Swing Q-Link turns it.
 - **Filter**: the filter Play's Filter Q-Link turns, the same way: track 1's, which Play's card calls Drums, whatever your project names track 1; low-pass below the middle, high-pass above it, and off in the middle.
-- **XY across** and **XY up**: each moves the XY pad one way, as your finger does, and the other way stays where it is. The pad on the Play page follows. Its effect plays until both are back where the pad rests: across in the middle and up at the bottom. Learn one on a joystick's two directions, or on two knobs side by side.
+- **XY across** and **XY up**: each moves the XY pad one way, as your finger does, and the other way stays where it is. The pad on the Play page follows. Its effect plays until both are back where the pad rests: across in the middle and up at the bottom. Learn one on a joystick's two directions, or on two knobs side by side. On one of [your own layouts](xy-layouts.md), a knob holds the pad while it moves and lets go half a second after, as any learned knob does.
+- **XY Hold**: a button, a key or a footswitch switches the pad's [Hold](xy-layouts.md#hold-and-let-go) on and off, each press. It works on a layout of yours.
+- **XY layout next** and **XY layout back**: each press plays the next (or the last) of this song's layouts of yours, or of the ready-made ones while the song has none of yours. Whatever the old layout held lets go first.
 
 **Your finger and the XY knobs together:** the one that started last plays. Move a learned XY knob while your finger is on the pad and the knob takes over; your finger does nothing until you lift it and touch again. A touch while the knobs hold the pad takes it back the same way, and the knobs then do nothing until they are back where the pad rests.
 
-These work on every page. The Learn section lists them as **Play · Swing**, **Play · Filter**, **Play · XY across** and **Play · XY up**. They are kept in **Rig**, so your controller works the same in every project, and they move the sound but don't record into a clip. Touching Play's own cards and pad still works as before.
+These work on every page. The Learn section lists them as **Play · Swing**, **Play · Filter**, **Play · XY across**, **Play · XY up**, **Play · XY Hold**, **Play · XY layout next** and **Play · XY layout back**. The three buttons start as **Button: while held**, so a footswitch presses once each time it goes down. They are kept in **Rig**, so your controller works the same in every project, and they move the sound but don't record into a clip. Touching Play's own cards and pad still works as before.
 
 ### Footswitches for a set
 

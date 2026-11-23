@@ -357,8 +357,7 @@ const XY_FULL_HINT: &str =
     "The XY pad full screen: drag to play   ·   the chip: what it plays   ·   Setup: what it moves   ·   SHIFT + NEXT SEQ: back";
 
 /// Hold on a ready-made layout (phase 2): it comes with the XY page.
-const XY_NO_HOLD: &str =
-    "Hold works on a layout of yours for now: Setup makes a copy of this one yours";
+const XY_NO_HOLD: &str = crate::xy_song::NO_HOLD;
 
 /// The hint on Setup for a layout of yours ([`crate::xy_setup`]).
 const XY_SETUP_HINT: &str =
@@ -2173,15 +2172,52 @@ pub enum FromUi {
 /// capture ([`FromUi::Capture`]).
 const CAPTURE_FRAMES: usize = mpfree_fx::GrainNode::MEMORY_S as usize * crate::RATE as usize;
 
+/// The XY pad's marks on the Synth tab's knobs (layout spec 4b's XY
+/// marks): the selected track's synth's settings (`track`) on the layout
+/// of yours playing, or any synth's on one that follows the selected
+/// track, by parameter id. Ready-made layouts move the master's effects
+/// only, and a synth's own settings move by Set only.
+fn synth_xy_marks(
+    song: &crate::xy_song::XyView,
+    track: Option<usize>,
+) -> Vec<(u16, mpfree_synth_ui::section_view::XyMark)> {
+    let (Some(t), Some(m)) = (track, song.playing.and_then(|i| song.yours.get(i))) else {
+        return Vec::new();
+    };
+    m.rows
+        .iter()
+        .filter(|r| r.gone.is_none() && !r.add)
+        .filter_map(|r| {
+            let a = r.addr?;
+            let ours = matches!(a.owner, mpfree_play::mpfree_param::Owner::Inst(o) if usize::from(o) == t || m.follow);
+            ours.then_some((
+                a.param,
+                mpfree_synth_ui::section_view::XyMark {
+                    up: r.up,
+                    from: r.from,
+                    to: r.to,
+                    now: 0.0,
+                    recorded: false,
+                },
+            ))
+        })
+        .collect()
+}
+
 /// A chain editor action as the message for the audio loop. A Capture
 /// takes the buffer it is copied into with it, made here, so the audio
-/// thread never allocates or frees it.
-fn chain_msg(a: ChainAction) -> FromUi {
+/// thread never allocates or frees it. XY → and XY ↑ go to your layouts,
+/// with `pick`, the ready-made layout Prefs keeps (a copy of it becomes
+/// yours when it plays).
+fn chain_msg(a: ChainAction, pick: Option<usize>) -> FromUi {
     match a {
         ChainAction::Capture(slot) => FromUi::Capture {
             slot,
             held: Box::new(Held::new(2, CAPTURE_FRAMES)),
         },
+        ChainAction::Xy { addr, up } => {
+            FromUi::Xy(crate::xy_song::XyAction::Chip { addr, up, pick })
+        }
         a => FromUi::Chain(a),
     }
 }
@@ -6371,6 +6407,10 @@ impl Player {
             }
         }
         self.xy_song = v;
+        let marks = synth_xy_marks(&self.xy_song, self.time.selected());
+        if let Some(p) = self.synth.as_mut() {
+            p.set_xy(&mut self.ui, marks);
+        }
         self.refresh_play();
         self.refresh_qlinks();
         self.refresh_hint();
@@ -10635,7 +10675,9 @@ impl Player {
             ToUi::ChainPush => {
                 if mpfree_chain_ui::chain_push(&mut self.ui) {
                     let acts = mpfree_chain_ui::take_chain_actions(&mut self.ui);
-                    self.outbox.extend(acts.into_iter().map(chain_msg));
+                    let pick = self.play.xy_effect;
+                    self.outbox
+                        .extend(acts.into_iter().map(|a| chain_msg(a, pick)));
                 } else {
                     // The picker is shut: the push is the outline's.
                     self.nav(Nav::Push);
@@ -10944,9 +10986,13 @@ impl Player {
                         {
                             state.edited = true;
                         }
+                        state.xy = synth_xy_marks(&self.xy_song, self.time.selected());
                         let _ = p.load(&mut self.ui, state);
                     }
-                    None => match SynthPanel::add(&mut self.ui, "Synth", state) {
+                    None => match SynthPanel::add(&mut self.ui, "Synth", {
+                        state.xy = synth_xy_marks(&self.xy_song, self.time.selected());
+                        state
+                    }) {
                         Ok(mut p) => {
                             let _ = p.set_layout_wrap(&mut self.ui, play_page::synth_with_pads);
                             self.synth = Some(p);
@@ -14495,7 +14541,9 @@ impl Player {
                 .get_mut::<mpfree_chain_ui::ChainView>(mpfree_chain_ui::CHAIN)
             {
                 let stop = cv.stop_listening();
-                self.outbox.extend(stop.into_iter().map(chain_msg));
+                let pick = self.play.xy_effect;
+                self.outbox
+                    .extend(stop.into_iter().map(|a| chain_msg(a, pick)));
             }
         }
         let (was, now) = (self.view == View::Touch, v == View::Touch);
@@ -16234,7 +16282,8 @@ impl Player {
                     // shut: its hint.
                     self.refresh_hint();
                 }
-                let mut acts = acts.into_iter().map(chain_msg);
+                let pick = self.play.xy_effect;
+                let mut acts = acts.into_iter().map(|a| chain_msg(a, pick));
                 let first = acts.next();
                 self.outbox.extend(acts);
                 first
@@ -16743,7 +16792,9 @@ impl Player {
         // A finger held on an effect in the picker opens its presets.
         if self.view == View::Chain && mpfree_chain_ui::chain_hold(&mut self.ui) {
             let acts = mpfree_chain_ui::take_chain_actions(&mut self.ui);
-            self.outbox.extend(acts.into_iter().map(chain_msg));
+            let pick = self.play.xy_effect;
+            self.outbox
+                .extend(acts.into_iter().map(|a| chain_msg(a, pick)));
         }
         // A finger held still on a Looper layer's row: it can lift out to
         // drag now (moved sooner, it swiped the rows).
@@ -19503,6 +19554,79 @@ fn sample_panels(p: &mut Player, view: View) {
     p.apply(ToUi::Macros(Box::new(song.macros_state(0))));
 }
 
+/// The chain editor of [`sample_panels`] with the XY pad's layout on Drive
+/// (across, 20 % to 85 %) and Tone (up, from halfway, the touched one), as
+/// the app marks them (`modpanels::xy_marks`).
+fn sample_xy_marks(p: &mut Player) {
+    use mpfree_chain_ui::sample::{Song, DRUMS};
+    use mpfree_chain_ui::state::XyMark;
+    use mpfree_play::mpfree_param::Owner;
+    let song = Song::new();
+    let Some(uid) = song.drums.uid(1) else {
+        return;
+    };
+    let at = |id| ParamAddr::new(Owner::Insert(DRUMS, uid), id);
+    let mut st = song.chain_state(DRUMS, 1, 0, Some(at(mpfree_fx::ids::drive::TONE)));
+    st.back = Some("Mixer".into());
+    st.strip_name = st.title.trim_end_matches(" FX").to_string();
+    st.strip_kind = "Track 1".into();
+    for v in &mut st.params {
+        let (up, from, to) = match v.addr.param {
+            mpfree_fx::ids::drive::DRIVE => (false, 0.2, 0.85),
+            mpfree_fx::ids::drive::TONE => (true, 0.5, 1.0),
+            _ => continue,
+        };
+        v.xy = Some(XyMark {
+            up,
+            from,
+            to,
+            now: v.pos,
+            recorded: false,
+        });
+    }
+    p.apply(ToUi::Chain(Box::new(st)));
+}
+
+/// A layout of yours playing with track `t`'s synth's Cutoff across (20 %
+/// to 85 % of its travel) and its Resonance up, running backwards, as the
+/// sound loop's song view has it (`xy_song::XySong::view`).
+fn synth_xy_view(t: u8) -> crate::xy_song::XyView {
+    use crate::xy_song::{MineView, RowView, XyView};
+    use mpfree_play::mpfree_param::Owner;
+    let row = |up, k, id: u16, name: &str, from, to| RowView {
+        addr: Some(ParamAddr::new(Owner::Inst(t), id)),
+        up,
+        k,
+        name: name.into(),
+        place: "Track 1 · Poly".into(),
+        from,
+        to,
+        ..RowView::default()
+    };
+    XyView {
+        yours: vec![MineView {
+            name: "Sweep".into(),
+            across: "Open".into(),
+            up: "Bite".into(),
+            rows: vec![
+                row(false, 0, mpfree_synth::params::CUTOFF, "Cutoff", 0.2, 0.85),
+                row(
+                    true,
+                    0,
+                    mpfree_synth::params::RESONANCE,
+                    "Resonance",
+                    0.6,
+                    0.1,
+                ),
+            ],
+            ..MineView::default()
+        }],
+        playing: Some(0),
+        hold: false,
+        wait: None,
+    }
+}
+
 /// The chain editor on the drum bus's EQ, shaped as on the approved
 /// mockups (a low cut, a low bump, a mud cut on band 2, presence and a
 /// high cut), band 2 picked, as the app sends it.
@@ -20827,6 +20951,12 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         sample_panels(&mut p, view);
         out.push((name, p));
     }
+    // The XY pad's marks and chips (boards 5 and 6 of the XY mockups,
+    // approved 23 Nov 10:34Z): Drive across, Tone up and touched.
+    let mut xy = sample_player(fonts());
+    sample_panels(&mut xy, View::Chain);
+    sample_xy_marks(&mut xy);
+    out.push(("chain-xy", xy));
     // The sidechain (layout spec 4b): the keys' Compressor listening to the
     // kick pad, and the sidechain list over it.
     for (name, list) in [("chain-sidechain", false), ("chain-sidechain-list", true)] {
@@ -22380,6 +22510,17 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         p.take_actions();
         out.push((name, p));
     }
+    // The XY pad's marks on the Synth tab (board 6 of the XY mockups,
+    // approved 23 Nov 10:34Z): a layout of yours with track 1's Cutoff
+    // across and its Resonance up, backwards, on the Filter page.
+    let mut xy = sample_player(fonts());
+    xy.time.armed = Some(0);
+    xy.apply(ToUi::Kit(synth_kit));
+    xy.apply(ToUi::Show(View::Synth));
+    xy.apply(ToUi::SynthPage(2));
+    xy.apply(ToUi::Xy(Box::new(synth_xy_view(0))));
+    xy.take_actions();
+    out.push(("synth-xy", xy));
     // FM on the pads with D Dorian chord pads, three chords held; FM's Synth
     // tab; and the Synth tab's options with FM and a scale picked.
     let mut fm = crate::synth::Synth::new(44_100);
@@ -31269,6 +31410,7 @@ mod tests {
             own: None,
             edited: false,
             pressures: Vec::new(),
+            xy: Vec::new(),
         };
         p.apply(ToUi::PluginFolders(vec![(info.id.to_string(), folder)]));
         p.apply(ToUi::Synth(state));
@@ -37642,6 +37784,77 @@ mod tests {
             .ends_with("· layer 1 of 2"));
     }
 
+    /// The chain editor's XY → and XY ↑ go to your layouts with the
+    /// ready-made pick; the Synth tab's knobs wear the marks of the layout
+    /// of yours playing: the selected track's synth's settings (any
+    /// synth's on a layout that follows the track), Set only, and the
+    /// knob's own position for the dot.
+    #[test]
+    fn the_xy_chips_reach_your_layouts_and_the_synth_tabs_knobs_wear_the_marks() {
+        use crate::xy_song::XyAction;
+        let addr = ParamAddr::new(mpfree_play::mpfree_param::Owner::Transport, 0);
+        assert_eq!(
+            chain_msg(ChainAction::Xy { addr, up: true }, Some(3)),
+            FromUi::Xy(XyAction::Chip {
+                addr,
+                up: true,
+                pick: Some(3)
+            })
+        );
+        let mut v = synth_xy_view(0);
+        let marks = synth_xy_marks(&v, Some(0));
+        let ids: Vec<(u16, bool)> = marks.iter().map(|(id, m)| (*id, m.up)).collect();
+        assert_eq!(
+            ids,
+            [
+                (mpfree_synth::params::CUTOFF, false),
+                (mpfree_synth::params::RESONANCE, true)
+            ]
+        );
+        assert_eq!((marks[1].1.from, marks[1].1.to), (0.6, 0.1), "backwards");
+        assert!(
+            synth_xy_marks(&v, Some(1)).is_empty(),
+            "another track's synth"
+        );
+        assert!(synth_xy_marks(&v, None).is_empty());
+        v.yours[0].follow = true;
+        assert_eq!(synth_xy_marks(&v, Some(1)).len(), 2, "it follows the track");
+        v.yours[0].rows[0].add = true;
+        v.yours[0].rows[1].gone = Some("Track 1 was removed.".into());
+        assert!(
+            synth_xy_marks(&v, Some(0)).is_empty(),
+            "no Add, nothing gone"
+        );
+        v.playing = None;
+        assert!(synth_xy_marks(&synth_xy_view(0), Some(0)).len() == 2);
+        assert!(
+            synth_xy_marks(&v, Some(0)).is_empty(),
+            "a ready-made layout"
+        );
+        // On the screen: the Filter page's Cutoff and Resonance knobs.
+        let mut p = sample_player(Fonts::embedded());
+        p.time.armed = Some(0);
+        p.apply(ToUi::Show(View::Synth));
+        p.apply(ToUi::SynthPage(2));
+        p.apply(ToUi::Xy(Box::new(synth_xy_view(0))));
+        let st = &p.synth.as_ref().unwrap().state;
+        assert_eq!(st.xy.len(), 2);
+        let tiles =
+            p.ui.get::<mpfree_synth_ui::section_view::SectionView>(mpfree_synth_ui::view::TILES)
+                .unwrap();
+        let marked: Vec<&str> = tiles
+            .sections
+            .iter()
+            .flat_map(|s| &s.controls)
+            .filter(|c| c.xy.is_some())
+            .map(|c| c.label.as_str())
+            .collect();
+        assert_eq!(marked, ["Cutoff", "Resonance"]);
+        // The layout stops playing: the marks go.
+        p.apply(ToUi::Xy(Box::default()));
+        assert!(p.synth.as_ref().unwrap().state.xy.is_empty());
+    }
+
     /// The chain editor's Capture goes to the audio thread with a buffer
     /// made here; the memory that comes back lands where a recording would,
     /// playing as grains with the effect's settings.
@@ -37650,7 +37863,7 @@ mod tests {
         use crate::mixing::Captured;
         use mpfree_sampler::model::PlayMode;
         let mut p = sample_sampler(Fonts::embedded());
-        match chain_msg(ChainAction::Capture(2)) {
+        match chain_msg(ChainAction::Capture(2), None) {
             FromUi::Capture { slot, held } => {
                 assert_eq!(slot, 2);
                 assert!(held.room() >= 8 * 44_100, "the whole memory fits");
@@ -37658,7 +37871,7 @@ mod tests {
             m => panic!("{m:?}"),
         }
         assert_eq!(
-            chain_msg(ChainAction::Select(1)),
+            chain_msg(ChainAction::Select(1), None),
             FromUi::Chain(ChainAction::Select(1))
         );
         // What the audio thread sends back: two seconds of a tone, from a

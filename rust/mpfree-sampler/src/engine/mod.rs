@@ -281,15 +281,7 @@ impl Engine {
             tape_target: 1.0,
             tape_rate: 0.0,
             tape_moved: false,
-            lives: vec![
-                Live {
-                    pads: Live::OWN,
-                    locks: Live::OWN,
-                    program: [0.0; ProgramField::COUNT],
-                    bend: 0.0,
-                };
-                kits
-            ],
+            lives: vec![Live::new(); kits],
             tunings: vec![KitTuning::default(); kits],
             live_k: 1.0 - (-(FILTER_STEP as f32) / (LIVE_SMOOTH_S * rate as f32)).exp(),
             stop_lane: false,
