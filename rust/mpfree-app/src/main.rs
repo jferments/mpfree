@@ -8176,7 +8176,11 @@ fn player_session(
         app.settings.audio_streams = tracks.streams();
         out.show(gui::ToUi::Settings(app.settings.clone()));
     }
-    out.show(gui::ToUi::Time(Box::new(time_state(&time, &tracks))));
+    let st = time_state(&time, &tracks);
+    // What the Perform pads' clip windows and scene pads light by, kept
+    // from each state the screen gets (the Arrange refactor's 5.5).
+    let mut pad_grid = perform_pads::Grid::of(&st);
+    out.show(gui::ToUi::Time(Box::new(st)));
     let (mut shown_transport, mut transport_shown_at) = (time.info(), Instant::now());
     let mut periods = app.settings.periods;
     // Where the sound runs (Prefs "Sound cores" as saved, or --sound-cores
@@ -11965,7 +11969,9 @@ fn player_session(
         }
         // `|`, not `||`: both flags are taken.
         if time.take_changed() | tracks.take_changed() {
-            out.show(gui::ToUi::Time(Box::new(time_state(&time, &tracks))));
+            let st = time_state(&time, &tracks);
+            pad_grid = perform_pads::Grid::of(&st);
+            out.show(gui::ToUi::Time(Box::new(st)));
             (shown_transport, transport_shown_at) = (time.info(), Instant::now());
         } else {
             let now = time.info();
@@ -12112,6 +12118,7 @@ fn player_session(
                 muted: (0..time.project().tracks.len().min(128))
                     .filter(|&t| time.muted(t) == Some(true))
                     .fold(0u128, |m, t| m | 1 << t),
+                grid: pad_grid.lights(app.perform_page(), time.info().position),
             };
             let want = perform_pads::colours(
                 app.perform_page(),

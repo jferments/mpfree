@@ -2755,6 +2755,30 @@ impl App {
     /// Page `page` of the Perform set named `name` (the Perform view's
     /// Name page and its UNDO). The project is unsaved; the screen gets
     /// the new set.
+    /// Page `page` of the Perform set is `kind` now (the Arrange
+    /// refactor's 5.5): pads of its own, a clip window or a bank of
+    /// scenes. A throw or macro its pads held lets go, as when the page
+    /// turns.
+    pub fn set_perform_kind(
+        &mut self,
+        page: usize,
+        kind: crate::perform_pads::PageKind,
+    ) -> Vec<Effect> {
+        let Some(p) = self.perform_set.pages.get_mut(page) else {
+            return Vec::new();
+        };
+        p.kind = kind;
+        let mut fx = Vec::new();
+        if self.loop_keys {
+            fx.push(self.status());
+        }
+        fx.push(Effect::PerformSet {
+            set: Box::new(self.perform_set.clone()),
+            opened: false,
+        });
+        fx
+    }
+
     pub fn set_perform_name(&mut self, page: usize, name: &str) -> Vec<Effect> {
         let Some(p) = self.perform_set.pages.get_mut(page) else {
             return Vec::new();

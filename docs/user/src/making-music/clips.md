@@ -31,6 +31,12 @@ The grid has 64 rows, in four **banks** of 16: **A** is rows 1 to 16, **B** rows
 - **What looks for room looks in all 64 rows:** a new clip you record, a phrase, a MIDI file's clips and **Capture** take the first empty slot or row; **Copy row** and **Insert row** need row 64 empty. **Song → scenes** puts the song's parts in the first bank with enough empty rows in a row, never across two banks, since they follow each other with Next.
 
 {{shot: clips-bank-b | The grid scrolled to rows 13 to 20: bank A's last rows, then a line and bank B's first rows with a second set of clips, B lit on the bank chip.}}
+
+### Clips and scenes on the pads
+
+A page of the [Perform set](pads.md#clip-windows-and-scenes-on-the-pads) can be a **clip window**, four tracks by four rows of the grid, or a **scenes** page, a bank's 16 rows. With it on the pads you launch clips and scenes without looking at the screen: each pad is a cell or a row's button, lit dim green with a clip, green while it plays and blinking while it waits for its line. While a clip window is on the pads, the grid outlines its 16 cells.
+
+{{shot: clips-pad-window | The grid with Tracks 1 to 4, rows 1 to 4 outlined: the Perform set's clip window on the pads.}}
 - **UNDO** takes back any drop, and the Takes list names it ("Move 7 · Drums / 2, to Bass / 4").
 - **Tap a track's name** to **arm** it: the pads record into that track. The track arms when you lift your finger.
 - **Hold ERASE and tap a clip** to delete it. **UNDO** brings it back. A clip the song uses leaves the grid, and the song keeps it and plays on; **UNDO** puts it back on the grid.

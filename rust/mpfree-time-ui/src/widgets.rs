@@ -572,6 +572,10 @@ pub struct ClipGrid {
     /// clip or a named scene. With more than one, the bank chip shows
     /// them right of the view chip; empty, it isn't there.
     pub banks: Vec<bool>,
+    /// The Perform pads' clip window (the Arrange refactor's 5.5), while
+    /// one is on the pads: its first track and row. Four tracks by four
+    /// rows from there are outlined in the accent, where they are in view.
+    pub pad_window: Option<(usize, usize)>,
     /// What was drawn last, so a change redraws only the cells that changed.
     drawn: RefCell<Option<Drawn>>,
     /// A finger down on a track's name: where (x) and which track. Let go
@@ -637,6 +641,7 @@ struct Drawn {
     /// The scene card was drawn over it.
     card: bool,
     banks: Vec<bool>,
+    pad_window: Option<(usize, usize)>,
 }
 
 /// `Toggle(slots + ADD_TRACK)`: "+ Track".
@@ -863,6 +868,7 @@ impl ClipGrid {
             back_to_song: false,
             scene_card: None,
             banks: Vec::new(),
+            pad_window: None,
             drawn: RefCell::new(None),
             press: None,
             grip: None,
@@ -1237,6 +1243,34 @@ impl ClipGrid {
         Some(Rect::new(h.x, h.y + h.h / 2, h.w, h.h - h.h / 2))
     }
 
+    /// The outline of the Perform pads' clip window ([`ClipGrid::pad_window`]):
+    /// round the cells of it in view, in the gaps between cells, so a cell
+    /// drawn again leaves it be. None with no window, or none of it in
+    /// view.
+    pub fn pad_window_rect(&self, r: Rect) -> Option<Rect> {
+        let (track, row) = self.pad_window?;
+        let cells: Vec<Rect> = (track..track + 4)
+            .flat_map(|t| (row..row + 4).map(move |s| (t, s)))
+            .filter(|&(t, _)| t < self.tracks.len())
+            .filter_map(|(t, s)| self.cell_rect(r, t, s))
+            .collect();
+        let first = cells.first()?;
+        let (mut x0, mut y0, mut x1, mut y1) = (first.x, first.y, first.right(), first.bottom());
+        for c in &cells {
+            x0 = x0.min(c.x);
+            y0 = y0.min(c.y);
+            x1 = x1.max(c.right());
+            y1 = y1.max(c.bottom());
+        }
+        let pad = CELL_GAP / 2;
+        Some(Rect::new(
+            x0 - pad,
+            y0 - pad,
+            x1 - x0 + 2 * pad,
+            y1 - y0 + 2 * pad,
+        ))
+    }
+
     /// Where slot `slot` of track `track` is, if it is in view.
     pub fn cell_rect(&self, r: Rect, track: usize, slot: usize) -> Option<Rect> {
         let g = self.geo(r);
@@ -1274,6 +1308,7 @@ impl Widget for ClipGrid {
             || d.card
             || self.scene_card.is_some()
             || d.banks != self.banks
+            || d.pad_window != self.pad_window
         {
             return None;
         }
@@ -1315,6 +1350,7 @@ impl Widget for ClipGrid {
             dragged: self.dragged_now(),
             card: self.scene_card.is_some(),
             banks: self.banks.clone(),
+            pad_window: self.pad_window,
         });
         // The view chip, then the title, shortened to what comes before
         // " · " where "Back to song" leaves it no room.
@@ -1629,6 +1665,9 @@ impl Widget for ClipGrid {
                 }
                 paint_cell(cx, cr, cell, base);
             }
+        }
+        if let Some(w) = self.pad_window_rect(r) {
+            cx.canvas.stroke_round_rect(w, t.round(8), 2, t.accent);
         }
         if let Some(gr) = self.grip.filter(|g| g.lifted) {
             self.paint_drag(cx, r, &gr);

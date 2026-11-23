@@ -752,6 +752,63 @@ mod looper {
         });
     }
 
+    /// The Arrange refactor's 5.5: page D a clip window over Tracks 1 to
+    /// 4 and rows 1 to 4, page E bank A's scenes. Pad 13 (top left) taps
+    /// Track 1's cell in row 1, launching its clip; an empty cell's pad
+    /// makes nothing and says so; page E's pad 14 launches row 2.
+    #[test]
+    fn a_clip_window_and_a_scenes_page_launch_from_the_pads() {
+        use crate::gui::FromUi;
+        use crate::perform_pads::{PageKind, PerformSet};
+        use mpfree_time_ui::TimeAction;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            for slot in 0..2 {
+                s.route(FromUi::Time(TimeAction::NewClip { track: 0, slot }));
+            }
+            s.route(FromUi::Time(TimeAction::StopAll));
+            s.run_for(0.1);
+            assert!(s.time.state().clip(0, 1).is_some());
+            let mut set = PerformSet::default();
+            set.pages[3].kind = PageKind::Clips { track: 0, row: 0 };
+            set.pages[4].kind = PageKind::Scenes { bank: 0 };
+            s.app.set_perform_set(set);
+            s.press("header", "tab", "Looper");
+            s.button_with("SHIFT", "SAMPLER");
+            s.run_for(0.1);
+            s.button("PAD BANK D/H");
+            assert_eq!(s.app.perform_bank(), 3);
+            assert!(s
+                .said()
+                .iter()
+                .any(|l| l == "Perform: Page D · Clips · Tracks 1–4 · rows 1–4"));
+            // Pad 9: Track 1, row 2.
+            s.pad(8, 100, 0.05).run_for(0.1);
+            let st = s.time.state();
+            let row = st
+                .cue(0)
+                .and_then(|c| c.slot)
+                .or(st.launch(0).map(|l| l.slot));
+            assert_eq!(row, Some(1), "Track 1's row 2 launched");
+            // Pad 5: Track 1, row 3, empty.
+            let n = s.lines.len();
+            s.pad(4, 100, 0.05).run_for(0.1);
+            assert!(
+                s.lines[n..]
+                    .iter()
+                    .any(|l| l.ends_with("· row 3 is empty (make a clip on the grid)")),
+                "{:?}",
+                &s.lines[n..]
+            );
+            assert!(s.time.state().clip(0, 2).is_none(), "no clip made");
+            // Page E: pad 14 is Scene 2.
+            s.button_with("SHIFT", "PAD BANK A/E");
+            assert_eq!(s.app.perform_bank(), 4, "SHIFT + PAD BANK A: E");
+            s.pad(13, 100, 0.05).run_for(0.1);
+            assert!(s.said().iter().any(|l| l == "perform: Scene 2"));
+        });
+    }
+
     /// A Perform pad's throw on the Drums track (board 7's On): picking
     /// On puts a Perform FX on Drums and says so, a hit plays the throw
     /// there and not on the master, and On back to the master takes it off

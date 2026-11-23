@@ -1907,6 +1907,13 @@ pub enum FromUi {
         page: usize,
         name: String,
     },
+    /// Page `page` of the Perform set is `kind` now: pads of its own, a
+    /// clip window or a bank of scenes (the Arrange refactor's 5.5), from
+    /// the Perform view's page chips, its window's places, its UNDO too.
+    PerformKind {
+        page: usize,
+        kind: crate::perform_pads::PageKind,
+    },
     /// A Q-Link on the Perform view turned a throw's setting on its
     /// strip's Perform FX (`ThrowKnobs::addr`), or its UNDO put it back:
     /// set as the chain editor's knobs set theirs, so a turn while the
@@ -3140,7 +3147,24 @@ impl Player {
                 })
                 .unwrap_or_default(),
             strips: self.throw_strips.clone(),
+            cells: self.perform_cells(),
         }
+    }
+
+    /// The clips of the Perform view's page, when it is a clip window
+    /// (the Arrange refactor's 5.5): each cell's track, row and name.
+    fn perform_cells(&self) -> Vec<(usize, usize, String)> {
+        let page = self.perform.set.page(self.perform.page);
+        (0..crate::perform_pads::PADS)
+            .filter_map(|pad| match page.action(pad) {
+                crate::perform_pads::PadAction::Clip { track, row } => {
+                    let (t, r) = (usize::from(track), usize::from(row));
+                    let clip = self.time.tracks.get(t)?.slots.get(r)?.as_ref()?;
+                    Some((t, r, clip.name.clone()))
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     /// The Pads tab's Perform view built and filled; false when it can't
@@ -3158,6 +3182,20 @@ impl Player {
 
     /// The Perform view again, when it shows.
     fn refresh_perform(&mut self) {
+        // A clip window on the pads is outlined on the grid (the Arrange
+        // refactor's 5.5).
+        let window = match self.perform.set.page(self.perform.page).kind {
+            crate::perform_pads::PageKind::Clips { track, row } if self.perform.on => {
+                Some((usize::from(track), usize::from(row)))
+            }
+            _ => None,
+        };
+        if self.time_page.pad_window != window {
+            self.time_page.pad_window = window;
+            if self.ready {
+                self.time_page.update(&mut self.ui, &self.time);
+            }
+        }
         if self.perform_showing() && self.ready {
             let names = self.perform_names();
             self.perform.show(&mut self.ui, &names);
@@ -3228,7 +3266,12 @@ impl Player {
         for a in acts {
             match a {
                 Act::Send(f) => {
-                    if matches!(f, FromUi::PerformPad { .. } | FromUi::PerformName { .. }) {
+                    if matches!(
+                        f,
+                        FromUi::PerformPad { .. }
+                            | FromUi::PerformName { .. }
+                            | FromUi::PerformKind { .. }
+                    ) {
                         self.mark_unsaved();
                     }
                     self.outbox.push(f);
@@ -7317,7 +7360,10 @@ impl Player {
                 }
                 View::Pads if self.perform.shown && self.ui.page() == crate::perform_tab::PAGE => {
                     let names = self.perform_names();
-                    crate::perform_tab::hint(self.perform.qlink_hint(&names))
+                    crate::perform_tab::hint(
+                        self.perform.qlink_hint(&names),
+                        self.perform.set.page(self.perform.page).kind,
+                    )
                 }
                 View::Pads if self.sample.page() == sample_page::PADS_PAGE => {
                     format!("Hit or tap a pad to pick it, again to hear it   ·   A-H: the kit's banks   ·   \
@@ -17307,6 +17353,38 @@ fn pads_perform(fonts: Fonts) -> Player {
     p
 }
 
+/// The Perform view on a clip window or a scenes page (the Arrange
+/// refactor's 5.5): `kind` on page C of the sample set, with the playing
+/// sample's grid (its clips and scenes named), pad `pad` picked and the
+/// set on the pads at page C.
+fn pads_perform_window(fonts: Fonts, kind: crate::perform_pads::PageKind, pad: usize) -> Player {
+    let mut p = pads_perform(fonts);
+    if let Ok(sample) = mpfree_time_ui::sample::playing() {
+        let mut st = sample.state();
+        st.scenes = ["Intro", "Verse", "Break", "Drop"]
+            .iter()
+            .map(|n| n.to_string())
+            .collect();
+        p.apply(ToUi::Time(Box::new(st)));
+    }
+    let mut set = p.perform.set.clone();
+    set.pages[2].kind = kind;
+    p.apply(ToUi::PerformSet {
+        set: Box::new(set),
+        opened: false,
+    });
+    let mut s = p.status.clone();
+    s.perform_bank = 2;
+    s.perform = Some(p.perform.set.page_name(2));
+    p.apply(ToUi::Status(s));
+    p.on_event(UiEvent {
+        widget: crate::perform_tab::MAP.into(),
+        kind: EventKind::Select(pad),
+    });
+    let _ = p.take_actions();
+    p
+}
+
 /// Each throw of `set` with the Perform FX's own settings for it (its
 /// default bank), as the app sends them once the strips have their Perform
 /// FX.
@@ -20794,6 +20872,24 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     // (board 7).
     out.push(("pads-perform", pads_perform(fonts())));
     out.push(("pads-perform-knobs", pads_perform_knobs(fonts())));
+    // The Arrange refactor's 5.5: page C a clip window over Tracks 1 to 4
+    // and rows 1 to 4, pad 9 (Track 1, row 2) picked; then page C bank
+    // A's scenes, pad 14 (row 2) picked; and the grid with the window
+    // outlined while it is on the pads.
+    use crate::perform_pads::PageKind;
+    out.push((
+        "pads-perform-clips",
+        pads_perform_window(fonts(), PageKind::Clips { track: 0, row: 0 }, 8),
+    ));
+    out.push((
+        "pads-perform-scenes",
+        pads_perform_window(fonts(), PageKind::Scenes { bank: 0 }, 13),
+    ));
+    {
+        let mut p = pads_perform_window(fonts(), PageKind::Clips { track: 0, row: 0 }, 8);
+        p.apply(ToUi::Show(View::Arrange));
+        out.push(("clips-pad-window", p));
+    }
     // The browser from the Pads tab's Browse for A5, over a scratch
     // library: Samples / Drums with Kick 01 selected, Load on A5.
     match browser_samples(fonts()) {

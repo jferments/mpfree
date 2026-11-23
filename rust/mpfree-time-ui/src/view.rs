@@ -5244,6 +5244,10 @@ pub struct TimePage {
     /// `song::ZOOMS`, 0 for the 16 a new page starts with. Kept while
     /// the app runs, whichever view shows; not saved with the project.
     pub song_bars: i64,
+    /// The Perform pads' clip window, while one is on the pads (the
+    /// Arrange refactor's 5.5): its first track and row, outlined on the
+    /// grid. The app sets it.
+    pub pad_window: Option<(usize, usize)>,
     /// The armed track last shown, so a newly armed track off the page
     /// brings its page.
     armed_seen: Option<usize>,
@@ -5752,6 +5756,7 @@ impl TimePage {
                 && g.adding == adding
                 && g.back_to_song == st.over_song()
                 && g.banks == banks
+                && g.pad_window == self.pad_window
         });
         if !same_grid {
             if let Some(g) = ui.get_mut::<ClipGrid>(CLIPS) {
@@ -5767,6 +5772,7 @@ impl TimePage {
                 g.adding = adding;
                 g.back_to_song = st.over_song();
                 g.banks = banks;
+                g.pad_window = self.pad_window;
             }
         }
     }
