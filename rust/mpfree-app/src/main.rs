@@ -5611,11 +5611,18 @@ impl PadsArp {
     /// Takes the selected track's arp as the app set it (`armed`, the
     /// engine the pads play through on a track): its settings, latch,
     /// pattern, tempo and swing (`own_swing`: its own, not the
-    /// transport's), and STOP's hush. Allocates nothing.
-    fn follow(&mut self, armed: &mpfree_arp::Engine, own_swing: bool) {
+    /// transport's), and STOP's hush. The mode is `mode`, the app's word
+    /// for what the pads play on their own (`App::pads_own_mode`): the
+    /// track's, but never Phrase, since a phrase stays with the track and
+    /// none is taken here. Allocates nothing.
+    fn follow(&mut self, armed: &mpfree_arp::Engine, mode: mpfree_arp::Mode, own_swing: bool) {
         let e = &mut self.host.engine;
-        if e.settings() != armed.settings() {
-            e.set_settings(armed.settings());
+        let settings = mpfree_arp::Settings {
+            mode,
+            ..armed.settings()
+        };
+        if e.settings() != settings {
+            e.set_settings(settings);
         }
         if e.latch() != armed.latch() {
             e.set_latch(armed.latch());
@@ -12629,7 +12636,10 @@ fn player_session(
                 {
                     let pad = pad as usize;
                     let v = app.velocity(velocity);
-                    let arp_to = pads_preview.filter(|_| app.generating());
+                    // Phrase is the track's: here the pads play as
+                    // pressed, or repeat (`App::pads_own_mode`).
+                    let arp_on = app.pads_own_mode() != mpfree_arp::Mode::Direct;
+                    let arp_to = pads_preview.filter(|_| arp_on);
                     if let Some(to) = arp_to {
                         let mut buf = [0u8; MAX_PAD_NOTES];
                         let n = match to {
@@ -14330,7 +14340,11 @@ fn player_session(
         // The pads' arp (sampler step 15c): the selected track's arp as the
         // app set it, on the period the clips' arps had, playing where the
         // pads play on their own; its notes flash their pads.
-        pads_arp.follow(app.arps.engine_at(app.track()), app.arp_own_swing());
+        pads_arp.follow(
+            app.arps.engine_at(app.track()),
+            app.pads_own_mode(),
+            app.arp_own_swing(),
+        );
         {
             let (track, page) = (app.track() as u8, app.kit_page());
             // A copy (no heap): the notes record into `time` as they play.

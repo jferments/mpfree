@@ -62,6 +62,7 @@ Note Repeat, Latch and the arpeggiator play whatever the pads play, and turning 
 - **On a synth** the arp plays the notes of the pads you hold, chords too, as the synth's pad layout has them.
 - **On a kit** it plays the kit's pads on the bank the pads are on.
 - **When the pads move to something else** (Follow track, another bank with its own pick, another synth or kit), what the arp was playing there stops, latched notes too. Play again to start it on what the pads play now.
+- **A phrase stays with its track.** A [phrase](#phrases) moves the notes of the selected track's synth, so the synth or kit the pads play on their own never plays one: with the Arp panel on Phrase the pads play it as pressed, and NOTE REPEAT and Latch repeat it.
 - **Layers** play each hit once, as you press it; the repeats play the pads' first sound.
 - **Recording:** REC records the synth or kit on a free track as usual (see [Synths](synths.md)), and the arp's notes record as you hear them. Once that track is selected the pads play through it and its arp. While the pads play a bank's own synth or kit, the arp's notes go into that sound's own track (see [Recording every bank](synths.md#recording-every-bank)).
 
@@ -170,6 +171,8 @@ With the transport stopped there are no bars to keep, so a pick comes in on the 
 {{shot: arp-phrase-kit | The Phrase tab on a kit track: it says the track's instrument is a kit, where the list would be.}}
 
 A kit's pads are different sounds, not notes, so there is nothing for a phrase to move: on a kit track the Phrase tab says so, and the pads play as pressed. NOTE REPEAT still repeats them, even if you left the panel on Phrase, and its **–** and **+** step Repeat, Arp and Pattern there.
+
+A synth or kit you have chosen for the pads while the track plays something else plays as pressed too: see [When the pads play something of their own](#when-the-pads-play-something-of-their-own).
 
 #### On the quick band
 

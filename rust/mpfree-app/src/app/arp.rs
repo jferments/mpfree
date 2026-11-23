@@ -337,6 +337,23 @@ impl App {
         }
     }
 
+    /// The mode what the pads play on their own goes through (the pads'
+    /// arp, main.rs `PadsArp`, sampler step 15c): the armed track's arp's
+    /// as the panel and NOTE REPEAT set it, but for Phrase. A phrase is
+    /// the armed track's: it moves the notes of the track's instrument,
+    /// and the pads' arp has the track's settings and no phrase, on what
+    /// is often a kit, whose pads are not notes. So what the pads play on
+    /// their own they play as pressed, and NOTE REPEAT and Latch repeat
+    /// it, as on a kit track ([`App::held_mode`]); the track's own phrase
+    /// plays on.
+    pub fn pads_own_mode(&self) -> Mode {
+        match self.arps.engine_at(self.track).settings().mode {
+            Mode::Phrase if self.repeating() => Mode::Repeat,
+            Mode::Phrase => Mode::Direct,
+            m => m,
+        }
+    }
+
     /// The Arp panel shows its Phrase tab on a kit track, whose pads play
     /// as pressed: the tab says so in the place of its list.
     pub(super) fn phrase_on_kit(&self) -> bool {

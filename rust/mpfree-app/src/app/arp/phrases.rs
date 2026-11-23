@@ -995,6 +995,34 @@ mod tests {
         assert_eq!(app.eng().settings().mode, Mode::Direct);
     }
 
+    /// What the pads play on their own (the pads' arp, sampler step 15c)
+    /// never takes a phrase: a track on Phrase gives it the pads as
+    /// pressed, and Repeat while NOTE REPEAT or Latch is on, and the
+    /// track's own engine stays on its phrase all along. The other modes
+    /// go there as they are.
+    #[test]
+    fn what_the_pads_play_on_their_own_never_takes_a_phrase() {
+        let mut app = on_the_phrase_tab();
+        let track = |app: &App| app.eng().settings().mode;
+        assert_eq!(track(&app), Mode::Phrase);
+        assert_eq!(app.pads_own_mode(), Mode::Direct, "as pressed");
+        app.button(NOTE_REPEAT, true, 0.0);
+        assert_eq!(track(&app), Mode::Phrase, "the track's phrase");
+        assert_eq!(app.pads_own_mode(), Mode::Repeat, "NOTE REPEAT repeats");
+        app.button(NOTE_REPEAT, false, 0.0);
+        assert_eq!(app.pads_own_mode(), Mode::Direct);
+        app.toggle_latch();
+        assert_eq!(track(&app), Mode::Phrase, "a latched phrase plays on");
+        assert_eq!(app.pads_own_mode(), Mode::Repeat, "Latch repeats");
+        app.toggle_latch();
+        for mode in [Mode::Repeat, Mode::Arp, Mode::Pattern] {
+            app.arp_action(ArpAction::Mode(mode));
+            assert_eq!((track(&app), app.pads_own_mode()), (mode, mode));
+        }
+        app.toggle_panel();
+        assert_eq!(app.pads_own_mode(), Mode::Direct, "the panel closed");
+    }
+
     /// Each track keeps its own pick, and a latched phrase plays on,
     /// from where it is, when its track is armed again.
     #[test]
