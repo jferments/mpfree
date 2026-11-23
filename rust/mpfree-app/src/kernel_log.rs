@@ -18,22 +18,25 @@
 //! | `Out of memory: Killed process 1234 (mpfree…) …`, `Memory cgroup out of memory: Killed process …` | The MPC ran out of memory |
 //!
 //! The stick is any `sd` disk: the MPC One has one USB port, and the stick
-//! in it is MPFree's. The eMMC and the SD card (`mmcblk`) are left out:
-//! MPFree's boot switches both off. Only MPFree's own programs count for
-//! memory (`mpfree`, `mpfree-plughost`, …), as the plan's list says.
+//! in it is MPFree's. The eMMC and the SD card, whose disks are named
+//! otherwise, are left out: MPFree's boot switches both off. Only MPFree's
+//! own programs count for memory (`mpfree`, `mpfree-plughost`, …), as the
+//! plan's list says.
 //!
 //! From the start of this boot, not of this run: when the kernel stopped
 //! MPFree itself for memory, the run after it (a safe start) shows why.
-//! `Buffer I/O error on dev mmcblk1p1, logical block 2` was seen on the MPC
-//! (stick-autoboot.md, 15 Nov), so that format is known; the others are
-//! from the kernel's source and wait for a device check.
+//! `Buffer I/O error on dev …, logical block 2` was seen on the MPC, for the
+//! SD card (stick-autoboot.md, 15 Nov), so that format is known; the others
+//! are from the kernel's source and wait for a device check.
 //!
 //! Errors come in bursts, so a second thread counts them and sends each
 //! kind at most once a second, with the count (`Report::happened`).
 //!
 //! Without `/dev/kmsg` (the app's own user can't read it when the kernel
-//! restricts it) the thread reads `journalctl -k -b -f` instead, as Dev >
-//! Console follows the whole journal; without either it says so once.
+//! restricts it) the kernel's lines come from the system log that Dev >
+//! Console already follows (main.rs's `follow_journal`, one read-only
+//! `journalctl -b -f -n 300`, the only one the app starts): [`FromJournal`]
+//! picks them out. That log starts 300 lines back, not at the boot's start.
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, ErrorKind, Read};
@@ -154,16 +157,11 @@ impl Tally {
     }
 }
 
-/// Reads lines from the kernel's log until it ends, giving each found one
-/// to `found`; `kmsg` says the lines have `/dev/kmsg`'s record header.
-/// Lines are read as bytes (the kernel escapes most, a driver's name may
-/// not be UTF-8). A `/dev/kmsg` read that lost lines to the ring's wrap
-/// (EPIPE) goes on with the next.
-pub fn read_lines(
-    from: impl Read,
-    kmsg: bool,
-    mut found: impl FnMut(Found) -> bool,
-) -> std::io::Result<()> {
+/// Reads `/dev/kmsg`'s records until it ends, giving each one found to
+/// `found` (false: stop). Lines are read as bytes (the kernel escapes most,
+/// a driver's name may not be UTF-8). A read that lost lines to the ring's
+/// wrap (EPIPE) goes on with the next.
+pub fn read_lines(from: impl Read, mut found: impl FnMut(Found) -> bool) -> std::io::Result<()> {
     let mut r = BufReader::new(from);
     let mut buf = Vec::new();
     loop {
@@ -177,12 +175,7 @@ pub fn read_lines(
             Err(e) => return Err(e),
         }
         let line = String::from_utf8_lossy(&buf);
-        let text = if kmsg {
-            record_text(&line)
-        } else {
-            Some(line.trim_end())
-        };
-        if let Some(f) = text.and_then(classify) {
+        if let Some(f) = record_text(&line).and_then(classify) {
             if !found(f) {
                 return Ok(());
             }
@@ -190,56 +183,37 @@ pub fn read_lines(
     }
 }
 
-/// Follows the kernel's log on its own threads, from the start of this
-/// boot, sending each problem found with `send` (false: the screen is
-/// gone). `log` takes the `status:` lines about the watch itself.
+/// The kernel's message in one line of the system log as Dev > Console
+/// follows it (`journalctl -o short-monotonic --no-hostname`):
+/// "[   12.345678] kernel: text". Another program's line has none.
+pub fn journal_text(line: &str) -> Option<&str> {
+    let (_, rest) = line.strip_prefix('[')?.split_once("] ")?;
+    rest.strip_prefix("kernel: ").map(str::trim_end)
+}
+
+/// The kernel's errors from the system log's lines, when `/dev/kmsg` can't
+/// be read ([`follow`] gives it to the console's journal follower).
+pub struct FromJournal(mpsc::Sender<Found>);
+
+impl FromJournal {
+    /// One line of the system log; false once nothing counts them.
+    pub fn line(&self, l: &str) -> bool {
+        match journal_text(l).and_then(classify) {
+            Some(f) => self.0.send(f).is_ok(),
+            None => true,
+        }
+    }
+}
+
+/// Follows the kernel's log from the start of this boot, on a thread of
+/// its own, sending each problem found with `send` (false: the screen is
+/// gone); `log` takes the `status:` lines about the watch itself. Without
+/// `/dev/kmsg` it gives back what the system log's follower feeds instead.
 pub fn follow(
     log: impl Fn(String) + Send + 'static,
     send: impl Fn(Report) -> bool + Send + 'static,
-) {
+) -> Option<FromJournal> {
     let (tx, rx) = mpsc::channel::<Found>();
-    let reader = std::thread::Builder::new()
-        .name("mpfree-kernel".into())
-        .spawn(move || {
-            let mut said = |f| tx.send(f).is_ok();
-            match File::open("/dev/kmsg") {
-                Ok(f) => {
-                    log("status: watching the kernel's log for stick and memory errors".into());
-                    if let Err(e) = read_lines(f, true, &mut said) {
-                        log(format!("status: the kernel's log stopped ({e})"));
-                    }
-                }
-                Err(kmsg) => {
-                    let child = std::process::Command::new("journalctl")
-                        .args(["-k", "-b", "-f", "-n", "all", "--no-pager", "-o", "cat"])
-                        .stdin(std::process::Stdio::null())
-                        .stdout(std::process::Stdio::piped())
-                        .stderr(std::process::Stdio::null())
-                        .spawn();
-                    match child {
-                        Ok(mut c) => {
-                            log(format!(
-                                "status: watching the kernel's log through journalctl \
-                                 (/dev/kmsg: {kmsg})"
-                            ));
-                            if let Some(out) = c.stdout.take() {
-                                let _ = read_lines(out, false, &mut said);
-                            }
-                            let _ = c.kill();
-                            let _ = c.wait();
-                        }
-                        Err(e) => log(format!(
-                            "status: the kernel's log can't be read (/dev/kmsg: {kmsg}; \
-                             journalctl: {e}), so its stick and memory errors aren't watched"
-                        )),
-                    }
-                }
-            }
-        });
-    if let Err(e) = reader {
-        eprintln!("status: the kernel's log watcher didn't start: {e}");
-        return;
-    }
     // The counting side: a burst is sent at once, then once a second while
     // it goes on, and what is left a second after it ends.
     let counter = std::thread::Builder::new()
@@ -266,7 +240,31 @@ pub fn follow(
             }
         });
     if let Err(e) = counter {
-        eprintln!("status: the kernel's log counter didn't start: {e}");
+        log(format!("status: the kernel's errors aren't watched ({e})"));
+        return None;
+    }
+    match File::open("/dev/kmsg") {
+        Ok(f) => {
+            log("status: watching the kernel's log for stick and memory errors".into());
+            let reader = std::thread::Builder::new()
+                .name("mpfree-kernel".into())
+                .spawn(move || {
+                    if let Err(e) = read_lines(f, |found| tx.send(found).is_ok()) {
+                        log(format!("status: the kernel's log stopped ({e})"));
+                    }
+                });
+            if let Err(e) = reader {
+                eprintln!("status: the kernel's log watcher didn't start: {e}");
+            }
+            None
+        }
+        Err(e) => {
+            log(format!(
+                "status: /dev/kmsg can't be read ({e}), so the kernel's stick and memory \
+                 errors are taken from the system log's lines"
+            ));
+            Some(FromJournal(tx))
+        }
     }
 }
 
@@ -341,34 +339,49 @@ mod tests {
     }
 
     #[test]
-    fn a_log_is_read_line_by_line_with_or_without_headers() {
+    fn kmsg_is_read_record_by_record() {
         let kmsg: &[u8] = b"6,1,10,-;usb 1-1: new device\n\
                     3,2,20,-;Buffer I/O error on dev sda4, logical block 9, async page read\n \
                     SUBSYSTEM=block\n\
                     3,3,30,-;EXT4-fs error (device sda4): ext4_lookup: \xff\n";
         let mut got = Vec::new();
-        read_lines(kmsg, true, |f| {
+        read_lines(kmsg, |f| {
             got.push(f);
             true
         })
         .unwrap();
         assert_eq!(got, [Found::StickErrors, Found::StickFiles]);
-        let journal = "Out of memory: Killed process 9 (mpfree) total-vm:1kB\nnothing\n";
-        let mut got = Vec::new();
-        read_lines(journal.as_bytes(), false, |f| {
-            got.push(f);
-            true
-        })
-        .unwrap();
-        assert_eq!(got, [Found::OutOfMemory]);
         // A gone screen ends the read.
         let mut n = 0;
-        read_lines(kmsg, true, |_| {
+        read_lines(kmsg, |_| {
             n += 1;
             false
         })
         .unwrap();
         assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn without_kmsg_the_kernel_lines_of_the_system_log_count() {
+        assert_eq!(
+            journal_text("[   12.345678] kernel: Buffer I/O error on dev sda4, logical block 9"),
+            Some("Buffer I/O error on dev sda4, logical block 9")
+        );
+        assert_eq!(
+            journal_text(
+                "[   12.500000] mpfree[812]: Buffer I/O error on dev sda4, logical block 9"
+            ),
+            None,
+            "a program saying the words isn't the kernel"
+        );
+        assert_eq!(journal_text("-- Boot 1a2b --"), None);
+        let (tx, rx) = mpsc::channel();
+        let j = FromJournal(tx);
+        assert!(j.line("[ 3.1] kernel: Out of memory: Killed process 9 (mpfree) total-vm:1kB"));
+        assert!(j.line("[ 3.2] kernel: usb 1-1: new high-speed USB device"));
+        assert_eq!(rx.try_iter().collect::<Vec<_>>(), [Found::OutOfMemory]);
+        drop(rx);
+        assert!(!j.line("[ 3.3] kernel: I/O error, dev sda, sector 8 op 0x1:(WRITE)"));
     }
 
     #[test]

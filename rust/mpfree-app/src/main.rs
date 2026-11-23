@@ -3936,8 +3936,8 @@ fn player(o: &Options, timed: bool) -> Result<(), String> {
     .map_err(|e| format!("screen thread: {e}"))?;
     out.sink = Some(to_ui.clone());
     if !timed {
-        follow_journal(to_ui.clone());
-        follow_kernel(to_ui.clone());
+        let kernel = follow_kernel(to_ui.clone());
+        follow_journal(to_ui.clone(), kernel);
     }
     let result = player_session(o, &mut out, timed, &from_ui, &xy);
     if let Err(e) = &result {
@@ -3993,8 +3993,9 @@ fn read_patterns(path: &Path) -> Result<String, String> {
 }
 
 /// The kernel's stick and memory errors, followed (read-only) onto the
-/// status board (`kernel_log`).
-fn follow_kernel(tx: SyncSender<gui::ToUi>) {
+/// status board (`kernel_log`); without `/dev/kmsg`, what the system log's
+/// follower feeds them from.
+fn follow_kernel(tx: SyncSender<gui::ToUi>) -> Option<kernel_log::FromJournal> {
     let lines = tx.clone();
     kernel_log::follow(
         move |l| {
@@ -4003,11 +4004,13 @@ fn follow_kernel(tx: SyncSender<gui::ToUi>) {
             let _ = lines.try_send(gui::ToUi::Line(l));
         },
         move |r| tx.send(gui::ToUi::Problem(r)).is_ok(),
-    );
+    )
 }
 
-/// The system log, followed (`journalctl -f`, read-only) into the Console page.
-fn follow_journal(tx: SyncSender<gui::ToUi>) {
+/// The system log, followed (`journalctl -f`, read-only) into the Console page,
+/// and, when `/dev/kmsg` couldn't be read, its kernel lines to the status
+/// board's kernel watch.
+fn follow_journal(tx: SyncSender<gui::ToUi>, kernel: Option<kernel_log::FromJournal>) {
     let spawned = thread::Builder::new()
         .name("mpfree-journal".into())
         .spawn(move || {
@@ -4040,6 +4043,9 @@ fn follow_journal(tx: SyncSender<gui::ToUi>) {
             };
             for line in io::BufRead::lines(io::BufReader::new(stdout)) {
                 let Ok(l) = line else { break };
+                if let Some(k) = &kernel {
+                    k.line(&l);
+                }
                 if let Err(std::sync::mpsc::TrySendError::Disconnected(_)) =
                     tx.try_send(gui::ToUi::Console(l))
                 {
