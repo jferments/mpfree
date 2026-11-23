@@ -7101,7 +7101,7 @@ impl TimePage {
         let kept = blocks.is_some();
         let mut lanes = song_lanes_with(st, self.first_bar, self.bars_shown(), blocks);
         lanes.show_button = self.set_open;
-        lanes.adding = adding;
+        lanes.adding = self.adding;
         let (same, same_waves, only_playhead) =
             ui.get::<SongLanes>(SONG).map_or((true, true, false), |l| {
                 let waves = crate::song::same_waves(&l.waves, &st.waves);
