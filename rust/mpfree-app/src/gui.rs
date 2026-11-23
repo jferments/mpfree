@@ -22372,28 +22372,43 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     }
     // Continue open on a two-bar riff (composing tools, phase 1 step 2):
     // its second try plays, the new bars faint after yours with their jobs
-    // and chords, the drawer Continue's settings and the tries.
-    match mpfree_time_ui::sample::notes_continue_state() {
-        Ok(state) => {
-            let mut p = quiet_player(fonts());
-            p.apply(ToUi::Time(Box::new(state)));
-            p.apply(ToUi::Show(View::Sequencer));
-            p.time_page.edit_drawer = true;
-            p.time_page.update(&mut p.ui, &p.time);
-            // The whole clip across and every note in sight: the riff's
-            // and the new ones.
-            let r = p.ui.rect_of(time_view::NOTES);
-            if let (Some(r), Some(g)) = (r, p.ui.get_mut::<NoteGrid>(time_view::NOTES)) {
-                let roll = g.roll_rect(r);
-                let lo = g.notes.iter().map(|n| n.note).min().unwrap_or(48);
-                let hi = g.notes.iter().map(|n| n.note).max().unwrap_or(59);
-                g.view = g.view.fit(roll, g.length, 128, (0, g.length), (lo, hi));
+    // and chords, the drawer Continue's settings and the tries. Step 3's
+    // screen: bar 4 locked and bar 6 picked and tried again.
+    let continues = [
+        (
+            "sequencer-notes-continue",
+            mpfree_time_ui::sample::notes_continue_state(),
+        ),
+        (
+            "sequencer-notes-continue-picks",
+            mpfree_time_ui::sample::notes_continue_picks_state(),
+        ),
+    ];
+    for (name, made) in continues {
+        let state = match made {
+            Ok(state) => state,
+            Err(e) => {
+                eprintln!("{name} sample: {e}");
+                continue;
             }
-            p.refresh_qlinks();
-            p.refresh_hint();
-            out.push(("sequencer-notes-continue", p));
+        };
+        let mut p = quiet_player(fonts());
+        p.apply(ToUi::Time(Box::new(state)));
+        p.apply(ToUi::Show(View::Sequencer));
+        p.time_page.edit_drawer = true;
+        p.time_page.update(&mut p.ui, &p.time);
+        // The whole clip across and every note in sight: the riff's
+        // and the new ones.
+        let r = p.ui.rect_of(time_view::NOTES);
+        if let (Some(r), Some(g)) = (r, p.ui.get_mut::<NoteGrid>(time_view::NOTES)) {
+            let roll = g.roll_rect(r);
+            let lo = g.notes.iter().map(|n| n.note).min().unwrap_or(48);
+            let hi = g.notes.iter().map(|n| n.note).max().unwrap_or(59);
+            g.view = g.view.fit(roll, g.length, 128, (0, g.length), (lo, hi));
         }
-        Err(e) => eprintln!("sequencer-notes-continue sample: {e}"),
+        p.refresh_qlinks();
+        p.refresh_hint();
+        out.push((name, p));
     }
     // The Pressure lane (piano roll plan 3A.1) under the two notes that
     // carry pressure, picked: their swells as lines.

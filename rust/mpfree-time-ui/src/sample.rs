@@ -1623,9 +1623,22 @@ pub fn riff_clip() -> Clip {
 /// shows the new bars faintly after yours, each bar's job on the ruler and
 /// the chords under it, the drawer Continue's settings and the tries.
 pub fn notes_continue_state() -> Result<TimeState, String> {
-    use crate::continuing::{Continuing, Try};
-    use crate::editor::{compose, NoteTool, ToolKind};
-    use mpfree_compose::request::{continue_clip, OnClip};
+    continue_sample(false)
+}
+
+/// [`notes_continue_state`] a step on (phase 1 step 3): bar 4 locked, bar
+/// 6 picked and tried again, so the third try ("bar 6 again") plays; the
+/// ruler marks both, the drawer's button unlocks or locks bar 6 and the
+/// tool bar's button tries it again.
+pub fn notes_continue_picks_state() -> Result<TimeState, String> {
+    continue_sample(true)
+}
+
+fn continue_sample(picks: bool) -> Result<TimeState, String> {
+    use crate::continuing::{Again, Continuing, Try};
+    use crate::editor::compose::{self, Picks};
+    use crate::editor::{NoteTool, ToolKind};
+    use mpfree_compose::request::{continue_clip, continue_clip_how, Making, OnClip};
     use mpfree_compose::{InstrumentKind, State};
     use mpfree_context::{PartRole, ReadBudget};
     let mut s = playing()?;
@@ -1648,8 +1661,31 @@ pub fn notes_continue_state() -> Result<TimeState, String> {
         bpm: BPM,
         budget: ReadBudget::default(),
     };
-    let (proposal, made) =
+    let (mut proposal, mut made) =
         continue_clip(&on, &settings, InstrumentKind::OneNote).map_err(|r| r.words())?;
+    let mut tries = vec![
+        Try {
+            style: settings.style.name,
+            bars: settings.bars,
+            again: None,
+        };
+        2
+    ];
+    if picks {
+        let how = Making::Bars {
+            before: std::sync::Arc::new(made),
+            bars: vec![5],
+            attempt: 1,
+        };
+        (proposal, made) = continue_clip_how(&on, &settings, InstrumentKind::OneNote, &how)
+            .0
+            .map_err(|r| r.words())?;
+        tries.push(Try {
+            again: Some(Again::Bar(5)),
+            ..tries[0]
+        });
+    }
+    let position = Some((tries.len(), tries.len()));
     let mut heard = riff.clone();
     heard.apply(&proposal.edit).map_err(|e| format!("{e:?}"))?;
     let mut state = s.state();
@@ -1661,24 +1697,25 @@ pub fn notes_continue_state() -> Result<TimeState, String> {
         made: Some(std::sync::Arc::new(made)),
         clip: Some(std::sync::Arc::new(heard)),
         new_from,
-        position: Some((2, 2)),
+        position,
         heard: true,
         line: None,
         words: None,
         settings,
-        tries: vec![
-            Try {
-                style: settings.style.name,
-                bars: settings.bars,
-            };
-            2
-        ],
+        tries,
     }));
     let mut editor = crate::editor::Editor::new(CHORDS, 1, &riff);
     let mut tool = NoteTool::new(ToolKind::Continue);
     tool.q = set.q;
     editor.open_tool = Some(tool);
     editor.row = crate::editor::CONTINUE_ROW;
+    if picks {
+        editor.continue_picks = Picks {
+            bars: vec![5],
+            notes: Vec::new(),
+            locked: vec![3],
+        };
+    }
     state.edit = Some(Box::new(crate::view::EditInfo {
         editor,
         clip: riff.into(),

@@ -33,7 +33,7 @@ use crate::continuing::{ContinueAction, Continuing};
 use crate::editor::zoom::RollView;
 use crate::editor::{
     box_of, chord_name, drop_of, edit_rows, knob_name, length_name, lit_scale, pads, position_name,
-    sound_name, step_name, ChordShape, EditAction, Editor, Fold, GhostLayer, Hearing, LaneShow, Lens, LockMark, LockSetting, NoteBox, NoteGrid, NoteTool, ShowOffer, Tool, ToolAct, ToolBar, ToolKind, ADD, CHORD_MAJOR, CHORD_MENU, CHORD_MINOR, CLIP_END, EDIT_BUTTON, ERASE_SWEEP, FIELDS, GHOST_MOST, GHOST_TAP, HELD_FINE, HELD_FIRST, HELD_TURN, LOCK_LANES, MENU, PADS_WRITE, PEN, PRESSURE_END, PRESSURE_LANE, ROOT_MENU, SCALE_MENU, SHOW_MENU, SHOW_NONE, SNAP_AUTO_T, START_HANDLE, STEP_FALLBACK, TOOL_BUTTONS, TOOL_CANCEL, TOOL_DONE, TOOL_OPTION, ChordMark,
+    sound_name, step_name, ChordShape, EditAction, Editor, Fold, GhostLayer, Hearing, LaneShow, Lens, LockMark, LockSetting, NoteBox, NoteGrid, NoteTool, ShowOffer, Tool, ToolAct, ToolBar, ToolKind, ADD, CHORD_MAJOR, CHORD_MENU, CHORD_MINOR, CLIP_END, EDIT_BUTTON, ERASE_SWEEP, FIELDS, GHOST_MOST, GHOST_TAP, HELD_FINE, HELD_FIRST, HELD_TURN, LOCK_LANES, MENU, PADS_WRITE, PEN, PRESSURE_END, PRESSURE_LANE, ROOT_MENU, SCALE_MENU, SHOW_MENU, SHOW_NONE, SNAP_AUTO_T, START_HANDLE, STEP_FALLBACK, TOOL_BUTTONS, TOOL_CANCEL, TOOL_DONE, TOOL_OPTION, ChordMark, CONTINUE_BAR, CONTINUE_NOTE,
 };
 use crate::list::{
     ListRow, SongListView, LIST_ADD, LIST_CLIPS, LIST_LINK, LIST_LINK_CLOSE, LIST_LINK_FROM_LIST,
@@ -371,7 +371,7 @@ pub fn tool_hint(t: &NoteTool) -> String {
     let own = match t.kind {
         ToolKind::Chop => "   ·   Reset pressure: pieces without it",
         ToolKind::Humanize => "   ·   Again: another try",
-        ToolKind::Continue => "   ·   Try again: another",
+        ToolKind::Continue => "   ·   Tap new bars or notes to pick them",
         _ => "",
     };
     format!(
@@ -2491,6 +2491,13 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                 EventKind::Tab(PADS_WRITE) => EditAction::PadsWrite,
                 // The Show menu and another clip's faint note (plan 4.1).
                 EventKind::Tab(SHOW_NONE) => EditAction::ShowNone,
+                // Continue's picks (composing tools, phase 1 step 3).
+                EventKind::Tab(k) if k >= CONTINUE_NOTE => {
+                    EditAction::ContinueNote(Tick::try_from(k - CONTINUE_NOTE).ok()?)
+                }
+                EventKind::Tab(k) if k >= CONTINUE_BAR => {
+                    EditAction::ContinueBar(u16::try_from(k - CONTINUE_BAR).ok()?)
+                }
                 EventKind::Tab(k) if k >= GHOST_TAP => {
                     let g = st.edit.as_ref()?.ghosts.get(k - GHOST_TAP)?;
                     EditAction::Switch {
@@ -2668,8 +2675,14 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
         // (layout spec 4n): Done closes it, UNDO takes the conversion back.
         (SONG | SONG_LIST, EventKind::Toggle(REPORT_DONE)) => Some(TimeAction::CloseReport),
         (SONG | SONG_LIST, EventKind::Toggle(REPORT_UNDO)) => Some(TimeAction::Undo),
-        // The drawer's Correct: Timing Correct, as TC.
-        (EDIT_OPTIONS, EventKind::Toggle(0)) => Some(TimeAction::Edit(EditAction::Correct)),
+        // The drawer's Correct: Timing Correct, as TC; while Continue is
+        // open, its Lock (step 3).
+        (EDIT_OPTIONS, EventKind::Toggle(0)) => Some(TimeAction::Edit(
+            match st.edit.as_ref().is_some_and(|e| e.editor.continuing_open()) {
+                true => EditAction::ContinueLock,
+                false => EditAction::Correct,
+            },
+        )),
         // The tempo lane: a tap adds a point, a tap on one picks it (again:
         // lets go), a drag moves it.
         (
@@ -6026,7 +6039,10 @@ pub fn try_list(st: &TimeState) -> (Vec<TakeItem>, Option<usize>, Option<String>
         .rev()
         .map(|(k, t)| TakeItem {
             title: format!("Try {} · {}", k + 1, t.style),
-            detail: format!("+{} bar{}", t.bars, if t.bars == 1 { "" } else { "s" }),
+            detail: match t.again {
+                Some(a) => a.short(),
+                None => format!("+{} bar{}", t.bars, if t.bars == 1 { "" } else { "s" }),
+            },
             color: None,
             undone: false,
         })
@@ -6399,6 +6415,14 @@ pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
     if let Some(k) = cont {
         let made = k.clip.as_ref().and(k.made.as_deref());
         g.new_from = made.map(|_| k.new_from);
+        // Picks and locks (step 3): the new notes picked outlined, the
+        // bars picked and locked marked.
+        let picks = &ed.continue_picks;
+        for n in &mut g.notes {
+            n.selected = n.tick >= k.new_from && picks.notes.contains(&n.tick);
+        }
+        g.picked_bars = picks.bars.clone();
+        g.locked_bars = picks.locked.clone();
         let bar = e.bar.max(1);
         g.bar_jobs = made.map_or_else(Vec::new, |m| {
             m.plan
@@ -6433,7 +6457,11 @@ pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
                     .map_or_else(String::new, |f| f.to_uppercase().chain(c).collect())
             }
         },
-        option: t.option(),
+        // Continue's Try again says what it works on (step 3).
+        option: match t.kind {
+            ToolKind::Continue => Some((ed.continue_picks.try_label(), false)),
+            _ => t.option().map(|(w, lit)| (w.to_string(), lit)),
+        },
     });
     g
 }
@@ -7303,9 +7331,13 @@ impl TimePage {
                 }
                 let rows = edit_rows(&e.editor, &e.clip);
                 let picked = e.editor.sel.iter().any(|&i| i < e.clip.notes.len());
-                // Continue open: its settings, and no Correct.
+                // Continue open: its settings, and Lock in Correct's
+                // place (step 3).
                 let buttons = match e.editor.continuing_open() {
-                    true => Vec::new(),
+                    true => vec![OptionButton::new(
+                        &e.editor.continue_picks.lock_label(),
+                        true,
+                    )],
                     false => vec![OptionButton::new(
                         if picked {
                             "Correct picked"
@@ -7522,7 +7554,7 @@ mod tests {
         let g = note_grid(e, &st);
         let bar = g.tool_bar.clone().unwrap();
         assert_eq!(bar.name, "Chop");
-        assert_eq!(bar.option, Some(("Reset pressure", false)));
+        assert_eq!(bar.option, Some(("Reset pressure".to_string(), false)));
         assert_eq!(bar.hint, "Turn the Q-Links: the roll shows the result");
         assert_eq!(g.notes.len(), e.clip.notes.len() + 6, "two notes in four");
         assert_eq!(g.notes.iter().filter(|n| n.selected).count(), 8);
@@ -7593,7 +7625,7 @@ mod tests {
         assert_eq!(g.chords.last().map(|k| k.end), Some(6 * BAR));
         let bar = g.tool_bar.clone().unwrap();
         assert_eq!(bar.name, "Continue");
-        assert_eq!(bar.option, Some(("Try again", false)));
+        assert_eq!(bar.option, Some(("Try again".to_string(), false)));
         assert_eq!(
             bar.hint,
             "Try 2 of 2 plays in place of the clip: Done keeps it"
@@ -7602,7 +7634,9 @@ mod tests {
         assert_eq!(head, "Continue · +4 bars");
         let names: Vec<&str> = cards.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, ["Similarity", "Variation", "Activity", "Range"]);
-        assert!(tool_hint(&e.editor.open_tool.unwrap()).contains("Try again: another"));
+        assert!(
+            tool_hint(&e.editor.open_tool.unwrap()).contains("Tap new bars or notes to pick them")
+        );
         let rows = edit_rows(&e.editor, &e.clip);
         let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, crate::editor::compose::CONTINUE_ROWS);
@@ -7632,6 +7666,102 @@ mod tests {
         assert!(g.bar_jobs.is_empty() && g.chords.is_empty());
         assert_eq!(action(&tap(2), &closed), None);
         assert!(!continuing_open(&closed));
+    }
+
+    /// Continue's picks (phase 1 step 3): the ruler marks the picked and
+    /// the locked bars, a picked new note is outlined, Try again says
+    /// what it works on and the drawer's button is Lock; a tap on a new
+    /// bar or note picks it, and the drawer's button locks while
+    /// Continue is open (Timing Correct otherwise). The tries say which
+    /// was made of part of the one before.
+    #[test]
+    fn continue_picks_show_on_the_roll_and_name_try_again_and_lock() {
+        let st = crate::sample::notes_continue_picks_state().unwrap();
+        let e = st.edit.as_ref().unwrap();
+        let g = note_grid(e, &st);
+        assert_eq!(
+            (g.picked_bars.clone(), g.locked_bars.clone()),
+            (vec![5], vec![3])
+        );
+        assert!(
+            g.notes.iter().all(|n| !n.selected),
+            "bars picked, not notes"
+        );
+        let bar = g.tool_bar.clone().unwrap();
+        assert_eq!(bar.option, Some(("Try bar 6 again".to_string(), false)));
+        assert_eq!(e.editor.continue_picks.lock_label(), "Lock bar 6");
+        let (items, current, ..) = try_list(&st);
+        let titles: Vec<&str> = items.iter().map(|i| i.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            ["Try 3 · Minimal", "Try 2 · Minimal", "Try 1 · Minimal"]
+        );
+        assert_eq!(items[0].detail, "bar 6");
+        assert_eq!(items[1].detail, "+4 bars");
+        assert_eq!(current, Some(0));
+        // A new note picked: outlined, your note at the same place never.
+        let mut picked = st.clone();
+        let c = st.continuing.as_ref().unwrap();
+        let new = c
+            .clip
+            .as_ref()
+            .unwrap()
+            .notes
+            .iter()
+            .find(|n| n.tick >= c.new_from)
+            .unwrap()
+            .tick;
+        let own = e.clip.notes[0].tick;
+        let ed = &mut picked.edit.as_mut().unwrap().editor;
+        ed.continue_picks.bars.clear();
+        ed.continue_picks.notes = vec![new, own];
+        let g = note_grid(picked.edit.as_ref().unwrap(), &picked);
+        let lit: Vec<Tick> = g
+            .notes
+            .iter()
+            .filter(|n| n.selected)
+            .map(|n| n.tick)
+            .collect();
+        assert!(!lit.is_empty() && lit.iter().all(|&t| t == new), "{lit:?}");
+        assert_eq!(
+            g.tool_bar.unwrap().option,
+            Some(("Try 2 notes again".to_string(), false))
+        );
+        // The touches.
+        let ev = |widget: &str, kind| {
+            action(
+                &UiEvent {
+                    widget: widget.into(),
+                    kind,
+                },
+                &st,
+            )
+        };
+        let edit = |a| Some(TimeAction::Edit(a));
+        assert_eq!(
+            ev(NOTES, EventKind::Tab(CONTINUE_BAR + 4)),
+            edit(EditAction::ContinueBar(4))
+        );
+        assert_eq!(
+            ev(NOTES, EventKind::Tab(CONTINUE_NOTE + 9000)),
+            edit(EditAction::ContinueNote(9000))
+        );
+        assert_eq!(
+            ev(EDIT_OPTIONS, EventKind::Toggle(0)),
+            edit(EditAction::ContinueLock)
+        );
+        let mut closed = st.clone();
+        closed.edit.as_mut().unwrap().editor.open_tool = None;
+        assert_eq!(
+            action(
+                &UiEvent {
+                    widget: EDIT_OPTIONS.into(),
+                    kind: EventKind::Toggle(0)
+                },
+                &closed
+            ),
+            edit(EditAction::Correct)
+        );
     }
 
     /// The Chord menu (plan 2B.2): a shape keeps Major or Minor, they

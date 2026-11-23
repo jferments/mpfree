@@ -72,7 +72,8 @@ use std::cell::RefCell;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use compose::{Compose, ContinueSet};
+use crate::continuing::Scope;
+use compose::{Asking, Compose, ContinueSet, Picks};
 use gesture::Pinch;
 use zoom::RollView;
 
@@ -201,6 +202,12 @@ pub const SHOW_NONE: usize = 790;
 pub const GHOST_TAP: usize = 4000;
 /// The most notes of one other clip the roll places (plan 4.1).
 pub const GHOST_MOST: usize = 2048;
+/// While Continue is open (composing tools, phase 1 step 3): a tap on a
+/// new bar's place on the ruler is `Tab(CONTINUE_BAR + n)`, `n` from 0
+/// (the clip's first bar); a tap on a new note `Tab(CONTINUE_NOTE +
+/// tick)`, the tick it starts on.
+pub const CONTINUE_BAR: usize = 900_000;
+pub const CONTINUE_NOTE: usize = 1_000_000;
 pub const TOOL_CANCEL: usize = 0;
 pub const TOOL_OPTION: usize = 1;
 pub const TOOL_DONE: usize = 7;
@@ -536,6 +543,15 @@ pub enum EditAction {
     Chord { shape: ChordShape, minor: bool },
     /// The open tool's bar (plan 2B.3): Done, Cancel or its own button.
     Tool(ToolAct),
+    /// While Continue is open (composing tools, phase 1 step 3): a tap on
+    /// new bar `n` (from 0) on the ruler, which picks it or lets it go.
+    ContinueBar(u16),
+    /// While Continue is open: a tap on the new note starting at this
+    /// tick, which picks it or lets it go.
+    ContinueNote(Tick),
+    /// While Continue is open: the drawer's Lock, which locks the picked
+    /// bars (or unlocks them, when they all are).
+    ContinueLock,
     /// The Pads write switch (plan 1C.2): on, the pads write at the
     /// cursor; off, they play (and pick a clip of pad hits' notes).
     PadsWrite,
@@ -1095,6 +1111,9 @@ pub struct Editor {
     /// Continue's drawer settings and the Q-Links' (composing tools,
     /// phase 1 step 2), kept from one Continue to the next.
     pub continuing: ContinueSet,
+    /// What Try again works on while Continue is open, and the bars
+    /// locked (step 3): from Continue opening to its closing.
+    pub continue_picks: Picks,
 }
 
 /// The most other clips the roll shows behind the one edited (plan 4.1).
@@ -1304,6 +1323,7 @@ impl Editor {
             show: Vec::new(),
             held_turn: None,
             continuing: ContinueSet::default(),
+            continue_picks: Picks::default(),
         }
     }
 
@@ -2053,6 +2073,10 @@ impl Editor {
                 }
                 return Done::default();
             }
+            // Continue's picks with Continue not open: nothing.
+            EditAction::ContinueBar(_) | EditAction::ContinueNote(_) | EditAction::ContinueLock => {
+                return Done::default()
+            }
             EditAction::Tool(act) => {
                 let Some(mut tool) = self.open_tool else {
                     return Done::default();
@@ -2542,8 +2566,13 @@ impl Editor {
         let mut tool = NoteTool::new(ToolKind::Continue);
         tool.q = self.continuing.q;
         self.open_tool = Some(tool);
+        self.continue_picks = Picks::default();
         Done {
-            compose: Some(Compose::Ask(Box::new(self.continuing.settings(tool.q)))),
+            compose: Some(Compose::Ask(Box::new(Asking {
+                settings: self.continuing.settings(tool.q),
+                scope: Scope::All,
+                locked: Vec::new(),
+            }))),
             ..Done::default()
         }
     }
@@ -2555,13 +2584,17 @@ impl Editor {
     /// until the time engine has done it. None for a touch the other
     /// tools' rules take (the view moving; anything else waits).
     fn continue_touch(&mut self, mut tool: NoteTool, a: &EditAction) -> Option<Done> {
-        let ask = |ed: &Editor, line: String| Done {
+        // A setting changed: a new result, the locked bars kept.
+        let ask_in = |ed: &Editor, line: String, scope: Scope| Done {
             line,
-            compose: Some(Compose::Ask(Box::new(
-                ed.continuing.settings(ed.continuing.q),
-            ))),
+            compose: Some(Compose::Ask(Box::new(Asking {
+                settings: ed.continuing.settings(ed.continuing.q),
+                scope,
+                locked: ed.continue_picks.locked.clone(),
+            }))),
             ..Done::default()
         };
+        let ask = |ed: &Editor, line: String| ask_in(ed, line, Scope::All);
         let rows = compose::CONTINUE_ROWS.len();
         Some(match *a {
             EditAction::Row { row, delta } if row < rows => {
@@ -2585,7 +2618,19 @@ impl Editor {
                 self.continuing.q = tool.q;
                 ask(self, String::new())
             }
-            EditAction::Tool(ToolAct::Option) => ask(self, String::new()),
+            // Try again: on what is picked, or everything.
+            EditAction::Tool(ToolAct::Option) => {
+                if self.continue_picks.only_locked() {
+                    return Some(Done::line(
+                        "continue: the picked bars are locked: Unlock them to try them again"
+                            .into(),
+                    ));
+                }
+                ask_in(self, String::new(), self.continue_picks.scope())
+            }
+            EditAction::ContinueBar(b) => Done::line(self.continue_picks.bar(b)),
+            EditAction::ContinueNote(t) => Done::line(self.continue_picks.note(t)),
+            EditAction::ContinueLock => Done::line(self.continue_picks.lock()),
             EditAction::Tool(ToolAct::Done) => Done {
                 compose: Some(Compose::Keep),
                 ..Done::default()
@@ -3706,7 +3751,7 @@ pub struct ToolBar {
     pub hint: String,
     /// The tool's own button's words and whether it is lit (Chop's Reset
     /// pressure, Humanize's Again).
-    pub option: Option<(&'static str, bool)>,
+    pub option: Option<(String, bool)>,
 }
 
 /// A chord under the roll while Continue is open (composing tools, phase
@@ -3828,6 +3873,11 @@ pub struct NoteGrid {
     pub new_from: Option<Tick>,
     pub bar_jobs: Vec<(Tick, &'static str)>,
     pub chords: Vec<ChordMark>,
+    /// Continue's picks and locks (step 3), from 0 (the clip's first
+    /// bar): new bars picked are washed in the accent on the roll and lit
+    /// on the ruler; new bars locked say "locked" in place of their job.
+    pub picked_bars: Vec<u16>,
+    pub locked_bars: Vec<u16>,
     /// Pads write is on (the editor's, plan 1C.2): its chip is lit like
     /// REC.
     pub pads_write: bool,
@@ -3862,6 +3912,10 @@ pub struct NoteGrid {
     /// When and where empty roll was last tapped with Draw off, for a
     /// double tap (a note goes in).
     empty_tap: Option<(Instant, (i32, i32))>,
+    /// A finger down on a new note while Continue is open: (finger, the
+    /// tick the note starts on, where it went down). It lifting close by
+    /// picks the note.
+    continue_tap: Option<(u64, Tick, (i32, i32))>,
     kept: Kept,
 }
 
@@ -4137,6 +4191,8 @@ impl Default for NoteGrid {
             new_from: None,
             bar_jobs: Vec::new(),
             chords: Vec::new(),
+            picked_bars: Vec::new(),
+            locked_bars: Vec::new(),
             pads_write: false,
             hearing: Hearing::On,
             ghosts: Vec::new(),
@@ -4152,6 +4208,7 @@ impl Default for NoteGrid {
             hand: Hand::Idle,
             overview_tap: None,
             empty_tap: None,
+            continue_tap: None,
             kept: Kept::default(),
         }
     }
@@ -4239,6 +4296,7 @@ impl NoteGrid {
             && self.tool_bar == other.tool_bar
             && (self.new_from, &self.bar_jobs, &self.chords)
                 == (other.new_from, &other.bar_jobs, &other.chords)
+            && (&self.picked_bars, &self.locked_bars) == (&other.picked_bars, &other.locked_bars)
             && (self.pads_write, self.hearing) == (other.pads_write, other.hearing)
             && self.ghosts == other.ghosts
             && self.show_offers == other.show_offers
@@ -4412,6 +4470,7 @@ impl NoteGrid {
         };
         swept.dedup();
         let (overview_tap, empty_tap, menu) = (self.overview_tap, self.empty_tap, self.menu);
+        let continue_tap = self.continue_tap;
         let (fine, erase) = (self.fine, self.erase);
         let (turning, holds) = (self.turning, self.holds);
         let (scale_menu, chord_menu) = (self.scale_menu, self.chord_menu);
@@ -4431,6 +4490,7 @@ impl NoteGrid {
             hand,
             overview_tap,
             empty_tap,
+            continue_tap,
             menu,
             scale_menu,
             chord_menu,
@@ -4633,6 +4693,19 @@ impl NoteGrid {
     /// The x of clip tick `t` on the roll.
     fn x_of(&self, g: &Geo, t: Tick) -> i32 {
         g.v.x_of(g.roll, t)
+    }
+
+    /// While Continue is open (step 3): the new bar at `x` on the ruler
+    /// (from 0, the clip's first bar), if a new bar is there.
+    fn continue_bar_at(&self, g: &Geo, x: i32) -> Option<u16> {
+        let from = self.new_from?;
+        self.tool_bar.as_ref()?;
+        let bar = self.bar.max(1);
+        let t = g.v.tick_at(g.roll, x);
+        let b = t.div_euclid(bar);
+        (b * bar >= from && t < self.length && t >= 0)
+            .then(|| u16::try_from(b).ok())
+            .flatten()
     }
 
     /// The note of the row at `y`, if it is on the roll.
@@ -5038,7 +5111,7 @@ impl NoteGrid {
         let option = self
             .tool_bar
             .as_ref()
-            .and_then(|t| t.option)
+            .and_then(|t| t.option.as_ref())
             .map(|_| span(b[1], b[2]));
         let hint = match option {
             Some(_) => span(b[3], b[6]),
@@ -5052,7 +5125,7 @@ impl NoteGrid {
         if let Some(t) = &self.tool_bar {
             return match k {
                 TOOL_CANCEL => "Cancel".into(),
-                TOOL_OPTION => t.option.map_or("", |o| o.0).into(),
+                TOOL_OPTION => t.option.as_ref().map_or("", |o| o.0.as_str()).into(),
                 TOOL_DONE => "Done".into(),
                 _ => String::new(),
             };
@@ -5363,6 +5436,7 @@ impl NoteGrid {
         // The ruler: bar numbers as close as fit (every bar, or every 2nd,
         // 4th ...), and beats too once a beat is wide enough.
         cx.canvas.set_clip(was.intersect(g.ruler));
+        self.paint_picked_bars(cx, g, (from, to));
         let bar = self.bar.max(1);
         let mut every = 1;
         while px(bar * every) < 36.0 && every < 1 << 12 {
@@ -5433,6 +5507,10 @@ impl NoteGrid {
                 cx.canvas.fill_round_rect(nr, 3, t.bg.mix(self.color, 0.30));
                 cx.canvas
                     .stroke_round_rect(nr, 3, 1, t.bg.mix(self.color, 0.60));
+                // Picked for Try again (step 3): outlined as picks are.
+                if n.selected {
+                    cx.canvas.stroke_round_rect(nr, 3, 2, top);
+                }
                 continue;
             }
             let fill = shade(n.velocity);
@@ -5654,6 +5732,34 @@ impl NoteGrid {
     /// Continue's bar jobs on the ruler (composing tools, phase 1 step
     /// 2): after each new bar's number while a bar is wide enough, in the
     /// track's colour; and a line down the roll where the new bars start.
+    /// Picked new bars while Continue is open (step 3): lit on the ruler
+    /// and washed on the roll, under the ruler's numbers and the notes.
+    fn paint_picked_bars(&self, cx: &mut PaintCx, g: &Geo, (from, to): (Tick, Tick)) {
+        let Some(new_from) = self.new_from else {
+            return;
+        };
+        let t = cx.theme.clone();
+        let bar = self.bar.max(1);
+        for &b in &self.picked_bars {
+            let (a, e) = (Tick::from(b) * bar, (Tick::from(b) + 1) * bar);
+            if e < from || a > to || a < new_from {
+                continue;
+            }
+            let (x0, x1) = (self.x_of(g, a), self.x_of(g, e));
+            let was = cx.canvas.clip();
+            cx.canvas.set_clip(was.union(g.roll));
+            cx.canvas.fill_rect(
+                Rect::new(x0 + 1, g.ruler.y + 2, x1 - x0 - 2, g.ruler.h - 4),
+                t.bg.mix(t.accent, 0.35),
+            );
+            cx.canvas.fill_rect(
+                Rect::new(x0, g.roll.y, x1 - x0, g.roll.h),
+                t.accent.with_alpha(26),
+            );
+            cx.canvas.set_clip(was);
+        }
+    }
+
     fn paint_bar_jobs(&self, cx: &mut PaintCx, g: &Geo, (from, to): (Tick, Tick)) {
         let Some(new_from) = self.new_from else {
             return;
@@ -5661,20 +5767,40 @@ impl NoteGrid {
         let t = cx.theme.clone();
         let bar = self.bar.max(1);
         let ink = t.readable(t.bg.mix(self.color, 0.85), t.bg);
-        if (bar as f64 * g.v.ppt) >= 72.0 {
-            for &(at, job) in self.bar_jobs.iter().filter(|j| j.0 >= from && j.0 <= to) {
-                let x = self.x_of(g, at);
-                let number = format!("{}", at / bar + 1);
-                let skip = cx.measure(FontId::Sans, t.size_small - 2.0, &number) + 8;
-                cx.text(
-                    FontId::Sans,
-                    t.size_small - 2.0,
-                    Rect::new(x + 3 + skip, g.ruler.y, 120, g.ruler.h),
-                    Align::Left,
-                    ink,
-                    job,
-                );
+        let wide = (bar as f64 * g.v.ppt) >= 72.0;
+        for &(at, job) in self.bar_jobs.iter().filter(|j| j.0 >= from && j.0 <= to) {
+            let b = u16::try_from(at / bar).unwrap_or(u16::MAX);
+            let locked = self.locked_bars.contains(&b);
+            if !wide && !locked {
+                continue;
             }
+            let x = self.x_of(g, at);
+            let number = format!("{}", at / bar + 1);
+            let skip = cx.measure(FontId::Sans, t.size_small - 2.0, &number) + 8;
+            let lit = self.picked_bars.contains(&b);
+            let ink = match lit {
+                true => t.ink_on(t.bg.mix(t.accent, 0.35)),
+                false => ink,
+            };
+            // A locked bar: a small lock, then "locked", in place of its
+            // job.
+            let mut tx = x + 3 + skip;
+            if locked {
+                let cy = g.ruler.y + g.ruler.h / 2;
+                cx.canvas
+                    .stroke_round_rect(Rect::new(tx + 2, cy - 7, 6, 7), 3, 2, ink);
+                cx.canvas
+                    .fill_round_rect(Rect::new(tx, cy - 2, 10, 8), 2, ink);
+                tx += 14;
+            }
+            cx.text(
+                FontId::Sans,
+                t.size_small - 2.0,
+                Rect::new(tx, g.ruler.y, 120, g.ruler.h),
+                Align::Left,
+                ink,
+                if locked { "locked" } else { job },
+            );
         }
         if (from..=to).contains(&new_from) {
             let x = self.x_of(g, new_from);
@@ -6060,8 +6186,8 @@ impl NoteGrid {
             cx.text(FontId::Bold, t.size_small, br, Align::Center, ink, text);
         };
         button(cx, cancel, "Cancel", false);
-        if let (Some(o), Some((name, lit))) = (option, tb.option) {
-            button(cx, o, name, lit);
+        if let (Some(o), Some((name, lit))) = (option, &tb.option) {
+            button(cx, o, name, *lit);
         }
         button(cx, done, "Done", true);
         cx.text(
@@ -6900,7 +7026,7 @@ impl Widget for NoteGrid {
             Some(tb) => {
                 let (cancel, option, _, done) = self.tool_rects(r);
                 let mut v = vec![Target::tap("tool-cancel", 0, "Cancel", cancel)];
-                if let (Some(o), Some((name, _))) = (option, tb.option) {
+                if let (Some(o), Some((name, _))) = (option, &tb.option) {
                     v.push(Target::tap("tool-option", 0, name, o));
                 }
                 v.push(Target::tap("tool-done", 0, "Done", done));
@@ -7038,6 +7164,38 @@ impl Widget for NoteGrid {
         // label, and does something only folded (it opens them).
         if !g.chip.is_empty() && (self.chords.is_empty() || self.lane.folded) {
             out.push(Target::tap("lane-chip", 0, "lane", g.chip));
+        }
+        // Continue open (step 3): each new bar's place on the ruler, and
+        // each new note in sight, pick it.
+        if let (Some(from), true) = (self.new_from, tool) {
+            let bar = self.bar.max(1);
+            let (lo, hi) = (
+                g.v.tick_at(g.roll, g.roll.x),
+                g.v.tick_at(g.roll, g.roll.right()),
+            );
+            let mut b = from.div_euclid(bar);
+            while b * bar < self.length.min(hi) {
+                let (x0, x1) = (
+                    self.x_of(&g, (b * bar).max(lo)),
+                    self.x_of(&g, ((b + 1) * bar).min(hi)),
+                );
+                if x1 - x0 >= 8 {
+                    let r = Rect::new(x0, g.ruler.y, x1 - x0, g.ruler.h);
+                    out.push(Target::tap("continue-bar", b as usize, "new bar", r));
+                }
+                b += 1;
+            }
+            let shown = self.in_view(&g);
+            for (i, n) in self.notes.iter().enumerate() {
+                if n.tick < from || !shown.contains(&i) {
+                    continue;
+                }
+                if let Some(nr) = self.note_rect_in(&g, i).map(|r| r.intersect(g.roll)) {
+                    if nr.w > 0 && nr.h > 0 {
+                        out.push(Target::tap("continue-note", i, "new note", nr));
+                    }
+                }
+            }
         }
         // Another clip's faint notes (plan 4.1): with Draw off, the first
         // in sight of each, where no note of this clip covers it, opens it.
@@ -7315,6 +7473,7 @@ impl Widget for NoteGrid {
                         .any(|a| a.contains(x, y));
                 let first = self.finger_now();
                 self.drag = None;
+                self.continue_tap = None;
                 self.hand = match (first, on_roll) {
                     (Some((a, ax, ay)), true) => {
                         Hand::Pinch(Pinch::new((a, ax, ay), (f, x, y), g.v))
@@ -7536,6 +7695,11 @@ impl Widget for NoteGrid {
                             finger,
                             now: (x, y),
                         };
+                        if let Some((_, _, (ax, ay))) = self.continue_tap {
+                            if (x - ax).abs() > TAP_SLOP || (y - ay).abs() > TAP_SLOP {
+                                self.continue_tap = None;
+                            }
+                        }
                         return None;
                     }
                     // The lane's top edge follows the finger.
@@ -7620,9 +7784,15 @@ impl Widget for NoteGrid {
                         });
                         return Some(self.view_event());
                     }
-                    Hand::Spent { .. } => {
+                    Hand::Spent { finger, .. } => {
                         self.hand = Hand::Idle;
-                        return None;
+                        let tap = self.continue_tap.take();
+                        return match tap {
+                            Some((tf, tick, _)) if up && tf == finger => {
+                                Some(EventKind::Tab(CONTINUE_NOTE + tick.max(0) as usize))
+                            }
+                            _ => None,
+                        };
                     }
                     // The holding finger lifts: nothing more; a tapping
                     // finger lifts: its note joins the picks or leaves.
@@ -7744,6 +7914,13 @@ impl Widget for NoteGrid {
                         self.hand = Hand::Idle;
                         if !up {
                             return None;
+                        }
+                        // Continue open: a tap on a new bar picks it.
+                        if !moved && on == Strip::Ruler {
+                            if let Some(b) = self.continue_bar_at(&g, at.0) {
+                                self.view = from;
+                                return Some(EventKind::Tab(CONTINUE_BAR + usize::from(b)));
+                            }
                         }
                         if !moved && on == Strip::Overview {
                             self.overview_tapped(&g, at.0);
@@ -8477,6 +8654,12 @@ impl NoteGrid {
         // A tool open: a finger on the roll or the lane edits nothing, but
         // a second one joins it to move the view.
         if self.tool_bar.is_some() && (g.vel.contains(x, y) || g.roll.contains(x, y)) {
+            // Continue open: a tap on a new note picks it (step 3).
+            self.continue_tap = self.new_from.and_then(|from| {
+                let i = self.note_under(g, x, y)?;
+                let tick = self.notes.get(i)?.tick;
+                (tick >= from).then_some((f, tick, (x, y)))
+            });
             self.hand = Hand::Spent {
                 finger: f,
                 now: (x, y),
@@ -10009,6 +10192,63 @@ mod tests {
         assert_eq!(g.touch(5, Touch::Down, ruler.x + 10, ruler.y + 5, r), None);
         assert_eq!(g.touch(5, Touch::Up, ruler.x + 10, ruler.y + 5, r), None);
         assert_eq!(g.view_in(r), v);
+    }
+
+    /// Continue open (composing tools, phase 1 step 3): a tap on a new
+    /// bar on the ruler picks it, and a tap on a new note on the roll;
+    /// your own bars and notes, a drag, and a closed tool pick nothing.
+    #[test]
+    fn continue_open_a_tap_picks_a_new_bar_or_a_new_note() {
+        let (mut g, r) = long_grid();
+        g.new_from = Some(4 * 3840);
+        g.tool_bar = Some(ToolBar {
+            name: "Continue",
+            hint: String::new(),
+            option: Some(("Try again".to_string(), false)),
+        });
+        g.view = g.view_in(r);
+        g.view.start = 0;
+        g.view.ppt = f64::from(g.geo(r).roll.w) / g.length as f64;
+        let geo = g.geo(r);
+        let ruler = geo.ruler;
+        let y = ruler.y + 5;
+        let x5 = g.x_of(&geo, 4 * 3840 + 400);
+        // Bar 5, a new bar: picked.
+        assert_eq!(g.touch(1, Touch::Down, x5, y, r), None);
+        assert_eq!(
+            g.touch(1, Touch::Up, x5, y, r),
+            Some(EventKind::Tab(CONTINUE_BAR + 4))
+        );
+        // Bar 2 is yours: nothing.
+        let x2 = g.x_of(&geo, 3840 + 400);
+        g.touch(2, Touch::Down, x2, y, r);
+        assert_ne!(
+            g.touch(2, Touch::Up, x2, y, r),
+            Some(EventKind::Tab(CONTINUE_BAR + 1))
+        );
+        // The new note in bar 8: picked; your note in bar 2: nothing.
+        let nr = g.note_rect(r, 2).expect("the new note shows");
+        let (nx, ny) = (nr.x + nr.w / 2, nr.y + nr.h / 2);
+        assert_eq!(g.touch(3, Touch::Down, nx, ny, r), None);
+        assert_eq!(
+            g.touch(3, Touch::Up, nx, ny, r),
+            Some(EventKind::Tab(CONTINUE_NOTE + 7 * 3840))
+        );
+        let own = g.note_rect(r, 1).expect("your note shows");
+        let (ox, oy) = (own.x + own.w / 2, own.y + own.h / 2);
+        g.touch(4, Touch::Down, ox, oy, r);
+        assert_eq!(g.touch(4, Touch::Up, ox, oy, r), None);
+        // Moved past a tap: nothing.
+        g.touch(5, Touch::Down, nx, ny, r);
+        g.touch(5, Touch::Move, nx, ny + 3 * TAP_SLOP, r);
+        assert_eq!(g.touch(5, Touch::Up, nx, ny + 3 * TAP_SLOP, r), None);
+        // The tool closed: the ruler moves nothing and picks nothing.
+        g.tool_bar = None;
+        g.touch(6, Touch::Down, x5, y, r);
+        assert_ne!(
+            g.touch(6, Touch::Up, x5, y, r),
+            Some(EventKind::Tab(CONTINUE_BAR + 4))
+        );
     }
 
     /// The overview: a tap jumps there, a drag moves the window, a double
@@ -12091,7 +12331,7 @@ mod chord_tests {
         let bar = ToolBar {
             name: "Chop",
             hint: "Turn the Q-Links: the roll shows the result".into(),
-            option: Some(("Reset pressure", false)),
+            option: Some(("Reset pressure".to_string(), false)),
         };
         g.show(NoteGrid {
             tool_bar: Some(bar.clone()),

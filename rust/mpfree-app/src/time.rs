@@ -16193,6 +16193,8 @@ mod tests {
             },
             kind: mpfree_compose::InstrumentKind::OneNote,
             lanes: mpfree_compose::Lanes::default(),
+            scope: mpfree_time_ui::continuing::Scope::All,
+            locked: Vec::new(),
         })))
     }
 
@@ -16508,6 +16510,108 @@ mod tests {
             h.act(ask(2)).unwrap_err(),
             "continue: slot 1 of track 3 is empty"
         );
+    }
+
+    /// Phase 1 step 3: Try again on picked bars or notes changes only
+    /// them (picked notes keep their places, lengths and velocity), and a
+    /// locked bar stays through a try on everything.
+    #[test]
+    fn continue_tries_picked_bars_and_notes_and_keeps_locked_bars() {
+        use mpfree_seq::Note;
+        use mpfree_time_ui::continuing::Again;
+        use mpfree_time_ui::editor::{EditAction as E, ToolAct, CONTINUE_ROW};
+        const BAR: Tick = 3840;
+        let mut h = riff_host();
+        let mut pads = Fake::default();
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        h.act(TimeAction::Edit(E::Row {
+            row: CONTINUE_ROW,
+            delta: 1,
+        }))
+        .unwrap();
+        until(&mut h, &mut pads, |h| {
+            continuing(h).is_some_and(|c| c.heard)
+        });
+        let heard = |h: &TimeHost| continuing(h).unwrap().clip.clone().unwrap();
+        let in_bar = |c: &Clip, b: Tick| -> Vec<Note> {
+            c.notes
+                .iter()
+                .copied()
+                .filter(|n| (b * BAR - 60..(b + 1) * BAR - 60).contains(&n.tick))
+                .collect()
+        };
+        let outside = |c: &Clip, b: Tick| -> Vec<Note> {
+            c.notes
+                .iter()
+                .copied()
+                .filter(|n| !(b * BAR - 60..(b + 1) * BAR - 60).contains(&n.tick))
+                .collect()
+        };
+        let one = heard(&h);
+        // Bar 3 picked on the ruler, then Try again: only bar 3 moves.
+        assert_eq!(
+            h.act(TimeAction::Edit(E::ContinueBar(2))).unwrap(),
+            "continue: bar 3 picked: Try again remakes it alone"
+        );
+        assert_eq!(
+            h.act(TimeAction::Edit(E::Tool(ToolAct::Option))).unwrap(),
+            "continue: trying bar 3 again (the rest stays as it is)"
+        );
+        until(&mut h, &mut pads, |h| {
+            continuing(h).is_some_and(|c| c.position == Some((2, 2)) && c.line.is_none())
+        });
+        let two = heard(&h);
+        assert_eq!(outside(&two, 2), outside(&one, 2));
+        assert_eq!(continuing(&h).unwrap().tries[1].again, Some(Again::Bar(2)));
+        // Locked, then Try again on everything: bar 3 stays.
+        assert_eq!(
+            h.act(TimeAction::Edit(E::ContinueLock)).unwrap(),
+            "continue: bar 3 locked: it stays through every try"
+        );
+        let picks = h.state().edit.unwrap().editor.continue_picks.clone();
+        assert_eq!((picks.bars, picks.locked), (vec![], vec![2]));
+        h.act(TimeAction::Edit(E::Tool(ToolAct::Option))).unwrap();
+        until(&mut h, &mut pads, |h| {
+            continuing(h).is_some_and(|c| c.position == Some((3, 3)) && c.line.is_none())
+        });
+        let three = heard(&h);
+        assert_eq!(in_bar(&three, 2), in_bar(&two, 2));
+        assert_eq!(continuing(&h).unwrap().tries[2].again, None);
+        // A new note picked on the roll, then Try again: only it may move,
+        // in its place.
+        let pick = in_bar(&three, 3)[0];
+        assert_eq!(
+            h.act(TimeAction::Edit(E::ContinueNote(pick.tick))).unwrap(),
+            "continue: 1 note picked: Try again gives it another"
+        );
+        h.act(TimeAction::Edit(E::Tool(ToolAct::Option))).unwrap();
+        until(&mut h, &mut pads, |h| {
+            continuing(h).is_some_and(|c| c.position == Some((4, 4)) && c.line.is_none())
+        });
+        let four = heard(&h);
+        let others = |c: &Clip| -> Vec<Note> {
+            c.notes
+                .iter()
+                .copied()
+                .filter(|n| n.tick != pick.tick)
+                .collect()
+        };
+        assert_eq!(others(&four), others(&three));
+        let moved = four.notes.iter().find(|n| n.tick == pick.tick).unwrap();
+        assert_eq!((moved.len, moved.velocity), (pick.len, pick.velocity));
+        assert_eq!(
+            continuing(&h).unwrap().tries[3].again,
+            Some(Again::Notes(1))
+        );
+        // Only locked bars picked: nothing to try.
+        h.act(TimeAction::Edit(E::ContinueBar(2))).unwrap();
+        assert_eq!(
+            h.act(TimeAction::Edit(E::Tool(ToolAct::Option))).unwrap(),
+            "continue: the picked bars are locked: Unlock them to try them again"
+        );
+        // Done keeps the try heard; the picks go with the tool.
+        h.act(TimeAction::Edit(E::Tool(ToolAct::Done))).unwrap();
+        assert_eq!(h.project().clip(0, 0).unwrap().notes, four.notes);
     }
 
     /// Phase 1 step 2: Continue from the note editor. The kind of

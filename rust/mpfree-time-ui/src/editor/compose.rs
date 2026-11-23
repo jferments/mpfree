@@ -10,10 +10,18 @@
 //! tries (‹ ›). Every change asks again, the last result playing on
 //! until the next is ready; Try again asks with the same settings; Done
 //! keeps the result as one take, Cancel goes back to the clip as it was.
+//!
+//! Step 3 adds [`Picks`]: new bars picked on the ruler or new notes picked
+//! on the roll make Try again work on them alone, and new bars locked stay
+//! through every try.
+//!
 //! The design is docs/dev/design/compose.md.
 
 use mpfree_compose::{Ending, Keeps, RangeSetting, Settings, STYLES};
+use mpfree_transport::time::Tick;
 use mpfree_ui::widgets::OptionRow;
+
+use crate::continuing::Scope;
 
 /// The drawer's rows while Continue is open, top to bottom: the style,
 /// the bars it adds, how the last bar closes, then what stays exactly as
@@ -87,13 +95,155 @@ pub fn opening_q() -> [i32; 4] {
 /// [`super::Done::compose`]).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Compose {
-    /// A new result with these settings: Continue opening, a setting
-    /// changed, or Try again. The time engine picks the seed.
-    Ask(Box<Settings>),
+    /// A result with these settings: Continue opening, a setting changed,
+    /// or Try again (on everything, or on what is picked). The time engine
+    /// picks the seed.
+    Ask(Box<Asking>),
     /// Done: the result shown, as one take.
     Keep,
     /// Cancel: the clip as it was.
     Back,
+}
+
+/// An ask from the note editor's Continue.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Asking {
+    pub settings: Settings,
+    pub scope: Scope,
+    /// The new bars locked (from 0).
+    pub locked: Vec<u16>,
+}
+
+/// What Try again works on while Continue is open, and the new bars
+/// locked: the editor's own, from when Continue opens until it closes
+/// (phase 1 step 3). Bars or notes are picked, never both.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Picks {
+    /// New bars picked on the ruler (from 0, the clip's first bar), in
+    /// the order picked.
+    pub bars: Vec<u16>,
+    /// New notes picked on the roll: where each starts, in the clip's
+    /// ticks.
+    pub notes: Vec<Tick>,
+    /// New bars locked: they stay exactly as they are through every try.
+    pub locked: Vec<u16>,
+}
+
+impl Picks {
+    /// A tap on new bar `b` on the ruler: picked, or let go. The line.
+    pub fn bar(&mut self, b: u16) -> String {
+        self.notes.clear();
+        if let Some(i) = self.bars.iter().position(|&x| x == b) {
+            self.bars.remove(i);
+            return format!("continue: bar {} let go", b + 1);
+        }
+        self.bars.push(b);
+        if self.locked.contains(&b) {
+            format!(
+                "continue: bar {} picked: it's locked, Unlock lets it change",
+                b + 1
+            )
+        } else {
+            format!("continue: bar {} picked: Try again remakes it alone", b + 1)
+        }
+    }
+
+    /// A tap on a new note starting at `t`: picked, or let go. The line.
+    pub fn note(&mut self, t: Tick) -> String {
+        self.bars.clear();
+        match self.notes.iter().position(|&x| x == t) {
+            Some(i) => {
+                self.notes.remove(i);
+            }
+            None => self.notes.push(t),
+        }
+        match self.notes.len() {
+            0 => "continue: no notes picked".to_string(),
+            1 => "continue: 1 note picked: Try again gives it another".to_string(),
+            n => format!("continue: {n} notes picked: Try again gives them others"),
+        }
+    }
+
+    /// Lock, on the drawer: the picked bars locked, or unlocked when they
+    /// all are; the picks let go. The line.
+    pub fn lock(&mut self) -> String {
+        if self.bars.is_empty() {
+            return "continue: pick new bars on the ruler to lock them".to_string();
+        }
+        let unlock = self.bars.iter().all(|b| self.locked.contains(b));
+        let which = bars_named(&self.bars);
+        for b in std::mem::take(&mut self.bars) {
+            match unlock {
+                true => self.locked.retain(|&x| x != b),
+                false if !self.locked.contains(&b) => self.locked.push(b),
+                false => {}
+            }
+        }
+        self.locked.sort_unstable();
+        match unlock {
+            true => format!("continue: {which} unlocked"),
+            false => format!("continue: {which} locked: it stays through every try"),
+        }
+    }
+
+    /// What Try again works on: the picked bars that aren't locked, the
+    /// picked notes, or everything.
+    pub fn scope(&self) -> Scope {
+        let mut bars: Vec<u16> = self
+            .bars
+            .iter()
+            .copied()
+            .filter(|b| !self.locked.contains(b))
+            .collect();
+        bars.sort_unstable();
+        if !bars.is_empty() {
+            Scope::Bars(bars)
+        } else if !self.notes.is_empty() {
+            let mut notes = self.notes.clone();
+            notes.sort_unstable();
+            Scope::Notes(notes)
+        } else {
+            Scope::All
+        }
+    }
+
+    /// Only locked bars are picked: Try again has nothing it may change.
+    pub fn only_locked(&self) -> bool {
+        !self.bars.is_empty() && self.bars.iter().all(|b| self.locked.contains(b))
+    }
+
+    /// The tool bar's Try again, saying what it works on.
+    pub fn try_label(&self) -> String {
+        match self.scope() {
+            Scope::All => "Try again".to_string(),
+            Scope::Bars(b) if b.len() == 1 => format!("Try bar {} again", b[0] + 1),
+            Scope::Bars(b) => format!("Try {} bars again", b.len()),
+            Scope::Notes(n) if n.len() == 1 => "Try 1 note again".to_string(),
+            Scope::Notes(n) => format!("Try {} notes again", n.len()),
+        }
+    }
+
+    /// The drawer's lock button: "Lock bar 6", "Unlock bar 4", "Lock 2
+    /// bars", or "Lock picked bars" with none picked.
+    pub fn lock_label(&self) -> String {
+        if self.bars.is_empty() {
+            return "Lock picked bars".to_string();
+        }
+        let unlock = self.bars.iter().all(|b| self.locked.contains(b));
+        let which = bars_named(&self.bars);
+        match unlock {
+            true => format!("Unlock {which}"),
+            false => format!("Lock {which}"),
+        }
+    }
+}
+
+/// "bar 6", "2 bars".
+fn bars_named(bars: &[u16]) -> String {
+    match bars {
+        [b] => format!("bar {}", b + 1),
+        v => format!("{} bars", v.len()),
+    }
 }
 
 impl ContinueSet {
@@ -245,6 +395,7 @@ pub fn cards(q: [i32; 4]) -> [(&'static str, String); 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::continuing::Scope;
 
     #[test]
     fn the_settings_open_as_the_composers_own_and_go_back_whole() {
@@ -294,6 +445,72 @@ mod tests {
         assert_eq!(set.rows().len(), CONTINUE_ROWS.len());
     }
 
+    /// Bars and notes are picked one at a time, never both; Lock locks
+    /// the picked bars (or unlocks them when they all are) and lets them
+    /// go; Try again works on the picked bars that aren't locked, else
+    /// the picked notes, else everything, and its label says which.
+    #[test]
+    fn picks_say_what_try_again_works_on() {
+        let mut p = Picks::default();
+        assert_eq!((p.scope(), p.try_label()), (Scope::All, "Try again".into()));
+        assert_eq!(p.lock_label(), "Lock picked bars");
+        assert_eq!(
+            p.lock(),
+            "continue: pick new bars on the ruler to lock them"
+        );
+        assert_eq!(
+            p.bar(5),
+            "continue: bar 6 picked: Try again remakes it alone"
+        );
+        assert_eq!(p.try_label(), "Try bar 6 again");
+        assert_eq!(p.lock_label(), "Lock bar 6");
+        p.bar(4);
+        assert_eq!(p.scope(), Scope::Bars(vec![4, 5]));
+        assert_eq!(p.try_label(), "Try 2 bars again");
+        assert_eq!(p.bar(4), "continue: bar 5 let go");
+        // A note picked lets the bars go.
+        assert_eq!(
+            p.note(7680),
+            "continue: 1 note picked: Try again gives it another"
+        );
+        assert!(p.bars.is_empty());
+        assert_eq!(
+            p.note(7200),
+            "continue: 2 notes picked: Try again gives them others"
+        );
+        assert_eq!(p.scope(), Scope::Notes(vec![7200, 7680]));
+        assert_eq!(p.try_label(), "Try 2 notes again");
+        p.note(7200);
+        assert_eq!(p.try_label(), "Try 1 note again");
+        assert_eq!(p.note(7680), "continue: no notes picked");
+        // Locked: the picks go, and Try again leaves the bar alone.
+        p.bar(5);
+        assert_eq!(
+            p.lock(),
+            "continue: bar 6 locked: it stays through every try"
+        );
+        assert_eq!((p.bars.clone(), p.locked.clone()), (vec![], vec![5]));
+        assert_eq!(p.scope(), Scope::All);
+        assert_eq!(
+            p.bar(5),
+            "continue: bar 6 picked: it's locked, Unlock lets it change"
+        );
+        assert!(p.only_locked());
+        assert_eq!(p.lock_label(), "Unlock bar 6");
+        p.bar(3);
+        assert!(!p.only_locked());
+        assert_eq!(p.scope(), Scope::Bars(vec![3]), "the locked bar stays out");
+        assert_eq!(p.lock_label(), "Lock 2 bars");
+        assert_eq!(
+            p.lock(),
+            "continue: 2 bars locked: it stays through every try"
+        );
+        assert_eq!(p.locked, vec![3, 5]);
+        p.bar(3);
+        assert_eq!(p.lock(), "continue: bar 4 unlocked");
+        assert_eq!(p.locked, vec![5]);
+    }
+
     #[test]
     fn the_cards_say_the_settings_in_words() {
         let c = cards(opening_q());
@@ -308,7 +525,8 @@ mod tests {
 /// The tool in the note editor: what each touch asks of the time engine.
 #[cfg(test)]
 mod editor_tests {
-    use super::{Compose, CONTINUE_ROWS};
+    use super::{Compose, Picks, CONTINUE_ROWS};
+    use crate::continuing::Scope;
     use crate::editor::{edit_rows, EditAction, Editor, ToolAct, CONTINUE_ROW};
     use mpfree_seq::{Clip, Holds, Note};
 
@@ -327,7 +545,7 @@ mod editor_tests {
 
     fn asked(d: &crate::editor::Done) -> mpfree_compose::Settings {
         match d.compose {
-            Some(Compose::Ask(ref s)) => **s,
+            Some(Compose::Ask(ref s)) => s.settings,
             ref other => panic!("no ask: {other:?} ({})", d.line),
         }
     }
@@ -398,6 +616,60 @@ mod editor_tests {
         let s = asked(&ed.act(row(CONTINUE_ROW, 1), &c));
         assert_eq!((s.bars, s.keeps.rhythm), (1, true));
         assert!((s.similarity - 0.7).abs() < 1e-6);
+    }
+
+    fn scope_of(d: &crate::editor::Done) -> (Scope, Vec<u16>) {
+        match d.compose {
+            Some(Compose::Ask(ref s)) => (s.scope.clone(), s.locked.clone()),
+            ref other => panic!("no ask: {other:?} ({})", d.line),
+        }
+    }
+
+    /// Phase 1 step 3: bars picked on the ruler and notes on the roll go
+    /// with Try again; a locked bar goes with every ask, a setting changed
+    /// too; only locked bars picked, Try again says why it can't; the
+    /// picks start empty each time Continue opens.
+    #[test]
+    fn continue_tries_again_on_what_is_picked_and_keeps_locks() {
+        let c = riff();
+        let mut ed = Editor::new(0, 0, &c);
+        ed.act(row(CONTINUE_ROW, 1), &c);
+        let try_again = EditAction::Tool(ToolAct::Option);
+        let d = ed.act(EditAction::ContinueBar(2), &c);
+        assert_eq!(d.line, "continue: bar 3 picked: Try again remakes it alone");
+        assert!(d.compose.is_none() && d.edit.is_empty());
+        assert_eq!(
+            scope_of(&ed.act(try_again.clone(), &c)),
+            (Scope::Bars(vec![2]), vec![])
+        );
+        let d = ed.act(EditAction::ContinueLock, &c);
+        assert_eq!(d.line, "continue: bar 3 locked: it stays through every try");
+        assert!(d.compose.is_none());
+        assert_eq!(
+            scope_of(&ed.act(try_again.clone(), &c)),
+            (Scope::All, vec![2])
+        );
+        assert_eq!(scope_of(&ed.act(row(1, -1), &c)), (Scope::All, vec![2]));
+        ed.act(EditAction::ContinueNote(4000), &c);
+        assert_eq!(
+            scope_of(&ed.act(try_again.clone(), &c)),
+            (Scope::Notes(vec![4000]), vec![2])
+        );
+        ed.act(EditAction::ContinueBar(2), &c);
+        let d = ed.act(try_again, &c);
+        assert!(d.compose.is_none());
+        assert_eq!(
+            d.line,
+            "continue: the picked bars are locked: Unlock them to try them again"
+        );
+        // Closed and opened again: nothing picked, nothing locked.
+        ed.act(EditAction::Tool(ToolAct::Cancel), &c);
+        ed.open_tool = None;
+        assert_eq!(
+            scope_of(&ed.act(row(CONTINUE_ROW, 1), &c)),
+            (Scope::All, vec![])
+        );
+        assert_eq!(ed.continue_picks, Picks::default());
     }
 
     /// A clip of pads has no tune, and an empty clip nothing to carry on:

@@ -7450,6 +7450,8 @@ impl TimeControl {
                     settings,
                     kind,
                     lanes,
+                    scope,
+                    locked,
                 } = *ask;
                 use mpfree_compose::{InstrumentKind, Refused};
                 use mpfree_context::{PartRole, ReadBudget};
@@ -7497,9 +7499,15 @@ impl TimeControl {
                     self.compile()?;
                 }
                 let playing = self.compose.in_view.is_some();
-                self.compose.ask(&self.project, ask)?;
+                self.compose.ask(&self.project, ask, &scope, &locked)?;
                 self.changed = true;
                 let more = more_bars(settings.bars.max(1), &name);
+                if let Some(again) = scope.again() {
+                    return Ok(format!(
+                        "continue: trying {} (the rest stays as it is)",
+                        again.words()
+                    ));
+                }
                 Ok(if playing {
                     format!(
                         "continue: trying {more} again, {} (the last plays on until it's ready)",
@@ -7554,13 +7562,15 @@ impl TimeControl {
         said: &str,
     ) -> Result<String, String> {
         let r = match &c {
-            Compose::Ask(settings) => {
+            Compose::Ask(asking) => {
                 let ask = ContinueAsk {
                     track,
                     slot,
-                    settings: **settings,
+                    settings: asking.settings,
                     kind: self.part_kind(track, slot),
                     lanes: self.compose_parts.lanes.clone(),
+                    scope: asking.scope.clone(),
+                    locked: asking.locked.clone(),
                 };
                 self.compose_from_editor = true;
                 self.continue_action(ContinueAction::Ask(Box::new(ask)))
