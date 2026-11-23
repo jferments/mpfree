@@ -2062,6 +2062,11 @@ impl TimeControl {
             Some(SongChange::SectionMoved { .. } | SongChange::SectionCopied { .. }) => {
                 return format!("{} · a section of the song", r.short())
             }
+            Some(
+                SongChange::SeveralMoved { blocks, .. }
+                | SongChange::SeveralCopied { blocks, .. }
+                | SongChange::SeveralDeleted { blocks },
+            ) => return format!("{} · {blocks} blocks in the song", r.short()),
             Some(SongChange::Scenes { .. }) => return format!("{} → song", r.short()),
             Some(SongChange::List) => return format!("{} · the song list", r.short()),
             Some(SongChange::ListToSong { .. }) => return format!("{} · list → song", r.short()),
@@ -4178,6 +4183,9 @@ impl TimeControl {
             | TimeAction::TrimPlacement { .. }
             | TimeAction::SlidePlacement { .. }
             | TimeAction::MovePlacement { .. }
+            | TimeAction::MovePlacements { .. }
+            | TimeAction::DuplicatePlacements(_)
+            | TimeAction::DeletePlacements(_)
             | TimeAction::StretchPlacement { .. }
             | TimeAction::MoveSection { .. }
             | TimeAction::SongBars(_)
@@ -5050,6 +5058,96 @@ impl TimeControl {
                 Ok((
                     format!("placement {} is its own copy", i + 1),
                     Some(SongChange::Unique { track, start }),
+                ))
+            }
+            TimeAction::MovePlacements {
+                set,
+                lanes,
+                by,
+                copy,
+            } => {
+                let n = distinct(&set);
+                let what = blocks_said(n);
+                song.move_placements(tracks, &set, lanes, by, copy)
+                    .map_err(|e| match e {
+                        ModelError::BadLoop => format!(
+                            "song: the {what} stay where they are: a loop's block can't go to another lane, nor a clip's onto a Loop track's"
+                        ),
+                        ModelError::AudioTrack => format!(
+                            "song: the {what} stay where they are: one would land on an audio track, which plays its recordings, not clips"
+                        ),
+                        _ => format!(
+                            "song: the {what} don't fit there: one would run into another block, or leave the song"
+                        ),
+                    })?;
+                self.selected = None;
+                self.section = None;
+                let lanes_said = match lanes {
+                    0 => String::new(),
+                    1 | -1 => format!(" a lane {}", if lanes > 0 { "down" } else { "up" }),
+                    _ => format!(
+                        " {} lanes {}",
+                        lanes.unsigned_abs(),
+                        if lanes > 0 { "down" } else { "up" }
+                    ),
+                };
+                let time_said = if by == 0 {
+                    String::new()
+                } else {
+                    format!(
+                        " {} {}",
+                        ticks_said(by.abs(), meter),
+                        if by > 0 { "later" } else { "earlier" }
+                    )
+                };
+                let and = if lanes_said.is_empty() || time_said.is_empty() {
+                    ""
+                } else {
+                    " and"
+                };
+                Ok(if copy {
+                    (
+                        format!("song: copies of {n} {what}{lanes_said}{and}{time_said} (UNDO takes them back)"),
+                        Some(SongChange::SeveralCopied { blocks: n, lanes, by }),
+                    )
+                } else {
+                    (
+                        format!("song: {n} {what} moved{lanes_said}{and}{time_said} (UNDO takes it back)"),
+                        Some(SongChange::SeveralMoved { blocks: n, lanes, by }),
+                    )
+                })
+            }
+            TimeAction::DuplicatePlacements(set) => {
+                let n = distinct(&set);
+                let what = blocks_said(n);
+                let blocks: Vec<&mpfree_seq::arrange::Placement> =
+                    set.iter().filter_map(|&i| song.placements.get(i)).collect();
+                let by = blocks.iter().map(|p| p.end()).max().unwrap_or(0)
+                    - blocks.iter().map(|p| p.start).min().unwrap_or(0);
+                song.duplicate_placements(tracks, &set).map_err(|_| {
+                    format!(
+                        "song: no room after the {what} for their copies: a block is in the way"
+                    )
+                })?;
+                self.selected = None;
+                self.section = None;
+                Ok((
+                    format!("song: copies of {n} {what} right after them (UNDO takes them back)"),
+                    Some(SongChange::SeveralCopied {
+                        blocks: n,
+                        lanes: 0,
+                        by,
+                    }),
+                ))
+            }
+            TimeAction::DeletePlacements(set) => {
+                let n = song
+                    .remove_placements(&set)
+                    .map_err(|_| "delete: no such blocks".to_string())?;
+                self.selected = None;
+                Ok((
+                    format!("song: {n} {} deleted (UNDO puts them back)", blocks_said(n)),
+                    Some(SongChange::SeveralDeleted { blocks: n }),
                 ))
             }
             TimeAction::DeletePlacement(i) => {
@@ -7416,6 +7514,41 @@ fn refused_said(r: Refused, at: impl Fn(Tick) -> String) -> String {
         Refused::Lanes => "the song's moves would have too many points".to_string(),
         Refused::Morphs => format!("the morph would change rows more than {MAX_MORPHS} times"),
         Refused::Check(e) => format!("the song wouldn't add up ({e:?})"),
+    }
+}
+
+/// "block" or "blocks", for `n` of them.
+fn blocks_said(n: usize) -> &'static str {
+    if n == 1 {
+        "block"
+    } else {
+        "blocks"
+    }
+}
+
+/// A stretch of `t` song ticks (above 0) as a musician counts it: "2
+/// bars", "1 beat", "3/16", else in ticks.
+/// How many blocks a picked set names, an index given twice counting
+/// once (as the model counts them).
+fn distinct(set: &[usize]) -> usize {
+    let mut set = set.to_vec();
+    set.sort_unstable();
+    set.dedup();
+    set.len()
+}
+
+fn ticks_said(t: Tick, meter: mpfree_transport::time::Meter) -> String {
+    let bar = meter.bar_ticks().max(1);
+    let beat = meter.beat_ticks().max(1);
+    let plural = |n: Tick, one: &str| format!("{n} {one}{}", if n == 1 { "" } else { "s" });
+    if t % bar == 0 {
+        plural(t / bar, "bar")
+    } else if t % beat == 0 {
+        plural(t / beat, "beat")
+    } else if beat % 4 == 0 && t % (beat / 4) == 0 {
+        format!("{}/16", t / (beat / 4))
+    } else {
+        plural(t, "tick")
     }
 }
 

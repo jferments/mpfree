@@ -3924,6 +3924,110 @@ mod tests {
         assert_eq!(h.control.project.arrangement, start, "every edit undone");
     }
 
+    /// Several blocks picked (phase 6): moved, copied, duplicated and
+    /// deleted as one song edit each, which one UNDO takes back; a
+    /// refusal says why and changes nothing.
+    #[test]
+    fn several_blocks_are_one_song_edit_and_undo_takes_them_back() {
+        use mpfree_seq::arrange::Placement;
+        const BAR: i64 = 3840;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        for (t, name) in [(0, "Beat"), (1, "Bass")] {
+            h.control.project.tracks[t].slots[0] = Some(Clip::new(name, BAR));
+        }
+        h.control.project.give_clip_ids();
+        let tracks = h.control.project.tracks.clone();
+        let song = &mut h.control.project.arrangement;
+        song.place(Placement::of(&tracks, 0, 0, 0, BAR)).unwrap();
+        song.place(Placement::of(&tracks, 0, 0, 4 * BAR, BAR))
+            .unwrap();
+        song.place(Placement::of(&tracks, 1, 0, BAR, BAR)).unwrap();
+        let start = h.control.project.arrangement.clone();
+        let blocks = |h: &TimeHost| -> Vec<(usize, Tick)> {
+            h.control
+                .project
+                .arrangement
+                .placements
+                .iter()
+                .map(|p| (p.track, p.start))
+                .collect()
+        };
+        // The beat's first block and the bass's, two bars on.
+        let two = vec![0, 2];
+        let said = h
+            .act(TimeAction::MovePlacements {
+                set: two.clone(),
+                lanes: 0,
+                by: 2 * BAR,
+                copy: false,
+            })
+            .unwrap();
+        assert!(said.contains("2 blocks moved 2 bars later"), "{said}");
+        assert_eq!(blocks(&h), [(0, 2 * BAR), (0, 4 * BAR), (1, 3 * BAR)]);
+        let said = h.act(TimeAction::Undo).unwrap();
+        assert!(said.contains("2 blocks in the song"), "{said}");
+        assert_eq!(h.control.project.arrangement, start);
+        // Copies four bars on: the beat's would land on its next block.
+        let said = h
+            .act(TimeAction::MovePlacements {
+                set: two.clone(),
+                lanes: 0,
+                by: 4 * BAR,
+                copy: true,
+            })
+            .unwrap_err();
+        assert!(said.contains("don't fit there"), "{said}");
+        assert_eq!(h.control.project.arrangement, start, "nothing changed");
+        let said = h
+            .act(TimeAction::MovePlacements {
+                set: two.clone(),
+                lanes: 0,
+                by: 8 * BAR,
+                copy: true,
+            })
+            .unwrap();
+        assert!(said.contains("copies of 2 blocks 8 bars later"), "{said}");
+        assert_eq!(blocks(&h).len(), 5);
+        h.act(TimeAction::Undo).unwrap();
+        // A 1/16 earlier would start before the song: a 1/16 later.
+        h.act(TimeAction::MovePlacements {
+            set: two.clone(),
+            lanes: 0,
+            by: -BAR / 16,
+            copy: false,
+        })
+        .unwrap_err();
+        let said = h
+            .act(TimeAction::MovePlacements {
+                set: two.clone(),
+                lanes: 0,
+                by: BAR / 16,
+                copy: false,
+            })
+            .unwrap();
+        assert!(said.contains("2 blocks moved 1/16 later"), "{said}");
+        h.act(TimeAction::Undo).unwrap();
+        // Duplicate: right after the pair, from bar 3.
+        let said = h.act(TimeAction::DuplicatePlacements(two.clone())).unwrap();
+        assert!(
+            said.contains("copies of 2 blocks right after them"),
+            "{said}"
+        );
+        assert_eq!(
+            blocks(&h),
+            [(0, 0), (0, 2 * BAR), (0, 4 * BAR), (1, BAR), (1, 3 * BAR)]
+        );
+        h.act(TimeAction::Undo).unwrap();
+        // Delete both: one UNDO brings both back.
+        let said = h.act(TimeAction::DeletePlacements(two)).unwrap();
+        assert!(said.contains("2 blocks deleted"), "{said}");
+        assert_eq!(blocks(&h), [(0, 4 * BAR)]);
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.control.project.arrangement, start, "every edit undone");
+        h.act(TimeAction::Redo).unwrap();
+        assert_eq!(blocks(&h), [(0, 4 * BAR)]);
+    }
+
     /// A section moves with its tempo points (Arrange 3.2), one UNDO
     /// takes the whole move back, and a refusal says why in plain words.
     #[test]

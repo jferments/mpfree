@@ -658,6 +658,9 @@ impl TakeRow {
                 SongChange::Split { .. } => "split",
                 SongChange::Trimmed { .. } => "trim",
                 SongChange::Slid { .. } => "slide",
+                SongChange::SeveralMoved { .. } => "move",
+                SongChange::SeveralCopied { .. } => "copy",
+                SongChange::SeveralDeleted { .. } => "delete",
                 SongChange::Scenes { .. } => "scenes",
                 SongChange::List | SongChange::ListToSong { .. } => "list",
                 SongChange::Tempo { .. } => "tempo",
@@ -1586,6 +1589,21 @@ pub enum TimeAction {
         index: usize,
         by: Tick,
     },
+    /// Several blocks picked (phase 6): blocks `set` moved together
+    /// `lanes` lanes down and `by` song ticks later, or with `copy`
+    /// copies of them put there, keeping their places to each other
+    /// (`Arrangement::move_placements`).
+    MovePlacements {
+        set: Vec<usize>,
+        lanes: i32,
+        by: Tick,
+        copy: bool,
+    },
+    /// Copies of blocks `set` right after them, as one (Duplicate with
+    /// several picked).
+    DuplicatePlacements(Vec<usize>),
+    /// Blocks `set` deleted together.
+    DeletePlacements(Vec<usize>),
     /// Live to song on or off: while on and the transport plays, what the
     /// grid plays is recorded into the song
     /// (`mpfree_perform::SongRecorder`).
@@ -3740,6 +3758,11 @@ pub fn take_title(st: &TimeState, row: &TakeRow) -> String {
         Some(SongChange::Followed { row: r }) => {
             return format!("{word} {} · row {}", row.shown(), r + 1);
         }
+        Some(
+            SongChange::SeveralMoved { blocks, .. }
+            | SongChange::SeveralCopied { blocks, .. }
+            | SongChange::SeveralDeleted { blocks },
+        ) => return format!("{word} {} · {blocks} blocks", row.shown()),
         Some(SongChange::Scenes { .. } | SongChange::List | SongChange::ListToSong { .. })
         | None => {}
     }
@@ -3819,6 +3842,10 @@ fn take_said(st: &TimeState, row: &TakeRow) -> String {
         }
         Some(SongChange::Marker { at }) => return format!("at bar {}", bar_of(at)),
         Some(SongChange::Followed { .. }) => return "the song's parts".into(),
+        Some(
+            SongChange::SeveralMoved { blocks, .. } | SongChange::SeveralCopied { blocks, .. },
+        ) => return format!("{blocks} blocks"),
+        Some(SongChange::SeveralDeleted { blocks }) => return format!("{blocks} blocks"),
         None => {}
     }
     match row.dropped {

@@ -175,6 +175,21 @@ pub enum SongChange {
         track: usize,
         start: Tick,
     },
+    /// Several blocks at once (phase 6): `blocks` moved `lanes` lanes and
+    /// `by` song ticks, or copies of them put there, or deleted.
+    SeveralMoved {
+        blocks: usize,
+        lanes: i32,
+        by: Tick,
+    },
+    SeveralCopied {
+        blocks: usize,
+        lanes: i32,
+        by: Tick,
+    },
+    SeveralDeleted {
+        blocks: usize,
+    },
     /// Scenes → song: `rows` rows onto the song's end.
     Scenes {
         rows: usize,

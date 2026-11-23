@@ -997,6 +997,122 @@ impl Arrangement {
         Ok(())
     }
 
+    /// Blocks `set` (indexes, in any order) moved together `lanes` lanes
+    /// down (up for a negative one) and `by` song ticks later (earlier
+    /// for a negative one), or with `copy` copies of them put there, the
+    /// blocks keeping their places to each other (several blocks picked,
+    /// the Arrange refactor's phase 6). Each stays linked to its clip, as
+    /// [`Arrangement::move_placement`] keeps one. All or none: refused,
+    /// changing nothing, for an empty set or an index past the blocks (an
+    /// index given twice counts once), or when one would leave the lanes,
+    /// start before 0 or land on a block outside the set
+    /// (`BadPlacement`), go to another lane from or onto a Loop track's
+    /// (`BadLoop`), or onto an audio track (`AudioTrack`). The moved
+    /// blocks' (or the copies') indexes now, in order.
+    pub fn move_placements(
+        &mut self,
+        tracks: &[Track],
+        set: &[usize],
+        lanes: i32,
+        by: Tick,
+        copy: bool,
+    ) -> Result<Vec<usize>, ModelError> {
+        let mut set = set.to_vec();
+        set.sort_unstable();
+        set.dedup();
+        if set.is_empty() || set.last() >= Some(&self.placements.len()) {
+            return Err(ModelError::BadPlacement);
+        }
+        let loops = |t: usize| tracks.get(t).is_some_and(Track::is_loops);
+        let mut moved = Vec::with_capacity(set.len());
+        for &i in &set {
+            let p = &self.placements[i];
+            let track =
+                i64::try_from(p.track).map_err(|_| ModelError::BadPlacement)? + i64::from(lanes);
+            let track = usize::try_from(track).map_err(|_| ModelError::BadPlacement)?;
+            if track >= tracks.len() || p.start + by < 0 {
+                return Err(ModelError::BadPlacement);
+            }
+            if track != p.track && (loops(track) || loops(p.track)) {
+                return Err(ModelError::BadLoop);
+            }
+            if tracks[track].is_audio() {
+                return Err(ModelError::AudioTrack);
+            }
+            moved.push(Placement {
+                track,
+                start: p.start + by,
+                ..p.clone()
+            });
+        }
+        if copy && self.placements.len() + moved.len() > MAX_PLACEMENTS {
+            return Err(ModelError::BadPlacement);
+        }
+        let mut song = self.clone();
+        if !copy {
+            for &i in set.iter().rev() {
+                song.placements.remove(i);
+            }
+        }
+        for p in &moved {
+            song.place(p.clone())?;
+        }
+        let at: Vec<usize> = moved
+            .iter()
+            .map(|p| {
+                song.placements
+                    .partition_point(|q| (q.track, q.start) < (p.track, p.start))
+            })
+            .collect();
+        *self = song;
+        let mut at = at;
+        at.sort_unstable();
+        Ok(at)
+    }
+
+    /// Copies of blocks `set` right after them, as one (Duplicate with
+    /// several blocks picked, phase 6): the copies keep their lanes and
+    /// their places to each other, the first starting where the last of
+    /// the set ends. All or none, as [`Arrangement::move_placements`]
+    /// with `copy`. The copies' indexes, in order.
+    pub fn duplicate_placements(
+        &mut self,
+        tracks: &[Track],
+        set: &[usize],
+    ) -> Result<Vec<usize>, ModelError> {
+        let blocks: Vec<&Placement> = set
+            .iter()
+            .map(|&i| self.placements.get(i).ok_or(ModelError::BadPlacement))
+            .collect::<Result<_, _>>()?;
+        let start = blocks
+            .iter()
+            .map(|p| p.start)
+            .min()
+            .ok_or(ModelError::BadPlacement)?;
+        let end = blocks
+            .iter()
+            .map(|p| p.end())
+            .max()
+            .ok_or(ModelError::BadPlacement)?;
+        self.move_placements(tracks, set, 0, end - start, true)
+    }
+
+    /// Blocks `set` deleted together; a song clip only they played goes
+    /// with them. Refused (`BadPlacement`), changing nothing, for an empty
+    /// set or an index past the blocks. How many went.
+    pub fn remove_placements(&mut self, set: &[usize]) -> Result<usize, ModelError> {
+        let mut set = set.to_vec();
+        set.sort_unstable();
+        set.dedup();
+        if set.is_empty() || set.last() >= Some(&self.placements.len()) {
+            return Err(ModelError::BadPlacement);
+        }
+        for &i in set.iter().rev() {
+            self.remove(i);
+        }
+        Ok(set.len())
+    }
+
     /// Section `k`: from marker `k` to the next, the last one to the end
     /// of the song in whole bars of `bar` ticks from its marker (a bar at
     /// least), or while it follows its scene as long as its passes, as a
@@ -2571,6 +2687,131 @@ mod tests {
     /// Duplicate puts a copy after the block where there is room; trim
     /// from the left keeps what plays where it was; slide moves what
     /// plays inside the block.
+    /// Several blocks picked (phase 6): moved, copied, duplicated and
+    /// deleted together, keeping their places to each other, all or none.
+    #[test]
+    fn several_blocks_move_copy_duplicate_and_go_together_all_or_none() {
+        let mut p = project();
+        p.tracks.push(Track::new("keys", 0));
+        p.tracks.push(Track::new_loops("loops", 0));
+        p.tracks.push(Track::new_audio("vox", 0));
+        let blocks = |s: &Arrangement| -> Vec<(usize, Tick, Tick)> {
+            s.placements
+                .iter()
+                .map(|b| (b.track, b.start, b.length))
+                .collect()
+        };
+        let mut s = Arrangement::default();
+        // Drums' a at bar 1, bass's b from bar 2, drums' b from bar 5.
+        s.place(Placement::of(&p.tracks, 0, 0, 0, BAR)).unwrap();
+        s.place(Placement::of(&p.tracks, 1, 1, BAR, 2 * BAR))
+            .unwrap();
+        s.place(Placement::of(&p.tracks, 0, 1, 4 * BAR, 2 * BAR))
+            .unwrap();
+        let start = s.clone();
+        let first_two = [s.at(0, 0).unwrap(), s.at(1, BAR).unwrap()];
+        // Two bars later and a lane down: the drums' a onto the bass's
+        // lane, the bass's b onto the keys', linked to their clips.
+        let moved = s
+            .move_placements(&p.tracks, &first_two, 1, 2 * BAR, false)
+            .unwrap();
+        assert_eq!(
+            blocks(&s),
+            [
+                (0, 4 * BAR, 2 * BAR),
+                (1, 2 * BAR, BAR),
+                (2, 3 * BAR, 2 * BAR)
+            ]
+        );
+        assert_eq!(moved, [1, 2]);
+        assert_eq!(s.placements[1].clip, start.placements[0].clip);
+        // Back again, in the other order and with an index twice.
+        s.move_placements(&p.tracks, &[2, 1, 2], -1, -2 * BAR, false)
+            .unwrap();
+        assert_eq!(s, start);
+        // Copies: the originals stay.
+        let copies = s
+            .move_placements(&p.tracks, &first_two, 0, 8 * BAR, true)
+            .unwrap();
+        assert_eq!(s.placements.len(), 5);
+        assert_eq!(
+            copies
+                .iter()
+                .map(|&i| (s.placements[i].track, s.placements[i].start))
+                .collect::<Vec<_>>(),
+            [(0, 8 * BAR), (1, 9 * BAR)]
+        );
+        s = start.clone();
+        // All or none: one landing on a block outside the set, one before
+        // bar 1, off the lanes, across a Loop lane, onto an audio track.
+        for (lanes, by, err) in [
+            (0, 4 * BAR, ModelError::BadPlacement),
+            (0, -BAR, ModelError::BadPlacement),
+            (-1, 0, ModelError::BadPlacement),
+            (3, 0, ModelError::BadLoop),
+            (4, 0, ModelError::AudioTrack),
+        ] {
+            // The bass's block alone across the Loop lane, the drums' onto
+            // the audio lane.
+            let lone = match lanes {
+                3 => &[1][..],
+                4 => &[0][..],
+                _ => &first_two[..],
+            };
+            assert_eq!(
+                s.move_placements(&p.tracks, lone, lanes, by, false),
+                Err(err),
+                "{lanes} {by}"
+            );
+            assert_eq!(s, start, "nothing changed");
+        }
+        // Moving onto a block of the set's own is fine: all three a bar on.
+        s.move_placements(&p.tracks, &[0, 1, 2], 0, BAR, false)
+            .unwrap();
+        assert_eq!(
+            blocks(&s),
+            [(0, BAR, BAR), (0, 5 * BAR, 2 * BAR), (1, 2 * BAR, 2 * BAR)]
+        );
+        s = start.clone();
+        assert_eq!(
+            s.move_placements(&p.tracks, &[], 0, BAR, false),
+            Err(ModelError::BadPlacement)
+        );
+        assert_eq!(
+            s.move_placements(&p.tracks, &[0, 7], 0, BAR, false),
+            Err(ModelError::BadPlacement)
+        );
+        // Duplicate: the first two again right after the later's end (bar
+        // 4), the drums' b from bar 5 not in their way.
+        let copies = s.duplicate_placements(&p.tracks, &first_two).unwrap();
+        assert_eq!(
+            copies
+                .iter()
+                .map(|&i| (s.placements[i].track, s.placements[i].start))
+                .collect::<Vec<_>>(),
+            [(0, 3 * BAR), (1, 4 * BAR)]
+        );
+        // The first two again: their copies are in the way now.
+        let snapshot = s.clone();
+        let again = [s.at(0, 0).unwrap(), s.at(1, BAR).unwrap()];
+        assert_eq!(
+            s.duplicate_placements(&p.tracks, &again),
+            Err(ModelError::BadPlacement)
+        );
+        assert_eq!(s, snapshot);
+        // Delete several: a song clip only they played goes with them.
+        let mut q = p.clone();
+        q.arrangement = start.clone();
+        let own = q.make_unique(0).unwrap();
+        let mut d = q.arrangement;
+        assert!(d.clips.get(own).is_some());
+        assert_eq!(d.remove_placements(&[0, 1, 0]), Ok(2));
+        assert_eq!(blocks(&d), [(1, BAR, 2 * BAR)]);
+        assert!(d.clips.get(own).is_none());
+        assert_eq!(d.remove_placements(&[3]), Err(ModelError::BadPlacement));
+        assert_eq!(d.remove_placements(&[]), Err(ModelError::BadPlacement));
+    }
+
     #[test]
     fn split_duplicate_trim_and_slide_keep_what_plays_in_phase() {
         let p = project();
