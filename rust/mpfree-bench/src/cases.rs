@@ -1658,6 +1658,7 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| held_pads(rate, 16, false, true)));
     v.push(measured(|| held_pads(rate, 16, true, false)));
     v.push(measured(|| held_pads(rate, 16, true, true)));
+    v.push(measured(|| layered_pads(rate, 4, 4)));
     v.push(measured(|| moving_pads(rate, 16)));
     v.push(measured(|| {
         new_filter_pads(rate, 16, FilterKind::Ladder, 12.0)
@@ -2948,6 +2949,69 @@ fn held_pads(rate: u32, n: usize, up: bool, sixteen: bool) -> Case {
         } else {
             "looping pads held down"
         },
+        block: Box::new(move |b, l, r| {
+            if b == 0 {
+                for pad in 0..n {
+                    e.apply(Event::NoteOn {
+                        pad: pad as u8,
+                        velocity: 100,
+                    });
+                }
+            }
+            l.fill(0.0);
+            r.fill(0.0);
+            e.render(l, r);
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// The sampler with `n` looping pads held down, as [`held_pads`], each
+/// with `layers` layers stacked, each layer tuned its own way: as many
+/// voices as `n * layers` held pads, through `n` filters, one a hit (the
+/// filter gap plan's F2c).
+fn layered_pads(rate: u32, n: usize, layers: usize) -> Case {
+    let s = Source::new("noise", rate, 2, bench_sound(rate as usize, false)).expect("source");
+    let mut p = Project::new();
+    p.add_source(s.clone());
+    for i in 0..n {
+        let layer = |k: usize| {
+            let mut r = Region::whole(&s);
+            r.mode = PlayMode::Loop;
+            r.sustain_loop = Some(Loop {
+                start: 5000,
+                end: 30000,
+                crossfade: 200,
+                mode: LoopMode::Forward,
+            });
+            r.tune_cents = ((i * layers + k) as i32 % 24 - 12) * 50;
+            let mut l = Layer::new(r);
+            l.level_db = -(k as f32) * 2.0;
+            l
+        };
+        let mut pad = Pad::new("p", layer(0));
+        for k in 1..layers {
+            pad.layers.push(layer(k));
+        }
+        pad.polyphony = layers as u8;
+        pad.filter = Filter {
+            kind: FilterKind::LowPass,
+            poles: 2,
+            cutoff_hz: 2000.0,
+            resonance: 0.3,
+            env_octaves: 1.0,
+            drive_db: 0.0,
+        };
+        p.set_pad(i, Some(pad), None).expect("pad");
+    }
+    let mut e = Engine::new(rate, (n * layers).max(1));
+    e.set_view(EngineView::build(&p, rate));
+    let name = format!("Sampler x{n} held, {layers} layers each");
+    let mut e = Watched::new(e, &name, Allow::default());
+    Case {
+        name,
+        module: "sampler",
+        what: "looping pads of stacked layers held down",
         block: Box::new(move |b, l, r| {
             if b == 0 {
                 for pad in 0..n {

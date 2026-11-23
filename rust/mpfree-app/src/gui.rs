@@ -24116,12 +24116,13 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         widget: mpfree_sampler_ui::play_tab::SECTIONS.into(),
         kind: EventKind::Tab(2),
     });
+    // Off, LP 1-pole, LP 2-pole.
     let filter = mpfree_sampler_ui::play_tab::Row::Filter.place();
     play.on_event(UiEvent {
         widget: mpfree_sampler_ui::play_tab::LIST.into(),
         kind: EventKind::Step {
             index: filter,
-            delta: 1,
+            delta: 2,
         },
     });
     play.on_event(UiEvent {
@@ -24665,14 +24666,14 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         out.push(("pads-edit-mono", mono));
     }
     // The Filter section's Ladder, resonant and driven 12 dB (sampler
-    // R5.6): Filter steps Off, LP2, LP4, HP2, HP4, BP2, BP4, Notch2, Notch4,
-    // Ladder.
+    // R5.6): Filter steps Off, LP 1 to 8-pole (six), HP the same, BP 2 to
+    // 8-pole (four), Notch2, Notch4, Peak, Ladder.
     {
         use mpfree_sampler_ui::play_tab::{Row, LIST};
         let mut ladder = sample_sampler(fonts());
         edit_pad(&mut ladder);
         for (row, delta) in [
-            (Row::Filter, 9),
+            (Row::Filter, 20),
             (Row::Cutoff, -3),
             (Row::Resonance, 14),
             (Row::Drive, 4),

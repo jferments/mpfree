@@ -251,10 +251,16 @@ impl Fonts {
             Align::Center => r.x + (r.w - w) / 2,
             Align::Right => r.right() - w,
         };
+        let old = canvas.clip();
+        let clip = old.intersect(r.inset_xy(0, -(px as i32)));
+        // Clipped away (a widget drawing only the part that changed):
+        // nothing to draw, but its width all the same.
+        if clip.is_empty() {
+            return w;
+        }
         let cap = face.cap_height(px);
         let baseline = r.y + (r.h + cap) / 2;
-        let old = canvas.clip();
-        canvas.set_clip(old.intersect(r.inset_xy(0, -(px as i32))));
+        canvas.set_clip(clip);
         face.draw(canvas, px, x, baseline, color, &shown);
         canvas.set_clip(old);
         w

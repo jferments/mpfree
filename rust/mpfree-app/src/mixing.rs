@@ -2041,6 +2041,12 @@ impl MixHost {
         self.xy_play.take_kept()
     }
 
+    /// A layout of yours's Set moves since the last call, in order, for
+    /// recording (`xy_rec.rs`).
+    pub fn take_xy_moves(&mut self, f: impl FnMut(crate::xy_play::RecMove)) {
+        self.xy_play.take_moves(f);
+    }
+
     /// The XY pad on a layout of yours as the sound loop has it (the
     /// tests').
     #[cfg(test)]
@@ -2066,7 +2072,11 @@ impl MixHost {
         let Some(layout) = self.xy_layout() else {
             return;
         };
-        layout.values(x, y, down, |addr, value| self.set_insert(addr, value));
+        layout.values(x, y, down, |addr, value| {
+            self.set_insert(addr, value);
+            // It records as a layout of yours does (`xy_rec.rs`).
+            self.xy_play.ready_made(addr, value, down);
+        });
     }
 
     /// An insert's setting set as a turn sets it, found by its slot id.

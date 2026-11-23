@@ -338,6 +338,8 @@ pub struct Session {
     xy_opening: bool,
     /// Stay's turns on a layout of yours, for UNDO (main.rs's own).
     xy_turns: crate::xy_song::XyTurns,
+    /// The XY pad's gestures recording (`xy_rec.rs`).
+    xy_rec: crate::xy_rec::XyRec,
     /// Play's learned controls (Learn's Play card) between periods, as
     /// main.rs keeps them: the XY pad's buttons press once past the
     /// middle.
@@ -486,6 +488,7 @@ impl Session {
             xy_yours: crate::xy_song::XySong::default(),
             xy_opening: false,
             xy_turns: undo::Turns::default(),
+            xy_rec: crate::xy_rec::XyRec::new(),
             play_moves: crate::remote::PlayMoves::default(),
             synth_turns: undo::Turns::default(),
             presets: crate::presets::TrackPresets::default(),
@@ -1721,6 +1724,23 @@ impl Session {
         if let Some((key, from, to)) = crate::xy_song::kept_turn(self.mix.take_xy_kept()) {
             let now = self.now();
             self.xy_turns.turned(key, from, to, now);
+        }
+        // The XY pad's Set moves record where `xy_rec.rs` says, as main.rs.
+        {
+            let (sounds, kits, listed) = (&self.sounds, &self.track_kits, &self.instrument_list);
+            let pads = |owner, id: u16| {
+                let (kit, pad) = crate::learned_kit(listed, kits, owner)?;
+                crate::pad_describe(sounds.as_ref()?, kit, pad, id)
+            };
+            crate::xy_record(
+                &mut self.xy_rec,
+                &mut self.mix,
+                &self.synth,
+                &self.app,
+                listed,
+                &pads,
+                &mut self.time,
+            );
         }
         // The list of instruments follows the tracks' own and the free
         // places' (step 6), as main.rs's period does: the app hears of it,

@@ -66,10 +66,14 @@ impl SvfCoefs {
         rate: u32,
         top: f32,
     ) -> SvfCoefs {
-        let fs = rate as f32;
-        let hz = hz.clamp(5.0, top * fs);
+        SvfCoefs::bilinear_at(mode, corner(hz, rate, top), q, gain_db)
+    }
+
+    /// [`SvfCoefs::bilinear`] at a prewarped corner `t` worked out already
+    /// ([`corner`]), so the stages of one filter share it.
+    #[inline]
+    pub fn bilinear_at(mode: SvfMode, t: f32, q: f32, gain_db: f32) -> SvfCoefs {
         let q = q.max(0.05);
-        let t = (PI * hz / fs).tan();
         // The square root of the linear gain, for the modes that have one.
         let a = || db_to_gain(gain_db * 0.5);
         let (g, k, m0, m1, m2) = match mode {
@@ -136,6 +140,15 @@ impl SvfCoefs {
             m2: l(self.m2, to.m2),
         }
     }
+}
+
+/// The prewarped corner `tan(pi hz / rate)` of a bilinear design, the
+/// cutoff kept between 5 Hz and `top` of the rate (under a half).
+#[inline]
+pub fn corner(hz: f32, rate: u32, top: f32) -> f32 {
+    let fs = rate as f32;
+    let hz = hz.clamp(5.0, top * fs);
+    (PI * hz / fs).tan()
 }
 
 /// The poles of `s^2 + 2 zeta wp s + wp^2` (`wp` in radians a sample)

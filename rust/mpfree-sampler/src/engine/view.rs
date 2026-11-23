@@ -157,6 +157,14 @@ pub struct ViewPad {
     pub(super) pitch_env: PitchEnv,
     pub(super) vel_to_cutoff: f32,
     pub(super) vel_to_pitch: f32,
+    /// What moves its filter per hit (the filter gap plan's F3), in their
+    /// ranges: the key, velocity on the envelope's depth and attack, and
+    /// each hit's random.
+    pub(super) key_track: f32,
+    pub(super) vel_to_env: f32,
+    pub(super) vel_to_attack: f32,
+    pub(super) cutoff_random: f32,
+    pub(super) res_random: f32,
     /// Mono, Legato and Glide for its keys (sampler R5.5).
     pub(super) mono: Mono,
     /// A live hit waits for the launch line ([`crate::model::Pad::on_launch`]):
@@ -324,8 +332,8 @@ impl EngineView {
 
     /// Pad `pad`'s own value of `field`, as edited: what [`Event::PadLive`]
     /// with NaN goes back to, so a caller can give its changes as offsets
-    /// on it. Cutoff and Resonance only where the pad has a filter; None for
-    /// a pad without a sound.
+    /// on it. Cutoff, Resonance, Drive and envelope depth only where the
+    /// pad has a filter; None for a pad without a sound.
     pub fn pad_own(&self, pad: usize, field: PadField) -> Option<f32> {
         let p = self
             .pads
@@ -346,6 +354,8 @@ impl EngineView {
             PadField::LfoDepth => Some(p.lfo.depth),
             PadField::PitchEnv => Some(p.pitch_env.semitones),
             PadField::PitchDecay => Some(p.pitch_env.decay_ms),
+            PadField::Drive => filtered.then_some(p.filter.drive_db),
+            PadField::EnvDepth => filtered.then_some(p.filter.env_octaves),
         }
     }
 
@@ -642,8 +652,13 @@ impl EngineView {
                         .decay_ms
                         .clamp(*PITCH_DECAY_MS.start(), *PITCH_DECAY_MS.end()),
                 },
-                vel_to_cutoff: p.vel_to_cutoff.clamp(0.0, 1.0),
+                vel_to_cutoff: p.vel_to_cutoff.clamp(-1.0, 1.0),
                 vel_to_pitch: p.vel_to_pitch.clamp(-12.0, 12.0),
+                key_track: p.key_track.clamp(-1.0, 1.0),
+                vel_to_env: p.vel_to_env.clamp(0.0, 1.0),
+                vel_to_attack: p.vel_to_attack.clamp(0.0, 1.0),
+                cutoff_random: p.cutoff_random.clamp(0.0, 1.0),
+                res_random: p.res_random.clamp(0.0, 1.0),
                 mono: Mono {
                     glide_ms: p.mono.glide_ms.clamp(*GLIDE_MS.start(), *GLIDE_MS.end()),
                     ..p.mono

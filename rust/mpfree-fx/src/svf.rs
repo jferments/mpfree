@@ -1566,9 +1566,15 @@ mod tests {
                 }
             }
         }
+        // The other modes fall through to the bilinear design, to the bit.
+        // Its cutoff goes through `black_box`, or a release build works its
+        // `tan` out while compiling (rounded correctly), while `matched`,
+        // in mpfree-filter and not inlined here, runs the library's `tan`:
+        // at 9 kHz the two are an ulp apart.
+        let hz = std::hint::black_box(9000.0);
         assert_eq!(
             SvfCoefs::matched(SvfMode::LowPass, 9000.0, 2.0, 0.0, rate),
-            SvfCoefs::bilinear(SvfMode::LowPass, 9000.0, 2.0, 0.0, rate)
+            SvfCoefs::bilinear(SvfMode::LowPass, hz, 2.0, 0.0, rate)
         );
     }
 

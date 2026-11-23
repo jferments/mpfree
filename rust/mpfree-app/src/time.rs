@@ -1886,6 +1886,20 @@ impl TimeHost {
         self.audio.gesture(offset, input);
     }
 
+    /// A setting the XY pad moved (`Input::Move`) or let go of
+    /// (`Input::End`) in the coming period, at `offset`, for the song's
+    /// own lanes: while Rec song records it becomes a move there
+    /// (`SongRecorder::moved`), else nothing (`xy_rec.rs` says which
+    /// moves go here).
+    pub fn song_gesture(&mut self, offset: u32, input: Input) {
+        self.audio.song_gesture(offset, input);
+    }
+
+    /// Whether Rec song is armed (it records while the transport plays).
+    pub fn rec_song(&self) -> bool {
+        self.song_rec_armed()
+    }
+
     /// FILL on or off from `offset` in the coming period: notes with the
     /// FILL and !FILL trig conditions follow it from that frame on. For
     /// the FILL button (hold for a fill, double-press to latch): PLAY
@@ -5241,6 +5255,50 @@ mod tests {
         assert!(lanes > 20, "{lanes}");
         assert_eq!(h.act(TimeAction::Undo).unwrap(), "undo: take 1");
         assert_eq!(lane(&h), None);
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// An XY pad gesture across a looping clip's end while recording (the
+    /// XY plan's phase 3, 3.1): its moves land at the clip's end and go
+    /// on from its start, one lane.
+    #[test]
+    fn an_xy_gesture_across_the_clips_loop_point_records_on_both_sides() {
+        use mpfree_play::mpfree_param::{Owner, ParamAddr};
+        use mpfree_seq::mpfree_moves::{Kind, Target};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        h.act(TimeAction::NewClip { track: 0, slot: 0 }).unwrap();
+        let len = h.control.project.clip(0, 0).unwrap().length;
+        assert_eq!(len, 7680, "a new clip: two bars");
+        let knob = ParamAddr::new(Owner::Inst(0), 5);
+        // From a quarter bar before the clip's end to a quarter bar into
+        // its next pass, every 50 ms, then let go.
+        let moves: Vec<(u64, Option<f32>)> = (0..20)
+            .map(|i| (BAR * 7 / 4 + i * 2205, Some(0.2 + 0.03 * i as f32)))
+            .chain([(BAR * 9 / 4 + 2205, None)])
+            .collect();
+        gestures(&mut h, &mut pads, BAR * 5 / 2, knob, &moves);
+        h.act(TimeAction::Transport(Command::Record)).unwrap();
+        let clip = h.control.project.clip(0, 0).unwrap();
+        assert_eq!(clip.length, len, "the clip looped");
+        let lane = clip
+            .moves
+            .lane(Target::for_track(knob, 0))
+            .expect("the knob's lane, as the track's own");
+        let ticks: Vec<u32> = lane
+            .points
+            .iter()
+            .filter(|p| p.kind != Kind::End)
+            .map(|p| p.tick)
+            .collect();
+        assert!(
+            ticks.iter().any(|&t| (6_720..7_680).contains(&t)) && ticks.iter().any(|&t| t < 960),
+            "both sides of the loop point: {ticks:?}"
+        );
+        assert!(
+            ticks.iter().all(|&t| !(1_100..6_700).contains(&t)),
+            "nothing in between: {ticks:?}"
+        );
         assert_eq!(h.dropped(), 0);
     }
 
@@ -11049,6 +11107,62 @@ mod tests {
         let at = |frames: u64| frames as f64 * 960.0 * 2.0 / f64::from(RATE);
         assert!((lane.value_at(at(BAR)).unwrap() - 0.5).abs() < 1e-3);
         assert!((lane.value_at(at(2 * BAR - 1500)).unwrap() - 1.0).abs() < 1e-3);
+    }
+
+    /// Rec song keeps the XY pad's moves that go into the song (XY phase
+    /// 3, `xy_rec.rs`): a setting's gesture goes into the song's lane for
+    /// it when the transport stops, as one song edit UNDO takes back.
+    #[test]
+    fn rec_song_keeps_the_xy_pads_moves() {
+        use mpfree_play::mpfree_param::{Owner, ParamAddr, Strip};
+        use mpfree_seq::mpfree_moves::{Map, Target};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let mut c = Clip::new("beat", 3840);
+        c.notes = vec![mpfree_seq::Note::new(0, 100, 4, 100)];
+        h.control.project.tracks[0].slots[0] = Some(c);
+        h.act(TimeAction::LaunchScene(0)).unwrap();
+        h.act(TimeAction::RecSong(true)).unwrap();
+        assert!(h.rec_song());
+        h.command(Command::Play);
+        let wet = ParamAddr::new(Owner::Insert(Strip::Master, 1), 0);
+        let map = Map::linear(0.0, 1.0);
+        let mv = |value: f32| Input::Move {
+            addr: wet,
+            value,
+            map,
+        };
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        h.song_gesture(0, mv(0.25));
+        run(&mut h, &mut pads, BAR, &[]);
+        h.song_gesture(0, mv(0.75));
+        run(&mut h, &mut pads, BAR + BAR / 2, &[]);
+        h.song_gesture(0, Input::End { addr: wet });
+        run(&mut h, &mut pads, 2 * BAR - 1000, &[]);
+        h.command(Command::Stop);
+        run(&mut h, &mut pads, 2 * BAR, &[]);
+        let note = h.take_later_note().unwrap();
+        assert!(note.contains(", 1 XY pad move"), "{note}");
+        let lane = |h: &TimeHost| {
+            h.control
+                .project
+                .arrangement
+                .lanes
+                .lane(Target::Fixed(wet))
+                .cloned()
+        };
+        let l = lane(&h).expect("the song's lane for it");
+        let at = |frames: u64| frames as f64 * 960.0 * 2.0 / f64::from(RATE);
+        assert_eq!(l.value_at(at(BAR / 2 - 2000)), None, "free before the move");
+        assert!((l.value_at(at(BAR / 2 + 300)).unwrap() - 0.25).abs() < 0.02);
+        assert!((l.value_at(at(BAR + 2000)).unwrap() - 0.75).abs() < 0.02);
+        assert_eq!(
+            l.value_at(at(BAR + BAR / 2 + 2000)),
+            None,
+            "free after the lift"
+        );
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(lane(&h), None, "UNDO takes it back with the song edit");
     }
 
     /// SHIFT + TC (the MPC's TC On/Off): the armed track's Quantise while

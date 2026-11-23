@@ -145,6 +145,7 @@ pub(super) fn follow_live(v: &mut Voice) {
     v.follow.count = (v.follow.count + 1) % FILTER_STEP;
     v.base_gain_l += v.follow.gain_inc[0];
     v.base_gain_r += v.follow.gain_inc[1];
+    v.pre.gain += v.follow.pre_inc;
     v.gain_l = v.base_gain_l * v.tape_gain;
     v.gain_r = v.base_gain_r * v.tape_gain;
 }
@@ -170,6 +171,9 @@ pub(super) fn live_step(v: &mut Voice) {
     };
     glide(&mut v.base_gain_l, f.gain_to[0], &mut f.gain_inc[0]);
     glide(&mut v.base_gain_r, f.gain_to[1], &mut f.gain_inc[1]);
+    if v.pre.on {
+        glide(&mut v.pre.gain, f.pre_to, &mut f.pre_inc);
+    }
     if let Some(flt) = v.filter.as_mut().filter(|_| f.fc_to > 0.0) {
         let (fc, res) = (flt.cutoff_hz, flt.resonance);
         let ratio = f.fc_to / fc;
@@ -186,7 +190,16 @@ pub(super) fn live_step(v: &mut Voice) {
             flt.resonance = res + d * k;
             moving = true;
         }
-        if flt.cutoff_hz != fc || flt.resonance != res {
+        // The envelope's depth, in octaves as the cutoff (F3).
+        let env = flt.env_octaves;
+        let d = f.env_to - env;
+        if d.abs() <= 1e-4 {
+            flt.env_octaves = f.env_to;
+        } else {
+            flt.env_octaves = env + d * k;
+            moving = true;
+        }
+        if flt.cutoff_hz != fc || flt.resonance != res || flt.env_octaves != env {
             v.filter_key = None;
         }
     }
@@ -283,7 +296,8 @@ pub(super) fn follow_motion(v: &mut Voice) {
 #[inline(never)]
 pub(super) fn motion_step(v: &mut Voice) {
     let m = &mut v.motion;
-    let mut cents = m.vel_cents + m.env_cents + m.glide_cents;
+    let glide = m.glide_cents;
+    let mut cents = m.vel_cents + m.env_cents + glide;
     if m.env_cents != 0.0 {
         m.env_cents *= m.env_k;
         if m.env_cents.abs() < 0.01 {
@@ -297,7 +311,11 @@ pub(super) fn motion_step(v: &mut Voice) {
             m.glide_cents - m.glide_inc.copysign(m.glide_cents)
         };
     }
-    let mut fc = m.vel_fc;
+    let mut fc = m.hit_fc;
+    // The key follows the glide's pitch, not only where it lands (F3).
+    if glide != 0.0 && m.key_track != 0.0 {
+        fc *= (m.key_track * glide / 1200.0).exp2();
+    }
     let mut side = [1.0f32; 2];
     let lfo = m.to != LfoTarget::Off;
     if lfo {
@@ -341,7 +359,12 @@ pub(super) fn motion_step(v: &mut Voice) {
     }
 }
 
-/// Sets the voice's filter for envelope level `e`. The coefficients only
+/// Sets the voice's filter for envelope level `e`: the cutoff is the
+/// pad's (or a live one, gliding) moved by the envelope at its depth (its
+/// hit's velocity scaling it), then by pressure's factor and the
+/// movement's (the LFO, and the hit's own: velocity, key and random), each
+/// an octave sum made a factor once; the resonance has the hit's random on
+/// it (the filter gap plan's F3). The coefficients only
 /// depend on `e` and the cutoff factors of pressure and movement, so while
 /// none moves (a held sustain, no pressure, no LFO on the cutoff) this
 /// skips the `exp2` and `tan`. A state-variable type glides to the new
@@ -361,8 +384,9 @@ pub(super) fn retune(v: &mut Voice, f: Filter, e: f32, rate: f32) {
         return;
     }
     v.filter_key = Some(key);
-    let fc = f.cutoff_hz * (f.env_octaves * e).exp2() * moved;
-    v.filt.set(&f, fc, f.resonance, rate, FILTER_STEP);
+    let fc = f.cutoff_hz * (f.env_octaves * v.motion.env_scale * e).exp2() * moved;
+    let res = (f.resonance + v.motion.res_add).clamp(0.0, 1.0);
+    v.filt.set(&f, fc, res, rate, FILTER_STEP);
 }
 
 /// `start` times pressure's gain, the amp envelope's next value and the kill
@@ -403,16 +427,30 @@ fn filter_tick(v: &mut Voice, rate: f32) -> Option<FilterKind> {
     Some(f.kind)
 }
 
-/// Everything after the source read, for one frame: the filter, then the
-/// amp envelope, pressure's gain, the kill fade, the voice's level and pan
-/// and the movement's sides after it (so a Drive or a loud resonance hears
-/// the sound as it is, not where its envelope or its velocity put it: the
-/// filter gap plan's F2), and the stolen voice's tail. A Comb comes after
-/// all the gains instead, so it rings on once the sound has ended
-/// ([`ring_out`]); a voice with no filter or a Comb takes its gains in the
-/// order it always did, so it renders exactly as before (and as
-/// [`render_plain`] does). `g` is the gain from the region's fades, part
-/// of the sound. Marks the voice done when its kill fade or envelope ends.
+/// Everything after the source read, for one frame, added into frame `k`
+/// of `out` (the left and right; indexed here, not passed as the frame's
+/// own pair, so a single voice's loop works out where only as it adds,
+/// not across the filter): the filter, then the amp envelope,
+/// pressure's gain, the kill fade, the rest of the voice's gains (its
+/// velocity, the pad's level and pan) and the movement's sides after it
+/// (so a Drive or a loud resonance hears the sound as it is, not where its
+/// envelope or its velocity put it: the filter gap plan's F2), and the
+/// stolen voice's tail. A Comb comes after all the gains instead, so it
+/// rings on once the sound has ended ([`ring_out`]); a voice with no
+/// filter or a Comb takes its gains in the order it always did, so it
+/// renders exactly as before (and as [`render_plain`] does). `g` is the
+/// gain before the filter: the region's fades, part of the sound, and for
+/// a filtered voice its gain before the filter too ([`Pre`]; the read
+/// starts from it, so the frame takes no other multiply for it). Marks the
+/// voice done when its kill fade or envelope ends.
+///
+/// A hit's layers that share their filter ([`Role`]): a follower adds its
+/// sound into `out` before the filter instead ([`follower_frame`], out of
+/// line), and the lead takes what its followers put there into its own
+/// before the filter, the hit's frame then taking the input's place. The
+/// lead runs the same filter call as every other voice: a second call of
+/// it, out of line for the chain, lost the driven Ladder its inlining
+/// (13.7 % more instructions on the bench's 16 held driven pads).
 #[inline(always)]
 pub(super) fn finish<const FOLLOW: bool>(
     v: &mut Voice,
@@ -420,7 +458,9 @@ pub(super) fn finish<const FOLLOW: bool>(
     mut l: f32,
     mut r: f32,
     g: f32,
-) -> (f32, f32) {
+    out: (&mut [f32], &mut [f32]),
+    k: usize,
+) {
     if FOLLOW {
         follow_live(v);
     }
@@ -430,6 +470,14 @@ pub(super) fn finish<const FOLLOW: bool>(
         let amp = amp_gain(v, 1.0);
         l *= g;
         r *= g;
+        if v.role != Role::Solo {
+            if v.role == Role::Follower {
+                follower_frame(v, amp, l, r, (&mut out.0[k], &mut out.1[k]));
+                return;
+            }
+            l += std::mem::take(&mut out.0[k]);
+            r += std::mem::take(&mut out.1[k]);
+        }
         if let Some(kind) = filter_tick(v, rate) {
             (l, r) = v.filt.process_first(kind, l, r);
         }
@@ -453,7 +501,16 @@ pub(super) fn finish<const FOLLOW: bool>(
             (l, r) = v.filt.comb.process(l, r);
         }
     }
+    let (l, r) = end_frame(v, l, r);
+    out.0[k] += l;
+    out.1[k] += r;
+}
 
+/// The end of a frame ([`finish`]): the stolen voice's tail, the frame
+/// kept as the voice's last, the kill fade's count and the end of the
+/// voice when it or the envelope ends.
+#[inline(always)]
+fn end_frame(v: &mut Voice, mut l: f32, mut r: f32) -> (f32, f32) {
     if v.tail_left > 0 {
         let t = f32::from(v.tail_left) / f32::from(STEAL_FRAMES);
         l += v.tail_l * t;
@@ -477,13 +534,50 @@ pub(super) fn finish<const FOLLOW: bool>(
     (l, r)
 }
 
+/// [`finish`] for a **follower**, a layer whose hit's filter its lead runs
+/// ([`Role`]): its sound, `l` and `r` at its gain before the filter, added
+/// into `out` (its lead's input) under its own kill fade (a fade of this
+/// layer alone). The lead's filter, envelope and gains are the hit's; the
+/// follower's own envelope and movement run on (the envelope ends with the
+/// lead's, the movement moves its pitch). What it keeps as its last frame
+/// is its sound through its own gains (its filter aside): about what it
+/// adds to the hit, for the voice cull's choice ([`Voice::heard`]) and a
+/// steal's tail. It has no tail of its own: its lead took it
+/// ([`Engine::share_filter`]). Kept out of line: the loop of every voice
+/// of its own stays as small as it was, and a follower pays a call a frame,
+/// a fraction of the filter it no longer runs.
+#[inline(never)]
+fn follower_frame(v: &mut Voice, amp: f32, l: f32, r: f32, out: (&mut f32, &mut f32)) {
+    v.last_l = l * amp * v.gain_l;
+    v.last_r = r * amp * v.gain_r;
+    let mut k = 1.0;
+    if v.kill_left > 0 {
+        k = f32::from(v.kill_left) / f32::from(KILL_FRAMES);
+        v.kill_left -= 1;
+        if v.kill_left == 0 {
+            v.active = false;
+        }
+    }
+    if v.amp.as_ref().is_some_and(|a| a.is_done()) {
+        v.active = false;
+    }
+    *out.0 += l * k;
+    *out.1 += r * k;
+}
+
 /// A sample voice's next `left.len()` frames, added into `left` and
-/// `right`. Whether it follows a live setting is settled once a call (only
-/// events start that, and they come between calls), so a voice that isn't
-/// following runs the loop it always did.
-pub(super) fn render_voice(v: &mut Voice, rate: f32, left: &mut [f32], right: &mut [f32]) {
+/// `right` (a lead's: filtered with what its followers put there,
+/// [`render_chain`]). Whether it follows a live setting is settled once a
+/// call (only events start that, and they come between calls), so a voice
+/// that isn't following runs the loop it always did. Returns the frames
+/// it played: all of them, unless it ended (a follower's end tells its
+/// lead how far to host it).
+pub(super) fn render_voice(v: &mut Voice, rate: f32, left: &mut [f32], right: &mut [f32]) -> usize {
+    let mut played = left.len();
     if v.ringing {
         ring_out(v, left, right);
+    } else if v.hosting {
+        played = host(v, rate, left, right, 0);
     } else {
         // A run stops early, the voice still playing, when its read
         // changes: its step passed CLEAN_ABOVE (a glide, pressure), or it
@@ -508,20 +602,136 @@ pub(super) fn render_voice(v: &mut Voice, rate: f32, left: &mut [f32], right: &m
                 break;
             }
         }
+        if !v.active {
+            played = done;
+        }
         if !v.active && done < left.len() && rings_on(v) {
             v.active = true;
             v.ringing = true;
             ring_out(v, &mut left[done..], &mut right[done..]);
+            played = left.len();
         } else if !v.active && rings_on(v) {
             // Ended on the block's last frame: it rings from the next.
             v.active = true;
             v.ringing = true;
+        } else if !v.active && v.hosting {
+            // A lead whose sound ended: it filters its followers' on while
+            // they play, here (some ended later) or from the next part (one
+            // played to the end of this one).
+            if done < v.host_until || v.host_until == left.len() {
+                v.active = true;
+                played = host(v, rate, left, right, done);
+            } else {
+                v.hosting = false;
+                v.data = None;
+            }
         }
     }
     v.heard = (v.heard * HEARD_FALL).max(v.last_l.abs().max(v.last_r.abs()));
     if v.heard < TINY {
         v.heard = 0.0;
     }
+    played
+}
+
+/// A lead whose own sound has ended ([`Voice::hosting`]), from frame
+/// `from` of this part of the block: its followers' sound, already in
+/// `left` and `right`, through its filter and its gains, until
+/// [`Voice::host_until`]. The hit ends there if its followers ended inside
+/// this part, or when its envelope or a kill fade ends. Returns the frames
+/// it played. Kept out of line: a lead spends only a sound's tail here.
+#[cold]
+#[inline(never)]
+fn host(v: &mut Voice, rate: f32, left: &mut [f32], right: &mut [f32], from: usize) -> usize {
+    let until = v.host_until.min(left.len());
+    let mut played = until.max(from);
+    if from < until {
+        let (l, r) = (&mut left[from..until], &mut right[from..until]);
+        played = from
+            + if v.follow.moving {
+                host_out::<true>(v, rate, l, r)
+            } else {
+                host_out::<false>(v, rate, l, r)
+            };
+    }
+    if v.active && until < left.len() {
+        v.active = false;
+    }
+    if !v.active {
+        v.hosting = false;
+        v.data = None;
+    }
+    played
+}
+
+/// [`host`]'s frames: each frame's followers' sound through the lead's
+/// [`finish`], with no sound of its own. Returns the frames it played.
+fn host_out<const FOLLOW: bool>(
+    v: &mut Voice,
+    rate: f32,
+    left: &mut [f32],
+    right: &mut [f32],
+) -> usize {
+    for k in 0..left.len().min(right.len()) {
+        finish::<FOLLOW>(v, rate, 0.0, 0.0, 0.0, (&mut *left, &mut *right), k);
+        if !v.active {
+            return k + 1;
+        }
+    }
+    left.len()
+}
+
+/// Lead `k`'s hit ([`Role`]), the next `left.len()` frames, into `left`
+/// and `right` in place of what they hold: its followers' sound before the
+/// filter, then the lead's own with theirs through its filter and the
+/// hit's gains. A lead that ends takes its followers with it.
+pub(super) fn render_chain(
+    voices: &mut [Voice],
+    k: usize,
+    rate: f32,
+    left: &mut [f32],
+    right: &mut [f32],
+) {
+    left.fill(0.0);
+    right.fill(0.0);
+    let hit = voices[k].hit;
+    let follows = |f: &Voice, j: usize| {
+        j != k && f.active && f.role == Role::Follower && usize::from(f.lead) == k && f.hit == hit
+    };
+    let mut until = 0;
+    for j in 0..voices.len() {
+        if follows(&voices[j], j) {
+            until = until.max(render_voice(&mut voices[j], rate, left, right));
+        }
+    }
+    let lead = &mut voices[k];
+    lead.host_until = until;
+    let played = render_voice(lead, rate, left, right);
+    if !lead.active {
+        // What its followers put past its end isn't heard.
+        left[played..].fill(0.0);
+        right[played..].fill(0.0);
+        for j in 0..voices.len() {
+            if follows(&voices[j], j) {
+                end_follower(&mut voices[j]);
+            }
+        }
+    }
+}
+
+/// Whether follower `f`'s lead, slot `f.lead` of `voices`, is still its
+/// hit's: a lead ends its followers as it ends, so this is only for one
+/// whose slot another voice took ([`Pool::render_into`]).
+pub(super) fn has_lead(voices: &[Voice], f: &Voice) -> bool {
+    voices
+        .get(usize::from(f.lead))
+        .is_some_and(|l| l.active && l.role == Role::Lead && l.hit == f.hit)
+}
+
+/// A follower whose hit has ended.
+pub(super) fn end_follower(f: &mut Voice) {
+    f.active = false;
+    f.data = None;
 }
 
 /// [`render_voice`] for a voice reading band-limited, from now on. Kept
@@ -770,7 +980,9 @@ pub(super) fn render_voice_as<const FOLLOW: bool, const BL: bool, const VINTAGE:
         Pcm::F32(d) => render_voice_runs::<f32, FOLLOW, BL, VINTAGE>(v, d, rate, left, right),
         Pcm::I16(d) => render_voice_runs::<i16, FOLLOW, BL, VINTAGE>(v, d, rate, left, right),
     };
-    if v.active {
+    // A lead whose sound ended keeps it while it filters its followers'
+    // ([`render_voice`]), so an edit of its layer still reaches it.
+    if v.active || v.hosting {
         v.data = Some(data);
     }
     done
@@ -841,10 +1053,15 @@ pub(super) fn render_voice_from<
     let exact = !BL && !VINTAGE && v.on_frame(v.pos);
     let mut xf = if XF { v.xf_left } else { 0 };
     let mut done = left.len();
-    for (k, (ol, or)) in left.iter_mut().zip(right.iter_mut()).enumerate() {
+    // The gain before the filter, the same all call unless it follows an
+    // edit ([`live_step`] glides it): read once here, not every frame.
+    let pre = v.pre.gain;
+    for k in 0..left.len().min(right.len()) {
         let i = v.pos >> 32;
         if i < v.start || i >= v.end {
             v.active = false;
+            // A lead's followers may play on ([`render_voice`]).
+            v.hosting = v.role == Role::Lead;
             done = k;
             break;
         }
@@ -874,7 +1091,9 @@ pub(super) fn render_voice_from<
             v.jump_left -= 1;
         }
 
-        let mut g = 1.0f32;
+        // The gain before the filter ([`Pre`]; 1 with no filter), then
+        // the region's fades.
+        let mut g = if FOLLOW { v.pre.gain } else { pre };
         if let Some(f) = v.fade_in {
             let d = if v.reverse {
                 v.end - 1 - i
@@ -895,9 +1114,7 @@ pub(super) fn render_voice_from<
                 g *= f.shape(d as f32 / f.frames as f32);
             }
         }
-        let (l, r) = finish::<FOLLOW>(v, rate, l, r, g);
-        *ol += l;
-        *or += r;
+        finish::<FOLLOW>(v, rate, l, r, g, (&mut *left, &mut *right), k);
         if XF && xf > 0 {
             xf -= 1;
         }

@@ -60,9 +60,9 @@ pub const KEY_BEND_CENTS: f32 = 200.0;
 
 /// The sampler setting a clip's lock on a kit pad's sound names
 /// (`Owner::Pad`): its parameter is the [`PadField`]'s number (Level 0,
-/// Pan 1, Tune 2, Cutoff 3, Resonance 4, Attack 5, Decay 6, Release 7), and
-/// its value is in the field's own unit (dB, -1 to 1, cents, Hz, 0 to 1,
-/// ms).
+/// Pan 1, Tune 2, Cutoff 3, Resonance 4, Attack 5, Decay 6, Release 7,
+/// ... Drive 12, Env depth 13), and its value is in the field's own unit
+/// (dB, -1 to 1, cents, Hz, 0 to 1, ms, octaves).
 pub fn pad_field(param: u16) -> Option<PadField> {
     PadField::ALL.get(usize::from(param)).copied()
 }
@@ -174,6 +174,14 @@ pub fn pad_info(field: PadField, slices: usize) -> mpfree_node::ParamInfo {
                 Unit::Ms,
                 Curve::Log,
             )
+        }
+        PadField::Drive => {
+            let top = mpfree_sampler::dsp::MAX_DRIVE_DB;
+            info("Drive", 0.0, top, 0.0, Unit::Db, Curve::Linear)
+        }
+        PadField::EnvDepth => {
+            let o = mpfree_sampler::dsp::MAX_ENV_OCTAVES;
+            info("Env depth", -o, o, 0.0, Unit::Octaves, Curve::Linear)
         }
     }
 }
