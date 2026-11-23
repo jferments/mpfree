@@ -16,6 +16,15 @@
 //!   morph lane (`Arrangement::lanes`, on `MORPH_LANE`), and the two rows
 //!   it morphs between are kept with them (`Arrangement::morphs`). A pass
 //!   with no move leaves the lane as it was.
+//! - **The XY pad's moves** (the XY controller plan, phase 3): a setting
+//!   the pad moves ([`SongRecorder::moved`]: the master, a bus, a return,
+//!   another track's, or with Rec song alone any of them) becomes a move
+//!   in the song's lane for it (`Target::Fixed`), over what the lane had
+//!   only where it moved, as a knob's move records into a clip. A gesture
+//!   still moving at a jump goes on in the next pass from where the
+//!   transport lands; a stop ends it. A move that finds no room (the
+//!   song's 64 lanes, or a lane's points) is left out and counted
+//!   ([`Recorded::moves_lost`]), never failing the rest.
 //!
 //! A track playing the song (song mode, nothing launched on it) is not
 //! recorded: the song stays as it is there. Where the session played a
@@ -51,8 +60,9 @@
 //! allocate, like any edit there today.
 
 use mpfree_play::{Launch, Started};
-use mpfree_seq::arrange::{MorphRows, MAX_PLACEMENTS};
-use mpfree_seq::mpfree_moves::Kind;
+use mpfree_seq::arrange::{MorphRows, MAX_PLACEMENTS, SONG_LANE_LEN};
+use mpfree_seq::mpfree_moves::{Input, Kind, Map, Target};
+use mpfree_seq::mpfree_param::ParamAddr;
 use mpfree_seq::{ModelError, Placement, Project, MAX_TRACKS};
 use mpfree_transport::{Block, State, Tick};
 
@@ -81,6 +91,16 @@ struct Pass {
     /// The morph position's points, and the rows at each change.
     morph: Vec<(f64, f32, Kind)>,
     rows: Vec<MorphRows>,
+    /// The XY pad's gestures, each a setting's points on song ticks.
+    moves: Vec<SongMove>,
+}
+
+/// A setting's gesture in a pass, for the song's lane for it.
+#[derive(Clone, Debug, PartialEq)]
+struct SongMove {
+    addr: ParamAddr,
+    map: Map,
+    points: Vec<(f64, f32, Kind)>,
 }
 
 /// What [`SongRecorder::finish`] put in the song.
@@ -89,6 +109,10 @@ pub struct Recorded {
     pub passes: usize,
     pub placements: usize,
     pub morph_points: usize,
+    /// The XY pad's gestures written into the song's lanes, and those
+    /// that found no room.
+    pub moves: usize,
+    pub moves_lost: usize,
 }
 
 /// Records the session into the song: see the module notes.
@@ -107,6 +131,9 @@ pub struct SongRecorder {
     rows: (usize, usize),
     /// The morph moved in this pass.
     morph_moved: bool,
+    /// The XY pad's gestures under way: the setting, its map, its last
+    /// knob place and its gesture in the pass.
+    moving: Vec<(ParamAddr, Map, f32, usize)>,
     pass: Option<Pass>,
     done: Vec<Pass>,
     /// The most blocks the song may hold ([`MAX_PLACEMENTS`]).
@@ -133,6 +160,7 @@ impl Default for SongRecorder {
             morph: 0.0,
             rows: (0, 1),
             morph_moved: false,
+            moving: Vec::new(),
             pass: None,
             done: Vec::new(),
             limit: MAX_PLACEMENTS,
@@ -195,6 +223,7 @@ impl SongRecorder {
                 self.end_pass(at);
             }
             self.next = None;
+            self.moving.clear();
         }
         self.armed = on;
     }
@@ -243,6 +272,7 @@ impl SongRecorder {
         if need > self.limit {
             self.end_pass(at);
             self.next = None;
+            self.moving.clear();
             self.armed = false;
             self.full = Some(at);
             return false;
@@ -287,6 +317,8 @@ impl SongRecorder {
                 if let Some(at) = self.next.take() {
                     self.end_pass(at);
                 }
+                // A stop ends the XY pad's gestures.
+                self.moving.clear();
                 continue;
             }
             match self.next {
@@ -362,6 +394,54 @@ impl SongRecorder {
         p.morph.push((at as f64, pos, Kind::Ramp));
     }
 
+    /// A setting the XY pad moves, or lets go of, at song tick `at`
+    /// (`Input::Move`, the first value starting a gesture, or
+    /// `Input::End`): see the module notes. Nothing happens unless a pass
+    /// records.
+    pub fn moved(&mut self, at: Tick, input: Input) {
+        let Some(p) = self.pass.as_mut() else {
+            return;
+        };
+        let at = at.max(p.from) as f64;
+        match input {
+            Input::Move { addr, value, map } => {
+                let u = map.unit(value);
+                let kind = if map.stepped() {
+                    Kind::Step
+                } else {
+                    Kind::Ramp
+                };
+                match self.moving.iter_mut().find(|m| m.0 == addr) {
+                    Some(m) => {
+                        m.2 = u;
+                        if let Some(g) = p.moves.get_mut(m.3) {
+                            let at = g.points.last().map_or(at, |l| at.max(l.0));
+                            g.points.push((at, u, kind));
+                        }
+                    }
+                    None => {
+                        self.moving.push((addr, map, u, p.moves.len()));
+                        p.moves.push(SongMove {
+                            addr,
+                            map,
+                            points: vec![(at, u, kind)],
+                        });
+                    }
+                }
+            }
+            Input::End { addr } => {
+                let Some(k) = self.moving.iter().position(|m| m.0 == addr) else {
+                    return;
+                };
+                let (_, _, _, g) = self.moving.swap_remove(k);
+                if let Some(g) = p.moves.get_mut(g) {
+                    let at = g.points.last().map_or(at, |l| at.max(l.0));
+                    g.points.push((at, 0.0, Kind::End));
+                }
+            }
+        }
+    }
+
     /// Track `track` muted or heard again from song tick `at`, other than
     /// by a scene's cue (which comes with its [`Started`]).
     pub fn mute(&mut self, track: usize, on: bool, at: Tick) {
@@ -412,6 +492,27 @@ impl SongRecorder {
                 song.put_morph(&p.morph, &p.rows, p.from, p.to)?;
                 out.morph_points += p.morph.len();
             }
+            for m in &p.moves {
+                // Song ticks never run past the song's lane (a lane wraps
+                // a gesture longer than it).
+                let last = f64::from(SONG_LANE_LEN - 1);
+                if m.points.first().is_none_or(|f| f.0 > last) {
+                    continue;
+                }
+                let mut points: Vec<(f64, f32, Kind)> =
+                    m.points.iter().copied().filter(|q| q.0 <= last).collect();
+                if m.points.len() > points.len() && points.last().is_some_and(|q| q.2 != Kind::End)
+                {
+                    points.push((last, 0.0, Kind::End));
+                }
+                match song
+                    .lanes
+                    .put(Target::Fixed(m.addr), m.map, &points, SONG_LANE_LEN)
+                {
+                    Ok(()) => out.moves += 1,
+                    Err(_) => out.moves_lost += 1,
+                }
+            }
             out.passes += 1;
         }
         song.check(&project.tracks)?;
@@ -442,6 +543,21 @@ impl SongRecorder {
                 a: rows.0,
                 b: rows.1,
             });
+            // The XY pad's gestures still moving (after a jump) go on from
+            // where the transport landed.
+            for m in &mut self.moving {
+                let kind = if m.1.stepped() {
+                    Kind::Step
+                } else {
+                    Kind::Ramp
+                };
+                m.3 = p.moves.len();
+                p.moves.push(SongMove {
+                    addr: m.0,
+                    map: m.1,
+                    points: vec![(at as f64, m.2, kind)],
+                });
+            }
         }
     }
 
@@ -455,6 +571,14 @@ impl SongRecorder {
         }
         if let Some(mut p) = self.pass.take() {
             p.to = at;
+            // Gestures still moving end where the pass does (a jump goes on
+            // in the next one, `begin_pass`).
+            for m in &self.moving {
+                if let Some(g) = p.moves.get_mut(m.3) {
+                    let at = g.points.last().map_or(at as f64, |l| (at as f64).max(l.0));
+                    g.points.push((at, 0.0, Kind::End));
+                }
+            }
             if !self.morph_moved {
                 p.morph.clear();
                 p.rows.clear();

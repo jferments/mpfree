@@ -1602,6 +1602,10 @@ impl TimeAudio {
         self.recorder.input_move(offset, input);
     }
 
+    pub fn song_gesture(&mut self, offset: u32, input: Input) {
+        self.send(ToControl::SongMoved(offset, input));
+    }
+
     pub fn set_fill(&mut self, on: bool, offset: u32) {
         self.player.set_fill(on, offset);
     }
