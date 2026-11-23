@@ -132,12 +132,14 @@ pub const THRESHOLD: f64 = 0.9;
 /// How far ahead of everything else (the tap included) it must be.
 pub const MARGIN: f64 = 0.4;
 /// Far from the tap: more than this part of the reach away. A hit there
-/// moves the tap only when the beat backs it ([`BEAT_BACKS`]), once the
-/// loop has a beat to go on ([`MIN_BEAT_NOTES`]): at fast tempos the
+/// moves the tap only when the beat backs it, once the loop has a beat
+/// to go on ([`MIN_BEAT_NOTES`]): its rhythm part at least [`BEAT_BACKS`],
+/// and no less than your tap's own (the loop ending there fits the beat
+/// at least as well as the loop ending on your tap). At fast tempos the
 /// reach is a 1/16 note, so a tap almost a 16th early reaches back
 /// nearly an 8th, to a pickup that sounds like the first hit.
-pub const FAR: f64 = 0.75;
-/// The rhythm part a far hit needs.
+pub const FAR: f64 = 0.7;
+/// The rhythm part a far hit needs, at least.
 pub const BEAT_BACKS: f64 = 0.15;
 
 /// A pass's notes (or hits), from its start: the first [`HEAD`], then the
@@ -562,9 +564,12 @@ pub fn decide<E: Event>(
             second = *c;
         }
     }
-    // Far from the tap, with a beat to go on, the beat must back it.
+    // Far from the tap, with a beat to go on, the beat must back it, at
+    // least as well as it backs your tap.
     let far = best.end.abs_diff(ask.tap) as f64 > FAR * ask.reach as f64;
-    let unbacked = far && ctx.beat_notes() >= MIN_BEAT_NOTES && best.rhythm < BEAT_BACKS;
+    let unbacked = far
+        && ctx.beat_notes() >= MIN_BEAT_NOTES
+        && (best.rhythm < BEAT_BACKS || best.rhythm < tap.rhythm);
     let clear = best.score >= THRESHOLD && best.score - second.score >= MARGIN && !unbacked;
     Decision {
         verdict: if clear {

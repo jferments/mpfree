@@ -17,16 +17,19 @@
 //! comes from a seeded generator, so the corpus is the same on every run
 //! and every machine.
 //!
-//! **No wrong moves.** Before two rules in [`ends`] it made 12, all one
+//! **No wrong moves.** Before the rules in [`ends`] it made 12, all one
 //! kind: at fast tempos (here 174 BPM) the reach is a 1/16 note, so a tap
 //! almost a 16th early reaches back nearly an 8th, and a kick played an
 //! 8th before the downbeat (half time's pickup on the "and" of 4) won on
 //! its likeness to the first hit, though the beat didn't fit it. Now a
-//! hit far from the tap needs the beat to back it ([`ends::FAR`]), and a
 //! soft note just ahead of the first kick is part of the opening hit
-//! ([`ends::FLAM_MS`]). Over 32 seeds of this corpus (6.4 million taps)
-//! that took the wrong moves from 214 to 4, for 0.12 % fewer of the taps
-//! off by 15 ms or more moved to the downbeat (99.39 to 99.27 %).
+//! ([`ends::FLAM_MS`]), and a hit far from the tap ([`ends::FAR`]) needs
+//! the beat to back it, at least [`ends::BEAT_BACKS`] and at least as
+//! well as it backs your tap. Over 160 seeds of this corpus (31.9 million
+//! taps) main's engine made 965 wrong moves, the flam and `BEAT_BACKS`
+//! alone 19, and all of it none, for 0.35 % fewer of the taps off by
+//! 15 ms or more moved to the downbeat (99.38 to 99.03 %). The test plays
+//! five seeds: the first, and four that fail without the last part.
 
 use mpfree_looper::ends::{decide, reach, Ask, NoteLog, Verdict};
 use mpfree_looper::{read_bars, NoteStart};
@@ -457,46 +460,55 @@ fn across_the_corpus_a_tap_moves_only_to_the_downbeat_you_played() {
     const TIMING: &[(&str, f64)] = &[("tight", 2.0), ("human", 6.0), ("loose", 12.0)];
     const EARLY: &[f64] = &[0.0, 60.0];
     const AFTER: [After; 3] = [After::Stops, After::PlaysOn, After::Silent];
-    let mut s = Seq(20_261_123);
+    // The corpus's own seed, and four that fail without the far rule's
+    // last part: in three a far hit that fits the beat less well than
+    // your tap would win, and in one a hit 0.7 to 0.75 of the reach away.
+    const SEEDS: &[u64] = &[20_261_123, 37, 121, 231, 212];
     let mut wrongs = Vec::new();
     let mut total = Tally::default();
     let mut by_timing = [Tally::default(); 3];
     let mut by_after = [Tally::default(); 3];
     let mut by_fill = [Tally::default(); 2];
     let mut lines = Vec::new();
-    for g in GROOVES {
-        let mut groove = Tally::default();
-        for &bpm in TEMPOS {
-            for &bars in BARS {
-                for (ti, &(timing, sd)) in TIMING.iter().enumerate() {
-                    for &early in EARLY {
-                        for (ai, &after) in AFTER.iter().enumerate() {
-                            for fill in [false, true] {
-                                let take = play(g, bpm, bars, sd, early, after, fill, &mut s);
-                                let what = format!(
-                                    "{} at {bpm} BPM, {bars} bars, {timing}, REC {early} ms early, {}{}",
+    let mut grooves = [Tally::default(); GROOVES.len()];
+    for &seed in SEEDS {
+        let mut s = Seq(seed);
+        for (gi, g) in GROOVES.iter().enumerate() {
+            let groove = &mut grooves[gi];
+            for &bpm in TEMPOS {
+                for &bars in BARS {
+                    for (ti, &(timing, sd)) in TIMING.iter().enumerate() {
+                        for &early in EARLY {
+                            for (ai, &after) in AFTER.iter().enumerate() {
+                                for fill in [false, true] {
+                                    let take = play(g, bpm, bars, sd, early, after, fill, &mut s);
+                                    let what = format!(
+                                    "{} at {bpm} BPM, {bars} bars, {timing}, REC {early} ms early, {}{} (seed {seed})",
                                     g.name,
                                     if fill { "a fill, " } else { "" },
                                     after.words()
                                 );
-                                let t = taps(&take, g, bpm, &mut wrongs, &what);
-                                groove.add(&t);
-                                by_timing[ti].add(&t);
-                                by_after[ai].add(&t);
-                                by_fill[usize::from(fill)].add(&t);
+                                    let t = taps(&take, g, bpm, &mut wrongs, &what);
+                                    groove.add(&t);
+                                    by_timing[ti].add(&t);
+                                    by_after[ai].add(&t);
+                                    by_fill[usize::from(fill)].add(&t);
+                                }
                             }
                         }
                     }
                 }
             }
         }
+    }
+    for (g, groove) in GROOVES.iter().zip(&grooves) {
         lines.push(format!(
             "{:>26} ({}): {}",
             g.name,
             g.meter.name,
             groove.line()
         ));
-        total.add(&groove);
+        total.add(groove);
     }
     for (i, (timing, sd)) in TIMING.iter().enumerate() {
         lines.push(format!(
