@@ -268,6 +268,7 @@ class WindowTests(unittest.TestCase):
               "mpfree-internal-off: done: no eMMC or SD card block device is left\n")
         self.kernel = None
         self.proc = None
+        self.quiet = None   # QUIET for this run, when a test needs it shorter
 
     def tearDown(self):
         if self.proc and self.proc.poll() is None:
@@ -281,7 +282,11 @@ class WindowTests(unittest.TestCase):
         with open(WINDOW) as fh:
             text = fh.read()
         self.assertTrue(text.startswith("R=''\n"))
-        return text.replace("R=''", f"R='{self.root}'", 1)
+        text = text.replace("R=''", f"R='{self.root}'", 1)
+        if self.quiet is not None:
+            self.assertEqual(text.count("\nQUIET=120\n"), 1)
+            text = text.replace("\nQUIET=120\n", f"\nQUIET={self.quiet}\n", 1)
+        return text
 
     def start(self, **env):
         path = os.path.join(self.root, "run/mpfree-app/sd-card.request")
@@ -624,6 +629,41 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(self.status()["state"], "failed")
         self.assertNotIn(MNT, self.mounts(), "unmounted before it turns the MPC off")
 
+    def test_closes_when_the_pad_player_stops_answering(self):
+        alive = os.path.join(self.root, "run/mpfree-app/sd-card.alive")
+        write(alive, "00000000000000000007\n")   # an earlier opening's: not this one's
+        self.quiet = 5
+        self.kernel = FakeSdKernel(self.root)
+        self.start()
+        self.wait_state("open")
+        self.assertFalse(os.path.exists(alive), "an earlier opening's counter is taken away")
+        # While the counter moves, the window stays open, far past QUIET checks.
+        for n in range(1, 31):
+            write(alive, f"{n:020}\n")
+            time.sleep(0.05)
+        self.assertIsNone(self.proc.poll(), "it stays open while the pad player answers" + self.notes())
+        self.assertEqual(self.status()["state"], "open")
+        # Then it stops: the window closes as if asked, and checks everything as it does.
+        code, out = self.finish()
+        self.assertEqual(code, 0, out + self.notes())
+        self.assertEqual(self.status(), {"state": "closed",
+                                         "message": "Closed: MPFree stopped reading the card. Nothing was written "
+                                                    "to it."})
+        self.assertIn("closed: MPFree stopped reading the card (its counter stood still for 5 s)", self.notes())
+        self.assert_closed()
+        self.assert_read_only()
+        self.assertFalse(os.path.exists(alive), "the counter is taken away with the window")
+
+    def test_a_pad_player_that_never_answers_still_gets_its_window_closed(self):
+        self.quiet = 3
+        self.kernel = FakeSdKernel(self.root)
+        self.start()
+        self.wait_state("open")
+        code, out = self.finish()
+        self.assertEqual(code, 0, out + self.notes())
+        self.assertEqual(self.status()["state"], "closed")
+        self.assert_closed()
+
     def test_a_close_left_from_before_is_not_for_this_opening(self):
         self.kernel = FakeSdKernel(self.root)
         write(os.path.join(self.root, "run/mpfree-app/sd-card.close"), "")
@@ -678,9 +718,11 @@ class StaticTests(unittest.TestCase):
         self.assertIn("devdir=$d\n", code)
         self.assertEqual(re.findall(r"(?m)^\s*devdir=\S+", code), ["devdir=''", "  devdir=$d"])
         # Deletes: its own files in /run, stale /dev/disk links, the empty mount point.
-        self.assertEqual(sorted(set(re.findall(r"\brm -f \"[^\"]+\"(?: \"[^\"]+\")?", code))),
-                         sorted({'rm -f "$ASK/sd-card.request" "$ASK/sd-card.close"', 'rm -f "$l"', 'rm -f "$RULE"',
-                                 'rm -f "$ASK/sd-card.close"', 'rm -f "$S/sd-card-counters-now.txt"'}))
+        self.assertEqual(sorted(set(re.findall(r"\brm -f \"[^\"]+\"(?: \"[^\"]+\")*", code))),
+                         sorted({'rm -f "$ASK/sd-card.request" "$ASK/sd-card.close" "$ALIVE"', 'rm -f "$l"',
+                                 'rm -f "$RULE"', 'rm -f "$ASK/sd-card.close"', 'rm -f "$S/sd-card-counters-now.txt"',
+                                 'rm -f "$ALIVE"'}))
+        self.assertIn('ALIVE="$ASK/sd-card.alive"\n', code)
         self.assertNotIn("rm -r", code)
         self.assertIn('rmdir "$R$MNT"', code)
         self.assertIn("MNT=/run/mpfree-sd\n", code)

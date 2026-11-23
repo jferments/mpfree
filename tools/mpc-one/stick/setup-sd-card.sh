@@ -6,7 +6,7 @@ R=''
 # Run as root, once per opening, when the pad player asks for the card (it writes
 # /run/mpfree-app/sd-card.request). At startup the stick's system switched the eMMC and SD card controllers
 # off (internal-off.sh). This opens a read-only window on the SD card only, and keeps it open until the pad
-# player asks to close it (/run/mpfree-app/sd-card.close):
+# player asks to close it (/run/mpfree-app/sd-card.close) or stops answering (sd-card.alive):
 #   1. checks: the startup switch-off finished, no eMMC or SD card block device present, both controllers
 #      unbound (so the backup's window is not open; the eMMC's stays unbound throughout), the backup not
 #      running, nothing mounted at the card's place;
@@ -24,12 +24,15 @@ R=''
 #      group) at /run/mpfree-sd, and records the card's write and discard counters (block layer stat fields
 #      5-7 and 12-14) and the kernel's count of refused writes to read-only disks;
 #   5. waits, once a second, until the pad player asks to close it, the card is taken out or the system
-#      stops this. If the counters move, or the card stops being read-only, it fails and closes;
-#   6. closes: checks the counters and the refused writes again, unmounts (after LETGO seconds of the pad
-#      player still holding a file, lazily: the card is read-only, so nothing can be lost), unbinds the
-#      controller, waits until no mmcblk device is left, removes the udev rule, stale /dev/disk links and
-#      the empty mount point. If the controller will not let go, the MPC powers off, as the backup's window
-#      does (MPFree never runs with the internal storage reachable).
+#      stops this. While it reads, the pad player moves a counter in /run/mpfree-app/sd-card.alive; once the
+#      counter stands still for QUIET seconds (the pad player stopped), the window closes as if asked. If
+#      the card's write or discard counters move, or the card stops being read-only, it fails and closes;
+#   6. closes: checks the write and discard counters and the refused writes again, unmounts (after LETGO
+#      seconds of the pad player still holding a file, lazily: the card is read-only, so nothing can be
+#      lost), unbinds the controller, waits until no mmcblk device is left, removes the pad player's
+#      counter, the udev rule, stale /dev/disk links and the empty mount point. If the controller will not
+#      let go, the MPC powers off, as the backup's window does (MPFree never runs with the internal storage
+#      reachable).
 # Nothing is ever written to the card: no fsck, no write, a read-only mount on a disk the kernel holds
 # read-only (no program can open it for writing, and no filesystem mounts it read-write). Underneath that,
 # the block layer of this kernel (6.x) only warns about a write to a read-only disk, once per disk ("Trying
@@ -51,9 +54,12 @@ ASK="$R/run/mpfree-app"
 MNT=/run/mpfree-sd
 RULE="$R/run/udev/rules.d/00-mpfree-sd-ro.rules"
 APP_GID=960
-# Seconds: for a card to answer after the bind, and for the pad player to let go of the card's files.
+# Seconds: for a card to answer after the bind, for the pad player to let go of the card's files, and for
+# its counter to stand still before the window closes (setup-backup.sh's QUIET).
 APPEAR=10
 LETGO=10
+QUIET=120
+ALIVE="$ASK/sd-card.alive"
 NEEDS='cat cut dd dmesg grep mkdir mount mv readlink rm rmdir sleep sync systemctl tr udevadm umount'
 opened=''
 mounted=''
@@ -65,8 +71,8 @@ devdir=''
 
 mkdir -p "$S"
 # The request has done its job: taken away so the path unit does not start this again when it ends. A close
-# left from an earlier opening is not for this one.
-rm -f "$ASK/sd-card.request" "$ASK/sd-card.close"
+# or a counter left from an earlier opening is not for this one.
+rm -f "$ASK/sd-card.request" "$ASK/sd-card.close" "$ALIVE"
 status() {   # state message
   { echo "state=$1"; echo "message=$2"
     if [ "$1" = open ]; then echo "card=$card"; echo "fs=$fs"; echo "sectors=$sectors"; echo "mount=$MNT"; fi
@@ -108,6 +114,7 @@ unmount() {
 close_window() {
   trap '' TERM INT   # a stop from the system waits for the close: it takes LETGO + 10 s at the most
   unmount
+  rm -f "$ALIVE"
   [ -n "$opened" ] || return 0
   [ -e "$devdir/driver" ] && echo "$name" > "$devdir/driver/unbind" 2>/dev/null
   n=0
@@ -266,8 +273,10 @@ counters > "$S/sd-card-counters-before.txt"
 say "window open: $card, $sectors sectors, $kind on $dev, read-only at $MNT"
 status open "The SD card is open, read-only."
 
-# 5. Open until the pad player asks to close it, the card goes or the system stops this.
+# 5. Open until the pad player asks to close it or stops answering, the card goes or the system stops this.
 why=''
+beat=''
+quiet=0
 while [ -z "$why" ]; do
   if [ -e "$ASK/sd-card.close" ]; then
     rm -f "$ASK/sd-card.close"
@@ -284,7 +293,18 @@ while [ -z "$why" ]; do
     elif [ "$ro" != 1 ]; then
       fail "$card stopped being read-only"
     else
-      sleep 1
+      now=$(cat "$ALIVE" 2>/dev/null)
+      if [ "$now" != "$beat" ]; then
+        beat=$now
+        quiet=0
+      else
+        quiet=$((quiet + 1))
+      fi
+      if [ "$quiet" -ge "$QUIET" ]; then
+        why=quiet
+      else
+        sleep 1
+      fi
     fi
   fi
 done
@@ -309,5 +329,10 @@ counters > "$S/sd-card-counters-now.txt"
   fail "the card's write or discard counters moved as it was unmounted (see $S/sd-card-counters-*.txt)"
 close_window
 rm -f "$S/sd-card-counters-now.txt"
-status closed "Closed. Nothing was written to the card."
+if [ "$why" = quiet ]; then
+  say "closed: MPFree stopped reading the card (its counter stood still for $QUIET s)"
+  status closed "Closed: MPFree stopped reading the card. Nothing was written to it."
+else
+  status closed "Closed. Nothing was written to the card."
+fi
 exit 0
