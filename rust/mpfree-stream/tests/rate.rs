@@ -274,16 +274,17 @@ fn a_band_limited_read_keeps_its_whole_frames_and_its_pitch() {
 #[test]
 fn a_band_limited_read_twice_as_fast_doesnt_fold_back() {
     // 15 kHz read twice as fast is 30 kHz: past the output's 22.05 kHz,
-    // it would fold back to 14.1 kHz. Hermite lets most of it through;
-    // the band-limited reads cut it.
+    // it would fold back to 14.1 kHz (Hermite, the cursors' old cheap
+    // read, let all but 12 dB of it through). Every read cuts it past the
+    // pitched reads standard's 50 dB (the 8-point read about 53).
     let level = |read| {
         let (got, input) = read_at("sinc-fold", 15_000.0, read, 2.0, 1_000);
         20.0 * (rms(&got) / rms(&input)).log10()
     };
-    let hermite = level(Read::Hermite);
+    let near = level(Read::Near);
     let sinc8 = level(Read::Sinc8);
     let sinc16 = level(Read::Sinc16);
-    assert!(hermite > -12.0, "Hermite: {hermite} dB");
+    assert!(near < -50.0, "the 8-point read: {near} dB");
     assert!(sinc8 < -55.0, "Sinc8: {sinc8} dB");
     assert!(sinc16 < -75.0, "Sinc16: {sinc16} dB");
     // A tone below the output's Nyquist frequency after the speed (5 kHz,

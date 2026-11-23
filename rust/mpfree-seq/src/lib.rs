@@ -51,10 +51,13 @@
 //! **Mutate** ([`mutate`]) makes a variation of a clip's notes and keeps
 //! the clip as it was beside it ([`Clip::original`]), for Restore.
 //!
-//! Audio clips come in a later roadmap step.
+//! **Audio clips** ([`audio`], the audio tracks rethink's phase 2) are
+//! clips of an audio track whose content is regions of its recordings
+//! ([`Clip::audio`]) instead of notes.
 #![forbid(unsafe_code)]
 
 pub mod arrange;
+pub mod audio;
 pub mod convert;
 pub mod groups;
 pub mod inst;
@@ -69,6 +72,7 @@ pub mod time_edit;
 pub use arrange::{
     Arrangement, FromScene, Marker, MorphRows, Placement, SongClips, SongSection, TempoPoint,
 };
+pub use audio::{AudioClip, ClipRegion, RecId, MAX_CLIP_REGIONS};
 pub use mutate::{Amount, Original, Pitches};
 pub use scenes::{
     Follow, FollowAction, ListStep, Scene, SceneSettings, SongList, TrackProgram, MAX_SCENE_NAME,
@@ -80,6 +84,8 @@ pub use mpfree_moves;
 use mpfree_moves::Moves;
 pub use mpfree_param;
 use mpfree_param::{OnTrack, RelAddr};
+pub use mpfree_scale;
+pub use mpfree_scale::Scale;
 use mpfree_transport::time::{Swing, Tick, PPQ};
 
 /// A bank of rows: 16, one per pad. Scene banks (the Arrange refactor's
@@ -943,12 +949,24 @@ pub struct Clip {
     /// (step sequencer refactor D1). It changes what the Steps, Notes and
     /// STEP SEQ show and edit, never when a note plays.
     pub step: Tick,
+    /// The scale its notes are written in (piano roll plan 2B.1): None
+    /// (Off) until one is picked, and always on a clip of pad hits, whose
+    /// numbers are pads, not pitches ([`Clip::takes_scale`]). A view of
+    /// the clip, as the step size is: it lights the Notes view's rows and
+    /// makes its moves go by scale notes, but never changes a note by
+    /// itself or how anything plays.
+    pub scale: Option<Scale>,
     /// Its notes, locks, length and moves as they were before its first
     /// Mutate (sequencer S6, [`mutate`]): what Restore puts back and each
     /// Mutate varies. None until it is mutated, and again once restored.
     pub original: Option<Box<Original>>,
     /// Whether its notes are pad hits or MIDI notes (step 5c).
     pub holds: Holds,
+    /// An audio track's clip: the regions of its recordings it plays
+    /// (the audio tracks rethink's phase 2, [`audio`]). Such a clip holds
+    /// nothing else a note clip holds, plays at normal speed, and lives on
+    /// an audio track; a clip on an audio track always has one.
+    pub audio: Option<AudioClip>,
     /// The instrument its instrument locks were made for, with the names
     /// of the controls they lock (step sequencer refactor F1,
     /// [`inst`]); None while it has none.
@@ -976,6 +994,8 @@ pub struct ClipSettings {
     pub direction: Direction,
     /// Its step size on the step grid (refactor D1).
     pub step: Tick,
+    /// Its scale, None for Off (piano roll plan 2B.1).
+    pub scale: Option<Scale>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1024,6 +1044,10 @@ pub enum ModelError {
     BadProgram,
     /// A clip's step size isn't one of [`steps::SIZES`].
     BadStep,
+    /// A clip's scale has a root past B (11), notes past the octave, or
+    /// leaves out its root ([`scale_ok`]), or is on a clip of pad hits,
+    /// which takes none ([`Clip::takes_scale`]).
+    BadScale,
     /// A loop cell names no loop or holds notes, or a clip is on a track
     /// of the other kind (a loop cell on a note track, a note clip on a
     /// Loop track).
@@ -1031,11 +1055,16 @@ pub enum ModelError {
     /// A song's tempo point is before the start, out of range, too near
     /// another (a 1/16 at least) or one too many.
     BadTempo,
-    /// A clip or a song block on an audio track: until audio clips come
-    /// (the audio tracks rethink's phase 2), an audio track's cells are
-    /// empty and its song material is its regions, in the audio tracks
-    /// part.
+    /// A note or Loop clip, or its song block, on an audio track, or an
+    /// audio clip or its block on another kind of track: an audio track's
+    /// cells hold audio clips only ([`Clip::audio`]), and its lane holds
+    /// its regions (in the audio tracks part) and blocks of audio clips
+    /// (phase 2's step 2d).
     AudioTrack,
+    /// An audio clip out of range ([`AudioClip::check`]), or one that also
+    /// holds what a note clip holds (notes, locks, pressure, moves, a
+    /// loop, a speed, swing, quantise, a direction or a program).
+    BadAudioClip,
 }
 
 /// Take one item equal to each of `out` out of `from`, the first equal one
@@ -1075,7 +1104,24 @@ pub fn take_out_each<T: Copy + Eq + std::hash::Hash>(from: &mut Vec<T>, out: &[T
     found
 }
 
+/// A clip's scale is one [`Scale::new`] or [`Scale::with_down`] could
+/// make: a root from C (0) to B (11), notes within the octave, its root
+/// among them both ways.
+pub fn scale_ok(s: Scale) -> bool {
+    s.root < 12
+        && [s.mask, s.down]
+            .iter()
+            .all(|&m| m & !0xFFF == 0 && m & 1 == 1)
+}
+
 impl Clip {
+    /// Whether it can have a scale (piano roll plan 2B.1): a clip of MIDI
+    /// notes can; a clip of pad hits can't, since its numbers are pads,
+    /// and a scale step would move a hit onto another pad.
+    pub fn takes_scale(&self) -> bool {
+        self.holds == Holds::Notes
+    }
+
     /// Its speed, swing, quantise, follow action, launch quantise and
     /// legato.
     pub fn settings(&self) -> ClipSettings {
@@ -1090,13 +1136,15 @@ impl Clip {
             program: self.program,
             direction: self.direction,
             step: self.step,
+            scale: self.scale,
         }
     }
 
     /// Change its speed, swing, quantise, follow action, launch quantise,
-    /// legato, program, direction and step size, all or none: `BadSpeed`,
-    /// `BadSwing`, `BadQuantise`, `BadLaunch`, `BadProgram`, `BadStep` or
-    /// the follow action's own refusal leaves the clip as it was.
+    /// legato, program, direction, step size and scale, all or none:
+    /// `BadSpeed`, `BadSwing`, `BadQuantise`, `BadLaunch`, `BadProgram`,
+    /// `BadStep`, `BadScale` or the follow action's own refusal leaves the
+    /// clip as it was.
     pub fn set_settings(&mut self, s: ClipSettings) -> Result<(), ModelError> {
         if Speed::new(s.speed.num, s.speed.den).is_none() {
             return Err(ModelError::BadSpeed);
@@ -1123,6 +1171,9 @@ impl Clip {
         if !steps::SIZES.contains(&s.step) {
             return Err(ModelError::BadStep);
         }
+        if s.scale.is_some_and(|k| !scale_ok(k) || !self.takes_scale()) {
+            return Err(ModelError::BadScale);
+        }
         self.speed = s.speed;
         self.swing = s.swing;
         self.quantise = s.quantise;
@@ -1133,6 +1184,7 @@ impl Clip {
         self.program = s.program;
         self.direction = s.direction;
         self.step = s.step;
+        self.scale = s.scale;
         Ok(())
     }
 
@@ -1164,8 +1216,10 @@ impl Clip {
             program: None,
             direction: Direction::Forward,
             step: steps::DEFAULT_SIZE,
+            scale: None,
             original: None,
             holds: Holds::Hits,
+            audio: None,
             made_for: None,
         }
     }
@@ -1177,6 +1231,12 @@ impl Clip {
             id: ClipId::NONE,
             ..self.clone()
         }
+    }
+
+    /// The recordings it names, if it is an audio clip ([`Clip::audio`]),
+    /// in region order (one may repeat). A copy names the same ones.
+    pub fn recordings(&self) -> impl Iterator<Item = RecId> + '_ {
+        self.audio.iter().flat_map(AudioClip::recordings)
     }
 
     /// A Loop track's cell for loop `n` (0 based), `ticks` long: named
@@ -1314,6 +1374,12 @@ impl Clip {
         if !steps::SIZES.contains(&self.step) {
             return Err(ModelError::BadStep);
         }
+        if self
+            .scale
+            .is_some_and(|k| !scale_ok(k) || !self.takes_scale())
+        {
+            return Err(ModelError::BadScale);
+        }
         if self.program.is_some_and(|p| !p.ok()) {
             return Err(ModelError::BadProgram);
         }
@@ -1350,6 +1416,23 @@ impl Clip {
         }
         if let Some(o) = &self.original {
             o.check(&self.touch)?;
+        }
+        if let Some(a) = &self.audio {
+            let plain = self.notes.is_empty()
+                && self.locks.is_empty()
+                && self.touch.is_empty()
+                && self.moves.is_empty()
+                && self.original.is_none()
+                && self.looped.is_none()
+                && self.speed == Speed::NORMAL
+                && self.swing.is_none()
+                && self.quantise.is_none()
+                && self.direction == Direction::Forward
+                && self.program.is_none();
+            if !plain {
+                return Err(ModelError::BadAudioClip);
+            }
+            a.check(self.length)?;
         }
         if (grouped || self.original.is_some()) && !self.groups_ok() {
             return Err(ModelError::BadGroup);
@@ -1676,8 +1759,9 @@ pub enum TrackKind {
     /// line input or the mix and plays what it recorded on its own mixer
     /// channel. Its recordings, regions and settings (input, monitor) are
     /// the audio tracks part's (`mpfree-audiotracks`), found by the
-    /// track's id. It holds no note clip and no song block: until audio
-    /// clips come (phase 2) its cells stay empty ([`ModelError::AudioTrack`]).
+    /// track's id. Its cells hold audio clips ([`Clip::audio`], phase 2)
+    /// and nothing else, and its lane blocks of audio clips beside its
+    /// regions (step 2d, [`ModelError::AudioTrack`]).
     Audio,
 }
 
@@ -1942,6 +2026,16 @@ impl Project {
             .max(song)
     }
 
+    /// The recordings its audio clips name, in their cells and the song's
+    /// own clips (each as often as it is named): what the project keeps
+    /// while it holds them (the audio tracks rethink, phase 2).
+    pub fn recordings(&self) -> impl Iterator<Item = RecId> + '_ {
+        self.cell_clips()
+            .map(|(_, _, c)| c)
+            .chain(self.arrangement.clips.iter())
+            .flat_map(Clip::recordings)
+    }
+
     /// Every clip in a cell, as (track, row, clip), in track and row
     /// order.
     pub fn cell_clips(&self) -> impl Iterator<Item = (usize, usize, &Clip)> {
@@ -2030,10 +2124,10 @@ impl Project {
     pub fn check(&self) -> Result<(), ModelError> {
         self.check_tracks()?;
         for t in &self.tracks {
-            if t.is_audio() && t.slots.clips().next().is_some() {
-                return Err(ModelError::AudioTrack);
-            }
             for c in t.slots.clips() {
+                if c.audio.is_some() != t.is_audio() {
+                    return Err(ModelError::AudioTrack);
+                }
                 c.check()?;
                 if c.looped.is_some() != t.is_loops() {
                     return Err(ModelError::BadLoop);
@@ -2729,6 +2823,51 @@ mod tests {
         s.program = Some(ok);
         assert_eq!(c.set_settings(s), Ok(()));
         assert_eq!(c.settings().program, Some(ok));
+    }
+
+    /// A clip's scale (piano roll plan 2B.1) is one of its settings: set
+    /// and read back with them, all or none; one no scale could be, and
+    /// any on a clip of pad hits, refused.
+    #[test]
+    fn a_clips_scale_is_checked_with_its_settings() {
+        let mut c = Clip::new("c", 960);
+        c.holds = Holds::Notes;
+        assert_eq!(c.scale, None);
+        let mut s = c.settings();
+        let ok = Scale::new(9, mpfree_scale::MINOR);
+        for bad in [
+            Scale { root: 12, ..ok },
+            Scale { mask: 0x1FFF, ..ok },
+            Scale { down: 0b100, ..ok },
+            Scale { mask: 0, ..ok },
+        ] {
+            assert!(!scale_ok(bad), "{bad:?}");
+            s.scale = Some(bad);
+            assert_eq!(c.set_settings(s), Err(ModelError::BadScale));
+            assert_eq!(c.scale, None);
+            c.scale = Some(bad);
+            assert_eq!(c.check(), Err(ModelError::BadScale));
+            c.scale = None;
+        }
+        // All or none: a speed sent with a bad scale doesn't go in.
+        let was = c.settings();
+        s.speed = Speed::new(2, 1).unwrap();
+        s.scale = Some(Scale { root: 12, ..ok });
+        assert_eq!(c.set_settings(s), Err(ModelError::BadScale));
+        assert_eq!(c.settings(), was);
+        s.scale = Some(ok);
+        assert_eq!(c.set_settings(s), Ok(()));
+        assert_eq!(c.settings().scale, Some(ok));
+        assert_eq!(c.check(), Ok(()));
+        // A clip of pad hits takes none, from its settings or as it is.
+        let mut hits = Clip::new("h", 960);
+        assert!(!hits.takes_scale() && c.takes_scale());
+        let mut s = hits.settings();
+        s.scale = Some(ok);
+        assert_eq!(hits.set_settings(s), Err(ModelError::BadScale));
+        assert_eq!(hits.scale, None);
+        hits.scale = Some(ok);
+        assert_eq!(hits.check(), Err(ModelError::BadScale));
     }
 
     #[test]

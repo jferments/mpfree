@@ -154,9 +154,57 @@ impl Profile {
     }
 }
 
+/// The kind of instrument a line of `notes` sounds written for, when
+/// nothing says what plays it (a plug-in, MIDI out): Chordal when at
+/// least a third of its notes sound with another, Bass when its middle
+/// note is under C3 (48, where [`InstrumentKind::Bass`]'s range sits),
+/// else OneNote. Notes switched off are left out.
+pub fn kind_of_notes(notes: &[mpfree_seq::Note]) -> InstrumentKind {
+    let mut on: Vec<&mpfree_seq::Note> = notes.iter().filter(|n| n.on).collect();
+    if on.is_empty() {
+        return InstrumentKind::OneNote;
+    }
+    on.sort_by_key(|n| (n.tick, n.note));
+    let together = on
+        .iter()
+        .enumerate()
+        .filter(|&(i, n)| {
+            on.iter()
+                .enumerate()
+                .any(|(j, m)| j != i && m.tick <= n.tick && n.tick < m.tick + m.len.max(1))
+        })
+        .count();
+    if together * 3 >= on.len() {
+        return InstrumentKind::Chordal;
+    }
+    let mut pitches: Vec<u8> = on.iter().map(|n| n.note).collect();
+    pitches.sort_unstable();
+    match pitches[pitches.len() / 2] < 48 {
+        true => InstrumentKind::Bass,
+        false => InstrumentKind::OneNote,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_line_says_what_it_was_written_for() {
+        let note = |tick: Tick, note: u8, len: Tick| mpfree_seq::Note::new(tick, len, note, 100);
+        let lead: Vec<_> = (0..8)
+            .map(|k| note(k * 240, 67 + (k % 3) as u8, 200))
+            .collect();
+        assert_eq!(kind_of_notes(&lead), InstrumentKind::OneNote);
+        let bass: Vec<_> = (0..8)
+            .map(|k| note(k * 240, 36 + (k % 2) as u8 * 7, 200))
+            .collect();
+        assert_eq!(kind_of_notes(&bass), InstrumentKind::Bass);
+        let mut keys = lead.clone();
+        keys.extend((0..4).map(|k| note(k * 480, 60, 400)));
+        assert_eq!(kind_of_notes(&keys), InstrumentKind::Chordal);
+        assert_eq!(kind_of_notes(&[]), InstrumentKind::OneNote);
+    }
 
     #[test]
     fn five_kinds_with_sane_ranges() {

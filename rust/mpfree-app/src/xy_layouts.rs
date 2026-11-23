@@ -21,7 +21,7 @@
 use mpfree_fx::ids::perform as pf;
 use mpfree_fx::xyfx::ids as xy;
 use mpfree_play::mpfree_param::{Owner, ParamAddr, Strip};
-use mpfree_xy::{Compiled, Lift, Pad, Target};
+use mpfree_xy::{Axis, Compiled, Layout, Lift, Pad, Target};
 
 /// How fast Filter + echo glides back: about this many ms to cover 63 % of
 /// the way.
@@ -71,6 +71,41 @@ pub fn pad(pick: Option<usize>) -> Pad {
     }
 }
 
+/// `pick` as a layout of yours, on the insert with slot id `uid`, called
+/// `name` (Setup on a ready-made layout: a copy becomes yours and the
+/// ready-made one stays as it was). Filter + echo goes back over
+/// [`COPY_GLIDE_MS`]; an XY FX's copy keeps its gate and stays (its
+/// effect is set on the insert when it plays: `xy_song::Mine::fx`).
+pub fn layout(pick: Option<usize>, uid: u16, name: &str) -> Layout {
+    let (across, up) = targets(pick, uid);
+    let (x, y) = match pick.filter(|_| xy_fx(pick)) {
+        Some(k) => {
+            let (ax, ay) = mpfree_fx::xyfx::axes(k);
+            (ax.name, ay.name)
+        }
+        None => ("Filter", "Echo"),
+    };
+    let fx = xy_fx(pick);
+    Layout {
+        across: Axis::new(x, &across),
+        up: Axis::new(y, &up),
+        gate: fx.then(|| master(uid, xy::ACTIVE)),
+        rest: pad(pick).rest(),
+        lift: if fx {
+            Lift::Stay
+        } else {
+            Lift::GoBack {
+                snap_ms: COPY_GLIDE_MS,
+            }
+        },
+        ..Layout::new(name)
+    }
+}
+
+/// How long a copy of Filter + echo glides back: its pad lands within a
+/// hundredth in about five times [`SNAP_MS`].
+pub const COPY_GLIDE_MS: f32 = 5.0 * SNAP_MS;
+
 /// Filter + echo's two values with the pad at `x`, `y`: the DJ filter
 /// (-100 to 100) and the echo (0 to 100), for its label.
 pub fn filter_echo(x: f32, y: f32) -> (f32, f32) {
@@ -109,5 +144,26 @@ mod tests {
         assert_eq!(filter_echo(1.0, 0.25), (100.0, 25.0));
         // Past the nine: Filter + echo.
         assert_eq!(compiled(Some(9), 7), fe);
+    }
+
+    /// A copy plays what the ready-made one plays, as a layout of yours.
+    #[test]
+    fn a_copy_of_a_ready_made_layout_plays_the_same_settings() {
+        for pick in [None, Some(0), Some(4)] {
+            let l = layout(pick, 7, "Mine");
+            let c = l.compile().unwrap();
+            let r = compiled(pick, 7);
+            let (mut a, mut b) = (Vec::new(), Vec::new());
+            c.values(0.3, 0.6, true, |x, v| a.push((x, v)));
+            r.values(0.3, 0.6, true, |x, v| b.push((x, v)));
+            assert_eq!(a, b, "{pick:?}");
+            assert_eq!(c.rest(), pad(pick).rest());
+        }
+        let wash = layout(Some(3), 2, "Wash 2");
+        assert_eq!(
+            (wash.across.name.as_str(), wash.lift),
+            ("Decay", Lift::Stay)
+        );
+        assert_eq!(layout(None, 2, "F").up.name, "Echo");
     }
 }

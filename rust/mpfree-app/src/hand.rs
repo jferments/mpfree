@@ -39,6 +39,12 @@ pub enum Hand {
     /// A learned MIDI control: its gesture ends [`HAND_S`] after its last
     /// move.
     Midi,
+    /// The XY pad playing a layout of yours (`xy_play.rs`), whichever
+    /// controller plays it: its gesture ends with the pad's own let-go
+    /// (a lift, Hold turned off, a layout switched), so a knob turned on
+    /// one of its settings takes it from the pad, and the pad's lift
+    /// doesn't let go of the knob's.
+    Pad,
 }
 
 impl Hand {

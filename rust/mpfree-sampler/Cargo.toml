@@ -12,8 +12,12 @@ mpfree-grain = { path = "../mpfree-grain" }
 mpfree-stretch = { path = "../mpfree-stretch" }
 mpfree-prof = { path = "../mpfree-prof" }
 mpfree-node = { path = "../mpfree-node" }
+mpfree-tuning = { path = "../mpfree-tuning" }
 mpfree-lanes = { path = "../mpfree-lanes" }
 mpfree-flac = { path = "../mpfree-flac" }
+# The 8-point read's table, shared with the streaming cursors
+# (`mpfree_stream::resample::NearKernel`).
+mpfree-stream = { path = "../mpfree-stream" }
 
 [dev-dependencies]
 mpfree-stream = { path = "../mpfree-stream", features = ["testkit"] }

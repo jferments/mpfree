@@ -33,6 +33,7 @@ abletown mixer-io-learn 1 # AbleTown (22 Nov): faded off-state labels and small 
 abletown mixer-io-learn-clips 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown mixer-io-learn-looper 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown mixer-io-learn-play 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown mixer-io-learn-show 1 # as mixer-io-learn-play: the same faded PROJECT chip on the mid grey (live shows B1)
 abletown mixer-io-monitor 2 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown mixer-io-port 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown sample-auto 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
@@ -43,8 +44,13 @@ abletown synth-pads-preview 3 # AbleTown (22 Nov): faded off-state labels and sm
 abletown synth-routes 12 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown synth-table 6 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown synth-voice 7 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown xy-banner 3 # the Synth tab's own runs under the XY banner (as synth); the banner's text reads
 console arp-quick-band 1 # before the theme refactor (phase 0 baseline)
 console arrange-clips-audio 1 # new screen (audio tracks rethink, phase 1): the faint labels its neighbours have
+console arrange-clips-audio-card 1 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
+console arrange-clips-audio-cells 1 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
+console arrange-clips-audio-fitting 1 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
+console arrange-clips-audio-once 1 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has, and a once clip's faint Fit to tempo
 console arrange-instruments 1 # before the theme refactor (phase 0 baseline)
 console arrange-song-tempo 1 # before the theme refactor (phase 0 baseline)
 console browser 3 # before the theme refactor (phase 0 baseline)
@@ -98,6 +104,7 @@ console mixer-io-learn 2 # before the theme refactor (phase 0 baseline)
 console mixer-io-learn-clips 2 # before the theme refactor (phase 0 baseline)
 console mixer-io-learn-looper 2 # before the theme refactor (phase 0 baseline)
 console mixer-io-learn-play 2 # before the theme refactor (phase 0 baseline)
+console mixer-io-learn-show 2 # as mixer-io-learn-play: the Learn section's faint runs (live shows B1)
 console mixer-io-monitor 1 # before the theme refactor (phase 0 baseline)
 console mixer-io-port 1 # before the theme refactor (phase 0 baseline)
 console mixer-io-routing 1 # before the theme refactor (phase 0 baseline)
@@ -169,9 +176,14 @@ console synth-routes 1 # before the theme refactor (phase 0 baseline)
 console synth-table 4 # before the theme refactor (phase 0 baseline)
 console synth-track 1 # before the theme refactor (phase 0 baseline)
 console synth-voice 3 # before the theme refactor (phase 0 baseline)
+console xy-banner 1 # the Synth tab's own runs under the XY banner (as synth); the banner's text reads
 default arp-quick-band 9 # before the theme refactor (phase 0 baseline)
 default arp-workspace-record 3 # before the theme refactor (phase 0 baseline)
 default arrange-clips-audio 1 # new screen (audio tracks rethink, phase 1): the faint labels its neighbours have
+default arrange-clips-audio-card 1 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
+default arrange-clips-audio-cells 1 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
+default arrange-clips-audio-fitting 1 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
+default arrange-clips-audio-once 1 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has, and a once clip's faint Fit to tempo
 default arrange-instruments 1 # before the theme refactor (phase 0 baseline)
 default browser 3 # before the theme refactor (phase 0 baseline)
 default browser-kits 1 # before the theme refactor (phase 0 baseline)
@@ -226,6 +238,7 @@ default mixer-io-learn 2 # before the theme refactor (phase 0 baseline)
 default mixer-io-learn-clips 2 # before the theme refactor (phase 0 baseline)
 default mixer-io-learn-looper 2 # before the theme refactor (phase 0 baseline)
 default mixer-io-learn-play 2 # before the theme refactor (phase 0 baseline)
+default mixer-io-learn-show 2 # as mixer-io-learn-play: the Learn section's faint runs (live shows B1)
 default mixer-io-monitor 1 # before the theme refactor (phase 0 baseline)
 default mixer-io-port 1 # before the theme refactor (phase 0 baseline)
 default mixer-io-routing 1 # before the theme refactor (phase 0 baseline)
@@ -294,6 +307,7 @@ default synth-routes 1 # before the theme refactor (phase 0 baseline)
 default synth-table 4 # before the theme refactor (phase 0 baseline)
 default synth-track 1 # before the theme refactor (phase 0 baseline)
 default synth-voice 4 # before the theme refactor (phase 0 baseline)
+default xy-banner 1 # the Synth tab's own runs under the XY banner (as synth); the banner's text reads
 light arrange-instruments 1 # Light (phase 4): faint text, under 3:1 in Default too
 light browser 2 # Light (phase 4): faint text, under 3:1 in Default too
 light browser-samples 6 # Light (phase 4): faint text, under 3:1 in Default too
@@ -323,6 +337,7 @@ light synth-on-kit 1 # Light (phase 4): faint text, under 3:1 in Default too
 light synth-pads-preview 1 # Light (phase 4): faint text, under 3:1 in Default too
 light synth-table 3 # Light (phase 4): faint text, under 3:1 in Default too
 light synth-voice 2 # Light (phase 4): faint text, under 3:1 in Default too
+light xy-banner 1 # the Synth tab's own runs under the XY banner (as synth); the banner's text reads
 slate arp-workspace-record 3 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
 slate arrange-instruments 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
 slate browser 2 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
@@ -361,10 +376,15 @@ slate synth-pads-preview 2 # Slate (22 Nov): faded off-state labels and small ma
 slate synth-routes 6 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
 slate synth-table 6 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
 slate synth-voice 7 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate xy-banner 2 # the Synth tab's own runs under the XY banner (as synth); the banner's text reads
 spaceship arp-panel 5 # before the theme refactor (phase 0 baseline)
 spaceship arp-quick-band 18 # before the theme refactor (phase 0 baseline)
 spaceship arp-workspace-record 18 # before the theme refactor (phase 0 baseline)
 spaceship arrange-clips-audio 9 # new screen (audio tracks rethink, phase 1): the faint labels its neighbours have
+spaceship arrange-clips-audio-card 9 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
+spaceship arrange-clips-audio-cells 9 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
+spaceship arrange-clips-audio-fitting 9 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
+spaceship arrange-clips-audio-once 10 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has, and a once clip's faint Fit to tempo
 spaceship arrange-instruments 67 # before the theme refactor (phase 0 baseline)
 spaceship arrange-list 39 # before the theme refactor (phase 0 baseline)
 spaceship arrange-list-link 39 # new screen (Arrange 4b.5): arrange-list's 39 runs; Link's chooser over it adds none
@@ -374,9 +394,11 @@ spaceship arrange-report 12 # the report card (Arrange 4.3) over arrange-song wi
 spaceship arrange-report-exact 10 # arrange-song with the exact line on the hint (Arrange 4.3): the same 10 runs as arrange-song
 spaceship arrange-report-list 39 # the report card (Arrange 4.3) over arrange-list: the same 39 runs as arrange-list, under the dimming; the card adds none
 spaceship arrange-report-scrolls 12 # as arrange-report, with nine rows scrolling: the card adds none
+spaceship arrange-show 1 # the transport bar's faint Undo, as on every Arrange page in this theme (live shows B1)
 spaceship arrange-song 10 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-add 12 # new screen (audio tracks rethink, phase 1): the faint labels its neighbours have
 spaceship arrange-song-audio 10 # before the theme refactor (phase 0 baseline)
+spaceship arrange-song-audio-blocks 10 # the same Song view chrome as arrange-song-audio (none in the audio blocks, whose names use ink_on)
 spaceship arrange-song-block 10 # arrange-song with Hook picked (Arrange phase 6): its start grip, Split and Duplicate; the same 10 runs as arrange-song
 spaceship arrange-song-box 12 # new screen (Arrange 6.5): arrange-song's faint runs (the ruler's numbers, the faint Duplicate, Make unique and Delete, the morph bar's and Takes' faint labels); the box adds none
 spaceship arrange-song-loops 12 # before the theme refactor (phase 0 baseline)
@@ -396,6 +418,7 @@ spaceship arrange-song-zoom-64 18 # new screen (Arrange 6.4): arrange-song's fai
 spaceship browser 3 # before the theme refactor (phase 0 baseline)
 spaceship browser-kits 1 # before the theme refactor (phase 0 baseline)
 spaceship browser-samples 22 # before the theme refactor (phase 0 baseline)
+spaceship browser-set-song 4 # the Fade row, faint while Ends isn't Fade (live shows B1)
 spaceship chain 3 # before the theme refactor (phase 0 baseline)
 spaceship chain-comp 3 # before the theme refactor (phase 0 baseline)
 spaceship chain-eq 2 # before the theme refactor (phase 0 baseline)
@@ -450,6 +473,7 @@ spaceship mixer-io-learn 18 # before the theme refactor (phase 0 baseline)
 spaceship mixer-io-learn-clips 28 # before the theme refactor (phase 0 baseline)
 spaceship mixer-io-learn-looper 30 # before the theme refactor (phase 0 baseline)
 spaceship mixer-io-learn-play 32 # before the theme refactor (phase 0 baseline)
+spaceship mixer-io-learn-show 30 # as mixer-io-learn-play: the Learn section's faint runs (live shows B1)
 spaceship mixer-io-monitor 41 # before the theme refactor (phase 0 baseline)
 spaceship mixer-io-port 29 # before the theme refactor (phase 0 baseline)
 spaceship mixer-io-routing 31 # before the theme refactor (phase 0 baseline)
@@ -487,11 +511,14 @@ spaceship play-synth 19 # before the theme refactor (phase 0 baseline)
 spaceship play-synth-chords 20 # before the theme refactor (phase 0 baseline)
 spaceship play-synth-in-key 17 # before the theme refactor (phase 0 baseline)
 spaceship play-xy-full 8 # before the theme refactor (phase 0 baseline)
+spaceship play-xy-full-yours 8 # the Play frame's master scale and the pad's faint labels, as play-xy-full and play-xy-list
 spaceship play-xy-list 5 # before the theme refactor (phase 0 baseline)
+spaceship play-xy-setup 5 # the Play frame's master scale and the pad's faint labels, as play-xy-full and play-xy-list
+spaceship play-xy-yours 5 # the Play frame's master scale and the pad's faint labels, as play-xy-full and play-xy-list
 spaceship sample 4 # before the theme refactor (phase 0 baseline)
 spaceship sample-auto 8 # before the theme refactor (phase 0 baseline)
 spaceship sample-chop 5 # before the theme refactor (phase 0 baseline)
-spaceship sample-chop-audio 15 # before the theme refactor (phase 0 baseline)
+spaceship sample-chop-audio 14 # before the theme refactor (phase 0 baseline)
 spaceship sample-chop-keys 9 # before the theme refactor (phase 0 baseline)
 spaceship sample-chop-live 5 # before the theme refactor (phase 0 baseline)
 spaceship sample-chop-new-kit 14 # before the theme refactor (phase 0 baseline)
@@ -512,7 +539,17 @@ spaceship sequencer-gear-lane-lfo 8 # before the theme refactor (phase 0 baselin
 spaceship sequencer-gear-lanes 7 # before the theme refactor (phase 0 baseline)
 spaceship sequencer-lock-lanes 14 # before the theme refactor (phase 0 baseline)
 spaceship sequencer-notes 29 # before the theme refactor (phase 0 baseline)
+spaceship sequencer-notes-chords 15 # the roll's faint key names and beat numbers and the transport's, as sequencer-notes (spaceship's text_faint on bg)
+spaceship sequencer-notes-drums 4 # the roll's faint beat numbers and the transport's, as sequencer-notes (spaceship's text_faint on bg)
+spaceship sequencer-notes-ghosts 21 # the roll's faint key names and beat numbers and the transport's, as sequencer-notes (spaceship's text_faint on bg)
 spaceship sequencer-notes-list 6 # before the theme refactor (phase 0 baseline)
+spaceship sequencer-notes-locks 14 # the roll's faint key names and beat numbers and the transport's, as sequencer-notes (spaceship's text_faint on bg)
+spaceship sequencer-notes-pads 15 # the roll's faint key names and beat numbers and the transport's, as sequencer-notes (spaceship's text_faint on bg)
+spaceship sequencer-notes-pressure 15 # the roll's faint key names and beat numbers and the transport's, as sequencer-notes (spaceship's text_faint on bg)
+spaceship sequencer-notes-scale 7 # the roll's faint beat numbers and the transport's, as sequencer-notes (spaceship's text_faint on bg)
+spaceship sequencer-notes-scales 7 # the roll's faint beat numbers and the transport's, as sequencer-notes (spaceship's text_faint on bg)
+spaceship sequencer-notes-show 21 # the roll's faint key names and beat numbers and the transport's, as sequencer-notes (spaceship's text_faint on bg)
+spaceship sequencer-notes-tool 26 # the roll's faint key names and beat numbers, the transport's, the free Q-Link cards' and the takes panel's, as sequencer-notes (spaceship's text_faint on bg)
 spaceship sequencer-notes-tracker 117 # before the theme refactor (phase 0 baseline)
 spaceship sequencer-silent-locks 7 # the same runs as sequencer-steps-synth (the root tag on the picked row, a picked step's badge, Spaceship's meter and Throws labels) and a lock lane's outline as on sequencer-steps; none of its own
 spaceship sequencer-step-ratchet 14 # the same runs as sequencer-steps (the Steps page under it, phase 0 baseline), none of its own
@@ -530,6 +567,7 @@ spaceship synth-table 4 # before the theme refactor (phase 0 baseline)
 spaceship synth-track 1 # before the theme refactor (phase 0 baseline)
 spaceship synth-voice 4 # before the theme refactor (phase 0 baseline)
 spaceship undo-history 4 # before the theme refactor (phase 0 baseline)
+spaceship xy-banner 1 # the Synth tab's own runs under the XY banner (as synth); the banner's text reads
 synthwave arrange-instruments 1 # before the theme refactor (phase 0 baseline)
 synthwave browser 2 # before the theme refactor (phase 0 baseline)
 synthwave browser-samples 6 # before the theme refactor (phase 0 baseline)
@@ -563,3 +601,4 @@ synthwave synth-on-kit 1 # before the theme refactor (phase 0 baseline)
 synthwave synth-pads-preview 1 # before the theme refactor (phase 0 baseline)
 synthwave synth-table 3 # before the theme refactor (phase 0 baseline)
 synthwave synth-voice 2 # before the theme refactor (phase 0 baseline)
+synthwave xy-banner 1 # the Synth tab's own runs under the XY banner (as synth); the banner's text reads

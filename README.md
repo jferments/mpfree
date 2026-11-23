@@ -95,11 +95,11 @@ MPFree is laid out as eight tabs across the top of the screen. Each name below l
 
 - **[Play](docs/user/src/making-music/playing-live.md)** is the home screen. Your pads, the beat as rows of steps, your loops, an XY pad, and **throws**: effects you play like an instrument, such as Stutter, Tape stop and Reverb wash. Hold one and it comes in, let go and it stops.
 - **[Sequencer](docs/user/src/making-music/sequencer.md)** is for building patterns step by step. Steps can be told to play only every other time or only on a fill, and each step can change a sound's settings just for that hit. There is also a piano roll, a note list and a tracker view.
-- **[Looper](docs/user/src/making-music/looping.md)** has eight loops you record from the pads, a synth or the line input. Overdub layers, undo them, play a loop in reverse or at half or double speed.
+- **[Looper](docs/user/src/making-music/looping.md)** has eight loops you record from the pads, a synth or the line input. Overdub layers, undo them, play a loop in reverse or at half or double speed. Play the first loop on the pads, close it a little late, and MPFree can find the downbeat you played and snap the loop onto it, or leave your tap alone if you'd rather.
 - **[Sample](docs/user/src/making-music/sampling.md)** puts the whole sampler on one page. Record, trim, chop a break onto the pads, stretch it to the song's tempo, or turn it into a cloud of grains. **Keep last 4 bars** catches what you just played, even if you weren't recording.
-- **[Synth](docs/user/src/making-music/synths.md)** holds twelve synths: Poly, FM, Drums, Pluck, Keys (electric piano and clav), Drawbar organ, Squelch acid bass, Analog, Strings, Bass, Wind (clarinet, sax and flute) and Choir. Any track can have its own.
-- **[Arrange](docs/user/src/making-music/arranging.md)** launches clips and scenes for playing live, then lays them out as a song, with audio tracks and takes.
-- **[Pads](docs/user/src/making-music/pads.md)** sets what each pad plays: a sample, a loop that stays in time, a synth note or a note to your other gear.
+- **[Synth](docs/user/src/making-music/synths.md)** holds twelve synths: Poly, FM, Drums, Pluck, Keys (electric piano and clav), Drawbar organ, Squelch acid bass, Analog, Strings, Bass, Wind (clarinet, sax and flute) and Choir. Any track can have its own, and the synths can play in other tunings, including your own Scala files.
+- **[Arrange](docs/user/src/making-music/arranging.md)** launches clips and scenes for playing live, then lays them out as a song or a song list. [Audio tracks](docs/user/src/making-music/audio-tracks.md) record vocals and instruments in takes, and each has its own mixer channel.
+- **[Pads](docs/user/src/making-music/pads.md)** sets what each pad plays: a sample, a loop that stays in time, a synth note or a note to your other gear. Each track plays a kit of its own, or several tracks share one.
 - **[Mix](docs/user/src/making-music/mixing-and-effects.md)** is the mixer, with an effect chain on every channel (compressors, EQ, delays, reverbs and more, with sidechain), plus your MIDI and CV connections and a monitor that shows every message coming in and going out.
 
 Beyond the tabs:
@@ -107,7 +107,8 @@ Beyond the tabs:
 - **[Other gear](docs/user/src/making-music/midi-and-cv.md).** Play it from MIDI keyboards over 5-pin MIDI or USB, including MPE. Turn a knob on your controller and MIDI Learn hands it the setting you touched. Sync to MIDI clock or send it, and play modular synths with CV and gate.
 - **[Plugins](docs/user/src/making-music/plugins.md).** It hosts CLAP plugins and the MPC-format plugins people share. Each one runs apart from the rest of MPFree, so a plugin that crashes can't stop the music.
 - **[Saving](docs/user/src/making-music/saving.md) and [exporting](docs/user/src/making-music/exporting.md).** Projects save with their samples and recordings, autosave every two minutes and keep the last ten saves. Songs export as a mixdown, as stems or as a MIDI file.
-- **Staying in time.** If the MPC can't keep up, MPFree fades out the quietest notes instead of glitching, and tells you it did.
+- **[Staying in time](docs/user/src/reference/when-something-goes-wrong.md).** If the MPC can't keep up, MPFree fades out the quietest notes instead of glitching, and tells you it did. A status chip on every page shows how busy the processor and memory are, and turns yellow or red when something needs you; tap it and System status says what happened and what to try.
+- **[Themes](docs/user/src/reference/making-a-theme.md).** Seven built-in looks, including a Light one, and your own from a short text file. The layout stays the same in every theme.
 
 ## Documentation
 
