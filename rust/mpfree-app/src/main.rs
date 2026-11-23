@@ -15939,10 +15939,10 @@ mod tests {
         time.act(TimeAction::SceneSettings {
             row: 2,
             card_row: mpfree_time_ui::view::SCENE_NAME,
-            settings: mpfree_seq::scenes::SceneSettings {
+            settings: Box::new(mpfree_seq::scenes::SceneSettings {
                 name: "Verse".into(),
                 ..Default::default()
-            },
+            }),
         })
         .unwrap();
         assert_eq!(name(&time, clips::scene(2)), "Scene 3 · Verse");

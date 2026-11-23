@@ -1457,7 +1457,8 @@ pub enum TimeAction {
     SceneSettings {
         row: usize,
         card_row: u8,
-        settings: SceneSettings,
+        // Boxed: the settings are the biggest thing an action carries.
+        settings: Box<SceneSettings>,
     },
     /// Show the song list (Arrange's third view, sequencer S4), or (false)
     /// the grid.
@@ -2734,10 +2735,10 @@ fn scene_mutes_now(st: &TimeState) -> Result<TimeAction, String> {
     Ok(TimeAction::SceneSettings {
         row: st.scene_focus,
         card_row: 5,
-        settings: SceneSettings {
+        settings: Box::new(SceneSettings {
             mutes: Some(m),
             ..st.scene.clone()
-        },
+        }),
     })
 }
 
@@ -2769,7 +2770,7 @@ fn scene_step(st: &TimeState, index: usize, delta: i32) -> Result<TimeAction, St
         Ok(TimeAction::SceneSettings {
             row,
             card_row: index as u8,
-            settings: s,
+            settings: Box::new(s),
         })
     };
     let off = || {
@@ -2938,7 +2939,7 @@ pub fn scene_action(
     Ok(TimeAction::SceneSettings {
         row: st.scene_focus,
         card_row: SCENE_BANK as u8,
-        settings: s,
+        settings: Box::new(s),
     })
 }
 
@@ -8228,7 +8229,7 @@ mod tests {
         let set = |a: Option<TimeAction>| match a {
             Some(TimeAction::SceneSettings {
                 row: 1, settings, ..
-            }) => settings,
+            }) => *settings,
             other => panic!("{other:?}"),
         };
         // ‹ › on the Scene row: the scene in focus.
@@ -8319,7 +8320,7 @@ mod tests {
                 assert!(
                     usize::from(card_row) == SCENE_PROGRAM || usize::from(card_row) == SCENE_BANK
                 );
-                settings
+                *settings
             }
             other => panic!("{other:?}"),
         };

@@ -1064,6 +1064,19 @@ pub fn scenes_to_song(
         }
         for (track, tr) in project.tracks.iter().enumerate() {
             let Some(clip) = tr.slots[row].as_ref() else {
+                // A Keep playing track (5.2): the clip it plays runs on
+                // through this row, its block longer by the row.
+                if scene.is_some_and(|s| s.keeps(track)) && ends[track] == Some(t) {
+                    ends[track] = Some(t + length);
+                    let last = song
+                        .placements
+                        .iter_mut()
+                        .rev()
+                        .find(|p| p.track == track && p.start + p.length == t);
+                    if let Some(p) = last {
+                        p.length += length;
+                    }
+                }
                 continue;
             };
             let mut len = length;
@@ -2364,6 +2377,40 @@ mod tests {
             Err(ModelError::NoRoom)
         );
         assert_eq!(q, again, "nothing changed");
+    }
+
+    /// A Keep playing track (phase 5.2) runs its clip on through a row
+    /// with no clip for it, its block longer by the row; a kept track
+    /// with nothing playing stays silent, and a track not kept stops.
+    #[test]
+    fn a_keep_playing_track_runs_its_block_on_through_a_row_without_a_clip() {
+        let mut p = project();
+        p.scene_mut(2).unwrap().set_keep(0, true).unwrap();
+        p.scene_mut(3).unwrap().set_keep(1, true).unwrap();
+        let song = scenes_to_song(&p, &[(1, 2 * BAR), (2, BAR), (3, BAR)], 0)
+            .unwrap()
+            .song;
+        let blocks: Vec<_> = song
+            .placements
+            .iter()
+            .map(|b| (b.track, row(&p, b), b.start, b.length))
+            .collect();
+        assert_eq!(
+            blocks,
+            [(0, Some(1), 0, 3 * BAR), (1, Some(1), 0, 2 * BAR)],
+            "the drums' b runs on through row 3; the bass stops there, and row 4 keeps nothing playing"
+        );
+        assert_eq!(song.markers.len(), 3, "each row still marks its bars");
+        // Kept, then a clip of its own: a block of its own after.
+        let song = scenes_to_song(&p, &[(0, BAR), (2, BAR), (0, BAR)], 0)
+            .unwrap()
+            .song;
+        let drums: Vec<_> = song
+            .on_track(0)
+            .iter()
+            .map(|b| (b.start, b.length))
+            .collect();
+        assert_eq!(drums, [(0, 2 * BAR), (2 * BAR, BAR)]);
     }
 
     /// Song → scenes takes only truly empty rows (`Project::row_empty`):

@@ -16,7 +16,10 @@
 //!   the host's mute queue ([`Perform::take_line_mutes`]), as TRACK
 //!   MUTE's do, since in song mode such a track still plays the song.
 //!   With the transport stopped, or Launch at once, it all happens at
-//!   once.
+//!   once. A scene's **Keep playing** tracks (the Arrange refactor's
+//!   5.2, [`mpfree_seq::Scene::keep`]) are left out where their cell is
+//!   empty: no cue, so what they play, and a cue already waiting, carry
+//!   on through the scene change; their mutes still wait for the line.
 //! - A scene's program changes (sequencer S5,
 //!   [`mpfree_seq::Scene::programs`]) go out on the same line, every track
 //!   with one, cued or not, so a track whose gear plays its own patterns
@@ -384,8 +387,22 @@ impl Perform {
                     id: self.program_id,
                 });
         }
+        // Its Keep playing tracks (the Arrange refactor's 5.2): an empty
+        // cell there leaves the track as it is.
+        let keep = scene.map_or(0, |s| s.keep);
         for (t, track) in project.tracks.iter_mut().enumerate() {
             let slot = track.slots[row].as_ref().map(|c| (row, c.length, c.speed));
+            if slot.is_none() && t < MAX_TRACKS && keep & (1 << t) != 0 {
+                // Keep playing: no cue, and what plays or waits carries
+                // on; the scene's mute still comes in on its line.
+                match (when, mute[t]) {
+                    (When::Now(_), Some(m)) => track.mute = m,
+                    (When::Now(_), None) => {}
+                    (When::Cued, Some(m)) if line == LaunchGrid::Now => track.mute = m,
+                    (When::Cued, m) => self.line_mutes[t] = m,
+                }
+                continue;
+            }
             let busy = launches.iter().any(|l| l.track == t) || cues.iter().any(|c| c.track == t);
             cues.retain(|c| c.track != t);
             match when {
@@ -1028,6 +1045,65 @@ mod tests {
         );
         assert_eq!(perf.cued(), Some(2));
         assert!(!perf.launch_scene(&mut p, SCENES, When::Cued, &mut launches, &mut cues));
+    }
+
+    /// The Arrange refactor's 5.2 (D4's empty cells): a scene's Keep
+    /// playing track with an empty cell gets no cue, so what it plays,
+    /// and a cue already waiting on it, carry on through the scene
+    /// change; its mute still waits for the scene's line. A cell with a
+    /// clip launches as ever, and a Stop track still stops.
+    #[test]
+    fn a_keep_playing_track_runs_on_through_a_scene_change() {
+        let mut p = project();
+        let sc = p.scene_mut(2).unwrap();
+        sc.set_keep(1, true).unwrap();
+        sc.mutes = Some(0b10);
+        let mut perf = Perform::default();
+        let playing = |track| Launch {
+            track,
+            slot: 0,
+            origin: 0,
+            start: 0,
+        };
+        let mut launches = vec![playing(0), playing(1)];
+        let mut cues = vec![];
+        assert!(perf.launch_scene(&mut p, 2, When::Cued, &mut launches, &mut cues));
+        assert_eq!(
+            cues,
+            vec![Cue {
+                track: 0,
+                slot: Some(2)
+            }],
+            "track 1 keeps playing: no stop cue"
+        );
+        assert_eq!(launches, vec![playing(0), playing(1)]);
+        let (_, mutes) = perf.take_line_mutes().unwrap();
+        assert_eq!(mutes[1], Some(true), "its mute on the line");
+        // A cue already waiting on a Keep playing track stays.
+        let mut cues = vec![Cue {
+            track: 1,
+            slot: Some(1),
+        }];
+        perf.launch_scene(&mut p, 2, When::Cued, &mut launches, &mut cues);
+        assert!(cues.contains(&Cue {
+            track: 1,
+            slot: Some(1)
+        }));
+        // Stopped, at once: the track's launch stays, and its mute is set.
+        let mut cues = vec![];
+        perf.launch_scene(&mut p, 2, When::Now(BAR), &mut launches, &mut cues);
+        assert!(launches.contains(&playing(1)));
+        assert!(launches.iter().any(|l| l.track == 0 && l.slot == 2));
+        assert!(p.tracks[1].mute);
+        // Back to Stop: the empty cell stops it, as before.
+        p.scene_mut(2).unwrap().set_keep(1, false).unwrap();
+        let mut launches = vec![playing(0), playing(1)];
+        let mut cues = vec![];
+        perf.launch_scene(&mut p, 2, When::Cued, &mut launches, &mut cues);
+        assert!(cues.contains(&Cue {
+            track: 1,
+            slot: None
+        }));
     }
 
     #[test]

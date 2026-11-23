@@ -8361,7 +8361,7 @@ mod tests {
             h.act(TimeAction::SceneSettings {
                 row: 0,
                 card_row,
-                settings,
+                settings: Box::new(settings),
             })
         };
         assert_eq!(

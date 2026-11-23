@@ -3190,7 +3190,7 @@ impl TimeControl {
                     .set_scene(
                         &mut self.project,
                         row,
-                        settings.clone(),
+                        *settings,
                         Some(SCENE_JOIN + u64::from(card_row)),
                     )
                     .map_err(|e| format!("scene {}: {e:?}", row + 1))?;

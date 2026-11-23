@@ -8791,10 +8791,10 @@ impl Player {
             return Some(FromUi::Time(TimeAction::SceneSettings {
                 row,
                 card_row: time_view::SCENE_NAME,
-                settings: mpfree_seq::SceneSettings {
+                settings: Box::new(mpfree_seq::SceneSettings {
                     name,
                     ..self.time.scene.clone()
-                },
+                }),
             }));
         }
         let before = self.sample.page().to_string();
@@ -19232,6 +19232,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             st.scene_focus = 1;
             st.scenes = vec![String::new(), "Drop".into()];
             st.scene = mpfree_seq::SceneSettings {
+                keep: 0,
                 name: "Drop".into(),
                 mutes: Some(0b10),
                 follow: Some(mpfree_seq::Follow {
@@ -22230,10 +22231,10 @@ mod tests {
             Some(FromUi::Time(TimeAction::SceneSettings {
                 row: 0,
                 card_row: 5,
-                settings: mpfree_seq::SceneSettings {
+                settings: Box::new(mpfree_seq::SceneSettings {
                     mutes: Some(0b10),
                     ..Default::default()
-                },
+                }),
             }))
         );
         // Rename: the keyboard on "Scene 1"; "Drop" typed over it names
@@ -22260,10 +22261,10 @@ mod tests {
         let named = FromUi::Time(TimeAction::SceneSettings {
             row: 0,
             card_row: time_view::SCENE_NAME,
-            settings: mpfree_seq::SceneSettings {
+            settings: Box::new(mpfree_seq::SceneSettings {
                 name: "Drop".into(),
                 ..Default::default()
-            },
+            }),
         });
         let mut got = p.take_actions();
         got.extend(enter);
