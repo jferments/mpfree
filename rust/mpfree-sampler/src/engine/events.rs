@@ -116,6 +116,14 @@ pub enum Event {
         field: ProgramField,
         value: f32,
     },
+    /// A keyboard's pitch wheel: the keygroups' notes (not pad hits or 16
+    /// Levels) move by `cents` (-4800 to +4800) on top of the program's
+    /// Tune, playing voices too, gliding there as they do for Tune. It
+    /// stays until the next bend, through new views. A warped layer keeps
+    /// its pitch.
+    Bend {
+        cents: f32,
+    },
     /// Live chop on pad `pad`'s sound (`Some`), or off (`None`): while
     /// it is on and the pad's audition plays, [`Event::Mark`] notes where
     /// the audition is in its source ([`Engine::mark`]). Turned off, the
@@ -181,6 +189,7 @@ impl Event {
             Event::Pressure { pad, .. } => Some((0, pad, 0)),
             Event::PadLive { pad, field, .. } => Some((1, pad, field as u8)),
             Event::ProgramLive { field, .. } => Some((2, 0, field as u8)),
+            Event::Bend { .. } => Some((3, 0, 0)),
             _ => None,
         }
     }
@@ -309,16 +318,30 @@ impl ProgramField {
 }
 
 /// The live settings: each pad's [`PadField`]s (NaN where the pad's own
-/// applies), its step locks under them, and the program's offsets.
+/// applies), its step locks under them, the program's offsets, and the
+/// pitch wheel's bend on the keygroups.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Live {
     pub(super) pads: [[f32; PadField::COUNT]; PADS],
     pub(super) locks: [[f32; PadField::COUNT]; PADS],
     pub(super) program: [f32; ProgramField::COUNT],
+    /// Cents the keygroups' notes move by ([`Event::Bend`]).
+    pub(super) bend: f32,
 }
 
 impl Live {
     pub(super) const OWN: [[f32; PadField::COUNT]; PADS] = [[f32::NAN; PadField::COUNT]; PADS];
+
+    /// The program's offsets as a voice playing `note` hears them: a
+    /// keygroup's note (below [`LEVEL_NOTE`]: not a pad hit, [`NO_NOTE`],
+    /// or a 16 Levels voice) has the bend on its Tune.
+    pub(super) fn program_for(&self, note: u8) -> [f32; ProgramField::COUNT] {
+        let mut program = self.program;
+        if note < LEVEL_NOTE {
+            program[ProgramField::Tune as usize] += self.bend;
+        }
+        program
+    }
 
     /// Pad `p`'s settings in place of its own: each field's live value,
     /// else its lock (NaN where neither is set).
@@ -542,7 +565,7 @@ impl Engine {
                 Target::Own(_) => self.hit(pad, velocity),
                 Target::Key(note) => self.key(note, velocity),
                 Target::Level { pad: p, by, k } => {
-                    self.note_on(p, velocity, LEVEL_NOTE + k, Vary::level(by, k))
+                    self.note_on(p, velocity, LEVEL_NOTE + k, self.level_vary(p, by, k))
                 }
             },
             Event::NoteOff { pad } => match self.target(pad) {
@@ -602,6 +625,7 @@ impl Engine {
             Event::PadLive { pad, field, value } => self.pad_live(pad, field, value),
             Event::PadLock { pad, field, value } => self.pad_lock(pad, field, value),
             Event::ProgramLive { field, value } => self.program_live(field, value),
+            Event::Bend { cents } => self.bend(cents),
             Event::LiveChop { pad } => {
                 if let (None, Some(was)) = (pad, self.chop_pad) {
                     let chop_kit = self.chop_kit;
@@ -690,10 +714,11 @@ impl Engine {
     pub(super) fn follow_pad(&mut self, pad: u8, field: PadField) {
         if field.follows() {
             let at = self.at;
-            let (live, program) = (self.lives[at].row(usize::from(pad)), self.lives[at].program);
+            let (live, row) = (&self.lives[at], self.lives[at].row(usize::from(pad)));
+            let t = &self.tunings[at];
             for (v, _) in self.pool.iter_mut() {
                 if v.active && usize::from(v.kit) == at && v.pad == pad {
-                    retarget(v, &live, &program);
+                    retarget(v, &row, &live.program_of(v, t));
                 }
             }
         }
@@ -703,15 +728,41 @@ impl Engine {
     pub(super) fn program_live(&mut self, field: ProgramField, value: f32) {
         let at = self.at;
         self.lives[at].program[field as usize] = field.clamp(value);
-        let program = self.lives[at].program;
-        let live = &self.lives[at];
+        let (live, t) = (&self.lives[at], &self.tunings[at]);
         for (v, _) in self.pool.iter_mut() {
             // The pads' voices and the take's (no live values of its own).
             let p = usize::from(v.pad);
             if v.active && usize::from(v.kit) == at && (p < PADS || v.pad == TAKE_PAD) {
-                retarget(v, &live.row(p), &program);
+                retarget(v, &live.row(p), &live.program_of(v, t));
             }
         }
+    }
+
+    /// [`Event::Bend`]: the bend, then every keygroup voice of the kit.
+    pub(super) fn bend(&mut self, cents: f32) {
+        let at = self.at;
+        let cents = if cents.is_nan() {
+            0.0
+        } else {
+            cents.clamp(-4800.0, 4800.0)
+        };
+        if self.lives[at].bend == cents {
+            return;
+        }
+        self.lives[at].bend = cents;
+        let (live, t) = (&self.lives[at], &self.tunings[at]);
+        for (v, _) in self.pool.iter_mut() {
+            let p = usize::from(v.pad);
+            if v.active && usize::from(v.kit) == at && p < PADS && v.note < LEVEL_NOTE {
+                retarget(v, &live.row(p), &live.program_of(v, t));
+            }
+        }
+    }
+
+    /// The pitch wheel's bend on kit `kit`'s keygroups, in cents (0 out of
+    /// range).
+    pub fn kit_bend(&self, kit: usize) -> f32 {
+        self.lives.get(kit).map_or(0.0, |l| l.bend)
     }
 
     /// Pad `pad`'s live `field`, or `None` where the pad's own applies.

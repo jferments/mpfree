@@ -18,7 +18,7 @@ Device safety (rule zero) applies to every step below that touches the MPC. Each
 
 | Fact | Status | Source |
 |---|---|---|
-| One 5-pin MIDI In, one 5-pin MIDI Out, one USB-A (MIDI controllers allowed), one USB-B | OBSERVED (documented) | MPC 3.6 user guide, MPC One rear panel and specifications |
+| One 5-pin MIDI In, one 5-pin MIDI Out, one USB-A (MIDI controllers allowed), one USB-B | OBSERVED (documented) | MPC 3.10.1 user guide, MPC One rear panel (p. 360) and specifications (pp. 474-475) |
 | **4** CV/Gate jacks, 3.5 mm TRS: a TS cable carries one signal, a TRS-to-dual-TS breakout two, so up to **8 signals** | OBSERVED (documented) | the same pages |
 | The CV/Gate voltage range of the MPC One | **UNKNOWN**: the guide does not give it, and it warns that V/oct scaling differs between devices. Akai's pitch spans five octaves over the full 14-bit range, which fits 0 to 5 V at 1 V/oct (INFERENCE until a meter is on a jack) | guide glossary, "CV"; [controller-protocol](../hardware/controller-protocol.md#second-round-the-cv-scale-and-the-next-outputs-2026-11-12) |
 | The internal controller is USB `09e8:0046`, a standard USB-MIDI 1.0 device with three cables: 0 "Public", 1 "Private", 2 "MIDI Port". It has no audio streaming interface | OBSERVED | [audio-midi-survey](../hardware/audio-midi-survey.md) |

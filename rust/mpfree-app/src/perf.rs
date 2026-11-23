@@ -9,7 +9,9 @@
 //! - The system: the `cpu` line of `/proc/stat` (100 % is every core),
 //!   `/proc/meminfo`, `/proc/loadavg`, `/sys/class/thermal/thermal_zone*`
 //!   and `/sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq`, where
-//!   they exist (on the MPC One they are assumed, not yet seen).
+//!   they exist (on the MPC One: two zones, `cpu-thermal` and `gpu-thermal`,
+//!   and four cores, seen in the disk streaming round D2b, 23 Nov; System
+//!   status reads them on its own, always, in heat.rs).
 //!
 //! Parsing is separate from reading, so the tests feed fixture text.
 

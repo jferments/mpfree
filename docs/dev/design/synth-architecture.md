@@ -14,7 +14,7 @@ From [Synth quality](synth-quality.md), the faults every engine shares, in the o
 | Aliasing in drive and distortion | Poly's saw through 24 dB of drive −30 dB at C7 | Antiderivative antialiasing on the drive's curve, or 2x around it, whichever measures better |
 | Velocity barely changes the level | Poly 7 to 8 dB from velocity 20 to 127, against 30 to 40 dB for keys | A square-law curve with a range per preset |
 | Velocity doesn't change the tone | 32 of 71 presets | Velocity routes on every engine |
-| Chords clip | 17 presets clip an 8-note chord | The preset rules and checks ([section 5](#5-what-a-preset-carries)) |
+| Chords clip | 17 presets clip an 8-note chord (none since 23 Nov, [DSP quality](dsp-quality.md#step-15-levels-and-dc) step 1.5) | The preset rules and checks ([section 5](#5-what-a-preset-carries)) |
 | Labels that don't say what happens | Poly's Attack reaches full level at 31 % of its label, Release at 85 % | Envelope times that mean what they say |
 | DC | 8 presets above −60 dBFS (FM's 1:1 pairs, reeds) | A DC blocker at every engine's output |
 | No sustain pedal, mod wheel or breath | Instruments hear only notes, pressure, bend, per-note expression and parameters | A controller event ([section 6](#6-how-each-instrument-is-played)) |

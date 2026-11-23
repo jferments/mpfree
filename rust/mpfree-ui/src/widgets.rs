@@ -22,6 +22,18 @@ pub struct Chip {
     /// wide, so a reading that changes width doesn't nudge the chips
     /// beside it (Jay, 18 Nov 2026 07:28Z).
     pub room: Option<&'static str>,
+    /// The text in parts, each in its own ink: a tone, or the plain text
+    /// colour for None (the status chip's CPU and RAM numbers, each in
+    /// its colour once past its line). Empty: all of `text`, plain. The
+    /// parts make up `text`.
+    pub inks: Vec<(String, Option<Tone>)>,
+    /// Drawn as a ring in `tone` (an outline and a hollow dot) instead of
+    /// a filled dot: something happened that hasn't been looked at
+    /// (System status).
+    pub ring: bool,
+    /// Lit, as the folder icon is while the browser shows: the page it
+    /// opens is showing.
+    pub lit: bool,
 }
 
 impl Chip {
@@ -30,12 +42,34 @@ impl Chip {
             text: text.into(),
             tone,
             room: None,
+            inks: Vec::new(),
+            ring: false,
+            lit: false,
         }
     }
 
     /// The chip as wide as `widest` (or its text, if that is wider).
     pub fn room(mut self, widest: &'static str) -> Chip {
         self.room = Some(widest);
+        self
+    }
+
+    /// A chip whose text is `parts`, each in its own ink.
+    pub fn parts(parts: Vec<(String, Option<Tone>)>, tone: Tone) -> Chip {
+        let text: String = parts.iter().map(|(p, _)| p.as_str()).collect();
+        Chip {
+            inks: parts,
+            ..Chip::new(text, tone)
+        }
+    }
+
+    pub fn ring(mut self, ring: bool) -> Chip {
+        self.ring = ring;
+        self
+    }
+
+    pub fn lit(mut self, lit: bool) -> Chip {
+        self.lit = lit;
         self
     }
 }
@@ -305,18 +339,46 @@ impl Widget for Header {
             }
             let cr = Rect::new(right - w, r.y + (r.h - h) / 2, w, h);
             drawn.push((i, cr));
-            cx.canvas.fill_round_rect(cr, h / 2, t.surface);
+            let well = if chip.lit { t.raised } else { t.surface };
+            let tone = t.tone(chip.tone);
+            if chip.ring {
+                // An outline in the tone, and a hollow dot.
+                cx.canvas.fill_round_rect(cr, h / 2, tone);
+                let inner = Rect::new(cr.x + 2, cr.y + 2, cr.w - 4, cr.h - 4);
+                cx.canvas.fill_round_rect(inner, inner.h / 2, well);
+            } else {
+                cx.canvas.fill_round_rect(cr, h / 2, well);
+            }
+            if chip.lit {
+                let bar = Rect::new(cr.x + 14, cr.bottom() - 4, cr.w - 28, 3);
+                cx.canvas.fill_round_rect(bar, 1, t.accent);
+            }
             let dot = Rect::new(cr.x + 14, cr.y + h / 2 - 4, 8, 8);
-            cx.canvas.fill_round_rect(dot, 4, t.tone(chip.tone));
-            let text = Rect::new(cr.x + 28, cr.y, tw + 4, h);
-            cx.text(
-                FontId::Sans,
-                t.size_small,
-                text,
-                Align::Left,
-                t.text,
-                &chip.text,
-            );
+            cx.canvas.fill_round_rect(dot, 4, tone);
+            if chip.ring {
+                let hole = Rect::new(dot.x + 2, dot.y + 2, 4, 4);
+                cx.canvas.fill_round_rect(hole, 2, well);
+            }
+            if chip.inks.is_empty() {
+                let text = Rect::new(cr.x + 28, cr.y, tw + 4, h);
+                cx.text(
+                    FontId::Sans,
+                    t.size_small,
+                    text,
+                    Align::Left,
+                    t.text,
+                    &chip.text,
+                );
+            } else {
+                let mut x = cr.x + 28;
+                for (part, ink) in &chip.inks {
+                    let pw = cx.measure(FontId::Sans, t.size_small, part);
+                    let ink = ink.map_or(t.text, |k| t.tone(k));
+                    let text = Rect::new(x, cr.y, pw + 4, h);
+                    cx.text(FontId::Sans, t.size_small, text, Align::Left, ink, part);
+                    x += pw;
+                }
+            }
             right -= w + 8;
         }
     }
@@ -915,6 +977,11 @@ pub struct Label {
     pub align: Align,
     /// Room left and right of the text, px.
     pub inset: i32,
+    /// The label sits on the page's own background (`bg`), so a status
+    /// tone (good, warn, bad) is kept readable there: a theme whose red
+    /// doesn't read on its background gets it moved just far enough
+    /// ([`crate::Theme::readable`]). The hint line is one.
+    pub on_bg: bool,
 }
 
 impl Label {
@@ -924,6 +991,7 @@ impl Label {
             tone,
             align,
             inset: 6,
+            on_bg: false,
         }
     }
 
@@ -932,11 +1000,20 @@ impl Label {
         self.inset = inset;
         self
     }
+
+    /// The same, on the page's background ([`Label::on_bg`]).
+    pub fn on_bg(mut self) -> Label {
+        self.on_bg = true;
+        self
+    }
 }
 
 impl Widget for Label {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
-        let (px, c) = (cx.theme.size_small, cx.theme.tone(self.tone));
+        let (px, mut c) = (cx.theme.size_small, cx.theme.tone(self.tone));
+        if self.on_bg && matches!(self.tone, Tone::Good | Tone::Warn | Tone::Bad) {
+            c = cx.theme.readable(c, cx.theme.bg);
+        }
         cx.text(
             FontId::Sans,
             px,

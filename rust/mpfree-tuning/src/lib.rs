@@ -22,9 +22,12 @@
 //! that need no file.
 #![forbid(unsafe_code)]
 
+mod pick;
 pub mod scala;
 
 use std::fmt;
+
+pub use pick::{TuningFile, TuningPick, A4_MAX, A4_MIN};
 
 /// The lowest key a table tuning holds.
 pub const LOW_KEY: i32 = -64;
@@ -234,6 +237,48 @@ impl Tuning {
     pub fn cents_off(&self, key: i32) -> f32 {
         let std = (key as f32 - 69.0) / 12.0 + A4_HZ.log2();
         (self.hz(key as f32).log2() - std) * 1200.0
+    }
+
+    /// How far a note, whole or fractional, sounds from where 12-TET at
+    /// A4 = 440 Hz puts it, in cents: what an instrument playing recorded
+    /// sounds adds to a note so that note `n` sounds at `self.hz(n)`, the
+    /// sound's own root staying at its 12-TET pitch (a keygroup). Exactly
+    /// 0.0 for the standard tuning at every note, so a keygroup in 12-TET
+    /// plays to the bit as before; 0.0 for a note that isn't finite. Never
+    /// allocates.
+    #[inline]
+    pub fn offset_cents(&self, note: f32) -> f32 {
+        if !note.is_finite() {
+            return 0.0;
+        }
+        match self.map {
+            Map::Equal {
+                ref_hz,
+                ref_note,
+                steps,
+            } => {
+                // 0.0 exactly for 440 Hz; A4 = 432 is -31.77 at every key.
+                let a4 = 1200.0 * (ref_hz / A4_HZ).log2();
+                if steps == 12.0 && ref_note == 69.0 {
+                    a4
+                } else {
+                    let n = f64::from(note);
+                    let step = 1200.0 / f64::from(steps);
+                    (f64::from(a4) + (n - f64::from(ref_note)) * step - (n - 69.0) * 100.0) as f32
+                }
+            }
+            Map::Table => {
+                // The table's own log2 pitch, as `table_hz` works it out,
+                // less the 12-TET one.
+                let x = (note - LOW_KEY as f32).max(0.0).min((KEYS - 1) as f32);
+                let i = (x as usize).min(KEYS - 2);
+                let f = x - i as f32;
+                let a = self.log2[i];
+                let l = f64::from(a + (self.log2[i + 1] - a) * f);
+                let std = (f64::from(note) - 69.0) / 12.0 + f64::from(A4_HZ).log2();
+                ((l - std) * 1200.0) as f32
+            }
+        }
     }
 }
 
@@ -532,6 +577,73 @@ mod tests {
                 assert!(f.is_finite() && f > 0.0, "{n} -> {f}");
             }
         }
+    }
+
+    /// Every note's offset, in steps of 0.07 from key -64 to 191.
+    fn notes() -> impl Iterator<Item = f32> {
+        (0..3658).map(|i| LOW_KEY as f32 + i as f32 * 0.07)
+    }
+
+    #[test]
+    fn the_standard_tuning_moves_no_note() {
+        let tunings = [
+            Tuning::standard(),
+            Tuning::equal(12, 440.0),
+            Builtin::Equal12.tuning(7, 440.0),
+            Tuning::default(),
+        ];
+        for t in tunings {
+            for n in notes().chain([f32::NAN, f32::INFINITY, -1e9, 1e9, -0.0, 0.5, 60.25]) {
+                assert_eq!(t.offset_cents(n).to_bits(), 0f32.to_bits(), "note {n}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_note_moved_by_its_offset_sounds_at_the_tunings_pitch() {
+        let standard = Tuning::standard();
+        let mut tunings: Vec<(String, Tuning)> = Vec::new();
+        for b in Builtin::ALL {
+            for root in [0u8, 2, 9, 11] {
+                for a4 in [415.0, 432.0, 440.0, 466.0] {
+                    tunings.push((
+                        format!("{} on {root} at {a4}", b.name()),
+                        b.tuning(root, a4),
+                    ));
+                }
+            }
+        }
+        tunings.push(("19-TET".into(), Tuning::equal(19, 440.0)));
+        for (name, t) in &tunings {
+            for n in notes() {
+                let moved = standard.hz(n + t.offset_cents(n) / 100.0);
+                let cents = 1200.0 * (moved / t.hz(n)).log2();
+                assert!(cents.abs() < 0.02, "{name}, note {n}: {cents} cents out");
+            }
+            for key in -64..=191 {
+                let (a, b) = (t.offset_cents(key as f32), t.cents_off(key));
+                assert!((a - b).abs() < 0.02, "{name}, key {key}: {a} vs {b}");
+            }
+        }
+    }
+
+    #[test]
+    fn offsets_for_a4_quarter_tones_and_just() {
+        let a432 = Tuning::equal(12, 432.0);
+        for n in [0.0, 60.0, 60.5, 69.0, 127.0] {
+            assert!((a432.offset_cents(n) + 31.767).abs() < 0.001, "{n}");
+        }
+        // A quarter tone above A4 is 50 cents under 12-TET's A#4.
+        let q = Tuning::equal(24, 440.0);
+        assert!((q.offset_cents(70.0) + 50.0).abs() < 1e-3);
+        assert!(q.offset_cents(69.0).abs() < 1e-3);
+        // Just on C: the third 13.69 cents flat, the fifth 1.96 sharp, the
+        // root where 12-TET has it.
+        let just = Builtin::Just.tuning(0, 440.0);
+        assert!(just.offset_cents(60.0).abs() < 0.01);
+        assert!((just.offset_cents(64.0) + 13.686).abs() < 0.01);
+        assert!((just.offset_cents(67.0) - 1.955).abs() < 0.01);
+        assert!((just.offset_cents(76.0) + 13.686).abs() < 0.01);
     }
 
     #[test]

@@ -305,7 +305,7 @@ Load **Break 92.wav** back, on this MPC or another, and the pad comes back exact
 
 The **Source** row says what plays:
 
-- **The Synth tab's patch.** MPFree plays a copy of it, much faster than real time, so a whole instrument takes seconds.
+- **The Synth tab's patch.** MPFree plays a copy of it, much faster than real time, so a whole instrument takes seconds. The copy plays in standard tuning whatever the song's [tuning](synths.md#tuning), because the keygroups it makes play the tuning themselves. Tune your own gear to standard tuning before you sample it, for the same reason.
 - **External gear**, on a MIDI channel from 1 to 16. MPFree plays your synth through **MIDI OUT** and records it from the line input, in real time. Connect the synth's audio out to the line input, set it to the channel you picked and turn the line input on. MPFree first plays the middle note twice to hear how loud the synth is and how late it answers, so no note starts late or cut off. If the line input stops or you switch the recorder's Source to another source while it runs, it stops, lets go of the note and keeps the notes done.
 
 The notes go out of the 5-pin **MIDI OUT** jack. MIDI out is built but not yet checked on an MPC One, so it only sends while **Send MIDI and CV out** is on in [Prefs](../reference/prefs.md) (see [Playing other gear](midi-and-cv.md)). Until then the Source row offers the Synth tab's patch only, and with the gear picked the bar says there is no MIDI out for it. Every note it plays is let go when it ends or you cancel it, and the MIDI Monitor shows them as sent by the auto-sample.

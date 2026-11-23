@@ -57,8 +57,8 @@ use mpfree_synth::{
 };
 use mpfree_synth_ui::format::value_line;
 use mpfree_synth_ui::SynthState;
-pub use mpfree_tuning::Builtin;
-use mpfree_tuning::{root_hz, scala, Tuning};
+use mpfree_tuning::Tuning;
+pub use mpfree_tuning::{Builtin, TuningFile, TuningPick, A4_MAX, A4_MIN};
 use mpfree_ui::Color;
 use std::time::{Duration, Instant};
 
@@ -313,135 +313,8 @@ fn as_poly_sound(
     Ok((s, extra))
 }
 
-/// The lowest and highest A4 the Synth tab's options offer, in Hz.
-pub const A4_MIN: u16 = 380;
-pub const A4_MAX: u16 = 480;
-
 /// The most tuning files the tunings folder offers.
 pub const MAX_TUNING_FILES: usize = 64;
-
-/// A tuning from a Scala file the musician put in the tunings folder
-/// (files/tunings/ on the data partition): its scale (`NAME.scl`) and,
-/// with a keyboard map beside it (`NAME.kbm`), the tuning the map fixes.
-#[derive(Clone, Debug, PartialEq)]
-pub struct TuningFile {
-    /// The file's name without `.scl`, as the options menu shows it.
-    pub name: String,
-    scale: scala::Scale,
-    /// The tuning the keyboard map gives, root and pitch included; None
-    /// without a map.
-    mapped: Option<Tuning>,
-}
-
-impl TuningFile {
-    /// Reads a scale and its keyboard map, if there is one, or says why
-    /// not. Allocates: call it before the sound starts.
-    pub fn parse(name: &str, scl: &str, kbm: Option<&str>) -> Result<TuningFile, String> {
-        let scale = scala::parse_scl(scl).map_err(|e| e.to_string())?;
-        let mapped = match kbm {
-            Some(text) => {
-                let map = scala::parse_kbm(text).map_err(|e| format!("its .kbm: {e}"))?;
-                Some(scala::tuning(&scale, &map).map_err(|e| e.to_string())?)
-            }
-            None => None,
-        };
-        Ok(TuningFile {
-            name: name.to_string(),
-            scale,
-            mapped,
-        })
-    }
-
-    /// Whether a keyboard map sets the root and the pitch, so the Tuning
-    /// root and A4 options don't apply.
-    pub fn mapped(&self) -> bool {
-        self.mapped.is_some()
-    }
-
-    /// Notes in one repeat of the scale (12 for most).
-    pub fn notes(&self) -> usize {
-        self.scale.len()
-    }
-
-    /// The tuning: the keyboard map's, or else the scale with its 1/1 on
-    /// pitch class `root` (0 = C, in octave 4), which keeps its 12-TET
-    /// pitch for `a4_hz`, and each key the next note of the scale, as the
-    /// built-in tunings do. Never allocates.
-    pub fn tuning(&self, root: u8, a4_hz: f32) -> Tuning {
-        match &self.mapped {
-            Some(t) => t.clone(),
-            None => {
-                let key = 60 + i32::from(root % 12);
-                self.scale.rooted(key, root_hz(key, a4_hz))
-            }
-        }
-    }
-}
-
-/// The synth's tuning, from the Synth tab's options: a built-in tuning or
-/// a tuning file, its root for the tunings that have one (0 = C to 11 = B)
-/// and A4 in whole Hz. Every engine but Drums plays through it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TuningPick {
-    pub builtin: Builtin,
-    /// A tuning file (its place in the synth's list,
-    /// [`Synth::tuning_files`]), which plays instead of `builtin`.
-    pub file: Option<u8>,
-    pub root: u8,
-    pub a4_hz: u16,
-}
-
-impl Default for TuningPick {
-    fn default() -> Self {
-        TuningPick {
-            builtin: Builtin::Equal12,
-            file: None,
-            root: 0,
-            a4_hz: 440,
-        }
-    }
-}
-
-impl TuningPick {
-    /// The tuning file picked, out of `files`.
-    pub fn file<'a>(&self, files: &'a [TuningFile]) -> Option<&'a TuningFile> {
-        files.get(usize::from(self.file?))
-    }
-
-    /// The tuning itself, with `files` the tuning files offered. Never
-    /// allocates.
-    pub fn tuning(&self, files: &[TuningFile]) -> Tuning {
-        let a4 = f32::from(self.a4_hz.clamp(A4_MIN, A4_MAX));
-        match self.file(files) {
-            Some(f) => f.tuning(self.root % 12, a4),
-            None => self.builtin.tuning(self.root % 12, a4),
-        }
-    }
-
-    /// "Just (5-limit) on D, A4 432 Hz"; "12-TET" on its own at 440; a
-    /// tuning file by its name ("werckmeister3 on C"), alone when its
-    /// keyboard map sets the root and the pitch.
-    pub fn label(&self, files: &[TuningFile]) -> String {
-        let (name, has_root, fixed) = match self.file(files) {
-            Some(f) => (f.name.as_str(), true, f.mapped()),
-            None => (self.builtin.name(), self.builtin.has_root(), false),
-        };
-        if fixed {
-            return name.to_string();
-        }
-        let root = if has_root {
-            format!(" on {}", NOTE_NAMES[usize::from(self.root % 12)])
-        } else {
-            String::new()
-        };
-        let a4 = if self.a4_hz == 440 {
-            String::new()
-        } else {
-            format!(", A4 {} Hz", self.a4_hz)
-        };
-        format!("{name}{root}{a4}")
-    }
-}
 
 /// How the synth's pads are set up, from the Synth tab's options: the
 /// engine, the scale (None is Off), how In key fills its rows, each bank's
@@ -2793,6 +2666,48 @@ mod tests {
         assert!(fresh_node("mpfree.poly", &[], &[0.5], 48_000).is_none());
     }
 
+    /// Auto-sample records a patch in 12-TET whatever the song's tuning
+    /// (tunings plan T3): its copy is made from the patch's values and
+    /// design, which a tuning doesn't touch, and starts in 12-TET, so a
+    /// keygroup made from it plays the tuning once, not twice.
+    #[test]
+    fn an_auto_sample_copy_plays_in_12_tet_whatever_the_tuning() {
+        let a432 = TuningPick {
+            a4_hz: 432,
+            ..TuningPick::default()
+        };
+        for engine in [
+            Engine::Poly,
+            Engine::Fm,
+            Engine::Drums,
+            Engine::Pluck,
+            Engine::Keys,
+            Engine::Drawbar,
+            Engine::Squelch,
+            Engine::Analog,
+            Engine::Strings,
+            Engine::Bass,
+            Engine::Wind,
+            Engine::Choir,
+        ] {
+            let mut s = Synth::new(48_000);
+            with(&mut s, |p| p.engine = engine);
+            let n = s.notes(0)[0];
+            let in_12 = note(s.node_mut(), n);
+            let plain = s.state();
+            with(&mut s, |p| p.tuning = a432);
+            let st = s.state();
+            let name = st.info.name;
+            assert_eq!(st.extras, plain.extras, "{name}");
+            assert_eq!(st.values, plain.values, "{name}");
+            if engine != Engine::Drums {
+                assert_ne!(note(s.node_mut(), n), in_12, "{name} plays the tuning");
+            }
+            let mut copy = fresh_node(st.info.id, &st.extras, &st.values, 48_000).unwrap();
+            assert_eq!(note(copy.as_mut(), n), in_12, "{name} records in 12-TET");
+        }
+    }
+
     #[test]
     fn pads_play_semitones_from_c3_and_octaves_move_them() {
         let mut s = Synth::new(44_100);
@@ -3726,14 +3641,11 @@ mod tests {
         assert_eq!(s.poly.active_voices(), 0, "Poly's release ended");
         assert_eq!(s.fm.active_voices(), 1);
         // The Synth tab edits FM now.
+        let poly_level = s.poly.param(pp::LEVEL);
         let id = mpfree_synth::fm_params::LEVEL;
         s.set(id, -6.0);
         assert_eq!(s.value(id), -6.0);
-        assert_eq!(
-            s.poly.param(pp::LEVEL),
-            Poly::new(44_100).param(pp::LEVEL),
-            "Poly untouched"
-        );
+        assert_eq!(s.poly.param(pp::LEVEL), poly_level, "Poly untouched");
         assert_eq!(s.load_preset(2), Some("Bell Tower"));
         assert_eq!(s.preset_count(), Fm::presets().len());
         assert_eq!(s.kit_view().name, "Synth: FM");

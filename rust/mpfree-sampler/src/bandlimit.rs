@@ -210,6 +210,29 @@ pub fn read2<S: Sample>(
     reach: Reach,
     picks: (u8, u8),
 ) -> (f32, f32) {
+    read2_folded(k, data, stereo, lo, hi, (lo, hi), |j| j, pos, reach, picks)
+}
+
+/// [`read2`] for a voice going round a loop: frames inside `fast` (both
+/// ends included, inside `lo..=hi`) are read straight; a read that reaches
+/// past them takes each frame `j` as `fold(j)`, then clamped to `lo..=hi`.
+/// `fold` maps a frame past the loop's end to the one the loop plays there
+/// (the engine's `Voice::fold`), so a read at a loop's wrap sees the loop
+/// unrolled. [`read2`] is this with nothing folded.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+pub fn read2_folded<S: Sample>(
+    k: &Kernel,
+    data: &[S],
+    stereo: bool,
+    lo: i64,
+    hi: i64,
+    fast: (i64, i64),
+    fold: impl Fn(i64) -> i64,
+    pos: i64,
+    reach: Reach,
+    picks: (u8, u8),
+) -> (f32, f32) {
     let i = pos >> 32;
     let du = reach.step;
     // Places of the first tap back (frame i) and forward (frame i + 1):
@@ -223,7 +246,7 @@ pub fn read2<S: Sample>(
     let (mut wb, mut lb, mut rb) = (0.0f32, 0.0f32, 0.0f32);
     let (mut wf, mut lf, mut rf) = (0.0f32, 0.0f32, 0.0f32);
     if stereo {
-        if n0 >= lo && n1 <= hi {
+        if n0 >= fast.0 && n1 <= fast.1 {
             let back = &data[2 * n0 as usize..2 * (i as usize + 1)];
             let fwd = &data[2 * (i as usize + 1)..2 * (n1 as usize + 1)];
             for (b, f) in back.chunks_exact(2).rev().zip(fwd.chunks_exact(2)) {
@@ -239,8 +262,8 @@ pub fn read2<S: Sample>(
             }
         } else {
             for m in 0..taps {
-                let jb = (i - m).clamp(lo, hi) as usize;
-                let jf = (i + 1 + m).clamp(lo, hi) as usize;
+                let jb = fold(i - m).clamp(lo, hi) as usize;
+                let jf = fold(i + 1 + m).clamp(lo, hi) as usize;
                 let (x, y) = (weight(k, ub), weight(k, uf));
                 wb += x;
                 lb += x * data[2 * jb].raw();
@@ -252,7 +275,7 @@ pub fn read2<S: Sample>(
                 uf += du;
             }
         }
-    } else if n0 >= lo && n1 <= hi {
+    } else if n0 >= fast.0 && n1 <= fast.1 {
         let back = &data[n0 as usize..=i as usize];
         let fwd = &data[i as usize + 1..=n1 as usize];
         for (b, f) in back.iter().rev().zip(fwd) {
@@ -266,8 +289,8 @@ pub fn read2<S: Sample>(
         }
     } else {
         for m in 0..taps {
-            let jb = (i - m).clamp(lo, hi) as usize;
-            let jf = (i + 1 + m).clamp(lo, hi) as usize;
+            let jb = fold(i - m).clamp(lo, hi) as usize;
+            let jf = fold(i + 1 + m).clamp(lo, hi) as usize;
             let (x, y) = (weight(k, ub), weight(k, uf));
             wb += x;
             lb += x * data[jb].raw();
@@ -491,6 +514,18 @@ pub fn prepare_now(cell: &OctaveCell, data: &Pcm, channels: u8) {
         let _ = cell.built.set(Octaves::make_from(data, channels));
     }
 }
+
+/// The near read (DSP quality step 1.4): the 8-point read a voice uses
+/// between [`CLEAN_ABOVE`]'s two semitones up and any speed down, where
+/// the Hermite read folds images of the sound back into hearing (−26 dB a
+/// semitone or two down at 9 kHz). It lives with the streaming cursors'
+/// kernels, which read with it too, so both share one table
+/// ([`mpfree_stream::resample::NearKernel`], measured there).
+///
+/// [`CLEAN_ABOVE`]: crate::engine::CLEAN_ABOVE
+pub use mpfree_stream::resample::{
+    near_kernel, near_sum, near_sum2, NearKernel, NEAR_HALF, NEAR_TAPS,
+};
 
 #[cfg(test)]
 mod tests {

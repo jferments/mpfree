@@ -897,13 +897,16 @@ jobs:
         # against rust/mpfree-fxlab/quality/synth.tsv. An improvement is
         # recorded with MPFREE_QUALITY_BLESS=1 (docs/dev/design/synth-quality.md).
         run: cargo test --manifest-path rust/Cargo.toml --release --locked -p mpfree-fxlab --test synth
-      - name: DSP quality gates Y4, Y7 and Y8 (finite output, block size, reference)
+      - name: DSP quality gates Y4, Y7 and Y8, the filter ratchet (Y1, Y2) and Y3
         # Release only: every synth engine, the drums and every effect, each on
         # its own, stays finite at every setting the layers try (Y4); the
         # subjects listed as bit-exact stay so in blocks of 1 and 37 frames
         # (Y7); the aliasing cases listed as converged keep an 8x reference
-        # that agrees with 16x (Y8). docs/dev/design/dsp-quality.md.
-        run: cargo test --manifest-path rust/Cargo.toml --release --locked -p mpfree-fxlab --test robust --test reference -- --nocapture
+        # that agrees with 16x (Y8); no filter number gets worse against
+        # rust/mpfree-fxlab/quality/filters.tsv (Y1, Y2; an improvement is
+        # recorded with MPFREE_QUALITY_BLESS=1); Y3's poly-mod and fast
+        # envelope cases are printed. docs/dev/design/dsp-quality.md.
+        run: cargo test --manifest-path rust/Cargo.toml --release --locked -p mpfree-fxlab --test robust --test reference --test filters -- --nocapture
       - name: DSP quality full-project renders (step 0.6)
         # Release only, a few seconds: seven fixed projects through the whole
         # chain (track host, the sampler's pads, inserts, returns, master),
@@ -1163,6 +1166,16 @@ jobs:
         # A step limit under the job's, so a hang fails with its log kept
         # (libtest names each test running over 60 s).
         timeout-minutes: 90
+        # glibc keeps freed memory in one malloc arena per thread, so the
+        # app's test program grew to 15.9 GB on 36 test threads (23 Nov) and
+        # held the mpfree slice at its memory limit. Four arenas: measured
+        # locally at 4 threads, 2 arenas cut the peak from 8.5 to 3.7 GB for
+        # +10 % time (merge desk handoff 23 Nov, section 7). Test harness
+        # only; the app on the MPC is not changed. Keep it only while the job
+        # stays within about 10 % of its time (16-17 min) and the slice
+        # report's memory.peak drops.
+        env:
+          MALLOC_ARENA_MAX: "4"
         run: cargo test --manifest-path rust/Cargo.toml -p mpfree-app --all-targets --locked
       - name: The mpfree slice's memory and CPU at the end (report only)
         if: always() && runner.environment == 'self-hosted'

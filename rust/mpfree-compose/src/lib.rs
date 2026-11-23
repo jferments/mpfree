@@ -60,16 +60,47 @@
 //! - [`baseline`]: the simpler ways each job is played beside in the
 //!   listening tests.
 //!
+//! Revision 3, S1, music first: the engine behind Continue since
+//! 2026-11-23 (the phase 0C engine above stays as
+//! [`request::first_engine`], the baseline beside it):
+//!
+//! - [`sketch`]: the phrase plan before any note: a gesture per bar,
+//!   landing notes that climb to one late high point, rests, and one
+//!   placed surprise.
+//! - [`draft`]: chords led to the landings, notes filled in between them,
+//!   a few whole drafts, the best one offered; locked bars kept, and
+//!   Try again on picked bars from the plan.
+//! - [`critic`]: a whole result judged on separate checks (goes
+//!   somewhere, lands, breathes, yours, repeats, flows), with words.
+//!
+//! Revision 3, S2, parts that play together (Add a part):
+//!
+//! - [`row`]: a row read as one picture: each part on the step grid, the
+//!   drums by kick, snare and hats, the tune read back into a plan
+//!   (landings, high point, close, rests) and each bar's energy.
+//! - [`cells`]: rhythm from one-beat cells with named changes (keep,
+//!   shift, push, split, join, drop, ghost, echo, mirror): a riff that
+//!   comes back changed where the plan asks, and ghost notes.
+//! - [`parts`]: a bass, chords, a second line or drums for the row, by
+//!   role (Support, Answer, Interlock, Stay out), judged with the row
+//!   (together, no clash, room, lands, returns, flows); the best of four
+//!   drafts, and the same rhythm re-fitted when a chord changes.
+//!
 //! Nothing here runs on the audio thread. The composer runs as an
 //! idle-priority background job (phase 0C onwards).
 #![forbid(unsafe_code)]
 
 pub mod baseline;
 pub mod bind;
+pub mod cells;
+pub mod critic;
 pub mod dice;
+pub mod draft;
 pub mod event;
+pub mod job;
 pub mod keep;
 pub mod motif;
+pub mod parts;
 pub mod phrase;
 pub mod plan;
 pub mod playing;
@@ -81,26 +112,38 @@ pub mod realize;
 pub mod refit;
 pub mod request;
 pub mod rhythm;
+pub mod row;
 pub mod rules;
 pub mod settings;
+pub mod sketch;
 pub mod style;
 pub mod timing;
 
 pub use bind::{audition, revision, revision_in, Binding, Stale};
 pub use dice::{Dice, DiceName, Job};
 pub use event::{Event, MotifRef, Motion, NoteDecision, Part, PartId, Role, Source};
+pub use job::{lane_named, Ask, ContinueJob, Done, Lanes};
 pub use keep::{clip_notes, continuation, KeepError};
 pub use motif::{similarity, transform, GridNote, Similarity, Transform};
-pub use phrase::{continue_line, try_again, Line, Phrasing};
+pub use parts::{add_part, add_part_again, AddPart, Added, PartVerdict, Relation};
+pub use phrase::{
+    continue_line, try_again, try_bars as try_line_bars, try_notes as try_line_notes, Line, NoteAs,
+    Phrasing,
+};
 pub use plan::{plan, BarJob, BarPlan};
 pub use preview::{Arrival, Preview, Proposal, Refusal, State};
 pub use profile::{Articulation, InstrumentKind, Profile};
-pub use progression::{diatonic, progression};
+pub use progression::{diatonic, progression, progression_keeping};
 pub use read::{read, LeftOut, ToRead};
 pub use realize::{decisions_of, realize, Fit, PlainNote};
 pub use refit::{action, effect, misfits, Action, Aspects, Change, Effect, How, Target};
-pub use request::{continue_clip, continue_notes, try_bar, Continue, Continued, OnClip, Refused};
+pub use request::{
+    continue_clip, continue_clip_how, continue_clip_read, continue_notes, continue_notes_keeping,
+    first_engine, first_engine_keeping, try_bar, try_bars, try_notes, Continue, Continued, Making,
+    OnClip, Refused,
+};
 pub use rhythm::{Grid, Onset};
+pub use row::{DrumHit, Heard, Row, RowPart, RowPlan, ToHear};
 pub use rules::{RangeSetting, Rule, RuleKind, Suggestion, Unmet, Weights};
 pub use settings::{Ending, Keeps, Settings};
 pub use style::{Component, PlanShape, Style, GROOVE, JAZZISH, MINIMAL, STYLES};

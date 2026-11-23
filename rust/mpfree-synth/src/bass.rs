@@ -235,6 +235,166 @@ impl Svf {
     }
 }
 
+/// The ladder: four stages, each `dv/dt = w tanh(x - v)`, the output fed
+/// back, with integrator states and last differences.
+#[derive(Clone, Copy, Debug, Default)]
+struct Ladder {
+    s: [f32; 4],
+    d: [f32; 4],
+}
+
+impl Ladder {
+    /// The four stages for input `x`, cutoff `g` and feedback `k`.
+    #[inline(always)]
+    fn run(&mut self, x: f32, g: f32, k: f32) -> f32 {
+        let a1 = stage_share(g, self.d[0]);
+        let a2 = stage_share(g, self.d[1]);
+        let a3 = stage_share(g, self.d[2]);
+        let a4 = stage_share(g, self.d[3]);
+        let [s1, s2, s3, s4] = self.s;
+        let b1 = (1.0 - a1) * s1;
+        let b2 = (1.0 - a2) * s2;
+        let b3 = (1.0 - a3) * s3;
+        let b4 = (1.0 - a4) * s4;
+        let a43 = a4 * a3;
+        let aa = a43 * a2 * a1;
+        let bb = a43 * (a2 * b1 + b2) + a4 * b3 + b4;
+        let u = (x - k * bb) / (1.0 + k * aa);
+        let v1 = a1 * u + b1;
+        let v2 = a2 * v1 + b2;
+        let v3 = a3 * v2 + b3;
+        let v4 = a4 * v3 + b4;
+        self.d = [u - v1, v1 - v2, v2 - v3, v3 - v4];
+        self.s = [2.0 * v1 - s1, 2.0 * v2 - s2, 2.0 * v3 - s3, 2.0 * v4 - s4];
+        v4
+    }
+}
+
+/// The ladder's feedback, the gain into it and the gain back out to the
+/// oscillators' level (half the resonance's loss made up) for
+/// **Resonance** `resonance` and **Filter drive** `drive` (0 to 100).
+#[inline]
+fn filter_gains(resonance: f32, drive: f32) -> (f32, f32, f32) {
+    let res = resonance * 0.01;
+    let in_gain = IN_MIN * (IN_MAX / IN_MIN).powf(drive * 0.01);
+    let k = K_MAX * res;
+    (k, in_gain, (1.0 + k).sqrt() / in_gain)
+}
+
+/// The ladder's prewarped gain for a cutoff of `fc` Hz at the inner rate
+/// `fs`, held between 10 Hz and 0.45 of `fs`.
+#[inline]
+fn cutoff_g(fc: f32, fs: f32) -> f32 {
+    (PI * fc.clamp(10.0, 0.45 * fs) / fs).tan()
+}
+
+/// How many samples the voice runs a frame at `rate`: 2 below 64 kHz.
+fn oversampling(rate: u32) -> usize {
+    if rate < 64_000 {
+        2
+    } else {
+        1
+    }
+}
+
+/// Two samples at the inner rate down to one: the polyphase half-band,
+/// the later sample through one branch, the earlier through the other.
+#[inline(always)]
+fn half_band(even: &mut [Ap; 3], odd: &mut [Ap; 3], a: f32, b: f32) -> f32 {
+    let mut e = b;
+    let mut o = a;
+    for (s, c) in even.iter_mut().zip(HB_EVEN) {
+        e = s.run(c, e);
+    }
+    for (s, c) in odd.iter_mut().zip(HB_ODD) {
+        o = s.run(c, o);
+    }
+    0.5 * (e + o)
+}
+
+/// The voice's filter on its own, for fxlab's filter measures (DSP
+/// quality Y1 and Y2): the ladder at the voice's inner rate and down
+/// through its half-band, set from the panel's values with no envelope,
+/// tracking or pressure, in and out at the oscillators' level with its
+/// drive and make-up (the amplifier, the drive after it, Tone and the
+/// output's high-pass left out).
+#[derive(Clone, Copy, Debug)]
+pub struct FilterProbe {
+    ladder: Ladder,
+    hb_even: [Ap; 3],
+    hb_odd: [Ap; 3],
+    os: usize,
+    fs: f32,
+    g: f32,
+    k: f32,
+    in_gain: f32,
+    out_scale: f32,
+    /// [`FilterProbe::glide`]'s step of the gain a sample.
+    dg: f32,
+}
+
+impl FilterProbe {
+    /// A filter at rest at `rate`, set to 1 kHz with no resonance or drive.
+    pub fn new(rate: u32) -> FilterProbe {
+        let os = oversampling(rate.max(1));
+        let mut p = FilterProbe {
+            ladder: Ladder::default(),
+            hb_even: [Ap::default(); 3],
+            hb_odd: [Ap::default(); 3],
+            os,
+            fs: (rate.max(1) as usize * os) as f32,
+            g: 0.0,
+            k: 0.0,
+            in_gain: 1.0,
+            out_scale: 1.0,
+            dg: 0.0,
+        };
+        p.set(1_000.0, 0.0, 0.0);
+        p
+    }
+
+    /// Samples a frame at the filter's own rate.
+    pub fn oversampling(&self) -> usize {
+        self.os
+    }
+
+    /// **Cutoff** `cutoff` (Hz), **Resonance** and **Filter drive** (0 to
+    /// 100). The state carries on.
+    pub fn set(&mut self, cutoff: f32, resonance: f32, drive: f32) {
+        (self.k, self.in_gain, self.out_scale) = filter_gains(resonance, drive);
+        self.g = cutoff_g(cutoff, self.fs);
+        self.dg = 0.0;
+    }
+
+    /// One control step of `frames` frames, moved as the voice moves it:
+    /// the ladder's gain in a straight line a sample from where it is to
+    /// **Cutoff** `cutoff` (Hz), **Resonance** and **Filter drive** (0 to
+    /// 100) at once.
+    pub fn glide(&mut self, cutoff: f32, resonance: f32, drive: f32, frames: u32) {
+        (self.k, self.in_gain, self.out_scale) = filter_gains(resonance, drive);
+        let n = (frames.max(1) as usize * self.os) as f32;
+        self.dg = (cutoff_g(cutoff, self.fs) - self.g) / n;
+    }
+
+    /// One frame: `x` holds [`FilterProbe::oversampling`] samples at the
+    /// filter's rate (only the first two are read); the frame's sample
+    /// comes back.
+    pub fn frame(&mut self, x: &[f32]) -> f32 {
+        let mut y = |x: f32| {
+            let g = self.g;
+            self.g += self.dg;
+            self.ladder.run(x * self.in_gain, g, self.k) * self.out_scale
+        };
+        if self.os == 2 {
+            let a = y(x[0]);
+            let b = y(x[1]);
+            half_band(&mut self.hb_even, &mut self.hb_odd, a, b)
+        } else {
+            y(x[0])
+        }
+    }
+}
+
 /// One first-order all-pass section of the half-band.
 #[derive(Clone, Copy, Debug, Default)]
 struct Ap {
@@ -318,10 +478,8 @@ pub struct Bass {
     dinc_b: f32,
     rng: Rng,
 
-    // The ladder: integrator states, last differences, cutoff now and its
-    // change per sample.
-    s: [f32; 4],
-    d: [f32; 4],
+    // The ladder, its cutoff now and its change per sample.
+    ladder: Ladder,
     g: f32,
     dg: f32,
     pair_hp: Svf,
@@ -394,8 +552,7 @@ impl Bass {
             inc_b: 0.0,
             dinc_b: 0.0,
             rng: Rng::new(0xBA55),
-            s: [0.0; 4],
-            d: [0.0; 4],
+            ladder: Ladder::default(),
             g: 0.1,
             dg: 0.0,
             pair_hp: Svf::default(),
@@ -747,13 +904,13 @@ impl Bass {
             self.v(VEL_TONE) * 0.01 * VEL_TONE_OCT * (1.0 - f32::from(self.velocity) / 127.0);
         let bright = TONE_EXPR_OCT * self.ex.tone;
         let oct = oct - soft + bright;
-        let fc = (self.v(CUTOFF) * oct.exp2()).clamp(10.0, 0.45 * fs);
+        let fc = self.v(CUTOFF) * oct.exp2();
         let tone = (self.v(TONE) * (bright - soft).exp2()).clamp(20.0, 0.45 * fs);
         if tone != self.tone_hz {
             self.tone_hz = tone;
             self.tone.set(tone, fs);
         }
-        let g_to = (PI * fc / fs).tan();
+        let g_to = cutoff_g(fc, fs);
         self.dg = (g_to - self.g) / n;
 
         let follow = if self.v(BODY) == B808 {
@@ -792,9 +949,7 @@ impl Bass {
         self.ddrive_k = (k - self.drive_k) / n;
         self.ddrive_n = (norm - self.drive_n) / n;
 
-        let res = self.v(RESONANCE) * 0.01;
-        let in_gain = IN_MIN * (IN_MAX / IN_MIN).powf(self.v(FILTER_DRIVE) * 0.01);
-        let k_fb = K_MAX * res;
+        let (k_fb, in_gain, out_scale) = filter_gains(self.v(RESONANCE), self.v(FILTER_DRIVE));
         self.frame = Frame {
             body: self.v(BODY) as u8,
             wave: self.v(WAVE) as u8,
@@ -804,9 +959,7 @@ impl Bass {
             fifth: self.v(FIFTH) * 0.01,
             noise: self.v(NOISE) * 0.01 * NOISE_LEVEL,
             in_gain,
-            // The ladder's output back to the oscillators' level, half the
-            // resonance's loss made up.
-            out_scale: (1.0 + k_fb).sqrt() / in_gain,
+            out_scale,
             k: k_fb,
             hard,
         };
@@ -850,8 +1003,7 @@ impl Bass {
         self.dinc = 0.0;
         self.dinc_a = 0.0;
         self.dinc_b = 0.0;
-        self.s = [0.0; 4];
-        self.d = [0.0; 4];
+        self.ladder = Ladder::default();
         self.pair_hp.clear();
         self.tone.clear();
         self.hp.clear();
@@ -859,31 +1011,6 @@ impl Bass {
         self.hb_odd = [Ap::default(); 3];
         self.amp.clear();
         self.fenv.clear();
-    }
-
-    /// The four ladder stages for input `x`, cutoff `g` and feedback `k`.
-    #[inline(always)]
-    fn ladder(&mut self, x: f32, g: f32, k: f32) -> f32 {
-        let a1 = stage_share(g, self.d[0]);
-        let a2 = stage_share(g, self.d[1]);
-        let a3 = stage_share(g, self.d[2]);
-        let a4 = stage_share(g, self.d[3]);
-        let [s1, s2, s3, s4] = self.s;
-        let b1 = (1.0 - a1) * s1;
-        let b2 = (1.0 - a2) * s2;
-        let b3 = (1.0 - a3) * s3;
-        let b4 = (1.0 - a4) * s4;
-        let a43 = a4 * a3;
-        let aa = a43 * a2 * a1;
-        let bb = a43 * (a2 * b1 + b2) + a4 * b3 + b4;
-        let u = (x - k * bb) / (1.0 + k * aa);
-        let v1 = a1 * u + b1;
-        let v2 = a2 * v1 + b2;
-        let v3 = a3 * v2 + b3;
-        let v4 = a4 * v3 + b4;
-        self.d = [u - v1, v1 - v2, v2 - v3, v3 - v4];
-        self.s = [2.0 * v1 - s1, 2.0 * v2 - s2, 2.0 * v3 - s3, 2.0 * v4 - s4];
-        v4
     }
 
     /// One sample at the inner rate.
@@ -955,7 +1082,7 @@ impl Bass {
                 };
                 let g = self.g;
                 self.g += self.dg;
-                let y = self.ladder((osc + mix) * f.in_gain, g, f.k) * f.out_scale;
+                let y = self.ladder.run((osc + mix) * f.in_gain, g, f.k) * f.out_scale;
                 y * self.vca
             }
         };
@@ -980,15 +1107,7 @@ impl Bass {
             let y = if self.os == 2 {
                 let a = self.sample();
                 let b = self.sample();
-                let mut e = b;
-                let mut o = a;
-                for (s, c) in self.hb_even.iter_mut().zip(HB_EVEN) {
-                    e = s.run(c, e);
-                }
-                for (s, c) in self.hb_odd.iter_mut().zip(HB_ODD) {
-                    o = s.run(c, o);
-                }
-                0.5 * (e + o)
+                half_band(&mut self.hb_even, &mut self.hb_odd, a, b)
             } else {
                 self.sample()
             };
@@ -1101,7 +1220,7 @@ impl Node for Bass {
 
     fn prepare(&mut self, rate: u32, _max_block: usize) {
         self.rate = rate.max(1);
-        self.os = if self.rate < 64_000 { 2 } else { 1 };
+        self.os = oversampling(self.rate);
         self.update_times();
         self.update_filters();
         self.expr_c = expr_coef(self.steps_per_sec());

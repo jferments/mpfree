@@ -37,9 +37,10 @@
 //!     (docs/dev/design/synth-quality.md). With --engine, only that
 //!     engine's presets (and renders), for a quick look while working on it.
 //! fxlab reference [--sixteen] [--out DIR]
-//!     Y8 of the DSP quality plan: each aliasing case against a render at
-//!     8 times the rate brought down to 44.1 kHz, and with --sixteen the
-//!     8x reference against a 16x one; writes DIR/reference.txt
+//!     Y8 and Y3 of the DSP quality plan: each aliasing case, and each
+//!     poly-mod and fast filter envelope case, against a render at 8 times
+//!     the rate brought down to 44.1 kHz, and with --sixteen the 8x
+//!     reference against a 16x one; writes DIR/reference.txt
 //!     (docs/dev/design/dsp-quality.md).
 //! ```
 
@@ -402,7 +403,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("wrote {}", a.out.display());
         }
         "reference" => {
-            let text = reference::to_text(&reference::y8(a.sixteen));
+            let text = reference::to_text(&reference::y8(a.sixteen))
+                + &reference::y3_text(&reference::y3(a.sixteen));
             print!("{text}");
             std::fs::create_dir_all(&a.out)?;
             std::fs::write(a.out.join("reference.txt"), &text)?;

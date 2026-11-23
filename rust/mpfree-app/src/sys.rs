@@ -184,12 +184,12 @@ extern "C" fn on_stop(sig: c_int) {
     }
 }
 
-/// Whether the drive holding `dir` answers and isn't read-only, and the
-/// bytes free on it for MPFree (`f_bavail` x `f_frsize`); None when it
-/// doesn't answer (it isn't there). statvfs only reads the file system's
+/// Whether the drive holding `dir` answers and isn't read-only, the bytes
+/// free on it for MPFree (`f_bavail` x `f_frsize`) and its size
+/// (`f_blocks` x `f_frsize`); None when it doesn't answer (it isn't there). statvfs only reads the file system's
 /// counts, and may wait on a failing drive: call it off the screen and
 /// audio threads. As `mpfree-disktest` reads the room (its `free_bytes`).
-pub fn drive_room(dir: &Path) -> Option<(bool, u64)> {
+pub fn drive_room(dir: &Path) -> Option<(bool, u64, u64)> {
     let c = CString::new(dir.as_os_str().as_bytes()).ok()?;
     // SAFETY: a statvfs is plain integers, so all zeros is a valid one.
     let mut s: libc::statvfs = unsafe { std::mem::zeroed() };
@@ -200,7 +200,8 @@ pub fn drive_room(dir: &Path) -> Option<(bool, u64)> {
     let writable = s.f_flag & libc::ST_RDONLY == 0;
     // `as`, not `from`: the fields are 32-bit on a 32-bit Arm build and
     // 64-bit here, as disktest's `free_bytes` reads them.
-    Some((writable, s.f_bavail as u64 * s.f_frsize as u64))
+    let frag = s.f_frsize as u64;
+    Some((writable, s.f_bavail as u64 * frag, s.f_blocks as u64 * frag))
 }
 
 /// From now on a stop from outside (SIGTERM as `systemctl stop` sends it,

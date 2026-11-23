@@ -31,12 +31,17 @@ use mpfree_capture::{keep, moves_for_clip, Capture, KeepError, Kept, Now, Pendin
 use mpfree_notefx::{Chain, TrackFx, MAX_FX};
 use mpfree_perform::{Perform, SceneMorph, SongRecorder, When};
 use mpfree_play::Replaced;
+use mpfree_time_ui::continuing::{ContinueAction, ContinueAsk};
+
+use super::compose::{more_bars, Composing, LineWait};
 use mpfree_play::{
     ClipDrop, Cue, Decisions, Includes, Launch, MuteCue, MuteLanded, PlayView, SongChange, Started,
     Takes,
 };
 use mpfree_play::{MOVE_POINTS, TOUCH_POINTS};
-use mpfree_seq::arrange::{list_spans, song_sections, song_to_scenes, Difference, Differs};
+use mpfree_seq::arrange::{
+    list_spans, scene_title, song_sections, song_to_scenes, Arrangement, Difference, Differs,
+};
 use mpfree_seq::loops::{self, LoopNow, LoopPlan};
 use mpfree_seq::mpfree_moves::{Kind, MoveLog};
 use mpfree_seq::scenes::{MAX_LIST_STEPS, MAX_TIMES};
@@ -45,17 +50,17 @@ use mpfree_seq::time_edit::Refused;
 use mpfree_seq::ListStep;
 use mpfree_seq::TimeEdit;
 use mpfree_seq::{
-    Clip, ClipId, LaunchGrid, ModelError, Project, TouchPoint, TrackId, LOOPS, MAX_TRACKS, ROWS,
-    SLOTS,
+    Clip, ClipId, Holds, LaunchGrid, ModelError, Project, TouchPoint, TrackId, TrackKind, LOOPS,
+    MAX_TRACKS, ROWS, SLOTS,
 };
 use mpfree_time_ui::editor::{EditAction, Editor};
 use mpfree_time_ui::list::ListRow;
 use mpfree_time_ui::view::pad_name;
 use mpfree_time_ui::view::{
     bars_label, card_rows, clips_after, grid_name, rows_named, scene_rows, AudioAction, BarsEdit,
-    Converting, EditAnswer, EditInfo, EditOutcome, FollowNext, MarkerEdit, MorphInfo, MuteWait,
-    RegionId, Report, ReportRow, TakeRow, TempoEdit, TimeAction, TimeState, TransportInfo,
-    SCENE_NAME,
+    Converting, EditAnswer, EditInfo, EditOutcome, FollowNext, LinkFrom, MarkerEdit, MorphInfo,
+    MuteWait, RegionId, Report, ReportRow, TakeRow, TempoEdit, TimeAction, TimeState,
+    TransportInfo, SCENE_NAME,
 };
 use mpfree_transport::time::{TempoMap, Tick};
 use mpfree_transport::{Block, Command, State};
@@ -70,6 +75,11 @@ use super::{
     RECORD_ROOM,
 };
 
+mod linked;
+mod parts;
+mod sections;
+pub use linked::edits_steps;
+
 /// The clip settings card's join keys for its takes, a row each (see
 /// `Takes::set_clip`).
 const CARD_JOIN: u64 = 0xC1_0000;
@@ -80,11 +90,6 @@ const SCENE_JOIN: u64 = 0x5C_0000;
 
 /// Started cues one period may bring before the list grows.
 const STARTED_ROOM: usize = 64;
-
-/// What a linked song list can't do yet (the Arrange refactor's phase 4b:
-/// its edits move the song from 4b.2, and it plays the song from 4b.4).
-pub(super) const LIST_LINKED: &str =
-    "song list: it is the song's parts now: edit and play them in the Song view";
 
 /// The tracks' mutes and solos as they will be once a mute queue lands,
 /// read without changing the project.
@@ -365,6 +370,17 @@ pub struct TimeControl {
     /// Perform's Rec song with REC: armed by the take, or taken off for
     /// it ([`TimeControl::take_follows`]).
     song_take: SongTake,
+    /// A linked song as it plays (4b.4, `sections`): where the section
+    /// whose mutes and program changes came in last starts, where the one
+    /// cued for its first tick starts, and the playhead as the last period
+    /// left it.
+    section_now: Option<Tick>,
+    section_next: Option<Tick>,
+    section_last: Tick,
+    /// The transport's loop Loop the list set on a linked list, and the
+    /// musician's it kept aside.
+    list_loop: Option<(Tick, Tick)>,
+    loop_kept: Option<(Tick, Tick)>,
     /// A take records (the notes, their count-in, or a loop), as the host
     /// last said.
     taking: bool,
@@ -494,6 +510,9 @@ pub struct TimeControl {
     saved: Vec<(usize, usize, Clip)>,
     /// Reloads waiting for their launch line.
     reloads: Vec<ReloadWait>,
+    /// Continue (composing tools): a clip carried on, heard in place of
+    /// the clip until Keep or Back ([`super::compose`]).
+    compose: Box<Composing>,
     /// The audio's sample rate, for a period's length in ticks.
     rate: u32,
     /// The bar line a cue started on in the last poll, on each loop's
@@ -620,6 +639,11 @@ impl TimeControl {
             project_bpm: info.bpm,
             song_rec: SongRecorder::default(),
             song_take: SongTake::Idle,
+            section_now: None,
+            section_next: None,
+            section_last: 0,
+            list_loop: None,
+            loop_kept: None,
             taking: false,
             later_note: None,
             throw: false,
@@ -666,6 +690,7 @@ impl TimeControl {
             landed: Vec::with_capacity(MAX_TRACKS),
             saved: Vec::new(),
             reloads: Vec::new(),
+            compose: Box::new(Composing::new()),
             rate,
             loop_at: [None; LOOPS],
             loops_seen: [LoopNow::default(); LOOPS],
@@ -1306,6 +1331,9 @@ impl TimeControl {
         if !self.reloads.is_empty() {
             compile |= self.reloads_due(end.frames);
         }
+        // Continue: the composer's answers, a recording that changed what
+        // it listened to, and a result coming in or going on its line.
+        compile |= self.continue_period(end.frames);
         // Song mode: the Loop tracks' blocks turn their loops on and off
         // on their own ticks, on the tracks with no clip launched.
         self.song_loops = [false; LOOPS];
@@ -1342,6 +1370,9 @@ impl TimeControl {
             // gave no cue wait in the mute queue for its line.
             compile |= self.queue_scene_mutes();
         }
+        // A linked song's sections bring their scenes' mutes and program
+        // changes (4b.4).
+        compile |= self.sections_due(self.info.meter.bar_ticks());
         let recorded = std::mem::take(&mut self.recorded_now);
         // The transport stopped: what live to song recorded goes into the
         // song (it compiles).
@@ -1546,7 +1577,14 @@ impl TimeControl {
         if self.also != 0 && self.also_n != n {
             self.also = 0;
         }
-        let mut v = self.view()?;
+        // Continue: a result whose clip, or a clip it listened to, changed
+        // stops here, and the clip plays as it now is.
+        if self.compose.active() && self.compose.follow(&self.project) {
+            self.compose.in_view = None;
+            self.compose.line = None;
+        }
+        self.continue_anchor();
+        let mut v = self.view_with_continue()?;
         // Each new decision in it gets its revision and the frame the
         // music had reached when it was made: a cue whose line played
         // before the view came lands late, in phase (Arrange 2.5).
@@ -1620,8 +1658,12 @@ impl TimeControl {
             .project
             .clip(track, slot)
             .is_some_and(|c| c.inst_silent(plays).is_some());
+        // While Continue is under way the edit compiles, so its result
+        // is checked against the clip ([`TimeControl::compile`]) and never
+        // edited in place in the view's copy of it.
         if silent
             || !InPlace::fits(edit, notes, locks)
+            || self.compose.active()
             || self.unsent.is_some()
             || (self.armed != Some(track) && self.track_pick != Some(track))
             || matches!(self.info.state, State::Recording | State::CountIn)
@@ -1782,7 +1824,7 @@ impl TimeControl {
         let mut made = false;
         let info = self.info;
         let bar = info.meter.bar_ticks();
-        let length = info.loop_range.map_or(NEW_CLIP_BARS * bar, |(a, b)| b - a);
+        let length = self.clip_loop().map_or(NEW_CLIP_BARS * bar, |(a, b)| b - a);
         while also != 0 {
             let track = also.trailing_zeros() as usize;
             also &= also - 1;
@@ -1832,7 +1874,7 @@ impl TimeControl {
             Some(s) => (s, format!("slot {} of track {} launched", s + 1, track + 1)),
             None => {
                 let bar = info.meter.bar_ticks();
-                let length = info.loop_range.map_or(NEW_CLIP_BARS * bar, |(a, b)| b - a);
+                let length = self.clip_loop().map_or(NEW_CLIP_BARS * bar, |(a, b)| b - a);
                 let t = self.project.tracks.get_mut(track).ok_or("no such track")?;
                 let s = t
                     .slots
@@ -2020,6 +2062,9 @@ impl TimeControl {
                     r.short(),
                     bar_beat(at, self.info.meter)
                 )
+            }
+            Some(SongChange::Followed { row }) => {
+                return format!("{} · the song's parts from row {}", r.short(), row + 1)
             }
             None => {}
         }
@@ -2766,7 +2811,7 @@ impl TimeControl {
     }
 
     /// The time edit a song action makes (a section moved or copied, bars
-    /// put in or taken out), if it makes one.
+    /// put in or taken out, a linked list's step edited), if it makes one.
     fn time_edit_of(&self, a: &TimeAction) -> Option<TimeEdit> {
         let bar = self.info.meter.bar_ticks();
         let song = &self.project.arrangement;
@@ -2775,6 +2820,12 @@ impl TimeControl {
                 song.section_edit(marker, gap, copy, bar)
             }
             TimeAction::SongBars(e) => bars_edit(song, e, bar.max(1)).ok().map(|x| x.0),
+            // Song from the list's room at the song's start (4b.5).
+            TimeAction::ListLink(from) => self.link_room(from, bar),
+            // A linked list's edits are the song's (Arrange 4b.2).
+            _ if song.list.linked && edits_steps(a) => {
+                self.linked_edit(a, bar).ok().and_then(|e| e.time)
+            }
             _ => None,
         }
     }
@@ -2927,7 +2978,25 @@ impl TimeControl {
     /// Carry out a touch on the time engine's screens. Returns a line for
     /// the log.
     pub fn act(&mut self, a: TimeAction) -> Result<String, String> {
-        let r = self.act_in(a);
+        // The song's parts follow their rows (parts.rs); undo and redo
+        // bring back the song their take holds instead.
+        let follows = !matches!(a, TimeAction::Undo | TimeAction::Redo);
+        let rows = if follows {
+            self.followed_rows()
+        } else {
+            Vec::new()
+        };
+        let edits = self.takes.edits();
+        let mut r = self.act_in(a);
+        if let (Ok(line), false) = (&mut r, rows.is_empty()) {
+            if let Some(more) = self.follow_rows(&rows, edits) {
+                // Before "(UNDO takes it back)" where the line ends so.
+                match line.rfind(" (UNDO") {
+                    Some(k) if line.ends_with(')') => line.insert_str(k, &more),
+                    _ => line.push_str(&more),
+                }
+            }
+        }
         // An action may add or take instrument locks (UNDO, a paste, a
         // clip copied to another track): the tags follow (refactor F1).
         self.tag_clips(None);
@@ -2941,7 +3010,10 @@ impl TimeControl {
         // cancelled (step 0C, agreed with the Arrange refactor). Before the
         // edit, so the view it compiles carries it; one that fails only
         // cancels a change early.
-        if moves_song_time(&a) {
+        if moves_song_time(&a)
+            || (self.project.arrangement.list.linked && edits_steps(&a))
+            || a == TimeAction::ListLink(LinkFrom::List)
+        {
             self.includes.timeline = next_timeline();
         }
         // Anything else done but the transport closes Convert to notes'
@@ -2976,6 +3048,14 @@ impl TimeControl {
             TimeAction::Transport(Command::Record)
                 if !matches!(info.state, State::Recording | State::CountIn) =>
             {
+                // Continue's new bars never play while recording: the
+                // clip comes back before the take starts.
+                if self.compose.stop_for_rec() {
+                    self.compile()?;
+                    self.note_later(
+                        "continue: REC brought the clip back; the new bars stay ready".into(),
+                    );
+                }
                 let made = self.ready_to_record()?;
                 if !self.command(Command::Record) {
                     return Err("transport: command queue full".into());
@@ -3445,8 +3525,9 @@ impl TimeControl {
                     None => "armed: none".into(),
                 })
             }
-            TimeAction::ListPlay(_) if self.project.arrangement.list.linked => {
-                Err(LIST_LINKED.into())
+            // Linked to the song, the list plays the song (4b.4).
+            TimeAction::ListPlay(k) if self.project.arrangement.list.linked => {
+                self.play_from_part(k)
             }
             TimeAction::LaunchScene(_)
             | TimeAction::StopAll
@@ -3573,7 +3654,7 @@ impl TimeControl {
             TimeAction::NewClip { track, slot } => {
                 let holds = self.take_holds(track);
                 let bar = info.meter.bar_ticks();
-                let length = info.loop_range.map_or(NEW_CLIP_BARS * bar, |(a, b)| b - a);
+                let length = self.clip_loop().map_or(NEW_CLIP_BARS * bar, |(a, b)| b - a);
                 let t = self.project.tracks.get_mut(track).ok_or("no such track")?;
                 let s = t.slots.get_mut(slot).ok_or("no such slot")?;
                 if s.is_some() {
@@ -3615,13 +3696,15 @@ impl TimeControl {
                 self.changed = true;
                 Ok("convert to notes: cancelled, nothing changed".to_string())
             }
+            TimeAction::Continue(c) => self.continue_action(c),
             TimeAction::DeleteClip { track, slot } => {
                 // A clip the song plays goes to the song's own clips, so
-                // the song plays on (Arrange 1.3).
+                // the song plays on (Arrange 1.3), but for the parts that
+                // follow its row, which it leaves (parts.rs).
                 let kept = self
                     .project
                     .clip(track, slot)
-                    .is_some_and(|c| self.project.arrangement.plays(c.id));
+                    .is_some_and(|c| self.plays_apart_from_row(c.id, slot));
                 self.takes
                     .remove_clip(&mut self.project, track, slot)
                     .map_err(|_| format!("slot {} of track {} is empty", slot + 1, track + 1))?;
@@ -3710,6 +3793,11 @@ impl TimeControl {
                         _ => format!("clips: row {} stays where it is", from + 1),
                     })?;
                 self.drop_went_in(drop)?;
+                // The scene editor's row goes with its row, as its scene
+                // does.
+                if let Some(r) = self.scene_pick {
+                    self.scene_pick = Some(drop.after((0, r)).1);
+                }
                 Ok(match drop {
                     ClipDrop::RowCopied { from, to } => format!(
                         "clips: a copy of row {} in row {}, the rows under it down one (UNDO takes it back)",
@@ -4050,7 +4138,10 @@ impl TimeControl {
             | TimeAction::ListScene { .. }
             | TimeAction::ListAdd
             | TimeAction::ListRemove(_)
+            | TimeAction::ListMove { .. }
+            | TimeAction::ListBack(_)
             | TimeAction::ListLoop(_)
+            | TimeAction::ListLink(_)
             | TimeAction::ListToSong
             | TimeAction::ScenesToSong
             | TimeAction::MakeUnique(_)
@@ -4080,16 +4171,18 @@ impl TimeControl {
                 // A time edit that moves audio regions is a take even with
                 // the song unchanged ([`TimeControl::act_with_audio`]).
                 let audio = self.audio_moves
-                    && matches!(a, TimeAction::MoveSection { .. } | TimeAction::SongBars(_));
-                let edited = if matches!(
-                    a,
-                    TimeAction::ListTimes { .. }
-                        | TimeAction::ListScene { .. }
-                        | TimeAction::ListAdd
-                        | TimeAction::ListRemove(_)
-                        | TimeAction::ListLoop(_)
-                        | TimeAction::ListToSong
-                ) {
+                    && (matches!(
+                        a,
+                        TimeAction::MoveSection { .. }
+                            | TimeAction::SongBars(_)
+                            | TimeAction::ListLink(LinkFrom::List)
+                    ) || edits_steps(&a));
+                let list = edits_steps(&a)
+                    || matches!(
+                        a,
+                        TimeAction::ListLoop(_) | TimeAction::ListToSong | TimeAction::ListLink(_)
+                    );
+                let edited = if list {
                     self.edit_list(a, bar)
                 } else {
                     self.edit_song(a, bar)
@@ -4100,6 +4193,14 @@ impl TimeControl {
                         self.project.arrangement = before;
                         return Err(e);
                     }
+                };
+                // An edit inside a section that followed its scene makes it
+                // the song's own (4b.3); a linked list's edits say what
+                // they make of their sections themselves.
+                let line = if list {
+                    line
+                } else {
+                    self.mark_own(&before, bar, line, "song: ")
                 };
                 if let Err(e) = self.compile() {
                     self.project.arrangement = before;
@@ -4230,6 +4331,30 @@ impl TimeControl {
         })
     }
 
+    /// After an edit of the song that isn't a linked list's own (`before`
+    /// the song before it, bars of `bar` ticks): the sections it changed
+    /// inside that followed their scenes are the song's own now
+    /// ([`Arrangement::mark_changed`], the Arrange refactor's 4b.3). On a
+    /// linked list the log line (`line`) says so instead, after `head`,
+    /// and where to take it back.
+    fn mark_own(&mut self, before: &Arrangement, bar: Tick, line: String, head: &str) -> String {
+        let song = &mut self.project.arrangement;
+        let marked = song.mark_changed(&self.project.tracks, before, bar);
+        let names: Vec<&str> = marked
+            .iter()
+            .map(|&k| song.markers[k].name.as_str())
+            .collect();
+        let who = match names.split_last() {
+            _ if !song.list.linked => return line,
+            None => return line,
+            Some((last, [])) => format!("{last} is"),
+            Some((last, rest)) => format!("{} and {last} are", rest.join(", ")),
+        };
+        format!(
+            "{head}{who} the song's own now: Back to the scene on the song list puts the scene's clips back"
+        )
+    }
+
     /// Live to song: the passes recorded so far into the song, compiled
     /// in. A line for the log.
     fn keep_song(&mut self) -> Result<String, String> {
@@ -4244,15 +4369,19 @@ impl TimeControl {
         // New placements shift the indices.
         self.selected = None;
         self.section = None;
+        // Recorded over a section that followed its scene: the song's own
+        // now (4b.3).
+        let line = format!(
+            "{} placements and {} morph points into the song",
+            r.placements, r.morph_points
+        );
+        let line = self.mark_own(&before, self.info.meter.bar_ticks(), line, "");
         if let Err(e) = self.compile() {
             self.project.arrangement = before;
             self.compile()?;
             return Err(e);
         }
-        Ok(format!(
-            "{} placements and {} morph points into the song",
-            r.placements, r.morph_points
-        ))
+        Ok(line)
     }
 
     /// The Song view's edits of the arrangement (and, for Song → scenes,
@@ -4796,17 +4925,26 @@ impl TimeControl {
         }
     }
 
-    /// A song list edit: a step's times or scene, a step put in or taken
-    /// out, the loop switch, or List → song. A linked list takes only the
-    /// loop switch for now ([`LIST_LINKED`]). A line for the log, and what
-    /// changed for the take UNDO takes back.
+    /// A song list edit: a step's times or scene, a step put in, taken
+    /// out or moved, the loop switch, or List → song. A linked list's
+    /// step edits are the song's ([`linked`]), and it needs no List →
+    /// song. A line for the log, and what changed for the take UNDO takes
+    /// back.
     fn edit_list(
         &mut self,
         a: TimeAction,
         bar: Tick,
     ) -> Result<(String, Option<SongChange>), String> {
-        if self.project.arrangement.list.linked && !matches!(a, TimeAction::ListLoop(_)) {
-            return Err(LIST_LINKED.into());
+        if let TimeAction::ListLink(from) = a {
+            return self.link(from, bar);
+        }
+        if self.project.arrangement.list.linked {
+            if edits_steps(&a) {
+                return self.edit_linked(&a, bar);
+            }
+            if a == TimeAction::ListToSong {
+                return Err("list → song: the list is the song's parts already".into());
+            }
         }
         let filled: Vec<usize> = (0..SLOTS).filter(|&r| self.project.row_filled(r)).collect();
         let n = self.project.arrangement.list.steps.len();
@@ -4871,6 +5009,30 @@ impl TimeControl {
                     Some(SongChange::List),
                 ))
             }
+            TimeAction::ListMove { step, to } => {
+                if step >= n || to > n {
+                    return Err("song list: no such step".into());
+                }
+                if to == step || to == step + 1 {
+                    return Ok((
+                        format!("song list: step {} is already there", step + 1),
+                        None,
+                    ));
+                }
+                let now = if to > step { to - 1 } else { to };
+                let s = list.steps.remove(step);
+                list.steps.insert(now, s);
+                self.perform.list_moved(step, now);
+                self.list_pick = Some(now);
+                Ok((
+                    format!(
+                        "song list: step {} is step {} now (UNDO takes it back)",
+                        step + 1,
+                        now + 1
+                    ),
+                    Some(SongChange::List),
+                ))
+            }
             TimeAction::ListLoop(on) => {
                 list.looped = on;
                 Ok((
@@ -4882,6 +5044,9 @@ impl TimeControl {
                     .into(),
                     Some(SongChange::List),
                 ))
+            }
+            TimeAction::ListBack(_) => {
+                Err("song list: Back to the scene is for a list linked to the song".into())
             }
             TimeAction::ListToSong => {
                 if n == 0 {
@@ -4922,7 +5087,16 @@ impl TimeControl {
         title: &str,
         lead: &str,
     ) -> Result<(Tick, String), String> {
-        let end = self.project.arrangement.end();
+        // After the song's end, and on a linked list after its last part
+        // (one that follows its scene may run on past its blocks), so no
+        // part is cut.
+        let song = &self.project.arrangement;
+        let parts = if song.list.linked {
+            song.parts(bar).last().map_or(0, |s| s.end)
+        } else {
+            0
+        };
+        let end = song.end().max(parts);
         let at = (end + bar - 1) / bar.max(1) * bar;
         let played = super::offline::play_rows(&self.project, steps, at, bar)?;
         let made = format!(
@@ -4945,11 +5119,8 @@ impl TimeControl {
                     what: Differs::SceneProgram,
                 });
             }
-            let name = scene
-                .map(|s| s.name.clone())
-                .filter(|n| !n.is_empty())
-                .unwrap_or_else(|| format!("Scene {}", row + 1));
-            song.mark(t, &name).map_err(|e| format!("{e:?}"))?;
+            song.mark(t, &scene_title(&self.project, row))
+                .map_err(|e| format!("{e:?}"))?;
         }
         song.check(&self.project.tracks)
             .map_err(|e| format!("{e:?}"))?;
@@ -5727,6 +5898,7 @@ impl TimeControl {
             Replaced::Mutate => "mutate",
             Replaced::Restore => "restore",
             Replaced::Convert => "convert to notes",
+            Replaced::Continue { .. } => "continue",
         };
         self.takes
             .replace_clip(&mut self.project, track, slot, clip, why)
@@ -5737,6 +5909,329 @@ impl TimeControl {
             return Err(e);
         }
         Ok(())
+    }
+
+    /// Continue's touches (composing tools, phase 1; [`super::compose`]).
+    fn continue_action(&mut self, a: ContinueAction) -> Result<String, String> {
+        let recording = matches!(self.info.state, State::Recording | State::CountIn);
+        match a {
+            ContinueAction::Ask(ask) => {
+                let ContinueAsk {
+                    track,
+                    slot,
+                    settings,
+                    kind,
+                    lanes,
+                } = *ask;
+                use mpfree_compose::{InstrumentKind, Refused};
+                use mpfree_context::{PartRole, ReadBudget};
+                if recording {
+                    return Err("continue: not while recording".into());
+                }
+                let c = self.project.clip(track, slot).ok_or_else(|| {
+                    format!(
+                        "continue: slot {} of track {} is empty",
+                        slot + 1,
+                        track + 1
+                    )
+                })?;
+                if c.looped.is_some() {
+                    return Err("continue: a loop's cell has no notes to carry on".into());
+                }
+                if c.holds != Holds::Notes {
+                    return Err(format!("continue: {}", Refused::PadHits.words()));
+                }
+                let name = c.name.clone();
+                let role = match kind {
+                    InstrumentKind::Bass => PartRole::Bass,
+                    InstrumentKind::Chords => PartRole::Chords,
+                    InstrumentKind::Percussive => PartRole::Drums,
+                    InstrumentKind::OneNote | InstrumentKind::Chordal => PartRole::Melody,
+                };
+                let ask = mpfree_compose::Ask {
+                    track,
+                    slot,
+                    role,
+                    kind,
+                    others: self.row_others(track, slot),
+                    lanes,
+                    transport_swing: self.info.swing,
+                    meter: self.info.meter,
+                    bpm: self.info.bpm,
+                    budget: ReadBudget::default(),
+                    settings,
+                    how: mpfree_compose::Making::New,
+                };
+                // Another clip's result playing goes at once.
+                if self.compose.in_view.is_some() && self.compose.bound() != Some((track, slot)) {
+                    self.compose.in_view = None;
+                    self.compose.line = None;
+                    self.compile()?;
+                }
+                let playing = self.compose.in_view.is_some();
+                self.compose.ask(&self.project, ask)?;
+                self.changed = true;
+                let more = more_bars(settings.bars.max(1), &name);
+                Ok(if playing {
+                    format!(
+                        "continue: trying {more} again, {} (the last plays on until it's ready)",
+                        settings.style.name
+                    )
+                } else {
+                    format!("continue: {more}, {}", settings.style.name)
+                })
+            }
+            ContinueAction::Step { back } => {
+                if !self.compose.step(back) {
+                    return Err(format!(
+                        "continue: no {} result",
+                        if back { "earlier" } else { "later" }
+                    ));
+                }
+                self.changed = true;
+                if self.continue_due(self.block.frames) {
+                    self.compile()?;
+                }
+                Ok(self.continue_when("continue: the result shown"))
+            }
+            ContinueAction::Keep => self.continue_keep(recording),
+            ContinueAction::Back => {
+                if !self.compose.back() {
+                    return Err("continue: Keep is under way".into());
+                }
+                self.changed = true;
+                if self.continue_due(self.block.frames) {
+                    self.compile()?;
+                }
+                Ok(self.continue_when("continue: back to the clip as it was"))
+            }
+        }
+    }
+
+    /// `what`, and when the music changes for it: on a bar line, or at
+    /// once.
+    fn continue_when(&self, what: &str) -> String {
+        match self.compose.line {
+            Some(l) => format!("{what}, heard from {}", bar_beat(l.line, self.info.meter)),
+            None => what.to_string(),
+        }
+    }
+
+    /// Keep: the result written as one take, and the view compiled from
+    /// it at once (the same notes, so nothing is heard to change). A
+    /// refusal writes nothing and leaves no result playing.
+    fn continue_keep(&mut self, recording: bool) -> Result<String, String> {
+        if recording {
+            return Err("continue: not while recording".into());
+        }
+        let (track, slot, clip, bars) = match self.compose.keep(&self.project) {
+            Ok(k) => k,
+            Err(e) => {
+                if self.compose.in_view.is_some() && self.compose.wanted(recording).is_none() {
+                    self.compose.in_view = None;
+                    self.compose.line = None;
+                    self.compile()?;
+                }
+                self.changed = true;
+                return Err(e);
+            }
+        };
+        let name = clip.name.clone();
+        let r = self.takes.replace_clip(
+            &mut self.project,
+            track,
+            slot,
+            clip,
+            Replaced::Continue { bars },
+        );
+        let refused = r.err();
+        self.compose.kept(r);
+        self.changed = true;
+        if let Some(e) = refused {
+            self.compile()?;
+            return Err(format!("continue: {name}: {e:?}, nothing written"));
+        }
+        if let Err(e) = self.compile() {
+            self.takes.undo(&mut self.project);
+            self.takes.forget_undone();
+            let _ = self.compile();
+            return Err(e);
+        }
+        Ok(format!(
+            "continue: {} kept (UNDO takes it back)",
+            more_bars(bars, &name)
+        ))
+    }
+
+    /// The rest of clip `slot`'s row, for the reading: the clip in the
+    /// same row on every other heard track of notes, drums read as drums.
+    fn row_others(&self, track: usize, slot: usize) -> Vec<mpfree_compose::ToRead> {
+        use mpfree_context::PartRole;
+        let p = &self.project;
+        p.tracks
+            .iter()
+            .enumerate()
+            .filter(|&(t, tr)| t != track && tr.kind == TrackKind::Notes && !p.silent(t))
+            .filter_map(|(t, tr)| {
+                let c = tr.slots.get(slot)?.as_ref()?;
+                if c.looped.is_some() || c.notes.is_empty() {
+                    return None;
+                }
+                let role = if c.holds == Holds::Hits {
+                    PartRole::Drums
+                } else {
+                    PartRole::Chords
+                };
+                Some(mpfree_compose::ToRead {
+                    track: t,
+                    slot,
+                    role,
+                })
+            })
+            .collect()
+    }
+
+    /// Whether the play view plays clip `slot` of `track` now or on its
+    /// next line: launched, cued, or (in song mode) placed in the song.
+    fn clip_heard(&self, track: usize, slot: usize) -> bool {
+        self.launches
+            .iter()
+            .any(|l| (l.track, l.slot) == (track, slot))
+            || self
+                .cues
+                .iter()
+                .any(|c| c.track == track && c.slot == Some(slot))
+            || (self.song && self.song_places(track, slot))
+    }
+
+    /// Continue, each period: the composer's answers, a recording that
+    /// changed the clip or what it listened to, and a change coming due on
+    /// its line. True if the view is to be compiled.
+    fn continue_period(&mut self, frames: u32) -> bool {
+        if !self.compose.active() {
+            return false;
+        }
+        let mut compile = false;
+        if self.recorded_now && self.compose.follow(&self.project) {
+            self.changed = true;
+            if self.compose.in_view.take().is_some() {
+                compile = true;
+            }
+            self.compose.line = None;
+        }
+        let mut log = Vec::new();
+        if self.compose.answers(&self.project, &mut log) {
+            self.changed = true;
+        }
+        for line in log {
+            self.note_later(line);
+        }
+        compile | self.continue_due(frames)
+    }
+
+    /// Bring the play view to what Continue wants: a result in place of
+    /// the clip, another result, or the clip itself. While the clip plays
+    /// and the transport rolls the change waits for the next bar line
+    /// (one within the next period is as good as now); otherwise it lands
+    /// at once. REC stops a result playing at once. True if the view is
+    /// to be compiled.
+    fn continue_due(&mut self, frames: u32) -> bool {
+        let recording = matches!(self.info.state, State::Recording | State::CountIn);
+        if recording && self.compose.stop_for_rec() {
+            self.changed = true;
+            self.note_later("continue: REC brought the clip back; the new bars stay ready".into());
+            return true;
+        }
+        let want = self.compose.wanted(recording);
+        if want == self.compose.in_view_id() {
+            if self.compose.line.take().is_some() {
+                self.changed = true;
+            }
+            self.compose.landed(want);
+            return false;
+        }
+        let Some((track, slot)) = self.compose.changing() else {
+            self.compose.landed(None);
+            self.changed = true;
+            return true;
+        };
+        if self.info.state.rolling() && self.clip_heard(track, slot) {
+            let pos = self.info.position;
+            let bar = self.info.meter.bar_ticks().max(1);
+            let w = *self.compose.line.get_or_insert(LineWait {
+                line: LaunchGrid::Bars(1).next(pos, bar),
+                asked: pos,
+            });
+            self.changed = true;
+            if !(w.line <= pos + self.period_ticks(frames) || pos < w.asked) {
+                return false;
+            }
+        }
+        self.compose.landed(want);
+        self.changed = true;
+        true
+    }
+
+    /// The launch of Continue's clip follows what the view plays: a
+    /// result's tick 0 falls where the clip started, so it plays in time
+    /// with what started with it; the clip as it was gets its own origin
+    /// back. A launch that started again since is left as it is.
+    fn continue_anchor(&mut self) {
+        let Some((t, s, len, speed)) = self
+            .compose
+            .in_view_clip()
+            .map(|(t, s, c)| (t, s, c.length, c.speed))
+        else {
+            if let Some((t, s, start, origin)) = self.compose.origin.take() {
+                for l in self.launches.iter_mut() {
+                    if (l.track, l.slot, l.start) == (t, s, start) {
+                        l.origin = origin;
+                    }
+                }
+            }
+            return;
+        };
+        for l in self.launches.iter_mut() {
+            if (l.track, l.slot) != (t, s) {
+                continue;
+            }
+            match self.compose.origin {
+                Some((ot, os, start, _)) if (ot, os, start) == (t, s, l.start) => {}
+                _ => self.compose.origin = Some((t, s, l.start, l.origin)),
+            }
+            l.origin = mpfree_play::anchored(l.start, len, speed);
+        }
+    }
+
+    /// The view of the project as it plays: [`TimeControl::view`], with
+    /// Continue's result in place of its clip while one is in the view.
+    fn view_with_continue(&mut self) -> Result<PlayView, String> {
+        let Some((t, s, heard)) = self
+            .compose
+            .in_view_clip()
+            .map(|(t, s, c)| (t, s, c.clone()))
+        else {
+            return self.view();
+        };
+        let Some(slot) = self
+            .project
+            .tracks
+            .get_mut(t)
+            .and_then(|tr| tr.slots.get_mut(s))
+        else {
+            return self.view();
+        };
+        let real = slot.replace(heard);
+        let v = self.view();
+        if let Some(slot) = self
+            .project
+            .tracks
+            .get_mut(t)
+            .and_then(|tr| tr.slots.get_mut(s))
+        {
+            *slot = real;
+        }
+        v
     }
 
     /// The reloads due: each whose line falls in the next period (of
@@ -6360,6 +6855,7 @@ impl TimeControl {
         );
         st.track_pick = self.track_pick;
         st.clip_pick = self.clip_picked();
+        st.continuing = self.compose.screen();
         st.also = self.also();
         st.capture = self.pending.map(|p| bars_label(p.bars));
         st.clipboard = self.clipboard.as_ref().map(|c| c.name.clone());
@@ -6397,6 +6893,7 @@ impl TimeControl {
         st.list = self.list_rows(&st.scenes);
         st.list_pick = self.list_pick.filter(|&k| k < st.list.len());
         st.list_looped = self.project.arrangement.list.looped;
+        st.list_linked = self.project.arrangement.list.linked;
         st.list_next = self
             .perform
             .list_next(&self.project, self.info.meter.bar_ticks());
@@ -6465,6 +6962,8 @@ impl TimeControl {
                 starts: at / bar + 1,
                 playing: pass.filter(|p| p.0 == k).map(|p| (p.1, p.2)),
                 waiting: waiting == Some(k),
+                lead: false,
+                changed: false,
             })
             .collect()
     }
@@ -6495,6 +6994,8 @@ impl TimeControl {
                     starts: s.start / bar + 1,
                     playing,
                     waiting: false,
+                    lead: s.marker.is_none(),
+                    changed: s.scene.is_some_and(|f| f.changed),
                 }
             })
             .collect()
@@ -6515,6 +7016,10 @@ impl TimeControl {
             c.dropped + self.dropped(),
             c.touch_dropped + self.touch_lost
         );
+        if let Some(c) = self.compose.counts.describe() {
+            line.push_str("; ");
+            line.push_str(&c);
+        }
         // Moments too busy (refactor A2): what gave way was new, never an
         // ending. Endings lost is a bug, said whenever it isn't 0.
         line.push_str(&format!(

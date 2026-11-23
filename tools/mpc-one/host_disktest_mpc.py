@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""mpfree-disktest on the test build: how fast and how steadily the stick's partition 4 streams audio. Four ways to run it:
+"""mpfree-disktest on the test build: how fast and how steadily the stick's partition 4 streams audio. Five ways to run it:
 
   --survey-only   READ-ONLY. Steps 1 and 2 only: nothing is copied to or run on the MPC.
   --read-only     RAM ONLY on the MPC. Copies the program into the test build's RAM and runs
@@ -11,6 +11,11 @@
                   the MPC's processor busy (it stops at 75 degrees C). Reads the audio on partition 4
                   while a recording, heavy reads and writes, busy cores and heavy task switching
                   run. Needs MPFREE_ACCEPT_DISKTEST=YES.
+  --recorder      WRITES TEST TAKES ON THE STICK'S PARTITION 4, THEN DELETES THEM, and CHANGES
+                  ONE SETTING IN THE RUNNING KERNEL for two of its steps (/proc/sys/vm/dirty_bytes,
+                  put back as found; a restart puts it back too). Records 8 takes with MPFree's own
+                  recorder while 8 streams read the audio on partition 4 (D4). Needs
+                  MPFREE_ACCEPT_DISKTEST=YES.
 
 Run it while the test build runs from the USB stick (started at power-on by
 the boot hook on the installed 3.10.1, or by `collect-over-ssh.sh --kexec-boot`
@@ -72,6 +77,27 @@ the second waits for you to press Enter:
      second: the busy and switching threads stop at 75 degrees C, or the lowest
      trip point the kernel gives if that is lower, and the steps after are
      left out; with no temperature to read, steps 5 to 8 are left out.
+  4d. With --recorder, STICK, PARTITION 4, AND ONE KERNEL SETTING: runs
+     `mpfree-disktest --recorder`, about 7 minutes. It refuses (exit code 3,
+     nothing written) on everything 4a and 4b refuse. Then, in 8 steps of
+     about 45 s, MPFree's own recorder (the recording file protocol's
+     writer) records 8 takes of stereo float at 48 kHz (3.07 MB/s) while 8
+     streams read the audio as 4a does with 128 KiB reads: a round every
+     1, 2, 5 and 10 s spread across the interval, every 2 and 5 s with the
+     takes together, and every 2 and 5 s with the kernel's writeback limit
+     raised. It writes only its takes (recN_ID.wav.recording,
+     recN_ID.wav.checkpoint and recN_ID.wav) in
+     /run/mpfree-data/mpfree-disktest, made new for each step and deleted
+     after it (about 126 MiB a step), and deletes the folder at the end,
+     after an error, on Ctrl-C, or when the ssh session closes. For steps 7
+     and 8 it writes 33554432 (32 MiB) to /proc/sys/vm/dirty_bytes, only if
+     that holds a size under 32 MiB (1048576 on the MPC's stick at D0),
+     and writes the value it found back after step 8, after an error, on
+     Ctrl-C, or when the ssh session closes; otherwise those two steps are
+     left out. That setting is in the running kernel only (RAM): a power
+     cycle puts it back whatever happened. This tool reads the four
+     writeback settings before and after the run (read-only) and says
+     whether they are as they were.
   All run as an ordinary process, so the pad player's audio thread, if
   it is running, comes first; the screen may answer slowly during steps
   5 to 8.
@@ -125,6 +151,8 @@ REMOTE_DIR = "/run/mpfree-disktest"
 TIMEOUT = 900
 # The run under load: about 7 minutes, longer if the stick can't keep up (each stream set stops at 60 s).
 TIMEOUT_LOAD = 1500
+# The recorder's run: about 7 minutes; each step's streams stop at 120 s and its takes finish within 60 s.
+TIMEOUT_RECORDER = 1800
 REFUSED = 3
 DEFAULT_SSH = {
     "ip": os.environ.get("MPC_IP", "10.42.0.141"),
@@ -162,6 +190,18 @@ exec "$R/run/mpfree-disktest/mpfree-disktest" --read-only
 RUN_LOAD = r"""R=''
 cd "$R/run/mpfree-disktest" || exit 1
 exec "$R/run/mpfree-disktest/mpfree-disktest" --under-load
+"""
+# Reads partition 4's audio, writes only its own takes there, and raises /proc/sys/vm/dirty_bytes for two
+# steps, putting it back as found.
+RUN_RECORDER = r"""R=''
+cd "$R/run/mpfree-disktest" || exit 1
+exec "$R/run/mpfree-disktest/mpfree-disktest" --recorder
+"""
+# Read-only: the kernel's four writeback settings, before and after the recorder's run.
+WRITEBACK = r"""R=''
+for n in dirty_bytes dirty_ratio dirty_background_bytes dirty_background_ratio; do
+  printf '%s=%s\n' "$n" "$(cat "$R/proc/sys/vm/$n" 2>/dev/null)"
+done
 """
 # Read-only: the streaming survey (step D0 of docs/dev/design/disk-streaming.md).
 SURVEY = os.path.join(HERE, "read-only-stream-survey.sh")
@@ -209,6 +249,10 @@ def main(argv):
     mode.add_argument("--under-load", action="store_true",
                       help="copy the program to the test build's RAM and run its test under load "
                            "(writes test files on partition 4, then deletes them; keeps the processor busy)")
+    mode.add_argument("--recorder", action="store_true",
+                      help="copy the program to the test build's RAM and run its recorder test (writes test "
+                           "takes on partition 4, then deletes them; raises /proc/sys/vm/dirty_bytes for two "
+                           "steps and puts it back)")
     args = p.parse_args(argv)
     accept = os.environ.get("MPFREE_ACCEPT_DISKTEST")
     if args.read_only and accept not in ("YES", "READ-ONLY"):
@@ -219,6 +263,10 @@ def main(argv):
         raise Stop("opt-in required (writes test files on the stick's partition 4, then deletes them, and keeps "
                    "the processor busy): "
                    "MPFREE_ACCEPT_DISKTEST=YES python3 tools/mpc-one/host_disktest_mpc.py --under-load")
+    if args.recorder and accept != "YES":
+        raise Stop("opt-in required (writes test takes on the stick's partition 4, then deletes them, and raises "
+                   "one writeback setting in the running kernel for two steps, putting it back): "
+                   "MPFREE_ACCEPT_DISKTEST=YES python3 tools/mpc-one/host_disktest_mpc.py --recorder")
     if not args.read_only and not args.survey_only and accept != "YES":
         raise Stop("opt-in required (writes test files on the stick's partition 4, then deletes them): "
                    "MPFREE_ACCEPT_DISKTEST=YES python3 tools/mpc-one/host_disktest_mpc.py")
@@ -233,6 +281,9 @@ def main(argv):
     elif args.under_load:
         out.say("MPFree disk test under load on the test build (RAM, reads of the audio and test files on the "
                 "stick's partition 4 that it deletes, and a busy processor)")
+    elif args.recorder:
+        out.say("MPFree recorder test on the test build (RAM, reads of the audio and test takes on the stick's "
+                "partition 4 that it deletes, and one writeback setting in the running kernel, put back)")
     else:
         out.say("MPFree disk test on the test build (RAM, and test files on the stick's partition 4 that it deletes)")
 
@@ -267,6 +318,11 @@ def main(argv):
 
     signal.signal(signal.SIGINT, signal.default_int_handler)
     result = 1
+    writeback_before = None
+    if args.recorder:
+        rc, text = mpc.run(WRITEBACK, test=True)
+        writeback_before = text.strip().splitlines()
+        out.say("  writeback settings now: " + ", ".join(writeback_before))
     try:
         out.say(f"\n[3/4] Copy the program into the test build's RAM ({REMOTE_DIR})")
         if app.ready(out, "Copies one program of about 1.1 MB.") != "go":
@@ -291,6 +347,12 @@ def main(argv):
                     "/run/mpfree-data/backup, WRITES test files in /run/mpfree-data/mpfree-disktest (stick "
                     "partition 4) and deletes them, and keeps the processor busy (it stops at 75 degrees C)")
             answer = app.ready(out, "Takes about 7 minutes; the screen may answer slowly in steps 5 to 8.")
+        elif args.recorder:
+            out.say("\n[4/4] The recorder test: READS the audio in /run/mpfree-data/library and "
+                    "/run/mpfree-data/backup, WRITES test takes in /run/mpfree-data/mpfree-disktest (stick "
+                    "partition 4) and deletes them, and for steps 7 and 8 sets /proc/sys/vm/dirty_bytes to "
+                    "33554432, then back to the value it found (RAM only)")
+            answer = app.ready(out, "Takes about 7 minutes; the MPC can stay as it is.")
         else:
             out.say("\n[4/4] The disk test: WRITES test files in /run/mpfree-data/mpfree-disktest "
                     "(stick partition 4), then deletes them")
@@ -301,8 +363,10 @@ def main(argv):
             out.say("  skipped: nothing was written on the stick")
             result = 0
         else:
-            script = RUN_READ if args.read_only else RUN_LOAD if args.under_load else RUN
-            rc, _ = app.stream(mpc, script, TIMEOUT_LOAD if args.under_load else TIMEOUT, out)
+            script = RUN_READ if args.read_only else RUN_LOAD if args.under_load \
+                else RUN_RECORDER if args.recorder else RUN
+            timeout = TIMEOUT_LOAD if args.under_load else TIMEOUT_RECORDER if args.recorder else TIMEOUT
+            rc, _ = app.stream(mpc, script, timeout, out)
             if rc == REFUSED:
                 out.say("  the disk test refused (reason above); nothing was written on the stick")
                 result = 2
@@ -319,8 +383,18 @@ def main(argv):
     rc, text = mpc.run(DF, test=True)
     for line in text.splitlines():
         out.say(f"  {line}")
+    if writeback_before is not None:
+        rc, text = mpc.run(WRITEBACK, test=True)
+        after = text.strip().splitlines()
+        if rc == 0 and after == writeback_before:
+            out.say("  writeback settings as before the run: " + ", ".join(after))
+        else:
+            out.say("  WRITEBACK SETTINGS CHANGED: " + ", ".join(after) + " (before: " + ", ".join(writeback_before)
+                    + "). They are in the running kernel only: switching the MPC off and on puts them back.")
+            result = 1
     ran = "the read-only disk test ran (numbers above); nothing was written on the stick." if args.read_only \
         else "the disk test under load ran (numbers above)." if args.under_load \
+        else "the recorder test ran (numbers above)." if args.recorder \
         else "the disk test ran (numbers above)."
     stopped = "stopped early; the read-only test writes nothing on the stick." if args.read_only else "stopped early."
     out.say("\nRESULT: " + {0: ran, 2: "refused by the disk test; nothing was written on the stick.",

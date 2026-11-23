@@ -269,6 +269,11 @@ pub(super) fn follow_loop(v: &mut Voice, l: &ViewLayer) {
     v.loop_start = start;
     v.loop_end = end;
     v.ping_pong = lp.ping_pong;
+    // Short of the new loop's start, it has not been round this one yet:
+    // the frames before it are the recording's ([`Voice::fold`]).
+    if v.pos >> 32 < start {
+        v.wrapped = false;
+    }
     // Its blend reads before the loop's start, never before the region's.
     v.crossfade = lp
         .crossfade
@@ -296,12 +301,22 @@ pub(super) fn follow_loop(v: &mut Voice, l: &ViewLayer) {
         return;
     };
     // The read on each side of the jump, so the step fades out instead
-    // of clicking (with what is left of an earlier jump's).
-    if let Some(data) = v.data.as_ref() {
-        let ((al, ar), (bl, br)) = match data {
-            Pcm::F32(d) => (v.read2(d, v.pos), v.read2(d, pos)),
-            Pcm::I16(d) => (v.read2(d, v.pos), v.read2(d, pos)),
+    // of clicking (with what is left of an earlier jump's): before it, the
+    // recording where the voice was, as it heard it; after it, round the
+    // loop it has now gone into ([`Voice::fold`]).
+    if let Some(data) = v.data.take() {
+        let read = |v: &Voice, at: i64| match &data {
+            Pcm::F32(d) => v.read2(d, at),
+            Pcm::I16(d) => v.read2(d, at),
         };
+        v.looping = false;
+        v.refresh_fast();
+        let (al, ar) = read(v, v.pos);
+        v.looping = true;
+        v.wrapped = true;
+        v.refresh_fast();
+        let (bl, br) = read(v, pos);
+        v.data = Some(data);
         let left = f32::from(v.jump_left) / f32::from(JUMP_FRAMES);
         v.jump = [v.jump[0] * left + al - bl, v.jump[1] * left + ar - br];
         v.jump_left = JUMP_FRAMES;
@@ -312,4 +327,5 @@ pub(super) fn follow_loop(v: &mut Voice, l: &ViewLayer) {
     }
     v.pos = pos;
     v.backwards = backwards;
+    v.wrapped = true;
 }

@@ -5608,6 +5608,7 @@ impl SamplePage {
             _ if i.chop && i.pads > 0 => format!("Chop to {}", pads(i.pads)),
             _ if i.pads_play && i.pads > 0 => format!("Keys on {}", pads(i.pads)),
             _ if i.pads_play => "What the pads play".to_string(),
+            _ if i.keys_play => "What keys play".to_string(),
             _ if i.sources > 0 && i.pads > 0 => format!("New sample on {}", pads(i.pads)),
             _ if i.sources > 0 => "New sample".to_string(),
             _ if i.chop => "New chop".to_string(),

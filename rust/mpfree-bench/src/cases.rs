@@ -2208,7 +2208,8 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| audio_tracks(rate, 0, false)));
     v.push(measured(|| audio_tracks(rate, 2, false)));
     v.push(measured(|| audio_tracks(rate, 2, true)));
-    v.push(measured(|| stream_voices(rate, 64, Read::Hermite, 1.5)));
+    v.push(measured(|| stream_voices(rate, 64, Read::Near, 0.75)));
+    v.push(measured(|| stream_voices(rate, 64, Read::Near, 1.5)));
     v.push(measured(|| stream_voices(rate, 64, Read::Sinc8, 1.5)));
     v.push(measured(|| stream_voices(rate, 64, Read::Sinc8, 3.0)));
     v.push(measured(|| stream_voices(rate, 64, Read::Sinc16, 1.5)));
@@ -5931,7 +5932,7 @@ fn stream_voices(rate: u32, n: usize, read: Read, speed: f64) -> Case {
         .collect();
     let mut out = vec![0.0f32; MAX_BLOCK * 2];
     let read_name = match read {
-        Read::Hermite => "Hermite",
+        Read::Near => "8-point",
         Read::Sinc8 => "band-limited",
         Read::Sinc16 => "band-limited 16",
     };
