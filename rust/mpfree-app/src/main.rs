@@ -182,6 +182,7 @@ mod views;
 mod waiting;
 mod xy_layouts;
 mod xy_list;
+mod xy_play;
 mod xy_slot;
 
 use mpfree_arp::scale::{pads::MAX_PAD_NOTES, Shift};
@@ -9617,6 +9618,7 @@ fn player_session(
         // chain editor's learn; a learned control sets its parameter as a
         // chain editor knob does.
         let recording = time.info().state == mpfree_transport::State::Recording;
+        mix.set_recording(recording);
         let by_touch = learning_shown.is_some_and(|(_, by)| by == midi_in::ArmedBy::Touch);
         let following = music.leader_name().is_some();
         // A controller pulled out never lets go of what it held: the
