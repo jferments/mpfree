@@ -1311,8 +1311,14 @@ impl Player {
         self.n_starts = 0;
         self.n_lock_starts = 0;
         let bar = span.meter.bar_ticks();
+        // The tracks it plays and the audio tracks, a bit each, shifted
+        // along with `i` (a shift by a variable is dear on 128 bits).
+        let (mut only, mut audio) = (self.only, view.audio);
         for i in 0..view.tracks.len() {
-            if (self.only >> i) & 1 == 0 {
+            let (plays, is_audio) = (only & 1 == 1, audio & 1 == 1);
+            only >>= 1;
+            audio >>= 1;
+            if !plays {
                 continue;
             }
             // A mute cue (the mute queue) splits the track's part of the
@@ -1325,12 +1331,12 @@ impl Player {
                         self.switches.late += 1;
                     }
                     if m > ticks.start {
-                        self.play_track(view, span, i, ticks.start..m);
+                        self.play_track(view, span, i, ticks.start..m, is_audio);
                     }
                     self.land_mute(view, i, m);
-                    self.play_track(view, span, i, m..ticks.end);
+                    self.play_track(view, span, i, m..ticks.end, is_audio);
                 }
-                None => self.play_track(view, span, i, ticks.clone()),
+                None => self.play_track(view, span, i, ticks.clone(), is_audio),
             }
         }
         // The song's own lanes, after every track's.
@@ -1512,13 +1518,20 @@ impl Player {
     }
 
     /// Track `i`'s part of a span, playing `ticks` (the whole span, or
-    /// the part before or after a mute cue's line).
-    fn play_track(&mut self, view: &PlayView, span: &Span, i: usize, ticks: Range<Tick>) {
+    /// the part before or after a mute cue's line). `audio`: it is an
+    /// audio track, whose changes [`Player::audio`] answers with.
+    fn play_track(
+        &mut self,
+        view: &PlayView,
+        span: &Span,
+        i: usize,
+        ticks: Range<Tick>,
+        audio: bool,
+    ) {
         let track = &view.tracks[i];
         let bar = span.meter.bar_ticks();
         // An audio track: what it plays here (after a loop jump, a locate
         // or a mute cue that landed on this tick, it may differ).
-        let audio = view.audio != 0 && (view.audio >> i) & 1 == 1;
         if audio {
             self.audio_note(view, span, i, ticks.start, ticks.start);
         }
