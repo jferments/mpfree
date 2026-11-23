@@ -4216,8 +4216,13 @@ fn play_routed(
         // gear (above), else its instrument, else the synth (Thru passes a
         // keyboard's on as it came).
         midi_in::Key::Bend { value } => {
-            if !gear && !own.bend(t, value) && plays_synth {
-                synth.bend(value);
+            if !gear && !own.bend(t, value) {
+                if plays_synth {
+                    synth.bend(value);
+                } else {
+                    // A kit's keygroups bend (sampler step 15).
+                    player.bend_kit(kit, value);
+                }
             }
             return;
         }
@@ -10056,6 +10061,11 @@ fn player_session(
                 midi_in::Key::Bend { value } if key_notes => {
                     if !mix.instruments.bend(armed, value) {
                         synth.bend(value);
+                        // The keygroups of the kit the pads play bend too
+                        // (sampler step 15).
+                        if !synth_on {
+                            player.bend(value);
+                        }
                     }
                     None
                 }
