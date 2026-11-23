@@ -7412,13 +7412,17 @@ fn time_action(
             return Vec::new();
         }
     }
-    // ERASE + a clip, COPY + a clip or a slot, a clip settings card change,
-    // a drop on the Clips grid or the Song view, a block deleted, UNDO and
-    // REDO: said in place of the hint.
+    // ERASE + a clip, COPY + a clip or a slot, COPY + a note or empty roll
+    // in the note editor, a clip settings card change, a drop on the Clips
+    // grid or the Song view, a block deleted, UNDO and REDO: said in place
+    // of the hint.
     let undo = matches!(a, TimeAction::Undo | TimeAction::Redo);
     let erase = matches!(
         a,
-        TimeAction::DeleteClip { .. }
+        TimeAction::Edit(
+            mpfree_time_ui::editor::EditAction::Copy { .. }
+                | mpfree_time_ui::editor::EditAction::Paste { .. }
+        ) | TimeAction::DeleteClip { .. }
             | TimeAction::ClipSettings { .. }
             | TimeAction::ClipLength { .. }
             | TimeAction::Mutate { .. }
@@ -8239,12 +8243,31 @@ fn player_session(
     // Dev's "Audio tracks from their files" (off by default): started
     // before the takes record to files, so the writer waits for playback's
     // reads; the screen opens projects without reading their takes then.
-    if app.settings.stream_audio {
+    // A script that needs stream-audio has it for its run only (the saved
+    // setting stays as it is).
+    let script_streams = o
+        .workflow
+        .as_ref()
+        .is_some_and(|w| w.needs.iter().any(|n| n == script::STREAM_AUDIO));
+    if app.settings.stream_audio || script_streams {
         if let Some(bytes) = tracks.stream(audio_memory.seconds()) {
             out.say(&format!(
-                "audio tracks: takes play from their files (Dev, MENU: Audio tracks from their files), through a {} MB cache",
+                "audio tracks: takes play from their files ({}), through a {} MB cache",
+                if app.settings.stream_audio {
+                    "Dev, MENU: Audio tracks from their files"
+                } else {
+                    "the script needs stream-audio, for this run"
+                },
                 bytes >> 20
             ));
+        }
+        // A stream test that plays from memory would measure nothing: it
+        // stops here, before a step runs, and says why.
+        if script_streams && !tracks.streams() {
+            return Err(
+                "the script needs stream-audio, but takes can't play from their files in this run"
+                    .into(),
+            );
         }
         app.settings.audio_streams = tracks.streams();
         out.show(gui::ToUi::Settings(app.settings.clone()));
@@ -11721,6 +11744,10 @@ fn player_session(
         // sequencer refactor E4).
         let n = time.track_count();
         time.set_notes_tracks(notes_tracks(&mix.instruments, &track_kits, &synth, n));
+        // The note editor's Scale option offers the pads' scale and the
+        // owner's own scales (piano roll plan 2B.1).
+        let (pads, own) = app.scale_offers();
+        time.set_scale_offers(pads, own);
         // A clip of notes shows each pad's note on the step grid's pad
         // rows: the root of what the pad plays on the track's own synth or
         // the shared synth, or a kit pad's note (step 5c).

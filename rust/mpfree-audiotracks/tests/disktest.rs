@@ -8,7 +8,10 @@
 //! nothing behind. With `--recorder` MPFree's own recorder writes its takes
 //! beside the reads, every take saved whole, and the writeback limit (a
 //! stand-in for `/proc/sys/vm` on a desktop) is raised for two steps and
-//! put back as found.
+//! put back as found. Each run that reads says what the rest of the stick
+//! (a stand-in for sysfs) did beside the reads. With `--heat` the cores are
+//! kept busy until the stand-in's temperature settles, and nothing is
+//! written.
 
 use std::collections::BTreeMap;
 use std::os::unix::fs::MetadataExt;
@@ -258,6 +261,115 @@ fn a_read_only_run_reads_the_library_and_changes_nothing() {
     std::fs::remove_dir_all(&outside).unwrap();
 }
 
+/// A stand-in for the stick in sysfs: `usb1/block/sdz/sdzN` for each
+/// partition, with the kernel's `partition`, `stat` and `inflight` files.
+fn stick_stand_in(d: &Path, parts: &[u32]) -> PathBuf {
+    let disk = d.join("usb1/1-1/block/sdz");
+    std::fs::create_dir_all(disk.join("queue")).unwrap();
+    std::fs::write(
+        disk.join("queue/scheduler"),
+        "[mq-deadline] kyber bfq none\n",
+    )
+    .unwrap();
+    for n in parts {
+        let p = disk.join(format!("sdz{n}"));
+        std::fs::create_dir_all(&p).unwrap();
+        std::fs::write(p.join("partition"), format!("{n}\n")).unwrap();
+        std::fs::write(
+            p.join("stat"),
+            "     120        0     960       40       12        0      96       30        0       60       70\n",
+        )
+        .unwrap();
+        std::fs::write(p.join("inflight"), "       0        0\n").unwrap();
+    }
+    disk.join("sdz4")
+}
+
+#[test]
+fn a_read_only_run_says_what_the_rest_of_the_stick_did_beside_the_reads() {
+    let d = scratch("read-watch");
+    let lib = d.join("library");
+    for i in 0..6 {
+        noise(
+            &lib.join(format!("Samples/s{i}.wav")),
+            (1 << 20) + i * 70_000,
+            i as u32 + 30,
+        );
+    }
+    let sys = scratch("read-watch-sys");
+    let part = stick_stand_in(&sys, &[1, 2, 3, 4, 5]);
+    let before = snapshot(&sys);
+    let out = bin()
+        .arg("--desktop-test")
+        .arg(&d)
+        .args(["--read-only", "--quick"])
+        .env("MPFREE_DISKTEST_SYS", &part)
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{text}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    for want in [
+        "watching: the counters of sdz (partitions 1, 2, 3, 4, 5) beside the reads, read-only",
+        "the rest of the stick (sdz): p4 wrote nothing; ",
+        " readings of its counters",
+        "reads over 100 ms: ",
+        "Beside the slow reads (over 100 ms)",
+        "the files read are as they were: nothing was written",
+    ] {
+        assert!(text.contains(want), "missing {want:?} in\n{text}");
+    }
+    // One line of each for every set of streams.
+    let sets = text.matches("    worst shortfall").count();
+    assert!(sets >= 4, "{text}");
+    assert_eq!(
+        text.matches("the rest of the stick (sdz)").count(),
+        sets,
+        "{text}"
+    );
+    // Its counters are only read.
+    assert_eq!(snapshot(&sys), before);
+
+    // Without them (a desktop's own disk is never watched) the run says nothing of them.
+    let out = bin()
+        .arg("--desktop-test")
+        .arg(&d)
+        .args(["--read-only", "--quick"])
+        .env_remove("MPFREE_DISKTEST_SYS")
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{text}");
+    assert!(
+        !text.contains("watching:") && !text.contains("the rest of the stick"),
+        "{text}"
+    );
+
+    // A stand-in with no partition 4: said, and the run goes on.
+    let other = scratch("read-watch-sys2");
+    let part = stick_stand_in(&other, &[1, 2]);
+    let out = bin()
+        .arg("--desktop-test")
+        .arg(&d)
+        .args(["--read-only", "--quick"])
+        .env("MPFREE_DISKTEST_SYS", part.with_file_name("sdz2"))
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{text}");
+    assert!(
+        text.contains("watching: the stick's counters can't be read (no partition 4 under "),
+        "{text}"
+    );
+    assert!(!text.contains("the rest of the stick"), "{text}");
+    for x in [&d, &sys, &other] {
+        std::fs::remove_dir_all(x).unwrap();
+    }
+}
+
 #[test]
 fn a_read_only_run_with_too_little_audio_is_refused() {
     let d = scratch("read-little");
@@ -460,6 +572,8 @@ fn a_recorder_run_saves_every_take_whole_and_puts_the_writeback_limit_back() {
     library(&d);
     std::fs::write(d.join("library/notes.txt"), b"keep me").unwrap();
     let vm = writeback_stand_in("rec-vm", "1048576");
+    let sys = scratch("rec-sys");
+    let part = stick_stand_in(&sys, &[1, 2, 4]);
     let before = snapshot(&d);
     let vm_before = settings(&vm);
     let out = bin()
@@ -467,6 +581,7 @@ fn a_recorder_run_saves_every_take_whole_and_puts_the_writeback_limit_back() {
         .arg(&d)
         .args(["--recorder", "--quick"])
         .env("MPFREE_DISKTEST_VM", &vm)
+        .env("MPFREE_DISKTEST_SYS", &part)
         .output()
         .unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
@@ -488,12 +603,17 @@ fn a_recorder_run_saves_every_take_whole_and_puts_the_writeback_limit_back() {
         "7. A round every 0.1 s, spread across the interval, writeback limit raised to 32 MiB",
         "8. A round every 0.25 s, spread across the interval, writeback limit raised to 32 MiB",
         "writeback limit raised to 32 MiB (dirty_bytes 33554432), until the last of these steps",
+        "9. A round every 0.1 s, spread across the interval, writeback as found, the reads ahead of the recorder on the disk",
+        "  writeback limit put back as found first: dirty_bytes 1048576",
+        "  disk priority: the streams' reads best effort 0, the recorder's thread best effort 7; set on this step's threads only",
+        "10. A round every 0.1 s, spread across the interval, writeback as found, the reads real-time on the disk",
+        "disk priority as found: ",
+        "; the stick's scheduler: mq-deadline",
         "recording: 8 takes, stereo float at 48 kHz (3.07 MB/s in all)",
         "frames refused: none",
         "8 of 8 takes saved, 8 of them whole (every frame in the file)",
         "2 streams, 24-bit",
         "worst shortfall",
-        "writeback limit put back as found: dirty_bytes 1048576",
         "Summary:",
         "the files read in library/ and backup/ are as they were",
         "the folder is deleted",
@@ -501,12 +621,51 @@ fn a_recorder_run_saves_every_take_whole_and_puts_the_writeback_limit_back() {
     ] {
         assert!(text.contains(want), "missing {want:?} in\n{text}");
     }
+    // The real-time class needs root (or CAP_SYS_NICE): without it step
+    // 10 is left out, saying why (under the step, and in its summary row),
+    // and every other step runs.
+    let left: Vec<&str> = text
+        .lines()
+        .filter(|l| l.starts_with("  left out: "))
+        .collect();
+    let ran = match left.as_slice() {
+        [] => {
+            assert!(
+                text.contains("  disk priority: the streams' reads real-time 4, the recorder's thread as found;"),
+                "{text}"
+            );
+            assert!(!text.contains("left out"), "{text}");
+            10
+        }
+        [one] => {
+            assert!(
+                one.starts_with("  left out: the disk priority real-time 4 could not be set: "),
+                "{text}"
+            );
+            assert!(
+                text.contains("    10  left out: the disk priority real-time 4 could not be set: "),
+                "{text}"
+            );
+            9
+        }
+        _ => panic!("{text}"),
+    };
     assert_eq!(
         text.matches("8 of 8 takes saved, 8 of them whole").count(),
-        8,
+        ran,
         "{text}"
     );
-    assert!(!text.contains("left out"), "{text}");
+    // The rest of the stick beside each step's streams.
+    assert_eq!(
+        text.matches("the rest of the stick (sdz): ").count(),
+        ran,
+        "{text}"
+    );
+    assert_eq!(
+        text.matches("    reads over 100 ms: ").count(),
+        ran,
+        "{text}"
+    );
     assert!(!text.contains("NOT ALL FINISHED"), "{text}");
     for name in ["s0.wav", "notes.txt", "Samples"] {
         assert!(!text.contains(name), "{name} named in\n{text}");
@@ -516,6 +675,7 @@ fn a_recorder_run_saves_every_take_whole_and_puts_the_writeback_limit_back() {
     assert_eq!(settings(&vm), vm_before);
     std::fs::remove_dir_all(&d).unwrap();
     std::fs::remove_dir_all(&vm).unwrap();
+    std::fs::remove_dir_all(&sys).unwrap();
 }
 
 #[test]
@@ -540,7 +700,7 @@ fn a_recorder_run_leaves_the_writeback_limit_alone_unless_it_can_raise_it() {
         );
         let left: Vec<String> = text
             .lines()
-            .filter(|l| l.starts_with("  left out: "))
+            .filter(|l| l.starts_with("  left out: ") && !l.contains("disk priority"))
             .map(str::to_string)
             .collect();
         assert_eq!(left.len(), 2, "{text}");
@@ -618,12 +778,137 @@ fn a_cut_off_recorder_runs_takes_are_cleared_first_and_nothing_else() {
     std::fs::remove_dir_all(&d).unwrap();
 }
 
+/// Stand-ins for the thermal zones (`thermal_zoneN/type`, `temp`, trip
+/// points) and the cores' clocks (`cpuN/cpufreq/...`).
+fn heat_stand_ins(name: &str, cpu_c: &str, trip: Option<&str>) -> (PathBuf, PathBuf) {
+    let d = scratch(name);
+    let th = d.join("thermal");
+    let z = th.join("thermal_zone0");
+    std::fs::create_dir_all(&z).unwrap();
+    std::fs::write(z.join("type"), "cpu-thermal\n").unwrap();
+    std::fs::write(z.join("temp"), cpu_c).unwrap();
+    if let Some(t) = trip {
+        std::fs::write(z.join("trip_point_0_temp"), t).unwrap();
+        std::fs::write(z.join("trip_point_0_type"), "critical\n").unwrap();
+    }
+    let g = th.join("thermal_zone1");
+    std::fs::create_dir_all(&g).unwrap();
+    std::fs::write(g.join("type"), "gpu-thermal\n").unwrap();
+    std::fs::write(g.join("temp"), "51500\n").unwrap();
+    let cpu = d.join("cpu");
+    let f = cpu.join("cpu0/cpufreq");
+    std::fs::create_dir_all(&f).unwrap();
+    for n in ["scaling_cur_freq", "scaling_max_freq", "cpuinfo_max_freq"] {
+        std::fs::write(f.join(n), "1608000\n").unwrap();
+    }
+    std::fs::write(f.join("scaling_governor"), "performance\n").unwrap();
+    (th, cpu)
+}
+
+fn heat_run(data: &Path, th: &Path, cpu: &Path) -> (std::process::ExitStatus, String) {
+    let out = bin()
+        .arg("--desktop-test")
+        .arg(data)
+        .args(["--heat", "--quick"])
+        .env("MPFREE_DISKTEST_THERMAL", th)
+        .env("MPFREE_DISKTEST_CPU", cpu)
+        .output()
+        .unwrap();
+    (
+        out.status,
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+    )
+}
+
+#[test]
+fn a_heat_run_keeps_the_cores_busy_until_the_temperature_settles_and_writes_nothing() {
+    let d = scratch("heat");
+    library(&d);
+    let (th, cpu) = heat_stand_ins("heat-sys", "55000\n", Some("113000\n"));
+    let before = (snapshot(&d), snapshot(&th), snapshot(&cpu));
+    let (status, text) = heat_run(&d, &th, &cpu);
+    assert!(status.success(), "{text}");
+    for want in [
+        "heat: one busy thread on each of ",
+        "until the hottest zone rises less than 0.5 °C in 0.5 s, or 1.5 s at the most; they stop at 75 °C. It writes no file.",
+        "zone cpu-thermal: trip points: critical 113 °C",
+        "zone gpu-thermal: trip points: none",
+        "clocks at the start:",
+        "cpu0: now 1608 MHz, max 1608 MHz (scaling_max_freq), 1608 MHz (cpuinfo_max_freq), governor performance",
+        "cpu-thermal 55.0 °C, gpu-thermal 51.5 °C; clocks 1608",
+        "clocks at the end:",
+        "the hottest zone went from 55.0 to 55.0 °C, 55.0 °C at the most",
+        "heat: settled at 55.0 °C after ",
+        "done",
+    ] {
+        assert!(text.contains(want), "missing {want:?} in\n{text}");
+    }
+    assert_eq!(text.matches("clocks at the ").count(), 2, "{text}");
+    // Nothing written: not the data folder, not the stand-ins.
+    assert_eq!((snapshot(&d), snapshot(&th), snapshot(&cpu)), before);
+    assert!(!d.join("mpfree-disktest").exists());
+
+    // At the stop (a trip point under 75 °C wins): the threads stop at once.
+    let (th2, cpu2) = heat_stand_ins("heat-hot", "71000\n", Some("70000\n"));
+    let (status, text) = heat_run(&d, &th2, &cpu2);
+    assert!(status.success(), "{text}");
+    assert!(text.contains("they stop at 70 °C"), "{text}");
+    assert!(text.contains("(at the stop, 70 °C)"), "{text}");
+    assert!(text.contains("heat: stopped at 71.0 °C after "), "{text}");
+    assert!(text.contains(": the stop is 70 °C"), "{text}");
+
+    // Still rising at the time limit.
+    let (th3, cpu3) = heat_stand_ins("heat-rising", "55000\n", None);
+    let temp = th3.join("thermal_zone0/temp");
+    let on = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let warmer = {
+        let (on, temp) = (on.clone(), temp.clone());
+        std::thread::spawn(move || {
+            let mut m = 55000;
+            while on.load(std::sync::atomic::Ordering::Relaxed) {
+                m += 100;
+                let part = temp.with_extension("part");
+                std::fs::write(&part, format!("{m}\n")).unwrap();
+                std::fs::rename(&part, &temp).unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        })
+    };
+    let (status, text) = heat_run(&d, &th3, &cpu3);
+    on.store(false, std::sync::atomic::Ordering::Relaxed);
+    warmer.join().unwrap();
+    assert!(status.success(), "{text}");
+    assert!(text.contains("heat: still rising after "), "{text}");
+    assert!(text.contains("the longest it runs: "), "{text}");
+
+    // No temperature to read: refused, the cores never busy.
+    let empty = scratch("heat-none");
+    let (status, text) = heat_run(&d, &empty, &cpu);
+    assert_eq!(status.code(), Some(3), "{text}");
+    assert!(
+        text.contains("refused: no temperature to read in "),
+        "{text}"
+    );
+    assert!(!text.contains("busy threads:"), "{text}");
+    for x in [&th, &th2, &th3] {
+        std::fs::remove_dir_all(x.parent().unwrap()).unwrap();
+    }
+    std::fs::remove_dir_all(&d).unwrap();
+    std::fs::remove_dir_all(&empty).unwrap();
+}
+
 #[test]
 fn only_one_kind_of_run_at_a_time() {
     for pair in [
         ["--recorder", "--under-load"],
         ["--recorder", "--read-only"],
         ["--read-only", "--under-load"],
+        ["--heat", "--read-only"],
+        ["--heat", "--recorder"],
     ] {
         let out = bin().args(pair).output().unwrap();
         assert_eq!(out.status.code(), Some(2), "{pair:?}");

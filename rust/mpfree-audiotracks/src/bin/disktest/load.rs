@@ -156,11 +156,11 @@ const STEPS: [(&str, Load); 8] = [
 #[derive(Debug, PartialEq)]
 pub(super) struct Zone {
     pub(super) name: String,
-    temp: PathBuf,
+    pub(super) temp: PathBuf,
     pub(super) trips: Vec<(String, f64)>,
 }
 
-fn millidegrees(p: &Path) -> Option<f64> {
+pub(super) fn millidegrees(p: &Path) -> Option<f64> {
     fs::read_to_string(p)
         .ok()?
         .trim()
@@ -219,7 +219,7 @@ pub(super) fn stop_at(zones: &[Zone]) -> f64 {
 }
 
 /// The hottest zone now, in °C.
-fn hottest(zones: &[Zone]) -> Option<f64> {
+pub(super) fn hottest(zones: &[Zone]) -> Option<f64> {
     zones
         .iter()
         .filter_map(|z| millidegrees(&z.temp))
@@ -326,7 +326,7 @@ pub(super) fn thousands(n: u64) -> String {
     out
 }
 
-fn cpus_online() -> usize {
+pub(super) fn cpus_online() -> usize {
     // SAFETY: sysconf only reads a value.
     let n = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) };
     if n < 1 {
@@ -355,7 +355,7 @@ fn going(on: &AtomicBool) -> bool {
 
 /// One busy thread: filter its buffer until told to stop. Passes made, and
 /// whether it was pinned.
-fn hog(cpu: usize, on: &AtomicBool, hot: &AtomicBool) -> (u64, bool) {
+pub(super) fn hog(cpu: usize, on: &AtomicBool, hot: &AtomicBool) -> (u64, bool) {
     let pinned = pin(cpu);
     let mut buf: Vec<f32> = (0..HOG_SAMPLES)
         .map(|i| ((i as f32) * 0.01).sin())
@@ -941,6 +941,10 @@ fn report_step(env: &Env, load: Load, m: &Measured) -> Row {
                         "    stopped at {:.0} s: the streams could not keep up, so the shortfall is at least this",
                         CAP * env.secs
                     );
+                }
+                if let Some(b) = &r.beside {
+                    say!("    {}", b.line());
+                    say!("    {}", b.slow_line());
                 }
                 sets.push(Some((r.behind_ms, r.reads.max(), w, r.cut)));
             }
