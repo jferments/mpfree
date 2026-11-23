@@ -1,6 +1,6 @@
 # Live shows: patches, keygroups and set lists
 
-The plan for playing whole shows from one MPC: songs in a set, the next song ready before you need it, keyboard patches that scenes recall, keys that play keygroups, and a Show view in Perform. The full plan, its research, two reviews and the twelve decisions are in the Claude Doc [Live shows: patches, keygroups and set lists](https://claude.ai/artifact/PBWnfRy2bfrJwhgS1eVjf6), approved as written by the owner on 22 Nov 2026. This page says what is built, as it is built.
+The plan for playing whole shows from one MPC: songs in a set, the next song ready before you need it, keyboard patches that scenes recall, keys that play keygroups, and a Show view in Perform. The full plan, its research, two reviews and the twelve decisions are in the Claude Doc [Live shows: patches, keygroups and set lists](https://claude.ai/artifact/PBWnfRy2bfrJwhgS1eVjf6), approved as written by the owner on 22 Nov 2026; a copy is in jferments/mpfree-claude `live-shows/plan.md`, with the approved Show view and Set editor screens in `live-shows/mockups/`. This page says what is built, as it is built.
 
 The rules it keeps: one track list per project; instruments make the sound, tracks record, pads and keys play instruments; no instrument swaps on a track per scene. It uses what the other redesigns make and never its own copy: the arranger's one scheduler, the stream layer ([Disk streaming](disk-streaming.md)), the instrument list ([Instruments](instruments.md)) and the audio tracks' recordings ([Audio tracks](audio-tracks.md)).
 
