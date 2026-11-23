@@ -138,8 +138,8 @@ pub const FORMAT: u32 = mpfree_library::project::PARTS_FORMAT;
 /// project has a synth that no track has ([`SYNTHS_WITHOUT_TRACKS`]), an
 /// audio track ([`AUDIO_TRACKS`]), an audio clip ([`AUDIO_CLIPS`]), a
 /// linked song list ([`LINKED_SONG_LIST`]), a scene that keeps a track
-/// playing ([`SCENE_KEEP`]), a free loop ([`FREE_LOOPS`]) or a scene that
-/// sets the tempo ([`SCENE_TEMPO`]).
+/// playing ([`SCENE_KEEP`]), patches ([`PATCHES_NEED`]), a free loop
+/// ([`FREE_LOOPS`]) or a scene that sets the tempo ([`SCENE_TEMPO`]).
 pub const NEEDS_KEY: &str = "needs";
 /// A project with a synth in a free place (the instrument redesign's step
 /// 6: one picked for the pads, no track's): an older build would read the
