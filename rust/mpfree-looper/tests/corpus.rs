@@ -17,13 +17,16 @@
 //! comes from a seeded generator, so the corpus is the same on every run
 //! and every machine.
 //!
-//! **The known wrong moves** ([`KNOWN_WRONG`]): at fast tempos (here 174
-//! BPM) the reach is a 1/16 note, so a tap almost a 16th early reaches
-//! back nearly an 8th, and a kick played an 8th before the downbeat (half
-//! time's pickup on the "and" of 4) can win on its likeness to your first
-//! hit, though the beat doesn't fit it. Every one lands at the far edge
-//! of the reach from the tap ([`EDGE`]), and the test fails on any other
-//! kind. Tuning for them waits for the device sessions' real taps.
+//! **No wrong moves.** Before two rules in [`ends`] it made 12, all one
+//! kind: at fast tempos (here 174 BPM) the reach is a 1/16 note, so a tap
+//! almost a 16th early reaches back nearly an 8th, and a kick played an
+//! 8th before the downbeat (half time's pickup on the "and" of 4) won on
+//! its likeness to the first hit, though the beat didn't fit it. Now a
+//! hit far from the tap needs the beat to back it ([`ends::FAR`]), and a
+//! soft note just ahead of the first kick is part of the opening hit
+//! ([`ends::FLAM_MS`]). Over 32 seeds of this corpus (6.4 million taps)
+//! that took the wrong moves from 214 to 4, for 0.12 % fewer of the taps
+//! off by 15 ms or more moved to the downbeat (99.39 to 99.27 %).
 
 use mpfree_looper::ends::{decide, reach, Ask, NoteLog, Verdict};
 use mpfree_looper::{read_bars, NoteStart};
@@ -379,22 +382,9 @@ impl Tally {
 /// or after the kick, and either is the downbeat), or this near the kick.
 const RIGHT_MS: f64 = 30.0;
 
-/// The wrong moves the corpus is known to make (see the top), at most.
-const KNOWN_WRONG: usize = 12;
-
-/// Where those land: at least this much of the reach from the tap.
-const EDGE: f64 = 0.75;
-
-/// A wrong move: what was played, the tap, and how far from the tap it
-/// went, as a part of the reach.
-struct Wrong {
-    what: String,
-    edge: f64,
-}
-
 /// Decide every tap from `-80` to `+80` ms around the downbeat of one
 /// take, Auto hearing to the end of the reach.
-fn taps(take: &Take, g: &Groove, bpm: f64, wrongs: &mut Vec<Wrong>, what: &str) -> Tally {
+fn taps(take: &Take, g: &Groove, bpm: f64, wrongs: &mut Vec<String>, what: &str) -> Tally {
     let mut log = NoteLog::new();
     let reach_frames = reach(RATE, bpm);
     let right = frames(RIGHT_MS) as u64;
@@ -437,8 +427,7 @@ fn taps(take: &Take, g: &Groove, bpm: f64, wrongs: &mut Vec<Wrong>, what: &str) 
             Verdict::Moved => {
                 t.wrong += 1;
                 let best = d.best.expect("moved to a candidate");
-                wrongs.push(Wrong {
-                    what: format!(
+                wrongs.push(format!(
                         "{what}, tap {off_ms:+} ms: moved {:+.1} ms from the downbeat (onset {:.2}, rhythm {:.2}, context {:.2}, score {:.2}; next {:.2})",
                         (d.end as f64 - take.downbeat as f64) * 1000.0 / f64::from(RATE),
                         best.onset,
@@ -446,9 +435,7 @@ fn taps(take: &Take, g: &Groove, bpm: f64, wrongs: &mut Vec<Wrong>, what: &str) 
                         best.context,
                         best.score,
                         d.second.map_or(0.0, |c| c.score),
-                    ),
-                    edge: d.end.abs_diff(tap) as f64 / reach_frames as f64,
-                });
+                ));
             }
             _ => t.kept += 1,
         }
@@ -461,7 +448,7 @@ fn taps(take: &Take, g: &Groove, bpm: f64, wrongs: &mut Vec<Wrong>, what: &str) 
 /// the bar before the downbeat as played or with a fill, and the playing
 /// stopping on the downbeat, playing on, or stopping before it; every tap
 /// from 80 ms early to 80 ms late in 5 ms steps. A tap moves only to the
-/// downbeat you played, but for the known few at the reach's far edge.
+/// downbeat you played.
 #[test]
 fn across_the_corpus_a_tap_moves_only_to_the_downbeat_you_played() {
     const TEMPOS: &[f64] = &[72.0, 90.0, 100.0, 120.0, 128.0, 140.0, 174.0];
@@ -530,20 +517,11 @@ fn across_the_corpus_a_tap_moves_only_to_the_downbeat_you_played() {
         eprintln!("  {l}");
     }
     for w in &wrongs {
-        eprintln!("  wrong: {}", w.what);
+        eprintln!("  wrong: {w}");
     }
-    let new: Vec<_> = wrongs
-        .iter()
-        .filter(|w| w.edge < EDGE)
-        .map(|w| &w.what)
-        .collect();
     assert!(
-        new.is_empty(),
-        "wrong moves away from the reach's edge: {new:#?}"
-    );
-    assert!(
-        wrongs.len() <= KNOWN_WRONG,
-        "{} wrong moves, {KNOWN_WRONG} known",
+        wrongs.is_empty(),
+        "{} taps moved somewhere else",
         wrongs.len()
     );
 }
