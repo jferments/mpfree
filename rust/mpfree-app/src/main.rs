@@ -8684,6 +8684,7 @@ fn time_action(
                     | ContinueAction::Step { .. }
                     | ContinueAction::Keep
                     | ContinueAction::Back
+                    | ContinueAction::Open { .. }
             )
             | TimeAction::CopyClip { .. }
             | TimeAction::PasteClip { .. }

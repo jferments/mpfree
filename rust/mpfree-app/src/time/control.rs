@@ -56,7 +56,7 @@ use mpfree_seq::{
     TrackId, TrackKind, LOOPS, MAX_TRACKS, ROWS, SLOTS,
 };
 use mpfree_time_ui::editor::compose::Compose;
-use mpfree_time_ui::editor::{Done, EditAction, Editor, ScaleOffers};
+use mpfree_time_ui::editor::{Done, EditAction, Editor, ScaleOffers, ToolKind, CONTINUE_ROW};
 use mpfree_time_ui::list::ListRow;
 use mpfree_time_ui::view::pad_name;
 use mpfree_time_ui::view::{
@@ -7535,6 +7535,7 @@ impl TimeControl {
                 self.compose_parts = p;
                 Ok(String::new())
             }
+            ContinueAction::Open { track, slot } => self.continue_open(track, slot),
             ContinueAction::Back => {
                 if !self.compose.back() {
                     return Err("continue: Keep is under way".into());
@@ -7546,6 +7547,66 @@ impl TimeControl {
                 Ok(self.continue_when("continue: back to the clip as it was"))
             }
         }
+    }
+
+    /// The clip card's Continue (composing tools, phase 1 step 4): the
+    /// note editor on clip `slot` of `track` (its track selected and the
+    /// clip the Sequencer edits), then Continue opened there, which asks
+    /// at once. Refused while another tool is open; the editor already on
+    /// the clip stays as it is, Continue opening in it.
+    fn continue_open(&mut self, track: usize, slot: usize) -> Result<String, String> {
+        let c = self.project.clip(track, slot).ok_or_else(|| {
+            format!(
+                "continue: slot {} of track {} is empty",
+                slot + 1,
+                track + 1
+            )
+        })?;
+        if c.looped.is_some() {
+            return Err("continue: a loop's cell has no notes to carry on".into());
+        }
+        if c.holds != Holds::Notes {
+            return Err(format!(
+                "continue: {}",
+                mpfree_compose::Refused::PadHits.words()
+            ));
+        }
+        if c.notes.iter().all(|n| !n.on) {
+            return Err("continue: play or draw some notes to carry on first".into());
+        }
+        if let Some(ed) = &self.editor {
+            if let Some(tool) = ed.open_tool {
+                if tool.kind == ToolKind::Continue && (ed.track, ed.slot) == (track, slot) {
+                    return Ok("continue: open already, in the note editor".into());
+                }
+                return Err(format!(
+                    "continue: Done or Cancel {} in the note editor first",
+                    tool.kind.name()
+                ));
+            }
+        }
+        let on_it = self
+            .editor
+            .as_ref()
+            .is_some_and(|e| (e.track, e.slot) == (track, slot));
+        if !on_it {
+            if self.selected() != Some(track) {
+                let was = self.track_pick;
+                self.set_pick(track);
+                if self.track_pick != was {
+                    self.compile()?;
+                }
+                self.steps_changed = true;
+            }
+            self.edit_clip(Some(slot))
+                .map_err(|e| e.replacen("edit:", "continue:", 1))?;
+            self.edit(EditAction::Open)
+                .map_err(|e| e.replacen("edit:", "continue:", 1))?;
+        }
+        self.edit(EditAction::Row {
+            row: CONTINUE_ROW,
+            delta: 1,
+        })
     }
 
     /// A touch on the note editor's Continue tool (composing tools, phase

@@ -28,6 +28,10 @@ pub enum ContinueAction {
     Keep,
     /// Back: nothing written; the clip as it was from the next bar line.
     Back,
+    /// From the clip card's Continue row (phase 1 step 4): the note
+    /// editor opens on clip `slot` of `track` with Continue open, which
+    /// asks at once.
+    Open { track: usize, slot: usize },
     /// Not a touch: what each track plays, as the screen knows it, sent
     /// when that changes, for the note editor's asks.
     Parts(Arc<Parts>),

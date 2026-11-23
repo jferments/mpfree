@@ -16512,6 +16512,72 @@ mod tests {
         );
     }
 
+    /// Phase 1 step 4: the clip card's Continue opens the note editor on
+    /// the clip with Continue open, which asks at once; Done keeps it as
+    /// one take. Opened again while it is open, it says so; another tool
+    /// open refuses it; a clip of pad hits says why.
+    #[test]
+    fn continue_from_the_clip_card_opens_the_note_editor_and_asks() {
+        use mpfree_time_ui::editor::{EditAction as E, ToolAct, CHOP_ROW};
+        let mut h = riff_host();
+        let mut pads = Fake::default();
+        let open = TimeAction::Continue(ContinueAction::Open { track: 0, slot: 0 });
+        assert!(h.state().edit.is_none());
+        assert_eq!(
+            h.act(open.clone()).unwrap(),
+            "continue: 4 more bars of riff, Minimal"
+        );
+        let st = h.state();
+        let e = st.edit.as_ref().expect("the note editor opened");
+        assert_eq!((e.editor.track, e.editor.slot), (0, 0));
+        assert!(e.editor.continuing_open());
+        until(&mut h, &mut pads, |h| {
+            continuing(h).is_some_and(|c| c.heard)
+        });
+        assert_eq!(
+            h.act(open.clone()).unwrap(),
+            "continue: open already, in the note editor"
+        );
+        // Done: one take of four more bars, the tool closed, the editor
+        // open on the kept clip.
+        let heard = continuing(&h).unwrap().clip.clone().unwrap();
+        h.act(TimeAction::Edit(E::Tool(ToolAct::Done))).unwrap();
+        assert!(continuing(&h).is_none());
+        assert_eq!(h.project().clip(0, 0).unwrap().notes, heard.notes);
+        assert_eq!(h.project().clip(0, 0).unwrap().length, 5 * 3840);
+        // Another tool open: refused, with which.
+        h.act(TimeAction::Edit(E::Pick {
+            from: 0,
+            to: 5 * 3840,
+            low: 0,
+            high: 127,
+        }))
+        .unwrap();
+        h.act(TimeAction::Edit(E::Row {
+            row: CHOP_ROW,
+            delta: 1,
+        }))
+        .unwrap();
+        assert_eq!(
+            h.act(open).unwrap_err(),
+            "continue: Done or Cancel Chop in the note editor first"
+        );
+        h.act(TimeAction::Edit(E::Tool(ToolAct::Cancel))).unwrap();
+        // A clip of pad hits: why.
+        let mut hits = h.project().clip(0, 0).unwrap().clone();
+        hits.holds = mpfree_seq::Holds::Hits;
+        h.control.project.tracks[1].slots[0] = Some(hits);
+        h.control.project.give_clip_ids();
+        assert_eq!(
+            h.act(TimeAction::Continue(ContinueAction::Open {
+                track: 1,
+                slot: 0
+            }))
+            .unwrap_err(),
+            "continue: This clip plays pads, so there's no tune to carry on."
+        );
+    }
+
     /// Phase 1 step 3: Try again on picked bars or notes changes only
     /// them (picked notes keep their places, lengths and velocity), and a
     /// locked bar stays through a try on everything.

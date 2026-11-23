@@ -430,7 +430,7 @@ pub const OTHERS: [FollowAction; 9] = [
     FollowAction::Stop,
 ];
 /// The clip settings card's rows, top to bottom.
-pub const CLIP_ROWS: [&str; 14] = [
+pub const CLIP_ROWS: [&str; 15] = [
     "Length",
     "Speed",
     "Swing",
@@ -445,6 +445,7 @@ pub const CLIP_ROWS: [&str; 14] = [
     "Direction",
     "Mutate",
     "Melody",
+    "Continue",
 ];
 /// The clip card's Direction row (S6).
 pub const CLIP_DIRECTION: usize = 11;
@@ -488,6 +489,9 @@ pub enum AudioSet {
     Gain(f32),
     Name(String),
 }
+/// The clip card's Continue row (composing tools, phase 1 step 4): either
+/// arrow opens the note editor on the clip with Continue open.
+pub const CLIP_CONTINUE: usize = 14;
 
 /// A play direction (S6) as the clip card names it.
 pub fn direction_name(d: Direction) -> &'static str {
@@ -3859,6 +3863,10 @@ pub fn clip_rows(st: &TimeState) -> Vec<OptionRow> {
                 name: CLIP_ROWS[CLIP_MELODY].to_string(),
                 value: melody_value(c),
             });
+            rows.push(OptionRow {
+                name: CLIP_ROWS[CLIP_CONTINUE].to_string(),
+                value: continue_card_value(c),
+            });
             rows
         }
         None => Vec::new(),
@@ -3885,6 +3893,22 @@ pub fn mutate_value(c: &ClipInfo) -> String {
         _ if c.looped.is_some() || (c.notes == 0 && c.variation.is_none()) => "—".to_string(),
         Some(_) => "variant".to_string(),
         None => "original".to_string(),
+    }
+}
+
+/// The clip card's Continue row's value (phase 1 step 4): the bars it
+/// adds when it opens ("+4 bars", the note editor's Bars as Continue
+/// opens), or why it can't: "no tune" on a clip of pad hits, "no notes"
+/// on one with none, "—" on a loop's cell.
+pub fn continue_card_value(c: &ClipInfo) -> String {
+    if c.looped.is_some() {
+        "—".to_string()
+    } else if c.holds == mpfree_seq::Holds::Hits {
+        "no tune".to_string()
+    } else if c.notes == 0 {
+        "no notes".to_string()
+    } else {
+        crate::editor::compose::ContinueSet::default().value(1)
     }
 }
 
@@ -4404,6 +4428,22 @@ fn settings_step(st: &TimeState, index: usize, delta: i32) -> Result<TimeAction,
         .focus()
         .ok_or("No clip to set: arm a track with a clip, or make one")?;
     let c = st.clip(track, slot).ok_or("No clip to set")?;
+    // Continue: the note editor opens on the clip, Continue open (step
+    // 4), or why it can't.
+    if index == CLIP_CONTINUE {
+        return if c.looped.is_some() {
+            Err("A loop's cell has no notes to carry on".into())
+        } else if c.holds == mpfree_seq::Holds::Hits {
+            Err(format!(
+                "Continue: {}",
+                mpfree_compose::Refused::PadHits.words()
+            ))
+        } else if c.notes == 0 {
+            Err("Continue: play or draw some notes to carry on first".into())
+        } else {
+            Ok(TimeAction::Continue(ContinueAction::Open { track, slot }))
+        };
+    }
     if c.looped.is_some() && !(5..8).contains(&index) {
         return Err(
             "A loop cell plays its loop as recorded: only Follow, After and Launch apply".into(),
@@ -10684,7 +10724,8 @@ mod tests {
                 "Bank —",
                 "Direction Forward",
                 "Mutate —",
-                "Melody pads"
+                "Melody pads",
+                "Continue no tune"
             ]
         );
         let step = |st: &TimeState, index: usize, delta: i32| {
@@ -11127,6 +11168,43 @@ mod tests {
             .contains("uses notes"));
         st.tracks[1].slots[1].as_mut().unwrap().looped = Some(0);
         assert_eq!(shown(&st), "—");
+    }
+
+    /// The card's Continue row (composing tools, phase 1 step 4): "+4
+    /// bars" on a clip of notes, either arrow opening the note editor on
+    /// it with Continue open; "no tune" on pad hits, "no notes" on an
+    /// empty clip and "—" on a loop's cell, each saying why.
+    #[test]
+    fn the_clip_cards_continue_row_opens_continue_in_the_note_editor() {
+        let mut st = state();
+        st.armed = Some(1);
+        let c = st.tracks[1].slots[1].as_mut().unwrap();
+        c.notes = 4;
+        c.holds = mpfree_seq::Holds::Notes;
+        let shown = |st: &TimeState| clip_rows(st)[CLIP_CONTINUE].clone();
+        let row = shown(&st);
+        assert_eq!(
+            (row.name.as_str(), row.value.as_str()),
+            ("Continue", "+4 bars")
+        );
+        let open = Ok(TimeAction::Continue(ContinueAction::Open {
+            track: 1,
+            slot: 1,
+        }));
+        assert_eq!(card_action(&st, CLIP_CONTINUE, 1, false), open);
+        assert_eq!(card_action(&st, CLIP_CONTINUE, -1, true), open);
+        let why = |st: &TimeState| card_action(st, CLIP_CONTINUE, 1, false).unwrap_err();
+        st.tracks[1].slots[1].as_mut().unwrap().holds = mpfree_seq::Holds::Hits;
+        assert_eq!(shown(&st).value, "no tune");
+        assert!(why(&st).contains("no tune to carry on"), "{}", why(&st));
+        let c = st.tracks[1].slots[1].as_mut().unwrap();
+        c.holds = mpfree_seq::Holds::Notes;
+        c.notes = 0;
+        assert_eq!(shown(&st).value, "no notes");
+        assert!(why(&st).contains("some notes"), "{}", why(&st));
+        st.tracks[1].slots[1].as_mut().unwrap().looped = Some(0);
+        assert_eq!(shown(&st).value, "—");
+        assert!(why(&st).contains("loop's cell"), "{}", why(&st));
     }
 
     #[test]

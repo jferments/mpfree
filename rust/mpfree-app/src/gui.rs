@@ -5576,6 +5576,13 @@ impl Player {
     /// A touch on the note editor that may make Continue ask: its row, or
     /// any touch while it is open.
     fn may_ask_continue(&self, a: &FromUi) -> bool {
+        // The clip card's Continue opens it, and it asks at once.
+        if let FromUi::Time(TimeAction::Continue(
+            mpfree_time_ui::continuing::ContinueAction::Open { .. },
+        )) = a
+        {
+            return true;
+        }
         let FromUi::Time(TimeAction::Edit(e)) = a else {
             return false;
         };
@@ -22013,6 +22020,26 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
                 }
                 out.push(("clips-card-direction", p));
             }
+            // A clip of notes, scrolled to its Continue row (composing
+            // tools, phase 1 step 4): either arrow opens the note editor
+            // on it with Continue open.
+            if let Ok(mut p) = sample_clips(fonts()) {
+                let mut st = st.clone();
+                if let Some(c) = st
+                    .focus()
+                    .and_then(|(t, s)| st.tracks.get_mut(t)?.slots.get_mut(s)?.as_mut())
+                {
+                    c.holds = mpfree_seq::Holds::Notes;
+                    c.notes = c.notes.max(8);
+                }
+                p.time_page.clip_card = true;
+                p.apply(ToUi::Time(Box::new(st)));
+                p.apply(ToUi::Show(View::Arrange));
+                if let Some(l) = p.ui.get_mut::<OptionList>(time_view::CLIP_CARD) {
+                    l.selected = time_view::CLIP_CONTINUE;
+                }
+                out.push(("clips-card-continue", p));
+            }
             // Mutated (S6): it plays a variant, its original kept for ‹.
             if let Ok(mut p) = sample_clips(fonts()) {
                 if let Some(c) = st
@@ -30423,6 +30450,18 @@ mod tests {
         p.outbox
             .push(FromUi::Time(TimeAction::Edit(EditAction::Correct)));
         assert_eq!(p.take_actions().len(), 1);
+        // The clip card's Continue (step 4) asks as it opens: told first.
+        let mut p = sample_play(Fonts::embedded(), PlayView::Beats);
+        p.take_actions();
+        let open = TimeAction::Continue(ContinueAction::Open { track: 0, slot: 0 });
+        p.outbox.push(FromUi::Time(open.clone()));
+        let out = p.take_actions();
+        assert_eq!(out.len(), 2);
+        assert!(matches!(
+            out[0],
+            FromUi::Time(TimeAction::Continue(ContinueAction::Parts(_)))
+        ));
+        assert!(matches!(&out[1], FromUi::Time(a) if *a == open));
     }
 
     /// The note editor's Pads write chip asks the time engine to switch
