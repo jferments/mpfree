@@ -6,6 +6,7 @@ abletown arp-workspace-record 1 # AbleTown (22 Nov): faded off-state labels and 
 abletown arrange-instruments 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown browser 2 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown browser-samples 6 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown browser-xy-layouts 2 # as browser (the same runs: each row's star while not starred)
 abletown chain 6 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown chain-comp 3 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown chain-notes 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
@@ -59,6 +60,7 @@ console arrange-song-tempo 1 # before the theme refactor (phase 0 baseline)
 console browser 3 # before the theme refactor (phase 0 baseline)
 console browser-kits 1 # before the theme refactor (phase 0 baseline)
 console browser-samples 7 # before the theme refactor (phase 0 baseline)
+console browser-xy-layouts 3 # as browser (the same runs: each row's star while not starred)
 console chain 1 # before the theme refactor (phase 0 baseline)
 console chain-sidechain-list 1 # before the theme refactor (phase 0 baseline)
 console chain-xy 1 # as chain (the same page and runs; the XY marks add none)
@@ -196,6 +198,7 @@ default arrange-instruments 1 # before the theme refactor (phase 0 baseline)
 default browser 3 # before the theme refactor (phase 0 baseline)
 default browser-kits 1 # before the theme refactor (phase 0 baseline)
 default browser-samples 7 # before the theme refactor (phase 0 baseline)
+default browser-xy-layouts 3 # as browser (the same runs: each row's star while not starred)
 default chain 2 # before the theme refactor (phase 0 baseline)
 default chain-comp 1 # before the theme refactor (phase 0 baseline)
 default chain-sidechain 1 # before the theme refactor (phase 0 baseline)
@@ -323,6 +326,7 @@ default xy-banner 1 # the Synth tab's own runs under the XY banner (as synth); t
 light arrange-instruments 1 # Light (phase 4): faint text, under 3:1 in Default too
 light browser 2 # Light (phase 4): faint text, under 3:1 in Default too
 light browser-samples 6 # Light (phase 4): faint text, under 3:1 in Default too
+light browser-xy-layouts 2 # as browser (the same runs: each row's star while not starred)
 light chain 1 # Light (phase 4): faint text, under 3:1 in Default too
 light chain-xy 1 # as chain (the same page and runs; the XY marks add none)
 light clips 6 # Light (phase 4): faint text, under 3:1 in Default too
@@ -356,6 +360,7 @@ slate arp-workspace-record 3 # Slate (22 Nov): faded off-state labels and small 
 slate arrange-instruments 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
 slate browser 2 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
 slate browser-samples 6 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate browser-xy-layouts 2 # as browser (the same runs: each row's star while not starred)
 slate chain 2 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
 slate chain-comp 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
 slate chain-notes 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
@@ -429,6 +434,7 @@ spaceship arrange-song-tracks 12 # before the theme refactor (phase 0 baseline)
 spaceship browser 3 # before the theme refactor (phase 0 baseline)
 spaceship browser-kits 1 # before the theme refactor (phase 0 baseline)
 spaceship browser-samples 22 # before the theme refactor (phase 0 baseline)
+spaceship browser-xy-layouts 3 # as browser (the same runs: each row's star while not starred)
 spaceship browser-set-song 4 # the Fade row, faint while Ends isn't Fade (live shows B1)
 spaceship chain 3 # before the theme refactor (phase 0 baseline)
 spaceship chain-comp 3 # before the theme refactor (phase 0 baseline)
@@ -585,6 +591,7 @@ spaceship xy-banner 1 # the Synth tab's own runs under the XY banner (as synth);
 synthwave arrange-instruments 1 # before the theme refactor (phase 0 baseline)
 synthwave browser 2 # before the theme refactor (phase 0 baseline)
 synthwave browser-samples 6 # before the theme refactor (phase 0 baseline)
+synthwave browser-xy-layouts 2 # as browser (the same runs: each row's star while not starred)
 synthwave chain 1 # before the theme refactor (phase 0 baseline)
 synthwave chain-xy 1 # as chain (the same page and runs; the XY marks add none)
 synthwave clips 6 # before the theme refactor (phase 0 baseline)

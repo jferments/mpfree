@@ -2942,7 +2942,8 @@ type LoopStart = Option<(String, bool)>;
 /// before the transport runs, so the hit is on the coming period's first
 /// frame: a loop listening for the pads starts on it, and with the song
 /// stopped the song starts on it too (from the bar it stopped in), so
-/// bar 1 is your note. `take`: a take ready on the armed track (as for
+/// bar 1 is your note; never for a free loop, which keeps its own time.
+/// `take`: a take ready on the armed track (as for
 /// [`time::TimeHost::take_waits`]) records from there too.
 fn pad_starts_loop(
     looper: &mut looping::LoopHost,
@@ -2953,7 +2954,14 @@ fn pad_starts_loop(
     let at = time.next_frame();
     let n = looper.listens_for_pads(at)?;
     let mut line = format!("looper: Loop {} starts on your note", n + 1);
-    if looper.records_free(n) {
+    if looper.on_free_clock(n) {
+        // A free loop keeps its own time: the song stays as it is.
+        line.push_str(if looper.records_free(n) {
+            ", free in your own time: REC again closes it, and its length sets the free loops' tempo"
+        } else {
+            ", on the free loops' clock (the song stays as it is)"
+        });
+    } else if looper.records_free(n) {
         // Tempo from the first loop: it records free, and closing it
         // starts the song (loop_sets_tempo).
         line.push_str(", free: REC again closes it and sets the tempo");
@@ -9034,8 +9042,6 @@ fn synth_turn_said(synth: &synth::Synth, id: u16, redo: bool) -> String {
     }
 }
 
-/// Your XY layouts as the screen shows them ([`gui::ToUi::Xy`]), each
-/// setting named afresh.
 /// Your XY layouts with what an action on them reads and changes: the
 /// screen's `FromUi::Xy`, and Learn's XY Hold and layout buttons (the
 /// smoke session's too).
@@ -9108,6 +9114,8 @@ impl XyHere<'_> {
     }
 }
 
+/// Your XY layouts as the screen shows them ([`gui::ToUi::Xy`]), each
+/// setting named afresh.
 fn xy_view(
     song: &mut xy_song::XySong,
     mix: &mixing::MixHost,
@@ -9144,13 +9152,15 @@ fn xy_turn_row(
     )
 }
 
-/// A synth's and a pad's own settings as the XY pad's hand reaches them
-/// (`xy_own.rs`), routed as a clip's lock is (`SeqPads::lock_at`): a
-/// track's own instrument (or the one it plays), else the synth on the
-/// pads; a kit pad's own setting on the kit its track plays. Stay sets
-/// one as a turn of its knob would: the Synth tab's turn (the tab follows,
-/// `synth_turned`), and a pad's on its kit by the screen, as a learned
-/// control sets it (`pads_learned`, `ToUi::PadsLearned`).
+/// A synth's, a pad's and an arp's own settings as the XY pad's hand
+/// reaches them (`xy_own.rs`), routed as a clip's lock is
+/// (`SeqPads::lock_at`): a track's own instrument (or the one it plays),
+/// else the synth on the pads; a kit pad's own setting on the kit its
+/// track plays; a track's arp in the App ([`app::App::arp_hand`]). Stay
+/// sets one as a turn of its knob would: the Synth tab's turn (the tab
+/// follows, `synth_turned`), a pad's on its kit by the screen, as a
+/// learned control sets it (`pads_learned`, `ToUi::PadsLearned`), and an
+/// arp's as a learned control sets it (the panel's update in `arp_fx`).
 struct OwnReach<'a> {
     synth: &'a mut synth::Synth,
     own: &'a mut instruments::Instruments,
@@ -9159,6 +9169,10 @@ struct OwnReach<'a> {
     kits: &'a sampler::TrackKits,
     pads_learned: &'a mut Vec<(usize, u8, mpfree_sampler::engine::PadField, f32)>,
     synth_turned: &'a mut bool,
+    /// The tracks' arps (None: none here).
+    app: Option<&'a mut app::App>,
+    /// What an arp's Stay tells the screens, for the caller to send.
+    arp_fx: Vec<app::Effect>,
 }
 
 impl OwnReach<'_> {
@@ -9190,6 +9204,10 @@ impl xy_own::OwnSide for OwnReach<'_> {
                 (Some((kit, f)), Some(p)) => p.pad_hand(kit, usize::from(pad), f, value, over),
                 _ => false,
             },
+            Owner::Arp(t) => self
+                .app
+                .as_mut()
+                .is_some_and(|a| a.arp_hand(usize::from(t), addr.param, value)),
             _ => false,
         }
     }
@@ -9210,43 +9228,48 @@ impl xy_own::OwnSide for OwnReach<'_> {
                 let own = p.pad_own(kit, usize::from(pad), f)?;
                 Some((p.pad_beneath(kit, usize::from(pad), f)?, own))
             }
+            Owner::Arp(t) => self.app.as_ref()?.arp_beneath(usize::from(t), addr.param),
             _ => None,
         }
     }
 
-    fn keep(&mut self, addr: mpfree_play::mpfree_param::ParamAddr, value: f32) -> bool {
+    fn keep(&mut self, addr: mpfree_play::mpfree_param::ParamAddr, value: f32) -> Option<f32> {
         use mpfree_play::mpfree_param::Owner;
         match addr.owner {
             Owner::Inst(t) if self.own.plays(usize::from(t)) => {
                 let ok = self.own.param(usize::from(t), addr.param, value);
                 *self.synth_turned |= ok;
-                ok
+                ok.then_some(value)
             }
             Owner::Inst(_) => {
-                if self.synth.param_info(addr.param).is_none() {
-                    return false;
-                }
+                self.synth.param_info(addr.param)?;
                 self.synth.set(addr.param, value);
                 *self.synth_turned = true;
-                true
+                Some(value)
             }
-            Owner::Pad(t, pad) => match self.pad_of(t, addr.param) {
-                Some((kit, f)) => {
-                    self.pads_learned.push((kit, pad, f, value));
-                    true
-                }
-                None => false,
-            },
-            _ => false,
+            Owner::Pad(t, pad) => {
+                let (kit, f) = self.pad_of(t, addr.param)?;
+                self.pads_learned.push((kit, pad, f, value));
+                Some(value)
+            }
+            Owner::Arp(t) => {
+                let (v, fx) = self
+                    .app
+                    .as_mut()?
+                    .keep_arp(usize::from(t), addr.param, value)?;
+                self.arp_fx.extend(fx);
+                Some(v)
+            }
+            _ => None,
         }
     }
 }
 
 /// A setting as the XY pad's Setup and its waiting banner name it
 /// (`xy_song.rs`): its name, where it is ("Bass · Poly", "Master · Room,
-/// effect 1", "Bass strip"), its colour, its range, and whether it is a
-/// synth's or a pad's own (no Add yet). Err with why it isn't there: its
-/// track removed, its effect taken out.
+/// effect 1", "Bass strip", "Bass · Arp"), its colour, its range, and
+/// whether it is a synth's, a pad's or an arp's own (no Add yet). Err with
+/// why it isn't there: its track removed, its effect taken out.
 fn xy_seen(
     mix: &mixing::MixHost,
     synth: &synth::Synth,
@@ -9269,9 +9292,6 @@ fn xy_seen(
         if usize::from(t) >= project.tracks.len() {
             return Err(format!("Track {} was removed.", u16::from(t) + 1));
         }
-    }
-    if matches!(addr.owner, Owner::Arp(_)) {
-        return Err("The arp's settings can't go on the pad yet.".to_string());
     }
     let now = desk::play_now(time, mix);
     let Some((info, _)) = learn_describe(mix, synth, app, pads, now, addr) else {
@@ -9300,6 +9320,7 @@ fn xy_seen(
                 mpfree_midi::profile::pad_name(usize::from(pad))
             ),
         ),
+        Owner::Arp(t) => (info.name.to_string(), format!("{} · Arp", track(t))),
         Owner::Strip(s) => (
             info.name.to_string(),
             format!("{} strip", mixing::name(modmix::strip_id(s))),
@@ -9334,7 +9355,7 @@ fn xy_seen(
         name,
         place,
         dot: xy_song::dot_of(addr),
-        own: matches!(addr.owner, Owner::Inst(_) | Owner::Pad(..)),
+        own: xy_own::is_own(addr),
     })
 }
 
@@ -10790,6 +10811,11 @@ fn player_session(
                         out.show(gui::ToUi::Tell(line));
                     }
                     out.show(xy.view());
+                    // Save to browser: the layout's text, for the screen's
+                    // browser to keep.
+                    if let Some((name, text)) = xy_yours.saving.take() {
+                        out.show(gui::ToUi::XyLayoutText { name, text });
+                    }
                 }
                 // UNDO on the Synth tab and the mixer: their turns' history.
                 gui::FromUi::UndoHistory(on) => {
@@ -10838,8 +10864,11 @@ fn player_session(
                                             kits: &track_kits,
                                             pads_learned: &mut pads_learned,
                                             synth_turned: &mut synth_learned,
+                                            app: Some(&mut app),
+                                            arp_fx: Vec::new(),
                                         };
                                         xy_own::OwnSide::keep(&mut side, addr, v);
+                                        fx.extend(side.arp_fx);
                                     } else {
                                         panels.set_param(&mut mix, addr, v, false);
                                     }
@@ -11793,9 +11822,10 @@ fn player_session(
             let pad_now = |t: u8, pad: u8, id: u16| pad_describe(&player, &track_kits, t, pad, id);
             out.show(xy_view(&mut xy_yours, &mix, &synth, &app, &pad_now, &time));
         }
-        // The XY pad's hand on a synth's and a pad's own settings: this
-        // period's moves, glides back and Stay go to their owners before
-        // they play (`xy_own.rs`); Stay's turns join the lift's UNDO step.
+        // The XY pad's hand on a synth's, a pad's and an arp's own
+        // settings: this period's moves, glides back and Stay go to their
+        // owners before they play (`xy_own.rs`); Stay's turns join the
+        // lift's UNDO step.
         if mix.xy_own().holding() > 0 {
             let mut hands = mix.take_xy_own();
             let none = mpfree_play::mpfree_param::ParamAddr::new(
@@ -11811,6 +11841,8 @@ fn player_session(
                 kits: &track_kits,
                 pads_learned: &mut pads_learned,
                 synth_turned: &mut synth_learned,
+                app: Some(&mut app),
+                arp_fx: Vec::new(),
             };
             hands.apply(PERIOD as u32, &mut side, |a, before, after| {
                 if n < kept.len() {
@@ -11818,6 +11850,7 @@ fn player_session(
                     n += 1;
                 }
             });
+            fx.extend(side.arp_fx);
             mix.put_xy_own(hands, &kept[..n]);
         }
         // The XY pad's Stay: the settings it kept at a lift, one UNDO step.
@@ -20335,6 +20368,61 @@ mod tests {
             assert_eq!(midi_in::learned_mode(&source, b2), Some(Mode::Momentary));
         }
         assert!(!midi_in::key_toggles(b2));
+    }
+
+    /// Starts: When I play on a free loop (Sync: Free), with the song and
+    /// the free loops stopped: the pad's note starts the loop on the
+    /// stopped free clock, and never the song.
+    #[test]
+    fn a_pad_starts_a_free_loop_and_never_the_song() {
+        use mpfree_looper::{Clock, Command as L, Phase, Starts};
+        let mut looper = looping::LoopHost::new(RATE, 8);
+        let mut time = time::TimeHost::new(RATE, 120.0).unwrap();
+        let mut t = mpfree_transport::Transport::new(RATE, 120.0).unwrap();
+        let mut b = mpfree_transport::Block::new();
+        let mut run = |looper: &mut looping::LoopHost, periods: usize, sound: bool| {
+            for k in 0..periods {
+                assert!(t.process(PERIOD as u32, &mut b));
+                let x = if sound {
+                    0.2 + 0.1 * (k % 3) as f32
+                } else {
+                    0.0
+                };
+                looper.take_pads(&[x; PERIOD], &[-x; PERIOD]);
+                let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+                looper.period(&b, &mut l, &mut r);
+            }
+        };
+        // Loop 1, free in your own time: about two seconds, closed by REC.
+        looper.command(L::SetClock(Clock::Free));
+        run(&mut looper, 1, false);
+        looper.command(L::Record);
+        run(&mut looper, 700, true);
+        looper.command(L::Record);
+        run(&mut looper, 4, true);
+        let s = looper.loop_status(0).unwrap();
+        assert_eq!((s.phase, s.clock), (Phase::Playing, Clock::Free));
+        // The free loops stop, at their tops.
+        looper.command(L::FreeStop);
+        run(&mut looper, 2, false);
+        // Loop 2 takes Sync: Free, and starts when you play.
+        looper.select(1);
+        looper.command(L::SetStarts(Starts::Play));
+        run(&mut looper, 1, false);
+        looper.command(L::Record);
+        run(&mut looper, 1, false);
+        let s = looper.loop_status(1).unwrap();
+        assert!(s.listening && s.clock == Clock::Free && !s.free, "{s:?}");
+        let (line, refused) =
+            pad_starts_loop(&mut looper, &mut time, None, false).expect("it starts");
+        assert!(!refused, "{line}");
+        assert!(line.contains("on the free loops' clock"), "{line}");
+        assert!(!line.contains("the song with it"), "{line}");
+        run(&mut looper, 2, true);
+        assert_eq!(looper.loop_status(1).unwrap().phase, Phase::Recording);
+        // The song's transport, a period on: still stopped.
+        assert!(time.advance(PERIOD as u32));
+        assert_eq!(time.info().state, mpfree_transport::State::Stopped);
     }
 
     /// The looper's learned controls (its footswitch) are named so the

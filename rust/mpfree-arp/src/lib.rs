@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod engine;
+pub mod hand;
 pub mod library;
 pub mod midi;
 pub mod modifier;
@@ -20,6 +21,7 @@ pub use engine::{
     step_notes, turn_of, turn_steps, Chord, Clock, Engine, Event, EventKind, Events, Mode, Order,
     Ramp, Rate, Settings, SyncStart, Turns, Velocity, PPQ,
 };
+pub use hand::{Hand, HandOn};
 pub use library::{Library, LibraryError};
 pub use midi::{midi_file, Message, MidiOut, NoteMap};
 pub use modifier::{ModSource, Modifier};

@@ -54,10 +54,11 @@ use std::f32::consts::PI;
 
 use mpfree_node::{Ctl, Ctx, Expr, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, Tuning};
 
+use crate::analog::{FB_SING, K_STRAIGHT};
 use crate::bass_params::*;
 use crate::body808::{drive, pitch_semis, triangle_turns, PUNCH_S, PUNCH_SEMIS};
 pub use crate::body808::{drive_gains, drive_shape, sin_turns};
-use crate::dsp::Rng;
+use crate::dsp::{soft_clip, Rng};
 use crate::expr::{expr_coef, NoteExprs, VoiceExpr};
 use crate::params::Preset;
 use crate::voice::{velocity_gain, Adsr, Glide, NoteStack, Priority};
@@ -92,7 +93,8 @@ const FOLLOW_808_DB: f32 = 3.5;
 /// Each body's trim, dB, so their presets sit at about the same loudness
 /// (the 808's sine puts all its level where loudness counts it).
 const TRIM_DB: [f32; 3] = [0.0, -5.0, 1.5];
-/// The ladder's feedback at Resonance 100: just past 4, so it whistles.
+/// The ladder's feedback at Resonance 100: just past 4, so it whistles,
+/// in tune since the feedback past [`K_STRAIGHT`] is limited as Analog's is.
 const K_MAX: f32 = 4.1;
 /// Filter drive: the oscillators into the ladder at 0 and at 100.
 const IN_MIN: f32 = 0.35;
@@ -244,9 +246,11 @@ struct Ladder {
 }
 
 impl Ladder {
-    /// The four stages for input `x`, cutoff `g` and feedback `k`.
+    /// The four stages for input `x`, cutoff `g` and feedback `k`;
+    /// `SING` when `k` is past [`K_STRAIGHT`], so the plain path keeps its
+    /// code.
     #[inline(always)]
-    fn run(&mut self, x: f32, g: f32, k: f32) -> f32 {
+    fn run<const SING: bool>(&mut self, x: f32, g: f32, k: f32) -> f32 {
         let a1 = stage_share(g, self.d[0]);
         let a2 = stage_share(g, self.d[1]);
         let a3 = stage_share(g, self.d[2]);
@@ -260,6 +264,15 @@ impl Ladder {
         let aa = a43 * a2 * a1;
         let bb = a43 * (a2 * b1 + b2) + a4 * b3 + b4;
         let u = (x - k * bb) / (1.0 + k * aa);
+        // Near singing: solved as if the feedback were straight, then the
+        // part past `K_STRAIGHT` through its limit.
+        let u = if SING {
+            let y4 = aa * u + bb;
+            let over = k - K_STRAIGHT;
+            x - K_STRAIGHT * y4 - FB_SING * soft_clip(over * y4 * (1.0 / FB_SING))
+        } else {
+            u
+        };
         let v1 = a1 * u + b1;
         let v2 = a2 * v1 + b2;
         let v3 = a3 * v2 + b3;
@@ -383,7 +396,13 @@ impl FilterProbe {
         let mut y = |x: f32| {
             let g = self.g;
             self.g += self.dg;
-            self.ladder.run(x * self.in_gain, g, self.k) * self.out_scale
+            let x = x * self.in_gain;
+            let y = if self.k > K_STRAIGHT {
+                self.ladder.run::<true>(x, g, self.k)
+            } else {
+                self.ladder.run::<false>(x, g, self.k)
+            };
+            y * self.out_scale
         };
         if self.os == 2 {
             let a = y(x[0]);
@@ -1015,7 +1034,7 @@ impl Bass {
 
     /// One sample at the inner rate.
     #[inline(always)]
-    fn sample(&mut self) -> f32 {
+    fn sample<const SING: bool>(&mut self) -> f32 {
         let f = self.frame;
         let c4 = self.p4;
         self.p4 = c4.wrapping_add(self.inc as u32);
@@ -1082,7 +1101,7 @@ impl Bass {
                 };
                 let g = self.g;
                 self.g += self.dg;
-                let y = self.ladder.run((osc + mix) * f.in_gain, g, f.k) * f.out_scale;
+                let y = self.ladder.run::<SING>((osc + mix) * f.in_gain, g, f.k) * f.out_scale;
                 y * self.vca
             }
         };
@@ -1103,13 +1122,29 @@ impl Bass {
         if self.idle {
             return;
         }
+        if self.frame.k > K_STRAIGHT {
+            self.render_as::<true>(from, to, left, right);
+        } else {
+            self.render_as::<false>(from, to, left, right);
+        }
+    }
+
+    /// [`Bass::render`] with the ladder's feedback past [`K_STRAIGHT`]
+    /// (`SING`) or not, fixed for the step.
+    fn render_as<const SING: bool>(
+        &mut self,
+        from: usize,
+        to: usize,
+        left: &mut [f32],
+        right: &mut [f32],
+    ) {
         for i in from..to {
             let y = if self.os == 2 {
-                let a = self.sample();
-                let b = self.sample();
+                let a = self.sample::<SING>();
+                let b = self.sample::<SING>();
                 half_band(&mut self.hb_even, &mut self.hb_odd, a, b)
             } else {
-                self.sample()
+                self.sample::<SING>()
             };
             let y = self.hp.run::<true>(y);
             left[i] += y;

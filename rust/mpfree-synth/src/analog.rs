@@ -58,7 +58,7 @@ use crate::analog_params::*;
 use crate::character::{
     Cards, Drift, AGE_CUT_OCT, AGE_LEVEL_DB, AGE_PW, AGE_TIME, AGE_TUNE_CENTS, DRIFT_CENTS,
 };
-use crate::dsp::{lfo_value, LfoShape, Rng};
+use crate::dsp::{lfo_value, soft_clip, LfoShape, Rng};
 use crate::expr::{expr_coef, NoteExprs, VoiceExpr};
 use crate::params::Preset;
 use crate::voice::Priority;
@@ -103,6 +103,17 @@ const PM_OSC2_CUT_OCT: f32 = 3.0;
 const UNI_CENTS: f32 = 25.0;
 /// The four-pole's feedback at Resonance 100 (it oscillates past 4).
 const K_MAX: f32 = 4.1;
+/// The four-pole's feedback is straight up to `K_STRAIGHT`; what Resonance
+/// adds past it (the last few percent, where the filter starts to sing)
+/// goes through [`soft_clip`] scaled to `FB_SING`, as a resonance
+/// amplifier limits what it gives back. A singing filter then settles
+/// where that part bends, low enough that the stages' own `tanh` hardly
+/// slows them, so it sings in tune (within 7 cents; with the whole
+/// feedback straight the stages set the level and it sang up to 2
+/// semitones flat, DSP quality step 2.2). Below `K_STRAIGHT` (Resonance
+/// under 93) nothing changes.
+pub(crate) const K_STRAIGHT: f32 = 3.8;
+pub(crate) const FB_SING: f32 = 0.012;
 /// The two-pole's damping (1/Q) at Resonance 0 and 100, and how much it
 /// grows with the square of the band-pass's level, so a loud resonance
 /// squashes instead of running away (our reading of an OTA filter's
@@ -884,9 +895,11 @@ impl Voice {
         self.sub.clear();
     }
 
-    /// The four OTA stages for input `x`, cutoff `g` and feedback `k`.
+    /// The four OTA stages for input `x`, cutoff `g` and feedback `k`;
+    /// `SING` when `k` is past [`K_STRAIGHT`], so the plain path keeps its
+    /// code.
     #[inline(always)]
-    fn ota(&mut self, x: f32, g: f32, k: f32) -> f32 {
+    fn ota<const SING: bool>(&mut self, x: f32, g: f32, k: f32) -> f32 {
         let a1 = stage_share(g, self.d[0]);
         let a2 = stage_share(g, self.d[1]);
         let a3 = stage_share(g, self.d[2]);
@@ -901,6 +914,15 @@ impl Voice {
         let aa = a43 * a2 * a1;
         let bb = a43 * (a2 * b1 + b2) + a4 * b3 + b4;
         let u = (x - k * bb) / (1.0 + k * aa);
+        // Near singing: solved as if the feedback were straight, then the
+        // part past `K_STRAIGHT` through its limit.
+        let u = if SING {
+            let y4 = aa * u + bb;
+            let over = k - K_STRAIGHT;
+            x - K_STRAIGHT * y4 - FB_SING * soft_clip(over * y4 * (1.0 / FB_SING))
+        } else {
+            u
+        };
         let v1 = a1 * u + b1;
         let v2 = a2 * v1 + b2;
         let v3 = a3 * v2 + b3;
@@ -908,6 +930,35 @@ impl Voice {
         self.d = [u - v1, v1 - v2, v2 - v3, v3 - v4];
         self.s = [2.0 * v1 - s1, 2.0 * v2 - s2, 2.0 * v3 - s3, 2.0 * v4 - s4];
         v4
+    }
+
+    /// The step's `n` samples `xs` through the filter and the VCA onto
+    /// `buf`; `SING` as for [`Voice::ota`].
+    #[inline(always)]
+    fn filter_step<const SING: bool>(
+        &mut self,
+        fr: &Frame,
+        xs: &[f32; STEP],
+        buf: &mut [f32],
+        n: usize,
+    ) {
+        for (i, y) in buf.iter_mut().enumerate().take(n) {
+            let x = xs[i];
+            let g = if fr.pm_cut > 0.0 {
+                let o2 = if fr.need2 { self.o2.w[i] } else { 0.0 };
+                (self.g * exp2_fast(fr.pm_cut * o2)).min(fr.g_max)
+            } else {
+                self.g
+            };
+            let f = if fr.filter == 0 {
+                self.ota::<SING>(x, g, fr.k)
+            } else {
+                self.svf(x, g, fr.damp, fr.filter - 1, fr.bp_gain)
+            };
+            *y += f * self.vca;
+            self.vca += self.dvca;
+            self.g += self.dg;
+        }
     }
 
     /// The state-variable filter: low-, band- (`mode` 1) or high-pass (2)
@@ -1254,7 +1305,11 @@ impl FilterProbe {
     pub fn tick(&mut self, x: f32) -> f32 {
         let x = x * self.in_gain;
         let f = if self.filter == 0 {
-            self.v.ota(x, self.g, self.k)
+            if self.k > K_STRAIGHT {
+                self.v.ota::<true>(x, self.g, self.k)
+            } else {
+                self.v.ota::<false>(x, self.g, self.k)
+            }
         } else {
             self.v
                 .svf(x, self.g, self.damp, self.filter - 1, self.bp_gain)
@@ -2109,22 +2164,10 @@ impl Analog {
                 }
                 *x = y * fr.in_gain;
             }
-            for (i, y) in buf.iter_mut().enumerate().take(n) {
-                let x = xs[i];
-                let g = if fr.pm_cut > 0.0 {
-                    let o2 = if fr.need2 { v.o2.w[i] } else { 0.0 };
-                    (v.g * exp2_fast(fr.pm_cut * o2)).min(fr.g_max)
-                } else {
-                    v.g
-                };
-                let f = if fr.filter == 0 {
-                    v.ota(x, g, fr.k)
-                } else {
-                    v.svf(x, g, fr.damp, fr.filter - 1, fr.bp_gain)
-                };
-                *y += f * v.vca;
-                v.vca += v.dvca;
-                v.g += v.dg;
+            if fr.filter == 0 && fr.k > K_STRAIGHT {
+                v.filter_step::<true>(&fr, &xs, &mut buf, n);
+            } else {
+                v.filter_step::<false>(&fr, &xs, &mut buf, n);
             }
             v.o1.next(n);
             if fr.need2 {
