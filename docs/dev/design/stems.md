@@ -1,10 +1,10 @@
 <!--
 covers: rust/mpfree-stems rust/mpfree-simd/src/neon.rs rust/mpfree-bench/src/stems.rs rust/mpfree-sampler/src/stems.rs rust/mpfree-sampler-ui/src/stems_page.rs rust/mpfree-app/src/sample_page/stems.rs
-checked: 2026-11-23 a2fecc1
+checked: 2026-11-23 56a7a2a
 -->
 # Stem separation (`mpfree-stems`)
 
-**Status:** engine built (plan step 1, 2026-11-23), on the workstation only: the crate, its two NEON kernels in `mpfree-simd`, the model packer and the bench's `--stems` mode. **Nothing here has run on the MPC**. Plan step 4 is built too, on the workstation: the split as a chain of jobs, the stems landing as one undo step, the Stems page and the app's Sample page offering it from the pad bar's Stems button. The USB Creator doesn't put the model on the stick yet, so on the MPC the page says the model isn't there until it is copied there by hand (below). The plan (Spleeter, the steps after this one and the decisions put to the owner) is in the stems research notes; the device run is plan step 2, the Stems page's mockups step 3, the app step 4.
+**Status:** engine built (plan step 1, 2026-11-23), on the workstation only: the crate, its two NEON kernels in `mpfree-simd`, the model packer and the bench's `--stems` mode. **Nothing here has run on the MPC**. Plan step 4 is built too, on the workstation: the split as a chain of jobs, the stems landing as one undo step, the Stems page and the app's Sample page offering it from the pad bar's Stems button. The USB Creator doesn't put the model on the stick yet, so on the MPC the page says the model isn't there until it is copied there by hand (below). The plan (Spleeter, the steps after this one and the decisions put to the owner) is in the stems research notes; the device run is plan step 2, the Stems page's screens step 3 (approved as drawn by the owner on 23 Nov 2026, in the [layout spec](layout-spec.md)), the app step 4.
 
 ## What it does
 
@@ -115,7 +115,6 @@ The MPC's figures are the plan's estimate until the device run: 9.4 s for a 10 s
 ## What's next
 
 - Plan step 2: `mpfree-bench --stems` in the next device round's benchmark block (RAM only, on the owner's go).
-- Plan step 3: the Stems page's layout spec change, waiting for the owner's look at the screens.
 - Plan step 4, the rest: the USB Creator puts the model on the stick, with Deezer's licence beside it; the device round that runs a split on the MPC.
 - Faster, if the device run shows the U-Nets well below twice the kernel's rate: a NEON transpose for the gather's stores (about 0.2 G of the 3.54 G above), a radix-4 FFT (it changes the bits, so the SNR checks run again) and a faster `expf`.
 - Holding less: both channels' STFT stay for the whole segment (16.8 MB); working them out again for the masks would save that for about 3 % more time.
