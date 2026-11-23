@@ -3164,9 +3164,9 @@ fn live_erase_starts(app: &app::App, time: &time::TimeHost) -> bool {
 /// playhead reaches them, until the pad or ERASE is let go; it neither
 /// sounds nor records. What to tell.
 fn live_erase(time: &mut time::TimeHost, pad: usize) -> Option<app::Effect> {
-    let note = u8::try_from(pad).ok()?;
+    let p = u8::try_from(pad).ok()?;
     let first = !time.erasing();
-    time.erase_sound(note, true);
+    time.erase_sound(p, true);
     first.then(|| {
         app::Effect::Tell(format!(
             "ERASE: pad {}'s notes come out of the armed track's clip as the playhead passes them; UNDO brings them back",
@@ -7583,6 +7583,25 @@ fn pad_rows(
     rows
 }
 
+/// The tracks whose takes hold notes, a bit each (instrument redesign
+/// step 5c): one whose own instrument, or the one it plays of another
+/// track's, plays notes, not the Drums engine's sounds; or one that plays
+/// the shared synth while it plays notes (step sequencer refactor E4).
+/// Never allocates.
+fn notes_tracks(
+    own: &instruments::Instruments,
+    kits: &sampler::TrackKits,
+    synth: &synth::Synth,
+    tracks: usize,
+) -> u128 {
+    if !synth.plays_notes() {
+        return own.note_tracks();
+    }
+    (0..tracks.min(128))
+        .filter(|&t| !own.plays(t) && kits.plays_synth(t))
+        .fold(own.note_tracks(), |bits, t| bits | 1 << t)
+}
+
 /// Whether track `track`'s arp works in notes (step 5d): its own synth
 /// (or the one it plays) plays notes, not the Drums engine's sounds, or it
 /// plays the shared synth, whose pads press notes; not while its notes go
@@ -8751,10 +8770,14 @@ fn player_session(
                 gui::FromUi::TrackInstrument(track) => {
                     out.note(&format!("arrange: no track {}", track + 1));
                 }
-                // A MIDI file from BROWSE: its tracks as clips, each note on
-                // the pad that plays it (midi_file.rs).
+                // A MIDI file from BROWSE: its tracks as clips, as a take
+                // there would hold them: notes on a track that plays notes,
+                // else each note on the pad that plays it (midi_file.rs).
                 gui::FromUi::MidiFile(m) => {
-                    let r = midi_file::put(&mut time, &m, |t, n| {
+                    let notes =
+                        notes_tracks(&mix.instruments, &track_kits, &synth, time.track_count());
+                    let notes_on = |t: usize| t < 128 && notes >> t & 1 == 1;
+                    let r = midi_file::put(&mut time, &m, notes_on, |t, n| {
                         let synth_has = track_kits.plays_synth(t).then_some(&*synth);
                         midi_file::pad_on_track(&mix.instruments, synth_has, t, n)
                     });
@@ -11504,8 +11527,10 @@ fn player_session(
         );
         time.set_instruments(&inst_now[..n]);
         // A take on a track whose instrument plays notes records notes
-        // (instrument redesign step 5c).
-        time.set_notes_tracks(mix.instruments.note_tracks());
+        // (instrument redesign step 5c), the shared synth's too (step
+        // sequencer refactor E4).
+        let n = time.track_count();
+        time.set_notes_tracks(notes_tracks(&mix.instruments, &track_kits, &synth, n));
         // A clip of notes shows each pad's note on the step grid's pad
         // rows: the root of what the pad plays on the track's own synth or
         // the shared synth, or a kit pad's note (step 5c).
@@ -13981,6 +14006,38 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    /// Step sequencer refactor E4: a take on a track that plays the shared
+    /// synth holds notes while the synth plays notes, as one on a track's
+    /// own synth does; a track on a kit holds pads.
+    #[test]
+    fn a_track_on_the_shared_synth_records_notes() {
+        let synth = synth::Synth::new(RATE);
+        let mut kits = sampler::TrackKits::new(1);
+        assert!(kits.set(2, kits.synth()));
+        let mut mix = mixing::MixHost::new(RATE, 0.0, 6.0);
+        // Track 4 plays its own Poly.
+        let engine = synth::Engine::Poly;
+        let (id, extras, values) = synth.sound_of(engine);
+        let made = instruments::make(
+            &plugins::Plugins::none(),
+            id,
+            &extras,
+            &values,
+            RATE,
+            PERIOD,
+        )
+        .unwrap();
+        let pads = synth.pads_for(engine);
+        let tuning = synth.tuning_now();
+        assert!(mix.instruments.put(3, made, pads, &tuning).is_ok());
+        assert!(synth.plays_notes());
+        assert_eq!(
+            notes_tracks(&mix.instruments, &kits, &synth, 8),
+            1 << 2 | 1 << 3,
+            "Track 3 on the shared synth, Track 4 on its own"
+        );
     }
 
     /// Finding 9 of the step sequencer refactor (20 Nov 2026): two tracks

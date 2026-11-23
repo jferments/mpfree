@@ -16,8 +16,8 @@ struct Rig {
     block: Box<Block>,
     capture: Box<Capture>,
     period: u32,
-    /// (frame, event), in frame order.
-    notes: Vec<(u64, Event)>,
+    /// (frame, event, kind), in frame order.
+    notes: Vec<(u64, Event, Took)>,
     next: usize,
     /// Routed tracks' notes: (frame, track, event), in frame order.
     routed: Vec<(u64, u8, Event)>,
@@ -53,17 +53,29 @@ impl Rig {
         self.routed.sort_by_key(|n| n.0);
     }
 
-    /// A note at `frame`, `len` frames long.
+    /// A pad's note at `frame`, `len` frames long.
     fn note(&mut self, frame: u64, len: u64, note: u8, velocity: u8) {
-        self.notes.push((frame, Event::NoteOn { note, velocity }));
-        self.notes.push((frame + len, Event::NoteOff { note }));
+        self.note_of(Took::PAD, frame, len, note, velocity);
+    }
+
+    /// A pad's or a note's note (`took`) at `frame`, `len` frames long.
+    fn note_of(&mut self, took: Took, frame: u64, len: u64, note: u8, velocity: u8) {
+        self.notes
+            .push((frame, Event::NoteOn { note, velocity }, took));
+        self.notes
+            .push((frame + len, Event::NoteOff { note }, took));
         self.notes.sort_by_key(|n| n.0);
     }
 
     /// Pad `pad`'s pressure `value` at `frame`, after the notes there.
     fn press(&mut self, frame: u64, pad: u8, value: u8) {
+        self.press_of(Took::PAD, frame, pad, value);
+    }
+
+    /// [`Rig::press`] on a pad or a note.
+    fn press_of(&mut self, took: Took, frame: u64, note: u8, value: u8) {
         self.notes
-            .push((frame, Event::Pressure { note: pad, value }));
+            .push((frame, Event::Pressure { note, value }, took));
         self.notes.sort_by_key(|n| n.0);
     }
 
@@ -82,8 +94,9 @@ impl Rig {
             let start = self.transport.frame();
             let n = (frame - start).min(u64::from(self.period)) as u32;
             while self.next < self.notes.len() && self.notes[self.next].0 < start + u64::from(n) {
-                let (f, ev) = self.notes[self.next];
-                self.capture.input(f.saturating_sub(start) as u32, ev);
+                let (f, ev, took) = self.notes[self.next];
+                self.capture
+                    .input_as(f.saturating_sub(start) as u32, ev, took);
                 self.next += 1;
             }
             while self.next_routed < self.routed.len()
@@ -91,7 +104,7 @@ impl Rig {
             {
                 let (f, track, ev) = self.routed[self.next_routed];
                 self.capture
-                    .input_on(track, f.saturating_sub(start) as u32, ev);
+                    .input_on(track, f.saturating_sub(start) as u32, ev, Took::PAD);
                 self.next_routed += 1;
             }
             assert!(self.transport.process(n, &mut self.block));
@@ -203,6 +216,7 @@ fn a_held_note_ends_now() {
             note: 9,
             velocity: 100,
         },
+        Took::PAD,
     ));
     r.run_to(1000 * TICK);
     let p = r.capture.phrase().unwrap();
@@ -214,8 +228,10 @@ fn a_held_note_ends_now() {
             note: 9,
             velocity: 50,
         },
+        Took::PAD,
     ));
-    r.notes.push((2100 * TICK, Event::NoteOff { note: 9 }));
+    r.notes
+        .push((2100 * TICK, Event::NoteOff { note: 9 }, Took::PAD));
     r.run_to(3000 * TICK);
     assert_eq!(
         ticks(&r.capture.phrase().unwrap()),
@@ -426,8 +442,11 @@ fn the_pressure_history_is_a_ring_of_its_own() {
         r.note(b * beat, beat - 10, 1, 100);
         for i in 0..300 {
             let value = if i % 2 == 0 { 10 } else { 0 };
-            r.notes
-                .push((b * beat + i * 80, Event::Pressure { note: 1, value }));
+            r.notes.push((
+                b * beat + i * 80,
+                Event::Pressure { note: 1, value },
+                Took::PAD,
+            ));
         }
     }
     r.notes.sort_by_key(|n| n.0);
@@ -483,6 +502,8 @@ fn timed(notes: &[(Tick, f64)], length: Tick, song_start: Tick) -> Phrase {
             },
             song: Some(song),
             track: ARMED,
+            holds: Holds::Hits,
+            paired: false,
         })
         .collect();
     Phrase {
@@ -514,6 +535,7 @@ fn kept_in_time_a_new_clip_plays_on_in_its_place() {
         0,
         now(8 * BAR + 100),
         "Capture 1",
+        Holds::Hits,
     )
     .unwrap();
     // From bar 1, an odd number of bars back: bar 6 is still its first.
@@ -533,6 +555,8 @@ fn kept_in_time_a_new_clip_plays_on_in_its_place() {
             }),
             touch: 0,
             touch_lost: 0,
+            holds: Holds::Hits,
+            left_out: 0,
         }
     );
     let c = p.clip(0, 0).unwrap();
@@ -543,7 +567,17 @@ fn kept_in_time_a_new_clip_plays_on_in_its_place() {
     // In a loop from bar 3: its start, or before.
     let mut looping = now(8 * BAR);
     looping.loop_range = Some((2 * BAR, 10 * BAR));
-    let k = keep(&phrase, &mut p, &[], &mut takes, 0, looping, "Capture 2").unwrap();
+    let k = keep(
+        &phrase,
+        &mut p,
+        &[],
+        &mut takes,
+        0,
+        looping,
+        "Capture 2",
+        Holds::Hits,
+    )
+    .unwrap();
     assert_eq!((k.slot, k.launch.map(|l| l.origin)), (1, Some(-BAR)));
     // Undo takes it back as a whole.
     assert_eq!(takes.undo(&mut p), Some(2));
@@ -571,6 +605,8 @@ fn kept_free_a_new_clip_starts_on_the_next_bar() {
             },
             song: None,
             track: ARMED,
+            holds: Holds::Hits,
+            paired: false,
         }],
         touch: Vec::new(),
         touch_cut: false,
@@ -579,7 +615,17 @@ fn kept_free_a_new_clip_starts_on_the_next_bar() {
         song_start: None,
         id: 1,
     };
-    let k = keep(&phrase, &mut p, &[], &mut takes, 1, now(3 * BAR + 5), "c").unwrap();
+    let k = keep(
+        &phrase,
+        &mut p,
+        &[],
+        &mut takes,
+        1,
+        now(3 * BAR + 5),
+        "c",
+        Holds::Hits,
+    )
+    .unwrap();
     assert_eq!(
         (k.slot, k.launch.map(|l| l.origin)),
         (1, Some(4 * BAR)),
@@ -589,7 +635,17 @@ fn kept_free_a_new_clip_starts_on_the_next_bar() {
         rolling: false,
         ..now(3 * BAR + 5)
     };
-    let k = keep(&phrase, &mut p, &[], &mut takes, 1, stopped, "c").unwrap();
+    let k = keep(
+        &phrase,
+        &mut p,
+        &[],
+        &mut takes,
+        1,
+        stopped,
+        "c",
+        Holds::Hits,
+    )
+    .unwrap();
     assert_eq!((k.slot, k.launch.map(|l| l.origin)), (2, Some(3 * BAR)));
 }
 
@@ -618,6 +674,7 @@ fn kept_over_the_playing_clip_the_notes_go_into_it() {
         1,
         now(7 * BAR),
         "unused",
+        Holds::Hits,
     )
     .unwrap();
     assert_eq!(
@@ -631,6 +688,8 @@ fn kept_over_the_playing_clip_the_notes_go_into_it() {
             launch: None,
             touch: 0,
             touch_lost: 0,
+            holds: Holds::Hits,
+            left_out: 0,
         }
     );
     let ticks: Vec<Tick> = p.clip(1, 0).unwrap().notes.iter().map(|n| n.tick).collect();
@@ -644,7 +703,17 @@ fn kept_over_the_playing_clip_the_notes_go_into_it() {
         origin: 6 * BAR,
         start: 6 * BAR,
     }];
-    let k = keep(&phrase, &mut p, &late, &mut takes, 1, now(7 * BAR), "new").unwrap();
+    let k = keep(
+        &phrase,
+        &mut p,
+        &late,
+        &mut takes,
+        1,
+        now(7 * BAR),
+        "new",
+        Holds::Hits,
+    )
+    .unwrap();
     assert_eq!((k.slot, k.launch.is_some()), (1, true));
 }
 
@@ -670,7 +739,17 @@ fn kept_notes_keep_their_pressure_when_the_track_records_it() {
     };
     let mut p = project();
     let mut takes = Takes::default();
-    let k = keep(&phrase, &mut p, &[], &mut takes, 0, now(8 * BAR), "c").unwrap();
+    let k = keep(
+        &phrase,
+        &mut p,
+        &[],
+        &mut takes,
+        0,
+        now(8 * BAR),
+        "c",
+        Holds::Hits,
+    )
+    .unwrap();
     assert_eq!((k.touch, k.touch_lost), (2, 0));
     assert_eq!(
         values(p.clip(0, 0).unwrap()),
@@ -678,7 +757,17 @@ fn kept_notes_keep_their_pressure_when_the_track_records_it() {
     );
     // A track that leaves pressure out.
     p.tracks[2].record_touch = false;
-    let k = keep(&phrase, &mut p, &[], &mut takes, 2, now(8 * BAR), "c").unwrap();
+    let k = keep(
+        &phrase,
+        &mut p,
+        &[],
+        &mut takes,
+        2,
+        now(8 * BAR),
+        "c",
+        Holds::Hits,
+    )
+    .unwrap();
     let c = p.clip(2, k.slot).unwrap();
     assert_eq!((k.touch, c.touch.len()), (0, 0));
     assert!(c.notes.iter().all(|n| n.touch.is_none()));
@@ -692,7 +781,17 @@ fn kept_notes_keep_their_pressure_when_the_track_records_it() {
     let beat = p.tracks[1].slots[0].as_mut().unwrap();
     beat.speed = mpfree_seq::Speed::new(2, 1).unwrap();
     beat.touch.push(point(0, 1));
-    let k = keep(&phrase, &mut p, &launches, &mut takes, 1, now(7 * BAR), "-").unwrap();
+    let k = keep(
+        &phrase,
+        &mut p,
+        &launches,
+        &mut takes,
+        1,
+        now(7 * BAR),
+        "-",
+        Holds::Hits,
+    )
+    .unwrap();
     assert_eq!((k.launch, k.touch, k.touch_lost), (None, 2, 0));
     let c = p.clip(1, 0).unwrap();
     assert_eq!(c.touch.len(), 3);
@@ -704,7 +803,17 @@ fn kept_notes_keep_their_pressure_when_the_track_records_it() {
     let beat = p.tracks[1].slots[0].as_mut().unwrap();
     beat.touch
         .resize(mpfree_seq::MAX_TOUCH_POINTS - 1, point(0, 0));
-    let k = keep(&phrase, &mut p, &launches, &mut takes, 1, now(7 * BAR), "-").unwrap();
+    let k = keep(
+        &phrase,
+        &mut p,
+        &launches,
+        &mut takes,
+        1,
+        now(7 * BAR),
+        "-",
+        Holds::Hits,
+    )
+    .unwrap();
     assert_eq!((k.notes, k.touch, k.touch_lost), (2, 0, 2));
     let c = p.clip(1, 0).unwrap();
     assert!(c.notes.iter().all(|n| n.touch.is_none()));
@@ -720,11 +829,20 @@ fn keep_refuses_and_changes_nothing() {
         ..phrase.clone()
     };
     assert_eq!(
-        keep(&empty, &mut p, &[], &mut takes, 0, now(0), "c"),
+        keep(&empty, &mut p, &[], &mut takes, 0, now(0), "c", Holds::Hits),
         Err(KeepError::Nothing)
     );
     assert_eq!(
-        keep(&phrase, &mut p, &[], &mut takes, 9, now(0), "c"),
+        keep(
+            &phrase,
+            &mut p,
+            &[],
+            &mut takes,
+            9,
+            now(0),
+            "c",
+            Holds::Hits
+        ),
         Err(KeepError::NoTrack(9))
     );
     for s in 0..SLOTS {
@@ -732,7 +850,16 @@ fn keep_refuses_and_changes_nothing() {
     }
     let before = p.clone();
     assert_eq!(
-        keep(&phrase, &mut p, &[], &mut takes, 2, now(0), "c"),
+        keep(
+            &phrase,
+            &mut p,
+            &[],
+            &mut takes,
+            2,
+            now(0),
+            "c",
+            Holds::Hits
+        ),
         Err(KeepError::NoSlot(2))
     );
     assert_eq!(p, before);
@@ -835,6 +962,7 @@ fn a_tracks_all_off_ends_only_its_own_notes() {
             note: 1,
             velocity: 100,
         },
+        Took::PAD,
     ));
     r.event_on(
         3,
@@ -852,7 +980,7 @@ fn a_tracks_all_off_ends_only_its_own_notes() {
             velocity: 100,
         },
     );
-    r.notes.push((f(100), Event::AllOff));
+    r.notes.push((f(100), Event::AllOff, Took::PAD));
     r.event_on(3, f(200), Event::AllOff);
     r.event_on(7, f(300), Event::NoteOff { note: 2 });
     r.run_to(f(BAR));
@@ -946,11 +1074,30 @@ fn parts_kept_into_their_tracks_are_one_take() {
     phrase.played[1].track = 2;
     let parts = phrase.split(0);
     let (t0, first) = &parts[0];
-    let k = keep(first, &mut p, &[], &mut takes, *t0, now(BAR), "Capture 1").unwrap();
+    let k = keep(
+        first,
+        &mut p,
+        &[],
+        &mut takes,
+        *t0,
+        now(BAR),
+        "Capture 1",
+        Holds::Hits,
+    )
+    .unwrap();
     let (t1, second) = &parts[1];
     let k2 = takes
         .joining(k.take, |takes| {
-            keep(second, &mut p, &[], takes, *t1, now(BAR), "Capture 1")
+            keep(
+                second,
+                &mut p,
+                &[],
+                takes,
+                *t1,
+                now(BAR),
+                "Capture 1",
+                Holds::Hits,
+            )
         })
         .unwrap();
     assert_eq!((k.track, k2.track, k2.take), (0, 2, k.take));
@@ -958,4 +1105,188 @@ fn parts_kept_into_their_tracks_are_one_take() {
     assert!(p.clip(0, 0).is_some() && p.clip(2, 0).is_some());
     assert_eq!(takes.undo(&mut p), Some(1));
     assert!(p.clip(0, 0).is_none() && p.clip(2, 0).is_none());
+}
+
+// ------------------------------------------------- pads and notes (E4)
+
+const PAD_OF_NOTES: Took = Took {
+    holds: Holds::Hits,
+    paired: true,
+};
+const NOTE_OF_PAD: Took = Took {
+    holds: Holds::Notes,
+    paired: true,
+};
+const NOTE_ALONE: Took = Took {
+    holds: Holds::Notes,
+    paired: false,
+};
+
+#[test]
+fn a_pad_and_a_note_of_one_number_are_two_notes() {
+    let mut r = Rig::new(128);
+    r.command(0, Command::Play);
+    // Pad 3 held a beat, and note 3 held two beats from the same tick:
+    // each ends on its own let-go, and each keeps its own pressure.
+    r.note_of(PAD_OF_NOTES, 0, BEAT as u64 * TICK, 3, 100);
+    r.note_of(NOTE_OF_PAD, 0, 2 * BEAT as u64 * TICK, 3, 90);
+    r.press_of(NOTE_OF_PAD, 10 * TICK, 3, 64);
+    r.run_to(3 * BAR as u64 * TICK);
+    let p = r.capture.phrase().unwrap();
+    assert_eq!(ticks(&p), vec![(0, BEAT, 3), (0, 2 * BEAT, 3)]);
+    let kinds: Vec<(Holds, bool)> = p.played.iter().map(|x| (x.holds, x.paired)).collect();
+    assert_eq!(kinds, vec![(Holds::Hits, true), (Holds::Notes, true)]);
+    assert_eq!(runs(&p), vec![vec![], vec![(10, 64)]]);
+}
+
+/// Pad 4 played on `notes` (tick, song tick), each touch kept as the pad
+/// and as the note 60 it played, as [`timed`].
+fn timed_both(notes: &[(Tick, f64)], length: Tick, song_start: Tick) -> Phrase {
+    let mut p = timed(notes, length, song_start);
+    let pads = p.played.clone();
+    p.played.clear();
+    for x in pads {
+        p.played.push(Played { paired: true, ..x });
+        let mut n = Played {
+            holds: Holds::Notes,
+            paired: true,
+            ..x
+        };
+        n.note.note = 60;
+        p.played.push(n);
+    }
+    p
+}
+
+#[test]
+fn capture_over_a_playing_clip_keeps_that_clips_kind() {
+    let mut p = project();
+    let mut takes = Takes::default();
+    // Track 2's beat plays from bar 3, and two touches were played over
+    // it in time, kept as pads and as notes.
+    let launches = [Launch {
+        track: 1,
+        slot: 0,
+        origin: 2 * BAR,
+        start: 2 * BAR,
+    }];
+    let phrase = timed_both(
+        &[(BEAT, (4 * BAR + BEAT) as f64), (BAR, (5 * BAR) as f64)],
+        2 * BAR,
+        4 * BAR,
+    );
+    let pitches = |p: &Project, slot: usize| -> Vec<u8> {
+        p.clip(1, slot)
+            .unwrap()
+            .notes
+            .iter()
+            .map(|n| n.note)
+            .collect()
+    };
+    // A clip of pads takes the pads, as an overdub would, whatever a new
+    // clip there would hold.
+    let k = keep(
+        &phrase,
+        &mut p,
+        &launches,
+        &mut takes,
+        1,
+        now(7 * BAR),
+        "c",
+        Holds::Notes,
+    )
+    .unwrap();
+    assert_eq!(
+        (k.slot, k.launch, k.holds, k.notes, k.left_out),
+        (0, None, Holds::Hits, 2, 0)
+    );
+    assert_eq!(pitches(&p, 0), vec![4, 4]);
+    // A clip of notes takes the notes.
+    takes.undo(&mut p);
+    p.tracks[1].slots[0].as_mut().unwrap().holds = Holds::Notes;
+    let k = keep(
+        &phrase,
+        &mut p,
+        &launches,
+        &mut takes,
+        1,
+        now(7 * BAR),
+        "c",
+        Holds::Hits,
+    )
+    .unwrap();
+    assert_eq!((k.slot, k.holds, k.notes), (0, Holds::Notes, 2));
+    assert_eq!(pitches(&p, 0), vec![60, 60]);
+    // No clip playing: a new clip of the kind the host says.
+    takes.undo(&mut p);
+    let k = keep(
+        &phrase,
+        &mut p,
+        &[],
+        &mut takes,
+        1,
+        now(7 * BAR),
+        "c",
+        Holds::Notes,
+    )
+    .unwrap();
+    assert_eq!((k.slot, k.holds), (1, Holds::Notes));
+    assert!(k.launch.is_some());
+    assert_eq!(p.clip(1, 1).unwrap().holds, Holds::Notes);
+    assert_eq!(pitches(&p, 1), vec![60, 60]);
+}
+
+#[test]
+fn a_touch_kept_only_as_the_other_kind_is_left_out_and_counted() {
+    let mut p = project();
+    let mut takes = Takes::default();
+    // Two kit pads that play no note, then a note the arp played, which
+    // comes with no pad.
+    let mut phrase = timed(
+        &[
+            (0, (4 * BAR) as f64),
+            (BEAT, (4 * BAR + BEAT) as f64),
+            (2 * BEAT, (4 * BAR + 2 * BEAT) as f64),
+        ],
+        BAR,
+        4 * BAR,
+    );
+    phrase.played[2].holds = NOTE_ALONE.holds;
+    phrase.played[2].note.note = 60;
+    let k = keep(
+        &phrase,
+        &mut p,
+        &[],
+        &mut takes,
+        0,
+        now(7 * BAR),
+        "c",
+        Holds::Notes,
+    )
+    .unwrap();
+    assert_eq!((k.notes, k.left_out, k.holds), (1, 2, Holds::Notes));
+    let clip = p.clip(0, k.slot).unwrap();
+    assert_eq!(clip.holds, Holds::Notes);
+    assert_eq!(
+        clip.notes.iter().map(|n| n.note).collect::<Vec<_>>(),
+        vec![60]
+    );
+    // Only the pads, into a clip of notes: nothing it can hold, and
+    // nothing changes.
+    phrase.played.truncate(2);
+    let before = p.clone();
+    assert_eq!(
+        keep(
+            &phrase,
+            &mut p,
+            &[],
+            &mut takes,
+            2,
+            now(7 * BAR),
+            "c",
+            Holds::Notes
+        ),
+        Err(KeepError::OtherKind(Holds::Notes))
+    );
+    assert_eq!(p, before);
 }
