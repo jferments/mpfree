@@ -866,6 +866,20 @@ class StaticTests(unittest.TestCase):
         self.assertIn("ExecStart=/bin/sh /etc/mpfree-test/setup-format.sh\n", fmt)
         self.assertIn("Before=mpfree-test-storage.service mpfree-test-app.service\n", fmt)
         self.assertEqual(self.read(os.path.join(STICK, "mode.txt")), "install\n")
+        # The SD card's read-only window (test_sd_card_window.py): started by the pad player's request,
+        # open until the pad player is done, stopped (closed) at shutdown.
+        sd = self.read(os.path.join(STICK, "mpfree-setup-sd-card.service"))
+        self.assertIn("ExecStart=/bin/sh /etc/mpfree-test/setup-sd-card.sh\n", sd)
+        self.assertIn("Requires=mpfree-test-internal-off.service\n", sd)
+        self.assertIn("After=mpfree-test-internal-off.service\n", sd)
+        self.assertIn("Type=oneshot\n", sd)
+        self.assertIn("TimeoutStartSec=infinity\n", sd)
+        self.assertIn("Conflicts=shutdown.target\n", sd)
+        sd_path = self.read(os.path.join(STICK, "mpfree-setup-sd-card.path"))
+        self.assertIn("PathExists=/run/mpfree-app/sd-card.request\n", sd_path)
+        self.assertIn("Unit=mpfree-setup-sd-card.service\n", sd_path)
+        self.assertIn("WantedBy=sysinit.target\n", sd_path)
+        self.assertNotIn("sd-card", path, "the backup's path unit never starts the SD card's window")
 
 
 class FormatTests(unittest.TestCase):

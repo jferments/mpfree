@@ -2083,6 +2083,54 @@ impl Synth {
         true
     }
 
+    /// The XY pad's hand on parameter `id` of the engine on the pads (a
+    /// layout of yours plays it by Set, `xy_own.rs`): `Some` holds it at
+    /// the value, over the clips' locks when `over` (a track records);
+    /// `None` lets go, back to its lock or its own value as they are now
+    /// (locks.rs). The sound's own value is left alone. False for a
+    /// parameter the pad can't hold: one the engine doesn't have, a meter,
+    /// Drums' pad notes and models, or a full table.
+    pub fn pad_hand(&mut self, id: u16, value: Option<f32>, over: bool) -> bool {
+        let e = self.settings.engine;
+        let key = lock_key(e, id);
+        let Some(value) = value else {
+            if let Some(v) = self.locks.release(key) {
+                self.node_mut().set_param(id, v);
+            }
+            return true;
+        };
+        let smooth = match self
+            .node()
+            .params()
+            .iter()
+            .find(|p| p.id == id && !p.readonly)
+        {
+            Some(p) if !(e == Engine::Drums && moves_drum_pads(id)) => crate::locks::glides(p),
+            _ => return false,
+        };
+        let now = self.node().param(id);
+        match self.locks.press(key, value, now, smooth, over) {
+            crate::locks::Pressed::Set(v) => {
+                self.node_mut().set_param(id, v);
+                true
+            }
+            crate::locks::Pressed::Kept => true,
+            crate::locks::Pressed::Full => false,
+        }
+    }
+
+    /// Parameter `id` of the engine on the pads under the XY pad's hand:
+    /// what a let-go goes back to now (its lock, else its own value), and
+    /// its own value.
+    pub fn pad_beneath(&self, id: u16) -> (f32, f32) {
+        let key = lock_key(self.settings.engine, id);
+        let now = self.node().param(id);
+        (
+            self.locks.beneath(key).unwrap_or(now),
+            self.locks.own(key).unwrap_or(now),
+        )
+    }
+
     /// Each track's lasting id (`mpfree_seq::TrackId`, 0 for none), by
     /// track: when two tracks on the synth lock one knob, the lowest owns
     /// it (step 4b, locks.rs).

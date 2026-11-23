@@ -1446,6 +1446,46 @@ impl TimeAudio {
         }
     }
 
+    /// A note by its number, as heard, on `track`, not the armed one: the
+    /// pads' arp's notes on a synth the pads play on their own (sampler
+    /// step 15c), as the armed track's arp's notes are taken
+    /// ([`TimeAudio::heard`]). On another armed track
+    /// ([`PlayView::set_also`]) its recorder takes it while the transport
+    /// records into a clip of notes (its pressure when that track records
+    /// pressure); a clip of pad hits has no pad for it, so nothing records
+    /// it there, as on the armed track. CAPTURE's history keeps it as the
+    /// track's note.
+    pub fn routed_note(&mut self, track: u8, offset: u32, event: Event) {
+        if !matches!(
+            event,
+            Event::NoteOn { .. } | Event::NoteOff { .. } | Event::Pressure { .. }
+        ) {
+            return;
+        }
+        let f = self.transport.frame() + u64::from(offset);
+        self.note_started(f, u16::from(track), event);
+        let t = usize::from(track);
+        let rank = self.view.also_rank(t);
+        let into_notes = rank.is_some() && self.now_playing(t).is_some_and(|n| n.holds_notes);
+        if let (Some(k), true) = (rank, into_notes) {
+            let note = matches!(event, Event::NoteOn { .. } | Event::NoteOff { .. });
+            let touch = matches!(event, Event::Pressure { .. }) && self.tracks.records_touch_on(t);
+            let recording = self.transport.state() == State::Recording;
+            match self.also.get_mut(k) {
+                Some(r) if note || touch => r.input_grouped(offset, event, 0),
+                None if note => self.also_dropped += 1,
+                None if touch && recording => self.also_pressure += 1,
+                _ => {}
+            }
+        }
+        let took = Took {
+            holds: Holds::Notes,
+            paired: false,
+            group: 0,
+        };
+        self.send(ToControl::PlayedOn(track, offset, event, took));
+    }
+
     /// A routed pad on track `t` as the notes it plays there
     /// ([`ToAudio::Pads`], a chord pad's every note): a note-on keeps
     /// which notes it started, so its end and pressure reach those however

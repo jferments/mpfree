@@ -147,7 +147,8 @@ enum Buttons {
     /// A loop's Key and Mute and the looper's own presses (the
     /// footswitch).
     Looper,
-    /// Play's Swing, Filter, XY across and XY up ([`play::ALL`]).
+    /// Play's Swing, Filter, XY across and XY up, then the XY pad's Hold
+    /// and layout buttons ([`play::ALL`]).
     Play,
     /// A set's controls: Next song, Previous song, Go and the rest
     /// ([`show::ALL`]).
@@ -754,10 +755,11 @@ fn looper_rects(l: &Layout) -> ([Rect; 2], [Rect; 9]) {
 }
 
 /// Play's card's buttons, on the same grid: Swing, Filter, XY across and
-/// XY up on the first row.
-fn play_rects(l: &Layout) -> [Rect; 4] {
+/// XY up on the first row, XY Hold, XY layout next and XY layout back on
+/// the second (layout spec 4o).
+fn play_rects(l: &Layout) -> [Rect; play::ALL.len()] {
     let p = pick_rects(l);
-    [p[0], p[1], p[2], p[3]]
+    std::array::from_fn(|i| p[i])
 }
 
 /// The Show card's seven, on the transport card's grid.
@@ -765,6 +767,9 @@ fn show_rects(l: &Layout) -> [Rect; 7] {
     let p = pick_rects(l);
     std::array::from_fn(|i| p[i])
 }
+
+// Play's card has the grid's two rows of four.
+const _: () = assert!(play::ALL.len() <= 8);
 
 /// The table's columns: Control, Moves, Now, Kept in (x and width).
 fn columns(body: Rect) -> [(i32, i32); 4] {
@@ -1061,7 +1066,12 @@ impl Learn {
 
     /// Play's card's button `i`: Learn waits for a control to take it.
     fn arm_play(&mut self, i: usize) -> IoReply {
-        self.arm_as(play_target(i), play::ALL[i].1, "move a knob or a fader")
+        let how = if play::is_press(play::ALL[i].0) {
+            "press a button, a key or a footswitch"
+        } else {
+            "move a knob or a fader"
+        };
+        self.arm_as(play_target(i), play::ALL[i].1, how)
     }
 
     /// The Show card's button `i`: Learn waits for a control to take it.
@@ -1728,12 +1738,13 @@ impl Learn {
             t.size_small * 0.9,
             Rect::new(ci.x, ci.y + BUTTON_H, ci.w, 2 * SAYS_LINE_H),
             t.text_dim,
-            "Tap one, then move a knob or a fader on your controller. It works in every project.",
+            "Tap one, then move a knob or a fader (or press a button) on your controller. \
+             It works in every project.",
         );
         for (i, r) in play_rects(l).into_iter().enumerate() {
             button(cx, r, play::ALL[i].1, self.waits_for(m, play_target(i)));
         }
-        let last = play_rects(l)[3];
+        let last = play_rects(l)[play::ALL.len() - 1];
         para(
             cx,
             t.size_small * 0.9,
@@ -1744,10 +1755,9 @@ impl Learn {
                 ci.bottom() - last.bottom() - 6,
             ),
             t.text_faint,
-            "Swing and Filter turn as Play's Q-Links do (Filter is track 1's, which Play calls Drums). \
-             XY across and XY up move the XY pad as a finger does: its effect plays until \
-             both are back, across in the middle and up at the bottom. \
-             Play's own touches stay as they are.",
+            "Swing and Filter turn as Play's Q-Links do (Filter is track 1's). XY across and up \
+             move the pad as a finger does, until both are back (across in the middle, up at the \
+             bottom). XY Hold is the pad's Hold; the layout buttons step through your layouts.",
         );
     }
 
@@ -3124,7 +3134,18 @@ mod tests {
             .filter(|t| t.id == "learn-play-pick")
             .map(|t| t.label)
             .collect();
-        assert_eq!(labels, ["Swing", "Filter", "XY across", "XY up"]);
+        assert_eq!(
+            labels,
+            [
+                "Swing",
+                "Filter",
+                "XY across",
+                "XY up",
+                "XY Hold",
+                "XY layout next",
+                "XY layout back"
+            ]
+        );
         assert_eq!(s.hint(), Some(PLAY_HINT));
         // Nothing for the Q-Links or - and + while it shows.
         assert!(s.qlinks().unwrap().iter().all(|k| !k.enabled));
@@ -3142,6 +3163,15 @@ mod tests {
         assert_eq!(
             s.take_note().unwrap(),
             "XY up: move a knob or a fader on your controller"
+        );
+        // The XY pad's buttons are presses.
+        for (i, id) in [(4, play::XY_HOLD), (5, play::XY_NEXT), (6, play::XY_BACK)] {
+            assert_eq!(tap(&mut s, "learn-play-pick", i), IoReply::Redraw);
+            assert_eq!(armed(&m), Some(ParamAddr::new(Owner::Play, id)));
+        }
+        assert_eq!(
+            s.take_note().unwrap(),
+            "XY layout back: press a button, a key or a footswitch on your controller"
         );
         let _ = paint(&s);
         // Play again shows the picked row's; Back does too.
