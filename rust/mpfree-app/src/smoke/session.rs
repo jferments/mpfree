@@ -2069,6 +2069,10 @@ impl Session {
         );
         self.tracks.play_into(&mut self.mix);
         let mut played = 0;
+        // A kit no track plays on a kit strip of its own (sampler step
+        // 15d, part 2), as main.rs.
+        let homes = self.track_kits.homes(|t| !self.mix.instruments.plays(t));
+        self.mix.strip_kits(&self.app.named_kits(), &homes);
         if let Some(p) = self.sounds.as_mut() {
             p.set_tempo(self.time.info().bpm);
             // The kits play the song's tuning, as main.rs hands it over.

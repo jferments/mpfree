@@ -116,6 +116,23 @@ pub const fn free_channel(n: usize) -> usize {
     FREE_FIRST + n
 }
 
+/// Kit strips (sampler step 15d, part 2): strips of their own for kits no
+/// track plays (the pads' own kit, a bank's own, a kit layer, a MIDI
+/// route's), past the free places'. Twelve is what the pad map and the
+/// routes name at once in practice (its base, eight banks, three layers),
+/// and fits the mixer's 160 tracks.
+pub const KIT_STRIPS: usize = 12;
+
+/// The first kit strip's mixer track.
+pub const KIT_FIRST: usize = FREE_FIRST + crate::instruments::FREE;
+
+/// Kit strip `n`'s mixer track (from 0): [`KIT_FIRST`]` + n`.
+pub const fn kit_channel(n: usize) -> usize {
+    KIT_FIRST + n
+}
+
+const _: () = assert!(KIT_FIRST + KIT_STRIPS <= mpfree_fx::MAX_TRACKS);
+
 /// A track channel's name while the track's own instrument plays there
 /// (the instrument redesign's step 4d, Jay's rule: name by instrument):
 /// the instrument first, then the track, "FM · Track 3", so a name cut
@@ -585,6 +602,16 @@ pub fn strip_name(ch: &PadChannels, s: StripId) -> String {
     }
 }
 
+/// A kit strip's name while a kit holds it (sampler step 15d): the kit's,
+/// "Kit 7", as the list of kits numbers it.
+pub fn kit_strip_name(places: &[Option<u8>; KIT_STRIPS], s: StripId) -> Option<String> {
+    let StripId::Track(t) = s else {
+        return None;
+    };
+    let k = (*places.get(t.checked_sub(KIT_FIRST)?)?)?;
+    Some(format!("Kit {}", usize::from(k) + 1))
+}
+
 /// The strips' names on the panel.
 pub fn name(s: StripId) -> String {
     match s {
@@ -593,6 +620,7 @@ pub fn name(s: StripId) -> String {
         StripId::Track(LOOP) => "Loop".into(),
         StripId::Track(AUDIO) => OLD_AUDIO.into(),
         StripId::Track(TRACKS) => OLD_TRACK_1.into(),
+        StripId::Track(t) if t >= KIT_FIRST => format!("Kit strip {}", t - KIT_FIRST + 1),
         StripId::Track(t) if t >= FREE_FIRST => format!("Free {}", t - FREE_FIRST + 1),
         StripId::Track(t) if t >= TRACKS => format!("Track {}", t - TRACKS + 1),
         LINE => "Line in".into(),
@@ -730,8 +758,17 @@ pub struct MixHost {
     /// plays into its own channel (the audio tracks rethink, phase 1b).
     pub audio_tracks: u128,
     /// Each kit's home as the last period's [`MixHost::pads_homed`] had it
-    /// (0: the pads and Drums; t: track t - 1's channel).
+    /// (0: the pads and Drums, or its kit strip; t: track t - 1's channel).
     homes: [u8; KITS],
+    /// The kit each kit strip holds (sampler step 15d, part 2;
+    /// [`MixHost::strip_kits`]).
+    kit_strips: [Option<u8>; KIT_STRIPS],
+    /// Each kit's kit strip while it sounds there (no track plays it):
+    /// 0 for none, n + 1 for strip n.
+    strip_of: [u8; KITS],
+    /// A kit wanted a strip in the last period and found none free (it
+    /// plays on the pad channels, as before), for the log.
+    strips_full: bool,
     /// The pad channels lent to pads past kit 1's A1-A16 (R3 part 4a).
     pub pad_channels: PadChannels,
     /// How long the tracks' own instruments took in the last period (0
@@ -894,9 +931,10 @@ impl MixHost {
             inputs: 1,
             pads: PAD_STRIPS,
             // The engines' tracks, then one for each sequencer track's own
-            // instrument, then one for each free place's (step 6; unused
-            // ones cost a few flag checks).
-            tracks: TRACKS + instruments::HOLDERS,
+            // instrument, then one for each free place's (step 6), then
+            // the kit strips (sampler step 15d; unused ones cost a few
+            // flag checks).
+            tracks: KIT_FIRST + KIT_STRIPS,
             slots: SLOTS,
             max_latency_ms: 50.0,
         };
@@ -984,6 +1022,9 @@ impl MixHost {
             kit_tracks: 0,
             audio_tracks: 0,
             homes: [0; KITS],
+            kit_strips: [None; KIT_STRIPS],
+            strip_of: [0; KITS],
+            strips_full: false,
             pad_channels: PadChannels::default(),
             instrument_time: Duration::ZERO,
             old_first_opens: 0,
@@ -1095,7 +1136,10 @@ impl MixHost {
                 return Dest::Pad(s);
             }
         }
-        if self.homes.get(kit).copied().unwrap_or(0) == 0 && pad < PADS {
+        if self.homes.get(kit).copied().unwrap_or(0) == 0
+            && self.kit_strip(kit).is_none()
+            && pad < PADS
+        {
             return Dest::Pad(pad);
         }
         Dest::Track(self.kit_track(kit))
@@ -1366,6 +1410,11 @@ impl MixHost {
                 for &(st, kit, pad) in &load.lent {
                     self.pad_channels.hold(st, kit, pad);
                 }
+                // The kit strips as saved (sampler step 15d): each kit
+                // back on its strip, with its settings, as it is named
+                // again (`MixHost::strip_kits`).
+                self.kit_strips = load.kit_strips;
+                self.strip_of = [0; KITS];
                 self.route_lent();
                 self.pad_mutes = load.pad_mutes;
                 self.apply_mutes();
@@ -2486,7 +2535,7 @@ impl MixHost {
                 .unwrap_or_else(|| self.track_channel(t)),
             Instrument::Synth => SYNTH,
             Instrument::Kit(k) => match homes.get(k).copied().unwrap_or(0) {
-                0 => DRUMS,
+                0 => self.kit_strip(k).map_or(DRUMS, kit_channel),
                 h => self.track_channel(usize::from(h) - 1),
             },
             Instrument::MidiOut => return None,
@@ -2847,16 +2896,98 @@ impl MixHost {
             channels: &self.pad_channels,
             played: 0,
             homes,
+            strip_of: &self.strip_of,
         }
     }
 
-    /// The track kit `kit`'s sound plays into: Drums for kit 1 and a kit
-    /// no track has, else its home track's own channel.
+    /// The track kit `kit`'s sound plays into: Drums for kit 1, its kit
+    /// strip for a kit no track has that holds one, else Drums; or its
+    /// home track's own channel.
     pub fn kit_track(&self, kit: usize) -> usize {
         match self.homes.get(kit).copied().unwrap_or(0) {
-            0 => DRUMS,
+            0 => self.kit_strip(kit).map_or(DRUMS, kit_channel),
             h => self.track_channel(usize::from(h) - 1),
         }
+    }
+
+    /// The kit strip kit `kit` sounds on now (no track plays it, and it
+    /// holds one), if any.
+    pub fn kit_strip(&self, kit: usize) -> Option<usize> {
+        let n = *self.strip_of.get(kit)?;
+        (n > 0).then(|| usize::from(n) - 1)
+    }
+
+    /// The kit each kit strip holds ([`MixHost::strip_kits`]).
+    pub fn kit_strips(&self) -> [Option<u8>; KIT_STRIPS] {
+        self.kit_strips
+    }
+
+    /// Whether a kit wanted a kit strip in the last period and found none
+    /// free.
+    pub fn strips_full(&self) -> bool {
+        self.strips_full
+    }
+
+    /// The kit strips as the app has things now (sampler step 15d, part
+    /// 2), each period before [`MixHost::pads_homed`]: each kit `named`
+    /// (the pad map's and the MIDI routes', `App::named_kits`) that no
+    /// track plays (`homes`, `TrackKits::homes`) sounds on a strip of its
+    /// own. It keeps the strip it holds; else it takes a free one; with
+    /// none free it plays on the pad channels as before
+    /// ([`MixHost::strips_full`]). A strip
+    /// stays its kit's while the kit is named with no track, or while the
+    /// strip has settings (an effect, a control moved): the kit comes back
+    /// to it, and its settings with it. Only a plain strip is freed, so a
+    /// strip never changes kit with settings on it. Kit 1 has the pad
+    /// channels and never takes one. Never allocates.
+    pub fn strip_kits(&mut self, named: &[Option<u8>], homes: &[u8]) {
+        let wants = |k: u8| {
+            k > 0
+                && homes.get(usize::from(k)).copied().unwrap_or(0) == 0
+                && named.contains(&Some(k))
+        };
+        for n in 0..KIT_STRIPS {
+            if let Some(k) = self.kit_strips[n] {
+                if !wants(k) && self.plain_kit_strip(n) {
+                    self.kit_strips[n] = None;
+                }
+            }
+        }
+        self.strips_full = false;
+        for k in named.iter().flatten().copied() {
+            if !wants(k) || self.kit_strips.contains(&Some(k)) {
+                continue;
+            }
+            match self.kit_strips.iter().position(Option::is_none) {
+                Some(n) => self.kit_strips[n] = Some(k),
+                None => self.strips_full = true,
+            }
+        }
+        let was = self.strip_of;
+        self.strip_of = [0; KITS];
+        for (n, k) in self.kit_strips.iter().enumerate() {
+            if let Some(k) = *k {
+                let homeless = homes.get(usize::from(k)).copied().unwrap_or(0) == 0;
+                if let Some(at) = self.strip_of.get_mut(usize::from(k)).filter(|_| homeless) {
+                    *at = n as u8 + 1;
+                }
+            }
+        }
+        // A lent pad channel plays into its kit's strip (R3 part 4a).
+        if self.strip_of != was {
+            self.route_lent();
+        }
+    }
+
+    /// Whether kit strip `n` has nothing set: no effects, every
+    /// saved control at its default.
+    fn plain_kit_strip(&self, n: usize) -> bool {
+        let s = StripId::Track(kit_channel(n));
+        self.mixer.chain(s).is_none_or(|c| c.is_empty())
+            && mpfree_fx::strip_params()
+                .iter()
+                .filter(|p| crate::project::saved_control(s, p.id))
+                .all(|p| self.mixer.param(s, p.id) == p.default)
     }
 
     /// Each lent channel's output to its kit's track (after a kit's home
@@ -2935,7 +3066,8 @@ impl MixHost {
     pub fn strip_name(&self, s: StripId) -> String {
         match self.own_instrument_on(s) {
             Some((t, instrument)) => instrument_channel_name(instrument, &own_track_label(s, t)),
-            None => strip_name(&self.pad_channels, s),
+            None => kit_strip_name(&self.kit_strips, s)
+                .unwrap_or_else(|| strip_name(&self.pad_channels, s)),
         }
     }
 
@@ -2971,7 +3103,8 @@ impl MixHost {
         self.give_back_plain();
         let lent: Vec<(StripId, usize, usize)> = self.pad_channels.lent().collect();
         let track1 = StripId::Track(self.track_channel(0));
-        crate::project::mixer_text_lent(&self.mixer, self.pad_mutes, &lent, track1)
+        let places = self.kit_strips;
+        crate::project::mixer_text_lent(&self.mixer, self.pad_mutes, &lent, track1, &places)
     }
 
     /// The tracks whose own channels are in use, a bit each: playing their
@@ -3035,10 +3168,9 @@ impl MixHost {
         }
         for i in (0..LENT).filter(|i| played & (1 << (LENT_BIT + i)) != 0) {
             let s = StripId::Pad(PADS + i);
-            let drums = self
-                .pad_channels
-                .holder(s)
-                .is_some_and(|(k, _)| self.homes.get(k).copied().unwrap_or(0) == 0);
+            let drums = self.pad_channels.holder(s).is_some_and(|(k, _)| {
+                self.homes.get(k).copied().unwrap_or(0) == 0 && self.kit_strip(k).is_none()
+            });
             if drums {
                 add(self.mixer.pad_input(PADS + i));
             }
@@ -3301,6 +3433,11 @@ impl MixHost {
             self.old_audio()
         } else if t < TRACKS {
             true
+        } else if t >= KIT_FIRST {
+            // A kit strip while a kit holds it (sampler step 15d).
+            self.kit_strips
+                .get(t - KIT_FIRST)
+                .is_some_and(Option::is_some)
         } else if t >= FREE_FIRST {
             let n = t - FREE_FIRST;
             n < instruments::FREE && self.instruments.free_in_use() >> n & 1 == 1
@@ -3346,8 +3483,13 @@ impl MixHost {
         let free_used = self.instruments.free_in_use();
         // The shared Audio strip only while it still holds settings.
         let old_audio = self.old_audio();
+        let places = self.kit_strips;
         let shown = |s: StripId| match s {
             StripId::Track(AUDIO) => old_audio,
+            // A kit strip while a kit holds it (sampler step 15d).
+            StripId::Track(t) if t >= KIT_FIRST => {
+                places.get(t - KIT_FIRST).is_some_and(Option::is_some)
+            }
             StripId::Track(t) if t >= FREE_FIRST => {
                 t - FREE_FIRST < instruments::FREE && free_used >> (t - FREE_FIRST) & 1 == 1
             }
@@ -3357,7 +3499,7 @@ impl MixHost {
         };
         let named = |s: StripId| match own.iter().find(|(o, _)| *o == s) {
             Some((_, n)) => n.clone(),
-            None => strip_name(ch, s),
+            None => kit_strip_name(&places, s).unwrap_or_else(|| strip_name(ch, s)),
         };
         let mut st = MixState::from_mixer_where(&mut self.mixer, view, &named, &shown);
         st.counts[0] = TRACKS - usize::from(!old_audio)
@@ -3474,6 +3616,8 @@ pub struct Pads<'a> {
     channels: &'a PadChannels,
     played: u128,
     homes: &'a [u8],
+    /// Each kit's kit strip, 0 for none ([`MixHost::strip_kits`]).
+    strip_of: &'a [u8; KITS],
 }
 
 impl Pads<'_> {
@@ -3493,7 +3637,10 @@ impl PadOut for Pads<'_> {
                 return self.mixer.pad_input(s);
             }
         }
+        let place = self.strip_of.get(kit).copied().unwrap_or(0);
         match self.homes.get(kit).copied().unwrap_or(0) {
+            // A kit no track plays, on its kit strip (sampler step 15d).
+            0 if place > 0 => self.mixer.track_input(kit_channel(usize::from(place) - 1)),
             0 if pad < PADS => {
                 self.played |= 1 << pad;
                 self.mixer.pad_input(pad)
@@ -3711,6 +3858,97 @@ mod tests {
         let _ = h.pads_homed(&[0, 0]);
         assert_eq!(h.channels_in_use(), 0);
         assert!(!h.track_strips().contains(&StripId::Track(track)));
+    }
+
+    /// A kit no track plays (sampler step 15d, part 2) sounds on a kit
+    /// strip of its own, named by its kit and shown with the tracks: every
+    /// pad of it, and a pad lent a channel plays into it. A track that
+    /// plays the kit takes it from there; a plain strip is freed, one with
+    /// settings stays its kit's (a held strip never changes kit). Kit 1
+    /// keeps the pad channels. With every strip taken, a kit plays on the
+    /// pad channels as before.
+    #[test]
+    fn a_kit_no_track_plays_gets_a_kit_strip_kept_while_it_has_settings() {
+        use mpfree_fx::ids::mixer::output;
+        let mut h = MixHost::new(RATE, -6.0, -6.0);
+        let strip = StripId::Track(kit_channel(0));
+        let homeless = [0u8; 8];
+        // Kit 3's B5 lent a channel before it has a strip: into Drums.
+        let lent = h.lend_pad(2, 20).expect("a channel for kit 3's B5");
+        assert_eq!(h.mixer.param(lent, mx::OUTPUT_TRACK), DRUMS as f32);
+        // The pad map names kits 1 and 3; no track plays either.
+        h.strip_kits(&[Some(0), Some(2)], &homeless);
+        assert_eq!(h.kit_strip(0), None, "kit 1 keeps the pad channels");
+        assert_eq!(h.kit_strip(2), Some(0));
+        assert_eq!(h.kit_strips()[0], Some(2));
+        assert!(!h.strips_full());
+        assert_eq!(h.kit_track(2), kit_channel(0));
+        assert_eq!(h.strip_name(strip), "Kit 3");
+        assert!(h.track_strips().contains(&strip));
+        assert_eq!(
+            h.mixer.param(lent, mx::OUTPUT),
+            output::TRACK,
+            "the lent channel still plays into a track"
+        );
+        assert_eq!(
+            h.mixer.param(lent, mx::OUTPUT_TRACK),
+            kit_channel(0) as f32,
+            "the lent channel follows its kit to its strip"
+        );
+        let mut pads = h.pads_homed(&homeless);
+        // The sampler adds each pad's sound into its strip.
+        pads.pad(2, 7).unwrap().0[0] += 0.5;
+        pads.pad(2, PADS + 1).unwrap().0[0] += 0.25;
+        pads.pad(2, 20).unwrap().0[0] = 0.125;
+        pads.pad(0, 7).unwrap().0[0] = 1.0;
+        assert_eq!(
+            pads.played(),
+            1 << 7 | 1 << LENT_BIT,
+            "kit 1's A8 and the lent channel"
+        );
+        let (l, _) = h.mixer.track_input(kit_channel(0)).unwrap();
+        assert_eq!(l[0], 0.75, "kit 3's A8 and B2, added, on its strip");
+        assert_eq!(h.mixer.pad_input(7).unwrap().0[0], 1.0);
+        assert_eq!(h.mixer.pad_input(PADS).unwrap().0[0], 0.125);
+        // A track plays kit 3: the plain strip is freed.
+        h.strip_kits(&[Some(2)], &[0, 0, 2]);
+        assert_eq!(h.kit_strip(2), None);
+        assert_eq!(h.kit_strips()[0], None);
+        assert!(!h.track_strips().contains(&strip));
+        assert!(!h.strips_full());
+        // No track again: the strip again. A control moved there holds it
+        // while nothing names kit 3, and the next kit takes the next one.
+        h.strip_kits(&[Some(2)], &homeless);
+        assert_eq!(h.kit_strip(2), Some(0));
+        let volume = mpfree_fx::strip_params()
+            .iter()
+            .find(|p| p.id == mx::VOLUME)
+            .unwrap()
+            .default;
+        h.mixer.set_now(strip, mx::VOLUME, volume - 3.0);
+        h.strip_kits(&[Some(4)], &homeless);
+        assert_eq!(h.kit_strips()[0], Some(2), "held: it has settings");
+        assert_eq!(h.kit_strip(4), Some(1), "a held strip never changes kit");
+        assert_eq!(h.strip_name(strip), "Kit 3");
+        // A track plays kit 3: it sounds there, its strip waits for it.
+        h.strip_kits(&[Some(2), Some(4)], &[0, 0, 2]);
+        assert_eq!(h.kit_strip(2), None);
+        assert_eq!(h.kit_strips()[0], Some(2));
+        // Plain again and named by nothing: freed.
+        h.mixer.set_now(strip, mx::VOLUME, volume);
+        h.strip_kits(&[Some(4)], &homeless);
+        assert_eq!(h.kit_strips()[0], None);
+        assert_eq!(h.kit_strip(4), Some(1));
+        // Every strip taken: the next kit plays on the pad channels.
+        let named: Vec<Option<u8>> = (1..=KIT_STRIPS as u8 + 1).map(Some).collect();
+        h.strip_kits(&named, &homeless);
+        assert!(h.strips_full());
+        let last = KIT_STRIPS + 1;
+        assert!((1..last).all(|k| h.kit_strip(k).is_some()));
+        assert_eq!(h.kit_strip(last), None);
+        let mut pads = h.pads_homed(&homeless);
+        pads.pad(last, 3).unwrap().0[0] = 0.5;
+        assert_eq!(pads.played(), 1 << 3);
     }
 
     /// A track's channel (R3 part 4b): Drums for track 1, its own past

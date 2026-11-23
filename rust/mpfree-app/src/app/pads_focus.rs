@@ -1076,6 +1076,23 @@ impl App {
         self.kit_tracks = out;
     }
 
+    /// The kits the pad map and the MIDI routes name, each once (its base,
+    /// the banks' own, its layers, the routes'), for the mixer's kit
+    /// strips (sampler step 15d, part 2: one no track plays sounds on a
+    /// strip of its own, `MixHost::strip_kits`). Allocates nothing.
+    pub fn named_kits(&self) -> [Option<u8>; MAP_KITS] {
+        let mut out = [None; MAP_KITS];
+        let mut n = 0;
+        for k in self.map_kits() {
+            let k = k.min(usize::from(u8::MAX)) as u8;
+            if n < MAP_KITS && !out[..n].contains(&Some(k)) {
+                out[n] = Some(k);
+                n += 1;
+            }
+        }
+        out
+    }
+
     /// The kit places the pad map names that the list has: its base, then
     /// the banks' own, then its layers, then the kits the MIDI routes name
     /// (sampler step 15f).
