@@ -94,6 +94,7 @@ Every design page opens with a **Status** line (proposal, approved, built, on ma
 - [Filters](design/fx-filter.md): the design of the Multi filter and the DJ filter: the state-variable filter, a resonance that bends instead of clipping, crossfaded type and slope changes, the drive at twice the rate with antialiasing, the fixed latency, the presets, the F targets and the cost (`rust/mpfree-fx`, 2026-11-17).
 - [Export](design/export.md): the mixdown, stems and MIDI file from one pass over the song, Fast (quiet, the default) or Listen (real time), when an export has to listen, and the app's part (`rust/mpfree-export`).
 - [Modulation](design/modulation.md): parameter addresses, macros, the mod matrix, morph and Q-Link bindings (`rust/mpfree-param`, `rust/mpfree-mod`).
+- [The XY controller](design/xy.md): one engine for the XY pad: timed input from any controller, who owns a gesture (the first touch, or the newest gesture from another controller), layouts of up to eight settings each way with a range and a curve, compiled for the sound loop, and the pad's glide; the Play page's ten ready-made layouts on it (`rust/mpfree-xy`, XY controller plan phase 1, 2026-11-22).
 
 ### The sampler
 
