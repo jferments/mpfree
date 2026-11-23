@@ -8528,6 +8528,110 @@ mod tests {
         assert_eq!(p.clip(1, row).map(|c| c.notes[0].note), Some(30));
     }
 
+    /// The scene card's Insert row and Delete row (5.2): an empty row goes
+    /// in under a row and the rows under it move down one, or a row goes
+    /// and the rows under it move up; their scenes, the song list's steps,
+    /// what plays and the scene playing go with them, and UNDO takes each
+    /// back. A clip the song plays stays the song's.
+    #[test]
+    fn insert_row_and_delete_row_move_the_rows_under_them_and_undo_takes_them_back() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let one_bar = |note: u8| {
+            let mut c = Clip::new("beat", 3840);
+            c.notes = vec![mpfree_seq::Note::new(0, 100, note, 100)];
+            c
+        };
+        for r in 0..3 {
+            h.control.project.tracks[0].slots[r] = Some(one_bar(4 + r as u8));
+            h.control.project.tracks[1].slots[r] = Some(one_bar(30 + r as u8));
+        }
+        h.control.project.scene_mut(1).unwrap().name = "Verse".into();
+        h.control.project.scene_mut(2).unwrap().name = "Drop".into();
+        h.control.project.arrangement.list.steps = (0..3)
+            .map(|row| mpfree_seq::ListStep { row, times: 1 })
+            .collect();
+        h.control.project.give_clip_ids();
+        h.act(TimeAction::LaunchScene(2)).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR, &[]);
+        assert_eq!(h.state().scene_playing, Some(2));
+        let note =
+            |h: &TimeHost, t: usize, r: usize| h.project().clip(t, r).map(|c| c.notes[0].note);
+        let steps = |h: &TimeHost| -> Vec<usize> {
+            h.project()
+                .arrangement
+                .list
+                .steps
+                .iter()
+                .map(|s| s.row)
+                .collect()
+        };
+        let played =
+            |h: &TimeHost| -> Vec<usize> { h.control.launches.iter().map(|l| l.slot).collect() };
+        // Insert row under row 1: Verse and Drop down one, row 2 empty.
+        assert_eq!(
+            h.act(TimeAction::InsertRow(0)).unwrap(),
+            "clips: an empty row 2 under row 1, the rows under it down one (UNDO takes it back)"
+        );
+        assert!(h.project().row_empty(1));
+        assert_eq!((note(&h, 0, 2), note(&h, 1, 3)), (Some(5), Some(32)));
+        assert_eq!(h.project().scene(3).map(|s| s.name.as_str()), Some("Drop"));
+        assert_eq!(steps(&h), [0, 2, 3]);
+        assert_eq!(played(&h), [3, 3], "Drop plays on, in its new row");
+        assert_eq!(h.state().scene_playing, Some(3));
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!((note(&h, 0, 1), note(&h, 0, 2)), (Some(5), Some(6)));
+        assert_eq!(steps(&h), [0, 1, 2]);
+        assert_eq!(h.state().scene_playing, Some(2));
+        // Delete row 2, Verse: Drop up one, its step too, Verse's gone.
+        assert_eq!(
+            h.act(TimeAction::DeleteRow(1)).unwrap(),
+            "clips: row 2 (Verse) deleted, the rows under it up one (UNDO brings it back)"
+        );
+        assert_eq!((note(&h, 0, 1), note(&h, 1, 1)), (Some(6), Some(32)));
+        assert!(h.project().row_empty(2));
+        assert_eq!(h.project().scene(1).map(|s| s.name.as_str()), Some("Drop"));
+        assert_eq!(steps(&h), [0, 1]);
+        assert_eq!(played(&h), [1, 1]);
+        assert_eq!(h.state().scene_playing, Some(1));
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!((note(&h, 0, 1), note(&h, 0, 2)), (Some(5), Some(6)));
+        assert_eq!(h.project().scene(1).map(|s| s.name.as_str()), Some("Verse"));
+        assert_eq!(steps(&h), [0, 1, 2]);
+        assert_eq!(played(&h), [2, 2]);
+        assert_eq!(h.state().scene_playing, Some(2));
+        h.act(TimeAction::Redo).unwrap();
+        assert_eq!(note(&h, 0, 1), Some(6));
+        assert_eq!(played(&h), [1, 1]);
+        h.act(TimeAction::Undo).unwrap();
+        // The playing row deleted: its clips stop.
+        h.act(TimeAction::DeleteRow(2)).unwrap();
+        assert_eq!(played(&h), Vec::<usize>::new());
+        assert_eq!(h.state().scene_playing, None);
+        h.act(TimeAction::Undo).unwrap();
+        // No room under the grid's last row.
+        h.control.project.tracks[0].slots[SLOTS - 1] = Some(one_bar(9));
+        h.control.project.give_clip_ids();
+        assert!(h
+            .act(TimeAction::InsertRow(0))
+            .unwrap_err()
+            .contains("in use"));
+        h.control.project.tracks[0].slots[SLOTS - 1] = None;
+        // A row the song plays: its clips stay the song's.
+        h.act(TimeAction::StopAll).unwrap();
+        h.command(Command::Stop);
+        run(&mut h, &mut pads, 2 * BAR, &[]);
+        h.act(TimeAction::ScenesToSong).unwrap();
+        let id = h.project().clip(0, 1).unwrap().id;
+        assert!(h
+            .act(TimeAction::DeleteRow(1))
+            .unwrap()
+            .contains("the song keeps playing its clips"));
+        assert!(h.project().arrangement.plays(id));
+        assert!(h.project().arrangement.clips.get(id).is_some());
+    }
+
     /// Two one-bar rows become a song (Scenes → song), which plays in song
     /// mode; a clip launched on track 1 takes it over, and the song plays
     /// on there after it stops. The song goes back into rows (Song →

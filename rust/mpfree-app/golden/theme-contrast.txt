@@ -18,8 +18,7 @@ abletown clips-loops 3 # AbleTown (22 Nov): faded off-state labels and small mar
 abletown clips-mutes 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown clips-perform 7 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown clips-perform-song 4 # the Clips grid's runs, as clips-perform; none of the preview's own
-abletown clips-scene 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
-abletown clips-scene-program 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown clips-scene-card 7 # the Clips grid's runs under the scene card, the same with it closed; none of the card's own
 abletown clips-solo 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown clips-tracks 5 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown clips-tracks-end 3 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
@@ -62,8 +61,7 @@ console clips-loops 3 # before the theme refactor (phase 0 baseline)
 console clips-mutes 1 # before the theme refactor (phase 0 baseline)
 console clips-perform 16 # before the theme refactor (phase 0 baseline)
 console clips-perform-song 16 # the Clips grid's runs, as clips-perform; none of the preview's own
-console clips-scene 1 # before the theme refactor (phase 0 baseline)
-console clips-scene-program 1 # before the theme refactor (phase 0 baseline)
+console clips-scene-card 7 # the Clips grid's runs under the scene card, the same with it closed; none of the card's own
 console clips-solo 3 # before the theme refactor (phase 0 baseline)
 console clips-tracks 5 # before the theme refactor (phase 0 baseline)
 console clips-tracks-end 4 # before the theme refactor (phase 0 baseline)
@@ -191,8 +189,7 @@ default clips-loops 3 # before the theme refactor (phase 0 baseline)
 default clips-mutes 1 # before the theme refactor (phase 0 baseline)
 default clips-perform 16 # before the theme refactor (phase 0 baseline)
 default clips-perform-song 16 # the Clips grid's runs, as clips-perform; none of the preview's own
-default clips-scene 1 # before the theme refactor (phase 0 baseline)
-default clips-scene-program 1 # before the theme refactor (phase 0 baseline)
+default clips-scene-card 7 # the Clips grid's runs under the scene card, the same with it closed; none of the card's own
 default clips-solo 15 # before the theme refactor (phase 0 baseline)
 default clips-tracks 5 # before the theme refactor (phase 0 baseline)
 default clips-tracks-end 4 # before the theme refactor (phase 0 baseline)
@@ -310,8 +307,7 @@ light clips-loops 3 # Light (phase 4): faint text, under 3:1 in Default too
 light clips-mutes 1 # Light (phase 4): faint text, under 3:1 in Default too
 light clips-perform 7 # Light (phase 4): faint text, under 3:1 in Default too
 light clips-perform-song 4 # the Clips grid's runs, as clips-perform; none of the preview's own
-light clips-scene 1 # Light (phase 4): faint text, under 3:1 in Default too
-light clips-scene-program 1 # Light (phase 4): faint text, under 3:1 in Default too
+light clips-scene-card 7 # the Clips grid's runs under the scene card, the same with it closed; none of the card's own
 light clips-solo 1 # Light (phase 4): faint text, under 3:1 in Default too
 light clips-tracks 5 # Light (phase 4): faint text, under 3:1 in Default too
 light clips-tracks-end 3 # Light (phase 4): faint text, under 3:1 in Default too
@@ -345,8 +341,7 @@ slate clips-loops 3 # Slate (22 Nov): faded off-state labels and small marks on 
 slate clips-mutes 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
 slate clips-perform 7 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
 slate clips-perform-song 4 # the Clips grid's runs, as clips-perform; none of the preview's own
-slate clips-scene 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
-slate clips-scene-program 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate clips-scene-card 7 # the Clips grid's runs under the scene card, the same with it closed; none of the card's own
 slate clips-solo 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
 slate clips-tracks 5 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
 slate clips-tracks-end 3 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
@@ -374,6 +369,7 @@ spaceship arrange-instruments 67 # before the theme refactor (phase 0 baseline)
 spaceship arrange-list 39 # before the theme refactor (phase 0 baseline)
 spaceship arrange-list-link 39 # new screen (Arrange 4b.5): arrange-list's 39 runs; Link's chooser over it adds none
 spaceship arrange-list-linked 41 # new screen (Arrange 4b.2): arrange-list's 39 runs, and the Song row's name and times, faint by the approved design (the song's own bars)
+spaceship arrange-list-scene-card 39 # the song list's runs under the scene card, the same with it closed; none of the card's own
 spaceship arrange-report 12 # the report card (Arrange 4.3) over arrange-song with nothing picked: arrange-song's 10 runs plus the faint Make unique and Delete, all under the card's dimming; the card adds none
 spaceship arrange-report-exact 10 # arrange-song with the exact line on the hint (Arrange 4.3): the same 10 runs as arrange-song
 spaceship arrange-report-list 39 # the report card (Arrange 4.3) over arrange-list: the same 39 runs as arrange-list, under the dimming; the card adds none
@@ -414,8 +410,7 @@ spaceship clips-loops 44 # before the theme refactor (phase 0 baseline)
 spaceship clips-mutes 43 # before the theme refactor (phase 0 baseline)
 spaceship clips-perform 46 # before the theme refactor (phase 0 baseline)
 spaceship clips-perform-song 47 # the Clips grid's runs, as clips-perform; none of the preview's own
-spaceship clips-scene 67 # before the theme refactor (phase 0 baseline)
-spaceship clips-scene-program 67 # before the theme refactor (phase 0 baseline)
+spaceship clips-scene-card 62 # the Clips grid's runs under the scene card, the same with it closed; none of the card's own
 spaceship clips-solo 81 # before the theme refactor (phase 0 baseline)
 spaceship clips-tracks 66 # before the theme refactor (phase 0 baseline)
 spaceship clips-tracks-end 67 # before the theme refactor (phase 0 baseline)
@@ -547,8 +542,7 @@ synthwave clips-loops 3 # before the theme refactor (phase 0 baseline)
 synthwave clips-mutes 1 # before the theme refactor (phase 0 baseline)
 synthwave clips-perform 7 # before the theme refactor (phase 0 baseline)
 synthwave clips-perform-song 4 # the Clips grid's runs, as clips-perform; none of the preview's own
-synthwave clips-scene 1 # before the theme refactor (phase 0 baseline)
-synthwave clips-scene-program 1 # before the theme refactor (phase 0 baseline)
+synthwave clips-scene-card 7 # the Clips grid's runs under the scene card, the same with it closed; none of the card's own
 synthwave clips-solo 1 # before the theme refactor (phase 0 baseline)
 synthwave clips-tracks 5 # before the theme refactor (phase 0 baseline)
 synthwave clips-tracks-end 3 # before the theme refactor (phase 0 baseline)

@@ -326,6 +326,28 @@ impl Perform {
         }
     }
 
+    /// Rows moved (a row dragged, copied, put in or deleted, or that
+    /// undone): the scene playing, the one waiting and each track's clip
+    /// follow go with their rows, `to` giving each row's new place. One
+    /// whose row went (None) is let go: what plays plays on.
+    pub fn rows_moved(&mut self, to: impl Fn(usize) -> Option<usize>) {
+        self.playing = self.playing.and_then(|p| {
+            Some(Playing {
+                row: to(p.row)?,
+                ..p
+            })
+        });
+        self.cued = self.cued.and_then(&to);
+        for c in &mut self.clips {
+            *c = c.and_then(|k| {
+                Some(ClipCount {
+                    slot: to(k.slot)?,
+                    ..k
+                })
+            });
+        }
+    }
+
     /// The list stops going on by itself (a scene launched by hand, Stop
     /// all, Back to song); what plays plays on.
     pub fn end_list(&mut self) {

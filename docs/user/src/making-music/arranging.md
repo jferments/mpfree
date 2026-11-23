@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-seq/src/scenes.rs rust/mpfree-seq/src/arrange.rs rust/mpfree-perform rust/mpfree-time-ui/src/song.rs rust/mpfree-time-ui/src/widgets.rs rust/mpfree-time-ui/src/list.rs
+covers: rust/mpfree-seq/src/scenes.rs rust/mpfree-seq/src/arrange.rs rust/mpfree-perform rust/mpfree-time-ui/src/song.rs rust/mpfree-time-ui/src/widgets.rs rust/mpfree-time-ui/src/list.rs rust/mpfree-time-ui/src/scene_card.rs
 checked: 2026-11-23 2bc73d12
 -->
 
@@ -15,33 +15,42 @@ A row of the clip grid is a scene. Tap a row's number on the left and every clip
 {{shot: clips | The Arrange tab's clip grid in a jam: clips playing (a ring turning), two waiting for the next bar ("from 4.1"), Chop B recording, loop cells from the looper, and empty slots, with the morph bar under it.}}
 
 - The square button above the row numbers stops every track on the next bar line.
-- A scene can also switch which tracks are muted on its bar line (a track with no clip in the row too: in song mode it plays the song until the line, and its pad and name show the mute waiting, as TRACK MUTE's do), send your outside synths and drum machines a program change there, have a name, and move on by itself after some bars (to the next row, back to the first, or to a random one). Set these up on the Record panel's **Scene** tab (below). **Song → scenes** (below) also sets rows up to play one after another, and the [song list](#the-song-list) plays them in any order.
+- A scene can also switch which tracks are muted on its bar line (a track with no clip in the row too: in song mode it plays the song until the line, and its pad and name show the mute waiting, as TRACK MUTE's do), send your outside synths and drum machines a program change there, have a name, and move on by itself after some bars (to the next row, back to the first, or to a random one). A scene can also change the tempo on its line, and let a track with no clip in the row keep playing through the change. Set these up on the row's **scene card** (below). **Song → scenes** (below) also sets rows up to play one after another, and the [song list](#the-song-list) plays them in any order.
 
 ### Setting up a scene
 
-Tap **Scene**, the third tab on the Record panel's title line, to the right of the grid. It shows the scene playing, or scene 1 when nothing plays. Launching a scene or picking a step of the song list brings that scene.
+Hold a row's number for half a second and its **scene card** opens over the grid, which dims behind it. On the [song list](#the-song-list), hold a part's number for its scene's card. A quick tap on the number still launches the row. Tap **Done**, or anywhere off the card, to close it.
 
-{{shot: clips-scene | The Record panel's Scene tab: scene 2, named Drop, moves on to the next scene after 4 bars four times in five, and mutes Track 2 when it starts.}}
+{{shot: clips-scene-card | The scene card for row 2, Verse: it moves on to the next scene after 4 bars four times in five, sets 95 BPM on its line, mutes Hats and sends Stab's synth program 12. Chords and Dust keep playing through it; the row's other empty cells stop their tracks.}}
 
-Turn the wheel to pick a row, and press **–** or **+** to change it:
+At the top is the scene's name, with **‹** and **›** either side to go to the card of the scene before or after. A row with no name is called by its number ("Row 2"). Tap the name to rename the scene: the keyboard opens, type the name and tap **Enter**. The name shows on the song list, and becomes the section's name when the scene goes into the song.
 
-- **Scene**: which scene you are setting up. Its name shows after its number.
+Under it are the scene's settings, in two columns. Tap **‹** or **›** on a setting to change it, or tap its name and turn the wheel or press **–** and **+**:
+
 - **Follow**: what plays after this scene has played its bars: off (it plays until you launch another), the next scene, the previous one, the first or the last, any scene, any other scene, this one again, or Stop. Turning it on sets **After** to the scene's longest clip.
 - **After**: how many bars the scene plays before Follow happens.
 - **Chance**: how often Follow happens, in steps of 10 %.
 - **Or**: what happens the rest of the time, when Chance is under 100 %. **Stay** plays the scene again for the same bars and then tries again.
-- **Mutes**: "as they are" leaves the mutes alone when the scene starts. **+** gives the scene the mutes you have now.
+- **Tempo**: "as it is" leaves the tempo alone. Tap the value to give the scene the tempo playing now, and tap it again to go back to as it is. **‹** and **›** step it 1 BPM, or 0.1 BPM with **SHIFT** held. The tempo changes on the line the scene's clips start on, so the new part starts at its own tempo.
+- **Mutes**: "as they are" leaves the mutes alone when the scene starts. Tap the value to give the scene the mutes you have now: mute the tracks you want silent in this part, then tap it. When the scene starts, those tracks mute and the others play.
 - **Program**: the program change the scene sends the armed track's synth or drum machine when it starts, **1** to **128**, or **off** for none. Arm another track to set its own: each track can have one. It shows a dash when no track is armed.
-- **Bank**: the bank select sent just before that program, **0/0** to **127/127** (the two numbers sent, as on the clip's **Bank**), or **off**. Hold **SHIFT** as you press **–** or **+** to step the first number.
+- **Bank**: the bank select sent just before that program, **0/0** to **127/127** (the two numbers sent, as on the clip's **Bank**), or **off**. Hold **SHIFT** as you step it to step the first number.
 - **Sent to**: the tracks this scene sends a program change to.
-
-{{shot: clips-scene-program | Further down the Scene tab: scene 2 sends the armed track's synth program 12 when it starts, with no bank select.}}
 
 A scene's program change goes out on the bar line the scene starts on, after the old clip's last notes and before the new clip's first, so the synth plays the new part with the new sound. A track with no clip in the row gets its program change too, which lets the scene switch a drum machine that plays its own patterns. If the clip that starts on a track has its own **Program** (see [Clip settings](clips.md#clip-settings)), the clip's goes out instead. They go out again when you start the music after stopping, but not on every loop. Only tracks that play on MIDI Out send them (their **Plays on**, with **Send MIDI and CV out** on in Prefs): see [MIDI and CV](midi-and-cv.md).
 
-**Mutes now**, under the rows, also gives the scene the mutes you have now: mute the tracks you want silent in this part, then tap it. When the scene starts, those tracks mute and the others play. **Rename** opens the keyboard: type the scene's name and tap **Enter**. The name shows on the song list, and becomes the section's name when the scene goes into the song.
+**Empty cells** has a box for each track, eight at a time (**‹** and **›** show the rest). A track with a clip in the row shows the clip's name: it starts with the scene. A track with no clip in the row shows **Stop** or **Keep**. **Stop**, as it always was, stops the track when the scene starts. **Keep** lets whatever the track plays carry on through the change, so a bass line or a loop can run on under several scenes. Tap the box to turn it over. Scenes → song lengthens a kept track's block through the row, so the song plays it the same way.
 
-Every change plays at once, and **UNDO** takes it back. Turning one row many times is one undo. While a scene plays, new mutes wait until it starts again.
+Along the card's foot:
+
+- **Capture** copies the clips playing now into the first empty row under the scene playing (from row 1 when no scene plays), as clips of their own. In song mode a track playing the song gives the song's block under the playhead. What plays carries on, and the card moves to the new row.
+- **Copy row** puts a copy of this row, its clips and its scene, under it. The rows under it move down one.
+- **Insert row** puts an empty row under it, and the rows under it move down one.
+- **Delete row** takes the row out, its clips and its scene with it, and the rows under it move up one. Its clips stop if they were playing, and its parts leave the song list. A clip of the row that the song plays stays in the song. In Perform it needs a half-second hold, like every delete.
+
+Copy row and Insert row need the grid's last row to be empty, since every row under this one moves down.
+
+Every change plays at once, and **UNDO** takes it back. Turning one setting many times is one undo. While a scene plays, new mutes wait until it starts again.
 
 ## The scene morph
 

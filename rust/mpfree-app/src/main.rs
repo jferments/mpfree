@@ -7353,6 +7353,8 @@ fn time_action(
             | TimeAction::DropClip { .. }
             | TimeAction::DropRow { .. }
             | TimeAction::CaptureScene
+            | TimeAction::InsertRow(_)
+            | TimeAction::DeleteRow(_)
             | TimeAction::MovePlacement { .. }
             | TimeAction::StretchPlacement { .. }
             | TimeAction::MoveSection { .. }
