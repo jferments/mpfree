@@ -1327,7 +1327,7 @@ mod looper {
             for _ in 0..13 {
                 s.pad(0, 120, 0.1).run_for(0.4);
             }
-            // Free length asks 4 bars; 3 whole ones were played, so 2.
+            // Until tap asks 4 bars; 3 whole ones were played, so 2.
             let t = at(&mut s, "leditor", "capture", 0);
             assert_eq!(t.label, "Capture bars 2 and 3");
             s.button_with("SHIFT", "REC");
@@ -1408,7 +1408,7 @@ mod looper {
     /// song playing, a pad early in a bar starts the next loop on that
     /// bar's line, the pad's sound in it.
     /// Looper redesign step 4c: with Tempo from the first loop on and the
-    /// song stopped, a first loop on Free length records free from REC;
+    /// song stopped, a first loop on Until tap records free from REC;
     /// REC again closes it, its length sets the tempo (1 bar at about 96
     /// BPM here), and the song starts at that tempo as the loop comes
     /// round. The app takes the tempo exactly, so it isn't asked back.
@@ -1422,7 +1422,7 @@ mod looper {
             // setting the MENU row steps).
             s.app.settings.loop_tempo = true;
             let free = at(&mut s, "leditor", "bars", 1);
-            assert_eq!(free.label, "Free");
+            assert_eq!(free.label, "Until tap");
             s.press_target(&free).run_for(0.1);
             assert_eq!(s.time.info().state, mpfree_transport::State::Stopped);
             let before = s.app.settings.bpm;
@@ -1837,6 +1837,290 @@ mod looper {
             let l2 = s.looper.looper.loop_status(1).unwrap();
             assert_eq!((l2.phase, l2.moved), (Phase::Playing, Some(by2)));
             assert_eq!(s.looper.snaps_refused, 0, "{:?}", s.said());
+        });
+    }
+
+    /// What the hint line says STOP (or PLAY) does now: its last part.
+    fn stop_words(s: &Session) -> String {
+        s.hint()
+            .rsplit("   ·   ")
+            .next()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// The Looper tab's deck, as drawn.
+    fn deck(s: &Session) -> &crate::looper_deck::LoopDeck {
+        s.screen
+            .ui
+            .get::<crate::looper_deck::LoopDeck>(crate::looper_deck::DECK)
+            .expect("the deck")
+    }
+
+    /// Whether the free clock runs (None: there is none).
+    fn free_runs(s: &Session) -> Option<bool> {
+        s.looper.looper.free_clock().map(|c| c.running)
+    }
+
+    /// Free loops' screens (step F2; the design's mockups 1 to 4, Jay's go
+    /// of 23 Nov), the whole way on the Looper tab: Sync: Free and Length:
+    /// Until tap on the strip, every empty loop saying "Pads · free", then
+    /// a first free loop recorded in your own time with the song stopped
+    /// (REC, the pads, REC again). It plays on at its own tempo with the
+    /// song still stopped, Stop in Listen's place and the hint line saying
+    /// what STOP does. STOP stops it at its top (its ring at rest with ▶,
+    /// Play in Listen's place); its ring plays the free loops again, the
+    /// header's Stop and Play stop and start them, and PLAY starts the
+    /// song and the free loops together. Then STOP stops the song alone,
+    /// and the free loop plays on.
+    #[test]
+    fn a_free_loop_records_in_your_own_time_and_stops_and_plays_from_the_screen() {
+        on_big_stack(|| {
+            use mpfree_looper::Clock;
+            use mpfree_transport::State;
+            let mut s = Session::new();
+            s.make_sounds();
+            s.press("header", "tab", "Looper");
+            assert_eq!(stop_words(&s), "STOP: silence");
+            // Sync: Free and Length: Until tap, as a musician taps them.
+            s.press("leditor", "sync", "Free").run_for(0.1);
+            assert_eq!(status(&s).clock, Clock::Free);
+            assert!(!at(&mut s, "leditor", "sync", 1).enabled, "Free is lit");
+            assert_eq!(deck(&s).channels[1].foot, "Pads · free");
+            assert_eq!(smart_editor(&s).sub, "empty · records the pads, free");
+            s.press("leditor", "bars", "Until tap").run_for(0.1);
+            assert_eq!(status(&s).bars, None);
+            // REC: it records at once, in your own time.
+            s.button("REC").run_for(0.1);
+            assert_eq!(
+                (status(&s).phase, status(&s).free),
+                (Phase::Recording, true)
+            );
+            assert_eq!(s.time.info().state, State::Stopped);
+            assert_eq!(
+                smart_editor(&s).sub,
+                "recording free · its length sets its own tempo; the song stays stopped"
+            );
+            for _ in 0..5 {
+                s.pad(0, 120, 0.1).run_for(0.4);
+            }
+            // REC again closes it: it plays on at its own tempo, and the
+            // song stays stopped.
+            s.button("REC");
+            until_phase(&mut s, Phase::Playing, 3.0);
+            // (Smart loop end's word on the hint line goes after 4 s.)
+            s.run_for(4.5);
+            assert_eq!(
+                s.time.info().state,
+                State::Stopped,
+                "the song stays stopped"
+            );
+            assert_eq!(free_runs(&s), Some(true));
+            assert_eq!(deck(&s).channels[0].length, "free");
+            let tempo = deck(&s)
+                .head
+                .free_tempo
+                .clone()
+                .expect("the free clock's tempo");
+            assert!(
+                tempo.starts_with("free ") && tempo.ends_with(" BPM"),
+                "{tempo}"
+            );
+            assert_eq!(stop_words(&s), "STOP: free loops");
+            assert_eq!(smart_editor(&s).free, Some((true, false)));
+            assert_eq!(
+                at(&mut s, "leditor", "free-loops", 0).label,
+                "Stop the free loops"
+            );
+            // STOP: the free loops stop at their tops.
+            s.button("STOP").run_for(0.2);
+            assert_eq!(free_runs(&s), Some(false));
+            assert_eq!(status(&s).phase, Phase::Playing, "kept, at rest");
+            assert_eq!(stop_words(&s), "PLAY: song and free loops");
+            assert!(
+                smart_editor(&s).sub.ends_with(" · stopped"),
+                "{}",
+                smart_editor(&s).sub
+            );
+            assert_eq!(
+                deck(&s).channels[0].state,
+                crate::looper_deck::RingState::Stopped(false)
+            );
+            assert_eq!(deck(&s).channels[0].centre.0, "▶");
+            assert_eq!(
+                at(&mut s, "leditor", "free-loops", 0).label,
+                "Play the free loops"
+            );
+            // Its ring plays them, at once with the song stopped (not an
+            // overdub).
+            s.press("ldeck", "ring", "Loop 1 ring: play the free loops")
+                .run_for(0.2);
+            assert_eq!(free_runs(&s), Some(true));
+            assert_eq!(status(&s).phase, Phase::Playing);
+            assert_eq!(stop_words(&s), "STOP: free loops");
+            // The header's Stop and Play.
+            s.press("leditor", "free-loops", "Stop the free loops")
+                .run_for(0.2);
+            assert_eq!(free_runs(&s), Some(false));
+            s.press("leditor", "free-loops", "Play the free loops")
+                .run_for(0.2);
+            assert_eq!(free_runs(&s), Some(true));
+            // STOP, then PLAY: the song and the free loops together.
+            s.button("STOP").run_for(0.2);
+            assert_eq!(free_runs(&s), Some(false));
+            s.button("PLAY").run_for(0.3);
+            assert_eq!(s.time.info().state, State::Playing);
+            assert_eq!(free_runs(&s), Some(true));
+            assert_eq!(stop_words(&s), "STOP: the song");
+            // STOP: the song alone; the free loop plays on.
+            s.button("STOP").run_for(0.2);
+            assert_eq!(s.time.info().state, State::Stopped);
+            assert_eq!(free_runs(&s), Some(true));
+            assert_eq!(stop_words(&s), "STOP: free loops");
+        });
+    }
+
+    /// Free loops on Play (mockup 5) and the loop keys: the hint line says
+    /// what STOP and PLAY do; with the free loops stopped, the loop row's
+    /// free loop rests with ▶ and its ring plays them (not an overdub).
+    /// With the pads as loop keys, Loop 1's key plays the stopped free
+    /// loops too; muted, its key lets it play first, as any loop's.
+    #[test]
+    fn a_stopped_free_loops_ring_on_play_and_its_key_play_the_free_loops() {
+        on_big_stack(|| {
+            use crate::loop_row::LOOP_ROW;
+            let mut s = Session::new();
+            s.make_sounds();
+            s.press("header", "tab", "Looper");
+            s.press("leditor", "sync", "Free").run_for(0.1);
+            s.press("leditor", "bars", "Until tap").run_for(0.1);
+            s.button("REC").run_for(0.1);
+            for _ in 0..5 {
+                s.pad(0, 120, 0.1).run_for(0.4);
+            }
+            s.button("REC");
+            until_phase(&mut s, Phase::Playing, 3.0);
+            s.run_for(4.5);
+            // Play: the hint, STOP, and the row's ring.
+            s.play_view("All");
+            assert_eq!(stop_words(&s), "STOP: free loops");
+            s.button("STOP").run_for(0.2);
+            assert_eq!(free_runs(&s), Some(false));
+            assert_eq!(stop_words(&s), "PLAY: song and free loops");
+            s.press(LOOP_ROW, "ring", "Loop 1 ring: play the free loops")
+                .run_for(0.2);
+            assert_eq!(free_runs(&s), Some(true));
+            assert_eq!(status(&s).phase, Phase::Playing, "not an overdub");
+            // The loop keys: Loop 1's key plays the stopped free loops.
+            s.button("STOP").run_for(0.2);
+            s.press("header", "tab", "Looper");
+            s.button_with("SHIFT", "SAMPLER");
+            assert!(s.app.pads_are_loop_keys());
+            s.pad(12, 100, 0.05).run_for(0.1);
+            assert_eq!(free_runs(&s), Some(true));
+            assert!(
+                s.said()
+                    .iter()
+                    .any(|l| l == "loop keys: Loop 1's key plays the free loops"),
+                "{:?}",
+                s.said()
+            );
+            assert_eq!(status(&s).phase, Phase::Playing, "not an overdub");
+            // Muted while stopped: its key lets it play first (still
+            // stopped), and the next plays the free loops.
+            s.button("STOP").run_for(0.2);
+            s.pad(4, 100, 0.05);
+            assert!(status(&s).muted, "pad 5 muted Loop 1");
+            s.pad(12, 100, 0.05).run_for(0.1);
+            assert!(!status(&s).muted);
+            assert_eq!(free_runs(&s), Some(false), "unmuted, still stopped");
+            s.pad(12, 100, 0.05).run_for(0.1);
+            assert_eq!(free_runs(&s), Some(true));
+        });
+    }
+
+    /// Free loops' screens with the song playing (mockup 2): an empty loop
+    /// on Sync: Free waits for the song's bar line, where the first free
+    /// loop copies the song's clock, and its header says so. Sync sticks
+    /// as Starts does: set to Song while Loop 1 records, Loop 1 keeps its
+    /// own and the next empty loop takes Song. Recorded, its card says
+    /// "free" where a song loop says its bars, and the deck's head adds
+    /// the free clock's tempo; while the song plays, a Play on the header
+    /// waits for the song's bar line, lit, and a tap calls it off.
+    #[test]
+    fn a_free_loop_with_the_song_playing_starts_on_the_bar_and_sync_sticks() {
+        on_big_stack(|| {
+            use mpfree_looper::Clock;
+            use mpfree_transport::State;
+            let mut s = Session::new();
+            s.make_sounds();
+            s.press("header", "tab", "Looper");
+            s.press("leditor", "sync", "Free").run_for(0.1);
+            s.press("leditor", "bars", "1").run_for(0.1);
+            s.button("PLAY").run_for(0.3);
+            s.button("REC").run_for(0.1);
+            assert_eq!(status(&s).phase, Phase::Armed);
+            assert_eq!(
+                smart_editor(&s).sub,
+                "waits for the bar line · records the pads, free"
+            );
+            until_phase(&mut s, Phase::Recording, 2.5);
+            // Song while it records: the next empty loop takes it.
+            s.press("leditor", "sync", "Song").run_for(0.1);
+            assert!(
+                s.said().iter().any(|l| l
+                    == "looper: sync: the song from the next empty loop on (loop 1 keeps its own)"),
+                "{:?}",
+                s.said()
+            );
+            assert_eq!(status(&s).clock, Clock::Free);
+            assert!(
+                !at(&mut s, "leditor", "sync", 0).enabled,
+                "Song is lit: the next empty loop's"
+            );
+            until_phase(&mut s, Phase::Playing, 3.0);
+            s.run_for(0.1);
+            let bpm = s.time.info().bpm;
+            let c = s.looper.looper.free_clock().expect("its clock");
+            assert!(c.running && (c.bpm - bpm).abs() < 1e-9, "the song's: {c:?}");
+            assert_eq!(deck(&s).channels[0].length, "free");
+            assert_eq!(
+                deck(&s).head.free_tempo.as_deref(),
+                Some(format!("free {} BPM", crate::looper_page::free_bpm_words(bpm)).as_str())
+            );
+            assert_eq!(deck(&s).channels[1].foot, "Pads", "Song from Loop 2 on");
+            assert_eq!(stop_words(&s), "STOP: the song");
+            // Stop on the header stops the free loops alone; Play waits
+            // for the song's bar line, lit, and a tap calls it off.
+            s.press("leditor", "free-loops", "Stop the free loops")
+                .run_for(0.2);
+            assert_eq!(free_runs(&s), Some(false));
+            assert_eq!(s.time.info().state, State::Playing);
+            s.press("leditor", "free-loops", "Play the free loops")
+                .run_for(0.05);
+            assert!(s.looper.looper.free_cued(), "waits for the bar line");
+            assert_eq!(smart_editor(&s).free, Some((false, true)));
+            assert_eq!(
+                deck(&s).channels[0].state,
+                crate::looper_deck::RingState::Stopped(true)
+            );
+            let lit = at(&mut s, "leditor", "free-loops", 0);
+            assert_eq!(lit.label, "Call off the free loops' Play");
+            s.press_target(&lit).run_for(0.05);
+            assert!(!s.looper.looper.free_cued(), "called off");
+            assert_eq!(free_runs(&s), Some(false));
+            // Played again: on the song's next bar line.
+            s.press("leditor", "free-loops", "Play the free loops");
+            let end = s.t() + 2.5;
+            while free_runs(&s) != Some(true) && s.t() < end {
+                s.run_periods(1);
+            }
+            assert_eq!(free_runs(&s), Some(true));
+            assert!(!s.looper.looper.free_cued());
+            // Loop 2, picked: empty, on the song's clock.
+            s.press("ldeck", "loop", "Loop 2").run_for(0.1);
+            assert_eq!(s.looper.looper.loop_status(1).unwrap().clock, Clock::Song);
+            assert_eq!(smart_editor(&s).sub, "empty · records the pads");
         });
     }
 

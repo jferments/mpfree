@@ -36,9 +36,9 @@ use mpfree_looper::find::{find, FindJob};
 use mpfree_looper::print::{frames_at, PrintJob};
 use mpfree_looper::save::Saved;
 use mpfree_looper::{
-    Bounce, Candidate, Clock, Command, Edit, History, LayerCommand, LayerInfo, LoopFile, Looper,
-    Memory, NoteStart, Phase, Print, Reading, Shift, SmartEnd, SmartNote, SmartOutcome, Snap,
-    SnapDone, SnapPlan, Starts, Stats, Status, Step, Sure, Take, HEARD_SECONDS, LOOP_MAX_BPM,
+    Bounce, Candidate, Clock, Command, Edit, FreeClock, History, LayerCommand, LayerInfo, LoopFile,
+    Looper, Memory, NoteStart, Phase, Print, Reading, Shift, SmartEnd, SmartNote, SmartOutcome,
+    Snap, SnapDone, SnapPlan, Starts, Stats, Status, Step, Sure, Take, HEARD_SECONDS, LOOP_MAX_BPM,
     LOOP_MIN_BPM, MAX_LAYERS, MAX_LOOPS,
 };
 use mpfree_seq::loops::{LoopNow, LoopPlan};
@@ -1323,6 +1323,44 @@ pub struct LooperView {
     /// The pattern's length in bars as last told
     /// ([`LoopHost::set_pattern_bars`]); None: no pattern plays.
     pub pattern_bars: Option<u32>,
+    /// Sync as last set ([`LoopHost::clock`]): the clock every empty loop
+    /// records on.
+    pub clock: Clock,
+    /// The free clock while a free loop holds audio
+    /// ([`Looper::free_clock`]), where it is now ([`Looper::free_now`]),
+    /// and whether a Play for the stopped free loops waits for the song's
+    /// bar line ([`Looper::free_cued`]).
+    pub free: Option<FreeClock>,
+    pub free_now: f64,
+    pub free_cued: bool,
+}
+
+impl LooperView {
+    /// The free loops play: the free clock is set and runs.
+    pub fn free_runs(&self) -> bool {
+        self.free.is_some_and(|c| c.running)
+    }
+
+    /// Loop `n` is a free loop with sound, stopped with the free clock: it
+    /// waits at its place on bar 1, and PLAY, Play or its ring starts it.
+    /// Not while muted: its ring unmutes it first, as any loop's.
+    pub fn free_stopped(&self, n: usize) -> bool {
+        self.loops.get(n).is_some_and(|l| {
+            l.clock == Clock::Free
+                && l.phase == Phase::Playing
+                && !l.muted
+                && self.free.is_some_and(|c| !c.running)
+        })
+    }
+
+    /// A free loop's bar in ticks (the free clock's meter), else the
+    /// song's.
+    pub fn bar_ticks_of(&self, s: &Status) -> Tick {
+        match (s.clock, self.free) {
+            (Clock::Free, Some(c)) => c.meter.bar_ticks(),
+            _ => self.bar_ticks,
+        }
+    }
 }
 
 impl Default for LooperView {
@@ -1357,6 +1395,10 @@ impl Default for LooperView {
             match_pattern: false,
             pattern_bars: None,
             listening: None,
+            clock: Clock::Song,
+            free: None,
+            free_now: 0.0,
+            free_cued: false,
         }
     }
 }
@@ -3698,6 +3740,18 @@ impl LoopHost {
         self.looper.status().phase
     }
 
+    /// Loop `n` is a free loop with sound, stopped with the free clock
+    /// (as [`LooperView::free_stopped`]): its ring or key plays the free
+    /// loops.
+    pub fn free_stopped(&self, n: usize) -> bool {
+        self.looper.loop_status(n).is_some_and(|l| {
+            l.clock == Clock::Free
+                && l.phase == Phase::Playing
+                && !l.muted
+                && self.looper.free_clock().is_some_and(|c| !c.running)
+        })
+    }
+
     /// Loop `n` as the looper has it (the loop keys' lights and steps).
     pub fn loop_status(&self, n: usize) -> Option<Status> {
         self.looper.loop_status(n)
@@ -3872,6 +3926,10 @@ impl LoopHost {
             match_pattern: self.match_pattern,
             pattern_bars: self.pattern_bars,
             listening: self.looper.listening(),
+            clock: self.clock,
+            free: self.looper.free_clock(),
+            free_now: self.looper.free_now().unwrap_or(0.0),
+            free_cued: self.looper.free_cued(),
         }
     }
 

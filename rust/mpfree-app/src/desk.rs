@@ -1632,6 +1632,20 @@ pub fn perform_pad_on(
                 // Capturing: its key calls it off.
                 fx.push(app::Effect::Looper(LoopAction::Capture));
                 format!("loop keys: Loop {}'s key calls its Capture off", n + 1)
+            } else if looper.free_stopped(n) {
+                // A stopped free loop: its key plays the free loops (again
+                // while one waits for the bar line: calls it off).
+                let cued = looper.looper.free_cued();
+                fx.push(app::Effect::Looper(LoopAction::Command(if cued {
+                    mpfree_looper::Command::FreeStop
+                } else {
+                    mpfree_looper::Command::FreePlay
+                })));
+                format!(
+                    "loop keys: Loop {}'s key {} the free loops",
+                    n + 1,
+                    if cued { "calls off Play for" } else { "plays" }
+                )
             } else {
                 if !app.rec.armed(crate::rec_arm::Target::Loop) {
                     app.rec.ready = None;

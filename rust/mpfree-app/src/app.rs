@@ -758,7 +758,7 @@ pub struct Settings {
     pub loop_latency_set: bool,
     pub loop_level_db: f32,
     /// The looper's options "Tempo from the first loop": with the song
-    /// stopped, a first loop recorded on Free length sets the tempo (and
+    /// stopped, a first loop recorded on Until tap sets the tempo (and
     /// starts the song) when it closes. Off by default; kept in Prefs.
     pub loop_tempo: bool,
     /// The looper's options "Smart loop end": when tempo from the first
@@ -5420,7 +5420,7 @@ impl App {
                 "On: with the song stopped, the first loop",
                 "records in your own time and its length sets",
                 "the tempo: Length's bars at the tempo you play,",
-                "or on Free the likeliest bars (a close call",
+                "or on Until tap the likeliest bars (a close call",
                 "says so). The song starts as the loop comes",
                 "round. Not while another device's clock leads,",
                 "the song has more than one tempo, or exporting.",

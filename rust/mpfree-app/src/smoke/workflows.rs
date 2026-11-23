@@ -3070,7 +3070,7 @@ mod tests {
                 rec.contains(&LIGHT_ON) && rec.contains(&LIGHT_DARK),
                 "REC blinks while recording: {rec:?}"
             );
-            // Free length: REC again closes it on the next bar line (two
+            // Until tap: REC again closes it on the next bar line (two
             // bars at 120 BPM), the loop then plays and REC goes dark.
             s.run_for(2.0);
             assert_eq!(

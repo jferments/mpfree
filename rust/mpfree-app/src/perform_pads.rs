@@ -583,7 +583,15 @@ pub fn lights(looper: &crate::looping::LoopHost) -> [LoopLight; MAX_LOOPS] {
         let c = crate::looper_tab::LOOP_COLOURS[n % crate::looper_tab::LOOP_COLOURS.len()];
         let beats = l.ticks as f64 / mpfree_transport::time::PPQ as f64;
         LoopLight {
-            state: RingState::of(&l, None),
+            // A stopped free loop's key lights dim: it waits to play.
+            state: RingState::of_free(
+                &l,
+                None,
+                (
+                    looper.looper.free_clock().is_some_and(|c| c.running),
+                    looper.looper.free_cued(),
+                ),
+            ),
             colour: [c.r, c.g, c.b],
             downbeat: beats > 0.0 && f64::from(l.position) * beats < 1.0,
             solo: l.solo && l.phase != mpfree_looper::Phase::Empty,
@@ -706,7 +714,11 @@ pub fn colours(page: &PerformPage, loops: &[LoopLight], lit: &Lit, blink: bool) 
                     RingState::Overdubbing => AMBER,
                     RingState::Playing if l.downbeat => pad_rgb(l.colour, 1.0),
                     RingState::Playing => pad_rgb(l.colour, 0.55),
-                    RingState::Muted | RingState::Off => pad_rgb(l.colour, 0.12),
+                    // Silent in its place: a stopped free loop too (its
+                    // key plays the free loops).
+                    RingState::Muted | RingState::Off | RingState::Stopped(_) => {
+                        pad_rgb(l.colour, 0.12)
+                    }
                 }
             }
             PadAction::LoopMute(n) => {
