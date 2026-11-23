@@ -132,9 +132,16 @@ pub const fn routed(j: usize) -> usize {
     THE_PADS + PAD_LAYERS + j
 }
 
+/// The note editor's audition (piano roll plan 1C.2), as a player: it
+/// plays the instrument the editor's track plays by a send, as the pads
+/// do, so the notes it starts end where they started and, the host
+/// counting each note's holders, letting one go never cuts the same note
+/// a clip holds. It never holds one.
+pub const AUDITION: usize = THE_PADS + PAD_LAYERS + ROUTE_SYNTHS;
+
 /// Every row: the holders, then the pads, then their layers, then the
-/// route rows.
-const WHO: usize = HOLDERS + PAD_LAYERS + ROUTE_SYNTHS;
+/// route rows, then the audition.
+const WHO: usize = AUDITION + 1;
 
 /// Free place `n`'s holder number (from 0).
 pub const fn free(n: usize) -> usize {
@@ -435,12 +442,13 @@ impl Instruments {
         self.slot(self.owner(track)?)
     }
 
-    /// Track `track` (or the pads, [`THE_PADS`], or one of their layers,
-    /// [`layer`]) plays holder `to`'s instrument from now on (None: the
-    /// pads again; the pads and their layers: nothing). `to` is another
-    /// track or a free place. The notes it left sounding on the old one
-    /// end first. Refused while the track has its own instrument, and when
-    /// `to` has none. Never allocates.
+    /// Track `track` (or the pads, [`THE_PADS`], one of their layers,
+    /// [`layer`], a route row, [`routed`], or the audition, [`AUDITION`])
+    /// plays holder `to`'s instrument from now on (None: the pads again;
+    /// the other players: nothing). `to` is another track or a free place.
+    /// The notes it left sounding on the old one end first. Refused while
+    /// the track has its own instrument, and when `to` has none. Never
+    /// allocates.
     pub fn set_send(&mut self, track: usize, to: Option<usize>) -> Result<(), SendRefused> {
         let player = track < TRACKS || (THE_PADS..WHO).contains(&track);
         if !player || to.is_some_and(|t| t >= HOLDERS) {
@@ -605,6 +613,26 @@ impl Instruments {
     /// none.
     pub fn pads_play(&mut self, to: Option<usize>) -> bool {
         self.set_send(THE_PADS, to).is_ok()
+    }
+
+    /// Note `note` heard on the instrument track `track` plays, at
+    /// `velocity`, as the audition's own ([`AUDITION`], piano roll plan
+    /// 1C.2): it moves to that instrument first, ending what it left
+    /// sounding on another. False when the track plays none here.
+    pub fn audition_on(&mut self, track: usize, note: u8, velocity: u8) -> bool {
+        let Some(to) = self.owner(track) else {
+            return false;
+        };
+        if self.owner(AUDITION) != Some(to) && self.set_send(AUDITION, Some(to)).is_err() {
+            return false;
+        }
+        self.note_on(AUDITION, note, velocity, 0)
+    }
+
+    /// An audition note's end ([`Instruments::audition_on`]): the note
+    /// goes quiet only if nothing else holds it.
+    pub fn audition_off(&mut self, note: u8) -> bool {
+        self.note_off(AUDITION, note, 0)
     }
 
     /// The holder whose instrument the pads play, if they play one here.
@@ -1477,6 +1505,35 @@ mod tests {
     /// strip of its own. The pads play it by their own player, a track can
     /// play it by a send (heard on its strip), and taking it out empties
     /// the place. The places count toward the [`SLOTS`] instruments.
+    #[test]
+    fn hearing_a_note_never_cuts_the_same_note_a_clip_holds() {
+        let mut i = Instruments::new(RATE, BLOCK);
+        i.put(2, hum(), chromatic_from(60), &Tuning::standard())
+            .unwrap();
+        // A clip holds note 64 on track 3's instrument; the note editor
+        // hears the same note, and lets it go: the clip's plays on.
+        assert!(i.note_on(2, 64, 100, 0));
+        assert!(i.audition_on(2, 64, 90));
+        assert!(i.audition_off(64));
+        assert!(i.holds_note(2, 64), "the clip's note sounds on");
+        assert!(i.note_off(2, 64, 0));
+        assert!(!i.holds_note(2, 64));
+        // Heard alone, it ends with its own let-go.
+        assert!(i.audition_on(2, 67, 90));
+        assert!(i.holds_note(2, 67));
+        assert!(i.audition_off(67));
+        assert!(!i.holds_note(2, 67));
+        // Track 5 plays track 3's instrument: heard there too. A track
+        // that plays the pads hears nothing here.
+        assert_eq!(i.set_send(4, Some(2)), Ok(()));
+        assert!(i.audition_on(4, 70, 90));
+        assert!(i.holds_note(2, 70));
+        assert!(!i.audition_on(6, 70, 90));
+        // The instrument taken out: what the audition held is forgotten.
+        assert!(i.take_out(2));
+        assert!(!i.audition_off(70), "nothing there to end");
+    }
+
     #[test]
     fn a_free_place_holds_an_instrument_the_pads_play_on_its_own_strip() {
         let mut i = Instruments::new(RATE, BLOCK);

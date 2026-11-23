@@ -345,6 +345,19 @@ A knob or fader on your controller can turn the Play page's **Swing** and **Filt
 
 These work on every page. The Learn section lists them as **Play · Swing**, **Play · Filter**, **Play · XY across** and **Play · XY up**. They are kept in **Rig**, so your controller works the same in every project, and they move the sound but don't record into a clip. Touching Play's own cards and pad still works as before.
 
+### Footswitches for a set
+
+{{shot: mixer-io-learn-show | The Learn section's Show card: a set's seven controls, each for a footswitch or a button to learn.}}
+
+A footswitch can move you through a [set](set-lists.md) on stage, so you never reach for the screen between songs. In the Learn section, tap **Show** by the heading, tap one, then press the footswitch or the button:
+
+- **Next song** arms the song after the one playing, and pressing it again goes to it. **Previous song** arms the one before.
+- **Go** goes to the armed song. **Cancel next** drops the armed song and leaves the music as it is. **Back to the set order** arms the song after the one playing, in the set's order.
+- **Panic** stops and silences everything, as SHIFT + STOP does, and sends notes off on every MIDI out.
+- **Click** turns the click on or off, as SHIFT + PLAY START does.
+
+A press counts once: it acts as the switch goes down, a second press within 50 ms is the same press (a footswitch's bounce), and presses while a song is changing are ignored. These work on every page, in every project, while a set is open; with no set open they do nothing, and the hint line says so. They are kept in **Rig**. The Learn section lists them as **Show · Next song**, **Show · Go** and so on. If one control has two jobs, both its rows show in red with what else it does: learn one of them again on another switch.
+
 ### Playing a Perform pad from your gear
 
 A key, pad or footswitch on your gear can play one of the project's [Perform pads](pads.md#the-perform-set-on-the-pads-tab), so a pedal can throw an echo while both hands play. On the **Pads** tab, tap **Perform pads**, pick the pad (page **B**, pad 2, say), tap **Learn a key** under its settings, then press the key or the footswitch. Holding **SHIFT** and tapping a pad on the map does the same.

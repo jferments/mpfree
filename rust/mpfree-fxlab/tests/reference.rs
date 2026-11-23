@@ -19,9 +19,11 @@
 use mpfree_fxlab::reference;
 
 /// The cases whose 8x reference agreed with the 16x one at the first
-/// survey (55 of 96), less one, and Squelch's square since step 1.3 (its
-/// shaper now takes the plain saw, and its own jump gets the step). Not
-/// listed: the drives and sync (still folding at 8x), Analog's saw (C6 and
+/// survey (55 of 96), less one, Squelch's square since step 1.3 (its
+/// shaper now takes the plain saw, and its own jump gets the step) and
+/// Poly's drive since step 2.1 (at twice the rate with second-order ADAA,
+/// it no longer folds at 8x). Not listed: Analog's drive and sync (still
+/// folding at 8x), Analog's saw (C6 and
 /// C7 fizz 3.7 dB
 /// apart near the floor at the survey; C5 left at step 1.2, whose
 /// oscillators run flat to 0.48 of whatever rate they run at, so the 8x
@@ -39,6 +41,9 @@ const AGREES: &[&str] = &[
     "Poly triangle, C5",
     "Poly triangle, C6",
     "Poly triangle, C7",
+    "Poly saw, drive 24 dB, C5",
+    "Poly saw, drive 24 dB, C6",
+    "Poly saw, drive 24 dB, C7",
     "Poly saw, distortion 24 dB, C5",
     "Poly saw, distortion 24 dB, C6",
     "Poly saw, distortion 24 dB, C7",

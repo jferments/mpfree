@@ -76,6 +76,9 @@ use crate::{
 /// The most starts held in the cache: every region of every track, and
 /// each track's frame at the loop's start.
 pub const MAX_HEADS: usize = MAX_TRACKS * (MAX_REGIONS + 1);
+/// The most audio clip region starts held with them
+/// ([`AudioHost::clip_starts`]).
+pub const MAX_CLIP_STARTS: usize = 512;
 /// Periods between looks at whether the regions' starts to hold have
 /// changed (about 93 ms at 128 frames).
 const HEADS_EVERY: u64 = 32;
@@ -109,6 +112,21 @@ const EVENTS: usize = 64;
 const PROBLEMS: usize = 64;
 /// The player's counters go to System status every this many periods.
 const PLAYER_LOOK_EVERY: u64 = 64;
+/// Answers about cues' audio waiting to be taken, at most (made at start).
+const CUE_ANSWERS: usize = 64;
+
+/// What the host says about the audio a cue waits for
+/// ([`AudioHost::hold_cue`], [`AudioHost::cue_audio`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CueAudio {
+    /// It is all in memory or in the cache, and held there.
+    Held,
+    /// It can't be held now: a recording isn't here (yet), a file isn't
+    /// open, or the cache has no room. Ask again later.
+    Short,
+    /// It was held, and the cache gave it back for room.
+    GivenBack,
+}
 
 /// A take recording to its file: how far it has been copied out, and the
 /// buffer filling for the worker.
@@ -244,6 +262,15 @@ enum ToWorker {
     Stream(Box<StreamConfig>),
     /// Hold these regions' starts in the cache (the room comes back).
     Heads(Vec<Head>),
+    /// Hold what cue `cue` needs from takes on their files.
+    Cue {
+        cue: u32,
+        parts: Vec<(u16, u64, u64)>,
+    },
+    /// Cue `cue`'s hold goes.
+    LetCueGo {
+        cue: u32,
+    },
     /// Write a sound brought in, or a stretched copy, as recording
     /// `rec`'s take file in the work folder, for the tracks of generation
     /// `gen` (the audio is dropped once written, or comes back).
@@ -367,6 +394,17 @@ enum Fitting {
     },
 }
 
+/// A fitted copy made for a clip ([`AudioHost::fit_copy`]): recording
+/// `to`, recording `from` stretched by `ratio` (its frames per one of
+/// `from`'s) to the tempo asked for, keeping its pitch. The song still
+/// plays `from`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FitCopy {
+    pub from: RecordingId,
+    pub to: RecordingId,
+    pub ratio: f64,
+}
+
 /// The audio tracks with their worker; see the module notes.
 pub struct AudioHost {
     pub tracks: AudioTracks,
@@ -386,10 +424,19 @@ pub struct AudioHost {
     /// Fits swapped in, and ones that could not be made or loaded.
     pub fits: u64,
     pub fits_failed: u64,
+    /// The fit under way makes a copy for a clip ([`AudioHost::fit_copy`]):
+    /// loaded, it is said in `fitted`, not played in the song.
+    fit_copy: bool,
+    fitted: Option<FitCopy>,
     /// A sound brought in ([`AudioHost::import`]) copying in: its take,
     /// placed once it is in, and where it is cut (kept, not freed, here).
     importing: Option<u16>,
     import_cuts: Vec<u64>,
+    /// The sound brought in goes in a clip, not on the song
+    /// ([`AudioHost::import_for_clip`]): once in, it is said in
+    /// `imported`, not placed.
+    import_place: bool,
+    imported: Option<u16>,
     /// Sounds brought in and placed.
     pub imports: u64,
     /// Which tracks a background job is for: one more each time they are
@@ -425,6 +472,13 @@ pub struct AudioHost {
     heads_said: (usize, usize),
     periods: u64,
     heads_sent: u64,
+    /// Where each audio clip's regions start in their recordings, to
+    /// hold with the regions' starts ([`AudioHost::clip_starts`]).
+    clip_starts: Vec<(RecordingId, u64)>,
+    /// Answers about cues' audio not taken yet, oldest first; ones that
+    /// found no room are counted.
+    cue_answers: Vec<(u32, CueAudio)>,
+    pub cue_answers_lost: u64,
     /// The transport's loop, as its blocks last said.
     loop_range: Option<(Tick, Tick)>,
     /// That project's tracks (its takes taken out), waiting until every
@@ -487,8 +541,12 @@ impl AudioHost {
             problems_lost: 0,
             fits: 0,
             fits_failed: 0,
+            fit_copy: false,
+            fitted: None,
             importing: None,
             import_cuts: Vec::new(),
+            import_place: true,
+            imported: None,
             imports: 0,
             generation: 0,
             stale: 0,
@@ -504,6 +562,9 @@ impl AudioHost {
             heads_said: (0, 0),
             periods: 0,
             heads_sent: 0,
+            clip_starts: Vec::new(),
+            cue_answers: Vec::with_capacity(CUE_ANSWERS),
+            cue_answers_lost: 0,
             loop_range: None,
         }
     }
@@ -522,7 +583,7 @@ impl AudioHost {
             return false;
         }
         self.streaming = true;
-        self.heads = Some(Vec::with_capacity(MAX_HEADS));
+        self.heads = Some(Vec::with_capacity(MAX_HEADS + MAX_CLIP_STARTS));
         let head_s = (cfg.plan.stall_s + HEAD_MARGIN_S).max(MIN_HEAD_S);
         self.head_frames = (head_s * f64::from(self.tracks.rate())) as u64;
         self.send(ToWorker::Stream(Box::new(cfg)));
@@ -533,6 +594,70 @@ impl AudioHost {
     /// on its way).
     pub fn streams(&self) -> bool {
         self.streaming
+    }
+
+    /// Hold what a cue that launches audio needs (the time engine's
+    /// `AudioNeed`s: frames `from..to` of each recording), under the
+    /// host's number `cue`, in place of anything held for it before; the
+    /// answer comes from [`AudioHost::cue_audio`]. What is in memory needs
+    /// nothing; frames of takes on their files go to the stream thread,
+    /// which answers once they are all in the cache. A recording not here
+    /// (still loading) is [`CueAudio::Short`].
+    pub fn hold_cue(&mut self, cue: u32, needs: &[(RecordingId, i64, i64)]) {
+        let mut parts = Vec::new();
+        for &(rec, from, to) in needs {
+            let Some(take) = self.tracks.take_of(rec) else {
+                self.cue_said(cue, CueAudio::Short);
+                return;
+            };
+            let frames = self.tracks.take(take).map_or(0, |k| k.frames) as i64;
+            // Frames on the file only: all of a take there, the start of a
+            // take partly there.
+            let on_file = if self.streaming {
+                self.tracks.file_frames(take).unwrap_or(0) as i64
+            } else {
+                0
+            };
+            let (from, to) = (from.clamp(0, frames), to.clamp(0, frames).min(on_file));
+            if from < to {
+                parts.push((take, from as u64, to as u64));
+            }
+        }
+        if parts.is_empty() {
+            self.cue_said(cue, CueAudio::Held);
+        } else {
+            self.send(ToWorker::Cue { cue, parts });
+        }
+    }
+
+    /// Cue `cue` landed or was cancelled: what was held for it goes.
+    pub fn let_cue_go(&mut self, cue: u32) {
+        if self.streaming {
+            self.send(ToWorker::LetCueGo { cue });
+        }
+    }
+
+    /// The next answer about a cue's audio, oldest first.
+    pub fn cue_audio(&mut self) -> Option<(u32, CueAudio)> {
+        (!self.cue_answers.is_empty()).then(|| self.cue_answers.remove(0))
+    }
+
+    fn cue_said(&mut self, cue: u32, a: CueAudio) {
+        if self.cue_answers.len() < CUE_ANSWERS {
+            self.cue_answers.push((cue, a));
+        } else {
+            self.cue_answers_lost += 1;
+        }
+    }
+
+    /// Where each audio clip's regions start in their recordings: held in
+    /// the cache with the song regions' starts while takes stream, so a
+    /// clip launched with the transport stopped starts from memory at
+    /// PLAY, and a cue's audio is mostly held already.
+    /// The first [`MAX_CLIP_STARTS`] count.
+    pub fn clip_starts(&mut self, mut starts: Vec<(RecordingId, u64)>) {
+        starts.truncate(MAX_CLIP_STARTS);
+        self.clip_starts = starts;
     }
 
     /// Takes still on their way: a project's waiting for their files to
@@ -683,7 +808,20 @@ impl AudioHost {
     /// Run the tracks for one period (see [`AudioTracks::process`]), then
     /// look after the save, the fit and the buffers.
     pub fn period(&mut self, block: &Block, map: &TempoMap, input: &[f32], out: &mut [f32]) {
-        self.tracks.process(block, map, input, out);
+        self.period_with(block, map, input, out, &[]);
+    }
+
+    /// [`AudioHost::period`] with what each track plays from the
+    /// arranger's player ([`AudioTracks::process_with`]).
+    pub fn period_with(
+        &mut self,
+        block: &Block,
+        map: &TempoMap,
+        input: &[f32],
+        out: &mut [f32],
+        answers: &[crate::Answer],
+    ) {
+        self.tracks.process_with(block, map, input, out, answers);
         self.tend_import(map);
         self.tend(block.frames as usize);
         self.periods += 1;
@@ -734,6 +872,11 @@ impl AudioHost {
                 from = mix(mix(from, u64::from(take)), at);
             }
         }
+        for &(rec, at) in &self.clip_starts {
+            if let Some(take) = tr.take_of(rec).filter(|&k| plays_from_file(tr, k)) {
+                from = mix(mix(from, u64::from(take)), at);
+            }
+        }
         let retry =
             self.heads_held < self.heads_wanted && self.periods - self.heads_sent >= HEADS_RETRY;
         if from == self.heads_from && !retry {
@@ -773,6 +916,15 @@ impl AudioHost {
                 }
             }
         }
+        // A clip may launch at any time: after what plays ahead, before
+        // what played.
+        for &(rec, at) in &self.clip_starts {
+            if let Some(take) = tr.take_of(rec).filter(|&k| plays_from_file(tr, k)) {
+                if let Some(h) = head(take, at, Tick::MAX / 4) {
+                    heads.push(h);
+                }
+            }
+        }
         heads.sort_unstable();
         self.heads_wanted = heads.len();
         self.send(ToWorker::Heads(heads));
@@ -789,7 +941,7 @@ impl AudioHost {
             .iter()
             .find(|r| r.contains(start) && r.start != start && plays_from_file(tr, r.take))?;
         let rate = self.tracks.rate();
-        let at = r.src + crate::frames_from(map, r.start as f64, start as f64, rate).round() as i64;
+        let at = r.src + r.frames_to(map, r.start as f64, start as f64, rate);
         Some((r.take, at.max(0) as u64))
     }
 
@@ -975,6 +1127,7 @@ impl AudioHost {
         if self.importing.is_some() {
             return refuse(self, audio, ImportRefused::Busy);
         }
+        self.import_place = true;
         let Some(id) = self.tracks.free_take_id() else {
             return refuse(self, audio, ImportRefused::NoTake);
         };
@@ -1026,6 +1179,29 @@ impl AudioHost {
         }
     }
 
+    /// Put in a cell (audio tracks phase 2): a sound brought in as for
+    /// [`AudioHost::import`], uncut, as a take of its own on `track` that
+    /// the song doesn't play: once it is in (copied in, or written to its
+    /// file and open), [`AudioHost::imported`] gives it, for a clip to
+    /// name. Refused as for [`AudioHost::import`].
+    pub fn import_for_clip(
+        &mut self,
+        track: usize,
+        channels: usize,
+        audio: Vec<f32>,
+        bpm: f64,
+    ) -> Result<u16, ImportRefused> {
+        let id = self.import(track, 0, channels, audio, Vec::new(), bpm)?;
+        self.import_place = false;
+        Ok(id)
+    }
+
+    /// The take of a sound brought in for a clip that has come in since
+    /// the last ask ([`AudioHost::import_for_clip`]).
+    pub fn imported(&mut self) -> Option<u16> {
+        self.imported.take()
+    }
+
     /// The take of a sound brought in that is still copying in.
     pub fn importing(&self) -> Option<u16> {
         self.importing
@@ -1045,7 +1221,11 @@ impl AudioHost {
             }
         } else if self.tracks.loading() == 0 {
             self.importing = None;
-            if self.tracks.place(id, &self.import_cuts, map) {
+            if !self.import_place {
+                // For a clip: said, not placed.
+                self.imported = Some(id);
+                self.imports += 1;
+            } else if self.tracks.place(id, &self.import_cuts, map) {
                 self.imports += 1;
             }
             self.import_cuts.clear();
@@ -1056,15 +1236,51 @@ impl AudioHost {
     /// a fit is under way, the take is not there or records, its tempo is
     /// not known or already `bpm`, or there is no worker.
     pub fn fit(&mut self, id: u16, bpm: f64) -> bool {
+        let from = self.tracks.take(id).map_or(0.0, |t| t.bpm);
+        self.start_fit(id, from, bpm, false)
+    }
+
+    /// Fit to tempo on an audio clip's card (audio tracks phase 2): a
+    /// fitted copy of take `id`, its audio made at `from` BPM stretched to
+    /// `bpm`, keeping its pitch, as a take of its own that the song does
+    /// not play (the song keeps the original). Once it is in (copied in,
+    /// or written to its file and open) [`AudioHost::fitted_copy`] says
+    /// so, and the clip is pointed at it. False as for
+    /// [`AudioHost::fit`], or if `from` is not a tempo.
+    pub fn fit_copy(&mut self, id: u16, from: f64, bpm: f64) -> bool {
+        self.start_fit(id, from, bpm, true)
+    }
+
+    /// The fitted copy that has come in since the last ask, if any.
+    pub fn fitted_copy(&mut self) -> Option<FitCopy> {
+        self.fitted.take()
+    }
+
+    /// How far the fit under way has got, 0 to 1, roughly: reading the
+    /// take is the first half, stretching it takes it to 0.9 (the worker
+    /// says nothing until it is done), copying it in the rest.
+    pub fn fit_progress(&self) -> Option<f32> {
+        Some(match self.fitting.as_ref()? {
+            Fitting::Sizing { .. } => 0.0,
+            Fitting::Reading { take, frame, .. } => {
+                0.5 * (*frame as f32 / take.frames.max(1) as f32).min(1.0)
+            }
+            Fitting::Stretching { .. } => 0.5,
+            Fitting::Loading { .. } => 0.9,
+        })
+    }
+
+    fn start_fit(&mut self, id: u16, from: f64, bpm: f64, copy: bool) -> bool {
         if self.fitting.is_some() || self.tx.is_none() {
             return false;
         }
         let Some(take) = self.tracks.take(id).filter(|t| !t.recording) else {
             return false;
         };
-        let Some(ratio) = fit_ratio(take.bpm, bpm).filter(|r| (r - 1.0).abs() > 1e-9) else {
+        let Some(ratio) = fit_ratio(from, bpm).filter(|r| (r - 1.0).abs() > 1e-9) else {
             return false;
         };
+        self.fit_copy = copy;
         if self.plays_from_file(id) {
             self.fit_from_file(take, ratio, bpm);
             return true;
@@ -1414,6 +1630,9 @@ impl AudioHost {
                 self.heads_held = held;
                 self.heads_short();
             }
+            FromStream::CueHeld { cue } => self.cue_said(cue, CueAudio::Held),
+            FromStream::CueShort { cue } => self.cue_said(cue, CueAudio::Short),
+            FromStream::CueGivenBack { cue } => self.cue_said(cue, CueAudio::GivenBack),
             FromStream::Open {
                 take,
                 rec,
@@ -1991,7 +2210,19 @@ impl AudioHost {
             }
             Some(Fitting::Loading { new, swap }) => {
                 if self.tracks.take(new).is_some() && self.tracks.loading() == 0 {
-                    self.tracks.command(swap);
+                    // A copy for a clip is said, and the song keeps the
+                    // take it plays.
+                    match (self.fit_copy, swap) {
+                        (true, Command::Swap { old, new, ratio }) => {
+                            let rec = |id| self.tracks.take(id).map(|t| t.rec);
+                            if let (Some(from), Some(to)) = (rec(old), rec(new)) {
+                                self.fitted = Some(FitCopy { from, to, ratio });
+                            }
+                        }
+                        _ => {
+                            self.tracks.command(swap);
+                        }
+                    }
                     self.fits += 1;
                 } else if self.tracks.take(new).is_some() || self.coming(new) {
                     self.fitting = Some(Fitting::Loading { new, swap });
@@ -2368,6 +2599,14 @@ impl Worker {
             }
             ToWorker::Heads(heads) => {
                 self.to_stream(ToStream::Heads(heads));
+                return None;
+            }
+            ToWorker::Cue { cue, parts } => {
+                self.to_stream(ToStream::Cue { cue, parts });
+                return None;
+            }
+            ToWorker::LetCueGo { cue } => {
+                self.to_stream(ToStream::LetCueGo { cue });
                 return None;
             }
             ToWorker::WriteTake {

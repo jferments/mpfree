@@ -100,6 +100,10 @@ pub enum Command {
     SetLoop(Option<(Tick, Tick)>),
     /// Bars of count-in before recording from stopped (0 to 4).
     SetCountIn(u8),
+    /// Stopped: count in (if set), then play from the current position,
+    /// recording nothing (a set's song that starts with its count-in, live
+    /// shows B1). Does nothing while rolling.
+    CountInPlay,
 }
 
 /// What happened, and where in the period.
@@ -480,6 +484,9 @@ pub struct Transport {
     loop_range: Option<(Tick, Tick)>,
     count_in: u8,
     record_at: Tick,
+    /// The count-in under way ends in recording ([`Command::Record`]), not
+    /// in playing ([`Command::CountInPlay`]).
+    count_records: bool,
     overdub: bool,
     tempo_grid: Tick,
     pending_tempo: Option<(Tick, NewTempo)>,
@@ -510,6 +517,7 @@ impl Transport {
             loop_range: None,
             count_in: 0,
             record_at: 0,
+            count_records: true,
             overdub: false,
             tempo_grid: MIN_SPAN_TICKS,
             pending_tempo: None,
@@ -871,10 +879,14 @@ impl Transport {
         match kind {
             Boundary::CountInEnd => {
                 let t = self.record_at;
-                self.state = State::Recording;
                 self.anchor(at, t);
                 self.mark(out, at, Mark::Started { tick: t });
-                self.mark(out, at, Mark::RecordOn { tick: t });
+                if self.count_records {
+                    self.state = State::Recording;
+                    self.mark(out, at, Mark::RecordOn { tick: t });
+                } else {
+                    self.state = State::Playing;
+                }
             }
             Boundary::Wrap => {
                 if let Some((start, end)) = self.loop_range {
@@ -896,6 +908,23 @@ impl Transport {
                 }
             }
         }
+    }
+
+    /// Stopped: the count-in starts, ending in recording (`records`) or in
+    /// playing, from the current position.
+    fn count_in_from_here(&mut self, at: u64, records: bool, out: &mut Block) {
+        self.count_records = records;
+        self.state = State::CountIn;
+        self.record_at = self.position;
+        let lead = i64::from(self.count_in) * self.meter.bar_ticks();
+        self.anchor(at, self.position - lead);
+        self.mark(
+            out,
+            at,
+            Mark::CountIn {
+                record_at: self.record_at,
+            },
+        );
     }
 
     /// A live tempo change: the song takes the new tempo (or map) from
@@ -956,20 +985,15 @@ impl Transport {
                     }
                 }
             }
-            Command::Record => match self.state {
+            Command::CountInPlay => match self.state {
                 State::Stopped if self.count_in > 0 => {
-                    self.state = State::CountIn;
-                    self.record_at = self.position;
-                    let lead = i64::from(self.count_in) * self.meter.bar_ticks();
-                    self.anchor(at, self.position - lead);
-                    self.mark(
-                        out,
-                        at,
-                        Mark::CountIn {
-                            record_at: self.record_at,
-                        },
-                    );
+                    self.count_in_from_here(at, false, out);
                 }
+                State::Stopped => self.apply(at, Command::Play, out),
+                _ => {}
+            },
+            Command::Record => match self.state {
+                State::Stopped if self.count_in > 0 => self.count_in_from_here(at, true, out),
                 State::Stopped => {
                     self.state = State::Recording;
                     self.anchor(at, self.position);
@@ -1145,6 +1169,42 @@ mod tests {
             ]
         );
         assert_eq!(t.state(), State::Recording);
+    }
+
+    /// A set's song that starts with its count-in (live shows B1): the
+    /// count-in, then it plays, recording nothing; with no count-in set it
+    /// plays at once.
+    #[test]
+    fn a_count_in_can_end_in_playing() {
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        t.command(0, Command::SetCountIn(1));
+        t.command(100, Command::CountInPlay);
+        let b = run(&mut t, 4096);
+        assert_eq!(b.markers()[1].mark, Mark::CountIn { record_at: 0 });
+        assert_eq!(t.state(), State::CountIn);
+        let mut b = Block::new();
+        while t.state() == State::CountIn {
+            t.process(4096, &mut b);
+        }
+        assert_eq!(marks(&b), vec![(88_300, Mark::Started { tick: 0 })]);
+        assert_eq!(t.state(), State::Playing);
+        // A Record count-in after it still records.
+        t.command(t.frame(), Command::Stop);
+        t.command(t.frame(), Command::Record);
+        let mut b = Block::new();
+        t.process(64, &mut b);
+        while t.state() == State::CountIn {
+            t.process(4096, &mut b);
+        }
+        assert_eq!(t.state(), State::Recording);
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        t.command(0, Command::CountInPlay);
+        run(&mut t, 64);
+        assert_eq!(t.state(), State::Playing);
+        // While rolling it does nothing.
+        t.command(t.frame(), Command::CountInPlay);
+        run(&mut t, 64);
+        assert_eq!(t.state(), State::Playing);
     }
 
     #[test]
