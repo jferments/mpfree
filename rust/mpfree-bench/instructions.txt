@@ -188,25 +188,25 @@
 12921	Ring mod
 145867	Room reverb
 108213	Rotary
-602175	Sampler x16 held
-1548520	Sampler x16 held up
-1801699	Sampler x16 held up, 16-bit sound
-654716	Sampler x16 held, 16-bit sound
-1443226	Sampler x16 held, LFO and pitch envelope
+617430	Sampler x16 held
+1587200	Sampler x16 held up
+1838424	Sampler x16 held up, 16-bit sound
+669942	Sampler x16 held, 16-bit sound
+1489849	Sampler x16 held, LFO and pitch envelope
 881875	Sampler x16 held, comb
 1794930	Sampler x16 held, driven ladder
-692121	Sampler x16 held, vowel
-481317	Sampler x4 held, 4 layers each
-1505167	Sampler, 20 pads
-2087707	Sampler, 20 pads + master grains
-80083	Sampler, 4 drum kits, 64 voices
-41608	Sampler, drum kit, 24 voices
-43974	Sampler, drum kit, 24 voices, 16-bit sounds
-81970	Sampler, drum kit, 64 voices
-893213	Sampler, the 16 sample pads alone
+721696	Sampler x16 held, vowel
+488150	Sampler x4 held, 4 layers each
+1402092	Sampler, 20 pads
+1985137	Sampler, 20 pads + master grains
+80602	Sampler, 4 drum kits, 64 voices
+42339	Sampler, drum kit, 24 voices
+44830	Sampler, drum kit, 24 voices, 16-bit sounds
+82504	Sampler, drum kit, 64 voices
+802604	Sampler, the 16 sample pads alone
 630801	Sampler, the 4 granular pads alone
 5519410	Song view: 4,096 blocks, a frame while the song plays
-4018602	Song: sampler, 2 synths, mixer+FX, time, looper
+4034169	Song: sampler, 2 synths, mixer+FX, time, looper
 261927	Sound Keys Init with Ensemble, 8 voices
 137967	Spring reverb
 58563	Squelch Acid Line, a line
