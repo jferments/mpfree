@@ -118,6 +118,7 @@ use mpfree_ui::widgets::Card;
 use mpfree_ui::{EventKind, Tone, Ui, UiEvent};
 
 use crate::gui::FromUi;
+use crate::instrument_list::{InstrumentId, KitIds};
 use crate::mixing::Captured;
 use crate::modpanels::PadFx;
 use crate::sampler::{Cloud, Playheads, RecFeed, RecSource, ViewSwap};
@@ -920,6 +921,10 @@ pub struct SamplePage {
     cloud_shown: bool,
     /// Kits whose pads were renamed or replaced, for the Play page.
     renamed: Vec<usize>,
+    /// Each kit's id in the project's list of instruments, as the audio
+    /// loop last said ([`SamplePage::set_kit_ids`]): what the page's
+    /// commands name a kit by (sampler refactor phase 3, step 14).
+    kit_ids: KitIds,
     /// The kit or pad changed since the page was last built.
     stale: bool,
     /// The last touch's tab answered it with an action (see
@@ -1243,6 +1248,7 @@ impl SamplePage {
             cloud: Some(Box::default()),
             cloud_shown: false,
             renamed: Vec::new(),
+            kit_ids: KitIds::default(),
             stale: true,
             answered: false,
             editing: false,
@@ -2352,7 +2358,7 @@ impl SamplePage {
             let map = Change::MapToKeys {
                 roots: roots.clone(),
             };
-            match self.command(&Command::to_kit(kit, map)) {
+            match self.change_kit(kit, map, None) {
                 Ok(_) => {
                     let lo = roots.iter().map(|r| r.1).min().unwrap_or(0);
                     let hi = roots.iter().map(|r| r.1).max().unwrap_or(0);
@@ -2993,7 +2999,7 @@ impl SamplePage {
             cuts: cuts.into_iter().collect(),
         };
         // The work is unsaved; the audio thread's view is the same.
-        match self.command(&Command::to_kit(kit, keep)) {
+        match self.change_kit(kit, keep, None) {
             Ok(_) => {
                 let kept = self
                     .projects
@@ -3231,21 +3237,18 @@ impl SamplePage {
         let Some((from, chop)) = a.chop(take) else {
             return;
         };
-        let mut cmd = Command::to_kit(
-            kit,
-            Change::Chop {
-                from,
-                chop: Box::new(chop),
-            },
-        );
-        if to_kit != kit {
+        let chopped = Change::Chop {
+            from,
+            chop: Box::new(chop),
+        };
+        let made = match (self.kit_id(kit), self.kit_id(to_kit)) {
+            (Ok(_), Ok(_)) if to_kit == kit => self.change_kit(kit, chopped, None),
             // The take goes from its kit's page too, an undo step there.
-            cmd = cmd.onto(to_kit);
+            (Ok(id), Ok(to)) => self.command(&Command::to_kit(id, chopped).onto(to)),
+            (Err(e), _) | (_, Err(e)) => Err(e),
         }
-        let made = self
-            .command(&cmd)
-            .map(|done| done.pads.unwrap_or(0..0))
-            .map_err(|e| e.to_string());
+        .map(|done| done.pads.unwrap_or(0..0))
+        .map_err(|e| e.to_string());
         match made {
             Ok(pads) => {
                 if let (Some(n), Some(new)) = (self.names.get_mut(to_kit), new_name) {
@@ -3504,7 +3507,7 @@ impl SamplePage {
                 let Some((change, gesture)) = a.change() else {
                     return;
                 };
-                if let Err(e) = self.command(&Command::to_kit(kit, change).in_gesture(gesture)) {
+                if let Err(e) = self.change_kit(kit, change, gesture) {
                     let line = format!(
                         "sample: edit of pad {} not made ({e})",
                         self.pad_text(kit, pad)
@@ -3538,7 +3541,7 @@ impl SamplePage {
             PlayAction::PadsPlay(play) => {
                 self.lift();
                 let kit = self.kit;
-                let what = match self.command(&Command::to_kit(kit, Change::PadsPlay(*play))) {
+                let what = match self.change_kit(kit, Change::PadsPlay(*play), None) {
                     Ok(_) => match play {
                         PadsPlay::Pads => "the pads play their own sounds".to_string(),
                         PadsPlay::Keys { from } => format!(
@@ -3560,7 +3563,7 @@ impl SamplePage {
             PlayAction::KeyFade(fade) => {
                 self.lift();
                 let kit = self.kit;
-                let what = match self.command(&Command::to_kit(kit, Change::KeyFade(*fade))) {
+                let what = match self.change_kit(kit, Change::KeyFade(*fade), None) {
                     Ok(_) => match fade {
                         0 => "key fade off, the zones edge to edge".to_string(),
                         1 => "key fade 1 note, the zones that meet crossfade over it".to_string(),
@@ -3582,7 +3585,7 @@ impl SamplePage {
                     return;
                 };
                 let before = self.projects.get(kit).and_then(|p| p.pad(pad)).cloned();
-                let done = self.command(&Command::to_kit(kit, change).in_gesture(gesture));
+                let done = self.change_kit(kit, change, gesture);
                 let what = match (done, self.projects.get(kit)) {
                     (Ok(_), Some(project)) => layers_text(&a, before.as_ref(), project),
                     (Ok(_), None) => return,
@@ -3623,7 +3626,7 @@ impl SamplePage {
                 let Some((change, gesture)) = a.change() else {
                     return;
                 };
-                if let Err(e) = self.command(&Command::to_kit(kit, change).in_gesture(gesture)) {
+                if let Err(e) = self.change_kit(kit, change, gesture) {
                     let line = format!(
                         "sample: edit of pad {} not made ({e})",
                         self.pad_text(kit, pad)
@@ -3647,7 +3650,7 @@ impl SamplePage {
         &mut self,
         cmd: &Command,
     ) -> Result<sampler_commands::Done, sampler_commands::Refused> {
-        let done = sampler_commands::run(&mut self.projects, cmd)?;
+        let done = sampler_commands::run(&mut self.projects, &self.kit_ids, cmd)?;
         if !done.changed {
             return Ok(done);
         }
@@ -3662,6 +3665,34 @@ impl SamplePage {
             self.mark_renamed(done.kit);
         }
         Ok(done)
+    }
+
+    /// `change` to kit `kit` (a place in the list of kits), named by its
+    /// id in the project's list, as part of `gesture`'s undo step (None:
+    /// a step of its own): a [`SamplePage::command`].
+    fn change_kit(
+        &mut self,
+        kit: usize,
+        change: Change,
+        gesture: Option<u64>,
+    ) -> Result<sampler_commands::Done, sampler_commands::Refused> {
+        let cmd = Command::to_kit(self.kit_id(kit)?, change).in_gesture(gesture);
+        self.command(&cmd)
+    }
+
+    /// Kit `kit`'s id in the project's list: refused when the place has
+    /// none (no kit there).
+    fn kit_id(&self, kit: usize) -> Result<InstrumentId, sampler_commands::Refused> {
+        self.kit_ids
+            .of(kit)
+            .ok_or(sampler_commands::Refused::NoKitAt(kit))
+    }
+
+    /// Each kit's id in the project's list of instruments, as the audio
+    /// loop has them (at start, and when a project opens): what the
+    /// page's commands name the kits by from now on.
+    pub fn set_kit_ids(&mut self, ids: KitIds) {
+        self.kit_ids = ids;
     }
 
     /// Kit `kit`'s pad names changed: the Play page is told
@@ -3833,7 +3864,7 @@ impl SamplePage {
             detents: d,
             fine,
         };
-        match self.command(&Command::to_kit(kit, turn).in_gesture(Some(id))) {
+        match self.change_kit(kit, turn, Some(id)) {
             Ok(_) => self.stale = true,
             Err(e) => self.lines.push(format!(
                 "sample: pad {} not changed ({e})",
@@ -3883,7 +3914,7 @@ impl SamplePage {
             }
         };
         let own = Change::Own { pad, field, value };
-        match self.command(&Command::to_kit(kit, own).in_gesture(Some(id))) {
+        match self.change_kit(kit, own, Some(id)) {
             Ok(_) => self.stale = true,
             Err(e) => self.lines.push(format!(
                 "sample: pad {} not changed by MIDI Learn ({e})",
@@ -4005,7 +4036,7 @@ impl SamplePage {
                 let Some((change, gesture)) = a.change() else {
                     return;
                 };
-                if let Err(e) = self.command(&Command::to_kit(kit, change).in_gesture(gesture)) {
+                if let Err(e) = self.change_kit(kit, change, gesture) {
                     let line = format!(
                         "sample: edit of pad {} not made ({e})",
                         self.pad_text(kit, pad)
@@ -4801,7 +4832,7 @@ impl SamplePage {
             None => set,
         };
         let r = self
-            .command(&Command::to_kit(l.kit, set))
+            .change_kit(l.kit, set, None)
             .map(|_| ())
             .map_err(|e| e.to_string());
         match r {
@@ -5021,7 +5052,7 @@ impl SamplePage {
                         sound: Recorded(sound),
                         scale,
                     };
-                    self.command(&Command::to_kit(p.kit, use_it))
+                    self.change_kit(p.kit, use_it, None)
                         .map(|_| id)
                         .map_err(|e| e.to_string())
                 });
@@ -5152,7 +5183,7 @@ impl SamplePage {
             pad_name: pad_name.map(str::to_string),
             sound_name: sound_name.map(str::to_string),
         };
-        match self.command(&Command::to_kit(kit, name)) {
+        match self.change_kit(kit, name, None) {
             Ok(_) => {
                 let line = match (pad_name, sound_name) {
                     (Some(p), Some(s)) => format!("pad {at} named {p}, its sound {s}"),
@@ -5327,8 +5358,10 @@ impl SamplePage {
                 },
                 None => start,
             };
-            let cmd = Command::to_kit(seat.kit, start).in_gesture(Some(seat.gesture));
-            let r = self.command(&cmd).map(|_| ()).map_err(|e| e.to_string());
+            let r = self
+                .change_kit(seat.kit, start, Some(seat.gesture))
+                .map(|_| ())
+                .map_err(|e| e.to_string());
             let what = self.seat_text(&seat);
             match r {
                 Ok(()) => {
@@ -5933,7 +5966,7 @@ impl SamplePage {
             onto: Landing::Pad(pad),
             lands,
         };
-        match self.command(&Command::to_kit(kit, keep)) {
+        match self.change_kit(kit, keep, None) {
             Ok(_) => {
                 let text = format!(
                     "{name}, {} {} on pad {}",
@@ -6429,7 +6462,7 @@ impl SamplePage {
             to: Box::new(o.pad),
             chops: o.chops,
         };
-        match self.command(&Command::to_kit(kit, load)) {
+        match self.change_kit(kit, load, None) {
             Ok(_) => {
                 let chops = match chops {
                     0 => String::new(),
@@ -6623,8 +6656,7 @@ impl SamplePage {
                         ..Lands::default()
                     },
                 };
-                let put =
-                    (kit < self.projects.len()).then(|| self.command(&Command::to_kit(kit, keep)));
+                let put = (kit < self.projects.len()).then(|| self.change_kit(kit, keep, None));
                 match put {
                     Some(Ok(_)) => {
                         let text = format!(
@@ -7022,7 +7054,7 @@ impl SamplePage {
             inst: Box::new(mpfree_sampler_ui::command::AutoSampled(inst)),
             to,
         };
-        match self.command(&Command::to_kit(kit, land)) {
+        match self.change_kit(kit, land, None) {
             Ok(_) => {
                 let pads = if n == 1 {
                     self.pad_text(kit, to)
@@ -7714,10 +7746,7 @@ impl SamplePage {
                 let slot = [SceneSlot::A, SceneSlot::B][k];
                 // Saved with the kit; the new view puts the crossfader's
                 // values back (take_view).
-                if self
-                    .command(&Command::to_kit(kit, Change::SceneStore(slot)))
-                    .is_ok()
-                {
+                if self.change_kit(kit, Change::SceneStore(slot), None).is_ok() {
                     let n = self.projects[kit].scenes[k]
                         .as_ref()
                         .map_or(0, scene::Scene::sounds);
@@ -7755,7 +7784,7 @@ impl SamplePage {
                 self.morph = None;
                 // A pad put back is an edit, and the Play page hears of
                 // its name; nothing changed since, no edit.
-                let back = self.command(&Command::to_kit(kit, Change::SceneReturn));
+                let back = self.change_kit(kit, Change::SceneReturn, None);
                 let (n, left) = back.ok().and_then(|d| d.put_back).unwrap_or((0, 0));
                 let left = match left {
                     0 => String::new(),
@@ -8651,7 +8680,7 @@ impl SamplePage {
                         region,
                     }),
                 };
-                let r = self.command(&Command::to_kit(kit, set).in_gesture(Some(gesture)));
+                let r = self.change_kit(kit, set, Some(gesture));
                 self.edited_take(kit, i, r);
                 self.refresh(ui);
                 None
@@ -8693,7 +8722,7 @@ impl SamplePage {
                         to: after,
                     }),
                 };
-                let r = self.command(&Command::to_kit(kit, set).in_gesture(Some(gesture)));
+                let r = self.change_kit(kit, set, Some(gesture));
                 self.edited_take(kit, i, r);
                 self.refresh(ui);
                 None
@@ -8832,7 +8861,7 @@ impl SamplePage {
         };
         let name = project.take(i).map(|t| t.name.clone()).unwrap_or_default();
         let had = project.pad(pad).map(|p| p.name.clone());
-        match self.command(&Command::to_kit(kit, Change::PutTake { take: i, pad })) {
+        match self.change_kit(kit, Change::PutTake { take: i, pad }, None) {
             Ok(_) => {
                 let at = self.pad_text(kit, pad);
                 self.lines.push(match had {
@@ -8955,7 +8984,7 @@ impl SamplePage {
             onto: Landing::Take,
             lands,
         };
-        let made = self.command(&Command::to_kit(kit, keep));
+        let made = self.change_kit(kit, keep, None);
         match made {
             Ok(done) => {
                 let i = done.take.unwrap_or(0);
@@ -9025,7 +9054,7 @@ impl SamplePage {
             take: i,
             name: name.to_string(),
         };
-        let r = self.command(&Command::to_kit(kit, named));
+        let r = self.change_kit(kit, named, None);
         if r.is_ok() {
             self.told.push(format!("{was} named {name}"));
             self.lines.push(format!("sample: {was} named {name}"));
