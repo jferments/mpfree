@@ -1196,3 +1196,207 @@ fn changes_as_messages_do_what_the_calls_do() {
     );
     assert_eq!(parse_source("lfo9"), None);
 }
+
+/// The XY pad's Go back (the XY controller plan, phase 2): a hand lets go
+/// over a glide, landing on what the layers under it hold by then.
+#[test]
+fn a_hand_letting_go_glides_to_what_is_under_it_by_then() {
+    let mut e = engine();
+    let hand = |value| ModEvent::Touch {
+        addr: mix(),
+        value,
+        over_locks: false,
+    };
+    let let_go = |frames| ModEvent::LetGo {
+        addr: mix(),
+        frames,
+    };
+    // Base 50, the hand at 90, then a glide of 3200 frames (100 ticks).
+    let log = run(&mut e, 256, 128, &[(0, hand(90.0))], None);
+    assert_eq!(last(&log, mix()), 90.0);
+    let log = run(&mut e, 1600, 128, &[(0, let_go(3200))], None);
+    let mid = last(&log, mix());
+    assert!(e.is_touched(mix()), "still letting go");
+    assert!(mid < 90.0 && mid > 50.0, "half way: {mid}");
+    assert!((mid - 70.0).abs() < 2.0, "about half way: {mid}");
+    // The base moves on underneath (a turn): it lands there instead.
+    let log = run(
+        &mut e,
+        3200,
+        128,
+        &[(
+            0,
+            ModEvent::Set {
+                addr: mix(),
+                value: 10.0,
+            },
+        )],
+        None,
+    );
+    assert!(!e.is_touched(mix()), "let go once the glide is over");
+    assert_eq!(last(&log, mix()), 10.0);
+    let vals: Vec<f32> = log.iter().filter(|x| x.1 == mix()).map(|x| x.2).collect();
+    assert!(
+        vals.windows(2).all(|w| w[1] <= w[0]),
+        "it glides down to 10 without a jump back up: {vals:?}"
+    );
+
+    // A new touch while it lets go takes it over; an Untouch ends it at
+    // once; 0 frames is an Untouch.
+    run(&mut e, 128, 128, &[(0, hand(80.0))], None);
+    run(&mut e, 256, 128, &[(0, let_go(48_000))], None);
+    let log = run(&mut e, 128, 128, &[(0, hand(30.0))], None);
+    assert_eq!(last(&log, mix()), 30.0);
+    let log = run(&mut e, 256, 128, &[(0, let_go(48_000))], None);
+    assert!(last(&log, mix()) < 30.0, "the new hand lets go from 30");
+    let log = run(
+        &mut e,
+        128,
+        128,
+        &[(0, ModEvent::Untouch { addr: mix() })],
+        None,
+    );
+    assert_eq!(last(&log, mix()), 10.0);
+    assert!(!e.is_touched(mix()));
+    run(&mut e, 128, 128, &[(0, hand(60.0))], None);
+    let log = run(&mut e, 128, 128, &[(0, let_go(0))], None);
+    assert_eq!(last(&log, mix()), 10.0);
+
+    // A switch can't glide: it lets go at once.
+    let mut switch = |ev| run(&mut e, 128, 128, &[(0, ev)], None);
+    switch(ModEvent::Touch {
+        addr: mode(),
+        value: 2.0,
+        over_locks: false,
+    });
+    let log = switch(ModEvent::LetGo {
+        addr: mode(),
+        frames: 4800,
+    });
+    assert_eq!(last(&log, mode()), 0.0);
+    assert!(!e.is_touched(mode()));
+}
+
+/// A hand letting go over a lock lands on the lock; opening a project
+/// (`let_go_all`) ends the glide too.
+#[test]
+fn a_glide_back_lands_on_a_lock_and_let_go_all_ends_it() {
+    let mut e = engine();
+    run(
+        &mut e,
+        128,
+        128,
+        &[
+            (
+                0,
+                ModEvent::Lane {
+                    addr: mix(),
+                    value: 20.0,
+                },
+            ),
+            (
+                10,
+                ModEvent::Touch {
+                    addr: mix(),
+                    value: 100.0,
+                    over_locks: false,
+                },
+            ),
+        ],
+        None,
+    );
+    let log = run(
+        &mut e,
+        6400,
+        128,
+        &[(
+            0,
+            ModEvent::LetGo {
+                addr: mix(),
+                frames: 3200,
+            },
+        )],
+        None,
+    );
+    assert_eq!(last(&log, mix()), 20.0, "on the lane's value");
+    run(
+        &mut e,
+        128,
+        128,
+        &[(
+            0,
+            ModEvent::Touch {
+                addr: mix(),
+                value: 100.0,
+                over_locks: false,
+            },
+        )],
+        None,
+    );
+    run(
+        &mut e,
+        128,
+        128,
+        &[(
+            0,
+            ModEvent::LetGo {
+                addr: mix(),
+                frames: 48_000,
+            },
+        )],
+        None,
+    );
+    e.let_go_all();
+    assert!(!e.is_touched(mix()));
+    let log = run(&mut e, 128, 128, &[], None);
+    assert_eq!(last(&log, mix()), 50.0, "the base, the lane let go too");
+}
+
+/// The XY pad's push: a row from one of its host sources, which go below
+/// 0 as well as above.
+#[test]
+fn the_xy_pads_host_sources_push_both_ways() {
+    let mut e = engine();
+    let n = XY_SOURCES.start as u8;
+    assert!(XY_SOURCES.end <= HOST_SOURCES && XY_SOURCES.len() >= 16);
+    e.add_row(Row {
+        source: Source::Host(n),
+        via: None,
+        target: mix(),
+        depth: 1.0,
+    })
+    .unwrap();
+    let log = run(
+        &mut e,
+        256,
+        128,
+        &[(0, ModEvent::Source { n, value: -0.25 })],
+        None,
+    );
+    assert_eq!(e.source(Source::Host(n)), -0.25);
+    assert!(
+        (last(&log, mix()) - 25.0).abs() < 0.01,
+        "50 % pushed down a quarter"
+    );
+    let log = run(
+        &mut e,
+        256,
+        128,
+        &[(0, ModEvent::Source { n, value: 2.0 })],
+        None,
+    );
+    assert_eq!(e.source(Source::Host(n)), 1.0, "clamped");
+    assert_eq!(last(&log, mix()), 100.0);
+    // Its rows belong to the layout, which makes them again: not saved.
+    assert!(Source::Host(n).is_xy() && !Source::Host(2).is_xy());
+    e.add_row(Row {
+        source: Source::Lfo(0),
+        via: None,
+        target: cut(),
+        depth: 0.5,
+    })
+    .unwrap();
+    let text = e.save();
+    assert!(!text.contains(&format!("host{n}")), "{text}");
+    assert!(text.contains("row.0 = lfo0"), "{text}");
+}

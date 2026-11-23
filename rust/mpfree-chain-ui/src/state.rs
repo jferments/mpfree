@@ -452,6 +452,8 @@ pub fn source_name(s: Source) -> String {
         Source::Host(0) => "Velocity".into(),
         Source::Host(1) => "Pressure".into(),
         Source::Host(2) => "Mod wheel".into(),
+        // An Add setting on a layout of yours (the XY controller plan).
+        s @ Source::Host(_) if s.is_xy() => "XY pad".into(),
         Source::Host(n) => format!("Control {}", n + 1),
     }
 }

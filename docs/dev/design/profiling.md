@@ -209,9 +209,10 @@ with `--quick`) at 128 frames and 44.1 kHz:
   a block through the full voice loop and take 39,000 through the plain
   path; 64 take 74,000. "Stream voices" are `mpfree-stream`'s cursors
   reading streamed sounds (disk streaming's P3, step 3), for the
-  sampler's voice limit: 64 voices at 1.5 times their rate take 1.1 M
-  instructions a block with Hermite and 6.4 M band-limited (8.2 M at 3
-  times, 11.8 M with 16 crossings a side); 16 stems at the engine's rate
+  sampler's voice limit: 64 voices at 1.5 times their rate take 3.7 M
+  instructions a block with the 8-point read (1.8 M at 0.75 times; Hermite,
+  before DSP quality step 1.7, took 1.1 M) and 6.4 M band-limited (8.2 M at
+  3 times, 11.8 M with 16 crossings a side); 16 stems at the engine's rate
   take 65,000. On the workstation 64 band-limited voices are 18 % of a
   period, so on the MPC fewer fit in the sampler's 25 %: the device round
   measures it, and the sampler sets the limit.
@@ -353,14 +354,22 @@ with `--quick`) at 128 frames and 44.1 kHz:
   container's compiler, 22 Nov), instructions a frame: built 21.2 million
   (19.8 million of it the paint, as a frame while it plays shows), with
   pressure 27.0 million, scrolled 20.7 million, zoomed 46.0 million,
-  switched 21.2 million.
+  switched 21.2 million. The value lanes (piano roll plan 2A.1, 23 Nov)
+  cut every one by a quarter to a half. The old velocity lane drew a bar
+  for every note in view and each repeat's hit; the new lane draws one
+  bar for each place where notes start (`NoteGrid::lane_of`), far fewer in
+  a wide view, which is most likely the saving (not profiled further):
+  built 13.9 million, with pressure 19.8 million, while
+  it plays 12.5 million, scrolled 13.0 million, zoomed 22.7 million,
+  switched 13.9 million. The bench's test still checks that the roll
+  draws all 8,192 notes.
 - **control, note editor edits (piano roll plan 0C.3):** two "Note editor:
   ..." cases make an editor edit on the same clip while it plays, as
   `TimeControl::edit` does (`note_edit` in the bench): the edit worked out
   (`Editor::act`), made to the clip and the takes (`Takes::edit`), the
   picks found again (`Editor::applied`), and the playing view edited in
   place when `InPlace::fits` allows it, else compiled. "a velocity change
-  and its UNDO" sets one picked note's velocity (a velocity lane lift) and
+  and its UNDO" sets one note's velocity (a stroke along the velocity lane) and
   takes it back with UNDO, a block each; "all picked and transposed" moves
   every note a semitone. On a clip this full neither goes in place: a
   velocity change is a note out and one in, twice the clip's notes of
@@ -522,8 +531,13 @@ to 18 bars in Jazz-ish 1.8 ms (3.2 ms); Try again on one bar of 18 0.13 ms;
 Continue on a clip in a project, 2 to 6 bars, 0.75 ms. With the
 calibration file (this machine times 9.3) that is about 18 ms on the MPC
 for an 18-bar Continue (23 ms), 1.3 ms for a Try again and 40 ms for the
-whole reading budget (64 ms): far under what a press can feel. The
-device's own numbers come from its bench round once `host_bench_mpc.py`
+whole reading budget (64 ms): far under what a press can feel. Since
+Continue makes music first (S1, 23 Nov; a cloud machine about 1.35 times
+slower than the workstation at the reading): Continue from 2 to 10 bars
+in Groove 3.0 ms (four whole drafts), from 2 to 18 bars in Jazz-ish
+2.8 ms (two drafts; 6.9 ms worst), Try again on one bar 0.02 ms, and a
+clip in a project 1.5 ms; by the same calibration about 20 ms on the MPC
+for an 8-bar Continue and about 50 ms at worst. The device's own numbers come from its bench round once `host_bench_mpc.py`
 runs `--compose` (not yet: round 2's runbook was rehearsed without it).
 
 ### Lanes (`--lanes`)
