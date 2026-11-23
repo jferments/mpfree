@@ -534,14 +534,18 @@ fn heavy_reader(
     let mut buf = vec![0u8; HEAVY_READ];
     let mut r = HeavyRead::default();
     let t = Instant::now();
+    // A step starts where the last left off, even past the last piece, so
+    // only a whole pass from the first piece that read nothing is an error.
     let mut empty_pass = true;
+    let mut whole_pass = false;
     'pieces: while going(on) {
         if *next >= pieces.len() {
-            if empty_pass {
+            if whole_pass && empty_pass {
                 return Err("the heavy read's files are empty now".into());
             }
             *next = 0;
             empty_pass = true;
+            whole_pass = true;
         }
         let a = pieces[*next];
         *next += 1;
@@ -1257,6 +1261,50 @@ pub(super) fn run(base: &Path, dir: &Path, room: u64, z: Ready) -> Result<(), St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A step that starts where the last one left off, past the last piece
+    /// (step 3 read the last piece and stopped there), goes round to the
+    /// first piece; only a whole pass that reads nothing is an error.
+    /// Train 149's CI failed "the heavy read's files are empty now" this way.
+    #[test]
+    fn a_heavy_read_that_starts_past_the_last_piece_goes_round() {
+        use std::os::unix::fs::MetadataExt;
+        let dir =
+            std::env::temp_dir().join(format!("mpfree-disktest-round-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.bin");
+        std::fs::write(&path, vec![7u8; 4096]).unwrap();
+        let dev = std::fs::metadata(&path).unwrap().dev();
+        let piece = Piece {
+            path: path.clone(),
+            start: 0,
+            len: 4096,
+        };
+        let pieces = [&piece];
+        let on = AtomicBool::new(true);
+        let mut next = pieces.len();
+        let r = std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(Duration::from_millis(50));
+                on.store(false, Ordering::Relaxed);
+            });
+            heavy_reader(&pieces, dev, &mut next, &on)
+        });
+        std::fs::remove_dir_all(&dir).unwrap();
+        let r = r.expect("a step starting past the last piece goes round");
+        assert!(r.bytes >= 4096, "read {} bytes", r.bytes);
+        // A pass over files that are all empty is still an error.
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, b"").unwrap();
+        let on = AtomicBool::new(true);
+        let mut next = 0;
+        let r = heavy_reader(&pieces, dev, &mut next, &on);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(
+            r.err().as_deref(),
+            Some("the heavy read's files are empty now")
+        );
+    }
 
     #[test]
     fn the_steps_match_the_design() {

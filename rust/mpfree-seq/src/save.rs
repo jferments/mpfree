@@ -117,8 +117,11 @@
 //!
 //! A note's words after its pressure are the step's own settings, written
 //! only when set (sequencer S6): `off` (the step is off), `ramp:<n>` (its
-//! ratchet's velocity ramp), `tie` or `slide` ([`crate::Join`]). An older
-//! build reads the note and skips them.
+//! ratchet's velocity ramp), `tie` or `slide` ([`crate::Join`]), and
+//! `group:<n>`, its trigger group in a clip of notes ([`crate::groups`]).
+//! An older build reads the note and skips them. A clip whose trigger has
+//! two chances, conditions or on states, or a clip of pad hits with a
+//! group, is refused (`ModelError::BadGroup`, from the clip's check).
 //!
 //! A clip's `direction` line is its play direction (sequencer S6:
 //! `reverse`, `pingpong` or `random`; none for forward); an older build
@@ -439,6 +442,9 @@ fn notes_text(s: &mut String, prefix: &str, notes: &[Note], keep: &crate::TouchK
         }
         if n.join != Join::Attack {
             let _ = write!(s, " {}", n.join.word());
+        }
+        if n.group != 0 {
+            let _ = write!(s, " group:{}", n.group);
         }
         s.push('\n');
     }
@@ -1235,8 +1241,9 @@ fn follow<'a>(w: &mut impl Iterator<Item = &'a str>) -> Option<Follow> {
 }
 
 /// A note line's words after its pressure: the step's own settings
-/// (`off`, `ramp:<n>`, `tie`, `slide`). A ramp out of range or not a
-/// number refuses the line (None); a word this build doesn't know is
+/// (`off`, `ramp:<n>`, `tie`, `slide`) and its trigger group
+/// (`group:<n>`). A ramp or group out of range or not a number refuses
+/// the line (None); a word this build doesn't know is
 /// skipped, as unknown lines are, so a newer build's notes still open.
 /// A `note` line's words after `note`.
 fn note<'a>(w: &mut impl Iterator<Item = &'a str>) -> Option<Note> {
@@ -1255,6 +1262,7 @@ fn note<'a>(w: &mut impl Iterator<Item = &'a str>) -> Option<Note> {
         on: true,
         ramp: 0,
         join: Join::Attack,
+        group: 0,
     };
     step_words(n, w)
 }
@@ -1297,6 +1305,8 @@ fn step_words<'a>(mut n: Note, w: impl Iterator<Item = &'a str>) -> Option<Note>
             x => {
                 if let Some(r) = x.strip_prefix("ramp:") {
                     n.ramp = r.parse().ok()?;
+                } else if let Some(g) = x.strip_prefix("group:") {
+                    n.group = g.parse().ok()?;
                 }
             }
         }
@@ -2238,6 +2248,57 @@ mod tests {
             let t = text.replace("ramp:-40", bad);
             assert!(from_text(&t).is_err(), "{bad}");
         }
+    }
+
+    /// Trigger groups: `group:<n>` round-trips and is written only when
+    /// set; a note without it reads 0; a number out of range, a trigger
+    /// with two chances and a clip of pad hits with groups are refused.
+    #[test]
+    fn trigger_groups_read_back_and_broken_ones_are_refused() {
+        let mut p = Project::new();
+        p.tracks.push(Track::new("synth", 0));
+        let mut c = Clip::new("chords", 3840);
+        c.holds = crate::Holds::Notes;
+        for pitch in [60, 64, 67] {
+            c.add_note(Note {
+                chance: 50,
+                group: 2,
+                ..Note::new(0, 240, pitch, 100)
+            })
+            .unwrap();
+        }
+        c.add_note(Note::new(480, 240, 72, 90)).unwrap();
+        p.put_new_clip(0, 0, c).unwrap();
+        let text = to_text(&p);
+        assert_eq!(text.matches(" group:2").count(), 3, "{text}");
+        assert!(!text.contains("group:0"), "{text}");
+        let back = from_text(&text).unwrap();
+        assert_eq!(back, p);
+        let notes = |t: &str| {
+            from_text(t).unwrap().tracks[0].slots[0]
+                .clone()
+                .unwrap()
+                .notes
+        };
+        // Without the word: 0, each note on its own.
+        assert!(notes(&text.replace(" group:2", ""))
+            .iter()
+            .all(|n| n.group == 0));
+        for bad in ["group:256", "group:x", "group:-1", "group:"] {
+            assert!(
+                from_text(&text.replacen("group:2", bad, 1)).is_err(),
+                "{bad}"
+            );
+        }
+        // One note of the trigger at another chance.
+        let mixed = text.replacen(" 60 100 50 ", " 60 100 75 ", 1);
+        assert_ne!(mixed, text);
+        assert!(from_text(&mixed).is_err(), "{mixed}");
+        // A clip of pad hits with a group.
+        let mut hits = p.clone();
+        let c = hits.tracks[0].slots[0].as_mut().unwrap();
+        c.holds = crate::Holds::Hits;
+        assert!(from_text(&to_text(&hits)).is_err());
     }
 
     #[test]

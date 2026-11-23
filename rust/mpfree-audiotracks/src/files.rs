@@ -15,21 +15,33 @@
 //! - [`recover_into`]: at start, before anything records, takes left in the
 //!   work folder by a crash, a power cut or a session never saved are
 //!   finished and moved where the musician finds them. Nothing is deleted.
+//! - [`Problem`]: what System status hears of the takes' files and the
+//!   drive, through `mpfree-stream`'s [`Watch`] (phase 3b step 5d): each
+//!   take as the writer shows it (at risk, not saved yet, may stop,
+//!   stopped), the drive's data folder looked at every few seconds on a
+//!   thread of its own ([`watch_drive`]: missing, nearly full), and what
+//!   recovery found ([`Recovered`]).
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use mpfree_stream::fsio::{Fs, StdFs};
-use mpfree_stream::rec::{Meta, RecFormat, RecId};
+use mpfree_stream::player::UNIT;
+use mpfree_stream::rec::{recording_path, Meta, RecFormat, RecId};
 pub use mpfree_stream::rec::{TakeState, Why};
 use mpfree_stream::recover::{check_whole, checked, recover, Found};
+use mpfree_stream::status::{Drive, Watch};
 pub use mpfree_stream::writer::WriterConfig;
 use mpfree_stream::writer::{Gate, RealClock, Recorder, Status, TakeNo, TakeView};
 
+use mpfree_status::{Report, Subject};
+
+use crate::host::TakeWave;
 use crate::save::TakeFile;
-use crate::RecordingId;
+use crate::{RecordingId, TakeInfo, PEAK_BLOCK};
 
 /// Bytes of a track's name kept for its take files' names.
 pub const NAME_MAX: usize = 48;
@@ -188,6 +200,17 @@ pub enum FileEvent {
     /// A sound brought in, or a stretched copy, plays from memory, as its
     /// file couldn't be written.
     Unwritten { track: usize, why: String },
+    /// A save wrote a take of `track` from what its file holds and the
+    /// rest from memory, as its file isn't all there (`state`): its memory
+    /// had gone to the file as it recorded (a take longer than memory).
+    FromBoth {
+        track: usize,
+        state: Option<TakeState>,
+    },
+    /// The part of a take of `track` whose memory had gone to its file
+    /// couldn't be read back from there (`why`) for a save, which holds
+    /// silence there.
+    Unread { track: usize, why: String },
 }
 
 impl FileEvent {
@@ -200,6 +223,8 @@ impl FileEvent {
             | FileEvent::State { track, .. }
             | FileEvent::Unopened { track, .. }
             | FileEvent::Unwritten { track, .. }
+            | FileEvent::FromBoth { track, .. }
+            | FileEvent::Unread { track, .. }
             | FileEvent::TrackLeftOut { track } => *track,
             FileEvent::NoStream { .. } | FileEvent::HeadsShort { .. } => 0,
         }
@@ -217,14 +242,20 @@ impl FileEvent {
                  made ({why}); saving the project keeps it"
             ),
             FileEvent::FromMemory { state, .. } => {
-                let file = match state {
-                    Some(TakeState::AtRisk(w) | TakeState::Stopped(w)) => {
-                        format!("its file stopped short ({})", why_words(*w))
-                    }
-                    _ => "it has no file of its own".to_string(),
-                };
-                format!("audio tracks: a take of {who} was saved from memory, as {file}")
+                format!(
+                    "audio tracks: a take of {who} was saved from memory, as {}",
+                    short_because(state)
+                )
             }
+            FileEvent::FromBoth { state, .. } => format!(
+                "audio tracks: a take of {who} was saved from what reached the drive and the rest \
+                 from memory, as {}",
+                short_because(state)
+            ),
+            FileEvent::Unread { why, .. } => format!(
+                "audio tracks: the start of a take of {who} couldn't be read back from the drive \
+                 ({why}), so the saved take is silent there"
+            ),
             FileEvent::State { state, .. } => match state {
                 TakeState::AtRisk(w) => format!(
                     "audio tracks: {who}'s take is at risk ({}): if the power goes now, what \
@@ -275,6 +306,16 @@ impl FileEvent {
     }
 }
 
+/// Why a take saved from memory had no whole file, in a few words.
+fn short_because(state: &Option<TakeState>) -> String {
+    match state {
+        Some(TakeState::AtRisk(w) | TakeState::Stopped(w)) => {
+            format!("its file stopped short ({})", why_words(*w))
+        }
+        _ => "it has no file of its own".to_string(),
+    }
+}
+
 /// Why a take's file got into trouble, in a few words.
 pub fn why_words(w: Why) -> &'static str {
     match w {
@@ -305,6 +346,8 @@ const POLL: Duration = Duration::from_millis(50);
 /// One recording's file, on the worker.
 struct FileRec {
     rec: RecordingId,
+    /// The engine track it was armed on (0 for a take a project opened).
+    track: u8,
     /// The take it is, once one records into it or opens with it.
     id: Option<u16>,
     /// 0 for a take opened with a project (it wasn't recorded here).
@@ -325,6 +368,15 @@ struct FileRec {
     ready: bool,
     /// The name the last save gave it.
     saved_as: Option<String>,
+    /// Frames its file was opened or grown to while being written (0:
+    /// not opened as it grows).
+    grown: u64,
+    /// While takes play from their files: the lowest and highest sample
+    /// of each block of [`PEAK_BLOCK`] samples pushed (the last as far as
+    /// it goes), so its waveform needs no read of its file, and `pushed`,
+    /// the samples pushed.
+    peaks: Vec<(f32, f32)>,
+    pushed: usize,
 }
 
 /// The writer and the folder it records into.
@@ -337,6 +389,37 @@ struct Writing {
 /// lasting id, the file, and the channels and frames it must hold.
 pub(crate) type ToOpen = (u16, RecordingId, PathBuf, usize, usize);
 
+/// A recording's file still being written, played from as it grows
+/// (phase 3b step 5): its pool memory goes back as the file holds it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Growing {
+    /// Take `take` has committed its first `frames` (whole units of the
+    /// stream cache) to the file at `path`, of `channels`: open it.
+    Open {
+        take: u16,
+        rec: RecordingId,
+        path: PathBuf,
+        channels: usize,
+        frames: u64,
+    },
+    /// Its file holds its first `frames` now: more units committed.
+    Grow {
+        take: u16,
+        rec: RecordingId,
+        frames: u64,
+    },
+    /// It is finished, named `path` in place, and holds all `frames` it
+    /// took: grown to them, or opened as a finished file if it didn't
+    /// open as it grew after all.
+    Finished {
+        take: u16,
+        rec: RecordingId,
+        path: PathBuf,
+        channels: usize,
+        frames: usize,
+    },
+}
+
 /// The worker's side of the files: see the module notes.
 pub(crate) struct Files {
     rate: u32,
@@ -344,9 +427,17 @@ pub(crate) struct Files {
     recs: Vec<FileRec>,
     last_poll: Instant,
     /// Takes play from their files (phase 3b): each take's file is to be
-    /// opened once finished ([`Files::take_opens`]).
+    /// opened once finished ([`Files::take_opens`]), or as it grows while
+    /// it records ([`Files::take_grows`]).
     streams: bool,
     opens: Vec<ToOpen>,
+    grows: Vec<Growing>,
+    /// The takes' problems for System status, and those not taken yet.
+    watch: Watch,
+    problems: Vec<Problem>,
+    /// Bytes a second the takes armed or recording take (for the drive's
+    /// look: nearly full by what is armed).
+    armed: Arc<AtomicU64>,
 }
 
 impl Files {
@@ -358,7 +449,22 @@ impl Files {
             last_poll: Instant::now(),
             streams: false,
             opens: Vec::new(),
+            grows: Vec::new(),
+            watch: Watch::new(),
+            problems: Vec::new(),
+            armed: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// What System status is to hear of the takes since last asked.
+    pub fn take_problems(&mut self) -> Vec<Problem> {
+        std::mem::take(&mut self.problems)
+    }
+
+    /// Bytes a second the takes armed or recording take, kept up to date
+    /// as the writer is looked at.
+    pub fn armed(&self) -> Arc<AtomicU64> {
+        self.armed.clone()
     }
 
     /// Takes play from their files from now on: each finished take file,
@@ -370,6 +476,12 @@ impl Files {
     /// The take files to open now, oldest first.
     pub fn take_opens(&mut self) -> Vec<ToOpen> {
         std::mem::take(&mut self.opens)
+    }
+
+    /// Recordings' files to open as they grow, or grown since, oldest
+    /// first.
+    pub fn take_grows(&mut self) -> Vec<Growing> {
+        std::mem::take(&mut self.grows)
     }
 
     /// The folder takes record into, once there is one.
@@ -439,6 +551,7 @@ impl Files {
         );
         self.recs.push(FileRec {
             rec,
+            track,
             id: None,
             channels,
             no: Some(no),
@@ -449,6 +562,9 @@ impl Files {
             shown: None,
             ready: false,
             saved_as: None,
+            grown: 0,
+            peaks: Vec::new(),
+            pushed: 0,
         });
         None
     }
@@ -487,6 +603,45 @@ impl Files {
             // The frames it took: fewer once its memory is full.
             f.frames += w.rec.push(no, frames);
         }
+        if self.streams {
+            note_peaks(&mut f.peaks, &mut f.pushed, frames);
+        }
+    }
+
+    /// Take `take`'s waveform in about `columns` columns, as
+    /// [`crate::host::AudioHost::wave`] reads it, from the peaks of what
+    /// was pushed to its file (as far as that goes: a take recording
+    /// grows): None if it has none (it wasn't recorded here while takes
+    /// play from their files).
+    pub fn wave_of(&self, take: &TakeInfo, columns: usize) -> Option<TakeWave> {
+        let ch = take.channels.max(1);
+        let f = self
+            .recs
+            .iter()
+            .find(|f| f.rec == take.rec && f.id == Some(take.id) && usize::from(f.channels) == ch)
+            .filter(|f| !f.peaks.is_empty())?;
+        let frames = (f.pushed / ch).min(take.frames);
+        let step = (PEAK_BLOCK / ch).max(1);
+        let fpc = take.frames.div_ceil(columns.max(1)).div_ceil(step).max(1) * step;
+        let mut out = Vec::with_capacity(frames.div_ceil(fpc));
+        let mut at = 0;
+        while at < frames {
+            let to = (at + fpc).min(frames);
+            let blocks = &f.peaks[at * ch / PEAK_BLOCK..(to * ch).div_ceil(PEAK_BLOCK)];
+            out.push(
+                blocks
+                    .iter()
+                    .fold((f32::MAX, f32::MIN), |(l, h), &(a, b)| (l.min(a), h.max(b))),
+            );
+            at = to;
+        }
+        Some(TakeWave {
+            id: take.id,
+            frames,
+            channels: take.channels,
+            frames_per_column: fpc,
+            columns: out,
+        })
     }
 
     /// The take stopped and every frame was pushed: its file is finished.
@@ -514,6 +669,7 @@ impl Files {
         }
         self.recs.push(FileRec {
             rec,
+            track: 0,
             id: Some(id),
             channels: 0,
             no: None,
@@ -524,6 +680,9 @@ impl Files {
             shown: Some(FileView::SAVED),
             ready: true,
             saved_as: None,
+            grown: 0,
+            peaks: Vec::new(),
+            pushed: 0,
         });
     }
 
@@ -531,13 +690,22 @@ impl Files {
     /// stay where they are). Files still only armed are left for their
     /// [`Files::disarm`].
     pub fn clear(&mut self) {
-        let Files { writing, recs, .. } = self;
+        let Files {
+            writing,
+            recs,
+            watch,
+            problems,
+            ..
+        } = self;
         recs.retain(|f| {
             if !f.take {
                 return true;
             }
             if let (Some(w), Some(no)) = (writing.as_mut(), f.no) {
                 w.rec.forget(no);
+                watch.take_gone(track_subject(f.track), &mut |r| {
+                    problems.push(Problem::of(r))
+                });
             }
             false
         });
@@ -554,15 +722,28 @@ impl Files {
         }
         self.last_poll = Instant::now();
         let mut gone = Vec::new();
+        let rate = u64::from(self.rate);
+        let bytes: u64 = self
+            .recs
+            .iter()
+            .filter(|f| f.no.is_some())
+            .map(|f| u64::from(f.channels) * 4 * rate)
+            .sum();
+        self.armed.store(bytes, Ordering::Relaxed);
+        let problems = &mut self.problems;
+        let mut report = |r: Report| problems.push(Problem::of(r));
         for f in &mut self.recs {
             let Some(no) = f.no else { continue };
+            let subject = track_subject(f.track);
             match w.rec.status(no) {
                 None | Some(Status::Arming) => {}
                 Some(Status::Failed(why)) => {
                     out.push(Said::Failed { rec: f.rec, why });
                     w.rec.disarm(no);
                     f.no = None;
-                    if !f.take {
+                    if f.take {
+                        self.watch.take_gone(subject, &mut report);
+                    } else {
                         gone.push(f.rec);
                     }
                 }
@@ -575,14 +756,53 @@ impl Files {
                         continue;
                     }
                     let view = FileView::of(&v);
+                    self.watch.take(subject, &v, &mut report);
+                    let ch = usize::from(f.channels);
+                    // Whole units of the cache committed: the file plays
+                    // them from now on, and their memory goes.
+                    let unit = (UNIT / ch.max(1)) as u64;
+                    let to = v.committed / unit * unit;
+                    let more = v.state != TakeState::Saved && to > f.grown;
+                    if let Some(id) = f.id.filter(|_| self.streams && more) {
+                        let stem = f.name.strip_suffix(".wav").unwrap_or(&f.name);
+                        self.grows.push(if f.grown == 0 {
+                            Growing::Open {
+                                take: id,
+                                rec: f.rec,
+                                path: recording_path(&w.dir, stem),
+                                channels: ch,
+                                frames: to,
+                            }
+                        } else {
+                            Growing::Grow {
+                                take: id,
+                                rec: f.rec,
+                                frames: to,
+                            }
+                        });
+                        f.grown = to;
+                    }
                     if v.state == TakeState::Saved {
                         f.path = w.rec.final_path(no);
                         // The writer is done with it.
                         w.rec.forget(no);
                         f.no = None;
+                        self.watch.take_gone(subject, &mut report);
                         if let (true, Some(id), Some(p)) = (self.streams, f.id, &f.path) {
-                            let ch = usize::from(f.channels);
-                            self.opens.push((id, f.rec, p.clone(), ch, f.frames));
+                            if f.grown > 0 {
+                                // Opened as it grew, and named in place:
+                                // the same file holds all of it now.
+                                f.grown = f.frames as u64;
+                                self.grows.push(Growing::Finished {
+                                    take: id,
+                                    rec: f.rec,
+                                    path: p.clone(),
+                                    channels: ch,
+                                    frames: f.frames,
+                                });
+                            } else {
+                                self.opens.push((id, f.rec, p.clone(), ch, f.frames));
+                            }
                         }
                     }
                     if f.shown.is_none_or(|s| view.differs(&s)) {
@@ -621,10 +841,33 @@ impl Files {
                     k.file.push_str(&f.name);
                     f.saved_as = Some(f.name.clone());
                     k.audio = vec![0.0; k.frames * k.channels];
-                    if f.channels > 0 {
+                    let state = f.shown.map(|s| s.state);
+                    if f.grown > 0 {
+                        // Its memory may have gone to its file as it
+                        // recorded: what the file holds comes from there,
+                        // and the tracks fill in the rest from memory.
+                        let stem = f.name.strip_suffix(".wav").unwrap_or(&f.name);
+                        let path = f.path.clone().or_else(|| {
+                            self.writing.as_ref().map(|w| recording_path(&w.dir, stem))
+                        });
+                        let read = match path {
+                            Some(p) => read_frames(&p, k.channels, &mut k.audio),
+                            None => Err("it has no file".into()),
+                        };
+                        said.push(match read {
+                            Ok(()) => FileEvent::FromBoth {
+                                track: k.track,
+                                state,
+                            },
+                            Err(why) => FileEvent::Unread {
+                                track: k.track,
+                                why,
+                            },
+                        });
+                    } else if f.channels > 0 {
                         said.push(FileEvent::FromMemory {
                             track: k.track,
-                            state: f.shown.map(|s| s.state),
+                            state,
                         });
                     }
                 }
@@ -659,6 +902,131 @@ impl Files {
             f.path = Some(there);
         }
     }
+}
+
+/// `samples` follow the `pushed` samples taken into `peaks` (see
+/// [`FileRec`]'s).
+fn note_peaks(peaks: &mut Vec<(f32, f32)>, pushed: &mut usize, samples: &[f32]) {
+    let mut j = 0;
+    while j < samples.len() {
+        let b = *pushed / PEAK_BLOCK;
+        let n = ((b + 1) * PEAK_BLOCK - *pushed).min(samples.len() - j);
+        let (lo, hi) = crate::min_max(&samples[j..j + n]);
+        match peaks.get_mut(b) {
+            Some(p) => *p = (p.0.min(lo), p.1.max(hi)),
+            None => peaks.push((lo, hi)),
+        }
+        *pushed += n;
+        j += n;
+    }
+}
+
+/// Read the frames a take's file at `path` holds (still being written, or
+/// finished) into the start of `out` (interleaved, `channels`), as many
+/// as both have.
+fn read_frames(path: &Path, channels: usize, out: &mut [f32]) -> Result<(), String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let l = mpfree_stream::format::layout(&mut f).map_err(|e| e.to_string())?;
+    if usize::from(l.channels) != channels {
+        return Err(format!(
+            "it has {} channels, the take {channels}",
+            l.channels
+        ));
+    }
+    let n = (l.frames as usize).min(out.len() / channels.max(1));
+    let mut bytes = vec![0u8; n * l.block_align()];
+    f.seek(SeekFrom::Start(l.data_at))
+        .and_then(|_| f.read_exact(&mut bytes))
+        .map_err(|e| e.to_string())?;
+    mpfree_stream::format::decode(l.sample, l.endian, &bytes, &mut out[..n * channels]);
+    Ok(())
+}
+
+/// A report for System status about the takes' files or the drive, and
+/// the engine track it is about, if any: the app names it
+/// (`Subject::audio_track` with the track's lasting id), as only it
+/// knows which project track an engine track plays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Problem {
+    pub report: Report,
+    pub track: Option<usize>,
+}
+
+impl Problem {
+    /// A watch's report: about an engine track when its subject is one
+    /// ([`track_subject`]), else about the whole system.
+    pub(crate) fn of(r: Report) -> Problem {
+        let track = (r.subject != Subject::NONE).then(|| r.subject.0 as usize - 1);
+        Problem {
+            report: Report {
+                subject: Subject::NONE,
+                ..r
+            },
+            track,
+        }
+    }
+}
+
+/// The subject the watch keeps engine track `track`'s takes under (one
+/// take records on a track at a time, and a take's problems end before
+/// the next begins); [`Problem::of`] takes it off again.
+fn track_subject(track: u8) -> Subject {
+    Subject(u32::from(track) + 1)
+}
+
+/// What a look at the drive holding the work folder found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Room {
+    /// It answered and isn't read-only.
+    pub writable: bool,
+    /// Bytes free for MPFree.
+    pub free: u64,
+}
+
+/// Looks at the drive holding a folder (`statvfs`, in the app): None if
+/// it couldn't (the drive isn't there). It may wait on a failing drive,
+/// so it runs on a thread of its own ([`watch_drive`]).
+pub type DriveProbe = fn(&Path) -> Option<Room>;
+
+/// How often the drive is looked at.
+pub const DRIVE_EVERY: Duration = Duration::from_secs(3);
+
+/// Look at the drive holding `dir` every [`DRIVE_EVERY`], on a thread of
+/// its own, until `stop`'s sender goes: Stick missing (it didn't answer,
+/// or is read-only) and Stick nearly full (under 1 GB free, or ten
+/// minutes of what `armed` says the armed takes record, a second), each to
+/// `report` as it begins and ends. False from `report`: the host is gone.
+pub fn watch_drive(
+    dir: PathBuf,
+    probe: DriveProbe,
+    armed: Arc<AtomicU64>,
+    stop: std::sync::mpsc::Receiver<()>,
+    report: impl Fn(Problem) -> bool + Send + 'static,
+) -> io::Result<()> {
+    std::thread::Builder::new()
+        .name("mpfree-at-drive".into())
+        .spawn(move || {
+            let mut watch = Watch::new();
+            loop {
+                let room = probe(&dir);
+                let d = Drive {
+                    writable: room.is_some_and(|r| r.writable),
+                    free: room.map_or(0, |r| r.free),
+                    armed_bytes_per_s: armed.load(Ordering::Relaxed),
+                };
+                let mut live = true;
+                watch.drive(&d, &mut |r| live &= report(Problem::of(r)));
+                if !live {
+                    return;
+                }
+                match stop.recv_timeout(DRIVE_EVERY) {
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    _ => return,
+                }
+            }
+        })
+        .map(|_| ())
 }
 
 /// How far ahead of the playhead the cache must be before a take file is
@@ -761,16 +1129,32 @@ pub fn write_take(
     Ok((name, path))
 }
 
+/// What [`recover_into`] found: the log's lines, System status's reports
+/// (Take recovered for each take it finished; Take damaged, about
+/// [`Subject::found_take`], for each whose whole check failed), and the
+/// name each found take's subject stands for (`found[n - 1]` for
+/// `found_take(n)`: its file's name in Recordings).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Recovered {
+    pub lines: Vec<String>,
+    pub reports: Vec<Report>,
+    pub found: Vec<String>,
+}
+
 /// Takes found in a work folder at start: finished, checked, and moved
 /// into `keep` (the library's Recordings place), each named as it was.
-/// The lines say what was found, in the musician's words. A take whose
+/// What was found is said in the musician's words, and to System status. A take whose
 /// checks can't run yet stays for the next start; nothing is deleted.
-pub fn recover_into(work: &Path, keep: &Path) -> io::Result<Vec<String>> {
+pub fn recover_into(work: &Path, keep: &Path) -> io::Result<Recovered> {
     let mut fs = StdFs::new();
     let mut lines = Vec::new();
+    let mut out = Recovered::default();
+    let mut watch = Watch::new();
     let found = recover(&mut fs, work)?;
-    let mut doubtful = Vec::new();
+    // Each take whose whole check failed, and its found take's number.
+    let mut doubtful: Vec<(PathBuf, u32)> = Vec::new();
     for f in &found {
+        watch.found(f, &mut |r| out.reports.push(r));
         match f {
             Found::CutOff { stem, record, .. } => lines.push(format!(
                 "audio tracks: {} was cut off while it recorded; recovered up to {}",
@@ -795,7 +1179,10 @@ pub fn recover_into(work: &Path, keep: &Path) -> io::Result<Vec<String>> {
             match check_whole(&mut fs, path, record) {
                 Ok(true) => checked(&mut fs, work, f.stem())?,
                 Ok(false) => {
-                    doubtful.push(path.to_path_buf());
+                    out.found.push(show_stem(f.stem()));
+                    let n = out.found.len() as u32;
+                    watch.checked(Subject::found_take(n), false, &mut |r| out.reports.push(r));
+                    doubtful.push((path.to_path_buf(), n));
                     checked(&mut fs, work, f.stem())?;
                 }
                 // Tried again next start, its checkpoint kept.
@@ -820,13 +1207,17 @@ pub fn recover_into(work: &Path, keep: &Path) -> io::Result<Vec<String>> {
             continue;
         }
         // A take whose whole check failed is kept as unverified.
-        let base = if doubtful.contains(&from) {
+        let failed = doubtful.iter().find(|(p, _)| *p == from).map(|&(_, n)| n);
+        let base = if failed.is_some() {
             format!("{stem}.unverified.wav")
         } else {
             n.clone()
         };
         let to = free_name(keep, &base);
         std::fs::rename(&from, &to)?;
+        if let (Some(k), Some(name)) = (failed, to.file_name()) {
+            out.found[k as usize - 1] = name.to_string_lossy().into_owned();
+        }
         if base.contains(".unverified.") {
             apart += 1;
         } else {
@@ -851,7 +1242,8 @@ pub fn recover_into(work: &Path, keep: &Path) -> io::Result<Vec<String>> {
             if apart == 1 { "was" } else { "were" }
         ));
     }
-    Ok(lines)
+    out.lines = lines;
+    Ok(out)
 }
 
 /// `name` in `dir`, or `name 2`, `name 3`... before its extension when
@@ -943,6 +1335,87 @@ mod tests {
             Name::new(&long).as_str(),
             rec
         )));
+    }
+
+    /// A watch's report about an engine track's takes comes out naming
+    /// the track, for the app to name as the musician does; one about the
+    /// whole system names none.
+    #[test]
+    fn a_problem_names_the_engine_track_its_take_records_on() {
+        use mpfree_status::kinds::{RECORDING_AT_RISK, STICK_MISSING};
+        let p = Problem::of(Report::began(&RECORDING_AT_RISK).about(track_subject(3)));
+        assert_eq!(p.track, Some(3));
+        assert_eq!(p.report, Report::began(&RECORDING_AT_RISK));
+        let p = Problem::of(Report::began(&STICK_MISSING));
+        assert_eq!(p.track, None);
+        assert_ne!(track_subject(0), Subject::NONE);
+    }
+
+    /// A take whose file was opened as it grew: a save reads what reached
+    /// the file from there (the tracks fill in the rest from memory), and
+    /// says so; a file that can't be read leaves that part silent, and
+    /// says that.
+    #[test]
+    fn a_save_reads_what_reached_the_drive_from_the_file() {
+        let dir = std::env::temp_dir().join(format!("mpfree-files-unit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let on_file: Vec<f32> = (0..300).map(|i| (i as f32 * 0.01).sin()).collect();
+        let path = dir.join("Vocal_1.wav");
+        std::fs::write(&path, crate::save::wav(&on_file, 1, 48_000)).unwrap();
+        let rec = |n: u128, path: Option<PathBuf>| FileRec {
+            rec: RecordingId(n),
+            track: 0,
+            id: Some(0),
+            channels: 1,
+            no: None,
+            take: true,
+            name: format!("Vocal_{n}.wav"),
+            path,
+            frames: 300,
+            shown: None,
+            ready: true,
+            saved_as: None,
+            grown: 256,
+            peaks: Vec::new(),
+            pushed: 0,
+        };
+        let mut f = Files::new(48_000);
+        f.stream();
+        f.recs.push(rec(1, Some(path)));
+        f.recs.push(rec(2, Some(dir.join("gone.wav"))));
+        let take = |n: u128, track: usize| TakeFile {
+            id: 0,
+            rec: RecordingId(n),
+            track,
+            group: 0,
+            pass: 0,
+            bpm: 0.0,
+            anchor: 0.0,
+            frames: 500,
+            channels: 1,
+            file: String::new(),
+            path: None,
+            audio: Vec::new(),
+        };
+        let mut takes = [take(1, 0), take(2, 1)];
+        let said = f.name_save(&mut takes);
+        assert_eq!(takes[0].audio.len(), 500);
+        assert_eq!(&takes[0].audio[..300], &on_file[..]);
+        assert!(takes[0].audio[300..].iter().all(|&s| s == 0.0));
+        assert_eq!(takes[0].path, None);
+        assert_eq!(takes[0].file, "Vocal_1.wav");
+        assert_eq!(said.len(), 2);
+        assert!(matches!(said[0], FileEvent::FromBoth { track: 0, .. }));
+        assert!(said[0]
+            .line("Vocal")
+            .starts_with("audio tracks: a take of Vocal was saved from what reached the drive"));
+        assert!(matches!(said[1], FileEvent::Unread { track: 1, .. }));
+        assert!(takes[1].audio.iter().all(|&s| s == 0.0));
+        assert!(said[1]
+            .line("Bass")
+            .starts_with("audio tracks: the start of a take of Bass couldn't be read back"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The library's rule for a sample's name (mpfree-library's

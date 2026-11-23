@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use mpfree_library::project::KEEP_VERSIONS;
+use mpfree_library::project::{KEEP_VERSIONS, PARTS_FORMAT, PARTS_FORMAT_KEY};
 use mpfree_library::{clean_name, Library, Loc, Meta, NewSample, Place, Snapshot};
 use mpfree_sampler::model::{Project, Source};
 use mpfree_sampler::{save, sound_file, wav};
@@ -200,6 +200,8 @@ fn save_kit(
             created: now,
             saved: now,
             app: format!("mpfree-mpc-import {}", env!("CARGO_PKG_VERSION")),
+            // mpfree opens only the format it writes.
+            extra: vec![(PARTS_FORMAT_KEY.to_string(), PARTS_FORMAT.to_string())],
             ..Meta::default()
         },
         parts: vec![(SAMPLER_PART.to_string(), text)],

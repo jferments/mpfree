@@ -221,8 +221,38 @@ impl Kind {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Subject(pub u32);
 
+/// A subject's kind lives in its top 8 bits, its number in the low 24
+/// ([`Subject::audio_track`], [`Subject::found_take`]); the board keys a
+/// problem on its kind and subject, so the tags only keep the namers
+/// apart.
+const TAG_SHIFT: u32 = 24;
+const NUMBER: u32 = (1 << TAG_SHIFT) - 1;
+const AUDIO_TRACK: u32 = 0x01;
+const FOUND_TAKE: u32 = 0x02;
+
 impl Subject {
     pub const NONE: Subject = Subject(0);
+
+    /// An audio track, by its lasting track id (given ids count from 1).
+    pub const fn audio_track(id: u32) -> Subject {
+        Subject(AUDIO_TRACK << TAG_SHIFT | (id & NUMBER))
+    }
+
+    /// A take found in the audio tracks' work folder at start, the `n`th
+    /// (from 1), which belongs to no track.
+    pub const fn found_take(n: u32) -> Subject {
+        Subject(FOUND_TAKE << TAG_SHIFT | (n & NUMBER))
+    }
+
+    /// The lasting track id, if this is an audio track.
+    pub fn audio_track_id(self) -> Option<u32> {
+        (self.0 >> TAG_SHIFT == AUDIO_TRACK).then_some(self.0 & NUMBER)
+    }
+
+    /// Which take found at start (from 1), if this is one.
+    pub fn found_take_number(self) -> Option<u32> {
+        (self.0 >> TAG_SHIFT == FOUND_TAKE).then_some(self.0 & NUMBER)
+    }
 }
 
 /// What a report says happened.
@@ -284,6 +314,28 @@ impl Report {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audio_track_and_found_take_subjects_never_meet() {
+        for i in [1u32, 2, 16, 255, 70_000, NUMBER] {
+            let (t, f) = (Subject::audio_track(i), Subject::found_take(i));
+            assert_ne!(t, Subject::NONE);
+            assert_ne!(f, Subject::NONE);
+            assert_ne!(t, f);
+            assert_eq!(t.audio_track_id(), Some(i));
+            assert_eq!(f.found_take_number(), Some(i));
+            assert_eq!(t.found_take_number(), None);
+            assert_eq!(f.audio_track_id(), None);
+            for j in [1u32, 3, 900] {
+                assert_ne!(t, Subject::found_take(j));
+                assert_eq!(Subject::audio_track(j) == t, i == j);
+            }
+        }
+        // A port's subject (Subject(i + 1)) is neither.
+        assert_eq!(Subject(5).audio_track_id(), None);
+        assert_eq!(Subject(5).found_take_number(), None);
+        assert_eq!(Subject::NONE.audio_track_id(), None);
+    }
 
     #[test]
     fn a_report_is_small_and_copy() {
