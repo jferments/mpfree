@@ -958,6 +958,9 @@ pub enum Item {
     PrefsBack,
     CalibrateTouch,
     TouchLab,
+    /// Play's MENU (live shows C1): the patch list, where a song with no
+    /// patches gets its first.
+    Patches,
     /// The Show view's MENU (live shows B1): the Set editor, the set's
     /// check, and closing the set.
     SetEditor,
@@ -1028,6 +1031,7 @@ fn opens_something(item: Item) -> bool {
             | Item::PrefsBack
             | Item::CalibrateTouch
             | Item::TouchLab
+            | Item::Patches
             | Item::SetEditor
             | Item::CheckSet
             | Item::CloseSet
@@ -1062,6 +1066,18 @@ pub enum ShowKey {
 
 /// The Show view's MENU rows.
 const SHOW_OPTIONS: [Item; 3] = [Item::SetEditor, Item::CheckSet, Item::CloseSet];
+
+/// Play's MENU: the options every page has, then Patches (live shows C1).
+const PLAY_OPTIONS: [Item; 8] = [
+    Item::Rate,
+    Item::Tempo,
+    Item::Metronome,
+    Item::MetronomeLevel,
+    Item::TimingStrip,
+    Item::PadLevel,
+    Item::Latch,
+    Item::Patches,
+];
 
 /// The menu on screen: its rows (name, value), the selected row and help.
 #[derive(Clone, Debug, PartialEq)]
@@ -1475,6 +1491,8 @@ pub enum Effect {
     Quit,
     /// Open the Touch lab page (it starts at its first step).
     TouchLab,
+    /// Open Play's patch list (Play's MENU, live shows C1).
+    PatchList,
     /// One of the Show view's MENU rows (live shows B1), for the screen's
     /// set player.
     SetMenu(SetMenu),
@@ -4984,6 +5002,7 @@ impl App {
             (_, View::Arp) if self.mod_section => &arp::MOD_ROWS,
             (_, View::Arp) => &arp::ARP_OPTIONS,
             (_, View::Arrange) if self.show_view => &SHOW_OPTIONS,
+            (_, View::Play) => &PLAY_OPTIONS,
             (_, View::Synth) => &synth_pads::SYNTH_OPTIONS,
             _ => &[
                 Item::Rate,
@@ -5059,6 +5078,7 @@ impl App {
             Item::PrefsBack => ("Back to Prefs", "Back".to_string()),
             Item::CalibrateTouch => ("Calibrate touch", "Start".to_string()),
             Item::TouchLab => ("Touch lab", "Open".to_string()),
+            Item::Patches => ("Patches", "Open".to_string()),
             Item::SetEditor => ("Open the Set editor", "Open".to_string()),
             Item::CheckSet => ("Check the set", "Check".to_string()),
             Item::CloseSet => ("Close the set", "Close".to_string()),
@@ -5308,6 +5328,11 @@ impl App {
             Item::CloseSet => vec![
                 "Ends the set. The song playing stays open as a",
                 "plain project, and the Show view goes.",
+            ],
+            Item::Patches => vec![
+                "The song's patches: splits and layers for your",
+                "keyboard. New patch makes one from a layout;",
+                "KEYS PLAY on the transport bar opens them too.",
             ],
             Item::TouchLab => vec![
                 "Timed touchscreen tests: taps, long presses,",
@@ -5853,6 +5878,11 @@ impl App {
             Item::PrefsBack => return self.leave_prefs_section(),
             Item::CalibrateTouch => return vec![Effect::CalibrateTouch],
             Item::TouchLab => return vec![Effect::TouchLab],
+            Item::Patches => {
+                let mut fx = self.show(self.back);
+                fx.push(Effect::PatchList);
+                return fx;
+            }
             Item::SetEditor | Item::CheckSet | Item::CloseSet => {
                 let m = match item {
                     Item::SetEditor => SetMenu::Editor,
@@ -10024,6 +10054,47 @@ mod tests {
     }
 
     #[test]
+    fn shift_and_the_wheel_jump_through_the_pattern_groups() {
+        let mut app = ready();
+        app.load_patterns("Skip = 1 . 3 2 . 3 x:2 .\n");
+        app.toggle_panel();
+        app.arp_action(ArpAction::Mode(Mode::Pattern));
+        assert_eq!(app.eng().settings().mode, Mode::Pattern);
+        let groups = mpfree_arp::groups::starts();
+        app.wheel(3);
+        assert_eq!(app.pattern_index, 3);
+        app.button(button::SHIFT, true, 0.0);
+        // On: the next group's first pattern, each turn a group.
+        app.wheel(1);
+        assert_eq!(app.pattern_index, groups[1].1);
+        assert_eq!(app.patterns[app.pattern_index].0, "Offbeats");
+        app.wheel(1);
+        app.wheel(1);
+        assert_eq!(app.pattern_index, groups[3].1);
+        assert_eq!(*app.eng().pattern(), app.patterns[groups[3].1].1);
+        // Back: from inside a group to its first pattern, then the group
+        // before.
+        app.button(button::SHIFT, false, 0.0);
+        app.wheel(2);
+        app.button(button::SHIFT, true, 0.0);
+        app.wheel(-1);
+        assert_eq!(app.pattern_index, groups[3].1);
+        app.wheel(-1);
+        assert_eq!(app.pattern_index, groups[2].1);
+        // The owner's patterns are the last group; past it nothing moves.
+        for _ in 0..20 {
+            app.wheel(1);
+        }
+        assert_eq!(app.patterns[app.pattern_index].0, "Skip");
+        assert!(app.wheel(1).is_empty());
+        for _ in 0..20 {
+            app.wheel(-1);
+        }
+        assert_eq!(app.pattern_index, 0);
+        assert!(app.wheel(-1).is_empty());
+    }
+
+    #[test]
     fn note_repeat_and_menu_open_the_arp_panel() {
         let mut app = ready();
         held(&mut app, REPEAT, |a| a.button(MENU, true, 0.0));
@@ -10236,7 +10307,7 @@ mod tests {
         app.toggle_panel();
         press(&mut app, MENU);
         assert!(
-            matches!(app.menu_view(), Effect::Menu(m) if m.title == "Play options" && m.rows.len() == 7)
+            matches!(app.menu_view(), Effect::Menu(m) if m.title == "Play options" && m.rows.len() == PLAY_OPTIONS.len())
         );
     }
 
@@ -10377,6 +10448,59 @@ mod tests {
         assert!(app
             .arp_param(mpfree_seq::MAX_TRACKS, ids::MODIFIER)
             .is_none());
+    }
+
+    /// The XY pad's hand on a track's arp (`App::arp_hand`, `arp_beneath`,
+    /// `keep_arp`): the pad's gate plays and the gate as set stays, the
+    /// push (in percent) pushes even with no controller picked, a Q-Link
+    /// turn takes the gate from the pad, Stay sets the gate as a learned
+    /// control does, and another track's arp is its own.
+    #[test]
+    fn the_xy_pads_hand_reaches_a_tracks_arp() {
+        use mpfree_play::mpfree_param::arp as ids;
+        let mut app = ready();
+        app.toggle_panel();
+        app.arp_action(ArpAction::Mode(Mode::Arp));
+        let set = app.eng().settings();
+        assert!(app.arp_hand(0, ids::GATE, Some(90.0)));
+        assert_eq!(app.eng().live().gate, 90);
+        assert_eq!(app.arp_param(0, ids::GATE).unwrap().1, f32::from(set.gate));
+        assert_eq!(
+            app.arp_beneath(0, ids::GATE),
+            Some((f32::from(set.gate), f32::from(set.gate)))
+        );
+        let Some(Effect::Arp(v)) = app.arp_poll() else {
+            panic!("the panel hears what plays");
+        };
+        assert_eq!((v.live.gate, v.settings.gate), (90, set.gate));
+        // The push, in percent: the pad is the controller.
+        assert!(app.arp_hand(0, ids::MODIFIER, Some(100.0)));
+        assert_eq!(app.eng().live().rate, Rate::ThirtySecond);
+        assert_eq!(app.arp_beneath(0, ids::MODIFIER), Some((0.0, 0.0)));
+        app.arp_hand(0, ids::MODIFIER, None);
+        assert_eq!(app.eng().live().rate, set.rate);
+        // A Q-Link turn of the gate takes it from the pad.
+        app.qlink(1, 0, Some(20)).expect("the panel takes Q-Link 2");
+        let turned = app.eng().settings().gate;
+        assert_ne!(turned, set.gate);
+        assert_eq!(app.eng().live().gate, turned);
+        app.arp_hand(0, ids::GATE, Some(95.0));
+        assert_eq!(app.eng().live().gate, turned, "kept until the pad lets go");
+        app.arp_hand(0, ids::GATE, None);
+        // Stay: the pad's step as set.
+        app.arp_hand(0, ids::GATE, Some(70.4));
+        assert_eq!(app.keep_arp(0, ids::GATE, 70.4).unwrap().0, 70.0);
+        assert_eq!(app.arp.gate, 70);
+        app.arp_hand(0, ids::GATE, None);
+        assert_eq!(app.eng().live().gate, 70);
+        assert!(app.eng().hand().is_empty());
+        // Another track's arp, and what isn't one.
+        assert!(app.arp_hand(2, ids::OCTAVES, Some(3.0)));
+        assert_eq!(app.arps.engine_at(2).live().octaves, 3);
+        assert_eq!(app.eng().live().octaves, set.octaves);
+        assert!(!app.arp_hand(0, 99, Some(1.0)));
+        assert!(!app.arp_hand(mpfree_seq::MAX_TRACKS, ids::GATE, Some(1.0)));
+        assert!(app.keep_arp(0, 99, 1.0).is_none());
     }
 
     /// A tap on the Modifier box opens the arp's options on its row; the

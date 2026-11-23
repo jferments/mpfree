@@ -3317,6 +3317,169 @@ mod tests {
     /// there loads and the page comes back; Back, the button again or a
     /// tab close it and keep the kit (Jay's card, 13 Nov 14:57Z).
     #[test]
+    fn a_patch_made_from_plays_menu_splits_the_keys_and_learns_a_zones_end() {
+        use crate::midi_in::Key;
+        use crate::patch_page::{EDIT, EDIT_PAGE, LIST, LIST_PAGE};
+        on_big_stack(|| {
+            let on = |note, velocity| (0u8, Key::Down { note, velocity });
+            let mut s = Session::new();
+            assert!(
+                s.control(crate::play_page::TRANSPORT, "keys", "").is_none(),
+                "no patches: no KEYS PLAY"
+            );
+            // MENU on Play: Patches opens the list, empty.
+            s.button("MENU").settle();
+            let row = s
+                .app
+                .row_of(crate::app::Item::Patches)
+                .expect("Patches on Play's MENU");
+            s.route(crate::gui::FromUi::MenuStep(row, 1));
+            s.run_periods(2).settle();
+            assert_eq!(s.page(), LIST_PAGE);
+            // New patch from Bass + keys: the editor, and the keys play it.
+            s.press(LIST, "new", "New patch").settle();
+            s.press(LIST, "layout", "Bass + keys").settle();
+            assert_eq!(s.page(), EDIT_PAGE);
+            let keys = s
+                .control(crate::play_page::TRANSPORT, "keys", "")
+                .expect("KEYS PLAY over the editor, once the song has a patch");
+            assert!(
+                keys.target.label.contains("1 · Patch 1"),
+                "{}",
+                keys.target.label
+            );
+            // Zone 2 (C3 up) picked, an octave up on Q-Link 3.
+            let zone2 = s
+                .controls()
+                .into_iter()
+                .find(|c| c.widget == EDIT && c.target.id == "zone" && c.target.index == 1)
+                .expect("zone 2's lane");
+            s.press_target(&zone2.target).settle();
+            s.qlink(2, 12).settle();
+            // C2 plays the bass as played; C4 plays an octave up.
+            let down = s.keys_from_gear(&[0x90, 36, 100, 0x90, 60, 90]);
+            assert_eq!(down, [on(36, 100), on(72, 90)], "{:?}", s.said());
+            assert!(
+                s.keys_from_gear(&[0x80, 36, 0]) == [(0, Key::Up { note: 36 })],
+                "a key ends where it started"
+            );
+            let _ = s.keys_from_gear(&[0x80, 60, 0]);
+            // + Zone: Learn low is lit, and the next key, C6, starts it.
+            // The new zone layers over zone 2 from there, untransposed.
+            s.press(EDIT, "add-zone", "+ Zone").settle();
+            let _ = s.keys_from_gear(&[0x90, 84, 80]);
+            let _ = s.keys_from_gear(&[0x80, 84, 0]);
+            assert_eq!(
+                s.keys_from_gear(&[0x90, 72, 64]),
+                [on(84, 64)],
+                "under C6, zone 2 alone"
+            );
+            assert_eq!(
+                s.keys_from_gear(&[0x90, 96, 64]),
+                [on(108, 64), on(96, 64)],
+                "from C6, zone 2 and the new zone"
+            );
+            let _ = s.keys_from_gear(&[0x80, 72, 0, 0x80, 96, 0]);
+            // Close: back to Play's view.
+            s.press(EDIT, "close", "Close").settle();
+            assert_eq!(s.page(), "Play");
+        });
+    }
+
+    /// C1's second half: a footswitch learned on Next and Previous patch
+    /// steps the song's patches from any page, stopping at the ends and
+    /// saying why; one set to wait does so until the key held is up; and
+    /// with Program change in: Picks a patch, program 2 from other gear
+    /// picks patch 2 before the key after it plays.
+    #[test]
+    fn a_footswitch_and_a_program_change_step_the_songs_patches() {
+        use crate::midi_in::Key;
+        use crate::patch_page::{EDIT, LIST};
+        use mpfree_play::mpfree_param::play;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let keys_play = |s: &mut Session| {
+                s.control(crate::play_page::TRANSPORT, "keys", "")
+                    .map(|c| c.target.label)
+                    .unwrap_or_default()
+            };
+            // No patches yet: the footswitch says so.
+            s.patch_footswitch(play::NEXT_PATCH, 1.0).settle();
+            s.patch_footswitch(play::NEXT_PATCH, 0.0).settle();
+            assert_eq!(s.hint(), "Next patch: this song has no patches yet");
+            // Two patches from Play's MENU: Bass + keys, then Whole keyboard.
+            s.button("MENU").settle();
+            let row = s.app.row_of(crate::app::Item::Patches).unwrap();
+            s.route(crate::gui::FromUi::MenuStep(row, 1));
+            s.run_periods(2).settle();
+            for layout in ["Bass + keys", "Whole keyboard"] {
+                s.press(LIST, "new", "New patch").settle();
+                s.press(LIST, "layout", layout).settle();
+                s.press(EDIT, "back", "‹ Patches").settle();
+            }
+            assert!(
+                keys_play(&mut s).contains("2 · Patch 2"),
+                "{}",
+                keys_play(&mut s)
+            );
+            s.press(LIST, "close", "Close").settle();
+            // Previous patch, then past the first.
+            let press = |s: &mut Session, id| {
+                s.patch_footswitch(id, 1.0).settle();
+                s.patch_footswitch(id, 0.0).settle();
+            };
+            press(&mut s, play::PREVIOUS_PATCH);
+            assert!(
+                keys_play(&mut s).contains("1 · Patch 1"),
+                "{}",
+                keys_play(&mut s)
+            );
+            press(&mut s, play::PREVIOUS_PATCH);
+            assert_eq!(s.hint(), "Previous patch: patch 1 is the song's first");
+            // Next patch set to wait for the hands: C4 held keeps patch 1.
+            let _ = s.keys_from_gear(&[0x90, 60, 90]);
+            press(&mut s, play::NEXT_PATCH_HANDS_UP);
+            assert!(
+                keys_play(&mut s).contains("Patch 1 → Patch 2"),
+                "{}",
+                keys_play(&mut s)
+            );
+            assert_eq!(
+                s.keys_from_gear(&[0x80, 60, 0]),
+                [(0, Key::Up { note: 60 })],
+                "C4 ends on patch 1"
+            );
+            assert!(
+                keys_play(&mut s).contains("2 · Patch 2"),
+                "{}",
+                keys_play(&mut s)
+            );
+            press(&mut s, play::NEXT_PATCH);
+            assert_eq!(s.hint(), "Next patch: patch 2 is the song's last");
+            // Program change in: Picks a patch. Program 1, then a key: patch
+            // 1's bass plays C2.
+            s.program_picks_patches(false);
+            let sent = s.keys_from_gear(&[0xC0, 0, 0x90, 36, 100]);
+            assert_eq!(
+                sent,
+                [(
+                    0,
+                    Key::Down {
+                        note: 36,
+                        velocity: 100
+                    }
+                )]
+            );
+            assert!(
+                keys_play(&mut s).contains("1 · Patch 1"),
+                "{}",
+                keys_play(&mut s)
+            );
+            let _ = s.keys_from_gear(&[0x80, 36, 0]);
+        });
+    }
+
+    #[test]
     fn what_the_pads_play_and_the_pads_tabs_kit_open_the_list_of_kits() {
         on_big_stack(|| {
             let mut s = Session::new();
@@ -5388,6 +5551,83 @@ mod tests {
         });
     }
 
+    /// Save to browser and From the browser (layout spec 4o): Setup keeps
+    /// a layout of yours in the library; the XY pad's list's From the
+    /// browser opens the browser on the saved ones, and Load makes one a
+    /// layout of yours again, playing, under a name of its own, and goes
+    /// back to Play. Cancel goes back too.
+    #[test]
+    fn a_layout_saved_to_the_browser_comes_back_from_the_list() {
+        on_big_stack(|| {
+            use crate::xy_song::XyAction;
+            let dir = std::env::temp_dir().join(format!("mpfree-xy-browse-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("a scratch folder");
+            let mut s = Session::with_library(&dir);
+            s.play_view("All");
+            s.press(crate::play_page::XY, "xy-chip", "").settle();
+            s.press(crate::xy_list::XY_LIST, "new", "+ New layout")
+                .settle();
+            let volume = mpfree_play::mpfree_param::ParamAddr::new(
+                mpfree_play::mpfree_param::Owner::Strip(mpfree_play::mpfree_param::Strip::Track(0)),
+                mpfree_fx::ids::mixer::VOLUME,
+            );
+            s.route(crate::gui::FromUi::Xy(XyAction::Chip {
+                addr: volume,
+                up: false,
+                pick: None,
+            }));
+            s.settle();
+            assert_eq!(s.xy_yours.yours[0].layout.way_of(volume), Some(false));
+            s.press(crate::xy_setup::XY_SETUP, "save", "Save to browser")
+                .settle();
+            let file = s
+                .library
+                .as_ref()
+                .unwrap()
+                .root()
+                .join(mpfree_library::Place::Instruments.folder())
+                .join(mpfree_browser_ui::XY_FOLDER)
+                .join("Layout 1.preset");
+            let text = std::fs::read_to_string(&file).expect("saved in the library");
+            assert!(text.starts_with("xy 1\nlayout\tLayout 1\n"), "{text}");
+            assert!(
+                s.hint().starts_with("Saved Layout 1 to the browser"),
+                "{}",
+                s.hint()
+            );
+            s.press(crate::xy_setup::XY_SETUP, "done", "Done").settle();
+
+            // From the browser: Cancel comes back to Play with nothing new.
+            s.press(crate::play_page::XY, "xy-chip", "").settle();
+            s.press(crate::xy_list::XY_LIST, "browser", "From the browser")
+                .settle();
+            assert_eq!(s.view(), View::Browser);
+            s.button("BROWSE").settle();
+            assert_eq!(s.view(), View::Play);
+            assert_eq!(s.xy_yours.yours.len(), 1);
+            // Load: one of yours again, playing, as Layout 2.
+            s.press(crate::play_page::XY, "xy-chip", "").settle();
+            s.press(crate::xy_list::XY_LIST, "browser", "From the browser")
+                .settle();
+            s.button("DATA DIAL PUSH").run_for(0.2).settle();
+            assert_eq!(s.view(), View::Play, "{:?}", s.lines);
+            assert_eq!(s.xy_yours.yours.len(), 2, "{:?}", s.lines);
+            assert_eq!(s.xy_yours.playing, Some(1));
+            let m = &s.xy_yours.yours[1];
+            assert_eq!(m.layout.name, "Layout 2");
+            assert_eq!(m.layout.way_of(volume), Some(false));
+            assert!(
+                s.lines
+                    .iter()
+                    .any(|l| l.contains("Layout 2 from the browser: a layout of yours")),
+                "{:?}",
+                s.lines
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
     /// A synth's own setting on a layout of yours (the XY plan's phase 2,
     /// "a synth's settings gain the hand layer"): SHIFT + a touch on a
     /// Synth tab knob joins it; the pad plays it without changing its own
@@ -5491,6 +5731,101 @@ mod tests {
                 "UNDO: {before} again, not {}",
                 value(&s)
             );
+        });
+    }
+
+    /// The arp on a layout of yours (the XY plan's phase 2, PR 2.4b): SHIFT
+    /// and a touch on the Arp panel's Gate join the armed track's arp gate;
+    /// the pad plays it without changing the gate as set, Go back gives
+    /// that back, Stay keeps the pad's, and UNDO puts it back.
+    #[test]
+    fn a_layout_of_yours_plays_the_arps_gate_and_lets_go_of_it() {
+        on_big_stack(|| {
+            use crate::xy_widgets::XY_BANNER;
+            use mpfree_play::mpfree_param::{arp, Owner};
+            use mpfree_ui::Touch;
+            let mut s = Session::new();
+            s.play_view("All");
+            s.press(crate::play_page::XY, "xy-chip", "").settle();
+            s.press(crate::xy_list::XY_LIST, "new", "+ New layout")
+                .settle();
+            s.press(crate::xy_setup::XY_SETUP, "plus", "+ across")
+                .settle();
+            // NOTE REPEAT + MENU: the Arp panel, its Gate the second slider.
+            s.button_with("NOTE REPEAT", "MENU").settle();
+            let gate = s
+                .controls()
+                .into_iter()
+                .find(|o| o.widget == mpfree_arp_ui::view::QLINKS && o.target.index == 1)
+                .unwrap_or_else(|| panic!("the Arp panel's Gate: {:?}", s.lines))
+                .target;
+            s.button_edge("SHIFT", true);
+            s.press_target(&gate).settle();
+            s.button_edge("SHIFT", false);
+            let across = s.xy_yours.yours[0].layout.across.targets.clone();
+            assert_eq!(across.len(), 1, "the gate joined across: {:?}", s.lines);
+            let addr = across[0].addr;
+            assert!(
+                matches!(addr.owner, Owner::Arp(_)) && addr.param == arp::GATE,
+                "{addr:?}"
+            );
+            s.press(XY_BANNER, "done", "Done").settle();
+            let set = |s: &Session| f32::from(s.app.eng().settings().gate);
+            let plays = |s: &Session| f32::from(s.app.eng().live().gate);
+            let before = set(&s);
+
+            // The pad plays it; the gate as set stays as it was.
+            s.button_with("SHIFT", "NEXT SEQ").settle();
+            assert_eq!(s.page(), crate::play_page::XY_FULL_PAGE);
+            let pad = s
+                .control(crate::play_page::XY, "xy", "")
+                .expect("the pad")
+                .target
+                .rect;
+            let (from, to) = (across[0].from, across[0].to);
+            let unit = |v: f32| ((v - from) / (to - from)).clamp(0.0, 1.0);
+            let x = if unit(before) > 0.5 {
+                pad.x + pad.w / 20
+            } else {
+                pad.x + pad.w * 19 / 20
+            };
+            let y = pad.y + pad.h / 2;
+            if let Some(a) = s.screen.touch(9, Touch::Down, x, y) {
+                s.route(a);
+            }
+            s.run_for(0.3);
+            let held = plays(&s);
+            assert!(
+                (held - before).abs() > 20.0,
+                "the pad moved the gate: {before} → {held}"
+            );
+            assert_eq!(set(&s), before, "the gate as set stays");
+            assert!(s.mix.xy_own().holding() > 0, "held by the pad's hand");
+            if let Some(a) = s.screen.touch(9, Touch::Up, x, y) {
+                s.route(a);
+            }
+            s.run_for(1.0);
+            assert_eq!(plays(&s), before, "Go back");
+            assert_eq!(s.mix.xy_own().holding(), 0, "let go");
+            assert!(s.app.eng().hand().is_empty());
+
+            // Stay keeps the pad's gate as set; UNDO gives the old one back.
+            s.press(crate::xy_widgets::XY_BAR, "xy-bar", "Let go: Go back")
+                .settle();
+            if let Some(a) = s.screen.touch(9, Touch::Down, x, y) {
+                s.route(a);
+            }
+            s.run_for(0.3);
+            if let Some(a) = s.screen.touch(9, Touch::Up, x, y) {
+                s.route(a);
+            }
+            s.run_for(0.5).settle();
+            assert_eq!((set(&s), plays(&s)), (held, held), "Stay");
+            assert_eq!(s.mix.xy_own().holding(), 0, "nothing stays held");
+            assert!(s.app.eng().hand().is_empty());
+            s.button("UNDO").settle();
+            s.run_for(0.2);
+            assert_eq!((set(&s), plays(&s)), (before, before), "UNDO");
         });
     }
 }

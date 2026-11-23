@@ -865,6 +865,14 @@ pub struct PlayPage {
     /// A layout of yours on the XY pad (`xy_song.rs`): it plays in the
     /// ready-made one's place.
     pub yours: Option<YoursPad>,
+    /// A touch that moves the pad from where it is: where the dot was and
+    /// where the finger landed, while it is down.
+    xy_from: Option<((f32, f32), (f32, f32))>,
+    /// A finger is on the XY pad.
+    xy_down: bool,
+    /// The pad's Hold is on (a layout of yours): the dot stays where the
+    /// finger lifts until Hold goes off, as the sound does.
+    xy_hold: bool,
     /// STEP SEQ: the sound whose steps the pads are, and their page.
     pub on_pads: Option<crate::app::StepPads>,
     /// STEP SEQ: the step pads held (their sound, and the steps, the first
@@ -1079,6 +1087,9 @@ impl Default for PlayPage {
             xy: crate::xy_layouts::pad(None),
             xy_effect: None,
             yours: None,
+            xy_from: None,
+            xy_down: false,
+            xy_hold: false,
             on_pads: None,
             held: None,
             picks: None,
@@ -1193,6 +1204,8 @@ pub struct YoursPad {
     pub across: String,
     pub up: String,
     pub line: String,
+    /// A touch moves the pad from where it is (Setup's "Moves from here").
+    pub from_here: bool,
 }
 
 /// What across and up do in XY choice `i` ([`XY_CHOICES`]).
@@ -3574,15 +3587,65 @@ impl PlayPage {
         })
     }
 
+    /// Whether a touch moves the XY pad from where it is (a layout of
+    /// yours set to "Moves from here"), so the page, not the finger, puts
+    /// the dot.
+    pub fn xy_from_here(&self) -> bool {
+        self.yours.as_ref().is_some_and(|m| m.from_here)
+    }
+
     /// The XY pad moved, or let go (it then glides home: [`PlayPage::tick_xy`]).
+    /// On a layout of yours whose touch moves the pad from where it is,
+    /// the dot moves from where it was by as much as the finger does, and
+    /// the sound loop, which works the same place out for itself
+    /// (`xy_play.rs`), gets the finger.
     pub fn xy(&mut self, x: f32, y: f32, down: bool) -> PlayFx {
-        if down {
+        let from_here = self.xy_from_here();
+        self.xy_down = down;
+        if !down {
+            self.xy_from = None;
+            if !self.xy_hold {
+                self.xy.release();
+            }
+            let (x, y) = self.xy.position();
+            return PlayFx::Xy { x, y, down };
+        }
+        let finger = (x.clamp(0.0, 1.0), y.clamp(0.0, 1.0));
+        if !from_here {
             self.xy.touch(x, y);
+            let (x, y) = self.xy.position();
+            return PlayFx::Xy { x, y, down };
+        }
+        // Where the sound loop has the pad: where the last finger left it
+        // with Stay or while Hold holds it, else where it rests (it goes
+        // back at the lift, though the dot glides).
+        let was = if self.xy.stays() || self.xy.touched() {
+            self.xy.position()
         } else {
+            self.xy.rest()
+        };
+        let (here, landed) = *self.xy_from.get_or_insert((was, finger));
+        let (px, py) = mpfree_xy::Start::FromHere.place(here, landed, finger);
+        self.xy.touch(px, py);
+        PlayFx::Xy {
+            x: finger.0,
+            y: finger.1,
+            down,
+        }
+    }
+
+    /// The pad's Hold, on or off (a layout of yours; `gui.rs` from the
+    /// sound loop's view). While it is on the dot stays where the finger
+    /// lifts; turned off with no finger down, it lets go as the layout
+    /// says (it glides home with Go back).
+    pub fn set_xy_hold(&mut self, on: bool) {
+        if self.xy_hold == on {
+            return;
+        }
+        self.xy_hold = on;
+        if !on && !self.xy_down {
             self.xy.release();
         }
-        let (x, y) = self.xy.position();
-        PlayFx::Xy { x, y, down }
     }
 
     /// The XY pad's glide home, `ms` on: where it is now, while it moves.
@@ -3627,6 +3690,7 @@ impl PlayPage {
                     across: m.across.clone(),
                     up: m.up.clone(),
                     line: m.line.clone(),
+                    from_here: m.from_here,
                 });
             }
             None => {
@@ -3689,7 +3753,10 @@ impl PlayPage {
         if p.label != label {
             p.label = label;
         }
-        if !self.xy.touched() {
+        // No finger on it (Hold may still keep it where the finger
+        // lifted), or one that moves it from where it is.
+        let held = self.xy_hold && !self.xy_down;
+        if !self.xy.touched() || held || self.xy_from_here() {
             (p.x, p.y) = self.xy.position();
         }
     }
@@ -3838,6 +3905,7 @@ impl PlayPage {
             view: 0,
             rec: None,
             pads: None,
+            keys: None,
         }
     }
 }
@@ -3850,6 +3918,116 @@ pub const DECAY_MAX_MS: f32 = mpfree_sampler_ui::command::DECAY_OPEN_MS;
 mod tests {
     use super::*;
     use mpfree_ui::layout;
+
+    /// A layout of yours whose touch moves the pad from where it is: the
+    /// dot moves from where the sound loop has the pad by as much as the
+    /// finger does (it doesn't jump to the finger), and the sound loop gets
+    /// the finger, working the same place out for itself.
+    #[test]
+    fn a_touch_that_moves_from_here_moves_the_dot_by_the_finger() {
+        let mut p = PlayPage::default();
+        let mut m = crate::xy_song::MineView {
+            name: "Squelch".into(),
+            stay: true,
+            glide_ms: 100.0,
+            from_here: true,
+            rest: (0.5, 0.25),
+            ..Default::default()
+        };
+        p.set_yours(Some(&m));
+        let mut w = XyPad::default();
+        let at = |p: &mut PlayPage, w: &mut XyPad| {
+            p.fill_xy(w);
+            ((w.x * 100.0).round() / 100.0, (w.y * 100.0).round() / 100.0)
+        };
+        assert_eq!(at(&mut p, &mut w), (0.5, 0.25));
+        // Lands far away: the dot stays put; the sound loop gets the finger.
+        assert_eq!(
+            p.xy(0.9, 0.9, true),
+            PlayFx::Xy {
+                x: 0.9,
+                y: 0.9,
+                down: true
+            }
+        );
+        assert_eq!(at(&mut p, &mut w), (0.5, 0.25));
+        p.xy(0.8, 1.0, true);
+        assert_eq!(at(&mut p, &mut w), (0.4, 0.35), "by as much as the finger");
+        // Stay: the next touch moves it on from there.
+        p.xy(0.8, 1.0, false);
+        p.xy(0.1, 0.1, true);
+        p.xy(0.2, 0.1, true);
+        assert_eq!(at(&mut p, &mut w), (0.5, 0.35));
+        p.xy(0.2, 0.1, false);
+        // Go back: from where it rests, as the sound loop has it, though
+        // the dot is still gliding.
+        m.stay = false;
+        p.set_yours(Some(&m));
+        p.xy(0.5, 0.5, true);
+        p.xy(0.5, 0.5, false);
+        p.xy(0.3, 0.3, true);
+        p.xy(0.4, 0.3, true);
+        assert_eq!(at(&mut p, &mut w), (0.6, 0.25));
+        p.xy(0.4, 0.3, false);
+        // A layout whose touch jumps: the pad goes to the finger (the
+        // widget puts the dot there itself).
+        m.from_here = false;
+        p.set_yours(Some(&m));
+        assert!(!p.xy_from_here());
+        p.xy(0.9, 0.8, true);
+        assert_eq!(p.xy.position(), (0.9, 0.8));
+    }
+
+    /// Hold on a layout of yours: the dot stays where the finger lifts,
+    /// as the sound does, and lets go as the layout says once Hold goes
+    /// off (it glides home with Go back).
+    #[test]
+    fn hold_keeps_the_dot_where_the_finger_lifts() {
+        let mut p = PlayPage::default();
+        let mut m = crate::xy_song::MineView {
+            name: "Squelch".into(),
+            glide_ms: 100.0,
+            rest: (0.5, 0.25),
+            ..Default::default()
+        };
+        p.set_yours(Some(&m));
+        p.set_xy_hold(true);
+        let mut w = XyPad::default();
+        let at = |p: &PlayPage, w: &mut XyPad| {
+            p.fill_xy(w);
+            ((w.x * 100.0).round() / 100.0, (w.y * 100.0).round() / 100.0)
+        };
+        p.xy(0.9, 0.8, true);
+        p.xy(0.9, 0.8, false);
+        assert_eq!(p.tick_xy(16.0), None, "Hold keeps it");
+        assert_eq!(at(&p, &mut w), (0.9, 0.8));
+        // Hold off with a finger down: it lets go at the lift.
+        p.xy(0.7, 0.6, true);
+        p.set_xy_hold(false);
+        assert_eq!(p.tick_xy(16.0), None, "the finger keeps it");
+        p.xy(0.7, 0.6, false);
+        assert!(p.tick_xy(16.0).is_some(), "it glides home");
+        for _ in 0..100 {
+            p.tick_xy(16.0);
+        }
+        assert_eq!(at(&p, &mut w), (0.5, 0.25));
+        // Moves from here under Hold: the next touch moves it on from
+        // where Hold keeps it.
+        m.from_here = true;
+        p.set_yours(Some(&m));
+        p.set_xy_hold(true);
+        p.xy(0.2, 0.2, true);
+        p.xy(0.3, 0.3, true);
+        p.xy(0.3, 0.3, false);
+        assert_eq!(at(&p, &mut w), (0.6, 0.35));
+        p.xy(0.9, 0.9, true);
+        p.xy(0.8, 0.9, true);
+        assert_eq!(at(&p, &mut w), (0.5, 0.35));
+        p.xy(0.8, 0.9, false);
+        // Hold off with no finger down: it lets go at once.
+        p.set_xy_hold(false);
+        assert!(p.tick_xy(16.0).is_some());
+    }
 
     #[test]
     fn the_xy_pad_plays_the_dj_filter_and_echo_and_glides_home() {

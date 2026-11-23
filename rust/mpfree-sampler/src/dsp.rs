@@ -1,8 +1,12 @@
 //! Small DSP building blocks for the sampler voice: interpolation, the
-//! AHDSR envelope, a state-variable filter and gain tables. Everything
-//! here is allocation-free and safe to call from the audio thread.
+//! AHDSR envelope, the voice's filter ([`VoiceFilter`]) and gain tables.
+//! Everything here is allocation-free and safe to call from the audio
+//! thread.
 
 use std::f32::consts::{FRAC_PI_2, PI};
+
+use mpfree_filter::multi::Multi;
+use mpfree_filter::svf::SvfMode;
 
 /// 4-point, 3rd-order Hermite interpolation between `x1` and `x2`
 /// (`t` in 0..1), with `x0` and `x3` as the outer neighbours.
@@ -131,6 +135,13 @@ const FLOOR: f32 = 1.0e-4;
 /// (under 1.2e-38): state that decays toward zero is set to zero once it
 /// gets here, as the effects do (`mpfree-fx`'s `flush`).
 pub const TINY: f32 = 1.0e-20;
+
+/// A multimode filter's channel is zeroed once both its states are under
+/// this, 300 dB down ([`VoiceFilter::flush`]): over the slow tail the
+/// shared stage's own flush leaves at a low cutoff
+/// ([`mpfree_filter::svf::Svf::flush_below`]), so a filter ringing out on
+/// silence reaches exact zeros as soon as its sound is gone.
+pub const QUIET: f32 = 1.0e-15;
 
 /// A running AHDSR. Attack is linear; decay and release are exponential
 /// (one multiply per sample), reaching about -80 dB of their distance in
@@ -417,10 +428,9 @@ struct DriveOs {
 }
 
 impl DriveOs {
-    /// Settles every state on `x` held steady (all-pass sections pass a
-    /// steady value as it is).
-    fn seed(&mut self, x: f32) {
-        let y = drive_curve(x);
+    /// Settles the up-sampler on `x` held steady and the down-sampler on
+    /// `y` (all-pass sections pass a steady value as it is).
+    fn seed(&mut self, x: f32, y: f32) {
         self.up = [[x, x]; 6];
         self.down = [[y, y]; 6];
         self.w = x / DRIVE_KNEE;
@@ -436,16 +446,22 @@ impl DriveOs {
         y
     }
 
-    /// `x` (already times the drive's gain) through the curve.
+    /// `x` (already times the drive's gain) through the curve, then each
+    /// of the two samples at twice the rate through `then` (the ladder, so
+    /// its loop runs oversampled too), the earlier first, and back down.
+    /// Starting, the down-sampler settles on `out`, about what `then` gives
+    /// now (the ladder's last stage), so turning Drive up doesn't click.
     #[inline(always)]
-    fn run(&mut self, x: f32) -> f32 {
+    fn run_through(&mut self, x: f32, out: f32, mut then: impl FnMut(f32) -> f32) -> f32 {
         if !self.live {
-            self.seed(x);
+            self.seed(x, out);
         }
         let [u0, u1, u2, u3, u4, u5] = &mut self.up;
         let e = ap(HB_EVEN[2], u2, ap(HB_EVEN[1], u1, ap(HB_EVEN[0], u0, x)));
         let o = ap(HB_ODD[2], u5, ap(HB_ODD[1], u4, ap(HB_ODD[0], u3, x)));
         let (a, b) = (self.curve(e), self.curve(o));
+        let a = then(a);
+        let b = then(b);
         // Down: the later sample through the even sections, the earlier
         // through the odd ones.
         let [d0, d1, d2, d3, d4, d5] = &mut self.down;
@@ -467,18 +483,28 @@ impl DriveOs {
 /// stages in a loop, solved without a delay in the loop (Zavalishin's TPT
 /// ladder), the feedback taken through [`soft_clip`], so a high Resonance
 /// sings at a steady level instead of running away while the sound itself
-/// passes straight. Drive goes before it ([`DriveOs`]). Both channels; one
-/// per voice.
+/// passes straight. Drive goes before it ([`DriveOs`]); with Drive the
+/// ladder runs inside the drive's twice-the-rate path, so the harmonics
+/// its curve makes near the top fold far less (the filter gap plan, F2).
+/// Both channels; one per voice.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Ladder {
     s: [[f32; 4]; 2],
-    /// One stage's `g / (1 + g)` and `1 / (1 + g)`.
+    /// One stage's `g / (1 + g)` now, at the rate and at twice it (with
+    /// Drive); `1 / (1 + g)` is one minus it.
     big_g: f32,
-    inv_1g: f32,
+    big_g2: f32,
     /// The feedback (0 to [`LADDER_K`]; from 4 it sings) and the gain that
     /// gives back part of the bass a resonant ladder loses.
     k: f32,
     makeup: f32,
+    /// A glide to a new setting ([`Ladder::set`]): where `big_g`, `big_g2`
+    /// and `k` are heading, each frame's step, and the frames left.
+    to: [f32; 3],
+    step: [f32; 3],
+    left: u32,
+    /// Set at least once (the first setting lands at once).
+    set: bool,
     /// Drive's gain into the curve and its scale after it; gain 0: none.
     /// The Drive (dB) they are for.
     drive: f32,
@@ -497,27 +523,69 @@ pub fn ladder_makeup(k: f32) -> f32 {
 }
 
 impl Ladder {
-    /// Resonance 0 to 1 (from about 0.95 it sings), Drive in dB.
-    pub fn set(&mut self, cutoff_hz: f32, resonance: f32, drive_db: f32, rate: f32) {
+    /// Resonance 0 to 1 (from about 0.95 it sings), Drive in dB. The
+    /// cutoff and resonance glide there over `frames` frames (the first
+    /// setting, or 0 frames: at once); Drive changes at once.
+    pub fn set(&mut self, cutoff_hz: f32, resonance: f32, drive_db: f32, rate: f32, frames: u32) {
         let fc = cutoff_hz.clamp(10.0, rate * 0.45);
-        let g = (PI * fc / rate).tan();
-        self.big_g = g / (1.0 + g);
-        self.inv_1g = 1.0 / (1.0 + g);
-        self.k = LADDER_K * resonance.clamp(0.0, 1.0);
-        self.makeup = ladder_makeup(self.k);
+        let stage = |rate: f32| {
+            let g = (PI * fc / rate).tan();
+            g / (1.0 + g)
+        };
+        let big_g = stage(rate);
+        let k = LADDER_K * resonance.clamp(0.0, 1.0);
+        let was_driven = self.drive > 0.0;
         let drive_db = drive_db.clamp(0.0, MAX_DRIVE_DB);
-        if drive_db > 0.0 {
+        let big_g2 = if drive_db > 0.0 {
             if drive_db != self.drive_db || self.drive == 0.0 {
                 self.drive = db_to_gain(drive_db);
                 self.norm = drive_norm(self.drive);
                 self.drive_db = drive_db;
             }
+            stage(2.0 * rate)
         } else {
             (self.drive, self.norm) = (0.0, 1.0);
             // Off: it starts afresh when it next comes on.
             self.os[0].live = false;
             self.os[1].live = false;
+            self.big_g2
+        };
+        if !self.set || frames == 0 {
+            (self.big_g, self.big_g2, self.k) = (big_g, big_g2, k);
+            self.left = 0;
+        } else {
+            // The twice-the-rate path comes in at its setting.
+            if drive_db > 0.0 && !was_driven {
+                self.big_g2 = big_g2;
+            }
+            let n = frames as f32;
+            self.to = [big_g, big_g2, k];
+            self.step = [
+                (big_g - self.big_g) / n,
+                (big_g2 - self.big_g2) / n,
+                (k - self.k) / n,
+            ];
+            self.left = frames;
         }
+        self.makeup = ladder_makeup(self.k);
+        self.set = true;
+    }
+
+    /// One frame of the glide; the last lands on the setting itself.
+    #[inline(always)]
+    fn tick(&mut self) {
+        if self.left == 0 {
+            return;
+        }
+        self.left -= 1;
+        if self.left == 0 {
+            [self.big_g, self.big_g2, self.k] = self.to;
+        } else {
+            self.big_g += self.step[0];
+            self.big_g2 += self.step[1];
+            self.k += self.step[2];
+        }
+        self.makeup = ladder_makeup(self.k);
     }
 
     /// Zeros a state too small to hear (see [`Svf::flush`]).
@@ -536,30 +604,47 @@ impl Ladder {
         }
     }
 
+    /// One frame, both channels.
     #[inline]
-    pub fn process(&mut self, ch: usize, x: f32) -> f32 {
-        let x = if self.drive > 0.0 {
-            self.os[ch].run(x * self.drive) * self.norm
-        } else {
-            x
-        };
-        let g = self.big_g;
-        let s = &mut self.s[ch];
-        let (g2, g3) = (g * g, g * g * g);
-        let g4 = g2 * g2;
-        // The loop's output, solved as if the feedback were straight;
-        // then the feedback through the curve.
-        let sig = self.inv_1g * (g3 * s[0] + g2 * s[1] + g * s[2] + s[3]);
-        let y4 = (g4 * x + sig) / (1.0 + self.k * g4);
-        let mut u = x - soft_clip(self.k * y4);
-        for st in s.iter_mut() {
-            let v = (u - *st) * g;
-            let y = v + *st;
-            *st = y + v;
-            u = y;
-        }
-        u * self.makeup
+    pub fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
+        self.tick();
+        (self.channel(0, l), self.channel(1, r))
     }
+
+    #[inline(always)]
+    fn channel(&mut self, ch: usize, x: f32) -> f32 {
+        let y = if self.drive > 0.0 {
+            let (g, k, norm) = (self.big_g2, self.k, self.norm);
+            let s = &mut self.s[ch];
+            let out = s[3];
+            self.os[ch].run_through(x * self.drive, out, |u| {
+                ladder_step(s, u * norm, g, 1.0 - g, k)
+            })
+        } else {
+            let g = self.big_g;
+            ladder_step(&mut self.s[ch], x, g, 1.0 - g, self.k)
+        };
+        y * self.makeup
+    }
+}
+
+/// One sample through the ladder's loop: states `s`, a stage's `g / (1 +
+/// g)` and `1 / (1 + g)`, feedback `k`. The loop's output is solved as if
+/// the feedback were straight; then the feedback goes through the curve.
+#[inline(always)]
+fn ladder_step(s: &mut [f32; 4], x: f32, g: f32, inv_1g: f32, k: f32) -> f32 {
+    let (g2, g3) = (g * g, g * g * g);
+    let g4 = g2 * g2;
+    let sig = inv_1g * (g3 * s[0] + g2 * s[1] + g * s[2] + s[3]);
+    let y4 = (g4 * x + sig) / (1.0 + k * g4);
+    let mut u = x - soft_clip(k * y4);
+    for st in s.iter_mut() {
+        let v = (u - *st) * g;
+        let y = v + *st;
+        *st = y + v;
+        u = y;
+    }
+    u
 }
 
 /// The comb's lowest pitch: its delay line holds one cycle of it.
@@ -830,7 +915,10 @@ pub fn ladder_db(cutoff_hz: f32, resonance: f32, hz: f32) -> f32 {
 }
 
 /// One 2-pole topology-preserving state-variable filter stage per channel
-/// (after Andrew Simper's published "SVF linear trap" design).
+/// (after Andrew Simper's published "SVF linear trap" design), with the
+/// pad's old resonance (Q 0.5 to 20): the Vowel's formants. The low-pass,
+/// high-pass, band-pass and notch run the Filter effect's multimode filter
+/// instead ([`VoiceFilter`]).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Svf {
     ic1: [f32; 2],
@@ -883,6 +971,158 @@ impl Svf {
             // [`Comb`]).
             FilterKind::Ladder | FilterKind::Comb => v2,
         }
+    }
+}
+
+/// The [`SvfMode`] a state-variable [`FilterKind`] runs as.
+#[inline]
+pub fn svf_mode(kind: FilterKind) -> SvfMode {
+    match kind {
+        FilterKind::HighPass => SvfMode::HighPass,
+        FilterKind::BandPass => SvfMode::BandPass,
+        FilterKind::Notch => SvfMode::Notch,
+        _ => SvfMode::LowPass,
+    }
+}
+
+/// The rate a filter's curve is drawn at: the engine's (it runs at 44.1
+/// kHz; DSP quality's plan keeps it there).
+pub const DRAW_RATE: u32 = 44_100;
+
+/// A state-variable type's curve at `hz` (dB), for drawing: its multimode
+/// filter's exact response at [`DRAW_RATE`]
+/// ([`mpfree_filter::multi::response_db`]), so the curve is what is heard,
+/// short of a loud sound's ring that the resonance guard holds back
+/// ([`Multi::guard`]).
+pub fn svf_db(f: &Filter, hz: f32) -> f32 {
+    mpfree_filter::multi::response_db(
+        svf_mode(f.kind),
+        f.poles >= 4,
+        f.cutoff_hz,
+        f.resonance,
+        hz,
+        DRAW_RATE,
+    )
+}
+
+/// One voice's filter: the state of every type, set from the voice's
+/// [`Filter`] and run a frame at a time. The low-pass, high-pass,
+/// band-pass and notch are the Filter effect's multimode filter
+/// ([`Multi`]: Butterworth at Resonance 0, so the cutoff is the -3 dB
+/// point; Q up to 40; linear, with a resonance guard that damps a loud
+/// sound's ring as it passes a knee, so nothing bends and no DC is made;
+/// each new cutoff glided to over the frames until the next).
+/// The Ladder, Vowel and Comb are the pad's own. The
+/// sampler's voices and the quality lab's pad filter both run this, so the
+/// lab measures what plays.
+#[derive(Clone, Debug)]
+pub struct VoiceFilter {
+    pub multi: Multi,
+    pub vowel: [Svf; 2],
+    /// The Vowel's gain after its formants.
+    pub vowel_gain: f32,
+    pub ladder: Ladder,
+    /// Made with the pool and kept from note to note ([`Comb::reset`]), so
+    /// nothing allocates.
+    pub comb: Comb,
+}
+
+impl Default for VoiceFilter {
+    fn default() -> VoiceFilter {
+        VoiceFilter {
+            multi: Multi::default(),
+            vowel: [Svf::default(); 2],
+            vowel_gain: 1.0,
+            ladder: Ladder::default(),
+            comb: Comb::default(),
+        }
+    }
+}
+
+impl VoiceFilter {
+    /// Every `frames` frames, before any new setting: zeros the states too
+    /// small to hear (see [`Svf::flush`]), the multimode filter's once both
+    /// of a channel's are under [`QUIET`] ([`Multi::flush_below`]; the Comb
+    /// flushes as it goes), and runs the multimode filter's resonance guard
+    /// ([`Multi::guard`]): its window of a loud ring's peak, letting the
+    /// damping go as the sound quietens (a ring rising past it is damped
+    /// in its own frame).
+    #[inline]
+    pub fn tick(&mut self, kind: FilterKind, frames: u32) {
+        match kind {
+            FilterKind::Off | FilterKind::Comb => {}
+            FilterKind::Ladder => self.ladder.flush(),
+            FilterKind::Vowel => self.vowel.iter_mut().for_each(Svf::flush),
+            _ => {
+                self.multi.flush_below(QUIET);
+                self.multi.guard(frames);
+            }
+        }
+    }
+
+    /// Sets `f`'s type at cutoff `fc` and resonance `res` (0 to 1). The
+    /// multimode filter, the Ladder and the Comb glide there over `frames`
+    /// frames (the first setting lands at once); the Vowel lands at once.
+    #[inline]
+    pub fn set(&mut self, f: &Filter, fc: f32, res: f32, rate: f32, frames: u32) {
+        match f.kind {
+            FilterKind::Off => {}
+            FilterKind::Ladder => self.ladder.set(fc, res, f.drive_db, rate, frames),
+            // The cutoff is its pitch.
+            FilterKind::Comb => self.comb.set(fc, res, rate, frames),
+            // The cutoff picks the vowel: its two formants, in parallel.
+            FilterKind::Vowel => {
+                let (f1, f2) = vowel_formants(fc);
+                let r = vowel_resonance(res);
+                self.vowel[0].set(f1, r, rate);
+                self.vowel[1].set(f2, r, rate);
+                self.vowel_gain = vowel_gain(res);
+            }
+            kind => {
+                let rate = rate.round() as u32;
+                self.multi
+                    .set(svf_mode(kind), f.poles >= 4, fc, res, rate, frames);
+            }
+        }
+    }
+
+    /// One frame of type `kind`.
+    #[inline(always)]
+    pub fn process(&mut self, kind: FilterKind, l: f32, r: f32) -> (f32, f32) {
+        match kind {
+            FilterKind::Off => (l, r),
+            FilterKind::Comb => self.comb.process(l, r),
+            kind => self.process_first(kind, l, r),
+        }
+    }
+
+    /// One frame of a type that comes before a voice's gains: any but Off
+    /// (a voice's filter is `None` for Off) and the Comb. Two tests, not a
+    /// jump table: the voice's loop runs it every frame.
+    #[inline(always)]
+    pub fn process_first(&mut self, kind: FilterKind, l: f32, r: f32) -> (f32, f32) {
+        debug_assert!(kind != FilterKind::Off && kind != FilterKind::Comb);
+        if kind == FilterKind::Ladder {
+            self.ladder.process(l, r)
+        } else if kind == FilterKind::Vowel {
+            let [a, b] = &mut self.vowel;
+            let g = self.vowel_gain;
+            let k = FilterKind::Vowel;
+            (
+                g * (a.process(0, l, k) + FORMANT_2 * b.process(0, l, k)),
+                g * (a.process(1, r, k) + FORMANT_2 * b.process(1, r, k)),
+            )
+        } else {
+            self.multi.process(l, r)
+        }
+    }
+
+    /// Every state but the Comb's line from silence, as a filter that
+    /// comes in on a sounding voice starts.
+    pub fn clear(&mut self) {
+        self.multi = Multi::default();
+        self.vowel = [Svf::default(); 2];
+        self.ladder = Ladder::default();
     }
 }
 

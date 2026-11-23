@@ -417,10 +417,52 @@ impl NextCard {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct KeyboardLine {
     pub name: String,
-    /// "Rhodes · track 3", or "not connected".
+    /// "Chorus split" (the song's patch its keys reach, live shows C1),
+    /// "connected", or "not connected".
     pub plays: String,
     /// Dim when it isn't connected, red when this song needs it too.
     pub tone: Tone,
+    /// The patch's zones that reach this keyboard, as a strip at the
+    /// line's right (empty without patches).
+    pub bars: Vec<KeyBar>,
+}
+
+/// One bar of a keyboard line's zone strip (live shows C1): where its
+/// keys lie across the strip, in thousandths from its left; its row of
+/// the strip's `rows` (layered zones lie on rows of their own); its
+/// instrument's colour; and whether that instrument is missing (red).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeyBar {
+    pub from: u16,
+    pub to: u16,
+    pub row: u8,
+    pub rows: u8,
+    pub color: mpfree_ui::Color,
+    pub missing: bool,
+}
+
+/// A keyboard line's zone strip: as wide as this at most, and as tall.
+const STRIP_W: i32 = 190;
+const STRIP_H: i32 = 10;
+
+/// A keyboard line's zone strip in `r`: a faint lane, then each bar on
+/// its row.
+fn paint_bars(cx: &mut PaintCx, t: &Theme, r: Rect, bars: &[KeyBar]) {
+    cx.canvas.fill_round_rect(r, 3, t.raised);
+    for b in bars {
+        let rows = i32::from(b.rows.max(1));
+        let gap = if r.h / rows >= 4 { 1 } else { 0 };
+        let h = ((r.h - gap * (rows - 1)) / rows).max(1);
+        let x0 = r.x + i32::from(b.from.min(1000)) * r.w / 1000;
+        let x1 = r.x + i32::from(b.to.min(1000)) * r.w / 1000;
+        let bar = Rect::new(x0, r.y + i32::from(b.row) * (h + gap), (x1 - x0).max(2), h);
+        let ink = if b.missing {
+            t.bad
+        } else {
+            t.swatch(b.color).fill
+        };
+        cx.canvas.fill_round_rect(bar, (h / 2).min(2), ink);
+    }
 }
 
 /// The Show view: see the module notes.
@@ -1013,7 +1055,18 @@ impl ShowView {
             self.keyboards.len()
         };
         for (i, k) in self.keyboards.iter().take(shown).enumerate() {
-            let line = Rect::new(c.x + 16, top + i as i32 * KEY_LINE, c.w - 32, KEY_LINE);
+            let mut line = Rect::new(c.x + 16, top + i as i32 * KEY_LINE, c.w - 32, KEY_LINE);
+            if !k.bars.is_empty() {
+                let w = STRIP_W.min(line.w / 3);
+                let strip = Rect::new(
+                    line.right() - w,
+                    line.y + (line.h - STRIP_H) / 2,
+                    w,
+                    STRIP_H,
+                );
+                paint_bars(cx, &t, strip, &k.bars);
+                line.w -= w + 12;
+            }
             let plays_w = cx.text(
                 FontId::Sans,
                 t.size_body - 1.0,
@@ -1353,6 +1406,18 @@ fn wrap(cx: &mut PaintCx, px: f32, text: &str, w: i32) -> Vec<String> {
     out
 }
 
+/// A sample keyboard line's bar, on a strip of `row + 1` rows or two.
+fn sample_bar(from: u16, to: u16, row: u8, rgb: u32) -> KeyBar {
+    KeyBar {
+        from,
+        to,
+        row,
+        rows: 2.min(row + 2),
+        color: mpfree_ui::Color::rgb(rgb),
+        missing: false,
+    }
+}
+
 /// The Show view as the approved mockup draws it: song 4 of 12 playing,
 /// song 5 armed for a cold change. For the sample screens and the tests.
 pub fn sample() -> ShowView {
@@ -1432,15 +1497,23 @@ pub fn sample() -> ShowView {
                 at bar 9. Chorus twice at the end if the room is up for it."
             .into(),
         keyboards: vec![
+            // The song's patch, Chorus split: a bass under C3 on every
+            // keyboard, and the Keystep's Rhodes above it with a pad.
             KeyboardLine {
                 name: "Keystep 37".into(),
-                plays: "Rhodes · track 3".into(),
+                plays: "Chorus split".into(),
                 tone: Tone::Normal,
+                bars: vec![
+                    sample_bar(0, 333, 0, crate::view::TRACK_COLORS[2]),
+                    sample_bar(333, 1000, 0, crate::view::TRACK_COLORS[0]),
+                    sample_bar(500, 1000, 1, crate::view::TRACK_COLORS[4]),
+                ],
             },
             KeyboardLine {
                 name: "Nord Electro".into(),
-                plays: "Organ · track 5".into(),
+                plays: "Chorus split".into(),
                 tone: Tone::Normal,
+                bars: vec![sample_bar(0, 333, 0, crate::view::TRACK_COLORS[2])],
             },
         ],
         click: true,
@@ -1830,6 +1903,7 @@ mod tests {
                 name: format!("Keys {i}"),
                 plays: "not connected".into(),
                 tone: if i == 0 { Tone::Bad } else { Tone::Dim },
+                bars: Vec::new(),
             })
             .collect();
         v.autosave_waiting = true;

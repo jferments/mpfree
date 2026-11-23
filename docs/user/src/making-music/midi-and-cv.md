@@ -245,9 +245,9 @@ MPFree can follow another device's MIDI clock. In the mixer's I/O view, under **
 Under **From other gear** in the **Sync** section, two settings let another device run MPFree. Both are off until you turn them on, and both are kept with the project.
 
 - **MMC in**: a computer's DAW, a hard disk recorder or a tape deck can play, stop, record and locate MPFree with **MIDI Machine Control** (MMC). Turn it on, and turn on "Send MMC" (or "MMC out") on the other device, on the port it reaches MPFree through. As on an MPC: **Play** (and **Deferred Play**) presses PLAY, **Stop** and **Pause** press STOP, **Record Strobe** presses REC, and **Locate** moves the playhead to its time (00:00:00:00 is the start of the song, along its tempo). **Locate zero then Play** is PLAY START. They do what the buttons do with what is armed: Record Strobe records what is armed, a ready take starts on Play, and Stop keeps a pad take that is recording. Play while MPFree plays does nothing (it is not FILL). Record Exit, fast forward and rewind do nothing. MPFree doesn't send MMC.
-- **Program change in**: set it to **Launches a scene**, and a program change from any port launches that scene of the [Clips grid](clips.md): program 1 launches scene 1, program 2 scene 2, and so on, on any channel, as a tap on the scene's launch button does (on the next bar line while playing). A program past the grid's last scene does nothing, and the log says so. A port set to ignore program changes (its page's **Ignore coming in**) launches nothing.
+- **Program change in**: set it to **Launches a scene**, and a program change from any port launches that scene of the [Clips grid](clips.md): program 1 launches scene 1, program 2 scene 2, and so on, on any channel, as a tap on the scene's launch button does (on the next bar line while playing). A program past the grid's last scene does nothing, and the log says so. A port set to ignore program changes (its page's **Ignore coming in**) launches nothing. Set it to **Picks a patch** and program 1 picks the song's patch 1, program 2 patch 2, and so on, at once or, with the **Switches** row under it, when your hands are up (see [Patches](patches.md#switching-with-a-program-change)).
 
-The MIDI monitor shows where each went: *MMC: the transport*, or *launched scene 3*.
+The MIDI monitor shows where each went: *MMC: the transport*, *launched scene 3*, or *picked patch 2*.
 
 MPFree can also send its own clock from **MIDI OUT**, or to a USB device, so a drum machine or an arpeggiator plays in time with it. Each port's **Clock out** is **Off**, **While playing** or **Always**, and each port with a delay gets its clock that much early. On a port's page, **Divide** slows the clock one port gets and **Nudge** moves it a little later or earlier than its notes (see [A port's page](#a-ports-page)).
 
@@ -336,7 +336,7 @@ These work on every page, whatever the pads are doing. A **Key** or a press star
 
 ### Play's swing, filter and XY pad from your controller
 
-{{shot: mixer-io-learn-play | The Learn section's Play card: Swing, Filter, XY across and XY up, each for a knob to learn, and the XY pad's Hold and layout buttons, each for a button.}}
+{{shot: mixer-io-learn-play | The Learn section's Play card: Swing, Filter, XY across and XY up, each for a knob to learn, the XY pad's Hold and layout buttons, and Next and Previous patch, each for a button.}}
 
 A knob or fader on your controller can turn the Play page's **Swing** and **Filter**, and two of them can move the **XY pad**, so you can play them without looking at the screen. On Play, SHIFT and a touch on these keeps its own job, so they are learned here instead. In the Learn section, tap **Play** by the heading, tap one, then move the knob:
 
@@ -345,6 +345,7 @@ A knob or fader on your controller can turn the Play page's **Swing** and **Filt
 - **XY across** and **XY up**: each moves the XY pad one way, as your finger does, and the other way stays where it is. The pad on the Play page follows. Its effect plays until both are back where the pad rests: across in the middle and up at the bottom. Learn one on a joystick's two directions, or on two knobs side by side. On one of [your own layouts](xy-layouts.md), a knob holds the pad while it moves and lets go half a second after, as any learned knob does.
 - **XY Hold**: a button, a key or a footswitch switches the pad's [Hold](xy-layouts.md#hold-and-let-go) on and off, each press. It works on a layout of yours.
 - **XY layout next** and **XY layout back**: each press plays the next (or the last) of this song's layouts of yours, or of the ready-made ones while the song has none of yours. Whatever the old layout held lets go first.
+- **Next patch** and **Previous patch**: a footswitch or a button that steps through the song's [patches](patches.md#switching-from-a-footswitch). Its card's **Switches** says whether the patch changes at once or once your hands are up.
 
 **Your finger and the XY knobs together:** the one that started last plays. Move a learned XY knob while your finger is on the pad and the knob takes over; your finger does nothing until you lift it and touch again. A touch while the knobs hold the pad takes it back the same way, and the knobs then do nothing until they are back where the pad rests.
 

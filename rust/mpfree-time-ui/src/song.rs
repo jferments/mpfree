@@ -84,7 +84,7 @@ use std::time::{Duration, Instant};
 
 /// The buttons along the bottom, left to right.
 pub const SONG_BUTTONS: [&str; 6] = [
-    "Clips",
+    "Split",
     "Play song",
     "Scenes → song",
     "Song → scenes",
@@ -106,6 +106,47 @@ pub const SECTION_BUTTONS: [&str; 4] = ["+ Bar", "Rename", "Remove marker", "Del
 pub const RULER_ROW: usize = 0x501;
 /// The picked section's grip on the ruler: its width, left of its marker.
 pub const GRIP_W: i32 = 28;
+/// The picked block's start grip, as the row of [`EventKind::Place`]:
+/// block `index` trimmed from the left to start on `at` (the Arrange
+/// refactor's phase 6).
+pub const START_ROW: usize = 0x502;
+/// A slide, as the row of [`EventKind::Place`]: what block `index` plays
+/// moved `at` song ticks later under it, earlier below 0 (phase 6).
+pub const SLIDE_ROW: usize = 0x503;
+/// What Tab reports for Duplicate (phase 6), drawn between Song → scenes
+/// and Make unique (after `SHOW_VIEW`: see
+/// `tests::the_song_views_tab_ids_are_all_different`).
+pub const DUPLICATE: usize = 0x313;
+/// How long a finger stays still on the picked block before a drag
+/// slides what the block plays instead of moving it (phase 6).
+pub const SLIDE_HOLD: Duration = Duration::from_millis(400);
+/// A box dragged across the lanes (6.5), as the index of
+/// [`EventKind::Span`]: `BOX + top * 0x100 + bottom`, the first and last
+/// tracks whose lanes it crosses ([`box_tracks`]), from and to the song
+/// ticks at its left and right. Above any take's number, which a take
+/// lane's swipe reports there.
+pub const BOX: usize = 1 << 24;
+
+/// The first and last tracks of a box's [`EventKind::Span`] index.
+pub fn box_tracks(index: usize) -> (usize, usize) {
+    let k = index.saturating_sub(BOX);
+    (k / 0x100, k % 0x100)
+}
+
+/// The zoom chip's choices (6.4): how many bars the Song view shows.
+pub const ZOOMS: [i64; 5] = [4, 8, 16, 32, 64];
+/// What Tab reports for the zoom chip's part `k`: `ZOOM + k` for
+/// [`ZOOMS`]`[k]`.
+pub const ZOOM: usize = 0x320;
+/// The zoom chip's "Bars" and each of its parts.
+const ZOOM_LABEL_W: i32 = 44;
+const ZOOM_PART_W: i32 = 40;
+pub const ZOOM_W: i32 = ZOOM_LABEL_W + ZOOMS.len() as i32 * ZOOM_PART_W;
+
+/// Duplicate's width.
+const DUPLICATE_W: i32 = 104;
+/// Split's width, the bottom row's first place (phase 6).
+const SPLIT_W: i32 = 76;
 /// The tempo lane, as the row of [`EventKind::Place`] (a point added, with
 /// index [`NONE`], or point `index` moved to `at`) and of
 /// [`EventKind::Cell`] (point `col` picked).
@@ -516,13 +557,19 @@ pub struct SongLanes {
     /// Each marker's passes and their length while its part follows its
     /// scene on a linked song, with more than one ([`crate::view::TimeState::passes`]).
     pub passes: Vec<Option<(u16, Tick)>>,
-    /// Ticks a bar.
+    /// Ticks a bar, and a beat.
     pub bar: Tick,
-    /// The first bar shown (0-based) and how many.
+    pub beat: Tick,
+    /// The first bar shown (0-based) and how many: one of [`ZOOMS`] (the
+    /// zoom chip lights it, 6.4).
     pub first_bar: i64,
     pub bars: i64,
     pub playhead: Option<Tick>,
     pub selected: Option<usize>,
+    /// The blocks picked together (6.5): two or more, `selected` being
+    /// None while they are. Each has the pick's outline, and a drag of
+    /// one carries them all. The app sets it.
+    pub picks: Vec<usize>,
     /// Song mode: the song plays.
     pub on: bool,
     /// Live to song armed.
@@ -610,6 +657,11 @@ pub(crate) enum Held {
     Block { index: usize, dt: Tick },
     /// The picked placement's end grip.
     End { index: usize, dt: Tick },
+    /// The picked placement's start grip (trim from the left, phase 6).
+    Start { index: usize, dt: Tick },
+    /// The picked placement held still, then dragged: what it plays
+    /// slides under it (phase 6).
+    Slide { index: usize },
     /// Section `k`'s name on the ruler.
     Section { k: usize, dt: Tick },
     /// Tempo point `k`, or the tempo lane where there is none (`None`: a
@@ -619,6 +671,9 @@ pub(crate) enum Held {
     Ruler,
     /// The picked section's grip: marker `k` alone moves (Arrange 3.3).
     MarkerGrip { k: usize, dt: Tick },
+    /// Empty space on the lanes: a tap picks nothing, a drag draws a box
+    /// that picks the blocks it touches (6.5).
+    Box,
 }
 
 /// A finger holding something on the Song view.
@@ -630,6 +685,9 @@ pub(crate) struct Grip {
     at: (i32, i32),
     /// It moved [`LIFT_PX`]: a drag, not a tap.
     lifted: bool,
+    /// When the finger went down: held [`SLIDE_HOLD`] still on the picked
+    /// block, a drag slides what it plays.
+    since: Instant,
     /// Held at an edge: which way (`BARS_BACK` or `BARS_ON`), and when the
     /// bars last scrolled.
     edge: Option<(usize, Instant)>,
@@ -642,12 +700,13 @@ impl Grip {
             from: (x, y),
             at: (x, y),
             lifted: false,
+            since: Instant::now(),
             edge: None,
         }
     }
 }
 
-const NAME_W: i32 = 96;
+pub const NAME_W: i32 = 96;
 /// The least lane height that shows what a track plays under its name.
 const SOUND_LANE_H: i32 = 34;
 const RULER_H: i32 = 26;
@@ -735,10 +794,12 @@ impl Default for SongLanes {
             markers: Vec::new(),
             passes: Vec::new(),
             bar: 3840,
+            beat: 960,
             first_bar: 0,
             bars: 16,
             playhead: None,
             selected: None,
+            picks: Vec::new(),
             on: false,
             rec: false,
             show_button: false,
@@ -977,10 +1038,12 @@ impl SongLanes {
             markers: self.markers.clone(),
             passes: self.passes.clone(),
             bar: self.bar,
+            beat: self.beat,
             first_bar: self.first_bar,
             bars: self.bars,
             playhead: self.playhead,
             selected: self.selected,
+            picks: self.picks.clone(),
             on: self.on,
             rec: self.rec,
             show_button: self.show_button,
@@ -1307,6 +1370,47 @@ impl SongLanes {
             .then(|| Rect::new(rec.x - 8 - w, rec.y, w, rec.h))
     }
 
+    /// The zoom chip (6.4), right of the view chip: "Bars", then a part
+    /// for each of [`ZOOMS`].
+    pub fn zoom_rect(&self, r: Rect) -> Rect {
+        let chip = view_chip_rect(r);
+        Rect::new(chip.right() + 12, chip.y, ZOOM_W, chip.h)
+    }
+
+    /// The zoom chip's part `k`, for [`ZOOMS`]`[k]`.
+    pub fn zoom_part_rect(&self, r: Rect, k: usize) -> Rect {
+        let z = self.zoom_rect(r);
+        Rect::new(
+            z.x + ZOOM_LABEL_W + k as i32 * ZOOM_PART_W,
+            z.y,
+            ZOOM_PART_W,
+            z.h,
+        )
+    }
+
+    /// What a drag snaps to (6.4): the beat while 8 bars or fewer show,
+    /// else the bar.
+    fn snap(&self) -> Tick {
+        if self.bars <= 8 {
+            self.beat.clamp(1, self.bar.max(1))
+        } else {
+            self.bar.max(1)
+        }
+    }
+
+    /// "bar 5", or "bar 5 beat 3" off the bar line: where a dragged block
+    /// starts.
+    fn at_text(&self, t: Tick) -> String {
+        let bar = self.bar.max(1);
+        let beat = self.beat.clamp(1, bar);
+        let (b, rest) = (t.div_euclid(bar), t.rem_euclid(bar));
+        if rest == 0 {
+            format!("bar {}", b + 1)
+        } else {
+            format!("bar {} beat {}", b + 1, rest / beat + 1)
+        }
+    }
+
     /// The buttons along the bottom (the audio region's while one is
     /// picked). Button 0 is the audio region's Split alone: the view chip
     /// took the place of the Clips button that was there (5.7), so
@@ -1316,10 +1420,12 @@ impl SongLanes {
         let widths = if self.region.is_some() {
             [84, 84, 84, 84, 84, 84]
         } else if self.section_buttons() {
-            [0, 124, 90, 110, 150, 150]
+            [SPLIT_W, 124, 90, 110, 150, 150]
         } else {
-            [0, 124, 140, 140, 124, 96]
+            [SPLIT_W, 104, 128, 128, 112, 80]
         };
+        // Duplicate's place, after Song → scenes, while it shows.
+        let dup = self.duplicate_shows();
         let mut out = [Rect::new(0, 0, 0, 0); 6];
         let mut x = g.tools.x;
         for (k, w) in widths.iter().enumerate() {
@@ -1327,8 +1433,31 @@ impl SongLanes {
             if *w > 0 {
                 x += w + 8;
             }
+            if k == 3 && dup {
+                x += DUPLICATE_W + 8;
+            }
         }
         out
+    }
+
+    /// Whether Duplicate shows (phase 6): with no audio region, tempo
+    /// point or section picked, the last buttons being the blocks'.
+    fn duplicate_shows(&self) -> bool {
+        self.region.is_none() && self.tempo_pick.is_none() && !self.section_buttons()
+    }
+
+    /// Duplicate (phase 6), between Song → scenes and Make unique, while
+    /// it shows.
+    pub fn duplicate_rect(&self, r: Rect) -> Option<Rect> {
+        if !self.duplicate_shows() {
+            return None;
+        }
+        let g = self.geo(r);
+        let mut x = g.tools.x;
+        for w in [SPLIT_W, 104, 128, 128] {
+            x += w + 8;
+        }
+        Some(Rect::new(x, g.tools.y, DUPLICATE_W, g.tools.h))
     }
 
     /// The track panel's parts, while one is open: over the lanes, right
@@ -1846,6 +1975,19 @@ impl SongLanes {
         Some(Rect::new(br.right() - 16, br.y, 28, br.h))
     }
 
+    /// The picked placement's start grip (trim from the left, phase 6),
+    /// if its start shows: two bars inside its left end.
+    pub fn start_rect(&self, r: Rect) -> Option<Rect> {
+        let b = self.block(self.selected?)?;
+        let g = self.geo(r);
+        let x = self.x_of(g.lanes, b.start);
+        if x < g.lanes.x + NAME_W || x >= g.lanes.right() {
+            return None;
+        }
+        let br = self.block_rect(r, b)?;
+        Some(Rect::new(br.x - 12, br.y, 28, br.h))
+    }
+
     /// Where section edge `j` is: section `j`'s start, or for the markers'
     /// count the last section's end (the song's end in whole bars from
     /// its marker, as `Arrangement::section` has it).
@@ -1890,9 +2032,9 @@ impl SongLanes {
             Lane::Audio(a) => self.audio[a].row,
             _ => return None,
         };
-        let bar = self.bar.max(1);
+        let snap = self.snap();
         let t = self.tick_at(g.lanes, gr.at.0) - dt;
-        Some((track, ((t + bar / 2).div_euclid(bar) * bar).max(0)))
+        Some((track, ((t + snap / 2).div_euclid(snap) * snap).max(0)))
     }
 
     /// How long the picked block becomes: its end where the grip is,
@@ -1903,11 +2045,64 @@ impl SongLanes {
         };
         let b = self.block(index)?;
         let g = self.geo(r);
-        let bar = self.bar.max(1);
+        let bar = self.snap();
         let t = self.tick_at(g.lanes, gr.at.0) - dt;
         let end = (t + bar / 2).div_euclid(bar) * bar;
         let least = (b.start.div_euclid(bar) + 1) * bar;
         Some(end.max(least) - b.start)
+    }
+
+    /// Where the picked block starts once trimmed from the left: its
+    /// start where the grip is, snapped to the nearest bar, up to the last
+    /// bar line before its end, and back no further than the end of the
+    /// block before it on its lane (or 0).
+    fn start_landing(&self, r: Rect, gr: &Grip) -> Option<Tick> {
+        let Held::Start { index, dt } = gr.held else {
+            return None;
+        };
+        let b = self.block(index)?;
+        let g = self.geo(r);
+        let bar = self.snap();
+        let t = self.tick_at(g.lanes, gr.at.0) - dt;
+        let start = (t + bar / 2).div_euclid(bar) * bar;
+        let most = (b.start + b.length - 1).div_euclid(bar) * bar;
+        let least = self
+            .blocks
+            .between(b.track, 0, b.start)
+            .filter(|o| o.index != index && o.start < b.start)
+            .map(|o| o.start + o.length)
+            .max()
+            .unwrap_or(0)
+            .min(b.start);
+        Some(start.min(most).max(least))
+    }
+
+    /// How far a slide moves what the held block plays: the finger's way
+    /// along the lane in song ticks, snapped to a 1/16 (phase 6).
+    fn slide_by(&self, r: Rect, gr: &Grip) -> Tick {
+        let g = self.geo(r);
+        let step = (self.bar / 16).max(1);
+        let d = self.tick_at(g.lanes, gr.at.0) - self.tick_at(g.lanes, gr.from.0);
+        (d + step / 2).div_euclid(step) * step
+    }
+
+    /// A slide's amount in words: "+1 beat", "−3/16", "+2 bars".
+    fn slide_text(&self, by: Tick) -> String {
+        let step = (self.bar / 16).max(1);
+        let n = by / step;
+        let sign = if n < 0 { "−" } else { "+" };
+        let n = n.abs();
+        match n {
+            _ if n % 16 == 0 && n > 0 => {
+                let k = n / 16;
+                format!("{sign}{k} bar{}", if k == 1 { "" } else { "s" })
+            }
+            _ if n % 4 == 0 && n > 0 => {
+                let k = n / 4;
+                format!("{sign}{k} beat{}", if k == 1 { "" } else { "s" })
+            }
+            _ => format!("{sign}{n}/16"),
+        }
     }
 
     /// Where a held section goes: the section edge nearest where its start
@@ -1921,11 +2116,74 @@ impl SongLanes {
             .min_by_key(|&j| self.edge_tick(j).map_or(Tick::MAX, |e| (e - t).abs()))
     }
 
+    /// The box a finger drags across the lanes (6.5), from where it went
+    /// down to where it is, right of the names and inside the lanes.
+    fn box_rect(&self, r: Rect, gr: &Grip) -> Rect {
+        let g = self.geo(r);
+        let x0 = gr.from.0.min(gr.at.0).max(g.lanes.x + NAME_W);
+        let x1 = gr.from.0.max(gr.at.0).min(g.lanes.right());
+        let y0 = gr.from.1.min(gr.at.1).max(g.lanes.y);
+        let y1 = gr.from.1.max(gr.at.1).min(g.lanes.bottom());
+        Rect::new(x0, y0, (x1 - x0).max(0), (y1 - y0).max(0))
+    }
+
+    /// The first and last tracks whose lanes the box crosses; None when
+    /// it crosses none (only "+ Track" or take lanes).
+    fn box_tracks(&self, r: Rect, gr: &Grip) -> Option<(usize, usize)> {
+        let g = self.geo(r);
+        let b = self.box_rect(r, gr);
+        let tracks: Vec<usize> = (0..self.lane_count())
+            .filter(|&k| {
+                self.lane_rect(&g, k)
+                    .is_some_and(|l| l.y < b.bottom().max(b.y + 1) && l.bottom() > b.y)
+            })
+            .filter_map(|k| match self.lane(k)? {
+                Lane::Midi(t) => Some(t),
+                Lane::Audio(a) => Some(self.audio[a].row),
+                _ => None,
+            })
+            .collect();
+        Some((*tracks.iter().min()?, *tracks.iter().max()?))
+    }
+
     /// What letting go of `gr` reports: see the module notes.
     fn let_go(&self, r: Rect, gr: &Grip) -> Option<EventKind> {
         match gr.held {
+            Held::Box if !gr.lifted => Some(EventKind::Select(NONE)),
+            Held::Box => {
+                let g = self.geo(r);
+                // Under the last lane: it picks nothing, as a tap does.
+                let Some((top, bottom)) = self.box_tracks(r, gr) else {
+                    return Some(EventKind::Select(NONE));
+                };
+                let (x0, x1) = (gr.from.0.min(gr.at.0), gr.from.0.max(gr.at.0));
+                let left = x0.max(g.lanes.x + NAME_W);
+                Some(EventKind::Span {
+                    index: BOX + top * 0x100 + bottom,
+                    from: self.tick_at(g.lanes, left).max(0),
+                    to: self.tick_at(g.lanes, x1.min(g.lanes.right())),
+                })
+            }
             Held::Block { index, .. } if !gr.lifted => Some(EventKind::Select(index)),
             Held::End { .. } if !gr.lifted => None,
+            Held::Start { .. } if !gr.lifted => None,
+            Held::Slide { index } => {
+                let by = self.slide_by(r, gr);
+                (by != 0).then_some(EventKind::Place {
+                    index,
+                    row: SLIDE_ROW,
+                    at: by,
+                })
+            }
+            Held::Start { index, .. } => {
+                let b = self.block(index)?;
+                let start = self.start_landing(r, gr)?;
+                (start != b.start).then_some(EventKind::Place {
+                    index,
+                    row: START_ROW,
+                    at: start,
+                })
+            }
             Held::Section { k, .. } if !gr.lifted => Some(EventKind::Tab(SECTION_TAP + k)),
             Held::Block { index, .. } => {
                 let b = self.block(index)?;
@@ -2219,13 +2477,62 @@ impl SongLanes {
                     cx.canvas.stroke_round_rect(h, t.round(6), 2, t.outline);
                 }
                 let land = self.block_landing(r, gr);
+                // One of several picked (6.5): the others go along, each
+                // its old place left, an outline where it lands and its
+                // card moved with the finger.
+                if self.picks.contains(&index) {
+                    let shift = land.map(|(k, s)| (k as i64 - b.track as i64, s - b.start));
+                    let set = |o: &SongBlock| self.picks.contains(&o.index);
+                    for &j in self.picks.iter().filter(|&&j| j != index) {
+                        let Some(o) = self.block(j) else {
+                            continue;
+                        };
+                        let Some(h) = self.block_rect(r, o) else {
+                            continue;
+                        };
+                        cx.canvas.fill_round_rect(h, t.round(6), t.surface);
+                        cx.canvas.stroke_round_rect(h, t.round(6), 2, t.outline);
+                        if let Some((dk, ds)) = shift {
+                            let track = usize::try_from(o.track as i64 + dk).ok();
+                            let lane = track
+                                .filter(|&k| k < self.tracks.len())
+                                .map(|k| self.track_k(k));
+                            let (s, e) = (o.start + ds, o.start + ds + o.length);
+                            if let Some(l) = lane.and_then(|k| self.span_rect(&g, k, s, e)) {
+                                let clash = track
+                                    .is_some_and(|k| self.blocks.between(k, s, e).any(|q| !set(q)))
+                                    || s < 0;
+                                let ink = if clash { t.bad } else { t.accent };
+                                cx.canvas.stroke_round_rect(l.inset(-2), t.round(8), 3, ink);
+                            }
+                        }
+                        let color = self.tracks.get(o.track).map_or(t.accent, |c| c.1);
+                        let card = Rect::new(h.x + dx, h.y + dy, h.w, h.h);
+                        cx.canvas
+                            .fill_round_rect(card, t.round(6), t.raised.mix(color, 0.5));
+                        cx.canvas.stroke_round_rect(card, t.round(6), 2, t.accent);
+                        if card.w > 30 {
+                            cx.text(
+                                FontId::Sans,
+                                t.size_small - 1.0,
+                                card.inset_xy(6, 0),
+                                Align::Left,
+                                t.text,
+                                &o.name,
+                            );
+                        }
+                    }
+                }
                 let at = land.and_then(|(k, s)| Some((self.span_rect(&g, k, s, s + b.length)?, s)));
                 if let (Some((l, _)), Some((k, start))) = (at, land) {
                     // Red where it would run into another block (the app
                     // refuses it and says so).
                     // and on an audio track's lane, into a region.
                     let end = start + b.length;
-                    let clash = self.blocks.between(k, start, end).any(|o| o.index != index)
+                    let clash = self
+                        .blocks
+                        .between(k, start, end)
+                        .any(|o| o.index != index && !self.picks.contains(&o.index))
                         || self.region_between(k, start, end);
                     let ink = if clash { t.bad } else { t.accent };
                     cx.canvas.stroke_round_rect(l.inset(-2), t.round(8), 3, ink);
@@ -2252,7 +2559,7 @@ impl SongLanes {
                 }
                 // The tag on where it lands, says the bar it starts on.
                 if let Some((l, start)) = at {
-                    let text = format!("bar {}", start / bar + 1);
+                    let text = self.at_text(start);
                     self.paint_tag(cx, l.x, l.y - 24, &text);
                 }
             }
@@ -2287,7 +2594,56 @@ impl SongLanes {
                     self.paint_tag(cx, (l.right() - 60).max(l.x), l.y - 24, &text);
                 }
             }
+            Held::Start { index, .. } => {
+                let (Some(b), Some(start)) = (self.block(index), self.start_landing(r, gr)) else {
+                    return;
+                };
+                if let Some(l) = self.span_rect(&g, b.track, start, b.start + b.length) {
+                    let color = self.tracks.get(b.track).map_or(t.accent, |c| c.1);
+                    cx.canvas
+                        .fill_round_rect(l, t.round(6), t.raised.mix(color, 0.3));
+                    cx.canvas
+                        .stroke_round_rect(l.inset(-2), t.round(8), 3, t.accent);
+                    if l.w > 30 {
+                        cx.text(
+                            FontId::Sans,
+                            t.size_small - 1.0,
+                            l.inset_xy(16, 0),
+                            Align::Left,
+                            t.text,
+                            &b.name,
+                        );
+                    }
+                    let text = format!("from bar {}", start / bar + 1);
+                    self.paint_tag(cx, l.x, l.y - 24, &text);
+                }
+            }
+            Held::Slide { index } => {
+                let Some(b) = self.block(index) else {
+                    return;
+                };
+                if let Some(l) = self.block_rect(r, b) {
+                    // The block stays; what it plays moves inside it.
+                    cx.canvas
+                        .stroke_round_rect(l.inset(-2), t.round(8), 3, t.warn);
+                    let by = self.slide_by(r, gr);
+                    let text = format!("slide {}", self.slide_text(by));
+                    self.paint_tag(cx, l.x, l.y - 24, &text);
+                }
+            }
             Held::Tempo { k: None, .. } | Held::Ruler => {}
+            Held::Box => {
+                // The box, and the pick's outline on every block it
+                // touches.
+                let b = self.box_rect(r, gr);
+                for (_, br) in self.blocks_in_view(&g) {
+                    if br.intersect(b).w > 0 && br.intersect(b).h > 0 {
+                        cx.canvas.stroke_round_rect(br, t.round(6), 2, t.accent);
+                    }
+                }
+                cx.canvas.fill_rect(b, t.accent.with_alpha(30));
+                cx.canvas.stroke_round_rect(b, 2, 1, t.accent);
+            }
             Held::MarkerGrip { k, .. } => {
                 // A line where the marker lands, and a tag saying where
                 // its section will start; the blocks stay as they are.
@@ -2628,11 +2984,41 @@ impl Widget for SongLanes {
         let show = self.show_rect(r);
         let end = show.map_or(rec.x, |s| s.x);
         view_title(cx, r, ArrangeView::Song, &self.title, end - 12);
+        // The zoom chip (6.4): "Bars", then 4 to 64, the one shown lit.
+        let zoom = self.zoom_rect(r);
+        cx.canvas.fill_round_rect(zoom, t.round(10), t.raised);
+        cx.text(
+            FontId::Sans,
+            t.size_small - 1.0,
+            Rect::new(zoom.x + 10, zoom.y, ZOOM_LABEL_W - 10, zoom.h),
+            Align::Left,
+            t.text_dim,
+            "Bars",
+        );
+        for (k, n) in ZOOMS.iter().enumerate() {
+            let b = self.zoom_part_rect(r, k);
+            let ink = if *n == self.bars {
+                cx.canvas
+                    .fill_round_rect(b.inset_xy(2, 2), t.round(8), t.accent);
+                t.ink_on(t.accent)
+            } else {
+                t.text
+            };
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                b,
+                Align::Center,
+                ink,
+                &n.to_string(),
+            );
+        }
         let head = r.inset(14).take_top(26).0;
+        let legend_x = zoom.right() + 12;
         cx.text(
             FontId::Sans,
             t.size_small,
-            Rect::new(head.x, head.y, end - head.x - 12, head.h),
+            Rect::new(legend_x, head.y, (end - legend_x - 12).max(0), head.h),
             Align::Right,
             if self.alert { t.warn } else { t.text_dim },
             &self.legend,
@@ -2644,7 +3030,27 @@ impl Widget for SongLanes {
         rec_song_pill(cx, rec, self.rec);
         let g = self.geo(r);
         // The ruler: bar numbers, then the markers' names over them.
-        let step = if self.bars > 16 { 4 } else { 1 };
+        // Every bar's number up to 16 bars, every 4th at 32, every 8th
+        // at 64 (6.4); at 4 and 8 bars a faint line on each beat too.
+        let step = match self.bars {
+            ..=16 => 1,
+            17..=32 => 4,
+            _ => 8,
+        };
+        if self.bars <= 8 && self.beat > 0 && self.beat < self.bar {
+            let (from, to) = self.ticks_shown();
+            let mut at = from;
+            while at < to {
+                if at % self.bar.max(1) != 0 {
+                    let x = self.x_of(g.ruler, at);
+                    cx.canvas.fill_rect(
+                        Rect::new(x, g.lanes.y, 1, g.lanes.h),
+                        t.outline.mix(t.surface, 0.6),
+                    );
+                }
+                at += self.beat;
+            }
+        }
         for k in 0..=self.bars {
             let bar = self.first_bar + k;
             if bar % step != 0 {
@@ -2703,10 +3109,17 @@ impl Widget for SongLanes {
                     }
                 }
             }
+            // Cut short before the next marker, so names never run into
+            // each other zoomed out (6.4).
+            let room = self
+                .markers
+                .get(k + 1)
+                .map_or(120, |m| (self.x_of(g.ruler, m.0) - x - 6).min(120))
+                .max(0);
             cx.text(
                 FontId::Bold,
                 t.size_small - 2.0,
-                Rect::new(x + 4, g.ruler.y + 12, 120, 14),
+                Rect::new(x + 4, g.ruler.y + 12, room, 14),
                 Align::Left,
                 ink,
                 name,
@@ -2831,6 +3244,9 @@ impl Widget for SongLanes {
                 cx.canvas
                     .fill_round_rect(Rect::new(br.right() - 10, br.y + 4, 6, 6), 3, ink);
             }
+            if self.picks.contains(&b.index) {
+                cx.canvas.stroke_round_rect(br, t.round(6), 2, t.accent);
+            }
             if self.selected == Some(b.index) {
                 cx.canvas.stroke_round_rect(br, t.round(6), 2, t.accent);
                 // Its end grip: two bars inside its right end.
@@ -2841,12 +3257,27 @@ impl Widget for SongLanes {
                             .fill_round_rect(Rect::new(x, br.y + 6, 2, br.h - 12), 1, t.text);
                     }
                 }
+                // Its start grip (phase 6): two bars inside its left end.
+                if self.start_rect(r).is_some() && br.w > 48 {
+                    for k in 0..2 {
+                        let x = br.x + 6 + k * 4;
+                        cx.canvas
+                            .fill_round_rect(Rect::new(x, br.y + 6, 2, br.h - 12), 1, t.text);
+                    }
+                }
             }
             if audio.is_none() && br.w > 30 {
+                // Picked, the name makes room for the start grip.
+                let left = if self.selected == Some(b.index) && br.w > 48 {
+                    16
+                } else {
+                    6
+                };
+                let name = Rect::new(br.x + left, br.y, (br.w - left - 6).max(0), br.h);
                 cx.text(
                     FontId::Sans,
                     t.size_small - 1.0,
-                    br.inset_xy(6, 0),
+                    name,
                     Align::Left,
                     t.text,
                     &b.name,
@@ -2907,7 +3338,9 @@ impl Widget for SongLanes {
         }
         let audio = self.region.is_some();
         let selected = self.selected.is_some();
-        // A tempo point picked: Ramp (lit while it ramps) and Delete.
+        // Several picked (6.5): Delete and Duplicate take them all, Make
+        // unique only one block.
+        let several = !self.picks.is_empty();
         let tempo = self
             .tempo_pick
             .and_then(|i| self.tempo.get(i))
@@ -2918,7 +3351,10 @@ impl Widget for SongLanes {
                 continue;
             }
             let lit = (k == 1 && self.on && !audio) || (k == 4 && tempo.is_some_and(|p| p.2));
-            let live = audio || tempo.is_some() || section || !(k >= 4 && !selected);
+            let live = audio
+                || tempo.is_some()
+                || section
+                || !(k >= 4 && !selected && !(k == 5 && several));
             let fill = if lit {
                 t.good
             } else if live {
@@ -2950,6 +3386,22 @@ impl Widget for SongLanes {
                 SONG_BUTTONS[k]
             };
             cx.text(FontId::Bold, t.size_small, *br, Align::Center, ink, word);
+        }
+        if let Some(d) = self.duplicate_rect(r) {
+            let (fill, ink) = if selected || several {
+                (t.raised, t.text)
+            } else {
+                (t.surface, t.text_faint)
+            };
+            cx.canvas.fill_round_rect(d, t.round(10), fill);
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                d,
+                Align::Center,
+                ink,
+                "Duplicate",
+            );
         }
         if let Some(gr) = self.grip.filter(|g| g.lifted) {
             self.paint_drag(cx, r, &gr);
@@ -3000,9 +3452,17 @@ impl Widget for SongLanes {
                 } else {
                     ("button", SONG_BUTTONS[k])
                 };
-                Target::tap(id, k, word, *b)
+                // Make unique takes one block, not several (6.5).
+                let one = id == "button" && k == 4 && !self.picks.is_empty();
+                Target::tap(id, k, word, *b).disabled_if(one)
             })
             .collect();
+        if let Some(d) = self.duplicate_rect(r) {
+            out.push(
+                Target::tap("button", DUPLICATE, "Duplicate", d)
+                    .disabled_if(self.selected.is_none() && self.picks.is_empty()),
+            );
+        }
         // The tempo lane: each point, and the lane after the last (a tap
         // there adds one).
         let lane = self.tempo_rect(r);
@@ -3024,6 +3484,14 @@ impl Widget for SongLanes {
         out.push(Target::tap("rec-song", 0, "Rec song", self.rec_rect(r)));
         if let Some(b) = self.show_rect(r) {
             out.push(Target::tap("show-view", 0, "Show", b));
+        }
+        // The zoom chip (6.4): the bars shown are lit, a tap on them
+        // changes nothing.
+        for (k, n) in ZOOMS.iter().enumerate() {
+            out.push(
+                Target::tap("zoom", k, format!("{n} bars"), self.zoom_part_rect(r, k))
+                    .disabled_if(*n == self.bars),
+            );
         }
         let chip = self.view_rect(r);
         out.push(Target::tap(
@@ -3070,6 +3538,14 @@ impl Widget for SongLanes {
         ) {
             out.push(
                 Target::drag("block-end", b.index, format!("{} end", b.name), e).towards(-40, 0),
+            );
+        }
+        if let (Some(s), Some(b)) = (
+            self.start_rect(r).and_then(&shown),
+            self.selected.and_then(|i| self.block(i)),
+        ) {
+            out.push(
+                Target::drag("block-start", b.index, format!("{} start", b.name), s).towards(40, 0),
             );
         }
         let mut free = self.ruler_rect(r);
@@ -3164,8 +3640,22 @@ impl Widget for SongLanes {
                 Touch::Move => {
                     gr.at = (x, y);
                     let (dx, dy) = (x - gr.from.0, y - gr.from.1);
-                    gr.lifted |= dx * dx + dy * dy >= LIFT_PX * LIFT_PX;
-                    let edge = if gr.lifted { self.edge_at(r, x) } else { None };
+                    let lifts = !gr.lifted && dx * dx + dy * dy >= LIFT_PX * LIFT_PX;
+                    gr.lifted |= lifts;
+                    // The picked block held still, then dragged: what it
+                    // plays slides under it (phase 6).
+                    if let Held::Block { index, .. } = gr.held {
+                        if lifts && self.selected == Some(index) && gr.since.elapsed() >= SLIDE_HOLD
+                        {
+                            gr.held = Held::Slide { index };
+                        }
+                    }
+                    let slides = matches!(gr.held, Held::Slide { .. } | Held::Box);
+                    let edge = if gr.lifted && !slides {
+                        self.edge_at(r, x)
+                    } else {
+                        None
+                    };
                     let mut scroll = None;
                     gr.edge = match (edge, gr.edge) {
                         (Some(e), Some((was, at))) if e == was && at.elapsed() < SCROLL_REPEAT => {
@@ -3287,8 +3777,14 @@ impl Widget for SongLanes {
         {
             return Some(EventKind::Tab(k));
         }
+        if self.duplicate_rect(r).is_some_and(|d| d.contains(x, y)) {
+            return Some(EventKind::Tab(DUPLICATE));
+        }
         if self.rec_rect(r).contains(x, y) {
             return Some(EventKind::Tab(REC));
+        }
+        if let Some(k) = (0..ZOOMS.len()).find(|&k| self.zoom_part_rect(r, k).contains(x, y)) {
+            return Some(EventKind::Tab(ZOOM + k));
         }
         match view_part_at(self.view_rect(r), x, y) {
             Some(ArrangeView::Clips) => return Some(EventKind::Tab(CLIPS)),
@@ -3322,6 +3818,13 @@ impl Widget for SongLanes {
             if let Some(b) = self.block(i).filter(|_| e.contains(x, y)) {
                 let dt = self.tick_at(g.lanes, x) - (b.start + b.length);
                 self.grip = Some(Grip::new(Held::End { index: i, dt }, x, y));
+                return None;
+            }
+        }
+        if let (Some(i), Some(s)) = (self.selected, self.start_rect(r)) {
+            if let Some(b) = self.block(i).filter(|_| s.contains(x, y)) {
+                let dt = self.tick_at(g.lanes, x) - b.start;
+                self.grip = Some(Grip::new(Held::Start { index: i, dt }, x, y));
                 return None;
             }
         }
@@ -3382,7 +3885,11 @@ impl Widget for SongLanes {
                 });
             }
         }
-        g.lanes.contains(x, y).then_some(EventKind::Select(NONE))
+        // Empty space: a tap picks nothing, a drag draws a box (6.5).
+        if g.lanes.contains(x, y) {
+            self.grip = Some(Grip::new(Held::Box, x, y));
+        }
+        None
     }
 }
 
@@ -3436,6 +3943,45 @@ mod tests {
         }
     }
 
+    /// Each control's `Tab` says which control it is: no two share a
+    /// value (Duplicate once shared Show's, and the app took its tap for
+    /// Show).
+    #[test]
+    fn the_song_views_tab_ids_are_all_different() {
+        let mut ids: Vec<usize> = (0..SONG_BUTTONS.len()).collect();
+        ids.extend([
+            REC,
+            ADD_AUDIO,
+            PANEL_CLOSE,
+            PANEL_MUTE,
+            PANEL_SOLO,
+            PANEL_TAKES,
+            ADD_TRACK,
+            ADD_NOTE,
+            ADD_LOOP,
+            ADD_CLOSE,
+            LIST,
+            CLIPS,
+            SHOW_VIEW,
+            DUPLICATE,
+            BARS_BACK,
+            BARS_ON,
+            TEMPO_ROW,
+            RULER_ROW,
+            START_ROW,
+            SLIDE_ROW,
+        ]);
+        ids.extend((0..ZOOMS.len()).map(|k| ZOOM + k));
+        let mut seen = std::collections::HashSet::new();
+        for id in &ids {
+            assert!(seen.insert(*id), "{id:#x} is two controls' id");
+            assert!(
+                !(SECTION_TAP..BARS_BACK).contains(id),
+                "{id:#x} is a section's tap"
+            );
+        }
+    }
+
     #[test]
     fn placements_and_buttons_report_where_they_are() {
         let mut s = lanes();
@@ -3458,21 +4004,33 @@ mod tests {
         assert!(s.block_rect(r, &s.blocks[1].clone()).is_some());
         assert!(s.block_rect(r, &s.blocks[0].clone()).is_none());
         let empty = s.block_rect(r, &s.blocks[1].clone()).unwrap();
+        // Empty space picks nothing as the finger lifts (a drag would
+        // draw a box, 6.5).
+        assert_eq!(s.touch(1, Touch::Down, empty.x - 20, empty.y + 3, r), None);
         assert_eq!(
-            s.touch(1, Touch::Down, empty.x - 20, empty.y + 3, r),
+            s.touch(1, Touch::Up, empty.x - 20, empty.y + 3, r),
             Some(EventKind::Select(NONE))
         );
         let buttons = s.button_rects(r);
-        // The first, Clips, went to the view chip (5.7).
-        assert_eq!(buttons[0].w, 0);
-        assert_eq!(buttons[1].x, r.x + 14);
-        for (k, br) in buttons.iter().enumerate().skip(1) {
+        // The first, Clips, went to the view chip (5.7), and Split took
+        // its place (phase 6); Duplicate sits after Song → scenes.
+        assert_eq!((buttons[0].x, buttons[0].w), (r.x + 14, SPLIT_W));
+        for (k, br) in buttons.iter().enumerate() {
             assert!(br.right() <= r.right() - 14, "{k}: {br:?}");
             assert_eq!(
                 s.touch(1, Touch::Down, br.x + 3, br.y + 3, r),
                 Some(EventKind::Tab(k))
             );
         }
+        let dup = s.duplicate_rect(r).unwrap();
+        assert!(
+            dup.x > buttons[3].right() && dup.right() < buttons[4].x,
+            "{dup:?}"
+        );
+        assert_eq!(
+            s.touch(1, Touch::Down, dup.x + 3, dup.y + 3, r),
+            Some(EventKind::Tab(DUPLICATE))
+        );
         let rec = s.rec_rect(r);
         assert!(rec.right() <= r.right() - 14 && rec.y >= r.y, "{rec:?}");
         assert_eq!(
@@ -3564,6 +4122,127 @@ mod tests {
         assert!(s.grip.is_none());
     }
 
+    /// Several blocks (6.5): a box dragged across empty space reports the
+    /// tracks and ticks it covers; a picked one dragged reports its own
+    /// landing, the app moving the rest with it; Make unique is faint.
+    #[test]
+    fn a_box_picks_blocks_and_one_picked_block_carries_the_others() {
+        let mut s = lanes();
+        let r = Rect::new(12, 140, 814, 534);
+        let g = s.geo(r);
+        let bar_px = (r.w - 28 - NAME_W) / 16;
+        let x0 = g.lanes.x + NAME_W;
+        let drums = s.block_rect(r, &s.blocks[0].clone()).unwrap();
+        let lane_h = g.lane_h;
+        // From bar 6 on the drums' lane, back to bar 3 on the bass's.
+        let (fx, fy) = (x0 + 5 * bar_px + 4, drums.y + 4);
+        assert_eq!(s.touch(1, Touch::Down, fx, fy, r), None);
+        let (tx, ty) = (x0 + 2 * bar_px + 4, drums.y + lane_h + 4);
+        assert_eq!(s.touch(1, Touch::Move, tx, ty, r), None, "no edge scroll");
+        let Some(EventKind::Span { index, from, to }) = s.touch(1, Touch::Up, tx, ty, r) else {
+            panic!("a box");
+        };
+        assert_eq!(box_tracks(index), (0, 1));
+        assert!(index >= BOX);
+        assert!((from - (2 * 3840 + 3840 / 20)).abs() < 3840 / 4, "{from}");
+        assert!((to - (5 * 3840 + 3840 / 20)).abs() < 3840 / 4, "{to}");
+        // Two picked: each has the pick's outline; a drag of one lands
+        // as one block's would, and the other's place shows under it.
+        s.picks = vec![0, 1];
+        s.first_bar = 0;
+        let b = s.block_rect(r, &s.blocks[0].clone()).unwrap();
+        let (x, y) = (b.x + 10, b.y + b.h / 2);
+        s.touch(1, Touch::Down, x, y, r);
+        s.touch(1, Touch::Move, x + 2 * bar_px + 6, y + lane_h, r);
+        // Painted mid-drag (the others' cards and landings) without a
+        // fault.
+        let mut c = mpfree_ui::SoftCanvas::new(r.right() + 20, r.bottom() + 20);
+        let theme = mpfree_ui::Theme::dark();
+        let mut fonts = mpfree_ui::Fonts::embedded();
+        s.paint(
+            &mut PaintCx {
+                canvas: &mut c,
+                theme: &theme,
+                fonts: &mut fonts,
+            },
+            r,
+        );
+        assert_eq!(
+            s.touch(1, Touch::Up, x + 2 * bar_px + 6, y + lane_h, r),
+            Some(EventKind::Place {
+                index: 0,
+                row: 1,
+                at: 2 * 3840
+            })
+        );
+        // Make unique takes one block: faint with several picked;
+        // Duplicate isn't.
+        let targets = s.targets(r);
+        let unique = targets.iter().find(|t| t.id == "button" && t.index == 4);
+        assert!(unique.is_some_and(|t| !t.enabled), "{unique:?}");
+        let dup = targets.iter().find(|t| t.index == DUPLICATE);
+        assert!(dup.is_some_and(|t| t.enabled), "{dup:?}");
+        // A box under the last lane picks nothing, as a tap there does.
+        s.picks.clear();
+        s.touch(1, Touch::Down, fx, g.lanes.bottom() - 4, r);
+        s.touch(1, Touch::Move, fx + 30, g.lanes.bottom() - 30, r);
+        assert_eq!(
+            s.touch(1, Touch::Up, fx + 30, g.lanes.bottom() - 30, r),
+            Some(EventKind::Select(NONE))
+        );
+    }
+
+    /// The zoom chip (6.4): 4 to 64 bars, the shown one lit and faint as
+    /// a target; up close a drag snaps to the beat and the tag says it.
+    #[test]
+    fn the_zoom_chip_shows_4_to_64_bars_and_snaps_to_the_beat_up_close() {
+        let mut s = lanes();
+        let r = Rect::new(12, 140, 814, 534);
+        let chip = s.view_rect(r);
+        let zoom = s.zoom_rect(r);
+        assert!(
+            zoom.x > chip.right() && zoom.right() < s.rec_rect(r).x,
+            "{zoom:?}"
+        );
+        for k in 0..ZOOMS.len() {
+            let p = s.zoom_part_rect(r, k);
+            assert_eq!(
+                s.touch(1, Touch::Down, p.x + 3, p.y + 3, r),
+                Some(EventKind::Tab(ZOOM + k))
+            );
+        }
+        let lit: Vec<_> = s
+            .targets(r)
+            .into_iter()
+            .filter(|t| t.id == "zoom" && !t.enabled)
+            .map(|t| t.index)
+            .collect();
+        assert_eq!(lit, [2], "16 bars shown");
+        // Four bars: a bar is a quarter of the lane, and a block dragged a
+        // beat and a bit lands on beat 2.
+        s.bars = 4;
+        let b = s.block_rect(r, &s.blocks[0].clone()).unwrap();
+        let lane_w = r.w - 28 - NAME_W;
+        assert!((b.w - lane_w).abs() <= 3, "four bars fill the lane: {b:?}");
+        let beat_px = lane_w / 16;
+        let (x, y) = (b.x + 10, b.y + b.h / 2);
+        s.touch(1, Touch::Down, x, y, r);
+        s.touch(1, Touch::Move, x + beat_px + 4, y, r);
+        assert_eq!(s.at_text(960), "bar 1 beat 2");
+        assert_eq!(s.at_text(2 * 3840), "bar 3");
+        assert_eq!(
+            s.touch(1, Touch::Up, x + beat_px + 4, y, r),
+            Some(EventKind::Place {
+                index: 0,
+                row: 0,
+                at: 960
+            })
+        );
+        // Sixty-four: back to the bar.
+        s.bars = 64;
+        assert_eq!(s.snap(), 3840);
+    }
+
     #[test]
     fn the_picked_blocks_end_grip_makes_it_longer_or_shorter() {
         let mut s = lanes();
@@ -3596,6 +4275,124 @@ mod tests {
         assert!(t
             .iter()
             .any(|t| t.id == "block-end" && t.gesture == mpfree_ui::Gesture::Drag));
+    }
+
+    /// Phase 6: the picked block's start grip trims it from the left (to
+    /// the bar, its last bar kept), and the block held still before a drag
+    /// slides what it plays (to the 1/16) instead of moving it.
+    #[test]
+    fn the_start_grip_trims_and_a_held_drag_slides() {
+        let mut s = lanes();
+        let r = Rect::new(12, 140, 814, 534);
+        assert!(s.start_rect(r).is_none(), "nothing picked");
+        s.selected = Some(0);
+        let g = s.start_rect(r).unwrap();
+        let bar_px = (r.w - 28 - NAME_W) / 16;
+        let (x, y) = (g.x + g.w / 2 + 4, g.y + g.h / 2);
+        s.touch(1, Touch::Down, x, y, r);
+        s.touch(1, Touch::Move, x + 2 * bar_px, y, r);
+        assert_eq!(
+            s.touch(1, Touch::Up, x + 2 * bar_px + 3, y, r),
+            Some(EventKind::Place {
+                index: 0,
+                row: START_ROW,
+                at: 2 * 3840
+            })
+        );
+        // Dragged past its end: its last bar stays.
+        s.touch(1, Touch::Down, x, y, r);
+        s.touch(1, Touch::Move, x + 10 * bar_px, y, r);
+        assert_eq!(
+            s.touch(1, Touch::Up, x + 10 * bar_px, y, r),
+            Some(EventKind::Place {
+                index: 0,
+                row: START_ROW,
+                at: 3 * 3840
+            })
+        );
+        // A tap on the grip keeps the pick.
+        s.touch(1, Touch::Down, x, y, r);
+        assert_eq!(s.touch(1, Touch::Up, x, y, r), None);
+        assert!(s
+            .targets(r)
+            .iter()
+            .any(|t| t.id == "block-start" && t.gesture == mpfree_ui::Gesture::Drag));
+        // Back no further than the block before it on its lane.
+        let mut q = lanes();
+        q.blocks = SongBlocks::new(vec![
+            SongBlock {
+                index: 0,
+                track: 0,
+                start: 0,
+                length: 3840 + 960,
+                name: "Before".into(),
+                unique: false,
+            },
+            SongBlock {
+                index: 1,
+                track: 0,
+                start: 4 * 3840,
+                length: 2 * 3840,
+                name: "Picked".into(),
+                unique: false,
+            },
+        ]);
+        q.selected = Some(1);
+        let g = q.start_rect(r).unwrap();
+        let (x, y) = (g.x + g.w / 2 + 4, g.y + g.h / 2);
+        q.touch(1, Touch::Down, x, y, r);
+        q.touch(1, Touch::Move, x - 6 * bar_px, y, r);
+        assert_eq!(
+            q.touch(1, Touch::Up, x - 6 * bar_px, y, r),
+            Some(EventKind::Place {
+                index: 1,
+                row: START_ROW,
+                at: 3840 + 960
+            })
+        );
+        // The block's middle: dragged at once it moves; held still first,
+        // what it plays slides a bar later.
+        let b = s.block_rect(r, &s.blocks[0].clone()).unwrap();
+        let (mx, my) = (b.x + b.w / 2, b.y + b.h / 2);
+        s.touch(1, Touch::Down, mx, my, r);
+        s.touch(1, Touch::Move, mx + bar_px, my, r);
+        assert_eq!(
+            s.touch(1, Touch::Up, mx + bar_px, my, r),
+            Some(EventKind::Place {
+                index: 0,
+                row: 0,
+                at: 3840
+            })
+        );
+        s.touch(1, Touch::Down, mx, my, r);
+        if let Some(gr) = s.grip.as_mut() {
+            gr.since -= SLIDE_HOLD;
+        }
+        s.touch(1, Touch::Move, mx + bar_px, my, r);
+        assert!(matches!(
+            s.grip.map(|g| g.held),
+            Some(Held::Slide { index: 0 })
+        ));
+        assert_eq!(
+            s.touch(1, Touch::Up, mx + bar_px, my, r),
+            Some(EventKind::Place {
+                index: 0,
+                row: SLIDE_ROW,
+                at: 3840
+            })
+        );
+        assert_eq!(s.slide_text(3840), "+1 bar");
+        assert_eq!(s.slide_text(-960), "−1 beat");
+        assert_eq!(s.slide_text(720), "+3/16");
+        // A block not picked moves, held or not.
+        s.selected = None;
+        s.touch(1, Touch::Down, mx, my, r);
+        if let Some(gr) = s.grip.as_mut() {
+            gr.since -= SLIDE_HOLD;
+        }
+        s.touch(1, Touch::Move, mx + bar_px, my, r);
+        assert!(matches!(s.grip.map(|g| g.held), Some(Held::Block { .. })));
+        s.touch(1, Touch::Cancel, mx, my, r);
     }
 
     #[test]

@@ -637,6 +637,432 @@ impl Widget for StepStrip {
     }
 }
 
+// ---------------------------------------------------------------- pattern list
+
+/// One step of a pattern as the Pattern list draws it: its rhythm only (the
+/// step strip shows the notes once the pattern is picked).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Mark {
+    #[default]
+    Rest,
+    /// Holds the note before it.
+    Tie,
+    Hit {
+        /// Hits within the step (a ratchet), 1 to 8.
+        hits: u8,
+        accent: bool,
+        /// The whole chord at once.
+        chord: bool,
+        /// Plays only sometimes (a chance under 100 %).
+        maybe: bool,
+    },
+}
+
+/// A row of the Pattern list: the pattern's name, the picture of its first
+/// steps, how many steps it has and its text (dim, at the right, where it
+/// fits).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PatternRow {
+    pub name: String,
+    pub marks: Vec<Mark>,
+    pub steps: usize,
+    pub text: String,
+}
+
+/// The patterns to pick from, a group at a time: the groups as tabs along
+/// the top (or "‹ Group ›" where they don't fit), and each row with a
+/// picture of its rhythm, the pictures lined up in a column so rhythms can
+/// be compared at a glance. A tap on group `g` gives `Tab(g)`, on row `k`
+/// `Select(k)`; the list keeps the row picked in view.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PatternList {
+    pub rows: Vec<PatternRow>,
+    /// Each group's name and the index of its first row, in row order.
+    pub groups: Vec<(String, usize)>,
+    pub selected: usize,
+}
+
+/// The tabs' height, and the narrowest a tab may be before the list shows
+/// one group at a time with arrows.
+const GROUP_H: i32 = 44;
+const GROUP_MIN_W: i32 = 84;
+/// Room at the tabs' right for "4 / 74".
+const COUNT_W: i32 = 84;
+const PATTERN_ROW_H: i32 = 46;
+/// The picture's widest step, the gap between steps and the extra gap
+/// between beats.
+const MARK_W: i32 = 14;
+const MARK_GAP: i32 = 4;
+const BEAT_GAP: i32 = 4;
+/// The names' column, at most.
+const NAME_W: i32 = 230;
+/// The most steps a row's picture shows: a bar of sixteenths.
+pub const MARKS: usize = 16;
+
+/// Where a row's parts go.
+struct RowParts {
+    name: Rect,
+    picture: Rect,
+    mark_w: i32,
+    text: Rect,
+}
+
+impl PatternList {
+    /// The group row `k` is in.
+    pub fn group_of(&self, k: usize) -> usize {
+        self.groups
+            .iter()
+            .rposition(|(_, at)| *at <= k)
+            .unwrap_or(0)
+    }
+
+    /// The group's rows.
+    fn span(&self, g: usize) -> (usize, usize) {
+        let start = self.groups.get(g).map_or(0, |(_, at)| *at);
+        let end = self
+            .groups
+            .get(g + 1)
+            .map_or(self.rows.len(), |(_, at)| *at);
+        (start, end.max(start))
+    }
+
+    /// The tabs (with the count at their right), then the rows.
+    fn parts(r: Rect, pad: i32) -> (Rect, Rect, Rect) {
+        let (top, rows) = r.inset(pad).take_top(GROUP_H);
+        let (count, tabs) = top.take_right(COUNT_W);
+        (tabs, count, rows.take_top(8).1)
+    }
+
+    /// Tabs fit: one per group, at least [`GROUP_MIN_W`] wide.
+    fn tabs_fit(&self, tabs: Rect) -> bool {
+        !self.groups.is_empty() && tabs.w / self.groups.len() as i32 >= GROUP_MIN_W
+    }
+
+    fn tab(&self, tabs: Rect, g: usize) -> Rect {
+        let n = self.groups.len().max(1) as i32;
+        let w = tabs.w / n;
+        let last = g as i32 == n - 1;
+        Rect::new(
+            tabs.x + g as i32 * w,
+            tabs.y,
+            if last { tabs.w - w * (n - 1) } else { w },
+            tabs.h,
+        )
+    }
+
+    /// The pager's back and on arrows, where the tabs don't fit.
+    fn arrows(tabs: Rect) -> (Rect, Rect) {
+        let (back, rest) = tabs.take_left(64);
+        let (on, _) = rest.take_right(64);
+        (back, on)
+    }
+
+    /// The first row shown: the picked row's group from its start, scrolled
+    /// so the picked row stays in view.
+    fn first(&self, visible: usize) -> usize {
+        let (start, end) = self.span(self.group_of(self.selected));
+        if visible == 0 || end - start <= visible {
+            return start;
+        }
+        let k = self.selected.clamp(start, end - 1);
+        (k + 1)
+            .saturating_sub(visible)
+            .max(start)
+            .min(end - visible)
+    }
+
+    fn shown(&self, rows: Rect) -> (usize, usize) {
+        let visible = (rows.h / PATTERN_ROW_H).max(0) as usize;
+        let first = self.first(visible);
+        let (_, end) = self.span(self.group_of(self.selected));
+        (first, end.min(first + visible))
+    }
+
+    fn row(rows: Rect, i: usize) -> Rect {
+        Rect::new(
+            rows.x,
+            rows.y + i as i32 * PATTERN_ROW_H,
+            rows.w,
+            PATTERN_ROW_H - 4,
+        )
+    }
+
+    /// The picture's width for `n` steps of `mark_w` pixels.
+    pub fn marks_w(n: usize, mark_w: i32) -> i32 {
+        let n = n.min(MARKS) as i32;
+        if n == 0 {
+            return 0;
+        }
+        n * (mark_w + MARK_GAP) - MARK_GAP + (n - 1) / 4 * BEAT_GAP
+    }
+
+    /// The name's column, then the picture (its steps as wide as fit, up
+    /// to [`MARK_W`]), then what is left for the text.
+    fn row_parts(row: Rect) -> RowParts {
+        let inner = row.inset_xy(14, 8);
+        let (name, rest) = inner.take_left(NAME_W.min(inner.w * 2 / 5));
+        let rest = rest.take_left(16).1;
+        let room = rest.w;
+        let mut mark_w = MARK_W;
+        while mark_w > 4 && PatternList::marks_w(MARKS, mark_w) > room {
+            mark_w -= 1;
+        }
+        let (picture, text) = rest.take_left(PatternList::marks_w(MARKS, mark_w).min(room));
+        RowParts {
+            name,
+            picture,
+            mark_w,
+            text: text.take_left(24).1,
+        }
+    }
+
+    fn paint_marks(cx: &mut PaintCx, r: Rect, mark_w: i32, marks: &[Mark], picked: bool) {
+        let t = cx.theme.clone();
+        let full = r.h;
+        let base = r.bottom();
+        let ink = if picked { t.text } else { t.text_dim };
+        let mut x = r.x;
+        let mut last_top = base - full * 3 / 5;
+        for (i, m) in marks.iter().enumerate() {
+            if i > 0 && i % 4 == 0 {
+                x += BEAT_GAP;
+            }
+            let cell = Rect::new(x, r.y, mark_w, full);
+            match *m {
+                Mark::Rest => {
+                    let d = (mark_w / 3).clamp(2, 4);
+                    cx.canvas.fill_round_rect(
+                        Rect::new(x + (mark_w - d) / 2, base - d, d, d),
+                        2,
+                        t.text_faint,
+                    );
+                }
+                Mark::Tie => {
+                    let y = last_top + (base - last_top) / 2 - 2;
+                    cx.canvas
+                        .fill_rect(Rect::new(x - MARK_GAP, y, mark_w + MARK_GAP, 4), ink);
+                }
+                Mark::Hit {
+                    hits,
+                    accent,
+                    chord,
+                    maybe,
+                } => {
+                    let h = if accent { full } else { full * 3 / 5 };
+                    let top = base - h;
+                    last_top = top;
+                    let c = if maybe {
+                        t.text_faint
+                    } else if accent {
+                        t.warn
+                    } else if chord {
+                        t.accent
+                    } else {
+                        ink
+                    };
+                    let n = i32::from(hits.clamp(1, 8));
+                    let gap = i32::from(n > 1);
+                    let w = ((cell.w - gap * (n - 1)) / n).max(1);
+                    for k in 0..n {
+                        let bar = Rect::new(cell.x + k * (w + gap), top, w, h);
+                        if chord {
+                            // Three notes stacked.
+                            let third = ((h - 4) / 3).max(1);
+                            for j in 0..3 {
+                                let y = top + j * (third + 2);
+                                cx.canvas
+                                    .fill_round_rect(Rect::new(bar.x, y, bar.w, third), 2, c);
+                            }
+                        } else {
+                            cx.canvas.fill_round_rect(bar, 2, c);
+                        }
+                    }
+                }
+            }
+            x += mark_w + MARK_GAP;
+        }
+    }
+}
+
+impl Widget for PatternList {
+    fn paint(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        cx.panel(r);
+        let (tabs, count, rows) = PatternList::parts(r, mpfree_ui::sizes::PAD);
+        if !self.rows.is_empty() {
+            let n = format!("{} / {}", self.selected + 1, self.rows.len());
+            cx.text(
+                FontId::Sans,
+                t.size_small,
+                count,
+                Align::Right,
+                t.text_dim,
+                &n,
+            );
+        }
+        let active = self.group_of(self.selected);
+        if self.tabs_fit(tabs) {
+            for (g, (name, _)) in self.groups.iter().enumerate() {
+                let c = self.tab(tabs, g).inset_xy(2, 2);
+                let on = g == active;
+                if on {
+                    cx.canvas.fill_round_rect(c, t.round(10), t.raised);
+                    let bar = Rect::new(c.x + 8, c.bottom() - 3, c.w - 16, 3);
+                    cx.canvas.fill_round_rect(bar, 1, t.accent);
+                }
+                cx.text(
+                    if on { FontId::Bold } else { FontId::Sans },
+                    t.size_small,
+                    c,
+                    Align::Center,
+                    if on { t.text } else { t.text_dim },
+                    name,
+                );
+            }
+        } else if let Some((name, _)) = self.groups.get(active) {
+            let (back, on) = PatternList::arrows(tabs);
+            for (a, glyph) in [(back, "‹"), (on, "›")] {
+                let a = a.inset_xy(2, 2);
+                cx.canvas.fill_round_rect(a, t.round(10), t.raised);
+                cx.text(FontId::Bold, t.size_body, a, Align::Center, t.text, glyph);
+            }
+            let (start, end) = self.span(active);
+            let label = format!("{name} · {} of {}", self.selected + 1 - start, end - start);
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                tabs,
+                Align::Center,
+                t.text,
+                &label,
+            );
+        }
+        let (first, last) = self.shown(rows);
+        for k in first..last {
+            let row = PatternList::row(rows, k - first);
+            let picked = k == self.selected;
+            if picked {
+                cx.canvas.fill_round_rect(row, t.round(10), t.raised);
+                cx.canvas
+                    .fill_round_rect(Rect::new(row.x, row.y + 10, 4, row.h - 20), 2, t.accent);
+            }
+            let item = &self.rows[k];
+            let p = PatternList::row_parts(row);
+            cx.text(
+                if picked { FontId::Bold } else { FontId::Sans },
+                t.size_body,
+                p.name,
+                Align::Left,
+                t.text,
+                &item.name,
+            );
+            PatternList::paint_marks(cx, p.picture, p.mark_w, &item.marks, picked);
+            let text = if item.steps > MARKS {
+                format!("{} steps · {}", item.steps, item.text)
+            } else {
+                item.text.clone()
+            };
+            let text = fit_text(cx, &text, t.size_small, p.text.w);
+            cx.text(
+                FontId::Mono,
+                t.size_small,
+                p.text,
+                Align::Right,
+                t.text_dim,
+                &text,
+            );
+        }
+        if self.rows.is_empty() {
+            cx.text(
+                FontId::Sans,
+                t.size_body,
+                rows.take_top(PATTERN_ROW_H).0,
+                Align::Left,
+                t.text_faint,
+                "nothing here",
+            );
+        }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let (tabs, _, rows) = PatternList::parts(r, mpfree_ui::sizes::PAD);
+        let mut out = Vec::new();
+        if self.tabs_fit(tabs) {
+            for (g, (name, at)) in self.groups.iter().enumerate() {
+                // The group's first pattern picked already: nothing to load.
+                out.push(
+                    Target::tap("group", g, name.clone(), self.tab(tabs, g))
+                        .disabled_if(*at == self.selected),
+                );
+            }
+        } else if !self.groups.is_empty() {
+            let (back, on) = PatternList::arrows(tabs);
+            out.push(Target::tap("group", 0, "Group back".to_string(), back));
+            out.push(Target::tap("group", 1, "Group on".to_string(), on));
+        }
+        let (first, last) = self.shown(rows);
+        for k in first..last {
+            let mut row = PatternList::row(rows, k - first);
+            row.h = PATTERN_ROW_H;
+            out.push(Target::tap("row", k, self.rows[k].name.clone(), row));
+        }
+        out
+    }
+
+    fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        if phase != Touch::Down {
+            return None;
+        }
+        let (tabs, _, rows) = PatternList::parts(r, mpfree_ui::sizes::PAD);
+        if tabs.contains(x, y) && !self.groups.is_empty() {
+            let n = self.groups.len();
+            let g = if self.tabs_fit(tabs) {
+                (0..n).find(|&g| self.tab(tabs, g).contains(x, y))?
+            } else {
+                let (back, on) = PatternList::arrows(tabs);
+                let at = self.group_of(self.selected);
+                if back.contains(x, y) {
+                    (at + n - 1) % n
+                } else if on.contains(x, y) {
+                    (at + 1) % n
+                } else {
+                    return None;
+                }
+            };
+            return Some(EventKind::Tab(g));
+        }
+        if !rows.contains(x, y) {
+            return None;
+        }
+        let (first, last) = self.shown(rows);
+        let k = first + ((y - rows.y) / PATTERN_ROW_H) as usize;
+        (k < last).then(|| {
+            self.selected = k;
+            EventKind::Select(k)
+        })
+    }
+}
+
+/// `text` cut with "…" to fit `w` pixels at `px`.
+fn fit_text(cx: &mut PaintCx, text: &str, px: f32, w: i32) -> String {
+    if w <= 0 {
+        return String::new();
+    }
+    if cx.measure(FontId::Mono, px, text) <= w {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut n = chars.len();
+    while n > 0 {
+        let s: String = chars[..n].iter().collect::<String>() + "…";
+        if cx.measure(FontId::Mono, px, &s) <= w {
+            return s;
+        }
+        n -= 1;
+    }
+    String::new()
+}
+
 // ---------------------------------------------------------------- buttons
 
 #[derive(Clone, Debug, Default, PartialEq)]
