@@ -7011,18 +7011,34 @@ impl TimePage {
         let mut lanes = song_lanes_with(st, self.first_bar, self.bars_shown(), blocks);
         lanes.show_button = self.set_open;
         lanes.adding = adding;
-        let (same, same_waves) = ui.get::<SongLanes>(SONG).map_or((true, true), |l| {
-            let waves = crate::song::same_waves(&l.waves, &st.waves);
-            lanes.keep_scroll(l);
-            if reveal {
-                lanes.first_lane = usize::MAX;
+        let (same, same_waves, only_playhead) =
+            ui.get::<SongLanes>(SONG).map_or((true, true, false), |l| {
+                let waves = crate::song::same_waves(&l.waves, &st.waves);
+                lanes.keep_scroll(l);
+                if reveal {
+                    lanes.first_lane = usize::MAX;
+                }
+                lanes.waves = Vec::new();
+                let mut was = l.clone_without_waves();
+                was.keep_scroll(l);
+                let same = was == lanes;
+                // Only the playhead moved, as each frame while the song
+                // plays: the view keeps what it last painted and draws
+                // only its line's strips (`SongLanes::changed_parts`).
+                let only_playhead = !same && was.playhead != lanes.playhead && {
+                    was.playhead = lanes.playhead;
+                    was == lanes
+                };
+                (same, waves, only_playhead)
+            });
+        if only_playhead && same_waves {
+            if let Some(l) = ui.get_mut::<SongLanes>(SONG) {
+                l.playhead = lanes.playhead;
+                if !kept {
+                    l.blocks = lanes.blocks;
+                }
             }
-            lanes.waves = Vec::new();
-            let mut was = l.clone_without_waves();
-            was.keep_scroll(l);
-            (was == lanes, waves)
-        });
-        if !(same && same_waves) {
+        } else if !(same && same_waves) {
             if let Some(l) = ui.get_mut::<SongLanes>(SONG) {
                 let waves = std::mem::take(&mut l.waves);
                 *l = lanes;
@@ -8396,6 +8412,99 @@ mod tests {
         let l = ui.get::<SongLanes>(SONG).unwrap();
         assert_eq!(l.blocks.len(), 5);
         assert_eq!(l.blocks.get(4).map(|b| b.name.as_str()), Some("Clip 4"));
+    }
+
+    /// While the song plays, a frame that only moves the playhead draws
+    /// the Song view's strips its line left and reached
+    /// (`SongLanes::changed_parts`), and the screen is the one a whole
+    /// paint of the same state gives, in a plain and a glowing theme; a
+    /// scroll or a pick draws the view whole again.
+    #[test]
+    fn the_song_views_playhead_strips_paint_as_a_whole_frame_does() {
+        for theme in [Theme::dark(), Theme::synthwave()] {
+            let make = || {
+                let mut ui = Ui::new(theme.clone(), Fonts::embedded(), 1280, 800);
+                ui.add("header", Header::new(&["Play", "Clips"]));
+                ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+                let page = TimePage::add_to(&mut ui).unwrap();
+                ui.show(CLIPS_PAGE).unwrap();
+                (ui, page)
+            };
+            let mut st = state();
+            st.song_view = true;
+            st.song_on = true;
+            let place = |renamed: bool| -> Arc<[PlacementInfo]> {
+                (0..24)
+                    .map(|k| PlacementInfo {
+                        track: k % 3,
+                        start: (k / 3) as Tick * BAR,
+                        length: BAR,
+                        name: if renamed && k == 7 {
+                            "Renamed".to_string()
+                        } else {
+                            format!("Clip {k}")
+                        },
+                        unique: k == 4,
+                    })
+                    .collect::<Vec<_>>()
+                    .into()
+            };
+            st.placements = place(false);
+            // The picture a fresh screen paints whole from `st`, its view
+            // scrolled as the one under test.
+            let whole = |st: &TimeState, first_bar: i64| {
+                let (mut ui, mut page) = make();
+                page.update(&mut ui, st);
+                page.scroll(&mut ui, first_bar as i32);
+                page.update(&mut ui, st);
+                let mut c = SoftCanvas::new(1280, 800);
+                ui.paint(&mut c);
+                c.px
+            };
+            let (mut ui, mut page) = make();
+            page.update(&mut ui, &st);
+            let mut now = SoftCanvas::new(1280, 800);
+            ui.paint(&mut now);
+            let song = ui.rect_of(SONG).unwrap();
+            for frame in 0..6 {
+                let strips = match frame {
+                    // A scroll, and a block renamed: the view whole.
+                    3 => {
+                        page.scroll(&mut ui, 1);
+                        false
+                    }
+                    5 => {
+                        st.placements = place(true);
+                        false
+                    }
+                    _ => true,
+                };
+                // An eighth of a bar a frame: the clip waiting on track 2
+                // starts (on bar 6) with the renamed block.
+                st.transport.position += BAR / 8;
+                page.update(&mut ui, &st);
+                let drawn = ui.paint(&mut now);
+                let on_song: Vec<mpfree_ui::Rect> = drawn
+                    .iter()
+                    .map(|d| d.intersect(song))
+                    .filter(|d| !d.is_empty())
+                    .collect();
+                if strips {
+                    assert!(
+                        !on_song.is_empty() && on_song.iter().all(|d| d.w <= 6),
+                        "{} frame {frame}: only the playhead's strips, not {on_song:?}",
+                        theme.name
+                    );
+                } else {
+                    assert!(on_song.contains(&song), "{} frame {frame}", theme.name);
+                }
+                assert!(
+                    now.px == whole(&st, page.first_bar),
+                    "{} frame {frame}: the strips paint what a whole frame does",
+                    theme.name
+                );
+            }
+        }
     }
 
     /// Several blocks (6.5): a box picks the blocks it touches; with
