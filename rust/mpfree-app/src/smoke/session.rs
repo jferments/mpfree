@@ -2394,7 +2394,10 @@ impl Session {
             FromUi::MidiFile(m) => {
                 let (synth, kits) = (&*self.synth, &self.track_kits);
                 let own = &self.mix.instruments;
-                let notes = crate::notes_tracks(own, kits, synth, self.time.track_count());
+                let kit_notes = self.sounds.as_ref().map(crate::sampler::KitNotes::of);
+                let kit_notes = kit_notes.unwrap_or_default();
+                let n = self.time.track_count();
+                let notes = crate::notes_tracks(own, kits, synth, &kit_notes, n);
                 let notes_on = |t: usize| t < 128 && notes >> t & 1 == 1;
                 let r = crate::midi_file::put(&mut self.time, &m, notes_on, |t, n| {
                     let synth_has = kits.plays_synth(t).then_some(synth);

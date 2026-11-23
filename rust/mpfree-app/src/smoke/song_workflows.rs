@@ -1995,7 +1995,8 @@ mod tests {
             // notes, so its take holds notes, each pad as the notes it
             // plays.
             s.time.set_notes_tracks(1 << 2);
-            let rows = crate::pad_rows(&s.mix.instruments, &s.synth, &s.track_kits, 2);
+            let none = crate::sampler::KitNotes::default();
+            let rows = crate::pad_rows(&s.mix.instruments, &s.synth, &s.track_kits, &none, 2);
             s.time.set_pad_rows(2, rows);
             // PLAY: the take records.
             s.button("PLAY");
