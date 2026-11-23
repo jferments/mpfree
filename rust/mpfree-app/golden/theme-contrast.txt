@@ -282,6 +282,7 @@ spaceship arrange-list 39 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song 10 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-add 12 # new screen (audio tracks rethink, phase 1): the faint labels its neighbours have
 spaceship arrange-song-audio 10 # before the theme refactor (phase 0 baseline)
+spaceship arrange-song-audio-blocks 10 # the same Song view chrome as arrange-song-audio (none in the audio blocks, whose names use ink_on)
 spaceship arrange-song-loops 12 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-panel 12 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-panel-mix 12 # new screen (instrument redesign, step 9): the faint labels arrange-song-panel has

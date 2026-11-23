@@ -1757,7 +1757,7 @@ mod tests {
     #[test]
     fn every_sample_draws() {
         let samples = samples(Fonts::embedded).unwrap();
-        assert_eq!(samples.len(), 11);
+        assert_eq!(samples.len(), 12);
         for mut s in samples {
             let (w, h) = s.ui.size();
             let mut c = SoftCanvas::new(w, h);

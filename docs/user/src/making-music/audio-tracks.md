@@ -68,6 +68,18 @@ A clip set to play **once** shows its playhead dimmed while its sound rings on a
 
 **Moving and copying.** Drag an audio clip to another row or another audio track; **SHIFT** as you lift makes a copy, which plays the same recordings. An audio clip can't go on a note or Loop track (nor a clip of notes on an audio track): the hint line says why. **COPY** + a clip and an empty audio cell works too.
 
+### Audio clips in the song
+
+With **Rec song** on, an audio clip you launch goes into the song as a block on its track's lane, as a clip of notes does (see [Recording a performance into the song](arranging.md#recording-a-performance-into-the-song)). In song mode it plays from the song just as you heard it from the grid.
+
+{{shot: arrange-song-audio-blocks | Two blocks of audio clips on Guitar's lane after its recording: Riff, two bars played twice (picked), and Outro, a once clip.}}
+
+- A block of an audio clip has a strip along its top in the track's colour with the clip's name, and its wave under it, drawn again each time the clip goes round, with a faint line where each pass starts. A recorded region has no strip, so you can always tell them apart. A once clip says so ("Outro · once").
+- A block and a region never overlap on a lane. Where Rec song puts a block over recorded regions, the block replaces them, and **UNDO** brings them back.
+- Dragging a block over a region, or making it longer over one, is refused, and the hint line says why ("Riff can't go over the region at bar 9: a block and a region never overlap on a lane"). While you drag, its outline turns red where it can't go.
+- Recording over a block cuts the block where the take starts and ends. So does swiping a take lane, dragging a region or bringing a sound in over it. **UNDO** takes back the recording and the cut together.
+- Drag a block to another audio track's lane to play it through that track. An audio clip's block can't go on a note or Loop track's lane, nor a clip of notes on an audio track's.
+
 ### The Clip tab for an audio clip
 
 Arm an audio track (its name on the grid, or its arm dot on the Song view) and the Record panel's **Clip** tab shows its playing clip, else its first, until you arm a note track again.
