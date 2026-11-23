@@ -96,6 +96,22 @@ impl App {
         self.arp_dirty = true;
     }
 
+    /// Every track's engine takes the pads' key: the scale the pads play,
+    /// which a phrase In key follows while its arp's own scale is off
+    /// (`Engine::set_key`). The pads have one scale for the whole project,
+    /// so it goes to every track, not only the armed one: a phrase latched
+    /// on a track the pads have left follows a change of key as the pads
+    /// do. It is a setting alone, so, like the tempo, it reaches all 128
+    /// engines without marking any in use. Called from the one place the
+    /// pads' settings go out (`App::pads_changed`). Allocates nothing.
+    pub(in crate::app) fn send_key(&mut self) {
+        let key = self.synth_pads.scale;
+        for e in self.arps.engines_mut() {
+            e.set_key(key);
+        }
+        self.arp_dirty = true;
+    }
+
     /// What the pads press changed (a kit's pads, or notes): a track on
     /// Phrase starts playing its phrase, or goes back to playing as
     /// pressed.
@@ -153,10 +169,13 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::View;
+    use crate::app::{SynthItem, View};
     use mpfree_arp::scale::pads::{layout, PadLayout, PadSetup};
+    use mpfree_arp::scale::{by_name, Scale};
     use mpfree_arp::{EventKind, Events, Follow, Speed};
     use mpfree_arp_ui::view::ArpAction;
+    use mpfree_seq::MAX_TRACKS;
+    use mpfree_store::Settings;
 
     const SR: u32 = 44_100;
 
@@ -248,6 +267,88 @@ mod tests {
         // The ends of the list stop the wheel.
         assert!(app.wheel(1000).len() == 1 && app.wheel(1).is_empty());
         assert_eq!(app.phrase_index(), 63);
+    }
+
+    /// In key, a phrase follows the scale the pads play, and a change of
+    /// that scale while it plays: Up and back's second note is the third
+    /// above the held one, a minor third from D in C major and a major
+    /// third by semitones.
+    #[test]
+    fn in_key_a_phrase_follows_the_scale_the_pads_play() {
+        let mut app = ready();
+        let home = on_a_synth(&mut app);
+        app.toggle_panel();
+        app.arp_action(ArpAction::Mode(Mode::Phrase));
+        pick_named(&mut app, "Up and back");
+        // The pads panel's In key switch: C major.
+        app.synth_pick_layout(true);
+        let d = home + 2;
+        app.pad_down(2, 100);
+        let bar = bar(&app);
+        // 1 3 5 6 1+ 6 5 3 from D in C major: D F A B D B A F.
+        let in_key = [0, 3, 7, 9, 12, 9, 7, 3].map(|s| d + s);
+        assert_eq!(ons(&mut app, bar), in_key);
+        // The pads' scale off while it plays: by semitones from the next
+        // note, with nothing started over.
+        while app.synth_pads.scale.is_some() {
+            app.step_synth_item(SynthItem::Scale, -1);
+        }
+        let exact = [0, 4, 7, 9, 12, 9, 7, 4].map(|s| d + s);
+        assert_eq!(ons(&mut app, bar), exact);
+        // The arp's own scale, when on, wins over the pads'.
+        app.synth_pick_layout(false);
+        app.step_synth_item(SynthItem::Scale, 1);
+        assert!(app.synth_pads.scale.is_some());
+        let minor = by_name("Minor").expect("a built-in scale");
+        app.arp.scale = Some(Scale::of(0, minor));
+        app.arp_changed();
+        // From D in C minor (D E♭ F G A♭ B♭ C): D F A♭ B♭ D B♭ A♭ F.
+        let in_minor = [0, 3, 6, 8, 12, 8, 6, 3].map(|s| d + s);
+        assert_eq!(ons(&mut app, bar), in_minor);
+    }
+
+    /// The pads have one scale for the whole project, so its every change
+    /// reaches every track's engine, the ones the pads are not on too,
+    /// and wakes none of them.
+    #[test]
+    fn the_pads_key_reaches_every_tracks_engine() {
+        let mut app = ready();
+        let keys = |app: &App| [0, 1, 7, MAX_TRACKS - 1].map(|t| app.arps.engine_at(t).key());
+        assert_eq!(keys(&app), [None; 4]);
+        let used = app.arps.used();
+        // The pads panel's In key switch picks Major on the root.
+        app.synth_pick_layout(true);
+        let major = app.synth_pads.scale;
+        assert!(major.is_some());
+        assert_eq!(keys(&app), [major; 4]);
+        // The Synth tab's Scale row, then its Scale root row.
+        app.step_synth_item(SynthItem::Scale, 1);
+        let next = app.synth_pads.scale;
+        assert!(next.is_some() && next != major);
+        assert_eq!(keys(&app), [next; 4]);
+        app.step_synth_item(SynthItem::Root, 2);
+        let moved = app.synth_pads.scale;
+        assert!(moved.is_some() && moved != next);
+        assert_eq!(keys(&app), [moved; 4]);
+        assert_eq!(app.arps.used(), used, "a key alone wakes no engine");
+        // A project opening: its scale, and with none kept, none.
+        let kept = app.synth_settings();
+        let mut again = ready();
+        again.open_synth(&kept);
+        assert_eq!(keys(&again), [moved; 4]);
+        again.open_synth(&Settings::default());
+        assert_eq!(again.synth_pads.scale, None);
+        assert_eq!(keys(&again), [None; 4]);
+        // The Scale row back to Off.
+        while app.synth_pads.scale.is_some() {
+            app.step_synth_item(SynthItem::Scale, -1);
+        }
+        assert_eq!(keys(&app), [None; 4]);
+        // Another track armed keeps the key: it is the pads', not a
+        // track's.
+        app.synth_pick_layout(true);
+        app.set_track(3);
+        assert_eq!(keys(&app), [app.synth_pads.scale; 4]);
     }
 
     /// A phrase moves notes: on a kit the pads play as pressed.
