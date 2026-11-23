@@ -58,7 +58,7 @@ Pick a set and tap **Play set** on its card. If the song open has changes you ha
 
 - **The set** runs down the left: songs already played are grey, the one playing says **NOW**, the one armed to go next says **NEXT** with what Go will do, and a red dot marks a song that isn't ready.
 - **The song playing** is in the middle: its name, whether it's **PLAYING** or **LOADED** (open, waiting for PLAY), its tempo, the part of its song list playing and the time left, and its parts as tiles.
-- **The next-song card** says which song is armed and what Go does with it. Under it are the song's **notes** from the set, the keyboards you have and whether they're plugged in (one this song needs and isn't plugged in is red), and the **click** switch.
+- **The next-song card** says which song is armed and what Go does with it. Under it are the song's **notes** from the set, the keyboards you have and whether they're plugged in (one this song needs and isn't plugged in is red; with [patches](patches.md#on-the-show-view), the patch each one plays and a strip of its zones), and the **click** switch.
 
 ### Moving to the next song
 

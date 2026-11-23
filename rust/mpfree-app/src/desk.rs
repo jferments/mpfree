@@ -715,6 +715,9 @@ impl Desk<'_> {
             | gui::FromUi::SampleGrains(_)
             | gui::FromUi::SaveProject
             | gui::FromUi::OpenProject(_)
+            // The song's patches and the patch picked: MIDI in's.
+            | gui::FromUi::Patches(_)
+            | gui::FromUi::PickPatch(_)
             | gui::FromUi::SongEnd(_)
             | gui::FromUi::SongEndReset
             | gui::FromUi::OpenLoops(_)
@@ -892,6 +895,7 @@ impl Desk<'_> {
             app::Effect::ClearLogs => out.show(gui::ToUi::ClearLogs),
             app::Effect::ClearConsole => out.show(gui::ToUi::ClearConsole),
             app::Effect::TouchLab => out.show(gui::ToUi::TouchLab),
+            app::Effect::PatchList => out.show(gui::ToUi::PatchList),
             app::Effect::SetMenu(m) => out.show(gui::ToUi::SetMenu(m)),
             app::Effect::ShowKey(k) => out.show(gui::ToUi::ShowKey(k)),
             app::Effect::CalibrateTouch => out.show(gui::ToUi::CalibrateTouch),
@@ -2130,6 +2134,30 @@ pub fn remote_in(
         fx.extend(a.map(app::Effect::Time));
     }
     fx
+}
+
+/// Next patch (`d` 1) or Previous patch (-1) from a learned control (the
+/// Learn section's Play card, live shows C1), at once or when every key
+/// and pedal is up. None when it picked one (KEYS PLAY shows it); else
+/// why it didn't, for the hint line.
+pub fn step_patch(music: &mut crate::midi_in::MusicIn, d: i32, hands_up: bool) -> Option<String> {
+    use mpfree_patch::keys::When;
+    let when = if hands_up { When::HandsUp } else { When::Now };
+    let (playing, waiting, _) = music.keys_at();
+    if music.step_patch(d, when).is_some() {
+        return None;
+    }
+    let what = if d > 0 {
+        "Next patch"
+    } else {
+        "Previous patch"
+    };
+    Some(match waiting.unwrap_or(playing) {
+        _ if music.patch_count() == 0 => format!("{what}: this song has no patches yet"),
+        None => format!("{what}: the keys play as routed, and Next patch picks patch 1"),
+        Some(i) if d > 0 => format!("{what}: patch {} is the song's last", i + 1),
+        Some(_) => format!("{what}: patch 1 is the song's first"),
+    })
 }
 
 /// Where other gear's MMC Locate goes (the Sync section's MMC in): the

@@ -31,6 +31,7 @@
 - [Getting plugins](making-music/plugins.md)
 - [Playing other gear: MIDI, sync and CV](making-music/midi-and-cv.md)
 - [Saving your work](making-music/saving.md)
+- [Patches: splits and layers for your keyboard](making-music/patches.md)
 - [Set lists](making-music/set-lists.md)
 - [Exporting your music](making-music/exporting.md)
 - [Moving your beats from the MPC](making-music/moving-from-the-mpc.md)
