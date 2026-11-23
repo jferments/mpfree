@@ -29,7 +29,7 @@ To hear a synth without changing any track, open the **Synth** tab while the sel
 - **The project remembers it.** Save with the synth on the pads and the project opens with it there again. A new project starts with the pads following the track.
 - **REC records the synth, not the drums.** Press **REC** (or **OVERDUB**) and the synth goes onto a free track, as if you had picked **Synth** in the list of kits for it, and the take goes there. A free track is one you haven't set up: no clips, no kit or MIDI output picked, no mixer settings, no settings of its own, and still its first name (**Track 3** for the third track: renamed, even to another "Track" name, it counts as set up). The selected track is used if it is free (never Track 1, the drums track); otherwise the first free track, which becomes the selected track; and if none is free, a new track is added for it (**UNDO** takes it away again). So your drums and anything you set up never change. It is the same synth, not a copy: the track plays exactly the sound you shaped, and changing that sound later changes the track too. The REC chip on the transport bar names where the synth will go before you press: **REC → Track 2 · Poly**, **REC → New track · Poly** when a track will be added for it, or **REC → No free track · Poly** when the project holds no more. The line at the bottom of the screen says where it went. The pads keep the synth, and **REC** again records on that same track. With the loop armed, REC records the loop with the synth as you hear it.
 - **A track you chose stays chosen.** If you pinned REC to a track (**Pin the arm** in the REC chip's list), or tapped one in that list, and that track isn't free, the REC chip says so before you press (**REC · PINNED → Track 1 · not free**), and REC records nothing and says why: unpin it, pick a free track, or tap **Follow track** to record the track's own kit.
-- **The arp plays the track, not the try-out.** Over a track that plays a kit, the synth plays exactly as you press the pads: holding **NOTE REPEAT**, Latch or opening the Arp panel gives the pads back to the track's kit, and the button won't start while the arp is on. Over a track that plays the synth (after a REC, say), the arp plays the synth as usual. To play the synth through the arp, put it on a track (pick **Synth** in the list of kits).
+- **The arp plays the synth too.** Hold **NOTE REPEAT**, turn on Latch or open the Arp panel and the repeats and arpeggios play the synth on the pads, with the selected track's arp settings; the pads keep the synth. See [When the pads play something of their own](note-repeat-and-arp.md#when-the-pads-play-something-of-their-own).
 
 To keep the synth without recording, put it on a track: pick **Synth** in the list of kits, or give the track its own synth (below).
 
@@ -50,7 +50,17 @@ Tap the synth's card at the top left of the **Synth** tab (its name, the track a
 - **One bank only.** On a kit, the row at the top of the list offers **All banks** and **Bank B only** (it names the bank the pads are on). With **Bank B only**, the synth you tap plays on bank B alone: PAD BANK A gives the pads the track's kit again, and PAD BANK B gives them the synth. The top of the screen reads **Pads B: FM** while you are on that bank. The first tile, **Bank B follows the track**, gives that bank back to the track. **All banks** puts the next synth on every bank again. **Follow track** gives every bank back to the track.
 - **The project remembers it.** Saved with FM on the pads, or on bank B, the project opens with FM there again.
 - **A synth that is gone keeps its place.** If a synth the pads or a bank point at is no longer in the project (a track's own synth you took off, say), the line at the bottom of the screen says so once, and that place waits for you: the bank plays what the other banks play, or the pads play the selected track's instrument, until you pick another synth there or tap **Follow track**. The project keeps the place too, and opening it says which synth is missing.
-- **Not while the arp plays the pads** (NOTE REPEAT, Latch or the Arp panel): it plays through the selected track, so let go of it first.
+- **The arp plays it too.** With NOTE REPEAT held, Latch on or the Arp panel open, the repeats and arpeggios play the synth you picked, and a tap in the list works as usual.
+
+### Recording every bank
+
+When a bank has a synth or kit of its own, REC records everything the pads play, whichever bank you play it on, each sound on its own track, in one take.
+
+- **The selected track stays armed**, so the banks that follow it go on playing its kit, and their hits record there. The REC chip names it and counts the rest: **REC → Track 1 + 1 more**.
+- **Each bank's own sound gets a track**, and so does what every other bank plays when you chose a synth or kit for the pads. An armed track that already plays it keeps it. Otherwise it goes on a free track, or a new one at the end, pointed at that same synth or kit and armed with the first.
+- **Every hit goes into the track of the sound it plays.** Bank B's hits go into bank B's synth's track, and the arp's notes too, as you hear them. A key a keyboard plays on the pads' synth goes in as the pad that plays its note there.
+- **One UNDO takes the whole take back**, and the next REC records on the same tracks with nothing more to set up.
+- **REC records nothing when a sound has no track.** When the project holds no more tracks, or more than 16 would record at once, the REC chip says so before you press (**REC → No free track · Bank B's FM**), and the line names the sound.
 
 ### Layers: more than one synth on the pads
 
@@ -67,11 +77,11 @@ The pads can play up to four synths at once, such as a soft pad sound and a bass
 - **Taking off the first** makes the next one the first. The last one stays: **Follow track** gives the pads back to the track, and the layers go with it.
 - **With Layer off**, a tap plays that one synth alone again, and the layers go.
 - **Layers are for every bank.** **Layer** and **Bank B only** don't go together: picking one turns the other off. A bank with a synth of its own plays that synth alone.
-- **Not while the arp plays the pads**: the arp plays through the selected track, where layers can't follow, so starting it gives the pads back to the track.
+- **With the arp on**, each layer plays a hit once, as you press it, and the repeats and arpeggios play the first synth. You can add and take off layers while it plays.
 - **The project remembers them.** A layer whose synth is no longer in the project stays silent in its place, and the others play.
 - **Recording.** REC records each layer on a track of its own, in one take. The REC chip names where the first goes and counts the rest: **REC → Track 2 · FM + 1 more**. When you press REC, the first synth goes on a free track as above, and each layer gets a free track too (or a new one at the end), pointed at that same synth and armed with the first, as SHIFT + a tap in REC's list arms a track. A track you armed that already plays a layer's synth keeps it. Every hit, and every key a pad plays, goes into each track, and one UNDO takes the whole take back. The next REC records on the same tracks, with nothing more to set up.
   - A new track that REC added for a layer goes away with its own UNDO, after the take's.
-  - When the project holds no more tracks, or 16 tracks already record at once, the line says which layer isn't recorded, and the rest record.
+  - When the project holds no more tracks, or 16 tracks would record at once, REC records nothing. The REC chip says so before you press (**REC → No free track · Pluck**), and the line names the layer that has no track.
   - A keyboard's key goes into a layer's track as the pad that plays its note on that synth; a note no pad plays alone sounds but isn't kept, as on a track a keyboard is routed to.
   - A keyboard routed to a synth no track plays (see [Playing several tracks from your keyboards](midi-and-cv.md#playing-several-tracks-from-your-keyboards)) records the same way: its synth gets a track of its own in the same take, counted on the chip.
 - **Looping layers.** To loop all the layers with the Looper, record from a mix that has them all (the Looper tab's **Records from**), such as Master: **Records from: Pads** takes the first synth's channel.
@@ -154,6 +164,7 @@ Coming:
 - **A control that does nothing** with the sound as it is, such as a pulse width while the wave is a saw, is drawn faint, and the section's heading says why ("Pulse width · pulse waves only").
 - **The Q-Links** turn the four controls marked **Q1** to **Q4**. The column on the right shows what each one turns on this page and its value. Drag a card there to turn it from the screen. Each Q-Link keeps its colour on its badge and its card, the same as on the Play tab.
 - **Locking a step.** With **STEP SEQ** on, hold a step pad of a track this synth plays and turn a knob here: the knob is locked on that step only, and the sound stays as it was for the other steps. While you hold the step the tab shows its locks; let go and it shows the sound's own values again. See [Your first beat](sequencer.md#the-pads-as-steps-step-seq).
+- **The XY pad's marks.** While a layout of yours puts one of this synth's controls on the XY pad, its knob wears **X→** or **Y↑**, a thin arc for the stretch the pad covers, and a dot where the setting is now. See [Your own XY layouts](xy-layouts.md#from-the-chain-editor).
 - **The presets** are listed on the left, under the synth's name. Tap one to load it. Once you change anything, the preset is marked **edited**. The ones you saved yourself are in the browser, under **Yours**.
 - **UNDO** takes back the last knob you turned on this tab (a run of turns of one knob is one UNDO), and **SHIFT + UNDO** puts it back. Loading a preset starts the list again.
 

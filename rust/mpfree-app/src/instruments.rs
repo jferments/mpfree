@@ -1011,6 +1011,60 @@ impl Instruments {
             .is_some_and(|s| self.host.param(s, 0, id, value))
     }
 
+    /// The XY pad's hand on parameter `id` of the instrument track `track`
+    /// plays (a layout of yours plays it by Set, `xy_own.rs`): `Some`
+    /// holds it at the value, over the clips' locks when `over` (a track
+    /// records); `None` lets go, back to its lock or its own value as they
+    /// are now (locks.rs). The sound's own value is left alone. False when
+    /// the track plays no instrument, it has no such parameter (or it is a
+    /// meter), or the table is full.
+    pub fn pad_hand(&mut self, track: usize, id: u16, value: Option<f32>, over: bool) -> bool {
+        let Some(owner) = self.owner(track) else {
+            return false;
+        };
+        let Some(s) = self.slot(owner) else {
+            return false;
+        };
+        let key = lock_key(owner, id);
+        let Some(value) = value else {
+            if let Some(v) = self.locks.release(key) {
+                self.host.param(s, 0, id, v);
+            }
+            return true;
+        };
+        let smooth = match self
+            .host
+            .params(s)
+            .iter()
+            .find(|p| p.id == id && !p.readonly)
+        {
+            Some(p) => crate::locks::glides(p),
+            None => return false,
+        };
+        let Some(now) = self.host.param_value(s, id) else {
+            return false;
+        };
+        match self.locks.press(key, value, now, smooth, over) {
+            crate::locks::Pressed::Set(v) => self.host.param(s, 0, id, v),
+            crate::locks::Pressed::Kept => true,
+            crate::locks::Pressed::Full => false,
+        }
+    }
+
+    /// Parameter `id` of the instrument track `track` plays, under the XY
+    /// pad's hand: what a let-go goes back to now (its lock, else its own
+    /// value), and its own value. None when the track plays no instrument
+    /// with that parameter.
+    pub fn pad_beneath(&self, track: usize, id: u16) -> Option<(f32, f32)> {
+        let owner = self.owner(track)?;
+        let now = self.host.param_value(self.slot(owner)?, id)?;
+        let key = lock_key(owner, id);
+        Some((
+            self.locks.beneath(key).unwrap_or(now),
+            self.locks.own(key).unwrap_or(now),
+        ))
+    }
+
     /// Each track's lasting id (`mpfree_seq::TrackId`, 0 for none), by
     /// track: when two tracks' clips lock one knob of an instrument they
     /// share, the lowest owns it (step 4b, locks.rs).

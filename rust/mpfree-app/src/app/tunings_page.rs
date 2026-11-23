@@ -169,11 +169,11 @@ impl App {
         deaf: (u128, u16),
         kit_of: [Option<u8>; mpfree_seq::MAX_TRACKS],
     ) -> Vec<Effect> {
-        if self.tuning_deaf == deaf && *self.kit_tracks == kit_of {
+        if self.tuning_deaf == deaf && *self.track_kits == kit_of {
             return Vec::new();
         }
         self.tuning_deaf = deaf;
-        *self.kit_tracks = kit_of;
+        *self.track_kits = kit_of;
         if self.view == View::Options {
             vec![self.menu_view()]
         } else {
@@ -359,7 +359,7 @@ impl App {
             .filter(|&t| match kind {
                 Kind::SharedSynth => self.plays_pads_synth(t),
                 Kind::Kit { kit } => {
-                    self.kit_tracks[t] == Some(kit as u8) && !self.track_plays_instrument(t)
+                    self.track_kits[t] == Some(kit as u8) && !self.track_plays_instrument(t)
                 }
                 k => k.holder().is_some() && self.track_owner(t) == k.holder(),
             })
@@ -419,7 +419,7 @@ impl App {
         let kits = (0..crate::instrument_list::KITS).filter_map(|k| {
             let id = list.of_kit(k)?;
             let used = k == 0
-                || self.kit_tracks.contains(&Some(k as u8))
+                || self.track_kits.contains(&Some(k as u8))
                 || self.tunings.own(id).is_some();
             used.then_some(id)
         });
