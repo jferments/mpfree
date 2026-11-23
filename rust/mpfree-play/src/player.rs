@@ -42,12 +42,28 @@
 //! brings back what it erased.
 //!
 //! **Chance.** A note with a chance below 100 % rolls each time it comes
-//! round. The roll is a hash of the note and the absolute frame it would
-//! play on, so it is the same for any period size, yet differs on every
-//! pass, transport loops included. While the dice are anchored
+//! round. The roll is a hash of the note's key and the absolute frame it
+//! would play on, so it is the same for any period size, yet differs on
+//! every pass, transport loops included. While the dice are anchored
 //! ([`Player::anchor_dice`], an export's replays) the frame counts from
 //! the one the transport last started on, so playing the same range again
-//! rolls the same.
+//! rolls the same. The key is the track, the clip's slot and the note's
+//! recorded tick, then one number from a range of its own for each kind
+//! of trigger, so two never share a throw by accident: a pad hit's pad (0
+//! to 15 on a synth's pads, up to 127 on a kit's), a trigger group's
+//! number less one (0 to 254), a lone note's pitch plus 256. A pad's
+//! notes in a clip of notes are its group (`mpfree_seq::groups`), so they
+//! roll exactly as the pad's hit did.
+//!
+//! **Trigger groups** (`mpfree_seq::Note::group`). In a clip of notes the
+//! notes on one recorded tick with the same group number are one trigger:
+//! the first of them the player meets decides (condition, chance, the
+//! track's last result read and set, the count of notes left out), and
+//! the rest take its answer, so a chord plays whole or not at all and
+//! PRE and NEI see one result. A track's notes on one tick are next to
+//! each other in the span's list, so a later note finds its first by
+//! looking back along them; nothing is kept between spans. A clip of pad
+//! hits has no groups.
 //!
 //! **Trig conditions** (`mpfree_seq::Cond`, the Elektron way). A note's
 //! condition is decided first, and its chance rolls only if it holds.
@@ -352,6 +368,9 @@ struct Start {
     /// Percent; below 100 the note rolls with `key`.
     chance: u8,
     key: u64,
+    /// A note of a trigger group (a clip of notes): the first note on its
+    /// tick and track with its key decides for it.
+    grouped: bool,
     cond: Cond,
     /// The clip's pass, counted from its start (pass 1).
     pass: i32,
@@ -536,6 +555,7 @@ const NO_START: Start = Start {
     off: 0,
     chance: 100,
     key: 0,
+    grouped: false,
     cond: Cond::Always,
     pass: 1,
     ratchet: 1,
@@ -1635,6 +1655,19 @@ impl Player {
                 }
                 continue;
             }
+            // A trigger group's later note takes the answer of the first
+            // one on its tick, which decided for the whole trigger.
+            if s.grouped {
+                let first = self.starts[..j]
+                    .iter()
+                    .rev()
+                    .take_while(|p| p.tick == s.tick && p.track == s.track)
+                    .find(|p| p.grouped && p.key == s.key && !p.reset && !p.scene);
+                if let Some(first) = first {
+                    self.starts[j].plays = first.plays;
+                    continue;
+                }
+            }
             // A step that is off is left out with its locks, and decides
             // nothing for PRE and NEI.
             if !s.plays {
@@ -2526,8 +2559,18 @@ impl Player {
             };
             let off = off.max(tick + 1);
             let off = cut.map_or(off, |c| off.min(c));
+            // Each kind of trigger rolls in a range of keys of its own: a
+            // pad hit by its pad, a trigger group by its number less one,
+            // a lone note by its pitch plus 256.
+            let grouped = clip.holds_notes && n.src.group != 0;
             let key = mix(mix(mix(u64::from(track)) ^ clip.slot as u64) ^ n.src.tick as u64)
-                ^ u64::from(n.note);
+                ^ if !clip.holds_notes {
+                    u64::from(n.note)
+                } else if grouped {
+                    u64::from(n.src.group - 1)
+                } else {
+                    256 + u64::from(n.note)
+                };
             // The whole note's end (a ratchet's last hit's too), for its
             // pressure.
             let whole = (swing.apply(straight + n.len).round() as Tick).max(tick + 1);
@@ -2542,6 +2585,7 @@ impl Player {
                 off,
                 chance: n.src.chance,
                 key,
+                grouped,
                 cond: n.src.cond,
                 pass: passes.number(clip, r.pass),
                 ratchet,

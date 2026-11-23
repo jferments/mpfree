@@ -76,9 +76,9 @@ Then press **REC** and **PLAY**, play, and press **STOP**. The new notes go into
 
 ### Erasing while you record
 
-Hit a wrong note? Keep recording, hold **ERASE** and hold that pad: its hits come out of the clip as the playhead passes them, on every pass, and the pad makes no sound while you hold it. The other pads play on. Let go of the pad, or of **ERASE**, and it stops. It erases on the armed track only, and the hits it took out are part of the take, so **UNDO** brings them back with it. With **STEP SEQ** on, **ERASE** and a pad clears that step instead.
+Hit a wrong note? Keep recording, hold **ERASE** and hold that pad: its notes come out of the clip as the playhead passes them, on every pass, and the pad makes no sound while you hold it. On a track that plays a synth, those are the notes the pad plays (a chord pad's every note), so a note another pad plays too comes out as well. The other pads play on. Let go of the pad, or of **ERASE**, and it stops. It erases on the armed track only, and the notes it took out are part of the take, so **UNDO** brings them back with it. With **STEP SEQ** on, **ERASE** and a pad clears that step instead.
 
-It works the same while the music only plays, without recording: hold **ERASE** and the pad for as long as you want its hits gone. Each time you hold **ERASE** is one **UNDO** step ("Erase 1"). With the music stopped, **ERASE** and a pad takes all of that pad's notes out of the clip at once, also one **UNDO** step.
+It works the same while the music only plays, without recording: hold **ERASE** and the pad for as long as you want its notes gone. Each time you hold **ERASE** is one **UNDO** step ("Erase 1"). With the music stopped, **ERASE** and a pad takes all of that pad's notes out of the clip at once, also one **UNDO** step.
 
 ### Knob moves while you record
 
@@ -116,6 +116,7 @@ The Record panel has three tabs at its top: **Record**, the record settings, **C
 - **Bank:** the bank select sent just before the program, shown as the two numbers sent (CC 0 / CC 32), **0/0** to **127/127**, or **off** to send none. Your synth's manual says which bank numbers it uses. Hold **SHIFT** as you tap its arrows to step the first number (a whole CC 0).
 - **Direction:** the order the clip plays its steps of a sixteenth in. **Forward** plays it as written. **Reverse** plays the last step first. **Ping pong** plays forward to the end, then back to the start, and on, the end steps once each turn, so it turns wherever it reached when the clip starts its next pass. **Random** plays every step once a pass in an order of its own, a new order each pass; each pass plays the same every time you play the song, so an export sounds as you heard it. Each step's notes and locks go with it, and a note played a little early or late keeps that place around its step. The clip's knob moves still play forward. The playhead on the step pads and on Play's rows lights the step you hear, so it runs backwards, turns or jumps with the clip. A clip that isn't two whole steps or more plays forward and the row shows **—**: a tap puts it back to **Forward**.
 - **Mutate:** a new variation of the clip's notes, and back. **›** mutates it; **‹** restores the original. See [Mutate and Restore](#mutate-and-restore) below.
+- **Melody:** **pads** or **notes**: whether the clip's tune follows what its pads play now, or keeps its own notes. On a synth track, **›** converts a clip that follows the pads. See [Melody: Convert to notes](#melody-convert-to-notes) below.
 
 {{shot: clips-card-direction | The Clip tab's Direction row: Clip 1 plays its steps in reverse.}}
 
@@ -142,13 +143,34 @@ When a pattern has gone stale, let the clip vary itself. On the Clip tab's **Mut
 - a ratchet: a single hit becomes two or three quick ones, or a ratchet becomes a single hit;
 - on a track that plays notes (a synth or outside gear, not a kit), the next pitch up or down among the notes the clip already plays, so the tune stays in its key. A kit's pads never change sound.
 
-Hold **SHIFT** as you tap **›** for a bolder variation, about half the notes. Steps that are off stay off, and tied and slid notes keep their pitch so the tie still holds.
+Hold **SHIFT** as you tap **›** for a bolder variation, about half the notes. Steps that are off stay off, and tied and slid notes keep their pitch so the tie still holds. A chord a pad played changes as one: its chance once for the whole chord, every note softer or harder by the same amount so the voicing stays, and its notes keep their pitches.
 
 {{shot: clips-card-mutate | The Clip tab's Mutate row: Clip 1 plays a variant, its original kept.}}
 
 The row says **original** until you mutate, then **variant**. The clip keeps its original beside it, so tap **›** again for another variation of the original (not of the variation), as many times as you like. Tap **‹** (or press **–**) to **restore** the original: its notes, locks, length and knob moves come back as they were before the first Mutate, whatever you changed since. The clip's settings (speed, direction and the rest) stay as they are now.
 
 Each Mutate and Restore is a take ("Mutate 4 · variant 2", "Restore 5 · the original"), so **UNDO** steps back through them. The original is saved with the project, so Restore still works after you open it again. Mutate waits until a recording is done, and a clip with no notes, or a Loop track's cell, has nothing to mutate.
+
+### Melody: Convert to notes
+
+A clip on a synth track either **uses notes**, each note keeping its pitch whatever you do to the pads, or **follows the pads**: it remembers which pads were hit and plays whatever those pads play now, so a new scale, pad layout or octave changes its tune. Recording on a synth track makes clips that use notes. Clips made before that, and every clip on a kit, follow the pads. The Clip tab's **Melody** row says which: **pads** or **notes**.
+
+To fix a clip's tune as it sounds now, tap **›** on its **Melody** row (or pick the row with the data wheel and press **+**). Nothing changes yet: the line under the screen says what it would do ("Convert to notes: 8 pad hits become 12 notes. Keeps what Verse plays now with these pads (C3 to D#4)"), and the buttons under the rows are **Cancel** and **Convert**. Tap **Convert**, and each hit becomes the note its pad plays now, or every note of a chord pad, each keeping the hit's timing, length, velocity, chance, condition, ratchet, tie or slide, and its pressure. A chord pad's notes stay one chord: with a chance or a condition, they play together or not at all, on the same passes as the pad's hit did. A lock on the synth's sound stays on its step. The clip plays exactly as it did, the row says **notes**, and the line says "Converted: 8 pad hits are 12 notes". It is one take ("Convert 5 · converted to notes"), so **UNDO** brings back the clip that follows the pads, and **SHIFT + UNDO** converts it again. If you mutated the clip, its original is converted too, so **Restore** brings back notes.
+
+{{shot: clips-card-convert | Convert to notes' preview: what it would make on the line under the screen, Cancel and Convert under the rows.}}
+
+Convert works with the music stopped: while it plays, the line asks you to press **STOP** first, and **Convert** appears when you do. If the clip or the pads change after the preview, **Convert** changes nothing and asks you to look again. Doing anything else on the Arrange page closes the preview, as **Cancel** does.
+
+When converting couldn't keep exactly what the clip plays, nothing changes, only **Cancel** shows, and the line names everything to fix at once:
+
+- **One pad hit twice on the same step with a different chance or condition,** such as "Pad A1 is hit twice on step 5 with a different chance or condition": as notes, a pad's notes on one step play together or not at all. Take one off, or set them alike.
+- **A lock on a pad's own setting,** such as "Pad A3's Tune on step 5": it has no note to follow. The lock lane's **×** takes it off.
+- **A pad that plays no note now,** because its notes fall off the top or bottom of the keyboard: take its steps off, or move the pads so it plays one.
+- **Two pads that play the same note, sounding together,** such as "Pad A1 and Pad A4 both play C3 and sound together on step 5": as notes, one would cut the other short. Move one of them.
+- **Two pads with the same root, with locks on the same step:** they would land on one row. Take one off.
+- **More notes than a clip holds** (8,192): chord pads multiply them.
+
+A kit's clips always follow the pads, so their row has no **›**. There is no way yet to turn a clip of notes back into one that follows the pads. **Reload** brings a saved state back as you saved it, so a state saved before converting follows the pads again: save it again after converting.
 
 Coming: the clip's name and colour, and its step size.
 
@@ -163,9 +185,10 @@ You weren't recording, but you just played something great. Tap the **Capture** 
 MPFree is always listening to the pads, and to keyboards a route plays on other tracks (see [Playing several tracks from your keyboards](midi-and-cv.md#playing-several-tracks-from-your-keyboards)). Capture keeps your **last phrase**: everything since the last bar of silence, up to 32 bars, cut to whole bars and with your exact timing.
 
 - If you played it in time over a clip that was playing, the notes go into that clip.
+- It keeps what recording would: a new clip on a track that plays a synth gets the notes you played (a chord pad's every note), and on a kit the pads you hit. Over a clip that was playing, it adds in that clip's way, as recording into it would: the pads you hit into an older clip of pads on a synth track, notes into a clip of notes.
 - Otherwise it becomes a new clip, named "Capture 1", "Capture 2" and so on, and starts playing in time.
 - It keeps how hard you pressed the pads as you held them, as recording does (see [Pad pressure](#pad-pressure)), unless the track's **Pressure** setting is **Off**.
-- The pads' notes go into the armed track. What a keyboard played on another track through a route goes into that track, so a jam of drums on the pads and bass on a keyboard comes back as two clips that play together. Each key goes in as the pad that plays its note on that track; a note no pad plays there isn't kept. The FX moves you made over the phrase (the XY pad, the DJ knob) go with the armed track's notes; when only a keyboard played, on other tracks, they're left out and the line under the screen says so.
+- The pads' notes go into the armed track. What a keyboard played on another track through a route goes into that track, so a jam of drums on the pads and bass on a keyboard comes back as two clips that play together. On a track that plays a synth, each key goes in as the notes of the pad that plays it there; on a kit, as that pad. A key whose note no single pad plays on that track isn't kept yet. The FX moves you made over the phrase (the XY pad, the DJ knob) go with the armed track's notes; when only a keyboard played, on other tracks, they're left out and the line under the screen says so.
 
 UNDO takes a capture back like any other take, every track's part of it at once.
 
@@ -182,12 +205,11 @@ A MIDI file (`.mid`) from another sequencer, a computer or your MPC loads as cli
 
 Each track of the file becomes a clip in the first empty slot of a track: the first on the armed track, the next on the track after it, and so on. A file with all its parts on one track, as many are, gets a clip for each channel. The clips are as long as the file, in whole bars, and wait in their slots for you to play them. The line under the screen says how many clips came in, where, and what was left out. **UNDO** takes the whole file away again.
 
-**Its notes go on the pads that play them.** A clip holds pads, as a recording does, so each note goes on the pad of its track that plays that note:
+**Its notes go in as a recording would keep them.** On a track that plays a synth, each note goes in as it is; on a kit, each note goes on the pad that plays it:
 
 - **On a kit**, each note on the pad that sends it (see [A kit on a drum machine](midi-and-cv.md#a-kit-on-a-drum-machine)): C#2 is A1, C2 A2 and so on through bank A, as the MPC sends and receives them, and the other notes on banks B to H. So a drum track exported from an MPC comes back on bank A's pads, a drum part from a computer that uses those notes does too, and MPFree's own export of a kit comes back on the pads that played it, in every bank.
-- **On a synth** or a track's own instrument, by its pad layout: a note goes on the pad that plays that note. Set the layout to cover the notes first (a scale, the right octave), then load the file.
-
-A note no pad plays is left out, and counted. A melody that goes past what the 16 pads reach comes in as far as they reach.
+- **On a synth** or a track's own instrument, every note as it is, so a melody comes in whole, whatever the pad layout. The Sequencer shows the notes on the rows of the pads that play them; a note no pad plays still plays, but has no row until a pad plays it.
+- **On the Drums synth**, which plays pads, a note goes on the pad that plays it. A note no pad plays is left out, and counted.
 
 **Left out** for now: controllers, pitch bend, pressure and program changes (they come with lanes), and SysEx. The file's tempo is said but not set, so set the project's tempo to match if you want it. A file in clock time (made for video) is read at 120 BPM.
 

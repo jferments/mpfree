@@ -12,14 +12,15 @@
 //! (`Recent::catch_up`); one that cannot goes back with a request to
 //! compile again, and the view that holds everything plays on.
 
+use mpfree_capture::Took;
 use mpfree_notefx::{Chain, Slot, TrackFx, MAX_FX};
 use mpfree_play::{
-    is_gear_control, Ahead, AheadCounts, Event, Out, PlayView, Player, Rec, Recent, Recorder,
-    TrackArps,
+    is_gear_control, Ahead, AheadCounts, Event, Out, PadRows, PlayView, Player, Rec, Recent,
+    Recorder, TrackArps, LAYOUT_PADS, PAD_NOTES,
 };
 use mpfree_play::{MOVE_POINTS, TOUCH_POINTS};
 use mpfree_seq::mpfree_moves::{Input, Kind};
-use mpfree_seq::{LaunchGrid, TouchPoint, MAX_TRACKS};
+use mpfree_seq::{Holds, LaunchGrid, TouchPoint, MAX_TRACKS};
 use mpfree_time_ui::view::TransportInfo;
 use mpfree_transport::time::{TempoMap, Tick};
 use mpfree_transport::{Block, Command, Mark, State, Transport};
@@ -86,6 +87,9 @@ struct NoteMod {
     value: i32,
 }
 
+/// The notes a routed pad started: (notes, how many).
+type PadStarted = ([u8; PAD_NOTES], u8);
+
 pub struct TimeAudio {
     // Boxed: the fixed tables are large.
     transport: Box<Transport>,
@@ -106,9 +110,19 @@ pub struct TimeAudio {
     /// routed keys for another armed track playing a clip of notes.
     /// Counted with the notes dropped.
     kind_refused: u64,
-    /// The notes each pad started in a take of notes, for its pressure
-    /// ([`TimeAudio::pad_pressure`]): (notes, how many).
+    /// The notes each pad started on the armed track, for its pressure
+    /// ([`TimeAudio::pad_pressure`]) in a take of notes and in CAPTURE's
+    /// history: (notes, how many).
     pad_notes: [([u8; HEARD_NOTES], u8); 128],
+    /// The notes each track's 16 pads play ([`ToAudio::Pads`]): a key
+    /// routed to a track comes as a pad, and records these on a clip of
+    /// notes (step sequencer refactor E4).
+    pad_rows: Box<[PadRows; MAX_TRACKS]>,
+    /// The notes each routed pad started on each track, for its end and
+    /// pressure, however the pads change meanwhile: (notes, how many).
+    routed_notes: Box<[[PadStarted; LAYOUT_PADS]; MAX_TRACKS]>,
+    /// The pads live erase holds, a bit each ([`TimeAudio::erase_sound`]).
+    erase_pads: u128,
     /// Pressure from routed keys on another armed track past
     /// [`super::MAX_ALSO`] while the transport records: not recorded, so
     /// counted with the pressure values lost ([`Counts::touch_dropped`]).
@@ -254,6 +268,9 @@ impl TimeAudio {
             also_dropped: 0,
             kind_refused: 0,
             pad_notes: [([0; HEARD_NOTES], 0); 128],
+            pad_rows: Box::new([PadRows::PADS; MAX_TRACKS]),
+            routed_notes: Box::new([[([0; PAD_NOTES], 0); LAYOUT_PADS]; MAX_TRACKS]),
+            erase_pads: 0,
             also_pressure: 0,
             block: Box::new(Block::new()),
             sink: Box::new(Table::new()),
@@ -351,6 +368,15 @@ impl TimeAudio {
                 ToAudio::Track(t, s) => {
                     if let Some(set) = self.tracks.set.get_mut(t) {
                         *set = s;
+                    }
+                }
+                ToAudio::Pads(t, rows) => {
+                    if let Some(r) = self.pad_rows.get_mut(t) {
+                        *r = rows;
+                    }
+                    // Live erase held on a clip of notes follows the pads.
+                    if self.erase_pads != 0 {
+                        self.player.set_erasing(self.erase_notes());
                     }
                 }
                 ToAudio::NoteFx {
@@ -1085,17 +1111,18 @@ impl TimeAudio {
                     self.kind_refused += 1;
                 }
                 for &e in h.notes() {
-                    self.recorder.input(offset, e);
+                    self.recorder.input_grouped(offset, e, h.group());
                 }
-                self.keep_pad_notes(h);
             } else {
                 self.recorder.input(offset, event);
             }
-            self.played(offset, event);
+            self.keep_pad_notes(h);
+            self.history(offset, h);
         }
     }
 
-    /// Which notes a pad started, for its pressure on a take of notes.
+    /// Which notes a pad started, for its pressure on a take of notes and
+    /// in CAPTURE's history.
     fn keep_pad_notes(&mut self, h: &Heard) {
         let Some(Event::NoteOn { note, .. }) = h.pad else {
             return;
@@ -1114,7 +1141,13 @@ impl TimeAudio {
     pub fn pad(&mut self, offset: u32, event: Event) {
         if !self.tracks.records_pressed() {
             self.recorder.input(offset, event);
-            self.played(offset, event);
+            // A pad alone: it started no notes.
+            if let Event::NoteOn { note, .. } = event {
+                if let Some(p) = self.pad_notes.get_mut(usize::from(note)) {
+                    p.1 = 0;
+                }
+            }
+            self.played(offset, event, Took::PAD);
         }
         self.hit_info(offset, event);
     }
@@ -1130,28 +1163,48 @@ impl TimeAudio {
 
     /// A live note heard on the armed track ([`Pads::live`]): a take of
     /// pad hits records its pad, as [`TimeAudio::pad`]; a take of notes
-    /// its notes, and keeps which notes the pad started for its pressure.
-    /// CAPTURE's history and the Play page's timing take the pad either
-    /// way.
+    /// its notes. Either way it keeps which notes the pad started, for
+    /// their pressure. CAPTURE's history takes them as the armed track's
+    /// takes do ([`TimeAudio::history`]), the Play page's timing the pad.
+    /// Pads as pressed keep their own notes ([`TimeAudio::pad_pressed`]).
     fn heard(&mut self, offset: u32, h: &Heard) {
-        if !self.takes_notes() {
-            if let Some(ev) = h.pad {
-                self.pad(offset, ev);
-            }
-            return;
-        }
         if !self.tracks.records_pressed() {
-            for &e in h.notes() {
-                self.recorder.input(offset, e);
+            if self.takes_notes() {
+                for &e in h.notes() {
+                    self.recorder.input_grouped(offset, e, h.group());
+                }
+            } else if let Some(ev) = h.pad {
+                self.recorder.input(offset, ev);
             }
+            self.keep_pad_notes(h);
+            self.history(offset, h);
         }
         if let Some(ev) = h.pad {
-            // Pads as pressed keep their own notes (`pad_pressed`).
-            if !self.tracks.records_pressed() {
-                self.keep_pad_notes(h);
-                self.played(offset, ev);
-            }
             self.hit_info(offset, ev);
+        }
+    }
+
+    /// A live note on the armed track for CAPTURE's history: its pad and
+    /// the notes it played, each marked as coming with the other, so
+    /// CAPTURE keeps whichever kind its clip holds, as a take there would
+    /// record (refactor E4). The arp's notes come with no pad.
+    fn history(&mut self, offset: u32, h: &Heard) {
+        let notes = h.notes();
+        if let Some(ev) = h.pad {
+            let took = Took {
+                holds: Holds::Hits,
+                paired: !notes.is_empty(),
+                group: 0,
+            };
+            self.played(offset, ev, took);
+        }
+        let took = Took {
+            holds: Holds::Notes,
+            paired: h.pad.is_some(),
+            group: h.group(),
+        };
+        for &e in notes {
+            self.send(ToControl::Played(offset, e, took));
         }
     }
 
@@ -1197,11 +1250,31 @@ impl TimeAudio {
             }
         }
         // CAPTURE's history keeps it always, as it keeps the notes (its
-        // keep leaves it out for a track that doesn't record pressure).
+        // keep leaves it out for a track that doesn't record pressure): on
+        // the pad and on each note the pad started (refactor E4).
         let sent = &mut self.pressure_sent[usize::from(pad)];
         if *sent != Some(value) {
             *sent = Some(value);
-            self.send(ToControl::Played(offset, event));
+            let (notes, n) = self.pad_notes[usize::from(pad)];
+            let notes = &notes[..usize::from(n)];
+            let took = Took {
+                holds: Holds::Hits,
+                paired: !notes.is_empty(),
+                group: 0,
+            };
+            self.send(ToControl::Played(offset, event, took));
+            let took = Took {
+                holds: Holds::Notes,
+                paired: true,
+                group: mpfree_seq::groups::pad_group(pad),
+            };
+            for &note in notes {
+                self.send(ToControl::Played(
+                    offset,
+                    Event::Pressure { note, value },
+                    took,
+                ));
+            }
         }
     }
 
@@ -1211,40 +1284,43 @@ impl TimeAudio {
     /// history; and, on another armed track ([`PlayView::set_also`]), for
     /// its recorder while the transport records: its notes, and their
     /// pressure when that track records pressure (`Track::record_touch`,
-    /// refactor E3), as the armed track's pads.
+    /// refactor E3), as the armed track's pads. Into a clip of notes the
+    /// pad is the notes it plays there; CAPTURE's history gets both
+    /// (refactor E4).
     pub fn routed(&mut self, track: u8, offset: u32, event: Event) {
         let f = self.transport.frame() + u64::from(offset);
         self.note_started(f, u16::from(track), event);
-        // A routed key comes as the pad that plays its note: no note for a
-        // clip of notes on that track (step 5c), so counted, not recorded.
-        let mut rank = self.view.also_rank(usize::from(track));
-        if rank.is_some()
-            && self
-                .now_playing(usize::from(track))
-                .is_some_and(|n| n.holds_notes)
-        {
-            if matches!(event, Event::NoteOn { .. }) {
-                self.kind_refused += 1;
-            }
-            rank = None;
+        let t = usize::from(track);
+        let heard = self.routed_heard(t, event);
+        let rank = self.view.also_rank(t);
+        let into_notes = rank.is_some() && self.now_playing(t).is_some_and(|n| n.holds_notes);
+        // A pad that plays no note there has none for a clip of notes:
+        // counted, not recorded.
+        let notes_refused = into_notes
+            && matches!(event, Event::NoteOn { velocity, .. } if velocity > 0)
+            && heard.notes().is_empty();
+        if notes_refused {
+            self.kind_refused += 1;
         }
-        if let Some(k) = rank {
-            match (event, self.also.get_mut(k)) {
-                (Event::NoteOn { .. } | Event::NoteOff { .. } | Event::AllOff, Some(r)) => {
-                    r.input(offset, event)
-                }
-                (Event::NoteOn { .. } | Event::NoteOff { .. } | Event::AllOff, None) => {
-                    self.also_dropped += 1
-                }
-                (Event::Pressure { .. }, r) if self.tracks.records_touch_on(usize::from(track)) => {
-                    match r {
-                        Some(r) => r.input(offset, event),
-                        None if self.transport.state() == State::Recording => {
-                            self.also_pressure += 1
+        if let (Some(k), false) = (rank, notes_refused) {
+            let note = matches!(
+                event,
+                Event::NoteOn { .. } | Event::NoteOff { .. } | Event::AllOff
+            );
+            let touch = matches!(event, Event::Pressure { .. }) && self.tracks.records_touch_on(t);
+            let recording = self.transport.state() == State::Recording;
+            match self.also.get_mut(k) {
+                Some(r) if note || touch => {
+                    if into_notes {
+                        for &e in heard.notes() {
+                            r.input_grouped(offset, e, heard.group());
                         }
-                        None => {}
+                    } else {
+                        r.input(offset, event);
                     }
                 }
+                None if note => self.also_dropped += 1,
+                None if touch && recording => self.also_pressure += 1,
                 _ => {}
             }
         }
@@ -1252,19 +1328,81 @@ impl TimeAudio {
             event,
             Event::NoteOn { .. } | Event::NoteOff { .. } | Event::Pressure { .. } | Event::AllOff
         ) {
-            self.send(ToControl::PlayedOn(track, offset, event));
+            // The pad and the notes it plays there, as the armed track's
+            // (`TimeAudio::history`).
+            let notes = heard.notes();
+            let took = Took {
+                holds: Holds::Hits,
+                paired: !notes.is_empty(),
+                group: 0,
+            };
+            self.send(ToControl::PlayedOn(track, offset, event, took));
+            let took = Took {
+                holds: Holds::Notes,
+                paired: true,
+                group: heard.group(),
+            };
+            for &e in notes {
+                self.send(ToControl::PlayedOn(track, offset, e, took));
+            }
         }
     }
 
-    /// A pad note for CAPTURE's history; a press sends its pad's next
-    /// pressure value even when it is the last one sent.
-    fn played(&mut self, offset: u32, event: Event) {
+    /// A routed pad on track `t` as the notes it plays there
+    /// ([`ToAudio::Pads`], a chord pad's every note): a note-on keeps
+    /// which notes it started, so its end and pressure reach those however
+    /// the pads change meanwhile; `AllOff` stays one. A pad past the 16 a
+    /// track's pads hold plays none (refactor E4).
+    fn routed_heard(&mut self, t: usize, event: Event) -> Heard {
+        let (Some(rows), Some(started)) = (self.pad_rows.get(t), self.routed_notes.get_mut(t))
+        else {
+            return Heard::NONE;
+        };
+        match event {
+            Event::NoteOn { note, velocity } if velocity > 0 => {
+                let notes = rows.notes(usize::from(note));
+                if let Some(s) = started.get_mut(usize::from(note)) {
+                    let n = notes.len().min(PAD_NOTES);
+                    s.0[..n].copy_from_slice(&notes[..n]);
+                    s.1 = n as u8;
+                }
+                Heard::of(Some(event), event, notes)
+            }
+            Event::NoteOn { note, .. } | Event::NoteOff { note } => {
+                let Some(s) = started.get_mut(usize::from(note)) else {
+                    return Heard::of(Some(event), Event::NoteOff { note }, &[]);
+                };
+                let (notes, n) = *s;
+                s.1 = 0;
+                Heard::of(
+                    Some(event),
+                    Event::NoteOff { note },
+                    &notes[..usize::from(n)],
+                )
+            }
+            Event::Pressure { note, .. } => {
+                let (notes, n) = started.get(usize::from(note)).copied().unwrap_or_default();
+                Heard::of(Some(event), event, &notes[..usize::from(n)])
+            }
+            Event::AllOff => {
+                for s in started.iter_mut() {
+                    s.1 = 0;
+                }
+                Heard::of(Some(event), event, &[0])
+            }
+            _ => Heard::NONE,
+        }
+    }
+
+    /// A pad note for CAPTURE's history, as `took` says; a press sends
+    /// its pad's next pressure value even when it is the last one sent.
+    fn played(&mut self, offset: u32, event: Event, took: Took) {
         if let Event::NoteOn { note, .. } = event {
             if let Some(p) = self.pressure_sent.get_mut(usize::from(note)) {
                 *p = None;
             }
         }
-        self.send(ToControl::Played(offset, event));
+        self.send(ToControl::Played(offset, event, took));
     }
 
     pub fn touch_dropped(&self) -> u64 {
@@ -1273,25 +1411,48 @@ impl TimeAudio {
             + self.also_pressure
     }
 
-    /// Live erase: sound `note` erased on the armed track while the
-    /// transport records (`on`), or not any more.
-    pub fn erase_sound(&mut self, note: u8, on: bool) {
-        let Some(bit) = 1u128.checked_shl(u32::from(note)) else {
+    /// Live erase: pad `pad`'s notes erased on the armed track while the
+    /// transport records (`on`), or not any more: on a clip of pad hits
+    /// the pad's own, on a clip of notes the notes it plays there
+    /// (refactor E4).
+    pub fn erase_sound(&mut self, pad: u8, on: bool) {
+        let Some(bit) = 1u128.checked_shl(u32::from(pad)) else {
             return;
         };
-        let now = self.player.erasing();
-        self.player
-            .set_erasing(if on { now | bit } else { now & !bit });
+        self.erase_pads = if on {
+            self.erase_pads | bit
+        } else {
+            self.erase_pads & !bit
+        };
+        self.player.set_erasing(self.erase_notes());
+    }
+
+    /// The notes live erase erases on the armed track's clip: the pads it
+    /// holds on a clip of pad hits; on a clip of notes, every note they
+    /// play there (a chord pad's all), so another pad's note goes too only
+    /// when it plays the same one.
+    fn erase_notes(&self) -> u128 {
+        if !self.takes_notes() {
+            return self.erase_pads;
+        }
+        let Some(rows) = self.tracks.armed.and_then(|t| self.pad_rows.get(t)) else {
+            return 0;
+        };
+        (0..LAYOUT_PADS)
+            .filter(|&p| self.erase_pads >> p & 1 == 1)
+            .flat_map(|p| rows.notes(p))
+            .fold(0, |bits, &n| bits | 1u128 << (n & 127))
     }
 
     /// Live erase off for every sound.
     pub fn erase_none(&mut self) {
+        self.erase_pads = 0;
         self.player.set_erasing(0);
     }
 
-    /// The sounds live erase erases, a bit each.
+    /// The pads live erase holds, a bit each.
     pub fn erasing(&self) -> u128 {
-        self.player.erasing()
+        self.erase_pads
     }
 
     pub fn knob(&mut self, offset: u32, addr: mpfree_play::mpfree_param::ParamAddr, value: f32) {

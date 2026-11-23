@@ -53,8 +53,9 @@ use mpfree_time_ui::list::ListRow;
 use mpfree_time_ui::view::pad_name;
 use mpfree_time_ui::view::{
     bars_label, card_rows, clips_after, grid_name, rows_named, scene_rows, AudioAction, BarsEdit,
-    EditAnswer, EditInfo, EditOutcome, FollowNext, MarkerEdit, MorphInfo, MuteWait, RegionId,
-    Report, ReportRow, TakeRow, TempoEdit, TimeAction, TimeState, TransportInfo, SCENE_NAME,
+    Converting, EditAnswer, EditInfo, EditOutcome, FollowNext, MarkerEdit, MorphInfo, MuteWait,
+    RegionId, Report, ReportRow, TakeRow, TempoEdit, TimeAction, TimeState, TransportInfo,
+    SCENE_NAME,
 };
 use mpfree_transport::time::{TempoMap, Tick};
 use mpfree_transport::{Block, Command, State};
@@ -426,6 +427,9 @@ pub struct TimeControl {
     /// The note each track's pads play (a pad's root), for the step grid's
     /// pad rows on a clip of notes ([`TimeControl::set_pad_rows`]).
     pad_rows: Box<[PadRows; MAX_TRACKS]>,
+    /// Convert to notes' preview, open (E1): Convert checks the clip and
+    /// the pads are still what it read.
+    convert_asked: Option<ConvertAsked>,
     takes: Takes,
     /// The song edits that moved the audio tracks' regions, by take
     /// number, with each edit made (+ Bar pressed in a row joins one take):
@@ -564,6 +568,8 @@ pub struct TimeControl {
     edit_id: u32,
     /// The tracks' settings the audio half has.
     tracks_sent: Tracks,
+    /// The tracks' pad rows the audio half has (refactor E4).
+    pad_rows_sent: Box<[PadRows; MAX_TRACKS]>,
     /// The tracks' MIDI effects the audio half has.
     note_fx_sent: Box<[TrackFx; MAX_TRACKS]>,
     /// Tracks the audio half has a chain of MIDI effects for (one is made
@@ -633,6 +639,7 @@ impl TimeControl {
             also_full: 0,
             notes_tracks: 0,
             pad_rows: Box::new([PadRows::PADS; MAX_TRACKS]),
+            convert_asked: None,
             takes: Takes::default(),
             audio_edits: HashMap::new(),
             audio_stayed: 0,
@@ -693,6 +700,7 @@ impl TimeControl {
             view_sent: 0,
             edit_id: 0,
             tracks_sent: tracks,
+            pad_rows_sent: Box::new([PadRows::PADS; MAX_TRACKS]),
             note_fx_sent: Box::new([TrackFx::default(); MAX_TRACKS]),
             chains_given: [false; MAX_TRACKS],
         };
@@ -1033,6 +1041,16 @@ impl TimeControl {
                 *was = *s;
             }
         }
+        for (t, (rows, was)) in self
+            .pad_rows
+            .iter()
+            .zip(self.pad_rows_sent.iter_mut())
+            .enumerate()
+        {
+            if rows != was && self.tx.send(ToAudio::Pads(t, *rows)).is_ok() {
+                *was = *rows;
+            }
+        }
         self.sync_note_fx();
     }
 
@@ -1117,9 +1135,11 @@ impl TimeControl {
         self.loop_at = [None; LOOPS];
         while let Some(m) = self.rx.recv() {
             match m {
-                ToControl::Played(offset, event) => self.capture.input(offset, event),
-                ToControl::PlayedOn(track, offset, event) => {
-                    self.capture.input_on(track, offset, event);
+                ToControl::Played(offset, event, took) => {
+                    self.capture.input_as(offset, event, took);
+                }
+                ToControl::PlayedOn(track, offset, event, took) => {
+                    self.capture.input_on(track, offset, event, took);
                 }
                 ToControl::Moved(offset, input) => self.move_log.input(offset, input),
                 ToControl::Started(st) => self.started.push(st),
@@ -1780,7 +1800,10 @@ impl TimeControl {
                 ));
                 continue;
             };
-            let clip = Clip::new(&format!("Clip {}", s + 1), length);
+            // On a track whose instrument plays notes it holds notes, as
+            // the armed track's does (refactor E4).
+            let mut clip = Clip::new(&format!("Clip {}", s + 1), length);
+            clip.holds = self.take_holds(track);
             self.project
                 .put_new_clip(track, s, clip)
                 .map_err(|e| format!("new clip: {e:?}"))?;
@@ -2228,6 +2251,15 @@ impl TimeControl {
             ..
         } = a
         {
+            // A pad's own setting has no note to follow on a clip of notes
+            // (E1): its lock would end on a pitch, not the pad.
+            let pad = matches!(addr.on, mpfree_play::mpfree_param::OnTrack::Pad(_));
+            if pad && clip.holds == mpfree_seq::Holds::Notes {
+                return Err(
+                    "steps: a pad's own setting has no note to follow on a clip of notes"
+                        .to_string(),
+                );
+            }
             if addr.on == mpfree_play::mpfree_param::OnTrack::Inst {
                 let plays = self.project.tracks.get(track).and_then(|t| t.plays.get());
                 if let Some(why) = clip.inst_refuses(addr.param, plays) {
@@ -2912,6 +2944,20 @@ impl TimeControl {
         if moves_song_time(&a) {
             self.includes.timeline = next_timeline();
         }
+        // Anything else done but the transport closes Convert to notes'
+        // preview (E1), which STOP leaves open for its Convert.
+        if self.convert_asked.is_some()
+            && !matches!(
+                a,
+                TimeAction::ConvertPreview { .. }
+                    | TimeAction::Convert { .. }
+                    | TimeAction::ConvertCancel
+                    | TimeAction::Transport(_)
+            )
+        {
+            self.convert_asked = None;
+            self.changed = true;
+        }
         match a {
             // A track picked arms it, unless the app found REC's arm
             // pinned and sent `Select` instead (refactor C1).
@@ -3562,6 +3608,13 @@ impl TimeControl {
                 melodic,
             } => self.mutate(track, slot, more, melodic),
             TimeAction::Restore { track, slot } => self.restore(track, slot),
+            TimeAction::ConvertPreview { track, slot } => self.convert_preview(track, slot),
+            TimeAction::Convert { track, slot } => self.convert(track, slot),
+            TimeAction::ConvertCancel => {
+                self.convert_asked = None;
+                self.changed = true;
+                Ok("convert to notes: cancelled, nothing changed".to_string())
+            }
             TimeAction::DeleteClip { track, slot } => {
                 // A clip the song plays goes to the song's own clips, so
                 // the song plays on (Arrange 1.3).
@@ -5025,6 +5078,8 @@ impl TimeControl {
         let mut left: Vec<String> = Vec::new();
         let mut first_error = None;
         for (track, part) in phrase.split(armed) {
+            // A new clip holds what a take there would (refactor E4).
+            let new = self.take_holds(track);
             let r = match kept.first().map(|k| k.take) {
                 None => keep(
                     &part,
@@ -5034,6 +5089,7 @@ impl TimeControl {
                     track,
                     now,
                     &name,
+                    new,
                 ),
                 // The other tracks join the first one's take.
                 Some(n) => self.takes.joining(n, |takes| {
@@ -5045,6 +5101,7 @@ impl TimeControl {
                         track,
                         now,
                         &name,
+                        new,
                     )
                 }),
             };
@@ -5132,6 +5189,20 @@ impl TimeControl {
             if phrase.touch_cut && k.touch > 0 {
                 pressure += "; the first notes' pressure was older than the history keeps";
             }
+            // A clip holds pads or notes, never both (refactor E4).
+            if k.left_out > 0 {
+                let (n, s) = (k.left_out, if k.left_out == 1 { "" } else { "s" });
+                pressure += &match k.holds {
+                    mpfree_seq::Holds::Notes => {
+                        format!("; {n} pad hit{s} left out: no note played there")
+                    }
+                    mpfree_seq::Holds::Hits => {
+                        format!(
+                            "; {n} note{s} left out: the clip holds pads, and no pad played them"
+                        )
+                    }
+                };
+            }
             let where_to = format!(
                 "{into} slot {} of {}",
                 k.slot + 1,
@@ -5170,6 +5241,12 @@ impl TimeControl {
             KeepError::NoTrack(_) => format!("{name} left out: there is no such track"),
             KeepError::NoSlot(_) => format!("{name} left out: every slot holds a clip"),
             KeepError::Nothing => format!("{name} left out: nothing played"),
+            KeepError::OtherKind(mpfree_seq::Holds::Notes) => {
+                format!("{name} left out: its clip holds notes, and the pads played none there")
+            }
+            KeepError::OtherKind(mpfree_seq::Holds::Hits) => {
+                format!("{name} left out: its clip holds pads, and no pad played its notes")
+            }
             KeepError::Model(m) => format!("{name} left out: {m:?}"),
         }
     }
@@ -5518,6 +5595,123 @@ impl TimeControl {
         ))
     }
 
+    /// Convert to notes' preview (step sequencer refactor E1,
+    /// `mpfree_seq::convert`): what converting clip `slot` of `track`, one
+    /// that follows the pads, would make through the pads as they play
+    /// now, or every reason it can't, STOP's too; nothing changes. It stays
+    /// open, its Convert checking the clip and the pads again, until
+    /// Cancel, Convert or another action. A kit's clip, a loop's cell or a
+    /// clip of notes opens none.
+    fn convert_preview(&mut self, track: usize, slot: usize) -> Result<String, String> {
+        let c = self.project.clip(track, slot).ok_or_else(|| {
+            format!(
+                "convert to notes: slot {} of track {} is empty",
+                slot + 1,
+                track + 1
+            )
+        })?;
+        let name = c.name.clone();
+        if c.looped.is_some() {
+            return Err("convert to notes: a loop's cell holds a loop, not notes".to_string());
+        }
+        if c.holds == mpfree_seq::Holds::Notes {
+            return Err(format!(
+                "convert to notes: {name} uses notes already: each keeps its pitch, whatever the pads play"
+            ));
+        }
+        if self.take_holds(track) == mpfree_seq::Holds::Hits {
+            return Err(format!(
+                "convert to notes: {name} is a kit's clip, and a kit's clips always follow the pads"
+            ));
+        }
+        let rows = self.pad_rows.get(track).copied().unwrap_or(PadRows::PADS);
+        let made = c.convert_to_notes(|p| rows.notes(usize::from(p)));
+        let line = match &made {
+            Ok(m) => {
+                let s = |n: usize| if n == 1 { "" } else { "s" };
+                let mut line = format!(
+                    "Convert to notes: {} pad hit{} become{} {} note{}. Keeps what {name} plays now with these pads ({})",
+                    m.hits,
+                    s(m.hits),
+                    if m.hits == 1 { "s" } else { "" },
+                    m.notes,
+                    s(m.notes),
+                    pads_range(&rows)
+                );
+                if self.info.state.rolling() {
+                    line.push_str(". Press STOP first, then Convert");
+                }
+                line
+            }
+            Err(why) => {
+                let grid = grid_of(c);
+                let mut words: Vec<String> = why
+                    .iter()
+                    .map(|r| refused_words(r, grid, c.length))
+                    .collect();
+                if self.info.state.rolling() {
+                    words.push("press STOP first".to_string());
+                }
+                format!(
+                    "Convert to notes can't keep what {name} plays yet: {}. Cancel closes this",
+                    words.join("; ")
+                )
+            }
+        };
+        self.convert_asked = Some(ConvertAsked {
+            track,
+            slot,
+            clip: c.clone(),
+            rows,
+            made: made.map_err(|_| ()),
+            line: line.clone(),
+        });
+        self.changed = true;
+        Ok(line)
+    }
+
+    /// Convert to notes (E1), after its preview: clip `slot` of `track`
+    /// becomes what the preview showed, its notes, locks and the original
+    /// Restore brings back together, as one edit UNDO takes back. Refused,
+    /// and nothing changes, while the transport rolls or if the clip or
+    /// the pads changed since the preview.
+    fn convert(&mut self, track: usize, slot: usize) -> Result<String, String> {
+        let asked = match self.convert_asked.take() {
+            Some(a) if (a.track, a.slot) == (track, slot) => a,
+            other => {
+                self.convert_asked = other;
+                return Err(
+                    "convert to notes: › on the Melody row shows what it would do first"
+                        .to_string(),
+                );
+            }
+        };
+        self.changed = true;
+        if self.project.clip(track, slot) != Some(&asked.clip) {
+            return Err("convert to notes: the clip changed since the preview: look again".into());
+        }
+        if self.pad_rows.get(track) != Some(&asked.rows) {
+            return Err("convert to notes: the pads changed since the preview: look again".into());
+        }
+        if self.info.state.rolling() {
+            let line = "convert to notes: press STOP first, then Convert".to_string();
+            self.convert_asked = Some(asked);
+            return Err(line);
+        }
+        let Ok(made) = asked.made else {
+            return Err("convert to notes: the preview named what to fix first".into());
+        };
+        let (hits, notes) = (made.hits, made.notes);
+        self.replace(track, slot, made.clip, Replaced::Convert)?;
+        let s = |n: usize| if n == 1 { "" } else { "s" };
+        Ok(format!(
+            "Converted: {hits} pad hit{} {} {notes} note{} (UNDO takes it back)",
+            s(hits),
+            if hits == 1 { "is" } else { "are" },
+            s(notes)
+        ))
+    }
+
     /// Put `clip` in place of clip `slot` of `track`, as an edit for
     /// `why`, and compile; on a refusal the project is as it was.
     fn replace(
@@ -5532,6 +5726,7 @@ impl TimeControl {
             Replaced::Reload => "reload",
             Replaced::Mutate => "mutate",
             Replaced::Restore => "restore",
+            Replaced::Convert => "convert to notes",
         };
         self.takes
             .replace_clip(&mut self.project, track, slot, clip, why)
@@ -6171,6 +6366,12 @@ impl TimeControl {
         st.cues = self.cues.clone();
         st.mute_wait = self.mute_wait().cloned();
         st.saved = self.saved.iter().map(|s| (s.0, s.1)).collect();
+        st.converting = self.convert_asked.as_ref().map(|c| Converting {
+            track: c.track,
+            slot: c.slot,
+            ok: c.made.is_ok() && !self.info.state.rolling(),
+            line: c.line.clone(),
+        });
         st.reloads = self
             .reloads
             .iter()
@@ -6465,6 +6666,114 @@ pub(super) fn bar_beat(t: Tick, meter: mpfree_transport::time::Meter) -> String 
     }
 }
 
+/// Step action `a` on a clip of notes ([`on_rows`]), with the notes it
+/// puts on a pad's rows made that pad's trigger group (trigger groups,
+/// `mpfree_seq::groups`): on a pad row a step is the pad's trigger, so
+/// its notes take the pad's number and the root's chance, condition and
+/// on, and decide together as the pad's hit does. A tap that puts a
+/// chord's missing notes back joins the chord already on the step; other
+/// notes put where the pad's number is taken on their tick get a free
+/// one, so two gestures never merge. Refused (no change) when a tick has
+/// no number left.
+fn on_notes(
+    grid: Grid,
+    clip: &Clip,
+    a: StepAction,
+    rows: &PadRows,
+    act: impl Fn(StepAction) -> (mpfree_seq::steps::Edit, Option<u64>, String),
+) -> (mpfree_seq::steps::Edit, Option<u64>, String) {
+    let (mut edit, key, line) = on_rows(grid, clip, a, rows, act);
+    // The pads whose rows the action puts notes on, and whether a tap's
+    // notes join the pad's chord already there.
+    let (pads, join): (Vec<u8>, bool) = match a {
+        StepAction::Tap { pad, .. } if pad != LINE => (vec![pad], true),
+        StepAction::Change {
+            change: mpfree_seq::steps::Change::Note(to),
+            pad,
+            ..
+        }
+        | StepAction::ChangeSteps {
+            change: mpfree_seq::steps::Change::Note(to),
+            pad,
+            ..
+        } if pad != LINE => (vec![to], false),
+        StepAction::Change { pad, .. }
+        | StepAction::ChangeSteps { pad, .. }
+        | StepAction::Values { pad, .. }
+        | StepAction::CopySteps { pad, .. }
+            if pad != LINE =>
+        {
+            (vec![pad], false)
+        }
+        StepAction::Enter { keys, n, .. } | StepAction::Keys { keys, n, .. } => (
+            keys[..usize::from(n).min(super::MAX_PEN)]
+                .iter()
+                .map(|k| k.0)
+                .collect(),
+            false,
+        ),
+        _ => (Vec::new(), false),
+    };
+    if pads.is_empty() || edit.add.is_empty() {
+        return (edit, key, line);
+    }
+    // Each added note on a pad's rows: (index, the pad's number, whether
+    // it is the pad's root).
+    let mut claimed: Vec<(usize, u8, bool)> = Vec::new();
+    for &pad in &pads {
+        let notes = rows.notes(usize::from(pad));
+        if notes.is_empty() || usize::from(pad) >= 16 {
+            continue;
+        }
+        let root = notes.last().copied();
+        for (i, n) in edit.add.iter().enumerate() {
+            if notes.contains(&n.note) && !claimed.iter().any(|c| c.0 == i) {
+                claimed.push((i, mpfree_seq::groups::pad_group(pad), Some(n.note) == root));
+            }
+        }
+    }
+    if claimed.is_empty() {
+        return (edit, key, line);
+    }
+    // One trigger per pad and tick: the root's settings (the first note's
+    // where the root isn't put in).
+    type Shared = (u8, mpfree_seq::Cond, bool);
+    let mut model: Vec<((Tick, u8), Shared)> = Vec::new();
+    for pass in [true, false] {
+        for &(i, g, root) in &claimed {
+            let n = edit.add[i];
+            if root == pass && !model.iter().any(|(k, _)| *k == (n.tick, g)) {
+                model.push(((n.tick, g), (n.chance, n.cond, n.on)));
+            }
+        }
+    }
+    let mut mine: Vec<mpfree_seq::Note> = claimed
+        .iter()
+        .map(|&(i, g, _)| {
+            let n = edit.add[i];
+            let (chance, cond, on) = model
+                .iter()
+                .find(|(k, _)| *k == (n.tick, g))
+                .map(|(_, m)| *m)
+                .expect("each claimed note has its trigger");
+            mpfree_seq::Note {
+                group: g,
+                chance,
+                cond,
+                on,
+                ..n
+            }
+        })
+        .collect();
+    if mpfree_seq::groups::settle_new(clip, &edit.erase, &mut mine, join).is_err() {
+        return (mpfree_seq::steps::Edit::default(), key, line);
+    }
+    for (&(i, _, _), n) in claimed.iter().zip(mine) {
+        edit.add[i] = n;
+    }
+    (edit, key, line)
+}
+
 /// Step action `a` on a clip of notes, whose pad rows stand for the notes
 /// `rows` gives each pad (step 5c), as `act` takes an action on a clip of
 /// hits: on each of the pad's notes, root first, joined as one edit, with
@@ -6473,7 +6782,7 @@ pub(super) fn bar_beat(t: Tick, meter: mpfree_transport::time::Meter) -> String 
 /// Note knob puts the step on another pad's notes (`swap`); keys entered
 /// on the line are their pads' notes. The line and the rows of notes no
 /// pad plays go to `act` as they are.
-fn on_notes(
+fn on_rows(
     grid: Grid,
     clip: &Clip,
     a: StepAction,
@@ -6826,4 +7135,89 @@ pub(crate) fn grid_of(c: &Clip) -> Grid {
         .filter(|_| mpfree_seq::steps::SIZES.contains(&c.step))
         .or_else(|| Grid::new(DEFAULT_SIZE))
         .expect("a 1/16 is a step size")
+}
+
+/// Convert to notes' preview, open (E1): the clip and the pads it read,
+/// and whether it would convert.
+struct ConvertAsked {
+    track: usize,
+    slot: usize,
+    clip: Clip,
+    rows: PadRows,
+    made: Result<mpfree_seq::convert::Converted, ()>,
+    /// What it said: the hint line while it is open.
+    line: String,
+}
+
+/// The notes the pads play, lowest root to highest, for Convert to notes'
+/// preview (E1): "C3 to D#4".
+fn pads_range(rows: &PadRows) -> String {
+    let roots = (0..16).filter_map(|p| rows.notes(p).last().copied());
+    match (roots.clone().min(), roots.max()) {
+        (Some(lo), Some(hi)) if lo != hi => format!(
+            "{} to {}",
+            crate::synth::note_name(lo),
+            crate::synth::note_name(hi)
+        ),
+        (Some(n), _) => crate::synth::note_name(n),
+        _ => "playing nothing".to_string(),
+    }
+}
+
+/// Why Convert to notes can't keep what a clip plays, in its preview's
+/// words (E1): the steps on `grid` in a clip `length` ticks long.
+fn refused_words(r: &mpfree_seq::convert::Refused, grid: Grid, length: Tick) -> String {
+    use mpfree_seq::convert::Refused;
+    let pad = |p: u8| crate::rec_arm::pad_name(usize::from(p));
+    let step = |tick: Tick| grid.place(length, tick).0 + 1;
+    let kept = |original: bool| {
+        if original {
+            " (in the original Restore brings back)"
+        } else {
+            ""
+        }
+    };
+    match *r {
+        Refused::Notes => "it uses notes already".to_string(),
+        Refused::Loop => "a loop's cell holds a loop".to_string(),
+        Refused::PadLock {
+            pad: p,
+            param,
+            tick,
+            original,
+        } => format!(
+            "{}'s {} on step {}{}: a pad's own setting has no note to follow, and the lane's × removes it",
+            pad(p),
+            crate::sampler::pad_field(param)
+                .map_or("setting", |f| crate::sampler::pad_info(f, 1).name),
+            step(tick),
+            kept(original)
+        ),
+        Refused::NoNote { pad: p } => format!(
+            "{} plays no note now: take its steps off, or move the pads so it plays one",
+            pad(p)
+        ),
+        Refused::Overlap { a, b, note, tick } => format!(
+            "{} and {} both play {} and sound together on step {}: as notes, one would cut the other short",
+            pad(a),
+            pad(b),
+            crate::synth::note_name(note),
+            step(tick)
+        ),
+        Refused::Room { notes } => format!(
+            "it would hold {notes} notes, more than a clip holds ({})",
+            mpfree_seq::MAX_NOTES
+        ),
+        Refused::LocksMeet { a, b, tick } => format!(
+            "{} and {} play the same root, so their locks on step {} would land on one row: take one off",
+            pad(a),
+            pad(b),
+            step(tick)
+        ),
+        Refused::Twice { pad: p, tick } => format!(
+            "{} is hit twice on step {} with a different chance or condition: as notes, a pad's notes on one step decide together, so take one off or set them alike",
+            pad(p),
+            step(tick)
+        ),
+    }
 }

@@ -606,7 +606,7 @@ impl Desk<'_> {
                 let recording = time.info().state == mpfree_transport::State::Recording;
                 modpanels::set_param(mix, addr, value, recording);
             }
-            gui::FromUi::ThrowKnobLift(addr) => mix.modu.release(addr),
+            gui::FromUi::ThrowKnobLift(addr) => mix.modu.release(crate::hand::Hand::Screen, addr),
             gui::FromUi::ThrowEffect { on, fx: throw } => {
                 fx.extend(panels.open_throw_mix(app, mix, on, throw))
             }

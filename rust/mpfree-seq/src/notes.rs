@@ -285,11 +285,18 @@ fn fit_len(len: Tick) -> Tick {
 }
 
 /// The edit that turns each `(old, new)` into `new`, leaving out the ones
-/// that stay the same; each note's own locks go with it.
+/// that stay the same; each note's own locks go with it. A trigger group
+/// moved whole stays one, and notes moved without the rest of theirs
+/// decide alone ([`crate::groups::settle_moved`]); refused (no change)
+/// when a trigger would need a number its new tick has none left of.
 fn replace(clip: &Clip, pairs: Vec<(Note, Note)>) -> Edit {
+    let (old, mut new): (Vec<Note>, Vec<Note>) = pairs.into_iter().filter(|(a, b)| a != b).unzip();
+    if crate::groups::settle_moved(clip, &old, &old, &mut new).is_err() {
+        return Edit::default();
+    }
     let mut e = Edit::default();
     let mut used = vec![false; clip.locks.len()];
-    for (old, new) in pairs {
+    for (old, new) in old.into_iter().zip(new) {
         if old == new {
             continue;
         }
@@ -489,8 +496,12 @@ pub fn add(clip: &Clip, note: Note) -> Edit {
     if c.add_note(note).is_err() || clip.notes.len() >= MAX_NOTES {
         return Edit::default();
     }
+    let mut add = vec![note];
+    if crate::groups::settle_new(clip, &[], &mut add, false).is_err() {
+        return Edit::default();
+    }
     Edit {
-        add: vec![note],
+        add,
         ..Edit::default()
     }
 }
@@ -499,7 +510,7 @@ pub fn add(clip: &Clip, note: Note) -> Edit {
 /// (first start to last end) rounded up to whole `division`s. Copies that
 /// would start past the clip's end wrap.
 pub fn duplicate(clip: &Clip, sel: &[usize], division: Tick) -> Edit {
-    let notes: Vec<Note> = picked(clip, sel).map(|(_, n)| n).collect();
+    let notes = crate::groups::copy_out(clip, sel);
     let (Some(first), Some(end)) = (
         notes.iter().map(|n| n.tick).min(),
         notes.iter().map(|n| n.tick + n.len).max(),
@@ -524,20 +535,27 @@ pub fn duplicate(clip: &Clip, sel: &[usize], division: Tick) -> Edit {
     e
 }
 
-/// Put `notes` (a copy taken from a clip, `from` its first start) in at
-/// `at`: each keeps its place from `from`; starts wrap round the clip.
+/// Put `notes` (a copy taken from a clip, `from` its first start, by
+/// [`crate::groups::copy_out`]) in at `at`: each keeps its place from
+/// `from`; starts wrap round the clip. A trigger group in the copy is a
+/// new trigger, with a free number where its tick has its number already
+/// (refused, no change, when none is left).
 pub fn paste(clip: &Clip, notes: &[Note], at: Tick, from: Tick) -> Edit {
     if clip.notes.len() + notes.len() > MAX_NOTES {
         return Edit::default();
     }
+    let mut add: Vec<Note> = notes
+        .iter()
+        .map(|n| Note {
+            tick: wrap(n.tick - from + at, clip.length),
+            ..*n
+        })
+        .collect();
+    if crate::groups::settle_new(clip, &[], &mut add, false).is_err() {
+        return Edit::default();
+    }
     Edit {
-        add: notes
-            .iter()
-            .map(|n| Note {
-                tick: wrap(n.tick - from + at, clip.length),
-                ..*n
-            })
-            .collect(),
+        add,
         ..Edit::default()
     }
 }
@@ -642,6 +660,8 @@ fn respace(
     if !touch_room(clip.touch.len(), &runs) {
         return None;
     }
+    // Two triggers that land on one tick stay two.
+    crate::groups::settle_moved(clip, &clip.notes, &clip.notes, &mut add).ok()?;
     Some(Edit {
         erase: clip.notes.clone(),
         add,
@@ -673,16 +693,20 @@ pub fn split(clip: &Clip, sel: &[usize], parts: u32) -> Edit {
         return Edit::default();
     }
     let mut e = Edit::default();
-    for n in notes {
+    // Each part `k` of the notes, made from them: a trigger split whole
+    // into equal parts is a trigger at each part.
+    let mut rows: Vec<Vec<Note>> = vec![Vec::with_capacity(notes.len()); parts as usize];
+    for &n in &notes {
         e.erase.push(n);
         let each = n.len / parts;
-        for k in 0..parts {
+        for (k, row) in rows.iter_mut().enumerate() {
+            let k = k as Tick;
             let len = if k == parts - 1 {
                 n.len - each * k
             } else {
                 each
             };
-            e.add.push(Note {
+            row.push(Note {
                 tick: wrap(n.tick + each * k, clip.length),
                 len,
                 // The first part keeps the pressure (what falls past its
@@ -692,6 +716,24 @@ pub fn split(clip: &Clip, sel: &[usize], parts: u32) -> Edit {
             });
         }
     }
+    let mut settled = Vec::with_capacity(notes.len() * parts as usize);
+    for (k, mut row) in rows.into_iter().enumerate() {
+        let ok = if k == 0 {
+            crate::groups::settle_moved(clip, &e.erase, &notes, &mut row)
+        } else {
+            crate::groups::settle_copied_beside(clip, &e.erase, &settled, &notes, &mut row)
+        };
+        if ok.is_err() {
+            return Edit::default();
+        }
+        settled.extend(row);
+    }
+    // In the order they were made: each note's parts together.
+    let n = notes.len();
+    e.add = (0..n)
+        .flat_map(|i| (0..parts as usize).map(move |k| (k, i)))
+        .map(|(k, i)| settled[k * n + i])
+        .collect();
     e
 }
 
@@ -720,9 +762,18 @@ pub fn humanize(clip: &Clip, sel: &[usize], h: Humanize, seed: u64) -> Edit {
         r as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
     };
     let lean = f64::from(h.eagerness.clamp(-100, 100)) / 100.0;
+    // A trigger group's notes move by one amount, so they stay one.
+    let mut moved: Vec<((Tick, u8), Tick)> = Vec::new();
+    let grouped = clip.holds == crate::Holds::Notes;
     map(clip, sel, |n| {
         let (a, b, c) = (rand(), rand(), rand());
-        let dt = ((a + lean) / (1.0 + lean.abs()) * h.time as f64).round() as Tick;
+        let mut dt = ((a + lean) / (1.0 + lean.abs()) * h.time as f64).round() as Tick;
+        if grouped && n.group != 0 {
+            match moved.iter().find(|(k, _)| *k == (n.tick, n.group)) {
+                Some(&(_, first)) => dt = first,
+                None => moved.push(((n.tick, n.group), dt)),
+            }
+        }
         let dl = (b * f64::from(h.length.min(100)) / 100.0 * n.len as f64).round() as Tick;
         let dv =
             (c * f64::from(h.velocity.min(100)) / 100.0 * f64::from(n.velocity)).round() as i32;

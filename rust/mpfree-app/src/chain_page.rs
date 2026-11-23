@@ -255,15 +255,13 @@ impl ChainPage {
         })
     }
 
-    /// A finger left Q-Link `k`: a knob of the effect lets go of its
-    /// parameter (the engine's `Untouch` after a recorded move).
+    /// A finger left Q-Link `k`: a knob of the effect, or a macro, lets go
+    /// of its parameter (the engine's `Untouch` after a recorded move).
     pub fn released(&self, k: usize) -> Option<Turned> {
         let c = self.bind.card(k);
-        match c.target {
-            Some(a) if !matches!(a.owner, Owner::Macro(_)) => {
-                Some(Turned::Chain(ChainAction::Release(a)))
-            }
-            _ => None,
+        match c.target?.owner {
+            Owner::Macro(m) => Some(Turned::Macro(MacroAction::Release(m as usize))),
+            _ => Some(Turned::Chain(ChainAction::Release(c.target?))),
         }
     }
 
@@ -431,7 +429,8 @@ mod tests {
             Some(Turned::Macro(MacroAction::Macro { m: 1, value })) => assert!(value > 0.0),
             other => panic!("{other:?}"),
         }
-        assert_eq!(p.released(1), None);
+        // Letting go of the Q-Link lets go of the macro.
+        assert_eq!(p.released(1), Some(Turned::Macro(MacroAction::Release(1))));
         // The macros' own names, once their state comes.
         let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
         p.set_macros(&mut ui, Song::new().macros_state(0));
