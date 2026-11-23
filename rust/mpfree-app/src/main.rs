@@ -116,6 +116,7 @@ mod heat;
 mod imagecopy;
 mod instrument_list;
 mod instruments;
+mod kernel_log;
 mod kit;
 mod locks;
 mod loop_row;
@@ -3936,6 +3937,7 @@ fn player(o: &Options, timed: bool) -> Result<(), String> {
     out.sink = Some(to_ui.clone());
     if !timed {
         follow_journal(to_ui.clone());
+        follow_kernel(to_ui.clone());
     }
     let result = player_session(o, &mut out, timed, &from_ui, &xy);
     if let Err(e) = &result {
@@ -3988,6 +3990,20 @@ fn read_patterns(path: &Path) -> Result<String, String> {
         return Err(format!("larger than {} KB", PATTERNS_MAX_BYTES / 1024));
     }
     Ok(text)
+}
+
+/// The kernel's stick and memory errors, followed (read-only) onto the
+/// status board (`kernel_log`).
+fn follow_kernel(tx: SyncSender<gui::ToUi>) {
+    let lines = tx.clone();
+    kernel_log::follow(
+        move |l| {
+            println!("{l}");
+            let _ = io::stdout().flush();
+            let _ = lines.try_send(gui::ToUi::Line(l));
+        },
+        move |r| tx.send(gui::ToUi::Problem(r)).is_ok(),
+    );
 }
 
 /// The system log, followed (`journalctl -f`, read-only) into the Console page.

@@ -78,6 +78,10 @@ Each problem below starts with its colour. A **Note** is listed on the System st
 
 **Yellow.** The MPC has little time to spare making the sound. If it gets any busier you may hear gaps. **Try:** play fewer sounds at once, or turn off an effect you don't need.
 
+### The MPC ran out of memory
+
+**Red.** Memory ran out, so the MPC stopped part of MPFree to free some: a plugin, or MPFree itself, which then started again safely. A sound it was making stopped. **Try:** save your project, then remove samples, kits and plugins you don't use. MPFree reads this from the MPC's own log, so when MPFree had to start again, it still says why.
+
 ### Memory is running low
 
 **Yellow.** Little memory is left for sounds, so the next sample or kit may not load. **Try:** remove samples you don't use, or save and start a smaller project.
@@ -105,6 +109,14 @@ Each problem below starts with its colour. A **Note** is listed on the System st
 ### Part of a sound went quiet
 
 **Red.** The stick or SD card didn't keep up with a sound playing from it, so part of the sound played as silence. **Try:** play fewer audio tracks or long samples at once. If it keeps happening, try a faster stick or card.
+
+### The stick had a read or write error
+
+**Red.** The MPC couldn't read or write part of the stick, so something being saved, recorded or played from it may be missing. **Try:** save again and check it opens. If it keeps happening, copy your music off the stick and use another one.
+
+### The stick's files have an error
+
+**Red.** The MPC found a mistake in how the stick keeps its files, so a file on it may be damaged or missing. **Try:** save your project under a new name, then copy your music off the stick on a computer and check the stick there.
 
 ### Saving didn't work
 
