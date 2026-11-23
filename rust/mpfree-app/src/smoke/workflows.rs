@@ -5555,4 +5555,99 @@ mod tests {
             );
         });
     }
+
+    /// The arp on a layout of yours (the XY plan's phase 2, PR 2.4b): SHIFT
+    /// and a touch on the Arp panel's Gate join the armed track's arp gate;
+    /// the pad plays it without changing the gate as set, Go back gives
+    /// that back, Stay keeps the pad's, and UNDO puts it back.
+    #[test]
+    fn a_layout_of_yours_plays_the_arps_gate_and_lets_go_of_it() {
+        on_big_stack(|| {
+            use crate::xy_widgets::XY_BANNER;
+            use mpfree_play::mpfree_param::{arp, Owner};
+            use mpfree_ui::Touch;
+            let mut s = Session::new();
+            s.play_view("All");
+            s.press(crate::play_page::XY, "xy-chip", "").settle();
+            s.press(crate::xy_list::XY_LIST, "new", "+ New layout")
+                .settle();
+            s.press(crate::xy_setup::XY_SETUP, "plus", "+ across")
+                .settle();
+            // NOTE REPEAT + MENU: the Arp panel, its Gate the second slider.
+            s.button_with("NOTE REPEAT", "MENU").settle();
+            let gate = s
+                .controls()
+                .into_iter()
+                .find(|o| o.widget == mpfree_arp_ui::view::QLINKS && o.target.index == 1)
+                .unwrap_or_else(|| panic!("the Arp panel's Gate: {:?}", s.lines))
+                .target;
+            s.button_edge("SHIFT", true);
+            s.press_target(&gate).settle();
+            s.button_edge("SHIFT", false);
+            let across = s.xy_yours.yours[0].layout.across.targets.clone();
+            assert_eq!(across.len(), 1, "the gate joined across: {:?}", s.lines);
+            let addr = across[0].addr;
+            assert!(
+                matches!(addr.owner, Owner::Arp(_)) && addr.param == arp::GATE,
+                "{addr:?}"
+            );
+            s.press(XY_BANNER, "done", "Done").settle();
+            let set = |s: &Session| f32::from(s.app.eng().settings().gate);
+            let plays = |s: &Session| f32::from(s.app.eng().live().gate);
+            let before = set(&s);
+
+            // The pad plays it; the gate as set stays as it was.
+            s.button_with("SHIFT", "NEXT SEQ").settle();
+            assert_eq!(s.page(), crate::play_page::XY_FULL_PAGE);
+            let pad = s
+                .control(crate::play_page::XY, "xy", "")
+                .expect("the pad")
+                .target
+                .rect;
+            let (from, to) = (across[0].from, across[0].to);
+            let unit = |v: f32| ((v - from) / (to - from)).clamp(0.0, 1.0);
+            let x = if unit(before) > 0.5 {
+                pad.x + pad.w / 20
+            } else {
+                pad.x + pad.w * 19 / 20
+            };
+            let y = pad.y + pad.h / 2;
+            if let Some(a) = s.screen.touch(9, Touch::Down, x, y) {
+                s.route(a);
+            }
+            s.run_for(0.3);
+            let held = plays(&s);
+            assert!(
+                (held - before).abs() > 20.0,
+                "the pad moved the gate: {before} → {held}"
+            );
+            assert_eq!(set(&s), before, "the gate as set stays");
+            assert!(s.mix.xy_own().holding() > 0, "held by the pad's hand");
+            if let Some(a) = s.screen.touch(9, Touch::Up, x, y) {
+                s.route(a);
+            }
+            s.run_for(1.0);
+            assert_eq!(plays(&s), before, "Go back");
+            assert_eq!(s.mix.xy_own().holding(), 0, "let go");
+            assert!(s.app.eng().hand().is_empty());
+
+            // Stay keeps the pad's gate as set; UNDO gives the old one back.
+            s.press(crate::xy_widgets::XY_BAR, "xy-bar", "Let go: Go back")
+                .settle();
+            if let Some(a) = s.screen.touch(9, Touch::Down, x, y) {
+                s.route(a);
+            }
+            s.run_for(0.3);
+            if let Some(a) = s.screen.touch(9, Touch::Up, x, y) {
+                s.route(a);
+            }
+            s.run_for(0.5).settle();
+            assert_eq!((set(&s), plays(&s)), (held, held), "Stay");
+            assert_eq!(s.mix.xy_own().holding(), 0, "nothing stays held");
+            assert!(s.app.eng().hand().is_empty());
+            s.button("UNDO").settle();
+            s.run_for(0.2);
+            assert_eq!((set(&s), plays(&s)), (before, before), "UNDO");
+        });
+    }
 }

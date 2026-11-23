@@ -365,7 +365,7 @@ pub const NO_HOLD: &str =
 
 /// Why Add is greyed on a synth's or a pad's own setting.
 pub const NO_ADD: &str =
-    "Add works on the mixer, effects and outside gear for now: a synth's or a pad's own setting moves by Set";
+    "Add works on the mixer, effects and outside gear for now: a synth's, a pad's or an arp's own setting moves by Set";
 
 /// What a learned layout button plays (Learn's Play card: XY layout next
 /// and back, `step` presses): the layout of yours `step` on from the one
@@ -546,7 +546,9 @@ impl XySong {
                 let (was, place) = m.name_of(t.addr);
                 let remembered = m.names.iter().any(|(a, ..)| *a == t.addr);
                 match look(t.addr) {
-                    _ if follows && matches!(t.addr.owner, Owner::Inst(_)) => kept.push(t),
+                    _ if follows && matches!(t.addr.owner, Owner::Inst(_) | Owner::Arp(_)) => {
+                        kept.push(t)
+                    }
                     Ok(s) if !remembered || s.name == was => {
                         seen.push((t.addr, s.name, s.place));
                         kept.push(t);
