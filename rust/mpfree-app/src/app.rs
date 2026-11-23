@@ -9999,6 +9999,47 @@ mod tests {
     }
 
     #[test]
+    fn shift_and_the_wheel_jump_through_the_pattern_groups() {
+        let mut app = ready();
+        app.load_patterns("Skip = 1 . 3 2 . 3 x:2 .\n");
+        app.toggle_panel();
+        app.arp_action(ArpAction::Mode(Mode::Pattern));
+        assert_eq!(app.eng().settings().mode, Mode::Pattern);
+        let groups = mpfree_arp::groups::starts();
+        app.wheel(3);
+        assert_eq!(app.pattern_index, 3);
+        app.button(button::SHIFT, true, 0.0);
+        // On: the next group's first pattern, each turn a group.
+        app.wheel(1);
+        assert_eq!(app.pattern_index, groups[1].1);
+        assert_eq!(app.patterns[app.pattern_index].0, "Offbeats");
+        app.wheel(1);
+        app.wheel(1);
+        assert_eq!(app.pattern_index, groups[3].1);
+        assert_eq!(*app.eng().pattern(), app.patterns[groups[3].1].1);
+        // Back: from inside a group to its first pattern, then the group
+        // before.
+        app.button(button::SHIFT, false, 0.0);
+        app.wheel(2);
+        app.button(button::SHIFT, true, 0.0);
+        app.wheel(-1);
+        assert_eq!(app.pattern_index, groups[3].1);
+        app.wheel(-1);
+        assert_eq!(app.pattern_index, groups[2].1);
+        // The owner's patterns are the last group; past it nothing moves.
+        for _ in 0..20 {
+            app.wheel(1);
+        }
+        assert_eq!(app.patterns[app.pattern_index].0, "Skip");
+        assert!(app.wheel(1).is_empty());
+        for _ in 0..20 {
+            app.wheel(-1);
+        }
+        assert_eq!(app.pattern_index, 0);
+        assert!(app.wheel(-1).is_empty());
+    }
+
+    #[test]
     fn note_repeat_and_menu_open_the_arp_panel() {
         let mut app = ready();
         held(&mut app, REPEAT, |a| a.button(MENU, true, 0.0));

@@ -445,6 +445,30 @@ impl App {
                 fx.extend(self.arp_changed());
                 fx
             }
+            // SHIFT + wheel: the first pattern of the group before or after
+            // (back from inside a group, its own first one).
+            Mode::Pattern if self.shift => {
+                let starts: Vec<usize> =
+                    mpfree_arp::groups::of_list(self.patterns.iter().map(|(n, _)| n.as_str()))
+                        .into_iter()
+                        .map(|(_, at)| at)
+                        .collect();
+                let here = starts
+                    .iter()
+                    .rposition(|at| *at <= self.pattern_index)
+                    .unwrap_or(0);
+                let to = if delta > 0 {
+                    starts.get(here + 1)
+                } else if starts.get(here) != Some(&self.pattern_index) {
+                    starts.get(here)
+                } else {
+                    here.checked_sub(1).and_then(|g| starts.get(g))
+                };
+                match to {
+                    Some(&i) if i != self.pattern_index => self.load_pattern(i),
+                    _ => Vec::new(),
+                }
+            }
             Mode::Pattern => {
                 let i = (self.pattern_index as i32 + delta).clamp(0, self.patterns.len() as i32 - 1)
                     as usize;

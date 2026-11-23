@@ -39,6 +39,7 @@
 
 - [Buttons and controls](reference/controls.md)
 - [Prefs](reference/prefs.md)
+- [Arp patterns](reference/arp-patterns.md)
 - [Making your own theme](reference/making-a-theme.md)
 - [When something goes wrong](reference/when-something-goes-wrong.md)
 - [Coming from an MPC](reference/coming-from-an-mpc.md)
