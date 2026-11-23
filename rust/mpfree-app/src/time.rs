@@ -9262,6 +9262,22 @@ mod tests {
         assert_eq!(sorted(&h).len(), 1);
         h.act(TimeAction::Undo).unwrap();
         assert_eq!(sorted(&h), c.notes);
+        // The clip's end handle (piano roll plan 1A.2): the Steps' length
+        // edit, one take; no shorter than just after the last note start.
+        let length = |h: &TimeHost| h.control.project.clip(0, 0).unwrap().length;
+        assert_eq!(
+            h.act(TimeAction::Edit(E::Length { to: 7680 })).unwrap(),
+            "edit: the clip is 32 steps long"
+        );
+        assert_eq!(length(&h), 7680);
+        assert_eq!(
+            h.act(TimeAction::Edit(E::Length { to: 960 })).unwrap(),
+            "edit: a note or lock starts on step 9: the clip can't end before it"
+        );
+        assert_eq!(length(&h), 7680);
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(length(&h), 3840);
+        assert_eq!(sorted(&h), c.notes);
         assert_eq!(
             h.act(TimeAction::Edit(E::Button(0))).unwrap(),
             "edit: closed"

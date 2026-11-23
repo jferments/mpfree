@@ -174,6 +174,7 @@ Rows open at least 40 pixels tall, big enough for a fingertip, and the roll open
 - **The overview** over the ruler shows the whole clip with the part on screen outlined. Tap it to jump there, drag along it to move the window, or tap it twice quickly to see the whole clip.
 - **Fit**, left of the overview, fits the picked notes on screen, or every note when none are picked.
 - **Follow**, at the overview's right end, pages the roll along with the playhead while it is lit. Scrolling by hand turns it off.
+- **The clip's end** has a grip on the ruler. Drag it left to make the clip shorter, or right to make it longer: it goes by bars, or by steps once you've zoomed in far enough to aim at one (hold **SHIFT** as you touch it for steps at any zoom). A readout says the new length, and what would be past the new end is shaded. It stops just after the last note that starts or the last lock, so shortening never takes a note out; a long note may still run on past the end, as on the Steps view. To go past the edge of the screen, push the grip against the roll's right edge and hold it there: the clip grows a bar (or a step) at a time and the roll scrolls with it. Lift your finger to make the change, which is one **UNDO**, the same length change the Steps view makes.
 - **SHIFT + data wheel** scrolls the rows.
 
 The zoom and scroll stay with each clip: go to Steps or another clip and back, and the roll is as you left it.

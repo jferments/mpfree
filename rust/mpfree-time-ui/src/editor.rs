@@ -212,6 +212,9 @@ pub const START_HANDLE: usize = 1 << 24;
 /// 1B.5): `Values`' index; its `set` is (note, 0) for each note the
 /// finger's path crossed.
 pub const ERASE_SWEEP: usize = 1 << 28;
+/// The clip's end handle dragged ([`EditAction::Length`], plan 1A.2):
+/// `Stretch`'s index; its `to` is the clip's new length.
+pub const CLIP_END: usize = usize::MAX - 2;
 /// The step the tracker and the Euclidean fill use when the snap is off
 /// or finer than a grid allows (1/32): a 1/16.
 pub const STEP_FALLBACK: Tick = PPQ as Tick / 4;
@@ -341,6 +344,12 @@ pub enum EditAction {
     /// path crossed comes out, by its index on the picture of revision
     /// `rev`. One take, however many notes.
     Sweep { notes: Vec<usize>, rev: u64 },
+    /// The clip's end handle on the ruler, as its finger lifted (plan
+    /// 1A.2): the clip made `to` ticks long, the nearest whole step, by
+    /// the Steps' length edit at its step size ([`Grid::resize`], their
+    /// D2), never shorter than just after its last note start or lock
+    /// ([`notes::shortest_steps`]). One take.
+    Length { to: Tick },
     /// A note added to the picks, or taken out of them when it was
     /// picked (plan 1B.2: a finger holding a note while another taps one,
     /// as holding steps does on the step pads).
@@ -1700,6 +1709,38 @@ impl Editor {
                     _ => format!("edit: {} notes erased", out.len()),
                 };
                 (notes::delete(clip, &out), None, false, true, line)
+            }
+            // The clip's end handle (plan 1A.2): the Steps' length edit at
+            // the clip's step size, which takes out no note start or lock
+            // this far on.
+            EditAction::Length { to } => {
+                let grid = notes::steps_grid(clip);
+                let size = grid.size();
+                let steps = usize::try_from((to + size / 2).div_euclid(size)).unwrap_or(0);
+                let fewest = notes::shortest_steps(clip, grid);
+                if steps < fewest {
+                    return Done::line(format!(
+                        "edit: a note or lock starts on step {fewest}: the clip can't end before it"
+                    ));
+                }
+                if steps > grid.max_steps() {
+                    return Done::line(format!(
+                        "edit: {} steps is the longest a clip can be",
+                        grid.max_steps()
+                    ));
+                }
+                let e = grid.resize(clip, steps, false);
+                if e.is_empty() {
+                    return Done::default();
+                }
+                let st = if steps == 1 { "step" } else { "steps" };
+                (
+                    e,
+                    None,
+                    false,
+                    true,
+                    format!("edit: the clip is {steps} {st} long"),
+                )
             }
             // A finger holding a note, another tapping: the note tapped
             // joins the picks, or leaves them.
@@ -3498,6 +3539,12 @@ pub struct NoteGrid {
     /// The clip's step size on the Steps view, where its locks sit
     /// ([`notes::steps_grid`]).
     pub lock_step: Tick,
+    /// Where the clip's end handle stops (the page's, plan 1A.2): no
+    /// shorter than just after the last note start or lock
+    /// ([`notes::shortest_steps`]), no longer than a clip can be, in clip
+    /// ticks. It snaps to `bar` or `lock_step`.
+    pub shortest: Tick,
+    pub longest: Tick,
     /// The settings a lock lane can show (the app's, plan 3A.2).
     pub lock_settings: Arc<Vec<LockSetting>>,
     /// The notes' pad pressure, each [`NoteBox::touch`] a run of it, timed
@@ -3617,6 +3664,23 @@ enum Hand {
         now: (i32, i32),
         moved: bool,
     },
+    /// A finger on the clip's end handle on the ruler (plan 1A.2): the
+    /// clip's new end `to` where the finger has taken it, `grab` pixels to
+    /// its right as it went down ([`NoteGrid::end_at`]), sent as it lifts.
+    /// Taken to the roll's right edge, [`END_PUSH`] right of `x0` where it
+    /// went down at least, so a finger resting on an end already at the
+    /// edge takes nothing on (`edge`: seconds there), the end goes on a
+    /// bar or step every [`END_RATE`] seconds and the roll, `span` ticks
+    /// across, scrolls with it ([`NoteGrid::grow_end`]).
+    End {
+        finger: u64,
+        now: (i32, i32),
+        x0: i32,
+        grab: i32,
+        to: Tick,
+        edge: Option<f32>,
+        span: Tick,
+    },
     /// A finger holding a note it picked (a hold) while others tap notes
     /// (plan 1B.2): each tap adds its note to the picks or takes it out,
     /// sent as the tapping finger lifts. `tap` is a finger down on note
@@ -3677,6 +3741,15 @@ enum Strip {
 /// A finger moved this far (pixels) on the roll is no tap (the plan's
 /// 24 px, about 3 mm).
 const TAP_SLOP: i32 = 24;
+/// The clip's end handle (plan 1A.2): its grip's width on the ruler, how
+/// near the roll's right edge it takes the end on with time and how fast
+/// (seconds a unit), how wide a step must be before it snaps to steps
+/// rather than bars, and how far right a finger must push first.
+const END_W: i32 = 28;
+const END_EDGE: i32 = 40;
+const END_RATE: f32 = 0.3;
+const END_STEP_PX: i32 = 24;
+const END_PUSH: i32 = 12;
 /// An ERASE sweep looks for notes this often along its path (pixels), so
 /// a fast finger misses none as narrow as this.
 const SWEEP_STEP: i32 = 3;
@@ -3797,6 +3870,8 @@ impl Default for NoteGrid {
             step: STEP_FALLBACK,
             locks: Vec::new(),
             lock_step: STEP_FALLBACK,
+            shortest: STEP_FALLBACK,
+            longest: mpfree_seq::MAX_CLIP_TICKS,
             lock_settings: Arc::default(),
             touch: Vec::new(),
             lane: LaneShow::default(),
@@ -4207,7 +4282,7 @@ impl NoteGrid {
                 false => none,
             },
             tools,
-            v: self.view.clamped(roll, self.length, rows.n),
+            v: self.view.clamped(roll, self.shown_length(), rows.n),
             rows,
         }
     }
@@ -4993,7 +5068,8 @@ impl NoteGrid {
         let beat = PPQ as Tick;
         let (from, to) = (
             v.tick_at(g.roll, g.roll.x),
-            v.tick_at(g.roll, g.roll.right()).min(self.length),
+            v.tick_at(g.roll, g.roll.right())
+                .min(self.length.max(self.end_now())),
         );
         let px = |ticks: Tick| ticks as f64 * v.ppt;
         let mut lines: Vec<(Tick, Color, i32)> = Vec::new();
@@ -5013,11 +5089,18 @@ impl NoteGrid {
                 at += step;
             }
         }
-        // The clip's end, when it shows.
+        // The clip's end, when it shows, and while its handle drags (plan
+        // 1A.2) the new end in the handle's colour.
         if (from..=to).contains(&self.length) {
             let x = self.x_of(g, self.length);
             cx.canvas
                 .fill_rect(Rect::new(x - 1, g.roll.y, 2, g.roll.h), t.text);
+        }
+        let end = self.end_now();
+        if end != self.length && (from..=to).contains(&end) {
+            let x = self.x_of(g, end);
+            cx.canvas
+                .fill_rect(Rect::new(x - 1, g.roll.y, 3, g.roll.h), t.accent2);
         }
         // The ruler: bar numbers as close as fit (every bar, or every 2nd,
         // 4th ...), and beats too once a beat is wide enough.
@@ -5049,6 +5132,15 @@ impl NoteGrid {
                 );
             }
             at += beat;
+        }
+        // The clip's end handle (plan 1A.2): a grip as a picked note's.
+        if let Some(e) = self.end_grip(g) {
+            let grip = t.accent2.mix(t.raised, 0.45);
+            cx.canvas.fill_round_rect(e.inset(2), 4, grip);
+            cx.canvas.fill_rect(
+                Rect::new(e.x + e.w / 2 - 1, e.y + e.h / 4, 2, e.h / 2),
+                t.ink_on(grip),
+            );
         }
         cx.canvas.set_clip(was);
         self.paint_overview(cx, g);
@@ -5139,6 +5231,16 @@ impl NoteGrid {
                     cx.canvas.stroke_round_rect(nr, 3, 2, top);
                 }
             }
+        }
+        // The end handle drawn in (plan 1A.2): what would be past the new
+        // end shaded, notes that would run past it too.
+        let end = self.end_now();
+        if end < self.length {
+            let (x0, x1) = (self.x_of(g, end), self.x_of(g, self.length));
+            cx.canvas.fill_rect(
+                Rect::new(x0, g.roll.y, x1 - x0, g.roll.h),
+                t.bg.with_alpha(150),
+            );
         }
         // An ERASE sweep (plan 1B.5): the notes it has crossed, marked to
         // come out when the finger lifts.
@@ -5936,7 +6038,10 @@ impl NoteGrid {
     /// in words, above the finger: the moved note's position and row, or
     /// the start and the length a handle leaves.
     fn paint_readout(&self, cx: &mut PaintCx, g: &Geo) {
-        let (text, now) = if let Hand::Sweep {
+        let (text, now) = if let Hand::End { to, now, .. } = self.hand {
+            // The end handle (plan 1A.2): the clip's new length.
+            (self.end_name(to), now)
+        } else if let Hand::Sweep {
             moved: true, now, ..
         } = self.hand
         {
@@ -6604,6 +6709,17 @@ impl Widget for NoteGrid {
         if tool {
             return out;
         }
+        // The clip's end handle (plan 1A.2): dragged a unit in, to its
+        // stop at most, while the clip can be shorter.
+        if let Some(e) = self
+            .end_grip(&g)
+            .filter(|_| self.length > self.shortest && self.drag.is_none())
+        {
+            let unit = self.end_unit(g.v.ppt);
+            let to = (self.length - unit).max(self.shortest);
+            let dx = (self.x_of(&g, to) - self.x_of(&g, self.length)).min(-END_W);
+            out.push(Target::drag("end", 0, "clip's end", e).towards(dx, 0));
+        }
         let shown = self.in_view(&g);
         for &i in &shown {
             // The part on the roll: a note running past its edge is
@@ -6833,6 +6949,31 @@ impl Widget for NoteGrid {
                         };
                         return None;
                     }
+                    // The end handle: the snapped end under the finger, or
+                    // at the roll's right edge at least the end there, going
+                    // on with time.
+                    Hand::End {
+                        finger,
+                        x0,
+                        grab,
+                        to,
+                        edge,
+                        span,
+                        ..
+                    } => {
+                        let at_edge = x >= g.roll.right() - END_EDGE && x >= x0 + END_PUSH;
+                        let under = self.end_at(&g, x + grab);
+                        self.hand = Hand::End {
+                            finger,
+                            now: (x, y),
+                            x0,
+                            grab,
+                            to: if at_edge { to.max(under) } else { under },
+                            edge: at_edge.then(|| edge.unwrap_or(0.0)),
+                            span,
+                        };
+                        return None;
+                    }
                     // An ERASE sweep marks every note along its path,
                     // from where it went down once it is no tap.
                     Hand::Sweep {
@@ -7058,6 +7199,17 @@ impl Widget for NoteGrid {
                         self.hand = Hand::Idle;
                         return if up { self.boxed(&g, at, now) } else { None };
                     }
+                    // The end handle: the clip's new length, when it moved;
+                    // the roll keeps its view inside it.
+                    Hand::End { to, .. } => {
+                        self.hand = Hand::Idle;
+                        let to = if up { to } else { self.length };
+                        self.view = self.view.clamped(g.roll, to.max(self.length), self.rows());
+                        return (to != self.length).then_some(EventKind::Stretch {
+                            index: CLIP_END,
+                            to,
+                        });
+                    }
                     // ERASE: a tap erases the note under it (or with Draw
                     // off the one beside it), as a tap with ERASE always
                     // has; a faint note is another clip's, and the app
@@ -7200,6 +7352,116 @@ impl NoteGrid {
         Some(EventKind::Select(index))
     }
 
+    /// The clip's end handle is held at the roll's right edge (plan
+    /// 1A.2): [`NoteGrid::grow_end`] takes the end on with time.
+    pub fn end_at_edge(&self) -> bool {
+        matches!(self.hand, Hand::End { edge: Some(_), .. })
+    }
+
+    /// Time passing, `dt` seconds, with the end handle held at the roll's
+    /// right edge (plan 1A.2): the end goes on to the next bar (or step,
+    /// [`NoteGrid::end_unit`]) every [`END_RATE`] seconds, never past
+    /// `longest`, and the roll scrolls so it shows a unit from the edge.
+    pub fn grow_end(&mut self, dt: f32) {
+        let Hand::End {
+            finger,
+            now,
+            x0,
+            grab,
+            to,
+            edge: Some(t),
+            span,
+        } = self.hand
+        else {
+            return;
+        };
+        let unit = self.end_unit(self.view.ppt);
+        let (mut t, mut to) = (t + dt.max(0.0), to);
+        while t >= END_RATE {
+            t -= END_RATE;
+            to = ((to.div_euclid(unit) + 1) * unit).min(self.longest.max(self.length));
+        }
+        if to + unit > self.view.start + span {
+            self.view.start = to + unit - span;
+            self.view.follow = false;
+        }
+        self.hand = Hand::End {
+            finger,
+            now,
+            x0,
+            grab,
+            to,
+            edge: Some(t),
+            span,
+        };
+    }
+
+    /// The clip's end as the roll shows it: where its handle is dragging
+    /// it (plan 1A.2), else its length.
+    pub fn end_now(&self) -> Tick {
+        match self.hand {
+            Hand::End { to, .. } => to,
+            _ => self.length,
+        }
+    }
+
+    /// How much of the time line the roll may show: past the clip's end
+    /// while its handle takes it on (plan 1A.2).
+    fn shown_length(&self) -> Tick {
+        match self.hand {
+            Hand::End { to, .. } => self.length.max(to + self.end_unit(self.view.ppt)),
+            _ => self.length,
+        }
+    }
+
+    /// What the end handle snaps to at `ppt` pixels a tick (plan 1A.2): a
+    /// step of the clip (its Steps' step) with SHIFT, or once a step is
+    /// [`END_STEP_PX`] wide; else a bar.
+    fn end_unit(&self, ppt: f64) -> Tick {
+        let step = self.lock_step.max(1);
+        if self.fine || step as f64 * ppt >= f64::from(END_STEP_PX) {
+            step
+        } else {
+            self.bar.max(step)
+        }
+    }
+
+    /// The end the handle gives at `x` (the finger plus its grab): the nearest
+    /// [`NoteGrid::end_unit`], from `shortest` to `longest`.
+    fn end_at(&self, g: &Geo, x: i32) -> Tick {
+        let unit = self.end_unit(g.v.ppt);
+        let t = g.v.tick_at(g.roll, x);
+        let snapped = (t + unit / 2).div_euclid(unit) * unit;
+        snapped.clamp(self.shortest.max(1), self.longest.max(self.shortest.max(1)))
+    }
+
+    /// The clip's end handle (plan 1A.2): a grip on the ruler just inside
+    /// the end (or the end being dragged), while it shows.
+    fn end_grip(&self, g: &Geo) -> Option<Rect> {
+        if self.lens != Lens::Grid || g.ruler.is_empty() {
+            return None;
+        }
+        let x = self.x_of(g, self.end_now());
+        let grip = Rect::new(x - END_W, g.ruler.y, END_W, g.ruler.h).intersect(g.ruler);
+        (grip.w >= END_W / 2).then_some(grip)
+    }
+
+    /// The end handle's readout (plan 1A.2): "Clip 2 bars · 32 steps", or
+    /// "Clip 18 steps" off a bar line.
+    fn end_name(&self, to: Tick) -> String {
+        let (bar, step) = (self.bar.max(1), self.lock_step.max(1));
+        let steps = to / step;
+        let st = if steps == 1 { "step" } else { "steps" };
+        match to % bar {
+            0 => {
+                let bars = to / bar;
+                let s = if bars == 1 { "" } else { "s" };
+                format!("Clip {bars} bar{s} · {steps} {st}")
+            }
+            _ => format!("Clip {steps} {st}"),
+        }
+    }
+
     /// Note `i` moves with drag `d`: the picked notes when the note
     /// dragged is one of them, else the note dragged alone.
     fn moves(&self, d: Drag, i: usize) -> bool {
@@ -7286,6 +7548,7 @@ impl NoteGrid {
             | Hand::Pen { finger, now, .. }
             | Hand::Box { finger, now, .. }
             | Hand::Sweep { finger, now, .. }
+            | Hand::End { finger, now, .. }
             | Hand::Holding { finger, now, .. }
             | Hand::Wait { finger, now, .. }
             | Hand::Scroll { finger, now, .. }
@@ -7676,6 +7939,20 @@ impl NoteGrid {
             };
             return None;
         }
+        // The clip's end handle on the ruler (plan 1A.2), not while a tool
+        // is open: its finger drags the clip's end.
+        if self.tool_bar.is_none() && self.end_grip(g).is_some_and(|e| e.contains(x, y)) {
+            self.hand = Hand::End {
+                finger: f,
+                now: (x, y),
+                x0: x,
+                grab: self.x_of(g, self.length) - x,
+                to: self.length,
+                edge: None,
+                span: g.v.ticks_shown(g.roll),
+            };
+            return None;
+        }
         let strip = if g.overview.contains(x, y) {
             Some(Strip::Overview)
         } else if g.ruler.contains(x, y) {
@@ -8053,6 +8330,37 @@ mod tests {
             .rev(),
             Some(4)
         );
+    }
+
+    /// The clip's end handle (plan 1A.2): the Steps' length edit at the
+    /// clip's step size, the nearest whole step, the picks kept; shorter
+    /// to just after the last note start, a long note running on past
+    /// it; a step shorter or past the longest refused with why.
+    #[test]
+    fn the_end_handle_lengthens_or_shortens_the_clip_as_the_steps_do() {
+        let mut c = clip(&[(0, 240, 3), (960, 1920, 5)]);
+        let mut ed = Editor::new(0, 0, &c);
+        ed.sel = vec![1];
+        let done = run(&mut ed, &mut c, EditAction::Length { to: 7680 });
+        assert_eq!(done.line, "edit: the clip is 32 steps long");
+        assert_eq!(c.length, 7680);
+        assert_eq!(ticks_of(&c, &ed.sel), [(960, 5)], "the picks stay");
+        run(&mut ed, &mut c, EditAction::Length { to: 1200 });
+        assert_eq!(c.length, 1200);
+        assert_eq!(c.notes.len(), 2, "the long note runs on past the end");
+        let done = ed.act(EditAction::Length { to: 960 }, &c);
+        assert!(done.edit.is_empty());
+        assert_eq!(
+            done.line,
+            "edit: a note or lock starts on step 5: the clip can't end before it"
+        );
+        let far = mpfree_seq::MAX_CLIP_TICKS + 960;
+        assert!(ed.act(EditAction::Length { to: far }, &c).edit.is_empty());
+        // Between steps: the nearest; the same length: nothing.
+        let done = ed.act(EditAction::Length { to: 1400 }, &c);
+        assert_eq!(done.edit.length, Some((1200, 1440)));
+        assert_eq!(ed.act(EditAction::Length { to: 1250 }, &c), Done::default());
+        assert_eq!(EditAction::Length { to: 960 }.rev(), None);
     }
 
     #[test]
@@ -9607,6 +9915,107 @@ mod tests {
             g.touch(8, Touch::Up, x1 + 2 * TAP_SLOP, y1, R),
             Some(EventKind::Marker { index: 1, .. })
         ));
+    }
+
+    /// The clip's end handle on the ruler (plan 1A.2): dragged in it
+    /// snaps to bars, with SHIFT to steps, and stops just after the last
+    /// note start, a readout saying the length, sent as it lifts; held at
+    /// the roll's right edge the end goes on a bar every `END_RATE` and the
+    /// roll scrolls past the old end with it; a second finger calls it off,
+    /// and a drag back to where it was sends nothing. Swept as a control
+    /// while the clip can be shorter.
+    #[test]
+    fn the_clip_end_handle_drags_the_length_by_bars_or_steps() {
+        let bar = 3840;
+        let mut g = grid();
+        g.length = 4 * bar;
+        g.lock_step = 240;
+        g.shortest = 5 * 240;
+        // The whole clip across.
+        g.view.ppt = 0.0;
+        g.view = g.view.clamped(g.geo(R).roll, g.length, g.rows());
+        let g0 = g.geo(R);
+        let e = g.end_grip(&g0).expect("the end shows");
+        let (ex, ey) = mid(e);
+        // Where the finger goes for the end to be at `t`: it keeps its
+        // place on the grip.
+        let grab = g.x_of(&g0, g.length) - ex;
+        let at = |g: &NoteGrid, t: Tick| g.x_of(&g0, t) - grab;
+        assert!(g.targets(R).iter().any(|t| t.id == "end"));
+        // Three bars: the readout says so; then past the stop.
+        let before = painted(&g);
+        assert_eq!(g.touch(1, Touch::Down, ex, ey, R), None);
+        g.touch(1, Touch::Move, at(&g, 3 * bar), ey, R);
+        assert_eq!(g.end_now(), 3 * bar);
+        assert!(differ_in(&before, &painted(&g), g0.roll));
+        g.touch(1, Touch::Move, g0.roll.x + 2, ey, R);
+        assert_eq!(g.end_now(), 5 * 240);
+        assert_eq!(
+            g.touch(1, Touch::Up, g0.roll.x + 2, ey, R),
+            Some(EventKind::Stretch {
+                index: CLIP_END,
+                to: 1200
+            })
+        );
+        assert!(
+            !differ_in(&before, &painted(&g), g0.roll),
+            "as it was until the clip says"
+        );
+        // Off a bar line: the nearest bar, or with SHIFT the step.
+        let off = 4 * bar - 5 * 240;
+        g.touch(2, Touch::Down, ex, ey, R);
+        g.touch(2, Touch::Move, at(&g, off), ey, R);
+        assert_eq!(g.end_now(), 4 * bar);
+        g.fine = true;
+        g.touch(2, Touch::Move, at(&g, off) + 1, ey, R);
+        assert_eq!(g.end_now(), off);
+        g.touch(2, Touch::Move, ex, ey, R);
+        assert_eq!(g.touch(2, Touch::Up, ex, ey, R), None, "back where it was");
+        g.fine = false;
+        // At the roll's right edge: a bar each END_RATE, the roll scrolled
+        // past the old end.
+        let edge = g0.roll.right() - 2;
+        g.touch(3, Touch::Down, ex, ey, R);
+        g.touch(3, Touch::Move, ex + 2, ey, R);
+        assert!(
+            !g.end_at_edge(),
+            "a finger resting on the end takes nothing on"
+        );
+        g.touch(3, Touch::Move, edge, ey, R);
+        assert!(g.end_at_edge());
+        g.grow_end(END_RATE / 2.0);
+        assert_eq!(g.end_now(), 4 * bar);
+        g.grow_end(END_RATE);
+        assert_eq!(g.end_now(), 5 * bar);
+        g.grow_end(2.0 * END_RATE);
+        assert_eq!(g.end_now(), 7 * bar);
+        let v = g.geo(R).v;
+        assert!(v.start > 0 && v.start + v.ticks_shown(g0.roll) > 7 * bar);
+        assert_eq!(
+            g.touch(3, Touch::Up, edge, ey, R),
+            Some(EventKind::Stretch {
+                index: CLIP_END,
+                to: 7 * bar
+            })
+        );
+        // A second finger: a pinch, and the length stays.
+        g.view = g.view.clamped(g0.roll, g.length, g.rows());
+        g.touch(4, Touch::Down, ex, ey, R);
+        g.touch(4, Touch::Move, at(&g, 2 * bar), ey, R);
+        g.touch(5, Touch::Down, ex - 200, ey + 200, R);
+        let sent = [
+            g.touch(4, Touch::Up, at(&g, 2 * bar), ey, R),
+            g.touch(5, Touch::Up, ex - 200, ey + 200, R),
+        ];
+        assert!(
+            !sent
+                .iter()
+                .any(|e| matches!(e, Some(EventKind::Stretch { .. }))),
+            "{sent:?}"
+        );
+        // At its stop: not swept.
+        g.shortest = g.length;
+        assert!(!g.targets(R).iter().any(|t| t.id == "end"));
     }
 
     #[test]
