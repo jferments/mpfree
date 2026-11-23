@@ -164,6 +164,9 @@ mod sampler_commands;
 mod screen_cost;
 mod screen_picture;
 mod script;
+// The SD card's read-only window, the pad player's side; the Browser's "SD card" place uses it next.
+#[allow(dead_code)]
+mod sd_card;
 mod set_play;
 mod setup;
 mod shed;
@@ -189,6 +192,7 @@ mod views;
 mod waiting;
 mod xy_layouts;
 mod xy_list;
+mod xy_own;
 mod xy_play;
 mod xy_setup;
 mod xy_slot;
@@ -9035,6 +9039,93 @@ fn synth_turn_said(synth: &synth::Synth, id: u16, redo: bool) -> String {
 
 /// Your XY layouts as the screen shows them ([`gui::ToUi::Xy`]), each
 /// setting named afresh.
+/// Your XY layouts with what an action on them reads and changes: the
+/// screen's `FromUi::Xy`, and Learn's XY Hold and layout buttons (the
+/// smoke session's too).
+struct XyHere<'a> {
+    song: &'a mut xy_song::XySong,
+    mix: &'a mut mixing::MixHost,
+    synth: &'a synth::Synth,
+    app: &'a app::App,
+    /// The project's instruments, by which a learned pad's setting or synth
+    /// knob names its instrument (sampler step 16).
+    listed: &'a instrument_list::InstrumentList,
+    pads: PadNow<'a>,
+    time: &'a time::TimeHost,
+}
+
+impl XyHere<'_> {
+    /// An action on your layouts: the mixer plays what it asks; the lines
+    /// to tell.
+    fn act(&mut self, act: xy_song::XyAction) -> Vec<String> {
+        let track = u8::try_from(self.app.track()).unwrap_or(u8::MAX);
+        let (mix, synth, app, listed, pads, time) = (
+            &*self.mix,
+            self.synth,
+            self.app,
+            self.listed,
+            self.pads,
+            self.time,
+        );
+        let look = |a| xy_seen(mix, synth, app, listed, pads, time, a);
+        let mut told = Vec::new();
+        let done = self.song.act(
+            act,
+            track,
+            |pick, name| mix.xy_ready(pick, name),
+            &look,
+            &mut |l| told.push(l),
+        );
+        match done {
+            Ok(d) => self.mix.xy_done(d),
+            Err(e) => told.push(e),
+        }
+        told
+    }
+
+    /// Learn's XY buttons pressed (the Play card): Hold switches on a
+    /// layout of yours (on a ready-made one the line says why it does
+    /// nothing), and the layout buttons step through the song's layouts
+    /// of yours, or the ready-made ones while there are none: the pick
+    /// for Prefs to keep, which the screen and the mixer then follow.
+    fn pressed(&mut self, p: remote::XyPresses) -> (Vec<String>, Option<Option<usize>>) {
+        let mut lines = Vec::new();
+        let mut pick = None;
+        if p.step != 0 {
+            match self.song.stepped(self.app.settings.xy_effect, p.step) {
+                xy_song::Stepped::Yours(i) => lines.extend(self.act(xy_song::XyAction::Play(i))),
+                xy_song::Stepped::Ready(e) => {
+                    let name = play_page::XY_CHOICES[e.map_or(0, |k| k + 1)];
+                    lines.push(format!("XY pad: {name}"));
+                    pick = Some(e);
+                }
+            }
+        }
+        if p.hold {
+            if self.song.playing.is_some() {
+                let on = !self.mix.xy_held();
+                lines.extend(self.act(xy_song::XyAction::Hold(on)));
+            } else {
+                lines.push(xy_song::NO_HOLD.to_string());
+            }
+        }
+        (lines, pick)
+    }
+
+    /// The screen's view of your layouts now.
+    fn view(&mut self) -> gui::ToUi {
+        xy_view(
+            self.song,
+            self.mix,
+            self.synth,
+            self.app,
+            self.listed,
+            self.pads,
+            self.time,
+        )
+    }
+}
+
 fn xy_view(
     song: &mut xy_song::XySong,
     mix: &mixing::MixHost,
@@ -9050,12 +9141,18 @@ fn xy_view(
 
 /// A Stay lift as the XY pad's undo history lists it: "Stay: Cutoff,
 /// Send A (2 settings)".
-fn xy_turn_row(mix: &mixing::MixHost, t: &undo::Turn<xy_song::XyKey, xy_song::XyValues>) -> String {
+fn xy_turn_row(
+    mix: &mixing::MixHost,
+    synth: &synth::Synth,
+    time: &time::TimeHost,
+    listed: &instrument_list::InstrumentList,
+    t: &undo::Turn<xy_song::XyKey, xy_song::XyValues>,
+) -> String {
     let names: Vec<String> = t
         .key
         .iter()
         .flatten()
-        .map(|&a| modpanels::label(mix, a))
+        .map(|&a| learn_label(mix, synth, time, listed, a))
         .collect();
     let n = names.len();
     let shown: Vec<&str> = names.iter().take(3).map(String::as_str).collect();
@@ -9065,6 +9162,134 @@ fn xy_turn_row(mix: &mixing::MixHost, t: &undo::Turn<xy_song::XyKey, xy_song::Xy
         shown.join(", "),
         if n == 1 { "" } else { "s" }
     )
+}
+
+/// A synth's and a pad's own settings as the XY pad's hand reaches them
+/// (`xy_own.rs`), routed as a clip's lock is (`SeqPads::lock_at`): a
+/// track's own instrument (or the one it plays), else the synth on the
+/// pads; a kit pad's own setting on the kit its track plays. Stay sets
+/// one as a turn of its knob would: the Synth tab's turn (the tab follows,
+/// `synth_turned`), and a pad's on its kit by the screen, as a learned
+/// control sets it (`pads_learned`, `ToUi::PadsLearned`).
+struct OwnReach<'a> {
+    synth: &'a mut synth::Synth,
+    own: &'a mut instruments::Instruments,
+    /// The kits' sounds (None: none play, as in a smoke test without them).
+    player: Option<&'a mut sampler::Player>,
+    kits: &'a sampler::TrackKits,
+    /// The project's instruments, for a setting named by its kit or its
+    /// instrument (sampler step 16: `Owner::KitPad`, `Owner::Sound`).
+    listed: &'a instrument_list::InstrumentList,
+    pads_learned: &'a mut Vec<(usize, u8, sampler::PadParam, f32)>,
+    synth_turned: &'a mut bool,
+}
+
+/// What the XY pad's hand reaches for a synth's or a pad's own setting.
+enum OwnAt {
+    /// The synth on the pads (the shared synth).
+    Synth,
+    /// The instrument this holder (a track, or a free place) holds.
+    Holder(usize),
+    /// A kit's pad's own setting. A layer's grain setting isn't reached by
+    /// the hand yet: only a pad's own `PadField`s.
+    Pad(usize, usize, mpfree_sampler::engine::PadField),
+}
+
+impl OwnReach<'_> {
+    /// Where `addr` lives now: a track's synth (`Owner::Inst`) on its own
+    /// instrument while it has one, else the synth on the pads; a track's
+    /// pad on the kit it plays (`Owner::Pad`); an instrument named by its
+    /// number (`Owner::Sound`), or a kit's pad (`Owner::KitPad`). None:
+    /// nothing there, a track that plays an instrument or the synth for a
+    /// pad's setting, or a number the list hasn't got.
+    fn at(&self, addr: mpfree_play::mpfree_param::ParamAddr) -> Option<OwnAt> {
+        use mpfree_play::mpfree_param::Owner;
+        match addr.owner {
+            Owner::Inst(t) if self.own.plays(usize::from(t)) => Some(OwnAt::Holder(usize::from(t))),
+            Owner::Inst(_) => Some(OwnAt::Synth),
+            Owner::Pad(t, pad) => {
+                let t = usize::from(t);
+                if self.own.plays(t) || self.kits.plays_synth(t) {
+                    return None;
+                }
+                let f = sampler::pad_field(addr.param)?;
+                Some(OwnAt::Pad(self.kits.kit_of(t)?, usize::from(pad), f))
+            }
+            Owner::Sound(n) => match named(self.listed, n)? {
+                Named::SharedSynth => Some(OwnAt::Synth),
+                Named::Holder(h) => Some(OwnAt::Holder(h)),
+                Named::Kit(_) => None,
+            },
+            Owner::KitPad(n, pad) => match named(self.listed, n)? {
+                Named::Kit(kit) => Some(OwnAt::Pad(
+                    kit,
+                    usize::from(pad),
+                    sampler::pad_field(addr.param)?,
+                )),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+}
+
+impl xy_own::OwnSide for OwnReach<'_> {
+    fn hold(
+        &mut self,
+        addr: mpfree_play::mpfree_param::ParamAddr,
+        value: Option<f32>,
+        over: bool,
+    ) -> bool {
+        match self.at(addr) {
+            Some(OwnAt::Holder(h)) => self.own.pad_hand(h, addr.param, value, over),
+            Some(OwnAt::Synth) => self.synth.pad_hand(addr.param, value, over),
+            Some(OwnAt::Pad(kit, pad, f)) => match self.player.as_mut() {
+                Some(p) => p.pad_hand(kit, pad, f, value, over),
+                None => false,
+            },
+            None => false,
+        }
+    }
+
+    fn beneath(&self, addr: mpfree_play::mpfree_param::ParamAddr) -> Option<(f32, f32)> {
+        match self.at(addr)? {
+            OwnAt::Holder(h) => self.own.pad_beneath(h, addr.param),
+            OwnAt::Synth => self
+                .synth
+                .param_info(addr.param)
+                .map(|_| self.synth.pad_beneath(addr.param)),
+            OwnAt::Pad(kit, pad, f) => {
+                let p = self.player.as_ref()?;
+                let own = p.pad_own(kit, pad, f)?;
+                Some((p.pad_beneath(kit, pad, f)?, own))
+            }
+        }
+    }
+
+    fn keep(&mut self, addr: mpfree_play::mpfree_param::ParamAddr, value: f32) -> bool {
+        match self.at(addr) {
+            Some(OwnAt::Holder(h)) => {
+                let ok = self.own.param(h, addr.param, value);
+                *self.synth_turned |= ok;
+                ok
+            }
+            Some(OwnAt::Synth) => {
+                if self.synth.param_info(addr.param).is_none() {
+                    return false;
+                }
+                self.synth.set(addr.param, value);
+                *self.synth_turned = true;
+                true
+            }
+            Some(OwnAt::Pad(kit, pad, f)) => {
+                let pad = u8::try_from(pad).unwrap_or(u8::MAX);
+                self.pads_learned
+                    .push((kit, pad, sampler::PadParam::Own(f), value));
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 /// A setting as the XY pad's Setup and its waiting banner name it
@@ -9098,14 +9323,6 @@ fn xy_seen(
     }
     if matches!(addr.owner, Owner::Arp(_)) {
         return Err("The arp's settings can't go on the pad yet.".to_string());
-    }
-    // A synth's and a pad's own settings: the pad's hand reaches them in
-    // the next step (the XY plan's phase 2, its third pull request).
-    if matches!(
-        addr.owner,
-        Owner::Inst(_) | Owner::Pad(..) | Owner::Sound(_) | Owner::KitPad(..)
-    ) {
-        return Err(xy_song::NOT_YET.to_string());
     }
     let now = desk::play_now(time, mix);
     let Some((info, _)) = learn_describe(mix, synth, app, listed, pads, now, addr) else {
@@ -9168,7 +9385,7 @@ fn xy_seen(
         name,
         place,
         dot: xy_song::dot_of(addr),
-        own: matches!(addr.owner, Owner::Inst(_) | Owner::Pad(..)),
+        own: xy_own::is_own(addr),
     })
 }
 
@@ -10606,33 +10823,20 @@ fn player_session(
                         let (kit, pad) = learned_kit(&listed, &track_kits, owner)?;
                         pad_describe(&player, kit, pad, id)
                     };
-                    let track = u8::try_from(app.track()).unwrap_or(u8::MAX);
-                    let look = |a| xy_seen(&mix, &synth, &app, &listed, &pad_now, &time, a);
-                    let mut told = None;
-                    let done = xy_yours.act(
-                        act,
-                        track,
-                        |pick, name| mix.xy_ready(pick, name),
-                        &look,
-                        &mut |l| told = Some(l),
-                    );
-                    match done {
-                        Ok(d) => mix.xy_done(d),
-                        Err(e) => told = Some(e),
-                    }
-                    if let Some(line) = told {
+                    let mut xy = XyHere {
+                        song: &mut xy_yours,
+                        mix: &mut mix,
+                        synth: &synth,
+                        app: &app,
+                        listed: &listed,
+                        pads: &pad_now,
+                        time: &time,
+                    };
+                    for line in xy.act(act) {
                         out.note(&format!("xy: {line}"));
                         out.show(gui::ToUi::Tell(line));
                     }
-                    out.show(xy_view(
-                        &mut xy_yours,
-                        &mix,
-                        &synth,
-                        &app,
-                        &listed,
-                        &pad_now,
-                        &time,
-                    ));
+                    out.show(xy.view());
                 }
                 // UNDO on the Synth tab and the mixer: their turns' history.
                 gui::FromUi::UndoHistory(on) => {
@@ -10644,9 +10848,9 @@ fn player_session(
                         gui::UndoOn::Mixer => {
                             mix_turns.rows("Start: the mix before these turns", mixturns::row)
                         }
-                        gui::UndoOn::Xy => {
-                            xy_turns.rows("Start: before these lifts", |t| xy_turn_row(&mix, t))
-                        }
+                        gui::UndoOn::Xy => xy_turns.rows("Start: before these lifts", |t| {
+                            xy_turn_row(&mix, &synth, &time, &listed, t)
+                        }),
                     };
                     out.show(gui::ToUi::UndoHistory { on, rows, now });
                 }
@@ -10673,12 +10877,25 @@ fn player_session(
                             };
                             turn.map(|t| {
                                 for (addr, v) in xy_song::turn_values(&t, redo) {
-                                    panels.set_param(&mut mix, addr, v, false);
+                                    if xy_own::is_own(addr) {
+                                        let mut side = OwnReach {
+                                            synth: &mut synth,
+                                            own: &mut mix.instruments,
+                                            player: Some(&mut player),
+                                            kits: &track_kits,
+                                            listed: &listed,
+                                            pads_learned: &mut pads_learned,
+                                            synth_turned: &mut synth_learned,
+                                        };
+                                        xy_own::OwnSide::keep(&mut side, addr, v);
+                                    } else {
+                                        panels.set_param(&mut mix, addr, v, false);
+                                    }
                                 }
                                 format!(
                                     "{}: {}",
                                     if redo { "redo" } else { "undo" },
-                                    xy_turn_row(&mix, &t)
+                                    xy_turn_row(&mix, &synth, &time, &listed, &t)
                                 )
                             })
                         }
@@ -11605,6 +11822,7 @@ fn player_session(
         // chain editor knob does.
         let recording = time.info().state == mpfree_transport::State::Recording;
         mix.set_recording(recording);
+        mix.set_xy_track(app.track());
         if xy_opening && !mix.opening() {
             xy_opening = false;
             if let Some(c) = xy_yours.opening() {
@@ -11626,6 +11844,34 @@ fn player_session(
                 &pad_now,
                 &time,
             ));
+        }
+        // The XY pad's hand on a synth's and a pad's own settings: this
+        // period's moves, glides back and Stay go to their owners before
+        // they play (`xy_own.rs`); Stay's turns join the lift's UNDO step.
+        if mix.xy_own().holding() > 0 {
+            let mut hands = mix.take_xy_own();
+            let none = mpfree_play::mpfree_param::ParamAddr::new(
+                mpfree_play::mpfree_param::Owner::Play,
+                0,
+            );
+            let mut kept = [(none, 0.0, 0.0); mpfree_xy::SLOTS];
+            let mut n = 0;
+            let mut side = OwnReach {
+                synth: &mut synth,
+                own: &mut mix.instruments,
+                player: Some(&mut player),
+                kits: &track_kits,
+                listed: &listed,
+                pads_learned: &mut pads_learned,
+                synth_turned: &mut synth_learned,
+            };
+            hands.apply(PERIOD as u32, &mut side, |a, before, after| {
+                if n < kept.len() {
+                    kept[n] = (a, before, after);
+                    n += 1;
+                }
+            });
+            mix.put_xy_own(hands, &kept[..n]);
         }
         // The XY pad's Stay: the settings it kept at a lift, one UNDO step.
         if let Some((key, from, to)) = xy_song::kept_turn(mix.take_xy_kept()) {
@@ -11934,7 +12180,32 @@ fn player_session(
             out.show(gui::ToUi::PadsLearned(std::mem::take(&mut pads_learned)));
         }
         // Play's Swing, Drums filter and XY pad, once a pass.
-        fx.extend(desk::play_remote(&time, &mut mix, out, &mut play_moves));
+        let (play_fx, xy_presses) = desk::play_remote(&time, &mut mix, out, &mut play_moves);
+        fx.extend(play_fx);
+        if xy_presses != remote::XyPresses::default() {
+            let pad_now = |owner, id: u16| {
+                let (kit, pad) = learned_kit(&listed, &track_kits, owner)?;
+                pad_describe(&player, kit, pad, id)
+            };
+            let mut xy = XyHere {
+                song: &mut xy_yours,
+                mix: &mut mix,
+                synth: &synth,
+                app: &app,
+                listed: &listed,
+                pads: &pad_now,
+                time: &time,
+            };
+            let (lines, pick) = xy.pressed(xy_presses);
+            for line in lines {
+                out.note(&format!("xy: {line}"));
+                out.show(gui::ToUi::Tell(line));
+            }
+            out.show(xy.view());
+            if let Some(e) = pick {
+                fx.extend(app.set_xy_effect(e));
+            }
+        }
         if synth_learned && mt >= synth_learned_at {
             synth_learned = false;
             synth_learned_at = mt + 0.05;
@@ -12141,6 +12412,22 @@ fn player_session(
                 // step 15c).
                 pads_rec.key(k, rv, &mut time, &mix.instruments, &synth);
                 continue;
+            }
+            // The armed track's arp hears the keys' pressure and
+            // controllers: its Modifier follows the one it is set to (the
+            // sound still gets them, below), and with Prefs' Sustain pedal
+            // latches on, the pedal latches the arp while it plays instead
+            // of holding the sound's notes.
+            match k {
+                midi_in::Key::Pressure { note, value } => app.key_pressure(note, value),
+                midi_in::Key::Control { ctl, value } => {
+                    if let Some(latch) = app.arp_pedal(ctl, value) {
+                        fx.extend(latch);
+                        continue;
+                    }
+                    app.arp_controller(ctl, value);
+                }
+                _ => {}
             }
             // Expression out: the armed track's CV outputs, and its gear on
             // MIDI out, take the keys' wheel, pressure and MPE (the keys

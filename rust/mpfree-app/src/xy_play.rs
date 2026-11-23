@@ -37,11 +37,12 @@
 //!
 //! What a setting is reached through is the [`Reach`]: the mod engine's
 //! settings (the mixer, effects, MIDI effects, outside gear, macros and
-//! the morph) for now; a synth's and a pad's own settings join when their
-//! lock tables gain the hand layer. Nothing here allocates after
-//! [`XyPlay::new`].
+//! the morph) straight through `ModMix`, and a synth's and a pad's own
+//! settings through their lock tables' hand layer (`xy_own.rs`). Nothing
+//! here allocates after [`XyPlay::new`].
 
 use crate::modmix::ModMix;
+use crate::xy_own::{is_own, OwnHands};
 use mpfree_fx::Mixer;
 use mpfree_play::mpfree_param::ParamAddr;
 use mpfree_xy::{Compiled, How, Lift, SLOTS};
@@ -74,16 +75,30 @@ pub trait Reach {
     fn pushed(&self, n: u8) -> f32;
 }
 
+/// Where setting `addr` of a layout that follows the selected track goes,
+/// with track `track` selected: a synth's setting means that track's
+/// synth; everything else stays where it is.
+pub fn followed(addr: ParamAddr, track: u8) -> ParamAddr {
+    match addr.owner {
+        mpfree_play::mpfree_param::Owner::Inst(_) => {
+            ParamAddr::new(mpfree_play::mpfree_param::Owner::Inst(track), addr.param)
+        }
+        _ => addr,
+    }
+}
+
 /// `ms` in frames at `rate`.
 pub fn frames(rate: u32, ms: f32) -> u32 {
     (rate as f32 * ms.max(0.0) / 1000.0) as u32
 }
 
-/// The mod engine's settings, as a layout of yours reaches them: the
-/// mixer's strips and effects, the tracks' MIDI effects and outside gear,
-/// the macros and the morph (`modmix.rs`).
+/// Every setting a layout of yours reaches: the mod engine's (the mixer's
+/// strips and effects, the tracks' MIDI effects and outside gear, the
+/// macros and the morph, `modmix.rs`), and a synth's and a pad's own,
+/// whose moves wait in `xy_own.rs` for the sound loop to hand on.
 pub struct ModReach<'a> {
     modu: &'a mut ModMix,
+    own: &'a mut OwnHands,
     mixer: &'a Mixer,
     recording: bool,
 }
@@ -91,9 +106,15 @@ pub struct ModReach<'a> {
 impl<'a> ModReach<'a> {
     /// `recording`: a track records, so the pad's hand beats a step's
     /// lock.
-    pub fn new(modu: &'a mut ModMix, mixer: &'a Mixer, recording: bool) -> ModReach<'a> {
+    pub fn new(
+        modu: &'a mut ModMix,
+        own: &'a mut OwnHands,
+        mixer: &'a Mixer,
+        recording: bool,
+    ) -> ModReach<'a> {
         ModReach {
             modu,
+            own,
             mixer,
             recording,
         }
@@ -102,16 +123,30 @@ impl<'a> ModReach<'a> {
 
 impl Reach for ModReach<'_> {
     fn touch(&mut self, addr: ParamAddr, value: f32) -> bool {
+        if is_own(addr) {
+            return self.own.touch(addr, value, self.recording);
+        }
         self.modu.pad_touch(self.mixer, addr, value, self.recording)
     }
     fn let_go(&mut self, addr: ParamAddr, frames: u32) {
+        if is_own(addr) {
+            return self.own.let_go(addr, frames);
+        }
         self.modu.pad_let_go(addr, frames);
     }
     fn keep(&mut self, addr: ParamAddr, value: f32) -> Option<f32> {
+        if is_own(addr) {
+            // Its turn for UNDO comes when the sound loop hands it on
+            // (`OwnHands::apply`), which knows the value before.
+            self.own.keep(addr, value);
+            return None;
+        }
         self.modu.pad_keep(addr, value)
     }
     fn row(&mut self, n: u8, addr: ParamAddr) -> bool {
-        self.modu.pad_row(self.mixer, n, addr, 1.0).is_ok()
+        // A synth's or a pad's own setting doesn't go through the mod
+        // engine: Add can't push it yet (Setup greys it).
+        !is_own(addr) && self.modu.pad_row(self.mixer, n, addr, 1.0).is_ok()
     }
     fn unrow(&mut self, n: u8, addr: ParamAddr) {
         self.modu.pad_unrow(n, addr);
@@ -198,6 +233,18 @@ impl XyPlay {
     /// Whether a layout of yours plays (else a ready-made one does).
     pub fn playing(&self) -> bool {
         self.layout.is_some()
+    }
+
+    /// The layout of yours as the pad plays it now, for the knobs' marks:
+    /// the gesture's while a finger (or Hold) keeps one, else the layout
+    /// pointed by `follow` when it follows the selected track.
+    pub fn shown(&self, follow: impl Fn(ParamAddr) -> ParamAddr) -> Option<Compiled> {
+        let l = self.layout?;
+        Some(match self.now {
+            Some(now) => now,
+            None if l.follows() => l.mapped(follow),
+            None => l,
+        })
     }
 
     /// `layout` plays from now (None: a ready-made one does). The old one
@@ -444,6 +491,15 @@ impl XyPlay {
         }
     }
 
+    /// A Stay turn on a synth's or a pad's own setting, which comes from
+    /// the sound loop once it has handed the setting on (`xy_own.rs`): it
+    /// joins the lift's UNDO step.
+    pub fn add_kept(&mut self, addr: ParamAddr, before: f32, after: f32) {
+        if self.kept.len() < self.kept.capacity() {
+            self.kept.push((addr, before, after));
+        }
+    }
+
     /// Stay's turns since the last call, as one UNDO step: each setting,
     /// its own value before and after.
     pub fn take_kept(&mut self) -> std::vec::Drain<'_, (ParamAddr, f32, f32)> {
@@ -548,6 +604,18 @@ mod tests {
             ..a
         });
         assert_eq!(r.said[0], format!("touch {} 0", insert(9, 3)));
+    }
+
+    /// Following the selected track moves a synth's settings to that
+    /// track's synth and leaves the rest where they are.
+    #[test]
+    fn a_following_layout_plays_the_selected_tracks_synth() {
+        let cutoff = ParamAddr::new(Owner::Inst(1), 3);
+        assert_eq!(followed(cutoff, 4), ParamAddr::new(Owner::Inst(4), 3));
+        let fx = insert(2, 3);
+        assert_eq!(followed(fx, 4), fx);
+        let pad = ParamAddr::new(Owner::Pad(1, 2), 3);
+        assert_eq!(followed(pad, 4), pad);
     }
 
     /// Cancelling lets go of everything at once, even with Hold on, and
