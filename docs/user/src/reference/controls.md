@@ -20,7 +20,7 @@ Every button works as soon as MPFree starts, with nothing to learn: the develope
 |---|---|---|
 | **Power button**, a short press | Opens the power card: **Shut down**, **Restart** or **Cancel**, and over unsaved changes, whether to save first. Another short press closes it. See [Switching off and restarting](../getting-started/before-you-start.md#switching-off-and-restarting). | Works |
 | **Power button**, held | Switches the MPC off at once, without asking or saving. | Works |
-| **MENU** | Opens the options for the page you are on. In Prefs' System info, Backup and Akai kits or Touch screen rows, goes back to the main Prefs rows. | Works |
+| **MENU** | Opens the options for the page you are on. In Prefs' System info, Backup and Akai kits or Touch screen rows, goes back to the main Prefs rows. On System status, closes it. | Works |
 | **SHIFT + MENU** | Opens Prefs. | Works |
 | **STOP** | Stops playback; sounds ring out and latched pads keep going. Press again to silence everything and go back to bar 1. | Works |
 | **SHIFT + STOP** | Stops, silences everything and goes back to the start of bar 1. | Works |
@@ -140,4 +140,4 @@ The mode buttons along the top of the MPC go to the MPFree page that does the sa
 The Console, a text view of what MPFree is doing, opens with a chord nothing else uses: hold **SHIFT**, hold **ERASE**, then press **TAP TEMPO** (the same again closes it). The Dev tab appears when Prefs > Show developer tools is on.
 
 > [!MPC]
-> Most buttons do what their label says, as on the MPC. The differences: **MAIN** in Perform cycles the Arrange tab's views, **STEP SEQ** keeps the pads as steps on every page until you press it again, **SHIFT + REC** is Capture rather than Automation, and **SHIFT + MENU** opens MPFree's Prefs. **Hold MAIN** shows your tracks on the pads rather than in a window, **hold FULL LEVEL** sets your own level from a hit rather than a number, and **TC** opens Timing Correct in the note editor. **ERASE + a pad** also works while only playing (on the MPC it needs recording), and while stopped clears the pad's notes at once. **SHIFT + PROG EDIT** opens the I/O view's Controller section, MPFree's MIDI Control settings.
+> Most buttons do what their label says, as on the MPC. The differences: **MAIN** in Perform cycles the Arrange tab's views, **STEP SEQ** keeps the pads as steps on every page until you press it again, **SHIFT + REC** is Capture (MPFree's Retro Rec), and **SHIFT + MENU** opens MPFree's Prefs. **Hold MAIN** shows your tracks on the pads rather than in a window, **hold FULL LEVEL** sets your own level from a hit rather than a number, and **TC** opens Timing Correct in the note editor. **ERASE + a pad** while stopped clears the pad's notes at once, where the MPC opens its Erase window. **SHIFT + PROG EDIT** opens the I/O view's Controller section, MPFree's MIDI Control settings.

@@ -1,11 +1,11 @@
 <!--
-covers: rust/mpfree-context rust/mpfree-compose
+covers: rust/mpfree-context rust/mpfree-compose rust/mpfree-app/src/time/compose.rs rust/mpfree-time-ui/src/continuing.rs
 checked: 2026-11-22 d9a2b851
 -->
 
 # The composer and the Musical Context
 
-**Status:** phases 0A (the musical model) and 0B (the check through real playback), and phase 0C's engine: the listener, plan, new chords, phrases, playing, Continue end to end, the simpler ways it is tested against, the listening set and the timing bench, 2026-11-22. Phase 0C's gate, the owner's blind listening tests and a 32-bar listen, is next. The code is [`rust/mpfree-context`](../../../rust/mpfree-context) and [`rust/mpfree-compose`](../../../rust/mpfree-compose). Nothing is on screen, nothing runs on the MPC, and nothing else in mpfree uses these crates yet. The owner approved the design on 2026-11-22 with Continue as the first tool.
+**Status:** phases 0A (the musical model) and 0B (the check through real playback), and phase 0C's engine: the listener, plan, new chords, phrases, playing, Continue end to end, the simpler ways it is tested against, the listening set and the timing bench, 2026-11-22. Phase 0C's gate: the owner's first listen (2026-11-22, 3 of 20 blind cases and the 32 bars) found the output mechanical, "chiptune" in sound, short of rhythm and variety, and asked for work to go on with a sound and rhythm pass later. Phase 1's first step, Continue in the time engine with no screen yet, is built: a result heard in place of its clip from the next bar line, kept as one take, or left with Back ([below](#continue-in-the-time-engine-phase-1)). The code is [`rust/mpfree-context`](../../../rust/mpfree-context), [`rust/mpfree-compose`](../../../rust/mpfree-compose) and, in the app, [`time/compose.rs`](../../../rust/mpfree-app/src/time/compose.rs) with its part of `TimeControl`. Nothing is on screen and nothing has run on the MPC. The owner approved the design on 2026-11-22 with Continue as the first tool.
 
 ## What it is for
 
@@ -25,7 +25,7 @@ There is no trained model: the engine is procedural. It reads what was played (k
 | 0A | The musical model: the Musical Context, phrases of events with roles and sources, decisions kept apart from notes, stable dice, the re-fit table, the timing contract, rule kinds, style components, instrument profiles | Built (this page) |
 | 0B | An integration check, developer only: one simple phrase played in place of a clip through the real play view, kept and undone; clip revisions; the preview states tried against the real play view, player and take undo | Built (this page) |
 | 0C | The full engine: listening, plan, harmony, phrase, playing, groove; three styles; two-sided Try again; the reading budget; listening tests against simpler baselines; MPC timings | Built: listening, the plan, new chords, phrases, two-sided Try again, playing and groove, Continue end to end, the simpler ways, the listening set (`examples/listen.rs`) and `mpfree-bench --compose`. Gate: the owner's blind tests and 32-bar listen; MPC timings estimated, measured at the next bench round |
-| 1 | Continue, with the preview states and an all-or-nothing Keep | |
+| 1 | Continue, with the preview states and an all-or-nothing Keep | Step 1 built: the composer on its own thread, results heard in place of the clip on bar lines, Keep as one take, Back, and every change or REC stopping a result ([below](#continue-in-the-time-engine-phase-1)). Next: step 2, the Continue panel in the note editor; step 3, Try again on picked bars or notes and locked bars; step 4, Continue on Steps and the clip card. Gate: a device round (preview, Keep, UNDO, scene changes, the clip limits) |
 | 2 | Add a part, with one harmony answer for rows and the song | |
 | 3 | Improvise and Answer, with record sources, chord settle and note owners | |
 | 4 | Later: Bridge between two clips or scenes, sections, styles from your clips | |
@@ -107,6 +107,33 @@ cargo run --release -p mpfree-compose --example listen -- --midi my-clip.mid [--
 
 What a request costs is `mpfree-bench --compose` ([Profiling](profiling.md#the-composer---compose)): about 1.8 ms on a desktop core for an 18-bar Continue, so about 18 ms on the MPC by the calibration (23 ms at worst), and a background job never on the audio thread.
 
+## Continue in the time engine (phase 1)
+
+Phase 1's first step puts Continue in the app with no screen yet: `TimeAction::Continue` carries a `ContinueAction` (`rust/mpfree-time-ui/src/continuing.rs`): Ask (Continue, or Try again on everything, with the settings, the kind of instrument and the kit's drums), Step (‹ ›), Keep and Back. The time engine's control half runs it (`TimeControl`'s Continue section in `time/control.rs`, with `Composing` in `time/compose.rs`) and publishes `TimeState::continuing`: the state, the shown result (what was made, with each bar's job and the chords, and the clip as heard with it), where the new bars start, which of the last 8 is shown, whether it plays and the bar line the music changes on next, and why nothing can be heard or kept when that is so.
+
+**The composer off the music's threads.** An ask copies just what the reading needs into a `ContinueJob` (`job.rs`): the tracks it reads, each with only its read clip, at its place, with the track's swing; nothing else of the project. That goes to a thread of its own, started on the first Continue, at idle priority on the helper cores (`mpfree_lanes::os::idle_job`), which runs only the newest job waiting. The control half takes the answer on a later period and checks it against the project as it is then (`Preview::arrived`); one overtaken by a newer ask, or made from a clip that changed meanwhile, is dropped and counted. The rest of the row is read from the clip's row on every other heard track of notes, a clip of pad hits as drums; the kit's drums (`Lanes`) come with the ask, from the screen that knows the pad names.
+
+**Heard in place of the clip.** While a result is in the view, `TimeControl::compile` swaps the result's clip into the clip's slot for the view's compile only, and back (no copy of the project). The music changes on the next bar line while the clip plays and the transport rolls (a line within the next period is as good as now, as Reload clip does), and at once otherwise:
+
+| What happens | When the music changes |
+|---|---|
+| A result arrives (or Try again's next one, or ‹ ›) | On the next bar line; the last result plays on until then |
+| Back | On the next bar line: the clip as it was |
+| Keep | At once: the view is compiled from the kept clip, which plays the same notes |
+| The clip, or a clip the reading listened to, changes (an edit, a recording, UNDO) | At once: the clip as it now is, with "The clip changed: try again?" |
+| REC | At once, before the take starts; the result stays ready, and none comes in while recording |
+| Stopped, or the clip doesn't play | At once |
+
+A result's tick 0 falls where its clip started (the launch's `start`): the launch's origin is anchored for the longer clip, so a riff carried on from 2 bars to 4 lines up with the 4-bar part that started with it, as the reading heard them. Without it the new length would play from wherever the old length's origin happened to fall (a 1-bar clip's origin is any whole bar back), which could put your first bar over the other part's third. Back gives the launch its origin back; Keep leaves it, in time with the kept clip.
+
+While Continue is under way, edits compile rather than go in place, so each compile checks the result against its clip (`Preview::clip_changed`) and no result in the view is edited in place. A recorded change checks it each period it lands.
+
+**Keep.** The shown result's clip goes in as one take, `Takes::replace_clip` with `Replaced::Continue { bars }` beside Mutate and Restore, as the design asked; the Takes list says "continue" and "2 more bars". Phase 0B kept through `Takes::edit` with the same `Edit`; the whole clip replaced is the same notes and length, puts the clip back whole on UNDO, and says what it was. A refused Keep (the clip changed, or its own limits) writes nothing and leaves no result playing. Keep is refused while recording.
+
+**What gave way is counted** and goes on the status line once anything was asked: "continue: 3 asked, 3 made, 1 stopped by a change, 1 stopped by REC" (asked, made, refused, overtaken, made from a clip that changed, stopped by a change, clips left out of readings, keeps refused, stopped by REC). They move to the system status monitor with the rest when it takes the time engine's counts.
+
+**Agreed with the piano roll** (22 Nov): Continue becomes a tool in the note editor's Edit options drawer (`ToolKind::Continue`), working like Strum or Humanize: the Q-Links while you hear it, Done for Keep, Cancel for Back. Its preview is the clip `TimeState::continuing` publishes, not a tool edit; the roll takes its length from it and draws the new bars from `new_from` in the faint mix the other clips use, with each bar's job on the ruler and the tries under the options where Takes sit. No new bottom button. That is step 2, with its layout spec change for the owner.
+
 ## Implementation contracts
 
 A design review set four must-haves before the code that needs them, and six more to settle early. The table says where each stands.
@@ -165,7 +192,7 @@ A preview is bound to one clip at one revision (`Binding` in `bind.rs`): its tra
 | Cancelling | After Back while it played: compiles the clip's own view, then says it is in |
 | Invalidated | The clip, or a clip the reading listened to, changed or went: nothing can be kept, and Try again asks afresh |
 
-The last 8 results for the clip are kept, and ‹ › steps through them (`step`); Keep writes the one shown. Try again while a result plays keeps it playing until the new one arrives, so the music doesn't drop out (the design's table had the clip come back while preparing; this is the one change, made because a gap on every Try again would be heard). The binding is checked when a result arrives, after every edit (`clip_changed`) and once more at Keep, against the bound clip and every clip the reading listened to. Continue's edit (`keep::continuation`) makes the clip longer and adds the new notes as one `Edit`, so one UNDO takes back the length and the notes together. The audition copies the whole project, a stand-in for phase 1, where results play through the shared audition layer the piano roll's previews build (its step 2B.3).
+The last 8 results for the clip are kept, and ‹ › steps through them (`step`); Keep writes the one shown. Try again while a result plays keeps it playing until the new one arrives, so the music doesn't drop out (the design's table had the clip come back while preparing; this is the one change, made because a gap on every Try again would be heard). The binding is checked when a result arrives, after every edit (`clip_changed`) and once more at Keep, against the bound clip and every clip the reading listened to. Continue's edit (`keep::continuation`) makes the clip longer and adds the new notes as one `Edit`, so one UNDO takes back the length and the notes together. Phase 0B's test auditions by copying the whole project; the app doesn't (phase 1, below): its compile puts the result's clip in the clip's place just for the compile. The piano roll's tool previews turned out to be drawn only, so there was no shared audition layer to play through, and phase 1 built the substitute; the piano roll will use it for its tool previews.
 
 ### Rules, styles and instruments (contracts 6, 10, 11)
 
@@ -200,12 +227,21 @@ Trying again on a bar is filling a gap: each try is scored on its inside, its wa
 - a step tapped on a clip the reading listened to invalidates it too;
 - Continue end to end (phase 0C): a swung riff and a hat part read from a project, carried on two bars in Groove, heard where `heard` says, every new note on an off-beat 1/8 landing with the drummer's late hats (not where the clip's swing alone would put it), kept as one take that plays what was heard, and undone.
 
+Phase 1's are in the app (`cargo test -p mpfree-app --bin mpfree -- continue try_again an_edit_or_rec stopped_a_result`), through the real time engine with the composer on its own thread, plus `job.rs`'s:
+
+- Continue on a playing riff comes in on the next bar line, in place of the clip and in time with where it started; nothing is written until Keep, which is one take (`Replaced::Continue`) that plays on unchanged, and UNDO takes back length and all;
+- Try again plays the last result on until the next has come and its line; ‹ › step on bar lines; Back brings the clip back on the next line as it was, and writes nothing;
+- an edit to the clip while its result plays stops it at once, the edited clip plays, and Keep is refused; REC brings the clip back before the take, the result stays ready, and none comes in while recording;
+- stopped, a result comes in at once and Back is at once; a clip of pad hits and an empty slot are refused with why;
+- with the halves apart (Arrange 2.6b), asked, heard and kept the same way;
+- a job's copy holds only what is read and answers as the whole project would; a missing other clip is counted as left out.
+
 Phase 0C's modules carry their own tests, among them: the listener hears the prototype's examples as it did; the plan's 16 bars match the prototype's numbers; a progression keeps your chords and lands; a 16-bar phrase stays in range, lands home and sits within 0.03 of each bar's similarity aim on average; only your notes are learned from; Try again changes one bar and leads into the next (the measurement above); the Keeps hold; a range that can't fit is refused with one change; bars of three beats stay in their bars; the playing rules ring out peaks, shorten repeats and hold the landing; new notes start from your touch (three quarters of the way to your loudness, a longer gate after legato playing); the simpler ways fill the same bars, the repeat exactly as played, and mpfree keeps closer to the chords and your tune than random notes; the drift is smooth, shared and only where the style has one; the three styles carry the riff on each in its own way (Groove busiest and most syncopated, Minimal thinner, Jazz-ish on 1/8s); trying a bar again keeps every other note.
 
 ## What phase 1 decides
 
-- Where the app keeps the `Preview` and drives it: the control thread's step edit path (`TimeControl::step_action`) already compiles after a take and takes the edit back if the view can't be built, and Keep should go the same way.
-- Playing results through the shared audition layer (piano roll step 2B.3) in place of the project copy, from the next bar line.
+Decided in step 1: the `Preview` lives in the control half beside the takes and Keep compiles after its take and takes it back if the view can't be built, as step edits do; results play through a substitute in `TimeControl::compile` on bar lines, in time with where the clip started. Still open:
+
 - What Keep says when the clip plays in more than one place, or when a longer clip makes its row play longer.
 - Continue carries on a clip's top line; a clip of chords waits for phase 2's comping, and until then Continue on one is a melody over its chords or is refused (phase 1 picks).
 - Whether a new clip takes the style's suggested swing (phase 2, Add a part); Continue leaves the clip's swing as it is.
