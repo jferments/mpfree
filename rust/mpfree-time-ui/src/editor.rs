@@ -310,6 +310,15 @@ pub enum EditAction {
     Correct,
     /// An item of the Select menu, [`SELECT_ITEMS`]`[k]` (plan 1B.3).
     Choose(usize),
+    /// COPY held + a tap on note `index` (plan 1B.4): the picked notes are
+    /// copied when it is one of them, else it alone, picked after: the
+    /// editor picks them and the app copies the picks.
+    Copy { index: usize, rev: u64 },
+    /// COPY held + a tap on empty roll, or on an empty line of the
+    /// tracker (plan 1B.4): the notes copied last go in with the first at
+    /// `tick`, from this clip or another, their pressure and locks with
+    /// them. The app makes the edit ([`Editor::pasted`]).
+    Paste { tick: Tick },
 }
 
 impl EditAction {
@@ -322,6 +331,7 @@ impl EditAction {
             | EditAction::Erase { rev, .. }
             | EditAction::Add { rev, .. }
             | EditAction::Resize { rev, .. }
+            | EditAction::Copy { rev, .. }
             | EditAction::Drop { rev, .. } => Some(rev),
             _ => None,
         }
@@ -549,6 +559,30 @@ impl Editor {
         all.sort_unstable();
         all.dedup();
         all
+    }
+
+    /// The notes COPY + a tap on note `index` of `clip` copies (plan
+    /// 1B.4), the picks `sel` before it: the picks when it is one of
+    /// them, else it alone, or none when it is no note.
+    fn copying(index: usize, sel: Vec<usize>, clip: &Clip) -> Vec<usize> {
+        if sel.contains(&index) {
+            sel
+        } else if index < clip.notes.len() {
+            vec![index]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// The paste COPY + a tap on empty space makes (plan 1B.4): `edit`,
+    /// one take, the notes it puts in picked after.
+    pub fn pasted(edit: Edit, line: String) -> Done {
+        Done {
+            edit,
+            select_added: true,
+            line,
+            ..Done::default()
+        }
     }
 
     /// Select menu item `k` ([`SELECT_ITEMS`], plan 1B.3) on `clip`, the
@@ -929,6 +963,15 @@ impl Editor {
                 String::new(),
             ),
             EditAction::Choose(k) => return self.choose(k, clip, sel),
+            // The app keeps the copy and makes the paste.
+            EditAction::Copy { index, .. } => {
+                self.sel = Self::copying(index, sel, clip);
+                if let Some(&i) = self.sel.first() {
+                    self.worked_on(clip.notes[i]);
+                }
+                return Done::default();
+            }
+            EditAction::Paste { .. } => return Done::default(),
             EditAction::PickRow(r) => {
                 self.row = r.min(EDIT_ROWS.len() - 1);
                 return Done::default();
@@ -4194,6 +4237,35 @@ mod tests {
             .rev(),
             Some(7)
         );
+    }
+
+    /// COPY + a tap (plan 1B.4): on a picked note the picks stay, on
+    /// another it is picked alone, and a note gone picks nothing; the
+    /// action carries its picture's revision, and the app's paste picks
+    /// the notes it put in.
+    #[test]
+    fn copy_picks_what_it_copies_and_a_paste_picks_what_went_in() {
+        let c = clip(&[(0, 240, 60), (240, 240, 62), (480, 240, 64)]);
+        let mut ed = Editor::new(0, 0, &c);
+        ed.sel = vec![0, 2];
+        ed.act(EditAction::Copy { index: 2, rev: 0 }, &c);
+        assert_eq!(ed.sel, [0, 2]);
+        ed.act(EditAction::Copy { index: 1, rev: 0 }, &c);
+        assert_eq!(ed.sel, [1]);
+        ed.act(EditAction::Copy { index: 9, rev: 0 }, &c);
+        assert!(ed.sel.is_empty());
+        assert_eq!(EditAction::Copy { index: 1, rev: 7 }.rev(), Some(7));
+        assert_eq!(EditAction::Paste { tick: 0 }.rev(), None);
+        assert_eq!(ed.act(EditAction::Paste { tick: 0 }, &c), Done::default());
+        let copied = notes::copy(&c, &[0, 1]);
+        let carried = notes::carry(&c, &copied, 960, |_| true).unwrap();
+        let done = Editor::pasted(carried.edit, "paste".into());
+        let mut d = c.clone();
+        d.apply(&done.edit).unwrap();
+        ed.applied(&d, &done);
+        let mut picked: Vec<Tick> = ed.sel.iter().map(|&i| d.notes[i].tick).collect();
+        picked.sort_unstable();
+        assert_eq!(picked, [960, 1200]);
     }
 
     /// The Select menu (plan 1B.3): All, None and Invert; the filters,

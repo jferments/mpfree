@@ -7412,13 +7412,17 @@ fn time_action(
             return Vec::new();
         }
     }
-    // ERASE + a clip, COPY + a clip or a slot, a clip settings card change,
-    // a drop on the Clips grid or the Song view, a block deleted, UNDO and
-    // REDO: said in place of the hint.
+    // ERASE + a clip, COPY + a clip or a slot, COPY + a note or empty roll
+    // in the note editor, a clip settings card change, a drop on the Clips
+    // grid or the Song view, a block deleted, UNDO and REDO: said in place
+    // of the hint.
     let undo = matches!(a, TimeAction::Undo | TimeAction::Redo);
     let erase = matches!(
         a,
-        TimeAction::DeleteClip { .. }
+        TimeAction::Edit(
+            mpfree_time_ui::editor::EditAction::Copy { .. }
+                | mpfree_time_ui::editor::EditAction::Paste { .. }
+        ) | TimeAction::DeleteClip { .. }
             | TimeAction::ClipSettings { .. }
             | TimeAction::ClipLength { .. }
             | TimeAction::Mutate { .. }

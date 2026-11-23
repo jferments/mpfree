@@ -6439,9 +6439,27 @@ impl Player {
 
     /// COPY held on the Clips grid (sequencer S3): a tap on a clip copies
     /// it, and a tap on an empty slot pastes the copy there (a take UNDO
-    /// takes away). `Some` is the answer to the touch; `None` lets the tap
-    /// do what it always does.
+    /// takes away). In the note editor (piano roll plan 1B.4), a tap on a
+    /// note copies the picked notes (or that one), and a tap on empty
+    /// roll or an empty line of the tracker pastes them there, in any
+    /// clip. `Some` is the answer to the touch; `None` lets the tap do
+    /// what it always does.
     fn copy_tap(&mut self, ev: &UiEvent) -> Option<Option<FromUi>> {
+        if ev.widget == time_view::NOTES {
+            let rev = self.time.edit.as_ref().map_or(0, |e| e.rev);
+            let a = match ev.kind {
+                EventKind::Toggle(index) | EventKind::Select(index) => {
+                    EditAction::Copy { index, rev }
+                }
+                // An empty cell of the roll (a row is a note) or the
+                // tracker's line (`PEN`); not a held note's add.
+                EventKind::Cell { row, col } if row < 128 || row == mpfree_time_ui::editor::PEN => {
+                    EditAction::Paste { tick: col as i64 }
+                }
+                _ => return None,
+            };
+            return Some(Some(FromUi::Time(TimeAction::Edit(a))));
+        }
         let (time_view::CLIPS, EventKind::Select(i)) = (ev.widget.as_str(), &ev.kind) else {
             return None;
         };
@@ -7051,6 +7069,13 @@ impl Player {
             FULL_HOLD_HINT.to_string()
         } else if self.status.tap_held && self.ready {
             TAP_HOLD_HINT.to_string()
+        } else if self.status.copy
+            && self.ready
+            && self.status.steps.is_none()
+            && self.view == View::Sequencer
+            && self.time.edit.is_some()
+        {
+            time_view::notes_copy_hint(&self.time)
         } else if self.status.copy
             && self.ready
             && self.status.steps.is_none()
@@ -22625,6 +22650,42 @@ mod tests {
             })))
         );
         held.erase = false;
+        p.apply(ToUi::Status(held));
+        // COPY held (piano roll plan 1B.4): a tap on a note copies the
+        // picked notes (or that one), a tap on empty roll pastes them
+        // there, and the hint line says so.
+        let mut held = p.status.clone();
+        held.copy = true;
+        p.apply(ToUi::Status(held.clone()));
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(
+            hint(&p).starts_with("COPY held: tap a note"),
+            "{}",
+            hint(&p)
+        );
+        assert_eq!(
+            tap(&mut p, (nx, ny)),
+            Some(FromUi::Time(TimeAction::Edit(EditAction::Copy {
+                index: 1,
+                rev: 0
+            })))
+        );
+        let empty = (area.x + area.w - 60, ny);
+        assert!(
+            matches!(
+                tap(&mut p, empty),
+                Some(FromUi::Time(TimeAction::Edit(EditAction::Paste { tick }))) if tick > 970
+            ),
+            "a paste where the finger lifts"
+        );
+        p.time.notes_copied = Some("1 note from Beat".into());
+        p.apply(ToUi::Status(held.clone()));
+        assert!(
+            hint(&p).contains("paste 1 note from Beat there"),
+            "{}",
+            hint(&p)
+        );
+        held.copy = false;
         p.apply(ToUi::Status(held));
         // Edit opens the drawer of Edit options and takes (the page's
         // own), whose Correct corrects the timing; TC does too, once the

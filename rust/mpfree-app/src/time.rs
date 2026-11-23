@@ -10605,6 +10605,197 @@ mod tests {
         );
     }
 
+    /// COPY + a note copies the picked notes, apart from the clip, and
+    /// COPY + empty space pastes them, here or in another track's clip,
+    /// as one take: their pressure comes along, and a lock another track
+    /// may not have the setting of is left out and said (piano roll plan
+    /// 1B.4).
+    #[test]
+    fn the_note_editor_copies_notes_into_another_tracks_clip() {
+        use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_seq::{Lock, TouchPoint};
+        use mpfree_time_ui::editor::EditAction as E;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        for step in [0, 4] {
+            h.step_action(StepAction::Tap {
+                pad: 0,
+                step,
+                velocity: 100,
+            })
+            .unwrap();
+        }
+        let p = |at, value| TouchPoint { at, value };
+        let cut = RelAddr::new(OnTrack::Inst, 1);
+        let level = RelAddr::new(OnTrack::Strip, 0);
+        {
+            let c = h.control.project.tracks[0].slots[0].as_mut().unwrap();
+            let i = c.notes.iter().position(|n| n.tick == 0).unwrap();
+            c.notes[i].touch = c.add_touch(&[p(0, 30), p(60, 90)]).unwrap();
+            let note = c.notes[i].note;
+            c.add_lock(Lock::new(0, Some(note), cut, 900.0)).unwrap();
+            c.add_lock(Lock::new(0, Some(note), level, 0.25)).unwrap();
+        }
+        h.control.project.tracks[1].slots[0] = Some(Clip::new("Chorus", 3840));
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        let why = h.act(TimeAction::Edit(E::Paste { tick: 0 })).unwrap_err();
+        assert!(why.contains("nothing copied yet"), "{why}");
+        let st = h.state().edit.unwrap();
+        let first = st.clip.notes.iter().position(|n| n.tick == 0).unwrap();
+        let said = h
+            .act(TimeAction::Edit(E::Copy {
+                index: first,
+                rev: st.rev,
+            }))
+            .unwrap();
+        let name = st.clip.name.clone();
+        assert_eq!(
+            h.state().notes_copied.as_deref(),
+            Some(format!("1 note from {name}").as_str()),
+            "{said}"
+        );
+        assert_eq!(h.state().edit.unwrap().editor.sel, [first], "picked");
+        // Into track 2's clip: the pressure comes, the synth's lock not.
+        h.act(TimeAction::Arm(Some(1))).unwrap();
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        // Not pad hits into a clip of notes.
+        h.control.project.tracks[1].slots[0].as_mut().unwrap().holds = mpfree_seq::Holds::Notes;
+        let why = h.act(TimeAction::Edit(E::Paste { tick: 480 })).unwrap_err();
+        assert!(
+            why.contains("Chorus holds notes and the copy is pad hits"),
+            "{why}"
+        );
+        // Its pressure nearly full of runs nothing names: taken back first.
+        {
+            let c = h.control.project.tracks[1].slots[0].as_mut().unwrap();
+            c.holds = mpfree_seq::Holds::Hits;
+            c.touch = vec![p(0, 1); mpfree_seq::MAX_TOUCH_POINTS - 1];
+        }
+        let takes = h.state().done.len();
+        let said = h.act(TimeAction::Edit(E::Paste { tick: 480 })).unwrap();
+        let track = h.control.project.tracks[1].name.clone();
+        assert!(
+            said.starts_with(&format!("paste: 1 note from {name} into Chorus on {track}")),
+            "{said}"
+        );
+        assert!(
+            said.ends_with(&format!(
+                "1 lock left out, as {track} may not have its setting: 1 on the instrument"
+            )),
+            "{said}"
+        );
+        let c = h.control.project.clip(1, 0).unwrap().clone();
+        assert_eq!(c.notes.len(), 1);
+        assert_eq!(c.notes[0].tick, 480);
+        assert_eq!(c.touch_of(&c.notes[0]), [p(0, 30), p(60, 90)]);
+        assert_eq!(c.touch.len(), 2, "the room nothing named was taken back");
+        assert_eq!(
+            c.locks,
+            [Lock::new(480, Some(c.notes[0].note), level, 0.25)]
+        );
+        let st = h.state();
+        assert_eq!(st.done.len(), takes + 1, "one take");
+        assert_eq!(st.edit.unwrap().editor.sel, [0], "the pasted notes picked");
+        h.act(TimeAction::Undo).unwrap();
+        assert!(h.control.project.clip(1, 0).unwrap().notes.is_empty());
+        // Back on track 1, both locks come with a paste.
+        h.act(TimeAction::Arm(Some(0))).unwrap();
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        let said = h.act(TimeAction::Edit(E::Paste { tick: 1920 })).unwrap();
+        assert!(!said.contains("left out"), "{said}");
+        let c = h.control.project.clip(0, 0).unwrap();
+        assert_eq!(c.locks.iter().filter(|l| l.tick == 1920).count(), 2);
+    }
+
+    /// A lock on the synth pastes into another track's clip when that
+    /// track plays the same synth (refactor F1), not when it plays
+    /// another, nor into a clip whose synth locks were made for another.
+    #[test]
+    fn a_synth_lock_pastes_onto_a_track_that_plays_the_same_synth() {
+        use mpfree_node::Node;
+        use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_seq::Lock;
+        use mpfree_time_ui::editor::EditAction as E;
+        let poly = crate::synth::engine_node("mpfree.poly", RATE).unwrap();
+        let fm = crate::synth::engine_node("mpfree.fm", RATE).unwrap();
+        let of = |n: &dyn Node| -> Option<InstRef> { Some((n.info(), n.params())) };
+        let cutoff = poly.params().iter().find(|p| p.name == "Cutoff").unwrap();
+        let cut = RelAddr::new(OnTrack::Inst, cutoff.id);
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.set_instruments(&[of(&*poly), of(&*poly), of(&*fm)]);
+        h.step_action(StepAction::Tap {
+            pad: 0,
+            step: 0,
+            velocity: 100,
+        })
+        .unwrap();
+        {
+            let c = h.control.project.tracks[0].slots[0].as_mut().unwrap();
+            let note = c.notes[0].note;
+            c.add_lock(Lock::new(0, Some(note), cut, 0.7)).unwrap();
+        }
+        for t in [1, 2] {
+            h.control.project.tracks[t].slots[0] = Some(Clip::new("Verse", 3840));
+        }
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        // The lock put in by hand gets its tag with the first action, so
+        // the picture moves on once.
+        let why = h.act(TimeAction::Edit(E::Paste { tick: 0 })).unwrap_err();
+        assert!(why.contains("nothing copied yet"), "{why}");
+        let st = h.state().edit.unwrap();
+        h.act(TimeAction::Edit(E::Copy {
+            index: 0,
+            rev: st.rev,
+        }))
+        .unwrap();
+        let paste = |h: &mut TimeHost, track: usize| {
+            h.act(TimeAction::Arm(Some(track))).unwrap();
+            h.act(TimeAction::Edit(E::Open)).unwrap();
+            h.act(TimeAction::Edit(E::Paste { tick: 480 })).unwrap()
+        };
+        // Track 2 plays Poly too: the lock comes, and the clip's locks are
+        // now made for Poly.
+        let said = paste(&mut h, 1);
+        assert!(!said.contains("left out"), "{said}");
+        let c = h.control.project.clip(1, 0).unwrap();
+        assert_eq!(c.locks.len(), 1);
+        assert_eq!(c.locks[0].addr, cut);
+        assert_eq!(
+            c.made_for.as_ref().map(|m| m.node.as_str()),
+            Some("mpfree.poly")
+        );
+        // Track 3 plays FM: left out, and said.
+        let said = paste(&mut h, 2);
+        let fm_track = h.control.project.tracks[2].name.clone();
+        assert!(
+            said.ends_with(&format!(
+                "1 lock left out, as {fm_track} may not have its setting: \
+                 1 on the instrument (made for Poly, {fm_track} plays FM)"
+            )),
+            "{said}"
+        );
+        assert!(h.control.project.clip(2, 0).unwrap().locks.is_empty());
+        // A clip on track 2 whose synth locks were made for FM takes none
+        // of Poly's.
+        h.act(TimeAction::Undo).unwrap();
+        h.act(TimeAction::Arm(Some(1))).unwrap();
+        h.act(TimeAction::Undo).unwrap();
+        {
+            let c = h.control.project.tracks[1].slots[0].as_mut().unwrap();
+            c.add_lock(Lock::new(960, None, cut, 0.1)).unwrap();
+            c.made_for = Some(mpfree_seq::inst::Inst {
+                node: "mpfree.fm".into(),
+                name: "FM".into(),
+                params: vec![],
+            });
+        }
+        let said = paste(&mut h, 1);
+        assert!(
+            said.ends_with("1 on the instrument (Verse's are made for FM)"),
+            "{said}"
+        );
+        assert_eq!(h.control.project.clip(1, 0).unwrap().locks.len(), 1);
+    }
+
     /// An editor edit that what plays can't follow (the play view would not
     /// build) is taken back from the clip and the takes, as a step edit is.
     #[test]
@@ -12424,11 +12615,23 @@ mod tests {
         let rev = drawn.rev;
         touch(&mut together, E::Erase { index, rev }, &note);
         touch(&mut together, E::Note { index: 0, rev }, &note);
-        let r = together
-            .act_then(TimeAction::Undo, Say::Undo)
-            .expect("together");
-        sent.push((TimeAction::Undo, Say::Undo));
-        want.push((Say::Undo, r));
+        // COPY + a note, then COPY + empty roll (plan 1B.4): a paste, which
+        // the first UNDO takes back, the second the erase.
+        let rev = info(&mut together).rev;
+        touch(&mut together, E::Copy { index: 0, rev }, &note);
+        touch(&mut together, E::Paste { tick: 2000 }, &note);
+        assert!(info(&mut together)
+            .clip
+            .notes
+            .iter()
+            .any(|n| n.tick == 2000));
+        for _ in 0..2 {
+            let r = together
+                .act_then(TimeAction::Undo, Say::Undo)
+                .expect("together");
+            sent.push((TimeAction::Undo, Say::Undo));
+            want.push((Say::Undo, r));
+        }
         let refused = |r: &Result<String, String>| {
             r.as_ref()
                 .is_err_and(|why| why.contains("the clip changed under your finger"))
@@ -12438,9 +12641,11 @@ mod tests {
             2,
             "the tap from before the move and the pick from before the erase: {want:?}"
         );
-        // UNDO took the erase back: the drawn note is there again.
+        // UNDO took the paste and the erase back: the drawn note is there
+        // again.
         let end = info(&mut together);
         assert!(end.clip.notes.iter().any(|n| (n.tick, n.note) == (480, 5)));
+        assert!(!end.clip.notes.iter().any(|n| n.tick == 2000));
         // Apart: every touch sent at once, as a quick hand does.
         let (mut h, why) = host_with_a_clip().into_apart();
         assert_eq!(why, None);
@@ -12457,8 +12662,8 @@ mod tests {
         let a = h.state().edit.expect("open").answer;
         assert_eq!(a, end.answer);
         assert!(
-            matches!(a.outcome, O::Refused(_)),
-            "the last editor touch was the stale pick: {a:?}"
+            matches!(a.outcome, O::Taken { .. }),
+            "the last editor touch was the paste: {a:?}"
         );
         // A new copy for something else (a track added) shares the clip
         // while it is unchanged (plan 0C.1), so the roll isn't built again.
