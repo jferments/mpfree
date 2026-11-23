@@ -28,7 +28,7 @@
 //! never a file's name, and checks at the end that the files it read are
 //! as they were.
 
-use super::{mbps, stopped, Times, MIB, STOP};
+use super::{mbps, stopped, watch, Times, MIB, STOP};
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
@@ -329,6 +329,10 @@ pub(super) struct Result1 {
     pub(super) longest_behind_ms: f64,
     /// A stream fell so far behind that it was stopped at the cap.
     pub(super) cut: bool,
+    /// Each read over [`watch::SLOW_MS`]: when it started, and its ms.
+    pub(super) slow: Vec<(Instant, f64)>,
+    /// What the rest of the stick did meanwhile, when it is watched.
+    pub(super) beside: Option<watch::Beside>,
 }
 
 /// One stream: read its pieces in turn at `cfg.rate` bytes a second until
@@ -377,7 +381,13 @@ fn stream(
         }
         let (f, left) = cur.as_mut().expect("opened above");
         let want = (*left).min(cfg.read as u64) as usize;
+        let at = Instant::now();
         let n = r.reads.time(|| fill(f, &mut buf[..want]))?;
+        if let Some(&ms) = r.reads.ms.last() {
+            if ms > watch::SLOW_MS {
+                r.slow.push((at, ms));
+            }
+        }
         *left -= n as u64;
         r.bytes += n as u64;
         pass_bytes += n as u64;
@@ -418,6 +428,7 @@ pub(super) fn run_config(
 ) -> Result<Result1, String> {
     let all: Vec<&Piece> = groups.iter().flatten().copied().collect();
     drop_pieces(&all, dev)?;
+    let watcher = watch::STICK.get().and_then(watch::Watcher::start);
     let start = Instant::now();
     let spread = cfg.read as f64 / cfg.rate;
     let secs = secs + LEAD_S;
@@ -456,7 +467,9 @@ pub(super) fn run_config(
         all.behind_ms = all.behind_ms.max(r.behind_ms);
         all.longest_behind_ms = all.longest_behind_ms.max(r.longest_behind_ms);
         all.cut |= r.cut;
+        all.slow.extend(r.slow);
     }
+    all.beside = watcher.and_then(|w| w.stop(&all.slow));
     Ok(all)
 }
 
@@ -566,6 +579,7 @@ pub fn run(base: &Path, quick: bool) -> Result<(), Fail> {
     );
     say!("  (p99.9 and p99.99 mean something only past 1,000 and 10,000 reads: each line gives its count)");
     let mut summary = Vec::new();
+    let mut beside = Vec::new();
     for cfg in &z.configs {
         let label = format!(
             "{} streams, {} ({:.1} kB/s each), {} KiB reads",
@@ -592,6 +606,10 @@ pub fn run(base: &Path, quick: bool) -> Result<(), Fail> {
             r.wraps
         );
         say!("  {}", r.opens.report("open"));
+        if let Some(b) = &r.beside {
+            say!("    {}", b.line());
+            say!("    {}", b.slow_line());
+        }
         let w = window_s(r.behind_ms);
         let ram = cfg.streams as f64 * cfg.rate * w;
         say!(
@@ -608,6 +626,7 @@ pub fn run(base: &Path, quick: bool) -> Result<(), Fail> {
             w,
             ram,
         ));
+        beside.push((*cfg, r.beside));
     }
 
     say!("\nSummary (times in ms, window in s a stream, RAM in MiB for all streams):");
@@ -625,6 +644,23 @@ pub fn run(base: &Path, quick: bool) -> Result<(), Fail> {
             w,
             ram / MIB as f64
         );
+    }
+    if beside.iter().any(|(_, b)| b.is_some()) {
+        say!(
+            "\nBeside the slow reads (over {:.0} ms): how many had another partition writing (w) or reading (r), and how many had nothing else on the stick (alone):",
+            watch::SLOW_MS
+        );
+        for (cfg, b) in &beside {
+            if let Some(b) = b {
+                say!(
+                    "  {:>7}  {:<7}  {:>8}  {}",
+                    cfg.streams,
+                    cfg.kind,
+                    cfg.read / KIB,
+                    b.short()
+                );
+            }
+        }
     }
     let (_, after) = find(base, z.piece)?;
     if after == before {

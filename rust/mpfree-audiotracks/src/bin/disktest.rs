@@ -52,6 +52,10 @@
 //! each stream would need ([`read`]). On the stick it also needs the
 //! partition mounted `noatime` (or read-only), so reading changes no
 //! access time.
+//!
+//! Every run that reads the library also watches the rest of the stick
+//! beside the reads ([`watch`]): each partition's block counters in sysfs,
+//! read-only, and what was going on beside each slow read.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -110,6 +114,10 @@ mod recorder;
 
 #[path = "disktest/vm.rs"]
 mod vm;
+
+/// What the rest of the stick did beside the streams' reads.
+#[path = "disktest/watch.rs"]
+mod watch;
 
 static STOP: AtomicBool = AtomicBool::new(false);
 
@@ -263,7 +271,28 @@ fn check_device(reads_library: bool) -> Result<(), String> {
         return Err(format!("{src} is labelled {label:?}, not {LABEL}"));
     }
     say!("device: {MOUNT} is {src} (USB, partition 4, ext4 {LABEL:?}, {opts}); no MMC device");
+    watch_stick(Path::new(&format!("/sys/class/block/{name}")));
     Ok(())
+}
+
+/// Watch the rest of the stick beside the streams ([`watch`]): the disk
+/// `part` is on and its partitions' counters, read-only. Without them the
+/// run goes on and says so.
+fn watch_stick(part: &Path) {
+    match watch::stick_of(part) {
+        Ok(stick) => {
+            let parts: Vec<String> = stick.parts.iter().map(|(n, _)| n.to_string()).collect();
+            say!(
+                "watching: the counters of {} (partitions {}) beside the reads, read-only",
+                stick.disk,
+                parts.join(", ")
+            );
+            let _ = watch::STICK.set(stick);
+        }
+        Err(e) => {
+            say!("watching: the stick's counters can't be read ({e}); the runs go on without them")
+        }
+    }
 }
 
 fn free_bytes(p: &Path) -> Result<u64, String> {
@@ -682,6 +711,10 @@ fn main() -> ExitCode {
             esay!("mpfree-disktest: refused: {e}. Nothing was written.");
             return ExitCode::from(3);
         }
+    } else if let Some(p) = std::env::var_os("MPFREE_DISKTEST_SYS") {
+        // A desktop test may name a stand-in partition folder in sysfs's
+        // shape; the stick's run always reads the kernel's.
+        watch_stick(Path::new(&p));
     }
     let base = match fs::canonicalize(&o.base) {
         Ok(b) if o.desktop || b == Path::new(MOUNT) => b,

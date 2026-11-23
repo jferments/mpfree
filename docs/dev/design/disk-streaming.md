@@ -243,7 +243,17 @@ What changed because of it:
 - **Background work waits while anything records** (`Gate::recording`, set by the writer from a take's first captured frame until it is saved; an armed track only monitoring holds nothing up). That covers checked copies (`cardcopy::background`) and the coordinator's background reads; the next song still prepares. Before, they stopped only past three quarters of a take's capture memory (`STOP_BACKGROUND`, now gone). But a heavy read or copy put the recording 0.4 to 0.8 s further behind every second, so it took a minute and a half to three minutes to reach that point.
 - **Capture memory covers a recording on its own.** 32 MiB a take is about 90 s of a stereo float track, and the worst on its own was 5.6 s behind. The writer also lengthens its interval when syncs run long (2 s, up to 10 s).
 
-Still open: D2 tried a sync every second only, not the writer's 2 s default or 5 and 10 s (D4, [below](#d4-mpfrees-recorder-on-the-stick)); what slowed reads with nothing writing on partition 4; and D3, the whole app ([below](#d3-the-app-streaming-on-the-stick)).
+Still open: D2 tried a sync every second only, not the writer's 2 s default or 5 and 10 s (D4, [below](#d4-mpfrees-recorder-on-the-stick)); what slowed reads with nothing writing on partition 4 (the disk test now watches the rest of the stick, [below](#beside-the-slow-reads-the-rest-of-the-stick)); and D3, the whole app ([below](#d3-the-app-streaming-on-the-stick)).
+
+### Beside the slow reads: the rest of the stick
+
+D1 again found slow reads with nothing writing on partition 4. The stick has one queue (USB 2.0, queue depth 1), so a write to the log partition (p2) or a read of the system (p1) waits in the same line as the streams. Every run that reads the library (`--read-only`, `--under-load` and `--recorder`) also watches the rest of the stick ([`src/bin/disktest/watch.rs`](../../../rust/mpfree-audiotracks/src/bin/disktest/watch.rs)):
+
+- **How.** A thread reads each partition's `stat` and `inflight` in sysfs every 10 ms, from just before a set of streams starts to just after it stops. It only reads, keeping the files open and reading them again from the start.
+- **What each set says.** What the other partitions read and wrote, as in `the rest of the stick (sda): p2 wrote 412 KiB in 37 writes, p4 wrote nothing`. Then, for the reads over 100 ms, what was going on beside each one: another partition reading or writing, partition 4 writing (its reads are the streams' own), or nothing else on the stick, as in `reads over 100 ms: 3; beside p2 writing 2; with nothing else on the stick 1`. The read-only run ends with a table of the slow reads, set by set.
+- **What it tells apart.** A slow read beside p2's writes points at the log. One with nothing else on the stick points at the stick's own housekeeping, or the bus.
+- **When it can't watch.** If the stick's counters can't be read, the run says so and goes on. On a desktop nothing is watched, except a stand-in named by `MPFREE_DISKTEST_SYS` (a partition's folder in sysfs's shape, for the desktop tests only).
+- **Tests.** The unit tests in `watch.rs` cover the kernel's fields, each slow read matched with what was beside it, and the stick found from its partition and watched. `tests/disktest.rs` checks that a read-only run says it for every set and leaves the stand-in as it was, and that a recorder run says it for every step.
 
 ### D3: the app streaming on the stick
 

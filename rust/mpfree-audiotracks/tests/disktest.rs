@@ -258,6 +258,109 @@ fn a_read_only_run_reads_the_library_and_changes_nothing() {
     std::fs::remove_dir_all(&outside).unwrap();
 }
 
+/// A stand-in for the stick in sysfs: `usb1/block/sdz/sdzN` for each
+/// partition, with the kernel's `partition`, `stat` and `inflight` files.
+fn stick_stand_in(d: &Path, parts: &[u32]) -> PathBuf {
+    let disk = d.join("usb1/1-1/block/sdz");
+    for n in parts {
+        let p = disk.join(format!("sdz{n}"));
+        std::fs::create_dir_all(&p).unwrap();
+        std::fs::write(p.join("partition"), format!("{n}\n")).unwrap();
+        std::fs::write(
+            p.join("stat"),
+            "     120        0     960       40       12        0      96       30        0       60       70\n",
+        )
+        .unwrap();
+        std::fs::write(p.join("inflight"), "       0        0\n").unwrap();
+    }
+    disk.join("sdz4")
+}
+
+#[test]
+fn a_read_only_run_says_what_the_rest_of_the_stick_did_beside_the_reads() {
+    let d = scratch("read-watch");
+    let lib = d.join("library");
+    for i in 0..6 {
+        noise(
+            &lib.join(format!("Samples/s{i}.wav")),
+            (1 << 20) + i * 70_000,
+            i as u32 + 30,
+        );
+    }
+    let sys = scratch("read-watch-sys");
+    let part = stick_stand_in(&sys, &[1, 2, 3, 4, 5]);
+    let before = snapshot(&sys);
+    let out = bin()
+        .arg("--desktop-test")
+        .arg(&d)
+        .args(["--read-only", "--quick"])
+        .env("MPFREE_DISKTEST_SYS", &part)
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{text}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    for want in [
+        "watching: the counters of sdz (partitions 1, 2, 3, 4, 5) beside the reads, read-only",
+        "the rest of the stick (sdz): p4 wrote nothing; ",
+        " readings of its counters",
+        "reads over 100 ms: ",
+        "Beside the slow reads (over 100 ms)",
+        "the files read are as they were: nothing was written",
+    ] {
+        assert!(text.contains(want), "missing {want:?} in\n{text}");
+    }
+    // One line of each for every set of streams.
+    let sets = text.matches("    worst shortfall").count();
+    assert!(sets >= 4, "{text}");
+    assert_eq!(
+        text.matches("the rest of the stick (sdz)").count(),
+        sets,
+        "{text}"
+    );
+    // Its counters are only read.
+    assert_eq!(snapshot(&sys), before);
+
+    // Without them (a desktop's own disk is never watched) the run says nothing of them.
+    let out = bin()
+        .arg("--desktop-test")
+        .arg(&d)
+        .args(["--read-only", "--quick"])
+        .env_remove("MPFREE_DISKTEST_SYS")
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{text}");
+    assert!(
+        !text.contains("watching:") && !text.contains("the rest of the stick"),
+        "{text}"
+    );
+
+    // A stand-in with no partition 4: said, and the run goes on.
+    let other = scratch("read-watch-sys2");
+    let part = stick_stand_in(&other, &[1, 2]);
+    let out = bin()
+        .arg("--desktop-test")
+        .arg(&d)
+        .args(["--read-only", "--quick"])
+        .env("MPFREE_DISKTEST_SYS", part.with_file_name("sdz2"))
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{text}");
+    assert!(
+        text.contains("watching: the stick's counters can't be read (no partition 4 under "),
+        "{text}"
+    );
+    assert!(!text.contains("the rest of the stick"), "{text}");
+    for x in [&d, &sys, &other] {
+        std::fs::remove_dir_all(x).unwrap();
+    }
+}
+
 #[test]
 fn a_read_only_run_with_too_little_audio_is_refused() {
     let d = scratch("read-little");
@@ -460,6 +563,8 @@ fn a_recorder_run_saves_every_take_whole_and_puts_the_writeback_limit_back() {
     library(&d);
     std::fs::write(d.join("library/notes.txt"), b"keep me").unwrap();
     let vm = writeback_stand_in("rec-vm", "1048576");
+    let sys = scratch("rec-sys");
+    let part = stick_stand_in(&sys, &[1, 2, 4]);
     let before = snapshot(&d);
     let vm_before = settings(&vm);
     let out = bin()
@@ -467,6 +572,7 @@ fn a_recorder_run_saves_every_take_whole_and_puts_the_writeback_limit_back() {
         .arg(&d)
         .args(["--recorder", "--quick"])
         .env("MPFREE_DISKTEST_VM", &vm)
+        .env("MPFREE_DISKTEST_SYS", &part)
         .output()
         .unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
@@ -506,6 +612,13 @@ fn a_recorder_run_saves_every_take_whole_and_puts_the_writeback_limit_back() {
         8,
         "{text}"
     );
+    // The rest of the stick beside each step's streams.
+    assert_eq!(
+        text.matches("the rest of the stick (sdz): ").count(),
+        8,
+        "{text}"
+    );
+    assert_eq!(text.matches("    reads over 100 ms: ").count(), 8, "{text}");
     assert!(!text.contains("left out"), "{text}");
     assert!(!text.contains("NOT ALL FINISHED"), "{text}");
     for name in ["s0.wav", "notes.txt", "Samples"] {
@@ -516,6 +629,7 @@ fn a_recorder_run_saves_every_take_whole_and_puts_the_writeback_limit_back() {
     assert_eq!(settings(&vm), vm_before);
     std::fs::remove_dir_all(&d).unwrap();
     std::fs::remove_dir_all(&vm).unwrap();
+    std::fs::remove_dir_all(&sys).unwrap();
 }
 
 #[test]

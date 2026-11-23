@@ -671,6 +671,10 @@ fn report_step(env: &Env, step: Step, m: &Measured) -> Row {
                     CAP * env.secs
                 );
             }
+            if let Some(b) = &r.beside {
+                say!("    {}", b.line());
+                say!("    {}", b.slow_line());
+            }
             (r.behind_ms, r.reads.max())
         }
         None => (f64::NAN, f64::NAN),

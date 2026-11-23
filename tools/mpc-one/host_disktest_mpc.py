@@ -98,6 +98,10 @@ the second waits for you to press Enter:
      cycle puts it back whatever happened. This tool reads the four
      writeback settings before and after the run (read-only) and says
      whether they are as they were.
+  Beside every set of streams (4a, 4c and 4d) it also reads the stick's
+  partitions' block counters in sysfs (/sys/class/block/sdX/sdXN/stat and
+  inflight, read-only) every 10 ms, and says what the other partitions
+  read and wrote, and what was going on beside each read over 100 ms.
   All run as an ordinary process, so the pad player's audio thread, if
   it is running, comes first; the screen may answer slowly during steps
   5 to 8.

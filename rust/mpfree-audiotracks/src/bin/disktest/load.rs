@@ -942,6 +942,10 @@ fn report_step(env: &Env, load: Load, m: &Measured) -> Row {
                         CAP * env.secs
                     );
                 }
+                if let Some(b) = &r.beside {
+                    say!("    {}", b.line());
+                    say!("    {}", b.slow_line());
+                }
                 sets.push(Some((r.behind_ms, r.reads.max(), w, r.cut)));
             }
             None => {
