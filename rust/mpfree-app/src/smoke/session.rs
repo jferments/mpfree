@@ -261,6 +261,11 @@ pub struct Session {
     /// The pads held on the instrument the host's pads player plays (step
     /// 6), as main.rs's.
     host_held: [bool; 16],
+    /// The kit chosen for the pads that plays on its own (sampler step
+    /// 15), as main.rs's `pads_preview`, and the kit and pad each pad held
+    /// on it hit.
+    kit_preview: Option<usize>,
+    kit_held: [Option<(usize, usize)>; 16],
     /// Keys playing the pads' synth while the pads play it on their own
     /// (step 7b, as main.rs).
     keys_on_pads: crate::KeysOnPads,
@@ -291,9 +296,6 @@ pub struct Session {
     /// The app's effects waiting for the desk (a test may add some).
     pub fx: Vec<Effect>,
     kit_to: Option<usize>,
-    /// A kit picked in the list (or turned with SHIFT + the wheel) since
-    /// the kit last changed: the pads follow the track (main.rs's own).
-    kit_picked: bool,
     /// The boxes the screen lent the audio thread.
     preview: Option<Box<crate::preview::Preview>>,
     rec_feed: Option<Box<crate::sampler::RecFeed>>,
@@ -431,6 +433,8 @@ impl Session {
             mute_pressed: [false; 16],
             preview_on: false,
             preview_held: [false; 16],
+            kit_preview: None,
+            kit_held: [None; 16],
             host_held: [false; 16],
             keys_on_pads: crate::KeysOnPads::new(),
             pad_layers: crate::PadLayers::new(),
@@ -449,7 +453,6 @@ impl Session {
             to_screen,
             fx: Vec::new(),
             kit_to: None,
-            kit_picked: false,
             preview: None,
             rec_feed: None,
             line_tone: None,
@@ -483,6 +486,10 @@ impl Session {
         // finder answers in the period that asks, as its thread would in
         // the time a period plays.
         s.looper.finder.inline = true;
+        // The app has the list from the first period, as main.rs's (its
+        // `list_changed` starts true), kits and all.
+        let fx = s.app.set_instrument_list(&s.instrument_list);
+        s.fx.extend(fx);
         let mut projects = vec![mpfree_sampler_ui::sample::project().0];
         projects.resize_with(n, mpfree_sampler::model::Project::new);
         s.out.show(ToUi::SampleKits {
@@ -1013,7 +1020,8 @@ impl Session {
         {
             Some(crate::PadsPreview::Host)
         } else {
-            None
+            self.kit_preview
+                .map(|k| crate::PadsPreview::Kit(k.min(usize::from(u8::MAX)) as u8))
         }
     }
 
@@ -1249,6 +1257,31 @@ impl Session {
         }
         if !down && pad < 16 && std::mem::take(&mut self.preview_held[pad]) {
             self.synth.note_off(pad, 0);
+            self.out.show(ToUi::PadUp(pad));
+            return;
+        }
+        // A kit chosen for the pads (sampler step 15), as main.rs: the pad
+        // of its page the pads are on plays on its own, before the arp and
+        // the recorder; its let-go reaches the kit and pad it hit.
+        if let (true, true, Some(k)) = (down, pad < 16, self.kit_preview) {
+            let v = self.app.velocity(velocity);
+            let kit_pad = self.app.kit_pad(pad);
+            if let Some(p) = self.sounds.as_mut() {
+                p.hit_kit_at(k, kit_pad, v, 0);
+            }
+            let own = &mut self.mix.instruments;
+            self.pad_layers.pad_on(pad, v, &mut self.synth, own);
+            let rv = self.app.layer_rec_velocity(velocity);
+            self.pad_layers.rec_on(pad, rv, &mut self.time);
+            self.kit_held[pad] = Some((k, kit_pad));
+            self.previewed.push((pad, v));
+            self.out.show(ToUi::PadDown { pad, velocity: v });
+            return;
+        }
+        if let Some((k, kit_pad)) = self.kit_held.get_mut(pad).and_then(Option::take) {
+            if let Some(p) = self.sounds.as_mut() {
+                p.release_kit_at(k, kit_pad, 0);
+            }
             self.out.show(ToUi::PadUp(pad));
             return;
         }
@@ -1985,7 +2018,6 @@ impl Session {
             ),
             instrument_list: self.instrument_list.text(),
             pads: self.app.pads_part(),
-            pad_layers: self.app.pad_layers_part(),
             loops,
             audio,
         };
@@ -2094,8 +2126,7 @@ impl Session {
         self.out
             .show(ToUi::KitIds(Box::new(self.instrument_list.kit_ids())));
         // As main.rs: the app has the list before the pads part names one.
-        let fx = self.app.set_instrument_list(&self.instrument_list);
-        self.fx.extend(fx);
+        self.app.open_list(&self.instrument_list);
         let (notes, fx) = self.app.open_arp(o.arp.as_deref());
         for line in notes {
             self.out.note(&line);
@@ -2109,9 +2140,6 @@ impl Session {
         self.app.forget_copies();
         let (notes, fx) = self.app.open_pads(o.pads.as_deref());
         for line in notes {
-            self.out.note(&line);
-        }
-        for line in self.app.open_pad_layers(o.pad_layers.as_deref()) {
             self.out.note(&line);
         }
         self.fx.extend(fx);
@@ -2183,7 +2211,6 @@ impl Session {
             FromUi::PadBank(_) => {}
             FromUi::Kit(k) => {
                 self.kit_to = Some(k.min(self.kits));
-                self.kit_picked = true;
             }
             FromUi::Synth(mpfree_synth_ui::SynthAction::Set { id, value }) => {
                 let from = self.synth.value(id);
@@ -2477,6 +2504,8 @@ impl Session {
         // records the pads as they are.
         self.app.set_configured(self.track_kits.picked());
         self.app.set_synth_tracks(self.track_kits.on_synth());
+        let on_kit = self.app.pads_kit().map_or(0, |k| self.track_kits.on_kit(k));
+        self.app.set_pads_kit_tracks(on_kit);
         for _ in 0..8 {
             if self.fx.is_empty() {
                 return;
@@ -2508,7 +2537,6 @@ impl Session {
                         let now = self.kit_to.unwrap_or(self.kit) as i64;
                         self.kit_to =
                             Some((now + d as i64).rem_euclid(self.kits as i64 + 1) as usize);
-                        self.kit_picked = true;
                     }
                     Effect::SynthPads(p) => {
                         if self.synth.set_settings(p) {
@@ -2539,6 +2567,16 @@ impl Session {
                         }
                         if t == self.app.track() {
                             self.kit_to = Some(self.track_kits.synth());
+                        }
+                    }
+                    // As main.rs (sampler step 15).
+                    Effect::KitOnTrack { track, kit } => {
+                        if self.track_kits.set(track, kit) {
+                            self.out
+                                .show(ToUi::TrackKits(Box::new(self.track_kits.clone())));
+                        }
+                        if track == self.app.track() {
+                            self.kit_to = Some(kit);
                         }
                     }
                     // As main.rs: opening a page changes what no track plays.
@@ -2716,12 +2754,9 @@ impl Session {
     /// the pads following the armed track, as main.rs takes it; then what
     /// the pads play (app/pads_focus.rs).
     fn change_kit(&mut self) {
-        // As main.rs: a kit picked while the synth was chosen for the pads
-        // makes them follow the track; so does the arp over a kit.
-        if std::mem::take(&mut self.kit_picked) {
-            let fx = self.app.kit_pick_follows_track();
-            self.fx.extend(fx);
-        }
+        // As main.rs: a kit picked leaves the pads' own choice alone
+        // (sampler step 15b); the arp over a kit makes them follow the
+        // track (until step 15c).
         let fx = self.app.arp_ends_pads_synth();
         self.fx.extend(fx);
         let playing = if self.synth_on { self.kits } else { self.kit };
@@ -2752,6 +2787,26 @@ impl Session {
                 }
             }
             self.preview_on = preview_now;
+        }
+        // A kit chosen for the pads (sampler step 15), as main.rs: on its
+        // own while the selected track doesn't play it itself. The pads
+        // held on a kit they leave let go there; their let-go is taken
+        // quietly.
+        let host = self.mix.instruments.pads_play_at().is_some();
+        let t = self.app.track();
+        let kit_now = self.app.pads_kit().filter(|&k| {
+            let through = !self.mix.instruments.plays(t);
+            !preview_now && !host && !(through && self.track_kits.kit_of(t) == Some(k))
+        });
+        if kit_now != self.kit_preview {
+            for held in self.kit_held.iter().flatten() {
+                if Some(held.0) != kit_now {
+                    if let Some(p) = self.sounds.as_mut() {
+                        p.release_kit_at(held.0, held.1, 0);
+                    }
+                }
+            }
+            self.kit_preview = kit_now;
         }
     }
 

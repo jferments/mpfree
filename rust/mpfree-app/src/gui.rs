@@ -4347,11 +4347,20 @@ impl Player {
         }
     }
 
-    fn pads_picked(&self) -> Option<&'static str> {
+    /// What was picked for the pads by name: a synth of the host's
+    /// ("FM"), or a kit (sampler step 15, "Boom Bap"). None while they
+    /// follow the track or have the shared synth.
+    fn pads_picked(&self) -> Option<String> {
         match self.pads_focus {
             crate::app::PadFocus::Track => None,
             _ if self.pads_chose_synth() => None,
-            crate::app::PadFocus::Instrument(_) => self.pads_host,
+            crate::app::PadFocus::Instrument(id) => match self.sample.kit_of_id(id) {
+                Some(k) => Some(self.kits.get(k).map_or_else(
+                    || format!("Kit {}", k + 1),
+                    |kit| chip_kit_name(&kit.name, k),
+                )),
+                None => self.pads_host.map(str::to_string),
+            },
         }
     }
 
@@ -4395,7 +4404,7 @@ impl Player {
         let playing = (self.pads_chose_synth() && on_kit.is_some())
             || picked.is_some()
             || self.pads_layers.is_some();
-        let play = if let Some(name) = self.pads_layers.as_deref().or(picked) {
+        let play = if let Some(name) = self.pads_layers.clone().or(picked) {
             Some((
                 "Follow track".to_string(),
                 format!("{} {name} on every track", self.who_pads()),
@@ -5853,7 +5862,7 @@ impl Player {
         // A synth picked in the list of synths (step 6): "Pads: FM", or
         // "Pads B: FM" on a bank with its own (6c).
         if let Some(name) = self.pads_picked() {
-            let mut play = play_widgets::PadsPlay::chosen(name.to_string());
+            let mut play = play_widgets::PadsPlay::chosen(name);
             play.track = self.pads_word();
             return Some(play);
         }
@@ -6600,7 +6609,18 @@ impl Player {
                 // free"). A take ready or going is on its track already.
                 match self.rec_plan {
                     Some(plan) if chip.state == RecState::Armed => RecChip {
-                        what: plan.chip(|t| self.track_name(t)),
+                        what: match plan.kit {
+                            // A kit chosen for the pads (sampler step 15),
+                            // by the name the screen has for it.
+                            Some(k) => {
+                                let name = self.kits.get(k).map_or_else(
+                                    || format!("Kit {}", k + 1),
+                                    |kit| chip_kit_name(&kit.name, k),
+                                );
+                                plan.chip_as(&name, |t| self.track_name(t))
+                            }
+                            None => plan.chip(|t| self.track_name(t)),
+                        },
                         ..chip
                     },
                     _ => self.pinned_apart(chip),
@@ -7502,7 +7522,7 @@ impl Player {
             Some(self.shared_synth_name())
         } else {
             // Or a synth picked in the list of synths (step 6).
-            self.pads_picked().map(str::to_string)
+            self.pads_picked()
         };
         if let Some(name) = chosen {
             // On a bank with its own (step 6c): "Pads B: FM".
@@ -7909,7 +7929,7 @@ impl Player {
                             self.who_plays.as_deref().unwrap_or_default())
                 }
                 View::Synth if self.pads_picked().is_some() => {
-                    let name = self.pads_picked().unwrap_or("the synth");
+                    let name = self.pads_picked().unwrap_or_else(|| "the synth".to_string());
                     format!("{} {name} on every track; no track changes   ·   REC: {name} on a free track   ·   \
                              Follow track: the button   ·   Q-Links 1-4: the marked knobs   ·   {stop}", self.who_pads())
                 }
@@ -17626,6 +17646,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             | Effect::TrackSend { .. }
             | Effect::TrackCopy { .. }
             | Effect::SynthOnTrack(_)
+            | Effect::KitOnTrack { .. }
             | Effect::ProgEdit
             | Effect::Metronome { .. }
             | Effect::Fill(_)
@@ -32111,7 +32132,6 @@ mod tests {
             track_kits: String::new(),
             instrument_list: crate::instrument_list::InstrumentList::new().text(),
             pads: String::new(),
-            pad_layers: String::new(),
             perform: String::new(),
             xy: String::new(),
             loops: Some(loops),
@@ -32669,7 +32689,6 @@ mod tests {
                 track_kits: String::new(),
                 instrument_list: crate::instrument_list::InstrumentList::new().text(),
                 pads: String::new(),
-                pad_layers: String::new(),
                 perform: String::new(),
                 xy: String::new(),
                 loops: None,
@@ -32773,7 +32792,6 @@ mod tests {
                 track_kits: String::new(),
                 instrument_list: crate::instrument_list::InstrumentList::new().text(),
                 pads: String::new(),
-                pad_layers: String::new(),
                 perform: String::new(),
                 xy: String::new(),
                 loops: None,
