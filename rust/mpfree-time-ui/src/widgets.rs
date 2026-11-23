@@ -1852,10 +1852,15 @@ impl Widget for ClipGrid {
                 Target::tap("capture-scene", 0, "Capture scene", b).disabled_if(!self.can_capture),
             );
         }
+        // The bank shown is lit and faint as a target: a tap there takes
+        // the grid where it is (as the zoom chip's lit part).
+        let shown = self.bank_shown(self.geo(r).rows);
         for k in 0..self.banks.len() {
             if let Some(b) = self.bank_part_rect(r, k) {
                 let letter = BANK_LETTERS.get(k).copied().unwrap_or("?");
-                out.push(Target::tap("bank", k, format!("Bank {letter}"), b));
+                out.push(
+                    Target::tap("bank", k, format!("Bank {letter}"), b).disabled_if(k == shown),
+                );
             }
         }
         if let Some((back, on)) = self.pager_rects(r) {
@@ -3236,6 +3241,14 @@ mod tests {
             .map(|t| t.label)
             .collect();
         assert_eq!(banks, ["Bank A", "Bank B", "Bank C", "Bank D"]);
+        // The bank shown is faint as a target: a tap there changes nothing.
+        let lit: Vec<usize> = g
+            .targets(r)
+            .into_iter()
+            .filter(|t| t.id == "bank" && !t.enabled)
+            .map(|t| t.index)
+            .collect();
+        assert_eq!(lit, [g.bank_shown(g.geo(r).rows)]);
         // The bank of the middle row in view; of an even split, the lower.
         assert_eq!(g.bank_shown(8), 0);
         g.first_row = 12;

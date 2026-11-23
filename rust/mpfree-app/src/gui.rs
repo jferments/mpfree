@@ -21782,6 +21782,14 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             st.launches.clear();
             st.cues.clear();
             st.transport.state = mpfree_transport::State::Stopped;
+            // A set really open, so Show takes the grid to the Show view.
+            let (sp, _) = crate::set_play::SetPlay::new(
+                mpfree_library::Loc::top(mpfree_library::Place::Sets)
+                    .join("Friday at the Lantern.set")
+                    .expect("a set's name"),
+                sample_set(),
+            );
+            p.set_play = Some(sp);
             p.time_page.set_open = true;
             p.apply(ToUi::Time(Box::new(st)));
             p.apply(ToUi::Show(View::Arrange));
