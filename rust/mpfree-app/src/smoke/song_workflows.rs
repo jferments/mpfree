@@ -2190,6 +2190,53 @@ mod tests {
         });
     }
 
+    /// Sampler step 15d, part 2: a kit no track plays gets a strip of its
+    /// own. With kit 2 on the pads and no track playing it, it sounds on a
+    /// kit strip named for it, shown with the tracks, not on the pad
+    /// channels kit 1 has.
+    #[test]
+    fn the_pads_own_kit_sounds_on_a_kit_strip_of_its_own() {
+        use mpfree_fx::StripId;
+        on_big_stack(|| {
+            let mut session = Session::new();
+            let s = &mut session;
+            s.make_sounds();
+            s.run_periods(2);
+            assert_eq!(s.mix.kit_strips(), [None; crate::mixing::KIT_STRIPS]);
+            let kit_2 = s.instrument_list.of_kit(1).expect("kit 2 has an id");
+            let part = format!("mpfree-pads 2\nplay instrument {kit_2}\n");
+            let (notes, fx) = s.app.open_pads(Some(&part));
+            assert!(notes.is_empty(), "{notes:?}");
+            s.fx.extend(fx);
+            s.run_periods(4);
+            assert_eq!(s.app.pads_kit(), Some(1), "the pads play kit 2");
+            assert_eq!(s.mix.kit_strip(1), Some(0), "on the first kit strip");
+            assert_eq!(s.mix.kit_strip(0), None, "kit 1 keeps the pad channels");
+            let strip = StripId::Track(crate::mixing::kit_channel(0));
+            assert_eq!(s.mix.strip_name(strip), "Kit 2");
+            assert!(s.mix.track_strips().contains(&strip));
+            let player = s.sounds.as_ref().expect("the kits");
+            let pad = (0..16)
+                .find(|&p| player.has_sound(1, p))
+                .expect("a pad kit 2 fills");
+            let _ = s.mix.mixer.take_input_peaks(strip);
+            let _ = s.mix.mixer.take_input_peaks(StripId::Pad(pad));
+            s.pad_edge(pad, 100, true);
+            s.run_periods(4);
+            assert!(
+                s.mix.mixer.take_input_peaks(strip)[0] > 0.0,
+                "kit 2's pad is heard on its strip"
+            );
+            assert_eq!(
+                s.mix.mixer.take_input_peaks(StripId::Pad(pad)),
+                [0.0; 2],
+                "not on kit 1's pad channel"
+            );
+            s.pad_edge(pad, 0, false);
+            s.run_periods(2);
+        });
+    }
+
     /// Sampler step 15c: NOTE REPEAT while the pads play a kit on their
     /// own repeats that kit's pad (the pads' arp), never the track's, and
     /// the pads keep the kit; let go, the repeats stop. Held again, Follow

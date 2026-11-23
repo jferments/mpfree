@@ -1083,7 +1083,8 @@ impl Running {
 /// The mixer strips that can have a stem: the engines' tracks, each
 /// track's own channel in use (`MixHost::own_channels_in_use`, named after
 /// its track), each free place's in use (the instrument redesign's step 6,
-/// named as the mixer names it, "FM · Pads"), and the returns.
+/// named as the mixer names it, "FM · Pads"), each kit strip a kit holds
+/// (sampler step 15d, "Kit 7"), and the returns.
 pub fn stem_strips(mix: &mixing::MixHost, tracks: &[String]) -> Vec<(String, StripId)> {
     let in_use = mix.own_channels_in_use();
     let free_used = mix.instruments.free_in_use();
@@ -1095,6 +1096,17 @@ pub fn stem_strips(mix: &mixing::MixHost, tracks: &[String]) -> Vec<(String, Str
             // own channels.
             StripId::Track(mixing::AUDIO) if !mix.old_audio() => {}
             StripId::Track(t) if t < TRACKS => out.push((mixing::name(s), s)),
+            // A kit strip while a kit holds it (sampler step 15d): what
+            // a kit no track plays sounds through.
+            StripId::Track(t) if t >= mixing::KIT_FIRST => {
+                if mix
+                    .kit_strips()
+                    .get(t - mixing::KIT_FIRST)
+                    .is_some_and(Option::is_some)
+                {
+                    out.push((mix.strip_name(s), s));
+                }
+            }
             StripId::Track(t) if t >= mixing::FREE_FIRST => {
                 let n = t - mixing::FREE_FIRST;
                 if n < crate::instruments::FREE && free_used >> n & 1 == 1 {

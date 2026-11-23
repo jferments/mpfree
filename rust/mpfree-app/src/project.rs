@@ -168,6 +168,12 @@ pub const SCENE_KEEP: &str = "scene-keep";
 /// `Owner::KitPad`, `Owner::Sound`): an older build can't read those
 /// `learn` lines, and would drop them at its next save.
 pub const LEARN_BY_INSTRUMENT: &str = "learn-by-instrument";
+
+/// A project with settings on a kit strip (sampler step 15d, part 2: the
+/// mixer strip of a kit no track plays): an older build would play the
+/// kit on the pad channels and lose the strip's settings at its next
+/// save, so it must not open it.
+pub const KIT_STRIPS_NEED: &str = "kit-strips";
 /// The features this build has, of those a project can need.
 pub const KNOWN_NEEDS: &[&str] = &[
     SYNTHS_WITHOUT_TRACKS,
@@ -176,6 +182,7 @@ pub const KNOWN_NEEDS: &[&str] = &[
     LINKED_SONG_LIST,
     SCENE_KEEP,
     LEARN_BY_INSTRUMENT,
+    KIT_STRIPS_NEED,
 ];
 
 // ------------------------------------------------------------ the loop's side
@@ -402,6 +409,9 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
         .map(|(_, t)| t.as_str());
     if midi.is_some_and(learns_by_instrument) {
         needs.push(LEARN_BY_INSTRUMENT);
+    }
+    if kit_strip_settings(&c.mixer) {
+        needs.push(KIT_STRIPS_NEED);
     }
     if !needs.is_empty() {
         extra.push((NEEDS_KEY.to_string(), needs.join(" ")));
@@ -1564,18 +1574,37 @@ pub fn untouched_channel(mixer: &Mixer, st: StripId) -> bool {
 /// ```
 pub fn mixer_text(mixer: &Mixer, pad_mutes: u16) -> String {
     let drums = StripId::Track(crate::mixing::DRUMS);
-    mixer_text_lent(mixer, pad_mutes, &[], drums)
+    mixer_text_lent(mixer, pad_mutes, &[], drums, &[])
+}
+
+/// Whether mixer text `text` has settings on a kit strip a kit holds (a
+/// `kitstrip` line's strip with a `strip` or `insert` line of its own):
+/// what the [`KIT_STRIPS_NEED`] need is written for. A plain strip isn't: an
+/// older build plays its kit on the pad channels and loses nothing.
+pub fn kit_strip_settings(text: &str) -> bool {
+    text.lines()
+        .filter_map(|l| l.strip_prefix("kitstrip "))
+        .filter_map(|l| l.split(' ').next())
+        .any(|st| {
+            text.lines().any(|l| {
+                let mut w = l.split(' ');
+                matches!(w.next(), Some("strip" | "insert")) && w.next() == Some(st)
+            })
+        })
 }
 
 /// [`mixer_text`], with a `lent` line for each pad channel lent to a pad
-/// (its strip, kit and pad): `lent ps16 1 20` is kit 2's pad B5; and the
+/// (its strip, kit and pad): `lent ps16 1 20` is kit 2's pad B5; the
 /// `track1` line, the strip track 1 plays into (`t0`, Drums, or `t4`, its
-/// old own channel: [`MixLoad::track1`]).
+/// old own channel: [`MixLoad::track1`]); and a `kitstrip` line for each
+/// kit strip a kit holds (its strip and kit, sampler step 15d):
+/// `kitstrip t148 6` is kit 7's.
 pub fn mixer_text_lent(
     mixer: &Mixer,
     pad_mutes: u16,
     lent: &[(StripId, usize, usize)],
     track1: StripId,
+    places: &[Option<u8>],
 ) -> String {
     let mut s = String::with_capacity(4096);
     s.push_str(MIXER_FORMAT);
@@ -1590,6 +1619,12 @@ pub fn mixer_text_lent(
     let _ = writeln!(s, "track1 {}", strip_text(track1));
     for &(st, kit, pad) in lent {
         let _ = writeln!(s, "lent {} {kit} {pad}", strip_text(st));
+    }
+    for (n, kit) in places.iter().enumerate() {
+        if let Some(kit) = kit {
+            let st = StripId::Track(crate::mixing::kit_channel(n));
+            let _ = writeln!(s, "kitstrip {} {kit}", strip_text(st));
+        }
     }
     let strips: Vec<StripId> = mixer
         .strips()
@@ -1665,6 +1700,9 @@ pub struct MixLoad {
     pub old_pad_solos: u16,
     /// The pad channels lent to pads: strip, kit and pad.
     pub lent: Vec<(StripId, u8, u8)>,
+    /// The kit each kit strip held (`kitstrip`, sampler step 15d), so a
+    /// kit opens on the strip, and with the settings, it had.
+    pub kit_strips: [Option<u8>; crate::mixing::KIT_STRIPS],
     /// The strip track 1 played into when the project was saved (its
     /// `track1` line): Drums, or its old own channel (`MixHost::old_first`).
     /// None for a project saved before Drums was track 1's strip (sampler
@@ -1754,6 +1792,7 @@ pub fn mixer_load(
         old_pad_mutes: 0,
         old_pad_solos: 0,
         lent: Vec::new(),
+        kit_strips: [None; crate::mixing::KIT_STRIPS],
         track1: None,
         track1_own: false,
         strips: Vec::new(),
@@ -1817,6 +1856,22 @@ pub fn mixer_load(
                 let pad: u8 = w.next().and_then(|x| x.parse().ok()).ok_or_else(bad)?;
                 if pad < 128 && kit < 128 {
                     out.lent.push((st, kit, pad));
+                }
+            }
+            Some("kitstrip") => {
+                let st = w.next().and_then(parse_strip).ok_or_else(bad)?;
+                let kit: u8 = w.next().and_then(|x| x.parse().ok()).ok_or_else(bad)?;
+                let place = match st {
+                    StripId::Track(t) => t.checked_sub(crate::mixing::KIT_FIRST),
+                    _ => None,
+                };
+                // Kit 1 never takes one; a strip past the mixer's is left
+                // out.
+                let fresh = kit > 0 && kit < 128 && !out.kit_strips.contains(&Some(kit));
+                if let Some(at) = place.and_then(|n| out.kit_strips.get_mut(n)) {
+                    if fresh {
+                        *at = Some(kit);
+                    }
                 }
             }
             Some("strip") => {
@@ -2592,6 +2647,58 @@ mod tests {
         assert_eq!(b.mixer.param(s, mx::PAN), 30.0);
         let track = crate::instruments::first_track() + 1;
         assert_eq!(b.mixer.param(s, mx::OUTPUT_TRACK), track as f32);
+    }
+
+    /// A kit strip a kit holds (sampler step 15d, part 2) is saved with
+    /// its kit, and opens holding it, with its settings, so the kit comes
+    /// back to the strip it had; a line for kit 1, for a kit a strip
+    /// already has, or past the strips is left out. Settings on a strip
+    /// say the project needs kit strips; a plain one doesn't.
+    #[test]
+    fn a_kit_strip_is_saved_with_its_kit_and_opens_holding_it() {
+        use crate::mixing::{kit_channel, KIT_STRIPS};
+        let homeless = [0u8; 8];
+        let mut a = MixHost::new(44_100, -6.0, 0.0);
+        a.strip_kits(&[Some(6)], &homeless);
+        let strip = StripId::Track(kit_channel(0));
+        let plain = a.mixer_text();
+        assert!(
+            plain.contains(&format!("kitstrip {} 6\n", strip_text(strip))),
+            "{plain}"
+        );
+        assert!(!kit_strip_settings(&plain), "a plain strip needs nothing");
+        a.mixer.set_now(strip, mx::PAN, 30.0);
+        let mut text = a.mixer_text();
+        assert!(kit_strip_settings(&text));
+        let mut c = collected(String::new(), InstrumentList::new().text());
+        c.mixer = text.clone();
+        let snap = snapshot(&c, Vec::new());
+        assert!(snap
+            .meta
+            .extra
+            .contains(&(NEEDS_KEY.to_string(), KIT_STRIPS_NEED.to_string())));
+        assert_eq!(check(&snap), Ok(FORMAT));
+        for (n, kit) in [(1, 0), (2, 6), (KIT_STRIPS, 9)] {
+            let st = StripId::Track(kit_channel(n));
+            text.push_str(&format!("kitstrip {} {kit}\n", strip_text(st)));
+        }
+        let load = mixer_load(&text, None, 44_100, &crate::plugins::Plugins::none()).unwrap();
+        let mut want = [None; KIT_STRIPS];
+        want[0] = Some(6);
+        assert_eq!(load.kit_strips, want);
+        let mut b = MixHost::new(44_100, -6.0, 0.0);
+        b.open(Box::new(load));
+        for _ in 0..400 {
+            b.tend_open();
+            b.run_silent_period();
+        }
+        assert!(!b.opening());
+        assert_eq!(b.kit_strips(), want);
+        assert_eq!(b.mixer.param(strip, mx::PAN), 30.0);
+        // Named again with no track: kit 7 on its strip, as it was.
+        b.strip_kits(&[Some(6)], &homeless);
+        assert_eq!(b.kit_strip(6), Some(0));
+        assert_eq!(b.strip_name(strip), "Kit 7");
     }
 
     #[test]

@@ -9622,6 +9622,9 @@ fn player_session(
     let mut line_at = 0.0;
     let mut who_at = 0.0f64;
     let mut preview_held: [Option<PadsPreview>; 16] = [None; 16];
+    // Every kit strip was taken when a kit wanted one (sampler step 15d),
+    // said once each time it starts.
+    let mut strips_full = false;
     // The pad of the kit each pad held on a kit chosen for them hit
     // (sampler step 15), so its let-go and pressure find it.
     let mut preview_pad = [0u8; 16];
@@ -14760,6 +14763,15 @@ fn player_session(
         list_changed |= listed.follow(mix.instruments.held_tracks())
             | listed.follow_free(mix.instruments.held_free());
         let homes = track_kits.homes(|t| !mix.instruments.plays(t) && !midi_out.takes(t as u16));
+        // A kit no track plays sounds on a kit strip of its own (sampler
+        // step 15d, part 2).
+        mix.strip_kits(&app.named_kits(), &homes);
+        if mix.strips_full() && !strips_full {
+            out.note(
+                "mixer: every kit strip is taken; a kit no track plays sounds on the pad channels",
+            );
+        }
+        strips_full = mix.strips_full();
         let mut pads = mix.pads_homed(&homes);
         // With the drums split (Cores 3 and 2), the lane's voices are waited
         // for until the period's deadline at most.
