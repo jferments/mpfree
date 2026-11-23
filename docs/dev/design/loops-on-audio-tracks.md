@@ -161,6 +161,51 @@ This is Arrange 3.4's way (ask first, then apply in the first period the edit pl
 - **The looper part** names each loop by its `LoopId` (built: `id=` and 32 hex digits on its `loop=` line, `LoopFile::id`, which the looper only keeps for its host; the loop host's table, `loops_on_tracks::OnTracks`, gives and takes it) and, from 4c, each layer by its recording, with its view's lines.
 - **Until 4e** a project saved with Dev's switch on is a development file and may be refused later. From 4e a project with a Loop track is refused when opened, with the reason; old projects are not converted.
 
+## Layers as recordings (4c): the contract
+
+Written before 4c's code, as the plan's "A loop's layers become recordings" asks; nothing here is built yet. Today a save writes each layer as it plays (`Looper::read_layer`: through its views, seam fades and the layers a Replace covers), so what an edit hid is lost on reopening, and a reopened loop can't be edited back. 4c saves what the looper holds instead, so a loop reopens exactly as it was.
+
+**What is kept, apart:**
+
+| | What it is | Where |
+| --- | --- | --- |
+| Raw audio | a layer's frames as written: a first pass with what it kept before and after its loop (`KEEP_BEFORE`, `KEEP_AFTER`), an overdub as its writer wrote it | a recording (`RecId`, the audio tracks' table and id maker), `NAME_ID.wav`, 32-bit float stereo, written once |
+| Its view | how the layer plays it: its size, the frames written (`Slot::valid`), its pieces (`View`: start, length, backwards), a Replace's fades | a `layer` line in the looper part |
+| The loop's shape | length (frames and ticks), origin, seam, the first pass's region, speed and rate, the play order | its `loop` line, and the order of its `layer` lines |
+| Its mix | each layer's level, pan, mute, solo and Fade old's age; the loop's level and mute | the same lines, as now |
+| Derived audio | audio an operation makes (Merge, Fit, later Print) | a recording that names the recordings it came from (`from=`) |
+
+**The rules:**
+
+1. **Raw audio never changes once its layer closes.** An overdub, a Replace, a Merge and a Fit each write a new layer slot; an edit (Half, Double, Reverse, Nudge, Trim, Move, Resize, Speed) changes views and shape only. 4c.1 checks every path that writes a slot against this, and any that writes into a closed one is changed to write a new one first.
+2. **Two calls, never bent to each other:** `Looper::raw_layer(n, k, from, out)` gives layer `k`'s audio as written, `size` frames (for saving); `read_layer` stays the frames as heard (for Bounce and Print). Neither allocates; both give the loop's version.
+3. **A loop reopens exactly:** loaded from its raw audio and its lines, every loop plays the same frames to 0.00001 as before it was saved, and Move, Resize, Half, Trim and the smart end give the same frames after reopening as before.
+4. **Written soon after each layer closes**, not at the save: a worker reads the closed layer with `raw_layer` a piece at a time and writes a hidden part file, synced, then renamed (as a take's file), with playback's reads first and the audio thread never waiting. Until it is synced the loop holds unsaved audio, said on its ring and counted by the status monitor. A loop still plays only from memory.
+5. **Saves take a snapshot:** a save reads every loop's shape, views and mix at one version, writes any layer not yet written first, and commits the project file only after them. A loop that changes during the save is saved as the snapshot had it.
+6. **Kept while named:** a recording a loop names (in a slot or stored for UNDO), a clip, a region, a kept save or an UNDO step is kept; one nothing names goes to the Trash on save, as takes do (phase 3b step 4).
+7. **Behind Dev's switch until 4e:** with it off, the looper part is written as now (`mpfree-looper 1`, each layer as heard). With it on, `mpfree-looper 2`, and the project needs `loop-recordings`, so a build without 4c refuses it with the reason. Both formats read.
+
+**The text** (format 2; one `layer` line a layer, in play order, `file=` last as now):
+
+```text
+mpfree-looper 2
+rate=44100 selected=0
+loop=0 frames=88200 ticks=3840 origin=0 seam=512 region=1536,1536 level=1 muted=0 bars=1 after=play fade_old=1 id=<32 hex>
+layer rec=<32 hex> size=91264 valid=0,91264 view=1536:88200 replace=- level=1 pan=0 muted=0 solo=0 faded=1 file=Loop1_<id>.wav
+layer rec=<32 hex> size=88200 valid=20000,30000 view=0:88200 replace=256,256 level=0.8 pan=0 muted=0 solo=0 faded=1 file=Loop1_<id>.wav
+```
+
+A view is its pieces, `start:len`, with `:b` for one played backwards, separated by `+`. A line that doesn't check (a view past its size, valid frames past it, a recording missing) refuses that loop with the reason; the others load.
+
+**Build steps**, each a pull request of its own:
+
+- **4c.1 The looper keeps and gives its layers as they are** (`mpfree-looper` only): `raw_layer`, the shape and views in `LoopFile`, format 2's text both ways, and `Looper::load` putting raw audio and views back exactly. Tests: rule 3 on a loop with overdubs, a Replace, each edit and a first pass that kept audio around its loop; the old format still reads; rule 1 checked on every writer.
+- **4c.2 The app saves and opens loops as recordings** with the switch on: ids from the audio tracks' id maker, the files named by them, `loop-recordings`.
+- **4c.3 Written soon after closing:** the worker, part files, the unsaved count; killed after a layer is synced, it is found on the next start.
+- **4c.4 Snapshot saves.**
+- **4c.5 Merge and Fit as derived recordings** naming their sources.
+- **4c.6 Kept while named, the rest to the Trash;** a layer only an UNDO step needs may leave memory once it is synced (UNDO brings it back from its file: 4d).
+
 ## What 4b's tests pin
 
 Built so far:
