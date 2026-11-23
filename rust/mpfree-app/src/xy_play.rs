@@ -75,6 +75,18 @@ pub trait Reach {
     fn pushed(&self, n: u8) -> f32;
 }
 
+/// Where setting `addr` of a layout that follows the selected track goes,
+/// with track `track` selected: a synth's setting means that track's
+/// synth; everything else stays where it is.
+pub fn followed(addr: ParamAddr, track: u8) -> ParamAddr {
+    match addr.owner {
+        mpfree_play::mpfree_param::Owner::Inst(_) => {
+            ParamAddr::new(mpfree_play::mpfree_param::Owner::Inst(track), addr.param)
+        }
+        _ => addr,
+    }
+}
+
 /// `ms` in frames at `rate`.
 pub fn frames(rate: u32, ms: f32) -> u32 {
     (rate as f32 * ms.max(0.0) / 1000.0) as u32
@@ -580,6 +592,18 @@ mod tests {
             ..a
         });
         assert_eq!(r.said[0], format!("touch {} 0", insert(9, 3)));
+    }
+
+    /// Following the selected track moves a synth's settings to that
+    /// track's synth and leaves the rest where they are.
+    #[test]
+    fn a_following_layout_plays_the_selected_tracks_synth() {
+        let cutoff = ParamAddr::new(Owner::Inst(1), 3);
+        assert_eq!(followed(cutoff, 4), ParamAddr::new(Owner::Inst(4), 3));
+        let fx = insert(2, 3);
+        assert_eq!(followed(fx, 4), fx);
+        let pad = ParamAddr::new(Owner::Pad(1, 2), 3);
+        assert_eq!(followed(pad, 4), pad);
     }
 
     /// Cancelling lets go of everything at once, even with Hold on, and

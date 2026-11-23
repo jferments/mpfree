@@ -1059,8 +1059,12 @@ impl Session {
     /// Learn's: on any page.
     pub fn play_knob(&mut self, id: u16, value: f32) -> &mut Session {
         self.play_moves.set(id, value);
-        let (fx, presses) =
-            crate::desk::play_remote(&self.time, &mut self.mix, &mut self.out, &mut self.play_moves);
+        let (fx, presses) = crate::desk::play_remote(
+            &self.time,
+            &mut self.mix,
+            &mut self.out,
+            &mut self.play_moves,
+        );
         self.fx.extend(fx);
         if presses != crate::remote::XyPresses::default() {
             let (sounds, kits) = (&self.sounds, &self.track_kits);
@@ -1438,6 +1442,7 @@ impl Session {
 
     fn period(&mut self) {
         self.settle();
+        self.mix.set_xy_track(self.app.track());
         if self.xy_opening && !self.mix.opening() {
             self.xy_opening = false;
             if let Some(c) = self.xy_yours.opening() {

@@ -1131,7 +1131,13 @@ mod tests {
         let mut m = PlayMoves::default();
         m.set(play::XY_HOLD, 1.0);
         let a = m.take(STOPPED);
-        assert_eq!(a.xy_presses, XyPresses { hold: true, step: 0 });
+        assert_eq!(
+            a.xy_presses,
+            XyPresses {
+                hold: true,
+                step: 0
+            }
+        );
         assert_eq!(a.xy, None, "the pad doesn't move");
         m.set(play::XY_HOLD, 1.0);
         assert_eq!(m.take(STOPPED).xy_presses, XyPresses::default(), "held");

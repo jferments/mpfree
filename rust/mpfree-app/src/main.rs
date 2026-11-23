@@ -7932,7 +7932,8 @@ impl XyHere<'_> {
     /// to tell.
     fn act(&mut self, act: xy_song::XyAction) -> Vec<String> {
         let track = u8::try_from(self.app.track()).unwrap_or(u8::MAX);
-        let (mix, synth, app, pads, time) = (&*self.mix, self.synth, self.app, self.pads, self.time);
+        let (mix, synth, app, pads, time) =
+            (&*self.mix, self.synth, self.app, self.pads, self.time);
         let look = |a| xy_seen(mix, synth, app, pads, time, a);
         let mut told = Vec::new();
         let done = self.song.act(
@@ -7980,7 +7981,9 @@ impl XyHere<'_> {
 
     /// The screen's view of your layouts now.
     fn view(&mut self) -> gui::ToUi {
-        xy_view(self.song, self.mix, self.synth, self.app, self.pads, self.time)
+        xy_view(
+            self.song, self.mix, self.synth, self.app, self.pads, self.time,
+        )
     }
 }
 
@@ -10528,6 +10531,7 @@ fn player_session(
         // chain editor knob does.
         let recording = time.info().state == mpfree_transport::State::Recording;
         mix.set_recording(recording);
+        mix.set_xy_track(app.track());
         if xy_opening && !mix.opening() {
             xy_opening = false;
             if let Some(c) = xy_yours.opening() {

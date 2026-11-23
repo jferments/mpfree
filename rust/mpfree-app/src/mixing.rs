@@ -673,6 +673,8 @@ pub struct MixHost {
     /// A track records (`main.rs` says so each loop): the XY pad's hand
     /// beats a step's lock, and Stay keeps no value.
     recording: bool,
+    /// The selected track, for a layout of yours that follows it.
+    xy_track: u8,
     /// Perform pads' throws held while their strip's Perform FX is being
     /// put on: each plays when it lands ([`MixHost::poll_built`]).
     waiting: [Option<Waiting>; WAITING],
@@ -973,6 +975,7 @@ impl MixHost {
             xy_own: crate::xy_own::OwnHands::new(rate),
             xy_midi_left: 0,
             recording: false,
+            xy_track: 0,
             waiting: [None; WAITING],
             throw_said: Vec::new(),
             perform_want: Vec::new(),
@@ -1816,7 +1819,9 @@ impl MixHost {
                 if self.xy_play.down() {
                     self.xy_play.end(&mut reach, recording);
                 }
-                self.xy_play.begin(&mut reach, x, y, |a| a)
+                let track = self.xy_track;
+                self.xy_play
+                    .begin(&mut reach, x, y, |a| crate::xy_play::followed(a, track))
             }
             Some(Step::Move { x, y }) => self.xy_play.moved(&mut reach, x, y),
             Some(Step::End { x, y }) => {
@@ -1928,6 +1933,12 @@ impl MixHost {
         let mut reach =
             crate::xy_play::ModReach::new(&mut self.modu, &mut self.xy_own, &self.mixer, recording);
         self.xy_play.set_hold(&mut reach, on, recording);
+    }
+
+    /// The selected track (`main.rs`, each loop): a layout of yours that
+    /// follows it plays its synth's settings, fixed when a finger lands.
+    pub fn set_xy_track(&mut self, track: usize) {
+        self.xy_track = u8::try_from(track).unwrap_or(u8::MAX);
     }
 
     /// Whether a track records: the XY pad's hand beats a step's lock

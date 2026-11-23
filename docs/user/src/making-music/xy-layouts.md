@@ -52,7 +52,7 @@ At the foot:
 
 - **When you let go:** **Go back** glides each setting back to its own value (where its knob, a step lock or an LFO puts it), over the **Glide back** time (**–** and **+**, or **Q4**). **Stay** leaves the settings where you lifted, as if you had turned their knobs, and **UNDO** puts them back.
 - **A touch:** **Jumps** puts the pad under your finger. **Moves from here** moves it from where it is by as much as your finger moves, so nothing jumps when you land.
-- **Follow the selected track** is for a synth's settings, and comes soon.
+- **Follow the selected track:** a synth's settings on the layout then mean the synth of whichever track you've selected, so one layout plays the bass's filter on the bass track and the lead's on the lead track. What a touch plays is fixed when your finger lands: selecting another track while you play changes the next touch, not this one. The mixer's and the effects' settings stay where they are.
 
 **Delete** takes the layout out of the song. **Done** takes you back to the pad.
 
