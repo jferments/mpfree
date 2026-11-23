@@ -152,7 +152,7 @@ The MPC's own **Internal** drive (partition 8, Akai's `/data`, also mounted by A
 
 Probably one script, `setup-internal-drive.sh`, sharing the backup's window functions, with the same kind of fake-kernel tests as `test_sd_card_window.py`. The creator puts it on the stick with a `.path` and `.service` pair like S1's.
 
-**Akai's journal.** Akai mounts partition 8 read-write. After a clean shutdown its journal is empty. After a cut, ext4 marks it `needs_recovery` (feature_incompat bit `0x4`, which the reader accepts), and the newest changes may be only in the journal. MPFree reads the filesystem as it stands, without them. So when the bit is set, the window's status says `journal=unclean`, the place opens anyway, and the line under the list says "The MPC wasn't shut down cleanly last time: the newest files may be missing here. Start Akai's MPC software once to tidy it." A file whose blocks don't read as a sound, a kit or a project fails to load and says so. Nothing is ever written.
+**Akai's journal.** Akai mounts partition 8 read-write. After a clean shutdown its journal is empty. After a cut, ext4 marks it `needs_recovery` (feature_incompat bit `0x4`, which the reader accepts and reports as `Ext4::needs_recovery()`), and the newest changes may be only in the journal. MPFree reads the filesystem as it stands, without them. So when the bit is set, the window's status says `journal=unclean`, the place opens anyway, and the line under the list says "The MPC wasn't shut down cleanly last time: the newest files may be missing here. Start Akai's MPC software once to tidy it." A file whose blocks don't read as a sound, a kit or a project fails to load and says so. Nothing is ever written.
 
 **The place.** The library is built on real folders. The internal drive is an image read through the reader, so it can't be a library folder.
 
@@ -165,7 +165,7 @@ Probably one script, `setup-internal-drive.sh`, sharing the backup's window func
 **Unverified, to settle before it is built:**
 - Which top folders Akai's browser shows on the Internal drive. A read-only listing of partition 8's top folder from the owner's eMMC backup (on the workstation, with `debugfs -R ls`) answers it without the MPC.
 - Whether Akai's partition 8 uses features the reader refuses (`INCOMPAT_KNOWN`). The same backup answers it (`dumpe2fs -h`).
-- How long the reader takes to list a folder of a few thousand samples on the eMMC (htree folders are read whole). A host test on an image of that size first.
+- How long the reader takes to list a folder of a few thousand samples on the eMMC (htree folders are read whole). On the host, `lists_a_hashed_folder_of_thousands_of_files` lists a hashed folder of 5000 files whole, each with its size, in about 3 ms from an image the host has cached. The eMMC's own reads are what is left to measure, on the MPC.
 
 **Passes when,** on the MPC with Jay's go and a rehearsed block: the place lists the Internal drive, a sound from it loads and plays, Copy and Paste put it in the library, the counters stay unchanged, and the boot hashes are the same before and after.
 
