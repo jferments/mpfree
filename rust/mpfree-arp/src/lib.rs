@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod engine;
+pub mod groups;
 pub mod library;
 pub mod midi;
 pub mod modifier;
