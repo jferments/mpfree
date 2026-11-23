@@ -307,6 +307,32 @@ mod tests {
         assert!(of_list(std::iter::empty()).is_empty());
     }
 
+    /// The manual's list of patterns names every one, and its steps (where
+    /// it gives them in full) are the pattern's text.
+    #[test]
+    fn the_manual_lists_every_pattern_as_written() {
+        let page = include_str!("../../../docs/user/src/reference/arp-patterns.md");
+        for g in &GROUPS {
+            assert!(
+                page.contains(&format!("\n## {}\n", g.name)),
+                "## {}",
+                g.name
+            );
+            for (name, text) in g.patterns {
+                let line = page
+                    .lines()
+                    .find(|l| l.starts_with(&format!("| {name} | ")))
+                    .unwrap_or_else(|| panic!("the manual has no row for {name}"));
+                let steps = line.trim_end_matches(" |").rsplit(" | ").next().unwrap();
+                if let Some(code) = steps.strip_prefix('`').and_then(|c| c.strip_suffix('`')) {
+                    if !code.contains('…') {
+                        assert_eq!(code.replace("\\|", "|"), *text, "{name}");
+                    }
+                }
+            }
+        }
+    }
+
     /// Every pattern makes notes over a three-note chord (chance ones over
     /// eight bars), and none plays forever-silent.
     #[test]

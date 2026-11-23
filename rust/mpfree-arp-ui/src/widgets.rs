@@ -988,8 +988,12 @@ impl Widget for PatternList {
         let (tabs, _, rows) = PatternList::parts(r, mpfree_ui::sizes::PAD);
         let mut out = Vec::new();
         if self.tabs_fit(tabs) {
-            for (g, (name, _)) in self.groups.iter().enumerate() {
-                out.push(Target::tap("group", g, name.clone(), self.tab(tabs, g)));
+            for (g, (name, at)) in self.groups.iter().enumerate() {
+                // The group's first pattern picked already: nothing to load.
+                out.push(
+                    Target::tap("group", g, name.clone(), self.tab(tabs, g))
+                        .disabled_if(*at == self.selected),
+                );
             }
         } else if !self.groups.is_empty() {
             let (back, on) = PatternList::arrows(tabs);
