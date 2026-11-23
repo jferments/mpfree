@@ -11,6 +11,9 @@
 //!   release notes on an `mpfree-arp` engine that follows the transport.
 //! - [`arps`]: one arp per track, and the per-track "Clips through the
 //!   arp" switch: a [`Sink`] adapter between the player and the host.
+//! - [`audio`]: what each audio track plays, for the audio engine
+//!   ([`Player::audio`]): what plays as a period starts and each change
+//!   on its frame, the clips' regions lent from the view.
 //! - [`record`]: the clip recorder: notes played while the transport
 //!   records go into the armed track's clip at their exact ticks, knob
 //!   moves as parameter locks and Perform FX gestures as moves.
@@ -32,6 +35,7 @@
 pub mod ahead;
 pub mod arp;
 pub mod arps;
+pub mod audio;
 pub mod player;
 pub mod record;
 pub mod recorded;
@@ -43,6 +47,7 @@ pub mod view;
 pub use ahead::{is_gear_control, Ahead, AheadCounts, MAX_AHEAD};
 pub use arp::ArpHost;
 pub use arps::{PadRows, Through, TrackArps, LAYOUT_PADS, PAD_NOTES};
+pub use audio::{AudioAnswer, AudioChange, AudioPlays, MAX_AUDIO_CHANGES};
 pub use mpfree_param;
 pub use player::{
     Erased, ErasedLock, Event, Out, Player, Sink, Stats, ALL, ERASE_TAKES, MAX_LOCKED, SONG_TRACK,
@@ -58,6 +63,6 @@ pub use takes::{
     Take, Takes, TAKE_ROOM, TOUCH_RECLAIM_AT,
 };
 pub use view::{
-    anchored, CompileError, Cue, InPlace, Launch, MuteCue, MuteLanded, NowPlaying, PlayView,
-    SceneProgram, SceneTempo, Started, EARLIEST, IN_PLACE_WORK, MAX_IN_PLACE,
+    anchored, pass_into, CompileError, Cue, InPlace, Launch, MuteCue, MuteLanded, NowPlaying,
+    PlayView, SceneProgram, SceneTempo, Started, EARLIEST, IN_PLACE_WORK, MAX_IN_PLACE,
 };

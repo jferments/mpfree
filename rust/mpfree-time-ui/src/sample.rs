@@ -1135,6 +1135,7 @@ impl AudioSession {
                 AUDIO_RATE,
             ),
             recording: None,
+            clips: Vec::new(),
         })
         .collect();
         let waves = takes.iter().filter_map(|t| self.wave(t.id, 600)).collect();
@@ -1191,6 +1192,220 @@ pub fn song_audio_state() -> Result<TimeState, String> {
     Ok(state)
 }
 
+/// The Song view with blocks of audio clips (phase 2, step 2d, layout
+/// spec 4c, board E), from [`song_audio_state`]: on Guitar's lane after
+/// its recording, Riff (its first two bars as a clip, played twice from
+/// bar 9, picked) and Outro (a once clip of all four, from bar 13).
+pub fn song_audio_blocks_state() -> Result<TimeState, String> {
+    use crate::song::{ClipBlock, ClipPiece};
+    use crate::view::PlacementInfo;
+    let mut state = song_audio_state()?;
+    state.region = None;
+    let g = 1;
+    let row = state.audio[g].row;
+    let r = state.audio[g]
+        .blocks
+        .first()
+        .cloned()
+        .ok_or("audio blocks sample: no guitar recording")?;
+    // The clip's bars from the recording's start, frames in step.
+    let per_bar = r.frames * BAR as f64 / (r.end - r.start).max(1) as f64;
+    let piece = |bars: Tick| ClipPiece {
+        start: 0,
+        end: bars * BAR,
+        take: r.take,
+        src: r.src,
+        frames: per_bar * bars as f64,
+    };
+    let mut placements = state.placements.to_vec();
+    let riff = placements.len();
+    for (name, start, pass, once) in [
+        ("Riff", 8 * BAR, 2 * BAR, false),
+        ("Outro", 12 * BAR, 4 * BAR, true),
+    ] {
+        state.audio[g].clips.push(ClipBlock {
+            index: placements.len(),
+            origin: start,
+            pass,
+            once,
+            pieces: vec![piece(pass / BAR)],
+        });
+        placements.push(PlacementInfo {
+            track: row,
+            start,
+            length: 4 * BAR,
+            name: name.into(),
+            unique: false,
+        });
+    }
+    state.placements = placements.into();
+    state.selected = Some(riff);
+    Ok(state)
+}
+
+/// The Clips grid with audio clips in the audio tracks' cells (layout
+/// spec 4f), as on the approved boards, at 92 BPM a little before bar 17:
+/// Vocal's Verse vox stopped, Hook vox playing, Ad libs from 17.1;
+/// Guitar's Riff made at 120, Outro waiting for its audio until 18.1,
+/// Solo missing; and a third audio track, Break, with Intro still
+/// ringing past its stop, Amen not ready and Pad wash. Guitar is armed,
+/// so its Riff is on the Clip tab.
+pub fn clips_audio_state() -> Result<TimeState, String> {
+    use crate::view::{AudioCellInfo, ClipInfo};
+    let mut state = song_audio_state()?;
+    state.song_view = false;
+    state.region = None;
+    let (vocal, guitar) = (state.audio[0].row, state.audio[1].row);
+    let brk_row = state.tracks.len();
+    let mut lane = state.audio[1].clone();
+    lane.track = 2;
+    lane.row = brk_row;
+    lane.name = "Break".into();
+    lane.input = mpfree_audiotracks::Input::Sum;
+    lane.color = crate::view::track_color(brk_row);
+    lane.armed = false;
+    lane.blocks.clear();
+    lane.takes.clear();
+    lane.recording = None;
+    let mut brk = state.tracks[guitar].clone();
+    brk.name = lane.name.clone();
+    brk.sound = format!("In {}", crate::song::input_chip(lane.input));
+    state.tracks.push(brk);
+    state.audio.push(lane);
+    state.transport.bpm = 92.0;
+    state.transport.position = 15 * BAR + 2 * BEAT;
+    let clip = |name: &str, bars: Tick, seed: u32, shape: Shape| {
+        let mut settings = Clip::new(name, bars * BAR).settings();
+        settings.once = shape == Shape::Swell;
+        ClipInfo {
+            name: name.to_string(),
+            length: bars * BAR,
+            speed: mpfree_seq::Speed::NORMAL,
+            notes: 0,
+            looped: None,
+            settings,
+            variation: None,
+            holds_notes: false,
+            holds: mpfree_seq::Holds::Hits,
+            audio: Some(AudioCellInfo {
+                bpm: if name == "Riff" { 120.0 } else { 92.0 },
+                gain: 1.0,
+                secs: 197.0,
+                wave: sample_wave(seed, shape),
+                missing: None,
+                ring: None,
+            }),
+        }
+    };
+    // A cell: its name, bars, wave seed and shape.
+    type Cell = (&'static str, Tick, u32, Shape);
+    let cells: [(usize, [Cell; 3]); 3] = [
+        (
+            vocal,
+            [
+                ("Verse vox", 4, 3, Shape::Vocal),
+                ("Hook vox", 2, 11, Shape::Vocal),
+                ("Ad libs", 2, 7, Shape::Vocal),
+            ],
+        ),
+        (
+            guitar,
+            [
+                ("Riff", 2, 5, Shape::Riff),
+                ("Outro", 4, 9, Shape::Riff),
+                ("Solo", 4, 13, Shape::Riff),
+            ],
+        ),
+        (
+            brk_row,
+            [
+                ("Intro", 4, 17, Shape::Swell),
+                ("Amen", 1, 19, Shape::Hits),
+                ("Pad wash", 4, 23, Shape::Pad),
+            ],
+        ),
+    ];
+    for (track, clips) in cells {
+        for (slot, (name, bars, seed, shape)) in clips.into_iter().enumerate() {
+            state.tracks[track].slots[slot] = Some(clip(name, bars, seed, shape));
+        }
+    }
+    audio_of(&mut state, guitar, 2)?.missing =
+        Some("take 4's file wasn't found when the project opened".into());
+    audio_of(&mut state, brk_row, 0)?.ring = Some(0.78);
+    state
+        .launches
+        .retain(|l| l.track != vocal && l.track != guitar && l.track != brk_row);
+    // Hook vox 0.45 through its two bars; Ad libs from bar 17.
+    state.launches.push(Launch {
+        track: vocal,
+        slot: 1,
+        origin: 15 * BAR + 2 * BEAT - (BAR * 9 / 10),
+        start: 0,
+    });
+    state.cues.retain(|c| c.track != vocal && c.track != guitar);
+    state.cues.push(Cue {
+        track: vocal,
+        slot: Some(2),
+    });
+    state.cues.push(Cue {
+        track: guitar,
+        slot: Some(1),
+    });
+    state.audio_late = vec![(guitar, 17 * BAR)];
+    state.not_ready = vec![(brk_row, 1, 2 * BAR)];
+    state.armed = None;
+    state.audio[1].armed = true;
+    state.audio_focus = Some(guitar);
+    Ok(state)
+}
+
+/// The audio facts of the clip in cell `slot` of `track`.
+fn audio_of(
+    st: &mut TimeState,
+    track: usize,
+    slot: usize,
+) -> Result<&mut crate::view::AudioCellInfo, String> {
+    st.tracks[track].slots[slot]
+        .as_mut()
+        .and_then(|c| c.audio.as_mut())
+        .ok_or_else(|| "audio cells sample: no clip".to_string())
+}
+
+/// The shapes of the sample's small waves.
+#[derive(Clone, Copy, PartialEq)]
+enum Shape {
+    Vocal,
+    Riff,
+    Swell,
+    Hits,
+    Pad,
+}
+
+/// A small wave for a sample cell: `shape`'s envelope over noise from
+/// `seed`, each column's peak 0 to 255.
+fn sample_wave(seed: u32, shape: Shape) -> [u8; crate::widgets::CELL_WAVE] {
+    let mut w = [0u8; crate::widgets::CELL_WAVE];
+    let mut x = seed.wrapping_mul(2_654_435_761).max(1);
+    let n = w.len() as f32;
+    for (c, v) in w.iter_mut().enumerate() {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        let noise = (x % 1000) as f32 / 1000.0;
+        let t = c as f32 / n;
+        let env = match shape {
+            Shape::Vocal => 0.35 + 0.55 * (t * 9.0).sin().abs(),
+            Shape::Riff => 0.45 + 0.45 * ((t * 16.0).fract() < 0.5) as u8 as f32,
+            Shape::Swell => 0.15 + 0.8 * t,
+            Shape::Hits => 0.2 + 0.75 * ((t * 8.0).fract() < 0.25) as u8 as f32,
+            Shape::Pad => 0.55 + 0.1 * (t * 3.0).sin(),
+        };
+        *v = ((env * (0.75 + 0.25 * noise)).clamp(0.0, 1.0) * 255.0) as u8;
+    }
+    w
+}
+
 /// The Clips page's Song view, from [`song_state`].
 fn song_sample(fonts: Fonts) -> Result<Sample, String> {
     let state = song_state()?;
@@ -1224,10 +1439,33 @@ fn song_audio_sample(fonts: Fonts) -> Result<Sample, String> {
     })
 }
 
+/// The Song view with blocks of audio clips, from
+/// [`song_audio_blocks_state`], and the refusal of one dropped over a
+/// region on the hint line.
+fn song_audio_blocks_sample(fonts: Fonts) -> Result<Sample, String> {
+    let state = song_audio_blocks_state()?;
+    let hint = "song: Riff can't go over the region at bar 1: a block and a region never overlap on a lane";
+    let mut ui = app_ui(fonts, "Arrange", hint);
+    let mut page = TimePage::add_to(&mut ui)?;
+    ui.show(CLIPS_PAGE)?;
+    page.update(&mut ui, &state);
+    Ok(Sample {
+        name: "clips-song-audio-blocks",
+        about: "Arrange page, Song view with blocks of audio clips on Guitar's lane: Riff \
+                (two bars, twice, picked) and Outro (a once clip); a block dropped over a \
+                region refused",
+        ui,
+        state,
+    })
+}
+
 /// "Keys": two bars of chords in C minor under a short melody, played in
 /// by hand, so some notes sit a little off the 1/16 grid.
 pub fn keys_clip() -> Clip {
     let mut c = Clip::new("Keys", 2 * BAR);
+    // Played on a synth: notes, not pad hits (its scale and plan 4.2's
+    // rows go by it).
+    c.holds = mpfree_seq::Holds::Notes;
     // (tick, length, note, velocity)
     let chords: [(Tick, Tick, [u8; 3]); 4] = [
         (0, 2 * BEAT - 40, [60, 63, 67]),
@@ -1309,7 +1547,276 @@ pub fn notes_state(lens: crate::editor::Lens) -> Result<TimeState, String> {
         track_name: "Chords".into(),
         bar: BAR,
         answer: Default::default(),
+        locks: Default::default(),
+        ghosts: Default::default(),
     }));
+    Ok(state)
+}
+
+/// The piano roll on the same clip with its scale on (piano roll plan
+/// 2B.1): C Dorian, so the G#2 of the second chord is off it and marked;
+/// the pads play C minor on the Synth tab, which the Scale menu offers
+/// first.
+pub fn notes_scale_state() -> Result<TimeState, String> {
+    use mpfree_seq::mpfree_scale::{DORIAN, MINOR};
+    let mut state = notes_state(crate::editor::Lens::Grid)?;
+    let e = state.edit.as_mut().ok_or("no editor")?;
+    let mut keys = (*e.clip).clone();
+    keys.scale = Some(mpfree_seq::Scale::new(0, DORIAN));
+    e.clip = keys.into();
+    e.editor.offers = std::sync::Arc::new(crate::editor::ScaleOffers {
+        pads: Some(mpfree_seq::Scale::new(0, MINOR)),
+        own: vec![("Hijaz".into(), 0b0101_1011_0011, 0b0101_1011_0011)],
+    });
+    Ok(state)
+}
+
+/// The keys clip with the Chord chip on Major seventh (piano roll plan
+/// 2B.2) and the chord with its G#2 picked, so the inspector names it.
+pub fn notes_chord_state() -> Result<TimeState, String> {
+    let mut state = notes_state(crate::editor::Lens::Grid)?;
+    let e = state.edit.as_mut().ok_or("no editor")?;
+    e.editor.chord = crate::editor::ChordShape::Seventh;
+    let all: Vec<usize> = (0..e.clip.notes.len()).collect();
+    let g_sharp = e
+        .clip
+        .notes
+        .iter()
+        .position(|n| n.note == 56)
+        .ok_or("no G#2")?;
+    e.editor.sel = mpfree_seq::notes::chords_of(&e.clip, &all)
+        .into_iter()
+        .find(|chord| chord.contains(&g_sharp))
+        .unwrap_or_default();
+    Ok(state)
+}
+
+/// Chop open on the two long melody notes (piano roll plan 2B.3), in four
+/// pieces: the roll previews the pieces, each with its share of the
+/// pressure, and the tool's bar takes the buttons' place.
+pub fn notes_tool_state() -> Result<TimeState, String> {
+    use crate::editor::{NoteTool, ToolKind};
+    let mut state = notes_state(crate::editor::Lens::Grid)?;
+    let e = state.edit.as_mut().ok_or("no editor")?;
+    e.editor.sel = (0..e.clip.notes.len())
+        .filter(|&i| !e.clip.notes[i].touch.is_none())
+        .collect();
+    let mut chop = NoteTool::new(ToolKind::Chop);
+    chop.q[0] = 4;
+    e.editor.open_tool = Some(chop);
+    e.editor.row = crate::editor::CHOP_ROW;
+    Ok(state)
+}
+
+/// The keys clip with Pads write on (piano roll plan 1C.2): the cursor
+/// on the second bar's last beat, where a pad pressed writes, nothing
+/// picked.
+pub fn notes_pads_state() -> Result<TimeState, String> {
+    let mut state = notes_state(crate::editor::Lens::Grid)?;
+    let e = state.edit.as_mut().ok_or("no editor")?;
+    e.editor.pads_write = true;
+    e.editor.cursor = BAR + 3 * BEAT;
+    e.editor.sel.clear();
+    Ok(state)
+}
+
+/// The note editor on the drums (piano roll plan 4.2): a bar of kick,
+/// snare, closed and open hats, a clap and a rim shot on the kit's first
+/// pads, a row for each pad, which the app names after the kit's sounds.
+pub fn notes_drums_state() -> Result<TimeState, String> {
+    let mut s = playing()?;
+    let mut beat = Clip::new("Boom bap", BAR);
+    // (tick, pad, velocity): kick, snare, closed hat, open hat, clap, rim.
+    let mut hits: Vec<(Tick, u8, u8)> = vec![
+        (0, 0, 120),
+        (720, 0, 96),
+        (2160, 0, 110),
+        (960, 1, 118),
+        (2880, 1, 122),
+        (2880, 4, 90),
+        (3360, 3, 100),
+        (3600, 5, 64),
+    ];
+    hits.extend(
+        (0..7)
+            .map(|k| k * 480)
+            .map(|t| (t, 2, if t % 960 == 0 { 100 } else { 72 })),
+    );
+    for (tick, pad, velocity) in hits {
+        beat.add_note(Note::new(tick, SIXTEENTH, pad, velocity))
+            .map_err(|e| format!("beat: {e:?}"))?;
+    }
+    s.project.tracks[DRUMS].slots[0] = Some(beat.clone());
+    let mut state = s.state();
+    state.edit = Some(Box::new(crate::view::EditInfo {
+        editor: crate::editor::Editor::new(DRUMS, 0, &beat),
+        clip: beat.into(),
+        rev: 0,
+        track_name: "Drums".into(),
+        bar: BAR,
+        answer: Default::default(),
+        locks: Default::default(),
+        ghosts: Default::default(),
+    }));
+    Ok(state)
+}
+
+/// The note editor on "Keys" with two other clips faintly behind it
+/// (piano roll plan 4.1): "Pluck", the stab track's line on the same row,
+/// which plays with it, and "Keys take 1", an earlier take of the chords
+/// on another row, shown for reference. The clips hold notes, so the Show
+/// menu offers those, the bass track's two lines (Sub line plays now) and
+/// none of the pad hits.
+pub fn notes_ghosts_state() -> Result<TimeState, String> {
+    const BASS: usize = 2;
+    let notes = |name: &str, length: Tick, notes: &[(Tick, Tick, u8)]| -> Result<Clip, String> {
+        let mut c = Clip::new(name, length);
+        for &(tick, len, note) in notes {
+            c.add_note(Note::new(tick, len, note, 96))
+                .map_err(|e| format!("{name}: {e:?}"))?;
+        }
+        c.holds = mpfree_seq::Holds::Notes;
+        Ok(c)
+    };
+    let mut s = playing()?;
+    let keys = keys_clip();
+    // (tick, length, note): an answer between the chords and the tune.
+    let pluck = notes(
+        "Pluck",
+        2 * BAR,
+        &[
+            (2 * SIXTEENTH, SIXTEENTH, 63),
+            (5 * SIXTEENTH, SIXTEENTH, 65),
+            (10 * SIXTEENTH, SIXTEENTH, 68),
+            (14 * SIXTEENTH, SIXTEENTH, 67),
+            (BAR + 2 * SIXTEENTH, SIXTEENTH, 65),
+            (BAR + 5 * SIXTEENTH, SIXTEENTH, 67),
+            (BAR + 10 * SIXTEENTH, SIXTEENTH, 70),
+            (BAR + 13 * SIXTEENTH, SIXTEENTH, 68),
+        ],
+    )?;
+    // The chords as first played: a bar each, voiced lower.
+    let take = notes(
+        "Keys take 1",
+        2 * BAR,
+        &[
+            (0, BAR - 40, 55),
+            (0, BAR - 40, 60),
+            (0, BAR - 40, 63),
+            (BAR, BAR - 40, 58),
+            (BAR, BAR - 40, 62),
+            (BAR, BAR - 40, 65),
+        ],
+    )?;
+    let bass = notes(
+        "Bass line",
+        2 * BAR,
+        &[
+            (0, BEAT, 36),
+            (2 * BEAT, BEAT, 32),
+            (BAR, BEAT, 34),
+            (BAR + 2 * BEAT, BEAT, 31),
+        ],
+    )?;
+    let p = &mut s.project;
+    p.tracks[CHORDS].slots[1] = Some(keys.clone());
+    p.tracks[CHORDS].slots[3] = Some(take.clone());
+    p.tracks[STAB].slots[1] = Some(pluck.clone());
+    p.tracks[BASS].slots[1] = Some(bass);
+    if let Some(sub) = p.tracks[BASS].slots[0].as_mut() {
+        sub.holds = mpfree_seq::Holds::Notes;
+    }
+    let mut state = s.state();
+    let mut editor = crate::editor::Editor::new(CHORDS, 1, &keys);
+    editor.show = vec![(STAB, 1), (CHORDS, 3)];
+    let ghost = |track: usize, slot: usize, clip: Clip, name: &str| crate::view::Ghost {
+        track,
+        slot,
+        clip: clip.into(),
+        track_name: name.into(),
+    };
+    state.edit = Some(Box::new(crate::view::EditInfo {
+        editor,
+        clip: keys.into(),
+        rev: 0,
+        track_name: "Chords".into(),
+        bar: BAR,
+        answer: Default::default(),
+        locks: Default::default(),
+        ghosts: vec![
+            ghost(STAB, 1, pluck, "Stab"),
+            ghost(CHORDS, 3, take, "Chords"),
+        ],
+    }));
+    Ok(state)
+}
+
+/// The note editor on "Keys" with the two melody notes that carry
+/// pressure picked (piano roll plan 3A.1): with the Pressure lane on,
+/// it draws their swells as lines under them.
+pub fn notes_pressure_state() -> Result<TimeState, String> {
+    let mut state = notes_state(crate::editor::Lens::Grid)?;
+    let e = state.edit.as_mut().ok_or("no editor")?;
+    e.editor.sel = (0..e.clip.notes.len())
+        .filter(|&i| !e.clip.notes[i].touch.is_none())
+        .collect();
+    Ok(state)
+}
+
+/// The setting the locks sample's lane shows: a filter cutoff, as a
+/// synth's knob turns it, a semitone a detent from 20 Hz to open.
+pub fn cutoff_setting(addr: mpfree_seq::mpfree_param::RelAddr) -> crate::editor::LockSetting {
+    let words = |v: f32| match v {
+        v if v >= 20_000.0 => "open".to_string(),
+        v if v >= 1000.0 => format!("{:.1} kHz", v / 1000.0),
+        v => format!("{v:.0} Hz"),
+    };
+    let mut values: Vec<(f32, String)> = (0..)
+        .map(|k| 20.0 * (k as f32 / 12.0).exp2())
+        .take_while(|&v| v < 20_000.0)
+        .map(|v| (v, words(v)))
+        .collect();
+    values.push((20_000.0, words(20_000.0)));
+    crate::editor::LockSetting {
+        addr,
+        name: "Cutoff".into(),
+        own: 20_000.0,
+        values,
+        centred: false,
+    }
+}
+
+/// The note editor on "Keys" with Cutoff locks on three steps (piano
+/// roll plan 3A.2), its lock lane showing: the second chord's three
+/// notes share their step's lock and are picked, so the lane says so; the
+/// notes the locks reach are marked, and a melody note with a 1:2
+/// condition is too. The steps with no lock play the filter open.
+pub fn notes_locks_state() -> Result<TimeState, String> {
+    use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
+    let mut state = notes_state(crate::editor::Lens::Grid)?;
+    let e = state.edit.as_mut().ok_or("no editor")?;
+    let cutoff = RelAddr::new(OnTrack::Inst, 3);
+    let mut clip = (*e.clip).clone();
+    let at = |c: &Clip, tick: Tick, note: u8| {
+        c.notes
+            .iter()
+            .position(|n| (n.tick, n.note) == (tick, note))
+            .ok_or(format!("no note {note} at {tick}"))
+    };
+    let set = [
+        (at(&clip, 0, 60)?, 640.0),
+        (at(&clip, 2 * BEAT + 12, 56)?, 2560.0),
+        (at(&clip, 3 * BEAT + 5, 72)?, 1280.0),
+    ];
+    clip.apply(&mpfree_seq::notes::lock_notes(&clip, cutoff, &set))
+        .map_err(|e| format!("{e:?}"))?;
+    let odd = at(&clip, BEAT + 14, 75)?;
+    clip.notes[odd].cond = mpfree_seq::Cond::Every { a: 1, b: 2 };
+    e.editor.sel = (0..clip.notes.len())
+        .filter(|&i| (2 * BEAT..3 * BEAT).contains(&clip.notes[i].tick) && clip.notes[i].len > BEAT)
+        .collect();
+    e.clip = clip.into();
+    e.locks = std::sync::Arc::new(vec![cutoff_setting(cutoff)]);
     Ok(state)
 }
 
@@ -1380,6 +1887,8 @@ pub fn tracker_state() -> Result<TimeState, String> {
         track_name: "Drums".into(),
         bar: BAR,
         answer: Default::default(),
+        locks: Default::default(),
+        ghosts: Default::default(),
     }));
     Ok(state)
 }
@@ -1522,6 +2031,7 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         )?,
         song_sample(fonts())?,
         song_audio_sample(fonts())?,
+        song_audio_blocks_sample(fonts())?,
     ];
     // A narrow look at the bar alone, while recording.
     let rec = recording()?;
@@ -1559,7 +2069,7 @@ mod tests {
     #[test]
     fn every_sample_draws() {
         let samples = samples(Fonts::embedded).unwrap();
-        assert_eq!(samples.len(), 11);
+        assert_eq!(samples.len(), 12);
         for mut s in samples {
             let (w, h) = s.ui.size();
             let mut c = SoftCanvas::new(w, h);

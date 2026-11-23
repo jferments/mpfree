@@ -46,7 +46,31 @@ pub struct NoteStart {
     pub velocity: u8,
 }
 
-impl NoteStart {
+/// What smart loop end weighs: a note started ([`NoteStart`], pads and
+/// MIDI) or a hit heard ([`crate::hits::Hit`], the line input and mixes).
+/// A decision ([`decide`]) and the beat inside a loop ([`InnerBeat`])
+/// work the same way on either.
+pub trait Event: Copy {
+    /// Nothing, to fill a fixed store.
+    const NONE: Self;
+    /// The frame it sounded, on the song's frame clock.
+    fn frame(&self) -> u64;
+    /// How hard it was played, 0 to 1.
+    fn level(&self) -> f64;
+    /// How alike two are, 0 (another pad, note or sound) to 1 (the same).
+    fn alike(&self, o: &Self) -> f64;
+    /// The accent weight: soft ones count far less than loud ones.
+    fn weight(&self) -> f64 {
+        let v = self.level();
+        v * v
+    }
+}
+
+/// Two events at least this alike are the same pad, note or sound for
+/// the context part of a decision.
+pub const ALIKE: f64 = 0.5;
+
+impl Event for NoteStart {
     const NONE: NoteStart = NoteStart {
         frame: 0,
         source: 0,
@@ -54,14 +78,21 @@ impl NoteStart {
         velocity: 0,
     };
 
-    fn same_key(&self, o: &NoteStart) -> bool {
-        self.source == o.source && self.key == o.key
+    fn frame(&self) -> u64 {
+        self.frame
     }
 
-    /// The accent weight: soft notes count far less than loud ones.
-    fn weight(&self) -> f64 {
-        let v = f64::from(self.velocity.min(127)) / 127.0;
-        v * v
+    fn level(&self) -> f64 {
+        f64::from(self.velocity.min(127)) / 127.0
+    }
+
+    /// The same pad or note on the same track: 1, else 0.
+    fn alike(&self, o: &NoteStart) -> f64 {
+        if self.source == o.source && self.key == o.key {
+            1.0
+        } else {
+            0.0
+        }
     }
 }
 
@@ -96,14 +127,14 @@ pub const THRESHOLD: f64 = 0.9;
 /// How far ahead of everything else (the tap included) it must be.
 pub const MARGIN: f64 = 0.4;
 
-/// A pass's notes, from its start: the first [`HEAD`], then the last
-/// [`TAIL`]. Notes the tail had to drop are counted, and the newest frame
-/// dropped kept, so a decision knows whether its window is whole.
+/// A pass's notes (or hits), from its start: the first [`HEAD`], then the
+/// last [`TAIL`]. Ones the tail had to drop are counted, and the newest
+/// frame dropped kept, so a decision knows whether its window is whole.
 #[derive(Clone, Debug)]
-pub struct NoteLog {
-    head: [NoteStart; HEAD],
+pub struct EventLog<E: Event> {
+    head: [E; HEAD],
     n_head: usize,
-    tail: [NoteStart; TAIL],
+    tail: [E; TAIL],
     /// Where the next tail note goes.
     next: usize,
     n_tail: usize,
@@ -112,18 +143,21 @@ pub struct NoteLog {
     lost_to: Option<u64>,
 }
 
-impl Default for NoteLog {
-    fn default() -> NoteLog {
-        NoteLog::new()
+/// The notes of a pass (pads and MIDI).
+pub type NoteLog = EventLog<NoteStart>;
+
+impl<E: Event> Default for EventLog<E> {
+    fn default() -> EventLog<E> {
+        EventLog::new()
     }
 }
 
-impl NoteLog {
-    pub fn new() -> NoteLog {
-        NoteLog {
-            head: [NoteStart::NONE; HEAD],
+impl<E: Event> EventLog<E> {
+    pub fn new() -> EventLog<E> {
+        EventLog {
+            head: [E::NONE; HEAD],
             n_head: 0,
-            tail: [NoteStart::NONE; TAIL],
+            tail: [E::NONE; TAIL],
             next: 0,
             n_tail: 0,
             dropped: 0,
@@ -140,8 +174,8 @@ impl NoteLog {
         self.lost_to = None;
     }
 
-    /// A note started.
-    pub fn push(&mut self, n: NoteStart) {
+    /// A note started (or a hit heard).
+    pub fn push(&mut self, n: E) {
         if self.n_head < HEAD {
             self.head[self.n_head] = n;
             self.n_head += 1;
@@ -150,7 +184,7 @@ impl NoteLog {
         if self.n_tail == TAIL {
             let old = self.tail[self.next];
             self.dropped += 1;
-            self.lost_to = Some(self.lost_to.map_or(old.frame, |f| f.max(old.frame)));
+            self.lost_to = Some(self.lost_to.map_or(old.frame(), |f| f.max(old.frame())));
         } else {
             self.n_tail += 1;
         }
@@ -168,12 +202,12 @@ impl NoteLog {
     /// Keep only the notes from frame `from` on, the first of them at the
     /// head (a pass starting there).
     pub fn keep_from(&mut self, from: u64) {
-        let mut buf = [NoteStart::NONE; HEAD + TAIL];
+        let mut buf = [E::NONE; HEAD + TAIL];
         let n = self.sorted(&mut buf);
         let lost = self.lost_to.filter(|&f| f >= from);
         let dropped = if lost.is_some() { self.dropped } else { 0 };
         self.clear();
-        for &x in buf[..n].iter().filter(|x| x.frame >= from) {
+        for &x in buf[..n].iter().filter(|x| x.frame() >= from) {
             self.push(x);
         }
         self.dropped += dropped;
@@ -200,7 +234,7 @@ impl NoteLog {
     }
 
     /// The notes it holds, in frame order, into `out`; how many.
-    fn sorted(&self, out: &mut [NoteStart; HEAD + TAIL]) -> usize {
+    pub(crate) fn sorted(&self, out: &mut [E; HEAD + TAIL]) -> usize {
         let mut n = 0;
         for &x in &self.head[..self.n_head] {
             out[n] = x;
@@ -216,7 +250,7 @@ impl NoteLog {
         for i in 1..n {
             let x = out[i];
             let mut j = i;
-            while j > 0 && out[j - 1].frame > x.frame {
+            while j > 0 && out[j - 1].frame() > x.frame() {
                 out[j] = out[j - 1];
                 j -= 1;
             }
@@ -234,8 +268,8 @@ pub const MIN_BEAT_NOTES: usize = 4;
 /// hit, as evidence for how many bars it is ([`InnerBeat::fit`],
 /// [`crate::reading::read_bars_with`]). Allocation-free: the notes are
 /// copied onto the stack.
-pub struct InnerBeat {
-    notes: [NoteStart; HEAD + TAIL],
+pub struct InnerBeat<E: Event> {
+    notes: [E; HEAD + TAIL],
     n: usize,
     rate: u32,
     /// The loop's opening hit (its grid starts there) and its length.
@@ -245,35 +279,35 @@ pub struct InnerBeat {
     beats: f64,
 }
 
-impl InnerBeat {
+impl<E: Event> InnerBeat<E> {
     /// The notes of `log` in a loop of `len` frames from frame `from` (the
     /// press, or the first hit), with bars of `bar` ticks and beats of
     /// `beat`. Its grid starts on the opening hit: the first note within
     /// the reach of `from`, else `from` itself. The opening's own notes
     /// are left out: they fall on the grid whatever the bar count.
     pub fn new(
-        log: &NoteLog,
+        log: &EventLog<E>,
         rate: u32,
         from: u64,
         len: usize,
         bar: Tick,
         beat: Tick,
-    ) -> InnerBeat {
-        let mut all = [NoteStart::NONE; HEAD + TAIL];
+    ) -> InnerBeat<E> {
+        let mut all = [E::NONE; HEAD + TAIL];
         let n = log.sorted(&mut all);
         let all = &all[..n];
         let reach = reach(rate, f64::NAN);
         let open = all
             .iter()
-            .position(|x| x.frame >= from && x.frame <= from + reach);
-        let origin = open.map_or(from, |i| all[i].frame);
+            .position(|x| x.frame() >= from && x.frame() <= from + reach);
+        let origin = open.map_or(from, |i| all[i].frame());
         let skip = open.map_or(0, |i| hit_at(all, i, frames(rate, TOGETHER_MS)).1);
         let end = from + len as u64;
-        let mut notes = [NoteStart::NONE; HEAD + TAIL];
+        let mut notes = [E::NONE; HEAD + TAIL];
         let mut k = 0;
         for &x in all[skip..]
             .iter()
-            .filter(|x| x.frame > origin && x.frame < end)
+            .filter(|x| x.frame() > origin && x.frame() < end)
         {
             notes[k] = x;
             k += 1;
@@ -304,7 +338,7 @@ impl InnerBeat {
         let sigma = (beat * 0.05).clamp(0.010 * rate, 0.030 * rate);
         let (mut sum, mut wsum) = (0.0, 0.0);
         for x in &self.notes[..self.n] {
-            let t = (x.frame - self.origin) as f64;
+            let t = (x.frame() - self.origin) as f64;
             let off = t - (t / beat).round() * beat;
             let w = x.weight();
             sum += w * (-(off / sigma) * (off / sigma)).exp();
@@ -370,6 +404,8 @@ pub enum Verdict {
     NotClear,
     /// Notes near the reach were dropped (the log was full): no decision.
     Lost,
+    /// By ear: the finder didn't answer in time ([`crate::find`]).
+    Late,
 }
 
 impl Verdict {
@@ -380,6 +416,26 @@ impl Verdict {
             Verdict::NoMatch => "no note near it",
             Verdict::NotClear => "no clear match near it",
             Verdict::Lost => "too many notes to follow",
+            Verdict::Late => "it couldn't listen in time",
+        }
+    }
+
+    /// [`Verdict::why`], or for hits heard on the line input or a mix
+    /// (`heard`) [`Verdict::why_heard`].
+    pub fn why_by(self, heard: bool) -> &'static str {
+        if heard {
+            self.why_heard()
+        } else {
+            self.why()
+        }
+    }
+
+    /// The same, for hits heard on the line input or a mix.
+    pub fn why_heard(self) -> &'static str {
+        match self {
+            Verdict::NoMatch => "no hit near it",
+            Verdict::Lost => "too many hits to follow",
+            v => v.why(),
         }
     }
 }
@@ -416,8 +472,12 @@ impl Decision {
 /// Decide where a free first pass ends, from `log`'s notes. `bars_for`
 /// gives the bar count the reading takes for a loop of so many frames
 /// (None when it can't read one). Real-time safe.
-pub fn decide(log: &NoteLog, ask: &Ask, bars_for: &dyn Fn(usize) -> Option<u32>) -> Decision {
-    let mut buf = [NoteStart::NONE; HEAD + TAIL];
+pub fn decide<E: Event>(
+    log: &EventLog<E>,
+    ask: &Ask,
+    bars_for: &dyn Fn(usize) -> Option<u32>,
+) -> Decision {
+    let mut buf = [E::NONE; HEAD + TAIL];
     let n = log.sorted(&mut buf);
     let notes = &buf[..n];
     let together = frames(ask.rate, TOGETHER_MS);
@@ -425,11 +485,11 @@ pub fn decide(log: &NoteLog, ask: &Ask, bars_for: &dyn Fn(usize) -> Option<u32>)
     // together, within the reach of the start.
     let open = notes
         .iter()
-        .position(|x| x.frame >= ask.start && x.frame <= ask.start + ask.reach);
+        .position(|x| x.frame() >= ask.start && x.frame() <= ask.start + ask.reach);
     let opening = open.map(|i| hit_at(notes, i, together));
     // The loop is measured from it (a loop started on REC a moment before
     // your first hit starts on the hit): an end is where it comes round.
-    let lead = opening.map_or(0, |o| notes[o.0].frame - ask.start);
+    let lead = opening.map_or(0, |o| notes[o.0].frame() - ask.start);
     let lo = ask.tap.saturating_sub(ask.reach).max(ask.start + lead + 1);
     let hi = (ask.tap + ask.reach).min(ask.heard_to);
     let ctx = Ctx {
@@ -456,10 +516,10 @@ pub fn decide(log: &NoteLog, ask: &Ask, bars_for: &dyn Fn(usize) -> Option<u32>)
     // played together).
     let mut cands = [tap; MAX_CANDIDATES];
     let mut n_c = 0;
-    let mut i = notes.partition_point(|x| x.frame < lo);
-    while i < notes.len() && notes[i].frame <= hi && n_c < MAX_CANDIDATES {
+    let mut i = notes.partition_point(|x| x.frame() < lo);
+    while i < notes.len() && notes[i].frame() <= hi && n_c < MAX_CANDIDATES {
         let (first, last) = hit_at(notes, i, together);
-        cands[n_c] = ctx.score(notes[first].frame, Some((first, last)));
+        cands[n_c] = ctx.score(notes[first].frame(), Some((first, last)));
         n_c += 1;
         i = last;
     }
@@ -504,17 +564,17 @@ pub fn decide(log: &NoteLog, ask: &Ask, bars_for: &dyn Fn(usize) -> Option<u32>)
 
 /// The hit (notes played together) that starts at note `i`: its first
 /// note and one past its last.
-fn hit_at(notes: &[NoteStart], i: usize, together: u64) -> (usize, usize) {
-    let f = notes[i].frame;
+fn hit_at<E: Event>(notes: &[E], i: usize, together: u64) -> (usize, usize) {
+    let f = notes[i].frame();
     let mut j = i + 1;
-    while j < notes.len() && notes[j].frame - f <= together {
+    while j < notes.len() && notes[j].frame() - f <= together {
         j += 1;
     }
     (i, j)
 }
 
-struct Ctx<'a> {
-    notes: &'a [NoteStart],
+struct Ctx<'a, E: Event> {
+    notes: &'a [E],
     ask: &'a Ask,
     together: u64,
     /// The opening hit's notes.
@@ -524,7 +584,7 @@ struct Ctx<'a> {
     bars_for: &'a dyn Fn(usize) -> Option<u32>,
 }
 
-impl Ctx<'_> {
+impl<E: Event> Ctx<'_, E> {
     /// Score the loop ending on frame `end`, with the hit `hit` there (None
     /// for the tap).
     fn score(&self, end: u64, hit: Option<(usize, usize)>) -> Candidate {
@@ -545,20 +605,29 @@ impl Ctx<'_> {
     }
 
     /// The hit `h` against the opening: the best of its notes that the
-    /// opening played too, by how loud that was in the opening (its
-    /// accent) and how alike the two velocities are.
+    /// opening played too (by how alike they are: the same pad or note,
+    /// or a sound of the same tone), by how loud that was in the opening
+    /// (its accent) and how alike the two levels are.
     fn onset(&self, h: (usize, usize)) -> f64 {
         let Some(o) = self.opening else {
             return 0.0;
         };
         let open = &self.notes[o.0..o.1];
-        let loudest = open.iter().map(|x| x.velocity).max().unwrap_or(0).max(1);
+        let loudest = open
+            .iter()
+            .map(|x| x.level())
+            .fold(0.0, f64::max)
+            .max(1.0 / 127.0);
         let mut best: f64 = 0.0;
         for x in &self.notes[h.0..h.1] {
-            for y in open.iter().filter(|y| y.same_key(x)) {
-                let accent = f64::from(y.velocity) / f64::from(loudest);
-                let alike = 1.0 - f64::from(x.velocity.abs_diff(y.velocity)) / 127.0;
-                best = best.max(accent * (0.5 + 0.5 * alike));
+            for y in open {
+                let same = x.alike(y);
+                if same <= 0.0 {
+                    continue;
+                }
+                let accent = y.level() / loudest;
+                let alike = 1.0 - (x.level() - y.level()).abs();
+                best = best.max(same * accent * (0.5 + 0.5 * alike));
             }
         }
         best
@@ -588,9 +657,9 @@ impl Ctx<'_> {
         let after = self.opening.map_or(0, |o| o.1);
         for x in self.notes[after..]
             .iter()
-            .filter(|x| x.frame >= from && x.frame < to)
+            .filter(|x| x.frame() >= from && x.frame() < to)
         {
-            let t = (x.frame - from) as f64;
+            let t = (x.frame() - from) as f64;
             let off = t - (t / beat).round() * beat;
             let w = x.weight();
             sum += w * (-(off / sigma) * (off / sigma)).exp();
@@ -611,25 +680,25 @@ impl Ctx<'_> {
         let Some(o) = self.opening else {
             return 0.0;
         };
-        let open_at = self.notes[o.0].frame;
+        let open_at = self.notes[o.0].frame();
         let window = self.ask.heard_to.saturating_sub(at);
         let tol = frames(self.ask.rate, CONTEXT_MS);
         let (mut got, mut wsum) = (0.0, 0.0);
         for x in &self.notes[o.1..] {
-            let r = x.frame - open_at;
+            let r = x.frame() - open_at;
             if r <= self.together {
                 continue;
             }
-            if r + tol > window || x.frame >= self.ask.tap.saturating_sub(self.ask.reach) {
+            if r + tol > window || x.frame() >= self.ask.tap.saturating_sub(self.ask.reach) {
                 break;
             }
             let want = at + r;
             let lo = want.saturating_sub(tol);
-            let i = self.notes.partition_point(|y| y.frame < lo);
+            let i = self.notes.partition_point(|y| y.frame() < lo);
             let hit = self.notes[i..]
                 .iter()
-                .take_while(|y| y.frame <= want + tol)
-                .any(|y| y.same_key(x));
+                .take_while(|y| y.frame() <= want + tol)
+                .any(|y| y.alike(x) >= ALIKE);
             let w = x.weight();
             wsum += w;
             if hit {

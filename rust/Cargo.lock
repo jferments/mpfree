@@ -944,6 +944,7 @@ name = "mpfree-compose"
 version = "0.1.0"
 dependencies = [
  "mpfree-context",
+ "mpfree-fx",
  "mpfree-midi",
  "mpfree-node",
  "mpfree-play",
@@ -1036,7 +1037,11 @@ dependencies = [
  "mpfree-instruments",
  "mpfree-node",
  "mpfree-sampler",
+ "mpfree-sampler-ui",
+ "mpfree-stream",
+ "mpfree-stretch",
  "mpfree-synth",
+ "mpfree-synth-ui",
 ]
 
 [[package]]
@@ -1096,6 +1101,7 @@ dependencies = [
 name = "mpfree-looper"
 version = "0.1.0"
 dependencies = [
+ "mpfree-analysis",
  "mpfree-stretch",
  "mpfree-transport",
 ]
@@ -1303,6 +1309,7 @@ dependencies = [
  "mpfree-stream",
  "mpfree-stretch",
  "mpfree-synth",
+ "mpfree-tuning",
 ]
 
 [[package]]
@@ -1330,6 +1337,7 @@ dependencies = [
  "mpfree-moves",
  "mpfree-notefx",
  "mpfree-param",
+ "mpfree-scale",
  "mpfree-transport",
 ]
 

@@ -79,6 +79,11 @@ pub struct QLinkColumn {
     /// The bank shown ("Play", "Mixer", "Arp"): not drawn (the cards fill
     /// the column, as in the mockups), kept for the log and tests.
     pub title: String,
+    /// A header over the cards, its two lines and its colour, for a bank
+    /// that must never pass for another: the note inspector's "Note edit"
+    /// over "3 notes" (piano roll plan 1C.1), so a turn is known to move
+    /// notes and not a sound. None: the cards fill the column.
+    pub header: Option<(String, String, Color)>,
     drag: Option<(usize, i32)>,
 }
 
@@ -90,6 +95,8 @@ impl Default for QLinkColumn {
 
 /// Space between the cards.
 const CARD_GAP: i32 = 10;
+/// The header's height, when there is one.
+pub const HEADER_H: i32 = 44;
 
 /// The space inside a card around its number, name and ring.
 pub fn card_inner(card: Rect) -> Rect {
@@ -139,6 +146,7 @@ impl QLinkColumn {
             cards: Default::default(),
             touched: [false; 4],
             title: "Q-LINKS".to_string(),
+            header: None,
             drag: None,
         }
     }
@@ -147,6 +155,22 @@ impl QLinkColumn {
     pub fn card_rects(r: Rect) -> [Rect; 4] {
         let h = ((r.h - 3 * CARD_GAP) / 4).max(0);
         std::array::from_fn(|i| Rect::new(r.x, r.y + i as i32 * (h + CARD_GAP), r.w, h))
+    }
+
+    /// The header's place in the column `r`, and the room left for the
+    /// cards under it.
+    pub fn header_rects(r: Rect) -> (Rect, Rect) {
+        let (head, rest) = r.take_top(HEADER_H);
+        (head, rest.take_top(CARD_GAP).1)
+    }
+
+    /// The four cards in the column `r` as it is drawn now: under the
+    /// header when there is one.
+    pub fn rects(&self, r: Rect) -> [Rect; 4] {
+        match self.header {
+            Some(_) => QLinkColumn::card_rects(QLinkColumn::header_rects(r).1),
+            None => QLinkColumn::card_rects(r),
+        }
     }
 
     /// The card under (x, y), if any.
@@ -167,7 +191,16 @@ impl Widget for QLinkColumn {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
         cx.canvas.fill_rect(r, t.bg);
-        for (k, cr) in QLinkColumn::card_rects(r).into_iter().enumerate() {
+        if let Some((top, under, col)) = &self.header {
+            let (hr, _) = QLinkColumn::header_rects(r);
+            cx.canvas.fill_round_rect(hr, t.radius, *col);
+            let ink = t.ink_on(*col);
+            let (a, b) = hr.inset_xy(6, 4).take_top(20);
+            cx.text(FontId::Bold, 14.0, a, Align::Center, ink, top);
+            let px = fitting(cx, under, b.w).min(13.0);
+            cx.text(FontId::Sans, px, b, Align::Center, ink, under);
+        }
+        for (k, cr) in self.rects(r).into_iter().enumerate() {
             let card = &self.cards[k];
             let col = self.colour(&t, k);
             let on = self.touched[k];
@@ -215,7 +248,7 @@ impl Widget for QLinkColumn {
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
-        QLinkColumn::card_rects(r)
+        self.rects(r)
             .iter()
             .enumerate()
             // A card with nothing to move on this page is drawn blank.
@@ -242,7 +275,11 @@ impl Widget for QLinkColumn {
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         match phase {
             Touch::Down => {
-                self.drag = QLinkColumn::card_at(r, x, y).map(|k| (k, y));
+                self.drag = self
+                    .rects(r)
+                    .iter()
+                    .position(|c| c.contains(x, y))
+                    .map(|k| (k, y));
                 None
             }
             Touch::Move => {

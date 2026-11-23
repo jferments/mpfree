@@ -2783,8 +2783,9 @@ mod tests {
     /// drum clip plays on Track 1 while the pads play Poly, chosen on the
     /// Synth tab. Selecting other tracks and tapping a row of REC's list
     /// never move the pads, the header names them on every page, and no
-    /// track or clip changes; a kit picked for the selected track, or the
-    /// header's chip (Follow track), gives the pads back to the track.
+    /// track or clip changes; a kit picked for the selected track leaves
+    /// the pads on Poly (sampler step 15b), and the header's chip (Follow
+    /// track) gives them back to the track.
     #[test]
     fn the_pads_play_poly_while_a_drum_clip_plays_on_whichever_track_is_selected() {
         use crate::app::PadFocus;
@@ -2865,13 +2866,17 @@ mod tests {
                 .filter(|c| c.widget == "kits" && c.target.id == "row")
                 .collect();
             s.press_target(&rows[1].target).run_for(0.2);
-            assert_eq!(s.app.pads_focus(), PadFocus::Track);
             assert_eq!(s.track_kits.entry(1), 1, "Track 2 plays kit 2");
-            assert_eq!(s.kit, 1, "and the pads with it");
-            // Chosen again, then the header's chip: Follow track.
+            assert_eq!(s.kit, 1, "the armed track's kit");
+            assert!(
+                s.app.pads_chose_synth(),
+                "a kit picked for the track never moves the pads (step 15b)"
+            );
+            let before = s.previewed.len();
+            s.pad(1, 90, 0.05);
+            assert_eq!(s.previewed.len(), before + 1, "the pads still play Poly");
+            // The header's chip: Follow track.
             s.press("header", "tab", "Synth").settle();
-            s.press("synth-pads-head", "play", "").settle();
-            assert!(s.app.pads_chose_synth(), "{}", s.hint());
             s.press("header", "chip", "Pads: Poly").settle();
             assert_eq!(s.app.pads_focus(), PadFocus::Track);
             assert!(s.control("header", "chip", "Pads: Poly").is_none());
@@ -5269,6 +5274,109 @@ mod tests {
             assert_eq!(s.synth.state().own.as_deref(), Some(saved.as_str()));
             assert_eq!(s.view(), View::Synth);
             let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
+    /// Your own XY layouts (the XY plan's phase 2): + New layout plays an
+    /// empty one and opens Setup; + across raises the banner, which stays
+    /// on the mixer; SHIFT + a touch on a fader joins it there (not MIDI
+    /// Learn) and Done keeps it; on the full-screen pad a finger moves the
+    /// fader and Go back gives it back; the song keeps the layout.
+    #[test]
+    fn a_layout_of_yours_gathers_a_fader_and_the_pad_plays_it() {
+        on_big_stack(|| {
+            use crate::xy_widgets::XY_BANNER;
+            use mpfree_ui::Touch;
+            let drums = StripId::Track(0);
+            let volume = |s: &Session| s.mix.mixer.param(drums, mpfree_fx::ids::mixer::VOLUME);
+            let mut s = Session::new();
+            s.play_view("All");
+            s.press(crate::play_page::XY, "xy-chip", "").settle();
+            assert_eq!(s.page(), crate::xy_list::XY_PAGE);
+            s.press(crate::xy_list::XY_LIST, "new", "+ New layout")
+                .settle();
+            assert_eq!(s.page(), crate::xy_setup::XY_SETUP_PAGE);
+            assert_eq!(s.xy_yours.playing, Some(0));
+            assert_eq!(s.xy_yours.yours[0].layout.name, "Layout 1");
+
+            // + across: the banner, on every page.
+            s.press(crate::xy_setup::XY_SETUP, "plus", "+ across")
+                .settle();
+            assert!(s.xy_yours.wait.is_some());
+            s.press("header", "tab", "Mix").settle();
+            assert!(
+                s.control(XY_BANNER, "done", "Done").is_some(),
+                "on the mixer too"
+            );
+            s.button_edge("SHIFT", true);
+            s.press("mixer", "fader", "Drums fader").settle();
+            s.button_edge("SHIFT", false);
+            let across = &s.xy_yours.yours[0].layout.across.targets;
+            assert_eq!(across.len(), 1, "the fader joined across");
+            s.press(XY_BANNER, "done", "Done").settle();
+            assert!(s.xy_yours.wait.is_none());
+            assert!(
+                s.control(XY_BANNER, "done", "Done").is_none(),
+                "the banner went"
+            );
+
+            // The full-screen pad plays it: the fader follows the finger,
+            // and Go back gives it back.
+            let before = volume(&s);
+            s.button_with("SHIFT", "NEXT SEQ").settle();
+            assert_eq!(s.page(), crate::play_page::XY_FULL_PAGE);
+            let pad = s
+                .control(crate::play_page::XY, "xy", "")
+                .expect("the pad")
+                .target
+                .rect;
+            let (x, y) = (pad.x + pad.w / 10, pad.y + pad.h / 2);
+            if let Some(a) = s.screen.touch(9, Touch::Down, x, y) {
+                s.route(a);
+            }
+            s.run_for(0.3);
+            let held = volume(&s);
+            assert!(
+                (held - before).abs() > 0.05,
+                "the pad moved the fader: {before} → {held}"
+            );
+            if let Some(a) = s.screen.touch(9, Touch::Up, x, y) {
+                s.route(a);
+            }
+            s.run_for(1.0);
+            assert!(
+                (volume(&s) - before).abs() < 0.01,
+                "Go back: {before} again, not {}",
+                volume(&s)
+            );
+
+            // Let go: Stay. The fader stays where the finger lifts, and
+            // UNDO puts it back.
+            s.press(crate::xy_widgets::XY_BAR, "xy-bar", "Let go: Go back")
+                .settle();
+            assert!(s.xy_yours.yours[0].stays());
+            if let Some(a) = s.screen.touch(9, Touch::Down, x, y) {
+                s.route(a);
+            }
+            s.run_for(0.3);
+            if let Some(a) = s.screen.touch(9, Touch::Up, x, y) {
+                s.route(a);
+            }
+            s.run_for(0.5).settle();
+            let stayed = volume(&s);
+            assert!((stayed - held).abs() < 0.01, "Stay: {held}, not {stayed}");
+            s.button("UNDO").settle();
+            s.run_for(0.2);
+            assert!(
+                (volume(&s) - before).abs() < 0.01,
+                "UNDO: {before} again, not {}",
+                volume(&s)
+            );
+
+            // The song keeps it.
+            let text = s.xy_yours.text();
+            assert!(text.starts_with("xy 1\nlayout\tLayout 1\n"), "{text}");
+            assert!(text.contains("playing\t0"), "{text}");
         });
     }
 }

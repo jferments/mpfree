@@ -6,8 +6,11 @@
 //!   it falls (more on bar lines and beats) and compared with the six
 //!   modes in all 12 keys: 72 readings, turned into odds. The cues a
 //!   player uses pick the home note: the last note, the first strong
-//!   note, the lowest and longest notes, each bar's first note and a note
-//!   held at a bar's end. A few notes can't add up to certainty, so the
+//!   note, the lowest and longest notes, each bar's first note, a note
+//!   held at a bar's end and an opening on the home chord's three notes
+//!   (F A C in F major); each bar's cues share their weight past four
+//!   bars, and the last note says nothing when the budget cut the
+//!   reading short. A few notes can't add up to certainty, so the
 //!   evidence is capped, and [`KeyReading`] never says more than "not
 //!   sure yet" for three notes.
 //! - **The chords.** Read beat by beat with a semi-Markov search (as in
@@ -57,6 +60,8 @@ const OUTSIDE_WEIGHT: f64 = 0.55;
 /// The most evidence the notes add up to, in weighted notes: past this a
 /// longer input is no surer.
 const EVIDENCE_CAP: f64 = 24.0;
+/// The cue of a melody that opens on the home chord's three notes.
+const OPENING_TRIAD: f64 = 1.0;
 
 impl Mode {
     /// How common each mode is in what people bring to a groovebox.
@@ -65,10 +70,28 @@ impl Mode {
             Mode::Major | Mode::Minor => 1.0,
             Mode::Dorian => 0.55,
             Mode::Mixolydian => 0.45,
-            Mode::Phrygian => 0.2,
-            Mode::Lydian => 0.15,
+            Mode::Phrygian => 0.12,
+            Mode::Lydian => 0.1,
         }
     }
+}
+
+/// How far off a bar line or a beat a played note may start and still be
+/// heard on it: a 1/32 either way, as a player's timing goes.
+fn slack(meter: Meter) -> Tick {
+    meter.beat_ticks() / 8
+}
+
+/// Whether `at` is on a multiple of `unit`, give or take `slack`.
+fn on(at: Tick, unit: Tick, slack: Tick) -> bool {
+    let r = at.rem_euclid(unit.max(1));
+    r <= slack || unit - r <= slack
+}
+
+/// The bar a note belongs to: a note played a hair early belongs to the
+/// bar it leads into.
+fn bar_of(at: Tick, meter: Meter) -> Tick {
+    (at + slack(meter)).div_euclid(meter.bar_ticks().max(1))
 }
 
 /// A note's weight: how long it sounds (a quarter to two beats) and where
@@ -76,9 +99,9 @@ impl Mode {
 fn weight(n: &Played, meter: Meter) -> f64 {
     let beat = meter.beat_ticks();
     let w = (n.len as f64 / beat as f64).clamp(0.25, 2.0);
-    let m = if n.at.rem_euclid(meter.bar_ticks()) == 0 {
+    let m = if on(n.at, meter.bar_ticks(), slack(meter)) {
         1.5
-    } else if n.at.rem_euclid(beat) == 0 {
+    } else if on(n.at, beat, slack(meter)) {
         1.2
     } else {
         1.0
@@ -89,6 +112,13 @@ fn weight(n: &Played, meter: Meter) -> f64 {
 /// The key the notes are in, as a reading in words (with its odds kept
 /// inside for ranking).
 pub fn key(notes: &[Played], meter: Meter) -> KeyReading {
+    key_of(notes, meter, false)
+}
+
+/// [`key`], for notes that were `cut` short by the reading's budget: then
+/// the last note read is wherever the budget stopped, not where the music
+/// came to rest, and says nothing about home.
+fn key_of(notes: &[Played], meter: Meter, cut: bool) -> KeyReading {
     if notes.is_empty() {
         return KeyReading::nothing();
     }
@@ -108,10 +138,11 @@ pub fn key(notes: &[Played], meter: Meter) -> KeyReading {
     let mut by_time: Vec<&Played> = notes.iter().collect();
     by_time.sort_by_key(|n| (n.at, n.pitch));
     let pc = |n: &Played| n.pitch % 12;
-    let last = by_time.last().map(|n| pc(n));
+    let last = by_time.last().filter(|_| !cut).map(|n| pc(n));
+    let tol = slack(meter);
     let first_strong = by_time
         .iter()
-        .find(|n| n.at.rem_euclid(meter.beat_ticks()) == 0)
+        .find(|n| on(n.at, meter.beat_ticks(), tol))
         .map(|n| pc(n));
     let lowest = by_time.iter().min_by_key(|n| n.pitch).map(|n| pc(n));
     // The earliest of the longest.
@@ -122,21 +153,46 @@ pub fn key(notes: &[Played], meter: Meter) -> KeyReading {
     let mut bar_ends = Vec::new();
     let mut i = 0;
     while i < by_time.len() {
-        let b = by_time[i].at.div_euclid(bar);
+        let b = bar_of(by_time[i].at, meter);
         let j = i + by_time[i..]
             .iter()
-            .take_while(|n| n.at.div_euclid(bar) == b)
+            .take_while(|n| bar_of(n.at, meter) == b)
             .count();
         let in_bar = &by_time[i..j];
-        if let Some(f) = in_bar.iter().find(|n| n.at.rem_euclid(bar) == 0) {
+        if let Some(f) = in_bar.iter().find(|n| on(n.at, bar, tol)) {
             downbeats.push(pc(f));
         }
+        // A note held at the bar's end: at least an 1/8 and as long as
+        // any other note of the bar. A bar of even quarters doesn't hold
+        // its last note any more than the others.
         if let Some(l) = in_bar.last() {
-            if l.len >= 2 * step {
+            let longest_else = in_bar[..in_bar.len() - 1]
+                .iter()
+                .map(|n| n.len)
+                .max()
+                .unwrap_or(0);
+            if l.len >= 2 * step && (in_bar.len() == 1 || l.len > longest_else) {
                 bar_ends.push(pc(l));
             }
         }
         i = j;
+    }
+    // The opening: the first three different notes of the first bar.
+    // Melodies very often open on the home chord's notes (F A C in F
+    // major, D F A in D Dorian), which decides between keys that share
+    // their notes.
+    let mut opening: Vec<u8> = Vec::new();
+    let first_bar = by_time.first().map_or(0, |n| bar_of(n.at, meter));
+    for n in by_time
+        .iter()
+        .take_while(|n| bar_of(n.at, meter) == first_bar)
+    {
+        if !opening.contains(&pc(n)) {
+            opening.push(pc(n));
+        }
+        if opening.len() == 3 {
+            break;
+        }
     }
 
     let mut scores: Vec<(Key, f64)> = Vec::with_capacity(72);
@@ -162,11 +218,20 @@ pub fn key(notes: &[Played], meter: Meter) -> KeyReading {
                 + cue(first_strong, 0.45, 0.15)
                 + cue(lowest, 0.4, 0.1)
                 + cue(longest, 0.35, 0.1);
+            // Each bar's cues count fully over four bars; over more they
+            // share that weight, so a long clip's many downbeats don't
+            // outvote everything else.
+            let per_down = (4.0 / downbeats.len().max(1) as f64).min(1.0);
             for &d in &downbeats {
-                ll += cue(Some(d), 0.35, 0.15);
+                ll += per_down * cue(Some(d), 0.35, 0.15);
             }
+            let per_end = (4.0 / bar_ends.len().max(1) as f64).min(1.0);
             for &e in &bar_ends {
-                ll += cue(Some(e), 0.5, 0.15);
+                ll += per_end * cue(Some(e), 0.5, 0.15);
+            }
+            let triad = [tonic, (tonic + steps[2]) % 12, fifth];
+            if opening.len() == 3 && opening.iter().all(|p| triad.contains(p)) {
+                ll += OPENING_TRIAD;
             }
             ll += mode.prior().ln();
             scores.push((Key::new(tonic, mode), ll));
@@ -208,7 +273,7 @@ const SOUNDING_REST: f64 = 1.0;
 /// How well one chord explains a span: the notes that fit, less the notes
 /// that don't, less the chord notes that never sounded, plus the lowest
 /// note on the root, all per note heard. 0 when nothing sounds.
-fn span_score(sum: &[f64; 12], bass: Option<u8>, c: Chord, key: Option<Key>) -> f64 {
+fn span_score(sum: &[f64; 12], bass: Option<u8>, c: Chord, key: Option<Key>, line: bool) -> f64 {
     let mask = c.pcs();
     let (mut total, mut fit, mut missing) = (0.0, 0.0, 0.0);
     for (pc, &x) in sum.iter().enumerate() {
@@ -238,7 +303,63 @@ fn span_score(sum: &[f64; 12], bass: Option<u8>, c: Chord, key: Option<Key>) -> 
     if key.is_some_and(|k| k.pcs() & mask == mask) {
         s += 0.04;
     }
+    if line {
+        s -= implied_cost(c, key);
+    }
     s
+}
+
+/// A single line whose middle note is this high or higher is a tune,
+/// not a bass line (G3).
+const TUNE_FROM: u8 = 55;
+
+/// What a chord costs when it is only implied by a single line: a tune
+/// implies the plain chords of its key, so a power chord, a sus4, a 6th
+/// or a diminished chord (which a few notes of a tune fit by chance) and
+/// a chord outside the key (but a minor key's major V) must be spelled
+/// out by chords actually played.
+fn implied_cost(c: Chord, key: Option<Key>) -> f64 {
+    let rare = match c.quality {
+        Quality::Major | Quality::Minor => 0.0,
+        Quality::Dominant7 | Quality::Minor7 | Quality::Major7 => 0.03,
+        Quality::Minor6
+        | Quality::Major6
+        | Quality::Sus4
+        | Quality::Diminished
+        | Quality::Diminished7
+        | Quality::HalfDiminished7 => 0.2,
+        Quality::Power => 0.35,
+    };
+    let outside = match key {
+        Some(k) if k.pcs() & c.pcs() != c.pcs() => {
+            let major_v = k.mode.minorish()
+                && c.root == (k.tonic + 7) % 12
+                && matches!(c.quality, Quality::Major | Quality::Dominant7);
+            if major_v {
+                0.0
+            } else {
+                0.25
+            }
+        }
+        _ => 0.0,
+    };
+    rare + outside
+}
+
+/// Whether the notes are a single line (a tune, a bass line): hardly
+/// any two sound together for more than a 1/16.
+fn is_line(notes: &[Played], meter: Meter) -> bool {
+    if notes.len() < 2 {
+        return false;
+    }
+    let step = meter.beat_ticks() / 4;
+    let mut sorted: Vec<&Played> = notes.iter().collect();
+    sorted.sort_by_key(|n| n.at);
+    let together = sorted
+        .windows(2)
+        .filter(|w| w[0].at + w[0].len - w[1].at > step)
+        .count();
+    together * 10 <= sorted.len()
 }
 
 /// How likely a span of `d` beats starting on beat `start` is: 2, 4, 8
@@ -284,13 +405,22 @@ fn all_chords() -> Vec<Chord> {
 }
 
 /// Pitch-class weights and the lowest note, beat by beat. A note counts
-/// fully on the beat it starts and 0.6 on beats it is held into.
+/// fully on the beat it starts and 0.6 on beats it is held into; played a
+/// hair early, it starts on the beat it leads into.
 fn beats_of(notes: &[Played], beats: usize, beat: Tick) -> (Vec<[f64; 12]>, Vec<Option<u8>>) {
     let mut prof = vec![[0.0f64; 12]; beats];
     let mut low: Vec<Option<u8>> = vec![None; beats];
+    // A note played a hair before a beat counts from that beat.
+    let slack = beat / 8;
     for n in notes {
-        let a = n.at.max(0);
-        let b = n.at + n.len.max(1);
+        let early = (beat - n.at.rem_euclid(beat)).rem_euclid(beat);
+        let a = if early > 0 && early <= slack {
+            n.at + early
+        } else {
+            n.at
+        }
+        .max(0);
+        let b = (n.at + n.len.max(1)).max(a + 1);
         let first = (a / beat) as usize;
         let last = ((b - 1).max(a) / beat) as usize;
         for (bi, (p, l)) in prof
@@ -323,6 +453,15 @@ pub fn chords(notes: &[Played], len: Tick, key: Option<Key>, meter: Meter) -> Ch
     let beats = ((len + beat - 1) / beat) as usize;
     let bar = usize::from(meter.beats.max(1));
     let (prof, low) = beats_of(notes, beats, beat);
+    let line = is_line(notes, meter);
+    // A tune's lowest note says little about the chord's root; a bass
+    // line's says a lot.
+    let tune = line && {
+        let mut p: Vec<u8> = notes.iter().map(|n| n.pitch).collect();
+        p.sort_unstable();
+        p.get(p.len() / 2).is_some_and(|&m| m >= TUNE_FROM)
+    };
+    let low = if tune { vec![None; low.len()] } else { low };
     let cands = all_chords();
     // The candidates are the 144 chords and, last, no chord.
     let rest = cands.len();
@@ -376,7 +515,7 @@ pub fn chords(notes: &[Played], len: Tick, key: Option<Key>, meter: Meter) -> Ch
                 let evidence = if c == rest {
                     SILENT_BEAT * silent - SOUNDING_REST * sounding
                 } else {
-                    sounding * span_score(&sum, bass, cands[c], key) - SILENT_BEAT * silent
+                    sounding * span_score(&sum, bass, cands[c], key, line) - SILENT_BEAT * silent
                 };
                 let v = from + evidence + prior;
                 if v > dp[e][c] {
@@ -417,13 +556,13 @@ pub fn chords(notes: &[Played], len: Tick, key: Option<Key>, meter: Meter) -> Ch
         let silent = sum.iter().all(|&x| x <= 0.0);
         let mine = cands
             .get(c)
-            .map_or(f64::MIN, |&ch| span_score(&sum, bass, ch, key));
+            .map_or(f64::MIN, |&ch| span_score(&sum, bass, ch, key, line));
         let span = if c == rest || silent || mine < NO_CLEAR_CHORD {
             ChordSpan::new(start, end - start, ChordAnswer::NoClearChord, Heard::Heard)
         } else {
             let mut scored: Vec<(f64, Chord)> = cands
                 .iter()
-                .map(|&ch| (span_score(&sum, bass, ch, key), ch))
+                .map(|&ch| (span_score(&sum, bass, ch, key, line), ch))
                 .collect();
             scored.sort_by(|a, b| b.0.total_cmp(&a.0));
             let runner = scored.iter().find(|x| x.1 != cands[c]);
@@ -461,7 +600,7 @@ pub fn chord_of(notes: &[Played]) -> ChordAnswer {
     let bass = notes.iter().map(|n| n.pitch).min();
     let best = all_chords()
         .into_iter()
-        .map(|c| (span_score(&sum, bass, c, None), c))
+        .map(|c| (span_score(&sum, bass, c, None, false), c))
         .max_by(|a, b| a.0.total_cmp(&b.0));
     match best {
         Some((s, c)) if s >= NO_CLEAR_CHORD && !notes.is_empty() => ChordAnswer::Chord(c),
@@ -509,7 +648,7 @@ pub fn within(
 /// key, then the chords (favouring the key when there is one).
 pub fn listen(notes: &[Played], len: Tick, budget: ReadBudget, meter: Meter) -> Reading {
     let (notes, len, cut_short) = within(notes, len, budget, meter);
-    let key = key(&notes, meter);
+    let key = key_of(&notes, meter, cut_short);
     let chords = chords(&notes, len, key.key(), meter);
     let played_pcs = notes.iter().fold(0u16, |m, n| m | 1 << (n.pitch % 12));
     Reading {
@@ -569,9 +708,11 @@ mod tests {
     fn the_key_in_words_as_the_prototype_heard_it() {
         let dfa = [n(0.0, 2.0, 62), n(2.0, 2.0, 65), n(4.0, 4.0, 69)];
         let r = key(&dfa, meter());
+        // D F A opens on D minor's chord: the runner-up is another key
+        // on D, not A minor, which shares the notes.
         assert_eq!(
             r.words(),
-            "Likely D minor, also possible A minor, not sure yet"
+            "Likely D minor, also possible D Dorian, not sure yet"
         );
         assert_eq!(chord_of(&dfa).name(), "Dm");
 
@@ -604,6 +745,102 @@ mod tests {
             n(28.0, 4.0, 62),
         ];
         assert_eq!(key(&dorian, meter()).words(), "D Dorian, fairly sure");
+    }
+
+    /// The listening tests' F major tune: it opens on F A C and ends on G.
+    fn f_major_tune() -> Vec<Played> {
+        [
+            (0.0, 4.0, 65),
+            (4.0, 2.0, 69),
+            (6.0, 2.0, 72),
+            (8.0, 3.0, 70),
+            (11.0, 1.0, 69),
+            (12.0, 4.0, 67),
+            (16.0, 2.0, 69),
+            (18.0, 2.0, 67),
+            (20.0, 2.0, 65),
+            (22.0, 2.0, 64),
+            (24.0, 2.0, 62),
+            (26.0, 2.0, 64),
+            (28.0, 4.0, 67),
+        ]
+        .iter()
+        .map(|&(at, len, p)| n(at, len, p))
+        .collect()
+    }
+
+    #[test]
+    fn a_tune_that_opens_on_its_home_chord_is_heard_in_that_key() {
+        // Round 2 heard this as G Dorian (it ends on G) and the waltz as
+        // A minor: both share their notes with the key they're in.
+        assert_eq!(
+            key(&f_major_tune(), meter()).best(),
+            Some(Key::new(5, Mode::Major))
+        );
+        let three = Meter::new(3, 4).unwrap();
+        let waltz: Vec<Played> = [
+            (0.0, 4.0, 62),
+            (4.0, 4.0, 65),
+            (8.0, 4.0, 69),
+            (12.0, 6.0, 71),
+            (18.0, 2.0, 69),
+            (20.0, 4.0, 67),
+            (24.0, 4.0, 65),
+            (28.0, 4.0, 67),
+            (32.0, 4.0, 69),
+            (36.0, 8.0, 64),
+            (44.0, 4.0, 60),
+        ]
+        .iter()
+        .map(|&(at, len, p)| n(at, len, p))
+        .collect();
+        assert_eq!(key(&waltz, three).best(), Some(Key::new(2, Mode::Dorian)));
+    }
+
+    #[test]
+    fn a_players_loose_timing_is_heard_on_the_beat() {
+        // Every note a little early or late, as played: the same key.
+        let loose: Vec<Played> = riff()
+            .iter()
+            .enumerate()
+            .map(|(i, p)| Played {
+                at: (p.at + [-9, 7, -4, 11][i % 4]).max(0),
+                ..*p
+            })
+            .collect();
+        assert_eq!(key(&loose, meter()).words(), key(&riff(), meter()).words());
+        assert_eq!(
+            chords(&loose, 2 * BAR, None, meter()).names(),
+            chords(&riff(), 2 * BAR, None, meter()).names()
+        );
+    }
+
+    #[test]
+    fn a_single_line_implies_plain_chords_in_its_key() {
+        let f = Key::new(5, Mode::Major);
+        let tl = chords(&f_major_tune(), 2 * BAR, Some(f), meter());
+        for s in tl.spans() {
+            if let Some(c) = s.answer.chord() {
+                assert!(
+                    !matches!(
+                        c.quality,
+                        Quality::Power
+                            | Quality::Sus4
+                            | Quality::Diminished
+                            | Quality::Diminished7
+                            | Quality::HalfDiminished7
+                    ),
+                    "{}",
+                    tl.names()
+                );
+                assert_eq!(f.pcs() & c.pcs(), c.pcs(), "{}", tl.names());
+            }
+        }
+        // Chords played as chords are still read as played.
+        assert_eq!(
+            chords(&comping(), 4 * BAR, None, meter()).names(),
+            "Cm7 F7 Bbmaj7 Ebmaj7 Am7b5 D7 Gm6"
+        );
     }
 
     #[test]

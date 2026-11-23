@@ -80,7 +80,7 @@ The song is your clips laid out on a timeline, one lane per track. Tap **Song** 
 {{shot: clips-perform-song | Song on in Perform: SONG tags on the tracks, filled where they play the song and outlined where a launched clip plays over it, and the glitch going back to the song at 6.1.}}
 
 {{shot: arrange-song-over | The same on the Song view: the launched clips drawn over their lanes, the glitch ending at the dashed line where the song comes back, and the chords waiting for bar 6.}}
-- **Song → scenes** goes the other way. It cuts the song into its parts and puts each part into empty rows, set to play one after another. It never writes over a row that has clips, or one you have set up without clips (a name, mutes, a follow action, morph values or a program change). A part that starts partway into a block gets its clip turned round to start there, so launching the first row plays what the song played. A tempo point on a part's first bar becomes its row's tempo: launching the row changes the tempo on its line, exactly where its clips start. **UNDO** takes the whole thing back in one go, and **SHIFT + UNDO** puts it back.
+- **Song → scenes** goes the other way. It cuts the song into its parts and puts each part into empty rows, set to play one after another. It never writes over a row that has clips, or one you have set up without clips (a name, mutes, a follow action, morph values or a program change). A part that starts partway into a block gets its clip turned round to start there, so launching the first row plays what the song played. A tempo point on a part's first bar becomes its row's tempo: launching the row changes the tempo on its line, exactly where its clips start. What an audio track recorded comes too: each part's stretch of its lane becomes an audio clip in the part's row, named after the track and its bars ("Vocal 5–8"), playing exactly what the song played there, fades and all. A part with more than 16 recordings on one audio track can't be one clip, so nothing changes and the message line says where ("Vocal, bars 9 to 16: 21 regions, and a clip holds 16"); split the part with a marker, or bounce it first. **UNDO** takes the whole thing back in one go, and **SHIFT + UNDO** puts it back.
 - Every conversion tells you whether it came out **exact**. An exact one says so in place of the hint line ("Song → scenes: rows 9 to 11, exact. UNDO takes it back."). When something can't carry over, a card opens over the song with one row for each difference: the track (or **Song** when it's the whole song's), the bar, and what's different. That can be a part off the bar line, a stretch of silence, a tempo change inside a part or a tempo that glides, the song's morph moves, a note held over a row change, a clip that plays in Random order or has notes with a chance (a copy rolls them its own way), or, going into the song, a scene's program changes (the one thing the song doesn't play yet). Five rows show at a time; drag the list or turn the wheel for the rest.
 - On the card, **UNDO** (or the MPC's UNDO) takes the whole conversion back, and **Done** closes the card and keeps the result. A tap anywhere outside the card, **MENU** or another page also closes it and keeps the result; that tap does nothing else. Once the card is closed, the details are still in the log in Dev.
 
@@ -169,12 +169,12 @@ Points are at least a 1/16 apart, and a song has up to 31.
 
 ### Audio in the song
 
-Audio you record from the INPUTS goes on **audio tracks**, with lanes of their own under the clip lanes, on the same timeline. They play whenever the song plays. Recording them, editing their regions and picking the best parts of several takes is in [Recording audio tracks](audio-tracks.md).
+Audio you record from the INPUTS goes on **audio tracks**, with lanes of their own under the clip lanes, on the same timeline. They play whenever the song plays, unless an audio clip launched on the grid plays in its place. Recording them, editing their regions and picking the best parts of several takes is in [Recording audio tracks](audio-tracks.md).
 
-When you move a section, put bars in or take them out, the audio moves with the song. A region across a section's edge is cut there, and each part plays what it played; parts that meet again in their new place are one region again.
+When you move a section, put bars in or take them out, the audio moves with the song. A region across a section's edge is cut there, and each part plays what it played, fades included; parts that meet again in their new place are one region again.
 
 - **UNDO** takes the audio back with the song, and **SHIFT + UNDO** puts both back.
-- If you changed a region since (a split, a move, a fade), **UNDO** waits and says so. Take that change back first with the region's **Undo**, then press **UNDO**.
+- If you changed a region since (a split, a move, a fade), **UNDO** takes those changes back first, then the song edit with its audio.
 - While an audio track records, the song's bars can't move: the message line says to stop the recording first, and nothing changes.
 
 ## The song list
@@ -233,13 +233,14 @@ Each line says what it would do to this project before you choose, and either is
 
 1. Tap **Rec song**.
 2. Press play and jam: launch clips and rows, stop tracks, move the morph crossfader.
-3. Press stop, or tap **Rec song** again. What you played goes into the song.
+3. Press stop, or tap **Rec song** again. What you played goes into the song, as one step **UNDO** takes back.
 
 - Each clip goes into the song where it started and stopped, linked to its clip. It plays from the song just as it does from the grid, pad pressure included.
 - Tracks that were muted are left out of the song for as long as they were muted.
 - The morph crossfader's moves are recorded too, with the two rows it was between. If you leave the crossfader still for a moment, the song holds it there until your next move.
 - A track you didn't touch keeps what the song already had there. Where you launched a clip, it records over the song, like recording over tape.
 - With the loop on, each time round records over the last.
+- An audio clip launched on an audio track goes into the song as a block too. Where it lands over something that track recorded, the block replaces it, and **UNDO** takes back both. The other way round, recording on an audio track over a block cuts the block there, and **UNDO** takes back both too (see [Audio clips in the song](audio-tracks.md#audio-clips-in-the-song)).
 - A song holds up to 4,096 blocks. When a recording gets to 90 % of that, the message line warns you. If a launch would take it past the limit, Rec song stops recording on every track on that launch line (never halfway through a scene change) and turns off, the message says so, and everything recorded up to there goes into the song. The music plays on.
 - Rec song records which clips played, not new notes. To record notes, use **REC** on a clip (see [Clips and patterns](clips.md)).
 - **In Perform, REC brings Rec song with it**: each take you record (a clip or a loop) also records the grid into the song for as long as it lasts, and the REC chip says "+ Rec song". To leave it out of a take, tap the REC chip and turn off **Rec song with REC**; it's back for the take after. Rec song turned on by hand stays on as usual (see [Make and Perform](playing-live.md#make-and-perform)).

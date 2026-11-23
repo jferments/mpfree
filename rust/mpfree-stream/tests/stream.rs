@@ -45,6 +45,37 @@ fn play_and_check(
     missed
 }
 
+/// [`play_and_check`] for a read that isn't exact on a whole frame (a
+/// band-limited read faster than the file's own speed): each output
+/// checked within `tol` of what it should be.
+fn play_and_check_within(
+    rig: &mut Rig,
+    k: &mut Cursor,
+    frames: usize,
+    tol: f32,
+    mut want: impl FnMut(usize) -> Option<[f32; 2]>,
+) -> u64 {
+    let mut missed = 0;
+    let mut done = 0;
+    while done < frames {
+        let n = (frames - done).min(256);
+        let mut outs = vec![vec![0.0; n * 2]];
+        missed += rig.period(&mut [k], &mut outs);
+        for j in 0..n {
+            if let Some(w) = want(done + j) {
+                let got = [outs[0][j * 2], outs[0][j * 2 + 1]];
+                assert!(
+                    (got[0] - w[0]).abs() <= tol && (got[1] - w[1]).abs() <= tol,
+                    "output frame {}: {got:?}, not {w:?}",
+                    done + j
+                );
+            }
+        }
+        done += n;
+    }
+    missed
+}
+
 #[test]
 fn every_format_plays_back_exactly() {
     let dir = folder("formats");
@@ -98,10 +129,13 @@ fn loops_seeks_and_speed_land_on_the_right_frames() {
     let at = |f: u64| [played(3, f, 0), played(3, f, 1)];
 
     // A loop crossing a unit's edge, entered from before it. Where the
-    // cursor lands is the point here: Hermite gives a whole frame's own
-    // sample at any speed (the band-limited read's are in tests/rate.rs).
+    // cursor lands is the point here (how each read sounds is in
+    // tests/rate.rs and the DSP lab's readers). At speed 1, and on whole
+    // frames slower than that, the band-limited read gives the frame's own
+    // sample; faster, a whole frame of these ramps comes out within a
+    // fraction of a frame's step of its own, away from a loop's seam.
     let mut k = Cursor::new(0, 0);
-    k.set_read(Read::Hermite);
+    assert_eq!(k.read(), Read::Sinc8);
     let (ls, le) = (7_000u64, 9_500u64);
     k.set_loop(Some((ls, le)));
     rig.warm(&mut [&mut k], 400);
@@ -109,29 +143,31 @@ fn loops_seeks_and_speed_land_on_the_right_frames() {
     let missed = play_and_check(&mut rig, &mut k, 20_000, |j| Some(at(wrap(j as u64))));
     assert_eq!(missed, 0);
 
-    // A seek into the middle of a unit, at double speed, no loop.
+    // A seek into the middle of a unit, at double speed, no loop: each
+    // output on its whole frame, within half a frame's step of the ramp.
+    let tol = 0.5 / 8_388_608.0;
     k.set_loop(None);
     k.seek(20_001);
     k.set_speed(2.0);
     rig.warm(&mut [&mut k], 400);
-    let missed = play_and_check(&mut rig, &mut k, 15_000, |j| {
+    let missed = play_and_check_within(&mut rig, &mut k, 15_000, tol, |j| {
         let f = 20_001 + 2 * j as u64;
-        Some(if f < frames { at(f) } else { [0.0, 0.0] })
+        Some(at(f))
     });
     assert_eq!(missed, 0);
 
     // One and a half times, round a loop: every other output frame lands
-    // on a whole file frame and is the file's own sample.
+    // on a whole file frame, the ramp's own value there, except within
+    // the read's reach of the loop's seam (where the ramp jumps).
     k.seek(30_000);
     k.set_speed(1.5);
     k.set_loop(Some((30_000, 33_001)));
     rig.warm(&mut [&mut k], 400);
     let (ls, le) = (30_000u64, 33_001u64);
-    let missed = play_and_check(&mut rig, &mut k, 12_000, |j| {
-        (j % 2 == 0).then(|| {
-            let f = 30_000 + (j as u64 / 2) * 3;
-            at(if f < le { f } else { ls + (f - le) % (le - ls) })
-        })
+    let missed = play_and_check_within(&mut rig, &mut k, 12_000, tol, |j| {
+        let f = 30_000 + (j as u64 / 2) * 3;
+        let f = if f < le { f } else { ls + (f - le) % (le - ls) };
+        (j % 2 == 0 && f >= ls + 16 && f + 16 < le).then(|| at(f))
     });
     assert_eq!(missed, 0);
 

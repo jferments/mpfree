@@ -41,6 +41,7 @@
 pub mod export;
 pub mod plugins;
 pub mod sample;
+pub mod sets;
 pub mod state;
 pub mod view;
 
@@ -51,6 +52,10 @@ pub use export::{
 pub use plugins::{
     KindFilter, PluginButton, PluginDetail, PluginInput, PluginRow, PluginsScreen, PluginsView,
     Tone,
+};
+pub use sets::{
+    NeedRow, RigThing, SetButton, SetDetail, SetField, SetInput, SetRow, SetsScreen, SetsView,
+    Stepper,
 };
 pub use state::{
     BrowseAction, Browser, Button, Filter, Input, MapCell, MapShown, PadMap, Pick, PresetFrom,
@@ -68,6 +73,12 @@ pub const BROWSER_PAGE: &str = "browser";
 pub const BROWSER_LAYOUT: &str = "col(header:60, browser:*, hint:26)";
 /// The hint line while the Plugins place shows.
 pub const PLUGINS_HINT: &str = "Dial: move  ·  push: next picture  ·  +: install  ·  -: back  ·  SHIFT + dial: places  ·  BROWSE closes";
+/// The hint line while the Sets place lists the sets (layout spec 4p).
+pub const SETS_HINT: &str = "Dial: move  ·  push: edit the set  ·  Play set: plays it in Perform  ·  Check set: the quick check on every song  ·  BROWSE closes";
+/// The hint line while a set is being edited.
+pub const SET_EDIT_HINT: &str = "Dial: move  ·  - / +: move the picked song  ·  push or tap a value: change it  ·  Add songs: from Projects  ·  BROWSE closes";
+/// The hint line while songs are being added to a set.
+pub const SET_ADD_HINT: &str = "Dial: move  ·  push or +: add the song picked  ·  -: done  ·  a tap on +: add that song  ·  BROWSE closes";
 /// The hint line while the browser is open.
 pub const BROWSER_HINT: &str = "Dial: move  ·  push: open or load  ·  - / +: up / into a folder  ·  PLAY: hear it  ·  ERASE: to Trash  ·  BROWSE closes  ·  SHIFT + BROWSE: save project";
 
@@ -111,6 +122,8 @@ pub fn step(ui: &mut Ui, browser: &mut Browser) -> Vec<BrowseAction> {
     if let Some(r) = ui.rect_of(BROWSER) {
         browser.set_visible(BrowserView::rows_in(r));
         browser.set_plugin_rows(BrowserView::plugin_rows_in(r));
+        let (list, songs) = BrowserView::set_rows_in(r);
+        browser.set_set_rows(list, songs);
     } else {
         browser.set_visible(rows);
     }
@@ -142,9 +155,11 @@ pub fn show(ui: &mut Ui, browser: &Browser) {
 pub fn qlinks(browser: &Browser, preview_level_db: f32) -> [(String, String); 4] {
     let s = browser.screen();
     // The Plugins place: its own list and chips.
-    let (selected, rows, show) = match &s.plugins {
-        Some(p) => (p.selected, p.rows.len(), p.filter.label()),
-        None => (s.selected, s.rows.len(), s.filter.label()),
+    let (selected, rows, show) = match (&s.plugins, &s.sets) {
+        (Some(p), _) => (p.selected, p.rows.len(), p.filter.label()),
+        // The Sets place has no filter chips.
+        (None, Some(p)) => (p.selected, p.rows.len(), "—"),
+        (None, None) => (s.selected, s.rows.len(), s.filter.label()),
     };
     let pos = match (selected, rows) {
         (Some(i), n) if n > 0 => format!("{} / {n}", i + 1),

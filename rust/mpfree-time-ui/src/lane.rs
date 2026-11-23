@@ -1,8 +1,9 @@
 //! A lane of bars under a grid, a value each, that a finger draws: one
 //! bar per step on the Sequencer's Steps (its Velocity and Chance lanes,
-//! step sequencer refactor D3) or one per note in the piano roll (its
+//! step sequencer refactor D3), one per note in the piano roll (its
 //! lanes, the piano roll plan's step 2A.1, which extends this without
-//! changing its callers).
+//! changing its callers), or narrow columns along the picked notes that
+//! draw a line, their pressure (plan 3A.1, [`LaneStyle::Line`]).
 //!
 //! It knows nothing about steps, notes or locks. The caller gives each
 //! bar its place across the lane in pixels (a step's cell, or a note's
@@ -21,14 +22,22 @@
 
 use mpfree_ui::{Align, Color, FontId, PaintCx, Rect, Touch};
 
-/// How a lane draws its values. Only bars so far; a ratchet's hits as
-/// ticks and a pressure line inside a note are room left for the piano
-/// roll.
+/// How a lane draws its values: bars from the foot, from the middle for
+/// a value either side of 0 (a repeat's velocity ramp, piano roll plan
+/// 2A.1), or a line along narrow columns side by side (a note's pressure
+/// as it goes, plan 3A.1).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LaneStyle {
     /// A bar per value, as tall as the value, from the lane's foot.
     #[default]
     Bars,
+    /// A bar per value from the height of 0 (the foot if 0 is out of the
+    /// range), up for a value over 0 and down for one under it.
+    Centred,
+    /// Each bar a slice of a line over a light fill from the foot, with
+    /// no labels or gaps: a stroke redraws the line, so its lift returns
+    /// every bar it set, changed or not.
+    Line,
 }
 
 /// One bar: where it is across the lane and its value.
@@ -54,9 +63,10 @@ pub enum LaneTouch {
     /// The stroke's preview changed: draw the lane again. Nothing to edit
     /// yet.
     Preview,
-    /// The stroke ended: each bar it changed, in bar order, with its new
-    /// value, for the caller's one edit. Empty when nothing changed, or
-    /// when the touch was cancelled or a second finger came down.
+    /// The stroke ended: each bar it changed (on a [`LaneStyle::Line`],
+    /// or with [`Lane::every`], each bar it set), in bar order, with its new value, for the
+    /// caller's one edit. Empty when nothing changed, or when the touch
+    /// was cancelled or a second finger came down.
     Done(Vec<(usize, i32)>),
 }
 
@@ -79,6 +89,11 @@ pub struct Lane {
     /// Values go in steps of this from `min` (1 for velocity).
     pub step: i32,
     pub style: LaneStyle,
+    /// Its lift returns every bar the stroke set, changed or not, as a
+    /// [`LaneStyle::Line`]'s does: a lock lane's (piano roll plan 3A.2),
+    /// where a bar with no lock shows what its step plays and a stroke
+    /// over it locks that.
+    pub every: bool,
     stroke: Option<Stroke>,
 }
 
@@ -167,9 +182,10 @@ impl Lane {
             Touch::Up if ours => {
                 self.draw_to(x, y, r);
                 let set = self.stroke.take().map(|s| s.set).unwrap_or_default();
+                let line = self.style == LaneStyle::Line || self.every;
                 let mut changed: Vec<(usize, i32)> = set
                     .into_iter()
-                    .filter(|&(k, v)| self.bars.get(k).is_some_and(|b| b.value != v))
+                    .filter(|&(k, v)| self.bars.get(k).is_some_and(|b| line || b.value != v))
                     .collect();
                 changed.sort_unstable_by_key(|&(k, _)| k);
                 LaneTouch::Done(changed)
@@ -214,22 +230,44 @@ impl Lane {
         s.at = (x, y);
     }
 
-    /// Draw the lane in `r`, its bars in `colour` (from the theme), each
-    /// as tall as its value from the lane's foot, the stroke's values in
-    /// place of theirs while it draws.
-    pub fn paint(&self, cx: &mut PaintCx, r: Rect, colour: Color) {
-        let t = cx.theme.clone();
-        let LaneStyle::Bars = self.style;
+    /// The height in the lane `r` that value `v` reaches: the foot for
+    /// `min`, the top of the bars for `max`.
+    pub fn y_of(&self, v: i32, r: Rect) -> i32 {
         let room = (r.h - LABEL_H).max(1);
         let span = (self.max - self.min).max(1);
-        // The foot, faint, under every bar.
-        cx.canvas
-            .fill_rect(Rect::new(r.x, r.bottom() - 1, r.w, 1), t.text_faint);
+        r.bottom() - (v.clamp(self.min, self.max) - self.min) * room / span
+    }
+
+    /// Draw the lane in `r`, its bars in `colour` (from the theme), each
+    /// as tall as its value from the lane's foot (or from 0's height,
+    /// [`LaneStyle::Centred`]), the stroke's values in place of theirs
+    /// while it draws.
+    pub fn paint(&self, cx: &mut PaintCx, r: Rect, colour: Color) {
+        let t = cx.theme.clone();
+        let base = match self.style {
+            LaneStyle::Bars | LaneStyle::Line => r.bottom(),
+            LaneStyle::Centred if self.min < 0 && self.max > 0 => self.y_of(0, r),
+            LaneStyle::Centred => r.bottom(),
+        };
+        // The foot (or 0's line), faint, under every bar.
+        cx.canvas.fill_rect(
+            Rect::new(r.x, base.min(r.bottom()) - 1, r.w, 1),
+            t.text_faint,
+        );
+        if self.style == LaneStyle::Line {
+            self.paint_line(cx, r, colour);
+            return;
+        }
         for (k, b) in self.bars.iter().enumerate() {
             let v = self.shown(k).unwrap_or(b.value).clamp(self.min, self.max);
-            let h = ((v - self.min) * room / span).max(2);
+            let top = self.y_of(v, r);
+            let (y, h) = match top < base {
+                true => (top, (base - top).max(2)),
+                false => (base, (top - base).max(2)),
+            };
+            let y = y.min(r.bottom() - h);
             let w = (b.w - 4).max(2);
-            let bar = Rect::new(b.x + (b.w - w) / 2, r.bottom() - h, w, h);
+            let bar = Rect::new(b.x + (b.w - w) / 2, y, w, h);
             let fill = if b.dim {
                 colour.mix(t.surface, 0.6)
             } else {
@@ -250,6 +288,37 @@ impl Lane {
                     &b.label,
                 );
             }
+        }
+    }
+
+    /// [`LaneStyle::Line`]: each bar a slice of the line, 2 px thick at
+    /// its value's height over a light fill down to the foot (faint for a
+    /// `dim` bar), joined to the bar beside it where they touch.
+    fn paint_line(&self, cx: &mut PaintCx, r: Rect, colour: Color) {
+        let t = cx.theme.clone();
+        let fill = colour.mix(t.surface, 0.7);
+        let mut last: Option<(i32, i32)> = None;
+        for (k, b) in self.bars.iter().enumerate() {
+            let v = self.shown(k).unwrap_or(b.value).clamp(self.min, self.max);
+            let y = self.y_of(v, r).clamp(r.y, r.bottom() - 2);
+            let ink = if b.dim {
+                colour.mix(t.surface, 0.6)
+            } else {
+                colour
+            };
+            if r.bottom() - y > 2 {
+                cx.canvas
+                    .fill_rect(Rect::new(b.x, y + 2, b.w, r.bottom() - y - 2), fill);
+            }
+            cx.canvas.fill_rect(Rect::new(b.x, y, b.w, 2), ink);
+            if let Some((end, was)) = last {
+                if end == b.x && was != y {
+                    let (top, foot) = (was.min(y), was.max(y));
+                    cx.canvas
+                        .fill_rect(Rect::new(b.x, top, 2, foot - top + 2), ink);
+                }
+            }
+            last = Some((b.x + b.w, y));
         }
     }
 }
@@ -357,6 +426,126 @@ mod tests {
             LaneTouch::Done(vec![])
         );
         assert!(l.bars.iter().all(|b| b.value == 64));
+    }
+
+    /// A centred lane (a ramp, -126 to 126) draws each bar from 0's
+    /// height, up for a value over 0 and down for one under it; a finger
+    /// on that line sets about 0.
+    #[test]
+    fn a_centred_lane_draws_from_its_middle() {
+        use mpfree_ui::{Fonts, SoftCanvas, Theme};
+        let r = Rect::new(0, 0, 200, 94);
+        let mut l = Lane::new(-126, 126, 1);
+        l.style = LaneStyle::Centred;
+        l.set_bars(
+            [(20, 100), (100, -100)]
+                .into_iter()
+                .map(|(x, value)| Bar {
+                    x,
+                    w: 20,
+                    value,
+                    ..Bar::default()
+                })
+                .collect(),
+        );
+        let zero = l.y_of(0, r);
+        assert!(l.value_at(zero, r).abs() <= 2, "about 0 at the line");
+        let theme = Theme::dark();
+        let mut c = SoftCanvas::new(r.w, r.h);
+        let mut fonts = Fonts::embedded();
+        l.paint(
+            &mut PaintCx {
+                canvas: &mut c,
+                theme: &theme,
+                fonts: &mut fonts,
+            },
+            r,
+            theme.accent,
+        );
+        let lit = |x: i32, y: i32| c.pixel(x, y) == c.pixel(30, zero - 10);
+        assert!(lit(30, zero - 20) && !lit(30, zero + 20), "up from 0");
+        assert!(lit(110, zero + 20) && !lit(110, zero - 20), "down from 0");
+    }
+
+    /// A line lane (a note's pressure) returns every column its stroke
+    /// set, the ones already at that height too, since the stroke
+    /// redraws the line; its columns paint side by side, the line over a
+    /// light fill.
+    #[test]
+    fn a_line_lane_returns_every_column_its_stroke_set() {
+        use mpfree_ui::{Fonts, SoftCanvas, Theme};
+        let r = Rect::new(0, 0, 200, 94);
+        let mut l = Lane::new(0, 127, 1);
+        l.style = LaneStyle::Line;
+        l.set_bars(
+            (0..10)
+                .map(|k| Bar {
+                    x: 20 + k * 4,
+                    w: 4,
+                    value: 0,
+                    ..Bar::default()
+                })
+                .collect(),
+        );
+        let foot = r.bottom() - 1;
+        l.touch(1, Touch::Down, 21, foot, r);
+        l.touch(1, Touch::Move, 37, foot, r);
+        let LaneTouch::Done(set) = l.touch(1, Touch::Up, 37, foot, r) else {
+            panic!();
+        };
+        assert_eq!(
+            set,
+            [(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)],
+            "unchanged, and sent"
+        );
+        // Painted: the line at its height over a lighter fill.
+        l.bars[2].value = 127;
+        let theme = Theme::dark();
+        let mut c = SoftCanvas::new(r.w, r.h);
+        let mut fonts = Fonts::embedded();
+        l.paint(
+            &mut PaintCx {
+                canvas: &mut c,
+                theme: &theme,
+                fonts: &mut fonts,
+            },
+            r,
+            theme.accent,
+        );
+        let top = l.y_of(127, r);
+        let line = c.pixel(30, top);
+        assert_eq!(line, theme.accent, "the line");
+        assert_ne!(c.pixel(30, top + 20), line, "the fill under it");
+        assert_ne!(c.pixel(30, top + 20), c.pixel(100, top + 20), "filled");
+    }
+
+    /// A lock lane's bars return every bar the stroke set, at the value
+    /// it shows too: a bar with no lock shows what its step plays, and a
+    /// tap on it locks that (piano roll plan 3A.2).
+    #[test]
+    fn a_lane_with_every_returns_bars_left_at_their_value() {
+        let r = Rect::new(0, 0, 200, 94);
+        let mut l = Lane::new(0, 10, 1);
+        l.every = true;
+        l.set_bars(vec![Bar {
+            x: 20,
+            w: 20,
+            value: 0,
+            dim: true,
+            ..Bar::default()
+        }]);
+        let foot = r.bottom() - 1;
+        l.touch(1, Touch::Down, 30, foot, r);
+        assert_eq!(
+            l.touch(1, Touch::Up, 30, foot, r),
+            LaneTouch::Done(vec![(0, 0)])
+        );
+        l.every = false;
+        l.touch(1, Touch::Down, 30, foot, r);
+        assert_eq!(
+            l.touch(1, Touch::Up, 30, foot, r),
+            LaneTouch::Done(Vec::new())
+        );
     }
 
     #[test]

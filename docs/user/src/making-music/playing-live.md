@@ -49,9 +49,11 @@ The **XY pad** plays an effect on the whole mix under one finger. The chip at it
 
 {{shot: play-xy-list | The list the XY chip opens: Filter + echo and the nine XY FX, each saying what across and up do. Wash is the pick here.}}
 
-**For a bigger pad, press SHIFT + NEXT SEQ** from any page. The XY pad takes the whole of Play under the transport bar, with the master bar and the Q-Links still beside it, so you have room for big, slow moves. It plays just as the small one does, and its chip still opens the list. Press **SHIFT + NEXT SEQ** again, or go to another page, to get the small pad back.
+**For a bigger pad, press SHIFT + NEXT SEQ** from any page. The XY pad takes the whole of Play under the transport bar, with the master bar and the Q-Links still beside it, so you have room for big, slow moves. It plays just as the small one does, and its chip still opens the list. Under it are **Hold**, **Let go** and **Setup**. Press **SHIFT + NEXT SEQ** again, or go to another page, to get the small pad back.
 
-{{shot: play-xy-full | The XY pad full screen (SHIFT + NEXT SEQ), playing Wash: decay across, brightness up.}}
+{{shot: play-xy-full | The XY pad full screen (SHIFT + NEXT SEQ), playing Wash: decay across, brightness up. Under it, Hold (for layouts of yours), Let go and Setup.}}
+
+**To put your own settings on the pad,** make a layout of your own: tap **+ New layout** in the chip's list, or **Setup** under the full-screen pad to start from the ready-made layout playing. See [Your own XY layouts](xy-layouts.md).
 
 ## Fills
 
@@ -80,7 +82,7 @@ Mutes and solos aren't undo steps, and with **Rec song** on they go into the son
 **16 LEVEL** spreads one sound over all 16 pads: the pad you hit last plays on every pad, each one a step of something else. Press **16 LEVEL** and the 16 Levels panel opens on the Play page, under the transport bar:
 
 - The cells are the pads, pad 1 at the bottom left. Each one shows what that pad plays, and they are lit in the same colour as the pads, with the pad you are holding bright.
-- The column on the right picks what the steps change: **Velocity** (8 to 127), **Tune** (a semitone a pad, pad 9 as recorded), **Cutoff** (100 Hz to 20 kHz), **Decay** (25 ms to 4.5 s), **Start** (where in the sound it starts) or **Transpose** (the armed track's notes, below). Tap one, or turn the wheel.
+- The column on the right picks what the steps change: **Velocity** (8 to 127), **Tune** (a semitone a pad, pad 9 as recorded; in another [tuning](synths.md#tuning), a note of the tuning a pad), **Cutoff** (100 Hz to 20 kHz), **Decay** (25 ms to 4.5 s), **Start** (where in the sound it starts) or **Transpose** (the armed track's notes, below). Tap one, or turn the wheel.
 - **Pick pad**, then hit a pad: the levels play that pad's sound instead.
 - **Close** hides the panel and keeps the pads on 16 Levels. **Off**, or **16 LEVEL** again, gives the pads their own sounds back. The 16 LEVEL button is lit while 16 Levels is on, and a **16 Levels** chip in the top bar says what the steps change.
 
@@ -115,7 +117,7 @@ Switching never stops or changes anything playing. The project keeps it, so a se
 
 What Perform changes today:
 
-- **MAIN** goes to the Arrange tab's Clips grid, not the Play page. Pressed again, it shows the Song view, then the song list, then the grid again.
+- **MAIN** goes to the Arrange tab's Clips grid, not the Play page. Pressed again, it shows the Song view, then the song list, then the grid again. While a [set](set-lists.md#playing-a-set) is open it goes to the Show view instead, and on Arrange goes Show, Clips, Song, List.
 - **The arm is pinned**: opening a page doesn't move what REC records; only a tap on an Arm pill does. Picking a track selects it to edit and play without moving REC. The REC chip says PINNED. Back in Make, the arm follows the page again.
 - **TRACK MUTE's pads wait for the launch line** before a mute or solo lands, and SHIFT + a pad acts at once (see [Muting tracks and pads](#muting-tracks-and-pads)).
 - **REC brings Rec song with it**: each take also records what the grid plays into the song, for as long as it lasts, and the REC chip says "+ Rec song". Tap the chip and turn off **Rec song with REC** to leave one take out (see [Recording a performance into the song](arranging.md#recording-a-performance-into-the-song)).

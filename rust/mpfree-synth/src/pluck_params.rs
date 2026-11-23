@@ -235,7 +235,10 @@ pub static PARAMS: &[ParamInfo] = &[
         Unit::Semitones,
         Stepped,
     ),
-    p(LEVEL, "Level", "Output", -60.0, 6.0, 0.0, Unit::Db, Linear),
+    // -2 dB: 8-note chords of Init at full velocity peak under 0 dBFS,
+    // whichever noise each pluck draws (synth-quality L2; DSP quality
+    // step 1.5).
+    p(LEVEL, "Level", "Output", -60.0, 6.0, -2.0, Unit::Db, Linear),
     p(
         PAN,
         "Pan",
