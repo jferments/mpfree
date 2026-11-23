@@ -4665,8 +4665,8 @@ fn track_name(project: &mpfree_seq::Project, t: u8) -> String {
 
 /// A Clips grid parameter named as the Learn section and the hint line
 /// show it: "Launch Bass · row 2", "Scene 3 · Verse", "Stop Bass", "Mute
-/// Bass", "Solo Bass", "Arm Bass", "Stop all", "Back to song". A track
-/// past the project's is named by its number.
+/// Bass", "Solo Bass", "Arm Bass", "Stop all", "Back to song", "Capture
+/// scene". A track past the project's is named by its number.
 fn clips_label(project: &mpfree_seq::Project, id: u16) -> String {
     use mpfree_play::mpfree_param::clips::{self, Clips};
     let track = |t: u8| track_name(project, t);
@@ -4674,6 +4674,7 @@ fn clips_label(project: &mpfree_seq::Project, id: u16) -> String {
         None => "?".to_string(),
         Some(Clips::StopAll) => "Stop all".to_string(),
         Some(Clips::BackToSong) => "Back to song".to_string(),
+        Some(Clips::CaptureScene) => "Capture scene".to_string(),
         Some(Clips::Scene(r)) => match project.scenes.get(usize::from(r)).map(|s| &s.name) {
             Some(name) if !name.is_empty() => format!("Scene {} · {name}", u16::from(r) + 1),
             _ => format!("Scene {}", u16::from(r) + 1),
@@ -15973,6 +15974,7 @@ mod tests {
         );
         assert_eq!(name(&time, clips::STOP_ALL), "Stop all");
         assert_eq!(name(&time, clips::BACK_TO_SONG), "Back to song");
+        assert_eq!(name(&time, clips::CAPTURE_SCENE), "Capture scene");
         assert_eq!(name(&time, clips::scene(2)), "Scene 3");
         time.act(TimeAction::SceneSettings {
             row: 2,

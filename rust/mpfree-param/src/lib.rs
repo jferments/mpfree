@@ -251,6 +251,9 @@ pub mod clips {
     pub const STOP_ALL: u16 = 0;
     /// Every track back to the arrangement (the grid's Back to song).
     pub const BACK_TO_SONG: u16 = 1;
+    /// Capture scene: the clips playing now into a new row (the grid's
+    /// Capture scene in Perform, the Arrange refactor's 5.3).
+    pub const CAPTURE_SCENE: u16 = 2;
     /// The tracks the ids below count to (`mpfree_seq::MAX_TRACKS`).
     pub const TRACKS: u16 = 128;
     /// The rows of the grid's bank A (`mpfree_seq::SLOTS`): its cells'
@@ -274,6 +277,8 @@ pub mod clips {
     pub enum Clips {
         StopAll,
         BackToSong,
+        /// Keep the clips playing now as a new row (Capture scene).
+        CaptureScene,
         /// Launch row `row` as a scene (the row's button).
         Scene(u8),
         /// The cell at `(track, row)`, as a tap on it: launch its clip,
@@ -332,6 +337,7 @@ pub mod clips {
             0 => match id {
                 STOP_ALL => Some(Clips::StopAll),
                 BACK_TO_SONG => Some(Clips::BackToSong),
+                CAPTURE_SCENE => Some(Clips::CaptureScene),
                 _ => None,
             },
             SCENE => (n < ALL_ROWS).then_some(Clips::Scene(n as u8)),
@@ -1060,6 +1066,7 @@ mod tests {
         use clips::Clips;
         assert_eq!(clips::of(clips::STOP_ALL), Some(Clips::StopAll));
         assert_eq!(clips::of(clips::BACK_TO_SONG), Some(Clips::BackToSong));
+        assert_eq!(clips::of(clips::CAPTURE_SCENE), Some(Clips::CaptureScene));
         assert_eq!(clips::of(clips::scene(15)), Some(Clips::Scene(15)));
         // Scene banks (5.6): 64 rows, bank A's cells keeping their ids.
         assert_eq!(clips::of(clips::scene(63)), Some(Clips::Scene(63)));
@@ -1089,7 +1096,7 @@ mod tests {
             assert!(!clips::is_value(clips::arm(t)) && !clips::is_value(clips::stop(t)));
         }
         assert_eq!(clips::of(clips::mute(127) + 1), None, "128 tracks");
-        assert_eq!(clips::of(2), None);
+        assert_eq!(clips::of(3), None);
         // No two say the same.
         let mut seen = std::collections::HashSet::new();
         for id in 0..=u16::MAX {
@@ -1097,7 +1104,7 @@ mod tests {
                 assert!(seen.insert(c), "{id}");
             }
         }
-        assert_eq!(seen.len(), 2 + 64 + 4 * 128 + 128 * 64);
+        assert_eq!(seen.len(), 3 + 64 + 4 * 128 + 128 * 64);
     }
 
     /// The looper's footswitch ids are fixed numbers (a rig keeps its

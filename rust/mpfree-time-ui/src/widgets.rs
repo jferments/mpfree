@@ -576,6 +576,12 @@ pub struct ClipGrid {
     /// one is on the pads: its first track and row. Four tracks by four
     /// rows from there are outlined in the accent, where they are in view.
     pub pad_window: Option<(usize, usize)>,
+    /// Capture scene can keep something (the Arrange refactor's 5.3): a
+    /// track plays a clip, or the song plays. Perform's title line has
+    /// the button, left of "Back to song", the pager or "+ Track". It
+    /// gives `Toggle(slots + `[`CAPTURE`]`)`, and is faint while this is
+    /// off.
+    pub can_capture: bool,
     /// What was drawn last, so a change redraws only the cells that changed.
     drawn: RefCell<Option<Drawn>>,
     /// A finger down on a track's name: where (x) and which track. Let go
@@ -642,6 +648,7 @@ struct Drawn {
     card: bool,
     banks: Vec<bool>,
     pad_window: Option<(usize, usize)>,
+    can_capture: bool,
 }
 
 /// `Toggle(slots + ADD_TRACK)`: "+ Track".
@@ -687,6 +694,11 @@ pub const BANK: usize = 15;
 pub const BANK_LETTERS: [&str; 4] = ["A", "B", "C", "D"];
 /// A part of the bank chip.
 pub const BANK_PART_W: i32 = 28;
+/// `Toggle(slots + CAPTURE)`: Perform's Capture scene (the Arrange
+/// refactor's 5.3), after the bank chip's four.
+pub const CAPTURE: usize = 19;
+/// Capture scene's width.
+const CAPTURE_W: i32 = 128;
 
 /// Arrange's three views of one song, in the order the view chip shows
 /// them (the Arrange refactor's 5.7).
@@ -869,6 +881,7 @@ impl ClipGrid {
             scene_card: None,
             banks: Vec::new(),
             pad_window: None,
+            can_capture: false,
             drawn: RefCell::new(None),
             press: None,
             grip: None,
@@ -1082,13 +1095,30 @@ impl ClipGrid {
         Rect::new(head.right() - REC_SONG_W, head.y - 4, REC_SONG_W, 30)
     }
 
-    /// Where the title line's left side ends: before "Back to song", the
-    /// pager or "+ Track".
+    /// Where the title line's left side ends: before Capture scene,
+    /// "Back to song", the pager or "+ Track".
     fn left_end(&self, r: Rect) -> i32 {
-        self.back_rect(r)
+        self.capture_rect(r)
+            .or(self.back_rect(r))
             .or(self.pager_rects(r).map(|(b, _)| b))
             .map_or(self.add_rect(r).x, |b| b.x)
             - 12
+    }
+
+    /// Where Capture scene is (the Arrange refactor's 5.3): in Perform,
+    /// left of "Back to song", the pager or "+ Track". "Back to song"
+    /// beside the pager leaves it no room right of the view chip: then it
+    /// isn't there, and the scene card's Capture is the way.
+    pub fn capture_rect(&self, r: Rect) -> Option<Rect> {
+        if !self.big {
+            return None;
+        }
+        let right = self
+            .back_rect(r)
+            .or(self.pager_rects(r).map(|(b, _)| b))
+            .unwrap_or(self.add_rect(r));
+        let x = right.x - 8 - CAPTURE_W;
+        (x >= self.view_rect(r).right() + 10).then(|| Rect::new(x, right.y, CAPTURE_W, right.h))
     }
 
     /// Where the bank chip is (scene banks, the Arrange refactor's 5.6):
@@ -1309,6 +1339,7 @@ impl Widget for ClipGrid {
             || self.scene_card.is_some()
             || d.banks != self.banks
             || d.pad_window != self.pad_window
+            || d.can_capture != self.can_capture
         {
             return None;
         }
@@ -1351,15 +1382,18 @@ impl Widget for ClipGrid {
             card: self.scene_card.is_some(),
             banks: self.banks.clone(),
             pad_window: self.pad_window,
+            can_capture: self.can_capture,
         });
         // The view chip, then the title, shortened to what comes before
         // " · " where "Back to song" leaves it no room.
         let head = r.inset(14).take_top(26).0;
         let title_x = self.title_x(r);
         let back = self.back_rect(r);
+        let capture = self.capture_rect(r);
         let mut title = self.title.as_str();
-        // What the title has before it: "Back to song", or the pager.
-        if back.is_some() || self.paged() {
+        // What the title has before it: Capture scene, "Back to song",
+        // or the pager.
+        if capture.is_some() || back.is_some() || self.paged() {
             let x = self.left_end(r);
             let mut wide = |s: &str| cx.measure(FontId::Bold, t.size_small, &s.to_uppercase());
             if title_x + wide(title) > x {
@@ -1370,7 +1404,7 @@ impl Widget for ClipGrid {
                 title = "";
             }
         }
-        let end = back.map_or(self.add_rect(r).x, |b| b.x) - 12;
+        let end = capture.or(back).map_or(self.add_rect(r).x, |b| b.x) - 12;
         view_title_at(cx, r, ArrangeView::Clips, title, title_x, end);
         if let Some(chip) = self.bank_chip_rect(r) {
             // The bank chip: A to D, the bank shown filled in the accent,
@@ -1398,6 +1432,22 @@ impl Widget for ClipGrid {
         let rec = self.rec_rect(r);
         let edit = self.edit_rect(r);
         let add = self.add_rect(r);
+        if let Some(b) = capture {
+            cx.canvas.fill_round_rect(b, t.round(10), t.raised);
+            let ink = if self.can_capture {
+                t.text
+            } else {
+                t.text_faint
+            };
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                b,
+                Align::Center,
+                ink,
+                "Capture scene",
+            );
+        }
         if let Some(b) = back {
             cx.canvas
                 .fill_round_rect(b, t.round(10), t.raised.mix(t.good, 0.35));
@@ -1437,7 +1487,7 @@ impl Widget for ClipGrid {
             // The legend's parts that fit between the title and the
             // buttons, dropping the first ones when it is too wide.
             let title_w = cx.measure(FontId::Bold, t.size_small, &title.to_uppercase());
-            let end = back.map_or(add.x, |b| b.x);
+            let end = capture.or(back).map_or(add.x, |b| b.x);
             let room = end - 12 - (title_x + title_w + 16);
             let mut legend = self.legend.as_str();
             while !legend.is_empty() && cx.measure(FontId::Sans, t.size_small, legend) > room {
@@ -1705,6 +1755,11 @@ impl Widget for ClipGrid {
         if let Some(b) = self.back_rect(r) {
             out.push(Target::tap("back-to-song", 0, "Back to song", b));
         }
+        if let Some(b) = self.capture_rect(r) {
+            out.push(
+                Target::tap("capture-scene", 0, "Capture scene", b).disabled_if(!self.can_capture),
+            );
+        }
         for k in 0..self.banks.len() {
             if let Some(b) = self.bank_part_rect(r, k) {
                 let letter = BANK_LETTERS.get(k).copied().unwrap_or("?");
@@ -1892,6 +1947,11 @@ impl Widget for ClipGrid {
         }
         if self.back_rect(r).is_some_and(|b| b.contains(x, y)) {
             return Some(EventKind::Toggle(self.slots + BACK_TO_SONG));
+        }
+        // Faint, it still gives its toggle, for SHIFT + tap's Learn; the
+        // page acts on it only while it is lit.
+        if self.capture_rect(r).is_some_and(|b| b.contains(x, y)) {
+            return Some(EventKind::Toggle(self.slots + CAPTURE));
         }
         if self.add_rect(r).contains(x, y) {
             return self
@@ -3061,6 +3121,72 @@ mod tests {
             g.touch(1, Touch::Up, cell.x + 4, cell.y + 4, r),
             Some(EventKind::Select(5 * 64 + 17))
         );
+    }
+
+    /// Capture scene (the Arrange refactor's 5.3) is Perform's: left of
+    /// "Back to song", the pager or "+ Track", clear of the view chip,
+    /// faint while there is nothing to keep but still giving its toggle
+    /// (SHIFT + tap learns it). Beside both the pager and "Back to song"
+    /// it has no room and isn't there; it moves the bank chip out where
+    /// the chip no longer fits.
+    #[test]
+    fn capture_scene_is_on_performs_title_line_where_it_fits() {
+        // Perform's grid, beside the Record panel.
+        let r = Rect::new(12, 140, 854, 534);
+        let mut g = grid(8);
+        assert_eq!(g.capture_rect(r), None, "Make has none");
+        g.big = true;
+        let c = g.capture_rect(r).unwrap();
+        assert!(c.right() + 8 <= g.add_rect(r).x, "{c:?}");
+        assert!(c.x > g.view_rect(r).right(), "{c:?}");
+        let target = g
+            .targets(r)
+            .into_iter()
+            .find(|t| t.id == "capture-scene")
+            .unwrap();
+        assert!(!target.enabled, "faint: nothing plays");
+        assert_eq!(
+            g.touch(1, Touch::Down, c.x + 4, c.y + 4, r),
+            Some(EventKind::Toggle(16 + CAPTURE)),
+            "faint, it still gives its toggle for Learn"
+        );
+        g.can_capture = true;
+        assert!(g
+            .targets(r)
+            .iter()
+            .any(|t| t.id == "capture-scene" && t.enabled));
+        // "Back to song" shows: Capture scene moves left of it.
+        g.back_to_song = true;
+        let b = g.back_rect(r).unwrap();
+        let c = g.capture_rect(r).unwrap();
+        assert!(c.right() + 8 <= b.x, "{c:?} {b:?}");
+        assert_eq!(
+            g.touch(1, Touch::Down, b.x + 4, b.y + 4, r),
+            Some(EventKind::Toggle(16 + BACK_TO_SONG))
+        );
+        // With the pager and "Back to song", no room.
+        let mut g = ClipGrid {
+            big: true,
+            back_to_song: true,
+            ..grid(24)
+        };
+        assert_eq!(g.capture_rect(r), None);
+        assert!(g.targets(r).iter().all(|t| t.id != "capture-scene"));
+        g.back_to_song = false;
+        let (pager, _) = g.pager_rects(r).unwrap();
+        assert!(g.capture_rect(r).unwrap().right() + 8 <= pager.x);
+        // Four banks: the chip fits beside Capture scene alone, not beside
+        // it and "Back to song" too.
+        let mut g = ClipGrid {
+            slots: 64,
+            banks: vec![true, true, false, false],
+            big: true,
+            ..grid(8)
+        };
+        let chip = g.bank_chip_rect(r).unwrap();
+        assert!(chip.right() + 12 <= g.capture_rect(r).unwrap().x);
+        g.back_to_song = true;
+        assert_eq!(g.bank_chip_rect(r), None);
     }
 
     #[test]

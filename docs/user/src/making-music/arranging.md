@@ -43,7 +43,7 @@ A scene's program change goes out on the bar line the scene starts on, after the
 
 Along the card's foot:
 
-- **Capture** copies the clips playing now into the first empty row under the scene playing (from row 1 when no scene plays), as clips of their own. In song mode a track playing the song gives the song's block under the playhead. What plays carries on, and the card moves to the new row.
+- **Capture** copies the clips playing now into the first empty row under the scene playing (from row 1 when no scene plays), as clips of their own. In song mode a track playing the song gives the song's block under the playhead. What plays carries on, and the card moves to the new row. In Perform the grid's title line has the same button, **Capture scene**, so you can keep a combination without opening the card (see [Make and Perform](playing-live.md#make-and-perform)).
 - **Copy row** puts a copy of this row, its clips and its scene, under it. The rows under it move down one.
 - **Insert row** puts an empty row under it, and the rows under it move down one.
 - **Delete row** takes the row out, its clips and its scene with it, and the rows under it move up one. Its clips stop if they were playing, and its parts leave the song list. A clip of the row that the song plays stays in the song. In Perform it needs a half-second hold, like every delete.

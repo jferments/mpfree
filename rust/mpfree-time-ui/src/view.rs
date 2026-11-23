@@ -48,7 +48,7 @@ use crate::song::{
 use crate::widgets::{
     BarButton, BarItem, CellState, ClipGrid, GridCell, GridTrack, MorphBar, Run, SongMark,
     TakeItem, TakeList, TransportBar, ADD_DISMISS, ADD_KIND, ADD_TRACK, BACK_TO_SONG, BANK,
-    GRID_COLS, PAGE_BACK, PAGE_ON, ROWS_BACK, ROWS_ON, ROW_DROP,
+    CAPTURE, GRID_COLS, PAGE_BACK, PAGE_ON, ROWS_BACK, ROWS_ON, ROW_DROP,
 };
 use mpfree_audiotracks::host::TakeWave;
 use mpfree_audiotracks::{Input, Monitor};
@@ -2036,7 +2036,8 @@ pub fn cell_tap(st: &TimeState, track: usize, slot: usize) -> Option<TimeAction>
 /// SHIFT + a tap on the Clips grid (sequencer S5, Jay's card of 18 Nov
 /// 2026): what MIDI Learn waits to give a control. A clip's cell (its
 /// tap, whatever the cell holds), a row's scene button, Stop all, Back to
-/// song, or a track's name (its arm). None for anything else on the grid,
+/// song, Perform's Capture scene (lit or faint), or a track's name (its
+/// arm). None for anything else on the grid,
 /// where SHIFT keeps its job (a drag copies, "+ Track" adds a Loop track).
 pub fn learn_target(ev: &UiEvent, st: &TimeState) -> Option<ParamAddr> {
     if ev.widget != CLIPS {
@@ -2049,6 +2050,7 @@ pub fn learn_target(ev: &UiEvent, st: &TimeState) -> Option<ParamAddr> {
         EventKind::Toggle(r) if r < ROWS => clips::scene(r as u8),
         EventKind::Toggle(ROWS) => clips::STOP_ALL,
         EventKind::Toggle(r) if r == ROWS + BACK_TO_SONG => clips::BACK_TO_SONG,
+        EventKind::Toggle(r) if r == ROWS + CAPTURE => clips::CAPTURE_SCENE,
         EventKind::Tab(t) if t < st.tracks.len() => clips::arm(t as u8),
         _ => return None,
     };
@@ -2064,6 +2066,7 @@ pub fn clips_press(st: &TimeState, c: Clips) -> Option<TimeAction> {
     match c {
         Clips::StopAll => Some(TimeAction::StopAll),
         Clips::BackToSong => Some(TimeAction::BackToSong),
+        Clips::CaptureScene => Some(TimeAction::CaptureScene),
         Clips::Scene(r) => Some(usize::from(r))
             .filter(|&r| r < ROWS)
             .map(TimeAction::LaunchScene),
@@ -2134,6 +2137,9 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             r if r == ROWS + ADD_KIND + 2 => TimeAction::AddLoopTrack,
             r if r == ROWS + BACK_TO_SONG => TimeAction::BackToSong,
             r if r == ROWS + crate::widgets::LIST_VIEW => TimeAction::ListView(true),
+            // Capture scene, faint (nothing to keep) unless something
+            // plays (5.3).
+            r if r == ROWS + CAPTURE && capture_can(st) => TimeAction::CaptureScene,
             // The pager and the drag's edges are the page's own:
             // TimePage::page_tracks.
             _ => return None,
@@ -2948,7 +2954,7 @@ pub fn scene_card_of(st: &TimeState) -> Option<crate::scene_card::SceneCard> {
         .tracks
         .iter()
         .all(|t| t.slots.get(ROWS - 1).is_none_or(Option::is_none));
-    let plays = (0..st.tracks.len()).any(|t| st.launch(t).is_some()) || st.song_on;
+    let plays = capture_can(st);
     Some(SceneCard {
         row,
         rows_count: ROWS,
@@ -2965,6 +2971,13 @@ pub fn scene_card_of(st: &TimeState) -> Option<crate::scene_card::SceneCard> {
             true,
         ],
     })
+}
+
+/// Whether Capture scene has something to keep (5.3): the song plays,
+/// or a track has a clip launched. The scene card's Capture and
+/// Perform's Capture scene are faint without.
+pub fn capture_can(st: &TimeState) -> bool {
+    st.song_on || (0..st.tracks.len()).any(|t| st.launch(t).is_some())
 }
 
 /// A tap on an empty cell's box on the scene card: the track stops as the
@@ -5744,6 +5757,8 @@ impl TimePage {
         let can_add = st.tracks.len() < MAX_TRACKS;
         self.adding &= can_add;
         let adding = self.adding;
+        // Capture scene is Perform's only (5.3).
+        let can_capture = st.perform && capture_can(st);
         let same_grid = ui.get::<ClipGrid>(CLIPS).is_some_and(|g| {
             g.tracks == tracks
                 && g.title == title
@@ -5757,6 +5772,7 @@ impl TimePage {
                 && g.back_to_song == st.over_song()
                 && g.banks == banks
                 && g.pad_window == self.pad_window
+                && g.can_capture == can_capture
         });
         if !same_grid {
             if let Some(g) = ui.get_mut::<ClipGrid>(CLIPS) {
@@ -5773,6 +5789,7 @@ impl TimePage {
                 g.back_to_song = st.over_song();
                 g.banks = banks;
                 g.pad_window = self.pad_window;
+                g.can_capture = can_capture;
             }
         }
     }
@@ -6696,9 +6713,39 @@ mod tests {
         );
     }
 
+    /// Perform's Capture scene (the Arrange refactor's 5.3): lit while a
+    /// track plays a clip or the song plays, and a tap on it is
+    /// CaptureScene; faint, a tap does nothing. Make's grid has none.
+    #[test]
+    fn performs_capture_scene_keeps_what_plays_while_something_does() {
+        let mut st = state();
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", Header::new(&["Play", "Clips"]));
+        ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        let mut page = TimePage::add_to(&mut ui).unwrap();
+        ui.show(CLIPS_PAGE).unwrap();
+        let tap = |st: &TimeState| action(&ev(CLIPS, EventKind::Toggle(ROWS + CAPTURE)), st);
+        assert!(capture_can(&st), "two tracks play");
+        assert_eq!(tap(&st), Some(TimeAction::CaptureScene));
+        page.update(&mut ui, &st);
+        assert!(!ui.get::<ClipGrid>(CLIPS).unwrap().can_capture, "Make");
+        st.perform = true;
+        page.update(&mut ui, &st);
+        assert!(ui.get::<ClipGrid>(CLIPS).unwrap().can_capture);
+        st.launches.clear();
+        assert!(!capture_can(&st));
+        assert_eq!(tap(&st), None, "faint: nothing to keep");
+        page.update(&mut ui, &st);
+        assert!(!ui.get::<ClipGrid>(CLIPS).unwrap().can_capture);
+        st.song_on = true;
+        assert!(capture_can(&st), "the song plays");
+        assert_eq!(tap(&st), Some(TimeAction::CaptureScene));
+    }
+
     /// MIDI Learn on the Clips grid (sequencer S5, Jay's card of 18 Nov):
-    /// SHIFT + a tap names a cell, a scene, Stop all, Back to song or a
-    /// track's arm, and a learned press later does what that tap does then.
+    /// SHIFT + a tap names a cell, a scene, Stop all, Back to song,
+    /// Perform's Capture scene or a track's arm, and a learned press later
+    /// does what that tap does then.
     #[test]
     fn a_learned_press_does_what_a_tap_on_the_grid_does() {
         let st = state();
@@ -6716,6 +6763,10 @@ mod tests {
         assert_eq!(
             learn(EventKind::Toggle(ROWS + BACK_TO_SONG)),
             c(clips::BACK_TO_SONG)
+        );
+        assert_eq!(
+            learn(EventKind::Toggle(ROWS + CAPTURE)),
+            c(clips::CAPTURE_SCENE)
         );
         assert_eq!(learn(EventKind::Tab(1)), c(clips::arm(1)));
         // SHIFT keeps its job elsewhere: + Track, the pager, the sound line.
@@ -6743,6 +6794,10 @@ mod tests {
         assert_eq!(
             clips_press(&st, Clips::BackToSong),
             Some(TimeAction::BackToSong)
+        );
+        assert_eq!(
+            clips_press(&st, Clips::CaptureScene),
+            Some(TimeAction::CaptureScene)
         );
         assert_eq!(
             clips_press(&st, Clips::Stop(1)),
