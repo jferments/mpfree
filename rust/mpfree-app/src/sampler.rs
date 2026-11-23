@@ -53,10 +53,6 @@ use mpfree_transport::Block;
 use crate::kit::{Kit, Sound, MAX_KITS, MAX_VOICES};
 use crate::looping::PERIOD;
 
-/// The engine pans a centred sound −3 dB a side. Pads are raised by this
-/// much, so a kit plays at the level the round 3 mixer played it.
-pub const CENTRE_DB: f32 = 3.010_3;
-
 /// The sampler setting a clip's lock on a kit pad's sound names
 /// (`Owner::Pad`): its parameter is the [`PadField`]'s number (Level 0,
 /// Pan 1, Tune 2, Cutoff 3, Resonance 4, Attack 5, Decay 6, Release 7), and
@@ -511,13 +507,6 @@ pub fn engine_velocity(v: u8) -> u8 {
 /// four sounds on every pad.
 pub const POOL_VOICES: usize = 64;
 
-/// Voices one kit pad holds before its own oldest gives way. A pad hit
-/// again and again (Note Repeat on a long sound) used to fill the whole
-/// pool and cut short every other pad's sound (Jay's round 4: 1,592 of
-/// 2,545 hits took a voice that was still playing); four copies of one
-/// sound is already more than the ear tells apart.
-pub const KIT_POLYPHONY: u8 = 4;
-
 /// Empty kit slots the app keeps after the kits and Grains (sampler R3
 /// part 3): the list of kits' **New kit** puts the next one on the armed
 /// track, and a kit loaded onto a kit other tracks play goes into one, so
@@ -531,14 +520,12 @@ fn kit_pad(name: &str, region: Region) -> Pad {
 }
 
 /// A new pad as the kits' own play: centred at the level a kit plays at,
-/// [`KIT_POLYPHONY`] voices. The browser's Load onto an empty pad makes
-/// these too, so a loaded sound plays as loud as the kit's (a plain
+/// four voices ([`mpfree_sampler_ui::command::kit_pad`], which recorded
+/// sounds landing on a pad get too). The browser's Load onto an empty pad
+/// makes these, so a loaded sound plays as loud as the kit's (a plain
 /// [`Pad::new`] is 3 dB quieter: the engine's centre pan).
 pub fn kit_pad_with(name: &str, layer: Layer) -> Pad {
-    let mut pad = Pad::new(name, layer);
-    pad.polyphony = KIT_POLYPHONY;
-    pad.level_db = CENTRE_DB;
-    pad
+    mpfree_sampler_ui::command::kit_pad(name, layer)
 }
 
 fn grain_pad(name: &str, source: &Source, row: usize) -> Pad {
@@ -1580,7 +1567,10 @@ mod tests {
             run(&mut p, 1);
         }
         run(&mut p, 1);
-        assert_eq!(p.playing(), usize::from(KIT_POLYPHONY));
+        assert_eq!(
+            p.playing(),
+            usize::from(mpfree_sampler_ui::command::KIT_POLYPHONY)
+        );
         assert_eq!(p.counters().steals, 0, "the pool never filled");
     }
 
@@ -1594,7 +1584,7 @@ mod tests {
         // Every pad hit once more than it holds, all at once: the kits'
         // plain hits fill the whole pool, past the 24 full voices.
         for k in 0..16 {
-            for _ in 0..=KIT_POLYPHONY {
+            for _ in 0..=mpfree_sampler_ui::command::KIT_POLYPHONY {
                 p.hit_at(k, 127, 0);
             }
         }

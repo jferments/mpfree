@@ -16,14 +16,17 @@ use crate::app::Settings;
 use crate::loop_row::{LayerChip, LoopRow, LOOP_ROW};
 use crate::looper_deck::{CaptureButton, Channel, DeckHead, LoopDeck, RingState, DECK};
 use crate::looper_tab::{
-    level_frac, level_text, Chip, ChipKind, Ctl, DropSpot, DropTo, EmptyLook, HistoryList,
-    LayerDrag, LayerRow, LoopEditor, Strip, BAR_CHOICES, EDITOR, LOOP_COLOURS, QLINKS, SEND_SHOW,
-    SPEED_CHOICES,
+    level_frac, level_text, AskButtons, Chip, ChipAct, ChipKind, Ctl, DropSpot, DropTo, EmptyLook,
+    HistoryList, LayerDrag, LayerRow, LoopEditor, PointLook, PointPane, SmartChip, Strip, ASK,
+    BAR_CHOICES, EDITOR, LOOP_COLOURS, QLINKS, SEND_SHOW, SPEED_CHOICES,
 };
-use crate::looping::{LoopSource, LoopWave, LooperView};
+use crate::looping::{
+    bars_words_n, LoopSource, LoopWave, LooperView, Side, POINT_END_FROM_MS, POINT_MS,
+    POINT_START_FROM_MS,
+};
 use mpfree_looper::{
-    After, Command, Edit, History, LayerCommand, LayerInfo, Overdubs, Phase, Starts, Status, Step,
-    MAX_LAYERS, MAX_LOOPS, MAX_SEAM,
+    After, Command, Edit, History, LayerCommand, LayerInfo, Overdubs, Phase, Shift, Snap, Starts,
+    Status, Step, LOOP_MAX_BPM, LOOP_MIN_BPM, MAX_LAYERS, MAX_LOOPS, MAX_SEAM,
 };
 use mpfree_time_ui::view::{LoopPlace, TransportInfo};
 use mpfree_transport::State;
@@ -128,6 +131,20 @@ fn step_text(s: Step, layers: &[Option<LayerInfo>], rate: u32) -> String {
             |n| format!("From loop {} · {n}", from + 1),
         ),
         Step::Moved(_, to) => format!("Moved to loop {}", to + 1),
+        // Smart loop end's Snap, Use my tap or Use my press, with the
+        // tempo.
+        Step::Snap(d) => {
+            let mut parts = Vec::new();
+            if d.start != 0 {
+                parts.push(edit_text(Edit::Move(d.start), rate).replacen("Move", "Start", 1));
+            }
+            if d.end != 0 || d.start == 0 {
+                parts.push(edit_text(Edit::Resize(d.end), rate));
+            }
+            format!("Snap · {}", parts.join(" · "))
+        }
+        // Read as: the loop's length kept, its bars and the tempo changed.
+        Step::Bars(b) => format!("Read as {}", crate::looping::bars_words_n(b)),
     }
 }
 
@@ -351,6 +368,9 @@ impl LooperPage {
         ui.add(EDITOR, LoopEditor::default());
         ui.add(QLINKS, QLinkColumn::new());
         ui.add(LOOP_ROW, LoopRow::default());
+        // Snap anyway and Not now: floated over the page while a snap
+        // asks (gui.rs, refresh_looper).
+        ui.add(ASK, AskButtons::default());
         ui.add_page(LOOPER_PAGE, LOOPER_LAYOUT)?;
         let mut p = LooperPage {
             hold: f32::NEG_INFINITY,
@@ -1486,6 +1506,20 @@ impl LooperPage {
         let colour = LOOP_COLOURS[n % LOOP_COLOURS.len()];
         let r = ui.rect_on(LOOPER_PAGE, EDITOR);
         if let Some(e) = ui.get_mut::<LoopEditor>(EDITOR) {
+            // Smart loop end's chip and the loop point view: as they were
+            // while a snap lands (the loop is between its two sides).
+            let (chip, point) = if s.snapping.is_some() {
+                (e.chip.clone(), e.point.clone())
+            } else {
+                (smart_chip(v), point_look(v))
+            };
+            if chip.is_none() && s.snapping.is_none() {
+                e.close_point();
+            }
+            if e.chip != chip || e.point != point {
+                e.chip = chip;
+                e.point = point;
+            }
             if e.title != title
                 || e.sub != sub
                 || e.colour != colour
@@ -1678,6 +1712,250 @@ fn live_place(v: &LooperView, wave: Option<&Arc<LoopWave>>) -> Option<(f32, usiz
 /// Bars in a loop of `ticks`, rounded (0 before it has a length).
 /// A loop's length in whole bars of `bar` ticks (the meter's bar), at
 /// least 1 for a loop with any length.
+/// A length in frames as whole milliseconds, its size only.
+fn ms_of(frames: i64, rate: u32) -> i64 {
+    (frames.unsigned_abs() as f64 * 1000.0 / f64::from(rate.max(1))).round() as i64
+}
+
+/// The tempo at which `ticks` of the song last `frames`.
+fn bpm_of(ticks: i64, frames: i64, rate: u32) -> f64 {
+    60.0 * f64::from(rate) * ticks as f64
+        / (f64::from(mpfree_transport::time::PPQ) * frames.max(1) as f64)
+}
+
+/// A difference in ms with its sign, as the loop point view says it:
+/// "−48 ms", "+80 ms".
+fn signed_ms(frames: i64, rate: u32) -> String {
+    let ms = ms_of(frames, rate);
+    match frames.signum() {
+        -1 => format!("\u{2212}{ms} ms"),
+        1 => format!("+{ms} ms"),
+        _ => "0 ms".to_string(),
+    }
+}
+
+/// Smart loop end's chip on the picked loop's header (Jay's OK on the
+/// drawings, 22 Nov): what it found, with Snap; what a snap did, with Use
+/// my tap or Use my press; a close call, with Read as the other bars.
+/// None once a side is kept, and when there is nothing to say.
+pub(crate) fn smart_chip(v: &LooperView) -> Option<SmartChip> {
+    let s = &v.status;
+    if v.smart.kept || !matches!(s.phase, Phase::Playing | Phase::Overdubbing) {
+        return None;
+    }
+    let ms = |f: i64| ms_of(f, v.rate);
+    if let Some(o) = s.offer {
+        let mut parts = Vec::new();
+        match o.end.signum() {
+            -1 => parts.push(format!("{} ms late", ms(o.end))),
+            1 => parts.push(format!("{} ms early", ms(o.end))),
+            _ => {}
+        }
+        match o.start.signum() {
+            1 => parts.push(format!("first hit {} ms after REC", ms(o.start))),
+            -1 => parts.push(format!("first hit {} ms before REC", ms(o.start))),
+            _ => {}
+        }
+        if !parts.is_empty() {
+            return Some(SmartChip {
+                words: parts.join(" · "),
+                action: ("Snap".to_string(), ChipAct::Side(Side::Snap), true),
+            });
+        }
+    }
+    if let Some(m) = s.moved.filter(|m| !m.is_none() && s.offer.is_none()) {
+        let (words, label) = if m.end != 0 {
+            let way = if m.end < 0 { "earlier" } else { "later" };
+            (format!("Snapped {} ms {way}", ms(m.end)), "Use my tap")
+        } else {
+            (
+                format!("Started on your first hit, {} ms after REC", ms(m.start)),
+                "Use my press",
+            )
+        };
+        return Some(SmartChip {
+            words,
+            action: (label.to_string(), ChipAct::Side(Side::Tap), false),
+        });
+    }
+    let b = v.smart.close_call?;
+    let bpm = bpm_of(i64::from(b) * v.bar_ticks, s.frames as i64, v.rate);
+    Some(SmartChip {
+        words: "Close call".to_string(),
+        action: (
+            format!("Read as {} at {bpm:.0} BPM", bars_words_n(b)),
+            ChipAct::Snap(Snap::Bars(b)),
+            false,
+        ),
+    })
+}
+
+/// The loop point view for the picked loop, while its chip shows and the
+/// looper has read the audio round its start and end
+/// ([`crate::looping::SmartView::point`]): the start's window from 100 ms
+/// before your press, the end's from 200 ms before your tap, each 300 ms,
+/// with where the loop is, your press or tap and what was found; what the
+/// other side would make of it; the choice, A/B, and Read as.
+pub(crate) fn point_look(v: &LooperView) -> Option<PointLook> {
+    smart_chip(v)?;
+    let s = &v.status;
+    let audio = v.smart.point?;
+    // (Not moved is None: the loop is on your press and your tap.)
+    let moved = s.moved.unwrap_or(Shift::NONE);
+    let rate = v.rate;
+    let ms = |f: i64| f as f64 * 1000.0 / f64::from(rate.max(1));
+    let tap_side = s.offer.is_some();
+    let snap_side = !tap_side && !moved.is_none();
+    let offer = s.offer.unwrap_or(Shift::NONE);
+    let frames = s.frames as i64;
+    let bars = bars_of(s.ticks, v.bar_ticks) as u32;
+    let bpm_now = bpm_of(s.ticks, frames, rate);
+    let now = if tap_side || !snap_side {
+        "your tap"
+    } else if moved.end != 0 {
+        "snapped"
+    } else {
+        "on your first hit"
+    };
+    let now = format!("Now: {now}, {} at {bpm_now:.2} BPM", bars_words_n(bars));
+    // The start: where it is and where it was found, from your press.
+    let at_start = |f: i64| ((ms(f) - POINT_START_FROM_MS) / POINT_MS) as f32;
+    let found_start = moved.start + offer.start;
+    let start = PointPane {
+        title: "Start".to_string(),
+        note: match (found_start != 0, snap_side) {
+            (false, _) => "the start stays on REC".to_string(),
+            (true, false) => format!(
+                "your first hit came {} ms after REC",
+                ms_of(found_start, rate)
+            ),
+            (true, true) => format!(
+                "started on your first hit, {} ms after REC",
+                ms_of(found_start, rate)
+            ),
+        },
+        peaks: audio.start,
+        edge: (at_start(moved.start), true),
+        you: (at_start(0), "REC".to_string()),
+        found: (found_start != 0).then(|| {
+            (
+                at_start(found_start),
+                "first hit".to_string(),
+                signed_ms(found_start, rate),
+            )
+        }),
+    };
+    // The end, from your tap.
+    let at_end = |f: i64| ((ms(f) - POINT_END_FROM_MS) / POINT_MS) as f32;
+    let found_end = moved.end + offer.end;
+    let way = if found_end < 0 { "before" } else { "after" };
+    let end = PointPane {
+        title: "End".to_string(),
+        note: match (found_end != 0, snap_side) {
+            (false, _) => "on your tap".to_string(),
+            (true, false) => format!(
+                "your first hit again, {} ms {way} your tap",
+                ms_of(found_end, rate)
+            ),
+            (true, true) => format!("snapped {} ms {way} your tap", ms_of(found_end, rate)),
+        },
+        peaks: audio.end,
+        edge: (at_end(moved.end), false),
+        you: (at_end(0), "your tap".to_string()),
+        found: (found_end != 0).then(|| {
+            (
+                at_end(found_end),
+                if snap_side { "snapped" } else { "end found" }.to_string(),
+                signed_ms(found_end, rate),
+            )
+        }),
+    };
+    let back = if moved.end != 0 {
+        "Use my tap"
+    } else {
+        "Use my press"
+    };
+    let (line, pick) = if v.smart.ab {
+        (
+            "A/B: the loop swaps your tap and the snap on each downbeat. Keep one to stop."
+                .to_string(),
+            vec![
+                ("Keep the snap".to_string(), Side::Snap, true),
+                ("Keep my tap".to_string(), Side::Tap, true),
+            ],
+        )
+    } else if tap_side {
+        let bpm = bpm_of(s.ticks, frames + offer.longer(), rate);
+        (
+            format!(
+                "Snap makes it {} at {bpm:.2} BPM, from the loop's next downbeat. \
+                 Your tap stays one tap away.",
+                bars_words_n(bars)
+            ),
+            vec![
+                ("Snap".to_string(), Side::Snap, false),
+                ("Keep my tap".to_string(), Side::Tap, true),
+            ],
+        )
+    } else if snap_side {
+        let bpm = bpm_of(s.ticks, frames - moved.longer(), rate);
+        (
+            format!(
+                "{back} puts it back: {} at {bpm:.2} BPM, from the loop's next downbeat. \
+                 The snap stays one tap away.",
+                bars_words_n(bars)
+            ),
+            vec![
+                (back.to_string(), Side::Tap, false),
+                ("Keep the snap".to_string(), Side::Snap, true),
+            ],
+        )
+    } else {
+        (
+            "Nothing to snap: the loop is on REC and your tap. Read as keeps its length \
+             and changes the tempo."
+                .to_string(),
+            vec![("Keep my tap".to_string(), Side::Tap, true)],
+        )
+    };
+    Some(PointLook {
+        now,
+        start,
+        end,
+        line,
+        pick,
+        ab: (tap_side || snap_side).then_some(v.smart.ab),
+        read_as: read_as_choices(v, bars),
+        bars_now: bars,
+    })
+}
+
+/// Read as's choices for the picked loop, `bars` now: those bars, the
+/// close call's other reading, double and half, three at most, each at
+/// the tempo its bars make of the loop's length (only those the looper
+/// takes, [`LOOP_MIN_BPM`] to [`LOOP_MAX_BPM`]); fewest bars first.
+fn read_as_choices(v: &LooperView, bars: u32) -> Vec<(String, u32)> {
+    let s = &v.status;
+    let bpm = |b: u32| bpm_of(i64::from(b) * v.bar_ticks, s.frames as i64, v.rate);
+    let mut picks = vec![bars];
+    let others = [
+        v.smart.close_call,
+        Some(bars * 2),
+        bars.is_multiple_of(2).then_some(bars / 2),
+    ];
+    for b in others.into_iter().flatten() {
+        let fits = (LOOP_MIN_BPM..=LOOP_MAX_BPM).contains(&bpm(b));
+        if b > 0 && fits && !picks.contains(&b) && picks.len() < 3 {
+            picks.push(b);
+        }
+    }
+    picks.sort_unstable();
+    picks
+        .into_iter()
+        .map(|b| (format!("{} · {:.2} BPM", bars_words_n(b), bpm(b)), b))
+        .collect()
+}
+
 pub(crate) fn bars_of(ticks: i64, bar: i64) -> usize {
     if ticks <= 0 {
         return 0;
@@ -1779,6 +2057,191 @@ mod tests {
             capacity: 60 * 44_100,
         };
         v
+    }
+
+    /// [`two_loops`] with smart loop end: 48 ms found before the tap.
+    fn found_late() -> LooperView {
+        let mut v = two_loops();
+        v.status.offer = Some(Shift {
+            start: 0,
+            end: -2117,
+        });
+        v
+    }
+
+    #[test]
+    fn the_chip_says_what_smart_loop_end_found_or_did_and_offers_the_way_back() {
+        let v = found_late();
+        let c = smart_chip(&v).unwrap();
+        assert_eq!(c.words, "48 ms late");
+        assert_eq!(c.action, ("Snap".into(), ChipAct::Side(Side::Snap), true));
+        let mut v = two_loops();
+        v.status.offer = Some(Shift {
+            start: 3528,
+            end: 441,
+        });
+        assert_eq!(
+            smart_chip(&v).unwrap().words,
+            "10 ms early · first hit 80 ms after REC"
+        );
+        // Snapped: the way back.
+        let mut v = two_loops();
+        v.status.moved = Some(Shift {
+            start: 0,
+            end: -2117,
+        });
+        let c = smart_chip(&v).unwrap();
+        assert_eq!(c.words, "Snapped 48 ms earlier");
+        assert_eq!(
+            c.action,
+            ("Use my tap".into(), ChipAct::Side(Side::Tap), false)
+        );
+        v.status.moved = Some(Shift {
+            start: 3528,
+            end: 0,
+        });
+        let c = smart_chip(&v).unwrap();
+        assert_eq!(c.words, "Started on your first hit, 80 ms after REC");
+        assert_eq!(c.action.0, "Use my press");
+        // A close call: Read as the other bars, at the tempo they make.
+        let mut v = two_loops();
+        v.smart.close_call = Some(8);
+        let c = smart_chip(&v).unwrap();
+        assert_eq!(c.words, "Close call");
+        assert_eq!(
+            c.action,
+            (
+                "Read as 8 bars at 184 BPM".into(),
+                ChipAct::Snap(Snap::Bars(8)),
+                false
+            )
+        );
+        // Kept, or nothing to say: no chip.
+        let mut v = found_late();
+        v.smart.kept = true;
+        assert_eq!(smart_chip(&v), None);
+        assert_eq!(smart_chip(&two_loops()), None);
+        let mut v = found_late();
+        v.status.phase = Phase::Recording;
+        assert_eq!(smart_chip(&v), None);
+    }
+
+    #[test]
+    fn the_loop_point_view_shows_both_sides_and_what_the_other_makes_of_the_loop() {
+        let mut v = found_late();
+        assert_eq!(point_look(&v), None, "no audio read yet");
+        v.smart.point = Some(crate::looping::LoopPoint {
+            start: [10; crate::looping::POINT_BARS],
+            end: [20; crate::looping::POINT_BARS],
+        });
+        let p = point_look(&v).unwrap();
+        assert_eq!(p.now, "Now: your tap, 4 bars at 92.00 BPM");
+        assert!(
+            p.line
+                .starts_with("Snap makes it 4 bars at 92.43 BPM, from the loop's next downbeat."),
+            "{}",
+            p.line
+        );
+        assert_eq!(p.pick[0], ("Snap".into(), Side::Snap, false));
+        assert_eq!(p.pick[1], ("Keep my tap".into(), Side::Tap, true));
+        assert_eq!(p.ab, Some(false));
+        // The tap two thirds across the end's window, the end found 48
+        // ms before it, the shade after the loop's end (the tap).
+        assert!((p.end.you.0 - 2.0 / 3.0).abs() < 1e-3);
+        let (f, name, gap) = p.end.found.clone().unwrap();
+        assert!((f - (2.0 / 3.0 - 48.0 / 300.0)).abs() < 2e-3, "{f}");
+        assert_eq!(
+            (name.as_str(), gap.as_str()),
+            ("end found", "\u{2212}48 ms")
+        );
+        assert_eq!(p.end.edge, (p.end.you.0, false));
+        assert_eq!(p.end.peaks, [20; crate::looping::POINT_BARS]);
+        assert_eq!(p.start.found, None);
+        assert_eq!(p.start.note, "the start stays on REC");
+        assert!((p.start.you.0 - 1.0 / 3.0).abs() < 1e-3);
+        assert_eq!(
+            p.read_as,
+            vec![
+                ("2 bars · 46.00 BPM".to_string(), 2),
+                ("4 bars · 92.00 BPM".to_string(), 4),
+                ("8 bars · 184.00 BPM".to_string(), 8),
+            ]
+        );
+        // Snapped: the way back, and the snap stays a tap away.
+        v.status.offer = None;
+        v.status.moved = Some(Shift {
+            start: 0,
+            end: -2117,
+        });
+        let p = point_look(&v).unwrap();
+        assert!(p.now.starts_with("Now: snapped, "), "{}", p.now);
+        assert!(
+            p.line
+                .starts_with("Use my tap puts it back: 4 bars at 91.58 BPM"),
+            "{}",
+            p.line
+        );
+        assert_eq!(p.pick[1], ("Keep the snap".into(), Side::Snap, true));
+        assert_eq!(p.end.found.unwrap().1, "snapped");
+        // A/B: keep one.
+        v.smart.ab = true;
+        let p = point_look(&v).unwrap();
+        assert_eq!(p.ab, Some(true));
+        assert_eq!(p.pick[0].0, "Keep the snap");
+        assert_eq!(p.pick[1].0, "Keep my tap");
+        // A close call alone: nothing to snap, no A/B, Read as.
+        let mut v = two_loops();
+        v.smart.close_call = Some(8);
+        v.smart.point = Some(crate::looping::LoopPoint {
+            start: [0; crate::looping::POINT_BARS],
+            end: [0; crate::looping::POINT_BARS],
+        });
+        let p = point_look(&v).unwrap();
+        assert_eq!(p.ab, None);
+        assert_eq!(p.pick, vec![("Keep my tap".into(), Side::Tap, true)]);
+        assert!(p.read_as.iter().any(|r| r.1 == 8));
+    }
+
+    #[test]
+    fn read_as_keeps_to_the_tempos_the_looper_takes() {
+        // 1 bar at 200 BPM: 2 bars would be 400, half isn't a bar.
+        let mut v = two_loops();
+        v.status.ticks = 4 * 960;
+        v.status.frames = 52_920;
+        let r = read_as_choices(&v, 1);
+        assert_eq!(r, vec![("1 bar · 200.00 BPM".to_string(), 1)]);
+    }
+
+    #[test]
+    fn the_point_view_closes_when_there_is_nothing_left_in_it() {
+        let (mut ui, mut page) = page();
+        let mut v = found_late();
+        v.smart.point = Some(crate::looping::LoopPoint {
+            start: [10; crate::looping::POINT_BARS],
+            end: [20; crate::looping::POINT_BARS],
+        });
+        page.update(&mut ui, &v, &Settings::default());
+        let e = ui.get_mut::<LoopEditor>(EDITOR).unwrap();
+        assert!(e.chip.is_some() && e.point.is_some());
+        e.open_point();
+        let _ = crate::looper_tab::take_actions(&mut ui);
+        // A snap lands: chip and view as they were meanwhile.
+        let mut landing = v.clone();
+        landing.status.offer = None;
+        landing.status.snapping = Some(1000);
+        page.update(&mut ui, &landing, &Settings::default());
+        let e = ui.get::<LoopEditor>(EDITOR).unwrap();
+        assert_eq!(e.chip.as_ref().unwrap().words, "48 ms late");
+        assert!(e.point_open());
+        // Kept: the chip goes, and the view closes and says so.
+        v.smart.kept = true;
+        page.update(&mut ui, &v, &Settings::default());
+        let e = ui.get::<LoopEditor>(EDITOR).unwrap();
+        assert!(e.chip.is_none() && !e.point_open());
+        assert_eq!(
+            crate::looper_tab::take_actions(&mut ui),
+            vec![crate::looper_tab::LoopAct::PointView(false)]
+        );
     }
 
     #[test]
@@ -2145,6 +2608,12 @@ mod tests {
         assert_eq!(text(Step::Edit(Edit::Move(-2_205))), "Move ← 50 ms");
         assert_eq!(text(Step::Edit(Edit::Resize(441))), "End → 10 ms");
         assert_eq!(text(Step::Edit(Edit::Turn(882))), "Bar 1 → 20 ms");
+        let snap = |start, end| text(Step::Snap(mpfree_looper::Shift { start, end }));
+        assert_eq!(snap(0, -2_205), "Snap · End ← 50 ms");
+        assert_eq!(snap(3_528, -441), "Snap · Start → 80 ms · End ← 10 ms");
+        assert_eq!(snap(-3_528, 0), "Snap · Start ← 80 ms");
+        assert_eq!(text(Step::Bars(4)), "Read as 4 bars");
+        assert_eq!(text(Step::Bars(1)), "Read as 1 bar");
         assert_eq!(text(Step::Merge(id(0))), "Merge layers");
         let (mut ui, mut page) = page();
         page.update(&mut ui, &v, &Settings::default());

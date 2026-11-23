@@ -8,12 +8,21 @@
 //! regions are in order and never overlap, and nothing from before the
 //! last open is in the tracks. Every save opens in a fresh host as it was
 //! saved, and reopening the last save gives back the same tracks.
+//!
+//! Phase 3b step 2: the same with every take recorded to a file of its own
+//! and played from it once finished (streaming on): a save names each
+//! finished file instead of reading it, a project opens its takes as
+//! their files, and the same holds after every step.
 
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use mpfree_audiotracks::files::{FileEvent, WriterConfig};
 use mpfree_audiotracks::host::AudioHost;
 use mpfree_audiotracks::save::Saved;
+use mpfree_audiotracks::streaming::StreamConfig;
 use mpfree_audiotracks::{Command as A, Input, MAX_TRACKS};
+use mpfree_stream::player::Config;
 use mpfree_transport::{Block, Command as T, Transport};
 
 const RATE: u32 = 22_050;
@@ -47,17 +56,42 @@ struct Rig {
     b: Block,
     frame: u64,
     live: bool,
+    /// Takes play from their files (and record to files, if the host was
+    /// given a folder).
+    streams: bool,
 }
 
 impl Rig {
-    /// Tracks with `seconds` of stereo memory.
-    fn new(seconds: u32) -> Rig {
+    /// Tracks with `seconds` of stereo memory; with `stream`, takes play
+    /// from their files, recorded into `stream`'s folder if it names one.
+    fn new(seconds: u32, stream: Option<Option<&Path>>) -> Rig {
+        let mut h = AudioHost::new(RATE, seconds);
+        if let Some(dir) = stream {
+            let cache = Config {
+                slots: 256,
+                ..Config::default()
+            };
+            assert!(h.stream(StreamConfig {
+                cache,
+                ..StreamConfig::default()
+            }));
+            if let Some(dir) = dir {
+                let quick = WriterConfig {
+                    interval_s: 0.05,
+                    max_interval_s: 0.2,
+                    commit_s: 0.01,
+                    ..WriterConfig::default()
+                };
+                assert!(h.record_to(dir.to_path_buf(), quick).is_ok());
+            }
+        }
         Rig {
             t: Transport::new(RATE, 240.0).unwrap(),
-            h: AudioHost::new(RATE, seconds),
+            h,
             b: Block::new(),
             frame: 0,
             live: false,
+            streams: stream.is_some(),
         }
     }
 
@@ -106,6 +140,7 @@ fn shape(s: &Saved) -> String {
     for k in &mut s.takes {
         k.audio = Vec::new();
         k.file = String::new();
+        k.path = None;
     }
     format!("{:?} {:?}", s.tracks, s.takes)
 }
@@ -133,17 +168,27 @@ fn check(r: &Rig, step: &str) {
     }
 }
 
-/// Every take of `saved` with its audio whole, and every region of it
-/// on a take it has.
+/// Every take of `saved` with its audio whole (or, named by its finished
+/// file, that file), and every region of it on a take it has.
 #[track_caller]
 fn check_saved(s: &Saved, step: &str) {
     for k in &s.takes {
-        assert_eq!(
-            k.audio.len(),
-            k.frames * k.channels,
-            "{step}: take {}",
-            k.id
-        );
+        match &k.path {
+            Some(p) => {
+                assert!(k.audio.is_empty(), "{step}: take {}", k.id);
+                // A WAV of the take's frames: a header, then 16 bits or
+                // more a sample.
+                let len = std::fs::metadata(p).map_or(0, |m| m.len());
+                let least = (k.frames * k.channels * 2) as u64;
+                assert!(len > least, "{step}: take {} file {p:?} {len}", k.id);
+            }
+            None => assert_eq!(
+                k.audio.len(),
+                k.frames * k.channels,
+                "{step}: take {}",
+                k.id
+            ),
+        }
     }
     for t in &s.tracks {
         for g in &t.regions {
@@ -190,8 +235,21 @@ fn open(r: &mut Rig, part: Option<&Saved>, step: &str) {
     r.run_until(step, |r| r.h.clear());
     assert_eq!(r.h.tracks.takes().count(), 0, "{step}");
     if let Some(p) = part {
+        while r.h.take_event().is_some() {}
         assert_eq!(r.h.load(p.clone()), Ok(()), "{step}");
-        r.run_until(step, |r| r.h.tracks.loading() == 0);
+        r.run_until(step, |r| r.h.tracks.loading() == 0 && r.h.opening() == 0);
+        while let Some(e) = r.h.take_event() {
+            assert!(
+                !matches!(e, FileEvent::Unopened { .. } | FileEvent::NoStream { .. }),
+                "{step}: {e:?}"
+            );
+        }
+        if r.streams {
+            // What was saved by its file opened as that file.
+            for k in p.takes.iter().filter(|k| k.path.is_some()) {
+                assert!(r.h.tracks.on_file(k.id), "{step}: take {}", k.id);
+            }
+        }
         let back = r.h.tracks.save_file().expect("settled");
         let mut want = p.clone();
         want.takes.sort_by_key(|k| k.id);
@@ -199,9 +257,12 @@ fn open(r: &mut Rig, part: Option<&Saved>, step: &str) {
     }
 }
 
-fn run_seed(seed: u64, steps: usize, seconds: u32) -> (usize, usize, u64) {
+/// A seed's steps on tracks with `seconds` of memory, with takes recorded
+/// to and played from files in `files` if given: the saves, the opens
+/// and the fits that were stale at an open.
+fn run_seed(seed: u64, steps: usize, seconds: u32, files: Option<&Path>) -> (usize, usize, u64) {
     let mut g = Gen(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
-    let mut r = Rig::new(seconds);
+    let mut r = Rig::new(seconds, files.map(Some));
     let mut last: Option<Saved> = None;
     let (mut saves, mut opens) = (0, 0);
     for i in 0..steps {
@@ -215,6 +276,11 @@ fn run_seed(seed: u64, steps: usize, seconds: u32) -> (usize, usize, u64) {
                 let input = g.pick(&[Input::Left, Input::Right, Input::Stereo]);
                 r.h.command(A::SetInput(track, input));
                 r.h.command(A::Arm(track, true));
+                // Streaming, most takes wait for their files (the rest
+                // record before theirs are made, and stay in memory).
+                if files.is_some() && g.below(4) > 0 {
+                    r.run_until(&step, |r| r.h.armed_file(track).is_some_and(|ok| ok));
+                }
                 let at = r.bar_frame() + BAR;
                 r.t.command(at, T::Locate(g.below(6) as i64 * BAR_TICKS));
                 r.t.command(at, T::Record);
@@ -272,7 +338,7 @@ fn run_seed(seed: u64, steps: usize, seconds: u32) -> (usize, usize, u64) {
                 if let Some(s) = save(&mut r, stop, &step) {
                     check_saved(&s, &step);
                     // It opens in a fresh host as it was saved.
-                    let mut fresh = Rig::new(30);
+                    let mut fresh = Rig::new(30, files.map(|_| None));
                     open(&mut fresh, Some(&s), &step);
                     last = Some(s);
                     saves += 1;
@@ -327,6 +393,14 @@ fn run_seed(seed: u64, steps: usize, seconds: u32) -> (usize, usize, u64) {
         r.h.tracks.takes().count(),
         r.h.tracks.stats()
     );
+    if files.is_some() {
+        let on =
+            r.h.tracks
+                .takes()
+                .filter(|k| r.h.tracks.on_file(k.id))
+                .count();
+        eprintln!("seed {seed}: {on} takes on their files");
+    }
     (saves, opens, r.h.stale)
 }
 
@@ -334,7 +408,7 @@ fn run_seed(seed: u64, steps: usize, seconds: u32) -> (usize, usize, u64) {
 fn generated_sequences_keep_every_take_a_region_plays_and_open_as_saved() {
     let (mut saves, mut opens, mut stale) = (0, 0, 0);
     for seed in 1..=20 {
-        let (s, o, d) = run_seed(seed, 40, 30);
+        let (s, o, d) = run_seed(seed, 40, 30, None);
         saves += s;
         opens += o;
         stale += d;
@@ -351,6 +425,39 @@ fn generated_sequences_keep_every_take_a_region_plays_and_open_as_saved() {
 #[test]
 fn generated_sequences_with_the_memory_full_lose_nothing_else() {
     for seed in 101..=106 {
-        run_seed(seed, 40, 3);
+        run_seed(seed, 40, 3, None);
+    }
+}
+
+fn scratch(seed: u64) -> PathBuf {
+    let d = std::env::temp_dir().join(format!("mpfree-seq-{seed}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    d
+}
+
+/// Phase 3b step 2: the same sequences with every take recorded to a file
+/// and played from it once finished. Saves name the files and opens open
+/// them, and every step keeps the same promises.
+#[test]
+fn generated_sequences_with_takes_on_their_files_keep_the_same_promises() {
+    let (mut saves, mut opens) = (0, 0);
+    for seed in 201..=210 {
+        let dir = scratch(seed);
+        let (s, o, _) = run_seed(seed, 40, 30, Some(&dir));
+        saves += s;
+        opens += o;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    assert!(saves >= 10 && opens >= 10, "{saves} saves, {opens} opens");
+}
+
+/// With memory for a few seconds only, takes on their files free it for
+/// the next recording.
+#[test]
+fn generated_sequences_with_takes_on_their_files_and_little_memory() {
+    for seed in 301..=304 {
+        let dir = scratch(seed);
+        run_seed(seed, 40, 3, Some(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

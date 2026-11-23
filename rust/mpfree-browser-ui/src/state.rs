@@ -1415,6 +1415,13 @@ impl Browser {
                     ),
                     (None, None) => format!("Saved {}", loc.name()),
                 };
+                // Takes no kept save names went to the Trash: where to get
+                // one back, or the room.
+                let line = match saved.cleared {
+                    0 => line,
+                    1 => format!("{line}, and moved a take it no longer uses to the Trash"),
+                    n => format!("{line}, and moved {n} takes it no longer uses to the Trash"),
+                };
                 self.status = Some((line, false));
                 // The project saved holds all it has: nothing left out to
                 // keep from it.

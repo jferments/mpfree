@@ -624,7 +624,7 @@ fn parts(list: &[ListRow]) -> Vec<PartTile> {
         .map(|(k, r)| PartTile {
             name: r.name.clone(),
             meta: format!("\u{d7} {} \u{b7} {} bars", r.times, r.bars),
-            row: r.row,
+            scene: r.scene,
             mark: match (playing, r.playing) {
                 (_, Some((pass, done))) => PartMark::Now {
                     pass: format!("pass {pass} of {}", r.times),
@@ -820,7 +820,7 @@ mod tests {
     fn the_parts_and_the_time_left_come_from_the_song_list() {
         let row = |name: &str, times, bars, playing| ListRow {
             name: name.into(),
-            row: 0,
+            scene: Some(0),
             times,
             bars,
             starts: 1,

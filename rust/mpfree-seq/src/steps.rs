@@ -1430,10 +1430,8 @@ impl Clip {
     }
 
     fn apply_all(&mut self, edit: &Edit) -> Result<(), crate::ModelError> {
-        for n in &edit.erase {
-            if !self.remove_note(n) {
-                return Err(crate::ModelError::MissingNote);
-            }
+        if self.remove_notes(&edit.erase) != edit.erase.len() {
+            return Err(crate::ModelError::MissingNote);
         }
         for l in &edit.erase_locks {
             if !self.remove_lock(l) {
@@ -1486,6 +1484,64 @@ mod tests {
             .map(|&(tick, note)| Note::new(tick, 60, note, 100))
             .collect();
         c
+    }
+
+    /// Taking many items out in one pass (an edit to all of a clip's
+    /// notes) leaves what taking them out one at a time leaves, in the
+    /// same order, and finds the same ones: with repeats, items asked for
+    /// more often than they are there, and items not there at all.
+    #[test]
+    fn many_notes_come_out_in_one_pass_as_one_at_a_time() {
+        fn one_at_a_time(from: &mut Vec<u32>, out: &[u32]) -> Vec<bool> {
+            out.iter()
+                .map(|x| match from.iter().position(|y| y == x) {
+                    Some(i) => {
+                        from.remove(i);
+                        true
+                    }
+                    None => false,
+                })
+                .collect()
+        }
+        let from: Vec<u32> = (0..200u32).map(|i| (i * 7919) % 23).collect();
+        for out in [
+            vec![],
+            vec![3, 3, 5],
+            (0..40u32).map(|i| (i * 31) % 29).collect::<Vec<_>>(),
+            (0..300u32).map(|i| i % 25).collect(),
+            from.clone(),
+        ] {
+            let (mut a, mut b) = (from.clone(), from.clone());
+            let found = crate::take_out_each(&mut a, &out);
+            assert_eq!(found, one_at_a_time(&mut b, &out), "out {out:?}");
+            assert_eq!(a, b, "out {out:?}");
+        }
+        // A whole clip's notes moved up a semitone in one edit, and an
+        // edit with one note the clip does not hold changes nothing.
+        let ticks: Vec<(Tick, u8)> = (0..crate::MAX_NOTES as Tick)
+            .map(|i| (i % (BAR * 4), (i % 61) as u8))
+            .collect();
+        let mut c = clip(BAR * 4, &ticks);
+        let up: Vec<Note> = c
+            .notes
+            .iter()
+            .map(|n| Note {
+                note: n.note + 1,
+                ..*n
+            })
+            .collect();
+        let e = Edit {
+            erase: c.notes.clone(),
+            add: up.clone(),
+            ..Edit::default()
+        };
+        assert_eq!(c.apply(&e), Ok(()));
+        assert_eq!(c.notes, up);
+        let mut stale = e.clone();
+        stale.erase[100].velocity = 1;
+        let before = c.clone();
+        assert_eq!(c.apply(&stale), Err(crate::ModelError::MissingNote));
+        assert_eq!(c, before);
     }
 
     #[test]

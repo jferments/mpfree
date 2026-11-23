@@ -6128,7 +6128,7 @@ mod tests {
         st.list = vec![
             ListRow {
                 name: "Intro".into(),
-                row: 0,
+                scene: Some(0),
                 times: 2,
                 bars: 8,
                 starts: 1,
@@ -6136,7 +6136,7 @@ mod tests {
             },
             ListRow {
                 name: "Drop".into(),
-                row: 3,
+                scene: Some(3),
                 times: 1,
                 bars: 2,
                 starts: 9,

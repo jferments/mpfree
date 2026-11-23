@@ -620,6 +620,21 @@ impl App {
         self.track_sends = *sends;
     }
 
+    /// The selected track's line as the audio loop says it (step 11d,
+    /// `main.rs`, `track_line`): what it plays and where it is heard. The
+    /// options, open on the Synth tab's, show it again when it changed.
+    pub fn set_track_line(&mut self, line: Vec<String>) -> Vec<Effect> {
+        if line == self.track_line {
+            return Vec::new();
+        }
+        self.track_line = line;
+        if self.view == View::Options && self.back == View::Synth {
+            vec![self.menu_view()]
+        } else {
+            Vec::new()
+        }
+    }
+
     /// Track `track`'s own instrument as the audio loop has it now.
     pub fn set_track_sound(&mut self, track: usize, held: Option<crate::instruments::Held>) {
         if let Some(t) = self.track_sounds.get_mut(track) {

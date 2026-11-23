@@ -225,10 +225,7 @@ fn song(p: &mut Project, sections: &[Section]) {
     p.give_clip_ids();
     let mut placed = Vec::new();
     for &(name, from, bars, clips) in sections {
-        p.arrangement.markers.push(Marker {
-            at: from * BAR,
-            name: name.to_string(),
-        });
+        p.arrangement.markers.push(Marker::new(from * BAR, name));
         for &(track, slot) in clips {
             placed.push(Placement::of(
                 &p.tracks,

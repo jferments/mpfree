@@ -212,7 +212,7 @@ mod tests {
             // Launched in its third pass from an origin of bar 2.
             let (origin, start) = (3840, 3840 + 2 * 2 * 8 * DIRECTION_STEP + 480);
             let order = StepOrder::of(&clip, 3, 5, origin, start).expect("a direction");
-            let view = view_of(&clip, None, 5, origin, start);
+            let view = view_of(&clip, None, None, 5, origin, start);
             let played = Steps::of(&view, 3, origin, start).expect("the player's");
             for big in 0..64 {
                 assert_eq!(

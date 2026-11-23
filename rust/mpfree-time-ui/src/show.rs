@@ -124,8 +124,9 @@ pub struct PartTile {
     pub name: String,
     /// "× 4 · 16 bars".
     pub meta: String,
-    /// Its scene's row, for its colour.
-    pub row: usize,
+    /// Its scene's row, for its colour (None: a linked list's section
+    /// that is the song's own, which has no scene colour).
+    pub scene: Option<usize>,
     pub mark: PartMark,
 }
 
@@ -1205,14 +1206,16 @@ fn paint_part(cx: &mut PaintCx, t: &Theme, tile: Rect, part: &PartTile) {
         PartMark::Next => cx.canvas.stroke_round_rect(tile, t.round(8), 2, t.warn),
         _ => {}
     }
-    let stripe = Rect::new(tile.x + 8, tile.y + 9, 4, 22);
-    let colour = t.track(part.row);
-    let colour = if played {
-        colour.mix(t.surface, 0.55)
-    } else {
-        colour
-    };
-    cx.canvas.fill_round_rect(stripe, 2, colour);
+    if let Some(scene) = part.scene {
+        let stripe = Rect::new(tile.x + 8, tile.y + 9, 4, 22);
+        let colour = t.track(scene);
+        let colour = if played {
+            colour.mix(t.surface, 0.55)
+        } else {
+            colour
+        };
+        cx.canvas.fill_round_rect(stripe, 2, colour);
+    }
     cx.text(
         FontId::Bold,
         t.size_body - 1.0,
@@ -1395,7 +1398,7 @@ pub fn sample() -> ShowView {
     .map(|(i, (name, times, bars, row))| PartTile {
         name: name.to_string(),
         meta: format!("× {times} · {bars} bars"),
-        row: *row,
+        scene: Some(*row),
         mark: match i {
             0..=2 => PartMark::Played,
             3 => PartMark::Now {
@@ -1709,7 +1712,7 @@ mod tests {
             .map(|i| PartTile {
                 name: format!("Part {i}"),
                 meta: "× 2 · 8 bars".into(),
-                row: i,
+                scene: Some(i),
                 mark: if i == 9 {
                     PartMark::Now {
                         pass: "pass 1 of 2".into(),
