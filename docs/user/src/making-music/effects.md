@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-fx rust/mpfree-fx-ui rust/mpfree-chain-ui rust/mpfree-notefx rust/mpfree-app/src/chain_page.rs rust/mpfree-app/src/plugins.rs rust/mpfree-plughost/src/rack.rs rust/mpfree-mpchost rust/mpfree-fx/src/perform.rs rust/mpfree-fx/src/xyfx.rs rust/mpfree-fx/src/picker.rs rust/mpfree-chain-ui/src/picker.rs
-checked: 2026-11-22 a7bacbcb
+checked: 2026-11-22 068a8998
 -->
 
 # Effects
@@ -534,4 +534,4 @@ Effects you play from the pads are already here: page B of the Perform set puts 
 > [!MPC]
 > MPFree's effects open in the chain editor over the mixer rather than in a separate insert window. Effects with a delay of their own, such as Pitch correct, are lined up with the rest of the mix automatically, so nothing drifts out of time.
 >
-> Every MPC effect has an MPFree effect or preset in its place: the MPC's many Delay versions (Mono, Sync, Ping Pong, Analog, LP, HP) are the **Delay** and its presets, Delay Tape is the **Delay** in its **Tape** mode, Reverb Small, Medium and In Gate are the **Reverb** in its **Room** mode, Reverb Large and AIR Reverb its **Hall**, AIR Spring Reverb its **Spring**, Distortion Amp the **Amp**, AIR Enhancer the **Exciter**, AIR Maximizer and AIR Limiter the **Limiter**, AIR Noise Gate the **Gate**, AIR Pumper and Mother Ducker the **Ducker**, Decimator and Resampler **Crush**, the AIR Vocal Tuner **Pitch correct**, the AIR Vocal Harmonizer the **Harmonizer**, XYFX is **XY FX**, Auto Wah the **Auto wah**, the Frequency Shifter and AIR Freq Shift the **Freq shifter**, AIR Stereo Width the **Stereo width**, AIR Talkbox the **Talk box**, AIR Channel Strip the **Channel strip**, Granulator the **Granulator**, and Sample Delay the **Sample delay**.
+> Every MPC effect has an MPFree effect or preset in its place: the MPC's many Delay versions (Mono, Sync, Ping Pong, Analog, LP, HP) are the **Delay** and its presets, Delay Tape is the **Delay** in its **Tape** mode, Reverb Small, Medium and In Gate are the **Reverb** in its **Room** mode, Reverb Large and AIR Reverb its **Hall**, AIR Spring Reverb its **Spring**, Distortion Amp the **Amp**, AIR Enhancer the **Exciter**, AIR Maximizer and AIR Limiter the **Limiter**, AIR Noise Gate the **Gate**, AIR Pumper and Mother Ducker the **Ducker**, Decimator and Resampler **Crush**, the AIR Vocal Tuner **Pitch correct**, the AIR Vocal Harmonizer the **Harmonizer**, XYFX is **XY FX**, Auto Wah the **Auto wah**, the Frequency Shifter and AIR Freq Shift the **Freq shifter**, AIR Stereo Width the **Stereo width**, AIR Talk Box the **Talk box**, AIR Channel Strip the **Channel strip**, Granulator the **Granulator**, and Sample Delay the **Sample delay**.
