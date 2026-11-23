@@ -37,7 +37,7 @@ use mpfree_capture::{keep, Capture, Now};
 use mpfree_play::{Event, Launch, Out, PlayView, Player, Sink, Takes};
 use mpfree_sampler::engine::{Engine, EngineView, Event as SEvent};
 use mpfree_sampler::model::{Layer, Pad, PlayMode, Project as SProject, Region, Source};
-use mpfree_seq::{Clip, Note, Project, Track};
+use mpfree_seq::{Clip, Holds, Note, Project, Track};
 use mpfree_transport::time::Tick;
 use mpfree_transport::{Block, Command, Transport};
 
@@ -277,6 +277,7 @@ impl Session {
                 on: true,
                 ramp: 0,
                 join: mpfree_seq::Join::Attack,
+                group: 0,
             })
             .expect("in range");
         }
@@ -293,6 +294,7 @@ impl Session {
                 on: true,
                 ramp: 0,
                 join: mpfree_seq::Join::Attack,
+                group: 0,
             })
             .expect("in range");
         }
@@ -421,6 +423,7 @@ impl Session {
             TAKE,
             now,
             &name,
+            Holds::Hits,
         )
         .expect("kept");
         if let Some(l) = k.launch {

@@ -11,6 +11,7 @@
 //! mpfree-bench --lanes [--lane-cores A,B] [--quick] [--json FILE]
 //! mpfree-bench --count [--blocks N] [--filter TEXT]
 //! mpfree-bench --soak [--blocks N] [--filter TEXT]
+//! mpfree-bench --compose [--quick] [--calibration FILE]
 //! ```
 //!
 //! Any mode takes `--plain`: the NEON kernels (`mpfree-simd`) off, so every
@@ -72,6 +73,12 @@
 //!   when a count passes a power of two (#273: the write's gaps grew after
 //!   51 minutes on the MPC). The nightly workflow runs it.
 //!
+//! - `--compose` times whole composer requests (`mpfree-compose`, phase
+//!   0C: reading clips, Continue, Try again on one bar), many runs each
+//!   with a different seed: median, p95, p99 and worst, on this machine,
+//!   as an MPC estimate with `--calibration`, or for real on the MPC. The
+//!   composer is a background job, never on the audio thread.
+//!
 //! It only reads and computes: it opens no device, writes no file unless
 //! `--json` names one, and runs on one thread at normal priority. The one
 //! exception is `--lanes`, which starts a worker thread per lane case (at
@@ -80,6 +87,7 @@
 //! with it.
 
 mod cases;
+mod compose;
 #[cfg(test)]
 mod golden;
 mod projects;
@@ -113,6 +121,7 @@ struct Options {
     lane_cores: Option<(usize, usize)>,
     count: bool,
     soak: bool,
+    compose: bool,
     blocks: Option<u64>,
 }
 
@@ -134,6 +143,7 @@ fn options() -> Result<Options, String> {
         lane_cores: None,
         count: false,
         soak: false,
+        compose: false,
         blocks: None,
     };
     let mut args = std::env::args().skip(1);
@@ -154,6 +164,7 @@ fn options() -> Result<Options, String> {
             "--lanes" => o.lanes = true,
             "--count" => o.count = true,
             "--soak" => o.soak = true,
+            "--compose" => o.compose = true,
             "--blocks" => {
                 let v = value("--blocks")?;
                 o.blocks = Some(v.parse().ok().filter(|&n| n > 0).ok_or(format!(
@@ -852,7 +863,8 @@ fn main() -> ExitCode {
                        mpfree-bench --starts [--quick] [--filter TEXT] [--calibration FILE]\n       \
                        mpfree-bench --lanes [--lane-cores A,B] [--quick] [--json FILE]\n       \
                        mpfree-bench --count [--blocks N] [--filter TEXT]\n       \
-                       mpfree-bench --soak [--blocks N] [--filter TEXT]");
+                       mpfree-bench --soak [--blocks N] [--filter TEXT]\n       \
+                       mpfree-bench --compose [--quick] [--calibration FILE]");
             eprintln!("       any mode: --plain runs the NEON kernels' plain twins (mpfree-simd)");
             return ExitCode::from(if e.is_empty() { 0 } else { 1 });
         }
@@ -923,6 +935,16 @@ fn main() -> ExitCode {
             o.filter.as_deref(),
             model.as_ref().map(|(m, _)| m),
             on_device,
+        );
+        return ExitCode::SUCCESS;
+    }
+    if o.compose {
+        compose::run(
+            o.quick,
+            model.as_ref().map(|(m, _)| m),
+            on_device,
+            &machine(),
+            &build(),
         );
         return ExitCode::SUCCESS;
     }

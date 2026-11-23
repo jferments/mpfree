@@ -1072,6 +1072,11 @@ pub enum ToUi {
     TrackSends(Box<TrackSends>),
     /// What each track plays of the list of kits, when it changes.
     TrackKits(Box<crate::sampler::TrackKits>),
+    /// Each kit's id in the project's list of instruments (sampler
+    /// refactor phase 3, step 14): at start and when a project opens, the
+    /// only times they change. The Sample page's commands name the kits
+    /// by them.
+    KitIds(Box<crate::instrument_list::KitIds>),
     /// An open done: the engines it replaced, to free here.
     ProjectBack(Box<crate::project::Opening>),
     /// Something the project keeps changed with the controls (a Synth tab
@@ -2278,8 +2283,12 @@ pub struct Player {
     /// The audio tracks' recovery at start, on its own thread: their work
     /// folder and the lines it says ([`Player::recover_audio_files`]).
     #[allow(clippy::type_complexity)]
-    audio_recover:
-        Option<std::sync::mpsc::Receiver<(std::path::PathBuf, std::io::Result<Vec<String>>)>>,
+    audio_recover: Option<
+        std::sync::mpsc::Receiver<(
+            std::path::PathBuf,
+            std::io::Result<mpfree_audiotracks::files::Recovered>,
+        )>,
+    >,
     /// The browser's preview level, in dB (its Q-Link 3).
     preview_db: f32,
     /// A sound file being read for the preview.
@@ -7181,7 +7190,7 @@ impl Player {
                 }
                 View::Arrange if self.time.list_view => time_view::LIST_HINT.to_string(),
                 View::Arrange if self.time.song_view => time_view::song_hint(&self.time).to_string(),
-                View::Arrange if self.time_page.clip_card => time_view::CLIPS_CARD_HINT.to_string(),
+                View::Arrange if self.time_page.clip_card => time_view::clips_card_hint(&self.time).to_string(),
                 View::Arrange if self.time_page.scene_card => time_view::SCENE_HINT.to_string(),
                 View::Arrange => CLIPS_HINT.to_string(),
                 // A snap over recorded audio asks: Snap anyway and Not
@@ -8224,6 +8233,14 @@ impl Player {
             one_core: self.engines.as_deref().and_then(|e| e.cores.fell_back()),
             missing_ports: missing.as_deref(),
         };
+        // Audio tracks by lasting id, for problems about one.
+        self.status_watch.set_audio_tracks(
+            self.time
+                .tracks
+                .iter()
+                .filter(|t| t.audio)
+                .map(|t| (t.id.0, t.name.as_str())),
+        );
         let mut reports = Vec::new();
         self.status_watch.look(&look, &mut |r| reports.push(r));
         for r in reports {
@@ -9227,9 +9244,12 @@ impl Player {
                     let acts = self.perform.qlink_lift(k, &names);
                     self.perform_acts(acts);
                 } else if !on && self.chain_page.drives(self.view) {
-                    // A knob of the effect lets go after a recorded move.
-                    if let Some(Turned::Chain(a)) = self.chain_page.released(k) {
-                        self.outbox.push(FromUi::Chain(a));
+                    // A knob of the effect, or a macro, lets go after a
+                    // recorded move.
+                    match self.chain_page.released(k) {
+                        Some(Turned::Chain(a)) => self.outbox.push(FromUi::Chain(a)),
+                        Some(Turned::Macro(a)) => self.outbox.push(FromUi::Macros(a)),
+                        _ => {}
                     }
                 }
                 for column in [play_page::QLINKS, crate::looper_tab::QLINKS] {
@@ -9552,6 +9572,7 @@ impl Player {
                 self.rec_plan = p.map(|p| *p);
                 self.refresh_rec_chip();
             }
+            ToUi::KitIds(ids) => self.sample.set_kit_ids(*ids),
             ToUi::TrackKits(k) => {
                 self.track_kits = *k;
                 self.refill_sounds();
@@ -10638,13 +10659,19 @@ impl Player {
         };
         self.audio_recover = None;
         match r {
-            Ok(lines) => {
-                let kept = !lines.is_empty();
-                for l in lines {
+            Ok(found) => {
+                let kept = !found.lines.is_empty();
+                for l in found.lines {
                     self.say(l);
                 }
                 if kept {
                     self.tell("Takes from last time were recovered into Recordings");
+                }
+                // System status: what was recovered, and any take whose
+                // check failed, by its name in Recordings.
+                self.status_watch.set_found_takes(found.found);
+                for r in found.reports {
+                    self.report_problem(r);
                 }
             }
             // Recording to files goes on: a take whose file can't be made
@@ -19129,12 +19156,33 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
                     c.variation = Some(2);
                 }
                 p.time_page.clip_card = true;
-                p.apply(ToUi::Time(Box::new(st)));
+                p.apply(ToUi::Time(Box::new(st.clone())));
                 p.apply(ToUi::Show(View::Arrange));
                 if let Some(l) = p.ui.get_mut::<OptionList>(time_view::CLIP_CARD) {
                     l.selected = time_view::CLIP_MUTATE;
                 }
                 out.push(("clips-card-mutate", p));
+            }
+            // Convert to notes' preview (step sequencer refactor E1): its
+            // words on the hint line, Cancel and Convert under the rows.
+            if let Ok(mut p) = sample_clips(fonts()) {
+                if let Some((track, slot)) = st.focus() {
+                    st.converting = Some(time_view::Converting {
+                        track,
+                        slot,
+                        ok: true,
+                        line: "Convert to notes: 8 pad hits become 12 notes. Keeps what Clip 1 \
+                               plays now with these pads (C3 to D#4)"
+                            .to_string(),
+                    });
+                }
+                p.time_page.clip_card = true;
+                p.apply(ToUi::Time(Box::new(st)));
+                p.apply(ToUi::Show(View::Arrange));
+                if let Some(l) = p.ui.get_mut::<OptionList>(time_view::CLIP_CARD) {
+                    l.selected = time_view::CLIP_MELODY;
+                }
+                out.push(("clips-card-convert", p));
             }
         }
         Err(e) => eprintln!("clips-card sample: {e}"),
@@ -24165,6 +24213,48 @@ mod tests {
     /// Pads tab's Level, Pan or Tune, arms MIDI Learn on the picked pad's
     /// setting; a learned control's values set it on the kit, one undo
     /// step a turn, and the kit's new view goes to the audio thread.
+    /// Sampler refactor phase 3 step 14: the Sample page names a kit by
+    /// its id in the project's list, as the audio loop says them. With
+    /// track 1's own instrument listed first (instrument 2), kit 1 is
+    /// instrument 3, and a learned control's turn still changes kit 1's
+    /// pad. Told of a list with no kits in it, the turn is refused and
+    /// nothing changes.
+    #[test]
+    fn the_sample_page_names_its_kits_by_the_lists_ids() {
+        use crate::instrument_list::{InstrumentList, KITS};
+        use mpfree_sampler::engine::PadField;
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let mut list = InstrumentList::new();
+        list.follow(1);
+        list.follow_kits(KITS);
+        assert_eq!(list.of_kit(0).map(|id| id.number()), Some(3));
+        p.apply(ToUi::KitIds(Box::new(list.kit_ids())));
+        let tune = |p: &Player| p.sample.project(0).unwrap().pad(pad).unwrap().tune_cents;
+        let turn = |p: &mut Player, cents: f32| {
+            p.apply(ToUi::PadsLearned(vec![(
+                0,
+                pad as u8,
+                PadField::Tune,
+                cents,
+            )]));
+        };
+        turn(&mut p, 700.0);
+        assert_eq!(tune(&p), 700, "kit 1, by instrument 3");
+        p.apply(ToUi::KitIds(Box::new(InstrumentList::new().kit_ids())));
+        turn(&mut p, 300.0);
+        assert_eq!(tune(&p), 700, "no kit has an id: nothing changes");
+        p.apply(ToUi::Show(View::Sample));
+        settle_views(&mut p);
+        assert!(
+            events_log(&p)
+                .iter()
+                .any(|l| l.contains("not changed by MIDI Learn (NoKit)")),
+            "{:?}",
+            events_log(&p)
+        );
+    }
+
     #[test]
     fn shift_and_a_touch_on_a_pads_setting_arms_midi_learn() {
         use mpfree_sampler::engine::PadField;
@@ -27625,6 +27715,10 @@ mod tests {
             ),
             "{sent:?}"
         );
+        // Letting go of the Q-Link lets go of the macro (a turn while
+        // recording holds it over the step locks until then).
+        p.apply(ToUi::QLinkTouch(3, false));
+        assert_eq!(p.take_actions(), [FromUi::Macros(MacroAction::Release(3))]);
         q_link(&mut p);
         assert_eq!(title(&p), "Q-Links · Macros 5-8");
         q_link(&mut p);
@@ -30453,10 +30547,20 @@ mod tests {
                 *v = (project::FORMAT + 1).to_string();
             }
         }
+        // Saved before kits had ids (sampler phase 3 step 14): older
+        // projects are refused, not converted.
+        let mut older = good.clone();
+        for (k, v) in &mut older.meta.extra {
+            if k == project::FORMAT_KEY {
+                *v = (project::FORMAT - 1).to_string();
+            }
+        }
         let later = Loc::top(Place::Projects).join("From later").unwrap();
         let newest = Loc::top(Place::Projects).join("Newest").unwrap();
+        let oldest = Loc::top(Place::Projects).join("Older").unwrap();
         lib.save_project(&later, &clips_9, 0).unwrap();
         lib.save_project(&newest, &newer, 0).unwrap();
+        lib.save_project(&oldest, &older, 0).unwrap();
         p.apply(ToUi::Show(View::Browser));
         let open = |p: &mut Player, name: &str| {
             let b = p.browser.as_mut().unwrap();
@@ -30474,6 +30578,10 @@ mod tests {
         for (name, why) in [
             ("From later", "its clips can't be read ("),
             ("Newest", "it was saved by a newer MPFree ("),
+            (
+                "Older",
+                "it was saved by an older MPFree, which this one doesn't open (",
+            ),
         ] {
             assert!(open(&mut p, name).is_none(), "{name} went to the engines");
             let b = p.browser.as_ref().unwrap();
@@ -30762,6 +30870,11 @@ mod tests {
             meta: Meta {
                 tempo,
                 saved: secs,
+                // The format mpfree opens: an older project is refused.
+                extra: vec![(
+                    crate::project::FORMAT_KEY.to_string(),
+                    crate::project::FORMAT.to_string(),
+                )],
                 ..Meta::default()
             },
             parts: vec![("transport".into(), format!("bpm = {tempo}\n"))],

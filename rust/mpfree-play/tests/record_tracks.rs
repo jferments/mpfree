@@ -39,6 +39,7 @@ fn note(tick: i64, n: u8) -> Note {
         on: true,
         ramp: 0,
         join: mpfree_seq::Join::Attack,
+        group: 0,
     }
 }
 

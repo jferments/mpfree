@@ -105,6 +105,12 @@ fn open(data: &Path, name: &str) -> (Vec<(String, Project)>, usize, Vec<String>)
     let loc = Loc::new(Place::Projects, &[name]).unwrap();
     let snap = lib.open_project(&loc).unwrap();
     assert_eq!(snap.meta.name, name);
+    // The format mpfree opens: it refuses any other.
+    let format = mpfree_library::project::PARTS_FORMAT.to_string();
+    assert!(snap.meta.extra.contains(&(
+        mpfree_library::project::PARTS_FORMAT_KEY.to_string(),
+        format
+    )));
     assert_eq!(snap.parts.len(), 1);
     let text = snap.part(SAMPLER_PART).expect("a sampler part");
     let opened = save::from_text(text, &mut |f| {

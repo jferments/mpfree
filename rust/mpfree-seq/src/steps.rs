@@ -747,8 +747,9 @@ impl Grid {
         if from == to {
             return edit;
         }
+        let (first, mut from) = (from, Vec::new());
         for k in 0..count {
-            let (src, dst) = (from + k, to + k);
+            let (src, dst) = (first + k, to + k);
             if src >= n || dst >= n {
                 break;
             }
@@ -759,16 +760,20 @@ impl Grid {
             };
             edit.erase.extend(self.chord(clip, dst));
             edit.erase_locks.extend(self.step_locks(clip, dst));
-            edit.add
-                .extend(self.chord(clip, src).into_iter().map(|n| Note {
-                    tick: at(n.tick),
-                    ..n
-                }));
+            let chord = self.chord(clip, src);
+            edit.add.extend(chord.iter().map(|&n| Note {
+                tick: at(n.tick),
+                ..n
+            }));
+            from.extend(chord);
             edit.add_locks
                 .extend(self.step_locks(clip, src).into_iter().map(|l| Lock {
                     tick: at(l.tick),
                     ..l
                 }));
+        }
+        if crate::groups::settle_copied(clip, &edit.erase, &from, &mut edit.add).is_err() {
+            return Edit::default();
         }
         edit
     }
@@ -800,8 +805,9 @@ impl Grid {
         if from == to {
             return edit;
         }
+        let (first, mut from) = (from, Vec::new());
         for k in 0..count {
-            let (src, dst) = (from + k, to + k);
+            let (src, dst) = (first + k, to + k);
             if src >= n || dst >= n {
                 break;
             }
@@ -812,11 +818,12 @@ impl Grid {
             };
             edit.erase.extend(self.notes(clip, pitch, dst));
             edit.erase_locks.extend(self.locks(clip, Some(pitch), dst));
-            edit.add
-                .extend(self.notes(clip, pitch, src).into_iter().map(|n| Note {
-                    tick: at(n.tick),
-                    ..n
-                }));
+            let notes = self.notes(clip, pitch, src);
+            edit.add.extend(notes.iter().map(|&n| Note {
+                tick: at(n.tick),
+                ..n
+            }));
+            from.extend(notes);
             edit.add_locks.extend(
                 self.locks(clip, Some(pitch), src)
                     .into_iter()
@@ -835,6 +842,10 @@ impl Grid {
             a == b
         };
         if same(&edit.erase, &edit.add) && edit.erase_locks == edit.add_locks {
+            return Edit::default();
+        }
+        // A copy of part of a trigger group decides alone.
+        if crate::groups::settle_copied(clip, &edit.erase, &from, &mut edit.add).is_err() {
             return Edit::default();
         }
         edit
@@ -915,6 +926,11 @@ impl Grid {
                 edit.add.push(new);
             }
         }
+        // A trigger group nudged whole stays one; a note of one nudged
+        // on its own decides alone.
+        if shift != 0 && !settle_pairs(clip, &mut edit) {
+            return Edit::default();
+        }
         // The row's locks on the step move with its notes.
         if shift != 0 {
             for l in self.locks(clip, Some(pitch), i) {
@@ -940,6 +956,10 @@ impl Grid {
         let mut edit = Edit::default();
         for pitch in self.sounds_in(clip, i) {
             edit.join(self.change(clip, pitch, i, change));
+        }
+        // The whole step's trigger groups moved together: they stay.
+        if matches!(change, Change::Nudge(_)) && !settle_pairs(clip, &mut edit) {
+            return Edit::default();
         }
         // The whole step's locks go where the notes' first one does.
         if let (Change::Nudge(n), false) = (change, edit.is_empty()) {
@@ -1154,6 +1174,7 @@ impl Grid {
             return Edit::default();
         }
         let mut edit = Edit::default();
+        let mut copied = Vec::new();
         for k in 0..PAGE {
             let (src, dst) = (from * PAGE + k, to * PAGE + k);
             if dst >= n {
@@ -1163,9 +1184,13 @@ impl Grid {
             edit.erase_locks.extend(self.step_locks(clip, dst));
             if src < n {
                 edit.add.extend(self.moved(clip, src, clip.length, dst));
+                copied.extend(self.chord(clip, src));
                 edit.add_locks
                     .extend(self.moved_locks(clip, src, clip.length, dst));
             }
+        }
+        if crate::groups::settle_copied(clip, &edit.erase, &copied, &mut edit.add).is_err() {
+            return Edit::default();
         }
         // The page's moves come along, over the same ticks.
         let page = PAGE as Tick * self.size;
@@ -1399,6 +1424,14 @@ impl Grid {
     }
 }
 
+/// Settle the trigger groups of `edit`, whose notes put in are its notes
+/// taken out, changed, in the same order ([`crate::groups::settle_moved`]);
+/// false when a trigger would need a number its tick has none left of.
+fn settle_pairs(clip: &Clip, edit: &mut Edit) -> bool {
+    edit.erase.len() != edit.add.len()
+        || crate::groups::settle_moved(clip, &edit.erase, &edit.erase, &mut edit.add).is_ok()
+}
+
 impl Clip {
     /// The sounds (pads or note numbers) the clip plays, lowest first.
     pub fn sounds(&self) -> Vec<u8> {
@@ -1412,8 +1445,10 @@ impl Clip {
     /// put its new ones in. All or nothing: if a note or lock to take out
     /// is not in the clip (`MissingNote`, `MissingLock`), the clip is not
     /// `length.0` long or a note or lock would be past its new end
-    /// (`ClipLength`), or a new note or lock does not fit, the clip is
-    /// unchanged and the error says which.
+    /// (`ClipLength`), a new note or lock does not fit, or a trigger group
+    /// would be left with two chances, conditions or on states (or a clip
+    /// of pad hits with a group: `BadGroup`, [`crate::groups`]), the clip
+    /// is unchanged and the error says which.
     pub fn apply(&mut self, edit: &Edit) -> Result<(), crate::ModelError> {
         let (notes, locks, length) = (self.notes.clone(), self.locks.clone(), self.length);
         let moves = edit.moves.as_ref().map(|_| self.moves.clone());
@@ -1466,6 +1501,12 @@ impl Clip {
                 return Err(crate::ModelError::BadMoves);
             }
             self.moves = m.after.clone();
+        }
+        // Only a grouped note put in can break a trigger's rules.
+        if edit.add.iter().any(|n| n.group != 0)
+            && !crate::groups::notes_ok(self.holds, &self.notes)
+        {
+            return Err(crate::ModelError::BadGroup);
         }
         Ok(())
     }
