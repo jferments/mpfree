@@ -824,6 +824,11 @@ pub struct TakeRow {
     /// The take put a clip in this row or took one out, and the song's
     /// parts that follow the row came along ([`Take::followed`]).
     pub followed: Option<usize>,
+    /// This row's chords changed (composing tools S2.5): a chord set on
+    /// its Harmony line, or the chords a part was added over.
+    pub chords: Option<usize>,
+    /// Add a part added a part.
+    pub part: bool,
 }
 
 impl TakeRow {
@@ -878,6 +883,8 @@ impl TakeRow {
                 SongChange::Followed { row } => Some(row),
                 _ => None,
             }),
+            chords: t.chords.as_ref().map(|e| e.row),
+            part: t.part,
         }
     }
 
@@ -888,13 +895,20 @@ impl TakeRow {
     /// "marker", "rec song" or "recorded over" (a recording cut the
     /// blocks under it),
     /// "list" for the
-    /// song list, "scene" for the scene editor and "song → scenes".
+    /// song list, "scene" for the scene editor and "song → scenes"; for
+    /// the composing tools "continue", "fit", "add part" and "chords".
     pub fn word(&self) -> &'static str {
         if let Some((word, _)) = self.row_tool {
             return word;
         }
         if self.rows.is_some() {
             return "song → scenes";
+        }
+        if self.part {
+            return "add part";
+        }
+        if self.chords.is_some() {
+            return "chords";
         }
         if let Some(c) = self.song {
             return match c {
@@ -939,6 +953,7 @@ impl TakeRow {
                 Replaced::Settings => "settings",
                 Replaced::Convert => "convert",
                 Replaced::Continue { .. } => "continue",
+                Replaced::FitChords => "fit",
             }
         } else if self.deleted {
             "delete"
@@ -5021,6 +5036,12 @@ fn take_said(st: &TimeState, row: &TakeRow) -> String {
     if row.scene.is_some() {
         return "scene settings".into();
     }
+    if row.part {
+        return "a new part".into();
+    }
+    if let Some(r) = row.chords {
+        return format!("row {}'s chords", r + 1);
+    }
     match (row.replaced, row.variant) {
         (Some(Replaced::Reload), _) => return "saved state".into(),
         (Some(Replaced::Mutate), Some(n)) => return format!("variant {n}"),
@@ -5031,6 +5052,7 @@ fn take_said(st: &TimeState, row: &TakeRow) -> String {
         (Some(Replaced::Convert), _) => return "converted to notes".into(),
         (Some(Replaced::Continue { bars: 1 }), _) => return "1 more bar".into(),
         (Some(Replaced::Continue { bars }), _) => return format!("{bars} more bars"),
+        (Some(Replaced::FitChords), _) => return "the new chords".into(),
         (None, _) => {}
     }
     if row.deleted {
@@ -10451,6 +10473,8 @@ mod tests {
             rows: None,
             row_tool: None,
             followed: None,
+            chords: None,
+            part: false,
         };
         let mut st = st;
         st.done = vec![take];
@@ -12165,6 +12189,8 @@ mod tests {
             rows: None,
             row_tool: None,
             followed: None,
+            chords: None,
+            part: false,
         };
         st.done = vec![row(1), row(2)];
         st.undone = vec![row(4), row(3)];
@@ -12210,6 +12236,8 @@ mod tests {
             rows: None,
             row_tool: None,
             followed: None,
+            chords: None,
+            part: false,
         };
         let (items, _) = take_items(&st);
         assert_eq!(
@@ -12240,6 +12268,8 @@ mod tests {
             rows: None,
             row_tool: None,
             followed: None,
+            chords: None,
+            part: false,
         };
         assert_eq!(take_items(&st).0[2].title, "Edit 5 · Bass / 1");
         assert_eq!(st.done[1].short(), "edit 5");

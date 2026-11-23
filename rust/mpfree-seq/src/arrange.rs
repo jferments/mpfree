@@ -76,6 +76,8 @@ use crate::{
     AudioClip, Clip, ClipId, ClipRegion, Cond, Direction, Follow, FollowAction, Join, ModelError,
     Project, Scene, Track, TrackId, MAX_CLIP_REGIONS, MAX_TRACKS, SCENES, SLOTS,
 };
+use mpfree_context::chord::Heard;
+use mpfree_context::harmony::RowHarmony;
 use mpfree_transport::time::{
     valid_bpm, MapError, Segment, TempoMap, Tick, MAX_SEGMENTS, MIN_SPAN_TICKS,
 };
@@ -1303,6 +1305,22 @@ pub fn scene_length(project: &Project, row: usize, bar: Tick) -> Tick {
         .max()
         .unwrap_or(bar);
     (longest + bar - 1) / bar * bar
+}
+
+/// Row `row`'s chords as every part asks them (contract 4 of the
+/// composing tools): its Harmony line over its length
+/// ([`scene_length`]), suggested when every chord on it is. `None` while
+/// the row has no line yet.
+pub fn row_harmony(project: &Project, row: usize, bar: Tick) -> Option<RowHarmony> {
+    let line = &project.scene(row)?.chords;
+    if line.is_empty() {
+        return None;
+    }
+    Some(RowHarmony {
+        line: line.clone(),
+        length: scene_length(project, row, bar),
+        suggested: line.spans().iter().all(|s| s.heard == Heard::Suggested),
+    })
 }
 
 /// Rows one after another from `at`, each for its length in song ticks,
@@ -3135,6 +3153,37 @@ mod tests {
             .unwrap();
         assert_eq!(p.arrangement.markers[2].scene.map(|s| s.row), Some(1));
         assert_eq!(p.arrangement.markers[2].passes, 3);
+    }
+
+    /// Composing tools S2.5: a row's chords run for the row's length and
+    /// say when they are all suggested; a row with no line has none, and
+    /// a row with only chords isn't an empty row.
+    #[test]
+    fn a_rows_chords_run_for_its_length() {
+        use mpfree_context::chord::{Chord, ChordTimeline, Quality};
+        let mut p = project();
+        assert_eq!(row_harmony(&p, 0, BAR), None);
+        let cm = Chord::new(0, Quality::Minor7);
+        p.scene_mut(0).unwrap().chords = ChordTimeline::of(&[(cm, BAR / 2)], Heard::Suggested);
+        let r = row_harmony(&p, 0, BAR).unwrap();
+        assert_eq!((r.length, r.line.len(), r.suggested), (BAR, BAR / 2, true));
+        p.scene_mut(0).unwrap().chords = ChordTimeline::of(&[(cm, BAR), (cm, BAR)], Heard::Set);
+        p.scene_mut(0).unwrap().follow = Some(Follow::after(4, FollowAction::Next));
+        let r = row_harmony(&p, 0, BAR).unwrap();
+        assert_eq!((r.length, r.suggested), (4 * BAR, false));
+        let free = (0..SCENES).find(|&row| !p.row_filled(row)).unwrap();
+        assert!(p.row_empty(free));
+        p.scene_mut(free).unwrap().chords = ChordTimeline::of(&[(cm, BAR)], Heard::Set);
+        assert!(
+            !p.row_empty(free),
+            "a row set up without clips is never taken"
+        );
+        assert_eq!(p.check(), Ok(()));
+        p.scene_mut(free).unwrap().chords = ChordTimeline::of(
+            &vec![(cm, 1); crate::scenes::MAX_ROW_CHORDS + 1],
+            Heard::Set,
+        );
+        assert_eq!(p.check(), Err(ModelError::BadScene));
     }
 
     #[test]

@@ -7427,6 +7427,7 @@ impl TimeControl {
             Replaced::Settings => "settings",
             Replaced::Convert => "convert to notes",
             Replaced::Continue { .. } => "continue",
+            Replaced::FitChords => "fit to the new chords",
         };
         self.takes
             .replace_clip(&mut self.project, track, slot, clip, why)

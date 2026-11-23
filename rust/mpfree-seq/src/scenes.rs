@@ -22,6 +22,11 @@
 //! - **a tempo** (the Arrange refactor's 5.2b): launching the scene sets
 //!   the project's tempo on its line, so a set can change tempo from one
 //!   scene to the next. In song mode the song's tempo points win.
+//! - **chords:** the row's Harmony line (composing tools S2.5, contract
+//!   4 of the design): the chords its parts play over, each heard from
+//!   the row's clips, suggested for a row with nothing to hear, or set by
+//!   the musician. Continue and Add a part ask it ([`crate::row_harmony`]);
+//!   empty until something hears or sets it.
 //!
 //! A clip can have a follow action of its own: after some bars, its track
 //! plays another clip (the next slot down, any other ...) or stops.
@@ -43,6 +48,7 @@
 //! [`Follow::check`] and [`SongList::check`]; `mpfree-perform` carries
 //! them out.
 
+use mpfree_context::chord::ChordTimeline;
 use mpfree_param::ParamAddr;
 
 use crate::{ClipProgram, ModelError, MAX_TRACKS, ROWS};
@@ -60,6 +66,8 @@ pub const MAX_LIST_STEPS: usize = 128;
 pub const MAX_TIMES: u16 = 99;
 /// The most characters a scene's name has (the scene editor's Rename).
 pub const MAX_SCENE_NAME: usize = 24;
+/// The most chords a row's Harmony line holds.
+pub const MAX_ROW_CHORDS: usize = 512;
 
 /// One step of the song list: scene `row` played `times` times, one
 /// after another (a pass is the scene's length, `arrange::scene_length`).
@@ -301,6 +309,9 @@ pub struct Scene {
     /// the tempo as it is. While song mode plays the song's tempo points,
     /// they lead and the scene's tempo is left out.
     pub tempo: Option<u16>,
+    /// The row's Harmony line, in song ticks from the row's start
+    /// (composing tools S2.5): see the module notes. Empty: none yet.
+    pub chords: ChordTimeline,
 }
 
 impl Scene {
@@ -410,6 +421,9 @@ impl Scene {
             return Err(ModelError::BadScene);
         }
         if self.values.len() > MAX_SCENE_VALUES || self.values.iter().any(|v| !v.1.is_finite()) {
+            return Err(ModelError::BadScene);
+        }
+        if self.chords.spans().len() > MAX_ROW_CHORDS || self.chords.len() > crate::MAX_CLIP_TICKS {
             return Err(ModelError::BadScene);
         }
         // One value a parameter.

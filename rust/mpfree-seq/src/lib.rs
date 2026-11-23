@@ -73,6 +73,7 @@ pub use arrange::{
     Arrangement, FromScene, Marker, MorphRows, Placement, SongClips, SongSection, TempoPoint,
 };
 pub use audio::{AudioClip, ClipRegion, RecId, MAX_CLIP_REGIONS};
+pub use arrange::{row_harmony, scene_length};
 pub use mutate::{Amount, Original, Pitches};
 pub use scenes::{
     Follow, FollowAction, ListStep, Scene, SceneSettings, SongList, TrackProgram, MAX_SCENE_NAME,
@@ -80,6 +81,7 @@ pub use scenes::{
 };
 pub use time_edit::TimeEdit;
 
+pub use mpfree_context;
 pub use mpfree_moves;
 use mpfree_moves::Moves;
 pub use mpfree_param;

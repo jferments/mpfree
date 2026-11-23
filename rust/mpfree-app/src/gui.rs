@@ -21709,6 +21709,8 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         rows: None,
         row_tool: None,
         followed: None,
+        chords: None,
+        part: false,
     };
     st.done = vec![
         take(1, 0, false, false),
@@ -28020,6 +28022,8 @@ mod tests {
             rows: None,
             row_tool: None,
             followed: None,
+            chords: None,
+            part: false,
         };
         let mut st = p.time.clone();
         st.done = vec![take(1), take(2), take(3)];
@@ -28676,6 +28680,8 @@ mod tests {
             rows: None,
             row_tool: None,
             followed: None,
+            chords: None,
+            part: false,
         });
         p.apply(ToUi::Time(Box::new(st.clone())));
         assert_eq!(undo(&mut p, false), takes(TimeAction::Undo));
@@ -32275,6 +32281,8 @@ mod tests {
             rows: None,
             followed: None,
             row_tool: None,
+            chords: None,
+            part: false,
         });
         p.apply(ToUi::Time(Box::new(st)));
         assert_eq!(undo(&mut p, false), [FromUi::Time(TimeAction::Undo)]);
