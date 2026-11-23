@@ -137,9 +137,13 @@ impl Tracks {
 
     /// Whether the armed track records pad pressure.
     pub fn records_touch(&self) -> bool {
-        self.armed
-            .filter(|&t| t < self.n)
-            .is_some_and(|t| self.set[t].record_touch)
+        self.armed.is_some_and(|t| self.records_touch_on(t))
+    }
+
+    /// Whether track `t` records pressure (`Track::record_touch`): the
+    /// armed one, or another armed track's keys (refactor E3).
+    pub fn records_touch_on(&self, t: usize) -> bool {
+        t < self.n && self.set[t].record_touch
     }
 }
 

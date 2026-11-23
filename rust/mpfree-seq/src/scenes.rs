@@ -30,6 +30,12 @@
 //! once, which follow actions can't say, so the list plays on its own,
 //! in place of the scenes' follow actions while it plays.
 //!
+//! A linked list (the Arrange refactor's phase 4b, plan D8: one song, two
+//! views) has no steps of its own: it is the song's sections, each a
+//! marker's, with its scene and passes on the marker
+//! (`arrange::song_sections`), so the list and the Song view show the
+//! same thing. A list saved before is not linked: it keeps its own steps.
+//!
 //! These are plain values, checked by [`Scene::check`],
 //! [`Follow::check`] and [`SongList::check`]; `mpfree-perform` carries
 //! them out.
@@ -63,17 +69,22 @@ pub struct ListStep {
 /// The song list: see the module notes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SongList {
+    /// Its own steps, when it isn't linked (none when it is).
     pub steps: Vec<ListStep>,
     /// After the last step the first plays again; otherwise every track
     /// stops.
     pub looped: bool,
+    /// Linked to the song (the Arrange refactor's phase 4b): its steps are
+    /// the song's sections (`arrange::song_sections`), not its own.
+    pub linked: bool,
 }
 
 impl SongList {
     /// No more than [`MAX_LIST_STEPS`] steps, each a scene in range played
-    /// 1 to [`MAX_TIMES`] times.
+    /// 1 to [`MAX_TIMES`] times, and none when it is linked.
     pub fn check(&self) -> Result<(), ModelError> {
         if self.steps.len() > MAX_LIST_STEPS
+            || (self.linked && !self.steps.is_empty())
             || self
                 .steps
                 .iter()

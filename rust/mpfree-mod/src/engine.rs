@@ -196,6 +196,24 @@ impl ModTimed {
     }
 }
 
+/// A let-go that found no room in a block's events, kept on its target
+/// instead ([`ModEngine::let_go_later`]): a hand's ([`ModEvent::Untouch`])
+/// or a lock's or lane's end ([`ModEvent::Unlock`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LetGo {
+    Touch,
+    Lock,
+}
+
+impl LetGo {
+    fn bit(self) -> u8 {
+        match self {
+            LetGo::Touch => 1,
+            LetGo::Lock => 2,
+        }
+    }
+}
+
 /// Why a change to the engine was refused. Nothing changes when it is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModError {
@@ -239,6 +257,9 @@ struct Target {
     /// A hand's value and knob position, and whether it beats a step's
     /// lock.
     touch: Option<(f32, f32, bool)>,
+    /// Let-gos waiting for the next block's first frame
+    /// ([`ModEngine::let_go_later`]): [`LetGo::bit`]s.
+    late: u8,
     /// Scene A and B knob positions.
     scene: [Option<f32>; 2],
     /// The macro and map that move it.
@@ -266,6 +287,7 @@ impl Target {
             lock: None,
             lane: false,
             touch: None,
+            late: 0,
             scene: [None; 2],
             mac: None,
             rows: 0,
@@ -372,6 +394,9 @@ pub struct ModEngine {
     /// A set or lock for a parameter that is not a target, to send on as
     /// it came.
     pass: Option<(ParamAddr, f32)>,
+    /// Targets with a let-go waiting ([`ModEngine::let_go_later`]), so a
+    /// block with none doesn't look.
+    late: usize,
 }
 
 impl ModEngine {
@@ -396,6 +421,7 @@ impl ModEngine {
             rate,
             stats: ModStats::default(),
             pass: None,
+            late: 0,
         }
     }
 
@@ -510,6 +536,9 @@ impl ModEngine {
         if let Some((m, k)) = self.targets[i].mac {
             self.maps[m as usize][k as usize] = None;
         }
+        if self.targets[i].late != 0 {
+            self.late -= 1;
+        }
         self.rows.retain(|r| r.target as usize != i);
         let last = self.targets.len() - 1;
         self.targets.swap_remove(i);
@@ -584,6 +613,44 @@ impl ModEngine {
     pub fn is_touched(&self, addr: ParamAddr) -> bool {
         self.find(addr)
             .is_some_and(|i| self.targets[i].touch.is_some())
+    }
+
+    /// A let-go for `addr` that found no room in the host's events this
+    /// block: kept on the target itself, which always has room, and done
+    /// on the first frame of the next [`ModEngine::process`], before that
+    /// block's events. So a hand's or a lock's end is never lost to a full
+    /// queue; at worst it comes one block late. False when `addr` isn't a
+    /// target (there is nothing to let go of). Real-time safe.
+    pub fn let_go_later(&mut self, addr: ParamAddr, what: LetGo) -> bool {
+        let Some(i) = self.find(addr) else {
+            return false;
+        };
+        let t = &mut self.targets[i];
+        if t.late == 0 {
+            self.late += 1;
+        }
+        t.late |= what.bit();
+        true
+    }
+
+    /// Let-gos waiting for the next block ([`ModEngine::let_go_later`]).
+    pub fn late(&self) -> usize {
+        self.late
+    }
+
+    /// Lets go of every hand and every lock and lane, at once (opening a
+    /// project): each target goes back to its own value and what moves
+    /// it. Real-time safe.
+    pub fn let_go_all(&mut self) {
+        for t in &mut self.targets {
+            let held = t.touch.take().is_some();
+            let locked = t.lock.take().is_some();
+            if held || locked {
+                t.dirty = true;
+            }
+            t.late = 0;
+        }
+        self.late = 0;
     }
 
     /// How far modulation can move a target's knob now, as positions
@@ -1092,6 +1159,11 @@ impl ModEngine {
         follow: &[Option<(&[f32], &[f32])>; FOLLOWERS],
         out: &mut dyn FnMut(ParamAddr, Timed),
     ) {
+        // Let-gos that found no room last block go first.
+        if self.late > 0 {
+            self.let_go_waiting();
+            self.settle(false, 0, out);
+        }
         let tick = self.tick as u64;
         let mut next_tick = ((tick - ctx.frame % tick) % tick) as usize;
         let mut followed = 0usize;
@@ -1146,6 +1218,20 @@ impl ModEngine {
         for (o, f) in self.fol_out.iter_mut().zip(&self.followers) {
             *o = f.value();
         }
+    }
+
+    /// Does the let-gos [`ModEngine::let_go_later`] kept.
+    fn let_go_waiting(&mut self) {
+        for t in self.targets.iter_mut().filter(|t| t.late != 0) {
+            if t.late & LetGo::Lock.bit() != 0 && t.lock.take().is_some() {
+                t.dirty = true;
+            }
+            if t.late & LetGo::Touch.bit() != 0 && t.touch.take().is_some() {
+                t.dirty = true;
+            }
+            t.late = 0;
+        }
+        self.late = 0;
     }
 
     fn apply(&mut self, ev: &ModEvent) {

@@ -1,0 +1,833 @@
+//! A voice's sound: the Hermite, plain and band-limited reads, the fades,
+//! envelopes and filter, the movement, pressure and live values on their
+//! steps, and the ring-out after a voice ends.
+
+use super::*;
+
+/// Filter coefficients, and anything pressure moves, are recomputed every
+/// this many frames.
+pub(super) const FILTER_STEP: u32 = 16;
+
+/// Pressure is smoothed with this time constant, so steps between pressure
+/// messages don't zipper.
+pub(super) const PRESSURE_SMOOTH_S: f32 = 0.005;
+
+pub(super) const ONE: i64 = 1 << 32;
+
+/// The step past which a voice takes the band-limited read: two semitones
+/// up (and a hair more, so a pad tuned exactly two up stays put whatever
+/// the rounding). Up to it, the highest a 44.1 kHz sound holds
+/// (22.05 kHz) moves to under 24.75 kHz and folds back no lower than
+/// 19.35 kHz, above hearing; the band-limited read costs several times the
+/// Hermite read, so a voice detuned a little, bent or swept by vibrato
+/// doesn't pay for it.
+pub const CLEAN_ABOVE: i64 = 4_820_937_788 + (1 << 16);
+
+/// A voice's [`Voice::bl_above`]: never, unless it is started clean.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct BlAbove(pub(super) i64);
+
+impl Default for BlAbove {
+    fn default() -> BlAbove {
+        BlAbove(i64::MAX)
+    }
+}
+
+/// The LFO's wave `shape` at `phase` (0 to 1), -1 to 1, as the Grain
+/// page's LFO draws it: the random waves from `held[0]` to `held[1]`.
+pub(super) fn lfo_wave(shape: LfoShape, phase: f32, held: [f32; 2]) -> f32 {
+    use std::f32::consts::{PI, TAU};
+    match shape {
+        LfoShape::Sine => (phase * TAU).sin(),
+        LfoShape::Triangle => 1.0 - 4.0 * ((phase + 0.25).fract() - 0.5).abs(),
+        LfoShape::SawUp => 2.0 * phase - 1.0,
+        LfoShape::SawDown => 1.0 - 2.0 * phase,
+        LfoShape::Square => {
+            if phase < 0.5 {
+                1.0
+            } else {
+                -1.0
+            }
+        }
+        LfoShape::Hold => held[1],
+        LfoShape::Drift => {
+            let t = 0.5 - 0.5 * (phase * PI).cos();
+            held[0] + (held[1] - held[0]) * t
+        }
+    }
+}
+
+/// A random value from -1 to 1.
+pub(super) fn bipolar(rng: &mut Rng) -> f32 {
+    (rng.next_u32() >> 8) as f32 / (1u32 << 23) as f32 - 1.0
+}
+
+/// A balance `x` from -1 (left) to 1 (right): the far side's gain falls
+/// on a quarter sine and the near side's stays.
+pub(super) fn balance(x: f32) -> [f32; 2] {
+    let fall = (x.abs().min(1.0) * std::f32::consts::FRAC_PI_2).cos();
+    if x > 0.0 {
+        [fall, 1.0]
+    } else {
+        [1.0, fall]
+    }
+}
+
+/// One voice's next `left.len()` frames, added into `left` and `right`.
+/// A granular voice that ends gives its grains back to the budget.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn play(
+    v: &mut Voice,
+    g: &mut GrainVoice,
+    budget: &mut Budget,
+    frame: u64,
+    rate: f32,
+    left: &mut [f32],
+    right: &mut [f32],
+    sl: &mut [f32],
+    sr: &mut [f32],
+) {
+    if v.granular {
+        render_granular(v, g, budget, frame, rate, left, right, sl, sr);
+        if !v.active {
+            g.kill(budget);
+            v.granular = false;
+        }
+    } else {
+        render_voice(v, rate, left, right);
+    }
+}
+
+/// One frame of following the live settings: the gain's step, and every
+/// [`FILTER_STEP`] frames the next steps ([`live_step`]). Only the loops of
+/// a voice that is following call it ([`render_voice`]).
+#[inline(always)]
+pub(super) fn follow_live(v: &mut Voice) {
+    if v.follow.count == 0 {
+        live_step(v);
+    }
+    v.follow.count = (v.follow.count + 1) % FILTER_STEP;
+    v.base_gain_l += v.follow.gain_inc[0];
+    v.base_gain_r += v.follow.gain_inc[1];
+    v.gain_l = v.base_gain_l * v.tape_gain;
+    v.gain_r = v.base_gain_r * v.tape_gain;
+}
+
+/// [`follow_live`]'s step every [`FILTER_STEP`] frames: each value moves
+/// `k` of the way to its target (the cutoff in octaves), the gain linearly
+/// across the step; one close enough lands. The voice stops following when
+/// all have landed.
+#[inline(never)]
+pub(super) fn live_step(v: &mut Voice) {
+    let f = &mut v.follow;
+    let k = f.k;
+    let mut moving = false;
+    let mut glide = |at: &mut f32, to: f32, inc: &mut f32| {
+        let d = to - *at;
+        if d.abs() <= 1e-5 * to.abs().max(at.abs()) + 1e-9 {
+            *at = to;
+            *inc = 0.0;
+        } else {
+            *inc = d * k / FILTER_STEP as f32;
+            moving = true;
+        }
+    };
+    glide(&mut v.base_gain_l, f.gain_to[0], &mut f.gain_inc[0]);
+    glide(&mut v.base_gain_r, f.gain_to[1], &mut f.gain_inc[1]);
+    if let Some(flt) = v.filter.as_mut().filter(|_| f.fc_to > 0.0) {
+        let (fc, res) = (flt.cutoff_hz, flt.resonance);
+        let ratio = f.fc_to / fc;
+        if (ratio - 1.0).abs() <= 1e-4 {
+            flt.cutoff_hz = f.fc_to;
+        } else {
+            flt.cutoff_hz = fc * ratio.powf(k);
+            moving = true;
+        }
+        let d = f.res_to - res;
+        if d.abs() <= 1e-4 {
+            flt.resonance = f.res_to;
+        } else {
+            flt.resonance = res + d * k;
+            moving = true;
+        }
+        if flt.cutoff_hz != fc || flt.resonance != res {
+            v.filter_key = None;
+        }
+    }
+    let d = f.cents_to - f.cents;
+    if d != 0.0 {
+        if d.abs() <= 0.01 {
+            f.cents = f.cents_to;
+        } else {
+            f.cents += d * k;
+            moving = true;
+        }
+        retime(v);
+    }
+    v.follow.moving = moving || v.jump_left > 0;
+}
+
+/// Smooths the voice's pressure and, every [`FILTER_STEP`] frames, updates
+/// what it moves on the voice itself: gain, step (pitch) and cutoff.
+#[inline]
+pub(super) fn follow_pressure(v: &mut Voice) {
+    v.press += (v.press_target - v.press) * v.press_coef;
+    if v.press_count == 0 {
+        pressure_step(v);
+    }
+    v.press_gain += v.press_gain_inc;
+    v.press_count = (v.press_count + 1) % FILTER_STEP;
+}
+
+/// A warped layer's step at `tempo`: `tempo / warp_bpm` times its own.
+pub(super) fn warped_step(step: i64, tempo: f64, warp_bpm: f64) -> i64 {
+    ((step as f64 * tempo / warp_bpm).round() as i64).max(1)
+}
+
+/// [`follow_pressure`]'s update every [`FILTER_STEP`] frames, kept out of
+/// the per-frame loop.
+#[inline(never)]
+pub(super) fn pressure_step(v: &mut Voice) {
+    // The smoothing lands, so pressure let go doesn't creep toward zero
+    // through the denormals.
+    if (v.press_target - v.press).abs() < TINY {
+        v.press = v.press_target;
+    }
+    let d = v.route.depth * v.press;
+    match v.route.target {
+        PressureTarget::Level => {
+            v.press_gain_inc = (db_to_gain(12.0 * d) - v.press_gain) / FILTER_STEP as f32
+        }
+        PressureTarget::Pitch => retime(v),
+        PressureTarget::Filter => v.press_fc = (4.0 * d).exp2(),
+        _ => {}
+    }
+}
+
+/// The voice's step from its base step, its pitch pressure, its speed
+/// (the tape's, with wow and flutter), the program's tune and its
+/// movement's pitch. A granular voice's grains keep their own pitch.
+pub(super) fn retime(v: &mut Voice) {
+    if v.granular {
+        return;
+    }
+    let mut step = v.base_step as f64;
+    if v.route.target == PressureTarget::Pitch {
+        step *= f64::from(v.route.depth * v.press).exp2();
+    }
+    if v.speed != 1.0 {
+        step *= f64::from(v.speed);
+    }
+    let cents = v.follow.cents + v.motion.cents;
+    if cents != 0.0 {
+        step *= f64::from(cents / 1200.0).exp2();
+    }
+    v.step = step.round().max(1.0) as i64;
+}
+
+/// One frame of the voice's movement: every [`FILTER_STEP`] frames its
+/// next step ([`motion_step`]), and each frame the level and pan's glide.
+/// Only called while [`Motion::on`].
+#[inline(always)]
+pub(super) fn follow_motion(v: &mut Voice) {
+    if v.motion.count == 0 {
+        motion_step(v);
+    }
+    let m = &mut v.motion;
+    m.count = (m.count + 1) % FILTER_STEP;
+    m.side[0] += m.side_inc[0];
+    m.side[1] += m.side_inc[1];
+}
+
+/// [`follow_motion`]'s step every [`FILTER_STEP`] frames, kept out of the
+/// per-frame loop: the LFO's value and the pitch envelope's, on to the
+/// pitch (a new step), the cutoff ([`retune`] sees it) and the gain on
+/// each side. It stops itself when nothing moves any more: no LFO, the
+/// envelope back home and the gains landed.
+#[inline(never)]
+pub(super) fn motion_step(v: &mut Voice) {
+    let m = &mut v.motion;
+    let mut cents = m.vel_cents + m.env_cents + m.glide_cents;
+    if m.env_cents != 0.0 {
+        m.env_cents *= m.env_k;
+        if m.env_cents.abs() < 0.01 {
+            m.env_cents = 0.0;
+        }
+    }
+    if m.glide_cents != 0.0 {
+        m.glide_cents = if m.glide_cents.abs() <= m.glide_inc {
+            0.0
+        } else {
+            m.glide_cents - m.glide_inc.copysign(m.glide_cents)
+        };
+    }
+    let mut fc = m.vel_fc;
+    let mut side = [1.0f32; 2];
+    let lfo = m.to != LfoTarget::Off;
+    if lfo {
+        let x = m.depth * lfo_wave(m.shape, m.phase, m.held);
+        m.phase += m.inc;
+        if m.phase >= 1.0 {
+            m.phase = m.phase.fract();
+            m.held = [m.held[1], bipolar(&mut m.rng)];
+        }
+        match m.to {
+            LfoTarget::Pitch => cents += 1200.0 * x,
+            LfoTarget::Cutoff => fc *= (4.0 * x).exp2(),
+            LfoTarget::Level => {
+                let g = 1.0 - 0.5 * (m.depth.abs() - x);
+                side = [g, g];
+            }
+            LfoTarget::Pan => side = balance(x),
+            LfoTarget::Off => {}
+        }
+    }
+    let mut gliding = false;
+    for k in 0..2 {
+        let d = side[k] - m.side[k];
+        if d.abs() < 1e-6 {
+            m.side[k] = side[k];
+            m.side_inc[k] = 0.0;
+        } else {
+            m.side_inc[k] = d / FILTER_STEP as f32;
+            gliding = true;
+        }
+    }
+    m.fc = fc;
+    let cents = if m.pitched { cents } else { 0.0 };
+    // The envelope on the pitch keeps it on a step past coming home, so
+    // the pitch lands on the velocity's alone.
+    let homing = cents != m.vel_cents;
+    m.on = lfo || homing || gliding;
+    if cents != m.cents {
+        m.cents = cents;
+        retime(v);
+    }
+}
+
+/// Sets the voice's filter for envelope level `e`. The coefficients only
+/// depend on `e` and the cutoff factors of pressure and movement, so while
+/// none moves (a held sustain, no pressure, no LFO on the cutoff) this
+/// skips the `exp2` and `tan`; the second
+/// stage is only set for a 4-pole filter, the only one that uses it.
+/// It also flushes the filter's state: ringing out on silence, the filter
+/// reaches exact zeros instead of denormals (here, out of the per-frame
+/// loop, it costs nothing measurable).
+#[inline(never)]
+pub(super) fn retune(v: &mut Voice, f: Filter, e: f32, rate: f32) {
+    match f.kind {
+        FilterKind::Ladder => v.ladder.flush(),
+        // Its line flushes as it goes ([`Comb::process`]).
+        FilterKind::Comb => {}
+        FilterKind::Vowel => v.svf.iter_mut().for_each(Svf::flush),
+        _ => {
+            v.svf[0].flush();
+            if f.poles >= 4 {
+                v.svf[1].flush();
+            }
+        }
+    }
+    let moved = v.press_fc * v.motion.fc;
+    let key = (e.to_bits(), moved.to_bits());
+    if v.filter_key == Some(key) {
+        return;
+    }
+    v.filter_key = Some(key);
+    let fc = f.cutoff_hz * (f.env_octaves * e).exp2() * moved;
+    match f.kind {
+        FilterKind::Ladder => v.ladder.set(fc, f.resonance, f.drive_db, rate),
+        // The cutoff is its pitch; it glides there by the next retune.
+        FilterKind::Comb => v.comb.set(fc, f.resonance, rate, FILTER_STEP),
+        // The cutoff picks the vowel: its two formants, in parallel.
+        FilterKind::Vowel => {
+            let (f1, f2) = vowel_formants(fc);
+            let res = vowel_resonance(f.resonance);
+            v.svf[0].set(f1, res, rate);
+            v.svf[1].set(f2, res, rate);
+            v.vowel_gain = vowel_gain(f.resonance);
+        }
+        _ => {
+            v.svf[0].set(fc, f.resonance, rate);
+            if f.poles >= 4 {
+                v.svf[1].set(fc, f.resonance * 0.5, rate);
+            }
+        }
+    }
+}
+
+/// Everything after the source read, for one frame: amp envelope, kill
+/// fade, gain and pan, filter, the stolen voice's tail. `g` is the gain
+/// from the region's fades. Marks the voice done when its kill fade or
+/// envelope ends.
+#[inline(always)]
+pub(super) fn finish<const FOLLOW: bool>(
+    v: &mut Voice,
+    rate: f32,
+    mut l: f32,
+    mut r: f32,
+    mut g: f32,
+) -> (f32, f32) {
+    if FOLLOW {
+        follow_live(v);
+    }
+    if v.route.target != PressureTarget::Off {
+        follow_pressure(v);
+        g *= v.press_gain;
+    }
+    if let Some(a) = &mut v.amp {
+        g *= a.next();
+    }
+    if v.kill_left > 0 {
+        g *= f32::from(v.kill_left) / f32::from(KILL_FRAMES);
+    }
+    if v.motion.on {
+        follow_motion(v);
+        l *= v.motion.side[0];
+        r *= v.motion.side[1];
+    }
+
+    l *= g * v.gain_l;
+    r *= g * v.gain_r;
+
+    if let (Some(f), Some(fe)) = (v.filter, v.fenv.as_mut()) {
+        let e = fe.next();
+        if v.filter_count == 0 {
+            retune(v, f, e, rate);
+        }
+        v.filter_count = (v.filter_count + 1) % FILTER_STEP;
+        match f.kind {
+            FilterKind::Ladder => {
+                l = v.ladder.process(0, l);
+                r = v.ladder.process(1, r);
+            }
+            FilterKind::Comb => (l, r) = v.comb.process(l, r),
+            FilterKind::Vowel => {
+                let [a, b] = &mut v.svf;
+                let g = v.vowel_gain;
+                l = g * (a.process(0, l, f.kind) + FORMANT_2 * b.process(0, l, f.kind));
+                r = g * (a.process(1, r, f.kind) + FORMANT_2 * b.process(1, r, f.kind));
+            }
+            _ => {
+                l = v.svf[0].process(0, l, f.kind);
+                r = v.svf[0].process(1, r, f.kind);
+                if f.poles >= 4 {
+                    l = v.svf[1].process(0, l, f.kind);
+                    r = v.svf[1].process(1, r, f.kind);
+                }
+            }
+        }
+    }
+
+    if v.tail_left > 0 {
+        let t = f32::from(v.tail_left) / f32::from(STEAL_FRAMES);
+        l += v.tail_l * t;
+        r += v.tail_r * t;
+        v.tail_left -= 1;
+    }
+    v.last_l = l;
+    v.last_r = r;
+
+    if v.kill_left > 0 {
+        v.kill_left -= 1;
+        if v.kill_left == 0 {
+            v.active = false;
+            // Cut, not ended: a Comb doesn't ring on.
+            v.comb.reset();
+        }
+    }
+    if v.amp.as_ref().is_some_and(|a| a.is_done()) {
+        v.active = false;
+    }
+    (l, r)
+}
+
+/// A sample voice's next `left.len()` frames, added into `left` and
+/// `right`. Whether it follows a live setting is settled once a call (only
+/// events start that, and they come between calls), so a voice that isn't
+/// following runs the loop it always did.
+pub(super) fn render_voice(v: &mut Voice, rate: f32, left: &mut [f32], right: &mut [f32]) {
+    if v.ringing {
+        ring_out(v, left, right);
+    } else {
+        let done = if v.bl || v.step > v.bl_above.0 {
+            render_voice_bl(v, rate, left, right)
+        } else {
+            let done = if v.follow.moving {
+                render_voice_as::<true, false>(v, rate, left, right)
+            } else if plain_now(v) {
+                render_plain(v, left, right);
+                left.len()
+            } else {
+                render_voice_as::<false, false>(v, rate, left, right)
+            };
+            if done < left.len() && v.active {
+                // Its step passed CLEAN_ABOVE on a frame (a glide,
+                // pressure): the rest of the block is the band-limited
+                // read's.
+                done + render_voice_bl(v, rate, &mut left[done..], &mut right[done..])
+            } else {
+                done
+            }
+        };
+        if !v.active && done < left.len() && rings_on(v) {
+            v.active = true;
+            v.ringing = true;
+            ring_out(v, &mut left[done..], &mut right[done..]);
+        } else if !v.active && rings_on(v) {
+            // Ended on the block's last frame: it rings from the next.
+            v.active = true;
+            v.ringing = true;
+        }
+    }
+    v.heard = (v.heard * HEARD_FALL).max(v.last_l.abs().max(v.last_r.abs()));
+    if v.heard < TINY {
+        v.heard = 0.0;
+    }
+}
+
+/// [`render_voice`] for a voice reading band-limited, from now on. Kept
+/// out of line, so the plain and Hermite paths stay as small as they were.
+#[inline(never)]
+pub(super) fn render_voice_bl(
+    v: &mut Voice,
+    rate: f32,
+    left: &mut [f32],
+    right: &mut [f32],
+) -> usize {
+    v.bl = true;
+    if v.follow.moving {
+        render_voice_as::<true, true>(v, rate, left, right)
+    } else {
+        render_voice_as::<false, true>(v, rate, left, right)
+    }
+}
+
+/// Whether a voice that just ended goes on as its Comb's ringing: its
+/// sound or its envelope ended (a cut resets the comb, [`finish`]), and
+/// the comb still holds something to hear.
+#[inline]
+pub(super) fn rings_on(v: &Voice) -> bool {
+    v.filter.is_some_and(|f| f.kind == FilterKind::Comb) && v.comb.rings()
+}
+
+/// A Comb's ringing after its voice's sound ended, added into `left` and
+/// `right`, until it is too quiet to hear ([`Comb::rings`]) or a cut's
+/// fade ends. The delay stays where the sound left it.
+#[cold]
+#[inline(never)]
+pub(super) fn ring_out(v: &mut Voice, left: &mut [f32], right: &mut [f32]) {
+    for (ol, or) in left.iter_mut().zip(right.iter_mut()) {
+        let (mut l, mut r) = v.comb.process(0.0, 0.0);
+        if v.kill_left > 0 {
+            let t = f32::from(v.kill_left) / f32::from(KILL_FRAMES);
+            (l, r) = (l * t, r * t);
+            v.kill_left -= 1;
+            if v.kill_left == 0 {
+                v.comb.reset();
+            }
+        }
+        *ol += l;
+        *or += r;
+        v.last_l = l;
+        v.last_r = r;
+        if !v.comb.rings() {
+            v.active = false;
+            v.ringing = false;
+            break;
+        }
+    }
+}
+
+/// Whether an amp envelope with these settings soon holds a level (its
+/// sustain, reached within a couple of frames) until a release, so a voice
+/// with it plays plain ([`plain_now`]) after its first frames.
+pub(super) fn amp_holds(a: &Ahdsr, rate: f32) -> bool {
+    let frames = |ms: f32| ms.max(0.0) * 0.001 * rate;
+    frames(a.attack_ms) < 1.0
+        && frames(a.hold_ms) < 1.0
+        && a.sustain > 0.0
+        && (a.sustain >= 1.0 || frames(a.decay_ms) < 1.0)
+}
+
+/// Whether the voice's next frames are a plain copy of its sound at a
+/// fixed gain, so [`render_plain`] gives exactly what the full loop would:
+/// forward at the sound's own speed from a whole frame (no Hermite
+/// blend), no loop, fades, filter or pressure, its envelope holding a
+/// level, and no kill fade or stolen voice's tail under way. A kit's
+/// drum hits are like this from their second frame to their last.
+#[inline]
+pub(super) fn plain_now(v: &Voice) -> bool {
+    v.step == ONE
+        && !v.backwards
+        && !v.looping
+        && v.pos & (ONE - 1) == 0
+        && v.fade_in.is_none()
+        && v.fade_out.is_none()
+        && v.filter.is_none()
+        && v.route.target == PressureTarget::Off
+        && !v.motion.on
+        && v.kill_left == 0
+        && v.tail_left == 0
+        && v.amp.as_ref().is_none_or(|a| a.is_steady())
+        && (!v.stereo || (v.pick_l == 0 && v.pick_r == 1))
+}
+
+/// A plain voice's next frames ([`plain_now`]): each frame of its sound
+/// times its gain, added in. Bit for bit what [`render_voice_as`] gives
+/// for such a voice (`a_plain_voice_renders_as_the_full_loop_does`), at a
+/// fraction of the cost: the loop is a multiply and an add a sample.
+pub(super) fn render_plain(v: &mut Voice, left: &mut [f32], right: &mut [f32]) {
+    let Some(data) = v.data.take() else {
+        v.active = false;
+        return;
+    };
+    match &data {
+        Pcm::F32(d) => render_plain_from(v, d, left, right),
+        Pcm::I16(d) => render_plain_from(v, d, left, right),
+    }
+    if v.active {
+        v.data = Some(data);
+    }
+}
+
+/// [`render_plain`] from the samples as the sound holds them.
+#[inline(always)]
+pub(super) fn render_plain_from<S: Sample>(
+    v: &mut Voice,
+    data: &[S],
+    left: &mut [f32],
+    right: &mut [f32],
+) {
+    let i = v.pos >> 32;
+    let n = if i < v.start {
+        0
+    } else {
+        left.len().min((v.end - i).max(0) as usize)
+    };
+    // The full loop's gain: the envelope's level (its `g`), times the
+    // voice's gain on each side.
+    let g = v.amp.as_ref().map_or(1.0, |a| a.level());
+    let (gl, gr) = (g * v.gain_l, g * v.gain_r);
+    // Raw samples times the gain with the samples' scale in it: exactly
+    // the scaled samples times the gain (the scale is a power of two).
+    let (sl, sr) = (gl * S::SCALE, gr * S::SCALE);
+    if n > 0 {
+        let k = i as usize;
+        let (left, right) = (&mut left[..n], &mut right[..n]);
+        if v.stereo {
+            let src = &data[2 * k..2 * (k + n)];
+            for ((ol, or), f) in left
+                .iter_mut()
+                .zip(right.iter_mut())
+                .zip(src.chunks_exact(2))
+            {
+                *ol += f[0].raw() * sl;
+                *or += f[1].raw() * sr;
+            }
+            v.last_l = src[2 * n - 2].raw() * sl;
+            v.last_r = src[2 * n - 1].raw() * sr;
+        } else {
+            let src = &data[k..k + n];
+            for ((ol, or), x) in left.iter_mut().zip(right.iter_mut()).zip(src) {
+                *ol += x.raw() * sl;
+                *or += x.raw() * sr;
+            }
+            v.last_l = src[n - 1].raw() * sl;
+            v.last_r = src[n - 1].raw() * sr;
+        }
+        v.pos += (n as i64) << 32;
+    }
+    if n < left.len() {
+        // It reached its end within the block, as the full loop finds.
+        v.active = false;
+    }
+}
+
+/// How much a voice's [`Voice::heard`] level falls each render it is not
+/// held up by its output (about 3 dB in four renders).
+pub(super) const HEARD_FALL: f32 = 0.84;
+
+/// Sets which copy a band-limited voice reads and how far its sinc
+/// stretches, for its step now: its sound, or the octave copy that brings
+/// its speed under [`bandlimit::MAX_STRETCH`] (positions and the region
+/// shift right by the copy's octave). Set again whenever its step moves,
+/// on that frame, so the sound doesn't depend on how the blocks fall.
+#[inline]
+pub(super) fn aim_bl(v: &mut Voice, octaves: Option<&bandlimit::Octaves>) {
+    let mut r = v.step as f32 / ONE as f32;
+    let mut octave = 0u32;
+    if let Some(o) = octaves {
+        while r >= bandlimit::MAX_STRETCH && o.level(octave as usize + 1).is_some() {
+            octave += 1;
+            r *= 0.5;
+        }
+    }
+    v.bl_octave = octave;
+    v.bl_reach = Reach::new(r);
+    v.bl_step = v.step;
+}
+
+/// Both output channels of a band-limited voice at `pos` ([`aim_bl`] says
+/// from what).
+#[inline(always)]
+pub(super) fn read_bl<S: Sample>(
+    v: &Voice,
+    kernel: &bandlimit::Kernel,
+    data: &[S],
+    octaves: Option<&bandlimit::Octaves>,
+    pos: i64,
+) -> (f32, f32) {
+    let k = v.bl_octave;
+    let (lo, hi, at) = (v.start >> k, (v.end - 1) >> k, pos >> k);
+    let picks = (v.pick_l, v.pick_r);
+    match octaves.and_then(|o| o.level(k as usize)) {
+        // The copies are floats, whatever the sound holds.
+        Some(copy) if k > 0 => {
+            bandlimit::read2(kernel, &copy[..], v.stereo, lo, hi, at, v.bl_reach, picks)
+        }
+        _ => bandlimit::read2(kernel, data, v.stereo, lo, hi, at, v.bl_reach, picks),
+    }
+}
+
+/// A sample voice's next frames, added into `left` and `right`, read with
+/// Hermite or (`BL`) band-limited. Returns the frames it rendered: all of
+/// them, unless the voice ended, or (not `BL`) its pitch went past
+/// [`CLEAN_ABOVE`] on a frame (a glide, pressure), after which the rest of
+/// the block is the band-limited read's ([`render_voice`] carries on with
+/// it).
+pub(super) fn render_voice_as<const FOLLOW: bool, const BL: bool>(
+    v: &mut Voice,
+    rate: f32,
+    left: &mut [f32],
+    right: &mut [f32],
+) -> usize {
+    // Taken out of the voice for the render and put back after (a clone
+    // would touch the shared count, which both cores' voices share).
+    let Some(data) = v.data.take() else {
+        v.active = false;
+        return left.len();
+    };
+    let done = match &data {
+        Pcm::F32(d) => render_voice_from::<f32, FOLLOW, BL>(v, d, rate, left, right),
+        Pcm::I16(d) => render_voice_from::<i16, FOLLOW, BL>(v, d, rate, left, right),
+    };
+    if v.active {
+        v.data = Some(data);
+    }
+    done
+}
+
+/// [`render_voice_as`] from the samples as the sound holds them.
+#[inline(always)]
+pub(super) fn render_voice_from<S: Sample, const FOLLOW: bool, const BL: bool>(
+    v: &mut Voice,
+    data: &[S],
+    rate: f32,
+    left: &mut [f32],
+    right: &mut [f32],
+) -> usize {
+    // The band-limited read's copies, taken only by a voice that reads
+    // with them, and its kernel, fetched once a call.
+    let octaves = if BL { v.octaves.take() } else { None };
+    let copies = octaves.as_deref().and_then(OctaveCell::get);
+    let kernel = bandlimit::kernel();
+    let read = |v: &Voice, pos: i64| -> (f32, f32) {
+        if BL {
+            read_bl(v, kernel, data, copies, pos)
+        } else {
+            v.read2(data, pos)
+        }
+    };
+    let mut done = left.len();
+    for (k, (ol, or)) in left.iter_mut().zip(right.iter_mut()).enumerate() {
+        let i = v.pos >> 32;
+        if i < v.start || i >= v.end {
+            v.active = false;
+            done = k;
+            break;
+        }
+        if BL && v.step != v.bl_step {
+            aim_bl(v, copies);
+        }
+
+        let (mut l, mut r) = read(v, v.pos);
+
+        // Forward-loop crossfade: blend in the audio before the loop start.
+        if v.looping && !v.ping_pong && v.crossfade > 0 && i >= v.loop_end - v.crossfade {
+            let x = (i - (v.loop_end - v.crossfade)) as f32 / v.crossfade as f32;
+            let (out, inn) = equal_power(x);
+            let back = v.pos - ((v.loop_end - v.loop_start) << 32);
+            let (bl, br) = read(v, back);
+            l = l * out + bl * inn;
+            r = r * out + br * inn;
+        }
+        // An edit's jump into a moved loop: the step fading out. A voice
+        // follows while one is under way ([`live_step`]).
+        if FOLLOW && v.jump_left > 0 {
+            let t = f32::from(v.jump_left) / f32::from(JUMP_FRAMES);
+            l += v.jump[0] * t;
+            r += v.jump[1] * t;
+            v.jump_left -= 1;
+        }
+
+        let mut g = 1.0f32;
+        if let Some(f) = v.fade_in {
+            let d = if v.reverse {
+                v.end - 1 - i
+            } else {
+                i - v.start
+            };
+            if d < i64::from(f.frames) {
+                g *= f.shape(d as f32 / f.frames as f32);
+            }
+        }
+        if let Some(f) = v.fade_out {
+            let d = if v.reverse {
+                i - v.start
+            } else {
+                v.end - 1 - i
+            };
+            if d < i64::from(f.frames) {
+                g *= f.shape(d as f32 / f.frames as f32);
+            }
+        }
+        let (l, r) = finish::<FOLLOW>(v, rate, l, r, g);
+        *ol += l;
+        *or += r;
+
+        // Advance.
+        if v.backwards {
+            v.pos -= v.step;
+        } else {
+            v.pos += v.step;
+        }
+        let j = v.pos >> 32;
+        if v.looping {
+            if v.ping_pong {
+                if !v.backwards && j >= v.loop_end {
+                    v.backwards = true;
+                    v.pos = ((v.loop_end - 1) << 32) - (v.pos - (v.loop_end << 32));
+                } else if v.backwards && j < v.loop_start {
+                    v.backwards = false;
+                    v.pos = (v.loop_start << 32) + ((v.loop_start << 32) - v.pos);
+                }
+            } else if j >= v.loop_end {
+                v.pos -= (v.loop_end - v.loop_start) << 32;
+            }
+        }
+
+        if !v.active {
+            done = k + 1;
+            break;
+        }
+        if !BL && v.step > v.bl_above.0 {
+            // Past two semitones up from the next frame on.
+            done = k + 1;
+            break;
+        }
+    }
+    if v.active && BL {
+        v.octaves = octaves;
+    }
+    done
+}

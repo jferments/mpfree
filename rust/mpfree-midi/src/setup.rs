@@ -440,17 +440,30 @@ impl TrackOut {
 /// The tracks a route may name: the sequencer's (`mpfree_seq::MAX_TRACKS`).
 pub const ROUTE_TRACKS: usize = 128;
 
+/// The most synths the routes may name at once (the instrument redesign's
+/// step 11e): each plays on a route row of the app's instrument host.
+pub const ROUTE_SYNTHS: usize = 4;
+
 /// A port and channel that play one track, whichever track is armed: a
 /// route to "Tracks by channel" in the I/O view's Routing. Saved with the
-/// project, as `route = track 1 < MIDI · ch 10` (or `· all channels`).
+/// project, as `route = track 1 < MIDI · ch 10` (or `· all channels`); one
+/// that plays a synth no track has (the instrument redesign's step 11e) as
+/// `route = instrument 4 < MIDI · ch 10`, which a build from before reads
+/// as a line it can't, said and left out.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrackRoute {
     /// The port, by name, as [`PortSetup::name`].
     pub port: String,
     /// None: every channel.
     pub channel: Option<Channel>,
-    /// The track, from 0, below [`ROUTE_TRACKS`].
+    /// The track, from 0, below [`ROUTE_TRACKS`]. 0 (and not used) while
+    /// it plays a synth (`synth`).
     pub track: u8,
+    /// The synth it plays instead of a track (step 11e): the number of one
+    /// of the project's instruments (the app's `InstrumentId`), a synth no
+    /// track has, such as one picked in the list of synths. None: it plays
+    /// `track`.
+    pub synth: Option<u32>,
     /// What it does to what it takes, in order (board 5), saved on the
     /// line after it as `route.blocks = transpose -12; velocity soft 20 127`.
     pub blocks: Blocks,
@@ -476,19 +489,31 @@ impl TrackRoute {
     }
 
     fn text(&self) -> String {
-        format!("track {} < {}", u16::from(self.track) + 1, self.source())
+        match self.synth {
+            Some(n) => format!("instrument {n} < {}", self.source()),
+            None => format!("track {} < {}", u16::from(self.track) + 1, self.source()),
+        }
     }
 
-    /// The same port, channel and track (whatever its blocks).
+    /// The same port, channel and track or synth (whatever its blocks).
     pub fn same_route(&self, other: &TrackRoute) -> bool {
-        self.port == other.port && self.channel == other.channel && self.track == other.track
+        self.port == other.port
+            && self.channel == other.channel
+            && self.track == other.track
+            && self.synth == other.synth
     }
 
     fn parse(v: &str) -> Result<TrackRoute, String> {
         let shape = || "not \"track N < port · ch N\"".to_string();
         let (t, from) = v.split_once(" < ").ok_or_else(shape)?;
-        let t = t.trim().strip_prefix("track ").ok_or_else(shape)?;
-        let track = (number(t.trim(), 1, ROUTE_TRACKS as u32)? - 1) as u8;
+        let t = t.trim();
+        let (track, synth) = match t.strip_prefix("instrument ") {
+            Some(n) => (0, Some(number(n.trim(), 1, u32::MAX)?)),
+            None => {
+                let t = t.strip_prefix("track ").ok_or_else(shape)?;
+                ((number(t.trim(), 1, ROUTE_TRACKS as u32)? - 1) as u8, None)
+            }
+        };
         let (port, ch) = from.rsplit_once(" · ").ok_or_else(shape)?;
         let channel = match ch.trim() {
             "all channels" => None,
@@ -504,6 +529,7 @@ impl TrackRoute {
             port: port.to_string(),
             channel,
             track,
+            synth,
             blocks: Blocks::NONE,
         })
     }
@@ -1892,12 +1918,14 @@ mod tests {
                     port: DIN_NAME.to_string(),
                     channel: Some(9),
                     track: 0,
+                    synth: None,
                     blocks: Blocks::parse("transpose -12; velocity soft 20 127").unwrap(),
                 },
                 TrackRoute {
                     port: "Keystep 37".to_string(),
                     channel: None,
                     track: 127,
+                    synth: None,
                     blocks: Blocks::NONE,
                 },
             ],
@@ -1931,6 +1959,42 @@ mod tests {
         assert_eq!(back.routes[0].source(), "MIDI · ch 3");
         assert_eq!(warn.len(), 4, "{warn:?}");
         assert!(warn[3].contains("the same route twice"), "{warn:?}");
+    }
+
+    /// A route that plays a synth no track has (the instrument redesign's
+    /// step 11e) reads back by the synth's number, and isn't the same
+    /// route as one to a track; number 0 isn't one. (A build from before
+    /// reads "instrument" as it reads "track 2 MIDI" above: named, and
+    /// left out.)
+    #[test]
+    fn a_route_to_a_synth_reads_back_by_its_number() {
+        let synth = TrackRoute {
+            port: DIN_NAME.to_string(),
+            channel: Some(1),
+            track: 0,
+            synth: Some(4),
+            blocks: Blocks::NONE,
+        };
+        let track = TrackRoute {
+            synth: None,
+            ..synth.clone()
+        };
+        let m = MidiSetup {
+            routes: vec![synth.clone(), track.clone()],
+            ..MidiSetup::default()
+        };
+        let text = m.to_text();
+        assert!(
+            text.contains("route = instrument 4 < MIDI · ch 2\n"),
+            "{text}"
+        );
+        let (back, warn) = MidiSetup::parse(&text);
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!(back.routes, m.routes);
+        assert!(!synth.same_route(&track));
+        let (back, warn) = MidiSetup::parse("mpfree-midi 1\nroute = instrument 0 < MIDI · ch 2\n");
+        assert!(back.routes.is_empty());
+        assert_eq!(warn.len(), 1, "{warn:?}");
     }
 
     /// A route's, a thru's and a port's blocks read back with the song; a

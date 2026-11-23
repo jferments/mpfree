@@ -336,6 +336,34 @@ class DiskTestTests(unittest.TestCase):
         self.assertNotEqual(res.returncode, 0)
         self.assertIn("not allowed with argument", res.stdout)
 
+    def test_under_load_runs_the_test_under_load(self):
+        survey_root(self.root)
+        res = self.run_helper(extra=["--under-load"])
+        self.assertEqual(res.returncode, 0, res.stdout)
+        for text in ("disk test under load on the test build", "END OF STREAM SURVEY",
+                     "copied; its hash on the MPC matches",
+                     "[4/4] The disk test under load: READS the audio in /run/mpfree-data/library",
+                     "WRITES test files in /run/mpfree-data/mpfree-disktest",
+                     "keeps the processor busy (it stops at 75 degrees C)",
+                     "RESULT: the disk test under load ran (numbers above)."):
+            self.assertIn(text, res.stdout)
+        self.assertEqual(self.lines("disktest: "), ["[--under-load]"])
+        # Only YES allows it: it writes on the stick.
+        res = self.run_helper(extra=["--under-load"], MPFREE_ACCEPT_DISKTEST="READ-ONLY")
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("MPFREE_ACCEPT_DISKTEST=YES python3 tools/mpc-one/host_disktest_mpc.py --under-load",
+                      res.stdout)
+        self.assertEqual(self.lines("disktest: "), ["[--under-load]"])
+        res = self.run_helper(extra=["--read-only", "--under-load"])
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("not allowed with argument", res.stdout)
+
+    def test_a_failed_under_load_run_says_how_to_clean_up(self):
+        res = self.run_helper(extra=["--under-load"], FAKE_DISKTEST_RC="1")
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("ended with exit code 1", res.stdout)
+        self.assertIn("rm -r /run/mpfree-data/mpfree-disktest", res.stdout)
+
     def test_a_failed_read_only_run_says_it_wrote_nothing(self):
         res = self.run_helper(extra=["--read-only"], MPFREE_ACCEPT_DISKTEST="READ-ONLY", FAKE_DISKTEST_RC="1")
         self.assertEqual(res.returncode, 1, res.stdout)

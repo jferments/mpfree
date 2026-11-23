@@ -452,16 +452,18 @@ fn a_stretch_running_when_its_region_is_asked_again_stops_and_never_sends_its_co
 
 #[test]
 fn a_stretch_the_memory_floor_cant_spare_is_refused_and_says_why() {
-    use mpfree_sampler::jobs::{Config, Jobs};
+    use mpfree_sampler::jobs::{Config, Hold, Jobs};
     use mpfree_sampler::warp::{Done, Worker};
     use std::time::Duration;
     let s = sine(1.0, 220.0);
     let p = project(&s, warped_pad(&s, 100.0, WarpMethod::Stretch));
     let jobs = Jobs::new(Config {
-        free: || Some(1_000),
-        room: |free, need| match free {
-            Some(f) if f >= need => Ok(()),
-            _ => Err("not enough memory: needs more".into()),
+        promise: |need| {
+            if need <= 1_000 {
+                Ok(Hold::none())
+            } else {
+                Err("not enough memory: needs more".into())
+            }
         },
         ..Config::default()
     });

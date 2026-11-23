@@ -51,6 +51,10 @@
 //! - [`sound_panel`]: the Sound section beside the Wave page's panel: how
 //!   the pad plays its sound (Amp, Filter, Pitch, Movement), four of the
 //!   Play page's controls at a time (the one Sample page, 18 Nov 2026).
+//! - [`command`]: a change to a kit in a musician's terms, the one piece
+//!   of code each tab's action, the Play page's Q-Links and MIDI Learn
+//!   make it through ([`command::Change`], the sampler refactor's step 12).
+//!   No screen: it runs in tests on its own.
 //! - [`sample`]: sample screens for the workstation preview and the tests.
 //!
 //! No device I/O and no audio: the app draws the screens, feeds them
@@ -60,6 +64,7 @@
 
 pub mod auto_tab;
 pub mod auto_widgets;
+pub mod command;
 pub mod grain_tab;
 pub mod grain_tool;
 pub mod keys_widgets;

@@ -2970,9 +2970,11 @@ mod tests {
             matches!(acts[0], MacroAction::Macro { m: 1, value } if (value - v0 - 0.1).abs() < 0.01),
             "{acts:?}"
         );
-        assert!(matches!(acts[1], MacroAction::Morph(p) if (p - 0.5).abs() < 0.05));
-        assert_eq!(acts[2], MacroAction::Capture(1));
-        assert_eq!(acts[3], MacroAction::Bank(1));
+        // Lifting the finger lets the knob go.
+        assert_eq!(acts[1], MacroAction::Release(1));
+        assert!(matches!(acts[2], MacroAction::Morph(p) if (p - 0.5).abs() < 0.05));
+        assert_eq!(acts[3], MacroAction::Capture(1));
+        assert_eq!(acts[4], MacroAction::Bank(1));
         // Back closes the panel; a target row opens its editor.
         tap(&mut ui, l.back.x + 5, l.back.y + 5);
         tap(&mut ui, l.banks[0].x + 4, l.banks[0].y + 4);
