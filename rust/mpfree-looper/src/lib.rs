@@ -91,9 +91,12 @@
 //!   PLAY starts them again from the free clock's bar 1
 //!   ([`Command::FreePlay`]).
 //!
-//! The memory is allocated once, in [`Looper::new`]. [`Looper::command`]
-//! and [`Looper::process`] never allocate, lock or panic, and give the same
-//! output for any period size.
+//! The memory is allocated once, in [`Looper::new`]. [`Looper::command`],
+//! [`Looper::process`] and [`Looper::process_each`] never allocate, lock or
+//! panic, and give the same output for any period size. `process_each`
+//! keeps each loop's sound apart ([`LoopOuts`]), for a host that gives
+//! each loop a channel of its own; their sum is `process`'s mix, bit for
+//! bit.
 
 #![forbid(unsafe_code)]
 
@@ -101,6 +104,7 @@ pub mod ends;
 pub mod find;
 pub mod heard;
 pub mod hits;
+mod outs;
 pub mod print;
 pub mod reading;
 pub mod save;
@@ -108,6 +112,7 @@ mod view;
 
 pub use ends::{Candidate, Event, EventLog, InnerBeat, NoteStart, Verdict};
 pub use heard::{Take, HEARD_SECONDS};
+pub use outs::LoopOuts;
 pub use reading::{
     read_bars, read_bars_with, Reading, Sure, TempoHint, TempoKind, LOOP_MAX_BPM, LOOP_MIN_BPM,
 };
@@ -123,6 +128,7 @@ use view::{Cursor, View};
 use std::ops::Index;
 
 use mpfree_transport::time::{ticks_in, Tick, PPQ};
+use mpfree_transport::transport::MAX_PERIOD;
 use mpfree_transport::{Block, Mark, Meter, Span, State, Swing};
 
 /// Frames of every fade: the loop point, punch in and out, start, stop,
@@ -2660,6 +2666,9 @@ pub struct Looper {
     /// song's), kept here so that a period without free loops doesn't
     /// clear them.
     free_ticks: [f64; RUN],
+    /// What each loop and Listen played in the last period, apart
+    /// ([`Looper::process_each`]).
+    outs: LoopOuts,
 }
 
 /// The looper's side of the free loops ([`Clock::Free`]).
@@ -2921,6 +2930,7 @@ impl Looper {
                 ran: None,
             },
             free_ticks: [0.0; RUN],
+            outs: LoopOuts::new(MAX_PERIOD as usize),
         }
     }
 
@@ -2983,8 +2993,9 @@ impl Looper {
         Some((l.n, l.layer, l.pos as f32 / len as f32))
     }
 
-    /// One period of Listen, added to `out` (n frames, interleaved).
-    fn play_listen(&mut self, block: &Block, n: usize, out: &mut [f32]) {
+    /// One period of Listen, into its own buffer of `outs` (n frames,
+    /// interleaved).
+    fn play_listen(&mut self, block: &Block, n: usize, outs: &mut LoopOuts) {
         let Some(mut ls) = self.listen else {
             return;
         };
@@ -3011,6 +3022,7 @@ impl Looper {
         let level = l.level;
         let len = l.len;
         let step = 1.0 / FADE as f32;
+        let out = outs.listen_mut(ls.n);
         let mut f = 0;
         while f < n {
             let k = RUN.min(n - f).min(len - ls.pos);
@@ -3680,11 +3692,43 @@ impl Looper {
 
     /// Run one period: `input` is the line input and `out` the mix, both
     /// interleaved stereo with `block.frames` frames. The loops are added
-    /// to `out`; nothing else is changed.
+    /// to `out`; nothing else is changed. The same as
+    /// [`Looper::process_each`] then [`LoopOuts::mix_into`] on `out`.
     pub fn process(&mut self, block: &Block, input: &[f32], out: &mut [f32]) {
+        let mut outs = std::mem::take(&mut self.outs);
         let n = (block.frames as usize)
             .min(input.len() / 2)
-            .min(out.len() / 2);
+            .min(out.len() / 2)
+            .min(outs.capacity());
+        self.period(block, input, n, &mut outs);
+        outs.mix_into(out);
+        self.outs = outs;
+    }
+
+    /// Run one period as [`Looper::process`] does, but keep each loop's
+    /// sound apart: [`Looper::outs`] then holds what each loop played and
+    /// what Listen played, and their [`LoopOuts::mix_into`] is the mix
+    /// `process` would have added, bit for bit. `input` is the line input,
+    /// interleaved stereo with `block.frames` frames ([`MAX_PERIOD`] at
+    /// most).
+    pub fn process_each(&mut self, block: &Block, input: &[f32]) {
+        let mut outs = std::mem::take(&mut self.outs);
+        let n = (block.frames as usize)
+            .min(input.len() / 2)
+            .min(outs.capacity());
+        self.period(block, input, n, &mut outs);
+        self.outs = outs;
+    }
+
+    /// What each loop and Listen played in the last period
+    /// ([`Looper::process_each`]).
+    pub fn outs(&self) -> &LoopOuts {
+        &self.outs
+    }
+
+    /// One period of `n` frames, each loop into its own buffer of `outs`.
+    fn period(&mut self, block: &Block, input: &[f32], n: usize, outs: &mut LoopOuts) {
+        outs.begin(n);
         self.now = block.start_frame;
         self.last_span = block.spans().last().copied();
         if let Some(s) = block.spans().first() {
@@ -3732,7 +3776,7 @@ impl Looper {
         self.place_hits(block);
         self.close_free(block);
         self.tend_captures();
-        self.play_listen(block, n, out);
+        self.play_listen(block, n, outs);
         // A loop with sound soloed: the others fall silent.
         let any_solo = self.loops.iter().any(|l| l.solo && l.phase != Phase::Empty);
         for l in &mut self.loops {
@@ -3817,6 +3861,7 @@ impl Looper {
             .iter()
             .enumerate()
             .fold(0u32, |m, (k, l)| m | (u32::from(l.resample) << k));
+        outs.set_resampling(rs);
         // Free loops keep time with the free clock: each run gets its ticks
         // too, its bar lines cut the runs, and of the song's marks they
         // hear only what [`FreeTime::mark`] makes of them. With no free
@@ -3962,7 +4007,6 @@ impl Looper {
                         None => ft.fill(0.0),
                     }
                 }
-                let mut ys = [[0.0f32; 2]; RUN];
                 let run = Run {
                     from: i,
                     ticks: &ticks[..frames],
@@ -3978,19 +4022,20 @@ impl Looper {
                     playing: free_rolling,
                     ..run
                 };
+                // Each loop adds its frames to its own buffer; a quiet one
+                // has none to add.
                 for (k, l) in loops.iter_mut().enumerate() {
-                    if rs & (1 << k) == 0 {
+                    if rs & (1 << k) == 0 && !l.quiet() {
                         let (p, waiting) = (prints[k].now.as_ref(), prints[k].next.is_some());
                         let r = l.run_from(any_free, free_rolling, &run, &free_run);
-                        l.run(store, stats, k, r, p, waiting, &mut ys[..frames]);
+                        l.run(store, stats, k, r, p, waiting, outs.run_mut(k, off, frames));
                     }
                 }
                 if rs != 0 {
+                    // What the others played in the run, summed as the mix
+                    // sums them.
                     let mut heard = [0.0f32; 2 * RUN];
-                    for (j, y) in ys[..frames].iter().enumerate() {
-                        heard[2 * j] = y[0];
-                        heard[2 * j + 1] = y[1];
-                    }
+                    outs.sum_into(!rs, off, &mut heard[..2 * frames]);
                     let run = Run {
                         input: &heard[..2 * frames],
                         ..run
@@ -4000,16 +4045,12 @@ impl Looper {
                         ..free_run
                     };
                     for (k, l) in loops.iter_mut().enumerate() {
-                        if rs & (1 << k) != 0 {
+                        if rs & (1 << k) != 0 && !l.quiet() {
                             let (p, waiting) = (prints[k].now.as_ref(), prints[k].next.is_some());
                             let r = l.run_from(any_free, free_rolling, &run, &free_run);
-                            l.run(store, stats, k, r, p, waiting, &mut ys[..frames]);
+                            l.run(store, stats, k, r, p, waiting, outs.run_mut(k, off, frames));
                         }
                     }
-                }
-                for (j, y) in ys[..frames].iter().enumerate() {
-                    out[2 * (off + j)] += y[0];
-                    out[2 * (off + j) + 1] += y[1];
                 }
                 i = end;
             }
@@ -4063,6 +4104,13 @@ impl Looper {
     /// until a print is in).
     pub fn take_tempo(&mut self) -> Option<(usize, Reading, u64, Tick)> {
         self.tempo_out.take()
+    }
+
+    /// The tempo the song takes from the next period, while
+    /// [`Looper::take_tempo`] hasn't been taken: a free first pass closed
+    /// in this one.
+    pub fn tempo_coming(&self) -> Option<f64> {
+        self.tempo_out.as_ref().map(|(_, r, _, _)| r.bpm)
     }
 
     /// What smart loop end made of a closing tap ([`Command::SetSmartEnd`]),
@@ -4490,9 +4538,15 @@ impl Looper {
                     );
                 let first = rec_from + d.lead;
                 let from_hit = |to: u64| reread((to - first) as usize, rate, bar, &tap_reading);
+                // Moved, the beat's fit is the loop's as it now ends (the
+                // reading weighed it at the tap's length).
                 let moved = (d.verdict == Verdict::Moved)
                     .then(|| from_hit(d.end))
-                    .flatten();
+                    .flatten()
+                    .map(|r| Reading {
+                        beat: r.beat.and(d.best.map(|b| b.rhythm)),
+                        ..r
+                    });
                 // The loop's length and its start in the pass. Ends are
                 // measured from the first hit: with no smart start the loop
                 // is as long from the press.
@@ -8475,9 +8529,17 @@ impl Loop {
         }
     }
 
-    /// The loop's part of a run: each frame's output is added to `ys`.
-    /// Frame by frame while anything moves (writers, fades, a jump); once
-    /// the loop is still, the rest of the run in one go.
+    /// Nothing to play and nothing coming in: empty, with no load and no
+    /// layer copying in. Its run would do nothing ([`Loop::run`]), so it
+    /// isn't run.
+    fn quiet(&self) -> bool {
+        self.phase == Phase::Empty && !self.loading && !self.adding
+    }
+
+    /// The loop's part of a run: each frame's output is added to `ys`,
+    /// once a frame (so a buffer of its own holds exactly what it played:
+    /// [`LoopOuts`]). Frame by frame while anything moves (writers, fades,
+    /// a jump); once the loop is still, the rest of the run in one go.
     #[allow(clippy::too_many_arguments)]
     fn run(
         &mut self,

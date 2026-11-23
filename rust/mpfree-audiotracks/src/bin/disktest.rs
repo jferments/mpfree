@@ -69,7 +69,11 @@
 //! imports are written in their own folder (`mpfree-cuttest/`) and what
 //! each promises is said as it goes; the stick is pulled mid-take; then
 //! the second half recovers the takes, checks every promise in the saved
-//! text and every sample, and deletes the folder if all held.
+//! text and every sample, and deletes the folder if all held. With `--fat`
+//! or `--fat-hidden` the cut test runs on a spare FAT32 or exFAT stick
+//! instead, as saving to the SD card would write it: imports only, each
+//! published by a rename or hidden until synced, and the second half
+//! checks them without writing anything.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -167,6 +171,8 @@ struct Opts {
     recorder: bool,
     heat: bool,
     cut_test: bool,
+    /// `--fat` or `--fat-hidden`: the cut test on a FAT stick.
+    fat: Option<cut::Way>,
     /// `--after-cut`'s saved text of the cut run.
     after_cut: Option<PathBuf>,
 }
@@ -181,6 +187,7 @@ fn parse() -> Result<Opts, String> {
         recorder: false,
         heat: false,
         cut_test: false,
+        fat: None,
         after_cut: None,
     };
     let mut args = std::env::args().skip(1);
@@ -196,6 +203,16 @@ fn parse() -> Result<Opts, String> {
             "--recorder" => o.recorder = true,
             "--heat" => o.heat = true,
             "--cut-test" => o.cut_test = true,
+            "--fat" | "--fat-hidden" => {
+                if o.fat.is_some() {
+                    return Err("--fat and --fat-hidden are different runs".into());
+                }
+                o.fat = Some(if a == "--fat" {
+                    cut::Way::Rename
+                } else {
+                    cut::Way::Hidden
+                });
+            }
             "--after-cut" => {
                 o.after_cut = Some(PathBuf::from(
                     args.next()
@@ -218,6 +235,9 @@ fn parse() -> Result<Opts, String> {
                 say!("--cut-test records 4 takes and writes imports beside them in its own folder until");
                 say!("the stick is pulled; --after-cut FILE recovers them and checks every promise in");
                 say!("FILE (the cut run's saved text), then deletes the folder. Only with --desktop-test.");
+                say!("--cut-test --fat (or --fat-hidden) writes only imports, on a FAT32 or exFAT stick, each");
+                say!("published by a rename (or hidden until synced); --after-cut then checks them without");
+                say!("writing anything.");
                 std::process::exit(0);
             }
             _ => return Err(format!("unknown argument {a:?}")),
@@ -240,6 +260,9 @@ fn parse() -> Result<Opts, String> {
         > 1
     {
         return Err("--read-only, --under-load, --recorder, --heat, --cut-test and --after-cut are different runs".into());
+    }
+    if o.fat.is_some() && !o.cut_test {
+        return Err("--fat and --fat-hidden go with --cut-test; --after-cut takes the way from the saved text".into());
     }
     if (o.cut_test || o.after_cut.is_some()) && !o.desktop {
         return Err("--cut-test and --after-cut run only with --desktop-test for now: the cut on the MPC (D6) waits for its own safety review".into());
@@ -747,7 +770,11 @@ fn clean_one(dir: &Path, name: &str) -> Result<(), String> {
 
 /// The pull test's two halves, on a desktop.
 fn cut_main(base: &Path, o: &Opts) -> ExitCode {
-    let z = cut::Sizes::new(o.quick);
+    let z = if o.fat.is_some() {
+        cut::Sizes::fat(o.quick)
+    } else {
+        cut::Sizes::new(o.quick)
+    };
     if let Some(saved) = &o.after_cut {
         let text = match fs::read_to_string(saved) {
             Ok(t) => t,
@@ -759,7 +786,7 @@ fn cut_main(base: &Path, o: &Opts) -> ExitCode {
                 return ExitCode::from(3);
             }
         };
-        return match cut::after(base, &text, z) {
+        return match cut::after(base, &text, o.quick) {
             Ok(true) => {
                 say!("done");
                 ExitCode::SUCCESS
@@ -776,7 +803,7 @@ fn cut_main(base: &Path, o: &Opts) -> ExitCode {
         };
     }
     if !o.quick {
-        if let Err(e) = cut::on_usb_disk(base) {
+        if let Err(e) = cut::on_usb_disk(base, o.fat.is_some()) {
             esay!("mpfree-disktest: refused: {e}. Nothing was written.");
             return ExitCode::from(3);
         }
@@ -796,7 +823,9 @@ fn cut_main(base: &Path, o: &Opts) -> ExitCode {
             return ExitCode::from(3);
         }
     }
-    match cut::run(base, z) {
+    // A test's quick run keeps the hidden mark as the sticky bit: its
+    // folder isn't on FAT.
+    match cut::run(base, z, o.fat, o.quick) {
         Ok(()) => {
             say!("done");
             ExitCode::SUCCESS

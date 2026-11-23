@@ -13,7 +13,10 @@
 //! kept busy until the stand-in's temperature settles, and nothing is
 //! written. With `--cut-test` takes and imports are written until the
 //! program is killed, and `--after-cut` then finds every promise kept and
-//! deletes them, or a broken one and keeps them.
+//! deletes them, or a broken one and keeps them. With `--fat` or
+//! `--fat-hidden` only imports are written, and `--after-cut` checks them
+//! without writing anything, finding a lost promise, an import under two
+//! names, a hidden one and a changed byte.
 
 use std::collections::BTreeMap;
 use std::os::unix::fs::MetadataExt;
@@ -1185,7 +1188,11 @@ fn a_cut_test_without_a_cut_is_checked_and_a_broken_promise_fails() {
 
 #[test]
 fn the_cut_test_runs_only_on_a_desktop_for_now() {
-    for args in [vec!["--cut-test"], vec!["--after-cut", "run.txt"]] {
+    for args in [
+        vec!["--cut-test"],
+        vec!["--after-cut", "run.txt"],
+        vec!["--cut-test", "--fat"],
+    ] {
         let out = bin().args(&args).output().unwrap();
         assert_eq!(out.status.code(), Some(2), "{args:?}");
         assert!(
@@ -1193,4 +1200,247 @@ fn the_cut_test_runs_only_on_a_desktop_for_now() {
             "{args:?}"
         );
     }
+}
+
+/// Start a quick FAT cut test (`--fat` or `--fat-hidden`) in `base`.
+fn fat_cut_test(base: &Path, saved: &Path, way: &str) -> std::process::Child {
+    bin()
+        .arg("--desktop-test")
+        .arg(base)
+        .args(["--cut-test", way, "--quick"])
+        .stdout(std::fs::File::create(saved).unwrap())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap()
+}
+
+/// The imports in a cut run's last promise.
+fn promised_imports(text: &str) -> Vec<u32> {
+    text.lines()
+        .rev()
+        .find_map(|l| {
+            l.strip_prefix("promised: ")?
+                .split_once("; imports ")
+                .map(|x| x.1)
+        })
+        .filter(|i| *i != "none")
+        .map(|i| i.split(' ').map(|n| n.parse().unwrap()).collect())
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_fat_cut_test_killed_mid_import_is_checked_without_writing() {
+    for (round, way) in ["--fat", "--fat-hidden", "--fat", "--fat-hidden"]
+        .into_iter()
+        .enumerate()
+    {
+        let d = scratch(&format!("fatcut-{round}"));
+        let saved = scratch(&format!("fatcut-saved-{round}")).join("run.txt");
+        let mut child = fat_cut_test(&d, &saved, way);
+        let t = std::time::Instant::now();
+        loop {
+            let text = std::fs::read_to_string(&saved).unwrap_or_default();
+            if text.contains("CUT NOW") && !promised_imports(&text).is_empty() {
+                break;
+            }
+            assert!(t.elapsed().as_secs() < 30, "{text}");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20 + 40 * round as u64));
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let cut = d.join("mpfree-cuttest");
+        let before = snapshot(&cut);
+        let (status, text) = after_cut(&d, &saved);
+        assert!(status.success(), "{text}");
+        for want in [
+            "checked without writing anything",
+            "promised, all there; ",
+            "under two names: none",
+            "RESULT: PASS, every promise kept; nothing was written",
+        ] {
+            assert!(text.contains(want), "missing {want:?} in\n{text}");
+        }
+        assert!(!text.contains("FAIL"), "{text}");
+        assert!(!text.contains("recovery"), "{text}");
+        // Nothing written, nothing swept.
+        assert_eq!(snapshot(&cut), before);
+        std::fs::remove_dir_all(&d).unwrap();
+        std::fs::remove_dir_all(saved.parent().unwrap()).unwrap();
+    }
+}
+
+#[test]
+fn a_fat_check_finds_a_lost_promise_a_second_name_a_hidden_one_and_a_changed_byte() {
+    let d = scratch("fatcheck");
+    let saved = scratch("fatcheck-saved").join("run.txt");
+    let out = fat_cut_test(&d, &saved, "--fat")
+        .wait_with_output()
+        .unwrap();
+    let text = std::fs::read_to_string(&saved).unwrap();
+    assert!(out.status.success(), "{text}");
+    for want in [
+        "cut test way: fat-rename",
+        "cut test on FAT: imports only",
+        "every fourth 64 KiB",
+        "CUT NOW: pull the stick",
+        "no cut was made",
+    ] {
+        assert!(text.contains(want), "missing {want:?} in\n{text}");
+    }
+    assert!(!text.contains("cut test: 4 takes"), "{text}");
+    let promised = promised_imports(&text);
+    assert!(promised.len() >= 2, "{text}");
+    let cut = d.join("mpfree-cuttest");
+    let names = |n: u32| {
+        (
+            cut.join(format!("import{n}.bin")),
+            cut.join(format!("import{n}.bin.{n}.part")),
+        )
+    };
+    let check = |text: &Path, code: i32, wants: &[&str]| {
+        let before = snapshot(&cut);
+        let (status, out) = after_cut(&d, text);
+        assert_eq!(status.code(), Some(code), "{out}");
+        for w in wants {
+            assert!(out.contains(w), "missing {w:?} in\n{out}");
+        }
+        assert_eq!(snapshot(&cut), before, "nothing written");
+    };
+    check(&saved, 0, &["RESULT: PASS", "under two names: none"]);
+
+    // A promised import's part file back beside it: the rename's second
+    // step lost after the folder was synced.
+    let n = promised[0];
+    let (bin, part) = names(n);
+    std::fs::copy(&bin, &part).unwrap();
+    check(
+        &saved,
+        1,
+        &[
+            &format!("import {n}: FAIL: promised, but its part file import{n}.bin.{n}.part (whole) is back beside it"),
+            &format!("under two names: {n}"),
+            "RESULT: FAIL, see above; nothing was written",
+        ],
+    );
+    // The same, not promised: a rename cut between its steps, said, not
+    // failed (fsck has the last word).
+    let rest: Vec<String> = promised[1..].iter().map(u32::to_string).collect();
+    let earlier = saved.with_file_name("earlier.txt");
+    std::fs::write(
+        &earlier,
+        format!("{text}promised: takes none; imports {}\n", rest.join(" ")),
+    )
+    .unwrap();
+    check(
+        &earlier,
+        0,
+        &[
+            &format!("import {n}: under two names, import{n}.bin and import{n}.bin.{n}.part (whole): the cut came between the rename's two steps"),
+            "(there but not promised: published, or about to be removed, when the stick went: ",
+            "RESULT: PASS",
+        ],
+    );
+    std::fs::remove_file(&part).unwrap();
+    // A part file alone was in flight.
+    std::fs::write(cut.join(format!("import{}.bin.7.part", n + 1000)), b"half").unwrap();
+    check(
+        &saved,
+        0,
+        &[&format!(
+            "part file import{}.bin.7.part: in flight at the cut (as written up to byte 0)",
+            n + 1000
+        )],
+    );
+    std::fs::remove_file(cut.join(format!("import{}.bin.7.part", n + 1000))).unwrap();
+
+    // A promised import hidden again (the stand-in's mark).
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(&bin).unwrap().permissions().mode() & 0o777;
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(mode | 0o1000)).unwrap();
+    check(
+        &saved,
+        1,
+        &[
+            &format!("import {n}: FAIL: promised, but hidden again (whole)"),
+            "missing or hidden",
+        ],
+    );
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(mode)).unwrap();
+
+    // A changed byte in a shown import.
+    let mut bytes = std::fs::read(&bin).unwrap();
+    bytes[100] ^= 1;
+    std::fs::write(&bin, &bytes).unwrap();
+    check(
+        &saved,
+        1,
+        &[&format!(
+            "import {n}: FAIL: shown, but not as written from byte 100 on"
+        )],
+    );
+    bytes[100] ^= 1;
+    std::fs::write(&bin, &bytes).unwrap();
+
+    // A promised import gone.
+    let keep = std::fs::read(&bin).unwrap();
+    std::fs::remove_file(&bin).unwrap();
+    check(&saved, 1, &[&format!("FAIL: {n} missing or hidden")]);
+    std::fs::write(&bin, &keep).unwrap();
+
+    // A take's name or a stranger's file: nothing is touched.
+    for other in ["rec1_0123456789abcdef0123456789abcdef.wav", "notes.txt"] {
+        std::fs::write(cut.join(other), b"x").unwrap();
+        check(&saved, 3, &[&format!("{other} in "), "nothing is touched"]);
+        std::fs::remove_file(cut.join(other)).unwrap();
+    }
+    check(&saved, 0, &["RESULT: PASS"]);
+    // It never deletes: the folder stays until the stick is formatted.
+    assert!(cut.exists());
+    std::fs::remove_dir_all(&d).unwrap();
+    std::fs::remove_dir_all(saved.parent().unwrap()).unwrap();
+}
+
+#[test]
+fn the_fat_flags_go_only_with_the_cut_test_and_one_at_a_time() {
+    let d = scratch("fatflags");
+    for (args, says) in [
+        (vec!["--fat"], "go with --cut-test"),
+        (
+            vec!["--after-cut", "run.txt", "--fat-hidden"],
+            "takes the way from the saved text",
+        ),
+        (
+            vec!["--cut-test", "--fat", "--fat-hidden"],
+            "are different runs",
+        ),
+    ] {
+        let out = bin()
+            .arg("--desktop-test")
+            .arg(&d)
+            .args(&args)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains(says),
+            "{args:?}"
+        );
+    }
+    // A real FAT run wants a FAT stick: this folder isn't on one.
+    let out = bin()
+        .arg("--desktop-test")
+        .arg(&d)
+        .args(["--cut-test", "--fat-hidden"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(3));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("the FAT pull test wants vfat or exfat")
+            && err.contains("Nothing was written"),
+        "{err}"
+    );
+    assert_eq!(std::fs::read_dir(&d).unwrap().count(), 0);
+    std::fs::remove_dir_all(&d).unwrap();
 }

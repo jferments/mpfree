@@ -2,6 +2,7 @@
 //! block by block at the MPC's period. Setup allocates; the block function
 //! must not.
 
+use mpfree_arp::modifier::{ModSource, Modifier};
 use mpfree_audiotracks::host::COPY_SAMPLES;
 use mpfree_audiotracks::{
     AudioTracks, Command as TrackCommand, Input as TrackInput, Io as TrackIo, MAX_TRACKS,
@@ -2198,8 +2199,9 @@ pub fn all(rate: u32) -> Vec<Case> {
     }
     v.push(measured(|| note_edit(NoteEditCase::VelocityAndUndo)));
     v.push(measured(|| note_edit(NoteEditCase::TransposeAll)));
-    v.push(measured(|| live_arps(rate, 4)));
-    v.push(measured(|| live_arps(rate, 16)));
+    v.push(measured(|| live_arps(rate, 4, false)));
+    v.push(measured(|| live_arps(rate, 16, false)));
+    v.push(measured(|| live_arps(rate, 16, true)));
     v.push(measured(|| looper(rate, 60)));
     v.push(measured(|| looper_loops(rate, 60, false)));
     v.push(measured(|| looper_loops(rate, 60, true)));
@@ -4435,8 +4437,12 @@ impl Sink for RealPass {
 /// several tracks hold latched arps: each latched a 4-note chord (pressed
 /// on the pads through its arp) and plays it Up over 2 octaves in 32nds,
 /// following the transport (128 BPM, swung). The other arps idle. No clips:
-/// the Time case measures those.
-fn live_arps(rate: u32, n: usize) -> Case {
+/// the Time case measures those. `pushed`: each arp's Modifier is on the
+/// mod wheel (a rate step, an octave, gate, a roll and accents at its top)
+/// and the wheel moves every block, up and down over 64 blocks, so every
+/// arp works its pushed settings out again each block: the Modifier's
+/// worst case, a wheel never still.
+fn live_arps(rate: u32, n: usize, pushed: bool) -> Case {
     let mut t = Transport::new(rate, 128.0).expect("transport");
     t.command(
         0,
@@ -4449,10 +4455,24 @@ fn live_arps(rate: u32, n: usize) -> Case {
     let mut arps = Box::new(TrackArps::new(rate, 128.0));
     for track in 0..n {
         let e = arps.engine(track).expect("an arp");
+        let modifier = if pushed {
+            Modifier {
+                source: ModSource::ModWheel,
+                rate: 1,
+                octaves: 1,
+                gate: 30,
+                swing: 0,
+                rolls: 1,
+                accents: 30,
+            }
+        } else {
+            Modifier::default()
+        };
         e.set_settings(mpfree_arp::Settings {
             mode: mpfree_arp::Mode::Arp,
             rate: mpfree_arp::Rate::ThirtySecond,
             octaves: 2,
+            modifier,
             ..mpfree_arp::Settings::default()
         });
         e.set_latch(mpfree_arp::LatchMode::Replace);
@@ -4461,12 +4481,35 @@ fn live_arps(rate: u32, n: usize) -> Case {
     let mut sink = TimeSink { notes: 0 };
     let mut player = Player::new();
     let mut block = TBlock::new();
+    let name = if pushed {
+        format!("Arps: {n} latched arps at 32nds, a mod wheel always moving")
+    } else {
+        format!("Arps: {n} latched arps at 32nds")
+    };
     Case {
-        name: format!("Arps: {n} latched arps at 32nds"),
+        name,
         module: "time",
-        what: "the per-track arps, n of 16 playing latched 4-note chords",
+        what: if pushed {
+            "the per-track arps, n of 16 playing latched 4-note chords, each Modifier pushed by a mod wheel that moves every block"
+        } else {
+            "the per-track arps, n of 16 playing latched 4-note chords"
+        },
         block: Box::new(move |b, l, r| {
             t.process(l.len() as u32, &mut block);
+            if pushed {
+                // Up and down over 64 blocks.
+                let k = (b % 64) as f32;
+                let wheel = if k < 32.0 {
+                    k / 31.0
+                } else {
+                    (63.0 - k) / 31.0
+                };
+                for track in 0..n {
+                    if let Some(e) = arps.engine(track) {
+                        e.control(ModSource::ModWheel, wheel);
+                    }
+                }
+            }
             if b == 0 {
                 for track in 0..n {
                     for k in 0..4u8 {
@@ -6239,9 +6282,9 @@ mod tests {
 
     #[test]
     fn the_live_arps_case_plays_every_busy_arp() {
-        let mut four = measured(|| live_arps(44_100, 4));
+        let mut four = measured(|| live_arps(44_100, 4, false));
         let (l4, _) = run(&mut four, 1_000);
-        let mut all = measured(|| live_arps(44_100, 16));
+        let mut all = measured(|| live_arps(44_100, 16, false));
         let (l16, _) = run(&mut all, 1_000);
         // About 3 s at 128 BPM: some 50 32nds, an on and an off each.
         assert!(l4[0] > 300.0, "{}", l4[0]);
@@ -6251,6 +6294,10 @@ mod tests {
             l16[0],
             l4[0]
         );
+        // The moving wheel pushes them: faster, with rolls, so more notes.
+        let mut pushed = measured(|| live_arps(44_100, 16, true));
+        let (lp, _) = run(&mut pushed, 1_000);
+        assert!(lp[0] > l16[0] * 1.2, "{} against {}", lp[0], l16[0]);
     }
 
     #[test]

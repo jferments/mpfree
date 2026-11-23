@@ -3431,11 +3431,20 @@ impl LoopHost {
             self.bar_ticks = span.meter.bar_ticks();
             self.bpm = span.bpm;
         }
+        // Each loop's sound apart (audio tracks phase 4a), added up where
+        // the Loop strip takes the mix, so nothing sounds different: the
+        // sum is what `process` would have added, bit for bit. Phase 4b
+        // gives each loop its own track's channel.
         self.out.fill(0.0);
-        self.looper.process(block, &self.input, &mut self.out);
+        self.looper.process_each(block, &self.input);
+        self.looper.outs().mix_into(&mut self.out);
         self.settle = self.settle.saturating_sub(1);
         if let Some(span) = block.spans().last() {
-            self.printer.tend(&mut self.looper, span.bpm);
+            // A free first pass that closed in this period sets the song's
+            // tempo from the next one, so the printer sees the loops at
+            // that tempo and asks for no print they won't need.
+            let bpm = self.looper.tempo_coming().unwrap_or(span.bpm);
+            self.printer.tend(&mut self.looper, bpm);
         }
         self.finder.tend(&mut self.looper);
         self.tend_save();
@@ -5302,6 +5311,46 @@ mod tests {
         assert_eq!(crate::looper_page::bars_of(v.status.ticks, v.bar_ticks), 1);
     }
 
+    /// The period a free first loop closes on a tap, at a tempo the song
+    /// doesn't have yet, asks the printer for nothing: the song takes the
+    /// loop's tempo from the next period, and the printer looks at the
+    /// loop at that tempo. (It asked for a print at the song's old tempo,
+    /// and that first message to its worker allocated on the audio
+    /// thread.) A song that doesn't take the tempo gets its print asked
+    /// for in the next period, as before.
+    #[test]
+    fn the_period_a_free_loop_sets_the_tempo_asks_the_printer_for_nothing() {
+        const RATE: u32 = 44_100;
+        let mut h = LoopHost::new(RATE, 20);
+        let mut t = Transport::new(RATE, 100.0).unwrap();
+        let mut b = Block::new();
+        h.set_tempo_from_loop(true);
+        h.command(Command::SetBars(None));
+        let mut period = |h: &mut LoopHost| {
+            assert!(t.process(PERIOD as u32, &mut b));
+            let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+            let (_, calls) = crate::sys::alloc_count::calls(|| h.period(&b, &mut l, &mut r));
+            (calls, h.take_tempo())
+        };
+        h.command(Command::Record);
+        // 2 s free: a bar at 120 BPM, with the song at 100.
+        for _ in 0..(2 * RATE as usize) / PERIOD {
+            assert_eq!(period(&mut h).1, None);
+        }
+        h.command(Command::Record);
+        let (calls, taken) = (0..8)
+            .map(|_| period(&mut h))
+            .find(|(_, taken)| taken.is_some())
+            .expect("the loop sets the tempo");
+        let bpm = taken.unwrap().1.bpm;
+        assert!((bpm - 120.0).abs() < 0.5, "{bpm}");
+        assert!(!h.printer.asked, "no print asked for at 100 BPM");
+        assert_eq!(calls, 0, "allocations or frees on the audio thread's path");
+        // The song stayed at 100: now the loop needs its print at 100.
+        period(&mut h);
+        assert!(h.printer.asked, "{}", h.describe());
+    }
+
     /// The looper on a real transport with the input closed: presses log,
     /// the phases log, and the waveform gets built.
     #[test]
@@ -6587,12 +6636,6 @@ mod tests {
         }
         let mut h = LoopHost::new(RATE, 20);
         assert!(!h.finder.inline && !h.finder.gone, "its thread");
-        // The host's own printer has sent its worker something before, as
-        // in a session. A message to it takes a block of its channel now
-        // and then, which it allows (Printer::tend); here the first would,
-        // if the tap stands at another tempo and the closing period asks
-        // for a print at the old one.
-        h.printer.send(ToPrinter::Drop(None, Vec::new()));
         // (The answers left unread: the finder's thread goes on, as a slow
         // one would, and none comes back.)
         let _unread = (!answers).then(|| h.finder.back.take());
