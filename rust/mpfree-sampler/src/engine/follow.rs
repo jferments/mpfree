@@ -83,9 +83,17 @@ pub(super) fn retarget(
         v.filter_key = None;
         f.own_fc = OPEN_FILTER.cutoff_hz;
     }
-    if v.filter.is_some() {
+    if let Some(flt) = v.filter.as_mut() {
         f.fc_to = cutoff.unwrap_or(f.own_fc) * octaves.exp2();
         f.res_to = get(PadField::Resonance).unwrap_or(f.own_res);
+        // The envelope's depth glides there; the Drive is there at once,
+        // as an edit's is (it keeps its level as it turns; F3).
+        f.env_to = get(PadField::EnvDepth).unwrap_or(f.own_env);
+        let drive = get(PadField::Drive).unwrap_or(f.own_drive);
+        if flt.drive_db != drive {
+            flt.drive_db = drive;
+            v.filter_key = None;
+        }
     }
     f.cents_to = if v.warp_bpm > 0.0 {
         0.0
@@ -146,14 +154,29 @@ pub(super) fn follow_edit(
     let f = v.follow;
     let mut moved = was_live;
 
-    // Level and pan: the layer's gain and pan under the hit's own.
-    let unit_gain = l.unit_gain * v.hit_gain;
+    // Level and pan: the layer's gain and pan under the hit's own. With
+    // its gains in two parts ([`Pre`]), the layer's gain is before the
+    // filter and glides there. A hit whose layers share a filter keeps the
+    // pan they started with (its lead's gains are all of theirs): a new
+    // layer pan is heard from the next hit.
+    let (unit_gain, pre_to) = if v.pre.on {
+        (v.unit_gain, l.unit_gain * v.pre.hit)
+    } else {
+        (l.unit_gain * v.hit_gain, f.pre_to)
+    };
+    let layer_pan = if v.role == Role::Solo {
+        l.pan
+    } else {
+        v.layer_pan
+    };
     if unit_gain != v.unit_gain
-        || l.pan != v.layer_pan
+        || pre_to != f.pre_to
+        || layer_pan != v.layer_pan
         || vp.level_db != f.own_db
         || vp.pan != f.own_pan
     {
-        (v.unit_gain, v.layer_pan) = (unit_gain, l.pan);
+        (v.unit_gain, v.layer_pan) = (unit_gain, layer_pan);
+        v.follow.pre_to = pre_to;
         (v.follow.own_db, v.follow.own_pan) = (vp.level_db, vp.pan);
         moved = true;
     }
@@ -185,15 +208,17 @@ pub(super) fn follow_edit(
         (v.follow.own_fc, v.follow.own_res) = (fc, res);
         moved = true;
     }
-    // A ladder's Drive at once (it keeps its level as it turns).
-    if let Some(cur) = v.filter.as_mut() {
-        if cur.kind == FilterKind::Ladder
-            && pf.kind == FilterKind::Ladder
-            && cur.drive_db != pf.drive_db
-        {
-            cur.drive_db = pf.drive_db;
-            v.filter_key = None;
-        }
+    // The envelope's depth and the Drive: the pad's own, which
+    // [`retarget`] puts in place under a live one (a ladder's Drive at
+    // once: it keeps its level as it turns; F3).
+    if v.filter.is_some() && (pf.env_octaves != f.own_env || pf.drive_db != f.own_drive) {
+        (v.follow.own_env, v.follow.own_drive) = (pf.env_octaves, pf.drive_db);
+        moved = true;
+    }
+    // How far the cutoff follows the key: at once, from the key it plays.
+    if vp.key_track != v.motion.key_track {
+        v.motion.key_track = vp.key_track;
+        v.motion.rekey(v.key_cents);
     }
 
     // Tune: the layer's speed against the one it played at. A warped

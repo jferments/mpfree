@@ -306,7 +306,8 @@ pub enum Row {
 impl Row {
     /// The pad's own setting this row sets, as the engine names it
     /// ([`PadField`], which clips' locks and MIDI Learn use): None for a
-    /// row without one (a layer's, the filter envelope's, the kit's).
+    /// row without one (a layer's, the filter envelope's times, the
+    /// kit's).
     pub fn field(self) -> Option<PadField> {
         Some(match self {
             Row::Level => PadField::Level,
@@ -321,6 +322,8 @@ impl Row {
             Row::LfoDepth => PadField::LfoDepth,
             Row::PitchEnv => PadField::PitchEnv,
             Row::PitchDecay => PadField::PitchDecay,
+            Row::Drive => PadField::Drive,
+            Row::FilterEnv => PadField::EnvDepth,
             _ => return None,
         })
     }
@@ -715,18 +718,30 @@ const SELECTS: [LayerSelect; 3] = [LayerSelect::All, LayerSelect::Cycle, LayerSe
 /// What the kit's pads play, as the Pads play row steps through them.
 const PADS_PLAY: [&str; 3] = ["Their sounds", "Notes", "16 Levels"];
 
-/// The filter types the Filter row steps through (the Ladder is 4-pole,
-/// the Vowel two formants and the Comb a delay, whatever the poles).
-const FILTERS: [(FilterKind, u8); 12] = [
+/// The filter types the Filter row steps through, each at its slopes
+/// (the filter gap plan's F4; the Ladder is 4-pole, the Vowel two
+/// formants, the Comb a delay and the Peak a boost, whatever the poles).
+const FILTERS: [(FilterKind, u8); 23] = [
     (FilterKind::Off, 2),
+    (FilterKind::LowPass, 1),
     (FilterKind::LowPass, 2),
+    (FilterKind::LowPass, 3),
     (FilterKind::LowPass, 4),
+    (FilterKind::LowPass, 6),
+    (FilterKind::LowPass, 8),
+    (FilterKind::HighPass, 1),
     (FilterKind::HighPass, 2),
+    (FilterKind::HighPass, 3),
     (FilterKind::HighPass, 4),
+    (FilterKind::HighPass, 6),
+    (FilterKind::HighPass, 8),
     (FilterKind::BandPass, 2),
     (FilterKind::BandPass, 4),
+    (FilterKind::BandPass, 6),
+    (FilterKind::BandPass, 8),
     (FilterKind::Notch, 2),
     (FilterKind::Notch, 4),
+    (FilterKind::Peak, 2),
     (FilterKind::Ladder, 4),
     (FilterKind::Vowel, 2),
     (FilterKind::Comb, 2),
@@ -1644,6 +1659,9 @@ impl PlayTab {
                     }
                     FilterKind::Comb => {
                         f.caption += &format!(" · rings at {}", note_of(p.filter.cutoff_hz))
+                    }
+                    FilterKind::Peak => {
+                        f.caption += &format!(" · boost {}", boost_text(p.filter.resonance))
                     }
                     _ => {}
                 }
@@ -2943,11 +2961,12 @@ fn section_text(st: &PlayState, s: Section) -> String {
             FilterKind::Off => "Off".into(),
             FilterKind::Vowel => format!("Vowel · {}", vowel_name(p.filter.cutoff_hz)),
             FilterKind::Comb => format!("Comb · {}", note_of(p.filter.cutoff_hz)),
+            // "LP 4-pole" as "LP4".
             _ => format!(
                 "{} · {}",
                 filter_label(&p.filter)
-                    .replace(" 2-pole", "2")
-                    .replace(" 4-pole", "4"),
+                    .replace("-pole", "")
+                    .replace(' ', ""),
                 hz_text(p.filter.cutoff_hz)
             ),
         },
@@ -3348,7 +3367,7 @@ pub fn stepped(p: &Pad, row: Row, delta: i32, granular: bool) -> Pad {
         Row::Sustain => p.amp.sustain = round_to(p.amp.sustain + d * 0.05, 0.05).clamp(0.0, 1.0),
         Row::Release => p.amp.release_ms = step_time(p.amp.release_ms, delta, MIN_RELEASE_MS),
         Row::Filter => {
-            let now = (p.filter.kind, if p.filter.poles >= 4 { 4 } else { 2 });
+            let now = (p.filter.kind, p.filter.slope());
             let i = FILTERS.iter().position(|f| *f == now).unwrap_or(0);
             (p.filter.kind, p.filter.poles) = FILTERS[shift(i, delta, FILTERS.len())];
             if now.0 == FilterKind::Off
@@ -3553,6 +3572,12 @@ pub fn value_text(p: &Pad, row: Row) -> String {
             note_of(p.filter.cutoff_hz)
         ),
         Row::Cutoff => hz_text(p.filter.cutoff_hz),
+        // A Peak's Resonance is its boost: "40 % · +14.5 dB".
+        Row::Resonance if p.filter.kind == FilterKind::Peak => format!(
+            "{} % · {}",
+            percent(p.filter.resonance),
+            boost_text(p.filter.resonance)
+        ),
         Row::Resonance => format!("{} %", percent(p.filter.resonance)),
         Row::Drive if p.filter.drive_db == 0.0 => "Off".into(),
         Row::Drive => format!("{:.1} dB", p.filter.drive_db),
@@ -3821,11 +3846,17 @@ pub fn filter_label(f: &Filter) -> String {
         FilterKind::HighPass => "HP",
         FilterKind::BandPass => "BP",
         FilterKind::Notch => "Notch",
+        FilterKind::Peak => return "Peak".into(),
         FilterKind::Ladder => return "Ladder".into(),
         FilterKind::Vowel => return "Vowel".into(),
         FilterKind::Comb => return "Comb".into(),
     };
-    format!("{kind} {}-pole", if f.poles >= 4 { 4 } else { 2 })
+    format!("{kind} {}-pole", f.slope())
+}
+
+/// The Peak's boost at Resonance `res`: "+14.5 dB".
+pub fn boost_text(res: f32) -> String {
+    format!("{:+.1} dB", mpfree_sampler::dsp::peak_boost_db(res))
 }
 
 pub fn pan_text(pan: f32) -> String {

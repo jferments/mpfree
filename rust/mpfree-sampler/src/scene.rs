@@ -55,7 +55,7 @@ impl Scene {
 
 /// Pad `p`'s own value of `field`, in the units
 /// [`crate::engine::Event::PadLive`] takes: a pad without a filter is open
-/// ([`OPEN_HZ`], no resonance).
+/// ([`OPEN_HZ`], no resonance, Drive or envelope).
 pub fn own(p: &Pad, field: PadField) -> f32 {
     let filtered = p.filter.kind != FilterKind::Off;
     match field {
@@ -73,6 +73,9 @@ pub fn own(p: &Pad, field: PadField) -> f32 {
         PadField::LfoDepth => p.lfo.depth,
         PadField::PitchEnv => p.pitch_env.semitones,
         PadField::PitchDecay => p.pitch_env.decay_ms,
+        PadField::Drive if filtered => p.filter.drive_db,
+        PadField::EnvDepth if filtered => p.filter.env_octaves,
+        PadField::Drive | PadField::EnvDepth => 0.0,
     }
 }
 
@@ -121,6 +124,9 @@ pub fn set_own(p: &mut Pad, field: PadField, v: f32) {
         PadField::LfoDepth => p.lfo.depth = v,
         PadField::PitchEnv => p.pitch_env.semitones = v,
         PadField::PitchDecay => p.pitch_env.decay_ms = v,
+        // Neither makes a filter: they move one the pad has.
+        PadField::Drive => p.filter.drive_db = v,
+        PadField::EnvDepth => p.filter.env_octaves = v,
     }
 }
 
@@ -202,6 +208,12 @@ mod tests {
             ),
             (FilterKind::LowPass, 2, 800.0)
         );
+        for (f, v) in [(PadField::Drive, 12.0), (PadField::EnvDepth, -2.5)] {
+            set_own(&mut pad, f, v);
+            assert_eq!(own(&pad, f), v, "{f:?}");
+        }
+        set_own(&mut pad, PadField::EnvDepth, 9.0);
+        assert_eq!(pad.filter.env_octaves, 4.0, "kept to the range");
         set_own(&mut pad, PadField::Level, 99.0);
         assert_eq!(pad.level_db, 24.0, "kept to the range");
         set_own(&mut pad, PadField::Level, f32::NAN);
