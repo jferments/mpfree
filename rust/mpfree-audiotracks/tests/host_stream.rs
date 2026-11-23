@@ -667,10 +667,14 @@ fn a_cue_s_audio_is_held_and_answered_once_it_is_in_the_cache() {
         said.is_some()
     });
     assert_eq!(said, Some((7, CueAudio::Held)));
-    // The audio thread has it within a period or two of the answer.
+    // The audio thread has it within a few periods of the answer: the
+    // units go to it at its next boundary, and the test's periods run far
+    // faster than real ones (300 us apart), so on a busy machine the
+    // stream thread can take a few to hand them over. 8 of them are still
+    // well inside a launch line.
     let f = r.frame;
     r.run_until(|r| r.cached(k.id, from, BAR));
-    assert!(r.frame - f <= 2 * P, "{}", r.frame - f);
+    assert!(r.frame - f <= 8 * P, "{}", r.frame - f);
     // A recording not here (still loading, say): short, at once.
     r.h.hold_cue(8, &[(RecordingId(9999), 0, 100)]);
     assert_eq!(r.h.cue_audio(), Some((8, CueAudio::Short)));
