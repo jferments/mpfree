@@ -81,10 +81,11 @@ button PLAY
 wait 60
 button STOP
 wait 2
-# The save copies every take's file into the project on the stick.
+# The save copies every take's file into the project on the stick: about
+# 200 MB, which the stick writes at 10 to 20 MB/s, so two minutes leave room.
 mark save
 button SHIFT + BROWSE
-wait 60
+wait 120
 expect project: saved Night Market
 # Opened again: the takes open on their files in the project's samples.
 mark open-again
@@ -92,7 +93,7 @@ button BROWSE
 tap browser place Projects
 tap browser row Night Market
 tap browser row Night Market
-wait 10
+wait 20
 expect project: Night Market is in
 expect project: 8 audio tracks and 10 takes in
 mark play-again

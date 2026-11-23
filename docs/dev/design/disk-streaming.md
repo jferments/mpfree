@@ -271,7 +271,7 @@ System status's "MPC running hot" needs to know where the MPC's temperature sett
 The first run of the whole app with its takes on the stick. [`host_streamtest_mpc.py`](../../../tools/mpc-one/host_streamtest_mpc.py) plays the stream test's workflows ([`tools/mpc-one/streamtest/workflows/`](../../../tools/mpc-one/streamtest/workflows/)) as the [device suite](../hardware/device-suite.md) plays its own, with one difference: each run's data folder is on partition 4, so what it records goes to the stick and plays back from its files there.
 
 - **Streaming for the run.** A workflow that says `needs stream-audio` ([`script.rs`](../../../rust/mpfree-app/src/script.rs)) has Dev's "Audio tracks from their files" on for its run only, started at the same point the setting starts it: before takes record to files. The saved setting stays as it is.
-- **`eight-tracks.mpw`,** about 8 minutes:
+- **`eight-tracks.mpw`,** about 9 minutes:
   - Night Market is opened in song mode, and eight audio tracks are added, each armed as it is added.
   - All eight record the line input for two minutes while the song plays. That is twice the audio track memory, so each take's memory goes back as its file holds it.
   - The eight play back from their files for two minutes, with two jumps back to the start.
