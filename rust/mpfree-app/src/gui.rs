@@ -2765,6 +2765,9 @@ pub struct Player {
     filter: Filter,
     tuning: Tuning,
     saved_tuning: Tuning,
+    /// What each track plays, as last told the time engine for the note
+    /// editor's Continue ([`Player::refresh_compose_parts`]).
+    compose_parts: Option<Arc<mpfree_time_ui::continuing::Parts>>,
     /// A line said in place of the hint ([`ToUi::Tell`]), the seconds it
     /// has left and its colour (yellow; red for a red problem's title,
     /// System status).
@@ -3384,6 +3387,7 @@ impl Player {
             filter: Filter::new((size.0 as f32, size.1 as f32)),
             tuning: Tuning::default(),
             saved_tuning: Tuning::default(),
+            compose_parts: None,
         };
         p.time_page.update(&mut p.ui, &p.time);
         p.show_timing();
@@ -5518,6 +5522,69 @@ impl Player {
         };
         let bank = self.pad_page.min(7) as u8;
         self.time_page.set_pads(&mut self.ui, names, bank);
+    }
+
+    /// What each track plays, for the note editor's Continue (composing
+    /// tools, phase 1 step 2): the kind of instrument where the screen is
+    /// sure of it (the Drums engine or a kit of samples: hits; the Bass
+    /// and Squelch engines: a bass; the rest is read from the clip's
+    /// notes), and the drum each pad of a kit plays, read from its
+    /// sound's name. The message telling the time engine, when it changed
+    /// since it was last told; sent just before a touch that may make
+    /// Continue ask ([`Player::may_ask_continue`]).
+    fn compose_parts_if_new(&mut self) -> Option<FromUi> {
+        use crate::synth::Engine;
+        use mpfree_compose::{lane_named, InstrumentKind, Lanes};
+        let n = self.time.tracks.len();
+        let mut kinds = Vec::with_capacity(n);
+        let mut lanes = Vec::new();
+        for t in 0..n {
+            let kind = match played(&self.track_sounds, &self.track_sends, t) {
+                Some((h, _)) => match Engine::from_node_id(h.id) {
+                    Some(Engine::Drums) => Some(InstrumentKind::Percussive),
+                    Some(Engine::Bass | Engine::Squelch) => Some(InstrumentKind::Bass),
+                    _ => None,
+                },
+                None => match self.track_kits.kit_of(t).and_then(|k| self.kits.get(k)) {
+                    Some(k) if k.synth.is_none() => {
+                        for (p, name) in k.pads.iter().enumerate().take(128) {
+                            if let Some(l) = name.as_deref().and_then(lane_named) {
+                                lanes.push((t, p as u8, l));
+                            }
+                        }
+                        Some(InstrumentKind::Percussive)
+                    }
+                    _ => None,
+                },
+            };
+            kinds.push(kind);
+        }
+        let parts = mpfree_time_ui::continuing::Parts {
+            kinds,
+            lanes: Lanes::new(lanes),
+        };
+        if self.compose_parts.as_deref() == Some(&parts) {
+            return None;
+        }
+        let parts = Arc::new(parts);
+        self.compose_parts = Some(Arc::clone(&parts));
+        Some(FromUi::Time(TimeAction::Continue(
+            mpfree_time_ui::continuing::ContinueAction::Parts(parts),
+        )))
+    }
+
+    /// A touch on the note editor that may make Continue ask: its row, or
+    /// any touch while it is open.
+    fn may_ask_continue(&self, a: &FromUi) -> bool {
+        let FromUi::Time(TimeAction::Edit(e)) = a else {
+            return false;
+        };
+        let open = self
+            .time
+            .edit
+            .as_ref()
+            .is_some_and(|ed| ed.editor.continuing_open());
+        open || matches!(e, EditAction::Row { row, .. } if *row == mpfree_time_ui::editor::CONTINUE_ROW)
     }
 
     /// The note editor's lock lanes (piano roll plan 3A.2): while it is
@@ -14602,6 +14669,13 @@ impl Player {
         }
         // A stretched copy coming in says so.
         self.print_sample_lines();
+        // What each track plays goes just before a touch that may make
+        // Continue ask, when it changed.
+        if let Some(at) = self.outbox.iter().position(|a| self.may_ask_continue(a)) {
+            if let Some(parts) = self.compose_parts_if_new() {
+                self.outbox.insert(at, parts);
+            }
+        }
         let out: Vec<FromUi> = std::mem::take(&mut self.outbox)
             .into_iter()
             .map(|a| self.as_held_lock(a))
@@ -22295,6 +22369,31 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             out.push(("sequencer-notes-tool", p));
         }
         Err(e) => eprintln!("sequencer-notes-tool sample: {e}"),
+    }
+    // Continue open on a two-bar riff (composing tools, phase 1 step 2):
+    // its second try plays, the new bars faint after yours with their jobs
+    // and chords, the drawer Continue's settings and the tries.
+    match mpfree_time_ui::sample::notes_continue_state() {
+        Ok(state) => {
+            let mut p = quiet_player(fonts());
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Sequencer));
+            p.time_page.edit_drawer = true;
+            p.time_page.update(&mut p.ui, &p.time);
+            // The whole clip across and every note in sight: the riff's
+            // and the new ones.
+            let r = p.ui.rect_of(time_view::NOTES);
+            if let (Some(r), Some(g)) = (r, p.ui.get_mut::<NoteGrid>(time_view::NOTES)) {
+                let roll = g.roll_rect(r);
+                let lo = g.notes.iter().map(|n| n.note).min().unwrap_or(48);
+                let hi = g.notes.iter().map(|n| n.note).max().unwrap_or(59);
+                g.view = g.view.fit(roll, g.length, 128, (0, g.length), (lo, hi));
+            }
+            p.refresh_qlinks();
+            p.refresh_hint();
+            out.push(("sequencer-notes-continue", p));
+        }
+        Err(e) => eprintln!("sequencer-notes-continue sample: {e}"),
     }
     // The Pressure lane (piano roll plan 3A.1) under the two notes that
     // carry pressure, picked: their swells as lines.
@@ -30269,6 +30368,46 @@ mod tests {
         p.apply(ToUi::Time(st));
         p.tick(0.1);
         assert_eq!(low(&grid(&p)), 16);
+    }
+
+    /// Continue's asks carry what each track plays (composing tools,
+    /// phase 1 step 2): the first touch on its row goes after the
+    /// screen's word on every track, a kit's drums read from its pads'
+    /// names; told once while it stays the same, and not with other
+    /// touches.
+    #[test]
+    fn a_continue_touch_tells_the_time_engine_what_each_track_plays() {
+        use mpfree_compose::{lane_named, InstrumentKind};
+        use mpfree_time_ui::continuing::ContinueAction;
+        use mpfree_time_ui::editor::CONTINUE_ROW;
+        let mut p = sample_play(Fonts::embedded(), PlayView::Beats);
+        p.take_actions();
+        let row = || {
+            FromUi::Time(TimeAction::Edit(EditAction::Row {
+                row: CONTINUE_ROW,
+                delta: 1,
+            }))
+        };
+        let is_row = |a: &FromUi| matches!(a, FromUi::Time(TimeAction::Edit(EditAction::Row { row, .. })) if *row == CONTINUE_ROW);
+        p.outbox.push(row());
+        let out = p.take_actions();
+        assert_eq!(out.len(), 2);
+        assert!(is_row(&out[1]));
+        let FromUi::Time(TimeAction::Continue(ContinueAction::Parts(parts))) = &out[0] else {
+            panic!("no word on the tracks first");
+        };
+        assert_eq!(parts.kinds.len(), p.time.tracks.len());
+        let kit = p.track_kits.kit_of(0).expect("track 1 plays a kit");
+        assert_eq!(parts.kinds[0], Some(InstrumentKind::Percussive));
+        let first = p.kits[kit].pads[0].clone().expect("its first pad is named");
+        assert_eq!(parts.lanes.lane(0, 0), lane_named(&first));
+        assert!(parts.lanes.lane(0, 0).is_some());
+        // The same again: not told twice; another touch: not told.
+        p.outbox.push(row());
+        assert_eq!(p.take_actions().len(), 1);
+        p.outbox
+            .push(FromUi::Time(TimeAction::Edit(EditAction::Correct)));
+        assert_eq!(p.take_actions().len(), 1);
     }
 
     /// The note editor's Pads write chip asks the time engine to switch

@@ -252,6 +252,22 @@ The last rows of the Edit options are tools. Pick some notes, then tap either ar
 
 Strum, Invert and Spread work on chords: the picked notes that sound together, each chord on its own, so a whole run of chords changes at once. Their rows show the first chord's strum ("↑ 20t", "↓ 20t", "none"), its name ("C/E") and whether it is "open" or "close"; Chop, Legato and Humanize say "open"; the open tool's row says "on".
 
+### Continue
+
+The very last row, **Continue**, carries the clip on: it listens to your bars (and to the clips in the same row on the other tracks), then makes some more bars in the same spirit. You hear them in place of the clip before anything is written, and keep them only if you like them.
+
+{{shot: sequencer-notes-continue | Continue open on a two-bar riff: your two bars, then four new bars drawn faintly in the track's colour, each new bar's job on the ruler and the chords under the roll, solid where they were heard in your bars and dashed where they're suggested. The drawer shows Continue's settings and the tries; the Q-Links are Similarity, Variation, Activity and Range.}}
+
+- **Open it** with either arrow on its row (its value says how many bars it adds, "+4 bars"). Nothing needs picking: it works on the whole clip, and it makes a first try straight away. While the clip plays, the new bars come in on the next bar line, in place of the clip and in time with whatever started with it; with the transport stopped they are there at once, so press **PLAY** to hear them.
+- **The roll** shows your bars as they are and the new ones faintly after them, with a line where they start. Each new bar's job is on the ruler after its number: **repeat**, **loop**, **vary**, **sequence** (yours moved up or down the scale), **answer**, **develop**, **contrast**, **return**, and the last bar's **land home**, **leave open** or **lead back**. The chords are under the roll in place of the lane: solid where they were heard in your bars, dashed where they are suggested for the new ones.
+- **The Q-Links**: **Q1 Similarity** (how close to your bars), **Q2 Variation** (steady to restless), **Q3 Activity** (sparser or busier than yours, "As yours" in the middle) and **Q4 Range** (**Narrow**, **Medium** or **Wide**: how far from the middle of your tune new notes may go). Hold **SHIFT** for the finest steps.
+- **The drawer** holds Continue's own settings while it is open: **Style** (Minimal, Groove, Jazz-ish), **Bars** (+1, +2, +4, +8 or +16), **Ending** (**Home** lands on the home chord, **Open** leaves it wanting more, **Loop** leads back into your first bar), then **Rhythm**, **Shape**, **Chords** and **Accents**, each **yours** (kept exactly as you played it; Shape means every step of the tune goes the way yours did) or **free**.
+- **Every change makes a new try.** The one you hear plays on until the new one is ready, which then comes in on the next bar line. **Try again**, on the tool's bar, makes another with the same settings.
+- **The tries** are listed where the takes usually are: the last 8, newest first, the one you hear lit. **‹** and **›** step back and forth through them, again from the next bar line.
+- **Done** writes the try you hear into the clip as one take (the clip grows by the new bars), and one **UNDO** takes it all back. **Cancel** brings the clip back as it was from the next bar line, and nothing is written.
+- If the clip changes while a try plays (you edit it, record into it or press **UNDO**), the clip comes back at once and the bar says "The clip changed: try again?". **REC** brings the clip back before the take starts; the try stays ready for afterwards.
+- A clip of pad hits has no tune to carry on, so its row says "no tune", and an empty clip's says "no notes". Carrying on drums and chords comes later.
+
 Every edit is a take, so **UNDO** takes it back and **SHIFT + UNDO** puts it back again.
 
 If the clip changes while you edit, because you're recording into it, pressed **UNDO**, or tapped a step on Steps, your picked notes stay picked wherever they now sit. If a picked note was taken out, the picks are let go and the line over the roll says "the clip changed: picks cleared". A tap on a note that landed just as the clip changed does nothing, so it never hits the wrong note: tap again. If an edit can't be played (rare), it is taken back and the log says so. Tap **‹ Steps**, or press **STEP SEQ**, to close the editor and see the clip as steps again. The editor stays open while you visit other tabs, and the Sequencer tab shows it again when you come back.
@@ -280,7 +296,7 @@ Timing Correct pulls notes toward the beat, so a part played a little loose sits
 - **Strength**: how far of the way each note moves. At 100 % it lands on the line. Lower values keep some of the feel.
 - **Shift**: moves the corrected notes a little early or late afterwards.
 
-The next rows act on the picked notes straight away: **Nudge** moves them a step, **Transpose** a semitone, **Velocity** up or down, **Length** longer or shorter, **Chance** 5 % at a time, **Condition** through the trig conditions (Always, 1:2 to 8:8, then FILL, !FILL, PRE, !PRE, NEI, !NEI, 1ST and !1ST), and **Ratchet** from 1 to 8 hits. A run of turns on the same row is one take, so one **UNDO** takes it all back. **Fit to scale**, after the Euclidean fill's rows, moves notes onto the clip's scale (see [Scale](#scale)), and the last rows open the tools: **Strum**, **Invert**, **Spread**, **Chop**, **Legato** and **Humanize** (see [Tools](#tools-strum-invert-spread-chop-legato-humanize)).
+The next rows act on the picked notes straight away: **Nudge** moves them a step, **Transpose** a semitone, **Velocity** up or down, **Length** longer or shorter, **Chance** 5 % at a time, **Condition** through the trig conditions (Always, 1:2 to 8:8, then FILL, !FILL, PRE, !PRE, NEI, !NEI, 1ST and !1ST), and **Ratchet** from 1 to 8 hits. A run of turns on the same row is one take, so one **UNDO** takes it all back. **Fit to scale**, after the Euclidean fill's rows, moves notes onto the clip's scale (see [Scale](#scale)), and the last rows open the tools: **Strum**, **Invert**, **Spread**, **Chop**, **Legato** and **Humanize** (see [Tools](#tools-strum-invert-spread-chop-legato-humanize)), then **Continue** (see [Continue](#continue)).
 
 ## Euclidean fill
 

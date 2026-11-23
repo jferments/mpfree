@@ -6,7 +6,9 @@
 //! options: Timing Correct; the selection's nudge, transpose, velocity,
 //! length, chance, condition and ratchet; the Euclidean fill; Fit to
 //! scale; and the tools (Strum, Invert, Spread, Chop, Legato, Humanize),
-//! each previewed on the roll until Done or Cancel.
+//! each previewed on the roll until Done or Cancel; and Continue, which
+//! carries the clip on by some bars ([`compose`]: composing tools, phase 1
+//! step 2).
 //!
 //! [`Editor`] is the editor's state (the clip, the selection, the lens,
 //! the tool, the snap, the Timing Correct settings, the sound being
@@ -62,6 +64,7 @@
 //! [`edit_rows`] fills the Edit options list; its `Step` and `Select`
 //! become [`EditAction::Row`] and [`EditAction::PickRow`].
 
+pub mod compose;
 pub mod gesture;
 pub mod zoom;
 
@@ -69,6 +72,7 @@ use std::cell::RefCell;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use compose::{Compose, ContinueSet};
 use gesture::Pinch;
 use zoom::RollView;
 
@@ -133,8 +137,9 @@ pub const EDIT_BUTTON: usize = 7;
 /// once; the next four are the Euclidean fill: the sound it writes, then
 /// its hits, steps and rotation, each turn writing the pattern; then Fit
 /// to scale (plan 2B.1), and the tools Strum, Invert and Spread (plan
-/// 2B.2), Chop, Legato and Humanize (plan 2B.3), each opening its tool.
-pub const EDIT_ROWS: [&str; 24] = [
+/// 2B.2), Chop, Legato and Humanize (plan 2B.3), each opening its tool,
+/// and Continue (composing tools, phase 1 step 2; [`compose`]).
+pub const EDIT_ROWS: [&str; 25] = [
     "Correct",
     "Division",
     "Swing",
@@ -159,6 +164,7 @@ pub const EDIT_ROWS: [&str; 24] = [
     "Chop",
     "Legato",
     "Humanize",
+    "Continue",
 ];
 /// The first of the Euclidean fill's rows in [`EDIT_ROWS`].
 pub const EUCLID_ROW: usize = 13;
@@ -174,6 +180,8 @@ pub const SPREAD_ROW: usize = 20;
 pub const CHOP_ROW: usize = 21;
 pub const LEGATO_ROW: usize = 22;
 pub const HUMANIZE_ROW: usize = 23;
+/// [`EDIT_ROWS`]' Continue: opens on the whole clip, no picks needed.
+pub const CONTINUE_ROW: usize = 24;
 /// How much a detent of Strum's Apart moves a chord's notes apart: about
 /// 5 ms at 120 BPM (SHIFT: a tick).
 pub const STRUM_TICKS: Tick = PPQ as Tick / 96;
@@ -568,12 +576,13 @@ pub enum ToolAct {
     /// The tool closes and the clip stays as it was.
     Cancel,
     /// The tool's own button: Chop's Reset pressure (on and off),
-    /// Humanize's Again (another roll of the dice).
+    /// Humanize's Again (another roll of the dice), Continue's Try again.
     Option,
 }
 
 /// The tools (piano roll plans 2B.2 and 2B.3), opened from their rows of
-/// the Edit options on the picked notes.
+/// the Edit options on the picked notes; Continue (composing tools, phase
+/// 1 step 2) on the whole clip.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToolKind {
     Strum,
@@ -582,17 +591,19 @@ pub enum ToolKind {
     Chop,
     Legato,
     Humanize,
+    Continue,
 }
 
 impl ToolKind {
     /// In [`EDIT_ROWS`]' order, from [`STRUM_ROW`].
-    pub const ALL: [ToolKind; 6] = [
+    pub const ALL: [ToolKind; 7] = [
         ToolKind::Strum,
         ToolKind::Invert,
         ToolKind::Spread,
         ToolKind::Chop,
         ToolKind::Legato,
         ToolKind::Humanize,
+        ToolKind::Continue,
     ];
 
     /// The tool on Edit option `row`, if one is.
@@ -633,7 +644,8 @@ pub struct NoteTool {
     /// is, 1 up, 2 down); Invert's and Spread's times (below 0 down, or
     /// closer); Chop's pieces; Legato's share of the gap (%); Humanize's
     /// timing (ticks), velocity and length (%), and ahead or behind (-100
-    /// to 100).
+    /// to 100); Continue's Similarity, Variation and Activity (%) and
+    /// Range (0 Narrow to 2 Wide).
     pub q: [i32; 4],
     /// Humanize's dice: Again moves it on.
     pub seed: u64,
@@ -649,6 +661,7 @@ impl NoteTool {
             ToolKind::Chop => [2, 0, 0, 0],
             ToolKind::Legato => [100, 0, 0, 0],
             ToolKind::Humanize => [20, 10, 10, 0],
+            ToolKind::Continue => compose::opening_q(),
             _ => [0; 4],
         };
         NoteTool {
@@ -690,14 +703,17 @@ impl NoteTool {
                 (5, 1, 0, 100),
                 (10, 1, -100, 100),
             ],
+            ToolKind::Continue => &[(5, 1, 0, 100), (5, 1, 0, 100), (5, 1, 0, 100), (1, 1, 0, 2)],
         }
     }
 
     /// The edit the tool makes on the `sel` notes of `clip` (empty at no
-    /// change, or when refused).
+    /// change, or when refused; always for Continue, whose result the time
+    /// engine makes and publishes).
     pub fn edit(&self, clip: &Clip, sel: &[usize]) -> Edit {
         let q = self.q;
         match self.kind {
+            ToolKind::Continue => Edit::default(),
             ToolKind::Strum => {
                 let down = match q[1] {
                     1 => Some(false),
@@ -730,6 +746,7 @@ impl NoteTool {
         let chords = notes::chords_of(clip, sel);
         let chord = |least: usize| chords.iter().any(|c| c.len() >= least);
         match self.kind {
+            ToolKind::Continue => "the new bars are on their way",
             _ if sel.is_empty() => "no notes picked",
             k if !chord(k.least()) && k.least() == 3 => "no chord of three notes or more picked",
             k if !chord(k.least()) => "no chord picked: notes that sound together",
@@ -790,6 +807,7 @@ impl NoteTool {
                     signed(q[3], "Behind", "Ahead").replace("None", "Even"),
                 ),
             ],
+            ToolKind::Continue => compose::cards(q),
         }
     }
 
@@ -810,11 +828,13 @@ impl NoteTool {
     }
 
     /// The tool's own button's words and whether it is lit: Chop's Reset
-    /// pressure, Humanize's Again; None for the others.
+    /// pressure, Humanize's Again, Continue's Try again; None for the
+    /// others.
     pub fn option(&self) -> Option<(&'static str, bool)> {
         match self.kind {
             ToolKind::Chop => Some(("Reset pressure", self.reset)),
             ToolKind::Humanize => Some(("Again", false)),
+            ToolKind::Continue => Some(("Try again", false)),
             _ => None,
         }
     }
@@ -875,6 +895,10 @@ pub struct Done {
     /// After the edit, sound the notes it put in (plan 1C.2: notes drawn
     /// or moved).
     hear: bool,
+    /// Continue's ask of the time engine (composing tools, phase 1 step
+    /// 2): a new result, Keep or Back. The time engine closes the tool
+    /// once Keep or Back is done.
+    pub compose: Option<Compose>,
 }
 
 impl Done {
@@ -1068,6 +1092,9 @@ pub struct Editor {
     /// The hold whose first detent picked its note (plan 1C.3): its
     /// later detents turn the picks; another hold's, nothing.
     held_turn: Option<u64>,
+    /// Continue's drawer settings and the Q-Links' (composing tools,
+    /// phase 1 step 2), kept from one Continue to the next.
+    pub continuing: ContinueSet,
 }
 
 /// The most other clips the roll shows behind the one edited (plan 4.1).
@@ -1276,6 +1303,7 @@ impl Editor {
             heard: Heard::default(),
             show: Vec::new(),
             held_turn: None,
+            continuing: ContinueSet::default(),
         }
     }
 
@@ -1556,6 +1584,13 @@ impl Editor {
         {
             self.pad_up(k, clip);
             return Done::default();
+        }
+        // Continue open (composing tools, phase 1 step 2) takes the
+        // drawer's rows too.
+        if let Some(tool) = self.open_tool.filter(|t| t.kind == ToolKind::Continue) {
+            if let Some(done) = self.continue_touch(tool, &a) {
+                return done;
+            }
         }
         // A tool open (plan 2B.3) takes the Q-Links and its bar; settings
         // and the view still change, another tool's row opens that one in
@@ -2077,6 +2112,8 @@ impl Editor {
                                 format!("{} held on, {q}% of the gap", them(n, "note", "notes"))
                             }
                             ToolKind::Humanize => format!("{} humanized", them(n, "note", "notes")),
+                            // Continue's Done is its own (`continue_touch`).
+                            ToolKind::Continue => return Done::default(),
                         };
                         // One take of its own, the notes it made picked.
                         (e, None, true, true, format!("edit: {line}"))
@@ -2447,13 +2484,17 @@ impl Editor {
             select_sound: None,
             scale: None,
             hear: hears,
+            compose: None,
         }
     }
 
     /// Open `kind` on the `sel` notes of `clip` (plan 2B.3), in place of
     /// a tool already open; refused, with why, without the notes it
-    /// needs.
+    /// needs. Continue opens on the whole clip and asks at once.
     fn open(&mut self, kind: ToolKind, clip: &Clip, sel: &[usize]) -> Done {
+        if kind == ToolKind::Continue {
+            return self.open_continue(clip);
+        }
         if sel.is_empty() {
             return Done::line("edit: pick notes first".into());
         }
@@ -2469,6 +2510,92 @@ impl Editor {
             "edit: {}: turn the Q-Links, then Done or Cancel",
             kind.name()
         ))
+    }
+
+    /// Continue is the tool open (composing tools, phase 1 step 2): the
+    /// drawer shows its settings.
+    pub fn continuing_open(&self) -> bool {
+        self.open_tool.is_some_and(|t| t.kind == ToolKind::Continue)
+    }
+
+    /// The drawer's row picked: Continue's while it is open.
+    pub fn row_picked(&self) -> usize {
+        match self.continuing_open() {
+            true => self.continuing.row,
+            false => self.row,
+        }
+    }
+
+    /// Continue opened on `clip` (composing tools, phase 1 step 2), with
+    /// the settings it had last: it asks at once. Refused on a clip of
+    /// pads (no tune to carry on) or one with no notes.
+    fn open_continue(&mut self, clip: &Clip) -> Done {
+        if pads(clip) {
+            return Done::line(format!(
+                "continue: {}",
+                mpfree_compose::Refused::PadHits.words()
+            ));
+        }
+        if clip.notes.iter().all(|n| !n.on) {
+            return Done::line("continue: play or draw some notes to carry on first".into());
+        }
+        let mut tool = NoteTool::new(ToolKind::Continue);
+        tool.q = self.continuing.q;
+        self.open_tool = Some(tool);
+        Done {
+            compose: Some(Compose::Ask(Box::new(self.continuing.settings(tool.q)))),
+            ..Done::default()
+        }
+    }
+
+    /// A touch while Continue is open (composing tools, phase 1 step 2):
+    /// the drawer's rows are its settings, the Q-Links turn the rest, and
+    /// each change asks again; Try again asks with the same settings;
+    /// Done asks for Keep and Cancel for Back, the tool staying open
+    /// until the time engine has done it. None for a touch the other
+    /// tools' rules take (the view moving; anything else waits).
+    fn continue_touch(&mut self, mut tool: NoteTool, a: &EditAction) -> Option<Done> {
+        let ask = |ed: &Editor, line: String| Done {
+            line,
+            compose: Some(Compose::Ask(Box::new(
+                ed.continuing.settings(ed.continuing.q),
+            ))),
+            ..Done::default()
+        };
+        let rows = compose::CONTINUE_ROWS.len();
+        Some(match *a {
+            EditAction::Row { row, delta } if row < rows => {
+                self.continuing.row = row;
+                if !self.continuing.step(row, delta) {
+                    return Some(Done::default());
+                }
+                let said = self.continuing.said(row);
+                ask(self, format!("continue: {said}"))
+            }
+            EditAction::PickRow(row) if row < rows => {
+                self.continuing.row = row;
+                Done::default()
+            }
+            EditAction::Row { .. } | EditAction::PickRow(_) => Done::default(),
+            EditAction::Knob { k, ticks, fine, .. } => {
+                if !tool.turn(k, ticks, fine) {
+                    return Some(Done::default());
+                }
+                self.open_tool = Some(tool);
+                self.continuing.q = tool.q;
+                ask(self, String::new())
+            }
+            EditAction::Tool(ToolAct::Option) => ask(self, String::new()),
+            EditAction::Tool(ToolAct::Done) => Done {
+                compose: Some(Compose::Keep),
+                ..Done::default()
+            },
+            EditAction::Tool(ToolAct::Cancel) => Done {
+                compose: Some(Compose::Back),
+                ..Done::default()
+            },
+            _ => return None,
+        })
     }
 
     /// The open tool's preview (plan 2B.3): a copy of `clip` with the
@@ -2714,6 +2841,10 @@ fn find_notes(clip: &Clip, want: &[Note]) -> Vec<Option<usize>> {
 
 /// The Edit options as the list shows them, for `ed` on `clip`.
 pub fn edit_rows(ed: &Editor, clip: &Clip) -> Vec<OptionRow> {
+    // Continue open: its settings in place of the options.
+    if ed.continuing_open() {
+        return ed.continuing.rows();
+    }
     let picks = ed.picked(clip);
     let sel: Vec<&Note> = picks.iter().map(|&i| &clip.notes[i]).collect();
     let tc = ed.tc;
@@ -2811,6 +2942,8 @@ pub fn edit_rows(ed: &Editor, clip: &Clip) -> Vec<OptionRow> {
         tool_value(&picks),
         tool_value(&picks),
         tool_value(&picks),
+        // Continue on the whole clip.
+        continue_value(ed, clip),
     ];
     // The open tool's row says so.
     let mut values = values;
@@ -2825,6 +2958,18 @@ pub fn edit_rows(ed: &Editor, clip: &Clip) -> Vec<OptionRow> {
             value,
         })
         .collect()
+}
+
+/// Continue's value while it is closed: the bars it adds, or why it
+/// can't open.
+fn continue_value(ed: &Editor, clip: &Clip) -> String {
+    if pads(clip) {
+        "no tune".into()
+    } else if clip.notes.iter().all(|n| !n.on) {
+        "no notes".into()
+    } else {
+        ed.continuing.value(1)
+    }
 }
 
 /// Chop's, Legato's and Humanize's value (plan 2B.3): "open" with notes
@@ -3564,6 +3709,18 @@ pub struct ToolBar {
     pub option: Option<(&'static str, bool)>,
 }
 
+/// A chord under the roll while Continue is open (composing tools, phase
+/// 1 step 2; [`NoteGrid::chords`]): from `start` to `end` in clip ticks,
+/// its name, and whether it is suggested for the new bars (dashed) rather
+/// than heard in yours (solid).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChordMark {
+    pub start: Tick,
+    pub end: Tick,
+    pub name: String,
+    pub suggested: bool,
+}
+
 /// The roll or the list (see the module notes).
 #[derive(Clone, Debug, PartialEq)]
 pub struct NoteGrid {
@@ -3664,6 +3821,13 @@ pub struct NoteGrid {
     /// notes are the tool's preview, and the roll and the lane only move
     /// the view.
     pub tool_bar: Option<ToolBar>,
+    /// Continue's result on the roll (composing tools, phase 1 step 2):
+    /// the notes from this tick on are the new bars, drawn faintly in the
+    /// track's colour as the other clips are; each bar's job, from its
+    /// start, on the ruler; the chords in the lane's place.
+    pub new_from: Option<Tick>,
+    pub bar_jobs: Vec<(Tick, &'static str)>,
+    pub chords: Vec<ChordMark>,
     /// Pads write is on (the editor's, plan 1C.2): its chip is lit like
     /// REC.
     pub pads_write: bool,
@@ -3970,6 +4134,9 @@ impl Default for NoteGrid {
             chord_menu: false,
             fold: Fold::All,
             tool_bar: None,
+            new_from: None,
+            bar_jobs: Vec::new(),
+            chords: Vec::new(),
             pads_write: false,
             hearing: Hearing::On,
             ghosts: Vec::new(),
@@ -4070,6 +4237,8 @@ impl NoteGrid {
             && self.offers == other.offers
             && (self.chord, self.minor) == (other.chord, other.minor)
             && self.tool_bar == other.tool_bar
+            && (self.new_from, &self.bar_jobs, &self.chords)
+                == (other.new_from, &other.bar_jobs, &other.chords)
             && (self.pads_write, self.hearing) == (other.pads_write, other.hearing)
             && self.ghosts == other.ghosts
             && self.show_offers == other.show_offers
@@ -5222,6 +5391,7 @@ impl NoteGrid {
             }
             at += beat;
         }
+        self.paint_bar_jobs(cx, g, (from, to));
         // The clip's end handle (plan 1A.2): a grip as a picked note's.
         if let Some(e) = self.end_grip(g) {
             let grip = t.accent2.mix(t.raised, 0.45);
@@ -5258,6 +5428,13 @@ impl NoteGrid {
                 continue;
             };
             let n = &self.notes[i];
+            // Continue's new bars: faint, as the other clips are.
+            if self.new_from.is_some_and(|f| n.tick >= f) {
+                cx.canvas.fill_round_rect(nr, 3, t.bg.mix(self.color, 0.30));
+                cx.canvas
+                    .stroke_round_rect(nr, 3, 1, t.bg.mix(self.color, 0.60));
+                continue;
+            }
             let fill = shade(n.velocity);
             if !n.on {
                 // Off: its place and settings kept, nothing played.
@@ -5368,7 +5545,10 @@ impl NoteGrid {
             g.keys.w + g.vel.w,
             g.vel.h + GAP,
         )));
-        self.paint_lane(cx, g);
+        match self.chords.is_empty() {
+            true => self.paint_lane(cx, g),
+            false => self.paint_chords(cx, g),
+        }
         let lines = was.intersect(Rect::new(
             g.roll.x,
             g.ruler.y,
@@ -5471,6 +5651,105 @@ impl NoteGrid {
     /// Other clips' notes, faint behind this one's (plan 4.1), and a
     /// label for each in the roll's top right corner: its name and Plays
     /// with or Reference, on a swatch of its colour.
+    /// Continue's bar jobs on the ruler (composing tools, phase 1 step
+    /// 2): after each new bar's number while a bar is wide enough, in the
+    /// track's colour; and a line down the roll where the new bars start.
+    fn paint_bar_jobs(&self, cx: &mut PaintCx, g: &Geo, (from, to): (Tick, Tick)) {
+        let Some(new_from) = self.new_from else {
+            return;
+        };
+        let t = cx.theme.clone();
+        let bar = self.bar.max(1);
+        let ink = t.readable(t.bg.mix(self.color, 0.85), t.bg);
+        if (bar as f64 * g.v.ppt) >= 72.0 {
+            for &(at, job) in self.bar_jobs.iter().filter(|j| j.0 >= from && j.0 <= to) {
+                let x = self.x_of(g, at);
+                let number = format!("{}", at / bar + 1);
+                let skip = cx.measure(FontId::Sans, t.size_small - 2.0, &number) + 8;
+                cx.text(
+                    FontId::Sans,
+                    t.size_small - 2.0,
+                    Rect::new(x + 3 + skip, g.ruler.y, 120, g.ruler.h),
+                    Align::Left,
+                    ink,
+                    job,
+                );
+            }
+        }
+        if (from..=to).contains(&new_from) {
+            let x = self.x_of(g, new_from);
+            let was = cx.canvas.clip();
+            cx.canvas.set_clip(was.union(g.roll));
+            cx.canvas.fill_rect(
+                Rect::new(x - 1, g.ruler.y, 2, g.roll.bottom() - g.ruler.y),
+                self.color,
+            );
+            cx.canvas.set_clip(was);
+        }
+    }
+
+    /// The chords in the lane's place while Continue is open (composing
+    /// tools, phase 1 step 2): each a box with its name, solid where heard
+    /// in your bars, dashed where suggested for the new ones.
+    fn paint_chords(&self, cx: &mut PaintCx, g: &Geo) {
+        let t = cx.theme.clone();
+        if !g.chip.is_empty() {
+            cx.canvas.fill_round_rect(g.chip, 6, t.raised);
+            cx.text(
+                FontId::Sans,
+                t.size_small - 2.0,
+                g.chip,
+                Align::Center,
+                t.ink_on(t.raised),
+                "Chords",
+            );
+        }
+        let band = Rect::new(g.vel.x, g.vel.y + 2, g.vel.w, g.vel.h.min(32) - 4);
+        if band.h <= 4 {
+            return;
+        }
+        let was = cx.canvas.clip();
+        cx.canvas.set_clip(was.intersect(g.vel));
+        for c in &self.chords {
+            let x0 = self.x_of(g, c.start) + 1;
+            let x1 = self.x_of(g, c.end) - 1;
+            if x1 <= g.vel.x || x0 >= g.vel.right() || x1 - x0 < 4 {
+                continue;
+            }
+            let r = Rect::new(x0, band.y, x1 - x0, band.h);
+            if c.suggested {
+                // Dashed: a mark every 8 px along the top and the bottom.
+                let edge = t.bg.mix(self.color, 0.60);
+                let mut x = r.x;
+                while x < r.right() {
+                    let w = 4.min(r.right() - x);
+                    cx.canvas.fill_rect(Rect::new(x, r.y, w, 1), edge);
+                    cx.canvas
+                        .fill_rect(Rect::new(x, r.bottom() - 1, w, 1), edge);
+                    x += 8;
+                }
+                cx.canvas.fill_rect(Rect::new(r.x, r.y, 1, r.h), edge);
+            } else {
+                cx.canvas
+                    .fill_round_rect(r, 4, t.surface.mix(self.color, 0.18));
+                cx.canvas.stroke_round_rect(r, 4, 1, self.color);
+            }
+            let ink = match c.suggested {
+                true => t.text_dim,
+                false => t.text,
+            };
+            cx.text(
+                FontId::Sans,
+                t.size_small - 2.0,
+                Rect::new(r.x + 6, r.y, (r.w - 8).max(0), r.h),
+                Align::Left,
+                ink,
+                &c.name,
+            );
+        }
+        cx.canvas.set_clip(was);
+    }
+
     fn paint_ghosts(&self, cx: &mut PaintCx, g: &Geo) {
         if self.ghosts.is_empty() || self.lens != Lens::Grid {
             return;
@@ -6755,7 +7034,9 @@ impl Widget for NoteGrid {
             }
             out.push(Target::drag("lane-edge", 0, "lane's top edge", g.edge).towards(0, -24));
         }
-        if !g.chip.is_empty() {
+        // While Continue's chords take the lane's place the chip is their
+        // label, and does something only folded (it opens them).
+        if !g.chip.is_empty() && (self.chords.is_empty() || self.lane.folded) {
             out.push(Target::tap("lane-chip", 0, "lane", g.chip));
         }
         // Another clip's faint notes (plan 4.1): with Draw off, the first
@@ -8171,6 +8452,8 @@ impl NoteGrid {
         if g.chip.contains(x, y) {
             if self.lane.folded {
                 self.lane.folded = false;
+            } else if !self.chords.is_empty() {
+                return None;
             } else {
                 let kinds = self.lane_kinds();
                 let k = kinds.iter().position(|&l| l == self.lane_kind());

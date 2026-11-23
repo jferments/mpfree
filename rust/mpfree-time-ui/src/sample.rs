@@ -1591,6 +1591,107 @@ pub fn notes_chord_state() -> Result<TimeState, String> {
     Ok(state)
 }
 
+/// A two-bar riff in C minor (composing tools, phase 1): what Continue
+/// carries on in the samples.
+pub fn riff_clip() -> Clip {
+    let mut c = Clip::new("Riff", 2 * BAR);
+    c.holds = mpfree_seq::Holds::Notes;
+    // (tick, length, note, velocity)
+    let notes: [(Tick, Tick, u8, u8); 13] = [
+        (0, 440, 60, 100),
+        (2 * SIXTEENTH, 220, 63, 84),
+        (3 * SIXTEENTH, 220, 65, 90),
+        (BEAT, 440, 67, 108),
+        (2 * BEAT, 440, 70, 96),
+        (2 * BEAT + 2 * SIXTEENTH, 440, 67, 88),
+        (3 * BEAT, 900, 65, 104),
+        (BAR, 440, 63, 100),
+        (BAR + 2 * SIXTEENTH, 220, 65, 86),
+        (BAR + 3 * SIXTEENTH, 220, 63, 84),
+        (BAR + BEAT, 900, 60, 106),
+        (BAR + 2 * BEAT, 440, 58, 92),
+        (BAR + 3 * BEAT, 900, 60, 110),
+    ];
+    for (tick, len, n, v) in notes {
+        c.add_note(Note::new(tick, len, n, v)).ok();
+    }
+    c
+}
+
+/// Continue open on the riff (composing tools, phase 1 step 2): its second
+/// try, four more bars in Minimal, plays in place of the clip; the roll
+/// shows the new bars faintly after yours, each bar's job on the ruler and
+/// the chords under it, the drawer Continue's settings and the tries.
+pub fn notes_continue_state() -> Result<TimeState, String> {
+    use crate::continuing::{Continuing, Try};
+    use crate::editor::{compose, NoteTool, ToolKind};
+    use mpfree_compose::request::{continue_clip, OnClip};
+    use mpfree_compose::{InstrumentKind, State};
+    use mpfree_context::{PartRole, ReadBudget};
+    let mut s = playing()?;
+    let riff = riff_clip();
+    s.project.tracks[CHORDS].slots[1] = Some(riff.clone());
+    let set = compose::ContinueSet::default();
+    let settings = mpfree_compose::Settings {
+        seed: 2,
+        ..set.settings(set.q)
+    };
+    let on = OnClip {
+        project: &s.project,
+        track: CHORDS,
+        slot: 1,
+        role: PartRole::Melody,
+        others: &[],
+        lane_of: &|_, _| None,
+        transport_swing: Default::default(),
+        meter: Default::default(),
+        bpm: BPM,
+        budget: ReadBudget::default(),
+    };
+    let (proposal, made) =
+        continue_clip(&on, &settings, InstrumentKind::OneNote).map_err(|r| r.words())?;
+    let mut heard = riff.clone();
+    heard.apply(&proposal.edit).map_err(|e| format!("{e:?}"))?;
+    let mut state = s.state();
+    let new_from = made.to - Tick::from(settings.bars) * BAR;
+    state.continuing = Some(std::sync::Arc::new(Continuing {
+        track: CHORDS,
+        slot: 1,
+        state: State::Auditioning,
+        made: Some(std::sync::Arc::new(made)),
+        clip: Some(std::sync::Arc::new(heard)),
+        new_from,
+        position: Some((2, 2)),
+        heard: true,
+        line: None,
+        words: None,
+        settings,
+        tries: vec![
+            Try {
+                style: settings.style.name,
+                bars: settings.bars,
+            };
+            2
+        ],
+    }));
+    let mut editor = crate::editor::Editor::new(CHORDS, 1, &riff);
+    let mut tool = NoteTool::new(ToolKind::Continue);
+    tool.q = set.q;
+    editor.open_tool = Some(tool);
+    editor.row = crate::editor::CONTINUE_ROW;
+    state.edit = Some(Box::new(crate::view::EditInfo {
+        editor,
+        clip: riff.into(),
+        rev: 0,
+        track_name: "Chords".into(),
+        bar: BAR,
+        answer: Default::default(),
+        locks: Default::default(),
+        ghosts: Default::default(),
+    }));
+    Ok(state)
+}
+
 /// Chop open on the two long melody notes (piano roll plan 2B.3), in four
 /// pieces: the roll previews the pieces, each with its share of the
 /// pressure, and the tool's bar takes the buttons' place.

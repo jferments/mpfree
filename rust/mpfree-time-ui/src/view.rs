@@ -29,15 +29,11 @@
 
 use std::collections::BTreeMap;
 
+use crate::continuing::{ContinueAction, Continuing};
 use crate::editor::zoom::RollView;
 use crate::editor::{
     box_of, chord_name, drop_of, edit_rows, knob_name, length_name, lit_scale, pads, position_name,
-    sound_name, step_name, ChordShape, EditAction, Editor, Fold, GhostLayer, Hearing, LaneShow,
-    Lens, LockMark, LockSetting, NoteBox, NoteGrid, NoteTool, ShowOffer, Tool, ToolAct, ToolBar,
-    ToolKind, ADD, CHORD_MAJOR, CHORD_MENU, CHORD_MINOR, CLIP_END, EDIT_BUTTON, ERASE_SWEEP,
-    FIELDS, GHOST_MOST, GHOST_TAP, HELD_FINE, HELD_FIRST, HELD_TURN, LOCK_LANES, MENU, PADS_WRITE,
-    PEN, PRESSURE_END, PRESSURE_LANE, ROOT_MENU, SCALE_MENU, SHOW_MENU, SHOW_NONE, SNAP_AUTO_T,
-    START_HANDLE, STEP_FALLBACK, TOOL_BUTTONS, TOOL_CANCEL, TOOL_DONE, TOOL_OPTION,
+    sound_name, step_name, ChordShape, EditAction, Editor, Fold, GhostLayer, Hearing, LaneShow, Lens, LockMark, LockSetting, NoteBox, NoteGrid, NoteTool, ShowOffer, Tool, ToolAct, ToolBar, ToolKind, ADD, CHORD_MAJOR, CHORD_MENU, CHORD_MINOR, CLIP_END, EDIT_BUTTON, ERASE_SWEEP, FIELDS, GHOST_MOST, GHOST_TAP, HELD_FINE, HELD_FIRST, HELD_TURN, LOCK_LANES, MENU, PADS_WRITE, PEN, PRESSURE_END, PRESSURE_LANE, ROOT_MENU, SCALE_MENU, SHOW_MENU, SHOW_NONE, SNAP_AUTO_T, START_HANDLE, STEP_FALLBACK, TOOL_BUTTONS, TOOL_CANCEL, TOOL_DONE, TOOL_OPTION, ChordMark,
 };
 use crate::list::{
     ListRow, SongListView, LIST_ADD, LIST_CLIPS, LIST_LINK, LIST_LINK_CLOSE, LIST_LINK_FROM_LIST,
@@ -51,9 +47,7 @@ use crate::song::{
     TEMPO_ROW,
 };
 use crate::widgets::{
-    BarButton, BarItem, CellAlert, CellState, ClipGrid, GridCell, GridTrack, MorphBar, Run,
-    SongMark, TakeItem, TakeList, TransportBar, ADD_DISMISS, ADD_KIND, ADD_TRACK, BACK_TO_SONG,
-    GRID_COLS, PAGE_BACK, PAGE_ON, ROWS_BACK, ROWS_ON, ROW_DROP,
+    BarButton, BarItem, CellAlert, CellState, ClipGrid, GridCell, GridTrack, MorphBar, Run, SongMark, TakeItem, TakeList, TransportBar, ADD_DISMISS, ADD_KIND, ADD_TRACK, BACK_TO_SONG, GRID_COLS, PAGE_BACK, PAGE_ON, ROWS_BACK, ROWS_ON, ROW_DROP, TAKE_WORDS,
 };
 use mpfree_audiotracks::host::TakeWave;
 use mpfree_audiotracks::{Input, Monitor};
@@ -180,6 +174,10 @@ pub fn note_cards(e: &EditInfo) -> Option<(String, [QLinkCard; 4])> {
             card
         });
         let notes = if n == 1 { "note" } else { "notes" };
+        if t.kind == ToolKind::Continue {
+            let more = e.editor.continuing.value(1);
+            return Some((format!("Continue · {more}"), cards));
+        }
         return Some((format!("{} · {n} {notes}", t.kind.name()), cards));
     }
     let picked: Vec<&mpfree_seq::Note> = e
@@ -373,6 +371,7 @@ pub fn tool_hint(t: &NoteTool) -> String {
     let own = match t.kind {
         ToolKind::Chop => "   ·   Reset pressure: pieces without it",
         ToolKind::Humanize => "   ·   Again: another try",
+        ToolKind::Continue => "   ·   Try again: another",
         _ => "",
     };
     format!(
@@ -3092,6 +3091,15 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                 _ => None,
             }
         }
+        // While the note editor's Continue is open the takes area holds
+        // its tries: ‹ and › step them, each only while there is one.
+        (TAKES, EventKind::Tab(k @ (0 | 1))) if continuing_open(st) => {
+            let (i, n) = st.continuing.as_ref()?.position?;
+            let back = *k == 0;
+            (if back { i > 1 } else { i < n })
+                .then_some(TimeAction::Continue(ContinueAction::Step { back }))
+        }
+        (TAKES, EventKind::Tab(_)) if continuing_open(st) => None,
         // Each only while it has something to do (it is faint otherwise).
         (TAKES, EventKind::Tab(0)) => (!st.done.is_empty()).then_some(TimeAction::Undo),
         (TAKES, EventKind::Tab(1)) => (!st.undone.is_empty()).then_some(TimeAction::Redo),
@@ -3159,6 +3167,12 @@ pub fn why_not(ev: &UiEvent, st: &TimeState) -> Option<String> {
             "Once is the fewest",
             &format!("{} times is the most", mpfree_seq::scenes::MAX_TIMES),
         )),
+        (TAKES, EventKind::Tab(0)) if continuing_open(st) => {
+            Some("This is the first try".to_string())
+        }
+        (TAKES, EventKind::Tab(1)) if continuing_open(st) => {
+            Some("This is the last try: Try again makes another".to_string())
+        }
         (TAKES, EventKind::Tab(0)) => Some("Nothing to undo yet".to_string()),
         (TAKES, EventKind::Tab(1)) => Some("Nothing to redo: Undo something first".to_string()),
         (TAKES, EventKind::Tab(2)) => {
@@ -5983,6 +5997,51 @@ pub fn launch_name(g: LaunchGrid) -> String {
 
 /// The takes newest first: the undone ones (dimmed), then the ones Undo
 /// can take back; and which row Undo takes back next.
+/// The note editor's Continue tool is open (composing tools, phase 1 step
+/// 2): the takes area holds its tries.
+pub fn continuing_open(st: &TimeState) -> bool {
+    st.edit.as_ref().is_some_and(|e| e.editor.continuing_open())
+}
+
+/// Continue's result for the clip the note editor shows, while its tool
+/// is open.
+fn continuing_for<'a>(e: &EditInfo, st: &'a TimeState) -> Option<&'a Continuing> {
+    let c = st.continuing.as_deref()?;
+    (e.editor.continuing_open() && (c.track, c.slot) == (e.editor.track, e.editor.slot))
+        .then_some(c)
+}
+
+/// The tries while Continue is open (composing tools, phase 1 step 2), as
+/// the takes area lists them: newest first, the one heard lit, each with
+/// its style and the bars it adds; ‹ and › on Undo's and Redo's places.
+pub fn try_list(st: &TimeState) -> (Vec<TakeItem>, Option<usize>, Option<String>, Option<String>) {
+    let Some(c) = st.continuing.as_deref() else {
+        return (Vec::new(), None, None, None);
+    };
+    let n = c.tries.len();
+    let items = c
+        .tries
+        .iter()
+        .enumerate()
+        .rev()
+        .map(|(k, t)| TakeItem {
+            title: format!("Try {} · {}", k + 1, t.style),
+            detail: format!("+{} bar{}", t.bars, if t.bars == 1 { "" } else { "s" }),
+            color: None,
+            undone: false,
+        })
+        .collect();
+    let (current, back, on) = match c.position {
+        Some((i, m)) if m == n && i >= 1 => (
+            Some(n - i),
+            (i > 1).then(|| format!("{}", i - 1)),
+            (i < n).then(|| format!("{}", i + 1)),
+        ),
+        _ => (None, None, None),
+    };
+    (items, current, back, on)
+}
+
 pub fn take_items(st: &TimeState) -> (Vec<TakeItem>, Option<usize>) {
     let item = |r: &TakeRow, undone: bool| TakeItem {
         title: take_title(st, r),
@@ -6112,6 +6171,30 @@ pub fn note_playhead(e: &EditInfo, st: &TimeState) -> Option<Tick> {
 /// The screen built the note editor from `a` and is asked to show `b`:
 /// nothing but the playhead can have changed. The same clip (one shared
 /// copy, not compared note by note), revision and editor.
+/// Continue shows the same on the roll: the same result (by its place in
+/// memory: a result is never changed, only replaced) and the same state.
+fn same_continuing(a: Option<&Continuing>, b: Option<&Continuing>) -> bool {
+    let same_arc = |x: &Option<Arc<_>>, y: &Option<Arc<_>>| match (x, y) {
+        (Some(x), Some(y)) => Arc::ptr_eq(x, y),
+        (None, None) => true,
+        _ => false,
+    };
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => {
+            same_arc(&a.clip, &b.clip)
+                && a.made.as_ref().map(Arc::as_ptr) == b.made.as_ref().map(Arc::as_ptr)
+                && (
+                    a.track, a.slot, a.state, a.new_from, a.position, a.heard, a.line,
+                ) == (
+                    b.track, b.slot, b.state, b.new_from, b.position, b.heard, b.line,
+                )
+                && a.words == b.words
+        }
+        _ => false,
+    }
+}
+
 fn same_edit(a: &EditInfo, b: &EditInfo) -> bool {
     Arc::ptr_eq(&a.clip, &b.clip)
         && a.rev == b.rev
@@ -6218,10 +6301,15 @@ pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
     // A tool open (plan 2B.3): the roll shows its preview, the notes it
     // makes picked, as Done will leave them; the clip itself is as it was.
     let preview = ed.preview(&e.clip);
-    let (c, sel): (&mpfree_seq::Clip, &[usize]) = match &preview {
-        Some((p, s)) => (p, s),
-        None => (&e.clip, &ed.sel),
-    };
+    // Continue open (composing tools, phase 1 step 2): the clip as heard
+    // with its result, the new bars faint, nothing picked.
+    let cont = continuing_for(e, st);
+    let (c, sel): (&mpfree_seq::Clip, &[usize]) =
+        match (&preview, cont.and_then(|c| c.clip.as_deref())) {
+            (_, Some(heard)) => (heard, &[]),
+            (Some((p, s)), None) => (p, s),
+            (None, None) => (&e.clip, &ed.sel),
+        };
     let playhead = note_playhead(e, st);
     let selected = |i: usize| sel.contains(&i);
     let n_sel = sel.iter().filter(|&&i| i < c.notes.len()).count();
@@ -6308,11 +6396,37 @@ pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
     // Other clips behind it, and what Show offers (plan 4.1).
     g.ghosts = ghost_layers(e, st);
     g.show_offers = show_offers(e, st);
+    if let Some(k) = cont {
+        let made = k.clip.as_ref().and(k.made.as_deref());
+        g.new_from = made.map(|_| k.new_from);
+        let bar = e.bar.max(1);
+        g.bar_jobs = made.map_or_else(Vec::new, |m| {
+            m.plan
+                .iter()
+                .enumerate()
+                .map(|(b, p)| (b as Tick * bar, p.job.words()))
+                .filter(|&(at, _)| at >= k.new_from)
+                .collect()
+        });
+        g.chords = made.map_or_else(Vec::new, |m| {
+            m.chords
+                .spans()
+                .iter()
+                .map(|s| ChordMark {
+                    start: s.start,
+                    end: s.end(),
+                    name: s.answer.name(),
+                    suggested: s.heard == mpfree_context::chord::Heard::Suggested,
+                })
+                .collect()
+        });
+    }
     g.tool_bar = ed.open_tool.map(|t| ToolBar {
         name: t.kind.name(),
-        hint: match preview {
-            Some(_) => "Turn the Q-Links: the roll shows the result".into(),
-            None => {
+        hint: match (t.kind, preview) {
+            (ToolKind::Continue, _) => continue_hint(st.continuing.as_deref(), e.bar.max(1)),
+            (_, Some(_)) => "Turn the Q-Links: the roll shows the result".into(),
+            (_, None) => {
                 let why = t.why_not(&e.clip, &ed.sel);
                 let mut c = why.chars();
                 c.next()
@@ -6325,6 +6439,30 @@ pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
 }
 
 // ---------------------------------------------------------------- the page
+
+/// What Continue's bar says (composing tools, phase 1 step 2): what it is
+/// doing, which try is heard and from when, or why nothing can be.
+fn continue_hint(c: Option<&Continuing>, bar: Tick) -> String {
+    use mpfree_compose::State;
+    let Some(c) = c else {
+        return "Making the new bars".into();
+    };
+    if let Some(w) = &c.words {
+        return w.clone();
+    }
+    let at = |l: Tick| format!("bar {}", l / bar + 1);
+    let which = c
+        .position
+        .map_or_else(String::new, |(i, n)| format!("Try {i} of {n}"));
+    match (c.state, c.heard, c.line) {
+        (State::Preparing, _, _) if c.made.is_none() => "Making the new bars".into(),
+        (State::Preparing, _, _) => format!("{which} plays on while the next is made"),
+        (_, false, Some(l)) => format!("{which} comes in at {}", at(l)),
+        (_, true, Some(l)) => format!("{which}: the next comes in at {}", at(l)),
+        (_, true, None) => format!("{which} plays in place of the clip: Done keeps it"),
+        _ => format!("{which} is ready: press PLAY to hear it, Done keeps it"),
+    }
+}
 
 /// The Clips page and the transport bar in the app's [`Ui`]: the app adds
 /// them once, calls [`TimePage::update`] when the state changes, and turns
@@ -6375,6 +6513,9 @@ pub struct TimePage {
     /// (piano roll plan 0C.1), so the playing transport costs the screen
     /// no rebuild of 8,192 notes a frame.
     edit_built: Option<Box<EditInfo>>,
+    /// Continue as the roll was last built with it (composing tools,
+    /// phase 1 step 2): a new result, or its state, builds it again.
+    edit_continuing: Option<Arc<Continuing>>,
     /// The note editor's Edit options and takes show, in a drawer at the
     /// right ([`EDIT_DRAWER_LAYOUT`]): Edit, TC and the wheel open it.
     pub edit_drawer: bool,
@@ -7097,8 +7238,12 @@ impl TimePage {
             self.edit_lane = g.lane;
             self.edit_hearing = g.hearing;
         }
+        let continuing = st.edit.as_ref().and_then(|e| continuing_for(e, st));
+        let same_continuing = same_continuing(self.edit_continuing.as_deref(), continuing);
         match &st.edit {
-            Some(e) if self.edit_built.as_ref().is_some_and(|b| same_edit(b, e)) => {
+            Some(e)
+                if same_continuing && self.edit_built.as_ref().is_some_and(|b| same_edit(b, e)) =>
+            {
                 // Only the playhead can have moved; with Follow on, the
                 // roll pages along with it.
                 let at = note_playhead(e, st);
@@ -7158,27 +7303,43 @@ impl TimePage {
                 }
                 let rows = edit_rows(&e.editor, &e.clip);
                 let picked = e.editor.sel.iter().any(|&i| i < e.clip.notes.len());
-                let buttons = vec![OptionButton::new(
-                    if picked {
-                        "Correct picked"
-                    } else {
-                        "Correct all"
-                    },
-                    true,
-                )];
+                // Continue open: its settings, and no Correct.
+                let buttons = match e.editor.continuing_open() {
+                    true => Vec::new(),
+                    false => vec![OptionButton::new(
+                        if picked {
+                            "Correct picked"
+                        } else {
+                            "Correct all"
+                        },
+                        true,
+                    )],
+                };
+                let (title, selected) = match e.editor.continuing_open() {
+                    true => ("Continue", e.editor.row_picked()),
+                    false => ("Edit", e.editor.row),
+                };
                 if ui.get::<OptionList>(EDIT_OPTIONS).is_some_and(|l| {
-                    l.rows != rows || l.selected != e.editor.row || l.buttons != buttons
+                    l.rows != rows
+                        || l.selected != selected
+                        || l.buttons != buttons
+                        || l.title != title
                 }) {
                     if let Some(l) = ui.get_mut::<OptionList>(EDIT_OPTIONS) {
                         l.rows = rows;
-                        l.selected = e.editor.row;
+                        l.selected = selected;
                         l.right = "wheel or arrows".to_string();
                         l.buttons = buttons;
+                        l.title = title.to_string();
                     }
                 }
                 self.edit_built = Some(e.clone());
+                self.edit_continuing = st.continuing.clone().filter(|_| continuing.is_some());
             }
-            None => self.edit_built = None,
+            None => {
+                self.edit_built = None;
+                self.edit_continuing = None;
+            }
         }
         if let (Some(e), Some(r)) = (&st.edit, ui.rect_of(NOTES)) {
             let key = (e.editor.track, e.editor.slot);
@@ -7247,15 +7408,37 @@ impl TimePage {
                 l.note = note;
             }
         }
-        let (items, current) = take_items(st);
-        let undo = st.done.last().map(TakeRow::short);
-        let redo = st.undone.last().map(TakeRow::short);
+        // While the note editor's Continue is open, its tries.
+        let tries = continuing_open(st);
+        let (items, current, undo, redo, capture) = match tries {
+            true => {
+                let (items, current, back, on) = try_list(st);
+                (items, current, back, on, None)
+            }
+            false => {
+                let (items, current) = take_items(st);
+                let undo = st.done.last().map(TakeRow::short);
+                let redo = st.undone.last().map(TakeRow::short);
+                (items, current, undo, redo, st.capture.clone())
+            }
+        };
+        let (title, right, words, empty) = match tries {
+            true => (
+                "Tries",
+                "the last 8",
+                ["‹", "›", ""],
+                Some(("No tries yet", "The first is on its way")),
+            ),
+            false => ("Takes", "SHIFT + UNDO: redo", TAKE_WORDS, None),
+        };
         let same_takes = ui.get::<TakeList>(TAKES).is_some_and(|l| {
             l.items == items
                 && l.current == current
                 && l.undo == undo
                 && l.redo == redo
-                && l.capture == st.capture
+                && l.capture == capture
+                && l.title == title
+                && l.words == words
         });
         if !same_takes {
             if let Some(l) = ui.get_mut::<TakeList>(TAKES) {
@@ -7263,8 +7446,11 @@ impl TimePage {
                 l.current = current;
                 l.undo = undo;
                 l.redo = redo;
-                l.capture = st.capture.clone();
-                l.right = "SHIFT + UNDO: redo".to_string();
+                l.capture = capture;
+                l.title = title.to_string();
+                l.right = right.to_string();
+                l.words = words;
+                l.empty = empty;
             }
         }
     }
@@ -7380,6 +7566,72 @@ mod tests {
             4,
             "a chord and the melody note in it"
         );
+    }
+
+    /// Continue open (composing tools, phase 1 step 2): the roll shows
+    /// the clip as heard with the result, the new bars from where they
+    /// start, each new bar's job on the ruler and the chords, nothing
+    /// picked; the bar says which try plays; the Q-Links and the drawer
+    /// are Continue's, and the takes area its tries, ‹ and › stepping
+    /// them while there is one that way. Closed, the clip as it is.
+    #[test]
+    fn continue_open_shows_its_result_its_settings_and_its_tries() {
+        let st = crate::sample::notes_continue_state().unwrap();
+        let e = st.edit.as_ref().unwrap();
+        let c = st.continuing.as_ref().unwrap();
+        let g = note_grid(e, &st);
+        const BAR: Tick = 3840;
+        assert_eq!(g.length, 6 * BAR);
+        assert_eq!(g.notes.len(), c.clip.as_ref().unwrap().notes.len());
+        assert!(g.notes.len() > e.clip.notes.len());
+        assert!(g.notes.iter().all(|n| !n.selected));
+        assert_eq!(g.new_from, Some(2 * BAR));
+        let bars: Vec<Tick> = g.bar_jobs.iter().map(|j| j.0).collect();
+        assert_eq!(bars, vec![2 * BAR, 3 * BAR, 4 * BAR, 5 * BAR]);
+        assert!(g.chords.iter().any(|k| k.suggested), "{:?}", g.chords);
+        assert!(g.chords.iter().any(|k| !k.suggested), "{:?}", g.chords);
+        assert_eq!(g.chords.last().map(|k| k.end), Some(6 * BAR));
+        let bar = g.tool_bar.clone().unwrap();
+        assert_eq!(bar.name, "Continue");
+        assert_eq!(bar.option, Some(("Try again", false)));
+        assert_eq!(
+            bar.hint,
+            "Try 2 of 2 plays in place of the clip: Done keeps it"
+        );
+        let (head, cards) = note_cards(e).unwrap();
+        assert_eq!(head, "Continue · +4 bars");
+        let names: Vec<&str> = cards.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["Similarity", "Variation", "Activity", "Range"]);
+        assert!(tool_hint(&e.editor.open_tool.unwrap()).contains("Try again: another"));
+        let rows = edit_rows(&e.editor, &e.clip);
+        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, crate::editor::compose::CONTINUE_ROWS);
+        // The tries, newest first, the one heard lit.
+        let (items, current, back, on) = try_list(&st);
+        let titles: Vec<&str> = items.iter().map(|i| i.title.as_str()).collect();
+        assert_eq!(titles, ["Try 2 · Minimal", "Try 1 · Minimal"]);
+        assert_eq!(items[0].detail, "+4 bars");
+        assert_eq!((current, back.as_deref(), on), (Some(0), Some("1"), None));
+        let tap = |k| UiEvent {
+            widget: TAKES.into(),
+            kind: EventKind::Tab(k),
+        };
+        let step = |back| Some(TimeAction::Continue(ContinueAction::Step { back }));
+        assert_eq!(action(&tap(0), &st), step(true));
+        assert_eq!(action(&tap(1), &st), None);
+        assert_eq!(action(&tap(2), &st), None);
+        assert_eq!(
+            why_not(&tap(1), &st).as_deref(),
+            Some("This is the last try: Try again makes another")
+        );
+        // Closed: the clip as it is, and the takes again.
+        let mut closed = st.clone();
+        closed.edit.as_mut().unwrap().editor.open_tool = None;
+        let g = note_grid(closed.edit.as_ref().unwrap(), &closed);
+        assert_eq!((g.notes.len(), g.new_from), (e.clip.notes.len(), None));
+        assert!(g.bar_jobs.is_empty() && g.chords.is_empty());
+        assert_eq!(action(&tap(2), &closed), None);
+        assert!(!continuing_open(&closed));
     }
 
     /// The Chord menu (plan 2B.2): a shape keeps Major or Minor, they
@@ -7795,9 +8047,22 @@ mod tests {
         }
         // The Mutate row (S6) at its longest.
         values.extend(["original", "variant", "—"].map(String::from));
+        // Continue's rows (composing tools, phase 1 step 2), each value
+        // at its longest.
+        let mut set = crate::editor::compose::ContinueSet::default();
+        for row in 0..crate::editor::compose::CONTINUE_ROWS.len() {
+            for d in [-9, 9] {
+                set.step(row, d);
+                values.push(set.value(row));
+            }
+            set.step(row, 1);
+            values.push(set.value(row));
+        }
+        values.extend(["no tune", "no notes"].map(String::from));
         for name in RECORD_ROWS
             .iter()
             .chain(crate::editor::EDIT_ROWS.iter())
+            .chain(crate::editor::compose::CONTINUE_ROWS.iter())
             .chain(CLIP_ROWS.iter())
         {
             let w = fonts.measure(FontId::Bold, px, name);

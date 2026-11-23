@@ -1473,6 +1473,7 @@ dependencies = [
  "mpfree-audiotracks",
  "mpfree-capture",
  "mpfree-compose",
+ "mpfree-context",
  "mpfree-play",
  "mpfree-seq",
  "mpfree-transport",

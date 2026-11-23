@@ -2465,7 +2465,8 @@ pub struct TakeItem {
 /// The row `current` (the take Undo would take back) is highlighted;
 /// undone takes are dimmed. A tap on Undo gives `Tab(0)`, on Redo `Tab(1)`,
 /// on Capture `Tab(2)`, faint or not: the page says why a faint one does
-/// nothing.
+/// nothing. The note editor's Continue shows its tries in it the same way
+/// ([`TakeList::words`], [`TakeList::empty`]).
 pub struct TakeList {
     pub title: String,
     pub right: String,
@@ -2476,8 +2477,16 @@ pub struct TakeList {
     pub redo: Option<String>,
     /// What Capture would keep, such as "2 bars"; None when nothing.
     pub capture: Option<String>,
+    /// The three buttons' words, Undo's, Redo's and Capture's places: a
+    /// button with no words isn't there.
+    pub words: [&'static str; 3],
+    /// What it says with no rows: a line, and help under it (None: the
+    /// takes' own).
+    pub empty: Option<(&'static str, &'static str)>,
 }
 
+/// The takes' buttons' words ([`TakeList::words`]).
+pub const TAKE_WORDS: [&str; 3] = ["Undo", "Redo", "Capture"];
 const TAKE_ROW_H: i32 = 38;
 const TAKE_BUTTON_H: i32 = 48;
 
@@ -2491,6 +2500,8 @@ impl TakeList {
             undo: None,
             redo: None,
             capture: None,
+            words: TAKE_WORDS,
+            empty: None,
         }
     }
 
@@ -2521,21 +2532,24 @@ impl Widget for TakeList {
         let limit = TakeList::button_rect(r, 0).y - 8;
         if self.items.is_empty() {
             let (a, rest) = body.take_top(26);
+            const HELP: &str = "REC records one; Capture keeps what you just played";
+            let (line, help) = self.empty.unwrap_or(("No takes yet", HELP));
             cx.text(
                 FontId::Sans,
                 t.size_body,
                 a,
                 Align::Left,
                 t.text_faint,
-                "No takes yet",
+                line,
             );
             // One line, or two in a narrow panel (Arrange beside the
             // Q-Link column).
-            const HELP: &str = "REC records one; Capture keeps what you just played";
-            let lines: Vec<&str> = if cx.measure(FontId::Sans, t.size_small, HELP) <= body.w {
-                vec![HELP]
-            } else {
+            let lines: Vec<&str> = if cx.measure(FontId::Sans, t.size_small, help) <= body.w {
+                vec![help]
+            } else if help == HELP {
                 vec!["REC records one;", "Capture keeps what you played"]
+            } else {
+                help.split_inclusive("; ").map(str::trim).collect()
             };
             let mut rest = rest;
             for line in lines {
@@ -2599,13 +2613,16 @@ impl Widget for TakeList {
             y += TAKE_ROW_H;
         }
         for (i, (word, what)) in [
-            ("Undo", &self.undo),
-            ("Redo", &self.redo),
-            ("Capture", &self.capture),
+            (self.words[0], &self.undo),
+            (self.words[1], &self.redo),
+            (self.words[2], &self.capture),
         ]
         .into_iter()
         .enumerate()
         {
+            if word.is_empty() {
+                continue;
+            }
             let b = TakeList::button_rect(r, i);
             match what {
                 Some(w) => {
@@ -2647,14 +2664,10 @@ impl Widget for TakeList {
     fn targets(&self, r: Rect) -> Vec<Target> {
         let live = [&self.undo, &self.redo, &self.capture];
         (0..3)
+            .filter(|&i| !self.words[i].is_empty())
             .map(|i| {
-                Target::tap(
-                    "button",
-                    i,
-                    ["Undo", "Redo", "Capture"][i],
-                    TakeList::button_rect(r, i),
-                )
-                .disabled_if(live[i].is_none())
+                Target::tap("button", i, self.words[i], TakeList::button_rect(r, i))
+                    .disabled_if(live[i].is_none())
             })
             .collect()
     }
@@ -2664,6 +2677,7 @@ impl Widget for TakeList {
             return None;
         }
         (0..3)
+            .filter(|&i| !self.words[i].is_empty())
             .find(|&i| TakeList::button_rect(r, i).contains(x, y))
             .map(EventKind::Tab)
     }

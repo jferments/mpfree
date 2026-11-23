@@ -212,6 +212,7 @@ use mpfree_midi::monitor::{Dir, Event, Mpc, To};
 use mpfree_midi::profile::{self, KIT_PADS};
 use mpfree_screen_log::Rotation;
 use mpfree_synth_ui::{SynthAction, SynthState};
+use mpfree_time_ui::continuing::ContinueAction;
 use mpfree_time_ui::view::AudioAction;
 use mpfree_time_ui::{TempoEdit, TimeAction, TransportInfo};
 use mpfree_transport::Command;
@@ -8678,7 +8679,12 @@ fn time_action(
             | TimeAction::ConvertPreview { .. }
             | TimeAction::Convert { .. }
             | TimeAction::ConvertCancel
-            | TimeAction::Continue(_)
+            | TimeAction::Continue(
+                ContinueAction::Ask(_)
+                    | ContinueAction::Step { .. }
+                    | ContinueAction::Keep
+                    | ContinueAction::Back
+            )
             | TimeAction::CopyClip { .. }
             | TimeAction::PasteClip { .. }
             | TimeAction::DropClip { .. }

@@ -42,7 +42,7 @@ use mpfree_compose::{
     Arrival, Ask, ContinueJob, Continued, Done, Preview, Refusal, Settings, State,
 };
 use mpfree_seq::{Clip, Project};
-use mpfree_time_ui::continuing::Continuing;
+use mpfree_time_ui::continuing::{Continuing, Try};
 use mpfree_transport::time::Tick;
 
 /// What Continue gave way on, since the start. The status line says the
@@ -105,6 +105,8 @@ struct Made {
     clip: Arc<Clip>,
     new_from: Tick,
     bars: u8,
+    /// The style it was made in.
+    style: &'static str,
 }
 
 /// The composer's thread: jobs out, answers back, each with its request's
@@ -338,6 +340,7 @@ impl Composing {
                                 made: Arc::new(made),
                                 clip: Arc::new(heard),
                                 bars,
+                                style: ask.settings.style.name,
                             });
                             log.push(format!(
                                 "continue: {} ready",
@@ -538,6 +541,14 @@ impl Composing {
             line: self.line.map(|l| l.line),
             words,
             settings: self.settings.unwrap_or_default(),
+            tries: self
+                .made
+                .iter()
+                .map(|m| Try {
+                    style: m.style,
+                    bars: m.bars,
+                })
+                .collect(),
         }))
     }
 }

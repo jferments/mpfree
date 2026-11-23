@@ -31,7 +31,7 @@ use mpfree_capture::{keep, moves_for_clip, Capture, KeepError, Kept, Now, Pendin
 use mpfree_notefx::{Chain, TrackFx, MAX_FX};
 use mpfree_perform::{Perform, SceneMorph, SongRecorder, When};
 use mpfree_play::Replaced;
-use mpfree_time_ui::continuing::{ContinueAction, ContinueAsk};
+use mpfree_time_ui::continuing::{ContinueAction, ContinueAsk, Parts};
 
 use super::compose::{more_bars, Composing, LineWait};
 use mpfree_play::{
@@ -55,6 +55,7 @@ use mpfree_seq::{
     Clip, ClipId, ClipRegion, Holds, LaunchGrid, Lock, ModelError, Project, RecId, TouchPoint,
     TrackId, TrackKind, LOOPS, MAX_TRACKS, ROWS, SLOTS,
 };
+use mpfree_time_ui::editor::compose::Compose;
 use mpfree_time_ui::editor::{Done, EditAction, Editor, ScaleOffers};
 use mpfree_time_ui::list::ListRow;
 use mpfree_time_ui::view::pad_name;
@@ -648,6 +649,12 @@ pub struct TimeControl {
     /// Continue (composing tools): a clip carried on, heard in place of
     /// the clip until Keep or Back ([`super::compose`]).
     compose: Box<Composing>,
+    /// What each track plays, as the screen last said, for the note
+    /// editor's Continue (`ContinueAction::Parts`).
+    compose_parts: Arc<Parts>,
+    /// The note editor's Continue tool asked for what is under way: Back
+    /// goes once the tool no longer shows that clip.
+    compose_from_editor: bool,
     /// The audio's sample rate, for a period's length in ticks.
     rate: u32,
     /// The bar line a cue started on in the last poll, on each loop's
@@ -851,6 +858,8 @@ impl TimeControl {
             saved: Vec::new(),
             reloads: Vec::new(),
             compose: Box::new(Composing::new()),
+            compose_parts: Arc::default(),
+            compose_from_editor: false,
             rate,
             loop_at: [None; LOOPS],
             loops_seen: [LoopNow::default(); LOOPS],
@@ -3251,6 +3260,10 @@ impl TimeControl {
         let from = self.edit_rev;
         let open = matches!(a, EditAction::Open | EditAction::Switch { .. });
         let r = self.edit_touch(a);
+        // The editor opened on another clip: Continue goes back.
+        if self.continue_follows_editor() {
+            let _ = self.compile();
+        }
         // The revision moves on Open, and on an edit that went in.
         let took = r.is_ok() && !open && self.edit_rev != from;
         let outcome = match &r {
@@ -3360,6 +3373,13 @@ impl TimeControl {
                 said,
             });
             return Ok(line);
+        }
+        // Continue's tool (composing tools, phase 1 step 2): its asks go
+        // to the composer.
+        if let Some(c) = done.compose {
+            let (track, slot) = (ed.track, ed.slot);
+            self.editor = Some(ed);
+            return self.continue_from_editor(c, track, slot, &done.line);
         }
         if done.close {
             self.edit_seen = None;
@@ -7503,6 +7523,10 @@ impl TimeControl {
                 Ok(self.continue_when("continue: the result shown"))
             }
             ContinueAction::Keep => self.continue_keep(recording),
+            ContinueAction::Parts(p) => {
+                self.compose_parts = p;
+                Ok(String::new())
+            }
             ContinueAction::Back => {
                 if !self.compose.back() {
                     return Err("continue: Keep is under way".into());
@@ -7514,6 +7538,97 @@ impl TimeControl {
                 Ok(self.continue_when("continue: back to the clip as it was"))
             }
         }
+    }
+
+    /// A touch on the note editor's Continue tool (composing tools, phase
+    /// 1 step 2) on clip `slot` of `track`: an ask, completed with what
+    /// the track plays (the screen's [`Parts`], else read from the clip),
+    /// Keep or Back. The tool closes once Keep or Back is done, or when an
+    /// ask is refused with nothing under way; `said` is the editor's own
+    /// line (a setting changed), put first.
+    fn continue_from_editor(
+        &mut self,
+        c: Compose,
+        track: usize,
+        slot: usize,
+        said: &str,
+    ) -> Result<String, String> {
+        let r = match &c {
+            Compose::Ask(settings) => {
+                let ask = ContinueAsk {
+                    track,
+                    slot,
+                    settings: **settings,
+                    kind: self.part_kind(track, slot),
+                    lanes: self.compose_parts.lanes.clone(),
+                };
+                self.compose_from_editor = true;
+                self.continue_action(ContinueAction::Ask(Box::new(ask)))
+            }
+            Compose::Keep => self.continue_action(ContinueAction::Keep),
+            Compose::Back if !self.compose.active() => Ok("continue: closed".into()),
+            Compose::Back => self.continue_action(ContinueAction::Back),
+        };
+        let close = match &c {
+            Compose::Ask(_) => r.is_err() && !self.compose.active(),
+            Compose::Keep | Compose::Back => r.is_ok(),
+        };
+        if close {
+            self.compose_from_editor = false;
+            if let Some(ed) = self.editor.as_mut() {
+                ed.open_tool = None;
+            }
+        }
+        if matches!(c, Compose::Keep) && r.is_ok() {
+            self.edit_follow();
+        }
+        self.changed = true;
+        match said {
+            "" => r,
+            said => r.map(|_| format!("{said}: the next try is on its way")),
+        }
+    }
+
+    /// The kind of instrument clip `slot` of `track` is carried on for:
+    /// the screen's word for the track, else read from the clip's notes.
+    pub(super) fn part_kind(&self, track: usize, slot: usize) -> mpfree_compose::InstrumentKind {
+        match self.compose_parts.kinds.get(track) {
+            Some(Some(k)) => *k,
+            _ => self
+                .project
+                .clip(track, slot)
+                .map_or(mpfree_compose::InstrumentKind::OneNote, |c| {
+                    mpfree_compose::profile::kind_of_notes(&c.notes)
+                }),
+        }
+    }
+
+    /// While the note editor's Continue asked for what is under way: Back
+    /// once the editor no longer has Continue open on its clip (it closed,
+    /// or opened another clip). True if the view is to be compiled.
+    fn continue_follows_editor(&mut self) -> bool {
+        if !self.compose_from_editor {
+            return false;
+        }
+        if !self.compose.active() {
+            self.compose_from_editor = false;
+            return false;
+        }
+        let on = self
+            .editor
+            .as_ref()
+            .filter(|e| e.continuing_open())
+            .map(|e| (e.track, e.slot));
+        if on.is_some() && on == self.compose.changing() {
+            return false;
+        }
+        self.compose_from_editor = false;
+        if !self.compose.back() {
+            return false;
+        }
+        self.changed = true;
+        self.note_later("continue: the editor moved on, so the clip is back as it was".into());
+        self.continue_due(self.block.frames)
     }
 
     /// `what`, and when the music changes for it: on a bar line, or at
@@ -7617,9 +7732,10 @@ impl TimeControl {
     /// its line. True if the view is to be compiled.
     fn continue_period(&mut self, frames: u32) -> bool {
         if !self.compose.active() {
+            self.compose_from_editor = false;
             return false;
         }
-        let mut compile = false;
+        let mut compile = self.continue_follows_editor();
         if self.recorded_now && self.compose.follow(&self.project) {
             self.changed = true;
             if self.compose.in_view.take().is_some() {

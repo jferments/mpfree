@@ -16510,6 +16510,97 @@ mod tests {
         );
     }
 
+    /// Phase 1 step 2: Continue from the note editor. The kind of
+    /// instrument comes from what the screen says the track plays, else
+    /// from the clip's notes. Opening the tool asks at once; stopped, the
+    /// result comes in at once and the editor's own clip stays as it is;
+    /// a setting changed asks again; Done keeps it as one take, closes
+    /// the tool and the editor follows the kept clip. Cancel goes back and
+    /// closes it, and the editor opening again on the clip goes back too.
+    #[test]
+    fn continue_from_the_note_editor_keeps_and_goes_back() {
+        use mpfree_compose::{InstrumentKind, Lanes};
+        use mpfree_time_ui::continuing::Parts;
+        use mpfree_time_ui::editor::{EditAction as E, ToolAct, CONTINUE_ROW};
+        let mut h = riff_host();
+        let mut pads = Fake::default();
+        let riff = h.project().clip(0, 0).unwrap().clone();
+        assert_eq!(h.control.part_kind(0, 0), InstrumentKind::OneNote);
+        let parts = Parts {
+            kinds: vec![Some(InstrumentKind::Bass)],
+            lanes: Lanes::default(),
+        };
+        let said = h.act(TimeAction::Continue(ContinueAction::Parts(Arc::new(parts))));
+        assert_eq!(said.unwrap(), "");
+        assert_eq!(h.control.part_kind(0, 0), InstrumentKind::Bass);
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        let open = E::Row {
+            row: CONTINUE_ROW,
+            delta: 1,
+        };
+        assert_eq!(
+            h.act(TimeAction::Edit(open.clone())).unwrap(),
+            "continue: 4 more bars of riff, Minimal"
+        );
+        assert!(h.state().edit.unwrap().editor.continuing_open());
+        until(&mut h, &mut pads, |h| {
+            continuing(h).is_some_and(|c| c.heard)
+        });
+        let c = continuing(&h).unwrap();
+        assert_eq!((c.position, c.line), (Some((1, 1)), None));
+        let st = h.state();
+        let e = st.edit.as_ref().unwrap();
+        assert_eq!(*e.clip, riff, "the editor's clip is the clip as it is");
+        // A setting asks again.
+        assert_eq!(
+            h.act(TimeAction::Edit(E::Row { row: 1, delta: -1 }))
+                .unwrap(),
+            "continue: 2 more bars: the next try is on its way"
+        );
+        until(&mut h, &mut pads, |h| {
+            continuing(h).is_some_and(|c| c.position == Some((2, 2)))
+        });
+        let heard = continuing(&h).unwrap().clip.clone().unwrap();
+        assert_eq!(heard.length, 3 * 3840);
+        // Done: one take, the tool closed, the editor on the kept clip.
+        let rev = h.state().edit.unwrap().rev;
+        assert_eq!(
+            h.act(TimeAction::Edit(E::Tool(ToolAct::Done))).unwrap(),
+            "continue: 2 more bars of riff kept (UNDO takes it back)"
+        );
+        assert!(continuing(&h).is_none());
+        let st = h.state();
+        let e = st.edit.as_ref().unwrap();
+        assert!(e.editor.open_tool.is_none());
+        assert_eq!(*e.clip, *heard);
+        assert!(e.rev > rev, "the editor's picture moved on");
+        assert_eq!(
+            st.done.last().unwrap().replaced,
+            Some(Replaced::Continue { bars: 2 })
+        );
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.project().clip(0, 0).unwrap(), &riff);
+        // Cancel: back, the tool closed, nothing written.
+        h.act(TimeAction::Edit(open.clone())).unwrap();
+        until(&mut h, &mut pads, |h| {
+            continuing(h).is_some_and(|c| c.heard)
+        });
+        assert_eq!(
+            h.act(TimeAction::Edit(E::Tool(ToolAct::Cancel))).unwrap(),
+            "continue: back to the clip as it was"
+        );
+        assert!(h.state().edit.unwrap().editor.open_tool.is_none());
+        assert_eq!(h.project().clip(0, 0).unwrap(), &riff);
+        // The editor opened again on the clip: back as well.
+        h.act(TimeAction::Edit(open)).unwrap();
+        until(&mut h, &mut pads, |h| {
+            continuing(h).is_some_and(|c| c.heard)
+        });
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        assert!(continuing(&h).is_none_or(|c| !c.heard && c.made.is_none()));
+        assert_eq!(h.project().clip(0, 0).unwrap(), &riff);
+    }
+
     /// Apart (Arrange 2.6b), Continue goes through the editing side's
     /// thread the same way: asked, heard, kept.
     #[test]

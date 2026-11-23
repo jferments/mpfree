@@ -1,6 +1,9 @@
 //! Continue (composing tools, phase 1) as the time engine's screens see
-//! it: what a touch asks for ([`ContinueAction`], [`ContinueAsk`]) and
-//! what the screens show while a clip is being carried on ([`Continuing`]).
+//! it: what a touch asks for ([`ContinueAction`], [`ContinueAsk`]), what
+//! each track plays as the screen knows it ([`Parts`]), and what the
+//! screens show while a clip is being carried on ([`Continuing`]). The
+//! note editor's Continue tool (`editor::compose`) asks through its own
+//! `Done`, which the time engine completes with the [`Parts`].
 //!
 //! The time engine runs it (mpfree-app's `time/compose.rs`): a result is
 //! heard in place of its clip from the next bar line, Keep writes it as
@@ -25,6 +28,20 @@ pub enum ContinueAction {
     Keep,
     /// Back: nothing written; the clip as it was from the next bar line.
     Back,
+    /// Not a touch: what each track plays, as the screen knows it, sent
+    /// when that changes, for the note editor's asks.
+    Parts(Arc<Parts>),
+}
+
+/// What each track plays, as the screen knows it (the time engine
+/// doesn't): the kind of instrument, where it can tell, and the drum
+/// each pad of a kit plays.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Parts {
+    /// Track by track: None where the screen can't tell (a plug-in, MIDI
+    /// out), and the time engine reads it from the clip.
+    pub kinds: Vec<Option<InstrumentKind>>,
+    pub lanes: Lanes,
 }
 
 /// Continue, or Try again on everything: a new result for clip `slot` of
@@ -66,4 +83,14 @@ pub struct Continuing {
     /// clip changed, a setting is in the way, Keep was refused.
     pub words: Option<String>,
     pub settings: Settings,
+    /// The last 8 results, oldest first, for the tries list.
+    pub tries: Vec<Try>,
+}
+
+/// One result in the tries list.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Try {
+    /// The style's name.
+    pub style: &'static str,
+    pub bars: u8,
 }
