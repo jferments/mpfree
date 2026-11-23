@@ -178,7 +178,7 @@ impl Engine {
                     let ours = p < PADS || v.pad == TAKE_PAD;
                     if v.active && ours && self.edit_lane.get(k) == Some(&true) {
                         let live = &self.lives[k];
-                        let (row, program) = (live.row(p), live.program);
+                        let (row, program) = (live.row(p), live.program_of(v, &self.tunings[k]));
                         follow_edit(v, g, &self.views[k], &row, &program, true, self.tempo);
                     }
                 }

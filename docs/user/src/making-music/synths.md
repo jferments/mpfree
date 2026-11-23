@@ -119,7 +119,7 @@ Every track can play its own instrument: Poly on one, FM on another, a plugin sy
 - **Up to 16 at once.** Any track can have its own instrument, and up to 16 tracks can at the same time, since each instrument takes its share of the MPC's power. With 16 already, the line along the bottom of the screen says so and the track stays on the kit: set one of the 16 to **Kit** first, and its place is free at once.
 - **Its own mixer channel.** A track with an instrument gets a channel named for the instrument and the track (**FM · Track 2**, **Poly · Track 3**) in the mixer's Tracks view, and in the lists that pick a mix (Perform's **On**, the Looper's **Records from**), where a track you named shows its name (**FM · Bass**), with its own fader, inserts and sends. The channel only shows while the track has an instrument, and its settings stay with the track: set it to Kit and give it an instrument again later, and the channel is as you left it. Track 1's channel is the **Drums** strip, so track 1 has the same strip whether it plays the kit or an instrument; it is called **Poly · Track 1** (or whichever instrument it is) while the instrument plays there. A track that plays another track's instrument has no channel of its own: its notes sound on that instrument's. See [Mixing and effects](mixing-and-effects.md).
 - **Shared options.** The scale, pad layouts, tuning and octave on the Synth tab's options are the same for every track's instrument.
-- **A plugin synth** runs in a process of its own, as plugin effects do. If it crashes, the track goes quiet and the plugin restarts on its own, while the rest of MPFree plays on. If it can't be started at all, the line along the bottom of the screen says so for a few seconds and the track keeps what it had. Its controls show on the Synth tab like a built-in synth's.
+- **A plugin synth** runs in a process of its own, as plugin effects do. If it crashes, the track goes quiet and the plugin restarts on its own, while the rest of MPFree plays on, and the status chip turns red ([A plugin stopped](../reference/when-something-goes-wrong.md#a-plugin-stopped)). If it can't be started at all, the line along the bottom of the screen says so for a few seconds and the track keeps what it had. Its controls show on the Synth tab like a built-in synth's.
 - **An MPC plugin instrument's presets** are the programs built into it, listed on the Synth tab in the plugin's own order.
 - **An MPC plugin instrument's own screen.** Most MPC plugins come with a skin: the screen their makers drew for the MPC. The Synth tab shows it full width, right under the top bar, exactly as the plugin shows on an MPC (see [The plugin's own screen](#the-plugins-own-screen)).
 - **A plugin synth's own presets** are listed on the Synth tab, as "Category / Name" (Surge XT's factory presets read "Bass / Attacky", "Pads / ..."). The first time a plugin's presets are asked for, the plugin reads them all, which takes a few seconds; the list appears when it is done. Tap one to load it into the track's plugin. Some plugins load a preset in the background: Surge XT goes quiet for a moment, and notes you play in that moment aren't heard. If a plugin can't load a preset, the line along the bottom of the screen gives its reason. A plugin without presets of its own, such as Dexed, lists none. The project keeps the plugin's sound, but not which preset it came from.
@@ -524,7 +524,7 @@ Everything else works as on a drum's steps (see [Your first beat](sequencer.md#t
 
 ## Tuning
 
-Out of the box every synth plays in standard tuning: twelve equal steps to the octave, with the A above middle C at 440 Hz. You can change that for the synth on the pads in the Synth tab's options (press MENU on the Synth tab; see [Controls](../reference/controls.md)).
+Out of the box every synth and kit plays in standard tuning: twelve equal steps to the octave, with the A above middle C at 440 Hz. You can change that for the song in the Synth tab's options (press MENU on the Synth tab; see [Controls](../reference/controls.md)): the synths and the kits' keygroups follow it.
 
 {{shot: synth-options | The Synth tab's options, with the Tuning, Tuning root and A4 rows.}}
 
@@ -539,6 +539,15 @@ Out of the box every synth plays in standard tuning: twelve equal steps to the o
 - **A4** is the pitch of the A above middle C, from 380 to 480 Hz, so the synth can match a recording or another instrument. 432 Hz and 442 Hz are common choices.
 
 The drum synth keeps its own pitches whatever you pick here.
+
+Kits follow it where they play notes:
+
+- **Keygroups** (pads that play notes, see [Playing a kit on keys](shaping-a-pad.md#playing-a-kit-on-keys)) play every key at the tuning's pitch. MPFree takes a keygroup's sound to be at its root note's standard pitch, so A4 = 432 Hz moves a keygroup just as it moves a synth.
+- **16 Levels by Tune** steps by the tuning's notes from the pad's root note (C4 on a pad without keys), with pad 9 as recorded.
+- **The pitch wheel** moves a keygroup's notes along the tuning's notes, as it does a synth's.
+- **A pad you hit**, and a slice, plays as you tuned it on the pad, whatever the tuning, as the drum synth does.
+
+Notes already sounding move to a new tuning as you pick it, gliding there if the pad glides. [Auto-sample](sampling.md#auto-sample-a-synth-or-your-gear-onto-the-pads) records the synth in standard tuning, so the keygroups it makes play the tuning once, not twice.
 
 Everything else in the Synth tab's options (the scale, pad layouts and tuning) is the song's: it is saved in your project and comes back when you open it, and New project starts chromatic in C at A4 = 440 Hz (see [Saving your work](saving.md)). If a tuning file or one of your own scales is gone by then, that one choice goes back to its default, and the Console says so.
 

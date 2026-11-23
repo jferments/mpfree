@@ -784,6 +784,8 @@ dependencies = [
  "mpfree-chain-ui",
  "mpfree-clap",
  "mpfree-clap-testplug",
+ "mpfree-compose",
+ "mpfree-context",
  "mpfree-controller",
  "mpfree-core",
  "mpfree-diskimage",
@@ -826,6 +828,7 @@ dependencies = [
  "mpfree-transport",
  "mpfree-tuning",
  "mpfree-ui",
+ "mpfree-xy",
 ]
 
 [[package]]
@@ -941,6 +944,7 @@ name = "mpfree-compose"
 version = "0.1.0"
 dependencies = [
  "mpfree-context",
+ "mpfree-fx",
  "mpfree-midi",
  "mpfree-node",
  "mpfree-play",
@@ -1026,6 +1030,7 @@ dependencies = [
  "mpfree-node",
  "mpfree-synth-ui",
  "mpfree-ui",
+ "mpfree-xy",
 ]
 
 [[package]]
@@ -1309,6 +1314,7 @@ dependencies = [
  "mpfree-stream",
  "mpfree-stretch",
  "mpfree-synth",
+ "mpfree-tuning",
 ]
 
 [[package]]
@@ -1336,6 +1342,7 @@ dependencies = [
  "mpfree-moves",
  "mpfree-notefx",
  "mpfree-param",
+ "mpfree-scale",
  "mpfree-transport",
 ]
 
@@ -1447,6 +1454,7 @@ version = "0.1.0"
 dependencies = [
  "mpfree-audiotracks",
  "mpfree-capture",
+ "mpfree-compose",
  "mpfree-play",
  "mpfree-seq",
  "mpfree-transport",
@@ -1486,6 +1494,9 @@ dependencies = [
 [[package]]
 name = "mpfree-tuning"
 version = "0.1.0"
+dependencies = [
+ "mpfree-scale",
+]
 
 [[package]]
 name = "mpfree-ui"
@@ -1493,6 +1504,14 @@ version = "0.1.0"
 dependencies = [
  "fontdue",
  "mpfree-screen-log",
+]
+
+[[package]]
+name = "mpfree-xy"
+version = "0.1.0"
+dependencies = [
+ "mpfree-mod",
+ "mpfree-param",
 ]
 
 [[package]]

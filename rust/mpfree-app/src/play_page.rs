@@ -579,7 +579,7 @@ pub const LOCKED: Color = Color::rgb(0xA0_40_FF);
 impl SoundKind {
     /// The value as the card writes it, where its ring is, and whether it
     /// is lit both ways.
-    fn read(self, v: f32) -> (String, f32, bool) {
+    pub(crate) fn read(self, v: f32) -> (String, f32, bool) {
         match self {
             SoundKind::Tune => {
                 let st = v / 100.0;
@@ -644,7 +644,7 @@ impl SoundKind {
     }
 
     /// `v` turned by `ticks` detents (`fine`: SHIFT held).
-    fn turn(self, v: f32, ticks: i32, fine: bool) -> f32 {
+    pub(crate) fn turn(self, v: f32, ticks: i32, fine: bool) -> f32 {
         let d = ticks as f32;
         match self {
             SoundKind::Tune => (v + d * if fine { 10.0 } else { 100.0 }).clamp(-2400.0, 2400.0),
@@ -850,7 +850,7 @@ pub struct PlayPage {
     /// echo up), gliding home when the finger lifts; or, with an effect
     /// picked from its chip, the XY FX's X and Y, staying where the finger
     /// lifts (the effect lets go and rings out).
-    pub xy: mpfree_fx::XyPad,
+    pub xy: mpfree_xy::Pad,
     /// What the XY pad plays: None, Filter + echo; `Some(k)`, the XY FX's
     /// effect `k` ([`XY_CHOICES`]; Prefs keeps it).
     pub xy_effect: Option<usize>,
@@ -1065,7 +1065,7 @@ impl Default for PlayPage {
             transport: TransportInfo::default(),
             hits: VecDeque::new(),
             throws: [false; 8],
-            xy: mpfree_fx::XyPad::perform(),
+            xy: crate::xy_layouts::pad(None),
             xy_effect: None,
             on_pads: None,
             held: None,
@@ -3576,24 +3576,7 @@ impl PlayPage {
     pub fn set_xy_effect(&mut self, pick: Option<usize>) {
         let pick = pick.filter(|&k| k < mpfree_fx::xyfx::EFFECTS.len());
         self.xy_effect = pick;
-        self.xy = match pick {
-            None => mpfree_fx::XyPad::perform(),
-            Some(k) => {
-                use mpfree_fx::xyfx::ids as xy;
-                let (ax, ay) = mpfree_fx::xyfx::axes(k);
-                let axis = |param, name, rest| mpfree_fx::XyAxis {
-                    param,
-                    name,
-                    from: 0.0,
-                    to: 100.0,
-                    rest,
-                };
-                let mut pad =
-                    mpfree_fx::XyPad::new(axis(xy::X, ax.name, 0.5), axis(xy::Y, ay.name, 0.25));
-                pad.set_hold(true);
-                pad
-            }
-        };
+        self.xy = crate::xy_layouts::pad(pick);
     }
 
     /// The XY pad's label ("LP 1.2 kHz · echo 40 %", "Decay 2.4 s ·
@@ -3602,7 +3585,8 @@ impl PlayPage {
     pub fn fill_xy(&self, p: &mut XyPad) {
         let (chip, x_axis, y_axis, label) = match self.xy_effect {
             None => {
-                let [(_, dj), (_, echo)] = self.xy.values();
+                let (x, y) = self.xy.position();
+                let (dj, echo) = crate::xy_layouts::filter_echo(x, y);
                 (
                     "Filter + echo".to_string(),
                     "LP  ←  off  →  HP".to_string(),

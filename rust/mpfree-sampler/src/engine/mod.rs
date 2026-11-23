@@ -90,10 +90,10 @@ use crate::grain_clip::GrainClip;
 use crate::grain_share::{self, Claim, Rank};
 use crate::hits::{self, HitCell};
 use crate::model::{
-    edge_gain, ChannelPick, Fade, GrainMode, GrainParams, Keys, LayerSelect, Levels, LfoShape,
-    LfoTarget, LoopMode, MasterFx, Mono, PadLfo, PadsPlay, Pcm, PitchEnv, PlayMode, PressureRoute,
-    PressureTarget, Project, SliceSet, WarpMethod, GLIDE_MS, GRAIN_GLIDE_MAX_MS, LFO_BEATS,
-    LFO_RATE_HZ, PADS, PITCH_DECAY_MS, PITCH_ENV_ST,
+    edge_gain, ChannelPick, Fade, GrainMode, GrainParams, Keys, KeysPlay, LayerSelect, Levels,
+    LfoShape, LfoTarget, LoopMode, MasterFx, Mono, PadLfo, PadsPlay, Pcm, PitchEnv, PlayMode,
+    PressureRoute, PressureTarget, Project, SliceSet, WarpMethod, GLIDE_MS, GRAIN_GLIDE_MAX_MS,
+    LFO_BEATS, LFO_RATE_HZ, PADS, PITCH_DECAY_MS, PITCH_ENV_ST,
 };
 use crate::warp::{CopyMap, Warps};
 use mpfree_grain::{Budget, GrainFx, GrainSource, GrainVoice, MIN_SPAN};
@@ -103,6 +103,7 @@ pub use mpfree_grain::{GrainView, MAX_GRAINS};
 pub use mpfree_lanes::{Config as LaneConfig, Setup as LaneSetup, Stats as LaneStats};
 use mpfree_lanes::{Lane, Setup};
 use mpfree_node::Cull;
+use mpfree_tuning::Tuning;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -116,6 +117,7 @@ mod render;
 mod routing;
 #[cfg(test)]
 mod tests;
+mod tuning;
 mod view;
 mod voices;
 
@@ -127,6 +129,7 @@ pub use master::*;
 use notes::*;
 pub use render::*;
 pub use routing::*;
+use tuning::*;
 pub use view::*;
 pub use voices::*;
 
@@ -202,6 +205,8 @@ pub struct Engine {
     tape_moved: bool,
     /// Each kit's live settings ([`Event::PadLive`], [`Event::ProgramLive`]).
     lives: Vec<Live>,
+    /// Each kit's tuning ([`Engine::set_tuning`]), about 1 KB a kit.
+    tunings: Vec<KitTuning>,
     /// The one-pole step playing voices follow them with, per
     /// [`FILTER_STEP`] frames.
     live_k: f32,
@@ -283,9 +288,11 @@ impl Engine {
                     pads: Live::OWN,
                     locks: Live::OWN,
                     program: [0.0; ProgramField::COUNT],
+                    bend: 0.0,
                 };
                 kits
             ],
+            tunings: vec![KitTuning::default(); kits],
             live_k: 1.0 - (-(FILTER_STEP as f32) / (LIVE_SMOOTH_S * rate as f32)).exp(),
             stop_lane: false,
             edit_lane: vec![false; kits],

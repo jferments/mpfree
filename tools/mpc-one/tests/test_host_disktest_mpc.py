@@ -47,6 +47,7 @@ FAKE_DISKTEST = r'''#!/bin/sh
 echo "disktest: [$*]" >> "$FAKE_LOG"
 [ -x ./mpfree-disktest ] || { echo "STOP: not copied"; exit 1; }
 if [ "$FAKE_DISKTEST_RC" = 3 ]; then echo "mpfree-disktest: refused: 40.0 MiB free" >&2; exit 3; fi
+if [ -n "$FAKE_VM_CHANGE" ]; then echo 33554432 > "$FAKE_ROOT/proc/sys/vm/dirty_bytes"; fi
 echo "free before: 900.0 MiB on /run/mpfree-data"
 echo "  write: 1488 ops, p50 0.10 ms, p99 31.00 ms, max 412.00 ms; over 50/100/250/500 ms: 9/4/1/0"
 echo "free after: 900.0 MiB (the folder is deleted)"
@@ -357,6 +358,69 @@ class DiskTestTests(unittest.TestCase):
         res = self.run_helper(extra=["--read-only", "--under-load"])
         self.assertNotEqual(res.returncode, 0)
         self.assertIn("not allowed with argument", res.stdout)
+
+    def test_recorder_runs_the_recorder_test_and_checks_the_writeback_settings(self):
+        survey_root(self.root)
+        th.write(f"{self.root}/proc/sys/vm/dirty_bytes", "1048576\n")
+        th.write(f"{self.root}/proc/sys/vm/dirty_ratio", "0\n")
+        th.write(f"{self.root}/proc/sys/vm/dirty_background_bytes", "51200\n")
+        th.write(f"{self.root}/proc/sys/vm/dirty_background_ratio", "0\n")
+        res = self.run_helper(extra=["--recorder"])
+        self.assertEqual(res.returncode, 0, res.stdout)
+        settings = "dirty_bytes=1048576, dirty_ratio=0, dirty_background_bytes=51200, dirty_background_ratio=0"
+        for text in ("MPFree recorder test on the test build", "END OF STREAM SURVEY",
+                     "writeback settings now: " + settings,
+                     "copied; its hash on the MPC matches",
+                     "[4/4] The recorder test: READS the audio in /run/mpfree-data/library",
+                     "WRITES test takes in /run/mpfree-data/mpfree-disktest",
+                     "sets /proc/sys/vm/dirty_bytes to 33554432, then back to the value it found (RAM only)",
+                     "writeback settings as before the run: " + settings,
+                     "RESULT: the recorder test ran (numbers above)."):
+            self.assertIn(text, res.stdout)
+        self.assertEqual(self.lines("disktest: "), ["[--recorder]"])
+        # Only YES allows it.
+        res = self.run_helper(extra=["--recorder"], MPFREE_ACCEPT_DISKTEST="READ-ONLY")
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("MPFREE_ACCEPT_DISKTEST=YES python3 tools/mpc-one/host_disktest_mpc.py --recorder",
+                      res.stdout)
+        self.assertEqual(self.lines("disktest: "), ["[--recorder]"])
+        res = self.run_helper(extra=["--recorder", "--under-load"])
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("not allowed with argument", res.stdout)
+
+    def test_heat_runs_the_heat_test_and_writes_nothing(self):
+        survey_root(self.root)
+        res = self.run_helper(extra=["--heat"])
+        self.assertEqual(res.returncode, 0, res.stdout)
+        for text in ("MPFree heat test on the test build", "END OF STREAM SURVEY",
+                     "copied; its hash on the MPC matches",
+                     "[4/4] The heat test: keeps every core busy (ordinary priority) until the hottest zone "
+                     "rises less than 0.5 degrees C in 5 minutes, 30 minutes at the most, stopping at 75 degrees C",
+                     "Takes up to 30 minutes",
+                     "RESULT: the heat test ran (numbers above); it wrote no file."):
+            self.assertIn(text, res.stdout)
+        self.assertEqual(self.lines("disktest: "), ["[--heat]"])
+        # Only YES allows it: it keeps the processor busy.
+        res = self.run_helper(extra=["--heat"], MPFREE_ACCEPT_DISKTEST="READ-ONLY")
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("MPFREE_ACCEPT_DISKTEST=YES python3 tools/mpc-one/host_disktest_mpc.py --heat", res.stdout)
+        self.assertEqual(self.lines("disktest: "), ["[--heat]"])
+        res = self.run_helper(extra=["--heat", "--recorder"])
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("not allowed with argument", res.stdout)
+        # Refused (no temperature to read): said, nothing changed.
+        res = self.run_helper(extra=["--heat"], FAKE_DISKTEST_RC="3")
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("RESULT: refused by the disk test", res.stdout)
+
+    def test_recorder_says_when_the_writeback_settings_were_not_put_back(self):
+        survey_root(self.root)
+        th.write(f"{self.root}/proc/sys/vm/dirty_bytes", "1048576\n")
+        res = self.run_helper(extra=["--recorder"], FAKE_VM_CHANGE="1")
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("WRITEBACK SETTINGS CHANGED: dirty_bytes=33554432", res.stdout)
+        self.assertIn("(before: dirty_bytes=1048576", res.stdout)
+        self.assertIn("switching the MPC off and on puts them back", res.stdout)
 
     def test_a_failed_under_load_run_says_how_to_clean_up(self):
         res = self.run_helper(extra=["--under-load"], FAKE_DISKTEST_RC="1")

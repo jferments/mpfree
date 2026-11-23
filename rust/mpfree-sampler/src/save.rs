@@ -117,6 +117,11 @@ pub fn to_text(
         let mut m = *p.master();
         w.scope("master", |w| visit_master(w, &mut m));
         w.line("pads_play", pads_play_text(p.pads_play()));
+        // Only once picked: until then it goes by what the kit holds, as a
+        // kit saved before it had the setting does.
+        if let Some(k) = p.keys_play_picked() {
+            w.line("keys_play", k.word());
+        }
         for i in 0..PADS {
             let Some(pad) = p.pad(i) else { continue };
             write_pad(&mut w, &format!("pad.{i}"), pad);
@@ -327,6 +332,14 @@ fn read_kit(
             None => r
                 .notes
                 .push(format!("{kit}: pads play their own sounds ({t:?} unknown)")),
+        }
+    }
+    if let Some(t) = r.text("keys_play") {
+        match KeysPlay::from_word(t.trim()) {
+            Some(k) => p.set_keys_play(Some(k)),
+            None => r.notes.push(format!(
+                "{kit}: keys play by what the kit holds ({t:?} unknown)"
+            )),
         }
     }
     for i in 0..PADS {

@@ -2388,6 +2388,52 @@ impl Keys {
     }
 }
 
+/// What a note from a keyboard (or a clip of notes, or a MIDI route) plays
+/// on the kit: the kit's **Keys play** (live shows decision 6, Jay 22 Nov
+/// 2026; sampler step 15). A kit is an instrument, so how it takes notes
+/// is its own setting, used wherever notes reach it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeysPlay {
+    /// Each note plays the pad that sends it (the MPC note map: C#2 is A1,
+    /// in any bank): a drum kit.
+    Pads,
+    /// Each note plays every keygroup that holds it; a note no keygroup
+    /// holds, or a velocity between its layers, plays nothing.
+    Keygroups,
+    /// The keygroups that hold a note play it; a note none holds plays its
+    /// pad, so one keyboard plays a drum kit with a bass keygroup.
+    Both,
+}
+
+impl KeysPlay {
+    /// What a kit plays notes as until one is picked, from what it holds:
+    /// Keygroups for a kit with keygroups and no other sounds, else Pads,
+    /// so nothing that worked before changes.
+    pub fn by_contents(keygroups: bool, pads: bool) -> KeysPlay {
+        if keygroups && !pads {
+            KeysPlay::Keygroups
+        } else {
+            KeysPlay::Pads
+        }
+    }
+
+    /// As saved and shown: "pads", "keygroups", "both".
+    pub fn word(self) -> &'static str {
+        match self {
+            KeysPlay::Pads => "pads",
+            KeysPlay::Keygroups => "keygroups",
+            KeysPlay::Both => "both",
+        }
+    }
+
+    /// [`KeysPlay::word`] read back.
+    pub fn from_word(word: &str) -> Option<KeysPlay> {
+        [KeysPlay::Pads, KeysPlay::Keygroups, KeysPlay::Both]
+            .into_iter()
+            .find(|k| k.word() == word)
+    }
+}
+
 /// What the kit's pads play.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PadsPlay {
@@ -2594,6 +2640,10 @@ enum Undo {
     PadsPlay {
         before: PadsPlay,
     },
+    /// What keys play changed ([`KeysPlay`]; None: by what the kit holds).
+    KeysPlay {
+        before: Option<KeysPlay>,
+    },
     /// A sound named: its name before.
     Rename {
         id: SourceId,
@@ -2631,6 +2681,7 @@ impl Undo {
             Undo::AddSource { .. } => i.sources += 1,
             Undo::AddChop { .. } => i.chop = true,
             Undo::PadsPlay { .. } => i.pads_play = true,
+            Undo::KeysPlay { .. } => i.keys_play = true,
             Undo::Rename { .. } => i.named += 1,
             Undo::Takes { .. } => i.takes = true,
             Undo::Group(steps) => steps.iter().for_each(|u| u.add_info(i)),
@@ -2654,6 +2705,8 @@ pub struct StepInfo {
     pub chop: bool,
     /// It changes what the pads play.
     pub pads_play: bool,
+    /// It changes what keys play ([`KeysPlay`]).
+    pub keys_play: bool,
     /// How many sounds it names.
     pub named: usize,
     /// It changes the takes kept on the page.
@@ -2675,6 +2728,9 @@ pub struct Project {
     pads: Vec<Option<Pad>>,
     master: MasterFx,
     pads_play: PadsPlay,
+    /// What keys play as picked; None until one is (it goes by what the
+    /// kit holds, [`KeysPlay::by_contents`]).
+    keys_play: Option<KeysPlay>,
     undo: Vec<Undo>,
     redo: Vec<Undo>,
     /// Bumps on every change; the engine view records which one it was built from.
@@ -3512,6 +3568,34 @@ impl Project {
         self.pads_play
     }
 
+    /// What a note from a keyboard plays on the kit: the one picked, else
+    /// by what the kit holds ([`KeysPlay::by_contents`]: a keygroup is a
+    /// pad with keys, any other pad with something on it a pad).
+    pub fn keys_play(&self) -> KeysPlay {
+        self.keys_play.unwrap_or_else(|| {
+            let filled = || self.pads.iter().flatten();
+            KeysPlay::by_contents(
+                filled().any(|p| p.keys.is_some()),
+                filled().any(|p| p.keys.is_none()),
+            )
+        })
+    }
+
+    /// What keys play as picked; None while it goes by what the kit holds.
+    pub fn keys_play_picked(&self) -> Option<KeysPlay> {
+        self.keys_play
+    }
+
+    /// What keys play: one picked, or None to go by what the kit holds.
+    /// One undo step.
+    pub fn set_keys_play(&mut self, play: Option<KeysPlay>) {
+        if play == self.keys_play {
+            return;
+        }
+        let before = std::mem::replace(&mut self.keys_play, play);
+        self.push_undo(Undo::KeysPlay { before });
+    }
+
     /// What the pads play: their own sounds, notes through the
     /// keygroups, or 16 Levels of one pad. One undo step.
     pub fn set_pads_play(&mut self, play: PadsPlay) -> Result<(), ModelError> {
@@ -3818,6 +3902,9 @@ impl Project {
             }
             Undo::PadsPlay { before } => Undo::PadsPlay {
                 before: std::mem::replace(&mut self.pads_play, before),
+            },
+            Undo::KeysPlay { before } => Undo::KeysPlay {
+                before: std::mem::replace(&mut self.keys_play, before),
             },
             Undo::Rename { id, before } => {
                 let s = self

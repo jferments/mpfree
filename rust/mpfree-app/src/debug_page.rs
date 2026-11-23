@@ -103,6 +103,9 @@ pub struct AudioNumbers {
     /// How long the grain budget was crowded, so every cloud got a share
     /// and thinned to fit it, seconds.
     pub crowded_s: f32,
+    /// The clock the project follows stopped arriving while it played
+    /// (System status's Clock stopped).
+    pub clock_lost: bool,
 }
 
 /// The period: 128 frames at 44.1 kHz, in µs.
@@ -199,20 +202,18 @@ fn at(start: std::time::Instant, t: std::time::Instant) -> String {
 
 /// The Status page's rows: the problems (a summary line first), and the
 /// last reports, with times since `start`. `names` names a subject where
-/// the watcher knows it (a port's name), else it shows as "#2".
+/// the watcher knows it (a port's name), else it says what it is ("port
+/// 2", `Subject`'s Display).
 pub fn status_rows(
     board: &mpfree_status::Board,
     names: &crate::status_watch::Watch,
     start: std::time::Instant,
 ) -> (Rows, Rows) {
     use mpfree_status::{Level, Op, ProblemState, Shape};
-    let subject = |k: &mpfree_status::Kind, s: mpfree_status::Subject| match (
-        s.0,
-        names.subject_name(k, s),
-    ) {
+    let subject = |s: mpfree_status::Subject| match (s.0, names.subject_name(s)) {
         (0, _) => String::new(),
         (_, Some(name)) => format!(" {name}"),
-        (n, None) => format!(" #{n}"),
+        (_, None) => format!(" {s}"),
     };
     let level_tone = |l: Level| match l {
         Level::Fail => Tone::Bad,
@@ -243,7 +244,7 @@ pub fn status_rows(
         ));
     }
     for p in raw {
-        let subject = subject(p.kind, p.subject);
+        let subject = subject(p.subject);
         let state = match p.state {
             ProblemState::Settling => "settling".to_string(),
             ProblemState::Now => "now".to_string(),
@@ -300,7 +301,7 @@ pub fn status_rows(
                 Op::Began => "began".to_string(),
                 Op::Ended => "ended".to_string(),
             };
-            let subject = subject(e.kind, e.subject);
+            let subject = subject(e.subject);
             (
                 format!("{}{subject} {op}", e.kind.id),
                 format!("at {}", at(start, e.at)),
@@ -972,7 +973,10 @@ mod tests {
         );
         assert!(events.is_empty());
         b.apply(Report::happened(&kinds::SOUND_DROPOUT, 3), t0);
-        b.apply(Report::began(&kinds::PORT_MISSING).about(Subject(2)), s(1));
+        b.apply(
+            Report::began(&kinds::PORT_MISSING).about(Subject::midi_port(1)),
+            s(1),
+        );
         b.tick(s(5));
         let (open, events) = status_rows(&b, &Default::default(), t0);
         assert_eq!(
@@ -994,7 +998,7 @@ mod tests {
         assert_eq!(
             open[2],
             (
-                "warn midi/port-missing #2".to_string(),
+                "warn midi/port-missing port 2".to_string(),
                 "now · 1× · first at 1.0 s · not seen".to_string(),
                 Tone::Warn
             )
@@ -1003,7 +1007,7 @@ mod tests {
             events,
             vec![
                 (
-                    "midi/port-missing #2 began".to_string(),
+                    "midi/port-missing port 2 began".to_string(),
                     "at 1.0 s".to_string(),
                     Tone::Normal
                 ),

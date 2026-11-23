@@ -119,6 +119,8 @@
 92010	Multi filter (ladder)
 95212	Multi-tap delay
 149907	Multiband compressor
+4168979	Note editor: 8,192 notes, a velocity change and its UNDO, until it plays
+159762062	Note editor: 8,192 notes, all picked and transposed, until it plays
 423088	Pad synths: 16 Instrument pads of Poly, a hit each per 0.5 s
 212533	Perform FX, 7 pads held (pitch drop, gate, sweeps, crush, riser, echo)
 61602	Perform FX, a wash throw held
@@ -126,6 +128,12 @@
 37002	Perform FX, the 16 pads in turn
 107805	Phaser (12 stages)
 66460	Phaser (4 stages)
+19779657	Piano roll: 8,192 notes with pressure, built and drawn
+12502497	Piano roll: 8,192 notes, a frame while it plays
+13937694	Piano roll: 8,192 notes, built and drawn
+13015180	Piano roll: 8,192 notes, scrolled a sixteenth a frame
+22717836	Piano roll: 8,192 notes, zoomed from a bar to the whole clip
+13924546	Piano roll: two clips of 8,192 notes, switched each frame
 74424	Pitch correct
 71972	Pitch shifter
 155797	Plate reverb

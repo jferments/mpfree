@@ -219,6 +219,7 @@ fn busy_kit() -> Project {
         by: Levels::Cutoff,
     })
     .unwrap();
+    p.set_keys_play(Some(KeysPlay::Both));
     p
 }
 
@@ -243,6 +244,7 @@ fn assert_same(a: &Project, b: &Project) {
     assert_eq!(a.kept_chops(), b.kept_chops());
     assert_eq!(a.master(), b.master());
     assert_eq!(a.pads_play(), b.pads_play());
+    assert_eq!(a.keys_play_picked(), b.keys_play_picked());
     assert_eq!(a.takes(), b.takes());
     let ids = |p: &Project| p.sources().iter().map(Source::id).collect::<Vec<_>>();
     assert_eq!(ids(a), ids(b));

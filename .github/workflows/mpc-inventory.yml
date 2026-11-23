@@ -140,6 +140,7 @@ jobs:
           python3 tools/mpc-one/tests/test_devtest_report.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_host_gpu_mpc.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_host_disktest_mpc.py
+          MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_host_streamtest_mpc.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_app_start_capture.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_midi_capture.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_midi_console.py
@@ -1166,6 +1167,16 @@ jobs:
         # A step limit under the job's, so a hang fails with its log kept
         # (libtest names each test running over 60 s).
         timeout-minutes: 90
+        # glibc keeps freed memory in one malloc arena per thread, so the
+        # app's test program grew to 15.9 GB on 36 test threads (23 Nov) and
+        # held the mpfree slice at its memory limit. Four arenas: measured
+        # locally at 4 threads, 2 arenas cut the peak from 8.5 to 3.7 GB for
+        # +10 % time (merge desk handoff 23 Nov, section 7). Test harness
+        # only; the app on the MPC is not changed. Keep it only while the job
+        # stays within about 10 % of its time (16-17 min) and the slice
+        # report's memory.peak drops.
+        env:
+          MALLOC_ARENA_MAX: "4"
         run: cargo test --manifest-path rust/Cargo.toml -p mpfree-app --all-targets --locked
       - name: The mpfree slice's memory and CPU at the end (report only)
         if: always() && runner.environment == 'self-hosted'

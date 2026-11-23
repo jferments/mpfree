@@ -58,7 +58,7 @@ The **Filter** selector steps through the types:
 {{shot: pads-edit-ladder | The Filter section with the Ladder: a 1 kHz cutoff, Resonance at 70 %, so the curve peaks at the cutoff, and 12 dB of Drive.}}
 
 > [!MPC]
-> The MPC offers many more filter models. MPFree keeps a smaller set and measures each one in its quality lab against the analog filter it follows.
+> The MPC has more filter types: low-pass, high-pass, band-pass, band-stop and band-boost with slopes from 1 to 8 poles, three **Model** filters after vintage synths, three **Vocal** formant filters and the MPC3000's low-pass. MPFree keeps a smaller set and measures each one in its quality lab against the analog filter it follows.
 
 ### Layers: more than one sound on a pad
 
@@ -222,7 +222,11 @@ While the pad is a keygroup, or the pads play notes, Edit pad's Pitch and Pad se
 - Tap a bar to pick its pad. Drag the picked pad's ends to set its lowest and highest keys, and its dot to move the root.
 - Press the keys to hear the kit. The line under the keys shows the 16 notes the pads play.
 
+A keyboard on MIDI IN or USB plays a kit of keygroups by pitch too, and a key outside every keygroup plays nothing (see [Playing MPFree from a keyboard](midi-and-cv.md#playing-mpfree-from-a-keyboard)).
+
 The Pitch section's Keys controls do the same with numbers: the Keys switch makes one pad a keygroup, Low key, High key and Root key set its range, and the Pad section's Pads play switches the pads between their own sounds and notes.
+
+Keygroups play the song's [tuning](synths.md#tuning), set in the Synth tab's options. In standard tuning a key plays its sound a semitone higher for each key above the root. In another tuning, MPFree takes the sound to be at its root note's standard pitch and plays every key, the root too, at the tuning's pitch for that key. The pad's own Tune still moves it as before, and a hit on the pad itself doesn't follow the tuning.
 
 ### Crossfades
 
@@ -250,4 +254,4 @@ They work on a pad's keys, from MIDI or with the pads playing notes. A hit on th
 {{shot: pads-edit-mono | The Pitch section of a pad with keys: Mono and Legato on, and a 200 ms glide on held keys.}}
 
 > [!MPC]
-> On an MPC a keygroup instrument is a program type of its own. In MPFree keygroups are pads of an ordinary kit, so any kit can become one with Map to keys.
+> On the MPC a keygroup is a track type of its own. In MPFree keygroups are pads of an ordinary kit, so any kit can become one with Map to keys.
