@@ -147,4 +147,4 @@ Later versions will share MPFree's library over the network cable and by USB, so
 Pictures of the screen go there too: hold all four **PAD BANK** buttons together and MPFree saves what the screen shows in `files/screens/`, named by the date and time.
 
 > [!MPC]
-> On the MPC, projects are saved to the internal drive, an SD card or a USB drive, with the samples in a folder beside the project file. MPFree saves only to its own stick, keeps every sample inside the project folder, and keeps the last ten versions of each project. MPFree doesn't open MPC projects (`.xpj`): bring your kits and patterns across as [Moving your beats from the MPC](moving-from-the-mpc.md) says.
+> On the MPC, projects are saved to the internal drive, an SD card or a USB drive. MPFree saves only to its own stick, keeps every sample inside the project folder, and keeps the last ten versions of each project. MPFree doesn't open MPC projects (`.xpj`): bring your kits and patterns across as [Moving your beats from the MPC](moving-from-the-mpc.md) says.

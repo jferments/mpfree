@@ -677,7 +677,7 @@ impl Engine {
                     g,
                     view,
                     &live.row(p),
-                    &live.program,
+                    &live.program_for(v.note),
                     live_pads.get(p).copied().unwrap_or(false),
                     *tempo,
                 );

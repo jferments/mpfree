@@ -1,4 +1,4 @@
-//! The Show view (live shows B1, layout spec 4o): Arrange's fourth view,
+//! The Show view (live shows B1, layout spec 4p): Arrange's fourth view,
 //! shown while a set is open. It is drawn to the approved mockup
 //! (`live-shows/show-screens.html`, board 1, approved 22 Nov 2026).
 //!

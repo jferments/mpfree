@@ -1,10 +1,10 @@
 <!--
-covers: rust/mpfree-status rust/mpfree-app/src/debug_page.rs rust/mpfree-app/src/status_watch.rs
+covers: rust/mpfree-status rust/mpfree-app/src/debug_page.rs rust/mpfree-app/src/status_watch.rs rust/mpfree-app/src/status_screen.rs rust/mpfree-ui/src/status_page.rs
 checked: 2026-11-22 e7409223
 -->
 # System status (`mpfree-status`)
 
-**Status:** phase 0 built 2026-11-22: the `mpfree-status` crate (the catalogue, reports and the board, with its tests) and a Status page in Dev > Debug that shows the board raw. Phase 1 built the same day: the watchers that turn today's counters and states into reports, and a log line for each problem that starts or ends. Nothing changes for musicians yet: the status chip, the System status page and the red hint line arrive in phase 2. The full plan, its research and its decisions are in the Claude Doc [System status monitor](https://claude.ai/artifact/Re2JmUJFbmrg74hj8wCEyR), approved as recommended by the owner on 22 Nov 2026 (08:35Z). This page says what is built, as it is built.
+**Status:** phase 0 built 2026-11-22: the `mpfree-status` crate (the catalogue, reports and the board, with its tests) and a Status page in Dev > Debug that shows the board raw. Phase 1 built the same day: the watchers that turn today's counters and states into reports, and a log line for each problem that starts or ends. Phase 2 built the same day: the status chip, the System status page, the red hint line and the manual chapter [When something goes wrong](../../user/src/reference/when-something-goes-wrong.md), after the owner approved the layout spec text (22 Nov 09:55Z). The full plan, its research and its decisions are in the Claude Doc [System status monitor](https://claude.ai/artifact/Re2JmUJFbmrg74hj8wCEyR), approved as recommended by the owner on 22 Nov 2026 (08:35Z). This page says what is built, as it is built.
 
 **Owner:** the System status thread. Other threads add kinds to the catalogue and send reports; they don't draw a chip or a warning of their own.
 
@@ -51,7 +51,7 @@ All of it is in `rust/mpfree-status`, std only, with no I/O and no drawing.
 - **An end for a problem never reported** is ignored.
 - `Board::unexpected(allowed)` lists the kinds on the board that a test didn't expect, for the soak and golden tests.
 
-## The catalogue (phase 1's kinds)
+## The catalogue
 
 | Id | Level | Shape | Short words | Button |
 |---|---|---|---|---|
@@ -66,6 +66,7 @@ All of it is in `rust/mpfree-status`, std only, with no I/O and no drawing.
 | `memory/not-enough` | warn | happens | Not enough memory | |
 | `storage/save-failed` | fail | happens | Save failed | |
 | `controls/no-session` | fail | lasts | Pads not answering | |
+| `controls/no-setup` | warn | stays | Without Akai setup | |
 | `controls/touch-stopped` | warn | lasts | Touch stopped | |
 | `midi/port-missing` | warn | stays | Not plugged in | |
 | `project/parts-missing` | warn | stays | Parts missing | Show what's missing |
@@ -113,7 +114,8 @@ The watcher (`rust/mpfree-app/src/status_watch.rs`) looks each time the audio lo
 | `memory/low` | free memory (MemAvailable) under 1.5 times the 256 MB floor, or RAM over 85 %; back once 32 MB more is free and RAM is 3 points under | watcher, from the screen thread's look at `/proc/meminfo` every 2 s |
 | `memory/not-enough` | the Sample page's lines that say something wasn't loaded or was left out for want of memory (`memory::SHORT`); a sound only kept at its own rate still loaded | `Player::print_sample_lines` |
 | `storage/save-failed` | the store's "not saved" for the FX shelf, touch tuning, settings and the MIDI rig | `main.rs` |
-| `controls/no-session` | the session chip's No reply or Stopped (red). Its No session (yellow: playing without Akai's setup, the pads still play) isn't this kind; phase 2 needs a yellow kind for it before the chip goes | watcher |
+| `controls/no-session` | the session's No reply or Stopped (red) | watcher |
+| `controls/no-setup` | the session's No session (yellow): no session within 20 s at the start, so the pads play without Akai's setup; it ends if the session starts later (phase 2, when the session chip went) | watcher |
 | `controls/touch-stopped` | the touchscreen's read failed and it hasn't opened again; it ends when it does | the screen loop |
 | `midi/port-missing` | a port the project uses (a track's MIDI out, a track's input route, the clock it follows, the Controller and Follow while on) not plugged in at two looks running, 2 s apart (`IoModel::missing_ports`), once the app is ready. The subject is the port; the Dev page and the log name it | watcher |
 | `project/parts-missing` | the browser's left-out list, while it has anything (it saves as a new project) | watcher |
@@ -133,6 +135,17 @@ The audio thread never reports. Watchers on the screen thread read its counters 
 
 Phase 0 sends two kinds for real: a save that didn't work (`storage/save-failed`, for the FX shelf, touch tuning, settings and MIDI rig files, beside their "not saved" notes in `main.rs`) and the safe start after a crash (`project/crash-restart`, where `gui.rs` starts safe).
 
+## The status chip, System status and the hint line (phase 2)
+
+The screen side is `rust/mpfree-app/src/status_screen.rs`; the page's widget is `rust/mpfree-ui/src/status_page.rs` (`StatusPage`), which draws only the `StatusView` it is given and knows nothing of the board. Layout spec, sections 2 and 2a.
+
+- **The status chip** is the top bar's rightmost chip, always there: "CPU 24 %  RAM 38 %", as wide as "CPU 100 %  RAM 100 %". It replaced the CPU, RAM and session chips. `Board::chip_look(ram_pct)` gives its colour, the worst of the CPU, the RAM (yellow over 70 %, red over 85 %) and the problems happening now or ended unseen, and the colour of each number: the CPU number is red while `sound/dropout` is happening now and yellow while `sound/near-limit` is, never for a slow moment alone. While the colour comes only from problems that ended unseen, the chip is drawn as a ring (`Chip::ring`). It is lit while the page shows. Before the first readings it says "CPU –" and is grey. The CPU number is `engines::cpu_pct`, the audio thread's mean share of the period. A tap sends `FromUi::StatusChip` and the app toggles `View::SystemStatus`.
+- **System status** (`View::SystemStatus`, page "System status") opens over the page from the chip or Prefs > System status (`Item::SystemStatus`, after System info); the chip again, MENU or a tab closes it. It opens on the worst system (`Place::opened`: red before yellow, then happening now before ended unseen), and while it shows every problem counts as seen (`Board::seen`), so the ring goes. The head names the worst problem happening now, or "Everything is working", with the counts; the meters are CPU and RAM (the stick and the temperature join with phase 3). All nine systems are listed with their worst problem's short words (a port's name in front), else plain words ("CPU 24 % · no dropouts", "41 % used · 1.1 GB free", "Working"). The picked system's problems are cards, by `Board::problems`, with when ("3 times · last 12 s ago · first 4 min ago", "now · for 9 s", "ended 30 s ago") and a button for a kind's `Action`. Now | This session (This session at first) picks the window. The wheel and – / + step the systems (`StatusKey::Step`), the push opens the next folded card (`StatusKey::Open`). The page looks twice a second while it shows and at once on a report, and redraws when what it shows changed: its ages count the seconds for the first minute, so it is one of the live pages in `no_page_redraws_while_idle` (Dev > Status, with times since the start, is not).
+- **Buttons:** Silence all notes is STOP's second press (`App::status_action`); Show what's missing opens the browser, whose status line names what was left out; Open the last project opens it at once when the safe start's new project is unchanged (`Player::open_last_now`, which ends `project/crash-restart`), else opens the browser, where opening a project asks about changes first.
+- **The red hint line:** when a red problem starts showing and isn't hidden by its cause, its title goes on the hint line in red for 4 s, "The sound dropped out. Tap the status chip to see why.", once per kind a minute (`Hinted`); not while the page shows. Yellow never goes there. The safe start after a crash puts its own words there instead, in red ("The last run crashed, so Old was not opened. BROWSE opens it."), since they name the project and where the unsaved work is. The told line has a colour now (`Player::told`). The hint line is a `Label::on_bg()`: on the page's own background its red (and yellow and green) is kept readable with `Theme::readable`, since some themes' red doesn't read on their background (Slate's and AbleTown's grey). A card's count badge draws its number in `Theme::ink_on` its fill.
+
+Golden screens: `system-status` (a dropout now, Juno-X missing, voices given up 30 s ago), `system-status-good` and `status-red-hint` (Play with the red hint line).
+
 ## The Dev > Status page
 
 Dev > Debug's strip gains **Status**, between Touch and Console (`View::StatusBoard`, `debug_page::status_rows`). It shows the board raw, for developers, in engineer words:
@@ -150,8 +163,8 @@ The `Player` keeps its own status clock, moved on by `tick(dt)`, so the board's 
 |---|---|---|
 | 0 | The `mpfree-status` crate (catalogue, reports, board) and the Dev > Status page; save failures and the crash restart report | built |
 | 1 | Watchers on the screen thread for the kinds above (the themes' four are reported by the theme code itself); one log line each time a problem starts or ends; the demo songs play green. Still only in Dev > Debug. The sampler's trades move in with its step 10, and the bench's check moves to `Board::unexpected` with its step 13 | built (the trades: with the sampler) |
-| 2 | The status chip (CPU and RAM, coloured; it replaces today's CPU, RAM and session chips), the System status page (opened from the chip or a Prefs row), the red hint line, the manual chapter "When something goes wrong", golden screens and the controls catalogue. Its layout spec change lands first, as its own docs pull request for the owner | planned |
-| 3 | Everyone reports in: disk streaming, themes (their four came with the theme writers' tools), plugins, MIDI clock, the MPC's temperature and processor clock, each owner's pull request adding its own catalogue entries | planned |
+| 2 | The status chip (CPU and RAM, coloured; it replaces today's CPU, RAM and session chips), the System status page (opened from the chip or a Prefs row), the red hint line, the manual chapter "When something goes wrong", golden screens and the controls catalogue. Its layout spec change (approved 22 Nov 09:55Z) lands first, as its own docs pull request | built |
+| 3 | Everyone reports in: disk streaming (its Storage kinds, built), themes (their four came with the theme writers' tools, built), plugins, MIDI clock, the MPC's temperature and processor clock, each owner's pull request adding its own catalogue entries and their manual entries | under way |
 | Later | Not in this go: where the time goes per track and pad, saving a report to the stick, and errors from the system journal from a short reviewed list | |
 
 ## Tests
@@ -161,4 +174,6 @@ The `Player` keeps its own status clock, moved on by `tick(dt)`, so the board's 
 - `cargo test -p mpfree-app --bin mpfree -- status_watch:: the_watchers_turn a_missing_midi_port`: each watched counter and state, memory's lines, a port after two looks and by its name.
 - `cargo test -p mpfree-app --bin mpfree -- every_song_plays_green`: each demo song opens and plays eight bars with nothing on the board (`Board::unexpected`).
 - `cargo test -p mpfree-midi-ui -- missing_ports`: the ports a project uses and isn't plugged into.
-- `cargo test -p mpfree-app --test cli`: the `debug-status` golden screen.
+- `cargo test -p mpfree-app --bin mpfree -- status_screen:: the_status_chip_opens`: the chip's look, the page from the board, the worst system, the hint line once a minute, every kind's entry in the manual, the chip opening the page and a card's button reaching the app.
+- `cargo test -p mpfree-ui -- status_page`: the page's targets and its cards opening and folding.
+- `cargo test -p mpfree-app --test cli`: the `debug-status`, `system-status`, `system-status-good` and `status-red-hint` golden screens.
