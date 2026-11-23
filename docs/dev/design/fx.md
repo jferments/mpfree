@@ -262,7 +262,7 @@ Each insert is saved in the project's `mixer` part with its slot id, on or off, 
 
 ## The mixer
 
-`Mixer` (in `src/mixer.rs`; the module docs have the details) is the one place audio is summed. It covers what the MPC 3.6 mixer can route, in fixed stages so nothing can feed back:
+`Mixer` (in `src/mixer.rs`; the module docs have the details) is the one place audio is summed. It covers what the MPC's mixer can route (MPC 3.10.1 user guide, pp. 86-98), in fixed stages so nothing can feed back:
 
 1. **Inputs** (2 by default, up to 8): the line input as a stereo pair or either side as mono (Source), heard through the strip's inserts when Monitor says so (Off, On, or Auto: heard while the track is armed).
 2. **Pad channels** (a pool of 32 by default, up to 128): pads that need their own inserts, sends or output. The sampler renders those apart; every other pad stays in its kit's track.
