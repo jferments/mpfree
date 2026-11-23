@@ -9485,6 +9485,173 @@ mod tests {
         assert_eq!(h.dropped(), 0);
     }
 
+    /// The song's parts follow their rows (parts.rs): a clip copied into
+    /// the Verse's row, deleted from it, or moved to the Intro's row, and
+    /// the parts made from those rows are made again, so the song is the
+    /// one List → song lays for the grid as it is now. Each is one UNDO
+    /// with the clip, and REDO brings both back.
+    #[test]
+    fn the_songs_parts_take_in_what_their_rows_hold_and_one_undo_takes_both_back() {
+        let mut h = linked_grid();
+        h.act(TimeAction::ListAdd).unwrap();
+        h.act(TimeAction::ListAdd).unwrap();
+        h.act(TimeAction::ListTimes { step: 1, delta: 1 }).unwrap();
+        let steps = [(0, 1), (1, 2)];
+        laid_as(&h, &steps);
+        let mut songs = vec![h.control.project.arrangement.clone()];
+        // A copy of the Intro's clip into the Verse's row, on track 3.
+        let said = h
+            .act(TimeAction::DropClip {
+                from: (0, 0),
+                to: (2, 1),
+                copy: true,
+            })
+            .unwrap();
+        assert!(
+            said.contains("; the song's parts from row 2 with it"),
+            "{said}"
+        );
+        laid_as(&h, &steps);
+        let copy = h.control.project.clip(2, 1).unwrap().id;
+        assert!(h.control.project.arrangement.plays(copy));
+        assert_eq!(h.state().done.last().unwrap().followed, Some(1));
+        songs.push(h.control.project.arrangement.clone());
+        // Deleted from the row: it leaves the parts, so the song keeps no
+        // copy of it.
+        let said = h.act(TimeAction::DeleteClip { track: 2, slot: 1 }).unwrap();
+        assert!(!said.contains("keeps playing it"), "{said}");
+        assert!(
+            said.contains("the song's parts from row 2 with it"),
+            "{said}"
+        );
+        laid_as(&h, &steps);
+        assert!(!h.control.project.arrangement.plays(copy));
+        assert!(h.control.project.arrangement.clips.is_empty());
+        songs.push(h.control.project.arrangement.clone());
+        // The Verse's bass moved to the Intro's row: both parts change.
+        let said = h
+            .act(TimeAction::DropClip {
+                from: (1, 1),
+                to: (1, 0),
+                copy: false,
+            })
+            .unwrap();
+        assert!(
+            said.contains("the song's parts from their rows with it"),
+            "{said}"
+        );
+        laid_as(&h, &steps);
+        songs.push(h.control.project.arrangement.clone());
+        // One UNDO each takes the clip and the parts back, REDO both again.
+        for k in (0..3).rev() {
+            h.act(TimeAction::Undo).unwrap();
+            assert_eq!(h.control.project.arrangement, songs[k], "undo to {k}");
+            laid_as(&h, &steps);
+        }
+        assert!(h.control.project.clip(2, 1).is_none());
+        for (k, song) in songs.iter().enumerate().skip(1) {
+            h.act(TimeAction::Redo).unwrap();
+            assert_eq!(h.control.project.arrangement, *song, "redo to {k}");
+        }
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// The scene editor's row goes with its row when the row is dragged
+    /// on the grid, as its scene does.
+    #[test]
+    fn the_scene_editors_row_follows_a_dragged_row() {
+        let mut h = linked_grid();
+        h.act(TimeAction::SceneFocus(1)).unwrap();
+        h.act(TimeAction::DropRow {
+            from: 1,
+            to: 3,
+            copy: false,
+        })
+        .unwrap();
+        let st = h.state();
+        assert_eq!((st.scene_focus, st.scene.name.as_str()), (2, "Verse"));
+        h.act(TimeAction::DropRow {
+            from: 0,
+            to: 0,
+            copy: true,
+        })
+        .unwrap();
+        let st = h.state();
+        assert_eq!((st.scene_focus, st.scene.name.as_str()), (3, "Verse"));
+    }
+
+    /// What doesn't follow its row (parts.rs): a part changed in the song
+    /// keeps what it holds; a part keeps its bars when its row gets a
+    /// longer clip, the blocks cut at its end; a list that isn't linked
+    /// leaves the song alone; a new clip REC puts in a row is no take, so
+    /// its parts are a take of their own.
+    #[test]
+    fn parts_keep_their_bars_and_changed_parts_and_unlinked_lists_stay_as_they_are() {
+        let mut h = linked_grid();
+        h.act(TimeAction::ListAdd).unwrap();
+        h.act(TimeAction::ListAdd).unwrap();
+        // A four-bar clip into the one-bar Intro's row: the Intro stays a
+        // bar, and the Verse where it was.
+        let mut long = Clip::new("long", 4 * 3840);
+        long.notes = vec![mpfree_seq::Note::new(0, 100, 4, 100)];
+        let ok = h.control.project.put_new_clip(3, 3, long).unwrap();
+        let said = h
+            .act(TimeAction::DropClip {
+                from: (3, 3),
+                to: (3, 0),
+                copy: false,
+            })
+            .unwrap();
+        assert!(said.contains("from row 1 with it"), "{said}");
+        let song = &h.control.project.arrangement;
+        let ats: Vec<Tick> = song.markers.iter().map(|m| m.at).collect();
+        assert_eq!(ats, vec![0, 3840]);
+        let b = song.placements.iter().find(|p| p.clip == ok).unwrap();
+        assert_eq!((b.start, b.length), (0, 3840), "cut at the Intro's end");
+        // The Verse changed in the song: a clip into its row leaves it.
+        h.control.project.arrangement.markers[1]
+            .scene
+            .as_mut()
+            .unwrap()
+            .changed = true;
+        let was = h.control.project.arrangement.clone();
+        let said = h
+            .act(TimeAction::DropClip {
+                from: (0, 0),
+                to: (2, 1),
+                copy: true,
+            })
+            .unwrap();
+        assert!(!said.contains("the song's parts"), "{said}");
+        assert_eq!(h.control.project.arrangement, was);
+        // REC on track 3 puts a new clip in its first empty cell, the
+        // Intro's row: the Intro takes it in, as a take of its own.
+        h.act(TimeAction::DeleteClip { track: 3, slot: 0 }).unwrap();
+        h.act(TimeAction::Arm(Some(3))).unwrap();
+        let before = h.control.project.arrangement.clone();
+        let said = h.act(TimeAction::Transport(Command::Record)).unwrap();
+        assert!(
+            said.ends_with("new clip in slot 1 of track 4; the song's parts from row 1 with it"),
+            "{said}"
+        );
+        let id = h.control.project.clip(3, 0).unwrap().id;
+        assert!(h.control.project.arrangement.plays(id));
+        let last = *h.state().done.last().unwrap();
+        assert_eq!(
+            last.song,
+            Some(mpfree_play::SongChange::Followed { row: 0 })
+        );
+        h.act(TimeAction::Transport(Command::Stop)).unwrap();
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.control.project.arrangement, before);
+        // Not linked: nothing follows.
+        h.control.project.arrangement.list.linked = false;
+        let was = h.control.project.arrangement.clone();
+        h.act(TimeAction::DeleteClip { track: 0, slot: 0 }).unwrap();
+        assert_eq!(h.control.project.arrangement.placements, was.placements);
+        assert_eq!(h.dropped(), 0);
+    }
+
     /// Save state and Reload clip (sequencer S4): the saved state comes
     /// back on the launch line while the clip plays, at once while the
     /// transport is stopped; UNDO takes a reload back; asked again while

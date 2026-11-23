@@ -75,7 +75,7 @@ The song is your clips laid out on a timeline, one lane per track. Tap **Song �
 - Under each track's name is what it plays: its kit (**Kit** for kit 1, then **Kit 2** and on: see [A kit for each track](pads.md#a-kit-for-each-track)), **Synth**, or its own instrument (see [A synth for each track](synths.md#a-synth-for-each-track)).
 - **Loop tracks** have lanes too, and Song on plays their loops' blocks as it plays clips (see [Loops in the song](looping.md#loops-in-the-song)).
 
-A block in the song is linked to its clip, so when you edit the clip, every block that uses it changes too. Moving the clip on the grid, to another row or track, doesn't change the song: its blocks play it wherever it is. **Make unique** gives the selected block its own copy, so you can change it without touching the others. A unique block has a small dot in its corner. **Delete** removes the selected block, and **UNDO** puts it back. In Perform, Delete takes a half-second hold (see [Make and Perform](playing-live.md#make-and-perform)).
+A block in the song is linked to its clip, so when you edit the clip, every block that uses it changes too. Moving the clip on the grid, to another row or track, doesn't change the song: its blocks play it wherever it is. The exception is a part of a linked song list that plays a row: it follows its row (see [The song list](#the-song-list)). **Make unique** gives the selected block its own copy, so you can change it without touching the others. A unique block has a small dot in its corner. **Delete** removes the selected block, and **UNDO** puts it back. In Perform, Delete takes a half-second hold (see [Make and Perform](playing-live.md#make-and-perform)).
 
 ### Moving blocks and sections
 
@@ -150,6 +150,8 @@ In a new project the list and the song are one song shown two ways: each part on
 - **Remove** takes the picked part out with everything in its bars, and the song closes up (in Perform, hold it for half a second).
 - **Song**, in faint words at the top, is the song's bars before its first marker, when it has some. It can't be moved, given a scene or repeated; add a marker on the Song view's ruler to make those bars a part.
 - Every change is one step for **UNDO**, the song's bars with it.
+
+**A part plays what its row holds.** Record a clip into a part's row, paste or drag one there, drag one away or delete it, and every part that plays that row changes with it. The part keeps its bars: a longer clip is cut at the part's end, and a shorter row plays round as many times as fill it. One **UNDO** takes back the clip and the parts together, and the Takes list says "and the song". A part changed in the song keeps what it has.
 
 The song changes the list too. Drag a section's name along the Song view's ruler and the part moves on the list; put in a marker and the list gets a new part. **Edit inside a part** on the Song view (move, delete, add or resize a block, make one unique, change its bars, or record over it with Rec song) and it becomes the song's own: the list marks it "● changed in the song", and its passes become plain bars (× 1). Moving or copying it whole doesn't count. **Back to the scene**, in List → song's place, puts the scene's clips back for the part's bars, as many passes as fit; it is lit when a changed part is picked. **Scenes → song** adds its rows after the last part.
 

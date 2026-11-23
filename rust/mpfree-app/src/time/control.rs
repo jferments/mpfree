@@ -73,6 +73,7 @@ use super::{
 };
 
 mod linked;
+mod parts;
 mod sections;
 pub use linked::edits_steps;
 
@@ -2019,6 +2020,9 @@ impl TimeControl {
                     bar_beat(at, self.info.meter)
                 )
             }
+            Some(SongChange::Followed { row }) => {
+                return format!("{} · the song's parts from row {}", r.short(), row + 1)
+            }
             None => {}
         }
         if let Some((first, last)) = r.rows {
@@ -2922,7 +2926,25 @@ impl TimeControl {
     /// Carry out a touch on the time engine's screens. Returns a line for
     /// the log.
     pub fn act(&mut self, a: TimeAction) -> Result<String, String> {
-        let r = self.act_in(a);
+        // The song's parts follow their rows (parts.rs); undo and redo
+        // bring back the song their take holds instead.
+        let follows = !matches!(a, TimeAction::Undo | TimeAction::Redo);
+        let rows = if follows {
+            self.followed_rows()
+        } else {
+            Vec::new()
+        };
+        let edits = self.takes.edits();
+        let mut r = self.act_in(a);
+        if let (Ok(line), false) = (&mut r, rows.is_empty()) {
+            if let Some(more) = self.follow_rows(&rows, edits) {
+                // Before "(UNDO takes it back)" where the line ends so.
+                match line.rfind(" (UNDO") {
+                    Some(k) if line.ends_with(')') => line.insert_str(k, &more),
+                    _ => line.push_str(&more),
+                }
+            }
+        }
         // An action may add or take instrument locks (UNDO, a paste, a
         // clip copied to another track): the tags follow (refactor F1).
         self.tag_clips(None);
@@ -3595,11 +3617,12 @@ impl TimeControl {
             TimeAction::Restore { track, slot } => self.restore(track, slot),
             TimeAction::DeleteClip { track, slot } => {
                 // A clip the song plays goes to the song's own clips, so
-                // the song plays on (Arrange 1.3).
+                // the song plays on (Arrange 1.3), but for the parts that
+                // follow its row, which it leaves (parts.rs).
                 let kept = self
                     .project
                     .clip(track, slot)
-                    .is_some_and(|c| self.project.arrangement.plays(c.id));
+                    .is_some_and(|c| self.plays_apart_from_row(c.id, slot));
                 self.takes
                     .remove_clip(&mut self.project, track, slot)
                     .map_err(|_| format!("slot {} of track {} is empty", slot + 1, track + 1))?;
@@ -3688,6 +3711,11 @@ impl TimeControl {
                         _ => format!("clips: row {} stays where it is", from + 1),
                     })?;
                 self.drop_went_in(drop)?;
+                // The scene editor's row goes with its row, as its scene
+                // does.
+                if let Some(r) = self.scene_pick {
+                    self.scene_pick = Some(drop.after((0, r)).1);
+                }
                 Ok(match drop {
                     ClipDrop::RowCopied { from, to } => format!(
                         "clips: a copy of row {} in row {}, the rows under it down one (UNDO takes it back)",

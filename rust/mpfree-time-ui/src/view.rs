@@ -564,6 +564,9 @@ pub struct TakeRow {
     pub scene: Option<usize>,
     /// Song → scenes filled these rows, as (first, last).
     pub rows: Option<(usize, usize)>,
+    /// The take put a clip in this row or took one out, and the song's
+    /// parts that follow the row came along ([`Take::followed`]).
+    pub followed: Option<usize>,
 }
 
 impl TakeRow {
@@ -608,6 +611,10 @@ impl TakeRow {
                 .rows
                 .as_ref()
                 .and_then(|e| Some((*e.rows.first()?, *e.rows.last()?))),
+            followed: t.followed.as_ref().and_then(|e| match e.change {
+                SongChange::Followed { row } => Some(row),
+                _ => None,
+            }),
         }
     }
 
@@ -633,6 +640,7 @@ impl TakeRow {
                 SongChange::Tempo { .. } => "tempo",
                 SongChange::Bars { .. } => "bars",
                 SongChange::Marker { .. } => "marker",
+                SongChange::Followed { .. } => "parts",
             };
         }
         if let Some(d) = self.dropped {
@@ -3577,6 +3585,9 @@ pub fn take_title(st: &TimeState, row: &TakeRow) -> String {
             );
             return format!("{word} {} · {name}", row.shown());
         }
+        Some(SongChange::Followed { row: r }) => {
+            return format!("{word} {} · row {}", row.shown(), r + 1);
+        }
         Some(SongChange::Scenes { .. } | SongChange::List | SongChange::ListToSong { .. })
         | None => {}
     }
@@ -3600,7 +3611,17 @@ pub fn take_title(st: &TimeState, row: &TakeRow) -> String {
     }
 }
 
+/// What a take did, short ("new +12", "to Bass / 3"), ending "· and the
+/// song" when the song's parts that follow a row came along.
 fn take_detail(st: &TimeState, row: &TakeRow) -> String {
+    let said = take_said(st, row);
+    match row.followed {
+        Some(_) => format!("{said} · and the song"),
+        None => said,
+    }
+}
+
+fn take_said(st: &TimeState, row: &TakeRow) -> String {
     if let Some((first, last)) = row.rows {
         return rows_named(first, last);
     }
@@ -3641,6 +3662,7 @@ fn take_detail(st: &TimeState, row: &TakeRow) -> String {
             };
         }
         Some(SongChange::Marker { at }) => return format!("at bar {}", bar_of(at)),
+        Some(SongChange::Followed { .. }) => return "the song's parts".into(),
         None => {}
     }
     match row.dropped {
@@ -7095,6 +7117,7 @@ mod tests {
             variant: None,
             scene: None,
             rows: None,
+            followed: None,
         };
         let mut st = st;
         st.done = vec![take];
@@ -8569,6 +8592,7 @@ mod tests {
             variant: None,
             scene: None,
             rows: None,
+            followed: None,
         };
         st.done = vec![row(1), row(2)];
         st.undone = vec![row(4), row(3)];
@@ -8612,6 +8636,7 @@ mod tests {
             variant: None,
             scene: None,
             rows: None,
+            followed: None,
         };
         let (items, _) = take_items(&st);
         assert_eq!(
@@ -8640,6 +8665,7 @@ mod tests {
             variant: None,
             scene: None,
             rows: None,
+            followed: None,
         };
         assert_eq!(take_items(&st).0[2].title, "Edit 5 · Bass / 1");
         assert_eq!(st.done[1].short(), "edit 5");
