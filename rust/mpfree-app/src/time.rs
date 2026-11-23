@@ -1837,6 +1837,26 @@ impl TimeHost {
         }
     }
 
+    /// What Rec song last put on audio tracks' lanes, once: its song edit's
+    /// number and the blocks' spans by lasting id, for the audio tracks to
+    /// replace the regions under them as a step tagged with the number
+    /// (audio tracks phase 2, step 2d; [`TimeControl::take_song_placed`]).
+    /// Then [`TimeHost::tie_audio`] if they made one.
+    pub fn take_song_placed(&mut self) -> Option<(u32, Vec<(mpfree_seq::TrackId, Tick, Tick)>)> {
+        match &mut self.control {
+            Half::Here(c) => c.take_song_placed(),
+            Half::Apart(a) => a.take_placed(),
+        }
+    }
+
+    /// The audio tracks made a step tied to song edit `n`: the song's UNDO
+    /// and REDO of it go through them ([`TimeControl::tie_audio`]). False
+    /// when the song's history no longer holds `n`.
+    pub fn tie_audio(&mut self, n: u32) -> bool {
+        let r = self.with(|c| c.tie_audio(n));
+        self.sent(r)
+    }
+
     /// Whether a change waits for the kit's pad `pad`, for its light.
     pub fn pad_waiting(&self, pad: usize) -> bool {
         match &self.control {
@@ -11900,6 +11920,7 @@ mod tests {
         #[derive(Default)]
         struct Tied {
             undone: Vec<(u32, bool)>,
+            regions: Vec<(mpfree_seq::TrackId, Vec<mpfree_seq::ClipRegion>)>,
         }
 
         impl SongAudio for Tied {
@@ -11921,6 +11942,117 @@ mod tests {
             fn song_undo(&mut self, song: u32, undo: bool) {
                 self.undone.push((song, undo));
             }
+            fn regions(&self) -> Vec<(mpfree_seq::TrackId, Vec<mpfree_seq::ClipRegion>)> {
+                self.regions.clone()
+            }
+        }
+
+        /// Phase 2, step 2d: what Rec song puts into the song is a song
+        /// edit UNDO takes back; the blocks it put on audio lanes are handed
+        /// to the audio tracks once, with the edit's number, to replace the
+        /// regions under them; once they say they made that step, the
+        /// song's UNDO and REDO take it back and bring it back too.
+        #[test]
+        fn rec_songs_blocks_are_one_undo_and_handed_to_the_audio_tracks() {
+            let mut h = host();
+            let mut pads = Fake::default();
+            h.act(TimeAction::LaunchScene(0)).unwrap();
+            h.act(TimeAction::RecSong(true)).unwrap();
+            h.command(Command::Play);
+            run(&mut h, &mut pads, 2 * BAR - 1000, &[]);
+            h.command(Command::Stop);
+            run(&mut h, &mut pads, 2 * BAR, &[]);
+            let note = h.take_later_note().unwrap();
+            assert!(note.starts_with("rec song: 2 placements"), "{note}");
+            let lanes = |h: &TimeHost| -> Vec<usize> {
+                let song = &h.control.project.arrangement;
+                song.placements.iter().map(|p| p.track).collect()
+            };
+            assert_eq!(lanes(&h), [DRUMS, VOCAL]);
+            let vocal = h.control.project.tracks[VOCAL].id;
+            let st = h.state();
+            let took = st.done.last().unwrap();
+            assert_eq!(took.word(), "rec song");
+            let n = took.number;
+            let end = h.control.project.arrangement.placements[1].end();
+            assert_eq!(h.take_song_placed(), Some((n, vec![(vocal, 0, end)])));
+            assert_eq!(h.take_song_placed(), None, "once");
+            // Untied, UNDO and REDO are the song's alone.
+            let mut tied = Tied::default();
+            h.act_with_audio(TimeAction::Undo, &mut tied).unwrap();
+            assert!(lanes(&h).is_empty());
+            h.act_with_audio(TimeAction::Redo, &mut tied).unwrap();
+            assert_eq!(lanes(&h), [DRUMS, VOCAL]);
+            assert!(tied.undone.is_empty());
+            // Tied: the audio tracks' step goes back and comes back too.
+            assert!(h.tie_audio(n));
+            h.act_with_audio(TimeAction::Undo, &mut tied).unwrap();
+            h.act_with_audio(TimeAction::Redo, &mut tied).unwrap();
+            assert_eq!(tied.undone, [(n, true), (n, false)]);
+            assert!(!h.tie_audio(n + 100), "no such edit");
+        }
+
+        /// Phase 2, step 2d: Song → scenes asks the audio tracks for the
+        /// song's regions, through act_with_audio, and each section's part
+        /// of a lane becomes an audio clip in the section's row; a section
+        /// a clip can't hold is refused by track and bars, and nothing
+        /// changes. Song → scenes through act alone has no regions.
+        #[test]
+        fn song_to_scenes_brings_the_songs_regions_in_as_audio_clips() {
+            use mpfree_seq::ClipRegion;
+            let bar = 3840;
+            let mut h = host();
+            let p = &mut h.control.project;
+            let beat = mpfree_seq::Placement::of(&p.tracks, DRUMS, 0, 0, 2 * bar);
+            p.arrangement.place(beat).unwrap();
+            p.arrangement.mark(bar, "Chorus").unwrap();
+            h.control.compile().unwrap();
+            let guitar = h.control.project.tracks[GUITAR].id;
+            let take = ClipRegion::new(bar / 2, 3 * bar / 2, RecId(5), 0);
+            let mut tied = Tied {
+                regions: vec![(guitar, vec![take])],
+                ..Tied::default()
+            };
+            let said = h
+                .act_with_audio(TimeAction::SongToScenes, &mut tied)
+                .unwrap();
+            assert!(said.starts_with("song → scenes: rows 2 to 3"), "{said}");
+            let audio = |h: &TimeHost, row: usize| {
+                let c = h.control.project.clip(GUITAR, row).unwrap();
+                (c.name.clone(), c.audio.clone().unwrap().regions)
+            };
+            let (name, regions) = audio(&h, 1);
+            assert_eq!(name, "Guitar 1");
+            assert_eq!(regions.len(), 1);
+            assert_eq!((regions[0].start, regions[0].end), (bar / 2, bar));
+            let (name, regions) = audio(&h, 2);
+            assert_eq!(name, "Guitar 2");
+            assert_eq!((regions[0].start, regions[0].end), (0, bar / 2));
+            assert_eq!(regions[0].src, regions[0].into as i64, "on from the cut");
+            // One UNDO takes the rows away.
+            h.act(TimeAction::Undo).unwrap();
+            assert!(h.control.project.clip(GUITAR, 1).is_none());
+            // 17 regions in the first section: refused by name, nothing
+            // changes.
+            tied.regions = vec![(
+                guitar,
+                (0..17)
+                    .map(|k| ClipRegion::new(k * 200, k * 200 + 100, RecId(5), 0))
+                    .collect(),
+            )];
+            let before = h.control.project.clone();
+            let err = h
+                .act_with_audio(TimeAction::SongToScenes, &mut tied)
+                .unwrap_err();
+            assert_eq!(
+                err,
+                "song → scenes: nothing changed: Guitar, bar 1: 17 regions, and a clip holds 16. Split the section, or bounce it first."
+            );
+            assert_eq!(h.control.project, before);
+            // Through act alone: no regions asked for, only the Beat.
+            h.act(TimeAction::SongToScenes).unwrap();
+            assert!(h.control.project.clip(GUITAR, 1).is_none());
+            assert!(h.control.project.clip(DRUMS, 1).is_some());
         }
 
         /// Phase 2, step 2d: a take over a block cuts the block at the

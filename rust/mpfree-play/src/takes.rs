@@ -157,6 +157,11 @@ pub enum SongChange {
         track: usize,
         start: Tick,
     },
+    /// Rec song's recording into the song (live to song): `placements`
+    /// blocks put in, and the song's lanes' points with them.
+    RecSong {
+        placements: usize,
+    },
     /// A recording on audio track `track`'s lane cut the blocks under it,
     /// the first from song tick `start` (audio tracks phase 2, step 2d).
     Recorded {

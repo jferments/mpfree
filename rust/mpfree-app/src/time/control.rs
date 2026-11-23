@@ -36,7 +36,9 @@ use mpfree_play::{
     Takes,
 };
 use mpfree_play::{MOVE_POINTS, TOUCH_POINTS};
-use mpfree_seq::arrange::{list_spans, song_to_scenes, Difference, Differs};
+use mpfree_seq::arrange::{
+    list_spans, song_to_scenes, Difference, Differs, ScenesRefused, SongSound,
+};
 use mpfree_seq::loops::{self, LoopNow, LoopPlan};
 use mpfree_seq::mpfree_moves::{Kind, MoveLog};
 use mpfree_seq::scenes::{MAX_LIST_STEPS, MAX_TIMES};
@@ -461,6 +463,15 @@ pub struct TimeControl {
     /// (the song full of blocks), so the whole block went: a fallback,
     /// counted and said ([`TimeControl::audio_took`]).
     audio_took_whole: u32,
+    /// The song's regions for the Song → scenes being made, from the audio
+    /// tracks ([`SongAudio::regions`]), only while
+    /// [`TimeControl::act_with_audio`] makes it.
+    song_regions: Vec<(TrackId, Vec<ClipRegion>)>,
+    /// What Rec song last put on audio tracks' lanes: its song edit's
+    /// number and the spans of the blocks, by lasting id, for the audio
+    /// tracks to replace the regions under them
+    /// ([`TimeControl::take_song_placed`]).
+    song_placed: Option<(u32, Vec<(TrackId, Tick, Tick)>)>,
     /// The song time edit being made moves audio regions: it is kept as a
     /// take even where the song itself doesn't change (bars put in after
     /// everything but the audio), so UNDO takes the regions back.
@@ -669,6 +680,8 @@ impl TimeControl {
             audio_edits: HashMap::new(),
             audio_stayed: 0,
             audio_took_whole: 0,
+            song_regions: Vec::new(),
+            song_placed: None,
             audio_moves: false,
             audio_apart: false,
             redos: 0,
@@ -2183,6 +2196,7 @@ impl TimeControl {
                 return format!("{} · a section of the song", r.short())
             }
             Some(SongChange::Scenes { .. }) => return format!("{} → song", r.short()),
+            Some(SongChange::RecSong { .. }) => return format!("{} · rec song", r.short()),
             Some(SongChange::List) => return format!("{} · the song list", r.short()),
             Some(SongChange::ListToSong { .. }) => return format!("{} · list → song", r.short()),
             Some(SongChange::Tempo { at }) => {
@@ -2951,6 +2965,14 @@ impl TimeControl {
         });
         if matches!(a, TimeAction::Undo | TimeAction::Redo) {
             return self.undo_with_audio(a == TimeAction::Undo, audio);
+        }
+        // Song → scenes turns the song's regions into audio clips too
+        // (audio tracks phase 2, step 2d): asked for this one edit.
+        if a == TimeAction::SongToScenes {
+            self.song_regions = audio.regions();
+            let r = self.act(a);
+            self.song_regions = Vec::new();
+            return r;
         }
         let Some(retime) = self.time_edit_of(&a).as_ref().and_then(retime_of) else {
             return self.act(a);
@@ -4414,7 +4436,10 @@ impl TimeControl {
     }
 
     /// Live to song: the passes recorded so far into the song, compiled
-    /// in. A line for the log.
+    /// in, as a song edit UNDO takes back (audio tracks phase 2, step 2d).
+    /// The blocks it put on audio tracks' lanes wait for the audio tracks
+    /// ([`TimeControl::take_song_placed`]): the regions under them go, as
+    /// a step tied to this edit. A line for the log.
     fn keep_song(&mut self) -> Result<String, String> {
         if !self.song_rec.waiting() {
             return Ok("nothing recorded".into());
@@ -4432,14 +4457,93 @@ impl TimeControl {
             self.compile()?;
             return Err(e);
         }
+        let placed = audio_placed(&self.project, &before);
+        if self.project.arrangement != before {
+            let change = SongChange::RecSong {
+                placements: r.placements,
+            };
+            self.takes
+                .song_edit_joining(&self.project, change, before, None);
+            self.changed = true;
+            if !placed.is_empty() {
+                let n = self.takes.done().last().map_or(0, |t| t.number);
+                self.song_placed = Some((n, placed));
+            }
+        }
         Ok(format!(
             "{} placements and {} morph points into the song",
             r.placements, r.morph_points
         ))
     }
 
+    /// What Rec song last put on audio tracks' lanes, once: its song
+    /// edit's number and each block's span, by the track's lasting id,
+    /// in order, joined where they meet. The audio tracks replace the
+    /// regions under them as a step of their own tagged with the number,
+    /// and say so with [`TimeControl::tie_audio`].
+    pub fn take_song_placed(&mut self) -> Option<(u32, Vec<(TrackId, Tick, Tick)>)> {
+        self.song_placed.take()
+    }
+
+    /// The audio tracks made a step tied to song edit `n` (the regions
+    /// under Rec song's blocks replaced): its UNDO and REDO take that step
+    /// back and bring it back, through [`TimeControl::act_with_audio`].
+    /// False when the song's history no longer holds `n`.
+    pub fn tie_audio(&mut self, n: u32) -> bool {
+        let held = self.song_reaches(n, true) || self.song_reaches(n, false);
+        if held {
+            self.audio_edits.entry(n).or_default();
+        }
+        held
+    }
+
     /// The Song view's edits of the arrangement (and, for Song → scenes,
     /// the rows). A line for the log, and what changed for the undo list.
+    /// Song → scenes ([`song_to_scenes`]) with the song's regions, when
+    /// [`TimeControl::act_with_audio`] has asked the audio tracks for
+    /// them, along the tempo map the song plays them on.
+    fn song_to_scenes(
+        &mut self,
+        bar: Tick,
+    ) -> Result<mpfree_seq::arrange::ToScenes, ScenesRefused> {
+        let song = &self.project.arrangement;
+        // As the transport plays it in song mode: its tempo points, or the
+        // tempo throughout when there are none.
+        let map = if song.tempo.is_empty() {
+            TempoMap::constant(self.info.bpm)
+        } else {
+            song.tempo_map(self.project_bpm).ok()
+        }
+        .or_else(|| TempoMap::constant(self.project_bpm))
+        .ok_or(ScenesRefused::Model(ModelError::BadPlacement))?;
+        let regions = std::mem::take(&mut self.song_regions);
+        let sound = SongSound {
+            regions: &regions,
+            map,
+            rate: self.rate,
+        };
+        let r = song_to_scenes(&mut self.project, bar, &sound);
+        self.song_regions = regions;
+        r
+    }
+
+    /// Track `track` in song ticks `from..to`, in bars of `bar` ticks, as
+    /// a refusal names it: "Vocal, bars 9 to 16".
+    fn lane_bars(&self, track: usize, from: Tick, to: Tick, bar: Tick) -> String {
+        let bar = bar.max(1);
+        let name = self
+            .project
+            .tracks
+            .get(track)
+            .map_or_else(|| format!("Track {}", track + 1), |t| t.name.clone());
+        let (first, last) = (from / bar + 1, ((to + bar - 1) / bar).max(from / bar + 1));
+        if last > first {
+            format!("{name}, bars {first} to {last}")
+        } else {
+            format!("{name}, bar {first}")
+        }
+    }
+
     /// The song's tempo map while song mode plays its tempo points, made
     /// with the project's tempo before the first; None plays the
     /// project's tempo throughout.
@@ -4940,7 +5044,7 @@ impl TimeControl {
                     Some(SongChange::Scenes { rows: rows.len() }),
                 ))
             }
-            TimeAction::SongToScenes => match song_to_scenes(&mut self.project, bar) {
+            TimeAction::SongToScenes => match self.song_to_scenes(bar) {
                 Ok(done) if done.rows.is_empty() => {
                     Ok(("song → scenes: the song is empty".into(), None))
                 }
@@ -4955,10 +5059,24 @@ impl TimeControl {
                         None,
                     ))
                 }
-                Err(ModelError::NoRoom) => {
+                Err(ScenesRefused::Model(ModelError::NoRoom)) => {
                     Err("song → scenes: not enough empty rows in a run".into())
                 }
-                Err(e) => Err(format!("song → scenes: {e:?}")),
+                Err(ScenesRefused::Model(e)) => Err(format!("song → scenes: {e:?}")),
+                Err(ScenesRefused::Regions {
+                    track,
+                    from,
+                    to,
+                    regions,
+                }) => Err(format!(
+                    "song → scenes: nothing changed: {}: {regions} regions, and a clip holds {}. Split the section, or bounce it first.",
+                    self.lane_bars(track, from, to, bar),
+                    mpfree_seq::MAX_CLIP_REGIONS
+                )),
+                Err(ScenesRefused::Both { track, from, to }) => Err(format!(
+                    "song → scenes: nothing changed: {} has recordings and a block, and a cell holds one clip",
+                    self.lane_bars(track, from, to, bar)
+                )),
             },
             TimeAction::MakeUnique(i) => {
                 let p = self
@@ -6931,6 +7049,29 @@ pub(crate) fn grid_of(c: &Clip) -> Grid {
         .filter(|_| mpfree_seq::steps::SIZES.contains(&c.step))
         .or_else(|| Grid::new(DEFAULT_SIZE))
         .expect("a 1/16 is a step size")
+}
+
+/// The blocks on audio tracks' lanes in `project`'s song that weren't in
+/// `before` (Rec song's, [`TimeControl::keep_song`]): each one's span by
+/// the track's lasting id, in order, joined where they meet.
+fn audio_placed(
+    project: &Project,
+    before: &mpfree_seq::arrange::Arrangement,
+) -> Vec<(TrackId, Tick, Tick)> {
+    let mut out: Vec<(TrackId, Tick, Tick)> = Vec::new();
+    for p in &project.arrangement.placements {
+        let Some(track) = project.tracks.get(p.track).filter(|t| t.is_audio()) else {
+            continue;
+        };
+        if before.placements.contains(p) {
+            continue;
+        }
+        match out.last_mut() {
+            Some(last) if last.0 == track.id && last.2 >= p.start => last.2 = last.2.max(p.end()),
+            _ => out.push((track.id, p.start, p.end())),
+        }
+    }
+    out
 }
 
 /// Where block `p` would cover a region on its audio track's lane (from

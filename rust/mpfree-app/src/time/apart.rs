@@ -38,8 +38,9 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use mpfree_seq::loops::{LoopNow, LoopPlan};
-use mpfree_seq::{Project, RecId, LOOPS, MAX_TRACKS};
+use mpfree_seq::{Project, RecId, TrackId, LOOPS, MAX_TRACKS};
 use mpfree_time_ui::view::{MuteWait, TimeState};
+use mpfree_transport::time::Tick;
 
 use super::control::{MuteLight, TimeControl, PADS};
 use super::StepsData;
@@ -92,6 +93,9 @@ pub enum Told {
     Notes(Vec<String>),
     /// The kit's pads whose change in the mute queue came due.
     Landings([Option<(bool, bool)>; PADS]),
+    /// What Rec song put on audio tracks' lanes: its song edit and the
+    /// blocks' spans ([`TimeControl::take_song_placed`]).
+    SongPlaced(u32, Vec<(TrackId, Tick, Tick)>),
 }
 
 /// An ask: run on the control half, perhaps with something to tell.
@@ -230,6 +234,8 @@ pub struct Apart {
     said: Vec<(Say, Result<String, String>)>,
     notes: VecDeque<String>,
     landings: [Option<(bool, bool)>; PADS],
+    /// What Rec song put on audio tracks' lanes, oldest first.
+    placed: VecDeque<(u32, Vec<(TrackId, Tick, Tick)>)>,
     pub counts: Counts,
     /// What the facade last sent of the inputs it gives every period, so
     /// only a change goes: the app's tempo, whether a take records.
@@ -296,6 +302,7 @@ impl Apart {
             said: Vec::with_capacity(KEPT),
             notes: VecDeque::with_capacity(KEPT),
             landings: [None; PADS],
+            placed: VecDeque::new(),
             counts: Counts::default(),
             tempo: None,
             taking: None,
@@ -407,6 +414,7 @@ impl Apart {
                 Ok(Told::Said(say, r)) => self.said.push((say, r)),
                 Ok(Told::Note(line)) => self.notes.push_back(line),
                 Ok(Told::Notes(lines)) => self.notes.extend(lines),
+                Ok(Told::SongPlaced(n, spans)) => self.placed.push_back((n, spans)),
                 Ok(Told::Landings(l)) => {
                     for (k, l) in self.landings.iter_mut().zip(l) {
                         if l.is_some() {
@@ -430,6 +438,12 @@ impl Apart {
     pub fn take_note(&mut self) -> Option<String> {
         self.drain_told();
         self.notes.pop_front()
+    }
+
+    /// What Rec song put on audio tracks' lanes, oldest first.
+    pub fn take_placed(&mut self) -> Option<(u32, Vec<(TrackId, Tick, Tick)>)> {
+        self.drain_told();
+        self.placed.pop_front()
     }
 
     /// The kit's pads whose change came due since the last call.
@@ -542,6 +556,9 @@ impl Thread {
             c.poll();
             if let Some(line) = c.take_later_note() {
                 self.unsent.push_back(Told::Note(line));
+            }
+            if let Some((n, spans)) = c.take_song_placed() {
+                self.unsent.push_back(Told::SongPlaced(n, spans));
             }
             let l = c.take_pad_landings();
             if l.iter().any(Option::is_some) {

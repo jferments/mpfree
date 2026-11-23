@@ -665,7 +665,8 @@ impl TakeRow {
     /// "settings", "reload", "mutate", "restore", for a drop "move",
     /// "swap" or "copy", and for a Song view edit "move", "copy",
     /// "length", "delete", "unique", "scenes", "tempo", "bars",
-    /// "marker" or "recorded over" (a recording cut the blocks under it),
+    /// "marker", "rec song" or "recorded over" (a recording cut the
+    /// blocks under it),
     /// "list" for the
     /// song list, "scene" for the scene editor and "song → scenes".
     pub fn word(&self) -> &'static str {
@@ -680,6 +681,7 @@ impl TakeRow {
                 SongChange::Deleted { .. } => "delete",
                 SongChange::Unique { .. } => "unique",
                 SongChange::Recorded { .. } => "recorded over",
+                SongChange::RecSong { .. } => "rec song",
                 SongChange::Scenes { .. } => "scenes",
                 SongChange::List | SongChange::ListToSong { .. } => "list",
                 SongChange::Tempo { .. } => "tempo",
@@ -3875,7 +3877,12 @@ pub fn take_title(st: &TimeState, row: &TakeRow) -> String {
             );
             return format!("{word} {} · {name}", row.shown());
         }
-        Some(SongChange::Scenes { .. } | SongChange::List | SongChange::ListToSong { .. })
+        Some(
+            SongChange::Scenes { .. }
+            | SongChange::List
+            | SongChange::ListToSong { .. }
+            | SongChange::RecSong { .. },
+        )
         | None => {}
     }
     if row.rows.is_some() {
@@ -3924,6 +3931,8 @@ fn take_detail(st: &TimeState, row: &TakeRow) -> String {
             return format!("{:.1} bars", length as f64 / bar as f64)
         }
         Some(SongChange::Scenes { rows }) => return format!("{rows} rows"),
+        Some(SongChange::RecSong { placements: 1 }) => return "1 block".into(),
+        Some(SongChange::RecSong { placements }) => return format!("{placements} blocks"),
         Some(SongChange::List) => return "song list".into(),
         Some(SongChange::ListToSong { steps }) => return format!("{steps} steps → song"),
         Some(SongChange::Tempo { .. }) => return "tempo point".into(),
