@@ -1803,7 +1803,10 @@ mod tests {
 
     /// Sampler step 15: a kit the project chose for the pads plays on its
     /// own, before the arp and the recorder, while the selected track plays
-    /// another kit; Follow track gives the pads back.
+    /// another kit; Follow track gives the pads back. The Sample page
+    /// follows the hit to the kit it played (step 15d; the screen test
+    /// `the_sample_page_follows_a_hit_to_the_kit_the_pads_play_and_says_where_send_lands`
+    /// has it back on the track's kit after).
     #[test]
     fn a_kit_chosen_for_the_pads_plays_on_its_own_and_follow_track_gives_them_back() {
         on_big_stack(|| {
@@ -1837,6 +1840,9 @@ mod tests {
             assert!(player.kit_pad_voices(1, pad) > 0, "kit 2's pad plays");
             assert_eq!(player.kit_pad_voices(0, pad), 0, "kit 1's doesn't");
             assert_eq!(s.previewed.len(), 1, "on its own, before the recorder");
+            // Step 15d: the Sample page edits the pad hit, on kit 2.
+            assert_eq!(s.screen.sample.edit_kit(), 1, "the Sample page shows kit 2");
+            assert_eq!(s.screen.sample.pad(), pad, "at the pad hit");
             s.pad_edge(pad, 0, false);
             s.run_for(2.0);
 

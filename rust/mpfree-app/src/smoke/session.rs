@@ -2892,6 +2892,8 @@ impl Session {
                 }
             }
             self.kit_preview = kit_now;
+            // The Sample page follows a hit there (sampler step 15d).
+            self.out.show(ToUi::PadsKit(kit_now));
         }
         // The pads' arp's notes end where they played as the pads move on
         // (sampler step 15c), as main.rs.

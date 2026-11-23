@@ -1139,6 +1139,10 @@ pub struct SamplePage {
     assign: Option<LoadedSound>,
     /// Send to pad: the kit and pad whose copy goes on the next pad hit.
     sending: Option<(usize, usize)>,
+    /// The kit the selected track plays ([`SamplePage::set_track_kit`]):
+    /// Load to pad and Send to pad say so when a hit lands them on
+    /// another (the kit the pads play on their own, sampler step 15d).
+    track_kit: usize,
     /// The take kept on the page that the Wave page shows (one-page step
     /// 2b), by its place in the kit's [`Project::takes`]; None: the pad.
     open: Option<usize>,
@@ -1337,6 +1341,7 @@ impl SamplePage {
             loading: None,
             assign: None,
             sending: None,
+            track_kit: 0,
             open: None,
             sending_take: None,
             take_held: None,
@@ -1457,6 +1462,10 @@ impl SamplePage {
         if self.sending.take().is_some() || self.sending_take.take().is_some() {
             self.lines
                 .push("sample: Send to pad called off (another kit)".into());
+            self.told.push(format!(
+                "Send to pad called off: the page moved to {}. Press it again there",
+                self.kit_text_of(k)
+            ));
         }
         // The takes kept are the kit's: the new kit's pad shows.
         self.open = None;
@@ -1515,6 +1524,32 @@ impl SamplePage {
         }
         self.hit(pad);
         self.hit_velocity(ui, pad, velocity);
+    }
+
+    /// The kit the selected track plays (the screen's [`ToUi::Kit`]).
+    ///
+    /// [`ToUi::Kit`]: crate::gui::ToUi::Kit
+    pub fn set_track_kit(&mut self, k: usize) {
+        self.track_kit = k;
+    }
+
+    /// Load to pad or Send to pad (`what`) landed on pad `pad` of kit
+    /// `kit`: when that isn't the selected track's kit (the pads play one
+    /// of their own), the hint says which kit it went on (sampler step
+    /// 15d: they land where the hit pad's sound lives, and say so).
+    fn say_where(&mut self, kit: usize, pad: usize, what: &str) {
+        let landed = self
+            .projects
+            .get(kit)
+            .and_then(|p| p.pad(pad))
+            .is_some_and(|p| !p.layers.is_empty());
+        if kit != self.track_kit && landed {
+            self.told.push(format!(
+                "{what} on pad {} of {}, the kit that pad plays",
+                self.pad_text(kit, pad),
+                self.kit_text_of(kit)
+            ));
+        }
     }
 
     /// Whether the Play tab shows, at a row that pad hits edit (Stops or
@@ -1626,13 +1661,16 @@ impl SamplePage {
             return;
         }
         if let Some(l) = self.assign.take() {
-            // Load to pad: this hit picks the pad.
+            // Load to pad: this hit picks the pad, on the kit it played.
             let kit = self.kit;
             self.keep_loaded(ui, kit, pad, l);
+            self.say_where(kit, pad, "Loaded");
         }
         if let Some((kit, from)) = self.sending.take() {
             // Send to pad: this hit picks the pad the copy goes on.
-            self.send(ui, kit, from, pad);
+            if self.send(ui, kit, from, pad) {
+                self.say_where(kit, pad, "Sent");
+            }
         }
         if let Some((kit, take)) = self.sending_take.take() {
             // Send to pad with a take shown: it goes on this pad.
@@ -2703,15 +2741,15 @@ impl SamplePage {
     }
 
     /// Send to pad: a copy of pad `from` of kit `kit` (its sound and every
-    /// edit) onto pad `to`, one undo step.
-    fn send(&mut self, ui: &mut Ui, kit: usize, from: usize, to: usize) {
+    /// edit) onto pad `to`, one undo step. Whether it was sent.
+    fn send(&mut self, ui: &mut Ui, kit: usize, from: usize, to: usize) -> bool {
         send::show(ui, true, false);
         if kit != self.kit || to == from || to >= PADS {
             self.lines.push("sample: Send to pad called off".into());
-            return;
+            return false;
         }
         let Some(copy) = self.projects.get(kit).and_then(|p| p.pad(from)).cloned() else {
-            return;
+            return false;
         };
         let mut none = Vec::new();
         self.act_pads(
@@ -2728,6 +2766,7 @@ impl SamplePage {
             self.pad_text(kit, from),
             self.pad_text(kit, to)
         ));
+        true
     }
 
     /// COPY held and pads hit on the MPC (the MPC's COPY): a copy of pad

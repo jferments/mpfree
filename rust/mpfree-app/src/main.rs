@@ -12791,6 +12791,12 @@ fn player_session(
                 }
             }
             pads_preview = preview_now;
+            // The Sample page follows a hit on a kit the pads play on
+            // their own (sampler step 15d).
+            out.show(gui::ToUi::PadsKit(match pads_preview {
+                Some(PadsPreview::Kit(k)) => Some(usize::from(k)),
+                _ => None,
+            }));
             let preview_on = pads_preview.is_some();
             if let Some(PadsPreview::Kit(k)) = pads_preview {
                 let k = usize::from(k);

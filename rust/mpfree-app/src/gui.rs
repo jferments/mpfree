@@ -1213,6 +1213,11 @@ pub enum ToUi {
     /// (a Loop pad's, sampler R5.3b): outlined in amber until it sounds.
     PadsWaiting(u16),
     Kit(usize),
+    /// The kit the pads play on their own now (a kit chosen for them, or
+    /// the bank's own, sampler step 15b), or None while they play the
+    /// selected track's: a hit there shows that kit's pad on the Sample
+    /// page (sampler step 15d).
+    PadsKit(Option<usize>),
     /// PAD BANK turned the kit's page (A = 0 to H = 7): the 16 pads are
     /// its pads 16 * page + 1 on. `PadDown`, `PadUp` and `PadFlash` name
     /// the 16 pads; with a kit, pad n is the kit's pad 16 * page + n.
@@ -2257,6 +2262,11 @@ pub struct Player {
     save_sent: Option<(Instant, usize, usize)>,
     kits: Vec<KitView>,
     kit: usize,
+    /// The kit the pads play on their own (a kit chosen for them, or the
+    /// bank's own), else None while they play the track's
+    /// ([`ToUi::PadsKit`]): the Sample page follows a hit there (sampler
+    /// step 15d).
+    pads_kit: Option<usize>,
     /// The kit's page on the pads (PAD BANK A = 0 to H = 7).
     pad_page: usize,
     midi: u64,
@@ -3016,6 +3026,7 @@ impl Player {
             ui,
             kits: Vec::new(),
             kit: 0,
+            pads_kit: None,
             pad_page: 0,
             midi: 0,
             midi_held_back: 0,
@@ -4154,16 +4165,22 @@ impl Player {
     /// The kit pad pad `cell` (0 to 15) plays on the page shown: 16 *
     /// page + cell for a kit, the cell itself for the synth's pads.
     fn kit_pad(&self, cell: usize) -> usize {
-        match self.kits.get(self.kit) {
-            Some(k) if k.synth.is_some() => cell,
-            _ => self.pad_page * 16 + cell,
+        if self.pads_on_synth_entry() {
+            cell
+        } else {
+            self.pad_page * 16 + cell
         }
     }
 
     /// The bank of the kit on the pads, or None while the synth has them.
     fn kit_page(&self) -> Option<usize> {
-        let synth = self.kits.get(self.kit).is_some_and(|k| k.synth.is_some());
-        (!synth).then_some(self.pad_page)
+        (!self.pads_on_synth_entry()).then_some(self.pad_page)
+    }
+
+    /// The pads play the synth's entry of the list of kits: the selected
+    /// track's, and no kit of their own ([`ToUi::PadsKit`]).
+    fn pads_on_synth_entry(&self) -> bool {
+        self.pads_kit.is_none() && self.kits.get(self.kit).is_some_and(|k| k.synth.is_some())
     }
 
     fn set_kit(&mut self, k: usize) {
@@ -9666,6 +9683,20 @@ impl Player {
     /// picked, as [`ToUi::PadDown`] picks it (the Sample and Pads tabs,
     /// the drum synth's page, the Play page's Q-Links), but nothing is lit,
     /// played or edited by its velocity.
+    /// A pad was hit: the Sample page shows the kit it played, the one the
+    /// pads play on their own or else the track's (the synth's entry keeps
+    /// the page's kit, as [`ToUi::Kit`] does), at the bank the pads show
+    /// (sampler step 15d: the Sample page follows the last pad hit).
+    fn sample_follows_hit(&mut self) {
+        let kit = self.pads_kit.unwrap_or(self.kit);
+        let synth = self.pads_on_synth_entry();
+        let before = self.sample.kit();
+        self.sample.set_kit(kit, synth);
+        if self.sample.kit() != before {
+            self.sample.set_pad_page(self.kit_page());
+        }
+    }
+
     fn pick_pad_quietly(&mut self, cell: usize) {
         let pad = self.kit_pad(cell);
         let synth_plays = self.kits.get(self.kit).is_some_and(|k| k.synth.is_some());
@@ -9923,8 +9954,10 @@ impl Player {
                         p.show_page(&mut self.ui, page);
                     }
                 }
-                // The Sample page edits the pad hit last, and the Play
-                // page's Tune and Decay turn it.
+                // The Sample page edits the pad hit last, on the kit it
+                // played (sampler step 15d), and the Play page's Tune and
+                // Decay turn it.
+                self.sample_follows_hit();
                 let shown = self.view.sampler();
                 self.sample.press(&mut self.ui, pad, velocity, shown);
                 self.levels_hit(cell, pad, true);
@@ -9984,11 +10017,13 @@ impl Player {
                     }
                 }
             }
+            ToUi::PadsKit(k) => self.pads_kit = k,
             ToUi::Kit(k) => {
                 self.set_kit(k);
                 // The synth's entry: the Sample page keeps its kit (Jay's
                 // device notes, 20 Nov 2026).
                 let synth = self.kits.get(k).is_some_and(|v| v.synth.is_some());
+                self.sample.set_track_kit(k);
                 self.sample.set_kit(k, synth);
                 self.sample.set_pad_page(self.kit_page());
                 self.sample_changed();
@@ -39878,6 +39913,71 @@ mod tests {
         assert_eq!(
             p.ui.get::<ButtonRow>(send::SEND).unwrap().enabled,
             [false, false]
+        );
+    }
+
+    /// Sampler step 15d: a pad hit while the pads play a kit of their own
+    /// moves the Sample page to that kit's pad. Send to pad lands there and
+    /// the hint says on which kit; one waiting when a hit moves the page to
+    /// another kit is called off, and the hint says so. With the pads back
+    /// on the track, the next hit opens the track's kit.
+    #[test]
+    fn the_sample_page_follows_a_hit_to_the_kit_the_pads_play_and_says_where_send_lands() {
+        use mpfree_sampler_ui::send;
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_player(Fonts::embedded());
+        let (kit, _) = mpfree_sampler_ui::sample::project();
+        p.apply(ToUi::SampleKits {
+            projects: vec![kit.clone(), kit],
+            rate: 44_100,
+        });
+        p.apply(ToUi::Kit(0));
+        p.apply(ToUi::Show(View::Sample));
+        let hit = |p: &mut Player, pad: usize| {
+            p.apply(ToUi::PadDown { pad, velocity: 100 });
+            p.apply(ToUi::PadUp(pad));
+        };
+        let send = |p: &mut Player| {
+            p.on_event(UiEvent {
+                widget: send::SEND.into(),
+                kind: EventKind::Tab(send::SEND_TO_PAD),
+            })
+        };
+        let told = |p: &Player| p.told.as_ref().map(|t| t.0.clone()).unwrap_or_default();
+        // The pads play kit 2 on their own: a hit opens kit 2's pad.
+        p.apply(ToUi::PadsKit(Some(1)));
+        hit(&mut p, pad);
+        assert_eq!((p.sample.edit_kit(), p.sample.pad()), (1, pad));
+        // Send to pad from it lands on kit 2's A2, and the hint says so.
+        send(&mut p);
+        hit(&mut p, 1);
+        let kit_2 = p.sample.project(1).unwrap();
+        assert_eq!(kit_2.pad(1), kit_2.pad(pad), "the copy on kit 2");
+        assert!(
+            p.sample.project(0).unwrap().pad(1).is_none(),
+            "kit 1 untouched"
+        );
+        assert!(
+            told(&p).starts_with("Sent on pad A2 of kit 2"),
+            "{}",
+            told(&p)
+        );
+        // A Send waiting as the pads go back to the track: the next hit
+        // opens kit 1 and calls it off, said.
+        hit(&mut p, pad);
+        send(&mut p);
+        p.apply(ToUi::PadsKit(None));
+        hit(&mut p, 2);
+        assert_eq!((p.sample.edit_kit(), p.sample.pad()), (0, 2));
+        assert!(
+            p.sample.project(0).unwrap().pad(2).is_none(),
+            "nothing sent"
+        );
+        assert!(p.sample.project(1).unwrap().pad(2).is_none());
+        assert!(
+            told(&p).starts_with("Send to pad called off: the page moved to kit 1"),
+            "{}",
+            told(&p)
         );
     }
 
