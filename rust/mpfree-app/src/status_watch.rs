@@ -8,6 +8,10 @@
 //! when it ends; the board settles it, so a look that flips once doesn't
 //! flicker.
 //!
+//! Phase 3 adds the clock the project follows stopping (the time engine's
+//! follower, through the timing) and the plugins' crashes (the rack's
+//! count).
+//!
 //! What this doesn't watch, because its owner reports it: the sampler's
 //! four trades (notes dropped, sound skipped, voices given up, grains
 //! thinned: the sampler refactor's step 10), a save that didn't work
@@ -56,16 +60,24 @@ pub struct Look<'a> {
     /// The ports the project uses that aren't plugged in, when looked at
     /// (every 2 s).
     pub missing_ports: Option<&'a [String]>,
+    /// The clock the project follows stopped arriving while it played
+    /// (the time engine's follower, `Follower::lost`).
+    pub clock_lost: Option<bool>,
+    /// Plugin processes that ended (crashed) since the start, from the
+    /// rack (`mpfree_plughost::rack::Summary::crashes`); None when the
+    /// rack was busy and couldn't say.
+    pub plugin_crashes: Option<u64>,
 }
 
 /// The states a look follows, each a kind that begins and ends.
-const STATES: [&Kind; 6] = [
+const STATES: [&Kind; 7] = [
     &kinds::NEAR_LIMIT,
     &kinds::MEMORY_LOW,
     &kinds::NO_SESSION,
     &kinds::NO_SETUP,
     &kinds::PARTS_MISSING,
     &kinds::ONE_CORE,
+    &kinds::CLOCK_STOPPED,
 ];
 
 /// The watcher's memory of the last look.
@@ -73,9 +85,12 @@ const STATES: [&Kind; 6] = [
 pub struct Watch {
     /// The counters at the last look (None before the first).
     counts: Option<(u64, u64)>,
+    /// The plugins' crashes at the last look that could read them.
+    crashes: Option<u64>,
     /// Each of [`STATES`] reported going.
-    on: [bool; 6],
-    /// Every port named missing this session: port `i` is `Subject(i + 1)`.
+    on: [bool; 7],
+    /// Every port named missing this session: port `i` is
+    /// `Subject::midi_port(i)`.
     ports: Vec<String>,
     /// Ports reported missing now, by their place in `ports`.
     missing: Vec<bool>,
@@ -110,6 +125,16 @@ impl Watch {
             }
         }
         self.counts = Some(now);
+        // A plugin's process that ended: the rack has restarted it (or
+        // left it off), and each one is a moment.
+        if let Some(is) = l.plugin_crashes {
+            let was = self.crashes.unwrap_or(0);
+            if is > was {
+                let times = u32::try_from(is - was).unwrap_or(u32::MAX);
+                report(Report::happened(&kinds::PLUGIN_STOPPED, times));
+            }
+            self.crashes = Some(is);
+        }
         // States.
         let low = l.free.map(|f| f < LOW_FREE).unwrap_or(false)
             || l.ram_pct.is_some_and(|p| p > LOW_RAM_PCT);
@@ -132,6 +157,7 @@ impl Watch {
             l.no_setup,
             l.parts_missing,
             l.one_core,
+            l.clock_lost,
         ];
         for (i, going) in states.into_iter().enumerate() {
             let Some(going) = going else { continue };
@@ -154,7 +180,7 @@ impl Watch {
         for i in 0..self.ports.len() {
             if self.missing[i] && !missing.contains(&self.ports[i]) {
                 self.missing[i] = false;
-                report(Report::ended(&kinds::PORT_MISSING).about(Subject(i as u32 + 1)));
+                report(Report::ended(&kinds::PORT_MISSING).about(Subject::midi_port(i as u32)));
             }
         }
         // Gone: missing at this look and the last.
@@ -172,7 +198,7 @@ impl Watch {
             };
             if !self.missing[i] {
                 self.missing[i] = true;
-                report(Report::began(&kinds::PORT_MISSING).about(Subject(i as u32 + 1)));
+                report(Report::began(&kinds::PORT_MISSING).about(Subject::midi_port(i as u32)));
             }
         }
         self.maybe.clear();
@@ -195,8 +221,9 @@ impl Watch {
 
     /// What a problem is about, in words, where the watcher named it: a
     /// port's own name, an audio track's name, or a take found at start
-    /// by its file's name.
-    pub fn subject_name(&self, kind: &Kind, subject: Subject) -> Option<&str> {
+    /// by its file's name. A subject's tag says which it is, whatever the
+    /// kind.
+    pub fn subject_name(&self, subject: Subject) -> Option<&str> {
         if let Some(id) = subject.audio_track_id() {
             return self
                 .audio_tracks
@@ -210,10 +237,8 @@ impl Watch {
                 .get(n.checked_sub(1)? as usize)
                 .map(String::as_str);
         }
-        if kind != &kinds::PORT_MISSING || subject == Subject::NONE {
-            return None;
-        }
-        self.ports.get(subject.0 as usize - 1).map(String::as_str)
+        let i = subject.midi_port_index()?;
+        self.ports.get(i as usize).map(String::as_str)
     }
 }
 
@@ -245,6 +270,8 @@ mod tests {
                 r.kind.id,
                 if r.subject == Subject::NONE {
                     String::new()
+                } else if let Some(i) = r.subject.midi_port_index() {
+                    format!(" port {i}")
                 } else {
                     format!(" #{}", r.subject.0)
                 }
@@ -343,6 +370,39 @@ mod tests {
         assert_eq!(look(&mut w, mem(900_000_000, 82.0)), ["ended memory/low"]);
     }
 
+    /// Phase 3: the followed clock that stopped is a state, a plugin's
+    /// crash a moment, counted as the rack counts them.
+    #[test]
+    fn a_stopped_clock_lasts_and_a_plugin_crash_is_a_moment() {
+        let mut w = Watch::default();
+        let clock = |on| Look {
+            clock_lost: Some(on),
+            ..Look::default()
+        };
+        assert!(look(&mut w, clock(false)).is_empty());
+        assert_eq!(look(&mut w, clock(true)), ["began midi/clock-stopped"]);
+        assert!(look(&mut w, clock(true)).is_empty());
+        assert_eq!(look(&mut w, clock(false)), ["ended midi/clock-stopped"]);
+        let crashes = |n| Look {
+            plugin_crashes: n,
+            ..Look::default()
+        };
+        assert!(look(&mut w, crashes(Some(0))).is_empty());
+        assert_eq!(
+            look(&mut w, crashes(Some(2))),
+            ["+2 plugins/plugin-stopped"]
+        );
+        assert!(
+            look(&mut w, crashes(None)).is_empty(),
+            "the rack was busy: as it was"
+        );
+        assert!(look(&mut w, crashes(Some(2))).is_empty(), "no new ones");
+        assert_eq!(
+            look(&mut w, crashes(Some(3))),
+            ["+1 plugins/plugin-stopped"]
+        );
+    }
+
     #[test]
     fn a_port_is_missing_after_two_looks_and_back_at_once() {
         let mut w = Watch::default();
@@ -363,20 +423,19 @@ mod tests {
         );
         assert_eq!(
             at(&mut w, &ports(&["Juno-X", "Digitakt"])),
-            ["began midi/port-missing #1"]
+            ["began midi/port-missing port 0"]
         );
         assert_eq!(
             at(&mut w, &ports(&["Juno-X", "Digitakt"])),
-            ["began midi/port-missing #2"]
+            ["began midi/port-missing port 1"]
         );
-        assert_eq!(
-            w.subject_name(&kinds::PORT_MISSING, Subject(2)),
-            Some("Digitakt")
-        );
-        assert_eq!(w.subject_name(&kinds::SOUND_DROPOUT, Subject(2)), None);
+        assert_eq!(w.subject_name(Subject::midi_port(1)), Some("Digitakt"));
+        assert_eq!(w.subject_name(Subject::midi_port(2)), None);
+        // An untagged number names nothing.
+        assert_eq!(w.subject_name(Subject(2)), None);
         assert_eq!(
             at(&mut w, &ports(&["Digitakt"])),
-            ["ended midi/port-missing #1"]
+            ["ended midi/port-missing port 0"]
         );
         assert!(
             look(&mut w, Look::default()).is_empty(),
@@ -385,7 +444,7 @@ mod tests {
         assert!(at(&mut w, &ports(&["Juno-X", "Digitakt"])).is_empty());
         assert_eq!(
             at(&mut w, &ports(&["Juno-X", "Digitakt"])),
-            ["began midi/port-missing #1"],
+            ["began midi/port-missing port 0"],
             "the same subject as before"
         );
     }
@@ -395,24 +454,20 @@ mod tests {
         let mut w = Watch::default();
         w.set_audio_tracks([(7, "Vocal"), (9, "Gtr")]);
         w.set_found_takes(vec!["Bass_0123abcd.unverified.wav".into()]);
-        let k = &kinds::RECORDING_AT_RISK;
-        assert_eq!(w.subject_name(k, Subject::audio_track(9)), Some("Gtr"));
-        assert_eq!(w.subject_name(k, Subject::audio_track(8)), None);
+        assert_eq!(w.subject_name(Subject::audio_track(9)), Some("Gtr"));
+        assert_eq!(w.subject_name(Subject::audio_track(8)), None);
         assert_eq!(
-            w.subject_name(&kinds::TAKE_DAMAGED, Subject::found_take(1)),
+            w.subject_name(Subject::found_take(1)),
             Some("Bass_0123abcd.unverified.wav")
         );
-        assert_eq!(
-            w.subject_name(&kinds::TAKE_DAMAGED, Subject::found_take(2)),
-            None
-        );
-        // A port's subject is still a port's, and only for Port missing.
-        assert_eq!(w.subject_name(&kinds::PORT_MISSING, Subject(1)), None);
-        assert_eq!(w.subject_name(k, Subject::NONE), None);
+        assert_eq!(w.subject_name(Subject::found_take(2)), None);
+        // A port's subject is a port's: none named yet.
+        assert_eq!(w.subject_name(Subject::midi_port(0)), None);
+        assert_eq!(w.subject_name(Subject::NONE), None);
         // The tracks as they are now: a renamed track's new name.
         w.set_audio_tracks([(9, "Guitar")]);
-        assert_eq!(w.subject_name(k, Subject::audio_track(9)), Some("Guitar"));
-        assert_eq!(w.subject_name(k, Subject::audio_track(7)), None);
+        assert_eq!(w.subject_name(Subject::audio_track(9)), Some("Guitar"));
+        assert_eq!(w.subject_name(Subject::audio_track(7)), None);
     }
 
     #[test]

@@ -201,7 +201,7 @@ pub fn when(p: &ProblemView, now: Instant) -> String {
 /// A problem's name with its subject's ("A MIDI device isn't plugged in:
 /// Juno-X").
 fn titled(p: &ProblemView, names: &Watch) -> String {
-    match names.subject_name(p.kind, p.subject) {
+    match names.subject_name(p.subject) {
         Some(name) if p.subject != Subject::NONE => format!("{}: {name}", p.kind.title),
         _ => p.kind.title.to_string(),
     }
@@ -210,7 +210,7 @@ fn titled(p: &ProblemView, names: &Watch) -> String {
 /// The short words for a system's line, with the subject's name in front
 /// ("Juno-X: not plugged in").
 fn short(p: &ProblemView, names: &Watch) -> String {
-    match names.subject_name(p.kind, p.subject) {
+    match names.subject_name(p.subject) {
         Some(name) if p.subject != Subject::NONE => {
             format!("{name}: {}", p.kind.short.to_lowercase())
         }
@@ -466,7 +466,7 @@ mod tests {
         let t = Instant::now();
         let b = board_with(
             &[
-                Report::began(&kinds::PORT_MISSING).about(Subject(1)),
+                Report::began(&kinds::PORT_MISSING).about(Subject::midi_port(0)),
                 Report::happened(&kinds::SOUND_DROPOUT, 3),
             ],
             t,

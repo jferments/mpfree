@@ -12923,6 +12923,7 @@ fn player_session(
                         faded_grains: c.faded_grains,
                         held_back_clouds: c.held_back_clouds,
                         crowded_s: c.crowded_ms as f32 / 1000.0,
+                        clock_lost: time.clock_lost(),
                     }
                 },
             }));

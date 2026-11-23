@@ -8321,10 +8321,10 @@ impl Player {
                     red = Some(line);
                 }
             }
-            let about = match (c.subject, watch.subject_name(c.kind, c.subject)) {
+            let about = match (c.subject, watch.subject_name(c.subject)) {
                 (mpfree_status::Subject::NONE, _) => String::new(),
                 (_, Some(name)) => format!(" {name}"),
-                (s, None) => format!(" #{}", s.0),
+                (s, None) => format!(" {s}"),
             };
             let hidden = if c.hidden {
                 " (its cause is going)"
@@ -8356,8 +8356,9 @@ impl Player {
 
     /// The watchers' look (status_watch.rs), each time the audio loop's
     /// timing arrives: its counters, the period's verdict, memory, the
-    /// session, the project's left-out parts, the cores, and every 8th
-    /// look (2 s) the MIDI ports the project uses.
+    /// session, the project's left-out parts, the cores, the followed
+    /// clock, the plugins' crashes, and every 8th look (2 s) the MIDI ports
+    /// the project uses.
     fn status_look(&mut self) {
         self.status_looks += 1;
         let missing = if self.ready && self.status_looks.is_multiple_of(8) {
@@ -8379,6 +8380,8 @@ impl Player {
             parts_missing: self.browser.as_ref().map(|b| !b.left_out_list().is_empty()),
             one_core: self.engines.as_deref().and_then(|e| e.cores.fell_back()),
             missing_ports: missing.as_deref(),
+            clock_lost: Some(t.audio.clock_lost),
+            plugin_crashes: self.project_plugins.summary().map(|s| s.crashes),
         };
         // Audio tracks by lasting id, for problems about one.
         self.status_watch.set_audio_tracks(
@@ -15863,6 +15866,7 @@ pub fn sample_player(fonts: Fonts) -> Player {
             faded_grains: 0,
             held_back_clouds: 0,
             crowded_s: 0.0,
+            clock_lost: false,
         },
     }));
     p.set_screen_row(
@@ -19066,6 +19070,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
                 faded_grains: 0,
                 held_back_clouds: 0,
                 crowded_s: 0.0,
+                clock_lost: false,
             },
             ..Timing::default()
         }));
@@ -19210,7 +19215,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         st.apply(ToUi::Problem(Report::happened(&kinds::VOICES_GIVEN_UP, 6)));
         st.tick(1.5);
         st.apply(ToUi::Problem(
-            Report::began(&kinds::PORT_MISSING).about(Subject(2)),
+            Report::began(&kinds::PORT_MISSING).about(Subject::midi_port(1)),
         ));
         st.tick(2.0);
         st.apply(ToUi::Problem(Report::began(&kinds::NEAR_LIMIT)));
@@ -29827,11 +29832,11 @@ mod tests {
         assert_eq!(r[0].1, "fail, ring · 0 now · 1 ended, not seen");
         // A report while the page shows lands at once.
         p.apply(ToUi::Problem(
-            Report::began(&kinds::PORT_MISSING).about(Subject(4)),
+            Report::began(&kinds::PORT_MISSING).about(Subject::midi_port(3)),
         ));
         assert!(rows(&mut p)
             .iter()
-            .any(|r| r.0 == "warn midi/port-missing #4" && r.1.starts_with("now")));
+            .any(|r| r.0 == "warn midi/port-missing port 4" && r.1.starts_with("now")));
         // The red one went on the hint line, in red, once (phase 2).
         assert_eq!(
             p.told.as_ref().map(|t| (t.0.as_str(), t.2)),
@@ -29872,7 +29877,7 @@ mod tests {
         p.set_ram(38.0);
         // A yellow problem: a yellow chip, nothing on the hint line.
         p.apply(ToUi::Problem(
-            Report::began(&kinds::PORT_MISSING).about(mpfree_status::Subject(1)),
+            Report::began(&kinds::PORT_MISSING).about(mpfree_status::Subject::midi_port(0)),
         ));
         assert_eq!(chip(&p).tone, Tone::Warn);
         assert!(p.told.is_none(), "yellow never goes on the hint line");

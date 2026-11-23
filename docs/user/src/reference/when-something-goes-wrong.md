@@ -149,6 +149,10 @@ Each problem below starts with its colour. A **Note** is listed on the System st
 
 **Yellow.** The project uses a MIDI device that isn't connected, so nothing is sent to it or heard from it. Its card and its system's line name the device. **Try:** plug it in, or pick another port where the project uses it. The problem ends by itself once the device is back.
 
+### The clock MPFree follows stopped
+
+**Yellow.** The device MPFree takes its tempo from (**Tempo from**, in the mixer's I/O view under **Sync**) stopped sending its clock while it played, so MPFree plays on by itself at the last tempo. **Try:** check that the device is still playing and its cable is in, or set **Tempo from** to **MPFree**. The problem ends by itself when the clock comes back or the device sends Stop. See [Staying in time with other gear](../making-music/midi-and-cv.md#staying-in-time-with-other-gear).
+
 ### The project opened with parts missing
 
 **Yellow.** Some samples or parts couldn't be found, so they were left out. It saves as a new project, so the original stays as it was. **Try:** press **Show what's missing**, which opens the browser with the missing parts named on its status line, then find or replace them.
@@ -176,6 +180,10 @@ Each problem below starts with its colour. A **Note** is listed on the System st
 ### Some pop-up colours were changed so they read
 
 **Yellow.** The theme's colours didn't read over a plugin's own screen, so MPFree changed the colours of its pop-ups there. **Try:** pick another theme, or give this one more difference between its words and its panels.
+
+### A plugin stopped
+
+**Red.** A plugin crashed, so its sound stopped for a moment. MPFree starts it again where it was. After four crashes in a minute it stays off: an effect then lets the sound through, and an instrument is silent. **Try:** save your project. If it keeps happening, take the plugin out and add it again, or use another one. See [Plugins](../making-music/effects.md#plugins) for how plugins run apart from the rest of MPFree.
 
 ### The sound is running on fewer cores
 

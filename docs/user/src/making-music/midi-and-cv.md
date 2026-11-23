@@ -235,7 +235,7 @@ MPFree can follow another device's MIDI clock. In the mixer's I/O view, under **
 - With **Start and stop** on, its Start and Stop start and stop MPFree. While the device is stopped, **PLAY** waits for it and says *Waiting for clock: PLAY starts when MIDI In starts*: press PLAY (or PLAY START, for bar 1) to get the pattern ready, then start the device.
 - To record from the device's start, press **REC** (or OVERDUB) while both are stopped. The take records from the device's first beat, with no count-in, since the device counts. PLAY keeps the take ready and says so; STOP lets go of it.
 - With **Position** on, MPFree plays from the same bar as the device, and goes back in step if it drifts away. The device owns the song's timeline, so MPFree's own loop is off while Position is on: the Record tab's **Loop** row reads *off while following*, and what you set there comes back when you turn Position off. Clips and scenes you launch still land on the bar line, which is the device's bar line too.
-- If its clock stops arriving, MPFree keeps playing at the last tempo.
+- If its clock stops arriving while it plays, MPFree keeps playing at the last tempo, and the status chip turns yellow until the clock comes back or the device sends Stop ([The clock MPFree follows stopped](../reference/when-something-goes-wrong.md#the-clock-mpfree-follows-stopped)).
 
 ### Playing, stopping and picking scenes from other gear
 
