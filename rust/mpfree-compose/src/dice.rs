@@ -82,6 +82,13 @@ impl Dice {
         self.unit() < p
     }
 
+    /// A Gumbel roll: adding these to scores and taking the best samples
+    /// in proportion to their odds, which is how a beam search varies.
+    pub fn gumbel(&mut self) -> f64 {
+        let u = self.unit().clamp(1e-12, 1.0 - 1e-12);
+        -(-u.ln()).ln()
+    }
+
     /// A number in 0..n (0 when n is 0).
     pub fn below(&mut self, n: usize) -> usize {
         if n == 0 {

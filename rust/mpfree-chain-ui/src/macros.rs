@@ -30,6 +30,9 @@ pub enum MacroAction {
     /// `ParamAddr::macro_value(m)` (a `Set` unless it has a lane or its
     /// track is recording).
     Macro { m: usize, value: f32 },
+    /// The finger left macro `m`'s knob: send `ModEvent::Untouch` for it
+    /// (nothing happens if its turns were `Set`s).
+    Release(usize),
     /// Show macros 1-4 (0) or 5-8 (1).
     Bank(usize),
     /// Change one of macro `m`'s targets (its range or curve, from the
@@ -254,7 +257,7 @@ impl MacrosView {
                 self.state.editing = None;
             }
             MacroAction::Back => self.state.editing = None,
-            MacroAction::Capture(_) => {}
+            MacroAction::Capture(_) | MacroAction::Release(_) => {}
         }
         self.actions.push(a);
     }
@@ -759,7 +762,11 @@ impl MacrosView {
             }
             Touch::Up | Touch::Cancel => {
                 if self.drag.as_ref().is_some_and(|(f, _)| *f == finger) {
-                    self.drag = None;
+                    // A macro's knob lets go: a turn while recording held
+                    // it as a hand until now.
+                    if let Some((_, Drag::Macro { m, .. })) = self.drag.take() {
+                        self.push(MacroAction::Release(m));
+                    }
                 }
                 None
             }
@@ -910,4 +917,34 @@ fn paint_editor(cx: &mut PaintCx, e: &EditorLayout, m: usize, name: &str, tv: &T
         t.bad,
         "Remove from the macro",
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lifting_a_finger_off_a_macros_knob_lets_it_go() {
+        let r = Rect::new(0, 0, 1280, 800);
+        let l = layout(r);
+        let (kx, ky, _) = l.knobs[1];
+        let (kx, ky) = (kx as i32, ky as i32);
+        let mut v = MacrosView::new();
+        v.touch_inner(7, Touch::Down, kx, ky, r);
+        v.touch_inner(7, Touch::Move, kx, ky - 40, r);
+        v.touch_inner(7, Touch::Up, kx, ky - 40, r);
+        assert_eq!(v.take_actions().last(), Some(&MacroAction::Release(1)));
+        // A cancelled touch lets go too.
+        v.touch_inner(8, Touch::Down, kx, ky, r);
+        v.touch_inner(8, Touch::Cancel, kx, ky, r);
+        assert_eq!(v.take_actions(), [MacroAction::Release(1)]);
+        // The morph's slider is set, never held: nothing to let go of.
+        let (sx, sy) = (l.slider.x + l.slider.w / 2, l.slider.y + l.slider.h / 2);
+        v.touch_inner(9, Touch::Down, sx, sy, r);
+        v.touch_inner(9, Touch::Up, sx, sy, r);
+        assert!(!v
+            .take_actions()
+            .iter()
+            .any(|a| matches!(a, MacroAction::Release(_))));
+    }
 }

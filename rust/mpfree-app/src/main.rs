@@ -156,6 +156,7 @@ mod remote;
 mod rt_safety;
 mod sample_page;
 mod sampler;
+mod sampler_commands;
 mod screen_cost;
 mod screen_picture;
 mod script;
@@ -176,7 +177,9 @@ mod touch_dev;
 mod touchlab_page;
 mod undo;
 mod views;
+mod waiting;
 mod xy_list;
+mod xy_slot;
 
 use mpfree_arp::scale::{pads::MAX_PAD_NOTES, Shift};
 use mpfree_controller::midi::{Message, Parser};
@@ -605,6 +608,18 @@ impl Out {
             self.note(&line);
             if tell {
                 self.show(gui::ToUi::Tell(line));
+            }
+        }
+    }
+
+    /// What smart loop end made of a closing tap
+    /// ([`looping::LoopHost::take_smart`]): the log, and the screen when
+    /// your tap stood.
+    fn smart_end(&mut self, said: Option<(String, Option<String>)>) {
+        if let Some((line, tell)) = said {
+            self.note(&line);
+            if let Some(words) = tell {
+                self.show(gui::ToUi::Tell(words));
             }
         }
     }
@@ -2913,7 +2928,7 @@ fn pad_starts_loop(
         // starts the song (loop_sets_tempo).
         line.push_str(", free: REC again closes it and sets the tempo");
     } else if time.info().state == mpfree_transport::State::Stopped {
-        match start_song_on_note(time, at, None, take, exporting) {
+        match start_song_on_note(time, at, None, take, exporting, 0) {
             Ok(more) => {
                 line.push_str(", and the song with it");
                 if let Some(m) = more {
@@ -3047,7 +3062,7 @@ fn loop_starts_song(
 ) -> LoopStart {
     let n = looper.take_start()?;
     Some(
-        match start_song_on_note(time, time.next_frame(), None, take, exporting) {
+        match start_song_on_note(time, time.next_frame(), None, take, exporting, 0) {
             Ok(more) => (
                 format!(
                     "looper: Loop {} heard you: the song starts on your note{}",
@@ -3061,20 +3076,21 @@ fn loop_starts_song(
     )
 }
 
-/// The song starts on a note on frame `at` (at tempo `bpm`, if given),
-/// unless an export runs (the transport's own refusals:
-/// [`time::TimeHost::start_at`]).
+/// The song starts on a note on frame `at` (at tempo `bpm`, if given,
+/// `into` ticks into the bar it stopped in), unless an export runs (the
+/// transport's own refusals: [`time::TimeHost::start_at`]).
 fn start_song_on_note(
     time: &mut time::TimeHost,
     at: u64,
     bpm: Option<f64>,
     take: Option<bool>,
     exporting: bool,
+    into: mpfree_transport::time::Tick,
 ) -> Result<Option<String>, String> {
     if exporting {
         return Err("an export is running".to_string());
     }
-    time.start_at(at, bpm, take)
+    time.start_at(at, bpm, take, into)
 }
 
 /// Tempo from the first loop (the looper's options): whether the song can
@@ -3101,10 +3117,10 @@ fn loop_sets_tempo(
     take: Option<bool>,
     exporting: bool,
 ) -> (LoopStart, Option<f64>) {
-    let Some((n, r, at)) = looper.take_tempo() else {
+    let Some((n, r, at, into)) = looper.take_tempo() else {
         return (None, None);
     };
-    match start_song_on_note(time, at, Some(r.bpm), take, exporting) {
+    match start_song_on_note(time, at, Some(r.bpm), take, exporting, into) {
         Ok(more) => {
             // A close call, or a Length it couldn't keep: on the screen too.
             let note = looping::reading_note(&r);
@@ -3863,6 +3879,9 @@ fn player(o: &Options, timed: bool) -> Result<(), String> {
     }
     let (to_ui, from_audio) = sync_channel::<gui::ToUi>(4096);
     let (to_audio, from_ui) = sync_channel::<gui::FromUi>(256);
+    // The screen's XY pad as one value beside that queue (xy_slot.rs).
+    let xy = std::sync::Arc::new(xy_slot::XySlot::default());
+    player.set_xy_slot(std::sync::Arc::clone(&xy));
     // The power button: only when the system can act on a request
     // (`--power-request`, the stick's root path unit). Read-only, not
     // grabbed, on a thread of its own (power.rs).
@@ -3905,7 +3924,7 @@ fn player(o: &Options, timed: bool) -> Result<(), String> {
     if !timed {
         follow_journal(to_ui.clone());
     }
-    let result = player_session(o, &mut out, timed, &from_ui);
+    let result = player_session(o, &mut out, timed, &from_ui, &xy);
     if let Err(e) = &result {
         // On the screen only: main prints the STOP line as for every step.
         out.show(gui::ToUi::Session("Stopped".into(), Tone::Bad));
@@ -4598,6 +4617,35 @@ fn io_track_names(shown: &mut [String], tracks: &[mpfree_seq::Track]) {
     }
 }
 
+/// The synths a MIDI route can name past the tracks (the instrument
+/// redesign's step 11e), for the Routing card's stepper and the monitor:
+/// the shared synth, then each free place's synth (one picked in the list
+/// of synths), by the project's instrument number and channel name ("FM ·
+/// Pads"). `shown` changes only when the list does; twice a second, with
+/// the tracks' names.
+fn io_route_synths(
+    shown: &mut Vec<(u32, String)>,
+    listed: &instrument_list::InstrumentList,
+    mix: &mixing::MixHost,
+) {
+    use looping::Instrument;
+    let name = |i: Instrument| {
+        mix.instrument_strip(i, &[])
+            .map_or_else(String::new, |s| mix.strip_name(s))
+    };
+    let shared = instrument_list::InstrumentId::SHARED_SYNTH;
+    let mut now = vec![(shared.number(), name(Instrument::Synth))];
+    for n in 0..instruments::FREE {
+        let holder = instruments::free(n);
+        if let (Some(id), true) = (listed.free_of(n), mix.instruments.holds(holder)) {
+            now.push((id.number(), name(Instrument::Own(holder))));
+        }
+    }
+    if *shown != now {
+        *shown = now;
+    }
+}
+
 /// Track `t` as the project names it; one past the project's tracks is
 /// named by its number.
 fn track_name(project: &mpfree_seq::Project, t: u8) -> String {
@@ -4803,6 +4851,243 @@ fn who_plays(
     Some(format!("{name}: {}", who.join(", ")))
 }
 
+/// A track's line (the instrument redesign's step 11d, the plan's "a
+/// track's line"): what track `t` plays and where it is heard, shown over
+/// the Instrument row's help in the Synth tab's options: ["Track 2 plays
+/// Track 1's Poly", "In the mixer: Poly · Track 1"]. The mixer names the
+/// channel (`MixHost::instrument_strip`, `MixHost::strip_name`), so it
+/// reads as the Mix tab does. `homes` say where each kit plays
+/// (`TrackKits::homes`); `midi_out`: the track sends MIDI out. Allocates;
+/// the loop asks a few times a second while the options show.
+fn track_line(
+    t: usize,
+    mix: &mixing::MixHost,
+    kits: &sampler::TrackKits,
+    homes: &[u8],
+    synth_name: &str,
+    midi_out: bool,
+) -> Vec<String> {
+    use looping::Instrument;
+    let own = &mix.instruments;
+    let who = format!("Track {}", t + 1);
+    let i = if midi_out {
+        Instrument::MidiOut
+    } else if let Some(o) = own.owner(t) {
+        Instrument::Own(o)
+    } else {
+        kits.kit_of(t).map_or(Instrument::Synth, Instrument::Kit)
+    };
+    let plays = match i {
+        Instrument::Own(o) => {
+            let name = own.held(o).map_or("an instrument", |h| h.name);
+            if o == t {
+                format!("{who} plays its own {name}")
+            } else if o < instruments::TRACKS {
+                format!("{who} plays Track {}'s {name}", o + 1)
+            } else {
+                format!("{who} plays {name}, from the list of synths")
+            }
+        }
+        Instrument::Kit(k) => format!("{who} plays Kit {}", k + 1),
+        Instrument::Synth => format!("{who} plays the shared {synth_name}"),
+        Instrument::MidiOut => format!("{who} plays gear on MIDI out"),
+    };
+    let heard = match mix.instrument_strip(i, homes) {
+        Some(s) => format!("In the mixer: {}", mix.strip_name(s)),
+        None => "In the mixer: nothing, it sounds outside mpfree".to_string(),
+    };
+    vec![plays, heard]
+}
+
+/// The synths MIDI routes name (the instrument redesign's step 11e,
+/// app/route_synths.rs): each route row of the instrument host
+/// (`instruments::routed`) points at the synth its routes name, or plays
+/// the shared synth by note; and while REC records one, the route's keys
+/// go into the track that records it, as the pads' layers' do
+/// (`PadLayers`). A key's let-go, pressure and slide reach where it went
+/// though the row moved on meanwhile. Main.rs and the test session both
+/// use it. Allocates nothing.
+struct RouteSynths {
+    /// The rows that play the shared synth, a bit each.
+    synth: u8,
+    /// The keys each row holds on the shared synth, a bit each.
+    synth_keys: [u128; RouteSynths::ROWS],
+    /// The pedals each row's keys put down.
+    pedals: [midi_in::PedalsDown; RouteSynths::ROWS],
+    /// The track recording each row's synth now (`App::route_recs`).
+    rec: [Option<u8>; RouteSynths::ROWS],
+    /// The pad each key went to on the track it went into.
+    keys: midi_in::RoutedPads,
+    /// The tracks each row's keys went into, a bit each, for their
+    /// let-go.
+    key_tracks: [u128; RouteSynths::ROWS],
+}
+
+impl RouteSynths {
+    const ROWS: usize = instruments::ROUTE_SYNTHS;
+
+    fn new() -> RouteSynths {
+        RouteSynths {
+            synth: 0,
+            synth_keys: [0; RouteSynths::ROWS],
+            pedals: std::array::from_fn(|_| midi_in::PedalsDown::default()),
+            rec: [None; RouteSynths::ROWS],
+            keys: midi_in::RoutedPads::new(),
+            key_tracks: [0; RouteSynths::ROWS],
+        }
+    }
+
+    /// The rows as the app has them now (`App::route_synth_holders`,
+    /// `App::route_synth_shared`): each pointed at its holder, the shared
+    /// synth's rows on or off. The notes and pedals a row leaves end
+    /// there first. Nothing changes when nothing did.
+    fn follow(
+        &mut self,
+        holders: [Option<usize>; RouteSynths::ROWS],
+        shared: u8,
+        synth: &mut synth::Synth,
+        own: &mut instruments::Instruments,
+    ) {
+        for (j, h) in holders.into_iter().enumerate() {
+            let to = h.filter(|&h| own.holds(h));
+            let (on, was) = (shared >> j & 1 == 1, self.synth >> j & 1 == 1);
+            if own.routed_at(j) == to && on == was {
+                continue;
+            }
+            for ctl in self.pedals[j].lift() {
+                own.control(instruments::routed(j), ctl, 0.0, 0);
+                if was {
+                    synth.control(ctl, 0.0, 0);
+                }
+            }
+            if own.routed_at(j) != to {
+                own.set_routed(j, to);
+            }
+            if was && !on {
+                let held = std::mem::take(&mut self.synth_keys[j]);
+                for note in (0..128u8).filter(|&n| held >> n & 1 == 1) {
+                    synth.note_off_note(note, 0);
+                }
+            }
+            self.synth = self.synth & !(1 << j) | u8::from(on) << j;
+        }
+    }
+
+    /// Route row `j`'s key `k` on its synth, each key its own note at its
+    /// own velocity, as a route to a track plays it. A second note-on for
+    /// a key held there is ignored; a let-go, pressure or slide reaches
+    /// where the key went.
+    fn key(
+        &mut self,
+        j: usize,
+        k: midi_in::Key,
+        synth: &mut synth::Synth,
+        own: &mut instruments::Instruments,
+    ) {
+        use midi_in::Key;
+        if j >= RouteSynths::ROWS {
+            return;
+        }
+        let row = instruments::routed(j);
+        let on = self.synth >> j & 1 == 1;
+        let bit = |note: u8| 1u128 << (note & 0x7F);
+        let held = &mut self.synth_keys[j];
+        match k {
+            Key::Down { note, velocity } => {
+                let vel = velocity.max(1);
+                if !own.key_held(row, note) {
+                    own.note_on(row, note, vel, 0);
+                }
+                if on && *held & bit(note) == 0 {
+                    synth.note_on_note(note, vel, 0);
+                    *held |= bit(note);
+                }
+            }
+            Key::Up { note } => {
+                if own.key_held(row, note) {
+                    own.note_off(row, note, 0);
+                }
+                if *held & bit(note) != 0 {
+                    synth.note_off_note(note, 0);
+                    *held &= !bit(note);
+                }
+            }
+            Key::Pressure { note, value } => {
+                if own.key_held(row, note) {
+                    own.note_pressure(row, note, value);
+                }
+                if *held & bit(note) != 0 {
+                    synth.pressure_note(note, value);
+                }
+            }
+            Key::Expr { note, kind, value } => {
+                if own.key_held(row, note) {
+                    own.note_expression(row, note, kind, value);
+                }
+                if *held & bit(note) != 0 {
+                    synth.expression_note(note, kind, value);
+                }
+            }
+            Key::Bend { value } => {
+                if !own.bend(row, value) && on {
+                    synth.bend(value);
+                }
+            }
+            Key::Control { ctl, value } => {
+                if !own.control(row, ctl, value, 0) && on {
+                    synth.control(ctl, value, 0);
+                }
+                self.pedals[j].key(ctl, value);
+            }
+        }
+    }
+
+    /// The tracks recording the rows' synths now (`App::route_recs`).
+    fn rec_to(&mut self, recs: [Option<u8>; RouteSynths::ROWS]) {
+        self.rec = recs;
+    }
+
+    /// Route row `j`'s key into the track recording its synth, as the pad
+    /// its note plays there (`midi_file::pad_on_track`); its end and
+    /// pressure where it went.
+    fn rec_key(
+        &mut self,
+        j: usize,
+        k: midi_in::Key,
+        time: &mut time::TimeHost,
+        own: &instruments::Instruments,
+        synth: &synth::Synth,
+    ) {
+        use midi_in::Key;
+        if j >= RouteSynths::ROWS {
+            return;
+        }
+        match k {
+            Key::Down { .. } => {
+                let Some(t) = self.rec[j] else {
+                    return;
+                };
+                let pad = |n| midi_file::pad_on_track(own, Some(synth), usize::from(t), n);
+                if let Some(ev) = self.keys.event(t, k, pad) {
+                    time.routed_played(t, 0, ev);
+                    self.key_tracks[j] |= 1 << t;
+                }
+            }
+            Key::Up { .. } | Key::Pressure { .. } => {
+                let mut went = self.key_tracks[j];
+                while went != 0 {
+                    let t = went.trailing_zeros() as u8;
+                    went &= went - 1;
+                    if let Some(ev) = self.keys.event(t, k, |_| None) {
+                        time.routed_played(t, 0, ev);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// What the pads play on their own, before the arp and the recorder,
 /// while the armed track plays something else (app/pads_focus.rs).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4937,6 +5222,324 @@ impl KeysOnPads {
     #[cfg(test)]
     fn held(&self) -> usize {
         self.held.iter().filter(|h| h.is_some()).count()
+    }
+}
+
+/// The pads' layers beyond the first (the instrument redesign's step 11a,
+/// app/pad_layers.rs): each pad hit plays them too, whichever way the
+/// first plays (on its own, or through the armed track), each by its own
+/// pad map, before the arp and the recorder; and so does each key of a
+/// keyboard. The instrument host's layer players (`instruments::layer`)
+/// play its synths, pointed each period ([`PadLayers::follow`]); the
+/// shared synth plays here. A hit or key remembers whether it started on
+/// the shared synth, so its let-go ends it there though the layers
+/// changed meanwhile; the host's players remember theirs. The pedals a
+/// keyboard put down on the layers come up as they move on, so nothing
+/// hangs. While a track armed besides the armed one plays a layer's synth
+/// (step 11c: REC sets them up, `desk.rs`), each hit and key goes into
+/// that track's recorder too, as a routed keyboard's does
+/// (`TimeHost::routed_played`), and its let-go goes where it went. Main.rs
+/// and the test session both use it. Allocates nothing once made.
+struct PadLayers {
+    /// The shared synth is a layer now.
+    synth: bool,
+    /// The pads whose hit started on the shared synth as a layer, a bit
+    /// each.
+    synth_pads: u16,
+    /// The keys held on the shared synth as a layer, a bit each.
+    synth_keys: u128,
+    /// The pedals the keys put down on the layers.
+    pedals: midi_in::PedalsDown,
+    /// The track recording each layer now (`App::pads_layer_recs`).
+    rec: [Option<u8>; PadLayers::MORE],
+    /// The tracks each pad's hit went into, for its let-go and pressure.
+    fed: [[Option<u8>; PadLayers::MORE]; 16],
+    /// The pad each key went to on each track it went into, as a route's
+    /// (CAPTURE's rule: a note no pad plays alone isn't kept).
+    keys: midi_in::RoutedPads,
+    /// The tracks a key went into, a bit each, for its let-go.
+    key_tracks: u128,
+}
+
+impl PadLayers {
+    /// The layers beyond the first.
+    const MORE: usize = instruments::PAD_LAYERS - 1;
+
+    fn new() -> PadLayers {
+        PadLayers {
+            synth: false,
+            synth_pads: 0,
+            synth_keys: 0,
+            pedals: midi_in::PedalsDown::default(),
+            rec: [None; PadLayers::MORE],
+            fed: [[None; PadLayers::MORE]; 16],
+            keys: midi_in::RoutedPads::new(),
+            key_tracks: 0,
+        }
+    }
+
+    /// The tracks recording the layers now (`App::pads_layer_recs`): the
+    /// hits and keys that follow go into them. A hit or key held goes on
+    /// where it went.
+    fn rec_to(&mut self, recs: [Option<u8>; PadLayers::MORE]) {
+        self.rec = recs;
+    }
+
+    /// Pad `pad` (0 to 15) down: into each track recording a layer, at
+    /// `velocity` as the recorder takes it (`App::layer_rec_velocity`;
+    /// None: nothing records the pads now).
+    fn rec_on(&mut self, pad: usize, velocity: Option<u8>, time: &mut time::TimeHost) {
+        let (Some(velocity), Some(fed)) = (velocity, self.fed.get_mut(pad)) else {
+            return;
+        };
+        *fed = self.rec;
+        for &t in self.rec.iter().flatten() {
+            let note = pad as u8;
+            time.routed_played(t, 0, mpfree_play::Event::NoteOn { note, velocity });
+        }
+    }
+
+    /// Pad `pad` up: its end where its hit went.
+    fn rec_off(&mut self, pad: usize, time: &mut time::TimeHost) {
+        let Some(fed) = self.fed.get_mut(pad) else {
+            return;
+        };
+        for t in std::mem::take(fed).into_iter().flatten() {
+            let note = pad as u8;
+            time.routed_played(t, 0, mpfree_play::Event::NoteOff { note });
+        }
+    }
+
+    /// Pad `pad`'s pressure where its hit went.
+    fn rec_pressure(&mut self, pad: usize, value: u8, time: &mut time::TimeHost) {
+        let Some(fed) = self.fed.get(pad) else {
+            return;
+        };
+        for &t in fed.iter().flatten() {
+            let note = pad as u8;
+            time.routed_played(t, 0, mpfree_play::Event::Pressure { note, value });
+        }
+    }
+
+    /// A keyboard's key into each track recording a layer, as the pad its
+    /// note plays there (`midi_file::pad_on_track`: the track plays its
+    /// layer's synth, its own pad map's or the shared synth's); its end
+    /// and pressure where it went. `velocity` is as the recorder takes it
+    /// (None: nothing records the pads now).
+    fn rec_key(
+        &mut self,
+        k: midi_in::Key,
+        velocity: Option<u8>,
+        time: &mut time::TimeHost,
+        own: &instruments::Instruments,
+        synth: &synth::Synth,
+    ) {
+        use midi_in::Key;
+        match k {
+            Key::Down { note, .. } => {
+                let Some(velocity) = velocity else {
+                    return;
+                };
+                for &t in self.rec.iter().flatten() {
+                    let key = Key::Down { note, velocity };
+                    let pad = |n| midi_file::pad_on_track(own, Some(synth), usize::from(t), n);
+                    if let Some(ev) = self.keys.event(t, key, pad) {
+                        time.routed_played(t, 0, ev);
+                        self.key_tracks |= 1 << t;
+                    }
+                }
+            }
+            Key::Up { .. } | Key::Pressure { .. } => {
+                let mut went = self.key_tracks;
+                while went != 0 {
+                    let t = went.trailing_zeros() as u8;
+                    went &= went - 1;
+                    if let Some(ev) = self.keys.event(t, k, |_| None) {
+                        time.routed_played(t, 0, ev);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The layers as the app has them now (`App::pads_layer_holders`,
+    /// `App::pads_layer_synth`): the host's layer players pointed at the
+    /// holders it holds, the shared synth's layer on or off. The notes
+    /// and pedals left on a layer that goes end there first. Nothing
+    /// changes (and nothing allocates) when nothing did.
+    fn follow(
+        &mut self,
+        holders: [Option<usize>; PadLayers::MORE],
+        synth_on: bool,
+        synth: &mut synth::Synth,
+        own: &mut instruments::Instruments,
+    ) {
+        let at = holders.map(|h| h.filter(|&h| own.holds(h)));
+        let moved = (0..PadLayers::MORE).any(|i| own.layer_at(i) != at[i]);
+        if !moved && synth_on == self.synth {
+            return;
+        }
+        for ctl in self.pedals.lift() {
+            for i in 0..PadLayers::MORE {
+                own.control(instruments::layer(i), ctl, 0.0, 0);
+            }
+            if self.synth {
+                synth.control(ctl, 0.0, 0);
+            }
+        }
+        for (i, &to) in at.iter().enumerate() {
+            if own.layer_at(i) != to {
+                own.set_layer(i, to);
+            }
+        }
+        if self.synth && !synth_on {
+            for pad in (0..16).filter(|&p| self.synth_pads >> p & 1 == 1) {
+                synth.note_off(pad, 0);
+            }
+            for note in (0..128u8).filter(|&n| self.synth_keys >> n & 1 == 1) {
+                synth.note_off_note(note, 0);
+            }
+            self.synth_pads = 0;
+            self.synth_keys = 0;
+        }
+        self.synth = synth_on;
+    }
+
+    /// Pad `pad` (0 to 15) down at velocity `v` (shaped): every layer
+    /// plays it.
+    fn pad_on(
+        &mut self,
+        pad: usize,
+        v: u8,
+        synth: &mut synth::Synth,
+        own: &mut instruments::Instruments,
+    ) {
+        let none = mpfree_arp::scale::Shift::NONE;
+        for i in 0..PadLayers::MORE {
+            own.pad_on_shifted(instruments::layer(i), pad, v, 0, &none);
+        }
+        if self.synth && pad < 16 {
+            synth.note_on(pad, v, 0);
+            self.synth_pads |= 1 << pad;
+        }
+    }
+
+    /// Pad `pad` up: the notes its hit started on the layers end there.
+    /// Nothing for a hit that started none.
+    fn pad_off(
+        &mut self,
+        pad: usize,
+        synth: &mut synth::Synth,
+        own: &mut instruments::Instruments,
+    ) {
+        for i in 0..PadLayers::MORE {
+            own.pad_off(instruments::layer(i), pad, 0);
+        }
+        if pad < 16 && self.synth_pads >> pad & 1 == 1 {
+            synth.note_off(pad, 0);
+            self.synth_pads &= !(1 << pad);
+        }
+    }
+
+    /// Pad `pad`'s pressure on the notes its hit started on the layers.
+    fn pad_pressure(
+        &mut self,
+        pad: usize,
+        value: u8,
+        synth: &mut synth::Synth,
+        own: &mut instruments::Instruments,
+    ) {
+        for i in 0..PadLayers::MORE {
+            own.pad_pressure(instruments::layer(i), pad, value, 0);
+        }
+        if pad < 16 && self.synth_pads >> pad & 1 == 1 {
+            synth.pressure(pad, value);
+        }
+    }
+
+    /// A keyboard's key `k` on the layers too, each key its own note (`v`
+    /// shapes a velocity as the pads'). A second note-on for a key held
+    /// there is ignored; a let-go, pressure or slide reaches where the key
+    /// went.
+    fn key(
+        &mut self,
+        k: midi_in::Key,
+        v: impl Fn(u8) -> u8,
+        synth: &mut synth::Synth,
+        own: &mut instruments::Instruments,
+    ) {
+        use midi_in::Key;
+        let bit = |note: u8| 1u128 << (note & 0x7F);
+        match k {
+            Key::Down { note, velocity } => {
+                let vel = v(velocity);
+                for i in 0..PadLayers::MORE {
+                    if !own.key_held(instruments::layer(i), note) {
+                        own.note_on(instruments::layer(i), note, vel, 0);
+                    }
+                }
+                if self.synth && self.synth_keys & bit(note) == 0 {
+                    synth.note_on_note(note, vel, 0);
+                    self.synth_keys |= bit(note);
+                }
+            }
+            Key::Up { note } => {
+                for i in 0..PadLayers::MORE {
+                    if own.key_held(instruments::layer(i), note) {
+                        own.note_off(instruments::layer(i), note, 0);
+                    }
+                }
+                if self.synth_keys & bit(note) != 0 {
+                    synth.note_off_note(note, 0);
+                    self.synth_keys &= !bit(note);
+                }
+            }
+            Key::Pressure { note, value } => {
+                for i in 0..PadLayers::MORE {
+                    if own.key_held(instruments::layer(i), note) {
+                        own.note_pressure(instruments::layer(i), note, value);
+                    }
+                }
+                if self.synth_keys & bit(note) != 0 {
+                    synth.pressure_note(note, value);
+                }
+            }
+            Key::Expr { note, kind, value } => {
+                for i in 0..PadLayers::MORE {
+                    if own.key_held(instruments::layer(i), note) {
+                        own.note_expression(instruments::layer(i), note, kind, value);
+                    }
+                }
+                if self.synth_keys & bit(note) != 0 {
+                    synth.expression_note(note, kind, value);
+                }
+            }
+            Key::Bend { value } => {
+                for i in 0..PadLayers::MORE {
+                    own.bend(instruments::layer(i), value);
+                }
+                if self.synth {
+                    synth.bend(value);
+                }
+            }
+            Key::Control { ctl, value } => {
+                for i in 0..PadLayers::MORE {
+                    own.control(instruments::layer(i), ctl, value, 0);
+                }
+                if self.synth {
+                    synth.control(ctl, value, 0);
+                }
+                self.pedals.key(ctl, value);
+            }
+        }
+    }
+
+    /// Whether a hit or key plays the shared synth as a layer now (for
+    /// the tests).
+    #[cfg(test)]
+    fn holds_synth(&self) -> bool {
+        self.synth_pads != 0 || self.synth_keys != 0
     }
 }
 
@@ -6427,6 +7030,38 @@ fn looper_action(
             Vec::new()
         }
         looping::LoopAction::Capture => vec![app::Effect::Tell(looper.capture())],
+        // Smart loop end's chip, the loop point view and the hint line's
+        // question.
+        looping::LoopAction::Snap(s) => {
+            out.note(&looper.snap(s));
+            Vec::new()
+        }
+        looping::LoopAction::Side(side, keep) => {
+            out.note(&looper.side(side, keep));
+            Vec::new()
+        }
+        looping::LoopAction::Ab(on) => {
+            let line = looper.set_ab(on);
+            out.note(&line);
+            vec![app::Effect::Tell(line)]
+        }
+        looping::LoopAction::Answer(anyway) => {
+            let line = if anyway {
+                looper.snap_anyway()
+            } else {
+                looper.snap_not_now()
+            };
+            line.map(|l| {
+                out.note(&l);
+                app::Effect::Tell(l)
+            })
+            .into_iter()
+            .collect()
+        }
+        looping::LoopAction::PointView(open) => {
+            looper.set_point_open(open);
+            Vec::new()
+        }
         looping::LoopAction::CaptureSpan(end, bars) => {
             out.note(&looper.set_capture_span(end, bars));
             Vec::new()
@@ -7062,6 +7697,7 @@ fn player_session(
     out: &mut Out,
     timed: bool,
     from_ui: &Receiver<gui::FromUi>,
+    xy: &xy_slot::XySlot,
 ) -> Result<(), String> {
     // The store (--data: the stick's partition 4) opens first, before the
     // first start writes anything there: it marks a new, empty data folder as
@@ -7185,12 +7821,17 @@ fn player_session(
     // The name of the instrument the host's pads player plays, as the
     // screen last heard it (step 6).
     let mut pads_host_shown: Option<&'static str> = None;
+    // What the pads play with their layers, as the screen last heard it
+    // (step 11b).
+    let mut layers_shown = [None; instruments::PAD_LAYERS];
     // What the screen shows the pads play, and their bank's letter when it
     // is the bank's own (step 6c).
     let mut pads_shown: (app::PadFocus, Option<usize>) = (app::PadFocus::Track, None);
     // Who plays the Synth tab's instrument, as last shown (step 8b), and
     // when to look again.
     let mut who_shown: Option<String> = None;
+    // When the selected track's line was last asked for (step 11d).
+    let mut line_at = 0.0;
     let mut who_at = 0.0f64;
     let mut preview_held: [Option<PadsPreview>; 16] = [None; 16];
     // The list of instruments changed since the app last had it (step 6).
@@ -7488,6 +8129,19 @@ fn player_session(
         audio_memory.time(),
         audio_memory.megabytes(RATE)
     ));
+    // Dev's "Audio tracks from their files" (off by default): started
+    // before the takes record to files, so the writer waits for playback's
+    // reads; the screen opens projects without reading their takes then.
+    if app.settings.stream_audio {
+        if let Some(bytes) = tracks.stream(audio_memory.seconds()) {
+            out.say(&format!(
+                "audio tracks: takes play from their files (Dev, MENU: Audio tracks from their files), through a {} MB cache",
+                bytes >> 20
+            ));
+        }
+        app.settings.audio_streams = tracks.streams();
+        out.show(gui::ToUi::Settings(app.settings.clone()));
+    }
     out.show(gui::ToUi::Time(Box::new(time_state(&time, &tracks))));
     let (mut shown_transport, mut transport_shown_at) = (time.info(), Instant::now());
     let mut periods = app.settings.periods;
@@ -7824,6 +8478,10 @@ fn player_session(
     let mut pedals_down = midi_in::PedalsDown::default();
     // Keys playing the pads' synth while the pads play it on their own.
     let mut keys_on_pads = KeysOnPads::new();
+    // The pads' layers beyond the first (step 11a), which the pads' hits
+    // and the keys play too.
+    let mut pad_layers = PadLayers::new();
+    let mut route_synths = RouteSynths::new();
     // The keys' expression on its gear, thinned for the recorder and the
     // move log (the MIDI plan's 3.7).
     let mut expr_rec = expr_rec::ExprRec::new();
@@ -8302,6 +8960,13 @@ fn player_session(
                     // A new or opened project arms the notes (rec_arm.rs).
                     app.rec = rec_arm::RecArm::default();
                     out.show(gui::ToUi::Rec(app.rec));
+                    // The synths its MIDI routes name (step 11e), from the
+                    // I/O setup the screen opened before sending the
+                    // project, so a synth only a route plays stays while
+                    // MIDI in catches up.
+                    if let Ok(m) = io_model.lock() {
+                        app.set_route_synths(midi_in::route_synths_of(&m.setup).0);
+                    }
                     // A save under way stops: the project changes under it.
                     if collect_now {
                         looper.cancel_save();
@@ -8490,6 +9155,10 @@ fn player_session(
                     list_changed = false;
                     let (notes, pads_fx) = app.open_pads(o.pads.as_deref());
                     for line in notes {
+                        out.note(&line);
+                    }
+                    // Its layers, after the pads part (step 11a).
+                    for line in app.open_pad_layers(o.pad_layers.as_deref()) {
                         out.note(&line);
                     }
                     fx.extend(pads_fx);
@@ -8699,6 +9368,14 @@ fn player_session(
                 _ => {}
             }
             parts.item_named(parts::SCREEN_ACTIONS, t_item, &item);
+        }
+        // The screen's XY pad as it stands: a lift whose action never came
+        // lets go here (xy_slot.rs).
+        if mix.screen_xy(xy.read()) {
+            out.note(&format!(
+                "XY pad: let go from the screen's state, its lift never came ({} so far)",
+                mix.xy_found_up()
+            ));
         }
         // MIDI Learn listens only while the chain editor's learn is armed:
         // Back or closing the editor stops it too. The I/O view's Learn
@@ -9254,6 +9931,7 @@ fn player_session(
             if mt >= track_names_at {
                 track_names_at = mt + 0.5;
                 io_track_names(&mut live.tracks, &time.project().tracks);
+                io_route_synths(&mut live.synths, &listed, &mix);
             }
             // Where each one's parameter stands, a few times a second, in
             // place (no allocation).
@@ -9280,6 +9958,14 @@ fn player_session(
         // once, after them.
         let armed = app.track();
         for (track, k) in music.take_routed() {
+            // A route that names a synth (step 11e): its row plays it, and
+            // the track recording it takes the key.
+            if let Some(j) = track.checked_sub(midi_in::SYNTH_ROUTES) {
+                let j = usize::from(j);
+                route_synths.key(j, k, &mut synth, &mut mix.instruments);
+                route_synths.rec_key(j, k, &mut time, &mix.instruments, &synth);
+                continue;
+            }
             if routed_held.direct(track, k, usize::from(track) == armed) {
                 routed_keys.push((track, k));
             } else {
@@ -9315,6 +10001,15 @@ fn player_session(
             // too, by note, and the armed track hears none of them (step
             // 7b); a key held there lets go there.
             let shape = |v| app.velocity(v);
+            // The pads' layers (step 11a) play each key too, by note,
+            // whichever way the first plays it.
+            pad_layers.key(k, shape, &mut synth, &mut mix.instruments);
+            // And into each track recording a layer (step 11c).
+            let rv = match k {
+                midi_in::Key::Down { velocity, .. } => app.layer_rec_velocity(velocity),
+                _ => None,
+            };
+            pad_layers.rec_key(k, rv, &mut time, &mix.instruments, &synth);
             if keys_on_pads.key(k, pads_preview, shape, &mut synth, &mut mix.instruments) {
                 if let midi_in::Key::Control { ctl, value } = k {
                     pedals_down.key(ctl, value);
@@ -9549,6 +10244,24 @@ fn player_session(
                     }
                 }
             }
+            // The pads' layers (step 11a): a pad's let-go and pressure
+            // reach the notes its hit started there, whichever arm below
+            // takes them. Keys play the layers by note (above), so a key
+            // that plays a pad doesn't.
+            match m.event {
+                Some(ControlEvent::PadUp { pad }) if (pad as usize) < 16 && !m.music => {
+                    pad_layers.pad_off(pad as usize, &mut synth, &mut mix.instruments);
+                    pad_layers.rec_off(pad as usize, &mut time);
+                }
+                Some(ControlEvent::PadPressure { pad, pressure })
+                    if (pad as usize) < 16 && !m.music =>
+                {
+                    let own = &mut mix.instruments;
+                    pad_layers.pad_pressure(pad as usize, pressure, &mut synth, own);
+                    pad_layers.rec_pressure(pad as usize, pressure, &mut time);
+                }
+                _ => {}
+            }
             let mut send = |to, msg| {
                 midi_out.controller(to, msg);
             };
@@ -9705,6 +10418,10 @@ fn player_session(
                         }
                         _ => synth.note_on(pad, v, 0),
                     }
+                    if !m.music {
+                        pad_layers.pad_on(pad, v, &mut synth, &mut mix.instruments);
+                        pad_layers.rec_on(pad, app.layer_rec_velocity(velocity), &mut time);
+                    }
                     preview_held[pad] = pads_preview;
                     out.show(gui::ToUi::PadDown { pad, velocity: v });
                     if mute_shown.is_none() {
@@ -9807,6 +10524,12 @@ fn player_session(
                             // With the notes it plays, for a take of notes (step 5d).
                             let rows = pad_rows(&mix.instruments, &synth, &track_kits, app.track());
                             time.pad_pressed_notes(0, ev, rows.notes(pad));
+                        }
+                        // The pads' layers (step 11a) play the hit too.
+                        if !m.music {
+                            let v = app.velocity(velocity);
+                            pad_layers.pad_on(pad, v, &mut synth, &mut mix.instruments);
+                            pad_layers.rec_on(pad, app.layer_rec_velocity(velocity), &mut time);
                         }
                         fx.extend(app.pad_down(pad, velocity));
                         awaiting[pad] = true;
@@ -10433,8 +11156,32 @@ fn player_session(
         if std::mem::take(&mut list_changed) {
             fx.extend(app.set_instrument_list(&listed));
         }
+        // The synths MIDI routes name (step 11e) as MIDI in applies a
+        // changed setup, before a free place nothing else plays is put
+        // away.
+        if let Some(ids) = music.take_route_synths() {
+            app.set_route_synths(ids);
+        }
         fx.extend(app.put_away_free());
         let pads_at = app.pads_holder().filter(|&h| mix.instruments.holds(h));
+        // The pads' layers (step 11a) follow the app's, as the pads do.
+        pad_layers.follow(
+            app.pads_layer_holders(),
+            app.pads_layer_synth(),
+            &mut synth,
+            &mut mix.instruments,
+        );
+        // The armed tracks that record a layer (step 11c).
+        pad_layers.rec_to(app.pads_layer_recs(time.also()));
+        // The synths MIDI routes name (step 11e), and where REC takes
+        // their keys.
+        route_synths.follow(
+            app.route_synth_holders(),
+            app.route_synth_shared(),
+            &mut synth,
+            &mut mix.instruments,
+        );
+        route_synths.rec_to(app.route_recs(time.also()));
         if mix.instruments.pads_play_at() != pads_at {
             mix.instruments.pads_play(pads_at);
             // The Synth tab shows the pads' instrument while they play it
@@ -10456,6 +11203,13 @@ fn player_session(
         if host_name != pads_host_shown {
             pads_host_shown = host_name;
             out.show(gui::ToUi::PadsHost(host_name));
+        }
+        // What the pads play with their layers (step 11b): "Pads: FM +
+        // Pluck". Nothing allocated while nothing changes.
+        let layers_now = app.pads_layer_list();
+        if layers_now != layers_shown {
+            layers_shown = layers_now;
+            out.show(gui::ToUi::PadsLayers(app::layer_names(&layers_now)));
         }
         // What the pads play now and the bank whose own it is (step 6c):
         // PAD BANK, the synth's layout coming or going, a bank's synth
@@ -10485,6 +11239,17 @@ fn player_session(
                 who_shown.clone_from(&who);
                 out.show(gui::ToUi::WhoPlays(who));
             }
+        }
+        // The selected track's line over the Instrument row (step 11d),
+        // as often, while the options show.
+        if app.view() == app::View::Options && mt >= line_at {
+            line_at = mt + 0.25;
+            let t = app.track();
+            let to_gear = |t: usize| midi_out.takes(t as u16);
+            let homes = track_kits.homes(|t| !mix.instruments.plays(t) && !to_gear(t));
+            let name = synth.engine_name();
+            let line = track_line(t, &mix, &track_kits, &homes, name, to_gear(t));
+            fx.extend(app.set_track_line(line));
         }
         let playing_kit = if synth_on { synth_kit } else { player.kit() };
         let mut kit_switched = false;
@@ -11492,6 +12257,16 @@ fn player_session(
             export.running(),
         ));
         looper.set_tempo_meant(app.tempo_by_hand);
+        looper.set_smart_end(app.settings.smart_end);
+        // The period's notes, for smart loop end.
+        if let Some(at) =
+            time.take_notes(|frame, track, key, velocity| looper.note(frame, track, key, velocity))
+        {
+            looper.notes_lost(at);
+        }
+        // A snap: its tempo asked of the time engine, or, committed, the
+        // loop told to change on the same frame.
+        out.loop_start(looper.tend_snap(&mut time, tracks.host.tracks.has_regions()));
         let line_note = looper.run(time.block(), &mut loop_l, &mut loop_r);
         // A loop that heard the line input with the song stopped starts it.
         let take = app.rec.ready.map(|take| take == rec_arm::Take::Add);
@@ -11504,7 +12279,11 @@ fn player_session(
         // A free first loop closed: the song starts at its tempo.
         let (said, tempo) = loop_sets_tempo(&mut looper, &mut time, take, export.running());
         out.loop_start(said);
-        loop_tempo = tempo.or(loop_tempo);
+        out.smart_end(looper.take_smart());
+        // A snap landed: the song's tempo changed with the loop.
+        let (said, snapped) = looper.take_snap();
+        out.loop_start(said);
+        loop_tempo = tempo.or(snapped).or(loop_tempo);
         // The audio tracks record the same line input onto the Song view's
         // lanes, and each plays into its own mixer channel (song mode only).
         tracks.follow_latency(app.settings.loop_latency);
@@ -11670,6 +12449,7 @@ fn player_session(
                 track_kits: project::track_kits_text(&track_kits, &mix.instruments, &listed),
                 instrument_list: listed.text(),
                 pads: app.pads_part(),
+                pad_layers: app.pad_layers_part(),
                 loops,
                 audio,
             })));
@@ -12102,6 +12882,7 @@ fn player_session(
                             + midi_out.ends_lost(),
                         peak_grains: c.peak_grains,
                         window_waits: c.window_waits,
+                        track_files: tracks.stream_numbers(),
                         faded_grains: c.faded_grains,
                         held_back_clouds: c.held_back_clouds,
                         crowded_s: c.crowded_ms as f32 / 1000.0,
@@ -12174,7 +12955,7 @@ fn player_session(
             let plan = desk::rec_plan(&app, &time, &mix);
             if plan != plan_shown {
                 plan_shown = plan;
-                out.show(gui::ToUi::RecPlan(plan));
+                out.show(gui::ToUi::RecPlan(plan.map(Box::new)));
             }
             if track_kits != kits_shown {
                 kits_shown = track_kits.clone();

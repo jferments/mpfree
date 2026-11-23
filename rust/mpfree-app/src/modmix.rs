@@ -50,7 +50,7 @@
 use mpfree_fx::mpfree_node::{Ctx, NodeEvent, ParamInfo, Timed};
 use mpfree_fx::{mixer_param_applies as param_applies, strip_params, Mixer, StripId};
 use mpfree_mod::{
-    Change, ModEngine, ModError, ModEvent, ModTimed, Source, DEFAULT_TICK, FOLLOWERS, MACROS,
+    Change, LetGo, ModEngine, ModError, ModEvent, ModTimed, Source, DEFAULT_TICK, FOLLOWERS, MACROS,
 };
 use mpfree_notefx::TrackFx;
 use mpfree_perform::morph::Loaded;
@@ -72,6 +72,12 @@ pub struct ModMix {
     events: Vec<ModTimed>,
     unrouted: u64,
     dropped: u64,
+    /// Let-gos that found the period's events full and were kept on their
+    /// target for the next period ([`ModEngine::let_go_later`]).
+    late: u64,
+    /// Values that found the period's events full and took the place of an
+    /// earlier value for the same setting.
+    merged: u64,
     /// The tracks' MIDI effects, for their settings' descriptions.
     note_fx: Box<[TrackFx; MAX_TRACKS]>,
     /// This period's values on MIDI effect settings, for the time engine.
@@ -139,6 +145,8 @@ impl ModMix {
             events: Vec::with_capacity(EVENTS),
             unrouted: 0,
             dropped: 0,
+            late: 0,
+            merged: 0,
             note_fx: Box::new([TrackFx::default(); MAX_TRACKS]),
             note_values: Vec::with_capacity(NOTE_VALUES),
             midi_values: Vec::with_capacity(MIDI_VALUES),
@@ -259,12 +267,33 @@ impl ModMix {
     /// The mod engine's part of the status line.
     pub fn describe(&self) -> String {
         format!(
-            "mod: {} targets, {} values sent, {} with no place in the mixer, {} events dropped",
+            "mod: {} targets, {} values sent, {} with no place in the mixer, {} events dropped, \
+             {} let-gos kept aside, {} values merged",
             self.engine.targets().count(),
             self.engine.stats().sent,
             self.unrouted,
-            self.dropped
+            self.dropped,
+            self.late,
+            self.merged
         )
+    }
+
+    /// Let-gos kept for the next period, and values merged, with the
+    /// period's events full (the tests').
+    #[cfg(test)]
+    pub fn waited(&self) -> (u64, u64, u64) {
+        (self.late, self.merged, self.dropped)
+    }
+
+    /// Lets go of every hand, lock and lane at once: a project is opening.
+    pub fn let_go_all(&mut self) {
+        self.events.retain(|e| {
+            !matches!(
+                e.ev,
+                ModEvent::Touch { .. } | ModEvent::Lock { .. } | ModEvent::Lane { .. }
+            )
+        });
+        self.engine.let_go_all();
     }
 
     /// A step's lock (`value`) or its end (`None`) at `offset` frames into
@@ -545,11 +574,47 @@ impl ModMix {
 
     fn queue(&mut self, offset: u32, ev: ModEvent) {
         if self.events.len() == self.events.capacity() {
-            self.dropped += 1;
+            self.full(ev);
             return;
         }
         let at = self.events.partition_point(|e| e.offset <= offset);
         self.events.insert(at, ModTimed::new(offset, ev));
+    }
+
+    /// `ev` found the period's events full. A let-go never needs a slot:
+    /// its target keeps it and the engine does it first next period, so a
+    /// setting never stays held. A value takes the place of the last one
+    /// queued for the same setting, when that is the same kind (the newest
+    /// value is the one that matters). Anything else is dropped, counted.
+    fn full(&mut self, ev: ModEvent) {
+        let late = match ev {
+            ModEvent::Untouch { addr } => Some((addr, LetGo::Touch)),
+            ModEvent::Unlock { addr } => Some((addr, LetGo::Lock)),
+            _ => None,
+        };
+        if let Some((addr, what)) = late {
+            // Not a target: nothing holds it, so nothing to let go of.
+            if self.engine.let_go_later(addr, what) {
+                self.late += 1;
+            }
+            return;
+        }
+        let Some(addr) = value_addr(&ev) else {
+            self.dropped += 1;
+            return;
+        };
+        let same = self
+            .events
+            .iter_mut()
+            .rev()
+            .find(|e| value_addr(&e.ev) == Some(addr) || late_addr(&e.ev) == Some(addr));
+        match same {
+            Some(e) if std::mem::discriminant(&e.ev) == std::mem::discriminant(&ev) => {
+                e.ev = ev;
+                self.merged += 1;
+            }
+            _ => self.dropped += 1,
+        }
     }
 
     /// Runs one period of `len` frames before the mixer's: what changed
@@ -584,6 +649,25 @@ impl ModMix {
             },
         );
         self.events.clear();
+    }
+}
+
+/// The setting a value event sets (a turn, a hand, a lock, a lane).
+fn value_addr(ev: &ModEvent) -> Option<ParamAddr> {
+    match *ev {
+        ModEvent::Set { addr, .. }
+        | ModEvent::Touch { addr, .. }
+        | ModEvent::Lock { addr, .. }
+        | ModEvent::Lane { addr, .. } => Some(addr),
+        _ => None,
+    }
+}
+
+/// The setting a let-go lets go of.
+fn late_addr(ev: &ModEvent) -> Option<ParamAddr> {
+    match *ev {
+        ModEvent::Untouch { addr } | ModEvent::Unlock { addr } => Some(addr),
+        _ => None,
     }
 }
 
@@ -889,6 +973,66 @@ mod tests {
         let after = h.mixer.param(StripId::Track(LOOP), mx::VOLUME);
         assert!((after + 6.0).abs() < 0.01, "{before} -> {after}");
         assert_eq!(h.modu.unrouted(), 0);
+    }
+
+    #[test]
+    fn a_let_go_lands_even_when_the_periods_events_are_full() {
+        let mut h = MixHost::new(RATE, 0.0, 6.0);
+        let level = |h: &MixHost, t: usize| h.mixer.param(StripId::Track(t), mx::VOLUME);
+        let (loop_was, drums_was) = (level(&h, LOOP), level(&h, DRUMS));
+        // A step's lock on the Loop track's fader, and a hand on the
+        // Drums' while recording.
+        h.lock(0, vol(LOOP), Some(-18.0));
+        assert!(h.modu.hold(&h.mixer, vol(DRUMS)));
+        assert!(h.modu.hand(vol(DRUMS), -12.0, true));
+        run(&mut h, 4, 0);
+        assert!((level(&h, LOOP) + 18.0).abs() < 0.01);
+        assert!((level(&h, DRUMS) + 12.0).abs() < 0.01);
+        // A busy period fills the events (the morph's crossfader, moved
+        // EVENTS times)...
+        for i in 0..EVENTS {
+            h.modu.morph_to(i as f32 / EVENTS as f32);
+        }
+        // ...then the lock ends and the hand lets go: neither is lost.
+        h.lock(0, vol(LOOP), None);
+        h.modu.release(vol(DRUMS));
+        // One more move of the crossfader takes the last one's place.
+        h.modu.morph_to(0.0);
+        // A source's value has no setting to merge into: dropped.
+        h.modu.queue(0, ModEvent::Trigger);
+        assert_eq!(h.modu.waited(), (2, 1, 1));
+        run(&mut h, 40, 4);
+        assert!(!h.modu.engine().is_locked(vol(LOOP)));
+        assert!(!h.modu.engine().is_touched(vol(DRUMS)));
+        assert!((level(&h, LOOP) - loop_was).abs() < 0.01, "the lock let go");
+        assert!(
+            (level(&h, DRUMS) - drums_was).abs() < 0.01,
+            "the hand let go"
+        );
+        assert_eq!(h.modu.engine().late(), 0);
+        assert!(h
+            .modu
+            .describe()
+            .contains("2 let-gos kept aside, 1 values merged"));
+    }
+
+    #[test]
+    fn opening_a_project_lets_go_of_every_hand_and_lock() {
+        let mut h = MixHost::new(RATE, 0.0, 6.0);
+        let level = |h: &MixHost, t: usize| h.mixer.param(StripId::Track(t), mx::VOLUME);
+        let (loop_was, drums_was) = (level(&h, LOOP), level(&h, DRUMS));
+        h.lock(0, vol(LOOP), Some(-18.0));
+        assert!(h.modu.hold(&h.mixer, vol(DRUMS)));
+        assert!(h.modu.hand(vol(DRUMS), -12.0, true));
+        run(&mut h, 4, 0);
+        // A hand queued in the same period goes too.
+        assert!(h.modu.hand(vol(DRUMS), -20.0, true));
+        h.modu.let_go_all();
+        run(&mut h, 40, 4);
+        assert!(!h.modu.engine().is_locked(vol(LOOP)));
+        assert!(!h.modu.engine().is_touched(vol(DRUMS)));
+        assert!((level(&h, LOOP) - loop_was).abs() < 0.01);
+        assert!((level(&h, DRUMS) - drums_was).abs() < 0.01);
     }
 
     #[test]

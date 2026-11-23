@@ -75,6 +75,13 @@ console looper-listening 2 # before the theme refactor (phase 0 baseline)
 console looper-loops 3 # before the theme refactor (phase 0 baseline)
 console looper-master-refused 2 # before the theme refactor (phase 0 baseline)
 console looper-perform-throws 2 # before the theme refactor (phase 0 baseline)
+console looper-smart-ask 2 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+console looper-smart-chip 2 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+console looper-smart-close-call 2 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+console looper-smart-point 2 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+console looper-smart-point-snapped 2 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+console looper-smart-snapped 2 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+console looper-smart-start 2 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
 console looper-sources 2 # before the theme refactor (phase 0 baseline)
 console looper-take-gap 3 # before the theme refactor (phase 0 baseline)
 console looper-this-take 3 # before the theme refactor (phase 0 baseline)
@@ -195,6 +202,13 @@ default looper-listening 7 # before the theme refactor (phase 0 baseline)
 default looper-loops 7 # before the theme refactor (phase 0 baseline)
 default looper-master-refused 8 # before the theme refactor (phase 0 baseline)
 default looper-perform-throws 7 # before the theme refactor (phase 0 baseline)
+default looper-smart-ask 7 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+default looper-smart-chip 7 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+default looper-smart-close-call 7 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+default looper-smart-point 7 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+default looper-smart-point-snapped 7 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+default looper-smart-snapped 7 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+default looper-smart-start 7 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
 default looper-sources 8 # before the theme refactor (phase 0 baseline)
 default looper-take-gap 4 # before the theme refactor (phase 0 baseline)
 default looper-this-take 4 # before the theme refactor (phase 0 baseline)
@@ -397,6 +411,13 @@ spaceship looper-listening 7 # before the theme refactor (phase 0 baseline)
 spaceship looper-loops 11 # before the theme refactor (phase 0 baseline)
 spaceship looper-master-refused 8 # before the theme refactor (phase 0 baseline)
 spaceship looper-perform-throws 11 # before the theme refactor (phase 0 baseline)
+spaceship looper-smart-ask 11 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+spaceship looper-smart-chip 11 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+spaceship looper-smart-close-call 11 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+spaceship looper-smart-point 7 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+spaceship looper-smart-point-snapped 7 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+spaceship looper-smart-snapped 11 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+spaceship looper-smart-start 11 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
 spaceship looper-sources 8 # before the theme refactor (phase 0 baseline)
 spaceship looper-take-gap 8 # before the theme refactor (phase 0 baseline)
 spaceship looper-this-take 8 # before the theme refactor (phase 0 baseline)

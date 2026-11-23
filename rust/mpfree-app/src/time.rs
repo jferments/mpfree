@@ -1215,6 +1215,14 @@ impl TimeHost {
         self.audio.hits()
     }
 
+    /// Every note started in the period just run ([`TimeAudio::take_notes`]):
+    /// its frame, track, note and velocity, for the looper's smart loop
+    /// end; then forgets them. The newest frame of a note lost for want
+    /// of room, if any was.
+    pub fn take_notes(&mut self, f: impl FnMut(u64, u16, u8, u8)) -> Option<u64> {
+        self.audio.take_notes(f)
+    }
+
     pub fn clear_hits(&mut self) {
         self.audio.clear_hits();
     }
@@ -1350,7 +1358,9 @@ impl TimeHost {
     /// Start the song on frame `at` (see [`TimeHost::next_frame`]): the
     /// looper's Starts: When I play, whose first note starts the song so
     /// bar 1 is where you started. Only while it is stopped: back to the
-    /// start of the bar it stopped in, the tempo `bpm` if given (the whole
+    /// start of the bar it stopped in (and `into` ticks after it, where a
+    /// loop closed by smart loop end's Auto already is), the tempo `bpm`
+    /// if given (the whole
     /// song takes it), then PLAY on `at`, with no count-in. With a take
     /// ready (`take`, as for [`TimeHost::take_waits`]) it records from
     /// there too, a punch-in with no count-in, into the clip REC readies
@@ -1363,18 +1373,19 @@ impl TimeHost {
         at: u64,
         bpm: Option<f64>,
         take: Option<bool>,
+        into: Tick,
     ) -> Result<Option<String>, String> {
         // The clip REC readies comes first, so with none to record into
         // the song starts without the take, and no punch-in needs taking
         // back. Only when the start will go in.
         let ready = match take {
-            Some(_) if self.audio.start_refusal(bpm, take).is_none() => {
+            Some(_) if self.audio.start_refusal(bpm, take, into).is_none() => {
                 Some(self.with(|c| c.take_started_on_note()))
             }
             _ => None,
         };
         let take = take.filter(|_| ready.as_ref().is_some_and(Result::is_ok));
-        self.audio.start_at(at, bpm, take)?;
+        self.audio.start_at(at, bpm, take, into)?;
         Ok(ready.map(|r| {
             self.sent(r)
                 .unwrap_or_else(|e| format!("rec: {e}, so it only plays"))
@@ -1390,7 +1401,6 @@ impl TimeHost {
 
     /// The song's timeline as it is now, for a timing change to be made
     /// against ([`TimeAudio::timeline`]).
-    #[allow(dead_code)] // smart loop end, steps 1 and 2
     pub fn timeline(&self) -> u64 {
         self.audio.timeline()
     }
@@ -1398,7 +1408,6 @@ impl TimeHost {
     /// Whether timing change `c` may be offered now: Safe, Ask (with
     /// `audio`, recorded audio playing at its own speed, at a new tempo)
     /// or Refused ([`TimeAudio::allowed`]).
-    #[allow(dead_code)] // smart loop end, steps 1 and 2
     pub fn allowed(&self, c: &TimingChange, audio: bool) -> Allowed {
         self.audio.allowed(c, audio)
     }
@@ -1406,20 +1415,17 @@ impl TimeHost {
     /// Timing change `c`, on its frame: its ticket, or why not
     /// ([`TimeAudio::timing_change`]). Called on the audio loop's thread,
     /// as [`TimeHost::start_at`] is.
-    #[allow(dead_code)] // smart loop end, steps 1 and 2
     pub fn timing_change(&mut self, c: TimingChange) -> Result<u32, &'static str> {
         self.audio.timing_change(c)
     }
 
     /// Take back the timing change with `ticket` if it still waits.
-    #[allow(dead_code)] // smart loop end, steps 1 and 2
     pub fn cancel_timing(&mut self, ticket: u32, why: &'static str) -> bool {
         self.audio.cancel_timing(ticket, why)
     }
 
     /// What became of the timing change with `ticket`, if it is one of
     /// the last few.
-    #[allow(dead_code)] // smart loop end, steps 1 and 2
     pub fn timing_answer(&self, ticket: u32) -> Option<Answer> {
         self.audio.timing_answer(ticket)
     }
@@ -8462,21 +8468,24 @@ mod tests {
         );
         h.act(TimeAction::ListTimes { step: 0, delta: 1 }).unwrap();
         let st = h.state();
-        let rows: Vec<(String, usize, u16, i64, i64)> = st
+        let rows: Vec<(String, Option<usize>, u16, i64, i64)> = st
             .list
             .iter()
-            .map(|r| (r.name.clone(), r.row, r.times, r.bars, r.starts))
+            .map(|r| (r.name.clone(), r.scene, r.times, r.bars, r.starts))
             .collect();
         assert_eq!(
             rows,
-            vec![("Row 1".into(), 0, 2, 2, 1), ("Row 2".into(), 1, 1, 1, 3)]
+            vec![
+                ("Row 1".into(), Some(0), 2, 2, 1),
+                ("Row 2".into(), Some(1), 1, 1, 3)
+            ]
         );
         assert_eq!(st.list_pick, Some(1));
         // Step 2's scene: the next row with a clip skips the empty one.
         h.act(TimeAction::ListScene { step: 1, delta: 1 }).unwrap();
-        assert_eq!(h.state().list[1].row, 3);
+        assert_eq!(h.state().list[1].scene, Some(3));
         h.act(TimeAction::Undo).unwrap();
-        assert_eq!(h.state().list[1].row, 1, "UNDO takes the edit back");
+        assert_eq!(h.state().list[1].scene, Some(1), "UNDO takes the edit back");
         // Played from the top while stopped: row 1 twice, row 2, then
         // every track stops on bar 4.
         h.act(TimeAction::ListPlay(0)).unwrap();
@@ -8525,6 +8534,87 @@ mod tests {
         h.act(TimeAction::LaunchScene(3)).unwrap();
         let st = h.state();
         assert!(st.list_next.is_none() && st.list.iter().all(|r| !r.waiting));
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// Arrange 4b.1: a linked song list shows the song's sections, each
+    /// with its marker's name, its scene and its passes, and the bars
+    /// before the first marker as "Song"; the one the song plays is lit
+    /// with its pass, and picking one picks its scene. Until its edits move
+    /// the song (4b.2) and it plays the song (4b.4) it takes only its loop
+    /// switch: an edit or a play says where to go and changes nothing.
+    #[test]
+    fn a_linked_list_shows_the_songs_sections_and_their_passes() {
+        use mpfree_seq::arrange::{scenes_to_song, FromScene, Placement};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let p = &mut h.control.project;
+        for (row, name) in [(0, "intro"), (1, "verse")] {
+            let mut c = Clip::new(name, 3840);
+            c.notes = vec![mpfree_seq::Note::new(0, 100, 4, 100)];
+            p.tracks[0].slots[row] = Some(c);
+        }
+        p.give_clip_ids();
+        p.scene_mut(1).unwrap().name = "Verse".into();
+        // A bar of the song's own, then row 1 once and row 2 three times.
+        let mut song = scenes_to_song(p, &[(0, 3840), (1, 3 * 3840)], 3840)
+            .unwrap()
+            .song;
+        for (m, (row, passes)) in song.markers.iter_mut().zip([(0, 1), (1, 3)]) {
+            m.scene = Some(FromScene {
+                row,
+                changed: false,
+            });
+            m.passes = passes;
+        }
+        song.place(Placement::of(&p.tracks, 0, 0, 0, 3840)).unwrap();
+        song.list.linked = true;
+        p.arrangement = song;
+        p.check().unwrap();
+        let rows = |h: &TimeHost| -> Vec<(String, Option<usize>, u16, i64, i64)> {
+            h.state()
+                .list
+                .iter()
+                .map(|r| (r.name.clone(), r.scene, r.times, r.bars, r.starts))
+                .collect()
+        };
+        assert_eq!(
+            rows(&h),
+            vec![
+                ("Song".into(), None, 1, 1, 1),
+                ("Scene 1".into(), Some(0), 1, 1, 2),
+                ("Verse".into(), Some(1), 3, 3, 3),
+            ]
+        );
+        // Halfway through bar 4: the verse's second pass.
+        h.act(TimeAction::SongMode(true)).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, 3 * BAR + BAR / 2, &[]);
+        let st = h.state();
+        let lit: Vec<Option<u16>> = st.list.iter().map(|r| r.playing.map(|p| p.0)).collect();
+        assert_eq!(lit, vec![None, None, Some(2)]);
+        h.act(TimeAction::ListPick(Some(2))).unwrap();
+        let st = h.state();
+        assert_eq!((st.list_pick, st.scene_focus), (Some(2), 1));
+        assert_eq!(
+            h.act(TimeAction::ListPick(Some(3))).unwrap(),
+            "song list: nothing picked"
+        );
+        // Not yet: edits and play change nothing; the loop switch works.
+        let was = h.control.project.arrangement.clone();
+        for a in [
+            TimeAction::ListAdd,
+            TimeAction::ListRemove(1),
+            TimeAction::ListTimes { step: 2, delta: 1 },
+            TimeAction::ListScene { step: 1, delta: 1 },
+            TimeAction::ListToSong,
+            TimeAction::ListPlay(0),
+        ] {
+            assert_eq!(h.act(a.clone()), Err(control::LIST_LINKED.into()), "{a:?}");
+        }
+        assert_eq!(h.control.project.arrangement, was);
+        h.act(TimeAction::ListLoop(true)).unwrap();
+        assert!(h.state().list_looped);
         assert_eq!(h.dropped(), 0);
     }
 
@@ -10128,7 +10218,7 @@ mod tests {
         let bar = 4 * mpfree_transport::PPQ as i64;
         let at = h.next_frame() + 40;
         // The app's tempo moves with it, in the same period (4c's way).
-        assert_eq!(h.start_at(at, Some(117.3456), None), Ok(None));
+        assert_eq!(h.start_at(at, Some(117.3456), None, 0), Ok(None));
         h.follow_tempo(117.3456);
         h.period(PERIOD, &mut pads);
         let span = *h.block().spans().last().unwrap();
@@ -10161,7 +10251,7 @@ mod tests {
         assert_eq!(h.info().bpm, 100.0);
         assert_eq!(asked, 1, "asked again before the line");
         // Refused while it plays, and while it counts in.
-        let r = h.start_at(h.next_frame(), None, None);
+        let r = h.start_at(h.next_frame(), None, None, 0);
         assert_eq!(r, Err("the song is playing already".to_string()));
         assert!(h.command(Command::StopAndRewind));
         h.period(PERIOD, &mut pads);
@@ -10169,14 +10259,14 @@ mod tests {
         assert!(h.command(Command::Record));
         h.period(PERIOD, &mut pads);
         assert_eq!(h.info().state, State::CountIn);
-        let r = h.start_at(h.next_frame(), None, None);
+        let r = h.start_at(h.next_frame(), None, None, 0);
         assert_eq!(r, Err("the song is counting in".to_string()));
         assert_eq!(h.starts_refused(), 2);
         // A take ready: it records from the note, with no count-in.
         assert!(h.command(Command::StopAndRewind));
         h.period(PERIOD, &mut pads);
         let at = h.next_frame();
-        let line = h.start_at(at, None, Some(true)).unwrap().unwrap();
+        let line = h.start_at(at, None, Some(true), 0).unwrap().unwrap();
         assert!(
             line.starts_with("rec: the take started on your note"),
             "{line}"
@@ -10193,7 +10283,7 @@ mod tests {
         h.period(PERIOD, &mut pads);
         h.control.armed = Some(h.control.project.tracks.len());
         let at = h.next_frame() + 40;
-        let line = h.start_at(at, None, Some(false)).unwrap().unwrap();
+        let line = h.start_at(at, None, Some(false), 0).unwrap().unwrap();
         assert!(line.ends_with("so it only plays"), "{line}");
         for _ in 0..8 {
             h.period(PERIOD, &mut pads);
@@ -10216,7 +10306,7 @@ mod tests {
         while h.audio.queue_room() > 2 {
             assert!(h.audio.command_at(far, Command::Stop));
         }
-        let r = h.start_at(h.next_frame(), Some(90.0), None);
+        let r = h.start_at(h.next_frame(), Some(90.0), None, 0);
         assert_eq!(r, Err("the transport's queue is full".to_string()));
         assert_eq!(h.audio.queue_room(), 2, "nothing queued");
         h.period(PERIOD, &mut pads);
@@ -11122,6 +11212,114 @@ mod tests {
         let h = h.into_together().expect("the control half comes back");
         assert!(!h.apart());
         assert_eq!(h.project(), together.project());
+    }
+
+    /// Piano roll plan 0B (on Arrange 2.6b): apart, the note editor's
+    /// touches go to the editing side's thread as the screen sends them
+    /// (`time_action`'s `act_then`) and answer as together does, in the
+    /// same order and words: a pick, a move, a tap made on the picture
+    /// from before the move's answer came back (refused: the clip changed
+    /// under the finger), a velocity drag, Draw, a drawn note, ERASE + a
+    /// tap, UNDO. The copy the screen reads comes to match together's:
+    /// the clip, its revision, the picks and the last touch's answer.
+    #[test]
+    fn apart_the_note_editor_answers_as_together_and_its_copy_follows() {
+        use mpfree_time_ui::editor::EditAction as E;
+        use mpfree_time_ui::view::EditOutcome as O;
+        let note = Say::Note {
+            ok: "time: ",
+            err: "time: ",
+        };
+        // Together: each touch made on the picture the screen has after
+        // the touch before it was answered, but the stale tap, made on
+        // the picture before the move.
+        let mut together = host_with_a_clip();
+        let info = |h: &mut TimeHost| {
+            h.take_changed();
+            *h.state().edit.expect("the editor is open")
+        };
+        let mut sent: Vec<(TimeAction, Say)> = Vec::new();
+        let mut want = Vec::new();
+        let mut touch = |h: &mut TimeHost, a: E, say: &Say| {
+            let a = TimeAction::Edit(a);
+            let r = h.act_then(a.clone(), say.clone()).expect("together");
+            sent.push((a, say.clone()));
+            want.push((say.clone(), r));
+        };
+        touch(&mut together, E::Open, &note);
+        let first = info(&mut together);
+        let rev = first.rev;
+        touch(&mut together, E::Note { index: 1, rev }, &note);
+        let drop = E::Drop {
+            index: 1,
+            rev,
+            ticks: 240,
+            notes: 2,
+        };
+        touch(&mut together, drop, &note);
+        touch(&mut together, E::Tap { index: 0, rev }, &note);
+        touch(&mut together, E::Velocity(0.5), &note);
+        touch(&mut together, E::Button(2), &note);
+        touch(&mut together, E::Empty { tick: 480, note: 5 }, &note);
+        let drawn = info(&mut together);
+        let index = drawn
+            .clip
+            .notes
+            .iter()
+            .position(|n| (n.tick, n.note) == (480, 5))
+            .expect("the drawn note");
+        let rev = drawn.rev;
+        touch(&mut together, E::Erase { index, rev }, &note);
+        touch(&mut together, E::Note { index: 0, rev }, &note);
+        let r = together
+            .act_then(TimeAction::Undo, Say::Undo)
+            .expect("together");
+        sent.push((TimeAction::Undo, Say::Undo));
+        want.push((Say::Undo, r));
+        let refused = |r: &Result<String, String>| {
+            r.as_ref()
+                .is_err_and(|why| why.contains("the clip changed under your finger"))
+        };
+        assert_eq!(
+            want.iter().filter(|(_, r)| refused(r)).count(),
+            2,
+            "the tap from before the move and the pick from before the erase: {want:?}"
+        );
+        // UNDO took the erase back: the drawn note is there again.
+        let end = info(&mut together);
+        assert!(end.clip.notes.iter().any(|n| (n.tick, n.note) == (480, 5)));
+        // Apart: every touch sent at once, as a quick hand does.
+        let (mut h, why) = host_with_a_clip().into_apart();
+        assert_eq!(why, None);
+        let mut pads = Fake::default();
+        for (a, say) in sent {
+            assert_eq!(h.act_then(a, say), None, "apart, the answer comes later");
+        }
+        assert_eq!(answers(&mut h, &mut pads, want.len()), want);
+        until(&mut h, &mut pads, |h| {
+            h.project() == together.project()
+                && h.state().edit.as_deref() == Some(&end)
+                && h.editing()
+        });
+        let a = h.state().edit.expect("open").answer;
+        assert_eq!(a, end.answer);
+        assert!(
+            matches!(a.outcome, O::Refused(_)),
+            "the last editor touch was the stale pick: {a:?}"
+        );
+        // A new copy for something else (a track added) shares the clip
+        // while it is unchanged (plan 0C.1), so the roll isn't built again.
+        let shown = h.state().edit.expect("open").clip;
+        let tracks = h.project().tracks.len();
+        assert_eq!(h.act_then(TimeAction::AddTrack, note.clone()), None);
+        assert!(answers(&mut h, &mut pads, 1)[0].1.is_ok());
+        until(&mut h, &mut pads, |h| {
+            h.project().tracks.len() == tracks + 1
+        });
+        let again = h.state().edit.expect("open").clip;
+        assert!(std::sync::Arc::ptr_eq(&shown, &again), "the same copy");
+        let h = h.into_together().expect("the control half comes back");
+        assert_eq!(h.project().tracks.len(), tracks + 1);
     }
 
     /// Arrange 2.6b: apart, a call that isn't an ask borrows the control

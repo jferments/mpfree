@@ -49,7 +49,7 @@ A colour is `#RRGGBB`, as on the web, or `#RRGGBBAA` to make it see-through (`#1
 | `text` | Words. |
 | `text_dim` | Labels, and words that matter less. Button labels use it when the button does nothing right now. |
 | `text_faint` | Hints, and the faintest words. |
-| `accent` | The main highlight: what is picked, a slider's fill. |
+| `accent` | The main highlight: words, lines and rings that stand out, a slider's fill, and what is picked unless you set `picked`. |
 | `accent2` | A second highlight, used sparingly. |
 | `on_accent` | Words on the accent. |
 | `good`, `warn`, `bad` | Ready or fine; take care; an error. |

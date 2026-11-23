@@ -32,6 +32,35 @@ fn read(fs: &Ext4<Offset<&File>>, path: &str) -> Vec<u8> {
     fs.read_file(&i).unwrap()
 }
 
+/// A stick pulled out part way: its writes fail once `left` bytes are used.
+struct CutOff<'a> {
+    disk: &'a File,
+    left: std::cell::Cell<u64>,
+}
+
+impl mpfree_diskimage::ReadAt for CutOff<'_> {
+    fn read_at(&self, buf: &mut [u8], offset: u64) -> std::io::Result<()> {
+        mpfree_diskimage::ReadAt::read_at(self.disk, buf, offset)
+    }
+}
+
+impl WriteAt for CutOff<'_> {
+    fn write_at(&self, buf: &[u8], offset: u64) -> std::io::Result<()> {
+        let left = self.left.get();
+        if buf.len() as u64 > left {
+            return Err(std::io::Error::other("the stick was pulled out"));
+        }
+        self.left.set(left - buf.len() as u64);
+        WriteAt::write_at(self.disk, buf, offset)
+    }
+}
+
+impl stick::Disk for CutOff<'_> {
+    fn sync(&self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 /// e2fsck, where it is installed, on one partition copied out.
 fn fsck(img: &File, p: &gpt::Part, dir: &Path) {
     let Some(e2fsck) = ["/usr/sbin/e2fsck", "/sbin/e2fsck"]
@@ -669,6 +698,45 @@ fn writes_a_stick_keeps_its_data_and_copies_the_backup_off() {
         stick::uuid_text(&again.layout.part(4).guid),
         again.values.data_uuid
     );
+    // Pulled out part way through the copy: the stick's table still shows
+    // partition 4, so making the stick again keeps it.
+    let cut = CutOff {
+        disk: &disk,
+        left: std::cell::Cell::new(8 << 20),
+    };
+    assert!(stick::write_disk(&b, &cut, bytes, &t.0, false, &mut |_| {}).is_err());
+    let shown: Vec<String> = gpt::read(&disk)
+        .unwrap()
+        .parts
+        .iter()
+        .flatten()
+        .map(|p| p.name.clone())
+        .collect();
+    assert_eq!(
+        shown,
+        [Recipe::load().data_name],
+        "no half-written partition shows"
+    );
+    assert_eq!(
+        stick::existing_data(&disk),
+        Some(p4.last),
+        "partition 4 is still found after a cut-off write"
+    );
+    let again = stick::write_disk(&b, &disk, bytes, &t.0, false, &mut |_| {}).unwrap();
+    assert_eq!(
+        stick::existing_data(&disk),
+        Some(p4.last),
+        "kept after a cut-off"
+    );
+    // With no table at all (another tool cleared it), partition 4's data
+    // still counts, so a remake that must keep it stops (cli.rs).
+    let mut table = vec![0u8; 34 * 512];
+    mpfree_diskimage::ReadAt::read_at(&disk, &mut table, 0).unwrap();
+    WriteAt::write_at(&disk, &vec![0u8; 34 * 512], 0).unwrap();
+    assert!(stick::existing_data(&disk).is_none());
+    assert!(stick::holds_data(&disk), "found where MPFree puts it");
+    WriteAt::write_at(&disk, &table, 0).unwrap();
+    assert_eq!(stick::existing_data(&disk), Some(p4.last));
     let root = part_fs(&disk, again.layout.part(1));
     assert!(
         root.lookup(stick::NEW_BACKUP_FILE).unwrap().is_none(),

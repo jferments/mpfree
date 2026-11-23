@@ -5,7 +5,7 @@ checked: 2026-11-22 d9a2b851
 
 # The composer and the Musical Context
 
-**Status:** phases 0A (the musical model) and 0B (the check through real playback), and phase 0C's listener, plan and new chords, 2026-11-22. The code is [`rust/mpfree-context`](../../../rust/mpfree-context) and [`rust/mpfree-compose`](../../../rust/mpfree-compose). Nothing is on screen, nothing runs on the MPC, and nothing else in mpfree uses these crates yet. The owner approved the design on 2026-11-22 with Continue as the first tool.
+**Status:** phases 0A (the musical model) and 0B (the check through real playback), and phase 0C's listener, plan, new chords and phrases, 2026-11-22. The code is [`rust/mpfree-context`](../../../rust/mpfree-context) and [`rust/mpfree-compose`](../../../rust/mpfree-compose). Nothing is on screen, nothing runs on the MPC, and nothing else in mpfree uses these crates yet. The owner approved the design on 2026-11-22 with Continue as the first tool.
 
 ## What it is for
 
@@ -24,7 +24,7 @@ There is no trained model: the engine is procedural. It reads what was played (k
 |---|---|---|
 | 0A | The musical model: the Musical Context, phrases of events with roles and sources, decisions kept apart from notes, stable dice, the re-fit table, the timing contract, rule kinds, style components, instrument profiles | Built (this page) |
 | 0B | An integration check, developer only: one simple phrase played in place of a clip through the real play view, kept and undone; clip revisions; the preview states tried against the real play view, player and take undo | Built (this page) |
-| 0C | The full engine: listening, plan, harmony, phrase, playing, groove; three styles; two-sided Try again; the reading budget; listening tests against simpler baselines; MPC timings | Listening, the plan and new chords built; the rest next |
+| 0C | The full engine: listening, plan, harmony, phrase, playing, groove; three styles; two-sided Try again; the reading budget; listening tests against simpler baselines; MPC timings | Listening, the plan, new chords, phrases and two-sided Try again built; playing, groove and the rest next |
 | 1 | Continue, with the preview states and an all-or-nothing Keep | |
 | 2 | Add a part, with one harmony answer for rows and the song | |
 | 3 | Improvise and Answer, with record sources, chord settle and note owners | |
@@ -64,18 +64,30 @@ A part keeps its **decisions** apart from its **notes** (`event.rs`). A `NoteDec
 
 `progression` (`progression.rs`) makes the chord timeline over every bar. Your bars keep the chords heard in them; a repeat or a return plays your bar's chords; every other new bar takes chords from the style's palette (diatonic triads or sevenths on its degrees, plus a borrowed V in minor for Jazz-ish), cut into the style's harmonic rhythm (two bars, one bar, half a bar). A landing bar's last beat takes the ending's chord. The chain is sampled by forward filtering and backward sampling from your last chord, weighted by the style's stay and root-motion weights, so it never dead-ends and Try again (the `attempt` in the dice name) gives another good progression; Variation flattens or sharpens the weights. New chords are marked suggested, shown dashed. A loop bar plays your riff over the style's chords rather than copying yours, so Minimal mostly stays on Cm and sometimes moves to Bb or Fm and back. With no clear key, the new bars play your bars' chords again in order, and nothing is invented.
 
+## Phrases (phase 0C)
+
+A phrase is written as a tune of places in the scale on the 1/16 grid (`motif.rs`): `Key::position` turns a pitch into a scale place and how far it is raised, so moving a motif two places is a sequence that stays in the key. `motifs` cuts a line at its phrase breaks (Cambouropoulos's boundary model: changes in leap, time between starts and rests); `similarity` says how alike two stretches are, whatever key they're in (0.35 leaps and lengths as an edit distance, 0.25 shape, 0.3 rhythm, 0.1 accents); `transform` has the classic changes (move, invert, backwards, augment, diminish, head, tail, shift, widen, end on).
+
+`rhythm.rs` keeps, varies, reshapes and makes a bar's rhythm on any meter's grid (`Grid`: the 4/4 table of strong and weak steps generalised to any bar and beat). `vary` splits, joins and nudges notes; `feel` is the style's: Minimal keeps the strongest notes, Groove pushes beats a 1/16 early and chops long notes, Jazz-ish moves notes to 1/8s and anticipates beats; `fresh` makes a new rhythm for a contrast near the style's syncopation (Longuet-Higgins and Lee) and away from yours.
+
+`phrase.rs` writes the new bars. `Phrasing::new` reads your notes (only notes a person played; anything the composer or an arp made is left out), learns how you move from note to note (a variable-order model of scale steps), and finds the middle of your tune and the notes you use most. For each new bar, `bar_material` takes the rhythm and a target from the bar's job: your bar again (a loop varies half the time), varied, moved up or down the scale, the first half of the call with the second half of your other bar ending elsewhere, the opening motif twice a step apart, or a new rhythm under your tune upside down. `fit` then picks the notes with a beam search (12 lines kept at each note) over every pitch in range, scoring your steps blended with the style's, the chord under it, leaps and a turn after one, repeats, register following the bar's tension, the target's place and steps, and, for the last note, the way into the next bar and the ending; Gumbel noise scaled by Variation makes each try different. The finished line nearest the bar's similarity aim wins. With no clear key, new notes keep to the notes you played.
+
+Contract 6's kinds hold: the Range you picked (`RangeSetting::steps`, scale places either side of your tune's middle), the instrument's range, locked bars and the Keeps never give way, and when they can't all be met the request is refused with the setting and one change ("Can't fit a new bar 3 between your bars with Range Narrow. Try Range Medium?", or the instrument's range when no wider setting helps). Keep Rhythm holds every new bar's rhythm as your bar's; Keep Tune shape makes every step go the way yours did. A leap over an octave, a chromatic note that doesn't move on by a half step and the ending's last note (home: the home note, or less well its 3rd or 5th; open: the 2nd, 5th or 7th; leading back: near your first note or the 5th) were hard rules in the prototype and are preferences here, weighed by the style; when one gives way the result says so (`Line::gave_way`), so Jazz-ish enclosures show up there and nothing is hidden.
+
+`continue_line` writes every new bar in order, each with its own dice (`Job::Rhythm` and `Job::Pitch`, by bar and try); `try_again` remakes one bar with everything else locked; `decisions` reads the new bars back as decisions under the chords, so a later chord change re-fits them, and realising them gives the same notes for all three styles. A 16-bar line takes 1 to 2 ms on one desktop core (9,400 to 21,000 candidates scored); MPC timings come with the rest of 0C.
+
 ## Implementation contracts
 
 A design review set four must-haves before the code that needs them, and six more to settle early. The table says where each stands.
 
 | Contract | Due | In 0A |
 |---|---|---|
-| 1. Try again respects both neighbours | Before phase 1 | The prototype's result is recorded below; the scoring is phase 0C's |
+| 1. Try again respects both neighbours | Before phase 1 | Built in 0C: `phrase.rs` scores the way in and the way out, and a loop's way back; measured below |
 | 2. What a change re-fits, and stable dice | Phase 0 | Built: `refit.rs`, `realize.rs`, `dice.rs` |
 | 3. One timing contract | Phase 0 | Built: `timing.rs`, `groove.rs`, `keep.rs` |
 | 4. One harmony question for every place | Before phase 2 | Built: `harmony.rs` |
 | 5. Saying how sure it is | Phase 0 | Built: `key.rs` (words), `chord.rs` (no clear chord, long chords) |
-| 6. Three kinds of rule | Phase 0 | Built as data: `rules.rs` |
+| 6. Three kinds of rule | Phase 0 | Built as data: `rules.rs`; the phrase keeps them (0C) |
 | 7. Preview states and Keep | Before phase 1 | Built in 0B: `bind.rs`, `preview.rs`, `keep.rs`; checked through the real engine (`tests/playback.rs`) |
 | 8. Recording and where notes came from | Before phase 3 | `Source` on every event; recording is phase 3's |
 | 9. Live: chord settle, note owners, release | Before phase 3 | Phase 3 |
@@ -126,7 +138,7 @@ The last 8 results for the clip are kept, and ‹ › steps through them (`step`
 
 ### Rules, styles and instruments (contracts 6, 10, 11)
 
-`Rule::kind` sorts every rule into structural (a real pitch and time, the instrument's range, the clip limits), yours (locks, chords you set, the Keeps, the Range you picked) and preferences (leap size, chromatic motion, the four parts of an ending, repeats). Only preferences give way, weighed by the style's `Weights`, so a leap over an octave is rare rather than banned and Jazz-ish can use enclosures. When the others can't all be met, `Unmet::words` says which setting is in the way and suggests one change: "Can't fit a new bar 6 between your bars with Range Narrow. Try Range Medium?"
+`Rule::kind` sorts every rule into structural (a real pitch and time, the instrument's range, the clip limits), yours (locks, chords you set, the Keeps, the Range you picked) and preferences (leap size, chromatic motion, the four parts of an ending, repeats). Only preferences give way, weighed by the style's `Weights` (a leap costs `leap` per scale step beyond a fourth, more again over an octave), so a leap over an octave is rare rather than banned and Jazz-ish can use enclosures. When the others can't all be met, `Unmet::words` says which setting is in the way and suggests one change: "Can't fit a new bar 6 between your bars with Range Narrow. Try Range Medium?"
 
 A `Style` is components (harmony, rhythm, bass, melody, playing, development) plus weights and drift; `Style::with` swaps one component, so jazz harmony can go without the walking bass. The three presets (`MINIMAL`, `GROOVE`, `JAZZISH`) carry the second prototype's numbers, tuned by ear, with each style's swing as a suggestion for the clip's playback swing and a few plan shapes each.
 
@@ -134,7 +146,7 @@ Five `InstrumentKind`s give a `Profile`: polyphony, range, articulation, overlap
 
 ### Try again on one bar (contract 1)
 
-Trying again on a bar is filling a gap: each try is scored on its inside, its way in and its way out, everything outside the selection stays (including a note held into it), and a loop's last bar leads into its first. The second prototype measured it: over 40 seeds, four bars each and three tries, big steps (more than a major third) into the next bar fell from 28 % with the way out ignored to 17 % with it, the same as music written in order (16 %); at the end of a four-bar loop, big steps back into bar 1 fell from 53 % to 17 %. Phase 0C builds the scoring; the dice contract above already keeps the other bars as they were.
+Trying again on a bar is filling a gap: each try is scored on its inside, its way in and its way out, everything outside the selection stays (including a note held into it), and a loop's last bar leads into its first. The second prototype measured it: over 40 seeds, four bars each and three tries, big steps (more than a major third) into the next bar fell from 28 % with the way out ignored to 17 % with it, the same as music written in order (16 %); at the end of a four-bar loop, big steps back into bar 1 fell from 53 % to 17 %. Phase 0C built the scoring (`try_again`), and its test repeats the measurement on the same riff and plan: over 40 seeds, trying bars 3, 6, 10 and 13 three times each, big steps into the next bar are 14 % with the way out scored and 28 % without (8 % in the line as first written), and at the end of a four-bar loop big steps back into bar 1 are 16 % with the wrap and 39 % without. The other bars stay exactly as they were.
 
 ## Tests
 
@@ -155,6 +167,8 @@ Trying again on a bar is filling a gap: each try is scored on its inside, its wa
 - a one-bar phrase, realised from decisions under the chord, is heard in place of a one-bar riff, kept as one take that plays the same notes on the same frames, undone back to the riff (length, notes and revision), and redone;
 - a step tapped on the clip while its result plays invalidates the result, and the tap's UNDO doesn't bring it back;
 - a step tapped on a clip the reading listened to invalidates it too.
+
+Phase 0C's modules carry their own tests, among them: the listener hears the prototype's examples as it did; the plan's 16 bars match the prototype's numbers; a progression keeps your chords and lands; a 16-bar phrase stays in range, lands home and sits within 0.03 of each bar's similarity aim on average; only your notes are learned from; Try again changes one bar and leads into the next (the measurement above); the Keeps hold; a range that can't fit is refused with one change; bars of three beats stay in their bars.
 
 ## What phase 1 decides
 

@@ -36,6 +36,7 @@
 //! The mockup is `mpfree-claude/sampler/mockups` (Wave). The header and the
 //! hint line are the app's; the tab adds its own widgets and its layout.
 
+use crate::command::Change;
 use crate::recorder::{self, Recorder, RecorderAction, RecorderView, INPUT_ROWS, RECORDER};
 use std::sync::Arc;
 
@@ -452,26 +453,36 @@ pub fn with_warp_tempo(st: &WaveState, r: &Region, bpm: f64) -> Option<Region> {
 }
 
 impl WaveAction {
-    /// Applies a region change to the project (one undo step per gesture).
-    /// Other actions change nothing here.
-    pub fn apply(&self, p: &mut Project) -> Result<(), ModelError> {
+    /// The change to the kit it asks for ([`crate::command`]), with its
+    /// gesture: a region, or the Sound section's change. None for the
+    /// actions the app carries out itself (Normalize, Process, a take, a
+    /// chop) or that change nothing.
+    pub fn change(&self) -> Option<(Change, Option<u64>)> {
         match self {
             WaveAction::Region {
                 pad,
                 layer,
                 region,
                 gesture,
-            } => {
-                let (layer, region) = (*layer, (**region).clone());
-                if p.pad(*pad).is_none_or(|pd| layer >= pd.layers.len()) {
-                    return Err(ModelError::BadPad);
-                }
-                p.edit_pad(*pad, Some(*gesture), move |pd| {
-                    pd.layers[layer].region = region
-                })
-            }
-            WaveAction::Play(a) => a.apply(p),
-            _ => Ok(()),
+            } => Some((
+                Change::Region {
+                    pad: *pad,
+                    layer: *layer,
+                    region: region.clone(),
+                },
+                Some(*gesture),
+            )),
+            WaveAction::Play(a) => a.change(),
+            _ => None,
+        }
+    }
+
+    /// Applies a region change to the project (one undo step per gesture,
+    /// [`Change::apply`]). Other actions change nothing here.
+    pub fn apply(&self, p: &mut Project) -> Result<(), ModelError> {
+        match self.change() {
+            Some((c, gesture)) => c.apply(p, gesture),
+            None => Ok(()),
         }
     }
 }

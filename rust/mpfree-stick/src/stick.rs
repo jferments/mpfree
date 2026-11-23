@@ -1540,6 +1540,12 @@ pub fn write_head<W: WriteAt + ReadAt>(
 /// SHA-256 of `len` bytes from `offset`.
 pub fn sha256_of<R: ReadAt + ?Sized>(r: &R, offset: u64, len: u64) -> io::Result<[u8; 32]> {
     let mut h = Sha256::new();
+    hash_into(&mut h, r, offset, len)?;
+    Ok(h.finalize().into())
+}
+
+/// Adds `len` bytes from `offset` to `h`.
+fn hash_into<R: ReadAt + ?Sized>(h: &mut Sha256, r: &R, offset: u64, len: u64) -> io::Result<()> {
     let mut buf = vec![0u8; 1 << 20];
     let mut at = 0;
     while at < len {
@@ -1548,7 +1554,7 @@ pub fn sha256_of<R: ReadAt + ?Sized>(r: &R, offset: u64, len: u64) -> io::Result
         h.update(&buf[..n]);
         at += n as u64;
     }
-    Ok(h.finalize().into())
+    Ok(())
 }
 
 /// Partition 4 of a disk already holding an MPFree data partition at 1 GiB
@@ -1572,15 +1578,19 @@ pub fn existing_data<R: ReadAt + ?Sized>(disk: &R) -> Option<u64> {
 /// Whether the stick's partition 4, wherever the table puts it, starts with
 /// an ext2/3/4 filesystem: saved data that a remake keeping partition 4
 /// must not lose when [`existing_data`] can't keep it (another place or
-/// label, from another version).
+/// label, from another version). With no table to read (another tool
+/// cleared it), where MPFree puts partition 4 (1 GiB) is looked at instead,
+/// so its data still counts.
 pub fn holds_data<R: ReadAt + ?Sized>(disk: &R) -> bool {
-    let Some(p) = gpt::read(disk).ok().and_then(|t| t.part(4).cloned()) else {
-        return false;
+    let start = match gpt::read(disk) {
+        Ok(t) => match t.part(4) {
+            Some(p) => p.start_bytes(),
+            None => return false,
+        },
+        Err(_) => Recipe::load().data_start_sectors * SECTOR,
     };
     let mut magic = [0u8; 2];
-    disk.read_at(&mut magic, p.start_bytes() + 1024 + 56)
-        .is_ok()
-        && u16::from_le_bytes(magic) == 0xEF53
+    disk.read_at(&mut magic, start + 1024 + 56).is_ok() && u16::from_le_bytes(magic) == 0xEF53
 }
 
 /// Marks partition 4 for the stick's first start: zeros its first MiB and
@@ -1626,7 +1636,9 @@ impl Disk for File {
 /// Writes the stick onto `disk` (`bytes` long): partitions 1, 2, 3 and 5
 /// from a scratch file in `work`, read back and compared, then the
 /// partition table, then partition 4: kept if it is an MPFree data
-/// partition (and `fresh_data` is not asked), marked otherwise.
+/// partition (and `fresh_data` is not asked), marked otherwise. Until the
+/// whole table goes on, the stick's table shows partition 4 alone, so a
+/// write cut off part way can be run again and still keeps partition 4.
 pub fn write_disk<D: Disk + ?Sized>(
     b: &Build,
     disk: &D,
@@ -1670,9 +1682,24 @@ pub fn write_disk<D: Disk + ?Sized>(
         };
         let made = write_head(b, sectors, keep, &scratch, &mut sub)?;
         let end = (made.layout.part(5).last + 1) * SECTOR;
-        // Copy to the stick, then read it back.
+        // While partitions 1, 2, 3 and 5 are copied, the stick's table shows
+        // partition 4 alone, where it already is and never written here:
+        // no system sees a half-written partition, and a copy cut off part
+        // way leaves partition 4 where the next run finds and keeps it.
+        // (Copying over the table cleared it, and the next run took
+        // partition 4 for new.) The whole table goes on after the read-back.
+        let only_data = Table {
+            disk_guid: made.layout.table.disk_guid,
+            parts: vec![None, None, None, Some(made.layout.part(4).clone())],
+        };
+        // Nothing has touched the stick before this line.
+        say(Msg::Progress(0.45, "Writing the stick".into()));
+        gpt::write(disk, sectors, &only_data)?;
+        disk.sync()?;
+        // Then the copy, after the table's sectors, and the read-back.
+        let table_end = gpt::usable(sectors).0 * SECTOR;
         let mut buf = vec![0u8; 4 << 20];
-        let mut at = 0u64;
+        let mut at = table_end;
         while at < end {
             let n = ((end - at) as usize).min(buf.len());
             scratch.read_at(&mut buf[..n], at)?;
@@ -1685,7 +1712,12 @@ pub fn write_disk<D: Disk + ?Sized>(
         }
         disk.sync()?;
         say(Msg::Progress(0.86, "Reading the stick back".into()));
-        let got = sha256_of(disk, 0, end)?;
+        // The head's table sectors (which the new table replaces) from the
+        // scratch file, the rest as the stick reads back.
+        let mut h = Sha256::new();
+        hash_into(&mut h, &scratch, 0, table_end)?;
+        hash_into(&mut h, disk, table_end, end - table_end)?;
+        let got: [u8; 32] = h.finalize().into();
         if got != made.head_sha256 {
             return Err(bad(
                 "the stick does not read back as written: try another stick or USB port",

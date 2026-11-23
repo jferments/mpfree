@@ -185,6 +185,10 @@ pub enum To {
     /// A route (the Routing section's Tracks by channel) played this track
     /// (from 0), whichever track is armed.
     Routed { track: u8 },
+    /// A route that names a synth (the instrument redesign's step 11e)
+    /// played it: the project's instrument `id` (its list of synths' id),
+    /// whichever track is armed.
+    Synth { id: u32 },
     /// Thru (the Routing section's square from a port to an output) sent
     /// it straight on to this output port.
     Thru { to: PortId },

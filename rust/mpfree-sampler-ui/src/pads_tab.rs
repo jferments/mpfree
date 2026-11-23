@@ -70,6 +70,7 @@ use mpfree_sampler::model::{
 use mpfree_ui::widgets::{ListItem, ListView};
 use mpfree_ui::{EventKind, Ui, UiEvent};
 
+use crate::command::Change;
 use crate::panel::{Control, Item, Look, Panel, Section};
 use crate::play_tab::{self, stepped, value_text};
 use crate::slice_tool::{bank_of, pad_text, BANK};
@@ -549,16 +550,31 @@ pub enum PadsAction {
 }
 
 impl PadsAction {
-    /// Applies [`PadsAction::Set`] to the project; other actions change
-    /// nothing here.
-    pub fn apply(&self, p: &mut Project) -> Result<(), ModelError> {
+    /// The change to the kit [`PadsAction::Set`] asks for
+    /// ([`crate::command`]), with its gesture; None for the other actions.
+    pub fn change(&self) -> Option<(Change, Option<u64>)> {
         match self {
             PadsAction::Set {
                 pad,
                 after,
                 gesture,
-            } => p.set_pad(*pad, after.as_deref().cloned(), *gesture),
-            _ => Ok(()),
+            } => Some((
+                Change::Pad {
+                    pad: *pad,
+                    to: after.clone(),
+                },
+                *gesture,
+            )),
+            _ => None,
+        }
+    }
+
+    /// Applies [`PadsAction::Set`] to the project ([`Change::apply`]);
+    /// other actions change nothing here.
+    pub fn apply(&self, p: &mut Project) -> Result<(), ModelError> {
+        match self.change() {
+            Some((c, gesture)) => c.apply(p, gesture),
+            None => Ok(()),
         }
     }
 }

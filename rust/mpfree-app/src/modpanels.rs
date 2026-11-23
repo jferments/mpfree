@@ -1089,6 +1089,7 @@ impl MacrosHost {
                 h.modu
                     .hand(ParamAddr::macro_value(m as u8), value, recording);
             }
+            MacroAction::Release(m) => h.modu.release(ParamAddr::macro_value(m as u8)),
             MacroAction::Bank(b) => self.bank = b.min(1),
             MacroAction::Map { m, map } => {
                 if h.modu
@@ -2808,6 +2809,21 @@ mod tests {
         r.run(4);
         assert!(!r.h.modu.engine().is_touched(addr));
         assert!((r.param(addr) - locked).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_macro_turned_while_recording_lets_go_when_the_finger_lifts() {
+        let mut r = Rig::new();
+        let mut m = MacrosHost::new(0);
+        let addr = ParamAddr::macro_value(2);
+        // Recording: the turn is a hand on the macro...
+        m.action(&mut r.h, &MacroAction::Macro { m: 2, value: 0.7 }, true);
+        r.run(4);
+        assert!(r.h.modu.engine().is_touched(addr));
+        // ...until the finger lifts off its knob (it used to stay held).
+        m.action(&mut r.h, &MacroAction::Release(2), true);
+        r.run(4);
+        assert!(!r.h.modu.engine().is_touched(addr));
     }
 
     #[test]
