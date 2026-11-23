@@ -312,7 +312,7 @@ impl Rig {
         // Each instrument's tuning, handed over when its pick changes (the
         // first period, here).
         let said = tunings.follow(app.tunings(), listed, synth, mix, Some(&mut *player));
-        assert!(said.is_none(), "12-TET at the start says nothing");
+        assert!(said.is_empty(), "12-TET at the start says nothing");
         // The period's deadline for the lanes, as the loop sets it after
         // each write; far, so a slow machine (qemu in CI) is never late.
         let until = std::time::Instant::now() + std::time::Duration::from_secs(5);

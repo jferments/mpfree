@@ -21,6 +21,12 @@
 //!   [`Sandbox::restart`] starts a new process on the same shared memory,
 //!   prepares it and loads the state the host saved, and the node carries
 //!   on.
+//! - **The tuning** an instrument is handed ([`Node::set_tuning`], tunings
+//!   step T6) goes in the shared block with the next request, as plain
+//!   numbers with a number that counts the changes; the process hands it
+//!   to the plugin before that block (and a restarted process at once). A
+//!   plugin that takes only MIDI says so in its hello
+//!   ([`Node::follows_tuning`]).
 //! - **Main-thread work** (state, a value's text, loading a preset) goes
 //!   over a socket from the control thread. The process answers the
 //!   plugin's own main-thread requests itself.
@@ -42,7 +48,7 @@ pub mod wire;
 pub use mpfree_clap::{Place, Preset};
 
 use mpfree_clap::{intern_node_info, intern_params};
-use mpfree_node::{Ctx, Expr, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed};
+use mpfree_node::{Ctx, Expr, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, Tuning};
 use shm::{Mapping, ShmEvent};
 use std::io;
 use std::os::fd::AsRawFd;
@@ -579,6 +585,10 @@ pub fn spawn_with(
         tail: 0,
         deadline: Deadline::Fraction(0.5),
         stats: SandboxStats::default(),
+        tuning: Tuning::standard(),
+        tuning_gen: 0,
+        tuning_sent: 0,
+        follows_tuning: hello.follows_tuning,
     };
     Ok((node, Sandbox { shared }))
 }
@@ -596,6 +606,13 @@ pub struct SandboxNode {
     tail: u32,
     deadline: Deadline,
     stats: SandboxStats,
+    /// The instrument's tuning, its number (one more each time it changes;
+    /// 0: none handed) and the number last written to the shared block.
+    tuning: Tuning,
+    tuning_gen: u32,
+    tuning_sent: u32,
+    /// Whether the plugin plays the tuning it's handed (its Hello).
+    follows_tuning: bool,
 }
 
 impl SandboxNode {
@@ -665,6 +682,11 @@ impl SandboxNode {
             (*p).bpm = ctx.bpm;
             (*p).beats = ctx.beats;
             (*p).playing = u32::from(ctx.playing);
+            if self.tuning_sent != self.tuning_gen {
+                (*p).tuning = self.tuning.words();
+                (*p).tuning_gen = self.tuning_gen;
+                self.tuning_sent = self.tuning_gen;
+            }
             let mut k = 0usize;
             for &(id, v) in &self.pending {
                 if k == shm::MAX_EVENTS {
@@ -891,6 +913,21 @@ impl Node for SandboxNode {
 
     fn latency(&self) -> u32 {
         self.latency
+    }
+
+    /// Kept and written into the shared block with the next request, so it
+    /// never waits or allocates; the process hands it to the plugin before
+    /// that block, and a restarted process takes it at once.
+    fn set_tuning(&mut self, tuning: &Tuning) {
+        if self.kind != Kind::Instrument || *tuning == self.tuning {
+            return;
+        }
+        self.tuning.clone_from(tuning);
+        self.tuning_gen = self.tuning_gen.wrapping_add(1).max(1);
+    }
+
+    fn follows_tuning(&self) -> bool {
+        self.follows_tuning
     }
 
     /// The last snapshot ([`SandboxNode::saved_state`]): never asks the

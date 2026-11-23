@@ -526,7 +526,7 @@ Everything else works as on a drum's steps (see [Your first beat](sequencer.md#t
 
 ## Tuning
 
-Out of the box every synth and kit plays in standard tuning: twelve equal steps to the octave, with the A above middle C at 440 Hz. You can change that for the song in the Synth tab's options (press MENU on the Synth tab; see [Controls](../reference/controls.md)): the synths and the kits' keygroups follow it.
+Out of the box every synth and kit plays in standard tuning: twelve equal steps to the octave, with the A above middle C at 440 Hz. You can change that for the song in the Synth tab's options (press MENU on the Synth tab; see [Controls](../reference/controls.md)): the synths, CLAP plugin synths and the kits' keygroups follow it.
 
 {{shot: synth-options | The Synth tab's options, with the Tuning, Tuning root and A4 rows.}}
 
@@ -541,6 +541,8 @@ Out of the box every synth and kit plays in standard tuning: twelve equal steps 
 - **A4** is the pitch of the A above middle C, from 380 to 480 Hz, so the synth can match a recording or another instrument. 432 Hz and 442 Hz are common choices.
 
 The drum synth keeps its own pitches whatever you pick here.
+
+A plugin synth plays each note at the tuning's pitch when it takes CLAP's own notes, as most CLAP synths do. A CLAP synth that takes only MIDI notes, and an MPC plugin instrument, can't follow a tuning: they play in standard tuning, and the Console says so when you pick another ("Track 3's own instrument, ... takes only MIDI notes, so it plays 12-TET").
 
 Kits follow it where they play notes:
 

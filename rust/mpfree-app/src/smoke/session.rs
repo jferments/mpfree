@@ -1864,7 +1864,7 @@ impl Session {
         }
         // Each instrument plays its own tuning or the song's, as main.rs
         // hands them over.
-        if let Some(line) = self.tunings_handed.follow(
+        for line in self.tunings_handed.follow(
             self.app.tunings(),
             &self.instrument_list,
             &self.synth,

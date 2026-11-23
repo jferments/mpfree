@@ -16,7 +16,7 @@ use mpfree_arp::scale::NOTE_NAMES;
 use mpfree_tuning::TuningPick;
 
 use super::{App, Effect};
-use crate::instrument_list::{InstrumentId, Kind};
+use crate::instrument_list::InstrumentId;
 use crate::tunings::Tunings;
 
 impl App {
@@ -47,7 +47,7 @@ impl App {
             return Vec::new();
         }
         self.project_edit = true;
-        let who = instrument_words(kind);
+        let who = kind.words();
         let line = match pick {
             Some(p) => format!(
                 "tunings: {who} plays its own tuning, {}",
@@ -180,7 +180,7 @@ impl App {
                 .iter_own()
                 .filter_map(|(id, p)| {
                     let kind = self.instrument_list.kind(id)?;
-                    Some(format!("{} {}", instrument_words(kind), self.pick_label(p)))
+                    Some(format!("{} {}", kind.words(), self.pick_label(p)))
                 })
                 .collect();
             notes.push(format!(
@@ -191,16 +191,5 @@ impl App {
         }
         self.shared_tuning_follows();
         (notes, vec![Effect::SynthPads(self.synth_pads)])
-    }
-}
-
-/// An instrument as the log names it: "the shared synth", "Track 3's
-/// own instrument", "free place 2's synth", "Kit 4".
-fn instrument_words(kind: Kind) -> String {
-    match kind {
-        Kind::SharedSynth => "the shared synth".to_string(),
-        Kind::Own { track } => format!("Track {}'s own instrument", track + 1),
-        Kind::Free { place } => format!("free place {}'s synth", place + 1),
-        Kind::Kit { kit } => format!("Kit {}", kit + 1),
     }
 }

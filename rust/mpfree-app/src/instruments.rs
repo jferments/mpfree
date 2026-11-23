@@ -1113,6 +1113,15 @@ impl Instruments {
         }
     }
 
+    /// Whether track `track`'s instrument plays the tuning it's handed:
+    /// false for a plugin that takes only MIDI notes, which plays 12-TET
+    /// (`Node::follows_tuning`). True with no instrument.
+    pub fn follows_tuning(&self, track: usize) -> bool {
+        self.slot(track)
+            .and_then(|s| self.host.instrument(s))
+            .is_none_or(|i| mpfree_node::Node::follows_tuning(i.node()))
+    }
+
     /// Every slot's next `frames` frames into its track's mixer channel.
     pub fn render(&mut self, ctx: &Ctx, frames: usize, out: &mut dyn Outputs) {
         // The locks that ended play now: forget them. A knob a new owner
