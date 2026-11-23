@@ -1789,8 +1789,17 @@ impl TrackHost {
         let tr = &self.host.tracks;
         let m = tr.memory();
         let s = tr.stats();
+        // While takes play from their files: how many are on them, what
+        // played as silence because the drive was late (since the start),
+        // and the region starts held (the stream test reads these, D3).
+        let files = self.stream_numbers().map_or_else(String::new, |n| {
+            format!(
+                "; from their files: {} of {} takes, {:.2} s went silent, {} of {} region starts held",
+                n.on_file, n.takes, n.silent_s, n.heads_held, n.heads_wanted
+            )
+        });
         format!(
-            "audio tracks: {} takes, {:.0} of {:.0} s used, {} refused, {} dropped, {} cut short{}",
+            "audio tracks: {} takes, {:.0} of {:.0} s used, {} refused, {} dropped, {} cut short{}{files}",
             tr.takes().count(),
             m.used as f64 / (2.0 * self.rate as f64),
             m.capacity as f64 / (2.0 * self.rate as f64),

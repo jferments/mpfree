@@ -71,9 +71,9 @@ Every button works as soon as MPFree starts, with nothing to learn: the develope
 
 | Control | What it does | When |
 |---|---|---|
-| **Data wheel** | Picks a row of the Record settings, or of the Edit options while the note editor is open (with their drawer closed, the wheel, **–**, **+** or a push opens it first). **–** and **+** change it; push the wheel and the wheel changes it. | Works |
+| **Data wheel** | Picks a row of the Record settings, or of the Edit options while the note editor's drawer is open (a push opens it). **–** and **+** change it; push the wheel and the wheel changes it. With the note editor's drawer closed, the wheel moves the cursor, **–** and **+** move the picked notes a snap earlier or later, and **SHIFT + –** or **+** zoom the roll in time. | Works (note editor's cursor and nudge new: needs a device check) |
 | **SHIFT + data wheel** | Scrolls the clip grid, the song, or the note editor's roll, list or tracker. | Works |
-| **Q-Link knobs 1-4** | The same knobs as on the Play page, as the cards on the right show; Q-LINK steps to the macro banks. See [Clips and patterns](../making-music/clips.md#the-q-links-on-arrange). | Works |
+| **Q-Link knobs 1-4** | The same knobs as on the Play page, as the cards on the right show; Q-LINK steps to the macro banks. See [Clips and patterns](../making-music/clips.md#the-q-links-on-arrange). With notes picked in the note editor they change the notes instead: position, length, semitones and velocity, under a **Note edit** header (**SHIFT**: finer steps; on velocity, the gap between soft and loud). From the first knob you touch to the last you let go is one **UNDO**. See [Change notes with the Q-Links](../making-music/editing-notes.md#change-notes-with-the-q-links). | Works (note editor's knobs new: needs a device check) |
 
 ## Pads tab
 

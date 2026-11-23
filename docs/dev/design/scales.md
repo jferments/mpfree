@@ -63,6 +63,10 @@ The sequencer's live transpose (S4, Jay's card of 17 Nov; [make-perform.md](make
 
 `Held` keeps what each note started by number became, counted, so the note's end and its pressure go where it went even when the shift changes while it sounds; a note started again while it sounds plays where it went the first time. 256 bytes, cleared by a panic. Nothing in the module allocates.
 
+## Chords (`mpfree_scale::chords`)
+
+The note editor's chords (piano roll plan 2B.2). `chord(root, shape, scale, minor)` gives a chord's notes lowest first, notes outside 0..=127 left out, in a fixed-size `Chord` (no allocation): a **Triad** or **Seventh** goes up the scale's notes from the root, as the Chord pads build theirs (a root off the scale counts the scale note above it as its first step), or with no scale is major (maj7) or minor (m7); **Sus2**, **Sus4**, **Power** and **Octave** are the same intervals in any key. `ChordName::of(notes)` names the chord some notes make, whatever their octaves and order: the Chord pads' `chord_quality` for triads and sevenths, plus sus2, sus4 and power (5) chords, the lowest note tried as the root first so an inversion is named over its bass ("C/E"); `Display` writes it ("Dm7", "Am7/C"). Nothing names a sixth chord or an add9 yet.
+
 ## The arp on a pad layout (proposed hook, 2026-11-11)
 
 Without a layout the arp is fed pad slots 0..15 (a kit, or the plain chromatic synth pads: slot 0 counts as C), as before. When the synth is on the pads, the audio loop calls `App::set_pad_layout(Some(layout(&setup)))`, again on PAD BANK or any layout change, and `set_pad_layout(None)` when a kit goes back on the pads. Then:
