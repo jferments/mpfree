@@ -3668,7 +3668,7 @@ mod tests {
             (MIXER, "mpfree-mixer 2\n", "its mixer can't be read ("),
             (SYNTH, "mpfree-synth 2\n", "its synth can't be read ("),
             (SAMPLER, "mpfree-sampler 2\n", "its kits can't be read ("),
-            (LOOPER, "mpfree-looper 2\n", "its loops can't be read ("),
+            (LOOPER, "mpfree-looper 3\n", "its loops can't be read ("),
             (
                 AUDIOTRACKS,
                 "mpfree-audiotracks 9\n",
