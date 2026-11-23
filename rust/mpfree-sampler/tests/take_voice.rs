@@ -208,6 +208,7 @@ fn kit1() -> Project {
         legato: true,
         glide_ms: 80.0,
         glide_held: false,
+        env_continue: false,
     };
     p.set_pad(127, Some(lead), None).unwrap();
     p

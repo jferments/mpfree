@@ -1627,6 +1627,10 @@ impl PlayPage {
                 p if p == PadField::PitchDecay as u16 => {
                     ("Pitch decay".to_string(), format!("{v:.0} ms"))
                 }
+                p if p == PadField::Drive as u16 => ("Drive".to_string(), format!("{v:.1} dB")),
+                p if p == PadField::EnvDepth as u16 => {
+                    ("Env depth".to_string(), format!("{v:+.2} oct"))
+                }
                 // Slices count from 1 on the screen, from 0 in the engine.
                 p if p == PadField::Slice as u16 => (
                     "Slice".to_string(),

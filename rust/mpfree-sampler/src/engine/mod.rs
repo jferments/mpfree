@@ -93,7 +93,8 @@ use crate::model::{
     edge_gain, ChannelPick, Fade, GrainMode, GrainParams, Keys, KeysPlay, LayerSelect, Levels,
     LfoShape, LfoTarget, LoopMode, MasterFx, Mono, PadLfo, PadsPlay, Pcm, PitchEnv, PlayMode,
     PressureRoute, PressureTarget, Project, SliceSet, WarpMethod, GLIDE_MS, GRAIN_GLIDE_MAX_MS,
-    LFO_BEATS, LFO_RATE_HZ, PADS, PITCH_DECAY_MS, PITCH_ENV_ST,
+    LFO_BEATS, LFO_RATE_HZ, PADS, PITCH_DECAY_MS, PITCH_ENV_ST, RANDOM_OCTAVES, RANDOM_RES,
+    VEL_ATTACK_MS,
 };
 use crate::warp::{CopyMap, Warps};
 use mpfree_grain::{Budget, GrainFx, GrainSource, GrainVoice, MIN_SPAN};
@@ -194,6 +195,11 @@ pub struct Engine {
     /// it plays ([`Engine::set_beat`]): a synced LFO that runs on between
     /// hits keeps to it.
     beat: Option<(u64, f64)>,
+    /// Times the transport has jumped back (a loop going round again, or
+    /// a locate back) since it started: with its place in the song, what a
+    /// hit's random on its filter is drawn from ([`Engine::hit_random`]),
+    /// so a loop's hits draw anew each time round.
+    passes: u32,
     /// The frame the events being applied are on.
     event_frame: u64,
     /// The tape's speed (1 when running, 0 stopped), where it is going,
@@ -278,6 +284,7 @@ impl Engine {
             master: None,
             tempo: 120.0,
             beat: None,
+            passes: 0,
             event_frame: 0,
             tape: 1.0,
             tape_target: 1.0,
@@ -325,8 +332,23 @@ impl Engine {
     /// Where the transport is, in beats, at the start of the next render,
     /// while it plays (None stopped): a synced LFO with Retrig off keeps
     /// to its beats (sampler R5 part 4). Once a period, with the tempo.
+    /// A beat more than an eighth of a beat behind where the last one had
+    /// got to is the transport jumping back (a loop going round again),
+    /// counted for the filters' random per hit ([`Engine::hit_random`]);
+    /// starting from stopped starts the count again.
     pub fn set_beat(&mut self, beat: Option<f64>) {
-        self.beat = beat.filter(|b| b.is_finite()).map(|b| (self.frames, b));
+        let beat = beat.filter(|b| b.is_finite());
+        match (self.beat, beat) {
+            (None, Some(_)) => self.passes = 0,
+            (Some((frame, was)), Some(now)) => {
+                let got_to = was + (self.frames - frame) as f64 / self.frames_per_beat();
+                if now < got_to - 0.125 {
+                    self.passes = self.passes.wrapping_add(1);
+                }
+            }
+            _ => {}
+        }
+        self.beat = beat.map(|b| (self.frames, b));
     }
 
     /// Output frames per beat at the project tempo: what a granular pad's

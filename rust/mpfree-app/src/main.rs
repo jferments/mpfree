@@ -198,6 +198,7 @@ mod xy_layouts;
 mod xy_list;
 mod xy_own;
 mod xy_play;
+mod xy_rec;
 mod xy_setup;
 mod xy_slot;
 mod xy_song;
@@ -9020,6 +9021,57 @@ impl XyHere<'_> {
 
 /// Your XY layouts as the screen shows them ([`gui::ToUi::Xy`]), each
 /// setting named afresh.
+/// The XY pad's Set moves this period go where they record
+/// (`xy_rec.rs`): into the clip REC records and the move log
+/// (`TimeHost::gesture`), into the song's lanes while Rec song records
+/// (`TimeHost::song_gesture`), or nowhere. Nothing allocates.
+fn xy_record(
+    rec: &mut xy_rec::XyRec,
+    mix: &mut mixing::MixHost,
+    synth: &synth::Synth,
+    app: &app::App,
+    pads: PadNow<'_>,
+    time: &mut time::TimeHost,
+) {
+    use xy_rec::Goes;
+    let mut moves = [None; xy_play::REC_MOVES];
+    let mut n = 0;
+    mix.take_xy_moves(|m| {
+        if n < moves.len() {
+            moves[n] = Some(m);
+            n += 1;
+        }
+    });
+    if n == 0 {
+        return;
+    }
+    let armed = time.armed().and_then(|t| u8::try_from(t).ok());
+    let now = xy_rec::Now {
+        armed,
+        rec: time.info().state == mpfree_transport::State::Recording,
+        song: time.rec_song(),
+        rolling: app.rolling(),
+    };
+    let ins = &mix.instruments;
+    let plays = |t: u8| {
+        armed.is_some_and(|a| {
+            xy_rec::plays_synth(a, t, |t| ins.owner(t), |t| app.plays_pads_synth(t))
+        })
+    };
+    let play_now = desk::play_now(time, mix);
+    for m in moves[..n].iter().flatten() {
+        let map = |a| {
+            learn_describe(mix, synth, app, pads, play_now, a)
+                .map(|(info, _)| mpfree_seq::mpfree_moves::Map::of(&info))
+        };
+        rec.feed(*m, &now, plays, map, |goes, input| match goes {
+            Goes::Clip | Goes::Log => time.gesture(0, input),
+            Goes::Song => time.song_gesture(0, input),
+            Goes::Not => {}
+        });
+    }
+}
+
 fn xy_view(
     song: &mut xy_song::XySong,
     mix: &mixing::MixHost,
@@ -10440,6 +10492,7 @@ fn player_session(
     // The keys' expression on its gear, thinned for the recorder and the
     // move log (the MIDI plan's 3.7).
     let mut expr_rec = expr_rec::ExprRec::new();
+    let mut xy_rec = xy_rec::XyRec::new();
     let mut key_misses = 0u64;
     // Keys the armed track's kit played on its keygroups at once, past the
     // arp and REC (sampler step 15; they record from step 15c).
@@ -11779,6 +11832,11 @@ fn player_session(
         // The XY pad's Stay: the settings it kept at a lift, one UNDO step.
         if let Some((key, from, to)) = xy_song::kept_turn(mix.take_xy_kept()) {
             xy_turns.turned(key, from, to, t_read);
+        }
+        // The XY pad's Set moves record where `xy_rec.rs` says (phase 3).
+        {
+            let pad_now = |t: u8, pad: u8, id: u16| pad_describe(&player, &track_kits, t, pad, id);
+            xy_record(&mut xy_rec, &mut mix, &synth, &app, &pad_now, &mut time);
         }
         let by_touch = learning_shown.is_some_and(|(_, by)| by == midi_in::ArmedBy::Touch);
         let following = music.leader_name().is_some();

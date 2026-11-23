@@ -169,6 +169,13 @@ impl Hands {
         }
     }
 
+    /// Whether `hand` lost `addr` to a newer gesture, its own not let go
+    /// of yet.
+    pub fn lost(&self, hand: Hand, addr: ParamAddr) -> bool {
+        self.find(hand, addr)
+            .is_some_and(|i| self.h[i].is_some_and(|h| h.lost))
+    }
+
     /// Whether a hand holds `addr`.
     pub fn held(&self, addr: ParamAddr) -> bool {
         self.h.iter().flatten().any(|h| h.addr == addr && !h.lost)

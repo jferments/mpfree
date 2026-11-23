@@ -263,7 +263,7 @@ fn arrows_change_the_pad_and_a_run_of_taps_on_one_row_is_one_undo_step() {
     let a = step(&mut s, Row::Filter, 1).unwrap();
     assert_eq!(gesture(&a), g, "a second tap on the row merges");
     apply(&mut s, &a);
-    assert_eq!(row_value(&mut s, Row::Filter), "LP 4-pole");
+    assert_eq!(row_value(&mut s, Row::Filter), "LP 2-pole");
     // A lift ends the step; another row is another step anyway.
     s.tab.lift();
     let a = step(&mut s, Row::Cutoff, -3).unwrap();
@@ -1859,8 +1859,9 @@ fn the_filter_section_offers_a_notch_a_driven_ladder_a_vowel_and_a_comb() {
         let i = Section::ALL.iter().position(|x| *x == Section::Filter);
         c.chips[i.unwrap()].sub.clone()
     };
-    // Off, LP2, LP4, HP2, HP4, BP2, BP4, then the new ones.
-    step_apply(&mut s, Row::Filter, 7);
+    // Off, the low-passes, high-passes and band-passes at each slope,
+    // then the notches.
+    step_apply(&mut s, Row::Filter, 17);
     assert_eq!(s.state.settings.filter.kind, FilterKind::Notch);
     assert_eq!(row_value(&mut s, Row::Filter), "Notch 2-pole");
     assert!(chip(&s).starts_with("Notch2 · "), "{}", chip(&s));
@@ -1868,7 +1869,8 @@ fn the_filter_section_offers_a_notch_a_driven_ladder_a_vowel_and_a_comb() {
         why(&s, Row::Drive),
         "Drive is the Ladder's: pick Ladder in the Filter row"
     );
-    step_apply(&mut s, Row::Filter, 2);
+    // Past the 4-pole notch and the Peak.
+    step_apply(&mut s, Row::Filter, 3);
     assert_eq!(s.state.settings.filter.kind, FilterKind::Ladder);
     assert_eq!(row_value(&mut s, Row::Filter), "Ladder");
     assert_eq!(why(&s, Row::Drive), "");
@@ -1901,12 +1903,75 @@ fn the_filter_section_offers_a_notch_a_driven_ladder_a_vowel_and_a_comb() {
     );
     assert!(chip(&s).starts_with("Comb · "), "{}", chip(&s));
     // The last; back down to Off.
-    step_apply(&mut s, Row::Filter, -11);
+    step_apply(&mut s, Row::Filter, -22);
     assert_eq!(s.state.settings.filter.kind, FilterKind::Off);
     assert_eq!(
         why(&s, Row::Drive),
         "The filter is off: pick one in the Filter row"
     );
+}
+
+#[test]
+fn the_filter_row_steps_through_every_slope_and_the_peak() {
+    let mut s = play(false);
+    open(&mut s, Section::Filter);
+    let chip = |s: &PlaySample| {
+        let c = s.ui.get::<SectionChips>(play_tab::SECTIONS).unwrap();
+        let i = Section::ALL.iter().position(|x| *x == Section::Filter);
+        c.chips[i.unwrap()].sub.clone()
+    };
+    let want = [
+        "LP 1-pole",
+        "LP 2-pole",
+        "LP 3-pole",
+        "LP 4-pole",
+        "LP 6-pole",
+        "LP 8-pole",
+        "HP 1-pole",
+        "HP 2-pole",
+        "HP 3-pole",
+        "HP 4-pole",
+        "HP 6-pole",
+        "HP 8-pole",
+        "BP 2-pole",
+        "BP 4-pole",
+        "BP 6-pole",
+        "BP 8-pole",
+        "Notch 2-pole",
+        "Notch 4-pole",
+        "Peak",
+        "Ladder",
+        "Vowel",
+        "Comb",
+    ];
+    for name in want {
+        step_apply(&mut s, Row::Filter, 1);
+        assert_eq!(row_value(&mut s, Row::Filter), name);
+        // "LP 6-pole" is "LP6" on the section's chip.
+        let short = name.replace("-pole", "").replace(' ', "");
+        assert!(chip(&s).starts_with(&format!("{short} · ")), "{}", chip(&s));
+    }
+    // A pad saved with a slope its type doesn't have shows the one it
+    // plays: a 5-pole low-pass is a 4-pole, and steps on from there.
+    step_apply(&mut s, Row::Filter, -22);
+    step_apply(&mut s, Row::Filter, 1);
+    let mut p = s.state.settings.clone();
+    p.filter.poles = 5;
+    let p = play_tab::stepped(&p, Row::Filter, 1, false);
+    assert_eq!((p.filter.kind, p.filter.poles), (FilterKind::LowPass, 6));
+    // The Peak's Resonance is its boost, from nothing at 0 to 35 dB.
+    step_apply(&mut s, Row::Filter, 18);
+    assert_eq!(s.state.settings.filter.kind, FilterKind::Peak);
+    let res = row_value(&mut s, Row::Resonance);
+    assert!(res.contains(" % · +") && res.ends_with(" dB"), "{res}");
+    let mut p = s.state.settings.clone();
+    p.filter.resonance = 0.0;
+    assert_eq!(play_tab::value_text(&p, Row::Resonance), "0 % · +0.0 dB");
+    p.filter.resonance = 1.0;
+    let full = play_tab::value_text(&p, Row::Resonance);
+    assert!(full.starts_with("100 % · +3"), "{full}");
+    let f = s.ui.get::<FilterCurve>(play_tab::FILTER).unwrap();
+    assert!(f.caption.contains(" · boost +"), "{}", f.caption);
 }
 
 #[test]

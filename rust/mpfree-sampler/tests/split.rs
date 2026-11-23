@@ -415,3 +415,74 @@ fn skipped_grains_never_go_back_while_the_lanes_half_is_away() {
         "the lane missed a deadline {late_parts} times in {parts} parts"
     );
 }
+
+/// A pad of three layers a hit, through one resonant filter (filter gap
+/// plan F2c), hit often enough that many hits sound at once.
+fn layered_kit() -> Project {
+    let s = noise(30_000, 11);
+    let mut p = Project::new();
+    p.add_source(s.clone());
+    let mut lp = Region::whole(&s);
+    lp.mode = PlayMode::Gate;
+    let mut pad = Pad::new("layers", Layer::new(lp.clone()));
+    for (k, cents) in [(1, 700), (2, -1200)] {
+        let mut l = Layer::new(Region {
+            tune_cents: cents,
+            ..lp.clone()
+        });
+        l.level_db = -3.0 * k as f32;
+        pad.layers.push(l);
+    }
+    pad.polyphony = 32;
+    pad.filter = Filter {
+        kind: FilterKind::LowPass,
+        poles: 2,
+        cutoff_hz: 1200.0,
+        resonance: 0.6,
+        env_octaves: 1.0,
+        drive_db: 0.0,
+    };
+    p.set_pad(0, Some(pad), None).unwrap();
+    p
+}
+
+#[test]
+fn a_hits_shared_filter_plays_the_same_split() {
+    // Every hit's three layers land in one share and share its filter
+    // there, as unsplit: the same but for rounding, and bit for bit the
+    // same with the lane on its own thread or in place.
+    let p = layered_kit();
+    let play = |e: &mut Engine| {
+        let mut out = Vec::new();
+        let mut ch = Channels::new(BLOCK);
+        for b in 0..80 {
+            if b % 3 == 0 {
+                assert!(e.schedule(
+                    (b * 37 % BLOCK) as u32,
+                    Event::NoteOn {
+                        pad: 0,
+                        velocity: 60 + (b % 60) as u8,
+                    }
+                ));
+            }
+            if b % 9 == 8 {
+                assert!(e.schedule(5, Event::NoteOff { pad: 0 }));
+            }
+            ch.clear();
+            e.render_routed_until(BLOCK, &mut ch, far());
+            out.extend(ch.take());
+        }
+        out
+    };
+    let one = play(&mut engine(&p, 48));
+    let here = play(&mut split(engine(&p, 48), false));
+    let there = play(&mut split(engine(&p, 48), true));
+    assert!(one.iter().any(|x| x.abs() > 0.05), "it plays");
+    assert!(here == there, "the lane's own core changes nothing");
+    let worst = one
+        .iter()
+        .zip(&here)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0f32, f32::max);
+    assert!(worst < 1e-5, "split differs from unsplit by {worst}");
+}
