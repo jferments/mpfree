@@ -69,10 +69,12 @@ use crate::style::{BassLine, Feel, Style};
 
 mod line;
 mod riff;
+mod simple;
 mod written;
 
 use line::line;
 use riff::riff;
+pub use simple::simple_idea;
 use written::{home_of, written};
 
 /// One New idea request.
@@ -132,7 +134,8 @@ pub struct Idea {
     pub strokes: Vec<Stroke>,
     /// Its notes as a phrase writes them, in ticks from its start.
     pub events: Vec<Event>,
-    /// The note it is written from: the held note plays this one.
+    /// The note it is written from, which the held note plays: C2 for a
+    /// bass, middle C for the rest.
     pub home: u8,
     /// The grid it is written on: 1/8 or 1/16.
     pub grid: Rate,
@@ -336,31 +339,62 @@ struct Made {
     verdict: IdeaVerdict,
 }
 
+/// What an idea is made over: its key, its loop of chords and the band
+/// heard as a row. The composer's idea and the simple way it is heard
+/// beside ([`simple_idea`]) are both made over this, so they differ only
+/// in how their notes were chosen.
+struct Backing {
+    key: Key,
+    settings: Settings,
+    chords: ChordTimeline,
+    row: Row,
+    /// Written to swing.
+    swung: bool,
+}
+
+impl Backing {
+    fn of(req: &NewIdea) -> Backing {
+        let key = key_of(req.minor);
+        let settings = settings_of(req);
+        let chords = chord_loop(req, key, &settings);
+        let row = band(key, &chords, &settings);
+        Backing {
+            key,
+            settings,
+            chords,
+            row,
+            swung: req.style.rhythm.feel == Feel::Swing8,
+        }
+    }
+
+    /// `made` as an idea of `kind` over this backing.
+    fn idea(self, kind: PhraseKind, made: Made) -> Idea {
+        let home = home_of(kind, self.key);
+        Idea {
+            kind,
+            key: self.key,
+            bars: self.settings.bars,
+            chords: self.chords,
+            strokes: made.strokes,
+            events: made.events,
+            home,
+            grid: made.grid,
+            swung: self.swung,
+            verdict: made.verdict,
+        }
+    }
+}
+
 /// A new idea.
 pub fn new_idea(req: &NewIdea) -> Idea {
-    let key = key_of(req.minor);
-    let settings = settings_of(req);
-    let chords = chord_loop(req, key, &settings);
-    let row = band(key, &chords, &settings);
-    let swung = req.style.rhythm.feel == Feel::Swing8;
+    let over = Backing::of(req);
+    let (row, settings, swung) = (&over.row, &over.settings, over.swung);
     let made = best(|d| match req.kind {
-        PhraseKind::Bass | PhraseKind::Chords => part(req, &row, &settings, swung, d),
-        PhraseKind::Riff => riff(req, &row, &settings, swung, d),
-        PhraseKind::Line => line(req, &row, &settings, swung, d),
+        PhraseKind::Bass | PhraseKind::Chords => part(req, row, settings, swung, d),
+        PhraseKind::Riff => riff(req, row, settings, swung, d),
+        PhraseKind::Line => line(req, row, settings, swung, d),
     });
-    let home = home_of(req.kind, &made.events, key);
-    Idea {
-        kind: req.kind,
-        key,
-        bars: settings.bars,
-        chords,
-        strokes: made.strokes,
-        events: made.events,
-        home,
-        grid: made.grid,
-        swung,
-        verdict: made.verdict,
-    }
+    over.idea(req.kind, made)
 }
 
 /// Attempts Try again makes for a phrase that was not offered before.
@@ -453,16 +487,15 @@ fn relation_of(req: &NewIdea) -> Relation {
     }
 }
 
-/// Draft `d` of a bass or chords: Add a part's draft for the band,
-/// written as a phrase and judged again by the part's checks on what was
-/// written. The band always has chords and neither kind is an answer, so
-/// nothing Add a part refuses can be asked here.
-fn part(req: &NewIdea, row: &Row, settings: &Settings, swung: bool, d: u16) -> Made {
+/// The band asked for a bass or chords, as Add a part is asked. The band
+/// always has chords and neither kind is an answer, so nothing Add a part
+/// refuses can be asked here.
+fn asked<'a>(req: &NewIdea, row: &'a Row, settings: &'a Settings) -> AddPart<'a> {
     let (part, kind) = match req.kind {
         PhraseKind::Bass => (PartRole::Bass, InstrumentKind::Bass),
         _ => (PartRole::Chords, InstrumentKind::Chords),
     };
-    let band = AddPart {
+    AddPart {
         row,
         part,
         relation: relation_of(req),
@@ -470,7 +503,36 @@ fn part(req: &NewIdea, row: &Row, settings: &Settings, swung: bool, d: u16) -> M
         kind,
         pads: [None; 4],
         swing: Swing::default(),
-    };
+    }
+}
+
+/// A bass or chords judged by Add a part's checks on what was written.
+fn judge_part(band: &AddPart, strokes: &[Stroke], heard: &[Event]) -> IdeaVerdict {
+    let mut v = parts::judge(band, strokes, heard);
+    if band.settings.bars <= 2 {
+        // Add a part asks a riff to come back within the row. A phrase
+        // is a loop: two bars that differ come back by going round,
+        // which a row played once in a song does not.
+        v.repeats = Check::new(
+            true,
+            1.0,
+            "a loop of two bars comes round by itself".to_string(),
+        );
+    }
+    IdeaVerdict {
+        checks: v
+            .checks()
+            .iter()
+            .map(|(name, c)| (*name, (*c).clone()))
+            .collect(),
+    }
+}
+
+/// Draft `d` of a bass or chords: Add a part's draft for the band,
+/// written as a phrase and judged again by the part's checks on what was
+/// written.
+fn part(req: &NewIdea, row: &Row, settings: &Settings, swung: bool, d: u16) -> Made {
+    let band = asked(req, row, settings);
     let added = parts::draft(&band, d, req.attempt);
     Draft {
         accents: pushed_ticks(&added.strokes),
@@ -478,24 +540,7 @@ fn part(req: &NewIdea, row: &Row, settings: &Settings, swung: bool, d: u16) -> M
         events: added.events,
     }
     .heard(row, swung, |strokes, heard| {
-        let mut v = parts::judge(&band, strokes, heard);
-        if settings.bars <= 2 {
-            // Add a part asks a riff to come back within the row. A
-            // phrase is a loop: two bars that differ come back by going
-            // round, which a row played once in a song does not.
-            v.repeats = Check::new(
-                true,
-                1.0,
-                "a loop of two bars comes round by itself".to_string(),
-            );
-        }
-        IdeaVerdict {
-            checks: v
-                .checks()
-                .iter()
-                .map(|(name, c)| (*name, (*c).clone()))
-                .collect(),
-        }
+        judge_part(&band, strokes, heard)
     })
 }
 

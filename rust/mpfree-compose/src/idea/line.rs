@@ -292,7 +292,7 @@ pub(super) fn line(req: &NewIdea, row: &Row, settings: &Settings, swung: bool, d
 /// the chords, has a shape (three different notes), goes somewhere (a
 /// high point late; in one bar, off its first note), stays in reach,
 /// comes back changed, and joins round the loop.
-fn judge_line(row: &Row, style: &Style, events: &[Event]) -> IdeaVerdict {
+pub(super) fn judge_line(row: &Row, style: &Style, events: &[Event]) -> IdeaVerdict {
     let g = row.grid;
     let n = events.len().max(1) as f32;
     let beats = (row.steps / g.beat.max(1)).max(1);

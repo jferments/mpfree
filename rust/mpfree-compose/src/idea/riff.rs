@@ -37,7 +37,7 @@ use crate::style::Style;
 use crate::timing::Timing;
 
 /// Where a riff sits.
-const RIFF_LOW: i32 = 55;
+pub(super) const RIFF_LOW: i32 = 55;
 const RIFF_HIGH: i32 = 81;
 const RIFF_CENTRE: i32 = 66;
 
@@ -56,8 +56,8 @@ const AGAIN_AFTER_BEAT: f64 = 1.2;
 /// How much of its steps a note of a riff sounds: the style's gate, kept
 /// between these so that a style played legato still leaves a riff its
 /// gaps.
-const GATE_LOW: f64 = 0.4;
-const GATE_HIGH: f64 = 0.8;
+pub(super) const GATE_LOW: f64 = 0.4;
+pub(super) const GATE_HIGH: f64 = 0.8;
 /// A note on one of the plan's marks is held.
 const GATE_MARKED: f64 = 0.95;
 /// Shapes and reaches a tune is made along before the most varied of
@@ -136,7 +136,7 @@ fn onto_chord(chord: Option<Chord>, p: i32) -> i32 {
 /// The plan's marks a riff keeps to. One bar has none: its only mark is
 /// a close at the half bar, and a close with its walk back would leave
 /// half a bar of tune.
-fn marks_of(row: &Row) -> &[Mark] {
+pub(super) fn marks_of(row: &Row) -> &[Mark] {
     if row.bars < 2 {
         &[]
     } else {
@@ -705,7 +705,7 @@ fn riff_tune(
 /// - **not too repetitive:** the critic's, so four bars are not one bar
 ///   four times;
 /// - **flows:** see [`flows`].
-fn judge_riff(
+pub(super) fn judge_riff(
     row: &Row,
     style: &Style,
     marks: &[Mark],

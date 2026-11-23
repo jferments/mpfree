@@ -69,45 +69,32 @@ pub(super) fn written(
     (events, grid)
 }
 
-/// The home note an idea is written from. Chords are shapes over the
-/// held note, so theirs is the home note under the first chord's lowest
-/// note. Any other kind's is the home note it sounds longest, in the
-/// octave it sounds it (the lower of two as long), so the held note plays
-/// where the phrase's weight is; one that never plays the home note is
-/// written from the one under its lowest note.
-pub(super) fn home_of(kind: PhraseKind, events: &[Event], key: Key) -> u8 {
-    let tonic = i32::from(key.tonic % 12);
-    let under = |p: i32| (p - (p - tonic).rem_euclid(12)).clamp(0, 127) as u8;
-    let Some(first) = events.first() else {
-        return under(60);
+/// The home note a bass is written from, in C: C2.
+const HOME_BASS: u8 = 36;
+/// The home note a riff, chords and a line are written from, in C:
+/// middle C.
+const HOME: u8 = 60;
+
+/// The home note an idea is written from: the one its kind is made
+/// around, C2 for a bass and middle C for the rest. The composer chooses
+/// each kind's register itself (a bass around G2, a riff and chords
+/// around middle C, a line a little over it), so the home note is known
+/// and is not read off the notes: every idea of a kind sits in one place
+/// from the held note, where MPFree's own phrases of that kind sit from
+/// theirs, and Try again never comes back an octave away.
+///
+/// Two rules that read it off the notes were tried first, and measured
+/// (docs/dev/design/compose.md, "The home note"): the home note sounded
+/// longest hung riffs and lines an octave under the held note, and the
+/// highest one a phrase dips no more than a fourth under threw a bass an
+/// octave up for one low note.
+pub(super) fn home_of(kind: PhraseKind, key: Key) -> u8 {
+    let c = if kind == PhraseKind::Bass {
+        HOME_BASS
+    } else {
+        HOME
     };
-    if kind == PhraseKind::Chords {
-        let low = events
-            .iter()
-            .filter(|e| e.at == first.at)
-            .map(|e| i32::from(e.pitch))
-            .min()
-            .unwrap_or(60);
-        return under(low);
-    }
-    let mut held = [0i64; 128];
-    for e in events {
-        if i32::from(e.pitch).rem_euclid(12) == tonic {
-            held[usize::from(e.pitch)] += e.len;
-        }
-    }
-    let most = held.iter().copied().max().unwrap_or(0);
-    if most > 0 {
-        if let Some(p) = (0..128).find(|&p| held[p] == most) {
-            return p as u8;
-        }
-    }
-    let low = events
-        .iter()
-        .map(|e| i32::from(e.pitch))
-        .min()
-        .unwrap_or(60);
-    under(low)
+    c + key.tonic % 12
 }
 
 impl Idea {
@@ -239,32 +226,179 @@ mod tests {
     }
 
     #[test]
-    fn the_home_note_is_where_the_phrase_weighs() {
-        let key = Key::new(0, Mode::Minor);
-        // The home note it sounds longest, in the octave it sounds it.
-        let riff = [
-            note(0, STEP, 60),
-            note(STEP, 4 * STEP, 72),
-            note(6 * STEP, STEP, 67),
-        ];
-        assert_eq!(home_of(PhraseKind::Riff, &riff, key), 72);
-        // Of two as long, the lower.
-        let even = [note(0, STEP, 72), note(STEP, STEP, 60)];
-        assert_eq!(home_of(PhraseKind::Bass, &even, key), 60);
-        // It never plays the home note: the one under its lowest note.
-        let off = [note(0, STEP, 63), note(STEP, STEP, 67)];
-        assert_eq!(home_of(PhraseKind::Line, &off, key), 60);
-        // Chords are shapes over the held note: under the first chord's
-        // lowest note, whatever sounds longest later.
-        let chords = [
-            note(0, STEP, 63),
-            note(0, STEP, 67),
-            note(0, STEP, 72),
-            note(4 * STEP, 8 * STEP, 48),
-        ];
-        assert_eq!(home_of(PhraseKind::Chords, &chords, key), 60);
-        // Nothing at all: middle C's home note.
-        assert_eq!(home_of(PhraseKind::Riff, &[], key), 60);
+    fn the_home_note_is_the_one_a_kind_is_made_around() {
+        let c = Key::new(0, Mode::Minor);
+        assert_eq!(home_of(PhraseKind::Bass, c), 36);
+        for kind in [PhraseKind::Riff, PhraseKind::Chords, PhraseKind::Line] {
+            assert_eq!(home_of(kind, c), 60);
+        }
+        // In another key, that key's home note.
+        assert_eq!(home_of(PhraseKind::Bass, Key::new(9, Mode::Minor)), 45);
+    }
+
+    #[test]
+    fn ideas_sit_where_mpfree_s_own_phrases_sit_from_the_held_note() {
+        use crate::idea::{new_idea, NewIdea};
+        use crate::style::STYLES;
+        // MPFree's own lie from a fourth under the home note (a bass
+        // more often than the rest) to two octaves over it, their middle
+        // from just under it to a little over an octave above. An idea
+        // lies in the same stretch, give or take a third, whatever its
+        // style, scale or length, and the middles of all of a kind's
+        // within an octave and a half of each other: none is an octave
+        // away from where the last one was.
+        for kind in PhraseKind::ALL {
+            let mut middles: Vec<f64> = Vec::new();
+            for style in STYLES {
+                for minor in [true, false] {
+                    for bars in [1u8, 2, 4] {
+                        for seed in 1..=4u64 {
+                            let idea = new_idea(&NewIdea {
+                                kind,
+                                style,
+                                minor,
+                                bars,
+                                activity: 0.5,
+                                seed,
+                                attempt: 0,
+                            });
+                            let from: Vec<i32> = idea
+                                .events
+                                .iter()
+                                .map(|e| i32::from(e.pitch) - i32::from(idea.home))
+                                .collect();
+                            let (low, high) = (
+                                from.iter().copied().min().unwrap_or(0),
+                                from.iter().copied().max().unwrap_or(0),
+                            );
+                            assert!(
+                                (-9..=28).contains(&low) && (-9..=28).contains(&high),
+                                "{kind:?} {} {bars} bars seed {seed}: {low} to {high} from its home note",
+                                style.name
+                            );
+                            middles
+                                .push(from.iter().sum::<i32>() as f64 / from.len().max(1) as f64);
+                        }
+                    }
+                }
+            }
+            let (low, high) = middles
+                .iter()
+                .fold((f64::MAX, f64::MIN), |(l, h), &m| (l.min(m), h.max(m)));
+            assert!(
+                low >= -4.0 && high <= 18.0 && high - low <= 18.0,
+                "{kind:?}: middles from {low:.1} to {high:.1}"
+            );
+        }
+    }
+
+    /// Where phrases sit from their home note, in semitones: the lowest
+    /// note, the middle (each note counted once) and the highest, for
+    /// MPFree's own phrases and for ideas, by kind. `cargo test -p
+    /// mpfree-compose --lib print_where_phrases_sit -- --ignored
+    /// --nocapture`
+    #[test]
+    #[ignore]
+    fn print_where_phrases_sit() {
+        use crate::idea::{new_idea, simple_idea, NewIdea};
+        use crate::style::STYLES;
+        use mpfree_arp::Library;
+        let sits = |p: &Phrase| {
+            let semis: Vec<i32> = p.notes().iter().map(|n| i32::from(n.semis)).collect();
+            let n = semis.len().max(1) as f64;
+            (
+                semis.iter().copied().min().unwrap_or(0),
+                semis.iter().sum::<i32>() as f64 / n,
+                semis.iter().copied().max().unwrap_or(0),
+            )
+        };
+        let library = Library::built_in();
+        for kind in PhraseKind::ALL {
+            let mut rows: Vec<(i32, f64, i32)> = library
+                .phrases()
+                .filter(|(_, p)| p.kind == kind)
+                .map(|(_, p)| sits(p))
+                .collect();
+            let show = |what: &str, rows: &mut Vec<(i32, f64, i32)>| {
+                rows.sort_by(|a, b| a.1.total_cmp(&b.1));
+                let n = rows.len().max(1);
+                let mean = rows.iter().map(|r| r.1).sum::<f64>() / n as f64;
+                let under = rows.iter().filter(|r| r.1 < 0.0).count();
+                println!(
+                    "{} {what}: {} phrases, middle {mean:.1} on average ({:.1} to {:.1}), {under} with the middle under the home note; lowest {} to {}, highest {} to {}",
+                    kind.label(),
+                    rows.len(),
+                    rows.first().map_or(0.0, |r| r.1),
+                    rows.last().map_or(0.0, |r| r.1),
+                    rows.iter().map(|r| r.0).min().unwrap_or(0),
+                    rows.iter().map(|r| r.0).max().unwrap_or(0),
+                    rows.iter().map(|r| r.2).min().unwrap_or(0),
+                    rows.iter().map(|r| r.2).max().unwrap_or(0),
+                );
+            };
+            show("MPFree's own", &mut rows);
+            for (what, make) in [
+                ("ideas", new_idea as fn(&NewIdea) -> crate::idea::Idea),
+                ("the simple way", simple_idea),
+            ] {
+                let mut rows = Vec::new();
+                for style in STYLES {
+                    for minor in [true, false] {
+                        for bars in [1u8, 2, 4] {
+                            for seed in 1..=10u64 {
+                                let idea = make(&NewIdea {
+                                    kind,
+                                    style,
+                                    minor,
+                                    bars,
+                                    activity: 0.5,
+                                    seed,
+                                    attempt: 0,
+                                });
+                                rows.push(sits(&idea.phrase()));
+                            }
+                        }
+                    }
+                }
+                show(what, &mut rows);
+                // Where they lie as made, before a home note is chosen.
+                let mut abs: Vec<(i32, f64, i32)> = Vec::new();
+                for style in STYLES {
+                    for minor in [true, false] {
+                        for bars in [1u8, 2, 4] {
+                            for seed in 1..=10u64 {
+                                let idea = make(&NewIdea {
+                                    kind,
+                                    style,
+                                    minor,
+                                    bars,
+                                    activity: 0.5,
+                                    seed,
+                                    attempt: 0,
+                                });
+                                let ps: Vec<i32> =
+                                    idea.events.iter().map(|e| i32::from(e.pitch)).collect();
+                                abs.push((
+                                    *ps.iter().min().unwrap(),
+                                    ps.iter().sum::<i32>() as f64 / ps.len() as f64,
+                                    *ps.iter().max().unwrap(),
+                                ));
+                            }
+                        }
+                    }
+                }
+                abs.sort_by(|a, b| a.1.total_cmp(&b.1));
+                let q = |f: f64| abs[((abs.len() - 1) as f64 * f) as usize];
+                println!(
+                    "    as made: lowest {} to {}, highest {} to {}; middle {:.1} at the lowest, {:.1} at a quarter, {:.1} at the half, {:.1} at three quarters, {:.1} at the highest",
+                    abs.iter().map(|r| r.0).min().unwrap(),
+                    abs.iter().map(|r| r.0).max().unwrap(),
+                    abs.iter().map(|r| r.2).min().unwrap(),
+                    abs.iter().map(|r| r.2).max().unwrap(),
+                    q(0.0).1, q(0.25).1, q(0.5).1, q(0.75).1, q(1.0).1
+                );
+            }
+        }
     }
 
     #[test]
