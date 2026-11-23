@@ -1122,6 +1122,16 @@ impl Clip {
         self.holds == Holds::Notes
     }
 
+    /// Nothing in it to play: no notes, locks or recorded moves, and not
+    /// a loop's. Add a part may put a part in its place (composing tools
+    /// S2.6: the Sequencer's empty clip offers it).
+    pub fn is_blank(&self) -> bool {
+        self.notes.is_empty()
+            && self.locks.is_empty()
+            && self.moves.is_empty()
+            && self.looped.is_none()
+    }
+
     /// Its speed, swing, quantise, follow action, launch quantise and
     /// legato.
     pub fn settings(&self) -> ClipSettings {

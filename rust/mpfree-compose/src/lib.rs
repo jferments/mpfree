@@ -124,7 +124,9 @@ pub use bind::{audition, revision, revision_in, Binding, Stale};
 pub use dice::{Dice, DiceName, Job};
 pub use event::{Event, MotifRef, Motion, NoteDecision, Part, PartId, Role, Source};
 pub use fit::{fit_clip, marks, FitRefused};
-pub use job::{lane_named, AddAsk, AddDone, AddPartJob, Ask, ContinueJob, Done, Lanes, PartMade};
+pub use job::{
+    lane_named, AddAsk, AddDone, AddPartJob, Ask, ContinueJob, Done, Lanes, PartMade, RowChords,
+};
 pub use keep::{clip_notes, continuation, KeepError};
 pub use motif::{similarity, transform, GridNote, Similarity, Transform};
 pub use parts::{

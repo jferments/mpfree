@@ -2189,6 +2189,217 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     Ok(out)
 }
 
+/// The Lead's eight-bar Solo for Add a part's screens: a tune in C minor
+/// on the chord tones of Cm, Cm, A♭, B♭, Cm and A♭, resting in bars 7 and
+/// 8 (where the row's chords are only suggested).
+fn solo_tune() -> Clip {
+    let bars: [[u8; 4]; 6] = [
+        [72, 75, 79, 75],
+        [79, 75, 72, 75],
+        [68, 72, 75, 72],
+        [70, 74, 77, 74],
+        [72, 79, 75, 72],
+        [75, 72, 68, 72],
+    ];
+    let notes: Vec<(Tick, u8, u8)> = bars
+        .iter()
+        .enumerate()
+        .flat_map(|(b, pitches)| {
+            pitches
+                .iter()
+                .enumerate()
+                .map(move |(i, &n)| (b as Tick * BAR + i as Tick * BEAT, n, 100))
+        })
+        .collect();
+    let mut c = clip("Solo", 8 * BAR, &notes);
+    c.holds = mpfree_seq::Holds::Notes;
+    for n in &mut c.notes {
+        n.len = BEAT * 3 / 4;
+    }
+    c
+}
+
+/// The busy jam ([`busy_project`]) with row 5 playing from bar 1 (Break,
+/// Ride and Solo: Drums, Hats and Lead, the Solo a tune in C minor), at
+/// 2.3: Add a part's screens (composing tools S2.6).
+fn row5_playing() -> Result<Session, String> {
+    let mut p = busy_project();
+    p.tracks[4].slots[ADD_ROW] = Some(solo_tune());
+    let launches = [(DRUMS, ADD_ROW), (1, ADD_ROW), (4, ADD_ROW)]
+        .iter()
+        .map(|&(track, slot)| Launch {
+            track,
+            slot,
+            origin: 0,
+            start: 0,
+        })
+        .collect();
+    let mut s = Session::new(p, launches, None)?;
+    s.command_at(0, Command::Play)?;
+    s.run_to(BAR + 2 * BEAT)?;
+    Ok(s)
+}
+
+/// The row Add a part's screens are on: row 5.
+pub const ADD_ROW: usize = 4;
+/// Where on the row the chord picker opens and the Chords tab's chord was
+/// changed: bar 4, the B♭ the Solo plays.
+const PICK_BAR: Tick = 3 * BAR;
+
+/// The chip of `line` that holds [`PICK_BAR`] (the last chip on a shorter
+/// line).
+pub fn picked_chip(line: &mpfree_context::chord::ChordTimeline) -> usize {
+    let spans = line.spans();
+    spans
+        .iter()
+        .position(|s| s.start <= PICK_BAR && PICK_BAR < s.end())
+        .unwrap_or(spans.len().saturating_sub(1))
+}
+/// The busy jam's Bass track.
+pub const ADD_BASS: usize = 2;
+
+/// Row `row`'s clips but track `but`'s, as the time engine has Add a part
+/// read them: drums as drums, the rest as one harmony.
+fn row_reads(p: &Project, row: usize, but: usize) -> Vec<mpfree_compose::ToRead> {
+    use mpfree_context::PartRole;
+    p.tracks
+        .iter()
+        .enumerate()
+        .filter(|&(t, tr)| t != but && tr.kind == mpfree_seq::TrackKind::Notes)
+        .filter_map(|(t, tr)| {
+            let c = tr.slots.get(row)?.as_ref()?;
+            if c.looped.is_some() || c.notes.is_empty() {
+                return None;
+            }
+            let role = match c.holds {
+                mpfree_seq::Holds::Hits => PartRole::Drums,
+                mpfree_seq::Holds::Notes => PartRole::Chords,
+            };
+            Some(mpfree_compose::ToRead {
+                track: t,
+                slot: row,
+                role,
+            })
+        })
+        .collect()
+}
+
+/// A part for the Bass track's cell in row 5 with `pick`'s choices, made
+/// as the time engine's composer thread makes it (its second ask), and
+/// the row's chords as it hears them.
+fn row5_part(
+    s: &Session,
+    pick: &crate::add_view::AddPick,
+) -> Result<(mpfree_compose::PartMade, mpfree_compose::RowChords), String> {
+    use mpfree_compose::{AddAsk, AddPartJob, InstrumentKind};
+    let t = s.state().transport;
+    let ask = AddAsk {
+        row: ADD_ROW,
+        parts: row_reads(&s.project, ADD_ROW, ADD_BASS),
+        lanes: Default::default(),
+        part: pick.part,
+        relation: pick.relation,
+        kind: InstrumentKind::Bass,
+        pads: [None; 4],
+        swing: t.swing,
+        transport_swing: t.swing,
+        meter: t.meter,
+        bpm: t.bpm,
+        budget: mpfree_context::ReadBudget::default(),
+        settings: pick.settings(),
+        bars: pick.bars,
+        attempt: 1,
+    };
+    let job = AddPartJob::new(&s.project, ask);
+    let made = job.run().result.map_err(|e| format!("add a part: {e:?}"))?;
+    Ok((made, job.hear()))
+}
+
+/// Add a part open on the busy jam's row 5 (composing tools S2.6, board
+/// A): Break, Ride and Solo heard, Bass on Support made for the Bass
+/// track's empty cell, its second try playing there, and the row's chords
+/// heard under the row. Made here as the time engine makes it, with a
+/// fixed try, so the screen is the same every time. With it, the page's
+/// choices, as [`crate::add_view::AddPick::open`] makes them.
+pub fn add_part_state() -> Result<(TimeState, crate::add_view::AddPick), String> {
+    use crate::adding::{AddState, Adding};
+    let s = row5_playing()?;
+    let mut st = s.state();
+    st.scene_focus = ADD_ROW;
+    let pick = crate::add_view::AddPick::open(&st, ADD_ROW, Some(ADD_BASS))?;
+    let (made, heard) = row5_part(&s, &pick)?;
+    st.adding = Some(std::sync::Arc::new(Adding {
+        row: ADD_ROW,
+        track: ADD_BASS,
+        state: AddState::Playing,
+        made: Some(std::sync::Arc::new(made)),
+        position: Some((2, 2)),
+        line: None,
+        picked: None,
+        words: None,
+        part: pick.part,
+        relation: pick.relation,
+    }));
+    st.row_chords = Some((ADD_ROW, std::sync::Arc::new(heard)));
+    Ok((st, pick))
+}
+
+/// The Chords tab later (composing tools S2.6, board C): the Bass part
+/// kept in row 5, then bar 4's B♭ set to A♭7 from the tab,
+/// which leaves the Bass and the Solo off the new chords (ticked, with
+/// how many notes would move).
+pub fn chords_tab_state() -> Result<TimeState, String> {
+    use mpfree_context::chord::Chord;
+    let mut s = row5_playing()?;
+    let st = s.state();
+    let pick = crate::add_view::AddPick::open(&st, ADD_ROW, Some(ADD_BASS))?;
+    let (made, heard) = row5_part(&s, &pick)?;
+    s.project.tracks[ADD_BASS].slots[ADD_ROW] = Some(made.clip);
+    let mut st = s.state();
+    st.scene_focus = ADD_ROW;
+    let chip = picked_chip(&heard.line);
+    let ab7 = Chord::new(8, crate::add_view::KIND_QUALITIES[2]);
+    let line = crate::add_view::use_chord(&heard.line, chip, ab7).ok_or("no chord to change")?;
+    st.unfit = vec![crate::adding::Unfit {
+        row: ADD_ROW,
+        before: heard.line.clone(),
+        clips: vec![(ADD_BASS, 3), (4, 2)],
+    }]
+    .into();
+    st.row_chords = Some((
+        ADD_ROW,
+        std::sync::Arc::new(mpfree_compose::RowChords {
+            line,
+            heard: heard.heard,
+        }),
+    ));
+    Ok(st)
+}
+
+/// The Sequencer's note editor on an empty two-bar clip in the Bass
+/// track's row 5 (composing tools S2.6, board D): its card offers Add a
+/// part with the row's Break, Ride and Solo.
+pub fn empty_clip_state() -> Result<TimeState, String> {
+    let mut s = row5_playing()?;
+    let mut empty = Clip::new("Clip 5", 2 * BAR);
+    empty.holds = mpfree_seq::Holds::Notes;
+    s.project.tracks[ADD_BASS].slots[ADD_ROW] = Some(empty.clone());
+    let mut state = s.state();
+    state.armed = Some(ADD_BASS);
+    let editor = crate::editor::Editor::new(ADD_BASS, ADD_ROW, &empty);
+    state.edit = Some(Box::new(crate::view::EditInfo {
+        editor,
+        clip: empty.into(),
+        rev: 0,
+        track_name: "Bass".into(),
+        bar: BAR,
+        answer: Default::default(),
+        locks: Default::default(),
+        ghosts: Default::default(),
+    }));
+    Ok(state)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

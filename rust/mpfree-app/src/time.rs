@@ -16816,6 +16816,7 @@ mod tests {
             kind: InstrumentKind::Bass,
             lanes: Lanes::default(),
             pads: [None; 4],
+            bars: None,
         })))
     }
 
@@ -16931,6 +16932,42 @@ mod tests {
             a.track = 0;
         }
         assert!(h.act(ask).unwrap_err().contains("isn't empty"));
+    }
+
+    /// A blank clip (the Sequencer's empty clip, S2.6): the try plays in
+    /// its place, Keep puts the part there, and UNDO brings the blank clip
+    /// back.
+    #[test]
+    fn add_a_part_takes_a_blank_clips_place() {
+        use mpfree_time_ui::adding::AddState;
+        let mut h = riff_host();
+        let mut pads = Fake::default();
+        h.control.project.tracks[1].slots[0] = Some(Clip::new("Clip 1", 2 * 3840));
+        h.control.project.give_clip_ids();
+        let blank = h.project().clip(1, 0).unwrap().clone();
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 4, &[]);
+        h.act(add_bass()).unwrap();
+        until(&mut h, &mut pads, |h| {
+            adding(h).is_some_and(|a| a.state == AddState::Playing)
+        });
+        let from = (h.state().transport.position as u64 / 3840 + 1) * BAR;
+        run(&mut h, &mut pads, from + 2 * BAR, &[]);
+        assert!(
+            hits_in(&pads, from, from + 2 * BAR)
+                .iter()
+                .any(|h| h.1 < 60),
+            "the try plays in the blank clip's place"
+        );
+        assert_eq!(h.project().clip(1, 0), Some(&blank), "nothing written");
+        h.act(TimeAction::Add(AddAction::Keep)).unwrap();
+        let kept = h.project().clip(1, 0).unwrap().clone();
+        assert!(!kept.notes.is_empty());
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.project().clip(1, 0), Some(&blank));
+        h.act(TimeAction::Redo).unwrap();
+        assert_eq!(h.project().clip(1, 0).unwrap().notes, kept.notes);
     }
 
     /// Chords picked on the panel: the try plays them at once, the next
@@ -17075,10 +17112,12 @@ mod tests {
             ""
         );
         until(&mut h, &mut pads, |h| h.state().row_chords.is_some());
-        let (row, heard) = h.state().row_chords.unwrap();
+        let (row, chords) = h.state().row_chords.unwrap();
+        let heard = &chords.line;
         assert_eq!(row, 0);
         assert!(!heard.is_empty(), "the riff gives chords");
         assert!(heard.spans().iter().all(|s| s.heard != Heard::Set));
+        assert_eq!(chords.heard, *heard, "nothing of its own yet");
         assert_eq!(h.project().scenes, before.scenes, "hearing writes nothing");
 
         // A chord set on the row: heard again, the set chord shown.
@@ -17090,19 +17129,20 @@ mod tests {
         h.act(TimeAction::Chords(ChordsAction::Set {
             row: 0,
             line: set,
-            shown: (*heard).clone(),
+            shown: heard.clone(),
         }))
         .unwrap();
         until(&mut h, &mut pads, |h| {
             h.state()
                 .row_chords
-                .is_some_and(|(_, l)| l.span_at(0).is_some_and(|s| s.heard == Heard::Set))
+                .is_some_and(|(_, c)| c.line.span_at(0).is_some_and(|s| s.heard == Heard::Set))
         });
         let (_, now) = h.state().row_chords.unwrap();
         assert_eq!(
-            now.span_at(0).unwrap().answer,
+            now.line.span_at(0).unwrap().answer,
             ChordAnswer::Chord(Chord::new(6, Quality::Minor))
         );
+        assert_eq!(now.heard, chords.heard, "what the clips say stays");
 
         // Another row, then none: the old row's chords go at once.
         h.act(TimeAction::Chords(ChordsAction::Hear { row: Some(1) }))

@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-seq/src/scenes.rs rust/mpfree-seq/src/arrange.rs rust/mpfree-perform rust/mpfree-time-ui/src/song.rs rust/mpfree-time-ui/src/widgets.rs rust/mpfree-time-ui/src/list.rs rust/mpfree-time-ui/src/scene_card.rs
+covers: rust/mpfree-seq/src/scenes.rs rust/mpfree-seq/src/arrange.rs rust/mpfree-perform rust/mpfree-time-ui/src/song.rs rust/mpfree-time-ui/src/widgets.rs rust/mpfree-time-ui/src/list.rs rust/mpfree-time-ui/src/scene_card.rs rust/mpfree-time-ui/src/add_view.rs rust/mpfree-time-ui/src/chord_strip.rs
 checked: 2026-11-23 2bc73d12
 -->
 
@@ -51,6 +51,46 @@ Along the card's foot:
 Copy row and Insert row need the grid's last row to be empty, since every row under this one moves down.
 
 Every change plays at once, and **UNDO** takes it back. Turning one setting many times is one undo. While a scene plays, new mutes wait until it starts again.
+
+### Adding a part to a row
+
+**Add a part**, on the grid's title line before **+ Track**, makes a new part for a row that plays with what is already there: a bass line under your beat and tune, chords, a second melody, or drums. It listens to the row's clips first, so the part follows their key, chords and groove.
+
+{{shot: clips-add-part | Add a part open on row 5: it hears the row's Break, Ride and Solo, a Bass part on the Bass track plays in its cell (dashed, "try 2"), the row's chords (Cm, Ab, Bb, Cm, Ab) under the row, and Keep ready.}}
+
+1. Pick the row on the **Scene** tab, or let it use the row playing. Tap **Add a part**. The row gets an outline, and the panel takes the place of the Record panel and the takes.
+2. **Heard** lists what it listens to in the row. Tap a part: **Bass**, **Chords**, **Melody** or **Drums**. A first try starts at once.
+3. The try plays in its cell with the row, dashed in the track's colour, from the next bar line while the row plays (press **PLAY** and launch the row to hear it).
+4. Change it until you like it:
+   - **Role** says how it plays with the others: **Support** (with the beat, under the tune), **Answer** (where the tune rests), **Interlock** (in the beat's gaps) or **Stay out** (sparse, out of the way). The words under it say what the role does.
+   - **Style**, and **Bars**: the row's length, or 1, 2, 4, 8 or 16 bars.
+   - **Track**: the track whose empty cell gets the part. It starts on a track whose name says the part (a "Bass" track for Bass), else the first with room. **Sound** says what plays it.
+   - The Q-Links: **Similarity**, **Variation**, **Activity** and **Range**, as on Continue.
+   - **Try again** makes another. **‹ Try 1** goes back to an earlier one (the last eight are kept).
+5. **Keep** puts the part in its cell: one take, "a new part", and one **UNDO** takes it back. If the song plays the row, its parts get it too, on the same take. **Back** or **×** closes the panel and changes nothing.
+
+While **Rec song** is on, Add a part is faint and the hint says why: a try playing in its cell would be recorded into the song. A part for drums plays the track's kit, on the pads its kit names as kick, snare and hats.
+
+### The row's chords
+
+While Add a part or the **Chords** tab is open, the row's chords show as a strip under the row, one row high: the row's bars across the grid, a chip for each chord as long as it lasts. Chords it heard in your clips are solid, suggested ones (where nothing says which chord) are dashed, and chords you set are blue. The green line is where the row is playing. A row with no notes reads "no chords yet": tap a bar to set one.
+
+{{shot: clips-chord-picker | The chord picker open on bar 4: heard Bb, Ab7 picked, the 7 lit; Split, Join next, As heard and Use Ab7.}}
+
+Tap a chip to change its chord. The picker opens under it, saying what was heard and what you're picking ("heard G7 → Ab7"). Tap a root, then a kind (major, minor, 7, maj7, m7, sus4, 6, m6, dim, dim7, m7♭5 or power), then **Use**. **Split** makes two chords of one, **Join next** makes one of it and the next, and **As heard** gives the row its own chord back. **×** closes it with nothing changed.
+
+- With Add a part open, the part you're trying plays the new chord at once, in the same rhythm and shape, and **Keep** keeps the part and its chords as one **UNDO** (**Back** drops both).
+- From the Chords tab, **Use** is a take of its own, "row 5's chords".
+
+### Clips that don't fit the new chords
+
+Your clips are never rewritten behind your back. When a row's chords change, a kept clip with notes off the new chords is marked in its cell: an amber dashed outline, and "doesn't fit" in place of its length. Drums and audio are never marked.
+
+{{shot: clips-chords | The Chords tab after bar 4 became Ab7: two clips don't fit, both ticked, with how many notes would move, and Fit to the new chords.}}
+
+Tap **Chords**, the third tab on the Record panel, to deal with them. It shows the row (the one you picked; tap **‹** or **›** for another), what changed, and each clip that doesn't fit, ticked, with how many of its notes would move. **Fit to the new chords** moves the ticked ones: their rhythm and shape stay, and only notes under a changed chord move. It is one take, "the new chords", and one **UNDO**. Untick a clip to leave it as it is (your tune, say).
+
+An empty clip in the Sequencer's note editor offers the same panel: see [Editing notes](editing-notes.md#an-empty-clip).
 
 ## The scene morph
 

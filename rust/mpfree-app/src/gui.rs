@@ -247,6 +247,9 @@ const LANES_NO_VALUE_LINE: &str = "Velocity and Chance lanes: on a kit's sounds.
 pub const EDIT_CLIPS_PAGE: &str = "Edit clip";
 pub const EDIT_CLIPS_LAYOUT: &str =
     "col(header:60, row(edit-clips:*, edit-clips-card:440):*, hint:26)";
+/// The hint line under an empty clip's note editor (composing tools S2.6,
+/// board D).
+const EMPTY_CLIP_HINT: &str = "Add a part: Arrange's panel on this clip's row and track   ·   play or draw: the clip is yours as now   ·   Continue shows once the clip has notes";
 const EDIT_CLIPS_HINT: &str = "Tap a clip, or turn the wheel and push: the Sequencer edits it and nothing starts   ·   Back or a tab: close the list";
 /// The Sequencer's step size chip's list (step sequencer refactor D1).
 pub const STEP_SIZE_PAGE: &str = "Step size";
@@ -4976,6 +4979,21 @@ impl Player {
                 *card = QLinkCard::new(name, "Arp", &row.text, row.value);
             }
             (ARP_QLINKS, cards)
+        } else if let Some(p) = self
+            .time_page
+            .add
+            .as_ref()
+            .filter(|_| self.view == View::Arrange)
+        {
+            // Add a part's panel (composing tools S2.6): Continue's four,
+            // Similarity, Variation, Activity and Range.
+            let names = p.cards();
+            let pos = p.knob_pos();
+            let cards: [QLinkCard; 4] = std::array::from_fn(|k| {
+                let (name, value) = &names[k];
+                QLinkCard::new(name, "Add a part", value, pos[k])
+            });
+            ("Q-Links · Add a part", cards)
         } else if let Some((count, mut cards)) = notes {
             // Notes picked in the note editor: the note inspector, under
             // its header in the note edit colour, so a turn is known to
@@ -5571,6 +5589,65 @@ impl Player {
         Some(FromUi::Time(TimeAction::Continue(
             mpfree_time_ui::continuing::ContinueAction::Parts(parts),
         )))
+    }
+
+    /// What the Clips page asks of the time engine on its own, sent: Snap
+    /// Auto's division, a note held picked, Add a part's tries (with what
+    /// plays them filled in, [`Gui::fill_part_ask`]) and the row's chords
+    /// to hear.
+    fn send_page_asks(&mut self) {
+        for a in self.time_page.take_asks() {
+            let a = match a {
+                TimeAction::Add(mpfree_time_ui::adding::AddAction::Ask(mut ask)) => {
+                    self.fill_part_ask(&mut ask);
+                    TimeAction::Add(mpfree_time_ui::adding::AddAction::Ask(ask))
+                }
+                a => a,
+            };
+            self.outbox.push(FromUi::Time(a));
+        }
+    }
+
+    /// What plays Add a part's part (composing tools S2.6), which the page
+    /// doesn't know: the track's instrument where the screen is sure of it
+    /// (as Continue reads it, [`Gui::compose_parts_if_new`]), the drums
+    /// every kit's pads are named for, and for drums the track's kit's pad
+    /// for kick, snare, hats and the rest. A track with no kit gets no
+    /// drum pads, and the time engine says why.
+    fn fill_part_ask(&mut self, ask: &mut mpfree_time_ui::adding::PartAsk) {
+        use mpfree_compose::lane_named;
+        use mpfree_context::groove::Lane;
+        if let Some(parts) = self.compose_parts_if_new() {
+            self.outbox.push(parts);
+        }
+        if let Some(parts) = &self.compose_parts {
+            if let Some(Some(kind)) = parts.kinds.get(ask.track) {
+                ask.kind = *kind;
+            }
+            ask.lanes = parts.lanes.clone();
+        }
+        if ask.part != mpfree_context::PartRole::Drums {
+            return;
+        }
+        let kit = match played(&self.track_sounds, &self.track_sends, ask.track) {
+            Some(_) => None,
+            None => self
+                .track_kits
+                .kit_of(ask.track)
+                .and_then(|k| self.kits.get(k))
+                .filter(|k| k.synth.is_none()),
+        };
+        let Some(kit) = kit else {
+            ask.pads = [None; 4];
+            return;
+        };
+        ask.pads = Lane::ALL.map(|lane| {
+            kit.pads
+                .iter()
+                .take(128)
+                .position(|n| n.as_deref().and_then(lane_named) == Some(lane))
+                .map(|p| p as u8)
+        });
     }
 
     /// A touch on the note editor that may make Continue ask: its row, or
@@ -8303,6 +8380,16 @@ impl Player {
                         .and_then(|e| e.editor.open_tool)
                         .map_or_else(String::new, |t| time_view::tool_hint(&t))
                 }
+                // An empty clip: its card's Add a part (S2.6, board D).
+                View::Sequencer
+                    if self.time.edit.as_ref().is_some_and(|e| {
+                        e.clip.notes.is_empty()
+                            && e.editor.lens == Lens::Grid
+                            && e.editor.open_tool.is_none()
+                    }) =>
+                {
+                    EMPTY_CLIP_HINT.to_string()
+                }
                 View::Sequencer if self.time.edit.is_some() => {
                     let (lens, tool) = self
                         .time
@@ -8338,12 +8425,18 @@ impl Player {
                 View::Arrange if self.time_page.adding => mpfree_time_ui::song::ADD_HINT.to_string(),
                 // Link's chooser (the Arrange refactor's 4b.5).
                 View::Arrange if self.time_page.linking => time_view::LINK_HINT.to_string(),
+                // Add a part's panel, the chord picker, the Chords tab.
+                View::Arrange if self.time_page.compose_hint(&self.time).is_some() => {
+                    self.time_page.compose_hint(&self.time).unwrap_or_default()
+                }
                 View::Arrange if self.time.list_view && self.time.list_linked => {
                     time_view::LINKED_LIST_HINT.to_string()
                 }
                 View::Arrange if self.time.list_view => time_view::LIST_HINT.to_string(),
                 View::Arrange if self.time.song_view => time_view::song_hint(&self.time).to_string(),
                 View::Arrange if self.time_page.clip_card => time_view::clip_card_hint(&self.time),
+                // Add a part is faint while Rec song is on: this says why.
+                View::Arrange if self.time.song_rec => time_view::REC_SONG_CLIPS_HINT.to_string(),
                 View::Arrange => CLIPS_HINT.to_string(),
                 // A snap over recorded audio asks: Snap anyway and Not
                 // now float at this line's end.
@@ -10712,6 +10805,11 @@ impl Player {
                     self.chain_qlink(k, ticks);
                 } else if self.audio_qlink(k, ticks) {
                     // An audio region's knobs.
+                } else if self.view == View::Arrange && self.time_page.add_knob(k, ticks) {
+                    // Add a part's panel: Similarity, Variation, Activity
+                    // and Range, a new try with each change.
+                    self.send_page_asks();
+                    self.refresh_qlinks();
                 } else if self.note_inspector().is_some() {
                     // Notes picked in the note editor: the note inspector.
                     self.note_qlink(k, ticks);
@@ -11747,7 +11845,14 @@ impl Player {
                     widget: list.to_string(),
                     kind: EventKind::Step { index, delta },
                 };
-                if let Some(a) = time_view::action(&ev, &self.time) {
+                if self.time_page.owns(&ev) {
+                    // Add a part's Role, or the Chords tab's row.
+                    if let Err(why) = self.time_page.compose(&ev, &self.time) {
+                        self.tell(&why);
+                    }
+                    self.time_page.update(&mut self.ui, &self.time);
+                    self.send_page_asks();
+                } else if let Some(a) = time_view::action(&ev, &self.time) {
                     self.outbox.push(FromUi::Time(a));
                 } else if let Some(why) = time_view::why_not(&ev, &self.time) {
                     self.tell(&why);
@@ -16967,16 +17072,60 @@ impl Player {
                 self.refresh_hint();
                 None
             }
+            // The empty clip's Add a part › on the Sequencer (composing
+            // tools S2.6, board D): Arrange's Clips, with Add a part's
+            // panel open on the clip's row and track. There is one panel.
+            (time_view::NOTES, EventKind::Tab(mpfree_time_ui::editor::EMPTY_ADD_PART)) => {
+                let (track, row) = self
+                    .time
+                    .edit
+                    .as_ref()
+                    .map(|e| (e.editor.track, e.editor.slot))?;
+                if let Err(why) = self.time_page.open_add(&self.time, row, Some(track)) {
+                    self.tell(&why);
+                    return None;
+                }
+                self.time_page.show_cell(track, row);
+                if self.time.song_view || self.time.list_view {
+                    self.outbox.push(FromUi::Time(TimeAction::SongView(false)));
+                }
+                if let Some(tab) = View::Arrange.tab_index(self.settings.debug_mode) {
+                    self.outbox.push(FromUi::Tab(tab));
+                }
+                self.time_page.update(&mut self.ui, &self.time);
+                self.send_page_asks();
+                None
+            }
+            // Add a part, the row's chords under its row, the chord picker
+            // and the Chords tab (composing tools S2.6, layout spec 4r):
+            // the page's own; what they ask of the time engine goes at
+            // once, and why not is said in place.
+            (time_view::CLIPS, EventKind::Toggle(_))
+            | (time_view::ADD_PANEL | time_view::CHORDS_CARD, _)
+                if self.time_page.owns(&ev) =>
+            {
+                if let Err(why) = self.time_page.compose(&ev, &self.time) {
+                    self.tell(&why);
+                }
+                self.time_page.update(&mut self.ui, &self.time);
+                self.send_page_asks();
+                self.refresh_qlinks();
+                self.refresh_hint();
+                None
+            }
             (time_view::CLIPS, EventKind::Toggle(_))
             | (time_view::NOTES, EventKind::Tab(_) | EventKind::View { .. })
             | (time_view::SONG, EventKind::Tab(_))
-            | (time_view::RECORD | time_view::CLIP_CARD, EventKind::Tab(_))
-                if self.time_page.page_tracks(&ev, &self.time) =>
-            {
+            | (
+                time_view::RECORD | time_view::CLIP_CARD | time_view::CHORDS_CARD,
+                EventKind::Tab(_),
+            ) if self.time_page.page_tracks(&ev, &self.time) => {
                 // The grid's pager, the Record panel's tabs, and the Song
                 // view's zoom and its bars scrolled at an edge (6.4): the
-                // page's own, nothing for the app but the hint line.
+                // page's own, nothing for the app but the hint line (and
+                // the Chords tab's ask to hear its row).
                 self.time_page.update(&mut self.ui, &self.time);
+                self.send_page_asks();
                 self.refresh_hint();
                 None
             }
@@ -17150,9 +17299,7 @@ impl Player {
         // page asks of the time engine on its own (that pick, Snap Auto's
         // division as the roll's zoom changes it).
         self.time_page.tick(&mut self.ui, &self.time, dt);
-        for a in self.time_page.take_asks() {
-            self.outbox.push(FromUi::Time(a));
-        }
+        self.send_page_asks();
         self.hear_tick(dt);
         self.status_tick(dt);
         self.power_tick(dt);
@@ -22081,6 +22228,68 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             }
         }
         Err(e) => eprintln!("clips-card sample: {e}"),
+    }
+    // Add a part (composing tools S2.6, boards A and B): the panel open
+    // on the busy jam's row 5, a Bass try playing in its cell, the row's
+    // chords under the row; then the chord picker open on the fourth
+    // chord with A♭7 picked.
+    match mpfree_time_ui::sample::add_part_state() {
+        Ok((st, pick)) => {
+            use mpfree_time_ui::add_view::ChordPick;
+            let mut p = quiet_player(fonts());
+            busy_sounds(&mut p);
+            p.time_page.add = Some(pick.clone());
+            p.apply(ToUi::Time(Box::new(st.clone())));
+            p.apply(ToUi::Show(View::Arrange));
+            p.refresh_qlinks();
+            p.refresh_hint();
+            out.push(("clips-add-part", p));
+            let mut p = quiet_player(fonts());
+            busy_sounds(&mut p);
+            p.time_page.add = Some(pick);
+            if let Some((row, rc)) = &st.row_chords {
+                let chip = mpfree_time_ui::sample::picked_chip(&rc.line);
+                p.time_page.chord_pick = ChordPick::open(*row, &rc.line, chip).map(|c| ChordPick {
+                    root: Some(8),
+                    kind: Some(2),
+                    ..c
+                });
+            }
+            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Show(View::Arrange));
+            p.refresh_qlinks();
+            p.refresh_hint();
+            out.push(("clips-chord-picker", p));
+        }
+        Err(e) => eprintln!("clips-add-part sample: {e}"),
+    }
+    // The Chords tab (S2.6, board C): bar 4's chord set to A♭7 after
+    // the Bass was kept, so the Bass and the Solo don't fit: both marked
+    // in their cells and ticked on the tab.
+    match mpfree_time_ui::sample::chords_tab_state() {
+        Ok(st) => {
+            let mut p = quiet_player(fonts());
+            busy_sounds(&mut p);
+            p.time_page.chords_card = true;
+            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Show(View::Arrange));
+            p.refresh_hint();
+            out.push(("clips-chords", p));
+        }
+        Err(e) => eprintln!("clips-chords sample: {e}"),
+    }
+    // The Sequencer's empty clip (S2.6, board D): its card, with Add a
+    // part ›.
+    match mpfree_time_ui::sample::empty_clip_state() {
+        Ok(st) => {
+            let mut p = quiet_player(fonts());
+            busy_sounds(&mut p);
+            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Show(View::Sequencer));
+            p.refresh_hint();
+            out.push(("sequencer-empty-clip", p));
+        }
+        Err(e) => eprintln!("sequencer-empty-clip sample: {e}"),
     }
     // The mute queue (sequencer S4): in Perform, Track 2's mute and
     // Track 3's solo wait for the next bar, their headers hatched and the

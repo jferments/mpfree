@@ -1050,8 +1050,11 @@ impl Takes {
     /// `slot` of `track` and, when `line` is given, give row `slot` that
     /// Harmony line (the chords the part was made over, suggested for a
     /// row with nothing to hear), as one edit that one UNDO takes back.
-    /// The clip gets a new id. The edit's number. `BadSlot` if there is no
-    /// such slot or it holds a clip; `BadScene` for a line too long; the
+    /// A blank clip there ([`Clip::is_blank`], the Sequencer's empty clip,
+    /// S2.6) makes way for it, and UNDO puts it back; a song that plays
+    /// it keeps its own copy, as ERASE leaves it. The clip gets a new id.
+    /// The edit's number. `BadSlot` if there is no such slot or it holds
+    /// a clip with something in it; `BadScene` for a line too long; the
     /// clip's own refusals as they are. Nothing changes on an error.
     pub fn add_part(
         &mut self,
@@ -1066,7 +1069,25 @@ impl Takes {
             Some(l) => chords_edit(project, slot, l)?,
             None => None,
         };
-        project.put_new_clip(track, slot, clip)?;
+        // A blank clip makes way, and comes back if the part can't go in.
+        let blank = slot_mut(project, track, slot)
+            .filter(|s| s.as_ref().is_some_and(Clip::is_blank))
+            .and_then(Option::take);
+        if let Err(e) = project.put_new_clip(track, slot, clip) {
+            if let (Some(b), Some(s)) = (blank, slot_mut(project, track, slot)) {
+                *s = Some(b);
+            }
+            return Err(e);
+        }
+        let mut kept_by_song = Vec::new();
+        if let Some(b) = blank.as_ref().filter(|b| project.arrangement.plays(b.id)) {
+            project
+                .arrangement
+                .clips
+                .keep(b.clone())
+                .expect("a cell's clip has an id no song clip has");
+            kept_by_song.push(b.id);
+        }
         let clip = project.clip(track, slot).expect("put").clone();
         if let Some(e) = &edit {
             put_row_chords(project, slot, &e.after);
@@ -1078,6 +1099,8 @@ impl Takes {
             edited: true,
             part: true,
             made: vec![(track, slot, clip)],
+            removed: blank.map(|b| vec![(track, slot, b)]).unwrap_or_default(),
+            kept_by_song,
             chords: edit.map(Box::new),
             ..Take::default()
         });
@@ -2314,6 +2337,12 @@ mod tests {
         use mpfree_seq::mpfree_context::chord::{Chord, ChordTimeline, Heard, Quality};
         let mut p = project();
         p.tracks.push(Track::new("bass", 1));
+        // Track 1's clip has a note: it is no place for a part.
+        p.tracks[0].slots[0]
+            .as_mut()
+            .unwrap()
+            .add_note(taken(0, 1).note)
+            .unwrap();
         let before = p.clone();
         let mut t = Takes::new(8);
         let line = ChordTimeline::of(&[(Chord::new(0, Quality::Minor7), 3840)], Heard::Suggested);
@@ -2336,6 +2365,36 @@ mod tests {
             .unwrap();
         let last = t.done().last().unwrap();
         assert!(last.part && last.chords.is_none());
+    }
+
+    /// A blank clip (the Sequencer's empty clip, S2.6) makes way for the
+    /// part, and UNDO puts it back; a clip with notes never does.
+    #[test]
+    fn a_part_takes_a_blank_clips_place() {
+        let mut p = project();
+        let mut bass = Track::new("bass", 1);
+        bass.slots[0] = Some(Clip::new("empty", 7680));
+        p.tracks.push(bass);
+        p.give_clip_ids();
+        let before = p.clone();
+        let mut t = Takes::new(8);
+        t.add_part(&mut p, 1, 0, Clip::new("bass", 3840), None)
+            .unwrap();
+        assert_eq!(p.clip(1, 0).unwrap().name, "bass");
+        t.undo(&mut p);
+        assert_eq!(p.tracks, before.tracks);
+        t.redo(&mut p);
+        assert_eq!(p.clip(1, 0).unwrap().name, "bass");
+        // Something in it (a loop's cell): it stays, and nothing changes.
+        let mut c = Clip::new("loop", 3840);
+        c.looped = Some(0);
+        p.tracks[1].slots[1] = Some(c);
+        let now = p.clone();
+        assert_eq!(
+            t.add_part(&mut p, 1, 1, Clip::new("bass", 3840), None),
+            Err(ModelError::BadSlot)
+        );
+        assert_eq!(p, now);
     }
 
     fn taken(tick: i64, take: u32) -> Taken {

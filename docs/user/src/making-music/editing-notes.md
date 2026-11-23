@@ -273,6 +273,12 @@ The very last row, **Continue**, carries the clip on: it listens to your bars (a
 
 {{shot: sequencer-notes-continue-picks | The same riff a few taps later: bar 4 is locked (a lock and "locked" on the ruler), bar 6 is picked (lit on the ruler) and was just tried again, so the tool's button says "Try bar 6 again", the drawer's button "Lock bar 6", and the newest try in the list says "bar 6".}}
 
+### An empty clip
+
+An empty clip shows a card on the roll: play it in, double tap to draw a note, or tap **Add a part ›**. That opens the Arrange tab with Add a part's panel on this clip's row and track, so the new part plays with what the row already has (see [Adding a part to a row](arranging.md#adding-a-part-to-a-row)). Its **Bars** starts at the clip's length. **Keep** puts the part in the empty clip's place, and **UNDO** brings the empty clip back. Once the clip has notes the card goes, and Continue is what the editor offers.
+
+{{shot: sequencer-empty-clip | An empty two-bar Bass clip on row 5: the card says the row's Break, Ride and Solo are there, with Add a part ›, which opens on Arrange.}}
+
 Every edit is a take, so **UNDO** takes it back and **SHIFT + UNDO** puts it back again.
 
 If the clip changes while you edit, because you're recording into it, pressed **UNDO**, or tapped a step on Steps, your picked notes stay picked wherever they now sit. If a picked note was taken out, the picks are let go and the line over the roll says "the clip changed: picks cleared". A tap on a note that landed just as the clip changed does nothing, so it never hits the wrong note: tap again. If an edit can't be played (rare), it is taken back and the log says so. Tap **‹ Steps**, or press **STEP SEQ**, to close the editor and see the clip as steps again. The editor stays open while you visit other tabs, and the Sequencer tab shows it again when you come back.

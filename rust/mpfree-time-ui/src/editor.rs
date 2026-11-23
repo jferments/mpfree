@@ -196,6 +196,24 @@ pub const PADS_WRITE: usize = 700;
 /// ([`NoteGrid::show_offers`]), `Tab(SHOW_NONE)` its None.
 pub const SHOW_MENU: usize = 800;
 pub const SHOW_NONE: usize = 790;
+/// The empty clip's card (composing tools S2.6, board D): Add a part ›
+/// is `Tab(EMPTY_ADD_PART)`.
+pub const EMPTY_ADD_PART: usize = 850;
+
+/// The card in an empty clip's roll (composing tools S2.6, board D): play
+/// it in, double tap to draw, or Add a part ›, which opens Arrange's Clips
+/// with Add a part's panel on the clip's row and track. It goes once the
+/// clip has notes.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct EmptyCard {
+    /// The clip's row, from 0.
+    pub row: usize,
+    /// The row's other clips with notes, by name ("Solo, Break and
+    /// Ride"); empty when there are none.
+    pub heard: String,
+    /// How many those are, for "is" or "are".
+    pub heard_n: usize,
+}
 /// A tap on a faint note of another clip (plan 4.1): `Tab(GHOST_TAP +
 /// k)` for [`NoteGrid::ghosts`]' `k`th, the cell it was on kept in
 /// [`NoteGrid::ghost_cell`].
@@ -3888,6 +3906,8 @@ pub struct NoteGrid {
     /// order picked, and what the Show menu offers.
     pub ghosts: Vec<GhostLayer>,
     pub show_offers: Vec<ShowOffer>,
+    /// The empty clip's card, while the clip has no notes (S2.6).
+    pub empty_card: Option<EmptyCard>,
     /// The Show menu is open over the roll, on this page of its offers.
     pub show_menu: bool,
     show_page: usize,
@@ -4197,6 +4217,7 @@ impl Default for NoteGrid {
             hearing: Hearing::On,
             ghosts: Vec::new(),
             show_offers: Vec::new(),
+            empty_card: None,
             show_menu: false,
             show_page: 0,
             ghost_cell: (0, 0),
@@ -4300,6 +4321,91 @@ impl NoteGrid {
             && (self.pads_write, self.hearing) == (other.pads_write, other.hearing)
             && self.ghosts == other.ghosts
             && self.show_offers == other.show_offers
+            && self.empty_card == other.empty_card
+    }
+
+    /// The empty clip's card and its Add a part ›, while it shows: on the
+    /// roll, no tool, menu or note in the way.
+    fn empty_card_rects(&self, r: Rect) -> Option<(Rect, Rect)> {
+        self.empty_card.as_ref()?;
+        let open = self.menu || self.scale_menu || self.chord_menu || self.show_menu;
+        if self.lens != Lens::Grid || self.tool_bar.is_some() || !self.notes.is_empty() || open {
+            return None;
+        }
+        let roll = self.geo(r).roll;
+        let w = (roll.w - 40).min(500);
+        let h = 196;
+        if w < 300 || roll.h < h + 20 {
+            return None;
+        }
+        let card = Rect::new(roll.x + (roll.w - w) / 2, roll.y + (roll.h - h) / 2, w, h);
+        let button = Rect::new(card.x + 24, card.y + 134, 200, 44);
+        Some((card, button))
+    }
+
+    fn paint_empty_card(&self, cx: &mut PaintCx, r: Rect) {
+        let (Some(c), Some((card, button))) = (&self.empty_card, self.empty_card_rects(r)) else {
+            return;
+        };
+        let t = cx.theme.clone();
+        cx.canvas.fill_round_rect(card, t.round(12), t.surface);
+        cx.canvas.stroke_round_rect(card, t.round(12), 1, t.outline);
+        let line = |y: i32, h: i32| Rect::new(card.x + 24, card.y + y, card.w - 48, h);
+        cx.text(
+            FontId::Bold,
+            t.size_title,
+            line(18, 30),
+            Align::Left,
+            t.text,
+            "This clip is empty",
+        );
+        let row = c.row + 1;
+        let lines = match c.heard_n {
+            0 => vec![
+                "Play it in, or double tap to draw a note.".to_string(),
+                format!("Or add a part for row {row}."),
+            ],
+            n => vec![
+                "Play it in, or double tap to draw a note.".to_string(),
+                format!("Or add a part that plays with row {row}:"),
+                format!("{} {} there.", c.heard, if n == 1 { "is" } else { "are" }),
+            ],
+        };
+        for (k, l) in lines.iter().enumerate() {
+            cx.text(
+                FontId::Sans,
+                t.size_small,
+                line(54 + 22 * k as i32, 22),
+                Align::Left,
+                t.text_dim,
+                l,
+            );
+        }
+        cx.canvas.fill_round_rect(button, t.round(10), t.raised);
+        cx.canvas
+            .stroke_round_rect(button, t.round(10), 2, t.accent);
+        cx.text(
+            FontId::Bold,
+            t.size_small,
+            button,
+            Align::Center,
+            t.accent,
+            "Add a part ›",
+        );
+        let note = Rect::new(
+            button.right() + 16,
+            button.y,
+            card.right() - button.right() - 40,
+            button.h,
+        );
+        cx.text(
+            FontId::Sans,
+            t.size_small - 2.0,
+            note,
+            Align::Left,
+            t.text_faint,
+            &format!("opens on Arrange, on row {row}"),
+        );
     }
 
     /// Note `i`'s pressure, empty for none.
@@ -6639,9 +6745,16 @@ impl NoteGrid {
         }
         // Pads write and Sound, then Fit and Follow.
         self.paint_switches(cx, g);
-        for (r, label, lit) in [(g.fit, "Fit", false), (g.follow, "Follow", g.v.follow)] {
+        // Fit is faint on an empty clip: no notes to fit.
+        let empty = self.notes.is_empty();
+        for (r, label, lit, faint) in [
+            (g.fit, "Fit", false, empty),
+            (g.follow, "Follow", g.v.follow, false),
+        ] {
             let (fill, ink) = if lit {
                 (t.picked(), t.on_picked())
+            } else if faint {
+                (t.raised, t.readable(t.text_dim, t.raised))
             } else {
                 (t.raised, t.text)
             };
@@ -7004,6 +7117,7 @@ impl Widget for NoteGrid {
                 &self.button_label(k),
             );
         }
+        self.paint_empty_card(cx, r);
         if self.menu {
             self.paint_menu(cx, r);
         }
@@ -7082,6 +7196,9 @@ impl Widget for NoteGrid {
             }
             return out;
         }
+        if let Some((_, b)) = self.empty_card_rects(r) {
+            out.push(Target::tap("add-part", 0, "Add a part", b));
+        }
         if !g.show_chip.is_empty() {
             out.push(Target::tap("show-chip", 0, "Show", g.show_chip));
         }
@@ -7129,7 +7246,9 @@ impl Widget for NoteGrid {
             // From near the foot to near the top, so the bars it crosses
             // change.
             let body = lane_body(&g);
-            let mut foot = Some(Rect::new(body.x, body.bottom() - 8, body.w, 6));
+            // With no notes in the clip there is nothing to draw.
+            let mut foot =
+                (!self.notes.is_empty()).then(|| Rect::new(body.x, body.bottom() - 8, body.w, 6));
             let kind = self.lane_kind();
             if let LaneKind::Lock(a) = kind {
                 // Up from the foot of its first bar.
@@ -7219,7 +7338,8 @@ impl Widget for NoteGrid {
             out.push(Target::tap("lane-fold", 0, "fold the lane", g.fold));
         }
         if !g.overview.is_empty() {
-            out.push(Target::tap("fit", 0, "Fit", g.fit));
+            // Faint on an empty clip: no notes to fit.
+            out.push(Target::tap("fit", 0, "Fit", g.fit).disabled_if(self.notes.is_empty()));
             out.push(Target::tap("follow", 0, "Follow", g.follow));
             // The ruler and the overview scroll in time only while part
             // of the clip shows; the keys while part of the rows do.
@@ -8485,6 +8605,14 @@ impl NoteGrid {
                 self.show_menu = false;
             }
             return None;
+        }
+        // The empty clip's Add a part › (S2.6): the app opens Arrange's
+        // panel on the clip's row and track.
+        if self
+            .empty_card_rects(r)
+            .is_some_and(|(_, b)| b.contains(x, y))
+        {
+            return Some(EventKind::Tab(EMPTY_ADD_PART));
         }
         // Show opens it (plan 4.1), a tool open or not: the roll's own.
         if g.show_chip.contains(x, y) {

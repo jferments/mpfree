@@ -34,7 +34,7 @@ use std::sync::mpsc::TryRecvError;
 use std::sync::Arc;
 
 use mpfree_compose::{
-    fit_clip, marks, revision_in, AddAsk, AddDone, AddPartJob, InstrumentKind, PartMade,
+    fit_clip, marks, revision_in, AddAsk, AddDone, AddPartJob, InstrumentKind, PartMade, RowChords,
 };
 use mpfree_context::chord::ChordTimeline;
 use mpfree_context::harmony::RowHarmony;
@@ -165,7 +165,7 @@ pub(super) struct Adding {
     pub(super) counts: AddCounts,
     /// Hearing a row's chords for the screens: its own thread, so a
     /// hearing never overtakes a try being made.
-    hear_worker: Option<Worker<AddPartJob, ChordTimeline>>,
+    hear_worker: Option<Worker<AddPartJob, RowChords>>,
     /// The row the screens asked to hear.
     pub(super) hearing: Option<usize>,
     /// What the last hearing was asked on: the row and its clips' and
@@ -173,7 +173,7 @@ pub(super) struct Adding {
     heard_on: Option<(usize, u64)>,
     hear_waiting: Option<(u32, usize)>,
     /// The row heard last and its chords.
-    pub(super) heard: Option<(usize, Arc<ChordTimeline>)>,
+    pub(super) heard: Option<(usize, Arc<RowChords>)>,
 }
 
 impl Adding {
@@ -227,6 +227,7 @@ impl Adding {
             bpm: hearing.bpm,
             budget: ReadBudget::default(),
             settings: mpfree_compose::Settings::default(),
+            bars: None,
             attempt: 0,
         };
         let job = AddPartJob::new(project, ask);
@@ -307,11 +308,13 @@ impl Adding {
         ask: PartAsk,
         hearing: Hearing,
     ) -> Result<u32, String> {
+        // An empty cell, or a blank clip that makes way at Keep (the
+        // Sequencer's empty clip, S2.6).
         let empty = project
             .tracks
             .get(ask.track)
             .and_then(|t| t.slots.get(ask.row))
-            .is_some_and(Option::is_none);
+            .is_some_and(|s| s.as_ref().is_none_or(mpfree_seq::Clip::is_blank));
         if !empty {
             return Err(format!(
                 "add a part: row {}'s cell on track {} isn't empty",
@@ -338,6 +341,7 @@ impl Adding {
             bpm: hearing.bpm,
             budget: ReadBudget::default(),
             settings: ask.settings,
+            bars: ask.bars,
             attempt: self.attempts,
         };
         self.attempts = self.attempts.wrapping_add(1);
@@ -364,13 +368,13 @@ impl Adding {
     }
 
     /// Whether the clips `made` heard are all as they were, and its cell
-    /// still empty.
+    /// still empty (or a blank clip, which makes way at Keep).
     fn fresh(project: &Project, made: &PartMade, track: usize, row: usize) -> bool {
         let empty = project
             .tracks
             .get(track)
             .and_then(|t| t.slots.get(row))
-            .is_some_and(Option::is_none);
+            .is_some_and(|s| s.as_ref().is_none_or(mpfree_seq::Clip::is_blank));
         empty
             && made
                 .read

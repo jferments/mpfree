@@ -57,6 +57,8 @@ pub struct PartAsk {
     pub lanes: Lanes,
     /// For drums, the pad for kick, snare, hats and the rest.
     pub pads: [Option<u8>; 4],
+    /// The part's length in bars; None: the row's.
+    pub bars: Option<u32>,
 }
 
 /// The row's chords outside the Add a part panel (the Chords tab).
@@ -76,8 +78,9 @@ pub enum ChordsAction {
     /// (the ticked ones) moved to the row's chords, one take ("the new
     /// chords").
     Fit { row: usize, tracks: Vec<usize> },
-    /// Not a touch: the row whose chords the screens show (the Chords
-    /// tab's), heard again whenever its clips or chords change, into
+    /// Not a touch: the row whose chords the screens show (the strip,
+    /// while Add a part or the Chords tab is open), heard again whenever
+    /// its clips or chords change, into
     /// [`crate::view::TimeState::row_chords`]; None stops.
     Hear { row: Option<usize> },
 }

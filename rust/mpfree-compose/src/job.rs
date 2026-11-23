@@ -200,8 +200,21 @@ pub struct AddAsk {
     pub bpm: f64,
     pub budget: ReadBudget,
     pub settings: Settings,
+    /// The part's length in bars; None: the row's. A part shorter than the
+    /// row loops in it; one longer plays the row's chords round again.
+    pub bars: Option<u32>,
     /// Try again's count: 0 is the first answer.
     pub attempt: u16,
+}
+
+/// A row's chords for the screens ([`AddPartJob::hear`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RowChords {
+    /// The row's line as it plays: its own chords heard again with its
+    /// clips (a chord you set stays), or what the clips say.
+    pub line: ChordTimeline,
+    /// What the clips alone say: "As heard" gives a chord back from it.
+    pub heard: ChordTimeline,
 }
 
 /// An Add a part request with its own copy of what it hears.
@@ -294,8 +307,9 @@ impl AddPartJob {
 
     /// The row's chords as it plays now, for the screens' Harmony line:
     /// its line heard again with its clips, or what the clips say when it
-    /// has none of its own. Nothing is suggested here. Pure.
-    pub fn hear(&self) -> ChordTimeline {
+    /// has none of its own, and what the clips alone say. Nothing is
+    /// suggested here. Pure.
+    pub fn hear(&self) -> RowChords {
         let a = &self.ask;
         let lane_of = |t: usize, pad: u8| a.lanes.lane(t, pad);
         let (ctx, _) = read(
@@ -306,7 +320,10 @@ impl AddPartJob {
             a.meter,
             a.budget,
         );
-        self.line_heard(&ctx.chords)
+        RowChords {
+            line: self.line_heard(&ctx.chords),
+            heard: ctx.chords.plain(),
+        }
     }
 
     /// The row's line heard again with the chords a reading heard, or
@@ -332,7 +349,7 @@ impl AddPartJob {
             a.budget,
         );
         let bar = a.meter.bar_ticks().max(1);
-        let length = self.length.max(bar);
+        let length = a.bars.map_or(self.length, |b| Tick::from(b) * bar).max(bar);
         // The row's chords: its line heard again, else the reading; for a
         // row with nothing to hear, suggested ones (contract 4).
         let stored = self.row.as_ref().map(|r| &r.line);
@@ -749,6 +766,7 @@ mod tests {
                 seed: 3,
                 ..Settings::default()
             },
+            bars: None,
             attempt: 0,
         }
     }
@@ -870,7 +888,7 @@ mod tests {
         use mpfree_context::chord::{Chord, ChordAnswer, Heard, Quality};
         let mut p = tune_row(true, true);
         let job = AddPartJob::new(&p, add_ask(&p, PartRole::Bass, Relation::Support));
-        let heard = job.hear();
+        let heard = job.hear().line;
         let made = job.run().result.unwrap();
         assert_eq!(root_at(&heard, 0), root_at(&made.chords, 0));
         assert!(root_at(&heard, 0).is_some(), "{}", heard.names());
@@ -878,10 +896,18 @@ mod tests {
         assert!(line.set_at(0, ChordAnswer::Chord(Chord::new(8, Quality::Major))));
         p.scene_mut(0).unwrap().chords = line.plain();
         let again = AddPartJob::new(&p, add_ask(&p, PartRole::Bass, Relation::Support)).hear();
-        assert_eq!(again.span_at(0).unwrap().heard, Heard::Set);
-        assert_eq!(root_at(&again, 0), Some(8));
+        assert_eq!(again.line.span_at(0).unwrap().heard, Heard::Set);
+        assert_eq!(root_at(&again.line, 0), Some(8));
+        assert_eq!(root_at(&again.heard, 0), root_at(&heard, 0), "as heard");
+        // A part of its own length: 2 bars of a 4-bar row.
+        let mut ask = add_ask(&p, PartRole::Bass, Relation::Support);
+        ask.bars = Some(2);
+        let short = AddPartJob::new(&p, ask).run().result.unwrap();
+        assert_eq!(short.clip.length, 2 * BAR);
         let beat = tune_row(false, true);
-        let none = AddPartJob::new(&beat, add_ask(&beat, PartRole::Bass, Relation::Support)).hear();
+        let none = AddPartJob::new(&beat, add_ask(&beat, PartRole::Bass, Relation::Support))
+            .hear()
+            .line;
         assert!(
             none.spans().iter().all(|s| s.answer.chord().is_none()),
             "{}",

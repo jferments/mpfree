@@ -8215,10 +8215,10 @@ impl TimeControl {
     }
 
     /// The view of the project as it plays: [`Self::view_with_continue`],
-    /// with Add a part's try in its empty cell while one is in the view,
-    /// launched where the row's clips started so it lines up with them
-    /// (in place of what its track played). Without a clip of the row
-    /// playing, the try isn't heard.
+    /// with Add a part's try in its empty cell (or in a blank clip's
+    /// place) while one is in the view, launched where the row's clips
+    /// started so it lines up with them (in place of what its track
+    /// played). Without a clip of the row playing, the try isn't heard.
     fn view_with_add(&mut self) -> Result<PlayView, String> {
         let Some(v) = self.add.in_view.clone() else {
             return self.view_with_continue();
@@ -8231,7 +8231,7 @@ impl TimeControl {
             .tracks
             .get(v.track)
             .and_then(|t| t.slots.get(v.row))
-            .is_some_and(Option::is_none);
+            .is_some_and(|s| s.as_ref().is_none_or(Clip::is_blank));
         if !empty {
             return self.view_with_continue();
         }
@@ -8241,13 +8241,13 @@ impl TimeControl {
             origin: mpfree_play::anchored(l.start, v.clip.length, v.clip.speed),
             start: l.start,
         };
-        self.project.tracks[v.track].slots[v.row] = Some((*v.clip).clone());
+        let was = self.project.tracks[v.track].slots[v.row].replace((*v.clip).clone());
         let saved = self.launches.clone();
         self.launches.retain(|x| x.track != v.track);
         self.launches.push(launch);
         let out = self.view_with_continue();
         self.launches = saved;
-        self.project.tracks[v.track].slots[v.row] = None;
+        self.project.tracks[v.track].slots[v.row] = was;
         out
     }
 
