@@ -11,6 +11,7 @@
 //! calls [`Engine::sync`] with a [`Clock`] before every `process` call, and
 //! while the transport plays the steps fall on its tick grid instead.
 
+use crate::modifier::{self, ModSource, Modifier, Steps};
 use crate::notes::{Held, LatchMode, NoteSet, Notes, MAX_NOTES};
 use crate::pattern::{Pattern, Pick, Step};
 use crate::scale::{Scale, Snap, CHROMATIC, MAJOR};
@@ -537,6 +538,8 @@ pub struct Settings {
     pub ramp: Ramp,
     /// Where notes start while the transport plays.
     pub start: SyncStart,
+    /// What a controller pushes while you play ([`crate::modifier`]).
+    pub modifier: Modifier,
 }
 
 impl Default for Settings {
@@ -560,6 +563,7 @@ impl Default for Settings {
             repeats: 0,
             ramp: Ramp::OFF,
             start: SyncStart::Step,
+            modifier: Modifier::default(),
         }
     }
 }
@@ -576,6 +580,7 @@ impl Settings {
         if let Velocity::Fixed(v) = self.velocity {
             self.velocity = Velocity::Fixed(v.clamp(1, 127));
         }
+        self.modifier = self.modifier.clamped();
         self
     }
 }
@@ -678,6 +683,20 @@ struct Pending {
 
 pub struct Engine {
     settings: Settings,
+    /// The settings as the modifier pushes them now: what the steps play.
+    /// The same as `settings` while nothing pushes.
+    live: Settings,
+    /// Where the modifier's controller is, 0 to 1.
+    amount: f32,
+    /// The modifier's stepped pushes, held near their edges.
+    steps: Steps,
+    /// Hits the modifier adds to every step.
+    rolls: u8,
+    /// The modifier's chance, in percent, that a step is accented.
+    accents: u8,
+    /// Each note's pressure since it was pressed (0 before any), for a
+    /// modifier pushed by pressure.
+    touch: [u8; 128],
     pattern: Pattern,
     sample_rate: f64,
     bpm: f64,
@@ -731,6 +750,12 @@ impl Engine {
     pub fn new(sample_rate: u32, bpm: f64) -> Self {
         Self {
             settings: Settings::default(),
+            live: Settings::default(),
+            amount: 0.0,
+            steps: Steps::default(),
+            rolls: 0,
+            accents: 0,
+            touch: [0; 128],
             pattern: Pattern::default(),
             sample_rate: f64::from(sample_rate.max(1)),
             bpm: bpm.clamp(20.0, 300.0),
@@ -762,8 +787,97 @@ impl Engine {
         }
     }
 
+    /// The settings as set (the modifier's push is not in them).
     pub fn settings(&self) -> Settings {
         self.settings
+    }
+
+    /// The settings the steps play now: as set, with the modifier's push
+    /// on rate, octaves, gate and swing.
+    pub fn live(&self) -> Settings {
+        self.live
+    }
+
+    /// Where the modifier's controller is now, 0 to 1 (0 while the
+    /// modifier is off).
+    pub fn modifier(&self) -> f32 {
+        self.amount
+    }
+
+    /// Hits the modifier adds to every step now.
+    pub fn rolls(&self) -> u8 {
+        self.rolls
+    }
+
+    /// The modifier's chance now, in percent, that a step is accented.
+    pub fn accent_chance(&self) -> u8 {
+        self.accents
+    }
+
+    /// A controller moved to `value` (0 to 1). The modifier follows it
+    /// when it is the modifier's source; pressure comes from
+    /// [`Engine::pressure`] instead, so `ModSource::Pressure` (and `Off`)
+    /// is ignored here. A change takes effect from the next step: a
+    /// faster rate shortens the gap after the step playing, and with a
+    /// transport the steps stay on its grid.
+    pub fn control(&mut self, source: ModSource, value: f32) {
+        if matches!(source, ModSource::Off | ModSource::Pressure)
+            || source != self.settings.modifier.source
+            || !value.is_finite()
+        {
+            return;
+        }
+        let v = value.clamp(0.0, 1.0);
+        if v != self.amount {
+            self.amount = v;
+            self.relive();
+        }
+    }
+
+    /// The highest pressure of the notes held now, for a modifier pushed
+    /// by pressure.
+    fn pressure_amount(&self) -> f32 {
+        let top = self
+            .notes
+            .physical()
+            .as_slice()
+            .iter()
+            .map(|h| self.touch[usize::from(h.note & 0x7F)])
+            .max()
+            .unwrap_or(0);
+        f32::from(top) / 127.0
+    }
+
+    /// Follows the held notes' pressure when the modifier's source is
+    /// pressure.
+    fn follow_pressure(&mut self) {
+        if self.settings.modifier.source == ModSource::Pressure {
+            let a = self.pressure_amount();
+            if a != self.amount {
+                self.amount = a;
+                self.relive();
+            }
+        }
+    }
+
+    /// Works the live settings out again from the settings and the
+    /// modifier. A changed order or octaves starts the random orders
+    /// afresh; a changed rate puts the next step on the new rate's grid
+    /// while the transport plays.
+    fn relive(&mut self) {
+        let old = self.live;
+        let p = modifier::push(&self.settings, self.amount, &mut self.steps);
+        self.live = p.settings;
+        self.rolls = p.rolls;
+        self.accents = p.accents;
+        if self.live.octaves != old.octaves || self.live.order != old.order {
+            self.once_len = 0;
+            self.bag = 0;
+        }
+        if self.live.rate != old.rate && self.running && self.sync.is_some() {
+            self.next_tick = self.grid_after(i64::from(self.live.rate.ticks()));
+            self.next_step = self.frame_of(self.next_tick as f64);
+        }
     }
 
     pub fn pattern(&self) -> &Pattern {
@@ -836,7 +950,7 @@ impl Engine {
         });
         if self.running {
             if !was || clock.jumped {
-                self.next_tick = self.grid_after(i64::from(self.settings.rate.ticks()));
+                self.next_tick = self.grid_after(i64::from(self.live.rate.ticks()));
             }
             self.next_step = self.frame_of(self.next_tick as f64);
         }
@@ -862,16 +976,17 @@ impl Engine {
             }
             self.running = false;
         }
-        let regrid = settings.rate != self.settings.rate;
-        if settings.octaves != self.settings.octaves || settings.order != self.settings.order {
-            self.once_len = 0;
-            self.bag = 0;
+        let source = settings.modifier.source;
+        if source != self.settings.modifier.source {
+            // A new controller starts from where it is: at rest until it
+            // moves, or the pressure held now.
+            self.amount = 0.0;
         }
         self.settings = settings;
-        if regrid && self.running && self.sync.is_some() {
-            self.next_tick = self.grid_after(i64::from(settings.rate.ticks()));
-            self.next_step = self.frame_of(self.next_tick as f64);
+        if source == ModSource::Pressure {
+            self.amount = self.pressure_amount();
         }
+        self.relive();
         self.update_running();
     }
 
@@ -899,19 +1014,30 @@ impl Engine {
 
     pub fn press(&mut self, note: u8, velocity: u8) {
         self.hushed = false;
+        // Pressure counts from after the strike: a hard hit is not a push.
+        self.touch[usize::from(note & 0x7F)] = 0;
         let before = self.notes.active().clone();
         self.notes.press(note, velocity.max(1));
+        self.follow_pressure();
         self.after_change(&before);
     }
 
     pub fn release(&mut self, note: u8) {
+        self.touch[usize::from(note & 0x7F)] = 0;
         let before = self.notes.active().clone();
         self.notes.release(note);
+        self.follow_pressure();
         self.after_change(&before);
     }
 
+    /// A held note's pressure (aftertouch): it sets the velocity the note
+    /// repeats at, and pushes a modifier whose source is pressure.
     pub fn pressure(&mut self, note: u8, value: u8) {
+        if self.notes.physical().contains(note) {
+            self.touch[usize::from(note & 0x7F)] = value & 0x7F;
+        }
         self.notes.pressure(note, value.max(1));
+        self.follow_pressure();
     }
 
     /// Silences the arp at the start of the next period (all notes off) but
@@ -968,6 +1094,8 @@ impl Engine {
     pub fn panic(&mut self) {
         self.hushed = false;
         self.notes.clear_all();
+        self.touch = [0; 128];
+        self.follow_pressure();
         self.end_sounding();
     }
 
@@ -998,7 +1126,7 @@ impl Engine {
         out.len = 0;
         let end = self.now + u64::from(frames);
         if self.running && self.sync.is_some() {
-            let ticks = i64::from(self.settings.rate.ticks());
+            let ticks = i64::from(self.live.rate.ticks());
             loop {
                 let len = self.step_frames();
                 let nudge = len * f64::from(self.nudge_percent()) / 100.0;
@@ -1033,7 +1161,7 @@ impl Engine {
     }
 
     fn step_frames(&self) -> f64 {
-        f64::from(self.settings.rate.ticks()) / f64::from(PPQ) * 60.0 / self.bpm * self.sample_rate
+        f64::from(self.live.rate.ticks()) / f64::from(PPQ) * 60.0 / self.bpm * self.sample_rate
     }
 
     /// Frames per tick at the current tempo.
@@ -1076,7 +1204,7 @@ impl Engine {
     fn swung(&self, t: i64, step_ticks: i64) -> f64 {
         let (grid, amount) = match self.sync.and_then(|s| s.swing) {
             Some((grid, amount)) => (i64::from(grid), amount),
-            None => (step_ticks, self.settings.swing),
+            None => (step_ticks, self.live.swing),
         };
         let s = f64::from(amount.saturating_sub(50)) / 50.0;
         if s == 0.0 {
@@ -1124,7 +1252,7 @@ impl Engine {
     /// Every second step moves later by (swing - 50) / 50 of a step.
     fn swing_delay(&self, len: f64) -> f64 {
         if self.step % 2 == 1 {
-            len * f64::from(self.settings.swing - 50) / 50.0
+            len * f64::from(self.live.swing - 50) / 50.0
         } else {
             0.0
         }
@@ -1187,7 +1315,7 @@ impl Engine {
             self.running = true;
             if let Some(s) = self.sync {
                 let unit = match self.settings.start {
-                    SyncStart::Step => self.settings.rate.ticks(),
+                    SyncStart::Step => self.live.rate.ticks(),
                     SyncStart::Beat => PPQ,
                     SyncStart::Bar => s.bar_ticks,
                 };
@@ -1225,11 +1353,11 @@ impl Engine {
     fn fire_step(&mut self, at: f64, len: f64) {
         let mut sorted = [Held::default(); MAX_NOTES];
         let active = self.notes.active();
-        let n = match turn_of(&self.settings, active.len(), self.step) {
+        let n = match turn_of(&self.live, active.len(), self.step) {
             Some(k) => {
                 sorted[0] = active.as_slice()[k];
                 // Each turn starts the order again, from its first note.
-                if self.step.checked_rem(turn_steps(&self.settings)) == Some(0) {
+                if self.step.checked_rem(turn_steps(&self.live)) == Some(0) {
                     self.arp_counter = 0;
                     self.bag = 0;
                     self.once_len = 0;
@@ -1245,12 +1373,18 @@ impl Engine {
         if self.settings.repeats > 0 && self.step >= u64::from(self.settings.repeats) {
             return;
         }
-        let gate = self.settings.gate;
+        let gate = self.live.gate;
         self.tied = 0.0;
         match self.settings.mode {
             Mode::Direct => {}
-            Mode::Repeat => self.chord(&sorted[..n], Hit::plain(gate), at, len),
-            Mode::Arp => self.play_next(&sorted[..n], Hit::plain(gate), at, len),
+            Mode::Repeat => {
+                let hit = self.pushed_hit(Hit::plain(gate));
+                self.chord(&sorted[..n], hit, at, len)
+            }
+            Mode::Arp => {
+                let hit = self.pushed_hit(Hit::plain(gate));
+                self.play_next(&sorted[..n], hit, at, len)
+            }
             Mode::Pattern => {
                 let step = self.pattern.steps()[(self.step % self.pattern.len() as u64) as usize];
                 // A tie was already added to the notes of the step before it,
@@ -1273,7 +1407,14 @@ impl Engine {
                 let lanes = self.pattern.lanes;
                 let lane_vel = lanes.velocity.at(self.step).filter(|&v| v > 0);
                 let lane_gate = lanes.gate.at(self.step).filter(|&v| v > 0);
-                let gate = if g != 0 { g } else { lane_gate.unwrap_or(gate) };
+                // The step's own length, else the lane's, else the gate as
+                // set; the modifier's push on the gate moves any of them.
+                let gate = if g != 0 {
+                    g
+                } else {
+                    lane_gate.unwrap_or(self.settings.gate)
+                };
+                let pushed = i16::from(self.live.gate) - i16::from(self.settings.gate);
                 let hit = Hit {
                     octave: i16::from(octave)
                         + i16::from(lanes.octave.at(self.step).unwrap_or(0))
@@ -1288,9 +1429,11 @@ impl Engine {
                     accent,
                     jitter: self.jitter(lanes.velocity.random()),
                     ratchet,
-                    gate: (i16::from(gate) + self.jitter(lanes.gate.random())).clamp(1, 100) as u8,
+                    gate: (i16::from(gate) + self.jitter(lanes.gate.random()) + pushed)
+                        .clamp(1, 100) as u8,
                     delay: 0.0,
                 };
+                let hit = self.pushed_hit(hit);
                 match pick {
                     Pick::Next => self.play_next(&sorted[..n], hit, at, len),
                     Pick::All => self.chord(&sorted[..n], hit, at, len),
@@ -1306,6 +1449,21 @@ impl Engine {
                 }
             }
         }
+    }
+
+    /// A step's hit with the modifier's rolls and accents: its hits grow
+    /// by the rolls (8 at most), and an unaccented step is accented by
+    /// chance. Draws a random number only while the accent chance is on,
+    /// so an arp with no modifier plays exactly as before.
+    fn pushed_hit(&mut self, mut hit: Hit) -> Hit {
+        if self.rolls > 0 {
+            hit.ratchet = hit.ratchet.max(1).saturating_add(self.rolls).min(8);
+        }
+        if self.accents > 0 && !hit.accent && self.random(100) < usize::from(self.accents) {
+            hit.accent = true;
+            hit.velocity = Some(self.settings.accent);
+        }
+        hit
     }
 
     /// Every note at once, strummed if the strum setting asks for it.
@@ -1341,7 +1499,7 @@ impl Engine {
         } else {
             sorted
         };
-        let total = (n * usize::from(self.settings.octaves)).min(MAX_ORDER);
+        let total = (n * usize::from(self.live.octaves)).min(MAX_ORDER);
         let c = self.arp_counter as usize;
         self.arp_counter += 1;
         let i = match order.place(total, c) {
@@ -2783,5 +2941,273 @@ mod tests {
             );
         }
         assert_eq!(ons(&got), [(4 * STEP, 1), (8 * STEP, 1)]);
+    }
+
+    fn wheel(m: Modifier) -> Modifier {
+        Modifier {
+            source: ModSource::ModWheel,
+            ..m
+        }
+    }
+
+    fn on_velocities(events: &[(u64, EventKind)]) -> Vec<u8> {
+        events
+            .iter()
+            .filter_map(|(_, k)| match k {
+                EventKind::On { velocity, .. } => Some(*velocity),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The mod wheel at the top, with Rate +2 on 1/16, plays 1/32s from the
+    /// next step on; back down, 1/16s again. The settings as set never
+    /// change.
+    #[test]
+    fn the_wheel_pushes_the_rate_from_the_next_step() {
+        let mut e = engine(Mode::Repeat);
+        e.set_settings(Settings {
+            modifier: wheel(Modifier::default()),
+            ..e.settings()
+        });
+        e.press(1, 100);
+        let first = run(&mut e, 2 * STEP, 128);
+        assert_eq!(ons(&first).len(), 2);
+        e.control(ModSource::ModWheel, 1.0);
+        assert_eq!(e.live().rate, Rate::ThirtySecond);
+        assert_eq!(e.settings().rate, Rate::Sixteenth, "the setting stays");
+        let pushed = run(&mut e, 2 * STEP, 128);
+        let t: Vec<u64> = ons(&pushed).iter().map(|(t, _)| *t).collect();
+        assert_eq!(
+            t,
+            [2 * STEP, 2 * STEP + STEP / 2, 3 * STEP, 3 * STEP + STEP / 2]
+        );
+        e.control(ModSource::ModWheel, 0.0);
+        assert_eq!(e.live().rate, Rate::Sixteenth);
+        let back = run(&mut e, 2 * STEP, 128);
+        let t: Vec<u64> = ons(&back).iter().map(|(t, _)| *t).collect();
+        assert_eq!(t, [4 * STEP, 5 * STEP]);
+    }
+
+    /// Only the modifier's own controller moves it.
+    #[test]
+    fn other_controllers_and_an_off_modifier_push_nothing() {
+        let mut e = engine(Mode::Arp);
+        e.set_settings(Settings {
+            modifier: wheel(Modifier::default()),
+            ..e.settings()
+        });
+        e.control(ModSource::Expression, 1.0);
+        e.control(ModSource::Pressure, 1.0);
+        e.control(ModSource::Off, 1.0);
+        assert_eq!(e.modifier(), 0.0);
+        assert_eq!(e.live(), e.settings());
+        e.control(ModSource::ModWheel, 0.75);
+        assert_eq!(e.modifier(), 0.75);
+        // A new source starts at rest.
+        e.set_settings(Settings {
+            modifier: Modifier {
+                source: ModSource::Breath,
+                ..e.settings().modifier
+            },
+            ..e.settings()
+        });
+        assert_eq!(e.modifier(), 0.0);
+        assert_eq!(e.live(), e.settings());
+    }
+
+    /// With the modifier off, or on but never moved, the arp plays exactly
+    /// as it did before the modifier existed: same notes, same random
+    /// draws.
+    #[test]
+    fn an_unmoved_modifier_changes_nothing() {
+        let play = |m: Modifier| {
+            let mut e = engine(Mode::Pattern);
+            e.set_pattern(
+                BUILT_IN
+                    .iter()
+                    .find(|(n, _)| *n == "Drift")
+                    .map(|(_, p)| Pattern::parse(p).unwrap())
+                    .unwrap(),
+            );
+            e.set_settings(Settings {
+                order: Order::Random,
+                modifier: m,
+                ..e.settings()
+            });
+            e.set_seed(7);
+            for n in [60, 64, 67] {
+                e.press(n, 100);
+            }
+            run(&mut e, 40 * STEP, 128)
+        };
+        let before = play(Modifier {
+            source: ModSource::Off,
+            ..Modifier::default()
+        });
+        let moved_not = play(Modifier {
+            source: ModSource::ModWheel,
+            rolls: 3,
+            accents: 50,
+            gate: 40,
+            ..Modifier::default()
+        });
+        assert!(!before.is_empty());
+        assert_eq!(before, moved_not);
+    }
+
+    /// Pressure pushes from what the held notes press after their strike;
+    /// a hard hit alone is no push, and a latched note, once let go,
+    /// presses nothing.
+    #[test]
+    fn pressure_pushes_from_the_notes_held_now() {
+        let mut e = engine(Mode::Repeat);
+        e.set_settings(Settings {
+            modifier: Modifier {
+                source: ModSource::Pressure,
+                ..Modifier::default()
+            },
+            ..e.settings()
+        });
+        e.set_latch(LatchMode::Replace);
+        e.press(1, 127);
+        assert_eq!(e.modifier(), 0.0, "the strike is not a push");
+        e.press(2, 100);
+        e.pressure(1, 40);
+        e.pressure(2, 127);
+        assert_eq!(e.modifier(), 1.0, "the highest of the held notes");
+        assert_eq!(e.live().rate, Rate::ThirtySecond);
+        e.release(2);
+        assert!((e.modifier() - 40.0 / 127.0).abs() < 1e-6);
+        e.pressure(9, 127); // not held: nothing
+        assert!((e.modifier() - 40.0 / 127.0).abs() < 1e-6);
+        e.release(1);
+        assert_eq!(e.modifier(), 0.0, "latched, but no finger on it");
+        assert_eq!(e.active().len(), 2);
+        e.press(3, 90);
+        e.pressure(3, 127);
+        e.panic();
+        assert_eq!(e.modifier(), 0.0);
+    }
+
+    /// Rolls turn every step into a quick roll; the accent chance at 100 %
+    /// accents every step.
+    #[test]
+    fn rolls_and_accents_follow_the_push() {
+        let mut e = engine(Mode::Repeat);
+        e.set_settings(Settings {
+            accent: 120,
+            modifier: wheel(Modifier {
+                rate: 0,
+                octaves: 0,
+                rolls: 2,
+                accents: 100,
+                ..Modifier::default()
+            }),
+            ..e.settings()
+        });
+        e.press(1, 60);
+        e.control(ModSource::ModWheel, 1.0);
+        let got = run(&mut e, STEP, 64);
+        let t: Vec<u64> = ons(&got).iter().map(|(t, _)| *t).collect();
+        assert_eq!(t, [0, STEP / 3, 2 * STEP / 3]);
+        assert_eq!(on_velocities(&got), [120, 120, 120]);
+        e.control(ModSource::ModWheel, 0.0);
+        let got = run(&mut e, STEP, 64);
+        assert_eq!(ons(&got).len(), 1);
+        assert_eq!(on_velocities(&got), [60]);
+    }
+
+    /// Octaves: an arp of one note over 1 octave climbs into a second
+    /// octave when pushed. Gate: the notes get longer.
+    #[test]
+    fn octaves_and_gate_follow_the_push() {
+        let mut e = engine(Mode::Arp);
+        e.set_settings(Settings {
+            gate: 50,
+            modifier: wheel(Modifier {
+                rate: 0,
+                octaves: 1,
+                gate: 40,
+                ..Modifier::default()
+            }),
+            ..e.settings()
+        });
+        e.press(60, 100);
+        e.control(ModSource::ModWheel, 1.0);
+        assert_eq!((e.live().octaves, e.live().gate), (2, 90));
+        let got = run(&mut e, 4 * STEP, 128);
+        let notes: Vec<u8> = ons(&got).iter().map(|(_, n)| *n).collect();
+        assert_eq!(notes, [60, 72, 60, 72]);
+        let off = got
+            .iter()
+            .find_map(|(t, k)| matches!(k, EventKind::Off { .. }).then_some(*t))
+            .unwrap();
+        assert_eq!(off, STEP * 9 / 10);
+    }
+
+    /// With the transport playing, a pushed rate keeps the steps on the
+    /// transport's grid, as turning the rate does.
+    #[test]
+    fn a_pushed_rate_stays_on_the_transport_grid() {
+        let mut e = engine(Mode::Repeat);
+        e.set_settings(Settings {
+            modifier: wheel(Modifier {
+                rate: -2,
+                ..Modifier::default()
+            }),
+            ..e.settings()
+        });
+        let spans = [span(0, 0, 120.0)];
+        let got = run_synced(&mut e, &spans, &[(0, 1)], STEP + 1000, 128);
+        assert_eq!(ons(&got), [(0, 1), (STEP, 1)]);
+        e.control(ModSource::ModWheel, 1.0);
+        assert_eq!(e.live().rate, Rate::Eighth);
+        let mut out = Events::new();
+        let mut got = Vec::new();
+        while e.now < 7 * STEP {
+            let now = e.now;
+            e.sync(&Clock::playing(0, now, 120.0));
+            e.process(128, &mut out);
+            got.extend(
+                out.as_slice()
+                    .iter()
+                    .map(|ev| (now + u64::from(ev.offset), ev.kind)),
+            );
+        }
+        assert_eq!(ons(&got), [(2 * STEP, 1), (4 * STEP, 1), (6 * STEP, 1)]);
+    }
+
+    /// A pattern step's own length moves with the gate's push, and its
+    /// ratchets gain the rolls.
+    #[test]
+    fn a_pattern_step_keeps_its_shape_under_the_push() {
+        let mut e = engine(Mode::Pattern);
+        e.set_pattern(Pattern::parse("x:2").unwrap());
+        e.set_settings(Settings {
+            gate: 50,
+            modifier: wheel(Modifier {
+                rate: 0,
+                octaves: 0,
+                gate: -20,
+                rolls: 1,
+                ..Modifier::default()
+            }),
+            ..e.settings()
+        });
+        e.press(1, 100);
+        e.control(ModSource::ModWheel, 1.0);
+        let got = run(&mut e, STEP, 64);
+        let t: Vec<u64> = ons(&got).iter().map(|(t, _)| *t).collect();
+        assert_eq!(t, [0, STEP / 3, 2 * STEP / 3], "2 hits + 1 roll");
+        let off = got
+            .iter()
+            .find_map(|(t, k)| matches!(k, EventKind::Off { .. }).then_some(*t))
+            .unwrap();
+        assert_eq!(
+            off,
+            (STEP as f64 / 3.0 * 0.3).floor() as u64,
+            "30 % of a hit"
+        );
     }
 }
