@@ -11856,11 +11856,14 @@ impl Player {
                 kept.as_deref(),
             );
             self.say(format!("project: safe start: {words}"));
-            self.tell(&words);
-            // On the status board too (Dev > Status until phase 2).
+            // On the status board, so the chip is red and System status
+            // says what to do. A red problem's title would go on the hint
+            // line; the safe start's own words go there instead, in red,
+            // since they name the project and where the unsaved work is.
             self.report_problem(mpfree_status::Report::began(
                 &mpfree_status::kinds::CRASH_RESTART,
             ));
+            self.tell_red(tell_text(&words));
             return;
         }
         if let Some(k) = &kept {
@@ -30511,9 +30514,11 @@ mod tests {
             "{:?}",
             events_log(&c)
         );
+        // On the hint line in red: the safe start's own words, not the
+        // kind's title, since they name the project.
         assert_eq!(
-            c.told.as_ref().map(|t| t.0.clone()),
-            Some(tell_text(&said)),
+            c.told.as_ref().map(|t| (t.0.clone(), t.2)),
+            Some((tell_text(&said), Tone::Bad)),
             "on the hint line"
         );
         assert!(
@@ -30521,7 +30526,7 @@ mod tests {
                 .raw()
                 .iter()
                 .any(|p| { p.kind == &mpfree_status::kinds::CRASH_RESTART && p.is_now() }),
-            "on the status board (Dev > Status until System status phase 2)"
+            "on the status board, so the chip is red"
         );
         assert!(opens(&mut c).is_none(), "nor later");
         // A last project gone since is said; the new one stays.

@@ -41,7 +41,7 @@ Tap a system to pick it. The data wheel, or **–** and **+**, step through the 
 
 ## On the hint line
 
-When a red problem starts, its title shows briefly on the hint line at the bottom of the screen, in red: "The sound dropped out. Tap the status chip to see why." The same problem shows there again only after a minute, so it never fills the hint line while you play. Yellow problems never go on the hint line.
+When a red problem starts, its title shows briefly on the hint line at the bottom of the screen, in red: "The sound dropped out. Tap the status chip to see why." The same problem shows there again only after a minute, so it never fills the hint line while you play. After a crash the hint line says, in red, which project wasn't opened instead. Yellow problems never go on the hint line.
 
 {{shot: status-red-hint | The sound dropped out: the status chip turns red and the hint line says so for a few seconds.}}
 
@@ -155,7 +155,7 @@ Each problem below starts with its colour. A **Note** is listed on the System st
 
 ### MPFree restarted after a crash
 
-**Red.** MPFree stopped unexpectedly and started again with a new project, so a project that crashes it can't do it again at every start. **Try:** press **Open the last project** to carry on. If you haven't changed the new project, it opens straight away; if you have, the browser opens, so you can save your changes before opening it. If it crashes again, please report it.
+**Red.** MPFree stopped unexpectedly and started again with a new project, so a project that crashes it can't do it again at every start. The hint line says so in red for a few seconds, naming the project that wasn't opened and, if you had unsaved work, where it was put. **Try:** press **Open the last project** to carry on. If you haven't changed the new project, it opens straight away; if you have, the browser opens, so you can save your changes before opening it. If it crashes again, please report it.
 
 ### The screen is drawing without the GPU
 
