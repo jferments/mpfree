@@ -24,7 +24,7 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -982,6 +982,51 @@ pub struct Room {
     pub writable: bool,
     /// Bytes free for MPFree.
     pub free: u64,
+    /// The drive's size, bytes.
+    pub total: u64,
+}
+
+/// The drive's last look, for System status's stick meter: the drive's
+/// own thread ([`watch_drive`]) writes it each look, and the screen reads
+/// it without waiting. The free space and the size may come from two
+/// looks running, which a meter doesn't mind.
+#[derive(Debug, Default)]
+pub struct DriveSeen {
+    /// 0: not looked at yet (no work folder, or not started); 1: there;
+    /// 2: it didn't answer.
+    state: AtomicU8,
+    writable: AtomicU8,
+    free: AtomicU64,
+    total: AtomicU64,
+}
+
+impl DriveSeen {
+    /// A look's answer: None when the drive didn't answer.
+    pub fn set(&self, room: Option<Room>) {
+        match room {
+            Some(r) => {
+                self.free.store(r.free, Ordering::Relaxed);
+                self.total.store(r.total, Ordering::Relaxed);
+                self.writable.store(u8::from(r.writable), Ordering::Relaxed);
+                self.state.store(1, Ordering::Release);
+            }
+            None => self.state.store(2, Ordering::Release),
+        }
+    }
+
+    /// The last look: None before the first, Some(None) when the drive
+    /// didn't answer.
+    pub fn get(&self) -> Option<Option<Room>> {
+        match self.state.load(Ordering::Acquire) {
+            1 => Some(Some(Room {
+                writable: self.writable.load(Ordering::Relaxed) == 1,
+                free: self.free.load(Ordering::Relaxed),
+                total: self.total.load(Ordering::Relaxed),
+            })),
+            2 => Some(None),
+            _ => None,
+        }
+    }
 }
 
 /// Looks at the drive holding a folder (`statvfs`, in the app): None if
@@ -997,10 +1042,12 @@ pub const DRIVE_EVERY: Duration = Duration::from_secs(3);
 /// or is read-only) and Stick nearly full (under 1 GB free, or ten
 /// minutes of what `armed` says the armed takes record, a second), each to
 /// `report` as it begins and ends. False from `report`: the host is gone.
+/// Each look also goes in `seen`, for the page's stick meter.
 pub fn watch_drive(
     dir: PathBuf,
     probe: DriveProbe,
     armed: Arc<AtomicU64>,
+    seen: Arc<DriveSeen>,
     stop: std::sync::mpsc::Receiver<()>,
     report: impl Fn(Problem) -> bool + Send + 'static,
 ) -> io::Result<()> {
@@ -1010,6 +1057,7 @@ pub fn watch_drive(
             let mut watch = Watch::new();
             loop {
                 let room = probe(&dir);
+                seen.set(room);
                 let d = Drive {
                     writable: room.is_some_and(|r| r.writable),
                     free: room.map_or(0, |r| r.free),

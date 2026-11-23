@@ -242,6 +242,7 @@ impl Player {
             self.rec_list = false;
             self.xy_list = false;
             self.xy_full = false;
+            self.xy_setup = false;
         }
         self.patch.learn = None;
         self.patch_show();

@@ -19,7 +19,7 @@ string.position = 20
 voice.vel-tone = 60
 
 # Output
-output.level = 1.5
+output.level = 1
 
 mpfree-preset = 2
 engine = mpfree.pluck
@@ -52,6 +52,9 @@ string.position = 30
 
 # Output
 output.spread = 60
+
+# Output
+output.level = -1
 
 mpfree-preset = 2
 engine = mpfree.pluck
@@ -128,7 +131,7 @@ string.position = 7
 voice.vel-tone = 65
 
 # Output
-output.level = -0.5
+output.level = -2.5
 
 mpfree-preset = 2
 engine = mpfree.pluck
@@ -190,6 +193,9 @@ voice.vel-tone = 60
 
 # Output
 output.spread = 70
+
+# Output
+output.level = 0
 
 mpfree-preset = 2
 engine = mpfree.pluck

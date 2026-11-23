@@ -167,7 +167,6 @@ pub fn play(
     let p = &style.playing;
     let k = f64::from(part.kind.profile().velocity_response);
     let bar = meter.bar_ticks().max(1);
-    let beat = meter.beat_ticks().max(1);
     let centre = events[..n].iter().map(|e| f64::from(e.pitch)).sum::<f64>() / n as f64;
     let range = f64::from(p.velocity_range);
     let mut loud = vec![0.0; n];
@@ -184,9 +183,12 @@ pub fn play(
         // Loudness.
         let base = f64::from(p.velocity) + f64::from(p.accent[step % p.accent.len()]);
         let mut v = 0.0;
+        // The first round of listening heard the new bars as flat (a
+        // spread of about 6 velocity): the four-bar rise and fall and the
+        // tension now move them about twice as far.
         let arch = (PI * (at.rem_euclid(4 * bar) as f64 / (4 * bar) as f64)).sin() - 0.5;
-        v += arch * range * 0.5;
-        v += (f64::from(bp.map_or(0.5, |b| b.tension)) - 0.5) * range * 0.4;
+        v += arch * range * 0.9;
+        v += (f64::from(bp.map_or(0.5, |b| b.tension)) - 0.5) * range * 0.8;
         if let Some(c) = chords.span_at(at).and_then(|s| s.answer.chord()) {
             v += 0.2 * charge(pitch - i32::from(c.root)) * VELOCITY_PER_DB * 0.5;
         }
@@ -199,6 +201,14 @@ pub fn play(
             v += 4.0;
         }
         v += (f64::from(e.pitch) - centre) / 12.0 * 3.0 * VELOCITY_PER_DB * 0.4;
+        // A phrase starts with a lift after a breath.
+        let after_rest = i.checked_sub(1).is_some_and(|j| {
+            let before = &events[j];
+            at - (part.decisions[j].at + before.len) >= STEP * 2
+        });
+        if after_rest {
+            v += 4.0;
+        }
 
         // Length.
         let gap = next.map_or(e.len, |x| x.at - at).max(1);
@@ -207,14 +217,24 @@ pub fn play(
         if next.is_some_and(|x| x.pitch == e.pitch) {
             gate *= 0.8;
         }
+        // A little air before a leap.
+        if next.is_some_and(|x| (i32::from(x.pitch) - pitch).abs() >= 5) {
+            gate *= 0.85;
+        }
+        // Short notes a little shorter and softer, long ones a little
+        // louder.
         if slot < 2 * STEP {
             gate *= 0.95;
             v -= 3.0;
+        } else if slot >= 4 * STEP {
+            v += 2.0;
         }
         let lands = bp.is_some_and(|b| matches!(b.job, BarJob::Land(_)))
             && next.is_none_or(|x| x.at.div_euclid(bar) != at.div_euclid(bar));
+        // A landing note is held for all its planned length, and never
+        // past it: the breath planned after it stays a breath.
         let len = if lands {
-            slot.max(gap.min(2 * beat)) - STEP / 2
+            slot - STEP / 2
         } else {
             (slot as f64 * gate) as Tick
         };
@@ -396,6 +416,42 @@ mod tests {
         );
         assert!(kept.decisions.iter().all(|d| d.velocity == 90));
         assert!(kept.decisions.iter().all(|d| d.source == Source::Mpfree));
+    }
+
+    #[test]
+    fn a_landing_before_a_breath_stops_there_and_the_next_phrase_lifts() {
+        // The landing (bar 3's last note) planned `landing` long, then a
+        // new phrase at the next bar.
+        let played = |landing: Tick| {
+            let (mut part, mut ev, plan) = line(&MINIMAL);
+            let n = ev.len();
+            ev[n - 1].len = landing;
+            let mut d = part.decisions[n - 1];
+            d.at = 3 * BAR;
+            d.len = BEAT / 2;
+            part.decisions.push(d);
+            let mut e = ev[n - 1];
+            e.at = 3 * BAR;
+            e.len = BEAT / 2;
+            ev.push(e);
+            play(
+                &mut part,
+                &ev,
+                &plan,
+                &chords(),
+                &MINIMAL,
+                Meter::default(),
+                false,
+                &Touch::NONE,
+            );
+            (part.decisions[n - 1].len, part.decisions[n].velocity)
+        };
+        // A beat and a half, then half a beat's breath: held to the
+        // breath, never past it, and the next phrase comes in louder.
+        let (held, lifted) = played(3 * BEAT / 2);
+        assert_eq!(held, 3 * BEAT / 2 - STEP / 2);
+        let (_, flat) = played(2 * BEAT);
+        assert!(lifted > flat, "{lifted} {flat}");
     }
 
     #[test]

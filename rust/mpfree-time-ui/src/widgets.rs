@@ -462,10 +462,36 @@ pub struct GridCell {
     /// place (the detail goes to the foot when it is empty): each column's
     /// peak, 0 to 255 (all 0 until the looper has made it).
     pub wave: Option<[u8; CELL_WAVE]>,
+    /// A change waits for its line on this playing cell (another clip,
+    /// a stop, the song coming back): the detail says what and when
+    /// ("until 7.1", "to song 7.1"), in amber, apart from what plays now
+    /// (the Arrange refactor's 5.1, D3).
+    pub cued: bool,
+    /// For a playing cell with a stop or Back to song waiting, in
+    /// Perform: how near its line is, an amber bar along its foot as a
+    /// queued cell's (0 draws none).
+    pub countdown: f32,
 }
 
 /// Columns of a loop cell's small wave ([`GridCell::wave`]).
 pub const CELL_WAVE: usize = 24;
+
+/// A track's SONG tag on its column's header (the Arrange refactor's
+/// 5.1, D3): what it plays now, the song or a clip over it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SongMark {
+    /// No tag: song mode is off, or the song has nothing on the track.
+    #[default]
+    None,
+    /// It plays the song now: a filled green tag.
+    Plays,
+    /// A clip launched on it plays over the song: an outlined tag. A
+    /// stop, or Back to song, gives it the song again.
+    Under,
+}
+
+/// The SONG tag's words.
+pub const SONG_TAG: &str = "SONG";
 
 /// One column of the grid: a track and its slots.
 #[derive(Clone, Debug, PartialEq)]
@@ -490,6 +516,8 @@ pub struct GridTrack {
     /// under its name, and its cells empty and dashed until audio clips
     /// come.
     pub audio: bool,
+    /// Its SONG tag, on the name line's right.
+    pub song: SongMark,
     pub cells: Vec<GridCell>,
 }
 
@@ -548,6 +576,10 @@ pub struct ClipGrid {
     press: Option<(i32, usize)>,
     /// A finger on a clip or a row's number, and where it has dragged it.
     grip: Option<Grip>,
+    /// A finger on an empty cell: (track, slot) and where it went down.
+    /// It makes a clip on the lift; one that moves off as a drag or a
+    /// scroll does nothing (the Arrange refactor's 5.4).
+    empty: Option<(usize, usize, (i32, i32))>,
 }
 
 /// What a finger holds on the grid.
@@ -622,13 +654,19 @@ pub const ADD_KIND: usize = 10;
 /// only closes it.
 pub const ADD_DISMISS: usize = 13;
 /// `Toggle(slots + SHOW_VIEW)`: Show, back to the Show view while a set is
-/// open (live shows B1).
-pub const SHOW_VIEW: usize = 14;
+/// open (live shows B1). After the view chip's List ([`LIST_VIEW`]).
+pub const SHOW_VIEW: usize = 15;
 /// The Show button's width, on the grid, the Song view and the song list
 /// (layout spec 4p).
 pub const SHOW_W: i32 = 72;
 /// "Back to song"'s width.
 const BACK_W: i32 = 124;
+/// "Back to song"'s and the pager's label's widths where Show shares the
+/// title line with both and the view chip leaves no room for all three at
+/// their usual widths (the Clips view beside the Record panel, more than
+/// eight tracks): the 36 pixels Show needs to clear the chip.
+const BACK_TIGHT_W: i32 = 100;
+const PAGER_LABEL_TIGHT_W: i32 = 92;
 /// Pixels a finger travels along the track names to page.
 const SWIPE_PX: i32 = 48;
 /// "+ Track"'s width, the pager's arrows' and its label's.
@@ -640,6 +678,97 @@ const PAGER_LABEL_W: i32 = 104;
 pub const GRID_COLS: usize = 8;
 /// The Rec song button's width (on the grid and the Song view).
 pub const REC_SONG_W: i32 = 112;
+
+/// `Toggle(slots + LIST_VIEW)`: the view chip's List.
+pub const LIST_VIEW: usize = 14;
+
+/// Arrange's three views of one song, in the order the view chip shows
+/// them (the Arrange refactor's 5.7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArrangeView {
+    Clips,
+    List,
+    Song,
+}
+
+impl ArrangeView {
+    pub const ALL: [ArrangeView; 3] = [ArrangeView::Clips, ArrangeView::List, ArrangeView::Song];
+
+    /// Its word on the chip.
+    pub fn word(self) -> &'static str {
+        match self {
+            ArrangeView::Clips => "Clips",
+            ArrangeView::List => "List",
+            ArrangeView::Song => "Song",
+        }
+    }
+}
+
+/// The view chip's parts' width, and the whole chip's.
+pub const VIEW_PART_W: i32 = 58;
+pub const VIEW_CHIP_W: i32 = 3 * VIEW_PART_W;
+
+/// Where the view chip is in an Arrange view's panel `r`: the left end of
+/// its title line, where the view's name was.
+pub fn view_chip_rect(r: Rect) -> Rect {
+    let head = r.inset(14).take_top(26).0;
+    Rect::new(head.x, head.y - 4, VIEW_CHIP_W, 30)
+}
+
+/// Where the title's words start, right of the view chip.
+pub fn view_title_x(r: Rect) -> i32 {
+    view_chip_rect(r).right() + 12
+}
+
+/// Part `v` of the view chip `chip`.
+pub fn view_part_rect(chip: Rect, v: ArrangeView) -> Rect {
+    let k = ArrangeView::ALL.iter().position(|a| *a == v).unwrap_or(0) as i32;
+    Rect::new(chip.x + k * VIEW_PART_W, chip.y, VIEW_PART_W, chip.h)
+}
+
+/// The view a touch at (x, y) on the chip picks, if it is on it.
+pub fn view_part_at(chip: Rect, x: i32, y: i32) -> Option<ArrangeView> {
+    ArrangeView::ALL
+        .into_iter()
+        .find(|v| view_part_rect(chip, *v).contains(x, y))
+}
+
+/// The view chip: Clips, List and Song side by side, the view showing
+/// filled in the accent colour.
+pub fn paint_view_chip(cx: &mut PaintCx, chip: Rect, on: ArrangeView) {
+    let t = cx.theme.clone();
+    cx.canvas.fill_round_rect(chip, t.round(10), t.raised);
+    for v in ArrangeView::ALL {
+        let b = view_part_rect(chip, v);
+        let ink = if v == on {
+            let lit = b.inset_xy(2, 2);
+            cx.canvas.fill_round_rect(lit, t.round(8), t.accent);
+            t.ink_on(t.accent)
+        } else {
+            t.text
+        };
+        cx.text(FontId::Bold, t.size_small, b, Align::Center, ink, v.word());
+    }
+}
+
+/// An Arrange view's title line: the panel, the view chip and the
+/// title's words after it (in capitals, as a panel's title is), up to
+/// `end` (the buttons on its right).
+pub fn view_title(cx: &mut PaintCx, r: Rect, on: ArrangeView, title: &str, end: i32) {
+    let t = cx.theme.clone();
+    cx.titled_panel(r, "", "");
+    paint_view_chip(cx, view_chip_rect(r), on);
+    let head = r.inset(14).take_top(26).0;
+    let x = view_title_x(r);
+    cx.text(
+        FontId::Bold,
+        t.size_small,
+        Rect::new(x, head.y, (end - x).max(0), head.h),
+        Align::Left,
+        t.text_dim,
+        &title.to_uppercase(),
+    );
+}
 
 /// The Rec song button: live to song, red while armed.
 pub fn rec_song_pill(cx: &mut PaintCx, r: Rect, on: bool) {
@@ -709,6 +838,7 @@ impl ClipGrid {
             drawn: RefCell::new(None),
             press: None,
             grip: None,
+            empty: None,
         }
     }
 
@@ -907,16 +1037,15 @@ impl ClipGrid {
         ))
     }
 
-    /// Where the Song button is: the right end of the title line.
-    pub fn song_rect(&self, r: Rect) -> Rect {
-        let head = r.inset(14).take_top(26).0;
-        Rect::new(head.right() - 72, head.y - 4, 72, 30)
+    /// Where the view chip is: the left end of the title line (5.7).
+    pub fn view_rect(&self, r: Rect) -> Rect {
+        view_chip_rect(r)
     }
 
-    /// Where the Rec song button is: left of the Song button.
+    /// Where the Rec song button is: the right end of the title line.
     pub fn rec_rect(&self, r: Rect) -> Rect {
-        let song = self.song_rect(r);
-        Rect::new(song.x - 8 - REC_SONG_W, song.y, REC_SONG_W, song.h)
+        let head = r.inset(14).take_top(26).0;
+        Rect::new(head.right() - REC_SONG_W, head.y - 4, REC_SONG_W, 30)
     }
 
     /// Where the Edit button is (the note editor): left of Rec song.
@@ -949,9 +1078,25 @@ impl ClipGrid {
             return None;
         }
         let add = self.add_rect(r);
+        let label = if self.tight(r) {
+            PAGER_LABEL_TIGHT_W
+        } else {
+            PAGER_LABEL_W
+        };
         let on = Rect::new(add.x - 8 - ARROW_W, add.y, ARROW_W, add.h);
-        let back = Rect::new(on.x - PAGER_LABEL_W - ARROW_W, add.y, ARROW_W, add.h);
+        let back = Rect::new(on.x - label - ARROW_W, add.y, ARROW_W, add.h);
         Some((back, on))
+    }
+
+    /// Whether Show, "Back to song" and the pager all share the title line
+    /// and would reach the view chip at their usual widths, so "Back to
+    /// song" and the pager's label narrow.
+    fn tight(&self, r: Rect) -> bool {
+        if !(self.show_button && self.back_to_song && self.paged()) {
+            return false;
+        }
+        let wide = 8 + 2 * ARROW_W + PAGER_LABEL_W + 8 + BACK_W + 8 + SHOW_W;
+        self.add_rect(r).x - wide < self.view_rect(r).right() + 8
     }
 
     /// Where "Back to song" is, while it shows: left of the pager, or of
@@ -961,7 +1106,8 @@ impl ClipGrid {
             return None;
         }
         let right = self.pager_rects(r).map_or(self.add_rect(r), |(b, _)| b);
-        Some(Rect::new(right.x - 8 - BACK_W, right.y, BACK_W, right.h))
+        let w = if self.tight(r) { BACK_TIGHT_W } else { BACK_W };
+        Some(Rect::new(right.x - 8 - w, right.y, w, right.h))
     }
 
     /// Where Show is, while a set is open: left of the title line's other
@@ -1124,22 +1270,22 @@ impl Widget for ClipGrid {
             show_button: self.show_button,
             dragged: self.dragged_now(),
         });
-        // The title, shortened to what comes before " · " where "Back to
-        // song" or Show leaves it no room.
+        // The view chip, then the title, shortened to what comes before
+        // " · " where "Back to song" or Show leaves it no room.
         let head = r.inset(14).take_top(26).0;
+        let title_x = view_title_x(r);
         let back = self.back_rect(r);
         let show = self.show_rect(r);
         let mut title = self.title.as_str();
         if let Some(b) = show.or(back) {
             let wide = cx.measure(FontId::Bold, t.size_small, &title.to_uppercase());
-            if head.x + wide + 12 > b.x {
+            if title_x + wide + 12 > b.x {
                 title = title.split(" · ").next().unwrap_or(title);
             }
         }
-        cx.titled_panel(r, title, "");
-        // The legend (or the pager), "+ Track", Edit, Rec song and the
-        // Song button (the Song view of the page).
-        let song = self.song_rect(r);
+        let end = show.or(back).map_or(self.add_rect(r).x, |b| b.x) - 12;
+        view_title(cx, r, ArrangeView::Clips, title, end);
+        // The legend (or the pager), "+ Track", Edit and Rec song.
         let rec = self.rec_rect(r);
         let edit = self.edit_rect(r);
         let add = self.add_rect(r);
@@ -1187,7 +1333,7 @@ impl Widget for ClipGrid {
             // buttons, dropping the first ones when it is too wide.
             let title_w = cx.measure(FontId::Bold, t.size_small, &title.to_uppercase());
             let end = show.or(back).map_or(add.x, |b| b.x);
-            let room = end - 12 - (head.x + title_w + 16);
+            let room = end - 12 - (title_x + title_w + 16);
             let mut legend = self.legend.as_str();
             while !legend.is_empty() && cx.measure(FontId::Sans, t.size_small, legend) > room {
                 legend = legend.split_once(" · ").map_or("", |(_, rest)| rest);
@@ -1219,15 +1365,6 @@ impl Widget for ClipGrid {
             Align::Center,
             t.text,
             "Edit ›",
-        );
-        cx.canvas.fill_round_rect(song, t.round(10), t.raised);
-        cx.text(
-            FontId::Bold,
-            t.size_small,
-            song,
-            Align::Center,
-            t.text,
-            "Song ›",
         );
         let g = self.geo(r);
         if self.tracks.is_empty() {
@@ -1305,6 +1442,42 @@ impl Widget for ClipGrid {
             if track.solo && !track.armed {
                 cx.canvas.stroke_round_rect(head, t.round(8), 2, t.accent);
             }
+            // What it plays now (D3): the SONG tag, filled while it
+            // plays the song and outlined while a clip plays over it, at
+            // the right of the sound line (of the name line when there is
+            // none, or while a mute waits there), muted or not.
+            let mut sound_w = head.w - 16;
+            if track.song != SongMark::None {
+                let px = t.size_small - 5.0;
+                let w = cx.measure(FontId::Bold, px, SONG_TAG) + 8;
+                let on_sound = two && track.waiting.is_none();
+                let line = if on_sound {
+                    Rect::new(head.x + 10, head.y + 22, sound_w, 18)
+                } else {
+                    name
+                };
+                if line.w > w + 24 {
+                    let tag = Rect::new(line.right() - w, line.y + line.h / 2 - 7, w, 14);
+                    let green = if track.mute {
+                        t.good.mix(head_fill, 0.45)
+                    } else {
+                        t.good
+                    };
+                    let ink = if track.song == SongMark::Plays {
+                        cx.canvas.fill_round_rect(tag, 7, green);
+                        t.ink_on(green)
+                    } else {
+                        cx.canvas.stroke_round_rect(tag, 7, 1, green);
+                        t.readable(green, head_fill)
+                    };
+                    cx.text(FontId::Bold, px, tag, Align::Center, ink, SONG_TAG);
+                    if on_sound {
+                        sound_w -= w + 4;
+                    } else {
+                        name = name.take_right(w + 4).1;
+                    }
+                }
+            }
             if let Some(w) = &track.waiting {
                 // Hatched while a change waits for its line, with what and
                 // when under the name (the second line, or the only one).
@@ -1320,7 +1493,7 @@ impl Widget for ClipGrid {
                 let ink = t.readable(t.warn, head_fill);
                 cx.text(FontId::Bold, px, line, Align::Left, ink, &w);
             } else if two {
-                let mut sound = Rect::new(head.x + 10, head.y + 22, head.w - 16, 18);
+                let mut sound = Rect::new(head.x + 10, head.y + 22, sound_w, 18);
                 let dim = if track.mute { t.text_faint } else { t.text_dim };
                 if track.loops || track.audio {
                     // A Loop or audio track's mark: a little wave before
@@ -1385,8 +1558,10 @@ impl Widget for ClipGrid {
             out.push(Target::tap("add-close", 0, "Close", r));
             return out;
         }
+        let chip = self.view_rect(r);
         let mut out = vec![
-            Target::tap("song", 0, "Song", self.song_rect(r)),
+            Target::tap("view", 1, "List", view_part_rect(chip, ArrangeView::List)),
+            Target::tap("view", 2, "Song", view_part_rect(chip, ArrangeView::Song)),
             Target::tap("rec-song", 0, "Rec song", self.rec_rect(r)),
             Target::tap("edit", 0, "Edit", self.edit_rect(r)),
             Target::tap("add-track", 0, "+ Track", self.add_rect(r)).disabled_if(!self.can_add),
@@ -1447,6 +1622,28 @@ impl Widget for ClipGrid {
             return Some(EventKind::Toggle(
                 self.slots + kind.map_or(ADD_DISMISS, |k| ADD_KIND + k),
             ));
+        }
+        // A finger on an empty cell: a tap on the lift; moved off as a
+        // drag or a scroll, nothing.
+        if let Some((track, slot, from)) = self.empty {
+            match phase {
+                Touch::Move => {
+                    let (dx, dy) = (x - from.0, y - from.1);
+                    if dx * dx + dy * dy >= LIFT_PX * LIFT_PX {
+                        self.empty = None;
+                    }
+                    return None;
+                }
+                Touch::Up => {
+                    self.empty = None;
+                    return Some(EventKind::Select(track * self.slots + slot));
+                }
+                Touch::Cancel => {
+                    self.empty = None;
+                    return None;
+                }
+                Touch::Down => self.empty = None,
+            }
         }
         // A finger on a clip or a row's number: a tap on the lift, or
         // dragged, a drop where it lifts.
@@ -1527,10 +1724,14 @@ impl Widget for ClipGrid {
             }
         }
         // A row's scene button is Toggle(row); Stop all is Toggle(slots);
-        // the Song button Toggle(slots + 1); Rec song Toggle(slots + 2);
+        // the view chip's Song Toggle(slots + 1) and List Toggle(slots +
+        // LIST_VIEW) (Clips is this view); Rec song Toggle(slots + 2);
         // Edit Toggle(slots + 3); "+ Track" and the pager as above.
-        if self.song_rect(r).contains(x, y) {
-            return Some(EventKind::Toggle(self.slots + 1));
+        match view_part_at(self.view_rect(r), x, y) {
+            Some(ArrangeView::Song) => return Some(EventKind::Toggle(self.slots + 1)),
+            Some(ArrangeView::List) => return Some(EventKind::Toggle(self.slots + LIST_VIEW)),
+            Some(ArrangeView::Clips) => return None,
+            None => {}
         }
         if self.rec_rect(r).contains(x, y) {
             return Some(EventKind::Toggle(self.slots + 2));
@@ -1595,7 +1796,9 @@ impl Widget for ClipGrid {
                         .get(slot)
                         .is_some_and(|c| !matches!(c.state, CellState::Empty | CellState::Armed));
                     if !filled {
-                        return Some(EventKind::Select(track * self.slots + slot));
+                        // On the lift, unless it moves off (5.4).
+                        self.empty = Some((track, slot, (x, y)));
+                        return None;
                     }
                     // A clip launches on the lift, unless it is dragged.
                     self.grip = Some(Grip {
@@ -1922,6 +2125,7 @@ fn paint_cell(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color) {
     let (detail, _) = rest.take_top(20);
     let detail_ink = match cell.state {
         CellState::Recording => t.readable(t.bad.mix(t.text, 0.2), fill),
+        _ if cell.cued => t.readable(t.warn, fill),
         _ => t.readable(t.text_dim, fill),
     };
     let rolling = matches!(cell.state, CellState::Playing | CellState::Recording);
@@ -1998,6 +2202,16 @@ fn paint_cell(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color) {
             t.surface.mix(t.text_faint, 0.35),
             color,
         );
+        if cell.countdown > 0.0 {
+            // A stop or Back to song nears: the countdown left of the
+            // ring.
+            let track = Rect::new(cr.x + 10, cr.bottom() - 7, cr.w - 24 - RING, 3);
+            cx.canvas
+                .fill_round_rect(track, 1, t.surface.mix(t.text_faint, 0.35));
+            let w = (track.w as f32 * cell.countdown.min(1.0)) as i32;
+            cx.canvas
+                .fill_round_rect(Rect::new(track.x, track.y, w.max(2), 3), 1, t.warn);
+        }
     } else if cell.state == CellState::Queued && cell.progress > 0.0 {
         // Perform's countdown: an amber bar along the foot that fills as
         // the line nears.
@@ -2094,6 +2308,7 @@ fn paint_compact(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color, fill:
                 CellState::Queued => (&cell.foot, t.warn),
                 CellState::Recording => (&cell.detail, t.bad.mix(t.text, 0.2)),
                 CellState::Armed => (&cell.detail, t.text),
+                _ if cell.cued => (&cell.detail, t.warn),
                 _ => (&cell.detail, t.text_dim),
             };
             let ink = t.readable(ink, fill);
@@ -2363,7 +2578,25 @@ fn waiting_fit(full: &str, mut fits: impl FnMut(&str) -> bool) -> String {
 
 /// Diagonal stripes over `r` in `c`, 3 px wide every 9 px, inside the
 /// canvas's clip (a mute or solo change waiting, the grid's header).
-fn hatch(cx: &mut PaintCx, r: Rect, c: Color) {
+/// A dashed outline round `r`: 6 px on, 4 px off, 2 px thick.
+pub(crate) fn dashed_outline(cx: &mut PaintCx, r: Rect, c: Color) {
+    let mut x = r.x;
+    while x < r.right() {
+        let w = 6.min(r.right() - x);
+        cx.canvas.fill_rect(Rect::new(x, r.y, w, 2), c);
+        cx.canvas.fill_rect(Rect::new(x, r.bottom() - 2, w, 2), c);
+        x += 10;
+    }
+    let mut y = r.y;
+    while y < r.bottom() {
+        let h = 6.min(r.bottom() - y);
+        cx.canvas.fill_rect(Rect::new(r.x, y, 2, h), c);
+        cx.canvas.fill_rect(Rect::new(r.right() - 2, y, 2, h), c);
+        y += 10;
+    }
+}
+
+pub(crate) fn hatch(cx: &mut PaintCx, r: Rect, c: Color) {
     let was = cx.canvas.clip();
     cx.canvas.set_clip(was.intersect(r));
     for y in r.y..r.y + r.h {
@@ -2469,6 +2702,7 @@ mod tests {
                 waiting: None,
                 loops: false,
                 audio: false,
+                song: SongMark::None,
                 cells,
             });
         }
@@ -2492,8 +2726,10 @@ mod tests {
         let c = g.cell_rect(r, 2, 3).unwrap();
         assert!(c.w > 80 && c.h >= ROW_MIN_H, "{c:?}");
         assert!(r.intersect(c) == c);
+        // An empty cell acts on the lift (the Arrange refactor's 5.4).
+        assert_eq!(g.touch(1, Touch::Down, c.x + 2, c.y + 2, r), None);
         assert_eq!(
-            g.touch(1, Touch::Down, c.x + 2, c.y + 2, r),
+            g.touch(1, Touch::Up, c.x + 2, c.y + 2, r),
             Some(EventKind::Select(2 * 16 + 3))
         );
         // A track's name arms it on the lift.
@@ -2631,13 +2867,51 @@ mod tests {
                 .unwrap_or(g.add_rect(r));
             assert!(s.right() < right.x, "{s:?} {right:?}");
             assert_eq!(s.w, SHOW_W);
-            assert!(s.x > r.x + 14, "on the panel: {s:?}");
+            assert!(
+                s.x > g.view_rect(r).right(),
+                "clear of the view chip: {s:?}"
+            );
+            // "Back to song" and the pager's label narrow only where all
+            // three would not fit, and their words still do.
+            let tight = back && tracks > GRID_COLS;
+            if let Some(b) = g.back_rect(r) {
+                assert_eq!(b.w, if tight { BACK_TIGHT_W } else { BACK_W });
+                assert!(b.w >= 87 + 12, "Back to song's words fit: {b:?}");
+            }
+            if let Some((pb, po)) = g.pager_rects(r) {
+                let label = po.x - pb.right();
+                assert_eq!(
+                    label,
+                    if tight {
+                        PAGER_LABEL_TIGHT_W
+                    } else {
+                        PAGER_LABEL_W
+                    }
+                );
+                assert!(label - 8 >= 77, "17–24 of 24 fits: {label}");
+            }
+            g.show_button = false;
+            assert_eq!(g.back_rect(r).map(|b| b.w), back.then_some(BACK_W));
+            g.show_button = true;
             assert!(g.targets(r).iter().any(|t| t.id == "show-view"));
             assert_eq!(
                 g.touch(1, Touch::Down, s.x + 3, s.y + 3, r),
                 Some(EventKind::Toggle(16 + SHOW_VIEW))
             );
         }
+    }
+
+    /// The title line's and the chooser's taps each have their own id
+    /// after the slots (Song 1, Rec song 2, Edit 3, then the constants).
+    #[test]
+    fn the_grid_s_ids_after_the_slots_are_all_different() {
+        let mut ids = vec![1, 2, 3, ADD_TRACK, PAGE_BACK, PAGE_ON, ROWS_BACK, ROWS_ON];
+        ids.extend([BACK_TO_SONG, ADD_DISMISS, LIST_VIEW, SHOW_VIEW]);
+        ids.extend((0..crate::song::ADD_KINDS.len()).map(|k| ADD_KIND + k));
+        let mut seen = ids.clone();
+        seen.sort();
+        seen.dedup();
+        assert_eq!(seen.len(), ids.len(), "{ids:?}");
     }
 
     #[test]
@@ -2728,13 +3002,19 @@ mod tests {
         g.touch(1, Touch::Down, beat.0, beat.1, r);
         g.touch(1, Touch::Move, there.0, there.1, r);
         assert_eq!(g.touch(1, Touch::Cancel, there.0, there.1, r), None);
-        // An empty slot is not dragged: a touch makes a clip there, as
-        // before.
+        // An empty slot is not dragged: a tap makes a clip there, on the
+        // lift (the Arrange refactor's 5.4), and a finger that slides off
+        // as a drag or a scroll makes nothing.
+        assert_eq!(g.touch(1, Touch::Down, there.0, there.1, r), None);
         assert_eq!(
-            g.touch(1, Touch::Down, there.0, there.1, r),
+            g.touch(1, Touch::Up, there.0 + 4, there.1 + 4, r),
             Some(EventKind::Select(4 * 16 + 3))
         );
-        g.touch(1, Touch::Up, there.0, there.1, r);
+        assert_eq!(g.touch(1, Touch::Down, there.0, there.1, r), None);
+        assert_eq!(g.touch(1, Touch::Move, there.0, there.1 + 60, r), None);
+        assert_eq!(g.touch(1, Touch::Up, there.0, there.1, r), None);
+        assert_eq!(g.touch(1, Touch::Down, there.0, there.1, r), None);
+        assert_eq!(g.touch(1, Touch::Cancel, there.0, there.1, r), None);
         // At the right edge the tracks after show.
         g.touch(1, Touch::Down, beat.0, beat.1, r);
         g.touch(1, Touch::Move, beat.0, beat.1 + 40, r);
@@ -2783,14 +3063,24 @@ mod tests {
             g.touch(1, Touch::Down, s.x + 4, s.y + 4, r),
             Some(EventKind::Toggle(16))
         );
-        let song = g.song_rect(r);
-        assert!(song.right() <= r.right() - 14 && song.y >= r.y, "{song:?}");
+        // The view chip at the title line's left: Song and List switch,
+        // Clips is this view (5.7).
+        let chip = g.view_rect(r);
+        assert!(chip.x >= r.x + 14 && chip.y >= r.y, "{chip:?}");
+        let song = view_part_rect(chip, ArrangeView::Song);
         assert_eq!(
             g.touch(1, Touch::Down, song.x + 4, song.y + 4, r),
             Some(EventKind::Toggle(17))
         );
+        let list = view_part_rect(chip, ArrangeView::List);
+        assert_eq!(
+            g.touch(1, Touch::Down, list.x + 4, list.y + 4, r),
+            Some(EventKind::Toggle(16 + LIST_VIEW))
+        );
+        let clips = view_part_rect(chip, ArrangeView::Clips);
+        assert_eq!(g.touch(1, Touch::Down, clips.x + 4, clips.y + 4, r), None);
         let rec = g.rec_rect(r);
-        assert!(rec.right() < song.x, "{rec:?}");
+        assert!(rec.right() <= r.right() - 14, "{rec:?}");
         assert_eq!(
             g.touch(1, Touch::Down, rec.x + 4, rec.y + 4, r),
             Some(EventKind::Toggle(18))

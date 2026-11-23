@@ -2519,7 +2519,7 @@ mod tests {
             s.press("synth-pick", "keep", "").run_periods(2).settle();
             assert_eq!(s.mix.instruments.pads_play_at(), Some(free(0)));
             s.press("header", "tab", "Arrange").settle();
-            s.press("clips", "song", "Song").settle();
+            s.press("clips", "view", "Song").settle();
             s.press("song", "button", "Play song").settle();
             assert!(s.time.song_on());
             let audio = |s: &mut Session, a| {
@@ -2692,7 +2692,7 @@ mod tests {
             // input; its next take's file is made as it arms.
             s.line_in(Some(440.0));
             s.press("header", "tab", "Arrange").settle();
-            s.press("clips", "song", "Song").settle();
+            s.press("clips", "view", "Song").settle();
             s.press("song", "button", "Play song").settle();
             s.press("song", "add-track", "+ Track").settle();
             s.press("song", "add-kind", "Audio track")
@@ -5432,6 +5432,109 @@ mod tests {
             assert_eq!(s.synth.state().own.as_deref(), Some(saved.as_str()));
             assert_eq!(s.view(), View::Synth);
             let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
+    /// Your own XY layouts (the XY plan's phase 2): + New layout plays an
+    /// empty one and opens Setup; + across raises the banner, which stays
+    /// on the mixer; SHIFT + a touch on a fader joins it there (not MIDI
+    /// Learn) and Done keeps it; on the full-screen pad a finger moves the
+    /// fader and Go back gives it back; the song keeps the layout.
+    #[test]
+    fn a_layout_of_yours_gathers_a_fader_and_the_pad_plays_it() {
+        on_big_stack(|| {
+            use crate::xy_widgets::XY_BANNER;
+            use mpfree_ui::Touch;
+            let drums = StripId::Track(0);
+            let volume = |s: &Session| s.mix.mixer.param(drums, mpfree_fx::ids::mixer::VOLUME);
+            let mut s = Session::new();
+            s.play_view("All");
+            s.press(crate::play_page::XY, "xy-chip", "").settle();
+            assert_eq!(s.page(), crate::xy_list::XY_PAGE);
+            s.press(crate::xy_list::XY_LIST, "new", "+ New layout")
+                .settle();
+            assert_eq!(s.page(), crate::xy_setup::XY_SETUP_PAGE);
+            assert_eq!(s.xy_yours.playing, Some(0));
+            assert_eq!(s.xy_yours.yours[0].layout.name, "Layout 1");
+
+            // + across: the banner, on every page.
+            s.press(crate::xy_setup::XY_SETUP, "plus", "+ across")
+                .settle();
+            assert!(s.xy_yours.wait.is_some());
+            s.press("header", "tab", "Mix").settle();
+            assert!(
+                s.control(XY_BANNER, "done", "Done").is_some(),
+                "on the mixer too"
+            );
+            s.button_edge("SHIFT", true);
+            s.press("mixer", "fader", "Drums fader").settle();
+            s.button_edge("SHIFT", false);
+            let across = &s.xy_yours.yours[0].layout.across.targets;
+            assert_eq!(across.len(), 1, "the fader joined across");
+            s.press(XY_BANNER, "done", "Done").settle();
+            assert!(s.xy_yours.wait.is_none());
+            assert!(
+                s.control(XY_BANNER, "done", "Done").is_none(),
+                "the banner went"
+            );
+
+            // The full-screen pad plays it: the fader follows the finger,
+            // and Go back gives it back.
+            let before = volume(&s);
+            s.button_with("SHIFT", "NEXT SEQ").settle();
+            assert_eq!(s.page(), crate::play_page::XY_FULL_PAGE);
+            let pad = s
+                .control(crate::play_page::XY, "xy", "")
+                .expect("the pad")
+                .target
+                .rect;
+            let (x, y) = (pad.x + pad.w / 10, pad.y + pad.h / 2);
+            if let Some(a) = s.screen.touch(9, Touch::Down, x, y) {
+                s.route(a);
+            }
+            s.run_for(0.3);
+            let held = volume(&s);
+            assert!(
+                (held - before).abs() > 0.05,
+                "the pad moved the fader: {before} → {held}"
+            );
+            if let Some(a) = s.screen.touch(9, Touch::Up, x, y) {
+                s.route(a);
+            }
+            s.run_for(1.0);
+            assert!(
+                (volume(&s) - before).abs() < 0.01,
+                "Go back: {before} again, not {}",
+                volume(&s)
+            );
+
+            // Let go: Stay. The fader stays where the finger lifts, and
+            // UNDO puts it back.
+            s.press(crate::xy_widgets::XY_BAR, "xy-bar", "Let go: Go back")
+                .settle();
+            assert!(s.xy_yours.yours[0].stays());
+            if let Some(a) = s.screen.touch(9, Touch::Down, x, y) {
+                s.route(a);
+            }
+            s.run_for(0.3);
+            if let Some(a) = s.screen.touch(9, Touch::Up, x, y) {
+                s.route(a);
+            }
+            s.run_for(0.5).settle();
+            let stayed = volume(&s);
+            assert!((stayed - held).abs() < 0.01, "Stay: {held}, not {stayed}");
+            s.button("UNDO").settle();
+            s.run_for(0.2);
+            assert!(
+                (volume(&s) - before).abs() < 0.01,
+                "UNDO: {before} again, not {}",
+                volume(&s)
+            );
+
+            // The song keeps it.
+            let text = s.xy_yours.text();
+            assert!(text.starts_with("xy 1\nlayout\tLayout 1\n"), "{text}");
+            assert!(text.contains("playing\t0"), "{text}");
         });
     }
 }

@@ -62,7 +62,8 @@ use mpfree_transport::time::TempoMap;
 use mpfree_transport::{Block, Mark, Tick};
 
 use crate::files::{
-    self, DriveProbe, FileEvent, FileView, Files, Growing, Name, Problem, Said, WriterConfig,
+    self, DriveProbe, DriveSeen, FileEvent, FileView, Files, Growing, Name, Problem, Said,
+    WriterConfig,
 };
 use crate::save::{Saved, TakeFile};
 use crate::streaming::{self, FromStream, Head, Read, Stream, StreamConfig, ToStream};
@@ -166,7 +167,7 @@ enum ToWorker {
     /// Room for a save (`Saved::room`), for the audio thread to fill.
     Room,
     /// Look at the drive takes record to with this, once they do.
-    WatchDrive(DriveProbe),
+    WatchDrive(DriveProbe, Arc<DriveSeen>),
     /// A filled room: trimmed to its first `tracks` and `takes`, each
     /// take named for its file, and room made for the audio of those
     /// whose file can't be copied whole ([`Files::name_save`]).
@@ -369,6 +370,8 @@ enum Fitting {
 /// The audio tracks with their worker; see the module notes.
 pub struct AudioHost {
     pub tracks: AudioTracks,
+    /// The drive's last look (System status's stick meter).
+    drive: Arc<DriveSeen>,
     tx: Option<Sender<ToWorker>>,
     rx: Option<Receiver<FromWorker>>,
     saving: Option<Saving>,
@@ -460,6 +463,7 @@ impl AudioHost {
             .is_ok();
         AudioHost {
             tracks: AudioTracks::new(rate, seconds),
+            drive: Arc::new(DriveSeen::default()),
             tx: spawned.then_some(tx),
             rx: spawned.then_some(rx),
             saving: None,
@@ -657,7 +661,13 @@ impl AudioHost {
     /// once takes record to files ([`AudioHost::record_to`]). Allocates
     /// the message: between periods.
     pub fn watch_drive(&self, probe: DriveProbe) {
-        self.send(ToWorker::WatchDrive(probe));
+        self.send(ToWorker::WatchDrive(probe, Arc::clone(&self.drive)));
+    }
+
+    /// The drive's last look, as [`AudioHost::watch_drive`]'s thread keeps
+    /// it (System status's stick meter): nothing until it starts.
+    pub fn drive_seen(&self) -> Arc<DriveSeen> {
+        Arc::clone(&self.drive)
     }
 
     fn send(&self, m: ToWorker) {
@@ -2079,9 +2089,9 @@ struct Worker {
     /// file opened carries it, so an answer for tracks since emptied is
     /// told apart.
     era: u32,
-    /// How to look at the drive, and the end of the thread looking at it
-    /// (dropped, it stops).
-    drive: Option<DriveProbe>,
+    /// How to look at the drive and where its looks go, and the end of
+    /// the thread looking at it (dropped, it stops).
+    drive: Option<(DriveProbe, Arc<DriveSeen>)>,
     drive_stop: Option<Sender<()>>,
 }
 
@@ -2089,15 +2099,16 @@ impl Worker {
     /// Look at the drive the takes record to, once there is a folder and
     /// a way to look: a thread of its own (any earlier one stops).
     fn look_at_drive(&mut self, done: &Sender<FromWorker>) {
-        let (Some(probe), Some(dir)) = (self.drive, self.files.work_dir()) else {
+        let (Some((probe, seen)), Some(dir)) = (self.drive.as_ref(), self.files.work_dir()) else {
             return;
         };
         let (stop, stopped) = channel();
         let done = done.clone();
         let started = crate::files::watch_drive(
             dir.to_path_buf(),
-            probe,
+            *probe,
             self.files.armed(),
+            Arc::clone(seen),
             stopped,
             move |p| done.send(FromWorker::Problem(p)).is_ok(),
         );
@@ -2285,8 +2296,8 @@ impl Worker {
                     Err(e) => FromWorker::FilesFailed(e.to_string()),
                 }
             }
-            ToWorker::WatchDrive(probe) => {
-                self.drive = Some(probe);
+            ToWorker::WatchDrive(probe, seen) => {
+                self.drive = Some((probe, seen));
                 self.look_at_drive(done);
                 return None;
             }

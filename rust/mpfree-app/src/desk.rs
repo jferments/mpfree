@@ -77,6 +77,19 @@ fn lane_rows(mix: &mut mixing::MixHost, ask: gui::LaneRowsAsk, out: &mut Out) {
     }
 }
 
+/// The setting a SHIFT + touch on a value names (layout spec 4d): a knob
+/// on the Synth tab is track `t`'s synth's, an arp slider its arp's, and a
+/// pad's setting on the Sample or Pads tab its kit's (`t` the armed track).
+pub fn learn_addr(v: gui::LearnValue, t: u8) -> mpfree_play::mpfree_param::ParamAddr {
+    use mpfree_play::mpfree_param::{Owner, ParamAddr};
+    match v {
+        gui::LearnValue::Param(a) => a,
+        gui::LearnValue::Synth(id) => ParamAddr::new(Owner::Inst(t), id),
+        gui::LearnValue::Arp(id) => ParamAddr::new(Owner::Arp(t), id),
+        gui::LearnValue::Pad { pad, field } => ParamAddr::new(Owner::Pad(t, pad), field),
+    }
+}
+
 /// The engines the control side reaches, borrowed for one action or effect.
 pub struct Desk<'a> {
     pub app: &'a mut app::App,
@@ -212,22 +225,7 @@ impl Desk<'_> {
             // arp slider the armed track's arp's, and a pad's setting on
             // the Sample or Pads tab the armed track's kit's.
             gui::FromUi::LearnValue(v) => {
-                use mpfree_play::mpfree_param::{Owner, ParamAddr};
-                let addr = match v {
-                    gui::LearnValue::Param(a) => a,
-                    gui::LearnValue::Synth(id) => {
-                        let t = u8::try_from(app.track()).unwrap_or(u8::MAX);
-                        ParamAddr::new(Owner::Inst(t), id)
-                    }
-                    gui::LearnValue::Arp(id) => {
-                        let t = u8::try_from(app.track()).unwrap_or(u8::MAX);
-                        ParamAddr::new(Owner::Arp(t), id)
-                    }
-                    gui::LearnValue::Pad { pad, field } => {
-                        let t = u8::try_from(app.track()).unwrap_or(u8::MAX);
-                        ParamAddr::new(Owner::Pad(t, pad), field)
-                    }
-                };
+                let addr = learn_addr(v, u8::try_from(app.track()).unwrap_or(u8::MAX));
                 if music.armed() == Some(addr) && music.waits() {
                     music.disarm();
                 } else {
@@ -680,6 +678,7 @@ impl Desk<'_> {
             // to be given a home here or there.
             a @ (gui::FromUi::Pad { .. }
             | gui::FromUi::Audition { .. }
+            | gui::FromUi::Hear(_)
             | gui::FromUi::PadBank(_)
             | gui::FromUi::Kit(_)
             | gui::FromUi::SaveTouch(_)
@@ -725,7 +724,9 @@ impl Desk<'_> {
             // Controller mode's chip: the I/O model and MIDI out's.
             | gui::FromUi::ControllerOff
             // The Q-Links' values, for MIDI Follow's Send values back.
-            | gui::FromUi::QLinkValues(_)) => return Some(a),
+            | gui::FromUi::QLinkValues(_)
+            // Your XY layouts: the loop names each setting (xy_song.rs).
+            | gui::FromUi::Xy(_)) => return Some(a),
         }
         None
     }
@@ -1686,9 +1687,10 @@ pub fn perform_remote(
 /// A learned control on the looper (its footswitch; `remote::LooperAct`),
 /// on any page: a loop's key does what its pad does ([`perform_pad_on`]),
 /// a mute mutes the loop or lets it play, Next loop picks the next one,
-/// Capture is the Looper tab's, and Undo, Redo and Clear are the Looper
-/// tab's buttons, on the picked loop. Its hold clears the loop through
-/// [`perform_pad_held`].
+/// Capture is the Looper tab's, Undo, Redo and Clear are the Looper
+/// tab's buttons, on the picked loop, and Snap and Use my tap are smart
+/// loop end's ([`looping::LoopHost::choose`]). Its hold clears the loop
+/// through [`perform_pad_held`].
 pub fn looper_remote(
     app: &mut app::App,
     time: &time::TimeHost,
@@ -1717,6 +1719,12 @@ pub fn looper_remote(
         LooperAct::Press(Looper::Undo) => app.looper_tap(B_UNDO),
         LooperAct::Press(Looper::Redo) => app.looper_tap(B_REDO),
         LooperAct::Press(Looper::Clear) => app.looper_tap(B_CLEAR),
+        LooperAct::Press(Looper::Snap) => {
+            vec![app::Effect::Looper(LoopAction::Choose(looping::Side::Snap))]
+        }
+        LooperAct::Press(Looper::UseMyTap) => {
+            vec![app::Effect::Looper(LoopAction::Choose(looping::Side::Tap))]
+        }
         // Keys and mutes come as Key and Mute.
         LooperAct::Press(Looper::Key(_) | Looper::Mute(_)) => Vec::new(),
     }

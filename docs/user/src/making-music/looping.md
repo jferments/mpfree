@@ -180,19 +180,23 @@ Press **MENU** on the Looper tab for the rarer settings as a list, with an expla
 
 #### Smart loop end
 
-Closing a loop exactly on the beat is hard. Tap a little late and the loop is a little long, so the tempo comes out slow and the loop stumbles each time round. When you play that first loop on the pads or a keyboard, MPFree can listen to the notes you played around your tap and find the downbeat you meant. Most players hit the loop's first beat again as they close it, and that is what it looks for. Choose what it does with **Smart loop end** in the Looper tab's MENU:
+Closing a loop exactly on the beat is hard. Tap a little late and the loop is a little long, so the tempo comes out slow and the loop stumbles each time round. MPFree can listen to what you played around your tap and find the downbeat you meant: the notes, when you play that first loop on the pads or a keyboard, or the sound itself, when the Looper records the line input or a mix. Most players hit the loop's first beat again as they close it, and that is what it looks for. Choose what it does with **Smart loop end** in the Looper tab's MENU:
 
 - **Suggest** (the default): the loop closes on your tap, as before. If you clearly played the downbeat a little off your tap, MPFree finds it, and the picked loop's header says so in a chip after its length ("48 ms late") with **Snap** in it. Tap Snap and the end moves there on the loop's next downbeat, and the tempo with it. The chip then says what it did ("Snapped 48 ms earlier") and offers **Use my tap**, to put it back the same way. UNDO takes a snap back too.
-- **Auto**: after your tap the loop listens on for a moment (a tenth of a second at most; the ring says **closing**), then closes on the downbeat you played. The music starts in step with where the loop has got to, a little way into bar 1, so you hear no gap. With **Then: Overdub**, what you played while it listened on is the start of the overdub, so nothing you played is lost.
+- **Auto**: after your tap the loop listens on for a moment (a tenth of a second at most, a little more from the line input or a mix; the ring says **closing**), then closes on the downbeat you played. The music starts in step with where the loop has got to, a little way into bar 1, so you hear no gap. With **Then: Overdub**, what you played while it listened on is the start of the overdub, so nothing you played is lost.
 - **Off**: the loop closes on your tap.
 
 The start gets the same care. If you started the loop a moment before your first hit (pressed REC, then played), that gap would otherwise sit at the start of every pass. With **Auto** the loop starts on your first hit instead, and the chip says so ("Started on your first hit, 80 ms after REC") with **Use my press** to put the start back; with **Suggest** the chip says the loop could ("first hit 80 ms after REC"), and Snap does it. Your first hit counts as the start only when it comes within a tenth of a second of your start; later than that, the loop starts where you started it.
 
 It only looks near your tap: within a tenth of a second, or a 1/16 note at very fast tempos. A hit wins when it sounds like the loop's first hit (the same pad or note, about as hard), fits the beat of what you played, and what follows it sounds like the start of the loop again. If no hit is clearly the one, your tap stands and the screen says why: "Kept your tap: no clear match near it."
 
-Smart loop end listens to the pads and MIDI notes, so it is off while the Looper records the line input or a mix. The beat you played still helps count the bars when Smart loop end is Off.
+When the Looper records the line input or a mix (**Records from**), Smart loop end listens to the sound itself. It hears each hit, a drum, a pluck or a strummed chord, and looks for the one that sounds like the loop's first: about as loud, with the same tone. It starts the loop on your first hit's first sound over -40 dB, and ends it where the sound coming round lines up with that start, to the sample, so both ends are measured the same way. Hearing takes a moment longer than notes: Auto waits up to 30 ms more for the answer, and if it doesn't come in time it keeps your tap and says so ("Kept your tap: it couldn't listen in time"). A sound without clear hits, such as a held pad or a drone, keeps your tap too: "Kept your tap: no hit near it."
+
+The beat you played still helps count the bars when Smart loop end is Off.
 
 The chip lasts until you keep a side (below), or the loop changes in another way: an overdub, an edit, a trim.
+
+With your hands on an instrument, a footswitch can do the chip's job: learn one on **Snap** and one on **Use my tap** in the mixer's Learn section (see [A footswitch](#a-footswitch)).
 
 ##### The loop point view
 
@@ -274,7 +278,7 @@ You set up what each pad of the set does on the Pads tab: see [The Perform set o
 
 ### A footswitch
 
-A MIDI footswitch or pedalboard can play the looper while your hands stay on your instrument: a loop's key and mute, the picked loop's key, **Next loop**, **Undo**, **Redo**, **Capture** and **Clear**, on every page. A key held for a second clears its loop, as a pad does. The MPC One has no footswitch jack, so the footswitch goes into a MIDI controller or pedal. Teach it in the mixer's Learn section: see [Playing the looper from a footswitch](midi-and-cv.md#playing-the-looper-from-a-footswitch).
+A MIDI footswitch or pedalboard can play the looper while your hands stay on your instrument: a loop's key and mute, the picked loop's key, **Next loop**, **Undo**, **Redo**, **Capture**, **Clear**, and smart loop end's **Snap** and **Use my tap**, on every page. A key held for a second clears its loop, as a pad does. The MPC One has no footswitch jack, so the footswitch goes into a MIDI controller or pedal. Teach it in the mixer's Learn section: see [Playing the looper from a footswitch](midi-and-cv.md#playing-the-looper-from-a-footswitch).
 
 ### Moving a layer to another loop
 

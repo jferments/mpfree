@@ -365,6 +365,12 @@ pub mod looper {
     pub const CAPTURE: u16 = 5;
     /// The picked loop's Clear (Undo brings it back).
     pub const CLEAR: u16 = 6;
+    /// Smart loop end's Snap on the picked loop: what the chip's Snap
+    /// does, or Snap anyway while the hint line asks.
+    pub const SNAP: u16 = 7;
+    /// Smart loop end's Use my tap on the picked loop: back where you
+    /// tapped (or pressed), or Not now while the hint line asks.
+    pub const USE_MY_TAP: u16 = 8;
     /// The loops the ids below count to (`mpfree_looper::MAX_LOOPS`).
     pub const LOOPS: u16 = 8;
     const KEY: u16 = 0x100;
@@ -391,6 +397,8 @@ pub mod looper {
         Redo,
         Capture,
         Clear,
+        Snap,
+        UseMyTap,
     }
 
     /// Loop `n`'s key (0 is Loop 1).
@@ -427,6 +435,8 @@ pub mod looper {
                 REDO => Looper::Redo,
                 CAPTURE => Looper::Capture,
                 CLEAR => Looper::Clear,
+                SNAP => Looper::Snap,
+                USE_MY_TAP => Looper::UseMyTap,
                 _ => return None,
             },
             KEY if n < LOOPS => Looper::Key(Which::Loop(n as u8)),
@@ -456,6 +466,8 @@ pub mod looper {
             Looper::Redo => "Redo".to_string(),
             Looper::Capture => "Capture".to_string(),
             Looper::Clear => "Clear".to_string(),
+            Looper::Snap => "Snap".to_string(),
+            Looper::UseMyTap => "Use my tap".to_string(),
         })
     }
 }
@@ -1182,12 +1194,14 @@ mod tests {
                 looper::REDO,
                 looper::CAPTURE,
                 looper::CLEAR,
+                looper::SNAP,
+                looper::USE_MY_TAP,
                 looper::key(0),
                 looper::key(7),
                 looper::mute(0),
                 looper::mute(7),
             ],
-            [0, 1, 2, 3, 4, 5, 6, 0x100, 0x107, 0x200, 0x207]
+            [0, 1, 2, 3, 4, 5, 6, 7, 8, 0x100, 0x107, 0x200, 0x207]
         );
         assert_eq!(
             looper::of(looper::key(2)),
@@ -1204,7 +1218,7 @@ mod tests {
         assert_eq!(looper::of(looper::key(8)), None, "8 loops");
         assert_eq!(looper::of(looper::mute(8)), None, "8 loops");
         assert_eq!(looper::of(0x1FF), None);
-        assert_eq!(looper::of(7), None);
+        assert_eq!(looper::of(9), None);
         for w in [Which::Picked, Which::Loop(0), Which::Loop(7)] {
             assert_eq!(looper::of(looper::key_of(w)), Some(Looper::Key(w)));
             assert_eq!(looper::of(looper::mute_of(w)), Some(Looper::Mute(w)));
@@ -1219,7 +1233,9 @@ mod tests {
                 assert!(names.insert(looper::name(id).unwrap()), "{id}");
             }
         }
-        assert_eq!(seen.len(), 7 + 2 * 8);
+        assert_eq!(seen.len(), 9 + 2 * 8);
+        assert_eq!(looper::name(looper::SNAP).unwrap(), "Snap");
+        assert_eq!(looper::name(looper::USE_MY_TAP).unwrap(), "Use my tap");
         assert_eq!(looper::name(looper::key(2)).unwrap(), "Loop 3 key");
         assert_eq!(
             looper::name(looper::PICKED_KEY).unwrap(),

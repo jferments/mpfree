@@ -295,6 +295,21 @@ impl RollView {
         v
     }
 
+    /// Scrolled just far enough that tick `t` shows at least an eighth of
+    /// the roll in from either edge (the cursor): true if it moved.
+    pub fn show_tick(&mut self, roll: Rect, length: Tick, rows: u8, t: Tick) -> bool {
+        let shown = self.ticks_shown(roll).max(1);
+        let margin = shown / 8;
+        let was = self.start;
+        if t < self.start + margin {
+            self.start = t - margin;
+        } else if t >= self.start + shown - margin {
+            self.start = t - shown + margin + 1;
+        }
+        self.clamp(roll, length, rows);
+        self.start != was
+    }
+
     /// Paged on so tick `t` (the playhead) shows, by whole screens: true
     /// if it moved.
     pub fn follow_to(&mut self, roll: Rect, length: Tick, rows: u8, t: Tick) -> bool {
@@ -571,6 +586,21 @@ mod tests {
         assert!(v.follow_to(ROLL, 16 * bar, 128, shown + 5));
         assert_eq!(v.start, shown);
         assert!(v.follow_to(ROLL, 16 * bar, 128, 5));
+        assert_eq!(v.start, 0);
+    }
+
+    #[test]
+    fn the_cursor_scrolls_the_roll_just_enough() {
+        let bar = 4 * PPQ as Tick;
+        let mut v = RollView::open([(0, 60)], 16 * bar, bar, ROLL, 128);
+        let shown = v.ticks_shown(ROLL);
+        assert!(!v.show_tick(ROLL, 16 * bar, 128, shown / 2), "on screen");
+        // Past the right edge: it comes in an eighth of the roll from it.
+        assert!(v.show_tick(ROLL, 16 * bar, 128, shown + 100));
+        assert_eq!(v.start + shown - shown / 8 - 1, shown + 100);
+        // Back before the left edge, then at the start: never before 0.
+        assert!(v.show_tick(ROLL, 16 * bar, 128, v.start - 10));
+        assert!(v.show_tick(ROLL, 16 * bar, 128, 0));
         assert_eq!(v.start, 0);
     }
 }

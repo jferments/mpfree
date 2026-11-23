@@ -98,6 +98,25 @@ def effects():
     return body
 
 
+def files(takes, silent):
+    """The audio tracks' status line while takes play from their files (the stream test's runs)."""
+    return [f"    status: audio tracks: {takes} takes, 0 of 60 s used, 0 refused, 0 dropped, 0 cut short; from their "
+            f"files: {takes} of {takes} takes, {silent:.2f} s went silent, {takes} of {takes} region starts held"]
+
+
+def eight(silent_in_play=0.0):
+    """The stream test's eight-tracks run, cut down: a part recording, a part playing."""
+    body = ['    script: "Eight tracks", 4 steps, 200.0 s', "    script: line 52 at 10.000 s: mark record-eight"]
+    body += status(0, 3445, 100, 50) + files(0, 0.0)
+    body += ["    script: line 60 at 132.000 s: mark play-eight"]
+    body += status(0, 45470, 120, 50) + files(8, 0.0)
+    body += ["    script: line 99 at 190.000 s: expect project: 8 audio tracks and 10 takes in",
+             "    project: 8 audio tracks and 10 takes in",
+             "    script: done"]
+    body += status(0, 65450, 130, 60) + files(8, silent_in_play)
+    return body
+
+
 class ReportTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="mpfree-devtest-report-")
@@ -173,6 +192,24 @@ class ReportTests(unittest.TestCase):
         self.assertIn("set `VOICE_COST` to **4** (now 4)", out)
         self.assertIn("set `GRAIN_BUDGET` to **180** (now 256)", out)
         self.assertIn("- Keys Tines", out)
+
+    def test_the_stream_tests_parts_say_what_went_silent(self):
+        res = self.report(self.write("06-streamtest.log", run("eight-tracks", "default", eight())))
+        self.assertEqual(res.returncode, 0, res.stdout)
+        out = res.stdout
+        self.assertIn("| eight-tracks | 0 | yes | 1 of 1 | 0 | 0 | 0 | 0 | 0.00 |", out)
+        self.assertIn("| part | underruns | periods | slow periods | late parts | sampler render µs | synth render µs "
+                      "| takes on files | went silent (s) |", out)
+        self.assertIn("| record-eight | 0 | 42025 | 0 | 0 | 122 | 50 | 8 of 8 | 0.00 |", out)
+        # Takes that played silence because the drive was late fail the run, and the part says where.
+        res = self.report(self.write("07-streamtest.log", run("eight-tracks", "default", eight(0.35))))
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("| eight-tracks | 0 | yes | 1 of 1 | 0 | 0 | 0 | 0 | 0.35 |", res.stdout)
+        self.assertIn("| play-eight | 0 | 19980 | 0 | 0 | 153 | 83 | 8 of 8 | 0.35 |", res.stdout)
+        # The device round's runs, which play from memory, keep their tables as they were.
+        res = self.report(self.write("08-devtest.log", run("effects", "default", effects())))
+        self.assertIn("| effects | 0 | yes | 1 of 1 | 0 | 0 | 0 | 0 |\n", res.stdout)
+        self.assertNotIn("went silent", res.stdout)
 
     def test_nothing_to_read(self):
         res = self.report(self.write("empty.log", ["hello"]))
