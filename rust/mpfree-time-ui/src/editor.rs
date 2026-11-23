@@ -62,6 +62,7 @@ use gesture::Pinch;
 use zoom::RollView;
 
 use crate::lane::{Bar, Lane, LaneStyle, LaneTouch};
+use mpfree_seq::mpfree_scale::chords::{self, ChordName, Shape};
 use mpfree_seq::mpfree_scale::{NOTE_NAMES, SCALES};
 use mpfree_seq::notes::{self, Field, Snap, Tc, TcKind, Which, DIVISIONS};
 use mpfree_seq::steps::{Edit, Euclid, Grid, MAX_EUCLID_STEPS};
@@ -118,9 +119,10 @@ pub const EDIT_BUTTON: usize = 7;
 /// The Edit options, top to bottom. The first six are Timing Correct's
 /// settings (TC applies them); the next seven change the selection at
 /// once; the next four are the Euclidean fill: the sound it writes, then
-/// its hits, steps and rotation, each turn writing the pattern; the last
-/// is Fit to scale (plan 2B.1).
-pub const EDIT_ROWS: [&str; 18] = [
+/// its hits, steps and rotation, each turn writing the pattern; then Fit
+/// to scale (plan 2B.1), and the chord tools Strum, Invert and Spread
+/// (plan 2B.2).
+pub const EDIT_ROWS: [&str; 21] = [
     "Correct",
     "Division",
     "Swing",
@@ -139,12 +141,23 @@ pub const EDIT_ROWS: [&str; 18] = [
     "Steps",
     "Rotate",
     "Fit to scale",
+    "Strum",
+    "Invert",
+    "Spread",
 ];
 /// The first of the Euclidean fill's rows in [`EDIT_ROWS`].
 pub const EUCLID_ROW: usize = 13;
 /// [`EDIT_ROWS`]' Fit to scale (piano roll plan 2B.1): a turn either way
 /// brings the picks, or every note, onto the clip's scale.
 pub const FIT_ROW: usize = 17;
+/// [`EDIT_ROWS`]' Strum, Invert and Spread (piano roll plan 2B.2): a turn
+/// changes each chord of the picked notes ([`notes::chords_of`]).
+pub const STRUM_ROW: usize = 18;
+pub const INVERT_ROW: usize = 19;
+pub const SPREAD_ROW: usize = 20;
+/// How much a turn of Strum moves a chord's notes apart: about 5 ms at
+/// 120 BPM.
+pub const STRUM_TICKS: Tick = PPQ as Tick / 96;
 /// A tracker step tapped: `Cell`'s row says the editor's sound.
 pub const PEN: usize = usize::MAX;
 /// A finger holding a note while another taps note `col`
@@ -386,6 +399,10 @@ pub enum EditAction {
     Scale(Option<Scale>),
     /// The clip's scale's root picked on the Scale menu (0 is C).
     Root(u8),
+    /// The Chord chip's menu (plan 2B.2): what a drawn note puts in, a
+    /// note or a chord of `shape`, `minor` for a Triad or a Seventh with
+    /// no scale. The editor's own, not the clip's: nothing changes.
+    Chord { shape: ChordShape, minor: bool },
 }
 
 impl EditAction {
@@ -601,6 +618,106 @@ pub struct Editor {
     /// The scales the Scale menu offers (the app's: the pads' scale and
     /// the owner's own; plan 2B.1).
     pub offers: Arc<ScaleOffers>,
+    /// What a note drawn on the roll puts in (plan 2B.2): a note, or a
+    /// chord on it; `minor` for a Triad or a Seventh with no scale.
+    pub chord: ChordShape,
+    pub minor: bool,
+}
+
+/// The Chord chip's shapes (piano roll plan 2B.2): Off draws one note.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ChordShape {
+    #[default]
+    Off,
+    Triad,
+    Seventh,
+    Sus2,
+    Sus4,
+    Power,
+    Octave,
+    /// The triad the Chord pads play: in the pads' scale on the Synth tab.
+    Pads,
+}
+
+impl ChordShape {
+    /// The Chord menu's shapes, in its order.
+    pub const ALL: [ChordShape; 8] = [
+        ChordShape::Off,
+        ChordShape::Triad,
+        ChordShape::Seventh,
+        ChordShape::Sus2,
+        ChordShape::Sus4,
+        ChordShape::Power,
+        ChordShape::Octave,
+        ChordShape::Pads,
+    ];
+
+    /// Its name on the Chord menu.
+    pub fn name(self) -> &'static str {
+        match self {
+            ChordShape::Off => "Off",
+            ChordShape::Triad => "Triad",
+            ChordShape::Seventh => "Seventh",
+            ChordShape::Sus2 => "Sus2",
+            ChordShape::Sus4 => "Sus4",
+            ChordShape::Power => "Power",
+            ChordShape::Octave => "Octave",
+            ChordShape::Pads => "Pads",
+        }
+    }
+
+    /// The Chord chip's words: "Triad", or with no scale "Minor triad",
+    /// "Major seventh".
+    pub fn label(self, minor: bool, scale: bool) -> String {
+        match self {
+            ChordShape::Triad | ChordShape::Seventh if !scale => {
+                let q = if minor { "Minor" } else { "Major" };
+                format!("{q} {}", self.name().to_lowercase())
+            }
+            s => s.name().to_string(),
+        }
+    }
+}
+
+/// The notes a note drawn on `root` puts in (plan 2B.2): `root` alone with
+/// the chord Off, else the chord of `shape` on it, lowest first: Triad and
+/// Seventh in `scale` (the clip's) or with none major or `minor`, Pads the
+/// triad in `pads` (the pads' scale, the root brought into it; with none,
+/// as Triad). Notes past 127 are left out.
+pub fn chord_notes(
+    shape: ChordShape,
+    minor: bool,
+    root: u8,
+    scale: Option<Scale>,
+    pads: Option<Scale>,
+) -> Vec<u8> {
+    let root16 = i16::from(root);
+    let made = |shape: Shape, scale: Option<Scale>, root: i16| {
+        chords::chord(root, shape, scale, minor).notes().to_vec()
+    };
+    match shape {
+        ChordShape::Off => vec![root],
+        ChordShape::Triad => made(Shape::Triad, scale, root16),
+        ChordShape::Seventh => made(Shape::Seventh, scale, root16),
+        ChordShape::Sus2 => made(Shape::Sus2, scale, root16),
+        ChordShape::Sus4 => made(Shape::Sus4, scale, root16),
+        ChordShape::Power => made(Shape::Power, scale, root16),
+        ChordShape::Octave => made(Shape::Octave, scale, root16),
+        ChordShape::Pads => match pads {
+            Some(k) => {
+                let root = k
+                    .snapped(root16, mpfree_seq::mpfree_scale::Snap::Nearest)
+                    .unwrap_or(root16);
+                made(Shape::Triad, Some(k), root)
+            }
+            None => made(Shape::Triad, scale, root16),
+        },
+    }
+}
+
+/// The name of the chord the notes `notes` make ("Dm7", "C/E"), if any.
+pub fn chord_name(notes: &[u8]) -> Option<String> {
+    ChordName::of(notes).map(|c| c.to_string())
 }
 
 impl Editor {
@@ -644,6 +761,8 @@ impl Editor {
             add: false,
             cursor: 0,
             offers: Arc::default(),
+            chord: ChordShape::Off,
+            minor: false,
         }
     }
 
@@ -730,15 +849,24 @@ impl Editor {
             return None;
         }
         let len = len.max(1).min(clip.length - tick);
-        let n = Note::new(tick, len, note.min(127), self.velocity);
-        self.sound = n.note;
-        Some((
-            notes::add(clip, n),
-            None,
-            true,
-            false,
-            format!("edit: note {} drawn at tick {tick}", note_name(n.note)),
-        ))
+        let note = note.min(127);
+        self.sound = note;
+        let shape = if pads(clip) {
+            ChordShape::Off
+        } else {
+            self.chord
+        };
+        let chord = chord_notes(shape, self.minor, note, lit_scale(clip), self.offers.pads);
+        let line = match (chord.len(), chord_name(&chord)) {
+            (1, _) => format!("edit: note {} drawn at tick {tick}", note_name(note)),
+            (_, Some(name)) => format!("edit: chord {name} drawn at tick {tick}"),
+            _ => format!("edit: chord on {} drawn at tick {tick}", note_name(note)),
+        };
+        let added: Vec<Note> = chord
+            .iter()
+            .map(|&k| Note::new(tick, len, k, self.velocity))
+            .collect();
+        Some((notes::add_all(clip, &added), None, true, false, line))
     }
 
     /// The selection, in range and in order.
@@ -1402,6 +1530,38 @@ impl Editor {
                             )
                         }
                     },
+                    // The chord tools (plan 2B.2): each chord of the picks,
+                    // a run of turns one take.
+                    STRUM_ROW | INVERT_ROW | SPREAD_ROW => {
+                        let least = if row == SPREAD_ROW { 3 } else { 2 };
+                        if !notes::chords_of(clip, &sel)
+                            .iter()
+                            .any(|c| c.len() >= least)
+                        {
+                            return Done::line(match least {
+                                3 => "edit: pick a chord of three notes or more".into(),
+                                _ => "edit: pick a chord: notes that sound together".into(),
+                            });
+                        }
+                        let e = match row {
+                            STRUM_ROW => notes::strum(clip, &sel, Tick::from(d) * STRUM_TICKS),
+                            INVERT_ROW => notes::invert(clip, &sel, d),
+                            _ => notes::spread(clip, &sel, d),
+                        };
+                        let line = match (e.add.is_empty(), row) {
+                            (false, _) => String::new(),
+                            (true, STRUM_ROW) => {
+                                "edit: a note is too short to strum further".into()
+                            }
+                            (true, SPREAD_ROW) if d < 0 => {
+                                "edit: the chords are as close as they go".into()
+                            }
+                            (true, _) => {
+                                "edit: a note would go past the lowest or highest note".into()
+                            }
+                        };
+                        (e, key(row as u64), true, true, line)
+                    }
                     _ => return Done::default(),
                 }
             }
@@ -1410,6 +1570,16 @@ impl Editor {
                     self.auto = d;
                 }
                 return Done::default();
+            }
+            // What a drawn note puts in: the editor's, not the clip's.
+            EditAction::Chord { shape, minor } => {
+                self.chord = shape;
+                self.minor = minor;
+                let label = shape.label(minor, lit_scale(clip).is_some());
+                return Done::line(match shape {
+                    ChordShape::Off => "edit: drawing notes".to_string(),
+                    _ => format!("edit: drawing chords: {label}"),
+                });
             }
             // The clip's scale: a setting, not an edit of its notes.
             // A clip of pad hits takes none, its numbers being pads.
@@ -1574,7 +1744,8 @@ fn find_notes(clip: &Clip, want: &[Note]) -> Vec<Option<usize>> {
 
 /// The Edit options as the list shows them, for `ed` on `clip`.
 pub fn edit_rows(ed: &Editor, clip: &Clip) -> Vec<OptionRow> {
-    let sel: Vec<&Note> = ed.picked(clip).iter().map(|&i| &clip.notes[i]).collect();
+    let picks = ed.picked(clip);
+    let sel: Vec<&Note> = picks.iter().map(|&i| &clip.notes[i]).collect();
     let tc = ed.tc;
     let division = DIVISIONS
         .iter()
@@ -1637,6 +1808,35 @@ pub fn edit_rows(ed: &Editor, clip: &Clip) -> Vec<OptionRow> {
                 }
             }
         },
+        // The chord tools (plan 2B.2): the first chord of the picks.
+        chord_value(
+            clip,
+            &picks,
+            2,
+            &|chord| match notes::strum_of(clip, chord) {
+                0 => "none".into(),
+                g if g > 0 => format!("↑ {g}t"),
+                g => format!("↓ {}t", -g),
+            },
+        ),
+        chord_value(clip, &picks, 2, &|chord| {
+            let notes: Vec<u8> = chord.iter().map(|&i| clip.notes[i].note).collect();
+            match chord_name(&notes) {
+                // A long name drops its bass to fit.
+                Some(name) if name.len() > 7 => {
+                    name.split('/').next().unwrap_or_default().to_string()
+                }
+                Some(name) => name,
+                None => note_name(notes[0]),
+            }
+        }),
+        chord_value(clip, &picks, 3, &|chord| {
+            let (lo, hi) = (chord[0], chord[chord.len() - 1]);
+            match clip.notes[hi].note - clip.notes[lo].note {
+                0..=11 => "close".into(),
+                _ => "open".into(),
+            }
+        }),
     ];
     EDIT_ROWS
         .iter()
@@ -1646,6 +1846,27 @@ pub fn edit_rows(ed: &Editor, clip: &Clip) -> Vec<OptionRow> {
             value,
         })
         .collect()
+}
+
+/// A chord tool's value (plan 2B.2): `show` of the first chord of at
+/// least `least` of the picked notes, "pick notes" with none picked, "no
+/// chord" with no such chord.
+fn chord_value(
+    clip: &Clip,
+    picks: &[usize],
+    least: usize,
+    show: &dyn Fn(&[usize]) -> String,
+) -> String {
+    if picks.is_empty() {
+        return "pick notes".into();
+    }
+    match notes::chords_of(clip, picks)
+        .iter()
+        .find(|c| c.len() >= least)
+    {
+        Some(chord) => show(chord),
+        None => "no chord".into(),
+    }
 }
 
 /// A trig condition as the editor names it ("Always", "1:2", "FILL" ...).
@@ -1768,10 +1989,12 @@ pub fn lit_scale(clip: &Clip) -> Option<Scale> {
     clip.scale.filter(|_| clip.takes_scale() && !pads(clip))
 }
 
-/// The clip plays the pads (every note below 16, or none): the roll shows
-/// 16 pad rows.
+/// The clip plays the pads: it holds pad hits (not MIDI notes,
+/// [`mpfree_seq::Holds`]) and every note is below 16, or it has none. The
+/// roll shows 16 pad rows; a clip of notes shows the keys even while
+/// empty, so its first notes (and chords, plan 2B.2) can be drawn.
 pub fn pads(clip: &Clip) -> bool {
-    clip.notes.iter().all(|n| n.note < 16)
+    clip.holds != mpfree_seq::Holds::Notes && clip.notes.iter().all(|n| n.note < 16)
 }
 
 /// A MIDI note's name, C3 being 60 (the MPC's way).
@@ -1932,11 +2155,19 @@ impl Fold {
 /// offers ([`ScaleOffers::scale_of`]). The Fold chip and the chip counting
 /// hidden notes are the roll's own (`View`).
 pub const ROOT_MENU: usize = 300;
+/// The Chord menu (plan 2B.2), which the roll's Chord chip opens: a shape
+/// tapped is `Tab(CHORD_MENU + i)`, `i` its place in [`ChordShape::ALL`];
+/// Major and Minor (with no scale) are [`CHORD_MAJOR`] and
+/// [`CHORD_MINOR`] after it.
+pub const CHORD_MENU: usize = 500;
+pub const CHORD_MAJOR: usize = 8;
+pub const CHORD_MINOR: usize = 9;
 pub const SCALE_MENU: usize = 400;
 /// The heading's chips: the Scale chip's width, the Fold chip's, and the
 /// hidden notes' chip's, which stands in for the legend while Fold hides
 /// notes.
 const SCALE_CHIP_W: i32 = 200;
+const CHORD_CHIP_W: i32 = 190;
 const FOLD_CHIP_W: i32 = 150;
 const HIDDEN_CHIP_W: i32 = 140;
 
@@ -2250,6 +2481,12 @@ pub struct NoteGrid {
     pub offers: Arc<ScaleOffers>,
     /// The Scale menu is open over the roll (the roll's own).
     pub scale_menu: bool,
+    /// What a note drawn puts in (the editor's, plan 2B.2): a note, or a
+    /// chord on it, shown on the Chord chip and while drawing.
+    pub chord: ChordShape,
+    pub minor: bool,
+    /// The Chord menu is open over the roll (the roll's own).
+    pub chord_menu: bool,
     /// Which rows show (the page's, plan 2B.1): the Fold chip and the
     /// hidden notes' chip change it here, and the page keeps it.
     pub fold: Fold,
@@ -2480,6 +2717,9 @@ impl Default for NoteGrid {
             scale_name: "Off".into(),
             offers: Arc::default(),
             scale_menu: false,
+            chord: ChordShape::Off,
+            minor: false,
+            chord_menu: false,
             fold: Fold::All,
             stroke: None,
             drag: None,
@@ -2512,6 +2752,7 @@ struct Geo {
     /// (empty off the roll), and the one counting the notes Fold hides
     /// (empty while it hides none).
     scale_chip: Rect,
+    chord_chip: Rect,
     fold_chip: Rect,
     hidden_chip: Rect,
     /// The rows, as Fold leaves them.
@@ -2546,6 +2787,7 @@ impl NoteGrid {
             && (self.scale, &self.scale_name, self.fold)
                 == (other.scale, &other.scale_name, other.fold)
             && self.offers == other.offers
+            && (self.chord, self.minor) == (other.chord, other.minor)
     }
 
     /// Note `i`'s pressure, empty for none.
@@ -2578,7 +2820,7 @@ impl NoteGrid {
             }
         }
         let (overview_tap, empty_tap, menu) = (self.overview_tap, self.empty_tap, self.menu);
-        let (fine, scale_menu) = (self.fine, self.scale_menu);
+        let (fine, scale_menu, chord_menu) = (self.fine, self.scale_menu, self.chord_menu);
         *self = NoteGrid {
             stroke,
             fine,
@@ -2588,6 +2830,7 @@ impl NoteGrid {
             empty_tap,
             menu,
             scale_menu,
+            chord_menu,
             ..other
         };
     }
@@ -2617,17 +2860,32 @@ impl NoteGrid {
         let none = Rect::new(0, 0, 0, 0);
         let open = roll_lens && !self.lane.folded;
         let chip_h = if open { 28.min(vel.h) } else { vel.h };
-        // The heading's chips, right to left: Fold, Scale, and the notes
-        // Fold hides, each as tall as the title's line.
+        // The heading's chips, right to left: Fold, Scale, Chord (not on
+        // pads), and the notes Fold hides, each as tall as the title's
+        // line.
         let chip = |right: i32, w: i32| Rect::new(right - w, head.y - 2, w, 26);
         let fold_chip = chip(head.right(), FOLD_CHIP_W);
         let scale_chip = chip(fold_chip.x - 6, SCALE_CHIP_W);
+        let chord_chip = match self.pads {
+            true => Rect::new(scale_chip.x, scale_chip.y, 0, 0),
+            false => chip(scale_chip.x - 6, CHORD_CHIP_W),
+        };
+        let left = if self.pads {
+            scale_chip.x
+        } else {
+            chord_chip.x
+        };
         let hidden = roll_lens && self.hidden(&rows) > 0;
         Geo {
             scale_chip: if roll_lens { scale_chip } else { none },
+            chord_chip: if roll_lens && !self.pads {
+                chord_chip
+            } else {
+                none
+            },
             fold_chip: if roll_lens { fold_chip } else { none },
             hidden_chip: match hidden {
-                true => chip(scale_chip.x - 6, HIDDEN_CHIP_W),
+                true => chip(left - 6, HIDDEN_CHIP_W),
                 false => none,
             },
             overview: Rect::new(roll.x, strip.y, (roll.w - FOLLOW_W - 6).max(0), strip.h),
@@ -2702,6 +2960,17 @@ impl NoteGrid {
             .iter()
             .filter(|b| rows.of(b.note).is_none())
             .count()
+    }
+
+    /// The notes a note drawn on `note` puts in (plan 2B.2): it alone,
+    /// or the Chord chip's chord on it, as the editor makes it.
+    fn chord_on(&self, note: u8) -> Vec<u8> {
+        let shape = if self.pads {
+            ChordShape::Off
+        } else {
+            self.chord
+        };
+        chord_notes(shape, self.minor, note, self.scale, self.offers.pads)
     }
 
     /// The note a finger on the row of `note` draws (plan 2B.1): with the
@@ -3067,8 +3336,29 @@ impl NoteGrid {
             ),
         };
         chip(cx, g.fold_chip, fold.name(), fill, fold_ink);
+        if !g.chord_chip.is_empty() {
+            let (fill, chord_ink) = match self.chord {
+                ChordShape::Off => (t.raised, ink),
+                _ => (
+                    t.raised.mix(self.color, 0.35),
+                    t.ink_on(t.raised.mix(self.color, 0.35)),
+                ),
+            };
+            let label = self.chord.label(self.minor, self.scale.is_some());
+            chip(
+                cx,
+                g.chord_chip,
+                &format!("Chord: {label}"),
+                fill,
+                chord_ink,
+            );
+        }
+        let first = match g.chord_chip.is_empty() {
+            true => g.scale_chip.x,
+            false => g.chord_chip.x,
+        };
         let left = if g.hidden_chip.is_empty() {
-            g.scale_chip.x
+            first
         } else {
             let n = self.hidden(&g.rows);
             let text = if n == 1 {
@@ -3285,12 +3575,14 @@ impl NoteGrid {
         // A note being drawn with Draw on: where it goes when the finger
         // lifts.
         if let Hand::Pen { note, from, to, .. } = self.hand {
-            if let Some(y) = self.y_of(g, note) {
-                let x0 = self.x_of(g, from);
-                let x1 = self.x_of(g, to).max(x0 + 3);
-                let nr = Rect::new(x0, y + 1, x1 - x0, g.v.row_h - 2);
-                cx.canvas.fill_round_rect(nr, 3, shade(DRAW_VELOCITY));
-                cx.canvas.stroke_round_rect(nr, 3, 2, top);
+            for k in self.chord_on(note) {
+                if let Some(y) = self.y_of(g, k) {
+                    let x0 = self.x_of(g, from);
+                    let x1 = self.x_of(g, to).max(x0 + 3);
+                    let nr = Rect::new(x0, y + 1, x1 - x0, g.v.row_h - 2);
+                    cx.canvas.fill_round_rect(nr, 3, shade(DRAW_VELOCITY));
+                    cx.canvas.stroke_round_rect(nr, 3, 2, top);
+                }
             }
         }
         // A box being drawn with Draw off: the notes in it are picked
@@ -3460,6 +3752,82 @@ impl NoteGrid {
                 Align::Center,
                 t.ink_on(fill),
                 &name,
+            );
+        }
+    }
+
+    /// The Chord menu's buttons (plan 2B.2), each with its index after
+    /// [`CHORD_MENU`]: Major and Minor first while the clip has no scale,
+    /// then the shapes (Pads only while the pads have a scale), in one
+    /// row over the roll; and its panel.
+    fn chord_menu_items(&self, r: Rect) -> (Vec<(usize, Rect)>, Rect) {
+        const PAD: i32 = 8;
+        const H: i32 = 40;
+        const GAP: i32 = 4;
+        let g = self.geo(r);
+        let area = Rect::new(
+            g.keys.x,
+            g.overview.y,
+            g.roll.right() - g.keys.x,
+            H + 2 * PAD,
+        );
+        let inner = area.inset(PAD);
+        let mut ids: Vec<usize> = Vec::new();
+        if self.scale.is_none() {
+            ids.extend([CHORD_MAJOR, CHORD_MINOR]);
+        }
+        ids.extend(
+            (0..ChordShape::ALL.len())
+                .filter(|&i| ChordShape::ALL[i] != ChordShape::Pads || self.offers.pads.is_some()),
+        );
+        // A wider gap after Major and Minor.
+        let split = if self.scale.is_none() { 3 * GAP } else { 0 };
+        let n = ids.len() as i32;
+        let w = (inner.w - (n - 1) * GAP - split) / n;
+        let items = ids
+            .into_iter()
+            .enumerate()
+            .map(|(k, id)| {
+                let k = k as i32;
+                let past = if id < CHORD_MAJOR { split } else { 0 };
+                (id, Rect::new(inner.x + k * (w + GAP) + past, inner.y, w, H))
+            })
+            .collect();
+        (items, area)
+    }
+
+    /// The name of the Chord menu's button `id`.
+    fn chord_item_name(id: usize) -> &'static str {
+        match id {
+            CHORD_MAJOR => "Major",
+            CHORD_MINOR => "Minor",
+            i => ChordShape::ALL.get(i).map_or("", |s| s.name()),
+        }
+    }
+
+    /// The Chord menu: Major and Minor, the one in use lit, then the
+    /// shapes, the one in use lit.
+    fn paint_chord_menu(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        let (items, panel) = self.chord_menu_items(r);
+        cx.canvas.fill_round_rect(panel, t.round(12), t.surface);
+        cx.canvas
+            .stroke_round_rect(panel, t.round(12), 1, t.outline);
+        for (id, m) in items {
+            let lit = match id {
+                CHORD_MAJOR => !self.minor,
+                CHORD_MINOR => self.minor,
+                i => ChordShape::ALL.get(i) == Some(&self.chord),
+            };
+            let fill = if lit { t.accent } else { t.raised };
+            cx.canvas.fill_round_rect(m, t.round(8), fill);
+            cx.text(
+                FontId::Sans,
+                t.size_small,
+                m,
+                Align::Center,
+                t.ink_on(fill),
+                NoteGrid::chord_item_name(id),
             );
         }
     }
@@ -4108,6 +4476,9 @@ impl Widget for NoteGrid {
         if self.scale_menu && self.lens == Lens::Grid {
             self.paint_scale_menu(cx, r);
         }
+        if self.chord_menu && self.lens == Lens::Grid {
+            self.paint_chord_menu(cx, r);
+        }
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
@@ -4127,6 +4498,18 @@ impl Widget for NoteGrid {
             for (i, m) in scales.into_iter().enumerate() {
                 let name = self.offers.choice_name(i).unwrap_or_default();
                 out.push(Target::tap("scale-pick", i, name, m));
+            }
+            return out;
+        }
+        // So does the Chord menu (plan 2B.2).
+        if self.chord_menu && self.lens == Lens::Grid {
+            for (id, m) in self.chord_menu_items(r).0 {
+                out.push(Target::tap(
+                    "chord-pick",
+                    id,
+                    NoteGrid::chord_item_name(id),
+                    m,
+                ));
             }
             return out;
         }
@@ -4155,6 +4538,9 @@ impl Widget for NoteGrid {
         }
         if !g.scale_chip.is_empty() && !self.pads {
             out.push(Target::tap("scale-chip", 0, "Scale", g.scale_chip));
+        }
+        if !g.chord_chip.is_empty() {
+            out.push(Target::tap("chord-chip", 0, "Chord", g.chord_chip));
         }
         if !g.fold_chip.is_empty() {
             out.push(Target::tap("fold-chip", 0, "Fold", g.fold_chip));
@@ -4967,6 +5353,18 @@ impl NoteGrid {
             self.scale_menu = false;
             return None;
         }
+        // The Chord menu, while open (plan 2B.2): Major or Minor keeps it
+        // open for a shape, a shape closes it; a touch anywhere else
+        // closes it and does nothing more.
+        if self.chord_menu {
+            let item = self
+                .chord_menu_items(r)
+                .0
+                .into_iter()
+                .find(|(_, m)| m.contains(x, y));
+            self.chord_menu = matches!(item, Some((CHORD_MAJOR | CHORD_MINOR, _)));
+            return item.map(|(id, _)| EventKind::Tab(CHORD_MENU + id));
+        }
         // The Select menu, while open: an item, or a touch anywhere else
         // closes it and does nothing more (plan 1B.3).
         if self.menu {
@@ -4989,11 +5387,16 @@ impl NoteGrid {
             }
             return Some(EventKind::Tab(k));
         }
-        // The heading's chips (plan 2B.1): Scale opens the drawer on the
-        // Scale option (the page's); Fold and the hidden notes' chip are
-        // the roll's own.
+        // The heading's chips (plan 2B.1, 2B.2): Scale and Chord open
+        // their menus over the roll; they, Fold and the hidden notes' chip
+        // are the roll's own.
         if g.scale_chip.contains(x, y) {
             self.scale_menu = !self.pads;
+            self.menu = false;
+            return None;
+        }
+        if g.chord_chip.contains(x, y) {
+            self.chord_menu = true;
             self.menu = false;
             return None;
         }
@@ -7330,5 +7733,362 @@ mod scale_tests {
         let mut pads = roll(&[(3, false)], None);
         pads.pads = true;
         assert_eq!(target(&pads, "scale-chip"), None);
+    }
+}
+
+#[cfg(test)]
+mod chord_tests {
+    use super::*;
+    use mpfree_seq::mpfree_scale::{MAJOR, MINOR};
+    use mpfree_seq::Holds;
+
+    const R: Rect = Rect {
+        x: 0,
+        y: 0,
+        w: 830,
+        h: 640,
+    };
+
+    fn keys(notes: &[(Tick, Tick, u8)]) -> Clip {
+        let mut c = Clip::new("Keys", 3840);
+        c.holds = Holds::Notes;
+        for &(t, l, n) in notes {
+            c.add_note(Note::new(t, l, n, 100)).unwrap();
+        }
+        c
+    }
+
+    fn run(ed: &mut Editor, c: &mut Clip, a: EditAction) -> Done {
+        let done = ed.act(a, c);
+        c.apply(&done.edit).unwrap();
+        ed.applied(c, &done);
+        done
+    }
+
+    fn picked(ed: &Editor, c: &Clip) -> Vec<(Tick, u8)> {
+        let mut p: Vec<(Tick, u8)> = ed
+            .picked(c)
+            .iter()
+            .map(|&i| (c.notes[i].tick, c.notes[i].note))
+            .collect();
+        p.sort_unstable();
+        p
+    }
+
+    fn chord(shape: ChordShape, minor: bool) -> EditAction {
+        EditAction::Chord { shape, minor }
+    }
+
+    /// A note drawn puts in the Chord chip's chord, picked after, as one
+    /// take: a triad in the clip's scale, major or minor with none, the
+    /// pads' triad, one note with the chip Off or on a clip of pads; an
+    /// empty clip of notes takes chords too. The chip changes nothing in
+    /// the clip.
+    #[test]
+    fn a_note_drawn_puts_in_the_chord_chips_chord() {
+        let mut c = keys(&[]);
+        c.scale = Some(Scale::new(0, MAJOR));
+        assert!(!pads(&c), "an empty clip of notes shows the keys");
+        let mut ed = Editor::new(0, 0, &c);
+        ed.tool = Tool::Draw;
+        let done = run(&mut ed, &mut c, chord(ChordShape::Triad, false));
+        assert_eq!(done.line, "edit: drawing chords: Triad");
+        assert!(done.edit.add.is_empty() && c.notes.is_empty());
+        let done = run(&mut ed, &mut c, EditAction::Empty { tick: 0, note: 62 });
+        assert_eq!(done.line, "edit: chord Dm drawn at tick 0");
+        assert_eq!(picked(&ed, &c), [(0, 62), (0, 65), (0, 69)]);
+        assert_eq!(done.join, None, "its own take");
+        // No scale: Triad and Seventh are major or minor; a drag draws
+        // the chord as long as it.
+        c.scale = None;
+        run(&mut ed, &mut c, chord(ChordShape::Seventh, true));
+        let done = run(
+            &mut ed,
+            &mut c,
+            EditAction::Draw {
+                tick: 960,
+                note: 60,
+                len: 480,
+            },
+        );
+        assert_eq!(done.line, "edit: chord Cm7 drawn at tick 960");
+        assert_eq!(
+            picked(&ed, &c),
+            [(960, 60), (960, 63), (960, 67), (960, 70)]
+        );
+        assert!(c.notes[ed.picked(&c)[0]].len == 480);
+        // Pads: the triad the Chord pads play, in the pads' scale.
+        ed.offers = Arc::new(ScaleOffers {
+            pads: Some(Scale::new(2, MINOR)),
+            own: Vec::new(),
+        });
+        run(&mut ed, &mut c, chord(ChordShape::Pads, false));
+        run(
+            &mut ed,
+            &mut c,
+            EditAction::Empty {
+                tick: 1920,
+                note: 65,
+            },
+        );
+        assert_eq!(
+            picked(&ed, &c),
+            [(1920, 65), (1920, 69), (1920, 72)],
+            "F A C"
+        );
+        // Off: one note.
+        run(&mut ed, &mut c, chord(ChordShape::Off, false));
+        run(
+            &mut ed,
+            &mut c,
+            EditAction::Empty {
+                tick: 2880,
+                note: 64,
+            },
+        );
+        assert_eq!(picked(&ed, &c), [(2880, 64)]);
+        // On a clip of pads, one hit whatever the chip.
+        let mut drums = Clip::new("Drums", 3840);
+        drums.add_note(Note::new(0, 240, 3, 100)).unwrap();
+        let mut ed = Editor::new(0, 0, &drums);
+        ed.tool = Tool::Draw;
+        ed.chord = ChordShape::Triad;
+        run(
+            &mut ed,
+            &mut drums,
+            EditAction::Empty { tick: 480, note: 5 },
+        );
+        assert_eq!(picked(&ed, &drums), [(480, 5)]);
+    }
+
+    /// Strum, Invert and Spread change each chord of the picks, a run of
+    /// turns one take; their values read the first chord; with nothing
+    /// picked, or no chord among the picks, they say so.
+    #[test]
+    fn strum_invert_and_spread_change_each_chord_of_the_picks() {
+        let mut c = keys(&[
+            (0, 960, 60),
+            (0, 960, 64),
+            (0, 960, 67),
+            (960, 960, 65),
+            (960, 960, 69),
+            (960, 960, 72),
+        ]);
+        let mut ed = Editor::new(0, 0, &c);
+        let value = |ed: &Editor, c: &Clip, row: usize| edit_rows(ed, c)[row].value.clone();
+        assert_eq!(EDIT_ROWS[STRUM_ROW], "Strum");
+        assert_eq!(value(&ed, &c, STRUM_ROW), "pick notes");
+        let done = run(
+            &mut ed,
+            &mut c,
+            EditAction::Row {
+                row: STRUM_ROW,
+                delta: 1,
+            },
+        );
+        assert!(done.edit.add.is_empty());
+        assert_eq!(done.line, "edit: pick a chord: notes that sound together");
+        ed.sel = (0..6).collect();
+        assert_eq!(value(&ed, &c, STRUM_ROW), "none");
+        assert_eq!(value(&ed, &c, INVERT_ROW), "C");
+        assert_eq!(value(&ed, &c, SPREAD_ROW), "close");
+        let a = run(
+            &mut ed,
+            &mut c,
+            EditAction::Row {
+                row: STRUM_ROW,
+                delta: 1,
+            },
+        );
+        let b = run(
+            &mut ed,
+            &mut c,
+            EditAction::Row {
+                row: STRUM_ROW,
+                delta: 1,
+            },
+        );
+        assert!(
+            a.join.is_some() && a.join == b.join,
+            "a run of turns is one take"
+        );
+        assert_eq!(value(&ed, &c, STRUM_ROW), format!("↑ {}t", 2 * STRUM_TICKS));
+        assert_eq!(ed.picked(&c).len(), 6, "the picks stay");
+        let starts = |c: &Clip| -> Vec<Tick> {
+            let mut s: Vec<(u8, Tick)> = c.notes.iter().map(|n| (n.note, n.tick)).collect();
+            s.sort_unstable();
+            s.into_iter().map(|(_, t)| t).collect()
+        };
+        let g = 2 * STRUM_TICKS;
+        assert_eq!(starts(&c), [0, g, 960, 2 * g, 960 + g, 960 + 2 * g]);
+        // Back down past 0: the highest first.
+        for _ in 0..4 {
+            run(
+                &mut ed,
+                &mut c,
+                EditAction::Row {
+                    row: STRUM_ROW,
+                    delta: -1,
+                },
+            );
+        }
+        assert_eq!(value(&ed, &c, STRUM_ROW), format!("↓ {g}t"));
+        for _ in 0..2 {
+            run(
+                &mut ed,
+                &mut c,
+                EditAction::Row {
+                    row: STRUM_ROW,
+                    delta: 1,
+                },
+            );
+        }
+        // Invert: C/E and F/A, the value naming the first.
+        run(
+            &mut ed,
+            &mut c,
+            EditAction::Row {
+                row: INVERT_ROW,
+                delta: 1,
+            },
+        );
+        assert_eq!(value(&ed, &c, INVERT_ROW), "C/E");
+        run(
+            &mut ed,
+            &mut c,
+            EditAction::Row {
+                row: INVERT_ROW,
+                delta: -1,
+            },
+        );
+        assert_eq!(value(&ed, &c, INVERT_ROW), "C");
+        // Spread opens each chord, then closes it.
+        run(
+            &mut ed,
+            &mut c,
+            EditAction::Row {
+                row: SPREAD_ROW,
+                delta: 1,
+            },
+        );
+        assert_eq!(value(&ed, &c, SPREAD_ROW), "open");
+        let mut p: Vec<u8> = c
+            .notes
+            .iter()
+            .filter(|n| n.tick == 0)
+            .map(|n| n.note)
+            .collect();
+        p.sort_unstable();
+        assert_eq!(p, [60, 67, 76]);
+        run(
+            &mut ed,
+            &mut c,
+            EditAction::Row {
+                row: SPREAD_ROW,
+                delta: -1,
+            },
+        );
+        assert_eq!(value(&ed, &c, SPREAD_ROW), "close");
+        let done = run(
+            &mut ed,
+            &mut c,
+            EditAction::Row {
+                row: SPREAD_ROW,
+                delta: -1,
+            },
+        );
+        assert_eq!(done.line, "edit: the chords are as close as they go");
+        // One note picked: no chord.
+        ed.sel = vec![0];
+        assert_eq!(value(&ed, &c, STRUM_ROW), "no chord");
+    }
+
+    fn roll(chord: ChordShape, minor: bool, scale: Option<Scale>) -> NoteGrid {
+        NoteGrid {
+            notes: vec![NoteBox::of(&Note::new(0, 240, 60, 100), false)],
+            length: 3840,
+            bar: 3840,
+            view: RollView {
+                lift: 57 * 40,
+                row_h: 40,
+                ..RollView::default()
+            },
+            scale,
+            chord,
+            minor,
+            ..NoteGrid::default()
+        }
+    }
+
+    fn target(g: &NoteGrid, id: &str, index: usize) -> Option<Rect> {
+        g.targets(R)
+            .into_iter()
+            .find(|t| t.id == id && t.index == index)
+            .map(|t| t.rect)
+    }
+
+    fn tap(g: &mut NoteGrid, f: u64, r: Rect) -> Option<EventKind> {
+        let (x, y) = (r.x + r.w / 2, r.y + r.h / 2);
+        let down = g.touch(f, Touch::Down, x, y, R);
+        let up = g.touch(f, Touch::Up, x, y, R);
+        down.or(up)
+    }
+
+    /// The Chord chip opens the Chord menu over the roll: Major and Minor
+    /// (only with no scale) keep it open, a shape closes it, Pads shows
+    /// only while the pads have a scale, a touch elsewhere closes it with
+    /// nothing sent; no chip on a clip of pads. A note being drawn shows
+    /// the whole chord.
+    #[test]
+    fn the_chord_chip_opens_the_chord_menu() {
+        let mut g = roll(ChordShape::Off, false, None);
+        let chip = target(&g, "chord-chip", 0).unwrap();
+        assert_eq!(tap(&mut g, 1, chip), None);
+        assert!(g.chord_menu);
+        assert_eq!(
+            target(&g, "chord-chip", 0),
+            None,
+            "the menu covers the roll"
+        );
+        assert_eq!(
+            target(&g, "chord-pick", 7),
+            None,
+            "no Pads: the pads have no scale"
+        );
+        let minor = target(&g, "chord-pick", CHORD_MINOR).unwrap();
+        assert_eq!(
+            tap(&mut g, 2, minor),
+            Some(EventKind::Tab(CHORD_MENU + CHORD_MINOR))
+        );
+        assert!(g.chord_menu, "Minor keeps it open for a shape");
+        let triad = target(&g, "chord-pick", 1).unwrap();
+        assert_eq!(tap(&mut g, 3, triad), Some(EventKind::Tab(CHORD_MENU + 1)));
+        assert!(!g.chord_menu, "a shape closes it");
+        g.chord_menu = true;
+        let tools = g.button_rects(R)[0];
+        assert_eq!(
+            tap(&mut g, 4, tools),
+            None,
+            "a touch elsewhere only closes it"
+        );
+        assert!(!g.chord_menu);
+        // With a scale, no Major or Minor; Pads with the pads' scale.
+        let mut g = roll(ChordShape::Triad, false, Some(Scale::new(0, MAJOR)));
+        g.offers = Arc::new(ScaleOffers {
+            pads: Some(Scale::new(2, MINOR)),
+            own: Vec::new(),
+        });
+        g.chord_menu = true;
+        assert_eq!(target(&g, "chord-pick", CHORD_MAJOR), None);
+        assert!(target(&g, "chord-pick", 7).is_some());
+        // Drawing shows the chord: C E G on the C row.
+        g.chord_menu = false;
+        g.tool = Tool::Draw;
+        assert_eq!(g.chord_on(60), [60, 64, 67]);
+        // No chip on pads.
+        let mut pads = roll(ChordShape::Triad, false, None);
+        pads.pads = true;
+        assert_eq!(target(&pads, "chord-chip", 0), None);
+        assert_eq!(pads.chord_on(3), [3]);
     }
 }

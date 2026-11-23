@@ -1300,6 +1300,26 @@ pub fn notes_scale_state() -> Result<TimeState, String> {
     Ok(state)
 }
 
+/// The keys clip with the Chord chip on Major seventh (piano roll plan
+/// 2B.2) and the chord with its G#2 picked, so the inspector names it.
+pub fn notes_chord_state() -> Result<TimeState, String> {
+    let mut state = notes_state(crate::editor::Lens::Grid)?;
+    let e = state.edit.as_mut().ok_or("no editor")?;
+    e.editor.chord = crate::editor::ChordShape::Seventh;
+    let all: Vec<usize> = (0..e.clip.notes.len()).collect();
+    let g_sharp = e
+        .clip
+        .notes
+        .iter()
+        .position(|n| n.note == 56)
+        .ok_or("no G#2")?;
+    e.editor.sel = mpfree_seq::notes::chords_of(&e.clip, &all)
+        .into_iter()
+        .find(|chord| chord.contains(&g_sharp))
+        .unwrap_or_default();
+    Ok(state)
+}
+
 /// A bar of drums with a step's every setting in use: a nudged hat, a
 /// ghost snare at 50 %, a 1:2 hat, a ratchet, a FILL open hat and a lock
 /// on the second snare (what the tracker shows).

@@ -31,10 +31,10 @@ use std::collections::BTreeMap;
 
 use crate::editor::zoom::RollView;
 use crate::editor::{
-    box_of, drop_of, edit_rows, knob_name, length_name, lit_scale, note_name, pads, position_name,
-    step_name, EditAction, Editor, Fold, LaneShow, Lens, LockMark, NoteBox, NoteGrid, Tool, ADD,
-    EDIT_BUTTON, FIELDS, MENU, PEN, ROOT_MENU, SCALE_MENU, SNAP_AUTO_T, START_HANDLE,
-    STEP_FALLBACK,
+    box_of, chord_name, drop_of, edit_rows, knob_name, length_name, lit_scale, note_name, pads,
+    position_name, step_name, ChordShape, EditAction, Editor, Fold, LaneShow, Lens, LockMark,
+    NoteBox, NoteGrid, Tool, ADD, CHORD_MAJOR, CHORD_MENU, CHORD_MINOR, EDIT_BUTTON, FIELDS, MENU,
+    PEN, ROOT_MENU, SCALE_MENU, SNAP_AUTO_T, START_HANDLE, STEP_FALLBACK,
 };
 use crate::list::{
     ListRow, SongListView, LIST_ADD, LIST_CLIPS, LIST_LINK, LIST_LINK_CLOSE, LIST_LINK_FROM_LIST,
@@ -221,11 +221,16 @@ pub fn note_cards(e: &EditInfo) -> Option<(String, [QLinkCard; 4])> {
     cards[3].value = range(vel, &|v| v.to_string());
     cards[3].pos = vel.1 as f32 / 127.0;
     let n = picked.len();
-    let head = if n == 1 {
+    let mut head = if n == 1 {
         "1 note".to_string()
     } else {
         format!("{n} notes")
     };
+    // The chord the picks make (plan 2B.2): "3 notes · Dm7".
+    let pitches: Vec<u8> = picked.iter().map(|n| n.note).collect();
+    if let Some(name) = chord_name(&pitches).filter(|_| !pad) {
+        head = format!("{head} · {name}");
+    }
     Some((head, cards))
 }
 
@@ -2149,6 +2154,25 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             // A touch naming a note carries the picture it was made on.
             let rev = st.edit.as_ref().map_or(0, |e| e.rev);
             match *kind {
+                // The Chord menu (plan 2B.2): a shape keeps Major or
+                // Minor, and they keep the shape.
+                EventKind::Tab(k) if k >= CHORD_MENU => {
+                    let ed = &st.edit.as_ref()?.editor;
+                    match k - CHORD_MENU {
+                        CHORD_MAJOR => EditAction::Chord {
+                            shape: ed.chord,
+                            minor: false,
+                        },
+                        CHORD_MINOR => EditAction::Chord {
+                            shape: ed.chord,
+                            minor: true,
+                        },
+                        i => EditAction::Chord {
+                            shape: *ChordShape::ALL.get(i)?,
+                            minor: ed.minor,
+                        },
+                    }
+                }
                 // The Scale menu (plan 2B.1): a scale, by its place among
                 // the editor's offers, or a root.
                 EventKind::Tab(k) if k >= SCALE_MENU => {
@@ -4837,6 +4861,9 @@ pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
         false => "none on pads".into(),
     };
     g.offers = Arc::clone(&ed.offers);
+    // What a drawn note puts in (plan 2B.2).
+    g.chord = ed.chord;
+    g.minor = ed.minor;
     g
 }
 
@@ -5675,6 +5702,36 @@ mod tests {
         assert_eq!(g.offers.pads, Some(mpfree_seq::Scale::new(2, MINOR)));
     }
 
+    /// The Chord menu (plan 2B.2): a shape keeps Major or Minor, they
+    /// keep the shape; the grid shows the editor's chord.
+    #[test]
+    fn the_chord_menu_sets_what_a_drawn_note_puts_in() {
+        let mut st = crate::sample::notes_state(Lens::Grid).unwrap();
+        let e = st.edit.as_mut().unwrap();
+        e.editor.chord = ChordShape::Seventh;
+        e.editor.minor = true;
+        let ev = |k| {
+            action(
+                &UiEvent {
+                    widget: NOTES.into(),
+                    kind: EventKind::Tab(k),
+                },
+                &st,
+            )
+        };
+        let set = |shape, minor| Some(TimeAction::Edit(EditAction::Chord { shape, minor }));
+        assert_eq!(ev(CHORD_MENU + 1), set(ChordShape::Triad, true));
+        assert_eq!(ev(CHORD_MENU + 7), set(ChordShape::Pads, true));
+        assert_eq!(
+            ev(CHORD_MENU + CHORD_MAJOR),
+            set(ChordShape::Seventh, false)
+        );
+        assert_eq!(ev(CHORD_MENU + CHORD_MINOR), set(ChordShape::Seventh, true));
+        assert_eq!(ev(CHORD_MENU + 50), None);
+        let g = note_grid(st.edit.as_ref().unwrap(), &st);
+        assert_eq!((g.chord, g.minor), (ChordShape::Seventh, true));
+    }
+
     /// Picking on the roll (piano roll plan 1B.2): a box, a note tapped
     /// while another is held and a handle dragged become the editor's
     /// actions; a drawn note's `Span` stays a drawn note.
@@ -5930,6 +5987,20 @@ mod tests {
         values.extend(edit_rows(&ed, &keys).into_iter().map(|r| r.value));
         // Fit to scale's (plan 2B.1).
         values.extend(["no scale", "none off", "127 off"].map(String::from));
+        // The chord tools' (plan 2B.2), at their longest.
+        values.extend(
+            [
+                "pick notes",
+                "no chord",
+                "↓ 9990t",
+                "C#mMaj7",
+                "C#m7b5",
+                "C#m/G#",
+                "close",
+                "open",
+            ]
+            .map(String::from),
+        );
         // The clip settings card, at its longest words.
         let mut card = ClipSettings {
             speed: Speed::new(1, 8).unwrap(),
@@ -6166,7 +6237,7 @@ mod tests {
         assert_eq!(values, ["2.1.480", "1/4", "G3", "104"]);
         e.editor.sel = vec![0, 1, 2];
         let (head, cards) = note_cards(&e).unwrap();
-        assert_eq!(head, "3 notes");
+        assert_eq!(head, "3 notes · C", "the chord they make (plan 2B.2)");
         let values: Vec<&str> = cards.iter().map(|c| c.value.as_str()).collect();
         assert_eq!(values, ["1.1–3.1", "37t–1/4", "C3–G3", "80–104"]);
         // The cursor on the roll, kept on screen.
