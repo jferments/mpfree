@@ -24,7 +24,11 @@
 //! - **Keys as routed:** with no patch playing (or for a patch's keys
 //!   outside its zones set so) a key goes the old way: [`Went::Routed`]
 //!   tells the caller, and its let-go is sent the same way even after a
-//!   switch.
+//!   switch. A let-go, pressure or pedal lift for a key or pedal the table
+//!   never saw go down (it went down before the song had patches) goes the
+//!   old way too, so nothing the old way holds can hang.
+//! - **Keyboards by name:** a zone names its keyboard ([`crate::Rig::keyboards`]);
+//!   the caller says which port each name is plugged in as ([`Keys::set_port`]).
 //!
 //! The table has room for [`MAX_HELD`] keys; one more plays nothing and
 //! is counted ([`Stats::held_full`]), so no note can hang. Nothing here
@@ -55,6 +59,13 @@ pub const MAX_KEYBOARDS: usize = 32;
 
 /// The most instruments one pedal or wheel move reaches.
 pub const MAX_REACH: usize = 16;
+
+/// The port numbers [`Keys::set_port`] names (the app's are fewer).
+pub const MAX_PORT_IDS: usize = 64;
+
+/// No keyboard a zone names: a port [`Keys::set_port`] hasn't named, or
+/// named for a keyboard no zone takes.
+pub const NO_KEYBOARD: u8 = u8::MAX;
 
 /// A message from a keyboard, after MIDI Learn took its controls.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -281,6 +292,8 @@ pub struct Keys {
     waiting: Option<Option<usize>>,
     held: Box<[Option<Held>; MAX_HELD]>,
     boards: Box<[Option<Board>; MAX_KEYBOARDS]>,
+    /// Each port's keyboard in the rig ([`NO_KEYBOARD`]: none).
+    port_kb: [u8; MAX_PORT_IDS],
     pub stats: Stats,
 }
 
@@ -288,6 +301,14 @@ impl Default for Keys {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// The keyboard `from` is, in the rig's list.
+fn kb_of(port_kb: &[u8; MAX_PORT_IDS], from: From) -> Option<u8> {
+    port_kb
+        .get(usize::from(from.port))
+        .copied()
+        .filter(|&k| k != NO_KEYBOARD)
 }
 
 fn transposed(note: u8, by: i8) -> Option<u8> {
@@ -304,8 +325,40 @@ impl Keys {
             waiting: None,
             held: Box::new([None; MAX_HELD]),
             boards: Box::new([None; MAX_KEYBOARDS]),
+            port_kb: [NO_KEYBOARD; MAX_PORT_IDS],
             stats: Stats::default(),
         }
+    }
+
+    /// Port `port` is plugged in as `name` (None: it went away, or the
+    /// name isn't known). Call it for every port plugged in after each
+    /// [`Keys::set_rig`]: a zone that names a keyboard takes nothing from a
+    /// port not named so. Never allocates.
+    pub fn set_port(&mut self, port: u8, name: Option<&str>) {
+        let kb = name
+            .and_then(|n| self.rig.keyboard(n))
+            .unwrap_or(NO_KEYBOARD);
+        if let Some(k) = self.port_kb.get_mut(usize::from(port)) {
+            *k = kb;
+        }
+    }
+
+    /// Whether anything here can take a key: the song has patches, or a
+    /// key or pedal is still held from one, or a switch waits. While not,
+    /// the caller can leave [`Keys::key`] out and play the keys as
+    /// before.
+    pub fn active(&self) -> bool {
+        !self.rig.is_empty() || self.waiting.is_some() || !self.hands_up()
+    }
+
+    /// Whether the song has patch `i` (from 0).
+    pub fn has(&self, i: usize) -> bool {
+        self.rig.patch(i).is_some()
+    }
+
+    /// How many patches the song has.
+    pub fn patches(&self) -> usize {
+        self.rig.len()
     }
 
     /// The song's patches change (an edit, another song). Keys held keep
@@ -314,6 +367,7 @@ impl Keys {
     /// be freed off the audio thread.
     pub fn set_rig(&mut self, rig: Box<Rig>) -> Box<Rig> {
         let old = std::mem::replace(&mut self.rig, rig);
+        self.port_kb = [NO_KEYBOARD; MAX_PORT_IDS];
         if self.now.is_some_and(|i| self.rig.patch(i).is_none()) {
             self.now = None;
         }
@@ -380,7 +434,9 @@ impl Keys {
         // sostenuto holds only the notes it caught), and its instruments
         // start from where each keyboard's wheels are.
         let stats = &mut self.stats;
+        let port_kb = &self.port_kb;
         for b in self.boards.iter_mut().flatten() {
+            let kb = kb_of(port_kb, b.from);
             for i in [0, 2] {
                 let Some(v) = b.down[i] else {
                     continue;
@@ -389,7 +445,7 @@ impl Keys {
                     let Some(inst) = z.inst else {
                         continue;
                     };
-                    if z.pedals && z.takes.takes(b.from) && b.reach[i].add(inst, stats) {
+                    if z.pedals && z.takes.takes(kb, b.from.ch) && b.reach[i].add(inst, stats) {
                         out(Out::Control {
                             inst,
                             ctl: PEDALS[i],
@@ -403,7 +459,7 @@ impl Keys {
                 let Some(inst) = z.inst else {
                     continue;
                 };
-                if !z.wheels || !z.takes.takes(b.from) || !sent.add(inst, stats) {
+                if !z.wheels || !z.takes.takes(kb, b.from.ch) || !sent.add(inst, stats) {
                     continue;
                 }
                 if let Some(value) = b.bend {
@@ -528,12 +584,13 @@ impl Keys {
             to: [NO_DEST; MAX_ZONES],
         };
         let mut vels = [0u8; MAX_ZONES];
+        let kb = kb_of(&self.port_kb, from);
         match self.patch() {
             None => h.routed = true,
             Some(p) => {
                 let mut taken = false;
                 for z in p.zones.iter().flatten() {
-                    if !z.takes(from, note, vel) {
+                    if !z.takes(kb, from.ch, note, vel) {
                         continue;
                     }
                     taken = true;
@@ -611,9 +668,10 @@ impl Keys {
                     Went::Played
                 }
             }
-            // Not remembered: the table was full, or the patch cut it.
-            None if self.routed_now() => Went::Routed,
-            None => Went::Nowhere,
+            // Not remembered: it went down before the song had patches,
+            // the table was full, or the patch cut it. The old way ends
+            // it if it holds it (a let-go it never had is harmless there).
+            None => Went::Routed,
         };
         self.check_waiting(out);
         went
@@ -637,8 +695,8 @@ impl Keys {
                 }
                 Went::Played
             }
-            None if self.routed_now() => Went::Routed,
-            None => Went::Nowhere,
+            // A key the table never saw: the old way has it, if anything.
+            None => Went::Routed,
         }
     }
 
@@ -675,10 +733,11 @@ impl Keys {
     fn reach(&mut self, from: From, pedal: bool) -> Reach {
         let mut r = Reach::EMPTY;
         let stats = &mut self.stats;
+        let kb = kb_of(&self.port_kb, from);
         if let Some(p) = self.now.and_then(|i| self.rig.patch(i)) {
             for z in p.zones.iter().flatten() {
                 let on = if pedal { z.pedals } else { z.wheels };
-                if let (true, Some(inst)) = (on && z.takes.takes(from), z.inst) {
+                if let (true, Some(inst)) = (on && z.takes.takes(kb, from.ch), z.inst) {
                     r.add(inst, stats);
                 }
             }
@@ -788,7 +847,9 @@ impl Keys {
             };
         }
         if !was {
-            return if routed { Went::Routed } else { Went::Nowhere };
+            // Up without a down here: it went down before the song had
+            // patches, so the old way lifts it.
+            return Went::Routed;
         }
         let b = self.boards[bi].as_mut().expect("claimed");
         b.down[i] = None;
@@ -812,6 +873,26 @@ impl Keys {
         } else {
             Went::Played
         }
+    }
+
+    /// All Notes Off (or All Sound Off) on `from`'s port and channel: the
+    /// notes its keys hold here end. Those that went the old way are the
+    /// old way's to end. Its pedals stay as they are.
+    pub fn release(&mut self, from: From, out: &mut impl FnMut(Out)) {
+        for slot in self.held.iter_mut() {
+            if let Some(h) = slot.filter(|h| h.from == from) {
+                if !h.routed {
+                    for d in h.dests() {
+                        out(Out::Off {
+                            inst: d.inst,
+                            note: d.note,
+                        });
+                    }
+                }
+                *slot = None;
+            }
+        }
+        self.check_waiting(out);
     }
 
     /// A keyboard's port went away: every note its keys hold ends and its
@@ -941,12 +1022,13 @@ mod tests {
         }
     }
 
-    fn port(name: &str) -> Option<u8> {
-        match name {
-            "KeyLab" => Some(1),
-            "Nord" => Some(2),
-            _ => None,
-        }
+    /// Puts `p` in, with the KeyLab plugged in as port 1 and the Nord as
+    /// port 2; gives the old rig back.
+    fn put(k: &mut Keys, p: &Patches) -> Box<Rig> {
+        let old = k.set_rig(p.resolve(inst));
+        k.set_port(1, Some("KeyLab"));
+        k.set_port(2, Some("Nord"));
+        old
     }
 
     /// Patch 0: piano, every key. Patch 1: pad, every key. Patch 2: bass
@@ -969,7 +1051,7 @@ mod tests {
             ],
         };
         let mut k = Keys::new();
-        k.set_rig(p.resolve(inst, port));
+        put(&mut k, &p);
         k
     }
 
@@ -1160,8 +1242,9 @@ mod tests {
                 off(PIANO, 60)
             ]
         );
-        // A second let-go finds nothing.
-        assert_eq!(r.up(KEYLAB, 60), Went::Nowhere);
+        // A second let-go finds nothing here, so it goes the old way,
+        // which holds nothing either.
+        assert_eq!(r.up(KEYLAB, 60), Went::Routed);
         assert_eq!(r.take(), vec![]);
         assert_eq!(r.k.held(), 0);
     }
@@ -1242,6 +1325,80 @@ mod tests {
     }
 
     #[test]
+    fn what_went_down_before_the_song_had_patches_comes_up_the_old_way() {
+        let mut r = Run {
+            k: Keys::new(),
+            sent: vec![],
+        };
+        assert!(!r.k.active(), "no patches: the keys play as before");
+        // Held before: the old way had them.
+        let p = Patches {
+            list: vec![Layout::Whole.patch("Piano", "piano")],
+        };
+        put(&mut r.k, &p);
+        assert!(r.k.active());
+        r.pick(Some(0), When::Now);
+        assert_eq!(r.up(KEYLAB, 60), Went::Routed);
+        assert_eq!(r.pedal(KEYLAB, Ctl::Sustain, false), Went::Routed);
+        assert_eq!(
+            r.key(KEYLAB, In::Pressure { note: 61, value: 3 }),
+            Went::Routed
+        );
+        assert_eq!(r.take(), vec![]);
+        // Every patch removed with a key still down: it ends where it
+        // started, and only then do the keys stop needing the table.
+        r.down(KEYLAB, 64, 90);
+        put(&mut r.k, &Patches::default());
+        assert!(r.k.active());
+        assert_eq!(r.up(KEYLAB, 64), Went::Played);
+        assert_eq!(r.take(), vec![on(PIANO, 64, 90), off(PIANO, 64)]);
+        assert!(!r.k.active());
+    }
+
+    #[test]
+    fn all_notes_off_ends_that_channels_keys_only() {
+        let mut r = Run::new(Some(0));
+        let ch2 = From { port: 1, ch: 1 };
+        r.down(KEYLAB, 60, 100);
+        r.down(ch2, 62, 100);
+        r.pedal(KEYLAB, Ctl::Sustain, true);
+        r.take();
+        let sent = &mut r.sent;
+        r.k.release(KEYLAB, &mut |o| sent.push(o));
+        assert_eq!(r.take(), vec![off(PIANO, 60)]);
+        assert_eq!(r.k.held(), 1);
+        assert!(!r.k.hands_up(), "the pedal stays down");
+    }
+
+    #[test]
+    fn a_zone_names_its_keyboard_and_finds_it_where_it_is_plugged_in() {
+        let mut p = Layout::Whole.patch("Nord only", "organ");
+        p.zones[0].keyboard = Keyboard::Port {
+            name: "Nord".into(),
+            ch: None,
+        };
+        let mut r = Run {
+            k: Keys::new(),
+            sent: vec![],
+        };
+        // Put in, with no port named yet: the Nord isn't plugged in.
+        r.k.set_rig(Patches { list: vec![p] }.resolve(inst));
+        r.pick(Some(0), When::Now);
+        assert_eq!(r.down(NORD, 60, 100), Went::Nowhere);
+        // Plugged in as port 5, on any channel.
+        r.k.set_port(5, Some("Nord"));
+        let nord = From { port: 5, ch: 9 };
+        assert_eq!(r.down(nord, 60, 100), Went::Played);
+        assert_eq!(r.down(KEYLAB, 61, 100), Went::Nowhere);
+        // Unplugged: its port is no one's.
+        let sent = &mut r.sent;
+        r.k.unplug(5, &mut |o| sent.push(o));
+        r.k.set_port(5, None);
+        assert_eq!(r.take(), vec![on(ORGAN, 60, 100), off(ORGAN, 60)]);
+        assert_eq!(r.down(nord, 60, 100), Went::Nowhere);
+    }
+
+    #[test]
     fn a_zone_without_wheels_hears_no_pressure_but_hears_how_the_key_let_go() {
         let mut p = Layout::Layered.patch("Layers", "piano");
         p.zones[1].plays = "pad".into();
@@ -1250,7 +1407,7 @@ mod tests {
             k: Keys::new(),
             sent: vec![],
         };
-        r.k.set_rig(Patches { list: vec![p] }.resolve(inst, port));
+        put(&mut r.k, &Patches { list: vec![p] });
         r.pick(Some(0), When::Now);
         r.down(KEYLAB, 60, 100);
         r.take();
@@ -1420,13 +1577,14 @@ mod tests {
         let mut r = Run::new(None);
         // No patch: everything goes the old way.
         assert_eq!(r.down(KEYLAB, 50, 100), Went::Routed);
-        r.k.set_rig(p.resolve(inst, port));
+        put(&mut r.k, &p);
         r.pick(Some(0), When::Now);
         // Its let-go goes the old way too, though a patch plays now.
         assert_eq!(r.up(KEYLAB, 50), Went::Routed);
-        // Nothing (the default): the gap is quiet.
+        // Nothing (the default): the gap is quiet. Its let-go isn't
+        // remembered, so the old way gets it, harmlessly.
         assert_eq!(r.down(KEYLAB, 50, 100), Went::Nowhere);
-        assert_eq!(r.up(KEYLAB, 50), Went::Nowhere);
+        assert_eq!(r.up(KEYLAB, 50), Went::Routed);
         // An instrument, or the old way.
         for (outside, went, sent) in [
             (
@@ -1437,7 +1595,7 @@ mod tests {
             (Outside::Routed, Went::Routed, vec![]),
         ] {
             p.list[0].outside = outside;
-            r.k.set_rig(p.resolve(inst, port));
+            put(&mut r.k, &p);
             assert_eq!(r.down(KEYLAB, 50, 100), went);
             assert_eq!(r.up(KEYLAB, 50), went);
             assert_eq!(r.take(), sent);
@@ -1452,7 +1610,7 @@ mod tests {
         };
         p.list[0].outside = Outside::Play("organ".into());
         let mut r = Run::new(None);
-        r.k.set_rig(p.resolve(inst, port));
+        put(&mut r.k, &p);
         r.pick(Some(0), When::Now);
         assert_eq!(r.down(KEYLAB, 60, 100), Went::Nowhere);
         assert_eq!(r.take(), vec![]);
@@ -1476,7 +1634,7 @@ mod tests {
         lead.zones.push(low);
         let p = Patches { list: vec![lead] };
         let mut r = Run::new(None);
-        r.k.set_rig(p.resolve(inst, port));
+        put(&mut r.k, &p);
         r.pick(Some(0), When::Now);
         // An MPE note on its own channel of the KeyLab; the Nord's channel
         // 4 alone reaches the bass; a key moved off the keyboard drops.
@@ -1519,7 +1677,7 @@ mod tests {
         assert_eq!(r.down(NORD, 100, 100), Went::Nowhere);
         assert_eq!(r.k.stats.held_full, 1);
         r.take();
-        assert_eq!(r.up(NORD, 100), Went::Nowhere);
+        assert_eq!(r.up(NORD, 100), Went::Routed);
         assert_eq!(r.take(), vec![]);
     }
 
@@ -1530,14 +1688,14 @@ mod tests {
         let p = Patches {
             list: vec![Layout::Whole.patch("Organ now", "organ")],
         };
-        let old = r.k.set_rig(p.resolve(inst, port));
+        let old = put(&mut r.k, &p);
         assert_eq!(old.len(), 4);
         r.up(KEYLAB, 60);
         assert_eq!(r.take(), vec![on(PIANO, 60, 100), off(PIANO, 60)]);
         // A patch the list no longer has leaves the keys as routed.
         r.pick(Some(0), When::Now);
         let p = Patches { list: vec![] };
-        r.k.set_rig(p.resolve(inst, port));
+        put(&mut r.k, &p);
         assert_eq!(r.k.playing(), None);
         assert_eq!(r.down(KEYLAB, 60, 100), Went::Routed);
     }

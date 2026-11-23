@@ -432,24 +432,32 @@ impl Patches {
     }
 
     /// The audio thread's copy: each zone's instrument as `inst` finds it
-    /// now (None: not in the song, so its keys play nothing) and its
-    /// keyboard as `port` finds it (None: not connected, so the zone takes
-    /// nothing). Allocates: the screen thread's job.
-    pub fn resolve(
-        &self,
-        inst: impl Fn(&str) -> Option<keys::Inst>,
-        port: impl Fn(&str) -> Option<u8>,
-    ) -> Box<Rig> {
+    /// now (None: not in the song, so its keys play nothing), and the
+    /// keyboards the zones name, by name ([`Rig::keyboards`]: the audio
+    /// thread finds them among the ports plugged in, [`keys::Keys::set_port`]).
+    /// Allocates: the screen thread's job.
+    pub fn resolve(&self, mut inst: impl FnMut(&str) -> Option<keys::Inst>) -> Box<Rig> {
         let mut rig = Box::new(Rig::default());
+        let mut keyboards: Vec<String> = Vec::new();
         for (slot, p) in rig.patches.iter_mut().zip(self.list.iter()) {
             let mut zones = [None; MAX_ZONES];
             for (to, z) in zones.iter_mut().zip(p.zones.iter()) {
                 let takes = match &z.keyboard {
                     Keyboard::Any => Takes::Any,
-                    Keyboard::Port { name, ch } => match port(name) {
-                        Some(p) => Takes::Port { port: p, ch: *ch },
-                        None => Takes::Nothing,
-                    },
+                    Keyboard::Port { name, ch } => {
+                        let kb = match keyboards.iter().position(|k| k == name) {
+                            Some(i) => i,
+                            None => {
+                                keyboards.push(name.clone());
+                                keyboards.len() - 1
+                            }
+                        };
+                        // Past 254 keyboards named (more than any rig
+                        // has), a zone names one no port is found as, so
+                        // it takes nothing.
+                        let kb = u8::try_from(kb).unwrap_or(keys::NO_KEYBOARD);
+                        Takes::Port { kb, ch: *ch }
+                    }
                 };
                 *to = Some(LiveZone {
                     inst: inst(&z.plays),
@@ -474,6 +482,7 @@ impl Patches {
                 cut_old: p.cut_old,
             });
         }
+        rig.keyboards = keyboards;
         rig
     }
 }
@@ -511,21 +520,22 @@ fn keep(out: &mut Patches, raw: &str) -> Option<()> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Takes {
     Any,
-    /// One port, one channel or (None) every channel.
+    /// One keyboard, by its place in [`Rig::keyboards`], on one channel
+    /// or (None) every channel. It takes nothing while that keyboard
+    /// isn't plugged in.
     Port {
-        port: u8,
+        kb: u8,
         ch: Option<u8>,
     },
-    /// Its keyboard isn't connected.
-    Nothing,
 }
 
 impl Takes {
-    pub fn takes(self, from: keys::From) -> bool {
+    /// Whether it takes a message on channel `ch` from the keyboard `kb`
+    /// ([`Rig::keyboards`]; None: a keyboard no zone names).
+    pub fn takes(self, kb: Option<u8>, ch: u8) -> bool {
         match self {
             Takes::Any => true,
-            Takes::Port { port, ch } => port == from.port && ch.is_none_or(|c| c == from.ch),
-            Takes::Nothing => false,
+            Takes::Port { kb: k, ch: c } => kb == Some(k) && c.is_none_or(|c| c == ch),
         }
     }
 }
@@ -548,9 +558,10 @@ pub struct LiveZone {
 }
 
 impl LiveZone {
-    /// Whether it takes `note` at `vel` from `from`.
-    pub fn takes(&self, from: keys::From, note: u8, vel: u8) -> bool {
-        self.takes.takes(from)
+    /// Whether it takes `note` at `vel` on channel `ch` from the keyboard
+    /// `kb` ([`Takes::takes`]).
+    pub fn takes(&self, kb: Option<u8>, ch: u8, note: u8, vel: u8) -> bool {
+        self.takes.takes(kb, ch)
             && (self.low..=self.high).contains(&note)
             && (self.vel_low..=self.vel_high).contains(&vel)
     }
@@ -579,17 +590,27 @@ pub struct LivePatch {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Rig {
     pub patches: [Option<LivePatch>; MAX_PATCHES],
+    /// The keyboards the zones name, each once, by the name the project
+    /// gives the port ([`Takes::Port`] holds a place in this).
+    pub keyboards: Vec<String>,
 }
 
 impl Default for Rig {
     fn default() -> Self {
         Rig {
             patches: [None; MAX_PATCHES],
+            keyboards: Vec::new(),
         }
     }
 }
 
 impl Rig {
+    /// A keyboard's place in [`Rig::keyboards`], by its port's name.
+    pub fn keyboard(&self, name: &str) -> Option<u8> {
+        let i = self.keyboards.iter().position(|k| k == name)?;
+        u8::try_from(i).ok()
+    }
+
     /// Patch `i` (from 0), if the song has it.
     pub fn patch(&self, i: usize) -> Option<&LivePatch> {
         self.patches.get(i)?.as_ref()
@@ -744,26 +765,27 @@ mod tests {
         let p = Patches {
             list: vec![chorus_split()],
         };
-        let rig = p.resolve(
-            |i| match i {
-                "track 4" => Some(keys::Inst(4)),
-                "kit 3" => Some(keys::Inst(30)),
-                _ => None,
-            },
-            |_| None,
-        );
+        let rig = p.resolve(|i| match i {
+            "track 4" => Some(keys::Inst(4)),
+            "kit 3" => Some(keys::Inst(30)),
+            _ => None,
+        });
         assert_eq!(rig.len(), 1);
         let live = rig.patch(0).unwrap();
         let z: Vec<_> = live.zones.iter().flatten().collect();
         assert_eq!(z.len(), 3);
         assert_eq!(z[0].inst, Some(keys::Inst(4)));
         assert_eq!(z[1].inst, Some(keys::Inst(30)));
-        // Strings isn't in the song, and its keyboard isn't connected.
+        // Strings isn't in the song, and it names its keyboard.
         assert_eq!(z[2].inst, None);
-        assert_eq!(z[2].takes, Takes::Nothing);
-        let key = keys::From { port: 1, ch: 0 };
-        assert!(z[0].takes(key, 30, 10));
-        assert!(!z[0].takes(key, 48, 10));
-        assert!(!z[2].takes(key, 60, 100));
+        assert_eq!(rig.keyboards, vec!["KeyLab 61".to_string()]);
+        assert_eq!(rig.keyboard("KeyLab 61"), Some(0));
+        assert_eq!(z[2].takes, Takes::Port { kb: 0, ch: Some(0) });
+        assert!(z[0].takes(None, 0, 30, 10));
+        assert!(!z[0].takes(None, 0, 48, 10));
+        // Only from that keyboard, on its channel.
+        assert!(!z[2].takes(None, 0, 60, 100));
+        assert!(z[2].takes(Some(0), 0, 60, 100));
+        assert!(!z[2].takes(Some(0), 1, 60, 100));
     }
 }
