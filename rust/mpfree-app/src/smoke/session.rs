@@ -350,6 +350,9 @@ pub struct Session {
     /// main.rs keeps them: the XY pad's buttons press once past the
     /// middle.
     play_moves: crate::remote::PlayMoves,
+    /// A set's song ending (live shows B1), as main.rs's audio loop runs
+    /// it: its fade, and silence once over.
+    song_end: crate::song_end::SongEnd,
     /// The library the browser saves projects into (`with_library`).
     pub library: Option<mpfree_library::Library>,
     /// A save asked for (SHIFT + BROWSE, Save in the browser), and the
@@ -497,6 +500,7 @@ impl Session {
             xy_turns: undo::Turns::default(),
             xy_rec: crate::xy_rec::XyRec::new(),
             play_moves: crate::remote::PlayMoves::default(),
+            song_end: crate::song_end::SongEnd::new(RATE),
             synth_turns: undo::Turns::default(),
             presets: crate::presets::TrackPresets::default(),
             mix_turns: undo::Turns::default(),
@@ -2273,8 +2277,15 @@ impl Session {
             played = pads.played();
         }
         self.mix.drums(played, &mut l, &mut r);
-        self.mix
+        let (peak, _) = self
+            .mix
             .period(&ctx, (&z, &z), (&ll, &lr), (&z, &z), &mut l, &mut r);
+        // A set's song ending, as main.rs: its fade, and silence once over.
+        if self.song_end.active() {
+            if let Some(n) = self.song_end.period(peak, &mut l, &mut r) {
+                self.out.show(ToUi::SongEnd(n));
+            }
+        }
         // The kit's pads whose mute or solo came due, as main.rs lands them.
         if let Some(h) = self.heard.as_mut() {
             h.extend(l.iter().zip(&r).flat_map(|(a, b)| [*a, *b]));
@@ -2438,6 +2449,8 @@ impl Session {
         self.fx
             .push(Effect::Time(TimeAction::Transport(Command::Stop)));
         self.fx.push(Effect::StopSounds);
+        // A set's song ended into silence: the new one sounds, as main.rs.
+        self.song_end.reset();
         // A new or opened project arms the notes (rec_arm.rs).
         self.app.rec = crate::rec_arm::RecArm::default();
         self.out.show(ToUi::Rec(self.app.rec));
@@ -2775,6 +2788,22 @@ impl Session {
             }
             FromUi::SaveProject => self.save_asked = true,
             FromUi::OpenProject(o) => self.open_project(o),
+            // A set's song ends as main.rs ends it: no new notes first (the
+            // transport's STOP), then its ending.
+            FromUi::SongEnd(end) => {
+                use mpfree_time_ui::TimeAction;
+                use mpfree_transport::Command;
+                if end != crate::song_end::End::Now
+                    && !self.song_end.active()
+                    && self.time.info().state.rolling()
+                {
+                    self.fx
+                        .push(Effect::Time(TimeAction::Transport(Command::Stop)));
+                }
+                self.song_end.start(end);
+                self.out.note(&format!("show: the song ends: {end:?}"));
+            }
+            FromUi::SongEndReset => self.song_end.reset(),
             FromUi::OpenLoops(l) => self.looper.open(*l),
             FromUi::OpenAudio(a) => self.tracks.open(*a),
             FromUi::AudioFiles(dir) => self.tracks.record_to(dir),

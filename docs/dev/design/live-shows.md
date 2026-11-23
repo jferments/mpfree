@@ -11,7 +11,7 @@ The rules it keeps: one track list per project; instruments make the sound, trac
 | A1 | All-or-nothing opens: the parts gate is the audio tracks rethink's phase 0.1 ([Project safety](project-safety.md)); A1 adds a refusal when sounds, takes or loops would be left out, and Open what reads | built ([Project safety](project-safety.md#a-project-that-cant-open-whole-asks-first-live-shows-a1-as-built)) |
 | A2 | The engines an open replaced always go back to the screen thread, never freed on the audio thread | built ([Project safety](project-safety.md#the-engines-an-open-replaced-go-back-live-shows-a2-as-built)) |
 | A3 | Lasting project ids (Save As gives a new one, a rename keeps it, twins are noticed) and a manifest per project | built ([The browser and projects](browser.md#projects)) |
-| A4 | Real songs measured on the MPC (read-only, on the owner's go) | planned |
+| A4 | Real songs measured on the MPC (read-only, on the owner's go) | prepared: every open's own line and each set change's, the device suite's `sets` workflow and the report's table ([below](#measuring-opens-a4)); the round waits for the owner's go |
 | K1 | Keys play keygroups by note on the sampler's single note path, with each kit's Keys play: Pads, Keygroups or Both | built by the sampler refactor as its step 15a2 (agreed 23 Nov): Keys play is the kit's setting, used by the armed track's keys and by routes alike |
 | B1, B2 | Sets, the Set editor and the Show view with cold changes; the set check as a preflight, Prepare show media and Soundcheck | B1 built: sets in the library, the Sets place, the Set editor, the Show view on Arrange, Play set, cold changes with each song's Ends, recovery copies, Learn's Show card and Quick advance ([below](#sets-b1-as-built), [playing a set](#playing-a-set-b1-as-built)). Screens: [layout spec 4p](layout-spec.md#4p-sets-the-show-view-and-the-set-editor). B2's screens (the check view, Soundcheck, Prepare show media) approved by the owner on 23 Nov 2026; being built |
 | C1 to C4 | Patches: zones, the note owner table, scenes and parts picking patches, REC with zones, knobs and pads per patch | C1 built: the patch model, the note owner table, the keys playing the song's patch, KEYS PLAY, the patch list and the editor, then Next and Previous patch, Program change in: Picks a patch and the Show view's keyboards line ([below](#patches-c1-as-built)). Screens: [layout spec 4q](layout-spec.md#4q-patches-what-the-keys-play). C2 to C4 planned |
@@ -132,3 +132,27 @@ More choices made while building:
 - Program change in's Switches is a row of its own under it ("on the line under it"), with a line saying when the patch changes.
 
 REC with zones is C3: until then REC records as before, and a patch's keys reach a track as a route's do.
+
+## Measuring opens (A4)
+
+A4 measures what real songs cost the MPC before anything is promised about changing songs: how long an open takes and where the time goes (reading the stick, decoding, building effects and instruments, starting plugin processes), and what each song really costs in memory once it is in. The app says it on its own, so a device round, a rehearsal or a show leaves the numbers in the log; the round itself is read-only and waits for the owner's go.
+
+**The open's own line** (`mpfree-app/src/open_clock.rs`, `OpenClock`): every open from BROWSE or a set, once all of it is in, says in the log and the Events log
+
+```text
+project: Night Market opened in 2.41 s: read in 0.05 s, built in 0.62 s (2 plugins started in 0.40 s), in the audio loop at 0.67 s, kits at 2.36 s, loops at 0.70 s; 42 sound files (38.1 MB) read in 0.90 s; memory 212 MB in use (peak 236 MB), 1480 MB free
+```
+
+- **read**: the library's read of the project's parts and the check of its files, on the browser's worker (`Done::took_ms`, kept by `Browser::take_open_read`). The clock starts at its answer.
+- **built**: `project::opening` on the screen thread (the time engine, the mixer's effects, the instruments), with the plugin processes it started and the time it waited for them: the rack counts every start and its time (`Rack::starts`, `mpfree-plughost`), and the open takes the difference.
+- Then each part as it was done, counted from the read's answer, because they go on side by side: **in the audio loop** (the engines swapped in and the replaced ones back, `ToUi::ProjectBack`), **kits** (their sounds read and decoded on the job service's file lane), **loops** and **takes** (each on a thread of its own). A part the project hasn't got isn't said.
+- **Sound files**: the kits' and loops' files, counted as they are read (`open_clock::Reads`, wrapped around the read the sampler and the loops already make), with the time in the reads alone, so the stick's share is told apart from decoding. The audio tracks' takes stream from their files and aren't read whole, so they aren't counted.
+- **Memory**, read once on the screen thread when the open is in: the process's resident memory and its peak (`/proc/self/status` VmRSS and VmHWM) and the memory free (`/proc/meminfo` MemAvailable). Never on the audio loop.
+
+The clock is checked once a frame (`Player::open_clock_tick`, beside the set player's), so a part's time is good to a frame (about 33 ms on the MPC). Another open or New before it is in drops it.
+
+**A set's change** says how long it took, from Go (or Play set, for the first song) to the next song in: its ending, its recovery copy and the open (`show: Glass Garden is in (Playing), 4.80 s after Go`).
+
+**The device round's workflow** `sets` (`tools/mpc-one/devtest/workflows/sets.mpw`, [device suite](../hardware/device-suite.md#the-workflows)) saves the three demo songs (so their kits' sounds are files to read), makes a set of them on the screen, and plays it through from the Show view with a Fade, a Let it finish and a Cut, back to the first song. `devtest_report.py` puts every open's line and every change in one table (its "Opens and song changes"), with the slowest open and the highest peak. The smoke session runs song endings as the audio loop does (`Session::song_end`), so the workflow runs on every pull request too; its times there are the workstation's, faster than real time.
+
+**What it doesn't measure yet:** the round's library is in RAM (the device suite never writes the stick), so its reads are RAM's: the stick's speed comes from the streaming thread's stick test, and a song from the stick needs a round of its own on the owner's go. What a background open costs the song playing is D1's to measure, once there is one.

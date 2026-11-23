@@ -119,6 +119,10 @@ pub struct Rack {
     failed: AtomicU64,
     /// The last instance number given.
     instances: AtomicU64,
+    /// Starts tried by [`Rack::make`] and the time spent in them, in
+    /// microseconds, for the open's line (live shows A4).
+    starts: AtomicU64,
+    start_us: AtomicU64,
     /// Each file's presets, once listed (or why they couldn't be).
     presets: Mutex<HashMap<PathBuf, Arc<Result<mpfree_clap::Found, String>>>>,
 }
@@ -144,6 +148,8 @@ impl Rack {
             restarts: AtomicU64::new(0),
             failed: AtomicU64::new(0),
             instances: AtomicU64::new(0),
+            starts: AtomicU64::new(0),
+            start_us: AtomicU64::new(0),
             presets: Mutex::new(HashMap::new()),
         }
     }
@@ -311,7 +317,12 @@ impl Rack {
         let (Some(program), Some(e)) = (self.program.as_ref(), self.find(node_id)) else {
             return Err(format!("no plugin {node_id}"));
         };
-        match crate::spawn_with(program, &e.file, &e.plugin_id) {
+        let at = Instant::now();
+        let started = crate::spawn_with(program, &e.file, &e.plugin_id);
+        self.starts.fetch_add(1, Ordering::Relaxed);
+        self.start_us
+            .fetch_add(at.elapsed().as_micros() as u64, Ordering::Relaxed);
+        match started {
             Ok((mut node, sandbox)) => {
                 node.set_deadline(self.deadline);
                 // The first snapshot: a restart before the first timed one
@@ -499,6 +510,17 @@ impl Rack {
             r.sandbox.refresh_state();
             r.snapshot_at = now;
         }
+    }
+
+    /// The plugin starts [`Rack::make`] tried so far and the time they
+    /// took in all (each waits for its process), whether or not they
+    /// started: the difference over an open is what its plugins cost it
+    /// (live shows A4). Never waits.
+    pub fn starts(&self) -> (u64, Duration) {
+        (
+            self.starts.load(Ordering::Relaxed),
+            Duration::from_micros(self.start_us.load(Ordering::Relaxed)),
+        )
     }
 
     /// The counts, for the host's Dev page. Never waits: if the control

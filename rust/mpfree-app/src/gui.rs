@@ -2640,6 +2640,12 @@ pub struct Player {
     project_rate: u32,
     /// When the last open landed ([`OPEN_SETTLE`]).
     opened_at: Option<Instant>,
+    /// The open going in, timed part by part for its line (live shows A4,
+    /// open_clock.rs).
+    open_clock: Option<crate::open_clock::OpenClock>,
+    /// When a set's song change began (Play set, or the song's end), for
+    /// the line saying when the next song is in.
+    change_from: Option<(Instant, &'static str)>,
     /// Opens sent to the audio loop whose replaced engines haven't come
     /// back yet ([`OPENS_ON_THEIR_WAY`] at most).
     opens_out: usize,
@@ -3405,6 +3411,8 @@ impl Player {
             export_job: None,
             project_rate: 44_100,
             opened_at: None,
+            open_clock: None,
+            change_from: None,
             opens_out: 0,
             set_play: None,
             set_song_next: false,
@@ -11997,6 +12005,9 @@ impl Player {
                 drop(old);
                 self.opens_out = self.opens_out.saturating_sub(1);
                 self.opened_at = Some(Instant::now());
+                if let Some(c) = self.open_clock.as_mut().filter(|_| self.opens_out == 0) {
+                    c.done(crate::open_clock::Part::Engines, Instant::now());
+                }
                 if let Some(b) = self.browser.as_mut() {
                     b.open_landed();
                 }
@@ -14254,10 +14265,14 @@ impl Player {
         what_reads: bool,
         stage: bool,
     ) -> Option<String> {
+        // The open's clock starts with the read's answer (live shows A4).
+        let start = Instant::now();
+        let read = self.browser.as_mut().and_then(|b| b.take_open_read());
         if self.opens_out >= OPENS_ON_THEIR_WAY {
             self.open_refused(loc.name(), OPENS_BUSY);
             return Some(OPENS_BUSY.to_string());
         }
+        let plugins_before = self.project_plugins.starts();
         let mut o = match self.project_opening(snap, loc.name()) {
             Ok(o) => o,
             Err(why) => {
@@ -14265,6 +14280,15 @@ impl Player {
                 return Some(why);
             }
         };
+        let mut clock = crate::open_clock::OpenClock::new(loc.name(), start, read);
+        let plugins = self.project_plugins.starts();
+        clock.built(
+            Instant::now(),
+            (
+                plugins.0 - plugins_before.0,
+                plugins.1.saturating_sub(plugins_before.1),
+            ),
+        );
         if stage && !o.left_out.is_empty() {
             let why = format!("it would leave out {}", o.left_out.join(", "));
             drop(o);
@@ -14302,15 +14326,16 @@ impl Player {
         self.left_out(std::mem::take(&mut o.left_out));
         let lib = self.browser.as_ref().map(|b| b.library().clone());
         if let (Some(text), Some(lib)) = (snap.part(crate::project::SAMPLER), lib) {
-            let loc = loc.clone();
+            let (loc, reads) = (loc.clone(), clock.reads());
             self.sample.open_part(
                 text.to_string(),
                 Box::new(move |f| {
                     lib.sample_path(&loc, f)
-                        .and_then(std::fs::read)
+                        .and_then(|p| reads.read(&p))
                         .map_err(|e| e.to_string())
                 }),
             );
+            clock.wait_for(crate::open_clock::Part::Kits);
         }
         // Learned pad settings and synth knobs that name their track (a
         // project from before sampler step 16) name what the track plays.
@@ -14341,14 +14366,14 @@ impl Player {
             snap.part(crate::project::LOOPER),
             self.browser.as_ref().map(|b| b.library().clone()),
         ) {
-            let (text, loc) = (text.to_string(), loc.clone());
+            let (text, loc, reads) = (text.to_string(), loc.clone(), clock.reads());
             let (tx, rx) = std::sync::mpsc::channel();
             let read = std::thread::Builder::new()
                 .name("loops-open".into())
                 .spawn(move || {
                     let r = crate::project::loops_open(&text, |f| {
                         lib.sample_path(&loc, f)
-                            .and_then(std::fs::read)
+                            .and_then(|p| reads.read(&p))
                             .map_err(|e| e.to_string())
                     });
                     let _ = tx.send(r);
@@ -14391,6 +14416,14 @@ impl Player {
         self.opened_at = Some(Instant::now());
         self.open_actions = self.outbox.len();
         self.say(format!("project: opening {}", loc.name()));
+        clock.wait_for(crate::open_clock::Part::Engines);
+        if self.loops_load.is_some() {
+            clock.wait_for(crate::open_clock::Part::Loops);
+        }
+        if self.audio_load.is_some() {
+            clock.wait_for(crate::open_clock::Part::Takes);
+        }
+        self.open_clock = Some(clock);
         None
     }
 
@@ -14470,6 +14503,7 @@ impl Player {
         ));
         self.set_play = Some(sp);
         (self.set_song_next, self.set_song_landing) = (false, false);
+        self.change_from = Some((Instant::now(), "Play set"));
         if let Some(b) = self.browser.as_mut() {
             b.set_playing(Some((loc.clone(), set)));
             b.check_set_now(&loc);
@@ -14499,6 +14533,7 @@ impl Player {
         };
         self.say(format!("show: the set {} closed ({why})", sp.name()));
         (self.set_song_next, self.set_song_landing) = (false, false);
+        self.change_from = None;
         (self.on_stage_asked, self.on_stage_for) = (false, None);
         if let Some(b) = self.browser.as_mut() {
             b.set_playing(None);
@@ -14636,6 +14671,7 @@ impl Player {
                 }
                 Do::End(end) => {
                     self.say(format!("show: the song ends ({end:?})"));
+                    self.change_from = Some((Instant::now(), "Go"));
                     self.outbox.push(FromUi::SongEnd(end));
                 }
                 Do::SaveCopy => {
@@ -14679,7 +14715,38 @@ impl Player {
         if let Some(c) = command {
             self.outbox.push(FromUi::Time(TimeAction::Transport(c)));
         }
-        self.say(format!("show: {name} is in ({starts:?})"));
+        // How long the change took, from Go (or Play set) to the song in:
+        // its ending, its copy and the next song's open (live shows A4).
+        let after = self.change_from.take().map_or(String::new(), |(t, what)| {
+            format!(", {:.2} s after {what}", t.elapsed().as_secs_f64())
+        });
+        self.say(format!("show: {name} is in ({starts:?}){after}"));
+    }
+
+    /// Once a frame: the open going in hears which of its parts are done,
+    /// and once all are, its line says how long each took and the memory
+    /// it left (live shows A4, open_clock.rs).
+    fn open_clock_tick(&mut self) {
+        use crate::open_clock::{Memory, Part};
+        let Some(c) = self.open_clock.as_mut() else {
+            return;
+        };
+        let now = Instant::now();
+        for (part, done) in [
+            (Part::Engines, self.opens_out == 0),
+            (Part::Kits, !self.sample.opening()),
+            (Part::Loops, self.loops_load.is_none()),
+            (Part::Takes, self.audio_load.is_none()),
+        ] {
+            if done {
+                c.done(part, now);
+            }
+        }
+        if c.is_in() {
+            let line = c.line(&Memory::now());
+            self.open_clock = None;
+            self.say(line);
+        }
     }
 
     /// Once a frame: a set's song that went to the audio loop is in once
@@ -14884,6 +14951,7 @@ impl Player {
         self.opens_out += 1;
         self.outbox.push(FromUi::OpenProject(Box::new(o)));
         (self.loops_load, self.audio_load) = (None, None);
+        self.open_clock = None;
         self.opened_at = Some(Instant::now());
         self.factory_kits();
         self.open_actions = self.outbox.len();
@@ -18433,6 +18501,7 @@ impl Player {
         self.poll_midi();
         self.poll_loops();
         self.poll_audio();
+        self.open_clock_tick();
         self.set_play_tick();
         self.poll_audio_recover();
         self.open_at_start();
@@ -37015,6 +37084,28 @@ mod tests {
             .any(|a| matches!(a, FromUi::Time(TimeAction::Transport(_)))));
         assert_eq!(view(&p).0, "Sunday chops");
         assert_eq!(view(&p).1, "LOADED");
+        // The open's line, part by part, then the song in, timed from Play
+        // set (live shows A4).
+        let said = |p: &Player, start: &str| {
+            events_log(p)
+                .into_iter()
+                .filter(|l| l.starts_with(start))
+                .collect::<Vec<_>>()
+        };
+        let opened = said(&p, "project: Sunday chops opened in ");
+        assert_eq!(opened.len(), 1, "{:?}", events_log(&p));
+        assert!(opened[0].contains(": read in "), "{}", opened[0]);
+        assert!(
+            opened[0].contains(", in the audio loop at "),
+            "{}",
+            opened[0]
+        );
+        assert!(opened[0].contains("; memory "), "{}", opened[0]);
+        let is_in = said(&p, "show: Sunday chops is in (Stopped), ");
+        assert!(
+            is_in.len() == 1 && is_in[0].ends_with(" s after Play set"),
+            "{is_in:?}"
+        );
 
         // Next song arms Slow signal; Go ends Sunday chops by its Ends.
         p.apply(ToUi::ShowPress(show::NEXT_SONG));
@@ -37055,6 +37146,13 @@ mod tests {
             .iter()
             .any(|a| matches!(a, FromUi::Time(TimeAction::Transport(_)))));
         assert_eq!(view(&p).0, "Slow signal");
+        // The change is timed from Go: its ending, its copy and the open.
+        assert_eq!(said(&p, "project: Slow signal opened in ").len(), 1);
+        let is_in = said(&p, "show: Slow signal is in (");
+        assert!(
+            is_in.len() == 1 && is_in[0].ends_with(" s after Go"),
+            "{is_in:?}"
+        );
         assert_eq!(
             lib.load_set(&set).unwrap().songs[0].on_stage,
             ["Sunday chops on stage".to_string()]

@@ -89,7 +89,7 @@ Real time: the node's side of a block never allocates or locks. `tests/no_alloc.
   - refreshes each running plugin's snapshot every 5 s.
 - `Rack::refresh_states()` reads every snapshot now, before a project save.
 - `Rack::presets(node_id)` lists a plugin's presets with `presets`, once per file: the list is kept and a second call is free. Its line says how many and the first error. `Rack::make_instance(node_id)` is `make` with the process's instance number, and `Rack::load_preset(instance, preset)` loads a preset into that process. Its snapshot is read again a second later, so a crash or a save soon after keeps the preset.
-- Every start, failed start, crash, restart and give-up is a line (`take_lines`). `summary()` counts plugins found, running and down, crashes, restarts and failures. Neither waits: they use `try_lock`. The screen's status watcher reads `summary().crashes` every 250 ms, and each crash is System status's red "A plugin stopped" (`plugins/plugin-stopped`, [status.md](status.md)).
+- Every start, failed start, crash, restart and give-up is a line (`take_lines`). `summary()` counts plugins found, running and down, crashes, restarts and failures. Neither waits: they use `try_lock`. `starts()` gives the starts `make` tried and the time they waited for their processes in all (two atomics, never a lock): an open takes the difference across its build for its line ([live shows A4](live-shows.md#measuring-opens-a4)). The screen's status watcher reads `summary().crashes` every 250 ms, and each crash is System status's red "A plugin stopped" (`plugins/plugin-stopped`, [status.md](status.md)).
 
 ## In the app
 

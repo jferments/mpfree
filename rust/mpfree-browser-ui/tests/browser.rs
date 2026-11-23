@@ -277,6 +277,7 @@ fn the_first_save_needs_no_typing_and_later_saves_keep_versions() {
     let back = lib.open_project(&loc).unwrap();
     assert_eq!(back.part("transport"), Some("bpm = 100\n"));
     assert_eq!(back.meta.created, t);
+    assert_eq!(b.take_open_read(), None, "a save is no open");
     // Opening from the list hands the parts to the app.
     b.go_source(src("Projects"));
     select(&mut b, "Night drive");
@@ -285,6 +286,9 @@ fn the_first_save_needs_no_typing_and_later_saves_keep_versions() {
     assert!(a
         .iter()
         .any(|x| matches!(x, BrowseAction::ProjectOpened { snap, .. } if snap.part("transport") == Some("bpm = 92\n"))));
+    // How long its read took is the app's, once (live shows A4).
+    assert!(b.take_open_read().is_some());
+    assert_eq!(b.take_open_read(), None);
     // Save as takes a typed name.
     b.save_as(t);
     b.input(Input::Key(Key::Done));
