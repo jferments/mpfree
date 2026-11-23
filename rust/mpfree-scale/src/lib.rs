@@ -17,12 +17,15 @@
 //!   Chromatic with the scale lit, In key, or Chord pads.
 //! - [`shift`] is a track's live transpose: by semitones, or by notes of
 //!   a key, with what each held note became.
+//! - [`chords`] gives a chord's notes on a root, and names the chord some
+//!   notes make, for the note editor.
 //!
 //! Notes are MIDI note numbers (60 = middle C) as `i16`, so steps below 0
 //! and above 127 can be computed and skipped by the caller. Nothing here
 //! allocates except [`steps_text`] and the parse error text.
 #![forbid(unsafe_code)]
 
+pub mod chords;
 pub mod pads;
 pub mod shift;
 pub use pads::{InKeyRows, Pad, PadLayout, PadRole, PadSetup};

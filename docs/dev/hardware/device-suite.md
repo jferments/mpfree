@@ -1,6 +1,6 @@
 # The automated device suite: workflows and benchmarks on the MPC
 
-**As of 2026-11-19** · **Asked for by** the owner, 19 Nov 06:46Z: test everything merged to `main` in the next device round with as little hand work as possible, through realistic workflows that use several tools together, and measure what it costs on the MPC. · **Code:** [`rust/mpfree-app/src/script.rs`](../../../rust/mpfree-app/src/script.rs) (the script player), [`smoke/scripts.rs`](../../../rust/mpfree-app/src/smoke/scripts.rs) (the same scripts in CI), [`tools/mpc-one/devtest/workflows/`](../../../tools/mpc-one/devtest/workflows/), [`host_devtest_mpc.py`](../../../tools/mpc-one/host_devtest_mpc.py), [`host_bench_mpc.py`](../../../tools/mpc-one/host_bench_mpc.py), [`devtest_report.py`](../../../tools/mpc-one/devtest_report.py).
+**As of 2026-11-19** · **Asked for by** the owner, 19 Nov 06:46Z: test everything merged to `main` in the next device round with as little hand work as possible, through realistic workflows that use several tools together, and measure what it costs on the MPC. · **Code:** [`rust/mpfree-app/src/script.rs`](../../../rust/mpfree-app/src/script.rs) (the script player), [`smoke/scripts.rs`](../../../rust/mpfree-app/src/smoke/scripts.rs) (the same scripts in CI), [`tools/mpc-one/devtest/workflows/`](../../../tools/mpc-one/devtest/workflows/), [`host_devtest_mpc.py`](../../../tools/mpc-one/host_devtest_mpc.py), [`host_bench_mpc.py`](../../../tools/mpc-one/host_bench_mpc.py), [`devtest_report.py`](../../../tools/mpc-one/devtest_report.py). The stick test D3 plays its own workflows the same way, with their data on the stick ([`tools/mpc-one/streamtest/workflows/`](../../../tools/mpc-one/streamtest/workflows/), [`host_streamtest_mpc.py`](../../../tools/mpc-one/host_streamtest_mpc.py); [disk-streaming.md](../design/disk-streaming.md#d3-the-app-streaming-on-the-stick)).
 
 A device round used to be a person working through [device checks](device-checks.md) one by one: a few steps each, read from the log. Most of those steps were a musician's moves that software can make just as well. Now mpfree plays them itself. A **workflow** is a musician's session written down as steps. `mpfree play --script FILE` plays it on the MPC, and CI's UI smoke session plays the same file on every pull request. A workflow that passes in CI does what it says. On the MPC the same steps show what they cost on its own cores, screen and sound card, and whether anything clicks.
 
@@ -27,6 +27,7 @@ One step per line. `#` starts a comment. Each step takes its time, and then the 
 title A beat from scratch           the workflow's name in reports
 covers rec-arm, step-pads           the device checks it stands in for
 needs demo-songs                    the three demo songs in the run's library first
+needs stream-audio                  takes play from their files for this run (the stick test D3)
 wait 1.5                            seconds
 tap header tab Sequencer            widget, id, then the label exactly as the page has it
 button PLAY                         a hardware button by the mapper's name
@@ -124,6 +125,8 @@ The other device checks are left out of a hands-off round unless an owner names 
    `MPFREE_SCRIPT_LINES=1` prints every line the session wrote, to write the `expect`s from.
 3. Add it to the `workflows!` list in `smoke/scripts.rs` (`every_workflow_file_has_its_test` fails until you do).
 4. The device round plays every file in the folder. `MPFREE_DEVTEST_ONLY=NAME` plays just one.
+
+A workflow for the stick test D3 goes in `tools/mpc-one/streamtest/workflows/` instead, says `needs stream-audio` (its takes record to files and play from them, for that run only), and is listed in `stream_workflows!`. CI plays it in a session that streams, with every wait over 1 s played as 1 s; `MPFREE_SCRIPT` does the same for a file that needs stream-audio. The device round's workflows never need it: their data folders are in RAM.
 
 ## What comes next
 

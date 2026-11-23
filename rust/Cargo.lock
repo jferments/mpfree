@@ -1337,6 +1337,7 @@ dependencies = [
  "mpfree-moves",
  "mpfree-notefx",
  "mpfree-param",
+ "mpfree-scale",
  "mpfree-transport",
 ]
 

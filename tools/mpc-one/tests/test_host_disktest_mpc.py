@@ -388,6 +388,31 @@ class DiskTestTests(unittest.TestCase):
         self.assertNotEqual(res.returncode, 0)
         self.assertIn("not allowed with argument", res.stdout)
 
+    def test_heat_runs_the_heat_test_and_writes_nothing(self):
+        survey_root(self.root)
+        res = self.run_helper(extra=["--heat"])
+        self.assertEqual(res.returncode, 0, res.stdout)
+        for text in ("MPFree heat test on the test build", "END OF STREAM SURVEY",
+                     "copied; its hash on the MPC matches",
+                     "[4/4] The heat test: keeps every core busy (ordinary priority) until the hottest zone "
+                     "rises less than 0.5 degrees C in 5 minutes, 30 minutes at the most, stopping at 75 degrees C",
+                     "Takes up to 30 minutes",
+                     "RESULT: the heat test ran (numbers above); it wrote no file."):
+            self.assertIn(text, res.stdout)
+        self.assertEqual(self.lines("disktest: "), ["[--heat]"])
+        # Only YES allows it: it keeps the processor busy.
+        res = self.run_helper(extra=["--heat"], MPFREE_ACCEPT_DISKTEST="READ-ONLY")
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("MPFREE_ACCEPT_DISKTEST=YES python3 tools/mpc-one/host_disktest_mpc.py --heat", res.stdout)
+        self.assertEqual(self.lines("disktest: "), ["[--heat]"])
+        res = self.run_helper(extra=["--heat", "--recorder"])
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("not allowed with argument", res.stdout)
+        # Refused (no temperature to read): said, nothing changed.
+        res = self.run_helper(extra=["--heat"], FAKE_DISKTEST_RC="3")
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("RESULT: refused by the disk test", res.stdout)
+
     def test_recorder_says_when_the_writeback_settings_were_not_put_back(self):
         survey_root(self.root)
         th.write(f"{self.root}/proc/sys/vm/dirty_bytes", "1048576\n")
