@@ -1,6 +1,6 @@
 <!--
 covers: rust/mpfree-stems rust/mpfree-simd/src/neon.rs rust/mpfree-bench/src/stems.rs
-checked: 2026-11-23 c8ed9ea
+checked: 2026-11-23 dea01de
 -->
 # Stem separation (`mpfree-stems`)
 
@@ -24,8 +24,8 @@ The pipeline is Spleeter's, kept as it is, so its stems are Spleeter's:
 
 What makes it fit the MPC:
 
-- **Every layer is a GEMM** on `mpfree_simd::gemm4x8`, a 4 × 8 micro-kernel (NEON on the MPC, its plain twin elsewhere). The patches are gathered straight into the kernel's packed layout, a skip join is read from its two tensors in place, and the transposed convolutions are four gathers, one for each output parity, so no work is spent on the zeros a naive transposed convolution inserts. The two narrow layers don't pad to the kernel's eight columns: the last transposed convolution (to one channel) is a GEMM to its 25 taps scattered into the output, and the mask layer (one channel to two) runs row by row.
-- **Weights as halves:** 79 MB rather than 158. Each layer is unpacked when it runs (`mpfree_simd::f16_to_f32`, NEON's `VCVT.F32.F16`) into one buffer as big as the widest layer (13 MB). Rounding Spleeter's weights to halves costs nothing audible: the stems stay 65 to 74 dB from Spleeter's own (below).
+- **Every layer is a GEMM** on `mpfree_simd::gemm4x8`, a 4 × 8 micro-kernel (NEON on the MPC, its plain twin elsewhere). The patches are gathered straight into the kernel's packed layout, four pixels at a time so each store is one row of the kernel's input (`put4`), a skip join is read from its two tensors in place, and the transposed convolutions are four gathers, one for each output parity, so no work is spent on the zeros a naive transposed convolution inserts. The two narrow layers don't pad to the kernel's eight columns: the last transposed convolution (to one channel) is a GEMM to its 25 taps scattered into the output, and the mask layer (one channel to two) runs row by row.
+- **Weights as halves:** 79 MB rather than 158. Each layer is unpacked when it runs (`mpfree_simd::f16_to_f32`, NEON's `VCVT.F32.F16`) into one buffer as big as the widest layer (13 MB). The file's halves go into each layer's packed layout as they are, with no round trip through f32 (loading the model takes 0.17 s on the workstation, 0.42 s before). Rounding Spleeter's weights to halves costs nothing audible: the stems stay 65 to 74 dB from Spleeter's own (below).
 - **Streaming:** a segment's tensors are all a run holds, so a sound of any length needs the same memory, and the stems go to the caller as they are finished.
 - **Threads:** each layer spreads its rows over the threads it is given (two, the job service's sound lane on cores 0 and 1); the threads it starts take the calling thread's cores. The result doesn't depend on how many threads ran it (a test checks it to the bit).
 
@@ -79,13 +79,16 @@ cargo run --release -p mpfree-stems --example stems -- split 4stems.mpfstem song
 
 ## Speed
 
-On the workstation (a 2.1 GHz Xeon VM, two threads, `--release`): 10.9 s splits in 2.0 s at 1024 bins and 3.2 s at full band; 43.5 s in 8.3 s. The U-Nets are 93 % of it (unpacking the halves 5 % of the whole), the STFTs, masks and inverse 6 %.
+On the workstation (a 2.1 GHz Xeon VM, two threads, `--release`): 10.9 s splits in 1.8 to 1.9 s at 1024 bins and 2.7 to 2.9 s at full band; 43.5 s in 6.6 and 10.2 s. Loading the model takes 0.17 s. The U-Nets are 92 to 95 % of it (unpacking the halves 3 to 4 %), the STFTs, masks and inverse 5 to 6 %.
 
-The MPC's figures are the plan's estimate until the device run: 9.4 s for a 10 s sample at 1024 bins (6.2 to 15.6), 12.5 s at full band; 43 and 62 s for 60 s. That run is `mpfree-bench --stems` ([Profiling](profiling.md#stem-separation---stems)); the kernels keep their place only if the device run shows them faster than their twins, as every `mpfree-simd` kernel ([NEON kernels](simd.md)).
+**Where an ARMv7 core's instructions go,** counted under qemu-arm for one 64-frame segment at full band (the ignored test `profile_a_short_segment`, 4.58 G multiply-adds, the model's building left out): of 3.54 G instructions, the kernel's loop is 1.72 G (49 %: 12 instructions for 32 multiply-adds), gathering the patches with the layers' bias, batch norms and ELUs 0.76 G (21 %), the FFTs 0.36 G (10 %), `expf` (the ELUs and sigmoids) 0.15 G and the GEMM driver 0.12 G. Gathering four pixels at a time took the gather from 1.37 G to 0.76 G and the segment from 4.15 G to 3.54 G, with the same stems to the bit; on the workstation, where the compiler vectorises the old copy, the split is 3 to 10 % faster. Instructions aren't time on a Cortex-A17, so the device run says what it is worth.
+
+The MPC's figures are the plan's estimate until the device run: 9.4 s for a 10 s sample at 1024 bins (6.2 to 15.6), 12.5 s at full band; 43 and 62 s for 60 s. That run is `mpfree-bench --stems` ([Profiling](profiling.md#stem-separation---stems)). It also times the kernel alone on one core with its data in the L1 cache, the most the U-Nets could do: their own rate against twice it says how much of their time is outside the kernel. The kernels keep their place only if the device run shows them faster than their twins, as every `mpfree-simd` kernel ([NEON kernels](simd.md)).
 
 ## What's next
 
 - Plan step 2: `mpfree-bench --stems` in the next device round's benchmark block (RAM only, on the owner's go).
 - Plan step 3: a mockup of the Stems sheet over the Sample page, proposed for the layout spec.
 - Plan step 4: the job in the app (the job service's sound lane, idle priority, `Model::need` as its promise, a Stop between steps), `Change::Stems` as one undo step, the destinations, the model file on the stick and the manual page.
+- Faster, if the device run shows the U-Nets well below twice the kernel's rate: a NEON transpose for the gather's stores (about 0.2 G of the 3.54 G above), a radix-4 FFT (it changes the bits, so the SNR checks run again) and a faster `expf`.
 - Holding less: both channels' STFT stay for the whole segment (16.8 MB); working them out again for the masks would save that for about 3 % more time.
