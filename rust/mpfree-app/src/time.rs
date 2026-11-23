@@ -63,6 +63,7 @@
 //! hear about recorded notes at most four times a second
 //! ([`TimeHost::take_changed`]). Every track plays the current kit.
 
+mod adding;
 mod apart;
 mod audio;
 mod audio_wait;
@@ -2389,6 +2390,7 @@ mod tests {
     use mpfree_play::PlayView;
     use mpfree_play::Replaced;
     use mpfree_seq::SLOTS;
+    use mpfree_time_ui::adding::{AddAction, ChordsAction, PartAsk};
     use mpfree_time_ui::continuing::{ContinueAction, ContinueAsk, Continuing};
     use mpfree_time_ui::view::{AudioAction, RegionId};
     use mpfree_transport::time::Tick;
@@ -16799,5 +16801,321 @@ mod tests {
         until(&mut h, &mut pads, |h| {
             h.project().clip(0, 0).is_some_and(|c| c.length == 2 * 3840)
         });
+    }
+
+    // ------------------------------------------------ Add a part (S2.6)
+
+    fn add_bass() -> TimeAction {
+        use mpfree_compose::{InstrumentKind, Lanes, Relation};
+        TimeAction::Add(AddAction::Ask(Box::new(PartAsk {
+            row: 0,
+            track: 1,
+            part: mpfree_context::PartRole::Bass,
+            relation: Relation::Support,
+            settings: mpfree_compose::Settings::default(),
+            kind: InstrumentKind::Bass,
+            lanes: Lanes::default(),
+            pads: [None; 4],
+        })))
+    }
+
+    fn adding(h: &TimeHost) -> Option<Arc<mpfree_time_ui::adding::Adding>> {
+        h.state().adding
+    }
+
+    /// Composing tools S2.6: Add a part on a playing row. The try comes
+    /// from the composer's thread and is heard in its empty cell from the
+    /// next bar line, in time with the row; nothing is written until Keep,
+    /// one take ("add part") that plays on unchanged; UNDO empties the
+    /// cell again.
+    #[test]
+    fn add_a_part_is_heard_in_its_cell_from_the_next_bar_line_kept_and_undone() {
+        use mpfree_time_ui::adding::AddState;
+        let mut h = riff_host();
+        let mut pads = Fake::default();
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 4, &[]);
+        assert_eq!(
+            h.act(add_bass()).unwrap(),
+            "add a part: bass on Support for row 1"
+        );
+        assert_eq!(adding(&h).unwrap().state, AddState::Making);
+        until(&mut h, &mut pads, |h| {
+            adding(h).is_some_and(|a| a.line.is_some() || a.state == AddState::Playing)
+        });
+        let a = adding(&h).unwrap();
+        assert_eq!((a.state, a.position), (AddState::Ready, Some((1, 1))));
+        let at = a.line.expect("on a bar line");
+        assert_eq!(at % 3840, 0);
+        let part = a.made.as_ref().unwrap().clip.clone();
+        assert!(!part.notes.is_empty());
+        assert!(h.project().clip(1, 0).is_none(), "nothing written");
+
+        // From the line the part plays with the riff: its low notes.
+        let line = at as u64 * BAR / 3840;
+        run(&mut h, &mut pads, line + 2 * BAR, &[]);
+        assert_eq!(adding(&h).unwrap().state, AddState::Playing);
+        assert!(
+            hits_in(&pads, 0, line).iter().all(|h| h.1 >= 60),
+            "the riff alone"
+        );
+        let low =
+            |pads: &Fake, from, to| hits_in(pads, from, to).iter().filter(|h| h.1 < 60).count();
+        assert!(low(&pads, line, line + 2 * BAR) > 0, "the bass in its cell");
+        assert!(h.project().clip(1, 0).is_none(), "still nothing written");
+
+        // Keep: one take, playing on.
+        assert_eq!(
+            h.act(TimeAction::Add(AddAction::Keep)).unwrap(),
+            format!(
+                "add a part: {} kept in row 1 (UNDO takes it back)",
+                part.name
+            )
+        );
+        assert!(adding(&h).is_none());
+        let kept = h.project().clip(1, 0).unwrap().clone();
+        assert_eq!(kept.notes, part.notes);
+        let st = h.state();
+        assert_eq!(st.done.last().unwrap().word(), "add part");
+        let from = line + 2 * BAR;
+        run(&mut h, &mut pads, from + 2 * BAR, &[]);
+        assert!(
+            low(&pads, from, from + 2 * BAR) > 0,
+            "the kept bass plays on"
+        );
+
+        // UNDO: the cell empty again.
+        h.act(TimeAction::Undo).unwrap();
+        assert!(h.project().clip(1, 0).is_none());
+        assert_eq!(h.dropped(), 0);
+        assert!(
+            h.describe().contains("add a part: 1 asked, 1 made"),
+            "{}",
+            h.describe()
+        );
+    }
+
+    /// Back while a try plays: the cell goes quiet on the next bar line
+    /// and nothing is written. A filled cell, Rec song and recording are
+    /// refused.
+    #[test]
+    fn add_a_part_back_quietens_the_cell_and_refuses_what_it_cant_do() {
+        use mpfree_time_ui::adding::AddState;
+        let mut h = riff_host();
+        let mut pads = Fake::default();
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 4, &[]);
+        h.act(add_bass()).unwrap();
+        until(&mut h, &mut pads, |h| {
+            adding(h).is_some_and(|a| a.state == AddState::Playing)
+        });
+        let pos = h.state().transport.position;
+        run(&mut h, &mut pads, (pos as u64 + 3840 / 4) * BAR / 3840, &[]);
+        let said = h.act(TimeAction::Add(AddAction::Back)).unwrap();
+        assert!(
+            said.starts_with("add a part: back to the row as it was, heard from"),
+            "{said}"
+        );
+        assert!(adding(&h).is_none(), "the panel closes");
+        let pos = h.state().transport.position;
+        let next = (pos / 3840 + 1) * 3840;
+        let quiet = next as u64 * BAR / 3840 + BAR / 8;
+        run(&mut h, &mut pads, quiet + BAR, &[]);
+        assert!(hits_in(&pads, quiet, quiet + BAR).iter().all(|h| h.1 >= 60));
+        assert!(h.project().clip(1, 0).is_none());
+        // A filled cell.
+        let mut ask = add_bass();
+        if let TimeAction::Add(AddAction::Ask(a)) = &mut ask {
+            a.track = 0;
+        }
+        assert!(h.act(ask).unwrap_err().contains("isn't empty"));
+    }
+
+    /// Chords picked on the panel: the try plays them at once, the next
+    /// try is made over them, and Keep puts them on the row with the part
+    /// as one take; the riff, kept before, is marked. One UNDO takes back
+    /// both.
+    #[test]
+    fn chords_picked_on_the_panel_go_with_keep_as_one_take() {
+        use mpfree_context::chord::{Chord, ChordAnswer, ChordTimeline, Heard, Quality};
+        use mpfree_time_ui::adding::AddState;
+        let mut h = riff_host();
+        let mut pads = Fake::default();
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 4, &[]);
+        h.act(add_bass()).unwrap();
+        until(&mut h, &mut pads, |h| {
+            adding(h).is_some_and(|a| a.state != AddState::Making)
+        });
+        let before = adding(&h).unwrap().made.clone().unwrap();
+        let ab = ChordTimeline::whole(
+            3840,
+            ChordAnswer::Chord(Chord::new(8, Quality::Major)),
+            Heard::Set,
+        );
+        h.act(TimeAction::Add(AddAction::Line(ab.clone()))).unwrap();
+        let a = adding(&h).unwrap();
+        assert_eq!(a.picked.as_ref(), Some(&ab));
+        let now = a.made.clone().unwrap();
+        assert_ne!(now.clip.notes, before.clip.notes, "moved to fit");
+        assert_eq!(
+            now.clip.notes.iter().map(|n| n.tick).collect::<Vec<_>>(),
+            before.clip.notes.iter().map(|n| n.tick).collect::<Vec<_>>(),
+            "the rhythm stays"
+        );
+        assert!(
+            h.project().scene(0).is_none_or(|s| s.chords.is_empty()),
+            "nothing written"
+        );
+        h.act(TimeAction::Add(AddAction::Keep)).unwrap();
+        assert_eq!(h.project().scene(0).unwrap().chords, ab.plain());
+        let st = h.state();
+        assert_eq!(st.done.last().unwrap().word(), "add part");
+        assert!(st
+            .unfit
+            .iter()
+            .any(|u| u.row == 0 && u.clips.iter().any(|c| c.0 == 0)));
+        h.act(TimeAction::Undo).unwrap();
+        assert!(h.project().clip(1, 0).is_none());
+        assert!(h.project().scene(0).is_none_or(|s| s.chords.is_empty()));
+    }
+
+    /// The row's chords outside the panel: Use is one take, the kept
+    /// clips it leaves off the chords are marked (drums never), and Fit
+    /// moves the ones asked as one take that UNDO takes back.
+    #[test]
+    fn a_chord_change_marks_kept_clips_and_fit_moves_them_as_one_take() {
+        use mpfree_context::chord::{Chord, ChordAnswer, ChordTimeline, Heard, Quality};
+        let mut h = riff_host();
+        // A bass under the riff on track 2, on C minor's chord tones.
+        let mut bass = Clip::new("bass", 3840);
+        bass.holds = mpfree_seq::Holds::Notes;
+        bass.notes = [36u8, 43, 39, 36]
+            .iter()
+            .enumerate()
+            .map(|(i, &n)| mpfree_seq::Note::new(i as Tick * 960, 900, n, 100))
+            .collect();
+        h.control.project.tracks[1].slots[0] = Some(bass.clone());
+        h.control.project.give_clip_ids();
+        let whole = |root, q| {
+            ChordTimeline::whole(3840, ChordAnswer::Chord(Chord::new(root, q)), Heard::Set)
+        };
+        let cm = whole(0, Quality::Minor);
+        // Heard as C minor, set to F sharp minor: no note of C minor in it.
+        let said = h
+            .act(TimeAction::Chords(ChordsAction::Set {
+                row: 0,
+                line: whole(6, Quality::Minor),
+                shown: cm.clone(),
+            }))
+            .unwrap();
+        assert!(said.contains("2 clips don't fit them"), "{said}");
+        let st = h.state();
+        assert_eq!(st.done.last().unwrap().word(), "chords");
+        let u = st.unfit.iter().find(|u| u.row == 0).unwrap();
+        assert_eq!(u.before, cm);
+        let tracks: Vec<usize> = u.clips.iter().map(|c| c.0).collect();
+        assert_eq!(tracks, vec![0, 1]);
+
+        // Fit the bass only: one take; the riff stays marked.
+        let said = h
+            .act(TimeAction::Chords(ChordsAction::Fit {
+                row: 0,
+                tracks: vec![1],
+            }))
+            .unwrap();
+        assert!(said.starts_with("chords: a clip fitted"), "{said}");
+        let fitted = h.project().clip(1, 0).unwrap().clone();
+        assert_ne!(fitted.notes, bass.notes);
+        assert_eq!(
+            fitted
+                .notes
+                .iter()
+                .map(|n| (n.tick, n.len))
+                .collect::<Vec<_>>(),
+            bass.notes
+                .iter()
+                .map(|n| (n.tick, n.len))
+                .collect::<Vec<_>>(),
+            "the rhythm stays"
+        );
+        for n in &fitted.notes {
+            assert!([6, 9, 1].contains(&(n.note % 12)), "{n:?}");
+        }
+        let st = h.state();
+        assert_eq!(st.done.last().unwrap().word(), "fit");
+        let u = st.unfit.iter().find(|u| u.row == 0).unwrap();
+        assert_eq!(u.clips.iter().map(|c| c.0).collect::<Vec<_>>(), vec![0]);
+
+        // UNDO: the bass as it was, marked again.
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.project().clip(1, 0).unwrap().notes, bass.notes);
+        assert_eq!(h.state().unfit[0].clips.len(), 2);
+        // UNDO the chords: nothing marked.
+        h.act(TimeAction::Undo).unwrap();
+        assert!(h.state().unfit.is_empty());
+    }
+
+    /// The Chords tab hears its row without a try: the row's chords come
+    /// from the composer's thread into the state, are heard again when
+    /// the row's chords change (a set chord shows as set), and go when
+    /// the tab closes. Nothing is written by hearing.
+    #[test]
+    fn the_chords_tab_hears_its_row_again_when_it_changes() {
+        use mpfree_context::chord::{Chord, ChordAnswer, ChordTimeline, Heard, Quality};
+        let mut h = riff_host();
+        let mut pads = Fake::default();
+        let before = h.project().clone();
+        assert_eq!(
+            h.act(TimeAction::Chords(ChordsAction::Hear { row: Some(0) }))
+                .unwrap(),
+            ""
+        );
+        until(&mut h, &mut pads, |h| h.state().row_chords.is_some());
+        let (row, heard) = h.state().row_chords.unwrap();
+        assert_eq!(row, 0);
+        assert!(!heard.is_empty(), "the riff gives chords");
+        assert!(heard.spans().iter().all(|s| s.heard != Heard::Set));
+        assert_eq!(h.project().scenes, before.scenes, "hearing writes nothing");
+
+        // A chord set on the row: heard again, the set chord shown.
+        let set = ChordTimeline::whole(
+            3840,
+            ChordAnswer::Chord(Chord::new(6, Quality::Minor)),
+            Heard::Set,
+        );
+        h.act(TimeAction::Chords(ChordsAction::Set {
+            row: 0,
+            line: set,
+            shown: (*heard).clone(),
+        }))
+        .unwrap();
+        until(&mut h, &mut pads, |h| {
+            h.state()
+                .row_chords
+                .is_some_and(|(_, l)| l.span_at(0).is_some_and(|s| s.heard == Heard::Set))
+        });
+        let (_, now) = h.state().row_chords.unwrap();
+        assert_eq!(
+            now.span_at(0).unwrap().answer,
+            ChordAnswer::Chord(Chord::new(6, Quality::Minor))
+        );
+
+        // Another row, then none: the old row's chords go at once.
+        h.act(TimeAction::Chords(ChordsAction::Hear { row: Some(1) }))
+            .unwrap();
+        assert!(h.state().row_chords.is_none());
+        h.act(TimeAction::Chords(ChordsAction::Hear { row: None }))
+            .unwrap();
+        run(&mut h, &mut pads, BAR, &[]);
+        assert!(h.state().row_chords.is_none());
+        assert!(h
+            .act(TimeAction::Chords(ChordsAction::Hear {
+                row: Some(mpfree_seq::SCENES)
+            }))
+            .is_err());
     }
 }

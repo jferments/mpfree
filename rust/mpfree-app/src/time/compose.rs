@@ -114,16 +114,18 @@ struct Made {
     again: Option<Again>,
 }
 
-/// The composer's thread: jobs out, answers back, each with its request's
-/// number.
-struct Worker {
-    jobs: Sender<(u32, Box<ContinueJob>)>,
-    done: Receiver<(u32, Option<Box<Done>>)>,
+/// A composer's thread: jobs out, answers back, each with its request's
+/// number. Continue and Add a part each have one.
+pub(super) struct Worker<J, D> {
+    pub(super) jobs: Sender<(u32, Box<J>)>,
+    pub(super) done: Receiver<(u32, Option<Box<D>>)>,
 }
 
-impl Worker {
-    fn start() -> Result<Worker, String> {
-        let (jobs, rx) = mpsc::channel::<(u32, Box<ContinueJob>)>();
+impl<J: Send + 'static, D: Send + 'static> Worker<J, D> {
+    /// Start the thread: `run` makes each job's answer. `what` names the
+    /// tool in the words of a refusal ("continue", "add a part").
+    pub(super) fn start(what: &str, run: fn(&J) -> D) -> Result<Worker<J, D>, String> {
+        let (jobs, rx) = mpsc::channel::<(u32, Box<J>)>();
         let (tx, done) = mpsc::channel();
         std::thread::Builder::new()
             .name("compose".into())
@@ -147,12 +149,12 @@ impl Worker {
                         }
                     }
                     let (n, job) = job;
-                    if tx.send((n, Some(Box::new(job.run())))).is_err() {
+                    if tx.send((n, Some(Box::new(run(&job))))).is_err() {
                         return;
                     }
                 }
             })
-            .map_err(|e| format!("continue: the composer's thread didn't start: {e}"))?;
+            .map_err(|e| format!("{what}: the composer's thread didn't start: {e}"))?;
         Ok(Worker { jobs, done })
     }
 }
@@ -178,7 +180,7 @@ pub(super) struct LineWait {
 /// Continue's side of the time engine's control half.
 pub(super) struct Composing {
     pub(super) preview: Preview,
-    worker: Option<Worker>,
+    worker: Option<Worker<ContinueJob, Done>>,
     /// The results the preview keeps, in its order.
     made: Vec<Made>,
     next_id: u32,
@@ -327,7 +329,7 @@ impl Composing {
         ask.how = self.making(&mut ask, scope, locked)?;
         let job = ContinueJob::new(project, ask.clone()).map_err(|r| r.words())?;
         if self.worker.is_none() {
-            self.worker = Some(Worker::start()?);
+            self.worker = Some(Worker::start("continue", ContinueJob::run)?);
         }
         let n = self
             .preview

@@ -278,6 +278,46 @@ impl AddPartJob {
         &self.ask
     }
 
+    /// The job over `line` in place of the row's stored chords: the
+    /// chords picked on the Add a part panel and not kept yet. They are
+    /// heard again as stored chords are (a chord you set stays), and Keep
+    /// puts them on the row with the part. An empty line is the row with
+    /// no chords of its own.
+    pub fn with_line(mut self, line: ChordTimeline) -> AddPartJob {
+        self.row = (!line.is_empty()).then(|| RowHarmony {
+            suggested: line.spans().iter().all(|s| s.heard == Heard::Suggested),
+            line,
+            length: self.length,
+        });
+        self
+    }
+
+    /// The row's chords as it plays now, for the screens' Harmony line:
+    /// its line heard again with its clips, or what the clips say when it
+    /// has none of its own. Nothing is suggested here. Pure.
+    pub fn hear(&self) -> ChordTimeline {
+        let a = &self.ask;
+        let lane_of = |t: usize, pad: u8| a.lanes.lane(t, pad);
+        let (ctx, _) = read(
+            &self.project,
+            &a.parts,
+            &lane_of,
+            a.transport_swing,
+            a.meter,
+            a.budget,
+        );
+        self.line_heard(&ctx.chords)
+    }
+
+    /// The row's line heard again with the chords a reading heard, or
+    /// those alone when the row has no line.
+    fn line_heard(&self, heard: &ChordTimeline) -> ChordTimeline {
+        match self.row.as_ref().map(|r| &r.line) {
+            Some(l) => l.rehear(heard),
+            None => heard.plain(),
+        }
+    }
+
     /// Hear the row and add the part. Pure: the same job gives the same
     /// answer.
     pub fn run(&self) -> AddDone {
@@ -296,10 +336,7 @@ impl AddPartJob {
         // The row's chords: its line heard again, else the reading; for a
         // row with nothing to hear, suggested ones (contract 4).
         let stored = self.row.as_ref().map(|r| &r.line);
-        let heard = match stored {
-            Some(l) => l.rehear(&ctx.chords),
-            None => ctx.chords.plain(),
-        };
+        let heard = self.line_heard(&ctx.chords);
         let clear = |t: &ChordTimeline| t.spans().iter().any(|s| s.answer.chord().is_some());
         let line = if clear(&heard) || a.part == PartRole::Drums {
             heard
@@ -787,6 +824,69 @@ mod tests {
         let p = tune_row(false, true);
         let refused = AddPartJob::new(&p, add_ask(&p, PartRole::Chords, Relation::Answer)).run();
         assert_eq!(refused.result, Err(PartRefused::NothingToAnswer));
+    }
+
+    /// Chords picked on the panel and not kept yet: the part plays over
+    /// them, a chord set stays, and nothing new is offered to keep (Keep
+    /// keeps the panel's line itself).
+    #[test]
+    fn a_part_asked_over_picked_chords_plays_them() {
+        use mpfree_context::chord::{Chord, Heard, Quality};
+        let p = tune_row(true, true);
+        let line = ChordTimeline::of(
+            &[
+                (Chord::new(8, Quality::Major), 2 * BAR),
+                (Chord::new(10, Quality::Major), 2 * BAR),
+            ],
+            Heard::Set,
+        );
+        let made = AddPartJob::new(&p, add_ask(&p, PartRole::Bass, Relation::Support))
+            .with_line(line)
+            .run()
+            .result
+            .unwrap();
+        assert_eq!(root_at(&made.chords, 0), Some(8), "{}", made.chords.names());
+        assert_eq!(root_at(&made.chords, 3 * BAR), Some(10));
+        assert_eq!(made.line, None);
+        // The bass plays the picked root in the first bar.
+        assert!(made
+            .clip
+            .notes
+            .iter()
+            .any(|n| n.tick < BAR && n.note % 12 == 8));
+        // An empty line: the row's own chords again.
+        let plain = AddPartJob::new(&p, add_ask(&p, PartRole::Bass, Relation::Support))
+            .with_line(ChordTimeline::default())
+            .run()
+            .result
+            .unwrap();
+        assert_ne!(root_at(&plain.chords, 0), Some(8));
+    }
+
+    /// Hearing alone: the row's chords as they play, a chord set kept,
+    /// and nothing suggested for a beat alone.
+    #[test]
+    fn a_row_heard_alone_gives_its_chords() {
+        use mpfree_context::chord::{Chord, ChordAnswer, Heard, Quality};
+        let mut p = tune_row(true, true);
+        let job = AddPartJob::new(&p, add_ask(&p, PartRole::Bass, Relation::Support));
+        let heard = job.hear();
+        let made = job.run().result.unwrap();
+        assert_eq!(root_at(&heard, 0), root_at(&made.chords, 0));
+        assert!(root_at(&heard, 0).is_some(), "{}", heard.names());
+        let mut line = heard.clone();
+        assert!(line.set_at(0, ChordAnswer::Chord(Chord::new(8, Quality::Major))));
+        p.scene_mut(0).unwrap().chords = line.plain();
+        let again = AddPartJob::new(&p, add_ask(&p, PartRole::Bass, Relation::Support)).hear();
+        assert_eq!(again.span_at(0).unwrap().heard, Heard::Set);
+        assert_eq!(root_at(&again, 0), Some(8));
+        let beat = tune_row(false, true);
+        let none = AddPartJob::new(&beat, add_ask(&beat, PartRole::Bass, Relation::Support)).hear();
+        assert!(
+            none.spans().iter().all(|s| s.answer.chord().is_none()),
+            "{}",
+            none.names()
+        );
     }
 
     /// Drums under a tune: hits only on the kit's pads, as a clip of hits.

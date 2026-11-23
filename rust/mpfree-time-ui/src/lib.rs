@@ -35,6 +35,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod adding;
 pub mod continuing;
 pub mod editor;
 pub mod lane;

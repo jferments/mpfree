@@ -1188,6 +1188,15 @@ pub struct TimeState {
     pub tempo_here: Option<f64>,
     /// Continue, while one is under way (composing tools).
     pub continuing: Option<Arc<crate::continuing::Continuing>>,
+    /// Add a part, while one is under way (composing tools S2.6).
+    pub adding: Option<Arc<crate::adding::Adding>>,
+    /// The rows whose chords changed since their kept clips fitted them,
+    /// with the clips that no longer do (composing tools S2.6).
+    pub unfit: Arc<[crate::adding::Unfit]>,
+    /// The row the screens asked to hear (`ChordsAction::Hear`) and its
+    /// chords as it plays: its line heard again with its clips, or what
+    /// they say when it has none. None until heard.
+    pub row_chords: Option<(usize, Arc<mpfree_context::chord::ChordTimeline>)>,
 }
 
 /// What a conversion (Scenes → song, List → song, Song → scenes) made
@@ -1521,6 +1530,9 @@ impl TimeState {
             report: None,
             tempo_here: None,
             continuing: None,
+            adding: None,
+            unfit: Arc::from(Vec::new()),
+            row_chords: None,
         }
     }
 
@@ -1807,6 +1819,12 @@ pub enum TimeAction {
     /// Continue (composing tools): carry a clip on, hear it in place of
     /// the clip, keep it or go back.
     Continue(crate::continuing::ContinueAction),
+    /// Add a part (composing tools S2.6): a part for a row's empty cell,
+    /// heard there with the row, kept or left.
+    Add(crate::adding::AddAction),
+    /// The row's chords outside Add a part: set them, or fit the clips
+    /// that no longer fit them (composing tools S2.6).
+    Chords(crate::adding::ChordsAction),
     /// Put these rows on the morph's A and B (loaded again if it is on).
     MorphRows {
         a: usize,
