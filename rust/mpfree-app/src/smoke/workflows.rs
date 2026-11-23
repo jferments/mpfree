@@ -4698,6 +4698,67 @@ mod tests {
         });
     }
 
+    /// SHIFT + Arm with Sync last set to Free: the loop REC records beside
+    /// the notes is a song loop, so it keeps time with the clip, and the
+    /// hint line says why; Sync stays Free for the loops picked after it.
+    /// REC with the loop armed alone still records it free.
+    #[test]
+    fn shift_arm_records_a_song_loop_whatever_sync_was_last_set_to() {
+        use mpfree_looper::{Clock, Phase};
+        fn until(s: &mut Session, n: usize, phase: Phase) {
+            let end = s.t() + 6.0;
+            while s.looper.loop_status(n).map(|l| l.phase) != Some(phase) && s.t() < end {
+                s.run_periods(4);
+            }
+            assert_eq!(s.looper.loop_status(n).map(|l| l.phase), Some(phase));
+        }
+        fn clock(s: &Session, n: usize) -> Clock {
+            s.looper.loop_status(n).expect("a loop").clock
+        }
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.make_sounds();
+            s.press("header", "tab", "Looper");
+            s.press("leditor", "sync", "Free").run_for(0.1);
+            assert_eq!((clock(&s, 0), s.looper.sync()), (Clock::Free, Clock::Free));
+
+            // The Looper tab armed the loop; SHIFT + the steps' Arm adds
+            // the notes: both armed.
+            s.press("header", "tab", "Play");
+            s.button_edge("SHIFT", true);
+            s.press("steps", "arm", "Arm").settle();
+            s.button_edge("SHIFT", false);
+            assert!(s.app.rec.both, "{:?}", s.app.rec);
+
+            // REC: the loop waits for PLAY on the song's clock.
+            s.button("REC");
+            s.run_periods(12).settle();
+            assert_eq!(s.looper.phase(), Phase::Armed);
+            assert_eq!(clock(&s, 0), Clock::Song, "a song loop beside the notes");
+            assert_eq!(
+                s.hint(),
+                "Loop 1 records with the song: the notes are armed too"
+            );
+            assert_eq!(s.looper.sync(), Clock::Free, "Sync as set stays");
+            s.button("PLAY");
+            until(&mut s, 0, Phase::Recording);
+            assert_eq!(clock(&s, 0), Clock::Song, "it records on the song");
+            s.pad(0, 120, 0.3);
+            s.run_for(1.4);
+            s.button("REC");
+            until(&mut s, 0, Phase::Playing);
+            assert_eq!(clock(&s, 0), Clock::Song);
+            s.button("STOP");
+            s.run_periods(12).settle();
+
+            // The loop armed alone on an empty loop: Sync's Free again.
+            s.looper.select(1);
+            s.run_periods(4).settle();
+            assert_eq!(s.looper.picked(), 1);
+            assert_eq!(clock(&s, 1), Clock::Free, "the next empty loop takes Sync");
+        });
+    }
+
     /// Loop tracks part 5 (loop-tracks.md): Rec song keeps a loop's launch
     /// and stop on Loops A as a block, and song mode plays it: the loop on
     /// from the block's start and off on its end's bar line.

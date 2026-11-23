@@ -4049,6 +4049,11 @@ impl LoopHost {
         self.picked
     }
 
+    /// Sync as last set, for every empty loop ([`Clock::Song`] at first).
+    pub fn sync(&self) -> Clock {
+        self.clock
+    }
+
     /// The loops muted, bit `n` for loop `n`, as MIDI Learn reads them.
     pub fn mute_bits(&self) -> u8 {
         (0..MAX_LOOPS.min(8)).fold(0, |bits, n| {

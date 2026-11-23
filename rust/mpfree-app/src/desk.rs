@@ -2258,7 +2258,8 @@ fn rec_effects(
             Do::Transport(c) => {
                 fx.push(app::Effect::Time(mpfree_time_ui::TimeAction::Transport(c)))
             }
-            Do::Looper(c) => fx.extend(loop_take(c, time, looper)),
+            Do::Looper(c) => fx.extend(loop_take(c, false, time, looper)),
+            Do::LoopWithNotes(c) => fx.extend(loop_take(c, true, time, looper)),
             Do::StopWaiting => fx.push(app::Effect::Looper(looping::LoopAction::StopWaiting)),
             Do::ThrowTake => fx.push(app::Effect::Time(mpfree_time_ui::TimeAction::ThrowTake)),
             Do::Pad(d) => fx.push(app::Effect::PadTake(d)),
@@ -2276,23 +2277,30 @@ fn rec_effects(
 /// the other loops as heard), or says
 /// why it can't; Overdub layers the loop playing on that Loop track. A
 /// first pass or an overdub under way takes them as the looper does.
+/// With no cell, `with_notes` (SHIFT + Arm: the notes armed too) makes
+/// the picked empty loop's Record a song loop whatever Sync says, so it
+/// keeps time with the clip recorded beside it.
 fn loop_take(
     c: mpfree_looper::Command,
+    with_notes: bool,
     time: &time::TimeHost,
     looper: &looping::LoopHost,
 ) -> Vec<app::Effect> {
     use looping::LoopAction;
     use mpfree_looper::{Command, Phase};
     let plain = vec![app::Effect::Looper(LoopAction::Command(c))];
-    let Some((t, _)) = time.loop_cell() else {
-        return plain;
-    };
     if matches!(
         looper.phase(),
         Phase::Armed | Phase::Recording | Phase::Overdubbing
     ) {
         return plain;
     }
+    let Some((t, _)) = time.loop_cell() else {
+        if with_notes && c == Command::Record && looper.phase() == Phase::Empty {
+            return song_loop_with_notes(looper);
+        }
+        return plain;
+    };
     let track = time.project().tracks.get(t);
     match c {
         Command::Record => match looper.free_loop() {
@@ -2324,6 +2332,27 @@ fn loop_take(
         },
         _ => plain,
     }
+}
+
+/// REC with the notes and the loop armed (SHIFT + Arm) and the picked
+/// loop empty: it records on the song's clock whatever Sync was last set
+/// to, as a Loop cell's does (`LoopAction::SelectForCell`), and Sync stays
+/// as set for the loops picked after it. With Sync: Free the hint line
+/// says why this one keeps the song's time.
+fn song_loop_with_notes(looper: &looping::LoopHost) -> Vec<app::Effect> {
+    use looping::LoopAction;
+    let n = looper.picked();
+    let mut fx = vec![
+        app::Effect::Looper(LoopAction::SelectForCell(n)),
+        app::Effect::Looper(LoopAction::Command(mpfree_looper::Command::Record)),
+    ];
+    if looper.sync() == mpfree_looper::Clock::Free {
+        fx.push(app::Effect::Tell(format!(
+            "Loop {} records with the song: the notes are armed too",
+            n + 1
+        )));
+    }
+    fx
 }
 
 /// What a Q-Link turned on the controller (`ticks` steps of knob `k`)
