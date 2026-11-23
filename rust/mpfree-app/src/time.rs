@@ -96,6 +96,14 @@ pub use mpfree_play::AheadCounts;
 pub use pad_wait::{DuePads, PadFrom, PadWait, MAX_WAITS};
 pub use timing::{Allowed, Answer, TimingChange};
 
+/// Each project audio track's regions as the spans of song ticks they
+/// cover, in order, by the track's lasting id (phase 2, step 2d).
+pub type AudioSpans = Vec<(mpfree_seq::TrackId, Vec<(Tick, Tick)>)>;
+
+/// Rec song's song edit that put blocks of audio clips in: its number,
+/// and each block's track and song ticks (phase 2, step 2d).
+pub type SongPlaced = (u32, Vec<(mpfree_seq::TrackId, Tick, Tick)>);
+
 /// Tracks in a new project.
 pub const TRACKS: usize = 8;
 /// Bars in a clip made by tapping an empty slot (without a loop set).
@@ -1087,7 +1095,7 @@ impl TimeHost {
     /// Each audio track's regions as song tick spans (phase 2, step 2d):
     /// a block is never dropped, moved or made longer over one (see
     /// `TimeControl::set_audio_spans`).
-    pub fn set_audio_spans(&mut self, spans: Vec<(mpfree_seq::TrackId, Vec<(Tick, Tick)>)>) {
+    pub fn set_audio_spans(&mut self, spans: AudioSpans) {
         self.with(|c| c.set_audio_spans(spans));
     }
 
@@ -1842,7 +1850,7 @@ impl TimeHost {
     /// replace the regions under them as a step tagged with the number
     /// (audio tracks phase 2, step 2d; [`TimeControl::take_song_placed`]).
     /// Then [`TimeHost::tie_audio`] if they made one.
-    pub fn take_song_placed(&mut self) -> Option<(u32, Vec<(mpfree_seq::TrackId, Tick, Tick)>)> {
+    pub fn take_song_placed(&mut self) -> Option<SongPlaced> {
         match &mut self.control {
             Half::Here(c) => c.take_song_placed(),
             Half::Apart(a) => a.take_placed(),

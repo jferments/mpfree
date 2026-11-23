@@ -109,8 +109,10 @@ pub enum Plays<'a> {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Change<'a> {
     pub frame: u32,
-    /// The song tick there, for the record: the engine places by the
-    /// period's spans.
+    /// The song tick it lands on: the line, a whole tick, where the
+    /// frame's own tick may be half a frame either side. Which pass and
+    /// region a clip is in there, and whether a block's last region ends
+    /// right there, go by it; the sound is placed by the period's spans.
     pub tick: f64,
     pub plays: Plays<'a>,
     pub muted: bool,
@@ -304,6 +306,12 @@ impl Shape {
 /// back from a frame.
 const EPS: f64 = 1e-6;
 
+/// Ticks a change's tick may be off a line by. Changes land on lines,
+/// whole ticks (and blocks and their clips' regions start and end on
+/// them); one made at a period's start has its frame's tick, within half
+/// a frame of the line, and half a frame is well under half a tick.
+pub(crate) const LINE: f64 = 0.5;
+
 /// A take number no take has: a region whose recording isn't here plays
 /// silence.
 pub(crate) const NO_TAKE_ID: u16 = u16::MAX;
@@ -390,6 +398,12 @@ pub(crate) struct Voice {
     /// last region plays to the last frame.
     pub ring: bool,
     pub ring_at: f64,
+    /// The song block it played ends at song tick `end` (infinite until
+    /// then): nothing of its from there on plays, and a region ending
+    /// right there meets what follows with `end_join`, as the song's
+    /// regions meet (phase 2, step 2d).
+    pub end: f64,
+    pub end_join: Join,
     /// Its track recorded over it: heard again, fading in, after.
     pub held: bool,
     /// A jump: it starts again where the song lands.
@@ -411,6 +425,8 @@ impl Voice {
         t_start: 0.0,
         ring: false,
         ring_at: 0.0,
+        end: f64::INFINITY,
+        end_join: Join::Fade,
         held: false,
         restart: false,
         last: [0.0; 2],
@@ -438,6 +454,8 @@ impl Voice {
         };
         self.t_start = tick;
         self.ring = false;
+        self.end = f64::INFINITY;
+        self.end_join = Join::Fade;
         self.held = false;
         self.restart = false;
         self.last = [0.0; 2];
@@ -479,6 +497,33 @@ impl Voice {
         self.ring_at = tick;
     }
 
+    /// Stops at song tick `tick`, where the song block it played ends:
+    /// what starts there or later doesn't play, and a region ending right
+    /// there meets what follows with `join` (it fades out past its end by
+    /// itself, as a song region does).
+    pub(crate) fn end_at(&mut self, tick: f64, join: Join) {
+        self.end = tick;
+        self.end_join = join;
+    }
+
+    /// One of its regions runs on through song tick `tick` (started
+    /// before it, ends after it).
+    pub(crate) fn runs_through(&self, tick: f64) -> bool {
+        [Some(&self.cur), self.next.as_ref()]
+            .into_iter()
+            .flatten()
+            .any(|s| {
+                let p = ((tick - s.origin) / s.len as f64).floor() as i64;
+                if p < s.first || p > s.last {
+                    return false;
+                }
+                let t = tick - s.base(p);
+                s.regions[..s.n]
+                    .iter()
+                    .any(|r| (r.start as f64) < t - LINE && t + LINE < r.end as f64)
+            })
+    }
+
     pub(crate) fn uses(&self, id: u16) -> bool {
         self.on && (self.cur.uses(id) || self.next.as_ref().is_some_and(|s| s.uses(id)))
     }
@@ -500,7 +545,7 @@ impl Voice {
             let base = s.base(p);
             for (i, r) in s.regions[..s.n].iter().enumerate() {
                 let at = base + r.start as f64;
-                if self.ring && at >= self.ring_at {
+                if (self.ring && at >= self.ring_at) || at + LINE > self.end {
                     return out;
                 }
                 let ringing = self.ring && p == s.last && i == s.n - 1;
@@ -523,7 +568,7 @@ impl Voice {
     pub(crate) fn heard(&self, map: &TempoMap, rate: u32, tick: f64) -> Option<(u16, i64, f32)> {
         let s = &self.cur;
         let p = s.pass_at(tick);
-        if p < s.first || p > s.last {
+        if p < s.first || p > s.last || tick + LINE > self.end {
             return None;
         }
         let base = s.base(p);
@@ -531,6 +576,37 @@ impl Voice {
         let r = s.regions[..s.n]
             .iter()
             .find(|r| r.start as f64 <= t && t < r.end as f64)?;
+        let at = base + r.start as f64;
+        let len_f = crate::frames_from(map, at, base + r.end as f64, rate).round() as i64;
+        let e = crate::frames_from(map, at, tick, rate).round() as i64;
+        let g = r.gain * Envelope::of(r, len_f).at(e) * self.shape.glide.to;
+        Some((r.take, r.src + e, g))
+    }
+
+    /// [`Voice::heard`] for the audio running into song tick `tick`: a
+    /// region ending right there gives its last frame's place, as if it
+    /// ran on (where [`Voice::heard`] finds the next region, or the next
+    /// pass, or nothing past the voice's last pass). For a switch at a
+    /// song block's end to a block whose clip plays on from that very
+    /// frame (Song → scenes cuts a region at a section's edge into two
+    /// clips: phase 2, step 2d).
+    pub(crate) fn heard_into(
+        &self,
+        map: &TempoMap,
+        rate: u32,
+        tick: f64,
+    ) -> Option<(u16, i64, f32)> {
+        let s = &self.cur;
+        // Half a tick before: the pass that runs into `tick`.
+        let p = s.pass_at(tick - 0.5);
+        if p < s.first || p > s.last || tick > self.end + LINE {
+            return None;
+        }
+        let base = s.base(p);
+        let t = tick - base;
+        let r = s.regions[..s.n]
+            .iter()
+            .find(|r| (r.start as f64) < t && t <= r.end as f64)?;
         let at = base + r.start as f64;
         let len_f = crate::frames_from(map, at, base + r.end as f64, rate).round() as i64;
         let e = crate::frames_from(map, at, tick, rate).round() as i64;
@@ -592,6 +668,13 @@ impl Declick {
 pub(crate) struct Lane {
     pub voices: [Voice; VOICES],
     pub song: Window,
+    /// The song ticks its song plays between, where it switched to its
+    /// song with nothing running through (from) and away from it (to):
+    /// what ended by `song_from` or starts from `song_to` on isn't heard,
+    /// and a region starting or ending right there fades by itself, as at
+    /// a gap, its window open meanwhile (a block's edges: step 2d).
+    pub song_from: f64,
+    pub song_to: f64,
     pub mode: Mode,
     /// 1 heard, 0 muted by the answer.
     pub mute: Glide,
@@ -603,6 +686,8 @@ impl Lane {
         Lane {
             voices: [Voice::OFF; VOICES],
             song: Window::OPEN,
+            song_from: f64::NEG_INFINITY,
+            song_to: f64::INFINITY,
             mode: Mode::Unknown,
             mute: Glide::steady(1.0),
             declick: Declick::NONE,
@@ -618,6 +703,8 @@ impl Lane {
         self.mode = Mode::Unknown;
         self.declick = Declick::NONE;
         self.song = Window::OPEN;
+        self.song_from = f64::NEG_INFINITY;
+        self.song_to = f64::INFINITY;
     }
 
     /// A voice for a clip starting on frame `f`: a free one, else the
@@ -659,6 +746,12 @@ impl Lane {
             } else {
                 v.restart = true;
             }
+        }
+        // The song plays on where it lands; one switched away from is over.
+        self.song_from = f64::NEG_INFINITY;
+        if self.song_to.is_finite() {
+            self.song = Window::SHUT;
+            self.song_to = f64::INFINITY;
         }
     }
 
@@ -795,7 +888,7 @@ impl crate::Reader<'_> {
                 for i in 0..n {
                     let r = &set.regions[i];
                     let at = base + r.start as f64;
-                    if at >= tick1 || (v.ring && at >= v.ring_at) {
+                    if at >= tick1 || (v.ring && at >= v.ring_at) || at + LINE > v.end {
                         break;
                     }
                     // Over before the voice started.
@@ -845,6 +938,9 @@ impl crate::Reader<'_> {
                     let frames = self.frames_of(r.take);
                     let after = if ringing {
                         Join::Fade
+                    } else if (base + r.end as f64 - v.end).abs() < LINE {
+                        // The end of its song block.
+                        v.end_join
                     } else if i + 1 < n {
                         let b = &set.regions[i + 1];
                         if r.end == b.start {

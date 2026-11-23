@@ -864,7 +864,8 @@ fn clips_never_allocate() {
                     }
                     cs.push(Change {
                         frame: (e.at - frame) as u32,
-                        tick: 0.0,
+                        // The whole tick it lands on, as the player gives.
+                        tick: ((e.at - start) as f64 * 128.0 / 735.0).round(),
                         plays: e
                             .k
                             .map_or(Plays::Song, |k| Plays::Clip(clip(k, e.origin, e.stamp))),

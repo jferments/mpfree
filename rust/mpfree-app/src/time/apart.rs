@@ -235,7 +235,7 @@ pub struct Apart {
     notes: VecDeque<String>,
     landings: [Option<(bool, bool)>; PADS],
     /// What Rec song put on audio tracks' lanes, oldest first.
-    placed: VecDeque<(u32, Vec<(TrackId, Tick, Tick)>)>,
+    placed: VecDeque<super::SongPlaced>,
     pub counts: Counts,
     /// What the facade last sent of the inputs it gives every period, so
     /// only a change goes: the app's tempo, whether a take records.
@@ -441,7 +441,7 @@ impl Apart {
     }
 
     /// What Rec song put on audio tracks' lanes, oldest first.
-    pub fn take_placed(&mut self) -> Option<(u32, Vec<(TrackId, Tick, Tick)>)> {
+    pub fn take_placed(&mut self) -> Option<super::SongPlaced> {
         self.drain_told();
         self.placed.pop_front()
     }

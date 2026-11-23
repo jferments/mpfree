@@ -139,20 +139,30 @@ impl Rig {
 
     /// Runs periods to `frame`, track 0 answering `evs` as the arranger's
     /// player would: what played before the period at its start, the
-    /// events in it as changes (the last 4; the rest superseded).
+    /// events in it as changes (the last 4; the rest superseded), each on
+    /// the whole tick it lands on.
     fn run(&mut self, frame: u64, evs: &[Ev]) {
         let inp = vec![0.0f32; 2 * self.period];
         let mut mix = vec![0.0f32; 2 * self.period];
         while self.frame < frame {
             let n = (self.period as u64).min(frame - self.frame) as usize;
             let p0 = self.frame;
+            assert!(self.t.process(n as u32, &mut self.b));
+            let b = &self.b;
+            let tick = |g: u64| -> f64 {
+                let off = (g - p0) as u32;
+                b.spans()
+                    .iter()
+                    .find(|s| off >= s.offset && off < s.offset + s.len.max(1))
+                    .map_or(0.0, |s| s.tick_at(g).round())
+            };
             let before = evs.iter().rev().find(|e| e.at < p0);
             let mut changes: Vec<Change> = evs
                 .iter()
                 .filter(|e| (p0..p0 + n as u64).contains(&e.at))
                 .map(|e| Change {
                     frame: (e.at - p0) as u32,
-                    tick: 0.0,
+                    tick: tick(e.at),
                     plays: e.plays,
                     muted: e.muted,
                     ring: e.ring,
@@ -167,7 +177,6 @@ impl Rig {
                 superseded: superseded as u32,
             }];
             mix[..2 * n].fill(0.0);
-            assert!(self.t.process(n as u32, &mut self.b));
             let map = *self.t.tempo_map();
             self.a
                 .process_with(&self.b, &map, &inp[..2 * n], &mut mix[..2 * n], &answer);

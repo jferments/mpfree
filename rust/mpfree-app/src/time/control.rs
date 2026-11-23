@@ -471,7 +471,7 @@ pub struct TimeControl {
     /// number and the spans of the blocks, by lasting id, for the audio
     /// tracks to replace the regions under them
     /// ([`TimeControl::take_song_placed`]).
-    song_placed: Option<(u32, Vec<(TrackId, Tick, Tick)>)>,
+    song_placed: Option<super::SongPlaced>,
     /// The song time edit being made moves audio regions: it is kept as a
     /// take even where the song itself doesn't change (bars put in after
     /// everything but the audio), so UNDO takes the regions back.
@@ -596,7 +596,7 @@ pub struct TimeControl {
     /// Each audio track's regions, by its lasting id, as the spans of song
     /// ticks they cover, in order ([`TimeControl::set_audio_spans`]): no
     /// block goes over one (phase 2, step 2d).
-    audio_spans: Vec<(TrackId, Vec<(Tick, Tick)>)>,
+    audio_spans: super::AudioSpans,
     tx: Tx<ToAudio>,
     rx: Rx<ToControl>,
     /// A view the audio half's full queue handed back, sent again on the
@@ -1548,7 +1548,7 @@ impl TimeControl {
     /// in order, by the track's lasting id (phase 2, step 2d): the audio
     /// tracks host hands them over whenever they change, so a block
     /// dropped, moved or made longer over a region is refused.
-    pub fn set_audio_spans(&mut self, spans: Vec<(TrackId, Vec<(Tick, Tick)>)>) {
+    pub fn set_audio_spans(&mut self, spans: super::AudioSpans) {
         self.audio_spans = spans;
     }
 
@@ -4481,7 +4481,7 @@ impl TimeControl {
     /// in order, joined where they meet. The audio tracks replace the
     /// regions under them as a step of their own tagged with the number,
     /// and say so with [`TimeControl::tie_audio`].
-    pub fn take_song_placed(&mut self) -> Option<(u32, Vec<(TrackId, Tick, Tick)>)> {
+    pub fn take_song_placed(&mut self) -> Option<super::SongPlaced> {
         self.song_placed.take()
     }
 
@@ -5219,7 +5219,15 @@ impl TimeControl {
     /// how the song plays differently from the rows ("exact", or the
     /// differences and what each is), or why nothing changed.
     fn rows_to_song(&mut self, steps: &[ListStep], bar: Tick) -> Result<(Tick, String), String> {
-        let end = self.project.arrangement.end();
+        // The song's end is its audio tracks' recordings' too, so the new
+        // blocks never land over a region (audio tracks phase 2, step 2d).
+        let recorded = self
+            .audio_spans
+            .iter()
+            .filter_map(|(_, spans)| spans.last().map(|s| s.1))
+            .max()
+            .unwrap_or(0);
+        let end = self.project.arrangement.end().max(recorded);
         let at = (end + bar - 1) / bar.max(1) * bar;
         let played = super::offline::play_rows(&self.project, steps, at, bar)?;
         let mut song = self.project.arrangement.clone();

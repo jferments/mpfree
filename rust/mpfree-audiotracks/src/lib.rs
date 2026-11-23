@@ -2262,7 +2262,7 @@ impl AudioTracks {
             }
             Command::TieStep { step, song } => {
                 if !self.tie_step(step, song) {
-                    return self.refuse();
+                    self.refuse();
                 }
             }
             Command::SongUndo(song) => {
@@ -3594,6 +3594,7 @@ impl AudioTracks {
         if song.silent(f0, len) {
             return;
         }
+        let (from, to) = (self.tracks[t].lane.song_from, self.tracks[t].lane.song_to);
         let shape = Shape {
             win: song,
             ..Shape::OPEN
@@ -3626,17 +3627,28 @@ impl AudioTracks {
         };
         let dst = &mut buf[2 * off..2 * (off + len)];
         for (i, r) in regions.iter().enumerate().skip(first) {
-            if r.start as f64 >= tick1 {
+            let (start, end) = (r.start as f64, r.end as f64);
+            if start >= tick1 || start + clips::LINE > to {
                 break;
             }
-            // How it meets the regions either side ([`Join`]).
+            if end < from + clips::LINE {
+                // Over before the song came in.
+                continue;
+            }
+            // How it meets the regions either side ([`Join`]), or the
+            // song's own start or end ([`clips::Lane::song_from`]).
             let before = match i.checked_sub(1) {
+                _ if (start - from).abs() < clips::LINE => Join::Fade,
                 Some(h) => join(&regions[h], r, map, rate),
                 None => Join::Fade,
             };
-            let after = regions
-                .get(i + 1)
-                .map_or(Join::Fade, |n| join(r, n, map, rate));
+            let after = if (end - to).abs() < clips::LINE {
+                Join::Fade
+            } else {
+                regions
+                    .get(i + 1)
+                    .map_or(Join::Fade, |n| join(r, n, map, rate))
+            };
             let len_f = frames_from(map, r.start as f64, r.end as f64, rate).round() as i64;
             let placed = Placed {
                 r,
@@ -3765,7 +3777,7 @@ impl AudioTracks {
                 }
                 next[t] += 1;
                 if (c.frame as usize) < n {
-                    self.change(t, c, f, tick, map);
+                    self.change(t, c, f, map);
                 }
             }
         }
@@ -3786,6 +3798,8 @@ impl AudioTracks {
                 } else {
                     Window::SHUT
                 };
+                lane.song_from = f64::NEG_INFINITY;
+                lane.song_to = f64::INFINITY;
                 let mode = match plays {
                     Plays::Nothing => Mode::Nothing,
                     Plays::Song => Mode::Song,
@@ -3811,15 +3825,19 @@ impl AudioTracks {
                     muted,
                     ring: false,
                 };
-                self.change(t, &c, f, tick, map);
+                self.change(t, &c, f, map);
             }
         }
     }
 
-    /// Track `t` changes to what `c` says at frame `f` (song tick
-    /// `tick`): what it played fades out (or rings, or runs straight on
-    /// into the same audio) and what it plays now fades in.
-    fn change(&mut self, t: usize, c: &Change, f: u64, tick: f64, map: &TempoMap) {
+    /// Track `t` changes to what `c` says at frame `f`: what it played
+    /// fades out (or rings, or runs straight on into the same audio) and
+    /// what it plays now fades in. On the change's own song tick, the line
+    /// it lands on: the frame's tick is within half a frame of it, either
+    /// side, where lines fall between frames, and which pass or region a
+    /// voice is in at a line can't hang on that.
+    fn change(&mut self, t: usize, c: &Change, f: u64, map: &TempoMap) {
+        let tick = c.tick;
         let rate = self.rate;
         // A ring from before ends with the usual fade.
         for v in self.tracks[t].lane.voices.iter_mut() {
@@ -3837,6 +3855,14 @@ impl AudioTracks {
             }
         }
         let prev = self.tracks[t].lane.mode;
+        // A song region running on through the change: cut there, crossed
+        // over. Else its regions end or start there, or nothing plays.
+        let song_through = {
+            let rs = self.tracks[t].regions();
+            let k = rs.partition_point(|r| r.end as f64 <= tick + clips::LINE);
+            rs.get(k)
+                .is_some_and(|r| (r.start as f64) < tick - clips::LINE)
+        };
         let mode = match &c.plays {
             Plays::Nothing => Mode::Nothing,
             Plays::Song => Mode::Song,
@@ -3847,7 +3873,16 @@ impl AudioTracks {
         };
         let lane = &mut self.tracks[t].lane;
         match prev {
-            Mode::Song if mode != Mode::Song => lane.song.close_at(f, Join::Fade),
+            Mode::Song if mode != Mode::Song => {
+                if song_through {
+                    lane.song.close_at(f, Join::Fade);
+                } else {
+                    // Nothing of the song from here on; a region ending
+                    // here fades out past its end by itself, as at a gap.
+                    lane.song_to = tick;
+                    lane.song.close_at(f + 2 * FADE as u64, Join::Straight);
+                }
+            }
             Mode::Clip { voice, .. } if lane.voices[voice].on => {
                 let new = match mode {
                     Mode::Clip { voice: nv, .. } => Some(nv),
@@ -3861,13 +3896,17 @@ impl AudioTracks {
                     // Declicked at the jump already.
                     lane.voices[voice].on = false;
                 } else {
+                    // The song block it played ends here: nothing of its
+                    // from here on plays. The same audio running on isn't
+                    // faded: a legato switch to the same audio, or a song
+                    // block's end into a block whose clip plays on from
+                    // the frame its region ended on (Song → scenes cuts a
+                    // region at a section's edge in two: step 2d).
                     let mut join = Join::Fade;
                     if let Some(nv) = new {
-                        // The same audio running on (a legato switch to
-                        // the same clip) isn't faded.
-                        let a = lane.voices[voice].heard(map, rate, tick);
+                        let a = lane.voices[voice].heard_into(map, rate, tick);
                         let b = lane.voices[nv].heard(map, rate, tick);
-                        if let (Some(a), Some(b)) = (a, b) {
+                        if let Some((a, b)) = a.zip(b) {
                             if a.0 == b.0 && a.1 == b.1 && a.0 != NO_TAKE_ID {
                                 join = if a.2 == b.2 {
                                     Join::Straight
@@ -3878,13 +3917,32 @@ impl AudioTracks {
                         }
                         lane.voices[nv].shape.win.open = join;
                     }
-                    lane.voices[voice].shape.win.close_at(f, join);
+                    let old = &mut lane.voices[voice];
+                    old.end_at(tick, join);
+                    if old.runs_through(tick) {
+                        // Cut here: crossed over to what follows.
+                        old.shape.win.close_at(f, join);
+                    } else {
+                        // Its regions end by here, each meeting what
+                        // follows by its own join as the song's regions
+                        // do; the window only closes once their fades
+                        // are over.
+                        old.shape.win.close_at(f + 2 * FADE as u64, Join::Straight);
+                    }
                 }
             }
             _ => {}
         }
         if mode == Mode::Song && prev != Mode::Song {
-            lane.song = Window::opening(f, Join::Fade);
+            if song_through {
+                lane.song = Window::opening(f, Join::Fade);
+                lane.song_from = f64::NEG_INFINITY;
+            } else {
+                // A region starting here fades in by itself, as after a gap.
+                lane.song = Window::opening(f, Join::Straight);
+                lane.song_from = tick;
+            }
+            lane.song_to = f64::INFINITY;
         }
         lane.mode = mode;
         lane.mute.set(heard, f);

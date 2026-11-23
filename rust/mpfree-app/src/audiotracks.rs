@@ -1707,7 +1707,7 @@ impl TrackHost {
     pub fn spans_if_changed(
         &mut self,
         project: &mpfree_seq::Project,
-    ) -> Option<Vec<(TrackId, Vec<(Tick, Tick)>)>> {
+    ) -> Option<crate::time::AudioSpans> {
         let tr = &self.host.tracks;
         let audio = || {
             project
@@ -1828,10 +1828,10 @@ impl TrackHost {
     /// them), as steps of that song edit, so the song's UNDO takes them
     /// back with the blocks and the audio tracks' UNDO stops at them
     /// (phase 2, step 2d, [`Command::EraseSong`]). Only where a region
-    /// plays. How many spans it erased; a send refused (the queue full)
-    /// stops it there, and the count says how far it got.
-    pub fn replace_under(&mut self, song: u32, spans: &[(TrackId, Tick, Tick)]) -> usize {
-        let mut done = 0;
+    /// plays. How many spans it erased, and how many over regions it
+    /// couldn't (the queue full: it stops there).
+    pub fn replace_under(&mut self, song: u32, spans: &[(TrackId, Tick, Tick)]) -> (usize, usize) {
+        let (mut done, mut left) = (0, 0);
         for &(id, from, to) in spans {
             let Some(track) = self.slots.slot_of(id) else {
                 continue;
@@ -1851,12 +1851,13 @@ impl TrackHost {
                 from,
                 to,
             };
-            if self.send(c).is_err() {
-                break;
+            if left > 0 || self.send(c).is_err() {
+                left += 1;
+                continue;
             }
             done += 1;
         }
-        done
+        (done, left)
     }
 
     /// The blocks of audio clips on the Song view's audio lanes (phase 2,
@@ -3383,7 +3384,11 @@ mod tests {
             (id, 10 * 3840, 11 * 3840),
             (other, 0, 3840),
         ];
-        assert_eq!(r.h.replace_under(7, &spans), 1, "one span over a region");
+        assert_eq!(
+            r.h.replace_under(7, &spans),
+            (1, 0),
+            "one span over a region"
+        );
         r.periods(2);
         assert_eq!(tr(&r), [(start, 3840)], "replaced from bar 2 on");
         assert_eq!(
