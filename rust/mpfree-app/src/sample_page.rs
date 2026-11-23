@@ -84,8 +84,8 @@ use mpfree_sampler::export;
 use mpfree_sampler::jobs::{Config as JobsConfig, Jobs, Key, Lane, Order};
 use mpfree_sampler::keymap::{self, RootFrom};
 use mpfree_sampler::model::{
-    self as model, ChannelPick, Fade, Levels, LoopMode, ModelError, Pad, PadsPlay, PlayMode,
-    Project, Region, Source, SourceId, Warp, PADS, SLICE_KEYS_FROM, WARP_BPM,
+    self as model, ChannelPick, Fade, KeysPlay, Levels, LoopMode, ModelError, Pad, PadsPlay,
+    PlayMode, Project, Region, Source, SourceId, Warp, PADS, SLICE_KEYS_FROM, WARP_BPM,
 };
 use mpfree_sampler::phrase::Phrase;
 use mpfree_sampler::record::{self, Input, Looped, Progress, Recording};
@@ -3746,6 +3746,27 @@ impl SamplePage {
     ) -> Result<sampler_commands::Done, sampler_commands::Refused> {
         let cmd = Command::to_kit(self.kit_id(kit)?, change).in_gesture(gesture);
         self.command(&cmd)
+    }
+
+    /// Kit `kit`'s Keys play set to `play` (sampler step 15e, from the
+    /// pads picker's Kits side): what a key plays on it, its pad, the
+    /// keygroups that hold it, or both. One undo step on the kit. The line
+    /// that says so, for the log and the hint.
+    pub fn set_keys_play(&mut self, ui: &mut Ui, kit: usize, play: KeysPlay) -> String {
+        let what = match self.change_kit(kit, Change::KeysPlay(Some(play)), None) {
+            Ok(_) => match play {
+                KeysPlay::Pads => "each key plays its pad".to_string(),
+                KeysPlay::Keygroups => "each key plays the keygroups that hold it".to_string(),
+                KeysPlay::Both => {
+                    "keys play the keygroups that hold them, the pad elsewhere".to_string()
+                }
+            },
+            Err(e) => format!("keys play not changed ({e})"),
+        };
+        let line = format!("sample: {}: {what}", self.kit_text_of(kit));
+        self.lines.push(line.clone());
+        self.refresh(ui);
+        line
     }
 
     /// The kit place whose id is `id`, as the audio loop last said

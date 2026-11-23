@@ -1774,6 +1774,21 @@ pub enum FromUi {
     /// The list's Layer switch on or off (step 11b): a tap adds a synth to
     /// what the pads play or takes it off.
     SynthPickLayer(bool),
+    /// The list's Synths (false) or Kits (true) side (sampler step 15e).
+    SynthPickSide(bool),
+    /// A tile of the list's Kits side (sampler step 15e): the kit in place
+    /// `kit` (None: the first tile, Follow track or Follow base), by
+    /// `name`, `empty` for one with no sounds, `banks` a bit for each bank
+    /// of it that holds sounds.
+    SynthPickKit {
+        kit: Option<usize>,
+        name: String,
+        empty: bool,
+        banks: u8,
+    },
+    /// The source bank row: the bank the pads are on plays this bank of its
+    /// own kit (sampler step 15e).
+    SynthPickFrom(u8),
     /// The Synth tab's gear: its options, as MENU opens them; on the
     /// options, their Back button: back to the page.
     OptionsButton,
@@ -2400,6 +2415,11 @@ pub struct Player {
     synth: Option<SynthPanel>,
     /// The list of synths over the Synth tab, while it is open.
     synth_pick: Option<Box<crate::app::SynthPickView>>,
+    /// The list's Kits side by tile (sampler step 15e): each tile's kit
+    /// place (None: the first), name, emptiness and filled banks; and the
+    /// source bank row's banks.
+    pick_kits: Vec<(Option<usize>, String, bool, u8)>,
+    pick_from: Vec<u8>,
     /// The Sample page and the kits' projects it edits (the Pads tab's
     /// screens too).
     pub sample: SamplePage,
@@ -3156,6 +3176,8 @@ impl Player {
             rec_plan: None,
             synth: None,
             synth_pick: None,
+            pick_kits: Vec::new(),
+            pick_from: Vec::new(),
             sample,
             browser: None,
             io_model: None,
@@ -4591,6 +4613,195 @@ impl Player {
         }
     }
 
+    /// The list's Kits side for `v` (sampler step 15e; the canvas "Pads and
+    /// kits: step 15e", boards 1 and 2): the first tile (Follow track,
+    /// "Track 1's kit", or Follow base with Bank B only), then each kit
+    /// but the synth's, by place, an empty one last-named "9 · Empty"; the
+    /// outlined kit's source bank row and Keys play. With them, each
+    /// tile's kit for its tap and the source row's banks.
+    #[allow(clippy::type_complexity)]
+    fn pick_kit_side(
+        &self,
+        v: &crate::app::SynthPickView,
+    ) -> (
+        mpfree_synth_ui::pick::KitsSide,
+        Vec<(Option<usize>, String, bool, u8)>,
+        Vec<u8>,
+    ) {
+        use crate::app::KitOn;
+        use mpfree_synth_ui::pick::{FromRow, KitTile, KitsSide};
+        let letter = crate::app::bank_letter;
+        let kit_name = |k: usize| {
+            self.kits.get(k).map_or_else(
+                || format!("Kit {}", k + 1),
+                |kit| chip_kit_name(&kit.name, k),
+            )
+        };
+        // The pads that hold a sound, and whether one is a keygroup.
+        let filled = |k: usize| -> (usize, u8, bool) {
+            match self.sample.project(k) {
+                Some(p) => (0..128).filter_map(|i| p.pad(i).map(|pd| (i, pd))).fold(
+                    (0, 0u8, false),
+                    |(n, banks, keys), (i, pd)| {
+                        (
+                            n + 1,
+                            banks | 1 << (i / 16).min(7),
+                            keys || pd.keys.is_some(),
+                        )
+                    },
+                ),
+                None => self.kits.get(k).map_or((0, 0, false), |kit| {
+                    kit.pads
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, p)| p.is_some())
+                        .fold((0, 0u8, false), |(n, banks, _), (i, _)| {
+                            (n + 1, banks | 1 << (i / 16).min(7), false)
+                        })
+                }),
+            }
+        };
+        let plays_kit = |t: usize| {
+            played(&self.track_sounds, &self.track_sends, t)
+                .is_none()
+                .then(|| self.track_kits.kit_of(t))
+                .flatten()
+        };
+        let only = v.bank.filter(|b| b.1).map(|b| b.0);
+        let track_says = match played(&self.track_sounds, &self.track_sends, v.track) {
+            Some((h, from)) => played_name(h, from),
+            None => plays_kit(v.track).map_or_else(|| "its kit".to_string(), kit_name),
+        };
+        let first = match only {
+            Some(b) => KitTile {
+                name: "Follow base".to_string(),
+                short: "Follow base".to_string(),
+                sub: format!("Bank {b} plays what every bank plays"),
+                colour: None,
+                empty: false,
+            },
+            None => {
+                let name = if plays_kit(v.track).is_some() {
+                    format!("Track {}'s kit", v.track + 1)
+                } else {
+                    "Follow track".to_string()
+                };
+                KitTile {
+                    short: name.clone(),
+                    name,
+                    sub: format!("The pads follow the track: {track_says}"),
+                    colour: None,
+                    empty: false,
+                }
+            }
+        };
+        let mut tiles = vec![first];
+        let mut taps = vec![(None, String::new(), false, 0u8)];
+        for k in (0..self.kits.len()).filter(|&k| self.kits[k].synth.is_none()) {
+            let (n, banks, keys) = filled(k);
+            let empty = n == 0;
+            let short = if empty {
+                format!("Kit {}", k + 1)
+            } else {
+                kit_name(k)
+            };
+            let track = (0..self.time.tracks.len())
+                .filter(|&t| self.time.tracks[t].loops.is_none())
+                .find(|&t| plays_kit(t) == Some(k));
+            let sub = if empty {
+                "Start a kit here".to_string()
+            } else {
+                let span = if banks.count_ones() > 1 {
+                    format!(
+                        " in {} to {}",
+                        letter(banks.trailing_zeros() as usize),
+                        letter(7 - banks.leading_zeros() as usize)
+                    )
+                } else {
+                    String::new()
+                };
+                format!(
+                    "{n} pad{}{span}{} · {}",
+                    if n == 1 { "" } else { "s" },
+                    if keys { ", keygroups" } else { "" },
+                    track.map_or_else(|| "no track".to_string(), |t| format!("Track {}", t + 1))
+                )
+            };
+            tiles.push(KitTile {
+                name: if empty {
+                    format!("{} · Empty", k + 1)
+                } else {
+                    format!("{} · {short}", k + 1)
+                },
+                short: short.clone(),
+                sub,
+                colour: (!empty).then(|| Color::from_pad(self.kits[k].colour)),
+                empty,
+            });
+            taps.push((Some(k), short, empty, banks));
+        }
+        let tile_of = |on: KitOn| match on {
+            KitOn::Follow => Some(0),
+            KitOn::Kit(k) => taps.iter().position(|t| t.0 == Some(k)),
+            KitOn::Other => None,
+        };
+        let (mut from, mut keys, mut from_banks) = (None, None, Vec::new());
+        if let KitOn::Kit(k) = v.kit_now {
+            let (_, banks, holds_keys) = filled(k);
+            if let Some(b) = only.filter(|_| banks.count_ones() > 1) {
+                from_banks = (0..8u8).filter(|&i| banks >> i & 1 == 1).collect();
+                let plays = v.from.unwrap_or((b as u8).wrapping_sub(b'A')).min(7);
+                from = Some(FromRow {
+                    bank: b,
+                    kit: kit_name(k),
+                    banks: from_banks.iter().map(|&i| letter(usize::from(i))).collect(),
+                    on: from_banks.iter().position(|&i| i == plays).unwrap_or(0),
+                });
+            }
+            if holds_keys {
+                let play = self.sample.project(k).map_or(0, |p| match p.keys_play() {
+                    mpfree_sampler::model::KeysPlay::Pads => 0,
+                    mpfree_sampler::model::KeysPlay::Keygroups => 1,
+                    mpfree_sampler::model::KeysPlay::Both => 2,
+                });
+                keys = Some((kit_name(k), play));
+            }
+        }
+        let side = KitsSide {
+            shown: v.kits,
+            now: tile_of(v.kit_now),
+            had: tile_of(v.kit_had),
+            layers: v
+                .kit_layers
+                .iter()
+                .filter_map(|&k| tile_of(KitOn::Kit(k)))
+                .collect(),
+            from,
+            keys,
+            tiles,
+        };
+        (side, taps, from_banks)
+    }
+
+    /// A Keys play choice on the list's Kits side (sampler step 15e,
+    /// question 2): the outlined kit's keys play its pads (0), its
+    /// keygroups (1) or both (2), one undo step on the kit; the list
+    /// again.
+    fn pick_keys_play(&mut self, choice: usize) {
+        let Some(crate::app::KitOn::Kit(k)) = self.synth_pick.as_ref().map(|v| v.kit_now) else {
+            return;
+        };
+        let play = match choice {
+            0 => mpfree_sampler::model::KeysPlay::Pads,
+            1 => mpfree_sampler::model::KeysPlay::Keygroups,
+            _ => mpfree_sampler::model::KeysPlay::Both,
+        };
+        let line = self.sample.set_keys_play(&mut self.ui, k, play);
+        self.tell(&line);
+        let pick = self.synth_pick.take();
+        self.set_synth_pick(pick);
+    }
+
     /// The list of synths opened, changed or closed (app/synth_pick.rs):
     /// it takes the page's place under the title bar's row, beside the
     /// instrument card and the Q-Links; the card is outlined while it is
@@ -4608,13 +4819,22 @@ impl Player {
                 .ui
                 .get_mut::<mpfree_synth_ui::pick::SynthList>(mpfree_synth_ui::pick::PICK)
             {
-                w.title = "Pick a synth for the pads".to_string();
+                w.title = "Pick what the pads play".to_string();
                 w.choices = v.choices.clone();
                 w.now = v.now;
                 w.had = v.had;
                 w.bank = v.bank;
                 w.layer = v.layer;
                 w.layers = v.layers.clone();
+            }
+            let (side, tiles, from) = self.pick_kit_side(v);
+            self.pick_kits = tiles;
+            self.pick_from = from;
+            if let Some(w) = self
+                .ui
+                .get_mut::<mpfree_synth_ui::pick::SynthList>(mpfree_synth_ui::pick::PICK)
+            {
+                w.kits = side;
             }
         }
         let was = self.synth_pick.is_some();
@@ -15398,8 +15618,29 @@ impl Player {
             }
         }
         if ev.widget == mpfree_synth_ui::pick::PICK {
+            use mpfree_synth_ui::pick::{FROM_BANK, KEYS, KITS, KIT_TILES, SYNTHS};
             return match ev.kind {
                 EventKind::Select(i) => Some(FromUi::SynthPickTap(i)),
+                // Synths or Kits (sampler step 15e).
+                EventKind::Tab(k) if k == SYNTHS || k == KITS => {
+                    Some(FromUi::SynthPickSide(k == KITS))
+                }
+                EventKind::Cell { row, col } if row == KIT_TILES => {
+                    let (kit, name, empty, banks) = self.pick_kits.get(col)?.clone();
+                    Some(FromUi::SynthPickKit {
+                        kit,
+                        name,
+                        empty,
+                        banks,
+                    })
+                }
+                EventKind::Cell { row, col } if row == FROM_BANK => {
+                    self.pick_from.get(col).copied().map(FromUi::SynthPickFrom)
+                }
+                EventKind::Cell { row, col } if row == KEYS => {
+                    self.pick_keys_play(col);
+                    None
+                }
                 // All banks or Bank B only (step 6c).
                 EventKind::Tab(k)
                     if k == mpfree_synth_ui::pick::ALL_BANKS

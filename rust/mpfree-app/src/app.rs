@@ -54,7 +54,7 @@ use pads_focus::{RecFrom, RecMore};
 pub use route_synths::REC_MORE;
 pub use step_pads::StepPads;
 pub use synth_pads::{sent_name, SynthItem};
-pub use synth_pick::SynthPickView;
+pub use synth_pick::{KitOn, SynthPickView};
 
 use crate::cores::SoundCores;
 use crate::looping::{LoopAction, LoopMemory, LoopSource};

@@ -724,6 +724,14 @@ impl Desk<'_> {
             gui::FromUi::SynthPickClose(keep) => fx.extend(app.close_synth_pick(keep)),
             gui::FromUi::SynthPickScope(only) => fx.extend(app.synth_pick_scope(only)),
             gui::FromUi::SynthPickLayer(on) => fx.extend(app.synth_pick_layer(on)),
+            gui::FromUi::SynthPickSide(kits) => fx.extend(app.synth_pick_side(kits)),
+            gui::FromUi::SynthPickKit {
+                kit,
+                name,
+                empty,
+                banks,
+            } => fx.extend(app.pick_pads_kit(kit, &name, empty, banks)),
+            gui::FromUi::SynthPickFrom(from) => fx.extend(app.pick_kit_from(from)),
             // The Synth tab's button: the synth on the pads whichever track
             // is selected, or Follow track (app/pads_focus.rs).
             gui::FromUi::PlayOnPads => fx.extend(app.toggle_pads_synth()),

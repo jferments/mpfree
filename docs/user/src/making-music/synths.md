@@ -35,7 +35,7 @@ To keep the synth without recording, put it on a track: pick **Synth** in the li
 
 ### Pick any synth for the pads
 
-Tap the synth's card at the top left of the **Synth** tab (its name, the track and Native or Plugin) to open the list of synths, **Pick a synth for the pads**. It works whatever the selected track plays.
+Tap the synth's card at the top left of the **Synth** tab (its name, the track and Native or Plugin) to open the list of synths, **Pick what the pads play**. It works whatever the selected track plays. **Synths** and **Kits** at the top switch between the synths and the kits (see [Put a kit on the pads](#put-a-kit-on-the-pads)).
 
 - **A tap plays it on the pads at once.** Tap **FM** and play the pads: you hear FM, and no track changes. Tap another synth to try that one instead. Each tile says what the synth is good for, and the one on the pads is outlined and marked **ON THE PADS**.
 - **Keep** (it names the synth: **Keep FM**) closes the list and the pads keep the synth. Tapping the card again, or going to another tab, keeps it too. **Cancel** gives the pads back what they played when you opened the list. The first tile, **Track 1's** (it names the selected track), gives the pads back to the track.
@@ -51,6 +51,17 @@ Tap the synth's card at the top left of the **Synth** tab (its name, the track a
 - **The project remembers it.** Saved with FM on the pads, or on bank B, the project opens with FM there again.
 - **A synth that is gone keeps its place.** If a synth the pads or a bank point at is no longer in the project (a track's own synth you took off, say), the line at the bottom of the screen says so once, and that place waits for you: the bank plays what the other banks play, or the pads play the selected track's instrument, until you pick another synth there or tap **Follow track**. The project keeps the place too, and opening it says which synth is missing.
 - **The arp plays it too.** With NOTE REPEAT held, Latch on or the Arp panel open, the repeats and arpeggios play the synth you picked, and a tap in the list works as usual.
+
+### Put a kit on the pads
+
+The same list puts a whole kit on the pads, with no track changed: tap **Kits** at the top of it. It opens on **Kits** by itself while the pads play a kit.
+
+- **A tile for each kit**, in its colour: its number and name, how many pads it fills (and which banks, if more than one), whether it has keygroups, and the first track that plays it (**2 · Boom Bap**, **16 pads · Track 1**). The kits you haven't filled come last, marked **Empty**.
+- **A tap plays it on the pads at once**, on its own, while the selected track keeps its kit. **Keep** names it (**Keep Boom Bap**), the top of the screen reads **Pads: Boom Bap** on every page, and REC records it on a free track. The first tile, **Track 1's kit**, gives the pads back to the track.
+- **An empty kit goes on the pads too.** They play nothing, and the line at the bottom says **Kit 9 is empty: load sounds on the Sample page**; sounds you load or record there land on that kit.
+- **One bank only.** With **Bank B only**, the kit plays on bank B alone. If the kit fills more than one bank, a row above the tiles picks which of its banks bank B plays (**Bank B plays Big Kit's bank A B C**); **PAD BANK** still picks the bank you play. The first tile, **Follow base**, gives bank B back to what every bank plays.
+- **What your keys play on it.** For a kit with keygroups, the row above the tiles sets what a keyboard's keys play on it: **Pads** (each key its pad), **Keygroups** (the keygroups that hold the key) or **Both** (keygroups where one holds the key, the pad elsewhere). It is the kit's own setting, and UNDO on the Sample page takes it back.
+- **Layer** works with kits too: with it on, a tap adds the kit to what the pads play, or takes it off.
 
 ### Recording every bank
 

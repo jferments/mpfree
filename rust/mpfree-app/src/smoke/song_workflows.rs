@@ -1860,6 +1860,124 @@ mod tests {
         });
     }
 
+    /// Sampler step 15e's screens (the canvas "Pads and kits: step 15e",
+    /// boards 1 and 2, Jay's "Build as drawn" of 23 Nov): the list's Kits
+    /// side puts kit 2 on the pads with no track changed, and it plays on
+    /// its own; Keep keeps it ("Pads: <kit 2>"). With Bank B only a kit of
+    /// one bank plays from it, and Follow base gives bank B back. An empty
+    /// kit goes on the pads too, and the hint says to load sounds on the
+    /// Sample page. The first tile, "Track 1's kit", gives the pads back.
+    #[test]
+    fn the_lists_kits_side_puts_a_kit_on_the_pads_with_no_track_changed() {
+        use mpfree_synth_ui::pick::{SynthList, PICK};
+        fn tiles(s: &Session) -> Vec<String> {
+            s.screen
+                .ui
+                .get::<SynthList>(PICK)
+                .map(|l| l.kits.tiles.iter().map(|t| t.name.clone()).collect())
+                .unwrap_or_default()
+        }
+        on_big_stack(|| {
+            let mut session = Session::new();
+            let s = &mut session;
+            s.make_sounds();
+            s.run_periods(2);
+            s.fill_kits(&[0, 1]);
+            s.press("header", "tab", "Synth").settle();
+            s.press("synth-inst", "card", "").settle();
+            s.press("synth-pick", "side", "Kits").settle();
+            let names = tiles(s);
+            assert_eq!(
+                names.first().map(String::as_str),
+                Some("Track 1's kit"),
+                "{names:?}"
+            );
+            let two = names
+                .iter()
+                .find(|n| n.starts_with("2 · "))
+                .cloned()
+                .expect("kit 2's tile");
+            let empty = names
+                .iter()
+                .find(|n| n.ends_with("· Empty"))
+                .cloned()
+                .expect("an empty kit's tile");
+            s.press("synth-pick", "kit", &two).run_periods(4).settle();
+            assert_eq!(s.app.pads_kit(), Some(1), "the pads play kit 2");
+            assert_eq!(s.track_kits.kit_of(0), Some(0), "Track 1 keeps kit 1");
+            let player = s.sounds.as_ref().expect("the kits");
+            let pad = (0..16)
+                .find(|&p| player.has_sound(1, p))
+                .expect("a pad kit 2 fills");
+            s.pad_edge(pad, 100, true);
+            s.run_periods(2);
+            let player = s.sounds.as_ref().expect("the kits");
+            assert!(player.kit_pad_voices(1, pad) > 0, "kit 2's pad plays");
+            s.pad_edge(pad, 0, false);
+            let short = two.trim_start_matches("2 · ").to_string();
+            assert!(
+                s.control("synth-pick", "keep", &format!("Keep {short}"))
+                    .is_some(),
+                "Keep names the kit"
+            );
+            s.press("synth-pick", "keep", "").run_periods(2).settle();
+            assert!(
+                s.control("header", "chip", &format!("Pads: {short}"))
+                    .is_some(),
+                "the chip names the kit"
+            );
+            // Bank B only: kit 2 there, then Follow base gives it back.
+            s.button("PAD BANK B/F").settle();
+            s.press("synth-inst", "card", "").settle();
+            assert!(
+                s.screen
+                    .ui
+                    .get::<SynthList>(PICK)
+                    .is_some_and(|l| l.kits.shown),
+                "the list opens on the Kits side while a kit plays"
+            );
+            s.press("synth-pick", "bank-only", "Bank B only").settle();
+            assert_eq!(tiles(s).first().map(String::as_str), Some("Follow base"));
+            s.press("synth-pick", "kit", &two).run_periods(2).settle();
+            assert!(
+                s.app.pads_part().contains("\nbank B instrument "),
+                "{}",
+                s.app.pads_part()
+            );
+            s.press("synth-pick", "kit", "Follow base")
+                .run_periods(2)
+                .settle();
+            assert!(
+                !s.app.pads_part().contains("\nbank B "),
+                "{}",
+                s.app.pads_part()
+            );
+            // An empty kit: on the pads, playing nothing, and the hint says
+            // where its sounds come from.
+            s.press("synth-pick", "all-banks", "All banks").settle();
+            s.press("synth-pick", "kit", &empty).run_periods(2).settle();
+            let k: usize = empty
+                .split(" · ")
+                .next()
+                .and_then(|n| n.parse().ok())
+                .expect("its number");
+            assert_eq!(s.app.pads_kit(), Some(k - 1));
+            assert!(
+                s.hint()
+                    .starts_with(&format!("Kit {k} is empty: load sounds on the Sample page")),
+                "{}",
+                s.hint()
+            );
+            // Track 1's kit: the pads follow the track again.
+            s.press("synth-pick", "kit", "Track 1's kit")
+                .run_periods(2)
+                .settle();
+            assert_eq!(s.app.pads_kit(), None);
+            s.press("synth-pick", "keep", "").run_periods(2).settle();
+            assert_eq!(s.track_kits.kit_of(0), Some(0), "no track changed");
+        });
+    }
+
     /// Sampler step 15e, the engine half: a bank's own kit from another of
     /// its banks plays that bank's pads. Bank D on kit 2 from A plays kit
     /// 2's A pads, on its own while the track plays kit 1, and the Sample

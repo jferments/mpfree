@@ -565,6 +565,26 @@ impl Session {
         self.kits
     }
 
+    /// The Sample page's kits `filled` hold the sample sounds (the
+    /// session starts with kit 1's only, the rest empty), as the list's
+    /// Kits side reads them.
+    pub fn fill_kits(&mut self, filled: &[usize]) -> &mut Session {
+        let projects = (0..self.kits)
+            .map(|k| {
+                if filled.contains(&k) {
+                    mpfree_sampler_ui::sample::project().0
+                } else {
+                    mpfree_sampler::model::Project::new()
+                }
+            })
+            .collect();
+        self.out.show(ToUi::SampleKits {
+            projects,
+            rate: mpfree_sampler_ui::sample::RATE,
+        });
+        self.settle()
+    }
+
     /// Seconds into the session.
     pub fn t(&self) -> f64 {
         self.periods as f64 * PERIOD_S
