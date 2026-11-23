@@ -361,8 +361,9 @@ impl Arrangement {
     }
 
     /// Every block and song clip in range, and each block's clip on a lane
-    /// of its kind: a loop's on a Loop track, a clip's off one (a block
-    /// whose clip is gone plays nothing and is fine). The cells' clips
+    /// of its kind: a loop's on a Loop track, a clip's off one, an audio
+    /// clip's on an audio track and a note clip's off one (a block whose
+    /// clip is gone plays nothing and is fine). The cells' clips
     /// are the project's to check.
     pub fn check(&self, tracks: &[Track]) -> Result<(), ModelError> {
         if self.placements.len() > MAX_PLACEMENTS
@@ -379,13 +380,13 @@ impl Arrangement {
             if p.length <= 0 || p.start < 0 || p.offset < 0 || p.track >= tracks.len() {
                 return Err(ModelError::BadPlacement);
             }
-            if tracks[p.track].is_audio() {
+            // An audio clip's block on an audio track's lane, and only
+            // there (the audio tracks rethink's phase 2, step 2d).
+            let clip = self.clip_of(tracks, p);
+            if clip.is_some_and(|c| c.audio.is_some() != tracks[p.track].is_audio()) {
                 return Err(ModelError::AudioTrack);
             }
-            if self
-                .clip_of(tracks, p)
-                .is_some_and(|c| c.looped.is_some() != tracks[p.track].is_loops())
-            {
+            if clip.is_some_and(|c| c.looped.is_some() != tracks[p.track].is_loops()) {
                 return Err(ModelError::BadLoop);
             }
             if let Some(prev) = i.checked_sub(1).map(|j| &self.placements[j]) {
@@ -739,7 +740,9 @@ impl Arrangement {
     /// when it would overlap a placement there or start before 0; and
     /// (`BadLoop`) when it goes to another track and either is a Loop
     /// track: a loop's block stays on its Loop track's lane, as its cell
-    /// stays in its column (loop-tracks.md). Its index now.
+    /// stays in its column (loop-tracks.md); and (`AudioTrack`) when it
+    /// goes between an audio track and another kind: an audio clip's block
+    /// stays on audio tracks' lanes. Its index now.
     pub fn move_placement(
         &mut self,
         tracks: &[Track],
@@ -756,7 +759,10 @@ impl Arrangement {
         if track != p.track && (loops(track) || loops(p.track)) {
             return Err(ModelError::BadLoop);
         }
-        if tracks[track].is_audio() {
+        // An audio clip's block goes only to another audio track's lane,
+        // and a note clip's never onto one (phase 2, step 2d).
+        let audio = |t: usize| tracks.get(t).is_some_and(Track::is_audio);
+        if audio(track) != audio(p.track) {
             return Err(ModelError::AudioTrack);
         }
         let mut moved = p.clone();

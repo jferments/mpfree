@@ -329,9 +329,13 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
     if c.clips.tracks.iter().any(mpfree_seq::Track::is_audio) {
         needs.push(AUDIO_TRACKS);
     }
+    // An audio clip in a cell, or among the song's own clips (a block
+    // made unique, or a deleted cell's clip the song still plays).
     if c.clips
         .cell_clips()
-        .any(|(_, _, clip)| clip.audio.is_some())
+        .map(|(_, _, clip)| clip)
+        .chain(c.clips.arrangement.clips.iter())
+        .any(|clip| clip.audio.is_some())
     {
         needs.push(AUDIO_CLIPS);
     }
@@ -3286,8 +3290,27 @@ mod tests {
                     .to_string()
             )
         );
+        // Deleted from its cell while a block still plays it (step 2d),
+        // the song keeps it, and the line still names audio clips.
+        c.clips.give_clip_ids();
+        let t = c.clips.tracks.len() - 1;
+        let clip = c.clips.tracks[t].slots[0].take().unwrap();
+        let id = clip.id;
+        c.clips.arrangement.clips.keep(clip).unwrap();
+        c.clips
+            .arrangement
+            .place(mpfree_seq::Placement::new(t, id, 0, 3840))
+            .unwrap();
+        c.clips.check().unwrap();
+        let snap = snapshot(&c, Vec::new());
+        let line = snap.meta.extra.iter().find(|(k, _)| k == NEEDS_KEY);
+        assert_eq!(
+            line.map(|(_, v)| v.as_str()),
+            Some("audio-tracks audio-clips")
+        );
         // Without the clip, the line names audio tracks alone.
-        c.clips.tracks.last_mut().unwrap().slots[0] = None;
+        c.clips.arrangement.remove(0);
+        assert!(c.clips.arrangement.clips.is_empty());
         let snap = snapshot(&c, Vec::new());
         assert_eq!(check_against(&snap, &phase_1), Ok(FORMAT));
     }

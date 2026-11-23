@@ -569,6 +569,10 @@ pub struct TimeControl {
     /// The audio track armed last, by its lasting id, while no note track
     /// has been armed since: the Clip tab shows its clip (layout spec 4j).
     audio_focus: TrackId,
+    /// Each audio track's regions, by its lasting id, as the spans of song
+    /// ticks they cover, in order ([`TimeControl::set_audio_spans`]): no
+    /// block goes over one (phase 2, step 2d).
+    audio_spans: Vec<(TrackId, Vec<(Tick, Tick)>)>,
     tx: Tx<ToAudio>,
     rx: Rx<ToControl>,
     /// A view the audio half's full queue handed back, sent again on the
@@ -704,6 +708,7 @@ impl TimeControl {
             audio_waits: AudioWaits::default(),
             not_ready: Vec::new(),
             audio_focus: TrackId::NONE,
+            audio_spans: Vec::new(),
             tx,
             rx,
             unsent: None,
@@ -1510,6 +1515,14 @@ impl TimeControl {
             self.audio_focus = TrackId::NONE;
         }
         self.changed |= was != self.audio_focus;
+    }
+
+    /// Each audio track's regions, as the spans of song ticks they cover,
+    /// in order, by the track's lasting id (phase 2, step 2d): the audio
+    /// tracks host hands them over whenever they change, so a block
+    /// dropped, moved or made longer over a region is refused.
+    pub fn set_audio_spans(&mut self, spans: Vec<(TrackId, Vec<(Tick, Tick)>)>) {
+        self.audio_spans = spans;
     }
 
     /// To a cell and Put in a cell (audio tracks phase 2): `clip`, an
@@ -4552,6 +4565,8 @@ impl TimeControl {
                 .map_or_else(|| "the block".to_string(), |c| c.name.clone())
         };
         let track_name = |t: usize| tracks.get(t).map_or_else(String::new, |t| t.name.clone());
+        let audio = |t: usize| tracks.get(t).is_some_and(|t| t.is_audio());
+        let spans = &self.audio_spans;
         let at = |t: Tick| bar_beat(t, meter);
         match a {
             TimeAction::MovePlacement {
@@ -4570,10 +4585,15 @@ impl TimeControl {
                         ModelError::BadLoop => format!(
                             "song: {name} stays on its own lane: a loop's block can't go to another track, nor a clip's onto a Loop track"
                         ),
-                        // An audio track plays its recordings, not clips
-                        // (audio-tracks.md, phase 1).
+                        // An audio clip's block stays on audio tracks'
+                        // lanes, and a note clip's off them (phase 2,
+                        // step 2d).
+                        ModelError::AudioTrack if was.is_some_and(audio) => format!(
+                            "song: {name} stays where it was: an audio clip's block goes only on an audio track, and {} isn't one",
+                            track_name(track)
+                        ),
                         ModelError::AudioTrack => format!(
-                            "song: {name} stays where it was: {} is an audio track, and it plays its recordings, not clips",
+                            "song: {name} stays where it was: {} is an audio track, and it takes blocks of audio clips only",
                             track_name(track)
                         ),
                         _ => format!(
@@ -4582,6 +4602,14 @@ impl TimeControl {
                             at(start)
                         ),
                     })?;
+                // Never over a recording on an audio track's lane.
+                if let Some(over) = region_under(spans, tracks, &song.placements[j]) {
+                    return Err(format!(
+                        "song: {name} stays where it was: it would cover {}'s recording at {}",
+                        track_name(track),
+                        at(over)
+                    ));
+                }
                 // On another lane it stays linked to its clip and plays
                 // through that track (Arrange 1.3).
                 let across = was.is_some_and(|t| t != track);
@@ -4615,6 +4643,13 @@ impl TimeControl {
                 song.set_length(index, length).map_err(|_| {
                     format!("song: {name} can't be that long: it would run into the next block")
                 })?;
+                if let Some(over) = region_under(spans, tracks, &song.placements[index]) {
+                    return Err(format!(
+                        "song: {name} can't be that long: it would run over {}'s recording at {}",
+                        track_name(track),
+                        at(over)
+                    ));
+                }
                 let bars = if length % bar.max(1) == 0 {
                     format!("{} bars", length / bar.max(1))
                 } else {
@@ -6805,6 +6840,24 @@ pub(crate) fn grid_of(c: &Clip) -> Grid {
         .filter(|_| mpfree_seq::steps::SIZES.contains(&c.step))
         .or_else(|| Grid::new(DEFAULT_SIZE))
         .expect("a 1/16 is a step size")
+}
+
+/// Where block `p` would cover a region on its audio track's lane (from
+/// `spans`, as [`TimeControl::set_audio_spans`] keeps them): the first
+/// such region's start, or the block's own where it starts inside one.
+/// None off audio tracks, and where the lane is clear.
+fn region_under(
+    spans: &[(TrackId, Vec<(Tick, Tick)>)],
+    tracks: &[mpfree_seq::Track],
+    p: &mpfree_seq::Placement,
+) -> Option<Tick> {
+    let id = tracks.get(p.track).filter(|t| t.is_audio())?.id;
+    let (_, regions) = spans.iter().find(|(t, _)| *t == id)?;
+    let k = regions.partition_point(|r| r.1 <= p.start);
+    regions
+        .get(k)
+        .filter(|r| r.0 < p.end())
+        .map(|r| r.0.max(p.start))
 }
 
 /// Audio clip `a`, `from` ticks long, cut or lengthened to `to` ticks

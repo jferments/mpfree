@@ -1015,11 +1015,11 @@ pub enum ModelError {
     /// A song's tempo point is before the start, out of range, too near
     /// another (a 1/16 at least) or one too many.
     BadTempo,
-    /// A note or Loop clip, or a song block, on an audio track, or an
-    /// audio clip on another kind of track: an audio track's cells hold
-    /// audio clips only ([`Clip::audio`]), and its song material is its
-    /// regions, in the audio tracks part (song blocks of audio clips come
-    /// with phase 2's step 2d).
+    /// A note or Loop clip, or its song block, on an audio track, or an
+    /// audio clip or its block on another kind of track: an audio track's
+    /// cells hold audio clips only ([`Clip::audio`]), and its lane holds
+    /// its regions (in the audio tracks part) and blocks of audio clips
+    /// (phase 2's step 2d).
     AudioTrack,
     /// An audio clip out of range ([`AudioClip::check`]), or one that also
     /// holds what a note clip holds (notes, locks, pressure, moves, a
@@ -1620,8 +1620,8 @@ pub enum TrackKind {
     /// channel. Its recordings, regions and settings (input, monitor) are
     /// the audio tracks part's (`mpfree-audiotracks`), found by the
     /// track's id. Its cells hold audio clips ([`Clip::audio`], phase 2)
-    /// and nothing else, and it holds no song block until step 2d
-    /// ([`ModelError::AudioTrack`]).
+    /// and nothing else, and its lane blocks of audio clips beside its
+    /// regions (step 2d, [`ModelError::AudioTrack`]).
     Audio,
 }
 

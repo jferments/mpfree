@@ -11108,6 +11108,11 @@ fn player_session(
                 time.audio_given_back(key);
             }
         });
+        // The audio tracks' regions as the time engine refuses blocks
+        // over them (phase 2, step 2d), when they changed.
+        if let Some(spans) = tracks.spans_if_changed(time.project()) {
+            time.set_audio_spans(spans);
+        }
         // Fit to tempo on an audio clip's card: once its copies are in,
         // the clip plays them as one UNDO step, held while the time engine
         // records (an edit then would go among the take's).
@@ -14306,6 +14311,122 @@ mod tests {
             if waits { (0, 1, 1, 0) } else { (0, 0, 0, 0) },
             "{w:?}"
         );
+    }
+
+    /// Phase 2, step 2d: with Rec song on, an audio clip launched on the
+    /// grid goes into the song as a block on its track's lane, and song
+    /// mode plays it back from the block sample for sample, through the
+    /// time engine and the track host.
+    #[test]
+    fn an_audio_launch_recorded_with_rec_song_plays_the_same_from_its_block() {
+        use mpfree_seq::{AudioClip, Clip, Project, RecId, Track};
+        struct Quiet;
+        impl time::Pads for Quiet {
+            fn hit_at(&mut self, _: u16, _: usize, _: u8, _: u32) -> bool {
+                true
+            }
+            fn release_at(&mut self, _: u16, _: usize, _: u32) {}
+            fn stop_all(&mut self) {}
+            fn pressure_at(&mut self, _: u16, _: usize, _: u8, _: u32) {}
+        }
+        let bar_frames = 2 * RATE as usize;
+        let mut p = Project::new();
+        let mut t = Track::new_audio("Loop", 0);
+        let mut clip = Clip::new("Loop", 3840);
+        clip.audio = Some(AudioClip::of(RecId(7), 0, bar_frames as i64, 3840, 120.0));
+        t.slots[0] = Some(clip);
+        p.tracks.push(t);
+        p.give_track_ids();
+        p.give_clip_ids();
+        let at = p.tracks.len() - 1;
+        let mut time = time::TimeHost::with_project(RATE, 120.0, p).unwrap();
+        let mut tracks = audiotracks::TrackHost::new(RATE, 10);
+        // Audio that changes every frame, so a frame out shows.
+        let audio: Vec<f32> = (0..bar_frames).map(|i| (i % 997) as f32 / 2000.0).collect();
+        let take = mpfree_audiotracks::save::TakeFile {
+            id: 0,
+            rec: mpfree_audiotracks::RecordingId(7),
+            track: 0,
+            group: 0,
+            pass: 0,
+            bpm: 120.0,
+            anchor: 0.0,
+            frames: bar_frames,
+            channels: 1,
+            file: String::new(),
+            path: None,
+            audio,
+        };
+        assert!(tracks.host.tracks.load_take(take).is_ok());
+        fn run(
+            time: &mut time::TimeHost,
+            tracks: &mut audiotracks::TrackHost,
+            periods: usize,
+            s: Option<usize>,
+            out: &mut Vec<f32>,
+        ) {
+            let z = [0f32; PERIOD];
+            for _ in 0..periods {
+                time.advance(PERIOD as u32);
+                time.period(PERIOD as u32, &mut Quiet);
+                tracks.sync(time.project(), time.silenced(), true);
+                let t: &time::TimeHost = time;
+                tracks.period(
+                    t.block(),
+                    t.tempo_map(),
+                    t.song_on(),
+                    (&z, &z),
+                    Some(&|p| t.audio(p)),
+                );
+                if let Some(s) = s {
+                    let o = tracks.host.tracks.track_out(s, PERIOD);
+                    out.extend(o.chunks_exact(2).map(|f| f[0]));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for _ in 0..100 {
+            if tracks.host.tracks.loading() == 0 {
+                break;
+            }
+            run(&mut time, &mut tracks, 10, None, &mut out);
+        }
+        assert_eq!(tracks.host.tracks.loading(), 0);
+        let s = (0..mpfree_audiotracks::MAX_TRACKS)
+            .find(|&s| tracks.place(s) == Some(at))
+            .expect("an engine track for it");
+        // Rec song: the clip launched, PLAY, two and a half bars, STOP.
+        time.act(TimeAction::Launch { track: at, slot: 0 }).unwrap();
+        time.act(TimeAction::RecSong(true)).unwrap();
+        time.act(TimeAction::Transport(mpfree_transport::Command::Play))
+            .unwrap();
+        let periods = 5 * bar_frames / 2 / PERIOD;
+        let mut heard = Vec::new();
+        run(&mut time, &mut tracks, periods, Some(s), &mut heard);
+        time.act(TimeAction::Transport(mpfree_transport::Command::Stop))
+            .unwrap();
+        run(&mut time, &mut tracks, 4, None, &mut out);
+        let note = time.take_later_note().unwrap_or_default();
+        assert!(note.starts_with("rec song: 1 placements"), "{note}");
+        let song = &time.project().arrangement;
+        assert_eq!(song.placements.len(), 1);
+        let block = &song.placements[0];
+        assert_eq!((block.track, block.start), (at, 0));
+        assert!(block.length >= 2 * 3840, "{block:?}");
+        // Song mode, nothing launched, from the top: the block plays it.
+        time.act(TimeAction::RecSong(false)).unwrap();
+        time.act(TimeAction::StopAll).unwrap();
+        time.act(TimeAction::SongMode(true)).unwrap();
+        time.command(mpfree_transport::Command::Locate(0));
+        run(&mut time, &mut tracks, 4, None, &mut out);
+        time.act(TimeAction::Transport(mpfree_transport::Command::Play))
+            .unwrap();
+        let mut again = Vec::new();
+        run(&mut time, &mut tracks, periods, Some(s), &mut again);
+        assert!(heard[2000..].iter().any(|&v| v != 0.0), "the clip played");
+        let n = heard.len().min(again.len());
+        let first = (0..n).find(|&i| (heard[i] - again[i]).abs() > 1e-6);
+        assert_eq!(first, None, "the block plays what the launch played");
     }
 
     /// Arrange 3.4: a section moved or + Bar moves the audio regions in it

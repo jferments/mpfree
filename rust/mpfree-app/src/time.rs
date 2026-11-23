@@ -1084,6 +1084,13 @@ impl TimeHost {
         self.sent(r)
     }
 
+    /// Each audio track's regions as song tick spans (phase 2, step 2d):
+    /// a block is never dropped, moved or made longer over one (see
+    /// `TimeControl::set_audio_spans`).
+    pub fn set_audio_spans(&mut self, spans: Vec<(mpfree_seq::TrackId, Vec<(Tick, Tick)>)>) {
+        self.with(|c| c.set_audio_spans(spans));
+    }
+
     /// Audio track `track` armed or disarmed by its own arm: the Clip tab
     /// follows it (see `TimeControl::focus_audio`).
     pub fn focus_audio(&mut self, track: usize, on: bool) {
@@ -11842,6 +11849,62 @@ mod tests {
                 .iter()
                 .next()
                 .is_none());
+        }
+
+        /// Phase 2, step 2d: an audio clip's block moves between audio
+        /// tracks' lanes only, never over a region (the spans the audio
+        /// tracks hand over), and a note clip's block never onto an audio
+        /// track's lane. A refusal changes nothing.
+        #[test]
+        fn an_audio_block_stays_on_audio_lanes_and_never_covers_a_region() {
+            let mut h = host();
+            let bar = 3840;
+            let p = &mut h.control.project;
+            let verse = mpfree_seq::Placement::of(&p.tracks, VOCAL, 0, 0, bar);
+            let beat = mpfree_seq::Placement::of(&p.tracks, DRUMS, 0, 0, bar);
+            p.arrangement.place(verse).unwrap();
+            p.arrangement.place(beat).unwrap();
+            h.control.compile().unwrap();
+            let id = |t: usize| h.control.project.tracks[t].id;
+            let spans = vec![
+                (id(VOCAL), Vec::new()),
+                (id(GUITAR), vec![(2 * bar, 3 * bar), (5 * bar, 6 * bar)]),
+            ];
+            h.set_audio_spans(spans);
+            let mv = |index, track, start| TimeAction::MovePlacement {
+                index,
+                track,
+                start,
+                copy: false,
+            };
+            let song = |h: &TimeHost| h.control.project.arrangement.clone();
+            let before = song(&h);
+            // Drums' beat is placement 0, Vocal's Verse 1.
+            let err = h.act(mv(1, DRUMS, 4 * bar)).unwrap_err();
+            assert_eq!(
+                err,
+                "song: Verse stays where it was: an audio clip's block goes only on an audio track, and Drums isn't one"
+            );
+            let err = h.act(mv(0, VOCAL, 4 * bar)).unwrap_err();
+            assert_eq!(
+                err,
+                "song: Beat stays where it was: Vocal is an audio track, and it takes blocks of audio clips only"
+            );
+            let err = h.act(mv(1, GUITAR, 2 * bar - 960)).unwrap_err();
+            assert!(err.contains("it would cover Guitar's recording at"), "{err}");
+            assert_eq!(song(&h), before, "nothing changed");
+            // A clear stretch of Guitar's lane takes it, and it plays the
+            // same clip.
+            h.act(mv(1, GUITAR, 3 * bar)).unwrap();
+            let moved = song(&h).placements[1].clone();
+            assert_eq!((moved.track, moved.start), (GUITAR, 3 * bar));
+            assert_eq!(moved.clip, before.placements[1].clip);
+            // Made longer over Guitar's next recording: refused.
+            let stretch = |length| TimeAction::StretchPlacement { index: 1, length };
+            let err = h.act(stretch(3 * bar)).unwrap_err();
+            assert!(err.contains("it would run over Guitar's recording at"), "{err}");
+            h.act(stretch(2 * bar)).unwrap();
+            assert_eq!(song(&h).placements[1].length, 2 * bar);
         }
 
         /// An audio clip's card (layout spec 4j): a length cut keeps the

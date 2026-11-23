@@ -2122,8 +2122,8 @@ mod tests {
 
     /// The audio tracks rethink, phase 1: an audio track is saved as a
     /// track with an `audio` line, and the part is then `mpfree-clips 3`;
-    /// with none it stays `mpfree-clips 2`. A clip or a song block on an
-    /// audio track is refused.
+    /// with none it stays `mpfree-clips 2`. A note clip, or a note
+    /// clip's song block, on an audio track is refused.
     #[test]
     fn audio_tracks_read_back_in_a_part_of_their_own_format() {
         let mut p = full();
@@ -2141,7 +2141,7 @@ mod tests {
         assert_eq!(back, p);
         assert!(back.tracks[1].is_audio() && !back.tracks[1].plays_notes());
         assert_eq!(back.tracks[1].loops(), None);
-        // A clip in an audio track's cell, or a block on its lane.
+        // A note clip in an audio track's cell, or its block on its lane.
         let mut cell = p.clone();
         cell.tracks[1].slots[0] = Some(Clip::new("Beat", 3840));
         assert_eq!(cell.check(), Err(crate::ModelError::AudioTrack));
@@ -2227,6 +2227,61 @@ mod tests {
         c.audio.as_mut().unwrap().regions[1].start = 3000;
         assert_eq!(overlap.check(), Err(crate::ModelError::BadAudioClip));
         refused(to_text(&overlap), "overlap");
+    }
+
+    /// Phase 2, step 2d: an audio clip's block goes on an audio track's
+    /// lane and reads back, as a cell's clip and as the song's own; never
+    /// on a note track's, and a note clip's never on an audio track's. A
+    /// block moves or copies to another audio track only.
+    #[test]
+    fn an_audio_clips_block_goes_on_audio_lanes_only_and_reads_back() {
+        use crate::{AudioClip, Placement, RecId};
+        let mut p = full();
+        for (k, name) in ["Vocal", "Guitar"].into_iter().enumerate() {
+            let mut a = Track::new_audio(name, 5 + k as u16);
+            a.id = crate::TrackId(p.next_track.max(1));
+            p.next_track = a.id.0 + 1;
+            p.tracks.insert(1 + k, a);
+        }
+        let mut clip = Clip::new("Hook", 7680);
+        clip.audio = Some(AudioClip::of(RecId(9), 0, 180_000, 7680, 120.0));
+        p.tracks[1].slots[0] = Some(clip);
+        p.give_clip_ids();
+        p.arrangement.placements.clear();
+        p.arrangement.clips = Default::default();
+        let block = Placement::of(&p.tracks, 1, 0, 3840, 15_360);
+        p.arrangement.place(block.clone()).unwrap();
+        p.check().unwrap();
+        assert_eq!(from_text(&to_text(&p)).unwrap(), p);
+        // Made the song's own, it reads back too.
+        let mut own = p.clone();
+        own.make_unique(0).unwrap();
+        own.check().unwrap();
+        assert!(own.arrangement.clips.iter().all(|c| c.audio.is_some()));
+        assert_eq!(from_text(&to_text(&own)).unwrap(), own);
+        // On a note track's lane, refused; a note clip's block on an
+        // audio track's, refused.
+        let mut on_notes = p.clone();
+        on_notes.arrangement.placements[0].track = 0;
+        assert_eq!(on_notes.check(), Err(crate::ModelError::AudioTrack));
+        assert!(from_text(&to_text(&on_notes)).is_err());
+        let note = p.tracks[0].slots.clips().next().map(|c| c.id).unwrap();
+        let mut note_on_audio = p.clone();
+        note_on_audio.arrangement.placements[0].clip = note;
+        assert_eq!(note_on_audio.check(), Err(crate::ModelError::AudioTrack));
+        // Moved: onto Guitar it plays the same clip; onto a note track it
+        // stays where it was.
+        let mut moved = p.clone();
+        let tracks = moved.tracks.clone();
+        assert_eq!(
+            moved.arrangement.move_placement(&tracks, 0, 0, 0, false),
+            Err(crate::ModelError::AudioTrack)
+        );
+        assert_eq!(moved.arrangement.placements[0], block);
+        let i = moved.arrangement.move_placement(&tracks, 0, 2, 0, true).unwrap();
+        assert_eq!(moved.arrangement.placements[i].track, 2);
+        assert_eq!(moved.arrangement.placements[i].clip, block.clip);
+        moved.check().unwrap();
     }
 
     #[test]

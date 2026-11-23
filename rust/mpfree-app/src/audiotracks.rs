@@ -400,6 +400,9 @@ pub struct TrackHost {
     /// What the lanes showed at the last check, and whether that changed.
     seen: u64,
     changed: bool,
+    /// The regions' spans as last handed to the time engine
+    /// ([`TrackHost::spans_if_changed`]), as a fingerprint.
+    spans_seen: u64,
     /// A project opening: the tracks empty once nothing records, then the
     /// project's part (if it has come) goes in.
     clearing: bool,
@@ -509,6 +512,7 @@ impl TrackHost {
             grown_at: 0,
             periods: 0,
             seen: 0,
+            spans_seen: 0,
             changed: false,
             clearing: false,
             pending: None,
@@ -1688,6 +1692,52 @@ impl TrackHost {
         .filter(|c| c.1 > 0)
         .map(|&(w, n)| (w.to_string(), n))
         .collect();
+    }
+
+    /// Each project audio track's regions as the spans of song ticks they
+    /// cover, in order, by the track's lasting id, when they changed since
+    /// the last call (or `project`'s audio tracks did): for the time
+    /// engine, which refuses a block over a region (phase 2, step 2d,
+    /// [`crate::time::TimeHost::set_audio_spans`]). Regions that touch
+    /// make one span. Allocates only when something changed.
+    pub fn spans_if_changed(
+        &mut self,
+        project: &mpfree_seq::Project,
+    ) -> Option<Vec<(TrackId, Vec<(Tick, Tick)>)>> {
+        let tr = &self.host.tracks;
+        let audio = || {
+            project
+                .tracks
+                .iter()
+                .filter(|t| t.is_audio())
+                .map(|t| (t.id, self.slots.slot_of(t.id)))
+        };
+        let mut h = Fnv::new();
+        for (id, slot) in audio() {
+            h.add(u64::from(id.0));
+            for r in slot.map_or(&[][..], |s| tr.regions(s)) {
+                h.add(r.start as u64);
+                h.add(r.end as u64);
+            }
+        }
+        if h.0 == self.spans_seen {
+            return None;
+        }
+        self.spans_seen = h.0;
+        Some(
+            audio()
+                .map(|(id, slot)| {
+                    let mut spans: Vec<(Tick, Tick)> = Vec::new();
+                    for r in slot.map_or(&[][..], |s| tr.regions(s)) {
+                        match spans.last_mut() {
+                            Some(last) if last.1 >= r.start => last.1 = last.1.max(r.end),
+                            _ => spans.push((r.start, r.end)),
+                        }
+                    }
+                    (id, spans)
+                })
+                .collect(),
+        )
     }
 
     /// The audio clips' cells and cards (audio tracks phase 2, layout spec
