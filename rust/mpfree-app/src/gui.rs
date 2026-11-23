@@ -7307,6 +7307,20 @@ impl Player {
                 ),
                 View::Play => format!("Tap a loop's ring: its next step, held: clear   ·   {WHEEL_HINT}   ·   PAD BANK: bank   ·   \
                                        NOTE REPEAT: repeat   ·   MENU: options   ·   {stop}"),
+                // A tool open on the picks (piano roll plan 2B.3).
+                View::Sequencer
+                    if self
+                        .time
+                        .edit
+                        .as_ref()
+                        .is_some_and(|e| e.editor.open_tool.is_some()) =>
+                {
+                    self.time
+                        .edit
+                        .as_ref()
+                        .and_then(|e| e.editor.open_tool)
+                        .map_or_else(String::new, |t| time_view::tool_hint(&t))
+                }
                 View::Sequencer if self.time.edit.is_some() => {
                     let (lens, tool) = self
                         .time
@@ -19889,6 +19903,34 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             out.push(("sequencer-notes-chords", p));
         }
         Err(e) => eprintln!("sequencer-notes-chords sample: {e}"),
+    }
+    // Chop open on two notes with pressure (piano roll plan 2B.3): the
+    // roll previews the pieces, the tool's bar and Q-Links show, and the
+    // Edit options' drawer is open on its row.
+    match mpfree_time_ui::sample::notes_tool_state() {
+        Ok(state) => {
+            let mut p = quiet_player(fonts());
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Sequencer));
+            p.time_page.edit_drawer = true;
+            p.time_page.update(&mut p.ui, &p.time);
+            // The whole clip across, from E3 up: both pieces in sight.
+            let r = p.ui.rect_of(time_view::NOTES);
+            if let (Some(r), Some(g)) = (r, p.ui.get_mut::<NoteGrid>(time_view::NOTES)) {
+                let roll = g.roll_rect(r);
+                g.view = mpfree_time_ui::editor::zoom::RollView {
+                    start: 0,
+                    ppt: f64::from(roll.w) / g.length.max(1) as f64,
+                    lift: 64 * 40,
+                    row_h: 40,
+                    follow: false,
+                };
+            }
+            p.refresh_qlinks();
+            p.refresh_hint();
+            out.push(("sequencer-notes-tool", p));
+        }
+        Err(e) => eprintln!("sequencer-notes-tool sample: {e}"),
     }
     // The Arrange page's Song view: rows made into a song, song mode on,
     // Rec song armed.

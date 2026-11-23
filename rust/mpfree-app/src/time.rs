@@ -10639,12 +10639,16 @@ mod tests {
         assert_eq!(notes, [0, 62, 64]);
     }
 
-    /// Piano roll plan 2B.2: with the Chord chip on, a note drawn puts in
-    /// the chord, picked, and one UNDO takes the whole chord back; a run
-    /// of Strum turns is one take; the inspector names the picked chord.
+    /// Piano roll plans 2B.2 and 2B.3: with the Chord chip on, a note
+    /// drawn puts in the chord, picked, and one UNDO takes the whole chord
+    /// back; the inspector names the picked chord. Strum opened on it
+    /// turns on the screen's preview alone (the clip and its revision
+    /// stay), and Done is one take.
     #[test]
-    fn the_note_editor_draws_chords_and_strums_them_one_take_a_run() {
-        use mpfree_time_ui::editor::{ChordShape, EditAction as E, STRUM_ROW, STRUM_TICKS};
+    fn the_note_editor_draws_chords_and_a_tools_done_is_one_take() {
+        use mpfree_time_ui::editor::{
+            ChordShape, EditAction as E, ToolAct, ToolKind, STRUM_ROW, STRUM_TICKS,
+        };
         let mut h = TimeHost::new(RATE, 120.0).unwrap();
         h.step_action(StepAction::Tap {
             pad: 0,
@@ -10691,11 +10695,20 @@ mod tests {
                 .as_deref(),
             Some("3 notes · D")
         );
-        // Two turns of Strum, one take.
-        for _ in 0..2 {
-            h.act(TimeAction::Edit(E::Row {
-                row: STRUM_ROW,
-                delta: 1,
+        // Strum opens on the picks; two turns of Q1 change its preview,
+        // not the clip.
+        h.act(TimeAction::Edit(E::Row {
+            row: STRUM_ROW,
+            delta: 1,
+        }))
+        .unwrap();
+        let rev = edit(&mut h).rev;
+        for turn in 1..=2 {
+            h.act(TimeAction::Edit(E::Knob {
+                k: 0,
+                ticks: 2,
+                fine: false,
+                turn,
             }))
             .unwrap();
         }
@@ -10703,7 +10716,17 @@ mod tests {
         let at = |e: &mpfree_time_ui::view::EditInfo, n: u8| {
             e.clip.notes.iter().find(|x| x.note == n).map(|x| x.tick)
         };
-        assert_eq!(at(&e, 69), Some(1920 + 4 * STRUM_TICKS));
+        assert_eq!(e.editor.open_tool.map(|t| t.kind), Some(ToolKind::Strum));
+        assert_eq!((e.rev, at(&e, 69)), (rev, Some(1920)), "nothing went in");
+        let (p, _) = e.editor.preview(&e.clip).unwrap();
+        let p69 = p.notes.iter().find(|x| x.note == 69).map(|x| x.tick);
+        assert_eq!(p69, Some(1920 + 8 * STRUM_TICKS));
+        // Done: one take.
+        let line = h.act(TimeAction::Edit(E::Tool(ToolAct::Done))).unwrap();
+        assert_eq!(line, "edit: 1 chord strummed");
+        let e = edit(&mut h);
+        assert_eq!(e.editor.open_tool, None);
+        assert_eq!(at(&e, 69), Some(1920 + 8 * STRUM_TICKS));
         h.act(TimeAction::Undo).unwrap();
         let e = edit(&mut h);
         assert_eq!(

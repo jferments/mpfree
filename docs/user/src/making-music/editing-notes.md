@@ -138,11 +138,26 @@ With the **Chord** chip on, a note you draw puts in a whole chord, built up from
 - **It plays whole.** A chord you draw plays all together or not at all, like a chord pad's: with a chance or a condition, the whole chord rolls once. Drawn on a step that has a chord already, it is a chord of its own there.
 - A clip of pad hits takes no chords: it has no Chord chip.
 
-**Strum**, **Invert** and **Spread** are the last rows of the Edit options. Each changes every chord among the picked notes (notes that sound together) at once, and a run of turns is one take, so one **UNDO** takes it all back:
+### Tools: Strum, Invert, Spread, Chop, Legato, Humanize
 
-- **Strum** starts each note of a chord a little after the one under it, about 5 ms more at 120 BPM for each turn to the right, as a strummed guitar does. Turn it left to strum down: the highest note goes first. Each note keeps its end. The value shows the gap between the notes ("↑ 20t", "↓ 20t", "none") in ticks. A strummed chord's notes start apart, so each then rolls its own chance.
-- **Invert** takes a chord's lowest note up an octave for each turn to the right, or its highest note down an octave to the left. The value names the first chord ("C/E").
-- **Spread** takes the note above a chord's lowest up an octave for each turn to the right, for an open chord (C E G becomes C G E). Turn it left to close it again: the highest note comes down an octave while it stays above the lowest. The value says "open" or "close". Spread needs chords of three notes or more.
+The last rows of the Edit options are tools. Pick some notes, then tap either arrow of a tool's row (or turn the data wheel on it): the tool opens on the picked notes. The roll shows the result straight away and the Q-Links change it, but nothing goes into the clip until you tap **Done**, so you can try settings freely.
+
+{{shot: sequencer-notes-tool | Chop open on two long notes played with pressure: the roll shows each cut into four, every piece keeping its part of the swell. The tool's bar has Cancel, Reset pressure and Done; Q1 says Pieces: 4.}}
+
+- **The tool's bar** takes the place of the buttons under the roll: **Cancel** on the left closes the tool and leaves the clip as it was; **Done** on the right puts the result in, and one **UNDO** takes it all back. Between them, the tool's name and what it shows, or why it changes nothing ("Nothing changes yet").
+- **The Q-Link column** shows the tool's settings in place of Position, Length, Semitones and Velocity. Hold **SHIFT** while turning for the finest steps. Turning the data wheel on the open tool's row turns its Q1.
+- While a tool is open, the notes stay as they are under your fingers: tapping or dragging them, the lane, and other edits wait until you tap Done or Cancel (the log says so). Two fingers still zoom and scroll, and the overview, Fit and Follow still work. Tap another tool's row to open that one instead.
+
+| Tool | What it does | Q-Links |
+|---|---|---|
+| **Strum** | Starts each note of a chord a little after the one under it, as a strummed guitar does. Each note keeps its end. A strummed chord's notes start apart, so each then rolls its own chance. | **Q1 Apart**: the notes this many ticks further apart (about 5 ms at 120 BPM a step; turn left to bring them closer, down to together). **Q2 Way**: As it is, **Up** (the lowest note first) or **Down** (the highest first). |
+| **Invert** | Takes a chord's lowest note up an octave, or its highest down one. | **Q1 Inversions**: Up 1, Up 2 ... to the right; Down 1 ... to the left. |
+| **Spread** | Opens a chord: the note above the lowest goes up an octave (C E G becomes C G E). Needs chords of three notes or more. | **Q1 Spread**: Open 1 ... to the right; Close 1 ... to the left, bringing the highest note down while it stays above the lowest. |
+| **Chop** | Cuts each note into equal pieces. Each piece keeps its part of the pressure the note was played with, starting from the pressure held where it was cut. **Reset pressure** (on the tool's bar, lit while on) leaves the pieces with none. A chord that plays whole or not at all still does at each piece. | **Q1 Pieces**: 2 to 16. |
+| **Legato** | Holds each note on toward the next note that starts after it (notes that start together all go to the same next note; the last notes keep their length). A note that already runs past the next start comes back toward it. | **Q1 Fill**: how much of the gap, 0 to 100 %. 100 % meets the next note exactly. |
+| **Humanize** | Nudges each note's time, velocity and length by a small random amount, so a drawn part sounds played. **Again** (on the tool's bar) tries another set of random amounts. The **Humanize** MIDI effect does this as the notes play, differently each time round; this tool changes the notes in the clip once. | **Q1 Timing**: up to this many ticks either way. **Q2 Velocity** and **Q3 Length**: up to this percent either way. **Q4 Ahead/behind**: leans the timing ahead of the beat or behind it ("Even" for neither). |
+
+Strum, Invert and Spread work on chords: the picked notes that sound together, each chord on its own, so a whole run of chords changes at once. Their rows show the first chord's strum ("↑ 20t", "↓ 20t", "none"), its name ("C/E") and whether it is "open" or "close"; Chop, Legato and Humanize say "open"; the open tool's row says "on".
 
 Every edit is a take, so **UNDO** takes it back and **SHIFT + UNDO** puts it back again.
 
@@ -172,7 +187,7 @@ Timing Correct pulls notes toward the beat, so a part played a little loose sits
 - **Strength**: how far of the way each note moves. At 100 % it lands on the line. Lower values keep some of the feel.
 - **Shift**: moves the corrected notes a little early or late afterwards.
 
-The next rows act on the picked notes straight away: **Nudge** moves them a step, **Transpose** a semitone, **Velocity** up or down, **Length** longer or shorter, **Chance** 5 % at a time, **Condition** through the trig conditions (Always, 1:2 to 8:8, then FILL, !FILL, PRE, !PRE, NEI, !NEI, 1ST and !1ST), and **Ratchet** from 1 to 8 hits. A run of turns on the same row is one take, so one **UNDO** takes it all back. **Fit to scale**, after the Euclidean fill's rows, moves notes onto the clip's scale (see [Scale](#scale)), and **Strum**, **Invert** and **Spread** change the picked chords (see [Chords](#chords)).
+The next rows act on the picked notes straight away: **Nudge** moves them a step, **Transpose** a semitone, **Velocity** up or down, **Length** longer or shorter, **Chance** 5 % at a time, **Condition** through the trig conditions (Always, 1:2 to 8:8, then FILL, !FILL, PRE, !PRE, NEI, !NEI, 1ST and !1ST), and **Ratchet** from 1 to 8 hits. A run of turns on the same row is one take, so one **UNDO** takes it all back. **Fit to scale**, after the Euclidean fill's rows, moves notes onto the clip's scale (see [Scale](#scale)), and the last rows open the tools: **Strum**, **Invert**, **Spread**, **Chop**, **Legato** and **Humanize** (see [Tools](#tools-strum-invert-spread-chop-legato-humanize)).
 
 ## Euclidean fill
 

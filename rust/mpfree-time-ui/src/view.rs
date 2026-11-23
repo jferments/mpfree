@@ -33,8 +33,9 @@ use crate::editor::zoom::RollView;
 use crate::editor::{
     box_of, chord_name, drop_of, edit_rows, knob_name, length_name, lit_scale, note_name, pads,
     position_name, step_name, ChordShape, EditAction, Editor, Fold, LaneShow, Lens, LockMark,
-    NoteBox, NoteGrid, Tool, ADD, CHORD_MAJOR, CHORD_MENU, CHORD_MINOR, EDIT_BUTTON, FIELDS, MENU,
-    PEN, ROOT_MENU, SCALE_MENU, SNAP_AUTO_T, START_HANDLE, STEP_FALLBACK,
+    NoteBox, NoteGrid, NoteTool, Tool, ToolAct, ToolBar, ToolKind, ADD, CHORD_MAJOR, CHORD_MENU,
+    CHORD_MINOR, EDIT_BUTTON, FIELDS, MENU, PEN, ROOT_MENU, SCALE_MENU, SNAP_AUTO_T, START_HANDLE,
+    STEP_FALLBACK, TOOL_BUTTONS, TOOL_CANCEL, TOOL_DONE, TOOL_OPTION,
 };
 use crate::list::{
     ListRow, SongListView, LIST_ADD, LIST_CLIPS, LIST_LINK, LIST_LINK_CLOSE, LIST_LINK_FROM_LIST,
@@ -158,6 +159,19 @@ pub fn clips_card_hint(st: &TimeState) -> &str {
 /// or range ("80–104"). None with no notes picked.
 pub fn note_cards(e: &EditInfo) -> Option<(String, [QLinkCard; 4])> {
     let c = &e.clip;
+    // A tool open (plan 2B.3): its settings, and the picks it works on.
+    if let Some(t) = e.editor.open_tool {
+        let n = e.editor.sel.iter().filter(|&&i| i < c.notes.len()).count();
+        let names = t.cards();
+        let cards = std::array::from_fn(|k| {
+            let (name, value) = &names[k];
+            let mut card = QLinkCard::new(name, t.kind.name(), value, t.pos(k));
+            card.bipolar = t.bipolar(k);
+            card
+        });
+        let notes = if n == 1 { "note" } else { "notes" };
+        return Some((format!("{} · {n} {notes}", t.kind.name()), cards));
+    }
     let picked: Vec<&mpfree_seq::Note> = e
         .editor
         .sel
@@ -338,6 +352,28 @@ pub fn edit_hint(lens: Lens, tool: Tool, picked: bool) -> &'static str {
         Lens::Tracker => EDIT_TRACKER_HINT,
     }
 }
+/// The hint line while a tool is open (piano roll plan 2B.3): its
+/// Q-Links, its own button, Done and Cancel.
+pub fn tool_hint(t: &NoteTool) -> String {
+    let knobs: Vec<String> = t
+        .cards()
+        .iter()
+        .enumerate()
+        .filter(|(_, (name, _))| !name.is_empty())
+        .map(|(k, (name, _))| format!("Q{} {}", k + 1, name.to_lowercase()))
+        .collect();
+    let own = match t.kind {
+        ToolKind::Chop => "   ·   Reset pressure: pieces without it",
+        ToolKind::Humanize => "   ·   Again: another try",
+        _ => "",
+    };
+    format!(
+        "{}: {} (SHIFT: finer){own}   ·   Done: in, one UNDO   ·   Cancel: the clip as it was",
+        t.kind.name(),
+        knobs.join(", ")
+    )
+}
+
 /// The record settings, top to bottom (short, to fit the 250 px panel).
 pub const RECORD_ROWS: [&str; 10] = [
     "Armed",
@@ -2154,6 +2190,15 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             // A touch naming a note carries the picture it was made on.
             let rev = st.edit.as_ref().map_or(0, |e| e.rev);
             match *kind {
+                // The open tool's bar (plan 2B.3).
+                EventKind::Tab(k) if k >= TOOL_BUTTONS => {
+                    EditAction::Tool(match k - TOOL_BUTTONS {
+                        TOOL_CANCEL => ToolAct::Cancel,
+                        TOOL_OPTION => ToolAct::Option,
+                        TOOL_DONE => ToolAct::Done,
+                        _ => return None,
+                    })
+                }
                 // The Chord menu (plan 2B.2): a shape keeps Major or
                 // Minor, and they keep the shape.
                 EventKind::Tab(k) if k >= CHORD_MENU => {
@@ -4788,10 +4833,16 @@ fn same_edit(a: &EditInfo, b: &EditInfo) -> bool {
 /// clip plays now (if it is launched).
 pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
     let ed = &e.editor;
-    let c = &e.clip;
+    // A tool open (plan 2B.3): the roll shows its preview, the notes it
+    // makes picked, as Done will leave them; the clip itself is as it was.
+    let preview = ed.preview(&e.clip);
+    let (c, sel): (&mpfree_seq::Clip, &[usize]) = match &preview {
+        Some((p, s)) => (p, s),
+        None => (&e.clip, &ed.sel),
+    };
     let playhead = note_playhead(e, st);
-    let selected = |i: usize| ed.sel.contains(&i);
-    let n_sel = ed.sel.iter().filter(|&&i| i < c.notes.len()).count();
+    let selected = |i: usize| sel.contains(&i);
+    let n_sel = sel.iter().filter(|&&i| i < c.notes.len()).count();
     let mut g = NoteGrid::new();
     g.title = format!("Edit · {} · {}", c.name, e.track_name);
     let step = ed.grid().size();
@@ -4864,6 +4915,19 @@ pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
     // What a drawn note puts in (plan 2B.2).
     g.chord = ed.chord;
     g.minor = ed.minor;
+    g.tool_bar = ed.open_tool.map(|t| ToolBar {
+        name: t.kind.name(),
+        hint: match preview {
+            Some(_) => "Turn the Q-Links: the roll shows the result".into(),
+            None => {
+                let why = t.why_not(&e.clip, &ed.sel);
+                let mut c = why.chars();
+                c.next()
+                    .map_or_else(String::new, |f| f.to_uppercase().chain(c).collect())
+            }
+        },
+        option: t.option(),
+    });
     g
 }
 
@@ -5702,6 +5766,63 @@ mod tests {
         assert_eq!(g.offers.pads, Some(mpfree_seq::Scale::new(2, MINOR)));
     }
 
+    /// A tool open (plan 2B.3): the roll shows its preview, the pieces it
+    /// makes picked, with the tool's bar; the Q-Link column its settings;
+    /// the bar's buttons are the tool's actions. At no change, the bar
+    /// says so and the roll shows the clip.
+    #[test]
+    fn a_tool_open_previews_on_the_roll_with_its_bar_and_cards() {
+        let st = crate::sample::notes_tool_state().unwrap();
+        let e = st.edit.as_ref().unwrap();
+        let g = note_grid(e, &st);
+        let bar = g.tool_bar.clone().unwrap();
+        assert_eq!(bar.name, "Chop");
+        assert_eq!(bar.option, Some(("Reset pressure", false)));
+        assert_eq!(bar.hint, "Turn the Q-Links: the roll shows the result");
+        assert_eq!(g.notes.len(), e.clip.notes.len() + 6, "two notes in four");
+        assert_eq!(g.notes.iter().filter(|n| n.selected).count(), 8);
+        let pressed = (0..g.notes.len())
+            .filter(|&i| g.notes[i].selected && !g.touch_of(i).is_empty())
+            .count();
+        assert_eq!(pressed, 8, "each piece its share of the pressure");
+        let (head, cards) = note_cards(e).unwrap();
+        assert_eq!(head, "Chop · 2 notes");
+        assert_eq!(
+            (cards[0].name.as_str(), cards[0].value.as_str()),
+            ("Pieces", "4")
+        );
+        assert!(cards[1..].iter().all(|c| c.is_free()));
+        let t = e.editor.open_tool.unwrap();
+        assert!(tool_hint(&t).starts_with("Chop: Q1 pieces (SHIFT: finer)"));
+        let ev = |k| {
+            action(
+                &UiEvent {
+                    widget: NOTES.into(),
+                    kind: EventKind::Tab(TOOL_BUTTONS + k),
+                },
+                &st,
+            )
+        };
+        let tool = |a| Some(TimeAction::Edit(EditAction::Tool(a)));
+        assert_eq!(ev(TOOL_CANCEL), tool(ToolAct::Cancel));
+        assert_eq!(ev(TOOL_OPTION), tool(ToolAct::Option));
+        assert_eq!(ev(TOOL_DONE), tool(ToolAct::Done));
+        assert_eq!(ev(3), None);
+        // Strum at no change on a chord: the clip as it is, and why.
+        let mut st = crate::sample::notes_chord_state().unwrap();
+        let e = st.edit.as_mut().unwrap();
+        e.editor.open_tool = Some(NoteTool::new(ToolKind::Strum));
+        let e = st.edit.as_ref().unwrap();
+        let g = note_grid(e, &st);
+        assert_eq!(g.tool_bar.unwrap().hint, "Nothing changes yet");
+        assert_eq!(g.notes.len(), e.clip.notes.len());
+        assert_eq!(
+            g.notes.iter().filter(|n| n.selected).count(),
+            4,
+            "a chord and the melody note in it"
+        );
+    }
+
     /// The Chord menu (plan 2B.2): a shape keeps Major or Minor, they
     /// keep the shape; the grid shows the editor's chord.
     #[test]
@@ -5998,6 +6119,8 @@ mod tests {
                 "C#m/G#",
                 "close",
                 "open",
+                // A tool open (plan 2B.3).
+                "on",
             ]
             .map(String::from),
         );
