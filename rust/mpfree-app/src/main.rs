@@ -164,11 +164,14 @@ mod sampler_commands;
 mod screen_cost;
 mod screen_picture;
 mod script;
+mod set_play;
 mod setup;
 mod shed;
+mod show;
 mod skin_page;
 #[cfg(test)]
 mod smoke;
+mod song_end;
 mod status_report;
 mod status_screen;
 mod status_watch;
@@ -4656,6 +4659,8 @@ fn learn_describe(
         // A Perform pad is pressed, with no value to read.
         Owner::Perform => return None,
         Owner::Play => return remote::describe_play(addr.param, now),
+        // A set's control is pressed, with no value to read.
+        Owner::Show => return None,
         // A track's controller, bend or pressure out: where the engine has
         // it, else its default.
         Owner::Midi(_) => {
@@ -4746,6 +4751,10 @@ fn learn_label(
             return format!("Perform pads {}", name.as_deref().unwrap_or("?"));
         }
         Owner::Play => return format!("Play · {}", play::name(addr.param).unwrap_or("?")),
+        Owner::Show => {
+            let name = mpfree_play::mpfree_param::show::name(addr.param);
+            return format!("Show · {}", name.unwrap_or("?"));
+        }
         _ => return modpanels::label(mix, addr),
     };
     // As the time engine and the I/O view name the tracks.
@@ -8872,6 +8881,8 @@ fn player_session(
     let mut shown_levels = mix.play_levels();
     out.show(gui::ToUi::PlayLevels(shown_levels));
     let mut meter_at = Instant::now();
+    // A set's song's ending (live shows B1): its gain on the output.
+    let mut song_end = song_end::SongEnd::new(RATE);
     out.say(&format!("mixer: the kit's 16 pads on pad channels into track 1 (drums), synth and loop on tracks 2-3, the \
                       line input on input 1 (heard with the looper's Monitor), Master safety {} at {:.1} dBFS",
                      "safe limiter", -0.3));
@@ -9636,6 +9647,20 @@ fn player_session(
                 gui::FromUi::OpenLoops(l) => looper.open(*l),
                 // The audio tracks' part goes in once they are empty.
                 gui::FromUi::OpenAudio(a) => tracks.open(*a),
+                gui::FromUi::SongEnd(end) => {
+                    // Step 1 of every ending: no new notes (the transport's
+                    // STOP, which keeps a take recording; never the stopped
+                    // transport's panic, which would cut the tails).
+                    if end != song_end::End::Now
+                        && !song_end.active()
+                        && time.info().state.rolling()
+                    {
+                        fx.push(app::Effect::Time(TimeAction::Transport(Command::Stop)));
+                    }
+                    song_end.start(end);
+                    out.note(&format!("show: the song ends: {end:?}"));
+                }
+                gui::FromUi::SongEndReset => song_end.reset(),
                 // Each take to a file of its own from now on (phase 3a),
                 // and where a project save put them.
                 gui::FromUi::AudioFiles(dir) => tracks.record_to(dir),
@@ -9645,6 +9670,8 @@ fn player_session(
                     // transport, and held notes would hang.
                     fx.push(app::Effect::Time(TimeAction::Transport(Command::Stop)));
                     fx.push(app::Effect::StopSounds);
+                    // A set's song ended into silence: the new one sounds.
+                    song_end.reset();
                     // A new or opened project arms the notes (rec_arm.rs).
                     app.rec = rec_arm::RecArm::default();
                     out.show(gui::ToUi::Rec(app.rec));
@@ -9741,6 +9768,12 @@ fn player_session(
                                 "project: {} keeps its instrument (its last sound is still ringing out)",
                                 holder_says(track)
                             ));
+                            // The last project's instrument plays on in
+                            // this one: never saved over it (live shows A1).
+                            out.left_out(format!(
+                                "track {}'s instrument (the last project's was still ringing out)",
+                                track + 1
+                            ));
                         }
                         app.set_track_sound(track, mix.instruments.held(track));
                     }
@@ -9781,6 +9814,7 @@ fn player_session(
                                     holder_says(track),
                                     held.name
                                 ));
+                                out.left_out(format!("{} on track {}", held.name, track + 1));
                             }
                         }
                         app.set_track_sound(track, mix.instruments.held(track));
@@ -10543,6 +10577,22 @@ fn player_session(
                     let now = desk::looper_now(&looper);
                     let act = remote.looper_write(w.target.param, w.value, now, t);
                     fx.extend(desk::looper_remote(&mut app, &time, &looper, out, act));
+                }
+                // A set's control (the Learn section's Show card): a press
+                // as it goes down, once, for the screen's set player (with
+                // no set open, its hint line says so).
+                midi_in::Learning::Set(w)
+                    if w.target.owner == mpfree_play::mpfree_param::Owner::Show =>
+                {
+                    if let Some(id) = remote.show_write(w.target.param, w.value) {
+                        if !app.set_open() {
+                            out.show(gui::ToUi::Tell(remote::NO_SET.to_string()));
+                        } else if let Some(e) = app.show_press(id) {
+                            fx.extend(e);
+                        } else {
+                            out.show(gui::ToUi::ShowPress(id));
+                        }
+                    }
                 }
                 // A Perform pad (Learn a key): played as a hit on it plays
                 // it, whatever the pads show, and let go of what it pressed.
@@ -13475,6 +13525,13 @@ fn player_session(
         );
         if caught {
             clipped += 1;
+        }
+        // A set's song ending: its fade, and silence once over, before
+        // Sample Recall and the metronome (song_end.rs).
+        if song_end.active() {
+            if let Some(n) = song_end.period(p, &mut left[..], &mut right[..]) {
+                out.show(gui::ToUi::SongEnd(n));
+            }
         }
         // The kit's pads whose mute or solo came due land from the next
         // period, which holds their line.

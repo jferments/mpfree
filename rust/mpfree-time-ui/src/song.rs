@@ -207,6 +207,9 @@ pub const ADD_HINT: &str =
 pub const LIST: usize = 0x310;
 /// What Tab reports for the view chip's Clips: the grid.
 pub const CLIPS: usize = 0x311;
+/// What Tab reports for Show, left of Rec song while a set is open: back
+/// to the Show view (live shows B1).
+pub const SHOW_VIEW: usize = 0x312;
 /// A region drag's `Marker` index is the audio track times this, plus
 /// the region's index (`mpfree_audiotracks::MAX_REGIONS`).
 pub const REGION_SLOTS: usize = mpfree_audiotracks::MAX_REGIONS;
@@ -524,6 +527,9 @@ pub struct SongLanes {
     pub on: bool,
     /// Live to song armed.
     pub rec: bool,
+    /// A set is open (live shows B1): **Show** (72 px), left of Rec song,
+    /// gives `Tab(`[`SHOW_VIEW`]`)`.
+    pub show_button: bool,
     /// The audio tracks' lanes, each in its track's place
     /// ([`AudioLane::row`]).
     pub audio: Vec<AudioLane>,
@@ -735,6 +741,7 @@ impl Default for SongLanes {
             selected: None,
             on: false,
             rec: false,
+            show_button: false,
             audio: Vec::new(),
             waves: Vec::new(),
             region: None,
@@ -976,6 +983,7 @@ impl SongLanes {
             selected: self.selected,
             on: self.on,
             rec: self.rec,
+            show_button: self.show_button,
             audio: self.audio.clone(),
             waves,
             region: self.region,
@@ -1289,6 +1297,14 @@ impl SongLanes {
     /// Where the view chip is: the left end of the title line (5.7).
     pub fn view_rect(&self, r: Rect) -> Rect {
         view_chip_rect(r)
+    }
+
+    /// Where Show is, while a set is open: left of Rec song.
+    pub fn show_rect(&self, r: Rect) -> Option<Rect> {
+        let rec = self.rec_rect(r);
+        let w = crate::widgets::SHOW_W;
+        self.show_button
+            .then(|| Rect::new(rec.x - 8 - w, rec.y, w, rec.h))
     }
 
     /// The buttons along the bottom (the audio region's while one is
@@ -2609,16 +2625,22 @@ impl Widget for SongLanes {
         let t = cx.theme.clone();
         // The view chip and the title, the legend, then Rec song.
         let rec = self.rec_rect(r);
-        view_title(cx, r, ArrangeView::Song, &self.title, rec.x - 12);
+        let show = self.show_rect(r);
+        let end = show.map_or(rec.x, |s| s.x);
+        view_title(cx, r, ArrangeView::Song, &self.title, end - 12);
         let head = r.inset(14).take_top(26).0;
         cx.text(
             FontId::Sans,
             t.size_small,
-            Rect::new(head.x, head.y, rec.x - head.x - 12, head.h),
+            Rect::new(head.x, head.y, end - head.x - 12, head.h),
             Align::Right,
             if self.alert { t.warn } else { t.text_dim },
             &self.legend,
         );
+        if let Some(b) = show {
+            cx.canvas.fill_round_rect(b, t.round(10), t.raised);
+            cx.text(FontId::Bold, t.size_small, b, Align::Center, t.text, "Show");
+        }
         rec_song_pill(cx, rec, self.rec);
         let g = self.geo(r);
         // The ruler: bar numbers, then the markers' names over them.
@@ -3000,6 +3022,9 @@ impl Widget for SongLanes {
             out.push(Target::tap("tempo-lane", 0, "Tempo", free));
         }
         out.push(Target::tap("rec-song", 0, "Rec song", self.rec_rect(r)));
+        if let Some(b) = self.show_rect(r) {
+            out.push(Target::tap("show-view", 0, "Show", b));
+        }
         let chip = self.view_rect(r);
         out.push(Target::tap(
             "view",
@@ -3271,6 +3296,9 @@ impl Widget for SongLanes {
             Some(ArrangeView::Song) => return None,
             None => {}
         }
+        if self.show_rect(r).is_some_and(|b| b.contains(x, y)) {
+            return Some(EventKind::Tab(SHOW_VIEW));
+        }
         if self.add_track_rect(r).is_some_and(|b| b.contains(x, y)) {
             return Some(EventKind::Tab(ADD_TRACK));
         }
@@ -3461,6 +3489,20 @@ mod tests {
             let b = view_part_rect(chip, v);
             assert_eq!(s.touch(1, Touch::Down, b.x + 3, b.y + 3, r), want, "{v:?}");
         }
+        // While a set is open, Show sits left of Rec song (live shows B1).
+        assert_eq!(s.show_rect(r), None);
+        assert!(s.targets(r).iter().all(|t| t.id != "show-view"));
+        s.show_button = true;
+        let show = s.show_rect(r).unwrap();
+        assert!(
+            show.right() < rec.x && show.x > chip.right() && show.w == 72,
+            "{show:?}"
+        );
+        assert!(s.targets(r).iter().any(|t| t.id == "show-view"));
+        assert_eq!(
+            s.touch(1, Touch::Down, show.x + 3, show.y + 3, r),
+            Some(EventKind::Tab(SHOW_VIEW))
+        );
     }
 
     #[test]

@@ -51,7 +51,7 @@ const PERIOD_FULL: &str = "too many commands land in its period";
 /// timing change made before it is cancelled for that reason.
 fn moves_time(cmd: Command) -> Option<&'static str> {
     match cmd {
-        Command::Play | Command::PlayStart => Some("the song started"),
+        Command::Play | Command::PlayStart | Command::CountInPlay => Some("the song started"),
         Command::Stop | Command::StopAndRewind => Some("the song stopped"),
         Command::Record => Some("recording started or stopped"),
         Command::Locate(_) => Some("the song moved"),

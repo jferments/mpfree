@@ -34,6 +34,7 @@ abletown mixer-io-learn 1 # AbleTown (22 Nov): faded off-state labels and small 
 abletown mixer-io-learn-clips 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown mixer-io-learn-looper 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown mixer-io-learn-play 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown mixer-io-learn-show 1 # as mixer-io-learn-play: the same faded PROJECT chip on the mid grey (live shows B1)
 abletown mixer-io-monitor 2 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown mixer-io-port 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown sample-auto 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
@@ -105,6 +106,7 @@ console mixer-io-learn 2 # before the theme refactor (phase 0 baseline)
 console mixer-io-learn-clips 2 # before the theme refactor (phase 0 baseline)
 console mixer-io-learn-looper 2 # before the theme refactor (phase 0 baseline)
 console mixer-io-learn-play 2 # before the theme refactor (phase 0 baseline)
+console mixer-io-learn-show 2 # as mixer-io-learn-play: the Learn section's faint runs (live shows B1)
 console mixer-io-monitor 1 # before the theme refactor (phase 0 baseline)
 console mixer-io-port 1 # before the theme refactor (phase 0 baseline)
 console mixer-io-routing 1 # before the theme refactor (phase 0 baseline)
@@ -239,6 +241,7 @@ default mixer-io-learn 2 # before the theme refactor (phase 0 baseline)
 default mixer-io-learn-clips 2 # before the theme refactor (phase 0 baseline)
 default mixer-io-learn-looper 2 # before the theme refactor (phase 0 baseline)
 default mixer-io-learn-play 2 # before the theme refactor (phase 0 baseline)
+default mixer-io-learn-show 2 # as mixer-io-learn-play: the Learn section's faint runs (live shows B1)
 default mixer-io-monitor 1 # before the theme refactor (phase 0 baseline)
 default mixer-io-port 1 # before the theme refactor (phase 0 baseline)
 default mixer-io-routing 1 # before the theme refactor (phase 0 baseline)
@@ -395,6 +398,7 @@ spaceship arrange-report 12 # the report card (Arrange 4.3) over arrange-song wi
 spaceship arrange-report-exact 10 # arrange-song with the exact line on the hint (Arrange 4.3): the same 10 runs as arrange-song
 spaceship arrange-report-list 39 # the report card (Arrange 4.3) over arrange-list: the same 39 runs as arrange-list, under the dimming; the card adds none
 spaceship arrange-report-scrolls 12 # as arrange-report, with nine rows scrolling: the card adds none
+spaceship arrange-show 1 # the transport bar's faint Undo, as on every Arrange page in this theme (live shows B1)
 spaceship arrange-song 10 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-add 12 # new screen (audio tracks rethink, phase 1): the faint labels its neighbours have
 spaceship arrange-song-audio 10 # before the theme refactor (phase 0 baseline)
@@ -411,6 +415,7 @@ spaceship arrange-song-tracks 12 # before the theme refactor (phase 0 baseline)
 spaceship browser 3 # before the theme refactor (phase 0 baseline)
 spaceship browser-kits 1 # before the theme refactor (phase 0 baseline)
 spaceship browser-samples 22 # before the theme refactor (phase 0 baseline)
+spaceship browser-set-song 4 # the Fade row, faint while Ends isn't Fade (live shows B1)
 spaceship chain 3 # before the theme refactor (phase 0 baseline)
 spaceship chain-comp 3 # before the theme refactor (phase 0 baseline)
 spaceship chain-eq 2 # before the theme refactor (phase 0 baseline)
@@ -465,6 +470,7 @@ spaceship mixer-io-learn 18 # before the theme refactor (phase 0 baseline)
 spaceship mixer-io-learn-clips 28 # before the theme refactor (phase 0 baseline)
 spaceship mixer-io-learn-looper 30 # before the theme refactor (phase 0 baseline)
 spaceship mixer-io-learn-play 32 # before the theme refactor (phase 0 baseline)
+spaceship mixer-io-learn-show 30 # as mixer-io-learn-play: the Learn section's faint runs (live shows B1)
 spaceship mixer-io-monitor 41 # before the theme refactor (phase 0 baseline)
 spaceship mixer-io-port 29 # before the theme refactor (phase 0 baseline)
 spaceship mixer-io-routing 31 # before the theme refactor (phase 0 baseline)

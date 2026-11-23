@@ -582,6 +582,10 @@ pub struct ClipGrid {
     /// on the title line, left of the pager or "+ Track" (sequencer S4,
     /// mockup C), and gives `Toggle(slots + `[`BACK_TO_SONG`]`)`.
     pub back_to_song: bool,
+    /// A set is open (live shows B1): **Show** (72 px) goes back to the
+    /// Show view, left of the title line's other buttons, and gives
+    /// `Toggle(slots + `[`SHOW_VIEW`]`)`.
+    pub show_button: bool,
     /// Perform's big rows (sequencer decision 5, mockup C): five rows of
     /// [`ROW_MIN_H`] with rings and countdowns. Off (Make), the rows are
     /// compact, [`ROW_MIN_H_MAKE`], eight in view with names and lengths.
@@ -646,6 +650,7 @@ struct Drawn {
     adding: bool,
     big: bool,
     back_to_song: bool,
+    show_button: bool,
     /// Where a dragged clip or row was drawn.
     dragged: Option<(Held, (i32, i32))>,
 }
@@ -670,8 +675,20 @@ pub const ADD_KIND: usize = 10;
 /// `Toggle(slots + ADD_DISMISS)`: a touch off the open chooser, which
 /// only closes it.
 pub const ADD_DISMISS: usize = 13;
+/// `Toggle(slots + SHOW_VIEW)`: Show, back to the Show view while a set is
+/// open (live shows B1). After the view chip's List ([`LIST_VIEW`]).
+pub const SHOW_VIEW: usize = 15;
+/// The Show button's width, on the grid, the Song view and the song list
+/// (layout spec 4p).
+pub const SHOW_W: i32 = 72;
 /// "Back to song"'s width.
 const BACK_W: i32 = 124;
+/// "Back to song"'s and the pager's label's widths where Show shares the
+/// title line with both and the view chip leaves no room for all three at
+/// their usual widths (the Clips view beside the Record panel, more than
+/// eight tracks): the 36 pixels Show needs to clear the chip.
+const BACK_TIGHT_W: i32 = 100;
+const PAGER_LABEL_TIGHT_W: i32 = 92;
 /// Pixels a finger travels along the track names to page.
 const SWIPE_PX: i32 = 48;
 /// "+ Track"'s width, the pager's arrows' and its label's.
@@ -839,6 +856,7 @@ impl ClipGrid {
             adding: false,
             big: false,
             back_to_song: false,
+            show_button: false,
             drawn: RefCell::new(None),
             press: None,
             grip: None,
@@ -1082,9 +1100,25 @@ impl ClipGrid {
             return None;
         }
         let add = self.add_rect(r);
+        let label = if self.tight(r) {
+            PAGER_LABEL_TIGHT_W
+        } else {
+            PAGER_LABEL_W
+        };
         let on = Rect::new(add.x - 8 - ARROW_W, add.y, ARROW_W, add.h);
-        let back = Rect::new(on.x - PAGER_LABEL_W - ARROW_W, add.y, ARROW_W, add.h);
+        let back = Rect::new(on.x - label - ARROW_W, add.y, ARROW_W, add.h);
         Some((back, on))
+    }
+
+    /// Whether Show, "Back to song" and the pager all share the title line
+    /// and would reach the view chip at their usual widths, so "Back to
+    /// song" and the pager's label narrow.
+    fn tight(&self, r: Rect) -> bool {
+        if !(self.show_button && self.back_to_song && self.paged()) {
+            return false;
+        }
+        let wide = 8 + 2 * ARROW_W + PAGER_LABEL_W + 8 + BACK_W + 8 + SHOW_W;
+        self.add_rect(r).x - wide < self.view_rect(r).right() + 8
     }
 
     /// Where "Back to song" is, while it shows: left of the pager, or of
@@ -1094,7 +1128,21 @@ impl ClipGrid {
             return None;
         }
         let right = self.pager_rects(r).map_or(self.add_rect(r), |(b, _)| b);
-        Some(Rect::new(right.x - 8 - BACK_W, right.y, BACK_W, right.h))
+        let w = if self.tight(r) { BACK_TIGHT_W } else { BACK_W };
+        Some(Rect::new(right.x - 8 - w, right.y, w, right.h))
+    }
+
+    /// Where Show is, while a set is open: left of the title line's other
+    /// buttons ("Back to song", the pager or "+ Track").
+    pub fn show_rect(&self, r: Rect) -> Option<Rect> {
+        if !self.show_button {
+            return None;
+        }
+        let right = self
+            .back_rect(r)
+            .or(self.pager_rects(r).map(|(b, _)| b))
+            .unwrap_or(self.add_rect(r));
+        Some(Rect::new(right.x - 8 - SHOW_W, right.y, SHOW_W, right.h))
     }
 
     /// Where the Stop all button is: over the scene buttons.
@@ -1200,6 +1248,7 @@ impl Widget for ClipGrid {
             || d.adding != self.adding
             || d.big != self.big
             || d.back_to_song != self.back_to_song
+            || d.show_button != self.show_button
             || d.dragged.is_some()
             || self.dragged_now().is_some()
         {
@@ -1240,26 +1289,32 @@ impl Widget for ClipGrid {
             adding: self.adding,
             big: self.big,
             back_to_song: self.back_to_song,
+            show_button: self.show_button,
             dragged: self.dragged_now(),
         });
         // The view chip, then the title, shortened to what comes before
-        // " · " where "Back to song" leaves it no room.
+        // " · " where "Back to song" or Show leaves it no room.
         let head = r.inset(14).take_top(26).0;
         let title_x = view_title_x(r);
         let back = self.back_rect(r);
+        let show = self.show_rect(r);
         let mut title = self.title.as_str();
-        if let Some(b) = back {
+        if let Some(b) = show.or(back) {
             let wide = cx.measure(FontId::Bold, t.size_small, &title.to_uppercase());
             if title_x + wide + 12 > b.x {
                 title = title.split(" · ").next().unwrap_or(title);
             }
         }
-        let end = back.map_or(self.add_rect(r).x, |b| b.x) - 12;
+        let end = show.or(back).map_or(self.add_rect(r).x, |b| b.x) - 12;
         view_title(cx, r, ArrangeView::Clips, title, end);
         // The legend (or the pager), "+ Track", Edit and Rec song.
         let rec = self.rec_rect(r);
         let edit = self.edit_rect(r);
         let add = self.add_rect(r);
+        if let Some(b) = show {
+            cx.canvas.fill_round_rect(b, t.round(10), t.raised);
+            cx.text(FontId::Bold, t.size_small, b, Align::Center, t.text, "Show");
+        }
         if let Some(b) = back {
             cx.canvas
                 .fill_round_rect(b, t.round(10), t.raised.mix(t.good, 0.35));
@@ -1299,7 +1354,7 @@ impl Widget for ClipGrid {
             // The legend's parts that fit between the title and the
             // buttons, dropping the first ones when it is too wide.
             let title_w = cx.measure(FontId::Bold, t.size_small, &title.to_uppercase());
-            let end = back.map_or(add.x, |b| b.x);
+            let end = show.or(back).map_or(add.x, |b| b.x);
             let room = end - 12 - (title_x + title_w + 16);
             let mut legend = self.legend.as_str();
             while !legend.is_empty() && cx.measure(FontId::Sans, t.size_small, legend) > room {
@@ -1537,6 +1592,9 @@ impl Widget for ClipGrid {
         if let Some(b) = self.back_rect(r) {
             out.push(Target::tap("back-to-song", 0, "Back to song", b));
         }
+        if let Some(b) = self.show_rect(r) {
+            out.push(Target::tap("show-view", 0, "Show", b));
+        }
         if let Some((back, on)) = self.pager_rects(r) {
             let last = self.first_track + GRID_COLS >= self.tracks.len();
             out.push(
@@ -1706,6 +1764,9 @@ impl Widget for ClipGrid {
         }
         if self.back_rect(r).is_some_and(|b| b.contains(x, y)) {
             return Some(EventKind::Toggle(self.slots + BACK_TO_SONG));
+        }
+        if self.show_rect(r).is_some_and(|b| b.contains(x, y)) {
+            return Some(EventKind::Toggle(self.slots + SHOW_VIEW));
         }
         if self.add_rect(r).contains(x, y) {
             return self
@@ -2850,6 +2911,71 @@ mod tests {
                 Some(EventKind::Toggle(16 + BACK_TO_SONG))
             );
         }
+    }
+
+    /// While a set is open, Show sits left of the title line's other
+    /// buttons, whatever else shows, and taps.
+    #[test]
+    fn show_sits_left_of_the_other_buttons_while_a_set_is_open() {
+        let r = Rect::new(12, 128, 854, 610);
+        for (tracks, back) in [(8, false), (8, true), (24, false), (24, true)] {
+            let mut g = grid(tracks);
+            g.back_to_song = back;
+            assert_eq!(g.show_rect(r), None);
+            assert!(g.targets(r).iter().all(|t| t.id != "show-view"));
+            g.show_button = true;
+            let s = g.show_rect(r).unwrap();
+            let right = g
+                .back_rect(r)
+                .or(g.pager_rects(r).map(|(b, _)| b))
+                .unwrap_or(g.add_rect(r));
+            assert!(s.right() < right.x, "{s:?} {right:?}");
+            assert_eq!(s.w, SHOW_W);
+            assert!(
+                s.x > g.view_rect(r).right(),
+                "clear of the view chip: {s:?}"
+            );
+            // "Back to song" and the pager's label narrow only where all
+            // three would not fit, and their words still do.
+            let tight = back && tracks > GRID_COLS;
+            if let Some(b) = g.back_rect(r) {
+                assert_eq!(b.w, if tight { BACK_TIGHT_W } else { BACK_W });
+                assert!(b.w >= 87 + 12, "Back to song's words fit: {b:?}");
+            }
+            if let Some((pb, po)) = g.pager_rects(r) {
+                let label = po.x - pb.right();
+                assert_eq!(
+                    label,
+                    if tight {
+                        PAGER_LABEL_TIGHT_W
+                    } else {
+                        PAGER_LABEL_W
+                    }
+                );
+                assert!(label - 8 >= 77, "17–24 of 24 fits: {label}");
+            }
+            g.show_button = false;
+            assert_eq!(g.back_rect(r).map(|b| b.w), back.then_some(BACK_W));
+            g.show_button = true;
+            assert!(g.targets(r).iter().any(|t| t.id == "show-view"));
+            assert_eq!(
+                g.touch(1, Touch::Down, s.x + 3, s.y + 3, r),
+                Some(EventKind::Toggle(16 + SHOW_VIEW))
+            );
+        }
+    }
+
+    /// The title line's and the chooser's taps each have their own id
+    /// after the slots (Song 1, Rec song 2, Edit 3, then the constants).
+    #[test]
+    fn the_grid_s_ids_after_the_slots_are_all_different() {
+        let mut ids = vec![1, 2, 3, ADD_TRACK, PAGE_BACK, PAGE_ON, ROWS_BACK, ROWS_ON];
+        ids.extend([BACK_TO_SONG, ADD_DISMISS, LIST_VIEW, SHOW_VIEW]);
+        ids.extend((0..crate::song::ADD_KINDS.len()).map(|k| ADD_KIND + k));
+        let mut seen = ids.clone();
+        seen.sort();
+        seen.dedup();
+        assert_eq!(seen.len(), ids.len(), "{ids:?}");
     }
 
     #[test]
