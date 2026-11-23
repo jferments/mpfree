@@ -245,9 +245,9 @@ MPFree can follow another device's MIDI clock. In the mixer's I/O view, under **
 Under **From other gear** in the **Sync** section, two settings let another device run MPFree. Both are off until you turn them on, and both are kept with the project.
 
 - **MMC in**: a computer's DAW, a hard disk recorder or a tape deck can play, stop, record and locate MPFree with **MIDI Machine Control** (MMC). Turn it on, and turn on "Send MMC" (or "MMC out") on the other device, on the port it reaches MPFree through. As on an MPC: **Play** (and **Deferred Play**) presses PLAY, **Stop** and **Pause** press STOP, **Record Strobe** presses REC, and **Locate** moves the playhead to its time (00:00:00:00 is the start of the song, along its tempo). **Locate zero then Play** is PLAY START. They do what the buttons do with what is armed: Record Strobe records what is armed, a ready take starts on Play, and Stop keeps a pad take that is recording. Play while MPFree plays does nothing (it is not FILL). Record Exit, fast forward and rewind do nothing. MPFree doesn't send MMC.
-- **Program change in**: set it to **Launches a scene**, and a program change from any port launches that scene of the [Clips grid](clips.md): program 1 launches scene 1, program 2 scene 2, and so on, on any channel, as a tap on the scene's launch button does (on the next bar line while playing). A program past the grid's last scene does nothing, and the log says so. A port set to ignore program changes (its page's **Ignore coming in**) launches nothing.
+- **Program change in**: set it to **Launches a scene**, and a program change from any port launches that scene of the [Clips grid](clips.md): program 1 launches scene 1, program 2 scene 2, and so on, on any channel, as a tap on the scene's launch button does (on the next bar line while playing). A program past the grid's last scene does nothing, and the log says so. A port set to ignore program changes (its page's **Ignore coming in**) launches nothing. Set it to **Picks a patch** and program 1 picks the song's patch 1, program 2 patch 2, and so on, at once or, with the **Switches** row under it, when your hands are up (see [Patches](patches.md#switching-with-a-program-change)).
 
-The MIDI monitor shows where each went: *MMC: the transport*, or *launched scene 3*.
+The MIDI monitor shows where each went: *MMC: the transport*, *launched scene 3*, or *picked patch 2*.
 
 MPFree can also send its own clock from **MIDI OUT**, or to a USB device, so a drum machine or an arpeggiator plays in time with it. Each port's **Clock out** is **Off**, **While playing** or **Always**, and each port with a delay gets its clock that much early. On a port's page, **Divide** slows the clock one port gets and **Nudge** moves it a little later or earlier than its notes (see [A port's page](#a-ports-page)).
 
@@ -319,7 +319,7 @@ Transport controls are kept in **Rig**, so they work in every project. Nothing h
 
 ### Playing the looper from a footswitch
 
-{{shot: mixer-io-learn-looper | The Learn section's Looper card: the Loop stepper on the picked loop with its Key and Mute, then Next loop, Undo, Redo, Capture and Clear.}}
+{{shot: mixer-io-learn-looper | The Learn section's Looper card: the Loop stepper on the picked loop with its Key and Mute, Next loop and Capture, then Undo, Redo, Clear, Snap and Use my tap.}}
 
 A footswitch leaves both hands on your instrument while you loop. Any control that sends MIDI can play the [looper](looping.md): a footswitch, a pedalboard, a button, a pad or a key. The MPC One has no footswitch jack, so plug the footswitch into a MIDI controller or a MIDI pedal that has one, and connect that to the MPC's USB or 5-pin MIDI in.
 
@@ -329,6 +329,7 @@ In the Learn section, tap **Looper** by the heading, tap one, then press the foo
 - **Key**: what the loop's pad does as a [loop key](looping.md#the-pads-as-loop-keys). Press to record from the next bar line, again to end the first pass, then to overdub and to play on; a muted loop plays again. Hold it for a second to clear the loop (UNDO brings it back).
 - **Mute**: mutes the loop, and lets it play again. A key or a pad flips it on each press; a footswitch or a fader mutes from halfway up and lets it play below that.
 - **Next loop** picks the next loop (after Loop 8, Loop 1). **Undo**, **Redo** and **Clear** are the Looper tab's buttons, on the picked loop. **Capture** keeps the bars you just played as a loop.
+- **Snap** and **Use my tap** are [smart loop end](looping.md#smart-loop-end)'s, on the picked loop, so you can take its suggestion without letting go of your instrument. **Snap** moves the loop's end (or start) to the hit it found, on the loop's next downbeat; **Use my tap** puts it back where you tapped. When the screen asks **Snap anyway?**, **Snap** says yes and **Use my tap** says not now.
 
 These work on every page, whatever the pads are doing. A **Key** or a press starts as **Button: while held**, so a footswitch goes down and comes up as a pad does; leave it so. The Learn section lists each one by what it plays: **Looper · Loop 3 key**, **Looper · picked loop's key**, **Looper · Next loop**. Looper controls are kept in **Rig**, so your pedalboard works in every project.
 
@@ -341,10 +342,24 @@ A knob or fader on your controller can turn the Play page's **Swing** and **Filt
 - **Swing**: from straight (50 %) to the most swing (75 %), as Play's Swing Q-Link turns it.
 - **Filter**: the filter Play's Filter Q-Link turns, the same way: track 1's, which Play's card calls Drums, whatever your project names track 1; low-pass below the middle, high-pass above it, and off in the middle.
 - **XY across** and **XY up**: each moves the XY pad one way, as your finger does, and the other way stays where it is. The pad on the Play page follows. Its effect plays until both are back where the pad rests: across in the middle and up at the bottom. Learn one on a joystick's two directions, or on two knobs side by side.
+- **Next patch** and **Previous patch**: a footswitch or a button that steps through the song's [patches](patches.md#switching-from-a-footswitch). Its card's **Switches** says whether the patch changes at once or once your hands are up.
 
 **Your finger and the XY knobs together:** the one that started last plays. Move a learned XY knob while your finger is on the pad and the knob takes over; your finger does nothing until you lift it and touch again. A touch while the knobs hold the pad takes it back the same way, and the knobs then do nothing until they are back where the pad rests.
 
 These work on every page. The Learn section lists them as **Play · Swing**, **Play · Filter**, **Play · XY across** and **Play · XY up**. They are kept in **Rig**, so your controller works the same in every project, and they move the sound but don't record into a clip. Touching Play's own cards and pad still works as before.
+
+### Footswitches for a set
+
+{{shot: mixer-io-learn-show | The Learn section's Show card: a set's seven controls, each for a footswitch or a button to learn.}}
+
+A footswitch can move you through a [set](set-lists.md) on stage, so you never reach for the screen between songs. In the Learn section, tap **Show** by the heading, tap one, then press the footswitch or the button:
+
+- **Next song** arms the song after the one playing, and pressing it again goes to it. **Previous song** arms the one before.
+- **Go** goes to the armed song. **Cancel next** drops the armed song and leaves the music as it is. **Back to the set order** arms the song after the one playing, in the set's order.
+- **Panic** stops and silences everything, as SHIFT + STOP does, and sends notes off on every MIDI out.
+- **Click** turns the click on or off, as SHIFT + PLAY START does.
+
+A press counts once: it acts as the switch goes down, a second press within 50 ms is the same press (a footswitch's bounce), and presses while a song is changing are ignored. These work on every page, in every project, while a set is open; with no set open they do nothing, and the hint line says so. They are kept in **Rig**. The Learn section lists them as **Show · Next song**, **Show · Go** and so on. If one control has two jobs, both its rows show in red with what else it does: learn one of them again on another switch.
 
 ### Playing a Perform pad from your gear
 

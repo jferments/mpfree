@@ -29,6 +29,10 @@
 //!   or a comp boundary, is seamless when the takes are of the same part.
 //!   Where the same take runs straight on (a Split), nothing fades, and a
 //!   gain change there ramps over [`FADE`] frames (`Join`).
+//! - **Cuts keep their fades.** A region cut in two (a Split, an erase or
+//!   punch across it, a song time edit) keeps the region's own fades on
+//!   both parts, each counting the frames cut off it ([`Region::into`],
+//!   [`Region::left`]), so a fade the cut goes through plays on as it did.
 //! - **Time.** A region sits on song ticks, so it stays on its bar when the
 //!   tempo before it changes. Its audio plays at the rate it was recorded
 //!   at, from the region's start, as a DAW plays audio that is not warped:
@@ -77,12 +81,17 @@
 //!   because the stick was late is counted, a take at a time
 //!   ([`AudioTracks::missed`]). Without a player every take is in the
 //!   pool, as before.
+//! - **Clips.** Given what the arranger's player says each track plays
+//!   ([`AudioTracks::process_with`]), a track plays audio clips as well as
+//!   its song: each in a voice with its own copy of the clip's regions,
+//!   every change on its frame ([`clips`]).
 //!
 //! [`AudioTracks::command`] and [`AudioTracks::process`] never allocate,
 //! lock or panic, and give the same output for any period size.
 
 #![forbid(unsafe_code)]
 
+pub mod clips;
 pub mod files;
 pub mod host;
 mod pool;
@@ -91,6 +100,10 @@ pub mod save;
 pub mod streaming;
 pub mod stretch;
 
+pub use clips::{
+    Answer, Change, ClipPlay, ClipRegion, Plays, DECLICK, MAX_CHANGES, MAX_CLIP_REGIONS, VOICES,
+};
+use clips::{Glide, Lane, Mode, Shape, Window, NO_TAKE_ID};
 use pool::Pool;
 pub use pool::CHUNK;
 pub use retime::{Piece, Retime};
@@ -202,9 +215,10 @@ pub enum Command {
     Solo(usize, bool),
     /// Input latency to make up for, in frames, for every track.
     SetLatency(u32),
-    /// Whether the tracks play and record (the host turns them off when
-    /// the song is not playing, say in clip launch mode). Monitoring goes
-    /// on either way.
+    /// Whether the tracks record and play their song regions (the host
+    /// turns them off when the song is not playing, say in clip launch
+    /// mode). Clips play either way, as the arranger's answer says
+    /// ([`AudioTracks::process_with`]), and so does monitoring.
     SetActive(bool),
     /// Play take `take` on its track from tick `from` to `to`, over what
     /// was there (clipped to where the take has audio).
@@ -224,6 +238,18 @@ pub enum Command {
         from: Tick,
         to: Tick,
     },
+    /// [`Command::Erase`] as an undo step of song edit `song` (not 0):
+    /// Rec song's block of an audio clip replacing the regions under it
+    /// (phase 2, step 2d). As for [`Command::Retime`], only
+    /// [`Command::SongUndo`] and [`Command::SongRedo`] take it back and
+    /// bring it back; [`Command::Undo`] and [`Command::Redo`] stop at it.
+    /// Refused while the track records.
+    EraseSong {
+        song: u32,
+        track: usize,
+        from: Tick,
+        to: Tick,
+    },
     /// Move the region of `track` playing at `at` to start at `to`, over
     /// what is there (its audio moves with it).
     Move {
@@ -239,7 +265,8 @@ pub enum Command {
     },
     /// Fades of the region of `track` playing at `at`, in frames from its
     /// start and to its end (each at most half the region; on top of the
-    /// crossfades every region has).
+    /// crossfades every region has). They are its own: a part cut from a
+    /// longer region no longer counts the frames cut off it.
     SetFades {
         track: usize,
         at: Tick,
@@ -249,9 +276,19 @@ pub enum Command {
     Undo,
     Redo,
     /// Give a take's memory back. Refused while it records or while a
-    /// region, or a step Undo or Redo could bring back, plays it (see
-    /// [`AudioTracks::in_use`]); [`Command::ClearHistory`] first.
+    /// region, or a step Undo or Redo could bring back, plays it, or a
+    /// clip keeps it (see [`AudioTracks::in_use`]);
+    /// [`Command::ClearHistory`] first.
     Forget(u16),
+    /// Keep take `take` while a clip, or an undo step holding one, names
+    /// its recording (the audio tracks rethink, phase 2: the app says
+    /// which, [`AudioTracks::kept`]), or let it go. A take kept can't be
+    /// forgotten; one let go is forgotten at once if nothing else uses it
+    /// and it is free to go (not recording, loading or being written).
+    Keep {
+        take: u16,
+        keep: bool,
+    },
     /// Forget the undo history (so takes only it used can be forgotten).
     ClearHistory,
     /// Play take `new` wherever take `old` plays, its frames `ratio` times
@@ -275,6 +312,17 @@ pub enum Command {
     Retime {
         song: u32,
         retime: Retime,
+    },
+    /// Undo step `step` (a recording's or a sound's put on a lane,
+    /// [`AudioTracks::take_took`]) becomes one of song edit `song` (not
+    /// 0): the song edit that cut the blocks under it (phase 2, step 2d).
+    /// From then on it is as a [`Command::Retime`]'s step: only
+    /// [`Command::SongUndo`] and [`Command::SongRedo`] take it back and
+    /// bring it back. Refused when Undo can't reach that step, or it
+    /// belongs to a song edit already.
+    TieStep {
+        step: u32,
+        song: u32,
     },
     /// Take back, or bring back, song edit `song`'s steps (one a
     /// [`Command::Retime`] it was made of: + Bar pressed in a row is one
@@ -432,9 +480,23 @@ pub struct Region {
     /// The take's frame that plays at `start` (may be below 0 or past the
     /// take's end: those frames are silent).
     pub src: i64,
+    /// Where in frame `src` its recording is at `start`, -0.5 to 0.5: the
+    /// frame that plays at song tick `t` is `src` plus `phase` and the
+    /// frames from `start` to `t`, rounded ([`Region::frames_to`]). Where
+    /// a tick falls between frames, a part cut from a region keeps the
+    /// region's rounding, so its parts play exactly as it did.
+    pub phase: f32,
     pub gain: f32,
+    /// Its fade in and fade out in frames, measured on the region it was
+    /// cut from (`into`, `left`).
     pub fade_in: u32,
     pub fade_out: u32,
+    /// Frames of the region it was cut from (a Split, an erase, a punch,
+    /// a song time edit) before its start and after its end: 0 for one
+    /// never cut. Its fades are that whole region's, so a cut keeps
+    /// exactly its share of them.
+    pub into: u32,
+    pub left: u32,
 }
 
 impl Region {
@@ -443,14 +505,33 @@ impl Region {
         end: 0,
         take: 0,
         src: 0,
+        phase: 0.0,
         gain: 1.0,
         fade_in: 0,
         fade_out: 0,
+        into: 0,
+        left: 0,
     };
 
     pub fn contains(&self, t: Tick) -> bool {
         (self.start..self.end).contains(&t)
     }
+
+    /// Frames of it from song tick `at`, where it starts as it plays, to
+    /// song tick `t` along `map`: from its start, the frame of its
+    /// recording `t` plays is `src` plus this; to its end, its length.
+    pub fn frames_to(&self, map: &TempoMap, at: f64, t: f64, rate: u32) -> i64 {
+        (f64::from(self.phase) + frames_from(map, at, t, rate)).round() as i64
+    }
+}
+
+/// The frame of a take, and where in it, at song tick `t` along `map`,
+/// the take's frame 0 at song tick `anchor`: for a region starting at `t`
+/// ([`Region::src`], [`Region::phase`]).
+pub fn src_at(map: &TempoMap, anchor: f64, t: f64, rate: u32) -> (i64, f32) {
+    let x = frames_from(map, anchor, t, rate);
+    let src = x.round();
+    (src as i64, (x - src) as f32)
 }
 
 /// What the screen shows of a take.
@@ -511,6 +592,12 @@ pub struct Stats {
     /// length didn't match it: the take stays in the pool, and the host is
     /// asked to close the file ([`Io::Close`]).
     pub mismatched: u32,
+    /// Changes the arranger's player dropped because a track had more
+    /// than [`MAX_CHANGES`] in a period ([`Answer::superseded`]).
+    pub superseded: u64,
+    /// Clip voices handed to the declick because a track needed a fifth
+    /// ([`VOICES`]).
+    pub declicked: u32,
 }
 
 /// What the host does about the recording files while
@@ -597,6 +684,11 @@ struct Take {
     /// can't be forgotten, nor the tracks cleared, until the host says
     /// [`AudioTracks::written`].
     writing: bool,
+    /// A clip, or an undo step holding one, names it ([`Command::Keep`]):
+    /// it can't be forgotten.
+    kept: bool,
+    /// Let go while only a clip voice used it: forgotten once none does.
+    let_go: bool,
     store: Store,
     /// Frames played from its file that played silence (see
     /// [`Stats::missed`]), and the song tick of the latest.
@@ -618,6 +710,8 @@ const NO_TAKE: Take = Take {
     cut_short: false,
     loading: false,
     writing: false,
+    kept: false,
+    let_go: false,
     store: Store::Pool,
     missed: 0,
     miss_tick: 0.0,
@@ -807,6 +901,9 @@ struct Track {
     /// whose files the host has been asked to make ([`Io::Arm`]), and the
     /// channels they were made for. None otherwise.
     next: Option<(RecordingId, u8)>,
+    /// Its clips playing, its song's window and the answer's mute
+    /// ([`clips`]).
+    lane: Box<Lane>,
 }
 
 impl Track {
@@ -828,6 +925,7 @@ impl Track {
             buf: vec![0.0; 2 * MAX_PERIOD as usize],
             inside: None,
             next: None,
+            lane: Box::new(Lane::new()),
         }
     }
 
@@ -860,8 +958,9 @@ impl Track {
     }
 
     /// Take `from..to` out of the regions: ones inside go, ones across an
-    /// edge are cut there (a cut start moves `src` on), and one across the
-    /// whole stretch becomes two. Checked by `clear_fits` first.
+    /// edge are cut there ([`cut`]: a cut start moves `src` on, and each
+    /// part keeps its share of the fades), and one across the whole
+    /// stretch becomes two. Checked by `clear_fits` first.
     fn clear(&mut self, map: &TempoMap, rate: u32, from: Tick, to: Tick) {
         if to <= from {
             return;
@@ -879,24 +978,18 @@ impl Track {
                 continue;
             }
             if r.start < from && r.end > to {
-                let mut right = r;
-                right.start = to;
-                right.src =
-                    r.src + frames_from(map, r.start as f64, to as f64, rate).round() as i64;
-                self.regions[i].end = from;
+                self.regions[i] = cut(&r, from, map, rate).0;
                 self.regions.copy_within(i + 1..self.n, i + 2);
-                self.regions[i + 1] = right;
+                self.regions[i + 1] = cut(&r, to, map, rate).1;
                 self.n += 1;
                 i += 2;
                 continue;
             }
-            if r.start < from {
-                self.regions[i].end = from;
+            self.regions[i] = if r.start < from {
+                cut(&r, from, map, rate).0
             } else {
-                self.regions[i].start = to;
-                self.regions[i].src =
-                    r.src + frames_from(map, r.start as f64, to as f64, rate).round() as i64;
-            }
+                cut(&r, to, map, rate).1
+            };
             i += 1;
         }
     }
@@ -979,24 +1072,280 @@ enum Join {
     Ramp,
 }
 
-/// How `b` meets `a`, the region before it, along `map`: the same take
-/// running on means `b` starts where `a` ends, on the frame `a` would
-/// play next, and neither fades there.
+/// How `b` meets `a`, the region before it, along `map`. The same take
+/// running on (`b` starts where `a` ends, on the frame `a` would play
+/// next) is [`Join::Straight`] when the gain runs on too: `a`'s gain with
+/// its fades on that frame is `b`'s. So the two parts of a Split, which
+/// keep their shares of one region's fades, play as that region did.
 fn join(a: &Region, b: &Region, map: &TempoMap, rate: u32) -> Join {
-    let runs_on = b.start == a.end
-        && b.take == a.take
-        && a.fade_out == 0
-        && b.fade_in == 0
-        && b.src == a.src + frames_from(map, a.start as f64, a.end as f64, rate).round() as i64;
-    match (runs_on, a.gain == b.gain) {
-        (false, _) => Join::Fade,
-        (true, true) => Join::Straight,
-        (true, false) => Join::Ramp,
+    if b.start != a.end || b.take != a.take {
+        return Join::Fade;
+    }
+    // The lengths only where the audio may run on (every region is
+    // placed again each run).
+    let frames = |r: &Region| r.frames_to(map, r.start as f64, r.end as f64, rate);
+    let len_a = frames(a);
+    if b.src != a.src + len_a {
+        return Join::Fade;
+    }
+    ends_meet(a, len_a, b, frames(b))
+}
+
+/// How `b` meets `a` where it starts as `a` ends, `len_a` and `len_b`
+/// frames long as they play: [`join`] past the ticks (clips place their
+/// regions themselves).
+fn join_run(a: &Region, len_a: i64, b: &Region, len_b: i64) -> Join {
+    if b.take != a.take || b.src != a.src + len_a {
+        return Join::Fade;
+    }
+    ends_meet(a, len_a, b, len_b)
+}
+
+/// The audio runs on from `a` into `b`: straight on if their gains meet,
+/// else a ramp.
+fn ends_meet(a: &Region, len_a: i64, b: &Region, len_b: i64) -> Join {
+    let end_a = a.gain * Envelope::of(a, len_a).at(len_a);
+    let start_b = b.gain * Envelope::of(b, len_b).at(0);
+    if end_a == start_b {
+        Join::Straight
+    } else {
+        Join::Ramp
     }
 }
 
+/// `r` cut at tick `at` (inside it) along `map`: the part before and the
+/// part after. Each keeps the region's fades and counts the frames cut
+/// off it ([`Region::into`], [`Region::left`]), so it plays exactly its
+/// share of them; the part after plays on from where `r` had got to.
+fn cut(r: &Region, at: Tick, map: &TempoMap, rate: u32) -> (Region, Region) {
+    let add = |n: u32, k: i64| (i64::from(n) + k).clamp(0, i64::from(u32::MAX)) as u32;
+    let (start, at_f, end) = (r.start as f64, at as f64, r.end as f64);
+    // On the region's own rounding: the part before is `k` frames, and
+    // the part after starts on frame `k` of it, where its recording is.
+    let k = r.frames_to(map, start, at_f, rate);
+    let len = r.frames_to(map, start, end, rate);
+    let (mut before, mut after) = (*r, *r);
+    before.end = at;
+    before.left = add(r.left, len - k);
+    after.start = at;
+    after.src = r.src + k;
+    after.phase = (f64::from(r.phase) + frames_from(map, start, at_f, rate) - k as f64) as f32;
+    after.into = add(r.into, k);
+    (before, after)
+}
+
+/// A region's own fades as it plays, `len_f` frames long: its fade in and
+/// fade out measured on the region it was cut from, `into` frames before
+/// it and `left` after it, each at most half that region.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Envelope {
+    into: i64,
+    /// Frames from its start to the end of the region it was cut from.
+    end: i64,
+    fade_in: i64,
+    fade_out: i64,
+}
+
+impl Envelope {
+    pub(crate) fn of(r: &Region, len_f: i64) -> Envelope {
+        let (into, left) = (i64::from(r.into), i64::from(r.left));
+        let half = (into + len_f + left).max(0) / 2;
+        Envelope {
+            into,
+            end: len_f + left,
+            fade_in: i64::from(r.fade_in).min(half),
+            fade_out: i64::from(r.fade_out).min(half),
+        }
+    }
+
+    /// The gain at frame `e` of it (1 between the fades). Past its end a
+    /// fade out goes on along the same line and stays at nothing there.
+    pub(crate) fn at(&self, e: i64) -> f32 {
+        let mut g = 1.0;
+        let from_start = e + self.into;
+        if self.fade_in > 0 && from_start < self.fade_in {
+            g *= from_start.max(0) as f32 / self.fade_in as f32;
+        }
+        let to_end = self.end - e;
+        if self.fade_out > 0 && to_end < self.fade_out {
+            g *= to_end.max(0) as f32 / self.fade_out as f32;
+        }
+        g
+    }
+
+    /// The frames of it the fades leave alone: from the first up to the
+    /// second, which may be past its end (the caller stops there).
+    fn plain(&self) -> (i64, i64) {
+        (self.fade_in - self.into, self.end - self.fade_out)
+    }
+}
+
+/// A region as a run plays it: from song tick `at` (its start, or a
+/// clip pass's start and its start in the clip), `len_f` frames long (its
+/// ticks' frames along the tempo map, or more for a clip's ring), meeting
+/// the region before it with `before` and the one after with `after`,
+/// heard through `shape` (a song's window, or a clip voice's window and
+/// gain).
+struct Placed<'a> {
+    r: &'a Region,
+    at: f64,
+    len_f: i64,
+    before: Join,
+    after: Join,
+    shape: Shape,
+}
+
+/// What a run reads regions through: the takes, the pool, the stream
+/// player and its room, the crossfade table and the counts. One place
+/// adds a region, for the song's regions and (phase 2) clips alike.
+struct Reader<'a> {
+    takes: &'a mut [Take],
+    pool: &'a Pool,
+    fade: &'a [f32; FADE + 1],
+    player: &'a mut Option<Box<Player>>,
+    reads: &'a mut [f32],
+    stats: &'a mut Stats,
+}
+
+impl Reader<'_> {
+    /// Add `p` into `dst` (interleaved stereo, a run's frames) from song
+    /// tick `tick0`, frame `f0`: its gain, its own fades, the crossfades
+    /// its joins ask for and the [`FADE`] frames past its end, through its
+    /// shape; frames from memory or its file, those that miss counted.
+    fn add(&mut self, p: &Placed, map: &TempoMap, rate: u32, tick0: f64, f0: u64, dst: &mut [f32]) {
+        let (r, len_f, before, after) = (p.r, p.len_f, p.before, p.after);
+        let len = dst.len() / 2;
+        let outer = p.shape.steady(f0, len);
+        if outer == Some(0.0) {
+            return;
+        }
+        let Some(tk) = self
+            .takes
+            .get(r.take as usize)
+            .filter(|k| k.live && !k.loading)
+        else {
+            return;
+        };
+        // Frames since the region's start at the run's first frame.
+        let e0 = r.frames_to(map, p.at, tick0, rate);
+        let stop = len_f
+            + if after == Join::Straight {
+                0
+            } else {
+                FADE as i64
+            };
+        if e0 >= stop || e0 + len as i64 <= 0 {
+            return;
+        }
+        let env = Envelope::of(r, len_f);
+        let fade = self.fade;
+        let shape = p.shape;
+        // The shape's gain at frame `j` of the run.
+        let heard = |j: usize| -> f32 {
+            match outer {
+                Some(g) => g,
+                None => shape.at(f0 + j as u64, fade),
+            }
+        };
+        let gain_at = |e: i64| -> f32 {
+            if e < 0 || e >= stop {
+                return 0.0;
+            }
+            let mut g = r.gain;
+            if e < FADE as i64 {
+                match before {
+                    Join::Fade => g *= fade[e as usize],
+                    Join::Ramp => g *= e as f32 / FADE as f32,
+                    Join::Straight => {}
+                }
+            }
+            if e >= len_f {
+                // Never Straight: then `stop` is `len_f`.
+                let j = FADE as i64 - (e - len_f);
+                match after {
+                    Join::Ramp => g *= j as f32 / FADE as f32,
+                    _ => g *= fade[j as usize],
+                }
+            }
+            // Its own fades. A fade out reaches nothing at the end of the
+            // region it was cut from, and the crossfade past its end goes
+            // on from where it got to.
+            g * env.at(e)
+        };
+        let (plain_from, plain_to) = env.plain();
+        let edge = if before == Join::Straight {
+            0
+        } else {
+            FADE as i64
+        };
+        // The whole run past the fades and crossfades: one gain.
+        let plain =
+            outer.is_some() && e0 >= plain_from.max(edge) && e0 + len as i64 <= plain_to.min(len_f);
+        let (g, k) = (r.gain * outer.unwrap_or(1.0), r.src + e0);
+        let (pool, reads) = (self.pool, &mut *self.reads);
+        let missed = match tk.store {
+            Store::File { gen } => {
+                let p = self.player.as_deref_mut();
+                let end = tk.frames;
+                if plain {
+                    tk.add_from_file(p, r.take, gen, end, k, dst, reads, &|_| g)
+                } else {
+                    let gain = |j: usize| gain_at(e0 + j as i64) * heard(j);
+                    tk.add_from_file(p, r.take, gen, end, k, dst, reads, &gain)
+                }
+            }
+            Store::Part { gen, freed, .. } if freed > 0 => {
+                let p = self.player.as_deref_mut();
+                if plain {
+                    tk.add_part(pool, p, r.take, gen, freed, k, dst, reads, &|_| g)
+                } else {
+                    let gain = |j: usize| gain_at(e0 + j as i64) * heard(j);
+                    tk.add_part(pool, p, r.take, gen, freed, k, dst, reads, &gain)
+                }
+            }
+            Store::Pool | Store::Part { .. } => {
+                if plain {
+                    tk.add_into(pool, r.take, k, dst, &|_| g);
+                } else {
+                    tk.add_into(pool, r.take, k, dst, &|j| gain_at(e0 + j as i64) * heard(j));
+                }
+                0
+            }
+        };
+        if missed > 0 {
+            let m = &mut self.takes[r.take as usize];
+            m.missed += missed;
+            m.miss_tick = tick0;
+            self.stats.missed += missed;
+        }
+    }
+}
+
+/// Sound put on a track's lane by an undo step of its own (a take
+/// punched out, a swipe on a take lane, a region moved, a sound brought
+/// in): the track, the song ticks it covers and the step, for the app to
+/// cut the song's blocks there and tie the step to that cut (the audio
+/// tracks rethink's phase 2, step 2d; [`AudioTracks::take_took`],
+/// [`Command::TieStep`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Took {
+    pub track: usize,
+    pub start: Tick,
+    pub end: Tick,
+    pub step: u32,
+}
+
+/// [`Took`]s kept between two asks: far more than a period's commands
+/// put.
+const TOOK: usize = 32;
+
 /// The audio tracks: see the module notes.
 pub struct AudioTracks {
+    /// Sound put on lanes since the app last asked ([`Took`]), oldest
+    /// first, and how many were lost for want of room.
+    took: [Took; TOOK],
+    took_n: usize,
+    took_lost: u32,
     rate: u32,
     /// Where new takes' lasting ids come from.
     ids: Ids,
@@ -1044,6 +1393,10 @@ pub struct AudioTracks {
     /// through it.
     player: Option<Box<Player>>,
     reads: Box<[f32]>,
+    /// Room for one clip voice's run, before it joins its track.
+    vbuf: Box<[f32]>,
+    /// A take was let go while a voice played it ([`Take::let_go`]).
+    let_go: bool,
     /// Where each track plays, or is about to (see [`AudioTracks::cue`]),
     /// a region in each of its two cursors.
     cues: [[Option<Cue>; 2]; MAX_TRACKS],
@@ -1078,6 +1431,9 @@ impl AudioTracks {
             hist,
             scratch: Box::new(Snap::new()),
             step: 0,
+            took: [Took::default(); TOOK],
+            took_n: 0,
+            took_lost: 0,
             last_map: TempoMap::constant(120.0).expect("a valid tempo"),
             pending: [None; MAX_TRACKS],
             h_base: 0,
@@ -1093,6 +1449,8 @@ impl AudioTracks {
             player: None,
             keep: false,
             reads: vec![0.0; 2 * RUN].into_boxed_slice(),
+            vbuf: vec![0.0; 2 * RUN].into_boxed_slice(),
+            let_go: false,
             cues: [[None; 2]; MAX_TRACKS],
             reserved: [false; MAX_TAKES],
         }
@@ -1178,6 +1536,24 @@ impl AudioTracks {
         self.tracks.get(track).is_some_and(|t| t.armed)
     }
 
+    /// Track `t`'s once clip still sounding past its stop (audio tracks
+    /// phase 2, a ring): its clip number, and how far through its sound it
+    /// is at frame `now`, 0 to 1, for the cell's dimmed playhead.
+    pub fn ringing(&self, t: usize, now: u64) -> Option<(u32, f32)> {
+        let v = self
+            .tracks
+            .get(t)?
+            .lane
+            .voices
+            .iter()
+            .find(|v| v.on && v.ring)?;
+        let s = &v.cur;
+        let first = s.regions[..s.n].first()?.src;
+        let total = (s.last_frame - first).max(1) as f64;
+        let done = now.saturating_sub(v.since) as f64;
+        Some((v.clip, (done / total).clamp(0.0, 1.0) as f32))
+    }
+
     /// The take a track is recording, if any.
     pub fn recording(&self, track: usize) -> Option<u16> {
         self.tracks.get(track)?.rec.map(|r| r.take)
@@ -1211,6 +1587,14 @@ impl AudioTracks {
             recording: t.recording,
             cut_short: t.cut_short,
         })
+    }
+
+    /// Whether a clip, or an undo step holding one, keeps the take
+    /// ([`Command::Keep`]).
+    pub fn kept(&self, id: u16) -> bool {
+        self.takes
+            .get(id as usize)
+            .is_some_and(|t| t.live && t.kept)
     }
 
     /// The take whose lasting id is `rec`, if it is here.
@@ -1317,10 +1701,17 @@ impl AudioTracks {
         (self.h_done, self.h_redo)
     }
 
-    /// Whether a region, or a step of the history, plays this take.
+    /// Whether a region, or a step of the history, plays this take, or a
+    /// clip keeps it ([`Command::Keep`]).
     pub fn in_use(&self, id: u16) -> bool {
+        self.in_use_apart_from_voices(id) || self.tracks.iter().any(|t| t.lane.uses(id))
+    }
+
+    /// [`AudioTracks::in_use`] but for the clip voices.
+    fn in_use_apart_from_voices(&self, id: u16) -> bool {
         let uses = |rs: &[Region]| rs.iter().any(|r| r.take == id);
-        self.tracks.iter().any(|t| uses(t.regions()))
+        self.kept(id)
+            || self.tracks.iter().any(|t| uses(t.regions()))
             || (0..self.h_done + self.h_redo).any(|i| {
                 let s = &self.hist[(self.h_base + i) % HISTORY];
                 uses(&s.regions[..s.n])
@@ -1586,12 +1977,122 @@ impl AudioTracks {
         true
     }
 
+    /// [`AudioTracks::edit`] putting sound on `track`'s lane over
+    /// `start..end`: once it goes in, a [`Took`] says so.
+    fn put_edit(
+        &mut self,
+        track: usize,
+        (start, end): (Tick, Tick),
+        f: impl FnOnce(&mut Track, &TempoMap, u32) -> bool,
+        map: &TempoMap,
+    ) {
+        let step = self.step;
+        self.edit(track, f, map);
+        if self.step == step {
+            return;
+        }
+        let took = Took {
+            track,
+            start,
+            end,
+            step: self.step,
+        };
+        if self.took_n == TOOK {
+            // Never, as the app asks every period: the oldest goes,
+            // counted ([`AudioTracks::took_lost`]).
+            self.took.copy_within(1.., 0);
+            self.took_n -= 1;
+            self.took_lost = self.took_lost.saturating_add(1);
+        }
+        self.took[self.took_n] = took;
+        self.took_n += 1;
+    }
+
+    /// The oldest sound put on a lane since the last ask ([`Took`]), for
+    /// the app to cut the song's blocks there.
+    pub fn take_took(&mut self) -> Option<Took> {
+        if self.took_n == 0 {
+            return None;
+        }
+        let t = self.took[0];
+        self.took.copy_within(1..self.took_n, 0);
+        self.took_n -= 1;
+        Some(t)
+    }
+
+    /// [`Took`]s lost for want of room (never, as the app asks every
+    /// period), for the status line.
+    pub fn took_lost(&self) -> u32 {
+        self.took_lost
+    }
+
+    /// Undo step `step` becomes one of song edit `song`
+    /// ([`Command::TieStep`]): false, nothing changed, when Undo can't
+    /// reach it or it belongs to a song edit.
+    fn tie_step(&mut self, step: u32, song: u32) -> bool {
+        let (base, done) = (self.h_base, self.h_done);
+        let mine = move |k: usize| (base + k) % HISTORY;
+        let snaps = || (0..done).map(mine);
+        let mut found = false;
+        for i in snaps() {
+            if self.hist[i].step == step {
+                if self.hist[i].song != 0 {
+                    return false;
+                }
+                found = true;
+            }
+        }
+        if song == 0 || !found {
+            return false;
+        }
+        for i in snaps() {
+            if self.hist[i].step == step {
+                self.hist[i].song = song;
+            }
+        }
+        true
+    }
+
+    /// Silence `track` from `from` to `to`, as an undo step of song edit
+    /// `song` (0: none); refused where no region plays.
+    fn erase(&mut self, track: usize, from: Tick, to: Tick, song: u32, map: &TempoMap) {
+        if !self.tracks[track]
+            .regions()
+            .iter()
+            .any(|r| r.start < to && r.end > from)
+        {
+            return self.refuse();
+        }
+        self.edit_of(
+            track,
+            song,
+            |t, m, rate| {
+                t.clear_fits(from, to, 0) && {
+                    t.clear(m, rate, from, to);
+                    true
+                }
+            },
+            map,
+        );
+    }
+
     /// An edit of one track's regions: `f` changes them and says whether it
     /// did; if so, the regions before it become an undo step, and if not,
     /// they are put back as they were.
     fn edit(
         &mut self,
         track: usize,
+        f: impl FnOnce(&mut Track, &TempoMap, u32) -> bool,
+        map: &TempoMap,
+    ) {
+        self.edit_of(track, 0, f, map)
+    }
+
+    /// [`AudioTracks::edit`], its step one of song edit `song` (0: none).
+    fn edit_of(
+        &mut self,
+        track: usize,
+        song: u32,
         f: impl FnOnce(&mut Track, &TempoMap, u32) -> bool,
         map: &TempoMap,
     ) {
@@ -1607,7 +2108,7 @@ impl AudioTracks {
         let rate = self.rate;
         if f(&mut self.tracks[track], map, rate) {
             let step = self.next_step();
-            self.push_history(step, 0);
+            self.push_history(step, song);
         } else {
             let (t, s) = (&mut self.tracks[track], &*self.scratch);
             t.n = s.n;
@@ -1664,16 +2165,25 @@ impl AudioTracks {
                 if to <= from {
                     return self.refuse();
                 }
+                let (src, phase) = src_at(map, a, from as f64, rate);
                 let r = Region {
                     start: from,
                     end: to,
                     take,
-                    src: frames_from(map, a, from as f64, rate).round() as i64,
+                    src,
+                    phase,
                     gain: 1.0,
                     fade_in: 0,
                     fade_out: 0,
+                    into: 0,
+                    left: 0,
                 };
-                self.edit(tk.track as usize, |t, m, rate| t.put(m, rate, r), map);
+                self.put_edit(
+                    tk.track as usize,
+                    (from, to),
+                    |t, m, rate| t.put(m, rate, r),
+                    map,
+                );
             }
             Command::Split { track, at } if ok_track(track) => {
                 let Some(i) = self.tracks[track]
@@ -1688,14 +2198,8 @@ impl AudioTracks {
                         if t.n == MAX_REGIONS {
                             return false;
                         }
-                        let r = t.regions[i];
-                        let mut right = r;
-                        right.start = at;
-                        right.src =
-                            r.src + frames_from(m, r.start as f64, at as f64, rate).round() as i64;
-                        right.fade_in = 0;
-                        t.regions[i].end = at;
-                        t.regions[i].fade_out = 0;
+                        let (left, right) = cut(&t.regions[i], at, m, rate);
+                        t.regions[i] = left;
                         t.regions.copy_within(i + 1..t.n, i + 2);
                         t.regions[i + 1] = right;
                         t.n += 1;
@@ -1705,30 +2209,24 @@ impl AudioTracks {
                 );
             }
             Command::Erase { track, from, to } if ok_track(track) && from < to => {
-                if !self.tracks[track]
-                    .regions()
-                    .iter()
-                    .any(|r| r.start < to && r.end > from)
-                {
-                    return self.refuse();
-                }
-                self.edit(
-                    track,
-                    |t, m, rate| {
-                        t.clear_fits(from, to, 0) && {
-                            t.clear(m, rate, from, to);
-                            true
-                        }
-                    },
-                    map,
-                );
+                self.erase(track, from, to, 0, map)
+            }
+            Command::EraseSong {
+                song,
+                track,
+                from,
+                to,
+            } if ok_track(track) && from < to && song != 0 && self.tracks[track].rec.is_none() => {
+                self.erase(track, from, to, song, map)
             }
             Command::Move { track, at, to } if ok_track(track) && to >= 0 => {
                 let Some(i) = self.tracks[track].at(at) else {
                     return self.refuse();
                 };
-                self.edit(
+                let r = self.tracks[track].regions[i];
+                self.put_edit(
                     track,
+                    (to, to + (r.end - r.start)),
                     |t, m, rate| {
                         let mut r = t.regions[i];
                         t.regions.copy_within(i + 1..t.n, i);
@@ -1765,8 +2263,10 @@ impl AudioTracks {
                 self.edit(
                     track,
                     |t, _, _| {
-                        t.regions[i].fade_in = fade_in;
-                        t.regions[i].fade_out = fade_out;
+                        let r = &mut t.regions[i];
+                        (r.fade_in, r.fade_out) = (fade_in, fade_out);
+                        // Fades set on it are its own, cut or not.
+                        (r.into, r.left) = (0, 0);
                         true
                     },
                     map,
@@ -1789,6 +2289,11 @@ impl AudioTracks {
                     self.refuse();
                 }
             }
+            Command::TieStep { step, song } => {
+                if !self.tie_step(step, song) {
+                    self.refuse();
+                }
+            }
             Command::SongUndo(song) => {
                 if self.any_recording() || self.song_step(song, true) != SongStep::Next {
                     return self.refuse();
@@ -1807,14 +2312,26 @@ impl AudioTracks {
             }
             Command::ForgetSong(song) => self.forget_song(song),
             Command::Forget(id) => {
-                let ok = self
-                    .takes
-                    .get(id as usize)
-                    .is_some_and(|t| t.live && !t.recording && !t.loading && !t.writing);
-                if !ok || self.in_use(id) {
+                if !self.free_to_forget(id) || self.in_use(id) {
                     return self.refuse();
                 }
                 self.forget(id);
+            }
+            Command::Keep { take, keep } => {
+                let Some(t) = self.takes.get_mut(take as usize).filter(|t| t.live) else {
+                    return self.refuse();
+                };
+                t.kept = keep;
+                t.let_go = false;
+                if !keep && self.free_to_forget(take) && !self.in_use_apart_from_voices(take) {
+                    if self.tracks.iter().any(|t| t.lane.uses(take)) {
+                        // A voice still plays it: it goes once none does.
+                        self.takes[take as usize].let_go = true;
+                        self.let_go = true;
+                    } else {
+                        self.forget(take);
+                    }
+                }
             }
             Command::OnFile {
                 take,
@@ -1859,7 +2376,10 @@ impl AudioTracks {
                         for r in &mut t.regions[..t.n] {
                             if r.take == old {
                                 r.take = new;
-                                r.src = (r.src as f64 * ratio).round() as i64;
+                                let x = (r.src as f64 + f64::from(r.phase)) * ratio;
+                                (r.src, r.phase) = (x.round() as i64, (x - x.round()) as f32);
+                                let scale = |n: u32| (f64::from(n) * ratio).round() as u32;
+                                (r.into, r.left) = (scale(r.into), scale(r.left));
                                 any = true;
                             }
                         }
@@ -2108,7 +2628,9 @@ impl AudioTracks {
             t.mute = false;
             t.solo = false;
             t.blocked = false;
+            t.lane.stop();
         }
+        self.let_go = false;
         for id in 0..MAX_TAKES {
             if self.takes[id].live {
                 self.forget(id as u16);
@@ -2148,8 +2670,10 @@ impl AudioTracks {
             .map(|&c| tick(c).round() as Tick)
             .chain(std::iter::once(tick(frames).floor() as Tick));
         let before = self.stats.refused;
-        self.edit(
+        let span = (a.ceil() as Tick, tick(frames).floor() as Tick);
+        self.put_edit(
             tk.track as usize,
+            span,
             |t, m, rate| {
                 let mut start = a.ceil() as Tick;
                 let mut placed = false;
@@ -2157,14 +2681,18 @@ impl AudioTracks {
                     if end <= start {
                         continue;
                     }
+                    let (src, phase) = src_at(m, a, start as f64, rate);
                     let r = Region {
                         start,
                         end,
                         take,
-                        src: frames_from(m, a, start as f64, rate).round() as i64,
+                        src,
+                        phase,
                         gain: 1.0,
                         fade_in: 0,
                         fade_out: 0,
+                        into: 0,
+                        left: 0,
                     };
                     if !t.put(m, rate, r) {
                         return false;
@@ -2343,16 +2871,20 @@ impl AudioTracks {
         let end_t = t_out.round() as Tick;
         if end_t > start {
             let anchor = self.takes[id].anchor;
+            let (src, phase) = src_at(map, anchor, start as f64, rate);
             let r = Region {
                 start,
                 end: end_t,
                 take: rec.take,
-                src: frames_from(map, anchor, start as f64, rate).round() as i64,
+                src,
+                phase,
                 gain: 1.0,
                 fade_in: 0,
                 fade_out: 0,
+                into: 0,
+                left: 0,
             };
-            self.edit(t, |tr, m, rate| tr.put(m, rate, r), map);
+            self.put_edit(t, (start, end_t), |tr, m, rate| tr.put(m, rate, r), map);
         }
     }
 
@@ -2441,6 +2973,21 @@ impl AudioTracks {
     /// to `out`. `map` is the transport's tempo map
     /// ([`mpfree_transport::Transport::tempo_map`]).
     pub fn process(&mut self, block: &Block, map: &TempoMap, input: &[f32], out: &mut [f32]) {
+        self.process_with(block, map, input, out, &[]);
+    }
+
+    /// [`AudioTracks::process`], with what each track plays this period
+    /// from the arranger's player: `answers[t]` for track `t`, and its
+    /// song for a track past the end ([`clips`]). Every change lands on
+    /// its frame. Real-time safe.
+    pub fn process_with(
+        &mut self,
+        block: &Block,
+        map: &TempoMap,
+        input: &[f32],
+        out: &mut [f32],
+        answers: &[Answer],
+    ) {
         let n = (block.frames as usize)
             .min(input.len() / 2)
             .min(out.len() / 2)
@@ -2455,10 +3002,18 @@ impl AudioTracks {
             }
         }
         self.q_len = 0;
+        self.forget_let_go();
         self.copy_loads(n);
         for t in &mut self.tracks {
             t.buf[..2 * n].fill(0.0);
         }
+        for a in answers.iter().take(MAX_TRACKS) {
+            self.stats.superseded += u64::from(a.superseded);
+        }
+        // Each track's next change, and whether its answer's start has
+        // been taken.
+        let mut next = [0usize; MAX_TRACKS];
+        let mut begun = [false; MAX_TRACKS];
         let markers = block.markers();
         let mut m = 0;
         // Each track's block from inside, lent to the runs (no allocation:
@@ -2482,6 +3037,17 @@ impl AudioTracks {
                     let to = (markers[m].frame - span.frame) as usize;
                     if to > i {
                         end = end.min(to);
+                    }
+                }
+                // The changes due now, then the next on any track ends
+                // the run before it.
+                self.answer(map, span, f, off, n, answers, &mut next, &mut begun);
+                for (t, a) in answers.iter().enumerate().take(MAX_TRACKS) {
+                    if let Some(c) = a.changes.get(next[t]) {
+                        let to = c.frame as usize;
+                        if to > off {
+                            end = end.min(i + (to - off));
+                        }
                     }
                 }
                 self.run(
@@ -2690,6 +3256,14 @@ impl AudioTracks {
 
     /// Take `id` goes: its pool memory back, and its stream source closed
     /// if it has one.
+    /// Whether take `id` is here and free to go: not recording, loading or
+    /// being written to its file.
+    fn free_to_forget(&self, id: u16) -> bool {
+        self.takes
+            .get(id as usize)
+            .is_some_and(|t| t.live && !t.recording && !t.loading && !t.writing)
+    }
+
     fn forget(&mut self, id: u16) {
         self.pool.release_take(id);
         if let Store::Part { gen, .. } | Store::File { gen } = self.takes[id as usize].store {
@@ -2707,9 +3281,6 @@ impl AudioTracks {
             return;
         }
         self.cues = [[None; 2]; MAX_TRACKS];
-        if !self.active {
-            return;
-        }
         let rate = self.rate;
         let tail = mpfree_transport::time::ticks_in(FADE as f64, bpm, rate) + 1.0;
         let ahead = CUE_S * f64::from(rate);
@@ -2718,11 +3289,26 @@ impl AudioTracks {
             if tr.rec.is_some() {
                 continue;
             }
-            let first = tr
-                .regions()
-                .partition_point(|r| r.end as f64 + tail <= tick);
-            for i in first..(first + 2).min(tr.n) {
-                let r = tr.regions[i];
+            // The region playing and the next: the song's, or the clip
+            // playing's (each with the song tick it starts at, the frames
+            // it plays to past its own, and its cursor).
+            let mut next: [Option<(Region, f64, i64, usize)>; 2] = [None; 2];
+            match tr.lane.mode {
+                Mode::Clip { voice, .. } if tr.lane.voices[voice].on => {
+                    next = tr.lane.voices[voice].upcoming(tick, tail);
+                }
+                Mode::Nothing => {}
+                _ if !self.active => {}
+                _ => {
+                    let first = tr
+                        .regions()
+                        .partition_point(|r| r.end as f64 + tail <= tick);
+                    for (k, i) in (first..(first + 2).min(tr.n)).enumerate() {
+                        next[k] = Some((tr.regions[i], tr.regions[i].start as f64, 0, i % 2));
+                    }
+                }
+            }
+            for (r, at, more, slot) in next.into_iter().flatten() {
                 let Some(tk) = self
                     .takes
                     .get(r.take as usize)
@@ -2732,19 +3318,20 @@ impl AudioTracks {
                 };
                 // Frames from the region's start to the tick: 0 for one
                 // still to come, if it comes soon enough.
-                let e0 = if r.start as f64 > tick {
-                    if frames_from(map, tick, r.start as f64, rate) > ahead {
+                let e0 = if at > tick {
+                    if frames_from(map, tick, at, rate) > ahead {
                         break;
                     }
                     0
                 } else {
-                    frames_from(map, r.start as f64, tick, rate).round() as i64
+                    r.frames_to(map, at, tick, rate)
                 };
-                let len_f = frames_from(map, r.start as f64, r.end as f64, rate).round() as i64;
+                let to = at + (r.end - r.start) as f64;
+                let len_f = r.frames_to(map, at, to, rate).max(more);
                 let end = (r.src + len_f + FADE as i64).clamp(0, tk.frames as i64) as u64;
                 let frame = (r.src + e0).max(0) as u64;
                 if frame < end {
-                    self.cues[t][i % 2] = Some(Cue {
+                    self.cues[t][slot] = Some(Cue {
                         take: r.take,
                         frame,
                         end,
@@ -2876,6 +3463,9 @@ impl AudioTracks {
             Mark::Located { from, .. } => from as f64,
             _ => return,
         };
+        for t in &mut self.tracks {
+            t.lane.jump();
+        }
         for t in 0..MAX_TRACKS {
             if let Some(rec) = self.tracks[t].rec {
                 let tk = self.takes[rec.take as usize];
@@ -2966,8 +3556,19 @@ impl AudioTracks {
                     Monitor::In => true,
                     Monitor::Auto => tr.armed && (span.state != State::Playing || !self.active),
                 };
-            if rolling && self.active && tr.rec.is_none() {
-                self.play(t, map, span, tick0, off, len);
+            let recording = tr.rec.is_some();
+            if rolling {
+                if recording {
+                    // Replace: its clips go on silently under the take.
+                    self.tracks[t].lane.hold();
+                } else {
+                    // The song only while the tracks are on (song mode);
+                    // clips as the answer says.
+                    if self.active {
+                        self.play(t, map, span, tick0, f, off, len);
+                    }
+                    self.play_clips(t, map, span, tick0, f, off, len);
+                }
             }
             if hear_input {
                 let tr = &mut self.tracks[t];
@@ -3011,8 +3612,27 @@ impl AudioTracks {
     }
 
     /// Add track `t`'s regions for `len` frames from song tick `tick0`
-    /// (frame `off` of the period).
-    fn play(&mut self, t: usize, map: &TempoMap, span: &Span, tick0: f64, off: usize, len: usize) {
+    /// (frame `f0`, `off` of the period), through its song's window.
+    #[allow(clippy::too_many_arguments)]
+    fn play(
+        &mut self,
+        t: usize,
+        map: &TempoMap,
+        span: &Span,
+        tick0: f64,
+        f0: u64,
+        off: usize,
+        len: usize,
+    ) {
+        let song = self.tracks[t].lane.song;
+        if song.silent(f0, len) {
+            return;
+        }
+        let (from, to) = (self.tracks[t].lane.song_from, self.tracks[t].lane.song_to);
+        let shape = Shape {
+            win: song,
+            ..Shape::OPEN
+        };
         let rate = self.rate;
         let tail = mpfree_transport::time::ticks_in(FADE as f64, span.bpm, rate) + 1.0;
         let tick1 = tick0 + mpfree_transport::time::ticks_in(len as f64, span.bpm, rate) + 1.0;
@@ -3031,110 +3651,415 @@ impl AudioTracks {
             .regions()
             .partition_point(|r| r.end as f64 + tail <= tick0);
         let (regions, buf) = (&tr.regions[..tr.n], &mut tr.buf);
+        let mut reader = Reader {
+            takes,
+            pool,
+            fade,
+            player,
+            reads,
+            stats,
+        };
+        let dst = &mut buf[2 * off..2 * (off + len)];
         for (i, r) in regions.iter().enumerate().skip(first) {
-            if r.start as f64 >= tick1 {
+            let (start, end) = (r.start as f64, r.end as f64);
+            if start >= tick1 || start + clips::LINE > to {
                 break;
             }
-            let Some(tk) = takes.get(r.take as usize).filter(|k| k.live && !k.loading) else {
+            if end < from + clips::LINE {
+                // Over before the song came in.
                 continue;
-            };
-            // Frames since the region's start at the run's first frame,
-            // and the region's length in frames.
-            let e0 = frames_from(map, r.start as f64, tick0, rate).round() as i64;
-            let len_f = frames_from(map, r.start as f64, r.end as f64, rate).round() as i64;
-            // How it meets the regions either side ([`Join`]).
+            }
+            // How it meets the regions either side ([`Join`]), or the
+            // song's own start or end ([`clips::Lane::song_from`]).
             let before = match i.checked_sub(1) {
+                _ if (start - from).abs() < clips::LINE => Join::Fade,
                 Some(h) => join(&regions[h], r, map, rate),
                 None => Join::Fade,
             };
-            let after = regions
-                .get(i + 1)
-                .map_or(Join::Fade, |n| join(r, n, map, rate));
-            let stop = len_f
-                + if after == Join::Straight {
-                    0
-                } else {
-                    FADE as i64
-                };
-            if e0 >= stop || e0 + len as i64 <= 0 {
+            let after = if (end - to).abs() < clips::LINE {
+                Join::Fade
+            } else {
+                regions
+                    .get(i + 1)
+                    .map_or(Join::Fade, |n| join(r, n, map, rate))
+            };
+            let len_f = r.frames_to(map, start, end, rate);
+            let placed = Placed {
+                r,
+                at: r.start as f64,
+                len_f,
+                before,
+                after,
+                shape,
+            };
+            reader.add(&placed, map, rate, tick0, f0, dst);
+        }
+    }
+
+    /// Add track `t`'s clip voices for `len` frames from song tick `tick0`
+    /// (frame `f0`, `off` of the period), then its declick, and the
+    /// answer's mute over what it played.
+    #[allow(clippy::too_many_arguments)]
+    fn play_clips(
+        &mut self,
+        t: usize,
+        map: &TempoMap,
+        span: &Span,
+        tick0: f64,
+        f0: u64,
+        off: usize,
+        len: usize,
+    ) {
+        let rate = self.rate;
+        let AudioTracks {
+            tracks,
+            takes,
+            pool,
+            fade,
+            player,
+            reads,
+            stats,
+            vbuf,
+            ..
+        } = self;
+        let tr = &mut tracks[t];
+        let lane = &mut *tr.lane;
+        let dst = &mut tr.buf[2 * off..2 * (off + len)];
+        if len == 0 {
+            return;
+        }
+        lane.resume(f0, tick0);
+        if lane.any_voice() {
+            let mut reader = Reader {
+                takes,
+                pool,
+                fade,
+                player,
+                reads,
+                stats,
+            };
+            let vb = &mut vbuf[..2 * len];
+            for v in lane.voices.iter_mut().filter(|v| v.on) {
+                vb.fill(0.0);
+                let on = reader.add_voice(v, map, rate, span.bpm, tick0, f0, vb);
+                for (d, s) in dst.iter_mut().zip(vb.iter()) {
+                    *d += *s;
+                }
+                v.last = [vb[2 * len - 2], vb[2 * len - 1]];
+                if !on {
+                    v.on = false;
+                    v.last = [0.0; 2];
+                }
+            }
+        }
+        lane.declick.add(dst);
+        match lane.mute.settled(f0) {
+            Some(1.0) => {}
+            Some(g) => dst.iter_mut().for_each(|d| *d *= g),
+            None => {
+                for (j, d) in dst.chunks_exact_mut(2).enumerate() {
+                    let g = lane.mute.at(f0 + j as u64);
+                    d[0] *= g;
+                    d[1] *= g;
+                }
+            }
+        }
+    }
+
+    /// The answers' starts and changes due at frame `f` (`off` of the
+    /// period's `n`), in order, a track at a time: `next` and `begun` keep
+    /// each track's place in its answer. Nothing plays while the
+    /// transport is stopped.
+    #[allow(clippy::too_many_arguments)]
+    fn answer(
+        &mut self,
+        map: &TempoMap,
+        span: &Span,
+        f: u64,
+        off: usize,
+        n: usize,
+        answers: &[Answer],
+        next: &mut [usize; MAX_TRACKS],
+        begun: &mut [bool; MAX_TRACKS],
+    ) {
+        let rolling = matches!(span.state, State::Playing | State::Recording);
+        let tick = span.tick_at(f);
+        for t in 0..MAX_TRACKS {
+            let a = answers.get(t).copied().unwrap_or_default();
+            if !rolling {
+                let lane = &mut self.tracks[t].lane;
+                if lane.mode != Mode::Unknown || lane.any_voice() {
+                    lane.stop();
+                }
+                begun[t] = false;
+                while a
+                    .changes
+                    .get(next[t])
+                    .is_some_and(|c| c.frame as usize <= off)
+                {
+                    next[t] += 1;
+                }
                 continue;
             }
-            let fi = i64::from(r.fade_in).min(len_f / 2).max(0);
-            let fo = i64::from(r.fade_out).min(len_f / 2).max(0);
-            let fade = &*fade;
-            let gain_at = |e: i64| -> f32 {
-                if e < 0 || e >= stop {
-                    return 0.0;
+            if !begun[t] {
+                begun[t] = true;
+                self.begin(t, &a.start, a.muted, f, tick, map);
+            }
+            while let Some(c) = a.changes.get(next[t]) {
+                if c.frame as usize > off {
+                    break;
                 }
-                let mut g = r.gain;
-                if e < FADE as i64 {
-                    match before {
-                        Join::Fade => g *= fade[e as usize],
-                        Join::Ramp => g *= e as f32 / FADE as f32,
-                        Join::Straight => {}
+                next[t] += 1;
+                if (c.frame as usize) < n {
+                    self.change(t, c, f, map);
+                }
+            }
+        }
+    }
+
+    /// Track `t` plays `plays` at frame `f` (song tick `tick`), the
+    /// period's start: as it is if nothing played before; else carried
+    /// on, a new stamp taken in, or switched to as a change.
+    fn begin(&mut self, t: usize, plays: &Plays, muted: bool, f: u64, tick: f64, map: &TempoMap) {
+        let heard = if muted { 0.0 } else { 1.0 };
+        let mode = self.tracks[t].lane.mode;
+        match (mode, plays) {
+            (Mode::Unknown, _) => {
+                let lane = &mut self.tracks[t].lane;
+                lane.mute = Glide::steady(heard);
+                lane.song = if *plays == Plays::Song {
+                    Window::OPEN
+                } else {
+                    Window::SHUT
+                };
+                lane.song_from = f64::NEG_INFINITY;
+                lane.song_to = f64::INFINITY;
+                let mode = match plays {
+                    Plays::Nothing => Mode::Nothing,
+                    Plays::Song => Mode::Song,
+                    Plays::Clip(c) => Mode::Clip {
+                        clip: c.clip,
+                        voice: self.start_voice(t, c, f, tick),
+                    },
+                };
+                self.tracks[t].lane.mode = mode;
+            }
+            (Mode::Song, Plays::Song) | (Mode::Nothing, Plays::Nothing) => {
+                self.tracks[t].lane.mute.set(heard, f);
+            }
+            (_, Plays::Clip(c)) if self.carries_on(t, c).is_some() => {
+                self.carry_on(t, c, f, tick);
+                self.tracks[t].lane.mute.set(heard, f);
+            }
+            _ => {
+                let c = Change {
+                    frame: 0,
+                    tick,
+                    plays: *plays,
+                    muted,
+                    ring: false,
+                };
+                self.change(t, &c, f, map);
+            }
+        }
+    }
+
+    /// Track `t` changes to what `c` says at frame `f`: what it played
+    /// fades out (or rings, or runs straight on into the same audio) and
+    /// what it plays now fades in. On the change's own song tick, the line
+    /// it lands on: the frame's tick is within half a frame of it, either
+    /// side, where lines fall between frames, and which pass or region a
+    /// voice is in at a line can't hang on that.
+    fn change(&mut self, t: usize, c: &Change, f: u64, map: &TempoMap) {
+        let tick = c.tick;
+        let rate = self.rate;
+        // A ring from before ends with the usual fade.
+        for v in self.tracks[t].lane.voices.iter_mut() {
+            if v.on && v.ring {
+                v.shape.win.close_at(f, Join::Fade);
+            }
+        }
+        let heard = if c.muted { 0.0 } else { 1.0 };
+        if let Plays::Clip(nc) = &c.plays {
+            if self.carries_on(t, nc).is_some() {
+                // The clip playing, muted or edited: no launch.
+                self.carry_on(t, nc, f, tick);
+                self.tracks[t].lane.mute.set(heard, f);
+                return;
+            }
+        }
+        let prev = self.tracks[t].lane.mode;
+        // A song region running on through the change: cut there, crossed
+        // over. Else its regions end or start there, or nothing plays.
+        let song_through = {
+            let rs = self.tracks[t].regions();
+            let k = rs.partition_point(|r| r.end as f64 <= tick + clips::LINE);
+            rs.get(k)
+                .is_some_and(|r| (r.start as f64) < tick - clips::LINE)
+        };
+        let mode = match &c.plays {
+            Plays::Nothing => Mode::Nothing,
+            Plays::Song => Mode::Song,
+            Plays::Clip(nc) => Mode::Clip {
+                clip: nc.clip,
+                voice: self.start_voice(t, nc, f, tick),
+            },
+        };
+        let takes = &self.takes;
+        let lane = &mut self.tracks[t].lane;
+        match prev {
+            Mode::Song if mode != Mode::Song => {
+                if song_through {
+                    lane.song.close_at(f, Join::Fade);
+                } else {
+                    // Nothing of the song from here on; a region ending
+                    // here fades out past its end by itself, as at a gap.
+                    lane.song_to = tick;
+                    lane.song.close_at(f + 2 * FADE as u64, Join::Straight);
+                }
+            }
+            Mode::Clip { voice, .. } if lane.voices[voice].on => {
+                let new = match mode {
+                    Mode::Clip { voice: nv, .. } => Some(nv),
+                    _ => None,
+                };
+                if new == Some(voice) {
+                    // Taken for the new clip (a fifth voice): declicked.
+                } else if c.ring {
+                    lane.voices[voice].ring_from(tick);
+                } else if lane.voices[voice].restart {
+                    // Declicked at the jump already.
+                    lane.voices[voice].on = false;
+                } else {
+                    // The song block it played ends here: nothing of its
+                    // from here on plays. The same audio running on isn't
+                    // faded: a legato switch to the same audio, or a song
+                    // block's end into a block whose clip plays on from
+                    // the frame its region ended on (Song → scenes cuts a
+                    // region at a section's edge in two: step 2d).
+                    let mut join = Join::Fade;
+                    if let Some(nv) = new {
+                        let a = lane.voices[voice].heard_into(map, rate, tick);
+                        let b = lane.voices[nv].heard(map, rate, tick);
+                        if let Some((a, b)) = a.zip(b) {
+                            if a.0 == b.0 && a.1 == b.1 && a.0 != NO_TAKE_ID {
+                                join = if a.2 == b.2 {
+                                    Join::Straight
+                                } else {
+                                    Join::Ramp
+                                };
+                            }
+                        }
+                        lane.voices[nv].shape.win.open = join;
+                    }
+                    let old = &mut lane.voices[voice];
+                    let frames =
+                        |id: u16| takes.get(id as usize).filter(|k| k.live).map(|k| k.frames);
+                    if old.runs_on(map, rate, tick, &frames) {
+                        // Its audio runs on (through a region, or into
+                        // the same audio next): crossed over to what
+                        // follows.
+                        old.shape.win.close_at(f, join);
+                    } else {
+                        // Its regions end by here, each meeting what
+                        // follows by its own join as the song's regions
+                        // do; nothing of its from here on plays, and the
+                        // window only closes once their fades are over.
+                        old.end_at(tick, join);
+                        old.shape.win.close_at(f + 2 * FADE as u64, Join::Straight);
                     }
                 }
-                if e >= len_f {
-                    // Never Straight: then `stop` is `len_f`.
-                    let j = FADE as i64 - (e - len_f);
-                    match after {
-                        Join::Ramp => g *= j as f32 / FADE as f32,
-                        _ => g *= fade[j as usize],
-                    }
-                }
-                if fi > 0 && e < fi {
-                    g *= e as f32 / fi as f32;
-                }
-                // Its fade out reaches nothing at its end, and the
-                // crossfade past the end goes on from there.
-                if fo > 0 && e >= len_f - fo {
-                    g *= (len_f - e).max(0) as f32 / fo as f32;
-                }
-                g
-            };
-            let dst = &mut buf[2 * off..2 * (off + len)];
-            let plain_from = if before == Join::Straight {
-                fi
+            }
+            _ => {}
+        }
+        if mode == Mode::Song && prev != Mode::Song {
+            if song_through {
+                lane.song = Window::opening(f, Join::Fade);
+                lane.song_from = f64::NEG_INFINITY;
             } else {
-                (FADE as i64).max(fi)
-            };
-            // The whole run past the fades: one gain.
-            let plain = e0 >= plain_from && e0 + len as i64 <= len_f - fo;
-            let (g, k) = (r.gain, r.src + e0);
-            let missed = match tk.store {
-                Store::File { gen } => {
-                    let p = player.as_deref_mut();
-                    let end = tk.frames;
-                    if plain {
-                        tk.add_from_file(p, r.take, gen, end, k, dst, reads, &|_| g)
-                    } else {
-                        let gain = |j: usize| gain_at(e0 + j as i64);
-                        tk.add_from_file(p, r.take, gen, end, k, dst, reads, &gain)
-                    }
-                }
-                Store::Part { gen, freed, .. } if freed > 0 => {
-                    let p = player.as_deref_mut();
-                    if plain {
-                        tk.add_part(pool, p, r.take, gen, freed, k, dst, reads, &|_| g)
-                    } else {
-                        let gain = |j: usize| gain_at(e0 + j as i64);
-                        tk.add_part(pool, p, r.take, gen, freed, k, dst, reads, &gain)
-                    }
-                }
-                Store::Pool | Store::Part { .. } => {
-                    if plain {
-                        tk.add_into(pool, r.take, k, dst, &|_| g);
-                    } else {
-                        tk.add_into(pool, r.take, k, dst, &|j| gain_at(e0 + j as i64));
-                    }
-                    0
-                }
-            };
-            if missed > 0 {
-                let m = &mut takes[r.take as usize];
-                m.missed += missed;
-                m.miss_tick = tick0;
-                stats.missed += missed;
+                // A region starting here fades in by itself, as after a gap.
+                lane.song = Window::opening(f, Join::Straight);
+                lane.song_from = tick;
+            }
+            lane.song_to = f64::INFINITY;
+        }
+        lane.mode = mode;
+        lane.mute.set(heard, f);
+    }
+
+    /// The voice playing clip `c` on track `t` as it is playing now (the
+    /// same clip from the same origin), if any.
+    fn carries_on(&self, t: usize, c: &ClipPlay) -> Option<usize> {
+        let lane = &self.tracks[t].lane;
+        match lane.mode {
+            Mode::Clip { clip, voice }
+                if clip == c.clip
+                    && lane.voices[voice].on
+                    && lane.voices[voice].origin == c.origin =>
+            {
+                Some(voice)
+            }
+            _ => None,
+        }
+    }
+
+    /// Clip `c` carries on on track `t`: a new stamp from its next pass,
+    /// its gain at once (from frame `f`, song tick `tick`).
+    fn carry_on(&mut self, t: usize, c: &ClipPlay, f: u64, tick: f64) {
+        let Some(voice) = self.carries_on(t, c) else {
+            return;
+        };
+        if self.tracks[t].lane.voices[voice].stamp() != c.stamp {
+            let takes = self.takes_for(c);
+            self.tracks[t].lane.voices[voice].restamp(c, &takes, f, tick);
+        } else {
+            self.tracks[t].lane.voices[voice].shape.glide.set(c.gain, f);
+        }
+    }
+
+    /// A voice on track `t` for clip `c` from frame `f` (song tick
+    /// `tick`), fading in; a fifth taken from the quietest is counted.
+    fn start_voice(&mut self, t: usize, c: &ClipPlay, f: u64, tick: f64) -> usize {
+        let takes = self.takes_for(c);
+        let lane = &mut self.tracks[t].lane;
+        let (i, took) = lane.free_voice();
+        if took {
+            self.stats.declicked += 1;
+        }
+        lane.voices[i].start(c, &takes, f, tick, Join::Fade);
+        i
+    }
+
+    /// The take each of `c`'s regions plays ([`NO_TAKE_ID`] for one not
+    /// here).
+    fn takes_for(&self, c: &ClipPlay) -> [u16; MAX_CLIP_REGIONS] {
+        let mut out = [NO_TAKE_ID; MAX_CLIP_REGIONS];
+        for (o, r) in out.iter_mut().zip(c.regions) {
+            *o = self.take_of(r.rec).unwrap_or(NO_TAKE_ID);
+        }
+        out
+    }
+
+    /// Takes let go while a voice played them, forgotten once none does
+    /// (and nothing else holds them).
+    fn forget_let_go(&mut self) {
+        if !self.let_go {
+            return;
+        }
+        self.let_go = false;
+        for id in 0..MAX_TAKES as u16 {
+            if !self.takes[id as usize].let_go {
+                continue;
+            }
+            if self.tracks.iter().any(|t| t.lane.uses(id)) {
+                self.let_go = true;
+                continue;
+            }
+            self.takes[id as usize].let_go = false;
+            let tk = &self.takes[id as usize];
+            if tk.live && !tk.kept && self.free_to_forget(id) && !self.in_use_apart_from_voices(id)
+            {
+                self.forget(id);
             }
         }
     }
@@ -3149,20 +4074,30 @@ impl AudioTracks {
             let lv = if audible { tr.level } else { 0.0 };
             let target = [lv * (1.0 - tr.pan).min(1.0), lv * (1.0 + tr.pan).min(1.0)];
             let from = tr.gains;
-            let step = [
-                (target[0] - from[0]) / n.max(1) as f32,
-                (target[1] - from[1]) / n.max(1) as f32,
-            ];
-            for (j, (d, o)) in tr.buf[..2 * n]
+            let frames = tr.buf[..2 * n]
                 .chunks_exact_mut(2)
-                .zip(out.chunks_exact_mut(2))
-                .enumerate()
-            {
-                let k = (j + 1) as f32;
-                d[0] *= from[0] + step[0] * k;
-                d[1] *= from[1] + step[1] * k;
-                o[0] += d[0];
-                o[1] += d[1];
+                .zip(out.chunks_exact_mut(2));
+            if from == target {
+                // Steady (most periods): the same sound as the ramp, which
+                // adds a step of nothing.
+                for (d, o) in frames {
+                    d[0] *= from[0];
+                    d[1] *= from[1];
+                    o[0] += d[0];
+                    o[1] += d[1];
+                }
+            } else {
+                let step = [
+                    (target[0] - from[0]) / n.max(1) as f32,
+                    (target[1] - from[1]) / n.max(1) as f32,
+                ];
+                for (j, (d, o)) in frames.enumerate() {
+                    let k = (j + 1) as f32;
+                    d[0] *= from[0] + step[0] * k;
+                    d[1] *= from[1] + step[1] * k;
+                    o[0] += d[0];
+                    o[1] += d[1];
+                }
             }
             if n > 0 {
                 tr.gains = target;

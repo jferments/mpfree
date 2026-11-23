@@ -30,8 +30,9 @@ use mpfree_seq::arrange::SONG_LANE_LEN;
 use mpfree_seq::mpfree_moves::{Kind, Map, Moves, Target};
 use mpfree_seq::steps::Edit;
 use mpfree_seq::{
-    touch_fits, Clip, ClipId, ClipProgram, DestId, Direction, LaunchGrid, Lock, ModelError, Note,
-    Project, Quantise, Speed, Touch, TouchPoint, MAX_LOCKS, MAX_NOTES, MAX_TRACKS, ROWS,
+    touch_fits, Clip, ClipId, ClipProgram, ClipRegion, DestId, Direction, LaunchGrid, Lock,
+    ModelError, Note, Project, Quantise, Speed, Touch, TouchPoint, MAX_LOCKS, MAX_NOTES,
+    MAX_TRACKS, ROWS,
 };
 use mpfree_transport::time::{Swing, TempoMap, Tick};
 
@@ -204,6 +205,21 @@ pub(crate) struct LockView {
     pub src: Lock,
 }
 
+/// An audio clip's regions, compiled with it ([`Clip::audio`], the audio
+/// tracks rethink's phase 2): what [`crate::Player::audio`] lends the
+/// audio engine, so the regions and the switch to them always come from
+/// the same view.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct AudioView {
+    /// The clip's lasting id, which the engine names a voice by.
+    pub id: ClipId,
+    pub regions: Vec<ClipRegion>,
+    pub gain: f32,
+    pub last_frame: i64,
+    /// A one-shot ([`Clip::once`]): its stop at its pass's end rings.
+    pub once: bool,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ClipView {
     pub slot: usize,
@@ -244,6 +260,8 @@ pub(crate) struct ClipView {
     /// redesign's step 5c): its note events say so ([`crate::Out::notes`]).
     /// In the stamp, so a frozen strip thaws when a clip changes kind.
     pub holds_notes: bool,
+    /// An audio clip's regions; None for a note clip.
+    pub audio: Option<AudioView>,
 }
 
 impl ClipView {
@@ -703,6 +721,9 @@ pub struct PlayView {
     /// live hit on a pad that starts on the line waits for (sampler
     /// R5.3b; the host waits, [`PlayView::launch`]).
     pub(crate) launch: LaunchGrid,
+    /// The audio tracks (`mpfree_seq::TrackKind::Audio`), a bit each:
+    /// the tracks [`crate::Player::audio`] answers for.
+    pub(crate) audio: u128,
 }
 
 impl PartialEq for PlayView {
@@ -716,6 +737,7 @@ impl PartialEq for PlayView {
             &self.song_clips,
             &self.tempo,
             self.launch,
+            self.audio,
         ) == (
             &other.tracks,
             other.armed,
@@ -725,6 +747,7 @@ impl PartialEq for PlayView {
             &other.song_clips,
             &other.tempo,
             other.launch,
+            other.audio,
         )
     }
 }
@@ -803,6 +826,12 @@ impl PlayView {
             includes: None,
             tempo: None,
             launch: project.launch,
+            audio: project
+                .tracks
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.is_audio())
+                .fold(0, |m, (i, _)| m | 1u128.checked_shl(i as u32).unwrap_or(0)),
         })
     }
 
@@ -888,6 +917,7 @@ impl PlayView {
                 direction: Direction::Forward,
                 steps: 0,
                 holds_notes: false,
+                audio: None,
             };
             // Recorded moves land here in place too: keep it as they would.
             song.stamp = stamp_of(&song);
@@ -1367,6 +1397,17 @@ impl PlayView {
         }
     }
 
+    /// Track `track`'s cue is kept out of this view: it lands once a
+    /// later view shows it, on the first line after that view was decided
+    /// (the host's cues that wait for their audio). False when the track
+    /// has no cue. Call it on the control thread, after compiling.
+    pub fn hold_back_cue(&mut self, track: usize) -> bool {
+        self.tracks
+            .get_mut(track)
+            .and_then(|t| t.cue.take())
+            .is_some()
+    }
+
     /// The cue waiting on `track`: `Some(Some(slot))` for a launch,
     /// `Some(None)` for a stop.
     pub fn cue(&self, track: usize) -> Option<Option<usize>> {
@@ -1438,6 +1479,13 @@ pub(crate) fn view_of(
         direction: clip.direction,
         steps: clip.direction_steps().unwrap_or(0),
         holds_notes: clip.holds == mpfree_seq::Holds::Notes,
+        audio: clip.audio.as_ref().map(|a| AudioView {
+            id: clip.id,
+            regions: a.regions.clone(),
+            gain: a.gain,
+            last_frame: a.last_frame,
+            once: clip.once,
+        }),
     };
     view.notes = clip.notes.iter().map(|n| view.note_view(n)).collect();
     view.notes.sort_by(|a, b| a.local.total_cmp(&b.local));
@@ -1594,6 +1642,45 @@ fn lock_hash(v: &LockView) -> u64 {
     h.done()
 }
 
+/// An audio clip's share of a stamp: every region in order, its gain, its
+/// last frame and whether it rings, every field named as for notes. Its
+/// id is where it comes from, not what it plays.
+fn audio_hash(a: &AudioView) -> u64 {
+    let AudioView {
+        id: _,
+        regions,
+        gain,
+        last_frame,
+        once,
+    } = a;
+    let mut h = Fnv::new();
+    h.word(u64::from(gain.to_bits()) | u64::from(*once) << 32);
+    h.word(*last_frame as u64);
+    for r in regions {
+        let ClipRegion {
+            start,
+            end,
+            rec,
+            src,
+            phase,
+            gain,
+            fade_in,
+            fade_out,
+            into,
+            left,
+        } = *r;
+        h.word(start as u64);
+        h.word(end as u64);
+        h.word(rec.0 as u64);
+        h.word((rec.0 >> 64) as u64);
+        h.word(src as u64);
+        h.word(u64::from(gain.to_bits()) | u64::from(fade_in) << 32);
+        h.word(u64::from(fade_out) | u64::from(into) << 32);
+        h.word(u64::from(left) | u64::from(phase.to_bits()) << 32);
+    }
+    h.done() | 1
+}
+
 /// A pressure point's share of a stamp: where it sits counts, since
 /// notes name their runs by place.
 fn touch_hash(i: usize, p: TouchPoint) -> u64 {
@@ -1651,6 +1738,7 @@ fn stamp_of(v: &ClipView) -> u64 {
         direction,
         steps,
         holds_notes,
+        audio,
     } = v;
     let mut h = Fnv::new();
     h.word(*length as u64);
@@ -1665,6 +1753,7 @@ fn stamp_of(v: &ClipView) -> u64 {
     direction.hash(&mut h);
     h.word(u64::from(*steps));
     h.word(u64::from(*holds_notes));
+    h.word(audio.as_ref().map_or(0, audio_hash));
     let notes = notes.iter().map(note_hash);
     let locks = locks.iter().map(lock_hash);
     let touch = touch.iter().enumerate().map(|(i, p)| touch_hash(i, *p));
@@ -2044,6 +2133,23 @@ impl Switches {
         match self.on.get(track).copied().flatten().and_then(|s| s.mute) {
             Some(m) => m,
             None => view.tracks.get(track).is_some_and(|t| t.mute),
+        }
+    }
+
+    /// Where the clip `track` plays now is in the view: the cue's (true:
+    /// a switch the view doesn't show yet) or the launched one; its
+    /// origin, and the tick its pass counts from.
+    pub fn playing_where(&self, view: &PlayView, track: usize) -> Option<(bool, Tick, Tick)> {
+        let t = view.tracks.get(track)?;
+        match self.on.get(track).copied().flatten() {
+            Some(sw) if sw.lost => None,
+            Some(sw) => t
+                .cue
+                .as_ref()?
+                .clip
+                .as_ref()
+                .map(|_| (true, sw.origin, sw.start)),
+            None => t.clip.as_ref().map(|c| (false, c.origin, c.start)),
         }
     }
 

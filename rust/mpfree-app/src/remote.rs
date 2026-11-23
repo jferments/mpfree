@@ -44,12 +44,17 @@
 //! where it rests: across in the middle, up at the bottom. Play's own
 //! touches stay as they are.
 //!
+//! A set's controls (the Learn section's Show card, live shows B1;
+//! `Owner::Show`, its ids in [`mpfree_play::mpfree_param::show`]) are
+//! presses: [`Remote::show_write`] gives each once as it goes down, for the
+//! set player.
+//!
 //! The MPC's own buttons never come here, and nothing here sends MIDI.
 
 use mpfree_node::{Curve, ParamInfo, Unit};
 use mpfree_play::mpfree_param::clips::{self, Clips};
 use mpfree_play::mpfree_param::looper::{self, Looper, Which};
-use mpfree_play::mpfree_param::{perform, play, transport};
+use mpfree_play::mpfree_param::{perform, play, show, transport};
 
 use crate::perform_pads::PadAction;
 
@@ -169,7 +174,8 @@ pub enum LooperAct {
         n: usize,
         on: bool,
     },
-    /// Pressed: Next loop, Undo, Redo, Capture or Clear.
+    /// Pressed: Next loop, Undo, Redo, Capture, Clear, Snap or Use my
+    /// tap.
     Press(Looper),
 }
 
@@ -284,7 +290,7 @@ const FILTER_OFF: f32 = 1.0;
 /// value each was given, 0 to 1 over its range), done once a period
 /// ([`PlayMoves::take`]), so the XY pad's two ways move together.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct PlayMoves([Option<f32>; play::ALL.len()]);
+pub struct PlayMoves([Option<f32>; play::KNOBS]);
 
 /// What learned controls do to Play this period.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -362,12 +368,19 @@ pub struct Remote {
     /// loop's.
     loop_keys: [Option<KeyHeld>; 9],
     /// The looper's presses held down now, bit `id` for Next loop to
-    /// Clear.
-    looper_held: u8,
+    /// Use my tap.
+    looper_held: u16,
     /// The mute last asked of each loop and when, until the looper has
     /// it ([`MUTE_ASK_S`]).
     mute_asked: [Option<(bool, f64)>; 8],
+    /// A set's controls held down now, bit `id` (the Show card's).
+    show_held: u8,
+    /// Next and Previous patch held down now, bit `id - NEXT_PATCH`.
+    patch_held: u8,
 }
+
+/// What a set's learned control says while no set is open.
+pub const NO_SET: &str = "No set is open: the Show controls work while a set plays";
 
 impl Remote {
     pub fn new() -> Remote {
@@ -442,8 +455,8 @@ impl Remote {
     /// A learned control set looper parameter `id` to `value` (0 to 1) at
     /// `t` seconds. A key goes down past the middle and lets go under it,
     /// as a pad does (its hold clears the loop: [`Remote::loop_holds`]);
-    /// Next loop, Undo, Redo, Capture and Clear press once each time they
-    /// go down; a mute is on from the middle up, and does something only
+    /// Next loop, Undo, Redo, Capture, Clear, Snap and Use my tap press
+    /// once each time they go down; a mute is on from the middle up, and does something only
     /// when that isn't where the loop stands (or will, once the looper has
     /// the last one asked).
     pub fn looper_write(&mut self, id: u16, value: f32, now: Now, t: f64) -> LooperAct {
@@ -494,7 +507,7 @@ impl Remote {
                 LooperAct::Mute { n, on }
             }
             press => {
-                let bit = 1u8 << (id & 7);
+                let bit = 1u16 << (id & 15);
                 let held = self.looper_held & bit != 0;
                 match (on, held) {
                     (true, false) => {
@@ -511,6 +524,47 @@ impl Remote {
         }
     }
 
+    /// A learned control set a set's control `id` ([`show`]) to `value`:
+    /// the press, as it goes down (from the middle up), once until it
+    /// comes up again. The set player cleans a footswitch's bounce
+    /// (`show::DEBOUNCE_MS`) and ignores presses while a song changes.
+    pub fn show_write(&mut self, id: u16, value: f32) -> Option<u16> {
+        show::name(id)?;
+        let bit = 1u8 << (id & 7);
+        let held = self.show_held & bit != 0;
+        match (value >= 0.5, held) {
+            (true, false) => {
+                self.show_held |= bit;
+                Some(id)
+            }
+            (false, true) => {
+                self.show_held &= !bit;
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// A learned control set Next or Previous patch (`id`, [`play`]) to
+    /// `value`: its step (1 or -1) and whether it waits for your hands, as
+    /// it goes down (from the middle up), once until it comes up again.
+    pub fn patch_write(&mut self, id: u16, value: f32) -> Option<(i32, bool)> {
+        let step = play::patch_step(id)?;
+        let bit = 1u8 << (id - play::NEXT_PATCH);
+        let held = self.patch_held & bit != 0;
+        match (value >= 0.5, held) {
+            (true, false) => {
+                self.patch_held |= bit;
+                Some(step)
+            }
+            (false, true) => {
+                self.patch_held &= !bit;
+                None
+            }
+            _ => None,
+        }
+    }
+
     /// A controller went away (`MusicIn::take_unplugged`): its controls
     /// held down will never come up. The looper's keys and presses let go
     /// without acting: a key held then clears nothing, and its next press
@@ -522,6 +576,8 @@ impl Remote {
     pub fn let_go(&mut self) -> impl Iterator<Item = u16> {
         self.loop_keys = [None; 9];
         self.looper_held = 0;
+        self.show_held = 0;
+        self.patch_held = 0;
         self.clips_held.clear();
         std::mem::take(&mut self.held)
             .into_iter()
@@ -644,6 +700,44 @@ mod tests {
         rolling: true,
         ..STOPPED
     };
+
+    /// A set's control presses once as it goes down, and again only after
+    /// it has come up; an unplugged controller lets go of it.
+    #[test]
+    fn a_sets_control_presses_once_a_press() {
+        let mut r = Remote::new();
+        assert_eq!(r.show_write(show::GO, 1.0), Some(show::GO));
+        assert_eq!(r.show_write(show::GO, 1.0), None, "still down");
+        assert_eq!(r.show_write(show::NEXT_SONG, 0.8), Some(show::NEXT_SONG));
+        assert_eq!(r.show_write(show::GO, 0.0), None);
+        assert_eq!(r.show_write(show::GO, 0.6), Some(show::GO));
+        assert_eq!(r.show_write(99, 1.0), None, "no such control");
+        let _ = r.let_go().count();
+        assert_eq!(r.show_write(show::NEXT_SONG, 1.0), Some(show::NEXT_SONG));
+    }
+
+    /// Next and Previous patch press once a press, each saying whether
+    /// it waits for the hands; the knobs aren't presses.
+    #[test]
+    fn next_and_previous_patch_press_once_a_press() {
+        let mut r = Remote::new();
+        assert_eq!(r.patch_write(play::NEXT_PATCH, 1.0), Some((1, false)));
+        assert_eq!(r.patch_write(play::NEXT_PATCH, 0.9), None, "still down");
+        assert_eq!(
+            r.patch_write(play::PREVIOUS_PATCH_HANDS_UP, 1.0),
+            Some((-1, true))
+        );
+        assert_eq!(r.patch_write(play::NEXT_PATCH, 0.0), None);
+        assert_eq!(r.patch_write(play::NEXT_PATCH, 1.0), Some((1, false)));
+        assert_eq!(r.patch_write(play::SWING, 1.0), None);
+        let _ = r.let_go().count();
+        assert_eq!(r.patch_write(play::NEXT_PATCH, 1.0), Some((1, false)));
+        // The knobs' moves still go by id.
+        let mut m = PlayMoves::default();
+        m.set(play::XY_UP, 1.0);
+        m.set(play::NEXT_PATCH, 1.0);
+        assert_eq!(m.take(STOPPED).xy, Some((0.5, 1.0, true)));
+    }
 
     #[test]
     fn a_button_presses_once_and_lets_go_once() {
@@ -893,6 +987,8 @@ mod tests {
             (looper::REDO, Looper::Redo),
             (looper::CAPTURE, Looper::Capture),
             (looper::CLEAR, Looper::Clear),
+            (looper::SNAP, Looper::Snap),
+            (looper::USE_MY_TAP, Looper::UseMyTap),
         ] {
             assert_eq!(r.looper_write(id, 1.0, STOPPED, 0.0), LooperAct::Press(l));
             assert_eq!(r.looper_write(id, 0.8, STOPPED, 0.0), LooperAct::Nothing);
@@ -900,7 +996,7 @@ mod tests {
             assert_eq!(r.looper_write(id, 1.0, STOPPED, 0.0), LooperAct::Press(l));
             assert_eq!(describe_looper(id, STOPPED), None);
         }
-        assert_eq!(r.looper_write(7, 1.0, STOPPED, 0.0), LooperAct::Nothing);
+        assert_eq!(r.looper_write(9, 1.0, STOPPED, 0.0), LooperAct::Nothing);
     }
 
     /// A loop's mute is on from the middle up and acts only where the

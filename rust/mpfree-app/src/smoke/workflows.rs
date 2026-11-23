@@ -2519,7 +2519,7 @@ mod tests {
             s.press("synth-pick", "keep", "").run_periods(2).settle();
             assert_eq!(s.mix.instruments.pads_play_at(), Some(free(0)));
             s.press("header", "tab", "Arrange").settle();
-            s.press("clips", "song", "Song").settle();
+            s.press("clips", "view", "Song").settle();
             s.press("song", "button", "Play song").settle();
             assert!(s.time.song_on());
             let audio = |s: &mut Session, a| {
@@ -2692,7 +2692,7 @@ mod tests {
             // input; its next take's file is made as it arms.
             s.line_in(Some(440.0));
             s.press("header", "tab", "Arrange").settle();
-            s.press("clips", "song", "Song").settle();
+            s.press("clips", "view", "Song").settle();
             s.press("song", "button", "Play song").settle();
             s.press("song", "add-track", "+ Track").settle();
             s.press("song", "add-kind", "Audio track")
@@ -2783,8 +2783,9 @@ mod tests {
     /// drum clip plays on Track 1 while the pads play Poly, chosen on the
     /// Synth tab. Selecting other tracks and tapping a row of REC's list
     /// never move the pads, the header names them on every page, and no
-    /// track or clip changes; a kit picked for the selected track, or the
-    /// header's chip (Follow track), gives the pads back to the track.
+    /// track or clip changes; a kit picked for the selected track leaves
+    /// the pads on Poly (sampler step 15b), and the header's chip (Follow
+    /// track) gives them back to the track.
     #[test]
     fn the_pads_play_poly_while_a_drum_clip_plays_on_whichever_track_is_selected() {
         use crate::app::PadFocus;
@@ -2865,13 +2866,17 @@ mod tests {
                 .filter(|c| c.widget == "kits" && c.target.id == "row")
                 .collect();
             s.press_target(&rows[1].target).run_for(0.2);
-            assert_eq!(s.app.pads_focus(), PadFocus::Track);
             assert_eq!(s.track_kits.entry(1), 1, "Track 2 plays kit 2");
-            assert_eq!(s.kit, 1, "and the pads with it");
-            // Chosen again, then the header's chip: Follow track.
+            assert_eq!(s.kit, 1, "the armed track's kit");
+            assert!(
+                s.app.pads_chose_synth(),
+                "a kit picked for the track never moves the pads (step 15b)"
+            );
+            let before = s.previewed.len();
+            s.pad(1, 90, 0.05);
+            assert_eq!(s.previewed.len(), before + 1, "the pads still play Poly");
+            // The header's chip: Follow track.
             s.press("header", "tab", "Synth").settle();
-            s.press("synth-pads-head", "play", "").settle();
-            assert!(s.app.pads_chose_synth(), "{}", s.hint());
             s.press("header", "chip", "Pads: Poly").settle();
             assert_eq!(s.app.pads_focus(), PadFocus::Track);
             assert!(s.control("header", "chip", "Pads: Poly").is_none());
@@ -3303,6 +3308,169 @@ mod tests {
     /// chip went in the Play, Pads and Sequencer redesign): a kit tapped
     /// there loads and the page comes back; Back, the button again or a
     /// tab close it and keep the kit (Jay's card, 13 Nov 14:57Z).
+    #[test]
+    fn a_patch_made_from_plays_menu_splits_the_keys_and_learns_a_zones_end() {
+        use crate::midi_in::Key;
+        use crate::patch_page::{EDIT, EDIT_PAGE, LIST, LIST_PAGE};
+        on_big_stack(|| {
+            let on = |note, velocity| (0u8, Key::Down { note, velocity });
+            let mut s = Session::new();
+            assert!(
+                s.control(crate::play_page::TRANSPORT, "keys", "").is_none(),
+                "no patches: no KEYS PLAY"
+            );
+            // MENU on Play: Patches opens the list, empty.
+            s.button("MENU").settle();
+            let row = s
+                .app
+                .row_of(crate::app::Item::Patches)
+                .expect("Patches on Play's MENU");
+            s.route(crate::gui::FromUi::MenuStep(row, 1));
+            s.run_periods(2).settle();
+            assert_eq!(s.page(), LIST_PAGE);
+            // New patch from Bass + keys: the editor, and the keys play it.
+            s.press(LIST, "new", "New patch").settle();
+            s.press(LIST, "layout", "Bass + keys").settle();
+            assert_eq!(s.page(), EDIT_PAGE);
+            let keys = s
+                .control(crate::play_page::TRANSPORT, "keys", "")
+                .expect("KEYS PLAY over the editor, once the song has a patch");
+            assert!(
+                keys.target.label.contains("1 · Patch 1"),
+                "{}",
+                keys.target.label
+            );
+            // Zone 2 (C3 up) picked, an octave up on Q-Link 3.
+            let zone2 = s
+                .controls()
+                .into_iter()
+                .find(|c| c.widget == EDIT && c.target.id == "zone" && c.target.index == 1)
+                .expect("zone 2's lane");
+            s.press_target(&zone2.target).settle();
+            s.qlink(2, 12).settle();
+            // C2 plays the bass as played; C4 plays an octave up.
+            let down = s.keys_from_gear(&[0x90, 36, 100, 0x90, 60, 90]);
+            assert_eq!(down, [on(36, 100), on(72, 90)], "{:?}", s.said());
+            assert!(
+                s.keys_from_gear(&[0x80, 36, 0]) == [(0, Key::Up { note: 36 })],
+                "a key ends where it started"
+            );
+            let _ = s.keys_from_gear(&[0x80, 60, 0]);
+            // + Zone: Learn low is lit, and the next key, C6, starts it.
+            // The new zone layers over zone 2 from there, untransposed.
+            s.press(EDIT, "add-zone", "+ Zone").settle();
+            let _ = s.keys_from_gear(&[0x90, 84, 80]);
+            let _ = s.keys_from_gear(&[0x80, 84, 0]);
+            assert_eq!(
+                s.keys_from_gear(&[0x90, 72, 64]),
+                [on(84, 64)],
+                "under C6, zone 2 alone"
+            );
+            assert_eq!(
+                s.keys_from_gear(&[0x90, 96, 64]),
+                [on(108, 64), on(96, 64)],
+                "from C6, zone 2 and the new zone"
+            );
+            let _ = s.keys_from_gear(&[0x80, 72, 0, 0x80, 96, 0]);
+            // Close: back to Play's view.
+            s.press(EDIT, "close", "Close").settle();
+            assert_eq!(s.page(), "Play");
+        });
+    }
+
+    /// C1's second half: a footswitch learned on Next and Previous patch
+    /// steps the song's patches from any page, stopping at the ends and
+    /// saying why; one set to wait does so until the key held is up; and
+    /// with Program change in: Picks a patch, program 2 from other gear
+    /// picks patch 2 before the key after it plays.
+    #[test]
+    fn a_footswitch_and_a_program_change_step_the_songs_patches() {
+        use crate::midi_in::Key;
+        use crate::patch_page::{EDIT, LIST};
+        use mpfree_play::mpfree_param::play;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let keys_play = |s: &mut Session| {
+                s.control(crate::play_page::TRANSPORT, "keys", "")
+                    .map(|c| c.target.label)
+                    .unwrap_or_default()
+            };
+            // No patches yet: the footswitch says so.
+            s.patch_footswitch(play::NEXT_PATCH, 1.0).settle();
+            s.patch_footswitch(play::NEXT_PATCH, 0.0).settle();
+            assert_eq!(s.hint(), "Next patch: this song has no patches yet");
+            // Two patches from Play's MENU: Bass + keys, then Whole keyboard.
+            s.button("MENU").settle();
+            let row = s.app.row_of(crate::app::Item::Patches).unwrap();
+            s.route(crate::gui::FromUi::MenuStep(row, 1));
+            s.run_periods(2).settle();
+            for layout in ["Bass + keys", "Whole keyboard"] {
+                s.press(LIST, "new", "New patch").settle();
+                s.press(LIST, "layout", layout).settle();
+                s.press(EDIT, "back", "‹ Patches").settle();
+            }
+            assert!(
+                keys_play(&mut s).contains("2 · Patch 2"),
+                "{}",
+                keys_play(&mut s)
+            );
+            s.press(LIST, "close", "Close").settle();
+            // Previous patch, then past the first.
+            let press = |s: &mut Session, id| {
+                s.patch_footswitch(id, 1.0).settle();
+                s.patch_footswitch(id, 0.0).settle();
+            };
+            press(&mut s, play::PREVIOUS_PATCH);
+            assert!(
+                keys_play(&mut s).contains("1 · Patch 1"),
+                "{}",
+                keys_play(&mut s)
+            );
+            press(&mut s, play::PREVIOUS_PATCH);
+            assert_eq!(s.hint(), "Previous patch: patch 1 is the song's first");
+            // Next patch set to wait for the hands: C4 held keeps patch 1.
+            let _ = s.keys_from_gear(&[0x90, 60, 90]);
+            press(&mut s, play::NEXT_PATCH_HANDS_UP);
+            assert!(
+                keys_play(&mut s).contains("Patch 1 → Patch 2"),
+                "{}",
+                keys_play(&mut s)
+            );
+            assert_eq!(
+                s.keys_from_gear(&[0x80, 60, 0]),
+                [(0, Key::Up { note: 60 })],
+                "C4 ends on patch 1"
+            );
+            assert!(
+                keys_play(&mut s).contains("2 · Patch 2"),
+                "{}",
+                keys_play(&mut s)
+            );
+            press(&mut s, play::NEXT_PATCH);
+            assert_eq!(s.hint(), "Next patch: patch 2 is the song's last");
+            // Program change in: Picks a patch. Program 1, then a key: patch
+            // 1's bass plays C2.
+            s.program_picks_patches(false);
+            let sent = s.keys_from_gear(&[0xC0, 0, 0x90, 36, 100]);
+            assert_eq!(
+                sent,
+                [(
+                    0,
+                    Key::Down {
+                        note: 36,
+                        velocity: 100
+                    }
+                )]
+            );
+            assert!(
+                keys_play(&mut s).contains("1 · Patch 1"),
+                "{}",
+                keys_play(&mut s)
+            );
+            let _ = s.keys_from_gear(&[0x80, 36, 0]);
+        });
+    }
+
     #[test]
     fn what_the_pads_play_and_the_pads_tabs_kit_open_the_list_of_kits() {
         on_big_stack(|| {
@@ -5269,6 +5437,109 @@ mod tests {
             assert_eq!(s.synth.state().own.as_deref(), Some(saved.as_str()));
             assert_eq!(s.view(), View::Synth);
             let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
+    /// Your own XY layouts (the XY plan's phase 2): + New layout plays an
+    /// empty one and opens Setup; + across raises the banner, which stays
+    /// on the mixer; SHIFT + a touch on a fader joins it there (not MIDI
+    /// Learn) and Done keeps it; on the full-screen pad a finger moves the
+    /// fader and Go back gives it back; the song keeps the layout.
+    #[test]
+    fn a_layout_of_yours_gathers_a_fader_and_the_pad_plays_it() {
+        on_big_stack(|| {
+            use crate::xy_widgets::XY_BANNER;
+            use mpfree_ui::Touch;
+            let drums = StripId::Track(0);
+            let volume = |s: &Session| s.mix.mixer.param(drums, mpfree_fx::ids::mixer::VOLUME);
+            let mut s = Session::new();
+            s.play_view("All");
+            s.press(crate::play_page::XY, "xy-chip", "").settle();
+            assert_eq!(s.page(), crate::xy_list::XY_PAGE);
+            s.press(crate::xy_list::XY_LIST, "new", "+ New layout")
+                .settle();
+            assert_eq!(s.page(), crate::xy_setup::XY_SETUP_PAGE);
+            assert_eq!(s.xy_yours.playing, Some(0));
+            assert_eq!(s.xy_yours.yours[0].layout.name, "Layout 1");
+
+            // + across: the banner, on every page.
+            s.press(crate::xy_setup::XY_SETUP, "plus", "+ across")
+                .settle();
+            assert!(s.xy_yours.wait.is_some());
+            s.press("header", "tab", "Mix").settle();
+            assert!(
+                s.control(XY_BANNER, "done", "Done").is_some(),
+                "on the mixer too"
+            );
+            s.button_edge("SHIFT", true);
+            s.press("mixer", "fader", "Drums fader").settle();
+            s.button_edge("SHIFT", false);
+            let across = &s.xy_yours.yours[0].layout.across.targets;
+            assert_eq!(across.len(), 1, "the fader joined across");
+            s.press(XY_BANNER, "done", "Done").settle();
+            assert!(s.xy_yours.wait.is_none());
+            assert!(
+                s.control(XY_BANNER, "done", "Done").is_none(),
+                "the banner went"
+            );
+
+            // The full-screen pad plays it: the fader follows the finger,
+            // and Go back gives it back.
+            let before = volume(&s);
+            s.button_with("SHIFT", "NEXT SEQ").settle();
+            assert_eq!(s.page(), crate::play_page::XY_FULL_PAGE);
+            let pad = s
+                .control(crate::play_page::XY, "xy", "")
+                .expect("the pad")
+                .target
+                .rect;
+            let (x, y) = (pad.x + pad.w / 10, pad.y + pad.h / 2);
+            if let Some(a) = s.screen.touch(9, Touch::Down, x, y) {
+                s.route(a);
+            }
+            s.run_for(0.3);
+            let held = volume(&s);
+            assert!(
+                (held - before).abs() > 0.05,
+                "the pad moved the fader: {before} → {held}"
+            );
+            if let Some(a) = s.screen.touch(9, Touch::Up, x, y) {
+                s.route(a);
+            }
+            s.run_for(1.0);
+            assert!(
+                (volume(&s) - before).abs() < 0.01,
+                "Go back: {before} again, not {}",
+                volume(&s)
+            );
+
+            // Let go: Stay. The fader stays where the finger lifts, and
+            // UNDO puts it back.
+            s.press(crate::xy_widgets::XY_BAR, "xy-bar", "Let go: Go back")
+                .settle();
+            assert!(s.xy_yours.yours[0].stays());
+            if let Some(a) = s.screen.touch(9, Touch::Down, x, y) {
+                s.route(a);
+            }
+            s.run_for(0.3);
+            if let Some(a) = s.screen.touch(9, Touch::Up, x, y) {
+                s.route(a);
+            }
+            s.run_for(0.5).settle();
+            let stayed = volume(&s);
+            assert!((stayed - held).abs() < 0.01, "Stay: {held}, not {stayed}");
+            s.button("UNDO").settle();
+            s.run_for(0.2);
+            assert!(
+                (volume(&s) - before).abs() < 0.01,
+                "UNDO: {before} again, not {}",
+                volume(&s)
+            );
+
+            // The song keeps it.
+            let text = s.xy_yours.text();
+            assert!(text.starts_with("xy 1\nlayout\tLayout 1\n"), "{text}");
+            assert!(text.contains("playing\t0"), "{text}");
         });
     }
 }

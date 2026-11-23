@@ -1669,14 +1669,17 @@ impl Poly {
         // The drive's and the distortion's level corrections, from the
         // step just rendered.
         let mut level = if v.drive_amt > 0.0 {
-            v.drive_level.step(CTRL, rate_bits)
+            v.drive_level
+                .step_late(CTRL, rate_bits, soft_quiet_gain(v.drive_gain, v.drive_amt))
         } else {
             v.drive_level.clear();
             v.drive_aa = [DriveAa::default(); 2];
             1.0
         };
         if v.dist_amt > 0.0 {
-            level *= v.dist_level.step(CTRL, rate_bits);
+            level *=
+                v.dist_level
+                    .step_late(CTRL, rate_bits, soft_quiet_gain(v.dist_gain, v.dist_amt));
         } else if dist_was > 0.0 {
             // Off: nothing more is summed, so one clear does.
             v.dist_level.clear();
@@ -1845,7 +1848,7 @@ impl Poly {
             // Most sounds have no distortion: one test a step skips it.
             let (dk, dn) = if v.drive_amt > 0.0 {
                 let lv = mix_level(s.unison, [s.lvl1, s.lvl2], v.sub, v.noise);
-                drive_scales(v.drive_gain, lv)
+                soft_scales(v.drive_gain, lv)
             } else {
                 (1.0, 1.0)
             };
@@ -1860,7 +1863,7 @@ impl Poly {
             v.filt[0].run(mode, &v.coefs, l);
             let dist = if v.dist_amt > 0.0 {
                 let lv = mix_level(s.unison, [s.lvl1, s.lvl2], v.sub, v.noise);
-                let (ek, en) = drive_scales(v.dist_gain, lv);
+                let (ek, en) = soft_scales(v.dist_gain, lv);
                 drive_run_level_aa(l, ek, en, v.dist_amt, &mut v.dist_level, &mut v.dist_aa[0]);
                 Some((ek, en))
             } else {

@@ -52,6 +52,10 @@ pub struct TransportLook {
     pub rec: Option<RecChip>,
     /// What the pads play, on Play's card only.
     pub pads: Option<PadsPlay>,
+    /// What the keys play (live shows C1, layout spec 4q), on Play's card
+    /// only while the song has patches: KEYS PLAY takes the bar and step
+    /// dots' place.
+    pub keys: Option<crate::patch_page::KeysPlay>,
 }
 
 /// What the pads play, on Play's transport card: the armed track, its kit
@@ -398,6 +402,7 @@ impl Default for TransportLook {
             view: 0,
             rec: None,
             pads: None,
+            keys: None,
         }
     }
 }
@@ -413,6 +418,8 @@ struct TransportAreas {
     rec: Rect,
     /// What the pads play, if it was drawn.
     pads: Rect,
+    /// KEYS PLAY, if it was drawn.
+    keys: Rect,
 }
 
 /// [`PlayTransport`]'s event for a tap on the tempo
@@ -425,6 +432,9 @@ pub const TAP_REC: usize = 1;
 /// [`PlayTransport`]'s event for a tap on what the pads play
 /// ([`PadsPlay`]): the app opens the list of kits.
 pub const TAP_PADS: usize = 2;
+/// [`PlayTransport`]'s event for a tap on KEYS PLAY: the app opens the
+/// patch list.
+pub const TAP_KEYS: usize = 3;
 
 /// The transport card. A tap on the switch gives `Tab(view)`.
 #[derive(Default)]
@@ -627,12 +637,22 @@ impl Widget for PlayTransport {
             paint_pads_play(cx, pads, p);
             end = pads.x - 12;
         }
+        // What the keys play, before PADS PLAY, in the dots' place.
+        let mut keys = Rect::default();
+        if let Some(k) = &self.look.keys {
+            let tw = cx.measure(FontId::Bold, 14.0, k.text()) + 12 + 14 + 12;
+            let w = tw.clamp(crate::patch_page::KEYS_MIN_W, crate::patch_page::KEYS_MAX_W);
+            let h = REC_CHIP_H.min(inner.h);
+            keys = Rect::new(end - w, inner.y + (inner.h - h) / 2, w, h);
+            crate::patch_page::paint_keys_play(cx, keys, k);
+            end = keys.x - 12;
+        }
         // The REC chip between the tempo and where the bar is. The dots go
         // wherever there's no switch beside what the pads play (Play's
         // card has the dots beside PADS PLAY, board 1 of the looper
         // redesign's step 5).
         let left = x + bw + 6 + bpm_word + 14;
-        let gw = if self.look.pads.is_some() && !segs.is_empty() {
+        let gw = if (self.look.pads.is_some() && !segs.is_empty()) || self.look.keys.is_some() {
             0
         } else {
             16 * DOT_CELL + 3 * 6
@@ -685,6 +705,7 @@ impl Widget for PlayTransport {
                 bpm,
                 rec,
                 pads,
+                keys,
             },
         ));
     }
@@ -714,6 +735,9 @@ impl Widget for PlayTransport {
             if let (true, false, Some(p)) = (*pr == r, a.pads.is_empty(), &self.look.pads) {
                 out.push(Target::tap("pads", 0, p.text(), a.pads));
             }
+            if let (true, false, Some(k)) = (*pr == r, a.keys.is_empty(), &self.look.keys) {
+                out.push(Target::tap("keys", 0, k.text(), a.keys));
+            }
         }
         out
     }
@@ -737,6 +761,8 @@ impl Widget for PlayTransport {
             Some(EventKind::Select(TAP_REC))
         } else if !a.pads.is_empty() && a.pads.contains(x, y) {
             Some(EventKind::Select(TAP_PADS))
+        } else if !a.keys.is_empty() && a.keys.contains(x, y) {
+            Some(EventKind::Select(TAP_KEYS))
         } else {
             None
         }
