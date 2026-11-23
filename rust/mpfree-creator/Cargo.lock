@@ -1571,6 +1571,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-scale"
+version = "0.1.0"
+
+[[package]]
 name = "mpfree-simd"
 version = "0.1.0"
 dependencies = [
@@ -1606,6 +1610,9 @@ dependencies = [
 [[package]]
 name = "mpfree-tuning"
 version = "0.1.0"
+dependencies = [
+ "mpfree-scale",
+]
 
 [[package]]
 name = "naga"

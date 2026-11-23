@@ -89,7 +89,7 @@ You can move the song around with your finger:
 - **UNDO** takes back any of these, one at a time, and **SHIFT + UNDO** puts them back again.
 
 > [!MPC]
-> On the MPC, a song is a list of sequences played one after another. In MPFree, the song is a timeline of clips, and each track can leave the song to play a launched clip and come back.
+> On the MPC, Song Mode plays a list of sequences one after another, and Arrange Mode records tracks onto a linear timeline. In MPFree, the song is a timeline of clips, and each track can leave the song to play a launched clip and come back.
 
 ### Markers and bars
 

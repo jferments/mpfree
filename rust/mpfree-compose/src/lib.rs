@@ -68,6 +68,7 @@ pub mod baseline;
 pub mod bind;
 pub mod dice;
 pub mod event;
+pub mod job;
 pub mod keep;
 pub mod motif;
 pub mod phrase;
@@ -89,6 +90,7 @@ pub mod timing;
 pub use bind::{audition, revision, revision_in, Binding, Stale};
 pub use dice::{Dice, DiceName, Job};
 pub use event::{Event, MotifRef, Motion, NoteDecision, Part, PartId, Role, Source};
+pub use job::{Ask, ContinueJob, Done, Lanes};
 pub use keep::{clip_notes, continuation, KeepError};
 pub use motif::{similarity, transform, GridNote, Similarity, Transform};
 pub use phrase::{continue_line, try_again, Line, Phrasing};
@@ -99,7 +101,10 @@ pub use progression::{diatonic, progression};
 pub use read::{read, LeftOut, ToRead};
 pub use realize::{decisions_of, realize, Fit, PlainNote};
 pub use refit::{action, effect, misfits, Action, Aspects, Change, Effect, How, Target};
-pub use request::{continue_clip, continue_notes, try_bar, Continue, Continued, OnClip, Refused};
+pub use request::{
+    continue_clip, continue_clip_read, continue_notes, try_bar, Continue, Continued, OnClip,
+    Refused,
+};
 pub use rhythm::{Grid, Onset};
 pub use rules::{RangeSetting, Rule, RuleKind, Suggestion, Unmet, Weights};
 pub use settings::{Ending, Keeps, Settings};
