@@ -6,10 +6,10 @@
 #   python3 tools/ci/instr_gate.py --bless
 319648	Amp (Crunch)
 341579	Amp (Lead, Gain 10)
-265396	Analog Init, 8 voices
-203488	Analog Poly Brass, 8 voices
-320632	Analog Warm Pad, 8 voices
-465556	Analog Worn Cards, 16 voices
+239825	Analog Init, 8 voices
+172383	Analog Poly Brass, 8 voices
+288045	Analog Warm Pad, 8 voices
+409027	Analog Worn Cards, 16 voices
 9679	Arps: 16 latched arps at 32nds
 3183	Arps: 4 latched arps at 32nds
 128876	Arrange: a step tap in song mode, 512 blocks of 32 clips: until it plays
@@ -137,19 +137,19 @@
 52446	Poly Acid, 8 voices
 210895	Poly Brass, 8 voices
 41489	Poly Breath Lead, 8 voices
-362523	Poly Digital Bell, 8 voices
+369437	Poly Digital Bell, 8 voices
 294239	Poly Drift Pad, 8 voices
 355569	Poly Dust Pad, 8 voices
 350506	Poly FM Keys, 8 voices
 62675	Poly Grit Bass, 8 voices
 71532	Poly Growl Bass, 8 voices
-246714	Poly Harmonic Pluck, 8 voices
+248587	Poly Harmonic Pluck, 8 voices
 595812	Poly Init, 16 voices, unison 4
 193565	Poly Init, 8 voices
 58186	Poly Lead, 8 voices
 40919	Poly Low Note Lead, 8 voices
 550307	Poly Morph Pad, 8 voices
-264543	Poly Organ, 8 voices
+266416	Poly Organ, 8 voices
 208324	Poly Pluck, 8 voices
 37721	Poly Portamento Lead, 8 voices
 68637	Poly Singing Lead, 8 voices
@@ -161,52 +161,53 @@
 401599	Poly Super Stack, 8 voices
 335435	Poly Supersaw, 8 voices
 445278	Poly Sync Sweep, 8 voices
-246862	Poly Table Init, 8 voices
-1698302	Poly Table, 16 voices, both osc, unison 8
+248736	Poly Table Init, 8 voices
+1687855	Poly Table, 16 voices, both osc, unison 8
 664789	Poly Table, 8 voices, both osc, unison 4
 48137	Poly Unison Lead, 8 voices
 47197	Poly Vowel Lead, 8 voices
 246021	Poly Worn Brass, 8 voices
 4215241	Project: all at once
 295686	Project: bass into the limiter
-1331926	Project: dense synths
+1311483	Project: dense synths
 1599146	Project: distortion chain
-571852	Project: fast automation
+567742	Project: fast automation
 742130	Project: granular drums
 290797	Project: long stems
 12921	Ring mod
 145867	Room reverb
 108213	Rotary
-546477	Sampler x16 held
+560208	Sampler x16 held
 1515282	Sampler x16 held up
-1774420	Sampler x16 held up, 16-bit sound
-548284	Sampler x16 held, 16-bit sound
+1764508	Sampler x16 held up, 16-bit sound
+610813	Sampler x16 held, 16-bit sound
 1336420	Sampler x16 held, LFO and pitch envelope
-867548	Sampler x16 held, comb
-1544133	Sampler x16 held, driven ladder
-650988	Sampler x16 held, vowel
-1435285	Sampler, 20 pads
-2018120	Sampler, 20 pads + master grains
-77512	Sampler, 4 drum kits, 64 voices
-41593	Sampler, drum kit, 24 voices
+881875	Sampler x16 held, comb
+1560743	Sampler x16 held, driven ladder
+665313	Sampler x16 held, vowel
+1453656	Sampler, 20 pads
+2036444	Sampler, 20 pads + master grains
+78172	Sampler, 4 drum kits, 64 voices
+40641	Sampler, drum kit, 24 voices
 43007	Sampler, drum kit, 24 voices, 16-bit sounds
-79457	Sampler, drum kit, 64 voices
-823688	Sampler, the 16 sample pads alone
+80116	Sampler, drum kit, 64 voices
+842186	Sampler, the 16 sample pads alone
 630801	Sampler, the 4 granular pads alone
 5519410	Song view: 4,096 blocks, a frame while the song plays
 4085464	Song: sampler, 2 synths, mixer+FX, time, looper
 261927	Sound Keys Init with Ensemble, 8 voices
 137967	Spring reverb
-59214	Squelch Acid Line, a line
-61774	Squelch Distorted, a line
-64328	Squelch Square Acid, a line
+58563	Squelch Acid Line, a line
+61123	Squelch Distorted, a line
+63931	Squelch Square Acid, a line
 375783	Steps: a lock detent, 8,192 notes: the edit
 387476	Steps: a lock detent, 8,192 notes: until it plays
 485970	Steps: a tap, 8,192 notes: the edit
 711323	Steps: a tap, 8,192 notes: until it plays
 1568091	Steps: the grid rebuilt, 8,192 notes in 64 rows
 65219	Stream voices x16 at 1x, band-limited
-1105482	Stream voices x64 at 1.5x, Hermite
+1841036	Stream voices x64 at 0.75x, 8-point
+3709708	Stream voices x64 at 1.5x, 8-point
 6410634	Stream voices x64 at 1.5x, band-limited
 11812490	Stream voices x64 at 1.5x, band-limited 16
 8220268	Stream voices x64 at 3x, band-limited
@@ -218,7 +219,7 @@
 39041	Choir formants: 8 voices, plain
 334933	Poly Init, 8 voices, distortion 24 dB
 330290	Poly Init, 8 voices, drive 24 dB
-333709	Poly Table, 8 voices, sync 50
+326596	Poly Table, 8 voices, sync 50
 31342	Talk box
 87944	Tape delay
 8952	Time with trig conditions and ratchets, 8 clips, arp
@@ -232,18 +233,18 @@
 11340	Tremolo
 32159	Tuner
 111176	Vocoder
-476604	Wavetable Digital Bell, 8 voices
-479074	Wavetable FM Keys, 8 voices
-77780	Wavetable Growl Bass, 8 voices
-362702	Wavetable Harmonic Pluck, 8 voices
-2715695	Wavetable Init, 16 voices, both osc, unison 8
-361976	Wavetable Init, 8 voices
-1034441	Wavetable Init, 8 voices, both osc, unison 4
-413168	Wavetable Init, 8 voices, sync 50
-858613	Wavetable Morph Pad, 8 voices
-362861	Wavetable Organ, 8 voices
-553843	Wavetable Sync Sweep, 8 voices
-60600	Wavetable Vowel Lead, 8 voices
+503385	Wavetable Digital Bell, 8 voices
+457063	Wavetable FM Keys, 8 voices
+75056	Wavetable Growl Bass, 8 voices
+340720	Wavetable Harmonic Pluck, 8 voices
+2685432	Wavetable Init, 16 voices, both osc, unison 8
+339995	Wavetable Init, 8 voices
+1014603	Wavetable Init, 8 voices, both osc, unison 4
+424098	Wavetable Init, 8 voices, sync 50
+838737	Wavetable Morph Pad, 8 voices
+340878	Wavetable Organ, 8 voices
+532200	Wavetable Sync Sweep, 8 voices
+57848	Wavetable Vowel Lead, 8 voices
 143226	Wind Concert Flute, a line
 144174	Wind Growl Sax, a line
 121431	Wind Init, a line

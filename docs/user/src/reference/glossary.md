@@ -130,7 +130,7 @@ checked: 2026-11-19 f0b39161
 
 **Tracker** — A view of a clip as a list of steps from top to bottom, every step's settings in a row.
 
-**Tuning file** — A Scala file (`.scl`, with an optional `.kbm`) that tunes the synths to a scale of your own.
+**Tuning file** — A Scala file (`.scl`, with an optional `.kbm`) that tunes the synths and the kits' keygroups to a scale of your own.
 
 **Velocity** — How hard a pad is hit, from 1 (softest) to 127 (hardest).
 

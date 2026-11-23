@@ -1,7 +1,8 @@
 //! Clean pitching: a pad pitched up, or a file recorded at a higher rate,
-//! plays without aliasing; a Vintage pad keeps the old read and its
-//! aliasing; up to two semitones up (where what folds lands above
-//! 19 kHz), at or below its pitch, a voice sounds exactly as before.
+//! plays without aliasing; tuned a little, or down, it keeps the images
+//! its read folds back 50 dB down (the near read, DSP quality step 1.4);
+//! at its pitch a voice sounds exactly as before; a Vintage pad keeps the
+//! old read and its aliasing.
 
 use mpfree_sampler::engine::{Engine, EngineView, Event};
 use mpfree_sampler::model::*;
@@ -152,19 +153,119 @@ fn a_keygroup_two_octaves_up_reads_an_octave_copy_and_stays_clean() {
     );
 }
 
+/// Where a read folds back the image of a tone at `src` Hz in the sound,
+/// read at `v` times the sound's speed: the sound's rate less the tone,
+/// moved by the speed, folded into the band.
+fn image(src: f64, v: f64) -> f64 {
+    let fs = f64::from(RATE);
+    let f = ((fs - src) * v) % fs;
+    if f > fs / 2.0 {
+        fs - f
+    } else {
+        f
+    }
+}
+
 #[test]
-fn up_to_two_semitones_up_a_voice_sounds_exactly_as_a_vintage_one() {
+fn at_its_pitch_a_voice_sounds_exactly_as_a_vintage_one() {
     let s = sine(RATE, 0.5, 3_000.0);
-    for cents in [200, 150, 1, 0, -700, -1200] {
+    let clean = play(&pad(&s, 0, false), hit(), 8_000, 128);
+    let vintage = play(&pad(&s, 0, true), hit(), 8_000, 128);
+    assert_eq!(clean, vintage);
+    assert!(clean.iter().any(|x| x.abs() > 0.1));
+    // Tuned at all, the reads differ: the near read, and past two
+    // semitones up the band-limited one.
+    for cents in [1, 200, 201, -1200] {
         let clean = play(&pad(&s, cents, false), hit(), 8_000, 128);
         let vintage = play(&pad(&s, cents, true), hit(), 8_000, 128);
-        assert_eq!(clean, vintage, "tuned {cents}");
-        assert!(clean.iter().any(|x| x.abs() > 0.1));
+        assert_ne!(clean, vintage, "tuned {cents}");
     }
-    // Just past two semitones the read changes.
-    let clean = play(&pad(&s, 201, false), hit(), 8_000, 128);
-    let vintage = play(&pad(&s, 201, true), hit(), 8_000, 128);
-    assert_ne!(clean, vintage);
+}
+
+#[test]
+fn a_voice_tuned_a_little_or_down_keeps_what_folds_50_db_down() {
+    // 9 kHz out, as fxlab's Y5 rows: the Hermite read folds the tone's
+    // image back at -26 to -44 dB, the near read keeps it under -50 and
+    // the tone within 1 dB.
+    let at_pitch = play(
+        &pad(&sine(RATE, 0.5, 9_000.0), 0, false),
+        hit(),
+        12_000,
+        128,
+    );
+    let reference = db(level(&at_pitch, 9_000.0));
+    for cents in [-700, -200, -100, 100, 200] {
+        let v = (f64::from(cents) / 1200.0).exp2();
+        let src = 9_000.0 / v;
+        let s = sine(RATE, 0.5, src);
+        let clean = play(&pad(&s, cents, false), hit(), 12_000, 128);
+        let vintage = play(&pad(&s, cents, true), hit(), 12_000, 128);
+        let tone = db(level(&clean, 9_000.0));
+        let at = image(src, v);
+        let c = db(level(&clean, at)) - tone;
+        let w = db(level(&vintage, at)) - db(level(&vintage, 9_000.0));
+        eprintln!("tuned {cents}: image at {at:.0} Hz {c:.1} dB, Vintage {w:.1} dB");
+        assert!(c < -50.0, "tuned {cents}: the image is {c:.1} dB");
+        assert!(
+            w > -50.0,
+            "tuned {cents}: Vintage keeps its image, {w:.1} dB"
+        );
+        assert!(
+            (tone - reference).abs() < 1.0,
+            "tuned {cents}: the tone is {:.2} dB from its level at pitch",
+            tone - reference
+        );
+    }
+}
+
+#[test]
+fn a_voice_changing_reads_mid_note_does_not_click() {
+    // At pitch it copies its frames; tuned a cent up at frame 3000 it
+    // takes the near read, and three semitones up at 6000 the band-limited
+    // one. None of the three delays the sound, so a sine goes on smoothly:
+    // its second difference never passes what a sine at the higher pitch
+    // makes.
+    let s = sine(RATE, 0.5, 3_000.0);
+    let p = pad(&s, 0, false);
+    let mut e = Engine::new(RATE, 16);
+    e.set_view(EngineView::build(&p, RATE));
+    e.apply(hit());
+    let frames = 9_000;
+    let (mut l, mut r) = (vec![0.0; frames], vec![0.0; frames]);
+    for (at, cents) in [(3_000, 1.0), (6_000, 300.0)] {
+        e.schedule(
+            at,
+            Event::ProgramLive {
+                field: mpfree_sampler::engine::ProgramField::Tune,
+                value: cents,
+            },
+        );
+    }
+    for (a, b) in l.chunks_mut(frames).zip(r.chunks_mut(frames)) {
+        e.render(a, b);
+    }
+    let peak = l[1000..2900].iter().fold(0.0f32, |m, x| m.max(x.abs()));
+    let hz = 3_000.0 * 2f64.powf(0.25);
+    let bound =
+        f64::from(peak) * (2.0 * (std::f64::consts::PI * hz / f64::from(RATE)).sin()).powi(2);
+    let worst = (2_000..8_000)
+        .map(|n| f64::from((l[n + 1] - 2.0 * l[n] + l[n - 1]).abs()))
+        .fold(0.0, f64::max);
+    assert!(
+        worst < 1.02 * bound,
+        "second difference {worst:.4}, a sine's {bound:.4}"
+    );
+    // And the tune did move: three semitones up, 19 % more crossings.
+    let crossings = |x: &[f32]| {
+        x.windows(2)
+            .filter(|w| (w[0] < 0.0) != (w[1] < 0.0))
+            .count()
+    };
+    let (before, after) = (crossings(&l[1_000..3_000]), crossings(&l[6_500..8_500]));
+    assert!(
+        after * 100 > before * 115,
+        "crossings {before} then {after}"
+    );
 }
 
 #[test]

@@ -33,7 +33,9 @@ mod pad;
 
 pub use gesture::{Gesture, Step};
 pub use input::{Device, Phase, XyInput};
-pub use layout::{Axis, Compiled, Layout, LayoutError, Lift, Target, TARGETS};
+pub use layout::{
+    Axis, Compiled, How, Layout, LayoutError, Lift, Start, Target, GLIDE_MAX_MS, SLOTS, TARGETS,
+};
 pub use pad::Pad;
 
 pub use mpfree_mod::MapCurve;
