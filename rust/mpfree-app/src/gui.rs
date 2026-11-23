@@ -33561,6 +33561,7 @@ mod tests {
                     fade_old: 1.0,
                     speed: 0,
                     rate: 0,
+                    id: 0,
                     layers: vec![mpfree_looper::save::LayerFile {
                         level: 0.5,
                         pan: -0.25,

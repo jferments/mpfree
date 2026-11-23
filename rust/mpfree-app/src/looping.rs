@@ -1536,6 +1536,9 @@ pub struct LoopHost {
     heard_peaks: Vec<f32>,
     /// A bar's ticks as the last period played.
     bar_ticks: Tick,
+    /// Loops on audio tracks (phase 4b, behind Dev's switch): each slot's
+    /// loop's lasting id, and which are on tracks.
+    pub on_tracks: crate::loops_on_tracks::OnTracks,
 }
 
 /// A whole loop copying into an empty one, a layer at a time
@@ -2021,6 +2024,7 @@ impl LoopHost {
             picked: 0,
             copy: None,
             copy_end: None,
+            on_tracks: Default::default(),
             heard_peaks: vec![
                 0.0;
                 if seconds > 0 {
@@ -2114,6 +2118,7 @@ impl LoopHost {
         self.steps_left = 0;
         self.clear_next = true;
         self.emptying = true;
+        self.on_tracks.forget();
         self.tend_open();
         "looper: every loop fades out for the project".into()
     }
@@ -2174,8 +2179,12 @@ impl LoopHost {
     pub fn load(&mut self, saved: Saved) -> String {
         let (mut done, mut kept) = (Vec::new(), Vec::new());
         for (n, f) in saved.loops {
+            let id = f.id;
             match self.looper.load(n, f) {
-                Ok(()) => done.push((n + 1).to_string()),
+                Ok(()) => {
+                    self.on_tracks.set(n, id);
+                    done.push((n + 1).to_string())
+                }
                 Err(f) => {
                     kept.push((n + 1).to_string());
                     self.printer.send(ToPrinter::DropLoop(f));
@@ -2232,7 +2241,12 @@ impl LoopHost {
                         rate: self.rate,
                         selected: self.looper.selected(),
                         loops: (0..MAX_LOOPS)
-                            .filter_map(|n| self.looper.loop_file(n).map(|f| (n, f)))
+                            .filter_map(|n| {
+                                let mut f = self.looper.loop_file(n)?;
+                                // Its lasting id, if it has one (phase 4b).
+                                f.id = self.on_tracks.id(n).map_or(0, |i| i.0);
+                                Some((n, f))
+                            })
                             .collect(),
                     };
                     self.printer.send(ToPrinter::Size(saved));
@@ -3173,6 +3187,32 @@ impl LoopHost {
     /// buffer, too).
     pub fn input(&self) -> (&[f32; PERIOD], &[f32; PERIOD]) {
         (&self.input_l, &self.input_r)
+    }
+
+    /// Loops on audio tracks (phase 4b, behind Dev's switch): a loop with
+    /// sound and no lasting id yet gets one, `fresh()` (the audio tracks'
+    /// id maker), one a period at most.
+    pub fn give_loop_id(&mut self, fresh: impl FnOnce() -> u128) {
+        if let Some(n) = self.on_tracks.needs_id(&self.looper) {
+            self.on_tracks.set(n, fresh());
+        }
+    }
+
+    /// Loops on audio tracks, before [`LoopHost::run`]: each slot a loop
+    /// cell names is told its runs from the track player (`loops`, planned
+    /// on this period: `TrackHost::plan_loops`). Does not allocate.
+    pub fn tell_tracks(
+        &mut self,
+        project: &mpfree_seq::Project,
+        loops: &mpfree_audiotracks::LoopPlayer,
+    ) {
+        self.on_tracks.tell(&mut self.looper, project, loops);
+    }
+
+    /// After [`LoopHost::run`]: loop `id`'s sound in the period, for its
+    /// audio track (`TrackHost::period_with_loops`).
+    pub fn track_loop(&self, id: u128) -> Option<&[f32]> {
+        self.on_tracks.out(&self.looper, id)
     }
 
     /// One period without the mixer (the screen's samples): as

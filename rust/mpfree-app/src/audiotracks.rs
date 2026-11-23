@@ -60,9 +60,9 @@ use mpfree_audiotracks::host::{AudioHost, CueAudio, ImportRefused, TakeWave, MAX
 use mpfree_audiotracks::save::{Saved, TrackFile};
 use mpfree_audiotracks::streaming::StreamConfig;
 use mpfree_audiotracks::{
-    Answer, Change, ClipPlay, ClipRegion, Command, Input, Monitor, Plays, RecordingId, Retime,
-    RetimeRefused, SongStep, TakeInfo, MAX_CHANGES, MAX_CLIP_REGIONS, MAX_REGIONS, MAX_TAKES,
-    MAX_TRACKS, PEAK_BLOCK,
+    Answer, Change, ClipPlay, ClipRegion, Command, Input, LoopPlay, LoopPlayer, Monitor, Plays,
+    RecordingId, Retime, RetimeRefused, SongStep, TakeInfo, MAX_CHANGES, MAX_CLIP_REGIONS,
+    MAX_REGIONS, MAX_TAKES, MAX_TRACKS, PEAK_BLOCK,
 };
 use mpfree_play::{AudioAnswer, AudioPlays};
 use mpfree_seq::{RecId, TrackId};
@@ -337,6 +337,31 @@ fn plays_in<'r>(p: &AudioPlays, room: &'r mut [ClipRegion; MAX_CLIP_REGIONS]) ->
                 stamp,
             })
         }
+        // A loop cell (phase 4b): the track player's loops play it with
+        // Dev's switch on; without it, the region player hears nothing.
+        AudioPlays::Loop { .. } => loop_plays(p),
+    }
+}
+
+/// What a track plays as the loops see it (phase 4b): a loop as it is,
+/// anything else as nothing (the loop player only tells a loop from what
+/// isn't one), so no regions are copied.
+fn loop_plays(p: &AudioPlays) -> Plays<'static> {
+    match *p {
+        AudioPlays::Loop {
+            id,
+            origin,
+            len,
+            clip,
+            stamp,
+        } => Plays::Loop(LoopPlay {
+            id: id.0,
+            origin,
+            len,
+            clip: clip.0,
+            stamp,
+        }),
+        _ => Plays::Nothing,
     }
 }
 
@@ -466,6 +491,10 @@ pub struct TrackHost {
     opened: Vec<(RecId, String)>,
     /// The song's meter, for the bar a dropout was at.
     time_sig: mpfree_transport::time::Meter,
+    /// Loops on audio tracks (phase 4b, behind Dev's switch): where each
+    /// track's loops sound this period and how loud
+    /// ([`TrackHost::plan_loops`]).
+    loops: LoopPlayer,
 }
 
 /// Playing takes from their files, for Dev's Performance page.
@@ -543,6 +572,7 @@ impl TrackHost {
             frame_now: 0,
             opened: Vec::new(),
             time_sig: mpfree_transport::time::Meter::default(),
+            loops: LoopPlayer::new(),
         }
     }
 
@@ -1031,6 +1061,89 @@ impl TrackHost {
         line: (&[f32; PERIOD], &[f32; PERIOD]),
         plays: Option<&dyn Fn(usize) -> AudioAnswer<'a>>,
     ) {
+        self.period_inner(block, map, song_on, line, plays, None);
+    }
+
+    /// Loops on audio tracks (phase 4b, behind Dev's switch), before the
+    /// looper runs: where each track's loops sound this period, from what
+    /// the arranger's player says each plays (`plays`, as for
+    /// [`TrackHost::period`]), for the loop host to tell the looper
+    /// ([`TrackHost::loop_player`]). Does not allocate.
+    pub fn plan_loops<'a>(&mut self, block: &Block, plays: &dyn Fn(usize) -> AudioAnswer<'a>) {
+        let none = Change {
+            frame: 0,
+            tick: 0.0,
+            plays: Plays::Nothing,
+            muted: false,
+            ring: false,
+        };
+        let mut changes = [[none; MAX_CHANGES]; MAX_TRACKS];
+        let mut answers = [Answer::default(); MAX_TRACKS];
+        for (s, (ch, ans)) in changes.iter_mut().zip(answers.iter_mut()).enumerate() {
+            let Some(p) = self.place[s] else {
+                continue;
+            };
+            let a = plays(p);
+            let mut k = 0;
+            for (c, slot) in a.changes().iter().zip(ch.iter_mut()) {
+                *slot = Change {
+                    frame: c.frame,
+                    tick: c.tick,
+                    plays: loop_plays(&c.plays),
+                    muted: c.muted,
+                    ring: c.ring,
+                };
+                k += 1;
+            }
+            let ch: &[Change] = ch;
+            *ans = Answer {
+                start: loop_plays(&a.start),
+                muted: a.muted,
+                changes: &ch[..k],
+                superseded: a.superseded,
+            };
+        }
+        self.loops.plan(block, &answers);
+    }
+
+    /// Where each track's loops sound this period
+    /// ([`TrackHost::plan_loops`]).
+    pub fn loop_player(&self) -> &LoopPlayer {
+        &self.loops
+    }
+
+    /// A new lasting id for a loop (phase 4b: `mpfree_seq::LoopId`), from
+    /// the audio tracks' id maker: never 0, never given twice.
+    pub fn fresh_loop_id(&mut self) -> u128 {
+        self.host.tracks.fresh_rec().0
+    }
+
+    /// [`TrackHost::period`] with the tracks' loops (phase 4b, behind
+    /// Dev's switch): planned before the looper ran
+    /// ([`TrackHost::plan_loops`]), and each loop's sound in the period by
+    /// its id (`src`: the loop host's [`crate::looping::LoopHost::track_loop`]),
+    /// into its track before the track's level, pan, mute and solo.
+    pub fn period_with_loops<'a, 's>(
+        &mut self,
+        block: &Block,
+        map: &TempoMap,
+        song_on: bool,
+        line: (&[f32; PERIOD], &[f32; PERIOD]),
+        plays: &dyn Fn(usize) -> AudioAnswer<'a>,
+        src: &dyn Fn(u128) -> Option<&'s [f32]>,
+    ) {
+        self.period_inner(block, map, song_on, line, Some(plays), Some(src));
+    }
+
+    fn period_inner<'a, 's>(
+        &mut self,
+        block: &Block,
+        map: &TempoMap,
+        song_on: bool,
+        line: (&[f32; PERIOD], &[f32; PERIOD]),
+        plays: Option<&dyn Fn(usize) -> AudioAnswer<'a>>,
+        src: Option<&dyn Fn(u128) -> Option<&'s [f32]>>,
+    ) {
         if song_on != self.active && self.host.command(Command::SetActive(song_on)) {
             self.active = song_on;
         }
@@ -1085,13 +1198,24 @@ impl TrackHost {
         }
         // The engine's sum is no one's since phase 1b: each track plays
         // through its own channel (`play_into`).
-        self.host.period_with(
-            block,
-            map,
-            &self.input[..],
-            &mut self.out[..],
-            &answers[..n],
-        );
+        match src {
+            Some(src) => self.host.period_with_loops(
+                block,
+                map,
+                &self.input[..],
+                &mut self.out[..],
+                &answers[..n],
+                &self.loops,
+                src,
+            ),
+            None => self.host.period_with(
+                block,
+                map,
+                &self.input[..],
+                &mut self.out[..],
+                &answers[..n],
+            ),
+        }
         if let Some(sp) = block.spans().last() {
             self.time_sig = sp.meter;
         }

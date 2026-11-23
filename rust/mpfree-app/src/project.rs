@@ -133,7 +133,8 @@ pub const FORMAT: u32 = mpfree_library::project::PARTS_FORMAT;
 /// build that lacks one doesn't open the project, and says which
 /// ([`check`]; docs/dev/design/project-safety.md). Written while the
 /// project has a synth that no track has ([`SYNTHS_WITHOUT_TRACKS`]), an
-/// audio track ([`AUDIO_TRACKS`]), or an audio clip ([`AUDIO_CLIPS`]).
+/// audio track ([`AUDIO_TRACKS`]), an audio clip ([`AUDIO_CLIPS`]), or a
+/// loop cell on an audio track ([`AUDIO_LOOPS`]).
 pub const NEEDS_KEY: &str = "needs";
 /// A project with a synth in a free place (the instrument redesign's step
 /// 6: one picked for the pads, no track's): an older build would read the
@@ -162,6 +163,12 @@ pub const LINKED_SONG_LIST: &str = "linked-song-list";
 /// build would skip the scene's `keep` line and stop those tracks at the
 /// scene change, so it must not open it.
 pub const SCENE_KEEP: &str = "scene-keep";
+/// A project with a loop cell on an audio track, or a block of one (the
+/// audio tracks rethink, phase 4b, made with Dev's "Loops on audio
+/// tracks"): a build from before phase 4 would read its `loopclip` line as
+/// unknown and open it as an empty note clip, so it refuses the project
+/// instead.
+pub const AUDIO_LOOPS: &str = "audio-loops";
 /// The features this build has, of those a project can need.
 pub const KNOWN_NEEDS: &[&str] = &[
     SYNTHS_WITHOUT_TRACKS,
@@ -169,6 +176,7 @@ pub const KNOWN_NEEDS: &[&str] = &[
     AUDIO_CLIPS,
     LINKED_SONG_LIST,
     SCENE_KEEP,
+    AUDIO_LOOPS,
 ];
 
 // ------------------------------------------------------------ the loop's side
@@ -375,6 +383,9 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
     }
     if c.clips.scenes.iter().any(|s| s.keep != 0) {
         needs.push(SCENE_KEEP);
+    }
+    if c.clips.loop_places().next().is_some() {
+        needs.push(AUDIO_LOOPS);
     }
     if !needs.is_empty() {
         extra.push((NEEDS_KEY.to_string(), needs.join(" ")));
@@ -2571,6 +2582,7 @@ mod tests {
                     fade_old: 1.0,
                     speed: 0,
                     rate: 0,
+                    id: 0,
                     layers,
                 },
             )
@@ -3379,6 +3391,44 @@ mod tests {
         assert!(c.clips.arrangement.clips.is_empty());
         let snap = snapshot(&c, Vec::new());
         assert_eq!(check_against(&snap, &phase_1), Ok(FORMAT));
+    }
+
+    /// Phase 4b: a project with a loop cell on an audio track says it
+    /// needs audio loops, and a build from before phase 4 refuses it in
+    /// plain words; this build opens it.
+    #[test]
+    fn a_project_with_a_loop_cell_needs_audio_loops_and_phase_2_refuses_it() {
+        let mut c = collected(String::new(), InstrumentList::new().text());
+        let mut t = mpfree_seq::Track::new_audio("Audio 1", 0);
+        c.clips.give_track_id(&mut t);
+        t.slots[0] = Some(mpfree_seq::Clip::new_audio_loop(
+            mpfree_seq::LoopId(0x5eed),
+            "Loop",
+            3840,
+        ));
+        c.clips.tracks.push(t);
+        c.clips.give_clip_ids();
+        c.clips.check().unwrap();
+        let snap = snapshot(&c, Vec::new());
+        let line = snap.meta.extra.iter().find(|(k, _)| k == NEEDS_KEY);
+        assert_eq!(
+            line.map(|(_, v)| v.as_str()),
+            Some("audio-tracks audio-loops")
+        );
+        assert_eq!(check(&snap), Ok(FORMAT));
+        let phase_2 = [
+            SYNTHS_WITHOUT_TRACKS,
+            AUDIO_TRACKS,
+            AUDIO_CLIPS,
+            LINKED_SONG_LIST,
+        ];
+        assert_eq!(
+            check_against(&snap, &phase_2),
+            Err(
+                "it needs audio-loops, which this MPFree hasn't got. Update MPFree to open it"
+                    .to_string()
+            )
+        );
     }
 
     /// Phase 0's gate (docs/dev/design/project-safety.md): a project that

@@ -2721,6 +2721,7 @@ impl Looper {
             fade_old: l.fade_old,
             speed: l.speed,
             rate: l.rate,
+            id: 0,
             layers,
         })
     }

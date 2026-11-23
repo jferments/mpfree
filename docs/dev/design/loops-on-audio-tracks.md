@@ -101,6 +101,20 @@ The track player sums the slot's buffer (4a's `LoopOuts`) and the region player'
 - **Listen** (a loop alone, while stopped) is a run the track player makes itself, through the track's channel.
 - **The Loop strip goes** (`mixing::LOOP` and its `LEFT_OUT` entry) at 4e; until then, with the switch off, Loop tracks play through it as now.
 
+### In the app (built, behind Dev's switch)
+
+Dev's "Loops on audio tracks" (`Settings::loops_on_tracks`, kept as `loops-on-tracks`, from the next start: `Settings::loops_on`) turns it on. Each period, with it on, in the audio loop (`main.rs`):
+
+1. **Before the looper:** the audio tracks follow the track list (`TrackHost::sync`), then `TrackHost::plan_loops` reads what the arranger says each audio track plays (`TimeHost::audio`, the same answer the tracks play) and plans its loops (`LoopPlayer::plan`; only a loop or not matters there, so no regions are copied).
+2. **Ids:** a loop with sound and no lasting id gets one from the audio tracks' id maker (`LoopHost::give_loop_id`, `TrackHost::fresh_loop_id`), one a period at most. Ids go with the loops into the looper part, come back with an open, and are forgotten for a New project.
+3. **Telling the looper:** each slot whose loop a loop cell or block names (looked at every 8 periods, `Project::loop_track`) is told its runs from every track (`LoopHost::tell_tracks`, `OnTracks::tell`); a slot named no more leaves its track.
+4. **The looper runs** (`LoopHost::run`): a loop on a track renders only where told, into its own buffer, and is left out of the Loop strip's mix (`LoopOuts::on_track`).
+5. **The tracks run** with the loops (`TrackHost::period_with_loops`, `AudioHost::period_with_loops`, `AudioTracks::process_with_loops`): each loop's buffer by its id (`LoopHost::track_loop`), mixed into its track before the track's level, pan, mute and solo, and so into the track's own channel.
+
+The app's test `a_loop_cell_plays_its_loop_in_its_track_and_not_on_the_loop_track` (`loops_on_tracks.rs`) runs these five steps as `main.rs` does, on a loop recorded from the pads: with the cell named and playing, the loop is heard in its audio track's channel and the Loop strip is silent; with the cell gone the loop plays on the Loop strip again and the track is silent. It fails if the loop's buffer doesn't reach the track, or if the Loop strip's mix keeps a loop on a track.
+
+With the switch off nothing here runs: a loop cell's answer reaches the region player as nothing, and Loop tracks play through the Loop strip as before. Still to come in 4b: making a loop cell (recording into an audio track's cell, boards 2 to 6), the transaction ids, `capture_for` and Master without the track.
+
 ### Recording
 
 - **One loop records at a time** (a first pass or an overdub), as `others_stop_recording` does now. A stated limit of phase 4.
@@ -142,8 +156,8 @@ This is Arrange 3.4's way (ask first, then apply in the first period the edit pl
 
 ## Saved
 
-- **The clips part** (built): a loop cell writes `loopclip <loop id>` (32 hex digits, not 0, once) in place of phase 2's `audioclip` and `region` lines (`mpfree-seq` `save.rs`), and the project needs `audio-loops`, so a build from before phase 4 refuses it instead of opening an empty clip (the app's gate, still to come with the switch). The project format stays 3.
-- **The looper part** names each loop by its `LoopId` and, from 4c, each layer by its recording, with its view's lines.
+- **The clips part** (built): a loop cell writes `loopclip <loop id>` (32 hex digits, not 0, once) in place of phase 2's `audioclip` and `region` lines (`mpfree-seq` `save.rs`), and the project needs `audio-loops` (built: `project::AUDIO_LOOPS`, in `KNOWN_NEEDS`), so a build from before phase 4 refuses it instead of opening an empty clip. The project format stays 3.
+- **The looper part** names each loop by its `LoopId` (built: `id=` and 32 hex digits on its `loop=` line, `LoopFile::id`, which the looper only keeps for its host; the loop host's table, `loops_on_tracks::OnTracks`, gives and takes it) and, from 4c, each layer by its recording, with its view's lines.
 - **Until 4e** a project saved with Dev's switch on is a development file and may be refused later. From 4e a project with a Loop track is refused when opened, with the reason; old projects are not converted.
 
 ## What 4b's tests pin

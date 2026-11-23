@@ -103,6 +103,7 @@ impl App {
         );
         out.set_i64("audio-memory", i64::from(s.audio_memory.seconds()));
         out.set_bool("stream-audio", s.stream_audio);
+        out.set_bool("loops-on-tracks", s.loops_on_tracks);
         out.set_str("start-with", if s.open_last { "last" } else { "new" });
         out.set_str("export", s.export_mode.key());
         out.set_str(
@@ -225,6 +226,7 @@ impl App {
                     .map(|m| s.audio_memory = m)
                     .is_some(),
                 "stream-audio" => app.get_bool(k).map(|b| s.stream_audio = b).is_some(),
+                "loops-on-tracks" => app.get_bool(k).map(|b| s.loops_on_tracks = b).is_some(),
                 "start-with" => match v {
                     "new" => Some(false),
                     "last" => Some(true),

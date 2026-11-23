@@ -822,6 +822,30 @@ impl AudioHost {
         answers: &[crate::Answer],
     ) {
         self.tracks.process_with(block, map, input, out, answers);
+        self.after_period(block, map);
+    }
+
+    /// [`AudioHost::period_with`] with the tracks' loops (phase 4b:
+    /// [`AudioTracks::process_with_loops`]).
+    #[allow(clippy::too_many_arguments)]
+    pub fn period_with_loops<'s>(
+        &mut self,
+        block: &Block,
+        map: &TempoMap,
+        input: &[f32],
+        out: &mut [f32],
+        answers: &[crate::Answer],
+        loops: &crate::LoopPlayer,
+        src: &dyn Fn(u128) -> Option<&'s [f32]>,
+    ) {
+        self.tracks
+            .process_with_loops(block, map, input, out, answers, loops, src);
+        self.after_period(block, map);
+    }
+
+    /// After the tracks' period: the save, the fit, the buffers, the
+    /// player's problems, the loop and the heads.
+    fn after_period(&mut self, block: &Block, map: &TempoMap) {
         self.tend_import(map);
         self.tend(block.frames as usize);
         self.periods += 1;
