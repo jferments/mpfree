@@ -2344,6 +2344,41 @@ pub fn add_part_state() -> Result<(TimeState, crate::add_view::AddPick), String>
     Ok((st, pick))
 }
 
+/// Add a part on New track (composing tools S2.6b): the panel on row 5
+/// with its Track row stepped to New track, on the Bass synth, a Bass try
+/// playing with the row on the track Keep would add.
+pub fn add_part_new_track_state() -> Result<(TimeState, crate::add_view::AddPick), String> {
+    use crate::adding::{AddState, Adding};
+    let s = row5_playing()?;
+    let mut st = s.state();
+    st.scene_focus = ADD_ROW;
+    let mut pick = crate::add_view::AddPick::open(&st, ADD_ROW, Some(ADD_BASS))?;
+    for _ in 0..st.tracks.len() {
+        if pick.new_track {
+            break;
+        }
+        pick.step(&st, crate::add_view::ROW_TRACK, 1)?;
+    }
+    if !pick.new_track {
+        return Err("New track isn't on the Track row".into());
+    }
+    let (made, heard) = row5_part(&s, &pick)?;
+    st.adding = Some(std::sync::Arc::new(Adding {
+        row: ADD_ROW,
+        track: pick.track,
+        state: AddState::Playing,
+        made: Some(std::sync::Arc::new(made)),
+        position: Some((1, 1)),
+        line: None,
+        picked: None,
+        words: None,
+        part: pick.part,
+        relation: pick.relation,
+    }));
+    st.row_chords = Some((ADD_ROW, std::sync::Arc::new(heard)));
+    Ok((st, pick))
+}
+
 /// The Chords tab later (composing tools S2.6, board C): the Bass part
 /// kept in row 5, then bar 4's B♭ set to A♭7 from the tab,
 /// which leaves the Bass and the Solo off the new chords (ticked, with

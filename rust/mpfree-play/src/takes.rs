@@ -509,6 +509,15 @@ fn row_chords(project: &Project, row: usize) -> ChordTimeline {
         .unwrap_or_default()
 }
 
+/// The lowest destination no track of `project` uses: a new track's
+/// ([`Takes::add_track_as`], [`Takes::add_part_on_new_track`]; a new
+/// project's tracks use their own numbers).
+pub fn lowest_free_dest(project: &Project) -> DestId {
+    (0..=MAX_TRACKS as DestId)
+        .find(|d| project.tracks.iter().all(|t| t.dest != *d))
+        .unwrap_or(project.tracks.len() as DestId)
+}
+
 /// Give row `row` the Harmony line `line`, leaving no plain rows at the
 /// end of the project's scenes.
 fn put_row_chords(project: &mut Project, row: usize, line: &ChordTimeline) {
@@ -1131,9 +1140,7 @@ impl Takes {
             Some(l) => chords_edit(project, slot, l)?,
             None => None,
         };
-        track.dest = (0..=MAX_TRACKS as DestId)
-            .find(|d| project.tracks.iter().all(|t| t.dest != *d))
-            .unwrap_or(project.tracks.len() as DestId);
+        track.dest = lowest_free_dest(project);
         project.give_track_id(&mut track);
         let index = project.tracks.len();
         project.tracks.push(track);
@@ -1222,9 +1229,7 @@ impl Takes {
         if project.tracks.len() >= MAX_TRACKS {
             return Err(ModelError::TooManyTracks);
         }
-        track.dest = (0..=MAX_TRACKS as DestId)
-            .find(|d| project.tracks.iter().all(|t| t.dest != *d))
-            .unwrap_or(project.tracks.len() as DestId);
+        track.dest = lowest_free_dest(project);
         // Its lasting id, kept by the take, so REDO brings back the same
         // track.
         project.give_track_id(&mut track);

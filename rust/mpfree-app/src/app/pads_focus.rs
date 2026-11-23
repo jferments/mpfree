@@ -901,10 +901,10 @@ impl App {
 
     /// The free places whose instrument nothing plays any more (not the
     /// pads, nor a track by a send, nor one waiting to be the pads', nor
-    /// a MIDI route that names it, step 11e), each
-    /// taken out (step 6): a synth tried on the pads and left goes away,
-    /// as nothing records it. Once a period; nothing allocated when there
-    /// is none.
+    /// a MIDI route that names it, step 11e, nor Add a part's New track
+    /// synth), each taken out (step 6): a synth tried on the pads and left
+    /// goes away, as nothing records it. Once a period; nothing allocated
+    /// when there is none.
     pub fn put_away_free(&mut self) -> Vec<Effect> {
         let mut fx = Vec::new();
         let pads = self.pads_holder();
@@ -926,6 +926,7 @@ impl App {
                 || self.keeps_free(n)
                 || self.banks_hold(holder)
                 || self.layers_hold(holder)
+                || self.holds_add_sound(n)
             {
                 continue;
             }
@@ -1249,6 +1250,8 @@ impl App {
         let mut notes = Vec::new();
         self.pads_to = None;
         self.bank_to = [None; super::KIT_PAGES];
+        // Add a part's New track synth went with the project it was in.
+        self.add_sound = None;
         self.layer_to = [None; super::pad_layers::MORE];
         self.pad_map = match text.map(PadMap::parse) {
             None => PadMap::default(),

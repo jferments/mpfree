@@ -110,13 +110,16 @@ struct Tried {
     chords: ChordTimeline,
 }
 
-/// A try in the play view, in its empty cell.
+/// A try in the play view, in its empty cell: on New track (S2.6b), in
+/// the cell of a track the view has and the project hasn't yet, named
+/// `new_track`.
 #[derive(Clone, Debug)]
 pub(super) struct AddInView {
     pub id: u32,
     pub track: usize,
     pub row: usize,
     pub clip: Arc<Clip>,
+    pub new_track: Option<String>,
 }
 
 /// What Keep writes.
@@ -124,6 +127,9 @@ pub(super) struct Keeping {
     pub track: usize,
     pub row: usize,
     pub clip: Clip,
+    /// New track: the track Keep adds with the part, named so; it gets
+    /// index `track`.
+    pub new_track: Option<String>,
     /// The chords to put on the row with the part, if any.
     pub line: Option<ChordTimeline>,
     /// The chords the part was made over, as the row was heard.
@@ -295,6 +301,15 @@ impl Adding {
         self.asked.as_ref().map(|a| (a.track, a.row))
     }
 
+    /// New track's name, while the part is under way for a track Keep
+    /// adds (S2.6b).
+    fn new_track(&self) -> Option<&str> {
+        self.asked
+            .as_ref()
+            .and_then(|a| a.new_track.as_ref())
+            .map(|n| n.name.as_str())
+    }
+
     fn shown_try(&self) -> Option<&Tried> {
         self.tries.get(self.shown)
     }
@@ -309,12 +324,16 @@ impl Adding {
         hearing: Hearing,
     ) -> Result<u32, String> {
         // An empty cell, or a blank clip that makes way at Keep (the
-        // Sequencer's empty clip, S2.6).
-        let empty = project
-            .tracks
-            .get(ask.track)
-            .and_then(|t| t.slots.get(ask.row))
-            .is_some_and(|s| s.as_ref().is_none_or(mpfree_seq::Clip::is_blank));
+        // Sequencer's empty clip, S2.6); on New track, the track Keep will
+        // add (S2.6b).
+        let empty = match ask.new_track {
+            Some(_) => project.tracks.len() == ask.track,
+            None => project
+                .tracks
+                .get(ask.track)
+                .and_then(|t| t.slots.get(ask.row))
+                .is_some_and(|s| s.as_ref().is_none_or(mpfree_seq::Clip::is_blank)),
+        };
         if !empty {
             return Err(format!(
                 "add a part: row {}'s cell on track {} isn't empty",
@@ -322,7 +341,12 @@ impl Adding {
                 ask.track + 1
             ));
         }
-        if self.target().is_some_and(|t| t != (ask.track, ask.row)) {
+        // Another cell, or New track asked over a track (or a track over
+        // New track): the tries start again.
+        let was_new = self.new_track().is_some();
+        if self.target().is_some_and(|t| t != (ask.track, ask.row))
+            || (self.asked.is_some() && was_new != ask.new_track.is_some())
+        {
             self.tries.clear();
             self.shown = 0;
             self.picked = None;
@@ -368,13 +392,20 @@ impl Adding {
     }
 
     /// Whether the clips `made` heard are all as they were, and its cell
-    /// still empty (or a blank clip, which makes way at Keep).
-    fn fresh(project: &Project, made: &PartMade, track: usize, row: usize) -> bool {
-        let empty = project
-            .tracks
-            .get(track)
-            .and_then(|t| t.slots.get(row))
-            .is_some_and(|s| s.as_ref().is_none_or(mpfree_seq::Clip::is_blank));
+    /// still empty (or a blank clip, which makes way at Keep). For New
+    /// track (`new`), while the project's tracks are as many as when it
+    /// was asked: a track added or taken away since would make Keep add
+    /// the track at another index than the one its synth plays.
+    fn fresh(project: &Project, made: &PartMade, track: usize, row: usize, new: bool) -> bool {
+        let empty = if new {
+            project.tracks.len() == track
+        } else {
+            project
+                .tracks
+                .get(track)
+                .and_then(|t| t.slots.get(row))
+                .is_some_and(|s| s.as_ref().is_none_or(mpfree_seq::Clip::is_blank))
+        };
         empty
             && made
                 .read
@@ -398,6 +429,7 @@ impl Adding {
             }
         };
         let mut changed = false;
+        let new = self.new_track().is_some();
         if gone {
             self.worker = None;
             if self.waiting.take().is_some() {
@@ -424,9 +456,9 @@ impl Adding {
                     self.words = Some(r.words());
                     log.push(format!("add a part: nothing made: {}", r.words()));
                 }
-                Ok(made) if !Self::fresh(project, &made, track, row) => {
+                Ok(made) if !Self::fresh(project, &made, track, row, new) => {
                     self.counts.stale += 1;
-                    self.words = Some("A clip it listened to changed. Try again?".into());
+                    self.words = Some(Self::stale_words(project, track, new).into());
                 }
                 Ok(made) => {
                     self.counts.made += 1;
@@ -456,9 +488,10 @@ impl Adding {
         let Some((track, row)) = self.target() else {
             return false;
         };
+        let new = self.new_track().is_some();
         let before = self.tries.len();
         self.tries
-            .retain(|t| Self::fresh(project, &t.made, track, row));
+            .retain(|t| Self::fresh(project, &t.made, track, row, new));
         if self.tries.len() == before {
             return false;
         }
@@ -472,8 +505,18 @@ impl Adding {
             self.in_view = None;
             self.line = None;
         }
-        self.words = Some("A clip it listened to changed. Try again?".into());
+        self.words = Some(Self::stale_words(project, track, new).into());
         true
+    }
+
+    /// Why the tries went: New track's tracks changed (a + Track, UNDO),
+    /// or a clip a try heard did.
+    fn stale_words(project: &Project, track: usize, new: bool) -> &'static str {
+        match project.tracks.len() {
+            n if new && n > track => "A track was added: Try again",
+            n if new && n < track => "A track was taken away: Try again",
+            _ => "A clip it listened to changed. Try again?",
+        }
     }
 
     /// What the play view should play in the cell once the next change
@@ -501,6 +544,7 @@ impl Adding {
     /// nothing there.
     pub(super) fn landed(&mut self, want: Option<u32>) {
         self.line = None;
+        let new_track = self.new_track().map(str::to_string);
         self.in_view = match (want, self.target()) {
             (Some(id), Some((track, row))) => {
                 self.tries.iter().find(|t| t.id == id).map(|t| AddInView {
@@ -508,6 +552,7 @@ impl Adding {
                     track,
                     row,
                     clip: t.clip.clone(),
+                    new_track,
                 })
             }
             _ => None,
@@ -574,13 +619,18 @@ impl Adding {
         let t = self
             .shown_try()
             .ok_or_else(|| "add a part: nothing made yet".to_string())?;
-        if !Self::fresh(project, &t.made, track, row) {
-            return Err("add a part: a clip it listened to changed: Try again".into());
+        let new_track = self.new_track().map(str::to_string);
+        if !Self::fresh(project, &t.made, track, row, new_track.is_some()) {
+            return Err(match new_track {
+                Some(_) => "add a part: the tracks changed since the try: Try again".into(),
+                None => "add a part: a clip it listened to changed: Try again".into(),
+            });
         }
         Ok(Keeping {
             track,
             row,
             clip: (*t.clip).clone(),
+            new_track,
             line: self.picked.clone().or_else(|| t.made.line.clone()),
             heard: t.made.chords.clone(),
         })

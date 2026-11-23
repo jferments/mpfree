@@ -19,7 +19,7 @@ use mpfree_transport::time::Tick;
 use mpfree_ui::widgets::OptionList;
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
 
-use crate::adding::{AddAction, AddState, ChordsAction, PartAsk};
+use crate::adding::{AddAction, AddState, ChordsAction, NewTrack, PartAsk};
 use crate::chord_strip::{ChipLook, ChordStrip, PickerView, StripChip};
 use crate::editor::compose::{cards, opening_q, RANGES};
 use crate::view::{track_color, TimeAction, TimeState};
@@ -52,12 +52,91 @@ pub const KIND_QUALITIES: [Quality; 12] = [
     Quality::Power,
 ];
 
-/// The panel's rows of ‹ › steppers, top to bottom.
-pub const PANEL_ROWS: [&str; 4] = ["Role", "Style", "Bars", "Track"];
+/// The panel's rows of ‹ › steppers, top to bottom. Sound is a stepper
+/// only for New track; on a track it reads what the track plays.
+pub const PANEL_ROWS: [&str; 5] = ["Role", "Style", "Bars", "Track", "Sound"];
 pub const ROW_ROLE: usize = 0;
 pub const ROW_STYLE: usize = 1;
 pub const ROW_BARS: usize = 2;
 pub const ROW_TRACK: usize = 3;
+pub const ROW_SOUND: usize = 4;
+
+/// The Track row's choice past the last track with room: a track Keep
+/// adds, with a synth made for the part (S2.6b).
+pub const NEW_TRACK: &str = "New track";
+
+/// The synths New track offers a bass part, the first the one it starts
+/// on: (node id, name), as mpfree-app's `synth::Engine` names them.
+pub const BASS_SOUNDS: [(&str, &str); 6] = [
+    ("mpfree.bass", "Bass"),
+    ("mpfree.squelch", "Squelch"),
+    ("mpfree.analog", "Analog"),
+    ("mpfree.poly", "Poly"),
+    ("mpfree.fm", "FM"),
+    ("mpfree.pluck", "Pluck"),
+];
+/// ... a chords part.
+pub const CHORDS_SOUNDS: [(&str, &str); 7] = [
+    ("mpfree.poly", "Poly"),
+    ("mpfree.keys", "Keys"),
+    ("mpfree.strings", "Strings"),
+    ("mpfree.drawbar", "Drawbar"),
+    ("mpfree.choir", "Choir"),
+    ("mpfree.analog", "Analog"),
+    ("mpfree.fm", "FM"),
+];
+/// ... a tune.
+pub const MELODY_SOUNDS: [(&str, &str); 8] = [
+    ("mpfree.fm", "FM"),
+    ("mpfree.pluck", "Pluck"),
+    ("mpfree.analog", "Analog"),
+    ("mpfree.wind", "Wind"),
+    ("mpfree.poly", "Poly"),
+    ("mpfree.keys", "Keys"),
+    ("mpfree.strings", "Strings"),
+    ("mpfree.squelch", "Squelch"),
+];
+/// ... drums: the Drums synth's kit.
+pub const DRUMS_SOUNDS: [(&str, &str); 1] = [("mpfree.drums", "Drums")];
+
+/// The synths New track offers `part`, the first the one it starts on.
+pub fn sounds_for(part: PartRole) -> &'static [(&'static str, &'static str)] {
+    match part {
+        PartRole::Bass => &BASS_SOUNDS,
+        PartRole::Chords => &CHORDS_SOUNDS,
+        PartRole::Melody => &MELODY_SOUNDS,
+        PartRole::Drums => &DRUMS_SOUNDS,
+    }
+}
+
+/// What plays a part on New track's synth `id`: a bass synth plays bass,
+/// the Drums synth drums, else the part's own kind.
+pub fn kind_on(part: PartRole, id: &str) -> InstrumentKind {
+    match id {
+        "mpfree.bass" | "mpfree.squelch" => InstrumentKind::Bass,
+        "mpfree.drums" => InstrumentKind::Percussive,
+        _ => kind_of_part(part),
+    }
+}
+
+/// The name New track gives the part's track: the part's word ("Bass"),
+/// or with the first number free when a track has it ("Bass 2").
+pub fn new_track_name(st: &TimeState, part: PartRole) -> String {
+    let word = part_word(part);
+    let taken = |n: &str| st.tracks.iter().any(|t| t.name.eq_ignore_ascii_case(n));
+    if !taken(word) {
+        return word.to_string();
+    }
+    (2..)
+        .map(|k| format!("{word} {k}"))
+        .find(|n| !taken(n))
+        .expect("a free number")
+}
+
+/// Whether the project has room for New track.
+fn room_for_a_track(st: &TimeState) -> bool {
+    st.tracks.len() < mpfree_seq::MAX_TRACKS
+}
 
 /// The panel's buttons: `Toggle(k)`.
 pub const PANEL_CLOSE: usize = 0;
@@ -142,6 +221,17 @@ pub struct AddPick {
     /// The Q-Links: Similarity, Variation and Activity in %, Range 0 to 2
     /// (as Continue's).
     pub q: [i32; 4],
+    /// New track (S2.6b): the part goes on a track Keep adds; `track` is
+    /// the index it will get (the project's track count), `new_name` its
+    /// name, and `sound` an index into [`sounds_for`] the part.
+    pub new_track: bool,
+    pub new_name: String,
+    pub sound: usize,
+    /// While the app makes New track's synth before a try is asked, or
+    /// when it didn't come: what the status says ("Making the Bass
+    /// synth…"), and whether it warns. The app sets it
+    /// ([`crate::view::TimePage::set_add_waiting`]).
+    pub waiting: Option<(String, bool)>,
 }
 
 impl AddPick {
@@ -151,16 +241,16 @@ impl AddPick {
     /// has an empty cell in the row.
     pub fn open(st: &TimeState, row: usize, track: Option<usize>) -> Result<AddPick, String> {
         let tracks = part_tracks(st, row);
-        if tracks.is_empty() {
+        if tracks.is_empty() && !room_for_a_track(st) {
             return Err(format!(
-                "Every track has a clip in row {}: add a part to another row, or + Track",
+                "Every track has a clip in row {}, and the project holds no more tracks: add a part to another row",
                 row + 1
             ));
         }
         let part = PartRole::Bass;
         let mut pick = AddPick {
             row,
-            track: tracks[0],
+            track: tracks.first().copied().unwrap_or(st.tracks.len()),
             part,
             relation: Relation::Support,
             style: STYLES
@@ -169,7 +259,16 @@ impl AddPick {
                 .unwrap_or(0),
             bars: None,
             q: opening_q(),
+            new_track: false,
+            new_name: String::new(),
+            sound: 0,
+            waiting: None,
         };
+        // No track has room in the row: New track.
+        if tracks.is_empty() {
+            pick.pick_new_track(st);
+            return Ok(pick);
+        }
         pick.track = match track.filter(|t| tracks.contains(t)) {
             Some(t) => t,
             None => pick.track_for(st, &tracks),
@@ -198,13 +297,19 @@ impl AddPick {
     }
 
     /// The part `k` of [`PARTS`] picked: the track follows it while it was
-    /// the default.
+    /// the default. On New track the sound starts on the part's first
+    /// synth, and the track takes the part's name.
     pub fn set_part(&mut self, st: &TimeState, k: usize) -> bool {
         let Some(&part) = PARTS.get(k) else {
             return false;
         };
         if part == self.part {
             return false;
+        }
+        if self.new_track {
+            self.part = part;
+            self.pick_new_track(st);
+            return true;
         }
         let tracks = part_tracks(st, self.row);
         let was_default = !tracks.is_empty() && self.track == self.track_for(st, &tracks);
@@ -213,6 +318,33 @@ impl AddPick {
             self.track = self.track_for(st, &tracks);
         }
         true
+    }
+
+    /// The Track row on New track: the index the track will get, its
+    /// name, the part's first synth.
+    fn pick_new_track(&mut self, st: &TimeState) {
+        self.new_track = true;
+        self.track = st.tracks.len();
+        self.new_name = new_track_name(st, self.part);
+        self.sound = 0;
+    }
+
+    /// The tracks changed while the panel is open (a + Track, UNDO): New
+    /// track's index and name follow them, so the next ask is for the
+    /// track Keep will add. True if they moved.
+    pub fn follow_tracks(&mut self, st: &TimeState) -> bool {
+        if !self.new_track || self.track == st.tracks.len() {
+            return false;
+        }
+        self.track = st.tracks.len();
+        self.new_name = new_track_name(st, self.part);
+        true
+    }
+
+    /// New track's synth: (node id, name).
+    pub fn sound_of(&self) -> (&'static str, &'static str) {
+        let list = sounds_for(self.part);
+        list[self.sound.min(list.len() - 1)]
     }
 
     /// Row `row` of [`PANEL_ROWS`] stepped `delta`: true when it changed,
@@ -244,37 +376,95 @@ impl AddPick {
                 Ok(changed)
             }
             ROW_TRACK => {
+                // The tracks with room, then New track while the project
+                // holds more.
                 let tracks = part_tracks(st, self.row);
-                let Some(at) = tracks.iter().position(|&t| t == self.track) else {
-                    return Err(format!(
-                        "{}'s cell in row {} filled: pick another track",
-                        self.track_name(st),
-                        self.row + 1
-                    ));
+                let new = room_for_a_track(st);
+                let n = tracks.len() + usize::from(new);
+                let at = if self.new_track {
+                    new.then_some(tracks.len())
+                } else {
+                    tracks.iter().position(|&t| t == self.track)
                 };
-                let to = by(at, tracks.len());
+                let Some(at) = at else {
+                    return Err(if self.new_track {
+                        "The project holds no more tracks: pick a track with room".to_string()
+                    } else {
+                        format!(
+                            "{}'s cell in row {} filled: pick another track",
+                            self.track_name(st),
+                            self.row + 1
+                        )
+                    });
+                };
+                let to = by(at, n);
                 if to == at {
-                    return Err(match tracks.len() {
+                    return Err(match n {
+                        1 if self.new_track => format!(
+                            "Every track has a clip in row {}: the part goes on a new track",
+                            self.row + 1
+                        ),
                         1 => format!(
-                            "{} is the only track with an empty cell in row {}",
+                            "{} is the only track with an empty cell in row {}, and the project holds no more tracks",
                             self.track_name(st),
                             self.row + 1
                         ),
                         _ if delta < 0 => "That's the first track with room".to_string(),
+                        _ if self.new_track => "New track is the last choice".to_string(),
                         _ => "That's the last track with room".to_string(),
                     });
                 }
-                self.track = tracks[to];
+                if to == tracks.len() {
+                    self.pick_new_track(st);
+                } else {
+                    self.new_track = false;
+                    self.track = tracks[to];
+                }
                 Ok(true)
+            }
+            ROW_SOUND => {
+                if !self.new_track {
+                    return Err(format!(
+                        "The part plays on {}'s own sound: pick New track on the Track row to choose a synth",
+                        self.track_name(st)
+                    ));
+                }
+                let list = sounds_for(self.part);
+                if list.len() == 1 {
+                    return Err(format!(
+                        "{} play on the {} synth",
+                        part_word(self.part),
+                        list[0].1
+                    ));
+                }
+                let to = by(self.sound, list.len());
+                let changed = to != self.sound;
+                self.sound = to;
+                Ok(changed)
             }
             _ => Ok(false),
         }
     }
 
     fn track_name(&self, st: &TimeState) -> String {
+        if self.new_track {
+            return NEW_TRACK.to_string();
+        }
         st.tracks
             .get(self.track)
             .map_or_else(|| format!("Track {}", self.track + 1), |t| t.name.clone())
+    }
+
+    /// What the part plays on, as the Sound row reads it: New track's
+    /// synth, else the track's instrument.
+    fn sound_words(&self, st: &TimeState) -> String {
+        if self.new_track {
+            return self.sound_of().1.to_string();
+        }
+        match st.tracks.get(self.track).map(|t| t.sound.as_str()) {
+            Some("") | None => "nothing on the track yet".to_string(),
+            Some(s) => format!("the track's {s}"),
+        }
     }
 
     /// Row `row`'s value as the panel shows it.
@@ -287,6 +477,7 @@ impl AddPick {
                 Some(b) => format!("{b}"),
             },
             ROW_TRACK => self.track_name(st),
+            ROW_SOUND => self.sound_words(st),
             _ => String::new(),
         }
     }
@@ -306,18 +497,26 @@ impl AddPick {
 
     /// The ask for a part with these choices. What plays it is the part's
     /// own kind until the app, which knows the track's instrument and its
-    /// kit's drums, fills it in.
+    /// kit's drums, fills it in; on New track, what its synth plays.
     pub fn ask(&self) -> PartAsk {
+        let new_track = self.new_track.then(|| NewTrack {
+            name: self.new_name.clone(),
+            sound: self.sound_of().0,
+        });
         PartAsk {
             row: self.row,
             track: self.track,
             part: self.part,
             relation: self.relation,
             settings: self.settings(),
-            kind: kind_of_part(self.part),
+            kind: match &new_track {
+                Some(n) => kind_on(self.part, n.sound),
+                None => kind_of_part(self.part),
+            },
             lanes: Lanes::default(),
             pads: [None; 4],
             bars: self.bars,
+            new_track,
         }
     }
 
@@ -505,9 +704,11 @@ pub struct AddPanelView {
     /// The part's tile lit: an index into [`PARTS`].
     pub part: usize,
     /// [`PANEL_ROWS`]' values.
-    pub values: [String; 4],
+    pub values: [String; 5],
     pub role_words: String,
     pub sound: String,
+    /// New track: Sound is a stepper of the part's synths.
+    pub new_track: bool,
     pub status: String,
     pub status_warn: bool,
     /// The try stepper: "‹ Try 1" or "Try 3 ›", and whether there is one.
@@ -546,6 +747,7 @@ pub fn panel_view(st: &TimeState, pick: &AddPick) -> AddPanelView {
         .as_ref()
         .filter(|a| (a.track, a.row) == (pick.track, pick.row));
     let (status, status_warn) = match a {
+        _ if pick.waiting.is_some() => pick.waiting.clone().unwrap_or_default(),
         None => ("Try again makes a part".to_string(), false),
         Some(a) => {
             let n = a.position.map_or(1, |p| p.0);
@@ -563,6 +765,9 @@ pub fn panel_view(st: &TimeState, pick: &AddPick) -> AddPanelView {
                     ),
                     None => (format!("Try {n} · plays once the row plays"), false),
                 },
+                AddState::Playing if pick.new_track => {
+                    (format!("Try {n} · plays on the new track"), false)
+                }
                 AddState::Playing => (format!("Try {n} · plays in its cell with the row"), false),
             }
         }
@@ -572,10 +777,7 @@ pub fn panel_view(st: &TimeState, pick: &AddPick) -> AddPanelView {
         Some((i, n)) if i < n => (format!("Try {} ›", i + 1), true),
         _ => ("‹ Try".to_string(), false),
     };
-    let sound = match st.tracks.get(pick.track).map(|t| t.sound.as_str()) {
-        Some("") | None => "nothing on the track yet".to_string(),
-        Some(s) => format!("the track's {s}"),
-    };
+    let sound = pick.sound_words(st);
     AddPanelView {
         row: pick.row,
         heard,
@@ -583,6 +785,7 @@ pub fn panel_view(st: &TimeState, pick: &AddPick) -> AddPanelView {
         values: std::array::from_fn(|r| pick.value(st, r)),
         role_words: relation_words(pick.part, pick.relation).to_string(),
         sound,
+        new_track: pick.new_track,
         status,
         status_warn,
         step,
@@ -840,8 +1043,10 @@ const STEP_W: i32 = 148;
 const STEP_H: i32 = 38;
 const TILE_H: i32 = 40;
 const BUTTON_H: i32 = 42;
-/// Heard lines shown; more are summed up on the last.
+/// Heard lines shown; more are summed up on the last. New track's
+/// Sound stepper takes the room of one.
 const HEARD_LINES: usize = 4;
+const HEARD_LINES_NEW: usize = 3;
 
 /// The Add a part panel: the side area, from under the transport bar to
 /// the foot, while it is open. A tap gives `Toggle(PANEL_*)`, a part's
@@ -857,8 +1062,10 @@ pub struct PanelGeo {
     pub close: Rect,
     pub heard_y: i32,
     pub tiles: [Rect; 4],
-    /// The steppers' value boxes, [`PANEL_ROWS`]' order.
-    pub steppers: [Rect; 4],
+    /// The steppers' value boxes, [`PANEL_ROWS`]' order. Sound's is a
+    /// stepper only on New track ([`AddPanelView::new_track`]); else the
+    /// Sound line reads at `sound`.
+    pub steppers: [Rect; 5],
     pub role_words: Rect,
     pub sound: Rect,
     pub status: Rect,
@@ -871,11 +1078,29 @@ impl AddPanel {
         AddPanel::default()
     }
 
+    /// How many heard lines show.
+    fn heard_lines(&self) -> usize {
+        if self.view.new_track {
+            HEARD_LINES_NEW
+        } else {
+            HEARD_LINES
+        }
+    }
+
+    /// The steppers that answer: Sound's only on New track.
+    fn live_steppers(&self) -> usize {
+        if self.view.new_track {
+            PANEL_ROWS.len()
+        } else {
+            ROW_SOUND
+        }
+    }
+
     pub fn geo(&self, r: Rect) -> PanelGeo {
         let x = r.x + PAD;
         let w = r.w - 2 * PAD;
         let half = (w - 6) / 2;
-        let lines = self.view.heard.len().clamp(1, HEARD_LINES) as i32;
+        let lines = self.view.heard.len().clamp(1, self.heard_lines()) as i32;
         let heard_y = r.y + 68;
         let tiles_y = heard_y + lines * 21 + 10;
         let tiles = std::array::from_fn(|k| {
@@ -888,11 +1113,15 @@ impl AddPanel {
             )
         });
         let role_y = tiles_y + 2 * (TILE_H + 6) + 2;
-        let ys = [role_y, role_y + 66, role_y + 112, role_y + 158];
+        let sound_y = role_y + 204;
+        let ys = [role_y, role_y + 66, role_y + 112, role_y + 158, sound_y];
         let step_x = (x + STEP_X).min(r.right() - PAD - STEP_W);
         let steppers = ys.map(|y| Rect::new(step_x, y, r.right() - PAD - step_x, STEP_H));
-        let sound_y = role_y + 204;
-        let status_y = sound_y + 28;
+        let status_y = if self.view.new_track {
+            sound_y + STEP_H + 4
+        } else {
+            sound_y + 28
+        };
         let b1 = status_y + 24;
         let b2 = b1 + BUTTON_H + 8;
         PanelGeo {
@@ -968,8 +1197,9 @@ impl Widget for AddPanel {
                 "nothing in the row yet",
             );
         }
-        let shown = if v.heard.len() > HEARD_LINES {
-            HEARD_LINES - 1
+        let most = self.heard_lines();
+        let shown = if v.heard.len() > most {
+            most - 1
         } else {
             v.heard.len()
         };
@@ -995,11 +1225,11 @@ impl Widget for AddPanel {
                 &format!(" · {what}"),
             );
         }
-        if v.heard.len() > HEARD_LINES {
+        if v.heard.len() > most {
             cx.text(
                 FontId::Sans,
                 t.size_small - 1.0,
-                line(HEARD_LINES - 1),
+                line(most - 1),
                 Align::Left,
                 t.text_dim,
                 &format!("and {} more", v.heard.len() - shown),
@@ -1019,7 +1249,7 @@ impl Widget for AddPanel {
                 part_word(PARTS[k]),
             );
         }
-        for (k, s) in g.steppers.iter().enumerate() {
+        for (k, s) in g.steppers.iter().enumerate().take(self.live_steppers()) {
             cx.text(
                 FontId::Sans,
                 t.size_body - 1.0,
@@ -1068,22 +1298,24 @@ impl Widget for AddPanel {
             t.text_dim,
             &v.role_words,
         );
-        cx.text(
-            FontId::Sans,
-            t.size_body - 1.0,
-            g.sound,
-            Align::Left,
-            t.text,
-            "Sound",
-        );
-        cx.text(
-            FontId::Sans,
-            t.size_small - 1.0,
-            g.sound,
-            Align::Right,
-            t.text_dim,
-            &v.sound,
-        );
+        if !v.new_track {
+            cx.text(
+                FontId::Sans,
+                t.size_body - 1.0,
+                g.sound,
+                Align::Left,
+                t.text,
+                "Sound",
+            );
+            cx.text(
+                FontId::Sans,
+                t.size_small - 1.0,
+                g.sound,
+                Align::Right,
+                t.text_dim,
+                &v.sound,
+            );
+        }
         let ink = if v.status_warn {
             t.readable(t.warn, t.surface)
         } else {
@@ -1112,7 +1344,7 @@ impl Widget for AddPanel {
                     .disabled_if(self.view.part == k),
             );
         }
-        for (k, s) in g.steppers.iter().enumerate() {
+        for (k, s) in g.steppers.iter().enumerate().take(self.live_steppers()) {
             let (less, more) = s.take_left(s.w / 2);
             out.push(Target::tap(
                 "add-row-less",
@@ -1156,7 +1388,12 @@ impl Widget for AddPanel {
         if let Some(k) = g.tiles.iter().position(|b| b.contains(x, y)) {
             return Some(EventKind::Select(k));
         }
-        if let Some(k) = g.steppers.iter().position(|s| s.contains(x, y)) {
+        if let Some(k) = g
+            .steppers
+            .iter()
+            .take(self.live_steppers())
+            .position(|s| s.contains(x, y))
+        {
             let s = g.steppers[k];
             let delta = if x < s.x + s.w / 2 { -1 } else { 1 };
             return Some(EventKind::Step { index: k, delta });
@@ -1523,6 +1760,54 @@ mod tests {
             p.touch(1, Touch::Down, x, y, r),
             Some(EventKind::Toggle(PANEL_CLOSE))
         );
+    }
+
+    /// New track's panel (S2.6b): the Sound stepper takes the reading
+    /// line's place and answers there, at most three heard lines show,
+    /// and everything still fits the side area without overlapping; off
+    /// New track the Sound row doesn't answer.
+    #[test]
+    fn new_tracks_panel_fits_its_sound_stepper() {
+        let mut p = AddPanel::new();
+        p.view.heard = (0..6)
+            .map(|k| {
+                (
+                    Color::rgb(0x3DDC97),
+                    format!("Track {k}"),
+                    "notes, 8 bars".into(),
+                )
+            })
+            .collect();
+        p.view.step = ("‹ Try 1".into(), true);
+        let r = Rect::new(878, 136, 250, 614);
+        let mid = |b: Rect| (b.x + b.w / 2, b.y + b.h / 2);
+        let sound = p.geo(r).steppers[ROW_SOUND];
+        let (x, y) = (sound.x + 4, sound.y + sound.h / 2);
+        assert_eq!(p.touch(1, Touch::Down, x, y, r), None, "a reading");
+        p.view.new_track = true;
+        let g = p.geo(r);
+        assert!(g.buttons[3].bottom() <= r.bottom(), "{:?}", g.buttons[3]);
+        let mut all: Vec<Rect> = vec![g.close];
+        all.extend(g.tiles);
+        all.extend(g.steppers);
+        all.extend(g.buttons);
+        for (i, a) in all.iter().enumerate() {
+            assert!(r.intersect(*a) == *a, "{a:?}");
+            for b in &all[i + 1..] {
+                let o = a.intersect(*b);
+                assert!(o.w <= 0 || o.h <= 0, "{a:?} {b:?}");
+            }
+        }
+        let s = g.steppers[ROW_SOUND];
+        assert_eq!(
+            p.touch(2, Touch::Down, s.x + 4, s.y + 4, r),
+            Some(EventKind::Step {
+                index: ROW_SOUND,
+                delta: -1
+            })
+        );
+        let (x, y) = mid(g.buttons[3]);
+        assert_eq!(p.touch(3, Touch::Down, x, y, r), None, "nothing to keep");
     }
 
     #[test]

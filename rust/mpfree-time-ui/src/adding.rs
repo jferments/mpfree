@@ -59,6 +59,21 @@ pub struct PartAsk {
     pub pads: [Option<u8>; 4],
     /// The part's length in bars; None: the row's.
     pub bars: Option<u32>,
+    /// New track (S2.6b): the part goes on a track Keep adds, played by
+    /// a synth made for it. `track` is then the index that track will
+    /// get: the project's track count when asked.
+    pub new_track: Option<NewTrack>,
+}
+
+/// A track Add a part adds at Keep (composing tools S2.6b): its name, and
+/// the synth the tries play on (made in a free place while the panel is
+/// open; the new track plays it from Keep on).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewTrack {
+    /// "Bass", or "Bass 2" when a track has that name.
+    pub name: String,
+    /// The synth's node id ("mpfree.bass").
+    pub sound: &'static str,
 }
 
 /// The row's chords outside the Add a part panel (the Chords tab).

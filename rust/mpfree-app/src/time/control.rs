@@ -7982,17 +7982,31 @@ impl TimeControl {
                     );
                 }
                 let (track, row) = (ask.track, ask.row);
-                let tr = self
-                    .project
-                    .tracks
-                    .get(track)
-                    .ok_or_else(|| format!("add a part: there is no track {}", track + 1))?;
-                if tr.kind != TrackKind::Notes {
-                    return Err("add a part: only a track of notes takes a part".into());
-                }
+                // New track (S2.6b): the part is for the track Keep adds,
+                // at the end; it swings as the transport does.
+                let swing = if ask.new_track.is_some() {
+                    if track != self.project.tracks.len() {
+                        return Err("add a part: a track was added: ask again".into());
+                    }
+                    if self.project.tracks.len() >= MAX_TRACKS {
+                        return Err(format!(
+                            "add a part: {MAX_TRACKS} tracks is the most a project holds"
+                        ));
+                    }
+                    self.info.swing
+                } else {
+                    let tr =
+                        self.project.tracks.get(track).ok_or_else(|| {
+                            format!("add a part: there is no track {}", track + 1)
+                        })?;
+                    if tr.kind != TrackKind::Notes {
+                        return Err("add a part: only a track of notes takes a part".into());
+                    }
+                    tr.swing.unwrap_or(self.info.swing)
+                };
                 let hearing = Hearing {
                     parts: self.row_others(track, row),
-                    swing: tr.swing.unwrap_or(self.info.swing),
+                    swing,
                     transport_swing: self.info.swing,
                     meter: self.info.meter,
                     bpm: self.info.bpm,
@@ -8069,6 +8083,7 @@ impl TimeControl {
             track,
             row,
             clip,
+            new_track,
             line,
             heard,
         } = self.add.keep(&self.project)?;
@@ -8087,9 +8102,26 @@ impl TimeControl {
             .find(|l| l.slot == row && l.track != track)
             .copied();
         let changes_chords = line.is_some();
-        let r = self
-            .takes
-            .add_part(&mut self.project, track, row, clip, line);
+        let r = match &new_track {
+            // New track: the track and the part, one take. Keep's check
+            // made sure it gets the index the try played on.
+            Some(name) => self
+                .takes
+                .add_part_on_new_track(
+                    &mut self.project,
+                    mpfree_seq::Track::new(name, 0),
+                    row,
+                    clip,
+                    line,
+                )
+                .map(|(n, index)| {
+                    debug_assert_eq!(index, track, "New track's index");
+                    n
+                }),
+            None => self
+                .takes
+                .add_part(&mut self.project, track, row, clip, line),
+        };
         self.add.kept(&r);
         self.changed = true;
         if let Err(e) = r {
@@ -8124,10 +8156,16 @@ impl TimeControl {
             let _ = self.compile();
             return Err(e);
         }
-        Ok(format!(
-            "add a part: {name} kept in row {} (UNDO takes it back)",
-            row + 1
-        ))
+        Ok(match new_track {
+            Some(t) => format!(
+                "add a part: {name} kept in row {} on a new track, {t} (UNDO takes both back)",
+                row + 1
+            ),
+            None => format!(
+                "add a part: {name} kept in row {} (UNDO takes it back)",
+                row + 1
+            ),
+        })
     }
 
     /// Whether row `row` plays now: a clip of it launched (on a track
@@ -8226,6 +8264,9 @@ impl TimeControl {
         let Some(l) = self.row_playing(v.row, v.track) else {
             return self.view_with_continue();
         };
+        if let Some(name) = &v.new_track {
+            return self.view_with_new_track(&v, name, l);
+        }
         let empty = self
             .project
             .tracks
@@ -8248,6 +8289,39 @@ impl TimeControl {
         let out = self.view_with_continue();
         self.launches = saved;
         self.project.tracks[v.track].slots[v.row] = was;
+        out
+    }
+
+    /// [`Self::view_with_add`] for a try on New track (S2.6b): the view
+    /// has the track Keep will add, at the end, with the try in its cell
+    /// and launched where the row's clip `row_launch` started; the project
+    /// gets it only at Keep. The track's notes go by its index to the
+    /// instruments, where the synth made for the part plays them (its
+    /// send set by the app). Nothing else of the track is set: the view
+    /// is the only place it is, and only while the try plays.
+    fn view_with_new_track(
+        &mut self,
+        v: &super::adding::AddInView,
+        name: &str,
+        row_launch: mpfree_play::Launch,
+    ) -> Result<PlayView, String> {
+        let n = self.project.tracks.len();
+        if v.track != n || n >= MAX_TRACKS || v.row >= SLOTS {
+            return self.view_with_continue();
+        }
+        let mut t = mpfree_seq::Track::new(name, mpfree_play::lowest_free_dest(&self.project));
+        t.slots[v.row] = Some((*v.clip).clone());
+        self.project.tracks.push(t);
+        let saved = self.launches.clone();
+        self.launches.push(mpfree_play::Launch {
+            track: v.track,
+            slot: v.row,
+            origin: mpfree_play::anchored(row_launch.start, v.clip.length, v.clip.speed),
+            start: row_launch.start,
+        });
+        let out = self.view_with_continue();
+        self.launches = saved;
+        self.project.tracks.pop();
         out
     }
 

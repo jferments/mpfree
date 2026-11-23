@@ -698,12 +698,16 @@ fn tracks_play(
 /// which sounds over its entry until the send ends. A track's own
 /// instrument is the instruments part's. Only the first line while every
 /// track plays kit 1, so the part isn't saved.
+/// A send past the project's `tracks` tracks (Add a part's New track
+/// while it tries, composing tools S2.6b; a track UNDO took away) isn't
+/// saved.
 ///
 /// [`TrackKits::entry`]: crate::sampler::TrackKits::entry
 pub fn track_kits_text(
     kits: &crate::sampler::TrackKits,
     inst: &crate::instruments::Instruments,
     list: &InstrumentList,
+    tracks: usize,
 ) -> String {
     use std::fmt::Write as _;
     let mut s = format!("{TRACK_KITS_FORMAT}\n");
@@ -713,7 +717,10 @@ pub fn track_kits_text(
             Some(k) => list.of_kit(k),
             None => Some(InstrumentId::SHARED_SYNTH),
         };
-        let sent = inst.send(t).and_then(|o| list.of_holder(o));
+        let sent = (t < tracks)
+            .then(|| inst.send(t))
+            .flatten()
+            .and_then(|o| list.of_holder(o));
         for id in [entry, sent].into_iter().flatten() {
             let _ = writeln!(s, "track {} instrument {id}", t + 1);
         }
@@ -2982,7 +2989,7 @@ mod tests {
             instrument_list: list.text(),
             ..c(track_kits)
         };
-        let none = track_kits_text(&kits, &inst, &list);
+        let none = track_kits_text(&kits, &inst, &list, crate::instruments::TRACKS);
         let snap = snapshot(&c(none), Vec::new());
         assert!(
             snap.part(TRACK_KITS).is_none(),
@@ -2991,7 +2998,7 @@ mod tests {
         let o = opening(&snap, 44_100, "a test", &crate::plugins::Plugins::none()).unwrap();
         assert!(o.track_kits.is_empty());
         assert!(kits.set(1, 2) && kits.set(3, 9));
-        let picks = track_kits_text(&kits, &inst, &list);
+        let picks = track_kits_text(&kits, &inst, &list, crate::instruments::TRACKS);
         assert_eq!(
             picks,
             format!("{TRACK_KITS_FORMAT}\ntrack 2 instrument 4\ntrack 4 instrument 1\n")
@@ -3659,10 +3666,16 @@ mod tests {
         list.follow_kits(4);
         let mut kits = crate::sampler::TrackKits::new(4);
         kits.set(5, 2);
-        let text = track_kits_text(&kits, &inst, &list);
+        let text = track_kits_text(&kits, &inst, &list, 6);
         assert_eq!(
             text,
             format!("{TRACK_KITS_FORMAT}\ntrack 6 instrument 5\ntrack 6 instrument 2\n")
+        );
+        // With 5 tracks there is no track 6 (Add a part's New track while
+        // it tries): its send isn't saved.
+        assert_eq!(
+            track_kits_text(&kits, &inst, &list, 5),
+            format!("{TRACK_KITS_FORMAT}\ntrack 6 instrument 5\n")
         );
         let mut c = collected(text.clone(), list.text());
         c.instruments = instruments_text(&inst);
@@ -3702,7 +3715,7 @@ mod tests {
         list.follow(inst.held_tracks());
         list.follow_free(inst.held_free());
         let kits = crate::sampler::TrackKits::new(4);
-        let text = track_kits_text(&kits, &inst, &list);
+        let text = track_kits_text(&kits, &inst, &list, 6);
         assert!(text.ends_with("\ntrack 6 instrument 2\n"), "{text}");
         let mut c = collected(text, list.text());
         c.instruments = instruments_text(&inst);

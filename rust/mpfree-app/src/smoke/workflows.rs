@@ -6082,4 +6082,79 @@ mod tests {
             );
         });
     }
+
+    /// Composing tools S2.6b, Add a part on New track, end to end: the
+    /// Track row's last choice makes the part's synth in a free place, and
+    /// the try waits for the new track's index to play it; Keep adds the
+    /// track with the part, which plays that synth on by its send; UNDO
+    /// takes the track away.
+    #[test]
+    fn add_a_part_on_a_new_track_makes_its_synth_and_keep_adds_the_track() {
+        use crate::instruments::TRACKS;
+        use std::time::{Duration, Instant};
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let mut riff = mpfree_seq::Clip::new("riff", 3840);
+            riff.holds = mpfree_seq::Holds::Notes;
+            riff.notes = [60u8, 63, 67, 65, 63, 62, 63, 60]
+                .iter()
+                .enumerate()
+                .map(|(i, &n)| mpfree_seq::Note::new(i as i64 * 480, 240, n, 96))
+                .collect();
+            s.time
+                .put_clips(vec![(0, riff)])
+                .expect("the riff in row 1");
+            s.press("header", "tab", "Arrange");
+            let n = s.time.project().tracks.len();
+            s.press("clips", "add-part", "Add a part");
+            for _ in 0..n {
+                if s.screen.time_page.add.as_ref().is_some_and(|p| p.new_track) {
+                    break;
+                }
+                s.press("add-part", "add-row-more", "Track ›");
+            }
+            let row = {
+                let p = s.screen.time_page.add.as_ref().expect("the panel");
+                assert!(p.new_track && p.track == n, "{p:?}");
+                p.row
+            };
+            // The synth in a free place, the new track's index playing it,
+            // and then the try.
+            let wall = Instant::now() + Duration::from_secs(20);
+            while !s
+                .screen
+                .time
+                .adding
+                .as_ref()
+                .is_some_and(|a| a.made.is_some())
+            {
+                assert!(Instant::now() < wall, "{:?}", s.lines);
+                s.run_for(0.05);
+            }
+            let holder = s.app.add_sound_holder().expect("a synth made");
+            assert!(holder >= TRACKS);
+            assert_eq!(s.mix.instruments.held(holder).map(|h| h.name), Some("Bass"));
+            assert_eq!(s.mix.instruments.send(n), Some(holder));
+            assert_eq!(s.time.project().tracks.len(), n, "no track until Keep");
+            // Keep: the track with the part, playing the synth on.
+            s.press("add-part", "add-keep", "Keep");
+            s.run_for(0.2);
+            assert_eq!(s.time.project().tracks.len(), n + 1);
+            assert_eq!(s.time.project().tracks[n].name, "Bass");
+            assert!(s.time.project().clip(n, row).is_some());
+            assert!(s.screen.time_page.add.is_none(), "the panel closed");
+            assert_eq!(s.app.add_sound_holder(), None);
+            assert_eq!(s.mix.instruments.send(n), Some(holder));
+            s.run_for(0.2);
+            assert_eq!(
+                s.mix.instruments.held(holder).map(|h| h.name),
+                Some("Bass"),
+                "the new track plays it: not put away"
+            );
+            // UNDO: the track goes with its part.
+            s.route(crate::gui::FromUi::Time(mpfree_time_ui::TimeAction::Undo));
+            s.run_for(0.1);
+            assert_eq!(s.time.project().tracks.len(), n);
+        });
+    }
 }

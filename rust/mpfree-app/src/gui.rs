@@ -987,6 +987,17 @@ fn played(
     sounds.get(o).copied().flatten().map(|h| (h, Some(o)))
 }
 
+/// How long a try of Add a part's New track waits for its synth, in
+/// seconds (composing tools S2.6b): the builder makes one in a few
+/// periods.
+const ADD_SYNTH_WAIT: f32 = 5.0;
+
+/// A synth's name from its node id ("Bass" for "mpfree.bass"), for the
+/// panel's words while it is made.
+fn synth_word(id: &str) -> &'static str {
+    crate::synth::Engine::from_node_id(id).map_or("new", |e| e.name())
+}
+
 /// An instrument's name as track `t` shows it: its own's ("FM"), or
 /// another track's ("Track 3's FM").
 fn played_name(h: crate::instruments::Held, from: Option<usize>) -> String {
@@ -1912,6 +1923,9 @@ pub enum FromUi {
     },
     /// A touch on the transport bar or the Arrange page.
     Time(TimeAction),
+    /// Add a part's New track (composing tools S2.6b): the synth its tries
+    /// play on, made, given up or kept (app/add_sound.rs).
+    AddPartSound(crate::app::AddSound),
     /// A change on the Synth page, for the synth on the audio thread.
     Synth(SynthAction),
     /// The plugin skin showing wants the plugin's values and texts
@@ -2771,6 +2785,12 @@ pub struct Player {
     /// What each track plays, as last told the time engine for the note
     /// editor's Continue ([`Player::refresh_compose_parts`]).
     compose_parts: Option<Arc<mpfree_time_ui::continuing::Parts>>,
+    /// Add a part's New track (composing tools S2.6b): the synth asked for
+    /// its tries (the index the track will get, the synth's node id), and
+    /// a try held until that synth plays there, with the seconds it has
+    /// waited ([`Player::new_track_ask`]).
+    add_sound: Option<(usize, &'static str)>,
+    add_held: Option<(Box<mpfree_time_ui::adding::PartAsk>, f32)>,
     /// A line said in place of the hint ([`ToUi::Tell`]), the seconds it
     /// has left and its colour (yellow; red for a red problem's title,
     /// System status).
@@ -3391,6 +3411,8 @@ impl Player {
             tuning: Tuning::default(),
             saved_tuning: Tuning::default(),
             compose_parts: None,
+            add_sound: None,
+            add_held: None,
         };
         p.time_page.update(&mut p.ui, &p.time);
         p.show_timing();
@@ -5593,18 +5615,137 @@ impl Player {
 
     /// What the Clips page asks of the time engine on its own, sent: Snap
     /// Auto's division, a note held picked, Add a part's tries (with what
-    /// plays them filled in, [`Gui::fill_part_ask`]) and the row's chords
-    /// to hear.
+    /// plays them filled in, [`Gui::fill_part_ask`]; on New track held
+    /// until its synth plays there, [`Player::new_track_ask`]) and the
+    /// row's chords to hear.
     fn send_page_asks(&mut self) {
+        use mpfree_time_ui::adding::AddAction;
+        // Keep kept a part on New track: the track plays its synth on.
+        if self.time_page.take_kept() && self.add_sound.take().is_some() {
+            self.add_held = None;
+            self.outbox
+                .push(FromUi::AddPartSound(crate::app::AddSound::Kept));
+        }
         for a in self.time_page.take_asks() {
             let a = match a {
-                TimeAction::Add(mpfree_time_ui::adding::AddAction::Ask(mut ask)) => {
+                TimeAction::Add(AddAction::Ask(mut ask)) => {
                     self.fill_part_ask(&mut ask);
-                    TimeAction::Add(mpfree_time_ui::adding::AddAction::Ask(ask))
+                    match self.new_track_ask(ask) {
+                        Some(ask) => TimeAction::Add(AddAction::Ask(ask)),
+                        None => continue,
+                    }
+                }
+                TimeAction::Add(AddAction::Back) => {
+                    self.new_track_back();
+                    TimeAction::Add(AddAction::Back)
                 }
                 a => a,
             };
             self.outbox.push(FromUi::Time(a));
+        }
+    }
+
+    /// A try of Add a part (composing tools S2.6b) as it goes: on a track
+    /// that is there, at once (a synth made for New track goes); on New
+    /// track, the synth asked for first when it changed, and the try held
+    /// (None) until that synth plays on the track Keep would add, so no
+    /// try sounds on a kit ([`Player::add_held_tick`] sends it).
+    fn new_track_ask(
+        &mut self,
+        ask: Box<mpfree_time_ui::adding::PartAsk>,
+    ) -> Option<Box<mpfree_time_ui::adding::PartAsk>> {
+        let Some(id) = ask.new_track.as_ref().map(|n| n.sound) else {
+            self.new_track_back();
+            return Some(ask);
+        };
+        let want = (ask.track, id);
+        if self.add_sound != Some(want) {
+            self.add_sound = Some(want);
+            self.outbox
+                .push(FromUi::AddPartSound(crate::app::AddSound::Try {
+                    track: ask.track,
+                    id,
+                }));
+        }
+        if self.new_synth_plays(ask.track, id) {
+            self.add_held = None;
+            self.show_add_waiting(None);
+            return Some(ask);
+        }
+        let same = |held: &mpfree_time_ui::adding::PartAsk| {
+            held.track == ask.track && held.new_track.as_ref().map(|n| n.sound) == Some(id)
+        };
+        let waited = match &self.add_held {
+            Some((held, w)) if same(held) => *w,
+            _ => 0.0,
+        };
+        self.show_add_waiting(Some((
+            format!("Making the {} synth…", synth_word(id)),
+            false,
+        )));
+        self.add_held = Some((ask, waited));
+        None
+    }
+
+    /// What Add a part's status says while New track's synth is made
+    /// ([`TimePage::set_add_waiting`]), shown at once.
+    fn show_add_waiting(&mut self, waiting: Option<(String, bool)>) {
+        if self.time_page.set_add_waiting(waiting) {
+            self.time_page.update(&mut self.ui, &self.time);
+        }
+    }
+
+    /// Add a part's panel closed with nothing kept, or its part goes on a
+    /// track that is there: New track's synth goes, and a held try with it.
+    fn new_track_back(&mut self) {
+        self.add_held = None;
+        if self.add_sound.take().is_some() {
+            self.outbox
+                .push(FromUi::AddPartSound(crate::app::AddSound::Back));
+        }
+    }
+
+    /// Whether track `track` (the one Keep would add) plays synth `id` by
+    /// its send, as the audio loop last said.
+    fn new_synth_plays(&self, track: usize, id: &str) -> bool {
+        matches!(
+            played(&self.track_sounds, &self.track_sends, track),
+            Some((h, Some(_))) if h.id == id
+        )
+    }
+
+    /// A try held for New track's synth, `dt` seconds on: sent once the
+    /// synth plays there; after [`ADD_SYNTH_WAIT`] dropped, the panel
+    /// saying so, and the synth asked for again by Try again.
+    fn add_held_tick(&mut self, dt: f32) {
+        let Some((ask, waited)) = self.add_held.as_mut() else {
+            return;
+        };
+        *waited += dt.max(0.0);
+        // A track added or taken away since (+ Track, UNDO): the try was
+        // for another index, and Try again asks for the new one.
+        let stale = ask.track != self.time.tracks.len();
+        let Some(id) = ask.new_track.as_ref().map(|n| n.sound).filter(|_| !stale) else {
+            self.add_held = None;
+            self.add_sound = None;
+            self.show_add_waiting(None);
+            return;
+        };
+        let (track, waited) = (ask.track, *waited);
+        if self.new_synth_plays(track, id) {
+            if let Some((ask, _)) = self.add_held.take() {
+                self.show_add_waiting(None);
+                self.outbox.push(FromUi::Time(TimeAction::Add(
+                    mpfree_time_ui::adding::AddAction::Ask(ask),
+                )));
+            }
+        } else if waited > ADD_SYNTH_WAIT {
+            self.add_held = None;
+            self.add_sound = None;
+            self.show_add_waiting(Some((
+                format!("{} didn't come: Try again", synth_word(id)),
+                true,
+            )));
         }
     }
 
@@ -5626,7 +5767,9 @@ impl Player {
             }
             ask.lanes = parts.lanes.clone();
         }
-        if ask.part != mpfree_context::PartRole::Drums {
+        // New track's Drums play the Drums synth made for it: desk.rs
+        // reads its pads there.
+        if ask.part != mpfree_context::PartRole::Drums || ask.new_track.is_some() {
             return;
         }
         let kit = match played(&self.track_sounds, &self.track_sends, ask.track) {
@@ -11206,6 +11349,10 @@ impl Player {
                 drop(old);
                 self.opens_out = self.opens_out.saturating_sub(1);
                 self.opened_at = Some(Instant::now());
+                // Add a part's New track synth went with the old project:
+                // a try asks for one again.
+                self.add_sound = None;
+                self.add_held = None;
                 if let Some(b) = self.browser.as_mut() {
                     b.open_landed();
                 }
@@ -17300,6 +17447,7 @@ impl Player {
         // division as the roll's zoom changes it).
         self.time_page.tick(&mut self.ui, &self.time, dt);
         self.send_page_asks();
+        self.add_held_tick(dt);
         self.hear_tick(dt);
         self.status_tick(dt);
         self.power_tick(dt);
@@ -19285,6 +19433,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             | Effect::TrackSound { .. }
             | Effect::TrackSend { .. }
             | Effect::TrackCopy { .. }
+            | Effect::AddPartSend { .. }
             | Effect::SynthOnTrack(_)
             | Effect::KitOnTrack { .. }
             | Effect::ProgEdit
@@ -22263,6 +22412,22 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("clips-add-part sample: {e}"),
     }
+    // Add a part on New track (composing tools S2.6b): the Track row on
+    // New track, the Sound row picking its synth (Bass), a try playing
+    // with the row on the track Keep would add.
+    match mpfree_time_ui::sample::add_part_new_track_state() {
+        Ok((st, pick)) => {
+            let mut p = quiet_player(fonts());
+            busy_sounds(&mut p);
+            p.time_page.add = Some(pick);
+            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Show(View::Arrange));
+            p.refresh_qlinks();
+            p.refresh_hint();
+            out.push(("clips-add-part-new-track", p));
+        }
+        Err(e) => eprintln!("clips-add-part-new-track sample: {e}"),
+    }
     // The Chords tab (S2.6, board C): bar 4's chord set to A♭7 after
     // the Bass was kept, so the Bass and the Solo don't fit: both marked
     // in their cells and ticked on the tab.
@@ -25000,6 +25165,88 @@ mod tests {
         );
         // A new engine's counts start again from nothing: no report.
         assert!(kinds_of(&t.note(&AudioNumbers::default(), 0)).is_empty());
+    }
+
+    /// Add a part's New track (composing tools S2.6b): a try asks for its
+    /// synth and waits for it, so it never sounds on a kit; it goes once
+    /// the synth plays on the track Keep would add; a try then goes at
+    /// once; another sound asks again; a synth that doesn't come is given
+    /// up after a while, so Try again asks for it again; and a try on a
+    /// track that is there lets the synth go.
+    #[test]
+    fn a_new_track_try_waits_for_its_synth() {
+        use crate::app::AddSound;
+        use crate::instruments::{free, Held, HOLDERS, TRACKS};
+        use mpfree_time_ui::adding::{AddAction, NewTrack, PartAsk};
+        let mut p = quiet_player(Fonts::embedded());
+        p.take_actions();
+        let n = p.time.tracks.len();
+        let ask = |sound| {
+            Box::new(PartAsk {
+                row: 0,
+                track: n,
+                part: mpfree_context::PartRole::Bass,
+                relation: mpfree_compose::Relation::Support,
+                settings: mpfree_compose::Settings::default(),
+                kind: mpfree_compose::InstrumentKind::Bass,
+                lanes: mpfree_compose::Lanes::default(),
+                pads: [None; 4],
+                bars: None,
+                new_track: Some(NewTrack {
+                    name: "Bass".into(),
+                    sound,
+                }),
+            })
+        };
+        let asks = |p: &mut Player| {
+            p.take_actions()
+                .into_iter()
+                .filter(|a| {
+                    matches!(
+                        a,
+                        FromUi::AddPartSound(_) | FromUi::Time(TimeAction::Add(_))
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let try_on = |id| FromUi::AddPartSound(AddSound::Try { track: n, id });
+        assert!(p.new_track_ask(ask("mpfree.bass")).is_none(), "held");
+        assert_eq!(asks(&mut p), [try_on("mpfree.bass")]);
+        p.add_held_tick(0.5);
+        assert!(asks(&mut p).is_empty(), "still waiting");
+        // The synth plays on the new track's index: the try goes.
+        let mut sounds: TrackSounds = [None; HOLDERS];
+        sounds[free(0)] = Some(Held {
+            id: "mpfree.bass",
+            name: "Bass",
+            instance: 0,
+        });
+        let mut sends: TrackSends = [None; TRACKS];
+        sends[n] = Some(free(0) as u8);
+        p.apply(ToUi::TrackSounds(Box::new(sounds)));
+        p.apply(ToUi::TrackSends(Box::new(sends)));
+        p.add_held_tick(0.02);
+        assert!(
+            matches!(&asks(&mut p)[..], [FromUi::Time(TimeAction::Add(AddAction::Ask(a)))] if a.track == n)
+        );
+        // Playing already: the next try goes at once, asking nothing more.
+        assert!(p.new_track_ask(ask("mpfree.bass")).is_some());
+        assert!(asks(&mut p).is_empty());
+        // Another sound: asked for, the try held until it plays.
+        assert!(p.new_track_ask(ask("mpfree.squelch")).is_none());
+        assert_eq!(asks(&mut p), [try_on("mpfree.squelch")]);
+        // It doesn't come: given up, and Try again asks for it again.
+        p.add_held_tick(ADD_SYNTH_WAIT + 0.1);
+        assert!(asks(&mut p).is_empty());
+        assert!(p.add_held.is_none());
+        assert!(p.new_track_ask(ask("mpfree.squelch")).is_none());
+        assert_eq!(asks(&mut p), [try_on("mpfree.squelch")]);
+        // A try on a track that is there: the synth goes, and the held try.
+        let mut there = ask("mpfree.bass");
+        there.new_track = None;
+        assert!(p.new_track_ask(there).is_some());
+        assert_eq!(asks(&mut p), [FromUi::AddPartSound(AddSound::Back)]);
+        assert!(p.add_held.is_none());
     }
 
     /// The held buttons' lines: hold MAIN (the pads pick a track), hold

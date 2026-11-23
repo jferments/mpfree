@@ -65,9 +65,12 @@ Every change plays at once, and **UNDO** takes it back. Turning one setting many
    - **Role** says how it plays with the others: **Support** (with the beat, under the tune), **Answer** (where the tune rests), **Interlock** (in the beat's gaps) or **Stay out** (sparse, out of the way). The words under it say what the role does.
    - **Style**, and **Bars**: the row's length, or 1, 2, 4, 8 or 16 bars.
    - **Track**: the track whose empty cell gets the part. It starts on a track whose name says the part (a "Bass" track for Bass), else the first with room. **Sound** says what plays it.
+   - **New track**, the Track row's last choice: the part goes on a track **Keep** adds, named for the part ("Bass", or "Bass 2" when you have one). **Sound** then picks the synth it plays: for Bass the Bass synth first, then Squelch, Analog, Poly, FM and Pluck; for Chords Poly, Keys, Strings, Drawbar, Choir, Analog and FM; for a melody FM, Pluck, Analog, Wind, Poly, Keys, Strings and Squelch; drums play the Drums synth. The status says "Making the Bass synth…" for a moment before the first try. When every track has a clip in the row, the panel opens on New track.
    - The Q-Links: **Similarity**, **Variation**, **Activity** and **Range**, as on Continue.
    - **Try again** makes another. **‹ Try 1** goes back to an earlier one (the last eight are kept).
-5. **Keep** puts the part in its cell: one take, "a new part", and one **UNDO** takes it back. If the song plays the row, its parts get it too, on the same take. **Back** or **×** closes the panel and changes nothing.
+5. **Keep** puts the part in its cell: one take, "a new part", and one **UNDO** takes it back. If the song plays the row, its parts get it too, on the same take. On New track, Keep adds the track with the part and its synth, and one **UNDO** takes both away. **Back** or **×** closes the panel and changes nothing (New track's synth goes too).
+
+Adding a track with **+ Track** while New track is trying moves the new track one along: the tries go ("A track was added: Try again"), and **Try again** makes one for the track after it.
 
 While **Rec song** is on, Add a part is faint and the hint says why: a try playing in its cell would be recorded into the song. A part for drums plays the track's kit, on the pads its kit names as kick, snare and hats.
 

@@ -6748,6 +6748,10 @@ pub struct TimePage {
     /// Keep was tapped: the panel closes once the time engine has kept
     /// the part (a refusal leaves it open, saying why).
     keeping: bool,
+    /// The panel closed because the part was kept, until the app takes
+    /// it ([`TimePage::take_kept`]): New track's synth stays on the new
+    /// track then; any other close lets it go.
+    kept: bool,
     /// The Record panel shows its Chords tab.
     pub chords_card: bool,
     /// The chord picker, open on a chip of the row's chords.
@@ -7383,6 +7387,7 @@ impl TimePage {
         let pick = AddPick::open(st, row, track)?;
         self.chord_pick = None;
         self.keeping = false;
+        self.kept = false;
         self.add = Some(pick);
         if st.scene_focus != row {
             self.asks.push(TimeAction::SceneFocus(row));
@@ -7457,12 +7462,37 @@ impl TimePage {
             });
         }
         if let Some(p) = self.add.as_ref().filter(|_| grid) {
+            // New track (S2.6b): Keep adds the track, and Sound picks its
+            // synth.
+            if p.new_track {
+                return Some("Tap a part: hear it with the row   ·   Sound: the new track's synth   ·   tap a chord on the row: change it   ·   Keep: the track and its part, one UNDO   ·   Back: nothing changes".to_string());
+            }
             return Some(format!(
                 "Tap a part: hear it with the row   ·   Role: how it plays with the others   ·   tap a chord on the row: change it   ·   Keep: the clip in row {}, one UNDO   ·   Back: nothing changes",
                 p.row + 1
             ));
         }
         self.chords_card.then(|| CHORDS_HINT.to_string())
+    }
+
+    /// Whether Add a part's panel closed because Keep kept the part,
+    /// since the last ask: once.
+    pub fn take_kept(&mut self) -> bool {
+        std::mem::take(&mut self.kept)
+    }
+
+    /// What Add a part's status says while the app makes New track's
+    /// synth, or that it didn't come (warning); None: the try's own words
+    /// again. Nothing while the panel is closed. True if it changed, so
+    /// the page is shown again ([`TimePage::update`]).
+    pub fn set_add_waiting(&mut self, waiting: Option<(String, bool)>) -> bool {
+        match self.add.as_mut() {
+            Some(p) if p.waiting != waiting => {
+                p.waiting = waiting;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Show `st`. Widgets whose contents did not change are left alone, so
@@ -7478,12 +7508,17 @@ impl TimePage {
             if self.keeping && st.adding.is_none() {
                 self.add = None;
                 self.keeping = false;
+                self.kept = true;
                 if !self.chords_card {
                     self.chord_pick = None;
                 }
             } else if st.song_rec {
                 self.close_add();
             }
+        }
+        // New track follows a track added or taken away while it is open.
+        if let Some(p) = self.add.as_mut() {
+            p.follow_tracks(st);
         }
         // The row whose chords show is heard while it shows.
         let chords_row = self.chords_row(st);
@@ -11851,11 +11886,28 @@ mod tests {
         page.update(&mut ui, &st);
         let add = ev(CLIPS, EventKind::Toggle(SLOTS + ADD_PART));
         assert!(page.owns(&add));
-        // Row 1 is full: it says so, and nothing opens.
+        // Row 1 is full: the panel opens on New track (S2.6b), for the
+        // track Keep would add, named for the part, on its first synth;
+        // Back closes it.
         st.scene_focus = 0;
-        let why = page.compose(&add, &st).unwrap_err();
-        assert!(why.contains("row 1"), "{why}");
+        page.compose(&add, &st).unwrap();
+        let p = page.add.as_ref().expect("open");
+        assert!(p.new_track);
+        assert_eq!((p.track, p.new_name.as_str()), (3, "Bass 2"));
+        assert!(
+            matches!(&page.take_asks()[..], [TimeAction::Add(AddAction::Ask(a))]
+            if a.track == 3 && a.new_track == Some(crate::adding::NewTrack {
+                name: "Bass 2".into(),
+                sound: "mpfree.bass",
+            }))
+        );
+        page.update(&mut ui, &st);
+        page.compose(&ev(ADD_PANEL, EventKind::Toggle(PANEL_BACK)), &st)
+            .unwrap();
+        page.update(&mut ui, &st);
         assert!(page.add.is_none());
+        assert!(page.take_asks().contains(&TimeAction::Add(AddAction::Back)));
+        assert!(!page.take_kept(), "nothing kept");
         // Rec song on: faint, and a tap says why.
         st.song_rec = true;
         page.update(&mut ui, &st);
@@ -11950,6 +12002,91 @@ mod tests {
         assert!(page.add.is_none());
         assert!(!page.take_asks().contains(&TimeAction::Add(AddAction::Back)));
         assert_eq!(ui.layout_of(CLIPS_PAGE), Some(CLIPS_LAYOUT));
+    }
+
+    /// New track (composing tools S2.6b): the Track row steps past the
+    /// tracks with room to New track and back; its Sound row steps the
+    /// part's synths (Drums: only the Drums synth), while on a track it
+    /// only reads; a part picked there takes its name and first synth; a
+    /// track added while it is open moves it on; and with the project
+    /// full a full row says why.
+    #[test]
+    fn new_track_is_the_track_rows_last_choice_and_its_sound_row_picks_a_synth() {
+        use crate::add_view::{AddPick, PARTS, ROW_SOUND, ROW_TRACK};
+        use crate::adding::NewTrack;
+        use mpfree_compose::InstrumentKind;
+        use mpfree_context::PartRole;
+        let mut st = state();
+        // Row 3: every track has room; Bass opens on the Bass track.
+        let mut p = AddPick::open(&st, 2, None).unwrap();
+        assert_eq!((p.track, p.new_track), (1, false));
+        assert!(p.ask().new_track.is_none());
+        let why = p.step(&st, ROW_SOUND, 1).unwrap_err();
+        assert!(why.contains("pick New track"), "{why}");
+        // + to Stab, then New track, the last choice.
+        assert!(p.step(&st, ROW_TRACK, 1).unwrap());
+        assert_eq!(p.track, 2);
+        assert!(p.step(&st, ROW_TRACK, 1).unwrap());
+        assert!(p.new_track);
+        assert_eq!((p.track, p.new_name.as_str()), (3, "Bass 2"));
+        assert_eq!(p.value(&st, ROW_TRACK), "New track");
+        assert_eq!(p.value(&st, ROW_SOUND), "Bass");
+        assert_eq!(
+            p.step(&st, ROW_TRACK, 1).unwrap_err(),
+            "New track is the last choice"
+        );
+        let a = p.ask();
+        assert_eq!(
+            (a.track, a.kind, a.new_track),
+            (
+                3,
+                InstrumentKind::Bass,
+                Some(NewTrack {
+                    name: "Bass 2".into(),
+                    sound: "mpfree.bass"
+                })
+            )
+        );
+        // Sound steps the bass synths.
+        assert!(p.step(&st, ROW_SOUND, 1).unwrap());
+        assert_eq!(p.sound_of(), ("mpfree.squelch", "Squelch"));
+        assert!(p.step(&st, ROW_SOUND, -5).unwrap());
+        assert_eq!(p.sound_of().1, "Bass", "back to the first");
+        // Chords: its own name and first synth, played as chords.
+        let chords = PARTS.iter().position(|&r| r == PartRole::Chords).unwrap();
+        assert!(p.set_part(&st, chords));
+        assert_eq!((p.new_name.as_str(), p.sound_of().1), ("Chords", "Poly"));
+        assert_eq!(
+            p.ask().kind,
+            crate::add_view::kind_of_part(PartRole::Chords)
+        );
+        // Drums: only the Drums synth, played as hits.
+        let drums = PARTS.iter().position(|&r| r == PartRole::Drums).unwrap();
+        assert!(p.set_part(&st, drums));
+        assert_eq!(p.sound_of(), ("mpfree.drums", "Drums"));
+        assert_eq!(p.ask().kind, InstrumentKind::Percussive);
+        assert_eq!(
+            p.step(&st, ROW_SOUND, 1).unwrap_err(),
+            "Drums play on the Drums synth"
+        );
+        // A track added while it is open: New track is the one after it,
+        // named again ("Drums" is taken).
+        st.tracks.push(st.tracks[2].clone());
+        assert!(p.follow_tracks(&st));
+        assert_eq!((p.track, p.new_name.as_str()), (4, "Drums 2"));
+        assert!(!p.follow_tracks(&st), "once");
+        // − back to the last track with room.
+        assert!(p.step(&st, ROW_TRACK, -1).unwrap());
+        assert_eq!((p.track, p.new_track), (3, false));
+        // A full row opens on New track; with the project full too, it
+        // says why.
+        let p = AddPick::open(&st, 0, None).unwrap();
+        assert!(p.new_track && p.track == 4);
+        while st.tracks.len() < mpfree_seq::MAX_TRACKS {
+            st.tracks.push(st.tracks[0].clone());
+        }
+        let why = AddPick::open(&st, 0, None).unwrap_err();
+        assert!(why.contains("holds no more tracks"), "{why}");
     }
 
     /// The Chords tab (composing tools S2.6): the third tab of the Record

@@ -1728,6 +1728,9 @@ impl Session {
             let fx = self.app.set_instrument_list(&self.instrument_list);
             self.fx.extend(fx);
         }
+        let tracks = self.time.project().tracks.len();
+        let fx = self.app.add_sound_follow(tracks);
+        self.fx.extend(fx);
         let fx = self.app.put_away_free();
         self.fx.extend(fx);
         let pads_at = self
@@ -2368,6 +2371,7 @@ impl Session {
                 &self.track_kits,
                 &self.mix.instruments,
                 &self.instrument_list,
+                self.time.project().tracks.len(),
             ),
             instrument_list: self.instrument_list.text(),
             pads: self.app.pads_part(),

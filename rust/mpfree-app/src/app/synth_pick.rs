@@ -176,6 +176,7 @@ impl App {
             self.track_sound(free(n)).is_none()
                 && self.pads_to != Some(n)
                 && !self.bank_to.contains(&Some(n))
+                && !self.holds_add_sound(n)
                 && open(n)
         })
     }

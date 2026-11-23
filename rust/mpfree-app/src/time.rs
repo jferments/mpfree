@@ -16817,6 +16817,7 @@ mod tests {
             lanes: Lanes::default(),
             pads: [None; 4],
             bars: None,
+            new_track: None,
         })))
     }
 
@@ -16968,6 +16969,125 @@ mod tests {
         assert_eq!(h.project().clip(1, 0), Some(&blank));
         h.act(TimeAction::Redo).unwrap();
         assert_eq!(h.project().clip(1, 0).unwrap().notes, kept.notes);
+    }
+
+    /// Add a part on New track (S2.6b): the part for the track Keep adds,
+    /// at the end (index [`TRACKS`] here), on a Bass synth.
+    fn add_bass_on_new_track() -> TimeAction {
+        let TimeAction::Add(AddAction::Ask(mut ask)) = add_bass() else {
+            unreachable!("an ask")
+        };
+        ask.track = TRACKS;
+        ask.new_track = Some(mpfree_time_ui::adding::NewTrack {
+            name: "Bass".into(),
+            sound: "mpfree.bass",
+        });
+        TimeAction::Add(AddAction::Ask(ask))
+    }
+
+    /// Composing tools S2.6b: Add a part on New track. The try plays on
+    /// the track Keep would add (the play view has it, the project
+    /// doesn't), from the next bar line in time with the row; Keep adds
+    /// the track with the part as one take, which plays on; UNDO takes
+    /// both away and REDO brings them back.
+    #[test]
+    fn a_part_on_a_new_track_plays_there_and_keep_adds_the_track_as_one_take() {
+        use mpfree_time_ui::adding::AddState;
+        let mut h = riff_host();
+        let mut pads = Fake::default();
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 4, &[]);
+        assert_eq!(
+            h.act(add_bass_on_new_track()).unwrap(),
+            "add a part: bass on Support for row 1"
+        );
+        until(&mut h, &mut pads, |h| {
+            adding(h).is_some_and(|a| a.state == AddState::Playing)
+        });
+        let part = adding(&h).unwrap().made.as_ref().unwrap().clip.clone();
+        assert!(!part.notes.is_empty());
+        assert_eq!(h.project().tracks.len(), TRACKS, "no track until Keep");
+        let low =
+            |pads: &Fake, from, to| hits_in(pads, from, to).iter().filter(|h| h.1 < 60).count();
+        let from = (h.state().transport.position as u64 / 3840 + 1) * BAR;
+        run(&mut h, &mut pads, from + 2 * BAR, &[]);
+        assert!(
+            low(&pads, from, from + 2 * BAR) > 0,
+            "the bass plays on the new track"
+        );
+        assert_eq!(h.project().tracks.len(), TRACKS, "still no track");
+
+        // Keep: the track and the part, one take, playing on.
+        assert_eq!(
+            h.act(TimeAction::Add(AddAction::Keep)).unwrap(),
+            format!(
+                "add a part: {} kept in row 1 on a new track, Bass (UNDO takes both back)",
+                part.name
+            )
+        );
+        assert!(adding(&h).is_none());
+        assert_eq!(h.project().tracks.len(), TRACKS + 1);
+        assert_eq!(h.project().tracks[TRACKS].name, "Bass");
+        assert_eq!(h.project().clip(TRACKS, 0).unwrap().notes, part.notes);
+        assert_eq!(h.state().done.last().unwrap().word(), "add part");
+        let from = h.state().transport.position as u64 * BAR / 3840 + BAR / 8;
+        run(&mut h, &mut pads, from + 2 * BAR, &[]);
+        assert!(
+            low(&pads, from, from + 2 * BAR) > 0,
+            "the kept bass plays on"
+        );
+
+        // UNDO: the track goes with its part; REDO brings both.
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.project().tracks.len(), TRACKS);
+        h.act(TimeAction::Redo).unwrap();
+        assert_eq!(h.project().tracks.len(), TRACKS + 1);
+        assert_eq!(h.project().clip(TRACKS, 0).unwrap().notes, part.notes);
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// A track added while New track tries (+ Track): Keep would add the
+    /// track at another index than the one its synth plays on, so the
+    /// tries go, saying why, and Keep and the old index are refused until
+    /// Try again asks for the new one.
+    #[test]
+    fn a_track_added_while_a_new_track_tries_drops_the_tries() {
+        use mpfree_time_ui::adding::AddState;
+        let mut h = riff_host();
+        let mut pads = Fake::default();
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 4, &[]);
+        h.act(add_bass_on_new_track()).unwrap();
+        until(&mut h, &mut pads, |h| {
+            adding(h).is_some_and(|a| a.state != AddState::Making)
+        });
+        h.act(TimeAction::AddTrack).unwrap();
+        let a = adding(&h).unwrap();
+        assert_eq!(a.words.as_deref(), Some("A track was added: Try again"));
+        assert!(a.made.is_none(), "the tries went");
+        assert!(h
+            .act(TimeAction::Add(AddAction::Keep))
+            .unwrap_err()
+            .contains("nothing made"));
+        assert_eq!(
+            h.act(add_bass_on_new_track()).unwrap_err(),
+            "add a part: a track was added: ask again"
+        );
+        // Try again for the track Keep would add now.
+        let TimeAction::Add(AddAction::Ask(mut ask)) = add_bass_on_new_track() else {
+            unreachable!()
+        };
+        ask.track = TRACKS + 1;
+        h.act(TimeAction::Add(AddAction::Ask(ask))).unwrap();
+        until(&mut h, &mut pads, |h| {
+            adding(h).is_some_and(|a| a.state == AddState::Playing)
+        });
+        h.act(TimeAction::Add(AddAction::Keep)).unwrap();
+        assert_eq!(h.project().tracks.len(), TRACKS + 2);
+        assert_eq!(h.project().tracks[TRACKS + 1].name, "Bass");
+        assert!(h.project().clip(TRACKS + 1, 0).is_some());
     }
 
     /// Chords picked on the panel: the try plays them at once, the next
