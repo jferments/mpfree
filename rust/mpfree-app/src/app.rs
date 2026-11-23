@@ -31,7 +31,9 @@
 
 mod arp;
 pub mod mapper;
+mod pad_layers;
 mod pads_focus;
+mod route_synths;
 pub mod saved;
 pub mod step_pads;
 mod synth_pads;
@@ -42,7 +44,9 @@ pub use arp::{
 };
 pub use mapper::{Code, MapView, Mark};
 use mpfree_arp::scale::pads::Pad as PadNotes;
-pub use pads_focus::{synth_track, PadFocus, RecPlan, SynthTake};
+pub use pad_layers::layer_names;
+pub use pads_focus::{layer_takes, synth_track, unfit, LayerTake, PadFocus, RecPlan, SynthTake};
+pub use route_synths::REC_MORE;
 pub use step_pads::StepPads;
 pub use synth_pads::{sent_name, SynthItem};
 pub use synth_pick::SynthPickView;
@@ -52,6 +56,7 @@ use crate::looping::{LoopAction, LoopMemory, LoopSource};
 use mpfree_arp::{Events, LatchMode, Mode, Pattern, Rate, RecordMode, Recorder};
 use mpfree_controller::mpc_one::button;
 use mpfree_looper::Command as LoopCommand;
+use mpfree_looper::SmartEnd;
 use mpfree_play::TrackArps;
 use mpfree_time_ui::TimeAction;
 use mpfree_transport::Command;
@@ -742,6 +747,12 @@ pub struct Settings {
     /// stopped, a first loop recorded on Free length sets the tempo (and
     /// starts the song) when it closes. Off by default; kept in Prefs.
     pub loop_tempo: bool,
+    /// The looper's options "Smart loop end": when tempo from the first
+    /// loop closes a loop played on the pads, Suggest (the default)
+    /// closes on your tap and offers the downbeat you played, Auto
+    /// listens a moment on and closes on it, Off keeps your tap. Kept in
+    /// Prefs.
+    pub smart_end: SmartEnd,
     /// Prefs > Appearance: the theme in use, a built-in name (see
     /// [`THEMES`]); `--theme` can also set a theme file for one run.
     pub theme: String,
@@ -770,6 +781,16 @@ pub struct Settings {
     /// Prefs "Audio track memory": the audio tracks' size from the next
     /// start.
     pub audio_memory: crate::audiotracks::AudioMemory,
+    /// Dev's options "Audio tracks from their files": from the next start,
+    /// takes play from their files on the drive through the stream layer's
+    /// cache (as big as Audio track memory), so memory only holds what
+    /// records (the audio tracks rethink, phase 3b). Off by default, and on
+    /// the MPC until the stick tests have run with Jay's go.
+    pub stream_audio: bool,
+    /// Whether takes play from their files in this start (the switch above
+    /// as it was at start, if the stream layer started): a project opening
+    /// then reads only its takes' headers. Never saved.
+    pub audio_streams: bool,
     /// Prefs "At start": open the last project (true, the default since
     /// round 4 of the creator run: a restart lost the pads the owner had
     /// set) or start with a new one. The screen opens it once the sound is
@@ -787,6 +808,18 @@ pub struct Settings {
 
 /// Half Level's velocity until FULL LEVEL held and a pad hit set another.
 pub const HALF_LEVEL: u8 = 64;
+
+/// Smart loop end's choices, in the order the MENU steps them.
+pub const SMART_ENDS: [SmartEnd; 3] = [SmartEnd::Off, SmartEnd::Suggest, SmartEnd::Auto];
+
+/// Smart loop end's choice as the MENU and the settings file name it.
+pub fn smart_end_name(m: SmartEnd) -> &'static str {
+    match m {
+        SmartEnd::Off => "Off",
+        SmartEnd::Suggest => "Suggest",
+        SmartEnd::Auto => "Auto",
+    }
+}
 
 /// The rates Prefs > Export rate steps through.
 pub const EXPORT_RATES: [u32; 2] = [44_100, 48_000];
@@ -830,6 +863,7 @@ impl Default for Settings {
             loop_latency_set: false,
             loop_level_db: 0.0,
             loop_tempo: false,
+            smart_end: SmartEnd::Suggest,
             theme: "default".to_string(),
             sound_cores: SoundCores::Shared,
             loop_memory: LoopMemory::default(),
@@ -839,6 +873,8 @@ impl Default for Settings {
             timing_strip: true,
             xy_effect: None,
             audio_memory: crate::audiotracks::AudioMemory::default(),
+            stream_audio: false,
+            audio_streams: false,
             open_last: true,
             export_mode: mpfree_export::Mode::Fast,
             export_bits: mpfree_fx::Bits::I24,
@@ -911,6 +947,8 @@ pub enum Item {
     Latch,
     ShowPressure,
     ClearLogs,
+    /// Dev's options: takes play from their files from the next start.
+    StreamAudio,
     ConsoleFollow,
     ClearConsole,
     LineInput,
@@ -923,6 +961,8 @@ pub enum Item {
     LoopLevel,
     /// The looper's options: tempo from the first loop, on or off.
     LoopTempo,
+    /// The looper's options: smart loop end, Off, Suggest or Auto.
+    SmartEnd,
     /// Prefs and the looper's options: the looper's size from the next
     /// start.
     LoopMemory,
@@ -978,6 +1018,9 @@ pub struct MenuView {
     /// value until the next push.
     pub editing: bool,
     pub help_heading: String,
+    /// What the selected row's choice means now, over its help, brighter
+    /// (the Instrument row: the track's line, step 11d). Mostly empty.
+    pub facts: Vec<String>,
     pub help: Vec<String>,
     /// Buttons under the help ("Keep" and "Go back" while a theme is on
     /// trial); a tap is `FromUi::HelpButton`.
@@ -1659,6 +1702,11 @@ pub struct App {
     /// its own (step 4), as the audio loop last said
     /// ([`App::set_track_sends`]).
     track_sends: [Option<u8>; mpfree_seq::MAX_TRACKS],
+    /// The selected track's line (the instrument redesign's step 11d), as
+    /// the audio loop says it: what it plays and where it is heard,
+    /// ["Track 2 plays Track 1's Poly", "In the mixer: Poly · Track 1"].
+    /// Shown over the Instrument row's help.
+    track_line: Vec<String>,
     /// The track each track's own instrument was copied from on the
     /// Instrument row (step 4c), while both play the same engine, so the
     /// row stays on "Copy of Track 3's FM" ([`App::copied_from`]). Not
@@ -1753,6 +1801,15 @@ pub struct App {
     /// A free place given a synth for one bank, waiting for its id in the
     /// list, as `pads_to` for every bank.
     bank_to: [Option<usize>; KIT_PAGES],
+    /// The synths the pads play beyond the first (step 11a, app/pad_layers.rs),
+    /// packed in order.
+    pad_layers: [Option<crate::instrument_list::InstrumentId>; pad_layers::MORE],
+    /// A free place given a layer's synth, waiting for its id in the list,
+    /// as `pads_to`.
+    layer_to: [Option<usize>; pad_layers::MORE],
+    /// The synths MIDI routes name (step 11e, `app/route_synths.rs`), row
+    /// by row, as MIDI in last said.
+    route_synths: [Option<crate::instrument_list::InstrumentId>; route_synths::ROUTE_SYNTHS],
     /// The list of synths, while open (app/synth_pick.rs).
     synth_pick: Option<synth_pick::SynthPick>,
     /// The tracks that play the shared synth, a bit each
@@ -1903,6 +1960,7 @@ impl App {
             synth_pads: Default::default(),
             track_sounds: [None; crate::instruments::HOLDERS],
             track_sends: [None; mpfree_seq::MAX_TRACKS],
+            track_line: Vec::new(),
             track_copied: [None; mpfree_seq::MAX_TRACKS],
             plugin_synths: Vec::new(),
             pad_scale_pick: 0,
@@ -1937,6 +1995,9 @@ impl App {
             pads_to: None,
             bank_focus: [None; KIT_PAGES],
             bank_to: [None; KIT_PAGES],
+            pad_layers: [None; pad_layers::MORE],
+            layer_to: [None; pad_layers::MORE],
+            route_synths: [None; route_synths::ROUTE_SYNTHS],
             synth_pick: None,
             synth_tracks: 0,
             configured: 0,
@@ -4708,6 +4769,7 @@ impl App {
                 Item::LoopLatency,
                 Item::LoopLevel,
                 Item::LoopTempo,
+                Item::SmartEnd,
                 Item::LoopMemory,
             ],
             (
@@ -4720,7 +4782,7 @@ impl App {
                 | View::StatusBoard,
             ) => {
                 // The MIDI page's monitor has its own Hold.
-                &[Item::ShowPressure, Item::ClearLogs]
+                &[Item::ShowPressure, Item::ClearLogs, Item::StreamAudio]
             }
             // The full-screen touch checks, also in Prefs > Touch screen.
             (_, View::Touch) => &[Item::CalibrateTouch, Item::TouchLab],
@@ -4832,6 +4894,16 @@ impl App {
                 if s.show_pressure { "Shown" } else { "Hidden" }.to_string(),
             ),
             Item::ClearLogs => ("Clear the MIDI and event logs", "Clear".to_string()),
+            Item::StreamAudio => (
+                "Audio tracks from their files",
+                match (s.stream_audio, s.stream_audio == s.audio_streams) {
+                    (true, true) => "On",
+                    (false, true) => "Off",
+                    (true, false) => "On (next start)",
+                    (false, false) => "Off (next start)",
+                }
+                .to_string(),
+            ),
             Item::ConsoleFollow => (
                 "Console",
                 if s.console_paused {
@@ -4883,6 +4955,7 @@ impl App {
                 "Tempo from the first loop",
                 if s.loop_tempo { "On" } else { "Off" }.to_string(),
             ),
+            Item::SmartEnd => ("Smart loop end", smart_end_name(s.smart_end).to_string()),
             Item::LoopMemory => (
                 "Loop memory",
                 if s.loop_memory == self.loop_memory_now {
@@ -5073,6 +5146,13 @@ impl App {
                 "but not listed.",
             ],
             Item::ClearLogs => vec!["Empty the MIDI and event logs."],
+            Item::StreamAudio => vec![
+                "Takes play from their files on the drive",
+                "through a cache as big as Audio track",
+                "memory, which then only holds what records.",
+                "From the next start. A test: off on the MPC",
+                "until the stick tests have run.",
+            ],
             Item::ConsoleFollow => vec![
                 "Pause the console to read it; it keeps",
                 "collecting lines meanwhile.",
@@ -5130,6 +5210,15 @@ impl App {
                 "says so). The song starts as the loop comes",
                 "round. Not while another device's clock leads,",
                 "the song has more than one tempo, or exporting.",
+            ],
+            Item::SmartEnd => vec![
+                "When tempo from the first loop closes a loop",
+                "you played on the pads or keys. Suggest: it",
+                "closes on your tap, then offers the downbeat",
+                "you played if your tap was off it. Auto: it",
+                "listens a moment past your tap and closes on",
+                "the downbeat you played; the song starts in",
+                "step. Off: it closes on your tap.",
             ],
             Item::LoopMemory => vec![
                 "How much sound the loops can hold, all",
@@ -5235,6 +5324,10 @@ impl App {
             selected,
             editing: self.menu_editing,
             help_heading,
+            facts: match items[selected] {
+                Item::Synth(synth_pads::SynthItem::Engine) => self.track_line.clone(),
+                _ => Vec::new(),
+            },
             help,
             help_buttons,
         })
@@ -5597,6 +5690,16 @@ impl App {
                 fx.extend(self.arp_changed());
             }
             Item::ShowPressure => s.show_pressure = d > 0,
+            Item::StreamAudio => {
+                let on = d > 0;
+                if on != s.stream_audio {
+                    s.stream_audio = on;
+                    fx.push(Effect::Note(format!(
+                        "audio tracks: takes play from {} from the next start",
+                        if on { "their files" } else { "memory" }
+                    )));
+                }
+            }
             Item::SendsMidi => {
                 let on = d > 0;
                 if on != s.sends_midi {
@@ -5664,6 +5767,7 @@ impl App {
                 )));
             }
             Item::LoopTempo => s.loop_tempo = d > 0,
+            Item::SmartEnd => s.smart_end = cycle(&SMART_ENDS, s.smart_end, d),
             Item::LoopLevel => {
                 s.loop_level_db = (s.loop_level_db + d as f32).clamp(-24.0, 6.0);
                 fx.push(Effect::Looper(LoopAction::Command(LoopCommand::SetLevel(
@@ -7164,6 +7268,36 @@ mod tests {
         assert!(!app.settings.loop_tempo);
     }
 
+    /// Smart loop end step 1: the looper's options pick Off, Suggest (at
+    /// first) or Auto, under Tempo from the first loop, kept between
+    /// starts.
+    #[test]
+    fn smart_loop_end_is_in_the_looper_options_and_kept() {
+        let mut app = App::new(44_100, false);
+        app.map.menu = Some(MENU);
+        app.open_tab(View::Looper);
+        press(&mut app, MENU);
+        let at = row(&app, Item::SmartEnd);
+        assert_eq!(at, row(&app, Item::LoopTempo) + 1);
+        assert_eq!(
+            app.item_text(Item::SmartEnd),
+            ("Smart loop end", "Suggest".to_string())
+        );
+        app.step_item(at, 1);
+        assert_eq!(app.settings.smart_end, SmartEnd::Auto);
+        app.step_item(at, 1);
+        assert_eq!(app.settings.smart_end, SmartEnd::Auto, "the last stays");
+        let kept = app.app_settings();
+        assert_eq!(kept.get_str("smart-loop-end"), Some("auto"));
+        let mut next = App::new(44_100, false);
+        let notes = next.restore(&kept, &mpfree_store::Settings::default());
+        assert_eq!(next.settings.smart_end, SmartEnd::Auto);
+        assert!(notes[0].contains(", smart loop end auto,"), "{notes:?}");
+        app.step_item(at, -1);
+        app.step_item(at, -1);
+        assert_eq!(app.item_text(Item::SmartEnd).1, "Off");
+    }
+
     /// Live test 2: a minute of loops was too little. Prefs (and the
     /// looper's options) pick 1 to 20 minutes, kept, from the next start.
     #[test]
@@ -7270,6 +7404,40 @@ mod tests {
             Effect::Looper(LoopAction::Command(LoopCommand::SetLatency(_)))
         )));
         assert!(!app.item_text(Item::LoopLatency).1.contains("estimated"));
+    }
+
+    /// The audio tracks rethink, phase 3b: Dev's options "Audio tracks
+    /// from their files", off by default, kept, from the next start.
+    #[test]
+    fn audio_tracks_from_their_files_is_a_dev_option_from_the_next_start() {
+        let mut app = App::new(44_100, false);
+        app.set_debug_mode(true);
+        app.debug_page(1);
+        let fx = app.button(MENU, true, 0.0);
+        assert!(fx.iter().any(|e| matches!(e, Effect::Menu(_))), "{fx:?}");
+        app.button(MENU, false, 0.0);
+        let at = row(&app, Item::StreamAudio);
+        assert_eq!(
+            app.item_text(Item::StreamAudio),
+            ("Audio tracks from their files", "Off".to_string())
+        );
+        let fx = app.step_item(at, 1);
+        assert!(app.settings.stream_audio);
+        assert_eq!(app.item_text(Item::StreamAudio).1, "On (next start)");
+        assert!(fx.contains(&Effect::Note(
+            "audio tracks: takes play from their files from the next start".into()
+        )));
+        // Kept; the next start turns it on and says no more.
+        let kept = app.app_settings();
+        assert_eq!(kept.get_bool("stream-audio"), Some(true));
+        let mut next = App::new(44_100, false);
+        next.restore(&kept, &mpfree_store::Settings::default());
+        assert!(next.settings.stream_audio && !next.settings.audio_streams);
+        next.settings.audio_streams = true;
+        assert_eq!(next.item_text(Item::StreamAudio).1, "On");
+        // Off again: from the next start too.
+        next.settings.stream_audio = false;
+        assert_eq!(next.item_text(Item::StreamAudio).1, "Off (next start)");
     }
 
     /// Layout spec 4c: Prefs "Audio track memory", right after Loop
@@ -8398,6 +8566,8 @@ mod tests {
             take,
             synth: "Poly",
             holder: None,
+            ready: false,
+            layers: [None; REC_MORE],
         };
         assert_eq!(plan(SynthTake::On(2)).chip(name), "Track 3 · Poly");
         assert_eq!(plan(SynthTake::On(1)).chip(name), "Bass · Poly");
@@ -8411,6 +8581,64 @@ mod tests {
             "Track 1 · not free"
         );
         assert_eq!(plan(SynthTake::Full).chip(name), "No free track · Poly");
+        // Layers (step 11c): the first by name, the rest counted; a layer
+        // with no place isn't.
+        let layer = |take| {
+            Some(LayerTake {
+                take,
+                synth: "Pluck",
+                holder: Some(3),
+                plays: false,
+            })
+        };
+        let mut two = plan(SynthTake::On(1));
+        two.layers[0] = layer(SynthTake::On(2));
+        assert_eq!(two.chip(name), "Bass · Poly + 1 more");
+        two.layers[1] = layer(SynthTake::New);
+        assert_eq!(two.chip(name), "Bass · Poly + 2 more");
+        two.layers[1] = layer(SynthTake::Full);
+        assert_eq!(two.chip(name), "Bass · Poly + 1 more");
+        let mut pinned = two;
+        pinned.take = SynthTake::Pinned {
+            track: 0,
+            why: "has clips",
+        };
+        assert_eq!(pinned.chip(name), "Track 1 · not free", "nothing records");
+    }
+
+    /// Where REC records the pads' layers (step 11c): an armed track that
+    /// plays a layer's synth already keeps it; else the first free track
+    /// that the first and the layers before haven't taken; else a new one
+    /// after the first's, while the project holds more; else none.
+    #[test]
+    fn each_layer_records_where_its_synth_plays_or_on_a_free_track() {
+        let mut layers = [None; REC_MORE];
+        layers[0] = Some(("Pluck", Some(130)));
+        layers[1] = Some(("Poly", None));
+        // Tracks 0 to 4: Track 3 plays Pluck; Tracks 2 and 4 are free.
+        let plays = |t: usize, h: Option<usize>| match h {
+            Some(130) => t == 3,
+            _ => false,
+        };
+        let fits = |t: usize| t == 2 || t == 4;
+        // Track 3 armed too: Pluck stays there; Poly takes Track 4, as the
+        // first took Track 2.
+        let got = layer_takes(layers, 5, Some(2), 1 << 3, plays, fits);
+        let take = |l: Option<LayerTake>| l.map(|l| (l.take, l.plays));
+        assert_eq!(take(got[0]), Some((SynthTake::On(3), true)));
+        assert_eq!(take(got[1]), Some((SynthTake::On(4), false)));
+        assert_eq!(got[2], None);
+        assert_eq!(got[1].unwrap().synth, "Poly");
+        // Track 3 not armed: Pluck takes the free Track 4, Poly a new one.
+        let got = layer_takes(layers, 5, Some(2), 0, plays, fits);
+        assert_eq!(take(got[0]), Some((SynthTake::On(4), false)));
+        assert_eq!(take(got[1]), Some((SynthTake::New, false)));
+        // The first on a new track: the layers' new ones come after it,
+        // until the project holds no more.
+        let max = mpfree_seq::MAX_TRACKS;
+        let got = layer_takes(layers, max - 2, None, 0, plays, |_| false);
+        assert_eq!(take(got[0]), Some((SynthTake::New, false)));
+        assert_eq!(take(got[1]), Some((SynthTake::Full, false)));
     }
 
     /// The arp and the synth chosen for the pads (the design review of 20
@@ -11606,5 +11834,231 @@ mod tests {
             held(&mut app, SHIFT, |a| press(a, 90)),
             [Effect::Time(TimeAction::Capture)]
         );
+    }
+
+    /// Layers (the instrument redesign's step 11a and 11b): with Layer on
+    /// in the list of synths, a tap adds a synth to what the pads play,
+    /// from a free place of its own, up to four; a second tap takes it
+    /// off; with Layer off a tap plays one synth alone again. The layers
+    /// keep their places from being put away, and Cancel gives back the
+    /// layers the pads had.
+    #[test]
+    fn layer_on_adds_synths_to_the_pads_up_to_four_and_takes_them_off() {
+        use crate::instrument_list::InstrumentList;
+        use crate::instruments::free;
+        use crate::synth::Engine;
+        let mut app = ready();
+        app.open_tab(View::Synth);
+        let view = |fx: &[Effect]| match fx.last() {
+            Some(Effect::SynthPick(v)) => v.clone().expect("open"),
+            other => panic!("{other:?}"),
+        };
+        app.open_synth_pick();
+        app.pick_pads_synth(2);
+        let mut list = InstrumentList::new();
+        list.follow_free(1);
+        let fm = list.free_of(0).expect("an id");
+        app.set_instrument_list(&list);
+        assert_eq!(app.pads_focus(), PadFocus::Instrument(fm));
+        assert!(!view(&app.synth_pick_layer(true)).bank.unwrap().1);
+        // Pluck: a place of its own, named before it is in.
+        let fx = app.pick_pads_synth(4);
+        assert_eq!(
+            fx[0],
+            Effect::TrackSound {
+                track: free(1),
+                id: Some(Engine::Pluck.node_id())
+            },
+            "{fx:?}"
+        );
+        assert!(
+            fx.iter().any(|e| matches!(e, Effect::Note(n) if n == "The pads play FM + Pluck · each on its own strip in the mixer")),
+            "{fx:?}"
+        );
+        assert_eq!(app.pads_layer_names().as_deref(), Some("FM + Pluck"));
+        list.follow_free(0b11);
+        let pluck = list.free_of(1).expect("an id");
+        app.set_instrument_list(&list);
+        assert_eq!(app.pad_layers().collect::<Vec<_>>(), [pluck]);
+        assert_eq!(app.pads_layer_holders(), [Some(free(1)), None, None]);
+        let v = view(&app.pick_pads_synth(5));
+        assert_eq!(
+            (v.now, v.layers.clone()),
+            (Some(2), vec![4, 5]),
+            "Keys too, going in"
+        );
+        assert!(
+            app.put_away_free().is_empty(),
+            "the layers keep their places"
+        );
+        // Pluck again: off.
+        let fx = app.pick_pads_synth(4);
+        assert!(
+            fx.iter().any(|e| matches!(e, Effect::Note(n) if n == "Pluck is off the pads · they play FM + Keys")),
+            "{fx:?}"
+        );
+        // Four at most.
+        app.pick_pads_synth(6);
+        app.pick_pads_synth(7);
+        let fx = app.pick_pads_synth(8);
+        assert!(
+            matches!(&fx[0], Effect::Tell(t) if t == "The pads play 4 synths, the most: take one off first"),
+            "{fx:?}"
+        );
+        // "Bank B only" turns Layer off; with it off a tap plays FM alone.
+        assert!(!view(&app.synth_pick_scope(true)).layer);
+        app.synth_pick_scope(false);
+        let fx = app.pick_pads_synth(2);
+        assert!(
+            fx.iter()
+                .any(|e| matches!(e, Effect::Note(n) if n.starts_with("The pads play FM alone"))),
+            "{fx:?}"
+        );
+        assert!(!app.has_layers() && app.pads_layer_names().is_none());
+        // Keep, then open again with layers: Layer is on, and Cancel
+        // gives them back.
+        app.close_synth_pick(true);
+        app.toggle_pad_layer(pluck);
+        let v = view(&app.open_synth_pick());
+        assert!(v.layer && v.layers == [4], "{v:?}");
+        app.pick_pads_synth(4);
+        assert!(!app.has_layers());
+        app.close_synth_pick(false);
+        assert_eq!(app.pad_layers().collect::<Vec<_>>(), [pluck]);
+        assert_eq!(app.pads_focus(), PadFocus::Instrument(fm));
+    }
+
+    /// Step 11a: a layer by its id. While the pads follow a track on a
+    /// kit, the synth is what they play, alone (a kit can't be a layer);
+    /// a second one layers it; taking off the first gives its place to
+    /// the next; the last one stays. Follow track gives the layers up, and
+    /// so does the arp starting.
+    #[test]
+    fn a_layer_goes_with_a_chosen_synth_and_never_with_a_kit_or_the_arp() {
+        use crate::instrument_list::{InstrumentId, InstrumentList};
+        let mut app = ready();
+        app.open_tab(View::Synth);
+        let mut list = InstrumentList::new();
+        list.follow_free(1);
+        let fm = list.free_of(0).expect("an id");
+        app.set_track_sound(
+            crate::instruments::free(0),
+            Some(crate::instruments::Held {
+                id: crate::synth::Engine::Fm.node_id(),
+                name: "FM",
+                instance: 0,
+            }),
+        );
+        app.set_instrument_list(&list);
+        let shared = InstrumentId::SHARED_SYNTH;
+        let fx = app.toggle_pad_layer(shared);
+        assert_eq!(fx[0], Effect::PadsFocus(PadFocus::SYNTH), "{fx:?}");
+        assert!(
+            matches!(&fx[1], Effect::Note(n) if n.contains("a kit can't be a layer")),
+            "{fx:?}"
+        );
+        assert!(!app.has_layers());
+        app.toggle_pad_layer(fm);
+        assert_eq!(app.pads_layer_names().as_deref(), Some("Poly + FM"));
+        assert!(!app.pads_layer_synth(), "Poly is the first");
+        assert_eq!(
+            app.pads_layer_holders()[0],
+            Some(crate::instruments::free(0))
+        );
+        // Poly off: FM is the first.
+        app.toggle_pad_layer(shared);
+        assert_eq!(app.pads_focus(), PadFocus::Instrument(fm));
+        assert!(!app.has_layers());
+        let fx = app.toggle_pad_layer(fm);
+        assert!(
+            matches!(&fx[..], [Effect::Tell(t)] if t.starts_with("FM is all the pads play")),
+            "{fx:?}"
+        );
+        // Poly as a layer now: the audio loop plays it there.
+        app.toggle_pad_layer(shared);
+        assert!(app.pads_layer_synth());
+        assert_eq!(app.pads_layer_holders(), [None; 3]);
+        // Follow track: gone.
+        app.pads_follow_track();
+        assert!(!app.has_layers() && !app.pads_layer_synth());
+        // The arp starting gives them up too.
+        app.toggle_pad_layer(fm);
+        app.toggle_pad_layer(shared);
+        assert!(app.has_layers());
+        app.button(REPEAT, true, 0.0);
+        let fx = app.arp_ends_pads_synth();
+        assert_eq!(fx[0], Effect::PadsFocus(PadFocus::Track), "{fx:?}");
+        assert!(!app.has_layers());
+        let fx = app.toggle_pad_layer(fm);
+        assert!(
+            matches!(&fx[..], [Effect::Tell(t)] if t.contains("NOTE REPEAT")),
+            "{fx:?}"
+        );
+    }
+
+    /// Step 11a: the layers are saved in a part of their own, after the
+    /// pads part, so a build from before plays the first only; read back
+    /// with the list, a layer the list hasn't got or a part that doesn't
+    /// read is said and left out.
+    #[test]
+    fn the_pad_layers_part_saves_and_opens_with_the_pads_part() {
+        use crate::instrument_list::{InstrumentId, InstrumentList};
+        let mut app = ready();
+        let mut list = InstrumentList::new();
+        list.follow_free(0b11);
+        let (fm, pluck) = (list.free_of(0).unwrap(), list.free_of(1).unwrap());
+        app.set_instrument_list(&list);
+        assert_eq!(app.pad_layers_part(), "", "none: no part");
+        app.toggle_pad_layer(fm);
+        app.toggle_pad_layer(pluck);
+        app.toggle_pad_layer(InstrumentId::SHARED_SYNTH);
+        let (pads, layers) = (app.pads_part(), app.pad_layers_part());
+        assert_eq!(pads, format!("mpfree-pads 1\nplay instrument {fm}\n"));
+        assert_eq!(
+            layers,
+            format!("mpfree-pad-layers 1\nlayer instrument {pluck}\nlayer instrument 1\n")
+        );
+        let mut other = ready();
+        other.set_instrument_list(&list);
+        other.open_pads(Some(&pads));
+        assert!(other.open_pad_layers(Some(&layers)).is_empty());
+        assert_eq!(
+            other.pad_layers().collect::<Vec<_>>(),
+            [pluck, InstrumentId::SHARED_SYNTH]
+        );
+        // A build from before reads the pads part alone: the first.
+        other.open_pads(Some(&pads));
+        assert!(!other.has_layers());
+        assert_eq!(other.pads_focus(), PadFocus::Instrument(fm));
+        let notes = other.open_pad_layers(Some(&format!(
+            "mpfree-pad-layers 1\nlayer instrument 9\nlayer instrument {fm}\nlayer instrument {pluck}\n"
+        )));
+        assert!(
+            notes[0].contains("instrument 9 isn't in the project's list"),
+            "{notes:?}"
+        );
+        assert!(notes[1].contains("what the pads play first"), "{notes:?}");
+        assert_eq!(other.pad_layers().collect::<Vec<_>>(), [pluck]);
+        for (bad, why) in [
+            ("mpfree-pad-layers 2\n", "its first line"),
+            ("mpfree-pad-layers 1\nlayer kit 2\n", "doesn't read"),
+            ("mpfree-pad-layers 1\nlayer instrument 3\nlayer instrument 3\n", "twice"),
+            (
+                "mpfree-pad-layers 1\nlayer instrument 3\nlayer instrument 4\nlayer instrument 5\nlayer instrument 6\n",
+                "3 more at most",
+            ),
+        ] {
+            let notes = other.open_pad_layers(Some(bad));
+            assert!(
+                matches!(&notes[..], [n] if n.contains(why) && n.contains("the pads play one synth")),
+                "{bad:?}: {notes:?}"
+            );
+            assert!(!other.has_layers());
+        }
+        // The pads follow the track: no layers.
+        other.open_pads(Some("mpfree-pads 1\nplay track\n"));
+        let notes = other.open_pad_layers(Some(&layers));
+        assert!(notes[0].contains("the pads follow the track"), "{notes:?}");
+        assert!(!other.has_layers());
     }
 }

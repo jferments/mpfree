@@ -122,7 +122,7 @@ The watcher (`rust/mpfree-app/src/status_watch.rs`) looks each time the audio lo
 | `project/crash-restart` | the safe start | `gui.rs` |
 | `screen/no-gpu` | the GPU process stopped and software drawing took over, until the next start | `drawing.rs` |
 | `mpc/one-core` | a set-up row in red on CPU by engine: the audio thread not on its core, or a strict lane on the audio thread (`CoreShared::fell_back`) | watcher |
-| `sound/skipped`, `sound/notes-dropped`, `sound/voices-given-up`, `sound/grains-thinned` | the sampler refactor's step 10 trades: a lane late with its part, full queues, load shedding, the grain share crowded | the sampler's `Trades::note`, when its step 10 lands (agreed 22 Nov); the watcher doesn't watch these counters |
+| `sound/skipped`, `sound/notes-dropped`, `sound/voices-given-up`, `sound/grains-thinned` | the sampler refactor's step 10 trades: a lane late with its part, full queues, load shedding, the grain share crowded | the sampler's `Trades::note` (its step 10, agreed 22 Nov); the watcher doesn't watch these counters |
 
 **The log.** Each start and end is one line, `status: + sound/dropout (3) The sound dropped out` and `status: - sound/dropout after 1.2 s`, with the port's name for a port and "(its cause is going)" for an effect its cause hides, so the Console, the journal and the test tools see what the board sees. The 30 s status lines stay as they are.
 

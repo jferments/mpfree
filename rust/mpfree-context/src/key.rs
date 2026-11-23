@@ -122,6 +122,29 @@ impl Key {
         let t = u32::from(self.tonic);
         (((m << t) | (m >> (12 - t))) & 0x0FFF) as u16
     }
+
+    /// A pitch as a place in the key's scale: scale steps above the home
+    /// note's lowest octave (7 a step per octave), and how many semitones
+    /// it sits above that step (0 for a note in the key). Moving a tune
+    /// by scale steps keeps it in the key (a sequence).
+    pub fn position(self, pitch: u8) -> (i32, i8) {
+        let steps = self.mode.steps();
+        let rel = i32::from(pitch) - i32::from(self.tonic);
+        let octave = rel.div_euclid(12);
+        let pc = rel.rem_euclid(12) as u8;
+        let degree = steps.iter().rposition(|&s| s <= pc).unwrap_or(0);
+        (octave * 7 + degree as i32, (pc - steps[degree]) as i8)
+    }
+
+    /// The pitch at a place in the scale, altered by `alt` semitones;
+    /// kept to MIDI's 0 to 127.
+    pub fn pitch_at(self, pos: i32, alt: i8) -> u8 {
+        let steps = self.mode.steps();
+        let octave = pos.div_euclid(7);
+        let degree = pos.rem_euclid(7) as usize;
+        (i32::from(self.tonic) + octave * 12 + i32::from(steps[degree]) + i32::from(alt))
+            .clamp(0, 127) as u8
+    }
 }
 
 /// How sure a reading is, in the words the screen uses.
@@ -284,6 +307,26 @@ mod tests {
         assert!(Key::new(2, Mode::Dorian).scale().contains(71));
         assert!(Mode::Dorian.minorish() && !Mode::Mixolydian.minorish());
         assert_eq!(Mode::Dorian.steps(), [0, 2, 3, 5, 7, 9, 10]);
+    }
+
+    #[test]
+    fn places_in_the_scale_and_back() {
+        let cm = Key::new(0, Mode::Minor);
+        // Middle C is 35 steps up (five octaves); Eb the third step; E
+        // the third step raised.
+        assert_eq!(cm.position(60), (35, 0));
+        assert_eq!(cm.position(63), (37, 0));
+        assert_eq!(cm.position(64), (37, 1));
+        assert_eq!(cm.pitch_at(37, 1), 64);
+        for k in [cm, Key::new(2, Mode::Dorian), Key::new(7, Mode::Lydian)] {
+            for p in 0..=127u8 {
+                let (pos, alt) = k.position(p);
+                assert_eq!(k.pitch_at(pos, alt), p, "{} {p}", k.name());
+                assert_eq!(alt == 0, k.has(i32::from(p)));
+            }
+        }
+        // A step up from Bb is C, an octave place higher.
+        assert_eq!(cm.pitch_at(cm.position(70).0 + 1, 0), 72);
     }
 
     #[test]

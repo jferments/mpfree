@@ -127,6 +127,8 @@ pub fn revision(clip: &Clip) -> Revision {
         // Mutate's restore point: Restore changes the notes, which are in.
         original: _,
         holds,
+        // The synth its locks were made for: locks are out, so it is too.
+        made_for: _,
     } = clip;
     let mut h = Fnv::new();
     h.word(*length as u64);

@@ -168,6 +168,26 @@ pub enum FileEvent {
     /// A take's file changed state: it is At risk or Stopped, or a take
     /// that was got over it (Saved after At risk).
     State { track: usize, state: TakeState },
+    /// A take's file couldn't be opened to play from (`why`): a take
+    /// recorded is `kept` in memory and plays from there; a take of a
+    /// project opening isn't in memory, so it is left out.
+    Unopened {
+        track: usize,
+        why: String,
+        kept: bool,
+    },
+    /// Playing takes from their files couldn't start (`why`): every take
+    /// plays from memory, as before.
+    NoStream { why: String },
+    /// A project's track went in without its regions, as it was recording
+    /// when its takes' files had opened.
+    TrackLeftOut { track: usize },
+    /// The cache holds the starts of only `held` of the `of` regions
+    /// playing from the drive: the others may start late.
+    HeadsShort { held: usize, of: usize },
+    /// A sound brought in, or a stretched copy, plays from memory, as its
+    /// file couldn't be written.
+    Unwritten { track: usize, why: String },
 }
 
 impl FileEvent {
@@ -177,7 +197,11 @@ impl FileEvent {
             FileEvent::ArmFailed { track, .. }
             | FileEvent::NoFile { track, .. }
             | FileEvent::FromMemory { track, .. }
-            | FileEvent::State { track, .. } => *track,
+            | FileEvent::State { track, .. }
+            | FileEvent::Unopened { track, .. }
+            | FileEvent::Unwritten { track, .. }
+            | FileEvent::TrackLeftOut { track } => *track,
+            FileEvent::NoStream { .. } | FileEvent::HeadsShort { .. } => 0,
         }
     }
 
@@ -220,6 +244,33 @@ impl FileEvent {
                     format!("audio tracks: {who}'s take is being written")
                 }
             },
+            FileEvent::Unopened {
+                why, kept: true, ..
+            } => format!(
+                "audio tracks: {who}'s take plays from memory, as its file couldn't be opened \
+                 ({why})"
+            ),
+            FileEvent::Unopened {
+                why, kept: false, ..
+            } => format!(
+                "audio tracks: a take of {who} was left out, as its file couldn't be opened ({why})"
+            ),
+            FileEvent::Unwritten { why, .. } => format!(
+                "audio tracks: {who}'s new take plays from memory, as its file couldn't be \
+                 written ({why})"
+            ),
+            FileEvent::NoStream { why } => format!(
+                "audio tracks: takes play from memory, as playing them from the drive couldn't \
+                 start ({why})"
+            ),
+            FileEvent::HeadsShort { held, of } => format!(
+                "audio tracks: the cache holds the starts of {held} of the {of} regions playing \
+                 from the drive; the others may start late (a bigger Audio track memory helps)"
+            ),
+            FileEvent::TrackLeftOut { .. } => format!(
+                "audio tracks: {who}'s regions in the project were left out, as it was recording \
+                 when they went in"
+            ),
         }
     }
 }
@@ -254,6 +305,8 @@ const POLL: Duration = Duration::from_millis(50);
 /// One recording's file, on the worker.
 struct FileRec {
     rec: RecordingId,
+    /// The take it is, once one records into it or opens with it.
+    id: Option<u16>,
     /// 0 for a take opened with a project (it wasn't recorded here).
     channels: u8,
     /// The writer's number for it, while the writer has it.
@@ -280,12 +333,20 @@ struct Writing {
     rec: Recorder,
 }
 
+/// A take's finished file to open as its stream source: the take, its
+/// lasting id, the file, and the channels and frames it must hold.
+pub(crate) type ToOpen = (u16, RecordingId, PathBuf, usize, usize);
+
 /// The worker's side of the files: see the module notes.
 pub(crate) struct Files {
     rate: u32,
     writing: Option<Writing>,
     recs: Vec<FileRec>,
     last_poll: Instant,
+    /// Takes play from their files (phase 3b): each take's file is to be
+    /// opened once finished ([`Files::take_opens`]).
+    streams: bool,
+    opens: Vec<ToOpen>,
 }
 
 impl Files {
@@ -295,7 +356,30 @@ impl Files {
             writing: None,
             recs: Vec::new(),
             last_poll: Instant::now(),
+            streams: false,
+            opens: Vec::new(),
         }
+    }
+
+    /// Takes play from their files from now on: each finished take file,
+    /// recorded or opened with a project, is to be opened.
+    pub fn stream(&mut self) {
+        self.streams = true;
+    }
+
+    /// The take files to open now, oldest first.
+    pub fn take_opens(&mut self) -> Vec<ToOpen> {
+        std::mem::take(&mut self.opens)
+    }
+
+    /// The folder takes record into, once there is one.
+    pub fn work_dir(&self) -> Option<&Path> {
+        self.writing.as_ref().map(|w| w.dir.as_path())
+    }
+
+    /// Where recording `rec`'s finished file is, if it has one.
+    pub fn path_of(&self, rec: RecordingId) -> Option<PathBuf> {
+        self.recs.iter().find(|f| f.rec == rec)?.path.clone()
     }
 
     /// Whether the writer runs (the worker then wakes to look at it).
@@ -303,8 +387,10 @@ impl Files {
         self.writing.is_some()
     }
 
-    /// Record into `dir` from now on (made if missing).
-    pub fn start(&mut self, dir: PathBuf, cfg: WriterConfig) -> io::Result<()> {
+    /// Record into `dir` from now on (made if missing), the writer's
+    /// rounds waiting for playback's reads through `gate` (the stream
+    /// coordinator's, while takes play from their files).
+    pub fn start(&mut self, dir: PathBuf, cfg: WriterConfig, gate: Arc<Gate>) -> io::Result<()> {
         std::fs::create_dir_all(&dir)?;
         if let Some(old) = self.writing.take() {
             old.rec.close();
@@ -312,7 +398,7 @@ impl Files {
         let rec = Recorder::start(
             Box::new(StdFs::new()),
             Arc::new(RealClock::new()),
-            Arc::new(Gate::new()),
+            gate,
             cfg,
         )?;
         self.writing = Some(Writing { dir, rec });
@@ -353,6 +439,7 @@ impl Files {
         );
         self.recs.push(FileRec {
             rec,
+            id: None,
             channels,
             no: Some(no),
             take: false,
@@ -377,12 +464,13 @@ impl Files {
         }
     }
 
-    /// A take started recording into `rec`'s files. None if it has none
-    /// (they failed, or the request was lost): why, for the musician.
-    pub fn start_take(&mut self, rec: RecordingId) -> Result<(), String> {
+    /// Take `id` started recording into `rec`'s files. None if it has
+    /// none (they failed, or the request was lost): why, for the musician.
+    pub fn start_take(&mut self, rec: RecordingId, id: u16) -> Result<(), String> {
         match self.find(rec) {
             Some(f) if f.no.is_some() => {
                 f.take = true;
+                f.id = Some(id);
                 Ok(())
             }
             _ => Err("its files weren't made".into()),
@@ -409,12 +497,24 @@ impl Files {
         }
     }
 
-    /// A take opened with a project: its file's name there, where it is,
-    /// and the frames it holds.
-    pub fn known(&mut self, rec: RecordingId, name: String, path: Option<PathBuf>, frames: usize) {
+    /// Take `id` opened with a project: its file's name there, where it
+    /// is, and the channels and frames it holds. While takes play from
+    /// their files, a take with a file is to be opened.
+    pub fn known(
+        &mut self,
+        rec: RecordingId,
+        id: u16,
+        name: String,
+        path: Option<PathBuf>,
+        (channels, frames): (usize, usize),
+    ) {
         self.recs.retain(|f| f.rec != rec);
+        if let (true, Some(p)) = (self.streams, &path) {
+            self.opens.push((id, rec, p.clone(), channels, frames));
+        }
         self.recs.push(FileRec {
             rec,
+            id: Some(id),
             channels: 0,
             no: None,
             take: true,
@@ -480,6 +580,10 @@ impl Files {
                         // The writer is done with it.
                         w.rec.forget(no);
                         f.no = None;
+                        if let (true, Some(id), Some(p)) = (self.streams, f.id, &f.path) {
+                            let ch = usize::from(f.channels);
+                            self.opens.push((id, f.rec, p.clone(), ch, f.frames));
+                        }
                     }
                     if f.shown.is_none_or(|s| view.differs(&s)) {
                         f.shown = Some(view);
@@ -555,6 +659,106 @@ impl Files {
             f.path = Some(there);
         }
     }
+}
+
+/// How far ahead of the playhead the cache must be before a take file is
+/// written a piece further ([`write_take`]), and the longest it waits for
+/// that, a piece at a time.
+const WRITE_CUSHION_S: f64 = 1.0;
+const WRITE_WAIT: Duration = Duration::from_secs(1);
+/// A take file is written this many bytes at a time.
+const WRITE_PIECE: usize = 1 << 20;
+
+/// Write a sound brought in, or a stretched copy, as recording `rec`'s
+/// take file in `dir`: `take_ID.wav`, 32-bit float at `rate` (as a
+/// recorded take's), written to a hidden `.part` file made new, synced,
+/// then renamed, so its name never holds half a file. Through the stream
+/// layer's file layer, as every take file is (a `.part` a cut-off write
+/// left goes first). A piece at a time, each once the cache is
+/// [`WRITE_CUSHION_S`] ahead of what plays (or after [`WRITE_WAIT`]), so
+/// playback's reads come first as the writer's do. Its name and path.
+pub fn write_take(
+    dir: &Path,
+    rec: RecordingId,
+    channels: usize,
+    rate: u32,
+    audio: &[f32],
+    gate: &Gate,
+) -> io::Result<(String, PathBuf)> {
+    use std::io::Write;
+    /// Bytes written on at the end of a file, through the file layer.
+    struct At<'a> {
+        fs: &'a mut StdFs,
+        path: &'a Path,
+        at: u64,
+    }
+    impl Write for At<'_> {
+        fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+            self.fs.write_at(self.path, self.at, b)?;
+            self.at += b.len() as u64;
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    /// Writes in pieces, each once playback's cushion allows.
+    struct Gated<'a, W: Write> {
+        w: std::io::BufWriter<W>,
+        gate: &'a Gate,
+        since: usize,
+    }
+    impl<W: Write> Write for Gated<'_, W> {
+        fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+            if self.since >= WRITE_PIECE {
+                self.w.flush()?;
+                self.since = 0;
+                let t0 = Instant::now();
+                while self.gate.cushion() < WRITE_CUSHION_S && t0.elapsed() < WRITE_WAIT {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+            let n = self.w.write(b)?;
+            self.since += n;
+            Ok(n)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            self.w.flush()
+        }
+    }
+    let name = format!("take_{rec}.wav");
+    let path = dir.join(&name);
+    let part = dir.join(format!(".{name}.part"));
+    let mut fs = StdFs::new();
+    if fs.exists(&part) {
+        let _ = fs.remove(&part);
+    }
+    let written = (|| {
+        fs.create(&part, true)?;
+        let mut w = Gated {
+            w: std::io::BufWriter::with_capacity(
+                1 << 16,
+                At {
+                    fs: &mut fs,
+                    path: &part,
+                    at: 0,
+                },
+            ),
+            gate,
+            since: 0,
+        };
+        crate::save::write_wav(&mut w, audio, channels, rate)?;
+        w.flush()?;
+        drop(w);
+        fs.sync(&part)?;
+        fs.rename(&part, &path)?;
+        fs.sync_dir(dir)
+    })();
+    if let Err(e) = written {
+        let _ = fs.remove(&part);
+        return Err(e);
+    }
+    Ok((name, path))
 }
 
 /// Takes found in a work folder at start: finished, checked, and moved
@@ -708,6 +912,15 @@ mod tests {
         assert!(memory
             .line("Keys")
             .ends_with("as it has no file of its own"));
+        let left = FileEvent::Unopened {
+            track: 3,
+            why: "No such file or directory (os error 2)".into(),
+            kept: false,
+        };
+        assert_eq!(left.track(), 3);
+        assert!(left.line("Gtr").starts_with(
+            "audio tracks: a take of Gtr was left out, as its file couldn't be opened (No such"
+        ));
     }
 
     #[test]

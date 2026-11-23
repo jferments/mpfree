@@ -21,7 +21,8 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 use mpfree_looper::{
-    After, Command as L, Edit as E, LayerCommand as Lc, Looper, Overdubs, Phase, Starts, MAX_LOOPS,
+    After, Command as L, Edit as E, LayerCommand as Lc, Looper, NoteStart, Overdubs, Phase,
+    SmartEnd, Snap, SnapPlan, Starts, MAX_LOOPS,
 };
 use mpfree_transport::{Block, Command as T, Transport};
 
@@ -538,6 +539,13 @@ fn starting_when_you_play_never_allocates() {
 
 #[test]
 fn a_free_pass_setting_the_tempo_never_allocates() {
+    // Smart loop end in each mode, with the pads' notes going in.
+    for mode in [SmartEnd::Off, SmartEnd::Suggest, SmartEnd::Auto] {
+        free_pass_without_allocating(mode);
+    }
+}
+
+fn free_pass_without_allocating(mode: SmartEnd) {
     const RATE: u32 = 44_100;
     let mut t = Transport::new(RATE, 100.0).unwrap();
     let mut l = Looper::new(RATE, 30);
@@ -546,11 +554,26 @@ fn a_free_pass_setting_the_tempo_never_allocates() {
     let mut out = vec![0.0f32; 2 * 4096];
     let sizes = [1usize, 7, 128, 333, 4096, 64, 256];
     let mut tempos = 0;
+    let mut said = 0;
     watch(true);
     let _ = l.command(L::TempoFromLoop(true));
     let _ = l.command(L::SetBars(None));
+    let _ = l.command(L::SetSmartEnd(mode));
+    // Auto hands what was played after the end to the overdub.
+    if mode == SmartEnd::Auto {
+        let _ = l.command(L::SetAfter(After::Overdub));
+    }
     for i in 0..3000u64 {
         let f = t.frame();
+        // A pad every few periods, more than the note log holds.
+        if i % 3 == 0 {
+            l.note(NoteStart {
+                frame: f,
+                source: 1,
+                key: (i % 16) as u8,
+                velocity: 100,
+            });
+        }
         match i {
             // Loop 0 records free from Record; Record again a moment
             // later waits to be a bar at 160 BPM, then sets the tempo.
@@ -604,16 +627,128 @@ fn a_free_pass_setting_the_tempo_never_allocates() {
         assert!(t.process(n as u32, &mut b));
         l.process(&b, &input[..2 * n], &mut out[..2 * n]);
         // The host: the tempo, then PLAY, on the frame asked.
-        if let Some((_, r, at)) = l.take_tempo() {
+        if let Some((_, r, at, _)) = l.take_tempo() {
             let _ = t.command(at, T::SetTempo(r.bpm));
             let _ = t.command(at, T::Play);
             tempos += 1;
+        }
+        if l.take_smart().is_some() {
+            said += 1;
         }
         let _ = l.status();
         let _ = l.stats();
     }
     watch(false);
-    assert_eq!(calls(), 0, "allocated while a free pass set the tempo");
+    assert_eq!(
+        calls(),
+        0,
+        "allocated while a free pass set the tempo ({mode:?})"
+    );
+    assert_eq!(said > 0, mode != SmartEnd::Off, "{mode:?}");
     assert_eq!(tempos, 2, "two passes set the tempo");
+    if mode == SmartEnd::Auto {
+        assert!(l.stats().handoffs >= 1, "{:?}", l.stats());
+    }
     assert!(l.stats().aborted >= 1, "PLAY threw one away");
+}
+
+/// Smart loop end's snaps: Suggest offers the downbeat played before a
+/// late tap, and a snap to it, its Undo and Redo, Use my tap, and Read as
+/// 4 bars and its Undo, each worked out, given and landed at odd period
+/// sizes, allocate nothing.
+#[test]
+fn snaps_never_allocate() {
+    const RATE: u32 = 22_050;
+    let mut t = Transport::new(RATE, 100.0).unwrap();
+    let mut l = Looper::new(RATE, 30);
+    let mut b = Block::new();
+    let mut input = vec![0.0f32; 2 * 4096];
+    let mut out = vec![0.0f32; 2 * 4096];
+    // Short enough that the tap lands within the reach.
+    let sizes = [1usize, 7, 128, 333, 64, 256];
+    let mut snap: Option<SnapPlan> = None;
+    let mut landed = 0;
+    // The loop point view's windows, read as the host reads them.
+    let mut kept = vec![[0.0f32; 2]; 6_615];
+    let mut read = 0;
+    let mut want = [
+        Snap::Found,
+        Snap::Undo,
+        Snap::Redo,
+        Snap::Tap,
+        Snap::Bars(4),
+        Snap::Undo,
+    ]
+    .into_iter();
+    let _ = l.command(L::TempoFromLoop(true));
+    let _ = l.command(L::SetBars(None));
+    let _ = l.command(L::SetSmartEnd(SmartEnd::Suggest));
+    // Two bars at 120 BPM on the pads from Record, Record again 60 ms
+    // after the downbeat that ends them.
+    let mut rec_from = None;
+    let mut closed = false;
+    watch(true);
+    for i in 0..12_000u64 {
+        let f = t.frame();
+        let n = sizes[(i % sizes.len() as u64) as usize];
+        if i == 10 {
+            let _ = l.command(L::Record);
+            rec_from = Some(f);
+        }
+        if let Some(r) = rec_from {
+            for k in 0..=8u64 {
+                let at = r + k * 11_025;
+                if at >= f && at < f + n as u64 {
+                    l.note(NoteStart {
+                        frame: at,
+                        source: 0,
+                        key: if k % 2 == 0 { 36 } else { 38 },
+                        velocity: if k % 2 == 0 { 120 } else { 100 },
+                    });
+                }
+            }
+            if !closed && f >= r + 88_200 + 1_323 {
+                let _ = l.command(L::Record);
+                closed = true;
+            }
+        }
+        for k in 0..n {
+            let x = 0.1 * ((k % 13) as f32 - 6.0) / 6.0;
+            input[2 * k] = x;
+            input[2 * k + 1] = -x;
+        }
+        out[..2 * n].fill(0.0);
+        if let Some(p) = snap.filter(|p| p.at < f + n as u64) {
+            let _ = t.command(p.at, T::TempoNow(p.bpm));
+            let _ = l.snap_at(p);
+            snap = None;
+        }
+        assert!(t.process(n as u32, &mut b));
+        l.process(&b, &input[..2 * n], &mut out[..2 * n]);
+        if let Some((_, r, at, _)) = l.take_tempo() {
+            let _ = t.command(at, T::SetTempo(r.bpm));
+            let _ = t.command(at, T::Play);
+        }
+        let _ = l.take_smart();
+        if l.take_snap().is_some_and(|d| d.landed) {
+            landed += 1;
+        }
+        if i % 7 == 0 && l.read_kept(0, (i % 900) as i64 - 300, &mut kept).is_some() {
+            read += 1;
+        }
+        // The next snap once the last has landed and the offer is in.
+        let st = l.status();
+        if snap.is_none() && st.snapping.is_none() && (st.offer.is_some() || st.moved.is_some()) {
+            if let Some(s) = want.next() {
+                snap = Some(l.snap_plan(0, s, t.frame()).expect("a snap"));
+            }
+        }
+    }
+    watch(false);
+    assert_eq!(calls(), 0, "allocated while snapping");
+    assert!(read > 0, "the kept audio was read");
+    assert_eq!(
+        landed, 6,
+        "Snap, Undo, Redo, Use my tap, Read as and its Undo landed"
+    );
 }

@@ -73,6 +73,13 @@ console looper-listening 2 # before the theme refactor (phase 0 baseline)
 console looper-loops 3 # before the theme refactor (phase 0 baseline)
 console looper-master-refused 2 # before the theme refactor (phase 0 baseline)
 console looper-perform-throws 2 # before the theme refactor (phase 0 baseline)
+console looper-smart-ask 2 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+console looper-smart-chip 2 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+console looper-smart-close-call 2 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+console looper-smart-point 2 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+console looper-smart-point-snapped 2 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+console looper-smart-snapped 2 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+console looper-smart-start 2 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
 console looper-sources 2 # before the theme refactor (phase 0 baseline)
 console looper-take-gap 3 # before the theme refactor (phase 0 baseline)
 console looper-this-take 3 # before the theme refactor (phase 0 baseline)
@@ -145,6 +152,7 @@ console sequencer-gear-lane-lfo 3 # before the theme refactor (phase 0 baseline)
 console sequencer-gear-lanes 4 # before the theme refactor (phase 0 baseline)
 console sequencer-lock-lanes 3 # before the theme refactor (phase 0 baseline)
 console sequencer-notes-tracker 5 # before the theme refactor (phase 0 baseline)
+console sequencer-silent-locks 3 # the same runs as sequencer-steps-synth (the root tag on the picked row, a picked step's badge, Spaceship's meter and Throws labels) and a lock lane's outline as on sequencer-steps; none of its own
 console sequencer-step-ratchet 2 # the same runs as sequencer-steps (the Steps page under it, phase 0 baseline), none of its own
 console sequencer-steps 2 # before the theme refactor (phase 0 baseline)
 console sequencer-steps-synth 3 # before the theme refactor (phase 0 baseline)
@@ -192,6 +200,13 @@ default looper-listening 7 # before the theme refactor (phase 0 baseline)
 default looper-loops 7 # before the theme refactor (phase 0 baseline)
 default looper-master-refused 8 # before the theme refactor (phase 0 baseline)
 default looper-perform-throws 7 # before the theme refactor (phase 0 baseline)
+default looper-smart-ask 7 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+default looper-smart-chip 7 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+default looper-smart-close-call 7 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+default looper-smart-point 7 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+default looper-smart-point-snapped 7 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+default looper-smart-snapped 7 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+default looper-smart-start 7 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
 default looper-sources 8 # before the theme refactor (phase 0 baseline)
 default looper-take-gap 4 # before the theme refactor (phase 0 baseline)
 default looper-this-take 4 # before the theme refactor (phase 0 baseline)
@@ -264,6 +279,7 @@ default sample-zoomed 4 # before the theme refactor (phase 0 baseline)
 default sequencer-gear-lane-lfo 1 # before the theme refactor (phase 0 baseline)
 default sequencer-gear-lanes 1 # before the theme refactor (phase 0 baseline)
 default sequencer-notes-tracker 4 # before the theme refactor (phase 0 baseline)
+default sequencer-silent-locks 1 # the same runs as sequencer-steps-synth (the root tag on the picked row, a picked step's badge, Spaceship's meter and Throws labels) and a lock lane's outline as on sequencer-steps; none of its own
 default sequencer-steps-synth 2 # before the theme refactor (phase 0 baseline)
 default status-red-hint 9 # the Play page's own runs, as on play (System status phase 2)
 default synth 2 # before the theme refactor (phase 0 baseline)
@@ -391,6 +407,13 @@ spaceship looper-listening 7 # before the theme refactor (phase 0 baseline)
 spaceship looper-loops 11 # before the theme refactor (phase 0 baseline)
 spaceship looper-master-refused 8 # before the theme refactor (phase 0 baseline)
 spaceship looper-perform-throws 11 # before the theme refactor (phase 0 baseline)
+spaceship looper-smart-ask 11 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+spaceship looper-smart-chip 11 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+spaceship looper-smart-close-call 11 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+spaceship looper-smart-point 7 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+spaceship looper-smart-point-snapped 7 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+spaceship looper-smart-snapped 11 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+spaceship looper-smart-start 11 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
 spaceship looper-sources 8 # before the theme refactor (phase 0 baseline)
 spaceship looper-take-gap 8 # before the theme refactor (phase 0 baseline)
 spaceship looper-this-take 8 # before the theme refactor (phase 0 baseline)
@@ -472,6 +495,7 @@ spaceship sequencer-lock-lanes 14 # before the theme refactor (phase 0 baseline)
 spaceship sequencer-notes 29 # before the theme refactor (phase 0 baseline)
 spaceship sequencer-notes-list 6 # before the theme refactor (phase 0 baseline)
 spaceship sequencer-notes-tracker 117 # before the theme refactor (phase 0 baseline)
+spaceship sequencer-silent-locks 7 # the same runs as sequencer-steps-synth (the root tag on the picked row, a picked step's badge, Spaceship's meter and Throws labels) and a lock lane's outline as on sequencer-steps; none of its own
 spaceship sequencer-step-ratchet 14 # the same runs as sequencer-steps (the Steps page under it, phase 0 baseline), none of its own
 spaceship sequencer-steps 14 # before the theme refactor (phase 0 baseline)
 spaceship sequencer-steps-synth 8 # before the theme refactor (phase 0 baseline)

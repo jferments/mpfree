@@ -189,9 +189,12 @@ fn golden_every_case_sounds_as_it_did() {
     let mut broken = Vec::new();
     // The step-edit cases make no sound: the instruction gate and their
     // own tests in cases.rs check them.
+    // Nor the fixed test projects, which have their own finer check
+    // (src/projects.rs, in release).
     for mut c in cases::all(RATE)
         .into_iter()
         .filter(|c| !cases::off_the_audio_path(c))
+        .filter(|c| !c.name.starts_with(crate::projects::PROJECT))
     {
         let blocks = blocks_for(&c);
         match fingerprint(&mut c, blocks) {

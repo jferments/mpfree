@@ -1096,6 +1096,11 @@ pub struct LockCells {
     /// step's value as bars a finger draws ([`ValueCells`]); `cells` is
     /// then empty.
     pub values: Option<ValueCells>,
+    /// Its locks are on a control of an instrument the track doesn't play
+    /// now (step sequencer refactor F1): kept, not played. Its bars are
+    /// faint, with this over them ("made for Poly's Cutoff, not playing on
+    /// FM"); the × still takes them off.
+    pub silent: Option<String>,
 }
 
 /// A Velocity or Chance lane under a sound (step sequencer refactor D3):
@@ -2480,11 +2485,20 @@ fn paint_lock_lane(
 ) {
     let t = cx.theme.clone();
     let y = g.row_y(k);
-    let ink = t.readable(LOCKED.mix(t.role(Role::Highlight), 0.45), t.surface);
+    let lane_ink = t.readable(LOCKED.mix(t.role(Role::Highlight), 0.45), t.surface);
+    // Locks that don't play now (F1): the lane's name is faint too, but
+    // never under 3:1 (the floor for readable text; a light theme's
+    // faint purple would be), its outline as any lock lane's (fainter,
+    // it would not show).
+    let ink = if lk.silent.is_some() {
+        mpfree_ui::roles::reach(lane_ink.mix(t.surface, 0.45), lane_ink, t.surface, 3.0)
+    } else {
+        lane_ink
+    };
     let mb = g.mute_button(k);
     let nr = Rect::new(g.names.x, y, mb.x - 4 - g.names.x, g.rh);
     cx.canvas.fill_round_rect(nr, t.round(8), t.surface);
-    dashed_outline(cx, nr, ink.with_alpha(130));
+    dashed_outline(cx, nr, lane_ink.with_alpha(130));
     // The hook from the sound above.
     cx.canvas
         .fill_rect(Rect::new(nr.x + 9, nr.y + 7, 2, 10), ink);
@@ -2526,8 +2540,11 @@ fn paint_lock_lane(
         cx.canvas.fill_round_rect(
             Rect::new(sr.x + 3, sr.bottom() - 3 - bh, sr.w - 6, bh),
             4,
-            ink.with_alpha(190),
+            ink.with_alpha(if lk.silent.is_some() { 60 } else { 190 }),
         );
+        if lk.silent.is_some() {
+            continue;
+        }
         // The value over it: only the number when the unit doesn't fit.
         let shown = if cx.measure(FontId::Bold, 10.0, &text) <= sr.w - 4 {
             text.as_str()
@@ -2542,6 +2559,13 @@ fn paint_lock_lane(
             t.readable(t.role(Role::Highlight), base),
             shown,
         );
+    }
+    // Locks kept but not played: why, over the lane's steps.
+    if let Some(why) = &lk.silent {
+        let last = g.cell(k, steps.clamp(1, 16) - 1);
+        let first = g.cell(k, 0);
+        let across = Rect::new(first.x + 8, first.y, last.right() - first.x - 16, first.h);
+        cx.text(FontId::Sans, 13.0, across, Align::Left, t.text_dim, why);
     }
 }
 
@@ -4568,6 +4592,7 @@ mod tests {
                 opens_rows: false,
                 moved: false,
                 values: None,
+                silent: None,
             }),
             ..lane(LOCK_LANE + id, &[])
         };
@@ -4813,6 +4838,7 @@ mod tests {
                 opens_rows: true,
                 moved: false,
                 values: None,
+                silent: None,
             }),
             ..lane(LOCK_LANE + id, &[])
         }));

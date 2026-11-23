@@ -45,6 +45,15 @@
 //! something moved it, and only sent when its value changed. Nodes smooth
 //! their own parameters, so a 32-frame step never zippers.
 //!
+//! # Let-gos are never lost
+//!
+//! A hand's end and a lock's end must always land, or a setting stays
+//! held. When the host's events for a block are full, it hands the let-go
+//! to [`ModEngine::let_go_later`] instead: the target keeps it (every
+//! target has room for it) and the next [`ModEngine::process`] does it on
+//! its first frame, before that block's events. [`ModEngine::let_go_all`]
+//! lets go of everything at once (opening a project).
+//!
 //! [`ModEngine::process`] never allocates, locks or panics, and nor do
 //! the changes ([`ModEngine::add_target`], [`ModEngine::map`],
 //! [`ModEngine::add_row`] ...) while there is room, so the host can make
@@ -69,7 +78,7 @@ pub mod text;
 
 pub use bind::{Bank, Binding, Bindings, Moved, QLinkCard, Scope, Write, KNOBS};
 pub use engine::{
-    parse_source, source_info, source_text, Change, MacroMap, MapCurve, ModEngine, ModError,
+    parse_source, source_info, source_text, Change, LetGo, MacroMap, MapCurve, ModEngine, ModError,
     ModEvent, ModStats, ModTimed, Row, Source, DEFAULT_TICK, FOLLOWERS, HOST_SOURCES, LFOS, MACROS,
     MACRO_TARGETS, MAX_ROWS, MAX_TARGETS,
 };
