@@ -9,7 +9,10 @@
 //!   by its own pad map, on its own mixer strip, so mute and solo stay per
 //!   strip and drop one layer in the Mix tab. A layer is a synth of the
 //!   project's list: the shared synth, a track's own, or one picked in the
-//!   list of synths (a free place's); never a kit.
+//!   list of synths (a free place's), or a kit (sampler step 15f): each
+//!   hit plays the kit's pad of the layer's source bank, else of the bank
+//!   the pads are on ([`App::pads_layer_kits`]), and REC records it on the
+//!   kit's track as that pad.
 //! - **Only with a synth chosen.** Layers go with a synth chosen for the
 //!   pads (`PadFocus::Instrument`). A layer added while the pads follow a
 //!   track that plays a synth chooses that synth first; over a kit the
@@ -43,7 +46,7 @@
 //!   has gone keeps its place, missing and silent, said
 //!   ([`App::set_instrument_list`], [`App::open_pads`]).
 
-use super::pads_focus::{RecFrom, RecMore, RecSound};
+use super::pads_focus::{RecFrom, RecMore};
 use super::{App, Effect, LayerEntry, PadFocus};
 use crate::instrument_list::{InstrumentId, Kind};
 
@@ -108,6 +111,30 @@ impl App {
         std::array::from_fn(|i| self.layer_now(i).and_then(|l| self.instrument_holder(l.id)))
     }
 
+    /// The kit each layer that plays now plays, with the bank of it its
+    /// hits take (sampler step 15f: the layer's source bank, else the bank
+    /// the pads are on), in order (None: no layer there, or a synth). The
+    /// audio loop plays each hit's pad of that bank on the kit too.
+    /// Allocates nothing.
+    pub fn pads_layer_kits(&self) -> [Option<(u8, u8)>; MORE] {
+        if !self.layers_apply() {
+            return [None; MORE];
+        }
+        std::array::from_fn(|i| self.layer_now(i).and_then(|l| self.layer_kit(l)))
+    }
+
+    /// The kit layer `l` plays and the bank of it (its source bank, else
+    /// the bank the pads are on), if it is a kit's.
+    fn layer_kit(&self, l: LayerEntry) -> Option<(u8, u8)> {
+        match self.instrument_list.kind(l.id)? {
+            Kind::Kit { kit } => {
+                let page = l.from.map_or(self.pad_page, usize::from);
+                Some((kit.min(255) as u8, page.min(super::KIT_PAGES - 1) as u8))
+            }
+            _ => None,
+        }
+    }
+
     /// Whether the shared synth plays as a layer now.
     pub fn pads_layer_synth(&self) -> bool {
         self.layers_apply() && self.layers_now().any(|id| id == InstrumentId::SHARED_SYNTH)
@@ -117,7 +144,7 @@ impl App {
     /// map whose instrument the list has, while the pads have one of their
     /// own (a layer plays only then), whatever bank it reaches and the
     /// pads are on (sampler step 15c: REC records every sound the map
-    /// plays). A kit isn't a layer yet (step 15f). Allocates nothing.
+    /// plays), a kit's too (step 15f). Allocates nothing.
     pub fn pads_layer_sounds(&self) -> [Option<RecMore>; MORE] {
         let mut out = [None; MORE];
         if !matches!(self.base_now(), PadFocus::Instrument(_)) {
@@ -126,8 +153,8 @@ impl App {
         let listed = (0..MORE).filter_map(|i| {
             let l = self.pad_map.layers[i]?;
             let sound = self.sound_of(PadFocus::Instrument(l.id))?;
-            matches!(sound, RecSound::Synth(_)).then(|| RecMore {
-                name: self.instrument_name(l.id),
+            Some(RecMore {
+                name: self.sound_name(PadFocus::Instrument(l.id)),
                 sound,
                 from: RecFrom::Layer(i),
             })
@@ -157,16 +184,23 @@ impl App {
     /// the other armed tracks (`also`, a bit each: `TimeHost::also`) that
     /// plays its synth, as REC sets them up (`desk.rs`, `rec_synth`). None:
     /// no layer there, one that doesn't play on the bank the pads are on,
-    /// or no such track. The audio loop gives them each pad hit. Allocates
-    /// nothing.
-    pub fn pads_layer_recs(&self, also: u128) -> [Option<u8>; MORE] {
+    /// or no such track. The audio loop gives them each pad hit, with the
+    /// bank of the kit a kit layer plays (sampler step 15f: its track
+    /// records the kit's pad of that bank). Allocates nothing.
+    pub fn pads_layer_recs(&self, also: u128) -> [Option<(u8, Option<u8>)>; MORE] {
         let more = self.rec_more_sounds();
         let all = self.rec_more_tracks(also);
         std::array::from_fn(|i| match more[i] {
             Some(RecMore {
                 from: RecFrom::Layer(l),
                 ..
-            }) if self.layer_plays_now(l) => all[i],
+            }) if self.layer_plays_now(l) => {
+                let page = self
+                    .layer_now(l)
+                    .and_then(|e| self.layer_kit(e))
+                    .map(|k| k.1);
+                all[i].map(|t| (t, page))
+            }
             _ => None,
         })
     }

@@ -1936,6 +1936,83 @@ mod tests {
         });
     }
 
+    /// Sampler step 15f, first part: a kit as a layer. With kit 2 on the
+    /// pads and the track's kit 1 as a layer from bank A, a hit plays kit
+    /// 2's pad and kit 1's A pad, on bank B too, and its let-go reaches
+    /// what it played. REC plans a track for the kit layer.
+    #[test]
+    fn a_kit_layer_plays_its_bank_with_every_hit() {
+        on_big_stack(|| {
+            let mut session = Session::new();
+            let s = &mut session;
+            s.make_sounds();
+            s.run_periods(2);
+            let kit_1 = s.instrument_list.of_kit(0).expect("kit 1 has an id");
+            let kit_2 = s.instrument_list.of_kit(1).expect("kit 2 has an id");
+            let part = format!(
+                "mpfree-pads 2\nplay instrument {kit_2}\nlayer instrument {kit_1} from A\n"
+            );
+            let (notes, fx) = s.app.open_pads(Some(&part));
+            assert!(notes.is_empty(), "{notes:?}");
+            s.fx.extend(fx);
+            s.run_periods(4);
+            assert_eq!(s.app.pads_kit(), Some(1), "the pads play kit 2");
+            assert_eq!(s.app.pads_layer_kits()[0], Some((0, 0)), "kit 1's bank A");
+            let player = s.sounds.as_ref().expect("the kits");
+            let pad = (0..16)
+                .find(|&p| player.has_sound(1, p) && player.has_sound(0, p))
+                .expect("a pad both kits fill");
+            s.pad_edge(pad, 100, true);
+            s.run_periods(2);
+            let player = s.sounds.as_ref().expect("the kits");
+            assert!(player.kit_pad_voices(1, pad) > 0, "kit 2's pad plays");
+            assert!(player.kit_pad_voices(0, pad) > 0, "and the layer's");
+            assert_eq!(s.pad_layers.kit_pads_held(pad)[0], Some((0, pad as u8)));
+            s.pad_edge(pad, 0, false);
+            s.run_periods(2);
+            assert_eq!(s.pad_layers.kit_pads_held(pad), [None; 3], "let go there");
+            s.run_for(2.0);
+
+            // On bank B the layer still plays kit 1's bank A.
+            s.button("PAD BANK B/F");
+            s.run_periods(4);
+            assert_eq!(s.app.pads_layer_kits()[0], Some((0, 0)));
+            s.pad_edge(pad, 100, true);
+            s.run_periods(2);
+            let player = s.sounds.as_ref().expect("the kits");
+            assert!(player.kit_pad_voices(0, pad) > 0, "kit 1's A pad");
+            assert_eq!(player.kit_pad_voices(0, 16 + pad), 0, "not its B pad");
+            s.pad_edge(pad, 0, false);
+            s.run_periods(2);
+
+            // REC records the kit layer too, on a track of its own that
+            // plays kit 1, each hit as kit 1's pad.
+            let more = s.app.rec_more_sounds();
+            assert!(
+                more.iter()
+                    .flatten()
+                    .any(|m| m.sound == crate::app::RecSound::Kit(0)
+                        && format!("{:?}", m.from) == "Layer(0)"),
+                "{more:?}"
+            );
+            s.button("PAD BANK A/E");
+            s.run_periods(4);
+            s.button("REC").settle();
+            s.run_periods(4).settle();
+            let rec = s.app.pads_layer_recs(s.time.also())[0];
+            let Some((t, kit)) = rec else {
+                panic!("no track records the kit layer: {:?}", s.said());
+            };
+            assert_eq!(kit, Some(0), "kit 1's bank A");
+            assert_eq!(
+                s.track_kits.kit_of(usize::from(t)),
+                Some(0),
+                "it plays kit 1"
+            );
+            assert_ne!(s.time.armed(), Some(usize::from(t)), "a track of its own");
+        });
+    }
+
     /// Sampler step 15c: NOTE REPEAT while the pads play a kit on their
     /// own repeats that kit's pad (the pads' arp), never the track's, and
     /// the pads keep the kit; let go, the repeats stop. Held again, Follow

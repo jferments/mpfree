@@ -1828,7 +1828,8 @@ pub struct App {
     /// ([`App::set_synth_tracks`]).
     synth_tracks: u128,
     /// The tracks that play each kit the pad map names (sampler step 15,
-    /// and its base and banks from step 15c, [`App::set_kit_tracks`]): the
+    /// its base and banks from step 15c, its layers from 15f,
+    /// [`App::set_kit_tracks`]): the
     /// kit place and a bit for each track; the rest `(usize::MAX, 0)`.
     kit_tracks: [(usize, u128); pads_focus::MAP_KITS],
     /// The tracks with a kit or a MIDI output picked, a bit each

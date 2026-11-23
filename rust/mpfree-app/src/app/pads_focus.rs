@@ -110,9 +110,9 @@ pub enum PadFocus {
     Instrument(InstrumentId),
 }
 
-/// The most kits the pad map names that REC can record: its base and a
-/// bank's own each (sampler step 15c).
-pub const MAP_KITS: usize = 1 + super::KIT_PAGES;
+/// The most kits the pad map names that REC can record: its base, a
+/// bank's own each (sampler step 15c) and its layers (step 15f).
+pub const MAP_KITS: usize = 1 + super::KIT_PAGES + super::pad_layers::MORE;
 
 /// The most sounds of the pad map REC records besides the first: its base
 /// and each bank's own ([`App::rec_map_sounds`]).
@@ -1058,8 +1058,9 @@ impl App {
         self.synth_tracks = tracks;
     }
 
-    /// The tracks that play each kit the pad map names (its base and the
-    /// banks' own, sampler steps 15 and 15c), as the audio loop has them
+    /// The tracks that play each kit the pad map names (its base, the
+    /// banks' own and its layers, sampler steps 15, 15c and 15f), as the
+    /// audio loop has them
     /// (`on_kit`: `TrackKits::on_kit`, a bit each). Allocates nothing.
     pub fn set_kit_tracks(&mut self, on_kit: impl Fn(usize) -> u128) {
         let mut out = [(usize::MAX, 0); MAP_KITS];
@@ -1074,14 +1075,18 @@ impl App {
     }
 
     /// The kit places the pad map names that the list has: its base, then
-    /// the banks' own.
+    /// the banks' own, then its layers (sampler step 15f).
     fn map_kits(&self) -> impl Iterator<Item = usize> + '_ {
         let base = std::iter::once(self.pad_map.base);
         let banks = self.pad_map.banks.iter().flatten().map(|e| e.play);
-        base.chain(banks).filter_map(|f| match self.sound_of(f)? {
-            RecSound::Kit(k) => Some(k),
-            RecSound::Synth(_) => None,
-        })
+        let layers = self.pad_map.layers.iter().flatten();
+        let layers = layers.map(|l| PadFocus::Instrument(l.id));
+        base.chain(banks)
+            .chain(layers)
+            .filter_map(|f| match self.sound_of(f)? {
+                RecSound::Kit(k) => Some(k),
+                RecSound::Synth(_) => None,
+            })
     }
 
     /// Whether track `track` plays kit place `kit`, one the pad map names,
@@ -1118,7 +1123,7 @@ impl App {
     }
 
     /// The name REC gives what `f` plays: the synth's ("FM"), "a kit".
-    fn sound_name(&self, f: PadFocus) -> &'static str {
+    pub(super) fn sound_name(&self, f: PadFocus) -> &'static str {
         match (f, self.sound_of(f)) {
             (_, Some(RecSound::Kit(_))) => "a kit",
             (PadFocus::Instrument(id), _) => self.instrument_name(id),

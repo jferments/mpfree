@@ -270,7 +270,7 @@ pub struct Session {
     /// (step 7b, as main.rs).
     keys_on_pads: crate::KeysOnPads,
     /// The pads' layers beyond the first (step 11a), as main.rs's.
-    pad_layers: crate::PadLayers,
+    pub(crate) pad_layers: crate::PadLayers,
     /// The pads' arp (sampler step 15c), as main.rs's, and what the pads
     /// played on their own when it last looked.
     pads_arp: crate::PadsArp,
@@ -1147,6 +1147,28 @@ impl Session {
     /// A pad pressed or let go on the controller, as `player_session` hands
     /// it over (the step pads, then the mute keys and 16 Levels' Transpose
     /// first).
+    /// The kit layers' pads a hit played (`on`: its velocity) or lets go
+    /// of (sampler step 15f), as main.rs plays them: on the sounding kit,
+    /// when there is one.
+    fn play_kit_layers(
+        &mut self,
+        pads: [Option<(u8, u8)>; crate::instruments::PAD_LAYERS - 1],
+        on: Option<u8>,
+    ) {
+        let Some(p) = self.sounds.as_mut() else {
+            return;
+        };
+        for (kit, kp) in pads.into_iter().flatten() {
+            let (kit, kp) = (usize::from(kit), usize::from(kp));
+            match on {
+                Some(v) => {
+                    p.hit_kit_at(kit, kp, v, 0);
+                }
+                None => p.release_kit_at(kit, kp, 0),
+            }
+        }
+    }
+
     pub fn pad_edge(&mut self, pad: usize, velocity: u8, down: bool) {
         // The pads' layers (step 11a), as main.rs: a let-go reaches the
         // notes its hit started there, whatever takes it below.
@@ -1154,6 +1176,8 @@ impl Session {
             let own = &mut self.mix.instruments;
             self.pad_layers.pad_off(pad, &mut self.synth, own);
             self.pad_layers.rec_off(pad, &mut self.time);
+            let kit_pads = self.pad_layers.kit_pads_off(pad);
+            self.play_kit_layers(kit_pads, None);
         }
         if down && self.app.pads_are_steps() {
             let v = self.app.velocity(velocity);
@@ -1268,6 +1292,8 @@ impl Session {
                 });
             let own = &mut self.mix.instruments;
             self.pad_layers.pad_on(pad, v, &mut self.synth, own);
+            let kit_pads = self.pad_layers.kit_pads_on(pad);
+            self.play_kit_layers(kit_pads, Some(v));
             let rv = self.app.layer_rec_velocity(velocity);
             self.pad_layers.rec_on(pad, rv, &mut self.time);
             self.previewed.push((pad, v));
@@ -1289,6 +1315,8 @@ impl Session {
                 .pad_on_shifted(crate::instruments::THE_PADS, pad, v, 0, &none);
             let own = &mut self.mix.instruments;
             self.pad_layers.pad_on(pad, v, &mut self.synth, own);
+            let kit_pads = self.pad_layers.kit_pads_on(pad);
+            self.play_kit_layers(kit_pads, Some(v));
             let rv = self.app.layer_rec_velocity(velocity);
             self.pad_layers.rec_on(pad, rv, &mut self.time);
             self.pads_rec.on(pad, pad as u8, rv, &mut self.time);
@@ -1312,6 +1340,8 @@ impl Session {
             self.synth.note_on(pad, v, 0);
             let own = &mut self.mix.instruments;
             self.pad_layers.pad_on(pad, v, &mut self.synth, own);
+            let kit_pads = self.pad_layers.kit_pads_on(pad);
+            self.play_kit_layers(kit_pads, Some(v));
             let rv = self.app.layer_rec_velocity(velocity);
             self.pad_layers.rec_on(pad, rv, &mut self.time);
             self.pads_rec.on(pad, pad as u8, rv, &mut self.time);
@@ -1337,6 +1367,8 @@ impl Session {
             }
             let own = &mut self.mix.instruments;
             self.pad_layers.pad_on(pad, v, &mut self.synth, own);
+            let kit_pads = self.pad_layers.kit_pads_on(pad);
+            self.play_kit_layers(kit_pads, Some(v));
             let rv = self.app.layer_rec_velocity(velocity);
             self.pad_layers.rec_on(pad, rv, &mut self.time);
             self.pads_rec.on(pad, kit_pad as u8, rv, &mut self.time);
@@ -1402,6 +1434,8 @@ impl Session {
                 let v = self.app.velocity(velocity);
                 let own = &mut self.mix.instruments;
                 self.pad_layers.pad_on(pad, v, &mut self.synth, own);
+                let kit_pads = self.pad_layers.kit_pads_on(pad);
+                self.play_kit_layers(kit_pads, Some(v));
                 let rv = self.app.layer_rec_velocity(velocity);
                 self.pad_layers.rec_on(pad, rv, &mut self.time);
             }
@@ -1508,6 +1542,7 @@ impl Session {
         );
         let recs = self.app.pads_layer_recs(self.time.also());
         self.pad_layers.rec_to(recs);
+        self.pad_layers.kits_to(self.app.pads_layer_kits());
         // What the pads play on their own, the pads' arp's notes too, as
         // main.rs (sampler step 15c).
         let own_rec = self.app.pads_own_rec(self.time.also());

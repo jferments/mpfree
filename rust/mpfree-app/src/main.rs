@@ -5661,6 +5661,37 @@ fn rec_pads_arp(to: PadsPreview, n: ArpNote, rec: Option<u8>, time: &mut time::T
 /// No track: what [`PadsArp`] keeps for a note nothing records.
 const NO_REC: u8 = u8::MAX;
 
+/// The note a layer's track records pad `pad` (0 to 15) as: the pad, or a
+/// kit layer's pad of bank `page` (sampler step 15f).
+fn layer_note(pad: usize, page: Option<u8>) -> u8 {
+    page.map_or(pad as u8, |p| p * 16 + pad as u8)
+}
+
+/// The kit layers' pads a hit played or lets go of, (kit, kit pad) each
+/// ([`PadLayers::kit_pads_on`], sampler step 15f): `event` of each pad on
+/// its kit, as its kind has it ([`play_routed_pad`]). Never allocates.
+fn play_kit_layers(
+    pads: [Option<(u8, u8)>; PadLayers::MORE],
+    event: impl Fn(u8) -> mpfree_play::Event,
+    track: u8,
+    midi: &mut midi_out::MidiOut,
+    (pad_synths, synth): (&mut pad_synths::PadSynths, &mut synth::Synth),
+    player: &mut sampler::Player,
+) {
+    for (kit, kp) in pads.into_iter().flatten() {
+        let (pad, kit) = (usize::from(kp), usize::from(kit));
+        play_routed_pad(
+            track,
+            pad,
+            event(kp),
+            midi,
+            (pad_synths, synth),
+            player,
+            kit,
+        );
+    }
+}
+
 /// Pad `pad`'s bit in a 16-pad mask (none past 16).
 fn bit16(pad: usize) -> u16 {
     1u16.checked_shl(pad as u32).unwrap_or(0)
@@ -5890,10 +5921,18 @@ struct PadLayers {
     synth_keys: u128,
     /// The pedals the keys put down on the layers.
     pedals: midi_in::PedalsDown,
-    /// The track recording each layer now (`App::pads_layer_recs`).
-    rec: [Option<u8>; PadLayers::MORE],
+    /// The track recording each layer now (`App::pads_layer_recs`), with
+    /// the bank of a kit layer's kit (its track records that bank's pad,
+    /// sampler step 15f).
+    rec: [Option<(u8, Option<u8>)>; PadLayers::MORE],
     /// The tracks each pad's hit went into, for its let-go and pressure.
-    fed: [[Option<u8>; PadLayers::MORE]; 16],
+    fed: [[Option<(u8, Option<u8>)>; PadLayers::MORE]; 16],
+    /// The kit each kit layer plays and its bank (`App::pads_layer_kits`,
+    /// sampler step 15f).
+    kits: [Option<(u8, u8)>; PadLayers::MORE],
+    /// The kit pad each pad's hit played on each kit layer, (kit, kit
+    /// pad), for its let-go and pressure though the layers changed since.
+    kit_held: [[Option<(u8, u8)>; PadLayers::MORE]; 16],
     /// The pad each key went to on each track it went into, as a route's
     /// (CAPTURE's rule: a note no pad plays alone isn't kept).
     keys: midi_in::RoutedPads,
@@ -5913,6 +5952,8 @@ impl PadLayers {
             pedals: midi_in::PedalsDown::default(),
             rec: [None; PadLayers::MORE],
             fed: [[None; PadLayers::MORE]; 16],
+            kits: [None; PadLayers::MORE],
+            kit_held: [[None; PadLayers::MORE]; 16],
             keys: midi_in::RoutedPads::new(),
             key_tracks: 0,
         }
@@ -5921,8 +5962,41 @@ impl PadLayers {
     /// The tracks recording the layers now (`App::pads_layer_recs`): the
     /// hits and keys that follow go into them. A hit or key held goes on
     /// where it went.
-    fn rec_to(&mut self, recs: [Option<u8>; PadLayers::MORE]) {
+    fn rec_to(&mut self, recs: [Option<(u8, Option<u8>)>; PadLayers::MORE]) {
         self.rec = recs;
+    }
+
+    /// The kit layers as the app has them now (`App::pads_layer_kits`):
+    /// each hit plays its pad of their bank on them too. A hit held goes
+    /// on where it went.
+    fn kits_to(&mut self, kits: [Option<(u8, u8)>; PadLayers::MORE]) {
+        self.kits = kits;
+    }
+
+    /// Pad `pad` (0 to 15) down: the kit layers' pads it plays, (kit, kit
+    /// pad) each, kept for its let-go and pressure.
+    fn kit_pads_on(&mut self, pad: usize) -> [Option<(u8, u8)>; PadLayers::MORE] {
+        let kits = self.kits;
+        let Some(held) = self.kit_held.get_mut(pad) else {
+            return [None; PadLayers::MORE];
+        };
+        *held = kits.map(|k| k.map(|(kit, page)| (kit, page * 16 + pad as u8)));
+        *held
+    }
+
+    /// Pad `pad` up: the kit layers' pads its hit played, now forgotten.
+    fn kit_pads_off(&mut self, pad: usize) -> [Option<(u8, u8)>; PadLayers::MORE] {
+        self.kit_held
+            .get_mut(pad)
+            .map_or([None; PadLayers::MORE], std::mem::take)
+    }
+
+    /// The kit layers' pads pad `pad`'s hit plays, for its pressure.
+    fn kit_pads_held(&self, pad: usize) -> [Option<(u8, u8)>; PadLayers::MORE] {
+        self.kit_held
+            .get(pad)
+            .copied()
+            .unwrap_or([None; PadLayers::MORE])
     }
 
     /// Pad `pad` (0 to 15) down: into each track recording a layer, at
@@ -5933,8 +6007,8 @@ impl PadLayers {
             return;
         };
         *fed = self.rec;
-        for &t in self.rec.iter().flatten() {
-            let note = pad as u8;
+        for &(t, page) in self.rec.iter().flatten() {
+            let note = layer_note(pad, page);
             time.routed_played(t, 0, mpfree_play::Event::NoteOn { note, velocity });
         }
     }
@@ -5944,8 +6018,8 @@ impl PadLayers {
         let Some(fed) = self.fed.get_mut(pad) else {
             return;
         };
-        for t in std::mem::take(fed).into_iter().flatten() {
-            let note = pad as u8;
+        for (t, page) in std::mem::take(fed).into_iter().flatten() {
+            let note = layer_note(pad, page);
             time.routed_played(t, 0, mpfree_play::Event::NoteOff { note });
         }
     }
@@ -5955,8 +6029,8 @@ impl PadLayers {
         let Some(fed) = self.fed.get(pad) else {
             return;
         };
-        for &t in fed.iter().flatten() {
-            let note = pad as u8;
+        for &(t, page) in fed.iter().flatten() {
+            let note = layer_note(pad, page);
             time.routed_played(t, 0, mpfree_play::Event::Pressure { note, value });
         }
     }
@@ -5980,7 +6054,7 @@ impl PadLayers {
                 let Some(velocity) = velocity else {
                     return;
                 };
-                for &t in self.rec.iter().flatten() {
+                for &(t, _) in self.rec.iter().flatten() {
                     let key = Key::Down { note, velocity };
                     let pad = |n| midi_file::pad_on_track(own, Some(synth), usize::from(t), n);
                     if let Some(ev) = self.keys.event(t, key, pad) {
@@ -11499,6 +11573,14 @@ fn player_session(
                 Some(ControlEvent::PadUp { pad }) if (pad as usize) < 16 && !m.music => {
                     pad_layers.pad_off(pad as usize, &mut synth, &mut mix.instruments);
                     pad_layers.rec_off(pad as usize, &mut time);
+                    play_kit_layers(
+                        pad_layers.kit_pads_off(pad as usize),
+                        |note| mpfree_play::Event::NoteOff { note },
+                        app.track() as u8,
+                        &mut midi_out,
+                        (&mut mix.pad_synths, &mut synth),
+                        &mut player,
+                    );
                 }
                 Some(ControlEvent::PadPressure { pad, pressure })
                     if (pad as usize) < 16 && !m.music =>
@@ -11506,6 +11588,17 @@ fn player_session(
                     let own = &mut mix.instruments;
                     pad_layers.pad_pressure(pad as usize, pressure, &mut synth, own);
                     pad_layers.rec_pressure(pad as usize, pressure, &mut time);
+                    play_kit_layers(
+                        pad_layers.kit_pads_held(pad as usize),
+                        |note| mpfree_play::Event::Pressure {
+                            note,
+                            value: pressure,
+                        },
+                        app.track() as u8,
+                        &mut midi_out,
+                        (&mut mix.pad_synths, &mut synth),
+                        &mut player,
+                    );
                 }
                 _ => {}
             }
@@ -11737,6 +11830,14 @@ fn player_session(
                     if !m.music {
                         pad_layers.pad_on(pad, v, &mut synth, &mut mix.instruments);
                         pad_layers.rec_on(pad, app.layer_rec_velocity(velocity), &mut time);
+                        play_kit_layers(
+                            pad_layers.kit_pads_on(pad),
+                            |note| mpfree_play::Event::NoteOn { note, velocity: v },
+                            app.track() as u8,
+                            &mut midi_out,
+                            (&mut mix.pad_synths, &mut synth),
+                            &mut player,
+                        );
                     }
                     preview_held[pad] = pads_preview;
                     out.show(gui::ToUi::PadDown { pad, velocity: v });
@@ -11899,6 +12000,14 @@ fn player_session(
                             let v = app.velocity(velocity);
                             pad_layers.pad_on(pad, v, &mut synth, &mut mix.instruments);
                             pad_layers.rec_on(pad, app.layer_rec_velocity(velocity), &mut time);
+                            play_kit_layers(
+                                pad_layers.kit_pads_on(pad),
+                                |note| mpfree_play::Event::NoteOn { note, velocity: v },
+                                app.track() as u8,
+                                &mut midi_out,
+                                (&mut mix.pad_synths, &mut synth),
+                                &mut player,
+                            );
                         }
                         fx.extend(app.pad_down(pad, velocity));
                         awaiting[pad] = true;
@@ -12578,6 +12687,7 @@ fn player_session(
         );
         // The armed tracks that record a layer (step 11c).
         pad_layers.rec_to(app.pads_layer_recs(time.also()));
+        pad_layers.kits_to(app.pads_layer_kits());
         // And what the pads play on their own, the pads' arp's notes too,
         // into the track REC set up for it (sampler step 15c).
         let own_rec = app.pads_own_rec(time.also());

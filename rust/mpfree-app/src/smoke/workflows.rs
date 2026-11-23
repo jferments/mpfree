@@ -2250,7 +2250,7 @@ mod tests {
             assert_eq!(s.mix.instruments.send(2), Some(free(1)), "Track 3: Pluck");
             assert_eq!(s.time.also(), 1 << 2, "Track 3 armed too");
             assert_eq!(s.app.rec.ready, Some(Take::Replace));
-            assert_eq!(s.app.pads_layer_recs(s.time.also())[0], Some(2));
+            assert_eq!(s.app.pads_layer_recs(s.time.also())[0], Some((2, None)));
             // PLAY: the hits and a key go into both tracks.
             s.button("PLAY");
             let end = s.t() + 4.0;
