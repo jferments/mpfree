@@ -4039,15 +4039,21 @@ impl Looper {
 
     /// A project's free clock back ([`save::Saved::free_clock`]): at `bpm`
     /// in `meter`, stopped on its bar 1, `top`, for the project's free
-    /// loops to load onto ([`Looper::load`]), so that they open stopped at
-    /// their tops. Refused (false) while a free clock is set, or for a
-    /// tempo that isn't one.
+    /// loops to load onto ([`Looper::load`]) before the next period, so
+    /// that they open stopped at their tops. Refused (false) while a free
+    /// loop holds audio or loads, or for a tempo that isn't one. A free
+    /// clock no loop holds any more (the last free loop just faded out:
+    /// it goes with the next period) gives way to it, and Undo no longer
+    /// brings back the loops made on that one.
     pub fn open_free_clock(&mut self, bpm: f64, meter: Meter, top: Tick) -> bool {
-        if self.free_time.clock.is_some() || !(bpm.is_finite() && bpm > 0.0) {
+        if self.loops.iter().any(Loop::holds_free) || !(bpm.is_finite() && bpm > 0.0) {
             return false;
         }
-        self.free_time.gen = self.free_time.gen.wrapping_add(1);
-        self.free_time.clock = Some(FreeClock::stopped(bpm, self.rate, meter, top));
+        let ft = &mut self.free_time;
+        ft.gen = ft.gen.wrapping_add(1);
+        ft.clock = Some(FreeClock::stopped(bpm, self.rate, meter, top));
+        ft.kept = None;
+        ft.cue = None;
         true
     }
 

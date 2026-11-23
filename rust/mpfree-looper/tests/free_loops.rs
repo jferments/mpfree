@@ -7,7 +7,8 @@
 //! the song; free loops recorded over each other line up on its bars; STOP
 //! keeps what a free pass played; Undo brings the last free loop back with
 //! its clock; Play waits for the song's bar line; a note starts a free loop
-//! on the free clock's nearest bar line; and saved free loops open stopped.
+//! on the free clock's nearest bar line; saved free loops open stopped; and
+//! a project's free clock opens as soon as the old free loops are empty.
 //! The free clock itself counts as the song's spans do.
 //!
 //! 22.05 kHz at 240 BPM in 4/4 makes a bar exactly 22 050 frames (1 s).
@@ -606,8 +607,11 @@ fn free_loops_open_stopped_at_their_tops() {
     let f = o.l.load(0, f).expect_err("no free clock");
     let c = back.free_clock.unwrap();
     assert!(o.l.open_free_clock(c.bpm, c.meter, c.top));
-    assert!(!o.l.open_free_clock(c.bpm, c.meter, c.top), "one at a time");
     assert!(o.l.load(0, f).is_ok());
+    assert!(
+        !o.l.open_free_clock(c.bpm, c.meter, c.top),
+        "not while a free loop loads onto it"
+    );
     o.run(1_000 + 2 * BAR, &quiet);
     let s = o.status(0);
     assert_eq!(
@@ -624,6 +628,48 @@ fn free_loops_open_stopped_at_their_tops() {
     for j in FADE as u64..len - FADE as u64 {
         assert!(close(o.out_at(at + j), noise(from + j)), "frame {j}");
     }
+}
+
+/// Opening a project as the app does: the old loops are forgotten, and
+/// the project's free clock opens as soon as they are empty, though the
+/// old clock would go only with the next period. Until then a free loop
+/// holding audio keeps its clock; afterwards the old loop's Undo is gone
+/// with its clock.
+#[test]
+fn a_project_opens_its_free_clock_as_soon_as_the_old_free_loops_are_empty() {
+    let mut r = Rig::new(128);
+    r.run(1_000, &quiet);
+    let (_, closed) = record_in_own_time(&mut r, 0, 35_280, &noise);
+    r.run(closed + BAR, &quiet);
+    let old = r.l.free_clock().expect("its clock");
+    let meter = Meter { beats: 3, unit: 4 };
+    assert!(
+        !r.l.open_free_clock(90.0, meter, 0),
+        "not while a free loop holds audio"
+    );
+    // Clear, so that Undo could bring it back on its clock.
+    r.cmd(L::Clear);
+    while r.status(0).phase != Phase::Empty {
+        let f = r.frame + r.period as u64;
+        r.run(f, &noise);
+    }
+    // It faded out in this period: its clock goes with the next one.
+    assert_eq!(r.l.free_clock(), Some(old), "the old clock lingers");
+    assert!(r.l.open_free_clock(90.0, meter, 0));
+    let new = r.l.free_clock().expect("the project's clock");
+    assert_eq!((new.bpm, new.meter, new.running), (90.0, meter, false));
+    let f = r.frame + r.period as u64;
+    r.run(f, &quiet);
+    // With no free loop on it, the opened clock goes too (a project's
+    // loops load before the next period), and the old loop's Undo is
+    // refused: its clock is gone.
+    assert_eq!(r.l.free_clock(), None);
+    let refused = r.l.stats().refused;
+    r.cmd(L::Undo);
+    let f = r.frame + 2 * r.period as u64;
+    r.run(f, &quiet);
+    assert_eq!(r.status(0).phase, Phase::Empty);
+    assert_eq!(r.l.stats().refused, refused + 1);
 }
 
 /// A free clock copied from one of the song's spans gives the song's ticks
