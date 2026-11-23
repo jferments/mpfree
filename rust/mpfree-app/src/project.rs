@@ -816,6 +816,74 @@ pub fn opening(
     })
 }
 
+// ------------------------------------------------------------ learned controls
+
+/// The MIDI part `text` as the project opens, with each learned
+/// control kept with the project that names a kit's pad or a synth by its
+/// track (`t3.pad5.2`, `t3.inst.12`: a project saved before sampler step
+/// 16) moved up to name what that track plays (the opening's
+/// [`Opening::track_kits`], [`Opening::sends`] and list), by its number in
+/// the list
+/// (`kit9.pad5.2`, `i9.12`), so it stays on that sound when the track
+/// picks another. A pad's setting names the track's kit (none for a track
+/// on the synth); a synth's knob the track's own instrument, the one it
+/// plays by a send, else the shared synth, as Learn turned it before.
+/// Controls kept for every project, and every other line, stay as they
+/// are. Gives how many moved.
+pub fn learns_moved_up(
+    text: &str,
+    track_kits: &[(usize, Option<usize>)],
+    sends: &[(usize, usize)],
+    list: &InstrumentList,
+) -> (String, usize) {
+    use mpfree_midi::learn::Saved;
+    use mpfree_play::mpfree_param::{Owner, ParamAddr};
+    let number = |id: Option<InstrumentId>| id.and_then(|id| u16::try_from(id.number()).ok());
+    let up = |target: ParamAddr| -> Option<ParamAddr> {
+        let owner = match target.owner {
+            Owner::Pad(t, pad) => {
+                let t = usize::from(t);
+                let kit = match track_kits.iter().rev().find(|(tt, _)| *tt == t) {
+                    Some((_, kit)) => (*kit)?,
+                    None => 0,
+                };
+                Owner::KitPad(number(list.of_kit(kit))?, pad)
+            }
+            Owner::Inst(t) => {
+                let t = usize::from(t);
+                let sent = sends.iter().find(|(tt, _)| *tt == t).map(|&(_, h)| h);
+                let id = match (list.own_of(t), sent) {
+                    (Some(id), _) => Some(id),
+                    (None, Some(h)) => list.of_holder(h),
+                    (None, None) => Some(InstrumentId::SHARED_SYNTH),
+                };
+                Owner::Sound(number(id)?)
+            }
+            _ => return None,
+        };
+        Some(ParamAddr::new(owner, target.param))
+    };
+    let mut out = String::with_capacity(text.len());
+    let mut moved = 0;
+    for line in text.lines() {
+        let saved = line
+            .split_once('=')
+            .filter(|(k, _)| k.trim() == "learn")
+            .and_then(|(_, v)| Saved::parse(v.trim()));
+        match saved.and_then(|l| up(l.target).map(|t| (l, t))) {
+            Some((mut l, target)) => {
+                l.target = target;
+                out.push_str("learn = ");
+                out.push_str(&l.text());
+                moved += 1;
+            }
+            None => out.push_str(line),
+        }
+        out.push('\n');
+    }
+    (out, moved)
+}
+
 // ------------------------------------------------------------ what the tracks play
 
 /// Reads the track kits part ([`track_kits_text`]):
@@ -3219,6 +3287,64 @@ mod tests {
             "any | ch 1 | cc 74 | kit9.pad5.2 | 0.0000 1.0000 | absolute | jump"
         )
         .is_some());
+    }
+
+    /// Sampler step 16, part b: a project saved before it has its learned
+    /// pad settings and synth knobs by track. As it opens, each names what
+    /// its track plays then, by its number in the list: the track's kit
+    /// (kit 1 for a track the part doesn't name), the track's own
+    /// instrument, the one it plays by a send, else the shared synth. A
+    /// pad on a track that plays the synth, a strip's control and a
+    /// control kept for every project stay as they are.
+    #[test]
+    fn learned_controls_by_track_move_up_to_what_the_track_plays() {
+        use crate::instruments::free;
+        let mut list = InstrumentList::new();
+        list.follow_kits(3);
+        list.follow(1 << 2);
+        list.follow_free(1);
+        let n = |id: Option<InstrumentId>| id.unwrap().number();
+        let (kit_1, kit_3) = (n(list.of_kit(0)), n(list.of_kit(2)));
+        let (own_3, free_1) = (n(list.own_of(2)), n(list.free_of(0)));
+        // Track 2 plays kit 3, track 4 the synth; track 5 plays free place
+        // 1's synth by a send, track 6 track 3's own.
+        let track_kits = [(1, Some(2)), (3, None)];
+        let sends = [(4, free(0)), (5, 2)];
+        let line = |key: &str, target: &str| {
+            format!("{key} = any | ch 1 | cc 74 | {target} | 0.0000 1.0000 | absolute | jump")
+        };
+        let targets = [
+            ("t0.pad4.2", format!("kit{kit_1}.pad4.2")),
+            ("t1.pad4.2", format!("kit{kit_3}.pad4.2")),
+            ("t3.pad4.2", "t3.pad4.2".to_string()),
+            ("t2.inst.12", format!("i{own_3}.12")),
+            ("t4.inst.12", format!("i{free_1}.12")),
+            ("t5.inst.12", format!("i{own_3}.12")),
+            ("t0.inst.12", "i1.12".to_string()),
+            ("t0.mix.0", "t0.mix.0".to_string()),
+        ];
+        let mut text = String::from("mpfree-midi 1\nfollow.start-stop = off\n");
+        for (old, _) in &targets {
+            text.push_str(&line("learn", old));
+            text.push('\n');
+        }
+        let rig = line("learn-rig", "t0.pad4.2");
+        text.push_str(&rig);
+        text.push('\n');
+        let (moved, count) = learns_moved_up(&text, &track_kits, &sends, &list);
+        assert_eq!(count, 6, "{moved}");
+        let lines: Vec<&str> = moved.lines().collect();
+        assert_eq!(lines[..2], ["mpfree-midi 1", "follow.start-stop = off"]);
+        for (i, (old, new)) in targets.iter().enumerate() {
+            assert_eq!(lines[2 + i], line("learn", new), "{old}");
+        }
+        assert_eq!(lines[2 + targets.len()], rig, "kept for every project");
+        assert!(learns_by_instrument(&moved));
+        // Opening it again moves nothing more.
+        assert_eq!(
+            learns_moved_up(&moved, &track_kits, &sends, &list),
+            (moved.clone(), 0)
+        );
     }
 
     /// Phase 0's gate (docs/dev/design/project-safety.md): a project that

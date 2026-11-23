@@ -12481,7 +12481,19 @@ impl Player {
                 }),
             );
         }
-        self.open_midi(snap.part(crate::project::MIDI));
+        // Learned pad settings and synth knobs that name their track (a
+        // project from before sampler step 16) name what the track plays.
+        let midi = snap.part(crate::project::MIDI).map(|t| {
+            crate::project::learns_moved_up(t, &o.track_kits, &o.sends, &o.instrument_list)
+        });
+        if let Some((_, n @ 1..)) = midi {
+            let s = if n == 1 { "" } else { "s" };
+            self.say(format!(
+                "project: {n} learned control{s} now stay on their kit or synth, \
+                 whichever track plays it"
+            ));
+        }
+        self.open_midi(midi.as_ref().map(|(t, _)| t.as_str()));
         self.opens_out += 1;
         self.outbox.push(FromUi::OpenProject(Box::new(o)));
         // No kits saved: the factory kits, as New has them.
