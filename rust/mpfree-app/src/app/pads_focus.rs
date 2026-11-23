@@ -265,6 +265,10 @@ pub struct RecPlan {
     /// The armed track plays the pads' synth already (`take` is it): only
     /// the layers want a place.
     pub ready: bool,
+    /// The kit place the pads play (sampler step 15): the track REC
+    /// records on plays that kit; `synth` is then a stand-in name ("the
+    /// pads' kit") the screen replaces with the kit's.
+    pub kit: Option<usize>,
     /// Where REC records each of the pads' layers beyond the first (step
     /// 11c), in their order, then each synth a MIDI route names (step
     /// 11e, [`App::rec_more_synths`]); None where there is none.
@@ -297,14 +301,20 @@ impl RecPlan {
     /// as it is, with a synth a MIDI route names (step 11e). `name` gives
     /// a track's name ("Bass" for one you named).
     pub fn chip(self, name: impl Fn(usize) -> String) -> String {
+        self.chip_as(self.synth, name)
+    }
+
+    /// [`RecPlan::chip`] with `what` for the pads' synth: a kit's name
+    /// (sampler step 15), which the screen has.
+    pub fn chip_as(self, what: &str, name: impl Fn(usize) -> String) -> String {
         let more = self.more();
         let first = match self.take {
             // The armed track as it is (a kit), with a route's synth.
-            SynthTake::On(t) if self.synth.is_empty() => name(t),
-            SynthTake::On(t) => format!("{} · {}", name(t), self.synth),
-            SynthTake::New => format!("New track · {}", self.synth),
+            SynthTake::On(t) if what.is_empty() => name(t),
+            SynthTake::On(t) => format!("{} · {what}", name(t)),
+            SynthTake::New => format!("New track · {what}"),
             SynthTake::Pinned { track, .. } => return format!("{} · not free", name(track)),
-            SynthTake::Full => return format!("No free track · {}", self.synth),
+            SynthTake::Full => return format!("No free track · {what}"),
         };
         if more == 0 {
             first
@@ -492,6 +502,19 @@ impl App {
     pub fn pads_holder(&self) -> Option<usize> {
         match self.pads_focus() {
             PadFocus::Instrument(id) => self.instrument_list.kind(id)?.holder(),
+            PadFocus::Track => None,
+        }
+    }
+
+    /// The kit place chosen for the pads (sampler step 15): a kit of the
+    /// project's list. None while they follow the track or play a synth,
+    /// or once the list hasn't got it.
+    pub fn pads_kit(&self) -> Option<usize> {
+        match self.pads_focus() {
+            PadFocus::Instrument(id) => match self.instrument_list.kind(id)? {
+                crate::instrument_list::Kind::Kit { kit } => Some(kit),
+                _ => None,
+            },
             PadFocus::Track => None,
         }
     }
@@ -755,6 +778,43 @@ impl App {
     /// as the audio loop has them (`TrackKits::on_synth`).
     pub fn set_synth_tracks(&mut self, tracks: u128) {
         self.synth_tracks = tracks;
+    }
+
+    /// The tracks that play the kit chosen for the pads (sampler step 15),
+    /// a bit each, as the audio loop has them (`TrackKits::on_kit`); 0
+    /// while the pads have none.
+    pub fn set_pads_kit_tracks(&mut self, tracks: u128) {
+        self.pads_kit_tracks = tracks;
+    }
+
+    /// Whether track `track` plays the kit chosen for the pads, with no
+    /// instrument of its own or a send over it: REC records the pads there
+    /// as they are (sampler step 15).
+    pub fn plays_pads_kit(&self, track: usize) -> bool {
+        track < 128 && self.pads_kit_tracks >> track & 1 == 1 && !self.track_plays_instrument(track)
+    }
+
+    /// REC while the pads have a kit the armed track doesn't play
+    /// (sampler step 15): track `track` (0 based) plays that kit from now
+    /// on, as picking it in the list of kits does ([`Effect::KitOnTrack`]),
+    /// so the take plays the kit that was heard. The pads keep it (rule
+    /// 1). The caller arms `track`, which it added for this take when
+    /// `added`.
+    pub fn rec_kit_on(&mut self, track: usize, kit: usize, added: bool) -> Vec<Effect> {
+        let new = if added { "a new track, " } else { "" };
+        self.project_edit = true;
+        if track < 128 {
+            // Before the audio loop says so: the press that follows
+            // records there.
+            self.pads_kit_tracks |= 1 << track;
+        }
+        vec![
+            Effect::KitOnTrack { track, kit },
+            Effect::Note(format!(
+                "REC records the pads' kit on {new}Track {}: the track plays the same kit as the pads",
+                track + 1
+            )),
+        ]
     }
 
     /// Whether track `track` plays the synth the pads have: the shared

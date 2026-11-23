@@ -292,6 +292,19 @@ impl TrackKits {
             .fold(0, |bits, (t, _)| bits | 1 << t)
     }
 
+    /// The tracks that play kit `kit`, a bit each (none for the synth's
+    /// entry). Never allocates.
+    pub fn on_kit(&self, kit: usize) -> u128 {
+        if kit >= usize::from(self.synth) {
+            return 0;
+        }
+        self.entries
+            .iter()
+            .enumerate()
+            .filter(|&(_, &e)| usize::from(e) == kit)
+            .fold(0, |bits, (t, _)| bits | 1 << t)
+    }
+
     /// Whether track `track` plays the synth.
     pub fn plays_synth(&self, track: usize) -> bool {
         self.entry(track) == usize::from(self.synth)
@@ -946,6 +959,13 @@ impl Player {
             let cents = value.clamp(-1.0, 1.0) * KEY_BEND_CENTS;
             self.engine.schedule_for(kit, 0, Event::Bend { cents });
         }
+    }
+
+    /// The voices kit `kit`'s pad `pad` plays now, not counting those
+    /// fading out.
+    #[cfg(test)]
+    pub fn kit_pad_voices(&self, kit: usize, pad: usize) -> usize {
+        u8::try_from(pad).map_or(0, |p| self.engine.kit_pad_voices(kit, p))
     }
 
     /// [`Player::release_at`] on kit `kit`. Always lands, even with the

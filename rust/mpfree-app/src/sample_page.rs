@@ -3680,6 +3680,12 @@ impl SamplePage {
         self.command(&cmd)
     }
 
+    /// The kit place whose id is `id`, as the audio loop last said
+    /// (sampler step 15); None for an instrument that isn't a kit.
+    pub fn kit_of_id(&self, id: InstrumentId) -> Option<usize> {
+        self.kit_ids.kit(id, self.projects.len())
+    }
+
     /// Kit `kit`'s id in the project's list: refused when the place has
     /// none (no kit there).
     fn kit_id(&self, kit: usize) -> Result<InstrumentId, sampler_commands::Refused> {

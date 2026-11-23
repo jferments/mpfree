@@ -1238,6 +1238,12 @@ pub enum Effect {
     /// synth from now on (the Synth kit, as a pick in the list of kits), so
     /// the take plays the one instance that was heard (app/pads_focus.rs).
     SynthOnTrack(usize),
+    /// REC while a kit is chosen for the pads (sampler step 15): this
+    /// track plays that kit from now on, as a pick in the list of kits.
+    KitOnTrack {
+        track: usize,
+        kit: usize,
+    },
     /// The mixer opened on a view, or closed (`None`): the audio thread
     /// sends the panel its state only while it is open.
     Mixer(Option<mpfree_mixer_ui::MixView>),
@@ -1796,6 +1802,9 @@ pub struct App {
     /// The tracks that play the shared synth, a bit each
     /// ([`App::set_synth_tracks`]).
     synth_tracks: u128,
+    /// The tracks that play the kit chosen for the pads (sampler step 15,
+    /// [`App::set_pads_kit_tracks`]).
+    pads_kit_tracks: u128,
     /// The tracks with a kit or a MIDI output picked, a bit each
     /// ([`App::set_configured`]).
     configured: u128,
@@ -1979,6 +1988,7 @@ impl App {
             route_synths: [None; route_synths::ROUTE_SYNTHS],
             synth_pick: None,
             synth_tracks: 0,
+            pads_kit_tracks: 0,
             configured: 0,
             pad_pressed: [PadNotes::default(); 16],
             note_holds: [0; 128],
@@ -8504,6 +8514,7 @@ mod tests {
             synth: "Poly",
             holder: None,
             ready: false,
+            kit: None,
             layers: [None; REC_MORE],
         };
         assert_eq!(plan(SynthTake::On(2)).chip(name), "Track 3 · Poly");

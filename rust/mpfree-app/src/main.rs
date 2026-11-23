@@ -2839,6 +2839,10 @@ fn pads_instrument(
     if let Some(h) = mix.instruments.pads_play_at() {
         return Instrument::Own(h);
     }
+    // A kit chosen for the pads (sampler step 15).
+    if let Some(k) = app.pads_kit() {
+        return Instrument::Kit(k);
+    }
     let t = app.track();
     if midi_out {
         Instrument::MidiOut
@@ -5101,6 +5105,9 @@ enum PadsPreview {
     Synth,
     /// An instrument the host holds, by its pads player (step 6).
     Host,
+    /// A kit chosen for the pads (sampler step 15): its pads play, each
+    /// hit at the pad of the kit's page the pads are on.
+    Kit(u8),
 }
 
 /// A keyboard's keys while the pads play a synth on their own (the
@@ -5149,6 +5156,9 @@ impl KeysOnPads {
                         own.note_on(pads, note, vel, 0);
                     }
                     PadsPreview::Synth => synth.note_on_note(note, vel, 0),
+                    // A kit on the pads: the keys play the armed track as
+                    // before (sampler step 15 leaves them there).
+                    PadsPreview::Kit(_) => return false,
                 }
                 self.held[at(note)] = Some(p);
                 true
@@ -5162,7 +5172,7 @@ impl KeysOnPads {
                     synth.note_off_note(note, 0);
                     true
                 }
-                None => false,
+                Some(PadsPreview::Kit(_)) | None => false,
             },
             Key::Pressure { note, value } => match self.held[at(note)] {
                 Some(PadsPreview::Host) => {
@@ -5173,7 +5183,7 @@ impl KeysOnPads {
                     synth.pressure_note(note, value);
                     true
                 }
-                None => false,
+                Some(PadsPreview::Kit(_)) | None => false,
             },
             Key::Expr { note, kind, value } => match self.held[at(note)] {
                 Some(PadsPreview::Host) => {
@@ -5184,7 +5194,7 @@ impl KeysOnPads {
                     synth.expression_note(note, kind, value);
                     true
                 }
-                None => false,
+                Some(PadsPreview::Kit(_)) | None => false,
             },
             Key::Bend { value } => match preview {
                 Some(PadsPreview::Host) => {
@@ -5195,7 +5205,7 @@ impl KeysOnPads {
                     synth.bend(value);
                     true
                 }
-                None => false,
+                Some(PadsPreview::Kit(_)) | None => false,
             },
             Key::Control { ctl, value } => KeysOnPads::control(preview, ctl, value, synth, own),
         }
@@ -5219,7 +5229,7 @@ impl KeysOnPads {
                 synth.control(ctl, value, 0);
                 true
             }
-            None => false,
+            Some(PadsPreview::Kit(_)) | None => false,
         }
     }
 
@@ -7816,6 +7826,9 @@ fn player_session(
     let mut line_at = 0.0;
     let mut who_at = 0.0f64;
     let mut preview_held: [Option<PadsPreview>; 16] = [None; 16];
+    // The pad of the kit each pad held on a kit chosen for them hit
+    // (sampler step 15), so its let-go and pressure find it.
+    let mut preview_pad = [0u8; 16];
     // The list of instruments changed since the app last had it (step 6).
     let mut list_changed = true;
     // What each track plays: a kit, the Grains kit or the synth (kit 1 on
@@ -10414,6 +10427,25 @@ fn player_session(
                             mix.instruments
                                 .pad_on_shifted(instruments::THE_PADS, pad, v, 0, &none);
                         }
+                        // A kit chosen for the pads (sampler step 15): the
+                        // pad of its page they are on, as its kind has it.
+                        Some(PadsPreview::Kit(k)) => {
+                            let kit_pad = app.kit_pad(pad);
+                            preview_pad[pad] = kit_pad as u8;
+                            let hit = mpfree_play::Event::NoteOn {
+                                note: kit_pad as u8,
+                                velocity: v,
+                            };
+                            play_routed_pad(
+                                app.track() as u8,
+                                kit_pad,
+                                hit,
+                                &mut midi_out,
+                                (&mut mix.pad_synths, &mut synth),
+                                &mut player,
+                                usize::from(k),
+                            );
+                        }
                         _ => synth.note_on(pad, v, 0),
                     }
                     if !m.music {
@@ -10437,6 +10469,23 @@ fn player_session(
                         Some(PadsPreview::Host) => {
                             mix.instruments.pad_off(instruments::THE_PADS, pad, 0);
                         }
+                        // On the kit and pad it started, though the pads
+                        // moved on meanwhile (rule 8).
+                        Some(PadsPreview::Kit(k)) => {
+                            let kit_pad = usize::from(preview_pad[pad]);
+                            let off = mpfree_play::Event::NoteOff {
+                                note: kit_pad as u8,
+                            };
+                            play_routed_pad(
+                                app.track() as u8,
+                                kit_pad,
+                                off,
+                                &mut midi_out,
+                                (&mut mix.pad_synths, &mut synth),
+                                &mut player,
+                                usize::from(k),
+                            );
+                        }
                         _ => synth.note_off(pad, 0),
                     }
                     out.show(gui::ToUi::PadUp(pad));
@@ -10448,11 +10497,28 @@ fn player_session(
                     if (pad as usize) < 16 && preview_held[pad as usize].is_some() =>
                 {
                     let pad = pad as usize;
-                    if preview_held[pad] == Some(PadsPreview::Host) {
-                        mix.instruments
-                            .pad_pressure(instruments::THE_PADS, pad, pressure, 0);
-                    } else {
-                        synth.pressure(pad, pressure);
+                    match preview_held[pad] {
+                        Some(PadsPreview::Host) => {
+                            mix.instruments
+                                .pad_pressure(instruments::THE_PADS, pad, pressure, 0);
+                        }
+                        Some(PadsPreview::Kit(k)) => {
+                            let kit_pad = usize::from(preview_pad[pad]);
+                            let press = mpfree_play::Event::Pressure {
+                                note: kit_pad as u8,
+                                value: pressure,
+                            };
+                            play_routed_pad(
+                                app.track() as u8,
+                                kit_pad,
+                                press,
+                                &mut midi_out,
+                                (&mut mix.pad_synths, &mut synth),
+                                &mut player,
+                                usize::from(k),
+                            );
+                        }
+                        _ => synth.pressure(pad, pressure),
                     }
                 }
                 Some(ControlEvent::PadUp { pad })
@@ -10759,6 +10825,7 @@ fn player_session(
         // that play the synth, where REC records the pads as they are.
         app.set_configured(track_kits.picked() | midi_out.routed());
         app.set_synth_tracks(track_kits.on_synth());
+        app.set_pads_kit_tracks(app.pads_kit().map_or(0, |k| track_kits.on_kit(k)));
         let mut stop = false;
         let mut later = Vec::new();
         for e in fx.drain(..) {
@@ -11012,6 +11079,14 @@ fn player_session(
                     track_kits.set(t, track_kits.synth());
                     if t == app.track() {
                         kit_to = Some(track_kits.synth());
+                    }
+                }
+                // REC while a kit is chosen for the pads (sampler step 15):
+                // the track plays that kit from now on, as a pick.
+                app::Effect::KitOnTrack { track, kit } => {
+                    track_kits.set(track, kit);
+                    if track == app.track() {
+                        kit_to = Some(kit);
                     }
                 }
                 app::Effect::StopSounds => {
@@ -11323,10 +11398,19 @@ fn player_session(
             .instruments
             .pads_play_at()
             .is_some_and(|h| mix.instruments.owner(app.track()) != Some(h));
+        // A kit chosen for them (sampler step 15) the same way: on their
+        // own while the armed track doesn't play that kit itself.
+        let sel = app.track();
+        let kit_now = app.pads_kit().filter(|&k| {
+            let through = !mix.instruments.plays(sel) && !midi_out.takes(sel as u16);
+            !(through && track_kits.kit_of(sel) == Some(k))
+        });
         let preview_now = if app.pads_chose_synth() && !synth_on {
             Some(PadsPreview::Synth)
         } else if host_now {
             Some(PadsPreview::Host)
+        } else if let Some(k) = kit_now {
+            Some(PadsPreview::Kit(k.min(usize::from(u8::MAX)) as u8))
         } else {
             None
         };
@@ -11336,9 +11420,33 @@ fn player_session(
                     synth.note_off(pad, 0);
                 }
             }
+            // The pads held on a kit they leave let go there, as the
+            // synth's (their let-go is taken quietly, above).
+            for pad in 0..16 {
+                if let Some(PadsPreview::Kit(k)) = preview_held[pad] {
+                    if preview_now != preview_held[pad] {
+                        let kit_pad = usize::from(preview_pad[pad]);
+                        let off = mpfree_play::Event::NoteOff {
+                            note: kit_pad as u8,
+                        };
+                        play_routed_pad(
+                            sel as u8,
+                            kit_pad,
+                            off,
+                            &mut midi_out,
+                            (&mut mix.pad_synths, &mut synth),
+                            &mut player,
+                            usize::from(k),
+                        );
+                    }
+                }
+            }
             pads_preview = preview_now;
             let preview_on = pads_preview.is_some();
-            if preview_on {
+            if let Some(PadsPreview::Kit(k)) = pads_preview {
+                let k = usize::from(k);
+                rest = sound_colours(player.page_sounds(k, app.pad_page()), k);
+            } else if preview_on {
                 rest = synth.pad_colours();
             } else if !synth_on {
                 rest = sound_colours(
@@ -11361,13 +11469,17 @@ fn player_session(
             // are in a mode (they come back with these) or play the synth
             // chosen for them (they come back with these once they follow
             // the track, above).
-            if pads_preview.is_none() {
-                rest = sound_colours(
-                    player.page_sounds(player.kit(), app.pad_page()),
-                    player.kit(),
-                );
+            // A kit chosen for the pads turns its own pages (sampler step
+            // 15).
+            let kit_on_pads = match pads_preview {
+                Some(PadsPreview::Kit(k)) => Some(usize::from(k)),
+                None => Some(player.kit()),
+                _ => None,
+            };
+            if let Some(k) = kit_on_pads {
+                rest = sound_colours(player.page_sounds(k, app.pad_page()), k);
             }
-            if mute_shown.is_none() && pads_preview.is_none() {
+            if mute_shown.is_none() && kit_on_pads.is_some() {
                 ports.send_batch(
                     out,
                     false,

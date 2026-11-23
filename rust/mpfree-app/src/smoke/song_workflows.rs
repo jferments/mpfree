@@ -1665,4 +1665,57 @@ mod tests {
             assert_eq!(drums.length, 8 * songs::BAR, "the 8 bars exported");
         });
     }
+
+    /// Sampler step 15: a kit the project chose for the pads plays on its
+    /// own, before the arp and the recorder, while the selected track plays
+    /// another kit; Follow track gives the pads back.
+    #[test]
+    fn a_kit_chosen_for_the_pads_plays_on_its_own_and_follow_track_gives_them_back() {
+        on_big_stack(|| {
+            let mut session = Session::new();
+            let s = &mut session;
+            s.make_sounds();
+            // The app has the list of instruments once the loop has run.
+            s.run_periods(2);
+            // The pads part as a project saved with the pads on kit 2.
+            let kit_2 = s.instrument_list.of_kit(1).expect("kit 2 has an id");
+            let part = format!("mpfree-pads 1\nplay instrument {kit_2}\n");
+            let (notes, fx) = s.app.open_pads(Some(&part));
+            assert!(notes.is_empty(), "{notes:?}");
+            s.fx.extend(fx);
+            s.run_periods(4);
+            assert_eq!(s.app.pads_kit(), Some(1), "the pads play kit 2");
+            assert_eq!(
+                s.track_kits.kit_of(s.app.track()),
+                Some(0),
+                "the track kit 1"
+            );
+            // A pad of kit 2's with a sound, and the same pad on kit 1.
+            let player = s.sounds.as_ref().expect("the kits");
+            let pad = (0..16)
+                .find(|&p| player.has_sound(1, p) && player.has_sound(0, p))
+                .expect("a pad both kits fill");
+            s.previewed.clear();
+            s.pad_edge(pad, 100, true);
+            s.run_periods(2);
+            let player = s.sounds.as_ref().expect("the kits");
+            assert!(player.kit_pad_voices(1, pad) > 0, "kit 2's pad plays");
+            assert_eq!(player.kit_pad_voices(0, pad), 0, "kit 1's doesn't");
+            assert_eq!(s.previewed.len(), 1, "on its own, before the recorder");
+            s.pad_edge(pad, 0, false);
+            s.run_for(2.0);
+
+            // Follow track: the pads play the track's kit 1 again.
+            s.fx.extend(s.app.pads_follow_track());
+            s.run_periods(4);
+            assert_eq!(s.app.pads_kit(), None);
+            s.previewed.clear();
+            s.pad_edge(pad, 100, true);
+            s.run_periods(2);
+            let player = s.sounds.as_ref().expect("the kits");
+            assert!(player.kit_pad_voices(0, pad) > 0, "kit 1's pad plays");
+            assert!(s.previewed.is_empty(), "through the track");
+            s.pad_edge(pad, 0, false);
+        });
+    }
 }
