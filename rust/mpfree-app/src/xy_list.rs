@@ -10,7 +10,8 @@
 //! - **YOURS · IN THIS SONG · N**: your layouts (`xy_song.rs`), each
 //!   saying what its directions are called, how many settings each moves
 //!   and where they play, then **+ New layout** (dashed: an empty layout
-//!   of yours, opened in Setup).
+//!   of yours, opened in Setup) and **From the browser** (a layout saved
+//!   in another song, picked in the browser).
 //!
 //! The one playing is lit in the accent. Two faint lines under them; more
 //! than fit scroll with a drag.
@@ -26,7 +27,7 @@ pub const XY_PAGE: &str = "Play · xy";
 /// The list: a tap on ready-made choice `i` gives `Tab(i)`
 /// ([`crate::play_page::XY_CHOICES`] order), on layout `j` of yours
 /// `Cell { row: 1, col: j }`, on + New layout `Cell { row: 2, col: 0 }`,
-/// on Close `Select(0)`.
+/// on From the browser `Cell { row: 2, col: 1 }`, on Close `Select(0)`.
 #[derive(Default)]
 pub struct XyList {
     /// The ready-made choices' names and what across and up do in each.
@@ -53,12 +54,14 @@ const FOOT_H: i32 = 48;
 /// A drag this far scrolls instead of picking.
 const SLOP: i32 = 12;
 
-/// A tile: a ready-made choice, a layout of yours, or + New layout.
+/// A tile: a ready-made choice, a layout of yours, + New layout or From
+/// the browser.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Tile {
     Ready(usize),
     Yours(usize),
     New,
+    Browser,
 }
 
 impl XyList {
@@ -92,7 +95,7 @@ impl XyList {
         (0..self.choices.len())
             .map(Tile::Ready)
             .chain((0..self.yours.len()).map(Tile::Yours))
-            .chain([Tile::New])
+            .chain([Tile::New, Tile::Browser])
             .collect()
     }
 
@@ -114,6 +117,7 @@ impl XyList {
             Tile::Ready(i) => (self.group_y(false), i),
             Tile::Yours(j) => (self.group_y(true), j),
             Tile::New => (self.group_y(true), self.yours.len()),
+            Tile::Browser => (self.group_y(true), self.yours.len() + 1),
         };
         let (col, row) = ((k % COLS) as i32, (k / COLS) as i32);
         Rect::new(
@@ -131,7 +135,7 @@ impl XyList {
     }
 
     fn content_h(&self) -> i32 {
-        let rows = (self.yours.len() + 1).div_ceil(COLS) as i32;
+        let rows = (self.yours.len() + 2).div_ceil(COLS) as i32;
         self.group_y(true) + GROUP_H + rows * (TILE_H + GAP)
     }
 
@@ -145,6 +149,7 @@ impl XyList {
             Tile::Ready(i) => EventKind::Tab(i),
             Tile::Yours(j) => EventKind::Cell { row: 1, col: j },
             Tile::New => EventKind::Cell { row: 2, col: 0 },
+            Tile::Browser => EventKind::Cell { row: 2, col: 1 },
         }
     }
 }
@@ -222,6 +227,11 @@ impl Widget for XyList {
                     self.playing == Some(j),
                 ),
                 Tile::New => ("+ New layout", "empty: add settings in Setup", false),
+                Tile::Browser => (
+                    "From the browser",
+                    "a layout you saved in another song",
+                    false,
+                ),
             };
             let (ink, dim) = if picked {
                 cx.canvas.fill_round_rect(tr, t.round(10), t.picked());
@@ -272,6 +282,7 @@ impl Widget for XyList {
                 Tile::Yours(j) => Target::tap("yours", j, self.yours[j].0.clone(), tr)
                     .disabled_if(self.playing == Some(j)),
                 Tile::New => Target::tap("new", 0, "+ New layout", tr),
+                Tile::Browser => Target::tap("browser", 0, "From the browser", tr),
             });
         }
         out.push(Target::tap("close", 0, "Close", XyList::close(r)));
@@ -349,6 +360,12 @@ mod tests {
         let wash = l.tile(r, 4);
         let squelch = l.tile_rect(r, Tile::Yours(0));
         let new = l.tile_rect(r, Tile::New);
+        let browser = l.tile_rect(r, Tile::Browser);
+        assert_eq!(
+            (browser.y, browser.x),
+            (new.y + TILE_H + GAP, squelch.x),
+            "after + New layout (on the next row with two of yours)"
+        );
         let ev = |ui: &mut Ui, x, y| {
             let e = ui.touch(1, Touch::Down, x, y).map(|e| e.kind);
             ui.touch(1, Touch::Up, x, y);
@@ -365,6 +382,10 @@ mod tests {
         assert_eq!(
             ev(&mut ui, new.x + 10, new.y + 10),
             Some(EventKind::Cell { row: 2, col: 0 })
+        );
+        assert_eq!(
+            ev(&mut ui, browser.x + 10, browser.y + 10),
+            Some(EventKind::Cell { row: 2, col: 1 })
         );
         let close = XyList::close(r);
         assert_eq!(

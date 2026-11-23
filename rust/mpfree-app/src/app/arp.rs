@@ -21,8 +21,8 @@
 use super::{App, Effect, Item, PadNotes, View};
 use mpfree_arp::scale::{Scale, Snap, NOTE_NAMES, SCALES};
 use mpfree_arp::{
-    Chord, Held, Library, ModSource, Mode, Modifier, Order, Pattern, Rate, RecordMode, Recorder,
-    Settings, Step, Turns, Wrote,
+    Chord, HandOn, Held, Library, ModSource, Mode, Modifier, Order, Pattern, Rate, RecordMode,
+    Recorder, Settings, Step, Turns, Wrote,
 };
 use mpfree_arp_ui::view::{ArpAction, PatternButton};
 use mpfree_arp_ui::workspace::{Editor, WsAction};
@@ -1809,6 +1809,65 @@ impl App {
         self.arp_dirty = true;
         Vec::new()
     }
+
+    /// The XY pad's hand on track `track`'s arp setting `id`
+    /// (`mpfree_param::arp`, in [`App::arp_param`]'s units): it holds it
+    /// at `value`, or lets go (`None`), and the settings as set stay as
+    /// they are (`mpfree_arp::hand`). The panel and the band follow what
+    /// plays. False when it isn't one of a track's arp's settings.
+    pub fn arp_hand(&mut self, track: usize, id: u16, value: Option<f32>) -> bool {
+        let Some(on) = hand_on(id) else {
+            return false;
+        };
+        if self.track_ui.get(track).is_none() {
+            return false;
+        }
+        let value = value.map(|v| if on == HandOn::Modifier { v / 100.0 } else { v });
+        self.arps.engine_at_mut(track).hold(on, value);
+        true
+    }
+
+    /// What track `track`'s arp setting `id` goes back to when the XY pad
+    /// lets go, and its own value: the setting as set, or where the
+    /// Modifier's controller is (in [`App::arp_param`]'s units).
+    pub fn arp_beneath(&self, track: usize, id: u16) -> Option<(f32, f32)> {
+        if id == arp_ids::MODIFIER {
+            self.track_ui.get(track)?;
+            let v = self.arps.engine_at(track).controller() * 100.0;
+            return Some((v, v));
+        }
+        let (_, v) = self.arp_param(track, id)?;
+        Some((v, v))
+    }
+
+    /// The XY pad's Stay on track `track`'s arp setting `id`: `value`
+    /// becomes the setting as set, as a learned control sets it
+    /// ([`App::set_arp_param`]), at the step the pad held; the Modifier's
+    /// push stays there until its controller next moves. The value it
+    /// became, and what the screens hear; None when it isn't one.
+    pub fn keep_arp(&mut self, track: usize, id: u16, value: f32) -> Option<(f32, Vec<Effect>)> {
+        let info = arp_info(id)?;
+        self.track_ui.get(track)?;
+        if id == arp_ids::MODIFIER {
+            let v = info.clamp(value);
+            self.arps.engine_at_mut(track).keep_push(v / 100.0);
+            return Some((v, Vec::new()));
+        }
+        let v = info.clamp(value.round());
+        Some((v, self.set_arp_param(track, id, v)))
+    }
+}
+
+/// What the XY pad's hand holds for arp setting `id`.
+fn hand_on(id: u16) -> Option<HandOn> {
+    Some(match id {
+        arp_ids::RATE => HandOn::Rate,
+        arp_ids::GATE => HandOn::Gate,
+        arp_ids::SWING => HandOn::Swing,
+        arp_ids::OCTAVES => HandOn::Octaves,
+        arp_ids::MODIFIER => HandOn::Modifier,
+        _ => return None,
+    })
 }
 
 /// The names of [`Rate::ALL`], for MIDI Learn's description of the rate.
