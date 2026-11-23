@@ -326,7 +326,7 @@ The recording file protocol is tested against a model stick that cuts after ever
 `mpfree-disktest --desktop-test DIR --after-cut FILE`, after the stick is put back and mounted at the same place, with FILE the pull run's saved text:
 
 - runs recovery on the folder as MPFree's start does (`recover`), and the whole-take check on each take it finishes;
-- checks each take came back with at least its last promised frames, every frame exactly as recorded; audio past the record, kept apart as `.tail.unverified.wav`, is counted and compared but not judged;
+- checks each take came back with at least its last promised frames, every frame exactly as recorded; audio past the record, kept apart as `.tail.unverified.wav`, is counted and compared but not judged; so is a take cut off as it started, before anything was committed for it, which recovery keeps apart as `.unverified.wav` (nothing was promised for it; a promise for such a take fails);
 - sweeps part files, and checks every promised import is there and whole, and any other there whole too (the one in flight when the stick went);
 - on a pass deletes its folder, its own names only; on a fail keeps it for a look and says why. It refuses a folder holding anything that isn't one of its names, and touches nothing then.
 

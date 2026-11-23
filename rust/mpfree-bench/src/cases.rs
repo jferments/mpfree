@@ -5601,12 +5601,20 @@ pub fn lanes(rate: u32, worker: Option<usize>, third: Option<usize>) -> Vec<Case
                 lane_wait(),
             )
         }),
-        measured(|| native_split("Sampler 24 voices split natively, one core", rate, None)),
+        measured(|| {
+            native_split(
+                "Sampler 24 voices split natively, one core",
+                rate,
+                None,
+                lane_wait(),
+            )
+        }),
         measured(|| {
             native_split(
                 "Sampler 24 voices split natively, 2 cores, worker sleeps",
                 rate,
                 Some(config(false)),
+                lane_wait(),
             )
         }),
         measured(|| {
@@ -5614,6 +5622,7 @@ pub fn lanes(rate: u32, worker: Option<usize>, third: Option<usize>) -> Vec<Case
                 "Sampler 24 voices split natively, 2 cores, worker spins",
                 rate,
                 Some(config(true)),
+                lane_wait(),
             )
         }),
         measured(|| {
@@ -5901,8 +5910,9 @@ fn split_sampler(name: &str, rate: u32, lane: Option<LaneConfig>, wait: Duration
 /// The [`sampler`] case with the engine's own split (`Engine::split`):
 /// one engine of 24 voices, the second 12 rendered on a lane, every hit,
 /// choke and steal still seeing all 24. `lane` None: the lane runs on this
-/// thread, which is the same work on one core.
-fn native_split(name: &str, rate: u32, lane: Option<LaneConfig>) -> Case {
+/// thread, which is the same work on one core. Each block waits up to
+/// `wait` for the lane.
+fn native_split(name: &str, rate: u32, lane: Option<LaneConfig>, wait: Duration) -> Case {
     let allow = Allow {
         steals: true,
         grains: true,
@@ -5928,7 +5938,7 @@ fn native_split(name: &str, rate: u32, lane: Option<LaneConfig>) -> Case {
             for ev in hits.at(b).into_iter().flatten() {
                 e.apply(ev);
             }
-            e.render_until(l, r, Instant::now() + lane_wait());
+            e.render_until(l, r, Instant::now() + wait);
         }),
         mem_bytes: 0,
     }
@@ -6101,8 +6111,8 @@ mod tests {
             600,
         );
         same_blocks(
-            native_split("one", 44_100, None),
-            native_split("two", 44_100, lane()),
+            native_split("one", 44_100, None, wait),
+            native_split("two", 44_100, lane(), wait),
             600,
         );
         same_blocks(
