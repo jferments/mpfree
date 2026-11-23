@@ -1563,8 +1563,9 @@ fn note_hash(v: &NoteView) -> u64 {
     );
     cond.hash(&mut h);
     touch.hash(&mut h);
-    join.hash(&mut h);
-    h.word(u64::from(group));
+    // One word for both: a word a note is what compiling the big song
+    // costs (the Arrange bench).
+    h.word(join as u64 | u64::from(group) << 8);
     h.done()
 }
 

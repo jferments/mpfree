@@ -1315,10 +1315,15 @@ impl Clip {
         if self.program.is_some_and(|p| !p.ok()) {
             return Err(ModelError::BadProgram);
         }
+        // Whether any note is in a trigger group, learnt on the way: a
+        // clip with none (every clip of pad hits that keeps the rules)
+        // checks its groups for nothing more (`groups_ok` below).
+        let mut grouped = false;
         for (i, n) in self.notes.iter().enumerate() {
             if !self.note_ok(n) {
                 return Err(ModelError::BadNote(i));
             }
+            grouped |= n.group != 0;
         }
         if self.locks.len() > MAX_LOCKS {
             return Err(ModelError::TooManyLocks);
@@ -1344,7 +1349,7 @@ impl Clip {
         if let Some(o) = &self.original {
             o.check(&self.touch)?;
         }
-        if !self.groups_ok() {
+        if (grouped || self.original.is_some()) && !self.groups_ok() {
             return Err(ModelError::BadGroup);
         }
         let len = u32::try_from(self.length).map_err(|_| ModelError::ClipLength)?;
