@@ -601,6 +601,10 @@ mod tests {
             ids.contains(&("card", 1)),
             "the ended card opens with a tap"
         );
+        assert!(
+            ids.iter().any(|(id, _)| *id == "save-report"),
+            "Save a report, on every system"
+        );
         for t in targets {
             let (x, y) = (t.rect.x + t.rect.w / 2, t.rect.y + t.rect.h / 2);
             let e = p.touch(1, Touch::Up, x, y, AREA);
@@ -608,6 +612,7 @@ mod tests {
                 "switch" => EventKind::Tab(t.index),
                 "system" => EventKind::Select(t.index),
                 "card-button" => EventKind::Tab(BUTTON + t.index),
+                "save-report" => EventKind::Tab(SAVE_REPORT),
                 _ => EventKind::Tab(CARD + t.index),
             };
             assert_eq!(e, Some(want), "{}", t.id);
