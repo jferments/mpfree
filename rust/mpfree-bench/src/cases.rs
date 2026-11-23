@@ -18,7 +18,8 @@ use mpfree_fx::{
 use mpfree_grain::GrainNode;
 use mpfree_lanes::{Config as LaneConfig, Job, Lane};
 use mpfree_looper::{
-    Command as LooperCommand, Edit as LooperEdit, Looper, Phase as LooperPhase, MAX_LOOPS,
+    Clock as LooperClock, Command as LooperCommand, Edit as LooperEdit, Looper,
+    Phase as LooperPhase, MAX_LOOPS,
 };
 use mpfree_node::{Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, MAX_BLOCK};
 use mpfree_play::{Ahead, Launch, Out, PlayView, Player, Sink, TrackArps};
@@ -2202,6 +2203,7 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| looper(rate, 60)));
     v.push(measured(|| looper_loops(rate, 60, false)));
     v.push(measured(|| looper_loops(rate, 60, true)));
+    v.push(measured(|| looper_free(rate, 60)));
     v.push(measured(|| looper_by_ear(rate, 60)));
     v.push(measured(|| audio_tracks(rate, 0, false)));
     v.push(measured(|| audio_tracks(rate, 2, false)));
@@ -4742,6 +4744,75 @@ fn looper_loops(rate: u32, seconds: u32, edited: bool) -> Case {
     }
 }
 
+/// Free loops ([`LooperClock::Free`]) playing on with the song stopped:
+/// the first four loops, one bar of two layers each, recorded while the
+/// song played (so the free clock is a copy of the song's), then the song
+/// stopped. Every block works out the free clock's place for each frame
+/// as well as the song's. Timed: an overdub every other 2 s, on one free
+/// loop after another.
+fn free_loops_rig(rate: u32, seconds: u32) -> LoopRig {
+    let mut g = LoopRig {
+        t: Transport::new(rate, 120.0).expect("transport"),
+        lp: Looper::new(rate, seconds),
+        block: TBlock::new(),
+        rate,
+        frame: 0,
+        seed: Lcg(31),
+        line_in: vec![0.0; 2 * MAX_BLOCK],
+        out: vec![0.0; 2 * MAX_BLOCK],
+    };
+    g.t.command(0, T::Play);
+    for k in 0..FREE_LOOPS {
+        let phase = |g: &LoopRig| g.lp.loop_status(k).map(|s| s.phase);
+        g.lp.select_loop(k);
+        g.lp.command(LooperCommand::SetClock(LooperClock::Free));
+        g.lp.command(LooperCommand::SetBars(Some(1)));
+        g.lp.command(LooperCommand::Record);
+        while phase(&g) != Some(LooperPhase::Recording) {
+            g.run(0.05);
+        }
+        g.lp.command(LooperCommand::Overdub);
+        while phase(&g) != Some(LooperPhase::Overdubbing) {
+            g.run(0.05);
+        }
+        g.run(2.0);
+        g.lp.command(LooperCommand::Overdub);
+        g.run(0.25);
+    }
+    g.t.command(g.frame, T::Stop);
+    g.run(0.5);
+    g
+}
+
+/// How many loops [`free_loops_rig`] records.
+const FREE_LOOPS: usize = 4;
+
+fn looper_free(rate: u32, seconds: u32) -> Case {
+    let mut g = free_loops_rig(rate, seconds);
+    let every = 2 * u64::from(rate);
+    let mut next = g.frame + every;
+    let mut turn = 0usize;
+    Case {
+        name: format!("Looper ({seconds} s), {FREE_LOOPS} free loops of 2 layers playing on, the song stopped"),
+        module: "looper",
+        what: "free loops on the free clock, with an overdub on one after another",
+        block: Box::new(move |_, l, r| {
+            if g.frame >= next {
+                next += every;
+                if turn.is_multiple_of(2) {
+                    g.lp.select_loop(turn / 2 % FREE_LOOPS);
+                }
+                g.lp.command(LooperCommand::Overdub);
+                turn += 1;
+            }
+            let f = g.frame;
+            input(rate, f, &mut g.seed, l, r);
+            g.period(l, r);
+        }),
+        mem_bytes: 0,
+    }
+}
+
 /// Audio tracks on the song timeline: every track with 8 bars recorded at
 /// 120 BPM in three loop passes, comped so a region boundary (a crossfade
 /// between two takes) falls on every beat, playing in a loop over the 8
@@ -6092,6 +6163,37 @@ mod tests {
                 (LooperPhase::Playing, 3, frames),
                 "loop {k}"
             );
+        }
+        let st = g.lp.stats();
+        assert_eq!((st.refused, st.aborted, st.dropped_commands), (0, 0, 0));
+    }
+
+    #[test]
+    fn the_free_loops_case_plays_on_with_the_song_stopped() {
+        let mut c = measured(|| looper_free(44_100, 60));
+        let (mut l, mut r) = (vec![0.0f32; 128], vec![0.0f32; 128]);
+        let mut energy = 0.0f64;
+        for b in 0..1_500u64 {
+            (c.block)(b, &mut l, &mut r);
+            energy += l
+                .iter()
+                .chain(r.iter())
+                .map(|v| f64::from(v.abs()))
+                .sum::<f64>();
+        }
+        assert!(energy > 1_000.0, "{energy}");
+        let g = free_loops_rig(44_100, 60);
+        assert_eq!(g.t.state(), mpfree_transport::State::Stopped);
+        let clock = g.lp.free_clock().expect("the free clock");
+        assert!(clock.running && clock.bpm == 120.0, "{clock:?}");
+        for k in 0..MAX_LOOPS {
+            let s = g.lp.loop_status(k).unwrap();
+            let want = if k < FREE_LOOPS {
+                (LooperPhase::Playing, LooperClock::Free, 2, 88_200)
+            } else {
+                (LooperPhase::Empty, LooperClock::Song, 0, 0)
+            };
+            assert_eq!((s.phase, s.clock, s.layers, s.frames), want, "loop {k}");
         }
         let st = g.lp.stats();
         assert_eq!((st.refused, st.aborted, st.dropped_commands), (0, 0, 0));

@@ -2234,6 +2234,10 @@ impl LoopHost {
                         loops: (0..MAX_LOOPS)
                             .filter_map(|n| self.looper.loop_file(n).map(|f| (n, f)))
                             .collect(),
+                        free_clock: self
+                            .looper
+                            .free_clock()
+                            .map(|c| mpfree_looper::save::ClockFile::of(&c)),
                     };
                     self.printer.send(ToPrinter::Size(saved));
                     Some(Saving::Sizing { at: self.shapes() })
@@ -2496,6 +2500,12 @@ impl LoopHost {
                     "off"
                 }
             ),
+            (Command::SetClock(mpfree_looper::Clock::Song), _) => "sync: the song".to_string(),
+            (Command::SetClock(mpfree_looper::Clock::Free), _) => {
+                "sync: free (the loop keeps its own time)".to_string()
+            }
+            (Command::FreeStop, _) => "free loops: stop, at their tops".to_string(),
+            (Command::FreePlay, _) => "free loops: play from their tops".to_string(),
             (Command::SetSmartEnd(m), _) => format!("smart loop end: {}", smart_end_text(m)),
             (Command::SmartByEar(on), _) => format!(
                 "smart loop end listens to {}",

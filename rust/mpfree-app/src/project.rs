@@ -2466,6 +2466,7 @@ mod tests {
                     fade_old: 1.0,
                     speed: 0,
                     rate: 0,
+                    clock: mpfree_looper::Clock::Song,
                     layers,
                 },
             )
@@ -2485,6 +2486,7 @@ mod tests {
                 ),
                 one(3, vec![layer(vec![0.5; 4])]),
             ],
+            free_clock: None,
         };
         let (text, files) = loops_part(saved.clone());
         assert_eq!(files.len(), 2);

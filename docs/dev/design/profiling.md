@@ -380,7 +380,11 @@ with `--quick`) at 128 frames and 44.1 kHz:
   sequencer's to make faster. Like the other new cases, their counts go
   into `instructions.txt` from CI's first run after they merge.
 - **looper:** 60 s of looper memory, recording a 2-bar first pass from the
-  input, then overdubbing layer after layer with an undo every 30 s.
+  input, then overdubbing layer after layer with an undo every 30 s. Also
+  every loop playing (plain and half edited), a free first pass by ear,
+  and four free loops playing on with the song stopped ([free
+  loops](looper.md#free-loops); its count goes into `instructions.txt`
+  from CI's first run after it merges).
 - **mix:** the mixer (from the FX thread) idle, and routing 12 tracks and 8
   pads, and 16 tracks and 32 pads, with no inserts. The pad player's own
   summing, meters and output copy are measured on the device by its "CPU by

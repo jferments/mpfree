@@ -29872,6 +29872,7 @@ mod tests {
                     fade_old: 1.0,
                     speed: 0,
                     rate: 0,
+                    clock: mpfree_looper::Clock::Song,
                     layers: vec![mpfree_looper::save::LayerFile {
                         level: 0.5,
                         pan: -0.25,
@@ -29883,6 +29884,7 @@ mod tests {
                     }],
                 },
             )],
+            free_clock: None,
         };
         // Audio 2 with a region of a mono take, as the tracks' save gives it.
         let take: Vec<f32> = (0..4410).map(|k| (k % 89) as f32 / 300.0).collect();
