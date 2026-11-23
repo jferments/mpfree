@@ -408,9 +408,11 @@ impl IirPhase {
 /// [`IirUp2`], [`IirDown2`] and [`IirPhase`] of one design for one
 /// channel, with the number of sections `N` fixed when compiled, so each
 /// chain is unrolled (no loop or bounds over a list of sections). The
-/// same arithmetic in the same order, so the same output to the bit. For
-/// the hot paths (Drive's Eco, Character) where the sections' bookkeeping
-/// cost as much as their arithmetic. Its states are flushed of values too
+/// same arithmetic in the same order, so the same output to the bit. Every
+/// effect runs its IIR half-bands through this: in the list-based types
+/// the sections' bookkeeping cost as much as their arithmetic (step 2.3A
+/// of DSP quality measured 18 to 20 x86-64 instructions a section and
+/// sample there, 8 to 9 here). Its states are flushed of values too
 /// small to hear every few frames ([`IirPair::settle`], on a grid of
 /// frames the owner counts from the stream's start, so the output is the
 /// same in any block size) rather than once a section and sample, so a
@@ -449,9 +451,25 @@ impl<const N: usize> IirPair<N> {
     /// Flushes every state too small to hear to zero.
     pub(crate) fn settle(&mut self) {
         for st in [&mut self.up, &mut self.down, &mut self.phase] {
-            for v in st.iter_mut().flatten() {
-                *v = crate::flush(*v);
-            }
+            Self::flush_all(st);
+        }
+    }
+
+    /// Flushes the up-sampler's states only, for an owner that runs the
+    /// two sides on grids of their own (a reverb's Eco: the input comes
+    /// down a chunk before the wet signal goes back up).
+    pub(crate) fn settle_up(&mut self) {
+        Self::flush_all(&mut self.up);
+    }
+
+    /// Flushes the down-sampler's states only (see [`IirPair::settle_up`]).
+    pub(crate) fn settle_down(&mut self) {
+        Self::flush_all(&mut self.down);
+    }
+
+    fn flush_all(st: &mut [[f32; 2]; N]) {
+        for v in st.iter_mut().flatten() {
+            *v = crate::flush(*v);
         }
     }
 
@@ -508,21 +526,38 @@ impl<const N: usize> IirPair<N> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_unrolled_pair_is_the_same_to_the_bit_on_audible_signals() {
-        let mut pair = IirPair::<5>::new(0.06);
-        let (mut up, mut down) = (IirUp2::new(5, 0.06), IirDown2::new(5, 0.06));
-        let mut phase = IirPhase::new(5, 0.06);
+    /// `IirPair<N>` against the list-based resamplers of the same design.
+    fn same_to_the_bit<const N: usize>(tbw: f64) {
+        let mut pair = IirPair::<N>::new(tbw);
+        let (mut up, mut down) = (IirUp2::new(N, tbw), IirDown2::new(N, tbw));
+        let mut phase = IirPhase::new(N, tbw);
         let mut seed = 7u32;
-        for _ in 0..4000 {
+        for i in 0..4000 {
             seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
             let x = (seed >> 9) as f32 / (1u32 << 22) as f32 - 1.0;
             let a = up.run(x);
-            assert_eq!(pair.up(x), a);
+            assert_eq!(pair.up(x), a, "{N} sections, frame {i}");
             let y = [a[0] * a[0], a[1].abs()];
-            assert_eq!(pair.down(y), down.run(y));
-            assert_eq!(pair.phase(x), phase.run(x));
+            assert_eq!(pair.down(y), down.run(y), "{N} sections, frame {i}");
+            assert_eq!(pair.phase(x), phase.run(x), "{N} sections, frame {i}");
+            // Settling on any grid changes nothing audible.
+            if i % 32 == 0 {
+                pair.settle_up();
+            }
+            if i % 32 == 7 {
+                pair.settle_down();
+            }
         }
+    }
+
+    /// Every design an effect runs as a pair: Drive's Eco, Character and
+    /// the Multi filter (5, 0.06), Amp's and Fuzz's second stage (4,
+    /// 0.12), Cloud's Eco (6, 0.06).
+    #[test]
+    fn the_unrolled_pair_is_the_same_to_the_bit_on_audible_signals() {
+        same_to_the_bit::<5>(0.06);
+        same_to_the_bit::<4>(0.12);
+        same_to_the_bit::<6>(0.06);
     }
 
     #[test]

@@ -1271,12 +1271,16 @@ const HQ_TBW: f64 = 0.06;
 const HQ_CHUNK: usize = 64;
 /// Frames the half-bands ring for, to about -120 dB.
 const HQ_TAIL: u32 = 128;
+/// The half-bands drop what is too small to hear every this many frames
+/// through the HQ path; a chunk starts on each, so the output is the same
+/// in any block size.
+const HQ_SETTLE: u32 = 64;
 
 /// One first-order all-pass section, `y = a (x - y1) + x1`, its state
-/// `[x1, y1]`.
+/// `[x1, y1]`. Its owner flushes the state on a grid ([`Halves::settle`]).
 #[inline(always)]
 fn ap1(a: f32, s: &mut [f32; 2], x: f32) -> f32 {
-    let y = crate::flush(a * (x - s[1]) + s[0]);
+    let y = a * (x - s[1]) + s[0];
     *s = [x, y];
     y
 }
@@ -1291,6 +1295,12 @@ struct Halves {
 }
 
 impl Halves {
+    /// Flushes every state too small to hear to zero.
+    fn settle(&mut self) {
+        for v in self.up.iter_mut().chain(self.down.iter_mut()).flatten() {
+            *v = crate::flush(*v);
+        }
+    }
     /// One frame in, two out (in time order).
     #[inline(always)]
     fn up(&mut self, c: &[f32; HQ_SECTIONS], x: f32) -> [f32; 2] {
@@ -1335,6 +1345,9 @@ pub struct Eq {
     /// The half-bands' coefficients and each channel's sections.
     hb: [f32; HQ_SECTIONS],
     halves: [Halves; 2],
+    /// Frames through the HQ path since the half-bands were cleared,
+    /// modulo [`HQ_SETTLE`].
+    hq_frames: u32,
 }
 
 impl Default for Eq {
@@ -1367,6 +1380,7 @@ impl Eq {
                 std::array::from_fn(|k| c[k])
             },
             halves: [Halves::default(); 2],
+            hq_frames: 0,
         };
         eq.prepare(48_000, mpfree_node::MAX_BLOCK);
         eq.reset();
@@ -1397,6 +1411,7 @@ impl Eq {
                     self.hq.reset();
                     self.snap_cuts();
                     self.halves = [Halves::default(); 2];
+                    self.hq_frames = 0;
                 } else {
                     self.normal.reset();
                 }
@@ -1425,8 +1440,16 @@ impl Eq {
         }
         let mut at = 0;
         while at < l.len() {
-            let end = (at + HQ_CHUNK).min(l.len());
+            // Chunks end on the settling grid.
+            let room = (HQ_SETTLE - self.hq_frames) as usize;
+            let end = (at + HQ_CHUNK.min(room)).min(l.len());
+            if self.hq_frames == 0 {
+                for h in &mut self.halves {
+                    h.settle();
+                }
+            }
             self.run_hq(&mut l[at..end], &mut r[at..end]);
+            self.hq_frames = (self.hq_frames + (end - at) as u32) % HQ_SETTLE;
             at = end;
         }
     }
@@ -1611,6 +1634,7 @@ impl Node for Eq {
         self.hq_mix.snap(self.hq_mix.target);
         self.warm = 0;
         self.halves = [Halves::default(); 2];
+        self.hq_frames = 0;
     }
     fn process(&mut self, _ctx: &Ctx, events: &[Timed], left: &mut [f32], right: &mut [f32]) {
         let len = left.len().min(right.len());
