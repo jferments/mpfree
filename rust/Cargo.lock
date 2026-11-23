@@ -1476,6 +1476,9 @@ dependencies = [
 [[package]]
 name = "mpfree-tuning"
 version = "0.1.0"
+dependencies = [
+ "mpfree-scale",
+]
 
 [[package]]
 name = "mpfree-ui"
