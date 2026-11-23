@@ -43,7 +43,6 @@
 //!   trance gate, filter sweeps, crush, echo throws, a noise riser) that
 //!   start on the next grid line and snap back when let go, with a DJ
 //!   filter and an echo knob for the XY pad and the DJ knob.
-//! - [`XyPad`]: the XY pad's logic (two parameters, snap back or hold).
 //! - [`Chain`]: serial inserts with click-free bypass, tails that keep
 //!   ringing after bypass, latency-matched dry paths and a NaN guard.
 //! - [`bounce`]: the mixer's capture points streamed to 24-bit WAV files
@@ -119,7 +118,6 @@ mod tuner;
 mod vocal;
 mod vocoder;
 mod wah;
-mod xy;
 pub mod xyfx;
 
 pub use amp::{Amp, Exciter};
@@ -174,7 +172,6 @@ pub use vocal::{
 };
 pub use vocoder::{Vocoder, CARRIERS as VOCODER_CARRIERS};
 pub use wah::{AutoWah, TalkBox};
-pub use xy::{XyAxis, XyPad};
 pub use xyfx::XyFx;
 
 pub use mpfree_lanes;

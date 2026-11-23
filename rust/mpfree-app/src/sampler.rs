@@ -53,6 +53,10 @@ use mpfree_transport::Block;
 use crate::kit::{Kit, Sound, MAX_KITS, MAX_VOICES};
 use crate::looping::PERIOD;
 
+/// How far the pitch wheel bends a kit's keygroups at either end, in
+/// cents: a whole tone, the usual wheel range (sampler phase 3 step 15).
+pub const KEY_BEND_CENTS: f32 = 200.0;
+
 /// The sampler setting a clip's lock on a kit pad's sound names
 /// (`Owner::Pad`): its parameter is the [`PadField`]'s number (Level 0,
 /// Pan 1, Tune 2, Cutoff 3, Resonance 4, Attack 5, Decay 6, Release 7), and
@@ -927,6 +931,23 @@ impl Player {
         self.engine.schedule_for(kit, offset, ev)
     }
 
+    /// A keyboard's pitch wheel, -1 to 1, on the keygroups of the kit the
+    /// pads play: [`KEY_BEND_CENTS`] each way at the ends. Pad hits and 16
+    /// Levels keep their pitch.
+    pub fn bend(&mut self, value: f32) {
+        self.bend_kit(self.kit, value);
+    }
+
+    /// [`Player::bend`] on kit `kit`. As with a live value, a newer bend
+    /// takes the place of one still waiting when the engine's queue is
+    /// full; one refused is counted there (dropped events).
+    pub fn bend_kit(&mut self, kit: usize, value: f32) {
+        if value.is_finite() {
+            let cents = value.clamp(-1.0, 1.0) * KEY_BEND_CENTS;
+            self.engine.schedule_for(kit, 0, Event::Bend { cents });
+        }
+    }
+
     /// [`Player::release_at`] on kit `kit`. Always lands, even with the
     /// engine's queue full.
     pub fn release_kit_at(&mut self, kit: usize, pad: usize, offset: u32) {
@@ -1633,6 +1654,24 @@ mod tests {
         assert!(p.swap_view(&mut swap));
         assert!(p.has_sound(3, 16), "B1 of the new kit");
         assert!(p.hit_kit_at(3, 16, 127, 0));
+    }
+
+    #[test]
+    fn the_pitch_wheel_reaches_the_kit_it_names() {
+        let mut ks = kits();
+        let mut p = Player::new(&mut ks, &NOTES, 44_100).unwrap();
+        p.select(1);
+        // The pads' kit, a whole tone at the end of the wheel.
+        p.bend(1.0);
+        p.bend_kit(0, -0.5);
+        p.bend_kit(0, f32::NAN);
+        run(&mut p, 1);
+        assert_eq!(p.engine.kit_bend(1), KEY_BEND_CENTS);
+        assert_eq!(p.engine.kit_bend(0), -KEY_BEND_CENTS / 2.0);
+        // Back to rest.
+        p.bend(0.0);
+        run(&mut p, 1);
+        assert_eq!(p.engine.kit_bend(1), 0.0);
     }
 
     #[test]
