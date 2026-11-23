@@ -88,6 +88,7 @@ The track player's side is `LoopPlayer::plan` then `LoopPlayer::runs(track)` (`m
 - **The same loop with a new origin** (a launch from another row naming the same loop, a block meeting a block of the same loop with another offset) is still one playback: the looper crossfades from the old place to the new, as for a locate.
 - **A slot told nothing is silent and isn't run** (4a's quiet loops). An outgoing loop's last run goes on past its change by the track's crossfade, then its slot is told nothing.
 - **No launches, fades, mutes or solos of the looper's own** for a slot on an audio track: `Looper::launch` and the loop's `Command::Mute` and `Command::Solo` are refused for it. Layer mute and solo stay inside the loop.
+- **Song loops only** (built, with the free loop mode merged): a track places only a song loop, since its runs are the song's ticks. `Looper::play` refuses a free loop (Sync: Free) and a loop on a track refuses Sync: Free ([looper.md](looper.md#a-loop-on-an-audio-track)). Free loop cells are the free loop mode's to design.
 
 ### One crossfade, at the track
 

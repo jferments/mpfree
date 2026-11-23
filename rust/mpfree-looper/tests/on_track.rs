@@ -4,12 +4,13 @@
 //! gain from the first frame, into its own buffer, for any period size.
 //! A new origin going straight on crossfades the place; after silence it
 //! starts where it should be with no crossfade; its own launch, mute and
-//! solo are refused; off the track it launches itself again.
+//! solo are refused; off the track it launches itself again. A track
+//! places only a song loop.
 //!
 //! 22.05 kHz at 240 BPM in 4/4: a bar is exactly 22 050 frames (1 s) and
 //! 3 840 ticks. The loop is a one-bar ramp, so its sound says its place.
 
-use mpfree_looper::{Command as L, Looper, Phase, PlayRun, FADE};
+use mpfree_looper::{Clock, Command as L, Looper, Phase, PlayRun, FADE};
 use mpfree_transport::{Block, Command as T, Transport};
 
 const RATE: u32 = 22_050;
@@ -257,6 +258,34 @@ fn a_new_origin_straight_on_crossfades_the_place() {
             "period {period}: starts at the old place"
         );
     }
+}
+
+/// A track places only a song loop (its runs are the song's frames and
+/// ticks): a free loop is refused and stays off the track, and an empty
+/// loop on a track refuses Sync: Free, so what it records keeps the
+/// song's clock.
+#[test]
+fn a_track_places_only_a_song_loop() {
+    let mut r = Rig::new(128);
+    // Loop 2, empty, set free: the track can't take it.
+    assert!(r.l.select_loop(2));
+    assert!(r.l.command(L::SetClock(Clock::Free)));
+    let f = r.frame;
+    r.run(f + 256, None, &[]);
+    assert_eq!(r.l.loop_status(2).unwrap().clock, Clock::Free);
+    let refused = r.l.stats().refused;
+    assert!(!r.l.play(2, &[]), "a free loop isn't placed");
+    assert!(!r.l.on_track(2));
+    assert_eq!(r.l.stats().refused, refused + 1);
+    // Loop 1, empty, on a track: Sync: Free is refused there.
+    assert!(r.l.play(1, &[]));
+    assert!(r.l.on_track(1));
+    assert!(r.l.select_loop(1));
+    assert!(r.l.command(L::SetClock(Clock::Free)));
+    let f = r.frame;
+    r.run(f + 256, None, &[]);
+    assert_eq!(r.l.loop_status(1).unwrap().clock, Clock::Song);
+    assert_eq!(r.l.stats().refused, refused + 2);
 }
 
 #[test]

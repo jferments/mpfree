@@ -3110,8 +3110,13 @@ impl Looper {
     /// track to fade and mix. False (counted as refused, and the runs told
     /// before kept) if `n` is past the loops or the runs are more than
     /// [`MAX_PLAY_RUNS`], empty, out of order or overlapping.
+    ///
+    /// A track places only a song loop: its runs are the song's frames
+    /// and ticks. A free loop ([`Clock::Free`]) keeps its own clock, so it
+    /// is refused too (counted, and not put on the track), and a loop on a
+    /// track refuses Sync: Free ([`Command::SetClock`]).
     pub fn play(&mut self, n: usize, runs: &[PlayRun]) -> bool {
-        let Some(l) = self.loops.get_mut(n) else {
+        let Some(l) = self.loops.get_mut(n).filter(|l| l.clock == Clock::Song) else {
             self.stats.refused += 1;
             return false;
         };
@@ -5265,8 +5270,10 @@ impl Looper {
                 },
                 None => self.stats.no_layer += 1,
             },
-            // Its track mutes and solos it.
-            Queued::Loop(Command::Mute(_) | Command::Solo(_)) if self.on_track(s) => {
+            // Its track mutes and solos it, on the song's clock.
+            Queued::Loop(Command::Mute(_) | Command::Solo(_) | Command::SetClock(Clock::Free))
+                if self.on_track(s) =>
+            {
                 self.stats.refused += 1
             }
             Queued::Loop(Command::SetLatency(l)) => {
