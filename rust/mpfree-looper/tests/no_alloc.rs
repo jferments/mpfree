@@ -11,7 +11,8 @@
 //! tempo (on the bar and from a note, closed too soon, one thrown away by
 //! PLAY); and free loops (the free clock set from the song and in your
 //! own time, the song stopping under them, STOP and PLAY, their own Stop
-//! and Play, a free loop from a note, Clear and Undo of the last one).
+//! and Play, a free loop from a note, Clear and Undo of the last one, a
+//! free loop's snap and a capture on the free clock's bars).
 //!
 //! This test file is its own program, so its global allocator (the only
 //! unsafe code here, a pass-through to the system allocator) does not
@@ -826,6 +827,75 @@ fn free_loops_never_allocate() {
     assert_eq!(l.loop_status(3).unwrap().phase, Phase::Empty, "and cleared");
     assert_eq!(l.loop_status(2).unwrap().phase, Phase::Playing);
     assert!(l.free_clock().is_some_and(|c| c.running));
+    assert_eq!(l.stats().refused, 0, "{:?}", l.stats());
+}
+
+/// A free loop read as other bars (a snap that changes the free clock's
+/// tempo on its downbeat), then a capture into another free loop on the
+/// free clock's bars, asked about first as What you played asks, at odd
+/// period sizes: nothing allocates.
+#[test]
+fn free_snaps_and_captures_never_allocate() {
+    const RATE: u32 = 44_100;
+    let mut t = Transport::new(RATE, 120.0).unwrap();
+    let mut l = Looper::new(RATE, 40);
+    let mut b = Block::new();
+    let mut input = vec![0.0f32; 2 * 4096];
+    let mut out = vec![0.0f32; 2 * 4096];
+    let mut lines = [(0i64, 0u64); 16];
+    let sizes = [1usize, 7, 128, 333, 4096, 64, 256];
+    let (mut planned, mut landed, mut took, mut captured) = (false, false, false, false);
+    watch(true);
+    // The song stopped: a free pass in your own time sets the free clock.
+    let _ = l.command(L::SetClock(Clock::Free));
+    let _ = l.command(L::SetBars(None));
+    let _ = l.command(L::Record);
+    for i in 0..2400u64 {
+        match i {
+            300 => {
+                let _ = l.command(L::Record);
+            }
+            600 => {
+                let s = l.loop_status(0).unwrap();
+                let bar = l.free_clock().unwrap().meter.bar_ticks();
+                let bars = (s.ticks / bar) as u32;
+                if let Ok(p) = l.snap_plan(0, Snap::Bars(bars + 1), t.frame()) {
+                    planned = l.snap_at(p);
+                }
+            }
+            1500 => {
+                took = l.capture_take(Clock::Free, 1).is_some();
+                let _ = l.heard_lines(Clock::Free, &mut lines);
+                let _ = l.capture_waits(Clock::Free);
+                let _ = l.select_loop(1);
+                let _ = l.command(L::SetClock(Clock::Free));
+                let _ = l.command(L::Capture(1));
+            }
+            _ => {}
+        }
+        let n = sizes[(i % sizes.len() as u64) as usize];
+        for k in 0..n {
+            let x = 0.2 * (((i as usize + k) % 23) as f32 - 11.0) / 11.0;
+            input[2 * k] = x;
+            input[2 * k + 1] = -x;
+        }
+        out[..2 * n].fill(0.0);
+        assert!(t.process(n as u32, &mut b));
+        l.process(&b, &input[..2 * n], &mut out[..2 * n]);
+        if let Some(d) = l.take_snap() {
+            landed |= d.landed;
+        }
+        let s = l.loop_status(1).unwrap();
+        captured |= s.phase == Phase::Playing && s.clock == Clock::Free;
+        let _ = l.take_tempo();
+        let _ = l.stats();
+    }
+    watch(false);
+    assert_eq!(calls(), 0, "allocated");
+    assert!(
+        planned && landed && took && captured,
+        "{planned} {landed} {took} {captured}"
+    );
     assert_eq!(l.stats().refused, 0, "{:?}", l.stats());
 }
 

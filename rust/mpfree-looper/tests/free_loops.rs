@@ -16,7 +16,10 @@
 //! 22.05 kHz at 240 BPM in 4/4 makes a bar exactly 22 050 frames (1 s).
 
 use mpfree_looper::save::{from_text, to_text, ClockFile, Saved};
-use mpfree_looper::{Clock, Command as L, FreeClock, Looper, Phase, Starts, Status, FADE};
+use mpfree_looper::{
+    Clock, Command as L, FreeClock, Looper, NoteStart, Phase, Shift, SmartEnd, Snap, Starts,
+    Status, FADE,
+};
 use mpfree_transport::{Block, Command as T, Meter, State, Transport};
 
 const RATE: u32 = 22_050;
@@ -38,6 +41,8 @@ struct Rig {
     out: Vec<f32>,
     /// The first frame of the first period each loop was seen recording.
     recording_from: [Option<u64>; 8],
+    /// Notes played (pads), given to the looper period by period.
+    notes: Vec<NoteStart>,
 }
 
 impl Rig {
@@ -52,6 +57,7 @@ impl Rig {
             mix: vec![0.0; 2 * period],
             out: Vec::new(),
             recording_from: [None; 8],
+            notes: Vec::new(),
         }
     }
 
@@ -81,6 +87,14 @@ impl Rig {
                 self.input[2 * i + 1] = x[1];
             }
             self.mix[..2 * n].fill(0.0);
+            let end = self.frame + n as u64;
+            for x in self
+                .notes
+                .iter()
+                .filter(|x| x.frame >= self.frame && x.frame < end)
+            {
+                self.l.note(*x);
+            }
             assert!(self.t.process(n as u32, &mut self.b));
             self.l
                 .process(&self.b, &self.input[..2 * n], &mut self.mix[..2 * n]);
@@ -945,6 +959,169 @@ fn stopped_free_loops_keep_their_last_bars_for_capture_until_they_start_again() 
     r.run(play + BAR + BAR / 2, &noise);
     let t = r.l.capture_take(Clock::Free, 4).expect("one bar");
     assert_eq!((t.bars, t.start, t.origin), (1, play, BAR_TICKS));
+}
+
+/// Loop 0 free in your own time, smart loop end on `mode`: two bars at
+/// 120 BPM on the pads from Record (a note on every beat: 11 025 frames),
+/// and Record again 60 ms (1 323 frames) after the downbeat that ends
+/// them. The frame the pass started on, and the tap: the frame it closes
+/// on without smart loop end.
+fn free_late_tap(r: &mut Rig, mode: SmartEnd) -> (u64, u64) {
+    r.cmd(L::SetClock(Clock::Free));
+    r.cmd(L::SetBars(None));
+    r.cmd(L::SetSmartEnd(mode));
+    r.run(10_000, &noise);
+    r.cmd(L::Record);
+    let rec_from = r.frame;
+    r.notes = (0..=8)
+        .map(|k| NoteStart {
+            frame: rec_from + k * 11_025,
+            source: 0,
+            key: if k % 2 == 0 { 36 } else { 38 },
+            velocity: if k % 2 == 0 { 120 } else { 100 },
+        })
+        .collect();
+    r.run(rec_from + 88_200 + 1_323, &noise);
+    r.cmd(L::Record);
+    // The tap is the end of the period that takes the press.
+    let f = r.frame + r.period as u64;
+    r.run(f, &noise);
+    assert_eq!(r.status(0).phase, Phase::Playing);
+    (rec_from, f)
+}
+
+/// Suggest's offer on a free loop: Snap moves its end and the free
+/// clock's tempo together on its next downbeat, with nothing asked of the
+/// time engine; from there it plays the two bars as recorded, sample for
+/// sample, the free clock at exactly 120 BPM, its bar 1 on that downbeat.
+/// The song's tempo is untouched. Use my tap puts the tap back the same
+/// way.
+#[test]
+fn snap_on_a_free_loop_changes_the_free_clocks_tempo_not_the_songs() {
+    let mut r = Rig::new(256);
+    let (rec_from, tap) = free_late_tap(&mut r, SmartEnd::Suggest);
+    let tap_bpm = r.l.free_clock().expect("set by the pass").bpm;
+    r.run(tap + 2_205 + 256, &noise);
+    let by = Shift {
+        start: 0,
+        end: (rec_from + 88_200) as i64 - tap as i64,
+    };
+    assert_eq!(r.status(0).offer, Some(by), "Suggest offers on a free loop");
+    let p = r.l.snap_plan(0, Snap::Found, r.frame).unwrap();
+    let s = r.status(0);
+    assert_eq!(p.by, by);
+    assert!((p.bpm - 120.0).abs() < 1e-9, "{}", p.bpm);
+    assert_eq!((p.tick - s.origin).rem_euclid(s.ticks), 0, "a downbeat");
+    assert!(p.at > r.frame && p.at <= r.frame + 256 + s.frames as u64);
+    assert!(r.l.snap_at(p));
+    r.run(p.at, &noise);
+    assert_eq!(r.status(0).snapping, Some(p.at), "until it lands");
+    assert_eq!(r.l.free_clock().unwrap().bpm, tap_bpm);
+    r.run(p.at + 70_000, &noise);
+    assert_eq!(r.l.take_snap().map(|d| d.landed), Some(true));
+    let s = r.status(0);
+    assert_eq!(
+        (s.frames, s.ticks, s.origin),
+        (88_200, 2 * BAR_TICKS, p.tick)
+    );
+    assert_eq!((s.offer, s.moved, s.snapping), (None, Some(by), None));
+    let c = r.l.free_clock().unwrap();
+    assert_eq!(
+        (c.bpm, c.anchor_frame, c.anchor_tick, c.top, c.running),
+        (p.bpm, p.at, p.tick, p.tick, true)
+    );
+    for j in [FADE as u64 + 10, 5_000, 60_000] {
+        assert!(close(r.out_at(p.at + j), noise(rec_from + j)), "frame {j}");
+    }
+    assert_eq!((r.t.bpm(), r.t.state()), (240.0, State::Stopped));
+    // Use my tap: back to the tap, with its tempo.
+    let t = r.l.snap_plan(0, Snap::Tap, r.frame).unwrap();
+    assert_eq!((t.by, t.bpm), (-by, tap_bpm));
+    assert!(r.l.snap_at(t));
+    r.run(t.at + 1_000, &noise);
+    assert!(r.l.take_snap().unwrap().landed);
+    assert_eq!(r.status(0).frames as u64, tap - rec_from);
+    assert_eq!(r.l.free_clock().unwrap().bpm, tap_bpm);
+    assert_eq!(r.l.stats().refused, 0);
+}
+
+/// Read as on a free loop: the same frames read as other bars, the free
+/// clock's tempo changing with it on the downbeat, so it plays on sample
+/// for sample; STOP and PLAY then start it from that downbeat, its bar 1.
+#[test]
+fn read_as_on_a_free_loop_keeps_every_frame_and_sets_the_free_clocks_tempo() {
+    let mut r = Rig::new(256);
+    let (rec_from, tap) = free_late_tap(&mut r, SmartEnd::Off);
+    r.run(tap + 5_000, &noise);
+    let len = tap - rec_from;
+    let bpm = r.l.free_clock().unwrap().bpm;
+    let s = r.status(0);
+    assert_eq!((s.frames as u64, s.ticks), (len, 2 * BAR_TICKS));
+    let p = r.l.snap_plan(0, Snap::Bars(4), r.frame).unwrap();
+    assert_eq!((p.by, p.ticks), (Shift::NONE, 4 * BAR_TICKS));
+    assert!((p.bpm - 2.0 * bpm).abs() < 1e-9, "{} {bpm}", p.bpm);
+    assert!(r.l.snap_at(p));
+    r.run(p.at + 60_000, &noise);
+    assert_eq!(r.l.take_snap().map(|d| d.landed), Some(true));
+    let s = r.status(0);
+    assert_eq!(
+        (s.frames as u64, s.ticks, s.origin),
+        (len, 4 * BAR_TICKS, p.tick)
+    );
+    assert_eq!(r.l.free_clock().unwrap().bpm, p.bpm);
+    for j in [0, 1, FADE as u64, 5_000, 59_999] {
+        assert!(close(r.out_at(p.at + j), noise(rec_from + j)), "frame {j}");
+    }
+    // Stopped and started again: from its downbeat, the clock's bar 1.
+    r.cmd(L::FreeStop);
+    r.run(r.frame + BAR, &noise);
+    r.cmd(L::FreePlay);
+    let at = r.frame;
+    r.run(at + BAR, &noise);
+    for j in FADE as u64..BAR {
+        assert!(close(r.out_at(at + j), noise(rec_from + j)), "frame {j}");
+    }
+    assert_eq!(r.l.stats().refused, 0);
+}
+
+/// A free loop can't snap while another free loop has sound (its tempo
+/// would change under it) or while the free loops are stopped; one
+/// worked out before they stopped doesn't land, and the free clock keeps
+/// its tempo.
+#[test]
+fn a_free_loop_snaps_only_alone_and_while_the_free_loops_play() {
+    let mut r = Rig::new(256);
+    let (_, tap) = free_late_tap(&mut r, SmartEnd::Off);
+    r.run(tap + 5_000, &noise);
+    let bpm = r.l.free_clock().unwrap().bpm;
+    // Planned, then the free loops stop before its downbeat.
+    let p = r.l.snap_plan(0, Snap::Bars(4), r.frame).unwrap();
+    assert!(r.l.snap_at(p));
+    r.cmd(L::FreeStop);
+    r.run(p.at + 1_000, &noise);
+    assert_eq!(r.l.take_snap().map(|d| d.landed), Some(false));
+    assert_eq!(r.l.stats().refused, 1);
+    let c = r.l.free_clock().unwrap();
+    assert_eq!((c.bpm, c.running), (bpm, false));
+    assert_eq!(r.status(0).ticks, 2 * BAR_TICKS, "nothing moved");
+    assert_eq!(
+        r.l.snap_plan(0, Snap::Bars(4), r.frame),
+        Err("the free loops aren't playing")
+    );
+    // Playing again, with another free loop recorded over it.
+    r.cmd(L::FreePlay);
+    r.run(r.frame + 256, &noise);
+    assert!(r.l.snap_plan(0, Snap::Bars(4), r.frame).is_ok());
+    r.select(1);
+    r.cmd(L::SetClock(Clock::Free));
+    r.cmd(L::SetBars(Some(1)));
+    r.cmd(L::Record);
+    r.run(r.frame + 4 * r.status(0).frames as u64, &noise);
+    assert_eq!(r.status(1).phase, Phase::Playing);
+    assert_eq!(
+        r.l.snap_plan(0, Snap::Bars(4), r.frame),
+        Err("another free loop has sound")
+    );
 }
 
 /// A free clock copied from one of the song's spans gives the song's ticks

@@ -2778,6 +2778,37 @@ impl FreeTime {
         }
     }
 
+    /// A free loop's snap due by frame `f` (a run's first: runs are cut on
+    /// it) lands there, and the free clock takes its tempo there, anchored
+    /// on the loop's downbeat, which is its bar 1 from now on (the loop is
+    /// the only free loop with sound, [`Looper::snap_plan`]): so the loop
+    /// plays on in its place, as a song loop does when the song's tempo
+    /// changes with it. With the free clock not running there, it doesn't
+    /// land.
+    fn land_snaps(&mut self, loops: &mut [Loop], stats: &mut Stats, f: u64) {
+        for l in loops.iter_mut() {
+            if l.clock != Clock::Free || l.snap_frame > f {
+                continue;
+            }
+            if !self.rolls_at(f) {
+                l.drop_snap(stats);
+                continue;
+            }
+            l.land_snap(stats);
+            let Some(p) = l.snap_done.filter(|d| d.landed).map(|d| d.plan) else {
+                continue;
+            };
+            // (Anchored there, it places no bar line before it: Capture
+            // takes no bars at the old tempo.)
+            if let Some(c) = self.clock.as_mut() {
+                c.anchor_frame = f;
+                c.anchor_tick = p.tick;
+                c.bpm = p.bpm;
+                c.top = p.tick;
+            }
+        }
+    }
+
     /// What the song's marks do to the free loops, which hear only the
     /// free clock: STOP with the song stopped stops it
     /// ([`FreeTime::stop`]); PLAY starts it, stopped, from its top; the
@@ -3884,11 +3915,21 @@ impl Looper {
                     if let Some(c) = free_time.clock.filter(|c| c.running && c.anchor_frame > f) {
                         end = end.min((c.anchor_frame - span.frame) as usize);
                     }
+                    // A free loop's snap, which changes the free clock's tempo
+                    // on its frame ([`FreeTime::land_snaps`]).
+                    for l in loops.iter().filter(|l| l.clock == Clock::Free) {
+                        if l.snap_frame > f && l.snap_frame != u64::MAX {
+                            end = end.min((l.snap_frame - span.frame) as usize);
+                        }
+                    }
                 }
                 let frames = end - i;
                 let mut ticks = [0.0f64; RUN];
                 let song = (span.anchor_frame, span.anchor_tick, span.bpm, span.rate);
                 fill_ticks(&mut ticks[..frames], span.state.rolling(), song, f);
+                if any_free {
+                    free_time.land_snaps(loops, stats, f);
+                }
                 let free_rolling = any_free && free_time.rolls_at(f);
                 if any_free {
                     let ft = &mut free_ticks[..frames];
@@ -4022,15 +4063,29 @@ impl Looper {
     /// loop isn't playing as it was left, it plays at another speed, it is
     /// already read as those bars, or the new length is outside what was
     /// kept or the tempo range. Changes nothing.
+    ///
+    /// A free loop's ([`Clock::Free`]) is worked out against the free
+    /// clock, whose tempo it changes instead of the song's: the host hands
+    /// it straight to [`Looper::snap_at`], with nothing to ask of the time
+    /// engine. Or why not: the free loops aren't playing, or another free
+    /// loop has sound (its tempo would change under it).
     pub fn snap_plan(&self, n: usize, s: Snap, after: u64) -> Result<SnapPlan, &'static str> {
         let l = self.loops.get(n).ok_or("there is no such loop")?;
-        if l.clock == Clock::Free {
-            return Err("a free loop can't snap yet");
-        }
-        let span = self
-            .last_span
-            .filter(|s| matches!(s.state, State::Playing | State::Recording))
-            .ok_or("the song isn't playing")?;
+        let span = if l.clock == Clock::Free {
+            if (0..self.loops.len()).any(|k| k != n && self.loops[k].holds_free()) {
+                return Err("another free loop has sound");
+            }
+            let at = self.heard.at();
+            self.free_time
+                .clock
+                .filter(|c| c.rolls_at(at))
+                .map(|c| c.span(0, 0, at))
+                .ok_or("the free loops aren't playing")?
+        } else {
+            self.last_span
+                .filter(|s| matches!(s.state, State::Playing | State::Recording))
+                .ok_or("the song isn't playing")?
+        };
         if l.phase != Phase::Playing || l.od_open || l.busy() {
             return Err("the loop is busy");
         }
@@ -4080,7 +4135,10 @@ impl Looper {
     /// waits for nothing else (commands that change it wait until it has
     /// landed). Call it before [`Looper::process`] runs the period its
     /// frame falls in. False if the loop has changed since (counted, and
-    /// said by [`Looper::take_snap`]). Allocation-free.
+    /// said by [`Looper::take_snap`]). Allocation-free. A free loop's
+    /// needs no time engine: the free clock takes its tempo on that frame
+    /// as the snap lands, its bar 1 on the loop's downbeat (if the free
+    /// loops have stopped by then, it doesn't land).
     pub fn snap_at(&mut self, p: SnapPlan) -> bool {
         let Some(l) = self.loops.get_mut(p.n) else {
             return false;
@@ -4459,9 +4517,9 @@ impl Looper {
             l.origin = origin;
             l.bar = bar;
             l.end_tick = Some(t);
-            // (Suggest's offer would move the song's tempo: not for a free
-            // loop yet.)
-            if self.smart == SmartEnd::Suggest && !free_loop {
+            // (Suggest's offer moves the song's tempo, or a free loop's the
+            // free clock's.)
+            if self.smart == SmartEnd::Suggest {
                 l.smart_wait = Some(SmartWait {
                     tap,
                     reach,
@@ -7379,6 +7437,21 @@ impl Loop {
             stats.refused += 1;
         }
         self.snap_done = Some(SnapDone { plan: p, landed });
+    }
+
+    /// The snap waiting can't land (a free loop's, the free loops stopped
+    /// before its frame): said ([`SnapDone`]) and counted.
+    #[cold]
+    #[inline(never)]
+    fn drop_snap(&mut self, stats: &mut Stats) {
+        self.snap_frame = u64::MAX;
+        if let Some(plan) = self.snap.take() {
+            stats.refused += 1;
+            self.snap_done = Some(SnapDone {
+                plan,
+                landed: false,
+            });
+        }
     }
 
     fn abort(&mut self, stats: &mut Stats) {

@@ -1427,6 +1427,11 @@ pub struct LoopHost {
     /// Snap anyway ([`LoopHost::snap_anyway`]).
     snap_want: Option<(usize, Snap, bool)>,
     snap_wait: Option<(SnapPlan, u32)>,
+    /// A free loop's snap, worked out: it changes the free clock's tempo,
+    /// not the song's, so it asks nothing of the time engine, and goes to
+    /// the looper in the period its frame falls in, as the time engine
+    /// commits a song loop's (until then the loop is as it was).
+    free_snap: Option<SnapPlan>,
     /// A snap that would change the tempo under recorded audio (the audio
     /// tracks' recordings), waiting for Snap anyway or Not now: the hint
     /// line asks ([`LoopHost::snap_asking`]).
@@ -1997,6 +2002,7 @@ impl LoopHost {
             snap_want: None,
             snap_ask: None,
             snap_wait: None,
+            free_snap: None,
             side_want: None,
             ab: None,
             kept: None,
@@ -4525,15 +4531,38 @@ impl LoopHost {
     /// [`LoopHost::run`]: a snap asked for is worked out
     /// ([`Looper::snap_plan`]) and its tempo asked of the time engine on
     /// the loop's next downbeat ([`TimeHost::timing_change`]): refused
-    /// while another loop has sound (its tempo would change under it), or
-    /// whatever the time engine refuses. While `audio` (recorded audio,
-    /// the audio tracks' regions, would play out of step) it asks first
-    /// ([`LoopHost::snap_asking`]) and goes ahead on Snap anyway. Once the
-    /// time engine commits it, the loop is told to change on the same
-    /// frame ([`Looper::snap_at`]); if the loop changes first, the tempo is
-    /// taken back. A refusal: the line for the log and the screen,
-    /// counted.
+    /// while another song loop has sound (its tempo would change under it;
+    /// a free loop keeps the free clock's), or whatever the time engine
+    /// refuses. While `audio` (recorded audio, the audio tracks' regions,
+    /// would play out of step) it asks first ([`LoopHost::snap_asking`])
+    /// and goes ahead on Snap anyway. Once the time engine commits it, the
+    /// loop is told to change on the same frame ([`Looper::snap_at`]); if
+    /// the loop changes first, the tempo is taken back. A free loop's
+    /// changes the free clock's tempo instead: no other loop but a free
+    /// one is in its way, nothing is asked of the time engine, and the
+    /// looper gets the plan in the period its frame falls in. A refusal:
+    /// the line for the log and the screen, counted.
     pub fn tend_snap(&mut self, time: &mut TimeHost, audio: bool) -> Option<(String, bool)> {
+        if let Some(p) = self.free_snap {
+            if self
+                .looper
+                .loop_status(p.n)
+                .is_none_or(|s| s.version != p.version)
+            {
+                self.free_snap = None;
+                return Some(self.snap_refused(
+                    p.n,
+                    p.snap,
+                    "the loop changed before its downbeat",
+                ));
+            }
+            if p.at < time.next_frame() + PERIOD as u64 {
+                // Said once it has landed (take_snap).
+                self.free_snap = None;
+                self.looper.snap_at(p);
+            }
+            return None;
+        }
         if let Some((p, ticket)) = self.snap_wait {
             if self
                 .looper
@@ -4582,12 +4611,31 @@ impl LoopHost {
             }
         }
         let (n, s, anyway) = self.snap_want.take()?;
+        // A free loop's snap changes the free clock's tempo, not the
+        // song's: song loops and the audio tracks aren't in its way, the
+        // looper says if another free loop is, and there is nothing to ask
+        // the time engine.
+        if self
+            .looper
+            .loop_status(n)
+            .is_some_and(|st| st.clock == Clock::Free)
+        {
+            return match self.looper.snap_plan(n, s, time.next_frame()) {
+                Ok(p) => {
+                    self.free_snap = Some(p);
+                    None
+                }
+                Err(why) => Some(self.snap_refused(n, s, why)),
+            };
+        }
+        // Another song loop with sound would change tempo under it; a
+        // free loop keeps the free clock's.
         let others = (0..MAX_LOOPS)
             .filter(|&k| k != n)
             .filter_map(|k| self.looper.loop_status(k))
-            .any(|st| st.phase != Phase::Empty);
+            .any(|st| st.phase != Phase::Empty && st.clock == Clock::Song);
         if others {
-            return Some(self.snap_refused(n, s, "another loop has sound"));
+            return Some(self.snap_refused(n, s, "another song loop has sound"));
         }
         let p = match self.looper.snap_plan(n, s, time.next_frame()) {
             Ok(p) => p,
@@ -4651,21 +4699,33 @@ impl LoopHost {
             return (None, None);
         };
         let n = p.n + 1;
+        // A free loop's snap changes the free clock's tempo, never the
+        // song's.
+        let free = self
+            .looper
+            .loop_status(p.n)
+            .is_some_and(|s| s.clock == Clock::Free);
+        let song_bpm = (!free).then_some(p.bpm);
         if !landed {
             self.snaps_refused += 1;
+            let why = if free {
+                "the loop changed, or the free loops stopped first"
+            } else {
+                "the loop changed (the tempo did)"
+            };
             return (
                 Some((
                     format!(
-                        "looper: Loop {n}: {} didn't land: the loop changed (the tempo did)",
+                        "looper: Loop {n}: {} didn't land: {why}",
                         snap_name(p.snap, self.reads_again(p.snap))
                     ),
                     true,
                 )),
-                Some(p.bpm),
+                song_bpm,
             );
         }
         let Some(s) = self.looper.loop_status(p.n) else {
-            return (None, Some(p.bpm));
+            return (None, song_bpm);
         };
         // A/B: the other side on the next downbeat. Its swaps go in the
         // log, not on the screen.
@@ -4676,7 +4736,11 @@ impl LoopHost {
                 None => self.ab = None,
             }
         }
-        let bars = ticks_text(s.ticks, self.bar_ticks);
+        let bar_ticks = match self.looper.free_clock().filter(|_| free) {
+            Some(c) => c.meter.bar_ticks(),
+            None => self.bar_ticks,
+        };
+        let bars = ticks_text(s.ticks, bar_ticks);
         let moves = shift_text(p.by, self.rate);
         // Landed: an Undo's step is the next Redo's now, and the other way.
         let h = self.looper.history();
@@ -4691,15 +4755,16 @@ impl LoopHost {
             Snap::Undo => format!("Undo: {moves}"),
             Snap::Redo => format!("Redo: {moves}"),
         };
+        let at = if free { ", free at" } else { " at" };
         (
             Some((
                 format!(
-                    "looper: Loop {n}: {what}: {bars} at {:.2} BPM, from its downbeat",
+                    "looper: Loop {n}: {what}: {bars}{at} {:.2} BPM, from its downbeat",
                     p.bpm
                 ),
                 !swapping,
             )),
-            Some(p.bpm),
+            song_bpm,
         )
     }
 
