@@ -21580,6 +21580,23 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("clips-perform sample: {e}"),
     }
+    // Perform's Capture scene (the Arrange refactor's 5.3) with a set
+    // open: Show left of it, and nothing playing, so it is faint.
+    match mpfree_time_ui::sample::playing() {
+        Ok(s) => {
+            let mut p = quiet_player(fonts());
+            let mut st = s.state();
+            st.perform = true;
+            st.launches.clear();
+            st.cues.clear();
+            st.transport.state = mpfree_transport::State::Stopped;
+            p.time_page.set_open = true;
+            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("clips-perform-capture", p));
+        }
+        Err(e) => eprintln!("clips-perform-capture sample: {e}"),
+    }
     // Scene banks (the Arrange refactor's 5.6): in Make, the grid
     // scrolled to rows 13 to 20, a second set in bank B's first rows
     // under a line, its letter by row 17 and lit on the bank chip.

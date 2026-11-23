@@ -129,6 +129,8 @@ What Perform changes today:
 
 {{shot: clips-perform | In Perform: five big rows, the chords waiting for bar 6 with their countdown bar, the glitch stopping there, NEXT on the transport bar, and Capture scene and Back to song on the grid's title line.}}
 
+{{shot: clips-perform-capture | In Perform with a set open and nothing playing: Show, then Capture scene, faint until a clip plays.}}
+
 Clips and scenes start on the line the Record panel's **Launch** sets, in Make and Perform alike (see [Recording a clip](clips.md#recording-a-clip)), and the transport bar shows it.
 
 More things help on a stage, in Make and Perform alike:
