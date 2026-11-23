@@ -27,6 +27,18 @@
 //!   taken out at its end when they don't fit exactly. It follows its
 //!   scene again.
 //!
+//! **Link** (4b.5) links a list that isn't linked (a project saved
+//! before), as one UNDO:
+//!
+//! - **Song from the list**: room for the list's steps at the song's
+//!   start, each step a section made from its row as the list's edits make
+//!   one (its marker named after the row, following it, its times its
+//!   passes), and the song's old bars after them, with a plain marker
+//!   "Song" where they start when they had bars before their first marker.
+//! - **List from the song**: the song's markers become the list as they
+//!   are, each section with the scene and passes it had (a song made by
+//!   List → song keeps its steps' times).
+//!
 //! An edit of the song inside a section that follows its scene makes it
 //! the song's own (`Arrangement::mark_changed`): the list's edits leave
 //! it as it is, its passes plain bars, until Back to the scene.
@@ -52,6 +64,7 @@ use mpfree_seq::arrange::{scene_length, scene_title, song_sections, FromScene, S
 use mpfree_seq::scenes::{MAX_LIST_STEPS, MAX_TIMES};
 use mpfree_seq::time_edit::Refused;
 use mpfree_seq::{TimeEdit, SLOTS};
+use mpfree_time_ui::view::LinkFrom;
 use mpfree_time_ui::view::TimeAction;
 use mpfree_transport::time::Tick;
 
@@ -501,5 +514,111 @@ impl TimeControl {
         self.section = None;
         self.tempo_pick = None;
         Ok((e.said, Some(SongChange::List)))
+    }
+}
+
+impl TimeControl {
+    /// The room Song from the list puts at the song's start (4b.5): each
+    /// step's scene length times its times. None from the song, or with
+    /// no steps.
+    pub(in crate::time) fn link_room(&self, from: LinkFrom, bar: Tick) -> Option<TimeEdit> {
+        let p = &self.project;
+        if from != LinkFrom::List || p.arrangement.list.linked {
+            return None;
+        }
+        let len: Tick = p
+            .arrangement
+            .list
+            .steps
+            .iter()
+            .map(|s| scene_length(p, s.row, bar.max(1)) * Tick::from(s.times))
+            .sum();
+        (len > 0).then_some(TimeEdit::Insert { at: 0, len })
+    }
+
+    /// Link (4b.5): see the module notes. A line for the log, and what
+    /// changed for the take UNDO takes back.
+    pub(in crate::time) fn link(
+        &mut self,
+        from: LinkFrom,
+        bar: Tick,
+    ) -> Result<(String, Option<SongChange>), String> {
+        let bar = bar.max(1);
+        let p = &self.project;
+        if p.arrangement.list.linked {
+            return Err("song list: it is linked to the song already".into());
+        }
+        let tracks = &p.tracks;
+        let mut song = p.arrangement.clone();
+        const MARKERS: &str = "song list: nothing changed: the song would have too many parts";
+        let said = match from {
+            LinkFrom::Song => match song.markers.len() {
+                0 => "song list: linked to the song (UNDO takes it back)".to_string(),
+                1 => "song list: linked to the song: its marked part is the list (UNDO takes it back)"
+                    .to_string(),
+                n => format!(
+                    "song list: linked to the song: its {n} marked parts are the list (UNDO takes it back)"
+                ),
+            },
+            LinkFrom::List => {
+                let steps = song.list.steps.clone();
+                match self.link_room(from, bar) {
+                    None => "song list: linked to the song (UNDO takes it back)".to_string(),
+                    Some(room) => {
+                        let TimeEdit::Insert { len: total, .. } = room else {
+                            unreachable!("room is put in");
+                        };
+                        // The old song's bars before its first marker get
+                        // one, so the last step doesn't run on into them.
+                        let lead = song.parts(bar).first().is_some_and(|s| s.marker.is_none());
+                        song = song.edited(tracks, room, self.project_bpm).map_err(|r| {
+                            format!(
+                                "song list: nothing changed: {}",
+                                refused_said(r, |t| bar_beat(t, self.info.meter))
+                            )
+                        })?;
+                        if lead {
+                            song.mark(total, "Song").map_err(|_| MARKERS)?;
+                        }
+                        let mut at = 0;
+                        for s in &steps {
+                            let pass = scene_length(p, s.row, bar);
+                            let len = pass * Tick::from(s.times);
+                            song.mark(at, &scene_title(p, s.row))
+                                .map_err(|_| MARKERS)?;
+                            let m = song
+                                .markers
+                                .iter_mut()
+                                .find(|m| m.at == at)
+                                .expect("just put there");
+                            m.scene = Some(FromScene::following(s.row, pass));
+                            m.passes = s.times;
+                            let blocks = offline::play_part(p, s.row, s.times, at, bar)
+                                .map_err(|why| format!("song list: nothing changed: {why}"))?;
+                            song.fill(tracks, at, at + len, &blocks).map_err(|_| {
+                                "song list: nothing changed: the song would hold too many blocks"
+                            })?;
+                            at += len;
+                        }
+                        let n = steps.len();
+                        format!(
+                            "song list: linked to the song: its {} the song's first {} bars, the old song after them (UNDO takes it back)",
+                            if n == 1 { "step is".to_string() } else { format!("{n} steps are") },
+                            total / bar
+                        )
+                    }
+                }
+            }
+        };
+        song.list.linked = true;
+        song.list.steps.clear();
+        song.check(tracks)
+            .map_err(|e| format!("song list: nothing changed ({e:?})"))?;
+        self.project.arrangement = song;
+        self.list_pick = None;
+        self.selected = None;
+        self.section = None;
+        self.tempo_pick = None;
+        Ok((said, Some(SongChange::List)))
     }
 }

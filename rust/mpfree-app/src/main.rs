@@ -7349,7 +7349,9 @@ fn time_action(
             | TimeAction::Perform(_)
     ) || matches!(a, TimeAction::SongTempo(e) if !matches!(e, TempoEdit::Pick(_)))
         // A linked song list's step edits are the song's (Arrange 4b.2).
-        || (time.project().arrangement.list.linked && time::edits_steps(&a));
+        || (time.project().arrangement.list.linked && time::edits_steps(&a))
+        // Link's Song from the list puts room at the song's start (4b.5).
+        || matches!(a, TimeAction::ListLink(_));
     // PLAY or PLAY START while the transport follows another device's
     // Start and Stop and it is stopped: its Start plays, and the screen
     // says so.

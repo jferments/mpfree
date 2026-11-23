@@ -175,6 +175,15 @@ A project saved before the list was linked keeps a list of its own, apart from t
 
 A scene's length is its follow action's bars if it has one, else its longest clip, rounded up to whole bars. Moving a row on the grid takes the list's steps with it.
 
+**Link** makes the list and the song one, as in a new project. It sits left of **Loop the list**, only on a list of its own. Tap it and choose:
+
+{{shot: arrange-list-link | Link's two choices over a list of its own: Song from the list, and List from the song, each saying what it would do.}}
+
+- **Song from the list**: the list's steps become the start of the song, each a part that plays its scene, and the song you had moves along after them. The song then plays what the list played.
+- **List from the song**: the song stays as it is, and its marked parts become the list, each played once.
+
+Each line says what it would do to this project before you choose, and either is one step for **UNDO**. Tap **Link** again, or anywhere off the choices, to close them without linking. Once the list is linked, Link goes.
+
 ## Recording a performance into the song
 
 **Rec song** records what you play on the clip grid into the song, so a jam becomes a song you can edit afterwards. The button sits above the clip grid and on the Song view, and it is red while it is on.

@@ -9272,6 +9272,116 @@ mod tests {
         }
     }
 
+    /// Arrange 4b.5: Link on a list that isn't linked. Song from the list
+    /// lays the list's steps at the song's start as the linked list's
+    /// edits make them, the old song after them (a "Song" marker where its
+    /// unmarked bars start), and the audio tracks get the same room; List
+    /// from the song leaves the song as it is and reads its parts. Each is
+    /// one UNDO, and a linked list can't be linked again.
+    #[test]
+    fn link_makes_the_song_from_the_list_or_the_list_from_the_song() {
+        use mpfree_seq::arrange::Placement;
+        use mpfree_seq::TimeEdit;
+        use mpfree_time_ui::view::LinkFrom;
+        const B: Tick = 3840;
+        // An old song: a bar of row 3's clip on track 1, no marker.
+        let mut p = section_grid();
+        p.arrangement
+            .place(Placement::of(&p.tracks, 0, 2, 0, B))
+            .unwrap();
+        let mut h = TimeHost::with_project(RATE, 120.0, p).unwrap();
+        let was = h.control.project.arrangement.clone();
+        let mut audio = Regions::default();
+        let said = h
+            .act_with_audio(TimeAction::ListLink(LinkFrom::List), &mut audio)
+            .unwrap();
+        assert_eq!(
+            said,
+            "song list: linked to the song: its 3 steps are the song's first 5 bars, the old song after them (UNDO takes it back)"
+        );
+        let given = |edits: &[TimeEdit]| -> Vec<mpfree_audiotracks::Retime> {
+            edits.iter().filter_map(control::retime_of).collect()
+        };
+        let had: Vec<_> = audio.0.iter().map(|x| x.1).collect();
+        assert_eq!(had, given(&[TimeEdit::Insert { at: 0, len: 5 * B }]));
+        // The steps' sections are the ones the list's edits make; the old
+        // bar after them, marked "Song".
+        let song = &h.control.project.arrangement;
+        let made = section_song();
+        let laid = &made.control.project.arrangement;
+        assert!(song.list.linked && song.list.steps.is_empty());
+        assert_eq!(&song.markers[..3], &laid.markers[..]);
+        assert_eq!(
+            (song.markers[3].at, song.markers[3].name.as_str()),
+            (5 * B, "Song")
+        );
+        let before: Vec<&Placement> = song.placements.iter().filter(|b| b.start < 5 * B).collect();
+        assert_eq!(before, laid.placements.iter().collect::<Vec<_>>());
+        let after: Vec<(usize, Tick)> = song
+            .placements
+            .iter()
+            .filter(|b| b.start >= 5 * B)
+            .map(|b| (b.track, b.start))
+            .collect();
+        assert_eq!(after, [(0, 5 * B)]);
+        let rows: Vec<(String, Option<usize>, u16)> = h
+            .state()
+            .list
+            .iter()
+            .map(|r| (r.name.clone(), r.scene, r.times))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("Scene 1".into(), Some(0), 1),
+                ("Scene 2".into(), Some(1), 2),
+                ("Scene 3".into(), Some(2), 1),
+                ("Song".into(), None, 1),
+            ]
+        );
+        assert_eq!(
+            h.act(TimeAction::ListLink(LinkFrom::Song)),
+            Err("song list: it is linked to the song already".into())
+        );
+        // One UNDO back to the list of its own; REDO links it again.
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.control.project.arrangement, was);
+        h.act(TimeAction::Redo).unwrap();
+        assert!(h.control.project.arrangement.list.linked);
+        h.act(TimeAction::Undo).unwrap();
+        // List from the song: the song as it is, its parts the list, each
+        // × 1 (List → song's markers are plain).
+        h.act(TimeAction::ListToSong).unwrap();
+        let laid = h.control.project.arrangement.clone();
+        let said = h.act(TimeAction::ListLink(LinkFrom::Song)).unwrap();
+        assert_eq!(
+            said,
+            "song list: linked to the song: its 3 marked parts are the list (UNDO takes it back)"
+        );
+        let song = &h.control.project.arrangement;
+        assert!(song.list.linked && song.list.steps.is_empty());
+        assert_eq!(
+            (&song.placements, &song.markers),
+            (&laid.placements, &laid.markers)
+        );
+        let rows: Vec<(String, u16, i64)> = h
+            .state()
+            .list
+            .iter()
+            .map(|r| (r.name.clone(), r.times, r.bars))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("Song".into(), 1, 1),
+                ("Scene 1".into(), 1, 2),
+                ("Scene 2".into(), 1, 2),
+                ("Scene 3".into(), 1, 1)
+            ]
+        );
+        assert_eq!(h.dropped(), 0);
+    }
+
     /// Arrange 4b.4: Play from here on a linked list stops the clips
     /// launched over the song and plays the song from the part's first
     /// bar, song mode on and its scene's mutes in at once; stopped, it

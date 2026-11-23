@@ -35,8 +35,8 @@ use crate::editor::{
     Tool, EDIT_BUTTON, PEN, SNAP_AUTO_T, STEP_FALLBACK,
 };
 use crate::list::{
-    ListRow, SongListView, LIST_ADD, LIST_CLIPS, LIST_LOOP, LIST_PLAY, LIST_REMOVE, LIST_SONG,
-    LIST_TO_SONG, SCENE_STEP,
+    ListRow, SongListView, LIST_ADD, LIST_CLIPS, LIST_LINK, LIST_LINK_CLOSE, LIST_LINK_FROM_LIST,
+    LIST_LINK_FROM_SONG, LIST_LOOP, LIST_PLAY, LIST_REMOVE, LIST_SONG, LIST_TO_SONG, SCENE_STEP,
 };
 use crate::report::{ReportCard, REPORT_DONE, REPORT_UNDO};
 use crate::song::{
@@ -126,6 +126,9 @@ pub const LIST_HINT: &str =
 /// The hint line under a song list linked to the song (phase 4b).
 pub const LINKED_LIST_HINT: &str =
     "Tap a part to pick it   ·   ‹ ›: its scene   ·   – / +: times   ·   drag its grip: move it   ·   + Add a scene: after the pick   ·   Play from here: the song from there";
+/// The hint line while Link's chooser is open (4b.5).
+pub const LINK_HINT: &str =
+    "Link: the list and the song become one   ·   Song from the list, or List from the song   ·   UNDO takes it back";
 /// The Clips view and the Song view with the Record panel on its Clip tab:
 /// the clip settings card in the record settings' place.
 pub const CLIPS_CARD_LAYOUT: &str =
@@ -785,9 +788,9 @@ pub struct TimeState {
     /// comparing them (Arrange refactor 2.4).
     pub placements: Arc<[PlacementInfo]>,
     pub markers: Vec<(Tick, String)>,
-    /// Each marker's passes and their length, on a linked song while its
-    /// part follows its scene with more than one (the Arrange refactor's
-    /// 4b.4: "×N" after its name and a line where each pass starts).
+    /// Each marker's passes and their length while its part follows its
+    /// scene with more than one (the Arrange refactor's 4b.4: on a linked
+    /// song, "×N" after its name and a line where each pass starts).
     pub passes: Vec<Option<(u16, Tick)>>,
     /// The placement selected on the Song view. The app sets it.
     pub selected: Option<usize>,
@@ -1086,9 +1089,8 @@ impl TimeState {
                 .markers
                 .iter()
                 .map(|m| {
-                    let linked = project.arrangement.list.linked;
                     m.scene
-                        .filter(|f| linked && !f.changed && m.passes > 1)
+                        .filter(|f| !f.changed && m.passes > 1)
                         .map(|f| (m.passes, f.pass))
                 })
                 .collect(),
@@ -1162,6 +1164,18 @@ impl TimeState {
 }
 
 // ---------------------------------------------------------------- actions
+
+/// What Link makes one of (the Arrange refactor's 4b.5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkFrom {
+    /// Song from the list: the list's steps become the song's first
+    /// parts, each made from its scene, and the song's old bars go after
+    /// them.
+    List,
+    /// List from the song: the song's marked parts become the list, as
+    /// they are.
+    Song,
+}
 
 /// What a touch on the time engine's screens asks for. The app applies it.
 /// Not `Copy`: the scene editor's settings carry a name.
@@ -1413,6 +1427,9 @@ pub enum TimeAction {
     /// The list goes round after its last step, or stops. Linked to the
     /// song (4b.4): in song mode the song loops, first part to last.
     ListLoop(bool),
+    /// Link a list that isn't linked to the song (4b.5), from the list or
+    /// from the song.
+    ListLink(LinkFrom),
     /// The list onto the end of the song, played offline through Rec song
     /// (the Arrange refactor's 4.1, the app's time engine).
     ListToSong,
@@ -2205,6 +2222,8 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             LIST_TO_SONG => (!st.list.is_empty()).then_some(TimeAction::ListToSong),
             LIST_PLAY => st.list_pick.map(TimeAction::ListPlay),
             LIST_REMOVE => st.list_pick.map(TimeAction::ListRemove),
+            LIST_LINK_FROM_LIST if !st.list_linked => Some(TimeAction::ListLink(LinkFrom::List)),
+            LIST_LINK_FROM_SONG if !st.list_linked => Some(TimeAction::ListLink(LinkFrom::Song)),
             _ => None,
         },
         // A linked list's Song row has no scene and plays once (phase 4b).
@@ -3887,6 +3906,43 @@ pub fn countdown(left: Tick, meter: Meter) -> String {
     }
 }
 
+/// What Link's two choices do, for its chooser (4b.5): "The list's 7
+/// steps become the song; its old bars go after them" and "The song's 5
+/// marked parts become the list, each × 1".
+fn link_choices(st: &TimeState) -> [String; 2] {
+    let steps = |n: usize| match n {
+        1 => "1 step becomes".to_string(),
+        n => format!("{n} steps become"),
+    };
+    let empty = st.placements.is_empty() && st.markers.is_empty();
+    let from_list = match st.list.len() {
+        0 => "The list has no steps: the song stays as it is".to_string(),
+        n if empty => format!("The list's {} the song", steps(n)),
+        n => format!(
+            "The list's {} the song; its old bars go after them",
+            steps(n)
+        ),
+    };
+    let from_song = match st.markers.len() {
+        0 if empty => "The song is empty: so is the list, to start".to_string(),
+        0 => "The song has no markers: it becomes the list's one part".to_string(),
+        n => {
+            let parts = if n == 1 {
+                "1 marked part becomes".to_string()
+            } else {
+                format!("{n} marked parts become")
+            };
+            let once = if st.passes.iter().all(Option::is_none) {
+                ", each × 1"
+            } else {
+                ""
+            };
+            format!("The song's {parts} the list{once}")
+        }
+    };
+    [from_list, from_song]
+}
+
 /// What a tap on a linked list's Song row says (the song's bars before its
 /// first marker, phase 4b).
 pub const SONG_ROW_WHY: &str =
@@ -4369,7 +4425,11 @@ fn song_lanes_with(st: &TimeState, first_bar: i64, blocks: Option<SongBlocks>) -
         sounds: st.tracks.iter().map(|tr| tr.sound.clone()).collect(),
         blocks,
         markers: st.markers.clone(),
-        passes: st.passes.clone(),
+        // On a linked song (4b.4).
+        passes: match st.list_linked {
+            true => st.passes.clone(),
+            false => Vec::new(),
+        },
         bar,
         first_bar,
         bars: 16,
@@ -4527,6 +4587,8 @@ pub struct TimePage {
     /// The "+ Track" chooser is open (layout spec 4c): on the grid under
     /// its "+ Track", on the Song view under the "+ Track" lane.
     pub adding: bool,
+    /// Link's chooser is open on a song list that isn't linked (4b.5).
+    pub linking: bool,
     /// A kind of track was picked in the chooser with this many tracks:
     /// once there are more, the new one is brought into view.
     reveal: Option<usize>,
@@ -4623,6 +4685,25 @@ impl TimePage {
                 [crate::song::ADD_NOTE, ADD_AUDIO, crate::song::ADD_LOOP].contains(k),
                 *k == crate::song::ADD_CLOSE,
             ),
+            // Link's chooser (4b.5): Link opens and closes it, a touch off
+            // it closes it, and a choice closes it and is the app's.
+            (SONG_LIST, EventKind::Toggle(k)) => {
+                return match *k {
+                    LIST_LINK => {
+                        self.linking = !self.linking && !st.list_linked;
+                        true
+                    }
+                    LIST_LINK_CLOSE => {
+                        self.linking = false;
+                        true
+                    }
+                    LIST_LINK_FROM_LIST | LIST_LINK_FROM_SONG => {
+                        self.linking = false;
+                        false
+                    }
+                    _ => false,
+                };
+            }
             _ => return false,
         };
         if button && !shift {
@@ -4985,6 +5066,14 @@ impl TimePage {
                 l.looped = st.list_looped;
                 l.can_add = can_add;
                 l.linked = st.list_linked;
+            }
+        }
+        // Link's chooser (4b.5), while the list shows and isn't linked.
+        self.linking &= st.list_view && !st.list_linked;
+        let choices = self.linking.then(|| link_choices(st));
+        if let Some(l) = ui.get_mut::<SongListView>(SONG_LIST) {
+            if l.link_choices != choices {
+                l.link_choices = choices;
             }
         }
         // The conversion report card, over the list too (a new report

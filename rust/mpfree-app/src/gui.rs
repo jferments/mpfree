@@ -7174,6 +7174,8 @@ impl Player {
                     .as_deref()
                     .map_or_else(String::new, time_view::report_hint),
                 View::Arrange if self.time_page.adding => mpfree_time_ui::song::ADD_HINT.to_string(),
+                // Link's chooser (the Arrange refactor's 4b.5).
+                View::Arrange if self.time_page.linking => time_view::LINK_HINT.to_string(),
                 View::Arrange if self.time.list_view && self.time.list_linked => {
                     time_view::LINKED_LIST_HINT.to_string()
                 }
@@ -10028,6 +10030,7 @@ impl Player {
                 // the Song view's hint too.
                 let swapped = st.song_view != self.time.song_view
                     || st.list_view != self.time.list_view
+                    || st.list_linked != self.time.list_linked
                     || lens(&st) != lens(&self.time)
                     || time_view::song_hint(&st) != time_view::song_hint(&self.time);
                 let switched = st.perform != self.time.perform;
@@ -14442,8 +14445,10 @@ impl Player {
             }
             // "+ Track" opens its chooser (Note track, Audio track, Loop
             // track; layout spec 4c), and a touch off it closes it: the
-            // page's own. SHIFT + "+ Track" still adds a Loop track.
-            (time_view::CLIPS, EventKind::Toggle(_)) | (time_view::SONG, EventKind::Tab(_))
+            // page's own. SHIFT + "+ Track" still adds a Loop track. The
+            // song list's Link opens its chooser the same way (4b.5).
+            (time_view::CLIPS | time_view::SONG_LIST, EventKind::Toggle(_))
+            | (time_view::SONG, EventKind::Tab(_))
                 if self.time_page.chooser(&ev, &self.time, self.status.shift) =>
             {
                 self.time_page.update(&mut self.ui, &self.time);
@@ -14541,6 +14546,11 @@ impl Player {
                     )
                 ) {
                     self.time_page.update(&mut self.ui, &self.time);
+                }
+                // Link's choice (4b.5): its chooser closed, and its hint with it.
+                if matches!(a, Some(TimeAction::ListLink(_))) {
+                    self.time_page.update(&mut self.ui, &self.time);
+                    self.refresh_hint();
                 }
                 a.map(|a| {
                     let a = match a {
@@ -19245,6 +19255,26 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("arrange-list-linked sample: {e}"),
     }
+    // A list of its own with Link's chooser open (Arrange 4b.5): Song
+    // from the list, or List from the song.
+    match sample_list_state() {
+        Ok(mut st) => {
+            // A song of five marked parts made before.
+            st.markers = ["Intro", "Verse", "Chorus", "Bridge", "Outro"]
+                .iter()
+                .enumerate()
+                .map(|(k, n)| (k as i64 * 8 * 4 * 960, n.to_string()))
+                .collect();
+            let mut p = quiet_player(fonts());
+            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Show(View::Arrange));
+            p.time_page.linking = true;
+            p.time_page.update(&mut p.ui, &p.time);
+            p.refresh_hint();
+            out.push(("arrange-list-link", p));
+        }
+        Err(e) => eprintln!("arrange-list-link sample: {e}"),
+    }
     // Loop tracks: Loops A to C after three note tracks, row 2 playing,
     // Loop 2 overdubbing (its third layer), the loops' memory a third used.
     match mpfree_time_ui::sample::loops_playing() {
@@ -21855,6 +21885,73 @@ mod tests {
         p.tick(0.25);
         assert_eq!(p.take_actions(), [FromUi::Time(TimeAction::ListRemove(0))]);
         p.touch(1, Touch::Up, x, y);
+        // Link (Arrange 4b.5): its chooser and hint; a touch off it only
+        // closes it; a choice is the engine's, and closes it.
+        p.tick(TELL_SECONDS + 0.5);
+        let tap = |p: &mut Player, b: mpfree_ui::Rect| {
+            let (x, y) = (b.x + b.w / 2, b.y + b.h / 2);
+            let down = p.touch(3, Touch::Down, x, y);
+            down.or(p.touch(3, Touch::Up, x, y))
+        };
+        assert_eq!(
+            {
+                let b = find(&p, "Link");
+                tap(&mut p, b)
+            },
+            None
+        );
+        p.ui.paint(&mut c);
+        assert_eq!(hint(&p), time_view::LINK_HINT);
+        let lines =
+            p.ui.get::<mpfree_time_ui::list::SongListView>(time_view::SONG_LIST)
+                .and_then(|l| l.link_choices.clone())
+                .unwrap();
+        assert_eq!(
+            lines[0],
+            "The list's 1 step becomes the song; its old bars go after them"
+        );
+        // Link again closes it; open, a touch under it closes it too.
+        let step = find(&p, "Song from the list");
+        assert_eq!(
+            {
+                let b = find(&p, "Link");
+                tap(&mut p, b)
+            },
+            None
+        );
+        assert!(!p.time_page.linking);
+        assert_eq!(
+            {
+                let b = find(&p, "Link");
+                tap(&mut p, b)
+            },
+            None
+        );
+        assert!(p.time_page.linking);
+        let off = mpfree_ui::Rect::new(step.x + 4, step.bottom() + 120, 4, 4);
+        assert_eq!(tap(&mut p, off), None);
+        assert!(!p.time_page.linking);
+        assert!(p.take_actions().is_empty());
+        assert_eq!(
+            {
+                let b = find(&p, "Link");
+                tap(&mut p, b)
+            },
+            None
+        );
+        assert_eq!(
+            {
+                let b = find(&p, "List from the song");
+                tap(&mut p, b)
+            },
+            Some(FromUi::Time(TimeAction::ListLink(
+                mpfree_time_ui::view::LinkFrom::Song
+            )))
+        );
+        assert!(!p.time_page.linking);
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        p.ui.paint(&mut c);
+        assert_eq!(hint(&p), time_view::LIST_HINT);
         // Linked to the song (Arrange 4b): its own hint, and a step's grip
         // dragged down past the next step moves it there.
         st.list_linked = true;

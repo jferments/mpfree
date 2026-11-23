@@ -21,6 +21,10 @@
 //! row, "Song", in faint words and with no grip: it stays first. A part
 //! edited in the song says "● changed in the song" where the pass shows
 //! while it plays, and Back to the scene takes List → song's place.
+//!
+//! A list that isn't linked (a project saved before) has **Link** on its
+//! title line (4b.5): a tap opens a chooser under it, Song from the list
+//! or List from the song, and a touch anywhere else closes it.
 
 use std::cell::Cell;
 
@@ -63,6 +67,12 @@ pub const LIST_ADD: usize = 3;
 pub const LIST_TO_SONG: usize = 4;
 pub const LIST_PLAY: usize = 5;
 pub const LIST_REMOVE: usize = 6;
+/// Link (4b.5): the button opens or closes its chooser; the chooser's
+/// choices, Song from the list and List from the song; a touch off it.
+pub const LIST_LINK: usize = 7;
+pub const LIST_LINK_FROM_LIST: usize = 8;
+pub const LIST_LINK_FROM_SONG: usize = 9;
+pub const LIST_LINK_CLOSE: usize = 10;
 /// `Step { index: SCENE_STEP + k, delta }` steps step `k`'s scene;
 /// `Step { index: k, delta }` its times.
 pub const SCENE_STEP: usize = 0x1000;
@@ -80,6 +90,12 @@ const BUTTON_H: i32 = 46;
 /// The title line's buttons, right to left: Song, Clips, the loop switch.
 const LENS_W: i32 = 72;
 const LOOP_W: i32 = 132;
+/// Link, left of the loop switch, and its chooser: a card a choice.
+const LINK_W: i32 = 84;
+const CHOOSER_W: i32 = 470;
+const CHOICE_H: i32 = 62;
+/// The chooser's choices' names, in the order of their `Toggle`s.
+pub const LINK_CHOICES: [&str; 2] = ["Song from the list", "List from the song"];
 /// A row's columns, from its left edge.
 const SCENE_X: i32 = 84;
 const SCENE_W: i32 = 210;
@@ -107,8 +123,11 @@ pub struct SongListView {
     /// Room for another step.
     pub can_add: bool,
     /// Linked to the song (phase 4b): Back to the scene takes List →
-    /// song's place.
+    /// song's place, and Link goes.
     pub linked: bool,
+    /// Link's chooser is open (4b.5), with what each choice does ("The
+    /// list's 7 steps become the song; its old bars go after them").
+    pub link_choices: Option<[String; 2]>,
     /// The last conversion's report card, open over the list (the
     /// Arrange refactor's 4.3): it takes the list's touches and targets.
     pub report: Option<ReportCard>,
@@ -271,6 +290,30 @@ impl SongListView {
         [looped, clips, song]
     }
 
+    /// Link, on a list that isn't linked (4b.5): left of the loop switch.
+    pub fn link_rect(&self, r: Rect) -> Option<Rect> {
+        let [looped, ..] = SongListView::head_rects(r);
+        (!self.linked).then(|| Rect::new(looped.x - 8 - LINK_W, looped.y, LINK_W, looped.h))
+    }
+
+    /// Link's chooser and its two choices, while it is open: under Link,
+    /// its right edge under Link's.
+    pub fn chooser_rects(&self, r: Rect) -> Option<(Rect, [Rect; 2])> {
+        self.link_choices.as_ref()?;
+        let link = self.link_rect(r)?;
+        let w = CHOOSER_W.min(link.right() - r.x - 14);
+        let pad = 8;
+        let card = Rect::new(
+            link.right() - w,
+            link.bottom() + 8,
+            w,
+            2 * CHOICE_H + 4 + 2 * pad,
+        );
+        let first = Rect::new(card.x + pad, card.y + pad, card.w - 2 * pad, CHOICE_H);
+        let second = Rect::new(first.x, first.bottom() + 4, first.w, CHOICE_H);
+        Some((card, [first, second]))
+    }
+
     /// The buttons under the list: List → song, Play from here, Remove.
     pub fn button_rects(r: Rect) -> [Rect; 3] {
         SongListView::geo(r).buttons
@@ -318,7 +361,12 @@ impl Widget for SongListView {
             ),
             (clips, "Clips", false),
             (song, "Song", false),
-        ] {
+        ]
+        .into_iter()
+        .chain(
+            self.link_rect(r)
+                .map(|b| (b, "Link", self.link_choices.is_some())),
+        ) {
             cx.canvas.fill_round_rect(b, t.round(10), t.raised);
             if lit {
                 cx.canvas.stroke_round_rect(b, t.round(10), 2, t.accent);
@@ -534,6 +582,29 @@ impl Widget for SongListView {
                 self.button_word(k),
             );
         }
+        // Link's chooser, over the rows under it.
+        if let (Some((card, choices)), Some(lines)) =
+            (self.chooser_rects(r), self.link_choices.as_ref())
+        {
+            cx.canvas.fill_round_rect(card, t.round(10), t.surface);
+            cx.canvas.stroke_round_rect(card, t.round(10), 1, t.outline);
+            for ((b, name), line) in choices.iter().zip(LINK_CHOICES).zip(lines) {
+                cx.canvas.fill_round_rect(*b, t.round(8), t.raised);
+                // The name a little above the middle of its half, as drawn.
+                let inner = b.inset_xy(14, 8);
+                let top = Rect::new(inner.x, inner.y, inner.w, 16);
+                let under = Rect::new(inner.x, inner.y + 24, inner.w, inner.h - 24);
+                cx.text(FontId::Bold, t.size_body, top, Align::Left, t.text, name);
+                cx.text(
+                    FontId::Sans,
+                    t.size_small - 1.0,
+                    under,
+                    Align::Left,
+                    t.text_dim,
+                    line,
+                );
+            }
+        }
         if let Some(card) = &self.report {
             card.paint(cx, r);
         }
@@ -543,12 +614,27 @@ impl Widget for SongListView {
         if let Some(card) = &self.report {
             return card.targets(r);
         }
+        let link = self.link_rect(r);
+        // Link's chooser open: its choices, and Link to close it.
+        if let Some((_, choices)) = self.chooser_rects(r) {
+            let mut out: Vec<Target> = link
+                .map(|b| Target::tap("link", 0, "Link", b))
+                .into_iter()
+                .collect();
+            for (k, (b, name)) in choices.iter().zip(LINK_CHOICES).enumerate() {
+                out.push(Target::tap("link-choice", k, name, *b));
+            }
+            return out;
+        }
         let [looped, clips, song] = SongListView::head_rects(r);
         let mut out = vec![
             Target::tap("loop", 0, "Loop the list", looped),
             Target::tap("lens", 0, "Clips", clips),
             Target::tap("lens", 1, "Song", song),
         ];
+        if let Some(b) = link {
+            out.push(Target::tap("link", 0, "Link", b));
+        }
         for (k, row) in self.rows.iter().enumerate() {
             let (Some(line), Some((scene, times))) = (self.line_rect(r, k), self.boxes(r, k))
             else {
@@ -610,6 +696,20 @@ impl Widget for SongListView {
         if let Some(card) = self.report.as_mut() {
             return card.touch(finger, phase, x, y, r);
         }
+        // Link's chooser open: a choice, Link again, or a touch anywhere
+        // else closes it (and does nothing else).
+        if let Some((_, choices)) = self.chooser_rects(r) {
+            if phase != Touch::Down {
+                return None;
+            }
+            if let Some(k) = choices.iter().position(|b| b.contains(x, y)) {
+                return Some(EventKind::Toggle(LIST_LINK_FROM_LIST + k));
+            }
+            if self.link_rect(r).is_some_and(|b| b.contains(x, y)) {
+                return Some(EventKind::Toggle(LIST_LINK));
+            }
+            return Some(EventKind::Toggle(LIST_LINK_CLOSE));
+        }
         match phase {
             Touch::Down => {}
             Touch::Move => {
@@ -654,6 +754,9 @@ impl Widget for SongListView {
             if b.contains(x, y) {
                 return Some(EventKind::Toggle(k));
             }
+        }
+        if self.link_rect(r).is_some_and(|b| b.contains(x, y)) {
+            return Some(EventKind::Toggle(LIST_LINK));
         }
         for (k, b) in SongListView::button_rects(r).iter().enumerate() {
             if b.contains(x, y) {
@@ -876,5 +979,57 @@ mod tests {
             l.touch(1, Touch::Down, x, y, r),
             Some(EventKind::Toggle(LIST_TO_SONG))
         );
+    }
+
+    /// Link (Arrange 4b.5): on a list of its own, left of the loop switch;
+    /// its chooser under it, its right edge under Link's: a choice, Link
+    /// again, or a touch anywhere else closes it, and while it is open the
+    /// rows under it take no touch. A linked list has no Link.
+    #[test]
+    fn link_opens_its_chooser_and_a_touch_off_it_closes_it() {
+        let r = Rect::new(12, 128, 854, 622);
+        let mut l = list(3);
+        let link = l.link_rect(r).unwrap();
+        let [looped, ..] = SongListView::head_rects(r);
+        assert_eq!(link.right() + 8, looped.x);
+        assert_eq!(link.w, LINK_W);
+        let mid = |b: Rect| (b.x + b.w / 2, b.y + b.h / 2);
+        let (x, y) = mid(link);
+        assert_eq!(
+            l.touch(1, Touch::Down, x, y, r),
+            Some(EventKind::Toggle(LIST_LINK))
+        );
+        assert!(l.targets(r).iter().any(|t| t.id == "link"));
+        assert_eq!(l.chooser_rects(r), None);
+        l.link_choices = Some(["a".into(), "b".into()]);
+        let (card, choices) = l.chooser_rects(r).unwrap();
+        assert_eq!((card.right(), card.w), (link.right(), CHOOSER_W));
+        assert!(card.y > link.bottom() && choices[0].bottom() < choices[1].y);
+        for (k, b) in choices.iter().enumerate() {
+            let (x, y) = mid(*b);
+            assert_eq!(
+                l.touch(1, Touch::Down, x, y, r),
+                Some(EventKind::Toggle(LIST_LINK_FROM_LIST + k))
+            );
+        }
+        assert_eq!(
+            l.touch(1, Touch::Down, x, y, r),
+            Some(EventKind::Toggle(LIST_LINK))
+        );
+        // A row under the chooser, and one past it: only closes it.
+        let line = l.line_rect(r, 2).unwrap();
+        for (x, y) in [mid(choices[1]), (line.x + 6, line.y + 6)] {
+            let (x, y) = (x, y + CHOICE_H);
+            assert_eq!(
+                l.touch(1, Touch::Down, x, y, r),
+                Some(EventKind::Toggle(LIST_LINK_CLOSE))
+            );
+        }
+        let t = l.targets(r);
+        let ids: Vec<(&str, usize)> = t.iter().map(|t| (t.id, t.index)).collect();
+        assert_eq!(ids, [("link", 0), ("link-choice", 0), ("link-choice", 1)]);
+        l.linked = true;
+        assert_eq!((l.link_rect(r), l.chooser_rects(r)), (None, None));
+        assert!(!l.targets(r).iter().any(|t| t.id.starts_with("link")));
     }
 }

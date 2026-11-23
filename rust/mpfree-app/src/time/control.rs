@@ -55,8 +55,9 @@ use mpfree_time_ui::list::ListRow;
 use mpfree_time_ui::view::pad_name;
 use mpfree_time_ui::view::{
     bars_label, card_rows, clips_after, grid_name, rows_named, scene_rows, AudioAction, BarsEdit,
-    EditAnswer, EditInfo, EditOutcome, FollowNext, MarkerEdit, MorphInfo, MuteWait, RegionId,
-    Report, ReportRow, TakeRow, TempoEdit, TimeAction, TimeState, TransportInfo, SCENE_NAME,
+    EditAnswer, EditInfo, EditOutcome, FollowNext, LinkFrom, MarkerEdit, MorphInfo, MuteWait,
+    RegionId, Report, ReportRow, TakeRow, TempoEdit, TimeAction, TimeState, TransportInfo,
+    SCENE_NAME,
 };
 use mpfree_transport::time::{TempoMap, Tick};
 use mpfree_transport::{Block, Command, State};
@@ -2763,6 +2764,8 @@ impl TimeControl {
                 song.section_edit(marker, gap, copy, bar)
             }
             TimeAction::SongBars(e) => bars_edit(song, e, bar.max(1)).ok().map(|x| x.0),
+            // Song from the list's room at the song's start (4b.5).
+            TimeAction::ListLink(from) => self.link_room(from, bar),
             // A linked list's edits are the song's (Arrange 4b.2).
             _ if song.list.linked && edits_steps(a) => {
                 self.linked_edit(a, bar).ok().and_then(|e| e.time)
@@ -2933,7 +2936,10 @@ impl TimeControl {
         // cancelled (step 0C, agreed with the Arrange refactor). Before the
         // edit, so the view it compiles carries it; one that fails only
         // cancels a change early.
-        if moves_song_time(&a) || (self.project.arrangement.list.linked && edits_steps(&a)) {
+        if moves_song_time(&a)
+            || (self.project.arrangement.list.linked && edits_steps(&a))
+            || a == TimeAction::ListLink(LinkFrom::List)
+        {
             self.includes.timeline = next_timeline();
         }
         match a {
@@ -4025,6 +4031,7 @@ impl TimeControl {
             | TimeAction::ListMove { .. }
             | TimeAction::ListBack(_)
             | TimeAction::ListLoop(_)
+            | TimeAction::ListLink(_)
             | TimeAction::ListToSong
             | TimeAction::ScenesToSong
             | TimeAction::MakeUnique(_)
@@ -4054,10 +4061,17 @@ impl TimeControl {
                 // A time edit that moves audio regions is a take even with
                 // the song unchanged ([`TimeControl::act_with_audio`]).
                 let audio = self.audio_moves
-                    && (matches!(a, TimeAction::MoveSection { .. } | TimeAction::SongBars(_))
-                        || edits_steps(&a));
+                    && (matches!(
+                        a,
+                        TimeAction::MoveSection { .. }
+                            | TimeAction::SongBars(_)
+                            | TimeAction::ListLink(LinkFrom::List)
+                    ) || edits_steps(&a));
                 let list = edits_steps(&a)
-                    || matches!(a, TimeAction::ListLoop(_) | TimeAction::ListToSong);
+                    || matches!(
+                        a,
+                        TimeAction::ListLoop(_) | TimeAction::ListToSong | TimeAction::ListLink(_)
+                    );
                 let edited = if list {
                     self.edit_list(a, bar)
                 } else {
@@ -4811,6 +4825,9 @@ impl TimeControl {
         a: TimeAction,
         bar: Tick,
     ) -> Result<(String, Option<SongChange>), String> {
+        if let TimeAction::ListLink(from) = a {
+            return self.link(from, bar);
+        }
         if self.project.arrangement.list.linked {
             if edits_steps(&a) {
                 return self.edit_linked(&a, bar);
