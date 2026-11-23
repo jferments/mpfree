@@ -1492,6 +1492,13 @@ impl TimeHost {
         self.audio.followed_bpm()
     }
 
+    /// The followed device's clock stopped arriving while it played, and
+    /// no pulse or Stop has come since: System status's "The clock MPFree
+    /// follows stopped".
+    pub fn clock_lost(&self) -> bool {
+        self.audio.clock_lost()
+    }
+
     /// Carry out a touch on the time engine's screens. Returns a line for
     /// the log.
     pub fn act(&mut self, a: TimeAction) -> Result<String, String> {

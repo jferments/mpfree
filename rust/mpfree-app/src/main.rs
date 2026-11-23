@@ -112,6 +112,7 @@ mod expr_rec;
 mod fxmodes;
 mod gui;
 mod hand;
+mod heat;
 mod imagecopy;
 mod instrument_list;
 mod instruments;
@@ -8148,6 +8149,9 @@ fn player_session(
     let audio_memory = app.settings.audio_memory;
     let mut tracks = audiotracks::TrackHost::new(RATE, audio_memory.seconds());
     app.set_audio_memory_now(audio_memory);
+    // System status's stick meter reads the drive's looks the audio
+    // tracks take of the stick.
+    out.show(gui::ToUi::Drive(tracks.host.drive_seen()));
     out.say(&format!(
         "audio tracks: {} of stereo memory for takes ({} MB, Prefs > Audio track memory)",
         audio_memory.time(),
@@ -12936,6 +12940,7 @@ fn player_session(
                         faded_grains: c.faded_grains,
                         held_back_clouds: c.held_back_clouds,
                         crowded_s: c.crowded_ms as f32 / 1000.0,
+                        clock_lost: time.clock_lost(),
                     }
                 },
             }));
