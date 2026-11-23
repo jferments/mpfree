@@ -108,6 +108,16 @@ While the drawer is closed:
 
 With the drawer open, the wheel, – and + work the Edit options as before.
 
+### Hold a note and turn the wheel
+
+Rest a finger on a note and turn the data wheel: the note gets louder or softer, one step of velocity a click, and the hint line shows the velocity it has now. **–** and **+** step it the same way while your finger is there, and pushing the wheel does nothing, so a slip of the thumb changes nothing. This works with the drawer open or closed and with Draw on or off, but not while **ERASE** is held.
+
+- **A picked note** turns with all the picks, as **Q4** turns them: each keeps its difference from the others. Hold **SHIFT** as you turn to widen or narrow the gap between the softest and the loudest instead.
+- **A note that isn't picked** is picked on its own as you start turning (or added to the picks, with **Add to pick** on).
+- **Several notes at once.** Hold a note until it's picked, tap the others to add them while you keep holding, then turn the wheel: they all change.
+- **One hold, one UNDO.** Everything you turn before you lift your finger is one take.
+- Once you've turned the wheel, your finger is a hold: lifting it doesn't tap the note, and sliding it doesn't move the note. Slide off before turning and the wheel goes back to moving the cursor.
+
 ### Write notes from the pads
 
 **Pads write**, just left of **Follow** over the roll (at the top right on the list and the tracker), lets you play notes in where the cursor is, one step at a time. It is off whenever you open a clip; tap it and it lights up like **REC**.

@@ -807,6 +807,7 @@ dependencies = [
  "mpfree-mpcstore",
  "mpfree-node",
  "mpfree-notefx",
+ "mpfree-patch",
  "mpfree-perform",
  "mpfree-play",
  "mpfree-plughost",
@@ -1249,6 +1250,13 @@ dependencies = [
 [[package]]
 name = "mpfree-param"
 version = "0.1.0"
+
+[[package]]
+name = "mpfree-patch"
+version = "0.1.0"
+dependencies = [
+ "mpfree-node",
+]
 
 [[package]]
 name = "mpfree-perform"

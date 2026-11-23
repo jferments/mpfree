@@ -46,7 +46,7 @@ The host calls `due` after every period while the transport rolls, with the next
 - **The row numbers are scene buttons.** Each one shows a play mark over its number, beside its row. Tapping it sends `TimeAction::LaunchScene(row)`. The playing scene's button is lit green, and a scene waiting for its bar line has an amber ring.
 - **The square in the corner** over the scene buttons is Stop all (`TimeAction::StopAll`).
 - The column is 48 pixels wide, up from the 26 the row numbers took, so the buttons are big enough to hit.
-- **The scene editor** (S4's seventh part, [make-perform.md](make-perform.md#the-scene-editor-as-built-the-seventh-part)): the Record panel's Scene tab sets a scene's name, follow action and mutes (`SceneSettings`, one take a row through `Takes::set_scene`).
+- **The scene editor** (S4's seventh part, [make-perform.md](make-perform.md#the-scene-editor-as-built-the-seventh-part)): a scene's name, follow action, mutes, program changes, tempo and Keep playing tracks (`SceneSettings`, one take a row through `Takes::set_scene`), set on the scene card that holding a row's number opens (the Arrange refactor's 5.2, [arrange.md](arrange.md)); it was the Record panel's Scene tab.
 
 ## In the pad player (`TimeHost`)
 

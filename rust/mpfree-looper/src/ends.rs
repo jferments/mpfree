@@ -141,6 +141,13 @@ pub const MARGIN: f64 = 0.4;
 pub const FAR: f64 = 0.7;
 /// The rhythm part a far hit needs, at least.
 pub const BEAT_BACKS: f64 = 0.15;
+/// The rhythm part any hit needs, near the tap or far, once the loop has
+/// a beat to go on ([`MIN_BEAT_NOTES`]): a hit the beat hardly backs
+/// moves nothing, however like the first hit it sounds. (The reading can
+/// hear a fast groove at half its tempo, half time at 174 BPM as 87, and
+/// then the reach is 100 ms, so such a pickup can come nearer the tap
+/// than [`FAR`].)
+pub const BEAT_FLOOR: f64 = 0.1;
 
 /// A pass's notes (or hits), from its start: the first [`HEAD`], then the
 /// last [`TAIL`]. Ones the tail had to drop are counted, and the newest
@@ -564,12 +571,12 @@ pub fn decide<E: Event>(
             second = *c;
         }
     }
-    // Far from the tap, with a beat to go on, the beat must back it, at
-    // least as well as it backs your tap.
+    // With a beat to go on, the beat must back it a little, and far from
+    // the tap at least as well as it backs your tap.
     let far = best.end.abs_diff(ask.tap) as f64 > FAR * ask.reach as f64;
-    let unbacked = far
-        && ctx.beat_notes() >= MIN_BEAT_NOTES
-        && (best.rhythm < BEAT_BACKS || best.rhythm < tap.rhythm);
+    let unbacked = ctx.beat_notes() >= MIN_BEAT_NOTES
+        && (best.rhythm < BEAT_FLOOR
+            || (far && (best.rhythm < BEAT_BACKS || best.rhythm < tap.rhythm)));
     let clear = best.score >= THRESHOLD && best.score - second.score >= MARGIN && !unbacked;
     Decision {
         verdict: if clear {
@@ -998,6 +1005,63 @@ mod tests {
         notes.push(note(downbeat, 36, 120));
         let a = ask(downbeat + 60.0, downbeat + 146.0, 174.0);
         let d = decide(&log_of(&notes), &a, &bars_at);
+        assert_eq!(
+            (d.verdict, d.end),
+            (Verdict::Moved, 10_000 + ms(downbeat)),
+            "{d:?}"
+        );
+    }
+
+    #[test]
+    fn a_hit_the_beat_hardly_backs_moves_nothing_even_near_the_tap() {
+        // Half time at 174 BPM, two bars, as above, but the pickup comes
+        // 30 ms late, in place of its hat. The reading hears it at 87 BPM
+        // (one bar), so the reach is 100 ms, as Auto takes it from the
+        // tap's reading.
+        let eighth = 30_000.0 / 174.0;
+        let mut notes = Vec::new();
+        for k in 0..16 {
+            let t = k as f64 * eighth;
+            match k % 8 {
+                0 => notes.push(note(t, 36, 120)),
+                4 => notes.push(note(t, 38, 118)),
+                7 => notes.push(note(t + 30.0, 36, 110)),
+                _ => {}
+            }
+            if k % 8 != 7 {
+                notes.push(note(t, 42, 60));
+            }
+        }
+        let downbeat = 16.0 * eighth;
+        let tap = downbeat - 80.0;
+        let song = crate::TempoHint {
+            bpm: 120.0,
+            kind: crate::TempoKind::Earlier,
+        };
+        let r = crate::read_bars(ms(tap) as usize, RATE, BAR, None, Some(song)).unwrap();
+        assert!(r.bpm < 100.0, "{r:?}");
+        let bars = r.bars;
+        // You stop before the downbeat and tap 80 ms early: the pickup is
+        // well inside the reach, not far, and sounds like the first kick,
+        // but the beat hardly fits a loop that ends there.
+        let a = ask(tap, tap + 100.0, r.bpm);
+        assert_eq!(a.reach, ms(100.0));
+        let d = decide(&log_of(&notes), &a, &|_| Some(bars));
+        let b = d.best.unwrap();
+        assert!(
+            b.onset > 0.85 && b.score >= THRESHOLD,
+            "it would have won: {d:?}"
+        );
+        assert!(
+            b.end.abs_diff(a.tap) as f64 <= FAR * a.reach as f64,
+            "{d:?}"
+        );
+        assert!(b.rhythm < BEAT_FLOOR, "{d:?}");
+        assert_eq!((d.verdict, d.end), (Verdict::NotClear, a.tap), "{d:?}");
+        // The downbeat played, and the tap 60 ms late: it moves there.
+        notes.push(note(downbeat, 36, 120));
+        let a = ask(downbeat + 60.0, downbeat + 160.0, r.bpm);
+        let d = decide(&log_of(&notes), &a, &|_| Some(bars));
         assert_eq!(
             (d.verdict, d.end),
             (Verdict::Moved, 10_000 + ms(downbeat)),

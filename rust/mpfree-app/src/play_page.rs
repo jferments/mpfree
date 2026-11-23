@@ -3905,6 +3905,7 @@ impl PlayPage {
             view: 0,
             rec: None,
             pads: None,
+            keys: None,
         }
     }
 }

@@ -29,6 +29,12 @@
 //!   scene launched while stopped sends them where the music starts; after
 //!   a stop or a jump they go out again, as a clip's do. The next launch
 //!   replaces them, and Stop all forgets them.
+//! - A scene's **tempo** (the Arrange refactor's 5.2b,
+//!   [`mpfree_seq::Scene::tempo`]) goes with its launch too: each launch
+//!   leaves its tempo and line (none: at once) for the host
+//!   ([`Perform::take_tempo`]), which says on which tick it lands and puts
+//!   it in the view for the audio half. A launch of a scene with none, and
+//!   Stop all, leave None: a tempo still waiting goes.
 //! - [`Perform::started`]: the host passes each [`Started`] the player
 //!   reports, before applying it. A scene's mute becomes the track's
 //!   `mute`, and the scene's first start is where its follow counts from.
@@ -55,9 +61,9 @@
 //!   hand or everything stops.
 //! - [`Perform::section_starts`]: a song linked to its list (the Arrange
 //!   refactor's 4b.4) plays its sections' blocks, made with no scene's
-//!   mutes; as each section starts, the host brings its scene's mutes
-//!   and program changes in here, as a launch brings them for the tracks
-//!   it gives no cue (the host's `sections` module says when).
+//!   mutes; as each section starts, the host brings its scene's mutes,
+//!   program changes and tempo in here, as a launch brings them for the
+//!   tracks it gives no cue (the host's `sections` module says when).
 //!
 //! [`morph`]: the scene morph (T10), two rows' stored values on the mod
 //! engine's scenes A and B.
@@ -174,10 +180,22 @@ pub struct Perform {
     line_mutes: [Option<bool>; MAX_TRACKS],
     /// The line they land on: the scene's cues' line.
     mute_line: LaunchGrid,
+    /// The last launch's tempo and its line, until the host takes it
+    /// ([`Perform::take_tempo`]).
+    tempo: Option<SceneTempoAsk>,
     clips: [Option<ClipCount>; MAX_TRACKS],
     /// The song list, while it plays.
     list: Option<ListPlaying>,
     rng: u64,
+}
+
+/// What a scene launch asks of the tempo ([`Perform::take_tempo`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SceneTempoAsk {
+    /// The scene's tempo; None: it sets none.
+    pub bpm: Option<f64>,
+    /// The line it lands on; None: at once (launched while stopped).
+    pub line: Option<LaunchGrid>,
 }
 
 impl Default for Perform {
@@ -198,6 +216,7 @@ impl Perform {
             program_id: 0,
             line_mutes: [None; MAX_TRACKS],
             mute_line: LaunchGrid::Bars(1),
+            tempo: None,
             clips: [None; MAX_TRACKS],
             list: None,
             rng: seed | 1,
@@ -307,6 +326,28 @@ impl Perform {
         }
     }
 
+    /// Rows moved (a row dragged, copied, put in or deleted, or that
+    /// undone): the scene playing, the one waiting and each track's clip
+    /// follow go with their rows, `to` giving each row's new place. One
+    /// whose row went (None) is let go: what plays plays on.
+    pub fn rows_moved(&mut self, to: impl Fn(usize) -> Option<usize>) {
+        self.playing = self.playing.and_then(|p| {
+            Some(Playing {
+                row: to(p.row)?,
+                ..p
+            })
+        });
+        self.cued = self.cued.and_then(&to);
+        for c in &mut self.clips {
+            *c = c.and_then(|k| {
+                Some(ClipCount {
+                    slot: to(k.slot)?,
+                    ..k
+                })
+            });
+        }
+    }
+
     /// The list stops going on by itself (a scene launched by hand, Stop
     /// all, Back to song); what plays plays on.
     pub fn end_list(&mut self) {
@@ -387,6 +428,11 @@ impl Perform {
                     id: self.program_id,
                 });
         }
+        // Its tempo, on the same line (5.2b); none takes back one waiting.
+        self.tempo = Some(SceneTempoAsk {
+            bpm: scene.and_then(|s| s.bpm()),
+            line: matches!(when, When::Cued).then_some(line),
+        });
         // Its Keep playing tracks (the Arrange refactor's 5.2): an empty
         // cell there leaves the track as it is.
         let keep = scene.map_or(0, |s| s.keep);
@@ -460,8 +506,8 @@ impl Perform {
     /// A section of a song linked to its list, made from row `row`,
     /// starts on `line` (the Arrange refactor's 4b.4; None: at once, the
     /// transport stopped or the playhead jumped into it). Its scene's
-    /// mutes and program changes come in there as a launch of the scene
-    /// brings them for the tracks it gives no cue: the mutes wait for the
+    /// mutes, program changes and tempo come in there as a launch of the
+    /// scene brings them for the tracks it gives no cue: the mutes wait for the
     /// line ([`Perform::take_line_mutes`]; at once they are set here), and
     /// the program changes go out on it (at once: where the music plays
     /// from), replacing the last ones. Nothing is cued: the song plays the
@@ -491,6 +537,13 @@ impl Perform {
                     line,
                     id: self.program_id,
                 });
+        }
+        // Its tempo on its start (5.2b), when its scene sets one.
+        if let Some(bpm) = scene.and_then(|s| s.bpm()) {
+            self.tempo = Some(SceneTempoAsk {
+                bpm: Some(bpm),
+                line,
+            });
         }
         self.line_mutes = [None; MAX_TRACKS];
         match line {
@@ -539,9 +592,19 @@ impl Perform {
         self.cue_mutes = [None; MAX_TRACKS];
         self.cue_lines = [None; MAX_TRACKS];
         self.programs = [None; MAX_TRACKS];
+        self.tempo = Some(SceneTempoAsk::default());
         self.cued = None;
         self.playing = None;
         self.list = None;
+    }
+
+    /// The tempo the last launch or Stop all asked for, taken: its BPM
+    /// (None: none, and one still waiting goes) and its line (None: at
+    /// once). None when nothing launched since it was last taken. Call it
+    /// after each launch, play of the song list, Stop all and
+    /// [`Perform::due`].
+    pub fn take_tempo(&mut self) -> Option<SceneTempoAsk> {
+        self.tempo.take()
     }
 
     /// The program change the scene launched last sends `track` (S5).
@@ -557,6 +620,9 @@ impl Perform {
             if p.line.is_some() {
                 p.line = Some(line);
             }
+        }
+        if let Some(t) = self.tempo.as_mut().filter(|t| t.line.is_some()) {
+            t.line = Some(line);
         }
         self.mute_line = line;
     }
@@ -1052,6 +1118,63 @@ mod tests {
         );
         assert_eq!(perf.cued(), Some(2));
         assert!(!perf.launch_scene(&mut p, SCENES, When::Cued, &mut launches, &mut cues));
+    }
+
+    /// The Arrange refactor's 5.2b: each launch leaves its scene's tempo
+    /// and line for the host, a follow's on its point; a scene with none,
+    /// and Stop all, leave None so a tempo waiting goes.
+    #[test]
+    fn a_launch_leaves_its_scenes_tempo_for_the_host() {
+        let mut p = project();
+        p.scene_mut(2).unwrap().set_bpm(Some(140.0)).unwrap();
+        p.scene_mut(2).unwrap().follow = Some(Follow::after(1, FollowAction::Next));
+        let mut perf = Perform::default();
+        let (mut launches, mut cues) = (vec![], vec![]);
+        assert_eq!(perf.take_tempo(), None, "nothing launched");
+        perf.launch_scene(&mut p, 2, When::Now(0), &mut launches, &mut cues);
+        let ask = |bpm, line| Some(SceneTempoAsk { bpm, line });
+        assert_eq!(
+            perf.take_tempo(),
+            ask(Some(140.0), None),
+            "stopped: at once"
+        );
+        assert_eq!(perf.take_tempo(), None, "taken");
+        p.launch = LaunchGrid::Bars(2);
+        perf.launch_scene(&mut p, 2, When::Cued, &mut launches, &mut cues);
+        assert_eq!(
+            perf.take_tempo(),
+            ask(Some(140.0), Some(LaunchGrid::Bars(2)))
+        );
+        perf.launch_scene(&mut p, 1, When::Cued, &mut launches, &mut cues);
+        assert_eq!(
+            perf.take_tempo(),
+            ask(None, Some(LaunchGrid::Bars(2))),
+            "none"
+        );
+        perf.stop_all(When::Cued, &mut launches, &mut cues);
+        assert_eq!(perf.take_tempo(), ask(None, None));
+        // A follow from scene 1 into scene 2 lands on its point, the next
+        // bar line.
+        p.scene_mut(1).unwrap().follow = Some(Follow::after(1, FollowAction::Next));
+        assert!(perf.launch_scene(&mut p, 1, When::Cued, &mut launches, &mut cues));
+        perf.take_tempo();
+        let st = Started {
+            track: 0,
+            slot: Some(1),
+            at: 2 * BAR,
+            origin: 2 * BAR,
+            mute: None,
+            from: 2 * BAR,
+            rev: 0,
+        };
+        perf.started(&mut p, &st);
+        st.apply(&mut launches, &mut cues);
+        let fired = perf.due(&mut p, &mut launches, &mut cues, 3 * BAR - 10, BAR);
+        assert_eq!(fired.scene, Some(Some(2)));
+        assert_eq!(
+            perf.take_tempo(),
+            ask(Some(140.0), Some(LaunchGrid::Bars(1)))
+        );
     }
 
     /// The Arrange refactor's 5.2 (D4's empty cells): a scene's Keep

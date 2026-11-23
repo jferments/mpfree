@@ -187,6 +187,47 @@ pub fn cpu_pct(shared: &EngineShared) -> Option<f64> {
     Some(MPC.pct(w.mean_ns))
 }
 
+/// The engines in System status's words, in the order Sound's numbers
+/// list them: each a stage of the period, and the rest of the period as
+/// MPFree's own work. Per track and per pad waits for the sampler
+/// refactor's lanes (docs/dev/design/status.md).
+pub const SHARES: [(usize, &str); 6] = [
+    (SAMPLER, "The pads"),
+    (SYNTH, "Synths"),
+    (LOOPER, "The looper and line input"),
+    (TIME, "Clips and the arp"),
+    (MIX, "Mixing"),
+    (CONTROL, "MPFree's own work"),
+];
+
+/// Where the sound's time went in the period's last window: each of
+/// [`SHARES`]'s mean as a share of the period (%), the measure
+/// [`cpu_pct`] gives the whole period, so together they come to about
+/// it. An engine that didn't run is 0. None until the loop has published.
+pub fn shares(shared: &EngineShared) -> Option<[f64; 6]> {
+    let s = read(shared);
+    s[PERIOD].0.filter(|w| w.blocks > 0)?;
+    let mut out = [0.0; 6];
+    for (o, (i, _)) in out.iter_mut().zip(SHARES) {
+        *o = s[i]
+            .0
+            .filter(|w| w.blocks > 0)
+            .map_or(0.0, |w| MPC.pct(w.mean_ns));
+    }
+    Some(out)
+}
+
+/// A share as Sound's numbers show it: "12 %", "under 1 %", "none".
+pub fn share_words(p: f64) -> String {
+    if p <= 0.0 {
+        "none".to_string()
+    } else if p < 0.5 {
+        "under 1 %".to_string()
+    } else {
+        format!("{p:.0} %")
+    }
+}
+
 /// Whether the whole period's last window was Tight or Over against its
 /// budget (the CPU chip yellow or red): System status's "Sound near
 /// limit" while it lasts a second. None until the loop has published.
@@ -420,5 +461,33 @@ mod tests {
             "{:?}",
             session[CONTROL]
         );
+    }
+
+    #[test]
+    fn shares_say_where_the_sounds_time_goes() {
+        use std::time::Duration;
+        let mut p = EngineProbes::new();
+        let shared = p.shared();
+        assert_eq!(shares(&shared), None, "nothing before the first publish");
+        p.add(SAMPLER, Duration::from_micros(600));
+        p.add(MIX, Duration::from_micros(100));
+        p.add(PERIOD, Duration::from_micros(1_000));
+        p.publish();
+        let s = shares(&shared).unwrap();
+        assert!((s[0] - MPC.pct(600_000.0)).abs() < 1e-9, "the pads: {s:?}");
+        assert_eq!(s[1], 0.0, "no synth played");
+        assert!((s[4] - MPC.pct(100_000.0)).abs() < 1e-9, "mixing: {s:?}");
+        assert!(
+            (s[5] - MPC.pct(300_000.0)).abs() < 1e-9,
+            "MPFree's own work, 1000 less 700 µs: {s:?}"
+        );
+        let all: f64 = s.iter().sum();
+        assert!(
+            (all - cpu_pct(&shared).unwrap()).abs() < 1e-6,
+            "together, the sound's share"
+        );
+        assert_eq!(share_words(0.0), "none");
+        assert_eq!(share_words(0.3), "under 1 %");
+        assert_eq!(share_words(20.6), "21 %");
     }
 }
