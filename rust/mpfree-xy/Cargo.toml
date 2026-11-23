@@ -1,0 +1,10 @@
+[package]
+name = "mpfree-xy"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The XY controller's engine for MPFree: timed input from any controller, who owns a gesture, layouts of settings on two axes, and the pad's glide; pure logic, nothing allocated while playing"
+
+[dependencies]
+mpfree-mod = { path = "../mpfree-mod" }
+mpfree-param = { path = "../mpfree-param" }

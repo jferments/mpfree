@@ -396,6 +396,46 @@ mod tests {
         })
     }
 
+    /// System status's controls, swept on their own (the whole sweep takes
+    /// minutes): each does something, and each is in the catalogue.
+    #[test]
+    fn system_status_controls_do_something_and_are_in_the_catalogue() {
+        let rows = on_big_stack(|| {
+            let make = || {
+                let mut p = gui::sample_status(Fonts::embedded());
+                p.apply(gui::ToUi::Show(crate::app::View::SystemStatus));
+                p
+            };
+            let mut p = make();
+            let mut fresh = make;
+            sweep("system-status", &mut p, &mut fresh)
+        });
+        let ours: Vec<&Row> = rows
+            .iter()
+            .filter(|r| r.widget == crate::status_screen::WIDGET)
+            .collect();
+        assert!(
+            ours.len() >= 12,
+            "the switch, nine systems, a card: {}",
+            ours.len()
+        );
+        let dead: Vec<String> = ours
+            .iter()
+            .filter(|r| r.outcome == Outcome::Dead)
+            .map(|r| format!("{} #{}", r.key(), r.target.index))
+            .collect();
+        assert!(dead.is_empty(), "dead: {dead:?}");
+        let text = std::fs::read_to_string(catalogue::PATH).expect("docs/dev/guides/controls.md");
+        let listed = catalogue::keys(&text);
+        for r in ours {
+            assert!(
+                listed.contains(&r.key()),
+                "{} not in the catalogue",
+                r.key()
+            );
+        }
+    }
+
     /// Every control on every sample screen does something when pressed.
     #[test]
     fn every_control_on_every_screen_does_something() {
