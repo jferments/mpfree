@@ -44,8 +44,14 @@ kit.0.sources = 1\nkit.0.source.0.file = Kick.wav\nkit.0.source.0.name = Kick\n\
 kit.0.pad.0.name = Kick\nkit.0.pad.0.layers = 1\nkit.0.pad.0.layer.0.source = 0\n";
 
 /// A stand-in SD card at `at`, from sounds [`fill`] put in `lib`: a sound
-/// at the top, Breaks, Drum hits and an empty Vinyl rips. Its folder.
+/// at the top, Breaks, Drum hits and an empty Vinyl rips. Its folder. Made
+/// as a library of its own whose Samples place is the card's top folder, so
+/// the previews write only through the library.
 pub fn fill_card(lib: &Library, at: &Path) -> Result<std::path::PathBuf, String> {
+    std::fs::create_dir_all(at).map_err(|e| e.to_string())?;
+    let card = Library::at(at).map_err(|e| e.to_string())?;
+    let e = |e: std::io::Error| e.to_string();
+    let top = Loc::top(Place::Samples);
     for (folder, files) in [
         ("", &["Rhodes chord.wav"][..]),
         ("Breaks", &["Break 92 bpm.wav", "Kick 01.wav"][..]),
@@ -55,18 +61,21 @@ pub fn fill_card(lib: &Library, at: &Path) -> Result<std::path::PathBuf, String>
         ),
         ("Vinyl rips", &[][..]),
     ] {
-        let to = at.join(folder);
-        std::fs::create_dir_all(&to).map_err(|e| e.to_string())?;
+        let to = match folder {
+            "" => top.clone(),
+            f => card.new_folder_unsynced(&top, f).map_err(e)?,
+        };
         for f in files {
             let from = ["", "Drums", "Loops"]
                 .iter()
                 .map(|d| lib.root().join("Samples").join(d).join(f))
                 .find(|p| p.is_file())
                 .ok_or_else(|| format!("no {f} in the samples"))?;
-            std::fs::copy(from, to.join(f)).map_err(|e| e.to_string())?;
+            let bytes = std::fs::read(&from).map_err(|e| e.to_string())?;
+            card.write_new_unsynced(&to, f, &bytes).map_err(e)?;
         }
     }
-    Ok(at.to_path_buf())
+    Ok(card.root().join(Place::Samples.folder()))
 }
 
 pub fn fill(data: &Path) -> Result<Library, String> {
