@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-seq/src/scenes.rs rust/mpfree-seq/src/arrange.rs rust/mpfree-perform rust/mpfree-time-ui/src/song.rs rust/mpfree-time-ui/src/widgets.rs rust/mpfree-time-ui/src/list.rs
-checked: 2026-11-19 79fc6f63
+checked: 2026-11-23 2bc73d12
 -->
 
 # Arranging a song
@@ -100,6 +100,25 @@ You can move the song around with your finger:
 - Hold a dragged block or section at the left or right edge and the bars scroll.
 - With the wheel: pick a block, push the wheel to grab it, turn to move it a beat at a time, and push again to let go. Tap a section's name to pick it, then push and turn to move it a section at a time.
 - **UNDO** takes back any of these, one at a time, and **SHIFT + UNDO** puts them back again.
+
+### Several blocks at once
+
+- **SHIFT + tap** a block to add it to what's picked, or to take it out again. A tap without SHIFT picks just that block.
+- **Drag across empty space** to draw a box: every block it touches is picked. Hold **SHIFT** as you lift to add them to what's picked. A tap on empty space picks nothing.
+- Each picked block is outlined. **Drag any of them** and they all go with it, keeping their places to each other, each one's new place outlined (red where it would run into a block that isn't picked). Hold **SHIFT** as you lift for copies. If one can't go there, none moves, and the hint line says why.
+- **Split** cuts the picked blocks that the playhead is on, and picks the parts after. **Duplicate** puts copies of them all right after the last one ends, and picks the copies, so pressing it again repeats them on. **Delete** removes them all (in Perform, with the half-second hold). **Make unique** takes one block at a time.
+- The wheel moves them all a beat at a time: push to grab them, turn, push again to let go.
+- Each of these is one step that **UNDO** takes back.
+
+{{shot: arrange-song-picks | Four blocks picked on the Bass and Lead lanes, each outlined; Make unique is faint, and the hint line says what they do together.}}
+
+{{shot: arrange-song-box | A box dragged from bar 15 on the Keys lane back to bar 7 on the Hats lane: the five blocks it touches are outlined.}}
+
+### Zoom
+
+The **Bars** chip on the Song view's title line shows **4**, **8**, **16**, **32** or **64** bars across the lanes; the one showing is lit. Up close (4 or 8 bars) a faint line marks each beat, and dragged blocks, ends and starts snap to the beat instead of the bar. Further out, the bar numbers on the ruler thin out to every 4th or 8th bar, and the wheel and a block held at the edge scroll more bars at a time. The zoom stays as you set it while you switch views and pages; a new session starts at 16 bars.
+
+{{shot: arrange-song-zoom-4 | The Song view at 4 bars, from bar 5: a faint line on every beat.}}
 
 > [!MPC]
 > On the MPC, Song Mode plays a list of sequences one after another, and Arrange Mode records tracks onto a linear timeline. In MPFree, the song is a timeline of clips, and each track can leave the song to play a launched clip and come back.

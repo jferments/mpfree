@@ -117,6 +117,29 @@ pub const DUPLICATE: usize = 0x312;
 /// How long a finger stays still on the picked block before a drag
 /// slides what the block plays instead of moving it (phase 6).
 pub const SLIDE_HOLD: Duration = Duration::from_millis(400);
+/// A box dragged across the lanes (6.5), as the index of
+/// [`EventKind::Span`]: `BOX + top * 0x100 + bottom`, the first and last
+/// tracks whose lanes it crosses ([`box_tracks`]), from and to the song
+/// ticks at its left and right. Above any take's number, which a take
+/// lane's swipe reports there.
+pub const BOX: usize = 1 << 24;
+
+/// The first and last tracks of a box's [`EventKind::Span`] index.
+pub fn box_tracks(index: usize) -> (usize, usize) {
+    let k = index.saturating_sub(BOX);
+    (k / 0x100, k % 0x100)
+}
+
+/// The zoom chip's choices (6.4): how many bars the Song view shows.
+pub const ZOOMS: [i64; 5] = [4, 8, 16, 32, 64];
+/// What Tab reports for the zoom chip's part `k`: `ZOOM + k` for
+/// [`ZOOMS`]`[k]`.
+pub const ZOOM: usize = 0x320;
+/// The zoom chip's "Bars" and each of its parts.
+const ZOOM_LABEL_W: i32 = 44;
+const ZOOM_PART_W: i32 = 40;
+pub const ZOOM_W: i32 = ZOOM_LABEL_W + ZOOMS.len() as i32 * ZOOM_PART_W;
+
 /// Duplicate's width.
 const DUPLICATE_W: i32 = 104;
 /// Split's width, the bottom row's first place (phase 6).
@@ -490,13 +513,19 @@ pub struct SongLanes {
     /// Each marker's passes and their length while its part follows its
     /// scene on a linked song, with more than one ([`crate::view::TimeState::passes`]).
     pub passes: Vec<Option<(u16, Tick)>>,
-    /// Ticks a bar.
+    /// Ticks a bar, and a beat.
     pub bar: Tick,
-    /// The first bar shown (0-based) and how many.
+    pub beat: Tick,
+    /// The first bar shown (0-based) and how many: one of [`ZOOMS`] (the
+    /// zoom chip lights it, 6.4).
     pub first_bar: i64,
     pub bars: i64,
     pub playhead: Option<Tick>,
     pub selected: Option<usize>,
+    /// The blocks picked together (6.5): two or more, `selected` being
+    /// None while they are. Each has the pick's outline, and a drag of
+    /// one carries them all. The app sets it.
+    pub picks: Vec<usize>,
     /// Song mode: the song plays.
     pub on: bool,
     /// Live to song armed.
@@ -595,6 +624,9 @@ pub(crate) enum Held {
     Ruler,
     /// The picked section's grip: marker `k` alone moves (Arrange 3.3).
     MarkerGrip { k: usize, dt: Tick },
+    /// Empty space on the lanes: a tap picks nothing, a drag draws a box
+    /// that picks the blocks it touches (6.5).
+    Box,
 }
 
 /// A finger holding something on the Song view.
@@ -715,10 +747,12 @@ impl Default for SongLanes {
             markers: Vec::new(),
             passes: Vec::new(),
             bar: 3840,
+            beat: 960,
             first_bar: 0,
             bars: 16,
             playhead: None,
             selected: None,
+            picks: Vec::new(),
             on: false,
             rec: false,
             audio: Vec::new(),
@@ -954,10 +988,12 @@ impl SongLanes {
             markers: self.markers.clone(),
             passes: self.passes.clone(),
             bar: self.bar,
+            beat: self.beat,
             first_bar: self.first_bar,
             bars: self.bars,
             playhead: self.playhead,
             selected: self.selected,
+            picks: self.picks.clone(),
             on: self.on,
             rec: self.rec,
             audio: self.audio.clone(),
@@ -1273,6 +1309,47 @@ impl SongLanes {
     /// Where the view chip is: the left end of the title line (5.7).
     pub fn view_rect(&self, r: Rect) -> Rect {
         view_chip_rect(r)
+    }
+
+    /// The zoom chip (6.4), right of the view chip: "Bars", then a part
+    /// for each of [`ZOOMS`].
+    pub fn zoom_rect(&self, r: Rect) -> Rect {
+        let chip = view_chip_rect(r);
+        Rect::new(chip.right() + 12, chip.y, ZOOM_W, chip.h)
+    }
+
+    /// The zoom chip's part `k`, for [`ZOOMS`]`[k]`.
+    pub fn zoom_part_rect(&self, r: Rect, k: usize) -> Rect {
+        let z = self.zoom_rect(r);
+        Rect::new(
+            z.x + ZOOM_LABEL_W + k as i32 * ZOOM_PART_W,
+            z.y,
+            ZOOM_PART_W,
+            z.h,
+        )
+    }
+
+    /// What a drag snaps to (6.4): the beat while 8 bars or fewer show,
+    /// else the bar.
+    fn snap(&self) -> Tick {
+        if self.bars <= 8 {
+            self.beat.clamp(1, self.bar.max(1))
+        } else {
+            self.bar.max(1)
+        }
+    }
+
+    /// "bar 5", or "bar 5 beat 3" off the bar line: where a dragged block
+    /// starts.
+    fn at_text(&self, t: Tick) -> String {
+        let bar = self.bar.max(1);
+        let beat = self.beat.clamp(1, bar);
+        let (b, rest) = (t.div_euclid(bar), t.rem_euclid(bar));
+        if rest == 0 {
+            format!("bar {}", b + 1)
+        } else {
+            format!("bar {} beat {}", b + 1, rest / beat + 1)
+        }
     }
 
     /// The buttons along the bottom (the audio region's while one is
@@ -1872,9 +1949,9 @@ impl SongLanes {
             Lane::Audio(a) => self.audio[a].row,
             _ => return None,
         };
-        let bar = self.bar.max(1);
+        let snap = self.snap();
         let t = self.tick_at(g.lanes, gr.at.0) - dt;
-        Some((track, ((t + bar / 2).div_euclid(bar) * bar).max(0)))
+        Some((track, ((t + snap / 2).div_euclid(snap) * snap).max(0)))
     }
 
     /// How long the picked block becomes: its end where the grip is,
@@ -1885,7 +1962,7 @@ impl SongLanes {
         };
         let b = self.block(index)?;
         let g = self.geo(r);
-        let bar = self.bar.max(1);
+        let bar = self.snap();
         let t = self.tick_at(g.lanes, gr.at.0) - dt;
         let end = (t + bar / 2).div_euclid(bar) * bar;
         let least = (b.start.div_euclid(bar) + 1) * bar;
@@ -1902,7 +1979,7 @@ impl SongLanes {
         };
         let b = self.block(index)?;
         let g = self.geo(r);
-        let bar = self.bar.max(1);
+        let bar = self.snap();
         let t = self.tick_at(g.lanes, gr.at.0) - dt;
         let start = (t + bar / 2).div_euclid(bar) * bar;
         let most = (b.start + b.length - 1).div_euclid(bar) * bar;
@@ -1956,9 +2033,54 @@ impl SongLanes {
             .min_by_key(|&j| self.edge_tick(j).map_or(Tick::MAX, |e| (e - t).abs()))
     }
 
+    /// The box a finger drags across the lanes (6.5), from where it went
+    /// down to where it is, right of the names and inside the lanes.
+    fn box_rect(&self, r: Rect, gr: &Grip) -> Rect {
+        let g = self.geo(r);
+        let x0 = gr.from.0.min(gr.at.0).max(g.lanes.x + NAME_W);
+        let x1 = gr.from.0.max(gr.at.0).min(g.lanes.right());
+        let y0 = gr.from.1.min(gr.at.1).max(g.lanes.y);
+        let y1 = gr.from.1.max(gr.at.1).min(g.lanes.bottom());
+        Rect::new(x0, y0, (x1 - x0).max(0), (y1 - y0).max(0))
+    }
+
+    /// The first and last tracks whose lanes the box crosses; None when
+    /// it crosses none (only "+ Track" or take lanes).
+    fn box_tracks(&self, r: Rect, gr: &Grip) -> Option<(usize, usize)> {
+        let g = self.geo(r);
+        let b = self.box_rect(r, gr);
+        let tracks: Vec<usize> = (0..self.lane_count())
+            .filter(|&k| {
+                self.lane_rect(&g, k)
+                    .is_some_and(|l| l.y < b.bottom().max(b.y + 1) && l.bottom() > b.y)
+            })
+            .filter_map(|k| match self.lane(k)? {
+                Lane::Midi(t) => Some(t),
+                Lane::Audio(a) => Some(self.audio[a].row),
+                _ => None,
+            })
+            .collect();
+        Some((*tracks.iter().min()?, *tracks.iter().max()?))
+    }
+
     /// What letting go of `gr` reports: see the module notes.
     fn let_go(&self, r: Rect, gr: &Grip) -> Option<EventKind> {
         match gr.held {
+            Held::Box if !gr.lifted => Some(EventKind::Select(NONE)),
+            Held::Box => {
+                let g = self.geo(r);
+                // Under the last lane: it picks nothing, as a tap does.
+                let Some((top, bottom)) = self.box_tracks(r, gr) else {
+                    return Some(EventKind::Select(NONE));
+                };
+                let (x0, x1) = (gr.from.0.min(gr.at.0), gr.from.0.max(gr.at.0));
+                let left = x0.max(g.lanes.x + NAME_W);
+                Some(EventKind::Span {
+                    index: BOX + top * 0x100 + bottom,
+                    from: self.tick_at(g.lanes, left).max(0),
+                    to: self.tick_at(g.lanes, x1.min(g.lanes.right())),
+                })
+            }
             Held::Block { index, .. } if !gr.lifted => Some(EventKind::Select(index)),
             Held::End { .. } if !gr.lifted => None,
             Held::Start { .. } if !gr.lifted => None,
@@ -2272,12 +2394,61 @@ impl SongLanes {
                     cx.canvas.stroke_round_rect(h, t.round(6), 2, t.outline);
                 }
                 let land = self.block_landing(r, gr);
+                // One of several picked (6.5): the others go along, each
+                // its old place left, an outline where it lands and its
+                // card moved with the finger.
+                if self.picks.contains(&index) {
+                    let shift = land.map(|(k, s)| (k as i64 - b.track as i64, s - b.start));
+                    let set = |o: &SongBlock| self.picks.contains(&o.index);
+                    for &j in self.picks.iter().filter(|&&j| j != index) {
+                        let Some(o) = self.block(j) else {
+                            continue;
+                        };
+                        let Some(h) = self.block_rect(r, o) else {
+                            continue;
+                        };
+                        cx.canvas.fill_round_rect(h, t.round(6), t.surface);
+                        cx.canvas.stroke_round_rect(h, t.round(6), 2, t.outline);
+                        if let Some((dk, ds)) = shift {
+                            let track = usize::try_from(o.track as i64 + dk).ok();
+                            let lane = track
+                                .filter(|&k| k < self.tracks.len())
+                                .map(|k| self.track_k(k));
+                            let (s, e) = (o.start + ds, o.start + ds + o.length);
+                            if let Some(l) = lane.and_then(|k| self.span_rect(&g, k, s, e)) {
+                                let clash = track
+                                    .is_some_and(|k| self.blocks.between(k, s, e).any(|q| !set(q)))
+                                    || s < 0;
+                                let ink = if clash { t.bad } else { t.accent };
+                                cx.canvas.stroke_round_rect(l.inset(-2), t.round(8), 3, ink);
+                            }
+                        }
+                        let color = self.tracks.get(o.track).map_or(t.accent, |c| c.1);
+                        let card = Rect::new(h.x + dx, h.y + dy, h.w, h.h);
+                        cx.canvas
+                            .fill_round_rect(card, t.round(6), t.raised.mix(color, 0.5));
+                        cx.canvas.stroke_round_rect(card, t.round(6), 2, t.accent);
+                        if card.w > 30 {
+                            cx.text(
+                                FontId::Sans,
+                                t.size_small - 1.0,
+                                card.inset_xy(6, 0),
+                                Align::Left,
+                                t.text,
+                                &o.name,
+                            );
+                        }
+                    }
+                }
                 let at = land.and_then(|(k, s)| Some((self.span_rect(&g, k, s, s + b.length)?, s)));
                 if let (Some((l, _)), Some((k, start))) = (at, land) {
                     // Red where it would run into another block (the app
                     // refuses it and says so).
                     let end = start + b.length;
-                    let clash = self.blocks.between(k, start, end).any(|o| o.index != index);
+                    let clash = self
+                        .blocks
+                        .between(k, start, end)
+                        .any(|o| o.index != index && !self.picks.contains(&o.index));
                     let ink = if clash { t.bad } else { t.accent };
                     cx.canvas.stroke_round_rect(l.inset(-2), t.round(8), 3, ink);
                 }
@@ -2303,7 +2474,7 @@ impl SongLanes {
                 }
                 // The tag on where it lands, says the bar it starts on.
                 if let Some((l, start)) = at {
-                    let text = format!("bar {}", start / bar + 1);
+                    let text = self.at_text(start);
                     self.paint_tag(cx, l.x, l.y - 24, &text);
                 }
             }
@@ -2369,6 +2540,18 @@ impl SongLanes {
                 }
             }
             Held::Tempo { k: None, .. } | Held::Ruler => {}
+            Held::Box => {
+                // The box, and the pick's outline on every block it
+                // touches.
+                let b = self.box_rect(r, gr);
+                for (_, br) in self.blocks_in_view(&g) {
+                    if br.intersect(b).w > 0 && br.intersect(b).h > 0 {
+                        cx.canvas.stroke_round_rect(br, t.round(6), 2, t.accent);
+                    }
+                }
+                cx.canvas.fill_rect(b, t.accent.with_alpha(30));
+                cx.canvas.stroke_round_rect(b, 2, 1, t.accent);
+            }
             Held::MarkerGrip { k, .. } => {
                 // A line where the marker lands, and a tag saying where
                 // its section will start; the blocks stay as they are.
@@ -2582,11 +2765,41 @@ impl Widget for SongLanes {
         // The view chip and the title, the legend, then Rec song.
         let rec = self.rec_rect(r);
         view_title(cx, r, ArrangeView::Song, &self.title, rec.x - 12);
+        // The zoom chip (6.4): "Bars", then 4 to 64, the one shown lit.
+        let zoom = self.zoom_rect(r);
+        cx.canvas.fill_round_rect(zoom, t.round(10), t.raised);
+        cx.text(
+            FontId::Sans,
+            t.size_small - 1.0,
+            Rect::new(zoom.x + 10, zoom.y, ZOOM_LABEL_W - 10, zoom.h),
+            Align::Left,
+            t.text_dim,
+            "Bars",
+        );
+        for (k, n) in ZOOMS.iter().enumerate() {
+            let b = self.zoom_part_rect(r, k);
+            let ink = if *n == self.bars {
+                cx.canvas
+                    .fill_round_rect(b.inset_xy(2, 2), t.round(8), t.accent);
+                t.ink_on(t.accent)
+            } else {
+                t.text
+            };
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                b,
+                Align::Center,
+                ink,
+                &n.to_string(),
+            );
+        }
         let head = r.inset(14).take_top(26).0;
+        let legend_x = zoom.right() + 12;
         cx.text(
             FontId::Sans,
             t.size_small,
-            Rect::new(head.x, head.y, rec.x - head.x - 12, head.h),
+            Rect::new(legend_x, head.y, (rec.x - legend_x - 12).max(0), head.h),
             Align::Right,
             if self.alert { t.warn } else { t.text_dim },
             &self.legend,
@@ -2594,7 +2807,27 @@ impl Widget for SongLanes {
         rec_song_pill(cx, rec, self.rec);
         let g = self.geo(r);
         // The ruler: bar numbers, then the markers' names over them.
-        let step = if self.bars > 16 { 4 } else { 1 };
+        // Every bar's number up to 16 bars, every 4th at 32, every 8th
+        // at 64 (6.4); at 4 and 8 bars a faint line on each beat too.
+        let step = match self.bars {
+            ..=16 => 1,
+            17..=32 => 4,
+            _ => 8,
+        };
+        if self.bars <= 8 && self.beat > 0 && self.beat < self.bar {
+            let (from, to) = self.ticks_shown();
+            let mut at = from;
+            while at < to {
+                if at % self.bar.max(1) != 0 {
+                    let x = self.x_of(g.ruler, at);
+                    cx.canvas.fill_rect(
+                        Rect::new(x, g.lanes.y, 1, g.lanes.h),
+                        t.outline.mix(t.surface, 0.6),
+                    );
+                }
+                at += self.beat;
+            }
+        }
         for k in 0..=self.bars {
             let bar = self.first_bar + k;
             if bar % step != 0 {
@@ -2653,10 +2886,17 @@ impl Widget for SongLanes {
                     }
                 }
             }
+            // Cut short before the next marker, so names never run into
+            // each other zoomed out (6.4).
+            let room = self
+                .markers
+                .get(k + 1)
+                .map_or(120, |m| (self.x_of(g.ruler, m.0) - x - 6).min(120))
+                .max(0);
             cx.text(
                 FontId::Bold,
                 t.size_small - 2.0,
-                Rect::new(x + 4, g.ruler.y + 12, 120, 14),
+                Rect::new(x + 4, g.ruler.y + 12, room, 14),
                 Align::Left,
                 ink,
                 name,
@@ -2765,6 +3005,9 @@ impl Widget for SongLanes {
                 cx.canvas
                     .fill_round_rect(Rect::new(br.right() - 10, br.y + 4, 6, 6), 3, t.text);
             }
+            if self.picks.contains(&b.index) {
+                cx.canvas.stroke_round_rect(br, t.round(6), 2, t.accent);
+            }
             if self.selected == Some(b.index) {
                 cx.canvas.stroke_round_rect(br, t.round(6), 2, t.accent);
                 // Its end grip: two bars inside its right end.
@@ -2856,7 +3099,9 @@ impl Widget for SongLanes {
         }
         let audio = self.region.is_some();
         let selected = self.selected.is_some();
-        // A tempo point picked: Ramp (lit while it ramps) and Delete.
+        // Several picked (6.5): Delete and Duplicate take them all, Make
+        // unique only one block.
+        let several = !self.picks.is_empty();
         let tempo = self
             .tempo_pick
             .and_then(|i| self.tempo.get(i))
@@ -2867,7 +3112,10 @@ impl Widget for SongLanes {
                 continue;
             }
             let lit = (k == 1 && self.on && !audio) || (k == 4 && tempo.is_some_and(|p| p.2));
-            let live = audio || tempo.is_some() || section || !(k >= 4 && !selected);
+            let live = audio
+                || tempo.is_some()
+                || section
+                || !(k >= 4 && !selected && !(k == 5 && several));
             let fill = if lit {
                 t.good
             } else if live {
@@ -2901,7 +3149,7 @@ impl Widget for SongLanes {
             cx.text(FontId::Bold, t.size_small, *br, Align::Center, ink, word);
         }
         if let Some(d) = self.duplicate_rect(r) {
-            let (fill, ink) = if selected {
+            let (fill, ink) = if selected || several {
                 (t.raised, t.text)
             } else {
                 (t.surface, t.text_faint)
@@ -2965,13 +3213,15 @@ impl Widget for SongLanes {
                 } else {
                     ("button", SONG_BUTTONS[k])
                 };
-                Target::tap(id, k, word, *b)
+                // Make unique takes one block, not several (6.5).
+                let one = id == "button" && k == 4 && !self.picks.is_empty();
+                Target::tap(id, k, word, *b).disabled_if(one)
             })
             .collect();
         if let Some(d) = self.duplicate_rect(r) {
             out.push(
                 Target::tap("button", DUPLICATE, "Duplicate", d)
-                    .disabled_if(self.selected.is_none()),
+                    .disabled_if(self.selected.is_none() && self.picks.is_empty()),
             );
         }
         // The tempo lane: each point, and the lane after the last (a tap
@@ -2993,6 +3243,14 @@ impl Widget for SongLanes {
             out.push(Target::tap("tempo-lane", 0, "Tempo", free));
         }
         out.push(Target::tap("rec-song", 0, "Rec song", self.rec_rect(r)));
+        // The zoom chip (6.4): the bars shown are lit, a tap on them
+        // changes nothing.
+        for (k, n) in ZOOMS.iter().enumerate() {
+            out.push(
+                Target::tap("zoom", k, format!("{n} bars"), self.zoom_part_rect(r, k))
+                    .disabled_if(*n == self.bars),
+            );
+        }
         let chip = self.view_rect(r);
         out.push(Target::tap(
             "view",
@@ -3150,7 +3408,7 @@ impl Widget for SongLanes {
                             gr.held = Held::Slide { index };
                         }
                     }
-                    let slides = matches!(gr.held, Held::Slide { .. });
+                    let slides = matches!(gr.held, Held::Slide { .. } | Held::Box);
                     let edge = if gr.lifted && !slides {
                         self.edge_at(r, x)
                     } else {
@@ -3283,6 +3541,9 @@ impl Widget for SongLanes {
         if self.rec_rect(r).contains(x, y) {
             return Some(EventKind::Tab(REC));
         }
+        if let Some(k) = (0..ZOOMS.len()).find(|&k| self.zoom_part_rect(r, k).contains(x, y)) {
+            return Some(EventKind::Tab(ZOOM + k));
+        }
         match view_part_at(self.view_rect(r), x, y) {
             Some(ArrangeView::Clips) => return Some(EventKind::Tab(CLIPS)),
             Some(ArrangeView::List) => return Some(EventKind::Tab(LIST)),
@@ -3379,7 +3640,11 @@ impl Widget for SongLanes {
                 });
             }
         }
-        g.lanes.contains(x, y).then_some(EventKind::Select(NONE))
+        // Empty space: a tap picks nothing, a drag draws a box (6.5).
+        if g.lanes.contains(x, y) {
+            self.grip = Some(Grip::new(Held::Box, x, y));
+        }
+        None
     }
 }
 
@@ -3455,8 +3720,11 @@ mod tests {
         assert!(s.block_rect(r, &s.blocks[1].clone()).is_some());
         assert!(s.block_rect(r, &s.blocks[0].clone()).is_none());
         let empty = s.block_rect(r, &s.blocks[1].clone()).unwrap();
+        // Empty space picks nothing as the finger lifts (a drag would
+        // draw a box, 6.5).
+        assert_eq!(s.touch(1, Touch::Down, empty.x - 20, empty.y + 3, r), None);
         assert_eq!(
-            s.touch(1, Touch::Down, empty.x - 20, empty.y + 3, r),
+            s.touch(1, Touch::Up, empty.x - 20, empty.y + 3, r),
             Some(EventKind::Select(NONE))
         );
         let buttons = s.button_rects(r);
@@ -3554,6 +3822,127 @@ mod tests {
         assert_eq!(s.touch(1, Touch::Move, right - 1, y, r), None);
         s.touch(1, Touch::Cancel, right, y, r);
         assert!(s.grip.is_none());
+    }
+
+    /// Several blocks (6.5): a box dragged across empty space reports the
+    /// tracks and ticks it covers; a picked one dragged reports its own
+    /// landing, the app moving the rest with it; Make unique is faint.
+    #[test]
+    fn a_box_picks_blocks_and_one_picked_block_carries_the_others() {
+        let mut s = lanes();
+        let r = Rect::new(12, 140, 814, 534);
+        let g = s.geo(r);
+        let bar_px = (r.w - 28 - NAME_W) / 16;
+        let x0 = g.lanes.x + NAME_W;
+        let drums = s.block_rect(r, &s.blocks[0].clone()).unwrap();
+        let lane_h = g.lane_h;
+        // From bar 6 on the drums' lane, back to bar 3 on the bass's.
+        let (fx, fy) = (x0 + 5 * bar_px + 4, drums.y + 4);
+        assert_eq!(s.touch(1, Touch::Down, fx, fy, r), None);
+        let (tx, ty) = (x0 + 2 * bar_px + 4, drums.y + lane_h + 4);
+        assert_eq!(s.touch(1, Touch::Move, tx, ty, r), None, "no edge scroll");
+        let Some(EventKind::Span { index, from, to }) = s.touch(1, Touch::Up, tx, ty, r) else {
+            panic!("a box");
+        };
+        assert_eq!(box_tracks(index), (0, 1));
+        assert!(index >= BOX);
+        assert!((from - (2 * 3840 + 3840 / 20)).abs() < 3840 / 4, "{from}");
+        assert!((to - (5 * 3840 + 3840 / 20)).abs() < 3840 / 4, "{to}");
+        // Two picked: each has the pick's outline; a drag of one lands
+        // as one block's would, and the other's place shows under it.
+        s.picks = vec![0, 1];
+        s.first_bar = 0;
+        let b = s.block_rect(r, &s.blocks[0].clone()).unwrap();
+        let (x, y) = (b.x + 10, b.y + b.h / 2);
+        s.touch(1, Touch::Down, x, y, r);
+        s.touch(1, Touch::Move, x + 2 * bar_px + 6, y + lane_h, r);
+        // Painted mid-drag (the others' cards and landings) without a
+        // fault.
+        let mut c = mpfree_ui::SoftCanvas::new(r.right() + 20, r.bottom() + 20);
+        let theme = mpfree_ui::Theme::dark();
+        let mut fonts = mpfree_ui::Fonts::embedded();
+        s.paint(
+            &mut PaintCx {
+                canvas: &mut c,
+                theme: &theme,
+                fonts: &mut fonts,
+            },
+            r,
+        );
+        assert_eq!(
+            s.touch(1, Touch::Up, x + 2 * bar_px + 6, y + lane_h, r),
+            Some(EventKind::Place {
+                index: 0,
+                row: 1,
+                at: 2 * 3840
+            })
+        );
+        // Make unique takes one block: faint with several picked;
+        // Duplicate isn't.
+        let targets = s.targets(r);
+        let unique = targets.iter().find(|t| t.id == "button" && t.index == 4);
+        assert!(unique.is_some_and(|t| !t.enabled), "{unique:?}");
+        let dup = targets.iter().find(|t| t.index == DUPLICATE);
+        assert!(dup.is_some_and(|t| t.enabled), "{dup:?}");
+        // A box under the last lane picks nothing, as a tap there does.
+        s.picks.clear();
+        s.touch(1, Touch::Down, fx, g.lanes.bottom() - 4, r);
+        s.touch(1, Touch::Move, fx + 30, g.lanes.bottom() - 30, r);
+        assert_eq!(
+            s.touch(1, Touch::Up, fx + 30, g.lanes.bottom() - 30, r),
+            Some(EventKind::Select(NONE))
+        );
+    }
+
+    /// The zoom chip (6.4): 4 to 64 bars, the shown one lit and faint as
+    /// a target; up close a drag snaps to the beat and the tag says it.
+    #[test]
+    fn the_zoom_chip_shows_4_to_64_bars_and_snaps_to_the_beat_up_close() {
+        let mut s = lanes();
+        let r = Rect::new(12, 140, 814, 534);
+        let chip = s.view_rect(r);
+        let zoom = s.zoom_rect(r);
+        assert!(
+            zoom.x > chip.right() && zoom.right() < s.rec_rect(r).x,
+            "{zoom:?}"
+        );
+        for k in 0..ZOOMS.len() {
+            let p = s.zoom_part_rect(r, k);
+            assert_eq!(
+                s.touch(1, Touch::Down, p.x + 3, p.y + 3, r),
+                Some(EventKind::Tab(ZOOM + k))
+            );
+        }
+        let lit: Vec<_> = s
+            .targets(r)
+            .into_iter()
+            .filter(|t| t.id == "zoom" && !t.enabled)
+            .map(|t| t.index)
+            .collect();
+        assert_eq!(lit, [2], "16 bars shown");
+        // Four bars: a bar is a quarter of the lane, and a block dragged a
+        // beat and a bit lands on beat 2.
+        s.bars = 4;
+        let b = s.block_rect(r, &s.blocks[0].clone()).unwrap();
+        let lane_w = r.w - 28 - NAME_W;
+        assert!((b.w - lane_w).abs() <= 3, "four bars fill the lane: {b:?}");
+        let beat_px = lane_w / 16;
+        let (x, y) = (b.x + 10, b.y + b.h / 2);
+        s.touch(1, Touch::Down, x, y, r);
+        s.touch(1, Touch::Move, x + beat_px + 4, y, r);
+        assert_eq!(s.at_text(960), "bar 1 beat 2");
+        assert_eq!(s.at_text(2 * 3840), "bar 3");
+        assert_eq!(
+            s.touch(1, Touch::Up, x + beat_px + 4, y, r),
+            Some(EventKind::Place {
+                index: 0,
+                row: 0,
+                at: 960
+            })
+        );
+        // Sixty-four: back to the bar.
+        s.bars = 64;
+        assert_eq!(s.snap(), 3840);
     }
 
     #[test]

@@ -10394,6 +10394,7 @@ impl Player {
             // The Song view with a block, a section or a tempo point
             // picked: the push grabs it for the wheel, and lets go again.
             let picked = self.time.selected.is_some()
+                || !self.time.picks.is_empty()
                 || self.time.section.is_some()
                 || self.time.tempo_pick.is_some();
             let song = self.view == View::Arrange
@@ -10402,7 +10403,7 @@ impl Player {
             if song && ((on && picked) || (!on && self.song_grab)) {
                 self.song_grab = on;
                 let name = self.song_picked_name();
-                let each = if self.time.selected.is_some() {
+                let each = if self.time.selected.is_some() || !self.time.picks.is_empty() {
                     "a beat"
                 } else {
                     "a section"
@@ -10538,6 +10539,9 @@ impl Player {
         if let Some(p) = st.selected.and_then(|i| st.placements.get(i)) {
             return p.name.clone();
         }
+        if !st.picks.is_empty() {
+            return format!("the {} blocks", st.picks.len());
+        }
         st.section
             .and_then(|k| st.markers.get(k))
             .map_or_else(|| "it".to_string(), |m| m.1.clone())
@@ -10569,6 +10573,23 @@ impl Player {
                 index,
                 track: p.track,
                 start,
+                copy: false,
+            })
+        } else if !st.picks.is_empty() {
+            // Several picked (6.5): they all move, none before bar 1.
+            let beat = st.transport.meter.beat_ticks();
+            let first = st
+                .picks
+                .iter()
+                .filter_map(|&i| st.placements.get(i))
+                .map(|p| p.start)
+                .min()
+                .unwrap_or(0);
+            let by = (i64::from(d) * beat).max(-first);
+            (by != 0).then(|| TimeAction::MovePlacements {
+                set: st.picks.clone(),
+                lanes: 0,
+                by,
                 copy: false,
             })
         } else if let Some(k) = st.section.filter(|&k| k < st.markers.len()) {
@@ -14688,12 +14709,14 @@ impl Player {
             }
             (time_view::CLIPS, EventKind::Toggle(_))
             | (time_view::NOTES, EventKind::Tab(_) | EventKind::View { .. })
+            | (time_view::SONG, EventKind::Tab(_))
             | (
                 time_view::RECORD | time_view::CLIP_CARD | time_view::SCENE_CARD,
                 EventKind::Tab(_),
             ) if self.time_page.page_tracks(&ev, &self.time) => {
-                // The grid's pager and the Record panel's tabs: the page's
-                // own, nothing for the app but the hint line.
+                // The grid's pager, the Record panel's tabs, and the Song
+                // view's zoom and its bars scrolled at an edge (6.4): the
+                // page's own, nothing for the app but the hint line.
                 self.time_page.update(&mut self.ui, &self.time);
                 self.refresh_hint();
                 None
@@ -14801,6 +14824,24 @@ impl Player {
                         }
                         // SHIFT + "+ Track": a Loop track.
                         TimeAction::AddTrack if fine && plus => TimeAction::AddLoopTrack,
+                        // SHIFT + a tap on a block adds it to what is
+                        // picked, or takes it out; SHIFT as a box lifts adds
+                        // its blocks; several dragged with SHIFT are copied
+                        // (6.5).
+                        TimeAction::SelectPlacement(Some(i)) if fine => {
+                            TimeAction::PickPlacement(i)
+                        }
+                        TimeAction::PickPlacements { set, .. } => {
+                            TimeAction::PickPlacements { set, add: fine }
+                        }
+                        TimeAction::MovePlacements { set, lanes, by, .. } => {
+                            TimeAction::MovePlacements {
+                                set,
+                                lanes,
+                                by,
+                                copy: fine,
+                            }
+                        }
                         // SHIFT held as the finger lifts: a copy, not a move.
                         TimeAction::DropClip { from, to, .. } => TimeAction::DropClip {
                             from,
@@ -19707,6 +19748,97 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             Err(e) => eprintln!("{name} sample: {e}"),
         }
     }
+    // Several blocks picked (the Arrange refactor's 6.5): Bass B, Walk,
+    // Hook and Hook B, each outlined, the hint line saying what they do
+    // together; then Rhodes B and Chop B picked and Rhodes B dragged four
+    // bars on, Chop B's card going with it; then a box dragged from bar
+    // 15 on the Keys lane back to bar 7 on the Hats lane, outlining the
+    // blocks it touches.
+    for name in [
+        "arrange-song-picks",
+        "arrange-song-picks-drag",
+        "arrange-song-box",
+    ] {
+        match mpfree_time_ui::sample::busy_song_state() {
+            Ok(mut state) => {
+                let pick = |n: &str| state.placements.iter().position(|b| b.name == n);
+                state.selected = None;
+                let names: &[&str] = match name {
+                    "arrange-song-picks" => &["Bass B", "Walk", "Hook", "Hook B"],
+                    "arrange-song-picks-drag" => &["Rhodes B", "Chop B"],
+                    _ => &[],
+                };
+                let mut picks: Vec<usize> = names.iter().filter_map(|n| pick(n)).collect();
+                picks.sort_unstable();
+                state.picks = picks;
+                let mut p = quiet_player(fonts());
+                busy_sounds(&mut p);
+                p.apply(ToUi::Time(Box::new(state)));
+                p.apply(ToUi::Show(View::Arrange));
+                if name == "arrange-song-picks" {
+                    out.push((name, p));
+                    continue;
+                }
+                // A drag or a box: laid out first, to find where to touch.
+                let (w, h) = SCREEN;
+                let mut c = SoftCanvas::new(w, h);
+                p.ui.paint(&mut c);
+                let r = p.ui.rect_of(time_view::SONG);
+                let lanes =
+                    p.ui.get::<mpfree_time_ui::song::SongLanes>(time_view::SONG)
+                        .cloned();
+                if let (Some(r), Some(l)) = (r, lanes) {
+                    let bar_px = (r.w - 28 - mpfree_time_ui::song::NAME_W) / 16;
+                    let x_bar = |k: i32| r.x + 14 + mpfree_time_ui::song::NAME_W + k * bar_px;
+                    let rect_of = |n: &str| {
+                        l.blocks
+                            .iter()
+                            .find(|b| b.name == n)
+                            .and_then(|b| l.block_rect(r, b))
+                    };
+                    match name {
+                        "arrange-song-picks-drag" => {
+                            if let Some(b) = rect_of("Rhodes B") {
+                                let (x, y) = (b.x + 30, b.y + b.h / 2);
+                                p.touch(902, Touch::Down, x, y);
+                                p.touch(902, Touch::Move, x + 4 * bar_px + 4, y);
+                            }
+                        }
+                        "arrange-song-box" => {
+                            if let (Some(keys), Some(hats)) =
+                                (rect_of("Rhodes B"), rect_of("Shaker"))
+                            {
+                                p.touch(903, Touch::Down, x_bar(14) + 10, keys.y + keys.h / 2);
+                                p.touch(903, Touch::Move, x_bar(6) + 10, hats.y + hats.h / 2);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                out.push((name, p));
+            }
+            Err(e) => eprintln!("{name} sample: {e}"),
+        }
+    }
+    // The zoom chip (6.4): the busy song at 4 bars (a faint line on each
+    // beat) and at 64 (the bar numbers every 8 bars).
+    for (name, bars) in [("arrange-song-zoom-4", 4), ("arrange-song-zoom-64", 64)] {
+        match mpfree_time_ui::sample::busy_song_state() {
+            Ok(mut state) => {
+                state.selected = None;
+                let mut p = quiet_player(fonts());
+                busy_sounds(&mut p);
+                p.time_page.song_bars = bars;
+                if bars == 4 {
+                    p.time_page.first_bar = 4;
+                }
+                p.apply(ToUi::Time(Box::new(state)));
+                p.apply(ToUi::Show(View::Arrange));
+                out.push((name, p));
+            }
+            Err(e) => eprintln!("{name} sample: {e}"),
+        }
+    }
     // The same song with the Verse picked by a tap on its name (Arrange
     // 3.3): its grip left of the marker and + Bar, Rename, Remove marker
     // and Delete bars in place of the clip buttons.
@@ -21829,6 +21961,96 @@ mod tests {
             })]
         );
         p.apply(ToUi::Rows(RowKey::Editing(false)));
+    }
+
+    /// Several blocks (6.5): SHIFT + a tap adds a block to the pick, a box
+    /// dragged with SHIFT adds its blocks, several dragged with SHIFT are
+    /// copied, and the wheel's push grabs them all. The zoom chip (6.4)
+    /// changes the bars shown, on the page alone.
+    #[test]
+    fn shift_picks_several_blocks_and_the_zoom_chip_shows_more_bars() {
+        use crate::app::RowKey;
+        use mpfree_time_ui::song::SongLanes;
+        let mut p = sample_clips(Fonts::embedded()).unwrap();
+        p.time.song_view = true;
+        let block = |track, start, name: &str| time_view::PlacementInfo {
+            track,
+            start,
+            length: 3840,
+            name: name.into(),
+            unique: false,
+        };
+        p.time.placements = vec![block(0, 0, "Beat"), block(1, 3840, "Bass")].into();
+        p.time_page.update(&mut p.ui, &p.time);
+        p.ui.paint(&mut SoftCanvas::new(1280, 800));
+        let area = p.ui.rect_of(time_view::SONG).unwrap();
+        let lanes = p.ui.get::<SongLanes>(time_view::SONG).unwrap().clone();
+        let tap = |p: &mut Player, r: mpfree_ui::Rect| {
+            let (x, y) = (r.x + 8, r.y + r.h / 2);
+            p.touch(1, Touch::Down, x, y)
+                .or(p.touch(1, Touch::Up, x, y))
+        };
+        let bass = lanes.block_rect(area, &lanes.blocks[1]).unwrap();
+        p.status.shift = true;
+        assert_eq!(
+            tap(&mut p, bass),
+            Some(FromUi::Time(TimeAction::PickPlacement(1)))
+        );
+        // A box from right of the bass's block back over both: added.
+        let (x0, y0) = (bass.right() + 40, bass.bottom() - 4);
+        assert_eq!(p.touch(1, Touch::Down, x0, y0), None);
+        p.touch(1, Touch::Move, x0 - 200, y0 - 60);
+        let a = p.touch(1, Touch::Up, x0 - 200, y0 - 60);
+        assert!(
+            matches!(
+                &a,
+                Some(FromUi::Time(TimeAction::PickPlacements { add: true, .. }))
+            ),
+            "{a:?}"
+        );
+        // Both picked: the beat's dragged a bar on with SHIFT copies both.
+        p.time.picks = vec![0, 1];
+        p.time_page.update(&mut p.ui, &p.time);
+        let beat = lanes.block_rect(area, &lanes.blocks[0]).unwrap();
+        let bar_px = beat.w;
+        let (x, y) = (beat.x + 8, beat.y + beat.h / 2);
+        p.touch(1, Touch::Down, x, y);
+        p.touch(1, Touch::Move, x + 2 * bar_px + 4, y);
+        assert_eq!(
+            p.touch(1, Touch::Up, x + 2 * bar_px + 4, y),
+            Some(FromUi::Time(TimeAction::MovePlacements {
+                set: vec![0, 1],
+                lanes: 0,
+                by: 2 * 3840,
+                copy: true
+            }))
+        );
+        p.status.shift = false;
+        // The wheel's push grabs them; a turn moves both a beat.
+        p.take_actions();
+        p.apply(ToUi::Rows(RowKey::Editing(true)));
+        let told = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(told.contains("the 2 blocks a beat at a time"), "{told}");
+        p.apply(ToUi::Rows(RowKey::Step(1)));
+        assert_eq!(
+            p.take_actions(),
+            vec![FromUi::Time(TimeAction::MovePlacements {
+                set: vec![0, 1],
+                lanes: 0,
+                by: 960,
+                copy: false
+            })]
+        );
+        // Back before bar 1 they can't go: nothing.
+        p.apply(ToUi::Rows(RowKey::Step(-1)));
+        assert!(p.take_actions().is_empty());
+        p.apply(ToUi::Rows(RowKey::Editing(false)));
+        // The zoom chip's 64: the page's own, no action, 64 bars shown.
+        let z = lanes.zoom_part_rect(area, 4);
+        assert_eq!(tap(&mut p, z), None);
+        assert!(p.take_actions().is_empty());
+        let shown = p.ui.get::<SongLanes>(time_view::SONG).unwrap();
+        assert_eq!(shown.bars, 64);
     }
 
     /// Perform's guard (sequencer decision 5): the Song view's Delete

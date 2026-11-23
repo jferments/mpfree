@@ -7366,6 +7366,7 @@ fn time_action(
             | TimeAction::MovePlacements { .. }
             | TimeAction::DuplicatePlacements(_)
             | TimeAction::DeletePlacements(_)
+            | TimeAction::SplitPlacements(_)
             | TimeAction::Perform(_)
     ) || matches!(a, TimeAction::SongTempo(e) if !matches!(e, TempoEdit::Pick(_)))
         // A linked song list's step edits are the song's (Arrange 4b.2).

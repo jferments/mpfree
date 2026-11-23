@@ -348,6 +348,9 @@ pub struct TimeControl {
     /// song list step picked); none follows the scene playing.
     scene_pick: Option<usize>,
     selected: Option<usize>,
+    /// The blocks picked together on the Song view (6.5), in order: two
+    /// or more, `selected` being None while they are; empty otherwise.
+    picks: Vec<usize>,
     /// The audio region picked on the Song view; it and `selected` are
     /// never both set (`TimeState::pick`).
     region: Option<RegionId>,
@@ -638,6 +641,7 @@ impl TimeControl {
             list_pick: None,
             scene_pick: None,
             selected: None,
+            picks: Vec::new(),
             region: None,
             section: None,
             tempo_pick: None,
@@ -2065,7 +2069,8 @@ impl TimeControl {
             Some(
                 SongChange::SeveralMoved { blocks, .. }
                 | SongChange::SeveralCopied { blocks, .. }
-                | SongChange::SeveralDeleted { blocks },
+                | SongChange::SeveralDeleted { blocks }
+                | SongChange::SeveralSplit { blocks, .. },
             ) => return format!("{} · {blocks} blocks in the song", r.short()),
             Some(SongChange::Scenes { .. }) => return format!("{} → song", r.short()),
             Some(SongChange::List) => return format!("{} · the song list", r.short()),
@@ -3150,6 +3155,7 @@ impl TimeControl {
                     if row.is_some_and(|r| r.song.is_some()) {
                         // The song's blocks and sections changed places.
                         self.selected = None;
+                        self.picks.clear();
                         self.section = None;
                         self.includes.timeline = next_timeline();
                     }
@@ -3188,6 +3194,7 @@ impl TimeControl {
                     }
                     if row.is_some_and(|r| r.song.is_some()) {
                         self.selected = None;
+                        self.picks.clear();
                         self.section = None;
                         self.includes.timeline = next_timeline();
                     }
@@ -4067,7 +4074,29 @@ impl TimeControl {
                 }
                 Ok(perform_line(on).into())
             }
+            TimeAction::PickPlacement(i) => {
+                if i >= self.project.arrangement.placements.len() {
+                    return Err("pick: no such block".into());
+                }
+                let mut set = self.picked();
+                match set.iter().position(|&j| j == i) {
+                    Some(k) => {
+                        set.remove(k);
+                    }
+                    None => set.push(i),
+                }
+                self.set_picks(set);
+                Ok(String::new())
+            }
+            TimeAction::PickPlacements { set, add } => {
+                let blocks = self.project.arrangement.placements.len();
+                let mut picked = if add { self.picked() } else { Vec::new() };
+                picked.extend(set.into_iter().filter(|&i| i < blocks));
+                self.set_picks(picked);
+                Ok(String::new())
+            }
             TimeAction::SelectPlacement(i) => {
+                self.picks.clear();
                 self.selected = i.filter(|&i| i < self.project.arrangement.placements.len());
                 self.region = None;
                 self.section = None;
@@ -4079,6 +4108,7 @@ impl TimeControl {
                 self.section = k.filter(|&k| k < self.project.arrangement.markers.len());
                 if self.section.is_some() {
                     self.selected = None;
+                    self.picks.clear();
                     self.region = None;
                     self.tempo_pick = None;
                 }
@@ -4090,6 +4120,7 @@ impl TimeControl {
                 self.region = r;
                 if r.is_some() {
                     self.selected = None;
+                    self.picks.clear();
                     self.section = None;
                     self.tempo_pick = None;
                 }
@@ -4103,6 +4134,7 @@ impl TimeControl {
                 self.tempo_pick = k.filter(|&k| k < self.project.arrangement.tempo.len());
                 if self.tempo_pick.is_some() {
                     self.selected = None;
+                    self.picks.clear();
                     self.region = None;
                     self.section = None;
                 }
@@ -4186,6 +4218,7 @@ impl TimeControl {
             | TimeAction::MovePlacements { .. }
             | TimeAction::DuplicatePlacements(_)
             | TimeAction::DeletePlacements(_)
+            | TimeAction::SplitPlacements(_)
             | TimeAction::StretchPlacement { .. }
             | TimeAction::MoveSection { .. }
             | TimeAction::SongBars(_)
@@ -4221,6 +4254,9 @@ impl TimeControl {
                         a,
                         TimeAction::ListLoop(_) | TimeAction::ListToSong | TimeAction::ListLink(_)
                     );
+                // The blocks picked together go with the edit, unless it
+                // picks them again where they are now (6.5).
+                let picks = std::mem::take(&mut self.picks);
                 let edited = if list {
                     self.edit_list(a, bar)
                 } else {
@@ -4230,6 +4266,7 @@ impl TimeControl {
                     Ok(done) => done,
                     Err(e) => {
                         self.project.arrangement = before;
+                        self.picks = picks;
                         return Err(e);
                     }
                 };
@@ -4243,6 +4280,7 @@ impl TimeControl {
                 };
                 if let Err(e) = self.compile() {
                     self.project.arrangement = before;
+                    self.picks = picks;
                     if converts {
                         self.report = None;
                     }
@@ -4284,6 +4322,35 @@ impl TimeControl {
         self.steps_changed = true;
         self.later_note = Some(format!("undo: take {n} thrown away"));
         true
+    }
+
+    /// The blocks picked on the Song view: the set picked together, else
+    /// the one selected, else none (6.5).
+    fn picked(&self) -> Vec<usize> {
+        if self.picks.is_empty() {
+            self.selected.into_iter().collect()
+        } else {
+            self.picks.clone()
+        }
+    }
+
+    /// Blocks `set` picked (6.5): one is the block selected, as a tap
+    /// picks it, and two or more are picked together, none selected. The
+    /// region, section or tempo point picked is let go.
+    fn set_picks(&mut self, mut set: Vec<usize>) {
+        set.sort_unstable();
+        set.dedup();
+        self.selected = None;
+        self.picks.clear();
+        match set.len() {
+            0 => {}
+            1 => self.selected = Some(set[0]),
+            _ => self.picks = set,
+        }
+        self.region = None;
+        self.section = None;
+        self.tempo_pick = None;
+        self.changed = true;
     }
 
     /// Rec song armed or not, with what plays now.
@@ -4407,6 +4474,7 @@ impl TimeControl {
             .map_err(|e| format!("rec song: {e:?}"))?;
         // New placements shift the indices.
         self.selected = None;
+        self.picks.clear();
         self.section = None;
         // Recorded over a section that followed its scene: the song's own
         // now (4b.3).
@@ -4525,6 +4593,7 @@ impl TimeControl {
                     .map_err(|_| refused(at))?;
                 self.tempo_pick = picked(song, at);
                 (self.selected, self.region, self.section) = (None, None, None);
+                self.picks.clear();
                 Ok((
                     format!(
                         "tempo: a point at {}, {bpm:.1} BPM (UNDO takes it back)",
@@ -4841,6 +4910,7 @@ impl TimeControl {
                 let start = song.markers.get(now).map_or(0, |m| m.at);
                 self.section = Some(now);
                 self.selected = None;
+                self.picks.clear();
                 Ok(if copy {
                     (
                         format!(
@@ -4899,6 +4969,7 @@ impl TimeControl {
                     _ => None,
                 };
                 self.selected = None;
+                self.picks.clear();
                 self.tempo_pick = None;
                 Ok((
                     if inserted {
@@ -5068,7 +5139,8 @@ impl TimeControl {
             } => {
                 let n = distinct(&set);
                 let what = blocks_said(n);
-                song.move_placements(tracks, &set, lanes, by, copy)
+                let moved = song
+                    .move_placements(tracks, &set, lanes, by, copy)
                     .map_err(|e| match e {
                         ModelError::BadLoop => format!(
                             "song: the {what} stay where they are: a loop's block can't go to another lane, nor a clip's onto a Loop track's"
@@ -5080,8 +5152,9 @@ impl TimeControl {
                             "song: the {what} don't fit there: one would run into another block, or leave the song"
                         ),
                     })?;
-                self.selected = None;
-                self.section = None;
+                // They stay picked where they are now (the copies, for a
+                // copy), for the wheel or another drag.
+                self.set_picks(moved);
                 let lanes_said = match lanes {
                     0 => String::new(),
                     1 | -1 => format!(" a lane {}", if lanes > 0 { "down" } else { "up" }),
@@ -5124,13 +5197,13 @@ impl TimeControl {
                     set.iter().filter_map(|&i| song.placements.get(i)).collect();
                 let by = blocks.iter().map(|p| p.end()).max().unwrap_or(0)
                     - blocks.iter().map(|p| p.start).min().unwrap_or(0);
-                song.duplicate_placements(tracks, &set).map_err(|_| {
+                let copies = song.duplicate_placements(tracks, &set).map_err(|_| {
                     format!(
                         "song: no room after the {what} for their copies: a block is in the way"
                     )
                 })?;
-                self.selected = None;
-                self.section = None;
+                // The copies are picked: Duplicate again repeats them on.
+                self.set_picks(copies);
                 Ok((
                     format!("song: copies of {n} {what} right after them (UNDO takes them back)"),
                     Some(SongChange::SeveralCopied {
@@ -5140,11 +5213,35 @@ impl TimeControl {
                     }),
                 ))
             }
+            TimeAction::SplitPlacements(set) => {
+                let after = song.split_these(tracks, &set, playhead).map_err(|_| {
+                    format!(
+                        "song: none of the {} picked plays across {} (Split cuts at the playhead)",
+                        blocks_said(distinct(&set)),
+                        at(playhead)
+                    )
+                })?;
+                let n = after.len();
+                // The parts after are picked: Split again cuts them further.
+                self.set_picks(after);
+                Ok((
+                    format!(
+                        "song: {n} {} split at {} (UNDO takes it back)",
+                        blocks_said(n),
+                        at(playhead)
+                    ),
+                    Some(SongChange::SeveralSplit {
+                        blocks: n,
+                        at: playhead,
+                    }),
+                ))
+            }
             TimeAction::DeletePlacements(set) => {
                 let n = song
                     .remove_placements(&set)
                     .map_err(|_| "delete: no such blocks".to_string())?;
                 self.selected = None;
+                self.picks.clear();
                 Ok((
                     format!("song: {n} {} deleted (UNDO puts them back)", blocks_said(n)),
                     Some(SongChange::SeveralDeleted { blocks: n }),
@@ -5153,6 +5250,7 @@ impl TimeControl {
             TimeAction::DeletePlacement(i) => {
                 let p = song.remove(i).ok_or("delete: no such placement")?;
                 self.selected = None;
+                self.picks.clear();
                 Ok((
                     format!("placement {} deleted (UNDO puts it back)", i + 1),
                     Some(SongChange::Deleted {
@@ -5378,6 +5476,7 @@ impl TimeControl {
         self.project.arrangement = song;
         // New placements shift the indices.
         self.selected = None;
+        self.picks.clear();
         self.section = None;
         self.report = report(title, made, lead.into(), &differences, bar);
         Ok((at, conversion_said(&self.project, &differences, bar)))
@@ -7255,6 +7354,11 @@ impl TimeControl {
             .list_next(&self.project, self.info.meter.bar_ticks());
         st.song_on = self.song;
         st.selected = self.selected;
+        let blocks = self.project.arrangement.placements.len();
+        st.picks = self.picks.iter().copied().filter(|&i| i < blocks).collect();
+        if st.picks.len() < 2 {
+            st.picks.clear();
+        }
         st.region = self.region;
         st.section = self.section;
         st.tempo_base = self.project_bpm;

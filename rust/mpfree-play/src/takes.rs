@@ -190,6 +190,11 @@ pub enum SongChange {
     SeveralDeleted {
         blocks: usize,
     },
+    /// `blocks` of the picked ones split at song tick `at` (6.5).
+    SeveralSplit {
+        blocks: usize,
+        at: Tick,
+    },
     /// Scenes → song: `rows` rows onto the song's end.
     Scenes {
         rows: usize,

@@ -162,10 +162,13 @@ pub fn copy_hint(st: &TimeState) -> String {
 
 /// The hint line under the Song view.
 pub const SONG_HINT: &str =
-    "Tap a block to pick it   ·   drag a block or a section's name: move it (SHIFT as you lift: copy)   ·   tap the ruler: add a marker   ·   Split: every block at the playhead";
+    "Tap a block to pick it (SHIFT + tap: several)   ·   drag across empty space: a box picks blocks   ·   drag a block or a section's name: move it   ·   tap the ruler: a marker";
 /// The hint line under the Song view with a block picked.
 pub const SONG_BLOCK_HINT: &str =
     "Drag it: move it (SHIFT as you lift: copy)   ·   drag its start or end: trim   ·   hold it still, then drag: slide what it plays   ·   Split: at the playhead   ·   wheel: a beat";
+/// The hint line under the Song view with several blocks picked (6.5).
+pub const SONG_PICKS_HINT: &str =
+    "Drag one: they all move (SHIFT as you lift: copies)   ·   SHIFT + tap: add or take out a block   ·   Split, Duplicate, Delete: all of them   ·   wheel: a beat";
 /// The hint line under the Song view with a section picked.
 pub const SONG_SECTION_HINT: &str =
     "Drag the name: move the section (SHIFT as you lift: copy)   ·   drag the grip: move where it starts   ·   + Bar: a bar of room before it   ·   push the wheel: move it a section at a time";
@@ -199,6 +202,8 @@ pub fn song_hint(st: &TimeState) -> &'static str {
         SONG_TEMPO_HINT
     } else if st.selected.is_some() {
         SONG_BLOCK_HINT
+    } else if !st.picks.is_empty() {
+        SONG_PICKS_HINT
     } else if st.section.is_some() {
         SONG_SECTION_HINT
     } else {
@@ -662,6 +667,7 @@ impl TakeRow {
                 SongChange::SeveralMoved { .. } => "move",
                 SongChange::SeveralCopied { .. } => "copy",
                 SongChange::SeveralDeleted { .. } => "delete",
+                SongChange::SeveralSplit { .. } => "split",
                 SongChange::Scenes { .. } => "scenes",
                 SongChange::List | SongChange::ListToSong { .. } => "list",
                 SongChange::Tempo { .. } => "tempo",
@@ -836,6 +842,10 @@ pub struct TimeState {
     pub passes: Vec<Option<(u16, Tick)>>,
     /// The placement selected on the Song view. The app sets it.
     pub selected: Option<usize>,
+    /// The blocks picked together on the Song view (6.5), in order: two
+    /// or more, `selected` being None while they are; empty otherwise.
+    /// The app sets it.
+    pub picks: Vec<usize>,
     /// The section picked on the Song view (by its marker), for the
     /// wheel. The app sets it.
     pub section: Option<usize>,
@@ -1153,6 +1163,7 @@ impl TimeState {
                 })
                 .collect(),
             selected: None,
+            picks: Vec::new(),
             section: None,
             song_rec: false,
             song_with_take: false,
@@ -1538,6 +1549,16 @@ pub enum TimeAction {
     SongToScenes,
     /// Select a placement on the Song view, or none.
     SelectPlacement(Option<usize>),
+    /// SHIFT + a tap on a block (6.5): block `i` added to what is picked,
+    /// or taken out of it if it was in.
+    PickPlacement(usize),
+    /// A box dragged across the Song view's lanes (6.5): blocks `set`
+    /// picked, or with `add` (SHIFT held as the finger lifts) added to
+    /// what is picked.
+    PickPlacements {
+        set: Vec<usize>,
+        add: bool,
+    },
     /// A block dragged on the Song view (Jay, 14 Nov: drag and drop), or
     /// moved a beat by the wheel: placement `index` to `track` from
     /// `start`, or with `copy` (SHIFT held as the finger lifts) a copy of
@@ -1605,6 +1626,9 @@ pub enum TimeAction {
     DuplicatePlacements(Vec<usize>),
     /// Blocks `set` deleted together.
     DeletePlacements(Vec<usize>),
+    /// Split with several blocks picked (6.5): those of blocks `set`
+    /// across the playhead cut there, the parts after picked.
+    SplitPlacements(Vec<usize>),
     /// Live to song on or off: while on and the transport plays, what the
     /// grid plays is recorded into the song
     /// (`mpfree_perform::SongRecorder`).
@@ -2256,12 +2280,39 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                 (st.section != Some(k)).then_some(k),
             ))
         }
+        // One of several picked blocks dragged: they all go with it
+        // (6.5).
+        (SONG, EventKind::Place { index, row, at })
+            if *row < TEMPO_ROW && st.picks.contains(index) =>
+        {
+            let p = st.placements.get(*index)?;
+            Some(TimeAction::MovePlacements {
+                set: st.picks.clone(),
+                lanes: i32::try_from(*row).ok()? - i32::try_from(p.track).ok()?,
+                by: *at - p.start,
+                copy: false,
+            })
+        }
         (SONG, EventKind::Place { index, row, at }) => Some(TimeAction::MovePlacement {
             index: *index,
             track: *row,
             start: *at,
             copy: false,
         }),
+        // A box dragged across the lanes (6.5): the blocks it touches.
+        (SONG, EventKind::Span { index, from, to }) if *index >= crate::song::BOX => {
+            let (top, bottom) = crate::song::box_tracks(*index);
+            let set = st
+                .placements
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| {
+                    (top..=bottom).contains(&p.track) && p.start < *to && p.start + p.length > *from
+                })
+                .map(|(i, _)| i)
+                .collect();
+            Some(TimeAction::PickPlacements { set, add: false })
+        }
         (SONG, EventKind::Stretch { index, to }) => Some(TimeAction::StretchPlacement {
             index: *index,
             length: *to,
@@ -2280,6 +2331,9 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
         (SONG, EventKind::Tab(crate::song::ADD_CLOSE)) => None,
         (SONG, EventKind::Tab(crate::song::LIST)) => Some(TimeAction::ListView(true)),
         (SONG, EventKind::Tab(crate::song::CLIPS)) => Some(TimeAction::SongView(false)),
+        (SONG, EventKind::Tab(DUPLICATE)) if !st.picks.is_empty() => {
+            Some(TimeAction::DuplicatePlacements(st.picks.clone()))
+        }
         (SONG, EventKind::Tab(DUPLICATE)) => st.selected.map(TimeAction::DuplicatePlacement),
         (SONG, EventKind::Tab(k)) if *k >= PANEL_CLOSE => {
             let track = st.audio_panel?;
@@ -2402,6 +2456,15 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                 step: *from,
                 to: *to,
             })
+        }
+        // Several blocks picked (6.5): Split and Delete take them all;
+        // Make unique takes one block at a time (`why_not`).
+        (SONG, EventKind::Tab(0)) if !st.picks.is_empty() => {
+            Some(TimeAction::SplitPlacements(st.picks.clone()))
+        }
+        (SONG, EventKind::Tab(4)) if !st.picks.is_empty() => None,
+        (SONG, EventKind::Tab(5)) if !st.picks.is_empty() => {
+            Some(TimeAction::DeletePlacements(st.picks.clone()))
         }
         (SONG, EventKind::Tab(k)) => match k {
             // Split at the playhead (phase 6): the picked block, or every
@@ -2587,7 +2650,10 @@ pub fn why_not(ev: &UiEvent, st: &TimeState) -> Option<String> {
         (TAKES, EventKind::Tab(2)) => {
             Some("Nothing to capture yet: play the pads while not recording".to_string())
         }
-        (SONG, EventKind::Tab(4 | 5)) if st.selected.is_none() => {
+        (SONG, EventKind::Tab(4)) if !st.picks.is_empty() => {
+            Some("Make unique takes one block at a time: tap the one to make its own".to_string())
+        }
+        (SONG, EventKind::Tab(4 | 5)) if st.selected.is_none() && st.picks.is_empty() => {
             Some("Tap a block in the song first".to_string())
         }
         (RECORD, EventKind::Step { index: 2, delta }) => Some(end(
@@ -3788,7 +3854,8 @@ pub fn take_title(st: &TimeState, row: &TakeRow) -> String {
         Some(
             SongChange::SeveralMoved { blocks, .. }
             | SongChange::SeveralCopied { blocks, .. }
-            | SongChange::SeveralDeleted { blocks },
+            | SongChange::SeveralDeleted { blocks }
+            | SongChange::SeveralSplit { blocks, .. },
         ) => return format!("{word} {} · {blocks} blocks", row.shown()),
         Some(SongChange::Scenes { .. } | SongChange::List | SongChange::ListToSong { .. })
         | None => {}
@@ -3873,6 +3940,7 @@ fn take_said(st: &TimeState, row: &TakeRow) -> String {
             SongChange::SeveralMoved { blocks, .. } | SongChange::SeveralCopied { blocks, .. },
         ) => return format!("{blocks} blocks"),
         Some(SongChange::SeveralDeleted { blocks }) => return format!("{blocks} blocks"),
+        Some(SongChange::SeveralSplit { at, .. }) => return format!("at bar {}", bar_of(at)),
         None => {}
     }
     match row.dropped {
@@ -4739,13 +4807,18 @@ pub fn min_sec(seconds: f64) -> String {
 /// waveforms are left out: [`TimePage::update`] copies `st.waves` only
 /// when they change, as they can be large.
 pub fn song_lanes(st: &TimeState, first_bar: i64) -> SongLanes {
-    song_lanes_with(st, first_bar, None)
+    song_lanes_with(st, first_bar, 16, None)
 }
 
 /// [`song_lanes`], with `blocks` for the blocks when they were made from
 /// `st.placements` ([`SongBlocks::made_from`]), so an update that changes
 /// no block copies none (Arrange refactor 2.4).
-fn song_lanes_with(st: &TimeState, first_bar: i64, blocks: Option<SongBlocks>) -> SongLanes {
+fn song_lanes_with(
+    st: &TimeState,
+    first_bar: i64,
+    bars_shown: i64,
+    blocks: Option<SongBlocks>,
+) -> SongLanes {
     let t = &st.transport;
     let bar = t.meter.bar_ticks();
     let blocks = blocks.unwrap_or_else(|| SongBlocks::of(&st.placements));
@@ -4787,10 +4860,12 @@ fn song_lanes_with(st: &TimeState, first_bar: i64, blocks: Option<SongBlocks>) -
             false => Vec::new(),
         },
         bar,
+        beat: t.meter.beat_ticks(),
         first_bar,
-        bars: 16,
+        bars: bars_shown,
         playhead: Some(t.position),
         selected: st.selected,
+        picks: st.picks.clone(),
         section: st.section,
         on: st.song_on,
         rec: st.song_rec,
@@ -4928,6 +5003,10 @@ pub struct TimePage {
     pub first_track: usize,
     /// The first bar the Song view shows (0-based).
     pub first_bar: i64,
+    /// How many bars the Song view shows (the zoom chip, 6.4): one of
+    /// `song::ZOOMS`, 0 for the 16 a new page starts with. Kept while
+    /// the app runs, whichever view shows; not saved with the project.
+    pub song_bars: i64,
     /// The armed track last shown, so a newly armed track off the page
     /// brings its page.
     armed_seen: Option<usize>,
@@ -4970,6 +5049,23 @@ pub struct TimePage {
 }
 
 impl TimePage {
+    /// How many bars the Song view shows (6.4): 16 until the zoom chip
+    /// picks another.
+    pub fn bars_shown(&self) -> i64 {
+        if crate::song::ZOOMS.contains(&self.song_bars) {
+            self.song_bars
+        } else {
+            16
+        }
+    }
+
+    /// How many bars the Song view scrolls a step (the wheel, a drag held
+    /// at an edge): one, up to 16 shown; a sixteenth of what shows past
+    /// that (6.4).
+    fn bars_step(&self) -> i64 {
+        (self.bars_shown() / 16).max(1)
+    }
+
     /// Add the bar, the grid, the record settings, the takes and the Clips
     /// page. The app's `header` and `hint` must be in `ui` already. The
     /// Q-Link column is the app's: an empty one is added only when `ui`
@@ -5083,9 +5179,17 @@ impl TimePage {
         let step = match (ev.widget.as_str(), &ev.kind) {
             (SONG, EventKind::Tab(k)) if *k == BARS_BACK || *k == BARS_ON => {
                 // A dragged block or section held at the left or right
-                // edge.
+                // edge: a bar a step, more zoomed out (6.4).
                 let d = if *k == BARS_ON { 1 } else { -1 };
-                self.first_bar = (self.first_bar + d).max(0);
+                self.first_bar = (self.first_bar + d * self.bars_step()).max(0);
+                return true;
+            }
+            // The zoom chip (6.4): the Song view shows that many bars.
+            (SONG, EventKind::Tab(k))
+                if (crate::song::ZOOM..crate::song::ZOOM + crate::song::ZOOMS.len())
+                    .contains(k) =>
+            {
+                self.song_bars = crate::song::ZOOMS[*k - crate::song::ZOOM];
                 return true;
             }
             // The note editor's Edit button: the drawer.
@@ -5213,7 +5317,7 @@ impl TimePage {
             ui.layout_of(CLIPS_PAGE),
             Some(SONG_LAYOUT | SONG_CARD_LAYOUT)
         ) {
-            self.first_bar = (self.first_bar + i64::from(delta)).max(0);
+            self.first_bar = (self.first_bar + i64::from(delta) * self.bars_step()).max(0);
             return None;
         }
         if matches!(
@@ -5455,7 +5559,7 @@ impl TimePage {
             .filter(|b| b.made_from(&st.placements))
             .cloned();
         let kept = blocks.is_some();
-        let mut lanes = song_lanes_with(st, self.first_bar, blocks);
+        let mut lanes = song_lanes_with(st, self.first_bar, self.bars_shown(), blocks);
         lanes.adding = adding;
         let (same, same_waves) = ui.get::<SongLanes>(SONG).map_or((true, true), |l| {
             let waves = crate::song::same_waves(&l.waves, &st.waves);
@@ -6474,6 +6578,120 @@ mod tests {
         let l = ui.get::<SongLanes>(SONG).unwrap();
         assert_eq!(l.blocks.len(), 5);
         assert_eq!(l.blocks.get(4).map(|b| b.name.as_str()), Some("Clip 4"));
+    }
+
+    /// Several blocks (6.5): a box picks the blocks it touches; with
+    /// several picked, a drag of one moves them all, and Split, Duplicate
+    /// and Delete take them all while Make unique says why not. The zoom
+    /// chip (6.4) is the page's own, and the wheel scrolls by it.
+    #[test]
+    fn several_picked_blocks_act_together_and_the_zoom_chip_is_the_pages() {
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", Header::new(&["Play", "Clips"]));
+        ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        let mut page = TimePage::add_to(&mut ui).unwrap();
+        ui.show(CLIPS_PAGE).unwrap();
+        let mut st = state();
+        st.song_view = true;
+        let block = |track, start, length| PlacementInfo {
+            track,
+            start,
+            length,
+            name: "B".into(),
+            unique: false,
+        };
+        st.placements = vec![
+            block(0, 0, 3840),
+            block(0, 4 * 3840, 3840),
+            block(1, 3840, 2 * 3840),
+        ]
+        .into();
+        let song = |k: EventKind, st: &TimeState| action(&ev(SONG, k), st);
+        // A box over both lanes from bar 2 to bar 5: the bass's block, and
+        // the drums' second block it reaches into.
+        assert_eq!(
+            song(
+                EventKind::Span {
+                    index: crate::song::BOX + 1,
+                    from: 3840,
+                    to: 4 * 3840 + 10
+                },
+                &st
+            ),
+            Some(TimeAction::PickPlacements {
+                set: vec![1, 2],
+                add: false
+            })
+        );
+        st.picks = vec![1, 2];
+        assert_eq!(song_hint(&st), SONG_PICKS_HINT);
+        // The drums' second block dragged a lane down and a bar back: both
+        // go a lane down and a bar back.
+        assert_eq!(
+            song(
+                EventKind::Place {
+                    index: 1,
+                    row: 1,
+                    at: 3 * 3840
+                },
+                &st
+            ),
+            Some(TimeAction::MovePlacements {
+                set: vec![1, 2],
+                lanes: 1,
+                by: -3840,
+                copy: false
+            })
+        );
+        // A block not picked moves alone.
+        assert!(matches!(
+            song(
+                EventKind::Place {
+                    index: 0,
+                    row: 0,
+                    at: 3840
+                },
+                &st
+            ),
+            Some(TimeAction::MovePlacement { index: 0, .. })
+        ));
+        assert_eq!(
+            song(EventKind::Tab(0), &st),
+            Some(TimeAction::SplitPlacements(vec![1, 2]))
+        );
+        assert_eq!(
+            song(EventKind::Tab(DUPLICATE), &st),
+            Some(TimeAction::DuplicatePlacements(vec![1, 2]))
+        );
+        assert_eq!(
+            song(EventKind::Tab(5), &st),
+            Some(TimeAction::DeletePlacements(vec![1, 2]))
+        );
+        assert_eq!(song(EventKind::Tab(4), &st), None);
+        let why = why_not(&ev(SONG, EventKind::Tab(4)), &st).unwrap();
+        assert!(why.starts_with("Make unique takes one block"), "{why}");
+        // The lanes show the picks.
+        page.update(&mut ui, &st);
+        assert_eq!(ui.get::<SongLanes>(SONG).unwrap().picks, [1, 2]);
+        // The zoom chip: the page's own; 64 bars shown, and the wheel
+        // scrolls four bars a detent.
+        let zoom = ev(SONG, EventKind::Tab(crate::song::ZOOM + 4));
+        assert_eq!(action(&zoom, &st), None);
+        assert!(page.page_tracks(&zoom, &st));
+        assert_eq!(page.bars_shown(), 64);
+        page.update(&mut ui, &st);
+        assert_eq!(ui.get::<SongLanes>(SONG).unwrap().bars, 64);
+        page.scroll(&mut ui, 1);
+        assert_eq!(page.first_bar, 4);
+        assert!(page.page_tracks(&ev(SONG, EventKind::Tab(BARS_BACK)), &st));
+        assert_eq!(page.first_bar, 0);
+        let zoom = ev(SONG, EventKind::Tab(crate::song::ZOOM));
+        assert!(page.page_tracks(&zoom, &st));
+        assert_eq!(page.bars_shown(), 4);
+        page.scroll(&mut ui, 1);
+        assert_eq!(page.first_bar, 1);
+        // Another Song tab isn't the page's.
+        assert!(!page.page_tracks(&ev(SONG, EventKind::Tab(0)), &st));
     }
 
     #[test]

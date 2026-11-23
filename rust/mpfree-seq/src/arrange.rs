@@ -942,6 +942,49 @@ impl Arrangement {
         Ok(split)
     }
 
+    /// Blocks `set` (indexes, in any order) that play across song tick
+    /// `at` split there, the others left as they are (Split with several
+    /// blocks picked, 6.5). All or none: refused (`BadPlacement`),
+    /// changing nothing, for an empty set, an index past the blocks, none
+    /// of them across `at`, or too many blocks. The parts after the cut,
+    /// in order.
+    pub fn split_these(
+        &mut self,
+        tracks: &[Track],
+        set: &[usize],
+        at: Tick,
+    ) -> Result<Vec<usize>, ModelError> {
+        let mut set = set.to_vec();
+        set.sort_unstable();
+        set.dedup();
+        if set.is_empty() || set.last() >= Some(&self.placements.len()) {
+            return Err(ModelError::BadPlacement);
+        }
+        let mut song = self.clone();
+        let mut cut = Vec::new();
+        // From the last, so the ones before keep their indexes.
+        for &i in set.iter().rev() {
+            let p = &song.placements[i];
+            if p.start < at && at < p.end() {
+                cut.push(p.track);
+                song.split(tracks, i, at)?;
+            }
+        }
+        if cut.is_empty() {
+            return Err(ModelError::BadPlacement);
+        }
+        let mut after: Vec<usize> = cut
+            .iter()
+            .map(|&track| {
+                song.placements
+                    .partition_point(|q| (q.track, q.start) < (track, at))
+            })
+            .collect();
+        after.sort_unstable();
+        *self = song;
+        Ok(after)
+    }
+
     /// A copy of block `i` right after it (Duplicate, phase 6): the same
     /// clip from the same place in it, as long, from where the block ends.
     /// Refused (`BadPlacement`), changing nothing, for no such block, a
@@ -2687,8 +2730,9 @@ mod tests {
     /// Duplicate puts a copy after the block where there is room; trim
     /// from the left keeps what plays where it was; slide moves what
     /// plays inside the block.
-    /// Several blocks picked (phase 6): moved, copied, duplicated and
-    /// deleted together, keeping their places to each other, all or none.
+    /// Several blocks picked (phase 6): moved, copied, duplicated, split
+    /// and deleted together, keeping their places to each other, all or
+    /// none.
     #[test]
     fn several_blocks_move_copy_duplicate_and_go_together_all_or_none() {
         let mut p = project();
@@ -2810,6 +2854,42 @@ mod tests {
         assert!(d.clips.get(own).is_none());
         assert_eq!(d.remove_placements(&[3]), Err(ModelError::BadPlacement));
         assert_eq!(d.remove_placements(&[]), Err(ModelError::BadPlacement));
+        // Split the picked ones at bar 3 beat 1: the bass's b alone plays
+        // across it, so it alone is cut, in phase; the drums' a is left.
+        s = start.clone();
+        let after = s.split_these(&p.tracks, &first_two, 2 * BAR).unwrap();
+        assert_eq!(
+            blocks(&s),
+            [
+                (0, 0, BAR),
+                (0, 4 * BAR, 2 * BAR),
+                (1, BAR, BAR),
+                (1, 2 * BAR, BAR)
+            ]
+        );
+        assert_eq!(after, [3]);
+        assert_eq!(s.placements[3].offset, BAR);
+        // Both bass and drums cut at bar 5 beat 2, the parts after picked.
+        let mut t = start.clone();
+        let all: Vec<usize> = (0..3).collect();
+        let at = 4 * BAR + BAR / 4;
+        assert_eq!(t.split_these(&p.tracks, &all, at), Ok(vec![2]));
+        t = start.clone();
+        t.place(Placement::of(&p.tracks, 1, 0, 4 * BAR, 2 * BAR))
+            .unwrap();
+        let all: Vec<usize> = (0..4).collect();
+        assert_eq!(t.split_these(&p.tracks, &all, at), Ok(vec![2, 5]));
+        // None across it, or no such block: nothing changes.
+        let snapshot = s.clone();
+        assert_eq!(
+            s.split_these(&p.tracks, &[0], 2 * BAR),
+            Err(ModelError::BadPlacement)
+        );
+        assert_eq!(
+            s.split_these(&p.tracks, &[9], 2 * BAR),
+            Err(ModelError::BadPlacement)
+        );
+        assert_eq!(s, snapshot);
     }
 
     #[test]

@@ -4028,6 +4028,124 @@ mod tests {
         assert_eq!(blocks(&h), [(0, 4 * BAR)]);
     }
 
+    /// Picking several blocks (6.5): SHIFT + a tap adds or takes out one,
+    /// a box picks or adds; one left is the block selected. The blocks
+    /// moved, copied or split stay picked where they are now; any other
+    /// pick, an UNDO or a delete lets them go.
+    #[test]
+    fn several_blocks_are_picked_and_stay_picked_where_an_edit_puts_them() {
+        use mpfree_seq::arrange::Placement;
+        const BAR: i64 = 3840;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        for (t, name) in [(0, "Beat"), (1, "Bass")] {
+            h.control.project.tracks[t].slots[0] = Some(Clip::new(name, 2 * BAR));
+        }
+        h.control.project.give_clip_ids();
+        let tracks = h.control.project.tracks.clone();
+        let song = &mut h.control.project.arrangement;
+        song.place(Placement::of(&tracks, 0, 0, 0, 2 * BAR))
+            .unwrap();
+        song.place(Placement::of(&tracks, 0, 0, 4 * BAR, BAR))
+            .unwrap();
+        song.place(Placement::of(&tracks, 1, 0, BAR, 2 * BAR))
+            .unwrap();
+        let picked = |h: &TimeHost| {
+            let st = h.control.state();
+            (st.selected, st.picks.clone())
+        };
+        h.act(TimeAction::SelectPlacement(Some(0))).unwrap();
+        // SHIFT + a tap on the bass's: both picked, none selected.
+        h.act(TimeAction::PickPlacement(2)).unwrap();
+        assert_eq!(picked(&h), (None, vec![0, 2]));
+        // Again: taken out, the beat's alone is the block selected.
+        h.act(TimeAction::PickPlacement(2)).unwrap();
+        assert_eq!(picked(&h), (Some(0), vec![]));
+        h.act(TimeAction::PickPlacement(9)).unwrap_err();
+        // A box adds the beat's second block; one without SHIFT picks
+        // only its own.
+        h.act(TimeAction::PickPlacements {
+            set: vec![1],
+            add: true,
+        })
+        .unwrap();
+        assert_eq!(picked(&h), (None, vec![0, 1]));
+        h.act(TimeAction::PickPlacements {
+            set: vec![0, 2],
+            add: false,
+        })
+        .unwrap();
+        assert_eq!(picked(&h), (None, vec![0, 2]));
+        // Moved four bars on, they stay picked there.
+        h.act(TimeAction::MovePlacements {
+            set: vec![0, 2],
+            lanes: 0,
+            by: 8 * BAR,
+            copy: false,
+        })
+        .unwrap();
+        let st = h.control.state();
+        let at: Vec<_> = st
+            .picks
+            .iter()
+            .map(|&i| (st.placements[i].track, st.placements[i].start))
+            .collect();
+        assert_eq!(at, [(0, 8 * BAR), (1, 9 * BAR)]);
+        // A refused move (to before the song) keeps them picked.
+        h.act(TimeAction::MovePlacements {
+            set: st.picks.clone(),
+            lanes: 0,
+            by: -20 * BAR,
+            copy: false,
+        })
+        .unwrap_err();
+        assert_eq!(h.control.state().picks, st.picks);
+        // Split at bar 10 beat 1: the beat's block alone plays across it
+        // (the bass's starts there); the part after is the block selected.
+        h.command(Command::Locate(9 * BAR));
+        run(&mut h, &mut pads, u64::from(PERIOD), &[]);
+        assert_eq!(h.info().position, 9 * BAR);
+        let said = h
+            .act(TimeAction::SplitPlacements(st.picks.clone()))
+            .unwrap();
+        assert!(said.contains("1 block split at"), "{said}");
+        let st = h.control.state();
+        let after = st
+            .selected
+            .map(|i| (st.placements[i].track, st.placements[i].start));
+        assert_eq!(after, Some((0, 9 * BAR)));
+        assert!(st.picks.is_empty());
+        // UNDO lets go of any pick.
+        h.act(TimeAction::PickPlacements {
+            set: vec![0, 1],
+            add: false,
+        })
+        .unwrap();
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(picked(&h), (None, vec![]));
+        // Duplicate several: the copies are picked; Split where none
+        // plays says why.
+        h.act(TimeAction::PickPlacements {
+            set: vec![0, 1],
+            add: false,
+        })
+        .unwrap();
+        h.act(TimeAction::DuplicatePlacements(vec![0, 1])).unwrap();
+        let st = h.control.state();
+        assert_eq!(st.picks.len(), 2);
+        assert!(st.picks.iter().all(|&i| st.placements[i].start >= 4 * BAR));
+        h.command(Command::Locate(100 * BAR));
+        run(&mut h, &mut pads, 2 * u64::from(PERIOD), &[]);
+        let said = h
+            .act(TimeAction::SplitPlacements(st.picks.clone()))
+            .unwrap_err();
+        assert!(said.contains("plays across"), "{said}");
+        // Delete them: nothing stays picked.
+        h.act(TimeAction::DeletePlacements(st.picks.clone()))
+            .unwrap();
+        assert_eq!(picked(&h), (None, vec![]));
+    }
+
     /// A section moves with its tempo points (Arrange 3.2), one UNDO
     /// takes the whole move back, and a refusal says why in plain words.
     #[test]
