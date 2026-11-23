@@ -372,6 +372,65 @@ impl TrackKits {
     }
 }
 
+/// The kits played as notes, like a synth ([`KitKeys::takes_notes`]: keys
+/// play the keygroups and the pads play notes), each with the note its pad
+/// A1 plays: a track playing one is a notes track (sampler step 15c, part
+/// 3). Its takes hold notes, its arp works in notes and the pads and keys
+/// press notes into it, so a key no pad reaches goes through the arp and
+/// records too. Read from the player each period ([`KitNotes::of`]); fixed
+/// size, never allocates.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct KitNotes {
+    from: [Option<u8>; MAX_KITS + 1],
+}
+
+impl KitNotes {
+    /// The kits `player` plays as notes now, the Grains kit counted.
+    pub fn of(player: &Player) -> KitNotes {
+        let mut notes = KitNotes::default();
+        for k in 0..player.engine.kits().min(MAX_KITS + 1) {
+            let keys = player.kit_keys(k);
+            notes.from[k] = keys.pads_from.filter(|_| keys.takes_notes());
+        }
+        notes
+    }
+
+    /// Kit `kit` is played as notes from `from` (pad A1's note), or not
+    /// (None). A kit out of range changes nothing.
+    #[cfg(test)]
+    pub fn set(&mut self, kit: usize, from: Option<u8>) {
+        if let Some(f) = self.from.get_mut(kit) {
+            *f = from;
+        }
+    }
+
+    /// The note pad A1 of the kit track `track` plays sounds, while that
+    /// kit is played as notes; None for a kit played by its pads, the
+    /// synth, or a track out of range.
+    pub fn of_track(&self, kits: &TrackKits, track: usize) -> Option<u8> {
+        if track >= mpfree_seq::MAX_TRACKS {
+            return None;
+        }
+        self.from.get(kits.kit_of(track)?).copied().flatten()
+    }
+
+    /// The note kit pad `pad` (bank × 16 + place) plays on track `track`'s
+    /// kit while it is played as notes, else None.
+    pub fn note(&self, kits: &TrackKits, track: usize, pad: usize) -> Option<u8> {
+        let n = usize::from(self.of_track(kits, track)?) + pad;
+        (pad < mpfree_sampler::model::PADS && n < 128).then_some(n as u8)
+    }
+
+    /// The tracks, of the first `tracks`, whose kit is played as notes, a
+    /// bit each.
+    #[cfg(test)]
+    pub fn tracks(&self, kits: &TrackKits, tracks: usize) -> u128 {
+        (0..tracks.min(128))
+            .filter(|&t| self.of_track(kits, t).is_some())
+            .fold(0, |bits, t| bits | 1 << t)
+    }
+}
+
 /// A kit's engine view, built again after an edit on the Sample tab, on its
 /// way to the audio thread; then the view it replaced, on its way back to
 /// the screen thread, which frees it. It travels boxed, so the channels
@@ -1894,6 +1953,59 @@ mod tests {
         assert_eq!(p.note_off_to(0, 40), NoteTo::Pad(2));
         assert_eq!(p.note_to(1, 40), NoteTo::Pad(kit_pad_of_note(40)));
         assert_eq!(p.note_to(99, 40), NoteTo::Pad(kit_pad_of_note(40)));
+    }
+
+    /// A kit played as notes (keys on the keygroups, the pads playing
+    /// notes) makes the tracks that play it notes tracks (sampler step
+    /// 15c, part 3); Both, or pads playing their own sounds, doesn't.
+    #[test]
+    fn a_kit_played_as_notes_makes_its_tracks_notes_tracks() {
+        use mpfree_sampler::model::{Keys, KeysPlay, PadsPlay};
+        let mut ks = kits();
+        let mut p = Player::new(&mut ks, &NOTES, 44_100).unwrap();
+        let mut kits = TrackKits::new(p.kits());
+        assert!(kits.set(1, 0) && kits.set(2, 1) && kits.set(3, kits.synth()));
+        assert_eq!(KitNotes::of(&p), KitNotes::default(), "drum kits");
+        let mut projects = p.take_projects();
+        let swap = |p: &mut Player, project: &Project| {
+            let mut s = Box::new(ViewSwap {
+                kit: 0,
+                view: Some(EngineView::build(project, 44_100)),
+                routes: pad_routes(project),
+            });
+            assert!(p.swap_view(&mut s));
+        };
+        projects[0]
+            .edit_pad(5, None, |pad| {
+                pad.keys = Some(Keys {
+                    lo: 36,
+                    hi: 59,
+                    root: 48,
+                })
+            })
+            .unwrap();
+        projects[0]
+            .set_pads_play(PadsPlay::Keys { from: 36 })
+            .unwrap();
+        projects[0].set_keys_play(Some(KeysPlay::Both));
+        swap(&mut p, &projects[0]);
+        assert_eq!(KitNotes::of(&p), KitNotes::default(), "Both");
+        projects[0].set_keys_play(Some(KeysPlay::Keygroups));
+        swap(&mut p, &projects[0]);
+        let notes = KitNotes::of(&p);
+        // Every track plays kit 1 but the one on kit 2 and the synth's.
+        assert_eq!(notes.tracks(&kits, 8), 0b1111_0011);
+        assert_eq!(notes.of_track(&kits, 1), Some(36));
+        assert_eq!(notes.of_track(&kits, 2), None, "kit 2");
+        assert_eq!(notes.of_track(&kits, 3), None, "the synth");
+        assert_eq!(notes.of_track(&kits, 200), None);
+        assert_eq!(notes.note(&kits, 1, 0), Some(36));
+        assert_eq!(notes.note(&kits, 1, 17), Some(53), "bank B's pad 2");
+        assert_eq!(notes.note(&kits, 1, 100), None, "past note 127");
+        // The pads playing their own sounds again: not as notes.
+        projects[0].set_pads_play(PadsPlay::Pads).unwrap();
+        swap(&mut p, &projects[0]);
+        assert_eq!(KitNotes::of(&p).tracks(&kits, 8), 0);
     }
 
     #[test]

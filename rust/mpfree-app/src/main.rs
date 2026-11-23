@@ -3052,7 +3052,7 @@ fn play_waited(
                 time.pad_pressed(offset, ev);
             }
             // The screen shows it down while its bank shows.
-            let shown = usize::from(w.kit_pad) / 16 == app.pad_page();
+            let shown = usize::from(w.kit_pad) / 16 == app.kit_page();
             if let Some(a) = awaiting.get_mut(slot) {
                 *a = w.down && shown;
             }
@@ -4532,6 +4532,22 @@ fn play_routed_pad(
     player: &mut sampler::Player,
     kit: usize,
 ) {
+    play_routed_pad_at(track, pad, event, 0, midi, (pad_synths, synth), player, kit);
+}
+
+/// [`play_routed_pad`] `offset` frames into the next period: the pads'
+/// arp's notes ([`PadsArp`], sampler step 15c).
+#[allow(clippy::too_many_arguments)]
+fn play_routed_pad_at(
+    track: u8,
+    pad: usize,
+    event: mpfree_play::Event,
+    offset: u32,
+    midi: &mut midi_out::MidiOut,
+    (pad_synths, synth): (&mut pad_synths::PadSynths, &mut synth::Synth),
+    player: &mut sampler::Player,
+    kit: usize,
+) {
     use mpfree_play::Event;
     let track = u16::from(track);
     match player.pad_route(kit, pad) {
@@ -4549,7 +4565,7 @@ fn play_routed_pad(
                 _ => return,
             };
             let o = mpfree_play::Out {
-                offset: 0,
+                offset,
                 frame: 0,
                 track,
                 dest: Default::default(),
@@ -4566,15 +4582,15 @@ fn play_routed_pad(
                 (kit, pad),
                 (engine, note),
                 event,
-                0,
+                offset,
             );
         }
         None => match event {
             Event::NoteOn { velocity, .. } => {
-                player.hit_kit_at(kit, pad, velocity, 0);
+                player.hit_kit_at(kit, pad, velocity, offset);
             }
-            Event::NoteOff { .. } => player.release_kit_at(kit, pad, 0),
-            Event::Pressure { value, .. } => player.pressure_kit_at(kit, pad, value, 0),
+            Event::NoteOff { .. } => player.release_kit_at(kit, pad, offset),
+            Event::Pressure { value, .. } => player.pressure_kit_at(kit, pad, value, offset),
             _ => {}
         },
     }
@@ -5109,6 +5125,16 @@ struct RouteSynths {
     /// The tracks each row's keys went into, a bit each, for their
     /// let-go.
     key_tracks: [u128; RouteSynths::ROWS],
+    /// The kit each row names (sampler step 15f, `App::route_synth_kits`).
+    kits: [Option<u8>; RouteSynths::ROWS],
+    /// Where each row's keys went on its kit, (kit, where) per note, for
+    /// their let-go and pressure though the row moved on since.
+    kit_keys: [[Option<(u8, sampler::NoteTo)>; 128]; RouteSynths::ROWS],
+    /// The kits the rows' wheels bent, to bend back once no row names
+    /// them.
+    bent: [Option<u8>; RouteSynths::ROWS],
+    /// A kit row's kit as the track recording it takes notes.
+    rec_kits: [Option<LayerKit>; RouteSynths::ROWS],
 }
 
 impl RouteSynths {
@@ -5122,7 +5148,74 @@ impl RouteSynths {
             rec: [None; RouteSynths::ROWS],
             keys: midi_in::RoutedPads::new(),
             key_tracks: [0; RouteSynths::ROWS],
+            kits: [None; RouteSynths::ROWS],
+            kit_keys: [[None; 128]; RouteSynths::ROWS],
+            bent: [None; RouteSynths::ROWS],
+            rec_kits: [None; RouteSynths::ROWS],
         }
+    }
+
+    /// The kits the rows name as the app has them now
+    /// (`App::route_synth_kits`, sampler step 15f): each row's keys play
+    /// its kit from then on; a key held goes on where it went. Returns the
+    /// kits the wheel bent that no row names any more, to bend back.
+    fn kits_to(
+        &mut self,
+        kits: [Option<u8>; RouteSynths::ROWS],
+    ) -> [Option<u8>; RouteSynths::ROWS] {
+        self.kits = kits;
+        let gone = self.bent.map(|b| b.filter(|k| !kits.contains(&Some(*k))));
+        self.bent = self.bent.map(|b| b.filter(|k| kits.contains(&Some(*k))));
+        gone
+    }
+
+    /// Route row `j`'s key `k` on the kit it names (sampler step 15f), as
+    /// the kit's Keys play sends it (`sampler::Player::note_to`: the pad
+    /// that sends the note, or the keygroups that hold it): (kit, where),
+    /// kept for its let-go and pressure, which go where it went though the
+    /// row moved on since. None for a row that names no kit, a second
+    /// note-on for a key held there, the wheel and the pedals.
+    fn kit_key(
+        &mut self,
+        j: usize,
+        k: midi_in::Key,
+        player: &sampler::Player,
+    ) -> Option<(u8, sampler::NoteTo)> {
+        use midi_in::Key;
+        let kit = self.kits.get(j).copied().flatten();
+        let held = self.kit_keys.get_mut(j)?;
+        match k {
+            Key::Down { note, .. } => {
+                let at = &mut held[usize::from(note & 0x7F)];
+                if at.is_some() {
+                    return None;
+                }
+                let kit = kit?;
+                *at = Some((kit, player.note_to(usize::from(kit), note)));
+                *at
+            }
+            Key::Up { note } => held[usize::from(note & 0x7F)].take(),
+            Key::Pressure { note, .. } => held[usize::from(note & 0x7F)],
+            _ => None,
+        }
+    }
+
+    /// The kit route row `j`'s wheel bends now (its keygroups), kept so
+    /// it is bent back once no row names it ([`RouteSynths::kits_to`]).
+    fn kit_bend(&mut self, j: usize) -> Option<u8> {
+        let kit = self.kits.get(j).copied().flatten()?;
+        self.bent[j] = Some(kit);
+        Some(kit)
+    }
+
+    /// The keys held on the rows' kits now (for the tests).
+    #[cfg(test)]
+    fn kit_keys_held(&self) -> usize {
+        self.kit_keys
+            .iter()
+            .flatten()
+            .filter(|k| k.is_some())
+            .count()
     }
 
     /// The rows as the app has them now (`App::route_synth_holders`,
@@ -5230,14 +5323,28 @@ impl RouteSynths {
         }
     }
 
-    /// The tracks recording the rows' synths now (`App::route_recs`).
-    fn rec_to(&mut self, recs: [Option<u8>; RouteSynths::ROWS]) {
+    /// The tracks recording the rows' synths now (`App::route_recs`), a
+    /// kit row's with how its kit takes notes now (`keys`,
+    /// `sampler::Player::kit_keys`; after [`RouteSynths::kits_to`]).
+    fn rec_to(
+        &mut self,
+        recs: [Option<u8>; RouteSynths::ROWS],
+        keys: impl Fn(usize) -> mpfree_sampler::engine::KitKeys,
+    ) {
         self.rec = recs;
+        self.rec_kits = self.kits.map(|k| {
+            k.map(|kit| LayerKit {
+                kit,
+                page: 0,
+                keys: keys(usize::from(kit)),
+            })
+        });
     }
 
     /// Route row `j`'s key into the track recording its synth, as the pad
-    /// its note plays there (`midi_file::pad_on_track`); its end and
-    /// pressure where it went.
+    /// its note plays there (`midi_file::pad_on_track`), or as a kit
+    /// row's kit takes it ([`LayerKit::key_note`], sampler step 15f); its
+    /// end and pressure where it went.
     fn rec_key(
         &mut self,
         j: usize,
@@ -5255,7 +5362,11 @@ impl RouteSynths {
                 let Some(t) = self.rec[j] else {
                     return;
                 };
-                let pad = |n| midi_file::pad_on_track(own, Some(synth), usize::from(t), n);
+                let kit = self.rec_kits[j];
+                let pad = |n| match kit {
+                    Some(k) => k.key_note(n),
+                    None => midi_file::pad_on_track(own, Some(synth), usize::from(t), n),
+                };
                 if let Some(ev) = self.keys.event(t, k, pad) {
                     time.routed_played(t, 0, ev);
                     self.key_tracks[j] |= 1 << t;
@@ -5419,6 +5530,634 @@ impl KeysOnPads {
     }
 }
 
+/// A note the pads' arp plays ([`PadsArp`]), `offset` frames into the
+/// period: a kit's pad, the synth's note or a host instrument's pad, as
+/// what it plays has it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ArpNote {
+    On { note: u8, velocity: u8, offset: u32 },
+    Off { note: u8, offset: u32 },
+}
+
+/// The pads' arp (sampler step 15c, the plan's "Note Repeat and the arp
+/// work on any pad"): NOTE REPEAT, Latch and the arp while the pads play
+/// an instrument on their own ([`PadsPreview`]: a synth, a whole kit, a
+/// bank's own), so the arp never gives the pads back. It is the selected
+/// track's arp as the Arp panel and NOTE REPEAT set it (its settings,
+/// latch, pattern, swing and STOP's hush, taken each period by
+/// [`PadsArp::follow`]) on an engine of its own, so the track's clips
+/// through its arp never mix with what the pads play. Each hit goes in
+/// as what it plays: a kit's pad of the page the pads are on, the synth's
+/// notes for the pad (the destination synth's notes, as its pad layout
+/// has them), or a host instrument's pad; and each note it makes plays
+/// there. When the pads move to another instrument, or back to the track,
+/// its notes end where they played and nothing stays held or latched
+/// ([`PadsArp::leave`]); a pad still held then lets go quietly. While a
+/// track records what the pads play on their own (REC set it up, step
+/// 15c's second part: `App::pads_own_rec`), each note goes there too, as
+/// heard, and its end goes where it went: the `play` closure gets the
+/// track with each note. Main.rs and the test session both use it.
+/// Allocates nothing once made.
+struct PadsArp {
+    host: Box<mpfree_play::ArpHost>,
+    /// What its notes play now (None until a hit comes in).
+    to: Option<PadsPreview>,
+    /// The track recording what the pads play now ([`PadsArp::rec_to`]).
+    rec: Option<u8>,
+    /// The track each sounding note went into ([`NO_REC`]: none).
+    fed: [u8; 128],
+    /// The notes each pad pressed into it, and how many (0: none).
+    pressed: [([u8; MAX_PAD_NOTES], u8); 16],
+    /// The pads whose hit was in it when the pads moved on: their let-go
+    /// is taken quietly. A bit each.
+    quiet: u16,
+    /// Its notes sounding now, a bit each.
+    on: u128,
+}
+
+impl PadsArp {
+    fn new(sample_rate: u32, bpm: f64) -> PadsArp {
+        PadsArp {
+            host: Box::new(mpfree_play::ArpHost::new(mpfree_arp::Engine::new(
+                sample_rate,
+                bpm,
+            ))),
+            to: None,
+            rec: None,
+            fed: [NO_REC; 128],
+            pressed: [([0; MAX_PAD_NOTES], 0); 16],
+            quiet: 0,
+            on: 0,
+        }
+    }
+
+    /// The track recording what the pads play on their own now (None:
+    /// none, or REC writes steps): the notes that start from now go into it
+    /// too.
+    fn rec_to(&mut self, rec: Option<u8>) {
+        self.rec = rec;
+    }
+
+    /// The track note `note`'s start went into, forgotten.
+    fn fed_off(&mut self, note: u8) -> Option<u8> {
+        let t = std::mem::replace(&mut self.fed[usize::from(note & 127)], NO_REC);
+        (t != NO_REC).then_some(t)
+    }
+
+    /// Takes the selected track's arp as the app set it (`armed`, the
+    /// engine the pads play through on a track): its settings, latch,
+    /// pattern, tempo and swing (`own_swing`: its own, not the
+    /// transport's), and STOP's hush. Allocates nothing.
+    fn follow(&mut self, armed: &mpfree_arp::Engine, own_swing: bool) {
+        let e = &mut self.host.engine;
+        if e.settings() != armed.settings() {
+            e.set_settings(armed.settings());
+        }
+        if e.latch() != armed.latch() {
+            e.set_latch(armed.latch());
+        }
+        if e.pattern() != armed.pattern() {
+            e.set_pattern(*armed.pattern());
+        }
+        e.set_tempo(armed.bpm());
+        e.set_own_swing(own_swing);
+        if armed.hushed() && !e.hushed() {
+            e.hush();
+        } else if !armed.hushed() {
+            e.resume();
+        }
+    }
+
+    /// Whether pad `pad`'s hit went into the arp: its let-go and pressure
+    /// come here.
+    fn holds(&self, pad: usize) -> bool {
+        self.pressed.get(pad).is_some_and(|p| p.1 > 0) || self.quiet & bit16(pad) != 0
+    }
+
+    /// Pad `pad` pressed at `velocity` while the pads play `to` on their
+    /// own: `notes` go into the arp (a kit's pad, the synth's notes for the
+    /// pad, a host's pad; the first [`MAX_PAD_NOTES`]). On another
+    /// instrument than the arp plays, its notes there end first
+    /// ([`PadsArp::leave`]). A pad pressed again lets go first.
+    fn down(
+        &mut self,
+        pad: usize,
+        notes: &[u8],
+        velocity: u8,
+        to: PadsPreview,
+        play: &mut impl FnMut(PadsPreview, ArpNote, Option<u8>),
+    ) {
+        use mpfree_play::Event;
+        if self.to != Some(to) {
+            self.leave(play);
+            self.to = Some(to);
+        }
+        if pad >= 16 {
+            return;
+        }
+        self.up(pad);
+        let n = notes.len().min(MAX_PAD_NOTES);
+        let velocity = velocity.max(1);
+        for &note in &notes[..n] {
+            let on = Event::NoteOn { note, velocity };
+            self.host.input_from(mpfree_play::arp::PADS, 0, on);
+        }
+        self.pressed[pad].0[..n].copy_from_slice(&notes[..n]);
+        self.pressed[pad].1 = n as u8;
+    }
+
+    /// Pad `pad` let go: its notes leave the arp (a latched arp plays on).
+    fn up(&mut self, pad: usize) {
+        use mpfree_play::Event;
+        self.quiet &= !bit16(pad);
+        let Some((notes, n)) = self.pressed.get_mut(pad) else {
+            return;
+        };
+        for &note in &notes[..usize::from(*n)] {
+            self.host
+                .input_from(mpfree_play::arp::PADS, 0, Event::NoteOff { note });
+        }
+        *n = 0;
+    }
+
+    /// A held pad's pressure, for the arp's notes of it.
+    fn pressure(&mut self, pad: usize, value: u8) {
+        use mpfree_play::Event;
+        let Some((notes, n)) = self.pressed.get(pad) else {
+            return;
+        };
+        for &note in &notes[..usize::from(*n)] {
+            let p = Event::Pressure { note, value };
+            self.host.input_from(mpfree_play::arp::PADS, 0, p);
+        }
+    }
+
+    /// The pads move to another instrument, or back to the track: every
+    /// note the arp has sounding ends where it plays, now, and nothing
+    /// stays held or latched; a pad still held lets go quietly.
+    fn leave(&mut self, play: &mut impl FnMut(PadsPreview, ArpNote, Option<u8>)) {
+        if let Some(to) = self.to.take() {
+            let on = self.on;
+            for note in (0..128u8).filter(|&n| on & 1 << n != 0) {
+                let rec = self.fed_off(note);
+                play(to, ArpNote::Off { note, offset: 0 }, rec);
+            }
+        }
+        self.on = 0;
+        self.fed = [NO_REC; 128];
+        for pad in 0..16 {
+            if self.pressed[pad].1 > 0 {
+                self.quiet |= bit16(pad);
+            }
+            self.pressed[pad].1 = 0;
+        }
+        self.host
+            .input_from(mpfree_play::arp::PADS, 0, mpfree_play::Event::AllOff);
+        self.host.engine.panic();
+    }
+
+    /// One period of `block` (the transport's, as the clips' arps had it):
+    /// each note the arp plays goes where the pads play.
+    fn period(
+        &mut self,
+        block: &mpfree_transport::Block,
+        play: &mut impl FnMut(PadsPreview, ArpNote, Option<u8>),
+    ) {
+        use mpfree_arp::EventKind;
+        let (to, rec) = (self.to, self.rec);
+        let (on, fed) = (&mut self.on, &mut self.fed);
+        self.host.process(block, &mut |offset, kind| match kind {
+            EventKind::On { note, velocity } => {
+                let Some(to) = to else { return };
+                *on |= 1 << (note & 127);
+                fed[usize::from(note & 127)] = rec.unwrap_or(NO_REC);
+                play(
+                    to,
+                    ArpNote::On {
+                        note,
+                        velocity,
+                        offset,
+                    },
+                    rec,
+                );
+            }
+            EventKind::Off { note } => {
+                let b = 1u128 << (note & 127);
+                if let Some(to) = to.filter(|_| *on & b != 0) {
+                    *on &= !b;
+                    let went = std::mem::replace(&mut fed[usize::from(note & 127)], NO_REC);
+                    play(
+                        to,
+                        ArpNote::Off { note, offset },
+                        (went != NO_REC).then_some(went),
+                    );
+                }
+            }
+        });
+    }
+
+    /// The notes it has sounding now (for the tests).
+    #[cfg(test)]
+    fn sounding(&self) -> u32 {
+        self.on.count_ones()
+    }
+}
+
+/// A note of the pads' arp into `rec`, the track recording what the pads
+/// play on their own (sampler step 15c's second part,
+/// `App::pads_own_rec`): the synth's by its number, into a clip of notes
+/// (`TimeHost::routed_note`); a host instrument's or a kit's as its pad
+/// (`TimeHost::routed_played`). Nothing without one. Never allocates.
+fn rec_pads_arp(to: PadsPreview, n: ArpNote, rec: Option<u8>, time: &mut time::TimeHost) {
+    use mpfree_play::Event;
+    let Some(t) = rec else {
+        return;
+    };
+    let (offset, ev) = match n {
+        ArpNote::On {
+            note,
+            velocity,
+            offset,
+        } => (offset, Event::NoteOn { note, velocity }),
+        ArpNote::Off { note, offset } => (offset, Event::NoteOff { note }),
+    };
+    match to {
+        PadsPreview::Synth => time.routed_note(t, offset, ev),
+        PadsPreview::Host | PadsPreview::Kit(_) => time.routed_played(t, offset, ev),
+    }
+}
+
+/// No track: what [`PadsArp`] keeps for a note nothing records.
+const NO_REC: u8 = u8::MAX;
+
+/// A kit layer as its track records it (sampler step 15f): the kit, the
+/// bank of it its hits take, and how the kit takes notes now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LayerKit {
+    kit: u8,
+    page: u8,
+    keys: mpfree_sampler::engine::KitKeys,
+}
+
+impl LayerKit {
+    /// The note pad `pad` (0 to 15)'s hit records as: the kit's pad of the
+    /// bank, or the note that pad plays on a kit played as notes (its
+    /// track holds notes, `sampler::KitNotes`).
+    fn pad_note(self, pad: usize) -> Option<u8> {
+        let kp = usize::from(self.page) * 16 + pad;
+        if self.keys.takes_notes() {
+            self.keys.note_of_pad(kp)
+        } else {
+            u8::try_from(kp).ok().filter(|&p| p < 128)
+        }
+    }
+
+    /// The note a key `note` records as: itself on a kit played as notes,
+    /// else the pad that sends it (the MPC note map, any bank); None for a
+    /// key the kit's keygroups take on a kit of pads (it plays but isn't
+    /// kept, as on the armed track).
+    fn key_note(self, note: u8) -> Option<u8> {
+        if self.keys.takes_notes() {
+            Some(note)
+        } else if self.keys.to_keygroups(note) {
+            None
+        } else {
+            Some(mpfree_midi::profile::kit_pad_of_note(note) as u8)
+        }
+    }
+}
+
+/// A keyboard's key `k` on the kit layers (sampler step 15f,
+/// [`PadLayers::kit_key`]): the pad it reaches as that pad's kind has it
+/// ([`play_routed_pad`]), or the keygroups as a key; the wheel bends their
+/// keygroups. `v` shapes a velocity as the pads'. None of it reaches the
+/// kit the armed track's keys play already (`armed_kit`). Never allocates.
+#[allow(clippy::too_many_arguments)]
+fn play_kit_layer_key(
+    layers: &mut PadLayers,
+    k: midi_in::Key,
+    v: impl Fn(u8) -> u8,
+    armed_kit: Option<usize>,
+    track: u8,
+    midi: &mut midi_out::MidiOut,
+    (pad_synths, synth): (&mut pad_synths::PadSynths, &mut synth::Synth),
+    player: &mut sampler::Player,
+) {
+    if let midi_in::Key::Bend { value } = k {
+        for kit in layers.kit_bend(armed_kit).into_iter().flatten() {
+            player.bend_kit(usize::from(kit), value);
+        }
+        return;
+    }
+    for (kit, to) in layers.kit_key(k, armed_kit, player).into_iter().flatten() {
+        let kit = usize::from(kit);
+        play_kit_key(kit, to, k, &v, track, midi, (pad_synths, synth), player);
+    }
+}
+
+/// Route row `j`'s key `k` on the kit it names (sampler step 15f,
+/// [`RouteSynths::kit_key`]), each key at its own velocity as a route to
+/// a track plays it; the wheel bends the kit's keygroups. Nothing for a
+/// row that names no kit. Never allocates.
+#[allow(clippy::too_many_arguments)]
+fn play_route_kit_key(
+    routes: &mut RouteSynths,
+    j: usize,
+    k: midi_in::Key,
+    track: u8,
+    midi: &mut midi_out::MidiOut,
+    (pad_synths, synth): (&mut pad_synths::PadSynths, &mut synth::Synth),
+    player: &mut sampler::Player,
+) {
+    if let midi_in::Key::Bend { value } = k {
+        if let Some(kit) = routes.kit_bend(j) {
+            player.bend_kit(usize::from(kit), value);
+        }
+        return;
+    }
+    if let Some((kit, to)) = routes.kit_key(j, k, player) {
+        let v = |v: u8| v.max(1);
+        play_kit_key(
+            usize::from(kit),
+            to,
+            k,
+            &v,
+            track,
+            midi,
+            (pad_synths, synth),
+            player,
+        );
+    }
+}
+
+/// Key `k` on kit `kit`, where `sampler::Player::note_to` sent it (`to`):
+/// the pad as its kind has it ([`play_routed_pad`]), or the keygroups as
+/// a key (they take no pressure yet). `v` gives a key's velocity. Never
+/// allocates.
+#[allow(clippy::too_many_arguments)]
+fn play_kit_key(
+    kit: usize,
+    to: sampler::NoteTo,
+    k: midi_in::Key,
+    v: &impl Fn(u8) -> u8,
+    track: u8,
+    midi: &mut midi_out::MidiOut,
+    (pad_synths, synth): (&mut pad_synths::PadSynths, &mut synth::Synth),
+    player: &mut sampler::Player,
+) {
+    use midi_in::Key;
+    use mpfree_play::Event;
+    match (to, k) {
+        (sampler::NoteTo::Pad(p), _) => {
+            let note = p.min(127) as u8;
+            let event = match k {
+                Key::Down { velocity, .. } => Event::NoteOn {
+                    note,
+                    velocity: v(velocity),
+                },
+                Key::Up { .. } => Event::NoteOff { note },
+                Key::Pressure { value, .. } => Event::Pressure { note, value },
+                _ => return,
+            };
+            play_routed_pad(track, p, event, midi, (pad_synths, synth), player, kit);
+        }
+        (sampler::NoteTo::Keys(n), Key::Down { velocity, .. }) => {
+            player.key_kit_at(kit, n, v(velocity), 0);
+        }
+        (sampler::NoteTo::Keys(n), Key::Up { .. }) => player.key_off_kit_at(kit, n, 0),
+        _ => {}
+    }
+}
+
+/// The kit layers' pads a hit played or lets go of, (kit, kit pad) each
+/// ([`PadLayers::kit_pads_on`], sampler step 15f): `event` of each pad on
+/// its kit, as its kind has it ([`play_routed_pad`]). Never allocates.
+fn play_kit_layers(
+    pads: [Option<(u8, u8)>; PadLayers::MORE],
+    event: impl Fn(u8) -> mpfree_play::Event,
+    track: u8,
+    midi: &mut midi_out::MidiOut,
+    (pad_synths, synth): (&mut pad_synths::PadSynths, &mut synth::Synth),
+    player: &mut sampler::Player,
+) {
+    for (kit, kp) in pads.into_iter().flatten() {
+        let (pad, kit) = (usize::from(kp), usize::from(kit));
+        play_routed_pad(
+            track,
+            pad,
+            event(kp),
+            midi,
+            (pad_synths, synth),
+            player,
+            kit,
+        );
+    }
+}
+
+/// Pad `pad`'s bit in a 16-pad mask (none past 16).
+fn bit16(pad: usize) -> u16 {
+    1u16.checked_shl(pad as u32).unwrap_or(0)
+}
+
+/// A note of the pads' arp ([`PadsArp`]) where the pads play on their
+/// own: the shared synth by note, a host instrument's pad on the pads'
+/// player, a kit's pad as its kind has it ([`play_routed_pad_at`]).
+/// Returns the pad on the page it lights, if one does. Never allocates.
+#[allow(clippy::too_many_arguments)]
+fn play_pads_arp(
+    to: PadsPreview,
+    n: ArpNote,
+    track: u8,
+    page: usize,
+    synth: &mut synth::Synth,
+    own: &mut instruments::Instruments,
+    midi: &mut midi_out::MidiOut,
+    pad_synths: &mut pad_synths::PadSynths,
+    player: &mut sampler::Player,
+) -> Option<usize> {
+    use mpfree_play::Event;
+    let pads = instruments::THE_PADS;
+    match (to, n) {
+        (
+            PadsPreview::Synth,
+            ArpNote::On {
+                note,
+                velocity,
+                offset,
+            },
+        ) => {
+            synth.note_on_note(note, velocity, offset);
+            (0..16).find(|&p| synth.notes(p).contains(&note))
+        }
+        (PadsPreview::Synth, ArpNote::Off { note, offset }) => {
+            synth.note_off_note(note, offset);
+            None
+        }
+        (
+            PadsPreview::Host,
+            ArpNote::On {
+                note,
+                velocity,
+                offset,
+            },
+        ) => {
+            let none = Shift::NONE;
+            own.pad_on_shifted(pads, usize::from(note), velocity, offset, &none);
+            (usize::from(note) < 16).then_some(usize::from(note))
+        }
+        (PadsPreview::Host, ArpNote::Off { note, offset }) => {
+            own.pad_off(pads, usize::from(note), offset);
+            None
+        }
+        (
+            PadsPreview::Kit(k),
+            ArpNote::On {
+                note,
+                velocity,
+                offset,
+            },
+        ) => {
+            let on = Event::NoteOn { note, velocity };
+            let s = (&mut *pad_synths, &mut *synth);
+            play_routed_pad_at(
+                track,
+                usize::from(note),
+                on,
+                offset,
+                midi,
+                s,
+                player,
+                usize::from(k),
+            );
+            let p = usize::from(note);
+            (p / 16 == page).then_some(p % 16)
+        }
+        (PadsPreview::Kit(k), ArpNote::Off { note, offset }) => {
+            let off = Event::NoteOff { note };
+            let s = (&mut *pad_synths, &mut *synth);
+            play_routed_pad_at(
+                track,
+                usize::from(note),
+                off,
+                offset,
+                midi,
+                s,
+                player,
+                usize::from(k),
+            );
+            None
+        }
+    }
+}
+
+/// The pads' hits while they play an instrument on their own (a synth, a
+/// whole kit, a bank's own: [`PadsPreview`]), into the track REC set up
+/// for it (sampler step 15c's second part, "REC records what is heard":
+/// `App::pads_own_rec`), as the layers' hits go into theirs
+/// ([`PadLayers::rec_on`]): each hit as the pad that plays it there (a
+/// kit's pad of the page the pads are on, the synth's or a host
+/// instrument's pad), its let-go and pressure where it went though the
+/// pads moved on meanwhile; and each key that plays the pads' synth on its
+/// own, as the pad its note plays there (CAPTURE's rule: a note no pad
+/// plays alone isn't kept). The pads' arp's notes go there by
+/// [`PadsArp`]. Main.rs and the test session both use it. Allocates
+/// nothing once made.
+struct PadsRec {
+    /// The track recording what the pads play now.
+    rec: Option<u8>,
+    /// Where each pad's hit went: the track, and the pad it went in as.
+    fed: [Option<(u8, u8)>; 16],
+    /// The pad each key went to on the track it went into.
+    keys: midi_in::RoutedPads,
+    /// The tracks a key went into, a bit each, for its let-go.
+    key_tracks: u128,
+}
+
+impl PadsRec {
+    fn new() -> PadsRec {
+        PadsRec {
+            rec: None,
+            fed: [None; 16],
+            keys: midi_in::RoutedPads::new(),
+            key_tracks: 0,
+        }
+    }
+
+    /// The track recording what the pads play on their own now
+    /// (`App::pads_own_rec`): the hits and keys that follow go into it.
+    fn rec_to(&mut self, rec: Option<u8>) {
+        self.rec = rec;
+    }
+
+    /// Pad `pad` (0 to 15) down as pad `note` of what the pads play, at
+    /// `velocity` as the recorder takes it (`App::layer_rec_velocity`;
+    /// None: nothing records the pads now).
+    fn on(&mut self, pad: usize, note: u8, velocity: Option<u8>, time: &mut time::TimeHost) {
+        use mpfree_play::Event;
+        self.off(pad, time);
+        let (Some(t), Some(velocity), Some(fed)) = (self.rec, velocity, self.fed.get_mut(pad))
+        else {
+            return;
+        };
+        *fed = Some((t, note));
+        time.routed_played(t, 0, Event::NoteOn { note, velocity });
+    }
+
+    /// Pad `pad` up: its end where its hit went.
+    fn off(&mut self, pad: usize, time: &mut time::TimeHost) {
+        if let Some((t, note)) = self.fed.get_mut(pad).and_then(Option::take) {
+            time.routed_played(t, 0, mpfree_play::Event::NoteOff { note });
+        }
+    }
+
+    /// Pad `pad`'s pressure where its hit went.
+    fn pressure(&mut self, pad: usize, value: u8, time: &mut time::TimeHost) {
+        if let Some(&Some((t, note))) = self.fed.get(pad) {
+            time.routed_played(t, 0, mpfree_play::Event::Pressure { note, value });
+        }
+    }
+
+    /// A keyboard's key that played the pads' synth on its own
+    /// (`KeysOnPads`), into the track recording it, as the pad its note
+    /// plays there (`midi_file::pad_on_track`); its end and pressure where
+    /// it went. `velocity` is as the recorder takes it (None: nothing
+    /// records the pads now).
+    fn key(
+        &mut self,
+        k: midi_in::Key,
+        velocity: Option<u8>,
+        time: &mut time::TimeHost,
+        own: &instruments::Instruments,
+        synth: &synth::Synth,
+    ) {
+        use midi_in::Key;
+        match k {
+            Key::Down { note, .. } => {
+                let (Some(t), Some(velocity)) = (self.rec, velocity) else {
+                    return;
+                };
+                let key = Key::Down { note, velocity };
+                let pad = |n| midi_file::pad_on_track(own, Some(synth), usize::from(t), n);
+                if let Some(ev) = self.keys.event(t, key, pad) {
+                    time.routed_played(t, 0, ev);
+                    self.key_tracks |= 1 << t;
+                }
+            }
+            Key::Up { .. } | Key::Pressure { .. } => {
+                let mut went = self.key_tracks;
+                while went != 0 {
+                    let t = went.trailing_zeros() as u8;
+                    went &= went - 1;
+                    if let Some(ev) = self.keys.event(t, k, |_| None) {
+                        time.routed_played(t, 0, ev);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// The pads' layers beyond the first (the instrument redesign's step 11a,
 /// app/pad_layers.rs): each pad hit plays them too, whichever way the
 /// first plays (on its own, or through the armed track), each by its own
@@ -5444,10 +6183,25 @@ struct PadLayers {
     synth_keys: u128,
     /// The pedals the keys put down on the layers.
     pedals: midi_in::PedalsDown,
-    /// The track recording each layer now (`App::pads_layer_recs`).
-    rec: [Option<u8>; PadLayers::MORE],
-    /// The tracks each pad's hit went into, for its let-go and pressure.
-    fed: [[Option<u8>; PadLayers::MORE]; 16],
+    /// The track recording each layer now (`App::pads_layer_recs`), with
+    /// a kit layer's kit (its track records that bank's pad, or the note
+    /// it plays, sampler step 15f).
+    rec: [Option<(u8, Option<LayerKit>)>; PadLayers::MORE],
+    /// The track each pad's hit went into for each layer, and the note it
+    /// went in as, for its let-go and pressure.
+    fed: [[Option<(u8, u8)>; PadLayers::MORE]; 16],
+    /// The kit each kit layer plays and its bank (`App::pads_layer_kits`,
+    /// sampler step 15f).
+    kits: [Option<(u8, u8)>; PadLayers::MORE],
+    /// The kit pad each pad's hit played on each kit layer, (kit, kit
+    /// pad), for its let-go and pressure though the layers changed since.
+    kit_held: [[Option<(u8, u8)>; PadLayers::MORE]; 16],
+    /// Where each key went on each kit layer, (kit, where), for its
+    /// let-go and pressure though the layers changed since.
+    kit_keys: [[Option<(u8, sampler::NoteTo)>; PadLayers::MORE]; 128],
+    /// The kit layers the wheel bent, to bend back once they are layers
+    /// no more.
+    bent: [Option<u8>; PadLayers::MORE],
     /// The pad each key went to on each track it went into, as a route's
     /// (CAPTURE's rule: a note no pad plays alone isn't kept).
     keys: midi_in::RoutedPads,
@@ -5467,16 +6221,134 @@ impl PadLayers {
             pedals: midi_in::PedalsDown::default(),
             rec: [None; PadLayers::MORE],
             fed: [[None; PadLayers::MORE]; 16],
+            kits: [None; PadLayers::MORE],
+            kit_held: [[None; PadLayers::MORE]; 16],
+            kit_keys: [[None; PadLayers::MORE]; 128],
+            bent: [None; PadLayers::MORE],
             keys: midi_in::RoutedPads::new(),
             key_tracks: 0,
         }
     }
 
-    /// The tracks recording the layers now (`App::pads_layer_recs`): the
-    /// hits and keys that follow go into them. A hit or key held goes on
-    /// where it went.
-    fn rec_to(&mut self, recs: [Option<u8>; PadLayers::MORE]) {
-        self.rec = recs;
+    /// The tracks recording the layers now (`App::pads_layer_recs`), a
+    /// kit layer's with how its kit takes notes now (`keys`,
+    /// `sampler::Player::kit_keys`): the hits and keys that follow go
+    /// into them. A hit or key held goes on where it went.
+    fn rec_to(
+        &mut self,
+        recs: [Option<app::LayerRec>; PadLayers::MORE],
+        keys: impl Fn(usize) -> mpfree_sampler::engine::KitKeys,
+    ) {
+        self.rec = recs.map(|r| {
+            r.map(|(t, kit)| {
+                let kit = kit.map(|(kit, page)| LayerKit {
+                    kit,
+                    page,
+                    keys: keys(usize::from(kit)),
+                });
+                (t, kit)
+            })
+        });
+    }
+
+    /// The kit layers as the app has them now (`App::pads_layer_kits`):
+    /// each hit plays its pad of their bank on them too, and each key as
+    /// the kit takes it. A hit or key held goes on where it went. Returns
+    /// the kits the wheel bent that are layers no more, to bend back.
+    fn kits_to(
+        &mut self,
+        kits: [Option<(u8, u8)>; PadLayers::MORE],
+    ) -> [Option<u8>; PadLayers::MORE] {
+        self.kits = kits;
+        let now = kits.map(|l| l.map(|(kit, _)| kit));
+        let gone = self.bent.map(|b| b.filter(|k| !now.contains(&Some(*k))));
+        self.bent = self.bent.map(|b| b.filter(|k| now.contains(&Some(*k))));
+        gone
+    }
+
+    /// A keyboard's key `k` on the kit layers (sampler step 15f), (kit,
+    /// where it goes) each, as each kit's Keys play sends it
+    /// (`sampler::Player::note_to`: the pad that sends the note, or the
+    /// keygroups that hold it). A key going down is kept for its let-go and
+    /// pressure, which go where it went though the layers changed since. A
+    /// kit layer that is the kit the armed track's keys play already
+    /// (`armed_kit`) takes none, so one key never plays a kit twice; nor
+    /// does a second note-on for a key held there. Never allocates.
+    fn kit_key(
+        &mut self,
+        k: midi_in::Key,
+        armed_kit: Option<usize>,
+        player: &sampler::Player,
+    ) -> [Option<(u8, sampler::NoteTo)>; PadLayers::MORE] {
+        use midi_in::Key;
+        let none = [None; PadLayers::MORE];
+        let at = |note: u8| usize::from(note & 0x7F);
+        match k {
+            Key::Down { note, .. } => {
+                let kits = self.kits;
+                let held = &mut self.kit_keys[at(note)];
+                if held.iter().any(Option::is_some) {
+                    return none;
+                }
+                *held = kits.map(|l| {
+                    let (kit, _) = l?;
+                    let k = usize::from(kit);
+                    (Some(k) != armed_kit).then(|| (kit, player.note_to(k, note)))
+                });
+                *held
+            }
+            Key::Up { note } => std::mem::take(&mut self.kit_keys[at(note)]),
+            Key::Pressure { note, .. } => self.kit_keys[at(note)],
+            _ => none,
+        }
+    }
+
+    /// The kit layers the wheel bends now (their keygroups,
+    /// `sampler::Player::bend_kit`): every one but the kit the armed
+    /// track's keys play already (`armed_kit`), kept so a kit that stops
+    /// being a layer is bent back ([`PadLayers::kits_to`]).
+    fn kit_bend(&mut self, armed_kit: Option<usize>) -> [Option<u8>; PadLayers::MORE] {
+        let bent = self.kits.map(|l| {
+            l.map(|(kit, _)| kit)
+                .filter(|&k| Some(usize::from(k)) != armed_kit)
+        });
+        self.bent = bent;
+        bent
+    }
+
+    /// The keys held on the kit layers now (for the tests).
+    #[cfg(test)]
+    fn kit_keys_held(&self) -> usize {
+        self.kit_keys
+            .iter()
+            .filter(|k| k.iter().any(Option::is_some))
+            .count()
+    }
+
+    /// Pad `pad` (0 to 15) down: the kit layers' pads it plays, (kit, kit
+    /// pad) each, kept for its let-go and pressure.
+    fn kit_pads_on(&mut self, pad: usize) -> [Option<(u8, u8)>; PadLayers::MORE] {
+        let kits = self.kits;
+        let Some(held) = self.kit_held.get_mut(pad) else {
+            return [None; PadLayers::MORE];
+        };
+        *held = kits.map(|k| k.map(|(kit, page)| (kit, page * 16 + pad as u8)));
+        *held
+    }
+
+    /// Pad `pad` up: the kit layers' pads its hit played, now forgotten.
+    fn kit_pads_off(&mut self, pad: usize) -> [Option<(u8, u8)>; PadLayers::MORE] {
+        self.kit_held
+            .get_mut(pad)
+            .map_or([None; PadLayers::MORE], std::mem::take)
+    }
+
+    /// The kit layers' pads pad `pad`'s hit plays, for its pressure.
+    fn kit_pads_held(&self, pad: usize) -> [Option<(u8, u8)>; PadLayers::MORE] {
+        self.kit_held
+            .get(pad)
+            .copied()
+            .unwrap_or([None; PadLayers::MORE])
     }
 
     /// Pad `pad` (0 to 15) down: into each track recording a layer, at
@@ -5486,9 +6358,12 @@ impl PadLayers {
         let (Some(velocity), Some(fed)) = (velocity, self.fed.get_mut(pad)) else {
             return;
         };
-        *fed = self.rec;
-        for &t in self.rec.iter().flatten() {
-            let note = pad as u8;
+        *fed = self.rec.map(|r| {
+            let (t, kit) = r?;
+            let note = kit.map_or(Some(pad as u8), |k| k.pad_note(pad))?;
+            Some((t, note))
+        });
+        for &(t, note) in fed.iter().flatten() {
             time.routed_played(t, 0, mpfree_play::Event::NoteOn { note, velocity });
         }
     }
@@ -5498,8 +6373,7 @@ impl PadLayers {
         let Some(fed) = self.fed.get_mut(pad) else {
             return;
         };
-        for t in std::mem::take(fed).into_iter().flatten() {
-            let note = pad as u8;
+        for (t, note) in std::mem::take(fed).into_iter().flatten() {
             time.routed_played(t, 0, mpfree_play::Event::NoteOff { note });
         }
     }
@@ -5509,16 +6383,16 @@ impl PadLayers {
         let Some(fed) = self.fed.get(pad) else {
             return;
         };
-        for &t in fed.iter().flatten() {
-            let note = pad as u8;
+        for &(t, note) in fed.iter().flatten() {
             time.routed_played(t, 0, mpfree_play::Event::Pressure { note, value });
         }
     }
 
     /// A keyboard's key into each track recording a layer, as the pad its
     /// note plays there (`midi_file::pad_on_track`: the track plays its
-    /// layer's synth, its own pad map's or the shared synth's); its end
-    /// and pressure where it went. `velocity` is as the recorder takes it
+    /// layer's synth, its own pad map's or the shared synth's), or as a
+    /// kit layer's kit takes it ([`LayerKit::key_note`], sampler step
+    /// 15f); its end and pressure where it went. `velocity` is as the recorder takes it
     /// (None: nothing records the pads now).
     fn rec_key(
         &mut self,
@@ -5534,9 +6408,12 @@ impl PadLayers {
                 let Some(velocity) = velocity else {
                     return;
                 };
-                for &t in self.rec.iter().flatten() {
+                for &(t, kit) in self.rec.iter().flatten() {
                     let key = Key::Down { note, velocity };
-                    let pad = |n| midi_file::pad_on_track(own, Some(synth), usize::from(t), n);
+                    let pad = |n| match kit {
+                        Some(k) => k.key_note(n),
+                        None => midi_file::pad_on_track(own, Some(synth), usize::from(t), n),
+                    };
                     if let Some(ev) = self.keys.event(t, key, pad) {
                         time.routed_played(t, 0, ev);
                         self.key_tracks |= 1 << t;
@@ -6252,6 +7129,16 @@ impl time::Pads for SeqPads<'_> {
         if self.own.plays(usize::from(o.track)) {
             return self.live_own(&sound, o, notes, &shift);
         }
+        // A kit played as notes (sampler step 15c, part 3): its notes play
+        // the kit as its Keys play sends them, never the synth.
+        let kit = self.kit_of(o.track);
+        if notes
+            && is_note(o.event)
+            && self.plays_kit(o.track)
+            && self.player.kit_keys(kit).takes_notes()
+        {
+            return self.live_kit_note(&sound, o);
+        }
         match (o.event, sound.event) {
             (Event::NoteOn { note, velocity }, Event::NoteOn { note: heard, .. }) => {
                 let v = self.live.velocity(velocity);
@@ -6940,6 +7827,58 @@ impl SeqPads<'_> {
 
     /// A live hit on `pad` at velocity `v`, for the pads' flashes and the
     /// Play page.
+    /// A live note (`o` as written, `sound` as it sounds) on a track
+    /// playing a kit played as notes (sampler step 15c, part 3): it plays
+    /// the pad that plays its note, or the keygroups that hold it, as the
+    /// kit's Keys play sends it (`sampler::Player::note_on_to`, as a clip's
+    /// note does in `out_note`), and records as written; the pad that plays
+    /// it flashes. Its let-go and pressure go where it went down.
+    fn live_kit_note(&mut self, sound: &mpfree_play::Out, o: &mpfree_play::Out) -> time::Heard {
+        use mpfree_play::Event;
+        use time::Heard;
+        let kit = self.kit_of(o.track);
+        let keys = self.player.kit_keys(kit);
+        match (o.event, sound.event) {
+            (Event::NoteOn { note, velocity }, Event::NoteOn { note: heard, .. }) => {
+                let v = self.live.velocity(velocity);
+                let played = match self.player.note_on_to(kit, heard) {
+                    sampler::NoteTo::Pad(p) => self.player.live_hit_at(kit, p, v, o.offset),
+                    sampler::NoteTo::Keys(n) => {
+                        // A note no keygroup holds plays nothing.
+                        self.player.key_kit_at(kit, n, v, o.offset) && keys.holds(n)
+                    }
+                };
+                if played {
+                    self.hits += 1;
+                } else {
+                    self.silent += 1;
+                }
+                let pad = keys.pad_of_note(note).map(usize::from);
+                if let Some(p) = pad {
+                    self.live_hit(p, v);
+                }
+                let on = Event::NoteOn { note, velocity: v };
+                Heard::of(pad.map(|p| pad_on(p, v)), on, &[note])
+            }
+            (Event::NoteOff { note }, Event::NoteOff { note: heard }) => {
+                match self.player.note_off_to(kit, heard) {
+                    sampler::NoteTo::Pad(p) => self.player.live_release_at(kit, p, o.offset),
+                    sampler::NoteTo::Keys(n) => self.player.key_off_kit_at(kit, n, o.offset),
+                }
+                let pad = keys.pad_of_note(note).map(usize::from);
+                Heard::of(pad.map(pad_off), o.event, &[note])
+            }
+            (Event::Pressure { value, .. }, Event::Pressure { note: heard, .. }) => {
+                // A keygroup's key takes no pressure yet.
+                if let sampler::NoteTo::Pad(p) = self.player.note_held_to(kit, heard) {
+                    self.player.pressure_kit_at(kit, p, value, o.offset);
+                }
+                Heard::NONE
+            }
+            _ => Heard::NONE,
+        }
+    }
+
     fn live_hit(&mut self, pad: usize, v: u8) {
         if self.n_live < MAX_LIVE_HITS {
             self.live_hits[self.n_live] = (pad as u8, v);
@@ -8144,13 +9083,15 @@ fn synth_status(synth: &synth::Synth, time: &RenderTime) -> String {
 /// The notes each of track `track`'s 16 pads plays, as a clip of notes on
 /// the track reads them (step 5c): what the pad plays on the track's own
 /// synth (or the one it plays) or on the shared synth, a chord's root
-/// last, or a kit pad's note in bank A. A pad that plays nothing (its
-/// notes outside 0 to 127) has none, and the grid shows its row on its own
-/// number. Never allocates.
+/// last, the note a kit played as notes plays on the pad (bank A's;
+/// sampler step 15c, part 3), or a kit pad's note in bank A. A pad that
+/// plays nothing (its notes outside 0 to 127) has none, and the grid shows
+/// its row on its own number. Never allocates.
 fn pad_rows(
     own: &instruments::Instruments,
     synth: &synth::Synth,
     kits: &sampler::TrackKits,
+    kit_notes: &sampler::KitNotes,
     track: usize,
 ) -> time::PadRows {
     let mut rows = time::PadRows::PADS;
@@ -8159,6 +9100,9 @@ fn pad_rows(
             rows.set(p, own.pad_notes(track, p));
         } else if kits.plays_synth(track) {
             rows.set(p, synth.notes(p));
+        } else if kit_notes.of_track(kits, track).is_some() {
+            let n = kit_notes.note(kits, track, p);
+            rows.set(p, n.as_slice());
         } else if let Some(n) = mpfree_midi::profile::kit_note(p) {
             rows.set(p, &[n]);
         }
@@ -8169,29 +9113,32 @@ fn pad_rows(
 /// The tracks whose takes hold notes, a bit each (instrument redesign
 /// step 5c): one whose own instrument, or the one it plays of another
 /// track's, plays notes, not the Drums engine's sounds; or one that plays
-/// the shared synth while it plays notes (step sequencer refactor E4).
+/// the shared synth while it plays notes (step sequencer refactor E4); or
+/// one that plays a kit played as notes (sampler step 15c, part 3).
 /// Never allocates.
 fn notes_tracks(
     own: &instruments::Instruments,
     kits: &sampler::TrackKits,
     synth: &synth::Synth,
+    kit_notes: &sampler::KitNotes,
     tracks: usize,
 ) -> u128 {
-    if !synth.plays_notes() {
-        return own.note_tracks();
-    }
+    let synth_notes = synth.plays_notes();
     (0..tracks.min(128))
-        .filter(|&t| !own.plays(t) && kits.plays_synth(t))
+        .filter(|&t| !own.plays(t))
+        .filter(|&t| (synth_notes && kits.plays_synth(t)) || kit_notes.of_track(kits, t).is_some())
         .fold(own.note_tracks(), |bits, t| bits | 1 << t)
 }
 
 /// Whether track `track`'s arp works in notes (step 5d): its own synth
 /// (or the one it plays) plays notes, not the Drums engine's sounds, or it
-/// plays the shared synth, whose pads press notes; not while its notes go
-/// to MIDI out, which plays the pads as its profile says. Never allocates.
+/// plays the shared synth, whose pads press notes, or a kit played as
+/// notes (sampler step 15c, part 3); not while its notes go to MIDI out,
+/// which plays the pads as its profile says. Never allocates.
 fn arp_on_notes(
     own: &instruments::Instruments,
     kits: &sampler::TrackKits,
+    kit_notes: &sampler::KitNotes,
     midi: &midi_out::MidiOut,
     track: usize,
 ) -> bool {
@@ -8201,8 +9148,78 @@ fn arp_on_notes(
     if own.plays(track) {
         own.plays_notes(track)
     } else {
-        kits.plays_synth(track)
+        kits.plays_synth(track) || kit_notes.of_track(kits, track).is_some()
     }
+}
+
+/// Which tracks' takes hold notes, each track's pad rows, and whether its
+/// arp works in notes, from what the tracks play now: a clip of notes shows
+/// each pad's note on the step grid's pad rows (step 5c), and a track whose
+/// instrument plays notes has its arp work in notes, so the live pads, a
+/// clip of notes and an old clip of pad hits meet in it as notes (step
+/// 5d); a kit played as notes too (sampler step 15c, part 3). Each period;
+/// never allocates.
+fn sync_notes(
+    time: &mut time::TimeHost,
+    app: &mut app::App,
+    own: &instruments::Instruments,
+    kits: &sampler::TrackKits,
+    kit_notes: &sampler::KitNotes,
+    synth: &synth::Synth,
+    midi: &midi_out::MidiOut,
+) {
+    let n = time.track_count();
+    time.set_notes_tracks(notes_tracks(own, kits, synth, kit_notes, n));
+    for t in 0..n.min(mpfree_seq::MAX_TRACKS) {
+        let rows = pad_rows(own, synth, kits, kit_notes, t);
+        time.set_pad_rows(t, rows);
+        app.arps
+            .set_on_notes(t, arp_on_notes(own, kits, kit_notes, midi, t));
+        app.arps.set_pads(t, &rows);
+    }
+}
+
+/// What the pads press into the selected track's arp: its own synth's pad
+/// map while that plays notes (step 5d), or its kit's bank's notes while
+/// that kit is played as notes (sampler step 15c, part 3). None (they
+/// press pads, or the shared synth's layout) otherwise, and while the pads
+/// play something of their own (`pads_own`, or a synth chosen for them).
+fn press_layout(
+    app: &app::App,
+    own: &instruments::Instruments,
+    kits: &sampler::TrackKits,
+    kit_notes: &sampler::KitNotes,
+    midi: &midi_out::MidiOut,
+    pads_own: bool,
+) -> Option<[mpfree_arp::scale::pads::Pad; 16]> {
+    let sel = app.track();
+    if pads_own || app.pads_chose_synth() || !arp_on_notes(own, kits, kit_notes, midi, sel) {
+        return None;
+    }
+    if own.plays(sel) {
+        own.pad_map(sel)
+    } else {
+        kit_press_layout(kits, kit_notes, sel, app.kit_page())
+    }
+}
+
+/// What the pads press into the arp of track `track` playing a kit played
+/// as notes (sampler step 15c, part 3): bank `bank`'s 16 notes, as the kit
+/// plays them, so the pads and the keys play the track as notes, like a
+/// synth's. None for any other track. Never allocates.
+fn kit_press_layout(
+    kits: &sampler::TrackKits,
+    kit_notes: &sampler::KitNotes,
+    track: usize,
+    bank: usize,
+) -> Option<[mpfree_arp::scale::pads::Pad; 16]> {
+    kit_notes.of_track(kits, track)?;
+    Some(std::array::from_fn(|s| {
+        let n = kit_notes.note(kits, track, bank * 16 + s);
+        n.map_or_else(mpfree_arp::scale::pads::Pad::default, |n| {
+            mpfree_arp::scale::pads::Pad::single(n.into())
+        })
+    }))
 }
 
 /// The hint the Synth tab shows while the armed track (`track`, from 0)
@@ -8399,6 +9416,9 @@ fn player_session(
     // pads player (`instruments::THE_PADS`), while the armed track doesn't
     // play it.
     let mut pads_preview: Option<PadsPreview> = None;
+    // The source bank the screen was last told the pads play (sampler
+    // step 15e), while it isn't the bank shown.
+    let mut kit_source: Option<usize> = None;
     // The name of the instrument the host's pads player plays, as the
     // screen last heard it (step 6).
     let mut pads_host_shown: Option<&'static str> = None;
@@ -8429,6 +9449,9 @@ fn player_session(
     // every track until a pick). The pads play the armed track's; each
     // track's clips play its own.
     let mut track_kits = sampler::TrackKits::new(drum_kits);
+    // The kits played as notes, read from the player each period (sampler
+    // step 15c, part 3).
+    let mut kit_notes = sampler::KitNotes::default();
     // The project's instruments, each with its lasting id (the shared
     // synth is instrument 1). Made here, before the sound starts; an open
     // swaps in the project's, and this one goes back to be freed on the
@@ -9113,6 +10136,12 @@ fn player_session(
     // The pads' layers beyond the first (step 11a), which the pads' hits
     // and the keys play too.
     let mut pad_layers = PadLayers::new();
+    // NOTE REPEAT, Latch and the arp while the pads play an instrument on
+    // their own (sampler step 15c).
+    let mut pads_arp = PadsArp::new(RATE, app.bpm());
+    // The pads' own hits and keys into the track recording what they play
+    // on their own (sampler step 15c).
+    let mut pads_rec = PadsRec::new();
     let mut route_synths = RouteSynths::new();
     // The keys' expression on its gear, thinned for the recorder and the
     // move log (the MIDI plan's 3.7).
@@ -9291,9 +10320,16 @@ fn player_session(
                     if !waits_for_line(&mut time, &player, &app, synth_on, w, &mut waits_full, out)
                     {
                         if let Some(ev) = app.pressed_event(pad, v, true) {
-                            // With the notes it plays, for a take of notes (step 5d).
-                            let rows = pad_rows(&mix.instruments, &synth, &track_kits, app.track());
-                            time.pad_pressed_notes(0, ev, rows.notes(pad));
+                            // With the notes it plays, for a take of notes (step 5d):
+                            // on a kit played as notes, the bank's (step 15c).
+                            let t = app.track();
+                            let rows =
+                                pad_rows(&mix.instruments, &synth, &track_kits, &kit_notes, t);
+                            let kit_note = kit_notes.note(&track_kits, t, app.kit_pad(pad));
+                            let notes = kit_note
+                                .as_ref()
+                                .map_or(rows.notes(pad), std::slice::from_ref);
+                            time.pad_pressed_notes(0, ev, notes);
                         }
                         fx.extend(app.pad_down(pad, v));
                         awaiting[pad] = true;
@@ -9313,9 +10349,16 @@ fn player_session(
                     if !waits_for_line(&mut time, &player, &app, synth_on, w, &mut waits_full, out)
                     {
                         if let Some(ev) = app.pressed_event(pad, 0, false) {
-                            // With the notes it plays, for a take of notes (step 5d).
-                            let rows = pad_rows(&mix.instruments, &synth, &track_kits, app.track());
-                            time.pad_pressed_notes(0, ev, rows.notes(pad));
+                            // With the notes it plays, for a take of notes (step 5d):
+                            // on a kit played as notes, the ones it pressed (step 15c).
+                            let t = app.track();
+                            let rows =
+                                pad_rows(&mix.instruments, &synth, &track_kits, &kit_notes, t);
+                            let notes = match kit_notes.of_track(&track_kits, t) {
+                                Some(_) => app.pad_held_notes(pad),
+                                None => rows.notes(pad),
+                            };
+                            time.pad_pressed_notes(0, ev, notes);
                         }
                         fx.extend(app.pad_up(pad));
                         awaiting[pad] = false;
@@ -9477,8 +10520,8 @@ fn player_session(
                 // there would hold them: notes on a track that plays notes,
                 // else each note on the pad that plays it (midi_file.rs).
                 gui::FromUi::MidiFile(m) => {
-                    let notes =
-                        notes_tracks(&mix.instruments, &track_kits, &synth, time.track_count());
+                    let n = time.track_count();
+                    let notes = notes_tracks(&mix.instruments, &track_kits, &synth, &kit_notes, n);
                     let notes_on = |t: usize| t < 128 && notes >> t & 1 == 1;
                     let r = midi_file::put(&mut time, &m, notes_on, |t, n| {
                         let synth_has = track_kits.plays_synth(t).then_some(&*synth);
@@ -10755,6 +11798,16 @@ fn player_session(
             if let Some(j) = track.checked_sub(midi_in::SYNTH_ROUTES) {
                 let j = usize::from(j);
                 route_synths.key(j, k, &mut synth, &mut mix.instruments);
+                // A route that names a kit plays it (sampler step 15f).
+                play_route_kit_key(
+                    &mut route_synths,
+                    j,
+                    k,
+                    armed as u8,
+                    &mut midi_out,
+                    (&mut mix.pad_synths, &mut synth),
+                    &mut player,
+                );
                 route_synths.rec_key(j, k, &mut time, &mix.instruments, &synth);
                 continue;
             }
@@ -10771,6 +11824,11 @@ fn player_session(
         // whatever bank the pads show) or the keygroups that hold it; else
         // as the pad the MPC gives that note.
         let key_notes = app.keys_play_notes();
+        // The armed track's kit played as notes (sampler step 15c, part
+        // 3): its keys press notes into its arp as a synth's do, but the
+        // wheel bends its keygroups and the shared synth takes nothing.
+        let kit_notes_armed =
+            !mix.instruments.plays(armed) && kit_notes.of_track(&track_kits, armed).is_some();
         let kit_keys = matches!(
             keys_play(
                 synth_on,
@@ -10780,6 +11838,12 @@ fn player_session(
             ),
             midi_in::KeysPlay::KitPads(_)
         );
+        // The kit the armed track's keys play, which the kit layers leave
+        // to it (sampler step 15f); none while the pads' synth takes the
+        // keys (`KeysOnPads`).
+        let armed_kit = (kit_keys || kit_notes_armed)
+            .then(|| player.kit())
+            .filter(|_| !matches!(pads_preview, Some(PadsPreview::Synth | PadsPreview::Host)));
         if armed != expr_track || pads_preview != expr_pads {
             // Its gear's pedals come up with its expression; its
             // instrument's and the synth's here (or the pads' synth's, as
@@ -10804,6 +11868,18 @@ fn player_session(
             // The pads' layers (step 11a) play each key too, by note,
             // whichever way the first plays it.
             pad_layers.key(k, shape, &mut synth, &mut mix.instruments);
+            // A kit layer plays each key too, as its kit's Keys play sends
+            // it (sampler step 15f).
+            play_kit_layer_key(
+                &mut pad_layers,
+                k,
+                shape,
+                armed_kit,
+                armed as u8,
+                &mut midi_out,
+                (&mut mix.pad_synths, &mut synth),
+                &mut player,
+            );
             // And into each track recording a layer (step 11c).
             let rv = match k {
                 midi_in::Key::Down { velocity, .. } => app.layer_rec_velocity(velocity),
@@ -10814,6 +11890,9 @@ fn player_session(
                 if let midi_in::Key::Control { ctl, value } = k {
                     pedals_down.key(ctl, value);
                 }
+                // Into the track recording what the pads play (sampler
+                // step 15c).
+                pads_rec.key(k, rv, &mut time, &mix.instruments, &synth);
                 continue;
             }
             // The armed track's arp hears the keys' pressure and
@@ -10875,9 +11954,21 @@ fn player_session(
                 {
                     None
                 }
+                // A keygroup's key takes no pressure or expression yet.
+                midi_in::Key::Pressure { .. } | midi_in::Key::Expr { .. }
+                    if key_notes && kit_notes_armed =>
+                {
+                    None
+                }
                 midi_in::Key::Pressure { note, value } if key_notes => {
                     if !mix.instruments.note_pressure(armed, note, value) {
                         synth.pressure_note(note, value);
+                    }
+                    None
+                }
+                midi_in::Key::Bend { value } if key_notes && kit_notes_armed => {
+                    if let Some(kit) = track_kits.kit_of(armed) {
+                        player.bend_kit(kit, value);
                     }
                     None
                 }
@@ -10912,7 +12003,8 @@ fn player_session(
                         if let Some(v) = mpfree_node::Ctl::clamp(value) {
                             expr_rec.control(ctl.cc(), (v * 127.0).round() as u8);
                         }
-                    } else if !mix.instruments.control(armed, ctl, value, 0) {
+                    } else if !mix.instruments.control(armed, ctl, value, 0) && !kit_notes_armed {
+                        // A kit's keygroups take no pedal.
                         synth.control(ctl, value, 0);
                     }
                     None
@@ -10923,7 +12015,8 @@ fn player_session(
                 // would, but in any bank and never as STEP SEQ's, TRACK
                 // MUTE's or the loop keys' pads; a key on the keygroups
                 // that no pad plays sounds at once, past the arp and REC
-                // (until step 15c), and is counted. A let-go and pressure
+                // (a kit played as notes takes every key through its arp
+                // above, step 15c's third part), and is counted. A let-go and pressure
                 // go where the key went down.
                 midi_in::Key::Down { note, velocity } if kit_keys => {
                     let kit = player.kit();
@@ -10959,7 +12052,8 @@ fn player_session(
                                 if keys_direct == 1 {
                                     out.midi(&format!(
                                         "+{mt:.3} s a key on the kit's keygroups: it plays at once, \
-                                         not through the arp, and doesn't record yet; such keys are counted"
+                                         not through the arp, and doesn't record (a kit whose pads \
+                                         play notes takes every key through its arp); such keys are counted"
                                     ));
                                 }
                             }
@@ -11118,6 +12212,14 @@ fn player_session(
                 Some(ControlEvent::PadUp { pad }) if (pad as usize) < 16 && !m.music => {
                     pad_layers.pad_off(pad as usize, &mut synth, &mut mix.instruments);
                     pad_layers.rec_off(pad as usize, &mut time);
+                    play_kit_layers(
+                        pad_layers.kit_pads_off(pad as usize),
+                        |note| mpfree_play::Event::NoteOff { note },
+                        app.track() as u8,
+                        &mut midi_out,
+                        (&mut mix.pad_synths, &mut synth),
+                        &mut player,
+                    );
                 }
                 Some(ControlEvent::PadPressure { pad, pressure })
                     if (pad as usize) < 16 && !m.music =>
@@ -11125,6 +12227,17 @@ fn player_session(
                     let own = &mut mix.instruments;
                     pad_layers.pad_pressure(pad as usize, pressure, &mut synth, own);
                     pad_layers.rec_pressure(pad as usize, pressure, &mut time);
+                    play_kit_layers(
+                        pad_layers.kit_pads_held(pad as usize),
+                        |note| mpfree_play::Event::Pressure {
+                            note,
+                            value: pressure,
+                        },
+                        app.track() as u8,
+                        &mut midi_out,
+                        (&mut mix.pad_synths, &mut synth),
+                        &mut player,
+                    );
                 }
                 _ => {}
             }
@@ -11271,12 +12384,51 @@ fn player_session(
                 // The synth chosen for the pads (or, from step 6, an
                 // instrument of the host's): it plays the hit, before the
                 // arp and the recorder; the armed track keeps its kit.
+                // With NOTE REPEAT, Latch or the arp on, the pads' arp
+                // takes it and plays it there (sampler step 15c).
                 Some(ControlEvent::PadDown { pad, velocity })
                     if (pad as usize) < 16 && pads_preview.is_some() =>
                 {
                     let pad = pad as usize;
                     let v = app.velocity(velocity);
-                    match pads_preview {
+                    let arp_to = pads_preview.filter(|_| app.generating());
+                    if let Some(to) = arp_to {
+                        let mut buf = [0u8; MAX_PAD_NOTES];
+                        let n = match to {
+                            PadsPreview::Host => {
+                                buf[0] = pad as u8;
+                                1
+                            }
+                            PadsPreview::Kit(_) => {
+                                let kit_pad = app.kit_pad(pad);
+                                preview_pad[pad] = kit_pad as u8;
+                                buf[0] = kit_pad as u8;
+                                1
+                            }
+                            PadsPreview::Synth => {
+                                let notes = synth.notes(pad);
+                                let n = notes.len().min(MAX_PAD_NOTES);
+                                buf[..n].copy_from_slice(&notes[..n]);
+                                n
+                            }
+                        };
+                        let (track, page) = (app.track() as u8, app.kit_page());
+                        pads_arp.down(pad, &buf[..n], v, to, &mut |to, n, rec| {
+                            play_pads_arp(
+                                to,
+                                n,
+                                track,
+                                page,
+                                &mut synth,
+                                &mut mix.instruments,
+                                &mut midi_out,
+                                &mut mix.pad_synths,
+                                &mut player,
+                            );
+                            rec_pads_arp(to, n, rec, &mut time);
+                        });
+                    }
+                    match pads_preview.filter(|_| arp_to.is_none()) {
                         Some(PadsPreview::Host) => {
                             let none = mpfree_arp::scale::Shift::NONE;
                             mix.instruments
@@ -11301,11 +12453,30 @@ fn player_session(
                                 usize::from(k),
                             );
                         }
-                        _ => synth.note_on(pad, v, 0),
+                        Some(PadsPreview::Synth) => synth.note_on(pad, v, 0),
+                        None => {}
+                    }
+                    // Into the track recording what the pads play (sampler
+                    // step 15c), as the pad it plays there; the arp's notes
+                    // go there instead while it takes the hit.
+                    if arp_to.is_none() {
+                        let note = match pads_preview {
+                            Some(PadsPreview::Kit(_)) => preview_pad[pad],
+                            _ => pad as u8,
+                        };
+                        pads_rec.on(pad, note, app.layer_rec_velocity(velocity), &mut time);
                     }
                     if !m.music {
                         pad_layers.pad_on(pad, v, &mut synth, &mut mix.instruments);
                         pad_layers.rec_on(pad, app.layer_rec_velocity(velocity), &mut time);
+                        play_kit_layers(
+                            pad_layers.kit_pads_on(pad),
+                            |note| mpfree_play::Event::NoteOn { note, velocity: v },
+                            app.track() as u8,
+                            &mut midi_out,
+                            (&mut mix.pad_synths, &mut synth),
+                            &mut player,
+                        );
                     }
                     preview_held[pad] = pads_preview;
                     out.show(gui::ToUi::PadDown { pad, velocity: v });
@@ -11320,7 +12491,12 @@ fn player_session(
                     if (pad as usize) < 16 && preview_held[pad as usize].is_some() =>
                 {
                     let pad = pad as usize;
-                    match preview_held[pad].take() {
+                    // A hit the pads' arp took lets go there (sampler
+                    // step 15c).
+                    let held = preview_held[pad].take().filter(|_| !pads_arp.holds(pad));
+                    pads_arp.up(pad);
+                    pads_rec.off(pad, &mut time);
+                    match held {
                         Some(PadsPreview::Host) => {
                             mix.instruments.pad_off(instruments::THE_PADS, pad, 0);
                         }
@@ -11341,7 +12517,8 @@ fn player_session(
                                 usize::from(k),
                             );
                         }
-                        _ => synth.note_off(pad, 0),
+                        Some(PadsPreview::Synth) => synth.note_off(pad, 0),
+                        None => {}
                     }
                     out.show(gui::ToUi::PadUp(pad));
                     if mute_shown.is_none() {
@@ -11352,7 +12529,10 @@ fn player_session(
                     if (pad as usize) < 16 && preview_held[pad as usize].is_some() =>
                 {
                     let pad = pad as usize;
-                    match preview_held[pad] {
+                    let held = preview_held[pad].filter(|_| !pads_arp.holds(pad));
+                    pads_arp.pressure(pad, pressure);
+                    pads_rec.pressure(pad, pressure, &mut time);
+                    match held {
                         Some(PadsPreview::Host) => {
                             mix.instruments
                                 .pad_pressure(instruments::THE_PADS, pad, pressure, 0);
@@ -11373,7 +12553,8 @@ fn player_session(
                                 usize::from(k),
                             );
                         }
-                        _ => synth.pressure(pad, pressure),
+                        Some(PadsPreview::Synth) => synth.pressure(pad, pressure),
+                        None => {}
                     }
                 }
                 Some(ControlEvent::PadUp { pad })
@@ -11440,17 +12621,32 @@ fn player_session(
                     if !waits_for_line(&mut time, &player, &app, synth_on, w, &mut waits_full, out)
                     {
                         if let Some(ev) = app.pressed_event(pad, velocity, true) {
-                            // With the notes it plays, for a take of notes (step 5d).
-                            let rows = pad_rows(&mix.instruments, &synth, &track_kits, app.track());
-                            time.pad_pressed_notes(0, ev, rows.notes(pad));
+                            // With the notes it plays, for a take of notes (step 5d):
+                            // on a kit played as notes, the bank's (step 15c).
+                            let t = app.track();
+                            let rows =
+                                pad_rows(&mix.instruments, &synth, &track_kits, &kit_notes, t);
+                            let kit_note = kit_notes.note(&track_kits, t, app.kit_pad(pad));
+                            let notes = kit_note
+                                .as_ref()
+                                .map_or(rows.notes(pad), std::slice::from_ref);
+                            time.pad_pressed_notes(0, ev, notes);
                             // The note editor's pads: write or pick.
-                            fx.extend(editor_pad(&app, &mut time, out, pad, ev, rows.notes(pad)));
+                            fx.extend(editor_pad(&app, &mut time, out, pad, ev, notes));
                         }
                         // The pads' layers (step 11a) play the hit too.
                         if !m.music {
                             let v = app.velocity(velocity);
                             pad_layers.pad_on(pad, v, &mut synth, &mut mix.instruments);
                             pad_layers.rec_on(pad, app.layer_rec_velocity(velocity), &mut time);
+                            play_kit_layers(
+                                pad_layers.kit_pads_on(pad),
+                                |note| mpfree_play::Event::NoteOn { note, velocity: v },
+                                app.track() as u8,
+                                &mut midi_out,
+                                (&mut mix.pad_synths, &mut synth),
+                                &mut player,
+                            );
                         }
                         fx.extend(app.pad_down(pad, velocity));
                         awaiting[pad] = true;
@@ -11471,9 +12667,16 @@ fn player_session(
                     if !waits_for_line(&mut time, &player, &app, synth_on, w, &mut waits_full, out)
                     {
                         if let Some(ev) = app.pressed_event(pad, 0, false) {
-                            // With the notes it plays, for a take of notes (step 5d).
-                            let rows = pad_rows(&mix.instruments, &synth, &track_kits, app.track());
-                            time.pad_pressed_notes(0, ev, rows.notes(pad));
+                            // With the notes it plays, for a take of notes (step 5d):
+                            // on a kit played as notes, the ones it pressed (step 15c).
+                            let t = app.track();
+                            let rows =
+                                pad_rows(&mix.instruments, &synth, &track_kits, &kit_notes, t);
+                            let notes = match kit_notes.of_track(&track_kits, t) {
+                                Some(_) => app.pad_held_notes(pad),
+                                None => rows.notes(pad),
+                            };
+                            time.pad_pressed_notes(0, ev, notes);
                             fx.extend(editor_pad(&app, &mut time, out, pad, ev, &[]));
                         }
                         fx.extend(app.pad_up(pad));
@@ -11703,7 +12906,7 @@ fn player_session(
         // that play the synth, where REC records the pads as they are.
         app.set_configured(track_kits.picked() | midi_out.routed());
         app.set_synth_tracks(track_kits.on_synth());
-        app.set_pads_kit_tracks(app.pads_kit().map_or(0, |k| track_kits.on_kit(k)));
+        app.set_kit_tracks(|k| track_kits.on_kit(k));
         let mut stop = false;
         let mut later = Vec::new();
         for e in fx.drain(..) {
@@ -12095,10 +13298,6 @@ fn player_session(
                 app.set_pad_layout(Some(synth.pad_layout()));
             }
         }
-        // The arp came on (NOTE REPEAT, Latch, the Arp panel) over a track
-        // that plays something else: it plays the track's instrument, so
-        // the pads follow the track.
-        fx.extend(app.arp_ends_pads_synth());
         // The list of instruments follows the tracks' own and the free
         // places' (step 6): the app has it when it changes, so an
         // instrument picked for the pads is theirs once it has an id, and
@@ -12126,7 +13325,19 @@ fn player_session(
             &mut mix.instruments,
         );
         // The armed tracks that record a layer (step 11c).
-        pad_layers.rec_to(app.pads_layer_recs(time.also()));
+        pad_layers.rec_to(app.pads_layer_recs(time.also()), |kit| player.kit_keys(kit));
+        for kit in pad_layers
+            .kits_to(app.pads_layer_kits())
+            .into_iter()
+            .flatten()
+        {
+            player.bend_kit(usize::from(kit), 0.0);
+        }
+        // And what the pads play on their own, the pads' arp's notes too,
+        // into the track REC set up for it (sampler step 15c).
+        let own_rec = app.pads_own_rec(time.also());
+        pads_rec.rec_to(own_rec);
+        pads_arp.rec_to(own_rec.filter(|_| app.layer_rec_velocity(1).is_some()));
         // The synths MIDI routes name (step 11e), and where REC takes
         // their keys.
         route_synths.follow(
@@ -12135,7 +13346,14 @@ fn player_session(
             &mut synth,
             &mut mix.instruments,
         );
-        route_synths.rec_to(app.route_recs(time.also()));
+        for kit in route_synths
+            .kits_to(app.route_synth_kits())
+            .into_iter()
+            .flatten()
+        {
+            player.bend_kit(usize::from(kit), 0.0);
+        }
+        route_synths.rec_to(app.route_recs(time.also()), |kit| player.kit_keys(kit));
         if mix.instruments.pads_play_at() != pads_at {
             mix.instruments.pads_play(pads_at);
             // The Synth tab shows the pads' instrument while they play it
@@ -12241,7 +13459,7 @@ fn player_session(
                 // Other tracks may play the synth: it plays on.
                 synth_on = false;
                 player.select(k);
-                rest = sound_colours(player.page_sounds(k, app.pad_page()), k);
+                rest = sound_colours(player.page_sounds(k, app.kit_page()), k);
                 out.note(&format!(
                     "kit {}: {} ({} sounds)",
                     k + 1,
@@ -12294,6 +13512,23 @@ fn player_session(
             kit_now.map(|k| PadsPreview::Kit(k.min(usize::from(u8::MAX)) as u8))
         };
         if preview_now != pads_preview || (preview_now.is_some() && kit_switched) {
+            // The pads' arp's notes end where they played (sampler step
+            // 15c); its next hit starts it on what the pads play now.
+            let (track, page) = (sel as u8, app.kit_page());
+            pads_arp.leave(&mut |to, n, rec| {
+                play_pads_arp(
+                    to,
+                    n,
+                    track,
+                    page,
+                    &mut synth,
+                    &mut mix.instruments,
+                    &mut midi_out,
+                    &mut mix.pad_synths,
+                    &mut player,
+                );
+                rec_pads_arp(to, n, rec, &mut time);
+            });
             if preview_now != Some(PadsPreview::Synth) {
                 for pad in (0..16).filter(|&p| preview_held[p] == Some(PadsPreview::Synth)) {
                     synth.note_off(pad, 0);
@@ -12321,15 +13556,21 @@ fn player_session(
                 }
             }
             pads_preview = preview_now;
+            // The Sample page follows a hit on a kit the pads play on
+            // their own (sampler step 15d).
+            out.show(gui::ToUi::PadsKit(match pads_preview {
+                Some(PadsPreview::Kit(k)) => Some(usize::from(k)),
+                _ => None,
+            }));
             let preview_on = pads_preview.is_some();
             if let Some(PadsPreview::Kit(k)) = pads_preview {
                 let k = usize::from(k);
-                rest = sound_colours(player.page_sounds(k, app.pad_page()), k);
+                rest = sound_colours(player.page_sounds(k, app.kit_page()), k);
             } else if preview_on {
                 rest = synth.pad_colours();
             } else if !synth_on {
                 rest = sound_colours(
-                    player.page_sounds(player.kit(), app.pad_page()),
+                    player.page_sounds(player.kit(), app.kit_page()),
                     player.kit(),
                 );
             }
@@ -12356,7 +13597,7 @@ fn player_session(
                 _ => None,
             };
             if let Some(k) = kit_on_pads {
-                rest = sound_colours(player.page_sounds(k, app.pad_page()), k);
+                rest = sound_colours(player.page_sounds(k, app.kit_page()), k);
             }
             if mute_shown.is_none() && kit_on_pads.is_some() {
                 ports.send_batch(
@@ -12368,6 +13609,13 @@ fn player_session(
                 lit = [None; 16];
             }
             out.show(gui::ToUi::PadPage(app.pad_page()));
+        }
+        // A bank's own kit from another of its banks (sampler step 15e):
+        // the screen's Sample page edits the pads of that bank.
+        let source_now = Some(app.kit_page()).filter(|&p| p != app.pad_page());
+        if source_now != kit_source {
+            kit_source = source_now;
+            out.show(gui::ToUi::KitSource(source_now));
         }
         // The PAD BANK buttons found so far: the bank playing is lit, or
         // TRACK MUTE's bank while the pads mute tracks.
@@ -12522,25 +13770,23 @@ fn player_session(
         // A take on a track whose instrument plays notes records notes
         // (instrument redesign step 5c), the shared synth's too (step
         // sequencer refactor E4).
-        let n = time.track_count();
-        time.set_notes_tracks(notes_tracks(&mix.instruments, &track_kits, &synth, n));
+        // A kit played as notes makes its tracks notes tracks (sampler
+        // step 15c, part 3).
+        kit_notes = sampler::KitNotes::of(&player);
+        let own = &mix.instruments;
+        sync_notes(
+            &mut time,
+            &mut app,
+            own,
+            &track_kits,
+            &kit_notes,
+            &synth,
+            &midi_out,
+        );
         // The note editor's Scale option offers the pads' scale and the
         // owner's own scales (piano roll plan 2B.1).
         let (pads, own) = app.scale_offers();
         time.set_scale_offers(pads, own);
-        // A clip of notes shows each pad's note on the step grid's pad
-        // rows: the root of what the pad plays on the track's own synth or
-        // the shared synth, or a kit pad's note (step 5c).
-        // A track whose synth plays notes has its arp work in notes, so
-        // the live pads, a clip of notes and an old clip of pad hits meet
-        // in it as notes (step 5d).
-        for t in 0..time.track_count().min(mpfree_seq::MAX_TRACKS) {
-            let rows = pad_rows(&mix.instruments, &synth, &track_kits, t);
-            time.set_pad_rows(t, rows);
-            let on = arp_on_notes(&mix.instruments, &track_kits, &midi_out, t);
-            app.arps.set_on_notes(t, on);
-            app.arps.set_pads(t, &rows);
-        }
         // CV out takes the outputs' jobs; run, reset and clock follow the
         // transport.
         cv_out.sync(&io_model);
@@ -12568,16 +13814,12 @@ fn player_session(
             }
         }
         // The pads press the notes of the selected track's own synth into
-        // its arp while that plays notes (step 5d).
-        let own_notes = !app.pads_chose_synth()
-            && pads_preview.is_none()
-            && arp_on_notes(&mix.instruments, &track_kits, &midi_out, app.track())
-            && mix.instruments.plays(app.track());
-        app.set_arp_layout(
-            own_notes
-                .then(|| mix.instruments.pad_map(app.track()))
-                .flatten(),
-        );
+        // its arp while that plays notes (step 5d), or of its kit while
+        // that is played as notes, the bank's (sampler step 15c, part 3).
+        let own = &mix.instruments;
+        let pads_own = pads_preview.is_some();
+        let layout = press_layout(&app, own, &track_kits, &kit_notes, &midi_out, pads_own);
+        app.set_arp_layout(layout);
         if let Some(app::Effect::Arp(v)) = app.arp_poll() {
             out.show(gui::ToUi::Arp(Box::new(v)));
         }
@@ -12812,7 +14054,7 @@ fn player_session(
         parts.begin();
         // The pads' own hits: the first sound of a press shows the pad
         // down; the arp's repeats flash it.
-        let page = app.pad_page();
+        let page = app.kit_page();
         for &(pad, v) in &seq.live_hits[..seq.n_live] {
             let pad = usize::from(pad);
             // The pad it is on the page; a repeat latched on another page
@@ -12840,6 +14082,35 @@ fn player_session(
         hits += seq.hits;
         // The pads the clips lit, kept so the mixer can be reached below.
         let seq_flashes = seq.flashes;
+        // The pads' arp (sampler step 15c): the selected track's arp as the
+        // app set it, on the period the clips' arps had, playing where the
+        // pads play on their own; its notes flash their pads.
+        pads_arp.follow(app.arps.engine_at(app.track()), app.arp_own_swing());
+        {
+            let (track, page) = (app.track() as u8, app.kit_page());
+            // A copy (no heap): the notes record into `time` as they play.
+            let block = time.block().clone();
+            pads_arp.period(&block, &mut |to, n, rec| {
+                let lit = play_pads_arp(
+                    to,
+                    n,
+                    track,
+                    page,
+                    &mut synth,
+                    &mut mix.instruments,
+                    &mut midi_out,
+                    &mut mix.pad_synths,
+                    &mut player,
+                );
+                rec_pads_arp(to, n, rec, &mut time);
+                if let (Some(pad), ArpNote::On { velocity, .. }) = (lit, n) {
+                    hits += 1;
+                    repeats += 1;
+                    window_repeats += 1;
+                    out.show(gui::ToUi::PadFlash { pad, velocity });
+                }
+            });
+        }
         // The clips' parameter locks: to the mixer's mod engine, on their
         // frames of this period.
         for &(offset, addr, value) in time.locks() {
@@ -12865,7 +14136,7 @@ fn player_session(
             out.show(gui::ToUi::Steps(Box::new(steps)));
         }
         for (pad, &v) in seq_flashes.iter().enumerate().filter(|(_, v)| **v > 0) {
-            if let Some(c) = pad_cell(pad, app.pad_page(), !synth_on) {
+            if let Some(c) = pad_cell(pad, app.kit_page(), !synth_on) {
                 out.show(gui::ToUi::PadFlash {
                     pad: c,
                     velocity: v,
@@ -12965,7 +14236,7 @@ fn player_session(
         // sound: their resting colours follow.
         if std::mem::take(&mut recolour) && !synth_on {
             let fresh = sound_colours(
-                player.page_sounds(player.kit(), app.pad_page()),
+                player.page_sounds(player.kit(), app.kit_page()),
                 player.kit(),
             );
             for pad in 0..16 {
@@ -13115,11 +14386,11 @@ fn player_session(
             let blink = ((t * 4.0) as u64).is_multiple_of(2);
             // Only kit 1's pads 1-16 have strips, so mutes.
             let off = no_mutes(&track_kits, mix.instruments.note_tracks(), app.track()).is_some();
-            let (t, page) = (app.track(), app.pad_page());
+            let (t, page) = (app.track(), app.kit_page());
             let pad = |p: usize| pad_light(&time, t, page * 16 + p, off);
             let want = mute_colours(
                 keys,
-                sound_colours(player.page_sounds(kit, app.pad_page()), kit),
+                sound_colours(player.page_sounds(kit, app.kit_page()), kit),
                 track,
                 pad,
                 blink,
@@ -13162,12 +14433,12 @@ fn player_session(
         let latched = if synth_on {
             0
         } else {
-            (player.latched_pads() >> (app.pad_page() * 16)) as u16
+            (player.latched_pads() >> (app.kit_page() * 16)) as u16
         };
         // A Loop pad's hit waiting for the launch line blinks amber (twice
         // a second, as a cued clip's mute key does) until it sounds, and
         // the screen's pad has an amber outline (sampler R5.3b).
-        let waiting = time.hits_waiting(app.pad_page());
+        let waiting = time.hits_waiting(app.kit_page());
         if waiting != waiting_shown {
             waiting_shown = waiting;
             out.show(gui::ToUi::PadsWaiting(waiting));
@@ -14989,6 +16260,43 @@ fn main() {
 mod tests {
     use super::*;
 
+    /// Sampler step 15f: a kit layer's track records a hit as the kit's
+    /// pad of the layer's bank, and a key as the pad that sends it; on a
+    /// kit played as notes, both as the notes they play. A key its
+    /// keygroups take on a kit of pads plays but isn't kept.
+    #[test]
+    fn a_kit_layer_records_a_hit_and_a_key_as_its_kit_takes_them() {
+        use mpfree_sampler::engine::KitKeys;
+        use mpfree_sampler::model::KeysPlay;
+        let pads = LayerKit {
+            kit: 1,
+            page: 2,
+            keys: KitKeys::PADS,
+        };
+        assert_eq!(pads.pad_note(3), Some(35), "bank C's pad 4");
+        assert_eq!(pads.key_note(37), Some(0), "C#2 sends A1");
+        let both = LayerKit {
+            keys: KitKeys {
+                play: KeysPlay::Both,
+                held: 1 << 60,
+                pads_from: None,
+            },
+            ..pads
+        };
+        assert_eq!(both.key_note(60), None, "its keygroup's key isn't kept");
+        assert_eq!(both.key_note(37), Some(0), "the rest send their pads");
+        let notes = LayerKit {
+            keys: KitKeys {
+                play: KeysPlay::Keygroups,
+                held: 0,
+                pads_from: Some(48),
+            },
+            ..pads
+        };
+        assert_eq!(notes.pad_note(3), Some(48 + 35), "the note C4 plays");
+        assert_eq!(notes.key_note(61), Some(61), "a key as itself");
+    }
+
     /// 16 Levels' Transpose on the pads (S4): the step the armed track is
     /// on is lit, pad 9 dim white, the rest dim blue; past the pads none
     /// is lit, and with nothing to transpose they are dark.
@@ -15107,11 +16415,40 @@ mod tests {
         let tuning = synth.tuning_now();
         assert!(mix.instruments.put(3, made, pads, &tuning).is_ok());
         assert!(synth.plays_notes());
+        let none = sampler::KitNotes::default();
         assert_eq!(
-            notes_tracks(&mix.instruments, &kits, &synth, 8),
+            notes_tracks(&mix.instruments, &kits, &synth, &none, 8),
             1 << 2 | 1 << 3,
             "Track 3 on the shared synth, Track 4 on its own"
         );
+        // Kit 1 played as notes (sampler step 15c, part 3): every track on
+        // it too.
+        let mut kit_notes = none;
+        kit_notes.set(0, Some(36));
+        assert_eq!(
+            notes_tracks(&mix.instruments, &kits, &synth, &kit_notes, 8),
+            0xFF
+        );
+    }
+
+    /// Sampler step 15c, part 3: on a track playing a kit played as notes
+    /// the pads press the bank's notes into the arp, as the kit plays them
+    /// (none past note 127); on any other track they press pads.
+    #[test]
+    fn a_kit_played_as_notes_gives_the_pads_its_banks_notes() {
+        let mut kits = sampler::TrackKits::new(2);
+        assert!(kits.set(1, 1));
+        let mut kit_notes = sampler::KitNotes::default();
+        kit_notes.set(1, Some(36));
+        assert!(kit_press_layout(&kits, &kit_notes, 0, 0).is_none(), "kit 1");
+        let a = kit_press_layout(&kits, &kit_notes, 1, 0).unwrap();
+        assert_eq!((a[0].notes(), a[15].notes()), (&[36][..], &[51][..]));
+        let b = kit_press_layout(&kits, &kit_notes, 1, 1).unwrap();
+        assert_eq!(b[0].notes(), &[52]);
+        let h = kit_press_layout(&kits, &kit_notes, 1, 7).unwrap();
+        assert_eq!(h[0].notes(), &[] as &[u8], "past note 127");
+        kit_notes.set(1, None);
+        assert!(kit_press_layout(&kits, &kit_notes, 1, 0).is_none());
     }
 
     /// Finding 9 of the step sequencer refactor (20 Nov 2026): two tracks
@@ -15357,7 +16694,8 @@ mod tests {
     #[test]
     fn the_grids_pad_rows_are_the_notes_the_pads_play() {
         on_the_pads(&[2], &[1], |seq| {
-            let rows = |seq: &SeqPads, t| pad_rows(seq.own, seq.synth, seq.kits, t);
+            let none = sampler::KitNotes::default();
+            let rows = |seq: &SeqPads, t| pad_rows(seq.own, seq.synth, seq.kits, &none, t);
             let own = rows(seq, 1);
             for p in 0..16 {
                 assert_eq!(own.notes(p), seq.own.pad_notes(1, p));
@@ -15372,6 +16710,14 @@ mod tests {
                 mpc_one::PAD_NOTES,
                 "a kit's pads' notes"
             );
+            // A kit played as notes: the notes its pads play in bank A
+            // (sampler step 15c, part 3).
+            let mut kit_notes = none;
+            kit_notes.set(seq.kits.kit_of(0).unwrap(), Some(48));
+            let notes = pad_rows(seq.own, seq.synth, seq.kits, &kit_notes, 0);
+            for p in 0..16 {
+                assert_eq!(notes.notes(p), &[48 + p as u8]);
+            }
         });
     }
 
@@ -15395,9 +16741,23 @@ mod tests {
             assert_eq!(heard.notes().len(), 1);
             seq.live(&clip_out(1, 10, Event::NoteOff { note: 52 }, true));
             assert!(!seq.own.holds_note(1, 52));
-            assert!(arp_on_notes(seq.own, seq.kits, seq.midi, 1), "own synth");
-            assert!(arp_on_notes(seq.own, seq.kits, seq.midi, 2), "shared synth");
-            assert!(!arp_on_notes(seq.own, seq.kits, seq.midi, 0), "a kit");
+            let none = sampler::KitNotes::default();
+            assert!(
+                arp_on_notes(seq.own, seq.kits, &none, seq.midi, 1),
+                "own synth"
+            );
+            assert!(
+                arp_on_notes(seq.own, seq.kits, &none, seq.midi, 2),
+                "shared synth"
+            );
+            assert!(
+                !arp_on_notes(seq.own, seq.kits, &none, seq.midi, 0),
+                "a kit"
+            );
+            // A kit played as notes works in notes (sampler step 15c).
+            let mut kit_notes = none;
+            kit_notes.set(seq.kits.kit_of(0).unwrap(), Some(48));
+            assert!(arp_on_notes(seq.own, seq.kits, &kit_notes, seq.midi, 0));
         });
     }
 
@@ -15465,6 +16825,77 @@ mod tests {
             // The kick's own note is outside the keygroup: nothing.
             assert!(seq.out(&clip_out(0, 20, note(mpc_one::PAD_NOTES[4]), true)));
             assert_eq!((seq.hits, seq.silent), (1, 1));
+        });
+    }
+
+    /// Sampler step 15c, part 3: on a track whose kit is played as notes
+    /// (keys on the keygroups, the pads playing notes from C3) a live note
+    /// from its arp, the pads or the keys plays the kit, never the synth:
+    /// one the pads reach through its pad, which flashes, one they don't
+    /// through the keygroups. Each records as written, and lets go where it
+    /// went.
+    #[test]
+    fn a_live_note_plays_a_kit_played_as_notes() {
+        use mpfree_play::Event;
+        use mpfree_sampler::model::{Keys, KeysPlay, PadsPlay};
+        use time::Pads;
+        on_the_pads(&[], &[], |seq| {
+            let mut projects = seq.player.take_projects();
+            projects[0]
+                .edit_pad(4, None, |pad| {
+                    pad.keys = Some(Keys {
+                        lo: 36,
+                        hi: 84,
+                        root: 60,
+                    })
+                })
+                .unwrap();
+            projects[0]
+                .set_pads_play(PadsPlay::Keys { from: 60 })
+                .unwrap();
+            projects[0].set_keys_play(Some(KeysPlay::Keygroups));
+            let mut swap = Box::new(sampler::ViewSwap {
+                kit: 0,
+                view: Some(mpfree_sampler::engine::EngineView::build(
+                    &projects[0],
+                    RATE,
+                )),
+                routes: sampler::pad_routes(&projects[0]),
+            });
+            assert!(seq.player.swap_view(&mut swap));
+            assert!(seq.player.kit_keys(0).takes_notes());
+            let on = |note| Event::NoteOn {
+                note,
+                velocity: 100,
+            };
+            let written = |h: &time::Heard| -> Vec<u8> {
+                h.notes()
+                    .iter()
+                    .filter_map(|e| match *e {
+                        Event::NoteOn { note, .. } | Event::NoteOff { note } => Some(note),
+                        _ => None,
+                    })
+                    .collect()
+            };
+            // Pad 3 plays D3 (62): its note, through the pad.
+            let heard = seq.live(&clip_out(0, 0, on(62), true));
+            assert_eq!(written(&heard), [62], "records as written");
+            assert!(
+                matches!(heard.pad, Some(Event::NoteOn { note: 2, .. })),
+                "pad 3"
+            );
+            assert_eq!((seq.hits, seq.silent), (1, 0));
+            assert_eq!(seq.n_live, 1, "pad 3 flashes");
+            // C2 (48), below the pads: the keygroup, by pitch.
+            let heard = seq.live(&clip_out(0, 5, on(48), true));
+            assert_eq!(written(&heard), [48]);
+            assert_eq!(heard.pad, None, "no pad plays it");
+            assert_eq!((seq.hits, seq.silent), (2, 0), "both on the kit");
+            // The let-go goes where each went.
+            for (n, at) in [(62, 10), (48, 12)] {
+                let off = seq.live(&clip_out(0, at, Event::NoteOff { note: n }, true));
+                assert_eq!(written(&off), [n]);
+            }
         });
     }
 

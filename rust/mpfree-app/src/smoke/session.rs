@@ -270,9 +270,18 @@ pub struct Session {
     /// (step 7b, as main.rs).
     keys_on_pads: crate::KeysOnPads,
     /// The pads' layers beyond the first (step 11a), as main.rs's.
-    pad_layers: crate::PadLayers,
+    pub(crate) pad_layers: crate::PadLayers,
+    /// The pads' arp (sampler step 15c), as main.rs's, and what the pads
+    /// played on their own when it last looked.
+    pads_arp: crate::PadsArp,
+    arp_preview: Option<crate::PadsPreview>,
+    /// The pads' own hits and keys into the track recording what they
+    /// play on their own (sampler step 15c), as main.rs.
+    pads_rec: crate::PadsRec,
+    /// What the pads' arp played: where, the note and its velocity.
+    pub arp_played: Vec<(crate::PadsPreview, u8, u8)>,
     /// The synths MIDI routes name (step 11e), as main.rs's.
-    route_synths: crate::RouteSynths,
+    pub(crate) route_synths: crate::RouteSynths,
     /// What the pads play with their layers, as the screen last heard it.
     layers_shown: [Option<&'static str>; crate::instruments::PAD_LAYERS],
     pub previewed: Vec<(usize, u8)>,
@@ -280,6 +289,9 @@ pub struct Session {
     /// player_session keeps them: the pads pressed but not yet sounded,
     /// how many found the table full, and how many STOP dropped.
     awaiting: [bool; 16],
+    /// The source bank the screen was last told the pads play (sampler
+    /// step 15e), as main.rs.
+    kit_source: Option<usize>,
     waits_full: u64,
     stop_dropped: usize,
     waiting_shown: u16,
@@ -438,10 +450,15 @@ impl Session {
             host_held: [false; 16],
             keys_on_pads: crate::KeysOnPads::new(),
             pad_layers: crate::PadLayers::new(),
+            pads_arp: crate::PadsArp::new(44_100, 120.0),
+            arp_preview: None,
+            pads_rec: crate::PadsRec::new(),
+            arp_played: Vec::new(),
             route_synths: crate::RouteSynths::new(),
             layers_shown: [None; crate::instruments::PAD_LAYERS],
             previewed: Vec::new(),
             awaiting: [false; 16],
+            kit_source: None,
             waits_full: 0,
             stop_dropped: 0,
             waiting_shown: 0,
@@ -950,6 +967,22 @@ impl Session {
         };
         let own = &mut self.mix.instruments;
         self.route_synths.key(j, key, &mut self.synth, own);
+        // A route that names a kit plays it (sampler step 15f), as
+        // main.rs: a pad by its own sound, a keygroup as a key.
+        if let Some(p) = self.sounds.as_mut() {
+            use crate::sampler::NoteTo;
+            match (self.route_synths.kit_key(j, key, p), velocity) {
+                (Some((kit, NoteTo::Pad(pad))), Some(v)) => {
+                    p.hit_kit_at(usize::from(kit), pad, v.max(1), 0);
+                }
+                (Some((kit, NoteTo::Pad(pad))), None) => p.release_kit_at(usize::from(kit), pad, 0),
+                (Some((kit, NoteTo::Keys(n))), Some(v)) => {
+                    p.key_kit_at(usize::from(kit), n, v.max(1), 0);
+                }
+                (Some((kit, NoteTo::Keys(n))), None) => p.key_off_kit_at(usize::from(kit), n, 0),
+                (None, _) => {}
+            }
+        }
         let (time, own) = (&mut self.time, &self.mix.instruments);
         self.route_synths.rec_key(j, key, time, own, &self.synth);
         self.run_periods(1)
@@ -972,6 +1005,10 @@ impl Session {
         let own = &mut self.mix.instruments;
         // The pads' layers play each key too, by note (step 11a).
         self.pad_layers.key(key, shape, &mut self.synth, own);
+        // A kit layer plays each key too, as its kit's Keys play sends it
+        // (sampler step 15f), as main.rs.
+        let armed_kit = self.armed_kit(preview);
+        self.play_kit_layer_key(key, armed_kit);
         // And into each track recording a layer (step 11c).
         let rv = velocity.and_then(|v| self.app.layer_rec_velocity(v));
         let (time, own) = (&mut self.time, &self.mix.instruments);
@@ -983,6 +1020,10 @@ impl Session {
             .keys_on_pads
             .key(key, preview, shape, &mut self.synth, own)
         {
+            // Into the track recording what the pads play (sampler step
+            // 15c), as main.rs.
+            let (time, own) = (&mut self.time, &self.mix.instruments);
+            self.pads_rec.key(key, rv, time, own, &self.synth);
             return self.run_periods(2);
         }
         match velocity {
@@ -1004,6 +1045,52 @@ impl Session {
             }
         }
         self.run_periods(2)
+    }
+
+    /// The kit the armed track's keys play, which the kit layers leave to
+    /// it (sampler step 15f), as main.rs: none while the pads' synth
+    /// takes the keys.
+    fn armed_kit(&self, preview: Option<crate::PadsPreview>) -> Option<usize> {
+        use crate::PadsPreview;
+        let p = self.sounds.as_ref()?;
+        let armed = self.app.track();
+        if matches!(preview, Some(PadsPreview::Synth | PadsPreview::Host))
+            || self.mix.instruments.plays(armed)
+        {
+            return None;
+        }
+        let kit_notes = crate::sampler::KitNotes::of(p);
+        let kit_pads = !self.app.keys_play_notes() && !self.synth_on;
+        (kit_pads || kit_notes.of_track(&self.track_kits, armed).is_some()).then(|| p.kit())
+    }
+
+    /// A key on the kit layers (sampler step 15f), as main.rs's
+    /// `play_kit_layer_key`: a pad by its own sound, a keygroup as a key.
+    fn play_kit_layer_key(&mut self, key: crate::midi_in::Key, armed_kit: Option<usize>) {
+        use crate::midi_in::Key;
+        use crate::sampler::NoteTo;
+        let Some(p) = self.sounds.as_mut() else {
+            return;
+        };
+        for (kit, to) in self
+            .pad_layers
+            .kit_key(key, armed_kit, p)
+            .into_iter()
+            .flatten()
+        {
+            let kit = usize::from(kit);
+            match (to, key) {
+                (NoteTo::Pad(pad), Key::Down { velocity, .. }) => {
+                    p.hit_kit_at(kit, pad, self.app.velocity(velocity), 0);
+                }
+                (NoteTo::Pad(pad), Key::Up { .. }) => p.release_kit_at(kit, pad, 0),
+                (NoteTo::Keys(n), Key::Down { velocity, .. }) => {
+                    p.key_kit_at(kit, n, self.app.velocity(velocity), 0);
+                }
+                (NoteTo::Keys(n), Key::Up { .. }) => p.key_off_kit_at(kit, n, 0),
+                _ => {}
+            }
+        }
     }
 
     /// What the pads play on their own, as main.rs's `pads_preview`: the
@@ -1130,6 +1217,28 @@ impl Session {
     /// A pad pressed or let go on the controller, as `player_session` hands
     /// it over (the step pads, then the mute keys and 16 Levels' Transpose
     /// first).
+    /// The kit layers' pads a hit played (`on`: its velocity) or lets go
+    /// of (sampler step 15f), as main.rs plays them: on the sounding kit,
+    /// when there is one.
+    fn play_kit_layers(
+        &mut self,
+        pads: [Option<(u8, u8)>; crate::instruments::PAD_LAYERS - 1],
+        on: Option<u8>,
+    ) {
+        let Some(p) = self.sounds.as_mut() else {
+            return;
+        };
+        for (kit, kp) in pads.into_iter().flatten() {
+            let (kit, kp) = (usize::from(kit), usize::from(kp));
+            match on {
+                Some(v) => {
+                    p.hit_kit_at(kit, kp, v, 0);
+                }
+                None => p.release_kit_at(kit, kp, 0),
+            }
+        }
+    }
+
     pub fn pad_edge(&mut self, pad: usize, velocity: u8, down: bool) {
         // The pads' layers (step 11a), as main.rs: a let-go reaches the
         // notes its hit started there, whatever takes it below.
@@ -1137,6 +1246,8 @@ impl Session {
             let own = &mut self.mix.instruments;
             self.pad_layers.pad_off(pad, &mut self.synth, own);
             self.pad_layers.rec_off(pad, &mut self.time);
+            let kit_pads = self.pad_layers.kit_pads_off(pad);
+            self.play_kit_layers(kit_pads, None);
         }
         if down && self.app.pads_are_steps() {
             let v = self.app.velocity(velocity);
@@ -1212,6 +1323,53 @@ impl Session {
             self.out.note(&line);
             return;
         }
+        // NOTE REPEAT, Latch or the arp on while the pads play on their
+        // own (sampler step 15c), as main.rs: the pads' arp takes the hit
+        // and plays it there; its let-go goes there too.
+        if !down && pad < 16 && self.pads_arp.holds(pad) {
+            self.pads_arp.up(pad);
+            self.out.show(ToUi::PadUp(pad));
+            return;
+        }
+        if let (true, true, Some(to)) =
+            (down && pad < 16, self.app.generating(), self.pads_preview())
+        {
+            let v = self.app.velocity(velocity);
+            let mut buf = [0u8; mpfree_arp::scale::pads::MAX_PAD_NOTES];
+            let n = match to {
+                crate::PadsPreview::Host => {
+                    buf[0] = pad as u8;
+                    1
+                }
+                crate::PadsPreview::Kit(_) => {
+                    buf[0] = self.app.kit_pad(pad) as u8;
+                    1
+                }
+                crate::PadsPreview::Synth => {
+                    let notes = self.synth.notes(pad);
+                    let n = notes.len().min(buf.len());
+                    buf[..n].copy_from_slice(&notes[..n]);
+                    n
+                }
+            };
+            let (synth, own) = (&mut *self.synth, &mut self.mix.instruments);
+            let (sounds, played) = (&mut self.sounds, &mut self.arp_played);
+            let time = &mut self.time;
+            self.pads_arp
+                .down(pad, &buf[..n], v, to, &mut |to, n, rec| {
+                    arp_note(to, n, synth, own, sounds, played);
+                    crate::rec_pads_arp(to, n, rec, time);
+                });
+            let own = &mut self.mix.instruments;
+            self.pad_layers.pad_on(pad, v, &mut self.synth, own);
+            let kit_pads = self.pad_layers.kit_pads_on(pad);
+            self.play_kit_layers(kit_pads, Some(v));
+            let rv = self.app.layer_rec_velocity(velocity);
+            self.pad_layers.rec_on(pad, rv, &mut self.time);
+            self.previewed.push((pad, v));
+            self.out.show(ToUi::PadDown { pad, velocity: v });
+            return;
+        }
         // A synth picked for the pads in the list of synths (step 6), as
         // main.rs: the host's pads player plays the hit while the armed
         // track doesn't play it, before the arp and the recorder.
@@ -1227,8 +1385,11 @@ impl Session {
                 .pad_on_shifted(crate::instruments::THE_PADS, pad, v, 0, &none);
             let own = &mut self.mix.instruments;
             self.pad_layers.pad_on(pad, v, &mut self.synth, own);
+            let kit_pads = self.pad_layers.kit_pads_on(pad);
+            self.play_kit_layers(kit_pads, Some(v));
             let rv = self.app.layer_rec_velocity(velocity);
             self.pad_layers.rec_on(pad, rv, &mut self.time);
+            self.pads_rec.on(pad, pad as u8, rv, &mut self.time);
             self.host_held[pad] = true;
             self.previewed.push((pad, v));
             self.out.show(ToUi::PadDown { pad, velocity: v });
@@ -1238,6 +1399,7 @@ impl Session {
             self.mix
                 .instruments
                 .pad_off(crate::instruments::THE_PADS, pad, 0);
+            self.pads_rec.off(pad, &mut self.time);
             self.out.show(ToUi::PadUp(pad));
             return;
         }
@@ -1248,8 +1410,11 @@ impl Session {
             self.synth.note_on(pad, v, 0);
             let own = &mut self.mix.instruments;
             self.pad_layers.pad_on(pad, v, &mut self.synth, own);
+            let kit_pads = self.pad_layers.kit_pads_on(pad);
+            self.play_kit_layers(kit_pads, Some(v));
             let rv = self.app.layer_rec_velocity(velocity);
             self.pad_layers.rec_on(pad, rv, &mut self.time);
+            self.pads_rec.on(pad, pad as u8, rv, &mut self.time);
             self.preview_held[pad] = true;
             self.previewed.push((pad, v));
             self.out.show(ToUi::PadDown { pad, velocity: v });
@@ -1257,6 +1422,7 @@ impl Session {
         }
         if !down && pad < 16 && std::mem::take(&mut self.preview_held[pad]) {
             self.synth.note_off(pad, 0);
+            self.pads_rec.off(pad, &mut self.time);
             self.out.show(ToUi::PadUp(pad));
             return;
         }
@@ -1271,8 +1437,11 @@ impl Session {
             }
             let own = &mut self.mix.instruments;
             self.pad_layers.pad_on(pad, v, &mut self.synth, own);
+            let kit_pads = self.pad_layers.kit_pads_on(pad);
+            self.play_kit_layers(kit_pads, Some(v));
             let rv = self.app.layer_rec_velocity(velocity);
             self.pad_layers.rec_on(pad, rv, &mut self.time);
+            self.pads_rec.on(pad, kit_pad as u8, rv, &mut self.time);
             self.kit_held[pad] = Some((k, kit_pad));
             self.previewed.push((pad, v));
             self.out.show(ToUi::PadDown { pad, velocity: v });
@@ -1282,6 +1451,7 @@ impl Session {
             if let Some(p) = self.sounds.as_mut() {
                 p.release_kit_at(k, kit_pad, 0);
             }
+            self.pads_rec.off(pad, &mut self.time);
             self.out.show(ToUi::PadUp(pad));
             return;
         }
@@ -1334,6 +1504,8 @@ impl Session {
                 let v = self.app.velocity(velocity);
                 let own = &mut self.mix.instruments;
                 self.pad_layers.pad_on(pad, v, &mut self.synth, own);
+                let kit_pads = self.pad_layers.kit_pads_on(pad);
+                self.play_kit_layers(kit_pads, Some(v));
                 let rv = self.app.layer_rec_velocity(velocity);
                 self.pad_layers.rec_on(pad, rv, &mut self.time);
             }
@@ -1439,15 +1611,45 @@ impl Session {
             &mut self.mix.instruments,
         );
         let recs = self.app.pads_layer_recs(self.time.also());
-        self.pad_layers.rec_to(recs);
+        let sounds = &self.sounds;
+        let keys = |kit| {
+            sounds
+                .as_ref()
+                .map_or(mpfree_sampler::engine::KitKeys::PADS, |p| p.kit_keys(kit))
+        };
+        self.pad_layers.rec_to(recs, keys);
+        let gone = self.pad_layers.kits_to(self.app.pads_layer_kits());
+        if let Some(p) = self.sounds.as_mut() {
+            for kit in gone.into_iter().flatten() {
+                p.bend_kit(usize::from(kit), 0.0);
+            }
+        }
+        // What the pads play on their own, the pads' arp's notes too, as
+        // main.rs (sampler step 15c).
+        let own_rec = self.app.pads_own_rec(self.time.also());
+        self.pads_rec.rec_to(own_rec);
+        let arp_rec = own_rec.filter(|_| self.app.layer_rec_velocity(1).is_some());
+        self.pads_arp.rec_to(arp_rec);
         self.route_synths.follow(
             self.app.route_synth_holders(),
             self.app.route_synth_shared(),
             &mut self.synth,
             &mut self.mix.instruments,
         );
+        let gone = self.route_synths.kits_to(self.app.route_synth_kits());
+        if let Some(p) = self.sounds.as_mut() {
+            for kit in gone.into_iter().flatten() {
+                p.bend_kit(usize::from(kit), 0.0);
+            }
+        }
         let recs = self.app.route_recs(self.time.also());
-        self.route_synths.rec_to(recs);
+        let sounds = &self.sounds;
+        let keys = |kit| {
+            sounds
+                .as_ref()
+                .map_or(mpfree_sampler::engine::KitKeys::PADS, |p| p.kit_keys(kit))
+        };
+        self.route_synths.rec_to(recs, keys);
         let host_name = pads_at
             .and_then(|h| self.mix.instruments.held(h))
             .map(|h| h.name);
@@ -1638,7 +1840,7 @@ impl Session {
         let mut due = time::DuePads::default();
         let dropped = self.time.due_pads(&mut due);
         crate::note_stop_dropped(dropped, &mut self.stop_dropped, &mut self.out);
-        let waiting = self.time.hits_waiting(self.app.pad_page());
+        let waiting = self.time.hits_waiting(self.app.kit_page());
         if self.waiting_shown != waiting {
             self.waiting_shown = waiting;
             self.out.show(ToUi::PadsWaiting(waiting));
@@ -1658,6 +1860,21 @@ impl Session {
         self.hits.only = self.export.only();
         self.time
             .period_arps(PERIOD as u32, &mut self.hits, &mut self.app.arps);
+        // The pads' arp (sampler step 15c), as main.rs: on the clips' arps'
+        // period, where the pads play on their own.
+        let own_swing = self.app.arp_own_swing();
+        self.pads_arp
+            .follow(self.app.arps.engine_at(self.app.track()), own_swing);
+        {
+            let (synth, own) = (&mut *self.synth, &mut self.mix.instruments);
+            let (sounds, played) = (&mut self.sounds, &mut self.arp_played);
+            let block = self.time.block().clone();
+            let time = &mut self.time;
+            self.pads_arp.period(&block, &mut |to, n, rec| {
+                arp_note(to, n, synth, own, sounds, played);
+                crate::rec_pads_arp(to, n, rec, time);
+            });
+        }
         for (o, is) in std::mem::take(&mut self.hits.tapped) {
             self.export.tap.send(&o, is);
         }
@@ -2312,7 +2529,10 @@ impl Session {
             FromUi::MidiFile(m) => {
                 let (synth, kits) = (&*self.synth, &self.track_kits);
                 let own = &self.mix.instruments;
-                let notes = crate::notes_tracks(own, kits, synth, self.time.track_count());
+                let kit_notes = self.sounds.as_ref().map(crate::sampler::KitNotes::of);
+                let kit_notes = kit_notes.unwrap_or_default();
+                let n = self.time.track_count();
+                let notes = crate::notes_tracks(own, kits, synth, &kit_notes, n);
                 let notes_on = |t: usize| t < 128 && notes >> t & 1 == 1;
                 let r = crate::midi_file::put(&mut self.time, &m, notes_on, |t, n| {
                     let synth_has = kits.plays_synth(t).then_some(synth);
@@ -2508,8 +2728,8 @@ impl Session {
         // records the pads as they are.
         self.app.set_configured(self.track_kits.picked());
         self.app.set_synth_tracks(self.track_kits.on_synth());
-        let on_kit = self.app.pads_kit().map_or(0, |k| self.track_kits.on_kit(k));
-        self.app.set_pads_kit_tracks(on_kit);
+        let kits = &self.track_kits;
+        self.app.set_kit_tracks(|k| kits.on_kit(k));
         for _ in 0..8 {
             if self.fx.is_empty() {
                 return;
@@ -2759,10 +2979,7 @@ impl Session {
     /// the pads play (app/pads_focus.rs).
     fn change_kit(&mut self) {
         // As main.rs: a kit picked leaves the pads' own choice alone
-        // (sampler step 15b); the arp over a kit makes them follow the
-        // track (until step 15c).
-        let fx = self.app.arp_ends_pads_synth();
-        self.fx.extend(fx);
+        // (sampler step 15b), and so does the arp (step 15c).
         let playing = if self.synth_on { self.kits } else { self.kit };
         if let Some(k) = self.kit_to.take().filter(|&k| k != playing) {
             if self.track_kits.set(self.app.track(), k) {
@@ -2811,7 +3028,34 @@ impl Session {
                 }
             }
             self.kit_preview = kit_now;
+            // The Sample page follows a hit there (sampler step 15d).
+            self.out.show(ToUi::PadsKit(kit_now));
         }
+        // A bank's own kit from another of its banks (step 15e), as
+        // main.rs: the screen edits the pads of that bank.
+        let source_now = Some(self.app.kit_page()).filter(|&p| p != self.app.pad_page());
+        if source_now != self.kit_source {
+            self.kit_source = source_now;
+            self.out.show(ToUi::KitSource(source_now));
+        }
+        // The pads' arp's notes end where they played as the pads move on
+        // (sampler step 15c), as main.rs.
+        let now = self.pads_preview();
+        if now != self.arp_preview {
+            let (synth, own) = (&mut *self.synth, &mut self.mix.instruments);
+            let (sounds, played) = (&mut self.sounds, &mut self.arp_played);
+            let time = &mut self.time;
+            self.pads_arp.leave(&mut |to, n, rec| {
+                arp_note(to, n, synth, own, sounds, played);
+                crate::rec_pads_arp(to, n, rec, time);
+            });
+            self.arp_preview = now;
+        }
+    }
+
+    /// The notes the pads' arp has sounding now (sampler step 15c).
+    pub fn pads_arp_sounding(&self) -> u32 {
+        self.pads_arp.sounding()
     }
 
     /// Everything the control side sent the screen, taken as the screen
@@ -2837,5 +3081,68 @@ impl Session {
             .ui
             .get::<mpfree_ui::widgets::Label>("hint")
             .map_or(String::new(), |l| l.text.clone())
+    }
+}
+
+/// A note of the pads' arp (sampler step 15c) where the pads play on
+/// their own, as main.rs's `play_pads_arp` plays it with what the session
+/// has: the synth by note, the host's pads player, the sounding kit's pad;
+/// each note-on is kept in `played`.
+fn arp_note(
+    to: crate::PadsPreview,
+    n: crate::ArpNote,
+    synth: &mut crate::synth::Synth,
+    own: &mut crate::instruments::Instruments,
+    sounds: &mut Option<crate::sampler::Player>,
+    played: &mut Vec<(crate::PadsPreview, u8, u8)>,
+) {
+    use crate::{ArpNote, PadsPreview};
+    let pads = crate::instruments::THE_PADS;
+    match (to, n) {
+        (
+            PadsPreview::Synth,
+            ArpNote::On {
+                note,
+                velocity,
+                offset,
+            },
+        ) => {
+            synth.note_on_note(note, velocity, offset);
+        }
+        (PadsPreview::Synth, ArpNote::Off { note, offset }) => synth.note_off_note(note, offset),
+        (
+            PadsPreview::Host,
+            ArpNote::On {
+                note,
+                velocity,
+                offset,
+            },
+        ) => {
+            let none = mpfree_arp::scale::Shift::NONE;
+            own.pad_on_shifted(pads, usize::from(note), velocity, offset, &none);
+        }
+        (PadsPreview::Host, ArpNote::Off { note, offset }) => {
+            own.pad_off(pads, usize::from(note), offset);
+        }
+        (
+            PadsPreview::Kit(k),
+            ArpNote::On {
+                note,
+                velocity,
+                offset,
+            },
+        ) => {
+            if let Some(p) = sounds.as_mut() {
+                p.hit_kit_at(usize::from(k), usize::from(note), velocity, offset);
+            }
+        }
+        (PadsPreview::Kit(k), ArpNote::Off { note, offset }) => {
+            if let Some(p) = sounds.as_mut() {
+                p.release_kit_at(usize::from(k), usize::from(note), offset);
+            }
+        }
+    }
+    if let ArpNote::On { note, velocity, .. } = n {
+        played.push((to, note, velocity));
     }
 }
