@@ -358,3 +358,75 @@ fn a_loop_on_a_track_is_not_in_the_loopers_mix() {
     assert!(!r.l.outs().on_track(0));
     assert!(mix.iter().any(|&v| v != 0.0));
 }
+
+/// The track stops playing a loop while it overdubs (a launch, a block's
+/// end, STOP): the overdub punches out on that frame and its layer is
+/// kept, the loop is silent from there, and when the track plays it again
+/// it plays the layer and records nothing more, for any period size.
+#[test]
+fn an_overdub_punches_out_where_the_track_stops_playing_it_and_keeps_its_layer() {
+    for period in PERIODS {
+        let mut r = Rig::new(period);
+        let on = r.frame;
+        let o = r.origin();
+        let (stop, c, d) = (on + 12_000, on + BAR + 3_000, on + 2 * BAR + 3_000);
+        let told = [
+            Told {
+                from: on,
+                to: stop,
+                origin: o,
+            },
+            Told {
+                from: c,
+                to: d,
+                origin: o,
+            },
+        ];
+        r.run(on + 2_000, Some(()), &told);
+        assert!(r.l.command(L::Overdub));
+        r.run(stop - 500, Some(()), &told);
+        let s = r.l.loop_status(0).unwrap();
+        assert_eq!(s.phase, Phase::Overdubbing, "period {period}");
+        r.run(c, Some(()), &told);
+        let s = r.l.loop_status(0).unwrap();
+        assert_eq!(
+            (s.phase, s.layers),
+            (Phase::Playing, 2),
+            "period {period}: punched out, its layer kept"
+        );
+        assert_eq!(r.l.stats().track_punch_outs, 1, "period {period}");
+        for f in stop..c {
+            assert_eq!(r.at(f), 0.0, "period {period} frame {f}: silent");
+        }
+        r.run(d + 500, Some(()), &told);
+        let s = r.l.loop_status(0).unwrap();
+        assert_eq!((s.phase, s.layers), (Phase::Playing, 2), "period {period}");
+        // Played again: twice the ramp where the overdub wrote it (clear
+        // of its fades), the ramp alone elsewhere.
+        let fade = 2 * FADE as u64;
+        let (od_in, od_out) = (place(on + 2_000 + fade, o).0, place(stop - fade, o).0);
+        let (before, after) = (place(on + 2_000 - fade, o).0, place(stop + fade, o).0);
+        let (mut doubled, mut single) = (0, 0);
+        for f in c..d {
+            let (want, clear) = place(f, o);
+            if !clear || want < 0.1 {
+                continue;
+            }
+            let v = r.at(f);
+            if want > od_in && want < od_out {
+                assert!(
+                    (v - 2.0 * want).abs() < 2e-3,
+                    "period {period} frame {f}: {v} not twice {want}"
+                );
+                doubled += 1;
+            } else if want < before || want > after {
+                assert!(
+                    (v - want).abs() < 2e-3,
+                    "period {period} frame {f}: {v} not {want}"
+                );
+                single += 1;
+            }
+        }
+        assert!(doubled > 5_000 && single > 5_000, "{doubled} {single}");
+    }
+}

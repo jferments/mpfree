@@ -850,6 +850,9 @@ pub struct Stats {
     /// short, or too cut up: a view holds at most 8 pieces), and merges
     /// refused (not playing, recording, nothing to merge, no memory).
     pub refused: u64,
+    /// Overdubs on a loop on a track that punched out because the track
+    /// stopped playing it (audio tracks phase 4b), each its layer kept.
+    pub track_punch_outs: u64,
     /// Layer commands for a layer that is not there, and loop numbers past
     /// [`MAX_LOOPS`].
     pub no_layer: u64,
@@ -7228,6 +7231,13 @@ impl Loop {
     /// frames it was told, each cut of the run at its place counted from
     /// its run's origin (its ticks moved by its own origin less the
     /// run's), into its own buffer. Frames it wasn't told stay silent.
+    ///
+    /// Where the track stops playing it while it overdubs (a launch, a
+    /// block's end, STOP), the overdub punches out on that frame, its
+    /// layer kept, and the writer's tail (the input that belongs before
+    /// the frame, then its fade) runs on silently at the place it would
+    /// have played, so nothing waits for its next launch to finish
+    /// writing. Runs and the gaps between them go in time order.
     #[allow(clippy::too_many_arguments)]
     fn run_told(
         &mut self,
@@ -7243,10 +7253,49 @@ impl Loop {
         outs: &mut LoopOuts,
     ) {
         let frames = r.ticks.len();
+        let end = off + frames;
         let mut ticks = [0.0f64; RUN];
-        for p in told.runs() {
-            let a = (p.from as usize).max(off);
-            let b = (p.to as usize).min(off + frames);
+        // After the last run, the rest of the period is a gap.
+        let rest = PlayRun {
+            from: end as u32,
+            to: end as u32,
+            origin: 0.0,
+        };
+        let mut at = 0usize;
+        for p in told.runs().iter().chain([&rest]) {
+            let (from, to) = (p.from as usize, p.to as usize);
+            // The gap before this run: only a writer still going is run.
+            let (a, b) = (at.max(off), from.min(end));
+            at = at.max(to);
+            let tail = self.phase == Phase::Overdubbing || self.od_open;
+            let gap = t
+                .last
+                .filter(|l| a < b && tail && l.0 == r.f + (a - off) as u64);
+            if let Some((e, origin)) = gap {
+                if self.phase == Phase::Overdubbing {
+                    self.punch_out();
+                    stats.track_punch_outs += 1;
+                }
+                let (j, m) = (a - off, b - a);
+                let shift = self.origin as f64 - origin;
+                for (t, &s) in ticks[..m].iter_mut().zip(&r.ticks[j..j + m]) {
+                    *t = s + shift;
+                }
+                let f = r.f + j as u64;
+                let cut = Run {
+                    from: r.from + j,
+                    ticks: &ticks[..m],
+                    input: &r.input[2 * j..2 * (j + m)],
+                    f,
+                    playing: r.playing,
+                    first: on_track::first_of(Some((e, origin)), f, origin),
+                };
+                let mut gone = [[0f32; 2]; RUN];
+                self.run(store, stats, me, &cut, print, waiting, &mut gone[..m]);
+                t.last = Some((f + m as u64, origin));
+            }
+            // The run itself.
+            let (a, b) = (from.max(off), to.min(end));
             if a >= b {
                 continue;
             }
