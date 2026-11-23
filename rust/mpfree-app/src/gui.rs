@@ -33951,7 +33951,6 @@ mod tests {
             track_kits: String::new(),
             instrument_list: crate::instrument_list::InstrumentList::new().text(),
             pads: String::new(),
-            pad_layers: String::new(),
             perform: String::new(),
             xy: String::new(),
             loops: None,
