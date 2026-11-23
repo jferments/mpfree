@@ -140,6 +140,8 @@ Its writes are all in its own `/run/mpfree-app`, and both review checks name the
 
 Tests: `mpfree-library`'s `the_sd_card_reads_like_a_place_and_nothing_on_it_is_ever_changed` (every write refused, the card byte for byte unchanged); `mpfree-browser-ui`'s browser tests for the place opening, a card that doesn't open, one not safely removed, the card closing (its copy dropped, asked again when shown again) and the picker; the pad player's `the_sd_card_place_opens_the_card_and_puts_it_away_once_hidden` (the slot, the library and the place together).
 
+**On the MPC:** the device check `sd-card` ([device checks](device-checks.md), `collect-over-ssh.sh --app` with `MPFREE_APP_CHECKS=sd-card`) is S1's pass: the musician opens the place, loads a sound from the card onto a pad and plays it, and closes the browser; the check reads the app's log for the card opened read-only, the load, and the window's closing word, which it gives only after the card's write and discard counters were found unchanged. The boot-area hashes before and after come from the round's boot maps.
+
 ## Step S2: saving to the card (design, not built)
 
 What the kernel does when MPFree writes to a FAT or exFAT card, from Linux 6.18's own code (Akai's kernel is `6.18.44-az01`), and the rules that follow. Not built: S2 changes the [storage spec](../design/storage-spec.md)'s rule zero ("the SD card is never written"), so it is merged only on the owner's go, and only after S1 has run on the MPC.
