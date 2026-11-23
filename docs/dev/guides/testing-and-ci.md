@@ -76,6 +76,10 @@ Things that differ from GitHub's hosts, and that the workflow handles:
 - Cargo targets are kept between runs at
   `$RUNNER_WORKSPACE/cargo-target/<job>`, outside the checkout. When they
   pass 15 GiB together, the job's own target is wiped first.
+- All four runners share one memory limit (the `system-mpfree.slice`, about
+  23.5 GiB) and one CPU weight. Over the limit, the kernel slows every mpfree
+  job at once. The three long jobs print the slice's memory, pressure and CPU
+  counters at their start and end (`tools/ci/slice_report.sh`, report only).
 - Each runner has its own `/tmp` that lasts between jobs. Every job starts
   by deleting the runner's `/tmp/mpfree-*` files, because many steps write
   fixed `/tmp/mpfree-*` names, and some create them with `create_new`.

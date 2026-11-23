@@ -92,6 +92,7 @@ jobs:
           bash -n tools/mpc-one/lib/neighbor-identity.sh
           bash -n tools/mpc-one/tests/test-neighbor-identity.sh
           bash -n tools/build-usb-creator.sh
+          sh -n tools/ci/slice_report.sh
       - name: Test neighbor MAC extraction against deterministic fixtures
         run: bash tools/mpc-one/tests/test-neighbor-identity.sh
       - name: Test the eMMC backup against a fake MPC under BusyBox (no device)
@@ -837,6 +838,10 @@ jobs:
         # some create them with create_new, so leftovers fail the next job.
         run: find /tmp -maxdepth 1 -name 'mpfree-*' -user "$(id -u)" -exec rm -rf {} +
       - uses: actions/checkout@v4
+      - name: The mpfree slice's memory and CPU at the start (report only)
+        if: runner.environment == 'self-hosted'
+        # All four runners share one memory limit; over it, every mpfree job slows at once.
+        run: sh tools/ci/slice_report.sh start
       - name: Keep the Cargo target between runs (self-hosted only)
         if: runner.environment == 'self-hosted'
         run: |
@@ -1105,6 +1110,9 @@ jobs:
           python3 tests/check_cpp_rust_wav_parity.py \
             --cpp build/mpfree-render \
             --rust rust/target/release/mpfree-render
+      - name: The mpfree slice's memory and CPU at the end (report only)
+        if: always() && runner.environment == 'self-hosted'
+        run: sh tools/ci/slice_report.sh end
   app-tests:
     name: The app's own tests, natively (debug; the control sweep over every screen)
     if: github.event.pull_request.draft != true
@@ -1125,6 +1133,10 @@ jobs:
         if: runner.environment == 'self-hosted'
         run: find /tmp -maxdepth 1 -name 'mpfree-*' -user "$(id -u)" -exec rm -rf {} +
       - uses: actions/checkout@v4
+      - name: The mpfree slice's memory and CPU at the start (report only)
+        if: runner.environment == 'self-hosted'
+        # All four runners share one memory limit; over it, every mpfree job slows at once.
+        run: sh tools/ci/slice_report.sh start
       - name: Keep the Cargo target between runs (self-hosted only)
         if: runner.environment == 'self-hosted'
         run: |
@@ -1152,6 +1164,9 @@ jobs:
         # (libtest names each test running over 60 s).
         timeout-minutes: 90
         run: cargo test --manifest-path rust/Cargo.toml -p mpfree-app --all-targets --locked
+      - name: The mpfree slice's memory and CPU at the end (report only)
+        if: always() && runner.environment == 'self-hosted'
+        run: sh tools/ci/slice_report.sh end
   rust-arm:
     name: ARMv7 hard-float cross-builds and the plugin sandbox under qemu (do not deploy)
     if: github.event.pull_request.draft != true
@@ -1178,6 +1193,10 @@ jobs:
         # some create them with create_new, so leftovers fail the next job.
         run: find /tmp -maxdepth 1 -name 'mpfree-*' -user "$(id -u)" -exec rm -rf {} +
       - uses: actions/checkout@v4
+      - name: The mpfree slice's memory and CPU at the start (report only)
+        if: runner.environment == 'self-hosted'
+        # All four runners share one memory limit; over it, every mpfree job slows at once.
+        run: sh tools/ci/slice_report.sh start
       - name: Keep the Cargo target between runs (self-hosted only)
         if: runner.environment == 'self-hosted'
         run: |
@@ -1599,6 +1618,9 @@ jobs:
           echo "not a font" > "$t/bad.ttf"
           run1 --font "$t/bad.ttf"; grep -q 'using the built-in block letters' "$t/out.txt"
           echo "PASS: title fonts under qemu"
+      - name: The mpfree slice's memory and CPU at the end (report only)
+        if: always() && runner.environment == 'self-hosted'
+        run: sh tools/ci/slice_report.sh end
   splash-gl:
     name: SDL3/GLES startup screen (desktop build, headless render)
     if: github.event.pull_request.draft != true
