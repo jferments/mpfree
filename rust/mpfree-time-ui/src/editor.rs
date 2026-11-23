@@ -254,8 +254,22 @@ const TURN_KEY: u64 = 0x80;
 /// A chord written on the pads' join key (plan 1C.2): its pads make one
 /// undoable take, its number in the key's top bits.
 const PAD_KEY: u64 = 0x40;
+/// A hold and turn's join key (plan 1C.3): a hold's detents make one
+/// undoable take, its number in the key's top bits.
+const HELD_KEY: u64 = 0x20;
 /// Join keys, so turning a row makes one undoable take.
 const JOIN: u64 = 0xED17_0000_0000;
+
+/// A finger resting on a note while the data wheel turns (plan 1C.3):
+/// the [`EventKind::Values`] `index` [`NoteGrid`] sends, plus
+/// [`HELD_FIRST`] on a hold's first detent and [`HELD_FINE`] with SHIFT;
+/// its `set` is (the note, the detents), then (the hold's number, 0).
+pub const HELD_TURN: usize = 1 << 27;
+pub const HELD_FIRST: usize = 1;
+pub const HELD_FINE: usize = 2;
+/// The note a hold's first detent names when the hold picked it (and
+/// taps may have added more): the picks as they are ([`EditAction::Held`]).
+pub const HELD_PICKS: usize = usize::MAX;
 
 /// How the editor shows the clip.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -471,6 +485,23 @@ pub enum EditAction {
         ticks: i32,
         fine: bool,
         turn: u64,
+    },
+    /// The data wheel (or – / +) turned `ticks` detents while a finger
+    /// rests on a note of the roll (plan 1C.3, hold and turn): the
+    /// velocity, as Q4 turns it (`fine`, SHIFT: the gap between the soft
+    /// and loud ones). The first detent of hold `turn` (`first`) names
+    /// note `index` on the picture of revision `rev` (or [`HELD_PICKS`]:
+    /// the picks as they are, a hold having picked it): it is picked,
+    /// unless it is one of the picks already, and every detent of the
+    /// hold turns the picks, one take. A later detent names no note, so
+    /// a detent the screen hasn't caught up with still turns them.
+    Held {
+        index: usize,
+        rev: u64,
+        ticks: i32,
+        fine: bool,
+        turn: u64,
+        first: bool,
     },
     /// – / + with the Edit options' drawer closed (plan 1C.1): the picked
     /// notes a snap earlier or later, as the MPC's Nudge; `fine` (SHIFT on
@@ -799,7 +830,10 @@ impl EditAction {
             | EditAction::Pressure { rev, .. }
             | EditAction::Lock { rev, .. }
             | EditAction::Unlock { rev, .. }
-            | EditAction::Drop { rev, .. } => Some(rev),
+            | EditAction::Drop { rev, .. }
+            | EditAction::Held {
+                rev, first: true, ..
+            } => Some(rev),
             _ => None,
         }
     }
@@ -1025,6 +1059,9 @@ pub struct Editor {
     /// Other clips shown faintly behind this one (plan 4.1), as (track,
     /// slot), in the order picked: at most [`SHOW_MAX`].
     pub show: Vec<(usize, usize)>,
+    /// The hold whose first detent picked its note (plan 1C.3): its
+    /// later detents turn the picks; another hold's, nothing.
+    held_turn: Option<u64>,
 }
 
 /// The most other clips the roll shows behind the one edited (plan 4.1).
@@ -1232,6 +1269,7 @@ impl Editor {
             pad_wrote: false,
             heard: Heard::default(),
             show: Vec::new(),
+            held_turn: None,
         }
     }
 
@@ -2038,6 +2076,41 @@ impl Editor {
                         (e, None, true, true, format!("edit: {line}"))
                     }
                 }
+            }
+            // Hold and turn (plan 1C.3): the first detent picks the note
+            // held, with the picks when it is one, and every detent of
+            // the hold turns them, one take.
+            EditAction::Held {
+                index,
+                ticks,
+                fine,
+                turn,
+                first,
+                ..
+            } => {
+                if first {
+                    if index < clip.notes.len() && !sel.contains(&index) {
+                        self.sel = self.picks_with(sel, vec![index]);
+                    }
+                    self.held_turn = Some(turn);
+                }
+                let sel = self.picked(clip);
+                if self.held_turn != Some(turn) || sel.is_empty() {
+                    return Done::default();
+                }
+                let edit = match fine {
+                    true => notes::velocity_spread(clip, &sel, ticks),
+                    false => notes::velocity_kept(clip, &sel, ticks),
+                };
+                // The picks now, the note held among them, stay picked
+                // (not the ones before it, picked alone).
+                return Done {
+                    edit,
+                    join: Some(base | HELD_KEY | (turn & 0xFFFF) << 48),
+                    select_added: true,
+                    kept: sel.iter().map(|&i| clip.notes[i]).collect(),
+                    ..Done::default()
+                };
             }
             EditAction::Knob { .. } | EditAction::Nudge { .. } if none => {
                 return Done::line("edit: pick notes first".into())
@@ -3606,6 +3679,11 @@ pub struct NoteGrid {
     /// The notes an ERASE sweep's path has crossed so far, in the order
     /// it met them ([`Hand::Sweep`]).
     swept: Vec<usize>,
+    /// Hold and turn (plan 1C.3): the wheel has turned the note under
+    /// the finger since it went down, and the number of the last hold
+    /// turned (each a take of its own, [`EditAction::Held`]).
+    turning: bool,
+    holds: u64,
     drag: Option<Drag>,
     /// What the fingers that aren't dragging a note are doing.
     hand: Hand,
@@ -3895,6 +3973,8 @@ impl Default for NoteGrid {
             ghost_cell: (0, 0),
             stroke: None,
             swept: Vec::new(),
+            turning: false,
+            holds: 0,
             drag: None,
             hand: Hand::Idle,
             overview_tap: None,
@@ -4158,6 +4238,7 @@ impl NoteGrid {
         swept.dedup();
         let (overview_tap, empty_tap, menu) = (self.overview_tap, self.empty_tap, self.menu);
         let (fine, erase) = (self.fine, self.erase);
+        let (turning, holds) = (self.turning, self.holds);
         let (scale_menu, chord_menu) = (self.scale_menu, self.chord_menu);
         // A tool's bar closes the menus over the roll (plan 2B.3).
         let open = other.tool_bar.is_none();
@@ -4169,6 +4250,8 @@ impl NoteGrid {
             swept,
             fine,
             erase,
+            turning,
+            holds,
             drag,
             hand,
             overview_tap,
@@ -6763,6 +6846,83 @@ impl Widget for NoteGrid {
         out
     }
 
+    /// A finger coming down on a note of the roll puts it under the data
+    /// wheel (plan 1C.3, hold and turn): the note a press would take (the
+    /// one on top, or with Draw off the one beside it), not a handle.
+    /// None with ERASE held, a tool open or a menu over the roll, off the
+    /// piano roll, or with a finger already down: one holding a note
+    /// keeps the wheel while others tap notes into the picks.
+    fn held(&self, x: i32, y: i32, r: Rect) -> Option<Target> {
+        let busy = self.drag.is_some() || self.stroke.is_some() || self.hand != Hand::Idle;
+        let covered = self.menu || self.scale_menu || self.chord_menu || self.show_menu;
+        if busy || covered || self.erase || self.tool_bar.is_some() || self.lens != Lens::Grid {
+            return None;
+        }
+        let g = self.geo(r);
+        if !g.roll.contains(x, y) {
+            return None;
+        }
+        let under = self.note_under(&g, x, y);
+        if under.is_none() && self.handle_at(&g, x, y).is_some() {
+            return None;
+        }
+        let i = under.or_else(|| self.note_near(&g, x, y))?;
+        let nr = self
+            .note_rect_in(&g, i)
+            .map_or(Rect::new(x, y, 1, 1), |nr| nr.intersect(g.roll));
+        Some(Target::tap("note", i, format!("note {}", i + 1), nr))
+    }
+
+    /// The wheel turned `delta` detents with a finger on note `t` (plan
+    /// 1C.3): its velocity, or the picks' with it, as
+    /// [`EditAction::Held`]. The press is a hold from the first detent:
+    /// it drags nothing, and the hold's own pick never comes. The first
+    /// detent names the note where it is now (or, held long enough to be
+    /// picked and other notes tapped in, the picks); later ones only the
+    /// hold. None once the finger is doing something else (a pinch).
+    fn held_step(&mut self, t: &Target, delta: i32, fine: bool, _r: Rect) -> Option<EventKind> {
+        if t.id != "note" || delta == 0 {
+            return None;
+        }
+        let index = match self.hand {
+            Hand::Press {
+                finger, index, now, ..
+            } => {
+                self.hand = Hand::Holding {
+                    finger,
+                    now,
+                    tap: None,
+                };
+                index
+            }
+            Hand::Holding { .. } => HELD_PICKS,
+            _ => return None,
+        };
+        let first = !self.turning;
+        if first {
+            self.turning = true;
+            self.holds += 1;
+            // Picked as the editor will pick it, until its picture comes.
+            if self.notes.get(index).is_some_and(|n| !n.selected) {
+                let add = self.add;
+                for (k, n) in self.notes.iter_mut().enumerate() {
+                    n.selected = k == index || (add && n.selected);
+                }
+            }
+        }
+        let mut flags = if fine { HELD_FINE } else { 0 };
+        if first {
+            flags |= HELD_FIRST;
+        }
+        Some(EventKind::Values {
+            index: HELD_TURN + flags,
+            set: vec![
+                (if first { index } else { HELD_PICKS }, delta),
+                (self.holds as usize, 0),
+            ],
+        })
+    }
+
     /// Touches are followed finger by finger. One finger edits notes: a
     /// drag (a note or the velocity lane) is its finger's alone, and a tap
     /// on empty roll acts when it lifts. One finger on the ruler, the keys
@@ -6889,6 +7049,7 @@ impl Widget for NoteGrid {
                 // This finger's own gesture that never heard its lift ends.
                 self.drag = None;
                 self.hand = Hand::Idle;
+                self.turning = false;
                 self.down(f, x, y, r, &g)
             }
             Touch::Move => {
@@ -7350,6 +7511,31 @@ impl NoteGrid {
         }
         *picked = true;
         Some(EventKind::Select(index))
+    }
+
+    /// What the data wheel turns with a finger on note `index` (plan
+    /// 1C.3), for the hint line: once it has turned, the picks' velocity
+    /// ("3 notes' velocity 80 to 104", the picks following the note
+    /// through each new picture), else the note's own ("Velocity 96").
+    pub fn held_velocity(&self, index: usize) -> Option<String> {
+        let mut them: Vec<u8> = match self.turning {
+            true => self
+                .notes
+                .iter()
+                .filter(|n| n.selected)
+                .map(|n| n.velocity)
+                .collect(),
+            false => Vec::new(),
+        };
+        if them.is_empty() {
+            them.push(self.notes.get(index)?.velocity);
+        }
+        let (lo, hi) = (*them.iter().min()?, *them.iter().max()?);
+        Some(match them.len() {
+            1 => format!("Velocity {lo}"),
+            n if lo == hi => format!("{n} notes' velocity {lo}"),
+            n => format!("{n} notes' velocity {lo} to {hi}"),
+        })
     }
 
     /// The clip's end handle is held at the roll's right edge (plan
@@ -8330,6 +8516,96 @@ mod tests {
             .rev(),
             Some(4)
         );
+    }
+
+    /// Hold and turn (plan 1C.3): a hold's first detent picks its note
+    /// (alone, or added with Add to pick; the picks stay when it is one
+    /// of them, or when the hold picked it) and every detent turns the
+    /// picks' velocity as Q4 does, SHIFT widening the gap, one take a
+    /// hold; a later detent of a hold whose first never came turns
+    /// nothing. Only the first names the picture it was made on.
+    #[test]
+    fn hold_and_turn_picks_the_note_and_turns_the_picks_one_take() {
+        let mut c = clip(&[(0, 240, 60), (480, 240, 64), (960, 240, 67)]);
+        c.notes[0].velocity = 80;
+        c.notes[1].velocity = 100;
+        c.notes[2].velocity = 60;
+        let mut ed = Editor::new(0, 0, &c);
+        let held = |index, ticks, fine, turn, first| EditAction::Held {
+            index,
+            rev: 0,
+            ticks,
+            fine,
+            turn,
+            first,
+        };
+        // A note changed goes to the end of the clip's notes: found by
+        // its pitch.
+        let at = |c: &Clip, p: u8| c.notes.iter().position(|n| n.note == p).unwrap();
+        let vel = |c: &Clip, p: u8| c.notes[at(c, p)].velocity;
+        let picked = |ed: &Editor, c: &Clip| {
+            let mut p: Vec<u8> = ed.sel.iter().map(|&i| c.notes[i].note).collect();
+            p.sort_unstable();
+            p
+        };
+        let d = run(&mut ed, &mut c, held(1, 5, false, 1, true));
+        assert_eq!(picked(&ed, &c), [64]);
+        assert_eq!(vel(&c, 64), 105);
+        let key = d.join;
+        assert!(key.is_some());
+        let d = run(&mut ed, &mut c, held(HELD_PICKS, 3, false, 1, false));
+        assert_eq!(d.join, key, "the same hold, the same take");
+        assert_eq!((vel(&c, 60), vel(&c, 64), vel(&c, 67)), (80, 108, 60));
+        // Past 127: as far as it goes.
+        run(&mut ed, &mut c, held(HELD_PICKS, 50, false, 1, false));
+        assert_eq!(vel(&c, 64), 127);
+        // A later detent of another hold, its first not seen: nothing.
+        assert!(ed
+            .act(held(HELD_PICKS, -5, false, 2, false), &c)
+            .edit
+            .is_empty());
+        // A note among the picks: they all turn, the gap kept.
+        ed.sel = vec![at(&c, 60), at(&c, 64)];
+        let i = at(&c, 60);
+        let d = run(&mut ed, &mut c, held(i, -7, false, 3, true));
+        assert_ne!(d.join, key, "a new hold, a new take");
+        assert_eq!(picked(&ed, &c), [60, 64]);
+        assert_eq!((vel(&c, 60), vel(&c, 64)), (73, 120));
+        // SHIFT: the gap wider, as Q4 with SHIFT.
+        run(&mut ed, &mut c, held(HELD_PICKS, 1, true, 3, false));
+        assert_eq!((vel(&c, 60), vel(&c, 64)), (67, 126));
+        // A note held long enough to be picked: the picks as they are.
+        run(&mut ed, &mut c, held(HELD_PICKS, 1, false, 4, true));
+        assert_eq!(picked(&ed, &c), [60, 64]);
+        assert_eq!((vel(&c, 60), vel(&c, 64)), (68, 127));
+        // Another note: picked alone; with Add to pick, added.
+        let i = at(&c, 67);
+        run(&mut ed, &mut c, held(i, 2, false, 5, true));
+        assert_eq!(picked(&ed, &c), [67]);
+        assert_eq!(vel(&c, 67), 62);
+        ed.add = true;
+        let i = at(&c, 60);
+        run(&mut ed, &mut c, held(i, 1, false, 6, true));
+        assert_eq!(picked(&ed, &c), [60, 67]);
+        assert_eq!((vel(&c, 60), vel(&c, 67)), (69, 63));
+        // Nothing picked and no note named: nothing.
+        ed.sel.clear();
+        assert!(ed
+            .act(held(HELD_PICKS, 1, false, 7, true), &c)
+            .edit
+            .is_empty());
+        let rev = |first| {
+            EditAction::Held {
+                index: 0,
+                rev: 9,
+                ticks: 1,
+                fine: false,
+                turn: 1,
+                first,
+            }
+            .rev()
+        };
+        assert_eq!((rev(true), rev(false)), (Some(9), None));
     }
 
     /// The clip's end handle (plan 1A.2): the Steps' length edit at the
@@ -9915,6 +10191,108 @@ mod tests {
             g.touch(8, Touch::Up, x1 + 2 * TAP_SLOP, y1, R),
             Some(EventKind::Marker { index: 1, .. })
         ));
+    }
+
+    /// A finger on a note puts it under the data wheel (plan 1C.3): the
+    /// note on top, not with ERASE held, a menu over the roll, a handle
+    /// or empty roll under it, or another finger down. A turn sends the
+    /// note on its first detent and only the hold after, numbered a hold
+    /// each; from the first the press is a hold, which a new picture
+    /// keeps, picks nothing more, moves nothing and sends nothing as it
+    /// lifts. A hold that picked its note (and tapped more in) names the
+    /// picks; a pinch turns nothing.
+    #[test]
+    fn a_finger_on_a_note_puts_its_velocity_under_the_wheel() {
+        let mut g = grid();
+        let (n0, n1) = (g.note_rect(R, 0).unwrap(), g.note_rect(R, 1).unwrap());
+        let ((x0, y0), (x1, y1)) = (mid(n0), mid(n1));
+        let t = g.held(x1, y1, R).expect("the note is held");
+        assert_eq!((t.id, t.index), ("note", 1));
+        assert_eq!(g.held(x1, y1 - 200, R), None, "empty roll");
+        g.erase = true;
+        assert_eq!(g.held(x1, y1, R), None, "ERASE held");
+        g.erase = false;
+        g.menu = true;
+        assert_eq!(g.held(x1, y1, R), None, "the Select menu");
+        g.menu = false;
+        let turn = |first: bool, fine: bool, note: usize, by: i32, hold: usize| {
+            let mut index = HELD_TURN;
+            if first {
+                index += HELD_FIRST;
+            }
+            if fine {
+                index += HELD_FINE;
+            }
+            Some(EventKind::Values {
+                index,
+                set: vec![(note, by), (hold, 0)],
+            })
+        };
+        g.notes[0].selected = true;
+        g.notes[1].selected = false;
+        g.touch(1, Touch::Down, x1, y1, R);
+        assert_eq!(g.held(x0, y0, R), None, "a finger is down");
+        assert_eq!(g.held_velocity(1).as_deref(), Some("Velocity 64"));
+        assert_eq!(g.held_step(&t, 2, false, R), turn(true, false, 1, 2, 1));
+        assert!(
+            g.notes[1].selected && !g.notes[0].selected,
+            "picked alone at once"
+        );
+        assert_eq!(g.tick(1.0), None, "the hold's pick never comes");
+        assert_eq!(
+            g.held_step(&t, -1, true, R),
+            turn(false, true, HELD_PICKS, -1, 1)
+        );
+        // A new picture, the note's velocity changed: still held.
+        let mut other = g.clone();
+        other.notes[1].velocity = 101;
+        g.show(other);
+        assert_eq!(g.held_velocity(1).as_deref(), Some("Velocity 101"));
+        assert_eq!(
+            g.held_step(&t, 1, false, R),
+            turn(false, false, HELD_PICKS, 1, 1)
+        );
+        assert_eq!(g.touch(1, Touch::Move, x1 + 3 * TAP_SLOP, y1, R), None);
+        assert_eq!(g.touch(1, Touch::Cancel, x1 + 3 * TAP_SLOP, y1, R), None);
+        assert_eq!(g.held_step(&t, 1, false, R), None, "lifted");
+        // The next finger: a new hold, its first detent naming its note.
+        let t0 = g.held(x0, y0, R).unwrap();
+        g.touch(2, Touch::Down, x0, y0, R);
+        assert_eq!(g.held_step(&t0, 1, false, R), turn(true, false, 0, 1, 2));
+        assert_eq!(g.touch(2, Touch::Up, x0, y0, R), None, "no tap");
+        // Held long enough to pick it, another note tapped in: the picks.
+        g.touch(3, Touch::Down, x0, y0, R);
+        assert_eq!(g.tick(1.0), Some(EventKind::Select(0)));
+        g.touch(4, Touch::Down, x1, y1, R);
+        assert_eq!(
+            g.touch(4, Touch::Up, x1, y1, R),
+            Some(EventKind::Cell { row: ADD, col: 1 })
+        );
+        let mut other = g.clone();
+        other.notes[0].selected = true;
+        other.notes[1].selected = true;
+        other.notes[1].velocity = 90;
+        g.show(other);
+        assert_eq!(
+            g.held_step(&t0, 3, false, R),
+            turn(true, false, HELD_PICKS, 3, 3)
+        );
+        assert_eq!(
+            g.held_velocity(0).as_deref(),
+            Some("2 notes' velocity 90 to 100")
+        );
+        g.touch(3, Touch::Up, x0, y0, R);
+        // Two fingers: a pinch, which turns nothing.
+        g.touch(5, Touch::Down, x0, y0, R);
+        g.touch(6, Touch::Down, x1, y1 - 100, R);
+        assert_eq!(g.held_step(&t0, 1, false, R), None);
+        g.touch(5, Touch::Up, x0, y0, R);
+        g.touch(6, Touch::Up, x1, y1 - 100, R);
+        // Draw on: the same.
+        g.tool = Tool::Draw;
+        g.touch(7, Touch::Down, x1, y1, R);
+        assert_eq!(g.held_step(&t, 1, false, R), turn(true, false, 1, 1, 4));
+        assert_eq!(g.touch(7, Touch::Cancel, x1, y1, R), None);
     }
 
     /// The clip's end handle on the ruler (plan 1A.2): dragged in it
