@@ -347,6 +347,8 @@ pub struct TimeControl {
     /// The scene editor's row as picked (its ‹ ›, a scene launched, a
     /// song list step picked); none follows the scene playing.
     scene_pick: Option<usize>,
+    /// The scene card open over the grid or the list (5.2): its row.
+    scene_open: Option<usize>,
     selected: Option<usize>,
     /// The audio region picked on the Song view; it and `selected` are
     /// never both set (`TimeState::pick`).
@@ -637,6 +639,7 @@ impl TimeControl {
             list_view: false,
             list_pick: None,
             scene_pick: None,
+            scene_open: None,
             selected: None,
             region: None,
             section: None,
@@ -2026,6 +2029,38 @@ impl TimeControl {
             },
             None => true,
         });
+        // A row moved or copied: the scene playing and waiting go with
+        // their rows.
+        if matches!(drop, ClipDrop::RowMoved { .. } | ClipDrop::RowCopied { .. }) {
+            self.perform.rows_moved(|r| to((0, r)).map(|c| c.1));
+        }
+        self.changed = true;
+    }
+
+    /// Rows renumbered by a row deleted, or its undo or redo: what plays
+    /// and waits, the scene playing and waiting and the scene editor's
+    /// row go with their rows, `to` giving each row's new place; a row it
+    /// gives None for stops.
+    fn rows_followed(&mut self, to: impl Fn(usize) -> Option<usize>) {
+        self.launches.retain_mut(|l| match to(l.slot) {
+            Some(s) => {
+                l.slot = s;
+                true
+            }
+            None => false,
+        });
+        self.cues.retain_mut(|c| match c.slot {
+            Some(s) => match to(s) {
+                Some(s2) => {
+                    c.slot = Some(s2);
+                    true
+                }
+                None => false,
+            },
+            None => true,
+        });
+        self.perform.rows_moved(&to);
+        self.scene_pick = self.scene_pick.and_then(&to);
         self.changed = true;
     }
 
@@ -2033,6 +2068,9 @@ impl TimeControl {
         let Some(r) = row else {
             return "take".into();
         };
+        if let Some((word, row)) = r.row_tool {
+            return format!("{} · row {}", word, row + 1);
+        }
         let track_name = |track: usize| {
             self.project
                 .tracks
@@ -2088,6 +2126,9 @@ impl TimeControl {
             }
             Some(SongChange::Followed { row }) => {
                 return format!("{} · the song's parts from row {}", r.short(), row + 1)
+            }
+            Some(SongChange::RowDeleted { row }) => {
+                return format!("{} · row {}", r.short(), row + 1)
             }
             None => {}
         }
@@ -3142,6 +3183,13 @@ impl TimeControl {
                     if let Some(d) = row.and_then(|r| r.dropped) {
                         self.follow_launches(d, true);
                     }
+                    if let Some(("delete", r)) = row.and_then(|t| t.row_tool) {
+                        // The rows under it go back down.
+                        self.rows_followed(|k| {
+                            let k = if k >= r { k + 1 } else { k };
+                            (k < SLOTS).then_some(k)
+                        });
+                    }
                     if row.is_some_and(|r| r.song.is_some()) {
                         // The song's blocks and sections changed places.
                         self.selected = None;
@@ -3180,6 +3228,14 @@ impl TimeControl {
                     let row = self.takes.done().last().map(TakeRow::of);
                     if let Some(d) = row.and_then(|r| r.dropped) {
                         self.follow_launches(d, false);
+                    }
+                    if let Some(("delete", r)) = row.and_then(|t| t.row_tool) {
+                        // Its clips stop again; the rows under it up one.
+                        self.rows_followed(|k| match k.cmp(&r) {
+                            std::cmp::Ordering::Less => Some(k),
+                            std::cmp::Ordering::Equal => None,
+                            std::cmp::Ordering::Greater => Some(k - 1),
+                        });
                     }
                     if row.is_some_and(|r| r.song.is_some()) {
                         self.selected = None;
@@ -3819,10 +3875,13 @@ impl TimeControl {
                         _ => format!("clips: row {} stays where it is", from + 1),
                     })?;
                 self.drop_went_in(drop)?;
-                // The scene editor's row goes with its row, as its scene
-                // does.
+                // The scene editor's row and the scene card go with their
+                // row, as its scene does.
                 if let Some(r) = self.scene_pick {
                     self.scene_pick = Some(drop.after((0, r)).1);
+                }
+                if let Some(r) = self.scene_open {
+                    self.scene_open = Some(drop.after((0, r)).1);
                 }
                 Ok(match drop {
                     ClipDrop::RowCopied { from, to } => format!(
@@ -4134,6 +4193,44 @@ impl TimeControl {
                 Ok(line)
             }
             TimeAction::CaptureScene => self.capture_scene(),
+            TimeAction::SceneCard(None) => {
+                self.scene_open = None;
+                self.changed = true;
+                Ok("scene card closed".into())
+            }
+            TimeAction::SceneCard(Some(row)) => {
+                if row >= SLOTS {
+                    return Err(format!("no row {}", row + 1));
+                }
+                self.scene_pick = Some(row);
+                self.scene_open = Some(row);
+                self.changed = true;
+                Ok(format!("scene card: scene {}", row + 1))
+            }
+            TimeAction::InsertRow(row) => {
+                if row + 2 >= SLOTS {
+                    return Err(format!(
+                        "clips: row {SLOTS}, the grid's last, is the only row under it"
+                    ));
+                }
+                if !self.project.row_empty(SLOTS - 1) {
+                    return Err(format!(
+                        "clips: row {SLOTS} is in use, so there's no room for another row: empty it first"
+                    ));
+                }
+                // The grid's last row, empty, moves in under it.
+                self.act_in(TimeAction::DropRow {
+                    from: SLOTS - 1,
+                    to: row + 1,
+                    copy: false,
+                })?;
+                Ok(format!(
+                    "clips: an empty row {} under row {}, the rows under it down one (UNDO takes it back)",
+                    row + 2,
+                    row + 1
+                ))
+            }
+            TimeAction::DeleteRow(row) => self.delete_row(row),
             TimeAction::SongToScenes => {
                 // The rows change, not the song: one edit of whole rows,
                 // which UNDO takes back. The last conversion's card closes.
@@ -6983,6 +7080,105 @@ impl TimeControl {
         !self.takes.undone().is_empty()
     }
 
+    /// The scene card's Delete row (5.2): row `row` goes, and the grid's
+    /// rows under it move up one, the last row empty. Its clips go (the
+    /// song keeps those it plays, as the song's own) and its scene with
+    /// them. The song list's steps of that row go, and those of the rows
+    /// that moved follow them, as the song's parts do (a part of that row
+    /// is the song's own now) and the morph's rows. A launch or a cue of
+    /// a clip that moved follows it; one of the row's stops there. One
+    /// take, which UNDO takes back whole. The card closes.
+    fn delete_row(&mut self, row: usize) -> Result<String, String> {
+        if row >= SLOTS {
+            return Err(format!("clips: no row {}", row + 1));
+        }
+        let before = self.project.clone();
+        let p = &mut self.project;
+        let name = match p.scene(row).map(|s| s.name.as_str()) {
+            Some(n) if !n.is_empty() => format!("row {} ({n})", row + 1),
+            _ => format!("row {}", row + 1),
+        };
+        let mut kept = 0;
+        for t in 0..p.tracks.len() {
+            let gone = p.tracks[t].slots.get_mut(row).and_then(Option::take);
+            if let Some(c) = gone {
+                if p.arrangement.plays(c.id) {
+                    p.arrangement
+                        .clips
+                        .keep(c)
+                        .map_err(|_| "clips: the song has no room for its clips".to_string())?;
+                    kept += 1;
+                }
+            }
+            for s in row..SLOTS - 1 {
+                let next = p.tracks[t].slots.get_mut(s + 1).and_then(Option::take);
+                if let Some(slot) = p.tracks[t].slots.get_mut(s) {
+                    *slot = next;
+                }
+            }
+        }
+        let mut scenes = p.scenes.clone();
+        scenes.resize(SLOTS.max(scenes.len()), mpfree_seq::Scene::default());
+        for s in row..SLOTS - 1 {
+            scenes[s] = scenes[s + 1].clone();
+        }
+        scenes[SLOTS - 1] = mpfree_seq::Scene::default();
+        while scenes
+            .last()
+            .is_some_and(|s| *s == mpfree_seq::Scene::default())
+        {
+            scenes.pop();
+        }
+        p.scenes = scenes;
+        let up = |r: usize| if r > row && r < SLOTS { r - 1 } else { r };
+        let song = &mut p.arrangement;
+        // The list's steps of the row go; the step playing keeps its place.
+        let gone: Vec<usize> = (0..song.list.steps.len())
+            .filter(|&k| song.list.steps[k].row == row)
+            .collect();
+        for &k in gone.iter().rev() {
+            self.perform.list_edited(k, false);
+        }
+        song.list.steps.retain(|s| s.row != row);
+        for step in &mut song.list.steps {
+            step.row = up(step.row);
+        }
+        for m in &mut song.markers {
+            match m.scene {
+                Some(f) if f.row == row => m.scene = None,
+                Some(ref mut f) => f.row = up(f.row),
+                None => {}
+            }
+        }
+        for m in &mut song.morphs {
+            m.a = up(m.a);
+            m.b = up(m.b);
+        }
+        // What plays follows the clips that moved; the row's own stop.
+        self.rows_followed(|r| (r != row).then(|| up(r)));
+        self.forget_saved(None);
+        if let Err(e) = self.compile() {
+            self.project = before;
+            self.compile()?;
+            return Err(e);
+        }
+        self.takes.rows_song_edit(
+            &before,
+            &self.project,
+            mpfree_play::RowsWhat::Deleted { row },
+            SongChange::RowDeleted { row },
+        );
+        self.scene_open = None;
+        let song = match kept {
+            0 => String::new(),
+            1 => "; the song keeps playing its clip".to_string(),
+            _ => "; the song keeps playing its clips".to_string(),
+        };
+        Ok(format!(
+            "clips: {name} deleted, the rows under it up one{song} (UNDO brings it back)"
+        ))
+    }
+
     /// Capture scene (the Arrange refactor's 5.3): a copy of the clip
     /// each track plays now (its launched clip, or in song mode the
     /// song's block under the playhead; nothing from an audio track) goes
@@ -7050,8 +7246,14 @@ impl TimeControl {
             self.compile()?;
             return Err(e);
         }
-        self.takes.rows_edit(&before, &self.project);
+        self.takes.rows_edit_as(
+            &before,
+            &self.project,
+            mpfree_play::RowsWhat::Captured { row },
+        );
         self.scene_pick = Some(row);
+        // The scene card, open, shows the new row.
+        self.scene_open = self.scene_open.map(|_| row);
         self.changed = true;
         Ok(format!(
             "capture: {names} into row {}, as copies (UNDO takes it back)",
@@ -7139,6 +7341,7 @@ impl TimeControl {
         st.scene_playing = self.perform.playing().map(|p| p.row);
         st.scene_cued = self.perform.cued();
         st.scene_focus = self.scene_pick.or(st.scene_playing).unwrap_or(0);
+        st.scene_open = self.scene_open;
         st.scene = self
             .project
             .scene(st.scene_focus)

@@ -13,6 +13,8 @@
 //!   placements on a timeline ([`song::SongLanes`]).
 //! - [`list`]: the song list, Arrange's third view: scenes and how many
 //!   times each plays ([`list::SongListView`]).
+//! - [`scene_card`]: the scene card, over the grid or the list
+//!   ([`scene_card::SceneCard`]).
 //! - [`editor`]: the note editor of the Arrange page (a piano roll or a
 //!   list, with Timing Correct): [`editor::Editor`], [`editor::NoteGrid`].
 //! - [`lane`]: a lane of bars a finger draws, one value each (the
@@ -35,6 +37,7 @@ pub mod lane;
 pub mod list;
 pub mod report;
 pub mod sample;
+pub mod scene_card;
 pub mod song;
 pub mod view;
 pub mod widgets;

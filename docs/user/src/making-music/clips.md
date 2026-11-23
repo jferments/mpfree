@@ -99,7 +99,7 @@ The pads feel how hard you keep pressing after you hit them. While you record, t
 
 ## Clip settings
 
-The Record panel has three tabs at its top: **Record**, the record settings, **Clip**, the settings of one clip, and **Scene**, a scene's name, follow action and mutes (see [Setting up a scene](arranging.md#setting-up-a-scene)). The Clip tab names the clip it sets, such as "Clip · Verse B": the armed track's playing clip, or its first clip when none is playing, the same clip the Sequencer's Steps and the note editor show.
+The Record panel has two tabs at its top: **Record**, the record settings, and **Clip**, the settings of one clip. A scene's settings are on its scene card: hold the row's number (see [Setting up a scene](arranging.md#setting-up-a-scene)). The Clip tab names the clip it sets, such as "Clip · Verse B": the armed track's playing clip, or its first clip when none is playing, the same clip the Sequencer's Steps and the note editor show.
 
 {{shot: clips-card | The Record panel's Clip tab: the settings of Bass's clip beside the grid.}}
 

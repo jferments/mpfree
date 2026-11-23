@@ -166,6 +166,8 @@ fn guarded(widget: &str, t: &mpfree_ui::Target) -> bool {
     match (widget, t.id) {
         // The song list's Remove.
         (SONG_LIST, "button") => label == "Remove",
+        // The scene card's Delete row (5.2), over the grid or the list.
+        (mpfree_time_ui::view::CLIPS | SONG_LIST, "scene-delete") => true,
         // The Song view's Delete (a block) and Erase (an audio region),
         // and the note editor's Delete.
         (SONG, "button") | (NOTES, "button") => label == "Delete",
@@ -2477,6 +2479,10 @@ pub struct Player {
     /// lane's pad, the step on the page, seconds held), for
     /// [`Self::step_hold_tick`].
     step_hold: Option<(u64, usize, usize, f32)>,
+    /// A finger held still on a row's number on the grid (false) or a
+    /// step's on the song list (true), and for how long (s): after
+    /// [`STEP_HOLD`] its scene card opens (the Arrange refactor's 5.2).
+    row_hold: Option<((bool, usize), f32)>,
     guard_done: Option<u64>,
     /// The finger whose SHIFT + touch armed MIDI Learn: it does nothing
     /// else until it lifts.
@@ -2831,6 +2837,7 @@ impl Player {
             keep_press: None,
             guard_press: None,
             step_hold: None,
+            row_hold: None,
             guard_done: None,
             learn_finger: None,
             report_finger: None,
@@ -7199,6 +7206,7 @@ impl Player {
                     .report
                     .as_deref()
                     .map_or_else(String::new, time_view::report_hint),
+                View::Arrange if self.time.scene_open.is_some() => time_view::SCENE_CARD_HINT.to_string(),
                 View::Arrange if self.time_page.adding => mpfree_time_ui::song::ADD_HINT.to_string(),
                 // Link's chooser (the Arrange refactor's 4b.5).
                 View::Arrange if self.time_page.linking => time_view::LINK_HINT.to_string(),
@@ -7208,7 +7216,6 @@ impl Player {
                 View::Arrange if self.time.list_view => time_view::LIST_HINT.to_string(),
                 View::Arrange if self.time.song_view => time_view::song_hint(&self.time).to_string(),
                 View::Arrange if self.time_page.clip_card => time_view::clips_card_hint(&self.time).to_string(),
-                View::Arrange if self.time_page.scene_card => time_view::SCENE_HINT.to_string(),
                 View::Arrange => CLIPS_HINT.to_string(),
                 // A snap over recorded audio asks: Snap anyway and Not
                 // now float at this line's end.
@@ -10212,6 +10219,7 @@ impl Player {
                 let swapped = st.song_view != self.time.song_view
                     || st.list_view != self.time.list_view
                     || st.list_linked != self.time.list_linked
+                    || st.scene_open.is_some() != self.time.scene_open.is_some()
                     || lens(&st) != lens(&self.time)
                     || time_view::song_hint(&st) != time_view::song_hint(&self.time);
                 let switched = st.perform != self.time.perform;
@@ -10442,12 +10450,41 @@ impl Player {
             for list in [
                 time_view::RECORD,
                 time_view::CLIP_CARD,
-                time_view::SCENE_CARD,
                 time_view::EDIT_OPTIONS,
             ] {
                 if let Some(l) = self.ui.get_mut::<OptionList>(list) {
                     l.editing = on;
                 }
+            }
+            return;
+        }
+        // The scene card (5.2): the wheel picks one of its settings, in
+        // its order down the left and then the right, and - / + step it.
+        if self.view == View::Arrange && self.time.scene_open.is_some() {
+            let order: Vec<usize> = mpfree_time_ui::scene_card::LEFT_ROWS
+                .iter()
+                .chain(&mpfree_time_ui::scene_card::RIGHT_ROWS)
+                .copied()
+                .collect();
+            let now = match self.time_page.scene_row {
+                0 => 1,
+                k => k,
+            };
+            match k {
+                RowKey::Pick(d) => {
+                    let i = order.iter().position(|&x| x == now).unwrap_or(0) as i32;
+                    let j = (i + d).clamp(0, order.len() as i32 - 1) as usize;
+                    self.time_page.scene_row = order[j];
+                    self.time_page.update(&mut self.ui, &self.time);
+                }
+                RowKey::Step(d) => {
+                    match time_view::scene_action(&self.time, now, d, self.status.shift) {
+                        Ok(a) => self.outbox.push(FromUi::Time(a)),
+                        Err(why) if !why.is_empty() => self.tell(&why),
+                        Err(_) => {}
+                    }
+                }
+                RowKey::Editing(_) => {}
             }
             return;
         }
@@ -12721,6 +12758,10 @@ impl Player {
         if self.view == View::Arrange && v != View::Arrange && self.time.report.is_some() {
             self.outbox.push(FromUi::Time(TimeAction::CloseReport));
         }
+        // And the scene card (5.2).
+        if self.view == View::Arrange && v != View::Arrange && self.time.scene_open.is_some() {
+            self.outbox.push(FromUi::Time(TimeAction::SceneCard(None)));
+        }
         if v == View::Pads && self.view != View::Pads && self.perform.shown {
             // Back on the Perform view: the app sends its throws' settings
             // again (the Mix tab may have turned them).
@@ -13563,6 +13604,65 @@ impl Player {
         }
         self.refresh_play();
         self.refresh_qlinks();
+    }
+
+    /// A finger held still on a row's number on the grid, or a step's on
+    /// the song list, from `tick`: after [`STEP_HOLD`] its scene card
+    /// opens (the Arrange refactor's 5.2), and the finger's lift launches,
+    /// picks and moves nothing. A drag or a lift lets it go.
+    fn row_hold_tick(&mut self, dt: f32) {
+        use mpfree_time_ui::list::SongListView;
+        use mpfree_time_ui::widgets::ClipGrid;
+        let held = if self.view != View::Arrange || self.time.scene_open.is_some() {
+            None
+        } else if self.time.list_view {
+            self.ui
+                .get::<SongListView>(time_view::SONG_LIST)
+                .and_then(SongListView::held_number)
+                .map(|k| (true, k))
+        } else if !self.time.song_view {
+            self.ui
+                .get::<ClipGrid>(time_view::CLIPS)
+                .and_then(ClipGrid::held_row)
+                .map(|r| (false, r))
+        } else {
+            None
+        };
+        let Some(h) = held else {
+            self.row_hold = None;
+            return;
+        };
+        let t = match self.row_hold {
+            Some((was, t)) if was == h => t + dt.max(0.0),
+            _ => 0.0,
+        };
+        if t < STEP_HOLD {
+            self.row_hold = Some((h, t));
+            return;
+        }
+        self.row_hold = None;
+        let row = match h {
+            (true, k) => {
+                if let Some(l) = self.ui.get_mut::<SongListView>(time_view::SONG_LIST) {
+                    l.let_go_of_step();
+                }
+                self.time.list.get(k).and_then(|r| r.scene)
+            }
+            (false, r) => {
+                if let Some(g) = self.ui.get_mut::<ClipGrid>(time_view::CLIPS) {
+                    g.let_go_of_row();
+                }
+                Some(r)
+            }
+        };
+        match row {
+            Some(row) => {
+                println!("scene card: row {} held", row + 1);
+                self.outbox
+                    .push(FromUi::Time(TimeAction::SceneCard(Some(row))));
+            }
+            None => self.tell("This part is the song's own: it has no scene"),
+        }
     }
 
     /// The guard's hold, from `tick`: the fill crosses the button, and
@@ -14646,15 +14746,23 @@ impl Player {
             // SHIFT + the clip card's arrows: Length and Speed halve or
             // double, Bank steps a whole CC 0; on the scene editor, Bank
             // does too.
-            (time_view::CLIP_CARD | time_view::SCENE_CARD, EventKind::Step { index, delta })
-                if self.status.shift =>
+            // SHIFT + the scene card's arrows (5.2): Bank a whole CC 0,
+            // Tempo a tenth of a BPM.
+            (time_view::CLIPS | time_view::SONG_LIST, EventKind::Step { index, delta })
+                if self.status.shift && self.time.scene_open.is_some() =>
             {
-                let a = if ev.widget == time_view::CLIP_CARD {
-                    time_view::card_action(&self.time, index, delta, true)
-                } else {
-                    time_view::scene_action(&self.time, index, delta, true)
-                };
-                match a {
+                match time_view::scene_action(&self.time, index, delta, true) {
+                    Ok(a) => Some(FromUi::Time(a)),
+                    Err(why) => {
+                        if !why.is_empty() {
+                            self.tell(&why);
+                        }
+                        None
+                    }
+                }
+            }
+            (time_view::CLIP_CARD, EventKind::Step { index, delta }) if self.status.shift => {
+                match time_view::card_action(&self.time, index, delta, true) {
                     Ok(a) => Some(FromUi::Time(a)),
                     Err(why) => {
                         if !why.is_empty() {
@@ -14688,10 +14796,9 @@ impl Player {
             }
             (time_view::CLIPS, EventKind::Toggle(_))
             | (time_view::NOTES, EventKind::Tab(_) | EventKind::View { .. })
-            | (
-                time_view::RECORD | time_view::CLIP_CARD | time_view::SCENE_CARD,
-                EventKind::Tab(_),
-            ) if self.time_page.page_tracks(&ev, &self.time) => {
+            | (time_view::RECORD | time_view::CLIP_CARD, EventKind::Tab(_))
+                if self.time_page.page_tracks(&ev, &self.time) =>
+            {
                 // The grid's pager and the Record panel's tabs: the page's
                 // own, nothing for the app but the hint line.
                 self.time_page.update(&mut self.ui, &self.time);
@@ -14716,9 +14823,12 @@ impl Player {
                 );
                 None
             }
-            // The scene editor's Rename: the text keyboard, its name typed
+            // The scene card's Rename: the text keyboard, its name typed
             // over the scene's.
-            (time_view::SCENE_CARD, EventKind::Toggle(time_view::SCENE_RENAME)) => {
+            (
+                time_view::CLIPS | time_view::SONG_LIST,
+                EventKind::Toggle(mpfree_time_ui::scene_card::SCENE_RENAME),
+            ) => {
                 let row = self.time.scene_focus;
                 let name = &self.time.scene.name;
                 self.open_textpad(
@@ -14742,7 +14852,6 @@ impl Player {
                 | time_view::CLIPS
                 | time_view::RECORD
                 | time_view::CLIP_CARD
-                | time_view::SCENE_CARD
                 | time_view::TAKES
                 | time_view::MORPH
                 | time_view::SONG
@@ -14851,6 +14960,7 @@ impl Player {
         self.script_hold_tick(dt);
         self.guard_tick(dt);
         self.step_hold_tick(dt);
+        self.row_hold_tick(dt);
         // UNDO held: the page's undo history.
         if let Some(held) = self.undo_held {
             let held = held + dt.max(0.0);
@@ -19084,6 +19194,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         variant: None,
         scene: None,
         rows: None,
+        row_tool: None,
         followed: None,
     };
     st.done = vec![
@@ -19434,51 +19545,6 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("clips-card sample: {e}"),
     }
-    // The Record panel's Scene tab (sequencer S4 and S5): scene 2, named
-    // Drop, moves on to the next scene after 4 bars four times in five
-    // (else plays again), mutes Track 2 when it starts, and sends Track
-    // 1's gear program 12.
-    match sample_clips(fonts()) {
-        Ok(mut p) => {
-            let mut st = p.time.clone();
-            st.scene_focus = 1;
-            st.scenes = vec![String::new(), "Drop".into()];
-            st.scene = mpfree_seq::SceneSettings {
-                keep: 0,
-                tempo: None,
-                name: "Drop".into(),
-                mutes: Some(0b10),
-                follow: Some(mpfree_seq::Follow {
-                    chance: 80,
-                    ..mpfree_seq::Follow::after(4, mpfree_seq::FollowAction::Next)
-                }),
-                programs: vec![mpfree_seq::TrackProgram {
-                    track: 0,
-                    program: mpfree_seq::ClipProgram {
-                        program: 11,
-                        bank: None,
-                    },
-                }],
-            };
-            p.time_page.scene_card = true;
-            p.apply(ToUi::Time(Box::new(st.clone())));
-            p.apply(ToUi::Show(View::Arrange));
-            out.push(("clips-scene", p));
-            // The same scene's program change rows (S5), scrolled to: the
-            // armed track's Program and Bank, and Sent to.
-            if let Ok(mut p) = sample_clips(fonts()) {
-                st.armed = Some(0);
-                p.time_page.scene_card = true;
-                p.apply(ToUi::Time(Box::new(st)));
-                p.apply(ToUi::Show(View::Arrange));
-                if let Some(l) = p.ui.get_mut::<OptionList>(time_view::SCENE_CARD) {
-                    l.selected = mpfree_time_ui::view::SCENE_ROWS.len() - 1;
-                }
-                out.push(("clips-scene-program", p));
-            }
-        }
-        Err(e) => eprintln!("clips-scene sample: {e}"),
-    }
     // The mute queue (sequencer S4): in Perform, Track 2's mute and
     // Track 3's solo wait for the next bar, their headers hatched and the
     // transport bar saying WAITING.
@@ -19530,6 +19596,58 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             out.push(("clips-perform", p));
         }
         Err(e) => eprintln!("clips-perform sample: {e}"),
+    }
+    // The scene card (the Arrange refactor's 5.2), row 2's number held:
+    // Verse moves on to the next scene after 4 bars four times in five,
+    // sets 95 BPM on its line, mutes Hats and sends Stab's gear program
+    // 12; Chords and Dust keep playing through it, the other empty cells
+    // stop. In Make over the grid; then over the song list, in Perform.
+    for (name, list) in [
+        ("clips-scene-card", false),
+        ("arrange-list-scene-card", true),
+    ] {
+        let st = if list {
+            sample_list_state()
+        } else {
+            mpfree_time_ui::sample::playing().map(|s| {
+                let mut st = s.state();
+                st.scenes = ["Intro", "Verse", "Break", "Drop"]
+                    .iter()
+                    .map(|n| n.to_string())
+                    .collect();
+                st
+            })
+        };
+        match st {
+            Ok(mut st) => {
+                let mut p = quiet_player(fonts());
+                st.scene_open = Some(1);
+                st.scene_focus = 1;
+                st.armed = Some(5);
+                st.scene = mpfree_seq::SceneSettings {
+                    name: "Verse".into(),
+                    mutes: Some(0b10),
+                    follow: Some(mpfree_seq::Follow {
+                        chance: 80,
+                        ..mpfree_seq::Follow::after(4, mpfree_seq::FollowAction::Next)
+                    }),
+                    programs: vec![mpfree_seq::TrackProgram {
+                        track: 5,
+                        program: mpfree_seq::ClipProgram {
+                            program: 11,
+                            bank: None,
+                        },
+                    }],
+                    keep: 1 << 4 | 1 << 6,
+                    tempo: Some(950),
+                };
+                p.time_page.scene_row = mpfree_time_ui::view::SCENE_TEMPO;
+                p.apply(ToUi::Time(Box::new(st)));
+                p.apply(ToUi::Show(View::Arrange));
+                out.push((name, p));
+            }
+            Err(e) => eprintln!("{name} sample: {e}"),
+        }
     }
     // What each track plays (the Arrange refactor's 5.1, D3), in Perform
     // with song mode on: SONG tags on the grid, filled where the track
@@ -22379,12 +22497,13 @@ mod tests {
         );
     }
 
-    /// The scene editor (sequencer S4, part 7): the Record panel's Scene
-    /// tab shows the scene in focus; the wheel steps its rows, Mutes now
-    /// takes the mutes as they are, and Rename types the scene's name on
-    /// the text keyboard.
+    /// The scene card (the Arrange refactor's 5.2): a row's number held
+    /// opens it; a tap on Mutes' value takes the mutes as they are, a tap
+    /// on the name types the scene's name on the text keyboard, and a tap
+    /// off the card closes it.
     #[test]
-    fn the_scene_tab_edits_the_scene_and_rename_types_its_name() {
+    fn a_held_row_number_opens_the_scene_card_and_rename_types_its_name() {
+        use mpfree_time_ui::widgets::ClipGrid;
         use mpfree_ui::textpad::{char_key, TextPad, KEY_CLEAR, KEY_ENTER};
         let mut p = sample_clips(Fonts::embedded()).unwrap();
         let tap = |p: &mut Player, (x, y): (i32, i32)| {
@@ -22392,55 +22511,52 @@ mod tests {
             down.or(p.touch(1, Touch::Up, x, y))
         };
         let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
-        let record = p.ui.rect_of(time_view::RECORD).unwrap();
-        let scene_tab =
-            p.ui.get::<OptionList>(time_view::RECORD)
+        let grid = p.ui.rect_of(time_view::CLIPS).unwrap();
+        let number =
+            p.ui.get::<ClipGrid>(time_view::CLIPS)
                 .unwrap()
-                .tab_rect(record, 2)
+                .scene_rect(grid, 0)
                 .unwrap();
-        assert_eq!(tap(&mut p, (scene_tab.x + 10, scene_tab.y + 20)), None);
-        assert_eq!(
-            p.ui.layout_of(time_view::CLIPS_PAGE),
-            Some(time_view::CLIPS_SCENE_LAYOUT)
-        );
-        assert_eq!(hint(&p), time_view::SCENE_HINT);
-        let rows = |p: &Player| -> Vec<String> {
-            p.ui.get::<OptionList>(time_view::SCENE_CARD)
-                .unwrap()
-                .rows
-                .iter()
-                .map(|r| format!("{} {}", r.name, r.value))
+        let (x, y) = (number.x + number.w / 2, number.y + number.h / 2);
+        // Held: under the hold nothing; past it, the card for row 1, and
+        // the lift plays nothing.
+        let asks = |p: &mut Player| -> Vec<FromUi> {
+            p.take_actions()
+                .into_iter()
+                .filter(|a| matches!(a, FromUi::Time(_)))
                 .collect()
         };
-        assert_eq!(
-            rows(&p),
-            [
-                "Scene 1",
-                "Follow off",
-                "After —",
-                "Chance —",
-                "Or —",
-                "Mutes as they are",
-                "Program off",
-                "Bank —",
-                "Sent to none"
-            ]
-        );
-        // The wheel on the Scene row: the next scene.
-        p.apply(ToUi::ClipsWheel {
-            delta: 1,
-            scroll: false,
-        });
-        assert_eq!(p.take_actions(), [FromUi::Time(TimeAction::SceneFocus(1))]);
+        assert_eq!(p.touch(1, Touch::Down, x, y), None);
+        p.tick(0.016);
+        p.tick(0.2);
+        assert_eq!(asks(&mut p), []);
+        p.tick(0.3);
+        assert_eq!(asks(&mut p), [FromUi::Time(TimeAction::SceneCard(Some(0)))]);
+        assert_eq!(p.touch(1, Touch::Up, x, y), None);
+        assert_eq!(asks(&mut p), []);
+        // The engine opens it.
+        let mut st = p.time.clone();
+        st.scene_open = Some(0);
+        p.apply(ToUi::Time(Box::new(st)));
+        assert_eq!(hint(&p), time_view::SCENE_CARD_HINT);
+        let card =
+            p.ui.get::<ClipGrid>(time_view::CLIPS)
+                .unwrap()
+                .scene_card
+                .clone()
+                .unwrap();
+        let parts = card.parts(grid);
+        let mid = |row: usize| {
+            let r = parts.rows.iter().find(|(k, _)| *k == row).unwrap().1;
+            // The value box's middle, between its arrows.
+            (r.x + 96 + (r.w - 96) / 2, r.y + r.h / 2)
+        };
         // Mutes now: Bass is muted, so the scene mutes Bass.
-        p.time.tracks[1].mute = true;
-        p.time_page.update(&mut p.ui, &p.time);
-        let card = p.ui.rect_of(time_view::SCENE_CARD).unwrap();
-        let list = p.ui.get::<OptionList>(time_view::SCENE_CARD).unwrap();
-        let mutes = list.button_rect(card, time_view::SCENE_MUTES_NOW).unwrap();
-        let rename = list.button_rect(card, time_view::SCENE_RENAME).unwrap();
+        let mut st = p.time.clone();
+        st.tracks[1].mute = true;
+        p.apply(ToUi::Time(Box::new(st)));
         assert_eq!(
-            tap(&mut p, (mutes.x + mutes.w / 2, mutes.y + mutes.h / 2)),
+            tap(&mut p, mid(time_view::SCENE_MUTES)),
             Some(FromUi::Time(TimeAction::SceneSettings {
                 row: 0,
                 card_row: 5,
@@ -22452,10 +22568,8 @@ mod tests {
         );
         // Rename: the keyboard on "Scene 1"; "Drop" typed over it names
         // the scene.
-        assert_eq!(
-            tap(&mut p, (rename.x + rename.w / 2, rename.y + rename.h / 2)),
-            None
-        );
+        let name = parts.name;
+        assert_eq!(tap(&mut p, (name.x + 20, name.y + name.h / 2)), None);
         assert_eq!(p.page(), TEXTPAD_PAGE);
         let r = p.ui.rect_of(TEXTPAD).unwrap();
         {
@@ -22483,6 +22597,11 @@ mod tests {
         got.extend(enter);
         assert!(got.contains(&named), "{got:?}");
         assert_eq!(p.page(), CLIPS_PAGE);
+        // A tap off the card closes it.
+        assert_eq!(
+            tap(&mut p, (grid.x + 2, grid.y + 2)),
+            Some(FromUi::Time(TimeAction::SceneCard(None)))
+        );
     }
 
     #[test]
@@ -24357,6 +24476,7 @@ mod tests {
             variant: None,
             scene: None,
             rows: None,
+            row_tool: None,
             followed: None,
         };
         let mut st = p.time.clone();
@@ -25012,6 +25132,7 @@ mod tests {
             variant: None,
             scene: None,
             rows: None,
+            row_tool: None,
             followed: None,
         });
         p.apply(ToUi::Time(Box::new(st.clone())));
