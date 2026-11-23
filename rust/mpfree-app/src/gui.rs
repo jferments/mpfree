@@ -35900,7 +35900,7 @@ mod tests {
         std::fs::write(dir.join("setup-sd-card.sh"), "# service\n").unwrap();
         std::fs::write(
             dir.join("mounts"),
-            format!("/dev/mmcblk1p1 {} exfat ro 0 0\n", card.display()),
+            format!("card {} exfat ro 0 0\n", card.display()),
         )
         .unwrap();
         std::fs::write(

@@ -1214,10 +1214,7 @@ mod tests {
                 }
                 put(
                     &p.mounts,
-                    &format!(
-                        "{mounts}/dev/mmcblk1p1 {} exfat ro,nosuid 0 0\n",
-                        card.display()
-                    ),
+                    &format!("{mounts}card {} exfat ro,nosuid 0 0\n", card.display()),
                 )
                 .unwrap();
                 note(&mut |l| l.opened.push(word.clone()));
