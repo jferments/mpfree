@@ -61,7 +61,7 @@ A tap, an expect, a mark or the title may quote the app's own characters (`Speed
 
 ## The workflows
 
-About 7.5 minutes in all, plus heavy-load once more on each of the four sound-core settings (about 6 minutes). `covers` names the [device checks](device-checks.md) each one stands in for.
+About 8 minutes in all, plus heavy-load once more on each of the four sound-core settings (about 6 minutes). `covers` names the [device checks](device-checks.md) each one stands in for.
 
 | Workflow | What a musician does | Stands in for | About |
 |---|---|---|---|
@@ -72,6 +72,7 @@ About 7.5 minutes in all, plus heavy-load once more on each of the four sound-co
 | `sample-page` | A loop's end moved while it sounds, ping-pong, Slice, Warp (stretch and repitch), Grain with its LFO and presets, Keep last 4 bars, UNDO, then Edit pad from the Pads tab's row and from PROG EDIT | `sample-live-loop`, `sample-warp`, `grain-movement`, `grain-cloud-view`, `grain-presets`, `sample-edit-pad` | 33 s |
 | `songs` | The three demo songs opened from BROWSE, played through two scenes, a track muted on the bar, the tempo moved, saved, and the first opened again | `mute-queue`, `reload-on-the-bar`, `sample-r3-kit-per-track` | 2 min |
 | `heavy-load` | A full song, a loop recorded over it, the pads rolling, and a reverb, delay and chorus on the drums: half a minute of everything at once | `load`, `fx-busy` | 1.5 min |
+| `smart-loop-end` | Free first loops with Tempo from the first loop on, each two bars of kick and snare with REC pressed a little after the next bar's first kick. On Suggest the chip's Snap, Use my tap, UNDO and SHIFT + UNDO; on Auto, REC just before the first kick: the loop closes on the end played and starts on the first hit | `smart-end` | 35 s |
 
 ## The round's order
 
@@ -94,7 +95,7 @@ The hardware thread builds the stick and writes the round's runbook. These are t
    - **What it changes:** it talks only to the test build (port 2222, the stick's own host key) and runs the same read-only checks as the app step first, plus that the stick's kits are at `/run/mpfree-kits/kits.bin`. It copies `mpfree` and the workflows into `/run/mpfree-devtest` (RAM) and checks their hashes there. It stops our pad player and log display (`mpfree-test-app`, `mpfree-test-screen`: RAM state only; Akai's services are not running and are never touched) and starts whichever was running again at the end, also when a run fails or you press `q` or Ctrl-C. Each workflow runs `mpfree play --script … --kits /run/mpfree-kits/kits.bin --data /run/mpfree-devtest/data-NAME --gain-db -12`: its saves go to that RAM folder, so partition 4 is never opened, and the kits are only read.
    - **Hands off the MPC** while it plays: the workflows press the buttons and pads themselves. Keep the volume where you can hear it. The terminal shows each part (`mark` lines) as it starts. At the end of the default pass it asks one question: did anything click, drop out, stick or sound wrong.
    - **Then heavy-load on each sound-core setting** (`--sound-cores shared`, `core3`, `two`, `three`), the same steps each time. `s` at that prompt skips it.
-   - **Passes when** it ends `RESULT: 11 runs played.` and prints `pad player: active (started again)`. A workflow that fails is listed on a `FAILED:` line, and the next one still plays.
+   - **Passes when** it ends `RESULT: 12 runs played.` and prints `pad player: active (started again)`. A workflow that fails is listed on a `FAILED:` line, and the next one still plays.
    - **If it is cut off halfway** (the cable, `q`, Ctrl-C), it ends a workflow still running from `/run/mpfree-devtest` and starts the pad player again; if the cable is gone, the pad player starts at the next power-on. Nothing is left but RAM.
    - **Undo:** none needed. Switching the MPC off clears `/run`.
 

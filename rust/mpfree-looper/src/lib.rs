@@ -3332,6 +3332,13 @@ impl Looper {
         self.tempo_out.take()
     }
 
+    /// The tempo the song takes from the next period, while
+    /// [`Looper::take_tempo`] hasn't been taken: a free first pass closed
+    /// in this one.
+    pub fn tempo_coming(&self) -> Option<f64> {
+        self.tempo_out.as_ref().map(|(_, r, _, _)| r.bpm)
+    }
+
     /// What smart loop end made of a closing tap ([`Command::SetSmartEnd`]),
     /// once per pass: Auto's when the loop closes, Suggest's at the end of
     /// the reach after it.
@@ -3617,9 +3624,15 @@ impl Looper {
                     );
                 let first = rec_from + d.lead;
                 let from_hit = |to: u64| reread((to - first) as usize, rate, bar, &tap_reading);
+                // Moved, the beat's fit is the loop's as it now ends (the
+                // reading weighed it at the tap's length).
                 let moved = (d.verdict == Verdict::Moved)
                     .then(|| from_hit(d.end))
-                    .flatten();
+                    .flatten()
+                    .map(|r| Reading {
+                        beat: r.beat.and(d.best.map(|b| b.rhythm)),
+                        ..r
+                    });
                 // The loop's length and its start in the pass. Ends are
                 // measured from the first hit: with no smart start the loop
                 // is as long from the press.
