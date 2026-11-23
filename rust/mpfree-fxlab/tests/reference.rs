@@ -19,10 +19,14 @@
 use mpfree_fxlab::reference;
 
 /// The cases whose 8x reference agreed with the 16x one at the first
-/// survey (55 of 96). Not listed: the drives and sync (still folding at
-/// 8x), Squelch's square, Analog's saw at C6 and C7 (fizz 3.7 dB apart
-/// near the floor), FM (feedback noise, the square's steps), and Strings
-/// and Drawbar's combo reed, whose off-harmonic energy grows with the rate.
+/// survey (55 of 96), less one. Not listed: the drives and sync (still
+/// folding at 8x), Squelch's square, Analog's saw (C6 and C7 fizz 3.7 dB
+/// apart near the floor at the survey; C5 left at step 1.2, whose
+/// oscillators run flat to 0.48 of whatever rate they run at, so the 8x
+/// render's fizz rose from -81.8 to -76.5 dB against 16x's -80.8, both
+/// over the 44.1 kHz render's -81.3), FM (feedback noise, the square's
+/// steps), and Strings and Drawbar's combo reed, whose off-harmonic energy
+/// grows with the rate.
 const AGREES: &[&str] = &[
     "Poly saw, C5",
     "Poly saw, C6",
@@ -36,7 +40,6 @@ const AGREES: &[&str] = &[
     "Poly saw, distortion 24 dB, C5",
     "Poly saw, distortion 24 dB, C6",
     "Poly saw, distortion 24 dB, C7",
-    "Analog saw, C5",
     "Squelch saw, C5",
     "Squelch saw, C6",
     "Squelch saw, C7",

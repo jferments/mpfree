@@ -4,7 +4,7 @@ checked: 2026-11-22 33571aaf
 -->
 # DSP quality: fizz, filters near the top and the sample rate
 
-**Status:** plan approved by the owner on 2026-11-22; phase 0 (measures, the rate probe, reference renders, the full-project check) is being built; the rate probe's code is written and has not run on the MPC. Phase 1 has begun: step 1.1 changes the sync warp's sound on the table oscillator ([Step 1.1: sync](#step-11-sync)); no other sound has changed yet. Design doc with both outside reviews and the answers to them: "DSP quality" (https://claude.ai/artifact/5jsLgS5ZaRoHzpvVbEUgZ5). Related pages: [FX quality](fx-quality.md), [Synth quality](synth-quality.md), [Drive and Character](fx-drive.md), [Synth library: architecture and roadmap](synth-architecture.md), [Disk streaming](disk-streaming.md), [Profiling](profiling.md).
+**Status:** plan approved by the owner on 2026-11-22; phase 0 (measures, the rate probe, reference renders, the full-project check) is being built; the rate probe's code is written and has not run on the MPC. Phase 1 has begun: step 1.1 changes the sync warp's sound on the table oscillator ([Step 1.1: sync](#step-11-sync)), and step 1.2 Analog's oscillators ([Step 1.2: Analog's waves](#step-12-analogs-waves), built, its blind A/B next); no other sound has changed yet. Design doc with both outside reviews and the answers to them: "DSP quality" (https://claude.ai/artifact/5jsLgS5ZaRoHzpvVbEUgZ5). Related pages: [FX quality](fx-quality.md), [Synth quality](synth-quality.md), [Drive and Character](fx-drive.md), [Synth library: architecture and roadmap](synth-architecture.md), [Disk streaming](disk-streaming.md), [Profiling](profiling.md).
 
 ## Why
 
@@ -21,7 +21,7 @@ From the ratchet files on main (`rust/mpfree-fxlab/quality/synth.tsv`, `sampler.
 | Where | Worst fold-back at C5 / C6 | Why |
 |---|---|---|
 | Poly saw, pulse, tables | -78 / -84 dB | band-limited tables (the voice core) |
-| Analog saw | -54 / -48 dB | polyBLEP at the host rate; never moved to the tables |
+| Analog saw | -54 / -48 dB | polyBLEP at the host rate; never moved to the tables; -94 / -89 dB since step 1.2 |
 | Poly table and Wavetable with sync 50 | -45 / -39 dB | the jump at each sync restart is not smoothed (`table_osc.rs`, `Warp::Sync`); -72 / -85 dB since step 1.1 |
 | Squelch square | -48 / -39 dB | the shaper that turns the saw into a square has no ADAA (it already runs at 2x) |
 | Poly drive 24 dB / distortion 24 dB | -50 / -45 and -45 / -40 dB | the curve runs per voice at 1x |
@@ -126,6 +126,55 @@ No other ratchet row moved past its tolerance; the four sync bench cases have ne
 - **What it costs in sound: some of the top octave at C5.** With the lower level, the harmonics from 16 to 20 kHz are about 10 dB under the 8x render at C5, where before fizz folded there and made them 7 dB over it. Y8's sync references haven't converged (the 8x and 16x renders are 5 to 6 dB apart), so the figure is rough. The blind A/B heard no difference.
 - **A finding, not fixed here:** what is left in the fast sweep is the level switching while the ratio moves; with the level held, the same sweep is under -55 dB. A crossfade between levels would be a step of its own.
 - **Cost** (instruction gate, thousands of x86-64 instructions a block, against the build before). Sync on: Poly Table, 8 voices, sync 50, 334 to 327 (-2.1 %); Poly Sync Sweep 446 to 447 (+0.3 %); Poly Digital Bell 363 to 370 (+1.9 %); Wavetable Init, 8 voices, sync 50, 413 to 424 (+2.6 %); Wavetable Sync Sweep 576 to 553 (-3.9 %); **Wavetable Digital Bell 483 to 510 (+5.6 %), over the first limit of 5 %** (the owner accepted it on 22 Nov, to be checked again by the device timing, step 0.4): its envelope moves both the sync and the table position at every control step on a single layer, so the per-step work is spread over the fewest samples. Sync off: Poly's table sounds up to 0.8 % (per-step bookkeeping; the sample loop is as it was), Wavetable's sounds 2 to 6 % cheaper (its sample loop now has a version without sync). Part of Poly's saving is that a sync read now finds its table index from integers: on x86 that saves a costly float-to-index conversion, on the MPC's ARM it is one instruction either way. Device timing (step 0.4) is the real check.
+
+### Step 1.2: Analog's waves
+
+Built; the owner's blind, level-matched A/B is next. Analog's oscillators (`analog.rs`) were band-limited with a polyBLEP placed a sample late. They now use a 32-sample band-limited step, chosen by two experiments.
+
+**The experiments.** A scratch harness (`analog-1.2/` in the project files, not committed) rendered one oscillator pair as Analog runs it, with no filter, at C5, C6 and C7, and compared each method with the same pair rendered at 8 times the rate and brought down. Experiment A was the plain saw, pulse (10 and 25 %), square, Saw+Pulse and triangle; B was sync (saw, pulse and triangle, and a saw five times the master), poly-mod into pitch and width, and both. The methods were today's polyBLEP; a four-point cubic B-spline step; an eight-point Kaiser-windowed sinc; windowed sincs of 16, 24, 32 and 48 points; a 32-point one with its cutoff at 0.48 of the rate; and the voice core's tables, with an eight-point step at a sync restart. The harness reads lower than the engine's A1 rows, which go through the filter.
+
+| Method (harness, worst fold-back, C5 / C6 / C7) | Saw | Pulse 10 % | Sync, saw | Width poly-mod | Sync and pitch poly-mod | 16-20 kHz against 8x | Cost, saw / sync |
+|---|---|---|---|---|---|---|---|
+| polyBLEP (before) | -43 / -39 / -32 | -35 / -29 / -26 | -38 / -31 / -24 | -36 / -32 / -25 | -39 / -30 / -28 | -5.1 dB | 128 / 214 |
+| 4-point B-spline | -53 / -49 / -43 | -45 / -39 / -37 | -48 / -42 / -35 | -38 / -33 / -26 | -50 / -40 / -37 | -10.2 dB | |
+| 8-point sinc | -48 / -45 / -38 | -40 / -35 / -33 | -43 / -37 / -31 | -37 / -33 / -26 | -46 / -36 / -34 | -3.5 dB | |
+| 16 / 24 points | -52 / -62 at C5 | -43 / -53 | -47 / -57 | -38 | -52 / -65 | -0.4 / -0.1 dB | |
+| 32 points, cutoff 0.48 | -94 / -99 / -95 | -94 / -94 / -92 | -99 / -95 / -90 | -38 / -33 / -27 | -71 / -58 / -47 | -0.2 dB | 157 / 332 |
+| the same, oscillator 2 heard within the sample | -94 / -99 / -95 | -94 / -94 / -92 | -99 / -95 / -90 | -94 / -99 / -95 | -88 / -76 / -64 | -0.2 dB | 157 / 438 |
+| the voice core's tables | -77 / -84 / -90 | -68 / -74 / -80 | -42 / -36 / -26 | -38 / -33 / -27 | -48 / -44 / -41 | -78 dB | 199 / 360 |
+
+The 8x render's own floor is -94 / -99 / -95 dB. Cost is the harness's x86 instructions a sample for the pair.
+
+- **Short steps don't reach -70.** Four or eight points leave the plain saw at -48 to -53 dB at C5; 24 points reach -62, 32 points -75, and 32 points with the cutoff at 0.48 of the rate (rather than 0.5) reach the floor.
+- **Tables are clean but cut the top and don't help sync.** The voice core's tables keep no harmonics above about 16.7 kHz (-78 dB from 16 to 20 kHz, against -0.2 for the 32-point step), a restart still needs its own step, and there is no triangle table with corners to restart.
+- **Poly-mod needs oscillator 2 as it is within the sample.** Read once a sample, a moving width or pitch is a step every sample; on width poly-mod every method stays at -36 to -38 dB at C5. With oscillator 2's plain wave heard where it jumps, the 32-point step reaches the floor there too.
+- **Pitch poly-mod at 100 can't be read this way:** it spreads the note's energy everywhere, the 8x render included. Counting only what is 6 dB or more over the 8x render, the 32-point step with oscillator 2 within the sample takes C5 from -37 to -57 dB and C6 from -22 to -31; C7 stays at -9.
+
+**What was built.**
+
+- **The step** (`Steps`): a Kaiser-windowed sinc (cutoff 0.48 of the rate, 16 samples either side, beta 7) run up to one, less the plain step, and its running integral less the plain ramp, for a jump in slope; tabled 256 rows a sample, read with a straight line between rows. Built once, when the first Analog is made.
+- **Where each jump lands.** A wrap, a pulse edge and a sync restart are jumps in level; the triangle's corners and a restart are jumps in slope. Each is placed at its own fraction of a sample. A pulse edge is found against the width as it moves across the sample, so a fast pulse-width move doesn't make a step every sample.
+- **Sounding late.** Each oscillator sounds 16 samples (0.36 ms) late, so the step's correction reaches the 16 samples before a jump as well as after it.
+- **A control step at a time.** Each oscillator makes the step's samples in a window of its own, `TAPS` samples still taking corrections followed by the step's own (`Osc::run`, one copy for each wave). Oscillator 2 goes first. When oscillator 1 follows it (sync, or its poly-mod into pitch or width), oscillator 2 notes its plain wave where each frame starts, its width, and where it wrapped and where its pulse fell. Oscillator 1 then cuts each sample at those points, with a step for each jump in its own level and slope (`Osc::run_follow`). A frame where oscillator 2 doesn't jump, under sync alone, is a plain sample. The cutoff's poly-mod hears oscillator 2's band-limited output.
+
+| Measure | Before | After |
+|---|---|---|
+| A1 Analog saw, C5 / C6 / C7 | -53.8 / -48.2 / -41.8 dB | -94.3 / -89.0 / -82.9 dB |
+| A1 Analog saw, Drive 100, C5 / C6 / C7 | -53.2 / -47.7 / -41.3 dB | -59.7 / -54.1 / -47.9 dB |
+| Y8 Analog saw fizz, C5 / C6 / C7 | -45.1 / -41.9 / -38.5 dB | -81.3 / -78.5 / -75.4 dB |
+| Y8 Drive 100 fizz, C5 / C6 / C7 | -43.3 / -40.2 / -36.8 dB | -46.8 / -43.7 / -40.6 dB |
+| Y8 top (16 to 20 kHz against the 8x render), saw, C5 / C6 / C7 | -2.3 / -3.1 / -2.1 dB | +2.1 / +1.4 / +2.3 dB |
+| Y3 poly-mod into pitch 100, with sync, C4 / C6 | -37.3 / -30.1 dB | -74.9 / -58.4 dB |
+| Y3 poly-mod into pitch and cutoff 100, with sync, C4 / C6 | -34.2 / -26.4 dB | -36.3 / -32.2 dB |
+| Y3 poly-mod into the cutoff 100, C4 / C6 | -54.5 / -34.8 dB | -52.5 / -32.1 dB |
+
+The target was -70 dB at C5 and C6 on the A1 Analog rows.
+
+- **The Drive 100 rows** are now set by the filter's own saturation, which Drive pushes up to 3 octaves harder, at the host rate.
+- **The top octave is back, and the filter shows.** In the harness the oscillators keep their harmonics from 16 to 20 kHz within 0.2 dB of the 8x render, where the polyBLEP lost 5 dB and 2.3 dB from 8 to 16 kHz. Through the engine the top is now 1.4 to 2.3 dB over the 8x render: the host-rate filter lets more through near the top than it does at 8x (Y1a, step 2.2). Y8's harmonics and envelope rows (5.2 and 4.4 dB, from 2.6 and 2.5) measure the same thing.
+- **Poly-mod into the cutoff is 2 to 2.7 dB fizzier,** and so is its 8x render (4.4 and 3.9 dB). Oscillator 2 now reaches the cutoff with its top octave. Against its references the 44.1 kHz render is 1 to 2.5 dB closer than before.
+- **The reference moved too.** With oscillators flat to 0.48 of whatever rate they run at, the 8x and 16x renders feed more above the band into the filter's saturation: Analog's saw at C5 has 8x fizz of -76.5 dB against 16x's -80.8 (were -81.8 and -85.1), so it no longer counts as converged and leaves `tests/reference.rs`'s list. The 44.1 kHz render (-81.3) is under both.
+- **Cost** (instruction gate, thousands of x86-64 instructions a block, against the build before; limit 10 % more): Analog Init 269 to 243 (-9.6 %), Poly Brass 206 to 174 (-15.3 %), Warm Pad 323 to 291 (-10.2 %), Worn Cards on 16 voices 470 to 413 (-12.1 %). The polyBLEP ran every oscillator a sample at a time through the whole voice. Running each oscillator alone for a control step, with a copy for each wave, saves more than the longer step costs. Every factory preset was counted the same way (8-voice chords): 13 of 14 are 1 to 16 % cheaper, and Clang Bell, poly-mod from oscillator 2 on two triangles, is 2.9 % dearer. Device timing (step 0.4) is the real check.
 
 ## Targets and new measures
 

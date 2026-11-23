@@ -1,99 +1,99 @@
 # The synths' quality ratchet: every number may stay or get better, never worse.
 # Written by `MPFREE_QUALITY_BLESS=1 cargo test --release --locked -p mpfree-fxlab --test synth`;
 # see docs/dev/design/synth-quality.md. key<TAB>value
-synth/Analog[Chorus Strings]/chord6_vs_power_db	0.1686
-synth/Analog[Chorus Strings]/chord8_peak_dbfs	-2.8413
-synth/Analog[Chorus Strings]/dc_dbfs	-107.3658
-synth/Analog[Chorus Strings]/key_spread_db	2.8844
-synth/Analog[Chorus Strings]/mono_loss_db	1.2225
+synth/Analog[Chorus Strings]/chord6_vs_power_db	0.1694
+synth/Analog[Chorus Strings]/chord8_peak_dbfs	-2.9003
+synth/Analog[Chorus Strings]/dc_dbfs	-106.3739
+synth/Analog[Chorus Strings]/key_spread_db	2.9458
+synth/Analog[Chorus Strings]/mono_loss_db	1.2221
 synth/Analog[Chorus Strings]/vel_curve_err_db	0.0165
 synth/Analog[Chorus Strings]/vel_tone_oct	0
-synth/Analog[Clang Bell]/chord6_vs_power_db	0.0443
-synth/Analog[Clang Bell]/chord8_peak_dbfs	-2.2087
+synth/Analog[Clang Bell]/chord6_vs_power_db	0.0066
+synth/Analog[Clang Bell]/chord8_peak_dbfs	-2.4363
 synth/Analog[Clang Bell]/dc_dbfs	-140
-synth/Analog[Clang Bell]/key_spread_db	3.2435
+synth/Analog[Clang Bell]/key_spread_db	3.225
 synth/Analog[Clang Bell]/mono_loss_db	0
 synth/Analog[Clang Bell]/vel_curve_err_db	0.293
 synth/Analog[Clang Bell]/vel_tone_oct	0
-synth/Analog[Fat Lead]/chord8_peak_dbfs	-4.0877
-synth/Analog[Fat Lead]/dc_dbfs	-129.2241
-synth/Analog[Fat Lead]/key_spread_db	5.1655
-synth/Analog[Fat Lead]/mono_loss_db	1.1902
-synth/Analog[Fat Lead]/vel_curve_err_db	0.1136
-synth/Analog[Fat Lead]/vel_tone_oct	0.1203
-synth/Analog[Glide Lead]/chord8_peak_dbfs	-10.9918
+synth/Analog[Fat Lead]/chord8_peak_dbfs	-4.0626
+synth/Analog[Fat Lead]/dc_dbfs	-125.6918
+synth/Analog[Fat Lead]/key_spread_db	5.2423
+synth/Analog[Fat Lead]/mono_loss_db	1.1898
+synth/Analog[Fat Lead]/vel_curve_err_db	0.1163
+synth/Analog[Fat Lead]/vel_tone_oct	0.125
+synth/Analog[Glide Lead]/chord8_peak_dbfs	-10.9533
 synth/Analog[Glide Lead]/dc_dbfs	-140
-synth/Analog[Glide Lead]/key_spread_db	3.2903
+synth/Analog[Glide Lead]/key_spread_db	3.3577
 synth/Analog[Glide Lead]/mono_loss_db	0
-synth/Analog[Glide Lead]/vel_curve_err_db	0.1151
-synth/Analog[Glide Lead]/vel_tone_oct	0.1174
-synth/Analog[Hollow Pulse]/chord6_vs_power_db	-0.0573
-synth/Analog[Hollow Pulse]/chord8_peak_dbfs	-1.7055
-synth/Analog[Hollow Pulse]/dc_dbfs	-130.2862
-synth/Analog[Hollow Pulse]/key_spread_db	9.9946
-synth/Analog[Hollow Pulse]/mono_loss_db	1.0464
+synth/Analog[Glide Lead]/vel_curve_err_db	0.1167
+synth/Analog[Glide Lead]/vel_tone_oct	0.1204
+synth/Analog[Hollow Pulse]/chord6_vs_power_db	-0.0532
+synth/Analog[Hollow Pulse]/chord8_peak_dbfs	-1.7208
+synth/Analog[Hollow Pulse]/dc_dbfs	-133.5134
+synth/Analog[Hollow Pulse]/key_spread_db	10.0647
+synth/Analog[Hollow Pulse]/mono_loss_db	1.0466
 synth/Analog[Hollow Pulse]/vel_curve_err_db	0.1192
 synth/Analog[Hollow Pulse]/vel_tone_oct	0
-synth/Analog[Init]/chord6_vs_power_db	0.2043
-synth/Analog[Init]/chord8_peak_dbfs	1.3877
+synth/Analog[Init]/chord6_vs_power_db	0.2087
+synth/Analog[Init]/chord8_peak_dbfs	1.4074
 synth/Analog[Init]/dc_dbfs	-140
-synth/Analog[Init]/key_spread_db	3.399
+synth/Analog[Init]/key_spread_db	3.5302
 synth/Analog[Init]/mono_loss_db	0
 synth/Analog[Init]/vel_curve_err_db	0.1192
 synth/Analog[Init]/vel_tone_oct	0
-synth/Analog[Poly Brass]/chord6_vs_power_db	-0.3568
-synth/Analog[Poly Brass]/chord8_peak_dbfs	0.3475
+synth/Analog[Poly Brass]/chord6_vs_power_db	-0.3576
+synth/Analog[Poly Brass]/chord8_peak_dbfs	0.3587
 synth/Analog[Poly Brass]/dc_dbfs	-140
-synth/Analog[Poly Brass]/key_spread_db	0.7069
+synth/Analog[Poly Brass]/key_spread_db	0.7403
 synth/Analog[Poly Brass]/mono_loss_db	0
-synth/Analog[Poly Brass]/vel_curve_err_db	0.1105
-synth/Analog[Poly Brass]/vel_tone_oct	0.155
-synth/Analog[Slow Sweep]/chord6_vs_power_db	0.1202
-synth/Analog[Slow Sweep]/chord8_peak_dbfs	-0.4336
-synth/Analog[Slow Sweep]/dc_dbfs	-123.6396
-synth/Analog[Slow Sweep]/key_spread_db	6.3835
-synth/Analog[Slow Sweep]/mono_loss_db	1.094
+synth/Analog[Poly Brass]/vel_curve_err_db	0.1235
+synth/Analog[Poly Brass]/vel_tone_oct	0.1565
+synth/Analog[Slow Sweep]/chord6_vs_power_db	0.1226
+synth/Analog[Slow Sweep]/chord8_peak_dbfs	-0.4276
+synth/Analog[Slow Sweep]/dc_dbfs	-122.7858
+synth/Analog[Slow Sweep]/key_spread_db	6.3857
+synth/Analog[Slow Sweep]/mono_loss_db	1.0938
 synth/Analog[Slow Sweep]/vel_curve_err_db	0.0165
 synth/Analog[Slow Sweep]/vel_tone_oct	0
-synth/Analog[Solo Lead]/chord8_peak_dbfs	-9.46
+synth/Analog[Solo Lead]/chord8_peak_dbfs	-9.3944
 synth/Analog[Solo Lead]/dc_dbfs	-140
-synth/Analog[Solo Lead]/key_spread_db	5.1912
+synth/Analog[Solo Lead]/key_spread_db	5.2623
 synth/Analog[Solo Lead]/mono_loss_db	0
-synth/Analog[Solo Lead]/vel_curve_err_db	0.1113
-synth/Analog[Solo Lead]/vel_tone_oct	0.1108
-synth/Analog[Square Keys]/chord6_vs_power_db	-0.209
-synth/Analog[Square Keys]/chord8_peak_dbfs	0.7616
-synth/Analog[Square Keys]/dc_dbfs	-133.2215
-synth/Analog[Square Keys]/key_spread_db	2.7541
-synth/Analog[Square Keys]/mono_loss_db	1.3964
-synth/Analog[Square Keys]/vel_curve_err_db	0.113
-synth/Analog[Square Keys]/vel_tone_oct	0.0995
-synth/Analog[Sync Lead]/chord8_peak_dbfs	-10.2396
+synth/Analog[Solo Lead]/vel_curve_err_db	0.113
+synth/Analog[Solo Lead]/vel_tone_oct	0.1139
+synth/Analog[Square Keys]/chord6_vs_power_db	-0.2087
+synth/Analog[Square Keys]/chord8_peak_dbfs	0.7628
+synth/Analog[Square Keys]/dc_dbfs	-134.2666
+synth/Analog[Square Keys]/key_spread_db	2.7668
+synth/Analog[Square Keys]/mono_loss_db	1.3963
+synth/Analog[Square Keys]/vel_curve_err_db	0.1116
+synth/Analog[Square Keys]/vel_tone_oct	0.1
+synth/Analog[Sync Lead]/chord8_peak_dbfs	-10.1409
 synth/Analog[Sync Lead]/dc_dbfs	-140
-synth/Analog[Sync Lead]/key_spread_db	4.8049
+synth/Analog[Sync Lead]/key_spread_db	4.893
 synth/Analog[Sync Lead]/mono_loss_db	0
 synth/Analog[Sync Lead]/vel_curve_err_db	0.1192
 synth/Analog[Sync Lead]/vel_tone_oct	0
-synth/Analog[Unison Bass]/chord8_peak_dbfs	-12.2349
+synth/Analog[Unison Bass]/chord8_peak_dbfs	-12.2364
 synth/Analog[Unison Bass]/dc_dbfs	-140
-synth/Analog[Unison Bass]/key_spread_db	3.8427
+synth/Analog[Unison Bass]/key_spread_db	3.8417
 synth/Analog[Unison Bass]/low_correlation	1
 synth/Analog[Unison Bass]/mono_loss_db	0
-synth/Analog[Unison Bass]/small_speaker_db	-6.2334
+synth/Analog[Unison Bass]/small_speaker_db	-6.2328
 synth/Analog[Unison Bass]/start_step_dbfs	-140
 synth/Analog[Unison Bass]/vel_curve_err_db	0.1192
 synth/Analog[Unison Bass]/vel_tone_oct	0
-synth/Analog[Warm Pad]/chord6_vs_power_db	-1.0279
-synth/Analog[Warm Pad]/chord8_peak_dbfs	-0.0895
-synth/Analog[Warm Pad]/dc_dbfs	-129.6609
-synth/Analog[Warm Pad]/key_spread_db	2.6568
+synth/Analog[Warm Pad]/chord6_vs_power_db	-1.0268
+synth/Analog[Warm Pad]/chord8_peak_dbfs	-0.0854
+synth/Analog[Warm Pad]/dc_dbfs	-130.7009
+synth/Analog[Warm Pad]/key_spread_db	2.6493
 synth/Analog[Warm Pad]/mono_loss_db	1.1538
 synth/Analog[Warm Pad]/vel_curve_err_db	0.0165
 synth/Analog[Warm Pad]/vel_tone_oct	0
-synth/Analog[Worn Cards]/chord6_vs_power_db	0.2476
-synth/Analog[Worn Cards]/chord8_peak_dbfs	0.1515
+synth/Analog[Worn Cards]/chord6_vs_power_db	0.2497
+synth/Analog[Worn Cards]/chord8_peak_dbfs	0.1639
 synth/Analog[Worn Cards]/dc_dbfs	-140
-synth/Analog[Worn Cards]/key_spread_db	4.5605
+synth/Analog[Worn Cards]/key_spread_db	4.6244
 synth/Analog[Worn Cards]/mono_loss_db	0
 synth/Analog[Worn Cards]/vel_curve_err_db	0.1192
 synth/Analog[Worn Cards]/vel_tone_oct	0
@@ -5096,12 +5096,12 @@ synth/Wind[Wind Controller Sax]/key_spread_db	1.4545
 synth/Wind[Wind Controller Sax]/mono_loss_db	0
 synth/Wind[Wind Controller Sax]/vel_curve_err_db	0.1092
 synth/Wind[Wind Controller Sax]/vel_tone_oct	0.1658
-synth/alias[Analog saw, C5]/worst_alias_db	-53.7821
-synth/alias[Analog saw, C6]/worst_alias_db	-48.1622
-synth/alias[Analog saw, C7]/worst_alias_db	-41.8279
-synth/alias[Analog saw, drive 100, C5]/worst_alias_db	-53.2081
-synth/alias[Analog saw, drive 100, C6]/worst_alias_db	-47.6714
-synth/alias[Analog saw, drive 100, C7]/worst_alias_db	-41.3
+synth/alias[Analog saw, C5]/worst_alias_db	-94.2791
+synth/alias[Analog saw, C6]/worst_alias_db	-88.9778
+synth/alias[Analog saw, C7]/worst_alias_db	-82.9137
+synth/alias[Analog saw, drive 100, C5]/worst_alias_db	-59.6547
+synth/alias[Analog saw, drive 100, C6]/worst_alias_db	-54.1089
+synth/alias[Analog saw, drive 100, C7]/worst_alias_db	-47.8625
 synth/alias[Bass pulse, C5]/worst_alias_db	-92.6884
 synth/alias[Bass pulse, C6]/worst_alias_db	-87.1358
 synth/alias[Bass pulse, C7]/worst_alias_db	-81.4379
@@ -5276,7 +5276,7 @@ synth/glide[Poly rate, an octave: an octave in 300 ms]/time_err_pct	-0.9977
 synth/morph[Choir Morph 60 at 0.15 Hz, B4]/step_db	-104.2985
 synth/morph[Choir at rest, B4]/step_db	-139.0744
 synth/morph[Choir vowel knob ooh to ee and back, B4]/step_db	-94.9688
-synth/priority[Analog unison, High]/pitch_err_cents	0.0051
+synth/priority[Analog unison, High]/pitch_err_cents	0.005
 synth/priority[Analog unison, Low]/pitch_err_cents	0.0033
 synth/priority[Bass, High]/pitch_err_cents	0.0016
 synth/priority[Bass, Low]/pitch_err_cents	0.0005
@@ -5301,7 +5301,7 @@ synth/swell[Strings shared, crescendo 1500 ms]/time_err_pct	-2.325
 synth/swell[Strings shared, crescendo 400 ms]/time_err_pct	-2.2336
 synth/swell[Strings shared, sustain 1500 ms]/time_err_pct	0.0605
 synth/swell[Strings shared, sustain 300 ms]/time_err_pct	0.2116
-synth/tune[Analog]/worst_cents	0.0302
+synth/tune[Analog]/worst_cents	0.0303
 synth/tune[Bass 808, C0 to C3]/worst_cents	0.0484
 synth/tune[Bass synth, C0 to C3]/worst_cents	0.0718
 synth/tune[Bass]/worst_cents	0.0037
@@ -5319,5 +5319,5 @@ synth/tune[Wind clarinet, C2 to C6, velocity 30 to 127]/worst_cents	0.0896
 synth/tune[Wind flute, C2 to C6, velocity 30 to 127]/worst_cents	0.1686
 synth/tune[Wind sax, C2 to C6, velocity 30 to 127]/worst_cents	0.0347
 synth/tune[Wind]/worst_cents	0.1273
-synth/vibrato[Analog, full pressure, Pressure 100]/depth_err_pct	-1.1482
-synth/vibrato[Analog, the wheel at the top]/depth_err_pct	-1.1482
+synth/vibrato[Analog, full pressure, Pressure 100]/depth_err_pct	-1.1494
+synth/vibrato[Analog, the wheel at the top]/depth_err_pct	-1.1494
