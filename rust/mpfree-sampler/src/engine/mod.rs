@@ -5,9 +5,11 @@
 //!
 //! Each voice reads its region with 4-point Hermite interpolation at a
 //! 32.32 fixed-point position, loops forward (with an equal-power
-//! crossfade) or ping-pong, applies fades, an AHDSR amp envelope, an
-//! optional 2- or 4-pole state-variable filter with its own envelope, and
-//! equal-power pan. Stolen and choked voices fade out instead of clicking.
+//! crossfade) or ping-pong, applies fades, an optional filter with its own
+//! envelope ([`VoiceFilter`]), an AHDSR amp envelope and equal-power pan:
+//! the filter before the envelope and the gains, except a Comb, which
+//! comes after them so it rings on. Stolen and choked voices fade out
+//! instead of clicking.
 //!
 //! **Clean pitching.** Once a voice reads its sound more than two
 //! semitones faster than the sound's own rate ([`CLEAN_ABOVE`]: pitched
@@ -81,8 +83,8 @@
 
 use crate::bandlimit::{self, OctaveCell, Reach, NEAR_HALF, NEAR_TAPS};
 use crate::dsp::{
-    db_to_gain, equal_power, hermite, pan_gains, vowel_formants, vowel_gain, vowel_resonance,
-    Ahdsr, Comb, Envelope, Filter, FilterKind, Ladder, Rng, Sample, Svf, FORMANT_2, TINY,
+    db_to_gain, equal_power, hermite, pan_gains, Ahdsr, Comb, Envelope, Filter, FilterKind, Rng,
+    Sample, VoiceFilter, TINY,
 };
 use crate::grain_clip::GrainClip;
 use crate::grain_share::{self, Claim, Rank};

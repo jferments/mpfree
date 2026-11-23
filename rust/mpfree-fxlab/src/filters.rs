@@ -49,10 +49,7 @@
 
 use std::f64::consts::TAU;
 
-use mpfree_sampler::dsp::{
-    vowel_formants, vowel_gain, vowel_resonance, Comb, Filter as PadFilter, FilterKind,
-    Ladder as PadLadder, Svf, FORMANT_2,
-};
+use mpfree_sampler::dsp::{Comb, Filter as PadFilter, FilterKind, VoiceFilter};
 use mpfree_synth::dsp::{Filter as SynthFilter, FilterCoefs, FilterMode};
 use mpfree_synth::{analog, bass, poly, squelch};
 
@@ -336,19 +333,17 @@ fn subjects(rate: u32) -> Vec<Subject> {
     v
 }
 
-/// The sampler's filter as a voice runs it (`mpfree_sampler::engine`'s
-/// `retune` and `finish`, the left channel), so that it can be set every
-/// frame as well as every [`PAD_STEP`] frames. Each set first flushes the
-/// states too small to hear, as the voice's does.
+/// The sampler's filter as a voice runs it: the voice's own
+/// [`VoiceFilter`], set as `mpfree_sampler::engine`'s `retune` sets it and
+/// run on the left channel, so that it can be set every frame as well as
+/// every [`PAD_STEP`] frames. Each set first flushes the states too small
+/// to hear, as the voice's does.
 struct PadMirror {
     f: PadFilter,
     rate: f32,
-    /// Frames the comb's pitch glides over (the voice's step).
+    /// Frames each setting glides over (the voice's step).
     glide: u32,
-    svf: [Svf; 2],
-    ladder: PadLadder,
-    comb: Comb,
-    vowel_gain: f32,
+    filt: VoiceFilter,
     /// The cutoff and resonance last set (the voice skips a set that
     /// changes nothing).
     last: Option<(u32, u32)>,
@@ -360,70 +355,26 @@ impl PadMirror {
             f,
             rate: rate as f32,
             glide,
-            svf: [Svf::default(); 2],
-            ladder: PadLadder::default(),
-            comb: Comb::new(rate as f32),
-            vowel_gain: 1.0,
+            filt: VoiceFilter {
+                comb: Comb::new(rate as f32),
+                ..VoiceFilter::default()
+            },
             last: None,
         }
     }
 
     fn set(&mut self, fc: f32, resonance: f32) {
-        let four = self.f.poles >= 4;
-        match self.f.kind {
-            FilterKind::Ladder => self.ladder.flush(),
-            FilterKind::Comb => {}
-            FilterKind::Vowel => self.svf.iter_mut().for_each(Svf::flush),
-            _ => {
-                self.svf[0].flush();
-                if four {
-                    self.svf[1].flush();
-                }
-            }
-        }
+        self.filt.flush(self.f.kind);
         let key = (fc.to_bits(), resonance.to_bits());
         if self.last == Some(key) {
             return;
         }
         self.last = Some(key);
-        let rate = self.rate;
-        match self.f.kind {
-            FilterKind::Ladder => self.ladder.set(fc, resonance, self.f.drive_db, rate),
-            FilterKind::Comb => self.comb.set(fc, resonance, rate, self.glide),
-            FilterKind::Vowel => {
-                let (f1, f2) = vowel_formants(fc);
-                let res = vowel_resonance(resonance);
-                self.svf[0].set(f1, res, rate);
-                self.svf[1].set(f2, res, rate);
-                self.vowel_gain = vowel_gain(resonance);
-            }
-            _ => {
-                self.svf[0].set(fc, resonance, rate);
-                if four {
-                    self.svf[1].set(fc, resonance * 0.5, rate);
-                }
-            }
-        }
+        self.filt.set(&self.f, fc, resonance, self.rate, self.glide);
     }
 
     fn process(&mut self, x: f32) -> f32 {
-        let kind = self.f.kind;
-        match kind {
-            FilterKind::Ladder => self.ladder.process(0, x),
-            FilterKind::Comb => self.comb.process(x, 0.0).0,
-            FilterKind::Vowel => {
-                let [a, b] = &mut self.svf;
-                self.vowel_gain * (a.process(0, x, kind) + FORMANT_2 * b.process(0, x, kind))
-            }
-            _ => {
-                let y = self.svf[0].process(0, x, kind);
-                if self.f.poles >= 4 {
-                    self.svf[1].process(0, y, kind)
-                } else {
-                    y
-                }
-            }
-        }
+        self.filt.process(self.f.kind, x, 0.0).0
     }
 }
 
@@ -1129,7 +1080,12 @@ mod tests {
                 if n % PAD_STEP == 0 {
                     m.set(f.cutoff_hz * (f.env_octaves * level).exp2(), f.resonance);
                 }
-                let y = f64::from(m.process((s * gain) as f32));
+                // The pad's gain comes after its filter, but before a Comb.
+                let y = if kind == FilterKind::Comb {
+                    f64::from(m.process((s * gain) as f32))
+                } else {
+                    f64::from(m.process(s as f32)) * gain
+                };
                 worst = worst.max((y - pad[n + delay]).abs());
             }
             // The same to the rounding of f32.

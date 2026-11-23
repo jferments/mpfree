@@ -659,8 +659,9 @@ fn the_envelope_and_filter_pictures_follow_the_engine() {
         env_octaves: 0.0,
         drive_db: 0.0,
     };
+    // The Cutoff is the -3 dB point: a Butterworth at Resonance 0.
     assert!(
-        (filter_db(&f, 1000.0) - (-6.02)).abs() < 0.1,
+        (filter_db(&f, 1000.0) - (-3.01)).abs() < 0.1,
         "{}",
         filter_db(&f, 1000.0)
     );

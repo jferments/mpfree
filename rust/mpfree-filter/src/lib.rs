@@ -6,10 +6,15 @@
 //!   designs ([`svf::SvfCoefs`]: bilinear, and the bell and shelves matched
 //!   to their analog curves) and its bounded resonance ([`svf::bend`],
 //!   [`svf::hard`]).
+//! - [`multi`]: the multimode filter built on it (12 or 24 dB, Butterworth
+//!   with the resonance on the last stage, the resonant stages bending),
+//!   the Filter effect's Multi model and the pads' state-variable types,
+//!   with a per-frame glide for a voice ([`multi::Multi`]).
 //!
 //! No allocation and no dependencies: every call is safe on the audio
 //! thread.
 
+pub mod multi;
 pub mod svf;
 
 pub use svf::{Svf, SvfCoefs, SvfMode};

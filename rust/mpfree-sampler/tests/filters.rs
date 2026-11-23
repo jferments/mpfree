@@ -147,8 +147,8 @@ fn a_ladder_at_full_resonance_sings_at_its_cutoff_at_a_steady_level() {
 
 #[test]
 fn drive_adds_harmonics_and_keeps_the_level() {
-    // -12 dBFS at the filter (the pad's centre pan takes 3 dB).
-    let s = sine(200.0, 0.25 * std::f32::consts::SQRT_2);
+    // -12 dBFS at the filter (the pad's level and pan come after it).
+    let s = sine(200.0, 0.25);
     let clean = filter(FilterKind::Ladder, 4, 18_000.0, 0.0, 0.0);
     let driven = Filter {
         drive_db: MAX_DRIVE_DB,

@@ -22,11 +22,16 @@
 //!   let go with the Play tab's shortest release (1 ms) and with none.
 //! - **S5, the filter and the read:** the pad's response from a sweep
 //!   ([`response`]) with each filter type against its analog prototype
-//!   (the state-variable filter's `1 / (s² + ks + 1)`, `k = 2 - 1.95 ×
-//!   resonance`; the Notch's `(1 + s²)` over it; the Ladder's `m / ((1 +
-//!   s)⁴ + k)`; the Vowel's two band-passes in parallel), from 30 Hz to
-//!   8 kHz wherever the prototype is above −30 dB; and with no filter, how
-//!   flat the read is.
+//!   (the state-variable filter's `1 / (s² + s / Q + 1)`, `Q = 0.707 × (40
+//!   / 0.707)^resonance`, a 4-pole low-pass's or high-pass's two stages a
+//!   Butterworth pair, Q 0.541 and 1.307, the second times `Q / 0.707`;
+//!   the Notch's `(1 + s²)` over it; the Ladder's `m / ((1 + s)⁴ + k)`;
+//!   the Vowel's two band-passes in parallel), from 30 Hz to 8 kHz
+//!   wherever the prototype is above −30 dB; and with no filter, how flat
+//!   the read is. The sweep is at −12 dBFS, but at −48 dBFS for a
+//!   state-variable type with resonance: under where its resonance bends,
+//!   so the row holds the linear filter to its prototype (PF5 and PF6
+//!   measure the bend).
 //! - **S6, Drive's aliases:** a 2.5 and a 5 kHz sine at 0 dBFS on a pad
 //!   whose Ladder is open (20 kHz) and driven 12 and 24 dB: the loudest
 //!   bin that is no harmonic of the tone, from 20 Hz to 20 kHz, against
@@ -644,9 +649,17 @@ fn stops(rows: &mut Vec<Row>, rate: u32) {
 // ---------------------------------------------------------------------------
 // S5: the filter and the read.
 
-/// The analog prototype of one state-variable stage at `x` = f / fc, dB.
-fn stage_db(kind: FilterKind, resonance: f64, x: f64) -> f64 {
-    let k = 2.0 - 1.95 * resonance.clamp(0.0, 1.0);
+/// The Q of a state-variable type at Resonance `resonance`: 0.707, flat,
+/// to 40, evenly in octaves (the Filter effect's Multi model, written out
+/// here rather than taken from the engine).
+fn svf_q(resonance: f64) -> f64 {
+    0.707 * (40.0f64 / 0.707).powf(resonance.clamp(0.0, 1.0))
+}
+
+/// The analog prototype of one state-variable stage of Q `q` at `x` = f /
+/// fc, dB.
+fn stage_db(kind: FilterKind, q: f64, x: f64) -> f64 {
+    let k = 1.0 / q;
     let den = ((1.0 - x * x).powi(2) + (k * x).powi(2)).sqrt();
     let num = match kind {
         FilterKind::Off | FilterKind::Ladder | FilterKind::Vowel | FilterKind::Comb => return 0.0,
@@ -703,8 +716,9 @@ fn comb_prototype_db(resonance: f64, x: f64, hz: f64) -> f64 {
     10.0 * (hp * (1.0 - g * g) / (re * re + im * im)).log10()
 }
 
-/// The prototype of a filter: one stage, or two for 4 poles (the second
-/// at half the resonance, as the engine sets it); the Ladder's, the
+/// The prototype of a filter: one stage, or two for 4 poles (a low-pass's
+/// or high-pass's a Butterworth pair with the resonance on the second, a
+/// band-pass's or notch's both at the type's Q); the Ladder's, the
 /// Vowel's and the Comb's own.
 fn prototype_db(f: &Filter, hz: f64) -> f64 {
     let x = hz / f64::from(f.cutoff_hz);
@@ -715,18 +729,26 @@ fn prototype_db(f: &Filter, hz: f64) -> f64 {
         FilterKind::Comb => return comb_prototype_db(r, x, hz),
         _ => {}
     }
-    let mut db = stage_db(f.kind, r, x);
-    if f.poles >= 4 {
-        db += stage_db(f.kind, r * 0.5, x);
+    let q = svf_q(r);
+    if f.poles < 4 {
+        return stage_db(f.kind, q, x);
     }
-    db
+    let (q1, q2) = match f.kind {
+        FilterKind::LowPass | FilterKind::HighPass => (0.541, 1.307 * q / 0.707),
+        _ => (q, q),
+    };
+    stage_db(f.kind, q1, x) + stage_db(f.kind, q2, x)
 }
 
 fn filters(rows: &mut Vec<Row>, rate: u32) {
     const WINDOW: usize = 16_384;
-    let sweep = response::sweep(-12.0, rate);
-    let frames = sweep.sweep.len() + WINDOW;
-    let measure = |filter: Option<Filter>| {
+    let loud = response::sweep(-12.0, rate);
+    // A state-variable type's resonance bends once its band-pass state
+    // passes 0.35 (at Resonance 0.25 and over): about -38 dBFS in at the
+    // 0.9 row's Q of 27, so these rows sweep 10 dB under that.
+    let quiet = response::sweep(-48.0, rate);
+    let frames = loud.sweep.len() + WINDOW;
+    let measure = |sweep: &crate::signals::Sweep, filter: Option<Filter>| {
         let s = sound(&sweep.sweep, rate);
         let p = pad(&s, |p| {
             if let Some(f) = filter {
@@ -734,9 +756,10 @@ fn filters(rows: &mut Vec<Row>, rate: u32) {
             }
         });
         let out = play(&kit(vec![(s, p)]), rate, &[(0, hit(0))], frames);
-        response::analyse(&sweep, &out, WINDOW)
+        response::analyse(sweep, &out, WINDOW)
     };
-    let plain = measure(None);
+    let plain = measure(&loud, None);
+    let plain_quiet = measure(&quiet, None);
     let at_1k = plain.at(1_000.0).unwrap_or(0.0);
     let flat = plain
         .points
@@ -785,11 +808,24 @@ fn filters(rows: &mut Vec<Row>, rate: u32) {
             env_octaves: 0.0,
             drive_db: 0.0,
         };
-        let r = measure(Some(f));
+        let bends = resonance > 0.0
+            && matches!(
+                kind,
+                FilterKind::LowPass
+                    | FilterKind::HighPass
+                    | FilterKind::BandPass
+                    | FilterKind::Notch
+            );
+        let (sweep, dry) = if bends {
+            (&quiet, &plain_quiet)
+        } else {
+            (&loud, &plain)
+        };
+        let r = measure(sweep, Some(f));
         let error = r
             .points
             .iter()
-            .zip(&plain.points)
+            .zip(&dry.points)
             .filter(|(p, _)| p.0 >= 30.0 && p.0 <= 8_000.0 && prototype_db(&f, p.0) > -30.0)
             .map(|(p, q)| ((p.1 - q.1) - prototype_db(&f, p.0)).abs())
             .fold(0.0, f64::max);
@@ -974,17 +1010,26 @@ mod tests {
             env_octaves: 0.0,
             drive_db: 0.0,
         };
-        // k = 2 (Q 0.5): -6 dB at the cutoff, -12 dB an octave per octave
-        // far above.
-        assert!((prototype_db(&lp, 1_000.0) + 6.0206).abs() < 1e-3);
+        // A Butterworth (Q 0.707): 3 dB down at the cutoff (Q's own 3.012),
+        // -12 dB an octave far above.
+        assert!((prototype_db(&lp, 1_000.0) - 20.0 * 0.707f64.log10()).abs() < 1e-9);
         assert!((prototype_db(&lp, 16_000.0) - prototype_db(&lp, 8_000.0) + 12.0).abs() < 0.1);
+        // At 4 poles a Butterworth pair: -3 dB at the cutoff too, and the
+        // fourth order's -80 dB a decade above.
         let lp4 = Filter { poles: 4, ..lp };
-        assert!((prototype_db(&lp4, 1_000.0) - 2.0 * prototype_db(&lp, 1_000.0)).abs() < 1e-9);
+        assert!((prototype_db(&lp4, 1_000.0) + 3.0103).abs() < 2e-3);
+        assert!((prototype_db(&lp4, 10_000.0) + 80.0).abs() < 0.01);
         let hp = Filter {
             kind: FilterKind::HighPass,
             ..lp
         };
         assert!((prototype_db(&hp, 1_000.0) - prototype_db(&lp, 1_000.0)).abs() < 1e-9);
+        // Resonance 1 is Q 40: +32 dB at the cutoff.
+        let peak = Filter {
+            resonance: 1.0,
+            ..lp
+        };
+        assert!((prototype_db(&peak, 1_000.0) - 20.0 * 40f64.log10()).abs() < 1e-3);
     }
 
     #[test]

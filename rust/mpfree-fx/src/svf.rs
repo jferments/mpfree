@@ -13,6 +13,7 @@ use crate::character::soft_big;
 use crate::oversample::IirPair;
 use crate::{db_to_gain, defaults, fast_tanh, flush, lerp, soft, FixedDelay};
 
+use mpfree_filter::multi::{bend_for, bends, set_stages, Stages, BEND_FULL_RES};
 use mpfree_filter::svf::{hard, res_to_q};
 pub use mpfree_filter::svf::{Svf, SvfCoefs, SvfMode};
 
@@ -142,38 +143,6 @@ static MULTI_PARAMS: [ParamInfo; 8] = [
     },
 ];
 
-/// Sets a [`MultiFilter`]'s one or two stages.
-#[allow(clippy::too_many_arguments)]
-fn set_stages(
-    a: &mut Svf,
-    b: &mut Svf,
-    mode: SvfMode,
-    cascaded: bool,
-    hz: f32,
-    res: f32,
-    gain: f32,
-    rate: u32,
-) {
-    let q = res_to_q(res);
-    if cascaded {
-        // 24 dB: a Butterworth-shaped first stage, resonance on the second.
-        let q1 = if matches!(mode, SvfMode::LowPass | SvfMode::HighPass) {
-            0.541
-        } else {
-            q
-        };
-        let q2 = if matches!(mode, SvfMode::LowPass | SvfMode::HighPass) {
-            1.307 * (q / 0.707)
-        } else {
-            q
-        };
-        a.set(mode, hz, q1, gain, rate);
-        b.set(mode, hz, q2, gain, rate);
-    } else {
-        a.set(mode, hz, q, gain, rate);
-    }
-}
-
 /// The product of two complex gains.
 pub(crate) fn cmul(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
     (a.0 * b.0 - a.1 * b.1, a.0 * b.1 + a.1 * b.0)
@@ -184,13 +153,6 @@ pub(crate) fn power_db(h: (f64, f64)) -> f32 {
     (10.0 * (h.0 * h.0 + h.1 * h.1).max(1e-24).log10()) as f32
 }
 
-/// Where the resonance starts to bend, and how much more it can give, in
-/// the band-pass state's units (full scale 1), at Resonance 25 % and up.
-/// Below 25 % both rise as 1 / (Resonance / 25 %), so a gentle filter never
-/// bends a mix-level sound, and at 0 nothing bends at all.
-const BEND_KNEE: f32 = 0.35;
-const BEND_ROOM: f32 = 0.3;
-const BEND_FULL_RES: f32 = 0.25;
 /// A type or slope change crossfades from the old filter over this long.
 const FADE_MS: f32 = 10.0;
 /// The drive's 2x path: Drive's Eco half-bands (flat to 0.19 of the
@@ -243,91 +205,6 @@ impl DriveOs {
         self.adaa.reset();
         self.flat.reset();
         self.dry_pad.reset();
-    }
-}
-
-/// One filter's stages as set: the two `Svf`s, whether the second runs,
-/// and which of them bend (the resonant ones).
-#[derive(Clone, Copy, Debug)]
-struct Stages {
-    a: Svf,
-    b: Svf,
-    cascaded: bool,
-    bend_a: bool,
-    bend_b: bool,
-}
-
-impl Stages {
-    /// One sample of channel `ch`; with an infinite `knee` (Resonance 0)
-    /// every stage is the plain linear one.
-    #[inline]
-    fn run(&mut self, ch: usize, x: f32, knee: f32, room: f32) -> f32 {
-        let bends = knee.is_finite();
-        let mut x = if self.bend_a && bends {
-            self.a.run_bounded(ch, x, knee, room)
-        } else {
-            self.a.run(ch, x)
-        };
-        if self.cascaded {
-            x = if self.bend_b && bends {
-                self.b.run_bounded(ch, x, knee, room)
-            } else {
-                self.b.run(ch, x)
-            };
-        }
-        x
-    }
-
-    /// One sample of channel `ch` with the resonant stages clipped at `lim`
-    /// (Hard); with an infinite `lim` (Resonance 0) every stage is linear.
-    #[inline]
-    fn run_clip(&mut self, ch: usize, x: f32, lim: f32) -> f32 {
-        let clips = lim.is_finite();
-        let mut x = if self.bend_a && clips {
-            self.a.run_clipped(ch, x, lim)
-        } else {
-            self.a.run(ch, x)
-        };
-        if self.cascaded {
-            x = if self.bend_b && clips {
-                self.b.run_clipped(ch, x, lim)
-            } else {
-                self.b.run(ch, x)
-            };
-        }
-        x
-    }
-
-    /// Carries on from `from`, the same filter at another rate: a
-    /// state-variable filter's states are its band-pass and low-pass, so
-    /// they mean nearly the same at any rate. A second stage that `from`
-    /// doesn't run starts from silence.
-    fn take_states(&mut self, from: &Stages) {
-        self.a.copy_states(&from.a);
-        if from.cascaded {
-            self.b.copy_states(&from.b);
-        } else {
-            self.b.reset();
-        }
-    }
-
-    /// [`Stages::run`] over a block of channel `ch`, in place, a stage at a
-    /// time (each stage hears only the one before it, so the numbers are
-    /// the same as frame by frame).
-    fn run_block(&mut self, ch: usize, x: &mut [f32], knee: f32, room: f32) {
-        let bends = knee.is_finite();
-        if self.bend_a && bends {
-            self.a.run_bounded_slice(ch, x, knee, room);
-        } else {
-            self.a.run_slice(ch, x);
-        }
-        if self.cascaded {
-            if self.bend_b && bends {
-                self.b.run_bounded_slice(ch, x, knee, room);
-            } else {
-                self.b.run_slice(ch, x);
-            }
-        }
     }
 }
 
@@ -795,24 +672,10 @@ impl MultiFilter {
             rate,
         );
         self.st.cascaded = cascaded;
-        // The resonant stages bend: a low-pass's or high-pass's only stage
-        // (the second at 24 dB; the first is a flat Butterworth one), and
-        // both of a band-pass's. The notch, bell and shelves don't ring up
-        // at their output, so they stay linear.
-        let resonant = matches!(
-            mode,
-            SvfMode::LowPass | SvfMode::HighPass | SvfMode::BandPass
-        );
-        self.st.bend_a = resonant && (!cascaded || mode == SvfMode::BandPass);
-        self.st.bend_b = resonant && cascaded;
+        // The resonant stages bend ([`bends`]).
+        (self.st.bend_a, self.st.bend_b) = bends(mode, cascaded);
         let r = (res / BEND_FULL_RES).min(1.0);
-        if r > 0.0 {
-            self.knee = BEND_KNEE / r;
-            self.room = BEND_ROOM / r;
-        } else {
-            self.knee = f32::INFINITY;
-            self.room = 1.0;
-        }
+        (self.knee, self.room) = bend_for(res);
         if self.runs(HARD) {
             // The same stages at twice the rate; the same ones clip.
             set_stages(

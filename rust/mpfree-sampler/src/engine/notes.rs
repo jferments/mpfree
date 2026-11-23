@@ -1057,7 +1057,7 @@ impl Engine {
             return;
         };
         // The comb's line stays with the slot.
-        let mut comb = std::mem::take(&mut v.comb);
+        let mut comb = std::mem::take(&mut v.filt.comb);
         comb.reset();
         *v = Voice {
             active: true,
@@ -1097,10 +1097,10 @@ impl Engine {
             amp: Some(Envelope::start(&amp, self.rate)),
             fenv: filter.map(|_| Envelope::start(&vp.filter_env, self.rate)),
             filter,
-            svf: [Svf::default(); 2],
-            ladder: Ladder::default(),
-            vowel_gain: 1.0,
-            comb,
+            filt: VoiceFilter {
+                comb,
+                ..VoiceFilter::default()
+            },
             ringing: false,
             filter_count: 0,
             filter_key: None,

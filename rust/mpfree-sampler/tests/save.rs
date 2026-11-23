@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use mpfree_sampler::dsp::{Ahdsr, Filter, FilterKind};
 use mpfree_sampler::model::*;
-use mpfree_sampler::save::{from_text, to_text, FORMAT};
+use mpfree_sampler::save::{from_text, to_text, FILTERS_VERSION, FORMAT};
 use mpfree_sampler::wav;
 
 const RATE: u32 = 44_100;
@@ -377,6 +377,44 @@ fn an_older_or_newer_builds_text_still_opens() {
     })
     .unwrap();
     assert!(opened.kits.len() <= 2);
+}
+
+/// The pad filters' version (the filter gap plan's F2): a save says which
+/// filters it was made with, and a kit saved before them whose pads use a
+/// filter that changed opens as saved, with a note that its filtered pads
+/// may sound different. One without such a pad, or saved now, opens
+/// without one.
+#[test]
+fn a_kit_saved_before_the_filter_rework_opens_with_a_note() {
+    let s = noise(3_000, 2, 4, "Bass");
+    let file = wav::file_name(&s);
+    let bytes = wav::bytes(&s);
+    let old = |kind: &str| {
+        format!(
+            "{FORMAT}\nkits = 1\nkit.0.name = Old\nkit.0.sources = 1\n\
+             kit.0.source.0.file = {file}\nkit.0.pad.0.layers = 1\nkit.0.pad.0.layer.0.source = 0\n\
+             kit.0.pad.0.filter.kind = {kind}\nkit.0.pad.0.filter.poles = 4\n\
+             kit.0.pad.0.filter.cutoff_hz = 1000\n"
+        )
+    };
+    let open = |text: &str| from_text(text, &mut |_| wav::read("Bass", &bytes)).unwrap();
+    let opened = open(&old("low-pass"));
+    assert_eq!(opened.notes.len(), 1, "{:?}", opened.notes);
+    assert!(opened.notes[0].starts_with("Old: saved before the pad filters were reworked"));
+    // The settings are as saved.
+    let pad = opened.kits[0].1.pad(0).unwrap();
+    assert_eq!(pad.filter.kind, FilterKind::LowPass);
+    assert_eq!((pad.filter.poles, pad.filter.cutoff_hz), (4, 1000.0));
+    // A Comb plays as it did: no note.
+    assert!(open(&old("comb")).notes.is_empty());
+    // Saved now, the same kit says its version and opens without a note.
+    let (text, files) = save(&[("New", &opened.kits[0].1)], 0);
+    assert!(
+        text.contains(&format!("\nfilters = {FILTERS_VERSION}\n")),
+        "{text}"
+    );
+    let again = from_text(&text, &mut |f| wav::read("x", &files[f])).unwrap();
+    assert!(again.notes.is_empty(), "{:?}", again.notes);
 }
 
 #[test]

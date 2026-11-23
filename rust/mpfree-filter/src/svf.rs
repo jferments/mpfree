@@ -50,8 +50,24 @@ impl SvfCoefs {
     /// cutoff is kept between 5 Hz and 45 % of the sample rate.
     #[inline]
     pub fn bilinear(mode: SvfMode, hz: f32, q: f32, gain_db: f32, rate: u32) -> SvfCoefs {
+        SvfCoefs::bilinear_under(mode, hz, q, gain_db, rate, 0.45)
+    }
+
+    /// [`SvfCoefs::bilinear`] with the cutoff kept under `top` of the
+    /// sample rate (under a half) instead of 45 %. Any cutoff under
+    /// Nyquist is a stable filter; 45 % keeps the bell and shelves out of
+    /// the cramped top, while a low-pass wide open wants to reach higher.
+    #[inline]
+    pub fn bilinear_under(
+        mode: SvfMode,
+        hz: f32,
+        q: f32,
+        gain_db: f32,
+        rate: u32,
+        top: f32,
+    ) -> SvfCoefs {
         let fs = rate as f32;
-        let hz = hz.clamp(5.0, 0.45 * fs);
+        let hz = hz.clamp(5.0, top * fs);
         let q = q.max(0.05);
         let t = (PI * hz / fs).tan();
         // The square root of the linear gain, for the modes that have one.
@@ -298,6 +314,30 @@ impl Svf {
         self.m0 * v0 + self.m1 * v1 + self.m2 * v2
     }
 
+    /// One frame of both channels, for a host that flushes the states every
+    /// few frames itself ([`Svf::flush_below`]) rather than on every
+    /// sample: the band-pass state bending at `knee` as in
+    /// [`Svf::run_bounded`] (an infinite `knee` leaves it linear), both
+    /// channels sharing the coefficients. A voice's path, so it is inlined
+    /// into the voice's loop; it takes and gives a pair rather than an
+    /// array, which the compiler packs into one integer register and back.
+    #[inline(always)]
+    pub fn step_stereo(&mut self, l: f32, r: f32, knee: f32, room: f32) -> (f32, f32) {
+        (self.step(0, l, knee, room), self.step(1, r, knee, room))
+    }
+
+    /// One sample of channel `ch` for [`Svf::step_stereo`].
+    #[inline(always)]
+    fn step(&mut self, ch: usize, x: f32, knee: f32, room: f32) -> f32 {
+        let (ic1, ic2) = (self.ic1[ch], self.ic2[ch]);
+        let v3 = x - ic2;
+        let v1 = bend(self.a1 * ic1 + self.a2 * v3, knee, room);
+        let v2 = ic2 + self.g * v1;
+        self.ic1[ch] = 2.0 * v1 - ic1;
+        self.ic2[ch] = 2.0 * v2 - ic2;
+        self.m0 * x + self.m1 * v1 + self.m2 * v2
+    }
+
     /// [`Svf::run_bounded`] with a hard ceiling instead of the bend: the
     /// band-pass state clipped at `lim` (its edge rounded), as a diode
     /// clipper in an analog filter's resonance loop.
@@ -353,6 +393,25 @@ impl Svf {
     pub fn reset(&mut self) {
         self.ic1 = [0.0; 2];
         self.ic2 = [0.0; 2];
+    }
+
+    /// Zeros each channel whose two states are both under `quiet`, for a
+    /// host to run every few frames. The flush in every sample works on
+    /// each state alone, so at a low cutoff it can zero the band-pass
+    /// state on every sample while the low-pass one is still above it
+    /// (the band-pass is about `g` times the low-pass there): what is left
+    /// then decays at about `2 g²` a sample instead of the filter's own
+    /// rate, a tail far below hearing (under 2e-18 at 40 Hz, 1.4e-17 at
+    /// 5 Hz) that takes seconds to minutes to reach zero. A `quiet` over
+    /// those levels ends it at once.
+    #[inline]
+    pub fn flush_below(&mut self, quiet: f32) {
+        for ch in 0..2 {
+            if self.ic1[ch].abs() < quiet && self.ic2[ch].abs() < quiet {
+                self.ic1[ch] = 0.0;
+                self.ic2[ch] = 0.0;
+            }
+        }
     }
 
     /// Carries on from `from`'s states (its band-pass and low-pass, which
@@ -424,6 +483,28 @@ pub fn hard(v: f32, lim: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_stereo_step_is_the_bounded_run() {
+        // Without the flush (nothing here is tiny), both channels as
+        // run_bounded runs each, to the rounding of v2's form.
+        let mut a = Svf::default();
+        a.set(SvfMode::LowPass, 2_000.0, 12.0, 0.0, 44_100);
+        let mut b = a;
+        for n in 0..2_000 {
+            let x = [
+                ((n * 37) % 17) as f32 / 8.0 - 1.0,
+                ((n * 11) % 13) as f32 / 6.0 - 1.0,
+            ];
+            let y = a.step_stereo(x[0], x[1], 0.35, 0.3);
+            let z = [
+                b.run_bounded(0, x[0], 0.35, 0.3),
+                b.run_bounded(1, x[1], 0.35, 0.3),
+            ];
+            assert_eq!(y.0.to_bits(), z[0].to_bits(), "{n}");
+            assert_eq!(y.1.to_bits(), z[1].to_bits(), "{n}");
+        }
+    }
 
     #[test]
     fn a_biquad_maps_onto_the_svf_exactly() {
