@@ -9436,6 +9436,7 @@ impl Player {
             free: self.mem_free,
             stick: self.drive.as_ref().and_then(|d| d.get()).flatten(),
             heat: self.heat,
+            engines: self.engines.as_deref().and_then(crate::engines::shares),
         }
     }
 
