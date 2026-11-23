@@ -7,8 +7,8 @@
 mod mutate;
 
 use mpfree_arp::{
-    scale, Engine, EventKind, Events, Follow, Library, Mode, Pattern, Phrase, Scale, Settings,
-    Speed, BUILT_IN, STARTER_PHRASES,
+    scale, Clock, Engine, EventKind, Events, Follow, Library, Mode, Pattern, Phrase, Scale,
+    Settings, Speed, BUILT_IN, PPQ, STARTER_PHRASES,
 };
 use mutate::Mutator;
 
@@ -58,10 +58,15 @@ fn damaged_patterns_are_refused_or_round_trip_and_play() {
     assert!(ok > 500 && refused > 500, "ok {ok}, refused {refused}");
 }
 
-/// Plays `p` from a held note, moves it to another, and lets go: every
-/// note that started has ended, and none sounds twice at once. The gate,
-/// the octaves, swing, the speed and the key change from case to case.
-fn play_phrase(case: usize, engine: &mut Engine, p: Phrase) {
+/// Plays `p` from a held note, moves it to another, picks `other` while
+/// it plays, and lets go: every note that started has ended, and none
+/// sounds twice at once. The gate, the octaves, swing, the speed and the
+/// key change from case to case; every other case plays with the
+/// transport (pressed a moment after a 1/16, so the phrase starts from
+/// the line just passed, and `other` comes in on a bar line), the rest
+/// without (`other` comes in on the next step).
+fn play_phrase(case: usize, engine: &mut Engine, p: Phrase, other: Phrase) {
+    const PERIOD: u32 = 128;
     engine.set_settings(Settings {
         mode: Mode::Phrase,
         gate: [50, 100, 20, 75][case % 4],
@@ -77,14 +82,26 @@ fn play_phrase(case: usize, engine: &mut Engine, p: Phrase) {
         ..Settings::default()
     });
     engine.set_phrase(p);
+    let transport = case % 2 == 1;
     let mut on = [0i32; 128];
     let mut played = 0;
     let mut ev = Events::new();
+    let mut frames = 0u64;
     let mut periods = |engine: &mut Engine, n: usize| {
         for _ in 0..n {
-            engine.process(128, &mut ev);
+            engine.sync(&Clock {
+                anchor_tick: 0,
+                frames_since_anchor: frames,
+                bpm: 128.0,
+                playing: transport,
+                jumped: false,
+                swing: None,
+                bar_ticks: 4 * PPQ,
+            });
+            engine.process(PERIOD, &mut ev);
+            frames += u64::from(PERIOD);
             for e in ev.as_slice() {
-                assert!(e.offset < 128, "case {case}: {e:?}");
+                assert!(e.offset < PERIOD, "case {case}: {e:?}");
                 match e.kind {
                     EventKind::On { note, .. } => {
                         played += 1;
@@ -101,10 +118,15 @@ fn play_phrase(case: usize, engine: &mut Engine, p: Phrase) {
             }
         }
     };
-    // Two bars and more at 128 bpm from each note.
+    // The transport runs a few periods before the press, so the press
+    // falls a moment after a 1/16 of its grid. Then two bars and more at
+    // 128 bpm from each note.
+    periods(engine, 3);
     engine.press(48, 100);
     periods(engine, 1_400);
     engine.press(55, 90);
+    periods(engine, 700);
+    engine.set_phrase(other);
     periods(engine, 1_400);
     engine.release(55);
     periods(engine, 300);
@@ -139,6 +161,8 @@ fn damaged_phrases_are_refused_or_round_trip_and_play() {
         ..Settings::default()
     });
     let (mut ok, mut refused) = (0, 0);
+    // The phrase picked while each one plays: the last one that read.
+    let mut other = Phrase::default();
     for case in 0..6_000 {
         let seed = seeds[case % seeds.len()];
         // Every phrase as written with each gate, then damaged ones.
@@ -156,8 +180,9 @@ fn damaged_phrases_are_refused_or_round_trip_and_play() {
                 });
                 assert_eq!(again.to_text(), written, "case {case}: {text:?}");
                 if case < 4 * seeds.len() || case % 10 == 0 {
-                    play_phrase(case, &mut engine, p);
+                    play_phrase(case, &mut engine, p, other);
                 }
+                other = p;
             }
             Err(_) => refused += 1,
         }

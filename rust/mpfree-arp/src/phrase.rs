@@ -718,10 +718,23 @@ pub enum Turn {
     /// the phrase started (counting on through every time round), on time
     /// through `pass` (0 the first).
     Note { index: usize, at: f64, pass: u64 },
-    /// The bar line where a waiting phrase comes in. The playhead is at
-    /// its start already ([`Playhead::origin`] is the line): put the
-    /// waiting phrase in and ask again.
+    /// The line where a waiting phrase comes in ([`Join`]). The playhead
+    /// is at its start already ([`Playhead::origin`] is the line): put
+    /// the waiting phrase in and ask again.
     Swap,
+}
+
+/// The line of the playing phrase a waiting one comes in on
+/// ([`Playhead::turn`]). Whoever asks picks it: the playhead only finds
+/// the line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Join {
+    /// Its next bar line: the bars the phrase keeps with everything else
+    /// that plays go on unbroken.
+    Bar,
+    /// The next step of the grid it is written on: as soon as can be
+    /// without the pulse stumbling.
+    Step,
 }
 
 /// Where a phrase is as it plays: which note is next, which time round,
@@ -800,8 +813,8 @@ impl Playhead {
         self.started
     }
 
-    /// The clock tick of its first step (after a [`Turn::Swap`], the bar
-    /// line the new phrase came in on).
+    /// The clock tick of its first step (after a [`Turn::Swap`], the line
+    /// the new phrase came in on).
     pub fn origin(&self) -> f64 {
         self.origin
     }
@@ -825,12 +838,13 @@ impl Playhead {
     }
 
     /// The next thing due before clock tick `until`: a note of `phrase`
-    /// or, with a phrase `waiting` to come in, the bar line where it does.
-    /// None once everything before `until` has been given out. Notes come
-    /// in time order, round and round the phrase; a waiting phrase comes
-    /// in on the first bar line no note of this one has played on yet,
-    /// before any note on that line.
-    pub fn turn(&mut self, phrase: &Phrase, waiting: bool, until: f64) -> Option<Turn> {
+    /// or, with a phrase `waiting` to come in, the line where it does
+    /// (its next bar line or its next step, as `waiting` says). None once
+    /// everything before `until` has been given out. Notes come in time
+    /// order, round and round the phrase; a waiting phrase comes in on
+    /// the first such line no note of this one has played on yet, before
+    /// any note on that line.
+    pub fn turn(&mut self, phrase: &Phrase, waiting: Option<Join>, until: f64) -> Option<Turn> {
         let end = self.written(until);
         if self.played >= end {
             return None;
@@ -840,11 +854,14 @@ impl Playhead {
             .notes()
             .get(self.next)
             .map(|n| self.pass as f64 * total + f64::from(n.start));
-        if waiting {
-            let bar = f64::from(phrase.bar_ticks());
-            let mut line = (self.played / bar).ceil() * bar;
+        if let Some(join) = waiting {
+            let unit = f64::from(match join {
+                Join::Bar => phrase.bar_ticks(),
+                Join::Step => phrase.unit.ticks(),
+            });
+            let mut line = (self.played / unit).ceil() * unit;
             if line <= self.last {
-                line += bar;
+                line += unit;
             }
             if line < end && next.is_none_or(|w| line <= w) {
                 *self = Self {
@@ -1236,7 +1253,7 @@ mod tests {
     }
 
     /// Every turn before clock tick `until`.
-    fn turns(h: &mut Playhead, p: &Phrase, waiting: bool, until: f64) -> Vec<Turn> {
+    fn turns(h: &mut Playhead, p: &Phrase, waiting: Option<Join>, until: f64) -> Vec<Turn> {
         let mut got = Vec::new();
         while let Some(t) = h.turn(p, waiting, until) {
             got.push(t);
@@ -1253,10 +1270,10 @@ mod tests {
         let p = Phrase::parse("bass either : 1 . 1 . . . 5 .").unwrap();
         let mut h = Playhead::new();
         h.start(1000.0, 1.0);
-        assert_eq!(h.turn(&p, false, 1000.0), None, "nothing before it starts");
+        assert_eq!(h.turn(&p, None, 1000.0), None, "nothing before it starts");
         assert_eq!(h.position(&p, 999.0), None);
         assert_eq!(
-            turns(&mut h, &p, false, 1000.0 + 2.0 * 3840.0),
+            turns(&mut h, &p, None, 1000.0 + 2.0 * 3840.0),
             [
                 note(0, 0.0, 0),
                 note(1, 480.0, 0),
@@ -1269,7 +1286,7 @@ mod tests {
         // A note right on the end of what was asked for waits for the next
         // ask, so no note is ever given twice or left out.
         assert_eq!(
-            turns(&mut h, &p, false, 1000.0 + 2.0 * 3840.0 + 1.0),
+            turns(&mut h, &p, None, 1000.0 + 2.0 * 3840.0 + 1.0),
             [note(0, 7680.0, 2)]
         );
         assert_eq!(h.tick_of(7680.0), 8680.0);
@@ -1283,33 +1300,33 @@ mod tests {
         let mut h = Playhead::new();
         h.start(0.0, 1.0);
         assert_eq!(
-            turns(&mut h, &p, false, 1000.0),
+            turns(&mut h, &p, None, 1000.0),
             [note(0, 0.0, 0), note(1, 960.0, 0)]
         );
         // A phrase waits from here: the bar's other notes play, then the
         // bar line comes before the note on it.
         assert_eq!(
-            turns(&mut h, &p, true, 3841.0),
+            turns(&mut h, &p, Some(Join::Bar), 3841.0),
             [note(2, 1920.0, 0), note(3, 2880.0, 0), Turn::Swap]
         );
         assert_eq!(h.origin(), 3840.0, "the new phrase starts on the line");
         assert_eq!(h.started(), 0.0, "where it all started stays");
-        assert_eq!(turns(&mut h, &q, false, 3841.0), [note(0, 0.0, 0)]);
+        assert_eq!(turns(&mut h, &q, None, 3841.0), [note(0, 0.0, 0)]);
 
         // Picked before anything has played, it comes in at once.
         let mut h = Playhead::new();
         h.start(500.0, 1.0);
-        assert_eq!(turns(&mut h, &p, true, 501.0), [Turn::Swap]);
+        assert_eq!(turns(&mut h, &p, Some(Join::Bar), 501.0), [Turn::Swap]);
         assert_eq!(h.origin(), 500.0);
 
         // Picked once the note on a bar line has played, it waits for the
         // next line.
         let mut h = Playhead::new();
         h.start(0.0, 1.0);
-        assert_eq!(turns(&mut h, &p, false, 1.0), [note(0, 0.0, 0)]);
-        assert_eq!(turns(&mut h, &p, true, 900.0), []);
+        assert_eq!(turns(&mut h, &p, None, 1.0), [note(0, 0.0, 0)]);
+        assert_eq!(turns(&mut h, &p, Some(Join::Bar), 900.0), []);
         assert_eq!(
-            turns(&mut h, &p, true, 3841.0),
+            turns(&mut h, &p, Some(Join::Bar), 3841.0),
             [
                 note(1, 960.0, 0),
                 note(2, 1920.0, 0),
@@ -1319,20 +1336,54 @@ mod tests {
         );
     }
 
+    /// On the next step instead, a waiting phrase comes in on the first
+    /// line of the playing phrase's grid that no note has played on.
+    #[test]
+    fn a_waiting_phrase_can_come_in_on_the_next_step() {
+        // On 1/8s (480 ticks a step): notes on steps 0 and 3.
+        let p = Phrase::parse("bass either 1/8 : 1 . . 1 . . . .").unwrap();
+        let mut h = Playhead::new();
+        h.start(0.0, 1.0);
+        assert_eq!(turns(&mut h, &p, None, 100.0), [note(0, 0.0, 0)]);
+        // Picked 100 ticks in: the next 1/8 line is at 480.
+        assert_eq!(turns(&mut h, &p, Some(Join::Step), 481.0), [Turn::Swap]);
+        assert_eq!(h.origin(), 480.0);
+        assert_eq!(h.started(), 0.0);
+
+        // Picked once the note on a step line has played, it waits for
+        // the next line.
+        let mut h = Playhead::new();
+        h.start(0.0, 1.0);
+        assert_eq!(
+            turns(&mut h, &p, None, 1441.0),
+            [note(0, 0.0, 0), note(1, 1440.0, 0)]
+        );
+        assert_eq!(turns(&mut h, &p, Some(Join::Step), 1900.0), []);
+        assert_eq!(turns(&mut h, &p, Some(Join::Step), 1921.0), [Turn::Swap]);
+        assert_eq!(h.origin(), 1920.0);
+
+        // At double speed its step is half as long on the clock.
+        let mut h = Playhead::new();
+        h.start(0.0, 2.0);
+        assert_eq!(turns(&mut h, &p, None, 50.0), [note(0, 0.0, 0)]);
+        assert_eq!(turns(&mut h, &p, Some(Join::Step), 241.0), [Turn::Swap]);
+        assert_eq!(h.origin(), 240.0);
+    }
+
     #[test]
     fn a_new_speed_keeps_the_place() {
         let p = Phrase::parse("bass either : 1 1 1 1 1 1 1 1").unwrap();
         let mut h = Playhead::new();
         h.start(0.0, 1.0);
         assert_eq!(
-            turns(&mut h, &p, false, 480.0),
+            turns(&mut h, &p, None, 480.0),
             [note(0, 0.0, 0), note(1, 240.0, 0)]
         );
         // Twice as fast from clock tick 480, where it is two 1/16s in.
         h.respeed(480.0, 2.0);
         assert_eq!(h.written(480.0), 480.0);
         assert_eq!(
-            turns(&mut h, &p, false, 721.0),
+            turns(&mut h, &p, None, 721.0),
             [note(2, 480.0, 0), note(3, 720.0, 0), note(4, 960.0, 0)]
         );
         assert_eq!(

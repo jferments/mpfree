@@ -59,7 +59,8 @@ impl App {
     }
 
     /// The armed track takes phrase `i` of the list. While its phrase
-    /// plays, the new one comes in on the next bar line.
+    /// plays, the new one comes in on its line (`Engine::set_phrase`: the
+    /// bar line with the transport, the next step without).
     pub fn pick_phrase(&mut self, i: usize) -> Vec<Effect> {
         let Some((name, phrase)) = self.phrases.get(i) else {
             return Vec::new();
@@ -220,7 +221,7 @@ mod tests {
     }
 
     /// On a synth, a held pad plays the picked phrase from its note; the
-    /// wheel moves the pick, and the new phrase comes in on the bar line.
+    /// wheel moves the pick, and the new phrase comes in on its line.
     #[test]
     fn a_held_pad_plays_the_picked_phrase_from_its_note() {
         let mut app = ready();
@@ -235,7 +236,8 @@ mod tests {
         // 1 3 5 6 1+ 6 5 3 in eighths: with no scale, by semitones.
         let up = [0, 4, 7, 9, 12, 9, 7, 4].map(|s| home + s);
         assert_eq!(ons(&mut app, bar), up);
-        // The wheel: the next phrase in the list waits for the bar line.
+        // The wheel: the next phrase in the list waits for its line (the
+        // next step: the transport is stopped).
         let at = app.phrase_index();
         assert_eq!(app.wheel(1).len(), 1);
         assert_eq!(app.phrase_index(), at + 1);

@@ -6,8 +6,8 @@
 //! here. Both share the engine's held notes and Latch, its settings and
 //! Modifier, its clock, and its queue of note-ons and note-offs.
 //!
-//! Where the phrase is (which note is next, which time round, the bar
-//! line a waiting phrase comes in on) is the [`Playhead`]'s business
+//! Where the phrase is (which note is next, which time round, the line
+//! a waiting phrase comes in on) is the [`Playhead`]'s business
 //! ([`crate::phrase`]): it counts in ticks and knows nothing of frames or
 //! of sound. This file turns what the playhead says is due into notes:
 //! the pitch from the newest held note, the velocity, the gate, swing,
@@ -22,24 +22,33 @@
 //! - when the phrase stops (nothing held, or the mode changes), what it
 //!   has sounding ends at once;
 //! - when it starts again (Retrigger, a transport start or jump), or
-//!   another phrase comes in on a bar line, what still sounds ends there.
+//!   another phrase comes in, what still sounds ends there.
 //!
 //! [`Playhead`]: crate::phrase::Playhead
 
 use super::{Engine, EventKind, Hit, Mode, SyncStart, PPQ};
-use crate::phrase::{self, Phrase, Turn, MAX_PHRASE_NOTES};
+use crate::phrase::{self, Join, Phrase, Turn, MAX_PHRASE_NOTES};
 use crate::scale::Scale;
 
 /// The 1/16 a phrase starts on and swings on, in ticks.
 const SIXTEENTH: u32 = PPQ / 4;
 
+/// How late a press may be for a start line and still count for it, in
+/// seconds (and never more than half a 1/16): about as late as a hand
+/// playing on the beat lands. A press meant for the next 1/16 comes
+/// later than this at any tempo.
+const LATE_PRESS: f64 = 0.060;
+
 impl Engine {
-    /// The phrase Phrase mode plays. Picked while one plays, it comes in on
-    /// the playing phrase's next bar line, from its first note; otherwise
-    /// at once. Picking again before that bar line replaces the one
-    /// waiting, and picking the one that plays leaves it playing on, with
-    /// nothing waiting (so a track armed again never starts its phrase
-    /// over).
+    /// The phrase Phrase mode plays. Picked while one plays, it comes in
+    /// from its first note on a line of the playing phrase: its next bar
+    /// line while the transport plays, so the bars it keeps with the song
+    /// go on unbroken, and its next step while the transport is stopped,
+    /// when nothing else counts bars and a list of phrases is quick to
+    /// hear through. Otherwise it is there at once. Picking again before
+    /// that line replaces the one waiting, and picking the one that plays
+    /// leaves it playing on, with nothing waiting (so a track armed again
+    /// never starts its phrase over).
     pub fn set_phrase(&mut self, phrase: Phrase) {
         if self.running && self.settings.mode == Mode::Phrase {
             self.next_phrase = (phrase != self.phrase).then_some(phrase);
@@ -95,18 +104,42 @@ impl Engine {
             / f64::from(self.live.rate.ticks())
     }
 
-    /// The phrase from its first note: on the next multiple of `unit`
-    /// ticks while the transport plays, else now. A phrase that was
-    /// waiting for a bar line comes in with it.
+    /// The phrase from its first note: on a multiple of `unit` ticks
+    /// while the transport plays ([`Engine::start_line`]), else now. A
+    /// phrase that was waiting for its line comes in with it.
     pub(super) fn start_phrase(&mut self, unit: u32) {
         if let Some(p) = self.next_phrase.take() {
             self.phrase = p;
         }
         let origin = match self.sync {
-            Some(_) => self.grid_after(i64::from(unit)) as f64,
+            Some(_) => self.start_line(i64::from(unit)) as f64,
             None => self.clock_tick(self.now as f64),
         };
         self.playhead.start(origin, self.phrase_factor());
+    }
+
+    /// The multiple of `unit` ticks a press now counts for, while the
+    /// transport plays: the next one or, for a press no more than
+    /// [`LATE_PRESS`] after one, that one.
+    ///
+    /// A step mode can start on the next line whatever the hand did: its
+    /// steps are all alike. A phrase is written against the bar, so one
+    /// pressed on the beat a moment late and started a 1/16 on would play
+    /// every note a 1/16 off the beat. Started from the line the hand
+    /// meant, it is in time from there, and only what the press was late
+    /// for is late ([`Engine::play_phrase_note`]).
+    fn start_line(&self, unit: i64) -> i64 {
+        let unit = unit.max(1);
+        let next = self.grid_after(unit);
+        let last = next - unit;
+        let late = self.now as f64 - self.frame_of(last as f64);
+        let window =
+            (LATE_PRESS * self.sample_rate).min(f64::from(SIXTEENTH / 2) * self.frames_per_tick());
+        if late <= window {
+            last
+        } else {
+            next
+        }
     }
 
     /// The phrase again from its first note while it plays (see
@@ -142,13 +175,18 @@ impl Engine {
     }
 
     /// Plays every note of the phrase that starts before frame `end`, and
-    /// brings a waiting phrase in on its bar line.
+    /// brings a waiting phrase in on its line: the bar line with the
+    /// transport, the next step without ([`Engine::set_phrase`]).
     pub(super) fn play_phrase(&mut self, end: u64) {
         let until = self.clock_tick(end as f64);
+        let join = match self.sync {
+            Some(_) => Join::Bar,
+            None => Join::Step,
+        };
         // A turn is a note or a phrase coming in: every note twice and a
         // swap at the very most in one period, so the loop always ends.
         for _ in 0..MAX_PHRASE_NOTES * 2 + 2 {
-            let waiting = self.next_phrase.is_some();
+            let waiting = self.next_phrase.is_some().then_some(join);
             match self.playhead.turn(&self.phrase, waiting, until) {
                 None => break,
                 Some(Turn::Swap) => {
@@ -174,6 +212,14 @@ impl Engine {
     /// the octaves set; its length by the gate ([`Phrase::gated`]); its
     /// velocity as written times the held note's (100 plays it as
     /// written); then the modifier's rolls and accents.
+    ///
+    /// A note the press was late for ([`Engine::start_line`]) sounds at
+    /// the press. It ends where it was written to, as a hand that lands
+    /// late and lets go in time would end it, but keeps half its length
+    /// at the least, so the first note of a short-gated phrase is still
+    /// heard; and it never runs into the next note's start. A note whose
+    /// place has wholly passed (the next one's start is behind the press
+    /// too) is left out.
     fn play_phrase_note(&mut self, i: usize, w: f64, pass: u64) {
         let Some(held) = self.notes.active().as_slice().last().copied() else {
             return;
@@ -197,8 +243,20 @@ impl Engine {
         // to the next one ends on the very frame that one starts.
         let t = self.playhead.tick_of(w);
         let t_off = self.playhead.tick_of(w + self.phrase.gated(i, live.gate));
-        let at = self.clock_frame(self.phrase_swung(t));
-        let off = self.clock_frame(self.phrase_swung(t_off)).max(at + 1.0);
+        let mut at = self.clock_frame(self.phrase_swung(t));
+        let mut off = self.clock_frame(self.phrase_swung(t_off));
+        let now = self.now as f64;
+        if at < now {
+            let t_next = self.playhead.tick_of(w + self.phrase.gated(i, 100));
+            let next = self.clock_frame(self.phrase_swung(t_next));
+            if next <= now {
+                self.step += 1;
+                return;
+            }
+            off = off.max((now + (off - at) / 2.0).min(next));
+            at = now;
+        }
+        let off = off.max(at + 1.0);
         let v = f64::from(n.velocity) * f64::from(self.velocity_of(held.velocity)) / 100.0;
         let v = self
             .settings
@@ -466,19 +524,19 @@ mod tests {
         }
     }
 
-    /// A phrase picked while one plays comes in on the playing phrase's
-    /// next bar line, from its first note.
+    /// With the transport, a phrase picked while another plays comes in
+    /// on the next bar line, from its first note.
     #[test]
-    fn a_phrase_picked_while_one_plays_comes_in_on_the_next_bar_line() {
+    fn with_the_transport_a_picked_phrase_comes_in_on_the_next_bar_line() {
+        let spans = [span(0, 0, 120.0)];
         let mut e = phrase_engine(
             "bass either : 1 . . . 1 . . . 1 . . . 1 . . .",
             Settings::default(),
         );
-        e.press(60, 100);
-        let first = ons(&run(&mut e, BAR + BAR / 2, 128));
+        let first = ons(&run_synced(&mut e, &spans, &[(0, 60)], BAR + BAR / 2, 128));
         assert_eq!(first.len(), 6);
         e.set_phrase(Phrase::parse("riff either : 5 5 5 5").unwrap());
-        let got = ons(&run(&mut e, BAR, 128));
+        let got = ons(&run_synced(&mut e, &spans, &[], 2 * BAR + BAR / 2, 128));
         assert_eq!(
             got,
             [
@@ -491,6 +549,37 @@ mod tests {
             ]
         );
         assert_eq!(e.phrase().len(), 4);
+    }
+
+    /// With the transport stopped nothing else counts bars, so it comes
+    /// in on the playing phrase's next step: a list of phrases is quick
+    /// to hear through, and the pulse never stumbles.
+    #[test]
+    fn without_the_transport_a_picked_phrase_comes_in_on_the_next_step() {
+        let mut e = phrase_engine(
+            "bass either : 1 . . . 1 . . . 1 . . . 1 . . .",
+            Settings::default(),
+        );
+        e.press(60, 100);
+        let first = ons(&run(&mut e, 4 * STEP + STEP / 2, 128));
+        assert_eq!(first, [(0, 60), (4 * STEP, 60)]);
+        e.set_phrase(Phrase::parse("riff either : 5 5 5 5").unwrap());
+        let got = ons(&run(&mut e, BAR, 128));
+        assert_eq!(
+            got,
+            [
+                (5 * STEP, 67),
+                (6 * STEP, 67),
+                (7 * STEP, 67),
+                (8 * STEP, 67)
+            ]
+        );
+        // A phrase on 1/8s gives way on its own grid: the next 1/8.
+        let mut e = phrase_engine("bass either 1/8 : 1 . . . 1 . . .", Settings::default());
+        e.press(60, 100);
+        run(&mut e, STEP / 2, 128);
+        e.set_phrase(Phrase::parse("riff either : 5 . . .").unwrap());
+        assert_eq!(ons(&run(&mut e, 4 * STEP, 128)), [(2 * STEP, 67)]);
     }
 
     /// The phrase that plays, picked again, plays on from where it is; and
@@ -663,10 +752,75 @@ mod tests {
                     ..Settings::default()
                 },
             );
-            let got = run_synced(&mut e, &spans, &[(1000, 60)], first + 2 * STEP + 1, 128);
+            // Pressed 4000 frames (83 ms) after the bar line.
+            let got = run_synced(&mut e, &spans, &[(4000, 60)], first + 2 * STEP + 1, 128);
             let t: Vec<u64> = ons(&got).iter().map(|(t, _)| *t).collect();
             assert_eq!(t, [first, first + STEP, first + 2 * STEP], "{start:?}");
         }
+    }
+
+    /// A press a moment after a start line counts for that line, as the
+    /// hand meant it: the note it was late for sounds at the press and
+    /// ends where it was written to, and the rest is in time from the
+    /// line. (Started a 1/16 on, every note would be a 1/16 off the beat.)
+    #[test]
+    fn a_press_a_moment_late_still_starts_on_its_line() {
+        let spans = [span(0, 0, 120.0)];
+        for start in SyncStart::ALL {
+            let mut e = phrase_engine(
+                EVERY_SIXTEENTH,
+                Settings {
+                    start,
+                    ..Settings::default()
+                },
+            );
+            // 1000 frames (21 ms) after the bar line.
+            let got = run_synced(&mut e, &spans, &[(1000, 60)], 2 * STEP + 1, 128);
+            assert_eq!(
+                got,
+                [
+                    (1000, on(60, 100)),
+                    (STEP * 8 / 10, off(60)),
+                    (STEP, on(60, 100)),
+                    (STEP + STEP * 8 / 10, off(60)),
+                    (2 * STEP, on(60, 100)),
+                ],
+                "{start:?}"
+            );
+        }
+
+        // 60 ms is the most (2880 frames here): a frame later waits for
+        // the next 1/16.
+        for (press, first) in [(2880, 2880), (2881, STEP)] {
+            let mut e = phrase_engine(EVERY_SIXTEENTH, Settings::default());
+            let got = run_synced(&mut e, &spans, &[(press, 60)], STEP + 1, 128);
+            assert_eq!(ons(&got)[0], (first, 60), "pressed at {press}");
+        }
+
+        // A short note whose written end is behind the press keeps half
+        // its length (gate 10: a fifth of the written 4800 frames).
+        let mut e = phrase_engine(
+            EVERY_SIXTEENTH,
+            Settings {
+                gate: 10,
+                ..Settings::default()
+            },
+        );
+        let got = run_synced(&mut e, &spans, &[(1000, 60)], STEP, 128);
+        assert_eq!(got, [(1000, on(60, 100)), (1480, off(60))]);
+
+        // A note whose place has wholly passed is left out: on 1/32s at
+        // double speed a step is 1500 frames, and the press comes in the
+        // second one.
+        let mut e = phrase_engine(
+            "line either 1/32 : 1 2 3 4 5 6 7 1+",
+            Settings {
+                speed: Speed::Double,
+                ..Settings::default()
+            },
+        );
+        let got = run_synced(&mut e, &spans, &[(2000, 60)], 4501, 128);
+        assert_eq!(ons(&got), [(2000, 62), (3000, 64), (4500, 65)]);
     }
 
     /// A jump of the transport (a loop going round, a locate) starts the
@@ -863,8 +1017,8 @@ mod tests {
     }
 
     /// Starting again (Retrigger here) ends what still sounds where the
-    /// phrase starts again: at once free-running, on the next 1/16 with
-    /// the transport.
+    /// phrase starts again: at once free-running; with the transport on
+    /// the next 1/16, or at once for a note pressed a moment after one.
     #[test]
     fn starting_again_ends_what_still_sounds() {
         let phrase = "chords either : 1~ _ _ _ _ _ _ _";
@@ -885,22 +1039,22 @@ mod tests {
                 (2 * STEP, on(64, 100))
             ]
         );
-        let mut e = phrase_engine(phrase, retrigger);
-        let got = run_synced(
-            &mut e,
-            &[span(0, 0, 120.0)],
-            &[(0, 60), (6144, 64)],
-            3 * STEP,
-            128,
-        );
-        assert_eq!(
-            got,
-            [
-                (0, on(60, 100)),
-                (2 * STEP, off(60)),
-                (2 * STEP, on(64, 100))
-            ]
-        );
+        // The new note comes 4000 frames after a 1/16, then 144 after.
+        for (press, again) in [(STEP + 4000, 2 * STEP), (STEP + 144, STEP + 144)] {
+            let mut e = phrase_engine(phrase, retrigger);
+            let got = run_synced(
+                &mut e,
+                &[span(0, 0, 120.0)],
+                &[(0, 60), (press, 64)],
+                3 * STEP,
+                128,
+            );
+            assert_eq!(
+                got,
+                [(0, on(60, 100)), (again, off(60)), (again, on(64, 100))],
+                "pressed at {press}"
+            );
+        }
     }
 
     /// A phrase coming in on a bar line ends the notes of the one before
@@ -912,10 +1066,10 @@ mod tests {
             "chords either 2 bars : . . . . . . . . . . . . 1~ _ _ _ _ _ _ _",
             Settings::default(),
         );
-        e.press(60, 100);
-        let mut got = run(&mut e, 13 * STEP, 128);
+        let spans = [span(0, 0, 120.0)];
+        let mut got = run_synced(&mut e, &spans, &[(0, 60)], 13 * STEP, 128);
         e.set_phrase(Phrase::parse("riff either : 5 . . .").unwrap());
-        got.extend(run(&mut e, 4 * STEP, 128));
+        got.extend(run_synced(&mut e, &spans, &[], 17 * STEP, 128));
         assert_eq!(
             got,
             [

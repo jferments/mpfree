@@ -760,7 +760,7 @@ pub struct Engine {
     /// that waited for the launch line. Back to 0 once the period runs.
     at: u32,
     /// Phrase mode's phrase ([`Engine::set_phrase`]), a phrase picked
-    /// while it plays (it comes in on the next bar line), and where the
+    /// while it plays (it waits for its line to come in on), and where the
     /// phrase is. What plays them is in `engine/phrase_mode.rs`.
     phrase: Phrase,
     next_phrase: Option<Phrase>,
