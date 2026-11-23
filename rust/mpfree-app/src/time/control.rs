@@ -45,8 +45,8 @@ use mpfree_seq::time_edit::Refused;
 use mpfree_seq::ListStep;
 use mpfree_seq::TimeEdit;
 use mpfree_seq::{
-    Clip, ClipId, LaunchGrid, ModelError, Project, RecId, TouchPoint, TrackId, LOOPS, MAX_TRACKS,
-    ROWS, SLOTS,
+    Clip, ClipId, ClipRegion, LaunchGrid, ModelError, Project, RecId, TouchPoint, TrackId, LOOPS,
+    MAX_TRACKS, ROWS, SLOTS,
 };
 use mpfree_time_ui::editor::{EditAction, Editor};
 use mpfree_time_ui::list::ListRow;
@@ -271,6 +271,15 @@ pub trait SongAudio {
     fn step(&self, song: u32, undo: bool) -> SongStep;
     /// Take back (`undo`) or bring back song edit `song`'s steps.
     fn song_undo(&mut self, song: u32, undo: bool);
+    /// Each audio track's regions as the song plays them, by its lasting
+    /// id: in order, none overlapping, start and end in song ticks, and
+    /// the rest (recording, first frame, gain, fades and what they were
+    /// cut from) exactly as they sound. Tracks with none are left out.
+    /// Song → scenes turns them into audio clips (audio tracks phase 2,
+    /// step 2d); nothing else asks, and nothing keeps them after.
+    fn regions(&self) -> Vec<(TrackId, Vec<ClipRegion>)> {
+        Vec::new()
+    }
 }
 
 /// The edit a bars action makes (`b` ticks a bar), with the tick it
@@ -448,6 +457,10 @@ pub struct TimeControl {
     /// audio tracks' history no longer reached it): a fallback, counted
     /// and said.
     audio_stayed: u32,
+    /// Takes on an audio lane over a block that couldn't be cut there
+    /// (the song full of blocks), so the whole block went: a fallback,
+    /// counted and said ([`TimeControl::audio_took`]).
+    audio_took_whole: u32,
     /// The song time edit being made moves audio regions: it is kept as a
     /// take even where the song itself doesn't change (bars put in after
     /// everything but the audio), so UNDO takes the regions back.
@@ -655,6 +668,7 @@ impl TimeControl {
             takes: Takes::default(),
             audio_edits: HashMap::new(),
             audio_stayed: 0,
+            audio_took_whole: 0,
             audio_moves: false,
             audio_apart: false,
             redos: 0,
@@ -2162,7 +2176,8 @@ impl TimeControl {
                 | SongChange::Copied { track, .. }
                 | SongChange::Resized { track, .. }
                 | SongChange::Deleted { track, .. }
-                | SongChange::Unique { track, .. },
+                | SongChange::Unique { track, .. }
+                | SongChange::Recorded { track, .. },
             ) => return format!("{} · {} in the song", r.short(), track_name(track)),
             Some(SongChange::SectionMoved { .. } | SongChange::SectionCopied { .. }) => {
                 return format!("{} · a section of the song", r.short())
@@ -3050,6 +3065,75 @@ impl TimeControl {
         };
         list.iter()
             .any(|t| t.edited && t.song.is_some() && t.number == n)
+    }
+
+    /// A take, or an import placing regions, has ended on audio track
+    /// `track`'s lane over song ticks `from..to` (audio tracks phase 2,
+    /// step 2d): a lane holds regions and blocks, never one over the
+    /// other, so the blocks there are cut at the span's edges, as a new
+    /// take covers the regions under it. The parts inside go and the parts
+    /// outside play as before. The cut is a song edit of its own, and its
+    /// number is returned for the audio tracks to tag the take's undo step
+    /// with, as a time edit's [`Retime`] is: from then on the two are one
+    /// for either UNDO ([`TimeControl::act_with_audio`]). None when no
+    /// block was there (nothing to tie).
+    ///
+    /// Where cutting a block in two needs more blocks than the song holds,
+    /// the recording wins: the whole block goes, said and counted
+    /// (`audio_took_whole`).
+    pub fn audio_took(
+        &mut self,
+        track: TrackId,
+        (from, to): (Tick, Tick),
+    ) -> Result<Option<(u32, String)>, String> {
+        let tracks = &self.project.tracks;
+        let Some(t) = tracks.iter().position(|tr| tr.id == track && tr.is_audio()) else {
+            return Ok(None);
+        };
+        let over = |p: &mpfree_seq::Placement| p.track == t && p.start < to && p.end() > from;
+        let before = self.project.arrangement.clone();
+        let Some(first) = before.placements.iter().find(|p| over(p)).map(|p| p.start) else {
+            return Ok(None);
+        };
+        let name = tracks[t].name.clone();
+        let at = |x: Tick| bar_beat(x, self.info.meter);
+        let mut song = before.clone();
+        let said = match song.clear(tracks, t, from, to) {
+            Ok(()) => format!(
+                "song: the recording on {name} at {} cut the blocks under it",
+                at(from)
+            ),
+            Err(_) => {
+                song = before.clone();
+                song.placements.retain(|p| !over(p));
+                self.audio_took_whole += 1;
+                format!(
+                    "song: the recording on {name} at {} took the whole block under it (the song has no room to cut it)",
+                    at(from)
+                )
+            }
+        };
+        song.drop_unplayed();
+        self.project.arrangement = song;
+        if let Err(e) = self.compile() {
+            self.project.arrangement = before;
+            self.compile()?;
+            return Err(e);
+        }
+        self.takes.song_edit_joining(
+            &self.project,
+            SongChange::Recorded {
+                track: t,
+                start: first.max(from),
+            },
+            before,
+            None,
+        );
+        self.changed = true;
+        let n = self.takes.done().last().map_or(0, |t| t.number);
+        // Tied: UNDO and REDO of it go through the audio tracks.
+        self.audio_edits.entry(n).or_default();
+        Ok(Some((n, said)))
     }
 
     /// Carry out a touch on the time engine's screens. Returns a line for
@@ -6451,6 +6535,14 @@ impl TimeControl {
             line.push_str(&format!(
                 "; {} song edits undone with the audio regions left where they were",
                 self.audio_stayed
+            ));
+        }
+        // Takes over a block that took the whole block, not its part
+        // (audio tracks phase 2, step 2d).
+        if self.audio_took_whole > 0 {
+            line.push_str(&format!(
+                "; {} recordings over a block took the whole block (no room to cut it)",
+                self.audio_took_whole
             ));
         }
         // What compiles and step edits cost (the device's numbers for the

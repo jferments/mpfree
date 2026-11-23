@@ -1527,6 +1527,21 @@ impl TimeHost {
         self.sent(r)
     }
 
+    /// A take, or an import placing regions, ended on audio track
+    /// `track`'s lane over song ticks `span`: the blocks under it are cut
+    /// there, as a song edit of its own, in the same period (audio tracks
+    /// phase 2, step 2d; [`TimeControl::audio_took`]). Its number, to tag
+    /// the take's undo step with, and the line to say; None when no block
+    /// was there.
+    pub fn audio_took(
+        &mut self,
+        track: mpfree_seq::TrackId,
+        span: (Tick, Tick),
+    ) -> Result<Option<(u32, String)>, String> {
+        let r = self.with(|c| c.audio_took(track, span));
+        self.sent(r)
+    }
+
     /// Whether the song's UNDO (`undo`), or its REDO, still reaches song
     /// edit `n` ([`TimeControl::song_reaches`]).
     pub fn song_reaches(&mut self, n: u32, undo: bool) -> bool {
@@ -11849,6 +11864,155 @@ mod tests {
                 .iter()
                 .next()
                 .is_none());
+        }
+
+        /// Phase 2, step 2d (the Arrange thread's half): Scenes → song and
+        /// List → song play the rows offline through Rec song, and the
+        /// copy keeps its audio clips as audio clips, so an audio clip's
+        /// launch comes out as its block on its own track's lane, linked to
+        /// the clip, with no audio tracks host attached.
+        #[test]
+        fn the_rows_played_offline_keep_their_audio_clips_blocks() {
+            for a in [TimeAction::ScenesToSong, TimeAction::ListToSong] {
+                let mut h = host();
+                if a == TimeAction::ListToSong {
+                    h.act(TimeAction::ListAdd).unwrap();
+                }
+                let verse = h.control.project.clip(VOCAL, 0).unwrap().id;
+                let said = h.act(a.clone()).unwrap();
+                assert!(said.ends_with("exact"), "{a:?}: {said}");
+                let blocks: Vec<_> = h
+                    .control
+                    .project
+                    .arrangement
+                    .placements
+                    .iter()
+                    .map(|p| (p.track, p.start, p.length))
+                    .collect();
+                assert_eq!(blocks, [(DRUMS, 0, 3840), (VOCAL, 0, 3840)], "{a:?}");
+                let p = &h.control.project.arrangement.placements[1];
+                assert_eq!(p.clip, verse, "{a:?}: the Verse clip itself");
+            }
+        }
+
+        /// The audio tracks, as far as a song edit tied to them goes: the
+        /// steps UNDO and REDO took back and brought back.
+        #[derive(Default)]
+        struct Tied {
+            undone: Vec<(u32, bool)>,
+        }
+
+        impl SongAudio for Tied {
+            fn busy(&self) -> Option<String> {
+                None
+            }
+            fn refused(&self, _: &mpfree_audiotracks::Retime) -> Option<String> {
+                None
+            }
+            fn moves(&self, _: &mpfree_audiotracks::Retime) -> bool {
+                false
+            }
+            fn retime(&mut self, _: u32, _: mpfree_audiotracks::Retime) -> bool {
+                false
+            }
+            fn step(&self, _: u32, _: bool) -> mpfree_audiotracks::SongStep {
+                mpfree_audiotracks::SongStep::Next
+            }
+            fn song_undo(&mut self, song: u32, undo: bool) {
+                self.undone.push((song, undo));
+            }
+        }
+
+        /// Phase 2, step 2d: a take over a block cuts the block at the
+        /// take's edges, as a song edit of its own whose number the audio
+        /// tracks tie their step to, so the song's UNDO and REDO take their
+        /// step back and bring it back. No block there, or a note track:
+        /// nothing to cut, nothing tied.
+        #[test]
+        fn a_take_over_a_block_cuts_it_and_its_undo_is_tied_to_the_takes() {
+            let bar = 3840;
+            let mut h = host();
+            let p = &mut h.control.project;
+            let mut verse = mpfree_seq::Placement::of(&p.tracks, VOCAL, 0, 0, 4 * bar);
+            verse.offset = 0;
+            p.arrangement.place(verse).unwrap();
+            let beat = mpfree_seq::Placement::of(&p.tracks, DRUMS, 0, 0, 4 * bar);
+            p.arrangement.place(beat).unwrap();
+            h.control.compile().unwrap();
+            let id = |h: &TimeHost, t: usize| h.control.project.tracks[t].id;
+            let lane = |h: &TimeHost, t: usize| -> Vec<(Tick, Tick, Tick)> {
+                let song = &h.control.project.arrangement;
+                song.placements
+                    .iter()
+                    .filter(|p| p.track == t)
+                    .map(|p| (p.start, p.length, p.offset))
+                    .collect()
+            };
+            let before = h.control.project.arrangement.clone();
+            // Nowhere near a block, or on a note track: nothing.
+            assert_eq!(h.audio_took(id(&h, GUITAR), (0, bar)), Ok(None));
+            assert_eq!(h.audio_took(id(&h, DRUMS), (0, bar)), Ok(None));
+            assert_eq!(h.audio_took(id(&h, VOCAL), (4 * bar, 5 * bar)), Ok(None));
+            assert_eq!(h.control.project.arrangement, before);
+            // Bars 2 and 3 recorded over Vocal's four-bar Verse: bar 1 and
+            // bar 4 stay, bar 4 playing on from where it was.
+            let (n, said) = h
+                .audio_took(id(&h, VOCAL), (bar, 3 * bar))
+                .unwrap()
+                .expect("a block was there");
+            assert_eq!(
+                said,
+                "song: the recording on Vocal at bar 2 cut the blocks under it"
+            );
+            assert_eq!(lane(&h, VOCAL), [(0, bar, 0), (3 * bar, bar, 0)]);
+            assert_eq!(lane(&h, DRUMS), [(0, 4 * bar, 0)], "another lane stays");
+            let st = h.state();
+            let took = st.done.last().unwrap();
+            assert_eq!((took.number, took.word()), (n, "recorded over"));
+            assert_eq!(
+                took.song,
+                Some(mpfree_play::SongChange::Recorded {
+                    track: VOCAL,
+                    start: bar
+                })
+            );
+            let cut = h.control.project.arrangement.clone();
+            // The song's UNDO takes the audio tracks' step back with it,
+            // and REDO brings it back.
+            let mut tied = Tied::default();
+            h.act_with_audio(TimeAction::Undo, &mut tied).unwrap();
+            assert_eq!(h.control.project.arrangement, before);
+            h.act_with_audio(TimeAction::Redo, &mut tied).unwrap();
+            assert_eq!(h.control.project.arrangement, cut);
+            assert_eq!(tied.undone, [(n, true), (n, false)]);
+        }
+
+        /// A take inside a block when the song holds all the blocks it
+        /// can: there's no room to cut it in two, so the recording wins and
+        /// the whole block goes, said and counted.
+        #[test]
+        fn a_take_inside_a_block_of_a_full_song_takes_the_whole_block() {
+            let bar = 3840;
+            let mut h = host();
+            let p = &mut h.control.project;
+            let n = mpfree_seq::arrange::MAX_PLACEMENTS - 1;
+            for k in 0..n {
+                let b = mpfree_seq::Placement::of(&p.tracks, DRUMS, 0, k as Tick * bar, bar);
+                p.arrangement.placements.push(b);
+            }
+            let verse = mpfree_seq::Placement::of(&p.tracks, VOCAL, 0, 0, 4 * bar);
+            p.arrangement.placements.push(verse);
+            h.control.compile().unwrap();
+            let vocal = h.control.project.tracks[VOCAL].id;
+            let (_, said) = h.audio_took(vocal, (bar, 2 * bar)).unwrap().unwrap();
+            assert!(said.contains("took the whole block"), "{said}");
+            let song = &h.control.project.arrangement;
+            assert!(song.placements.iter().all(|p| p.track == DRUMS));
+            assert_eq!(song.placements.len(), n);
+            assert!(h
+                .control
+                .describe()
+                .contains("1 recordings over a block took the whole block"));
         }
 
         /// Phase 2, step 2d: an audio clip's block moves between audio

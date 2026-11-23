@@ -157,6 +157,12 @@ pub enum SongChange {
         track: usize,
         start: Tick,
     },
+    /// A recording on audio track `track`'s lane cut the blocks under it,
+    /// the first from song tick `start` (audio tracks phase 2, step 2d).
+    Recorded {
+        track: usize,
+        start: Tick,
+    },
     /// Scenes → song: `rows` rows onto the song's end.
     Scenes {
         rows: usize,

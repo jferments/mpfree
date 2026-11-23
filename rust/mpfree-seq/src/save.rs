@@ -2278,7 +2278,10 @@ mod tests {
             Err(crate::ModelError::AudioTrack)
         );
         assert_eq!(moved.arrangement.placements[0], block);
-        let i = moved.arrangement.move_placement(&tracks, 0, 2, 0, true).unwrap();
+        let i = moved
+            .arrangement
+            .move_placement(&tracks, 0, 2, 0, true)
+            .unwrap();
         assert_eq!(moved.arrangement.placements[i].track, 2);
         assert_eq!(moved.arrangement.placements[i].clip, block.clip);
         moved.check().unwrap();

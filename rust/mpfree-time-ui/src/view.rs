@@ -664,8 +664,9 @@ impl TakeRow {
     /// What it is: "take", "capture", "edit", "delete", "paste",
     /// "settings", "reload", "mutate", "restore", for a drop "move",
     /// "swap" or "copy", and for a Song view edit "move", "copy",
-    /// "length", "delete", "unique", "scenes", "tempo", "bars" or
-    /// "marker", "list" for the
+    /// "length", "delete", "unique", "scenes", "tempo", "bars",
+    /// "marker" or "recorded over" (a recording cut the blocks under it),
+    /// "list" for the
     /// song list, "scene" for the scene editor and "song → scenes".
     pub fn word(&self) -> &'static str {
         if self.rows.is_some() {
@@ -678,6 +679,7 @@ impl TakeRow {
                 SongChange::Resized { .. } => "length",
                 SongChange::Deleted { .. } => "delete",
                 SongChange::Unique { .. } => "unique",
+                SongChange::Recorded { .. } => "recorded over",
                 SongChange::Scenes { .. } => "scenes",
                 SongChange::List | SongChange::ListToSong { .. } => "list",
                 SongChange::Tempo { .. } => "tempo",
@@ -3850,7 +3852,8 @@ pub fn take_title(st: &TimeState, row: &TakeRow) -> String {
             | SongChange::Copied { track, .. }
             | SongChange::Resized { track, .. }
             | SongChange::Deleted { track, .. }
-            | SongChange::Unique { track, .. },
+            | SongChange::Unique { track, .. }
+            | SongChange::Recorded { track, .. },
         ) => return format!("{word} {} · {}", row.shown(), st.track_name(track)),
         Some(SongChange::SectionMoved { at } | SongChange::SectionCopied { at }) => {
             let name = st
@@ -3909,9 +3912,11 @@ fn take_detail(st: &TimeState, row: &TakeRow) -> String {
             | SongChange::SectionMoved { at: start }
             | SongChange::SectionCopied { at: start },
         ) => return format!("to bar {}", bar_of(start)),
-        Some(SongChange::Deleted { start, .. } | SongChange::Unique { start, .. }) => {
-            return format!("at bar {}", bar_of(start))
-        }
+        Some(
+            SongChange::Deleted { start, .. }
+            | SongChange::Unique { start, .. }
+            | SongChange::Recorded { start, .. },
+        ) => return format!("at bar {}", bar_of(start)),
         Some(SongChange::Resized { length, .. }) if length % bar == 0 => {
             return format!("{} bars", length / bar)
         }
