@@ -88,6 +88,9 @@ pub struct MiniBar {
     /// What the arp plays: "Repeat", "Arp · Up", "Pattern · Gallop".
     pub mode: String,
     pub rate: String,
+    /// The Modifier pushes the rate: [`MiniBar::rate`] is the one playing,
+    /// drawn in the second accent.
+    pub pushed: bool,
     pub latched: bool,
     pub can_slower: bool,
     pub can_faster: bool,
@@ -149,7 +152,12 @@ impl Widget for MiniBar {
             t.size_title,
             rate,
             Align::Center,
-            t.accent,
+            // Pushed, the second accent, made to read on the band.
+            if self.pushed {
+                t.readable(t.accent2, t.panel())
+            } else {
+                t.accent
+            },
             &self.rate,
         );
         let ink = if self.latched { t.warn } else { t.text_dim };
@@ -196,6 +204,107 @@ impl Widget for MiniBar {
     }
 }
 
+// ---------------------------------------------------------------- modifier
+
+/// The arp's Modifier beside the mode tabs: which controller pushes the
+/// arp, and how far it is now as a meter. A tap gives `Tab(0)`: the app
+/// opens the Modifier's options.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ModBox {
+    /// The controller's name ("Mod wheel"); empty while the Modifier is
+    /// off.
+    pub source: String,
+    /// How far the controller is now, 0.0 to 1.0.
+    pub amount: f32,
+}
+
+/// The meter's width, with its percent over it.
+const MOD_METER_W: i32 = 112;
+
+impl ModBox {
+    fn card(r: Rect) -> Rect {
+        r.inset_xy(3, 2)
+    }
+}
+
+impl Widget for ModBox {
+    fn paint(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        cx.canvas.fill_rect(r, t.bg);
+        let c = ModBox::card(r);
+        cx.canvas.fill_round_rect(c, t.round(10), t.surface);
+        let inner = c.inset_xy(12, 5);
+        let on = !self.source.is_empty();
+        let words = if on {
+            Rect::new(
+                inner.x,
+                inner.y,
+                (inner.w - MOD_METER_W - 12).max(1),
+                inner.h,
+            )
+        } else {
+            inner
+        };
+        let (head, body) = words.take_top(inner.h / 2);
+        cx.text(
+            FontId::Bold,
+            t.size_small - 1.0,
+            head,
+            Align::Left,
+            t.text_dim,
+            "MODIFIER",
+        );
+        if !on {
+            cx.text(
+                FontId::Sans,
+                t.size_body,
+                body,
+                Align::Left,
+                t.text_dim,
+                "Off · tap to pick a controller",
+            );
+            return;
+        }
+        cx.text(
+            FontId::Bold,
+            t.size_body,
+            body,
+            Align::Left,
+            t.text,
+            &self.source,
+        );
+        let meter = Rect::new(inner.right() - MOD_METER_W, inner.y, MOD_METER_W, inner.h);
+        let (top, foot) = meter.take_top(inner.h / 2);
+        let v = self.amount.clamp(0.0, 1.0);
+        cx.text(
+            FontId::Bold,
+            t.size_small,
+            top,
+            Align::Right,
+            if v > 0.0 {
+                t.readable(t.accent2, t.surface)
+            } else {
+                t.text_dim
+            },
+            &format!("{} %", (v * 100.0).round() as i32),
+        );
+        let track = Rect::new(foot.x, foot.y + (foot.h - 8) / 2, foot.w, 8);
+        cx.canvas.fill_round_rect(track, 4, t.raised);
+        let fill = Rect::new(track.x, track.y, ((track.w as f32) * v) as i32, track.h);
+        if fill.w > 0 {
+            cx.canvas.fill_round_rect(fill, 4, t.accent2);
+        }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        vec![Target::tap("modifier", 0, "Modifier", ModBox::card(r))]
+    }
+
+    fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        (phase == Touch::Down && ModBox::card(r).contains(x, y)).then_some(EventKind::Tab(0))
+    }
+}
+
 // ---------------------------------------------------------------- sliders
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -204,6 +313,10 @@ pub struct Slider {
     /// 0.0 to 1.0.
     pub value: f32,
     pub text: String,
+    /// Where something else pushes the setting now (the arp's Modifier),
+    /// 0.0 to 1.0, with its text: a ring on the track and "1/16 → 1/32".
+    /// The slider still sets [`Slider::value`].
+    pub pushed: Option<(f32, String)>,
 }
 
 /// A titled panel of horizontal sliders, such as the four Q-Links. A finger
@@ -278,10 +391,25 @@ impl Widget for SliderStack {
                 ink,
                 &s.label.to_uppercase(),
             );
+            // Pushed: "1/16 → 1/32", the push in the second accent.
+            let mut value_box = head;
+            if let Some((_, to)) = &s.pushed {
+                let to = format!("→ {to}");
+                cx.text(
+                    FontId::Bold,
+                    t.size_body,
+                    head,
+                    Align::Right,
+                    t.readable(t.accent2, t.panel()),
+                    &to,
+                );
+                let w = cx.measure(FontId::Bold, t.size_body, &to) + 8;
+                value_box.w = (value_box.w - w).max(1);
+            }
             cx.text(
                 FontId::Bold,
                 t.size_body,
-                head,
+                value_box,
                 Align::Right,
                 t.text,
                 &s.text,
@@ -289,7 +417,20 @@ impl Widget for SliderStack {
             cx.canvas.fill_round_rect(track, 4, t.raised);
             let v = s.value.clamp(0.0, 1.0);
             let fill = Rect::new(track.x, track.y, ((track.w as f32) * v) as i32, track.h);
-            cx.canvas.fill_round_rect(fill, 4, t.accent);
+            if let Some((p, _)) = &s.pushed {
+                // The stretch between the setting and the push, then a
+                // ring where it plays now.
+                let px = track.x + ((track.w as f32) * p.clamp(0.0, 1.0)) as i32;
+                let (a, b) = (px.min(fill.right()), px.max(fill.right()));
+                let span = Rect::new(a, track.y, (b - a).max(1), track.h);
+                cx.canvas.fill_round_rect(span, 4, t.accent2);
+                cx.canvas.fill_round_rect(fill, 4, t.accent);
+                let ring = Rect::new(px - 9, track.y - 5, 18, 18);
+                cx.canvas.fill_round_rect(ring, 9, t.surface);
+                cx.canvas.stroke_round_rect(ring, 9, 3, t.accent2);
+            } else {
+                cx.canvas.fill_round_rect(fill, 4, t.accent);
+            }
             let kx = track.x + fill.w;
             cx.canvas
                 .fill_round_rect(Rect::new(kx - 9, track.y - 5, 18, 18), 9, t.text);

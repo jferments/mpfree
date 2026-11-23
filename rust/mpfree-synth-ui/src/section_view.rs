@@ -72,6 +72,112 @@ pub struct Control {
     /// A fill of its own over the job's (a drawbar's family), written as
     /// the default theme's colour.
     pub tint: Option<Paint>,
+    /// On the layout the XY pad plays: a knob wears its mark.
+    pub xy: Option<XyMark>,
+}
+
+/// A control on the layout the XY pad plays (layout spec 4b's XY marks):
+/// which way the pad moves it, the stretch it covers as knob positions
+/// (0 to 1), and where the setting really is now.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct XyMark {
+    /// On the pad's up (Y↑), else across (X→).
+    pub up: bool,
+    /// The knob's position with the pad at its left or bottom, and at its
+    /// right or top: `to` below `from` runs the other way. For Add, its
+    /// own value pushed by the layout's ends.
+    pub from: f32,
+    pub to: f32,
+    /// Where the setting really is now (for Add, its own value plus the
+    /// pad's push).
+    pub now: f32,
+    /// A recorded move plays it (a hollow dot; the XY plan's phase 3).
+    pub recorded: bool,
+}
+
+/// Where a knob at position `p` points: the angle its ring uses
+/// (clockwise on screen from the bottom left).
+fn ring_angle(p: f32) -> f32 {
+    0.75 * std::f32::consts::PI + 1.5 * std::f32::consts::PI * p.clamp(0.0, 1.0)
+}
+
+/// How far an inline knob's name and value move right while it wears the
+/// XY marks, clear of the arc's arrow.
+const XY_ROOM: i32 = 8;
+
+/// The XY pad's arc's radius round a dial `d` across: outside its ring,
+/// and outside the matrix's ring (`ringed`) when it has one.
+pub fn xy_radius(d: f32, ringed: bool) -> f32 {
+    d * 0.5 + if ringed { 13.0 } else { 10.0 }
+}
+
+/// A box round a dial at `kx`, `ky` that holds everything drawn at `r`.
+fn xy_box(kx: f32, ky: f32, r: f32) -> Rect {
+    let reach = r + 10.0;
+    Rect::new(
+        (kx - reach) as i32,
+        (ky - reach) as i32,
+        (2.0 * reach) as i32 + 1,
+        (2.0 * reach) as i32 + 1,
+    )
+}
+
+/// The XY pad's stretch round a dial at `kx`, `ky` (layout spec 4b's XY
+/// marks): a thin arc in the text colour at radius `r`, from a tick at
+/// the layout's from to an arrow at its to.
+pub fn paint_xy_arc(cx: &mut PaintCx, kx: f32, ky: f32, r: f32, m: XyMark) {
+    let t = cx.theme.clone();
+    let bbox = xy_box(kx, ky, r);
+    let at = |a: f32, rr: f32| (kx + rr * a.cos(), ky + rr * a.sin());
+    let (a0, a1) = (ring_angle(m.from), ring_angle(m.to));
+    let mut arc = Mask::new(bbox);
+    let lo = a0.min(a1);
+    arc.arc(kx, ky, r, lo, a0.max(a1).max(lo + 0.02), 1.5);
+    arc.segment(at(a0, r - 4.0), at(a0, r + 4.0), 1.5);
+    // The arrow's head, pointing on round the ring the way it runs.
+    let way = if m.to >= m.from { 1.0 } else { -1.0 };
+    let tip = at(a1, r);
+    let (tx, ty) = (-a1.sin() * way, a1.cos() * way);
+    let (nx, ny) = (a1.cos(), a1.sin());
+    let back = (tip.0 - tx * 6.0, tip.1 - ty * 6.0);
+    arc.segment(tip, (back.0 + nx * 3.5, back.1 + ny * 3.5), 1.5);
+    arc.segment(tip, (back.0 - nx * 3.5, back.1 - ny * 3.5), 1.5);
+    arc.draw(cx.canvas, t.text);
+}
+
+/// The dot on the XY pad's arc ([`paint_xy_arc`]): the second accent
+/// where the setting really is now, hollow while a recorded move plays it;
+/// drawn last, over a badge it passes, with a rim in the background's
+/// colour.
+pub fn paint_xy_dot(cx: &mut PaintCx, kx: f32, ky: f32, r: f32, m: XyMark) {
+    let t = cx.theme.clone();
+    let a = ring_angle(m.now);
+    let (dx, dy) = (kx + r * a.cos(), ky + r * a.sin());
+    let mut rim = Mask::new(xy_box(kx, ky, r));
+    rim.disc(dx, dy, 5.5);
+    rim.draw(cx.canvas, t.bg);
+    let mut dot = Mask::new(xy_box(kx, ky, r));
+    if m.recorded {
+        dot.arc(dx, dy, 3.0, 0.0, 2.0 * std::f32::consts::PI, 1.5);
+    } else {
+        dot.disc(dx, dy, 4.0);
+    }
+    dot.draw(cx.canvas, t.accent2);
+}
+
+/// The XY pad's badge, X→ or Y↑, in the text colour with ink on it (so it
+/// never looks like a macro's coloured one), at `b` (30 × 18).
+pub fn paint_xy_badge(cx: &mut PaintCx, b: Rect, up: bool) {
+    let t = cx.theme.clone();
+    cx.canvas.fill_round_rect(b, t.round(6), t.text);
+    cx.text(
+        FontId::Bold,
+        12.0,
+        b,
+        Align::Center,
+        t.ink_on(t.text),
+        if up { "Y↑" } else { "X→" },
+    );
 }
 
 /// One section as the panel fills it in.
@@ -1457,11 +1563,37 @@ fn paint_control(
             };
             let track = fade(pal.job.with_alpha(52), dim);
             knob(cx, x, y, d, *pos, *bipolar, track, fill);
-            cx.text(FontId::Sans, LABEL_PX, g.label, align, label_c, &c.label);
+            // On the XY pad's layout: its arc, its badge at the dial's top
+            // left (the Q-Link's is at its top right), the dot over both.
+            if let Some(m) = c.xy {
+                let r = xy_radius(d, false);
+                paint_xy_arc(cx, x, y, r, m);
+                let (bx, by) = if g.inline {
+                    ((x - d / 2.0) as i32 - 14, (y + d / 2.0) as i32 - 14)
+                } else {
+                    ((x - d / 2.0) as i32 - 14, (y - d / 2.0) as i32 - 2)
+                };
+                paint_xy_badge(cx, Rect::new(bx, by, 30, 18), m.up);
+                paint_xy_dot(cx, x, y, r, m);
+            }
+            // Inline, the name and value move right, clear of the arc's
+            // arrow (into the gap after the cell, so a name keeps its room).
+            let room = |r: Rect| match (g.inline, c.xy) {
+                (true, Some(_)) => Rect::new(r.x + XY_ROOM, r.y, r.w, r.h),
+                _ => r,
+            };
+            cx.text(
+                FontId::Sans,
+                LABEL_PX,
+                room(g.label),
+                align,
+                label_c,
+                &c.label,
+            );
             paint_value(
                 cx,
                 t,
-                g.value,
+                room(g.value),
                 value_px(c.tier),
                 &c.value,
                 &c.unit,
@@ -1726,6 +1858,7 @@ mod tests {
             qlink: None,
             dim: false,
             tint: None,
+            xy: None,
         }
     }
 
