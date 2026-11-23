@@ -79,7 +79,7 @@
 //! [`Event::Freeze`] and [`Event::Tape`] are for the whole engine, from
 //! any kit.
 
-use crate::bandlimit::{self, OctaveCell, Reach};
+use crate::bandlimit::{self, OctaveCell, Reach, NEAR_HALF, NEAR_TAPS};
 use crate::dsp::{
     db_to_gain, equal_power, hermite, pan_gains, vowel_formants, vowel_gain, vowel_resonance,
     Ahdsr, Comb, Envelope, Filter, FilterKind, Ladder, Rng, Sample, Svf, FORMANT_2, TINY,
@@ -238,6 +238,7 @@ impl Engine {
         let kits = kits.clamp(1, MAX_KITS);
         // Made here, so the audio thread's first clean read finds it.
         bandlimit::kernel();
+        bandlimit::near_kernel();
         Engine {
             rate: rate as f32,
             views: vec![EngineView::empty(); kits],

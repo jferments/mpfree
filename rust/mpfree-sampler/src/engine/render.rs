@@ -1,4 +1,4 @@
-//! A voice's sound: the Hermite, plain and band-limited reads, the fades,
+//! A voice's sound: the plain, 8-point, Hermite and band-limited reads, the fades,
 //! envelopes and filter, the movement, pressure and live values on their
 //! steps, and the ring-out after a voice ends.
 
@@ -30,6 +30,42 @@ pub(super) struct BlAbove(pub(super) i64);
 impl Default for BlAbove {
     fn default() -> BlAbove {
         BlAbove(i64::MAX)
+    }
+}
+
+/// The frames over which a voice crossfades from one read to another
+/// ([`Voice::xf_left`]): about 6 ms at 44.1 kHz.
+pub(super) const XF_FRAMES: u16 = 256;
+
+/// The read a voice renders a block with, chosen once a block from where
+/// it is ([`read_for`]), so no read's loop chooses inside it. Which frames
+/// a read may look at (the region, clamped at its edges) is the voice's
+/// business, not the read's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Read {
+    /// Its sound's frames as they are, the whole block ([`render_plain`]).
+    Plain,
+    /// The 8-point read ([`bandlimit::near_kernel`]), and a whole frame as
+    /// it is at the sound's own speed.
+    Pitched,
+    /// A Vintage pad's Hermite read, at every speed.
+    Vintage,
+    /// The band-limited read, from the frame its step passed
+    /// [`Voice::bl_above`] on.
+    Band,
+}
+
+/// The read for a voice's next block.
+#[inline]
+pub(super) fn read_for(v: &Voice) -> Read {
+    if v.bl || v.step > v.bl_above.0 {
+        Read::Band
+    } else if !v.follow.moving && plain_now(v) {
+        Read::Plain
+    } else if v.vintage {
+        Read::Vintage
+    } else {
+        Read::Pitched
     }
 }
 
@@ -449,26 +485,29 @@ pub(super) fn render_voice(v: &mut Voice, rate: f32, left: &mut [f32], right: &m
     if v.ringing {
         ring_out(v, left, right);
     } else {
-        let done = if v.bl || v.step > v.bl_above.0 {
-            render_voice_bl(v, rate, left, right)
-        } else {
-            let done = if v.follow.moving {
-                render_voice_as::<true, false>(v, rate, left, right)
-            } else if plain_now(v) {
-                render_plain(v, left, right);
-                left.len()
-            } else {
-                render_voice_as::<false, false>(v, rate, left, right)
+        // A run stops early, the voice still playing, when its read
+        // changes: its step passed CLEAN_ABOVE (a glide, pressure), or it
+        // came onto or off its sound's own speed on a whole frame. The
+        // next run reads the new way, fading in over the old.
+        let mut done = 0;
+        while done < left.len() {
+            let (l, r) = (&mut left[done..], &mut right[done..]);
+            let read = read_for(v);
+            done += match (read, v.follow.moving) {
+                (Read::Band, _) => render_voice_bl(v, rate, l, r),
+                (Read::Plain, _) => {
+                    render_plain(v, l, r);
+                    l.len()
+                }
+                (Read::Vintage, true) => render_voice_as::<true, false, true>(v, rate, l, r),
+                (_, true) => render_voice_as::<true, false, false>(v, rate, l, r),
+                (Read::Vintage, false) => render_voice_as::<false, false, true>(v, rate, l, r),
+                _ => render_voice_as::<false, false, false>(v, rate, l, r),
             };
-            if done < left.len() && v.active {
-                // Its step passed CLEAN_ABOVE on a frame (a glide,
-                // pressure): the rest of the block is the band-limited
-                // read's.
-                done + render_voice_bl(v, rate, &mut left[done..], &mut right[done..])
-            } else {
-                done
+            if !v.active {
+                break;
             }
-        };
+        }
         if !v.active && done < left.len() && rings_on(v) {
             v.active = true;
             v.ringing = true;
@@ -496,9 +535,9 @@ pub(super) fn render_voice_bl(
 ) -> usize {
     v.bl = true;
     if v.follow.moving {
-        render_voice_as::<true, true>(v, rate, left, right)
+        render_voice_as::<true, true, false>(v, rate, left, right)
     } else {
-        render_voice_as::<false, true>(v, rate, left, right)
+        render_voice_as::<false, true, false>(v, rate, left, right)
     }
 }
 
@@ -553,8 +592,9 @@ pub(super) fn amp_holds(a: &Ahdsr, rate: f32) -> bool {
 /// fixed gain, so [`render_plain`] gives exactly what the full loop would:
 /// forward at the sound's own speed from a whole frame (no Hermite
 /// blend), no loop, fades, filter or pressure, its envelope holding a
-/// level, and no kill fade or stolen voice's tail under way. A kit's
-/// drum hits are like this from their second frame to their last.
+/// level, no kill fade or stolen voice's tail under way, and no other
+/// read heard last (one that was fades out first, through [`hear`]). A
+/// kit's drum hits are like this from their second frame to their last.
 #[inline]
 pub(super) fn plain_now(v: &Voice) -> bool {
     v.step == ONE
@@ -570,6 +610,8 @@ pub(super) fn plain_now(v: &Voice) -> bool {
         && v.tail_left == 0
         && v.amp.as_ref().is_none_or(|a| a.is_steady())
         && (!v.stereo || (v.pick_l == 0 && v.pick_r == 1))
+        && v.xf_left == 0
+        && v.last_read.is_none_or(|r| r == Heard::Exact)
 }
 
 /// A plain voice's next frames ([`plain_now`]): each frame of its sound
@@ -577,6 +619,7 @@ pub(super) fn plain_now(v: &Voice) -> bool {
 /// for such a voice (`a_plain_voice_renders_as_the_full_loop_does`), at a
 /// fraction of the cost: the loop is a multiply and an add a sample.
 pub(super) fn render_plain(v: &mut Voice, left: &mut [f32], right: &mut [f32]) {
+    v.last_read = Some(Heard::Exact);
     let Some(data) = v.data.take() else {
         v.active = false;
         return;
@@ -690,12 +733,12 @@ pub(super) fn read_bl<S: Sample>(
 }
 
 /// A sample voice's next frames, added into `left` and `right`, read with
-/// Hermite or (`BL`) band-limited. Returns the frames it rendered: all of
-/// them, unless the voice ended, or (not `BL`) its pitch went past
-/// [`CLEAN_ABOVE`] on a frame (a glide, pressure), after which the rest of
-/// the block is the band-limited read's ([`render_voice`] carries on with
-/// it).
-pub(super) fn render_voice_as<const FOLLOW: bool, const BL: bool>(
+/// the 8-point read, Hermite (`VINTAGE`) or band-limited (`BL`). Returns the
+/// frames it rendered: all of them, unless the voice ended or its read
+/// changed on a frame ([`render_voice`] carries on with the new one). Kept
+/// out of line: inlined into [`render_voice`], every read's loop got slower.
+#[inline(never)]
+pub(super) fn render_voice_as<const FOLLOW: bool, const BL: bool, const VINTAGE: bool>(
     v: &mut Voice,
     rate: f32,
     left: &mut [f32],
@@ -708,8 +751,8 @@ pub(super) fn render_voice_as<const FOLLOW: bool, const BL: bool>(
         return left.len();
     };
     let done = match &data {
-        Pcm::F32(d) => render_voice_from::<f32, FOLLOW, BL>(v, d, rate, left, right),
-        Pcm::I16(d) => render_voice_from::<i16, FOLLOW, BL>(v, d, rate, left, right),
+        Pcm::F32(d) => render_voice_runs::<f32, FOLLOW, BL, VINTAGE>(v, d, rate, left, right),
+        Pcm::I16(d) => render_voice_runs::<i16, FOLLOW, BL, VINTAGE>(v, d, rate, left, right),
     };
     if v.active {
         v.data = Some(data);
@@ -717,9 +760,50 @@ pub(super) fn render_voice_as<const FOLLOW: bool, const BL: bool>(
     done
 }
 
-/// [`render_voice_as`] from the samples as the sound holds them.
+/// [`render_voice_as`] in at most two runs: while a change of read fades
+/// in, the frames that carry the old read under the new, then the rest
+/// with no fade to look after.
 #[inline(always)]
-pub(super) fn render_voice_from<S: Sample, const FOLLOW: bool, const BL: bool>(
+fn render_voice_runs<S: Sample, const FOLLOW: bool, const BL: bool, const VINTAGE: bool>(
+    v: &mut Voice,
+    data: &[S],
+    rate: f32,
+    left: &mut [f32],
+    right: &mut [f32],
+) -> usize {
+    if !VINTAGE {
+        let now = if BL {
+            Heard::Band
+        } else if v.on_frame(v.pos) {
+            Heard::Exact
+        } else {
+            Heard::Near
+        };
+        hear(v, now);
+    }
+    if VINTAGE || v.xf_left == 0 {
+        return render_voice_from::<S, FOLLOW, BL, VINTAGE, false>(v, data, rate, left, right);
+    }
+    let n = usize::from(v.xf_left).min(left.len());
+    let (l, r) = (&mut left[..n], &mut right[..n]);
+    let done = render_voice_from::<S, FOLLOW, BL, VINTAGE, true>(v, data, rate, l, r);
+    if done < n || !v.active || n == left.len() {
+        return done;
+    }
+    let (l, r) = (&mut left[n..], &mut right[n..]);
+    n + render_voice_from::<S, FOLLOW, BL, VINTAGE, false>(v, data, rate, l, r)
+}
+
+/// One run of [`render_voice_as`] from the samples as the sound holds
+/// them, with (`XF`) or without a change of read fading in.
+#[inline(always)]
+pub(super) fn render_voice_from<
+    S: Sample,
+    const FOLLOW: bool,
+    const BL: bool,
+    const VINTAGE: bool,
+    const XF: bool,
+>(
     v: &mut Voice,
     data: &[S],
     rate: f32,
@@ -731,13 +815,13 @@ pub(super) fn render_voice_from<S: Sample, const FOLLOW: bool, const BL: bool>(
     let octaves = if BL { v.octaves.take() } else { None };
     let copies = octaves.as_deref().and_then(OctaveCell::get);
     let kernel = bandlimit::kernel();
-    let read = |v: &Voice, pos: i64| -> (f32, f32) {
-        if BL {
-            read_bl(v, kernel, data, copies, pos)
-        } else {
-            v.read2(data, pos)
-        }
-    };
+    let near = bandlimit::near_kernel();
+    // Whether the 8-point read takes whole frames as they are: found once,
+    // as at one step it can't change ([`Voice::on_frame`]). The run ends
+    // when the step moves it.
+    let seen = v.step;
+    let exact = !BL && !VINTAGE && v.on_frame(v.pos);
+    let mut xf = if XF { v.xf_left } else { 0 };
     let mut done = left.len();
     for (k, (ol, or)) in left.iter_mut().zip(right.iter_mut()).enumerate() {
         let i = v.pos >> 32;
@@ -750,14 +834,16 @@ pub(super) fn render_voice_from<S: Sample, const FOLLOW: bool, const BL: bool>(
             aim_bl(v, copies);
         }
 
-        let (mut l, mut r) = read(v, v.pos);
+        let (mut l, mut r) =
+            read_one::<S, BL, VINTAGE>(v, kernel, near, data, copies, v.pos, exact, xf);
 
         // Forward-loop crossfade: blend in the audio before the loop start.
         if v.looping && !v.ping_pong && v.crossfade > 0 && i >= v.loop_end - v.crossfade {
             let x = (i - (v.loop_end - v.crossfade)) as f32 / v.crossfade as f32;
             let (out, inn) = equal_power(x);
             let back = v.pos - ((v.loop_end - v.loop_start) << 32);
-            let (bl, br) = read(v, back);
+            let (bl, br) =
+                read_one::<S, BL, VINTAGE>(v, kernel, near, data, copies, back, exact, xf);
             l = l * out + bl * inn;
             r = r * out + br * inn;
         }
@@ -794,6 +880,9 @@ pub(super) fn render_voice_from<S: Sample, const FOLLOW: bool, const BL: bool>(
         let (l, r) = finish::<FOLLOW>(v, rate, l, r, g);
         *ol += l;
         *or += r;
+        if XF && xf > 0 {
+            xf -= 1;
+        }
 
         // Advance.
         if v.backwards {
@@ -820,14 +909,94 @@ pub(super) fn render_voice_from<S: Sample, const FOLLOW: bool, const BL: bool>(
             done = k + 1;
             break;
         }
-        if !BL && v.step > v.bl_above.0 {
-            // Past two semitones up from the next frame on.
+        // The step moved (a glide, pressure, the movement's pitch): past
+        // two semitones up, or onto or off the sound's own speed on a whole
+        // frame, another read takes over from the next frame.
+        if !BL
+            && v.step != seen
+            && (v.step > v.bl_above.0 || !VINTAGE && v.on_frame(v.pos) != exact)
+        {
             done = k + 1;
             break;
         }
+    }
+    if XF {
+        v.xf_left = xf;
     }
     if v.active && BL {
         v.octaves = octaves;
     }
     done
+}
+
+/// One frame of [`render_voice_from`]'s read at `pos`: the band-limited,
+/// Hermite or 8-point read, with the old read under it while a change of
+/// read fades in. Always inlined: as a call of its own it costs the held
+/// pads a tenth more.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn read_one<S: Sample, const BL: bool, const VINTAGE: bool>(
+    v: &Voice,
+    kernel: &bandlimit::Kernel,
+    near: &bandlimit::NearKernel,
+    data: &[S],
+    copies: Option<&bandlimit::Octaves>,
+    pos: i64,
+    exact: bool,
+    xf: u16,
+) -> (f32, f32) {
+    let new = if BL {
+        read_bl(v, kernel, data, copies, pos)
+    } else if VINTAGE {
+        v.read2_hermite(data, pos)
+    } else {
+        v.read2_near(near, data, pos, exact)
+    };
+    if VINTAGE || xf == 0 {
+        new
+    } else {
+        faded(v, data, pos, new, xf)
+    }
+}
+
+/// `new` with the read the voice heard before it faded under it, `xf`
+/// frames of [`XF_FRAMES`] left. The plain copy's side is the band-limited
+/// read unstretched: exact on a whole frame, as the copy is, flat to about
+/// 19 kHz and with no phase error between frames, so the fade carries only
+/// the new read's own difference. Out of the render loop: a voice spends
+/// 6 ms here per change of read.
+#[cold]
+#[inline(never)]
+fn faded<S: Sample>(v: &Voice, data: &[S], pos: i64, new: (f32, f32), xf: u16) -> (f32, f32) {
+    let old = match v.xf_from {
+        Heard::Exact => {
+            let picks = (v.pick_l, v.pick_r);
+            let k = bandlimit::kernel();
+            bandlimit::read2(
+                k,
+                data,
+                v.stereo,
+                v.start,
+                v.end - 1,
+                pos,
+                Reach::default(),
+                picks,
+            )
+        }
+        Heard::Near | Heard::Band => v.read2_near(bandlimit::near_kernel(), data, pos, false),
+    };
+    let g = f32::from(xf) * (1.0 / f32::from(XF_FRAMES));
+    (new.0 + (old.0 - new.0) * g, new.1 + (old.1 - new.1) * g)
+}
+
+/// The voice now hears `now`: if it heard another read before, the
+/// crossfade from that one starts ([`Voice::xf_left`]).
+fn hear(v: &mut Voice, now: Heard) {
+    if v.last_read != Some(now) {
+        if let Some(was) = v.last_read {
+            v.xf_from = was;
+            v.xf_left = XF_FRAMES;
+        }
+        v.last_read = Some(now);
+    }
 }
