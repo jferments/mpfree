@@ -858,9 +858,9 @@ impl Settings {
     /// which are in time with the transport (the host makes up the mix's
     /// own).
     pub fn loop_latency_now(&self) -> u32 {
-        match self.loop_source {
-            LoopSource::Pads | LoopSource::Mix(_) => 0,
-            LoopSource::Line => self.loop_latency,
+        match self.loop_source.line() {
+            false => 0,
+            true => self.loop_latency,
         }
     }
 }
@@ -4902,6 +4902,26 @@ impl App {
         };
         if !fx.is_empty() {
             self.save_dirty = true;
+            fx.push(Effect::Settings(self.settings.clone()));
+        }
+        fx
+    }
+
+    /// An audio track's empty cell armed for a loop (audio tracks phase 4b,
+    /// behind Dev's switch): the looper records the track's own input, as
+    /// a take on the track would ([`crate::looping::TrackInput`]). A line
+    /// pick switches the line input on, as a Loop track's Line in does.
+    /// Records from shows it until another source is picked or a Loop
+    /// cell is armed.
+    pub fn loop_track_input(&mut self, input: crate::looping::TrackInput) -> Vec<Effect> {
+        let mut fx = Vec::new();
+        if matches!(input.from, crate::looping::TrackFrom::Line(_)) && !self.settings.line_input {
+            fx.extend(self.looper_setting(Item::LineInput, 1));
+        }
+        let set = self.set_loop_source(LoopSource::Track(input));
+        if !set.is_empty() {
+            self.save_dirty = true;
+            fx.extend(set);
             fx.push(Effect::Settings(self.settings.clone()));
         }
         fx

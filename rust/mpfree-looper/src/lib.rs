@@ -3164,6 +3164,10 @@ impl Looper {
         // A loop with sound soloed: the others fall silent. A loop on a
         // track is its track's to solo, and plays at full gain while it
         // plays: the track fades it (a clear or a swap still fades it out).
+        // One that was heard as it went on the track (its first pass just
+        // ended, its own fade in under way) rises on to full gain as it
+        // would have off the track, so the track takes it on unfaded with
+        // no step (`LoopPlayer::moving`).
         let tracked = |k: usize| self.on_track[k].is_some();
         let any_solo = (self.loops.iter().enumerate())
             .any(|(k, l)| l.solo && l.phase != Phase::Empty && !tracked(k));
@@ -3176,6 +3180,7 @@ impl Looper {
                 if matches!(l.phase, Phase::Playing | Phase::Overdubbing)
                     && !l.clearing
                     && !l.swapping
+                    && l.gain == 0.0
                 {
                     l.gain = 1.0;
                 }

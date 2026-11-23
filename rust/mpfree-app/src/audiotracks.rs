@@ -1112,6 +1112,13 @@ impl TrackHost {
         &self.loops
     }
 
+    /// Before [`TrackHost::plan_loops`]: the loops heard off any track
+    /// now (the Loop strip's, by id: `LoopHost::moving_ids`). One that
+    /// opens on a track carries on there unfaded ([`LoopPlayer::moving`]).
+    pub fn loops_moving(&mut self, ids: &[u128]) {
+        self.loops.moving(ids);
+    }
+
     /// A new lasting id for a loop (phase 4b: `mpfree_seq::LoopId`), from
     /// the audio tracks' id maker: never 0, never given twice.
     pub fn fresh_loop_id(&mut self) -> u128 {
@@ -1360,6 +1367,31 @@ impl TrackHost {
             after_effects: after,
         };
         self.set_inside(t, Some((f, &name)))
+    }
+
+    /// What a loop recorded into project track `p`'s cell records (audio
+    /// tracks phase 4b, behind Dev's switch): the track's own input, as a
+    /// take on it would (inside the mix at its point, or its line pick),
+    /// and its own channel, which is never in it. None when `p` is not an
+    /// audio track here.
+    pub fn loop_input(&self, p: usize, mix: &MixHost) -> Option<crate::looping::TrackInput> {
+        use crate::looping::{TrackFrom, TrackInput};
+        let s = (0..MAX_TRACKS).find(|&s| self.place[s] == Some(p))?;
+        let from = match self.inside[s] {
+            Some(f) => TrackFrom::Mix(
+                f.strip,
+                if f.after_effects {
+                    mpfree_fx::CapturePoint::BeforeFader
+                } else {
+                    mpfree_fx::CapturePoint::BeforeInserts
+                },
+            ),
+            None => TrackFrom::Line(self.inputs[s]),
+        };
+        Some(TrackInput {
+            channel: mpfree_fx::StripId::Track(mix.track_channel(p)),
+            from,
+        })
     }
 
     /// What track `t` records from inside the mix, and the name it was
@@ -3146,7 +3178,7 @@ fn bar_beat(tick: Tick, t: &TransportInfo) -> String {
 }
 
 /// What an input records, for the log.
-fn input_words(i: Input) -> &'static str {
+pub(crate) fn input_words(i: Input) -> &'static str {
     match i {
         Input::Left => "the left input (mono)",
         Input::Right => "the right input (mono)",

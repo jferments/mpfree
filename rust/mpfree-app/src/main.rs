@@ -2912,6 +2912,14 @@ fn loop_input(
     let moved = looper.follow_pads(pads);
     let how = match looper.takes_from() {
         (LoopSource::Mix(strip), _) => mix.loop_take(Some(strip), left, right),
+        // A loop into an audio track's cell (phase 4b): the track's input,
+        // inside the mix where the mixer says, or its line pick.
+        (LoopSource::Track(t), _) => match t.from {
+            looping::TrackFrom::Mix(strip, point) => {
+                mix.track_loop_take((strip, point), t.channel, left, right)
+            }
+            looping::TrackFrom::Line(_) => Ok(0),
+        },
         (LoopSource::Pads, Some(i)) => match mix.instrument_strip(i, homes) {
             Some(strip) => mix.loop_take(Some(strip), left, right),
             None => Err(looping::PADS_ON_MIDI_OUT),
@@ -2921,10 +2929,8 @@ fn loop_input(
         (LoopSource::Line, _) => Ok(0),
     };
     if how.is_err()
-        || matches!(
-            looper.takes_from(),
-            (LoopSource::Line, _) | (LoopSource::Pads, None)
-        )
+        || looper.takes_from().0.line()
+        || matches!(looper.takes_from(), (LoopSource::Pads, None))
     {
         left.fill(0.0);
         right.fill(0.0);
@@ -9968,6 +9974,7 @@ fn player_session(
         out.show(gui::ToUi::Settings(app.settings.clone()));
     }
     let loops_on = app.settings.loops_on;
+    time.set_loops_on(loops_on);
     // With takes streaming, a cue that launches audio waits until the
     // start of its audio is in memory (the audio tracks rethink's phase
     // 2): the needs go to the tracks whenever they change.
@@ -14830,6 +14837,7 @@ fn player_session(
         // before the looper runs.
         if loops_on {
             tracks.sync(time.project(), time.silenced(), false);
+            tracks.loops_moving(&looper.moving_ids());
             tracks.plan_loops(time.block(), &|p| time.audio(p));
             looper.give_loop_id(|| tracks.fresh_loop_id());
             looper.tell_tracks(time.project(), tracks.loop_player());
@@ -15231,9 +15239,19 @@ fn player_session(
         for line in looper.changes(|| time.position_text()) {
             out.note(&line);
         }
-        // A loop recorded lands on a Loop track; its cells follow it.
+        // A loop recorded lands on a Loop track (or, with loops on audio
+        // tracks, in an audio track's cell armed for it, by its lasting
+        // id); its cells follow it.
         if let Some(now) = looper.grid_now() {
-            for line in time.loops_are(&now) {
+            let lines = if loops_on {
+                time.loops_are_on(&now, &looper.loop_ids())
+            } else {
+                time.loops_are(&now)
+            };
+            if loops_on && !lines.is_empty() {
+                looper.look_again();
+            }
+            for line in lines {
                 out.note(&format!("time: {line}"));
             }
         }

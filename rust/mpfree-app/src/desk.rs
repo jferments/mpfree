@@ -389,6 +389,21 @@ impl Desk<'_> {
                         fx.extend(copy_loop_cell(time, looper, out, from, to));
                         return None;
                     }
+                    // An audio track's loop cell (Dev's switch, phase 4b):
+                    // onto another audio track, a new loop.
+                    let loop_id = time
+                        .project()
+                        .clip(from.0, from.1)
+                        .and_then(|c| c.loop_id());
+                    let audio = |t: usize| time.project().tracks.get(t).is_some_and(|t| t.is_audio());
+                    if let Some(id) = loop_id.filter(|_| {
+                        app.settings.loops_on && from.0 != to.0 && audio(to.0)
+                    }) {
+                        fx.extend(copy_audio_loop_cell(
+                            time, tracks, looper, out, from, to, id,
+                        ));
+                        return None;
+                    }
                 }
                 let picked = matches!(
                     a,
@@ -1913,19 +1928,29 @@ fn arm_loop_cell(
         mpfree_time_ui::TimeAction::LoopCell(Some((t, s))),
     );
     out.show(gui::ToUi::Rec(app.rec));
-    let input = time
-        .project()
-        .tracks
-        .get(t)
-        .and_then(|tr| tr.loops())
-        .unwrap_or_default();
     fx.push(app::Effect::Looper(looping::LoopAction::Select(n)));
-    fx.extend(app.loop_input(input));
+    // An audio track's cell (Dev's switch, phase 4b) records the track's
+    // own input; a Loop track's, its Loop input.
+    let from = match tracks.loop_input(t, mix) {
+        Some(input) => {
+            fx.extend(app.loop_track_input(input));
+            looping::source_words(looping::LoopSource::Track(input), None)
+        }
+        None => {
+            let input = time
+                .project()
+                .tracks
+                .get(t)
+                .and_then(|tr| tr.loops())
+                .unwrap_or_default();
+            fx.extend(app.loop_input(input));
+            input.name().to_lowercase()
+        }
+    };
     fx.extend(rec_effects(done, time, looper));
     if let Some(name) = mpfree_time_ui::view::loop_cell_name(&time.state()) {
         fx.push(app::Effect::Tell(format!(
-            "REC \u{2192} {name}: REC records a loop there, from {}",
-            input.name().to_lowercase()
+            "REC \u{2192} {name}: REC records a loop there, from {from}"
         )));
     }
     fx
@@ -1961,6 +1986,7 @@ fn copy_loop_cell(
         from,
         to,
         into: m as u8,
+        id: 0,
     }) {
         Ok(line) => line,
         Err(why) => return tell(why),
@@ -1972,6 +1998,56 @@ fn copy_loop_cell(
             return tell(why);
         }
     }
+    tell(said)
+}
+
+/// SHIFT + an audio track's loop cell dropped on an empty cell of
+/// another audio track (Dev's "Loops on audio tracks", phase 4b): a copy
+/// is a new loop, so an empty loop takes a new lasting id, the cell there
+/// names it, and the looper copies the layers into it, silent until the
+/// cell is launched. Says why not, and takes the id back.
+fn copy_audio_loop_cell(
+    time: &mut time::TimeHost,
+    tracks: &mut audiotracks::TrackHost,
+    looper: &mut looping::LoopHost,
+    out: &mut Out,
+    from: (usize, usize),
+    to: (usize, usize),
+    id: mpfree_seq::LoopId,
+) -> Vec<app::Effect> {
+    use mpfree_time_ui::TimeAction::{LoopCopy, LoopCopyOff};
+    let tell = |s: String| vec![app::Effect::Tell(s)];
+    let Some(n) = looper.slot_of(id.0) else {
+        return tell("clips: that loop isn't in memory to copy".to_string());
+    };
+    let m = match looper.free_loop() {
+        Ok(m) => m,
+        Err(why) => return tell(why),
+    };
+    let new = tracks.fresh_loop_id();
+    let was = looper.loop_ids()[m];
+    looper.set_loop_id(m, new);
+    let said = match time.act(LoopCopy {
+        from,
+        to,
+        into: m as u8,
+        id: new,
+    }) {
+        Ok(line) => line,
+        Err(why) => {
+            looper.set_loop_id(m, was);
+            return tell(why);
+        }
+    };
+    match looper.copy_loop(n, m) {
+        Ok(line) => out.note(&line),
+        Err(why) => {
+            let _ = time.act(LoopCopyOff(m as u8));
+            looper.set_loop_id(m, was);
+            return tell(why);
+        }
+    }
+    looper.look_again();
     tell(said)
 }
 

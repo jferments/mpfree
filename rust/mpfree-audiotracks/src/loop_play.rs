@@ -29,6 +29,10 @@
 //!   pan, mute and solo act on a loop as on its regions.
 //! - **Stopped**, nothing plays and the next answer starts afresh, as for
 //!   clips: the looper's own stop is the looper's.
+//! - **A loop that moves onto a track** ([`LoopPlayer::moving`]: it is
+//!   heard already, on the Loop strip, as when its first pass lands in a
+//!   loop cell) opens at full gain, not over a fade: it carries on where
+//!   it is heard, so there is no dip.
 //!
 //! Everything happens on a frame and is the same for any period size, and
 //! nothing allocates once made.
@@ -41,6 +45,10 @@ use crate::{Join, FADE, MAX_TRACKS};
 
 /// Loops a track sounds at once: the one playing and one fading out.
 pub const LOOP_VOICES: usize = 2;
+
+/// Loops heard off any track at once that [`LoopPlayer::moving`] keeps:
+/// the looper's.
+pub const MOVING: usize = 8;
 
 /// Runs a track has at most in a period: a voice's run splits at each
 /// change of origin, and a change can open one voice as another closes.
@@ -123,6 +131,8 @@ pub struct LoopPlayer {
     frames: usize,
     stolen: u64,
     dropped: u64,
+    /// The loops heard off any track now ([`LoopPlayer::moving`]; 0: none).
+    moving: [u128; MOVING],
 }
 
 impl Default for LoopPlayer {
@@ -141,6 +151,18 @@ impl LoopPlayer {
             frames: 0,
             stolen: 0,
             dropped: 0,
+            moving: [0; MOVING],
+        }
+    }
+
+    /// Before [`LoopPlayer::plan`]: the loops heard off any track now, by
+    /// id (the looper's own mix, the Loop strip; at most [`MOVING`], 0 for
+    /// none). One of them that opens on a track moves there: at full gain
+    /// from its frame, as it is heard already, not over a fade.
+    pub fn moving(&mut self, ids: &[u128]) {
+        self.moving = [0; MOVING];
+        for (m, &id) in self.moving.iter_mut().zip(ids) {
+            *m = id;
         }
     }
 
@@ -282,6 +304,7 @@ impl LoopPlayer {
     /// origin if it has one), and the mute moves.
     fn change(&mut self, t: usize, plays: &Plays, muted: bool, f: u64) {
         let heard = if muted { 0.0 } else { 1.0 };
+        let moving = self.moving;
         let lane = &mut self.lanes[t];
         let playing = match lane.mode {
             Mode::Loop(v) if lane.voices[v].on => Some(v),
@@ -322,11 +345,17 @@ impl LoopPlayer {
                             (0..LOOP_VOICES).find(|&v| Some(v) != playing).unwrap_or(0)
                         }
                     };
+                    // Heard already, off the track: it moves on, unfaded.
+                    let join = if l.id != 0 && moving.contains(&l.id) {
+                        Join::Straight
+                    } else {
+                        Join::Fade
+                    };
                     lane.voices[v] = Voice {
                         on: true,
                         id: l.id,
                         origin: l.origin,
-                        win: Window::opening(f, Join::Fade),
+                        win: Window::opening(f, join),
                     };
                     lane.mode = Mode::Loop(v);
                 }
