@@ -1195,6 +1195,8 @@ fn song_audio_sample(fonts: Fonts) -> Result<Sample, String> {
 /// by hand, so some notes sit a little off the 1/16 grid.
 pub fn keys_clip() -> Clip {
     let mut c = Clip::new("Keys", 2 * BAR);
+    // Played on a synth: notes, not pad hits (its scale goes by it).
+    c.holds = mpfree_seq::Holds::Notes;
     // (tick, length, note, velocity)
     let chords: [(Tick, Tick, [u8; 3]); 4] = [
         (0, 2 * BEAT - 40, [60, 63, 67]),
@@ -1277,6 +1279,24 @@ pub fn notes_state(lens: crate::editor::Lens) -> Result<TimeState, String> {
         bar: BAR,
         answer: Default::default(),
     }));
+    Ok(state)
+}
+
+/// The piano roll on the same clip with its scale on (piano roll plan
+/// 2B.1): C Dorian, so the G#2 of the second chord is off it and marked;
+/// the pads play C minor on the Synth tab, which the Scale menu offers
+/// first.
+pub fn notes_scale_state() -> Result<TimeState, String> {
+    use mpfree_seq::mpfree_scale::{DORIAN, MINOR};
+    let mut state = notes_state(crate::editor::Lens::Grid)?;
+    let e = state.edit.as_mut().ok_or("no editor")?;
+    let mut keys = (*e.clip).clone();
+    keys.scale = Some(mpfree_seq::Scale::new(0, DORIAN));
+    e.clip = keys.into();
+    e.editor.offers = std::sync::Arc::new(crate::editor::ScaleOffers {
+        pads: Some(mpfree_seq::Scale::new(0, MINOR)),
+        own: vec![("Hijaz".into(), 0b0101_1011_0011, 0b0101_1011_0011)],
+    });
     Ok(state)
 }
 

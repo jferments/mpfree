@@ -2041,6 +2041,16 @@ impl TimeHost {
         self.with(|c| c.set_notes_tracks(tracks));
     }
 
+    /// The scales the note editor's Scale option offers (piano roll plan
+    /// 2B.1): the synth pads' scale, if any, and the owner's own.
+    pub fn set_scale_offers(
+        &mut self,
+        pads: Option<mpfree_seq::Scale>,
+        own: &[(String, u16, u16)],
+    ) {
+        self.with(|c| c.set_scale_offers(pads, own));
+    }
+
     /// The notes each of track `track`'s 16 pads plays: a clip of notes
     /// shows each pad's root on the step grid's pad rows, and a tap on a
     /// pad's row edits its notes (step 5c).
@@ -10428,6 +10438,7 @@ mod tests {
                 rev: mid.rev,
                 ticks: 240,
                 notes: 0,
+                scale: false,
             },
             // Plan 1B.2: a handle and a note tapped while one is held.
             E::Resize {
@@ -10554,6 +10565,80 @@ mod tests {
         assert!(Arc::ptr_eq(&d.clip, &info(&mut h).clip));
     }
 
+    /// Piano roll plan 2B.1: the clip's scale is set from the note editor
+    /// as a clip setting, a take each (UNDO takes it back, no note moves),
+    /// and saved with the clip; the editor offers the pads' scale it was
+    /// given; a drag with the scale's flag moves by its notes.
+    #[test]
+    fn the_note_editor_sets_the_clips_scale_and_undo_takes_it_back() {
+        use mpfree_seq::mpfree_scale::{DORIAN, MAJOR};
+        use mpfree_seq::Scale;
+        use mpfree_time_ui::editor::EditAction as E;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.step_action(StepAction::Tap {
+            pad: 0,
+            step: 0,
+            velocity: 100,
+        })
+        .unwrap();
+        // A clip of pad hits takes no scale (its numbers are pads).
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        let line = h
+            .act(TimeAction::Edit(E::Scale(Some(Scale::new(0, MAJOR)))))
+            .unwrap();
+        assert_eq!(line, "edit: a clip of pads has no scale");
+        // A clip of notes, which a synth's track plays, does.
+        h.control.project.tracks[0].slots[0].as_mut().unwrap().holds = mpfree_seq::Holds::Notes;
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        for (tick, note) in [(960, 60), (1920, 64)] {
+            h.act(TimeAction::Edit(E::Draw {
+                tick,
+                note,
+                len: 240,
+            }))
+            .unwrap();
+        }
+        h.set_scale_offers(Some(Scale::new(2, DORIAN)), &[("Mine".into(), 0b11, 0b11)]);
+        h.take_changed();
+        let edit = |h: &mut TimeHost| {
+            h.take_changed();
+            h.state().edit.unwrap()
+        };
+        assert_eq!(edit(&mut h).editor.offers.pads, Some(Scale::new(2, DORIAN)));
+        assert_eq!(edit(&mut h).editor.offers.own.len(), 1);
+        let line = h
+            .act(TimeAction::Edit(E::Scale(Some(Scale::new(0, MAJOR)))))
+            .unwrap();
+        assert_eq!(line, "edit: scale C Major (UNDO takes it back)");
+        h.act(TimeAction::Edit(E::Root(2))).unwrap();
+        let e = edit(&mut h);
+        assert_eq!(e.clip.scale, Some(Scale::new(2, MAJOR)));
+        let mut notes: Vec<u8> = e.clip.notes.iter().map(|n| n.note).collect();
+        notes.sort_unstable();
+        assert_eq!(notes, [0, 60, 64], "no note moved");
+        let saved = mpfree_seq::save::to_text(h.project());
+        assert!(saved.contains("\nscale D 0 2 4 5 7 9 11\n"), "{saved}");
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(edit(&mut h).clip.scale, Some(Scale::new(0, MAJOR)));
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(edit(&mut h).clip.scale, None);
+        h.act(TimeAction::Redo).unwrap();
+        // C major: the C a scale step up is D.
+        let e = edit(&mut h);
+        let c = e.clip.notes.iter().position(|n| n.note == 60).unwrap();
+        h.act(TimeAction::Edit(E::Drop {
+            index: c,
+            rev: e.rev,
+            ticks: 0,
+            notes: 1,
+            scale: true,
+        }))
+        .unwrap();
+        let mut notes: Vec<u8> = edit(&mut h).clip.notes.iter().map(|n| n.note).collect();
+        notes.sort_unstable();
+        assert_eq!(notes, [0, 62, 64]);
+    }
+
     /// Piano roll plan 0C.2: the copy of the clip the screen reads carries
     /// the answer to the editor's last touch, numbered: taken with the new
     /// revision and where its notes landed, refused with why, or nothing
@@ -10588,6 +10673,7 @@ mod tests {
             rev,
             ticks: 240,
             notes: 2,
+            scale: false,
         }))
         .unwrap();
         let a = answer(&mut h);
@@ -12676,6 +12762,7 @@ mod tests {
             rev,
             ticks: 240,
             notes: 2,
+            scale: false,
         };
         touch(&mut together, drop, &note);
         touch(&mut together, E::Tap { index: 0, rev }, &note);
