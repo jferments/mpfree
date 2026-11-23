@@ -432,6 +432,205 @@ impl Drop for SdCard {
     }
 }
 
+/// How long the card stays open once nothing uses it: the browser hidden
+/// and its worker idle. Coming back within it finds the card still open.
+pub const PUT_AWAY: Duration = Duration::from_secs(30);
+
+/// What the Browser's SD card place hears from [`Slot::tick`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Heard {
+    /// A line for the log.
+    Say(String),
+    /// The card is open, read-only.
+    Open(Card),
+    /// It didn't open: why, for the screen.
+    NotOpened(String),
+    /// It was open and isn't now: taken out, closed by the system, or put
+    /// away here once nothing used it. Why, for the log.
+    Closed(String),
+}
+
+enum Opening {
+    Say(String),
+    Done(Box<Result<SdCard, NotOpened>>),
+}
+
+/// The card as the Browser's SD card place uses it: opened in a thread of
+/// its own when the place asks ([`Slot::open`]), watched while it is open,
+/// and closed in a thread once nothing has used it for `put_away`. A close
+/// still running when the card is asked for again finishes first.
+pub struct Slot {
+    paths: Paths,
+    timing: Timing,
+    put_away: Duration,
+    opening: Option<std::sync::mpsc::Receiver<Opening>>,
+    open: Option<SdCard>,
+    closing: Option<thread::JoinHandle<Result<String, String>>>,
+    unused_since: Option<Instant>,
+    looked: Instant,
+    heard: Vec<Heard>,
+}
+
+impl Slot {
+    pub fn new(paths: Paths, timing: Timing, put_away: Duration) -> Slot {
+        Slot {
+            paths,
+            timing,
+            put_away,
+            opening: None,
+            open: None,
+            closing: None,
+            unused_since: None,
+            looked: Instant::now(),
+            heard: Vec::new(),
+        }
+    }
+
+    /// The pad player's card on the MPC.
+    pub fn on_the_mpc(report_dir: &Path) -> Slot {
+        Slot::new(
+            Paths::on_the_stick(report_dir),
+            Timing::on_the_mpc(),
+            PUT_AWAY,
+        )
+    }
+
+    /// Asks for the card, in a thread. Already open, the next tick says so
+    /// again; already being opened, nothing more is asked.
+    pub fn open(&mut self) {
+        if let Some(c) = &self.open {
+            self.heard.push(Heard::Open(c.card().clone()));
+            return;
+        }
+        if self.opening.is_some() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (paths, timing) = (self.paths.clone(), self.timing.clone());
+        let before = self.closing.take();
+        let spawned = thread::Builder::new()
+            .name("sd-card-open".into())
+            .spawn(move || {
+                // The last opening's close first: its window ends before
+                // this one is asked for.
+                if let Some(h) = before {
+                    let _ = tx.send(Opening::Say(closed_line(h.join())));
+                }
+                let r = SdCard::open(&paths, &timing, &mut |m| {
+                    let _ = tx.send(Opening::Say(m));
+                });
+                let _ = tx.send(Opening::Done(Box::new(r)));
+            });
+        match spawned {
+            Ok(_) => self.opening = Some(rx),
+            Err(e) => self.heard.push(Heard::NotOpened(format!(
+                "The SD card couldn't be asked for ({e})."
+            ))),
+        }
+    }
+
+    /// Once a frame. `using` says whether anything shows or uses the card
+    /// now (the browser shows, or its worker has jobs). What happened since
+    /// the last tick, oldest first.
+    pub fn tick(&mut self, using: bool) -> Vec<Heard> {
+        self.poll_opening();
+        if self.closing.as_ref().is_some_and(|h| h.is_finished()) {
+            if let Some(h) = self.closing.take() {
+                self.heard.push(Heard::Say(closed_line(h.join())));
+            }
+        }
+        if self.open.is_some() {
+            if using {
+                self.unused_since = None;
+            }
+            let since = *self.unused_since.get_or_insert_with(Instant::now);
+            if since.elapsed() >= self.put_away {
+                self.put_away();
+            } else if self.looked.elapsed() >= self.timing.beat {
+                self.looked = Instant::now();
+                self.look();
+            }
+        }
+        std::mem::take(&mut self.heard)
+    }
+
+    fn poll_opening(&mut self) {
+        use std::sync::mpsc::TryRecvError;
+        let Some(rx) = &self.opening else { return };
+        loop {
+            match rx.try_recv() {
+                Ok(Opening::Say(m)) => self.heard.push(Heard::Say(m)),
+                Ok(Opening::Done(r)) => {
+                    match *r {
+                        Ok(c) => {
+                            self.heard.push(Heard::Open(c.card().clone()));
+                            self.open = Some(c);
+                            self.unused_since = None;
+                            self.looked = Instant::now();
+                        }
+                        Err(e) => self.heard.push(Heard::NotOpened(e.message())),
+                    }
+                    break;
+                }
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => {
+                    self.heard.push(Heard::NotOpened(
+                        "The SD card didn't open: its thread stopped.".to_string(),
+                    ));
+                    break;
+                }
+            }
+        }
+        self.opening = None;
+    }
+
+    /// Nothing used it for `put_away`: closed in a thread.
+    fn put_away(&mut self) {
+        let Some(c) = self.open.take() else { return };
+        self.unused_since = None;
+        let timing = self.timing.clone();
+        self.heard.push(Heard::Closed(format!(
+            "sd card: putting it away: nothing used it for {} s",
+            self.put_away.as_secs()
+        )));
+        match thread::Builder::new()
+            .name("sd-card-close".into())
+            .spawn(move || c.close(&timing))
+        {
+            Ok(h) => self.closing = Some(h),
+            // Dropped in the failed spawn: asked to close without waiting.
+            Err(e) => self.heard.push(Heard::Say(format!(
+                "sd card: asked to close without waiting ({e})"
+            ))),
+        }
+    }
+
+    /// While open: whether it still is (taken out, or closed by the system).
+    fn look(&mut self) {
+        let Some(c) = &self.open else { return };
+        if c.is_open() {
+            return;
+        }
+        let why = read_status(&self.paths)
+            .filter(|s| s.ask == c.ask)
+            .map_or_else(|| "The SD card's window closed.".to_string(), |s| s.message);
+        if let Some(mut c) = self.open.take() {
+            // Its window is over: nothing to ask, the counter stops.
+            c.closed = true;
+        }
+        self.heard
+            .push(Heard::Closed(format!("sd card: closed: {why}")));
+    }
+}
+
+fn closed_line(r: thread::Result<Result<String, String>>) -> String {
+    match r {
+        Ok(Ok(m)) => format!("sd card: closed: {m}"),
+        Ok(Err(e)) => format!("sd card: the close didn't finish: {e}"),
+        Err(_) => "sd card: the close stopped before it finished".to_string(),
+    }
+}
+
 fn open_card(s: &Status) -> Option<Card> {
     Some(Card {
         fs: s.fs.clone(),
@@ -814,5 +1013,100 @@ mod tests {
             .file_type()
             .is_symlink());
         assert_eq!(fs::read_to_string(&elsewhere).unwrap(), "keep\n");
+    }
+
+    /// Ticks until `done` holds for what was heard, up to 3 s.
+    fn tick_until(slot: &mut Slot, using: bool, done: impl Fn(&[Heard]) -> bool) -> Vec<Heard> {
+        let mut all = Vec::new();
+        let end = Instant::now() + Duration::from_secs(3);
+        while !done(&all) {
+            assert!(Instant::now() < end, "not yet: {all:?}");
+            all.extend(slot.tick(using));
+            thread::sleep(Duration::from_millis(2));
+        }
+        all
+    }
+
+    #[test]
+    fn the_place_opens_the_card_in_a_thread_and_puts_it_away_once_unused() {
+        let t = tmp("slot");
+        let p = paths(&t);
+        let svc = service(&t, Answer::Open);
+        let mut slot = Slot::new(p.clone(), quick(), Duration::from_millis(150));
+        assert!(slot.tick(false).is_empty());
+        slot.open();
+        slot.open(); // a second tap while it opens asks nothing more
+        let heard = tick_until(&mut slot, true, |h| {
+            h.iter().any(|x| matches!(x, Heard::Open(_)))
+        });
+        assert!(heard
+            .iter()
+            .any(|h| matches!(h, Heard::Say(l) if l.contains("asked for the card"))));
+        let Some(Heard::Open(card)) = heard.last() else {
+            panic!("{heard:?}")
+        };
+        assert_eq!(card.mount, t.0.join("card"));
+        assert!(slot.open.is_some());
+        // Asked again while open: said again, nothing asked.
+        slot.open();
+        assert!(matches!(slot.tick(true).as_slice(), [Heard::Open(_)]));
+        // In use, it stays open past the put-away time.
+        let end = Instant::now() + Duration::from_millis(300);
+        while Instant::now() < end {
+            assert!(slot.tick(true).is_empty());
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(slot.open.is_some());
+        // Unused: put away, and the close's last word follows.
+        let heard = tick_until(&mut slot, false, |h| {
+            h.iter()
+                .any(|x| matches!(x, Heard::Say(l) if l.starts_with("sd card: closed")))
+        });
+        assert!(
+            matches!(&heard[0], Heard::Closed(l) if l.contains("nothing used it")),
+            "{heard:?}"
+        );
+        assert!(!slot.open.is_some());
+        assert!(heard.iter().any(|h| *h
+            == Heard::Say("sd card: closed: Closed. Nothing was written to the card.".into())));
+        assert!(svc.join().unwrap().len() >= 2);
+    }
+
+    #[test]
+    fn the_place_hears_when_the_card_closes_by_itself_and_why_it_didnt_open() {
+        let t = tmp("slot-gone");
+        let p = paths(&t);
+        let svc = service(&t, Answer::Open);
+        let mut slot = Slot::new(p.clone(), quick(), Duration::from_secs(60));
+        slot.open();
+        tick_until(&mut slot, true, |h| {
+            h.iter().any(|x| matches!(x, Heard::Open(_)))
+        });
+        // The card is taken out: the service says so under the same word.
+        let word = read_status(&p).unwrap().ask;
+        status(&p, &format!("state=closed\nmessage=The card was taken out while it was open. Nothing was written to it.\nask={word}\n"));
+        let heard = tick_until(&mut slot, true, |h| !h.is_empty());
+        assert_eq!(heard, [Heard::Closed("sd card: closed: The card was taken out while it was open. Nothing was written to it.".into())]);
+        assert!(!slot.open.is_some());
+        // Nothing asked of a window that is over.
+        assert!(!p.close.exists());
+        // The stand-in service gives up waiting for a close; a new tap asks
+        // again, and an empty slot says so.
+        svc.join().unwrap();
+        let svc = service(&t, Answer::NoCard);
+        slot.open();
+        let heard = tick_until(&mut slot, true, |h| {
+            h.iter().any(|x| matches!(x, Heard::NotOpened(_)))
+        });
+        assert_eq!(
+            heard.last(),
+            Some(&Heard::NotOpened("There is no card in the SD slot.".into()))
+        );
+        svc.join().unwrap();
+        // No service on this stick.
+        fs::remove_file(&p.service).unwrap();
+        slot.open();
+        let heard = tick_until(&mut slot, true, |h| !h.is_empty());
+        assert_eq!(heard, [Heard::NotOpened(NotOpened::NoService.message())]);
     }
 }
