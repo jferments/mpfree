@@ -1769,6 +1769,13 @@ fn the_browsers_preview_mixes_and_stops_without_allocating() {
 /// allocating; only the hits of the kit the pads show flash them.
 #[test]
 fn each_track_plays_its_own_kit_at_once() {
+    // The rig, a second player and the pads' routing overflow a 2 MiB test
+    // thread in a debug build (the time host's start-up frames are most
+    // of it), so this one runs on the smoke tests' stack.
+    crate::smoke::on_big_stack(each_track_plays_its_own_kit);
+}
+
+fn each_track_plays_its_own_kit() {
     let mut rig = Rig::new(false);
     let a = kit::build(&[(PAD_NOTES[0], "Kick", &tone(6000, 0.01)[..])]);
     let b = kit::build(&[(PAD_NOTES[1], "Clap", &tone(3000, 0.03)[..])]);
