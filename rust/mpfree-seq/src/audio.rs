@@ -57,6 +57,11 @@ pub struct ClipRegion {
     pub end: Tick,
     pub rec: RecId,
     pub src: i64,
+    /// Where in frame `src` its recording is at `start`, -0.5 to 0.5, as
+    /// on the song region it was cut from: the frame playing at clip tick
+    /// `t` is `src` plus this and the frames from `start` to `t`, rounded
+    /// (`mpfree_audiotracks::Region::phase`).
+    pub phase: f32,
     pub gain: f32,
     /// Its fade in and fade out in frames, measured on the region it was
     /// cut from (see `into` and `left`).
@@ -77,6 +82,7 @@ impl ClipRegion {
             end,
             rec,
             src,
+            phase: 0.0,
             gain: 1.0,
             fade_in: 0,
             fade_out: 0,
@@ -153,7 +159,8 @@ impl AudioClip {
         let scale = |n: f64| (n * f64::from(to) / f64::from(from)).round();
         let frames = |n: u32| scale(f64::from(n)) as u32;
         for r in &mut self.regions {
-            r.src = scale(r.src as f64) as i64;
+            let x = f64::from(to) / f64::from(from) * (r.src as f64 + f64::from(r.phase));
+            (r.src, r.phase) = (x.round() as i64, (x - x.round()) as f32);
             (r.fade_in, r.fade_out) = (frames(r.fade_in), frames(r.fade_out));
             (r.into, r.left) = (frames(r.into), frames(r.left));
         }

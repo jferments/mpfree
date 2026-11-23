@@ -338,11 +338,16 @@ fn clip_body(s: &mut String, c: &Clip) {
     if let Some(a) = &c.audio {
         let _ = writeln!(s, "audioclip {} {} {}", a.bpm, a.gain, a.last_frame);
         for r in &a.regions {
-            let _ = writeln!(
+            let _ = write!(
                 s,
                 "region {} {} {:032x} {} {} {} {} {} {}",
                 r.start, r.end, r.rec.0, r.src, r.gain, r.fade_in, r.fade_out, r.into, r.left
             );
+            // Where between frames it starts, when not on a frame.
+            if r.phase != 0.0 {
+                let _ = write!(s, " {}", r.phase);
+            }
+            s.push('\n');
         }
     }
     // Pressure first: the notes name runs of it. Only what the notes and
@@ -1220,7 +1225,8 @@ fn num<T: FromStr>(w: Option<&str>) -> Option<T> {
 
 /// An audio clip's `region` line after its word: start and end ticks, the
 /// recording's lasting id (32 hex digits), its first frame, gain, fades,
-/// `into` and `left`.
+/// `into`, `left` and where in its first frame it starts (`phase`; 0 if
+/// left out).
 fn clip_region<'a>(w: &mut impl Iterator<Item = &'a str>) -> Option<crate::ClipRegion> {
     let (start, end) = (num(w.next())?, num(w.next())?);
     let rec = w
@@ -1237,6 +1243,10 @@ fn clip_region<'a>(w: &mut impl Iterator<Item = &'a str>) -> Option<crate::ClipR
         fade_out: num(w.next())?,
         into: num(w.next())?,
         left: num(w.next())?,
+        phase: match w.next() {
+            None => 0.0,
+            Some(p) => num::<f32>(Some(p)).filter(|p| p.abs() <= 0.5)?,
+        },
     })
 }
 
@@ -2158,8 +2168,8 @@ mod tests {
     }
 
     /// An audio clip (phase 2) reads back exactly, its regions' ids,
-    /// fades and cut counts included; one out of place or out of range is
-    /// refused.
+    /// fades, cut counts and place between frames included (that written
+    /// only when not 0); one out of place or out of range is refused.
     #[test]
     fn audio_clips_read_back_and_bad_ones_are_refused() {
         use crate::{AudioClip, ClipRegion, RecId};
@@ -2178,6 +2188,7 @@ mod tests {
             left: 7,
             ..ClipRegion::new(3840, 7680, RecId(3), -40)
         });
+        audio.regions[1].phase = -0.25;
         audio.gain = 0.75;
         clip.audio = Some(audio);
         clip.once = true;
@@ -2189,7 +2200,7 @@ mod tests {
             text.contains(
                 "clip 2 7680 Hook\nonce\naudioclip 120.5 0.75 90000\n\
                  region 0 3840 5b2f0d9c41e8a7763c0f12ab9e4d8c01 1200 1 300 0 0 0\n\
-                 region 3840 7680 00000000000000000000000000000003 -40 0.5 0 64 22050 7\nend\n"
+                 region 3840 7680 00000000000000000000000000000003 -40 0.5 0 64 22050 7 -0.25\nend\n"
             ),
             "{text}"
         );
@@ -2213,6 +2224,10 @@ mod tests {
         refused(
             text.replace("5b2f0d9c41e8a7763c0f12ab9e4d8c01", "5b2f"),
             "short id",
+        );
+        refused(
+            text.replace("22050 7 -0.25", "22050 7 0.75"),
+            "phase past half a frame",
         );
         let mut on_notes = p.clone();
         let c = on_notes.tracks[1].slots[2].take();

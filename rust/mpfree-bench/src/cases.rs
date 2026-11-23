@@ -4118,6 +4118,7 @@ fn audio_clips(rate: u32) -> Case {
                 end: bar,
                 rec: RecordingId(1 + u128::from(k)),
                 src: 0,
+                phase: 0.0,
                 gain: 1.0,
                 fade_in: 0,
                 fade_out: 0,

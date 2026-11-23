@@ -1590,6 +1590,7 @@ fn audio_hash(a: &AudioView) -> u64 {
             end,
             rec,
             src,
+            phase,
             gain,
             fade_in,
             fade_out,
@@ -1603,7 +1604,7 @@ fn audio_hash(a: &AudioView) -> u64 {
         h.word(src as u64);
         h.word(u64::from(gain.to_bits()) | u64::from(fade_in) << 32);
         h.word(u64::from(fade_out) | u64::from(into) << 32);
-        h.word(u64::from(left));
+        h.word(u64::from(left) | u64::from(phase.to_bits()) << 32);
     }
     h.done() | 1
 }

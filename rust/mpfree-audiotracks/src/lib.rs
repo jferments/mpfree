@@ -480,6 +480,12 @@ pub struct Region {
     /// The take's frame that plays at `start` (may be below 0 or past the
     /// take's end: those frames are silent).
     pub src: i64,
+    /// Where in frame `src` its recording is at `start`, -0.5 to 0.5: the
+    /// frame that plays at song tick `t` is `src` plus `phase` and the
+    /// frames from `start` to `t`, rounded ([`Region::frames_to`]). Where
+    /// a tick falls between frames, a part cut from a region keeps the
+    /// region's rounding, so its parts play exactly as it did.
+    pub phase: f32,
     pub gain: f32,
     /// Its fade in and fade out in frames, measured on the region it was
     /// cut from (`into`, `left`).
@@ -499,6 +505,7 @@ impl Region {
         end: 0,
         take: 0,
         src: 0,
+        phase: 0.0,
         gain: 1.0,
         fade_in: 0,
         fade_out: 0,
@@ -509,6 +516,22 @@ impl Region {
     pub fn contains(&self, t: Tick) -> bool {
         (self.start..self.end).contains(&t)
     }
+
+    /// Frames of it from song tick `at`, where it starts as it plays, to
+    /// song tick `t` along `map`: from its start, the frame of its
+    /// recording `t` plays is `src` plus this; to its end, its length.
+    pub fn frames_to(&self, map: &TempoMap, at: f64, t: f64, rate: u32) -> i64 {
+        (f64::from(self.phase) + frames_from(map, at, t, rate)).round() as i64
+    }
+}
+
+/// The frame of a take, and where in it, at song tick `t` along `map`,
+/// the take's frame 0 at song tick `anchor`: for a region starting at `t`
+/// ([`Region::src`], [`Region::phase`]).
+pub fn src_at(map: &TempoMap, anchor: f64, t: f64, rate: u32) -> (i64, f32) {
+    let x = frames_from(map, anchor, t, rate);
+    let src = x.round();
+    (src as i64, (x - src) as f32)
 }
 
 /// What the screen shows of a take.
@@ -1060,7 +1083,7 @@ fn join(a: &Region, b: &Region, map: &TempoMap, rate: u32) -> Join {
     }
     // The lengths only where the audio may run on (every region is
     // placed again each run).
-    let frames = |r: &Region| frames_from(map, r.start as f64, r.end as f64, rate).round() as i64;
+    let frames = |r: &Region| r.frames_to(map, r.start as f64, r.end as f64, rate);
     let len_a = frames(a);
     if b.src != a.src + len_a {
         return Join::Fade;
@@ -1095,14 +1118,18 @@ fn ends_meet(a: &Region, len_a: i64, b: &Region, len_b: i64) -> Join {
 /// off it ([`Region::into`], [`Region::left`]), so it plays exactly its
 /// share of them; the part after plays on from where `r` had got to.
 fn cut(r: &Region, at: Tick, map: &TempoMap, rate: u32) -> (Region, Region) {
-    let frames = |a: Tick, b: Tick| frames_from(map, a as f64, b as f64, rate).round() as i64;
     let add = |n: u32, k: i64| (i64::from(n) + k).clamp(0, i64::from(u32::MAX)) as u32;
+    let (start, at_f, end) = (r.start as f64, at as f64, r.end as f64);
+    // On the region's own rounding: the part before is `k` frames, and
+    // the part after starts on frame `k` of it, where its recording is.
+    let k = r.frames_to(map, start, at_f, rate);
+    let len = r.frames_to(map, start, end, rate);
     let (mut before, mut after) = (*r, *r);
     before.end = at;
-    before.left = add(r.left, frames(at, r.end));
-    let k = frames(r.start, at);
+    before.left = add(r.left, len - k);
     after.start = at;
     after.src = r.src + k;
+    after.phase = (f64::from(r.phase) + frames_from(map, start, at_f, rate) - k as f64) as f32;
     after.into = add(r.into, k);
     (before, after)
 }
@@ -1200,7 +1227,7 @@ impl Reader<'_> {
             return;
         };
         // Frames since the region's start at the run's first frame.
-        let e0 = frames_from(map, p.at, tick0, rate).round() as i64;
+        let e0 = r.frames_to(map, p.at, tick0, rate);
         let stop = len_f
             + if after == Join::Straight {
                 0
@@ -2138,11 +2165,13 @@ impl AudioTracks {
                 if to <= from {
                     return self.refuse();
                 }
+                let (src, phase) = src_at(map, a, from as f64, rate);
                 let r = Region {
                     start: from,
                     end: to,
                     take,
-                    src: frames_from(map, a, from as f64, rate).round() as i64,
+                    src,
+                    phase,
                     gain: 1.0,
                     fade_in: 0,
                     fade_out: 0,
@@ -2347,7 +2376,8 @@ impl AudioTracks {
                         for r in &mut t.regions[..t.n] {
                             if r.take == old {
                                 r.take = new;
-                                r.src = (r.src as f64 * ratio).round() as i64;
+                                let x = (r.src as f64 + f64::from(r.phase)) * ratio;
+                                (r.src, r.phase) = (x.round() as i64, (x - x.round()) as f32);
                                 let scale = |n: u32| (f64::from(n) * ratio).round() as u32;
                                 (r.into, r.left) = (scale(r.into), scale(r.left));
                                 any = true;
@@ -2651,11 +2681,13 @@ impl AudioTracks {
                     if end <= start {
                         continue;
                     }
+                    let (src, phase) = src_at(m, a, start as f64, rate);
                     let r = Region {
                         start,
                         end,
                         take,
-                        src: frames_from(m, a, start as f64, rate).round() as i64,
+                        src,
+                        phase,
                         gain: 1.0,
                         fade_in: 0,
                         fade_out: 0,
@@ -2839,11 +2871,13 @@ impl AudioTracks {
         let end_t = t_out.round() as Tick;
         if end_t > start {
             let anchor = self.takes[id].anchor;
+            let (src, phase) = src_at(map, anchor, start as f64, rate);
             let r = Region {
                 start,
                 end: end_t,
                 take: rec.take,
-                src: frames_from(map, anchor, start as f64, rate).round() as i64,
+                src,
+                phase,
                 gain: 1.0,
                 fade_in: 0,
                 fade_out: 0,
@@ -3290,10 +3324,10 @@ impl AudioTracks {
                     }
                     0
                 } else {
-                    frames_from(map, at, tick, rate).round() as i64
+                    r.frames_to(map, at, tick, rate)
                 };
                 let to = at + (r.end - r.start) as f64;
-                let len_f = (frames_from(map, at, to, rate).round() as i64).max(more);
+                let len_f = r.frames_to(map, at, to, rate).max(more);
                 let end = (r.src + len_f + FADE as i64).clamp(0, tk.frames as i64) as u64;
                 let frame = (r.src + e0).max(0) as u64;
                 if frame < end {
@@ -3649,7 +3683,7 @@ impl AudioTracks {
                     .get(i + 1)
                     .map_or(Join::Fade, |n| join(r, n, map, rate))
             };
-            let len_f = frames_from(map, r.start as f64, r.end as f64, rate).round() as i64;
+            let len_f = r.frames_to(map, start, end, rate);
             let placed = Placed {
                 r,
                 at: r.start as f64,

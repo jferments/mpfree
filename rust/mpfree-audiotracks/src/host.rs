@@ -928,7 +928,7 @@ impl AudioHost {
             .iter()
             .find(|r| r.contains(start) && r.start != start && plays_from_file(tr, r.take))?;
         let rate = self.tracks.rate();
-        let at = r.src + crate::frames_from(map, r.start as f64, start as f64, rate).round() as i64;
+        let at = r.src + r.frames_to(map, r.start as f64, start as f64, rate);
         Some((r.take, at.max(0) as u64))
     }
 

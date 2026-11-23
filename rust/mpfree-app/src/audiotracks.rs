@@ -288,6 +288,7 @@ const NO_CLIP_REGION: ClipRegion = ClipRegion {
     end: 0,
     rec: RecordingId::NONE,
     src: 0,
+    phase: 0.0,
     gain: 1.0,
     fade_in: 0,
     fade_out: 0,
@@ -318,6 +319,7 @@ fn plays_in<'r>(p: &AudioPlays, room: &'r mut [ClipRegion; MAX_CLIP_REGIONS]) ->
                     end: r.end,
                     rec: RecordingId(r.rec.0),
                     src: r.src,
+                    phase: r.phase,
                     gain: r.gain,
                     fade_in: r.fade_in,
                     fade_out: r.fade_out,
@@ -1979,9 +1981,7 @@ impl TrackHost {
             .place(r.track)
             .ok_or_else(|| format!("{} is not in the track list", self.who(r.track)))?;
         let length = reg.end - reg.start;
-        let frames = map
-            .frames_between(reg.start as f64, reg.end as f64, self.rate)
-            .round() as i64;
+        let frames = reg.frames_to(map, reg.start as f64, reg.end as f64, self.rate);
         let bar = meter.bar_ticks().max(1);
         let (first, last) = (reg.start / bar + 1, (reg.end + bar - 1) / bar);
         let who = self.who(r.track);
@@ -1994,6 +1994,7 @@ impl TrackHost {
             (format!("{who} {first}"), format!("{who}, bar {first}"))
         };
         let mut one = mpfree_seq::ClipRegion::new(0, length, RecId(take.rec.0), reg.src);
+        one.phase = reg.phase;
         one.gain = reg.gain;
         one.fade_in = reg.fade_in;
         one.fade_out = reg.fade_out;
@@ -2114,7 +2115,8 @@ impl TrackHost {
         for r in &mut audio.regions {
             if let Some(c) = copy_of(r.rec) {
                 r.rec = RecId(c.to.0);
-                r.src = scale(r.src as f64, c.ratio) as i64;
+                let x = (r.src as f64 + f64::from(r.phase)) * c.ratio;
+                (r.src, r.phase) = (x.round() as i64, (x - x.round()) as f32);
                 r.into = scale(f64::from(r.into), c.ratio) as u32;
                 r.left = scale(f64::from(r.left), c.ratio) as u32;
             }
@@ -3137,6 +3139,7 @@ impl crate::time::SongAudio for TrackHost {
                             end: r.end,
                             rec: RecId(tr.take(r.take)?.rec.0),
                             src: r.src,
+                            phase: r.phase,
                             gain: r.gain,
                             fade_in: r.fade_in,
                             fade_out: r.fade_out,
@@ -4543,6 +4546,7 @@ mod tests {
                     end,
                     take: 0,
                     src: 0,
+                    phase: 0.0,
                     gain: 1.0,
                     fade_in: 0,
                     fade_out: 0,

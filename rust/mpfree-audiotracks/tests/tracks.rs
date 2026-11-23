@@ -412,6 +412,51 @@ fn a_split_in_held_audio_plays_as_the_whole_region_did() {
     }
 }
 
+/// Splits on ticks that fall between frames (a tick is 5.74 frames
+/// here), heard from song positions that put the region's start between
+/// frames too: each part keeps the region's rounding (`Region::phase`),
+/// so the parts play sample for sample as the whole region did, its
+/// fades and all, from wherever the song plays.
+#[test]
+fn splits_between_frames_play_as_the_whole_region_from_anywhere() {
+    let play = |splits: &[i64], from: i64| {
+        let mut r = one_bar(128);
+        r.cmd(A::SetFades {
+            track: 0,
+            at: 0,
+            fade_in: 6000,
+            fade_out: 8000,
+        });
+        for &at in splits {
+            r.cmd(A::Split { track: 0, at });
+        }
+        r.run_to(r.frame + 1);
+        assert_eq!(r.a.regions(0).len(), splits.len() + 1);
+        let p = r.frame + 10;
+        r.at(p, T::Locate(from));
+        r.at(p, T::Play);
+        r.run_to(p + BAR + 1000);
+        (p, r.out)
+    };
+    for from in [0, 333, 1499, 2777] {
+        let (p, whole) = play(&[], from);
+        let (q, split) = play(&[1001, 1927, 2903, 3001], from);
+        assert_eq!(p, q);
+        let span = 2 * p as usize..2 * (p + BAR) as usize;
+        let first = (span.start..span.end).find(|&i| whole[i] != split[i]);
+        assert_eq!(
+            first,
+            None,
+            "from tick {from}: frame {:?}",
+            first.map(|i| i / 2 - p as usize)
+        );
+        assert!(
+            whole[span].iter().any(|&v| v != 0.0),
+            "it played from tick {from}"
+        );
+    }
+}
+
 /// Splits inside a region's fade in and fade out: each part keeps its
 /// share of the fades, so the parts play sample for sample as the whole
 /// region did, and setting a part's fades makes them its own.

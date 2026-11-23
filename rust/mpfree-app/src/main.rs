@@ -14552,8 +14552,10 @@ mod tests {
             .expect("an engine track for it");
         // Two takes of six bars, each frame different, so a frame out shows.
         for (id, rec, k) in [(0u16, 7u128, 997usize), (1, 8, 613)] {
-            // Six bars, silent past the last region's last frame: its fade
-            // past the end, under the first block, reads nothing.
+            // Six bars, silent from the frame after the last region's
+            // last (its end, rounded: a region plays the frames before
+            // it): its fade past the end, under the first block, reads
+            // nothing.
             let frames = 6 * bar_frames;
             let end = (6.0 * 4.0 * 60.0 / bpm * RATE as f64).round() as usize;
             let take = mpfree_audiotracks::save::TakeFile {
@@ -14570,7 +14572,7 @@ mod tests {
                 path: None,
                 audio: (0..frames)
                     .map(|i| {
-                        if i > end {
+                        if i >= end {
                             0.0
                         } else {
                             (i % k) as f32 / (2.0 * k as f32)
@@ -14701,12 +14703,11 @@ mod tests {
             Some((s, &mut again)),
         );
         let n = song.len().min(again.len());
-        // Where a section's edge falls between frames (at 117 BPM; at 120
-        // they fall on frames), a region cut there keeps its fades to the
-        // frame only: each clip rounds its own length, so a fade can run
-        // one frame off, a gain step of one frame of its slope (under
-        // 1e-5 here). Every frame else is exact.
-        let tol = if bpm == 120.0 { 1e-6 } else { 1e-5 };
+        // At 117 BPM a section's edge falls between frames; the parts cut
+        // there keep their place between frames (their phase), so they
+        // play as the region did, to float rounding, as at 120 where the
+        // edges fall on frames.
+        let tol = 1e-6;
         let first = (0..n).find(|&i| (song[i] - again[i]).abs() > tol);
         assert_eq!(
             first, None,

@@ -70,6 +70,7 @@ pub struct ClipRegion {
     pub end: Tick,
     pub rec: RecordingId,
     pub src: i64,
+    pub phase: f32,
     pub gain: f32,
     pub fade_in: u32,
     pub fade_out: u32,
@@ -359,6 +360,7 @@ impl Set {
                 end: r.end,
                 take: takes[i],
                 src: r.src,
+                phase: r.phase,
                 gain: r.gain,
                 fade_in: r.fade_in,
                 fade_out: r.fade_out,
@@ -552,8 +554,7 @@ impl Voice {
             return false;
         };
         let a = &s.regions[i];
-        let len_a = crate::frames_from(map, base + a.start as f64, base + a.end as f64, rate)
-            .round() as i64;
+        let len_a = a.frames_to(map, base + a.start as f64, base + a.end as f64, rate);
         let b = if i + 1 < s.n {
             Some(&s.regions[i + 1]).filter(|b| b.start == a.end)
         } else if a.end != s.len {
@@ -628,8 +629,8 @@ impl Voice {
             .iter()
             .find(|r| r.start as f64 <= t && t < r.end as f64)?;
         let at = base + r.start as f64;
-        let len_f = crate::frames_from(map, at, base + r.end as f64, rate).round() as i64;
-        let e = crate::frames_from(map, at, tick, rate).round() as i64;
+        let len_f = r.frames_to(map, at, base + r.end as f64, rate);
+        let e = r.frames_to(map, at, tick, rate);
         let g = r.gain * Envelope::of(r, len_f).at(e) * self.shape.glide.to;
         Some((r.take, r.src + e, g))
     }
@@ -659,8 +660,8 @@ impl Voice {
             .iter()
             .find(|r| (r.start as f64) < t && t <= r.end as f64)?;
         let at = base + r.start as f64;
-        let len_f = crate::frames_from(map, at, base + r.end as f64, rate).round() as i64;
-        let e = crate::frames_from(map, at, tick, rate).round() as i64;
+        let len_f = r.frames_to(map, at, base + r.end as f64, rate);
+        let e = r.frames_to(map, at, tick, rate);
         let g = r.gain * Envelope::of(r, len_f).at(e) * self.shape.glide.to;
         Some((r.take, r.src + e, g))
     }
@@ -910,7 +911,7 @@ impl crate::Reader<'_> {
             }
         }
         let placed = |r: &Region, base: f64| -> i64 {
-            crate::frames_from(map, base + r.start as f64, base + r.end as f64, rate).round() as i64
+            r.frames_to(map, base + r.start as f64, base + r.end as f64, rate)
         };
         let mut alive = false;
         let v = &*v;
@@ -954,7 +955,7 @@ impl crate::Reader<'_> {
                         len0
                     };
                     if ringing {
-                        let e0 = crate::frames_from(map, at, tick0, rate).round() as i64;
+                        let e0 = r.frames_to(map, at, tick0, rate);
                         if e0 >= len_f + FADE as i64 {
                             continue;
                         }

@@ -1096,12 +1096,31 @@ impl SongSound<'_> {
             .collect()
     }
 
-    /// Frames from song tick `a` to `b` as the song plays them, rounded as
-    /// the audio tracks round a cut.
-    fn frames(&self, a: Tick, b: Tick) -> i64 {
-        self.map
-            .frames_between(a as f64, b as f64, self.rate)
-            .round() as i64
+    /// `r`'s frames from song tick `at`, where it starts, to song tick
+    /// `t`, on its own rounding (its `phase`), as the audio tracks count
+    /// them (`Region::frames_to`): to its end, its length.
+    fn frames_of(&self, r: &ClipRegion, at: Tick, t: Tick) -> i64 {
+        let x = self.map.frames_between(at as f64, t as f64, self.rate);
+        (f64::from(r.phase) + x).round() as i64
+    }
+
+    /// `r`, on song ticks `at..end`, cut at song tick `cut` inside it, as
+    /// the audio tracks cut a region (`mpfree-audiotracks`' `cut`): the
+    /// part before ends there and counts the frames after in `left`; the
+    /// part after plays on from where `r` had got to, counting the frames
+    /// before in `into`, on `r`'s rounding, so the parts play exactly as
+    /// `r` did. Each keeps its ticks (the caller moves them).
+    fn cut(&self, r: &ClipRegion, at: Tick, end: Tick, cut: Tick) -> (ClipRegion, ClipRegion) {
+        let add = |n: u32, k: i64| (i64::from(n) + k).clamp(0, i64::from(u32::MAX)) as u32;
+        let k = self.frames_of(r, at, cut);
+        let len = self.frames_of(r, at, end);
+        let (mut before, mut after) = (*r, *r);
+        before.left = add(r.left, len - k);
+        after.src = r.src + k;
+        let x = self.map.frames_between(at as f64, cut as f64, self.rate);
+        after.phase = (f64::from(r.phase) + x - k as f64) as f32;
+        after.into = add(r.into, k);
+        (before, after)
     }
 }
 
@@ -1493,21 +1512,18 @@ fn block_turn(block: &Placement, clip: &Clip, a: Tick) -> Tick {
 /// of its fades, and a part after a cut plays on from where the region
 /// had got to.
 fn regions_in(regions: &[ClipRegion], a: Tick, b: Tick, sound: &SongSound) -> Vec<ClipRegion> {
-    let add = |n: u32, k: i64| (i64::from(n) + k).clamp(0, i64::from(u32::MAX)) as u32;
     regions
         .iter()
         .filter(|r| r.start < b && r.end > a)
         .map(|r| {
             let mut c = *r;
-            if r.end > b {
-                c.end = b;
-                c.left = add(r.left, sound.frames(b, r.end));
-            }
             if r.start < a {
-                let k = sound.frames(r.start, a);
+                c = sound.cut(&c, r.start, r.end, a).1;
                 c.start = a;
-                c.src = r.src + k;
-                c.into = add(r.into, k);
+            }
+            if r.end > b {
+                c = sound.cut(&c, c.start, r.end, b).0;
+                c.end = b;
             }
             c.start -= a;
             c.end -= a;
@@ -1535,9 +1551,9 @@ fn regions_clip(
     } else {
         format!("{} {first}", track.name)
     };
-    let end = heard
-        .last()
-        .map_or(0, |r| r.src + sound.frames(a + r.start, a + r.end).max(1));
+    let end = heard.last().map_or(0, |r| {
+        r.src + sound.frames_of(r, a + r.start, a + r.end).max(1)
+    });
     let mut clip = Clip::new(&name, b - a);
     clip.audio = Some(AudioClip {
         regions: heard.to_vec(),
@@ -1559,7 +1575,6 @@ fn turned_audio(audio: &AudioClip, len: Tick, by: Tick, at: Tick, sound: &SongSo
     if by == 0 {
         return audio.clone();
     }
-    let add = |n: u32, k: i64| (i64::from(n) + k).clamp(0, i64::from(u32::MAX)) as u32;
     // Clip tick `t` of the pass that played `by` at `at`, on the song.
     let song = |t: Tick| at - by + t;
     // Each part, turned, with the song ticks it played.
@@ -1575,18 +1590,13 @@ fn turned_audio(audio: &AudioClip, len: Tick, by: Tick, at: Tick, sound: &SongSo
             parts.push(moved(*r, r.start, r.end));
             continue;
         }
-        let k = sound.frames(song(r.start), at);
-        let mut before = *r;
-        before.left = add(r.left, sound.frames(at, song(r.end)));
-        let mut after = *r;
-        after.src = r.src + k;
-        after.into = add(r.into, k);
+        let (before, after) = sound.cut(r, song(r.start), song(r.end), at);
         parts.push(moved(before, r.start, by));
         parts.push(moved(after, by, r.end));
     }
     parts.sort_by_key(|p| p.0.start);
     let last_frame = parts.last().map_or(audio.last_frame, |(r, from, to)| {
-        r.src + sound.frames(*from, *to).max(1)
+        r.src + sound.frames_of(r, *from, *to).max(1)
     });
     AudioClip {
         regions: parts.into_iter().map(|p| p.0).collect(),

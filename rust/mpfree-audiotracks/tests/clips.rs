@@ -68,6 +68,7 @@ fn region(k: u16, s: i64, e: i64, src: i64) -> ClipRegion {
         end: e,
         rec: rec(k),
         src,
+        phase: 0.0,
         gain: 1.0,
         fade_in: 0,
         fade_out: 0,

@@ -3959,6 +3959,7 @@ mod tests {
             end,
             take,
             src: 0,
+            phase: 0.0,
             gain: 1.0,
             fade_in: 0,
             fade_out: 0,

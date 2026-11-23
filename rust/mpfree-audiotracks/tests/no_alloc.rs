@@ -743,6 +743,7 @@ fn clips_never_allocate() {
                 end: 960,
                 rec: RecordingId(100 + u128::from(k)),
                 src: 0,
+                phase: 0.0,
                 gain: 1.0,
                 fade_in: 100,
                 fade_out: 100,
