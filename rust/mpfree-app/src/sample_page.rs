@@ -172,8 +172,11 @@ pub const NAME_MAX: usize = 32;
 const PLAY_PREFIX: &str = "smp-play-";
 const PADS_PREFIX: &str = "smp-pads-";
 const AUTO_PREFIX: &str = "smp-auto-";
-/// A Q-Link resting this long ends its turn: the next one is a new undo step.
-const TURN_REST: Duration = Duration::from_secs(1);
+/// A Q-Link resting this long, in seconds, ends its turn: the next one is a
+/// new undo step. Timed on the screen's clock ([`SamplePage::tick`]'s
+/// `dt`), so a script's `wait 1` is a rest however fast the machine plays
+/// it.
+const TURN_REST_S: f32 = 1.0;
 
 /// A grain start (0 to 1 across `region`) to the Position row's step
 /// (0.1 %), as a turn would leave it, while that step is under a quarter of
@@ -958,7 +961,9 @@ pub struct SamplePage {
     /// The bank of the kit on the pads (PAD BANK, the Pads tab's strip);
     /// None while the synth has them.
     pad_page: Option<usize>,
-    last_turn: Option<Instant>,
+    /// Seconds on the screen's clock since the last Q-Link or wheel turn;
+    /// None once the turn has ended ([`Self::lift`]).
+    since_turn: Option<f32>,
     gesture: Option<Gesture>,
     /// A Play page Q-Link turning a pad: the pad, the knob and the turn's
     /// undo id (one undo step a turn).
@@ -1265,7 +1270,7 @@ impl SamplePage {
             auditioning: None,
             synth: false,
             pad_page: Some(0),
-            last_turn: None,
+            since_turn: None,
             gesture: None,
             play_turn: None,
             learn_turn: None,
@@ -3887,7 +3892,7 @@ impl SamplePage {
                 id
             }
         };
-        self.last_turn = Some(Instant::now());
+        self.since_turn = Some(0.0);
         let turn = Change::Turn {
             pad,
             knob: which,
@@ -3906,7 +3911,7 @@ impl SamplePage {
     /// A learned MIDI control (MIDI Learn) set kit `kit`'s pad `pad`'s own
     /// `field` to `value`, in the field's units ([`scene::own`]'s), as the
     /// Play tab's knob sets it: one undo step a turn, a turn after a rest
-    /// ([`TURN_REST`]) or of another setting a new one. The kit's new view
+    /// ([`TURN_REST_S`]) or of another setting a new one. The kit's new view
     /// goes to the audio thread; the engine's live rows (the Q-Links'
     /// values, the clips' locks) are left alone. Nothing for a pad without
     /// a sound, or a value it has already.
@@ -3982,14 +3987,10 @@ impl SamplePage {
 
     /// A Q-Link or the wheel turned: a turn after a rest is a new undo step.
     fn turned(&mut self) {
-        let now = Instant::now();
-        if self
-            .last_turn
-            .is_some_and(|t| now.duration_since(t) >= TURN_REST)
-        {
+        if self.since_turn.is_some_and(|s| s >= TURN_REST_S) {
             self.lift();
         }
-        self.last_turn = Some(now);
+        self.since_turn = Some(0.0);
     }
 
     /// The data wheel: zoom round the marker last moved or the slice picked
@@ -5476,7 +5477,7 @@ impl SamplePage {
         if let Some(tab) = self.pads.as_mut() {
             tab.lift();
         }
-        self.last_turn = None;
+        self.since_turn = None;
         self.play_turn = None;
         self.learn_turn = None;
         let Some(g) = self.gesture.take() else { return };
@@ -7131,6 +7132,9 @@ impl SamplePage {
     /// About 30 times a second: polls the take (when it ends it lands on
     /// its pad) and, while the page is `showing`, draws it into the wave.
     pub fn tick(&mut self, ui: &mut Ui, dt: f32, showing: bool) {
+        if let Some(s) = self.since_turn.as_mut() {
+            *s += dt.max(0.0);
+        }
         self.poll_take(ui);
         self.watch_pad_run();
         if let Some((_, left)) = self.here_no.as_mut() {

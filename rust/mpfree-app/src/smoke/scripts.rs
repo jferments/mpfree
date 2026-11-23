@@ -256,6 +256,49 @@ mod tests {
         });
     }
 
+    /// A Q-Link's rest is timed on the session's clock, not the wall
+    /// clock's: Grain pitch turned up, a second of the session, turned back
+    /// is two undo steps; turned up, a second of the wall clock with no
+    /// periods, turned back is one turn that changed nothing. The Sample
+    /// page workflow's Grain pitch check (`sample-page.mpw`) failed in CI,
+    /// whose session played its `wait 1` faster than a second.
+    #[test]
+    fn a_qlink_turns_rest_is_timed_on_the_sessions_clock() {
+        const GRAIN: &str = "title Grain pitch turned twice\nwait 1\npad 1 100 0.5\ntap header tab Sample\ntap smp-tools tool Grain\ntap smp-region choice Grain: Grains\n";
+        let run = |name: &str, first: &str, between: Option<std::time::Duration>, last: &str| {
+            let dir = std::env::temp_dir()
+                .join(format!("mpfree-devtest-rest-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("a scratch folder");
+            let mut s = Session::with_library(&dir);
+            let mut wrong = play(&mut s, &Script::parse(first).expect("the first half"), None);
+            if let Some(d) = between {
+                std::thread::sleep(d);
+            }
+            wrong.extend(play(
+                &mut s,
+                &Script::parse(last).expect("the second half"),
+                None,
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            assert!(wrong.is_empty(), "{name}:\n  {}", wrong.join("\n  "));
+        };
+        on_big_stack(move || {
+            run(
+                "session",
+                &format!("{GRAIN}qlink 4 +4\nwait 1\n"),
+                None,
+                "title Turned back\nqlink 4 -4\nwait 0.5\ntap smp-region choice Grain: Grain LFO\nexpect : pitch +0 st -> +4 st\n",
+            );
+            run(
+                "wall",
+                &format!("{GRAIN}qlink 4 +4\n"),
+                Some(std::time::Duration::from_millis(1_200)),
+                "title Turned back\nqlink 4 -4\nwait 0.5\ntap smp-region choice Grain: Grain LFO\nexpect-not : pitch +0 st\n",
+            );
+        });
+    }
+
     /// The workflows below, one test each; a file in the folder that isn't
     /// listed here fails [`every_workflow_file_has_its_test`].
     macro_rules! workflows {
