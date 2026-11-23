@@ -355,11 +355,12 @@ impl Jobs {
     pub fn submit(&self, job: Job) {
         if self.0.in_place {
             let shared = self.inner();
-            {
+            let cancel = {
                 let mut s = shared.lock();
                 replace(&mut s, job.key);
-            }
-            run_one(shared, job);
+                take(&mut s, job.key)
+            };
+            run_one(shared, job, cancel);
             return;
         }
         let lane = job.lane;
@@ -507,11 +508,36 @@ fn replace(s: &mut State, key: Key) {
     s.counts.replaced += gone;
 }
 
+/// Marks the job with `key` running as it leaves the queue, in the same
+/// hold of the lock, so there is no moment when it is in neither and
+/// [`Jobs::busy`] says nothing is (train 155's race: a test that waited
+/// for the service to settle went on while a job was between the two).
+/// It can be told to stop from here on. Its cancel flag, for [`run_one`].
+fn take(s: &mut State, key: Key) -> Arc<AtomicBool> {
+    let cancel = Arc::new(AtomicBool::new(false));
+    s.running.push(Busy {
+        key,
+        cancel: cancel.clone(),
+    });
+    cancel
+}
+
+/// The job with `cancel` no longer running ([`take`]).
+fn finish(s: &mut State, cancel: &Arc<AtomicBool>) {
+    if let Some(i) = s
+        .running
+        .iter()
+        .position(|b| Arc::ptr_eq(&b.cancel, cancel))
+    {
+        s.running.swap_remove(i);
+    }
+}
+
 /// A worker on `lane`: takes the first job of its lane, checks its memory,
 /// runs it; until the service stops.
 fn work(shared: &Shared, lane: Lane) {
     loop {
-        let job = {
+        let (job, cancel) = {
             let mut s = shared.lock();
             loop {
                 if s.stop {
@@ -521,27 +547,26 @@ fn work(shared: &Shared, lane: Lane) {
                 if !s.held {
                     if let Some(i) = s.waiting.iter().position(|w| w.lane == lane) {
                         if let Some(j) = s.waiting.remove(i) {
-                            break j;
+                            let cancel = take(&mut s, j.key);
+                            break (j, cancel);
                         }
                     }
                 }
                 s = shared.cv.wait(s).unwrap_or_else(|e| e.into_inner());
             }
         };
-        run_one(shared, job);
+        run_one(shared, job, cancel);
         shared.cv.notify_all();
     }
 }
 
 /// Runs `job` here, if its memory allows: the worker's step, or the caller's
-/// for a service made [in place](Jobs::in_place).
-fn run_one(shared: &Shared, job: Job) {
+/// for a service made [in place](Jobs::in_place). The job is running
+/// already ([`take`], with `cancel`) and stays so until it has run, or
+/// has been refused and told why.
+fn run_one(shared: &Shared, job: Job, cancel: Arc<AtomicBool>) {
     let Job {
-        key,
-        need,
-        run,
-        refused,
-        ..
+        need, run, refused, ..
     } = job;
     // Promised outside the service's lock: the promise reads the memory
     // free (a file read on the device) under its own.
@@ -557,30 +582,17 @@ fn run_one(shared: &Shared, job: Job) {
             if let Some(r) = refused {
                 r(why);
             }
+            finish(&mut shared.lock(), &cancel);
             return;
         }
     };
-    let cancel = Arc::new(AtomicBool::new(false));
-    {
-        let mut s = shared.lock();
-        s.reserved += need;
-        s.running.push(Busy {
-            key,
-            cancel: cancel.clone(),
-        });
-    }
+    shared.lock().reserved += need;
     run(&Running {
         cancel: cancel.clone(),
     });
     let mut s = shared.lock();
     s.reserved -= need;
-    if let Some(i) = s
-        .running
-        .iter()
-        .position(|b| Arc::ptr_eq(&b.cancel, &cancel))
-    {
-        s.running.swap_remove(i);
-    }
+    finish(&mut s, &cancel);
     s.counts.done += 1;
 }
 
@@ -771,6 +783,84 @@ mod tests {
         go_tx.send(()).unwrap();
         settle(&jobs);
         assert_eq!(rx.try_iter().collect::<Vec<_>>(), vec!["view"]);
+    }
+
+    /// A job is running from the moment it leaves the queue (train 155's
+    /// race): while its memory is promised, before it runs, the service is
+    /// busy and has it, and a newer job with its key, or a cancel, tells
+    /// it to stop. A refused one stays running until it has been told why.
+    #[test]
+    fn a_job_is_running_from_the_moment_it_leaves_the_queue() {
+        static IN_PROMISE: AtomicBool = AtomicBool::new(false);
+        static GATE: Mutex<bool> = Mutex::new(false);
+        static OPEN: Condvar = Condvar::new();
+        let config = Config {
+            promise: |need| {
+                IN_PROMISE.store(true, Ordering::SeqCst);
+                let mut open = GATE.lock().unwrap();
+                while !*open {
+                    open = OPEN.wait(open).unwrap();
+                }
+                if need > 100 {
+                    return Err("short".into());
+                }
+                Ok(Hold::none())
+            },
+            ..Config::default()
+        };
+        let jobs = Jobs::new(config);
+        let wait_for_promise = || {
+            let end = Instant::now() + Duration::from_secs(10);
+            while !IN_PROMISE.load(Ordering::SeqCst) {
+                assert!(Instant::now() < end, "the promise never came");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        };
+        let open = |to: bool| {
+            *GATE.lock().unwrap() = to;
+            OPEN.notify_all();
+        };
+        let (tx, rx) = mpsc::channel();
+        let key = Key::new("view", 1);
+        jobs.submit(
+            Job::new(Lane::Sound, key, move |r| {
+                let _ = tx.send(r.cancelled());
+            })
+            .needs(10, |w| panic!("{w}")),
+        );
+        wait_for_promise();
+        assert_eq!(jobs.waiting(), 0, "it has left the queue");
+        assert!(jobs.busy(), "and is still the service's");
+        assert!(jobs.has(key));
+        jobs.cancel(key);
+        assert_eq!(jobs.counts().cancelled, 1, "told to stop before it runs");
+        open(true);
+        settle(&jobs);
+        assert_eq!(rx.try_recv(), Ok(true), "it ran told to stop");
+
+        // Refused: busy until it has been told why.
+        open(false);
+        IN_PROMISE.store(false, Ordering::SeqCst);
+        let (said_tx, said) = mpsc::channel();
+        let (go_tx, go) = mpsc::channel::<()>();
+        jobs.submit(
+            Job::new(Lane::Sound, Key::new("view", 2), |_| panic!("refused")).needs(
+                500,
+                move |w| {
+                    let _ = go.recv();
+                    let _ = said_tx.send(w);
+                },
+            ),
+        );
+        wait_for_promise();
+        assert!(jobs.busy());
+        open(true);
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(jobs.busy(), "telling why is still its work");
+        go_tx.send(()).unwrap();
+        settle(&jobs);
+        assert_eq!(said.try_recv().as_deref(), Ok("short"));
+        assert_eq!(jobs.counts().refused, 1);
     }
 
     #[test]

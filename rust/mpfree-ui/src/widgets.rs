@@ -1357,7 +1357,11 @@ pub struct OptionRow {
 ///
 /// With `buttons`, a row of buttons sits under the rows, side by side
 /// (the clip card's Save state and Reload, sequencer S4): a tap on button
-/// `i` gives `Toggle(i)` at once, unless it is drawn off.
+/// `i` gives `Toggle(i)` at once, unless it is drawn off (and doesn't
+/// [`OptionButton::explains`]).
+///
+/// With a `note`, two lines sit between the rows and the buttons (an
+/// audio clip's made-at line over Fit to tempo, layout spec 4j).
 pub struct OptionList {
     pub title: String,
     pub right: String,
@@ -1369,6 +1373,8 @@ pub struct OptionList {
     pub rows: Vec<OptionRow>,
     /// The buttons under the rows; none to begin with.
     pub buttons: Vec<OptionButton>,
+    /// Two lines over the buttons; none to begin with.
+    pub note: Option<OptionNote>,
     /// What the list says with no rows ("nothing here" to begin with).
     pub empty: String,
     /// A Back button at the left of the title line ("‹ Back"), for a
@@ -1406,6 +1412,12 @@ pub struct OptionButton {
     /// Outlined amber: what it asked for waits (a reload waiting for its
     /// line); a tap takes it back.
     pub waiting: bool,
+    /// Drawn off, a tap still gives `Toggle(i)`, for the app to say why
+    /// it does nothing (Fit to tempo on a clip at the project's tempo).
+    pub explains: bool,
+    /// A job it started, this far done (0 to 1): it fills from the left
+    /// in a dim accent, under its label ("Fitting… 40 %").
+    pub progress: Option<f32>,
 }
 
 impl OptionButton {
@@ -1413,15 +1425,28 @@ impl OptionButton {
         OptionButton {
             label: label.to_string(),
             enabled,
-            waiting: false,
+            ..OptionButton::default()
         }
     }
+}
+
+/// The two lines an [`OptionList`] shows over its buttons: `lead` in bold
+/// on the first, amber when it `warn`s, and `rest` under it ("Made at
+/// 120 BPM:" over "at 92 a 1.2 s gap each pass").
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OptionNote {
+    pub lead: String,
+    pub rest: String,
+    pub warn: bool,
 }
 
 const OPTION_H: i32 = 58;
 /// An [`OptionList`]'s buttons: their height, and the gap over them.
 const OPTION_BUTTON_H: i32 = 44;
 const OPTION_BUTTON_GAP: i32 = 8;
+/// An [`OptionNote`]'s line, and the room the note takes over the buttons.
+const OPTION_NOTE_LINE: i32 = 18;
+const OPTION_NOTE_H: i32 = 2 * OPTION_NOTE_LINE + 12;
 const VALUE_W: i32 = 300;
 const ARROW_W: i32 = 64;
 /// Rows narrower than this draw narrow (see [`OptionList`]): below it the
@@ -1448,6 +1473,7 @@ impl OptionList {
             tab_widths: Vec::new(),
             rows: Vec::new(),
             buttons: Vec::new(),
+            note: None,
             empty: "nothing here".to_string(),
             back: None,
             selected: 0,
@@ -1464,14 +1490,39 @@ impl OptionList {
         r.inset(14).take_top(34).1
     }
 
-    /// Where the rows are: inside, over the buttons if there are any.
+    /// Where the rows are: inside, over the buttons and the note if there
+    /// are any.
     fn body(&self, r: Rect) -> Rect {
         let inside = OptionList::inside(r);
-        if self.buttons.is_empty() {
-            inside
+        let buttons = if self.buttons.is_empty() {
+            0
         } else {
-            inside.take_bottom(OPTION_BUTTON_H + OPTION_BUTTON_GAP).1
-        }
+            OPTION_BUTTON_H + OPTION_BUTTON_GAP
+        };
+        let note = if self.note.is_some() {
+            OPTION_NOTE_H
+        } else {
+            0
+        };
+        inside.take_bottom(buttons + note).1
+    }
+
+    /// Where the note's two lines are: over the buttons, under the rows.
+    pub fn note_rect(&self, r: Rect) -> Option<Rect> {
+        self.note.as_ref()?;
+        let foot = if self.buttons.is_empty() {
+            0
+        } else {
+            OPTION_BUTTON_H + OPTION_BUTTON_GAP
+        };
+        let above = OptionList::inside(r).take_bottom(foot).1;
+        let note = above.take_bottom(OPTION_NOTE_H).0;
+        Some(Rect::new(
+            note.x + 2,
+            note.y + 6,
+            note.w - 2,
+            2 * OPTION_NOTE_LINE,
+        ))
     }
 
     fn visible(&self, r: Rect) -> usize {
@@ -1737,6 +1788,25 @@ impl Widget for OptionList {
             cx.canvas.fill_round_rect(track, 2, t.outline);
             cx.canvas.fill_round_rect(thumb, 2, t.text_dim);
         }
+        if let (Some(n), Some(nr)) = (&self.note, self.note_rect(r)) {
+            let (first, second) = nr.take_top(OPTION_NOTE_LINE);
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                first,
+                Align::Left,
+                if n.warn { t.warn } else { t.text },
+                &n.lead,
+            );
+            cx.text(
+                FontId::Sans,
+                t.size_small,
+                second,
+                Align::Left,
+                t.text_dim,
+                &n.rest,
+            );
+        }
         for (i, b) in self.buttons.iter().enumerate() {
             let Some(br) = self.button_rect(r, i) else {
                 continue;
@@ -1746,6 +1816,14 @@ impl Widget for OptionList {
                 t.round(10),
                 if b.enabled { t.raised } else { t.surface },
             );
+            if let Some(p) = b.progress {
+                let w = (br.w as f32 * p.clamp(0.0, 1.0)).round() as i32;
+                if w > 0 {
+                    let fill = t.raised.mix(t.accent, 0.35);
+                    cx.canvas
+                        .fill_round_rect(Rect::new(br.x, br.y, w, br.h), t.round(10), fill);
+                }
+            }
             if b.waiting {
                 cx.canvas.stroke_round_rect(br, t.round(10), 2, t.warn);
             }
@@ -1880,7 +1958,8 @@ impl Widget for OptionList {
         if let Some(i) = (0..self.buttons.len())
             .find(|&i| self.button_rect(r, i).is_some_and(|b| b.contains(x, y)))
         {
-            return self.buttons[i].enabled.then_some(EventKind::Toggle(i));
+            let b = &self.buttons[i];
+            return (b.enabled || b.explains).then_some(EventKind::Toggle(i));
         }
         let k = (0..self.rows.len()).find(|&k| {
             self.row_rects(r, k)
@@ -2287,6 +2366,51 @@ mod tests {
         assert!(buttons[0].enabled && !buttons[1].enabled);
         // Painted, waiting outlined.
         o.buttons[1].waiting = true;
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 260, r.h);
+        ui.add("o", o);
+        ui.add_page("p", "o").unwrap();
+        let mut c = SoftCanvas::new(260, r.h);
+        assert!(!ui.paint(&mut c).is_empty());
+    }
+
+    /// An audio clip's card (layout spec 4j): two lines between the rows
+    /// and the button, the button filling with its job's progress, and a
+    /// faint button that explains still answers a tap.
+    #[test]
+    fn an_option_note_sits_over_the_buttons_and_a_faint_button_can_explain() {
+        let mut o = OptionList::new("Clip");
+        o.rows = (0..7)
+            .map(|i| OptionRow {
+                name: format!("Row {i}"),
+                value: "1".into(),
+            })
+            .collect();
+        let r = Rect::new(0, 0, 250, 14 * 2 + 34 + OPTION_H * 4 + OPTION_BUTTON_H + 8);
+        let mut fit = OptionButton::new("Fit to tempo", false);
+        o.buttons = vec![fit.clone()];
+        assert_eq!(o.visible(r), 4);
+        assert!(o.note_rect(r).is_none());
+        o.note = Some(OptionNote {
+            lead: "Made at 120 BPM:".into(),
+            rest: "at 92 a 1.2 s gap each pass".into(),
+            warn: true,
+        });
+        assert_eq!(o.visible(r), 3, "the note takes a row's room");
+        let (n, b) = (o.note_rect(r).unwrap(), o.button_rect(r, 0).unwrap());
+        let (last, _) = o.row_rects(r, 2).unwrap();
+        assert!(
+            last.bottom() <= n.y && n.bottom() <= b.y,
+            "{last:?} {n:?} {b:?}"
+        );
+        assert_eq!(o.touch(1, Touch::Down, b.x + 4, b.y + 4, r), None, "off");
+        fit.explains = true;
+        fit.progress = Some(0.4);
+        o.buttons = vec![fit];
+        assert_eq!(
+            o.touch(1, Touch::Down, b.x + 4, b.y + 4, r),
+            Some(EventKind::Toggle(0)),
+            "off, but it says why"
+        );
         let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 260, r.h);
         ui.add("o", o);
         ui.add_page("p", "o").unwrap();

@@ -2206,6 +2206,7 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| audio_tracks(rate, 0, false)));
     v.push(measured(|| audio_tracks(rate, 2, false)));
     v.push(measured(|| audio_tracks(rate, 2, true)));
+    v.push(measured(|| audio_clips(rate)));
     v.push(measured(|| stream_voices(rate, 64, Read::Near, 0.75)));
     v.push(measured(|| stream_voices(rate, 64, Read::Near, 1.5)));
     v.push(measured(|| stream_voices(rate, 64, Read::Sinc8, 1.5)));
@@ -4891,6 +4892,150 @@ fn audio_tracks(rate: u32, recording: usize, files: bool) -> Case {
             if files {
                 serve(&mut a, COPY_SAMPLES);
             }
+            for (i, (x, y)) in ol.iter_mut().zip(or.iter_mut()).enumerate() {
+                *x = out[2 * i];
+                *y = out[2 * i + 1];
+            }
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// Audio clips (phase 2, step 2b): every track looping a 2-bar clip of two
+/// regions (a comp boundary in the middle), and launching another on every
+/// bar line (the tracks taking turns through 3 clips), so each bar every
+/// track crossfades a launch over the old clip's fade out, as the
+/// arranger's player says it.
+fn audio_clips(rate: u32) -> Case {
+    use mpfree_audiotracks::save::TakeFile;
+    use mpfree_audiotracks::{Answer, Change, ClipPlay, ClipRegion, Plays, RecordingId};
+    const CLIPS: usize = 3;
+    let bar = 4 * i64::from(PPQ);
+    let bar_frames = 2 * u64::from(rate); // 120 BPM
+    let mut t = Transport::new(rate, 120.0).expect("transport");
+    let mut a = AudioTracks::new(rate, 60);
+    // Three recordings of 2 bars and a half, stereo, from the bench's
+    // input.
+    let prog = program(rate);
+    let frames = (5 * rate / 2) as usize * 2;
+    for k in 0..CLIPS as u16 {
+        let (mut l, mut r) = (vec![0.0f32; frames], vec![0.0f32; frames]);
+        prog.play(u64::from(k) * 7 * u64::from(rate), &mut l, &mut r);
+        let audio = l.iter().zip(&r).flat_map(|(x, y)| [*x, *y]).collect();
+        let f = TakeFile {
+            id: k,
+            rec: RecordingId(1 + u128::from(k)),
+            track: 0,
+            group: k,
+            pass: 0,
+            bpm: 120.0,
+            anchor: 0.0,
+            frames,
+            channels: 2,
+            file: String::new(),
+            path: None,
+            audio,
+        };
+        assert!(a.load_take(f).is_ok(), "a take loads");
+    }
+    let regions: Vec<[ClipRegion; 2]> = (0..CLIPS as u16)
+        .map(|k| {
+            let r = ClipRegion {
+                start: 0,
+                end: bar,
+                rec: RecordingId(1 + u128::from(k)),
+                src: 0,
+                phase: 0.0,
+                gain: 1.0,
+                fade_in: 0,
+                fade_out: 0,
+                into: 0,
+                left: 0,
+            };
+            let later = i64::from(rate) / 3;
+            [
+                r,
+                ClipRegion {
+                    start: bar,
+                    end: 2 * bar,
+                    src: bar_frames as i64 + later,
+                    ..r
+                },
+            ]
+        })
+        .collect();
+    let mut block = TBlock::new();
+    let n = MAX_BLOCK;
+    let (line_in, mut out) = (vec![0.0f32; 2 * n], vec![0.0f32; 2 * n]);
+    let mut frame = 0u64;
+    while a.loading() > 0 {
+        t.process(n as u32, &mut block);
+        let map = *t.tempo_map();
+        a.process(&block, &map, &line_in, &mut out);
+        frame += n as u64;
+    }
+    t.command(frame, T::PlayStart);
+    let start = frame;
+    let mut tr = t;
+    Case {
+        name: format!("Audio tracks: {MAX_TRACKS} tracks of 2-bar clips launched every bar"),
+        module: "looper",
+        what: "a launch on every track on every bar line, crossfading",
+        block: Box::new(move |_, ol, or| {
+            let n = ol.len();
+            // The clip track `k` plays in bar `b`, from its line.
+            let plays = |k: usize, b: u64| {
+                let c = (b as usize + k) % CLIPS;
+                Plays::Clip(ClipPlay {
+                    regions: &regions[c],
+                    origin: (b as i64 * bar) as f64,
+                    len: 2 * bar,
+                    last_frame: 2 * bar_frames as i64,
+                    gain: 1.0,
+                    clip: c as u32 + 1,
+                    stamp: 1,
+                })
+            };
+            let since = frame.saturating_sub(start);
+            let b0 = since.saturating_sub(1) / bar_frames;
+            // A bar line in this block: every track launches there.
+            let line = (b0 + 1) * bar_frames;
+            let mut changes = [[Change {
+                frame: 0,
+                tick: 0.0,
+                plays: Plays::Nothing,
+                muted: false,
+                ring: false,
+            }; 1]; MAX_TRACKS];
+            let mut answers = [Answer::default(); MAX_TRACKS];
+            for (k, (ans, ch)) in answers.iter_mut().zip(changes.iter_mut()).enumerate() {
+                let mut c = 0;
+                if frame > start && (since..since + n as u64).contains(&line) {
+                    ch[0] = Change {
+                        frame: (line - since) as u32,
+                        tick: ((b0 + 1) as i64 * bar) as f64,
+                        plays: plays(k, b0 + 1),
+                        muted: false,
+                        ring: false,
+                    };
+                    c = 1;
+                }
+                *ans = Answer {
+                    start: if frame > start {
+                        plays(k, b0)
+                    } else {
+                        Plays::Song
+                    },
+                    muted: false,
+                    changes: &ch[..c],
+                    superseded: 0,
+                };
+            }
+            out[..2 * n].fill(0.0);
+            tr.process(n as u32, &mut block);
+            let map = *tr.tempo_map();
+            a.process_with(&block, &map, &line_in[..2 * n], &mut out[..2 * n], &answers);
+            frame += n as u64;
             for (i, (x, y)) in ol.iter_mut().zip(or.iter_mut()).enumerate() {
                 *x = out[2 * i];
                 *y = out[2 * i + 1];

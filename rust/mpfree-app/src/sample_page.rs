@@ -258,6 +258,8 @@ struct Span {
     end: u64,
     cuts: Vec<u64>,
     bpm: f64,
+    /// Put in a cell: whole, as a clip ([`crate::audiotracks::Sound::cell`]).
+    cell: bool,
 }
 
 /// What a Put on audio track job sends back.
@@ -314,6 +316,7 @@ fn copy_for_audio(
         audio,
         cuts,
         bpm: span.bpm,
+        cell: span.cell,
     })))
 }
 
@@ -1158,6 +1161,10 @@ pub struct SamplePage {
     /// why not now. None until the app says, and then the Slice tool has
     /// no New kit.
     new_kit: Option<Result<usize, String>>,
+    /// Put in a cell's cell, as the app picks it from the Clips grid
+    /// ([`SamplePage::set_audio_cell`]): the audio track's name and row;
+    /// None: a new audio track.
+    audio_cell: Option<(String, usize)>,
     /// A chop to a new kit just made, for the app to put on a new track
     /// ([`SamplePage::take_new_kit_track`]).
     new_kit_track: Option<NewKitTrack>,
@@ -1344,6 +1351,7 @@ impl SamplePage {
             exports: Vec::new(),
             wanted_kit: None,
             new_kit: None,
+            audio_cell: None,
             new_kit_track: None,
             new_kit_pad: None,
         };
@@ -2271,6 +2279,7 @@ impl SamplePage {
             let cs = Arc::make_mut(cs);
             cs.files = self.files;
             cs.audio = true;
+            cs.cell = self.audio_cell.clone();
             cs.new_kit = self
                 .new_kit
                 .as_ref()
@@ -3086,6 +3095,7 @@ impl SamplePage {
             layer,
             name,
             bounds,
+            cell,
         } = a
         else {
             return;
@@ -3117,9 +3127,11 @@ impl SamplePage {
             );
             return;
         }
+        // Put in a cell: the whole sound, Start to End, in one clip.
+        let cell = *cell;
         let cuts: Vec<u64> = bounds[1..bounds.len() - 1]
             .iter()
-            .filter(|&&c| start < c && c < end)
+            .filter(|&&c| !cell && start < c && c < end)
             .map(|&c| c - start)
             .collect();
         // Its tempo, for the Song view's Fit to tempo.
@@ -3135,7 +3147,7 @@ impl SamplePage {
         };
         let rate = self.rate;
         let need = to_audio_need((end - start) * ch, s.rate(), rate);
-        let key = Key::new(TO_AUDIO, job_id((s.id().0, start, end)));
+        let key = Key::new(TO_AUDIO, job_id((s.id().0, start, end, cell)));
         let (tx, why) = (self.to_audio.0.clone(), self.to_audio.0.clone());
         let (made, refused) = (name.clone(), name.clone());
         self.jobs.submit(
@@ -3145,6 +3157,7 @@ impl SamplePage {
                     end,
                     cuts,
                     bpm,
+                    cell,
                 };
                 if let Some(t) = copy_for_audio(&s, span, rate, made, run) {
                     let _ = tx.send(t);
@@ -3440,6 +3453,17 @@ impl SamplePage {
         }
     }
 
+    /// Where Put in a cell would put the sound now (audio tracks phase 2),
+    /// as the app picks it from the Clips grid: the audio track's name and
+    /// row, or None for a new audio track. The Slice tool's main button
+    /// names it.
+    pub fn set_audio_cell(&mut self, ui: &mut Ui, cell: Option<(String, usize)>) {
+        if self.audio_cell != cell {
+            self.audio_cell = cell;
+            self.refresh(ui);
+        }
+    }
+
     /// A chop to a new kit made since the last call: the app adds a track,
     /// and once it is armed gives it the kit and the phrase.
     pub fn take_new_kit_track(&mut self) -> Option<NewKitTrack> {
@@ -3678,6 +3702,12 @@ impl SamplePage {
     ) -> Result<sampler_commands::Done, sampler_commands::Refused> {
         let cmd = Command::to_kit(self.kit_id(kit)?, change).in_gesture(gesture);
         self.command(&cmd)
+    }
+
+    /// The kit place whose id is `id`, as the audio loop last said
+    /// (sampler step 15); None for an instrument that isn't a kit.
+    pub fn kit_of_id(&self, id: InstrumentId) -> Option<usize> {
+        self.kit_ids.kit(id, self.projects.len())
     }
 
     /// Kit `kit`'s id in the project's list: refused when the place has
@@ -9340,6 +9370,7 @@ mod tests {
                     end: 21_000,
                     cuts: vec![5000, 10_000],
                     bpm: 120.0,
+                    cell: false,
                 };
                 let _ = tx.send(copy_for_audio(&s, span, 44_100, "Half".into(), run));
             },
