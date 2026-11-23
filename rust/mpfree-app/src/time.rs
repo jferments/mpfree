@@ -8373,21 +8373,24 @@ mod tests {
         );
         h.act(TimeAction::ListTimes { step: 0, delta: 1 }).unwrap();
         let st = h.state();
-        let rows: Vec<(String, usize, u16, i64, i64)> = st
+        let rows: Vec<(String, Option<usize>, u16, i64, i64)> = st
             .list
             .iter()
-            .map(|r| (r.name.clone(), r.row, r.times, r.bars, r.starts))
+            .map(|r| (r.name.clone(), r.scene, r.times, r.bars, r.starts))
             .collect();
         assert_eq!(
             rows,
-            vec![("Row 1".into(), 0, 2, 2, 1), ("Row 2".into(), 1, 1, 1, 3)]
+            vec![
+                ("Row 1".into(), Some(0), 2, 2, 1),
+                ("Row 2".into(), Some(1), 1, 1, 3)
+            ]
         );
         assert_eq!(st.list_pick, Some(1));
         // Step 2's scene: the next row with a clip skips the empty one.
         h.act(TimeAction::ListScene { step: 1, delta: 1 }).unwrap();
-        assert_eq!(h.state().list[1].row, 3);
+        assert_eq!(h.state().list[1].scene, Some(3));
         h.act(TimeAction::Undo).unwrap();
-        assert_eq!(h.state().list[1].row, 1, "UNDO takes the edit back");
+        assert_eq!(h.state().list[1].scene, Some(1), "UNDO takes the edit back");
         // Played from the top while stopped: row 1 twice, row 2, then
         // every track stops on bar 4.
         h.act(TimeAction::ListPlay(0)).unwrap();
@@ -8436,6 +8439,87 @@ mod tests {
         h.act(TimeAction::LaunchScene(3)).unwrap();
         let st = h.state();
         assert!(st.list_next.is_none() && st.list.iter().all(|r| !r.waiting));
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// Arrange 4b.1: a linked song list shows the song's sections, each
+    /// with its marker's name, its scene and its passes, and the bars
+    /// before the first marker as "Song"; the one the song plays is lit
+    /// with its pass, and picking one picks its scene. Until its edits move
+    /// the song (4b.2) and it plays the song (4b.4) it takes only its loop
+    /// switch: an edit or a play says where to go and changes nothing.
+    #[test]
+    fn a_linked_list_shows_the_songs_sections_and_their_passes() {
+        use mpfree_seq::arrange::{scenes_to_song, FromScene, Placement};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let p = &mut h.control.project;
+        for (row, name) in [(0, "intro"), (1, "verse")] {
+            let mut c = Clip::new(name, 3840);
+            c.notes = vec![mpfree_seq::Note::new(0, 100, 4, 100)];
+            p.tracks[0].slots[row] = Some(c);
+        }
+        p.give_clip_ids();
+        p.scene_mut(1).unwrap().name = "Verse".into();
+        // A bar of the song's own, then row 1 once and row 2 three times.
+        let mut song = scenes_to_song(p, &[(0, 3840), (1, 3 * 3840)], 3840)
+            .unwrap()
+            .song;
+        for (m, (row, passes)) in song.markers.iter_mut().zip([(0, 1), (1, 3)]) {
+            m.scene = Some(FromScene {
+                row,
+                changed: false,
+            });
+            m.passes = passes;
+        }
+        song.place(Placement::of(&p.tracks, 0, 0, 0, 3840)).unwrap();
+        song.list.linked = true;
+        p.arrangement = song;
+        p.check().unwrap();
+        let rows = |h: &TimeHost| -> Vec<(String, Option<usize>, u16, i64, i64)> {
+            h.state()
+                .list
+                .iter()
+                .map(|r| (r.name.clone(), r.scene, r.times, r.bars, r.starts))
+                .collect()
+        };
+        assert_eq!(
+            rows(&h),
+            vec![
+                ("Song".into(), None, 1, 1, 1),
+                ("Scene 1".into(), Some(0), 1, 1, 2),
+                ("Verse".into(), Some(1), 3, 3, 3),
+            ]
+        );
+        // Halfway through bar 4: the verse's second pass.
+        h.act(TimeAction::SongMode(true)).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, 3 * BAR + BAR / 2, &[]);
+        let st = h.state();
+        let lit: Vec<Option<u16>> = st.list.iter().map(|r| r.playing.map(|p| p.0)).collect();
+        assert_eq!(lit, vec![None, None, Some(2)]);
+        h.act(TimeAction::ListPick(Some(2))).unwrap();
+        let st = h.state();
+        assert_eq!((st.list_pick, st.scene_focus), (Some(2), 1));
+        assert_eq!(
+            h.act(TimeAction::ListPick(Some(3))).unwrap(),
+            "song list: nothing picked"
+        );
+        // Not yet: edits and play change nothing; the loop switch works.
+        let was = h.control.project.arrangement.clone();
+        for a in [
+            TimeAction::ListAdd,
+            TimeAction::ListRemove(1),
+            TimeAction::ListTimes { step: 2, delta: 1 },
+            TimeAction::ListScene { step: 1, delta: 1 },
+            TimeAction::ListToSong,
+            TimeAction::ListPlay(0),
+        ] {
+            assert_eq!(h.act(a.clone()), Err(control::LIST_LINKED.into()), "{a:?}");
+        }
+        assert_eq!(h.control.project.arrangement, was);
+        h.act(TimeAction::ListLoop(true)).unwrap();
+        assert!(h.state().list_looped);
         assert_eq!(h.dropped(), 0);
     }
 

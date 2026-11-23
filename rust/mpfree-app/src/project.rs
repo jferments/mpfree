@@ -145,8 +145,14 @@ pub const SYNTHS_WITHOUT_TRACKS: &str = "synths-without-tracks";
 /// The clips part is `mpfree-clips 3` too, which such a build doesn't
 /// read; the line says it in words before anything is read.
 pub const AUDIO_TRACKS: &str = "audio-tracks";
+/// A project whose song list is linked to its song, or whose song's
+/// markers carry their sections' scenes and passes (the Arrange
+/// refactor's phase 4b): an older build would show the list empty and
+/// lose them. The clips part is `mpfree-clips 4` too, which such a build
+/// doesn't read; the line says it in words before anything is read.
+pub const LINKED_SONG_LIST: &str = "linked-song-list";
 /// The features this build has, of those a project can need.
-pub const KNOWN_NEEDS: &[&str] = &[SYNTHS_WITHOUT_TRACKS, AUDIO_TRACKS];
+pub const KNOWN_NEEDS: &[&str] = &[SYNTHS_WITHOUT_TRACKS, AUDIO_TRACKS, LINKED_SONG_LIST];
 
 // ------------------------------------------------------------ the loop's side
 
@@ -337,6 +343,9 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
     }
     if c.clips.tracks.iter().any(mpfree_seq::Track::is_audio) {
         needs.push(AUDIO_TRACKS);
+    }
+    if c.clips.arrangement.uses_sections() {
+        needs.push(LINKED_SONG_LIST);
     }
     if !needs.is_empty() {
         extra.push((NEEDS_KEY.to_string(), needs.join(" ")));
@@ -3104,7 +3113,7 @@ mod tests {
     /// Phase 1a: a project with an audio track says it needs audio
     /// tracks, so an older build doesn't open it as an empty note track;
     /// with a synth in a free place too, the line names both, and this
-    /// build opens it.
+    /// build opens it. A linked song list (Arrange 4b) says it needs one.
     #[test]
     fn a_project_with_an_audio_track_says_it_needs_audio_tracks() {
         let needs = |c: &Collected| {
@@ -3128,6 +3137,19 @@ mod tests {
         c.instruments = format!("{INSTRUMENTS_FORMAT}\nfree 1 mpfree.fm\n");
         let (snap, line) = needs(&c);
         assert_eq!(line.as_deref(), Some("synths-without-tracks audio-tracks"));
+        assert_eq!(check(&snap), Ok(FORMAT));
+        // Arrange 4b: a linked song list, or a marker with its section's
+        // passes, says so too.
+        let mut c = collected(String::new(), InstrumentList::new().text());
+        c.clips.arrangement.list.linked = true;
+        assert_eq!(needs(&c).1.as_deref(), Some(LINKED_SONG_LIST));
+        c.clips.arrangement.list.linked = false;
+        c.clips.arrangement.markers = vec![mpfree_seq::Marker {
+            passes: 2,
+            ..mpfree_seq::Marker::new(0, "Verse")
+        }];
+        let (snap, line) = needs(&c);
+        assert_eq!(line.as_deref(), Some(LINKED_SONG_LIST));
         assert_eq!(check(&snap), Ok(FORMAT));
     }
 

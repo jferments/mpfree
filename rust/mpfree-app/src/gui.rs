@@ -17915,7 +17915,7 @@ fn sample_list_state() -> Result<TimeState, String> {
         .map(|(k, &(name, row, times, len))| {
             let r = ListRow {
                 name: name.to_string(),
-                row,
+                scene: Some(row),
                 times,
                 bars: i64::from(times) * len,
                 starts,
@@ -21738,7 +21738,7 @@ mod tests {
         );
         st.list = vec![ListRow {
             name: "Verse".into(),
-            row: 0,
+            scene: Some(0),
             times: 2,
             bars: 2,
             starts: 1,

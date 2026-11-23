@@ -23,8 +23,9 @@ use crate::report::ReportCard;
 pub struct ListRow {
     /// Its scene's name ("Verse", or "Scene 3" for a plain row).
     pub name: String,
-    /// Its scene's row, for its colour.
-    pub row: usize,
+    /// Its scene's row, for its colour (None: a linked list's section
+    /// that is the song's own, phase 4b).
+    pub scene: Option<usize>,
     pub times: u16,
     /// How long it plays, in bars.
     pub bars: i64,
@@ -276,8 +277,10 @@ impl Widget for SongListView {
                 t.text_dim,
                 &(k + 1).to_string(),
             );
-            let sw = Rect::new(line.x + 44, line.y + 10, 30, line.h - 20);
-            cx.canvas.fill_round_rect(sw, t.round(6), t.track(row.row));
+            if let Some(scene) = row.scene {
+                let sw = Rect::new(line.x + 44, line.y + 10, 30, line.h - 20);
+                cx.canvas.fill_round_rect(sw, t.round(6), t.track(scene));
+            }
             let (scene, times) = self.boxes(r, k).expect("in view");
             for (b, word) in [
                 (scene, row.name.as_str()),
@@ -555,7 +558,7 @@ mod tests {
         l.rows = (0..n)
             .map(|k| ListRow {
                 name: format!("Scene {}", k + 1),
-                row: k,
+                scene: Some(k),
                 times: 2,
                 bars: 8,
                 starts: 1 + 8 * k as i64,

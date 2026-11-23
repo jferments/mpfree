@@ -87,7 +87,7 @@ pub fn play_rows(
     copy.arrangement = Arrangement {
         list: SongList {
             steps: steps.to_vec(),
-            looped: false,
+            ..SongList::default()
         },
         ..Arrangement::default()
     };
