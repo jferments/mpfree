@@ -17,7 +17,8 @@
 //! `docs/dev/design/disk-streaming.md` says why each has its level), and
 //! phase 3's MIDI clock and plugin kinds (`docs/dev/design/status.md`).
 //! The MPC's temperature and clock kinds wait for lines measured on the
-//! MPC. The words are drafts; any can change.
+//! MPC. The kernel's stick and memory errors (the app's kernel.rs) follow
+//! phase 3. The words are drafts; any can change.
 
 use crate::{Action, Kind, Level, Shape, System};
 
@@ -137,6 +138,23 @@ pub static NEAR_LIMIT: Kind = Kind {
 
 // ---------------------------------------------------------------- Memory
 
+/// The kernel stopped one of MPFree's programs because memory ran out
+/// (kernel.rs: "Out of memory: Killed process … (mpfree…)"). When it was
+/// MPFree itself, the next start reads it from this boot's kernel log.
+pub static OUT_OF_MEMORY: Kind = Kind {
+    id: "memory/ran-out",
+    system: System::Memory,
+    level: Level::Fail,
+    shape: Shape::Happens,
+    short: "Out of memory",
+    title: "The MPC ran out of memory",
+    what: "Memory ran out, so the MPC stopped part of MPFree to free some: a plugin, or MPFree itself, which then started again safely. A sound it was making stopped.",
+    to_try: "Save your project, then remove samples, kits and plugins you don't use.",
+    action: None,
+    manual: "the-mpc-ran-out-of-memory",
+    hides: &[],
+};
+
 /// Free memory close to the floor kept for the system, or RAM over 85 %.
 pub static MEMORY_LOW: Kind = Kind {
     id: "memory/low",
@@ -188,6 +206,8 @@ pub static STICK_MISSING: Kind = Kind {
         &RECORDING_AT_RISK,
         &NOT_SAVED_YET,
         &STICK_NEARLY_FULL,
+        &STICK_ERRORS,
+        &STICK_FILES_ERROR,
     ],
 };
 
@@ -253,6 +273,39 @@ pub static STICK_FELL_BEHIND: Kind = Kind {
     to_try: "Play fewer audio tracks or long samples at once. If it keeps happening, try a faster stick or card.",
     action: None,
     manual: "part-of-a-sound-went-quiet",
+    hides: &[],
+};
+
+/// The kernel couldn't read or write the stick (kernel.rs: "I/O error,
+/// dev sda, sector …", "Buffer I/O error on dev sda4, …"). Work being
+/// saved or recorded then may not be on it.
+pub static STICK_ERRORS: Kind = Kind {
+    id: "storage/stick-errors",
+    system: System::Storage,
+    level: Level::Fail,
+    shape: Shape::Happens,
+    short: "Stick errors",
+    title: "The stick had a read or write error",
+    what: "The MPC couldn't read or write part of the stick, so something being saved, recorded or played from it may be missing.",
+    to_try: "Save again and check it opens. If it keeps happening, copy your music off the stick and use another one.",
+    action: None,
+    manual: "the-stick-had-a-read-or-write-error",
+    hides: &[],
+};
+
+/// The stick's file system reported an error (kernel.rs: "EXT4-fs error
+/// (device sda4): …", "FAT-fs (sda1): error, …").
+pub static STICK_FILES_ERROR: Kind = Kind {
+    id: "storage/stick-files-error",
+    system: System::Storage,
+    level: Level::Fail,
+    shape: Shape::Happens,
+    short: "Stick files error",
+    title: "The stick's files have an error",
+    what: "The MPC found a mistake in how the stick keeps its files, so a file on it may be damaged or missing.",
+    to_try: "Save your project under a new name, then copy your music off the stick on a computer and check the stick there.",
+    action: None,
+    manual: "the-sticks-files-have-an-error",
     hides: &[],
 };
 
@@ -660,6 +713,7 @@ pub static ALL: &[&Kind] = &[
     &VOICES_GIVEN_UP,
     &GRAINS_THINNED,
     &NEAR_LIMIT,
+    &OUT_OF_MEMORY,
     &MEMORY_LOW,
     &NOT_ENOUGH_MEMORY,
     &STICK_MISSING,
@@ -667,6 +721,8 @@ pub static ALL: &[&Kind] = &[
     &RECORDING_STOPPED,
     &CARD_REMOVED,
     &STICK_FELL_BEHIND,
+    &STICK_ERRORS,
+    &STICK_FILES_ERROR,
     &SAVE_FAILED,
     &RECORDING_MAY_STOP,
     &NOT_SAVED_YET,
@@ -842,6 +898,9 @@ mod tests {
             &STICK_FELL_BEHIND,
             &CARD_REMOVED,
             &PLUGIN_STOPPED,
+            &STICK_ERRORS,
+            &STICK_FILES_ERROR,
+            &OUT_OF_MEMORY,
         ] {
             assert_eq!(k.level, Level::Fail, "{}", k.id);
         }

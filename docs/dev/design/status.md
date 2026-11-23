@@ -1,5 +1,5 @@
 <!--
-covers: rust/mpfree-status rust/mpfree-app/src/debug_page.rs rust/mpfree-app/src/status_watch.rs rust/mpfree-app/src/status_screen.rs rust/mpfree-ui/src/status_page.rs
+covers: rust/mpfree-status rust/mpfree-app/src/debug_page.rs rust/mpfree-app/src/status_watch.rs rust/mpfree-app/src/status_screen.rs rust/mpfree-app/src/kernel_log.rs rust/mpfree-ui/src/status_page.rs
 checked: 2026-11-22 e7409223
 -->
 # System status (`mpfree-status`)
@@ -62,8 +62,11 @@ All of it is in `rust/mpfree-status`, std only, with no I/O and no drawing.
 | `sound/voices-given-up` | warn | happens | Voices given up | |
 | `sound/grains-thinned` | warn | lasts | Grains thinned | |
 | `sound/near-limit` | warn | lasts | Sound near limit | |
+| `memory/ran-out` | fail | happens | Out of memory | |
 | `memory/low` | warn | lasts | Memory low | |
 | `memory/not-enough` | warn | happens | Not enough memory | |
+| `storage/stick-errors` | fail | happens | Stick errors | |
+| `storage/stick-files-error` | fail | happens | Stick files error | |
 | `storage/save-failed` | fail | happens | Save failed | |
 | `controls/no-session` | fail | lasts | Pads not answering | |
 | `controls/no-setup` | warn | stays | Without Akai setup | |
@@ -117,6 +120,9 @@ The watcher (`rust/mpfree-app/src/status_watch.rs`) looks each time the audio lo
 | `sound/near-limit` | the whole period's last window Tight or Over against its budget (`engines::near_limit`, the CPU chip's colour) | watcher |
 | `memory/low` | free memory (MemAvailable) under 1.5 times the 256 MB floor, or RAM over 85 %; back once 32 MB more is free and RAM is 3 points under | watcher, from the screen thread's look at `/proc/meminfo` every 2 s |
 | `memory/not-enough` | the Sample page's lines that say something wasn't loaded or was left out for want of memory (`memory::SHORT`); a sound only kept at its own rate still loaded | `Player::print_sample_lines` |
+| `memory/ran-out` | the kernel's log: "Out of memory: Killed process N (mpfree…)" (or the memory cgroup's), for MPFree's own programs only; read from the start of the boot, so the safe start after the kernel stopped MPFree itself shows it (after phase 3) | `kernel_log.rs` |
+| `storage/stick-errors` | the kernel's log: "… error, dev sdX, sector …" and "Buffer I/O error on dev sdX…" (after phase 3) | `kernel_log.rs` |
+| `storage/stick-files-error` | the kernel's log: "EXT4-fs error (device sdX…)", "FAT-fs (sdX…): error" and "exFAT-fs (sdX…): error" (after phase 3) | `kernel_log.rs` |
 | `storage/save-failed` | the store's "not saved" for the FX shelf, touch tuning, settings and the MIDI rig | `main.rs` |
 | `controls/no-session` | the session's No reply or Stopped (red) | watcher |
 | `controls/no-setup` | the session's No session (yellow): no session within 20 s at the start, so the pads play without Akai's setup; it ends if the session starts later (phase 2, when the session chip went) | watcher |
@@ -165,6 +171,32 @@ Times are since MPFree started ("at 3.5 s", "at 1:10"), not ages, so they stand 
 
 The `Player` keeps its own status clock, moved on by `tick(dt)`, so the board's timing in the app's tests is exact.
 
+## Save a report (after phase 3)
+
+Jay's pick on 23 Nov 2026 at 11:43Z ("Save a report, then kernel errors", from the proposal in mpfree-claude `notes/status-monitor/after-phase-3.md`). A **Save a report** button at the foot of System status's cards panel, on the right, on every system (`status_page::SAVE_REPORT`; the cards and numbers stop above it; layout spec 2a). A tap makes the report's words on the screen thread (`Player::status_report`, `status_report::text`) and hands them to the sound loop as `FromUi::SaveReport`, which gives them to the store like a screen picture: `files/reports/report-YYYYMMDD-HHMMSS.txt` (UTC by the MPC's clock; `-2` within the second). The hint line says where it went, or why nothing was saved (no data folder this run, the store's error).
+
+- **What it holds:** when it was saved and how long MPFree had run; Prefs > System info (`sysinfo::read`) without the host name; a normal start or a safe start with the crash's panic line (`Player::set_crash_why`); the page's numbers (CPU, RAM, free memory, the stick, the temperature and trip point, the processor's speeds); every problem on the board (`Board::raw`, hidden and settling ones too, marked), with its level, id, title, count, first and last, and whether it is going; and the last 200 `status:` lines (`Player::status_log`), each with its time since the start.
+- **What it never holds:** serial numbers and network addresses (System info leaves them out), the host name, and names someone typed: a problem about a track or a take says "track 3" or "found take 1" (`status_report::about`, also used for the log's copy), and only a MIDI port keeps its device's name. The test `a_report_holds_the_session_and_no_names_typed` checks a track's name and the host name stay out.
+
+## The kernel's stick and memory errors (after phase 3)
+
+The second half of Jay's pick of 23 Nov 11:43Z. `rust/mpfree-app/src/kernel_log.rs` reads the kernel's log from the start of this boot on a thread of its own (`/dev/kmsg`, read-only; a read waits for the kernel's next line, so it costs nothing while the kernel is quiet) and turns a short, reviewed list of its messages into problems. Anything not on the list is ignored, so a harmless driver message never colours the chip.
+
+| Message (Linux 6.18's own words) | Problem |
+|---|---|
+| `I/O error, dev sda, sector …` (any `… error, dev sdX, sector`, the block layer's `blk_print_req_error`) | `storage/stick-errors` |
+| `Buffer I/O error on dev sda4, logical block …` | `storage/stick-errors` |
+| `EXT4-fs error (device sda4): …` | `storage/stick-files-error` |
+| `FAT-fs (sda1): error, …`, `exFAT-fs (sda1): error, …` | `storage/stick-files-error` |
+| `Out of memory: Killed process 1234 (mpfree…) …`, `Memory cgroup out of memory: Killed process …` | `memory/ran-out` |
+
+- **The stick** is any `sd` disk: the MPC One has one USB port, and the stick in it is MPFree's. The eMMC and the SD card (`mmcblk`) are left out, since MPFree's boot switches both off ([stick-autoboot.md](../hardware/stick-autoboot.md)). The stick being gone (`storage/stick-missing`) hides both stick kinds, whose errors are then its echoes.
+- **Memory** counts MPFree's own programs only (`mpfree`, `mpfree-plughost`, …), as the proposal's list says. Reading from the start of the boot, not of this run, is what lets the safe start after the kernel stopped MPFree itself say why: the crash file can't tell an out-of-memory kill from any other crash outside Rust.
+- **Bursts:** a failing stick writes many lines a second, so a second thread counts them and sends each kind at most once a second with its count (`Tally`, `Report::happened`).
+- **Without `/dev/kmsg`:** the app's own user can't open it when the kernel restricts its log (`dmesg_restrict`). Then the kernel's lines come from the system log Dev > Console already follows (`follow_journal`'s one read-only `journalctl -b -f -n 300`, still the only program the app starts besides the GPU process and the Plugins place's downloads): `kernel_log::FromJournal` picks out the lines marked `kernel:`, so another program saying the same words doesn't count. That log starts 300 lines back rather than at the boot's start, and a `status:` line says which way the errors are read.
+- **Checked so far:** `Buffer I/O error on dev mmcblk1p1, logical block 2` was seen on the MPC (stick-autoboot.md, 15 Nov), so that format is known. The others come from the kernel's source and wait for a device check: the next MPC round's stick logs (`dmesg.txt`) show whether `/dev/kmsg` opens for the app's user and what the lines look like there.
+- **Left out of this first list:** the proposal's `critical temperature reached`. The MPC turns itself off then, so it is in the previous boot's log, which `/dev/kmsg` doesn't keep; showing it at the next start needs a log kept across boots, still to be checked on the stick.
+
 ## The MPC's temperature and processor clock (phase 3)
 
 `rust/mpfree-app/src/heat.rs` reads a few small files in `/sys` every 2 s on the screen thread, with `/proc/meminfo`, whatever shows, read-only; never the audio loop. The first read finds the files (one look in `/sys/class/thermal` and `/sys/devices/system/cpu`) and each zone's critical trip point; later reads open only the zones' `temp` and each core's `scaling_cur_freq` and `scaling_max_freq`. A part the machine doesn't have reads as None, so a desktop without zones shows no Temp meter.
@@ -182,13 +214,16 @@ The `Player` keeps its own status clock, moved on by `tick(dt)`, so the board's 
 | 1 | Watchers on the screen thread for the kinds above (the themes' four are reported by the theme code itself); one log line each time a problem starts or ends; the demo songs play green. Still only in Dev > Debug. The sampler's trades move in with its step 10, and the bench's check moves to `Board::unexpected` with its step 13 | built (the trades: with the sampler) |
 | 2 | The status chip (CPU and RAM, coloured; it replaces today's CPU, RAM and session chips), the System status page (opened from the chip or a Prefs row), the red hint line, the manual chapter "When something goes wrong", golden screens and the controls catalogue. Its layout spec change (approved 22 Nov 09:55Z) lands first, as its own docs pull request | built |
 | 3 | Everyone reports in: disk streaming (its Storage kinds, built), themes (their four came with the theme writers' tools, built), the MIDI clock and plugins (Clock stopped and Plugin stopped, built, with MIDI ports as tagged subjects), the stick's free space on the page's head (built: the audio tracks' drive watcher's last look, `files::DriveSeen`, with Storage's line and numbers), and the MPC's temperature and processor clock (built: `heat.rs` reads them every 2 s, the Temp meter and The MPC's numbers show them, Processor slowed is on; MPC running hot stays off until its line is measured on the MPC, never guessed, in a round that also records what the reads cost there). Each adds its catalogue entries and their manual entries | built but the hot line |
-| Later | Not in this go: where the time goes per track and pad, saving a report to the stick, and errors from the system journal from a short reviewed list | |
+| After 3 | Jay's pick of 23 Nov 11:43Z: **Save a report** (a button at the foot of the cards panel writes a plain text report to the stick; above), then **kernel errors** (stick and memory errors from the kernel's log, from a short reviewed list; above) | built; the kernel's formats wait for a device check |
+| Later | Where the time goes per track and pad, once the sampler refactor's lanes have landed | |
 
 ## Tests
 
 - `cargo test -p mpfree-status`: the catalogue's words, the board's rules (moments, counts, settling on and off, latching, inhibition, worst first, a full board, the event ring, no allocation once made).
 - `cargo test -p mpfree-app --bin mpfree -- problems_reach_the_status_board`: a report reaches the board and the Dev page follows it.
 - `cargo test -p mpfree-app --bin mpfree -- status_watch:: the_watchers_turn a_missing_midi_port`: each watched counter and state, memory's lines, a port after two looks and by its name, the followed clock stopping and the plugins' crashes.
+- `cargo test -p mpfree-app --bin mpfree -- status_report:: save_a_report`: the report's words (the session, the numbers, no names typed, no host name, a safe start's crash), its name by the time, the store writing it, and the button reaching the store.
+- `cargo test -p mpfree-app --bin mpfree -- kernel_log::`: the list (the stick's read, write and file system errors, MPFree's programs stopped for memory, and what is left out: other programs, the eMMC and SD card, harmless lines), `/dev/kmsg`'s record header and continuation lines, a line that isn't UTF-8, the system log's kernel lines when `/dev/kmsg` can't be read, and a burst counted once a second.
 - `cargo test -p mpfree-app --bin mpfree -- heat:: the_mpc_runs_hot the_mpc_shows`: the MPC's files read from a fixture tree as D2b saw them (the hottest zone, the critical trip, a resting core not slowed, a lower ceiling slowed, a machine without them), the cost line's times, running hot over its line and off without one, and the Temp meter and The MPC's numbers.
 - `cargo test -p mpfree-app --bin mpfree -- a_lost_clock_lasts_until`: the follower's lost clock, from the pulses stopping while the device played to the next pulse or Stop.
 - `cargo test -p mpfree-app --bin mpfree -- every_song_plays_green`: each demo song opens and plays eight bars with nothing on the board (`Board::unexpected`).

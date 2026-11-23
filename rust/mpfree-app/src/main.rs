@@ -112,10 +112,12 @@ mod expr_rec;
 mod fxmodes;
 mod gui;
 mod hand;
+mod hearing;
 mod heat;
 mod imagecopy;
 mod instrument_list;
 mod instruments;
+mod kernel_log;
 mod kit;
 mod locks;
 mod loop_row;
@@ -162,11 +164,15 @@ mod sampler_commands;
 mod screen_cost;
 mod screen_picture;
 mod script;
+mod set_play;
 mod setup;
 mod shed;
+mod show;
 mod skin_page;
 #[cfg(test)]
 mod smoke;
+mod song_end;
+mod status_report;
 mod status_screen;
 mod status_watch;
 mod step_keys;
@@ -184,9 +190,13 @@ mod waiting;
 mod xy_layouts;
 mod xy_list;
 mod xy_play;
+mod xy_setup;
 mod xy_slot;
+mod xy_song;
+mod xy_widgets;
 
 use mpfree_arp::scale::{pads::MAX_PAD_NOTES, Shift};
+use mpfree_audiotracks::host::CueAudio;
 use mpfree_controller::midi::{Message, Parser};
 use mpfree_controller::mpc_one::{self, ControlEvent, OBSERVED_KEEPALIVE_TOKEN};
 use mpfree_core::{float_to_s32, ClickConfig, ClickEngine};
@@ -2850,6 +2860,10 @@ fn pads_instrument(
     if let Some(h) = mix.instruments.pads_play_at() {
         return Instrument::Own(h);
     }
+    // A kit chosen for the pads (sampler step 15).
+    if let Some(k) = app.pads_kit() {
+        return Instrument::Kit(k);
+    }
     let t = app.track();
     if midi_out {
         Instrument::MidiOut
@@ -3206,6 +3220,49 @@ fn erase_pad_notes(time: &mut time::TimeHost, pad: usize) -> app::Effect {
     })
 }
 
+/// The note editor's pads (piano roll plan 1C.2): pad `pad` (0 to 15)
+/// pressed or let go (`ev`, its kit pad's note-on or note-off), playing
+/// `notes` from its instrument's pad map, while the Sequencer shows the
+/// Notes view. With Pads write on, a pad going down writes at the
+/// editor's cursor, but not while the transport records (the take has the
+/// pads then); with it off, a pad picks its notes on a clip of pad hits.
+/// The pad plays either way, and its let-go always goes, so a chord ends.
+fn editor_pad(
+    app: &app::App,
+    time: &mut time::TimeHost,
+    out: &mut Out,
+    pad: usize,
+    ev: mpfree_play::Event,
+    notes: &[u8],
+) -> Vec<app::Effect> {
+    use mpfree_play::Event;
+    use mpfree_time_ui::editor::EditAction;
+    let (hit, velocity, down) = match ev {
+        Event::NoteOn { note, velocity } => (note, velocity, true),
+        Event::NoteOff { note } => (note, 0, false),
+        _ => return Vec::new(),
+    };
+    if !app.notes_shown() || !time.editing() {
+        return Vec::new();
+    }
+    let recording = time.info().state == mpfree_transport::State::Recording;
+    if down && recording && time.pads_write() {
+        return Vec::new();
+    }
+    let a = EditAction::Pad {
+        key: pad as u8,
+        hit,
+        notes: notes.to_vec(),
+        velocity,
+        down,
+    };
+    let say = time::Say::NoteOrTell { err: "" };
+    match time.act_then(TimeAction::Edit(a), say.clone()) {
+        Some(r) => time_said(out, say, r),
+        None => Vec::new(),
+    }
+}
+
 /// ERASE let go: live erase stops for every pad.
 fn live_erase_let_go(app: &app::App, time: &mut time::TimeHost) {
     if !app.erase_held() && time.erasing() {
@@ -3320,6 +3377,78 @@ fn audition(
             player.hit_at(pad, v, 0);
         }
         (false, false) => player.release_at(pad, 0),
+    }
+}
+
+/// What plays the notes the note editor hears (hearing.rs, piano roll
+/// plan 1C.2): a track's instrument (its own or another's) as the
+/// audition's own player; the synth on the pads by note number, counted
+/// with its other holders; a kit track's pad, as Steps' audition hits it.
+/// A track on MIDI out hears nothing: its notes are its gear's.
+struct HearOn<'a> {
+    own: &'a mut instruments::Instruments,
+    synth: &'a mut synth::Synth,
+    player: &'a mut sampler::Player,
+    kits: &'a sampler::TrackKits,
+    midi: &'a midi_out::MidiOut,
+}
+
+impl hearing::Sound for HearOn<'_> {
+    fn start(
+        &mut self,
+        track: usize,
+        hits: bool,
+        key: u8,
+        velocity: u8,
+        out: &mut Vec<(hearing::On, u8)>,
+    ) {
+        use hearing::On;
+        let v = velocity.max(1);
+        if u16::try_from(track).map_or(true, |t| self.midi.takes(t)) {
+            return;
+        }
+        let mut notes = [0u8; time::HEARD_NOTES];
+        let mut fill = |from: &[u8]| {
+            let n = from.len().min(notes.len());
+            notes[..n].copy_from_slice(&from[..n]);
+            n
+        };
+        if self.own.plays(track) {
+            // A pad: the notes its pad map plays, as written.
+            let n = match hits {
+                true => fill(self.own.pad_notes(track, usize::from(key))),
+                false => fill(&[key]),
+            };
+            for &note in &notes[..n] {
+                if self.own.audition_on(track, note, v) {
+                    out.push((On::Instrument, note));
+                }
+            }
+        } else if self.kits.plays_synth(track) {
+            let n = match hits {
+                true => fill(self.synth.notes(usize::from(key))),
+                false => fill(&[key]),
+            };
+            for &note in &notes[..n] {
+                self.synth.note_on_note(note, v, 0);
+                out.push((On::Synth, note));
+            }
+        } else if hits {
+            let kit = self.kits.kit_of(track).unwrap_or(0);
+            if self.player.hit_kit_at(kit, usize::from(key), v, 0) {
+                out.push((On::Kit(kit), key));
+            }
+        }
+    }
+
+    fn end(&mut self, on: hearing::On, key: u8) {
+        match on {
+            hearing::On::Instrument => {
+                self.own.audition_off(key);
+            }
+            hearing::On::Synth => self.synth.note_off_note(key, 0),
+            hearing::On::Kit(kit) => self.player.release_kit_at(kit, usize::from(key), 0),
+        }
     }
 }
 
@@ -3874,8 +4003,9 @@ fn player(o: &Options, timed: bool) -> Result<(), String> {
     // A scripted run is the app as a musician has it (STOP stops, it
     // doesn't end the run); only its length is the script's.
     let mut player = gui::Player::new(fonts, size, timed && o.workflow.is_none(), backdrop);
-    if last_run != crash::LastRun::Fine {
+    if let crash::LastRun::Crashed(why) = &last_run {
         player.safe_start();
+        player.set_crash_why(why.clone());
     }
     match load_theme(o) {
         Ok(t) => player.ui.set_theme(t),
@@ -3933,7 +4063,8 @@ fn player(o: &Options, timed: bool) -> Result<(), String> {
     .map_err(|e| format!("screen thread: {e}"))?;
     out.sink = Some(to_ui.clone());
     if !timed {
-        follow_journal(to_ui.clone());
+        let kernel = follow_kernel(to_ui.clone());
+        follow_journal(to_ui.clone(), kernel);
     }
     let result = player_session(o, &mut out, timed, &from_ui, &xy);
     if let Err(e) = &result {
@@ -3988,8 +4119,25 @@ fn read_patterns(path: &Path) -> Result<String, String> {
     Ok(text)
 }
 
-/// The system log, followed (`journalctl -f`, read-only) into the Console page.
-fn follow_journal(tx: SyncSender<gui::ToUi>) {
+/// The kernel's stick and memory errors, followed (read-only) onto the
+/// status board (`kernel_log`); without `/dev/kmsg`, what the system log's
+/// follower feeds them from.
+fn follow_kernel(tx: SyncSender<gui::ToUi>) -> Option<kernel_log::FromJournal> {
+    let lines = tx.clone();
+    kernel_log::follow(
+        move |l| {
+            println!("{l}");
+            let _ = io::stdout().flush();
+            let _ = lines.try_send(gui::ToUi::Line(l));
+        },
+        move |r| tx.send(gui::ToUi::Problem(r)).is_ok(),
+    )
+}
+
+/// The system log, followed (`journalctl -f`, read-only) into the Console page,
+/// and, when `/dev/kmsg` couldn't be read, its kernel lines to the status
+/// board's kernel watch.
+fn follow_journal(tx: SyncSender<gui::ToUi>, kernel: Option<kernel_log::FromJournal>) {
     let spawned = thread::Builder::new()
         .name("mpfree-journal".into())
         .spawn(move || {
@@ -4022,6 +4170,9 @@ fn follow_journal(tx: SyncSender<gui::ToUi>) {
             };
             for line in io::BufRead::lines(io::BufReader::new(stdout)) {
                 let Ok(l) = line else { break };
+                if let Some(k) = &kernel {
+                    k.line(&l);
+                }
                 if let Err(std::sync::mpsc::TrySendError::Disconnected(_)) =
                     tx.try_send(gui::ToUi::Console(l))
                 {
@@ -4508,6 +4659,8 @@ fn learn_describe(
         // A Perform pad is pressed, with no value to read.
         Owner::Perform => return None,
         Owner::Play => return remote::describe_play(addr.param, now),
+        // A set's control is pressed, with no value to read.
+        Owner::Show => return None,
         // A track's controller, bend or pressure out: where the engine has
         // it, else its default.
         Owner::Midi(_) => {
@@ -4598,6 +4751,10 @@ fn learn_label(
             return format!("Perform pads {}", name.as_deref().unwrap_or("?"));
         }
         Owner::Play => return format!("Play · {}", play::name(addr.param).unwrap_or("?")),
+        Owner::Show => {
+            let name = mpfree_play::mpfree_param::show::name(addr.param);
+            return format!("Show · {}", name.unwrap_or("?"));
+        }
         _ => return modpanels::label(mix, addr),
     };
     // As the time engine and the I/O view name the tracks.
@@ -5127,6 +5284,9 @@ enum PadsPreview {
     Synth,
     /// An instrument the host holds, by its pads player (step 6).
     Host,
+    /// A kit chosen for the pads (sampler step 15): its pads play, each
+    /// hit at the pad of the kit's page the pads are on.
+    Kit(u8),
 }
 
 /// A keyboard's keys while the pads play a synth on their own (the
@@ -5175,6 +5335,9 @@ impl KeysOnPads {
                         own.note_on(pads, note, vel, 0);
                     }
                     PadsPreview::Synth => synth.note_on_note(note, vel, 0),
+                    // A kit on the pads: the keys play the armed track as
+                    // before (sampler step 15 leaves them there).
+                    PadsPreview::Kit(_) => return false,
                 }
                 self.held[at(note)] = Some(p);
                 true
@@ -5188,7 +5351,7 @@ impl KeysOnPads {
                     synth.note_off_note(note, 0);
                     true
                 }
-                None => false,
+                Some(PadsPreview::Kit(_)) | None => false,
             },
             Key::Pressure { note, value } => match self.held[at(note)] {
                 Some(PadsPreview::Host) => {
@@ -5199,7 +5362,7 @@ impl KeysOnPads {
                     synth.pressure_note(note, value);
                     true
                 }
-                None => false,
+                Some(PadsPreview::Kit(_)) | None => false,
             },
             Key::Expr { note, kind, value } => match self.held[at(note)] {
                 Some(PadsPreview::Host) => {
@@ -5210,7 +5373,7 @@ impl KeysOnPads {
                     synth.expression_note(note, kind, value);
                     true
                 }
-                None => false,
+                Some(PadsPreview::Kit(_)) | None => false,
             },
             Key::Bend { value } => match preview {
                 Some(PadsPreview::Host) => {
@@ -5221,7 +5384,7 @@ impl KeysOnPads {
                     synth.bend(value);
                     true
                 }
-                None => false,
+                Some(PadsPreview::Kit(_)) | None => false,
             },
             Key::Control { ctl, value } => KeysOnPads::control(preview, ctl, value, synth, own),
         }
@@ -5245,7 +5408,7 @@ impl KeysOnPads {
                 synth.control(ctl, value, 0);
                 true
             }
-            None => false,
+            Some(PadsPreview::Kit(_)) | None => false,
         }
     }
 
@@ -7149,6 +7312,11 @@ fn looper_action(
             looper.set_point_open(open);
             Vec::new()
         }
+        looping::LoopAction::Choose(side) => {
+            let line = looper.choose(side);
+            out.note(&line);
+            vec![app::Effect::Tell(line)]
+        }
         looping::LoopAction::CaptureSpan(end, bars) => {
             out.note(&looper.set_capture_span(end, bars));
             Vec::new()
@@ -7251,6 +7419,76 @@ fn looper_action(
         // hint.
         looping::LoopAction::CopyLayer { from, id, to, keep } => {
             vec![app::Effect::Tell(looper.copy_layer(from, id, to, keep))]
+        }
+    }
+}
+
+/// A Fit to tempo ended ([`audiotracks::TrackHost::tend_clip_fit`]): a
+/// fitted clip goes in its cell as one UNDO step, or its copies are
+/// forgotten if the cell changed meanwhile. The hint line.
+fn fit_ended(
+    time: &mut time::TimeHost,
+    tracks: &mut audiotracks::TrackHost,
+    done: audiotracks::ClipFitDone,
+) -> String {
+    match done {
+        audiotracks::ClipFitDone::Fitted {
+            track,
+            slot,
+            id,
+            name,
+            audio,
+            bpm,
+            copies,
+        } => match time.fit_clip(track, slot, id, audio) {
+            Ok(_) => format!(
+                "{name}: fitted to {} · UNDO goes back",
+                audiotracks::bpm_words(bpm)
+            ),
+            Err(e) => {
+                tracks.forget_copies(&copies);
+                format!("Fit to tempo: {e}")
+            }
+        },
+        audiotracks::ClipFitDone::Failed { name } => {
+            format!("Fit to tempo: {name} couldn't be fitted; nothing changed")
+        }
+    }
+}
+
+/// A sound Put in a cell came in ([`audiotracks::TrackHost::tend_cell_sound`]):
+/// its clip goes in its track's first empty cell, as an edit UNDO takes
+/// away, or its take is forgotten if the track has no room now. The hint
+/// line.
+fn cell_sound_in(
+    time: &mut time::TimeHost,
+    tracks: &mut audiotracks::TrackHost,
+    done: Result<(usize, mpfree_seq::Clip), String>,
+) -> String {
+    let (track, clip) = match done {
+        Ok(d) => d,
+        Err(e) => return format!("Put in a cell: {e}"),
+    };
+    let name = clip.name.clone();
+    let rec = clip
+        .audio
+        .as_ref()
+        .and_then(|a| a.regions.first())
+        .map(|r| r.rec);
+    match time.put_audio_clip(track, clip) {
+        Ok(row) => {
+            let who = time
+                .project()
+                .tracks
+                .get(track)
+                .map_or("", |t| t.name.as_str());
+            format!("{name} into {who}, row {} · UNDO takes it out", row + 1)
+        }
+        Err(e) => {
+            if let Some(rec) = rec {
+                tracks.forget_recording(rec);
+            }
+            format!("Put in a cell: {e}")
         }
     }
 }
@@ -7385,6 +7623,34 @@ fn time_action(
     }
     // The audio lanes' touches go to the audio tracks; a pick stays with
     // the time engine, which keeps the selection.
+    // To a cell (audio tracks phase 2): the picked region as an audio
+    // clip in its track's first empty cell; the song doesn't change.
+    // Fit to tempo on an audio clip's card (audio tracks phase 2): fitted
+    // copies of its recordings start; the clip plays them once they are
+    // in (the main loop, `fit_ended`).
+    if let TimeAction::FitClip { track, slot } = a {
+        let bpm = time.info().bpm;
+        let said = match time.project().clip(track, slot) {
+            Some(c) => tracks.fit_clip(track, slot, c, bpm),
+            None => Err(format!("cell {} of track {} is empty", slot + 1, track + 1)),
+        };
+        let line = said.unwrap_or_else(|e| format!("Fit to tempo: {e}"));
+        out.note(&format!("audio tracks: {line}"));
+        out.show(gui::ToUi::Tell(line));
+        return Vec::new();
+    }
+    if let TimeAction::Audio(AudioAction::ToCell(r)) = a {
+        let said = tracks
+            .region_clip(r, time.tempo_map(), time.info().meter)
+            .and_then(|(track, clip, place)| {
+                let row = time.put_audio_clip(track, clip)?;
+                Ok(format!("{place}: in row {} · UNDO takes it out", row + 1))
+            });
+        let line = said.unwrap_or_else(|e| format!("To a cell: {e}"));
+        out.note(&format!("audio tracks: {line}"));
+        out.show(gui::ToUi::Tell(line));
+        return Vec::new();
+    }
     if let TimeAction::Audio(aa) = a {
         // The audio tracks' own Undo and Redo at a song edit's step the
         // song no longer reaches: the step is forgotten (Arrange 3.4).
@@ -7394,6 +7660,23 @@ fn time_action(
                 out.note(&format!("audio tracks: {line}"));
                 return Vec::new();
             }
+            // At a song edit's step the song still reaches, UNDO (or SHIFT
+            // + UNDO) on Arrange takes the song edit back with its regions
+            // (layout spec 4c: UNDO follows the region edits down to it).
+            let tr = &tracks.host.tracks;
+            let song = if undo {
+                tr.undo_is_song()
+            } else {
+                tr.redo_is_song()
+            };
+            if song.is_some() {
+                let a = if undo {
+                    TimeAction::Undo
+                } else {
+                    TimeAction::Redo
+                };
+                return time_action(out, time, tracks, looper, app, mix, a);
+            }
         }
         if !matches!(aa, AudioAction::Pick(_)) {
             // What the panel's Mix offers comes from the mixer (step 9).
@@ -7401,8 +7684,17 @@ fn time_action(
                 tracks.offer(mix.inside_sources());
             }
             match tracks.action(aa, &time.info(), looper.line.is_open()) {
-                Ok(line) if !line.is_empty() => out.note(&line),
-                Ok(_) => {}
+                Ok(line) => {
+                    // An audio track armed: the Clip tab shows its clip.
+                    if let AudioAction::Arm { track, on } = aa {
+                        if let Some(row) = tracks.place(track) {
+                            time.focus_audio(row, on);
+                        }
+                    }
+                    if !line.is_empty() {
+                        out.note(&line);
+                    }
+                }
                 Err(e) => out.note(&format!("audio tracks: {e}")),
             }
             // An erase leaves the picked region's place empty.
@@ -7425,6 +7717,7 @@ fn time_action(
         ) | TimeAction::DeleteClip { .. }
             | TimeAction::ClipSettings { .. }
             | TimeAction::ClipLength { .. }
+            | TimeAction::AudioClip { .. }
             | TimeAction::Mutate { .. }
             | TimeAction::Restore { .. }
             | TimeAction::ConvertPreview { .. }
@@ -7441,6 +7734,10 @@ fn time_action(
             | TimeAction::SongBars(_)
             | TimeAction::SongMarker(_)
             | TimeAction::DeletePlacement(_)
+            | TimeAction::SplitPlacement(_)
+            | TimeAction::DuplicatePlacement(_)
+            | TimeAction::TrimPlacement { .. }
+            | TimeAction::SlidePlacement { .. }
             | TimeAction::Perform(_)
     ) || matches!(a, TimeAction::SongTempo(e) if !matches!(e, TempoEdit::Pick(_)))
         // A linked song list's step edits are the song's (Arrange 4b.2).
@@ -7487,7 +7784,8 @@ fn time_action(
         // 4b.2), UNDO and REDO with audio regions (or a song edit's step
         // on their history): the regions move with the song in the same
         // period, or nothing moves (Arrange 3.4). Apart too, the control
-        // half borrowed back for it.
+        // half borrowed back for it. Song → scenes asks them for their
+        // regions, to turn into audio clips (phase 2, step 2d).
         TimeAction::MoveSection { .. }
         | TimeAction::SongBars(_)
         | TimeAction::ListTimes { .. }
@@ -7496,6 +7794,7 @@ fn time_action(
         | TimeAction::ListRemove(_)
         | TimeAction::ListMove { .. }
         | TimeAction::ListBack(_)
+        | TimeAction::SongToScenes
         | TimeAction::Undo
         | TimeAction::Redo
             if tracks.host.tracks.has_regions() || tracks.host.tracks.has_song_steps() =>
@@ -7613,6 +7912,140 @@ fn synth_turn_said(synth: &synth::Synth, id: u16, redo: bool) -> String {
     }
 }
 
+/// Your XY layouts as the screen shows them ([`gui::ToUi::Xy`]), each
+/// setting named afresh.
+fn xy_view(
+    song: &mut xy_song::XySong,
+    mix: &mixing::MixHost,
+    synth: &synth::Synth,
+    app: &app::App,
+    pads: PadNow<'_>,
+    time: &time::TimeHost,
+) -> gui::ToUi {
+    let look = |a| xy_seen(mix, synth, app, pads, time, a);
+    gui::ToUi::Xy(Box::new(song.view(mix.xy_held(), &look)))
+}
+
+/// A Stay lift as the XY pad's undo history lists it: "Stay: Cutoff,
+/// Send A (2 settings)".
+fn xy_turn_row(mix: &mixing::MixHost, t: &undo::Turn<xy_song::XyKey, xy_song::XyValues>) -> String {
+    let names: Vec<String> = t
+        .key
+        .iter()
+        .flatten()
+        .map(|&a| modpanels::label(mix, a))
+        .collect();
+    let n = names.len();
+    let shown: Vec<&str> = names.iter().take(3).map(String::as_str).collect();
+    let more = if n > 3 { ", …" } else { "" };
+    format!(
+        "Stay: {}{more} ({n} setting{})",
+        shown.join(", "),
+        if n == 1 { "" } else { "s" }
+    )
+}
+
+/// A setting as the XY pad's Setup and its waiting banner name it
+/// (`xy_song.rs`): its name, where it is ("Bass · Poly", "Master · Room,
+/// effect 1", "Bass strip"), its colour, its range, and whether it is a
+/// synth's or a pad's own (no Add yet). Err with why it isn't there: its
+/// track removed, its effect taken out.
+fn xy_seen(
+    mix: &mixing::MixHost,
+    synth: &synth::Synth,
+    app: &app::App,
+    pads: PadNow<'_>,
+    time: &time::TimeHost,
+    addr: mpfree_play::mpfree_param::ParamAddr,
+) -> Result<xy_song::Seen, String> {
+    use mpfree_play::mpfree_param::Owner;
+    let project = time.project();
+    let track = |t: u8| {
+        let n = track_name(project, t);
+        if n.is_empty() {
+            format!("Track {}", u16::from(t) + 1)
+        } else {
+            n
+        }
+    };
+    if let Some((t, _)) = addr.owner.split() {
+        if usize::from(t) >= project.tracks.len() {
+            return Err(format!("Track {} was removed.", u16::from(t) + 1));
+        }
+    }
+    if matches!(addr.owner, Owner::Arp(_)) {
+        return Err("The arp's settings can't go on the pad yet.".to_string());
+    }
+    // A synth's and a pad's own settings: the pad's hand reaches them in
+    // the next step (the XY plan's phase 2, its third pull request).
+    if matches!(addr.owner, Owner::Inst(_) | Owner::Pad(..)) {
+        return Err(xy_song::NOT_YET.to_string());
+    }
+    let now = desk::play_now(time, mix);
+    let Some((info, _)) = learn_describe(mix, synth, app, pads, now, addr) else {
+        return Err(match addr.owner {
+            Owner::Insert(..) => "Its effect was taken out, or has no such setting now.",
+            Owner::Pad(..) => "Its pad has no sound now.",
+            _ => "It isn't there any more.",
+        }
+        .to_string());
+    };
+    let (name, place) = match addr.owner {
+        Owner::Inst(t) => {
+            let own = mix
+                .instruments
+                .holds(usize::from(t))
+                .then(|| mix.instruments.node(usize::from(t)))
+                .flatten();
+            let engine = own.map_or_else(|| synth.engine_name(), |n| n.info().name);
+            (info.name.to_string(), format!("{} · {engine}", track(t)))
+        }
+        Owner::Pad(t, pad) => (
+            info.name.to_string(),
+            format!(
+                "{} · pad {}",
+                track(t),
+                mpfree_midi::profile::pad_name(usize::from(pad))
+            ),
+        ),
+        Owner::Strip(s) => (
+            info.name.to_string(),
+            format!("{} strip", mixing::name(modmix::strip_id(s))),
+        ),
+        Owner::Insert(s, uid) => {
+            let sid = modmix::strip_id(s);
+            let (effect, slot) = mix
+                .mixer
+                .chain(sid)
+                .and_then(|c| {
+                    let i = c.slot_of(uid)?;
+                    Some((c.node(i)?.info().name, i))
+                })
+                .unwrap_or(("?", 0));
+            (
+                info.name.to_string(),
+                format!("{} · {effect}, effect {}", mixing::name(sid), slot + 1),
+            )
+        }
+        _ => {
+            // "CC 74 (Track 3)", "Macro 2 · Grit": the name, and where in
+            // the brackets.
+            let label = learn_label(mix, synth, time, addr);
+            match label.rsplit_once(" (") {
+                Some((n, p)) => (n.to_string(), p.trim_end_matches(')').to_string()),
+                None => (label, String::new()),
+            }
+        }
+    };
+    Ok(xy_song::Seen {
+        info,
+        name,
+        place,
+        dot: xy_song::dot_of(addr),
+        own: matches!(addr.owner, Owner::Inst(_) | Owner::Pad(..)),
+    })
+}
+
 /// A synth knob's turn as the undo history lists it: "Filter Cutoff to
 /// 1.2 kHz".
 fn synth_turn_row(synth: &synth::Synth, id: u16, to: f32) -> String {
@@ -7629,10 +8062,53 @@ fn synth_turn_row(synth: &synth::Synth, id: u16, to: f32) -> String {
     }
 }
 
+/// A block and a region never overlap on a lane (the audio tracks
+/// rethink's phase 2, step 2d), each period: Rec song's new blocks of
+/// audio clips replace the regions under them (Joshi, 23 Nov), as steps
+/// of its song edit; and sound put on an audio track's lane since the last
+/// period (a take, a swipe on a take lane, a region moved, a sound brought
+/// in) cuts the song's blocks under it, as a song edit its undo step is
+/// then tied to. Either way either UNDO takes back both.
+fn cut_blocks_under_takes(
+    out: &mut Out,
+    time: &mut time::TimeHost,
+    tracks: &mut audiotracks::TrackHost,
+) {
+    if let Some((song, spans)) = time.take_song_placed() {
+        let (done, left) = tracks.replace_under(song, &spans);
+        if done > 0 && !time.tie_audio(song) {
+            out.note(
+                "audio tracks: Rec song's blocks replaced recorded regions, but its song edit \
+                 is gone, so UNDO can't bring them back",
+            );
+        }
+        if left > 0 {
+            out.note(&format!(
+                "audio tracks: the queue was full: {left} of Rec song's blocks still sit over \
+                 recorded regions"
+            ));
+        }
+    }
+    while let Some((track, span, step)) = tracks.take_took() {
+        match time.audio_took(track, span) {
+            Ok(Some((song, line))) => {
+                out.note(&line);
+                if let Err(e) = tracks.tie_step(step, song) {
+                    out.note(&format!("audio tracks: {e}"));
+                }
+            }
+            Ok(None) => {}
+            Err(e) => out.note(&e),
+        }
+    }
+}
+
 /// Everything the time pages show, with the audio tracks' lanes.
 fn time_state(time: &time::TimeHost, tracks: &audiotracks::TrackHost) -> mpfree_time_ui::TimeState {
     let mut st = time.state();
     tracks.fill(&mut st, time.tempo_map());
+    tracks.fill_cells(&mut st, time.project());
+    tracks.fill_blocks(&mut st, time.project(), time.tempo_map());
     st
 }
 
@@ -7939,6 +8415,14 @@ fn player_session(
     let mut line_at = 0.0;
     let mut who_at = 0.0f64;
     let mut preview_held: [Option<PadsPreview>; 16] = [None; 16];
+    // The pad of the kit each pad held on a kit chosen for them hit
+    // (sampler step 15), so its let-go and pressure find it.
+    let mut preview_pad = [0u8; 16];
+    // The notes the note editor hears (piano roll plan 1C.2), and whether
+    // the transport rolled when they started: it starting or stopping
+    // lets them go.
+    let mut hearing = hearing::Hearing::default();
+    let mut hear_rolling = false;
     // The list of instruments changed since the app last had it (step 6).
     let mut list_changed = true;
     // What each track plays: a kit, the Grains kit or the synth (kit 1 on
@@ -7968,8 +8452,14 @@ fn player_session(
     // UNDO on the Synth tab and the mixer: their knob and fader turns.
     let mut synth_turns: undo::Turns<u16> = undo::Turns::default();
     let mut mix_turns: mixturns::MixTurns = undo::Turns::default();
+    // Your XY layouts in this song, and Stay's lifts for UNDO.
+    let mut xy_yours = xy_song::XySong::default();
+    let mut xy_turns: xy_song::XyTurns = undo::Turns::default();
+    // A project's layouts came in: the one it played plays once its mixer
+    // and mod set-up are in.
+    let mut xy_opening = false;
     // What the screen was last told about them, for the UNDO light.
-    let mut turns_told = (false, false);
+    let mut turns_told = (false, false, false);
     let mut synth_time = RenderTime::default();
     // Q-Links on the Public port (no Akai session) send positions; the Synth
     // page wants turns, so the last position of each is kept.
@@ -7996,6 +8486,7 @@ fn player_session(
     let mut views_swapped = 0u64;
     // All four PAD BANK buttons: the screen pictures' names this run.
     let mut picture_names = screen_picture::Names::default();
+    let mut report_names = status_report::Names::default();
     let mut recolour = false;
     let (mut shown_heads, mut heads_at) = (sampler::Playheads::default(), Instant::now());
     // The Grain tab's cloud box, while the audio thread holds it: filled and
@@ -8272,6 +8763,15 @@ fn player_session(
         app.settings.audio_streams = tracks.streams();
         out.show(gui::ToUi::Settings(app.settings.clone()));
     }
+    // With takes streaming, a cue that launches audio waits until the
+    // start of its audio is in memory (the audio tracks rethink's phase
+    // 2): the needs go to the tracks whenever they change.
+    time.set_audio_waits(tracks.streams());
+    let mut needs_rev = 0u64;
+    // A Fit to tempo ended, or a sound Put in a cell came in: its clip
+    // waits while the time engine records.
+    let mut fit_done: Option<audiotracks::ClipFitDone> = None;
+    let mut cell_done: Option<Result<(usize, mpfree_seq::Clip), String>> = None;
     out.show(gui::ToUi::Time(Box::new(time_state(&time, &tracks))));
     let (mut shown_transport, mut transport_shown_at) = (time.info(), Instant::now());
     let mut periods = app.settings.periods;
@@ -8381,6 +8881,8 @@ fn player_session(
     let mut shown_levels = mix.play_levels();
     out.show(gui::ToUi::PlayLevels(shown_levels));
     let mut meter_at = Instant::now();
+    // A set's song's ending (live shows B1): its gain on the output.
+    let mut song_end = song_end::SongEnd::new(RATE);
     out.say(&format!("mixer: the kit's 16 pads on pad channels into track 1 (drums), synth and loop on tracks 2-3, the \
                       line input on input 1 (heard with the looper's Monitor), Master safety {} at {:.1} dBFS",
                      "safe limiter", -0.3));
@@ -8637,9 +9139,6 @@ fn player_session(
         parts.begin();
         let t = started.elapsed().as_secs_f64();
         let mut kit_to: Option<usize> = kit_follow.take();
-        // A kit picked in the list (or turned with SHIFT + the wheel) this
-        // period: what the pads play, so they follow the track.
-        let mut kit_picked = false;
         let mut audio_change: Option<u32> = None;
         let mut bank_lights = false;
         // PAD BANK turned the kit's page: the pads' colours follow.
@@ -8677,6 +9176,9 @@ fn player_session(
                 }
             }
             let (t_item, item) = (Instant::now(), parts::Name::of(&a));
+            // A ready-made layout picked on the XY pad's list: none of
+            // yours plays from now.
+            let xy_picked = matches!(a, gui::FromUi::PlayFx(mixing::PlayFx::XyEffect(_)));
             let mix_turn = mixturns::before_ui(&a, &mix, app.view() == app::View::Mixer);
             // The app, the mixer, the time engine, the looper and the chain
             // editor take theirs (desk.rs); the rest is this loop's.
@@ -8698,6 +9200,11 @@ fn player_session(
             record_knob(&a, desk.app, desk.mix, desk.time);
             let a = desk.screen(a, t, out, &mut fx);
             save_shelf(&mut mix, &store, out);
+            if xy_picked && xy_yours.playing.take().is_some() {
+                let pad_now =
+                    |t: u8, pad: u8, id: u16| pad_describe(&player, &track_kits, t, pad, id);
+                out.show(xy_view(&mut xy_yours, &mix, &synth, &app, &pad_now, &time));
+            }
             // UNDO on the mixer: a strip control's turn, from its value
             // before the desk set it.
             if let Some(turn) = mix_turn {
@@ -8821,6 +9328,18 @@ fn player_session(
                     audition(pad, down, &mut player, &mut synth, synth_on);
                 }
                 gui::FromUi::Audition { .. } => {}
+                // The note editor hears notes picked, drawn or moved.
+                gui::FromUi::Hear(ask) => {
+                    let mut on = HearOn {
+                        own: &mut mix.instruments,
+                        synth: &mut synth,
+                        player: &mut player,
+                        kits: &track_kits,
+                        midi: &midi_out,
+                    };
+                    hearing.hear(&ask, t, &mut on);
+                    hear_rolling = time.info().state.rolling();
+                }
                 // The Pads tab's strip: the kit's bank on the pads, as PAD
                 // BANK turns it (the synth's pads have layouts, not banks).
                 gui::FromUi::PadBank(b) if b < app::KIT_PAGES && !synth_on => {
@@ -8831,11 +9350,38 @@ fn player_session(
                     bank_lights = true;
                 }
                 gui::FromUi::PadBank(_) => {}
-                // A pick in the list of kits: what the pads play, so they
-                // follow the track again (app/pads_focus.rs).
+                // A pick in the list of kits: what the track plays. The
+                // pads' own choice stays (sampler step 15b: nothing implicit
+                // moves the pads); while they follow the track, they play
+                // its new kit.
                 gui::FromUi::Kit(k) => {
                     kit_to = Some(k.min(n - 1));
-                    kit_picked = true;
+                }
+                // Your XY layouts (xy_song.rs): the loop names each
+                // setting, the mixer plays the layout, and the screen sees
+                // the song's layouts again.
+                gui::FromUi::Xy(act) => {
+                    let pad_now =
+                        |t: u8, pad: u8, id: u16| pad_describe(&player, &track_kits, t, pad, id);
+                    let track = u8::try_from(app.track()).unwrap_or(u8::MAX);
+                    let look = |a| xy_seen(&mix, &synth, &app, &pad_now, &time, a);
+                    let mut told = None;
+                    let done = xy_yours.act(
+                        act,
+                        track,
+                        |pick, name| mix.xy_ready(pick, name),
+                        &look,
+                        &mut |l| told = Some(l),
+                    );
+                    match done {
+                        Ok(d) => mix.xy_done(d),
+                        Err(e) => told = Some(e),
+                    }
+                    if let Some(line) = told {
+                        out.note(&format!("xy: {line}"));
+                        out.show(gui::ToUi::Tell(line));
+                    }
+                    out.show(xy_view(&mut xy_yours, &mix, &synth, &app, &pad_now, &time));
                 }
                 // UNDO on the Synth tab and the mixer: their turns' history.
                 gui::FromUi::UndoHistory(on) => {
@@ -8846,6 +9392,9 @@ fn player_session(
                             }),
                         gui::UndoOn::Mixer => {
                             mix_turns.rows("Start: the mix before these turns", mixturns::row)
+                        }
+                        gui::UndoOn::Xy => {
+                            xy_turns.rows("Start: before these lifts", |t| xy_turn_row(&mix, t))
                         }
                     };
                     out.show(gui::ToUi::UndoHistory { on, rows, now });
@@ -8863,6 +9412,23 @@ fn player_session(
                                 synth.set(t.key, v);
                                 out.show(gui::ToUi::SynthValues(synth.values()));
                                 synth_turn_said(&synth, t.key, redo)
+                            })
+                        }
+                        gui::UndoOn::Xy => {
+                            let turn = if redo {
+                                xy_turns.redo()
+                            } else {
+                                xy_turns.undo()
+                            };
+                            turn.map(|t| {
+                                for (addr, v) in xy_song::turn_values(&t, redo) {
+                                    panels.set_param(&mut mix, addr, v, false);
+                                }
+                                format!(
+                                    "{}: {}",
+                                    if redo { "redo" } else { "undo" },
+                                    xy_turn_row(&mix, &t)
+                                )
                             })
                         }
                         gui::UndoOn::Mixer => {
@@ -9081,6 +9647,20 @@ fn player_session(
                 gui::FromUi::OpenLoops(l) => looper.open(*l),
                 // The audio tracks' part goes in once they are empty.
                 gui::FromUi::OpenAudio(a) => tracks.open(*a),
+                gui::FromUi::SongEnd(end) => {
+                    // Step 1 of every ending: no new notes (the transport's
+                    // STOP, which keeps a take recording; never the stopped
+                    // transport's panic, which would cut the tails).
+                    if end != song_end::End::Now
+                        && !song_end.active()
+                        && time.info().state.rolling()
+                    {
+                        fx.push(app::Effect::Time(TimeAction::Transport(Command::Stop)));
+                    }
+                    song_end.start(end);
+                    out.note(&format!("show: the song ends: {end:?}"));
+                }
+                gui::FromUi::SongEndReset => song_end.reset(),
                 // Each take to a file of its own from now on (phase 3a),
                 // and where a project save put them.
                 gui::FromUi::AudioFiles(dir) => tracks.record_to(dir),
@@ -9090,6 +9670,8 @@ fn player_session(
                     // transport, and held notes would hang.
                     fx.push(app::Effect::Time(TimeAction::Transport(Command::Stop)));
                     fx.push(app::Effect::StopSounds);
+                    // A set's song ended into silence: the new one sounds.
+                    song_end.reset();
                     // A new or opened project arms the notes (rec_arm.rs).
                     app.rec = rec_arm::RecArm::default();
                     out.show(gui::ToUi::Rec(app.rec));
@@ -9126,6 +9708,11 @@ fn player_session(
                             *t = time_apart(out, *t);
                         }
                         std::mem::swap(&mut time, &mut *t);
+                        // Its cues wait for their audio as the last one's
+                        // did; none of the last one's waits any more.
+                        time.set_audio_waits(tracks.streams());
+                        tracks.forget_waits();
+                        needs_rev = 0;
                         // The old engine goes back in the box, to be freed
                         // on the screen thread.
                         o.time = Some(t);
@@ -9138,6 +9725,18 @@ fn player_session(
                             s,
                         ))));
                     }
+                    // The XY pad's layout of yours lets go and its rows go
+                    // before the mixer and the mod engine change; the
+                    // project's layouts come in, and the one it played
+                    // plays once its mixer is in.
+                    mix.xy_yours(None);
+                    let (song, notes) = xy_song::XySong::parse(o.xy.as_deref().unwrap_or(""));
+                    for line in notes {
+                        out.note(&format!("project: {line}"));
+                    }
+                    xy_yours = song;
+                    xy_turns.clear();
+                    xy_opening = true;
                     if let Some(m) = o.mix.take() {
                         mix.open(m);
                     }
@@ -9168,6 +9767,12 @@ fn player_session(
                             out.note(&format!(
                                 "project: {} keeps its instrument (its last sound is still ringing out)",
                                 holder_says(track)
+                            ));
+                            // The last project's instrument plays on in
+                            // this one: never saved over it (live shows A1).
+                            out.left_out(format!(
+                                "track {}'s instrument (the last project's was still ringing out)",
+                                track + 1
                             ));
                         }
                         app.set_track_sound(track, mix.instruments.held(track));
@@ -9209,6 +9814,7 @@ fn player_session(
                                     holder_says(track),
                                     held.name
                                 ));
+                                out.left_out(format!("{} on track {}", held.name, track + 1));
                             }
                         }
                         app.set_track_sound(track, mix.instruments.held(track));
@@ -9296,14 +9902,10 @@ fn player_session(
                     // What the pads play: the project's, or the track, once
                     // the app has the project's list of instruments.
                     app.forget_copies();
-                    fx.extend(app.set_instrument_list(&listed));
+                    app.open_list(&listed);
                     list_changed = false;
                     let (notes, pads_fx) = app.open_pads(o.pads.as_deref());
                     for line in notes {
-                        out.note(&line);
-                    }
-                    // Its layers, after the pads part (step 11a).
-                    for line in app.open_pad_layers(o.pad_layers.as_deref()) {
                         out.note(&line);
                     }
                     fx.extend(pads_fx);
@@ -9351,6 +9953,13 @@ fn player_session(
                 // the store (files/screens/).
                 gui::FromUi::ScreenPicture(png) => {
                     let line = screen_picture::save(&store, &mut picture_names, png);
+                    out.note(&line);
+                    out.show(gui::ToUi::Tell(line));
+                }
+                // System status's Save a report: to the store
+                // (files/reports/).
+                gui::FromUi::SaveReport(text) => {
+                    let line = status_report::save(&store, &mut report_names, text);
                     out.note(&line);
                     out.show(gui::ToUi::Tell(line));
                 }
@@ -9531,12 +10140,17 @@ fn player_session(
         if let Some(line) = param_log.poll(&synth, t_read) {
             out.note(&line);
         }
-        let turns_ready = (!synth_turns.done().is_empty(), !mix_turns.done().is_empty());
+        let turns_ready = (
+            !synth_turns.done().is_empty(),
+            !mix_turns.done().is_empty(),
+            !xy_turns.done().is_empty(),
+        );
         if turns_ready != turns_told {
             turns_told = turns_ready;
             out.show(gui::ToUi::TurnsReady {
                 synth: turns_ready.0,
                 mixer: turns_ready.1,
+                xy: turns_ready.2,
             });
         }
         if let Some(b) = preview_back.take() {
@@ -9740,6 +10354,21 @@ fn player_session(
         // chain editor knob does.
         let recording = time.info().state == mpfree_transport::State::Recording;
         mix.set_recording(recording);
+        if xy_opening && !mix.opening() {
+            xy_opening = false;
+            if let Some(c) = xy_yours.opening() {
+                mix.xy_done(xy_song::Done {
+                    load: Some(Some(c)),
+                    hold: None,
+                });
+            }
+            let pad_now = |t: u8, pad: u8, id: u16| pad_describe(&player, &track_kits, t, pad, id);
+            out.show(xy_view(&mut xy_yours, &mix, &synth, &app, &pad_now, &time));
+        }
+        // The XY pad's Stay: the settings it kept at a lift, one UNDO step.
+        if let Some((key, from, to)) = xy_song::kept_turn(mix.take_xy_kept()) {
+            xy_turns.turned(key, from, to, t_read);
+        }
         let by_touch = learning_shown.is_some_and(|(_, by)| by == midi_in::ArmedBy::Touch);
         let following = music.leader_name().is_some();
         // A controller pulled out never lets go of what it held: the
@@ -9948,6 +10577,22 @@ fn player_session(
                     let now = desk::looper_now(&looper);
                     let act = remote.looper_write(w.target.param, w.value, now, t);
                     fx.extend(desk::looper_remote(&mut app, &time, &looper, out, act));
+                }
+                // A set's control (the Learn section's Show card): a press
+                // as it goes down, once, for the screen's set player (with
+                // no set open, its hint line says so).
+                midi_in::Learning::Set(w)
+                    if w.target.owner == mpfree_play::mpfree_param::Owner::Show =>
+                {
+                    if let Some(id) = remote.show_write(w.target.param, w.value) {
+                        if !app.set_open() {
+                            out.show(gui::ToUi::Tell(remote::NO_SET.to_string()));
+                        } else if let Some(e) = app.show_press(id) {
+                            fx.extend(e);
+                        } else {
+                            out.show(gui::ToUi::ShowPress(id));
+                        }
+                    }
                 }
                 // A Perform pad (Learn a key): played as a hit on it plays
                 // it, whatever the pads show, and let go of what it pressed.
@@ -10637,6 +11282,25 @@ fn player_session(
                             mix.instruments
                                 .pad_on_shifted(instruments::THE_PADS, pad, v, 0, &none);
                         }
+                        // A kit chosen for the pads (sampler step 15): the
+                        // pad of its page they are on, as its kind has it.
+                        Some(PadsPreview::Kit(k)) => {
+                            let kit_pad = app.kit_pad(pad);
+                            preview_pad[pad] = kit_pad as u8;
+                            let hit = mpfree_play::Event::NoteOn {
+                                note: kit_pad as u8,
+                                velocity: v,
+                            };
+                            play_routed_pad(
+                                app.track() as u8,
+                                kit_pad,
+                                hit,
+                                &mut midi_out,
+                                (&mut mix.pad_synths, &mut synth),
+                                &mut player,
+                                usize::from(k),
+                            );
+                        }
                         _ => synth.note_on(pad, v, 0),
                     }
                     if !m.music {
@@ -10660,6 +11324,23 @@ fn player_session(
                         Some(PadsPreview::Host) => {
                             mix.instruments.pad_off(instruments::THE_PADS, pad, 0);
                         }
+                        // On the kit and pad it started, though the pads
+                        // moved on meanwhile (rule 8).
+                        Some(PadsPreview::Kit(k)) => {
+                            let kit_pad = usize::from(preview_pad[pad]);
+                            let off = mpfree_play::Event::NoteOff {
+                                note: kit_pad as u8,
+                            };
+                            play_routed_pad(
+                                app.track() as u8,
+                                kit_pad,
+                                off,
+                                &mut midi_out,
+                                (&mut mix.pad_synths, &mut synth),
+                                &mut player,
+                                usize::from(k),
+                            );
+                        }
                         _ => synth.note_off(pad, 0),
                     }
                     out.show(gui::ToUi::PadUp(pad));
@@ -10671,11 +11352,28 @@ fn player_session(
                     if (pad as usize) < 16 && preview_held[pad as usize].is_some() =>
                 {
                     let pad = pad as usize;
-                    if preview_held[pad] == Some(PadsPreview::Host) {
-                        mix.instruments
-                            .pad_pressure(instruments::THE_PADS, pad, pressure, 0);
-                    } else {
-                        synth.pressure(pad, pressure);
+                    match preview_held[pad] {
+                        Some(PadsPreview::Host) => {
+                            mix.instruments
+                                .pad_pressure(instruments::THE_PADS, pad, pressure, 0);
+                        }
+                        Some(PadsPreview::Kit(k)) => {
+                            let kit_pad = usize::from(preview_pad[pad]);
+                            let press = mpfree_play::Event::Pressure {
+                                note: kit_pad as u8,
+                                value: pressure,
+                            };
+                            play_routed_pad(
+                                app.track() as u8,
+                                kit_pad,
+                                press,
+                                &mut midi_out,
+                                (&mut mix.pad_synths, &mut synth),
+                                &mut player,
+                                usize::from(k),
+                            );
+                        }
+                        _ => synth.pressure(pad, pressure),
                     }
                 }
                 Some(ControlEvent::PadUp { pad })
@@ -10745,6 +11443,8 @@ fn player_session(
                             // With the notes it plays, for a take of notes (step 5d).
                             let rows = pad_rows(&mix.instruments, &synth, &track_kits, app.track());
                             time.pad_pressed_notes(0, ev, rows.notes(pad));
+                            // The note editor's pads: write or pick.
+                            fx.extend(editor_pad(&app, &mut time, out, pad, ev, rows.notes(pad)));
                         }
                         // The pads' layers (step 11a) play the hit too.
                         if !m.music {
@@ -10774,6 +11474,7 @@ fn player_session(
                             // With the notes it plays, for a take of notes (step 5d).
                             let rows = pad_rows(&mix.instruments, &synth, &track_kits, app.track());
                             time.pad_pressed_notes(0, ev, rows.notes(pad));
+                            fx.extend(editor_pad(&app, &mut time, out, pad, ev, &[]));
                         }
                         fx.extend(app.pad_up(pad));
                         awaiting[pad] = false;
@@ -10955,6 +11656,22 @@ fn player_session(
         fx.extend(app.tick(t));
         // "Keep this theme?" counting down in Prefs > Appearance.
         fx.extend(app.theme_tick());
+        // The notes the note editor hears let go in time, and all at once
+        // when the transport starts or stops.
+        if !hearing.is_empty() {
+            let mut on = HearOn {
+                own: &mut mix.instruments,
+                synth: &mut synth,
+                player: &mut player,
+                kits: &track_kits,
+                midi: &midi_out,
+            };
+            if time.info().state.rolling() != hear_rolling {
+                hearing.stop(&mut on);
+            } else {
+                hearing.tick(t, &mut on);
+            }
+        }
         // As set, not rounded: the song plays at it, and a project saves it
         // as it is.
         if let Some(bpm) = loop_tempo.take() {
@@ -10986,6 +11703,7 @@ fn player_session(
         // that play the synth, where REC records the pads as they are.
         app.set_configured(track_kits.picked() | midi_out.routed());
         app.set_synth_tracks(track_kits.on_synth());
+        app.set_pads_kit_tracks(app.pads_kit().map_or(0, |k| track_kits.on_kit(k)));
         let mut stop = false;
         let mut later = Vec::new();
         for e in fx.drain(..) {
@@ -11063,7 +11781,6 @@ fn player_session(
                     let from = kit_to.unwrap_or(player.kit());
                     let sounds = |k| player.sounds(k);
                     kit_to = Some(kit_turned(from, d, n, &user_kits, sounds, &track_kits));
-                    kit_picked = true;
                 }
                 // The Synth tab's options: the engine, the scale and the
                 // pad layouts.
@@ -11241,11 +11958,28 @@ fn player_session(
                         kit_to = Some(track_kits.synth());
                     }
                 }
+                // REC while a kit is chosen for the pads (sampler step 15):
+                // the track plays that kit from now on, as a pick.
+                app::Effect::KitOnTrack { track, kit } => {
+                    track_kits.set(track, kit);
+                    if track == app.track() {
+                        kit_to = Some(kit);
+                    }
+                }
                 app::Effect::StopSounds => {
                     player.stop_all();
                     synth.stop();
                     mix.instruments.stop();
                     mix.pad_synths.stop();
+                    // STOP while stopped turns the XY pad's Hold off (its
+                    // layout lets go as it says).
+                    if mix.xy_held() {
+                        mix.xy_hold(false);
+                        let pad_now = |t: u8, pad: u8, id: u16| {
+                            pad_describe(&player, &track_kits, t, pad, id)
+                        };
+                        out.show(xy_view(&mut xy_yours, &mix, &synth, &app, &pad_now, &time));
+                    }
                 }
                 app::Effect::Audio(p) => audio_change = Some(p),
                 app::Effect::Quit => stop = true,
@@ -11360,11 +12094,6 @@ fn player_session(
             if synth_on {
                 app.set_pad_layout(Some(synth.pad_layout()));
             }
-        }
-        // A kit picked while the synth was chosen for the pads: what the
-        // pads play, so they follow the track again (app/pads_focus.rs).
-        if kit_picked {
-            fx.extend(app.kit_pick_follows_track());
         }
         // The arp came on (NOTE REPEAT, Latch, the Arp panel) over a track
         // that plays something else: it plays the track's instrument, so
@@ -11550,12 +12279,19 @@ fn player_session(
             .instruments
             .pads_play_at()
             .is_some_and(|h| mix.instruments.owner(app.track()) != Some(h));
+        // A kit chosen for them (sampler step 15) the same way: on their
+        // own while the armed track doesn't play that kit itself.
+        let sel = app.track();
+        let kit_now = app.pads_kit().filter(|&k| {
+            let through = !mix.instruments.plays(sel) && !midi_out.takes(sel as u16);
+            !(through && track_kits.kit_of(sel) == Some(k))
+        });
         let preview_now = if app.pads_chose_synth() && !synth_on {
             Some(PadsPreview::Synth)
         } else if host_now {
             Some(PadsPreview::Host)
         } else {
-            None
+            kit_now.map(|k| PadsPreview::Kit(k.min(usize::from(u8::MAX)) as u8))
         };
         if preview_now != pads_preview || (preview_now.is_some() && kit_switched) {
             if preview_now != Some(PadsPreview::Synth) {
@@ -11563,9 +12299,33 @@ fn player_session(
                     synth.note_off(pad, 0);
                 }
             }
+            // The pads held on a kit they leave let go there, as the
+            // synth's (their let-go is taken quietly, above).
+            for pad in 0..16 {
+                if let Some(PadsPreview::Kit(k)) = preview_held[pad] {
+                    if preview_now != preview_held[pad] {
+                        let kit_pad = usize::from(preview_pad[pad]);
+                        let off = mpfree_play::Event::NoteOff {
+                            note: kit_pad as u8,
+                        };
+                        play_routed_pad(
+                            sel as u8,
+                            kit_pad,
+                            off,
+                            &mut midi_out,
+                            (&mut mix.pad_synths, &mut synth),
+                            &mut player,
+                            usize::from(k),
+                        );
+                    }
+                }
+            }
             pads_preview = preview_now;
             let preview_on = pads_preview.is_some();
-            if preview_on {
+            if let Some(PadsPreview::Kit(k)) = pads_preview {
+                let k = usize::from(k);
+                rest = sound_colours(player.page_sounds(k, app.pad_page()), k);
+            } else if preview_on {
                 rest = synth.pad_colours();
             } else if !synth_on {
                 rest = sound_colours(
@@ -11588,13 +12348,17 @@ fn player_session(
             // are in a mode (they come back with these) or play the synth
             // chosen for them (they come back with these once they follow
             // the track, above).
-            if pads_preview.is_none() {
-                rest = sound_colours(
-                    player.page_sounds(player.kit(), app.pad_page()),
-                    player.kit(),
-                );
+            // A kit chosen for the pads turns its own pages (sampler step
+            // 15).
+            let kit_on_pads = match pads_preview {
+                Some(PadsPreview::Kit(k)) => Some(usize::from(k)),
+                None => Some(player.kit()),
+                _ => None,
+            };
+            if let Some(k) = kit_on_pads {
+                rest = sound_colours(player.page_sounds(k, app.pad_page()), k);
             }
-            if mute_shown.is_none() && pads_preview.is_none() {
+            if mute_shown.is_none() && kit_on_pads.is_some() {
                 ports.send_batch(
                     out,
                     false,
@@ -12128,13 +12892,62 @@ fn player_session(
         if let Some(line) = time.take_later_note() {
             out.note(&format!("time: {line}"));
         }
+        // What the stream thread says about the waiting cues' audio.
+        tracks.wait_answers(|key, a| match a {
+            CueAudio::Held => {
+                time.audio_held(key, true);
+            }
+            CueAudio::Short => {}
+            CueAudio::GivenBack => {
+                time.audio_given_back(key);
+            }
+        });
+        // The audio tracks' regions as the time engine refuses blocks
+        // over them (phase 2, step 2d), when they changed.
+        if let Some(spans) = tracks.spans_if_changed(time.project()) {
+            time.set_audio_spans(spans);
+        }
+        cut_blocks_under_takes(out, &mut time, &mut tracks);
+        // Fit to tempo on an audio clip's card: once its copies are in,
+        // the clip plays them as one UNDO step, held while the time engine
+        // records (an edit then would go among the take's).
+        if fit_done.is_none() {
+            fit_done = tracks.tend_clip_fit();
+        }
+        let recording = matches!(
+            time.info().state,
+            mpfree_transport::State::Recording | mpfree_transport::State::CountIn
+        );
+        if let Some(done) = fit_done.take_if(|_| !recording) {
+            let line = fit_ended(&mut time, &mut tracks, done);
+            out.note(&format!("audio tracks: {line}"));
+            out.show(gui::ToUi::Tell(line));
+        }
+        // Put in a cell: once the sound is in, its clip goes in the cell.
+        if cell_done.is_none() {
+            cell_done = tracks.tend_cell_sound(time.info().bpm);
+        }
+        if let Some(done) = cell_done.take_if(|_| !recording) {
+            let line = cell_sound_in(&mut time, &mut tracks, done);
+            out.note(&format!("audio tracks: {line}"));
+            out.show(gui::ToUi::Tell(line));
+        }
         // A region just moved is picked again where it went.
         if let Some(r) = tracks.take_repick() {
             let _ = time.act(TimeAction::Audio(AudioAction::Pick(Some(r))));
         }
         // `|`, not `||`: both flags are taken.
         if time.take_changed() | tracks.take_changed() {
-            out.show(gui::ToUi::Time(Box::new(time_state(&time, &tracks))));
+            // The takes the clips name stay (the audio tracks rethink,
+            // phase 2); the next look tells the tracks.
+            tracks.keep_named(time.recordings());
+            tracks.clip_starts(time.project());
+            let st = time_state(&time, &tracks);
+            if st.audio_waits.needs_rev != needs_rev {
+                needs_rev = st.audio_waits.needs_rev;
+                tracks.hold_waits(&time.audio_needs());
+            }
+            out.show(gui::ToUi::Time(Box::new(st)));
             (shown_transport, transport_shown_at) = (time.info(), Instant::now());
         } else {
             let now = time.info();
@@ -12530,11 +13343,14 @@ fn player_session(
         // Tracks recording from inside the mix (step 9) take the mixer's
         // last block for them, before they run.
         tracks.feed_inside(&mut mix);
+        // What each audio track plays (its clips, its song or nothing)
+        // comes from the player's last period, on its frames.
         tracks.period(
             time.block(),
             time.tempo_map(),
             time.song_on(),
             looper.input(),
+            Some(&|p| time.audio(p)),
         );
         // Each audio track into its own channel (phase 1b).
         tracks.play_into(&mut mix);
@@ -12684,11 +13500,11 @@ fn player_session(
                 synth: project::synth_text(&app.synth_settings(), &synth.sounds()),
                 arp: app.arp_part(),
                 perform: app.perform_set().text(),
+                xy: xy_yours.text(),
                 instruments: project::instruments_text(&mix.instruments),
                 track_kits: project::track_kits_text(&track_kits, &mix.instruments, &listed),
                 instrument_list: listed.text(),
                 pads: app.pads_part(),
-                pad_layers: app.pad_layers_part(),
                 loops,
                 audio,
             })));
@@ -12725,6 +13541,13 @@ fn player_session(
         );
         if caught {
             clipped += 1;
+        }
+        // A set's song ending: its fade, and silence once over, before
+        // Sample Recall and the metronome (song_end.rs).
+        if song_end.active() {
+            if let Some(n) = song_end.period(p, &mut left[..], &mut right[..]) {
+                out.show(gui::ToUi::SongEnd(n));
+            }
         }
         // The kit's pads whose mute or solo came due land from the next
         // period, which holds their line.
@@ -15056,7 +15879,9 @@ mod tests {
             self.time.period(PERIOD as u32, &mut Quiet);
             let (block, map) = (self.time.block(), self.time.tempo_map());
             let song_on = self.time.song_on();
-            self.tracks.period(block, map, song_on, (&z, &z));
+            let time = &self.time;
+            self.tracks
+                .period(block, map, song_on, (&z, &z), Some(&|p| time.audio(p)));
             self.tracks.play_into(&mut self.mix);
         }
 
@@ -15109,6 +15934,1341 @@ mod tests {
                 fx => panic!("{fx:?}"),
             }
         }
+    }
+
+    /// Audio tracks phase 2, step 2b: PLAY starts the focused cell's
+    /// audio clip (the Play page's pattern) from the first frame, with
+    /// the usual fade in, and a clip launched in another cell takes over
+    /// on the frame its bar line lands on, as the player says it (song
+    /// mode off: the clips play without it). The track host maps the
+    /// project track to its engine track.
+    #[test]
+    fn an_audio_clip_launched_in_its_cell_plays_from_its_line() {
+        clip_launch(false);
+    }
+
+    /// The same with takes streaming (the time engine's audio waits on):
+    /// the launch waits for its audio, the tracks hold it (here it is all
+    /// in memory, so at once) and say so, and it lands on its line all the
+    /// same, as the app's loop does it (`TrackHost::hold_waits`,
+    /// `TrackHost::wait_answers`).
+    #[test]
+    fn a_clip_launch_that_waits_for_its_audio_lands_on_its_line_once_held() {
+        clip_launch(true);
+    }
+
+    struct QuietPads;
+    impl time::Pads for QuietPads {
+        fn hit_at(&mut self, _: u16, _: usize, _: u8, _: u32) -> bool {
+            true
+        }
+        fn release_at(&mut self, _: u16, _: usize, _: u32) {}
+        fn stop_all(&mut self) {}
+        fn pressure_at(&mut self, _: u16, _: usize, _: u8, _: u32) {}
+    }
+    /// Audio tracks tests: runs `periods` periods, keeping engine track
+    /// `s`'s left channel in `out`, and in `at` the frame song tick `tick`
+    /// lands on.
+    fn run_audio(
+        time: &mut time::TimeHost,
+        tracks: &mut audiotracks::TrackHost,
+        periods: usize,
+        s: usize,
+        tick: f64,
+        out: &mut Vec<f32>,
+        at: &mut Option<usize>,
+    ) {
+        let z = [0f32; PERIOD];
+        for _ in 0..periods {
+            time.advance(PERIOD as u32);
+            time.period(PERIOD as u32, &mut QuietPads);
+            tracks.sync(time.project(), time.silenced(), true);
+            let t: &time::TimeHost = time;
+            tracks.period(
+                t.block(),
+                t.tempo_map(),
+                t.song_on(),
+                (&z, &z),
+                Some(&|p| t.audio(p)),
+            );
+            for sp in t.block().spans() {
+                if let (None, Some(o)) = (*at, sp.offset_of(tick)) {
+                    *at = Some(out.len() + o as usize);
+                }
+            }
+            let o = tracks.host.tracks.track_out(s, PERIOD);
+            out.extend(o.chunks_exact(2).map(|f| f[0]));
+        }
+    }
+
+    /// Audio tracks phase 2, step 2c: To a cell makes the picked region a
+    /// clip, in its track's first empty cell, that plays what the song
+    /// played there: exactly, past the entry fade (its first 64 frames,
+    /// never louder than the song) and before the song region's own fade
+    /// out at its end. The clip is named after the track and bar, and the
+    /// song keeps its region.
+    #[test]
+    fn a_region_put_in_a_cell_plays_what_the_song_played_there() {
+        use mpfree_audiotracks::RecordingId;
+        use mpfree_seq::{Project, Track};
+        use mpfree_time_ui::view::RegionId;
+        use mpfree_transport::Command;
+        let bar = 2 * RATE as usize;
+        let mut p = Project::new();
+        p.tracks.push(Track::new_audio("Vocal", 0));
+        p.give_track_ids();
+        let mut time = time::TimeHost::with_project(RATE, 120.0, p).unwrap();
+        let mut tracks = audiotracks::TrackHost::new(RATE, 10);
+        tracks.sync(time.project(), 0, true);
+        let s = (0..mpfree_audiotracks::MAX_TRACKS)
+            .find(|&s| tracks.place(s) == Some(0))
+            .expect("an engine track for Vocal");
+        // A bar of audio that changes every frame, recorded at bar 3.
+        let audio: Vec<f32> = (0..bar)
+            .map(|i| ((i % 97) as f32 / 97.0 - 0.5) * 0.8)
+            .collect();
+        let take = mpfree_audiotracks::save::TakeFile {
+            id: 0,
+            rec: RecordingId(42),
+            track: s,
+            group: 0,
+            pass: 0,
+            bpm: 120.0,
+            anchor: (2 * 3840) as f64,
+            frames: bar,
+            channels: 1,
+            file: String::new(),
+            path: None,
+            audio,
+        };
+        assert!(tracks.host.tracks.load_take(take).is_ok());
+        let (mut out, mut at) = (Vec::new(), None);
+        for _ in 0..100 {
+            if tracks.host.tracks.loading() == 0 {
+                break;
+            }
+            run_audio(&mut time, &mut tracks, 10, s, 0.0, &mut out, &mut at);
+        }
+        let map = *time.tempo_map();
+        assert!(tracks.host.tracks.place(0, &[], &map));
+        // The song, bar 3.
+        time.act(TimeAction::SongMode(true)).unwrap();
+        time.act(TimeAction::Transport(Command::PlayStart)).unwrap();
+        let (mut song, mut line) = (Vec::new(), None);
+        let periods = 3 * bar / PERIOD + 4;
+        run_audio(
+            &mut time,
+            &mut tracks,
+            periods,
+            s,
+            7680.0,
+            &mut song,
+            &mut line,
+        );
+        let line = line.expect("bar 3 came");
+        let song = song[line..line + bar].to_vec();
+        assert!(song[200..].iter().any(|&v| v != 0.0), "the song plays it");
+        time.act(TimeAction::Transport(Command::Stop)).unwrap();
+        time.act(TimeAction::SongMode(false)).unwrap();
+        let mut rest = Vec::new();
+        run_audio(&mut time, &mut tracks, 4, s, 0.0, &mut rest, &mut None);
+        // To a cell.
+        let r = RegionId { track: s, index: 0 };
+        let (track, clip, place) = tracks
+            .region_clip(r, &map, time.info().meter)
+            .expect("a clip of it");
+        assert_eq!(
+            (track, clip.name.as_str(), place.as_str(), clip.length),
+            (0, "Vocal 3", "Vocal, bar 3", 3840)
+        );
+        let a = clip.audio.clone().expect("an audio clip");
+        assert_eq!(
+            (a.bpm, a.last_frame, a.regions.len()),
+            (120.0, bar as i64, 1)
+        );
+        assert_eq!(time.put_audio_clip(track, clip), Ok(0));
+        assert_eq!(tracks.host.tracks.regions(s).len(), 1, "the song keeps it");
+        // PLAY launches it, the focused cell, from the first frame.
+        let said = time.act(TimeAction::Transport(Command::PlayStart)).unwrap();
+        assert!(said.contains("slot 1 of track 1 launched"), "{said}");
+        let (mut cell, mut start) = (Vec::new(), None);
+        run_audio(
+            &mut time,
+            &mut tracks,
+            bar / PERIOD + 4,
+            s,
+            0.0,
+            &mut cell,
+            &mut start,
+        );
+        let start = start.expect("its line came");
+        let cell = &cell[start..start + bar];
+        for i in 0..64 {
+            assert!(
+                cell[i].abs() <= song[i].abs() + 1e-6,
+                "{i}: {} {}",
+                cell[i],
+                song[i]
+            );
+        }
+        let first = (64..bar - 64).find(|&i| cell[i] != song[i]);
+        assert_eq!(first, None, "the clip plays what the song played");
+    }
+
+    /// Audio tracks phase 2, step 2c: Put in a cell from the Sample page.
+    /// The sound goes in the armed audio track's first empty cell, else the
+    /// first audio track's with one; as a take the song doesn't play, and
+    /// a clip that loops at its tempo (to the nearest beat), or with no
+    /// tempo plays once, up to the next beat at the project's. UNDO takes
+    /// it out.
+    #[test]
+    fn a_sound_put_in_a_cell_becomes_a_clip_the_song_doesnt_play() {
+        use mpfree_seq::{AudioClip, Clip, Project, RecId, Track};
+        let mut p = Project::new();
+        p.tracks.push(Track::new("Keys", 0));
+        let mut vocal = Track::new_audio("Vocal", 0);
+        for (slot, name) in [(0, "Verse vox"), (1, "Hook vox")] {
+            let mut c = Clip::new(name, 3840);
+            c.audio = Some(AudioClip::of(RecId(7), 0, 88_200, 3840, 120.0));
+            vocal.slots[slot] = Some(c);
+        }
+        p.tracks.push(vocal);
+        p.tracks.push(Track::new_audio("Guitar", 0));
+        p.give_track_ids();
+        let mut time = time::TimeHost::with_project(RATE, 120.0, p).unwrap();
+        let mut tracks = audiotracks::TrackHost::new(RATE, 30);
+        tracks.sync(time.project(), 0, true);
+        let s = (0..mpfree_audiotracks::MAX_TRACKS)
+            .find(|&s| tracks.place(s) == Some(1))
+            .expect("an engine track for Vocal");
+        // Keys is armed, and plays notes: Vocal's first empty cell, row 3.
+        time.act(TimeAction::Arm(Some(0))).unwrap();
+        assert_eq!(time.cell_for_sound(), Some((1, 2)));
+        // Two bars at 92 BPM.
+        let frames = (f64::from(RATE) * 8.0 * 60.0 / 92.0).round() as usize;
+        let sound = |name: &str, frames: usize, bpm: f64| audiotracks::Sound {
+            name: name.into(),
+            channels: 1,
+            audio: vec![0.25; frames],
+            cuts: vec![1000],
+            bpm,
+            cell: true,
+        };
+        let arrive = |time: &mut time::TimeHost, tracks: &mut audiotracks::TrackHost| {
+            let t0 = std::time::Instant::now();
+            loop {
+                run_audio(time, tracks, 1, s, 0.0, &mut Vec::new(), &mut None);
+                if let Some(d) = tracks.tend_cell_sound(time.info().bpm) {
+                    break d;
+                }
+                assert!(t0.elapsed().as_secs() < 30, "the sound never came in");
+            }
+        };
+        let said = tracks.bring_to_cell(sound("Break 92", frames, 92.0), 1, time.project());
+        assert_eq!(said, Ok("Break 92 going into Vocal".to_string()));
+        let done = arrive(&mut time, &mut tracks);
+        let (track, clip) = done.clone().expect("its clip");
+        assert_eq!((track, clip.length, clip.once), (1, 8 * 960, false));
+        let a = clip.audio.clone().unwrap();
+        assert_eq!(
+            (a.bpm, a.regions.len(), a.last_frame),
+            (92.0, 1, frames as i64)
+        );
+        assert_eq!(
+            cell_sound_in(&mut time, &mut tracks, done),
+            "Break 92 into Vocal, row 3 · UNDO takes it out"
+        );
+        assert_eq!(
+            time.project().clip(1, 2).map(|c| c.name.as_str()),
+            Some("Break 92")
+        );
+        assert!(tracks.host.tracks.regions(s).is_empty(), "not on the song");
+        let rec = mpfree_audiotracks::RecordingId(a.regions[0].rec.0);
+        assert!(tracks.host.tracks.take_of(rec).is_some(), "its take is in");
+        // No tempo: it plays once, 5.2 s up to the next beat at 120.
+        let secs = (f64::from(RATE) * 5.2) as usize;
+        tracks
+            .bring_to_cell(sound("Riser", secs, 0.0), 1, time.project())
+            .unwrap();
+        let done = arrive(&mut time, &mut tracks);
+        let (_, clip) = done.clone().expect("its clip");
+        assert_eq!((clip.length, clip.once), (11 * 960, true));
+        assert_eq!(clip.audio.as_ref().map(|a| a.bpm), Some(120.0));
+        assert_eq!(
+            cell_sound_in(&mut time, &mut tracks, done),
+            "Riser into Vocal, row 4 · UNDO takes it out"
+        );
+        // UNDO takes it out.
+        time.act(TimeAction::Undo).unwrap();
+        assert!(time.project().clip(1, 3).is_none());
+        assert!(time.project().clip(1, 2).is_some());
+    }
+
+    /// Audio tracks phase 2, step 2c: Fit to tempo on a clip made at 120
+    /// BPM, in a project at 90, plays it on a fitted copy of its recording
+    /// that fills its length (at 90 the original leaves a gap each pass),
+    /// as one UNDO step; the song keeps playing the original.
+    #[test]
+    fn a_clip_fitted_to_tempo_fills_its_length_and_undo_goes_back() {
+        use mpfree_audiotracks::RecordingId;
+        use mpfree_seq::{AudioClip, Clip, Project, RecId, Track};
+        use mpfree_transport::Command;
+        // One bar at 120 (2 s); at 90 a bar is 8/3 s.
+        let made = 2 * RATE as usize;
+        let mut p = Project::new();
+        p.tracks.push(Track::new_audio("Vocal", 0));
+        p.give_track_ids();
+        let mut time = time::TimeHost::with_project(RATE, 90.0, p).unwrap();
+        let mut tracks = audiotracks::TrackHost::new(RATE, 20);
+        tracks.sync(time.project(), 0, true);
+        let s = (0..mpfree_audiotracks::MAX_TRACKS)
+            .find(|&s| tracks.place(s) == Some(0))
+            .expect("an engine track for Vocal");
+        let take = mpfree_audiotracks::save::TakeFile {
+            id: 0,
+            rec: RecordingId(42),
+            track: s,
+            group: 0,
+            pass: 0,
+            bpm: 120.0,
+            anchor: 0.0,
+            frames: made,
+            channels: 1,
+            file: String::new(),
+            path: None,
+            audio: vec![0.5; made],
+        };
+        assert!(tracks.host.tracks.load_take(take).is_ok());
+        let mut rest = Vec::new();
+        while tracks.host.tracks.loading() != 0 {
+            run_audio(&mut time, &mut tracks, 10, s, 0.0, &mut rest, &mut None);
+        }
+        let map = *time.tempo_map();
+        assert!(tracks.host.tracks.place(0, &[], &map));
+        let song_take = tracks.host.tracks.regions(s)[0].take;
+        let mut clip = Clip::new("Riff", 3840);
+        clip.audio = Some(AudioClip::of(RecId(42), 0, made as i64, 3840, 120.0));
+        assert_eq!(time.put_audio_clip(0, clip.clone()), Ok(0));
+        // Fit to tempo: once the copy is in, the clip plays it.
+        let c = time.project().clip(0, 0).cloned().expect("the clip");
+        assert_eq!(
+            tracks.fit_clip(0, 0, &c, time.info().bpm),
+            Ok("Riff: fitting to 90 BPM…".to_string())
+        );
+        assert!(tracks.fit_clip(0, 0, &c, 90.0).is_err(), "one at a time");
+        let t0 = std::time::Instant::now();
+        let done = loop {
+            run_audio(&mut time, &mut tracks, 1, s, 0.0, &mut rest, &mut None);
+            if let Some(d) = tracks.tend_clip_fit() {
+                break d;
+            }
+            assert!(t0.elapsed().as_secs() < 30, "the fit never came");
+            assert!(tracks.clip_fit_progress().is_some());
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        };
+        assert!(tracks.clip_fit_progress().is_none());
+        assert_eq!(
+            fit_ended(&mut time, &mut tracks, done),
+            "Riff: fitted to 90 BPM · UNDO goes back"
+        );
+        let a = time
+            .project()
+            .clip(0, 0)
+            .and_then(|c| c.audio.clone())
+            .unwrap();
+        let fitted = made as i64 * 4 / 3;
+        assert_eq!(a.bpm, 90.0);
+        assert_ne!(a.regions[0].rec, RecId(42), "on the copy");
+        assert!((a.last_frame - fitted).abs() <= 1, "{}", a.last_frame);
+        let copy = tracks
+            .host
+            .tracks
+            .take_of(RecordingId(a.regions[0].rec.0))
+            .and_then(|id| tracks.host.tracks.take(id))
+            .expect("the copy is in");
+        assert!((copy.frames as i64 - fitted).abs() <= 2, "{}", copy.frames);
+        assert_eq!(
+            tracks.host.tracks.regions(s)[0].take,
+            song_take,
+            "the song keeps it"
+        );
+        // Launched at 90, it sounds to the end of its bar.
+        time.act(TimeAction::Transport(Command::PlayStart)).unwrap();
+        let bar = made * 4 / 3;
+        let (mut cell, mut start) = (Vec::new(), None);
+        run_audio(
+            &mut time,
+            &mut tracks,
+            bar / PERIOD + 4,
+            s,
+            0.0,
+            &mut cell,
+            &mut start,
+        );
+        let start = start.expect("its line came");
+        let late = &cell[start + made + 100..start + bar - 200];
+        assert!(late.iter().all(|&v| v.abs() > 0.1), "no gap past 2 s");
+        time.act(TimeAction::Transport(Command::Stop)).unwrap();
+        // UNDO goes back to the clip made at 120.
+        time.act(TimeAction::Undo).unwrap();
+        let back = time
+            .project()
+            .clip(0, 0)
+            .and_then(|c| c.audio.clone())
+            .unwrap();
+        assert_eq!((back.bpm, back.regions[0].rec), (120.0, RecId(42)));
+    }
+
+    /// [`an_audio_clip_launched_in_its_cell_plays_from_its_line`], with the
+    /// cues waiting for their audio if `waits`.
+    fn clip_launch(waits: bool) {
+        use mpfree_seq::{AudioClip, Clip, Project, RecId, Track};
+        struct Quiet;
+        impl time::Pads for Quiet {
+            fn hit_at(&mut self, _: u16, _: usize, _: u8, _: u32) -> bool {
+                true
+            }
+            fn release_at(&mut self, _: u16, _: usize, _: u32) {}
+            fn stop_all(&mut self) {}
+            fn pressure_at(&mut self, _: u16, _: usize, _: u8, _: u32) {}
+        }
+        let bar_frames = 2 * RATE as usize;
+        let mut p = Project::new();
+        let mut t = Track::new_audio("Loop", 0);
+        for (slot, rec) in [(0, 7), (1, 8)] {
+            let mut clip = Clip::new("Loop", 3840);
+            clip.audio = Some(AudioClip::of(RecId(rec), 0, bar_frames as i64, 3840, 120.0));
+            t.slots[slot] = Some(clip);
+        }
+        p.tracks.push(t);
+        p.give_track_ids();
+        let at = p.tracks.len() - 1;
+        let mut time = time::TimeHost::with_project(RATE, 120.0, p).unwrap();
+        assert!(!time.song_on(), "clip mode");
+        let mut tracks = audiotracks::TrackHost::new(RATE, 10);
+        for (id, rec, level) in [(0, 7, 0.25), (1, 8, 0.5)] {
+            let take = mpfree_audiotracks::save::TakeFile {
+                id,
+                rec: mpfree_audiotracks::RecordingId(rec),
+                track: 0,
+                group: 0,
+                pass: id,
+                bpm: 120.0,
+                anchor: 0.0,
+                frames: bar_frames,
+                channels: 1,
+                file: String::new(),
+                path: None,
+                audio: vec![level; bar_frames],
+            };
+            assert!(tracks.host.tracks.load_take(take).is_ok());
+        }
+        /// Runs `periods` periods, keeping engine track `s`'s left
+        /// channel in `out` and the frame bar 2's line lands on in `line`;
+        /// what waiting cues need goes to the tracks when it changes, and
+        /// what they say back to the time engine.
+        fn run(
+            time: &mut time::TimeHost,
+            tracks: &mut audiotracks::TrackHost,
+            periods: usize,
+            s: usize,
+            out: &mut Vec<f32>,
+            line: &mut Option<usize>,
+        ) {
+            let mut needs_rev = 0;
+            let z = [0f32; PERIOD];
+            for _ in 0..periods {
+                time.advance(PERIOD as u32);
+                time.period(PERIOD as u32, &mut Quiet);
+                tracks.sync(time.project(), time.silenced(), true);
+                let t: &time::TimeHost = time;
+                tracks.period(
+                    t.block(),
+                    t.tempo_map(),
+                    t.song_on(),
+                    (&z, &z),
+                    Some(&|p| t.audio(p)),
+                );
+                for sp in t.block().spans() {
+                    if let Some(o) = sp.offset_of(3840.0) {
+                        *line = Some(out.len() + o as usize);
+                    }
+                }
+                let o = tracks.host.tracks.track_out(s, PERIOD);
+                out.extend(o.chunks_exact(2).map(|f| f[0]));
+                let rev = time.state().audio_waits.needs_rev;
+                if rev != needs_rev {
+                    needs_rev = rev;
+                    tracks.hold_waits(&time.audio_needs());
+                }
+                tracks.wait_answers(|key, a| {
+                    if a == CueAudio::Held {
+                        assert!(time.audio_held(key, true));
+                    }
+                });
+            }
+        }
+        let (mut out, mut line) = (Vec::new(), None);
+        for _ in 0..100 {
+            if tracks.host.tracks.loading() == 0 {
+                break;
+            }
+            run(&mut time, &mut tracks, 10, 0, &mut out, &mut line);
+        }
+        assert_eq!(tracks.host.tracks.loading(), 0);
+        assert!(out.iter().all(|&v| v == 0.0), "nothing plays while stopped");
+        // The takes sit on engine tracks 0 and 1, so the track gets
+        // another.
+        let s = (0..mpfree_audiotracks::MAX_TRACKS)
+            .find(|&s| tracks.place(s) == Some(at))
+            .expect("an engine track for it");
+        out.clear();
+        line = None;
+        time.set_audio_waits(waits);
+        let said = time
+            .act(TimeAction::Transport(mpfree_transport::Command::Play))
+            .unwrap();
+        assert!(said.contains("slot 1 of track 1 launched"), "{said}");
+        // Half a bar of the first clip, then the second one's launch
+        // waits for bar 2's line.
+        run(
+            &mut time,
+            &mut tracks,
+            bar_frames / 2 / PERIOD,
+            s,
+            &mut out,
+            &mut line,
+        );
+        assert!(out[0] < 0.25 && out[0] >= 0.0, "fading in: {}", out[0]);
+        assert!((out[200] - 0.25).abs() < 1e-6, "{}", out[200]);
+        time.act(TimeAction::Launch { track: at, slot: 1 }).unwrap();
+        run(
+            &mut time,
+            &mut tracks,
+            bar_frames / PERIOD + 20,
+            s,
+            &mut out,
+            &mut line,
+        );
+        let line = line.expect("bar 2's line came");
+        assert!(
+            out[200..line].iter().all(|&v| (v - 0.25).abs() < 1e-6),
+            "the first clip up to its line {line}: first change at {:?}",
+            (200..line).find(|&i| (out[i] - 0.25).abs() >= 1e-6)
+        );
+        assert!(out[line + 1] > 0.25, "fading over from its line");
+        assert!((out[line + 200] - 0.5).abs() < 1e-6, "{}", out[line + 200]);
+        let w = time.state().audio_waits;
+        assert_eq!(
+            (w.waiting, w.kept, w.held, w.moved),
+            if waits { (0, 1, 1, 0) } else { (0, 0, 0, 0) },
+            "{w:?}"
+        );
+    }
+
+    /// Phase 2, step 2d: with Rec song on, an audio clip launched on the
+    /// grid goes into the song as a block on its track's lane, and song
+    /// mode plays it back from the block sample for sample, through the
+    /// time engine and the track host.
+    #[test]
+    fn an_audio_launch_recorded_with_rec_song_plays_the_same_from_its_block() {
+        use mpfree_seq::{AudioClip, Clip, Project, RecId, Track};
+        struct Quiet;
+        impl time::Pads for Quiet {
+            fn hit_at(&mut self, _: u16, _: usize, _: u8, _: u32) -> bool {
+                true
+            }
+            fn release_at(&mut self, _: u16, _: usize, _: u32) {}
+            fn stop_all(&mut self) {}
+            fn pressure_at(&mut self, _: u16, _: usize, _: u8, _: u32) {}
+        }
+        let bar_frames = 2 * RATE as usize;
+        let mut p = Project::new();
+        let mut t = Track::new_audio("Loop", 0);
+        let mut clip = Clip::new("Loop", 3840);
+        clip.audio = Some(AudioClip::of(RecId(7), 0, bar_frames as i64, 3840, 120.0));
+        t.slots[0] = Some(clip);
+        p.tracks.push(t);
+        p.give_track_ids();
+        p.give_clip_ids();
+        let at = p.tracks.len() - 1;
+        let mut time = time::TimeHost::with_project(RATE, 120.0, p).unwrap();
+        let mut tracks = audiotracks::TrackHost::new(RATE, 10);
+        // Audio that changes every frame, so a frame out shows.
+        let audio: Vec<f32> = (0..bar_frames).map(|i| (i % 997) as f32 / 2000.0).collect();
+        let take = mpfree_audiotracks::save::TakeFile {
+            id: 0,
+            rec: mpfree_audiotracks::RecordingId(7),
+            track: 0,
+            group: 0,
+            pass: 0,
+            bpm: 120.0,
+            anchor: 0.0,
+            frames: bar_frames,
+            channels: 1,
+            file: String::new(),
+            path: None,
+            audio,
+        };
+        assert!(tracks.host.tracks.load_take(take).is_ok());
+        fn run(
+            time: &mut time::TimeHost,
+            tracks: &mut audiotracks::TrackHost,
+            periods: usize,
+            s: Option<usize>,
+            out: &mut Vec<f32>,
+        ) {
+            let z = [0f32; PERIOD];
+            for _ in 0..periods {
+                time.advance(PERIOD as u32);
+                time.period(PERIOD as u32, &mut Quiet);
+                tracks.sync(time.project(), time.silenced(), true);
+                let t: &time::TimeHost = time;
+                tracks.period(
+                    t.block(),
+                    t.tempo_map(),
+                    t.song_on(),
+                    (&z, &z),
+                    Some(&|p| t.audio(p)),
+                );
+                if let Some(s) = s {
+                    let o = tracks.host.tracks.track_out(s, PERIOD);
+                    out.extend(o.chunks_exact(2).map(|f| f[0]));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for _ in 0..100 {
+            if tracks.host.tracks.loading() == 0 {
+                break;
+            }
+            run(&mut time, &mut tracks, 10, None, &mut out);
+        }
+        assert_eq!(tracks.host.tracks.loading(), 0);
+        let s = (0..mpfree_audiotracks::MAX_TRACKS)
+            .find(|&s| tracks.place(s) == Some(at))
+            .expect("an engine track for it");
+        // Rec song: the clip launched, PLAY, two and a half bars, STOP.
+        time.act(TimeAction::Launch { track: at, slot: 0 }).unwrap();
+        time.act(TimeAction::RecSong(true)).unwrap();
+        time.act(TimeAction::Transport(mpfree_transport::Command::Play))
+            .unwrap();
+        let periods = 5 * bar_frames / 2 / PERIOD;
+        let mut heard = Vec::new();
+        run(&mut time, &mut tracks, periods, Some(s), &mut heard);
+        time.act(TimeAction::Transport(mpfree_transport::Command::Stop))
+            .unwrap();
+        run(&mut time, &mut tracks, 4, None, &mut out);
+        let note = time.take_later_note().unwrap_or_default();
+        assert!(note.starts_with("rec song: 1 placements"), "{note}");
+        let song = &time.project().arrangement;
+        assert_eq!(song.placements.len(), 1);
+        let block = &song.placements[0];
+        assert_eq!((block.track, block.start), (at, 0));
+        assert!(block.length >= 2 * 3840, "{block:?}");
+        // Song mode, nothing launched, from the top: the block plays it.
+        time.act(TimeAction::RecSong(false)).unwrap();
+        time.act(TimeAction::StopAll).unwrap();
+        time.act(TimeAction::SongMode(true)).unwrap();
+        time.command(mpfree_transport::Command::Locate(0));
+        run(&mut time, &mut tracks, 4, None, &mut out);
+        time.act(TimeAction::Transport(mpfree_transport::Command::Play))
+            .unwrap();
+        let mut again = Vec::new();
+        run(&mut time, &mut tracks, periods, Some(s), &mut again);
+        assert!(heard[2000..].iter().any(|&v| v != 0.0), "the clip played");
+        let n = heard.len().min(again.len());
+        let first = (0..n).find(|&i| (heard[i] - again[i]).abs() > 1e-6);
+        assert_eq!(first, None, "the block plays what the launch played");
+    }
+
+    /// Phase 2, step 2d: the song's audio, round the trip. Song → scenes
+    /// turns an audio lane's regions into a clip in each section's row,
+    /// and Scenes → song puts the rows back as blocks after the
+    /// recordings' end; those blocks play what the regions played, sample
+    /// for sample: plain regions, a comped one, silence, fades across
+    /// section edges and clips starting partway into a recording. At 120
+    /// BPM bar lines fall on whole frames; at 117 they don't.
+    #[test]
+    fn song_to_scenes_and_back_plays_the_songs_audio_sample_for_sample() {
+        song_to_scenes_and_back_at(120.0);
+        song_to_scenes_and_back_at(117.0);
+    }
+
+    fn song_to_scenes_and_back_at(bpm: f64) {
+        use mpfree_seq::{Project, Track};
+        use mpfree_transport::Tick;
+        struct Quiet;
+        impl time::Pads for Quiet {
+            fn hit_at(&mut self, _: u16, _: usize, _: u8, _: u32) -> bool {
+                true
+            }
+            fn release_at(&mut self, _: u16, _: usize, _: u32) {}
+            fn stop_all(&mut self) {}
+            fn pressure_at(&mut self, _: u16, _: usize, _: u8, _: u32) {}
+        }
+        let bar: Tick = 3840;
+        let bar_frames = (4.0 * 60.0 / bpm * RATE as f64).ceil() as usize;
+        let mut p = Project::new();
+        p.tracks.push(Track::new_audio("Vocal", 0));
+        p.give_track_ids();
+        let at = p.tracks.len() - 1;
+        let mut time = time::TimeHost::with_project(RATE, bpm, p).unwrap();
+        let mut tracks = audiotracks::TrackHost::new(RATE, 30);
+        let mut out = Out {
+            console: None,
+            sink: None,
+            dropped: 0,
+            report: None,
+            queued: None,
+            last_draw: Instant::now(),
+        };
+        fn run(
+            time: &mut time::TimeHost,
+            tracks: &mut audiotracks::TrackHost,
+            out: &mut Out,
+            periods: usize,
+            heard: Option<(usize, &mut Vec<f32>)>,
+        ) {
+            let z = [0f32; PERIOD];
+            let mut heard = heard;
+            for _ in 0..periods {
+                time.advance(PERIOD as u32);
+                time.period(PERIOD as u32, &mut Quiet);
+                tracks.sync(time.project(), time.silenced(), true);
+                let t: &time::TimeHost = time;
+                tracks.period(
+                    t.block(),
+                    t.tempo_map(),
+                    t.song_on(),
+                    (&z, &z),
+                    Some(&|p| t.audio(p)),
+                );
+                if let Some((s, h)) = heard.as_mut() {
+                    let o = tracks.host.tracks.track_out(*s, PERIOD);
+                    h.extend(o.chunks_exact(2).map(|f| f[0]));
+                }
+                if let Some(spans) = tracks.spans_if_changed(time.project()) {
+                    time.set_audio_spans(spans);
+                }
+                cut_blocks_under_takes(out, time, tracks);
+            }
+        }
+        run(&mut time, &mut tracks, &mut out, 1, None);
+        let s = (0..mpfree_audiotracks::MAX_TRACKS)
+            .find(|&s| tracks.place(s) == Some(at))
+            .expect("an engine track for it");
+        // Two takes of six bars, each frame different, so a frame out shows.
+        for (id, rec, k) in [(0u16, 7u128, 997usize), (1, 8, 613)] {
+            // Six bars, silent from the frame after the last region's
+            // last (its end, rounded: a region plays the frames before
+            // it): its fade past the end, under the first block, reads
+            // nothing.
+            let frames = 6 * bar_frames;
+            let end = (6.0 * 4.0 * 60.0 / bpm * RATE as f64).round() as usize;
+            let take = mpfree_audiotracks::save::TakeFile {
+                id,
+                rec: mpfree_audiotracks::RecordingId(rec),
+                track: s,
+                group: id,
+                pass: 0,
+                bpm,
+                anchor: 0.0,
+                frames,
+                channels: 1,
+                file: String::new(),
+                path: None,
+                audio: (0..frames)
+                    .map(|i| {
+                        if i >= end {
+                            0.0
+                        } else {
+                            (i % k) as f32 / (2.0 * k as f32)
+                        }
+                    })
+                    .collect(),
+            };
+            assert!(tracks.host.tracks.load_take(take).is_ok());
+        }
+        for _ in 0..200 {
+            if tracks.host.tracks.loading() == 0 {
+                break;
+            }
+            run(&mut time, &mut tracks, &mut out, 10, None);
+        }
+        assert_eq!(tracks.host.tracks.loading(), 0);
+        let map = *time.tempo_map();
+        use mpfree_audiotracks::Command as A;
+        assert!(tracks.host.tracks.place(0, &[], &map));
+        // Bar 3 comped from the other take; silence over the second half
+        // of bar 5; fades on the first region, the fade out running
+        // across bar 2's edge (from 1.5 s to its end at 4 s).
+        for c in [
+            A::Comp {
+                take: 1,
+                from: 2 * bar,
+                to: 3 * bar,
+            },
+            A::Erase {
+                track: s,
+                from: 4 * bar + bar / 2,
+                to: 5 * bar,
+            },
+            A::SetFades {
+                track: s,
+                at: bar / 2,
+                fade_in: RATE / 2,
+                fade_out: 5 * RATE / 2,
+            },
+        ] {
+            assert!(tracks.host.command(c), "{c:?}");
+            run(&mut time, &mut tracks, &mut out, 2, None);
+        }
+        let regions: Vec<(Tick, Tick)> = tracks
+            .host
+            .tracks
+            .regions(s)
+            .iter()
+            .map(|r| (r.start, r.end))
+            .collect();
+        assert_eq!(
+            regions,
+            [
+                (0, 2 * bar),
+                (2 * bar, 3 * bar),
+                (3 * bar, 4 * bar + bar / 2),
+                (5 * bar, 6 * bar)
+            ]
+        );
+        // Sections at bars 1, 2, 4 and 6: bar 2's edge cuts the faded
+        // region, bar 4's starts a clip partway into the first take.
+        for b in [0, 1, 3, 5] {
+            let add = mpfree_time_ui::view::MarkerEdit::Add(b * bar);
+            time.act(TimeAction::SongMarker(add)).unwrap();
+        }
+        // The song, from the top in song mode.
+        time.act(TimeAction::SongMode(true)).unwrap();
+        time.command(mpfree_transport::Command::Locate(0));
+        run(&mut time, &mut tracks, &mut out, 4, None);
+        time.act(TimeAction::Transport(mpfree_transport::Command::Play))
+            .unwrap();
+        let periods = 6 * bar_frames / PERIOD;
+        let mut song = Vec::new();
+        run(
+            &mut time,
+            &mut tracks,
+            &mut out,
+            periods,
+            Some((s, &mut song)),
+        );
+        time.act(TimeAction::Transport(mpfree_transport::Command::Stop))
+            .unwrap();
+        run(&mut time, &mut tracks, &mut out, 4, None);
+        assert!(song.iter().any(|&v| v != 0.0), "the song played");
+        // Song → scenes: a row a section, each with its audio clip.
+        let said = time
+            .act_with_audio(TimeAction::SongToScenes, &mut tracks)
+            .unwrap();
+        assert!(said.contains("exact"), "{said}");
+        let clips = (0..4)
+            .filter(|&r| {
+                time.project()
+                    .clip(at, r)
+                    .is_some_and(|c| c.audio.is_some())
+            })
+            .count();
+        assert_eq!(clips, 4, "{said}");
+        // Scenes → song: the rows as blocks after the recordings' end.
+        let said = time.act(TimeAction::ScenesToSong).unwrap();
+        assert!(said.contains("from bar 7"), "{said}");
+        let blocks: Vec<(Tick, Tick)> = time
+            .project()
+            .arrangement
+            .placements
+            .iter()
+            .map(|p| (p.start, p.end()))
+            .collect();
+        assert_eq!(
+            blocks,
+            [
+                (6 * bar, 7 * bar),
+                (7 * bar, 9 * bar),
+                (9 * bar, 11 * bar),
+                (11 * bar, 12 * bar)
+            ]
+        );
+        // The blocks, from bar 7: the song's audio again.
+        time.command(mpfree_transport::Command::Locate(6 * bar));
+        run(&mut time, &mut tracks, &mut out, 4, None);
+        time.act(TimeAction::Transport(mpfree_transport::Command::Play))
+            .unwrap();
+        let mut again = Vec::new();
+        run(
+            &mut time,
+            &mut tracks,
+            &mut out,
+            periods,
+            Some((s, &mut again)),
+        );
+        let n = song.len().min(again.len());
+        // At 117 BPM a section's edge falls between frames; the parts cut
+        // there keep their place between frames (their phase), so they
+        // play as the region did, to float rounding, as at 120 where the
+        // edges fall on frames.
+        let tol = 1e-6;
+        let first = (0..n).find(|&i| (song[i] - again[i]).abs() > tol);
+        assert_eq!(
+            first, None,
+            "the blocks play what the regions played at {bpm} BPM ({n} frames)"
+        );
+    }
+
+    /// Phase 2, step 2d (Joshi's pick, 23 Nov): what Rec song records
+    /// plays back as it was heard, sample for sample, edges and all. The
+    /// track's regions play, its clip is launched over them for a bar and
+    /// stopped, and its regions play on; the block that replaced the
+    /// regions under it, and the regions either side of it, then play the
+    /// same three bars again.
+    #[test]
+    fn rec_song_plays_back_what_was_heard_at_the_blocks_edges() {
+        use mpfree_seq::{AudioClip, Clip, Project, RecId, Track};
+        use mpfree_transport::Tick;
+        struct Quiet;
+        impl time::Pads for Quiet {
+            fn hit_at(&mut self, _: u16, _: usize, _: u8, _: u32) -> bool {
+                true
+            }
+            fn release_at(&mut self, _: u16, _: usize, _: u32) {}
+            fn stop_all(&mut self) {}
+            fn pressure_at(&mut self, _: u16, _: usize, _: u8, _: u32) {}
+        }
+        let bar: Tick = 3840;
+        let bar_frames = 2 * RATE as usize;
+        let mut p = Project::new();
+        let mut t = Track::new_audio("Loop", 0);
+        let mut clip = Clip::new("Loop", bar);
+        clip.audio = Some(AudioClip::of(RecId(7), 0, bar_frames as i64, bar, 120.0));
+        t.slots[0] = Some(clip);
+        p.tracks.push(t);
+        p.give_track_ids();
+        p.give_clip_ids();
+        let at = p.tracks.len() - 1;
+        let mut time = time::TimeHost::with_project(RATE, 120.0, p).unwrap();
+        let mut tracks = audiotracks::TrackHost::new(RATE, 10);
+        let mut out = Out {
+            console: None,
+            sink: None,
+            dropped: 0,
+            report: None,
+            queued: None,
+            last_draw: Instant::now(),
+        };
+        fn run(
+            time: &mut time::TimeHost,
+            tracks: &mut audiotracks::TrackHost,
+            out: &mut Out,
+            periods: usize,
+            heard: Option<(usize, &mut Vec<f32>)>,
+        ) {
+            let z = [0f32; PERIOD];
+            let mut heard = heard;
+            for _ in 0..periods {
+                time.advance(PERIOD as u32);
+                time.period(PERIOD as u32, &mut Quiet);
+                tracks.sync(time.project(), time.silenced(), true);
+                let t: &time::TimeHost = time;
+                tracks.period(
+                    t.block(),
+                    t.tempo_map(),
+                    t.song_on(),
+                    (&z, &z),
+                    Some(&|p| t.audio(p)),
+                );
+                if let Some((s, h)) = heard.as_mut() {
+                    let o = tracks.host.tracks.track_out(*s, PERIOD);
+                    h.extend(o.chunks_exact(2).map(|f| f[0]));
+                }
+                if let Some(spans) = tracks.spans_if_changed(time.project()) {
+                    time.set_audio_spans(spans);
+                }
+                cut_blocks_under_takes(out, time, tracks);
+            }
+        }
+        run(&mut time, &mut tracks, &mut out, 1, None);
+        let s = (0..mpfree_audiotracks::MAX_TRACKS)
+            .find(|&s| tracks.place(s) == Some(at))
+            .expect("an engine track for it");
+        // The clip's recording, and four bars the track recorded from the
+        // top: each frame different, so a frame out shows.
+        for (id, rec, k, frames) in [
+            (0u16, 7u128, 997usize, bar_frames),
+            (1, 8, 613, 4 * bar_frames),
+        ] {
+            let take = mpfree_audiotracks::save::TakeFile {
+                id,
+                rec: mpfree_audiotracks::RecordingId(rec),
+                track: s,
+                group: id,
+                pass: 0,
+                bpm: 120.0,
+                anchor: 0.0,
+                frames,
+                channels: 1,
+                file: String::new(),
+                path: None,
+                audio: (0..frames)
+                    .map(|i| (i % k) as f32 / (2.0 * k as f32))
+                    .collect(),
+            };
+            assert!(tracks.host.tracks.load_take(take).is_ok());
+        }
+        for _ in 0..200 {
+            if tracks.host.tracks.loading() == 0 {
+                break;
+            }
+            run(&mut time, &mut tracks, &mut out, 10, None);
+        }
+        assert_eq!(tracks.host.tracks.loading(), 0);
+        let map = *time.tempo_map();
+        assert!(tracks.host.tracks.place(1, &[], &map));
+        run(&mut time, &mut tracks, &mut out, 2, None);
+        let regions = |tracks: &audiotracks::TrackHost| -> Vec<(Tick, Tick)> {
+            let tr = &tracks.host.tracks;
+            tr.regions(s).iter().map(|r| (r.start, r.end)).collect()
+        };
+        assert_eq!(regions(&tracks), [(0, 4 * bar)]);
+        // Rec song from the top: the clip launched in bar 2 and stopped
+        // for bar 3, three bars heard.
+        time.act(TimeAction::SongMode(true)).unwrap();
+        time.act(TimeAction::RecSong(true)).unwrap();
+        time.command(mpfree_transport::Command::Locate(0));
+        run(&mut time, &mut tracks, &mut out, 4, None);
+        time.act(TimeAction::Transport(mpfree_transport::Command::Play))
+            .unwrap();
+        let periods = |frames: usize| frames / PERIOD;
+        let mut heard = Vec::new();
+        run(
+            &mut time,
+            &mut tracks,
+            &mut out,
+            periods(bar_frames / 2),
+            Some((s, &mut heard)),
+        );
+        time.act(TimeAction::Launch { track: at, slot: 0 }).unwrap();
+        run(
+            &mut time,
+            &mut tracks,
+            &mut out,
+            periods(bar_frames),
+            Some((s, &mut heard)),
+        );
+        time.act(TimeAction::StopClip(at)).unwrap();
+        let rest = 3 * bar_frames - heard.len();
+        run(
+            &mut time,
+            &mut tracks,
+            &mut out,
+            periods(rest) + 1,
+            Some((s, &mut heard)),
+        );
+        time.act(TimeAction::Transport(mpfree_transport::Command::Stop))
+            .unwrap();
+        time.act(TimeAction::RecSong(false)).unwrap();
+        run(&mut time, &mut tracks, &mut out, 4, None);
+        let blocks: Vec<(Tick, Tick)> = time
+            .project()
+            .arrangement
+            .placements
+            .iter()
+            .map(|p| (p.start, p.end()))
+            .collect();
+        assert_eq!(blocks, [(bar, 2 * bar)]);
+        assert_eq!(regions(&tracks), [(0, bar), (2 * bar, 4 * bar)]);
+        // The song again from the top.
+        time.command(mpfree_transport::Command::Locate(0));
+        run(&mut time, &mut tracks, &mut out, 4, None);
+        time.act(TimeAction::Transport(mpfree_transport::Command::Play))
+            .unwrap();
+        let mut again = Vec::new();
+        run(
+            &mut time,
+            &mut tracks,
+            &mut out,
+            periods(3 * bar_frames) + 1,
+            Some((s, &mut again)),
+        );
+        let n = 3 * bar_frames;
+        assert!(heard.len() >= n && again.len() >= n);
+        let diff = |i: usize| (heard[i] - again[i]).abs() > 1e-6;
+        let bad: Vec<usize> = (0..n).filter(|&i| diff(i)).collect();
+        assert!(
+            bad.is_empty(),
+            "the song plays what Rec song heard: {} frames differ, from {:?} to {:?}",
+            bad.len(),
+            bad.first(),
+            bad.last()
+        );
+    }
+
+    /// Phase 2, step 2d (Joshi's pick, 23 Nov): an audio clip launched
+    /// with Rec song over what its track recorded goes into the song as a
+    /// block that replaces the regions under it, and the song's UNDO takes
+    /// back both (the block gone, the regions back), REDO both again.
+    #[test]
+    fn rec_songs_audio_block_replaces_the_regions_under_it_and_undo_takes_back_both() {
+        use mpfree_seq::{AudioClip, Clip, Project, RecId, Track};
+        use mpfree_transport::Tick;
+        struct Quiet;
+        impl time::Pads for Quiet {
+            fn hit_at(&mut self, _: u16, _: usize, _: u8, _: u32) -> bool {
+                true
+            }
+            fn release_at(&mut self, _: u16, _: usize, _: u32) {}
+            fn stop_all(&mut self) {}
+            fn pressure_at(&mut self, _: u16, _: usize, _: u8, _: u32) {}
+        }
+        let bar = 3840;
+        let bar_frames = 2 * RATE as usize;
+        let mut p = Project::new();
+        let mut t = Track::new_audio("Loop", 0);
+        let mut clip = Clip::new("Loop", bar);
+        clip.audio = Some(AudioClip::of(RecId(7), 0, bar_frames as i64, bar, 120.0));
+        t.slots[0] = Some(clip);
+        p.tracks.push(t);
+        p.give_track_ids();
+        p.give_clip_ids();
+        let at = p.tracks.len() - 1;
+        let mut time = time::TimeHost::with_project(RATE, 120.0, p).unwrap();
+        let mut tracks = audiotracks::TrackHost::new(RATE, 10);
+        let mut out = Out {
+            console: None,
+            sink: None,
+            dropped: 0,
+            report: None,
+            queued: None,
+            last_draw: Instant::now(),
+        };
+        let run = |time: &mut time::TimeHost,
+                   tracks: &mut audiotracks::TrackHost,
+                   out: &mut Out,
+                   periods: usize| {
+            let z = [0f32; PERIOD];
+            for _ in 0..periods {
+                time.advance(PERIOD as u32);
+                time.period(PERIOD as u32, &mut Quiet);
+                tracks.sync(time.project(), time.silenced(), true);
+                let t: &time::TimeHost = time;
+                tracks.period(
+                    t.block(),
+                    t.tempo_map(),
+                    t.song_on(),
+                    (&z, &z),
+                    Some(&|p| t.audio(p)),
+                );
+                cut_blocks_under_takes(out, time, tracks);
+            }
+        };
+        run(&mut time, &mut tracks, &mut out, 1);
+        let s = (0..mpfree_audiotracks::MAX_TRACKS)
+            .find(|&s| tracks.place(s) == Some(at))
+            .expect("an engine track for it");
+        // The clip's recording, and four bars the track recorded on the
+        // song from bar 1.
+        for (id, rec, frames) in [(0, 7, bar_frames), (1, 8, 4 * bar_frames)] {
+            let take = mpfree_audiotracks::save::TakeFile {
+                id,
+                rec: mpfree_audiotracks::RecordingId(rec),
+                track: s as _,
+                group: id,
+                pass: 0,
+                bpm: 120.0,
+                anchor: 0.0,
+                frames,
+                channels: 1,
+                file: String::new(),
+                path: None,
+                audio: vec![0.25; frames],
+            };
+            assert!(tracks.host.tracks.load_take(take).is_ok());
+        }
+        for _ in 0..100 {
+            if tracks.host.tracks.loading() == 0 {
+                break;
+            }
+            run(&mut time, &mut tracks, &mut out, 10);
+        }
+        assert_eq!(tracks.host.tracks.loading(), 0);
+        let map = *time.tempo_map();
+        assert!(tracks.host.tracks.place(1, &[], &map));
+        let regions = |tracks: &audiotracks::TrackHost| -> Vec<(Tick, Tick)> {
+            let tr = &tracks.host.tracks;
+            tr.regions(s).iter().map(|r| (r.start, r.end)).collect()
+        };
+        assert_eq!(regions(&tracks), [(0, 4 * bar)]);
+        // Rec song: the clip launched, PLAY, two and a half bars, STOP.
+        time.act(TimeAction::Launch { track: at, slot: 0 }).unwrap();
+        time.act(TimeAction::RecSong(true)).unwrap();
+        time.act(TimeAction::Transport(mpfree_transport::Command::Play))
+            .unwrap();
+        run(
+            &mut time,
+            &mut tracks,
+            &mut out,
+            5 * bar_frames / 2 / PERIOD,
+        );
+        time.act(TimeAction::Transport(mpfree_transport::Command::Stop))
+            .unwrap();
+        run(&mut time, &mut tracks, &mut out, 4);
+        let song = time.project().arrangement.clone();
+        assert_eq!(song.placements.len(), 1);
+        let end = song.placements[0].end();
+        assert!(end > 2 * bar && end < 4 * bar, "{end}");
+        assert_eq!(
+            regions(&tracks),
+            [(end, 4 * bar)],
+            "replaced under the block"
+        );
+        // The song's UNDO takes back both; REDO brings both back.
+        time.act_with_audio(TimeAction::Undo, &mut tracks).unwrap();
+        run(&mut time, &mut tracks, &mut out, 4);
+        assert!(time.project().arrangement.placements.is_empty());
+        assert_eq!(regions(&tracks), [(0, 4 * bar)], "the regions back");
+        time.act_with_audio(TimeAction::Redo, &mut tracks).unwrap();
+        run(&mut time, &mut tracks, &mut out, 4);
+        assert_eq!(time.project().arrangement, song);
+        assert_eq!(regions(&tracks), [(end, 4 * bar)]);
+    }
+
+    /// Phase 2, step 2d: a take recorded over a block of an audio clip
+    /// cuts the block at the take's edges, as a song edit the take's undo
+    /// step is tied to: the song's UNDO takes back both (the block whole
+    /// again, the take's region gone) and REDO brings both back, while
+    /// the audio tracks' own Undo stops at the step.
+    #[test]
+    fn a_take_over_a_block_cuts_it_and_either_undo_takes_back_both() {
+        use mpfree_seq::{AudioClip, Clip, Placement, Project, RecId, Track};
+        use mpfree_transport::Tick;
+        struct Quiet;
+        impl time::Pads for Quiet {
+            fn hit_at(&mut self, _: u16, _: usize, _: u8, _: u32) -> bool {
+                true
+            }
+            fn release_at(&mut self, _: u16, _: usize, _: u32) {}
+            fn stop_all(&mut self) {}
+            fn pressure_at(&mut self, _: u16, _: usize, _: u8, _: u32) {}
+        }
+        let bar = 3840;
+        let bar_frames = 2 * RATE as usize;
+        let mut p = Project::new();
+        let mut t = Track::new_audio("Vocal", 0);
+        let mut clip = Clip::new("Loop", bar);
+        clip.audio = Some(AudioClip::of(RecId(7), 0, bar_frames as i64, bar, 120.0));
+        t.slots[0] = Some(clip);
+        p.tracks.push(t);
+        p.give_track_ids();
+        p.give_clip_ids();
+        let at = p.tracks.len() - 1;
+        // A four-bar block of the clip on its lane.
+        let block = Placement::of(&p.tracks, at, 0, 0, 4 * bar);
+        p.arrangement.placements.push(block);
+        let mut time = time::TimeHost::with_project(RATE, 120.0, p).unwrap();
+        let mut tracks = audiotracks::TrackHost::new(RATE, 10);
+        let mut out = Out {
+            console: None,
+            sink: None,
+            dropped: 0,
+            report: None,
+            queued: None,
+            last_draw: Instant::now(),
+        };
+        let take = mpfree_audiotracks::save::TakeFile {
+            id: 0,
+            rec: mpfree_audiotracks::RecordingId(7),
+            track: 0,
+            group: 0,
+            pass: 0,
+            bpm: 120.0,
+            anchor: 0.0,
+            frames: bar_frames,
+            channels: 1,
+            file: String::new(),
+            path: None,
+            audio: vec![0.25; bar_frames],
+        };
+        assert!(tracks.host.tracks.load_take(take).is_ok());
+        let run = |time: &mut time::TimeHost,
+                   tracks: &mut audiotracks::TrackHost,
+                   out: &mut Out,
+                   periods: usize| {
+            let z = [0f32; PERIOD];
+            for _ in 0..periods {
+                time.advance(PERIOD as u32);
+                time.period(PERIOD as u32, &mut Quiet);
+                tracks.sync(time.project(), time.silenced(), true);
+                let t: &time::TimeHost = time;
+                tracks.period(
+                    t.block(),
+                    t.tempo_map(),
+                    t.song_on(),
+                    (&z, &z),
+                    Some(&|p| t.audio(p)),
+                );
+                cut_blocks_under_takes(out, time, tracks);
+            }
+        };
+        run(&mut time, &mut tracks, &mut out, 4);
+        let s = (0..mpfree_audiotracks::MAX_TRACKS)
+            .find(|&s| tracks.place(s) == Some(at))
+            .expect("an engine track for it");
+        let lane = |time: &time::TimeHost| -> Vec<(Tick, Tick)> {
+            let song = &time.project().arrangement;
+            song.placements
+                .iter()
+                .filter(|p| p.track == at)
+                .map(|p| (p.start, p.end()))
+                .collect()
+        };
+        let regions = |tracks: &audiotracks::TrackHost| -> Vec<(Tick, Tick)> {
+            let tr = &tracks.host.tracks;
+            tr.regions(s).iter().map(|r| (r.start, r.end)).collect()
+        };
+        assert_eq!(lane(&time), [(0, 4 * bar)]);
+        // Song mode, armed, recorded from bar 2 for a bar.
+        time.act(TimeAction::SongMode(true)).unwrap();
+        let info = time.info();
+        tracks
+            .action(AudioAction::Arm { track: s, on: true }, &info, false)
+            .unwrap();
+        time.command(mpfree_transport::Command::Locate(bar));
+        run(&mut time, &mut tracks, &mut out, 40);
+        time.act(TimeAction::Transport(mpfree_transport::Command::Record))
+            .unwrap();
+        run(&mut time, &mut tracks, &mut out, bar_frames / PERIOD);
+        time.act(TimeAction::Transport(mpfree_transport::Command::Stop))
+            .unwrap();
+        run(&mut time, &mut tracks, &mut out, 40);
+        let took = regions(&tracks);
+        assert_eq!(took.len(), 1, "the take's region");
+        let (from, to) = took[0];
+        assert!(from >= bar && from < bar + bar / 4, "{from}");
+        assert!(to > from + bar / 2, "{to}");
+        assert_eq!(lane(&time), [(0, from), (to, 4 * bar)], "cut at its edges");
+        let cut = time.project().arrangement.clone();
+        // The audio tracks' own Undo stops at the step.
+        let refused = tracks.host.tracks.stats().refused;
+        assert!(tracks.host.command(mpfree_audiotracks::Command::Undo));
+        run(&mut time, &mut tracks, &mut out, 2);
+        assert_eq!(tracks.host.tracks.stats().refused, refused + 1);
+        assert_eq!(regions(&tracks), took);
+        // The song's UNDO takes back both; REDO brings both back.
+        time.act_with_audio(TimeAction::Undo, &mut tracks).unwrap();
+        run(&mut time, &mut tracks, &mut out, 4);
+        assert_eq!(lane(&time), [(0, 4 * bar)], "the block whole again");
+        assert!(regions(&tracks).is_empty(), "the take's region gone");
+        time.act_with_audio(TimeAction::Redo, &mut tracks).unwrap();
+        run(&mut time, &mut tracks, &mut out, 4);
+        assert_eq!(time.project().arrangement, cut);
+        assert_eq!(regions(&tracks), took);
     }
 
     /// Arrange 3.4: a section moved or + Bar moves the audio regions in it
@@ -16195,10 +18355,10 @@ mod tests {
         time.act(TimeAction::SceneSettings {
             row: 2,
             card_row: mpfree_time_ui::view::SCENE_NAME,
-            settings: mpfree_seq::scenes::SceneSettings {
+            settings: Box::new(mpfree_seq::scenes::SceneSettings {
                 name: "Verse".into(),
                 ..Default::default()
-            },
+            }),
         })
         .unwrap();
         assert_eq!(name(&time, clips::scene(2)), "Scene 3 · Verse");
@@ -16316,6 +18476,8 @@ mod tests {
         assert_eq!(name(looper::PICKED_MUTE), "Looper · picked loop's mute");
         assert_eq!(name(looper::NEXT_LOOP), "Looper · Next loop");
         assert_eq!(name(looper::CLEAR), "Looper · Clear");
+        assert_eq!(name(looper::SNAP), "Looper · Snap");
+        assert_eq!(name(looper::USE_MY_TAP), "Looper · Use my tap");
         assert_eq!(name(99), "Looper · ?");
         let now = remote::Now {
             picked: 2,

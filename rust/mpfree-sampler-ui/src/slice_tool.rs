@@ -93,6 +93,9 @@ const BANKS: usize = PADS / BANK;
 /// sliced pad holds (R4).
 pub const MAX_CUT_SLICES: usize = MAX_SLICES;
 
+/// The switch in the Phrase row's place on Put on Audio track (audio
+/// tracks phase 2): the slices on the song, or the whole sound in a cell.
+pub const CELL_SWITCH: [&str; 2] = ["On the song", "In a cell"];
 /// Why the pad map and First pad do nothing with Put on Audio track.
 const AUDIO_NO_PAD: &str = "An audio track plays the slices in a row: no pad";
 /// The hint line the app shows under the page with the Slice tool.
@@ -357,6 +360,10 @@ pub struct ChopState {
     pub new_kit: Option<Result<(), String>>,
     /// The app has audio tracks (Put on Audio track is offered).
     pub audio: bool,
+    /// Put in a cell's cell (audio tracks phase 2), as the app picks it
+    /// from the Clips grid: the audio track's name and the row (from 0)
+    /// the sound would go in; None: a new audio track.
+    pub cell: Option<(String, usize)>,
     /// What each of the kit's pads plays of the chopped sound, by pad
     /// (None: another sound, or none): so the tool knows a slice that is
     /// on a pad already ([`SliceTool::slice_pad`]).
@@ -439,6 +446,7 @@ impl ChopState {
             kept,
             new_kit: None,
             audio: false,
+            cell: None,
             plays: (0..PADS)
                 .map(|i| {
                     let pd = p.pad(i)?;
@@ -531,12 +539,16 @@ pub enum ChopAction {
     /// end; source frames of pad `pad`'s layer `layer`) on an audio track
     /// in a row, a region each, from the playhead's bar: one undo step
     /// there (the one Sample page's step 6). The app copies the sound out
-    /// and the audio tracks place it.
+    /// and the audio tracks place it. With `cell` (Put in a cell, audio
+    /// tracks phase 2) the whole sound, `bounds` its Start and End only,
+    /// goes in an audio track's cell as a clip instead
+    /// ([`ChopState::cell`] says which).
     ToAudio {
         pad: usize,
         layer: usize,
         name: String,
         bounds: Vec<u64>,
+        cell: bool,
     },
     /// Live chop: play source frames `start..end` of pad `pad`'s layer
     /// `layer` once, and let the pads played meanwhile mark cuts in it
@@ -724,6 +736,9 @@ pub struct SliceTool {
     /// The Phrase row: a phrase of the slices in time as well, where one
     /// can be made ([`SliceTool::phrase_on`]).
     phrase: bool,
+    /// The Phrase row's place on Audio track: On the song (false) or In
+    /// a cell ([`SliceTool::in_cell`]).
+    cell: bool,
     /// The source and region the cuts were made for, and whether the
     /// source's hits and tempo were worked out then: another pad, a moved
     /// Start or End, or the analysis coming in chops again.
@@ -761,6 +776,7 @@ impl Default for SliceTool {
             map_bank: None,
             put: Put::Pads,
             phrase: false,
+            cell: false,
             made_for: None,
             told: None,
             heard: None,
@@ -850,6 +866,39 @@ impl SliceTool {
     /// can be made.
     pub fn phrase_on(&self, st: &ChopState) -> bool {
         self.phrase && self.phrase_can(st)
+    }
+
+    /// Put in a cell (audio tracks phase 2): Put on Audio track with the
+    /// switch in the Phrase row's place on In a cell. The whole sound,
+    /// Start to End, goes in an audio track's cell as a clip.
+    pub fn in_cell(&self, st: &ChopState) -> bool {
+        self.cell && self.put(st) == Put::Audio
+    }
+
+    /// What Put in a cell's clip does, for the section's note: "the whole
+    /// sound · loops 2 bars at 92 BPM" for a sound with a tempo (its
+    /// length to the nearest beat), else "plays once · 5.2 s".
+    fn cell_note(st: &ChopState) -> String {
+        let frames = st.region.end.saturating_sub(st.region.start) as f64;
+        match (st.frames_per_beat(), st.source.tempo) {
+            (Some(fpb), Some(bpm)) => {
+                let beats = (frames / fpb).round().max(1.0) as u64;
+                let length = match beats {
+                    1 => "1 beat".to_string(),
+                    4 => "1 bar".to_string(),
+                    b if b % 4 == 0 => format!("{} bars", b / 4),
+                    b => format!("{b} beats"),
+                };
+                let tenths = (bpm * 10.0).round();
+                let bpm = if tenths % 10.0 == 0.0 {
+                    format!("{}", tenths / 10.0)
+                } else {
+                    format!("{:.1}", tenths / 10.0)
+                };
+                format!("the whole sound · loops {length} at {bpm} BPM")
+            }
+            _ => format!("plays once · {:.1} s", frames / f64::from(st.rate.max(1))),
+        }
     }
 
     /// Where the slices start and end: the region's start, the cuts, its end.
@@ -1342,6 +1391,10 @@ impl SliceTool {
             Button::ToPads => match (self.pads(st).map(|p| self.range_text(&p)), self.put(st)) {
                 (_, Put::Library) if n == 1 => "Save the pad".to_string(),
                 (_, Put::Library) => format!("Save {n} slices"),
+                (_, Put::Audio) if self.cell => match &st.cell {
+                    Some((track, row)) => format!("Into {track}, row {}", row + 1),
+                    None => "Into a new audio track".to_string(),
+                },
                 (_, Put::Audio) => "To audio track".to_string(),
                 (None, Put::OnePad) => format!("Max {MAX_SLICES} slices"),
                 (None, _) => format!("Max {PADS} slices"),
@@ -1419,6 +1472,7 @@ impl SliceTool {
                 _ => "not now".into(),
             },
             _ if self.put(st) == Put::Library => "into Samples › Exports".into(),
+            _ if self.in_cell(st) => Self::cell_note(st),
             _ if self.put(st) == Put::Audio => "a region each, from the playhead's bar".into(),
             _ if self.all_on(st) => "on their pads".into(),
             (false, _) => format!("{} slices: more than the kit's {PADS} pads", self.slices()),
@@ -1464,6 +1518,13 @@ impl SliceTool {
                     .faint_because(self.map_why(st).is_some(), self.map_why(st).unwrap_or("")),
                 Row::Bank => Control::new(Look::Chip)
                     .faint_because(self.map_why(st).is_some(), self.map_why(st).unwrap_or("")),
+                // On Audio track: where the sound goes, On the song (a
+                // region a slice) or In a cell (the whole sound as a clip).
+                Row::Phrase if self.put(st) == Put::Audio => Control::new(Look::Choice {
+                    options: CELL_SWITCH.iter().map(|o| o.to_string()).collect(),
+                    on: usize::from(self.cell),
+                    off: Vec::new(),
+                }),
                 Row::Phrase => Control::new(Look::Toggle(self.phrase_on(st)))
                     .faint_because(!self.phrase_can(st), self.phrase_why(st).unwrap_or("")),
                 Row::Put => Control::new(Look::Grid {
@@ -1656,6 +1717,9 @@ impl SliceTool {
                     let b = (b'A' + self.bank_shown(st) as u8) as char;
                     format!("{b}1–{b}16")
                 }),
+                Row::Phrase if self.put(st) == Put::Audio => {
+                    row("Goes", CELL_SWITCH[usize::from(self.cell)].into())
+                }
                 Row::Phrase => row(
                     "Phrase",
                     if self.phrase_on(st) { "On" } else { "Off" }.into(),
@@ -1839,7 +1903,13 @@ impl SliceTool {
                 pad: st.pad,
                 layer: st.layer,
                 name: st.pad_name.clone(),
-                bounds,
+                // In a cell: the whole sound, its slices aside.
+                bounds: if self.cell {
+                    vec![st.region.start, st.region.end]
+                } else {
+                    bounds
+                },
+                cell: self.cell,
             }),
             Button::ToPads => {
                 let pads = self.pads(st)?;
@@ -1924,6 +1994,7 @@ impl SliceTool {
                 let b = (self.bank_shown(st) as i32 + d).rem_euclid(BANKS as i32) as usize;
                 self.map_bank = Some((st.pad, b));
             }
+            Row::Phrase if self.put(st) == Put::Audio => self.cell ^= d % 2 != 0,
             Row::Phrase => match self.phrase_why(st) {
                 None => self.phrase ^= d % 2 != 0,
                 Some(why) => self.note = Some(why.into()),

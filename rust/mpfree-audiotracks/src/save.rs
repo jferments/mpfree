@@ -10,13 +10,15 @@
 //! mpfree-audiotracks 2
 //! rate=44100
 //! track=0 id=9 input=left monitor=auto
-//! region start=0 end=3840 take=3 src=0 gain=1 fade_in=0 fade_out=0
+//! region start=0 end=3840 take=3 src=0 gain=1 fade_in=0 fade_out=0 into=0 left=0
 //! take=3 rec=5b2f0d9c41e8a7763c0f12ab9e4d8c01 track=0 group=1 pass=0 bpm=120 anchor=-12.5 frames=44100 channels=1 file=Vocal_5b2f0d9c41e8a7763c0f12ab9e4d8c01.wav
 //! ```
 //!
 //! A line is `key=value` words; `file=` comes last and takes the rest of
 //! the line. Unknown keys and lines are skipped, so a newer build's text
-//! still loads. A region line belongs to the track line above it.
+//! still loads. A region line belongs to the track line above it; it has
+//! `phase=` after `src=` where it starts between frames of its take
+//! ([`crate::Region::phase`]).
 //!
 //! A track line's `id` is the lasting id of its track in the project's
 //! track list (the audio tracks rethink, phase 1: an audio track is a
@@ -154,9 +156,13 @@ impl Saved {
             k.rec = RecordingId::NONE;
             for g in self.tracks.iter_mut().flat_map(|t| &mut t.regions) {
                 if g.take == k.id {
-                    g.src = scale(g.src as f64) as i64;
+                    let x = (g.src as f64 + f64::from(g.phase)) * f64::from(rate) / f64::from(from);
+                    g.src = x.round() as i64;
+                    g.phase = (x - x.round()) as f32;
                     g.fade_in = scale(f64::from(g.fade_in)) as u32;
                     g.fade_out = scale(f64::from(g.fade_out)) as u32;
+                    g.into = scale(f64::from(g.into)) as u32;
+                    g.left = scale(f64::from(g.left)) as u32;
                 }
             }
         }
@@ -239,9 +245,15 @@ pub fn to_text(saved: &Saved) -> String {
             s.push_str(&format!(" from={}\n", t.from));
         }
         for r in &t.regions {
+            // Where in its first frame it starts, only when not on it.
+            let phase = if r.phase == 0.0 {
+                String::new()
+            } else {
+                format!(" phase={}", r.phase)
+            };
             s.push_str(&format!(
-                "region start={} end={} take={} src={} gain={} fade_in={} fade_out={}\n",
-                r.start, r.end, r.take, r.src, r.gain, r.fade_in, r.fade_out
+                "region start={} end={} take={} src={}{phase} gain={} fade_in={} fade_out={} into={} left={}\n",
+                r.start, r.end, r.take, r.src, r.gain, r.fade_in, r.fade_out, r.into, r.left
             ));
         }
     }
@@ -347,9 +359,15 @@ pub fn from_text(text: &str) -> Result<Saved, String> {
                 end: num::<Tick>(&kv, "end", n)?,
                 take: num(&kv, "take", n)?,
                 src: num(&kv, "src", n)?,
+                phase: match get(&kv, "phase") {
+                    None => 0.0,
+                    Some(_) => level(&kv, "phase", n, -0.5, 0.5)?,
+                },
                 gain: level(&kv, "gain", n, 0.0, 4.0)?,
                 fade_in: num(&kv, "fade_in", n).unwrap_or(0),
                 fade_out: num(&kv, "fade_out", n).unwrap_or(0),
+                into: num(&kv, "into", n).unwrap_or(0),
+                left: num(&kv, "left", n).unwrap_or(0),
             };
             if r.end <= r.start || t.regions.last().is_some_and(|p| p.end > r.start) {
                 return Err(format!("line {n}: a region empty or out of order"));
@@ -560,9 +578,12 @@ mod tests {
             end,
             take,
             src: -7,
+            phase: 0.0,
             gain: 0.5,
             fade_in: 10,
             fade_out: 0,
+            into: 3,
+            left: 0,
         };
         let take = |id, track, file: &str| TakeFile {
             id,
@@ -617,7 +638,8 @@ mod tests {
 
     /// Takes recorded at another rate come out at the one asked for: each
     /// read take converted (its sound the same tone at the new rate), its
-    /// frames and the frame counts of its regions scaled, and no file or
+    /// frames and the frame counts of its regions scaled (and where between
+    /// frames a region starts), and no file or
     /// lasting id kept for it; a take not read is left as it was.
     #[test]
     fn takes_at_another_rate_are_converted_with_their_regions() {
@@ -630,7 +652,9 @@ mod tests {
         };
         s.takes[0].audio = tone(44_100.0, 44_100);
         s.tracks[0].regions[0].src = 4410;
+        s.tracks[0].regions[0].phase = 0.25;
         s.tracks[0].regions[0].fade_out = 441;
+        s.tracks[0].regions[0].left = 44_100;
         let before = s.clone();
         s.convert(48_000);
         assert_eq!(s.rate, 48_000);
@@ -648,7 +672,16 @@ mod tests {
             .fold(0.0f32, f32::max);
         assert!(worst < 1e-3, "{worst}");
         let g = &s.tracks[0].regions[0];
-        assert_eq!((g.src, g.fade_in, g.fade_out), (4800, 11, 480));
+        assert_eq!(
+            (g.src, g.fade_in, g.fade_out, g.into, g.left),
+            (4800, 11, 480, 3, 48_000)
+        );
+        // Its place between frames too: 4410.25 frames are 4800.27.
+        let x = 4410.25 * 48_000.0 / 44_100.0;
+        assert!(
+            (g.src as f64 + f64::from(g.phase) - x).abs() < 1e-4,
+            "{g:?}"
+        );
         assert_eq!((g.start, g.end, g.gain), (0, 1920, 0.5));
         // Take 1 (no sound here) and its region stay as they were.
         assert_eq!(s.takes[1], before.takes[1]);
