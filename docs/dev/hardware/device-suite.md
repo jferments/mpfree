@@ -79,7 +79,7 @@ The hardware thread builds the stick and writes the round's runbook. These are t
 
 1. **Builds** (workstation): the `build-arm` and `build-bench` blocks as in the [second 3.10.1 round](firmware-3.10.1-round-2.md), from the commit the stick is made from. `build-arm` makes `rust/target/armv7-unknown-linux-gnueabihf/release/mpfree`, the program `host_devtest_mpc.py` copies.
 2. **The stick boots** on the hardware thread's blocks, and its checks pass.
-3. **The benchmark** (**RAM only**, about 50 minutes): `host_bench_mpc.py` as in Q8b. Since this change the default build also runs `--starts` (what a note costs as it starts) and `--plain --json default-plain.json` (every engine with the NEON kernels off, for the keep-or-drop A/B).
+3. **The benchmark** (**RAM only**, about 55 minutes): `host_bench_mpc.py` as in Q8b. Since this change the default build also runs `--starts` (what a note costs as it starts) and `--plain --json default-plain.json` (every engine with the NEON kernels off, for the keep-or-drop A/B). The default build also runs `--stems` (about 4 minutes and 200 MB of RAM: the stem separation's networks with seeded weights on 30 s of noise, its NEON kernels checked against their twins first, then four timed runs on cores 0 and 1; it skips itself if less than 400 MB is free; [Stem separation](../design/stems.md)). It passes when it shows `stems: NEON matches plain` and a `stems: estimate` line.
 
    ```bash
    cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run bench -- env MPFREE_ACCEPT_BENCH=YES python3 tools/mpc-one/host_bench_mpc.py
