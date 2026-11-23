@@ -132,7 +132,7 @@ The status line's `mod:` part counts the holds (held now, taken by a newer gestu
 
 *Tests:* `hand::tests`, `modmix::tests::a_learned_control_turned_while_recording_lets_go_half_a_second_after_its_last_move` and `only_the_hand_that_holds_a_setting_lets_it_go`, `qlink_touch::tests::turns_with_no_finger_let_go_half_a_second_after_the_last`, the macro release in `chain_page::tests::the_q_link_button_steps_to_the_macro_banks_and_back` and `gui::tests::q_link_steps_plays_column_through_the_macro_banks`.
 
-Still to come (the XY controller plan's phase 1, later steps): the same hand layer for a synth's settings (`locks.rs`) and a pad's sound (the sampler's pad locks), and the XY pad's own gestures through this table.
+The XY pad's own gestures have their owner in the XY engine instead (`mpfree_xy::Gesture`, [xy.md](xy.md)), by the same rule: the newest gesture wins, and only its own end lets go. Still to come, in the XY controller plan's phase 2: the same hand layer for a synth's settings (`locks.rs`) and a pad's sound (the sampler's pad locks).
 
 ## Q-Link bindings
 

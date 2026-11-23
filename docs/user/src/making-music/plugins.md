@@ -63,4 +63,4 @@ When a newer version is out, the plugin is tagged **Update** and the column says
 Tap **Favourite** to keep a plugin at the top of every list. Tap it again to take it off.
 
 > [!MPC]
-> On the MPC, you install plugins by copying them to a drive from a computer. MPFree can do that too, and it can also fetch them from the Open MPC catalog by itself, check them and install them from the screen.
+> On the MPC, plugins load from a **VST2 Plugins** folder on the internal drive or an attached drive, once **External Plugin Support** is switched on in the Preferences' Enhancements. MPFree can install them from a drive too, and it can also fetch them from the Open MPC catalog by itself, check them and install them from the screen.
