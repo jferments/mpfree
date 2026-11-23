@@ -1,4 +1,5 @@
-//! The composer behind Continue, Add a part, Improvise and Answer.
+//! The composer behind Continue, Add a part, Improvise and Answer, and
+//! the arp's new phrases.
 //!
 //! A pure library: no screen, no sound, no device. A result depends only
 //! on what it was given (a [`mpfree_context::MusicalContext`] and the
@@ -86,6 +87,14 @@
 //!   (together, no clash, room, lands, returns, flows); the best of four
 //!   drafts, and the same rhythm re-fitted when a chord changes.
 //!
+//! Phrases, P2, new ideas for the arp's phrase player:
+//!
+//! - [`idea`]: a bass line, a riff, chord stabs or an arp line of one,
+//!   two or four bars made to order as an [`mpfree_arp::Phrase`]: Add a
+//!   part for a band that isn't there, every draft written as a phrase
+//!   writes notes and then judged, a riff with a tune of its own, and a
+//!   Try again that never offers a phrase twice.
+//!
 //! Nothing here runs on the audio thread. The composer runs as an
 //! idle-priority background job (phase 0C onwards).
 #![forbid(unsafe_code)]
@@ -97,6 +106,7 @@ pub mod critic;
 pub mod dice;
 pub mod draft;
 pub mod event;
+pub mod idea;
 pub mod job;
 pub mod keep;
 pub mod motif;
@@ -122,6 +132,7 @@ pub mod timing;
 pub use bind::{audition, revision, revision_in, Binding, Stale};
 pub use dice::{Dice, DiceName, Job};
 pub use event::{Event, MotifRef, Motion, NoteDecision, Part, PartId, Role, Source};
+pub use idea::{new_idea, next_idea, Idea, IdeaVerdict, NewIdea};
 pub use job::{lane_named, Ask, ContinueJob, Done, Lanes};
 pub use keep::{clip_notes, continuation, KeepError};
 pub use motif::{similarity, transform, GridNote, Similarity, Transform};

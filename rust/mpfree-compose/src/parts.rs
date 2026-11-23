@@ -257,7 +257,8 @@ pub fn refit(req: &AddPart, before: &Added) -> Added {
     }
 }
 
-fn draft(req: &AddPart, d: u16, attempt: u16) -> Added {
+/// Draft `d` of a part: its riff, its notes, and what its checks found.
+pub(crate) fn draft(req: &AddPart, d: u16, attempt: u16) -> Added {
     let mut cd = dice(req, Job::Cells, d, attempt);
     let (strokes, changes) = if req.part == PartRole::Drums {
         (Vec::new(), Vec::new())
@@ -438,7 +439,7 @@ fn blocked(row: &Row) -> Vec<bool> {
         .collect()
 }
 
-fn unit_of(st: &Style) -> i32 {
+pub(crate) fn unit_of(st: &Style) -> i32 {
     if st.rhythm.feel == Feel::Swing8 {
         2
     } else {
@@ -446,7 +447,24 @@ fn unit_of(st: &Style) -> i32 {
     }
 }
 
-fn rhythm(req: &AddPart, d: u16, dice: &mut Dice) -> (Vec<Stroke>, Vec<(usize, Change)>) {
+/// The bars of cells draft `d`'s riff is sampled over before it is laid
+/// over the row: the whole row for an answer, else one bar, or two for
+/// every other draft of a row that has them.
+pub(crate) fn riff_bars(req: &AddPart, d: u16) -> usize {
+    if req.relation == Relation::Answer {
+        req.row.bars
+    } else if req.row.bars >= 2 && d % 2 == 1 {
+        2
+    } else {
+        1
+    }
+}
+
+pub(crate) fn rhythm(
+    req: &AddPart,
+    d: u16,
+    dice: &mut Dice,
+) -> (Vec<Stroke>, Vec<(usize, Change)>) {
     let row = req.row;
     let g = row.grid;
     let steps = row.steps;
@@ -464,13 +482,7 @@ fn rhythm(req: &AddPart, d: u16, dice: &mut Dice) -> (Vec<Stroke>, Vec<(usize, C
         return (v, Vec::new());
     }
     let lib = library(st, cell_part(req));
-    let riff_bars = if req.relation == Relation::Answer {
-        row.bars
-    } else if row.bars >= 2 && d % 2 == 1 {
-        2
-    } else {
-        1
-    };
+    let riff_bars = riff_bars(req, d);
     let wander = 0.2 + 0.8 * f64::from(req.settings.variation);
     let cells = riff(lib, g, riff_bars, &desire(req), aim(req), wander, dice);
     let mut v = lay(&cells, g, steps);
@@ -535,7 +547,7 @@ fn sound(req: &AddPart, strokes: &[Stroke], dice: &mut Dice) -> Vec<Event> {
 }
 
 /// The chord at `step`, or the nearest before it, or the first.
-fn chord_near(row: &Row, step: i32) -> Option<Chord> {
+pub(crate) fn chord_near(row: &Row, step: i32) -> Option<Chord> {
     let t = row.tick(step.rem_euclid(row.steps));
     let spans = row.chords.spans();
     spans
@@ -549,7 +561,7 @@ fn chord_near(row: &Row, step: i32) -> Option<Chord> {
 /// Two notes rub when the upper is a half step above the lower, in any
 /// octave: a minor 2nd or 9th. A major 7th (a tune's 9th over the chord's
 /// 3rd, say) is left alone.
-fn rubs(a: i32, b: i32) -> bool {
+pub(crate) fn rubs(a: i32, b: i32) -> bool {
     (a - b).abs() % 12 == 1
 }
 
@@ -877,9 +889,17 @@ fn best_path<T>(
     cands: &[Vec<(i32, T, f64)>],
     step: impl Fn(usize, usize, usize) -> f64,
 ) -> Vec<usize> {
+    best_path_cost(cands, step).0
+}
+
+/// [`best_path`], with what the path costs.
+pub(crate) fn best_path_cost<T>(
+    cands: &[Vec<(i32, T, f64)>],
+    step: impl Fn(usize, usize, usize) -> f64,
+) -> (Vec<usize>, f64) {
     let n = cands.len();
     if n == 0 {
-        return Vec::new();
+        return (Vec::new(), 0.0);
     }
     let mut cost: Vec<Vec<f64>> = vec![cands[0].iter().map(|c| c.2).collect()];
     let mut back: Vec<Vec<usize>> = vec![vec![0; cands[0].len()]];
@@ -901,10 +921,11 @@ fn best_path<T>(
     path[n - 1] = (0..cands[n - 1].len())
         .min_by(|&a, &b| cost[n - 1][a].total_cmp(&cost[n - 1][b]))
         .expect("a candidate");
+    let total = cost[n - 1][path[n - 1]];
     for k in (1..n).rev() {
         path[k - 1] = back[k][path[k]];
     }
-    path
+    (path, total)
 }
 
 /// Close-position voicings of `c` with every note in `[lo, hi]`: all
@@ -1517,7 +1538,9 @@ fn drums(req: &AddPart, dice: &mut Dice) -> Vec<Event> {
 
 // ----------------------------------------------------------------- judge
 
-fn judge(req: &AddPart, strokes: &[Stroke], events: &[Event]) -> PartVerdict {
+/// A part's checks, heard with the row: `events` are its notes with the
+/// rhythm `strokes`.
+pub(crate) fn judge(req: &AddPart, strokes: &[Stroke], events: &[Event]) -> PartVerdict {
     if req.part == PartRole::Drums {
         return judge_drums(req, events);
     }
