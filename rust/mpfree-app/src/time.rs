@@ -11891,7 +11891,10 @@ mod tests {
                 "song: Beat stays where it was: Vocal is an audio track, and it takes blocks of audio clips only"
             );
             let err = h.act(mv(1, GUITAR, 2 * bar - 960)).unwrap_err();
-            assert!(err.contains("it would cover Guitar's recording at"), "{err}");
+            assert_eq!(
+                err,
+                "song: Verse can't go over the region at bar 3: a block and a region never overlap on a lane"
+            );
             assert_eq!(song(&h), before, "nothing changed");
             // A clear stretch of Guitar's lane takes it, and it plays the
             // same clip.
@@ -11902,7 +11905,10 @@ mod tests {
             // Made longer over Guitar's next recording: refused.
             let stretch = |length| TimeAction::StretchPlacement { index: 1, length };
             let err = h.act(stretch(3 * bar)).unwrap_err();
-            assert!(err.contains("it would run over Guitar's recording at"), "{err}");
+            assert_eq!(
+                err,
+                "song: Verse can't run over the region at bar 6: a block and a region never overlap on a lane"
+            );
             h.act(stretch(2 * bar)).unwrap();
             assert_eq!(song(&h).placements[1].length, 2 * bar);
         }

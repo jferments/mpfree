@@ -1099,6 +1099,7 @@ impl AudioSession {
                 AUDIO_RATE,
             ),
             recording: None,
+            clips: Vec::new(),
         })
         .collect();
         let waves = takes.iter().filter_map(|t| self.wave(t.id, 600)).collect();
@@ -1152,6 +1153,54 @@ pub fn song_audio_state() -> Result<TimeState, String> {
         index: picked,
     });
     state.audio_free = Some(audio.free());
+    Ok(state)
+}
+
+/// The Song view with blocks of audio clips (phase 2, step 2d, layout
+/// spec 4c, board E), from [`song_audio_state`]: on Guitar's lane after
+/// its recording, Riff (its first two bars as a clip, played twice from
+/// bar 9, picked) and Outro (a once clip of all four, from bar 13).
+pub fn song_audio_blocks_state() -> Result<TimeState, String> {
+    use crate::song::{ClipBlock, ClipPiece};
+    use crate::view::PlacementInfo;
+    let mut state = song_audio_state()?;
+    state.region = None;
+    let g = 1;
+    let row = state.audio[g].row;
+    let r = state.audio[g]
+        .blocks
+        .first()
+        .cloned()
+        .ok_or("audio blocks sample: no guitar recording")?;
+    // The clip's bars from the recording's start, frames in step.
+    let per_bar = r.frames * BAR as f64 / (r.end - r.start).max(1) as f64;
+    let piece = |bars: Tick| ClipPiece {
+        start: 0,
+        end: bars * BAR,
+        take: r.take,
+        src: r.src,
+        frames: per_bar * bars as f64,
+    };
+    let mut placements = state.placements.to_vec();
+    let riff = placements.len();
+    for (name, start, pass, once) in [("Riff", 8 * BAR, 2 * BAR, false), ("Outro", 12 * BAR, 4 * BAR, true)] {
+        state.audio[g].clips.push(ClipBlock {
+            index: placements.len(),
+            origin: start,
+            pass,
+            once,
+            pieces: vec![piece(pass / BAR)],
+        });
+        placements.push(PlacementInfo {
+            track: row,
+            start,
+            length: 4 * BAR,
+            name: name.into(),
+            unique: false,
+        });
+    }
+    state.placements = placements.into();
+    state.selected = Some(riff);
     Ok(state)
 }
 
@@ -1344,6 +1393,26 @@ fn song_audio_sample(fonts: Fonts) -> Result<Sample, String> {
         about: "Arrange page, Song view with two audio tracks after the song's tracks: \
                 Vocal recorded over bars 1-8 and punched in over 5-8 (that region picked, \
                 with fades), Guitar armed",
+        ui,
+        state,
+    })
+}
+
+/// The Song view with blocks of audio clips, from
+/// [`song_audio_blocks_state`], and the refusal of one dropped over a
+/// region on the hint line.
+fn song_audio_blocks_sample(fonts: Fonts) -> Result<Sample, String> {
+    let state = song_audio_blocks_state()?;
+    let hint = "song: Riff can't go over the region at bar 1: a block and a region never overlap on a lane";
+    let mut ui = app_ui(fonts, "Arrange", hint);
+    let mut page = TimePage::add_to(&mut ui)?;
+    ui.show(CLIPS_PAGE)?;
+    page.update(&mut ui, &state);
+    Ok(Sample {
+        name: "clips-song-audio-blocks",
+        about: "Arrange page, Song view with blocks of audio clips on Guitar's lane: Riff \
+                (two bars, twice, picked) and Outro (a once clip); a block dropped over a \
+                region refused",
         ui,
         state,
     })
@@ -1647,6 +1716,7 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         )?,
         song_sample(fonts())?,
         song_audio_sample(fonts())?,
+        song_audio_blocks_sample(fonts())?,
     ];
     // A narrow look at the bar alone, while recording.
     let rec = recording()?;

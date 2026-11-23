@@ -6570,6 +6570,7 @@ mod tests {
             blocks: Vec::new(),
             takes: Vec::new(),
             recording: None,
+            clips: Vec::new(),
         }];
         let cols = grid_tracks(&st);
         assert!(cols[1].audio && !cols[0].audio);
@@ -6943,6 +6944,7 @@ mod tests {
             }],
             takes: Vec::new(),
             recording: None,
+            clips: Vec::new(),
         }];
         let song = |k: EventKind, st: &TimeState| action(&ev(SONG, k), st);
         let audio = |a: AudioAction| Some(TimeAction::Audio(a));
@@ -7056,6 +7058,7 @@ mod tests {
             blocks: Vec::new(),
             takes: Vec::new(),
             recording: None,
+            clips: Vec::new(),
         }];
         let song = |k: EventKind, st: &TimeState| action(&ev(SONG, k), st);
         let audio = |a: AudioAction| Some(TimeAction::Audio(a));

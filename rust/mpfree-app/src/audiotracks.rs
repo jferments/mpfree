@@ -66,7 +66,9 @@ use mpfree_audiotracks::{
 };
 use mpfree_play::{AudioAnswer, AudioPlays};
 use mpfree_seq::{RecId, TrackId};
-use mpfree_time_ui::song::{audio_blocks, input_chip, take_lanes, AudioLane, MixFrom, MONITORS};
+use mpfree_time_ui::song::{
+    audio_blocks, input_chip, take_lanes, AudioLane, ClipBlock, ClipPiece, MixFrom, MONITORS,
+};
 use mpfree_time_ui::view::{
     audio_color, track_color, AudioAction, RegionId, TimeState, TransportInfo,
 };
@@ -1668,6 +1670,8 @@ impl TrackHost {
                     .recording(t)
                     .and_then(|id| tr.take(id))
                     .map(|k| k.anchor.floor() as Tick),
+                // [`TrackHost::fill_blocks`]'s.
+                clips: Vec::new(),
             })
             .collect();
         st.waves = self.waves.clone();
@@ -1792,6 +1796,57 @@ impl TrackHost {
                 info.wave = self.clip_wave(a, c.length, per_tick);
                 info.ring = ring.filter(|r| r.0 == c.id.0).map(|r| r.1);
             }
+        }
+    }
+
+    /// The blocks of audio clips on the Song view's audio lanes (phase 2,
+    /// step 2d, layout spec 4c): for each, where its clip's passes start
+    /// and how long one is, whether it is a once clip, and what one pass
+    /// plays, take by take, with the frames along `map` at the block's
+    /// first pass. Into `st` after [`TrackHost::fill`] made its lanes of
+    /// `project`; a block whose clip or takes are gone draws its header
+    /// without a wave.
+    pub fn fill_blocks(&self, st: &mut TimeState, project: &mpfree_seq::Project, map: &TempoMap) {
+        let tr = &self.host.tracks;
+        for (index, p) in project.arrangement.placements.iter().enumerate() {
+            let Some(lane) = st.audio.iter_mut().find(|l| l.row == p.track) else {
+                continue;
+            };
+            let Some((c, a)) = project
+                .block_clip(p)
+                .and_then(|c| Some((c, c.audio.as_ref()?)))
+            else {
+                continue;
+            };
+            let origin = p.origin(c);
+            let pass = c.length.max(1);
+            // The first pass the block plays some of.
+            let base = origin + (p.start - origin).div_euclid(pass) * pass;
+            let pieces = a
+                .regions
+                .iter()
+                .filter_map(|r| {
+                    Some(ClipPiece {
+                        start: r.start,
+                        end: r.end,
+                        take: tr.take_of(RecordingId(r.rec.0))?,
+                        src: r.src,
+                        frames: mpfree_audiotracks::frames_from(
+                            map,
+                            (base + r.start) as f64,
+                            (base + r.end) as f64,
+                            self.rate,
+                        ),
+                    })
+                })
+                .collect();
+            lane.clips.push(ClipBlock {
+                index,
+                origin,
+                pass,
+                once: c.once,
+                pieces,
+            });
         }
     }
 
@@ -3180,6 +3235,7 @@ mod tests {
                 &mpfree_play::Takes::new(4),
             );
             self.h.fill(&mut st, self.t.tempo_map());
+            self.h.fill_blocks(&mut st, &self.project, self.t.tempo_map());
             st
         }
 

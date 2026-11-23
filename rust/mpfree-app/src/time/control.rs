@@ -4603,10 +4603,10 @@ impl TimeControl {
                         ),
                     })?;
                 // Never over a recording on an audio track's lane.
+                // (the approved board's words, layout spec 4c).
                 if let Some(over) = region_under(spans, tracks, &song.placements[j]) {
                     return Err(format!(
-                        "song: {name} stays where it was: it would cover {}'s recording at {}",
-                        track_name(track),
+                        "song: {name} can't go over the region at {}: a block and a region never overlap on a lane",
                         at(over)
                     ));
                 }
@@ -4645,8 +4645,7 @@ impl TimeControl {
                 })?;
                 if let Some(over) = region_under(spans, tracks, &song.placements[index]) {
                     return Err(format!(
-                        "song: {name} can't be that long: it would run over {}'s recording at {}",
-                        track_name(track),
+                        "song: {name} can't run over the region at {}: a block and a region never overlap on a lane",
                         at(over)
                     ));
                 }

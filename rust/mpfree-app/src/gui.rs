@@ -18811,6 +18811,17 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("arrange-song-audio sample: {e}"),
     }
+    // Blocks of audio clips on the guitar's lane (layout spec 4c, step
+    // 2d, board E): Riff played twice, picked, and Outro, a once clip.
+    match mpfree_time_ui::sample::song_audio_blocks_state() {
+        Ok(state) => {
+            let mut p = quiet_player(fonts());
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("arrange-song-audio-blocks", p));
+        }
+        Err(e) => eprintln!("arrange-song-audio-blocks sample: {e}"),
+    }
     // The same project on the Clips grid (layout spec 4f): the vocal and
     // the guitar are columns after the note tracks, a wave mark and their
     // input under their names, their cells dashed, the guitar armed; the
@@ -26426,6 +26437,7 @@ mod tests {
             }],
             takes: Vec::new(),
             recording: None,
+            clips: Vec::new(),
         }];
         p.apply(ToUi::Time(Box::new(st.clone())));
         assert_eq!(

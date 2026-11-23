@@ -6888,6 +6888,7 @@ fn time_state(time: &time::TimeHost, tracks: &audiotracks::TrackHost) -> mpfree_
     let mut st = time.state();
     tracks.fill(&mut st, time.tempo_map());
     tracks.fill_cells(&mut st, time.project());
+    tracks.fill_blocks(&mut st, time.project(), time.tempo_map());
     st
 }
 
