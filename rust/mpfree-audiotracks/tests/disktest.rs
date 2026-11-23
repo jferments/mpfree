@@ -5,7 +5,10 @@
 //! and the files under `backup/` and changes nothing at all, never
 //! following a link out of them. With `--under-load` it reads them the
 //! same way while its load runs, writes only its own files, and leaves
-//! nothing behind.
+//! nothing behind. With `--recorder` MPFree's own recorder writes its takes
+//! beside the reads, every take saved whole, and the writeback limit (a
+//! stand-in for `/proc/sys/vm` on a desktop) is raised for two steps and
+//! put back as found.
 
 use std::collections::BTreeMap;
 use std::os::unix::fs::MetadataExt;
@@ -412,4 +415,218 @@ fn under_load_the_load_steps_are_watched_for_heat() {
     assert!(!d.join("mpfree-disktest").exists());
     std::fs::remove_dir_all(&d).unwrap();
     std::fs::remove_dir_all(&zones).unwrap();
+}
+
+/// The stand-in's settings, by name (what they say, not when they were written).
+fn settings(vm: &Path) -> BTreeMap<String, String> {
+    std::fs::read_dir(vm)
+        .unwrap()
+        .flatten()
+        .map(|e| {
+            (
+                e.file_name().to_string_lossy().into_owned(),
+                std::fs::read_to_string(e.path()).unwrap(),
+            )
+        })
+        .collect()
+}
+
+fn writeback_stand_in(name: &str, bytes: &str) -> PathBuf {
+    let vm = scratch(name);
+    for (n, v) in [
+        ("dirty_bytes", bytes),
+        ("dirty_ratio", "0"),
+        ("dirty_background_bytes", "51200"),
+        ("dirty_background_ratio", "0"),
+    ] {
+        std::fs::write(vm.join(n), format!("{v}\n")).unwrap();
+    }
+    vm
+}
+
+fn library(d: &Path) {
+    for i in 0..6 {
+        noise(
+            &d.join(format!("library/Samples/s{i}.wav")),
+            (1 << 20) + i * 70_000,
+            i as u32 + 1,
+        );
+    }
+}
+
+#[test]
+fn a_recorder_run_saves_every_take_whole_and_puts_the_writeback_limit_back() {
+    let d = scratch("rec");
+    library(&d);
+    std::fs::write(d.join("library/notes.txt"), b"keep me").unwrap();
+    let vm = writeback_stand_in("rec-vm", "1048576");
+    let before = snapshot(&d);
+    let vm_before = settings(&vm);
+    let out = bin()
+        .arg("--desktop-test")
+        .arg(&d)
+        .args(["--recorder", "--quick"])
+        .env("MPFREE_DISKTEST_VM", &vm)
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{text}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    for want in [
+        "recorder: MPFree's own recorder writes 8 takes in",
+        "found: 6 audio files in library/",
+        "writeback as found: at most 1.0 MiB waiting (dirty_bytes 1048576), written out from 50.0 KiB (dirty_background_bytes 51200)",
+        "1. A round every 0.05 s, spread across the interval, writeback as found",
+        "2. A round every 0.1 s, spread across the interval, writeback as found",
+        "3. A round every 0.25 s, spread across the interval, writeback as found",
+        "4. A round every 0.5 s, spread across the interval, writeback as found",
+        "5. A round every 0.1 s, the takes together, writeback as found",
+        "6. A round every 0.25 s, the takes together, writeback as found",
+        "7. A round every 0.1 s, spread across the interval, writeback limit raised to 32 MiB",
+        "8. A round every 0.25 s, spread across the interval, writeback limit raised to 32 MiB",
+        "writeback limit raised to 32 MiB (dirty_bytes 33554432), until the last of these steps",
+        "recording: 8 takes, stereo float at 48 kHz (3.07 MB/s in all)",
+        "frames refused: none",
+        "8 of 8 takes saved, 8 of them whole (every frame in the file)",
+        "2 streams, 24-bit",
+        "worst shortfall",
+        "writeback limit put back as found: dirty_bytes 1048576",
+        "Summary:",
+        "the files read in library/ and backup/ are as they were",
+        "the folder is deleted",
+        "done",
+    ] {
+        assert!(text.contains(want), "missing {want:?} in\n{text}");
+    }
+    assert_eq!(
+        text.matches("8 of 8 takes saved, 8 of them whole").count(),
+        8,
+        "{text}"
+    );
+    assert!(!text.contains("left out"), "{text}");
+    assert!(!text.contains("NOT ALL FINISHED"), "{text}");
+    for name in ["s0.wav", "notes.txt", "Samples"] {
+        assert!(!text.contains(name), "{name} named in\n{text}");
+    }
+    // Its folder is gone, nothing else changed, and the limit is as found.
+    assert_eq!(snapshot(&d), before);
+    assert_eq!(settings(&vm), vm_before);
+    std::fs::remove_dir_all(&d).unwrap();
+    std::fs::remove_dir_all(&vm).unwrap();
+}
+
+#[test]
+fn a_recorder_run_leaves_the_writeback_limit_alone_unless_it_can_raise_it() {
+    let d = scratch("rec-alone");
+    library(&d);
+    let run = |vm: Option<&Path>| {
+        let mut c = bin();
+        c.arg("--desktop-test")
+            .arg(&d)
+            .args(["--recorder", "--quick"]);
+        match vm {
+            Some(vm) => c.env("MPFREE_DISKTEST_VM", vm),
+            None => c.env_remove("MPFREE_DISKTEST_VM"),
+        };
+        let out = c.output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(
+            out.status.success(),
+            "{text}\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let left: Vec<String> = text
+            .lines()
+            .filter(|l| l.starts_with("  left out: "))
+            .map(str::to_string)
+            .collect();
+        assert_eq!(left.len(), 2, "{text}");
+        assert!(!text.contains("raised to 32 MiB (dirty_bytes"), "{text}");
+        assert!(!d.join("mpfree-disktest").exists());
+        (text, left)
+    };
+    // A desktop with no stand-in: the desktop's own settings are never read or written.
+    let (text, left) = run(None);
+    assert!(
+        text.contains("writeback: left alone (a desktop test without a stand-in)"),
+        "{text}"
+    );
+    assert!(
+        left[0].contains("the writeback settings are left alone here"),
+        "{left:?}"
+    );
+    // A limit counted as a share of memory, or one already 32 MiB or more.
+    for (bytes, why) in [
+        ("0", "a share of memory (dirty_ratio 0 %), not a size"),
+        ("67108864", "already 64.0 MiB"),
+    ] {
+        let vm = writeback_stand_in("rec-alone-vm", bytes);
+        let vm_before = snapshot(&vm);
+        let (_, left) = run(Some(&vm));
+        assert!(left[0].contains(why), "{left:?}");
+        assert_eq!(snapshot(&vm), vm_before);
+        std::fs::remove_dir_all(&vm).unwrap();
+    }
+    std::fs::remove_dir_all(&d).unwrap();
+}
+
+#[test]
+fn a_cut_off_recorder_runs_takes_are_cleared_first_and_nothing_else() {
+    let d = scratch("rec-left");
+    library(&d);
+    let mine = d.join("mpfree-disktest");
+    std::fs::create_dir(&mine).unwrap();
+    let id = "00112233445566778899aabbccddeeff";
+    for ext in ["wav.recording", "wav.checkpoint", "wav"] {
+        std::fs::write(mine.join(format!("rec3_{id}.{ext}")), b"x").unwrap();
+    }
+    let out = bin()
+        .arg("--desktop-test")
+        .arg(&d)
+        .args(["--recorder", "--quick"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!mine.exists());
+    // A take of someone else's in its folder: left alone, nothing written.
+    std::fs::create_dir(&mine).unwrap();
+    std::fs::write(mine.join(format!("Vocal_{id}.wav")), b"keep me").unwrap();
+    std::fs::write(mine.join(format!("rec1_{id}.wav")), b"x").unwrap();
+    let out = bin()
+        .arg("--desktop-test")
+        .arg(&d)
+        .args(["--recorder", "--quick"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not the tool's"));
+    assert_eq!(
+        std::fs::read(mine.join(format!("Vocal_{id}.wav"))).unwrap(),
+        b"keep me"
+    );
+    assert_eq!(
+        std::fs::read(mine.join(format!("rec1_{id}.wav"))).unwrap(),
+        b"x"
+    );
+    std::fs::remove_dir_all(&d).unwrap();
+}
+
+#[test]
+fn only_one_kind_of_run_at_a_time() {
+    for pair in [
+        ["--recorder", "--under-load"],
+        ["--recorder", "--read-only"],
+        ["--read-only", "--under-load"],
+    ] {
+        let out = bin().args(pair).output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{pair:?}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("are different runs"));
+    }
 }

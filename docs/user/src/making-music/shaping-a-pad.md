@@ -56,7 +56,7 @@ The **Filter** selector steps through the types:
 {{shot: pads-edit-ladder | The Filter section with the Ladder: a 1 kHz cutoff, Resonance at 70 %, so the curve peaks at the cutoff, and 12 dB of Drive.}}
 
 > [!MPC]
-> The MPC offers many more filter models. MPFree keeps a smaller set and measures each one in its quality lab against the analog filter it follows.
+> The MPC has more filter types: low-pass, high-pass, band-pass, band-stop and band-boost with slopes from 1 to 8 poles, three **Model** filters after vintage synths, three **Vocal** formant filters and the MPC3000's low-pass. MPFree keeps a smaller set and measures each one in its quality lab against the analog filter it follows.
 
 ### Layers: more than one sound on a pad
 
@@ -246,4 +246,4 @@ They work on a pad's keys, from MIDI or with the pads playing notes. A hit on th
 {{shot: pads-edit-mono | The Pitch section of a pad with keys: Mono and Legato on, and a 200 ms glide on held keys.}}
 
 > [!MPC]
-> On an MPC a keygroup instrument is a program type of its own. In MPFree keygroups are pads of an ordinary kit, so any kit can become one with Map to keys.
+> On the MPC a keygroup is a track type of its own. In MPFree keygroups are pads of an ordinary kit, so any kit can become one with Map to keys.

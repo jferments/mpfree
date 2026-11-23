@@ -38,6 +38,7 @@
 - [Buttons and controls](reference/controls.md)
 - [Prefs](reference/prefs.md)
 - [Making your own theme](reference/making-a-theme.md)
+- [When something goes wrong](reference/when-something-goes-wrong.md)
 - [Coming from an MPC](reference/coming-from-an-mpc.md)
 - [Glossary](reference/glossary.md)
 - [About this manual](reference/about-this-manual.md)
