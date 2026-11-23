@@ -33,9 +33,15 @@ fn subnormal(x: f32) -> bool {
     x != 0.0 && x.abs() < f32::MIN_POSITIVE
 }
 
+/// A very resonant filter at a low cutoff rings on for seconds, as it
+/// should: Resonance 0.95 is Q 33 (Q 60 on a 4-pole's resonant stage), a
+/// time constant of half a second at 40 Hz, so it takes about 17 seconds
+/// to fall the 340 dB to [`mpfree_sampler::dsp::QUIET`]. Those cases get
+/// longer to reach silence; the rest five seconds.
 #[test]
 fn a_filter_ringing_out_on_silence_reaches_exact_zeros() {
-    let s = noise_then_silence(4.9);
+    let short = noise_then_silence(4.9);
+    let long = noise_then_silence(24.9);
     let mut checked = 0;
     for kind in [
         FilterKind::LowPass,
@@ -45,9 +51,14 @@ fn a_filter_ringing_out_on_silence_reaches_exact_zeros() {
         for poles in [2, 4] {
             for cutoff_hz in [40.0, 1000.0, 18_000.0] {
                 for resonance in [0.0, 0.95] {
+                    let (s, secs) = if resonance > 0.0 && cutoff_hz < 100.0 {
+                        (&long, 25)
+                    } else {
+                        (&short, 5)
+                    };
                     let mut p = Project::new();
                     p.add_source(s.clone());
-                    let mut r = Region::whole(&s);
+                    let mut r = Region::whole(s);
                     r.mode = PlayMode::Gate;
                     let mut pad = Pad::new("tail", Layer::new(r));
                     pad.filter = Filter {
@@ -67,7 +78,7 @@ fn a_filter_ringing_out_on_silence_reaches_exact_zeros() {
                     });
                     let (mut l, mut r) = (vec![0.0; 128], vec![0.0; 128]);
                     let mut out = Vec::new();
-                    for _ in 0..(5 * RATE as usize) / 128 - 1 {
+                    for _ in 0..(secs * RATE as usize) / 128 - 1 {
                         e.render(&mut l, &mut r);
                         out.extend_from_slice(&l);
                         out.extend_from_slice(&r);

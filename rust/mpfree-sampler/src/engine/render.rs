@@ -344,25 +344,17 @@ pub(super) fn motion_step(v: &mut Voice) {
 /// Sets the voice's filter for envelope level `e`. The coefficients only
 /// depend on `e` and the cutoff factors of pressure and movement, so while
 /// none moves (a held sustain, no pressure, no LFO on the cutoff) this
-/// skips the `exp2` and `tan`; the second
-/// stage is only set for a 4-pole filter, the only one that uses it.
-/// It also flushes the filter's state: ringing out on silence, the filter
-/// reaches exact zeros instead of denormals (here, out of the per-frame
-/// loop, it costs nothing measurable).
+/// skips the `exp2` and `tan`. A state-variable type glides to the new
+/// cutoff over the [`FILTER_STEP`] frames until the next ([`VoiceFilter`]),
+/// so an envelope or LFO moves it every frame.
+/// It also flushes the filter's state (ringing out on silence, the filter
+/// reaches exact zeros instead of denormals) and runs the state-variable
+/// types' resonance guard's window, which lets a loud ring's damping go
+/// as the sound quietens ([`VoiceFilter::tick`]); here, out of the
+/// per-frame loop, both cost nothing measurable.
 #[inline(never)]
 pub(super) fn retune(v: &mut Voice, f: Filter, e: f32, rate: f32) {
-    match f.kind {
-        FilterKind::Ladder => v.ladder.flush(),
-        // Its line flushes as it goes ([`Comb::process`]).
-        FilterKind::Comb => {}
-        FilterKind::Vowel => v.svf.iter_mut().for_each(Svf::flush),
-        _ => {
-            v.svf[0].flush();
-            if f.poles >= 4 {
-                v.svf[1].flush();
-            }
-        }
-    }
+    v.filt.tick(f.kind, FILTER_STEP);
     let moved = v.press_fc * v.motion.fc;
     let key = (e.to_bits(), moved.to_bits());
     if v.filter_key == Some(key) {
@@ -370,87 +362,95 @@ pub(super) fn retune(v: &mut Voice, f: Filter, e: f32, rate: f32) {
     }
     v.filter_key = Some(key);
     let fc = f.cutoff_hz * (f.env_octaves * e).exp2() * moved;
-    match f.kind {
-        FilterKind::Ladder => v.ladder.set(fc, f.resonance, f.drive_db, rate),
-        // The cutoff is its pitch; it glides there by the next retune.
-        FilterKind::Comb => v.comb.set(fc, f.resonance, rate, FILTER_STEP),
-        // The cutoff picks the vowel: its two formants, in parallel.
-        FilterKind::Vowel => {
-            let (f1, f2) = vowel_formants(fc);
-            let res = vowel_resonance(f.resonance);
-            v.svf[0].set(f1, res, rate);
-            v.svf[1].set(f2, res, rate);
-            v.vowel_gain = vowel_gain(f.resonance);
-        }
-        _ => {
-            v.svf[0].set(fc, f.resonance, rate);
-            if f.poles >= 4 {
-                v.svf[1].set(fc, f.resonance * 0.5, rate);
-            }
-        }
-    }
+    v.filt.set(&f, fc, f.resonance, rate, FILTER_STEP);
 }
 
-/// Everything after the source read, for one frame: amp envelope, kill
-/// fade, gain and pan, filter, the stolen voice's tail. `g` is the gain
-/// from the region's fades. Marks the voice done when its kill fade or
-/// envelope ends.
+/// `start` times pressure's gain, the amp envelope's next value and the kill
+/// fade, in that order; then the movement's next step, before the filter
+/// so a movement on the cutoff reaches it this frame.
+#[inline(always)]
+fn amp_gain(v: &mut Voice, start: f32) -> f32 {
+    let mut amp = start;
+    if v.route.target != PressureTarget::Off {
+        follow_pressure(v);
+        amp *= v.press_gain;
+    }
+    if let Some(a) = &mut v.amp {
+        amp *= a.next();
+    }
+    if v.kill_left > 0 {
+        amp *= f32::from(v.kill_left) / f32::from(KILL_FRAMES);
+    }
+    if v.motion.on {
+        follow_motion(v);
+    }
+    amp
+}
+
+/// The filter envelope's step and the filter retuned every
+/// [`FILTER_STEP`] frames, ahead of a frame through it: the filter's type,
+/// or `None` with no filter.
+#[inline(always)]
+fn filter_tick(v: &mut Voice, rate: f32) -> Option<FilterKind> {
+    let (Some(f), Some(fe)) = (v.filter, v.fenv.as_mut()) else {
+        return None;
+    };
+    let e = fe.next();
+    if v.filter_count == 0 {
+        retune(v, f, e, rate);
+    }
+    v.filter_count = (v.filter_count + 1) % FILTER_STEP;
+    Some(f.kind)
+}
+
+/// Everything after the source read, for one frame: the filter, then the
+/// amp envelope, pressure's gain, the kill fade, the voice's level and pan
+/// and the movement's sides after it (so a Drive or a loud resonance hears
+/// the sound as it is, not where its envelope or its velocity put it: the
+/// filter gap plan's F2), and the stolen voice's tail. A Comb comes after
+/// all the gains instead, so it rings on once the sound has ended
+/// ([`ring_out`]); a voice with no filter or a Comb takes its gains in the
+/// order it always did, so it renders exactly as before (and as
+/// [`render_plain`] does). `g` is the gain from the region's fades, part
+/// of the sound. Marks the voice done when its kill fade or envelope ends.
 #[inline(always)]
 pub(super) fn finish<const FOLLOW: bool>(
     v: &mut Voice,
     rate: f32,
     mut l: f32,
     mut r: f32,
-    mut g: f32,
+    g: f32,
 ) -> (f32, f32) {
     if FOLLOW {
         follow_live(v);
     }
-    if v.route.target != PressureTarget::Off {
-        follow_pressure(v);
-        g *= v.press_gain;
-    }
-    if let Some(a) = &mut v.amp {
-        g *= a.next();
-    }
-    if v.kill_left > 0 {
-        g *= f32::from(v.kill_left) / f32::from(KILL_FRAMES);
-    }
-    if v.motion.on {
-        follow_motion(v);
-        l *= v.motion.side[0];
-        r *= v.motion.side[1];
-    }
-
-    l *= g * v.gain_l;
-    r *= g * v.gain_r;
-
-    if let (Some(f), Some(fe)) = (v.filter, v.fenv.as_mut()) {
-        let e = fe.next();
-        if v.filter_count == 0 {
-            retune(v, f, e, rate);
+    // One test a frame, each order its own path: every type but the Comb
+    // comes before the gains (`v.filter` is `None` for Off).
+    if v.filter.is_some_and(|f| f.kind != FilterKind::Comb) {
+        let amp = amp_gain(v, 1.0);
+        l *= g;
+        r *= g;
+        if let Some(kind) = filter_tick(v, rate) {
+            (l, r) = v.filt.process_first(kind, l, r);
         }
-        v.filter_count = (v.filter_count + 1) % FILTER_STEP;
-        match f.kind {
-            FilterKind::Ladder => {
-                l = v.ladder.process(0, l);
-                r = v.ladder.process(1, r);
-            }
-            FilterKind::Comb => (l, r) = v.comb.process(l, r),
-            FilterKind::Vowel => {
-                let [a, b] = &mut v.svf;
-                let g = v.vowel_gain;
-                l = g * (a.process(0, l, f.kind) + FORMANT_2 * b.process(0, l, f.kind));
-                r = g * (a.process(1, r, f.kind) + FORMANT_2 * b.process(1, r, f.kind));
-            }
-            _ => {
-                l = v.svf[0].process(0, l, f.kind);
-                r = v.svf[0].process(1, r, f.kind);
-                if f.poles >= 4 {
-                    l = v.svf[1].process(0, l, f.kind);
-                    r = v.svf[1].process(1, r, f.kind);
-                }
-            }
+        l *= amp * v.gain_l;
+        r *= amp * v.gain_r;
+        if v.motion.on {
+            l *= v.motion.side[0];
+            r *= v.motion.side[1];
+        }
+    } else {
+        // The region's fades in the gain, in the order it always had.
+        let amp = amp_gain(v, g);
+        if v.motion.on {
+            l *= v.motion.side[0];
+            r *= v.motion.side[1];
+        }
+        l *= amp * v.gain_l;
+        r *= amp * v.gain_r;
+        // A Comb, if any.
+        if filter_tick(v, rate).is_some() {
+            (l, r) = v.filt.comb.process(l, r);
         }
     }
 
@@ -468,7 +468,7 @@ pub(super) fn finish<const FOLLOW: bool>(
         if v.kill_left == 0 {
             v.active = false;
             // Cut, not ended: a Comb doesn't ring on.
-            v.comb.reset();
+            v.filt.comb.reset();
         }
     }
     if v.amp.as_ref().is_some_and(|a| a.is_done()) {
@@ -546,7 +546,7 @@ pub(super) fn render_voice_bl(
 /// the comb still holds something to hear.
 #[inline]
 pub(super) fn rings_on(v: &Voice) -> bool {
-    v.filter.is_some_and(|f| f.kind == FilterKind::Comb) && v.comb.rings()
+    v.filter.is_some_and(|f| f.kind == FilterKind::Comb) && v.filt.comb.rings()
 }
 
 /// A Comb's ringing after its voice's sound ended, added into `left` and
@@ -556,20 +556,20 @@ pub(super) fn rings_on(v: &Voice) -> bool {
 #[inline(never)]
 pub(super) fn ring_out(v: &mut Voice, left: &mut [f32], right: &mut [f32]) {
     for (ol, or) in left.iter_mut().zip(right.iter_mut()) {
-        let (mut l, mut r) = v.comb.process(0.0, 0.0);
+        let (mut l, mut r) = v.filt.comb.process(0.0, 0.0);
         if v.kill_left > 0 {
             let t = f32::from(v.kill_left) / f32::from(KILL_FRAMES);
             (l, r) = (l * t, r * t);
             v.kill_left -= 1;
             if v.kill_left == 0 {
-                v.comb.reset();
+                v.filt.comb.reset();
             }
         }
         *ol += l;
         *or += r;
         v.last_l = l;
         v.last_r = r;
-        if !v.comb.rings() {
+        if !v.filt.comb.rings() {
             v.active = false;
             v.ringing = false;
             break;

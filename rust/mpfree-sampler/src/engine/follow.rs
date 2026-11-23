@@ -79,8 +79,7 @@ pub(super) fn retarget(
         // From open, so it comes in without a click.
         v.filter = Some(OPEN_FILTER);
         v.fenv = Some(Envelope::idle());
-        v.svf = [Svf::default(); 2];
-        v.ladder = Ladder::default();
+        v.filt.clear();
         v.filter_key = None;
         f.own_fc = OPEN_FILTER.cutoff_hz;
     }
@@ -176,8 +175,7 @@ pub(super) fn follow_edit(
                 ..pf
             });
             v.fenv = Some(Envelope::idle());
-            v.svf = [Svf::default(); 2];
-            v.ladder = Ladder::default();
+            v.filt.clear();
             v.filter_key = None;
             (pf.cutoff_hz, pf.resonance)
         }
