@@ -131,6 +131,18 @@ pub enum RecState {
     Recording,
 }
 
+/// What the REC chip warns of (loops on audio tracks, phase 4, board 3).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RecAlert {
+    #[default]
+    None,
+    /// In amber: REC does what it says, and more than the take alone
+    /// ("Bass · row 2 · closes Vocal's loop").
+    Warn,
+    /// In red, no arrow: REC is refused ("REC: 8 loops · clear one").
+    Refused,
+}
+
 /// The REC chip on the transport bars: what REC records and where its take
 /// stands (sequencer decision 1, mockups F and G).
 #[derive(Clone, Debug, PartialEq)]
@@ -142,6 +154,8 @@ pub struct RecChip {
     pub add: bool,
     /// Only a tap on Arm moves the arm (the target list's Pin the arm).
     pub pinned: bool,
+    /// Said before the press, in amber or red (board 3).
+    pub alert: RecAlert,
 }
 
 impl RecChip {
@@ -158,9 +172,21 @@ impl RecChip {
         }
     }
 
-    /// The chip as one line, for the Arrange bar and the log: "REC → Loop 1".
+    /// The chip as one line, for the Arrange bar and the log: "REC → Loop 1";
+    /// refused, "REC: 8 loops · clear one".
     pub fn line(&self) -> String {
-        format!("{} → {}", self.head(), self.what)
+        match self.alert {
+            RecAlert::Refused => format!("REC: {}", self.what),
+            _ => format!("{} → {}", self.head(), self.what),
+        }
+    }
+
+    /// Its tone on the Arrange bar: red, or amber for a warning.
+    pub fn tone(&self) -> mpfree_ui::Tone {
+        match self.alert {
+            RecAlert::Warn => mpfree_ui::Tone::Warn,
+            _ => mpfree_ui::Tone::Bad,
+        }
     }
 }
 
@@ -315,13 +341,30 @@ pub fn paint_rec_chip(cx: &mut PaintCx, r: Rect, c: &RecChip) {
         RecState::Recording => (t.bad, t.ink_on(t.bad), t.ink_on(t.bad)),
     };
     cx.canvas.fill_round_rect(r, t.round(10), fill);
-    if c.state == RecState::Ready {
-        cx.canvas.stroke_round_rect(r, t.round(10), 2, t.bad);
+    // A warning (amber) or a refusal (red) outlines it and colours its
+    // words (board 3).
+    let edge = match c.alert {
+        RecAlert::Warn => Some(t.warn),
+        RecAlert::Refused => Some(t.bad),
+        RecAlert::None => (c.state == RecState::Ready).then_some(t.bad),
+    };
+    if let Some(edge) = edge {
+        cx.canvas.stroke_round_rect(r, t.round(10), 2, edge);
     }
+    let ink = match c.alert {
+        RecAlert::Warn if c.state != RecState::Recording => t.readable(t.warn, fill),
+        RecAlert::Refused => t.readable(t.bad, fill),
+        _ => ink,
+    };
     let mut x = r.x + 12;
     if c.state == RecState::Armed {
+        let dot = if c.alert == RecAlert::Warn {
+            t.warn
+        } else {
+            t.bad
+        };
         cx.canvas
-            .fill_round_rect(Rect::new(x, r.y + 13, 8, 8), 4, t.bad);
+            .fill_round_rect(Rect::new(x, r.y + 13, 8, 8), 4, dot);
         x += 14;
     }
     let half = r.h / 2;
@@ -339,7 +382,10 @@ pub fn paint_rec_chip(cx: &mut PaintCx, r: Rect, c: &RecChip) {
         Rect::new(r.x + 12, r.y + half - 2, r.w - 20, half),
         Align::Left,
         ink,
-        &format!("→ {}", c.what),
+        &match c.alert {
+            RecAlert::Refused => c.what.clone(),
+            _ => format!("→ {}", c.what),
+        },
     );
 }
 

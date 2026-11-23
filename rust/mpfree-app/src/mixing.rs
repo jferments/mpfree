@@ -2836,8 +2836,9 @@ impl MixHost {
 
     /// What audio track `t` records from inside the mix (the instrument
     /// redesign's step 9): `from`'s strip as the last period left it,
-    /// before or after its effects (before its fader either way, so its
-    /// level never changes the take), into `into` interleaved stereo, and
+    /// before or after its effects, before its fader (the panel's Mix, so
+    /// its level never changes the take) or after it (the input list's
+    /// strips and Pads, phase 4), into `into` interleaved stereo, and
     /// the capture's latency (frames between the block's track inputs and
     /// the point). `from` None frees the track's capture point. The period
     /// the point moves is silence, as the looper's. Silence and None while
@@ -2850,17 +2851,9 @@ impl MixHost {
         from: Option<crate::audiotracks::Inside>,
         into: &mut [f32],
     ) -> Option<u32> {
-        use mpfree_fx::CapturePoint;
         let slot = AUDIO_CAPTURE + t;
         let was = *self.audio_points.get(t)?;
-        let point = from.map(|f| {
-            let p = if f.after_effects {
-                CapturePoint::BeforeFader
-            } else {
-                CapturePoint::BeforeInserts
-            };
-            (f.strip, p)
-        });
+        let point = from.map(|f| (f.strip, f.point()));
         let Some(point) = point else {
             if was.is_some() {
                 self.mixer.set_capture(slot, None);
@@ -2888,6 +2881,18 @@ impl MixHost {
             _ => into.fill(0.0),
         }
         latency
+    }
+
+    /// Why the mixer refuses a recording into `channel` (an audio track's
+    /// own) from `from`, as [`mpfree_fx::Mixer::capture_for`] says; None
+    /// when it can take it. For the input list (phase 4, board 4), which
+    /// shows the refused inputs dim. Cheap.
+    pub fn capture_refusal(
+        &self,
+        from: (StripId, mpfree_fx::CapturePoint),
+        channel: StripId,
+    ) -> Option<mpfree_fx::CaptureRefusal> {
+        self.mixer.capture_for(from, channel).err()
     }
 
     /// What an audio track can record from inside the mix (step 9), by
@@ -4750,6 +4755,7 @@ mod tests {
         let after = Inside {
             strip: StripId::Pad(0),
             after_effects: true,
+            after_fader: false,
         };
         assert!(h.audio_take(2, Some(after), &mut buf).is_some());
         assert_eq!(peak(&buf), 0.0, "silent the period it moves");
@@ -4776,6 +4782,7 @@ mod tests {
         let gone = Inside {
             strip: StripId::Pad(PAD_STRIPS),
             after_effects: true,
+            after_fader: false,
         };
         assert_eq!(h.audio_take(2, Some(gone), &mut buf), None);
         assert_eq!(peak(&buf), 0.0);

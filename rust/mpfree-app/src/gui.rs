@@ -101,6 +101,10 @@ pub const OPTIONS_LAYOUT: &str = "col(header:60, row(options:*, help:470):*, hin
 /// wide range), over the page it was asked from.
 pub const NUMPAD: &str = "numpad";
 pub const NUMPAD_PAGE: &str = "Type a number";
+/// The hint line while an audio track's input list is open (phase 4,
+/// board 4).
+pub const INPUT_LIST_HINT: &str =
+    "Tap an input: the track records from it   \u{b7}   a dim one says why it can't   \u{b7}   tap anywhere else: no change";
 const NUMPAD_LAYOUT: &str = "col(header:60, numpad:*, hint:26)";
 const NUMPAD_HINT: &str = "Tap the number, then Enter   ·   wheel or - / +: step it   ·   push the wheel: Enter   ·   Cancel: leave it as it was";
 /// The text keyboard (the sampler review's R1: names), over the page it
@@ -1096,6 +1100,10 @@ fn fill_sounds(
 /// The drum synth's id: its notes are drums, so it never transposes.
 const DRUMS_ENGINE: &str = "mpfree.drums";
 
+/// A tap on the Looper tab's Records into, loops in audio cells (phase 4,
+/// board 5): a loop records from its track's input.
+pub const ON_TRACKS_INPUT: &str = "A loop records from its track's input: tap the input under an audio track's name on Clips to change it";
+
 /// The loops as the Loop tracks' cells show them, from the Looper's view:
 /// each loop's layers and whether it overdubs, how many hold a loop, and
 /// the memory in use.
@@ -1116,6 +1124,7 @@ fn loops_info(v: &crate::looping::LooperView) -> mpfree_time_ui::view::LoopsInfo
     info.in_use = v.loops.iter().filter(|s| s.phase != Phase::Empty).count();
     info.waiting = v.loops.iter().any(|s| s.phase == Phase::Armed);
     info.recording = v.loops.iter().any(|s| s.phase == Phase::Recording);
+    info.ids = v.ids;
     let m = v.memory;
     info.memory_pct = (m.used * 100)
         .checked_div(m.capacity)
@@ -1195,6 +1204,10 @@ pub enum ToUi {
     /// A line shown in place of the hint for [`TELL_SECONDS`] (it was
     /// logged as a `Line` too): why something did nothing.
     Tell(String),
+    /// An audio track's input list, as the mixer offers it, in answer to
+    /// `AudioAction::Inputs` (phase 4, board 4): it opens over the Clips
+    /// grid or the Song view, whichever shows.
+    InputList(Box<mpfree_time_ui::inputs::InputChoices>),
     /// UNDO (true: SHIFT + UNDO, redo) on a page whose history the screen
     /// picks ([`Player::undo`]).
     Undo(bool),
@@ -2844,6 +2857,9 @@ pub struct Player {
     xy_setup: bool,
     /// Your layouts, as the sound loop last told them ([`ToUi::Xy`]).
     xy_song: crate::xy_song::XyView,
+    /// An audio track's input list open over the Clips page (phase 4,
+    /// board 4): the page it floats on and the track.
+    input_list: Option<(String, usize)>,
     /// The Pads tab's Perform view: the project's Perform set
     /// ([`crate::perform_tab`]).
     perform: crate::perform_tab::PerformTab,
@@ -2999,6 +3015,10 @@ impl Player {
         ui.add(
             crate::xy_widgets::XY_BANNER,
             crate::xy_widgets::XyBanner::default(),
+        );
+        ui.add(
+            mpfree_time_ui::inputs::INPUT_LIST,
+            mpfree_time_ui::inputs::InputList::default(),
         );
         ui.add(play_page::SYNTH_PADS_HEAD, PadsBar::default());
         ui.add(
@@ -3218,6 +3238,7 @@ impl Player {
             xy_full: false,
             xy_setup: false,
             xy_song: crate::xy_song::XyView::default(),
+            input_list: None,
             perform: crate::perform_tab::PerformTab::default(),
             throw_strips: vec![("Master".to_string(), mpfree_fx::StripId::Master)],
             play_own: PlayView::All,
@@ -6810,7 +6831,7 @@ impl Player {
                 g.arm = Some(looped);
             }
         }
-        let bar = vec![Chip::new(chip.line(), Tone::Bad)];
+        let bar = vec![Chip::new(chip.line(), chip.tone())];
         if self.time.chips != bar {
             self.time.chips = bar;
             self.time_page.update(&mut self.ui, &self.time);
@@ -6852,6 +6873,7 @@ impl Player {
                 what: format!("{name} · {}", self.sample.chip_source()),
                 add: false,
                 pinned: false,
+                alert: play_widgets::RecAlert::None,
             };
         }
         // While the pads have a synth the armed track doesn't play, REC
@@ -6869,6 +6891,7 @@ impl Player {
                     what: format!("{names} + {}", l.what),
                     add: if n.state >= l.state { n.add } else { l.add },
                     pinned: false,
+                    alert: l.alert,
                 }
             } else {
                 play_widgets::RecChip { what: names, ..n }
@@ -6887,6 +6910,7 @@ impl Player {
                 ),
                 add: if n.state >= l.state { n.add } else { l.add },
                 pinned: false,
+                alert: l.alert,
             }
         } else {
             self.rec_chip_of(self.rec.target)
@@ -6897,6 +6921,220 @@ impl Player {
             chip.what.push_str(" + Rec song");
         }
         chip
+    }
+
+    /// Each loop's place, and with Dev's "Loops on audio tracks" where
+    /// the next loop goes, to the Looper tab (phase 4, board 5). True when
+    /// either changed.
+    fn refresh_loop_places(&mut self) -> bool {
+        let places = time_view::loop_places(&self.time);
+        let into = self.records_into();
+        let placed = self.looper_page.set_places(places);
+        self.looper_page.set_on_tracks(into) || placed
+    }
+
+    /// An audio track's input list, as the app says the mixer offers it
+    /// (phase 4, board 4): over the Clips grid under the track's column
+    /// head, the grid veiled, or over the Song view under its lane's
+    /// header. Each strip an instrument plays into takes its track's
+    /// colour. Not opened on another page (the answer came late).
+    fn open_input_list(&mut self, mut c: mpfree_time_ui::inputs::InputChoices) {
+        use mpfree_time_ui::inputs::{InputList, INPUT_LIST};
+        use mpfree_time_ui::song::SongLanes;
+        use mpfree_time_ui::widgets::ClipGrid;
+        let page = self.ui.page().to_string();
+        if page != time_view::CLIPS_PAGE || !self.time.loops_on {
+            return;
+        }
+        if self.input_list.is_some() {
+            self.close_input_list();
+        }
+        for ch in c.strips.iter_mut().chain(c.pads.as_mut()) {
+            ch.color = ch.owner.map(time_view::track_color);
+        }
+        let row = self
+            .time
+            .audio
+            .iter()
+            .find(|l| l.track == c.track)
+            .map(|l| l.row);
+        let morph = self.ui.rect_of(time_view::MORPH);
+        let (area, head) = if let Some(grid) = self.ui.rect_of(time_view::CLIPS) {
+            let head = self
+                .ui
+                .get::<ClipGrid>(time_view::CLIPS)
+                .and_then(|g| g.head_rect(grid, row?));
+            (grid, head)
+        } else if let Some(song) = self.ui.rect_of(time_view::SONG) {
+            let head = self.ui.get::<SongLanes>(time_view::SONG).and_then(|s| {
+                let a = s.audio.iter().position(|l| l.track == c.track)?;
+                s.header_rect(song, a)
+            });
+            (song, head)
+        } else {
+            return;
+        };
+        let area = morph.map_or(area, |m| area.union(m));
+        let track = c.track;
+        let Some(list) = self.ui.get_mut::<InputList>(INPUT_LIST) else {
+            return;
+        };
+        list.choices = c;
+        let at = list.place(
+            area,
+            head.unwrap_or(mpfree_ui::Rect::new(area.x, area.y, 0, 40)),
+        );
+        if self.ui.set_float(&page, INPUT_LIST, Some(at)).is_err() {
+            return;
+        }
+        let on_grid = self.ui.rect_of(time_view::CLIPS).is_some();
+        if let (Some(g), Some(row)) = (self.ui.get_mut::<ClipGrid>(time_view::CLIPS), row) {
+            if on_grid {
+                g.veil = Some(row);
+            }
+        }
+        self.input_list = Some((page, track));
+        self.refresh_hint();
+    }
+
+    /// Closes the input list, if it is open, and takes the grid's veil.
+    fn close_input_list(&mut self) {
+        let Some((page, _)) = self.input_list.take() else {
+            return;
+        };
+        let _ = self
+            .ui
+            .set_float(&page, mpfree_time_ui::inputs::INPUT_LIST, None);
+        if self
+            .ui
+            .get::<mpfree_time_ui::widgets::ClipGrid>(time_view::CLIPS)
+            .is_some_and(|g| g.veil.is_some())
+        {
+            if let Some(g) = self
+                .ui
+                .get_mut::<mpfree_time_ui::widgets::ClipGrid>(time_view::CLIPS)
+            {
+                g.veil = None;
+            }
+        }
+        self.refresh_hint();
+    }
+
+    /// With Dev's "Loops on audio tracks" on (phase 4, board 5): where REC
+    /// puts the next loop and from what, for the Looper tab's header in
+    /// Records from's place: the armed empty audio cell ("Vocal · row 3 ·
+    /// Line L"), else the picked loop's cell, which REC overdubs, else that
+    /// none is armed. None with the switch off.
+    fn records_into(&self) -> Option<String> {
+        let st = &self.time;
+        if !st.loops_on {
+            return None;
+        }
+        let at = |t: usize, s: usize| {
+            let place = format!(
+                "{} \u{b7} {}",
+                self.track_name(t),
+                time_view::row_name(st, s)
+            );
+            match st.audio_lane_at(t).map(mpfree_time_ui::song::input_words) {
+                Some(i) => format!("{place} \u{b7} {i}"),
+                None => place,
+            }
+        };
+        if let Some((t, s)) = st.loop_cell.filter(|_| st.loop_cell_audio()) {
+            return Some(at(t, s));
+        }
+        let places = time_view::loop_places(st);
+        Some(
+            match places
+                .get(self.looper.selected)
+                .and_then(|p| p.as_ref())
+                .filter(|p| p.audio)
+            {
+                Some(p) => at(p.track, p.slot),
+                None => "no cell armed".to_string(),
+            },
+        )
+    }
+
+    /// The REC chip's words for a loop on an audio track, with Dev's
+    /// "Loops on audio tracks" on (phase 4, board 3; layout spec 4c, What
+    /// REC records): an armed empty audio cell and the track's input
+    /// ("Vocal · row 3 · Line L"); while another loop's first pass
+    /// records, that REC closes it first, in amber ("Bass · row 2 · closes
+    /// Vocal's loop"); the picked loop in an audio cell, which REC
+    /// overdubs ("Vox loop · overdub"); with every loop in use and the
+    /// picked one in no cell, the refusal ("8 loops · clear one"). None:
+    /// the Loop track's words.
+    fn audio_loop_chip(&self) -> Option<(String, play_widgets::RecAlert)> {
+        use mpfree_looper::Phase;
+        use play_widgets::RecAlert;
+        let st = &self.time;
+        if !st.loops_on {
+            return None;
+        }
+        let places = time_view::loop_places(st);
+        if st.loop_cell_audio() {
+            let place = time_view::loop_cell_name(st)?;
+            // One loop records at a time: REC hands over (Jay's pick, 23
+            // Nov 2026 19:24Z).
+            let first = self
+                .looper
+                .loops
+                .iter()
+                .position(|s| s.phase == Phase::Recording)
+                .filter(|&n| n != self.looper.selected);
+            if let Some(n) = first {
+                let whose = places
+                    .get(n)
+                    .and_then(|p| p.as_ref())
+                    .map_or_else(|| self.looper_page.loop_name(n), |p| p.track_name.clone());
+                return Some((format!("{place} · closes {whose}'s loop"), RecAlert::Warn));
+            }
+            let input = st
+                .loop_cell
+                .and_then(|(t, _)| st.audio_lane_at(t))
+                .map(mpfree_time_ui::song::input_words);
+            return Some((
+                match input {
+                    Some(i) => format!("{place} · {i}"),
+                    None => place,
+                },
+                RecAlert::None,
+            ));
+        }
+        let n = self.looper.selected;
+        let place = places.get(n).and_then(|p| p.as_ref());
+        let audio = place.filter(|p| st.tracks.get(p.track).is_some_and(|t| t.audio));
+        match audio {
+            Some(p) => {
+                let name = st.clip(p.track, p.slot)?.name.clone();
+                let phase = self.looper.loops.get(n)?.phase;
+                Some(match phase {
+                    Phase::Playing | Phase::Overdubbing => {
+                        (format!("{name} · overdub"), RecAlert::None)
+                    }
+                    _ => (name, RecAlert::None),
+                })
+            }
+            None if st.loops.in_use >= mpfree_seq::LOOPS && place.is_none() => Some((
+                format!("{} loops · clear one", mpfree_seq::LOOPS),
+                RecAlert::Refused,
+            )),
+            None => None,
+        }
+    }
+
+    /// Loop `n`'s audio track, with Dev's "Loops on audio tracks" on, as
+    /// (its engine track, muted, soloed): its M and S on the Looper tab are
+    /// the track's (board 5).
+    fn track_of_loop(&self, n: usize) -> Option<(usize, bool, bool)> {
+        if !self.time.loops_on {
+            return None;
+        }
+        let place = self.looper_page.place(n).filter(|p| p.audio)?;
+        let lane = self.time.audio_lane_at(place.track)?;
+        Some((lane.track, lane.mute, lane.solo))
     }
 
     /// The armed tracks' names for the REC chip while more than one is
@@ -6973,17 +7211,26 @@ impl Player {
             }
             Target::Loop => {
                 let phase = self.looper.status.phase;
+                // Loops on audio tracks (phase 4, board 3): where the loop
+                // goes and from which input, or what else REC does.
+                let (what, alert) = self.audio_loop_chip().unwrap_or_else(|| {
+                    (
+                        // A Loop cell armed on the grid: "Loops C · Drop".
+                        time_view::loop_cell_name(&self.time)
+                            .unwrap_or_else(|| self.looper_page.loop_name(self.looper.selected)),
+                        play_widgets::RecAlert::None,
+                    )
+                });
                 RecChip {
                     state: match phase {
                         Phase::Recording | Phase::Overdubbing => RecState::Recording,
                         Phase::Armed => RecState::Ready,
                         Phase::Empty | Phase::Playing => RecState::Armed,
                     },
-                    // A Loop cell armed on the grid: "Loops C · Drop".
-                    what: time_view::loop_cell_name(&self.time)
-                        .unwrap_or_else(|| self.looper_page.loop_name(self.looper.selected)),
+                    what,
                     add: phase == Phase::Overdubbing,
                     pinned: false,
+                    alert,
                 }
             }
         }
@@ -7518,6 +7765,18 @@ impl Player {
                         out.push(FromUi::Looper(crate::looper_page::B_RECORD));
                     }
                 }
+                // A loop on an audio track (Dev's switch, board 5): its M
+                // and S are its track's.
+                LoopAct::Mute(n) | LoopAct::Solo(n) if self.track_of_loop(n).is_some() => {
+                    if let Some((track, mute, solo)) = self.track_of_loop(n) {
+                        let a = if matches!(a, LoopAct::Mute(_)) {
+                            mpfree_time_ui::view::AudioAction::Mute { track, on: !mute }
+                        } else {
+                            mpfree_time_ui::view::AudioAction::Solo { track, on: !solo }
+                        };
+                        out.push(FromUi::Time(TimeAction::Audio(a)));
+                    }
+                }
                 LoopAct::Mute(n) => out.push(FromUi::LoopMute(Some(n))),
                 LoopAct::Solo(n) => out.push(FromUi::LoopSolo(n)),
                 LoopAct::PadKeys => out.push(FromUi::LoopKeys),
@@ -7536,6 +7795,11 @@ impl Player {
                     if let Some(l) = self.looper_page.layer_info(k) {
                         out.push(FromUi::LoopLayer { id: l.id, command });
                     }
+                }
+                // With loops in audio cells (board 5) a loop records from
+                // its track's input: the header says where it goes.
+                LoopAct::Strip(Ctl::Input) if self.time.loops_on => {
+                    self.tell(ON_TRACKS_INPUT);
                 }
                 // Records from (the deck's header): its choices open in the
                 // lanes' place.
@@ -8048,6 +8312,8 @@ impl Player {
             .to_string()
         } else if self.history.is_some() {
             HISTORY_HINT.to_string()
+        } else if self.input_list.is_some() {
+            INPUT_LIST_HINT.to_string()
         } else if self.recall.is_some() {
             mpfree_sampler_ui::recall::HINT.to_string()
         } else if self.kit_list {
@@ -10325,6 +10591,7 @@ impl Player {
         }
         match msg {
             ToUi::Tell(l) => self.tell(&l),
+            ToUi::InputList(c) => self.open_input_list(*c),
             ToUi::Undo(redo) => self.undo(redo),
             ToUi::UndoButton(down) => {
                 self.undo_held = (down && self.typing.is_none()).then_some(0.0);
@@ -10775,7 +11042,15 @@ impl Player {
                 let loops = loops_info(&self.looper);
                 if loops != self.time.loops {
                     self.time.loops = loops;
-                    if self.time.tracks.iter().any(|t| t.loops.is_some()) {
+                    // Loops on audio tracks: their cards find their places
+                    // by the loops' ids (phase 4).
+                    if self.time.loops_on && self.refresh_loop_places() {
+                        self.refresh_looper();
+                    }
+                    // Loop cells on audio tracks too (phase 4).
+                    if self.time.tracks.iter().any(|t| t.loops.is_some())
+                        || (self.time.loops_on && self.time.loop_cells() > 0)
+                    {
                         self.time_page.update(&mut self.ui, &self.time);
                     }
                 }
@@ -11571,9 +11846,16 @@ impl Player {
                     // The armed track, and where it is transposed to.
                     self.refresh_levels();
                 }
+                // The input list closes once its page goes, or the switch.
+                let gone = self
+                    .input_list
+                    .as_ref()
+                    .is_some_and(|(p, _)| self.ui.page() != p || !self.time.loops_on);
+                if gone {
+                    self.close_input_list();
+                }
                 // Play's strip and the Looper tab name a loop by its place.
-                let places = time_view::loop_places(&self.time);
-                if self.looper_page.set_places(places) {
+                if self.refresh_loop_places() {
                     if matches!(self.view, View::Looper | View::Play) {
                         self.refresh_looper();
                     }
@@ -15791,6 +16073,30 @@ impl Player {
 
     /// A touch meant something: hand it to the audio thread, which decides.
     pub fn on_event(&mut self, ev: UiEvent) -> Option<FromUi> {
+        // An audio track's input list open (phase 4, board 4): a tap on
+        // an input picks it, or says why it can't; a touch anywhere else
+        // only closes it.
+        if let Some((_, track)) = self.input_list {
+            if ev.widget != mpfree_time_ui::inputs::INPUT_LIST {
+                self.close_input_list();
+                return None;
+            }
+            let EventKind::Select(k) = ev.kind else {
+                return None;
+            };
+            let list = self
+                .ui
+                .get::<mpfree_time_ui::inputs::InputList>(mpfree_time_ui::inputs::INPUT_LIST)?;
+            if let Some(why) = list.refused(k) {
+                self.tell(&why);
+                return None;
+            }
+            self.close_input_list();
+            return Some(FromUi::Time(TimeAction::Audio(AudioAction::InputPick {
+                track,
+                k,
+            })));
+        }
         if [skin_page::SKIN, skin_page::TABS, skin_page::CHIP].contains(&ev.widget.as_str()) {
             self.skin_event(&ev);
             return None;
@@ -16797,7 +17103,12 @@ impl Player {
             // track's input steps to the next (Pads, Line in, Resample).
             (time_view::CLIPS, EventKind::Tab(k)) if k >= mpfree_time_ui::widgets::SOUND_TAP => {
                 let t = k - mpfree_time_ui::widgets::SOUND_TAP;
-                if let Some(tr) = self.time.tracks.get(t).filter(|tr| tr.audio) {
+                let lane = self.time.audio_lane_at(t).map(|l| l.track);
+                if let Some(lane) = lane.filter(|_| self.time.loops_on) {
+                    // Its input list (phase 4, board 4): the app says what
+                    // the mixer offers, and it opens.
+                    Some(FromUi::Time(TimeAction::Audio(AudioAction::Inputs(lane))))
+                } else if let Some(tr) = self.time.tracks.get(t).filter(|tr| tr.audio) {
                     // An audio track's input: its panel on the Song view.
                     let line = format!(
                         "{}'s input: tap its name on the Song view (Song ›) to open its panel",
@@ -31843,6 +32154,269 @@ mod tests {
         apply_effects(&mut p, app.tab(4));
         let fx = app.button(71, true, 0.0);
         assert!(!fx.contains(&Effect::QLinkBank), "{fx:?}");
+    }
+
+    /// The audio tracks rethink's phase 4, board 4: with Dev's "Loops on
+    /// audio tracks" on, a tap on an audio column's input line asks the
+    /// app for its input list; the list opens over the grid under the
+    /// column's head, the grid veiled but for it, each instrument's strip
+    /// in its track's colour; a dim input says why and stays open; a pick
+    /// goes to the tracks and closes it; a touch on the grid only closes
+    /// it. With the switch off the line says where the panel is, as before.
+    #[test]
+    fn an_audio_columns_input_line_opens_its_input_list() {
+        use mpfree_time_ui::inputs::{Choice, InputChoices, InputList, INPUT_LIST, STRIP};
+        use mpfree_time_ui::widgets::{ClipGrid, SOUND_TAP};
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        let ev = |widget: &str, kind| mpfree_ui::UiEvent {
+            widget: widget.to_string(),
+            kind,
+        };
+        let mut st = mpfree_time_ui::sample::clips_audio_state().unwrap();
+        st.loops_on = true;
+        let vocal = st.audio[0].row;
+        let mut p = quiet_player(Fonts::embedded());
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        p.apply(ToUi::Show(View::Arrange));
+        // Vocal's page of tracks, as a finger on its head would have it.
+        p.time_page.show_cell(vocal, 0);
+        p.time_page.update(&mut p.ui, &p.time);
+        assert_eq!(
+            p.on_event(ev(time_view::CLIPS, EventKind::Tab(SOUND_TAP + vocal))),
+            Some(FromUi::Time(TimeAction::Audio(AudioAction::Inputs(0))))
+        );
+        let choice = |name: &str, owner, refused: Option<&str>| Choice {
+            name: name.to_string(),
+            owner,
+            color: None,
+            refused: refused.map(str::to_string),
+        };
+        let c = InputChoices {
+            track: 0,
+            name: "Vocal".into(),
+            line: Some(mpfree_audiotracks::Input::Left),
+            picked: None,
+            pads: Some(choice("Pads \u{b7} Kit 1", Some(0), None)),
+            pads_why: String::new(),
+            strips: vec![
+                choice("Bass", Some(1), None),
+                choice(
+                    "Bus A",
+                    None,
+                    Some("Vocal plays into Bus A, so it would record itself"),
+                ),
+            ],
+            strips_why: "Bus A is dim: Vocal plays into it. Pick a strip Vocal doesn't feed."
+                .into(),
+            master: choice("Master", None, None),
+            master_why: String::new(),
+        };
+        p.apply(ToUi::InputList(Box::new(c.clone())));
+        let grid = p.ui.rect_of(time_view::CLIPS).expect("the grid");
+        let head =
+            p.ui.get::<ClipGrid>(time_view::CLIPS)
+                .unwrap()
+                .head_rect(grid, vocal)
+                .expect("Vocal's head");
+        let at =
+            p.ui.rect_of(INPUT_LIST)
+                .expect("the list floats over the page");
+        assert!(at.y > head.bottom() && at.w > 600, "{at:?} under {head:?}");
+        assert_eq!(
+            p.ui.get::<ClipGrid>(time_view::CLIPS).unwrap().veil,
+            Some(vocal)
+        );
+        assert_eq!(hint(&p), INPUT_LIST_HINT);
+        let list = p.ui.get::<InputList>(INPUT_LIST).unwrap();
+        assert_eq!(
+            list.choices.strips[0].color,
+            Some(time_view::track_color(1))
+        );
+        assert_eq!(list.choices.strips[1].color, None);
+        let mut canvas = SoftCanvas::new(1280, 800);
+        p.ui.paint(&mut canvas);
+        // A dim one: said, and the list stays.
+        assert_eq!(
+            p.on_event(ev(INPUT_LIST, EventKind::Select(STRIP + 1))),
+            None
+        );
+        assert!(
+            p.told
+                .as_ref()
+                .is_some_and(|t| t.0.contains("plays into Bus A")),
+            "{:?}",
+            p.told
+        );
+        assert!(p.input_list.is_some());
+        // A pick: to the tracks, and the list closes.
+        assert_eq!(
+            p.on_event(ev(INPUT_LIST, EventKind::Select(STRIP))),
+            Some(FromUi::Time(TimeAction::Audio(AudioAction::InputPick {
+                track: 0,
+                k: STRIP
+            })))
+        );
+        assert!(p.input_list.is_none());
+        assert_eq!(p.ui.rect_of(INPUT_LIST), None);
+        assert_eq!(p.ui.get::<ClipGrid>(time_view::CLIPS).unwrap().veil, None);
+        assert_ne!(hint(&p), INPUT_LIST_HINT);
+        // Again: a touch on the grid, off the list, only closes it.
+        p.apply(ToUi::InputList(Box::new(c.clone())));
+        p.take_actions();
+        let (x, y) = (grid.x + 4, grid.bottom() - 4);
+        p.touch(1, Touch::Down, x, y);
+        p.touch(1, Touch::Up, x, y);
+        assert!(p.input_list.is_none());
+        assert!(p.take_actions().is_empty());
+        // Away from the page, it closes; an answer that comes late to
+        // another page doesn't open.
+        p.apply(ToUi::InputList(Box::new(c.clone())));
+        p.apply(ToUi::Show(View::Looper));
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        assert!(p.input_list.is_none());
+        p.apply(ToUi::InputList(Box::new(c)));
+        assert!(p.input_list.is_none());
+        // The switch off: the line says where the panel is.
+        p.apply(ToUi::Show(View::Arrange));
+        st.loops_on = false;
+        p.apply(ToUi::Time(Box::new(st)));
+        assert_eq!(
+            p.on_event(ev(time_view::CLIPS, EventKind::Tab(SOUND_TAP + vocal))),
+            None
+        );
+        assert!(p.told.as_ref().is_some_and(|t| t.0.contains("Song view")));
+    }
+
+    /// The audio tracks rethink's phase 4, board 3: with Dev's "Loops on
+    /// audio tracks" on and an empty audio cell armed, the REC chip names
+    /// the cell and the track's input; while another loop's first pass
+    /// records it says, in amber, that REC closes it; the picked loop in an
+    /// audio cell is overdubbed; with all 8 loops in use and none picked in
+    /// a cell, it is refused in red. With the switch off, the old words.
+    #[test]
+    fn with_loops_on_rec_names_the_cell_and_hands_over_a_first_pass() {
+        use crate::rec_arm::Target;
+        use mpfree_looper::Phase;
+        use play_widgets::RecAlert;
+        let mut st = mpfree_time_ui::sample::clips_audio_state().unwrap();
+        st.loops_on = true;
+        let vocal = st.audio[0].row;
+        let empty = st.tracks[vocal]
+            .slots
+            .iter()
+            .position(|s| s.is_none())
+            .expect("an empty cell of Vocal's");
+        st.loop_cell = Some((vocal, empty));
+        let mut p = quiet_player(Fonts::embedded());
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        p.rec.target = Target::Loop;
+        let row = time_view::row_name(&p.time, empty);
+        let chip = p.rec_chip();
+        assert_eq!(chip.what, format!("Vocal \u{b7} {row} \u{b7} Line L"));
+        assert_eq!(chip.alert, RecAlert::None);
+        // Another loop's first pass records: REC closes it first, said.
+        let mut v = LooperView::default();
+        v.loops[2].phase = Phase::Recording;
+        v.selected = 0;
+        p.apply(ToUi::Looper(Box::new(v.clone())));
+        let chip = p.rec_chip();
+        assert!(chip.what.ends_with("'s loop"), "{}", chip.what);
+        assert!(chip.what.contains("closes"), "{}", chip.what);
+        assert_eq!(chip.alert, RecAlert::Warn);
+        assert_eq!(chip.tone(), Tone::Warn);
+        // Every loop in use, none picked in a cell and no cell armed:
+        // refused, in red.
+        for l in v.loops.iter_mut() {
+            l.phase = Phase::Playing;
+        }
+        p.apply(ToUi::Looper(Box::new(v)));
+        st.loop_cell = None;
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        assert_eq!(p.time.loops.in_use, mpfree_seq::LOOPS);
+        let chip = p.rec_chip();
+        assert_eq!(chip.what, "8 loops \u{b7} clear one");
+        assert_eq!(chip.alert, RecAlert::Refused);
+        assert!(chip.line().starts_with("REC: "), "{}", chip.line());
+        // The switch off: the old words.
+        st.loops_on = false;
+        st.loop_cell = Some((vocal, empty));
+        p.apply(ToUi::Time(Box::new(st)));
+        assert_eq!(p.rec_chip().alert, RecAlert::None);
+    }
+
+    /// The audio tracks rethink's phase 4, board 6: with Dev's "Loops on
+    /// audio tracks" on, an audio track's strip says its input and, while
+    /// it plays one, what ("loop · row 2" over the clip's name, or a take
+    /// clip's "take · row 1"); with no Loop track in the project there is
+    /// no Loop strip.
+    #[test]
+    fn with_loops_on_the_mixer_tags_what_an_audio_track_plays() {
+        use mpfree_fx::StripId;
+        let mut project = mpfree_seq::Project::new();
+        project.tracks.push(mpfree_seq::Track::new("Drums", 0));
+        project
+            .tracks
+            .push(mpfree_seq::Track::new_audio("Vocal", 0));
+        project.give_track_ids();
+        let lp = mpfree_seq::Clip::new_audio_loop(mpfree_seq::LoopId(7), "Vox loop", 4 * 3840);
+        if let Some(cell) = project.tracks[1].slots.get_mut(1) {
+            *cell = Some(lp);
+        }
+        project.give_clip_ids();
+        let clip = project.tracks[1]
+            .slots
+            .iter()
+            .next()
+            .expect("the loop cell")
+            .1
+            .id;
+        let mut tracks = crate::audiotracks::TrackHost::new(44_100, 1);
+        tracks.sync(&project, 0, true);
+        let mut mix = crate::mixing::MixHost::new(44_100, -18.0, -12.0);
+        let vocal = StripId::Track(mix.track_channel(1));
+        mix.audio_tracks = 0b10;
+        mix.show(Some(mpfree_mixer_ui::MixView::Tracks));
+        let mut st = mix
+            .poll_state(std::time::Instant::now())
+            .expect("the mixer shows");
+        let looper = StripId::Track(crate::mixing::LOOP);
+        let had_loop = st.strips.iter().any(|v| v.id == looper);
+        tracks.dress_strips(&mut st, &project, 0, &mix);
+        tracks.dress_loop_strips(
+            &mut st,
+            &project,
+            |p| (p == 1).then_some((true, clip)),
+            &mix,
+        );
+        let v = st
+            .strips
+            .iter()
+            .find(|v| v.id == vocal)
+            .expect("Vocal's strip");
+        assert_eq!(v.audio.as_deref(), Some("Line L"));
+        assert_eq!(
+            v.tag,
+            Some(("loop \u{b7} row 2".to_string(), "Vox loop".to_string()))
+        );
+        assert!(had_loop, "the Loop strip was there");
+        assert!(
+            !st.strips.iter().any(|v| v.id == looper),
+            "no Loop track: no Loop strip"
+        );
+        // A take clip: "take"; nothing playing: no tag.
+        tracks.dress_loop_strips(
+            &mut st,
+            &project,
+            |p| (p == 1).then_some((false, clip)),
+            &mix,
+        );
+        let v = st.strips.iter().find(|v| v.id == vocal).unwrap();
+        assert_eq!(
+            v.tag.as_ref().map(|t| t.0.as_str()),
+            Some("take \u{b7} row 2")
+        );
+        tracks.dress_loop_strips(&mut st, &project, |_| None, &mix);
+        assert_eq!(st.strips.iter().find(|v| v.id == vocal).unwrap().tag, None);
     }
 
     /// Arrange has Play's column (layout spec 4c): the same knobs, turned

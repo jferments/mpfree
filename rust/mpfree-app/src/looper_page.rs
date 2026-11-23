@@ -322,6 +322,9 @@ fn input_frac(db: f32) -> f32 {
     ((db + 48.0) / 48.0).clamp(0.0, 1.0)
 }
 
+/// A free slot's foot with loops in audio cells (phase 4, board 5).
+pub const FREE_FOOT: &str = "REC into an empty audio cell fills it";
+
 pub struct LooperPage {
     /// The input's peak, held for about 2 s of updates.
     hold: f32,
@@ -360,6 +363,10 @@ pub struct LooperPage {
     /// the master, the tracks and the submixes, never the Loop track
     /// ([`LooperPage::set_mixes`]).
     mixes: Vec<(String, mpfree_fx::StripId)>,
+    /// Dev's "Loops on audio tracks" (phase 4, board 5): where the next
+    /// loop goes, for the header ("Vocal · row 3 · Line L"); None with the
+    /// switch off ([`LooperPage::set_on_tracks`]).
+    on_tracks: Option<String>,
 }
 
 impl LooperPage {
@@ -389,6 +396,7 @@ impl LooperPage {
             bank: LoopBank::default(),
             pads_keys: false,
             mixes: vec![("Master".to_string(), mpfree_fx::StripId::Master)],
+            on_tracks: None,
         };
         p.update(ui, &LooperView::default(), &Settings::default());
         Ok(p)
@@ -402,6 +410,52 @@ impl LooperPage {
         }
         self.places = places;
         true
+    }
+
+    /// Loops on audio tracks (phase 4, board 5): with Dev's switch on,
+    /// where the next loop goes ("Vocal · row 3 · Line L"); None with it
+    /// off. True when it changed (the page is then refreshed).
+    pub fn set_on_tracks(&mut self, into: Option<String>) -> bool {
+        if self.on_tracks == into {
+            return false;
+        }
+        self.on_tracks = into;
+        true
+    }
+
+    /// Loop `n`'s place, when it is a loop cell on an audio track with
+    /// Dev's switch on (phase 4): its card and header name it there.
+    fn audio_place(&self, n: usize) -> Option<&LoopPlace> {
+        self.on_tracks.as_ref()?;
+        self.place(n).filter(|p| p.audio)
+    }
+
+    /// Loops on audio tracks (phase 4, board 5), with Dev's switch on:
+    /// loop `n`'s card named by its place ("Vocal · row 2", the loop's
+    /// name under it), its M and S its track's; a free slot says how one
+    /// is filled.
+    fn on_track_card(&self, n: usize, ch: &mut Channel) {
+        if self.on_tracks.is_none() {
+            return;
+        }
+        if let Some(p) = self.audio_place(n) {
+            ch.name = format!("{} \u{b7} {}", p.track_name, p.row);
+            ch.sub = if p.clip.is_empty() {
+                format!("Loop {}", n + 1)
+            } else {
+                p.clip.clone()
+            };
+            if p.mute {
+                ch.sub.push_str(" \u{b7} muted");
+            }
+            ch.length.clear();
+            ch.track = format!("{}'S TRACK", p.track_name.to_uppercase());
+            ch.track_mute = p.mute;
+            ch.track_solo = p.solo;
+        } else if ch.state == RingState::Empty && self.place(n).is_none() {
+            ch.name = "Free".to_string();
+            ch.foot = FREE_FOOT.to_string();
+        }
     }
 
     /// Loop `n` as the screens name it: by its place on the Clips grid,
@@ -1030,7 +1084,19 @@ impl LooperPage {
             input: (self.input_words(v).0, input_frac(self.hold)),
             input_next: self.input_words(v).1,
             capture: capture_button(v),
+            gauge: String::new(),
+            into: false,
         };
+        // Loops on audio tracks (board 5): the loops' gauge, and where the
+        // next loop goes in Records from's place.
+        let mut head = head;
+        if let Some(into) = &self.on_tracks {
+            let in_use = v.loops.iter().filter(|l| l.phase != Phase::Empty).count();
+            head.gauge = format!("LOOPS {in_use} OF {MAX_LOOPS}");
+            head.input.0 = into.clone();
+            head.input_next = None;
+            head.into = true;
+        }
         // An armed loop starts on the next bar line (on the bar PLAY
         // starts while stopped).
         let next_bar = running.then_some(bar + 2);
@@ -1188,7 +1254,13 @@ impl LooperPage {
                         foot.clone()
                     },
                     solo: l.solo,
+                    ..Channel::default()
                 }
+            })
+            .enumerate()
+            .map(|(n, mut ch)| {
+                self.on_track_card(n, &mut ch);
+                ch
             })
             .collect();
         // Play's row shows the same loops.
@@ -1218,7 +1290,12 @@ impl LooperPage {
         let n = v.selected;
         let empty = s.phase == Phase::Empty;
         let has_sound = matches!(s.phase, Phase::Playing | Phase::Overdubbing);
-        let title = format!("Loop {}", n + 1);
+        // A loop on an audio track goes by its name (board 5: "Vox loop",
+        // its place in the line under it).
+        let title = match self.audio_place(n) {
+            Some(p) if !p.clip.is_empty() => p.clip.clone(),
+            _ => format!("Loop {}", n + 1),
+        };
         let source = self.source_word(v);
         let records = match (v.resample, now_source(v)) {
             (true, _) => "records the other loops".to_string(),
@@ -2062,6 +2139,61 @@ mod tests {
             capacity: 60 * 44_100,
         };
         v
+    }
+
+    /// The audio tracks rethink's phase 4, board 5: with Dev's "Loops on
+    /// audio tracks" on, a loop in an audio cell's card is named by its
+    /// place over its clip's name, its M and S are its track's, a free
+    /// slot says how one is filled, and the header's gauge and Records
+    /// into say where the next loop goes. Off, the cards are as before.
+    #[test]
+    fn with_loops_on_a_card_is_named_by_its_place_and_its_track() {
+        use crate::looper_deck::LoopDeck;
+        let (mut ui, mut page) = page();
+        let v = two_loops();
+        let mut places: [Option<LoopPlace>; MAX_LOOPS] = Default::default();
+        places[1] = Some(LoopPlace {
+            track: 4,
+            slot: 2,
+            track_name: "Vocal".into(),
+            row: "row 3".into(),
+            clip: "Vox loop".into(),
+            audio: true,
+            mute: true,
+            solo: false,
+        });
+        page.set_places(places);
+        page.update(&mut ui, &v, &Settings::default());
+        let deck = |ui: &Ui| {
+            let d = ui.get::<LoopDeck>(crate::looper_deck::DECK).unwrap();
+            (d.head.clone(), d.channels.clone())
+        };
+        let (head, ch) = deck(&ui);
+        assert!(
+            ch[1].track.is_empty() && ch[1].name != "Vocal \u{b7} row 3",
+            "off: as before"
+        );
+        assert!(!head.into);
+        assert!(page.set_on_tracks(Some("Bass \u{b7} row 1 \u{b7} Line L".into())));
+        page.update(&mut ui, &v, &Settings::default());
+        let (head, ch) = deck(&ui);
+        assert_eq!(ch[1].name, "Vocal \u{b7} row 3");
+        assert_eq!(ch[1].sub, "Vox loop \u{b7} muted");
+        assert_eq!(ch[1].track, "VOCAL'S TRACK");
+        assert!(ch[1].track_mute && !ch[1].track_solo);
+        assert!(ch[1].length.is_empty());
+        // Loop 1 is in no cell: its card as before. A free slot says how
+        // one is filled.
+        assert!(ch[0].track.is_empty());
+        assert_eq!(
+            (ch[2].name.as_str(), ch[2].foot.as_str()),
+            ("Free", FREE_FOOT)
+        );
+        assert!(head.into);
+        assert_eq!(head.input.0, "Bass \u{b7} row 1 \u{b7} Line L");
+        assert!(head.gauge.starts_with("LOOPS 2 OF 8"), "{}", head.gauge);
+        // The same again: nothing changed.
+        assert!(!page.set_on_tracks(Some("Bass \u{b7} row 1 \u{b7} Line L".into())));
     }
 
     /// [`two_loops`] with smart loop end: 48 ms found before the tap.

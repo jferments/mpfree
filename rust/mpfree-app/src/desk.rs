@@ -1911,7 +1911,11 @@ fn arm_loop_cell(
     use crate::rec_arm::{Mover, Target};
     let n = match looper.free_loop() {
         Ok(n) => n,
-        Err(why) => return vec![app::Effect::Tell(why)],
+        Err(why) => {
+            return vec![app::Effect::Tell(
+                full_words(time, looper, t).unwrap_or(why),
+            )]
+        }
     };
     let now = rec_now(time, looper);
     let was = app.rec;
@@ -1958,6 +1962,47 @@ fn arm_loop_cell(
         )));
     }
     fx
+}
+
+/// Every loop in use, an audio track's empty cell tapped (Dev's "Loops on
+/// audio tracks", phase 4, board 3): the REC chip's refusal and the cells
+/// holding the loops, "REC: 8 loops · clear one (Vocal · row 2, Bass ·
+/// row 1, …)". None for a Loop track's cell, or while a loop is free.
+fn full_words(time: &time::TimeHost, looper: &looping::LoopHost, t: usize) -> Option<String> {
+    use mpfree_looper::Phase;
+    let p = time.project();
+    if !p.tracks.get(t)?.is_audio() {
+        return None;
+    }
+    let full = (0..mpfree_looper::MAX_LOOPS).all(|n| {
+        looper
+            .looper
+            .loop_status(n)
+            .is_some_and(|s| s.phase != Phase::Empty)
+    });
+    if !full {
+        return None;
+    }
+    let row = |s: usize| match p.scenes.get(s).filter(|sc| !sc.name.is_empty()) {
+        Some(sc) => sc.name.clone(),
+        None => format!("row {}", s + 1),
+    };
+    let places: Vec<String> = looper
+        .loop_ids()
+        .iter()
+        .filter(|&&id| id != 0)
+        .filter_map(|&id| mpfree_seq::loops::audio_cells(p, mpfree_seq::LoopId(id)).next())
+        .map(|(tr, s)| format!("{} · {}", p.tracks[tr].name, row(s)))
+        .collect();
+    let cells = if places.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", places.join(", "))
+    };
+    Some(format!(
+        "REC: {} loops \u{b7} clear one{cells}",
+        mpfree_looper::MAX_LOOPS
+    ))
 }
 
 /// SHIFT + a loop's cell dropped on an empty cell of another Loop track

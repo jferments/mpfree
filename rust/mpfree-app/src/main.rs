@@ -2882,6 +2882,62 @@ fn pads_instrument(
     }
 }
 
+/// What audio track `t`'s input list offers (phase 4, board 4), from the
+/// mixer: each strip an instrument plays into named by its track (a kit
+/// or the synth by its own name), the Loop strip only while the project
+/// has a Loop track, the pads' instrument as the looper was last told it,
+/// and the mixer's refusals for a recording into the track's channel.
+fn input_choices(
+    time: &time::TimeHost,
+    tracks: &mut audiotracks::TrackHost,
+    looper: &looping::LoopHost,
+    mix: &mixing::MixHost,
+    t: usize,
+) -> Result<mpfree_time_ui::inputs::InputChoices, String> {
+    use audiotracks::InputSource;
+    use mpfree_fx::StripId;
+    let project = time.project();
+    let p = tracks
+        .place(t)
+        .ok_or_else(|| format!("there is no audio track {}", t + 1))?;
+    let channel = StripId::Track(mix.track_channel(p));
+    let owner = |s: StripId| {
+        (0..project.tracks.len()).find(|&q| {
+            !project.tracks[q].is_audio()
+                && mix.instrument_strip(looping::Instrument::Own(q), &[]) == Some(s)
+        })
+    };
+    let named = |s: StripId, name: String| {
+        let o = owner(s);
+        InputSource {
+            strip: s,
+            name: o.map_or(name, |q| project.tracks[q].name.clone()),
+            owner: o,
+        }
+    };
+    let loop_track = project.tracks.iter().any(|x| x.is_loops());
+    let sources: Vec<InputSource> = mix
+        .inside_sources()
+        .into_iter()
+        .filter(|(_, s)| loop_track || *s != StripId::Track(mixing::LOOP))
+        .map(|(name, s)| named(s, name))
+        .collect();
+    let pads = looper.pads_play().and_then(|(i, s)| {
+        let s = s?;
+        let name = match i {
+            looping::Instrument::Kit(k) => format!("Kit {}", k + 1),
+            _ => named(s, mix.strip_name(s)).name,
+        };
+        Some(InputSource {
+            name,
+            ..named(s, String::new())
+        })
+    });
+    tracks.input_choices(t, &sources, pads, channel, |from| {
+        mix.capture_refusal(from, channel)
+    })
+}
+
 /// A looper line for the log as the screen says it: without "looper: ",
 /// from a capital ("The take records silence from here...").
 fn looper_says(line: &str) -> String {
@@ -2913,6 +2969,7 @@ fn loop_input(
 ) -> [Option<(String, bool)>; 2] {
     use looping::LoopSource;
     let moved = looper.follow_pads(pads);
+    looper.set_pads_strip(mix.instrument_strip(pads, homes));
     let how = match looper.takes_from() {
         (LoopSource::Mix(strip), _) => mix.loop_take(Some(strip), left, right),
         // A loop into an audio track's cell (phase 4b): the track's input,
@@ -8638,6 +8695,15 @@ fn time_action(
                 };
                 return time_action(out, time, tracks, looper, app, mix, a);
             }
+        }
+        // An audio track's input list (phase 4, board 4): what the mixer
+        // offers the track, for the screen.
+        if let AudioAction::Inputs(t) = aa {
+            match input_choices(time, tracks, looper, mix, t) {
+                Ok(c) => out.show(gui::ToUi::InputList(Box::new(c))),
+                Err(e) => out.show(gui::ToUi::Tell(e)),
+            }
+            return Vec::new();
         }
         if !matches!(aa, AudioAction::Pick(_)) {
             // What the panel's Mix offers comes from the mixer (step 9).
@@ -15319,6 +15385,18 @@ fn player_session(
         if let Some(mut st) = mix.poll_state(Instant::now()) {
             // The audio tracks' strips, named and lit as their tracks.
             tracks.dress_strips(&mut st, time.project(), time.silenced(), &mix);
+            // Loops on audio tracks (Dev's switch, phase 4, board 6).
+            if app.settings.loops_on {
+                let plays = |t: usize| {
+                    let a = time.audio(t);
+                    match a.changes().last().map_or(a.start, |c| c.plays) {
+                        mpfree_play::AudioPlays::Loop { clip, .. } => Some((true, clip)),
+                        mpfree_play::AudioPlays::Clip { clip, .. } => Some((false, clip)),
+                        _ => None,
+                    }
+                };
+                tracks.dress_loop_strips(&mut st, time.project(), plays, &mix);
+            }
             out.show(gui::ToUi::Mixer(Box::new(st)));
         }
         panels.poll(

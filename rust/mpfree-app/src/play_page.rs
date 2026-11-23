@@ -3858,6 +3858,7 @@ impl PlayPage {
             .as_ref()
             .map_or("new clip", |c| c.name.as_str());
         RecChip {
+            alert: crate::play_widgets::RecAlert::None,
             state: if recording {
                 RecState::Recording
             } else if ready.is_some() {
