@@ -7978,7 +7978,7 @@ impl Player {
         let tab = self.arp.tab();
         let wheel = match tab {
             Mode::Arp => "order",
-            Mode::Pattern => "pattern",
+            Mode::Pattern => "pattern   ·   SHIFT + wheel: group",
             Mode::Phrase => "phrase",
             Mode::Direct | Mode::Repeat => "rate",
         };
@@ -21306,7 +21306,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     let mut console = sample_player(fonts());
     console.apply(ToUi::Show(View::Console));
     out.push(("syslog", console));
-    use mpfree_controller::mpc_one::button::{MENU, NOTE_REPEAT, PLUS};
+    use mpfree_controller::mpc_one::button::{MENU, NOTE_REPEAT, PLUS, SHIFT};
     let mut app = sample_app();
     for (name, shift) in [("prefs", true), ("options", false)] {
         let mut p = sample_player(fonts());
@@ -24054,6 +24054,50 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     }
     run_arp(&mut panel, &mut app, 3 * 5513 + 2000);
     out.push(("arp-panel", panel));
+    // The Arp panel in Pattern mode over pads 1 3 5, latched: the starters
+    // with Climb picked; Snare build in the Rolls group (SHIFT + wheel
+    // three groups on, then the wheel); two patterns of the owner's.
+    for (name, shift_turns, turns, mine) in [
+        ("arp-pattern", 0, 3, false),
+        ("arp-pattern-rolls", 3, 1, false),
+        ("arp-pattern-mine", 0, 75, true),
+    ] {
+        let mut pat = quiet_player(fonts());
+        let mut app = sample_app();
+        let mut fx = Vec::new();
+        if mine {
+            fx.extend(app.load_patterns(
+                "Skip = 1 . 3 2 . 3 x:2 .\nLift = 1 2 3 4 | oct 0 0 1 | vel 110 70\n",
+            ));
+        }
+        fx.extend(app.button(NOTE_REPEAT, true, 0.0));
+        fx.extend(app.button(MENU, true, 0.0));
+        fx.extend(app.button(MENU, false, 0.0));
+        fx.extend(app.button(NOTE_REPEAT, false, 0.0));
+        fx.extend(app.button(PLUS, true, 0.0));
+        fx.extend(app.button(PLUS, true, 0.0));
+        fx.extend(app.arp_action(ArpAction::Latch));
+        if shift_turns > 0 {
+            fx.extend(app.button(SHIFT, true, 0.0));
+            for _ in 0..shift_turns {
+                fx.extend(app.wheel(1));
+            }
+            fx.extend(app.button(SHIFT, false, 0.0));
+        }
+        for _ in 0..turns {
+            fx.extend(app.wheel(1));
+        }
+        for pad in [0, 2, 4] {
+            fx.extend(app.pad_down(pad, 100));
+        }
+        for pad in [0, 2, 4] {
+            app.pad_up(pad);
+        }
+        fx.push(app.arp_view());
+        apply_effects(&mut pat, fx);
+        run_arp(&mut pat, &mut app, 4 * 5513 + 2000);
+        out.push((name, pat));
+    }
     // The same, with the Modifier on the mod wheel (rate +2, an octave
     // and the gate +30 at its top), the wheel 80 % up: 1/16 → 1/32,
     // 2 → 3 octaves, 50 → 74 %.

@@ -12,6 +12,7 @@
 //! mpfree-arp-render --chords "60,63,67,70;65,68,72,75" --mode pattern --builtin Bounce
 //! mpfree-arp-render --pads 1,3,5,7 --mode pattern --pattern "x x:2 . x | vel 127 60 90"
 //! mpfree-arp-render --patterns my-patterns.txt   every pattern and phrase in a library file (see patterns/example.txt)
+//! mpfree-arp-render --group Rolls                 every built-in pattern of a group (or --group all)
 //! mpfree-arp-render --phrases                    every starter phrase (phrases/starter.txt), each from one held note
 //! ```
 //!
@@ -21,7 +22,8 @@
 //! the chords from C3, riffs and lines from C4.
 //!
 //! Options: `--out DIR` (default ~/mpfree-work/arp-render-<UTC>), `--mode
-//! repeat|arp|pattern`, `--order NAME`, `--pattern TEXT` or `--builtin NAME`,
+//! repeat|arp|pattern`, `--order NAME`, `--pattern TEXT` or `--builtin NAME`
+//! (any pattern of the built-in library), `--group NAME|all`,
 //! `--chords "n,n;n,n"` (one bar each, looped) or `--notes n,n` or `--pads
 //! 1,2` (drum sounds), `--bpm`, `--rate 1/16`, `--octaves`, `--gate`,
 //! `--swing`, `--strum`, `--scale d_dorian`, `--snap down|up|nearest|skip`,
@@ -42,6 +44,7 @@
 //! between computers.
 #![forbid(unsafe_code)]
 
+use mpfree_arp::groups::GROUPS;
 use mpfree_arp::{
     midi_file, Engine, EventKind, Events, LatchMode, Library, MidiOut, ModSource, Mode, Modifier,
     NoteMap, Order, Pattern, Phrase, PhraseKind, Ramp, Rate, Scale, Settings, Written, BUILT_IN,
@@ -832,12 +835,30 @@ fn parse_args(args: &[String]) -> Result<(Vec<Job>, Option<PathBuf>), String> {
             }
             "--builtin" => {
                 let v = value(&mut i)?;
-                let (_, text) = BUILT_IN
-                    .iter()
-                    .find(|(n, _)| n.eq_ignore_ascii_case(&v))
+                job.pattern = *Library::built_in()
+                    .get(&v)
                     .ok_or(format!("--builtin {v}: unknown pattern"))?;
-                job.pattern = Pattern::parse(text).unwrap();
                 job.settings.mode = Mode::Pattern;
+            }
+            "--group" => {
+                let v = value(&mut i)?;
+                let mut lib = Library::default();
+                for g in GROUPS
+                    .iter()
+                    .filter(|g| v == "all" || g.name.eq_ignore_ascii_case(&v))
+                {
+                    for (name, text) in g.patterns {
+                        lib.put(name, Pattern::parse(text).unwrap())?;
+                    }
+                }
+                if lib.is_empty() {
+                    let names: Vec<&str> = GROUPS.iter().map(|g| g.name).collect();
+                    return Err(format!(
+                        "--group {v}: unknown group (use all, or one of: {})",
+                        names.join(", ")
+                    ));
+                }
+                library = Some(lib);
             }
             "--patterns" => {
                 let path = value(&mut i)?;
