@@ -1415,6 +1415,9 @@ pub enum Effect {
     /// Keep this library text in the store as arp/patterns.txt (the store's
     /// own thread writes it).
     SavePatterns(String),
+    /// Keep this library text, the owner's own phrases, in the store as
+    /// arp/phrases.txt.
+    SavePhrases(String),
     /// STOP in the timed `play` step: end it.
     Quit,
     /// Open the Touch lab page (it starts at its first step).
@@ -1741,9 +1744,12 @@ pub struct App {
     /// The patterns to pick from (built in; Save changes them in memory).
     patterns: Vec<(String, Pattern)>,
     pattern_index: usize,
-    /// The phrases to pick from: MPFree's own (the first `phrases_own`),
-    /// then the open project's (`app/arp/phrases.rs`).
+    /// The phrases to pick from, in three runs (`app/arp/phrases.rs`):
+    /// MPFree's own (the first `phrases_built`), the owner's (up to
+    /// `phrases_own`: the store's arp/phrases.txt), then the ones only the
+    /// open project has.
     phrases: Vec<(String, mpfree_arp::Phrase)>,
+    phrases_built: usize,
     phrases_own: usize,
     /// The armed track's phrase, as a place in `phrases`.
     phrase_index: usize,
@@ -1756,7 +1762,8 @@ pub struct App {
     /// How the next recording on the pads goes: Step time or Free time.
     record_mode: RecordMode,
     /// Save also keeps the patterns in the store (arp/patterns.txt, when
-    /// the store saves: `app --data DIR`), through [`Effect::SavePatterns`].
+    /// the store saves: `app --data DIR`), through [`Effect::SavePatterns`],
+    /// and the owner's phrases beside them ([`Effect::SavePhrases`]).
     pub pattern_file: bool,
     /// Q-Link turns not yet used, per knob (rate and octaves need several).
     qlink_turns: [i32; 4],
@@ -2000,6 +2007,7 @@ impl App {
             swing_from_transport: true,
             patterns,
             pattern_index: 0,
+            phrases_built: phrases.len(),
             phrases_own: phrases.len(),
             phrases,
             phrase_index: 0,

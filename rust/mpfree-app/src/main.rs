@@ -8432,6 +8432,15 @@ fn player_session(
             None => {}
         },
     }
+    // The owner's own phrases, kept beside the patterns (arp/phrases.txt).
+    match store
+        .read(app::saved::ARP, app::saved::ARP_PHRASES)
+        .map(String::from_utf8)
+    {
+        Some(Ok(text)) => fx.extend(app.load_phrases(&text)),
+        Some(Err(_)) => out.note("arp phrases: the saved file is not text; MPFree's phrases stay"),
+        None => {}
+    }
     app.pattern_file = store.saves();
     // The Synth tab's options are the project's (project.rs): they start at
     // their defaults, and an open puts back the project's.
@@ -11326,6 +11335,13 @@ fn player_session(
                         store.write(app::saved::ARP, app::saved::ARP_PATTERNS, text.into_bytes())
                     {
                         out.note(&format!("arp patterns: not saved ({e})"));
+                    }
+                }
+                app::Effect::SavePhrases(text) => {
+                    if let Err(e) =
+                        store.write(app::saved::ARP, app::saved::ARP_PHRASES, text.into_bytes())
+                    {
+                        out.note(&format!("arp phrases: not saved ({e})"));
                     }
                 }
                 // The desk's, taken above.

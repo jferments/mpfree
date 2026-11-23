@@ -957,6 +957,7 @@ impl Desk<'_> {
             | app::Effect::Bank { .. }
             | app::Effect::BankLights
             | app::Effect::SavePatterns(_)
+            | app::Effect::SavePhrases(_)
             | app::Effect::SetupNextStart { .. }) => return Some(e),
         }
         None

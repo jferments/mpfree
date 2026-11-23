@@ -2469,7 +2469,7 @@ impl Session {
                     Effect::BankLights => {}
                     Effect::Audio(p) => self.out.note(&format!("audio buffer: {p} periods")),
                     Effect::Quit => self.quit = true,
-                    Effect::SavePatterns(_) => {}
+                    Effect::SavePatterns(_) | Effect::SavePhrases(_) => {}
                     Effect::SaveProject => self.save_asked = true,
                     // 16 LEVEL, as main.rs: the synth's pads open Transpose;
                     // the Drums engine's have neither.

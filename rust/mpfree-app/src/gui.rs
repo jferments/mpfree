@@ -17138,6 +17138,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             | Effect::PlayFx(_)
             | Effect::TrackMute { .. }
             | Effect::SavePatterns(_)
+            | Effect::SavePhrases(_)
             | Effect::SynthPads(_)
             | Effect::TrackSound { .. }
             | Effect::TrackSend { .. }

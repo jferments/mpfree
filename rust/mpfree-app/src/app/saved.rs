@@ -23,6 +23,11 @@ pub const MAP: &str = "map";
 /// (the patterns Save keeps and the owner's own scales).
 pub const ARP: &str = "arp";
 pub const ARP_PATTERNS: &str = "patterns.txt";
+/// The owner's own phrases, a library file beside the patterns. A file of
+/// its own, so a start of an older MPFree, which reads a phrase line as a
+/// bad pattern and then leaves the whole file unused, still has the
+/// patterns, and its Save never writes over the phrases.
+pub const ARP_PHRASES: &str = "phrases.txt";
 /// The Dev tab's Touch page keeps its tuning as these settings
 /// (`mpfree_touch::tuning::Tuning::to_pairs`).
 pub const TOUCH: &str = "touch";

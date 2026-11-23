@@ -3,11 +3,26 @@
 //! `docs/dev/design/arpeggiator.md`, "Phrases").
 //!
 //! A track keeps a pick, never a copy: its place in `App::phrases`, the
-//! one list every track picks from (MPFree's own phrases, then the ones
-//! only the open project has). The phrase itself goes to the track's
+//! one list every track picks from. The phrase itself goes to the track's
 //! engine when it is picked. `TrackUi` stays small that way: all 128 are
 //! copied whenever the project's arps are looked over, and a phrase is
 //! 3 KB.
+//!
+//! The list has three runs, in this order:
+//!
+//! 1. **MPFree's own** (the first `phrases_built`). One of them that the
+//!    owner's library names again plays the owner's notes in its place,
+//!    as a pattern of the owner's takes a built-in pattern's.
+//! 2. **The owner's** (up to `phrases_own`), from the store's
+//!    arp/phrases.txt ([`App::load_phrases`]; a phrase line in a patterns
+//!    file is the owner's too). Save keeps them there
+//!    ([`App::phrases_text`]).
+//! 3. **The open project's**: the ones it was saved with that the list
+//!    doesn't have ([`App::place_phrase`]). The next project drops them.
+//!
+//! A phrase that joins the owner's run moves the project's up one, and
+//! every track's pick with them ([`App::own_phrase`]), so a pick stays on
+//! its phrase.
 //!
 //! A phrase moves notes, so it plays where the pads press notes into the
 //! arp (a synth); on a kit the pads play as pressed.
@@ -28,9 +43,9 @@ pub fn built_in_phrases() -> Vec<(String, Phrase)> {
 }
 
 impl App {
-    /// The phrases to pick from: MPFree's own, then the open project's.
-    /// (The Phrase tab's list reads this and the pick; until the tab is
-    /// built only the tests do.)
+    /// The phrases to pick from: MPFree's own, the owner's, then the open
+    /// project's. (The Phrase tab's list reads this and the pick; until
+    /// the tab is built only the tests do.)
     #[cfg(test)]
     pub fn phrases(&self) -> &[(String, Phrase)] {
         &self.phrases
@@ -123,17 +138,101 @@ impl App {
         }
     }
 
+    /// The owner's phrase `name` joins the list: in the place of the one
+    /// that has its name among MPFree's and the owner's (ignoring case; it
+    /// keeps the place and the name's spelling), else after the owner's
+    /// others, before the open project's. The project's phrases move up
+    /// one then, and every track's pick on them moves with them. Returns
+    /// whether it took a place. The engines hear of it from
+    /// [`App::send_all_phrases`].
+    fn own_phrase(&mut self, name: &str, phrase: Phrase) -> bool {
+        if let Some(slot) = self.phrases[..self.phrases_own]
+            .iter_mut()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+        {
+            slot.1 = phrase;
+            return true;
+        }
+        let at = self.phrases_own;
+        self.phrases.insert(at, (name.to_string(), phrase));
+        self.phrases_own += 1;
+        let up = |pick: &mut usize| {
+            if *pick >= at {
+                *pick += 1;
+            }
+        };
+        up(&mut self.phrase_index);
+        self.track_ui
+            .iter_mut()
+            .for_each(|u| up(&mut u.phrase_index));
+        false
+    }
+
+    /// A library file's phrases join the list as the owner's
+    /// ([`App::own_phrase`]), and every track's engine takes its pick
+    /// again. Returns how many were added and how many took a place.
+    pub(super) fn take_phrases(&mut self, lib: &Library) -> (usize, usize) {
+        let (mut added, mut replaced) = (0, 0);
+        for (name, p) in lib.phrases() {
+            if self.own_phrase(name, *p) {
+                replaced += 1;
+            } else {
+                added += 1;
+            }
+        }
+        if added + replaced > 0 {
+            self.send_all_phrases();
+        }
+        (added, replaced)
+    }
+
+    /// Every track's engine takes its track's pick, after the list changed
+    /// under the picks: a phrase a track picked may have other notes now.
+    /// An engine leaves the phrase it has alone when it is the same, and
+    /// one playing takes the new one on its line. A phrase is a setting
+    /// alone, so no engine is marked in use. Allocates nothing.
+    fn send_all_phrases(&mut self) {
+        let (armed, pick) = (self.track, self.phrase_index);
+        for (t, (e, u)) in self.arps.engines_mut().zip(&self.track_ui).enumerate() {
+            let i = if t == armed { pick } else { u.phrase_index };
+            if let Some((_, phrase)) = self.phrases.get(i) {
+                e.set_phrase(*phrase);
+            }
+        }
+        self.arp_dirty = true;
+    }
+
+    /// The owner's phrases as a library file, for the store's
+    /// arp/phrases.txt: each of MPFree's that plays other notes than the
+    /// one built in, and every one of the owner's own. None when the
+    /// owner has none: nothing to keep.
+    pub fn phrases_text(&self) -> Option<String> {
+        let built_in = Library::built_in();
+        let mut lib = Library::default();
+        for (i, (name, p)) in self.phrases[..self.phrases_own].iter().enumerate() {
+            if i >= self.phrases_built || built_in.phrase(name) != Some(p) {
+                let _ = lib.put_phrase(name, *p);
+            }
+        }
+        lib.phrases().next()?;
+        Some(format!(
+            "# MPFree phrases of your own, saved by the pad player. One per line:\n\
+             # Name = what it is : its steps. The syntax is in docs/dev/design/arpeggiator.md.\n{}",
+            lib.to_text()
+        ))
+    }
+
     /// The open project's own phrases go (another project is opening):
-    /// the list is MPFree's again.
+    /// the list is MPFree's and the owner's again.
     pub(super) fn drop_project_phrases(&mut self) {
         self.phrases.truncate(self.phrases_own);
     }
 
     /// The place in the list of the phrase a project kept as `name` and
     /// `phrase`: the list's own phrase of that name when it is the same
-    /// phrase, else the project's copy, added after MPFree's (under its
-    /// name, or the name with "(project)" when MPFree has another phrase
-    /// by it), so the project plays what it was saved with.
+    /// phrase, else the project's copy, added at the end (under its name,
+    /// or the name with "(project)" when the list has another phrase by
+    /// it), so the project plays what it was saved with.
     pub(super) fn place_phrase(&mut self, name: &str, phrase: Phrase) -> usize {
         if let Some(i) = self
             .phrases
@@ -172,8 +271,9 @@ mod tests {
     use crate::app::{SynthItem, View};
     use mpfree_arp::scale::pads::{layout, PadLayout, PadSetup};
     use mpfree_arp::scale::{by_name, Scale};
-    use mpfree_arp::{EventKind, Events, Follow, Speed};
-    use mpfree_arp_ui::view::ArpAction;
+    use mpfree_arp::{EventKind, Events, Follow, Pattern, Speed};
+    use mpfree_arp_ui::view::{ArpAction, PatternButton};
+    use mpfree_arp_ui::workspace::WsAction;
     use mpfree_seq::MAX_TRACKS;
     use mpfree_store::Settings;
 
@@ -349,6 +449,142 @@ mod tests {
         app.synth_pick_layout(true);
         app.set_track(3);
         assert_eq!(keys(&app), [app.synth_pads.scale; 4]);
+    }
+
+    /// The owner's phrases come from a library file of their own: a new
+    /// one goes after MPFree's, one named as a phrase in the list takes
+    /// its place, and Save keeps them in that file, never among the
+    /// patterns.
+    #[test]
+    fn the_owners_phrases_are_kept_in_a_file_of_their_own() {
+        let mut app = ready();
+        let quiet = "bass minor : 1 . . . 1 . . . 1 . . . 1 . . .";
+        let fx = app.load_phrases(&format!(
+            "# mine\nVerse bass = bass minor : 1 . 1 . 5- . 1 . 1 . 1 . 5- . b7- .\n\
+             night drive = {quiet}\n"
+        ));
+        assert_eq!(
+            fx,
+            vec![Effect::Note(
+                "arp phrases file: 1 phrases added, 1 replaced".into()
+            )]
+        );
+        assert_eq!(app.phrases().len(), 65);
+        assert_eq!(app.phrases()[64].0, "Verse bass");
+        let at = app
+            .phrases()
+            .iter()
+            .position(|(n, _)| n == "Night drive")
+            .expect("it keeps its name as MPFree spells it");
+        assert!(at < 64, "and its place");
+        assert_eq!(app.phrases()[at].1, Phrase::parse(quiet).unwrap());
+        // What Save keeps: those two, and none of MPFree's as built.
+        let text = app.phrases_text().expect("the owner has phrases");
+        let lib = Library::parse(&text).unwrap();
+        let names: Vec<&str> = lib.phrases().map(|(n, _)| n).collect();
+        assert_eq!(names, ["Night drive", "Verse bass"]);
+        assert!(lib.is_empty(), "no patterns in it");
+        assert!(!app.library_text().contains("Verse bass"));
+        // The next start reads it back to the same list.
+        let mut again = ready();
+        again.load_phrases(&text);
+        assert_eq!(again.phrases(), app.phrases());
+        // With none of the owner's there is nothing to keep.
+        assert_eq!(ready().phrases_text(), None);
+        // A file with a bad line is not used.
+        let before = app.phrases().to_vec();
+        let fx = app.load_phrases("Fine = riff either : 1 3 5 3\nBad = riff either : 1 z\n");
+        assert_eq!(app.phrases(), before);
+        assert!(
+            fx.contains(&Effect::Note(
+                "arp phrases file not used (1 bad lines); MPFree's phrases stay".into()
+            )),
+            "{fx:?}"
+        );
+
+        // A phrase line in a patterns file is the owner's too, and Save
+        // puts each kind in its own file, so it is never lost.
+        let mut app = ready();
+        let riff = "riff minor : 1 b3 5 b7 1+ b7 5 b3 1 b3 5 b7 1+ b7 5 b3";
+        let fx = app.load_patterns(&format!("Skip = 1 . 3 2\nMy riff = {riff}\n"));
+        for line in [
+            "arp patterns file: 1 added, 0 built-in ones replaced, 0 scales of your own",
+            "arp patterns file: 1 phrases added, 0 replaced",
+        ] {
+            assert!(fx.contains(&Effect::Note(line.into())), "{line} in {fx:?}");
+        }
+        app.pattern_file = true;
+        app.toggle_panel();
+        app.arp_action(ArpAction::Button(PatternButton::Edit));
+        let fx = app.workspace_action(WsAction::Save(Pattern::parse("1 2 . 3").unwrap()));
+        let saved: Vec<(bool, &str)> = fx
+            .iter()
+            .filter_map(|e| match e {
+                Effect::SavePatterns(t) => Some((false, t.as_str())),
+                Effect::SavePhrases(t) => Some((true, t.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(saved.len(), 2, "{fx:?}");
+        let (patterns, phrases) = (saved[0], saved[1]);
+        assert!(!patterns.0 && patterns.1.contains("Skip") && !patterns.1.contains("My riff"));
+        assert!(phrases.0, "the phrases after the patterns");
+        assert_eq!(
+            Library::parse(phrases.1).unwrap().phrase("My riff"),
+            Some(&Phrase::parse(riff).unwrap())
+        );
+    }
+
+    /// A phrase joining the owner's moves the project's own up the list,
+    /// and every track's pick stays on its phrase; one that takes a place
+    /// reaches the engine of every track that picked it.
+    #[test]
+    fn a_pick_stays_on_its_phrase_when_the_owners_join_the_list() {
+        let mut app = ready();
+        on_a_synth(&mut app);
+        app.toggle_panel();
+        app.arp_action(ArpAction::Mode(Mode::Phrase));
+        // Track 1 plays a phrase only the project has, track 2 one of
+        // MPFree's.
+        pick_named(&mut app, "Dub steps");
+        let part = app
+            .arp_part()
+            .replace("phrase-name = Dub steps", "phrase-name = My riff");
+        let (notes, _) = app.open_arp(Some(&part));
+        assert_eq!(notes, Vec::<String>::new());
+        assert_eq!((app.phrase_name(0), app.phrase_index()), ("My riff", 64));
+        let mine = app.phrases()[64].1;
+        app.set_track(1);
+        app.arp_action(ArpAction::Mode(Mode::Phrase));
+        pick_named(&mut app, "Sus lift");
+        // The owner's file: a new phrase, and Sus lift with other notes.
+        let lift = "chords either 1/8 : 1,3,5 . . . 1,3,5 . . .";
+        app.load_phrases(&format!(
+            "Verse bass = bass minor : 1 . 1 . 5- . 1 . 1 . 1 . 5- . b7- .\nSus lift = {lift}\n"
+        ));
+        let lift = Phrase::parse(lift).unwrap();
+        assert_eq!(app.phrases()[64].0, "Verse bass");
+        assert_eq!(app.phrases()[65], ("My riff".to_string(), mine));
+        assert_eq!(app.phrase_name(0), "My riff", "one up, with its phrase");
+        assert_eq!(app.phrase_name(1), "Sus lift");
+        assert_eq!(
+            app.eng().phrase(),
+            &lift,
+            "the armed track plays the new notes"
+        );
+        assert_eq!(app.arps.engine_at(0).phrase(), &mine);
+        app.set_track(0);
+        assert_eq!(app.phrase_index(), 65);
+        assert_eq!(app.eng().phrase(), &mine);
+        assert_eq!(app.arps.engine_at(1).phrase(), &lift);
+        // A new project drops the project's own and keeps the owner's.
+        app.open_arp(None);
+        assert_eq!(app.phrases().len(), 65);
+        assert_eq!(app.phrases()[64].0, "Verse bass");
+        assert_eq!(
+            app.phrases_text().map(|t| t.contains("Sus lift")),
+            Some(true)
+        );
     }
 
     /// A phrase moves notes: on a kit the pads play as pressed.

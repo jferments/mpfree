@@ -71,6 +71,34 @@ pub fn built_in_patterns() -> Vec<(String, Pattern)> {
         .collect()
 }
 
+/// Which of the arp's two library files a text is, for what the log says
+/// of it. Both are read the same way ([`App::load_library`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LibraryFile {
+    /// The owner's patterns and scales: the store's arp/patterns.txt, or
+    /// the `--patterns` option's file.
+    Patterns,
+    /// The owner's phrases: the store's arp/phrases.txt.
+    Phrases,
+}
+
+impl LibraryFile {
+    fn label(self) -> &'static str {
+        match self {
+            LibraryFile::Patterns => "arp patterns file",
+            LibraryFile::Phrases => "arp phrases file",
+        }
+    }
+
+    /// What is left when the file is not used.
+    fn stay(self) -> &'static str {
+        match self {
+            LibraryFile::Patterns => "the built-in patterns stay",
+            LibraryFile::Phrases => "MPFree's phrases stay",
+        }
+    }
+}
+
 /// Q-Link turn units per change of rate, gate, swing and octaves: rate and
 /// octaves have few values, so they need a longer turn.
 const QLINK_UNITS: [i32; 4] = [3, 1, 1, 4];
@@ -739,18 +767,38 @@ impl App {
     /// `--patterns` option): one with a
     /// built-in's name replaces it, the others come after the built-ins. A
     /// file with any bad line is not used, and every bad line is logged.
+    /// Phrase lines in it are the owner's phrases, as in their own file.
     pub fn load_patterns(&mut self, text: &str) -> Vec<Effect> {
+        self.load_library(text, LibraryFile::Patterns)
+    }
+
+    /// The owner's own phrases from their library file (the store's
+    /// arp/phrases.txt): one with the name of a phrase in the list takes
+    /// its place, the others come after MPFree's. A file with any bad line
+    /// is not used, and every bad line is logged. Patterns and scales in
+    /// it are read as a patterns file's are.
+    pub fn load_phrases(&mut self, text: &str) -> Vec<Effect> {
+        self.load_library(text, LibraryFile::Phrases)
+    }
+
+    /// One reader for both of the arp's library files: whatever a file
+    /// holds is used, and Save sorts each kind into its own file
+    /// (`library_text`, `phrases_text`), so a line in the other file is
+    /// never lost.
+    fn load_library(&mut self, text: &str, file: LibraryFile) -> Vec<Effect> {
+        let what = file.label();
         let lib = match Library::parse(text) {
             Ok(lib) => lib,
             Err(errors) => {
                 let mut fx: Vec<Effect> = errors
                     .iter()
                     .take(20)
-                    .map(|e| Effect::Note(format!("arp patterns file, {e}")))
+                    .map(|e| Effect::Note(format!("{what}, {e}")))
                     .collect();
                 fx.push(Effect::Note(format!(
-                    "arp patterns file not used ({} bad lines); the built-in patterns stay",
-                    errors.len()
+                    "{what} not used ({} bad lines); {}",
+                    errors.len(),
+                    file.stay()
                 )));
                 return fx;
             }
@@ -784,17 +832,26 @@ impl App {
                 }
             }
         }
-        // A scale of the owner's in use may have changed.
-        if self.scale_pick >= SCALES.len() {
-            self.apply_scale_pick();
-            self.update_engine();
-        }
-        let mut fx = self.load_pattern(self.pattern_index);
-        fx.push(Effect::Patterns(self.patterns.clone()));
-        fx.push(Effect::Note(format!(
-            "arp patterns file: {added} added, {replaced} built-in ones replaced, \
+        let (phrases_added, phrases_replaced) = self.take_phrases(&lib);
+        let mut fx = Vec::new();
+        if file == LibraryFile::Patterns || added + replaced + scales > 0 {
+            // A scale of the owner's in use may have changed.
+            if self.scale_pick >= SCALES.len() {
+                self.apply_scale_pick();
+                self.update_engine();
+            }
+            fx.extend(self.load_pattern(self.pattern_index));
+            fx.push(Effect::Patterns(self.patterns.clone()));
+            fx.push(Effect::Note(format!(
+                "{what}: {added} added, {replaced} built-in ones replaced, \
                                       {scales} scales of your own"
-        )));
+            )));
+        }
+        if file == LibraryFile::Phrases || phrases_added + phrases_replaced > 0 {
+            fx.push(Effect::Note(format!(
+                "{what}: {phrases_added} phrases added, {phrases_replaced} replaced"
+            )));
+        }
         fx
     }
 
@@ -1266,6 +1323,9 @@ impl App {
                 ];
                 if self.pattern_file {
                     fx.push(Effect::SavePatterns(self.library_text()));
+                    // The owner's phrases with them: one read from a
+                    // patterns file is in its own file from here on.
+                    fx.extend(self.phrases_text().map(Effect::SavePhrases));
                 } else {
                     fx.push(Effect::Note("the pattern stays in memory until the power goes off (no --data folder to keep it in)"
                         .to_string()));
