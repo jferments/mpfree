@@ -142,25 +142,25 @@
 277522	Pluck Harp, 16 voices
 128065	Pluck Marimba, 8 voices
 181173	Pluck Steel String, 8 voices
-52446	Poly Acid, 8 voices
+57831	Poly Acid, 8 voices
 210895	Poly Brass, 8 voices
 41489	Poly Breath Lead, 8 voices
 369437	Poly Digital Bell, 8 voices
 294239	Poly Drift Pad, 8 voices
 355569	Poly Dust Pad, 8 voices
 350506	Poly FM Keys, 8 voices
-62675	Poly Grit Bass, 8 voices
-71532	Poly Growl Bass, 8 voices
+67588	Poly Grit Bass, 8 voices
+79025	Poly Growl Bass, 8 voices
 248587	Poly Harmonic Pluck, 8 voices
 595812	Poly Init, 16 voices, unison 4
 193565	Poly Init, 8 voices
-58186	Poly Lead, 8 voices
+64618	Poly Lead, 8 voices
 40919	Poly Low Note Lead, 8 voices
 550307	Poly Morph Pad, 8 voices
 266416	Poly Organ, 8 voices
 208324	Poly Pluck, 8 voices
 37721	Poly Portamento Lead, 8 voices
-68637	Poly Singing Lead, 8 voices
+74769	Poly Singing Lead, 8 voices
 233750	Poly Slide Lead, 8 voices
 31730	Poly Sub Bass, 8 voices
 47093	Poly Super Lead, 8 voices
@@ -168,7 +168,7 @@
 327444	Poly Super Stab, 8 voices
 401599	Poly Super Stack, 8 voices
 335435	Poly Supersaw, 8 voices
-445278	Poly Sync Sweep, 8 voices
+503135	Poly Sync Sweep, 8 voices
 248736	Poly Table Init, 8 voices
 1687855	Poly Table, 16 voices, both osc, unison 8
 664789	Poly Table, 8 voices, both osc, unison 4
@@ -225,8 +225,8 @@
 283218	Strings Orchestra, 6 keys
 133524	Supersaw saws: 8 voices, plain
 39041	Choir formants: 8 voices, plain
-334933	Poly Init, 8 voices, distortion 24 dB
-330290	Poly Init, 8 voices, drive 24 dB
+380287	Poly Init, 8 voices, distortion 24 dB
+378497	Poly Init, 8 voices, drive 24 dB
 326596	Poly Table, 8 voices, sync 50
 31342	Talk box
 87944	Tape delay

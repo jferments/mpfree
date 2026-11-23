@@ -168,6 +168,24 @@ pub enum SongChange {
         track: usize,
         start: Tick,
     },
+    /// Split at the playhead (the Arrange refactor's phase 6): the block
+    /// on `track` cut at song tick `at`, or (`track` None) every block
+    /// across it. Duplicate is a `Copied`.
+    Split {
+        track: Option<usize>,
+        at: Tick,
+    },
+    /// A block on `track`, from `start` now, trimmed from the left
+    /// (phase 6).
+    Trimmed {
+        track: usize,
+        start: Tick,
+    },
+    /// What the block on `track` at `start` plays slid under it (phase 6).
+    Slid {
+        track: usize,
+        start: Tick,
+    },
     /// Scenes → song: `rows` rows onto the song's end.
     Scenes {
         rows: usize,

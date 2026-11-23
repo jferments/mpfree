@@ -19,8 +19,9 @@
 //!   markers' count);
 //! - the buttons along the bottom: `Tab(k)` for [`SONG_BUTTONS`]`[k]`, or
 //!   for [`AUDIO_BUTTONS`]`[k]` while an audio region is picked;
-//! - Rec song, at the right of the title line: `Tab(REC)`; List, left of
-//!   it (the song list, Arrange's third view): `Tab(LIST)`;
+//! - Rec song, at the right of the title line: `Tab(REC)`; the view chip
+//!   at its left (the Arrange refactor's 5.7): its Clips `Tab(CLIPS)` and
+//!   its List (the song list, Arrange's third view) `Tab(LIST)`;
 //! - an audio region: `Cell { row: audio track, col: region index }` as
 //!   the finger goes down; dragged sideways and let go, `Marker { index:
 //!   audio track * REGION_SLOTS + region index, frame: its new start in
@@ -70,7 +71,10 @@
 
 use crate::report::ReportCard;
 use crate::view::PlacementInfo;
-use crate::widgets::{rec_song_pill, REC_SONG_W};
+use crate::widgets::{
+    dashed_outline, hatch, rec_song_pill, view_chip_rect, view_part_at, view_part_rect, view_title,
+    ArrangeView, REC_SONG_W,
+};
 use mpfree_audiotracks::host::TakeWave;
 use mpfree_audiotracks::{frames_from, Input, Monitor, Region, TakeInfo};
 use mpfree_transport::time::{TempoMap, Tick};
@@ -199,10 +203,10 @@ pub const ADD_ABOUT: [&str; 3] = [
 /// The hint line while the "+ Track" chooser is open.
 pub const ADD_HINT: &str =
     "Pick the kind of track to add: Note, Audio or Loop   ·   it goes at the end of the track list   ·   UNDO takes it away   ·   tap anywhere else: nothing is added";
-/// What Tab reports for List, left of Rec song: the song list.
+/// What Tab reports for the view chip's List: the song list.
 pub const LIST: usize = 0x310;
-/// The List button's width.
-const LIST_W: i32 = 64;
+/// What Tab reports for the view chip's Clips: the grid.
+pub const CLIPS: usize = 0x311;
 /// A region drag's `Marker` index is the audio track times this, plus
 /// the region's index (`mpfree_audiotracks::MAX_REGIONS`).
 pub const REGION_SLOTS: usize = mpfree_audiotracks::MAX_REGIONS;
@@ -567,6 +571,29 @@ pub struct SongLanes {
     /// The last conversion's report card, open over the lanes (the
     /// Arrange refactor's 4.3): it takes their touches and their targets.
     pub report: Option<ReportCard>,
+    /// The clips launched over the song, each drawn over its track's
+    /// lane (the Arrange refactor's 5.1, D3).
+    pub over: Vec<LaneOver>,
+}
+
+/// A clip launched over the song (the Arrange refactor's 5.1, D3): the
+/// Song view draws it over its track's lane, from `from` to `until` (the
+/// view's right edge while nothing waits), the song's blocks hatched
+/// under it, silent while it plays.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LaneOver {
+    /// The track (an index into [`SongLanes::tracks`]).
+    pub track: usize,
+    pub name: String,
+    /// Where it started, or the line it starts on while it waits.
+    pub from: Tick,
+    /// The line it ends on, while a cue waits on the track.
+    pub until: Option<Tick>,
+    /// The cue is a stop or Back to song: the song comes back at `until`
+    /// (an amber dashed line there).
+    pub back: bool,
+    /// Not started yet: it waits for `from` (a dashed amber outline).
+    pub waiting: bool,
 }
 
 /// What a finger holds on the Song view, and where in it (song ticks from
@@ -693,7 +720,7 @@ pub struct PanelParts {
 impl Default for SongLanes {
     fn default() -> SongLanes {
         SongLanes {
-            title: "Song".to_string(),
+            title: String::new(),
             legend: String::new(),
             alert: false,
             tracks: Vec::new(),
@@ -725,6 +752,7 @@ impl Default for SongLanes {
             tempo_base: 120.0,
             tempo_pick: None,
             report: None,
+            over: Vec::new(),
         }
     }
 }
@@ -965,6 +993,70 @@ impl SongLanes {
             tempo_base: self.tempo_base,
             tempo_pick: self.tempo_pick,
             report: self.report.clone(),
+            over: self.over.clone(),
+        }
+    }
+
+    /// The clips launched over the song ([`SongLanes::over`]), over
+    /// their tracks' lanes: the song's blocks hatched under one that
+    /// plays, a band in the track's colour with its name, outlined green;
+    /// one waiting only a dashed amber outline. Where the song comes back
+    /// (a stop or Back to song waits), an amber dashed line.
+    fn paint_over(&self, cx: &mut PaintCx, g: &Geo) {
+        let t = cx.theme.clone();
+        let view_end = (self.first_bar + self.bars) * self.bar;
+        for o in &self.over {
+            let Some((_, color)) = self.tracks.get(o.track) else {
+                continue;
+            };
+            let k = self.track_k(o.track);
+            let end = o.until.unwrap_or(view_end).max(o.from + 1);
+            let Some(span) = self.span_rect(g, k, o.from, end) else {
+                continue;
+            };
+            let px = t.size_small - 2.0;
+            if o.waiting {
+                dashed_outline(cx, span, t.warn);
+                if span.w > 40 {
+                    cx.text(
+                        FontId::Sans,
+                        px,
+                        span.inset_xy(8, 0),
+                        Align::Left,
+                        t.readable(t.warn, t.surface),
+                        &o.name,
+                    );
+                }
+                continue;
+            }
+            // The song under it waits, silent.
+            hatch(cx, span, t.surface);
+            let band = span.inset_xy(0, (span.h / 5).max(3));
+            let fill = t.raised.mix(*color, 0.62);
+            cx.canvas.fill_round_rect(band, t.round(6), fill);
+            cx.canvas.stroke_round_rect(band, t.round(6), 2, t.good);
+            if band.w > 40 {
+                cx.text(
+                    FontId::Bold,
+                    px,
+                    band.inset_xy(8, 0),
+                    Align::Left,
+                    t.readable(t.text, fill),
+                    &o.name,
+                );
+            }
+            if let (true, Some(at)) = (o.back, o.until) {
+                let x = self.x_of(g.lanes, at);
+                if x >= g.lanes.x + NAME_W && x < g.lanes.right() {
+                    let row = self.lane_rect(g, k).unwrap_or(span);
+                    let mut y = row.y;
+                    while y < row.bottom() {
+                        let h = 4.min(row.bottom() - y);
+                        cx.canvas.fill_rect(Rect::new(x - 1, y, 2, h), t.warn);
+                        y += 7;
+                    }
+                }
+            }
         }
     }
 
@@ -1194,28 +1286,31 @@ impl SongLanes {
         Rect::new(head.right() - REC_SONG_W, head.y - 4, REC_SONG_W, 30)
     }
 
-    /// Where List is: left of Rec song.
-    pub fn list_rect(&self, r: Rect) -> Rect {
-        let rec = self.rec_rect(r);
-        Rect::new(rec.x - 8 - LIST_W, rec.y, LIST_W, rec.h)
+    /// Where the view chip is: the left end of the title line (5.7).
+    pub fn view_rect(&self, r: Rect) -> Rect {
+        view_chip_rect(r)
     }
 
     /// The buttons along the bottom (the audio region's while one is
-    /// picked).
+    /// picked). Button 0 is the audio region's Split alone: the view chip
+    /// took the place of the Clips button that was there (5.7), so
+    /// otherwise it has no width and the others start at the left.
     pub fn button_rects(&self, r: Rect) -> [Rect; 6] {
         let g = self.geo(r);
         let widths = if self.region.is_some() {
             [84, 84, 84, 84, 84, 84]
         } else if self.section_buttons() {
-            [84, 124, 90, 110, 150, 150]
+            [0, 124, 90, 110, 150, 150]
         } else {
-            [84, 124, 140, 140, 124, 96]
+            [0, 124, 140, 140, 124, 96]
         };
         let mut out = [Rect::new(0, 0, 0, 0); 6];
         let mut x = g.tools.x;
         for (k, w) in widths.iter().enumerate() {
             out[k] = Rect::new(x, g.tools.y, *w, g.tools.h);
-            x += w + 8;
+            if *w > 0 {
+                x += w + 8;
+            }
         }
         out
     }
@@ -2512,27 +2607,17 @@ impl SongLanes {
 impl Widget for SongLanes {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
-        cx.titled_panel(r, &self.title, "");
-        // The legend, then List and Rec song.
+        // The view chip and the title, the legend, then Rec song.
         let rec = self.rec_rect(r);
-        let list = self.list_rect(r);
+        view_title(cx, r, ArrangeView::Song, &self.title, rec.x - 12);
         let head = r.inset(14).take_top(26).0;
         cx.text(
             FontId::Sans,
             t.size_small,
-            Rect::new(head.x, head.y, list.x - head.x - 12, head.h),
+            Rect::new(head.x, head.y, rec.x - head.x - 12, head.h),
             Align::Right,
             if self.alert { t.warn } else { t.text_dim },
             &self.legend,
-        );
-        cx.canvas.fill_round_rect(list, t.round(10), t.raised);
-        cx.text(
-            FontId::Bold,
-            t.size_small,
-            list,
-            Align::Center,
-            t.text,
-            "List",
         );
         rec_song_pill(cx, rec, self.rec);
         let g = self.geo(r);
@@ -2746,6 +2831,7 @@ impl Widget for SongLanes {
                 );
             }
         }
+        self.paint_over(cx, &g);
         for (a, lane) in self.audio.iter().enumerate() {
             for (i, b) in lane.blocks.iter().enumerate() {
                 let Some(br) = self.region_rect(r, a, i) else {
@@ -2806,6 +2892,9 @@ impl Widget for SongLanes {
             .filter(|_| !audio);
         let section = self.section_buttons();
         for (k, br) in self.button_rects(r).iter().enumerate() {
+            if br.w == 0 {
+                continue;
+            }
             let lit = (k == 1 && self.on && !audio) || (k == 4 && tempo.is_some_and(|p| p.2));
             let live = audio || tempo.is_some() || section || !(k >= 4 && !selected);
             let fill = if lit {
@@ -2877,6 +2966,7 @@ impl Widget for SongLanes {
             .button_rects(r)
             .iter()
             .enumerate()
+            .filter(|(_, b)| b.w > 0)
             .map(|(k, b)| {
                 let tempo = !audio && k >= 4 && self.tempo_pick.is_some();
                 let (id, word) = if audio {
@@ -2910,7 +3000,19 @@ impl Widget for SongLanes {
             out.push(Target::tap("tempo-lane", 0, "Tempo", free));
         }
         out.push(Target::tap("rec-song", 0, "Rec song", self.rec_rect(r)));
-        out.push(Target::tap("list", 0, "List", self.list_rect(r)));
+        let chip = self.view_rect(r);
+        out.push(Target::tap(
+            "view",
+            0,
+            "Clips",
+            view_part_rect(chip, ArrangeView::Clips),
+        ));
+        out.push(Target::tap(
+            "view",
+            1,
+            "List",
+            view_part_rect(chip, ArrangeView::List),
+        ));
         if let Some(b) = self.add_track_rect(r) {
             out.push(Target::tap("add-track", 0, "+ Track", b));
         }
@@ -3153,14 +3255,21 @@ impl Widget for SongLanes {
                 return None;
             }
         }
-        if let Some(k) = self.button_rects(r).iter().position(|b| b.contains(x, y)) {
+        if let Some(k) = self
+            .button_rects(r)
+            .iter()
+            .position(|b| b.w > 0 && b.contains(x, y))
+        {
             return Some(EventKind::Tab(k));
         }
         if self.rec_rect(r).contains(x, y) {
             return Some(EventKind::Tab(REC));
         }
-        if self.list_rect(r).contains(x, y) {
-            return Some(EventKind::Tab(LIST));
+        match view_part_at(self.view_rect(r), x, y) {
+            Some(ArrangeView::Clips) => return Some(EventKind::Tab(CLIPS)),
+            Some(ArrangeView::List) => return Some(EventKind::Tab(LIST)),
+            Some(ArrangeView::Song) => return None,
+            None => {}
         }
         if self.add_track_rect(r).is_some_and(|b| b.contains(x, y)) {
             return Some(EventKind::Tab(ADD_TRACK));
@@ -3325,7 +3434,11 @@ mod tests {
             s.touch(1, Touch::Down, empty.x - 20, empty.y + 3, r),
             Some(EventKind::Select(NONE))
         );
-        for (k, br) in s.button_rects(r).iter().enumerate() {
+        let buttons = s.button_rects(r);
+        // The first, Clips, went to the view chip (5.7).
+        assert_eq!(buttons[0].w, 0);
+        assert_eq!(buttons[1].x, r.x + 14);
+        for (k, br) in buttons.iter().enumerate().skip(1) {
             assert!(br.right() <= r.right() - 14, "{k}: {br:?}");
             assert_eq!(
                 s.touch(1, Touch::Down, br.x + 3, br.y + 3, r),
@@ -3338,12 +3451,16 @@ mod tests {
             s.touch(1, Touch::Down, rec.x + 3, rec.y + 3, r),
             Some(EventKind::Tab(REC))
         );
-        let list = s.list_rect(r);
-        assert!(list.right() < rec.x, "{list:?}");
-        assert_eq!(
-            s.touch(1, Touch::Down, list.x + 3, list.y + 3, r),
-            Some(EventKind::Tab(LIST))
-        );
+        let chip = s.view_rect(r);
+        assert!(chip.right() < rec.x, "{chip:?}");
+        for (v, want) in [
+            (ArrangeView::Clips, Some(EventKind::Tab(CLIPS))),
+            (ArrangeView::List, Some(EventKind::Tab(LIST))),
+            (ArrangeView::Song, None),
+        ] {
+            let b = view_part_rect(chip, v);
+            assert_eq!(s.touch(1, Touch::Down, b.x + 3, b.y + 3, r), want, "{v:?}");
+        }
     }
 
     #[test]
