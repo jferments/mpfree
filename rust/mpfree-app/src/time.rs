@@ -3839,6 +3839,108 @@ mod tests {
         assert_eq!(h.control.project.arrangement.placements.len(), 2);
     }
 
+    /// The Arrange refactor's phase 6: Split at the playhead (the picked
+    /// block, or every block across it), Duplicate, trim from the left
+    /// and slide are each an edit UNDO takes back, and a refusal says why
+    /// and changes nothing.
+    #[test]
+    fn split_duplicate_trim_and_slide_are_song_edits_undo_takes_back() {
+        use mpfree_seq::arrange::Placement;
+        const BAR: i64 = 3840;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        for (t, name) in [(0, "Beat"), (1, "Bass")] {
+            h.control.project.tracks[t].slots[0] = Some(Clip::new(name, 2 * BAR));
+        }
+        h.control.project.give_clip_ids();
+        let tracks = h.control.project.tracks.clone();
+        let song = &mut h.control.project.arrangement;
+        song.place(Placement::of(&tracks, 0, 0, 0, 4 * BAR))
+            .unwrap();
+        song.place(Placement::of(&tracks, 1, 0, 0, 2 * BAR))
+            .unwrap();
+        let start = h.control.project.arrangement.clone();
+        let blocks = |h: &TimeHost| -> Vec<(usize, Tick, Tick, Tick)> {
+            h.control
+                .project
+                .arrangement
+                .placements
+                .iter()
+                .map(|p| (p.track, p.start, p.length, p.offset))
+                .collect()
+        };
+        // The playhead at bar 2 beat 3 (a bar and a half in).
+        h.command(Command::Locate(BAR + BAR / 2));
+        run(&mut h, &mut pads, u64::from(PERIOD), &[]);
+        assert_eq!(h.info().position, BAR + BAR / 2);
+        // Split with nothing picked: both lanes.
+        let said = h.act(TimeAction::SplitPlacement(None)).unwrap();
+        assert!(said.contains("2 blocks split at bar 2 beat 3"), "{said}");
+        assert_eq!(
+            blocks(&h),
+            [
+                (0, 0, BAR + BAR / 2, 0),
+                (0, BAR + BAR / 2, 2 * BAR + BAR / 2, BAR + BAR / 2),
+                (1, 0, BAR + BAR / 2, 0),
+                (1, BAR + BAR / 2, BAR / 2, BAR + BAR / 2),
+            ]
+        );
+        let said = h.act(TimeAction::SplitPlacement(None)).unwrap_err();
+        assert!(
+            said.contains("no block plays across bar 2 beat 3"),
+            "{said}"
+        );
+        let said = h.act(TimeAction::SplitPlacement(Some(0))).unwrap_err();
+        assert!(said.contains("move the playhead inside Beat"), "{said}");
+        let said = h.act(TimeAction::Undo).unwrap();
+        assert!(said.contains("split"), "{said}");
+        assert_eq!(h.control.project.arrangement, start);
+        // Split the picked block alone: the part after is picked.
+        h.act(TimeAction::SplitPlacement(Some(0))).unwrap();
+        assert_eq!(h.control.state().selected, Some(1));
+        assert_eq!(blocks(&h).len(), 3);
+        h.act(TimeAction::Undo).unwrap();
+        // Duplicate the bass: a copy after it, picked; again, the copy's
+        // copy; the beat's has no room.
+        let said = h.act(TimeAction::DuplicatePlacement(1)).unwrap();
+        assert!(said.contains("a copy of Bass at bar 3"), "{said}");
+        assert_eq!(blocks(&h)[2], (1, 2 * BAR, 2 * BAR, 0));
+        assert_eq!(h.control.state().selected, Some(2));
+        h.act(TimeAction::DuplicatePlacement(1)).unwrap_err();
+        let said = h.act(TimeAction::DuplicatePlacement(9)).unwrap_err();
+        assert!(said.contains("no such block"), "{said}");
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.control.project.arrangement, start);
+        // Trim the beat from the left to bar 2: what plays stays put.
+        let said = h
+            .act(TimeAction::TrimPlacement {
+                index: 0,
+                start: BAR,
+            })
+            .unwrap();
+        assert!(said.contains("Beat starts at bar 2 now"), "{said}");
+        assert_eq!(blocks(&h)[0], (0, BAR, 3 * BAR, BAR));
+        let said = h
+            .act(TimeAction::TrimPlacement {
+                index: 0,
+                start: 4 * BAR,
+            })
+            .unwrap_err();
+        assert!(said.contains("can't start at bar 5"), "{said}");
+        // Slide what it plays a beat later.
+        let said = h
+            .act(TimeAction::SlidePlacement {
+                index: 0,
+                by: BAR / 4,
+            })
+            .unwrap();
+        assert!(said.contains("slid 1 beat later"), "{said}");
+        assert_eq!(blocks(&h)[0], (0, BAR, 3 * BAR, BAR - BAR / 4));
+        h.act(TimeAction::Undo).unwrap();
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.control.project.arrangement, start, "every edit undone");
+    }
+
     /// A section moves with its tempo points (Arrange 3.2), one UNDO
     /// takes the whole move back, and a refusal says why in plain words.
     #[test]
@@ -8392,7 +8494,7 @@ mod tests {
             h.act(TimeAction::SceneSettings {
                 row: 0,
                 card_row,
-                settings,
+                settings: Box::new(settings),
             })
         };
         assert_eq!(

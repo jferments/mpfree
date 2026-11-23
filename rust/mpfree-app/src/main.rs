@@ -7565,6 +7565,10 @@ fn time_action(
             | TimeAction::SongBars(_)
             | TimeAction::SongMarker(_)
             | TimeAction::DeletePlacement(_)
+            | TimeAction::SplitPlacement(_)
+            | TimeAction::DuplicatePlacement(_)
+            | TimeAction::TrimPlacement { .. }
+            | TimeAction::SlidePlacement { .. }
             | TimeAction::Perform(_)
     ) || matches!(a, TimeAction::SongTempo(e) if !matches!(e, TempoEdit::Pick(_)))
         // A linked song list's step edits are the song's (Arrange 4b.2).
@@ -16575,10 +16579,10 @@ mod tests {
         time.act(TimeAction::SceneSettings {
             row: 2,
             card_row: mpfree_time_ui::view::SCENE_NAME,
-            settings: mpfree_seq::scenes::SceneSettings {
+            settings: Box::new(mpfree_seq::scenes::SceneSettings {
                 name: "Verse".into(),
                 ..Default::default()
-            },
+            }),
         })
         .unwrap();
         assert_eq!(name(&time, clips::scene(2)), "Scene 3 · Verse");
