@@ -4036,4 +4036,88 @@ impl Project {
         self.revision += 1;
         true
     }
+    /// A sound's stems (the stems plan) put where `to` says, with `sounds`
+    /// (the stems kept) added to the kit, as one undo step that UNDO takes
+    /// back whole. The caller makes each pad or take from the sounds
+    /// ([`Layer::new`] over [`Region::whole`]); every layer must play one
+    /// of `sounds` or a sound the kit has. Refused, with nothing changed,
+    /// when a pad is past the last or named twice, the Layers pad is empty,
+    /// the takes would pass [`MAX_TAKES`], or a pad isn't one the model
+    /// takes.
+    pub fn put_stems(&mut self, sounds: Vec<Source>, to: StemsTo) -> Result<(), ModelError> {
+        match &to {
+            StemsTo::Pads(pads) => {
+                let mut seen = [false; PADS];
+                for &(i, _) in pads {
+                    if i >= PADS || std::mem::replace(&mut seen[i], true) {
+                        return Err(ModelError::BadPad);
+                    }
+                }
+            }
+            StemsTo::Layers(i, _) => {
+                if self.pad(*i).is_none() {
+                    return Err(ModelError::BadPad);
+                }
+            }
+            StemsTo::Takes(takes) => {
+                if self.takes.len() + takes.len() > MAX_TAKES {
+                    return Err(ModelError::BadTake);
+                }
+            }
+        }
+        let mut added = Vec::with_capacity(sounds.len());
+        for s in sounds {
+            let id = s.id();
+            if self.source(id).is_none() && !added.contains(&id) {
+                self.sources.push(s);
+                added.push(id);
+            }
+        }
+        let checked = match &to {
+            StemsTo::Pads(pads) => pads.iter().try_for_each(|(_, p)| self.check_pad(p)),
+            StemsTo::Layers(_, p) => self.check_pad(p),
+            StemsTo::Takes(takes) => takes.iter().try_for_each(|p| self.check_pad(p)),
+        };
+        if let Err(e) = checked {
+            self.sources.truncate(self.sources.len() - added.len());
+            return Err(e);
+        }
+        let mut steps: Vec<Undo> = added.into_iter().map(|id| Undo::AddSource { id }).collect();
+        match to {
+            StemsTo::Pads(pads) => steps.extend(pads.into_iter().map(|(index, p)| Undo::Pad {
+                index,
+                before: self.pads[index].replace(p).map(Box::new),
+                gesture: None,
+            })),
+            StemsTo::Layers(index, p) => steps.push(Undo::Pad {
+                index,
+                before: self.pads[index].replace(*p).map(Box::new),
+                gesture: None,
+            }),
+            StemsTo::Takes(takes) => {
+                let before = self.takes.clone();
+                self.takes.extend(takes);
+                steps.push(Undo::Takes {
+                    before,
+                    gesture: None,
+                });
+            }
+        }
+        self.push_undo(Undo::Group(steps));
+        Ok(())
+    }
+}
+
+/// Where [`Project::put_stems`] puts a sound's stems, each pad or take as
+/// the caller made it from the stems' sounds.
+#[derive(Clone, Debug, PartialEq)]
+pub enum StemsTo {
+    /// Each `(pad, what it becomes)`, replacing what the pad had: four pads
+    /// in a row, the default.
+    Pads(Vec<(usize, Pad)>),
+    /// One pad playing the stems as its layers, together, in place of the
+    /// sound (Akai's "Assign to Pad").
+    Layers(usize, Box<Pad>),
+    /// Takes kept on the Sample page.
+    Takes(Vec<Pad>),
 }

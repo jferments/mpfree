@@ -26,7 +26,7 @@ use mpfree_sampler::autosample::Instrument;
 use mpfree_sampler::engine::PadField;
 use mpfree_sampler::model::{
     ChopMode, ChopSet, Fade, GrainParams, Layer, ModelError, Pad, PadsPlay, PlayMode, Project,
-    Region, Source, SourceId, Warp, KEPT_CHOP, MAX_LAYERS,
+    Region, Source, SourceId, StemsTo, Warp, KEPT_CHOP, MAX_LAYERS,
 };
 use mpfree_sampler::scene;
 
@@ -180,6 +180,11 @@ pub enum Change {
         sound: Recorded,
         scale: f64,
     },
+    /// A sound's stems (the stems plan): `sounds`, the stems kept, added to
+    /// the kit and put where `to` says (four pads, one pad's layers or
+    /// takes), one undo step (`Project::put_stems`). Onto a new kit, the
+    /// app puts them there with both kits, as for a chop.
+    Stems { sounds: Vec<Recorded>, to: StemsTo },
     /// One of a pad's own changes (its settings, a layer's region, gain or
     /// grain start, its layers) made to take `take` on the Sample page
     /// instead, as to a pad, the change's pad number unused: one undo
@@ -537,6 +542,9 @@ impl Change {
             } => {
                 p.use_processed(*pad, *layer, sound.0.clone(), *scale)?;
             }
+            Change::Stems { sounds, to } => {
+                p.put_stems(sounds.iter().map(|r| r.0.clone()).collect(), to.clone())?;
+            }
             Change::OnTake { take, change } => {
                 let now = p.take(*take).ok_or(ModelError::BadTake)?;
                 let next = change
@@ -676,6 +684,10 @@ impl Change {
             | Change::PutTake { pad, .. }
             | Change::LoadPad { pad, .. }
             | Change::Processed { pad, .. } => Some(*pad),
+            Change::Stems { to, .. } => match to {
+                StemsTo::Layers(pad, _) => Some(*pad),
+                StemsTo::Pads(_) | StemsTo::Takes(_) => None,
+            },
             Change::PadsPlay(_)
             | Change::KeyFade(_)
             | Change::MapToKeys { .. }
@@ -700,6 +712,7 @@ impl Change {
             Change::Pad { .. }
             | Change::Chop { .. }
             | Change::AutoSampled { .. }
+            | Change::Stems { .. }
             | Change::PutTake { .. }
             | Change::LoadPad { .. }
             | Change::SceneReturn => true,
@@ -1451,6 +1464,46 @@ mod tests {
         assert!(p.undo());
         assert!(same(&p, &base) && p.source(new.id()).is_none(), "undone");
         assert_eq!((used.pad(), used.renames()), (Some(0), false));
+    }
+
+    #[test]
+    fn a_sounds_stems_land_on_four_pads_in_one_step() {
+        let (base, ..) = kit();
+        let stems: Vec<Source> = (0..4)
+            .map(|k| {
+                let data = (0..4800)
+                    .map(|i| ((i + k * 7) as f32 * 0.01).sin() * 0.25)
+                    .collect();
+                Source::new(&format!("Hit stem {k}"), RATE, 1, data).expect("a stem")
+            })
+            .collect();
+        let mut p = base.clone();
+        let before = steps(&mut p.clone());
+        let pads = stems
+            .iter()
+            .enumerate()
+            .map(|(k, s)| (5 + k, Pad::new(&s.name, Layer::new(Region::whole(s)))))
+            .collect();
+        let landed = Change::Stems {
+            sounds: stems.iter().cloned().map(Recorded).collect(),
+            to: StemsTo::Pads(pads),
+        };
+        landed.apply(&mut p, None).expect("landed");
+        for (k, s) in stems.iter().enumerate() {
+            assert_eq!(p.pad(5 + k).unwrap().layers[0].region.source, s.id());
+        }
+        assert_eq!(steps(&mut p.clone()), before + 1);
+        assert!(p.undo());
+        assert!(
+            same(&p, &base) && stems.iter().all(|s| p.source(s.id()).is_none()),
+            "undone, sounds and all"
+        );
+        assert_eq!((landed.pad(), landed.renames()), (None, true));
+        let layers = Change::Stems {
+            sounds: vec![],
+            to: StemsTo::Layers(0, Box::new(base.pad(0).unwrap().clone())),
+        };
+        assert_eq!(layers.pad(), Some(0));
     }
 
     #[test]
