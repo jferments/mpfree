@@ -1307,6 +1307,7 @@ dependencies = [
  "mpfree-lanes",
  "mpfree-node",
  "mpfree-prof",
+ "mpfree-stems",
  "mpfree-stream",
  "mpfree-stretch",
  "mpfree-synth",

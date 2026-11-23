@@ -353,11 +353,25 @@ impl Jobs {
     /// Puts `job` in the queue at its order. A job with its key that is
     /// still waiting is dropped for it, and one running is told to stop.
     pub fn submit(&self, job: Job) {
+        self.queue(job, true);
+    }
+
+    /// Puts `job` in the queue at its order as the next step of the job
+    /// with its key that is running now, and is posting it: work done a
+    /// step a job so that other jobs run between its steps (a stems
+    /// split). The running job isn't told to stop, and isn't counted
+    /// replaced; a job with the key that is still waiting is dropped for
+    /// it, as with [`Jobs::submit`].
+    pub fn follow(&self, job: Job) {
+        self.queue(job, false);
+    }
+
+    fn queue(&self, job: Job, stop_running: bool) {
         if self.0.in_place {
             let shared = self.inner();
             let cancel = {
                 let mut s = shared.lock();
-                replace(&mut s, job.key);
+                replace(&mut s, job.key, stop_running);
                 take(&mut s, job.key)
             };
             run_one(shared, job, cancel);
@@ -369,7 +383,7 @@ impl Jobs {
             if s.stop {
                 return;
             }
-            replace(&mut s, job.key);
+            replace(&mut s, job.key, stop_running);
             let at = match job.order {
                 Order::First => 0,
                 Order::Last => s.waiting.len(),
@@ -496,13 +510,15 @@ impl Jobs {
 
 /// Drops a waiting job with `key` and tells a running one to stop, each
 /// counted as replaced.
-fn replace(s: &mut State, key: Key) {
+fn replace(s: &mut State, key: Key, stop_running: bool) {
     let before = s.waiting.len();
     s.waiting.retain(|w| w.key != key);
     let mut gone = (before - s.waiting.len()) as u64;
-    for b in &s.running {
-        if b.key == key && !b.cancel.swap(true, Ordering::Relaxed) {
-            gone += 1;
+    if stop_running {
+        for b in &s.running {
+            if b.key == key && !b.cancel.swap(true, Ordering::Relaxed) {
+                gone += 1;
+            }
         }
     }
     s.counts.replaced += gone;

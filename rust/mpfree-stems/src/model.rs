@@ -85,6 +85,18 @@ impl Model {
         Model::synthetic_shaped(Shape::SPLEETER, seed)
     }
 
+    /// A small network of Spleeter's code (narrow layers, 64-frame
+    /// segments of 1.5 s) with seeded weights: for the tests of what runs
+    /// a separation (the sampler's stems job), which want it quick. Its
+    /// stems mean nothing.
+    pub fn small(seed: u32) -> Model {
+        let shape = Shape {
+            filters: [3, 4, 5, 6, 7, 8],
+            rows: 64,
+        };
+        Model::synthetic_shaped(shape, seed)
+    }
+
     pub(crate) fn synthetic_shaped(shape: Shape, seed: u32) -> Model {
         let mut tensors = synthetic_tensors(shape, seed);
         Model::build(shape, |_, _| {
