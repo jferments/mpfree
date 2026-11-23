@@ -7,7 +7,9 @@
 //! In order: its two NEON kernels against their plain twins, bit for bit
 //! (a mismatch stops it, exit code 1); the free memory (below 400 MB it
 //! skips itself, exit code 0, so it can never push the MPC into swap or
-//! the OOM killer); then four runs, each timed by stage: NEON on two
+//! the OOM killer); the GEMM kernel alone on core 0, NEON and plain, its
+//! data in the L1 cache (the peak the U-Nets' rate compares with); then
+//! four runs, each timed by stage: NEON on two
 //! threads on cores 0 and 1 at 1024 bins (the job's own setting), on one
 //! thread on core 0, the plain twins on two, and NEON on two at full band
 //! (1536 bins); then an estimate for 10 s and 60 s samples.
@@ -74,6 +76,30 @@ fn check_kernels() -> Check {
         ));
     }
     Check::Matches
+}
+
+/// The GEMM kernel alone on `path`, its data in the L1 cache (a 256-step
+/// block, as the U-Nets' layers run it): multiply-adds a second over about
+/// a quarter of a second. Against the U-Nets' own rate it says how much of
+/// their time goes outside the kernel.
+fn kernel_rate(path: Path) -> f64 {
+    const KC: usize = 256;
+    let a: Vec<f32> = (0..KC * GEMM_MR)
+        .map(|i| (i % 7) as f32 * 0.1 - 0.3)
+        .collect();
+    let b: Vec<f32> = (0..KC * GEMM_NR)
+        .map(|i| (i % 5) as f32 * 0.1 - 0.2)
+        .collect();
+    let mut acc = [0f32; 32];
+    let (mut calls, t) = (0u64, Instant::now());
+    while t.elapsed().as_secs_f64() < 0.25 {
+        for _ in 0..256 {
+            mpfree_simd::gemm4x8_on(path, KC, &a, &b, &mut acc);
+        }
+        calls += 256;
+    }
+    std::hint::black_box(acc);
+    (calls * (KC * GEMM_MR * GEMM_NR) as u64) as f64 / t.elapsed().as_secs_f64()
 }
 
 /// A `/proc` file's value for `key` (the first number after it).
@@ -229,6 +255,29 @@ pub fn run(plain_build: bool, machine: &str, build: &str) -> ExitCode {
         Some(mb) => println!("stems: {mb} MB free"),
         None => println!("stems: free memory not readable; going on"),
     }
+    let all = mpfree_lanes::os::allowed_cores();
+    let pin = match mpfree_lanes::os::pin_set(&[0]) {
+        Ok(()) => "on core 0".to_string(),
+        Err(e) => format!("not pinned ({e})"),
+    };
+    let plain = kernel_rate(Path::Plain);
+    if mpfree_simd::neon_available() {
+        let neon = kernel_rate(Path::Neon);
+        println!(
+            "stems: the GEMM kernel alone, {pin}, its data in the L1 cache: NEON {:.2} G multiply-adds a second, plain {:.2} G ({:.2} x)",
+            neon / 1e9,
+            plain / 1e9,
+            neon / plain
+        );
+    } else {
+        println!(
+            "stems: the GEMM kernel alone, {pin}, its data in the L1 cache: plain {:.2} G multiply-adds a second (no NEON here)",
+            plain / 1e9
+        );
+    }
+    if !all.is_empty() {
+        let _ = mpfree_lanes::os::pin_set(&all);
+    }
     let t = Instant::now();
     let model = Model::synthetic(SEED);
     println!(
@@ -243,7 +292,6 @@ pub fn run(plain_build: bool, machine: &str, build: &str) -> ExitCode {
             ((seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5) * 0.5
         })
         .collect();
-    let all = mpfree_lanes::os::allowed_cores();
     println!("stems: before: {}", temperature_and_clock());
     let case = |what, band, threads, cores, neon| Case {
         what,

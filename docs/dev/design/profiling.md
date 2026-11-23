@@ -578,13 +578,18 @@ case: the separation is a background job. In order:
 2. The free memory (`MemAvailable`): below 400 MB it prints `stems:
    skipped, only N MB free` and exits 0, so it can never push the MPC into
    swap or the OOM killer.
-3. Four runs, each with its seconds by stage, the kernel's multiply-adds a
+3. The GEMM kernel alone on core 0, its data in the L1 cache, NEON and
+   plain (a quarter of a second each): the most the U-Nets could do a
+   core. Their own rate in the runs below, against twice this, says how
+   much of their time goes outside the kernel (gathering patches, batch
+   norms, unpacking).
+4. Four runs, each with its seconds by stage, the kernel's multiply-adds a
    second, the memory promised and the peak so far (`VmHWM`), and the
    stems' levels: the job's setting (two threads on cores 0 and 1, 1024
    bins), one thread on core 0, the kernels off (their twins) on two, and
    full band (1536 bins) on two. It pins its own threads, as `--lanes`
    does, and prints `not pinned (reason)` if a pin is refused.
-4. The CPU's temperature and clock before and after (from `/sys`, read
+5. The CPU's temperature and clock before and after (from `/sys`, read
    only), the kernels' A/B, and `stems: estimate`: a 10 s and a 60 s sample
    at both bands, from the measured rates plus 2.6 s assumed for loading
    the model.
