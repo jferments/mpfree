@@ -801,12 +801,12 @@ pub fn screens(fonts: &impl Fn() -> mpfree_ui::Fonts) -> Vec<(&'static str, crat
         });
     };
     // A fixed free memory, so each preview is the same picture every time.
-    let free = || Some(1_500_000_000);
+    let free: fn() -> Option<u64> = || Some(1_500_000_000);
     let mut none = crate::gui::sample_sampler(fonts());
-    none.sample.set_mem_free(free);
+    none.sample.mem_free = free;
     press(&mut none);
     let mut ready = crate::gui::sample_sampler(fonts());
-    ready.sample.set_mem_free(free);
+    ready.sample.mem_free = free;
     ready.sample.stems.model = Some(Arc::new(Model::small(3)));
     press(&mut ready);
     vec![("sample-stems-no-model", none), ("sample-stems", ready)]
