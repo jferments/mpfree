@@ -102,6 +102,7 @@
 44852	Limiter
 98264	Limiter (true peak)
 221974	Lo-fi
+494618	Looper (60 s) on audio tracks: 8 loops of 3 layers, half launched again every bar
 294259	Looper (60 s), 8 loops of 3 layers playing
 417853	Looper (60 s), 8 loops of 3 layers playing, half edited
 34896	Looper (60 s), a free first pass by ear with Auto

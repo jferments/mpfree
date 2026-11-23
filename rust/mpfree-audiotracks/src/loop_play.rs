@@ -150,7 +150,11 @@ impl LoopPlayer {
     pub fn plan(&mut self, block: &Block, answers: &[Answer]) {
         let n = (block.frames as usize).min(PERIOD);
         self.frames = n;
-        self.gains.fill(0.0);
+        // Only the period's frames of each voice: the rest is never read
+        // (the whole buffer would be 256 KiB to clear each period).
+        for g in self.gains.chunks_exact_mut(PERIOD) {
+            g[..n].fill(0.0);
+        }
         for t in 0..MAX_TRACKS {
             self.lanes[t].n = 0;
             let a = answers.get(t).copied().unwrap_or(Answer {

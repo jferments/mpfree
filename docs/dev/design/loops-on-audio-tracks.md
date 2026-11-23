@@ -178,8 +178,19 @@ To come:
 - A launch that cuts an overdub keeps its layer, as a transaction of its own before the launch.
 - A muted track's loop comes back in place after a switch to a take clip and back.
 - Every change carries a transaction id, the same in every engine it touched.
-- The 8-loops worst case for real time: the longest period, the 99.9th percentile and missed deadlines, with 8 loops on 8 tracks, each with its own effects.
+- The 8-loops worst case for real time on the MPC: the longest period, the 99.9th percentile and missed deadlines, with 8 loops on 8 tracks, each with its own effects. Its engine half is counted already (below).
 
-## Open point: where a launched loop starts
+## Cost
 
-A clip launched on its own starts from its top; Legato keeps the place of the clip it takes over. Loop tracks don't: an off loop keeps its place in the song, so a launch brings it back in step with where it was recorded. With the arranger deciding, the plan's "one rule for both kinds of clip" gives loop cells the clip rule (a loop launched on bar 3 of its 4 plays its bar 1 from there; Legato, or a launch quantise of the loop's length, keeps it in step). Recommended, and asked of Jay on 23 Nov; the other way is an origin for a loop's launch kept at its own origin.
+`mpfree-bench`'s "Looper (60 s) on audio tracks: 8 loops of 3 layers, half launched again every bar" is the worst the arranger can ask of the engines: the looper's 8 loops of three layers (half of them edited, as "half edited" has them), each on an audio track of its own, the track player planning every track each period, the looper rendering each loop only where it is told, and the tracks mixing them in; every bar, half the tracks launch their loop again a beat on, mid period, so the looper crossfades those loops' places. Counted under callgrind (rustc 1.97.0, 128-frame periods):
+
+| Case | Instructions a period |
+|---|---|
+| The 8 loops on the Loop track ("half edited") | 425 007 |
+| The same loops on 8 audio tracks | 494 618 (+16 %) |
+
+The 16 % is the track player's plan (33 000), the tracks' mix (32 000) and telling the looper its runs (11 000); the looper's own work is the same. The first count was 1 018 146: the plan cleared all its gains each period (8 tracks, two voices, a 4 096-frame period each: 256 KiB), and now clears only the period's frames. The same bench checked that a loop launched again on its track sounds, after the crossfade, exactly as the loop placed there from the start (the difference is silence).
+
+## Where a launched loop starts (settled)
+
+A clip launched on its own starts from its top; Legato keeps the place of the clip it takes over. Loop tracks don't: an off loop keeps its place in the song, so a launch brings it back in step with where it was recorded. With the arranger deciding, the plan's "one rule for both kinds of clip" gives loop cells the clip rule (a loop launched on bar 3 of its 4 plays its bar 1 from there; Legato, or a launch quantise of the loop's length, keeps it in step). Jay chose this on 23 Nov ("From its top, like any clip"), and it is what 4b builds: a loop cell's launch is a clip launch, with no rule of its own.

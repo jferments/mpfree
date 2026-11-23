@@ -5,7 +5,8 @@
 use mpfree_arp::modifier::{ModSource, Modifier};
 use mpfree_audiotracks::host::COPY_SAMPLES;
 use mpfree_audiotracks::{
-    AudioTracks, Command as TrackCommand, Input as TrackInput, Io as TrackIo, MAX_TRACKS,
+    Answer as TrackAnswer, AudioTracks, Change as TrackChange, Command as TrackCommand,
+    Input as TrackInput, Io as TrackIo, LoopPlay, LoopPlayer, Plays, MAX_TRACKS,
 };
 use mpfree_fx::ids;
 use mpfree_fx::{
@@ -19,7 +20,8 @@ use mpfree_fx::{
 use mpfree_grain::GrainNode;
 use mpfree_lanes::{Config as LaneConfig, Job, Lane};
 use mpfree_looper::{
-    Command as LooperCommand, Edit as LooperEdit, Looper, Phase as LooperPhase, MAX_LOOPS,
+    Command as LooperCommand, Edit as LooperEdit, Looper, Phase as LooperPhase, PlayRun, MAX_LOOPS,
+    MAX_PLAY_RUNS,
 };
 use mpfree_node::{Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, MAX_BLOCK};
 use mpfree_play::{Ahead, Launch, Out, PlayView, Player, Sink, TrackArps};
@@ -2204,6 +2206,7 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| looper(rate, 60)));
     v.push(measured(|| looper_loops(rate, 60, false)));
     v.push(measured(|| looper_loops(rate, 60, true)));
+    v.push(measured(|| looper_on_tracks(rate, 60)));
     v.push(measured(|| looper_by_ear(rate, 60)));
     v.push(measured(|| audio_tracks(rate, 0, false)));
     v.push(measured(|| audio_tracks(rate, 2, false)));
@@ -4791,6 +4794,141 @@ fn looper_loops(rate: u32, seconds: u32, edited: bool) -> Case {
             let f = g.frame;
             input(rate, f, &mut g.seed, l, r);
             g.period(l, r);
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// Loops on audio tracks (audio tracks phase 4b, the worst case): every
+/// loop of [`loops_rig`] (three layers, half edited) on an audio track of
+/// its own, all playing. Each block the track player plans every track's
+/// loop, the looper renders each only where it's told, and the tracks mix
+/// the loops in. Every bar (2 s), half the tracks launch their loop again
+/// a beat on from where it was, mid block, so the looper crossfades those
+/// loops' places on the track: everything the arranger can ask of it at
+/// once.
+fn looper_on_tracks(rate: u32, seconds: u32) -> Case {
+    let mut g = loops_rig(rate, seconds, true);
+    let mut a = AudioTracks::new(rate, 1);
+    let mut loops = LoopPlayer::new();
+    let bar = 4 * i64::from(PPQ);
+    let every = 2 * u64::from(rate);
+    let mut next = g.frame + every + 37;
+    let mut turn = 0usize;
+    let mut origins: Option<[f64; MAX_LOOPS]> = None;
+    let mut mix = vec![0.0f32; 2 * MAX_BLOCK];
+    let plays = move |k: usize, origin: f64| {
+        Plays::Loop(LoopPlay {
+            id: k as u128 + 1,
+            origin,
+            len: bar,
+            clip: k as u32,
+            stamp: 1,
+        })
+    };
+    Case {
+        name: format!(
+            "Looper ({seconds} s) on audio tracks: {MAX_LOOPS} loops of 3 layers, half launched again every bar"
+        ),
+        module: "looper",
+        what: "every loop on its own audio track, half of them launched again each bar mid block",
+        block: Box::new(move |_, l, r| {
+            let n = l.len();
+            let p0 = g.frame;
+            input(rate, p0, &mut g.seed, l, r);
+            for (i, (x, y)) in l.iter().zip(r.iter()).enumerate() {
+                input_frame(&mut g.line_in, i, *x, *y);
+            }
+            g.t.process(n as u32, &mut g.block);
+            let was = *origins.get_or_insert_with(|| {
+                std::array::from_fn(|k| g.lp.loop_status(k).map_or(0.0, |s| s.origin as f64))
+            });
+            // The launches this block: half the tracks, from a beat on.
+            let none = TrackChange {
+                frame: 0,
+                tick: 0.0,
+                plays: Plays::Nothing,
+                muted: false,
+                ring: false,
+            };
+            let mut changes = [[none; 1]; MAX_LOOPS];
+            let mut launched = [false; MAX_LOOPS];
+            if (p0..p0 + n as u64).contains(&next) {
+                let off = (next - p0) as u32;
+                let tick = g
+                    .block
+                    .spans()
+                    .iter()
+                    .find(|s| off >= s.offset && off < s.offset + s.len.max(1))
+                    .map_or(0.0, |s| s.tick_at(next).round());
+                for k in (turn % 2..MAX_LOOPS).step_by(2) {
+                    changes[k][0] = TrackChange {
+                        frame: off,
+                        tick,
+                        plays: plays(k, was[k] + f64::from(PPQ)),
+                        ..none
+                    };
+                    launched[k] = true;
+                }
+                next += every;
+                turn += 1;
+            }
+            let mut answers = [TrackAnswer::default(); MAX_TRACKS];
+            for k in 0..MAX_LOOPS {
+                answers[k] = TrackAnswer {
+                    start: plays(k, was[k]),
+                    muted: false,
+                    changes: if launched[k] { &changes[k] } else { &[] },
+                    superseded: 0,
+                };
+            }
+            if let Some(o) = origins.as_mut() {
+                for k in 0..MAX_LOOPS {
+                    if let Plays::Loop(p) = changes[k][0].plays {
+                        o[k] = p.origin;
+                    }
+                }
+            }
+            loops.plan(&g.block, &answers);
+            for k in 0..MAX_LOOPS {
+                let mut runs = [PlayRun::default(); MAX_PLAY_RUNS];
+                let mut m = 0;
+                for run in loops.runs(k).iter().filter(|run| run.id == k as u128 + 1) {
+                    if m < MAX_PLAY_RUNS {
+                        runs[m] = PlayRun {
+                            from: run.from,
+                            to: run.to,
+                            origin: run.origin,
+                        };
+                        m += 1;
+                    }
+                }
+                g.lp.play(k, &runs[..m]);
+            }
+            g.out[..2 * n].fill(0.0);
+            g.lp
+                .process(&g.block, &g.line_in[..2 * n], &mut g.out[..2 * n]);
+            mix[..2 * n].fill(0.0);
+            let map = *g.t.tempo_map();
+            let outs = g.lp.outs();
+            let src = |id: u128| {
+                let k = (id as usize).checked_sub(1)?;
+                (k < MAX_LOOPS).then(|| &outs.loop_out(k)[..2 * n])
+            };
+            a.process_with_loops(
+                &g.block,
+                &map,
+                &g.line_in[..2 * n],
+                &mut mix[..2 * n],
+                &answers,
+                &loops,
+                &src,
+            );
+            for (i, (x, y)) in l.iter_mut().zip(r.iter_mut()).enumerate() {
+                *x = g.out[2 * i] + mix[2 * i];
+                *y = g.out[2 * i + 1] + mix[2 * i + 1];
+            }
+            g.frame += n as u64;
         }),
         mem_bytes: 0,
     }
