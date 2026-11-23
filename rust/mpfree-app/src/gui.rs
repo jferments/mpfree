@@ -35962,10 +35962,10 @@ mod tests {
         std::thread::sleep(Duration::from_millis(150));
         p.tick(0.01);
         assert!(matches!(state(&p), CardState::Open { .. }));
-        // Hidden: put away, and asked to close.
+        // Hidden: put away, and asked to close (by the close's own thread).
         p.apply(ToUi::Show(View::Play));
-        until(&mut p, &|p| state(p) == CardState::Closed);
-        assert!(dir.join("run/sd-card.close").exists());
+        let close = dir.join("run/sd-card.close");
+        until(&mut p, &|p| state(p) == CardState::Closed && close.exists());
         assert!(p.browser.as_ref().unwrap().library().card().is_none());
         // Shown again on the card place: asked for again (here the window
         // is still open, so it is taken over).
