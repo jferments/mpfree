@@ -59,8 +59,8 @@ use mpfree_time_ui::list::ListRow;
 use mpfree_time_ui::view::pad_name;
 use mpfree_time_ui::view::{
     bars_label, card_rows, clips_after, grid_name, rows_named, scene_rows, AudioAction, BarsEdit,
-    Converting, EditAnswer, EditInfo, EditOutcome, FollowNext, LinkFrom, MarkerEdit, MorphInfo,
-    MuteWait, RegionId, Report, ReportRow, TakeRow, TempoEdit, TimeAction, TimeState,
+    Converting, EditAnswer, EditInfo, EditOutcome, FollowNext, Ghost, LinkFrom, MarkerEdit,
+    MorphInfo, MuteWait, RegionId, Report, ReportRow, TakeRow, TempoEdit, TimeAction, TimeState,
     TransportInfo, SCENE_NAME,
 };
 use mpfree_transport::time::{TempoMap, Tick};
@@ -463,6 +463,10 @@ pub struct TimeControl {
     /// the clip is unchanged, so they rebuild the roll only when it moved
     /// (plan 0C.1).
     edit_seen: Option<Arc<Clip>>,
+    /// The other clips the editor shows faintly behind (piano roll plan
+    /// 4.1), each copy shared with the screens until its clip changes
+    /// ([`TimeControl::ghosts_follow`]).
+    ghost_seen: Vec<Ghost>,
     edit_rev: u64,
     /// What became of the editor's last touch, and how many touches it
     /// has had (plan 0C.2): sent with the clip ([`EditInfo::answer`]).
@@ -716,6 +720,7 @@ impl TimeControl {
             scene_morph: SceneMorph::default(),
             editor: None,
             edit_seen: None,
+            ghost_seen: Vec::new(),
             edit_rev: 0,
             edit_answer: EditAnswer::default(),
             scale_offers: Arc::default(),
@@ -1087,6 +1092,12 @@ impl TimeControl {
         self.editor
             .as_ref()
             .is_some_and(|ed| self.project.clip(ed.track, ed.slot).is_some())
+    }
+
+    /// The note editor is open with Pads write on (piano roll plan 1C.2):
+    /// the pads write at its cursor.
+    pub fn pads_write(&self) -> bool {
+        self.editing() && self.editor.as_ref().is_some_and(|ed| ed.pads_write)
     }
 
     /// The Loop cell armed on the grid while it is still an empty cell of
@@ -2141,8 +2152,20 @@ impl TimeControl {
                 | SongChange::Copied { track, .. }
                 | SongChange::Resized { track, .. }
                 | SongChange::Deleted { track, .. }
-                | SongChange::Unique { track, .. },
+                | SongChange::Unique { track, .. }
+                | SongChange::Split {
+                    track: Some(track), ..
+                }
+                | SongChange::Trimmed { track, .. }
+                | SongChange::Slid { track, .. },
             ) => return format!("{} · {} in the song", r.short(), track_name(track)),
+            Some(SongChange::Split { track: None, at }) => {
+                return format!(
+                    "{} · the song split at {}",
+                    r.short(),
+                    bar_beat(at, self.info.meter)
+                )
+            }
             Some(SongChange::SectionMoved { .. } | SongChange::SectionCopied { .. }) => {
                 return format!("{} · a section of the song", r.short())
             }
@@ -2767,7 +2790,7 @@ impl TimeControl {
         // revision it was carried out on and what became of it.
         self.edit_follow();
         let from = self.edit_rev;
-        let open = a == EditAction::Open;
+        let open = matches!(a, EditAction::Open | EditAction::Switch { .. });
         let r = self.edit_touch(a);
         // The revision moves on Open, and on an edit that went in.
         let took = r.is_ok() && !open && self.edit_rev != from;
@@ -2793,6 +2816,9 @@ impl TimeControl {
 
     /// [`TimeControl::edit`]'s touch itself.
     fn edit_touch(&mut self, a: EditAction) -> Result<String, String> {
+        if let EditAction::Switch { track, slot } = a {
+            return self.edit_switch(track, slot);
+        }
         if a == EditAction::Open {
             let (track, slot) = self.step_focus();
             let name = self
@@ -3095,6 +3121,102 @@ impl TimeControl {
     /// an edit from Steps, a clip moved): its picks follow their notes
     /// (cleared, and said, when one is gone) and the clip's revision
     /// moves, so a tap on the old picture is refused.
+    /// A tap on another clip's faint note (piano roll plan 4.1): the
+    /// editor opens track `track`'s slot `slot`, selecting the track and
+    /// the clip as the Sequencer does (the pads follow), and the clip it
+    /// left shows faintly in its place. Not while a tool is open.
+    fn edit_switch(&mut self, track: usize, slot: usize) -> Result<String, String> {
+        let old = self.editor.as_ref().ok_or("edit: no clip is open")?;
+        if let Some(tool) = old.open_tool {
+            return Err(format!("edit: Done or Cancel {} first", tool.kind.name()));
+        }
+        let left = (old.track, old.slot);
+        let mut show = old.show.clone();
+        let holds = self.project.clip(left.0, left.1).map(|c| c.holds);
+        let clip = self
+            .project
+            .clip(track, slot)
+            .ok_or("edit: that clip is gone")?;
+        if Some(clip.holds) != holds || (track, slot) == left {
+            return Err("edit: that clip can't open here".into());
+        }
+        let was = self.track_pick;
+        self.set_pick(track);
+        if self.track_pick != was && self.track_pick.is_some() {
+            self.compile()?;
+        }
+        self.steps_changed = true;
+        self.edit_clip(Some(slot))?;
+        let clip = self
+            .project
+            .clip(track, slot)
+            .ok_or("edit: that clip is gone")?;
+        match show.iter().position(|&s| s == (track, slot)) {
+            Some(k) => show[k] = left,
+            None => {
+                show.insert(0, left);
+                show.truncate(mpfree_time_ui::editor::SHOW_MAX);
+            }
+        }
+        let name = |t: usize| {
+            self.project
+                .tracks
+                .get(t)
+                .map_or_else(String::new, |t| t.name.clone())
+        };
+        let line = format!(
+            "edit: {} on {}; {} shows behind",
+            clip.name,
+            name(track),
+            self.project
+                .clip(left.0, left.1)
+                .map_or_else(String::new, |c| c.name.clone())
+        );
+        let mut ed = Editor::new(track, slot, clip);
+        ed.offers = Arc::clone(&self.scale_offers);
+        ed.show = show;
+        self.editor = Some(ed);
+        self.edit_seen = Some(Arc::new(clip.clone()));
+        self.edit_rev += 1;
+        self.changed = true;
+        Ok(line)
+    }
+
+    /// The other clips the editor shows (piano roll plan 4.1): those still
+    /// there, of its clip's kind and with notes to show, each copy kept
+    /// while its clip is unchanged so the screens tell it at no cost.
+    fn ghosts_follow(&mut self) {
+        let Some(ed) = self.editor.as_ref() else {
+            self.ghost_seen.clear();
+            return;
+        };
+        let holds = self.project.clip(ed.track, ed.slot).map(|c| c.holds);
+        let mut now = Vec::with_capacity(ed.show.len());
+        for &(track, slot) in &ed.show {
+            let Some(t) = self.project.tracks.get(track) else {
+                continue;
+            };
+            let Some(clip) = self.project.clip(track, slot) else {
+                continue;
+            };
+            if t.is_loops() || t.is_audio() || Some(clip.holds) != holds {
+                continue;
+            }
+            let seen = self
+                .ghost_seen
+                .iter()
+                .find(|g| (g.track, g.slot) == (track, slot) && *g.clip == *clip)
+                .map(|g| Arc::clone(&g.clip));
+            now.push(Ghost {
+                track,
+                slot,
+                clip: seen.unwrap_or_else(|| Arc::new(clip.clone())),
+                track_name: t.name.clone(),
+            });
+        }
+        self.ghost_seen = now;
+    }
+
     fn edit_follow(&mut self) {
         let Some(ed) = self.editor.as_mut() else {
             self.edit_seen = None;
@@ -3524,7 +3646,7 @@ impl TimeControl {
                     .set_scene(
                         &mut self.project,
                         row,
-                        settings.clone(),
+                        *settings,
                         Some(SCENE_JOIN + u64::from(card_row)),
                     )
                     .map_err(|e| format!("scene {}: {e:?}", row + 1))?;
@@ -4451,6 +4573,10 @@ impl TimeControl {
             | TimeAction::ScenesToSong
             | TimeAction::MakeUnique(_)
             | TimeAction::DeletePlacement(_)
+            | TimeAction::SplitPlacement(_)
+            | TimeAction::DuplicatePlacement(_)
+            | TimeAction::TrimPlacement { .. }
+            | TimeAction::SlidePlacement { .. }
             | TimeAction::MovePlacement { .. }
             | TimeAction::StretchPlacement { .. }
             | TimeAction::MoveSection { .. }
@@ -4891,6 +5017,7 @@ impl TimeControl {
     ) -> Result<(String, Option<SongChange>), String> {
         let meter = self.info.meter;
         let bpm = self.project_bpm;
+        let playhead = self.info.position;
         let tracks = &self.project.tracks;
         let song = &mut self.project.arrangement;
         let named = |song: &mpfree_seq::arrange::Arrangement, i: usize| {
@@ -4956,6 +5083,116 @@ impl TimeControl {
                         Some(SongChange::Moved { track, start }),
                     )
                 })
+            }
+            TimeAction::SplitPlacement(Some(i)) => {
+                let name = named(song, i);
+                let track = song
+                    .placements
+                    .get(i)
+                    .map(|p| p.track)
+                    .ok_or("split: no such block")?;
+                let j = song.split(tracks, i, playhead).map_err(|_| {
+                    format!("song: move the playhead inside {name} (Split cuts at the playhead)")
+                })?;
+                // The part after is picked: Split again cuts it further.
+                self.selected = Some(j);
+                Ok((
+                    format!(
+                        "song: {name} split at {} (UNDO takes it back)",
+                        at(playhead)
+                    ),
+                    Some(SongChange::Split {
+                        track: Some(track),
+                        at: playhead,
+                    }),
+                ))
+            }
+            TimeAction::SplitPlacement(None) => {
+                let n = song
+                    .split_all(tracks, playhead)
+                    .map_err(|_| "song: too many blocks to split them all".to_string())?;
+                if n == 0 {
+                    return Err(format!(
+                        "song: no block plays across {} (Split cuts at the playhead)",
+                        at(playhead)
+                    ));
+                }
+                let blocks = if n == 1 { "block" } else { "blocks" };
+                Ok((
+                    format!(
+                        "song: {n} {blocks} split at {} (UNDO takes it back)",
+                        at(playhead)
+                    ),
+                    Some(SongChange::Split {
+                        track: None,
+                        at: playhead,
+                    }),
+                ))
+            }
+            TimeAction::DuplicatePlacement(i) => {
+                let name = named(song, i);
+                if i >= song.placements.len() {
+                    return Err("duplicate: no such block".into());
+                }
+                let j = song.duplicate(i).map_err(|_| {
+                    format!("song: no room after {name} for its copy: a block on its lane is in the way")
+                })?;
+                let (track, start) = (song.placements[j].track, song.placements[j].start);
+                self.selected = Some(j);
+                self.section = None;
+                Ok((
+                    format!(
+                        "song: a copy of {name} at {} (UNDO takes it back)",
+                        at(start)
+                    ),
+                    Some(SongChange::Copied { track, start }),
+                ))
+            }
+            TimeAction::TrimPlacement { index, start } => {
+                let name = named(song, index);
+                let track = song
+                    .placements
+                    .get(index)
+                    .map(|p| p.track)
+                    .ok_or("trim: no such block")?;
+                song.trim_start(tracks, index, start).map_err(|_| {
+                    format!(
+                        "song: {name} can't start at {}: it would run into the block before, or past its own end",
+                        at(start)
+                    )
+                })?;
+                Ok((
+                    format!(
+                        "song: {name} starts at {} now, what it plays where it was (UNDO takes it back)",
+                        at(start)
+                    ),
+                    Some(SongChange::Trimmed { track, start }),
+                ))
+            }
+            TimeAction::SlidePlacement { index, by } => {
+                let name = named(song, index);
+                let (track, start) = song
+                    .placements
+                    .get(index)
+                    .map(|p| (p.track, p.start))
+                    .ok_or("slide: no such block")?;
+                if by == 0 {
+                    return Ok((format!("song: {name} plays as it did"), None));
+                }
+                song.slide(tracks, index, by)
+                    .map_err(|_| "slide: no such block".to_string())?;
+                let beats = by.unsigned_abs() as f64 / meter.beat_ticks().max(1) as f64;
+                let way = if by > 0 { "later" } else { "earlier" };
+                let amount = if beats.fract() == 0.0 {
+                    let n = beats as u64;
+                    format!("{n} beat{}", if n == 1 { "" } else { "s" })
+                } else {
+                    format!("{beats:.2} beats")
+                };
+                Ok((
+                    format!("song: what {name} plays slid {amount} {way} (UNDO takes it back)"),
+                    Some(SongChange::Slid { track, start }),
+                ))
             }
             TimeAction::StretchPlacement { index, length } => {
                 let name = named(song, index);
@@ -7122,8 +7359,9 @@ impl TimeControl {
     pub fn take_changed(&mut self) -> bool {
         if self.changed {
             // The note editor's picks follow what changed, before the
-            // screens get it.
+            // screens get it, and so do the clips it shows behind.
             self.edit_follow();
+            self.ghosts_follow();
         }
         std::mem::take(&mut self.changed)
     }
@@ -7234,6 +7472,7 @@ impl TimeControl {
                 bar: bar.round() as Tick,
                 answer: self.edit_answer.clone(),
                 locks: Default::default(),
+                ghosts: self.ghost_seen.clone(),
             }))
         });
         st

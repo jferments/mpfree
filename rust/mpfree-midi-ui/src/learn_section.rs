@@ -98,6 +98,9 @@ const LOOPER_W: i32 = 76;
 const SHOW_W: i32 = 64;
 /// The Clips and scenes card's track stepper's - and +.
 const CLIP_STEP_W: i32 = 34;
+/// The looper card's Loop stepper's words ("Picked loop", "Loop 8")
+/// between its - and +.
+const LOOP_WORDS_W: i32 = 96;
 /// Where the heading's key may start, after its words ("WHAT YOUR
 /// CONTROLLERS MOVE · 12"), and the least room it is drawn in.
 const KEY_FROM: i32 = 290;
@@ -170,8 +173,8 @@ fn clip_target(i: usize, track: u8) -> ParamAddr {
 
 /// The looper card's buttons, after the Loop stepper: that loop's Key
 /// and Mute, then the looper's own (on the loop picked when they are
-/// pressed).
-const LOOPER_BUTTONS: [&str; 7] = [
+/// pressed), smart loop end's Snap and Use my tap last.
+const LOOPER_BUTTONS: [&str; 9] = [
     "Key",
     "Mute",
     "Next loop",
@@ -179,6 +182,8 @@ const LOOPER_BUTTONS: [&str; 7] = [
     "Redo",
     "Capture",
     "Clear",
+    "Snap",
+    "Use my tap",
 ];
 
 /// What the looper card's Loop stepper steps through: the picked loop,
@@ -206,7 +211,9 @@ fn looper_target(i: usize, w: Which) -> ParamAddr {
         3 => looper::UNDO,
         4 => looper::REDO,
         5 => looper::CAPTURE,
-        _ => looper::CLEAR,
+        6 => looper::CLEAR,
+        7 => looper::SNAP,
+        _ => looper::USE_MY_TAP,
     };
     ParamAddr::new(Owner::Looper, id)
 }
@@ -717,13 +724,33 @@ fn clip_rects(l: &Layout) -> ([Rect; 2], [Rect; 5]) {
     (steps, [p[1], p[2], p[3], p[4], p[5]])
 }
 
-/// The looper card's parts, on the same grid: the Loop stepper (- and
-/// +) in the first place, that loop's Key and Mute and Next loop beside
-/// it, then Undo, Redo, Capture and Clear on the second row.
-fn looper_rects(l: &Layout) -> ([Rect; 2], [Rect; 7]) {
-    let (steps, _) = clip_rects(l);
-    let p = pick_rects(l);
-    (steps, [p[1], p[2], p[3], p[4], p[5], p[6], p[7]])
+/// The looper card's parts, in [`LOOPER_BUTTONS`]' order, on a grid of
+/// two rows of five (the transport card's rows), the first column wide
+/// enough for the Loop stepper's words: the stepper (- and +) in the
+/// first place, that loop's Key and Mute, Next loop and Capture beside
+/// it, then Undo, Redo, Clear, Snap and Use my tap on the second row.
+fn looper_rects(l: &Layout) -> ([Rect; 2], [Rect; 9]) {
+    let ci = l.card.inset(14);
+    let first = (2 * CLIP_STEP_W + LOOP_WORDS_W).min(ci.w / 3);
+    let w = (ci.w - 4 * 8 - first) / 4;
+    let y = ci.y + BUTTON_H + 34;
+    let p: [Rect; 10] = std::array::from_fn(|i| {
+        let (row, col) = ((i / 5) as i32, (i % 5) as i32);
+        let (x, w) = match col {
+            0 => (ci.x, first),
+            _ => (ci.x + first + 8 + (col - 1) * (w + 8), w),
+        };
+        Rect::new(x, y + row * (PICK_H + 8), w, PICK_H)
+    });
+    let s = p[0];
+    let steps = [
+        Rect::new(s.x, s.y, CLIP_STEP_W, s.h),
+        Rect::new(s.right() - CLIP_STEP_W, s.y, CLIP_STEP_W, s.h),
+    ];
+    (
+        steps,
+        [p[1], p[2], p[3], p[5], p[6], p[4], p[7], p[8], p[9]],
+    )
 }
 
 /// Play's card's buttons, on the same grid: Swing, Filter, XY across and
@@ -1663,7 +1690,7 @@ impl Learn {
             let lit = self.waits_for(m, looper_target(i, self.loop_which));
             button(cx, r, LOOPER_BUTTONS[i], lit);
         }
-        let last = pick_rects(l)[7];
+        let last = looper_rects(l).1[8];
         para(
             cx,
             t.size_small * 0.9,
@@ -2972,9 +2999,23 @@ mod tests {
                 "Undo",
                 "Redo",
                 "Capture",
-                "Clear"
+                "Clear",
+                "Snap",
+                "Use my tap"
             ]
         );
+        // The Loop stepper's words fit between its - and +, and no two
+        // buttons overlap.
+        let l = layout(AREA, false);
+        let (steps, buttons) = looper_rects(&l);
+        assert!(steps[1].x - steps[0].right() >= LOOP_WORDS_W);
+        for (i, a) in buttons.iter().enumerate() {
+            assert!(a.x >= steps[1].right() || a.y > steps[1].y, "{i}");
+            assert_eq!(l.card.inset(14).intersect(*a), *a, "{i}");
+            for b in &buttons[i + 1..] {
+                assert!(a.intersect(*b).is_empty(), "{i}");
+            }
+        }
         // Nothing for the Q-Links while it shows.
         assert!(s.qlinks().unwrap().iter().all(|k| !k.enabled));
         assert_eq!(s.qlink_turn(0, 1, false), IoReply::Ignored);
@@ -3032,6 +3073,8 @@ mod tests {
             (4, looper::REDO),
             (5, looper::CAPTURE),
             (6, looper::CLEAR),
+            (7, looper::SNAP),
+            (8, looper::USE_MY_TAP),
         ] {
             tap(&mut s, "learn-looper-pick", i);
             assert_eq!(armed(&m), at(id));

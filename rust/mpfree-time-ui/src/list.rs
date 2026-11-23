@@ -31,6 +31,7 @@ use std::cell::Cell;
 use mpfree_ui::{Align, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
 
 use crate::report::ReportCard;
+use crate::widgets::{view_chip_rect, view_part_at, view_part_rect, view_title, ArrangeView};
 
 /// One step as the list shows it.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -90,8 +91,8 @@ const BUTTONS: [(&str, i32); 3] = [
     ("Remove", 120),
 ];
 const BUTTON_H: i32 = 46;
-/// The title line's buttons, right to left: Song, Clips, the loop switch.
-const LENS_W: i32 = 72;
+/// The title line's loop switch, at its right end (the view chip at its
+/// left has Clips and Song, 5.7).
 const LOOP_W: i32 = 132;
 /// Link, left of the loop switch, and its chooser: a card a choice.
 const LINK_W: i32 = 84;
@@ -117,7 +118,7 @@ const GRIP_W: i32 = 44;
 /// The song list: see the module notes.
 #[derive(Debug, Default)]
 pub struct SongListView {
-    /// "Song list · 7 steps · 76 bars · 2:27".
+    /// "7 steps · 76 bars · 2:27", after the view chip.
     pub title: String,
     pub rows: Vec<ListRow>,
     pub picked: Option<usize>,
@@ -286,18 +287,20 @@ impl SongListView {
         })
     }
 
-    /// The title line's buttons: the loop switch, Clips and Song.
-    pub fn head_rects(r: Rect) -> [Rect; 3] {
+    /// The title line's loop switch, at its right end.
+    pub fn loop_rect(r: Rect) -> Rect {
         let h = SongListView::geo(r).head;
-        let song = Rect::new(h.right() - LENS_W, h.y - 4, LENS_W, h.h + 8);
-        let clips = Rect::new(song.x - 8 - LENS_W, song.y, LENS_W, song.h);
-        let looped = Rect::new(clips.x - 8 - LOOP_W, song.y, LOOP_W, song.h);
-        [looped, clips, song]
+        Rect::new(h.right() - LOOP_W, h.y - 4, LOOP_W, h.h + 8)
+    }
+
+    /// Where the view chip is: the left end of the title line (5.7).
+    pub fn view_rect(r: Rect) -> Rect {
+        view_chip_rect(r)
     }
 
     /// Link, on a list that isn't linked (4b.5): left of the loop switch.
     pub fn link_rect(&self, r: Rect) -> Option<Rect> {
-        let [looped, ..] = SongListView::head_rects(r);
+        let looped = SongListView::loop_rect(r);
         (!self.linked).then(|| Rect::new(looped.x - 8 - LINK_W, looped.y, LINK_W, looped.h))
     }
 
@@ -322,7 +325,7 @@ impl SongListView {
     /// Where Show is, while a set is open: left of Link, or of the loop
     /// switch while the list is linked.
     pub fn show_rect(&self, r: Rect) -> Option<Rect> {
-        let [looped, ..] = SongListView::head_rects(r);
+        let looped = SongListView::loop_rect(r);
         let right = self.link_rect(r).unwrap_or(looped);
         let w = crate::widgets::SHOW_W;
         self.show_button
@@ -362,21 +365,18 @@ impl SongListView {
 impl Widget for SongListView {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
-        cx.titled_panel(r, &self.title, "");
-        let [looped, clips, song] = SongListView::head_rects(r);
-        for (b, word, lit) in [
-            (
-                looped,
-                if self.looped {
-                    "Loop the list: on"
-                } else {
-                    "Loop the list: off"
-                },
-                self.looped,
-            ),
-            (clips, "Clips", false),
-            (song, "Song", false),
-        ]
+        let looped = SongListView::loop_rect(r);
+        let end = self.link_rect(r).unwrap_or(looped).x - 12;
+        view_title(cx, r, ArrangeView::List, &self.title, end);
+        for (b, word, lit) in [(
+            looped,
+            if self.looped {
+                "Loop the list: on"
+            } else {
+                "Loop the list: off"
+            },
+            self.looped,
+        )]
         .into_iter()
         .chain(
             self.link_rect(r)
@@ -643,11 +643,11 @@ impl Widget for SongListView {
             }
             return out;
         }
-        let [looped, clips, song] = SongListView::head_rects(r);
+        let chip = SongListView::view_rect(r);
         let mut out = vec![
-            Target::tap("loop", 0, "Loop the list", looped),
-            Target::tap("lens", 0, "Clips", clips),
-            Target::tap("lens", 1, "Song", song),
+            Target::tap("loop", 0, "Loop the list", SongListView::loop_rect(r)),
+            Target::tap("view", 0, "Clips", view_part_rect(chip, ArrangeView::Clips)),
+            Target::tap("view", 2, "Song", view_part_rect(chip, ArrangeView::Song)),
         ];
         if let Some(b) = link {
             out.push(Target::tap("link", 0, "Link", b));
@@ -772,11 +772,14 @@ impl Widget for SongListView {
                 return Some(EventKind::Select(g.step));
             }
         }
-        let [looped, clips, song] = SongListView::head_rects(r);
-        for (b, k) in [(looped, LIST_LOOP), (clips, LIST_CLIPS), (song, LIST_SONG)] {
-            if b.contains(x, y) {
-                return Some(EventKind::Toggle(k));
-            }
+        if SongListView::loop_rect(r).contains(x, y) {
+            return Some(EventKind::Toggle(LIST_LOOP));
+        }
+        match view_part_at(SongListView::view_rect(r), x, y) {
+            Some(ArrangeView::Clips) => return Some(EventKind::Toggle(LIST_CLIPS)),
+            Some(ArrangeView::Song) => return Some(EventKind::Toggle(LIST_SONG)),
+            Some(ArrangeView::List) => return None,
+            None => {}
         }
         if self.link_rect(r).is_some_and(|b| b.contains(x, y)) {
             return Some(EventKind::Toggle(LIST_LINK));
@@ -837,7 +840,7 @@ mod tests {
 
     fn list(n: usize) -> SongListView {
         let mut l = SongListView::new();
-        l.title = "Song list".into();
+        l.title = "3 steps · 12 bars · 0:24".into();
         l.can_add = true;
         l.rows = (0..n)
             .map(|k| ListRow {
@@ -899,12 +902,23 @@ mod tests {
             tap(&mut l, b[2].x + 3, b[2].y + 3),
             Some(EventKind::Toggle(LIST_REMOVE))
         );
-        let [lp, clips, song] = SongListView::head_rects(r);
-        assert!(lp.right() < clips.x && clips.right() < song.x);
+        // The view chip at the title line's left (5.7), the loop switch
+        // at its right.
+        let chip = SongListView::view_rect(r);
+        let lp = SongListView::loop_rect(r);
+        assert!(chip.x + crate::widgets::VIEW_CHIP_W < lp.x);
+        let song = view_part_rect(chip, ArrangeView::Song);
         assert_eq!(
             tap(&mut l, song.x + 3, song.y + 3),
             Some(EventKind::Toggle(LIST_SONG))
         );
+        let clips = view_part_rect(chip, ArrangeView::Clips);
+        assert_eq!(
+            tap(&mut l, clips.x + 3, clips.y + 3),
+            Some(EventKind::Toggle(LIST_CLIPS))
+        );
+        let own = view_part_rect(chip, ArrangeView::List);
+        assert_eq!(tap(&mut l, own.x + 3, own.y + 3), None);
         // While a set is open, Show sits left of Link (left of the loop
         // switch while the list is linked).
         assert_eq!(l.show_rect(r), None);
@@ -1030,7 +1044,7 @@ mod tests {
         let r = Rect::new(12, 128, 854, 622);
         let mut l = list(3);
         let link = l.link_rect(r).unwrap();
-        let [looped, ..] = SongListView::head_rects(r);
+        let looped = SongListView::loop_rect(r);
         assert_eq!(link.right() + 8, looped.x);
         assert_eq!(link.w, LINK_W);
         let mid = |b: Rect| (b.x + b.w / 2, b.y + b.h / 2);

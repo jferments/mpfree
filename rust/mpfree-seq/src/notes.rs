@@ -1404,6 +1404,92 @@ pub fn add_all(clip: &Clip, notes: &[Note]) -> Edit {
     }
 }
 
+/// Notes the pads write at the cursor (piano roll plan 1C.2): each in
+/// place of any note already starting on its tick at its pitch, so a pad
+/// hit again on the same line changes the note rather than doubling it.
+/// The notes it takes the place of keep their locks, which sit on the
+/// same step and row. In a clip of notes each note keeps the trigger
+/// group it comes with (a pad's, [`crate::groups::pad_group`], so a chord
+/// pad's chord plays whole or not at all, as its hit does) and joins what
+/// is left of that trigger on its tick, taking its chance, condition and
+/// on, as a pad tapped on its step does; a clip of pad hits has none
+/// ([`crate::groups::settle_new`]). None go in when one can't, or the
+/// clip would hold more than [`MAX_NOTES`].
+pub fn write(clip: &Clip, notes: &[Note]) -> Edit {
+    let erase: Vec<Note> = clip
+        .notes
+        .iter()
+        .filter(|n| notes.iter().any(|w| w.tick == n.tick && w.note == n.note))
+        .copied()
+        .collect();
+    let mut c = Clip::new("", clip.length);
+    if clip.notes.len() - erase.len() + notes.len() > MAX_NOTES
+        || notes.is_empty()
+        || notes.iter().any(|&n| c.add_note(n).is_err())
+    {
+        return Edit::default();
+    }
+    let mut add = notes.to_vec();
+    // Joining never runs out of numbers: a note takes its own number,
+    // into the trigger there when the tick has it.
+    if crate::groups::settle_new(clip, &erase, &mut add, true).is_err() {
+        return Edit::default();
+    }
+    Edit {
+        erase,
+        add,
+        ..Edit::default()
+    }
+}
+
+/// Another clip's notes as they sound against one pass of `into` (piano
+/// roll plan 4.1, other clips shown faintly behind the one edited),
+/// placed with the clips' own speeds: each played note of `other` at
+/// the song time it plays, from `phase` song ticks into `other`'s loop
+/// where the pass of `into` starts, on `into`'s ticks. A shorter clip
+/// comes round as often as it plays in the pass, a half-speed one is
+/// twice as long, and a note running past the pass's end is cut there.
+/// Only notes that start in the pass, in time order, at most `most`.
+/// Off notes play nothing and are left out; the play direction is taken
+/// as forward.
+pub fn placed(other: &Clip, into: &Clip, phase: f64, most: usize) -> Vec<Note> {
+    let period = other.speed.to_song(other.length as f64);
+    let pass = into.speed.to_song(into.length as f64);
+    if period <= 0.0 || pass <= 0.0 || !phase.is_finite() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for n in other.notes.iter().filter(|n| n.on && n.tick < other.length) {
+        let song_len = other.speed.to_song(n.len.max(1) as f64);
+        let mut at = (other.speed.to_song(n.tick as f64) - phase).rem_euclid(period);
+        while at < pass && out.len() < most {
+            let tick = into.speed.to_clip(at).round() as Tick;
+            let end = into.speed.to_clip(at + song_len).round() as Tick;
+            let end = end.min(into.length).max(tick + 1);
+            if tick < into.length {
+                out.push(Note {
+                    tick,
+                    len: end - tick,
+                    ..*n
+                });
+            }
+            at += period;
+        }
+    }
+    out.sort_by_key(|n| (n.tick, n.note));
+    out
+}
+
+/// How far into its loop, in song ticks, a clip that started its loop on
+/// song tick `origin` and repeats every `period` song ticks is at song
+/// tick `at`: `placed`'s phase for a pass starting at `at`.
+pub fn loop_phase(origin: f64, period: f64, at: f64) -> f64 {
+    if period <= 0.0 {
+        return 0.0;
+    }
+    (at - origin).rem_euclid(period)
+}
+
 /// The `sel` notes in chords (plan 2B.2): the notes that sound together,
 /// each chord lowest first, the chords in time. Taken by their starts, a
 /// note joins a chord while it starts before the chord's first note ends,
@@ -2914,6 +3000,122 @@ mod tests {
         assert!(add_all(&c, &[Note::new(4 * 960, 240, 50, 90)])
             .add
             .is_empty());
+    }
+
+    /// The pads write in place of a note on the same tick and pitch (plan
+    /// 1C.2): hit again, a note changes rather than doubles; its lock
+    /// stays; a pad past the clip's end, or nothing, writes nothing.
+    #[test]
+    fn a_pad_writes_in_place_of_a_note_on_its_line() {
+        let mut c = clip(&[(0, 240, 36), (0, 480, 38), (480, 240, 36)]);
+        c.add_lock(Lock::new(0, Some(36), RelAddr::new(OnTrack::Inst, 1), 0.5))
+            .unwrap();
+        let e = write(&c, &[Note::new(0, 120, 36, 70)]);
+        assert_eq!(e.erase, [Note::new(0, 240, 36, 100)]);
+        assert!(e.erase_locks.is_empty(), "its lock stays");
+        let d = applied(&c, &e);
+        assert_eq!(d.notes.len(), 3);
+        assert!(d.notes.contains(&Note::new(0, 120, 36, 70)));
+        assert!(d.notes.contains(&Note::new(480, 240, 36, 100)));
+        // A chord: each of its notes in place of its own.
+        let e = write(&c, &[Note::new(0, 240, 38, 90), Note::new(0, 240, 42, 90)]);
+        assert_eq!(e.erase, [Note::new(0, 480, 38, 100)]);
+        assert_eq!(e.add.len(), 2);
+        assert!(write(&c, &[Note::new(4 * 960, 240, 36, 90)]).is_empty());
+        assert!(write(&c, &[]).is_empty());
+    }
+
+    /// The pads write their trigger groups (#827): in a clip of notes a
+    /// chord pad's notes are its trigger, its number plus one, as a
+    /// recorded hit's are; written again on its step, a note joins what
+    /// is left of the trigger there and takes its chance; another pad's
+    /// notes on the step are a trigger of their own; a clip of pad hits
+    /// has no groups.
+    #[test]
+    fn a_pad_writes_its_chord_as_one_trigger() {
+        let pad = |tick, note, g: u8| Note {
+            group: g,
+            ..Note::new(tick, 240, note, 90)
+        };
+        let g = crate::groups::pad_group(4);
+        let mut c = clip(&[]);
+        c.holds = Holds::Notes;
+        let chord = [pad(0, 60, g), pad(0, 64, g), pad(0, 67, g)];
+        let mut d = applied(&c, &write(&c, &chord));
+        assert!(d.notes.iter().all(|n| n.group == g));
+        // A chance on the trigger (all its notes), then the pad's E again
+        // with a softer hit: it joins the trigger and takes its chance.
+        for n in d.notes.iter_mut() {
+            n.chance = 40;
+        }
+        d.check().unwrap();
+        let e = write(&d, &[pad(0, 64, g)]);
+        assert_eq!(e.erase.len(), 1);
+        assert_eq!((e.add[0].group, e.add[0].chance), (g, 40));
+        let d = applied(&d, &e);
+        assert_eq!(d.check(), Ok(()));
+        // Another pad on the step: its own trigger, its own chance.
+        let h = crate::groups::pad_group(5);
+        let e = write(&d, &[pad(0, 72, h)]);
+        assert_eq!((e.add[0].group, e.add[0].chance), (h, 100));
+        assert_eq!(applied(&d, &e).check(), Ok(()));
+        // A clip of pad hits: none.
+        let mut hits = clip(&[]);
+        hits.holds = Holds::Hits;
+        let e = write(&hits, &[pad(0, 4, g)]);
+        assert_eq!(e.add[0].group, 0);
+    }
+
+    /// Another clip placed against the one edited (plan 4.1): a clip at
+    /// half speed lines up where it is heard, twice as long; a shorter
+    /// clip comes round in the pass; the phase moves it; an off note is
+    /// left out, and a note past the pass's end is cut there.
+    #[test]
+    fn another_clip_lines_up_by_its_speed_and_where_its_loop_is() {
+        use crate::Speed;
+        let bar = 4 * 960;
+        // Edited: two bars at normal speed.
+        let into = Clip::new("Keys", 2 * bar);
+        // A one-bar bass at half speed: its bar plays over two.
+        let mut bass = clip(&[(0, 480, 36), (bar / 2, 480, 43)]);
+        bass.length = bar;
+        bass.speed = Speed::new(1, 2).unwrap();
+        let got: Vec<(Tick, Tick, u8)> = placed(&bass, &into, 0.0, 64)
+            .iter()
+            .map(|n| (n.tick, n.len, n.note))
+            .collect();
+        assert_eq!(got, [(0, 960, 36), (bar, 960, 43)]);
+        // A half-bar hat at normal speed comes round four times.
+        let mut hat = clip(&[(0, 120, 42)]);
+        hat.length = bar / 2;
+        let ticks: Vec<Tick> = placed(&hat, &into, 0.0, 64)
+            .iter()
+            .map(|n| n.tick)
+            .collect();
+        assert_eq!(ticks, [0, bar / 2, bar, 3 * bar / 2]);
+        // A quarter of a bar into the hat's loop: each hit a quarter
+        // earlier, the first coming round at the end.
+        let ticks: Vec<Tick> = placed(&hat, &into, f64::from(960), 64)
+            .iter()
+            .map(|n| n.tick)
+            .collect();
+        assert_eq!(ticks, [960, 960 + bar / 2, 960 + bar, 960 + 3 * bar / 2]);
+        // At most `most`.
+        assert_eq!(placed(&hat, &into, 0.0, 3).len(), 3);
+        // Off notes are left out; a long note is cut at the pass's end.
+        let mut pad = Clip::new("Pad", 2 * bar);
+        pad.add_note(Note::new(0, 240, 60, 100)).unwrap();
+        pad.add_note(Note::new(bar + bar / 2, 4 * bar, 64, 100))
+            .unwrap();
+        pad.notes[0].on = false;
+        let got: Vec<(Tick, Tick, u8)> = placed(&pad, &into, 0.0, 64)
+            .iter()
+            .map(|n| (n.tick, n.len, n.note))
+            .collect();
+        assert_eq!(got, [(bar + bar / 2, bar / 2, 64)]);
+        // The phase of a loop at a song tick.
+        assert_eq!(loop_phase(960.0, 1920.0, 960.0 + 1920.0 * 3.0 + 10.0), 10.0);
+        assert_eq!(loop_phase(0.0, 0.0, 99.0), 0.0);
     }
 
     /// Chop cuts each picked note into equal pieces, each with its part

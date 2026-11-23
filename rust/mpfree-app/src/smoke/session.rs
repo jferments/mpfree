@@ -225,6 +225,8 @@ pub struct Session {
     pub synth_on: bool,
     /// What each track plays, as main.rs keeps it.
     pub track_kits: crate::sampler::TrackKits,
+    /// The song's tuning the kits were handed last, as main.rs keeps it.
+    kits_tuned: Option<crate::synth::TuningPick>,
     /// The project's instruments, as main.rs keeps them.
     pub instrument_list: crate::instrument_list::InstrumentList,
     /// The tracks' own instruments and sends the screen was last told of,
@@ -315,7 +317,13 @@ pub struct Session {
     /// try (presets.rs), as main.rs keeps them.
     pub presets: crate::presets::TrackPresets,
     mix_turns: crate::mixturns::MixTurns,
-    turns_told: (bool, bool),
+    turns_told: (bool, bool, bool),
+    /// Your XY layouts in the song, as main.rs keeps them, and whether a
+    /// project's layout waits for its mixer to play.
+    pub xy_yours: crate::xy_song::XySong,
+    xy_opening: bool,
+    /// Stay's turns on a layout of yours, for UNDO (main.rs's own).
+    xy_turns: crate::xy_song::XyTurns,
     /// The library the browser saves projects into (`with_library`).
     pub library: Option<mpfree_library::Library>,
     /// A save asked for (SHIFT + BROWSE, Save in the browser), and the
@@ -403,6 +411,7 @@ impl Session {
             kit: 0,
             synth_on: false,
             track_kits: crate::sampler::TrackKits::new(n),
+            kits_tuned: None,
             instrument_list: {
                 // Each kit place has its id, as main.rs's (step 14).
                 let mut list = crate::instrument_list::InstrumentList::new();
@@ -450,10 +459,13 @@ impl Session {
             periods: 0,
             t0: Instant::now(),
             canvas: mpfree_ui::SoftCanvas::new(gui::SCREEN.0, gui::SCREEN.1),
+            xy_yours: crate::xy_song::XySong::default(),
+            xy_opening: false,
+            xy_turns: undo::Turns::default(),
             synth_turns: undo::Turns::default(),
             presets: crate::presets::TrackPresets::default(),
             mix_turns: undo::Turns::default(),
-            turns_told: (false, false),
+            turns_told: (false, false, false),
             library: None,
             save_asked: false,
             loops_saving: false,
@@ -467,6 +479,10 @@ impl Session {
         s.out.show(ToUi::Synth(s.synth.state()));
         s.out
             .show(ToUi::KitIds(Box::new(s.instrument_list.kit_ids())));
+        // Simulated time runs far faster than it plays: smart loop end's
+        // finder answers in the period that asks, as its thread would in
+        // the time a period plays.
+        s.looper.finder.inline = true;
         let mut projects = vec![mpfree_sampler_ui::sample::project().0];
         projects.resize_with(n, mpfree_sampler::model::Project::new);
         s.out.show(ToUi::SampleKits {
@@ -759,6 +775,8 @@ impl Session {
         let file = crate::kit::build_kits(&[("Tones", crate::kit::build(&sounds))]);
         let mut kits = crate::kit::parse_kits(&file).expect("the tones kit");
         self.sounds = Some(crate::sampler::Player::new(&mut kits, &notes, RATE).expect("a player"));
+        // A new player starts in 12-TET: the next period hands it the tuning.
+        self.kits_tuned = None;
         self
     }
 
@@ -1343,6 +1361,21 @@ impl Session {
 
     fn period(&mut self) {
         self.settle();
+        if self.xy_opening && !self.mix.opening() {
+            self.xy_opening = false;
+            if let Some(c) = self.xy_yours.opening() {
+                self.mix.xy_done(crate::xy_song::Done {
+                    load: Some(Some(c)),
+                    hold: None,
+                });
+            }
+            self.xy_show();
+        }
+        // The XY pad's Stay: the settings it kept at a lift, one UNDO step.
+        if let Some((key, from, to)) = crate::xy_song::kept_turn(self.mix.take_xy_kept()) {
+            let now = self.now();
+            self.xy_turns.turned(key, from, to, now);
+        }
         // The list of instruments follows the tracks' own and the free
         // places' (step 6), as main.rs's period does: the app hears of it,
         // a free place nothing plays is put away, and the pads play the
@@ -1791,6 +1824,12 @@ impl Session {
         let mut played = 0;
         if let Some(p) = self.sounds.as_mut() {
             p.set_tempo(self.time.info().bpm);
+            // The kits play the song's tuning, as main.rs hands it over.
+            let (now, said) = crate::kits_follow_tuning(&self.synth, p, self.kits_tuned);
+            self.kits_tuned = now;
+            if let Some(line) = said {
+                self.out.note(&line);
+            }
             let mut pads = self.mix.pads();
             p.render_routed(PERIOD, &mut pads);
             played = pads.played();
@@ -1937,6 +1976,7 @@ impl Session {
             synth: crate::project::synth_text(&self.app.synth_settings(), &self.synth.sounds()),
             arp: self.app.arp_part(),
             perform: self.app.perform_set().text(),
+            xy: self.xy_yours.text(),
             instruments: crate::project::instruments_text(&self.mix.instruments),
             track_kits: crate::project::track_kits_text(
                 &self.track_kits,
@@ -1992,6 +2032,16 @@ impl Session {
             self.fx
                 .push(Effect::Time(TimeAction::Transport(Command::SetSwing(sw))));
         }
+        // Your XY layouts, as main.rs: the one playing lets go before the
+        // mixer changes, and the project's plays once its mixer is in.
+        self.mix.xy_yours(None);
+        let (song, notes) = crate::xy_song::XySong::parse(o.xy.as_deref().unwrap_or(""));
+        for line in notes {
+            self.out.note(&format!("project: {line}"));
+        }
+        self.xy_yours = song;
+        self.xy_turns.clear();
+        self.xy_opening = true;
         if let Some(m) = o.mix.take() {
             self.mix.open(m);
         }
@@ -2093,11 +2143,17 @@ impl Session {
         }
         crate::record_knob(&a, &self.app, &self.mix, &mut self.time);
         let mut fx = std::mem::take(&mut self.fx);
+        // A ready-made layout picked on the XY pad's list: none of yours
+        // plays from now (as main.rs).
+        let xy_picked = matches!(a, FromUi::PlayFx(mixing::PlayFx::XyEffect(_)));
         let rest = {
             let (mut d, out) = self.desk();
             d.screen(a, t, out, &mut fx)
         };
         self.fx = fx;
+        if xy_picked && self.xy_yours.playing.take().is_some() {
+            self.xy_show();
+        }
         // As the audio loop does: a mixer turn, from its value before the
         // desk set it.
         if let Some(turn) = mix_turn {
@@ -2236,6 +2292,30 @@ impl Session {
                 self.out.note(&line);
                 self.out.show(ToUi::Tell(line));
             }
+            // Your XY layouts, as main.rs.
+            FromUi::Xy(act) => {
+                let track = u8::try_from(self.app.track()).unwrap_or(u8::MAX);
+                let pads = |_: u8, _: u8, _: u16| None;
+                let (mix, synth, app, time) = (&self.mix, &*self.synth, &self.app, &self.time);
+                let look = |a| crate::xy_seen(mix, synth, app, &pads, time, a);
+                let mut told = None;
+                let done = self.xy_yours.act(
+                    act,
+                    track,
+                    |pick, name| mix.xy_ready(pick, name),
+                    &look,
+                    &mut |l| told = Some(l),
+                );
+                match done {
+                    Ok(d) => self.mix.xy_done(d),
+                    Err(e) => told = Some(e),
+                }
+                if let Some(line) = told {
+                    self.out.note(&format!("xy: {line}"));
+                    self.out.show(ToUi::Tell(line));
+                }
+                self.xy_show();
+            }
             FromUi::SaveProject => self.save_asked = true,
             FromUi::OpenProject(o) => self.open_project(o),
             FromUi::OpenLoops(l) => self.looper.open(*l),
@@ -2292,6 +2372,9 @@ impl Session {
                         .rows("Start: the mix before these turns", |t| {
                             crate::mixturns::row(t)
                         }),
+                    gui::UndoOn::Xy => self.xy_turns.rows("Start: before these lifts", |t| {
+                        crate::xy_turn_row(&self.mix, t)
+                    }),
                 };
                 self.out.show(ToUi::UndoHistory { on, rows, now });
             }
@@ -2324,6 +2407,23 @@ impl Session {
                             line
                         })
                     }
+                    gui::UndoOn::Xy => {
+                        let turn = if redo {
+                            self.xy_turns.redo()
+                        } else {
+                            self.xy_turns.undo()
+                        };
+                        turn.map(|t| {
+                            for (addr, v) in crate::xy_song::turn_values(&t, redo) {
+                                self.panels.set_param(&mut self.mix, addr, v, false);
+                            }
+                            format!(
+                                "{}: {}",
+                                if redo { "redo" } else { "undo" },
+                                crate::xy_turn_row(&self.mix, &t)
+                            )
+                        })
+                    }
                 };
                 let line = line.unwrap_or_else(|| {
                     format!(
@@ -2337,18 +2437,34 @@ impl Session {
         }
     }
 
+    /// Your XY layouts to the screen, as main.rs's `xy_view`.
+    fn xy_show(&mut self) {
+        let pads = |_: u8, _: u8, _: u16| None;
+        let v = crate::xy_view(
+            &mut self.xy_yours,
+            &self.mix,
+            &self.synth,
+            &self.app,
+            &pads,
+            &self.time,
+        );
+        self.out.show(v);
+    }
+
     /// Whether the Synth tab's and the mixer's turns have something to
     /// undo, when that changes (as the audio loop tells the screen).
     fn tell_turns(&mut self) {
         let ready = (
             !self.synth_turns.done().is_empty(),
             !self.mix_turns.done().is_empty(),
+            !self.xy_turns.done().is_empty(),
         );
         if ready != self.turns_told {
             self.turns_told = ready;
             self.out.show(ToUi::TurnsReady {
                 synth: ready.0,
                 mixer: ready.1,
+                xy: ready.2,
             });
         }
     }

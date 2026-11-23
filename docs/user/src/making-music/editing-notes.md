@@ -1,7 +1,7 @@
 <!--
 status: changing
-covers: rust/mpfree-time-ui/src/editor.rs rust/mpfree-time-ui/src/editor/zoom.rs rust/mpfree-time-ui/src/editor/gesture.rs rust/mpfree-seq/src/notes.rs rust/mpfree-seq/src/save.rs rust/mpfree-app/src/time.rs
-checked: 2026-11-22 77d2264a
+covers: rust/mpfree-time-ui/src/editor.rs rust/mpfree-time-ui/src/editor/zoom.rs rust/mpfree-time-ui/src/editor/gesture.rs rust/mpfree-seq/src/notes.rs rust/mpfree-seq/src/save.rs rust/mpfree-app/src/time.rs rust/mpfree-app/src/hearing.rs
+checked: 2026-11-22 75ce108d
 -->
 
 # Editing notes
@@ -104,9 +104,51 @@ While the drawer is closed:
 
 - **–** and **+** move the picked notes a snap earlier or later, as **Q1** does (the MPC's Nudge). A run of presses is one take. With no notes picked they open the drawer.
 - **SHIFT + – / +** zoom the roll in time, around the cursor when it is on screen.
-- **The data wheel** moves the **cursor**, a line across the roll in the note edit colour with a mark on the ruler, a snap at a time and round the clip; the roll scrolls to keep it in view. In the tracker the cursor's step is outlined and stays near the top. The cursor marks where the pads will write notes once they can. **SHIFT + wheel** still scrolls the rows, and pushing the wheel opens the drawer. On the list the wheel opens the drawer, as before.
+- **The data wheel** moves the **cursor**, a line across the roll in the note edit colour with a mark on the ruler, a snap at a time and round the clip; the roll scrolls to keep it in view. In the tracker the cursor's step is outlined and stays near the top. The cursor marks where the pads write notes with **Pads write** on (see below). **SHIFT + wheel** still scrolls the rows, and pushing the wheel opens the drawer. On the list the wheel opens the drawer, as before.
 
 With the drawer open, the wheel, – and + work the Edit options as before.
+
+### Write notes from the pads
+
+**Pads write**, just left of **Follow** over the roll (at the top right on the list and the tracker), lets you play notes in where the cursor is, one step at a time. It is off whenever you open a clip; tap it and it lights up like **REC**.
+
+- **Press a pad** and its notes go in at the cursor, one snap long, as hard as you hit it. A chord pad writes its whole chord, and on a drum clip a pad writes its hit.
+- **The cursor steps on** a snap when you let go of the pad, ready for the next one. Turn the data wheel to move it anywhere first, for a rest or to go back.
+- **Hold pads together** for a chord: they all go in on the same step, the cursor steps on once when you let go of the last one, and one **UNDO** takes the whole chord back.
+- A pad pressed where the same note already sits takes its place, with the new length and velocity.
+- **A chord pad's chord plays whole.** With a chance or a condition, the chord a pad writes plays all together or not at all, just as when you record the pad. Pressed again on the same step, its notes join that chord and keep its chance. Pads held together still decide one by one, as they do when recorded.
+- The pads still play as always while you write, so you hear what goes in. Draw on or off makes no difference.
+- While the transport records, the pads go into the recording instead, and Pads write leaves them be.
+
+{{shot: sequencer-notes-pads | Pads write lit beside Follow over the roll, and the Sound chip set to Stopped only; the cursor sits on the second bar's last beat, where the next pad writes.}}
+
+With **Pads write** off, the pads just play. On a drum clip, a pad also picks every note it plays in the clip, so you can change all the snares at once with the Q-Links. Hold **ERASE** and press a pad to take out all its notes, as before.
+
+*Try it:* turn the snap to 1/8, tap **Pads write**, then play C, E and G one after another and C, E and G together: three notes up and a chord, each an eighth apart.
+
+### Hear the notes
+
+When you pick a note, draw one or move one, you hear it through the track's instrument, so you can tell what you've got without pressing Play. A note sounds for its own length, up to a second; pick a chord and you hear the chord. Drag a note up or down and you hear each note it passes. What you hear is never recorded and never cuts off a note the clip is playing.
+
+The **Sound** chip, left of **Pads write**, says when you hear them: **Sound: On** (always), **Sound: Stopped only** (only while the transport is stopped, so playing back stays clean) or **Sound: Off**. Tap it for the next. It stays as you set it for every clip. A track that sends to MIDI out plays nothing here.
+
+### Other clips behind
+
+**Show**, just left of **Pads write** over the roll, puts up to three other clips faintly behind the one you're editing, each in its track's colour, so you can write a bass line against the chords or check a new take against the old one. Tap it to open its menu:
+
+- **Plays with** marks the clips that play along with this one: on the same row of the clip grid, or playing now. They come first. Every other clip says **Reference**. A clip of notes offers other clips of notes, and a drum clip other drum clips.
+- **Tap a clip** to show it and again to take it off. **None** takes them all off. With three showing, take one off before you pick another. The chip says how many are showing, as in **Show: 2**, and a label at the top right of the roll names each one.
+- Each one sits **where it sounds** against this clip. When both are playing, they line up as they do right now. A clip that isn't playing lines up as if you'd launched it with this one, and when this clip isn't playing, both start from their tops. A shorter clip repeats across this one, and a clip at another speed is stretched to match.
+- **Tap a faint note** (with Draw off) to open its clip. The clip you were on goes behind it, so you can go back and forth with a tap. Where one of your own notes sits on top, the tap picks yours.
+- Hold **COPY** and tap a faint note to paste there, as on empty space. **ERASE** leaves faint notes alone: they aren't this clip's.
+
+Faint clips show on the piano roll only, not on the list or the tracker. Each time you open a clip from the Steps view, it starts with none showing.
+
+{{shot: sequencer-notes-ghosts | The Keys clip with Show: 2: the stab track's Pluck faintly in red between the chords, which plays with it, and Keys take 1 faintly behind the chords, for reference; the labels at the top right name both.}}
+
+{{shot: sequencer-notes-show | The Show menu open: None, then the bass track's two lines and Pluck marked Plays with, and Keys take 1 marked Reference; the two showing are lit.}}
+
+*Try it:* open an empty bass clip on the same row as your chords, tap **Show** and pick the chords (marked **Plays with**). Draw a note under the lowest note of each chord, then tap one of the chords' faint notes to open the chords with the bass behind them.
 
 ### Zoom and scroll
 

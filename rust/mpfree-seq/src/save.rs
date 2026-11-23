@@ -171,6 +171,13 @@
 //! program changes it sends as it starts (sequencer S5), one a track, in
 //! order of track; an older build skips them.
 //!
+//! A scene's `keep <tracks>` line (the Arrange refactor's phase 5.2,
+//! [`crate::Scene::keep`]) is the tracks, a bit each as `mutes`, whose
+//! empty cell keeps playing when it starts; none written, every empty
+//! cell stops there, as before. A build from before would skip it and
+//! stop them, so a project with one says it needs `scene-keep` (the
+//! app's project gate) and such a build refuses it first.
+//!
 //! Reading is careful: every number is checked, every clip and the whole
 //! project go through [`Project::check`]-level checks, and a part that
 //! doesn't hold together is refused whole (the engine keeps what it had).
@@ -292,6 +299,9 @@ pub fn to_text(p: &Project) -> String {
         let _ = writeln!(s, "scene {row} {}", one_line(&sc.name));
         if let Some(m) = sc.mutes {
             let _ = writeln!(s, "mutes {m}");
+        }
+        if sc.keep != 0 {
+            let _ = writeln!(s, "keep {}", sc.keep);
         }
         if let Some(f) = sc.follow {
             let _ = writeln!(s, "follow {}", follow_text(f));
@@ -1042,6 +1052,9 @@ pub fn from_text(text: &str) -> Result<Project, String> {
             }
             ("mutes", At::Scene) => {
                 last_scene(&mut p).mutes = Some(num(w.next()).ok_or_else(|| bad("mutes"))?)
+            }
+            ("keep", At::Scene) => {
+                last_scene(&mut p).keep = num(w.next()).ok_or_else(|| bad("keep"))?
             }
             ("follow", At::Scene) => {
                 last_scene(&mut p).follow = Some(follow(&mut w).ok_or_else(|| bad("follow"))?)
@@ -2401,6 +2414,33 @@ mod tests {
         .is_err());
         assert!(from_text(&text.replacen(head, &format!("{head}{head}"), 1)).is_err());
         assert!(from_text(&text.replacen(head, "original 7680\n", 1)).is_err());
+    }
+
+    /// The Arrange refactor's 5.2: a scene's Keep playing tracks are a
+    /// `keep` line after its mutes, written only when it keeps any, so a
+    /// project with none saves as before.
+    #[test]
+    fn a_scenes_keep_playing_tracks_read_back() {
+        let mut p = full();
+        assert!(!to_text(&p).contains("keep"), "none: no line");
+        let sc = p.scene_mut(2).unwrap();
+        sc.set_keep(0, true).unwrap();
+        sc.set_keep(127, true).unwrap();
+        assert!(sc.set_keep(128, true).is_err());
+        let text = to_text(&p);
+        assert!(
+            text.contains(&format!("mutes 5\nkeep {}\n", 1u128 << 127 | 1)),
+            "{text}"
+        );
+        let back = from_text(&text).unwrap();
+        assert_eq!(back, p);
+        assert!(back.scenes[2].keeps(0) && back.scenes[2].keeps(127));
+        assert!(!back.scenes[2].keeps(1));
+        // Out of place, or not a number: the part is refused.
+        for bad in ["keep x", "keep", "keep -1"] {
+            let t = text.replacen(&format!("keep {}", 1u128 << 127 | 1), bad, 1);
+            assert!(from_text(&t).is_err(), "{bad}");
+        }
     }
 
     #[test]

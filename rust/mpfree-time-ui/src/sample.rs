@@ -912,6 +912,39 @@ pub fn song_tempo_state() -> Result<TimeState, String> {
     Ok(state)
 }
 
+/// Clips played over the song (the Arrange refactor's 5.1, D3), in
+/// Perform with song mode on: rows 1 to 5 made into the song; Drums, Bass
+/// and Stab launched over it, Glitch launched from bar 3 and going back
+/// to the song at 6.1, the chords cued for 6.1; Hats, Dust and FX play
+/// the song. `song_view` shows it on the Song view in place of the grid.
+pub fn over_song_state(song_view: bool) -> Result<TimeState, String> {
+    let launches = launches()
+        .into_iter()
+        .filter(|l| [0, 2, 3, 5].contains(&l.track))
+        .collect();
+    let mut s = Session::new(project(), launches, Some(STAB))?;
+    let rows: Vec<(usize, Tick)> = (0..5)
+        .filter(|&r| s.project.row_filled(r))
+        .map(|r| (r, scene_length(&s.project, r, BAR)))
+        .collect();
+    s.project.arrangement = scenes_to_song(&s.project, &rows, 0)
+        .map(|t| t.song)
+        .map_err(|e| format!("{e:?}"))?;
+    s.command_at(0, Command::Play)?;
+    s.run_to(4 * BAR + 2 * BEAT)?;
+    s.act(TimeAction::Launch {
+        track: CHORDS,
+        slot: 0,
+    })?;
+    s.act(TimeAction::StopClip(3))?;
+    s.run_to(4 * BAR + 2 * BEAT + SIXTEENTH)?;
+    let mut state = s.state();
+    state.perform = true;
+    state.song_on = true;
+    state.song_view = song_view;
+    Ok(state)
+}
+
 /// Recordings into a real audio tracks engine for the Song view's audio
 /// lanes: "Guitar" (audio track 2, stereo) plays bars 1 to 4; "Vocal"
 /// (audio track 1, the left jack) was recorded over bars 1 to 8 and then
@@ -1279,6 +1312,7 @@ pub fn notes_state(lens: crate::editor::Lens) -> Result<TimeState, String> {
         bar: BAR,
         answer: Default::default(),
         locks: Default::default(),
+        ghosts: Default::default(),
     }));
     Ok(state)
 }
@@ -1335,6 +1369,109 @@ pub fn notes_tool_state() -> Result<TimeState, String> {
     chop.q[0] = 4;
     e.editor.open_tool = Some(chop);
     e.editor.row = crate::editor::CHOP_ROW;
+    Ok(state)
+}
+
+/// The keys clip with Pads write on (piano roll plan 1C.2): the cursor
+/// on the second bar's last beat, where a pad pressed writes, nothing
+/// picked.
+pub fn notes_pads_state() -> Result<TimeState, String> {
+    let mut state = notes_state(crate::editor::Lens::Grid)?;
+    let e = state.edit.as_mut().ok_or("no editor")?;
+    e.editor.pads_write = true;
+    e.editor.cursor = BAR + 3 * BEAT;
+    e.editor.sel.clear();
+    Ok(state)
+}
+
+/// The note editor on "Keys" with two other clips faintly behind it
+/// (piano roll plan 4.1): "Pluck", the stab track's line on the same row,
+/// which plays with it, and "Keys take 1", an earlier take of the chords
+/// on another row, shown for reference. The clips hold notes, so the Show
+/// menu offers those, the bass track's two lines (Sub line plays now) and
+/// none of the pad hits.
+pub fn notes_ghosts_state() -> Result<TimeState, String> {
+    const BASS: usize = 2;
+    let notes = |name: &str, length: Tick, notes: &[(Tick, Tick, u8)]| -> Result<Clip, String> {
+        let mut c = Clip::new(name, length);
+        for &(tick, len, note) in notes {
+            c.add_note(Note::new(tick, len, note, 96))
+                .map_err(|e| format!("{name}: {e:?}"))?;
+        }
+        c.holds = mpfree_seq::Holds::Notes;
+        Ok(c)
+    };
+    let mut s = playing()?;
+    let mut keys = keys_clip();
+    keys.holds = mpfree_seq::Holds::Notes;
+    // (tick, length, note): an answer between the chords and the tune.
+    let pluck = notes(
+        "Pluck",
+        2 * BAR,
+        &[
+            (2 * SIXTEENTH, SIXTEENTH, 63),
+            (5 * SIXTEENTH, SIXTEENTH, 65),
+            (10 * SIXTEENTH, SIXTEENTH, 68),
+            (14 * SIXTEENTH, SIXTEENTH, 67),
+            (BAR + 2 * SIXTEENTH, SIXTEENTH, 65),
+            (BAR + 5 * SIXTEENTH, SIXTEENTH, 67),
+            (BAR + 10 * SIXTEENTH, SIXTEENTH, 70),
+            (BAR + 13 * SIXTEENTH, SIXTEENTH, 68),
+        ],
+    )?;
+    // The chords as first played: a bar each, voiced lower.
+    let take = notes(
+        "Keys take 1",
+        2 * BAR,
+        &[
+            (0, BAR - 40, 55),
+            (0, BAR - 40, 60),
+            (0, BAR - 40, 63),
+            (BAR, BAR - 40, 58),
+            (BAR, BAR - 40, 62),
+            (BAR, BAR - 40, 65),
+        ],
+    )?;
+    let bass = notes(
+        "Bass line",
+        2 * BAR,
+        &[
+            (0, BEAT, 36),
+            (2 * BEAT, BEAT, 32),
+            (BAR, BEAT, 34),
+            (BAR + 2 * BEAT, BEAT, 31),
+        ],
+    )?;
+    let p = &mut s.project;
+    p.tracks[CHORDS].slots[1] = Some(keys.clone());
+    p.tracks[CHORDS].slots[3] = Some(take.clone());
+    p.tracks[STAB].slots[1] = Some(pluck.clone());
+    p.tracks[BASS].slots[1] = Some(bass);
+    if let Some(sub) = p.tracks[BASS].slots[0].as_mut() {
+        sub.holds = mpfree_seq::Holds::Notes;
+    }
+    let mut state = s.state();
+    let mut editor = crate::editor::Editor::new(CHORDS, 1, &keys);
+    editor.show = vec![(STAB, 1), (CHORDS, 3)];
+    let ghost = |track: usize, slot: usize, clip: Clip, name: &str| crate::view::Ghost {
+        track,
+        slot,
+        clip: clip.into(),
+        track_name: name.into(),
+    };
+    state.edit = Some(Box::new(crate::view::EditInfo {
+        editor,
+        clip: keys.into(),
+        rev: 0,
+        track_name: "Chords".into(),
+        bar: BAR,
+        answer: Default::default(),
+        locks: Default::default(),
+        ghosts: vec![
+            ghost(STAB, 1, pluck, "Stab"),
+            ghost(CHORDS, 3, take, "Chords"),
+        ],
+    }));
     Ok(state)
 }
 
@@ -1475,6 +1612,7 @@ pub fn tracker_state() -> Result<TimeState, String> {
         bar: BAR,
         answer: Default::default(),
         locks: Default::default(),
+        ghosts: Default::default(),
     }));
     Ok(state)
 }

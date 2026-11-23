@@ -169,15 +169,23 @@ impl Placement {
     /// its clip (`clip`, None when it has none now) has got to there: the
     /// part after a cut at `at`.
     pub fn from(&self, clip: Option<&Clip>, at: Tick) -> Placement {
-        let speed = clip.map_or(crate::Speed::NORMAL, |c| c.speed);
-        let length = clip.map_or(1, |c| c.length.max(1));
-        let moved = speed.to_clip((at - self.start) as f64).round() as Tick;
         Placement {
-            offset: (self.offset + moved).rem_euclid(length),
+            offset: self.offset_by(clip, at - self.start),
             start: at,
             length: self.end() - at,
             ..self.clone()
         }
+    }
+
+    /// Its offset `by` song ticks further into its clip (`clip`, None
+    /// when it has none now), at the clip's speed and going round the
+    /// clip's length: where the clip has got to `by` ticks after its
+    /// start (before it, for a negative `by`).
+    pub fn offset_by(&self, clip: Option<&Clip>, by: Tick) -> Tick {
+        let speed = clip.map_or(crate::Speed::NORMAL, |c| c.speed);
+        let length = clip.map_or(1, |c| c.length.max(1));
+        let moved = speed.to_clip(by as f64).round() as Tick;
+        (self.offset + moved).rem_euclid(length)
     }
 }
 
@@ -896,6 +904,99 @@ impl Arrangement {
         Ok(())
     }
 
+    /// Block `i` cut in two at song tick `at` (Split, the Arrange
+    /// refactor's phase 6): the part before keeps its place, and the part
+    /// after starts at `at` from where its clip had got to there, so the
+    /// song plays as it did. Both play the same clip. Refused
+    /// (`BadPlacement`), changing nothing: no such block, `at` not inside
+    /// it (its start or end is no cut), or a song full of blocks. The
+    /// part after's index.
+    pub fn split(&mut self, tracks: &[Track], i: usize, at: Tick) -> Result<usize, ModelError> {
+        let p = self.placements.get(i).ok_or(ModelError::BadPlacement)?;
+        if at <= p.start || at >= p.end() || self.placements.len() >= MAX_PLACEMENTS {
+            return Err(ModelError::BadPlacement);
+        }
+        let rest = p.from(p.clip(tracks, &self.clips), at);
+        self.placements[i].length = at - self.placements[i].start;
+        self.placements.insert(i + 1, rest);
+        Ok(i + 1)
+    }
+
+    /// Every block across song tick `at` split there, on every lane
+    /// (Split at the playhead with no block picked). All or none: refused
+    /// (`BadPlacement`) when the blocks would be too many, the song as it
+    /// was. How many were split.
+    pub fn split_all(&mut self, tracks: &[Track], at: Tick) -> Result<usize, ModelError> {
+        let mut song = self.clone();
+        let mut split = 0;
+        let mut i = 0;
+        while i < song.placements.len() {
+            let p = &song.placements[i];
+            if p.start < at && at < p.end() {
+                i = song.split(tracks, i, at)?;
+                split += 1;
+            }
+            i += 1;
+        }
+        *self = song;
+        Ok(split)
+    }
+
+    /// A copy of block `i` right after it (Duplicate, phase 6): the same
+    /// clip from the same place in it, as long, from where the block ends.
+    /// Refused (`BadPlacement`), changing nothing, for no such block, a
+    /// block on its lane in the way, or a song full of blocks. The copy's
+    /// index.
+    pub fn duplicate(&mut self, i: usize) -> Result<usize, ModelError> {
+        let p = self.placements.get(i).ok_or(ModelError::BadPlacement)?;
+        let copy = Placement {
+            start: p.end(),
+            ..p.clone()
+        };
+        self.place(copy)
+    }
+
+    /// Block `i`'s start moved to song tick `start`, its end staying
+    /// (trim from the left, phase 6). What plays stays where it was in the
+    /// song: the offset moves with the start, so a later start leaves out
+    /// the clip's first ticks and an earlier one brings in the ticks
+    /// before (past the clip's top, its pass before, as it goes round).
+    /// Refused (`BadPlacement`), changing nothing: no such block, `start`
+    /// below 0 or at or past its end, or into the block before it on its
+    /// lane.
+    pub fn trim_start(
+        &mut self,
+        tracks: &[Track],
+        i: usize,
+        start: Tick,
+    ) -> Result<(), ModelError> {
+        let p = self.placements.get(i).ok_or(ModelError::BadPlacement)?;
+        let before = i
+            .checked_sub(1)
+            .map(|j| &self.placements[j])
+            .filter(|q| q.track == p.track);
+        if start < 0 || start >= p.end() || before.is_some_and(|q| q.end() > start) {
+            return Err(ModelError::BadPlacement);
+        }
+        let offset = p.offset_by(p.clip(tracks, &self.clips), start - p.start);
+        let p = &mut self.placements[i];
+        p.length = p.end() - start;
+        p.start = start;
+        p.offset = offset;
+        Ok(())
+    }
+
+    /// What block `i` plays slid `by` song ticks later under it (earlier
+    /// for a negative `by`; slide, phase 6): the block keeps its place and
+    /// length, and its clip's ticks move along inside it, going round the
+    /// clip's length. Refused (`BadPlacement`) for no such block.
+    pub fn slide(&mut self, tracks: &[Track], i: usize, by: Tick) -> Result<(), ModelError> {
+        let p = self.placements.get(i).ok_or(ModelError::BadPlacement)?;
+        let offset = p.offset_by(p.clip(tracks, &self.clips), -by);
+        self.placements[i].offset = offset;
+        Ok(())
+    }
+
     /// Section `k`: from marker `k` to the next, the last one to the end
     /// of the song in whole bars of `bar` ticks from its marker (a bar at
     /// least), or while it follows its scene as long as its passes, as a
@@ -1064,6 +1165,19 @@ pub fn scenes_to_song(
         }
         for (track, tr) in project.tracks.iter().enumerate() {
             let Some(clip) = tr.slots[row].as_ref() else {
+                // A Keep playing track (5.2): the clip it plays runs on
+                // through this row, its block longer by the row.
+                if scene.is_some_and(|s| s.keeps(track)) && ends[track] == Some(t) {
+                    ends[track] = Some(t + length);
+                    let last = song
+                        .placements
+                        .iter_mut()
+                        .rev()
+                        .find(|p| p.track == track && p.start + p.length == t);
+                    if let Some(p) = last {
+                        p.length += length;
+                    }
+                }
                 continue;
             };
             let mut len = length;
@@ -1230,7 +1344,9 @@ impl Arrangement {
     /// that doesn't. The last section reaches to the song's end, so a
     /// block put after it is in it. A block across its edges counts as
     /// the part of it inside, cut in phase, so a block joined to its copy
-    /// across an edge holds what the two did.
+    /// across an edge holds what the two did. Blocks that meet with the
+    /// clip where the one before had got to count as one, so a block split
+    /// in phase (Split, phase 6) holds what it did whole.
     fn held(&self, tracks: &[Track], s: &SongSection) -> Option<Held> {
         let scene = s.scene.filter(|f| !f.changed)?;
         let last = s.marker? + 1 == self.markers.len();
@@ -1253,11 +1369,25 @@ impl Arrangement {
             })
             .collect();
         blocks.sort_by_key(|p| (p.track, p.start));
+        let mut joined: Vec<Placement> = Vec::with_capacity(blocks.len());
+        for b in blocks {
+            match joined.last_mut() {
+                Some(a)
+                    if a.track == b.track
+                        && a.clip == b.clip
+                        && a.end() == b.start
+                        && a.offset_by(a.clip(tracks, &self.clips), a.length) == b.offset =>
+                {
+                    a.length += b.length;
+                }
+                _ => joined.push(b),
+            }
+        }
         Some(Held {
             scene,
             passes: s.passes,
             reach: reach - s.start,
-            blocks,
+            blocks: joined,
         })
     }
 
@@ -2142,6 +2272,12 @@ mod tests {
             changed(&song),
             [(false, 1), (false, 2), (false, 3), (false, 3)]
         );
+        // A block split in phase (Split, phase 6) plays as it did whole:
+        // nothing is marked.
+        let before = song.clone();
+        let i = song.at(1, 4 * BAR + BAR / 2).unwrap();
+        song.split(&tracks, i, 4 * BAR + BAR / 2).unwrap();
+        assert!(song.mark_changed(&tracks, &before, BAR).is_empty());
         // So is a tempo point.
         let before = song.clone();
         song.tempo.push(TempoPoint {
@@ -2364,6 +2500,143 @@ mod tests {
             Err(ModelError::NoRoom)
         );
         assert_eq!(q, again, "nothing changed");
+    }
+
+    /// Phase 6's block tools. Split cuts a block in phase (at the clip's
+    /// speed), never on an edge; Split at the playhead cuts every lane;
+    /// Duplicate puts a copy after the block where there is room; trim
+    /// from the left keeps what plays where it was; slide moves what
+    /// plays inside the block.
+    #[test]
+    fn split_duplicate_trim_and_slide_keep_what_plays_in_phase() {
+        let p = project();
+        let blocks = |s: &Arrangement, t: usize| -> Vec<(Tick, Tick, Tick)> {
+            s.on_track(t)
+                .iter()
+                .map(|b| (b.start, b.length, b.offset))
+                .collect()
+        };
+        let mut s = Arrangement::default();
+        // The drums' two-bar b for 4 bars, the bass's one-bar a for 2.
+        s.place(Placement::of(&p.tracks, 0, 1, 0, 4 * BAR)).unwrap();
+        s.place(Placement::of(&p.tracks, 1, 0, 0, 2 * BAR)).unwrap();
+        // Split: 3 bars into a two-bar clip is a bar into it.
+        assert_eq!(s.split(&p.tracks, 0, 3 * BAR), Ok(1));
+        assert_eq!(blocks(&s, 0), [(0, 3 * BAR, 0), (3 * BAR, BAR, BAR)]);
+        for at in [0, 3 * BAR, 4 * BAR, -1] {
+            assert_eq!(
+                s.split(&p.tracks, 1, at),
+                Err(ModelError::BadPlacement),
+                "{at}"
+            );
+        }
+        assert_eq!(s.split(&p.tracks, 9, BAR), Err(ModelError::BadPlacement));
+        // At half speed a bar of the song is half a bar of the clip.
+        let mut q = p.clone();
+        q.tracks[0].slots[1].as_mut().unwrap().speed = crate::Speed::new(1, 2).unwrap();
+        let mut h = Arrangement::default();
+        h.place(Placement::of(&q.tracks, 0, 1, 0, 4 * BAR)).unwrap();
+        h.split(&q.tracks, 0, BAR).unwrap();
+        assert_eq!(blocks(&h, 0), [(0, BAR, 0), (BAR, 3 * BAR, BAR / 2)]);
+        // Split at the playhead: every lane across it, none on an edge.
+        let mut all = s.clone();
+        assert_eq!(all.split_all(&p.tracks, BAR + 100), Ok(2));
+        assert_eq!(
+            blocks(&all, 0),
+            [
+                (0, BAR + 100, 0),
+                (BAR + 100, 2 * BAR - 100, BAR + 100),
+                (3 * BAR, BAR, BAR)
+            ]
+        );
+        assert_eq!(
+            blocks(&all, 1),
+            [(0, BAR + 100, 0), (BAR + 100, BAR - 100, 100)]
+        );
+        assert_eq!(all.split_all(&p.tracks, 3 * BAR), Ok(0), "on an edge");
+        // Duplicate: the bass's block again after it, then no room.
+        let i = s.at(1, 0).unwrap();
+        let copy = s.duplicate(i).unwrap();
+        assert_eq!(blocks(&s, 1), [(0, 2 * BAR, 0), (2 * BAR, 2 * BAR, 0)]);
+        assert_eq!(
+            s.placements[copy].clip, s.placements[i].clip,
+            "the same clip"
+        );
+        let first = s.at(0, 0).unwrap();
+        assert_eq!(
+            s.duplicate(first),
+            Err(ModelError::BadPlacement),
+            "the drums' next block is in the way"
+        );
+        // Trim from the left: later leaves out the clip's first ticks,
+        // earlier brings them back.
+        let last = s.at(0, 3 * BAR).unwrap();
+        s.trim_start(&p.tracks, last, 3 * BAR + 10).unwrap();
+        assert_eq!(blocks(&s, 0)[1], (3 * BAR + 10, BAR - 10, BAR + 10));
+        s.remove(first);
+        let last = s.at(0, 3 * BAR + 10).unwrap();
+        s.trim_start(&p.tracks, last, BAR).unwrap();
+        assert_eq!(
+            blocks(&s, 0),
+            [(BAR, 3 * BAR, BAR)],
+            "back past its top, in phase: a bar into the two-bar clip, as it played from 0"
+        );
+        let mut t = s.clone();
+        t.place(Placement::of(&p.tracks, 0, 0, 0, BAR / 2)).unwrap();
+        let k = t.at(0, BAR).unwrap();
+        for start in [BAR / 2 - 1, 4 * BAR, -1] {
+            assert_eq!(
+                t.trim_start(&p.tracks, k, start),
+                Err(ModelError::BadPlacement),
+                "{start}"
+            );
+        }
+        assert_eq!(
+            t.trim_start(&p.tracks, k, BAR / 2),
+            Ok(()),
+            "up to the block before"
+        );
+        // Slide: the clip's ticks later under the block, going round.
+        let k = s.at(0, BAR).unwrap();
+        s.slide(&p.tracks, k, BAR + 100).unwrap();
+        assert_eq!(blocks(&s, 0), [(BAR, 3 * BAR, 2 * BAR - 100)]);
+        s.slide(&p.tracks, k, -100).unwrap();
+        assert_eq!(blocks(&s, 0), [(BAR, 3 * BAR, 0)]);
+        assert_eq!(s.check(&p.tracks), Ok(()));
+    }
+
+    /// A Keep playing track (phase 5.2) runs its clip on through a row
+    /// with no clip for it, its block longer by the row; a kept track
+    /// with nothing playing stays silent, and a track not kept stops.
+    #[test]
+    fn a_keep_playing_track_runs_its_block_on_through_a_row_without_a_clip() {
+        let mut p = project();
+        p.scene_mut(2).unwrap().set_keep(0, true).unwrap();
+        p.scene_mut(3).unwrap().set_keep(1, true).unwrap();
+        let song = scenes_to_song(&p, &[(1, 2 * BAR), (2, BAR), (3, BAR)], 0)
+            .unwrap()
+            .song;
+        let blocks: Vec<_> = song
+            .placements
+            .iter()
+            .map(|b| (b.track, row(&p, b), b.start, b.length))
+            .collect();
+        assert_eq!(
+            blocks,
+            [(0, Some(1), 0, 3 * BAR), (1, Some(1), 0, 2 * BAR)],
+            "the drums' b runs on through row 3; the bass stops there, and row 4 keeps nothing playing"
+        );
+        assert_eq!(song.markers.len(), 3, "each row still marks its bars");
+        // Kept, then a clip of its own: a block of its own after.
+        let song = scenes_to_song(&p, &[(0, BAR), (2, BAR), (0, BAR)], 0)
+            .unwrap()
+            .song;
+        let drums: Vec<_> = song
+            .on_track(0)
+            .iter()
+            .map(|b| (b.start, b.length))
+            .collect();
+        assert_eq!(drums, [(0, 2 * BAR), (2 * BAR, BAR)]);
     }
 
     /// Song → scenes takes only truly empty rows (`Project::row_empty`):
