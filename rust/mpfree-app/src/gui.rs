@@ -595,18 +595,6 @@ impl Console {
     }
 }
 
-/// A colour for a log line from how it starts.
-/// The RAM chip's colour: green under 70 %, amber under 85 %, red above.
-fn ram_tone(pct: f64) -> Tone {
-    if pct < 70.0 {
-        Tone::Good
-    } else if pct < 85.0 {
-        Tone::Warn
-    } else {
-        Tone::Bad
-    }
-}
-
 /// A kit's name as Play's "pads play" and the Pads tab's Kit show it (the
 /// header's kit chip did until the Play, Pads and Sequencer redesign):
 /// words, not dashes
@@ -1384,6 +1372,9 @@ pub enum ToUi {
     },
     /// A control for the Pads tab's browser (its Browse view).
     Browse(crate::app::BrowseKey),
+    /// A key on the System status page: the wheel or - and + step the
+    /// systems, the data push opens the picked system's first card.
+    StatusKey(crate::app::StatusKey),
     /// The browser's preview, played out or replaced, to free here.
     PreviewBack(Box<crate::preview::Preview>),
     /// On the Sample page: a Q-Link let go (the turn is one undo step).
@@ -1718,6 +1709,10 @@ pub enum FromUi {
     Workspace(Box<WsAction>),
     /// The arp chip in the header: open or close the panel.
     ArpChip,
+    /// The status chip: open or close System status.
+    StatusChip,
+    /// A System status card's button: its job.
+    StatusAction(mpfree_status::Action),
     /// The Full level or Half level chip in the header: the pads play as
     /// hit again.
     PadLevelOff,
@@ -2473,6 +2468,12 @@ pub struct Player {
     /// Memory free (MemAvailable), from the screen thread's look at
     /// /proc/meminfo every 2 s; None until then.
     mem_free: Option<u64>,
+    /// System status (phase 2): the page's system and switch, when each
+    /// red problem last went on the hint line, and the status chip's place
+    /// among the chips.
+    status_place: crate::status_screen::Place,
+    status_hinted: crate::status_screen::Hinted,
+    status_chip: Option<usize>,
     /// The Looper tab, and what it shows.
     // Boxed: it holds every loop's status and layer rows, and a Player is
     // moved by value often enough (sample_screens) that its size matters.
@@ -2497,9 +2498,10 @@ pub struct Player {
     filter: Filter,
     tuning: Tuning,
     saved_tuning: Tuning,
-    /// A line said in place of the hint ([`ToUi::Tell`]) and the seconds
-    /// it has left.
-    told: Option<(String, f32)>,
+    /// A line said in place of the hint ([`ToUi::Tell`]), the seconds it
+    /// has left and its colour (yellow; red for a red problem's title,
+    /// System status).
+    told: Option<(String, f32, Tone)>,
     /// Which of the Play page's histories changed last, for UNDO on the
     /// All view: the loop's (true) or the takes' (false); and the counts
     /// each was last seen at.
@@ -2719,8 +2721,15 @@ impl Player {
         ui.add("guide", Card::new("Button guide"));
         ui.add("found", StatList::new("Buttons"));
         // The hint line starts where the panels do (the mockups).
-        ui.add("hint", Label::new("", Tone::Dim, Align::Left).inset(18));
+        ui.add(
+            "hint",
+            Label::new("", Tone::Dim, Align::Left).inset(18).on_bg(),
+        );
         ui.add("syssw", StatList::new("MPFree and the system"));
+        ui.add(
+            crate::status_screen::WIDGET,
+            mpfree_ui::status_page::StatusPage::default(),
+        );
         ui.add("syshw", StatList::new("Hardware"));
         let time_page = TimePage::add_to(&mut ui).expect("clips layout");
         ui.add_full_page("Loading", "loading")
@@ -2777,6 +2786,8 @@ impl Player {
             .expect("step size layout");
         ui.add_page("System info", SYSTEM_LAYOUT)
             .expect("system info layout");
+        ui.add_page(crate::status_screen::PAGE, crate::status_screen::LAYOUT)
+            .expect("system status layout");
         let patterns = crate::app::built_in_patterns();
         let pattern = patterns.first().map(|(_, p)| *p).unwrap_or_default();
         let name = patterns.first().map(|(n, _)| n.clone()).unwrap_or_default();
@@ -3022,6 +3033,9 @@ impl Player {
             status_watch: crate::status_watch::Watch::default(),
             status_looks: 0,
             mem_free: None,
+            status_place: crate::status_screen::Place::default(),
+            status_hinted: crate::status_screen::Hinted::default(),
+            status_chip: None,
             looper_page,
             looper: LooperView::default(),
             play: PlayPage::default(),
@@ -6868,26 +6882,22 @@ impl Player {
     /// chip left for Play's transport in the Play, Pads and Sequencer
     /// redesign: [`Player::pads_play`].)
     fn refresh_chips(&mut self) {
-        // The first chip sits at the right end (the mockups: the CPU). The
-        // session shows only when something is wrong with it.
+        // The first chip sits at the right end: the status chip (System
+        // status phase 2, Jay's spec of 22 Nov 08:17Z), the CPU and RAM in
+        // one fixed-size chip, green, yellow or red by them and the
+        // problems on the board. A tap opens System status; the session's
+        // states are problems there now.
         let mut chips = Vec::new();
         // A tap on a chip that only shows says what it shows.
         let mut why = Vec::new();
-        if let Some((text, tone)) = self.engines.as_deref().and_then(crate::engines::cpu_chip) {
-            why.push(format!("{text}: how much of the processor the sound uses"));
-            chips.push(Chip::new(text, tone).room("CPU 100 %"));
-        }
-        if let Some(p) = self.ram_pct {
-            why.push(format!("RAM {p:.0} %: how much of the memory is in use"));
-            chips.push(Chip::new(format!("RAM {p:.0} %"), ram_tone(p)).room("RAM 100 %"));
-        }
-        if self.session.1 != Tone::Good || !self.ready {
-            why.push(format!(
-                "{}: the state of the audio session",
-                self.session.0
-            ));
-            chips.push(Chip::new(self.session.0.clone(), self.session.1));
-        }
+        self.status_chip = Some(chips.len());
+        why.push(String::new());
+        chips.push(crate::status_screen::chip(
+            self.status_board.chip_look(self.ram_pct),
+            self.engines.as_deref().and_then(crate::engines::cpu_pct),
+            self.ram_pct,
+            self.view == View::SystemStatus,
+        ));
         // What the pads play is on Play's transport now, and follows the
         // kit, the bank and the track's name from here.
         self.refresh_pads_play();
@@ -7469,6 +7479,8 @@ impl Player {
                 View::Console => "The system log, as it comes   ·   MENU: pause or clear   ·   SHIFT + ERASE + TAP TEMPO: back"
                     .to_string(),
                 View::System => "Read when the page opens   ·   MENU: back to Prefs   ·   a tab: leave".to_string(),
+                View::SystemStatus => "Tap a system: its problems   ·   Wheel or - / +: the systems   ·   push: open a card   ·   \
+                                       MENU or the status chip: close".to_string(),
                 View::Prefs | View::Options if self.menu_editing => OPTIONS_EDIT_HINT.to_string(),
                 View::Prefs | View::Options => OPTIONS_HINT.to_string(),
                 View::Mixer => mpfree_mixer_ui::io_hint(&self.ui)
@@ -7503,7 +7515,7 @@ impl Player {
         };
         let asking = self.view == View::Looper && self.looper.smart.asking.is_some();
         let (text, tone) = match &self.told {
-            Some((t, _)) => (t.clone(), Tone::Warn),
+            Some((t, _, tone)) => (t.clone(), *tone),
             None if asking => (text, Tone::Warn),
             None => (text, Tone::Dim),
         };
@@ -8230,7 +8242,14 @@ impl Player {
     }
 
     pub fn tell(&mut self, line: &str) {
-        self.told = Some((tell_text(line), TELL_SECONDS));
+        self.told = Some((tell_text(line), TELL_SECONDS, Tone::Warn));
+        self.tells += 1;
+        self.refresh_hint();
+    }
+
+    /// A red problem's title on the hint line, in red (System status).
+    fn tell_red(&mut self, line: String) {
+        self.told = Some((line, TELL_SECONDS, Tone::Bad));
         self.tells += 1;
         self.refresh_hint();
     }
@@ -8268,6 +8287,10 @@ impl Player {
         if self.view == View::StatusBoard {
             self.fill_status();
         }
+        if self.view == View::SystemStatus {
+            self.fill_system_status();
+        }
+        self.refresh_chips();
     }
 
     /// Moves the status board's clock on by `dt` s; Dev > Status looks
@@ -8282,6 +8305,121 @@ impl Player {
             self.status_drawn += dt;
             if self.status_drawn >= 0.5 {
                 self.fill_status();
+            }
+        }
+        if self.view == View::SystemStatus {
+            self.status_place.drawn += dt;
+            if self.status_place.drawn >= 0.5 {
+                self.fill_system_status();
+            }
+        }
+    }
+
+    /// System status from the board as it stands. While it shows, every
+    /// problem on it counts as seen.
+    fn fill_system_status(&mut self) {
+        self.status_place.drawn = 0.0;
+        let was = self.status_board.chip_look(self.ram_pct);
+        self.status_board.seen(self.status_clock);
+        self.status_lines();
+        let readings = crate::status_screen::Readings {
+            cpu_pct: self.engines.as_deref().and_then(crate::engines::cpu_pct),
+            ram_pct: self.ram_pct,
+            free: self.mem_free,
+        };
+        let v = crate::status_screen::view(
+            &self.status_board,
+            &self.status_watch,
+            &readings,
+            &mut self.status_place,
+            self.status_clock,
+        );
+        use mpfree_ui::status_page::StatusPage;
+        if self
+            .ui
+            .get::<StatusPage>(crate::status_screen::WIDGET)
+            .is_some_and(|w| w.view != v)
+        {
+            if let Some(w) = self.ui.get_mut::<StatusPage>(crate::status_screen::WIDGET) {
+                w.set(v);
+            }
+        }
+        if self.status_board.chip_look(self.ram_pct) != was {
+            self.refresh_chips();
+        }
+    }
+
+    /// A touch on System status: a system picked, the switch, a card's
+    /// button (its job goes to the app).
+    fn status_page_event(&mut self, kind: EventKind) -> Option<FromUi> {
+        use mpfree_ui::status_page::{BUTTON, CARD, NOW, SESSION};
+        match kind {
+            EventKind::Select(i) => {
+                self.status_place.picked = *mpfree_status::System::ALL.get(i)?;
+            }
+            EventKind::Tab(NOW) => self.status_place.window = mpfree_status::Window::Now,
+            EventKind::Tab(SESSION) => self.status_place.window = mpfree_status::Window::Session,
+            EventKind::Tab(i) if i >= BUTTON => {
+                let a = self
+                    .status_place
+                    .actions
+                    .get(i - BUTTON)
+                    .copied()
+                    .flatten()?;
+                if a == mpfree_status::Action::OpenLastProject && self.open_last_now() {
+                    return None;
+                }
+                return Some(FromUi::StatusAction(a));
+            }
+            // A card opened or folded: the widget did it.
+            EventKind::Tab(i) if i >= CARD => return None,
+            _ => return None,
+        }
+        self.fill_system_status();
+        None
+    }
+
+    /// Open the last project from System status's button, after a safe
+    /// start, only when nothing would be lost: the new project unchanged
+    /// (otherwise the button opens the browser, where opening a project
+    /// asks about the changes first).
+    fn open_last_now(&mut self) -> bool {
+        let Some(b) = self.browser.as_mut() else {
+            return false;
+        };
+        let Some(name) = b.last_project().map(|l| l.name().to_string()) else {
+            return false;
+        };
+        if b.unsaved() || !b.open_last() {
+            return false;
+        }
+        self.say(format!(
+            "project: opening the last project, {name} (System status)"
+        ));
+        self.step_browser();
+        self.report_problem(mpfree_status::Report::ended(
+            &mpfree_status::kinds::CRASH_RESTART,
+        ));
+        true
+    }
+
+    /// The wheel, - and + and the data push on System status.
+    fn status_key(&mut self, k: crate::app::StatusKey) {
+        if self.view != View::SystemStatus {
+            return;
+        }
+        match k {
+            crate::app::StatusKey::Step(d) => {
+                self.status_place.step(d);
+                self.fill_system_status();
+            }
+            // The next folded card opens; after the last, they fold again.
+            crate::app::StatusKey::Open => {
+                use mpfree_ui::status_page::StatusPage;
+                if let Some(w) = self.ui.get_mut::<StatusPage>(crate::status_screen::WIDGET) {
+                    let from = w.opened.map_or(0, |i| i + 1);
+                    w.opened = (from..w.view.cards.len()).find(|&i| !w.view.cards[i].now);
+                }
             }
         }
     }
@@ -8304,7 +8442,17 @@ impl Player {
     fn status_lines(&mut self) {
         let watch = &self.status_watch;
         let mut lines = Vec::new();
+        let mut red = None;
+        let hinted = &mut self.status_hinted;
+        let (clock, on_page) = (self.status_clock, self.view == View::SystemStatus);
         self.status_board.take_changes(|c| {
+            // A red problem starting: its title on the hint line, unless
+            // the page shows already.
+            if c.started && !on_page {
+                if let Some(line) = hinted.line(c.kind, c.hidden, clock) {
+                    red = Some(line);
+                }
+            }
             let about = match (c.subject, watch.subject_name(c.kind, c.subject)) {
                 (mpfree_status::Subject::NONE, _) => String::new(),
                 (_, Some(name)) => format!(" {name}"),
@@ -8333,6 +8481,9 @@ impl Player {
             #[cfg(test)]
             self.said_all.push(l);
         }
+        if let Some(line) = red {
+            self.tell_red(line);
+        }
     }
 
     /// The watchers' look (status_watch.rs), each time the audio loop's
@@ -8356,6 +8507,7 @@ impl Player {
             free: self.mem_free,
             ram_pct: self.ram_pct,
             session_lost: Some(self.session.1 == Tone::Bad),
+            no_setup: Some(self.session.1 == Tone::Warn),
             parts_missing: self.browser.as_ref().map(|b| !b.left_out_list().is_empty()),
             one_core: self.engines.as_deref().and_then(|e| e.cores.fell_back()),
             missing_ports: missing.as_deref(),
@@ -9415,6 +9567,7 @@ impl Player {
             }
             ToUi::Library { dir, lists } => self.open_library(&dir, &lists),
             ToUi::Browse(k) => self.browse_key(k),
+            ToUi::StatusKey(k) => self.status_key(k),
             // Played out or replaced: freed here, not on the audio thread.
             ToUi::PreviewBack(p) => drop(p),
             ToUi::SampleEditor(e) => {
@@ -11884,11 +12037,14 @@ impl Player {
                 kept.as_deref(),
             );
             self.say(format!("project: safe start: {words}"));
-            self.tell(&words);
-            // On the status board too (Dev > Status until phase 2).
+            // On the status board, so the chip is red and System status
+            // says what to do. A red problem's title would go on the hint
+            // line; the safe start's own words go there instead, in red,
+            // since they name the project and where the unsaved work is.
             self.report_problem(mpfree_status::Report::began(
                 &mpfree_status::kinds::CRASH_RESTART,
             ));
+            self.tell_red(tell_text(&words));
             return;
         }
         if let Some(k) = &kept {
@@ -12813,6 +12969,15 @@ impl Player {
                 self.set_system(crate::sysinfo::read(std::path::Path::new("/")));
                 "System info".to_string()
             }
+            // System status opens on the worst system, and marks every
+            // problem seen (the chip's ring goes).
+            View::SystemStatus => {
+                if self.view != View::SystemStatus {
+                    self.status_place.opened(&self.status_board);
+                }
+                self.fill_system_status();
+                crate::status_screen::PAGE.to_string()
+            }
             View::Prefs => "Prefs".to_string(),
             View::Mixer => mpfree_mixer_ui::MIXER_PAGE.to_string(),
             View::Chain => mpfree_chain_ui::CHAIN_PAGE.to_string(),
@@ -13321,7 +13486,7 @@ impl Player {
             if self
                 .told
                 .as_ref()
-                .is_some_and(|(t, _)| t.ends_with(HELD_TOLD))
+                .is_some_and(|(t, _, _)| t.ends_with(HELD_TOLD))
             {
                 self.told = None;
             }
@@ -14555,6 +14720,10 @@ impl Player {
             ("guide", EventKind::Tab(i)) => Some(FromUi::GuideButton(i)),
             ("help", EventKind::Tab(i)) => Some(FromUi::HelpButton(i)),
             ("header", EventKind::Select(i)) if Some(i) == self.arp_chip => Some(FromUi::ArpChip),
+            ("header", EventKind::Select(i)) if Some(i) == self.status_chip => {
+                Some(FromUi::StatusChip)
+            }
+            (crate::status_screen::WIDGET, kind) => self.status_page_event(kind),
             ("header", EventKind::Select(i)) if Some(i) == self.level_chip => {
                 Some(FromUi::PadLevelOff)
             }
@@ -14894,7 +15063,7 @@ impl Player {
             self.outbox.push(FromUi::Outline(outline));
         }
         // A told line goes back to the hint once read.
-        if let Some((_, left)) = self.told.as_mut() {
+        if let Some((_, left, _)) = self.told.as_mut() {
             *left -= dt.max(0.0);
             if *left <= 0.0 {
                 self.told = None;
@@ -15785,6 +15954,35 @@ pub fn sample_kits() -> Vec<KitView> {
 
 /// The pad player in a busy moment, for screenshots: a few pads lit, a
 /// level, timing, MIDI lines and a few system log lines.
+/// A Player with problems on its status board (System status phase 2's
+/// previews): voices given up 30 s ago, Juno-X missing (as the watcher
+/// finds it, at two looks), the sound dropping out now.
+pub fn sample_status(fonts: Fonts) -> Player {
+    use mpfree_status::{kinds, Report};
+    let mut p = sample_player(fonts);
+    p.set_ram(41.0);
+    p.set_free(1_100_000_000);
+    p.apply(ToUi::Problem(Report::happened(&kinds::VOICES_GIVEN_UP, 6)));
+    let ports = ["Juno-X".to_string()];
+    for _ in 0..2 {
+        let look = crate::status_watch::Look {
+            missing_ports: Some(&ports),
+            ..crate::status_watch::Look::default()
+        };
+        let mut reports = Vec::new();
+        p.status_watch.look(&look, &mut |r| reports.push(r));
+        for r in reports {
+            p.report_problem(r);
+        }
+    }
+    for _ in 0..60 {
+        p.tick(0.5);
+    }
+    p.apply(ToUi::Problem(Report::happened(&kinds::SOUND_DROPOUT, 3)));
+    p.tick(0.5);
+    p
+}
+
 pub fn sample_player(fonts: Fonts) -> Player {
     let mut p = Player::new(fonts, SCREEN, false, None);
     let synth = crate::synth::Synth::new(44_100);
@@ -16716,6 +16914,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::SampleEditor(e) => p.apply(ToUi::SampleEditor(e)),
             Effect::EditPad => p.apply(ToUi::EditPad),
             Effect::Browse(k) => p.apply(ToUi::Browse(k)),
+            Effect::StatusPage(k) => p.apply(ToUi::StatusKey(k)),
             Effect::SaveProject => p.ask_save(),
             Effect::PerformSet { set, opened } => p.apply(ToUi::PerformSet { set, opened }),
             Effect::SynthPick(v) => p.apply(ToUi::SynthPick(v.map(Box::new))),
@@ -19211,6 +19410,19 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     // Debug mode: the Touch page after some taps, holds and swipes, a finger
     // down, and a small saved correction; then Targets mode, four done.
     push_touch_dev_samples(&mut out, &fonts);
+    // System status (phase 2): the sound dropping out now (red, on the
+    // hint line), Juno-X not plugged in (yellow), voices given up 30 s ago;
+    // then the page on Sound, and all good.
+    out.push(("status-red-hint", sample_status(fonts())));
+    let mut page = sample_status(fonts());
+    page.told = None;
+    page.apply(ToUi::Show(View::SystemStatus));
+    out.push(("system-status", page));
+    let mut good = sample_player(fonts());
+    good.set_ram(38.0);
+    good.set_free(1_200_000_000);
+    good.apply(ToUi::Show(View::SystemStatus));
+    out.push(("system-status-good", good));
     // Prefs > System info, with fixed rows (the host's own would differ).
     let mut system = sample_player(fonts());
     system.apply(ToUi::Show(View::System));
@@ -27471,7 +27683,8 @@ mod tests {
                 .iter()
                 .map(|c| c.text.clone())
                 .collect();
-        assert!(chips.iter().any(|c| c == "RAM 17 %"), "{chips:?}");
+        // The status chip's RAM number (System status phase 2).
+        assert!(chips.iter().any(|c| c.ends_with("RAM 17 %")), "{chips:?}");
         assert!(!chips.iter().any(|c| c.contains("Bank")), "{chips:?}");
         assert_eq!(pads_play(&p), "Track 1 · Classic House · A");
         assert_eq!(
@@ -29952,7 +30165,7 @@ mod tests {
         assert!(
             p.told
                 .as_ref()
-                .is_some_and(|(t, _)| t.contains("no room for a new one")),
+                .is_some_and(|(t, _, _)| t.contains("no room for a new one")),
             "{:?}",
             p.told
         );
@@ -29981,7 +30194,8 @@ mod tests {
             p.apply(ToUi::Time(Box::new(st)));
             n
         };
-        let told = |p: &Player, what: &str| p.told.as_ref().is_some_and(|(t, _)| t.contains(what));
+        let told =
+            |p: &Player, what: &str| p.told.as_ref().is_some_and(|(t, _, _)| t.contains(what));
         let ask = |engine: &str, name: &str, from| A::NewTrackWithPreset {
             engine: engine.into(),
             name: name.into(),
@@ -30118,12 +30332,118 @@ mod tests {
         assert!(rows(&mut p)
             .iter()
             .any(|r| r.0 == "warn midi/port-missing #4" && r.1.starts_with("now")));
-        // Nothing on the top bar or the hint line: until phase 2 the board
-        // shows only here.
-        assert!(p.told.is_none());
+        // The red one went on the hint line, in red, once (phase 2).
+        assert_eq!(
+            p.told.as_ref().map(|t| (t.0.as_str(), t.2)),
+            Some((
+                "Saving didn't work. Tap the status chip to see why.",
+                Tone::Bad
+            ))
+        );
         // SHIFT + wheel reaches it on the Dev tab's strip, before Console.
         assert_eq!(crate::app::DEBUG_PAGES[6], View::StatusBoard);
         assert_eq!(View::StatusBoard.tab_view(), Some(View::Debug));
+    }
+
+    /// System status phase 2 (Jay's spec, 22 Nov 08:17Z): one fixed-size
+    /// status chip with the CPU and the RAM, green, yellow or red by them
+    /// and the problems, never their words; a tap opens System status on
+    /// the worst system and marks every problem seen (the ring goes); a
+    /// red problem's title goes on the hint line in red, once a minute; a
+    /// card's button reaches the app; MENU closes the page.
+    #[test]
+    fn the_status_chip_opens_system_status_and_red_problems_reach_the_hint_line() {
+        use mpfree_status::{kinds, Report};
+        use mpfree_ui::status_page::StatusPage;
+        let mut p = sample_player(Fonts::embedded());
+        let mut app = sample_app();
+        let chip = |p: &Player| {
+            p.ui.get::<Header>("header").unwrap().chips[p.status_chip.unwrap()].clone()
+        };
+        assert_eq!(p.status_chip, Some(0), "at the right end");
+        assert_eq!(chip(&p).text, "CPU –  RAM –");
+        p.set_ram(38.0);
+        assert_eq!(chip(&p).text, "CPU –  RAM 38 %");
+        assert_eq!(chip(&p).room, Some(crate::status_screen::CHIP_ROOM));
+        // Memory past its red line: the chip and its RAM number red.
+        p.set_ram(90.0);
+        assert_eq!(chip(&p).tone, Tone::Bad);
+        assert_eq!(chip(&p).inks[2].1, Some(Tone::Bad));
+        p.set_ram(38.0);
+        // A yellow problem: a yellow chip, nothing on the hint line.
+        p.apply(ToUi::Problem(
+            Report::began(&kinds::PORT_MISSING).about(mpfree_status::Subject(1)),
+        ));
+        assert_eq!(chip(&p).tone, Tone::Warn);
+        assert!(p.told.is_none(), "yellow never goes on the hint line");
+        // A red one: red, and its title on the hint line in red; the
+        // chip has no words of it.
+        p.apply(ToUi::Problem(Report::happened(&kinds::SOUND_DROPOUT, 2)));
+        assert_eq!(chip(&p).tone, Tone::Bad);
+        assert!(!chip(&p).text.contains("dropped"));
+        let hint = p.ui.get::<Label>("hint").unwrap();
+        assert_eq!(
+            (hint.text.as_str(), hint.tone),
+            (
+                "The sound dropped out. Tap the status chip to see why.",
+                Tone::Bad
+            )
+        );
+        // Over, unseen: the chip keeps the colour as a ring. Again within
+        // the minute: not on the hint line again.
+        p.tick(4.5);
+        assert!(p.told.is_none());
+        assert_eq!((chip(&p).tone, chip(&p).ring), (Tone::Bad, true));
+        p.apply(ToUi::Problem(Report::happened(&kinds::SOUND_DROPOUT, 1)));
+        assert!(p.told.is_none(), "once a minute");
+        p.tick(4.5);
+        assert_eq!((chip(&p).tone, chip(&p).ring), (Tone::Bad, true));
+        // The chip, drawn once, opens System status.
+        let mut c = SoftCanvas::new(SCREEN.0, SCREEN.1);
+        p.ui.paint(&mut c);
+        let r = p.ui.get::<Header>("header").unwrap().chip_rect(0).unwrap();
+        assert_eq!(
+            p.touch(1, Touch::Down, r.x + 10, r.y + 10),
+            Some(FromUi::StatusChip)
+        );
+        p.touch(1, Touch::Up, r.x + 10, r.y + 10);
+        apply_effects(&mut p, app.toggle_status());
+        assert_eq!(p.page(), crate::status_screen::PAGE);
+        assert!(chip(&p).lit);
+        // The worst system is picked; opening marked it seen, so the ring
+        // went (the port still makes the chip yellow).
+        let v =
+            p.ui.get::<StatusPage>(crate::status_screen::WIDGET)
+                .unwrap()
+                .view
+                .clone();
+        assert_eq!(v.picked, 0, "Sound");
+        assert_eq!(v.cards[0].title, "The sound dropped out");
+        assert_eq!(v.cards[0].when.split(" · ").next(), Some("3 times"));
+        assert_eq!(v.systems[4].badge, 1, "MIDI and sync");
+        assert_eq!((chip(&p).tone, chip(&p).ring), (Tone::Warn, false));
+        // The wheel steps the systems.
+        let fx = app.wheel(1);
+        apply_effects(&mut p, fx);
+        let v = &p
+            .ui
+            .get::<StatusPage>(crate::status_screen::WIDGET)
+            .unwrap()
+            .view;
+        assert_eq!(v.picked, 1, "Memory");
+        // A card's button: Silence all notes reaches the app.
+        p.status_place.actions = vec![Some(mpfree_status::Action::SilenceNotes)];
+        assert_eq!(
+            p.status_page_event(EventKind::Tab(mpfree_ui::status_page::BUTTON)),
+            Some(FromUi::StatusAction(mpfree_status::Action::SilenceNotes))
+        );
+        let fx = app.status_action(mpfree_status::Action::SilenceNotes);
+        assert!(fx.contains(&crate::app::Effect::StopSounds));
+        // MENU closes it, back to the page it opened over.
+        let fx = app.options_button();
+        apply_effects(&mut p, fx);
+        assert_ne!(p.page(), crate::status_screen::PAGE);
+        assert!(!chip(&p).lit);
     }
 
     /// The theme safety nets are yellow Screen problems: files left out,
@@ -30694,9 +31014,11 @@ mod tests {
             "{:?}",
             events_log(&c)
         );
+        // On the hint line in red: the safe start's own words, not the
+        // kind's title, since they name the project.
         assert_eq!(
-            c.told.as_ref().map(|t| t.0.clone()),
-            Some(tell_text(&said)),
+            c.told.as_ref().map(|t| (t.0.clone(), t.2)),
+            Some((tell_text(&said), Tone::Bad)),
             "on the hint line"
         );
         assert!(
@@ -30704,7 +31026,7 @@ mod tests {
                 .raw()
                 .iter()
                 .any(|p| { p.kind == &mpfree_status::kinds::CRASH_RESTART && p.is_now() }),
-            "on the status board (Dev > Status until System status phase 2)"
+            "on the status board, so the chip is red"
         );
         assert!(opens(&mut c).is_none(), "nor later");
         // A last project gone since is said; the new one stays.
@@ -31023,7 +31345,7 @@ mod tests {
             Some((format!("Saved as Song 2: {why}").as_str(), false))
         );
         assert_eq!(
-            p.told.as_ref().map(|(t, _)| t.clone()),
+            p.told.as_ref().map(|(t, _, _)| t.clone()),
             Some(tell_text(&format!("Saving as Song 2: {why}")))
         );
         assert!(
@@ -40362,9 +40684,13 @@ mod tests {
         // Pages whose live parts redraw on their own, and why. (The I/O
         // view redraws only when it changes, since 13 Nov, and here
         // nothing does.)
-        const LIVE: [&str; 1] = [
+        const LIVE: [&str; 2] = [
             // The touch test's trails fade.
             "debug-touch",
+            // System status counts how long ago each problem was, to the
+            // second for the first minute ("last 12 s ago": the layout
+            // spec, section 2a), while the page is open.
+            "system-status",
         ];
         let mut busy = Vec::new();
         for (name, mut p) in sample_screens(Fonts::embedded) {

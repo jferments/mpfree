@@ -9,7 +9,6 @@
 //! - [`grain_clip`]: a region of a sound as grains read it, with the
 //!   clean pitching of [`bandlimit`]; [`grain_presets`]: starting points
 //!   for a granular pad.
-//! - [`node`]: the sampler as an instrument node any track can hold.
 //! - [`record`]: the rolling "skip back" buffers and takes.
 //! - [`autosample`]: plays an instrument note by note, records each note
 //!   and builds a keygroup instrument from the takes.
@@ -41,7 +40,6 @@ pub mod hits;
 pub mod jobs;
 pub mod keymap;
 pub mod model;
-pub mod node;
 pub mod phrase;
 pub mod record;
 pub mod save;

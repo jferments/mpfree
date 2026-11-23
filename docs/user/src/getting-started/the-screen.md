@@ -41,10 +41,9 @@ A ninth tab, **Dev**, shows only when **Show developer tools** is on in [Prefs](
 | **Arp · Up · 1/16** | The arpeggiator, Note Repeat's latch or a pattern is on. | Opens the Arp panel. See [Note Repeat, Latch and the arpeggiator](../making-music/note-repeat-and-arp.md). |
 | **120.0 from MIDI In** | The tempo follows a clock from another device (with a green dot). | Opens the I/O view at Sync. |
 | **READY → Track 1** | On a page with no transport bar: REC is ready or recording, and what it records. | Says what it shows. |
-| **CPU 21 %** and **RAM 40 %** | How much of the processor the sound uses and how much memory is in use: green, then amber over 70 % and red over 85 %. They keep their width as the numbers change, so the chips beside them stay put. | Says what it shows. |
-| **No session** | Only when something is wrong with the link to the pads and buttons. | Says what it shows. |
+| **CPU 21 %  RAM 40 %** | The status chip, always there at the right end: how much of the processor the sound uses and how much memory is in use. Green when everything is working, yellow or red when something isn't, with a number past its line in that colour too. It keeps its size as the numbers change, so the chips beside it stay put. | Opens System status, which says what is wrong and what to try. See [When something goes wrong](../reference/when-something-goes-wrong.md). |
 
-When memory runs so short that new sounds can't load, the hint line says so (see [The Pads tab](../making-music/pads.md)).
+When a red problem starts, such as the sound dropping out, the hint line says so briefly in red. When memory runs so short that new sounds can't load, the hint line says so too (see [The Pads tab](../making-music/pads.md)).
 
 **The folder** at the far right of the bar opens the browser over the page, as **BROWSE** does, and is lit while the browser shows. Tap it again (or press BROWSE, or tap a tab) to close it. See [The browser](../making-music/saving.md#the-browser).
 

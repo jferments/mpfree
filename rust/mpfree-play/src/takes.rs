@@ -309,6 +309,9 @@ pub enum Replaced {
     /// Convert to notes: a clip that followed the pads, now of the notes
     /// it played (step sequencer refactor E1, `mpfree_seq::convert`).
     Convert,
+    /// Continue (composing tools): the clip carried on by `bars` bars,
+    /// kept from its preview.
+    Continue { bars: u8 },
 }
 
 /// A scene editor change: row `row`'s settings before and after.
@@ -760,7 +763,7 @@ impl Takes {
 
     /// Put `clip` in place of clip `slot` of `track`, as an edit of its
     /// own, for `why`: a reload, a Mutate or a Restore (S6,
-    /// [`mpfree_seq::mutate`]). Undo puts back the clip as it was, redo
+    /// [`mpfree_seq::mutate`]), or a Continue kept. Undo puts back the clip as it was, redo
     /// `clip` again. The edit's number. `BadSlot` if the slot is empty;
     /// `clip`'s own refusals as they are. Nothing changes on an error.
     pub fn replace_clip(
