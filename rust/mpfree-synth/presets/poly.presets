@@ -185,6 +185,9 @@ amp-env.decay = 450
 amp-env.sustain = 0
 amp-env.release = 295
 
+# Output
+output.level = 0
+
 # Pressure
 pressure.to-1 = Off
 
@@ -213,6 +216,9 @@ amp-env.sustain = 90
 # LFO
 lfo.rate = 5.5
 lfo.to-pitch = 0.15
+
+# Output
+output.level = 0
 
 # Pressure
 pressure.to-1 = Level
@@ -246,6 +252,9 @@ amp-env.release = 118
 # Voice
 voice.mode = Mono
 voice.glide = 25
+
+# Output
+output.level = 0
 
 # Pressure
 pressure.to-1 = Drive
@@ -442,6 +451,9 @@ voice.mode = Legato
 voice.glide = 60
 voice.bend-range = 12
 
+# Output
+output.level = 0
+
 # Pressure
 pressure.to-1 = Vibrato
 pressure.depth-1 = 40
@@ -517,6 +529,9 @@ filter-env.sustain = 0
 amp-env.decay = 380
 amp-env.sustain = 0
 amp-env.release = 177
+
+# Output
+output.level = 0
 
 mpfree-preset = 2
 engine = mpfree.poly
@@ -789,7 +804,7 @@ amp-env.release = 197
 lfo.rate = 2
 
 # Output
-output.level = 1.9
+output.level = 0.9
 
 # Pressure
 pressure.to-1 = Position
@@ -837,7 +852,7 @@ amp-env.release = 1180
 lfo.rate = 2
 
 # Output
-output.level = 1.9
+output.level = -1.1
 
 # Pressure
 pressure.to-1 = Warp
@@ -1018,7 +1033,7 @@ amp-env.release = 491
 lfo.rate = 2
 
 # Output
-output.level = 1.9
+output.level = 0.4
 
 # Pressure
 pressure.to-1 = Warp

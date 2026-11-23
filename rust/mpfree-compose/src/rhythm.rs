@@ -171,18 +171,33 @@ pub fn fresh(
             })
             .collect();
         ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
-        let mut on: Vec<i32> = ranked.iter().take(want).map(|x| x.1).collect();
+        // The bar's first step always sounds: a new rhythm stands on the
+        // downbeat, or the whole bar sounds pushed late.
+        let mut on: Vec<i32> = vec![0];
+        on.extend(
+            ranked
+                .iter()
+                .map(|x| x.1)
+                .filter(|&s| s != 0)
+                .take(want - 1),
+        );
         // Now and then a beat left silent.
         if dice.chance(f64::from(style.rest)) {
             let beat = dice.below(beats as usize) as i32 * grid.beat;
             on.retain(|&s| s < beat || s >= beat + grid.beat || s == 0);
         }
         on.sort_unstable();
-        if on.is_empty() {
-            continue;
-        }
-        let shared = on.iter().filter(|o| avoid.contains(o)).count() as f64 / on.len() as f64;
-        let score = (syncopation(&on, grid) - sync).abs() + 0.5 * shared;
+        // Unlike your bar off the beat; sharing its beats is fine.
+        let shared = on
+            .iter()
+            .filter(|&&o| !grid.on_beat(o) && avoid.contains(&o))
+            .count() as f64
+            / on.len() as f64;
+        // A note a 1/16 after a beat that doesn't run straight on into the
+        // next 1/16 sounds like a late beat, not a syncopation (a 1/16
+        // before a beat, pushing into it, is the syncopation).
+        let late = on.iter().filter(|&&o| is_late(o, &on, grid)).count() as f64 / on.len() as f64;
+        let score = (syncopation(&on, grid) - sync).abs() + 0.5 * shared + LATE_COST * late;
         if score < best.0 {
             best = (score, on);
         }
@@ -190,10 +205,94 @@ pub fn fresh(
     from_starts(&best.1, grid)
 }
 
+/// What a fresh rhythm pays for its share of late notes.
+const LATE_COST: f64 = 1.2;
+
+/// Whether a note starting at `o` sounds like a late beat: a 1/16 after
+/// a beat, with nothing on the 1/16 after it.
+fn is_late(o: i32, on: &[i32], grid: Grid) -> bool {
+    grid.level(o) == -4 && o.rem_euclid(grid.beat) == 1 && !on.contains(&(o + 1))
+}
+
+/// Thin or fill a rhythm to about `want` notes. Thinner drops the weakest
+/// notes (the weakest steps and shortest notes, never the bar's first),
+/// each leaving a rest or, half the time, a longer note before it.
+/// Fuller splits the longest notes in two at the strongest step inside
+/// them that is a multiple of `unit` steps (2 keeps a swung line on its
+/// 1/8s). The plan's activity and the Activity setting work through this.
+pub fn density_to(r: &mut Vec<Onset>, want: usize, unit: i32, grid: Grid, dice: &mut Dice) {
+    let unit = unit.max(1);
+    let want = want.clamp(1, grid.bar.max(1) as usize);
+    while r.len() > want && r.len() > 1 {
+        let scores: Vec<(usize, f64)> = (1..r.len())
+            .map(|i| {
+                let x = r[i];
+                let s = f64::from(grid.level(x.on) + 5) + 0.4 * f64::from(x.len) + dice.unit();
+                (i, s)
+            })
+            .collect();
+        let Some(&(i, _)) = scores.iter().min_by(|a, b| a.1.total_cmp(&b.1)) else {
+            break;
+        };
+        let gone = r.remove(i);
+        let p = &mut r[i - 1];
+        if p.on + p.len == gone.on && dice.chance(0.5) {
+            p.len += gone.len;
+        }
+    }
+    while r.len() < want {
+        let inside = |x: Onset| (x.on + 1..x.on + x.len).filter(move |p| p % unit == 0);
+        let scores: Vec<(usize, f64)> = (0..r.len())
+            .filter(|&i| inside(r[i]).next().is_some())
+            .map(|i| (i, f64::from(r[i].len) + dice.unit()))
+            .collect();
+        let Some(&(i, _)) = scores.iter().max_by(|a, b| a.1.total_cmp(&b.1)) else {
+            break;
+        };
+        let x = r[i];
+        let mid = x.on + x.len / 2;
+        let Some(at) = inside(x).max_by_key(|&p| (grid.level(p), -(p - mid).abs())) else {
+            break;
+        };
+        r[i].len = at - x.on;
+        r.insert(
+            i + 1,
+            Onset {
+                on: at,
+                len: x.on + x.len - at,
+            },
+        );
+    }
+}
+
+/// The steps where a note of `r` sounds.
+fn sounding(r: &[Onset], grid: Grid) -> Vec<bool> {
+    let mut s = vec![false; grid.bar.max(1) as usize];
+    for x in r {
+        for p in x.on.max(0)..(x.on + x.len).min(grid.bar) {
+            s[p as usize] = true;
+        }
+    }
+    s
+}
+
+/// Each note of `r` stops where `was` (the rhythm it came from) had a
+/// rest of an 1/8 or more: the rests you played stay rests.
+fn keep_rests(r: &mut [Onset], was: &[bool]) {
+    let silent = |p: i32| !was.get(p as usize).copied().unwrap_or(true);
+    for x in r.iter_mut() {
+        let end = x.on + x.len;
+        if let Some(p) = (x.on + 1..end - 1).find(|&p| silent(p) && silent(p + 1)) {
+            x.len = p - x.on;
+        }
+    }
+}
+
 /// The style's feel on a kept rhythm: Minimal keeps the strongest notes,
 /// Groove pushes some beats a 1/16 early and chops long notes, Jazz-ish
 /// moves notes to 1/8s and anticipates some beats. The further the bar
-/// may stray from yours (`similarity` low), the more it changes.
+/// may stray from yours (`similarity` low), the more it changes. Rests of
+/// an 1/8 or more in the rhythm stay rests.
 pub fn feel(
     style: &RhythmStyle,
     r: &mut Vec<Onset>,
@@ -204,6 +303,7 @@ pub fn feel(
 ) {
     let k = (1.25 - similarity).clamp(0.1, 1.0);
     let beats = f64::from((grid.bar / grid.beat).max(1));
+    let was = sounding(r, grid);
     let mut on: Vec<i32> = r.iter().map(|x| x.on).collect();
     match style.feel {
         Feel::Simplify => {
@@ -237,9 +337,14 @@ pub fn feel(
                 } else {
                     v.push(o);
                 }
-                // A long note chopped into a short one and a repeat.
+                // A long note chopped into a short one and a repeat (never
+                // into a rest).
                 let next = on.get(i + 1).copied().unwrap_or(grid.bar);
-                if next - o >= grid.beat && dice.chance(0.4 * k) {
+                let held = was
+                    .get((o + grid.beat - 1) as usize)
+                    .copied()
+                    .unwrap_or(false);
+                if next - o >= grid.beat && held && dice.chance(0.4 * k) {
                     v.push(o + grid.beat - 1);
                 }
             }
@@ -263,6 +368,7 @@ pub fn feel(
     on.dedup();
     on.retain(|&o| (0..grid.bar).contains(&o));
     *r = from_starts(&on, grid);
+    keep_rests(r, &was);
 }
 
 #[cfg(test)]
@@ -360,6 +466,65 @@ mod tests {
         };
         // Groove's rhythms are more syncopated than Minimal's.
         assert!(mean(&GROOVE.rhythm) > mean(&MINIMAL.rhythm));
+    }
+
+    #[test]
+    fn busier_and_sparser_rhythms_keep_the_downbeat_and_the_grid() {
+        let r: Vec<Onset> = from_starts(&[0, 4, 6, 8, 12], FOUR);
+        for b in 0..30 {
+            let mut thin = r.clone();
+            density_to(&mut thin, 3, 1, FOUR, &mut dice(b));
+            assert_eq!(thin.len(), 3);
+            assert_eq!(thin[0].on, 0, "the bar's first note stays");
+            let mut full = r.clone();
+            density_to(&mut full, 8, 1, FOUR, &mut dice(b));
+            assert_eq!(full.len(), 8);
+            assert!(full.windows(2).all(|w| w[0].on + w[0].len <= w[1].on));
+            // On 1/8s only, a swung line stays on its 1/8s.
+            let mut swung = r.clone();
+            density_to(&mut swung, 8, 2, FOUR, &mut dice(b));
+            assert!(swung.iter().all(|x| x.on % 2 == 0), "{swung:?}");
+        }
+    }
+
+    #[test]
+    fn a_fresh_rhythm_stands_on_the_downbeat() {
+        // Your bar on every beat and 1/8: a contrast used to dodge all of
+        // them and land every note a 1/16 late.
+        let yours = [0, 2, 3, 4, 6, 8, 11, 12];
+        for style in [MINIMAL.rhythm, GROOVE.rhythm, JAZZISH.rhythm] {
+            let mut late = 0;
+            for b in 0..40 {
+                let r = fresh(&style, 0.7, &yours, FOUR, &mut dice(b));
+                assert_eq!(r[0].on, 0, "{r:?}");
+                let on: Vec<i32> = r.iter().map(|x| x.on).collect();
+                late += on.iter().filter(|&&o| is_late(o, &on, FOUR)).count();
+            }
+            assert!(late < 10, "{late} late notes in 40 bars");
+        }
+    }
+
+    #[test]
+    fn the_rests_you_played_stay_rests() {
+        // Two 1/8s, a beat and a half of rest, then a beat: the feel keeps
+        // the rest.
+        let r = vec![
+            Onset { on: 0, len: 2 },
+            Onset { on: 2, len: 2 },
+            Onset { on: 10, len: 4 },
+        ];
+        for style in [&MINIMAL.rhythm, &GROOVE.rhythm, &JAZZISH.rhythm] {
+            for b in 0..20 {
+                let mut x = r.clone();
+                feel(style, &mut x, 1.0, 0.9, FOUR, &mut dice(b));
+                let sounding = sounding(&x, FOUR);
+                assert!(
+                    sounding[5..9].iter().all(|s| !s),
+                    "{}: {x:?}",
+                    style.syncopation
+                );
+            }
+        }
     }
 
     #[test]

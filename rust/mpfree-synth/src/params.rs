@@ -785,7 +785,9 @@ const BASE: &[ParamInfo] = &[
     // Character (the voice core's): how far each voice is from the
     // others, as on an analog poly's voice cards. 0, the default, is none.
     p(AGE, "Age", "Voice", 0.0, 100.0, 0.0, Unit::Percent, Linear),
-    p(LEVEL, "Level", "Output", -60.0, 6.0, 0.0, Unit::Db, Linear),
+    // -4 dB: an 8-note chord of Init at full velocity peaks under 0 dBFS
+    // (synth-quality L2; DSP quality step 1.5).
+    p(LEVEL, "Level", "Output", -60.0, 6.0, -4.0, Unit::Db, Linear),
     p(
         PAN,
         "Pan",
