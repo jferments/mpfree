@@ -30,7 +30,7 @@ Tap the status chip, or pick **System status** in Prefs, to open the page over t
 
 {{shot: system-status | System status: the sound dropped out three times just now (red), Juno-X isn't plugged in (yellow), and some voices were faded out 30 seconds ago.}}
 
-- **The top line** says the worst problem happening now, in its colour, or **Everything is working**, with how many problems there are now and earlier. On its right are the CPU and RAM meters.
+- **The top line** says the worst problem happening now, in its colour, or **Everything is working**, with how many problems there are now and earlier. On its right are the CPU and RAM meters and, once MPFree has looked at the stick it records to, the stick's meter with how much space is free (yellow while the stick is nearly full), and the **Temp** meter with the MPC's temperature, filled towards the temperature at which it turns itself off (yellow while it is running hot).
 - **The systems** are always listed on the left, all nine: Sound, Memory, Storage, Pads and buttons, MIDI and sync, Project, Screen, Plugins and The MPC. Each has a dot in its colour, a few plain words ("41 % used · 1.1 GB free", "Juno-X: not plugged in") and a count of its problems. The page opens on the worst one.
 - **The picked system's problems** are on the right, worst and newest first. A problem happening now shows in full: what happened, what to try and, where MPFree can do it for you, a button. One that is over folds to a line with when it happened; tap it to open it. Each kind of problem has one card, with how many times and when ("3 times · last 12 s ago · first 4 min ago").
 - **Now | This session**, at the top right, shows only what is happening now, or everything since MPFree started.
@@ -149,6 +149,10 @@ Each problem below starts with its colour. A **Note** is listed on the System st
 
 **Yellow.** The project uses a MIDI device that isn't connected, so nothing is sent to it or heard from it. Its card and its system's line name the device. **Try:** plug it in, or pick another port where the project uses it. The problem ends by itself once the device is back.
 
+### The clock MPFree follows stopped
+
+**Yellow.** The device MPFree takes its tempo from (**Tempo from**, in the mixer's I/O view under **Sync**) stopped sending its clock while it played, so MPFree plays on by itself at the last tempo. **Try:** check that the device is still playing and its cable is in, or set **Tempo from** to **MPFree**. The problem ends by itself when the clock comes back or the device sends Stop. See [Staying in time with other gear](../making-music/midi-and-cv.md#staying-in-time-with-other-gear).
+
 ### The project opened with parts missing
 
 **Yellow.** Some samples or parts couldn't be found, so they were left out. It saves as a new project, so the original stays as it was. **Try:** press **Show what's missing**, which opens the browser with the missing parts named on its status line, then find or replace them.
@@ -176,6 +180,18 @@ Each problem below starts with its colour. A **Note** is listed on the System st
 ### Some pop-up colours were changed so they read
 
 **Yellow.** The theme's colours didn't read over a plugin's own screen, so MPFree changed the colours of its pop-ups there. **Try:** pick another theme, or give this one more difference between its words and its panels.
+
+### A plugin stopped
+
+**Red.** A plugin crashed, so its sound stopped for a moment. MPFree starts it again where it was. After four crashes in a minute it stays off: an effect then lets the sound through, and an instrument is silent. **Try:** save your project. If it keeps happening, take the plugin out and add it again, or use another one. See [Plugins](../making-music/effects.md#plugins) for how plugins run apart from the rest of MPFree.
+
+### The MPC is running hot
+
+**Yellow.** The MPC is hotter than it gets even with all its cores busy, so it may slow its processor to cool down, and then the sound has less room before it runs late. **Try:** keep it out of the sun and away from heat, with room around it, and play fewer effects and instruments at once until it cools. The **Temp** meter at the top of System status shows how hot it is; the problem ends once it has cooled a few degrees.
+
+### The MPC slowed its processor
+
+**Yellow.** The MPC turned its processor's top speed down, usually to cool down, so the sound has less room before it runs late. **Try:** let it cool: keep it out of the sun and away from heat, and play fewer effects and instruments at once for now. It ends by itself when the speed comes back. **The MPC**'s numbers on System status say how far the top speed came down.
 
 ### The sound is running on fewer cores
 

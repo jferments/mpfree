@@ -15,7 +15,7 @@ use mpfree_transport::time::{Meter, Swing};
 use crate::preview::Proposal;
 use crate::profile::InstrumentKind;
 use crate::read::ToRead;
-use crate::request::{continue_clip_read, Continued, OnClip, Refused};
+use crate::request::{continue_clip_how, Continued, Making, OnClip, Refused};
 use crate::settings::Settings;
 
 /// The drums each pad of a drum track plays, as the kit names them: only
@@ -46,6 +46,33 @@ impl Lanes {
     }
 }
 
+/// The drum a kit's pad plays, read from the sound's name: Kick ("Kick
+/// 1", "BD Deep", "808 Bass Drum"), Snare (a snare, "SD", a clap or a
+/// rim), Hats (a hat, "HH", a ride, a cymbal, a shaker or a tambourine),
+/// else Other; None for a pad with no sound.
+pub fn lane_named(name: &str) -> Option<Lane> {
+    let name = name.trim().to_lowercase();
+    if name.is_empty() {
+        return None;
+    }
+    let words: Vec<&str> = name.split(|c: char| !c.is_alphanumeric()).collect();
+    let word = |w: &[&str]| words.iter().any(|x| w.contains(x));
+    let has = |w: &[&str]| w.iter().any(|x| name.contains(x));
+    Some(
+        if has(&["kick", "bassdrum", "bass drum"]) || word(&["bd", "kik", "kck"]) {
+            Lane::Kick
+        } else if has(&["snare", "clap", "rim"]) || word(&["sd", "snr", "sn", "cp"]) {
+            Lane::Snare
+        } else if has(&["hat", "ride", "cymbal", "shaker", "tamb"])
+            || word(&["hh", "oh", "ch", "cy"])
+        {
+            Lane::Hats
+        } else {
+            Lane::Other
+        },
+    )
+}
+
 /// What the time engine asks for, besides the project.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Ask {
@@ -61,6 +88,8 @@ pub struct Ask {
     pub bpm: f64,
     pub budget: ReadBudget,
     pub settings: Settings,
+    /// A new result, or part of an earlier one again.
+    pub how: Making,
 }
 
 /// A request with its own copy of what it reads.
@@ -130,7 +159,7 @@ impl ContinueJob {
             bpm: a.bpm,
             budget: a.budget,
         };
-        let (result, left_out) = continue_clip_read(&on, &a.settings, a.kind);
+        let (result, left_out) = continue_clip_how(&on, &a.settings, a.kind, &a.how);
         Done { result, left_out }
     }
 }
@@ -194,7 +223,22 @@ mod tests {
                 seed: 9,
                 ..Settings::default()
             },
+            how: Making::New,
         }
+    }
+
+    #[test]
+    fn a_pad_s_drum_is_read_from_its_sound_s_name() {
+        assert_eq!(lane_named("Kick 1"), Some(Lane::Kick));
+        assert_eq!(lane_named("BD Deep"), Some(Lane::Kick));
+        assert_eq!(lane_named("808 Bass Drum"), Some(Lane::Kick));
+        assert_eq!(lane_named("SD Tight"), Some(Lane::Snare));
+        assert_eq!(lane_named("Clap Wide"), Some(Lane::Snare));
+        assert_eq!(lane_named("Hat Open"), Some(Lane::Hats));
+        assert_eq!(lane_named("HH closed"), Some(Lane::Hats));
+        assert_eq!(lane_named("Shaker"), Some(Lane::Hats));
+        assert_eq!(lane_named("Conga Hi"), Some(Lane::Other));
+        assert_eq!(lane_named("  "), None);
     }
 
     #[test]

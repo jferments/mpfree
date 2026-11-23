@@ -100,12 +100,13 @@
 //! skip the line and open the track as an empty note track; a part with
 //! none is still `mpfree-clips 2`.
 //!
-//! A marker's `section <passes>[ scene <row>[ changed]]` line, right
-//! after its `marker` line, is what the marker says when the song list
-//! is linked to the song (the Arrange refactor's phase 4b,
+//! A marker's `section <passes>[ scene <row> pass <ticks>[ changed]]`
+//! line, right after its `marker` line, is what the marker says when the
+//! song list is linked to the song (the Arrange refactor's phase 4b,
 //! [`crate::arrange::FromScene`]): how many passes its section plays,
-//! the scene it was made from, and whether it has been changed in the
-//! song since; a plain marker (one pass, no scene) has none. A linked
+//! the scene it was made from with how long a pass of it was then, and
+//! whether it has been changed in the song since; a plain marker (one
+//! pass, no scene) has none. A linked
 //! list is a `listlinked` line, with no `list` steps. A part with either
 //! starts `mpfree-clips 4` ([`FORMAT_4`]), which an older build doesn't
 //! open, since it would skip them and show the list as empty; a part
@@ -304,7 +305,7 @@ pub fn to_text(p: &Project) -> String {
         if !m.is_plain() {
             let _ = write!(s, "section {}", m.passes);
             if let Some(from) = m.scene {
-                let _ = write!(s, " scene {}", from.row);
+                let _ = write!(s, " scene {} pass {}", from.row, from.pass);
                 if from.changed {
                     s.push_str(" changed");
                 }
@@ -1033,10 +1034,11 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                     match x {
                         "scene" => {
                             let row = num(w.next()).ok_or_else(|| bad("scene"))?;
-                            m.scene = Some(FromScene {
-                                row,
-                                changed: false,
-                            });
+                            m.scene = Some(FromScene::following(row, 0));
+                        }
+                        "pass" => {
+                            let pass = num(w.next()).ok_or_else(|| bad("pass"))?;
+                            m.scene.as_mut().ok_or_else(|| bad("pass"))?.pass = pass;
                         }
                         "changed" => {
                             m.scene.as_mut().ok_or_else(|| bad("changed"))?.changed = true;
@@ -1044,6 +1046,9 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                         // Words a newer build adds are skipped.
                         _ => {}
                     }
+                }
+                if m.scene.is_some_and(|from| from.pass <= 0) {
+                    return Err(bad("a section's scene without its pass"));
                 }
             }
             ("section", _) => return Err(bad("a section line not after its marker")),
@@ -2363,8 +2368,8 @@ mod tests {
         assert_eq!(placed.check(), Err(crate::ModelError::AudioTrack));
     }
 
-    /// Arrange 4b.1: a marker's section line (its passes, its scene, and
-    /// changed in the song) and a linked list read back, in a part an
+    /// Arrange 4b.1: a marker's section line (its passes, its scene with
+    /// its pass, and changed in the song) and a linked list read back, in a part an
     /// older build doesn't open; plain markers write no line, and a part
     /// with neither keeps its format.
     #[test]
@@ -2373,7 +2378,12 @@ mod tests {
         assert!(to_text(&p).starts_with("mpfree-clips 2\n"));
         p.arrangement.list.steps.clear();
         p.arrangement.list.linked = true;
-        let from = |row, changed| Some(FromScene { row, changed });
+        let from = |row, changed| {
+            Some(FromScene {
+                changed,
+                ..FromScene::following(row, 3840)
+            })
+        };
         p.arrangement.markers = vec![
             Marker {
                 scene: from(2, false),
@@ -2394,8 +2404,8 @@ mod tests {
         let text = to_text(&p);
         assert!(text.starts_with("mpfree-clips 4\n"), "{text}");
         for lines in [
-            "marker 0 Intro bit\nsection 4 scene 2\nmarker 7680 Break\nmarker 11520 Verse\n",
-            "section 1 scene 0 changed\nmarker 15360 Outro\nsection 2\n",
+            "marker 0 Intro bit\nsection 4 scene 2 pass 3840\nmarker 7680 Break\nmarker 11520 Verse\n",
+            "section 1 scene 0 pass 3840 changed\nmarker 15360 Outro\nsection 2\n",
             "listloop\nlistlinked\n",
         ] {
             assert!(text.contains(lines), "{text}");
@@ -2417,7 +2427,8 @@ mod tests {
         assert_eq!(from_text(&newer).unwrap(), p);
         // Refused: a section line not right after its marker, changed
         // without a scene, passes out of range or missing, a scene off
-        // the grid, and a linked list with steps of its own.
+        // the grid, a scene without its pass or a pass without a scene,
+        // and a linked list with steps of its own.
         for (from_, to) in [
             (
                 "marker 7680 Break\n",
@@ -2427,7 +2438,10 @@ mod tests {
             ("section 2\n", "section 0\n"),
             ("section 2\n", "section 100\n"),
             ("section 2\n", "section\n"),
-            ("section 4 scene 2\n", "section 4 scene 9999\n"),
+            ("scene 2 pass", "scene 9999 pass"),
+            ("scene 2 pass 3840", "scene 2"),
+            ("scene 2 pass 3840", "scene 2 pass 0"),
+            ("section 2\n", "section 2 pass 3840\n"),
             ("listlinked\n", "listlinked\nlist 0 1\n"),
         ] {
             let bad = text.replacen(from_, to, 1);

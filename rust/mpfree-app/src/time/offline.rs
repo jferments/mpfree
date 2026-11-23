@@ -16,6 +16,9 @@
 //! from the first ([`TimeAction::ListPlay`]), from song tick `at`. It
 //! stops where the last step ends, where the list stops every track.
 //!
+//! A linked list's section (the Arrange refactor's 4b.2, [`play_part`])
+//! is made the same way from one step, with no scene's mutes.
+//!
 //! Only ticks are kept, and nothing that decides where a block starts or
 //! ends counts frames (cues land on bar lines, follow actions and
 //! one-shots on ticks), so the copy plays at [`FAST_BPM`] and
@@ -71,6 +74,35 @@ pub fn play_rows(
     at: Tick,
     bar: Tick,
 ) -> Result<Played, String> {
+    play(project, steps, at, bar, true)
+}
+
+/// A linked list's section made from its scene (the Arrange refactor's
+/// 4b.2): row `row` played `times` times from song tick `at`, as
+/// [`play_rows`] plays one step, but with no scene's mutes, and the
+/// blocks it plays. A linked section's blocks are the row's clips
+/// whatever played before it: the scenes' mutes are the song's to bring
+/// in as each section starts (4b.4), as the list brings them in live,
+/// so a section plays the same wherever it is moved.
+pub fn play_part(
+    project: &Project,
+    row: usize,
+    times: u16,
+    at: Tick,
+    bar: Tick,
+) -> Result<Vec<Placement>, String> {
+    let step = ListStep { row, times };
+    Ok(play(project, &[step], at, bar, false)?.placements)
+}
+
+/// [`play_rows`], with the scenes' mutes (`mutes`) or none.
+fn play(
+    project: &Project,
+    steps: &[ListStep],
+    at: Tick,
+    bar: Tick,
+    mutes: bool,
+) -> Result<Played, String> {
     let bar = bar.max(1);
     let length: Tick = steps
         .iter()
@@ -96,6 +128,11 @@ pub fn play_rows(
         t.solo = false;
         for (_, c) in t.slots.iter_mut() {
             bare(c);
+        }
+    }
+    if !mutes {
+        for s in &mut copy.scenes {
+            s.mutes = None;
         }
     }
     let mut host = TimeHost::with_project(FAST_RATE, FAST_BPM, copy)?;

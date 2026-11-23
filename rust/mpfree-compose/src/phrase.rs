@@ -31,10 +31,10 @@ use crate::motif::{bar_of, line, motifs, similarity, transform, GridNote, Transf
 use crate::plan::{BarJob, BarPlan};
 use crate::profile::{InstrumentKind, Profile};
 use crate::realize::{decisions_of, Fit, PlainNote};
-use crate::rhythm::{feel, fresh, rhythm_of, vary, Grid, Onset};
+use crate::rhythm::{density_to, feel, fresh, rhythm_of, vary, Grid, Onset};
 use crate::rules::{RangeSetting, Rule, Suggestion, Unmet, Weights};
 use crate::settings::{Ending, Settings};
-use crate::style::{MelodyStyle, Style};
+use crate::style::{Feel, MelodyStyle, Style};
 
 /// Steps the model knows: -7 to 7 scale places.
 const SPAN: usize = 15;
@@ -148,6 +148,19 @@ fn over(chord: Chord, pitch: u8, key: Key) -> Over {
     }
 }
 
+/// Whether `pitch` is one of `chord`'s own notes from outside `key`, with
+/// the chord itself from outside the key (a borrowed chord).
+fn borrowed_tone(chord: Chord, pitch: u8, key: Key) -> bool {
+    let outside = |p: i32| !key.has(p);
+    chord.tone_of(i32::from(pitch)).is_some()
+        && outside(i32::from(pitch))
+        && chord
+            .quality
+            .intervals()
+            .iter()
+            .any(|&i| outside(i32::from(chord.root) + i32::from(i)))
+}
+
 /// Your tune, read for writing more of it.
 #[derive(Clone, Debug)]
 pub struct Phrasing<'a> {
@@ -178,6 +191,10 @@ pub struct Phrasing<'a> {
     pub two_sided: bool,
     /// The clip loops: its last bar leads into its first.
     pub loops: bool,
+    /// The music-first engine (revision 3, S1): a note leads into a held
+    /// anchor rather than sounding it early, and over a chord from outside
+    /// the key the melody may use that chord's own notes.
+    pub music_first: bool,
 }
 
 impl<'a> Phrasing<'a> {
@@ -240,10 +257,11 @@ impl<'a> Phrasing<'a> {
             part: 0,
             two_sided: true,
             loops: false,
+            music_first: false,
         }
     }
 
-    fn dice(&self, settings: &Settings, job: Job, bar: usize, attempt: u16) -> Dice {
+    pub(crate) fn dice(&self, settings: &Settings, job: Job, bar: usize, attempt: u16) -> Dice {
         DiceName {
             seed: settings.seed,
             part: self.part,
@@ -258,7 +276,7 @@ impl<'a> Phrasing<'a> {
     /// The lowest and highest pitch new notes may use with `range`: inside
     /// the range you picked around the middle of your tune, and inside
     /// the instrument's.
-    fn pitches(&self, range: RangeSetting) -> Option<(u8, u8)> {
+    pub(crate) fn pitches(&self, range: RangeSetting) -> Option<(u8, u8)> {
         let lo = self
             .key
             .pitch_at(self.centre - range.steps(), 0)
@@ -271,7 +289,7 @@ impl<'a> Phrasing<'a> {
     }
 
     /// Refused: the setting in the way and the one change that fixes it.
-    fn unmet(&self, rule: Rule, bar: usize, range: RangeSetting) -> Unmet {
+    pub(crate) fn unmet(&self, rule: Rule, bar: usize, range: RangeSetting) -> Unmet {
         let mut wider = range.wider();
         while let Some(w) = wider {
             if rule != Rule::RangeSetting || self.pitches(w).is_some() {
@@ -341,8 +359,32 @@ pub fn bar_material(
         * (1.0 - aim).max(0.08)
         * 2.0;
     let keep = settings.keeps.rhythm;
-    // Your bar's rhythm, varied by `share` of the amount (when `vary_it`)
-    // and given the style's feel, unless Keep Rhythm holds it as yours.
+    // About as busy as the bar's activity asks, against the `base` notes
+    // its rhythm came from (within 15 %, so the feel's own changes stay).
+    // Minimal's feel already keeps as many notes as the activity asks.
+    let busy = |r: &mut Vec<Onset>, base: usize, dice: &mut Dice| {
+        if style.rhythm.feel == Feel::Simplify || base == 0 {
+            return;
+        }
+        let want = base as f64 * act;
+        let (lo, hi) = (
+            (want * 0.85).floor() as usize,
+            (want * 1.15).ceil() as usize,
+        );
+        let unit = if style.rhythm.feel == Feel::Swing8 {
+            2
+        } else {
+            1
+        };
+        if r.len() > hi {
+            density_to(r, hi, unit, grid, dice);
+        } else if r.len() < lo {
+            density_to(r, lo, unit, grid, dice);
+        }
+    };
+    // Your bar's rhythm, varied by `share` of the amount (when `vary_it`),
+    // given the style's feel and made as busy as the bar asks, unless Keep
+    // Rhythm holds it as yours.
     let reshaped = |tune: &[GridNote], share: f64, vary_it: bool, dice: &mut Dice| {
         let mut r = rhythm_of(tune, grid);
         if !keep {
@@ -350,6 +392,7 @@ pub fn bar_material(
                 vary(&mut r, amount * share, act, grid, dice);
             }
             feel(&style.rhythm, &mut r, act, aim, grid, dice);
+            busy(&mut r, tune.len(), dice);
         }
         r
     };
@@ -375,8 +418,10 @@ pub fn bar_material(
             } else {
                 src.clone()
             };
+            let tune = transform(&tune, Transform::Move(bp.shift));
             if !keep {
                 feel(&style.rhythm, &mut r, act, aim, grid, dice);
+                busy(&mut r, src.len(), dice);
             }
             targets(&r, &tune)
         }
@@ -385,9 +430,14 @@ pub fn bar_material(
             // bar, ending on another note than the call did.
             let mut tune: Vec<GridNote> = src.iter().filter(|m| m.on < half).copied().collect();
             tune.extend(other.iter().filter(|m| m.on >= half));
-            let home = ph.centre - ph.centre.rem_euclid(7);
+            // It ends on home, or on the fifth if the call did, the one
+            // nearest where the (lifted) answer is.
             let call_end = src.last().map_or(0, |m| m.pos.rem_euclid(7));
-            let end = if call_end == 0 { home + 4 } else { home };
+            let degree = if call_end == 0 { 4 } else { 0 };
+            let tune = transform(&tune, Transform::Move(bp.shift));
+            let near = tune.last().map_or(ph.centre, |m| m.pos);
+            let below = (near - degree).rem_euclid(7);
+            let end = near - below + if below > 3 { 7 } else { 0 };
             let tune = transform(&tune, Transform::EndOn(end));
             let r = reshaped(&tune, 0.5, true, dice);
             targets(&r, &tune)
@@ -421,7 +471,10 @@ pub fn bar_material(
                 let avoid: Vec<i32> = src.iter().map(|m| m.on).collect();
                 fresh(&style.rhythm, act, &avoid, grid, dice)
             };
-            let tune = transform(&transform(src, Transform::Invert), Transform::Move(2));
+            let tune = transform(
+                &transform(src, Transform::Invert),
+                Transform::Move(2 + bp.shift),
+            );
             targets(&r, &tune)
         }
         BarJob::Land(_) => {
@@ -453,6 +506,52 @@ pub fn bar_material(
     }
 }
 
+/// How much of the style's breath bar `b` ends with, 0 to 1. A whole
+/// breath where a phrase ends: a landing, every fourth bar, and the bar
+/// before a contrast or a return. Half of one, now and then, halfway
+/// through a phrase, and on a last bar that leads back into the first.
+/// None with Keep Rhythm: the rhythm stays yours.
+///
+/// The listening tests' first round heard lines that never stopped
+/// (two rests of an 1/8 or more in 34 bars of the riff): phrases ran into
+/// each other with no breath between them.
+pub fn breath_share(plan: &[BarPlan], b: usize, settings: &Settings, dice: &mut Dice) -> f64 {
+    let Some(bp) = plan.get(b) else {
+        return 0.0;
+    };
+    if settings.keeps.rhythm || bp.job == BarJob::Yours {
+        return 0.0;
+    }
+    let next = plan.get(b + 1).map(|n| n.job);
+    match bp.job {
+        BarJob::Land(Ending::LoopsBack) if next.is_none() => 0.5,
+        BarJob::Land(_) => 1.0,
+        _ if next.is_none() => 1.0,
+        _ if matches!(next, Some(BarJob::Contrast | BarJob::Return)) => 1.0,
+        _ if (b + 1).is_multiple_of(4) => 1.0,
+        _ if (b + 1).is_multiple_of(2) && dice.chance(0.5) => 0.5,
+        _ => 0.0,
+    }
+}
+
+/// The bar's last `rest` steps left silent: notes starting there are
+/// dropped (never the bar's first) and the rest end before it. A landing
+/// note keeps its first beat, so the breath gives way to it.
+pub fn breathe(planned: &mut Vec<Planned>, rest: i32, grid: Grid) {
+    if rest <= 0 || planned.is_empty() {
+        return;
+    }
+    let end = (grid.bar - rest).max(1);
+    let keep = planned.iter().filter(|p| p.on < end).count().max(1);
+    planned.truncate(keep);
+    let last = planned.len() - 1;
+    for (i, p) in planned.iter_mut().enumerate() {
+        let room = (end - p.on).max(1);
+        let floor = if i == last { p.len.min(grid.beat) } else { 1 };
+        p.len = p.len.min(room).max(floor).max(1);
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 struct Beam {
     pos: Vec<i32>,
@@ -477,6 +576,16 @@ fn broken(bits: u8) -> Vec<Rule> {
     .collect()
 }
 
+/// What a planned note's pitch may be in [`fit`]: any in range, the one
+/// it has (a note outside what is tried again), or any but the one it has
+/// (a picked note tried again, which should change if it can).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoteAs {
+    Free,
+    Fixed(i32, i8),
+    Change(i32, i8),
+}
+
 /// One new bar's notes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BarOut {
@@ -492,16 +601,77 @@ pub struct BarOut {
 /// Lines kept at each note.
 pub const BEAM: usize = 12;
 
+/// A note the bar's rhythm split in two (a busier bar) that still sits on
+/// one pitch is one note again: struck twice a 1/16 apart it stutters.
+/// Notes held as they are stay as they are.
+fn rejoin(
+    notes: Vec<GridNote>,
+    planned: &[Planned],
+    notes_as: &[NoteAs],
+    grid: Grid,
+) -> Vec<GridNote> {
+    let free = |i: usize| {
+        matches!(
+            notes_as.get(i).copied().unwrap_or(NoteAs::Free),
+            NoteAs::Free
+        )
+    };
+    let mut out: Vec<GridNote> = Vec::with_capacity(notes.len());
+    let mut last: Option<usize> = None;
+    for (i, n) in notes.into_iter().enumerate() {
+        if let (Some(j), Some(p)) = (last, out.last_mut()) {
+            let split = planned.get(j).map(|r| r.target) == planned.get(i).map(|r| r.target);
+            if split
+                && free(i)
+                && free(j)
+                && (p.pos, p.alt) == (n.pos, n.alt)
+                && p.on + p.len == n.on
+                && n.on - p.on <= (grid.beat / 4).max(1)
+            {
+                p.len += n.len;
+                continue;
+            }
+        }
+        out.push(n);
+        last = Some(i);
+    }
+    out
+}
+
+/// What a note outside the style's few notes of yours costs (Minimal
+/// keeps to your four most played): enough to stay mostly within them,
+/// little enough that a lifted bar finds the notes above (round 2 heard
+/// Minimal's tunes circle five notes for 32 bars).
+const OUTSIDE_SET: f64 = 1.2;
+
+/// What striking the same note again costs a split note: a 1/16 later,
+/// and an 1/8 later.
+const RESTRIKE_SIXTEENTH: f64 = 3.0;
+const RESTRIKE_EIGHTH: f64 = 0.5;
+/// Music first (S1): a free note struck again within a beat.
+const RESTRIKE_MUSIC_FIRST: f64 = 1.5;
+/// Music first (S1): a trill of two notes, or an outside note leapt to.
+const BACK_AND_FORTH: f64 = 2.0;
+
+/// A style this chromatic or more may hold a note outside the key for a
+/// 1/8 instead of a 1/16.
+const CHROMATIC_EIGHTHS: f32 = 0.4;
+
 /// Notes for one bar's rhythm: a beam search over pitches in range.
-/// `before` is the line's last notes before the bar, `next_first` the
-/// place of the next bar's first note when it is already there.
+/// `before` is the line's last notes before the bar, `last_on` where the
+/// last of them starts (in steps from the bar's start), `next_first` the
+/// place of the next bar's first note when it is already there. `notes_as`
+/// holds a planned note to its pitch, or steers it off it (empty: every
+/// note free).
 #[allow(clippy::too_many_arguments)]
 pub fn fit(
     ph: &Phrasing,
     bp: &BarPlan,
     bar: usize,
     planned: &[Planned],
+    notes_as: &[NoteAs],
     before: &[(i32, i8)],
+    last_on: Option<i32>,
     next_first: Option<i32>,
     src_bar: &[GridNote],
     settings: &Settings,
@@ -521,7 +691,10 @@ pub fn fit(
     let alpha = learned / (learned + 12.0) * (0.4 + 0.6 * similarity_set);
     let temp = 0.1 + 0.9 * f64::from(settings.variation);
     let w_target = 0.4 + 2.0 * aim;
-    let register = ph.centre + (f64::from(bp.tension) * 4.0 - 1.5).round() as i32;
+    // The line climbs with the tension: from a step below its centre to
+    // a fifth above at the plan's peak, so a long continuation goes
+    // somewhere instead of circling one octave.
+    let register = ph.centre + (f64::from(bp.tension) * 6.0 - 2.0).round() as i32;
     let home = ph.centre - ph.centre.rem_euclid(7);
     let first_yours = ph.yours.first().map_or(ph.centre, |m| m.pos);
     let miss = 3.0 * f64::from(w.ending_tune);
@@ -538,6 +711,25 @@ pub fn fit(
             (Some(t), Some(q)) => Some(t.pos - q.pos),
             _ => None,
         };
+        let held = notes_as.get(i).copied().unwrap_or(NoteAs::Free);
+        // A note outside the key passes quickly: a 1/16, or a 1/8 where
+        // the style leans on chromatic lines (Jazz-ish). Held longer it
+        // sounds like a wrong note.
+        let short = r.len
+            <= if style.melody.chromatic >= CHROMATIC_EIGHTHS {
+                grid.beat / 2
+            } else {
+                (grid.beat / 4).max(1)
+            };
+        let cands: Vec<(u8, i32, i8)> = match held {
+            NoteAs::Fixed(pos, alt) => vec![(key.pitch_at(pos, alt), pos, alt)],
+            _ => (plo..=phi)
+                .map(|p| {
+                    let (pos, alt) = key.position(p);
+                    (p, pos, alt)
+                })
+                .collect(),
+        };
         let mut next: Vec<(usize, i32, i8, f64, u8)> = Vec::with_capacity(beams.len() * 32);
         for (bi, st) in beams.iter().enumerate() {
             let mut h: Vec<(i32, i8)> = before.to_vec();
@@ -553,19 +745,24 @@ pub fn fit(
                 .rev()
                 .collect();
             let um = ph.model.odds(&steps);
-            for p in plo..=phi {
-                let (pos, alt) = key.position(p);
+            for &(p, pos, alt) in &cands {
                 let pc = p % 12;
-                if !ph.clear {
+                let fixed = matches!(held, NoteAs::Fixed(..));
+                if fixed {
+                    // Held as it is: no filter applies.
+                } else if !ph.clear {
                     // No clear key: only the notes you played.
                     if all_pcs != 0 && all_pcs & (1 << pc) == 0 {
                         continue;
                     }
-                } else if alt != 0 && (style.melody.chromatic <= 0.0 || strong || last) {
+                } else if alt != 0
+                    && (style.melody.chromatic <= 0.0 || strong || last || !short)
+                    && !(ph.music_first && chord.is_some_and(|c| borrowed_tone(c, p, key)))
+                {
                     continue;
                 }
                 // Keep Tune shape: every step goes the way yours did.
-                if settings.keeps.tune_shape {
+                if settings.keeps.tune_shape && !fixed {
                     if let (Some(ts), Some((pp, _))) = (target_step, prev) {
                         if (pos - pp).signum() != ts.signum() {
                             continue;
@@ -574,6 +771,10 @@ pub fn fit(
                 }
                 tried += 1;
                 let mut c = 0.0;
+                if held == NoteAs::Change(pos, alt) {
+                    // Tried again: another note if one fits.
+                    c += 2.0;
+                }
                 let mut broke = st.broke;
                 let iv = prev.map_or(0, |(pp, _)| (pos - pp).clamp(-7, 7));
                 if let Some((pp, pa)) = prev {
@@ -635,9 +836,82 @@ pub fn fit(
                 if h.len() >= 2 && h[h.len() - 1].0 == pos && h[h.len() - 2].0 == pos {
                     c += f64::from(w.repeats) * 2.0;
                 }
+                // The same note struck again at once stutters, unless your
+                // bar did it: a note split in two (a busier bar) or a quick
+                // step of yours moves.
+                let q = i.checked_sub(1).map(|j| planned[j]);
+                let q_on = q.map(|q| q.on).or(last_on);
+                if let (Some((pp, pa)), Some(q_on)) = (prev, q_on) {
+                    let yours_repeat = matches!(
+                        (r.target, q.and_then(|q| q.target)),
+                        (Some(a), Some(b)) if a != b && a.pos == b.pos && a.alt == b.alt
+                    );
+                    if !yours_repeat && pp == pos && pa == alt {
+                        let gap = r.on - q_on;
+                        if gap <= (grid.beat / 4).max(1) {
+                            c += RESTRIKE_SIXTEENTH;
+                        } else if gap <= (grid.beat / 2).max(1) {
+                            c += RESTRIKE_EIGHTH;
+                        }
+                        // Music first: a note struck again within a beat
+                        // has no job, unless it is a held note's.
+                        if ph.music_first && !fixed && gap <= grid.beat {
+                            c += RESTRIKE_MUSIC_FIRST;
+                        }
+                    }
+                }
+                if ph.music_first && !fixed {
+                    // Two notes back and forth twice, quickly, is a trill,
+                    // not a line.
+                    let n = h.len();
+                    let quick = (grid.beat / 2).max(1);
+                    if i >= 3
+                        && planned[i - 3..=i].iter().all(|q| q.len <= quick)
+                        && h[n - 2].0 == pos
+                        && h[n - 3].0 == h[n - 1].0
+                        && h[n - 1].0 != pos
+                    {
+                        c += BACK_AND_FORTH;
+                    }
+                    // A note outside the key is reached by step, not a leap.
+                    if let (true, Some((pp, pa))) = (alt != 0, prev) {
+                        let semis = (i32::from(p) - i32::from(key.pitch_at(pp, pa))).abs();
+                        if semis > 2 {
+                            c += BACK_AND_FORTH;
+                        }
+                    }
+                }
                 let set = usize::from(style.melody.pitch_set);
                 if set > 0 && !ph.pitch_set.iter().take(set).any(|&x| x == pc) {
-                    c += 2.5;
+                    c += OUTSIDE_SET;
+                }
+                // A note before a held anchor leads into it by step: it
+                // doesn't sound the anchor's note early, or leap to it. The
+                // note after an anchor doesn't strike it again.
+                if ph.music_first && !fixed {
+                    if let Some(NoteAs::Fixed(np, na)) = notes_as.get(i + 1).copied() {
+                        if (np, na) == (pos, alt) {
+                            c += 2.0;
+                        }
+                        let d = (np - pos).abs();
+                        if d > 1 {
+                            c += 1.2 * f64::from(d - 1);
+                        }
+                    }
+                    let after_anchor = i
+                        .checked_sub(1)
+                        .and_then(|j| notes_as.get(j))
+                        .is_some_and(|q| matches!(q, NoteAs::Fixed(..)));
+                    if after_anchor && prev == Some((pos, alt)) {
+                        c += RESTRIKE_MUSIC_FIRST;
+                    }
+                    // An outside note just played moves on by a half step.
+                    if let Some((pp, pa)) = prev {
+                        let semis = (i32::from(p) - i32::from(key.pitch_at(pp, pa))).abs();
+                        if pa != 0 && semis != 1 {
+                            c += BACK_AND_FORTH;
+                        }
+                    }
                 }
                 // 5. Register follows tension.
                 c += 0.04 * f64::from((pos - register).pow(2));
@@ -742,13 +1016,28 @@ pub fn fit(
             })
             .collect();
         let sim = similarity(key, &notes, reference).tune();
-        let score =
-            (st.cost - min_cost) / planned.len().max(1) as f64 * 0.5 + 4.0 * (sim - aim).abs();
+        // The music-first engine never takes a line that sounds a held
+        // anchor's note just before it, however alike it is.
+        let early = if ph.music_first {
+            (0..notes.len().saturating_sub(1))
+                .filter(|&i| {
+                    matches!(notes_as.get(i), None | Some(NoteAs::Free))
+                        && notes_as.get(i + 1) == Some(&NoteAs::Fixed(st.pos[i + 1], st.alt[i + 1]))
+                        && (st.pos[i], st.alt[i]) == (st.pos[i + 1], st.alt[i + 1])
+                })
+                .count()
+        } else {
+            0
+        };
+        let score = (st.cost - min_cost) / planned.len().max(1) as f64 * 0.5
+            + 4.0 * (sim - aim).abs()
+            + 3.0 * early as f64;
         if best.as_ref().is_none_or(|b| score < b.0) {
             best = Some((score, notes, sim, st.broke));
         }
     }
     let (_, notes, sim, broke) = best.unwrap_or((0.0, Vec::new(), 1.0, 0));
+    let notes = rejoin(notes, planned, notes_as, grid);
     Ok(BarOut {
         notes,
         similarity: sim,
@@ -816,7 +1105,11 @@ pub fn continue_line(
         let attempt = attempts.get(b).copied().unwrap_or(0);
         let mut rd = ph.dice(settings, Job::Rhythm, b, attempt);
         let mut pd = ph.dice(settings, Job::Pitch, b, attempt);
-        let planned = bar_material(ph, bp, &your_bars, settings, &mut rd);
+        let mut planned = bar_material(ph, bp, &your_bars, settings, &mut rd);
+        let breath = breath_share(plan, b, settings, &mut rd)
+            * f64::from(ph.style.rhythm.breath)
+            * f64::from(ph.grid.beat);
+        breathe(&mut planned, breath.round() as i32, ph.grid);
         let before: Vec<(i32, i8)> = notes
             .iter()
             .rev()
@@ -844,8 +1137,19 @@ pub fn continue_line(
         let src_bar: &[GridNote] = your_bars
             .get(bp.source.min(your_bars.len().saturating_sub(1)))
             .map_or(&[], |v| v.as_slice());
+        let last_on = notes.last().map(|m| m.on - b as i32 * ph.grid.bar);
         let out = fit(
-            ph, bp, b, &planned, &before, next_first, src_bar, settings, &mut pd,
+            ph,
+            bp,
+            b,
+            &planned,
+            &[],
+            &before,
+            last_on,
+            next_first,
+            src_bar,
+            settings,
+            &mut pd,
         )?;
         tried += out.tried;
         gave_way.extend(out.gave_way.iter().map(|&r| (b as u16 + 1, r)));
@@ -874,35 +1178,181 @@ pub fn try_again(
     bar: usize,
     attempt: u16,
 ) -> Result<Line, Unmet> {
+    try_bars(ph, plan, settings, line, &[bar], attempt)
+}
+
+/// Try the new bars `bars` of `line` again, in order, each scored on its
+/// way in and, when the bar after it stays, its way out: every other bar
+/// stays exactly as it is. Your bars are never tried.
+pub fn try_bars(
+    ph: &Phrasing,
+    plan: &[BarPlan],
+    settings: &Settings,
+    line: &Line,
+    bars: &[usize],
+    attempt: u16,
+) -> Result<Line, Unmet> {
+    let tried = |b: usize| bars.contains(&b) && b >= ph.your_bars;
     let mut locks: Vec<Option<Vec<GridNote>>> = (0..plan.len())
-        .map(|b| Some(line.bar(b, ph.grid)))
+        .map(|b| (!tried(b)).then(|| line.bar(b, ph.grid)))
         .collect();
     let mut attempts = vec![0u16; plan.len()];
-    if let Some(l) = locks.get_mut(bar) {
-        *l = None;
-        attempts[bar] = attempt;
-    }
-    let mut out = continue_line(ph, plan, settings, &locks, &attempts)?;
-    // The other bars' measures are the line's as it was.
-    for (b, s) in out.similarity.iter_mut().enumerate() {
-        if b != bar {
-            *s = line.similarity.get(b).copied().flatten();
+    for (b, a) in attempts.iter_mut().enumerate() {
+        if tried(b) {
+            *a = attempt;
         }
     }
+    // Bars past the line (none were made there) stay empty.
+    for l in locks.iter_mut().skip(line.similarity.len()) {
+        l.get_or_insert_with(Vec::new);
+    }
+    let mut out = continue_line(ph, plan, settings, &locks, &attempts)?;
+    out.similarity = merged_similarity(line, &out, &tried);
+    out.gave_way = merged_gave_way(line, &out, &tried);
+    Ok(out)
+}
+
+/// The bars' measures: the tried bars' from `out`, the rest the line's.
+fn merged_similarity(line: &Line, out: &Line, tried: &dyn Fn(usize) -> bool) -> Vec<Option<f64>> {
+    out.similarity
+        .iter()
+        .enumerate()
+        .map(|(b, s)| {
+            if tried(b) {
+                *s
+            } else {
+                line.similarity.get(b).copied().flatten()
+            }
+        })
+        .collect()
+}
+
+/// What gave way: the tried bars' from `out`, the rest the line's.
+fn merged_gave_way(line: &Line, out: &Line, tried: &dyn Fn(usize) -> bool) -> Vec<(u16, Rule)> {
+    let bar_of = |b: u16| usize::from(b).saturating_sub(1);
     let mut gave_way: Vec<(u16, Rule)> = line
         .gave_way
         .iter()
-        .filter(|(b, _)| usize::from(*b) != bar + 1)
+        .filter(|(b, _)| !tried(bar_of(*b)))
         .copied()
         .collect();
-    gave_way.extend(
-        out.gave_way
-            .iter()
-            .filter(|(b, _)| usize::from(*b) == bar + 1),
-    );
+    gave_way.extend(out.gave_way.iter().filter(|(b, _)| tried(bar_of(*b))));
     gave_way.sort_by_key(|g| g.0);
-    out.gave_way = gave_way;
-    Ok(out)
+    gave_way
+}
+
+/// Try the notes `picked` of `line` again (indices into `line.notes`):
+/// each gets another note where one fits, in its place and for its
+/// length, and every other note stays exactly as it is, including the
+/// rest of its bar, which the new notes lead from and into. Only new
+/// bars' notes are tried; your own never change.
+pub fn try_notes(
+    ph: &Phrasing,
+    plan: &[BarPlan],
+    settings: &Settings,
+    line: &Line,
+    picked: &[usize],
+    attempt: u16,
+) -> Result<Line, Unmet> {
+    let gb = ph.grid.bar;
+    let first_new = ph.your_bars.min(plan.len());
+    let bar_at = |on: i32| on.div_euclid(gb.max(1)) as usize;
+    let mut notes = line.notes.clone();
+    let mut bars: Vec<usize> = picked
+        .iter()
+        .filter_map(|&i| notes.get(i))
+        .map(|m| bar_at(m.on))
+        .filter(|&b| b >= first_new && b < plan.len())
+        .collect();
+    bars.sort_unstable();
+    bars.dedup();
+    let your_bars: Vec<Vec<GridNote>> = (0..ph.your_bars)
+        .map(|b| bar_of(&ph.yours, b as i32, gb))
+        .collect();
+    let mut sims = line.similarity.clone();
+    let mut fresh_gave: Vec<(u16, Rule)> = Vec::new();
+    let mut tried = 0;
+    for &b in &bars {
+        let bp = &plan[b];
+        let off = b as i32 * gb;
+        let mut idx: Vec<usize> = (0..notes.len())
+            .filter(|&i| bar_at(notes[i].on) == b)
+            .collect();
+        idx.sort_by_key(|&i| notes[i].on);
+        let planned: Vec<Planned> = idx
+            .iter()
+            .map(|&i| Planned {
+                on: notes[i].on - off,
+                len: notes[i].len,
+                target: None,
+            })
+            .collect();
+        let notes_as: Vec<NoteAs> = idx
+            .iter()
+            .map(|&i| {
+                let m = notes[i];
+                if picked.contains(&i) {
+                    NoteAs::Change(m.pos, m.alt)
+                } else {
+                    NoteAs::Fixed(m.pos, m.alt)
+                }
+            })
+            .collect();
+        let mut earlier: Vec<&GridNote> = notes.iter().filter(|m| m.on < off).collect();
+        earlier.sort_by_key(|m| m.on);
+        let before: Vec<(i32, i8)> = earlier
+            .iter()
+            .rev()
+            .take(3)
+            .rev()
+            .map(|m| (m.pos, m.alt))
+            .collect();
+        let first_of = |bar: usize| {
+            notes
+                .iter()
+                .filter(|m| bar_at(m.on) == bar)
+                .min_by_key(|m| m.on)
+                .map(|m| m.pos)
+        };
+        let next_first = if !ph.two_sided {
+            None
+        } else if b + 1 < plan.len() {
+            first_of(b + 1)
+        } else if ph.loops {
+            first_of(0)
+        } else {
+            None
+        };
+        let src_bar: &[GridNote] = your_bars
+            .get(bp.source.min(your_bars.len().saturating_sub(1)))
+            .map_or(&[], |v| v.as_slice());
+        let mut pd = ph.dice(settings, Job::Pitch, b, attempt.wrapping_add(0x4000));
+        let last_on = earlier.last().map(|m| m.on - off);
+        let out = fit(
+            ph, bp, b, &planned, &notes_as, &before, last_on, next_first, src_bar, settings,
+            &mut pd,
+        )?;
+        tried += out.tried;
+        fresh_gave.extend(out.gave_way.iter().map(|&r| (b as u16 + 1, r)));
+        if let Some(s) = sims.get_mut(b) {
+            *s = Some(out.similarity);
+        }
+        for (k, &i) in idx.iter().enumerate() {
+            if let Some(n) = out.notes.get(k) {
+                notes[i].pos = n.pos;
+                notes[i].alt = n.alt;
+            }
+        }
+    }
+    let touched = |b: usize| bars.contains(&b);
+    let out = Line {
+        notes,
+        similarity: sims,
+        gave_way: fresh_gave,
+        tried,
+    };
+    let gave_way = merged_gave_way(line, &out, &touched);
+    Ok(Line { gave_way, ..out })
 }
 
 /// The new bars' decisions, read back from the line under the chords, so
@@ -1079,6 +1529,131 @@ mod tests {
     }
 
     #[test]
+    fn the_activity_setting_moves_how_busy_the_new_bars_are() {
+        // New notes per bar at Sparse, the middle and Busy: in Groove and
+        // Jazz-ish too, whose feels keep your notes (before the sound and
+        // rhythm pass they moved only from 6.5 to 7.0 and 5.1 to 5.8 notes
+        // a bar). Jazz-ish stays on 1/8s, so it can't pass eight a bar.
+        for style in [MINIMAL, GROOVE, JAZZISH] {
+            let per_bar = |activity: f32| {
+                let mut notes = 0;
+                for seed in 0..12u64 {
+                    let mut r = request(style, 16, seed, Ending::Home);
+                    r.settings.activity = activity;
+                    r.plan = plan(&r.settings, 2, 16, 2.0);
+                    let ph = phrasing(&r);
+                    let line = continue_line(&ph, &r.plan, &r.settings, &[], &[]).unwrap();
+                    notes += line.notes.len() - ph.yours.len();
+                }
+                notes as f64 / (12.0 * 14.0)
+            };
+            let (sparse, middle, busy) = (per_bar(0.0), per_bar(0.5), per_bar(1.0));
+            assert!(
+                sparse < middle && middle < busy && busy - sparse > 1.5,
+                "{}: {sparse:.2} {middle:.2} {busy:.2}",
+                style.name
+            );
+        }
+    }
+
+    #[test]
+    fn notes_outside_the_key_pass_quickly_and_nothing_stutters() {
+        for style in [MINIMAL, GROOVE, JAZZISH] {
+            let longest = if style.melody.chromatic >= CHROMATIC_EIGHTHS {
+                2
+            } else {
+                1
+            };
+            for seed in 0..12 {
+                let r = request(style, 16, seed, Ending::Home);
+                let ph = phrasing(&r);
+                let line = continue_line(&ph, &r.plan, &r.settings, &[], &[]).unwrap();
+                let new: Vec<GridNote> = line
+                    .notes
+                    .iter()
+                    .filter(|m| m.on >= 2 * ph.grid.bar)
+                    .copied()
+                    .collect();
+                for m in new.iter().filter(|m| m.alt != 0) {
+                    assert!(style.melody.chromatic > 0.0, "{}", style.name);
+                    assert!(m.len <= longest, "{} seed {seed}: {m:?}", style.name);
+                    assert!(!ph.grid.on_beat(m.on), "{} seed {seed}: {m:?}", style.name);
+                }
+                // Your riff never strikes a note twice in a 1/16; nor do
+                // the new bars.
+                let stutters = new
+                    .windows(2)
+                    .filter(|w| {
+                        (w[0].pos, w[0].alt) == (w[1].pos, w[1].alt) && w[1].on - w[0].on <= 1
+                    })
+                    .count();
+                assert_eq!(stutters, 0, "{} seed {seed}", style.name);
+            }
+        }
+    }
+
+    #[test]
+    fn phrases_end_with_a_breath() {
+        for style in [MINIMAL, GROOVE, JAZZISH] {
+            let r = request(style, 16, 3, Ending::Home);
+            let ph = phrasing(&r);
+            let line = continue_line(&ph, &r.plan, &r.settings, &[], &[]).unwrap();
+            let rest = (f64::from(style.rhythm.breath) * f64::from(ph.grid.beat)).round() as i32;
+            // Bars 4, 8, 12 and 16 end a phrase: nothing sounds in their
+            // last `rest` steps, except a landing note's first beat.
+            for b in [3usize, 7, 11, 15] {
+                let notes = line.bar(b, ph.grid);
+                let last = notes.last().unwrap();
+                let end = last.on + last.len;
+                let floor = last.on + last.len.min(ph.grid.beat);
+                assert!(
+                    end <= ph.grid.bar - rest || end == floor,
+                    "{} bar {}: {notes:?}",
+                    style.name,
+                    b + 1
+                );
+                assert!(!notes.is_empty());
+            }
+        }
+        // Keep Rhythm keeps your rhythm, with no breath of its own.
+        let mut r = request(GROOVE, 8, 3, Ending::Home);
+        r.settings.keeps.rhythm = true;
+        let mut d = DiceName {
+            seed: 3,
+            part: 0,
+            phrase: 0,
+            job: Job::Rhythm,
+            bar: 3,
+            attempt: 0,
+        }
+        .dice();
+        assert_eq!(breath_share(&r.plan, 3, &r.settings, &mut d), 0.0);
+        r.settings.keeps.rhythm = false;
+        assert_eq!(breath_share(&r.plan, 3, &r.settings, &mut d), 1.0);
+    }
+
+    #[test]
+    fn a_breath_drops_the_last_notes_and_keeps_a_landing_notes_first_beat() {
+        let grid = Grid { bar: 16, beat: 4 };
+        let p = |on, len| Planned {
+            on,
+            len,
+            target: None,
+        };
+        let mut v = vec![p(0, 4), p(4, 4), p(8, 4), p(12, 4)];
+        breathe(&mut v, 4, grid);
+        assert_eq!(v, vec![p(0, 4), p(4, 4), p(8, 4)]);
+        // A landing note at the half and a quarter: it keeps a beat.
+        let mut land = vec![p(0, 2), p(2, 2), p(10, 6)];
+        breathe(&mut land, 4, grid);
+        assert_eq!(land, vec![p(0, 2), p(2, 2), p(10, 4)]);
+        // Never the bar's first note.
+        let mut one = vec![p(14, 2)];
+        breathe(&mut one, 4, grid);
+        assert_eq!(one.len(), 1);
+    }
+
+    #[test]
     fn sixteen_bars_land_near_each_aim_in_range_and_home() {
         let r = request(JAZZISH, 16, 16, Ending::Home);
         let ph = phrasing(&r);
@@ -1097,9 +1672,10 @@ mod tests {
         }
         let mean = off / 14.0;
         assert!(mean < 0.15, "mean distance from the aims {mean:.3}");
-        // The last note is the home note.
+        // The last note lands on the home chord: the home note, or its
+        // third or fifth (a quarter of the cost of missing it).
         let last = line.notes.last().unwrap();
-        assert_eq!(last.pos.rem_euclid(7), 0);
+        assert!(matches!(last.pos.rem_euclid(7), 0 | 2 | 4), "{last:?}");
         // Jazz-ish's chromatic notes may skip their half step (an
         // enclosure); nothing else gave way.
         assert!(

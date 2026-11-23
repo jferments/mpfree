@@ -19,13 +19,16 @@
 
 use std::time::{Duration, Instant};
 
+use mpfree_audiotracks::files::Room;
 use mpfree_status::{
-    Action, Board, ChipLook, Kind, Level, ProblemState, ProblemView, Shape, Subject, System, Window,
+    kinds, Action, Board, ChipLook, Kind, Level, ProblemState, ProblemView, Shape, Subject, System,
+    Window,
 };
 use mpfree_ui::status_page::{Card, StatusView, SystemRow};
 use mpfree_ui::widgets::Chip;
 use mpfree_ui::Tone;
 
+use crate::heat::Heat;
 use crate::status_watch::Watch;
 
 /// The page's name, its widget and its layout: over the page, under the
@@ -89,6 +92,13 @@ pub struct Readings {
     pub ram_pct: Option<f64>,
     /// Memory free (MemAvailable), bytes.
     pub free: Option<u64>,
+    /// The stick the audio tracks record to, at its last look (their drive
+    /// watcher's, every 3 s), while it answers; None before the first look
+    /// or once it stopped answering (Stick missing says so).
+    pub stick: Option<Room>,
+    /// The MPC's temperature and processor clock at the last read (every
+    /// 2 s, heat.rs).
+    pub heat: Option<Heat>,
 }
 
 /// Where the page is: the system picked and the Now | This session switch.
@@ -201,7 +211,7 @@ pub fn when(p: &ProblemView, now: Instant) -> String {
 /// A problem's name with its subject's ("A MIDI device isn't plugged in:
 /// Juno-X").
 fn titled(p: &ProblemView, names: &Watch) -> String {
-    match names.subject_name(p.kind, p.subject) {
+    match names.subject_name(p.subject) {
         Some(name) if p.subject != Subject::NONE => format!("{}: {name}", p.kind.title),
         _ => p.kind.title.to_string(),
     }
@@ -210,7 +220,7 @@ fn titled(p: &ProblemView, names: &Watch) -> String {
 /// The short words for a system's line, with the subject's name in front
 /// ("Juno-X: not plugged in").
 fn short(p: &ProblemView, names: &Watch) -> String {
-    match names.subject_name(p.kind, p.subject) {
+    match names.subject_name(p.subject) {
         Some(name) if p.subject != Subject::NONE => {
             format!("{name}: {}", p.kind.short.to_lowercase())
         }
@@ -241,6 +251,15 @@ fn all_good_line(system: System, r: &Readings, board: &Board) -> String {
         System::Memory => match (r.ram_pct, r.free) {
             (Some(p), Some(f)) => format!("{p:.0} % used · {} free", bytes(f)),
             (Some(p), None) => format!("{p:.0} % used"),
+            _ => "Working".to_string(),
+        },
+        System::Storage => match r.stick {
+            Some(s) => format!("{} free on the stick", bytes(s.free)),
+            None => "Working".to_string(),
+        },
+        System::Mpc => match r.heat.map(|h| (h.temp_c, h.slowed)) {
+            Some((Some(c), Some(false))) => format!("{c:.0} °C · full speed"),
+            Some((Some(c), _)) => format!("{c:.0} °C"),
             _ => "Working".to_string(),
         },
         _ => "Working".to_string(),
@@ -288,8 +307,7 @@ pub fn view(
             problems(n)
         ),
     };
-    // The meters: each once it can be read (the stick's free space and the
-    // MPC's temperature come with phase 3).
+    // The meters: each once it can be read.
     let look = board.chip_look(r.ram_pct);
     let meter_tone = |l: Option<Level>| tone_of(l).unwrap_or(Tone::Good);
     let mut meters = Vec::new();
@@ -307,6 +325,35 @@ pub fn view(
             format!("{p:.0} %"),
             (p / 100.0).clamp(0.0, 1.0) as f32,
             meter_tone(look.ram),
+        ));
+    }
+    // The stick: how full, yellow while it is nearly full.
+    if let Some(s) = r.stick.filter(|s| s.total > 0) {
+        let used = 1.0 - s.free.min(s.total) as f64 / s.total as f64;
+        let full = board
+            .problems(System::Storage, Window::Now)
+            .iter()
+            .any(|p| p.kind == &kinds::STICK_NEARLY_FULL);
+        meters.push((
+            "Stick".to_string(),
+            format!("{} free", bytes(s.free)),
+            used as f32,
+            if full { Tone::Warn } else { Tone::Good },
+        ));
+    }
+    // The MPC's temperature, against where the kernel turns it off (or
+    // 100 °C where it doesn't say), yellow while it is running hot.
+    if let Some(c) = r.heat.and_then(|h| h.temp_c) {
+        let off = r.heat.and_then(|h| h.critical_c).unwrap_or(100.0);
+        let hot = board
+            .problems(System::Mpc, Window::Now)
+            .iter()
+            .any(|p| p.kind == &kinds::MPC_HOT);
+        meters.push((
+            "Temp".to_string(),
+            format!("{c:.0} °C"),
+            (c / off).clamp(0.0, 1.0),
+            if hot { Tone::Warn } else { Tone::Good },
         ));
     }
     // The systems: always all nine.
@@ -388,6 +435,36 @@ fn numbers(system: System, r: &Readings) -> Vec<(String, String)> {
                 out.push(("Free".to_string(), bytes(f)));
             }
         }
+        System::Storage => {
+            if let Some(s) = r.stick {
+                out.push(("Free on the stick".to_string(), bytes(s.free)));
+                out.push(("The stick's size".to_string(), bytes(s.total)));
+                if !s.writable {
+                    out.push(("The stick".to_string(), "read only".to_string()));
+                }
+            }
+        }
+        System::Mpc => {
+            let Some(h) = r.heat else {
+                return out;
+            };
+            if let Some(c) = h.temp_c {
+                out.push(("Temperature".to_string(), format!("{c:.0} °C")));
+            }
+            if let Some(c) = h.critical_c {
+                out.push(("It turns itself off at".to_string(), format!("{c:.0} °C")));
+            }
+            if let Some(m) = h.clock_mhz {
+                out.push(("Processor speed".to_string(), format!("{m} MHz")));
+            }
+            match (h.top_mhz, h.full_mhz) {
+                (Some(t), Some(f)) if t < f => {
+                    out.push(("Top speed".to_string(), format!("{t} MHz, down from {f}")));
+                }
+                (_, Some(f)) => out.push(("Top speed".to_string(), format!("{f} MHz"))),
+                _ => {}
+            }
+        }
         _ => {}
     }
     out
@@ -466,7 +543,7 @@ mod tests {
         let t = Instant::now();
         let b = board_with(
             &[
-                Report::began(&kinds::PORT_MISSING).about(Subject(1)),
+                Report::began(&kinds::PORT_MISSING).about(Subject::midi_port(0)),
                 Report::happened(&kinds::SOUND_DROPOUT, 3),
             ],
             t,
@@ -478,6 +555,8 @@ mod tests {
             cpu_pct: Some(92.0),
             ram_pct: Some(41.0),
             free: Some(1_100_000_000),
+            stick: None,
+            heat: None,
         };
         let v = view(&b, &Watch::default(), &r, &mut place, t);
         assert_eq!(v.head, "The sound dropped out");
@@ -534,6 +613,125 @@ mod tests {
         place.window = Window::Now;
         let v = view(&b, &Watch::default(), &r, &mut place, later);
         assert!(v.cards.is_empty() && v.now_only);
+    }
+
+    /// Phase 3: the stick's meter on the head once the audio tracks have
+    /// looked at it, yellow while it is nearly full, with its free space on
+    /// Storage's line and its numbers under the cards.
+    #[test]
+    fn the_stick_has_a_meter_once_it_is_looked_at() {
+        let t = Instant::now();
+        let mut place = Place::default();
+        let r = Readings {
+            ram_pct: Some(38.0),
+            ..Readings::default()
+        };
+        let v = view(&Board::new(), &Watch::default(), &r, &mut place, t);
+        assert_eq!(v.meters.len(), 1, "not looked at yet: no stick meter");
+        assert_eq!(v.systems[2].line, "Working");
+        let r = Readings {
+            stick: Some(Room {
+                writable: true,
+                free: 12_400_000_000,
+                total: 15_500_000_000,
+            }),
+            ..r
+        };
+        let v = view(&Board::new(), &Watch::default(), &r, &mut place, t);
+        let m = &v.meters[1];
+        assert_eq!((m.0.as_str(), m.1.as_str()), ("Stick", "12.4 GB free"));
+        assert!((m.2 - 0.2).abs() < 1e-3, "a fifth used: {}", m.2);
+        assert_eq!(m.3, Tone::Good);
+        assert_eq!(v.systems[2].line, "12.4 GB free on the stick");
+        place.picked = System::Storage;
+        let v = view(&Board::new(), &Watch::default(), &r, &mut place, t);
+        assert_eq!(
+            v.numbers,
+            [
+                ("Free on the stick".to_string(), "12.4 GB".to_string()),
+                ("The stick's size".to_string(), "15.5 GB".to_string()),
+            ]
+        );
+        // Nearly full: the meter turns yellow with the problem.
+        let mut b = board_with(&[Report::began(&kinds::STICK_NEARLY_FULL)], t);
+        let later = t + Duration::from_secs(2);
+        b.tick(later);
+        let v = view(&b, &Watch::default(), &r, &mut place, later);
+        assert_eq!(v.meters[1].3, Tone::Warn);
+    }
+
+    /// Phase 3: the MPC's temperature on the head against where it turns
+    /// itself off, yellow while it is running hot, with the processor's
+    /// speed on The MPC's line and its numbers.
+    #[test]
+    fn the_mpc_shows_its_temperature_and_its_speed() {
+        let t = Instant::now();
+        let mut place = Place::default();
+        let mut heat = Heat {
+            temp_c: Some(56.5),
+            critical_c: Some(113.0),
+            clock_mhz: Some(1608),
+            top_mhz: Some(1608),
+            full_mhz: Some(1608),
+            slowed: Some(false),
+        };
+        let r = Readings {
+            heat: Some(heat),
+            ..Readings::default()
+        };
+        let v = view(&Board::new(), &Watch::default(), &r, &mut place, t);
+        let m = &v.meters[0];
+        assert_eq!((m.0.as_str(), m.1.as_str()), ("Temp", "56 °C"));
+        assert!((m.2 - 0.5).abs() < 1e-3, "half way to off: {}", m.2);
+        assert_eq!(m.3, Tone::Good);
+        assert_eq!(v.systems[8].line, "56 °C · full speed");
+        place.picked = System::Mpc;
+        let v = view(&Board::new(), &Watch::default(), &r, &mut place, t);
+        assert_eq!(
+            v.numbers,
+            [
+                ("Temperature".to_string(), "56 °C".to_string()),
+                ("It turns itself off at".to_string(), "113 °C".to_string()),
+                ("Processor speed".to_string(), "1608 MHz".to_string()),
+                ("Top speed".to_string(), "1608 MHz".to_string()),
+            ]
+        );
+        // Slowed, and running hot (once its line is measured): the meter
+        // turns yellow, and the numbers say how far the speed came down.
+        heat.top_mhz = Some(1200);
+        heat.clock_mhz = Some(1200);
+        heat.slowed = Some(true);
+        let r = Readings {
+            heat: Some(heat),
+            ..r
+        };
+        let mut b = board_with(
+            &[
+                Report::began(&kinds::MPC_HOT),
+                Report::began(&kinds::PROCESSOR_SLOWED),
+            ],
+            t,
+        );
+        let later = t + Duration::from_secs(2);
+        b.tick(later);
+        let v = view(&b, &Watch::default(), &r, &mut place, later);
+        assert_eq!(v.meters[0].3, Tone::Warn);
+        assert!(
+            v.numbers.contains(&(
+                "Top speed".to_string(),
+                "1200 MHz, down from 1608".to_string()
+            )),
+            "{:?}",
+            v.numbers
+        );
+        // A machine without the files: no meter, and The MPC just works.
+        let r = Readings {
+            heat: Some(Heat::default()),
+            ..Readings::default()
+        };
+        let v = view(&Board::new(), &Watch::default(), &r, &mut place, t);
+        assert!(v.meters.is_empty());
+        assert_eq!(v.systems[8].line, "Working");
     }
 
     /// The anchor mdBook gives a heading.

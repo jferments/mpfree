@@ -259,6 +259,39 @@ pub fn decisions_of(notes: &[PlainNote], fit: &Fit, source: Source) -> (u8, Vec<
         },
         None => Motion::NEAREST,
     };
+    // Roles, right to left: an approach or a passing note leads into a
+    // note that realising places before it (an anchor, or an approach),
+    // never into a passing or neighbour note, which are placed after it.
+    let mut roles = vec![Role::Scale; notes.len()];
+    for i in (0..notes.len()).rev() {
+        let n = notes[i];
+        let p = i32::from(n.pitch);
+        let prev = i.checked_sub(1).map(|j| i32::from(notes[j].pitch));
+        let next = notes.get(i + 1).map(|m| i32::from(m.pitch));
+        let into = roles
+            .get(i + 1)
+            .is_some_and(|r| r.anchors() || *r == Role::Approach);
+        let after_outside = prev.is_some_and(|q| base & pc_bit(q) == 0);
+        roles[i] = match fit.chord_at(n.at).and_then(|c| c.tone_of(p)) {
+            Some(t) => Role::Chord(t),
+            // The note a chromatic note resolves to stands on its own, so
+            // the chromatic note reads as leading into it.
+            None if after_outside && base & pc_bit(p) != 0 => Role::Scale,
+            None => match (prev, next) {
+                (_, Some(x)) if into && (x - p).abs() == 1 && base & pc_bit(p) == 0 => {
+                    Role::Approach
+                }
+                (Some(a), Some(b))
+                    if into && (a.min(b) < p && p < a.max(b)) && (b - a).abs() <= 4 =>
+                {
+                    Role::Passing
+                }
+                (Some(q), _) if (1..=2).contains(&(p - q).abs()) => Role::Neighbour,
+                (_, Some(x)) if into && (x - p).abs() == 1 => Role::Approach,
+                _ => Role::Scale,
+            },
+        };
+    }
     let mut last_anchor: Option<i32> = None;
     let ds = notes
         .iter()
@@ -267,18 +300,7 @@ pub fn decisions_of(notes: &[PlainNote], fit: &Fit, source: Source) -> (u8, Vec<
             let p = i32::from(n.pitch);
             let prev = i.checked_sub(1).map(|j| i32::from(notes[j].pitch));
             let next = notes.get(i + 1).map(|m| i32::from(m.pitch));
-            let role = match fit.chord_at(n.at).and_then(|c| c.tone_of(p)) {
-                Some(t) => Role::Chord(t),
-                None => match (prev, next) {
-                    (_, Some(x)) if (x - p).abs() == 1 && base & pc_bit(p) == 0 => Role::Approach,
-                    (Some(a), Some(b)) if (a.min(b) < p && p < a.max(b)) && (b - a).abs() <= 4 => {
-                        Role::Passing
-                    }
-                    (Some(q), _) if (1..=2).contains(&(p - q).abs()) => Role::Neighbour,
-                    (_, Some(x)) if (x - p).abs() == 1 => Role::Approach,
-                    _ => Role::Scale,
-                },
-            };
+            let role = roles[i];
             let motion = if role == Role::Approach {
                 // Into the next note: from below is up.
                 Motion {
@@ -454,5 +476,43 @@ mod tests {
         let again: Vec<u8> = realize(&part, &fit).iter().map(|e| e.pitch).collect();
         assert_eq!(again, pitches.to_vec());
         assert!(realize(&part, &fit).iter().all(|e| e.source == Source::You));
+    }
+
+    #[test]
+    fn a_step_into_a_passing_note_reads_back_as_itself() {
+        // F, D, Eb, F over Fm in C minor: D steps up a half step into Eb,
+        // a passing note on to F. D is no approach (realising places an
+        // approach before the passing note it would lead into, so it came
+        // back as E, and Eb as F); it is a scale note.
+        let t = ChordTimeline::of(&[(Chord::new(5, Quality::Minor), BAR)], Heard::Heard);
+        let fit = Fit {
+            harmony: &t,
+            key: Some(Key::new(0, Mode::Minor)),
+            played_pcs: 0,
+            origin: 0,
+        };
+        let pitches = [65u8, 62, 63, 65];
+        let notes: Vec<PlainNote> = pitches
+            .iter()
+            .enumerate()
+            .map(|(i, &p)| PlainNote {
+                at: i as Tick * BEAT / 2,
+                len: BEAT / 2,
+                pitch: p,
+                velocity: 90,
+            })
+            .collect();
+        let (register, ds) = decisions_of(&notes, &fit, Source::Mpfree);
+        assert_eq!(ds[1].role, Role::Scale);
+        assert_eq!(ds[2].role, Role::Passing);
+        let part = Part {
+            id: PartId(0),
+            role: PartRole::Melody,
+            kind: InstrumentKind::Chordal,
+            register,
+            decisions: ds,
+        };
+        let again: Vec<u8> = realize(&part, &fit).iter().map(|e| e.pitch).collect();
+        assert_eq!(again, pitches.to_vec());
     }
 }

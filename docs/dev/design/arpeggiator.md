@@ -55,7 +55,7 @@ On the pad player, the "notes" fed to the engine are **pad slots** (pad 1 = 0 â€
 
 ## The engine (`rust/mpfree-arp`)
 
-Notes in, sample-timed notes out. It lives in the audio thread: the app calls `press`, `release`, `pressure` and the setters between periods, then `process(frames)` once per period, which returns the note-ons and note-offs inside that period with their frame offsets. It never allocates, locks or does I/O after `Engine::new`, and its output does not depend on the period size (a test runs the same input in blocks of 1, 64, 127, 1000 and 100 000 frames and gets identical events).
+Notes in, sample-timed notes out. It lives in the audio thread: the app calls `press`, `release`, `pressure` and the setters between periods, then `process(frames)` once per period, which returns the note-ons and note-offs inside that period with their frame offsets. It never allocates, locks or does I/O after `Engine::new`, and its output does not depend on the period size (a test runs the same input in blocks of 1, 64, 127, 1000 and 100 000 frames and gets identical events). Its note-ons and note-offs go out frame by frame and, on one frame, in the order they were made: a note that ends on the frame it plays again ends first, and a note pressed and let go inside one period (a quick tap, or a MIDI note with no length) plays and ends instead of hanging (`a_tap_inside_one_period_does_not_hang`).
 
 Built now:
 

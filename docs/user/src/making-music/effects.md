@@ -512,7 +512,7 @@ Each plugin runs on its own, apart from the rest of MPFree, so a plugin that cra
 - If a plugin crashes, MPFree starts it again with the settings it had a few seconds before.
 - If it crashes four times in a minute, MPFree leaves it off and the strip plays dry. Remove it and add it again to try once more.
 
-Each of these is written in the Events log, so nothing goes wrong without your being told.
+Each of these is written in the Events log, so nothing goes wrong without your being told. A crash also turns the status chip red, and System status lists it under Plugins ([A plugin stopped](../reference/when-something-goes-wrong.md#a-plugin-stopped)).
 
 Some plugins keep files of their own: Surge XT its user folder, Dexed its cartridges. MPFree gives them the folder `files/plugin-home/` on the stick, so they never write anywhere else. To reset every plugin's own files, delete that folder from a computer.
 

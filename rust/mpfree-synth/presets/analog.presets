@@ -29,7 +29,7 @@ envelopes.a-release = 320
 voice.age = 40
 
 # Output
-output.level = -1
+output.level = -4
 
 mpfree-preset = 2
 engine = mpfree.analog
@@ -58,7 +58,7 @@ voice.age = 45
 voice.chorus = Slow
 
 # Output
-output.level = 2
+output.level = 1
 
 mpfree-preset = 2
 engine = mpfree.analog
@@ -142,6 +142,9 @@ envelopes.a-release = 420
 # Voice
 voice.chorus = Slow
 
+# Output
+output.level = -3.5
+
 mpfree-preset = 2
 engine = mpfree.analog
 name = Clang Bell
@@ -167,6 +170,9 @@ mod.pmod-osc-2 = 45
 
 # Voice
 voice.age = 15
+
+# Output
+output.level = -1
 
 mpfree-preset = 2
 engine = mpfree.analog
@@ -221,6 +227,9 @@ mod.lfo-cutoff = 45
 # Voice
 voice.chorus = Slow
 
+# Output
+output.level = -1
+
 mpfree-preset = 2
 engine = mpfree.analog
 name = Hollow Pulse
@@ -245,6 +254,9 @@ mod.lfo-pw = 25
 # Voice
 voice.chorus = Vibe
 
+# Output
+output.level = -2
+
 mpfree-preset = 2
 engine = mpfree.analog
 name = Worn Cards
@@ -264,6 +276,9 @@ envelopes.a-release = 700
 
 # Voice
 voice.age = 100
+
+# Output
+output.level = -2
 
 mpfree-preset = 2
 engine = mpfree.analog

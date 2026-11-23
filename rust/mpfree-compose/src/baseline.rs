@@ -476,8 +476,12 @@ mod tests {
             .collect();
         let plain_34: Vec<&Note> = plain.iter().filter(|n| n.tick < 4 * BAR).collect();
         assert_eq!(ours_34.len(), plain_34.len());
-        // mpfree's plan contrasts in bars 9 and 10; the motif just repeats.
-        assert!(made.plan[8].similarity < 0.4);
+        // mpfree's phrase changes what its bars do; the motif just repeats.
+        let jobs: std::collections::BTreeSet<String> = made.plan[2..]
+            .iter()
+            .map(|p| format!("{:?}", p.job))
+            .collect();
+        assert!(jobs.len() >= 3, "{jobs:?}");
     }
 
     #[test]

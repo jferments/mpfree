@@ -312,8 +312,9 @@ impl App {
                 "quarter-comma meantone (pure thirds) or",
                 "24-TET (each pad a quarter tone). Scala .scl",
                 "files in files/tunings/ come after them.",
-                "Drums keep their own pitch. Held notes follow",
-                "at once.",
+                "Kits' keygroups play it too; drums, pad hits",
+                "and slices keep their own pitch. Held notes",
+                "follow at once.",
             ],
             SynthItem::TuningRoot => vec![
                 "The note just intonation, Pythagorean,",

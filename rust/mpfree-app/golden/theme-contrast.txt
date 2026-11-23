@@ -371,6 +371,8 @@ spaceship arp-workspace-record 18 # before the theme refactor (phase 0 baseline)
 spaceship arrange-clips-audio 9 # new screen (audio tracks rethink, phase 1): the faint labels its neighbours have
 spaceship arrange-instruments 67 # before the theme refactor (phase 0 baseline)
 spaceship arrange-list 39 # before the theme refactor (phase 0 baseline)
+spaceship arrange-list-link 39 # new screen (Arrange 4b.5): arrange-list's 39 runs; Link's chooser over it adds none
+spaceship arrange-list-linked 41 # new screen (Arrange 4b.2): arrange-list's 39 runs, and the Song row's name and times, faint by the approved design (the song's own bars)
 spaceship arrange-report 12 # the report card (Arrange 4.3) over arrange-song with nothing picked: arrange-song's 10 runs plus the faint Make unique and Delete, all under the card's dimming; the card adds none
 spaceship arrange-report-exact 10 # arrange-song with the exact line on the hint (Arrange 4.3): the same 10 runs as arrange-song
 spaceship arrange-report-list 39 # the report card (Arrange 4.3) over arrange-list: the same 39 runs as arrange-list, under the dimming; the card adds none
@@ -381,6 +383,7 @@ spaceship arrange-song-audio 10 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-loops 12 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-panel 12 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-panel-mix 12 # new screen (instrument redesign, step 9): the faint labels arrange-song-panel has
+spaceship arrange-song-passes 10 # new screen (Arrange 4b.4): arrange-song's 10 faint runs; the pass label adds none
 spaceship arrange-song-section 10 # arrange-song with the Verse picked (Arrange 3.3): its faint text, the same 10 runs as arrange-song
 spaceship arrange-song-takes 10 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-tempo 10 # before the theme refactor (phase 0 baseline)

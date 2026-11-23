@@ -14,7 +14,7 @@ the same output for any block size (tests check both).
 | Part | What it does |
 | --- | --- |
 | Osc A, Osc B | Table (10 factory tables or the user table), Position through it, Warp mode and amount, octave, semi, fine, level |
-| Warp | Bend (phase distortion, the cycle squeezed to the front), Sync (the cycle repeats up to 8 times a period), Mirror (forward then back), FM (the other oscillator moves this one's phase) |
+| Warp | Bend (phase distortion, the cycle squeezed to the front), Sync (the cycle repeats up to 8 times a period, each restart band-limited; [DSP quality](dsp-quality.md#step-11-sync)), Mirror (forward then back), FM (the other oscillator moves this one's phase) |
 | Unison | 1 to 8 stacks on both oscillators, detune and stereo spread |
 | Mix | A sub sine an octave under Osc A, and noise |
 | Filter | Poly's: ladder LP 24, state-variable LP 12, BP 12, HP 12, with drive (level-matched as Poly's, see [Synths](synths.md)), key track, velocity |
@@ -32,7 +32,8 @@ Organ, Harmonic Pluck, FM Keys.
 A table is up to 256 frames. Each frame is analysed (FFT) and kept at 17
 bandwidths, half an octave apart, from 512 harmonics down to 1. A note reads
 the widest level whose top harmonic stays below Nyquist, taking unison
-detune and the warp's speed-up into account, so high notes don't alias:
+detune and the warp's speed-up into account (a sync read's for 1.5 times its
+fastest ratio, so its restart correction holds), so high notes don't alias:
 the worst alias of a saw at C8 is about 57 dB under the fundamental (the
 test `high_notes_do_not_alias`). Reading is linear in phase and linear
 between neighbouring frames. A warped phase is always under one cycle:
@@ -42,9 +43,10 @@ audio thread (fixed 19 Nov; the test
 `warps_at_the_last_frame_stay_inside_the_table` plays every table at every
 warp at the last position across the keyboard).
 
-Memory: about 49 KB per frame. The ten factory tables (176 frames) take
-8.8 MB once per process, shared by every Wavetable instance. A 16-frame
-user table is 0.8 MB; a full 256-frame import about 12.6 MB.
+Memory: about 51 KB per frame (the smallest levels are 128 samples, so the
+linear read's images stay under -60 dB). The ten factory tables (176 frames)
+take 8.9 MB once per process, shared by every Wavetable instance. A 16-frame
+user table is 0.8 MB; a full 256-frame import about 13 MB.
 
 Factory tables are made from formulas, with no samples and no third-party
 content: Basic (sine, triangle, saw, square), Harmonics (a saw built up a

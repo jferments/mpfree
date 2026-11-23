@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-synth rust/mpfree-synth-ui rust/mpfree-scale rust/mpfree-app/src/synth.rs rust/mpfree-app/src/app/synth_pads.rs rust/mpfree-app/src/app/pads_focus.rs rust/mpfree-app/src/instruments.rs rust/mpfree-mpchost rust/mpfree-mpcskin rust/mpfree-app/src/skin_page.rs
-checked: 2026-11-19 95c1134d
+checked: 2026-11-22 e5518efc
 -->
 
 # Synths
@@ -119,7 +119,7 @@ Every track can play its own instrument: Poly on one, FM on another, a plugin sy
 - **Up to 16 at once.** Any track can have its own instrument, and up to 16 tracks can at the same time, since each instrument takes its share of the MPC's power. With 16 already, the line along the bottom of the screen says so and the track stays on the kit: set one of the 16 to **Kit** first, and its place is free at once.
 - **Its own mixer channel.** A track with an instrument gets a channel named for the instrument and the track (**FM · Track 2**, **Poly · Track 3**) in the mixer's Tracks view, and in the lists that pick a mix (Perform's **On**, the Looper's **Records from**), where a track you named shows its name (**FM · Bass**), with its own fader, inserts and sends. The channel only shows while the track has an instrument, and its settings stay with the track: set it to Kit and give it an instrument again later, and the channel is as you left it. Track 1's channel is the **Drums** strip, so track 1 has the same strip whether it plays the kit or an instrument; it is called **Poly · Track 1** (or whichever instrument it is) while the instrument plays there. A track that plays another track's instrument has no channel of its own: its notes sound on that instrument's. See [Mixing and effects](mixing-and-effects.md).
 - **Shared options.** The scale, pad layouts, tuning and octave on the Synth tab's options are the same for every track's instrument.
-- **A plugin synth** runs in a process of its own, as plugin effects do. If it crashes, the track goes quiet and the plugin restarts on its own, while the rest of MPFree plays on. If it can't be started at all, the line along the bottom of the screen says so for a few seconds and the track keeps what it had. Its controls show on the Synth tab like a built-in synth's.
+- **A plugin synth** runs in a process of its own, as plugin effects do. If it crashes, the track goes quiet and the plugin restarts on its own, while the rest of MPFree plays on, and the status chip turns red ([A plugin stopped](../reference/when-something-goes-wrong.md#a-plugin-stopped)). If it can't be started at all, the line along the bottom of the screen says so for a few seconds and the track keeps what it had. Its controls show on the Synth tab like a built-in synth's.
 - **An MPC plugin instrument's presets** are the programs built into it, listed on the Synth tab in the plugin's own order.
 - **An MPC plugin instrument's own screen.** Most MPC plugins come with a skin: the screen their makers drew for the MPC. The Synth tab shows it full width, right under the top bar, exactly as the plugin shows on an MPC (see [The plugin's own screen](#the-plugins-own-screen)).
 - **A plugin synth's own presets** are listed on the Synth tab, as "Category / Name" (Surge XT's factory presets read "Bass / Attacky", "Pads / ..."). The first time a plugin's presets are asked for, the plugin reads them all, which takes a few seconds; the list appears when it is done. Tap one to load it into the track's plugin. Some plugins load a preset in the background: Surge XT goes quiet for a moment, and notes you play in that moment aren't heard. If a plugin can't load a preset, the line along the bottom of the screen gives its reason. A plugin without presets of its own, such as Dexed, lists none. The project keeps the plugin's sound, but not which preset it came from.
@@ -168,7 +168,7 @@ Both oscillators have **Octave**, **Semi** and **Fine**, and the **Sub** under t
 
 **Poly's Table wave.** Set an oscillator's **Wave** to **Table** and it plays a table: a stack of single waves that change from one to the next. There are ten: **Basic** (sine to saw to square), **Harmonics**, **Pulse**, **Sync**, **Vowels**, **Organ**, **Bits**, **Resonance**, **FM** and **Drift**. Moving the position while a note sounds is what makes the sound evolve. The **Waves** page holds both oscillators' tables:
 
-- **Table** picks the stack, **Position** where in it the oscillator plays, **Warp** how each wave is bent and **Warp amt** how much. **Bend** squeezes the wave to the front (brighter and more nasal), **Sync** repeats it up to eight times in each cycle (the tearing sync sound), **Mirror** plays it forward then back, and **FM** lets the other oscillator wobble this one. The Q-Links turn both positions and warp amounts, and the Q-Links' **Tables** set does too from any page.
+- **Table** picks the stack, **Position** where in it the oscillator plays, **Warp** how each wave is bent and **Warp amt** how much. **Bend** squeezes the wave to the front (brighter and more nasal), **Sync** repeats it up to eight times in each cycle (the tearing sync sound, kept clean on high notes and fast sweeps), **Mirror** plays it forward then back, and **FM** lets the other oscillator wobble this one. The Q-Links turn both positions and warp amounts, and the Q-Links' **Tables** set does too from any page.
 - **Moves**: the filter envelope can sweep each oscillator's position (**Env to position 1** and **2**) and the warp (**Env to warp**), harder hits can start further in (**Velocity to position**), and LFO 1 can wobble each position (**LFO to position 1** and **2**). Pad pressure and the routes can move them too (**Position**, **Warp**).
 
 A setting that does nothing says so in place: "Table wave only" while its oscillator plays another wave, "warp is off" while its Warp is Off. Everything else on Poly works with a table too: the filter, both LFOs, unison (now up to 8 copies), Age (which nudges the two oscillators' positions apart, note by note). **Morph Pad**, **Vowel Lead**, **Sync Sweep**, **Digital Bell**, **Growl Bass**, **Organ**, **Harmonic Pluck** and **FM Keys** play tables, and **Table Init** is a plain start with both oscillators on one.
@@ -176,6 +176,8 @@ A setting that does nothing says so in place: "Table wave only" while its oscill
 **The Wavetable synth is part of Poly now** (since 19 November 2026). Its presets are Poly's, and anything you made with it plays on Poly with both oscillators on Table, sounding as it did: a track that played it, the pads' sound in a project, and presets you saved (they stay in **Instruments/Wavetable** on the stick; load one from there in the browser and it plays on Poly, with its effects, macros and Q-Link sets). The log says when a project's track moved to Poly.
 
 {{shot: synth-voice | Poly's Voice page: how it plays (Poly, Mono or Legato, which held pad sounds, the number of voices, the glide and how it is timed, and Age), Unison (copies of each note, their detune and spread), the tuning and the output.}}
+
+Poly's **Level**, on the Voice page, is -4 dB unless the preset sets it, so a chord of all eight voices at full velocity stays under full scale.
 
 **Poly's envelopes** (on the Env page, and the filter's on the Filter page) have times that mean what they say: an **Attack** of 100 ms reaches full level at 100 ms, and a **Release** of 1 s fades 60 dB in 1 s and stops. **Velocity to level** is how much quieter your softest hit is than your hardest, in dB (8 dB by default; 0 dB plays every hit as loud, and keys-like sounds want 30 dB or more). Presets and projects saved before 19 November 2026 load with their times and velocity converted, so they sound as they did.
 
@@ -296,7 +298,7 @@ FM keeps itself clean up the keyboard: on the top notes a bright modulator and t
 
 - **String:** **Decay** is how long middle C rings (higher notes ring shorter, lower ones longer), and **Release** how fast a note you let go is damped. **Brightness** is the string's tone, **Pick** how hard and bright the pick is, and **Position** where along the string you pluck: near the end is thin and bright, towards the middle hollow.
 - **Mallet:** **Material** is **Marimba**, **Vibes**, **Bell**, **Glass**, **Kalimba**, **Steel drum**, **Glockenspiel**, **Xylophone** or **Chimes**. **Hardness** is the mallet: a harder one is brighter. **Strike** is where on the bar it lands, which changes which overtones ring. **Stretch** pulls the overtones closer together or further apart, for a softer or a more clangy, metallic tone, and **High damp** makes the high overtones die away sooner.
-- **Voice:** transpose, fine tuning, bend range, how many notes can sound (**Voices**), **Vel > tone** (softer hits are darker), **Vel > level** (how much quieter your softest hit is than your hardest: 30 dB by default, 0 for every hit the same), level, pan and **Spread** (notes spread across the speakers).
+- **Voice:** transpose, fine tuning, bend range, how many notes can sound (**Voices**), **Vel > tone** (softer hits are darker), **Vel > level** (how much quieter your softest hit is than your hardest: 30 dB by default, 0 for every hit the same), level (-2 dB unless the preset sets it), pan and **Spread** (notes spread across the speakers).
 
 Every note is as loud as middle C, whatever the knobs, so a melody up high doesn't jump out and a low line doesn't disappear. Playing a note that is still ringing plucks or strikes it again, on top of what sounds, as a real string or bar does. The Q-Links take Decay, Brightness, Pick and Position on the String page, Hardness, Strike, Stretch and High damp on the Mallet page.
 
@@ -330,7 +332,7 @@ The combo presets start from the classic settings: 16', 8' and 4' with flute and
 
 The classic move is to turn **Cutoff** and **Resonance** while a line plays; the Synth page's Q-Links are set up for it. It has three pages:
 
-- **Synth:** **Wave** (**Saw** or **Square**), **Cutoff** (where the filter rests between notes), **Resonance** (the squelch; at 100 the filter is on the edge of whistling and screams on high notes), **Env mod** (how far each note opens the filter), **Decay** (how fast it closes again) and **Accent** (how far accented notes jump out).
+- **Synth:** **Wave** (**Saw** or **Square**; both stay clean on high notes), **Cutoff** (where the filter rests between notes), **Resonance** (the squelch; at 100 the filter is on the edge of whistling and screams on high notes), **Env mod** (how far each note opens the filter), **Decay** (how fast it closes again) and **Accent** (how far accented notes jump out).
 - **Play:** **Slide** (how long a glide takes), **Accent at**, **Acc decay** (how fast the filter closes on accented notes), **Amp decay** (how long a held note takes to fade; short for plucked notes), **Key track** (how far the filter follows the note; at 0, as on the original, high notes come out darker) and **Drive** (distortion after the filter, as from a pedal).
 - **Voice:** transpose, fine tuning, bend range, level and pan.
 
@@ -338,11 +340,11 @@ Its pictures: the **Wave**, the **Filter**'s curve where it rests between notes 
 
 **Analog** plays like the polysynths of the late 1970s, which had a circuit board for each voice. No two boards were quite alike, and notes went to them in turn, so the same chord sounds a little different each time you play it. **Age** sets how much: at 0 every voice is identical, at 30 (the default) they differ slightly, and at 100 they differ as much as on an old synth that hasn't been calibrated in a while: each voice a few cents out of tune with the others, a little brighter or darker, quicker or slower. The higher it is, the more each oscillator also drifts slowly as it plays. It has five pages:
 
-- **Osc:** two oscillators, each **Saw**, **Pulse**, **Saw+Pulse** or **Triangle**, with their octave, the second's semitones and **Osc 2 fine** (its detune against the first, the source of the thick, beating sound), and each pulse's width (**PW**). **Sync** locks oscillator 1 to oscillator 2's cycle: tune oscillator 1 up and it tears rather than sweeps. **Osc 1**, **Osc 2**, **Sub** (a square an octave down) and **Noise** are the mix.
+- **Osc:** two oscillators, each **Saw**, **Pulse**, **Saw+Pulse** or **Triangle**, with their octave, the second's semitones and **Osc 2 fine** (its detune against the first, the source of the thick, beating sound), and each pulse's width (**PW**). **Sync** locks oscillator 1 to oscillator 2's cycle: tune oscillator 1 up and it tears rather than sweeps. The oscillators stay clean on high notes, with Sync and with poly-mod: no gritty, out-of-tune whine folding down from above what you can hear. **Osc 1**, **Osc 2**, **Sub** (a square an octave down) and **Noise** are the mix.
 - **Filter:** **Filter** **LP 24** is the classic four-pole: thick and smooth, and at **Resonance** 100 it whistles on its own. **LP 12**, **BP 12** and **HP 12** are a gentler two-pole that rings but never whistles. **Env amount** is how far the filter envelope opens it (below 0 it closes it), **Key track** how far it follows the note, **Vel > filter** how much softer notes open it less, and **Drive** how hard the oscillators push it (grit, not volume). Turning Resonance up thins the bass a little, as on the old synths.
 - **Envelopes:** the filter's (**F**) and the volume's (**A**) attack, decay, sustain and release, from 1 ms to 20 s, and **Vel > amp** (how much softer notes play quieter). The attack has the old synths' shape: fast, then bending over just before the top.
 - **Mod:** the **LFO** (**LFO rate**, **LFO wave**, and **LFO delay**, which fades it in after you start a phrase) on the pitch (**Vibrato**), both pulse widths (**LFO > PW**) and the filter (**LFO > cutoff**). **PMod env** and **PMod osc 2** are poly-mod: each voice's own filter envelope and its own oscillator 2 bend oscillator 1's pitch, its pulse width or the filter, as the three **PMod >** switches choose. The envelope on the pitch of a synced oscillator 1 is the classic sync sweep; oscillator 2 on the pitch or the filter at audio speed gives clangy, bell-like sounds. **Press to** sends pad pressure to the **Cutoff** (pressing harder opens it, up to two octaves) or to a **Vibrato** (up to 50 cents), by **Pressure**. **Wheel vibrato** is how deep the mod wheel's vibrato goes with the wheel at the top (50 cents unless you change it); it uses the LFO's rate and wave.
-- **Voice:** **Mode** **Poly** or **Unison** (all the voices on one note, spread by **Detune**, for leads and basses), **Voices**, **Glide** (in Poly each voice glides from the last note it played, so chords smear into each other), **Age**, **Chorus** (**Slow** and **Fast** are the wide, swirling stereo chorus of the time, **Vibe** a quick shimmer), transpose, fine tuning, bend range, level and pan. In **Unison**, **Priority** picks which of several held pads sounds (the **Last** pressed, the **Low**est or the **High**est), and **Legato** glides to a pad pressed while another is held without starting the note again; in Poly both are drawn faint.
+- **Voice:** **Mode** **Poly** or **Unison** (all the voices on one note, spread by **Detune**, for leads and basses), **Voices**, **Glide** (in Poly each voice glides from the last note it played, so chords smear into each other), **Age**, **Chorus** (**Slow** and **Fast** are the wide, swirling stereo chorus of the time, **Vibe** a quick shimmer), transpose, fine tuning, bend range, level (-3 dB unless the preset sets it) and pan. In **Unison**, **Priority** picks which of several held pads sounds (the **Last** pressed, the **Low**est or the **High**est), and **Legato** glides to a pad pressed while another is held without starting the note again; in Poly both are drawn faint.
 
 Its pictures: both oscillators (**Osc**; with Sync on, oscillator 1 restarts with each of oscillator 2's cycles), the **Filter**'s curve, both envelopes (**Env**), the **LFO**, and each voice board's own tuning at the Age set (**Voices**).
 
@@ -522,7 +524,7 @@ Everything else works as on a drum's steps (see [Your first beat](sequencer.md#t
 
 ## Tuning
 
-Out of the box every synth plays in standard tuning: twelve equal steps to the octave, with the A above middle C at 440 Hz. You can change that for the synth on the pads in the Synth tab's options (press MENU on the Synth tab; see [Controls](../reference/controls.md)).
+Out of the box every synth and kit plays in standard tuning: twelve equal steps to the octave, with the A above middle C at 440 Hz. You can change that for the song in the Synth tab's options (press MENU on the Synth tab; see [Controls](../reference/controls.md)): the synths and the kits' keygroups follow it.
 
 {{shot: synth-options | The Synth tab's options, with the Tuning, Tuning root and A4 rows.}}
 
@@ -537,6 +539,15 @@ Out of the box every synth plays in standard tuning: twelve equal steps to the o
 - **A4** is the pitch of the A above middle C, from 380 to 480 Hz, so the synth can match a recording or another instrument. 432 Hz and 442 Hz are common choices.
 
 The drum synth keeps its own pitches whatever you pick here.
+
+Kits follow it where they play notes:
+
+- **Keygroups** (pads that play notes, see [Playing a kit on keys](shaping-a-pad.md#playing-a-kit-on-keys)) play every key at the tuning's pitch. MPFree takes a keygroup's sound to be at its root note's standard pitch, so A4 = 432 Hz moves a keygroup just as it moves a synth.
+- **16 Levels by Tune** steps by the tuning's notes from the pad's root note (C4 on a pad without keys), with pad 9 as recorded.
+- **The pitch wheel** moves a keygroup's notes along the tuning's notes, as it does a synth's.
+- **A pad you hit**, and a slice, plays as you tuned it on the pad, whatever the tuning, as the drum synth does.
+
+Notes already sounding move to a new tuning as you pick it, gliding there if the pad glides. [Auto-sample](sampling.md#auto-sample-a-synth-or-your-gear-onto-the-pads) records the synth in standard tuning, so the keygroups it makes play the tuning once, not twice.
 
 Everything else in the Synth tab's options (the scale, pad layouts and tuning) is the song's: it is saved in your project and comes back when you open it, and New project starts chromatic in C at A4 = 440 Hz (see [Saving your work](saving.md)). If a tuning file or one of your own scales is gone by then, that one choice goes back to its default, and the Console says so.
 
