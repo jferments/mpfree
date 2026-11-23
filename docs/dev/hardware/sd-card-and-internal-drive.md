@@ -70,7 +70,7 @@ Each step is its own PR with owner blocks, verified before the owner gets them. 
 0. **Survey (read-only).** With the owner's card in, on Akai's system: how `edisksd` mounts an SD card and with which options, which filesystems Akai's kernel has, whether `fsck.exfat` and `fsck.vfat` are on Akai's system, what it does with a partition it can't read (as far as its unit files, udev rules and journal say), and what Akai keeps on a card (the names in the card's top folder, in the report on the owner's computer only). Also the SD node's card-detect and write-protect settings and the bus speed the card runs at, which our kernel's settings start from. **Built 2026-11-17** as [`collect-over-ssh.sh --sd-card`](../guides/survey-tools.md) ([`read-only-sd-card.sh`](../../../tools/mpc-one/read-only-sd-card.sh)): it reads procfs, sysfs, the device tree and udev's records, and never runs `blkid`, `fsck`, `mkfs` or `tune2fs`, opens a block device or mounts. It lists the card's top folder only when the card is FAT or exFAT, whose top folder keeps no dates.
 1. **SD card, read-only, on Akai's kernel (soft-reboot route).** The Browser gets an "SD card" place. Opening it binds the SD controller alone and mounts the card read-only; leaving it or shutting down unmounts and unbinds. Passes when the card's write counter stays at 0 and the owner loads a sample from it. **The window is built** (2026-11-23) as [`setup-sd-card.sh`](../../../tools/mpc-one/stick/setup-sd-card.sh), tested against a fake kernel in [`test_sd_card_window.py`](../../../tools/mpc-one/tests/test_sd_card_window.py) ([below](#step-s1-the-read-only-window)). It is on the creator's stick with its units ([below](#on-the-stick)), and does nothing until the pad player asks; the Browser's place comes next, with what S0 finds.
 2. **SD card, saving to `MPFree/`.** Layout A's rules above, with what the kernel's FAT and exFAT drivers do ([design](#step-s2-saving-to-the-card-design-not-built)). Passes when Akai's system shows MPFree's files afterwards and the card checks clean on a computer. This step changes the [storage spec](../design/storage-spec.md)'s rule zero ("the SD card is never written") and is merged only on the owner's go.
-3. **The internal drive, read-only, on Akai's kernel.** The backup's window plus MPFree's ext4 reader; an "MPC internal drive (read-only)" place. Passes with the write and discard counters unchanged and the boot hashes unchanged.
+3. **The internal drive, read-only, on Akai's kernel.** The backup's window plus MPFree's ext4 reader; an "MPC internal drive (read-only)" place. Passes with the write and discard counters unchanged and the boot hashes unchanged ([design](#step-s3-the-internal-drive-read-only-design-not-built)).
 4. **Our own kernel.** The same three on the chain, with the modules held at start and the read-only patch (own-kernel step 2 builds the modules; this step adds the patch and the holds).
 
 Steps 1 to 3 don't wait for our kernel: the soft-reboot route is the default, and the backup already proves the read-only window there. Until step 4 a `--chain` stick keeps both controllers out of its device tree.
@@ -133,6 +133,39 @@ What the kernel does when MPFree writes to a FAT or exFAT card, from Linux 6.18'
 **Tested before the MPC:** the [pull test on FAT](../design/disk-streaming.md#wp-on-fat-the-pull-test-for-saving-to-the-sd-card) (`mpfree-disktest --cut-test --fat`, or `--fat-hidden` for the hidden way, built) on a spare FAT32 and a spare exFAT stick on a computer. Each run writes a stream of whole files and is pulled mid-write. MPFree's check then reads the stick without writing, and the computer's own `fsck -n` checks it too. The runs show how often a pull leaves a cross-link or a lost file with each way of publishing. Then on the MPC with the owner's card, with S1's checks around it and the boot-area hashes unchanged.
 
 **What S0 settles for S2:** whether Akai's system has `fsck.vfat` and `fsck.exfat`, and how it mounts a card (if Akai's own system writes to the card with the same driver, its cuts leave the same mark).
+
+## Step S3: the internal drive, read only (design, not built)
+
+The MPC's own **Internal** drive (partition 8, Akai's `/data`, also mounted by Akai's system at `/media/az01-internal`) as a place in the Browser: the musician's projects, samples and kits from Akai's side, read only. Partition 7, the factory content, already reads this way for Akai's kits without a backup (setup-backup.sh's step 3c and [`mpfree-factory`](../../../rust/mpfree-factory/src/import.rs)); S3 does the same for partition 8, for as long as the browser uses it.
+
+**Never mounted.** Mounting ext4, even read-only, replays an unfinished journal ([above](#the-internal-drive-is-read-with-mpfrees-own-ext4-reader-never-mounted)). The pad player opens the partition's device read-only and reads it with [`mpfree_diskimage::ext4`](../../../rust/mpfree-diskimage/src/ext4.rs), which never writes, never replays a journal and bounds every count it reads.
+
+**The window,** a third mode beside the backup's copy and its step 3c, with S1's protocol rather than 3c's (3c ends with a "done" file and an hour's limit; a place stays open while the browser uses it):
+
+- `/run/mpfree-app/internal-drive.request` with a word; every status gives it back as `ask=`, as S1's do.
+- The eMMC controller is bound alone, under the backup's udev rule (every `mmcblk` disk read-only as it appears) and its checks: the startup switch-off finished, no other window open (the SD card's included: both windows mark every `mmcblk` disk read-only, and each sees the other's disk and closes), `ro = 1` and `force_ro = 1` on the disk, its partitions and boot areas, the counters recorded.
+- Only partition 8's node becomes root's and the pad player's group's, 0440, in `/dev` (RAM), as 3c does for partition 7. Nothing is mounted. The status names the partition and the journal's state (below).
+- While open, once a second: the write and discard counters must not move and every disk must stay read-only, or the window fails and closes. The pad player moves `internal-drive.alive` every 2 s; 120 s still, and the window closes as if asked. `internal-drive.close` closes it.
+- Closing is the backup's: counters, the node's owner and mode back, unbind, wait for every `mmcblk` device to go, remove the rule. A controller that won't let go turns the MPC off.
+
+Probably one script, `setup-internal-drive.sh`, sharing the backup's window functions, with the same kind of fake-kernel tests as `test_sd_card_window.py`. The creator puts it on the stick with a `.path` and `.service` pair like S1's.
+
+**Akai's journal.** Akai mounts partition 8 read-write. After a clean shutdown its journal is empty. After a cut, ext4 marks it `needs_recovery` (feature_incompat bit `0x4`, which the reader accepts), and the newest changes may be only in the journal. MPFree reads the filesystem as it stands, without them. So when the bit is set, the window's status says `journal=unclean`, the place opens anyway, and the line under the list says "The MPC wasn't shut down cleanly last time: the newest files may be missing here. Start Akai's MPC software once to tidy it." A file whose blocks don't read as a sound, a kit or a project fails to load and says so. Nothing is ever written.
+
+**The place.** The library is built on real folders. The internal drive is an image read through the reader, so it can't be a library folder.
+
+- **Listing:** the place gets its rows from the reader, as the Plugins place gets its rows from the app: `mpfree-library` gains a read-only `Volume` behind `Place::Internal`, with `list(loc)` from `read_dir` and the inodes' sizes and times, and `read(loc)` from `read_file` (up to `MAX_WHOLE_FILE`). `check_writable` refuses `Place::Internal`, as it does the SD card.
+- **Hidden:** Akai's own folders are left out of the top folder: `system` (Akai's `/etc` and `/var` layers), `lost+found`, and names starting with a dot. Links and special files are never shown or followed.
+- **Load, Audition and Copy** read the bytes through the volume on the library's worker: a sound is read into memory and handed to the loader as bytes (`LoadSample` with the bytes instead of a path), so nothing is copied anywhere first. Copy, then Paste in a library place, writes the bytes with `Library::write_new`.
+- **Akai's own files:** the MPC's projects (`.xpj`) and programs (`.xpm`) open with [`mpfree-mpc-import`](../../../rust/mpfree-mpc-import/src/lib.rs) (sounds and patterns only, decisions), reading each sample the program names through the same volume. That is S3's second part.
+- **Its look:** the SD card place's (read-only path line, Copy only, no stars). Its own screens go to Jay first, as the SD card's did.
+
+**Unverified, to settle before it is built:**
+- Which top folders Akai's browser shows on the Internal drive. A read-only listing of partition 8's top folder from the owner's eMMC backup (on the workstation, with `debugfs -R ls`) answers it without the MPC.
+- Whether Akai's partition 8 uses features the reader refuses (`INCOMPAT_KNOWN`). The same backup answers it (`dumpe2fs -h`).
+- How long the reader takes to list a folder of a few thousand samples on the eMMC (htree folders are read whole). A host test on an image of that size first.
+
+**Passes when,** on the MPC with Jay's go and a rehearsed block: the place lists the Internal drive, a sound from it loads and plays, Copy and Paste put it in the library, the counters stay unchanged, and the boot hashes are the same before and after.
 
 ## Step S0: block for the owner
 
