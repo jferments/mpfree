@@ -122,6 +122,10 @@ pub const GUARD_HOLD: f32 = 0.5;
 pub const STEP_HOLD: f32 = 0.4;
 /// What the hint line says when such a button is touched in Perform.
 pub const GUARD_HINT: &str = "Hold to delete";
+/// The hint while a finger holds an empty cell of the Clips grid in
+/// Perform, and after a tap on one (the Arrange refactor's 5.4).
+pub const MAKE_HINT: &str =
+    "Perform: hold an empty cell to make a clip there   ·   a tap makes nothing, so a stray finger can't stop what plays";
 /// The longest name the text keyboard takes for a song marker.
 const MARKER_NAME_LEN: usize = 32;
 
@@ -148,6 +152,9 @@ struct GuardPress {
     rect: mpfree_ui::Rect,
     /// The button's name, for the log.
     label: String,
+    /// What the hint line says while it is held and after a lift too
+    /// soon: [`GUARD_HINT`], or [`MAKE_HINT`] on an empty cell.
+    hint: &'static str,
 }
 
 /// Whether target `t` of widget `widget` deletes or clears: in Perform it
@@ -13293,10 +13300,11 @@ impl Player {
                 Touch::Move | Touch::Up | Touch::Cancel => {
                     // Slid off or let go early: nothing happens.
                     println!("guard: {}: let go early, nothing done", g.label);
+                    let hint = g.hint;
                     self.guard_press = None;
                     self.ui.set_hold_fill(None);
                     if phase != Touch::Move {
-                        self.tell(GUARD_HINT);
+                        self.tell(hint);
                     }
                 }
                 Touch::Down => {}
@@ -13312,8 +13320,15 @@ impl Player {
             .into_iter()
             .filter(|pt| pt.target.rect.contains(x, y) && pt.target.enabled)
             .min_by_key(|pt| pt.target.rect.w as i64 * pt.target.rect.h as i64);
-        let Some(pt) = hit.filter(|pt| guarded(&pt.widget, &pt.target)) else {
+        let Some(pt) = hit.filter(|pt| {
+            guarded(&pt.widget, &pt.target) || self.empty_cell(&pt.widget, &pt.target)
+        }) else {
             return false;
+        };
+        let hint = if self.empty_cell(&pt.widget, &pt.target) {
+            MAKE_HINT
+        } else {
+            GUARD_HINT
         };
         self.ui
             .set_hold_fill(Some((&pt.widget, pt.target.rect, 0.0)));
@@ -13324,9 +13339,29 @@ impl Player {
             widget: pt.widget,
             rect: pt.target.rect,
             label: pt.target.label,
+            hint,
         });
-        self.tell(GUARD_HINT);
+        self.tell(hint);
         true
+    }
+
+    /// Whether target `t` of widget `widget` is an empty cell of the Clips
+    /// grid that a tap would make a clip in: in Perform that needs
+    /// [`GUARD_HOLD`] too, so a stray finger can't stop what a track plays
+    /// (the Arrange refactor's 5.4, decision 4). An empty Loop cell only
+    /// arms for the next loop, so it stays a tap.
+    fn empty_cell(&self, widget: &str, t: &mpfree_ui::Target) -> bool {
+        use mpfree_seq::SLOTS;
+        use mpfree_time_ui::view::CLIPS;
+        if widget != CLIPS || t.id != "slot" {
+            return false;
+        }
+        let (track, slot) = (t.index / SLOTS, t.index % SLOTS);
+        self.time
+            .tracks
+            .get(track)
+            .is_some_and(|tr| tr.loops.is_none() && !tr.audio)
+            && self.time.clip(track, slot).is_none()
     }
 
     /// A finger held on a step of the Sequencer's Steps, from `tick`:
@@ -19282,6 +19317,22 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("clips-perform sample: {e}"),
     }
+    // What each track plays (the Arrange refactor's 5.1, D3), in Perform
+    // with song mode on: SONG tags on the grid, filled where the track
+    // plays the song and outlined where a clip plays over it, Glitch
+    // going back to the song at 6.1; then the Song view, the clips drawn
+    // over their lanes.
+    for (name, song_view) in [("clips-perform-song", false), ("arrange-song-over", true)] {
+        match mpfree_time_ui::sample::over_song_state(song_view) {
+            Ok(st) => {
+                let mut p = quiet_player(fonts());
+                p.apply(ToUi::Time(Box::new(st)));
+                p.apply(ToUi::Show(View::Arrange));
+                out.push((name, p));
+            }
+            Err(e) => eprintln!("{name} sample: {e}"),
+        }
+    }
     // The song list (sequencer S4, mockup D), in Perform: seven steps, the
     // fourth playing its third pass of four, the fifth picked.
     match sample_list_state() {
@@ -21597,6 +21648,93 @@ mod tests {
         );
     }
 
+    /// Empty cells (the Arrange refactor's 5.4, decision 4): in Perform a
+    /// tap on one makes nothing and the hint says to hold it; held half a
+    /// second, a clip is made there. A Loop
+    /// track's empty cell stays a tap (it only arms for the next loop).
+    /// In Make one tap makes a clip, on the lift.
+    #[test]
+    fn perform_makes_a_clip_in_an_empty_cell_only_when_it_is_held() {
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        let mut st = mpfree_time_ui::sample::playing().unwrap().state();
+        st.perform = true;
+        let mut p = quiet_player(Fonts::embedded());
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        p.apply(ToUi::Show(View::Arrange));
+        let mut c = SoftCanvas::new(1280, 800);
+        p.ui.paint(&mut c);
+        let (track, slot) = (2, 4);
+        assert!(st.clip(track, slot).is_none());
+        let cell =
+            p.ui.targets()
+                .into_iter()
+                .find(|t| {
+                    t.widget == time_view::CLIPS
+                        && t.target.id == "slot"
+                        && t.target.index == track * mpfree_seq::SLOTS + slot
+                })
+                .expect("the empty cell")
+                .target
+                .rect;
+        let (x, y) = (cell.x + cell.w / 2, cell.y + cell.h / 2);
+        let made = vec![FromUi::Time(TimeAction::NewClip { track, slot })];
+        // A tap: nothing made, and the hint says to hold.
+        assert_eq!(p.touch(1, Touch::Down, x, y), None);
+        p.tick(0.2);
+        assert_eq!(p.touch(1, Touch::Up, x, y), None);
+        assert!(p.take_actions().is_empty());
+        assert_eq!(hint(&p), MAKE_HINT);
+        // Held half a second: the clip is made.
+        assert_eq!(p.touch(1, Touch::Down, x, y), None);
+        p.tick(0.3);
+        assert!(p.take_actions().is_empty());
+        p.tick(0.25);
+        assert_eq!(p.take_actions(), made);
+        assert_eq!(p.touch(1, Touch::Up, x, y), None);
+        assert!(p.take_actions().is_empty());
+        // A filled cell is still one tap: it launches.
+        let filled =
+            p.ui.targets()
+                .into_iter()
+                .find(|t| {
+                    t.widget == time_view::CLIPS
+                        && t.target.id == "slot"
+                        && t.target.index == track * mpfree_seq::SLOTS + 1
+                })
+                .unwrap()
+                .target
+                .rect;
+        let (fx, fy) = (filled.x + filled.w / 2, filled.y + filled.h / 2);
+        let a = p.touch(1, Touch::Down, fx, fy);
+        let a = a.or(p.touch(1, Touch::Up, fx, fy));
+        assert_eq!(
+            a.into_iter().chain(p.take_actions()).collect::<Vec<_>>(),
+            [FromUi::Time(TimeAction::Launch { track, slot: 1 })]
+        );
+        // In Make, one tap makes it, on the lift.
+        st.perform = false;
+        p.apply(ToUi::Time(Box::new(st)));
+        p.ui.paint(&mut c);
+        let cell =
+            p.ui.targets()
+                .into_iter()
+                .find(|t| {
+                    t.widget == time_view::CLIPS
+                        && t.target.id == "slot"
+                        && t.target.index == track * mpfree_seq::SLOTS + slot
+                })
+                .unwrap()
+                .target
+                .rect;
+        let (x, y) = (cell.x + cell.w / 2, cell.y + cell.h / 2);
+        assert_eq!(p.touch(1, Touch::Down, x, y), None);
+        let a = p.touch(1, Touch::Up, x, y);
+        assert_eq!(
+            a.into_iter().chain(p.take_actions()).collect::<Vec<_>>(),
+            made
+        );
+    }
+
     /// The Song view's marker tools (Arrange 3.3): a tap on the free ruler
     /// adds a marker; with a section picked, its grip moves where it
     /// starts, + Bar, Remove marker and Delete bars send their edits, and
@@ -22200,7 +22338,7 @@ mod tests {
         });
         assert_eq!(
             p.ui.get::<ClipGrid>(time_view::CLIPS).unwrap().title,
-            "Clips · slots 2–9 of 16"
+            "Slots 2–9 of 16"
         );
         assert!(p.take_actions().is_empty());
         // The Record panel's Clip tab: the clip settings card for the
@@ -22256,15 +22394,16 @@ mod tests {
             tap(&mut p, (save.x + save.w / 2, save.y + save.h / 2)),
             Some(FromUi::Time(TimeAction::SaveScene(0)))
         );
-        // The Song view in the grid's place: its Clips button goes back.
+        // The Song view in the grid's place: Clips on its view chip goes
+        // back (the Arrange refactor's phase 5).
         p.time.song_view = true;
         p.time_page.update(&mut p.ui, &p.time);
         p.ui.paint(&mut SoftCanvas::new(1280, 800));
         let song = p.ui.rect_of(time_view::SONG).unwrap();
-        let back =
-            p.ui.get::<mpfree_time_ui::song::SongLanes>(time_view::SONG)
-                .unwrap()
-                .button_rects(song)[0];
+        let back = mpfree_time_ui::widgets::view_part_rect(
+            mpfree_time_ui::widgets::view_chip_rect(song),
+            mpfree_time_ui::widgets::ArrangeView::Clips,
+        );
         assert_eq!(
             tap(&mut p, (back.x + back.w / 2, back.y + back.h / 2)),
             Some(FromUi::Time(TimeAction::SongView(false)))

@@ -40,14 +40,14 @@ use crate::list::{
 };
 use crate::report::{ReportCard, REPORT_DONE, REPORT_UNDO};
 use crate::song::{
-    AudioLane, SongBlocks, SongLanes, ADD_AUDIO, AUDIO_BUTTONS, BARS_BACK, BARS_ON, INPUTS,
-    MONITORS, NONE, PANEL, PANEL_CLOSE, PANEL_INPUT, PANEL_MONITOR, PANEL_MUTE, PANEL_SOLO,
+    AudioLane, LaneOver, SongBlocks, SongLanes, ADD_AUDIO, AUDIO_BUTTONS, BARS_BACK, BARS_ON,
+    INPUTS, MONITORS, NONE, PANEL, PANEL_CLOSE, PANEL_INPUT, PANEL_MONITOR, PANEL_MUTE, PANEL_SOLO,
     PANEL_TAKES, REC, REGION_SLOTS, RULER_ROW, SECTION_TAP, TEMPO_ROW,
 };
 use crate::widgets::{
-    BarButton, BarItem, CellState, ClipGrid, GridCell, GridTrack, MorphBar, Run, TakeItem,
-    TakeList, TransportBar, ADD_DISMISS, ADD_KIND, ADD_TRACK, BACK_TO_SONG, GRID_COLS, PAGE_BACK,
-    PAGE_ON, ROWS_BACK, ROWS_ON, ROW_DROP,
+    BarButton, BarItem, CellState, ClipGrid, GridCell, GridTrack, MorphBar, Run, SongMark,
+    TakeItem, TakeList, TransportBar, ADD_DISMISS, ADD_KIND, ADD_TRACK, BACK_TO_SONG, GRID_COLS,
+    PAGE_BACK, PAGE_ON, ROWS_BACK, ROWS_ON, ROW_DROP,
 };
 use mpfree_audiotracks::host::TakeWave;
 use mpfree_audiotracks::{Input, Monitor};
@@ -915,6 +915,17 @@ pub struct RegionId {
 
 /// What is picked on the Song view: the selection's kind decides the
 /// bottom row's buttons and the Q-Links.
+/// What a track plays now (the Arrange refactor's D3, "Now"):
+/// [`TimeState::plays`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Plays {
+    Nothing,
+    /// The song's blocks on its lane (song mode).
+    Song,
+    /// The clip in this slot, launched.
+    Clip(usize),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pick {
     /// A placement, by its index in the arrangement.
@@ -2017,6 +2028,7 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             r if r == SLOTS + ADD_KIND + 1 => TimeAction::AddAudioTrack,
             r if r == SLOTS + ADD_KIND + 2 => TimeAction::AddLoopTrack,
             r if r == SLOTS + BACK_TO_SONG => TimeAction::BackToSong,
+            r if r == SLOTS + crate::widgets::LIST_VIEW => TimeAction::ListView(true),
             // The pager and the drag's edges are the page's own:
             // TimePage::page_tracks.
             _ => return None,
@@ -2192,6 +2204,7 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
         (SONG, EventKind::Tab(crate::song::ADD_LOOP)) => Some(TimeAction::AddLoopTrack),
         (SONG, EventKind::Tab(crate::song::ADD_CLOSE)) => None,
         (SONG, EventKind::Tab(crate::song::LIST)) => Some(TimeAction::ListView(true)),
+        (SONG, EventKind::Tab(crate::song::CLIPS)) => Some(TimeAction::SongView(false)),
         (SONG, EventKind::Tab(k)) if *k >= PANEL_CLOSE => {
             let track = st.audio_panel?;
             let lane = st.audio.iter().find(|l| l.track == track);
@@ -2315,7 +2328,8 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             })
         }
         (SONG, EventKind::Tab(k)) => match k {
-            0 => Some(TimeAction::SongView(false)),
+            // Button 0 is the audio region's Split alone (the view chip
+            // has Clips, 5.7).
             1 => Some(TimeAction::SongMode(!st.song_on)),
             2 => Some(TimeAction::ScenesToSong),
             3 => Some(TimeAction::SongToScenes),
@@ -3961,6 +3975,7 @@ pub fn cell_of(st: &TimeState, track: usize, slot: usize) -> GridCell {
         foot: notes,
         progress: 0.0,
         wave: facts.map(|f| f.wave),
+        ..GridCell::default()
     };
     if facts.is_some_and(|f| f.copying) {
         cell.foot = "copying in".to_string();
@@ -3996,12 +4011,25 @@ pub fn cell_of(st: &TimeState, track: usize, slot: usize) -> GridCell {
         cell.state = CellState::Playing;
     }
     if let Some(c) = cue {
-        // It plays until the cue starts.
-        let word = if c.slot.is_none() { "stops" } else { "until" };
-        cell.detail = format!(
-            "{word} {}",
-            bar_beat(cue_tick(t, st.cue_line(track)), t.meter)
-        );
+        // It plays until the cue starts; a stop in song mode gives the
+        // track the song again (D3's Next).
+        let word = match c.slot {
+            Some(_) => "until",
+            None if st.song_on && st.song_has(track) => "to song",
+            None => "stops",
+        };
+        let line = st.cue_line(track);
+        let at = cue_tick(t, line);
+        cell.detail = format!("{word} {}", bar_beat(at, t.meter));
+        cell.cued = true;
+        if c.slot.is_none() && st.perform && t.state.rolling() {
+            // The stop's countdown, as a queued cell's (the next clip's
+            // cell has its own).
+            let span = line.line(t.meter.bar_ticks()).max(1);
+            let left = (at - t.position).max(0);
+            let frac = 1.0 - (left.min(span) as f64 / span as f64);
+            cell.countdown = ((frac * 64.0).floor().max(1.0) / 64.0) as f32;
+        }
     }
     cell
 }
@@ -4074,18 +4102,14 @@ fn list_lead(st: &TimeState, index: usize) -> bool {
     st.list.get(k).is_some_and(|r| r.lead)
 }
 
-/// The song list's title line: "Song list · 7 steps · 76 bars · 2:27"
-/// (the time at the tempo now), or "Song list" while it is empty; linked
-/// to the song (phase 4b), "Song list · linked to the song · 7 parts · 50
-/// bars · 2:10".
+/// The song list's title, after the view chip's List (5.7): "7 steps ·
+/// 76 bars · 2:27" (the time at the tempo now), or nothing while it is
+/// empty; linked to the song (phase 4b), "Linked to the song · 7 parts ·
+/// 50 bars · 2:10".
 pub fn list_title(st: &TimeState) -> String {
-    let head = if st.list_linked {
-        "Song list · linked to the song"
-    } else {
-        "Song list"
-    };
+    let linked = "Linked to the song";
     if st.list.is_empty() {
-        return head.to_string();
+        return if st.list_linked { linked } else { "" }.to_string();
     }
     let n = st.list.len();
     let bars: i64 = st.list.iter().map(|r| r.bars).sum();
@@ -4097,8 +4121,13 @@ pub fn list_title(st: &TimeState) -> String {
     } else {
         ("step", "steps")
     };
+    let head = if st.list_linked {
+        format!("{linked} · ")
+    } else {
+        String::new()
+    };
     format!(
-        "{head} · {n} {} · {bars} {} · {}:{:02}",
+        "{head}{n} {} · {bars} {} · {}:{:02}",
         if n == 1 { one } else { many },
         if bars == 1 { "bar" } else { "bars" },
         secs / 60,
@@ -4130,6 +4159,100 @@ impl TimeState {
     /// The reload of clip `at` (track, slot) waits for its line.
     pub fn reload_waiting(&self, at: (usize, usize)) -> bool {
         self.reloads.iter().any(|r| (r.0, r.1) == at)
+    }
+
+    /// The song has something on `track` to play: a block on its lane,
+    /// or an audio track's region.
+    pub fn song_has(&self, track: usize) -> bool {
+        self.placements.iter().any(|p| p.track == track)
+            || self
+                .audio_lane_at(track)
+                .is_some_and(|l| !l.blocks.is_empty())
+    }
+
+    /// What `track` plays now (the Arrange refactor's D3, "Now"), as the
+    /// player has it: the clip launched on it once it has started, else
+    /// in song mode the song (a track with no clip of its own plays it,
+    /// and a stopped one goes back to it), else nothing. A muted track
+    /// still says what it would play.
+    pub fn plays(&self, track: usize) -> Plays {
+        let t = &self.transport;
+        if let Some(l) = self.launch(track).filter(|l| l.origin <= t.position) {
+            Plays::Clip(l.slot)
+        } else if self.song_on && self.song_has(track) {
+            Plays::Song
+        } else {
+            Plays::Nothing
+        }
+    }
+
+    /// `track`'s SONG tag on the grid (D3): in song mode, on a track the
+    /// song has something for, filled while it plays the song and
+    /// outlined while a clip plays over it.
+    pub fn song_mark(&self, track: usize) -> SongMark {
+        if !self.song_on || !self.song_has(track) {
+            return SongMark::None;
+        }
+        match self.plays(track) {
+            Plays::Clip(_) => SongMark::Under,
+            _ => SongMark::Plays,
+        }
+    }
+
+    /// The clips launched over the song, for the Song view to draw over
+    /// their tracks' lanes (D3): the one playing, from where it started
+    /// to its cue's line while one waits (the song comes back there after
+    /// a stop or Back to song), and the one waiting, from its line. None
+    /// with song mode off.
+    pub fn lanes_over(&self) -> Vec<LaneOver> {
+        if !self.song_on {
+            return Vec::new();
+        }
+        let t = &self.transport;
+        let mut out = Vec::new();
+        for (track, tr) in self.tracks.iter().enumerate() {
+            if tr.audio {
+                continue;
+            }
+            let cue = self.cue(track);
+            let line = cue.map(|_| cue_tick(t, self.cue_line(track)));
+            let launch = self.launch(track);
+            if let Some(l) = launch.filter(|l| l.origin <= t.position) {
+                let back = cue.is_some_and(|c| c.slot.is_none());
+                out.extend(self.over(track, l.slot, l.origin, line, back, false));
+            }
+            let waiting = match (cue.and_then(|c| c.slot), line) {
+                (Some(next), Some(at)) => Some((next, at)),
+                _ => launch
+                    .filter(|l| l.origin > t.position)
+                    .map(|l| (l.slot, l.origin)),
+            };
+            if let Some((slot, from)) = waiting {
+                out.extend(self.over(track, slot, from, None, false, true));
+            }
+        }
+        out
+    }
+
+    /// One clip over the song on `track`'s lane, if `slot` holds one.
+    fn over(
+        &self,
+        track: usize,
+        slot: usize,
+        from: Tick,
+        until: Option<Tick>,
+        back: bool,
+        waiting: bool,
+    ) -> Option<LaneOver> {
+        let clip = self.clip(track, slot)?;
+        Some(LaneOver {
+            track,
+            name: clip.name.clone(),
+            from,
+            until,
+            back,
+            waiting,
+        })
     }
 
     /// Clips play over the song: song mode is on and a clip is launched,
@@ -4361,6 +4484,7 @@ pub fn grid_tracks(st: &TimeState) -> Vec<GridTrack> {
             waiting: st.mute_waiting(i),
             loops: tr.loops.is_some(),
             audio: tr.audio,
+            song: st.song_mark(i),
             cells: (0..tr.slots.len()).map(|s| cell_of(st, i, s)).collect(),
         })
         .collect()
@@ -4543,7 +4667,7 @@ fn song_lanes_with(st: &TimeState, first_bar: i64, blocks: Option<SongBlocks>) -
     }
     let alert = st.audio_counts.iter().any(|c| c.1 > 0);
     SongLanes {
-        title: "Song".to_string(),
+        title: String::new(),
         legend,
         alert,
         tracks: st
@@ -4580,6 +4704,7 @@ fn song_lanes_with(st: &TimeState, first_bar: i64, blocks: Option<SongBlocks>) -
             .report
             .clone()
             .map(|r| ReportCard::new(r, &report_tracks(st))),
+        over: st.lanes_over(),
         ..SongLanes::default()
     }
 }
@@ -5123,7 +5248,7 @@ impl TimePage {
             )
         } else {
             format!(
-                "Clips · slots {}–{} of {SLOTS}",
+                "Slots {}–{} of {SLOTS}",
                 self.first_row + 1,
                 (self.first_row + rows).min(SLOTS)
             )
@@ -6280,10 +6405,13 @@ mod tests {
         page.scroll(&mut ui, 4);
         assert_eq!(page.first_bar, 4, "the wheel scrolls bars");
         let song = |k: EventKind, st: &TimeState| action(&ev(SONG, k), st);
+        // The view chip's Clips (5.7); the bottom row's first place is the
+        // audio region's Split alone.
         assert_eq!(
-            song(EventKind::Tab(0), &st),
+            song(EventKind::Tab(crate::song::CLIPS), &st),
             Some(TimeAction::SongView(false))
         );
+        assert_eq!(song(EventKind::Tab(0), &st), None);
         assert_eq!(
             song(EventKind::Tab(1), &st),
             Some(TimeAction::SongMode(true))
@@ -6347,10 +6475,7 @@ mod tests {
         page.update(&mut ui, &st);
         assert!(ui.rect_of(SONG_LIST).is_some());
         assert!(ui.rect_of(SONG).is_none() && ui.rect_of(MORPH).is_none());
-        assert_eq!(
-            ui.get::<SongListView>(SONG_LIST).unwrap().title,
-            "Song list"
-        );
+        assert_eq!(ui.get::<SongListView>(SONG_LIST).unwrap().title, "");
         let list = |k: EventKind, st: &TimeState| action(&ev(SONG_LIST, k), st);
         let why = |k: EventKind, st: &TimeState| why_not(&ev(SONG_LIST, k), st);
         assert_eq!(
@@ -6384,7 +6509,7 @@ mod tests {
         page.update(&mut ui, &st);
         assert_eq!(
             ui.get::<SongListView>(SONG_LIST).unwrap().title,
-            "Song list · 2 steps · 10 bars · 0:20"
+            "2 steps · 10 bars · 0:20"
         );
         assert_eq!(list(EventKind::Toggle(LIST_PLAY), &st), None);
         assert_eq!(
@@ -6475,7 +6600,7 @@ mod tests {
         page.update(&mut ui, &st);
         assert_eq!(
             ui.get::<SongListView>(SONG_LIST).unwrap().title,
-            "Song list · linked to the song · 2 parts · 10 bars · 0:20"
+            "Linked to the song · 2 parts · 10 bars · 0:20"
         );
         // Back to the scene takes List → song's place (4b.3): for a part
         // changed in the song, picked; otherwise it says why.
@@ -6856,8 +6981,8 @@ mod tests {
         // Nothing picked: the Song view's own row.
         assert_eq!(st.pick(), None);
         assert_eq!(
-            song(EventKind::Tab(0), &st),
-            Some(TimeAction::SongView(false))
+            song(EventKind::Tab(1), &st),
+            Some(TimeAction::SongMode(!st.song_on))
         );
         st.selected = Some(1);
         assert_eq!(st.pick(), Some(Pick::Placement(1)));
@@ -8447,6 +8572,100 @@ mod tests {
                 origin,
                 start: 3 * BAR,
             }]
+        );
+    }
+
+    #[test]
+    fn each_track_shows_what_it_plays_now_and_what_comes_next() {
+        // The Arrange refactor's 5.1 (D3). Drums plays clip A from 1.1,
+        // Bass waits for 6.1, Stab has nothing launched.
+        let mut st = state();
+        assert_eq!(st.plays(0), Plays::Clip(0));
+        assert_eq!(st.plays(1), Plays::Nothing, "waits for its line");
+        assert_eq!(st.plays(2), Plays::Nothing);
+        assert!(
+            (0..3).all(|k| st.song_mark(k) == SongMark::None),
+            "song mode off"
+        );
+        assert!(st.lanes_over().is_empty());
+        // Song mode with blocks on Drums and Stab: Stab plays the song,
+        // Drums a clip over it; Bass, with nothing in the song, no tag.
+        st.song_on = true;
+        st.placements = [0, 2]
+            .into_iter()
+            .map(|track| PlacementInfo {
+                track,
+                start: 0,
+                length: 8 * BAR,
+                name: "A".to_string(),
+                unique: false,
+            })
+            .collect::<Vec<_>>()
+            .into();
+        assert_eq!(st.plays(2), Plays::Song);
+        assert_eq!(st.song_mark(0), SongMark::Under);
+        assert_eq!(st.song_mark(1), SongMark::None);
+        assert_eq!(st.song_mark(2), SongMark::Plays);
+        let tags: Vec<SongMark> = grid_tracks(&st).iter().map(|t| t.song).collect();
+        assert_eq!(tags, [SongMark::Under, SongMark::None, SongMark::Plays]);
+        // A muted track still says what it would play.
+        st.tracks[2].silent = true;
+        assert_eq!(st.song_mark(2), SongMark::Plays);
+        // On the Song view: Drums' clip over its lane from where it
+        // started, to the view's end; Bass's, waiting, from its line.
+        let over = |track, from, until, back, waiting| LaneOver {
+            track,
+            name: if track == 0 { "A" } else { "B" }.to_string(),
+            from,
+            until,
+            back,
+            waiting,
+        };
+        assert_eq!(
+            st.lanes_over(),
+            [
+                over(0, 0, None, false, false),
+                over(1, 5 * BAR, None, false, true)
+            ]
+        );
+        // Back to song on Drums: a stop cue. The cell says when the song
+        // comes back, in amber; the Song view ends the clip there.
+        st.cues = vec![Cue {
+            track: 0,
+            slot: None,
+        }];
+        let c = cell_of(&st, 0, 0);
+        assert_eq!(
+            (c.state, c.detail.as_str()),
+            (CellState::Playing, "to song 6.1")
+        );
+        assert!(c.cued);
+        assert_eq!(c.countdown, 0.0, "Make has no countdowns");
+        assert_eq!(st.lanes_over()[0], over(0, 0, Some(5 * BAR), true, false));
+        // In Perform, the stop counts down, as a queued cell does.
+        st.perform = true;
+        let c = cell_of(&st, 0, 0);
+        assert!(c.countdown > 0.0 && c.countdown < 1.0, "{}", c.countdown);
+        // Off song mode the same cue only stops it.
+        st.song_on = false;
+        assert_eq!(cell_of(&st, 0, 0).detail, "stops 6.1");
+        // Another clip cued on Drums: A plays until its line, B waits
+        // from there; neither counts down on A's cell.
+        st.song_on = true;
+        st.cues = vec![Cue {
+            track: 0,
+            slot: Some(1),
+        }];
+        let c = cell_of(&st, 0, 0);
+        assert_eq!(
+            (c.detail.as_str(), c.cued, c.countdown),
+            ("until 6.1", true, 0.0)
+        );
+        let mut b = over(0, 5 * BAR, None, false, true);
+        b.name = "B".to_string();
+        assert_eq!(
+            st.lanes_over()[..2],
+            [over(0, 0, Some(5 * BAR), false, false), b]
         );
     }
 

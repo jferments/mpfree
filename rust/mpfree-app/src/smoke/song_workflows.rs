@@ -955,7 +955,7 @@ mod tests {
             let s = &mut l.s;
             open(s, song.name);
             s.press("header", "tab", "Arrange");
-            s.press("clips", "song", "Song");
+            s.press("clips", "view", "Song");
             s.press("song", "button", "Play song");
             assert!(s.time.song_on(), "Play song turned song mode on");
             let from = s.t();
@@ -1207,7 +1207,7 @@ mod tests {
             open(s, song.name);
             assert!(s.time.project().arrangement.placements.is_empty());
             s.press("header", "tab", "Arrange");
-            s.press("clips", "song", "Song");
+            s.press("clips", "view", "Song");
             s.press("song", "button", "Scenes → song");
             let arr = s.time.project().arrangement.clone();
             let names: Vec<&str> = arr.markers.iter().map(|m| m.name.as_str()).collect();

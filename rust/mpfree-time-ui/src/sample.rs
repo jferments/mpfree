@@ -912,6 +912,39 @@ pub fn song_tempo_state() -> Result<TimeState, String> {
     Ok(state)
 }
 
+/// Clips played over the song (the Arrange refactor's 5.1, D3), in
+/// Perform with song mode on: rows 1 to 5 made into the song; Drums, Bass
+/// and Stab launched over it, Glitch launched from bar 3 and going back
+/// to the song at 6.1, the chords cued for 6.1; Hats, Dust and FX play
+/// the song. `song_view` shows it on the Song view in place of the grid.
+pub fn over_song_state(song_view: bool) -> Result<TimeState, String> {
+    let launches = launches()
+        .into_iter()
+        .filter(|l| [0, 2, 3, 5].contains(&l.track))
+        .collect();
+    let mut s = Session::new(project(), launches, Some(STAB))?;
+    let rows: Vec<(usize, Tick)> = (0..5)
+        .filter(|&r| s.project.row_filled(r))
+        .map(|r| (r, scene_length(&s.project, r, BAR)))
+        .collect();
+    s.project.arrangement = scenes_to_song(&s.project, &rows, 0)
+        .map(|t| t.song)
+        .map_err(|e| format!("{e:?}"))?;
+    s.command_at(0, Command::Play)?;
+    s.run_to(4 * BAR + 2 * BEAT)?;
+    s.act(TimeAction::Launch {
+        track: CHORDS,
+        slot: 0,
+    })?;
+    s.act(TimeAction::StopClip(3))?;
+    s.run_to(4 * BAR + 2 * BEAT + SIXTEENTH)?;
+    let mut state = s.state();
+    state.perform = true;
+    state.song_on = true;
+    state.song_view = song_view;
+    Ok(state)
+}
+
 /// Recordings into a real audio tracks engine for the Song view's audio
 /// lanes: "Guitar" (audio track 2, stereo) plays bars 1 to 4; "Vocal"
 /// (audio track 1, the left jack) was recorded over bars 1 to 8 and then
