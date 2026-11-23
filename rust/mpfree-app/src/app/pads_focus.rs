@@ -865,7 +865,7 @@ impl App {
         list: &crate::instrument_list::InstrumentList,
     ) -> Vec<Effect> {
         let was = self.pads_focus();
-        let missing = self.missing();
+        let (map_was, missing) = (self.pad_map, self.missing());
         self.instrument_list.clone_from(list);
         // A synth given a free place for a bank (step 6c), the pads or a
         // layer (step 11a) that has its id now.
@@ -888,6 +888,11 @@ impl App {
             .collect();
         if self.pads_focus() != was {
             fx.insert(0, Effect::PadsFocus(self.pads_focus()));
+        }
+        // What the pads play, open: a synth tried has its id, or an entry
+        // went missing (sampler step 15e).
+        if self.map_panel && (self.pad_map != map_was || gone != 0) {
+            fx.push(self.pad_map_fx());
         }
         fx
     }
@@ -947,6 +952,16 @@ impl App {
     /// follow the selected track again. Nothing while the pads follow a
     /// track that plays a synth already: its own, or the shared one.
     pub fn toggle_pads_synth(&mut self) -> Vec<Effect> {
+        let was = self.pad_map;
+        let fx = self.toggle_pads_synth_now();
+        // One step of What the pads play's history (sampler step 15e).
+        if self.synth_pick.is_none() {
+            self.map_step(was);
+        }
+        fx
+    }
+
+    fn toggle_pads_synth_now(&mut self) -> Vec<Effect> {
         // The shared synth, or a synth picked in the list (step 6): Follow
         // track.
         if self.pads_focus() != PadFocus::Track || self.pads_to.is_some() {
@@ -1282,7 +1297,13 @@ impl App {
                 .into_iter()
                 .map(|n| format!("project: {n}")),
         );
-        (notes, vec![Effect::PadsFocus(self.pads_focus())])
+        // What the pads play starts its history again (sampler step 15e).
+        self.map_history_clear();
+        let mut fx = vec![Effect::PadsFocus(self.pads_focus())];
+        if self.map_panel {
+            fx.push(self.pad_map_fx());
+        }
+        (notes, fx)
     }
 
     /// The pads follow the selected track again, saying what `why` writes.

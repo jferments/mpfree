@@ -732,11 +732,12 @@ impl Desk<'_> {
                 banks,
             } => fx.extend(app.pick_pads_kit(kit, &name, empty, banks)),
             gui::FromUi::SynthPickFrom(from) => fx.extend(app.pick_kit_from(from)),
+            gui::FromUi::PadMapOpen => fx.extend(app.open_pad_map()),
+            gui::FromUi::PadMapTap { row, act } => fx.extend(app.pad_map_tap(row, act)),
             // The Synth tab's button: the synth on the pads whichever track
             // is selected, or Follow track (app/pads_focus.rs).
             gui::FromUi::PlayOnPads => fx.extend(app.toggle_pads_synth()),
             // The "Pads: Poly" chip: Follow track.
-            gui::FromUi::FollowTrack => fx.extend(app.pads_follow_track()),
             // The audio loop's own: named one by one, so a new action has
             // to be given a home here or there.
             a @ (gui::FromUi::Pad { .. }
@@ -821,6 +822,7 @@ impl Desk<'_> {
             app::Effect::Mixer(v) => mix.show(v),
             // The list of synths over the Synth tab (app/synth_pick.rs).
             app::Effect::SynthPick(v) => out.show(gui::ToUi::SynthPick(v.map(Box::new))),
+            app::Effect::PadMap(v) => out.show(gui::ToUi::PadMap(v.map(Box::new))),
             app::Effect::MixerLast => mix.show(Some(mix.last())),
             app::Effect::MixerFaders => out.show(gui::ToUi::MixerFaders),
             // The wheel on the mixer: Q-Link 1 on a strips view, the

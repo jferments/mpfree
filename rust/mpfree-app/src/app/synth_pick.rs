@@ -129,6 +129,12 @@ pub(super) struct SynthPick {
     kits: bool,
     /// What the Kits side outlined then.
     had_kit: KitOn,
+    /// The bank "Bank B only" means: one the panel What the pads play
+    /// opened the list for (sampler step 15e), else the bank the pads are
+    /// on.
+    pub(super) for_bank: Option<usize>,
+    /// What the pads play opened it: it closes back to the panel.
+    pub(super) from_map: bool,
 }
 
 /// What each built-in synth is good for, in musicians' words (the manual's
@@ -228,10 +234,19 @@ impl App {
     }
 
     /// The bank a tap in the list gives the synth alone (step 6c): the one
-    /// the pads are on, with "Bank B only" on a kit's pages.
+    /// the pads are on (or the one What the pads play opened the list
+    /// for), with "Bank B only" on a kit's pages.
     fn pick_bank(&self) -> Option<usize> {
         let only = self.synth_pick.is_some_and(|p| p.bank_only);
-        (only && self.banks_apply()).then_some(self.pad_page)
+        (only && self.banks_apply()).then_some(self.pick_page())
+    }
+
+    /// The bank "Bank B only" names: the one What the pads play opened the
+    /// list for (sampler step 15e), else the one the pads are on.
+    fn pick_page(&self) -> usize {
+        self.synth_pick
+            .and_then(|p| p.for_bank)
+            .unwrap_or(self.pad_page)
     }
 
     /// "All banks" (`only` false) or "Bank B only" at the top of the open
@@ -314,9 +329,10 @@ impl App {
                 )
             }))
             .collect();
-        // What the pads play now, on the bank they are on: a place waiting
-        // for its id first.
-        let page = self.pad_page;
+        // What the pads play now, on the bank they are on (or the one What
+        // the pads play opened the list for): a place waiting for its id
+        // first.
+        let page = self.pick_page();
         let own = self.banks_apply()
             && (self.bank_to[page].is_some() || self.pad_map.banks[page].is_some());
         let waiting = if own {
@@ -574,6 +590,20 @@ impl App {
         if self.synth_pick.is_some() {
             return self.close_synth_pick(true);
         }
+        let mut fx = Vec::new();
+        if self.map_panel {
+            fx.extend(self.close_pad_map());
+        }
+        let bank_only = self.pads_bank().is_some();
+        let layer = self.has_layers() && !bank_only;
+        fx.extend(self.open_synth_pick_for(bank_only.then_some(self.pad_page), layer));
+        fx
+    }
+
+    /// The list opens for bank `bank` alone (None: every bank), with Layer
+    /// on or off: the card's tap, or a row of What the pads play (sampler
+    /// step 15e).
+    pub(super) fn open_synth_pick_for(&mut self, bank: Option<usize>, layer: bool) -> Vec<Effect> {
         let kept = (0..FREE)
             .filter(|&n| self.track_sound(free(n)).is_some())
             .fold(0u16, |m, n| m | 1 << n);
@@ -582,11 +612,13 @@ impl App {
             kept,
             had_choice: None,
             // On a bank with its own, the next tap changes that bank.
-            bank_only: self.pads_bank().is_some(),
+            bank_only: bank.is_some(),
             // With layers, the next tap adds or takes off one (step 11b).
-            layer: self.has_layers() && self.pads_bank().is_none(),
+            layer: layer && bank.is_none(),
             kits: false,
             had_kit: KitOn::Other,
+            for_bank: bank,
+            from_map: false,
         });
         let view = self.synth_pick_view();
         if let (Some(p), Some(v)) = (self.synth_pick.as_mut(), view.as_ref()) {
@@ -860,7 +892,13 @@ impl App {
             self.project_edit = true;
             fx.push(Effect::PadsFocus(self.pads_focus()));
         }
+        // Kept, one step of What the pads play's history (sampler step
+        // 15e); opened there, the panel again.
+        if keep && moved {
+            self.map_step(pick.had);
+        }
         fx.push(Effect::SynthPick(None));
+        fx.extend(self.back_to_map(&pick));
         fx
     }
 }

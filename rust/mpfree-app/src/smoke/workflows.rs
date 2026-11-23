@@ -2188,9 +2188,13 @@ mod tests {
             s.pad_edge(3, 0, false);
             s.run_periods(1);
             assert!(!s.layer_synth_held(), "ended where it started");
-            // Keep, then Follow track: the layers go too.
+            // Keep, then Follow track (the chip opens What the pads play,
+            // whose first row holds it): the layers go too.
             s.press("synth-pick", "keep", "").run_periods(2).settle();
             s.press("header", "chip", "Pads: FM + Poly")
+                .run_periods(2)
+                .settle();
+            s.press(mpfree_synth_ui::pad_map::PANEL, "base", "Follow track")
                 .run_periods(2)
                 .settle();
             assert!(!s.app.has_layers() && s.mix.instruments.layer_at(0).is_none());

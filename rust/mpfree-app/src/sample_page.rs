@@ -1151,6 +1151,14 @@ pub struct SamplePage {
     /// Load to pad and Send to pad say so when a hit lands them on
     /// another (the kit the pads play on their own, sampler step 15d).
     track_kit: usize,
+    /// The selected track (0 based), for the bar's "Track 1's kit" chip,
+    /// and the pad of its kit hit last, which the chip shows again
+    /// (sampler step 15e, board 4).
+    track: usize,
+    track_pad: usize,
+    /// The bank pressed while the kit shown plays from another of its
+    /// banks (bank B playing Big Kit's bank C): "from pad B1".
+    from_bank: Option<usize>,
     /// The take kept on the page that the Wave page shows (one-page step
     /// 2b), by its place in the kit's [`Project::takes`]; None: the pad.
     open: Option<usize>,
@@ -1354,6 +1362,9 @@ impl SamplePage {
             assign: None,
             sending: None,
             track_kit: 0,
+            track: 0,
+            track_pad: 0,
+            from_bank: None,
             open: None,
             sending_take: None,
             take_held: None,
@@ -1543,7 +1554,77 @@ impl SamplePage {
     ///
     /// [`ToUi::Kit`]: crate::gui::ToUi::Kit
     pub fn set_track_kit(&mut self, k: usize) {
-        self.track_kit = k;
+        if k != self.track_kit {
+            self.track_kit = k;
+            self.stale = true;
+        }
+    }
+
+    /// The selected track (0 based): the bar's chip names its kit.
+    pub fn set_track(&mut self, t: usize) {
+        if t != self.track {
+            self.track = t;
+            self.stale = true;
+        }
+    }
+
+    /// The bank pressed while the pads play another bank of the kit (its
+    /// source bank, sampler step 15e), or None: the bar says "from pad
+    /// B1".
+    pub fn set_from_bank(&mut self, b: Option<usize>) {
+        if b != self.from_bank {
+            self.from_bank = b;
+            self.stale = true;
+        }
+    }
+
+    /// The bar's "Track 1's kit" chip (sampler step 15e, board 4): the
+    /// page shows the selected track's own kit again, at its pad hit
+    /// last. Nothing while it shows it, or the pads play the synth.
+    pub fn show_track_kit(&mut self) {
+        if self.synth || self.kit == self.track_kit || self.track_kit >= self.projects.len() {
+            return;
+        }
+        let pad = self.track_pad;
+        self.set_kit(self.track_kit, false);
+        self.pick(pad);
+        self.stale = true;
+        self.told.push(format!(
+            "Track {}'s kit, at pad {}: a hit on another kit shows that kit again",
+            self.track + 1,
+            self.pad_text(self.kit, self.pad)
+        ));
+    }
+
+    /// What the bar says of the kit shown while it isn't the selected
+    /// track's (sampler step 15e, board 4): its name, and the pad pressed
+    /// when it plays from another of its banks ("Big Kit, from pad B1");
+    /// and the chip that shows the track's kit again. None for the track's
+    /// own kit and while the pads play the synth.
+    fn kit_shown_note(&self) -> Option<(String, String)> {
+        if self.synth || self.kit == self.track_kit || self.kit >= self.projects.len() {
+            return None;
+        }
+        let name = self
+            .names
+            .get(self.kit)
+            .filter(|n| !n.is_empty())
+            .cloned()
+            .unwrap_or_else(|| format!("Kit {}", self.kit + 1));
+        let from = self
+            .from_bank
+            .filter(|&b| b != self.pad / 16)
+            .map(|b| {
+                format!(
+                    ", from pad {}",
+                    crate::app::kit_pad_name(b * 16 + self.pad % 16)
+                )
+            })
+            .unwrap_or_default();
+        Some((
+            format!("{name}{from}"),
+            format!("Track {}'s kit", self.track + 1),
+        ))
     }
 
     /// Load to pad or Send to pad (`what`) landed on pad `pad` of kit
@@ -1633,6 +1714,9 @@ impl SamplePage {
     }
 
     fn pick(&mut self, pad: usize) {
+        if pad < PADS && self.kit == self.track_kit {
+            self.track_pad = pad;
+        }
         if pad == self.pad || pad >= PADS {
             return;
         }
@@ -2124,11 +2208,17 @@ impl SamplePage {
             send::show(ui, has_sound, self.sending.is_some());
         }
         // The pad bar's title names the pad (and its sound) on the editors
-        // of a pad with a sound.
+        // of a pad with a sound; on another kit than the track's, the bar
+        // names it and offers the track's kit back (sampler step 15e).
+        let (note, chip) = self.kit_shown_note().unzip();
         for bar in NAMED_BARS {
             if let Some(b) = ui.get_mut::<mpfree_sampler_ui::widgets::PadBar>(bar) {
                 if b.nameable != has_sound {
                     b.nameable = has_sound;
+                }
+                if b.kit_note != note || b.track_kit != chip {
+                    b.kit_note.clone_from(&note);
+                    b.track_kit.clone_from(&chip);
                 }
             }
         }
@@ -2586,6 +2676,16 @@ impl SamplePage {
                 .is_some()
         {
             self.ask_names();
+            return;
+        }
+        // The bar's "Track 1's kit" chip (sampler step 15e, board 4).
+        if ev.kind == EventKind::Tab(mpfree_sampler_ui::widgets::TRACK_KIT)
+            && ui
+                .get::<mpfree_sampler_ui::widgets::PadBar>(&ev.widget)
+                .is_some()
+        {
+            self.show_track_kit();
+            self.refresh_if_stale(ui);
             return;
         }
         // A finger dragged on a Q-Link card turns that knob, as the knob
@@ -3355,6 +3455,14 @@ impl SamplePage {
                         ""
                     }
                 ));
+                // On a kit the pads play on their own, the hint says where
+                // the slices went (sampler step 15e, board 4).
+                if to_kit == kit && kit != self.track_kit {
+                    self.told.push(format!(
+                        "Chopped onto {to} of {}, the kit shown",
+                        self.kit_text_of(kit)
+                    ));
+                }
                 let mut for_track = None;
                 match phrase.map(|p| p.map(|p| phrase_clip(&name, &p, pads.start, *one_pad))) {
                     Ok(None) => {}

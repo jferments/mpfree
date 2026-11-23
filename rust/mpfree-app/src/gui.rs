@@ -220,6 +220,9 @@ pub const GUIDE_LAYOUT: &str = "col(header:60, row(guide:*, found:400):*, hint:2
 pub const KITS_PAGE: &str = "Kits";
 /// The Synth tab with the list of synths over its page (app/synth_pick.rs).
 pub const SYNTH_PICK_PAGE: &str = "Synth · synths";
+/// The Synth tab with What the pads play over its page (sampler step
+/// 15e, app/pad_map_panel.rs).
+pub const PAD_MAP_PAGE: &str = "Synth · pads";
 /// The Synth tab's middle (the title bar over the page) in its layout,
 /// which the list of synths takes.
 const SYNTH_MIDDLE: &str = "col(synth-title:56, synth-tiles:*):*";
@@ -1424,6 +1427,9 @@ pub enum ToUi {
     /// The list of synths over the Synth tab, or closed (None)
     /// (app/synth_pick.rs, the instrument redesign's step 6).
     SynthPick(Option<Box<crate::app::SynthPickView>>),
+    /// What the pads play, the panel over the Synth tab, or closed (None)
+    /// (app/pad_map_panel.rs, sampler step 15e).
+    PadMap(Option<Box<crate::app::PadMapView>>),
     /// What the pads play: the selected track's instrument, or the synth
     /// chosen for them (app/pads_focus.rs).
     PadsFocus(crate::app::PadFocus),
@@ -1796,8 +1802,14 @@ pub enum FromUi {
     /// pads whichever track is selected, or Follow track
     /// (app/pads_focus.rs).
     PlayOnPads,
-    /// A tap on the "Pads: Poly" chip: Follow track.
-    FollowTrack,
+    /// A tap on the "Pads: Poly" chip: What the pads play opens over the
+    /// Synth tab (sampler step 15e), or, open, closes.
+    PadMapOpen,
+    /// A tap on What the pads play: `act` on `row`.
+    PadMapTap {
+        row: crate::app::MapRow,
+        act: crate::app::MapAct,
+    },
     /// The preset picker on the Synth tab's sound: try, load, put back or
     /// save a preset (presets.rs).
     Preset(crate::presets::Ask),
@@ -2420,6 +2432,10 @@ pub struct Player {
     /// source bank row's banks.
     pick_kits: Vec<(Option<usize>, String, bool, u8)>,
     pick_from: Vec<u8>,
+    /// What the pads play, while open (sampler step 15e), and what each of
+    /// its rows' buttons does, by the panel's row number.
+    pads_panel: Option<Box<crate::app::PadMapView>>,
+    pads_panel_acts: Vec<(usize, Vec<crate::app::MapAct>)>,
     /// The Sample page and the kits' projects it edits (the Pads tab's
     /// screens too).
     pub sample: SamplePage,
@@ -2925,6 +2941,10 @@ impl Player {
             mpfree_synth_ui::pick::PICK,
             mpfree_synth_ui::pick::SynthList::default(),
         );
+        ui.add(
+            mpfree_synth_ui::pad_map::PANEL,
+            mpfree_synth_ui::pad_map::PadMapPanel::default(),
+        );
         ui.add("midi", LogPanel::new("MIDI in and out", true, 300));
         ui.add("events", LogPanel::new("Events", false, 200));
         ui.add("syslog", LogPanel::new("Console", true, CONSOLE_BACKLOG));
@@ -3178,6 +3198,8 @@ impl Player {
             synth_pick: None,
             pick_kits: Vec::new(),
             pick_from: Vec::new(),
+            pads_panel: None,
+            pads_panel_acts: Vec::new(),
             sample,
             browser: None,
             io_model: None,
@@ -4605,6 +4627,8 @@ impl Player {
     fn synth_page(&self) -> String {
         if self.skin.as_ref().is_some_and(|s| s.on) {
             skin_page::PAGE.to_string()
+        } else if self.pads_panel.is_some() && self.ui.pages().iter().any(|p| p == PAD_MAP_PAGE) {
+            PAD_MAP_PAGE.to_string()
         } else if self.synth_pick.is_some() && self.ui.pages().iter().any(|p| p == SYNTH_PICK_PAGE)
         {
             SYNTH_PICK_PAGE.to_string()
@@ -4845,6 +4869,280 @@ impl Player {
         }
         if self.view == View::Synth && was != open {
             self.show_view(View::Synth);
+        }
+    }
+
+    /// What the pads play over the Synth tab (sampler step 15e), or
+    /// closed: its page is the Synth tab's with the panel in the middle,
+    /// as the list of synths'.
+    fn set_pads_panel(&mut self, v: Option<Box<crate::app::PadMapView>>) {
+        use mpfree_synth_ui::pad_map::{PadMapPanel, PANEL};
+        if let (Some(view), Some(p)) = (v.as_ref(), self.synth.as_ref()) {
+            let spec = p.spec();
+            let page = spec.replacen(SYNTH_MIDDLE, PANEL, 1);
+            if page != spec && self.pads_panel.is_none() {
+                if let Err(e) = self.ui.add_page(PAD_MAP_PAGE, &page) {
+                    println!("screen: no What the pads play ({e})");
+                }
+            }
+            let (panel, acts) = self.pads_panel_rows(view);
+            self.pads_panel_acts = acts;
+            if let Some(w) = self.ui.get_mut::<PadMapPanel>(PANEL) {
+                *w = panel;
+            }
+        }
+        let was = self.pads_panel.is_some();
+        self.pads_panel = v;
+        if self.view == View::Synth && was != self.pads_panel.is_some() {
+            self.show_view(View::Synth);
+        }
+    }
+
+    /// The selected track's instrument, as the panel's Follow track says
+    /// it ("Track 1's kit: Boom Bap", "Track 2: Poly").
+    fn track_plays_words(&self, t: usize) -> String {
+        match played(&self.track_sounds, &self.track_sends, t) {
+            Some((h, from)) => format!("Track {}: {}", t + 1, played_name(h, from)),
+            None => match self.track_kits.kit_of(t) {
+                Some(k) => format!("Track {}'s kit: {}", t + 1, self.pads_kit_name(k)),
+                None => format!("Track {}'s instrument", t + 1),
+            },
+        }
+    }
+
+    /// Kit place `k`'s name, as the chip says it.
+    fn pads_kit_name(&self, k: usize) -> String {
+        self.kits.get(k).map_or_else(
+            || format!("Kit {}", k + 1),
+            |kit| chip_kit_name(&kit.name, k),
+        )
+    }
+
+    /// What `s` plays, by name.
+    fn map_sound_name(&self, s: crate::app::MapSound) -> String {
+        use crate::app::MapSound;
+        match s {
+            MapSound::Track => "Follow track".to_string(),
+            MapSound::Kit(k) => self.pads_kit_name(k),
+            MapSound::Synth(n) => n.to_string(),
+            MapSound::Missing(id) => format!("Missing: instrument {id}"),
+        }
+    }
+
+    /// The panel's rows for `v` (the canvas "Pads and kits: step 15e",
+    /// board 3), and what each row's buttons do, by its row number.
+    #[allow(clippy::type_complexity)]
+    fn pads_panel_rows(
+        &self,
+        v: &crate::app::PadMapView,
+    ) -> (
+        mpfree_synth_ui::pad_map::PadMapPanel,
+        Vec<(usize, Vec<crate::app::MapAct>)>,
+    ) {
+        use crate::app::{MapAct, MapChange, MapSound};
+        use mpfree_synth_ui::pad_map::{Look, MapRow, PadMapPanel, BANK, BASE, LAYER};
+        let letter = crate::app::bank_letter;
+        let colour = |s: MapSound| match s {
+            MapSound::Kit(k) => self.kits.get(k).map(|kit| Color::from_pad(kit.colour)),
+            _ => None,
+        };
+        let look = |s: MapSound| match s {
+            MapSound::Missing(_) => Look::Missing,
+            _ => Look::Own,
+        };
+        let mut acts = Vec::new();
+        // The base, every bank.
+        let (sub, buttons) = match v.base {
+            MapSound::Track => (self.track_plays_words(v.track), vec![MapAct::Pick]),
+            MapSound::Missing(_) => (
+                format!("{} plays meanwhile", self.track_plays_words(v.track)),
+                vec![MapAct::FollowTrack, MapAct::Pick],
+            ),
+            MapSound::Kit(_) => (
+                format!("A whole kit · Track {} keeps what it plays", v.track + 1),
+                vec![MapAct::FollowTrack, MapAct::Pick],
+            ),
+            MapSound::Synth(_) => (
+                format!("A synth · Track {} keeps what it plays", v.track + 1),
+                vec![MapAct::FollowTrack, MapAct::Pick],
+            ),
+        };
+        let words = |a: &MapAct| match a {
+            MapAct::Pick => "Pick",
+            MapAct::FollowTrack => "Follow track",
+            MapAct::FollowBase => "Follow base",
+            _ => "",
+        };
+        let base = MapRow {
+            letter: None,
+            what: self.map_sound_name(v.base),
+            sub,
+            colour: colour(v.base),
+            look: look(v.base),
+            buttons: buttons.iter().map(|a| words(a).to_string()).collect(),
+        };
+        acts.push((BASE, buttons));
+        // The banks.
+        let mut missing: Vec<String> = Vec::new();
+        if let MapSound::Missing(id) = v.base {
+            missing.push(format!(
+                "This project names instrument {id} for every bank, which isn't in its list: the track's instrument plays until it's replaced."
+            ));
+        }
+        let banks = (0..v.banks.len())
+            .map(|b| {
+                let on = (b == v.current).then(|| format!("you are on {}", letter(b)));
+                match v.banks[b] {
+                    None => {
+                        acts.push((BANK + b, Vec::new()));
+                        MapRow {
+                            letter: Some(letter(b)),
+                            what: "The base".to_string(),
+                            sub: on.unwrap_or_default(),
+                            look: Look::Faint,
+                            ..MapRow::default()
+                        }
+                    }
+                    Some((MapSound::Missing(id), _)) => {
+                        missing.push(format!(
+                            "This project names instrument {id} for bank {}, which isn't in its list. Bank {} plays the base until it's replaced or removed.",
+                            letter(b),
+                            letter(b)
+                        ));
+                        acts.push((BANK + b, vec![MapAct::Pick, MapAct::FollowBase]));
+                        MapRow {
+                            letter: Some(letter(b)),
+                            what: self.map_sound_name(MapSound::Missing(id)),
+                            sub: "Plays the base meanwhile".to_string(),
+                            look: Look::Missing,
+                            buttons: vec!["Replace".to_string(), "Remove".to_string()],
+                            ..MapRow::default()
+                        }
+                    }
+                    Some((s, from)) => {
+                        let mut sub: Vec<String> = Vec::new();
+                        if s == MapSound::Track {
+                            sub.push(self.track_plays_words(v.track));
+                        }
+                        if let Some(f) = from {
+                            sub.push(format!("From its bank {}", letter(usize::from(f))));
+                        }
+                        if !v.banks_apply {
+                            sub.push("Waits: PAD BANK picks the synth's layouts".to_string());
+                        }
+                        sub.extend(on);
+                        acts.push((BANK + b, vec![MapAct::FollowBase]));
+                        MapRow {
+                            letter: Some(letter(b)),
+                            what: self.map_sound_name(s),
+                            sub: sub.join(" · "),
+                            colour: None,
+                            look: Look::Own,
+                            buttons: vec!["Follow base".to_string()],
+                        }
+                    }
+                }
+            })
+            .collect();
+        // The layers.
+        let layers = v
+            .layers
+            .iter()
+            .enumerate()
+            .map(|(l, layer)| {
+                if let MapSound::Missing(id) = layer.sound {
+                    missing.push(format!(
+                        "This project names instrument {id} as a layer, which isn't in its list: it's silent until it's removed."
+                    ));
+                    acts.push((LAYER + l, vec![MapAct::Remove]));
+                    return MapRow {
+                        what: self.map_sound_name(layer.sound),
+                        sub: "Silent until it's removed".to_string(),
+                        look: Look::Missing,
+                        buttons: vec!["Remove".to_string()],
+                        ..MapRow::default()
+                    };
+                }
+                let reach = layer
+                    .reach
+                    .map_or_else(|| "Every bank".to_string(), |r| format!("Bank {}", letter(usize::from(r))));
+                let mut sub = match layer.reach {
+                    None => "Every bank".to_string(),
+                    Some(r) => format!("Bank {} only", letter(usize::from(r))),
+                };
+                if let Some(f) = layer.from {
+                    sub.push_str(&format!(", from its bank {}", letter(usize::from(f))));
+                }
+                acts.push((LAYER + l, vec![MapAct::Reach, MapAct::Remove]));
+                MapRow {
+                    letter: None,
+                    what: self.map_sound_name(layer.sound),
+                    sub,
+                    colour: colour(layer.sound),
+                    look: Look::Own,
+                    buttons: vec![reach, "Remove".to_string()],
+                }
+            })
+            .collect::<Vec<_>>();
+        let named = |s: MapSound| self.map_sound_name(s);
+        let last = v.last.map(|c| match c {
+            MapChange::FollowTrack => "Follow track gave every bank back to the track".to_string(),
+            MapChange::Base(MapSound::Track) => "the base follows the track again".to_string(),
+            MapChange::Base(s) => format!("the base got {}", named(s)),
+            MapChange::Bank(b, None) => format!("bank {} plays the base again", letter(b)),
+            MapChange::Bank(b, Some((s, from))) => format!(
+                "bank {} got {}{}",
+                letter(b),
+                named(s),
+                from.map(|f| format!(", from its bank {}", letter(usize::from(f))))
+                    .unwrap_or_default()
+            ),
+            MapChange::LayerOn(s) => format!("{} was added as a layer", named(s)),
+            MapChange::LayerOff(s) => format!("{} came off the layers", named(s)),
+            MapChange::LayerReach(s, None) => format!("{} plays on every bank", named(s)),
+            MapChange::LayerReach(s, Some(r)) => {
+                format!("{} plays on bank {} only", named(s), letter(usize::from(r)))
+            }
+            MapChange::Several => "a pick that changed more than one row".to_string(),
+        });
+        let panel = PadMapPanel {
+            base,
+            banks,
+            current: v.current,
+            can_add: v.layers.len() + 1 < v.most,
+            layers,
+            most: v.most,
+            last,
+            missing: missing.first().cloned().map(|m| (missing.len(), m)),
+        };
+        (panel, acts)
+    }
+
+    /// A tap on What the pads play: Done, + Add a layer, or a row's button
+    /// (the row itself picks its sound).
+    fn pads_panel_event(&mut self, kind: &EventKind) -> Option<FromUi> {
+        use crate::app::{MapAct, MapRow};
+        use mpfree_synth_ui::pad_map::{ADD_LAYER, BANK, BASE, DONE, LAYER, ROW};
+        let row_of = |n: usize| match n {
+            BASE => Some(MapRow::Base),
+            n if (BANK..LAYER).contains(&n) => Some(MapRow::Bank(n - BANK)),
+            n if n >= LAYER => Some(MapRow::Layer(n - LAYER)),
+            _ => None,
+        };
+        let tap = |row, act| Some(FromUi::PadMapTap { row, act });
+        match *kind {
+            EventKind::Tab(DONE) => tap(MapRow::Base, MapAct::Done),
+            EventKind::Tab(ADD_LAYER) => tap(MapRow::Base, MapAct::AddLayer),
+            EventKind::Cell { row, col } if col == ROW => tap(row_of(row)?, MapAct::Pick),
+            EventKind::Cell { row, col } => {
+                let act = self
+                    .pads_panel_acts
+                    .iter()
+                    .find(|(n, _)| *n == row)
+                    .and_then(|(_, a)| a.get(col).copied())?;
+                tap(row_of(row)?, act)
+            }
+            _ => None,
         }
     }
 
@@ -8310,6 +8608,8 @@ impl Player {
                 View::Synth if self.skin_showing() => format!("{}'s own screen   ·   tap a control: pick it   ·   Wheel: pick one, push and turn: change it   ·   \
                                         Q-Links 1-4: the skin's knobs   ·   MPFree page: MPFree's own page   ·   {stop}",
                                        self.synth.as_ref().map_or("The plugin", |p| p.state.info.name)),
+                View::Synth if self.pads_panel.is_some() => format!("Tap a row: pick its sound   ·   Follow base: the bank plays the base again   ·   \
+                                        UNDO: the last change here   ·   Done or a tab: close   ·   {stop}"),
                 View::Synth if self.synth_pick.as_ref().is_some_and(|p| p.layer) => format!("Layer: a tap adds a synth to the pads or takes it off, up to 4   ·   \
                                         Keep: the pads keep them   ·   Cancel: what they played   ·   No track changes   ·   {stop}"),
                 View::Synth if self.synth_pick.is_some() => format!("Tap a synth: the pads play it now   ·   \
@@ -10501,8 +10801,10 @@ impl Player {
             ToUi::KitSource(b) => {
                 if b != self.kit_source {
                     self.kit_source = b;
-                    // The Sample and Pads tabs go to the pad of that bank.
+                    // The Sample and Pads tabs go to the pad of that bank,
+                    // and the bar says the bank pressed ("from pad B1").
                     self.sample.set_pad_page(self.kit_page());
+                    self.sample.set_from_bank(b.map(|_| self.pad_page));
                     self.sample_changed();
                 }
             }
@@ -10522,6 +10824,7 @@ impl Player {
             ToUi::PadPage(page) => {
                 if page != self.pad_page {
                     self.pad_page = page;
+                    self.sample.set_from_bank(self.kit_source.map(|_| page));
                     // The 16 pads show the page's sounds; Beats keeps its
                     // lanes (any of the kit's pads), with the page's empty
                     // pads last.
@@ -11305,6 +11608,10 @@ impl Player {
             }
             ToUi::SynthPick(v) => {
                 self.set_synth_pick(v);
+                self.refresh_hint();
+            }
+            ToUi::PadMap(v) => {
+                self.set_pads_panel(v);
                 self.refresh_hint();
             }
             ToUi::SampleKits { projects, rate } => {
@@ -14556,7 +14863,8 @@ impl Player {
                 | FromUi::SynthPickOpen
                 | FromUi::OptionsButton
                 | FromUi::PlayOnPads
-                | FromUi::FollowTrack
+                | FromUi::PadMapOpen
+                | FromUi::PadMapTap { .. }
                 | FromUi::Preview(_)
                 | FromUi::PreviewStop
                 | FromUi::SaveBrowserLists(_)
@@ -14605,6 +14913,10 @@ impl Player {
             if let Some(c) = self.ui.get_mut::<synth_view::InstCard>(synth_view::INST) {
                 c.open = false;
             }
+        }
+        if v != View::Synth {
+            // What the pads play too (the app closed it).
+            self.pads_panel = None;
         }
         // Another page (MENU's options too) closes the conversion report
         // card and keeps what the conversion did (layout spec 4n).
@@ -14658,11 +14970,13 @@ impl Player {
             View::Sample => {
                 let name = self.auto_synth_name();
                 self.sample.set_auto_synth(&mut self.ui, name);
+                self.sample.set_track(self.time.selected().unwrap_or(0));
                 self.sample.show_sample(&mut self.ui);
                 self.sample.page().to_string()
             }
             View::Pads => {
                 self.follow_pad_ports();
+                self.sample.set_track(self.time.selected().unwrap_or(0));
                 self.sample.show_pads(&mut self.ui);
                 if self.perform.shown && self.show_perform() {
                     // The Perform set in the kit's place.
@@ -15617,6 +15931,9 @@ impl Player {
                 _ => return a.map(FromUi::Synth),
             }
         }
+        if ev.widget == mpfree_synth_ui::pad_map::PANEL {
+            return self.pads_panel_event(&ev.kind);
+        }
         if ev.widget == mpfree_synth_ui::pick::PICK {
             use mpfree_synth_ui::pick::{FROM_BANK, KEYS, KITS, KIT_TILES, SYNTHS};
             return match ev.kind {
@@ -16541,7 +16858,7 @@ impl Player {
                 Some(FromUi::StepsOff)
             }
             ("header", EventKind::Select(i)) if Some(i) == self.pads_chip => {
-                Some(FromUi::FollowTrack)
+                Some(FromUi::PadMapOpen)
             }
             ("header", EventKind::Select(i)) if Some(i) == self.perform_set_chip => {
                 Some(FromUi::PerformOff)
@@ -18815,6 +19132,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::SaveProject => p.ask_save(),
             Effect::PerformSet { set, opened } => p.apply(ToUi::PerformSet { set, opened }),
             Effect::SynthPick(v) => p.apply(ToUi::SynthPick(v.map(Box::new))),
+            Effect::PadMap(v) => p.apply(ToUi::PadMap(v.map(Box::new))),
             Effect::PadsFocus(f) => p.apply(ToUi::PadsFocus(f)),
             Effect::Light(..)
             | Effect::StopSounds
@@ -43421,8 +43739,9 @@ mod tests {
     /// redesign): on a track whose instrument is a kit, the button under
     /// the synth's card chooses the synth for the pads and the track keeps
     /// its kit; the header names it on every page ("Pads: Poly") and Play's
-    /// transport says the pads play it; the button again, or the chip, is
-    /// Follow track. While the synth is the track's own, there is no
+    /// transport says the pads play it; the button again is Follow track,
+    /// and the chip opens What the pads play (sampler step 15e), whose
+    /// first row holds it. While the synth is the track's own, there is no
     /// button.
     #[test]
     fn the_synth_chosen_for_the_pads_is_named_and_follow_track_gives_them_back() {
@@ -43526,7 +43845,7 @@ mod tests {
                 .unwrap();
         assert_eq!(
             p.touch(3, Touch::Down, chip.x + 10, chip.y + 10),
-            Some(FromUi::FollowTrack)
+            Some(FromUi::PadMapOpen)
         );
         p.touch(3, Touch::Up, chip.x + 10, chip.y + 10);
         apply_effects(&mut p, a.pads_follow_track());
