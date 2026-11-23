@@ -15,13 +15,15 @@
 //!   up (27 and 30 kHz, above what 44.1 kHz carries, so they would fold
 //!   back to 17.1 and 14.1 kHz): what is heard of them, RMS, against the
 //!   tone.
-//! - **Q4, loop wraps:** a loop of whole periods (100 periods of 1 kHz)
-//!   read a semitone up, two semitones down and a fifth up, against the
-//!   same sound unrolled: the largest difference, dB against the tone. A
-//!   read that sees the loop's other end as its neighbours at the wrap
-//!   matches; one that sees past the end does not. For the readers that
-//!   loop (the pads and the streaming cursor); grains and the stretch
-//!   read no loops.
+//! - **Q4, loop wraps:** a loop of 100.6 periods of 1 kHz (its seam a
+//!   step), the sound ending where the loop does, read a semitone up, two
+//!   semitones down and a fifth up, against the loop unrolled (the sound
+//!   to the loop's end, then the loop over and over) read straight
+//!   through: the largest difference, dB against the tone. A read that
+//!   takes its neighbours at the seam from round the loop matches; one
+//!   that takes the recording past the end, or before the start once
+//!   round, does not. For the readers that loop (the pads and the
+//!   streaming cursor); grains and the stretch read no loops.
 //!
 //! A row whose sine would have to be above 21 kHz in the sound is left
 //! out (it can't be in a 44.1 kHz file), and so is a speed a reader can't
@@ -31,11 +33,10 @@
 //! thread's reads must meet them on the rows the 8-point sampler read
 //! meets, and the rows it doesn't (octave drops, 13.5 kHz a fifth down)
 //! are tracked for step 3.3. The stretch's resampler runs off the sound
-//! thread, so it is held to more. Two reads are exceptions by choice, and
-//! are measured with no target: the Vintage pad (aliasing is its sound)
-//! and the streaming cursor's Hermite (the cheap read the sampler may
-//! pick when the sound thread is short). Every number is kept by a
-//! ratchet (`tests/readers.rs`, `quality/readers.tsv`).
+//! thread, so it is held to more. One read is an exception by choice,
+//! measured with no target: the Vintage pad (aliasing is its sound).
+//! Every number is kept by a ratchet (`tests/readers.rs`,
+//! `quality/readers.tsv`).
 
 use mpfree_grain::buffer::Clip;
 use mpfree_grain::GrainSource;
@@ -100,8 +101,9 @@ pub enum Reader {
     Stream8,
     /// The same with 16 crossings a side.
     Stream16,
-    /// The streaming cursor's Hermite read (the cheap choice).
-    StreamHermite,
+    /// The streaming cursor's cheap read: the pads' 8-point read, its cut
+    /// following the speed past the file's own.
+    StreamNear,
     /// The stretch's windowed-sinc resampler (`mpfree_stretch::
     /// convert_rate`), off the sound thread: its pitch shift and the
     /// conversion of sounds loaded at another rate.
@@ -116,7 +118,7 @@ impl Reader {
         Reader::Grains,
         Reader::Stream8,
         Reader::Stream16,
-        Reader::StreamHermite,
+        Reader::StreamNear,
         Reader::Stretch,
     ];
 
@@ -129,7 +131,7 @@ impl Reader {
             Reader::Grains => "grains",
             Reader::Stream8 => "stream sinc8",
             Reader::Stream16 => "stream sinc16",
-            Reader::StreamHermite => "stream hermite",
+            Reader::StreamNear => "stream 8-point",
             Reader::Stretch => "stretch",
         }
     }
@@ -141,7 +143,7 @@ impl Reader {
 
     /// Whether it is an exception by choice, measured with no target.
     pub fn chosen(self) -> bool {
-        matches!(self, Reader::PadVintage | Reader::StreamHermite)
+        self == Reader::PadVintage
     }
 
     /// The speed it plays at, `cents` up, as it rounds it: file frames an
@@ -150,7 +152,7 @@ impl Reader {
         let exact = (f64::from(cents) / 1200.0).exp2();
         match self {
             Reader::Pad | Reader::PadVintage => Some(sampler::speed(cents, rate, rate)),
-            Reader::Stream8 | Reader::Stream16 | Reader::StreamHermite => {
+            Reader::Stream8 | Reader::Stream16 | Reader::StreamNear => {
                 (exact <= mpfree_stream::cursor::MAX_SPEED).then_some(exact)
             }
             // convert_rate takes whole rates: the sound as if recorded at
@@ -168,7 +170,7 @@ impl Reader {
                 | Reader::PadVintage
                 | Reader::Stream8
                 | Reader::Stream16
-                | Reader::StreamHermite
+                | Reader::StreamNear
         )
     }
 
@@ -232,11 +234,11 @@ impl Reader {
                 }
                 out.iter().map(|f| f64::from(f[0])).collect()
             }
-            Reader::Stream8 | Reader::Stream16 | Reader::StreamHermite => {
+            Reader::Stream8 | Reader::Stream16 | Reader::StreamNear => {
                 let read = match self {
                     Reader::Stream8 => Read::Sinc8,
                     Reader::Stream16 => Read::Sinc16,
-                    _ => Read::Hermite,
+                    _ => Read::Near,
                 };
                 stream_play(x, read, v, rate, frames, looped)
             }
@@ -343,19 +345,33 @@ fn heard_of(r: Reader, hz: f64, cents: i32, rate: u32) -> f64 {
     floor(20.0 * (rms / (amp / 2f64.sqrt())).max(1e-30).log10())
 }
 
-/// The loop Q4 reads: 100 periods of 1 kHz at 44.1 kHz.
-const LOOP: (u64, u64) = (10_000, 14_410);
+/// The loop Q4 reads: 100.6 periods of 1 kHz at 44.1 kHz, so its seam is
+/// a step, and a read that takes its neighbours from the wrong side of it
+/// (the recording past the end, or before the start once round) shows.
+const LOOP: (u64, u64) = (10_000, 14_437);
 
 /// Q4: the largest difference between reading round [`LOOP`] (the sound
-/// ends where the loop does) and reading the same sound unrolled, `cents`
-/// up: dB against the tone's peak.
+/// ends where the loop does) and reading the loop unrolled (the sound up
+/// to the loop's end, then the loop over and over) straight through,
+/// `cents` up: dB against the tone's peak.
 fn loop_wrap_db(r: Reader, cents: i32, rate: u32) -> f64 {
     let frames = 24_000;
     let v = r.speed(cents, rate).expect("a speed it plays");
     let amp = db_to_amp(LEVEL_DB);
-    let x = sine(1_000.0, amp, (frames as f64 * v) as usize + 256, rate);
-    let looped = r.play_looped(&x[..LOOP.1 as usize], cents, rate, frames, Some(LOOP));
-    let unrolled = r.play(&x, cents, rate, frames);
+    let (ls, le) = (LOOP.0 as usize, LOOP.1 as usize);
+    let x = sine(1_000.0, amp, le, rate);
+    let n = (frames as f64 * v) as usize + 256;
+    let unrolled: Vec<f64> = (0..n.max(le))
+        .map(|k| {
+            if k < le {
+                x[k]
+            } else {
+                x[ls + (k - le) % (le - ls)]
+            }
+        })
+        .collect();
+    let looped = r.play_looped(&x, cents, rate, frames, Some(LOOP));
+    let unrolled = r.play(&unrolled, cents, rate, frames);
     let d = looped
         .iter()
         .zip(&unrolled)

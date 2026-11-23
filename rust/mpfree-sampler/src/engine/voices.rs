@@ -212,6 +212,16 @@ pub(super) struct Voice {
     pub(super) crossfade: i64,
     pub(super) ping_pong: bool,
     pub(super) looping: bool,
+    /// It has gone round its loop, or turned at an end of a ping-pong
+    /// loop, since it started: from then on the frames before the loop's
+    /// start that its read looks at are the ones the loop plays there
+    /// ([`Voice::fold`]), not the recording's.
+    pub(super) wrapped: bool,
+    /// Frames `fast_lo..fast_hi` can be read straight, with nothing to
+    /// clamp or fold ([`Voice::refresh_fast`], at the start of each render
+    /// run). Left at 0 and 0, every read takes the careful path.
+    pub(super) fast_lo: i64,
+    pub(super) fast_hi: i64,
     pub(super) fade_in: Option<Fade>,
     pub(super) fade_out: Option<Fade>,
     pub(super) gain_l: f32,
@@ -360,9 +370,74 @@ pub(super) struct Voice {
 }
 
 impl Voice {
+    /// Whether its reads fold their neighbours round the loop: a forward
+    /// loop with no crossfade, played forward, or a ping-pong loop. A
+    /// crossfaded loop's blend reads the frames on either side of its ends
+    /// as they are, which is what it plays.
+    #[inline]
+    fn folds(&self) -> bool {
+        self.looping
+            && self.loop_end > self.loop_start
+            && (self.ping_pong || self.crossfade == 0 && !self.backwards)
+    }
+
+    /// Frame `k` as the loop unrolled holds it, for a read near one of the
+    /// loop's ends ([`Voice::folds`]): past a forward loop's end, the
+    /// frames from its start; before its start once it has wrapped, its
+    /// last frames. A ping-pong loop mirrors them, about its last frame's
+    /// far edge at the end and about its first frame at the start, as the
+    /// voice turns. Any other frame is itself; the caller clamps to the
+    /// region.
+    #[inline]
+    pub(super) fn fold(&self, k: i64) -> i64 {
+        if !self.folds() {
+            return k;
+        }
+        let (ls, le) = (self.loop_start, self.loop_end);
+        let len = le - ls;
+        if self.ping_pong {
+            // A loop shorter than the read mirrors more than once.
+            let mut k = k;
+            for _ in 0..8 {
+                if k >= le {
+                    k = 2 * le - 1 - k;
+                } else if k < ls && self.wrapped {
+                    k = 2 * ls - k;
+                } else {
+                    break;
+                }
+            }
+            k
+        } else if k >= le {
+            ls + (k - le) % len
+        } else if k < ls && self.wrapped {
+            le - 1 - (ls - 1 - k) % len
+        } else {
+            k
+        }
+    }
+
+    /// Sets [`Voice::fast_lo`] and [`Voice::fast_hi`]: the region, less
+    /// what lies past the loop's end and, once it has wrapped, before its
+    /// start, when its reads fold.
+    #[inline]
+    pub(super) fn refresh_fast(&mut self) {
+        let (mut lo, mut hi) = (self.start, self.end);
+        if self.folds() {
+            hi = hi.min(self.loop_end);
+            if self.wrapped {
+                lo = lo.max(self.loop_start);
+            }
+        }
+        self.fast_lo = lo;
+        self.fast_hi = hi;
+    }
+
+    /// The sound at frame `i` (folded round the loop, [`Voice::fold`], and
+    /// clamped to the region), channel `ch` (0 for a mono sound).
     #[inline]
     pub(super) fn at<S: Sample>(&self, data: &[S], i: i64, ch: u8) -> f32 {
-        let i = i.clamp(self.start, self.end - 1) as usize;
+        let i = self.fold(i).clamp(self.start, self.end - 1) as usize;
         if self.stereo {
             data[2 * i + usize::from(ch)].f()
         } else {
@@ -370,11 +445,11 @@ impl Voice {
         }
     }
 
-    /// The sound's raw value (see [`Sample::raw`]) at frame `i` clamped to
-    /// the region, channel `ch` (0 for a mono sound).
+    /// The sound's raw value (see [`Sample::raw`]) at frame `i` folded
+    /// round the loop and clamped to the region, as [`Voice::at`].
     #[inline]
     fn at_raw<S: Sample>(&self, data: &[S], i: i64, ch: u8) -> f32 {
-        let i = i.clamp(self.start, self.end - 1) as usize;
+        let i = self.fold(i).clamp(self.start, self.end - 1) as usize;
         if self.stereo {
             data[2 * i + usize::from(ch)].raw()
         } else {
@@ -405,7 +480,7 @@ impl Voice {
     }
 
     /// [`Voice::read`] through [`bandlimit::near_kernel`], neighbours
-    /// clamped to the region. `exact` ([`Voice::on_frame`]) takes the frame
+    /// folded round the loop and clamped to the region. `exact` ([`Voice::on_frame`]) takes the frame
     /// as it is; otherwise the kernel reads every position, a whole frame
     /// too (the old side of a crossfade).
     #[cold]
@@ -452,7 +527,8 @@ impl Voice {
 
     /// Both channels through [`bandlimit::near_kernel`]'s 8 frames. With
     /// `exact` ([`Voice::on_frame`], found once a run by the render loop),
-    /// the frame as it is. Away from the region's edges (nearly always) the
+    /// the frame as it is. Away from the region's edges and the loop's ends
+    /// ([`Voice::fast_lo`], nearly always) the
     /// frames are read straight from the data, once for both channels,
     /// with no clamps.
     #[inline(always)]
@@ -466,7 +542,7 @@ impl Voice {
         let i = pos >> 32;
         let f = pos as u32;
         let k0 = i - (NEAR_HALF as i64 - 1);
-        if k0 < self.start || i + NEAR_HALF as i64 >= self.end {
+        if k0 < self.fast_lo || i + NEAR_HALF as i64 >= self.fast_hi {
             return (
                 self.read_near(data, pos, self.pick_l, exact),
                 self.read_near(data, pos, self.pick_r, exact),
@@ -521,7 +597,7 @@ impl Voice {
     #[inline(always)]
     pub(super) fn read2_hermite<S: Sample>(&self, data: &[S], pos: i64) -> (f32, f32) {
         let i = pos >> 32;
-        if i - 1 < self.start || i + 2 >= self.end {
+        if i - 1 < self.fast_lo || i + 2 >= self.fast_hi {
             return (
                 self.read_hermite(data, pos, self.pick_l),
                 self.read_hermite(data, pos, self.pick_r),

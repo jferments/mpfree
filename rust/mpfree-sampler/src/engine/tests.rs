@@ -653,6 +653,174 @@ fn a_one_frame_region_reads_as_its_frame() {
     }
 }
 
+/// A sound that never repeats, for the loop-wrap tests: what a read
+/// takes from the wrong side of a seam shows.
+fn unrepeating(n: usize) -> Vec<f32> {
+    (0..n)
+        .map(|k| {
+            let t = k as f32;
+            (t * 0.37).sin() * 0.4 + (t * 0.0731).cos() * 0.3 + (t * t * 1.3e-4).sin() * 0.2
+        })
+        .collect()
+}
+
+/// A forward loop that ends where its sound does (as a recording cut at
+/// its loop's end is) plays pitched exactly as the loop unrolled does, bit
+/// for bit, across every wrap and with every read: near the loop's end the
+/// read takes its neighbours from the loop's start, and once it has gone
+/// round, before the start from the loop's end, never the clamped last
+/// frame or the recording before the loop.
+#[test]
+fn a_loop_ending_with_its_sound_reads_as_the_unrolled_loop() {
+    let (ls, le) = (1000usize, 1437usize);
+    let x = unrepeating(le);
+    let unrolled: Vec<f32> = (0..30_000)
+        .map(|k| {
+            if k < le {
+                x[k]
+            } else {
+                x[ls + (k - le) % (le - ls)]
+            }
+        })
+        .collect();
+    let mut amp = Envelope::start(&Ahdsr::OPEN, 44_100.0);
+    for _ in 0..4 {
+        amp.next();
+    }
+    let st = |s: f64| (2f64.powf(s / 12.0) * ONE as f64).round() as i64;
+    for (step, vintage) in [
+        (st(-7.0), false),
+        (st(-0.5), false),
+        (st(1.0), false),
+        (st(7.0), false),
+        (st(-7.0), true),
+        (st(1.0), true),
+        (st(7.0), true),
+    ] {
+        let base = Voice {
+            active: true,
+            pos: (900 << 32) + 12_345_678,
+            step,
+            start: 0,
+            gain_l: 1.0,
+            gain_r: 1.0,
+            amp: Some(amp),
+            vintage,
+            bl_above: if vintage {
+                BlAbove::default()
+            } else {
+                BlAbove(CLEAN_ABOVE)
+            },
+            ..Voice::default()
+        };
+        let mut looped = Voice {
+            data: Some(Pcm::F32(x.clone().into())),
+            end: le as i64,
+            looping: true,
+            loop_start: ls as i64,
+            loop_end: le as i64,
+            ..base.clone()
+        };
+        let mut straight = Voice {
+            data: Some(Pcm::F32(unrolled.clone().into())),
+            end: unrolled.len() as i64,
+            ..base
+        };
+        for block in 0..60 {
+            let (mut al, mut ar) = ([0.0f32; 64], [0.0f32; 64]);
+            let (mut bl, mut br) = (al, ar);
+            render_voice(&mut looped, 44_100.0, &mut al, &mut ar);
+            render_voice(&mut straight, 44_100.0, &mut bl, &mut br);
+            assert_eq!(
+                al.map(f32::to_bits),
+                bl.map(f32::to_bits),
+                "step {step:#x}, vintage {vintage}, block {block}"
+            );
+        }
+        assert!(looped.wrapped, "step {step:#x}: it went round");
+    }
+}
+
+/// A ping-pong loop plays as the loop unrolled with its turns mirrored:
+/// near each end the read takes its neighbours from the frames the voice
+/// turns back over, not the recording past the end or before the start.
+/// (The mirrored sum adds in another order, so it matches to rounding.)
+#[test]
+fn a_ping_pong_loop_reads_as_the_mirrored_loop() {
+    let (ls, le) = (1000usize, 1437usize);
+    let len = le - ls;
+    let x = unrepeating(le + 300);
+    let unrolled: Vec<f32> = (0..30_000)
+        .map(|k| {
+            if k < le {
+                return x[k];
+            }
+            let n = (k - le) % (2 * len - 1);
+            if n < len {
+                x[le - 1 - n]
+            } else {
+                x[ls + 1 + (n - len)]
+            }
+        })
+        .collect();
+    let mut amp = Envelope::start(&Ahdsr::OPEN, 44_100.0);
+    for _ in 0..4 {
+        amp.next();
+    }
+    let st = |s: f64| (2f64.powf(s / 12.0) * ONE as f64).round() as i64;
+    for (step, vintage) in [
+        (st(-7.0), false),
+        (st(1.0), false),
+        (st(7.0), false),
+        (st(1.0), true),
+    ] {
+        let base = Voice {
+            active: true,
+            pos: (900 << 32) + 12_345_678,
+            step,
+            start: 0,
+            gain_l: 1.0,
+            gain_r: 1.0,
+            amp: Some(amp),
+            vintage,
+            bl_above: if vintage {
+                BlAbove::default()
+            } else {
+                BlAbove(CLEAN_ABOVE)
+            },
+            ..Voice::default()
+        };
+        let mut looped = Voice {
+            data: Some(Pcm::F32(x.clone().into())),
+            end: x.len() as i64,
+            looping: true,
+            ping_pong: true,
+            loop_start: ls as i64,
+            loop_end: le as i64,
+            ..base.clone()
+        };
+        let mut straight = Voice {
+            data: Some(Pcm::F32(unrolled.clone().into())),
+            end: unrolled.len() as i64,
+            ..base
+        };
+        let mut worst = 0.0f32;
+        for _ in 0..60 {
+            let (mut al, mut ar) = ([0.0f32; 64], [0.0f32; 64]);
+            let (mut bl, mut br) = (al, ar);
+            render_voice(&mut looped, 44_100.0, &mut al, &mut ar);
+            render_voice(&mut straight, 44_100.0, &mut bl, &mut br);
+            for (a, b) in al.iter().zip(&bl) {
+                worst = worst.max((a - b).abs());
+            }
+        }
+        assert!(
+            worst < 2e-6,
+            "step {step:#x}, vintage {vintage}: off by {worst}"
+        );
+    }
+}
+
 /// A seamless loop (its sound repeating with the loop's length, the
 /// frames past its end continuing it) plays pitched exactly as the same
 /// sound unrolled does, bit for bit, across every wrap: the read sees the

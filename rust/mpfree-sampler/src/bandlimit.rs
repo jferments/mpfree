@@ -210,6 +210,29 @@ pub fn read2<S: Sample>(
     reach: Reach,
     picks: (u8, u8),
 ) -> (f32, f32) {
+    read2_folded(k, data, stereo, lo, hi, (lo, hi), |j| j, pos, reach, picks)
+}
+
+/// [`read2`] for a voice going round a loop: frames inside `fast` (both
+/// ends included, inside `lo..=hi`) are read straight; a read that reaches
+/// past them takes each frame `j` as `fold(j)`, then clamped to `lo..=hi`.
+/// `fold` maps a frame past the loop's end to the one the loop plays there
+/// (the engine's `Voice::fold`), so a read at a loop's wrap sees the loop
+/// unrolled. [`read2`] is this with nothing folded.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+pub fn read2_folded<S: Sample>(
+    k: &Kernel,
+    data: &[S],
+    stereo: bool,
+    lo: i64,
+    hi: i64,
+    fast: (i64, i64),
+    fold: impl Fn(i64) -> i64,
+    pos: i64,
+    reach: Reach,
+    picks: (u8, u8),
+) -> (f32, f32) {
     let i = pos >> 32;
     let du = reach.step;
     // Places of the first tap back (frame i) and forward (frame i + 1):
@@ -223,7 +246,7 @@ pub fn read2<S: Sample>(
     let (mut wb, mut lb, mut rb) = (0.0f32, 0.0f32, 0.0f32);
     let (mut wf, mut lf, mut rf) = (0.0f32, 0.0f32, 0.0f32);
     if stereo {
-        if n0 >= lo && n1 <= hi {
+        if n0 >= fast.0 && n1 <= fast.1 {
             let back = &data[2 * n0 as usize..2 * (i as usize + 1)];
             let fwd = &data[2 * (i as usize + 1)..2 * (n1 as usize + 1)];
             for (b, f) in back.chunks_exact(2).rev().zip(fwd.chunks_exact(2)) {
@@ -239,8 +262,8 @@ pub fn read2<S: Sample>(
             }
         } else {
             for m in 0..taps {
-                let jb = (i - m).clamp(lo, hi) as usize;
-                let jf = (i + 1 + m).clamp(lo, hi) as usize;
+                let jb = fold(i - m).clamp(lo, hi) as usize;
+                let jf = fold(i + 1 + m).clamp(lo, hi) as usize;
                 let (x, y) = (weight(k, ub), weight(k, uf));
                 wb += x;
                 lb += x * data[2 * jb].raw();
@@ -252,7 +275,7 @@ pub fn read2<S: Sample>(
                 uf += du;
             }
         }
-    } else if n0 >= lo && n1 <= hi {
+    } else if n0 >= fast.0 && n1 <= fast.1 {
         let back = &data[n0 as usize..=i as usize];
         let fwd = &data[i as usize + 1..=n1 as usize];
         for (b, f) in back.iter().rev().zip(fwd) {
@@ -266,8 +289,8 @@ pub fn read2<S: Sample>(
         }
     } else {
         for m in 0..taps {
-            let jb = (i - m).clamp(lo, hi) as usize;
-            let jf = (i + 1 + m).clamp(lo, hi) as usize;
+            let jb = fold(i - m).clamp(lo, hi) as usize;
+            let jf = fold(i + 1 + m).clamp(lo, hi) as usize;
             let (x, y) = (weight(k, ub), weight(k, uf));
             wb += x;
             lb += x * data[jb].raw();
@@ -492,120 +515,17 @@ pub fn prepare_now(cell: &OctaveCell, data: &Pcm, channels: u8) {
     }
 }
 
-/// Zero crossings of the near read's sinc on each side of the read
-/// position: it reads 2 × `NEAR_HALF` frames.
-pub const NEAR_HALF: usize = 4;
-/// Frames the near read weighs, from the read position's frame less
-/// `NEAR_HALF - 1` on.
-pub const NEAR_TAPS: usize = 2 * NEAR_HALF;
-/// The near read's rows per frame of fraction, read with linear
-/// interpolation between them.
-const NEAR_ROWS: usize = 256;
-/// Its cutoff, a fraction of the sound's rate: 20.1 kHz for a 44.1 kHz
-/// sound.
-const NEAR_FC: f64 = 0.455;
-/// Its Kaiser window.
-const NEAR_BETA: f64 = 5.0;
-
-/// The near read's table (DSP quality step 1.4): for each of
-/// [`NEAR_ROWS`] fractions of a frame, the [`NEAR_TAPS`] weights and their
-/// steps to the next row's. 16 KB.
-pub struct NearKernel([[[f32; NEAR_TAPS]; 2]; NEAR_ROWS]);
-
-static NEAR: OnceLock<NearKernel> = OnceLock::new();
-
-/// The near read's exact weights for a read `t` (0 to 1) past a frame,
-/// summing to one: the table holds these at each row and steps linearly
-/// between them.
-fn near_row(t: f64) -> [f64; NEAR_TAPS] {
-    let i0b = bessel_i0(NEAR_BETA);
-    let mut h = [0.0; NEAR_TAPS];
-    for (j, e) in h.iter_mut().enumerate() {
-        // Frame i - (NEAR_HALF - 1) + j, from position i + t.
-        let d = j as f64 - (NEAR_HALF as f64 - 1.0) - t;
-        let r = d / NEAR_HALF as f64;
-        let w = bessel_i0(NEAR_BETA * (1.0 - r * r).max(0.0).sqrt()) / i0b;
-        *e = sinc(2.0 * NEAR_FC * d) * w;
-    }
-    let sum: f64 = h.iter().sum();
-    h.map(|x| x / sum)
-}
-
-/// The near read: how a voice reads its sound between [`CLEAN_ABOVE`]'s
-/// two semitones up and any speed down, where the Hermite read folds
-/// images of the sound back into hearing (-26 dB a semitone or two down
-/// at 9 kHz). A Kaiser-windowed sinc over 8 frames, cut at 0.455 of the
-/// sound's rate, each row's weights summing to one. Within two semitones
-/// either way every image stays 50 dB down and the tone within 1 dB to
-/// 13.5 kHz out; a fifth down, images stay 50 dB down to 9 kHz out; an
-/// octave down, 3 kHz out comes back at -48.5 dB, just short. Tones at the
-/// top of the sound pitched further down still fold: 18 kHz an octave down
-/// at -22 dB, 20 kHz a fifth down at -9 dB, 3 and 6 dB quiet (the Hermite
-/// read: -8 and -3 dB, 3 and 5 dB quiet); every row would need 48 frames.
-///
-/// Unlike the Hermite read it is not the frame itself on a whole frame: the
-/// sinc's window dulls the top there (-0.9 dB at 15 kHz, -2.5 dB at 18 kHz,
-/// -3.7 dB at 20 kHz), so the engine reads a sound played at its own speed
-/// exactly and crossfades over about 6 ms whenever a voice changes read.
-/// Made once, as [`kernel`] is.
+/// The near read (DSP quality step 1.4): the 8-point read a voice uses
+/// between [`CLEAN_ABOVE`]'s two semitones up and any speed down, where
+/// the Hermite read folds images of the sound back into hearing (−26 dB a
+/// semitone or two down at 9 kHz). It lives with the streaming cursors'
+/// kernels, which read with it too, so both share one table
+/// ([`mpfree_stream::resample::NearKernel`], measured there).
 ///
 /// [`CLEAN_ABOVE`]: crate::engine::CLEAN_ABOVE
-pub fn near_kernel() -> &'static NearKernel {
-    NEAR.get_or_init(|| {
-        let mut k = NearKernel([[[0.0; NEAR_TAPS]; 2]; NEAR_ROWS]);
-        for (p, e) in k.0.iter_mut().enumerate() {
-            let a = near_row(p as f64 / NEAR_ROWS as f64);
-            let b = near_row((p + 1) as f64 / NEAR_ROWS as f64);
-            for j in 0..NEAR_TAPS {
-                e[0][j] = a[j] as f32;
-                e[1][j] = (b[j] - a[j]) as f32;
-            }
-        }
-        k
-    })
-}
-
-impl NearKernel {
-    /// The weights for a read `frac` (a 32.32 position's low 32 bits) past
-    /// a frame: the top 8 bits pick the row, the other 24 move toward the
-    /// next.
-    #[inline(always)]
-    pub fn weights(&self, frac: u32) -> [f32; NEAR_TAPS] {
-        let [a, d] = &self.0[(frac >> 24) as usize];
-        let u = (frac & 0x00ff_ffff) as f32 * (1.0 / (1u32 << 24) as f32);
-        let mut c = [0.0; NEAR_TAPS];
-        for j in 0..NEAR_TAPS {
-            c[j] = a[j] + u * d[j];
-        }
-        c
-    }
-}
-
-/// The near read's sum over one channel's [`NEAR_TAPS`] frames, in four
-/// running sums (one vector register), the same order every time.
-#[inline(always)]
-pub fn near_sum(c: &[f32; NEAR_TAPS], x: &[f32; NEAR_TAPS]) -> f32 {
-    let mut acc = [0.0f32; 4];
-    for q in 0..NEAR_TAPS / 4 {
-        for m in 0..4 {
-            acc[m] += c[4 * q + m] * x[4 * q + m];
-        }
-    }
-    (acc[0] + acc[1]) + (acc[2] + acc[3])
-}
-
-/// [`near_sum`] for two channels at once, `x` interleaved left and right:
-/// (left, right), each summed in the same order as the other.
-#[inline(always)]
-pub fn near_sum2(c: &[f32; NEAR_TAPS], x: &[f32; 2 * NEAR_TAPS]) -> (f32, f32) {
-    let mut acc = [0.0f32; 4];
-    for q in 0..NEAR_TAPS / 2 {
-        for m in 0..4 {
-            acc[m] += c[2 * q + m / 2] * x[4 * q + m];
-        }
-    }
-    (acc[0] + acc[2], acc[1] + acc[3])
-}
+pub use mpfree_stream::resample::{
+    near_kernel, near_sum, near_sum2, NearKernel, NEAR_HALF, NEAR_TAPS,
+};
 
 #[cfg(test)]
 mod tests {
@@ -805,50 +725,5 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         assert_eq!(cell.get().unwrap().count(), LEVELS);
-    }
-
-    #[test]
-    fn the_near_table_matches_the_exact_kernel() {
-        // Every row, halfway between rows and a spread of other fractions:
-        // the table's weights against the exact ones, and their sum.
-        let k = near_kernel();
-        let mut fracs: Vec<u32> = (0..256u32)
-            .flat_map(|r| [r << 24, (r << 24) | 0x0080_0000])
-            .collect();
-        let mut x = 0x9e37_79b9u32;
-        for _ in 0..4096 {
-            x ^= x << 13;
-            x ^= x >> 17;
-            x ^= x << 5;
-            fracs.push(x);
-        }
-        let (mut worst_tap, mut worst_row, mut worst_sum) = (0.0f64, 0.0f64, 0.0f64);
-        for &f in &fracs {
-            let got = k.weights(f);
-            let want = near_row(f64::from(f) / 4_294_967_296.0);
-            let mut row = 0.0;
-            for j in 0..NEAR_TAPS {
-                let e = (f64::from(got[j]) - want[j]).abs();
-                worst_tap = worst_tap.max(e);
-                row += e;
-            }
-            worst_row = worst_row.max(row);
-            worst_sum = worst_sum.max((got.iter().map(|&w| f64::from(w)).sum::<f64>() - 1.0).abs());
-        }
-        eprintln!("near table: tap {worst_tap:.2e}, row {worst_row:.2e}, sum {worst_sum:.2e}");
-        // The table rows themselves are the exact weights, to f32.
-        for r in 0..256u32 {
-            let got = k.weights(r << 24);
-            let want = near_row(f64::from(r) / 256.0);
-            for j in 0..NEAR_TAPS {
-                assert!(
-                    (f64::from(got[j]) - want[j]).abs() < 1e-7,
-                    "row {r} tap {j}"
-                );
-            }
-        }
-        assert!(worst_tap < 1e-5, "worst tap {worst_tap:e}");
-        assert!(worst_row < 2e-5, "worst row {worst_row:e}");
-        assert!(worst_sum < 1e-6, "worst sum {worst_sum:e}");
     }
 }

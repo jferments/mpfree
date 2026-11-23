@@ -205,7 +205,8 @@
 711323	Steps: a tap, 8,192 notes: until it plays
 1568091	Steps: the grid rebuilt, 8,192 notes in 64 rows
 65219	Stream voices x16 at 1x, band-limited
-1105482	Stream voices x64 at 1.5x, Hermite
+1841036	Stream voices x64 at 0.75x, 8-point
+3709708	Stream voices x64 at 1.5x, 8-point
 6410634	Stream voices x64 at 1.5x, band-limited
 11812490	Stream voices x64 at 1.5x, band-limited 16
 8220268	Stream voices x64 at 3x, band-limited

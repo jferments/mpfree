@@ -14,6 +14,9 @@ mpfree-prof = { path = "../mpfree-prof" }
 mpfree-node = { path = "../mpfree-node" }
 mpfree-lanes = { path = "../mpfree-lanes" }
 mpfree-flac = { path = "../mpfree-flac" }
+# The 8-point read's table, shared with the streaming cursors
+# (`mpfree_stream::resample::NearKernel`).
+mpfree-stream = { path = "../mpfree-stream" }
 
 [dev-dependencies]
 mpfree-stream = { path = "../mpfree-stream", features = ["testkit"] }

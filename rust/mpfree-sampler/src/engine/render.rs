@@ -722,13 +722,29 @@ pub(super) fn read_bl<S: Sample>(
 ) -> (f32, f32) {
     let k = v.bl_octave;
     let (lo, hi, at) = (v.start >> k, (v.end - 1) >> k, pos >> k);
+    // What reads straight, in the copy's frames, and a frame past a loop's
+    // end folded as the sound's own frame there is ([`Voice::fold`]).
+    let unit = (1i64 << k) - 1;
+    let fast = ((v.fast_lo + unit) >> k, (v.fast_hi - 1) >> k);
+    let fold = |j: i64| v.fold(j << k) >> k;
     let picks = (v.pick_l, v.pick_r);
     match octaves.and_then(|o| o.level(k as usize)) {
         // The copies are floats, whatever the sound holds.
-        Some(copy) if k > 0 => {
-            bandlimit::read2(kernel, &copy[..], v.stereo, lo, hi, at, v.bl_reach, picks)
-        }
-        _ => bandlimit::read2(kernel, data, v.stereo, lo, hi, at, v.bl_reach, picks),
+        Some(copy) if k > 0 => bandlimit::read2_folded(
+            kernel,
+            &copy[..],
+            v.stereo,
+            lo,
+            hi,
+            fast,
+            fold,
+            at,
+            v.bl_reach,
+            picks,
+        ),
+        _ => bandlimit::read2_folded(
+            kernel, data, v.stereo, lo, hi, fast, fold, at, v.bl_reach, picks,
+        ),
     }
 }
 
@@ -814,6 +830,8 @@ pub(super) fn render_voice_from<
     // with them, and its kernel, fetched once a call.
     let octaves = if BL { v.octaves.take() } else { None };
     let copies = octaves.as_deref().and_then(OctaveCell::get);
+    // What its reads take straight, for this run's loop and region.
+    v.refresh_fast();
     let kernel = bandlimit::kernel();
     let near = bandlimit::near_kernel();
     // Whether the 8-point read takes whole frames as they are: found once,
@@ -896,12 +914,15 @@ pub(super) fn render_voice_from<
                 if !v.backwards && j >= v.loop_end {
                     v.backwards = true;
                     v.pos = ((v.loop_end - 1) << 32) - (v.pos - (v.loop_end << 32));
+                    went_round(v);
                 } else if v.backwards && j < v.loop_start {
                     v.backwards = false;
                     v.pos = (v.loop_start << 32) + ((v.loop_start << 32) - v.pos);
+                    went_round(v);
                 }
             } else if j >= v.loop_end {
                 v.pos -= (v.loop_end - v.loop_start) << 32;
+                went_round(v);
             }
         }
 
@@ -972,12 +993,14 @@ fn faded<S: Sample>(v: &Voice, data: &[S], pos: i64, new: (f32, f32), xf: u16) -
         Heard::Exact => {
             let picks = (v.pick_l, v.pick_r);
             let k = bandlimit::kernel();
-            bandlimit::read2(
+            bandlimit::read2_folded(
                 k,
                 data,
                 v.stereo,
                 v.start,
                 v.end - 1,
+                (v.fast_lo, v.fast_hi - 1),
+                |j| v.fold(j),
                 pos,
                 Reach::default(),
                 picks,
@@ -987,6 +1010,17 @@ fn faded<S: Sample>(v: &Voice, data: &[S], pos: i64, new: (f32, f32), xf: u16) -
     };
     let g = f32::from(xf) * (1.0 / f32::from(XF_FRAMES));
     (new.0 + (old.0 - new.0) * g, new.1 + (old.1 - new.1) * g)
+}
+
+/// The voice went round its loop (or turned at an end of a ping-pong
+/// one): from now on its reads fold the frames before the loop's start
+/// too ([`Voice::fold`]).
+#[inline]
+fn went_round(v: &mut Voice) {
+    if !v.wrapped {
+        v.wrapped = true;
+        v.refresh_fast();
+    }
 }
 
 /// The voice now hears `now`: if it heard another read before, the

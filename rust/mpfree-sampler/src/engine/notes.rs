@@ -1082,6 +1082,11 @@ impl Engine {
                 && lp.is_some()
                 && !reverse
                 && matches!(mode, PlayMode::Loop | PlayMode::Toggle | PlayMode::Gate),
+            // Not round its loop yet; the render works out what reads
+            // straight ([`Voice::refresh_fast`]).
+            wrapped: false,
+            fast_lo: 0,
+            fast_hi: 0,
             fade_in,
             fade_out,
             gain_l,
