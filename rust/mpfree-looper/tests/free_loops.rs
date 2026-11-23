@@ -646,6 +646,57 @@ fn free_loops_open_stopped_at_their_tops() {
     }
 }
 
+/// A free loop kept as the looper holds it (format 2, audio tracks phase
+/// 4c) opens on its free clock as a song loop does: stopped at its top,
+/// with what its first pass kept around it and its bounds back, and Play
+/// plays it from its top.
+#[test]
+fn a_free_loop_kept_as_held_opens_stopped_with_its_bounds() {
+    let mut r = Rig::new(128);
+    r.run(1_000, &quiet);
+    let (from, closed) = record_in_own_time(&mut r, 0, 35_280, &noise);
+    r.run(closed + 2 * BAR, &quiet);
+    let bounds = r.status(0).bounds;
+    assert!(bounds.is_some(), "a first pass alone");
+    let mut f = r.l.loop_file_raw(0).expect("savable");
+    let size = f.layers[0].raw.as_ref().unwrap().size;
+    let mut audio = vec![0.0; 2 * size];
+    assert!(r.l.raw_layer(0, 0, 0, &mut audio).is_some());
+    f.layers[0].file = "a.wav".into();
+    let saved = Saved {
+        rate: RATE,
+        selected: 0,
+        loops: vec![(0, f)],
+        free_clock: r.l.free_clock().map(|c| ClockFile::of(&c)),
+    };
+    let text = to_text(&saved);
+    assert!(text.starts_with("mpfree-looper 2\n"), "{text}");
+    assert!(text.contains(" clock=free"), "{text}");
+    let mut back = from_text(&text).unwrap();
+    assert_eq!(back, saved);
+    let (_, mut f) = back.loops.remove(0);
+    f.layers[0].audio = audio;
+    let mut o = Rig::new(128);
+    o.run(1_000, &quiet);
+    let c = back.free_clock.unwrap();
+    assert!(o.l.open_free_clock(c.bpm, c.meter, c.top));
+    assert!(o.l.load(0, f).is_ok());
+    o.run(1_000 + 3 * BAR, &quiet);
+    let s = o.status(0);
+    assert_eq!(
+        (s.phase, s.clock, s.loading, s.bounds),
+        (Phase::Playing, Clock::Free, None, bounds)
+    );
+    assert!(o.silent(1_000, o.frame), "stopped at its top");
+    o.cmd(L::FreePlay);
+    let at = o.frame;
+    o.run(at + 2 * BAR, &quiet);
+    let len = s.frames as u64;
+    for j in FADE as u64..len - FADE as u64 {
+        assert!(close(o.out_at(at + j), noise(from + j)), "frame {j}");
+    }
+}
+
 /// Opening a project as the app does: the old loops are forgotten, and
 /// the project's free clock opens as soon as they are empty, though the
 /// old clock would go only with the next period. Until then a free loop
