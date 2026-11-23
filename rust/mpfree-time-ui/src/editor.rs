@@ -208,6 +208,10 @@ pub const BOX: usize = 1 << 16;
 /// A handle dragged ([`EditAction::Resize`]): `Stretch`'s index is the
 /// note's, plus this for its start handle; `to` is the ticks it moved.
 pub const START_HANDLE: usize = 1 << 24;
+/// ERASE held + a drag across the roll ([`EditAction::Sweep`], plan
+/// 1B.5): `Values`' index; its `set` is (note, 0) for each note the
+/// finger's path crossed.
+pub const ERASE_SWEEP: usize = 1 << 28;
 /// The step the tracker and the Euclidean fill use when the snap is off
 /// or finer than a grid allows (1/32): a 1/16.
 pub const STEP_FALLBACK: Tick = PPQ as Tick / 4;
@@ -333,6 +337,10 @@ pub enum EditAction {
     Tap { index: usize, rev: u64 },
     /// A note taken out: ERASE held + a tap.
     Erase { index: usize, rev: u64 },
+    /// ERASE held + a drag across the roll (plan 1B.5): every note its
+    /// path crossed comes out, by its index on the picture of revision
+    /// `rev`. One take, however many notes.
+    Sweep { notes: Vec<usize>, rev: u64 },
     /// A note added to the picks, or taken out of them when it was
     /// picked (plan 1B.2: a finger holding a note while another taps one,
     /// as holding steps does on the step pads).
@@ -774,6 +782,7 @@ impl EditAction {
             EditAction::Note { rev, .. }
             | EditAction::Tap { rev, .. }
             | EditAction::Erase { rev, .. }
+            | EditAction::Sweep { rev, .. }
             | EditAction::Add { rev, .. }
             | EditAction::Resize { rev, .. }
             | EditAction::Copy { rev, .. }
@@ -1674,6 +1683,24 @@ impl Editor {
                 true,
                 format!("edit: {} erased", one_named(clip, clip.notes[i].note)),
             ),
+            // ERASE + a drag: the notes it crossed, each once.
+            EditAction::Sweep {
+                notes: ref swept, ..
+            } => {
+                let mut out: Vec<usize> = swept
+                    .iter()
+                    .copied()
+                    .filter(|&i| i < clip.notes.len())
+                    .collect();
+                out.sort_unstable();
+                out.dedup();
+                let line = match out[..] {
+                    [] => return Done::default(),
+                    [i] => format!("edit: {} erased", one_named(clip, clip.notes[i].note)),
+                    _ => format!("edit: {} notes erased", out.len()),
+                };
+                (notes::delete(clip, &out), None, false, true, line)
+            }
             // A finger holding a note, another tapping: the note tapped
             // joins the picks, or leaves them.
             EditAction::Add { index: i, .. } if i < clip.notes.len() => {
@@ -3483,6 +3510,10 @@ pub struct NoteGrid {
     /// along the Repeats lane sets the ramp; a drag or a drawn note goes
     /// by semitones with the clip's scale on.
     pub fine: bool,
+    /// ERASE was held as the last finger came down (the app's, plan
+    /// 1B.5): a finger on the roll erases, a tap the note under it and a
+    /// drag every note its path crosses ([`Hand::Sweep`]).
+    pub erase: bool,
     /// The clip's scale (plan 2B.1; none on a clip of pads): its rows lit,
     /// its roots marked, notes off it marked; drags and drawn notes go by
     /// its notes.
@@ -3525,6 +3556,9 @@ pub struct NoteGrid {
     pub ghost_cell: (u8, Tick),
     /// A finger drawing along the lane.
     stroke: Option<Stroke>,
+    /// The notes an ERASE sweep's path has crossed so far, in the order
+    /// it met them ([`Hand::Sweep`]).
+    swept: Vec<usize>,
     drag: Option<Drag>,
     /// What the fingers that aren't dragging a note are doing.
     hand: Hand,
@@ -3571,6 +3605,17 @@ enum Hand {
         finger: u64,
         at: (i32, i32),
         now: (i32, i32),
+    },
+    /// A finger on the roll with ERASE held (plan 1B.5), Draw on or off.
+    /// Until it moves [`TAP_SLOP`] it is a tap, which erases the note
+    /// under it (the one on top) as it lifts; after, it sweeps, and every
+    /// note its path crosses ([`NoteGrid::swept`]) is marked and comes
+    /// out as it lifts, one take. A second finger calls it off.
+    Sweep {
+        finger: u64,
+        at: (i32, i32),
+        now: (i32, i32),
+        moved: bool,
     },
     /// A finger holding a note it picked (a hold) while others tap notes
     /// (plan 1B.2): each tap adds its note to the picks or takes it out,
@@ -3632,6 +3677,9 @@ enum Strip {
 /// A finger moved this far (pixels) on the roll is no tap (the plan's
 /// 24 px, about 3 mm).
 const TAP_SLOP: i32 = 24;
+/// An ERASE sweep looks for notes this often along its path (pixels), so
+/// a fast finger misses none as narrow as this.
+const SWEEP_STEP: i32 = 3;
 /// A finger moved this far on a strip starts scrolling.
 const STRIP_SLOP: i32 = 6;
 /// Two taps on the overview, or on empty roll with Draw off, this close
@@ -3753,6 +3801,7 @@ impl Default for NoteGrid {
             touch: Vec::new(),
             lane: LaneShow::default(),
             fine: false,
+            erase: false,
             scale: None,
             scale_name: "Off".into(),
             offers: Arc::default(),
@@ -3770,6 +3819,7 @@ impl Default for NoteGrid {
             show_page: 0,
             ghost_cell: (0, 0),
             stroke: None,
+            swept: Vec::new(),
             drag: None,
             hand: Hand::Idle,
             overview_tap: None,
@@ -4024,8 +4074,16 @@ impl NoteGrid {
                 None => hand = Hand::Idle,
             }
         }
+        // A sweep's notes follow to their places in `other`; one gone is
+        // no longer there to erase.
+        let mut swept: Vec<usize> = match hand {
+            Hand::Sweep { .. } => self.swept.iter().filter_map(|&i| refind(i)).collect(),
+            _ => Vec::new(),
+        };
+        swept.dedup();
         let (overview_tap, empty_tap, menu) = (self.overview_tap, self.empty_tap, self.menu);
-        let (fine, scale_menu, chord_menu) = (self.fine, self.scale_menu, self.chord_menu);
+        let (fine, erase) = (self.fine, self.erase);
+        let (scale_menu, chord_menu) = (self.scale_menu, self.chord_menu);
         // A tool's bar closes the menus over the roll (plan 2B.3).
         let open = other.tool_bar.is_none();
         let (menu, scale_menu, chord_menu) = (menu && open, scale_menu && open, chord_menu && open);
@@ -4033,7 +4091,9 @@ impl NoteGrid {
         let (show_menu, show_page, ghost_cell) = (self.show_menu, self.show_page, self.ghost_cell);
         *self = NoteGrid {
             stroke,
+            swept,
             fine,
+            erase,
             drag,
             hand,
             overview_tap,
@@ -5080,6 +5140,16 @@ impl NoteGrid {
                 }
             }
         }
+        // An ERASE sweep (plan 1B.5): the notes it has crossed, marked to
+        // come out when the finger lifts.
+        if matches!(self.hand, Hand::Sweep { moved: true, .. }) {
+            for &i in &self.swept {
+                if let Some(nr) = self.note_rect_in(g, i) {
+                    cx.canvas.fill_round_rect(nr, 3, t.surface.mix(t.bad, 0.35));
+                    cx.canvas.stroke_round_rect(nr, 3, 2, t.bad);
+                }
+            }
+        }
         // A box being drawn with Draw off: the notes in it are picked
         // when the finger lifts.
         if let Hand::Box { at, now, .. } = self.hand {
@@ -5866,33 +5936,46 @@ impl NoteGrid {
     /// in words, above the finger: the moved note's position and row, or
     /// the start and the length a handle leaves.
     fn paint_readout(&self, cx: &mut PaintCx, g: &Geo) {
-        let Some(d) = self.drag else {
-            return;
-        };
-        let Some((tick, len, note)) = self.notes.get(d.index).and_then(|n| self.dragged(d, n))
-        else {
-            return;
-        };
-        let text = match d.handle {
-            Some(true) => format!(
-                "Start {} · {}",
-                position_name(tick, self.bar),
-                length_name(len)
-            ),
-            Some(false) => format!("Length {}", length_name(len)),
-            None => format!(
-                "{} · {}",
-                position_name(tick, self.bar),
-                self.row_name(note)
-            ),
+        let (text, now) = if let Hand::Sweep {
+            moved: true, now, ..
+        } = self.hand
+        {
+            // An ERASE sweep (plan 1B.5): how many notes will come out.
+            let text = match self.swept.len() {
+                1 => "Erase 1 note".to_string(),
+                n => format!("Erase {n} notes"),
+            };
+            (text, now)
+        } else {
+            let Some(d) = self.drag else {
+                return;
+            };
+            let Some((tick, len, note)) = self.notes.get(d.index).and_then(|n| self.dragged(d, n))
+            else {
+                return;
+            };
+            let text = match d.handle {
+                Some(true) => format!(
+                    "Start {} · {}",
+                    position_name(tick, self.bar),
+                    length_name(len)
+                ),
+                Some(false) => format!("Length {}", length_name(len)),
+                None => format!(
+                    "{} · {}",
+                    position_name(tick, self.bar),
+                    self.row_name(note)
+                ),
+            };
+            (text, d.now)
         };
         let t = cx.theme.clone();
         let size = t.size_small;
         let w = cx.measure(FontId::Sans, size, &text) + 20;
         let h = 30;
         // Above the finger, clear of it, kept on the roll.
-        let x = (d.now.0 - w / 2).clamp(g.roll.x, (g.roll.right() - w).max(g.roll.x));
-        let y = (d.now.1 - 64 - h).max(g.roll.y + 2);
+        let x = (now.0 - w / 2).clamp(g.roll.x, (g.roll.right() - w).max(g.roll.x));
+        let y = (now.1 - 64 - h).max(g.roll.y + 2);
         let r = Rect::new(x, y, w, h);
         cx.canvas.fill_round_rect(r, 6, t.raised);
         cx.canvas.stroke_round_rect(r, 6, 1, t.outline);
@@ -6750,6 +6833,27 @@ impl Widget for NoteGrid {
                         };
                         return None;
                     }
+                    // An ERASE sweep marks every note along its path,
+                    // from where it went down once it is no tap.
+                    Hand::Sweep {
+                        finger,
+                        at,
+                        now,
+                        moved,
+                    } => {
+                        let moved = moved || (x - at.0).abs().max((y - at.1).abs()) >= TAP_SLOP;
+                        if moved {
+                            let from = if self.swept.is_empty() { at } else { now };
+                            self.sweep_along(&g, from, (x, y));
+                        }
+                        self.hand = Hand::Sweep {
+                            finger,
+                            at,
+                            now: (x, y),
+                            moved,
+                        };
+                        return None;
+                    }
                     // With Draw off, a finger moved on empty roll draws a
                     // box: its notes are picked when it lifts.
                     Hand::Wait {
@@ -6954,6 +7058,32 @@ impl Widget for NoteGrid {
                         self.hand = Hand::Idle;
                         return if up { self.boxed(&g, at, now) } else { None };
                     }
+                    // ERASE: a tap erases the note under it (or with Draw
+                    // off the one beside it), as a tap with ERASE always
+                    // has; a faint note is another clip's, and the app
+                    // says so. A sweep sends every note it crossed.
+                    Hand::Sweep { at, moved, .. } => {
+                        self.hand = Hand::Idle;
+                        let swept = std::mem::take(&mut self.swept);
+                        if !up {
+                            return None;
+                        }
+                        if !moved {
+                            let note = self
+                                .note_under(&g, at.0, at.1)
+                                .or_else(|| self.note_near(&g, at.0, at.1));
+                            if let Some(i) = note {
+                                return Some(EventKind::Toggle(i));
+                            }
+                            return self
+                                .ghost_under(&g, at)
+                                .map(|k| EventKind::Tab(GHOST_TAP + k));
+                        }
+                        return (!swept.is_empty()).then(|| EventKind::Values {
+                            index: ERASE_SWEEP,
+                            set: swept.into_iter().map(|i| (i, 0)).collect(),
+                        });
+                    }
                     // A tap on a note, unless a hold picked it. On its
                     // marks' corner, it opens their lane and picks the
                     // note (plan 3A.2): never the tap's take-out.
@@ -7092,6 +7222,32 @@ impl NoteGrid {
         end.max(from + unit).min(self.length.max(from + 1))
     }
 
+    /// An ERASE sweep's finger went from `from` to `to`: every note in
+    /// view its path crosses joins [`NoteGrid::swept`] (each once; under
+    /// the one on top too, as an eraser rubs out what it passes over).
+    fn sweep_along(&mut self, g: &Geo, from: (i32, i32), to: (i32, i32)) {
+        let steps = (to.0 - from.0).abs().max((to.1 - from.1).abs()) / SWEEP_STEP + 1;
+        let shown = self.in_view(g);
+        let rects: Vec<(usize, Rect)> = shown
+            .into_iter()
+            .filter_map(|i| Some((i, self.note_rect_in(g, i)?)))
+            .collect();
+        for k in 0..=steps {
+            let (x, y) = (
+                from.0 + (to.0 - from.0) * k / steps,
+                from.1 + (to.1 - from.1) * k / steps,
+            );
+            if !g.roll.contains(x, y) {
+                continue;
+            }
+            for &(i, nr) in &rects {
+                if nr.contains(x, y) && !self.swept.contains(&i) {
+                    self.swept.push(i);
+                }
+            }
+        }
+    }
+
     /// A tap on empty roll at `at`, on row `note` at the cell from
     /// `tick`: `Cell` (with Draw on a note goes in, with Draw off the
     /// picks go), or with Draw off a second tap there soon after a first:
@@ -7129,6 +7285,7 @@ impl NoteGrid {
             Hand::Press { finger, now, .. }
             | Hand::Pen { finger, now, .. }
             | Hand::Box { finger, now, .. }
+            | Hand::Sweep { finger, now, .. }
             | Hand::Holding { finger, now, .. }
             | Hand::Wait { finger, now, .. }
             | Hand::Scroll { finger, now, .. }
@@ -7617,6 +7774,18 @@ impl NoteGrid {
         if !g.roll.contains(x, y) {
             return None;
         }
+        // ERASE held (plan 1B.5): a tap or a sweep, whatever the tool and
+        // whatever is under the finger.
+        if self.erase {
+            self.swept.clear();
+            self.hand = Hand::Sweep {
+                finger: f,
+                at: (x, y),
+                now: (x, y),
+                moved: false,
+            };
+            return None;
+        }
         // A picked note's handle (beside it, or under a short one), when
         // no note is under the finger: its start or end follows the
         // finger, and every picked note's with it.
@@ -7842,6 +8011,50 @@ mod tests {
     /// note no longer than a step, only the one tapped, and picks a
     /// longer one; Draw off, a tap picks the note alone. A drawn note
     /// gets the velocity last used and stops at the clip's end.
+    /// ERASE + a drag (plan 1B.5): the notes it crossed come out as one
+    /// edit, each once, whatever the tool; none, nothing; it names the
+    /// picture it was made on.
+    #[test]
+    fn a_sweep_erases_the_notes_it_crossed_as_one_edit() {
+        let mut c = clip(&[
+            (0, 240, 60),
+            (480, 240, 62),
+            (960, 240, 64),
+            (1440, 240, 65),
+        ]);
+        c.notes[2].velocity = 80;
+        let mut ed = Editor::new(0, 0, &c);
+        ed.sel = vec![1, 3];
+        let sweep = |notes: Vec<usize>| EditAction::Sweep { notes, rev: 0 };
+        let done = run(&mut ed, &mut c, sweep(vec![2, 0, 2, 9]));
+        assert_eq!(done.line, "edit: 2 notes erased");
+        assert_eq!(done.edit.erase.len(), 2);
+        assert_eq!(
+            ticks_of(&c, &(0..c.notes.len()).collect::<Vec<_>>()),
+            [(480, 62), (1440, 65)]
+        );
+        assert_eq!(
+            ticks_of(&c, &ed.sel),
+            [(480, 62), (1440, 65)],
+            "the other picks stay"
+        );
+        ed.act(EditAction::Button(2), &c);
+        assert_eq!(ed.tool, Tool::Draw);
+        let done = run(&mut ed, &mut c, sweep(vec![0]));
+        assert_eq!(done.line, "edit: note D3 erased");
+        assert_eq!(c.notes.len(), 1);
+        assert!(ed.act(sweep(Vec::new()), &c).edit.is_empty());
+        assert!(ed.act(sweep(vec![7]), &c).edit.is_empty());
+        assert_eq!(
+            EditAction::Sweep {
+                notes: vec![0],
+                rev: 4
+            }
+            .rev(),
+            Some(4)
+        );
+    }
+
     #[test]
     fn draw_on_taps_notes_out_or_picks_them_and_draws_to_the_end() {
         // Two notes of one step and pitch, and a long one.
@@ -9300,6 +9513,102 @@ mod tests {
     /// note's handles drag its start or end (under a short note), drawn
     /// where they go over an outline of where they were, with a readout;
     /// with Draw off a near miss beside a note gets it.
+    /// ERASE held (plan 1B.5), Draw on or off: a tap erases the note under
+    /// it (a hold is still a tap) and a tap on empty roll does nothing; a
+    /// drag sweeps, marking every note its path crosses, each once, even
+    /// from one fast move, and sends them as it lifts, following them to
+    /// where a new picture has them. A second finger calls it off with
+    /// nothing sent, and a sweep that crosses no note sends nothing.
+    #[test]
+    fn erase_held_taps_a_note_out_or_sweeps_every_note_it_crosses() {
+        let mut g = grid();
+        g.notes
+            .push(NoteBox::of(&Note::new(1920, 240, 50, 90), false));
+        g.erase = true;
+        let (n0, n1, n2) = (
+            g.note_rect(R, 0).unwrap(),
+            g.note_rect(R, 1).unwrap(),
+            g.note_rect(R, 2).unwrap(),
+        );
+        let (x1, y1) = mid(n1);
+        assert_eq!(g.touch(1, Touch::Down, x1, y1, R), None);
+        assert_eq!(g.tick(0.5), None, "a hold picks nothing");
+        assert_eq!(g.touch(1, Touch::Up, x1, y1, R), Some(EventKind::Toggle(1)));
+        g.tool = Tool::Draw;
+        g.touch(2, Touch::Down, x1, y1, R);
+        assert_eq!(g.touch(2, Touch::Up, x1, y1, R), Some(EventKind::Toggle(1)));
+        let empty = (n2.right() + 80, y1);
+        g.touch(3, Touch::Down, empty.0, empty.1, R);
+        assert_eq!(
+            g.touch(3, Touch::Up, empty.0, empty.1, R),
+            None,
+            "no note goes in"
+        );
+        // One fast move along the bottom row: the first and the third
+        // notes, not the second a row up; marked, with a readout.
+        let before = painted(&g);
+        let (x0, y0) = mid(n0);
+        let x2 = mid(n2).0;
+        g.touch(4, Touch::Down, x0, y0, R);
+        assert_eq!(g.touch(4, Touch::Move, x2, y0, R), None);
+        assert_eq!(g.swept, [0, 2]);
+        assert!(differ_in(&before, &painted(&g), g.geo(R).roll));
+        // A new picture with the notes in another order: the sweep
+        // follows them.
+        let mut other = g.clone();
+        other.notes.swap(0, 2);
+        other.erase = false;
+        g.show(other);
+        assert!(g.erase, "kept from the finger's down");
+        assert_eq!(g.swept, [2, 0]);
+        // Up to the second note, crossing the others again.
+        g.touch(4, Touch::Move, x0, y0, R);
+        g.touch(4, Touch::Move, x1, y1, R);
+        assert_eq!(
+            g.touch(4, Touch::Up, x1, y1, R),
+            Some(EventKind::Values {
+                index: ERASE_SWEEP,
+                set: vec![(2, 0), (0, 0), (1, 0)]
+            })
+        );
+        assert!(g.swept.is_empty());
+        assert!(
+            !differ_in(&before, &painted(&g), g.geo(R).roll),
+            "nothing marked after"
+        );
+        // A second finger: a pinch, and nothing erased.
+        g.touch(5, Touch::Down, x0, y0, R);
+        g.touch(5, Touch::Move, x2, y0, R);
+        g.touch(6, Touch::Down, x1, y1 - 100, R);
+        let sent: Vec<_> = [
+            g.touch(5, Touch::Up, x2, y0, R),
+            g.touch(6, Touch::Up, x1, y1 - 100, R),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        assert!(
+            !sent
+                .iter()
+                .any(|e| matches!(e, EventKind::Values { .. } | EventKind::Toggle(_))),
+            "{sent:?}"
+        );
+        // Along an empty row: nothing.
+        let row = (n0.x + 4, y1 - 120);
+        g.touch(7, Touch::Down, row.0, row.1, R);
+        g.touch(7, Touch::Move, row.0 + 400, row.1, R);
+        assert_eq!(g.touch(7, Touch::Up, row.0 + 400, row.1, R), None);
+        // ERASE let go: a drag on a note moves it again.
+        g.erase = false;
+        g.tool = Tool::Select;
+        g.touch(8, Touch::Down, x1, y1, R);
+        g.touch(8, Touch::Move, x1 + 2 * TAP_SLOP, y1, R);
+        assert!(matches!(
+            g.touch(8, Touch::Up, x1 + 2 * TAP_SLOP, y1, R),
+            Some(EventKind::Marker { index: 1, .. })
+        ));
+    }
+
     #[test]
     fn a_box_a_held_note_and_handles_pick_and_change_notes() {
         let mut g = grid();

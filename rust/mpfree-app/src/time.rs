@@ -10611,6 +10611,33 @@ mod tests {
         assert_eq!(ticks(&h), [0, 960, 1920]);
         h.act(TimeAction::Undo).unwrap();
         assert_eq!(sorted(&h), c.notes);
+        // ERASE + a drag (piano roll plan 1B.5): the notes it crossed in
+        // one take, which one UNDO brings back; on an old picture,
+        // refused with nothing erased.
+        h.take_changed();
+        let rev = h.state().edit.unwrap().rev;
+        assert_eq!(
+            h.act(TimeAction::Edit(E::Sweep {
+                notes: vec![0, 2],
+                rev
+            }))
+            .unwrap(),
+            "edit: 2 notes erased"
+        );
+        assert_eq!(sorted(&h).len(), 1);
+        let said = h
+            .act(TimeAction::Edit(E::Sweep {
+                notes: vec![0],
+                rev,
+            }))
+            .unwrap_err();
+        assert!(
+            said.contains("the clip changed under your finger"),
+            "{said}"
+        );
+        assert_eq!(sorted(&h).len(), 1);
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(sorted(&h), c.notes);
         assert_eq!(
             h.act(TimeAction::Edit(E::Button(0))).unwrap(),
             "edit: closed"

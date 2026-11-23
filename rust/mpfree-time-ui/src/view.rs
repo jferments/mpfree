@@ -34,10 +34,10 @@ use crate::editor::{
     box_of, chord_name, drop_of, edit_rows, knob_name, length_name, lit_scale, pads, position_name,
     sound_name, step_name, ChordShape, EditAction, Editor, Fold, GhostLayer, Hearing, LaneShow,
     Lens, LockMark, LockSetting, NoteBox, NoteGrid, NoteTool, ShowOffer, Tool, ToolAct, ToolBar,
-    ToolKind, ADD, CHORD_MAJOR, CHORD_MENU, CHORD_MINOR, EDIT_BUTTON, FIELDS, GHOST_MOST,
-    GHOST_TAP, LOCK_LANES, MENU, PADS_WRITE, PEN, PRESSURE_END, PRESSURE_LANE, ROOT_MENU,
-    SCALE_MENU, SHOW_MENU, SHOW_NONE, SNAP_AUTO_T, START_HANDLE, STEP_FALLBACK, TOOL_BUTTONS,
-    TOOL_CANCEL, TOOL_DONE, TOOL_OPTION,
+    ToolKind, ADD, CHORD_MAJOR, CHORD_MENU, CHORD_MINOR, EDIT_BUTTON, ERASE_SWEEP, FIELDS,
+    GHOST_MOST, GHOST_TAP, LOCK_LANES, MENU, PADS_WRITE, PEN, PRESSURE_END, PRESSURE_LANE,
+    ROOT_MENU, SCALE_MENU, SHOW_MENU, SHOW_NONE, SNAP_AUTO_T, START_HANDLE, STEP_FALLBACK,
+    TOOL_BUTTONS, TOOL_CANCEL, TOOL_DONE, TOOL_OPTION,
 };
 use crate::list::{
     ListRow, SongListView, LIST_ADD, LIST_CLIPS, LIST_LINK, LIST_LINK_CLOSE, LIST_LINK_FROM_LIST,
@@ -331,10 +331,10 @@ pub const EDIT_DRAWER_LAYOUT: &str =
     "col(header:60, row(col(transport:44, row(notes:*, col(edit-options:*, takes:240):250):*):*, qlinks:128):*, hint:26)";
 /// The hint line under the note editor's piano roll, Draw off.
 pub const EDIT_HINT: &str =
-    "Tap: pick   ·   drag: move   ·   drag empty space: box   ·   hold one, tap more: add   ·   handles: start, length   ·   double tap: new note   ·   ERASE + tap: erase   ·   two fingers: zoom";
+    "Tap: pick   ·   drag: move   ·   drag empty space: box   ·   hold one, tap more: add   ·   handles: start, length   ·   double tap: new note   ·   ERASE + tap or drag: erase   ·   two fingers: zoom";
 /// The hint line under the piano roll with Draw on (piano roll plan 1B.1).
 pub const EDIT_DRAW_HINT: &str =
-    "Draw: tap a note in, or a short one out   ·   drag: a long note   ·   hold a note: pick, tap more: add   ·   handles: start, length   ·   ERASE + tap: erase   ·   two fingers: zoom";
+    "Draw: tap a note in, or a short one out   ·   drag: a long note   ·   hold a note: pick, tap more: add   ·   handles: start, length   ·   ERASE + tap or drag: erase   ·   two fingers: zoom";
 /// The hint line under the note editor's list.
 pub const EDIT_LIST_HINT: &str =
     "Tap a row to pick its note   ·   ERASE + tap: erase   ·   SHIFT + wheel: scroll   ·   Edit, TC or the wheel: the options";
@@ -345,7 +345,7 @@ pub const EDIT_TRACKER_HINT: &str =
 /// options' drawer closed (piano roll plan 1C.1): the Q-Links are the
 /// note inspector.
 pub const EDIT_PICKED_HINT: &str =
-    "Q-Links: position, length, pitch, velocity (SHIFT: finer)   ·   - / +: nudge   ·   drag: move   ·   handles: start, length   ·   wheel: the cursor   ·   ERASE + tap: erase";
+    "Q-Links: position, length, pitch, velocity (SHIFT: finer)   ·   - / +: nudge   ·   drag: move   ·   handles: start, length   ·   wheel: the cursor   ·   ERASE + tap or drag: erase";
 
 /// The hint line under the note editor showing `lens`, with `tool`, and
 /// `picked` when notes are picked with the drawer closed.
@@ -2500,6 +2500,12 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                         scale,
                     }
                 }
+                // ERASE + a drag across the roll (plan 1B.5): the notes
+                // its path crossed.
+                EventKind::Values { index, ref set } if index == ERASE_SWEEP => EditAction::Sweep {
+                    notes: set.iter().map(|&(i, _)| i).collect(),
+                    rev,
+                },
                 // The Pressure lane (plan 3A.1): its columns' (tick,
                 // value), then the stroke's end.
                 EventKind::Values { index, ref set } if index == PRESSURE_LANE => {
@@ -6982,6 +6988,17 @@ mod tests {
         assert_eq!(
             ev(EventKind::Cell { row: ADD, col: 3 }),
             edit(EditAction::Add { index: 3, rev: 0 })
+        );
+        // ERASE + a drag (plan 1B.5): the notes it crossed.
+        assert_eq!(
+            ev(EventKind::Values {
+                index: ERASE_SWEEP,
+                set: vec![(4, 0), (1, 0)]
+            }),
+            edit(EditAction::Sweep {
+                notes: vec![4, 1],
+                rev: 0
+            })
         );
         assert_eq!(
             ev(EventKind::Stretch {
