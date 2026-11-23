@@ -564,8 +564,10 @@ mod tests {
                 if Instant::now() >= end {
                     return beats;
                 }
+                // Empty only when just made, before its first count (the
+                // script's `cat` reads it as no count yet, too).
                 if let Ok(b) = fs::read_to_string(&p.alive) {
-                    if beats.last() != Some(&b) {
+                    if !b.is_empty() && beats.last() != Some(&b) {
                         beats.push(b);
                     }
                 }
@@ -628,12 +630,22 @@ mod tests {
         assert_eq!(card.card().mount, t.0.join("card"));
         assert!(card.is_open());
         assert!(!p.request.exists(), "the service took the request");
-        // The counter moves while it is open.
-        thread::sleep(Duration::from_millis(100));
+        // The counter moves while it is open (waited for by its count, not
+        // a time, so a busy machine doesn't fail it).
+        let end = Instant::now() + Duration::from_secs(5);
+        while fs::read_to_string(&p.alive)
+            .ok()
+            .and_then(|b| b.trim().parse::<u64>().ok())
+            .is_none_or(|n| n < 5)
+        {
+            assert!(Instant::now() < end, "the counter didn't move");
+            thread::sleep(Duration::from_millis(2));
+        }
         let said = card.close(&quick()).unwrap();
         assert_eq!(said, "Closed. Nothing was written to the card.");
         let beats = svc.join().unwrap();
-        assert!(beats.len() >= 3, "{beats:?}");
+        assert!(beats.len() >= 2, "{beats:?}");
+        assert!(beats.windows(2).all(|w| w[0] < w[1]), "{beats:?}");
         assert!(beats.iter().all(|b| b.len() == 21 && b.ends_with('\n')));
         assert!(
             log.iter()
