@@ -172,6 +172,7 @@ mod skin_page;
 #[cfg(test)]
 mod smoke;
 mod song_end;
+mod status_screen;
 mod status_watch;
 mod step_keys;
 mod synth;
@@ -185,6 +186,7 @@ mod touchlab_page;
 mod undo;
 mod views;
 mod waiting;
+mod xy_layouts;
 mod xy_list;
 mod xy_slot;
 
@@ -4223,8 +4225,13 @@ fn play_routed(
         // gear (above), else its instrument, else the synth (Thru passes a
         // keyboard's on as it came).
         midi_in::Key::Bend { value } => {
-            if !gear && !own.bend(t, value) && plays_synth {
-                synth.bend(value);
+            if !gear && !own.bend(t, value) {
+                if plays_synth {
+                    synth.bend(value);
+                } else {
+                    // A kit's keygroups bend (sampler step 15).
+                    player.bend_kit(kit, value);
+                }
             }
             return;
         }
@@ -7352,6 +7359,7 @@ fn time_action(
             | TimeAction::ConvertPreview { .. }
             | TimeAction::Convert { .. }
             | TimeAction::ConvertCancel
+            | TimeAction::Continue(_)
             | TimeAction::CopyClip { .. }
             | TimeAction::PasteClip { .. }
             | TimeAction::DropClip { .. }
@@ -10186,6 +10194,11 @@ fn player_session(
                 midi_in::Key::Bend { value } if key_notes => {
                     if !mix.instruments.bend(armed, value) {
                         synth.bend(value);
+                        // The keygroups of the kit the pads play bend too
+                        // (sampler step 15).
+                        if !synth_on {
+                            player.bend(value);
+                        }
                     }
                     None
                 }
@@ -12958,6 +12971,7 @@ fn player_session(
             ));
             out.note(&format!("status: {}", tracks.describe()));
             out.note(&format!("status: {}", mix.modu.describe()));
+            out.note(&format!("status: {}", mix.describe_xy()));
             if let Some(line) = found_plugins.summary().and_then(|s| s.line()) {
                 out.note(&format!("status: plugins: {line}"));
             }
@@ -13188,6 +13202,7 @@ fn player_session(
     out.say(&format!("{}; {}", looper.describe(), loop_time.describe()));
     out.say(&tracks.describe());
     out.say(&mix.modu.describe());
+    out.say(&mix.describe_xy());
     if let Some(line) = param_log.flush(&synth) {
         out.say(&line);
     }

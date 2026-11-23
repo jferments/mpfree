@@ -22,6 +22,8 @@
 //! - [`lane`]: a lane of bars a finger draws, one value each (the
 //!   Sequencer's Velocity and Chance lanes, the piano roll's lanes):
 //!   [`lane::Lane`].
+//! - [`continuing`]: Continue (composing tools) as the screens see it:
+//!   [`continuing::ContinueAction`], [`continuing::Continuing`].
 //! - [`sample`]: sample screens with a real transport, player, recorder and
 //!   take undo behind them, for the workstation preview and the tests.
 //!
@@ -31,6 +33,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod continuing;
 pub mod editor;
 pub mod lane;
 pub mod list;

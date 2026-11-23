@@ -1,5 +1,5 @@
 //! The patch screens' side on the screen thread (live shows C1, layout
-//! spec 4p): which of them is open, the zone picked, Learn low and high,
+//! spec 4q): which of them is open, the zone picked, Learn low and high,
 //! UNDO's takes of the edits, and what the keys do now as the audio loop
 //! last said ([`KeysNow`]). It builds what [`crate::patch_page`]'s widgets
 //! show from the song's patches (`Player::patches`) and makes the edits;

@@ -511,3 +511,80 @@ fn a_key_fade_for_the_kit_overlaps_the_zones_and_one_undo_takes_it_back() {
     assert_eq!(q.key_fade(), None);
     assert!(q.set_key_fade(3).is_err());
 }
+
+/// The pitch of what plays from frame `from` on.
+fn pitch_from(x: &[f32], from: usize) -> f32 {
+    pitch(&x[from - 1000..])
+}
+
+#[test]
+fn the_pitch_wheel_bends_the_keygroups_notes_playing_ones_too() {
+    let (p, _) = spread();
+    // A bend before the note: two semitones up.
+    let mut e = engine(&p);
+    e.apply(Event::Bend { cents: 200.0 });
+    e.apply(Event::Key {
+        note: 57,
+        velocity: 127,
+    });
+    let out = render(&mut e, 12_000);
+    let up = 220.0 * 2f32.powf(2.0 / 12.0);
+    assert!((pitch(&out) - up).abs() < up * 0.003, "{}", pitch(&out));
+    assert_eq!(e.kit_bend(0), 200.0);
+    // A held note follows the wheel: an octave up, gliding there.
+    let mut e = engine(&p);
+    e.apply(Event::Key {
+        note: 57,
+        velocity: 127,
+    });
+    render(&mut e, 4_000);
+    e.apply(Event::Bend { cents: 1200.0 });
+    let out = render(&mut e, 14_000);
+    let hz = pitch_from(&out, 5_000);
+    assert!((hz - 440.0).abs() < 440.0 * 0.003, "{hz}");
+    // Back to the middle: the root again.
+    e.apply(Event::Bend { cents: 0.0 });
+    let out = render(&mut e, 14_000);
+    let hz = pitch_from(&out, 5_000);
+    assert!((hz - 220.0).abs() < 220.0 * 0.003, "{hz}");
+}
+
+#[test]
+fn the_pitch_wheel_leaves_pad_hits_alone_and_at_rest_changes_nothing() {
+    // A pad that isn't a keygroup: a hit plays it as it is, bent or not.
+    let s = sine(1.0, 220.0);
+    let mut p = Project::new();
+    p.add_source(s.clone());
+    let mut r = Region::whole(&s);
+    r.mode = PlayMode::Gate;
+    p.set_pad(0, Some(Pad::new("hit", Layer::new(r))), None)
+        .unwrap();
+    let mut e = engine(&p);
+    e.apply(Event::Bend { cents: 1200.0 });
+    e.apply(Event::NoteOn {
+        pad: 0,
+        velocity: 127,
+    });
+    let out = render(&mut e, 12_000);
+    assert!(
+        (pitch(&out) - 220.0).abs() < 220.0 * 0.003,
+        "{}",
+        pitch(&out)
+    );
+    // A keygroup with the wheel moved and back plays bit for bit as one
+    // never bent.
+    let (p, _) = spread();
+    let play = |bend: bool| {
+        let mut e = engine(&p);
+        if bend {
+            e.apply(Event::Bend { cents: 300.0 });
+            e.apply(Event::Bend { cents: 0.0 });
+        }
+        e.apply(Event::Key {
+            note: 60,
+            velocity: 100,
+        });
+        render(&mut e, 6_000)
+    };
+    assert_eq!(play(true), play(false));
+}

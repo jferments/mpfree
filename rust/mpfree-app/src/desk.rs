@@ -343,6 +343,8 @@ impl Desk<'_> {
             gui::FromUi::Arp(a) => fx.extend(app.arp_action(a)),
             gui::FromUi::Workspace(a) => fx.extend(app.workspace_action(*a)),
             gui::FromUi::ArpChip => fx.extend(app.toggle_panel()),
+            gui::FromUi::StatusChip => fx.extend(app.toggle_status()),
+            gui::FromUi::StatusAction(a) => fx.extend(app.status_action(a)),
             gui::FromUi::PadLevelOff => fx.extend(app.pad_level_off()),
             gui::FromUi::StepsOff => fx.extend(app.steps_off()),
             gui::FromUi::StepPage(page) => fx.extend(app.set_step_page(page)),
@@ -915,6 +917,7 @@ impl Desk<'_> {
             app::Effect::SampleEditor(e) => out.show(gui::ToUi::SampleEditor(e)),
             app::Effect::EditPad => out.show(gui::ToUi::EditPad),
             app::Effect::Browse(k) => out.show(gui::ToUi::Browse(k)),
+            app::Effect::StatusPage(k) => out.show(gui::ToUi::StatusKey(k)),
             app::Effect::Fill(on) => time.set_fill(on, 0),
             app::Effect::Metronome { on, db } => {
                 time.metronome = on;

@@ -13,6 +13,7 @@ mpfree-transport = { path = "../mpfree-transport" }
 mpfree-ui = { path = "../mpfree-ui" }
 mpfree-capture = { path = "../mpfree-capture" }
 mpfree-audiotracks = { path = "../mpfree-audiotracks" }
+mpfree-compose = { path = "../mpfree-compose" }
 
 [[bin]]
 name = "mpfree-time-preview"

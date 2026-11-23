@@ -1,4 +1,4 @@
-//! The patch screens (live shows C1, layout spec 4p): what the keys play.
+//! The patch screens (live shows C1, layout spec 4q): what the keys play.
 //!
 //! - [`paint_keys_play`]: KEYS PLAY on Play's transport bar, the patch
 //!   playing and a strip of its zones, while the song has patches.
@@ -129,7 +129,7 @@ pub fn paint_strip(cx: &mut PaintCx, r: Rect, zones: &[ZoneLook]) {
 
 // ------------------------------------------------------------- KEYS PLAY
 
-/// What KEYS PLAY shows on Play's transport bar (layout spec 4p).
+/// What KEYS PLAY shows on Play's transport bar (layout spec 4q).
 #[derive(Clone, Debug, PartialEq)]
 pub struct KeysPlay {
     /// "3 · Chorus split", or "Keys as routed".
@@ -281,7 +281,7 @@ struct ListFinger {
     scrolled: bool,
 }
 
-/// The patch list (layout spec 4p), in place of Play's view.
+/// The patch list (layout spec 4q), in place of Play's view.
 #[derive(Default)]
 pub struct PatchList {
     /// "5 patches in this song".
@@ -877,7 +877,7 @@ struct Parts {
     this: Rect,
 }
 
-/// The patch editor (layout spec 4p), in place of Play's view.
+/// The patch editor (layout spec 4q), in place of Play's view.
 #[derive(Default)]
 pub struct PatchEditor {
     pub look: EditLook,

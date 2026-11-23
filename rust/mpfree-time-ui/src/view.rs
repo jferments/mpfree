@@ -114,7 +114,7 @@ pub const SONG_SCENE_LAYOUT: &str =
     "col(header:60, row(col(transport:44, row(col(song:*, morph:64):*, col(scene-card:*, takes:240):250):*):*, qlinks:128):*, hint:26)";
 pub const LIST_SCENE_LAYOUT: &str =
     "col(header:60, row(col(transport:44, row(song-list:*, col(scene-card:*, takes:240):250):*):*, qlinks:128):*, hint:26)";
-/// The Show view (live shows B1, layout spec 4o): the bar over the view,
+/// The Show view (live shows B1, layout spec 4p): the bar over the view,
 /// in the place of the grid and the Record panel, and the Q-Link column at
 /// the right. No Record panel and no Takes.
 pub const SHOW_LAYOUT: &str =
@@ -672,6 +672,7 @@ impl TakeRow {
                 Replaced::Mutate => "mutate",
                 Replaced::Restore => "restore",
                 Replaced::Convert => "convert",
+                Replaced::Continue { .. } => "continue",
             }
         } else if self.deleted {
             "delete"
@@ -864,6 +865,8 @@ pub struct TimeState {
     /// point in effect at the playhead (None before the first), which the
     /// Tempo row steps from. None otherwise. The app sets it.
     pub tempo_here: Option<f64>,
+    /// Continue, while one is under way (composing tools).
+    pub continuing: Option<Arc<crate::continuing::Continuing>>,
 }
 
 /// What a conversion (Scenes → song, List → song, Song → scenes) made
@@ -1130,6 +1133,7 @@ impl TimeState {
             tempo_pick: None,
             report: None,
             tempo_here: None,
+            continuing: None,
         }
     }
 
@@ -1383,6 +1387,9 @@ pub enum TimeAction {
     },
     /// Close Convert to notes' preview.
     ConvertCancel,
+    /// Continue (composing tools): carry a clip on, hear it in place of
+    /// the clip, keep it or go back.
+    Continue(crate::continuing::ContinueAction),
     /// Put these rows on the morph's A and B (loaded again if it is on).
     MorphRows {
         a: usize,
@@ -3687,6 +3694,8 @@ fn take_detail(st: &TimeState, row: &TakeRow) -> String {
         (Some(Replaced::Mutate), None) => return "a variation".into(),
         (Some(Replaced::Restore), _) => return "the original".into(),
         (Some(Replaced::Convert), _) => return "converted to notes".into(),
+        (Some(Replaced::Continue { bars: 1 }), _) => return "1 more bar".into(),
+        (Some(Replaced::Continue { bars }), _) => return format!("{bars} more bars"),
         (None, _) => {}
     }
     if row.deleted {
@@ -6156,7 +6165,7 @@ mod tests {
     /// step.
     /// Live shows B1: with a set open, the title lines have Show, and the
     /// Show view takes the place of the grid and the Record panel (layout
-    /// spec 4o), over any of the three views.
+    /// spec 4p), over any of the three views.
     #[test]
     fn the_show_view_swaps_in_while_a_set_is_open() {
         let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);

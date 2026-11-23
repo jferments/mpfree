@@ -3308,6 +3308,7 @@ mod tests {
         use crate::midi_in::Key;
         use crate::patch_page::{EDIT, EDIT_PAGE, LIST, LIST_PAGE};
         on_big_stack(|| {
+            let on = |note, velocity| (0u8, Key::Down { note, velocity });
             let mut s = Session::new();
             assert!(
                 s.control(crate::play_page::TRANSPORT, "keys", "").is_none(),
@@ -3329,7 +3330,11 @@ mod tests {
             let keys = s
                 .control(crate::play_page::TRANSPORT, "keys", "")
                 .expect("KEYS PLAY over the editor, once the song has a patch");
-            assert!(keys.target.label.contains("1 · Patch 1"), "{}", keys.target.label);
+            assert!(
+                keys.target.label.contains("1 · Patch 1"),
+                "{}",
+                keys.target.label
+            );
             // Zone 2 (C3 up) picked, an octave up on Q-Link 3.
             let zone2 = s
                 .controls()
@@ -3340,15 +3345,7 @@ mod tests {
             s.qlink(2, 12).settle();
             // C2 plays the bass as played; C4 plays an octave up.
             let down = s.keys_from_gear(&[0x90, 36, 100, 0x90, 60, 90]);
-            assert_eq!(
-                down,
-                [
-                    (0, Key::Down { note: 36, velocity: 100 }),
-                    (0, Key::Down { note: 72, velocity: 90 }),
-                ],
-                "{:?}",
-                s.said()
-            );
+            assert_eq!(down, [on(36, 100), on(72, 90)], "{:?}", s.said());
             assert!(
                 s.keys_from_gear(&[0x80, 36, 0]) == [(0, Key::Up { note: 36 })],
                 "a key ends where it started"
@@ -3361,15 +3358,12 @@ mod tests {
             let _ = s.keys_from_gear(&[0x80, 84, 0]);
             assert_eq!(
                 s.keys_from_gear(&[0x90, 72, 64]),
-                [(0, Key::Down { note: 84, velocity: 64 })],
+                [on(84, 64)],
                 "under C6, zone 2 alone"
             );
             assert_eq!(
                 s.keys_from_gear(&[0x90, 96, 64]),
-                [
-                    (0, Key::Down { note: 108, velocity: 64 }),
-                    (0, Key::Down { note: 96, velocity: 64 }),
-                ],
+                [on(108, 64), on(96, 64)],
                 "from C6, zone 2 and the new zone"
             );
             let _ = s.keys_from_gear(&[0x80, 72, 0, 0x80, 96, 0]);

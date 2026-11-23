@@ -625,7 +625,7 @@ pub const ADD_DISMISS: usize = 13;
 /// open (live shows B1).
 pub const SHOW_VIEW: usize = 14;
 /// The Show button's width, on the grid, the Song view and the song list
-/// (layout spec 4o).
+/// (layout spec 4p).
 pub const SHOW_W: i32 = 72;
 /// "Back to song"'s width.
 const BACK_W: i32 = 124;

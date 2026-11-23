@@ -1,4 +1,4 @@
-//! The Sets place and the Set editor (live shows B1; layout spec 4o): a
+//! The Sets place and the Set editor (live shows B1; layout spec 4p): a
 //! set is a list of songs in order, each a project in Projects, kept as
 //! `Sets/<name>.set`. The place lists the sets with their last check, a
 //! set picked shows its card (Play set, Edit set, Check set, Rename, Copy,

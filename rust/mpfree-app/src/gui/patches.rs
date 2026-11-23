@@ -1,4 +1,4 @@
-//! The patch screens on Play (live shows C1, layout spec 4p): KEYS PLAY on
+//! The patch screens on Play (live shows C1, layout spec 4q): KEYS PLAY on
 //! the transport bar, the patch list and the editor in place of Play's
 //! view, their events, the wheel, the Q-Links, UNDO, and what the audio
 //! loop says of the keys. The screens' state and the edits are

@@ -1,4 +1,4 @@
-//! The Sets place's logic (live shows B1; layout spec 4o): which set is
+//! The Sets place's logic (live shows B1; layout spec 4p): which set is
 //! picked, the set being edited and its picked song, the projects to add,
 //! the rig the app gave, and what a touch, the dial or a button does.
 //! Every read and write goes to the library's worker (`Job::Sets`,
