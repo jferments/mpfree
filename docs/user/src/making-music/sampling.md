@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-sampler rust/mpfree-sampler-ui/src/pads_tab.rs rust/mpfree-sampler-ui/src/rec_tab.rs rust/mpfree-sampler-ui/src/recall.rs rust/mpfree-sampler-ui/src/wave_tab.rs rust/mpfree-sampler-ui/src/grain_tool.rs rust/mpfree-sampler-ui/src/sound_panel.rs rust/mpfree-sampler-ui/src/warp_tool.rs rust/mpfree-sampler-ui/src/slice_tool.rs rust/mpfree-sampler-ui/src/auto_tab.rs rust/mpfree-app/src/sample_page.rs rust/mpfree-app/src/sampler.rs
+covers: rust/mpfree-sampler rust/mpfree-sampler-ui/src/pads_tab.rs rust/mpfree-sampler-ui/src/rec_tab.rs rust/mpfree-sampler-ui/src/recall.rs rust/mpfree-sampler-ui/src/wave_tab.rs rust/mpfree-sampler-ui/src/grain_tool.rs rust/mpfree-sampler-ui/src/sound_panel.rs rust/mpfree-sampler-ui/src/warp_tool.rs rust/mpfree-sampler-ui/src/slice_tool.rs rust/mpfree-sampler-ui/src/auto_tab.rs rust/mpfree-sampler-ui/src/stems_page.rs rust/mpfree-app/src/sample_page.rs rust/mpfree-app/src/sampler.rs
 checked: 2026-11-18 ec8cb82
 -->
 
@@ -8,7 +8,7 @@ checked: 2026-11-18 ec8cb82
 
 **Sampling** means taking a recording (a drum break, a chord from a record, your own voice) and playing it from the pads. This chapter covers the **Sample** tab: recording sounds, trimming them, fitting them to the tempo and chopping them into slices. Loading a sound onto a pad from the browser, and setting how each pad plays, is on [the Pads tab](pads.md); [Shaping how a pad plays](shaping-a-pad.md) covers a pad's layers, envelope, filter and grains.
 
-The **Sample** tab works on one pad at a time. **Hit a pad** to pick it; its name and sound are at the top left of the page. It is one page: the recorder, the tools that trim, slice, warp and grain the sound, the wave, and the pad's settings with its **Sound** beside them. Beside the pad's name, **Send to pad** and **Chop to pads** (see [below](#send-to-pad-and-chop-to-pads)). The pad's layers, keygroups, scenes and each slice's own settings are on the Pads tab's **Edit pad** (see [Shaping how a pad plays](shaping-a-pad.md)). The four **Q-Link** cards are down the right-hand side, as on every other page: each says what its knob turns here, and you can drag a card up or down to turn it from the screen.
+The **Sample** tab works on one pad at a time. **Hit a pad** to pick it; its name and sound are at the top left of the page. It is one page: the recorder, the tools that trim, slice, warp and grain the sound, the wave, and the pad's settings with its **Sound** beside them. Beside the pad's name, **Send to pad**, **Chop to pads** and **Stems** (see [below](#send-to-pad-and-chop-to-pads)). The pad's layers, keygroups, scenes and each slice's own settings are on the Pads tab's **Edit pad** (see [Shaping how a pad plays](shaping-a-pad.md)). The four **Q-Link** cards are down the right-hand side, as on every other page: each says what its knob turns here, and you can drag a card up or down to turn it from the screen.
 
 The Sample tab is yours whatever the pads play. While the pads play the synth, the page stays on the kit and pad it showed: record, keep takes, trim, slice, warp, make grains and put the result on pads or in your library as ever. Hitting a pad plays a note of the synth then, so it doesn't change the pad the page shows (pick another one with SHIFT + the data wheel), and a tap on the wave plays the page's pad on its own, not a synth note. **Load to pad** and **Send to pad**, which wait for a pad hit, wait for the pads to play a kit again.
 
@@ -128,12 +128,37 @@ The Q-Links turn **Length** (through the bars, then Free's seconds up to two min
 
 ## Send to pad and Chop to pads
 
-The two buttons at the top right of the Sample page (and of the Pads tab's Edit pad):
+The three buttons at the top right of the Sample page (and of the Pads tab's Edit pad):
 
 - **Send to pad** copies the pad you are editing, its sound and every edit, onto the next pad you hit. The button says **Hit a pad** while it waits; press it again to call it off. One UNDO takes the copy back.
 - **Chop to pads** picks the **Slice** tool on the Sample page, so you can check the cuts first. Press it again (or the Put on section's own **Chop to** button) to put the slices on the pads. On Edit pad it takes you to the Sample page with the Slice tool, and chops nothing yet.
 
-Both buttons are faint while the pad picked has no sound.
+- **Stems** opens the Stems page, which splits the sound into vocals, drums, bass and other (see [below](#stems-split-a-sound-into-vocals-drums-bass-and-other)).
+
+The buttons are faint while the pad picked has no sound.
+
+## Stems: split a sound into vocals, drums, bass and other
+
+The **Stems** page splits the sound on the page into four new sounds that add up to it: **Vocals**, **Drums**, **Bass** and **Other** (everything else: keys, guitars, pads, strings). Take the drums out of a loop, keep only its bass line, or put the four on four pads and play them against each other. It works on the MPC itself, with Deezer's Spleeter model, which comes on the USB stick.
+
+1. Pick the pad (or the take on the page) and press **Stems** at the top right. The page opens over the Sample page, and the Stems button stays lit; press it again to go back.
+2. Check where the stems will go (**Put on**, below) and tap a stem's name to leave it out.
+3. Press **Split to A6–A9** (the button says where they go). It takes about as long as the sound plays: the page says how long before it starts, and how long is left while it works.
+
+While it splits, the four lanes fill in, a part of about 12 seconds at a time, and the main button is **Stop** (nothing is kept). You can leave the page and carry on: the split keeps going, and lands when it is done. **STOP** stops the music, not the split. The stems land as one step: one **UNDO** takes them all back, with their sounds.
+
+| Section | What it does |
+|---|---|
+| **Split** | **Start to End** splits the part between the sound's markers (as Akai's "Use trimmed sample"); **Whole sound** the lot. Under it: how long it takes, how much memory it holds while it works and how much is free, and how big the stems are. The four are always worked out together, so leaving a stem out doesn't make it faster; it just isn't kept. |
+| **Put on** | Where the stems go. **4 pads** (the first empty pads after the sound's; tap a pad on the map to start them there, and the note says which pads with a sound it would replace), **Layers** (the sound's own pad plays the four together as its layers, in place of the sound), **Takes** (four takes on the page), **New kit** (a new kit's pads A1 to A4, on a new track) or **Library** (saved under Samples › Stems; the kit doesn't change). The map's ‹ › shows another bank of pads. |
+| **Listen** | Each stem's level, and **Play all four** once they have landed. A tap on a stem's lane plays it on its own. |
+
+The **Q-Links** are the four stems' levels: as you hear them on the page, and as they land on their pads or layers.
+
+When it can't start, the main button is faint and the Put on note says why: the stems model isn't on the stick (the USB Creator adds it), there isn't enough memory free ("Needs 190 MB, 120 MB free"), or another split is running (wait, or stop it).
+
+> [!NOTE]
+> A stem is as good as the model can make it: in a busy mix, each stem keeps a little of the other parts. The stems are stereo, up to 16.5 kHz, and 16-bit when the sound is.
 
 ## Naming a pad and its sound
 
