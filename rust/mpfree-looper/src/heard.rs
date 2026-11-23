@@ -264,32 +264,43 @@ impl Heard {
         let e = self.line(end)?;
         let mut k = bars.max(1);
         loop {
-            if let Some(s) = end
+            if let Some(t) = end
                 .checked_sub(u64::from(k))
                 .and_then(|i| self.line(i))
-                .filter(|s| s.run == e.run && e.frame > s.frame)
+                .filter(|s| s.run == e.run)
+                .and_then(|s| self.take_lines((s.tick, s.frame), (e.tick, e.frame), k, latency))
             {
-                let start = s.frame + u64::from(latency);
-                let frames = (e.frame - s.frame) as usize;
-                let first = start.saturating_sub(FADE as u64);
-                // Kept until the copy has read it: from when all of it is
-                // heard, for as long as the copy takes.
-                let copy = (frames / LOAD_SPEED) as u64 + SLACK;
-                let last = self.at.max(start + frames as u64);
-                if start >= self.from && last - first + copy <= self.cap as u64 {
-                    return Some(Take {
-                        bars: k,
-                        start,
-                        frames,
-                        ticks: e.tick - s.tick,
-                        origin: s.tick,
-                    });
-                }
+                return Some(t);
             }
             if k == 1 {
                 return None;
             }
             k /= 2;
         }
+    }
+
+    /// The `bars` whole bars between bar lines `s` and `e` (each its tick
+    /// and frame, on whatever clock placed them: the song's here, the free
+    /// clock's for a free loop), read `latency` frames late: None unless
+    /// all of it was heard since the input changed and fits in what is
+    /// kept, with room for the copy to read it.
+    pub fn take_lines(&self, s: LineAt, e: LineAt, bars: u32, latency: u32) -> Option<Take> {
+        if e.1 <= s.1 {
+            return None;
+        }
+        let start = s.1 + u64::from(latency);
+        let frames = (e.1 - s.1) as usize;
+        let first = start.saturating_sub(FADE as u64);
+        // Kept until the copy has read it: from when all of it is heard,
+        // for as long as the copy takes.
+        let copy = (frames / LOAD_SPEED) as u64 + SLACK;
+        let last = self.at.max(start + frames as u64);
+        (start >= self.from && last - first + copy <= self.cap as u64).then_some(Take {
+            bars,
+            start,
+            frames,
+            ticks: e.0 - s.0,
+            origin: s.0,
+        })
     }
 }

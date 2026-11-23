@@ -2941,7 +2941,8 @@ type LoopStart = Option<(String, bool)>;
 /// before the transport runs, so the hit is on the coming period's first
 /// frame: a loop listening for the pads starts on it, and with the song
 /// stopped the song starts on it too (from the bar it stopped in), so
-/// bar 1 is your note. `take`: a take ready on the armed track (as for
+/// bar 1 is your note; never for a free loop, which keeps its own time.
+/// `take`: a take ready on the armed track (as for
 /// [`time::TimeHost::take_waits`]) records from there too.
 fn pad_starts_loop(
     looper: &mut looping::LoopHost,
@@ -2952,7 +2953,14 @@ fn pad_starts_loop(
     let at = time.next_frame();
     let n = looper.listens_for_pads(at)?;
     let mut line = format!("looper: Loop {} starts on your note", n + 1);
-    if looper.records_free(n) {
+    if looper.on_free_clock(n) {
+        // A free loop keeps its own time: the song stays as it is.
+        line.push_str(if looper.records_free(n) {
+            ", free in your own time: REC again closes it, and its length sets the free loops' tempo"
+        } else {
+            ", on the free loops' clock (the song stays as it is)"
+        });
+    } else if looper.records_free(n) {
         // Tempo from the first loop: it records free, and closing it
         // starts the song (loop_sets_tempo).
         line.push_str(", free: REC again closes it and sets the tempo");
@@ -20116,6 +20124,61 @@ mod tests {
             assert_eq!(midi_in::learned_mode(&source, b2), Some(Mode::Momentary));
         }
         assert!(!midi_in::key_toggles(b2));
+    }
+
+    /// Starts: When I play on a free loop (Sync: Free), with the song and
+    /// the free loops stopped: the pad's note starts the loop on the
+    /// stopped free clock, and never the song.
+    #[test]
+    fn a_pad_starts_a_free_loop_and_never_the_song() {
+        use mpfree_looper::{Clock, Command as L, Phase, Starts};
+        let mut looper = looping::LoopHost::new(RATE, 8);
+        let mut time = time::TimeHost::new(RATE, 120.0).unwrap();
+        let mut t = mpfree_transport::Transport::new(RATE, 120.0).unwrap();
+        let mut b = mpfree_transport::Block::new();
+        let mut run = |looper: &mut looping::LoopHost, periods: usize, sound: bool| {
+            for k in 0..periods {
+                assert!(t.process(PERIOD as u32, &mut b));
+                let x = if sound {
+                    0.2 + 0.1 * (k % 3) as f32
+                } else {
+                    0.0
+                };
+                looper.take_pads(&[x; PERIOD], &[-x; PERIOD]);
+                let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+                looper.period(&b, &mut l, &mut r);
+            }
+        };
+        // Loop 1, free in your own time: about two seconds, closed by REC.
+        looper.command(L::SetClock(Clock::Free));
+        run(&mut looper, 1, false);
+        looper.command(L::Record);
+        run(&mut looper, 700, true);
+        looper.command(L::Record);
+        run(&mut looper, 4, true);
+        let s = looper.loop_status(0).unwrap();
+        assert_eq!((s.phase, s.clock), (Phase::Playing, Clock::Free));
+        // The free loops stop, at their tops.
+        looper.command(L::FreeStop);
+        run(&mut looper, 2, false);
+        // Loop 2 takes Sync: Free, and starts when you play.
+        looper.select(1);
+        looper.command(L::SetStarts(Starts::Play));
+        run(&mut looper, 1, false);
+        looper.command(L::Record);
+        run(&mut looper, 1, false);
+        let s = looper.loop_status(1).unwrap();
+        assert!(s.listening && s.clock == Clock::Free && !s.free, "{s:?}");
+        let (line, refused) =
+            pad_starts_loop(&mut looper, &mut time, None, false).expect("it starts");
+        assert!(!refused, "{line}");
+        assert!(line.contains("on the free loops' clock"), "{line}");
+        assert!(!line.contains("the song with it"), "{line}");
+        run(&mut looper, 2, true);
+        assert_eq!(looper.loop_status(1).unwrap().phase, Phase::Recording);
+        // The song's transport, a period on: still stopped.
+        assert!(time.advance(PERIOD as u32));
+        assert_eq!(time.info().state, mpfree_transport::State::Stopped);
     }
 
     /// The looper's learned controls (its footswitch) are named so the
