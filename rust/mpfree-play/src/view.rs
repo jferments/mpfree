@@ -221,11 +221,28 @@ pub(crate) struct AudioView {
 }
 
 /// A loop cell as the view keeps it (phase 4): its loop and the clip's
-/// lasting id.
+/// lasting id. The loop's id is kept as two halves so the view's clips
+/// stay 8-byte aligned (a `u128` would make every [`ClipView`] 16-byte
+/// aligned, which the track player's hot loop pays for); [`Self::id`]
+/// joins them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct LoopView {
-    pub id: LoopId,
+    halves: [u64; 2],
     pub clip: ClipId,
+}
+
+impl LoopView {
+    pub fn new(id: LoopId, clip: ClipId) -> Self {
+        Self {
+            halves: [id.0 as u64, (id.0 >> 64) as u64],
+            clip,
+        }
+    }
+
+    /// The loop it places.
+    pub fn id(&self) -> LoopId {
+        LoopId(u128::from(self.halves[0]) | u128::from(self.halves[1]) << 64)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1496,7 +1513,7 @@ pub(crate) fn view_of(
             last_frame: a.last_frame,
             once: clip.once,
         }),
-        looped: clip.loop_id().map(|id| LoopView { id, clip: clip.id }),
+        looped: clip.loop_id().map(|id| LoopView::new(id, clip.id)),
     };
     view.locks = clip
         .locks
@@ -1780,8 +1797,8 @@ fn stamp_of(v: &ClipView) -> u64 {
     h.word(u64::from(*holds_notes));
     h.word(audio.as_ref().map_or(0, audio_hash));
     // A loop cell's loop: its two halves, so another loop is another stamp.
-    h.word(looped.map_or(0, |l| l.id.0 as u64));
-    h.word(looped.map_or(0, |l| (l.id.0 >> 64) as u64));
+    h.word(looped.map_or(0, |l| l.halves[0]));
+    h.word(looped.map_or(0, |l| l.halves[1]));
     let notes = notes.iter().map(note_hash);
     let locks = locks.iter().map(lock_hash);
     let touch = touch.iter().enumerate().map(|(i, p)| touch_hash(i, *p));

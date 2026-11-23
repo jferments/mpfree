@@ -276,7 +276,7 @@ fn plays(view: &PlayView, i: usize, what: What) -> AudioPlays<'_> {
                 None => match c.looped {
                     // A loop cell: the looper plays it.
                     Some(l) => AudioPlays::Loop {
-                        id: l.id,
+                        id: l.id(),
                         origin: origin as f64,
                         len: c.length,
                         clip: l.clip,
