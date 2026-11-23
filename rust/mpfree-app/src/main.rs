@@ -8366,6 +8366,12 @@ fn looper_action(
             }
             Vec::new()
         }
+        looping::LoopAction::StopFree => {
+            if let Some(line) = looper.stop_free() {
+                out.note(&line);
+            }
+            Vec::new()
+        }
         // A dragged layer says what it did (or why not) in place of the
         // hint.
         looping::LoopAction::CopyLayer { from, id, to, keep } => {

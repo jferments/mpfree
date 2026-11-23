@@ -184,9 +184,11 @@ pub struct DeckHead {
     pub clock: String,
     /// "92 BPM".
     pub tempo: String,
-    /// While a free loop holds audio, the free clock's tempo: "free 93.4
-    /// BPM".
+    /// While a free loop holds audio, the free group and its tempo: "Free
+    /// 93.4 BPM", drawn with ▶ or ■ after "Free" as it plays or not.
     pub free_tempo: Option<String>,
+    /// The free group plays (▶ after "Free"), or is stopped (■).
+    pub free_plays: bool,
     /// "37 s of 5 min", and how full, 0 to 1.
     pub memory: (String, f32),
     /// The pads are the loop keys (SHIFT + SAMPLER): the Pads switch lit.
@@ -586,14 +588,17 @@ impl LoopDeck {
             t.text_dim,
             &self.head.tempo,
         );
-        // The free loops' tempo, while a free loop holds audio: "· free
-        // 93.4 BPM", "free" in bold; without "BPM" when the song's bar
-        // numbers leave no room for it before the Pads switch.
+        // The free group, while a free loop holds audio: "· Free ▶ 93.4
+        // BPM" (■ while it is stopped), "Free" in bold, so the song and the
+        // free loops read as two groups (Jay's review, 23 Nov, 5.1);
+        // without "BPM" when the song's bar numbers leave no room for it
+        // before the Pads switch.
         if let Some(free) = &self.head.free_tempo {
             let tw = cx.measure(FontId::Sans, 15.0, &self.head.tempo);
             let x = x + w + 14 + tw + 8;
             let (word, rest) = free.split_once(' ').unwrap_or((free.as_str(), ""));
-            let ww = cx.measure(FontId::Bold, 15.0, word);
+            // "Free", then its ▶ or ■ (12 wide) before the tempo.
+            let ww = cx.measure(FontId::Bold, 15.0, word) + 18;
             let room = LoopDeck::pads_rect(r).x - 10 - (x + 12 + ww + 6);
             let short = rest.trim_end_matches(" BPM");
             let rest = [rest, short]
@@ -616,6 +621,14 @@ impl LoopDeck {
                     t.text,
                     word,
                 );
+                let ix = x + 12 + ww - 12;
+                let cy = line.y as f32 + line.h as f32 / 2.0;
+                if self.head.free_plays {
+                    play_icon(cx, ix as f32, cy, 11.0, t.text);
+                } else {
+                    cx.canvas
+                        .fill_rect(Rect::new(ix + 1, cy as i32 - 4, 9, 9), t.text_dim);
+                }
                 cx.text(
                     FontId::Sans,
                     15.0,

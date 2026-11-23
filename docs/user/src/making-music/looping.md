@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-looper rust/mpfree-app/src/looper_page.rs rust/mpfree-app/src/loop_row.rs rust/mpfree-app/src/looper_deck.rs rust/mpfree-app/src/looper_tab.rs rust/mpfree-app/src/looping.rs rust/mpfree-seq/src/loops.rs
-checked: 2026-11-22 0df0743b
+checked: 2026-11-23 4cc9c0ec
 -->
 
 # Recording loops
@@ -79,13 +79,13 @@ The **speaker** under a ring mutes the loop without picking it: it is kept and k
 
 Every loop plays at once, in time with the song, but only one records at a time: starting to record in one loop ends the recording in the others. The pads can do all of this too: see [The pads as loop keys](#the-pads-as-loop-keys).
 
-Over the loops: whether the song is stopped or playing and its tempo (and, while a [free loop](#free-loops) has something in it, the free loops' tempo: "Stopped 120 BPM · free 93.4 BPM"), **Pads as loop keys** (see [The pads as loop keys](#the-pads-as-loop-keys)), **Records from** (what every loop records, with a meter of how loud it is coming in; tap it and its choices open in the lanes' place: **Pads**, **Line in**, **Loops**, or a mix; see [Recording a new loop](#recording-a-new-loop)) and the loop memory every loop shares ("37 s of 5 min").
+Over the loops: whether the song is stopped or playing and its tempo (and, while a [free loop](#free-loops) has something in it, the free loops as a group of their own: **Free**, ▶ while they play or ■ while they are stopped, and their tempo, so "Song stopped 120 BPM · Free ▶ 93.4 BPM" says the song is stopped and the free loops play on; with the song's bar numbers there it leaves out the free loops' "BPM"), **Pads as loop keys** (see [The pads as loop keys](#the-pads-as-loop-keys)), **Records from** (what every loop records, with a meter of how loud it is coming in; tap it and its choices open in the lanes' place: **Pads**, **Line in**, **Loops**, or a mix; see [Recording a new loop](#recording-a-new-loop)) and the loop memory every loop shares ("37 s of 5 min").
 
 ### The picked loop
 
 Under the loops, the picked loop has the whole width. Its header has its colour and name, where it lives on the Clips grid with its length and layers ("Loops A · Verse · 4 bars · 6 layers"), and:
 
-- **Listen**: with the music stopped, plays the loop on its own, round and round from its start, so you can hear it without starting the song. It lights up and says **Stop** while it plays; tap it again, or press PLAY, to stop. While the music plays it is faint, since you hear the loop with everything else then. A [free loop](#free-loops) plays with the song stopped anyway, so it has **Stop** and **Play** for the free loops here instead.
+- **Listen**: with the music stopped, plays the loop on its own, round and round from its start, so you can hear it without starting the song. It lights up and says **Stop** while it plays; tap it again, or press PLAY, to stop. While the music plays it is faint, since you hear the loop with everything else then. A [free loop](#free-loops) plays with the song stopped anyway, so it has **Stop free** and **Play free** for the free loops here instead.
 - **Send**: what to do with the loop (below).
 - **Clear** (outlined in red): deletes the whole loop, like holding its ring. UNDO brings it back.
 
@@ -128,7 +128,7 @@ Pick an empty loop and the space under the lanes shows how it will record, and t
 
 | Setting | What it does |
 |---|---|
-| **Sync** | **Song** (the default): the loop keeps time with the song, as above. **Free**: it keeps its own time with the other free loops, plays on when the song stops and records with the song stopped ([below](#free-loops)). Your choice sticks, as Starts' does. |
+| **Sync** | **Song** (the default): the loop keeps time with the song, as above. **Free**: it keeps its own time with the other free loops, plays on when the song stops and records with the song stopped ([below](#free-loops)). Your choice sticks, as Starts' does. Sync shows the picked loop's own clock: once a loop waits to record, records or has sound, its Sync is faint and stays as it was; tap it and the hint line says why. |
 | **Records from** (over the loops) | **Pads** (the default): what the pads play, so a drum pattern on another instrument stays out. It records the mixer channel of the instrument the pads play: the selected track's own synth, its kit (kit 1 is on **Drums**) or the **Synth** channel, with that channel's effects and fader; and the synth on the **Synth** channel while the synth is on the pads by **Play Poly on the pads** (the Synth tab; **Pads: Poly** at the top of the screen). That instrument's own clips play on the same channel, so they go in with what you play: the choice says so ("what the pads play, and clips on that sound"). It leaves out the echoes and reverbs of the sends (turn up the Loop track's own sends to hear the loop through them, or record **Master**) and the master's own effects and Level, which the loop plays through anyway. While the pads play MIDI out it records silence: record that synth's sound with **Line in**. **Line in**: the INPUTS on the back of the MPC (it opens the line input). **Loops**: all the other loops as you hear them, so you can bounce several loops into one and keep layering. **A mix**, from the row under them: **Master** is everything you hear but the loops (the tracks, the audio tracks and the line input), before the master's own effects and Level; a track or a submix is what it sends on, after its effects and fader, named as the Mix tab names it. The Loop track isn't offered, and a submix the Loop track plays into says it can't be recorded (the loop would record itself). |
 | **Monitor** | With Line in: hear the input through the outputs, about 9 ms late. Leave it off if you already hear your instrument another way, such as through a mixer. |
 | **Length** | **Pattern** (the default): as long as the pattern playing (the longest clip playing, in whole bars), so the loop always fits the beat; with nothing playing it records as on Until tap. **Until tap**: from the next bar line until you tap the ring again (it ends on the next bar line) or press STOP (it stops at once). Or 1, 2, 4 or 8 bars, and it ends by itself. With [Tempo from the first loop](#tempo-from-the-first-loop) on and the music stopped, a first loop with no set length records in your own time and sets the tempo; so does a first [free loop](#free-loops), which sets the free loops' tempo instead. |
@@ -314,7 +314,7 @@ Tap the history chips between Undo and Redo to open a list of everything you did
 
 A loop keeps time with the song ([above](#how-the-looper-keeps-time)), unless you make it a **free loop**. A free loop keeps its own time: it plays on when the song stops, keeps its place when you move the song's playhead or the song's loop goes round, keeps its tempo when the song's changes, and records with the song stopped, at once or in your own time. It is the MPC's Looper with Sync off, with up to eight loops that stay together.
 
-To make one, pick an empty loop on the Looper tab and tap **Sync: Free**, the first setting under What you played. The choice sticks, as Starts' does: every empty loop records free until you tap **Song** again, and each says **Pads · free** (or what it records from) under its ring. A loop keeps the Sync it was recorded with: change Sync while a loop records and that loop keeps its own, and the next empty loop takes the new one.
+To make one, pick an empty loop on the Looper tab and tap **Sync: Free**, the first setting under What you played. The choice sticks, as Starts' does: every empty loop records free until you tap **Song** again (on an empty loop), and each says **Pads · free** (or what it records from) under its ring. A loop keeps the Sync it was recorded with: once it waits to record, records or has sound, its Sync shows its own clock, faint, and doesn't change (tap it and the hint line says "This loop is free and stays so: pick an empty loop to set Sync"). Pick an empty loop to set Sync for the loops you record next.
 
 {{shot: looper-free-empty | Sync on Free for the empty Loop 5, Loop 1 a free loop playing on at its own tempo while the song is stopped: every empty loop says Pads · free, and the line over the loops adds the free loops' tempo.}}
 
@@ -323,7 +323,7 @@ To make one, pick an empty loop on the Looper tab and tap **Sync: Free**, the fi
 All the free loops keep time together, on the looper's **free clock**, so free loops recorded over each other stay in step, as on a looper pedal. The first free loop sets it:
 
 - **With the song playing**, the free clock is a copy of the song's: the loop starts on the song's next bar line and sounds exactly like a song loop, until the song stops, jumps or changes tempo. Then it plays on as if nothing had happened.
-- **With the song stopped**, the loop records in your own time, at once (or on your first note, with **Starts: When I play**); its ring says **Free** and counts the seconds. With **Length: Until tap**, tap the ring or press REC again to close it: its length sets the free loops' tempo, read as [Tempo from the first loop](#tempo-from-the-first-loop) reads it, close calls and Smart loop end included, and it plays on at once. The song's tempo isn't touched and the song stays stopped. With a Length of 1, 2, 4 or 8 bars, it is that many bars at the tempo you played.
+- **With the song stopped**, the loop records in your own time, at once (or on your first note, with **Starts: When I play**); its ring says **Free** and counts the seconds. With **Length: Until tap**, tap the ring or press REC again to close it: its length sets the free loops' tempo, read as [Tempo from the first loop](#tempo-from-the-first-loop) reads it, close calls and Smart loop end included, and it plays on at once. The song's tempo isn't touched and the song stays stopped. With a Length of 1, 2, 4 or 8 bars, it is that many bars at the tempo you played, and its header says so while it records ("recording 4 bars free · tap when they are done"): the pass still ends on your tap, since there is no tempo yet to count the bars.
 
 A free loop says **free** on its card where a song loop says its bars, and its header says so too ("free · 4 bars · 3 layers"); its ring counts its bars on the free clock. When you clear the last free loop the free clock goes with it, and the next free loop sets a new one.
 
@@ -344,16 +344,17 @@ While a free loop records, **PLAY** starts the song and the loop records on, and
 |---|---|---|
 | **STOP** | Stops the song. The free loops play on. | Stops the free loops, at their tops, with every other sound. |
 | **PLAY** | Nothing new. | Starts the song and the stopped free loops together. |
-| **Stop** (on a free loop's header, in Listen's place) | Stops the free loops at their tops. | The same. |
-| **Play** (on a free loop's header, or a tap on a stopped free loop's ring or loop key) | Starts the free loops from their tops on the song's next bar line. Play lights while it waits: tap it again to call it off. | Starts them at once. The song stays stopped. |
+| **SHIFT + STOP** | Stops everything, the free loops too, and the song goes back to bar 1. | Stops the free loops, at their tops, with every other sound. |
+| **Stop free** (on a free loop's header, in Listen's place) | Stops the free loops at their tops. | The same. |
+| **Play free** (on a free loop's header, or a tap on a stopped free loop's ring or loop key) | Starts the free loops from their tops on the song's next bar line. Play free lights while it waits: tap it again to call it off. | Starts them at once. The song stays stopped. |
 
-So STOP stops the song first, a second STOP stops the free loops too, and PLAY starts everything together. The hint line at the bottom says what STOP will do now: **STOP: the song**, **STOP: free loops**, or, with the free loops stopped, **PLAY: song and free loops**.
+So STOP stops the song first, a second STOP stops the free loops too, SHIFT + STOP stops everything at once, and PLAY starts everything together. The line over the loops names both: the song ("Song stopped" or its bar and beat) and **Free** with ▶ or ■. The hint line at the bottom says what STOP will do now: **STOP: the song**, **STOP: free loops**, or, with the free loops stopped, **PLAY: song and free loops**.
 
 The free loops stop at their **tops**: each waits at its place on the free loops' bar 1, so they come back together exactly as they played. While they are stopped, a free loop's ring rests faint where it will start again, with ▶ in the middle, and its header ends in **stopped**. REC or OVERDUB on a stopped free loop starts the free loops and records at once. To take one free loop out and back in, mute it, as any loop.
 
-{{shot: looper-free-picked | A free loop picked while the song plays: Loops 1 and 3 say free on their cards, Stop sits in Listen's place, and the hint line says STOP stops the song.}}
+{{shot: looper-free-picked | A free loop picked while the song plays: Loops 1 and 3 say free on their cards, Free ▶ over the loops, Stop free in Listen's place, and the hint line says STOP stops the song.}}
 
-{{shot: looper-free-stopped | After STOP, STOP: the free loops wait at their tops, their rings at rest with ▶, Play in Listen's place, and the hint line says PLAY starts the song and the free loops.}}
+{{shot: looper-free-stopped | After STOP, STOP: Song stopped and Free ■ over the loops, the free loops wait at their tops with ▶ on their rings, Play free in Listen's place, and the hint line says PLAY starts the song and the free loops.}}
 
 ### What else to know
 

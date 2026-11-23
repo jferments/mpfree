@@ -1872,7 +1872,8 @@ mod looper {
     /// Play in Listen's place); its ring plays the free loops again, the
     /// header's Stop and Play stop and start them, and PLAY starts the
     /// song and the free loops together. Then STOP stops the song alone,
-    /// and the free loop plays on.
+    /// and the free loop plays on; SHIFT + STOP stops it too, with the
+    /// song stopped or playing.
     #[test]
     fn a_free_loop_records_in_your_own_time_and_stops_and_plays_from_the_screen() {
         on_big_stack(|| {
@@ -1923,7 +1924,7 @@ mod looper {
                 .clone()
                 .expect("the free clock's tempo");
             assert!(
-                tempo.starts_with("free ") && tempo.ends_with(" BPM"),
+                tempo.starts_with("Free ") && tempo.ends_with(" BPM"),
                 "{tempo}"
             );
             assert_eq!(stop_words(&s), "STOP: free loops");
@@ -1977,6 +1978,24 @@ mod looper {
             assert_eq!(s.time.info().state, State::Stopped);
             assert_eq!(free_runs(&s), Some(true));
             assert_eq!(stop_words(&s), "STOP: free loops");
+            // SHIFT + STOP stops everything, the free loops too (Jay's
+            // review, 5.4): with the song stopped, and with it playing.
+            s.button_with("SHIFT", "STOP").run_for(0.2);
+            assert_eq!(free_runs(&s), Some(false));
+            assert!(
+                s.said()
+                    .iter()
+                    .any(|l| l == "looper: the free loops stopped, back to their bar 1"),
+                "{:?}",
+                s.said()
+            );
+            s.button("PLAY").run_for(0.3);
+            assert_eq!(free_runs(&s), Some(true));
+            s.button_with("SHIFT", "STOP").run_for(0.2);
+            assert_eq!(s.time.info().state, State::Stopped);
+            assert_eq!(s.time.info().position, 0, "back to bar 1");
+            assert_eq!(free_runs(&s), Some(false));
+            assert_eq!(status(&s).phase, Phase::Playing, "kept, at rest");
         });
     }
 
@@ -2041,12 +2060,14 @@ mod looper {
 
     /// Free loops' screens with the song playing (mockup 2): an empty loop
     /// on Sync: Free waits for the song's bar line, where the first free
-    /// loop copies the song's clock, and its header says so. Sync sticks
-    /// as Starts does: set to Song while Loop 1 records, Loop 1 keeps its
-    /// own and the next empty loop takes Song. Recorded, its card says
-    /// "free" where a song loop says its bars, and the deck's head adds
-    /// the free clock's tempo; while the song plays, a Play on the header
-    /// waits for the song's bar line, lit, and a tap calls it off.
+    /// loop copies the song's clock, and its header says so. Sync shows
+    /// the picked loop's own clock (Jay's review of 23 Nov, 5.2): fixed
+    /// once Loop 1 records, a tap on Song says why on the hint line and
+    /// changes nothing, and the next empty loop records free as last set.
+    /// Recorded, its card says "free" where a song loop says its bars, and
+    /// the deck's head adds the free clock's tempo; while the song plays,
+    /// a Play on the header waits for the song's bar line, lit, and a tap
+    /// calls it off. Loop 2, picked, takes Song.
     #[test]
     fn a_free_loop_with_the_song_playing_starts_on_the_bar_and_sync_sticks() {
         on_big_stack(|| {
@@ -2065,19 +2086,16 @@ mod looper {
                 "waits for the bar line · records the pads, free"
             );
             until_phase(&mut s, Phase::Recording, 2.5);
-            // Song while it records: the next empty loop takes it.
+            // Sync is Loop 1's own now, fixed: Song is faint, and a tap
+            // says why and changes nothing.
+            assert!(!at(&mut s, "leditor", "sync", 0).enabled, "Song: fixed");
+            assert!(!at(&mut s, "leditor", "sync", 1).enabled, "Free: fixed");
             s.press("leditor", "sync", "Song").run_for(0.1);
-            assert!(
-                s.said().iter().any(|l| l
-                    == "looper: sync: the song from the next empty loop on (loop 1 keeps its own)"),
-                "{:?}",
-                s.said()
+            assert_eq!(
+                s.hint(),
+                "This loop is free and stays so: pick an empty loop to set Sync"
             );
             assert_eq!(status(&s).clock, Clock::Free);
-            assert!(
-                !at(&mut s, "leditor", "sync", 0).enabled,
-                "Song is lit: the next empty loop's"
-            );
             until_phase(&mut s, Phase::Playing, 3.0);
             s.run_for(0.1);
             let bpm = s.time.info().bpm;
@@ -2086,9 +2104,11 @@ mod looper {
             assert_eq!(deck(&s).channels[0].length, "free");
             assert_eq!(
                 deck(&s).head.free_tempo.as_deref(),
-                Some(format!("free {} BPM", crate::looper_page::free_bpm_words(bpm)).as_str())
+                Some(format!("Free {} BPM", crate::looper_page::free_bpm_words(bpm)).as_str())
             );
-            assert_eq!(deck(&s).channels[1].foot, "Pads", "Song from Loop 2 on");
+            assert_eq!(deck(&s).channels[1].foot, "Pads · free", "as last set");
+            // (Sync's word on the hint line goes after 4 s.)
+            s.run_for(4.0);
             assert_eq!(stop_words(&s), "STOP: the song");
             // Stop on the header stops the free loops alone; Play waits
             // for the song's bar line, lit, and a tap calls it off.
@@ -2117,10 +2137,18 @@ mod looper {
             }
             assert_eq!(free_runs(&s), Some(true));
             assert!(!s.looper.looper.free_cued());
-            // Loop 2, picked: empty, on the song's clock.
+            // Loop 2, picked: empty and free as last set, and it takes
+            // Song.
             s.press("ldeck", "loop", "Loop 2").run_for(0.1);
+            assert_eq!(s.looper.looper.loop_status(1).unwrap().clock, Clock::Free);
+            assert!(
+                at(&mut s, "leditor", "sync", 0).enabled,
+                "Song: free to pick"
+            );
+            s.press("leditor", "sync", "Song").run_for(0.1);
             assert_eq!(s.looper.looper.loop_status(1).unwrap().clock, Clock::Song);
             assert_eq!(smart_editor(&s).sub, "empty · records the pads");
+            assert_eq!(deck(&s).channels[2].foot, "Pads", "Song from Loop 2 on");
         });
     }
 

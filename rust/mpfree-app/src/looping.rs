@@ -402,6 +402,9 @@ pub enum LoopAction {
     /// STOP with the transport stopped: an overdub waiting for PLAY is
     /// let go and an armed loop disarmed ([`LoopHost::stop_waiting`]).
     StopWaiting,
+    /// SHIFT + STOP, or a set's Panic: the free loops stop too, at once
+    /// ([`LoopHost::stop_free`]).
+    StopFree,
     /// Listen: Some(None) plays the picked loop alone while the song is
     /// stopped, Some(Some(id)) one of its layers ([`LayerInfo::id`]);
     /// asked again, or None, it stops ([`LoopHost::listen`]).
@@ -2920,6 +2923,33 @@ impl LoopHost {
             said.push(format!("loop {}: {what}", n + 1));
         }
         (!said.is_empty()).then(|| format!("looper: STOP: {}", said.join("; ")))
+    }
+
+    /// SHIFT + STOP and a set's Panic stop everything, the free loops too
+    /// (Jay's review of 23 Nov, 5.4): as STOP with the song stopped stops
+    /// them ([`Command::FreeStop`]), at once and back to their bar 1. A
+    /// Play waiting for the song's bar line is called off, an overdub
+    /// ends, and a free first pass in your own time closes there, as a
+    /// tap would. None when no free loop plays, waits to or records in
+    /// your own time (STOP's [`LoopHost::stop_waiting`] lets go of the
+    /// rest).
+    pub fn stop_free(&mut self) -> Option<String> {
+        let runs = self.looper.free_clock().is_some_and(|c| c.running);
+        let own_time = (0..MAX_LOOPS).any(|n| {
+            self.looper
+                .loop_status(n)
+                .is_some_and(|s| s.clock == Clock::Free && s.phase == Phase::Recording && s.free)
+        });
+        if !(runs || own_time || self.looper.free_cued()) {
+            return None;
+        }
+        if self.looper.room() < 1 {
+            return Some(
+                "looper: the free loops NOT stopped, the command queue is full".to_string(),
+            );
+        }
+        self.looper.command(Command::FreeStop);
+        Some("looper: the free loops stopped, back to their bar 1".to_string())
     }
 
     /// Loop `n`'s level (0 to 2), leaving the picked loop picked.

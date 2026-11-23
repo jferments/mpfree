@@ -167,6 +167,12 @@ pub fn seam_text(frames: usize, rate: u32) -> String {
     }
 }
 
+/// Whether the picked loop takes Sync now: it is empty, with nothing
+/// coming in (the looper refuses a clock for a loop with sound).
+fn takes_sync(s: &Status) -> bool {
+    s.phase == Phase::Empty && s.loading.is_none() && s.copying.is_none() && s.capturing.is_none()
+}
+
 /// Whether the picked loop takes edits now: it plays (not recording or
 /// overdubbing) and no merge is rendering.
 fn editable(s: &Status) -> bool {
@@ -190,8 +196,9 @@ pub fn strip_command(c: Ctl, s: &Status) -> Option<Command> {
             Starts::Play
         })),
         // Sync: taken by the loop while it is empty, and by every empty
-        // loop after it (LoopHost::clock).
-        Ctl::Sync(i) => Some(Command::SetClock(if i == 0 {
+        // loop after it (LoopHost::clock). Once it records it keeps its
+        // own, and Sync shows it, fixed (Jay's review, 23 Nov, 5.2).
+        Ctl::Sync(i) if takes_sync(s) => Some(Command::SetClock(if i == 0 {
             Clock::Song
         } else {
             Clock::Free
@@ -237,6 +244,10 @@ pub fn why_faint(c: Ctl, s: &Status) -> &'static str {
         Ctl::Starts(_) => {
             "Recording the other loops starts on the bar: When I play is for the pads and the line input"
         }
+        Ctl::Sync(_) if s.clock == Clock::Free => {
+            "This loop is free and stays so: pick an empty loop to set Sync"
+        }
+        Ctl::Sync(_) => "This loop keeps time with the song and stays so: pick an empty loop to set Sync",
         _ => phase,
     }
 }
@@ -1023,6 +1034,9 @@ impl LooperPage {
         let head = DeckHead {
             beat: running.then_some((beat, beats)),
             clock: match t.state {
+                // With a free group about, whose stop it is (Jay's
+                // review, 23 Nov, 5.1).
+                State::Stopped if v.free.is_some() => "Song stopped".to_string(),
                 State::Stopped => "Stopped".to_string(),
                 State::CountIn => "Count-in".to_string(),
                 _ => format!("Bar {} · beat {}", bar + 1, beat + 1),
@@ -1030,7 +1044,8 @@ impl LooperPage {
             tempo: format!("{:.0} BPM", t.bpm),
             free_tempo: v
                 .free
-                .map(|c| format!("free {} BPM", free_bpm_words(c.bpm))),
+                .map(|c| format!("Free {} BPM", free_bpm_words(c.bpm))),
+            free_plays: v.free_runs(),
             memory: memory(v),
             pads: self.pads_keys,
             input: (self.input_words(v).0, input_frac(self.hold)),
@@ -1309,10 +1324,17 @@ impl LooperPage {
                     parts.push(format!("waits for the free loops' bar line · {records_as}"))
                 }
                 Phase::Armed => parts.push(format!("waits for the bar line · {records_as}")),
-                Phase::Recording if s.free && free => parts.push(format!(
-                    "recording {} · its length sets its own tempo; the song stays stopped",
-                    crate::looping::free_words(s.bars)
-                )),
+                // With a Length the closing tap says when its bars are
+                // done (nothing can count them yet: Jay's review, 5.5).
+                Phase::Recording if s.free && free => parts.push(match s.bars {
+                    Some(n) if n > 0 => format!(
+                        "recording {} free · tap when {} done",
+                        bars_word(n as usize),
+                        if n == 1 { "it is" } else { "they are" }
+                    ),
+                    _ => "recording free · its length sets its own tempo; the song stays stopped"
+                        .to_string(),
+                }),
                 Phase::Recording if free => {
                     parts.push("recording the first pass · free".to_string())
                 }
@@ -1473,10 +1495,14 @@ impl LooperPage {
         } else {
             Strip::Records {
                 source: u8::try_from(self.source_index(v)).unwrap_or(u8::MAX),
-                // Sync as last set: the loop takes it while it is empty,
-                // and every empty loop after it (a tap while this one
-                // records changes the next one's).
-                sync: u8::from(v.clock == Clock::Free),
+                // Sync as last set while the loop is empty: it takes it,
+                // and so does every empty loop after it. Once it records,
+                // its own clock, fixed (Jay's review, 23 Nov, 5.2).
+                sync: if takes_sync(s) {
+                    (u8::from(v.clock == Clock::Free), true)
+                } else {
+                    (u8::from(s.clock == Clock::Free), false)
+                },
                 monitor: (!v.resample && v.source == LoopSource::Line && v.line_on)
                     .then_some(v.monitor),
                 // Length: Pattern is the app's choice; the looper only
@@ -2257,7 +2283,11 @@ mod tests {
             (d.channels[1].length.as_str(), d.channels[1].free),
             ("2 bars", false)
         );
-        assert_eq!(d.head.free_tempo.as_deref(), Some("free 93.4 BPM"));
+        assert_eq!(d.head.free_tempo.as_deref(), Some("Free 93.4 BPM"));
+        // Both groups named over the deck: whose stop it is, and the
+        // free group's own state (Jay's review, 5.1).
+        assert_eq!(d.head.clock, "Song stopped");
+        assert!(d.head.free_plays);
         assert_eq!(d.channels[2].foot, "Pads · free");
         assert_eq!(d.channels[0].state, RingState::Playing);
         let e = ui.get::<LoopEditor>(EDITOR).unwrap();
@@ -2278,6 +2308,7 @@ mod tests {
             RingState::Muted,
             "a song loop as it was"
         );
+        assert!(!d.head.free_plays, "■ over the deck");
         let e = ui.get::<LoopEditor>(EDITOR).unwrap();
         assert_eq!(e.sub, "free · 4 bars · 3 layers · stopped");
         assert_eq!(e.free, Some((false, false)));
@@ -2297,7 +2328,13 @@ mod tests {
         page.update(&mut ui, &v, &Settings::default());
         let e = ui.get::<LoopEditor>(EDITOR).unwrap();
         assert!(
-            matches!(e.strip, Strip::Records { sync: 1, .. }),
+            matches!(
+                e.strip,
+                Strip::Records {
+                    sync: (1, true),
+                    ..
+                }
+            ),
             "{:?}",
             e.strip
         );
@@ -2307,11 +2344,51 @@ mod tests {
         page.update(&mut ui, &v, &Settings::default());
         let e = ui.get::<LoopEditor>(EDITOR).unwrap();
         assert!(
-            matches!(e.strip, Strip::Records { sync: 0, .. }),
+            matches!(
+                e.strip,
+                Strip::Records {
+                    sync: (0, true),
+                    ..
+                }
+            ),
             "{:?}",
             e.strip
         );
         assert_eq!(ui.get::<LoopDeck>(DECK).unwrap().channels[2].foot, "Pads");
+        // A free first pass in your own time: Sync is its own, fixed; with
+        // a Length the closing tap says when its bars are done (Jay's
+        // review, 5.5).
+        let words = |ui: &mut Ui, page: &mut LooperPage, v: &mut LooperView, bars| {
+            let l = &mut v.loops[2];
+            (l.phase, l.clock, l.free, l.bars) = (Phase::Recording, Clock::Free, true, bars);
+            v.status = v.loops[2];
+            page.update(ui, v, &Settings::default());
+            let e = ui.get::<LoopEditor>(EDITOR).unwrap();
+            assert!(
+                matches!(
+                    e.strip,
+                    Strip::Records {
+                        sync: (1, false),
+                        ..
+                    }
+                ),
+                "{:?}",
+                e.strip
+            );
+            e.sub.clone()
+        };
+        assert_eq!(
+            words(&mut ui, &mut page, &mut v, Some(4)),
+            "recording 4 bars free · tap when they are done"
+        );
+        assert_eq!(
+            words(&mut ui, &mut page, &mut v, Some(1)),
+            "recording 1 bar free · tap when it is done"
+        );
+        assert_eq!(
+            words(&mut ui, &mut page, &mut v, None),
+            "recording free · its length sets its own tempo; the song stays stopped"
+        );
         ui.paint(&mut SoftCanvas::new(1280, 800));
     }
 
@@ -2745,13 +2822,14 @@ mod tests {
             e.strip,
             Strip::Records {
                 source: 1,
-                sync: 0,
+                sync: (0, false),
                 monitor: Some(false),
                 bars: 3,
                 starts: (0, true),
                 then: 0
             },
-            "the line in shows its monitor; 2 bars is the fourth length (after Pattern)"
+            "the line in shows its monitor; 2 bars is the fourth length (after Pattern); \
+             armed, its Sync is its own"
         );
         // Records from the loops.
         v.resample = true;
