@@ -319,3 +319,42 @@ fn runs_out_of_order_are_refused_and_counted() {
     assert!(!r.l.play(9, &[]));
     assert_eq!(r.l.stats().refused, refused + 2);
 }
+
+#[test]
+fn a_loop_on_a_track_is_not_in_the_loopers_mix() {
+    // `process` (the looper's mix) leaves it out; its own buffer has it.
+    let mut r = Rig::new(128);
+    let on = r.frame;
+    let o = r.origin();
+    let mut mix = vec![0.0f32; 256];
+    let input = vec![0.0f32; 256];
+    for _ in 0..40 {
+        assert!(r.l.play(
+            0,
+            &[PlayRun {
+                from: 0,
+                to: 128,
+                origin: o
+            }]
+        ));
+        assert!(r.t.process(128, &mut r.b));
+        mix.fill(0.0);
+        r.l.process(&r.b, &input, &mut mix);
+        assert!(mix.iter().all(|&v| v == 0.0), "in the mix");
+        let outs = r.l.outs();
+        assert!(outs.on_track(0) && outs.sounded(0));
+        assert!(
+            outs.loop_out(0).iter().any(|&v| v != 0.0),
+            "on its own output"
+        );
+        r.frame += 128;
+    }
+    assert!(r.frame > on);
+    // Off the track, back in the mix.
+    r.l.leave_track(0);
+    assert!(r.t.process(128, &mut r.b));
+    mix.fill(0.0);
+    r.l.process(&r.b, &input, &mut mix);
+    assert!(!r.l.outs().on_track(0));
+    assert!(mix.iter().any(|&v| v != 0.0));
+}

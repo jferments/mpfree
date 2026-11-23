@@ -3259,6 +3259,9 @@ impl Looper {
             m | (u32::from(l.resample && on_track[k].is_none()) << k)
         });
         outs.set_resampling(rs);
+        outs.set_on_track(
+            (on_track.iter().enumerate()).fold(0u32, |m, (k, t)| m | (u32::from(t.is_some()) << k)),
+        );
         let markers = block.markers();
         let mut m = 0;
         for span in block.spans() {
