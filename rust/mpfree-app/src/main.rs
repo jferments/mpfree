@@ -5423,15 +5423,20 @@ enum ArpNote {
 /// has them), or a host instrument's pad; and each note it makes plays
 /// there. When the pads move to another instrument, or back to the track,
 /// its notes end where they played and nothing stays held or latched
-/// ([`PadsArp::leave`]); a pad still held then lets go quietly. Nothing
-/// records it, as nothing records the pads' own hits: REC moves the arm to
-/// a track that plays what the pads play, and the pads then play through
-/// that track's arp. Main.rs and the test session both use it. Allocates
-/// nothing once made.
+/// ([`PadsArp::leave`]); a pad still held then lets go quietly. While a
+/// track records what the pads play on their own (REC set it up, step
+/// 15c's second part: `App::pads_own_rec`), each note goes there too, as
+/// heard, and its end goes where it went: the `play` closure gets the
+/// track with each note. Main.rs and the test session both use it.
+/// Allocates nothing once made.
 struct PadsArp {
     host: Box<mpfree_play::ArpHost>,
     /// What its notes play now (None until a hit comes in).
     to: Option<PadsPreview>,
+    /// The track recording what the pads play now ([`PadsArp::rec_to`]).
+    rec: Option<u8>,
+    /// The track each sounding note went into ([`NO_REC`]: none).
+    fed: [u8; 128],
     /// The notes each pad pressed into it, and how many (0: none).
     pressed: [([u8; MAX_PAD_NOTES], u8); 16],
     /// The pads whose hit was in it when the pads moved on: their let-go
@@ -5449,10 +5454,25 @@ impl PadsArp {
                 bpm,
             ))),
             to: None,
+            rec: None,
+            fed: [NO_REC; 128],
             pressed: [([0; MAX_PAD_NOTES], 0); 16],
             quiet: 0,
             on: 0,
         }
+    }
+
+    /// The track recording what the pads play on their own now (None:
+    /// none, or REC writes steps): the notes that start from now go into it
+    /// too.
+    fn rec_to(&mut self, rec: Option<u8>) {
+        self.rec = rec;
+    }
+
+    /// The track note `note`'s start went into, forgotten.
+    fn fed_off(&mut self, note: u8) -> Option<u8> {
+        let t = std::mem::replace(&mut self.fed[usize::from(note & 127)], NO_REC);
+        (t != NO_REC).then_some(t)
     }
 
     /// Takes the selected track's arp as the app set it (`armed`, the
@@ -5496,7 +5516,7 @@ impl PadsArp {
         notes: &[u8],
         velocity: u8,
         to: PadsPreview,
-        play: &mut impl FnMut(PadsPreview, ArpNote),
+        play: &mut impl FnMut(PadsPreview, ArpNote, Option<u8>),
     ) {
         use mpfree_play::Event;
         if self.to != Some(to) {
@@ -5546,13 +5566,16 @@ impl PadsArp {
     /// The pads move to another instrument, or back to the track: every
     /// note the arp has sounding ends where it plays, now, and nothing
     /// stays held or latched; a pad still held lets go quietly.
-    fn leave(&mut self, play: &mut impl FnMut(PadsPreview, ArpNote)) {
+    fn leave(&mut self, play: &mut impl FnMut(PadsPreview, ArpNote, Option<u8>)) {
         if let Some(to) = self.to.take() {
-            for note in (0..128u8).filter(|&n| self.on & 1 << n != 0) {
-                play(to, ArpNote::Off { note, offset: 0 });
+            let on = self.on;
+            for note in (0..128u8).filter(|&n| on & 1 << n != 0) {
+                let rec = self.fed_off(note);
+                play(to, ArpNote::Off { note, offset: 0 }, rec);
             }
         }
         self.on = 0;
+        self.fed = [NO_REC; 128];
         for pad in 0..16 {
             if self.pressed[pad].1 > 0 {
                 self.quiet |= bit16(pad);
@@ -5569,15 +5592,16 @@ impl PadsArp {
     fn period(
         &mut self,
         block: &mpfree_transport::Block,
-        play: &mut impl FnMut(PadsPreview, ArpNote),
+        play: &mut impl FnMut(PadsPreview, ArpNote, Option<u8>),
     ) {
         use mpfree_arp::EventKind;
-        let to = self.to;
-        let on = &mut self.on;
+        let (to, rec) = (self.to, self.rec);
+        let (on, fed) = (&mut self.on, &mut self.fed);
         self.host.process(block, &mut |offset, kind| match kind {
             EventKind::On { note, velocity } => {
                 let Some(to) = to else { return };
                 *on |= 1 << (note & 127);
+                fed[usize::from(note & 127)] = rec.unwrap_or(NO_REC);
                 play(
                     to,
                     ArpNote::On {
@@ -5585,13 +5609,19 @@ impl PadsArp {
                         velocity,
                         offset,
                     },
+                    rec,
                 );
             }
             EventKind::Off { note } => {
                 let b = 1u128 << (note & 127);
                 if let Some(to) = to.filter(|_| *on & b != 0) {
                     *on &= !b;
-                    play(to, ArpNote::Off { note, offset });
+                    let went = std::mem::replace(&mut fed[usize::from(note & 127)], NO_REC);
+                    play(
+                        to,
+                        ArpNote::Off { note, offset },
+                        (went != NO_REC).then_some(went),
+                    );
                 }
             }
         });
@@ -5603,6 +5633,33 @@ impl PadsArp {
         self.on.count_ones()
     }
 }
+
+/// A note of the pads' arp into `rec`, the track recording what the pads
+/// play on their own (sampler step 15c's second part,
+/// `App::pads_own_rec`): the synth's by its number, into a clip of notes
+/// (`TimeHost::routed_note`); a host instrument's or a kit's as its pad
+/// (`TimeHost::routed_played`). Nothing without one. Never allocates.
+fn rec_pads_arp(to: PadsPreview, n: ArpNote, rec: Option<u8>, time: &mut time::TimeHost) {
+    use mpfree_play::Event;
+    let Some(t) = rec else {
+        return;
+    };
+    let (offset, ev) = match n {
+        ArpNote::On {
+            note,
+            velocity,
+            offset,
+        } => (offset, Event::NoteOn { note, velocity }),
+        ArpNote::Off { note, offset } => (offset, Event::NoteOff { note }),
+    };
+    match to {
+        PadsPreview::Synth => time.routed_note(t, offset, ev),
+        PadsPreview::Host | PadsPreview::Kit(_) => time.routed_played(t, offset, ev),
+    }
+}
+
+/// No track: what [`PadsArp`] keeps for a note nothing records.
+const NO_REC: u8 = u8::MAX;
 
 /// Pad `pad`'s bit in a 16-pad mask (none past 16).
 fn bit16(pad: usize) -> u16 {
@@ -5696,6 +5753,114 @@ fn play_pads_arp(
                 usize::from(k),
             );
             None
+        }
+    }
+}
+
+/// The pads' hits while they play an instrument on their own (a synth, a
+/// whole kit, a bank's own: [`PadsPreview`]), into the track REC set up
+/// for it (sampler step 15c's second part, "REC records what is heard":
+/// `App::pads_own_rec`), as the layers' hits go into theirs
+/// ([`PadLayers::rec_on`]): each hit as the pad that plays it there (a
+/// kit's pad of the page the pads are on, the synth's or a host
+/// instrument's pad), its let-go and pressure where it went though the
+/// pads moved on meanwhile; and each key that plays the pads' synth on its
+/// own, as the pad its note plays there (CAPTURE's rule: a note no pad
+/// plays alone isn't kept). The pads' arp's notes go there by
+/// [`PadsArp`]. Main.rs and the test session both use it. Allocates
+/// nothing once made.
+struct PadsRec {
+    /// The track recording what the pads play now.
+    rec: Option<u8>,
+    /// Where each pad's hit went: the track, and the pad it went in as.
+    fed: [Option<(u8, u8)>; 16],
+    /// The pad each key went to on the track it went into.
+    keys: midi_in::RoutedPads,
+    /// The tracks a key went into, a bit each, for its let-go.
+    key_tracks: u128,
+}
+
+impl PadsRec {
+    fn new() -> PadsRec {
+        PadsRec {
+            rec: None,
+            fed: [None; 16],
+            keys: midi_in::RoutedPads::new(),
+            key_tracks: 0,
+        }
+    }
+
+    /// The track recording what the pads play on their own now
+    /// (`App::pads_own_rec`): the hits and keys that follow go into it.
+    fn rec_to(&mut self, rec: Option<u8>) {
+        self.rec = rec;
+    }
+
+    /// Pad `pad` (0 to 15) down as pad `note` of what the pads play, at
+    /// `velocity` as the recorder takes it (`App::layer_rec_velocity`;
+    /// None: nothing records the pads now).
+    fn on(&mut self, pad: usize, note: u8, velocity: Option<u8>, time: &mut time::TimeHost) {
+        use mpfree_play::Event;
+        self.off(pad, time);
+        let (Some(t), Some(velocity), Some(fed)) = (self.rec, velocity, self.fed.get_mut(pad))
+        else {
+            return;
+        };
+        *fed = Some((t, note));
+        time.routed_played(t, 0, Event::NoteOn { note, velocity });
+    }
+
+    /// Pad `pad` up: its end where its hit went.
+    fn off(&mut self, pad: usize, time: &mut time::TimeHost) {
+        if let Some((t, note)) = self.fed.get_mut(pad).and_then(Option::take) {
+            time.routed_played(t, 0, mpfree_play::Event::NoteOff { note });
+        }
+    }
+
+    /// Pad `pad`'s pressure where its hit went.
+    fn pressure(&mut self, pad: usize, value: u8, time: &mut time::TimeHost) {
+        if let Some(&Some((t, note))) = self.fed.get(pad) {
+            time.routed_played(t, 0, mpfree_play::Event::Pressure { note, value });
+        }
+    }
+
+    /// A keyboard's key that played the pads' synth on its own
+    /// (`KeysOnPads`), into the track recording it, as the pad its note
+    /// plays there (`midi_file::pad_on_track`); its end and pressure where
+    /// it went. `velocity` is as the recorder takes it (None: nothing
+    /// records the pads now).
+    fn key(
+        &mut self,
+        k: midi_in::Key,
+        velocity: Option<u8>,
+        time: &mut time::TimeHost,
+        own: &instruments::Instruments,
+        synth: &synth::Synth,
+    ) {
+        use midi_in::Key;
+        match k {
+            Key::Down { note, .. } => {
+                let (Some(t), Some(velocity)) = (self.rec, velocity) else {
+                    return;
+                };
+                let key = Key::Down { note, velocity };
+                let pad = |n| midi_file::pad_on_track(own, Some(synth), usize::from(t), n);
+                if let Some(ev) = self.keys.event(t, key, pad) {
+                    time.routed_played(t, 0, ev);
+                    self.key_tracks |= 1 << t;
+                }
+            }
+            Key::Up { .. } | Key::Pressure { .. } => {
+                let mut went = self.key_tracks;
+                while went != 0 {
+                    let t = went.trailing_zeros() as u8;
+                    went &= went - 1;
+                    if let Some(ev) = self.keys.event(t, k, |_| None) {
+                        time.routed_played(t, 0, ev);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -9210,6 +9375,9 @@ fn player_session(
     // NOTE REPEAT, Latch and the arp while the pads play an instrument on
     // their own (sampler step 15c).
     let mut pads_arp = PadsArp::new(RATE, app.bpm());
+    // The pads' own hits and keys into the track recording what they play
+    // on their own (sampler step 15c).
+    let mut pads_rec = PadsRec::new();
     let mut route_synths = RouteSynths::new();
     // The keys' expression on its gear, thinned for the recorder and the
     // move log (the MIDI plan's 3.7).
@@ -10860,6 +11028,9 @@ fn player_session(
                 if let midi_in::Key::Control { ctl, value } = k {
                     pedals_down.key(ctl, value);
                 }
+                // Into the track recording what the pads play (sampler
+                // step 15c).
+                pads_rec.key(k, rv, &mut time, &mix.instruments, &synth);
                 continue;
             }
             // Expression out: the armed track's CV outputs, and its gear on
@@ -11330,7 +11501,7 @@ fn player_session(
                             }
                         };
                         let (track, page) = (app.track() as u8, app.pad_page());
-                        pads_arp.down(pad, &buf[..n], v, to, &mut |to, n| {
+                        pads_arp.down(pad, &buf[..n], v, to, &mut |to, n, rec| {
                             play_pads_arp(
                                 to,
                                 n,
@@ -11342,6 +11513,7 @@ fn player_session(
                                 &mut mix.pad_synths,
                                 &mut player,
                             );
+                            rec_pads_arp(to, n, rec, &mut time);
                         });
                     }
                     match pads_preview.filter(|_| arp_to.is_none()) {
@@ -11372,6 +11544,16 @@ fn player_session(
                         Some(PadsPreview::Synth) => synth.note_on(pad, v, 0),
                         None => {}
                     }
+                    // Into the track recording what the pads play (sampler
+                    // step 15c), as the pad it plays there; the arp's notes
+                    // go there instead while it takes the hit.
+                    if arp_to.is_none() {
+                        let note = match pads_preview {
+                            Some(PadsPreview::Kit(_)) => preview_pad[pad],
+                            _ => pad as u8,
+                        };
+                        pads_rec.on(pad, note, app.layer_rec_velocity(velocity), &mut time);
+                    }
                     if !m.music {
                         pad_layers.pad_on(pad, v, &mut synth, &mut mix.instruments);
                         pad_layers.rec_on(pad, app.layer_rec_velocity(velocity), &mut time);
@@ -11393,6 +11575,7 @@ fn player_session(
                     // step 15c).
                     let held = preview_held[pad].take().filter(|_| !pads_arp.holds(pad));
                     pads_arp.up(pad);
+                    pads_rec.off(pad, &mut time);
                     match held {
                         Some(PadsPreview::Host) => {
                             mix.instruments.pad_off(instruments::THE_PADS, pad, 0);
@@ -11428,6 +11611,7 @@ fn player_session(
                     let pad = pad as usize;
                     let held = preview_held[pad].filter(|_| !pads_arp.holds(pad));
                     pads_arp.pressure(pad, pressure);
+                    pads_rec.pressure(pad, pressure, &mut time);
                     match held {
                         Some(PadsPreview::Host) => {
                             mix.instruments
@@ -11780,7 +11964,7 @@ fn player_session(
         // that play the synth, where REC records the pads as they are.
         app.set_configured(track_kits.picked() | midi_out.routed());
         app.set_synth_tracks(track_kits.on_synth());
-        app.set_pads_kit_tracks(app.pads_kit().map_or(0, |k| track_kits.on_kit(k)));
+        app.set_kit_tracks(|k| track_kits.on_kit(k));
         let mut stop = false;
         let mut later = Vec::new();
         for e in fx.drain(..) {
@@ -12200,6 +12384,11 @@ fn player_session(
         );
         // The armed tracks that record a layer (step 11c).
         pad_layers.rec_to(app.pads_layer_recs(time.also()));
+        // And what the pads play on their own, the pads' arp's notes too,
+        // into the track REC set up for it (sampler step 15c).
+        let own_rec = app.pads_own_rec(time.also());
+        pads_rec.rec_to(own_rec);
+        pads_arp.rec_to(own_rec.filter(|_| app.layer_rec_velocity(1).is_some()));
         // The synths MIDI routes name (step 11e), and where REC takes
         // their keys.
         route_synths.follow(
@@ -12370,7 +12559,7 @@ fn player_session(
             // The pads' arp's notes end where they played (sampler step
             // 15c); its next hit starts it on what the pads play now.
             let (track, page) = (sel as u8, app.pad_page());
-            pads_arp.leave(&mut |to, n| {
+            pads_arp.leave(&mut |to, n, rec| {
                 play_pads_arp(
                     to,
                     n,
@@ -12382,6 +12571,7 @@ fn player_session(
                     &mut mix.pad_synths,
                     &mut player,
                 );
+                rec_pads_arp(to, n, rec, &mut time);
             });
             if preview_now != Some(PadsPreview::Synth) {
                 for pad in (0..16).filter(|&p| preview_held[p] == Some(PadsPreview::Synth)) {
@@ -12935,8 +13125,9 @@ fn player_session(
         pads_arp.follow(app.arps.engine_at(app.track()), app.arp_own_swing());
         {
             let (track, page) = (app.track() as u8, app.pad_page());
-            let block = time.block();
-            pads_arp.period(block, &mut |to, n| {
+            // A copy (no heap): the notes record into `time` as they play.
+            let block = time.block().clone();
+            pads_arp.period(&block, &mut |to, n, rec| {
                 let lit = play_pads_arp(
                     to,
                     n,
@@ -12948,6 +13139,7 @@ fn player_session(
                     &mut mix.pad_synths,
                     &mut player,
                 );
+                rec_pads_arp(to, n, rec, &mut time);
                 if let (Some(pad), ArpNote::On { velocity, .. }) = (lit, n) {
                     hits += 1;
                     repeats += 1;

@@ -47,8 +47,10 @@ use mpfree_arp::scale::pads::Pad as PadNotes;
 pub use pad_layers::layer_names;
 pub use pads_focus::{
     layer_takes, synth_track, unfit, BankEntry, LayerEntry, LayerTake, PadFocus, PadMap, RecPlan,
-    SynthTake,
+    RecSound, SynthTake,
 };
+#[cfg(test)]
+use pads_focus::{RecFrom, RecMore};
 pub use route_synths::REC_MORE;
 pub use step_pads::StepPads;
 pub use synth_pads::{sent_name, SynthItem};
@@ -1825,9 +1827,10 @@ pub struct App {
     /// The tracks that play the shared synth, a bit each
     /// ([`App::set_synth_tracks`]).
     synth_tracks: u128,
-    /// The tracks that play the kit chosen for the pads (sampler step 15,
-    /// [`App::set_pads_kit_tracks`]).
-    pads_kit_tracks: u128,
+    /// The tracks that play each kit the pad map names (sampler step 15,
+    /// and its base and banks from step 15c, [`App::set_kit_tracks`]): the
+    /// kit place and a bit for each track; the rest `(usize::MAX, 0)`.
+    kit_tracks: [(usize, u128); pads_focus::MAP_KITS],
     /// The tracks with a kit or a MIDI output picked, a bit each
     /// ([`App::set_configured`]).
     configured: u128,
@@ -2011,7 +2014,7 @@ impl App {
             route_synths: [None; route_synths::ROUTE_SYNTHS],
             synth_pick: None,
             synth_tracks: 0,
-            pads_kit_tracks: 0,
+            kit_tracks: [(usize::MAX, 0); pads_focus::MAP_KITS],
             configured: 0,
             pad_pressed: [PadNotes::default(); 16],
             note_holds: [0; 128],
@@ -8652,21 +8655,24 @@ mod tests {
         assert_eq!(plan(SynthTake::Full).chip(name), "No free track · Poly");
         // Layers (step 11c): the first by name, the rest counted; a layer
         // with no place isn't.
-        let layer = |take| {
+        let layer = |take, from| {
             Some(LayerTake {
                 take,
                 synth: "Pluck",
-                holder: Some(3),
+                sound: RecSound::Synth(Some(3)),
+                from,
                 plays: false,
             })
         };
         let mut two = plan(SynthTake::On(1));
-        two.layers[0] = layer(SynthTake::On(2));
+        two.layers[0] = layer(SynthTake::On(2), RecFrom::Layer(0));
         assert_eq!(two.chip(name), "Bass · Poly + 1 more");
-        two.layers[1] = layer(SynthTake::New);
+        two.layers[1] = layer(SynthTake::New, RecFrom::Layer(1));
         assert_eq!(two.chip(name), "Bass · Poly + 2 more");
-        two.layers[1] = layer(SynthTake::Full);
-        assert_eq!(two.chip(name), "Bass · Poly + 1 more");
+        // A sound with no track: REC records nothing, and the chip names
+        // it (sampler step 15c).
+        two.layers[1] = layer(SynthTake::Full, RecFrom::Bank(1));
+        assert_eq!(two.chip(name), "No free track · Bank B's Pluck");
         let mut pinned = two;
         pinned.take = SynthTake::Pinned {
             track: 0,
@@ -8682,11 +8688,12 @@ mod tests {
     #[test]
     fn each_layer_records_where_its_synth_plays_or_on_a_free_track() {
         let mut layers = [None; REC_MORE];
-        layers[0] = Some(("Pluck", Some(130)));
-        layers[1] = Some(("Poly", None));
+        let more = |name, sound, from| Some(RecMore { name, sound, from });
+        layers[0] = more("Pluck", RecSound::Synth(Some(130)), RecFrom::Layer(0));
+        layers[1] = more("Poly", RecSound::Synth(None), RecFrom::Base);
         // Tracks 0 to 4: Track 3 plays Pluck; Tracks 2 and 4 are free.
-        let plays = |t: usize, h: Option<usize>| match h {
-            Some(130) => t == 3,
+        let plays = |t: usize, s: RecSound| match s {
+            RecSound::Synth(Some(130)) => t == 3,
             _ => false,
         };
         let fits = |t: usize| t == 2 || t == 4;

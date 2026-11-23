@@ -30,16 +30,20 @@
 //! - **REC** (step 11c) records each layer on a track of its own, in one
 //!   take: an armed track that plays its synth, or a free one pointed at
 //!   it and armed with the first (`desk.rs`, `rec_plan` and `rec_synth`;
-//!   [`App::pads_layer_synths`]). The audio loop gives each hit to the
-//!   armed tracks that play a layer ([`App::pads_layer_recs`]). The
-//!   synths MIDI routes name (step 11e, `app/route_synths.rs`) record
-//!   after them the same way.
+//!   [`App::pads_layer_sounds`]): every layer of the map, whichever bank
+//!   the pads are on when you press (sampler step 15c). The audio loop
+//!   gives each hit to the armed tracks of the layers that play on the
+//!   bank the pads are on ([`App::pads_layer_recs`]). The synths MIDI
+//!   routes name (step 11e, `app/route_synths.rs`), then the pads' base
+//!   and the banks' own (sampler step 15c), record after them the same
+//!   way.
 //! - **Saved** in the pads part with the rest of the pad map (sampler step
 //!   15b, [`super::PadMap`]): a line per layer after the first (`layer
 //!   instrument 4`, `bank B` for a layer on one bank). A layer whose synth
 //!   has gone keeps its place, missing and silent, said
 //!   ([`App::set_instrument_list`], [`App::open_pads`]).
 
+use super::pads_focus::{RecFrom, RecMore, RecSound};
 use super::{App, Effect, LayerEntry, PadFocus};
 use crate::instrument_list::{InstrumentId, Kind};
 
@@ -109,25 +113,34 @@ impl App {
         self.layers_apply() && self.layers_now().any(|id| id == InstrumentId::SHARED_SYNTH)
     }
 
-    /// The layers that play now, for REC (step 11c), in order: each one's
-    /// name and holder in the instrument host (None for the shared synth).
-    /// A layer whose free place isn't held yet is left out. Allocates
-    /// nothing.
-    pub fn pads_layer_synths(&self) -> [Option<(&'static str, Option<usize>)>; MORE] {
+    /// The pads' layers for REC (step 11c), in order: every layer of the
+    /// map whose instrument the list has, while the pads have one of their
+    /// own (a layer plays only then), whatever bank it reaches and the
+    /// pads are on (sampler step 15c: REC records every sound the map
+    /// plays). A kit isn't a layer yet (step 15f). Allocates nothing.
+    pub fn pads_layer_sounds(&self) -> [Option<RecMore>; MORE] {
         let mut out = [None; MORE];
-        if !self.layers_apply() {
+        if !matches!(self.base_now(), PadFocus::Instrument(_)) {
             return out;
         }
-        let playing = self
-            .layers_now()
-            .filter_map(|id| match self.instrument_list.kind(id)? {
-                Kind::SharedSynth => Some((self.instrument_name(id), None)),
-                k => k.holder().map(|h| (self.instrument_name(id), Some(h))),
-            });
-        for (slot, l) in out.iter_mut().zip(playing) {
+        let listed = (0..MORE).filter_map(|i| {
+            let l = self.pad_map.layers[i]?;
+            let sound = self.sound_of(PadFocus::Instrument(l.id))?;
+            matches!(sound, RecSound::Synth(_)).then(|| RecMore {
+                name: self.instrument_name(l.id),
+                sound,
+                from: RecFrom::Layer(i),
+            })
+        });
+        for (slot, l) in out.iter_mut().zip(listed) {
             *slot = Some(l);
         }
         out
+    }
+
+    /// Whether layer slot `i` plays on the bank the pads are on now.
+    pub(super) fn layer_plays_now(&self, i: usize) -> bool {
+        self.layers_apply() && self.layer_now(i).is_some()
     }
 
     /// Whether track `track` plays a synth: holder `holder`'s, by its own
@@ -140,15 +153,22 @@ impl App {
         }
     }
 
-    /// The track each layer that plays now records on (step 11c), in the
-    /// order of [`App::pads_layer_synths`]: one of the other armed tracks
-    /// (`also`, a bit each: `TimeHost::also`) that plays its synth, as REC
-    /// sets them up (`desk.rs`, `rec_synth`). None: no layer there, or no
-    /// such track. The audio loop gives them each pad hit. Allocates
+    /// The track each layer that plays now records on (step 11c): one of
+    /// the other armed tracks (`also`, a bit each: `TimeHost::also`) that
+    /// plays its synth, as REC sets them up (`desk.rs`, `rec_synth`). None:
+    /// no layer there, one that doesn't play on the bank the pads are on,
+    /// or no such track. The audio loop gives them each pad hit. Allocates
     /// nothing.
     pub fn pads_layer_recs(&self, also: u128) -> [Option<u8>; MORE] {
+        let more = self.rec_more_sounds();
         let all = self.rec_more_tracks(also);
-        std::array::from_fn(|i| all[i])
+        std::array::from_fn(|i| match more[i] {
+            Some(RecMore {
+                from: RecFrom::Layer(l),
+                ..
+            }) if self.layer_plays_now(l) => all[i],
+            _ => None,
+        })
     }
 
     /// The velocity a hit of `velocity` (raw) goes into a layer's track

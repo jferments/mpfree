@@ -2026,10 +2026,11 @@ mod tests {
     /// and FM: bank B plays FM, named "Pads B: FM" in the header, while
     /// Track 1 keeps its kit. PAD BANK A gives the pads the kit again (FM
     /// stays, as bank B points at it) and B gives them FM; REC there
-    /// records FM on a free track, and the project's pads part keeps the
-    /// bank's line. The Synth tab's hint then says who plays FM: "the
-    /// pads, Track 2" while Track 2 is picked (the pads follow it on the
-    /// other banks), "pads bank B, Track 2" once Track 1 is again.
+    /// records FM on a free track armed with Track 1, which stays armed so
+    /// the other banks go on playing its kit (sampler step 15c: "REC →
+    /// Track 1 + 1 more"), and the project's pads part keeps the bank's
+    /// line. The Synth tab's hint then says who plays FM: "pads bank B,
+    /// Track 2".
     #[test]
     fn bank_b_only_plays_fm_on_bank_b_and_the_kit_on_the_others() {
         use crate::instruments::free;
@@ -2079,34 +2080,26 @@ mod tests {
                 Some("FM"),
                 "FM stays for bank B"
             );
-            // Bank B again: FM, and REC records it on Track 2.
+            // Bank B again: FM, and REC records it on Track 2, armed with
+            // Track 1, which stays armed (sampler step 15c).
             s.button("PAD BANK B/F").run_periods(2).settle();
             assert_eq!(s.mix.instruments.pads_play_at(), Some(free(0)));
             s.run_periods(1).settle();
-            assert_eq!(rec_chip(&s), "REC → Track 2 · FM");
+            assert_eq!(rec_chip(&s), "REC → Track 1 + 1 more");
             s.button("REC").settle();
             s.run_periods(2).settle();
             assert_eq!(s.mix.instruments.send(1), Some(free(0)), "the same FM");
+            assert_eq!(s.time.armed(), Some(0), "the arm stays on Track 1");
+            assert_eq!(s.time.also(), 1 << 1, "Track 2 armed too");
+            assert_eq!(s.app.track(), 0, "the other banks play Track 1's kit");
             assert_eq!(s.app.pad_page(), 1, "REC never moves the pads");
             assert!(
                 s.app.pads_part().contains("\nbank B instrument "),
                 "{}",
                 s.app.pads_part()
             );
-            // Who plays FM (step 8). REC picked Track 2, so the other
-            // banks follow it to FM: the pads, every bank.
+            // Who plays FM (step 8): bank B alone of the pads, and Track 2.
             s.button("STOP").settle();
-            s.run_for(crate::gui::TELL_SECONDS as f64 + 0.5).settle();
-            assert!(
-                s.hint().starts_with("FM: the pads, Track 2"),
-                "{}",
-                s.hint()
-            );
-            // Track 1 picked again: bank B alone of the pads, and Track 2.
-            let pick = mpfree_time_ui::TimeAction::Pick(0);
-            s.route(crate::gui::FromUi::Time(pick));
-            s.run_periods(2).settle();
-            assert_eq!(s.app.track(), 0);
             assert_eq!(s.mix.instruments.pads_play_at(), Some(free(0)));
             s.run_for(crate::gui::TELL_SECONDS as f64 + 0.5).settle();
             assert!(

@@ -275,6 +275,9 @@ pub struct Session {
     /// played on their own when it last looked.
     pads_arp: crate::PadsArp,
     arp_preview: Option<crate::PadsPreview>,
+    /// The pads' own hits and keys into the track recording what they
+    /// play on their own (sampler step 15c), as main.rs.
+    pads_rec: crate::PadsRec,
     /// What the pads' arp played: where, the note and its velocity.
     pub arp_played: Vec<(crate::PadsPreview, u8, u8)>,
     /// The synths MIDI routes name (step 11e), as main.rs's.
@@ -446,6 +449,7 @@ impl Session {
             pad_layers: crate::PadLayers::new(),
             pads_arp: crate::PadsArp::new(44_100, 120.0),
             arp_preview: None,
+            pads_rec: crate::PadsRec::new(),
             arp_played: Vec::new(),
             route_synths: crate::RouteSynths::new(),
             layers_shown: [None; crate::instruments::PAD_LAYERS],
@@ -988,6 +992,10 @@ impl Session {
             .keys_on_pads
             .key(key, preview, shape, &mut self.synth, own)
         {
+            // Into the track recording what the pads play (sampler step
+            // 15c), as main.rs.
+            let (time, own) = (&mut self.time, &self.mix.instruments);
+            self.pads_rec.key(key, rv, time, own, &self.synth);
             return self.run_periods(2);
         }
         match velocity {
@@ -1248,9 +1256,12 @@ impl Session {
             };
             let (synth, own) = (&mut *self.synth, &mut self.mix.instruments);
             let (sounds, played) = (&mut self.sounds, &mut self.arp_played);
-            self.pads_arp.down(pad, &buf[..n], v, to, &mut |to, n| {
-                arp_note(to, n, synth, own, sounds, played);
-            });
+            let time = &mut self.time;
+            self.pads_arp
+                .down(pad, &buf[..n], v, to, &mut |to, n, rec| {
+                    arp_note(to, n, synth, own, sounds, played);
+                    crate::rec_pads_arp(to, n, rec, time);
+                });
             let own = &mut self.mix.instruments;
             self.pad_layers.pad_on(pad, v, &mut self.synth, own);
             let rv = self.app.layer_rec_velocity(velocity);
@@ -1276,6 +1287,7 @@ impl Session {
             self.pad_layers.pad_on(pad, v, &mut self.synth, own);
             let rv = self.app.layer_rec_velocity(velocity);
             self.pad_layers.rec_on(pad, rv, &mut self.time);
+            self.pads_rec.on(pad, pad as u8, rv, &mut self.time);
             self.host_held[pad] = true;
             self.previewed.push((pad, v));
             self.out.show(ToUi::PadDown { pad, velocity: v });
@@ -1285,6 +1297,7 @@ impl Session {
             self.mix
                 .instruments
                 .pad_off(crate::instruments::THE_PADS, pad, 0);
+            self.pads_rec.off(pad, &mut self.time);
             self.out.show(ToUi::PadUp(pad));
             return;
         }
@@ -1297,6 +1310,7 @@ impl Session {
             self.pad_layers.pad_on(pad, v, &mut self.synth, own);
             let rv = self.app.layer_rec_velocity(velocity);
             self.pad_layers.rec_on(pad, rv, &mut self.time);
+            self.pads_rec.on(pad, pad as u8, rv, &mut self.time);
             self.preview_held[pad] = true;
             self.previewed.push((pad, v));
             self.out.show(ToUi::PadDown { pad, velocity: v });
@@ -1304,6 +1318,7 @@ impl Session {
         }
         if !down && pad < 16 && std::mem::take(&mut self.preview_held[pad]) {
             self.synth.note_off(pad, 0);
+            self.pads_rec.off(pad, &mut self.time);
             self.out.show(ToUi::PadUp(pad));
             return;
         }
@@ -1320,6 +1335,7 @@ impl Session {
             self.pad_layers.pad_on(pad, v, &mut self.synth, own);
             let rv = self.app.layer_rec_velocity(velocity);
             self.pad_layers.rec_on(pad, rv, &mut self.time);
+            self.pads_rec.on(pad, kit_pad as u8, rv, &mut self.time);
             self.kit_held[pad] = Some((k, kit_pad));
             self.previewed.push((pad, v));
             self.out.show(ToUi::PadDown { pad, velocity: v });
@@ -1329,6 +1345,7 @@ impl Session {
             if let Some(p) = self.sounds.as_mut() {
                 p.release_kit_at(k, kit_pad, 0);
             }
+            self.pads_rec.off(pad, &mut self.time);
             self.out.show(ToUi::PadUp(pad));
             return;
         }
@@ -1487,6 +1504,12 @@ impl Session {
         );
         let recs = self.app.pads_layer_recs(self.time.also());
         self.pad_layers.rec_to(recs);
+        // What the pads play on their own, the pads' arp's notes too, as
+        // main.rs (sampler step 15c).
+        let own_rec = self.app.pads_own_rec(self.time.also());
+        self.pads_rec.rec_to(own_rec);
+        let arp_rec = own_rec.filter(|_| self.app.layer_rec_velocity(1).is_some());
+        self.pads_arp.rec_to(arp_rec);
         self.route_synths.follow(
             self.app.route_synth_holders(),
             self.app.route_synth_shared(),
@@ -1713,8 +1736,11 @@ impl Session {
         {
             let (synth, own) = (&mut *self.synth, &mut self.mix.instruments);
             let (sounds, played) = (&mut self.sounds, &mut self.arp_played);
-            self.pads_arp.period(self.time.block(), &mut |to, n| {
+            let block = self.time.block().clone();
+            let time = &mut self.time;
+            self.pads_arp.period(&block, &mut |to, n, rec| {
                 arp_note(to, n, synth, own, sounds, played);
+                crate::rec_pads_arp(to, n, rec, time);
             });
         }
         for (o, is) in std::mem::take(&mut self.hits.tapped) {
@@ -2563,8 +2589,8 @@ impl Session {
         // records the pads as they are.
         self.app.set_configured(self.track_kits.picked());
         self.app.set_synth_tracks(self.track_kits.on_synth());
-        let on_kit = self.app.pads_kit().map_or(0, |k| self.track_kits.on_kit(k));
-        self.app.set_pads_kit_tracks(on_kit);
+        let kits = &self.track_kits;
+        self.app.set_kit_tracks(|k| kits.on_kit(k));
         for _ in 0..8 {
             if self.fx.is_empty() {
                 return;
@@ -2870,8 +2896,10 @@ impl Session {
         if now != self.arp_preview {
             let (synth, own) = (&mut *self.synth, &mut self.mix.instruments);
             let (sounds, played) = (&mut self.sounds, &mut self.arp_played);
-            self.pads_arp.leave(&mut |to, n| {
+            let time = &mut self.time;
+            self.pads_arp.leave(&mut |to, n, rec| {
                 arp_note(to, n, synth, own, sounds, played);
+                crate::rec_pads_arp(to, n, rec, time);
             });
             self.arp_preview = now;
         }

@@ -52,6 +52,16 @@ Tap the synth's card at the top left of the **Synth** tab (its name, the track a
 - **A synth that is gone keeps its place.** If a synth the pads or a bank point at is no longer in the project (a track's own synth you took off, say), the line at the bottom of the screen says so once, and that place waits for you: the bank plays what the other banks play, or the pads play the selected track's instrument, until you pick another synth there or tap **Follow track**. The project keeps the place too, and opening it says which synth is missing.
 - **The arp plays it too.** With NOTE REPEAT held, Latch on or the Arp panel open, the repeats and arpeggios play the synth you picked, and a tap in the list works as usual.
 
+### Recording every bank
+
+When a bank has a synth or kit of its own, REC records everything the pads play, whichever bank you play it on, each sound on its own track, in one take.
+
+- **The selected track stays armed**, so the banks that follow it go on playing its kit, and their hits record there. The REC chip names it and counts the rest: **REC → Track 1 + 1 more**.
+- **Each bank's own sound gets a track**, and so does what every other bank plays when you chose a synth or kit for the pads. An armed track that already plays it keeps it. Otherwise it goes on a free track, or a new one at the end, pointed at that same synth or kit and armed with the first.
+- **Every hit goes into the track of the sound it plays.** Bank B's hits go into bank B's synth's track, and the arp's notes too, as you hear them. A key a keyboard plays on the pads' synth goes in as the pad that plays its note there.
+- **One UNDO takes the whole take back**, and the next REC records on the same tracks with nothing more to set up.
+- **REC records nothing when a sound has no track.** When the project holds no more tracks, or more than 16 would record at once, the REC chip says so before you press (**REC → No free track · Bank B's FM**), and the line names the sound.
+
 ### Layers: more than one synth on the pads
 
 The pads can play up to four synths at once, such as a soft pad sound and a bass under it. Each hit plays every one of them at the same velocity, and so does each key of a keyboard.
@@ -71,7 +81,7 @@ The pads can play up to four synths at once, such as a soft pad sound and a bass
 - **The project remembers them.** A layer whose synth is no longer in the project stays silent in its place, and the others play.
 - **Recording.** REC records each layer on a track of its own, in one take. The REC chip names where the first goes and counts the rest: **REC → Track 2 · FM + 1 more**. When you press REC, the first synth goes on a free track as above, and each layer gets a free track too (or a new one at the end), pointed at that same synth and armed with the first, as SHIFT + a tap in REC's list arms a track. A track you armed that already plays a layer's synth keeps it. Every hit, and every key a pad plays, goes into each track, and one UNDO takes the whole take back. The next REC records on the same tracks, with nothing more to set up.
   - A new track that REC added for a layer goes away with its own UNDO, after the take's.
-  - When the project holds no more tracks, or 16 tracks already record at once, the line says which layer isn't recorded, and the rest record.
+  - When the project holds no more tracks, or 16 tracks would record at once, REC records nothing. The REC chip says so before you press (**REC → No free track · Pluck**), and the line names the layer that has no track.
   - A keyboard's key goes into a layer's track as the pad that plays its note on that synth; a note no pad plays alone sounds but isn't kept, as on a track a keyboard is routed to.
   - A keyboard routed to a synth no track plays (see [Playing several tracks from your keyboards](midi-and-cv.md#playing-several-tracks-from-your-keyboards)) records the same way: its synth gets a track of its own in the same take, counted on the chip.
 - **Looping layers.** To loop all the layers with the Looper, record from a mix that has them all (the Looper tab's **Records from**), such as Master: **Records from: Pads** takes the first synth's channel.
