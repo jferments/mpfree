@@ -1374,6 +1374,13 @@ name = "mpfree-status"
 version = "0.1.0"
 
 [[package]]
+name = "mpfree-stems"
+version = "0.1.0"
+dependencies = [
+ "mpfree-simd",
+]
+
+[[package]]
 name = "mpfree-stick"
 version = "0.1.0"
 dependencies = [

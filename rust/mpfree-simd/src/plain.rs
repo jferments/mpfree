@@ -149,6 +149,7 @@ pub(crate) fn mix4_from(
 
 /// The twin of [`crate::gemm4x8`]: step by step, row by row, column by
 /// column (see there for what it computes).
+#[inline]
 pub fn gemm4x8(kc: usize, a: &[f32], b: &[f32], acc: &mut [f32; 32]) {
     let mut c = *acc;
     for k in 0..kc {
@@ -186,6 +187,7 @@ pub fn half(h: u16) -> f32 {
 }
 
 /// The twin of [`crate::f16_to_f32`]: one at a time.
+#[inline]
 pub fn f16_to_f32(src: &[u16], dst: &mut [f32]) {
     for (d, &h) in dst.iter_mut().zip(src) {
         *d = half(h);

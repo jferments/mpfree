@@ -406,12 +406,14 @@ pub const GEMM_NR: usize = 8;
 /// the product before it adds, as the twin does, so both give the same
 /// sums. Calls where `a` or `b` is shorter than `kc` steps take the twin's
 /// path and panic there, as a slice index does.
+#[inline]
 pub fn gemm4x8(kc: usize, a: &[f32], b: &[f32], acc: &mut [f32; GEMM_MR * GEMM_NR]) {
     gemm4x8_on(path(), kc, a, b, acc);
 }
 
 /// [`gemm4x8`] on a chosen path (NEON only where [`neon_available`]);
 /// returns the path that ran.
+#[inline]
 pub fn gemm4x8_on(
     want: Path,
     kc: usize,
@@ -434,11 +436,13 @@ pub fn gemm4x8_on(
 /// kernel (`VCVT.F32.F16`, VFPv4's half-precision conversion) does eight at
 /// a time, the rest go through the twin. NEON runs only where
 /// [`neon_available`] and the processor reports VFPv4.
+#[inline]
 pub fn f16_to_f32(src: &[u16], dst: &mut [f32]) {
     f16_to_f32_on(path(), src, dst);
 }
 
 /// [`f16_to_f32`] on a chosen path; returns the path that ran.
+#[inline]
 pub fn f16_to_f32_on(want: Path, src: &[u16], dst: &mut [f32]) -> Path {
     let n = src.len().min(dst.len());
     #[cfg(all(target_arch = "arm", target_endian = "little", target_os = "linux"))]
