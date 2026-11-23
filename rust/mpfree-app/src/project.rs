@@ -154,8 +154,18 @@ pub const AUDIO_TRACKS: &str = "audio-tracks";
 /// lose them. The clips part is `mpfree-clips 4` too, which such a build
 /// doesn't read; the line says it in words before anything is read.
 pub const LINKED_SONG_LIST: &str = "linked-song-list";
+/// A project with a scene whose empty cells keep playing on some track
+/// (the Arrange refactor's 5.2, `mpfree_seq::Scene::keep`): an older
+/// build would skip the scene's `keep` line and stop those tracks at the
+/// scene change, so it must not open it.
+pub const SCENE_KEEP: &str = "scene-keep";
 /// The features this build has, of those a project can need.
-pub const KNOWN_NEEDS: &[&str] = &[SYNTHS_WITHOUT_TRACKS, AUDIO_TRACKS, LINKED_SONG_LIST];
+pub const KNOWN_NEEDS: &[&str] = &[
+    SYNTHS_WITHOUT_TRACKS,
+    AUDIO_TRACKS,
+    LINKED_SONG_LIST,
+    SCENE_KEEP,
+];
 
 // ------------------------------------------------------------ the loop's side
 
@@ -357,6 +367,9 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
     }
     if c.clips.arrangement.uses_sections() {
         needs.push(LINKED_SONG_LIST);
+    }
+    if c.clips.scenes.iter().any(|s| s.keep != 0) {
+        needs.push(SCENE_KEEP);
     }
     if !needs.is_empty() {
         extra.push((NEEDS_KEY.to_string(), needs.join(" ")));
@@ -3148,6 +3161,12 @@ mod tests {
         }];
         let (snap, line) = needs(&c);
         assert_eq!(line.as_deref(), Some(LINKED_SONG_LIST));
+        assert_eq!(check(&snap), Ok(FORMAT));
+        // Arrange 5.2: a scene whose empty cell keeps a track playing.
+        let mut c = collected(String::new(), InstrumentList::new().text());
+        c.clips.scene_mut(3).unwrap().set_keep(0, true).unwrap();
+        let (snap, line) = needs(&c);
+        assert_eq!(line.as_deref(), Some(SCENE_KEEP));
         assert_eq!(check(&snap), Ok(FORMAT));
     }
 

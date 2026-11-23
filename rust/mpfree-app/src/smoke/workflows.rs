@@ -2519,7 +2519,7 @@ mod tests {
             s.press("synth-pick", "keep", "").run_periods(2).settle();
             assert_eq!(s.mix.instruments.pads_play_at(), Some(free(0)));
             s.press("header", "tab", "Arrange").settle();
-            s.press("clips", "song", "Song").settle();
+            s.press("clips", "view", "Song").settle();
             s.press("song", "button", "Play song").settle();
             assert!(s.time.song_on());
             let audio = |s: &mut Session, a| {
@@ -2692,7 +2692,7 @@ mod tests {
             // input; its next take's file is made as it arms.
             s.line_in(Some(440.0));
             s.press("header", "tab", "Arrange").settle();
-            s.press("clips", "song", "Song").settle();
+            s.press("clips", "view", "Song").settle();
             s.press("song", "button", "Play song").settle();
             s.press("song", "add-track", "+ Track").settle();
             s.press("song", "add-kind", "Audio track")
