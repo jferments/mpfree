@@ -220,6 +220,8 @@ While the pad is a keygroup, or the pads play notes, Edit pad's Pitch and Pad se
 
 The Pitch section's Keys controls do the same with numbers: the Keys switch makes one pad a keygroup, Low key, High key and Root key set its range, and the Pad section's Pads play switches the pads between their own sounds and notes.
 
+Keygroups play the song's [tuning](synths.md#tuning), set in the Synth tab's options. In standard tuning a key plays its sound a semitone higher for each key above the root. In another tuning, MPFree takes the sound to be at its root note's standard pitch and plays every key, the root too, at the tuning's pitch for that key. The pad's own Tune still moves it as before, and a hit on the pad itself doesn't follow the tuning.
+
 ### Crossfades
 
 Where one zone ends and the next begins, the sound can switch at a hard edge or blend from one sample into the other. The same goes for a pad's velocity layers, from soft to hard.

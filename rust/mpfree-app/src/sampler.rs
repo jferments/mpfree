@@ -1085,6 +1085,23 @@ impl Player {
         }
     }
 
+    /// Every kit's tuning (tunings plan T3: the song's, until each kit can
+    /// have its own): their keygroups, the pads playing notes and 16 Levels
+    /// of Tune play it, playing notes moving there; pad hits and slices
+    /// don't ([`Engine::set_tuning`]). Never allocates; cheap for a kit
+    /// already in it, so call it when the song's tuning may have changed.
+    pub fn set_tuning(&mut self, tuning: &mpfree_tuning::Tuning) {
+        for k in 0..self.engine.kits() {
+            self.engine.set_tuning(k, tuning);
+        }
+    }
+
+    /// Kit `kit`'s tuning (None out of range).
+    #[cfg(test)]
+    pub fn kit_tuning(&self, kit: usize) -> Option<&mpfree_tuning::Tuning> {
+        self.engine.kit_tuning(kit)
+    }
+
     /// The project tempo, for warped pads (cheap when it hasn't moved:
     /// call it every period).
     pub fn set_tempo(&mut self, bpm: f64) {

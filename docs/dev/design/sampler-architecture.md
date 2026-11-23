@@ -689,6 +689,7 @@ The plan and its rules are in [Tunings for keygroups and every instrument](tunin
 - **`Voice::key_cents`**: how far the voice's key sounds from its sound's root in cents (semitones, the tuning's offset and a 16 Levels interval; not the pad's or program's Tune or a bend), kept by Legato and grain glide, for what follows the key played (a filter's key tracking).
 - **In 12-TET nothing changes to the bit:** every offset is exactly 0.0 and none is added; every sampler test and the bench's golden sounds are unchanged.
 - **Tests:** `tests/tuning.rs` (a keygroup in just on C, A4 = 432 and 24-TET; 12-TET set and put back; pad hits and slices unchanged to the bit; a held note follows a change; the wheel in quarter tones and just; 16 Levels of Tune; legato and glide; the pads playing notes and a sound on each key; split and unsplit the same), `tests/tuning_no_alloc.rs`, and the unit tests in `src/engine/tuning.rs` (grain and warped voices, legato's offset and `key_cents`).
+- **In the app (T3):** `Player::set_tuning` gives every kit place the Synth tab's tuning, and the pad player's loop hands it over when the pick changes (`kits_follow_tuning` in `main.rs`, after the tempo), so until T5 every kit plays the song's tuning. Auto-sample's copy of the synth starts in 12-TET, so its keygroups play the tuning once ([Tunings: T3 as built](tunings.md#t3-as-built)).
 
 ### Sliced pads (R4, `mpfree-sampler`)
 
