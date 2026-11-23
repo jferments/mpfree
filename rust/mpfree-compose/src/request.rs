@@ -309,9 +309,21 @@ pub fn continue_clip(
     settings: &Settings,
     kind: InstrumentKind,
 ) -> Result<(Proposal, Continued), Refused> {
-    let clip = on.project.clip(on.track, on.slot).ok_or(Refused::NoClip)?;
+    continue_clip_read(on, settings, kind).0
+}
+
+/// [`continue_clip`], with how many clips the reading left out (gone, or
+/// past its budget), which the app counts.
+pub fn continue_clip_read(
+    on: &OnClip,
+    settings: &Settings,
+    kind: InstrumentKind,
+) -> (Result<(Proposal, Continued), Refused>, usize) {
+    let Some(clip) = on.project.clip(on.track, on.slot) else {
+        return (Err(Refused::NoClip), 0);
+    };
     if clip.holds != Holds::Notes {
-        return Err(Refused::PadHits);
+        return (Err(Refused::PadHits), 0);
     }
     let mut clips = vec![ToRead {
         track: on.track,
@@ -323,7 +335,7 @@ pub fn continue_clip(
             .iter()
             .filter(|r| (r.track, r.slot) != (on.track, on.slot)),
     );
-    let (mut ctx, _) = read(
+    let (mut ctx, left) = read(
         on.project,
         &clips,
         on.lane_of,
@@ -369,15 +381,17 @@ pub fn continue_clip(
         swing,
         loops: !clip.once,
     };
-    let made = continue_notes(&req)?;
-    let edit = continuation(clip, made.notes.clone(), made.to)?;
-    Ok((
-        Proposal {
-            edit,
-            read: ctx.read.clone(),
-        },
-        made,
-    ))
+    let result = continue_notes(&req).and_then(|made| {
+        let edit = continuation(clip, made.notes.clone(), made.to)?;
+        Ok((
+            Proposal {
+                edit,
+                read: ctx.read.clone(),
+            },
+            made,
+        ))
+    });
+    (result, left.len())
 }
 
 #[cfg(test)]

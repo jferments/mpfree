@@ -345,7 +345,7 @@ fn the_xy_pad_plays_the_filter_and_echo_and_glides_back() {
     let e = ui.touch(2, Touch::Down, h.x + 4, h.y + 4).unwrap();
     p.event(&mut ui, &e);
     ui.touch(2, Touch::Up, h.x + 4, h.y + 4);
-    assert!(p.xy().hold);
+    assert!(p.xy().stays());
     let e = ui.touch(3, Touch::Down, x, y).unwrap();
     p.event(&mut ui, &e);
     let e = ui.touch(3, Touch::Up, x, y).unwrap();

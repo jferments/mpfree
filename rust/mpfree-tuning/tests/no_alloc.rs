@@ -1,6 +1,7 @@
 //! A built-in tuning, or a Scala scale moved to a root and A4, is worked
 //! out without allocating, so the audio thread can switch tunings (the pad
-//! player does, from the Synth tab's options).
+//! player does, from the Synth tab's options); so is a pick's tuning and a
+//! note's offset, which a keygroup asks for at every note.
 //!
 //! This test file is its own program, so its global allocator (a counting
 //! pass-through to the system allocator) does not affect the library.
@@ -8,7 +9,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use mpfree_tuning::{root_hz, scala, Builtin, Tuning};
+use mpfree_tuning::{root_hz, scala, Builtin, Tuning, TuningFile, TuningPick};
 
 struct Counting;
 static WATCH: AtomicBool = AtomicBool::new(false);
@@ -40,8 +41,10 @@ static GLOBAL: Counting = Counting;
 
 // One test, since the count is global and tests run side by side.
 #[test]
-fn built_in_tunings_and_rooted_scales_never_allocate() {
-    let scale = scala::parse_scl("Dorian, just\n7\n9/8\n6/5\n4/3\n3/2\n5/3\n9/5\n2/1\n").unwrap();
+fn built_in_tunings_rooted_scales_picks_and_offsets_never_allocate() {
+    let dorian = "Dorian, just\n7\n9/8\n6/5\n4/3\n3/2\n5/3\n9/5\n2/1\n";
+    let scale = scala::parse_scl(dorian).unwrap();
+    let files = [TuningFile::parse("dorian", dorian, None).unwrap()];
     let mut sum = 0.0f32;
     WATCH.store(true, Ordering::Relaxed);
     for b in Builtin::ALL {
@@ -57,8 +60,28 @@ fn built_in_tunings_and_rooted_scales_never_allocate() {
         let t: Tuning = scale.rooted(key, root_hz(key, 380.0 + root as f32 * 8.0));
         sum += t.hz(60.0) + t.hz(67.5);
     }
+    let rooted = CALLS.load(Ordering::Relaxed);
+    for b in Builtin::ALL {
+        for file in [None, Some(0), Some(5)] {
+            let pick = TuningPick {
+                builtin: b,
+                file,
+                root: 4,
+                a4_hz: 432,
+            };
+            let t = pick.tuning(&files);
+            for n in [-64.0, 21.0, 60.0, 64.5, 108.0, 191.0, f32::NAN] {
+                sum += t.offset_cents(n).abs();
+            }
+        }
+    }
     WATCH.store(false, Ordering::Relaxed);
     assert!(sum.is_finite() && sum > 0.0);
     assert_eq!(builtins, 0, "a built-in tuning allocated");
-    assert_eq!(CALLS.load(Ordering::Relaxed), 0, "a rooted scale allocated");
+    assert_eq!(rooted, 0, "a rooted scale allocated");
+    assert_eq!(
+        CALLS.load(Ordering::Relaxed),
+        0,
+        "a pick or an offset allocated"
+    );
 }

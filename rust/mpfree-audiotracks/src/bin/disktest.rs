@@ -38,6 +38,14 @@
 //! `rec.bin` and `copy.bin` in its own folder, within the same room as the
 //! write run, and needs the partition mounted `noatime` too.
 //!
+//! `--recorder` (D4) puts MPFree's own recorder on the stick: 8 takes
+//! through the recording file protocol's writer, with a round every 1, 2,
+//! 5 and 10 s, spread or together, and the kernel's writeback limit as
+//! found and raised, while 8 streams read the library ([`recorder`]). It
+//! writes only its takes in its own folder, and changes one setting in the
+//! running kernel (`/proc/sys/vm/dirty_bytes`) for two steps, putting it
+//! back as found ([`vm`]).
+//!
 //! `--read-only` writes nothing at all: it reads the audio already under
 //! `library/` the way the streaming engine will (many paced streams, reads
 //! of 64 to 512 KiB) and gives the tail of the read times and the window
@@ -97,6 +105,12 @@ mod read;
 #[path = "disktest/load.rs"]
 mod load;
 
+#[path = "disktest/recorder.rs"]
+mod recorder;
+
+#[path = "disktest/vm.rs"]
+mod vm;
+
 static STOP: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn on_signal(_: libc::c_int) {
@@ -117,6 +131,7 @@ struct Opts {
     quick: bool,
     read_only: bool,
     under_load: bool,
+    recorder: bool,
 }
 
 fn parse() -> Result<Opts, String> {
@@ -126,6 +141,7 @@ fn parse() -> Result<Opts, String> {
         quick: false,
         read_only: false,
         under_load: false,
+        recorder: false,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -137,12 +153,16 @@ fn parse() -> Result<Opts, String> {
             "--quick" => o.quick = true,
             "--read-only" => o.read_only = true,
             "--under-load" => o.under_load = true,
+            "--recorder" => o.recorder = true,
             "-h" | "--help" => {
-                say!("usage: mpfree-disktest [--read-only | --under-load] [--desktop-test DIR] [--quick]");
+                say!("usage: mpfree-disktest [--read-only | --under-load | --recorder] [--desktop-test DIR] [--quick]");
                 say!("Without --desktop-test it runs only on {MOUNT}, the stick's partition 4.");
                 say!("--read-only reads the audio in its library folder and writes nothing.");
                 say!("--under-load reads it with a recording, heavy reads and writes, busy cores and");
                 say!("heavy task switching beside it, writing only test files in its own folder.");
+                say!("--recorder records 8 takes with MPFree's own recorder while 8 streams read it,");
+                say!("writing only its takes in its own folder, and raises the kernel's writeback");
+                say!("limit (/proc/sys/vm/dirty_bytes) for two steps, putting it back as found.");
                 std::process::exit(0);
             }
             _ => return Err(format!("unknown argument {a:?}")),
@@ -151,8 +171,13 @@ fn parse() -> Result<Opts, String> {
     if o.quick && !o.desktop {
         return Err("--quick is only for --desktop-test".into());
     }
-    if o.read_only && o.under_load {
-        return Err("--read-only and --under-load are different runs".into());
+    if [o.read_only, o.under_load, o.recorder]
+        .iter()
+        .filter(|&&m| m)
+        .count()
+        > 1
+    {
+        return Err("--read-only, --under-load and --recorder are different runs".into());
     }
     Ok(o)
 }
@@ -256,7 +281,8 @@ fn free_bytes(p: &Path) -> Result<u64, String> {
     Ok(s.f_bavail as u64 * s.f_frsize as u64)
 }
 
-/// Delete the tool's folder: only its own regular files, then the folder.
+/// Delete the tool's folder: only its own regular files (the names in
+/// [`FILES`] and the recorder's takes), then the folder.
 /// Anything else in it stops it (left as found).
 fn clean(dir: &Path) -> Result<(), String> {
     let meta = match fs::symlink_metadata(dir) {
@@ -267,18 +293,21 @@ fn clean(dir: &Path) -> Result<(), String> {
     if !meta.is_dir() {
         return Err(format!("{} is not a folder: left alone", dir.display()));
     }
+    let mut own = Vec::new();
     for e in fs::read_dir(dir).map_err(|e| e.to_string())?.flatten() {
         let n = e.file_name().to_string_lossy().into_owned();
         let m = fs::symlink_metadata(e.path()).map_err(|e| e.to_string())?;
-        if !FILES.contains(&n.as_str()) || !m.file_type().is_file() {
+        let ours = FILES.contains(&n.as_str()) || recorder::is_take_file(&n);
+        if !ours || !m.file_type().is_file() {
             return Err(format!(
                 "{} holds {n:?}, which is not the tool's: left alone",
                 dir.display()
             ));
         }
+        own.push(n);
     }
-    for n in FILES {
-        match fs::remove_file(dir.join(n)) {
+    for n in own {
+        match fs::remove_file(dir.join(&n)) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(format!("remove {n}: {e}")),
@@ -649,7 +678,7 @@ fn main() -> ExitCode {
         BLOCK / 1024
     );
     if !o.desktop {
-        if let Err(e) = check_device(o.read_only || o.under_load) {
+        if let Err(e) = check_device(o.read_only || o.under_load || o.recorder) {
             esay!("mpfree-disktest: refused: {e}. Nothing was written.");
             return ExitCode::from(3);
         }
@@ -696,6 +725,25 @@ fn main() -> ExitCode {
             _ => PathBuf::from(load::THERMAL),
         };
         match load::prepare(&base, o.quick, o.desktop, &thermal) {
+            Ok(r) => Some(r),
+            Err(read::Fail::Refused(e)) | Err(read::Fail::Failed(e)) => {
+                esay!("mpfree-disktest: refused: {e}. Nothing was written.");
+                return ExitCode::from(3);
+            }
+        }
+    } else {
+        None
+    };
+    // So does the recorder's run, and it reads the writeback settings.
+    let takes = if o.recorder {
+        // The stick's run always uses the kernel's; a desktop test only a
+        // stand-in it names, never the desktop's own.
+        let vm_dir = match std::env::var_os("MPFREE_DISKTEST_VM") {
+            Some(p) if o.desktop => Some(PathBuf::from(p)),
+            _ if o.desktop => None,
+            _ => Some(PathBuf::from(vm::VM)),
+        };
+        match recorder::prepare(&base, o.quick, vm_dir) {
             Ok(r) => Some(r),
             Err(read::Fail::Refused(e)) | Err(read::Fail::Failed(e)) => {
                 esay!("mpfree-disktest: refused: {e}. Nothing was written.");
@@ -754,9 +802,10 @@ fn main() -> ExitCode {
     let r = fs::DirBuilder::new()
         .create(&dir)
         .map_err(|e| format!("create {}: {e}", dir.display()))
-        .and_then(|()| match ready {
-            Some(ready) => load::run(&base, &dir, room, ready),
-            None => run(&dir, &z),
+        .and_then(|()| match (ready, takes) {
+            (Some(ready), _) => load::run(&base, &dir, room, ready),
+            (None, Some(takes)) => recorder::run(&base, &dir, room, takes),
+            (None, None) => run(&dir, &z),
         });
     let cleaned = clean(&dir);
     let after = free_bytes(&base).map(|f| format!("{:.1} MiB", f as f64 / MIB as f64));
