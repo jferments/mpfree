@@ -1073,7 +1073,7 @@ impl Session {
             let mut xy = crate::XyHere {
                 song: &mut self.xy_yours,
                 mix: &mut self.mix,
-                synth: &*self.synth,
+                synth: &self.synth,
                 app: &self.app,
                 pads: &pads,
                 time: &self.time,
@@ -1459,7 +1459,7 @@ impl Session {
             let mut hands = self.mix.take_xy_own();
             let (mut kept, mut pads_learned, mut turned) = (Vec::new(), Vec::new(), false);
             let mut side = crate::OwnReach {
-                synth: &mut *self.synth,
+                synth: &mut self.synth,
                 own: &mut self.mix.instruments,
                 player: self.sounds.as_mut(),
                 kits: &self.track_kits,
@@ -2399,7 +2399,7 @@ impl Session {
                 let mut xy = crate::XyHere {
                     song: &mut self.xy_yours,
                     mix: &mut self.mix,
-                    synth: &*self.synth,
+                    synth: &self.synth,
                     app: &self.app,
                     pads: &pads,
                     time: &self.time,
@@ -2515,7 +2515,7 @@ impl Session {
                             for (addr, v) in crate::xy_song::turn_values(&t, redo) {
                                 if crate::xy_own::is_own(addr) {
                                     let mut side = crate::OwnReach {
-                                        synth: &mut *self.synth,
+                                        synth: &mut self.synth,
                                         own: &mut self.mix.instruments,
                                         player: self.sounds.as_mut(),
                                         kits: &self.track_kits,

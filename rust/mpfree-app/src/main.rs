@@ -9537,7 +9537,7 @@ fn player_session(
                     let mut xy = XyHere {
                         song: &mut xy_yours,
                         mix: &mut mix,
-                        synth: &*synth,
+                        synth: &synth,
                         app: &app,
                         pads: &pad_now,
                         time: &time,
@@ -9589,7 +9589,7 @@ fn player_session(
                                 for (addr, v) in xy_song::turn_values(&t, redo) {
                                     if xy_own::is_own(addr) {
                                         let mut side = OwnReach {
-                                            synth: &mut *synth,
+                                            synth: &mut synth,
                                             own: &mut mix.instruments,
                                             player: Some(&mut player),
                                             kits: &track_kits,
@@ -10555,7 +10555,7 @@ fn player_session(
             let mut kept = [(none, 0.0, 0.0); mpfree_xy::SLOTS];
             let mut n = 0;
             let mut side = OwnReach {
-                synth: &mut *synth,
+                synth: &mut synth,
                 own: &mut mix.instruments,
                 player: Some(&mut player),
                 kits: &track_kits,
@@ -10862,7 +10862,7 @@ fn player_session(
             let mut xy = XyHere {
                 song: &mut xy_yours,
                 mix: &mut mix,
-                synth: &*synth,
+                synth: &synth,
                 app: &app,
                 pads: &pad_now,
                 time: &time,
