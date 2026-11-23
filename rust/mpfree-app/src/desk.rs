@@ -937,6 +937,7 @@ impl Desk<'_> {
                 later.extend(crate::time_action(out, time, tracks, looper, app, mix, a))
             }
             app::Effect::Looper(a) => {
+                later.extend(cell_lets_go(time, a));
                 later.extend(crate::looper_action(out, looper, app, *card, a))
             }
             // A Perform pad's throw, and its track mute.
@@ -1933,7 +1934,8 @@ fn arm_loop_cell(
         .get(t)
         .and_then(|tr| tr.loops())
         .unwrap_or_default();
-    fx.push(app::Effect::Looper(looping::LoopAction::Select(n)));
+    // On the song's clock whatever Sync says: a free loop has no cell.
+    fx.push(app::Effect::Looper(looping::LoopAction::SelectForCell(n)));
     fx.extend(app.loop_input(input));
     fx.extend(rec_effects(done, time, looper));
     if let Some(name) = mpfree_time_ui::view::loop_cell_name(&time.state()) {
@@ -1943,6 +1945,23 @@ fn arm_loop_cell(
         )));
     }
     fx
+}
+
+/// Sync: Free set with an empty Loop cell armed on the grid: the cell lets
+/// go, saying why, as a free loop has no cell (`LoopHost::grid_now`); the
+/// loop picked for it records free, as set.
+fn cell_lets_go(time: &time::TimeHost, a: looping::LoopAction) -> Vec<app::Effect> {
+    use mpfree_looper::{Clock, Command};
+    if a != looping::LoopAction::Command(Command::SetClock(Clock::Free)) {
+        return Vec::new();
+    }
+    let Some(name) = mpfree_time_ui::view::loop_cell_name(&time.state()) else {
+        return Vec::new();
+    };
+    vec![
+        app::Effect::Time(mpfree_time_ui::TimeAction::LoopCell(None)),
+        app::Effect::Tell(format!("{name} let go: a free loop has no cell")),
+    ]
 }
 
 /// SHIFT + a loop's cell dropped on an empty cell of another Loop track
@@ -2045,8 +2064,9 @@ fn rec_effects(
 }
 
 /// The loop's Record or Overdub from REC with a Loop cell armed on the
-/// grid (loop-tracks.md part 4): Record makes a new loop in an empty one,
-/// from the track's input (Resample: the other loops as heard), or says
+/// grid (loop-tracks.md part 4): Record makes a new loop in an empty one
+/// (a song loop, whatever Sync says), from the track's input (Resample:
+/// the other loops as heard), or says
 /// why it can't; Overdub layers the loop playing on that Loop track. A
 /// first pass or an overdub under way takes them as the looper does.
 fn loop_take(
@@ -2072,8 +2092,10 @@ fn loop_take(
             Ok(n) => {
                 let resample =
                     track.and_then(|tr| tr.loops()) == Some(mpfree_seq::LoopInput::Resample);
+                // On the song's clock whatever Sync says: a free loop
+                // has no cell.
                 vec![
-                    app::Effect::Looper(LoopAction::Select(n)),
+                    app::Effect::Looper(LoopAction::SelectForCell(n)),
                     app::Effect::Looper(LoopAction::Command(if resample {
                         Command::Resample
                     } else {

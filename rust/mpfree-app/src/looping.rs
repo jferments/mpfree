@@ -399,6 +399,10 @@ pub enum LoopAction {
     /// Pick loop `n` (0 to [`MAX_LOOPS`] - 1): the buttons, the layers'
     /// controls and the screens act on it from the next period.
     Select(usize),
+    /// Pick loop `n` to record into an empty Loop cell armed on the grid
+    /// (`desk::arm_loop_cell`): as [`LoopAction::Select`], on the song's
+    /// clock whatever Sync was last set to ([`LoopHost::select_for_cell`]).
+    SelectForCell(usize),
     /// STOP with the transport stopped: an overdub waiting for PLAY is
     /// let go and an armed loop disarmed ([`LoopHost::stop_waiting`]).
     StopWaiting,
@@ -1524,6 +1528,10 @@ pub struct LoopHost {
     /// Sync, for every empty loop, sticking as Starts does: the song's
     /// clock at first, or the free loops' ([`Clock::Free`]).
     clock: Clock,
+    /// The loop picked was picked for a Loop cell
+    /// ([`LoopHost::select_for_cell`]): it records on the song's clock,
+    /// until another is picked or Sync is set.
+    for_cell: bool,
     /// What you played's window, moved or resized: the bar line its bars
     /// end on (None: the newest, keeping up as the song plays) and how
     /// many ([`LoopHost::set_capture_span`]). None: the Length's bars.
@@ -2061,6 +2069,7 @@ impl LoopHost {
             match_pattern: false,
             starts: Starts::Bar,
             clock: Clock::Song,
+            for_cell: false,
             capture_span: None,
             pattern_bars: None,
             last_rolling: false,
@@ -2214,6 +2223,7 @@ impl LoopHost {
             }
             self.looper.select_loop(0);
             self.picked = 0;
+            self.for_cell = false;
             self.clear_next = false;
             // The clears apply with the next period: a load before then
             // would be cleared with them.
@@ -2271,6 +2281,7 @@ impl LoopHost {
         }
         self.looper.select_loop(saved.selected);
         self.picked = saved.selected;
+        self.for_cell = false;
         let mut note = format!("looper: loading loops {}", done.join(", "));
         if done.is_empty() {
             note = "looper: no loops to load".into();
@@ -2447,6 +2458,9 @@ impl LoopHost {
                 self.capture_span = None;
             }
             self.clock = k;
+            // Set by hand, it is the picked loop's too (a Loop cell armed
+            // for it lets go on Free: `desk::cell_lets_go`).
+            self.for_cell = false;
             // A loop with sound, or sound coming in, keeps its own: the
             // looper would refuse it.
             let takes = self.looper.loop_status(self.picked).is_some_and(|s| {
@@ -2467,7 +2481,12 @@ impl LoopHost {
             }
         }
         if c == Command::Record && empty {
-            self.sticky_settings(self.picked);
+            let clock = if self.for_cell {
+                Clock::Song
+            } else {
+                self.clock
+            };
+            self.sticky_settings(self.picked, clock);
         }
         if self.match_pattern
             && c == Command::Record
@@ -2832,6 +2851,22 @@ impl LoopHost {
     /// Pick loop `n` for the presses and controls after this, with its
     /// `looper:` line for the log ("loop 2 picked (empty)").
     pub fn select(&mut self, n: usize) -> String {
+        self.for_cell = false;
+        self.select_on(n, self.clock)
+    }
+
+    /// Pick empty loop `n` to record into a Loop cell armed on the grid:
+    /// it takes Sync: Song whatever Sync was last set to, as a free loop
+    /// has no cell ([`LoopHost::grid_now`]), and Sync stays as set for
+    /// the loops picked after it.
+    pub fn select_for_cell(&mut self, n: usize) -> String {
+        let line = self.select_on(n, Clock::Song);
+        self.for_cell = self.picked == n.min(MAX_LOOPS - 1);
+        line
+    }
+
+    /// [`LoopHost::select`], an empty loop taking `clock` for its Sync.
+    fn select_on(&mut self, n: usize, clock: Clock) -> String {
         self.steps_left = 0;
         let n = n.min(MAX_LOOPS - 1);
         let what = match self.looper.loop_status(n) {
@@ -2858,15 +2893,16 @@ impl LoopHost {
             .loop_status(n)
             .is_some_and(|s| s.phase == Phase::Empty)
         {
-            self.sticky_settings(n);
+            self.sticky_settings(n, clock);
         }
         format!("looper: loop {} picked ({what})", n + 1)
     }
 
-    /// Empty loop `n`, picked, takes Starts and Sync as they were last
-    /// set, where it differs (a loop that is copying in or capturing
-    /// keeps its Sync: the looper refuses it).
-    fn sticky_settings(&mut self, n: usize) {
+    /// Empty loop `n`, picked, takes Starts as last set and `clock` for
+    /// its Sync (as last set, but for a Loop cell's), where it differs (a
+    /// loop that is copying in or capturing keeps its Sync: the looper
+    /// refuses it).
+    fn sticky_settings(&mut self, n: usize, clock: Clock) {
         let Some(s) = self.looper.loop_status(n) else {
             return;
         };
@@ -2874,8 +2910,8 @@ impl LoopHost {
             self.looper.command(Command::SetStarts(self.starts));
         }
         let busy = s.loading.is_some() || s.copying.is_some() || s.capturing.is_some();
-        if s.clock != self.clock && !busy {
-            self.looper.command(Command::SetClock(self.clock));
+        if s.clock != clock && !busy {
+            self.looper.command(Command::SetClock(clock));
         }
     }
 
@@ -4214,10 +4250,11 @@ impl LoopHost {
                 return "looper: Capture: NOT started, the command queue is full".to_string();
             }
             self.picked = n;
+            self.for_cell = false;
         }
         // It records as a loop recorded now would: Sync as last set (the
         // bars above were counted on that clock), and Starts.
-        self.sticky_settings(n);
+        self.sticky_settings(n, self.clock);
         let c = match pinned {
             Some(end) => Command::CaptureTo(end, asked),
             None => Command::Capture(asked),

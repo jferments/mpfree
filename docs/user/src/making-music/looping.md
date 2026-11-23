@@ -363,7 +363,7 @@ The free loops stop at their **tops**: each waits at its place on the free loops
 - **Capture** into a free loop takes the free loops' last bars, and What you played shows and numbers their bar lines. **Smart loop end** works as it does for the first loop: Snap, Use my tap and Read as change the free loops' tempo, never the song's.
 - **Play's loop row** shows them as the Looper tab does: **free** after the loop's name, a stopped free loop's ring at rest with ▶ (a tap plays the free loops), and **Pads · free** on empty loops.
 - **They are saved with the project**, free clock and all, and open stopped at their tops: PLAY, or Play on a free loop's header, starts them. An older MPFree won't open a project with a free loop.
-- **They aren't on the Clips grid or in the song yet**: scenes, launches and Stop all don't reach them, and the looper alone says when they play.
+- **They aren't on the Clips grid or in the song yet**: scenes, launches and Stop all don't reach them, and the looper alone says when they play. So a loop you record into a Loop cell keeps time with the song whatever Sync says: tapping an empty Loop cell picks an empty loop on **Song** (Sync stays Free for the loops you pick after it), and tapping **Sync: Free** with a cell armed lets the cell go ("Loops A · row 3 let go: a free loop has no cell").
 
 {{shot: play-free-loops | Play with the song stopped and Loop 1 playing on free: free after its name, Pads · free on every empty loop, and the hint line says STOP stops the free loops.}}
 
@@ -388,7 +388,7 @@ A project opens with nothing launched, as its clips do: tap a loop's cell, or it
 
 1. To add a Loop track, hold **SHIFT** and tap **+ Track** over the grid: it is named Loops A, Loops B and so on. **UNDO** takes it away again.
 2. Tap the line under a Loop track's name to choose what its new loops record: **Pads** (the pads and the synth), **Line in** (the MPC's inputs; it turns **Line input** on) or **Resample** (the other loops, as you hear them).
-3. Tap an empty cell of the Loop track. It turns red and says **Armed**, and the REC chip names it ("REC → Loops C · Drop", the row's scene name or "row 3").
+3. Tap an empty cell of the Loop track. It turns red and says **Armed**, and the REC chip names it ("REC → Loops C · Drop", the row's scene name or "row 3"). The loop it records keeps time with the song, even with Sync set to Free ([free loops](#free-loops) aren't on the grid yet).
 4. Press **REC**: the cell says **Ready**. Press **PLAY** if the music is stopped; the loop starts on the next bar line. The cell says **REC** while it records.
 5. Press **REC** again: the loop closes on the next bar line and plays in that cell. If another loop was playing on that Loop track, it stops, since one loop plays per Loop track.
 

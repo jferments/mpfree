@@ -4458,6 +4458,68 @@ mod tests {
         });
     }
 
+    /// Free loops and Loop cells: a free loop has no cell on the grid, so a
+    /// Loop cell tapped with Sync last set to Free picks its loop on the
+    /// song's clock (Sync shows Song), REC records it there, and Sync
+    /// stays Free for the loops picked after it. Sync: Free set with a
+    /// cell armed lets the cell go, saying why, and the loop records free.
+    #[test]
+    fn a_loop_cell_records_a_song_loop_whatever_sync_was_last_set_to() {
+        use mpfree_looper::{Clock, Phase};
+        fn until(s: &mut Session, n: usize, phase: Phase) {
+            let end = s.t() + 6.0;
+            while s.looper.loop_status(n).map(|l| l.phase) != Some(phase) && s.t() < end {
+                s.run_periods(4);
+            }
+            assert_eq!(s.looper.loop_status(n).map(|l| l.phase), Some(phase));
+        }
+        fn clock(s: &Session, n: usize) -> Clock {
+            s.looper.loop_status(n).expect("a loop").clock
+        }
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.make_sounds();
+            s.press("header", "tab", "Looper");
+            s.press("leditor", "sync", "Free").run_for(0.1);
+            assert_eq!(clock(&s, 0), Clock::Free);
+            s.press("header", "tab", "Arrange").settle();
+            s.button_edge("SHIFT", true);
+            s.press("clips", "add-track", "+ Track").settle();
+            s.button_edge("SHIFT", false);
+            s.press("clips", "pager", "Tracks after").settle();
+
+            // Row 2's cell tapped: Loop 1 picked for it, on the song.
+            s.press("clips", "slot", "Loops A slot 2").settle();
+            assert_eq!(s.time.loop_cell(), Some((8, 1)));
+            assert_eq!(s.looper.picked(), 0);
+            assert_eq!(clock(&s, 0), Clock::Song);
+            s.button("REC");
+            s.run_periods(12).settle();
+            s.button("PLAY");
+            until(&mut s, 0, Phase::Recording);
+            assert_eq!(clock(&s, 0), Clock::Song, "REC keeps the cell's clock");
+            s.pad(0, 120, 0.3);
+            s.run_for(1.4);
+            s.button("REC");
+            until(&mut s, 0, Phase::Playing);
+            s.run_periods(12).settle();
+            assert_eq!(s.time.loop_on(8), Some(0), "in its cell");
+            assert_eq!(s.time.loop_cell(), None);
+
+            // Row 3's cell: Loop 2 for it, on the song; Sync: Free set
+            // then lets the cell go, and Loop 2 records free.
+            s.press("clips", "slot", "Loops A slot 3").settle();
+            assert_eq!(s.time.loop_cell(), Some((8, 2)));
+            assert_eq!((s.looper.picked(), clock(&s, 1)), (1, Clock::Song));
+            s.press("header", "tab", "Looper");
+            s.press("leditor", "sync", "Free").run_for(0.1);
+            assert_eq!(s.time.loop_cell(), None);
+            assert_eq!(s.hint(), "Loops A · row 3 let go: a free loop has no cell");
+            assert_eq!(clock(&s, 1), Clock::Free);
+            assert_eq!(s.time.project().check(), Ok(()));
+        });
+    }
+
     /// Loop tracks part 5 (loop-tracks.md): Rec song keeps a loop's launch
     /// and stop on Loops A as a block, and song mode plays it: the loop on
     /// from the block's start and off on its end's bar line.

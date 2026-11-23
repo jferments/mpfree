@@ -8331,6 +8331,10 @@ fn looper_action(
             out.note(&looper.select(n));
             Vec::new()
         }
+        looping::LoopAction::SelectForCell(n) => {
+            out.note(&looper.select_for_cell(n));
+            Vec::new()
+        }
         looping::LoopAction::ToggleMute(n) => {
             out.note(&looper.toggle_mute(n));
             Vec::new()
