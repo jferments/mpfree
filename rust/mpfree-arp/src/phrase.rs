@@ -133,6 +133,26 @@ impl Written {
             Written::Major | Written::Either => [0, 2, 4, 5, 7, 9, 11],
         }
     }
+
+    /// Whether a phrase written in this scale suits `key`, for a list
+    /// that shows the ones that don't last: a major phrase suits a key
+    /// with a major third, a minor one a key with a minor third, and one
+    /// written for either suits any. A key with both thirds or neither
+    /// (chromatic, a blues scale with both, a scale of fourths) is of no
+    /// kind, so every phrase suits it, as every phrase suits no key. In
+    /// key, a phrase still plays in any key: its steps follow the key's.
+    pub const fn suits(self, key: Option<Scale>) -> bool {
+        let Some(key) = key else {
+            return true;
+        };
+        let minor = key.mask & (1 << 3) != 0;
+        let major = key.mask & (1 << 4) != 0;
+        match self {
+            Written::Either => true,
+            Written::Major => major || !minor,
+            Written::Minor => minor || !major,
+        }
+    }
 }
 
 /// How a phrase's rhythm feels, as the list says it.
@@ -1173,6 +1193,31 @@ mod tests {
         // In a scale of five notes too.
         let penta = Scale::new(9, PENTATONIC_MINOR);
         assert_eq!(play(&turn, 57, penta), [57, 56, 57, 60]);
+    }
+
+    /// A phrase suits a key of its own kind, by the key's third; a key of
+    /// no kind, or no key, suits all.
+    #[test]
+    fn a_phrase_suits_a_key_of_the_kind_it_was_written_in() {
+        let key = |mask| Some(Scale::new(9, mask));
+        let dorian = crate::scale::by_name("Dorian").unwrap().mask;
+        let mixolydian = crate::scale::by_name("Mixolydian").unwrap().mask;
+        for (k, major, minor) in [
+            (key(MAJOR), true, false),
+            (key(mixolydian), true, false),
+            (key(MINOR), false, true),
+            (key(dorian), false, true),
+            (key(PENTATONIC_MINOR), false, true),
+            // Both thirds, neither, and no key: of no kind.
+            (key(crate::scale::CHROMATIC), true, true),
+            (key(crate::scale::MAJOR_BLUES), true, true),
+            (key(crate::scale::mask(&[0, 2, 5, 7, 10])), true, true),
+            (None, true, true),
+        ] {
+            assert_eq!(Written::Major.suits(k), major, "{k:?}");
+            assert_eq!(Written::Minor.suits(k), minor, "{k:?}");
+            assert!(Written::Either.suits(k), "{k:?}");
+        }
     }
 
     #[test]

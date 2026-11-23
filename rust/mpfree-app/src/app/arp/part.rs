@@ -333,6 +333,8 @@ impl App {
             e.set_own_swing(!u.swing_from_transport);
         }
         let mut fx = self.take_ui(kept[self.track]);
+        // The project's own phrases came or went.
+        fx.push(Effect::Phrases(self.phrase_list()));
         fx.push(self.arp_view());
         self.arp_seen = self.arp_fingerprint();
         (notes, fx)

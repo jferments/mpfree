@@ -21,12 +21,13 @@
 //! pads, the header and the hint line belong to the app; the panel only adds
 //! its own widgets and the layouts that place them.
 
+use crate::phrases::PhraseList;
 use crate::widgets::{
     Button, ButtonRow, CellKind, MiniBar, ModBox, Segments, SliderStack, StepCell, StepStrip,
     MINI_FASTER, MINI_LATCH, MINI_OPEN, MINI_SLOWER,
 };
 use mpfree_arp::{
-    Engine, Held, ModSource, Mode, Order, Pattern, Pick, Rate, Settings, Step, MAX_NOTES,
+    Engine, Held, ModSource, Mode, Order, Pattern, Pick, Rate, Scale, Settings, Step, MAX_NOTES,
 };
 use mpfree_ui::widgets::{Chip, ListItem, ListView};
 use mpfree_ui::{EventKind, Tone, Ui, UiEvent};
@@ -114,6 +115,12 @@ pub struct ArpState {
     /// The loaded pattern was changed (mutated, edited or recorded) from the
     /// one in the list: Original puts it back.
     pub pattern_changed: bool,
+    /// The phrases to choose from, and the track's pick.
+    pub phrases: PhraseList,
+    pub phrase_index: usize,
+    /// The scale the pads play: the key a phrase follows In key while the
+    /// arp's own scale is off ([`ArpState::phrase_key`]).
+    pub pads_key: Option<Scale>,
     /// The notes the generator plays, in the order they were pressed.
     pub notes: Vec<Held>,
     /// Steps played since the notes started ([`Engine::step`]).
@@ -124,7 +131,8 @@ pub struct ArpState {
 
 impl ArpState {
     /// What the engine shows now. The pattern list and its state are the
-    /// app's, so they are passed in.
+    /// app's, so they are passed in; the phrases are MPFree's own, on the
+    /// first, until the app sends its list and the track's pick.
     pub fn from_engine(
         e: &Engine,
         patterns: Vec<(String, Pattern)>,
@@ -139,11 +147,25 @@ impl ArpState {
             patterns,
             pattern_index,
             pattern_changed,
+            phrases: PhraseList::built_in(),
+            phrase_index: 0,
+            pads_key: e.key(),
             notes: e.active().as_slice().to_vec(),
             step: e.step(),
             latched: e.latch() != mpfree_arp::LatchMode::Off,
             bpm: e.bpm(),
         }
+    }
+
+    /// The name of the track's phrase.
+    pub fn phrase_name(&self) -> &str {
+        self.phrases.name(self.phrase_index)
+    }
+
+    /// The key a phrase follows In key now: the arp's own scale, or with
+    /// that off the scale the pads play. None: it moves by semitones.
+    pub fn phrase_key(&self) -> Option<Scale> {
+        self.settings.scale.or(self.pads_key)
     }
 
     /// The notes the steps work from: the held notes (or, while they take
@@ -418,7 +440,10 @@ pub fn chip(st: &ArpState) -> Chip {
         }
         Mode::Repeat => format!("Repeat {}", s.rate.label()),
         Mode::Arp => format!("Arp: {} {}", s.order.label(), s.rate.label()),
-        Mode::Phrase => "Phrase".to_string(),
+        Mode::Phrase => match st.phrase_name() {
+            "" => "Phrase".to_string(),
+            name => format!("Phrase: {name}"),
+        },
         Mode::Pattern => {
             let name = st
                 .patterns
@@ -560,7 +585,10 @@ impl ArpPanel {
             m.mode = match s.mode {
                 Mode::Direct => "Direct".to_string(),
                 Mode::Repeat => "Repeat".to_string(),
-                Mode::Phrase => "Phrase".to_string(),
+                Mode::Phrase => match st.phrase_name() {
+                    "" => "Phrase".to_string(),
+                    name => format!("Phrase · {}", short(name, 14)),
+                },
                 Mode::Arp => format!("Arp · {}", s.order.label()),
                 Mode::Pattern => {
                     let name = st
@@ -767,6 +795,9 @@ mod tests {
             patterns: built_in_patterns(),
             pattern_index: 0,
             pattern_changed: false,
+            phrases: PhraseList::built_in(),
+            phrase_index: 0,
+            pads_key: None,
             notes: held
                 .iter()
                 .map(|&note| Held {
@@ -953,6 +984,16 @@ mod tests {
             chip(&st).text,
             format!("Pattern: {}* 1/32T", st.patterns[0].0)
         );
+        // A phrase by its name, as a pattern.
+        st.settings.mode = Mode::Phrase;
+        st.phrase_index = 4;
+        assert_eq!(chip(&st).text, format!("Phrase: {}", st.phrases.name(4)));
+        st.latched = true;
+        assert_eq!(
+            chip(&st).text,
+            format!("Phrase: {}, latched", st.phrases.name(4))
+        );
+        st.latched = false;
         st.settings.mode = Mode::Direct;
         assert_eq!(
             (chip(&st).text, chip(&st).tone),
@@ -960,6 +1001,20 @@ mod tests {
         );
         st.latched = true;
         assert_eq!(chip(&st).text, "Latch on");
+    }
+
+    /// In key, a phrase follows the arp's own scale, or with that off the
+    /// scale the pads play.
+    #[test]
+    fn a_phrases_key_is_the_arps_scale_or_the_pads() {
+        let mut st = state(Settings::default(), &[], 0);
+        assert_eq!(st.phrase_key(), None);
+        let pads = Scale::new(9, mpfree_arp::scale::MINOR);
+        st.pads_key = Some(pads);
+        assert_eq!(st.phrase_key(), Some(pads));
+        let own = Scale::new(2, mpfree_arp::scale::MAJOR);
+        st.settings.scale = Some(own);
+        assert_eq!(st.phrase_key(), Some(own));
     }
 
     #[test]

@@ -873,6 +873,7 @@ impl Desk<'_> {
             app::Effect::TouchStep(d) => out.show(gui::ToUi::TouchStep(d)),
             app::Effect::Arp(v) => out.show(gui::ToUi::Arp(Box::new(v))),
             app::Effect::Patterns(list) => out.show(gui::ToUi::Patterns(list)),
+            app::Effect::Phrases(list) => out.show(gui::ToUi::Phrases(list)),
             app::Effect::Workspace(w) => out.show(gui::ToUi::Workspace(Box::new(w))),
             app::Effect::Recorded(p, next) => out.show(gui::ToUi::Recorded(Box::new(p), next)),
             app::Effect::WorkspaceWheel(d) => out.show(gui::ToUi::WorkspaceWheel(d)),

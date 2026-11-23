@@ -1394,6 +1394,9 @@ pub enum Effect {
     Arp(ArpView),
     /// The arp's pattern list (names and patterns), when it changes.
     Patterns(Vec<(String, Pattern)>),
+    /// The arp's phrase list, whenever it changes: MPFree's own, the
+    /// owner's and the open project's.
+    Phrases(mpfree_arp_ui::PhraseList),
     /// The pattern workspace: open it on a pattern, or start or stop
     /// recording on the pads.
     Workspace(WorkspaceView),
@@ -2403,6 +2406,7 @@ impl App {
             Effect::Settings(self.settings.clone()),
             Effect::Light(button::FULL_LEVEL, LIGHT_OFF),
             Effect::Patterns(self.patterns.clone()),
+            Effect::Phrases(self.phrase_list()),
             self.arp_view(),
         ];
         fx.extend(self.repeat_light());

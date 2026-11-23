@@ -33,6 +33,7 @@
 
 use crate::app::{App, Effect};
 use mpfree_arp::{Library, Mode, Phrase};
+use mpfree_arp_ui::PhraseList;
 
 /// MPFree's starter phrases, by name, in the library's order.
 pub fn built_in_phrases() -> Vec<(String, Phrase)> {
@@ -55,6 +56,17 @@ impl App {
     #[cfg(test)]
     pub fn phrase_index(&self) -> usize {
         self.phrase_index
+    }
+
+    /// The list as the screens read it ([`Effect::Phrases`]): sent at the
+    /// start and whenever it changes (the owner's library read, a project
+    /// opened).
+    pub(in crate::app) fn phrase_list(&self) -> PhraseList {
+        PhraseList {
+            phrases: self.phrases.clone(),
+            built: self.phrases_built,
+            own: self.phrases_own,
+        }
     }
 
     /// The name of track `t`'s phrase.
@@ -465,10 +477,13 @@ mod tests {
         ));
         assert_eq!(
             fx,
-            vec![Effect::Note(
-                "arp phrases file: 1 phrases added, 1 replaced".into()
-            )]
+            vec![
+                Effect::Phrases(app.phrase_list()),
+                Effect::Note("arp phrases file: 1 phrases added, 1 replaced".into())
+            ],
+            "the screens get the new list"
         );
+        assert_eq!((app.phrase_list().built, app.phrase_list().own), (64, 65));
         assert_eq!(app.phrases().len(), 65);
         assert_eq!(app.phrases()[64].0, "Verse bass");
         let at = app

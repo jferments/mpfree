@@ -43,6 +43,11 @@ pub struct ArpView {
     pub pattern_index: usize,
     /// The pattern was edited, mutated or recorded from the list's.
     pub pattern_changed: bool,
+    /// The track's phrase, as a place in the list ([`Effect::Phrases`]).
+    pub phrase_index: usize,
+    /// The scale the pads play: the key a phrase follows In key while the
+    /// arp's own scale is off.
+    pub pads_key: Option<Scale>,
     /// Held and latched pads (slots), in the order they were pressed.
     pub notes: Vec<Held>,
     /// Steps played since the notes started.
@@ -319,6 +324,8 @@ impl App {
             pattern: self.pattern,
             pattern_index: self.pattern_index,
             pattern_changed: self.pattern_changed(),
+            phrase_index: self.phrase_index,
+            pads_key: self.arps.engine_at(self.track).key(),
             notes: self.arps.engine_at(self.track).active().as_slice().to_vec(),
             step: self.arps.engine_at(self.track).step(),
             latched: self.latched,
@@ -846,6 +853,9 @@ impl App {
                 "{what}: {added} added, {replaced} built-in ones replaced, \
                                       {scales} scales of your own"
             )));
+        }
+        if phrases_added + phrases_replaced > 0 {
+            fx.push(Effect::Phrases(self.phrase_list()));
         }
         if file == LibraryFile::Phrases || phrases_added + phrases_replaced > 0 {
             fx.push(Effect::Note(format!(

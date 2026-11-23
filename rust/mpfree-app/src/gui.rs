@@ -1477,6 +1477,8 @@ pub enum ToUi {
     LevelsWheel(i32),
     /// The arp's pattern list.
     Patterns(Vec<(String, Pattern)>),
+    /// The arp's phrase list.
+    Phrases(mpfree_arp_ui::PhraseList),
     Workspace(Box<WorkspaceView>),
     /// A step recorded on the pads: the pattern so far and the next step.
     Recorded(Box<Pattern>, usize),
@@ -2848,6 +2850,9 @@ impl Player {
             patterns,
             pattern_index: 0,
             pattern_changed: false,
+            phrases: mpfree_arp_ui::PhraseList::built_in(),
+            phrase_index: 0,
+            pads_key: None,
             notes: Vec::new(),
             step: 0,
             latched: false,
@@ -10439,6 +10444,8 @@ impl Player {
                 a.pattern = v.pattern;
                 a.pattern_index = v.pattern_index;
                 a.pattern_changed = v.pattern_changed;
+                a.phrase_index = v.phrase_index;
+                a.pads_key = v.pads_key;
                 a.notes = v.notes;
                 a.step = v.step;
                 a.latched = v.latched;
@@ -10459,6 +10466,10 @@ impl Player {
             }
             ToUi::Patterns(list) => {
                 self.arp.patterns = list;
+                self.refresh_arp();
+            }
+            ToUi::Phrases(list) => {
+                self.arp.phrases = list;
                 self.refresh_arp();
             }
             ToUi::Workspace(w) => {
@@ -17086,6 +17097,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::LevelsWheel(d) => p.apply(ToUi::LevelsWheel(d)),
             Effect::Steps(_) => {}
             Effect::Patterns(l) => p.apply(ToUi::Patterns(l)),
+            Effect::Phrases(l) => p.apply(ToUi::Phrases(l)),
             Effect::Workspace(w) => p.apply(ToUi::Workspace(Box::new(w))),
             Effect::Recorded(pat, next) => p.apply(ToUi::Recorded(Box::new(pat), next)),
             Effect::WorkspaceWheel(d) => p.apply(ToUi::WorkspaceWheel(d)),

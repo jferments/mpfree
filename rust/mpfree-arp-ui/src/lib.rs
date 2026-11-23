@@ -13,15 +13,20 @@
 //! - [`workspace`]: the full-screen pattern workspace: a grid of steps and
 //!   their parts, editing by tap, drag and wheel, Rotate, Mutate, Original,
 //!   length, Save, and recording on the pads.
+//! - [`phrases`]: the phrases a track picks from, as the screens read them:
+//!   whose each is, and the list a shelf at a time, in the order that suits
+//!   the key.
 //! - [`sample`]: sample screens for the workstation preview and the tests.
 //!
 //! No device I/O: the pad player draws the screens and feeds them touches.
 
 #![forbid(unsafe_code)]
 
+pub mod phrases;
 pub mod sample;
 pub mod view;
 pub mod widgets;
 pub mod workspace;
 
+pub use phrases::PhraseList;
 pub use view::{ArpAction, ArpPanel, ArpState, PatternButton};
