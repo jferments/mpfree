@@ -25,14 +25,28 @@
 //! its phrase.
 //!
 //! A phrase moves notes, so it plays where the pads press notes into the
-//! arp (a synth); on a kit the pads play as pressed.
+//! arp (a synth); on a kit the pads play as pressed, and NOTE REPEAT
+//! repeats them.
 //!
-//! Until the Phrase tab is built (its boards come first) nothing on screen
-//! picks Phrase mode. The wheel, the project's arp part and the engine
-//! already follow it.
+//! **The Phrase tab** (the Arp panel's fifth) shows the list a kind at a
+//! time: MPFree's basses, riffs, chords and lines, then the owner's
+//! (`mpfree_arp_ui::phrases::Shelf`). The app keeps which kind shows and
+//! moves the pick:
+//!
+//! - The kind shown is the pick's. Only an empty one (the owner's, before
+//!   they have made a phrase) shows with the pick elsewhere, so that it can
+//!   be stepped to and say what it is for.
+//! - The wheel moves the pick along the kind shown, in the order the
+//!   screen shows it (the phrases that suit the key first), and stops at
+//!   its ends.
+//! - A tap on a kind, or - and + on the tab, shows that kind and picks on
+//!   it: the phrase last picked there, else its first. So what is lit in
+//!   the list is always what a held note plays, and stepping through the
+//!   kinds is hearing one of each.
 
-use crate::app::{App, Effect};
-use mpfree_arp::{Library, Mode, Phrase};
+use crate::app::{App, Effect, View};
+use mpfree_arp::{Library, Mode, Phrase, Scale};
+use mpfree_arp_ui::phrases::{Shelf, Shelves};
 use mpfree_arp_ui::PhraseList;
 
 /// MPFree's starter phrases, by name, in the library's order.
@@ -45,8 +59,7 @@ pub fn built_in_phrases() -> Vec<(String, Phrase)> {
 
 impl App {
     /// The phrases to pick from: MPFree's own, the owner's, then the open
-    /// project's. (The Phrase tab's list reads this and the pick; until
-    /// the tab is built only the tests do.)
+    /// project's. (The screens get them as [`Effect::Phrases`].)
     #[cfg(test)]
     pub fn phrases(&self) -> &[(String, Phrase)] {
         &self.phrases
@@ -56,6 +69,34 @@ impl App {
     #[cfg(test)]
     pub fn phrase_index(&self) -> usize {
         self.phrase_index
+    }
+
+    /// The list's shelves, read where it is kept.
+    fn shelves(&self) -> Shelves<'_> {
+        Shelves {
+            phrases: &self.phrases,
+            built: self.phrases_built,
+            own: self.phrases_own,
+        }
+    }
+
+    /// The kind the Phrase tab's list shows, which the wheel moves along:
+    /// the pick's, unless an empty one was stepped to on the panel. Away
+    /// from the panel (the NOTE REPEAT band, which shows no kinds) it is
+    /// always the pick's, so the wheel there never stands on an empty
+    /// kind nobody sees.
+    pub(super) fn shown_shelf(&self) -> Shelf {
+        self.phrase_shelf
+            .filter(|_| self.view == View::Arp)
+            .unwrap_or_else(|| self.shelves().shelf_of(self.phrase_index))
+    }
+
+    /// The key the armed track's phrase follows In key now: the arp's own
+    /// scale, or with that off the scale the pads play. The list is in the
+    /// order that suits it.
+    fn phrase_key(&self) -> Option<Scale> {
+        let e = self.arps.engine_at(self.track);
+        e.settings().scale.or(e.key())
     }
 
     /// The list as the screens read it ([`Effect::Phrases`]): sent at the
@@ -94,20 +135,61 @@ impl App {
         };
         let note = Effect::Note(format!("arp phrase: {name} ({})", phrase.to_text()));
         self.phrase_index = i;
+        // The list shows the pick's kind, which remembers it.
+        self.phrase_shelf = None;
+        self.phrase_last[self.shelves().shelf_of(i).place()] = Some(i);
         self.send_phrase();
         vec![note]
     }
 
-    /// The wheel on a phrase: the pick moves along the list, stopping at
-    /// its ends.
+    /// The wheel on a phrase: the pick moves along the kind shown, in the
+    /// order the list shows it, stopping at its ends. An empty kind has
+    /// nothing to move along.
     pub(super) fn phrase_wheel(&mut self, delta: i32) -> Vec<Effect> {
-        let last = self.phrases.len().saturating_sub(1) as i32;
-        let i = (self.phrase_index as i32 + delta).clamp(0, last) as usize;
-        if i == self.phrase_index {
+        let rows = self.shelves().rows(self.shown_shelf(), self.phrase_key());
+        let Some(at) = rows.iter().position(|r| r.index == self.phrase_index) else {
+            return Vec::new();
+        };
+        let to = (at as i32 + delta).clamp(0, rows.len() as i32 - 1) as usize;
+        if to == at {
             Vec::new()
         } else {
-            self.pick_phrase(i)
+            self.pick_phrase(rows[to].index)
         }
+    }
+
+    /// The Phrase tab shows `shelf` (a tap on a kind, or - and +). The
+    /// track picks on it: the phrase last picked there, else the first as
+    /// the list shows it. An empty kind shows with the pick left where it
+    /// is, and the pick's own kind shows again with the pick as it is.
+    pub(super) fn show_shelf(&mut self, shelf: Shelf) -> Vec<Effect> {
+        if shelf == self.shown_shelf() {
+            return Vec::new();
+        }
+        if shelf == self.shelves().shelf_of(self.phrase_index) {
+            self.phrase_shelf = None;
+            self.arp_dirty = true;
+            return Vec::new();
+        }
+        let rows = self.shelves().rows(shelf, self.phrase_key());
+        let last = self.phrase_last[shelf.place()].filter(|i| rows.iter().any(|r| r.index == *i));
+        match last.or(rows.first().map(|r| r.index)) {
+            Some(i) => self.pick_phrase(i),
+            None => {
+                self.phrase_shelf = Some(shelf);
+                self.arp_dirty = true;
+                Vec::new()
+            }
+        }
+    }
+
+    /// The - and + buttons on Phrase: the kind `d` after the one shown,
+    /// stopping at the last. None before the first: the step goes on to
+    /// the tab before ([`App::arp_mode_step`]).
+    pub(super) fn phrase_kind_step(&mut self, d: i32) -> Option<Vec<Effect>> {
+        let to = self.shown_shelf().place() as i32 + d;
+        let to = usize::try_from(to).ok()?.min(Shelf::ALL.len() - 1);
+        Some(self.show_shelf(Shelf::ALL[to]))
     }
 
     /// The armed track's engine takes the track's pick (after a pick, or
@@ -177,6 +259,8 @@ impl App {
         self.track_ui
             .iter_mut()
             .for_each(|u| up(&mut u.phrase_index));
+        // And what each kind remembers.
+        self.phrase_last.iter_mut().flatten().for_each(up);
         false
     }
 
@@ -280,12 +364,13 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{SynthItem, View};
+    use crate::app::SynthItem;
     use mpfree_arp::scale::pads::{layout, PadLayout, PadSetup};
     use mpfree_arp::scale::{by_name, Scale};
-    use mpfree_arp::{EventKind, Events, Follow, Pattern, Speed};
+    use mpfree_arp::{Clock, EventKind, Events, Follow, Pattern, Rate, Speed};
     use mpfree_arp_ui::view::{ArpAction, PatternButton};
     use mpfree_arp_ui::workspace::WsAction;
+    use mpfree_controller::mpc_one::button::{MINUS, NOTE_REPEAT, PLUS};
     use mpfree_seq::MAX_TRACKS;
     use mpfree_store::Settings;
 
@@ -338,6 +423,41 @@ mod tests {
         (f64::from(SR) * 240.0 / app.settings.bpm).round() as u32
     }
 
+    /// A button pressed and let go.
+    fn press(app: &mut App, note: u8) {
+        app.button(note, true, 0.0);
+        app.button(note, false, 0.0);
+    }
+
+    /// The Arp panel open on its Phrase tab, the pads on a synth.
+    fn on_the_phrase_tab() -> App {
+        let mut app = ready();
+        on_a_synth(&mut app);
+        app.toggle_panel();
+        assert_eq!(app.view(), View::Arp);
+        app.arp_action(ArpAction::Mode(Mode::Phrase));
+        app
+    }
+
+    /// The first phrase of kind `k` ([`Shelf::ALL`]) as the list shows it.
+    fn first_of(app: &App, k: usize) -> usize {
+        app.shelves().rows(Shelf::ALL[k], app.phrase_key())[0].index
+    }
+
+    /// `periods` of 128 frames with the transport playing at 120 BPM from
+    /// period `*from` on: how many of them the arp screens heard of.
+    fn play(app: &mut App, from: &mut u64, periods: u64) -> usize {
+        let mut ev = Events::new();
+        let mut heard = 0;
+        for _ in 0..periods {
+            app.set_clock(Some(Clock::playing(0, *from * 128, 120.0)));
+            app.process(128, &mut ev);
+            heard += usize::from(app.arp_poll().is_some());
+            *from += 1;
+        }
+        heard
+    }
+
     #[test]
     fn the_list_is_mpfrees_sixty_four() {
         let app = ready();
@@ -367,18 +487,271 @@ mod tests {
         // 1 3 5 6 1+ 6 5 3 in eighths: with no scale, by semitones.
         let up = [0, 4, 7, 9, 12, 9, 7, 4].map(|s| home + s);
         assert_eq!(ons(&mut app, bar), up);
-        // The wheel: the next phrase in the list waits for its line (the
-        // next step: the transport is stopped).
-        let at = app.phrase_index();
-        assert_eq!(app.wheel(1).len(), 1);
-        assert_eq!(app.phrase_index(), at + 1);
-        assert_eq!(app.eng().phrase(), &app.phrases()[at].1, "still playing");
-        let next = app.phrases()[at + 1].1;
+        // The wheel: the phrase before it in its kind (Up and back is the
+        // last of the lines) waits for its line (the next step: the
+        // transport is stopped).
+        let kind: Vec<usize> = app
+            .shelves()
+            .rows(app.shown_shelf(), app.phrase_key())
+            .iter()
+            .map(|r| r.index)
+            .collect();
+        let at = kind
+            .iter()
+            .position(|i| *i == app.phrase_index())
+            .expect("the pick is in the kind shown");
+        assert_eq!(at + 1, kind.len());
+        assert!(app.wheel(1).is_empty(), "the end of its kind");
+        assert_eq!(app.wheel(-1).len(), 1);
+        assert_eq!(app.phrase_index(), kind[at - 1]);
+        assert_eq!(
+            app.eng().phrase(),
+            &app.phrases()[kind[at]].1,
+            "still playing"
+        );
+        let next = app.phrases()[kind[at - 1]].1;
         ons(&mut app, bar);
         assert_eq!(app.eng().phrase(), &next);
-        // The ends of the list stop the wheel.
+        // The ends of the kind stop the wheel: it never runs on into the
+        // next kind.
         assert!(app.wheel(1000).len() == 1 && app.wheel(1).is_empty());
-        assert_eq!(app.phrase_index(), 63);
+        assert_eq!(app.phrase_index(), *kind.last().unwrap());
+        assert!(app.wheel(-1000).len() == 1 && app.wheel(-1).is_empty());
+        assert_eq!(app.phrase_index(), kind[0]);
+        assert!(kind.len() < app.phrases().len(), "one kind, not the list");
+    }
+
+    /// On the panel's Phrase tab - and + step the kinds, each picking on
+    /// its kind: the phrase last picked there, else its first. + past the
+    /// last kind stops; - past the first goes back to Pattern.
+    #[test]
+    fn minus_and_plus_on_the_phrase_tab_step_the_kinds() {
+        let mut app = on_the_phrase_tab();
+        assert_eq!(app.shown_shelf(), Shelf::ALL[0], "Offbeat pump is a bass");
+        // +: the riffs, on the first of them.
+        press(&mut app, PLUS);
+        assert_eq!(app.shown_shelf(), Shelf::ALL[1]);
+        assert_eq!(app.phrase_index(), first_of(&app, 1));
+        assert_eq!(app.eng().settings().mode, Mode::Phrase, "the tab stays");
+        // The wheel picks another riff, and the kind remembers it.
+        app.wheel(2);
+        let riff = app.phrase_index();
+        assert_ne!(riff, first_of(&app, 1));
+        press(&mut app, PLUS);
+        assert_eq!(app.phrase_index(), first_of(&app, 2), "the chords");
+        press(&mut app, MINUS);
+        assert_eq!(app.phrase_index(), riff, "the riff as it was left");
+        // On to the owner's kind, which is empty: it shows, and the pick
+        // stays where it was, on a line.
+        for _ in 0..3 {
+            press(&mut app, PLUS);
+        }
+        assert_eq!(app.shown_shelf(), Shelf::Own);
+        let line = app.phrase_index();
+        assert_eq!(line, first_of(&app, 3));
+        assert_eq!(app.phrase_view().shelf, Some(Shelf::Own));
+        // + past the last kind and the wheel on an empty kind: nothing.
+        press(&mut app, PLUS);
+        assert!(app.wheel(1).is_empty() && app.wheel(-1).is_empty());
+        assert_eq!((app.shown_shelf(), app.phrase_index()), (Shelf::Own, line));
+        // Back: the lines show again, with the pick as it was.
+        press(&mut app, MINUS);
+        assert_eq!(
+            (app.shown_shelf(), app.phrase_index()),
+            (Shelf::ALL[3], line)
+        );
+        assert_eq!(app.phrase_view().shelf, None);
+        // Down to the basses, then past them: the Pattern tab.
+        for _ in 0..3 {
+            press(&mut app, MINUS);
+        }
+        assert_eq!(app.shown_shelf(), Shelf::ALL[0]);
+        assert_eq!(app.eng().settings().mode, Mode::Phrase);
+        press(&mut app, MINUS);
+        assert_eq!(app.eng().settings().mode, Mode::Pattern);
+        // + from there: the Phrase tab again, on the pick's kind.
+        press(&mut app, PLUS);
+        assert_eq!(app.eng().settings().mode, Mode::Phrase);
+        assert_eq!(app.shown_shelf(), Shelf::ALL[0]);
+    }
+
+    /// A tap on a kind shows it and picks on it, as - and + do; the kind
+    /// shown again does nothing, and the pick's own kind, tapped from the
+    /// owner's empty one, shows again with nothing picked anew.
+    #[test]
+    fn a_tap_on_a_kind_shows_it_and_picks_on_it() {
+        let mut app = on_the_phrase_tab();
+        let chords = Shelf::ALL[2];
+        let fx = app.arp_action(ArpAction::Shelf(chords));
+        assert_eq!(fx.len(), 1, "the pick is said once: {fx:?}");
+        assert_eq!(app.shown_shelf(), chords);
+        let pick = app.phrase_index();
+        assert_eq!(pick, first_of(&app, 2));
+        assert!(app.arp_action(ArpAction::Shelf(chords)).is_empty());
+        // A row tapped: the pick, which its kind remembers.
+        let third = app.shelves().rows(chords, app.phrase_key())[2].index;
+        app.arp_action(ArpAction::Phrase(third));
+        assert_eq!(app.phrase_index(), third);
+        app.arp_action(ArpAction::Shelf(Shelf::ALL[0]));
+        app.arp_action(ArpAction::Shelf(chords));
+        assert_eq!(app.phrase_index(), third);
+        // The owner's empty kind, then the chords again: nothing picked.
+        assert!(app.arp_action(ArpAction::Shelf(Shelf::Own)).is_empty());
+        assert_eq!(app.shown_shelf(), Shelf::Own);
+        assert!(app.arp_action(ArpAction::Shelf(chords)).is_empty());
+        assert_eq!((app.shown_shelf(), app.phrase_index()), (chords, third));
+        // With a phrase of the owner's, their kind picks like the others.
+        app.load_phrases("Verse bass = bass minor : 1 . 1 . 5- . 1 . 1 . 1 . 5- . b7- .\n");
+        app.arp_action(ArpAction::Shelf(Shelf::Own));
+        assert_eq!(app.phrase_name(0), "Verse bass");
+        // A row that is not in the list picks nothing.
+        assert!(app.arp_action(ArpAction::Phrase(999)).is_empty());
+        assert_eq!(app.phrase_name(0), "Verse bass");
+    }
+
+    /// On the Phrase tab Q-Link 1 is the phrase's speed, in its three
+    /// steps, and the other three are the arp's as on every tab; the
+    /// tab's In key | Exact switch and the band's speed buttons reach the
+    /// engine the same way.
+    #[test]
+    fn on_the_phrase_tab_the_first_qlink_is_the_speed() {
+        let mut app = on_the_phrase_tab();
+        let rate = app.eng().settings().rate;
+        assert_eq!(app.eng().settings().speed, Speed::AsWritten);
+        app.qlink(0, 10_000, None);
+        assert_eq!(app.eng().settings().speed, Speed::Double);
+        app.qlink(0, -20_000, None);
+        assert_eq!(app.eng().settings().speed, Speed::Half);
+        // A controller that sends positions: the middle is as written.
+        app.qlink(0, 0, Some(64));
+        assert_eq!(app.eng().settings().speed, Speed::AsWritten);
+        assert_eq!(app.eng().settings().rate, rate, "the rate is not touched");
+        app.qlink(3, 10_000, None);
+        assert_eq!(app.eng().settings().octaves, 4);
+        // The switch and the band's buttons send the settings they change.
+        let s = app.eng().settings();
+        app.arp_action(ArpAction::Settings(mpfree_arp::Settings {
+            follow: Follow::Exact,
+            speed: Speed::Double,
+            ..s
+        }));
+        let now = app.eng().settings();
+        assert_eq!((now.follow, now.speed), (Follow::Exact, Speed::Double));
+        assert_eq!((now.rate, now.octaves), (rate, 4));
+        // On another tab the first Q-Link is the rate again.
+        app.arp_action(ArpAction::Mode(Mode::Arp));
+        app.qlink(0, 10_000, None);
+        assert_eq!(app.eng().settings().rate, *Rate::ALL.last().unwrap());
+        assert_eq!(app.eng().settings().speed, Speed::Double, "kept");
+    }
+
+    /// NOTE REPEAT held away from the panel: on a synth - and + reach
+    /// Phrase after Pattern, and no further (no kinds show there); the
+    /// wheel moves the pick along its kind.
+    #[test]
+    fn note_repeats_minus_and_plus_reach_phrase_on_a_synth() {
+        let mut app = ready();
+        on_a_synth(&mut app);
+        app.button(NOTE_REPEAT, true, 0.0);
+        assert_eq!(app.eng().settings().mode, Mode::Repeat);
+        for mode in [Mode::Arp, Mode::Pattern, Mode::Phrase, Mode::Phrase] {
+            press(&mut app, PLUS);
+            assert_eq!(app.eng().settings().mode, mode);
+        }
+        assert_eq!(app.phrase_index(), 0, "+ on Phrase steps no kind here");
+        assert!(app.phrase_view().plays);
+        app.wheel(1);
+        let basses = app.shelves().rows(Shelf::ALL[0], app.phrase_key());
+        assert_eq!(app.phrase_index(), basses[1].index);
+        press(&mut app, MINUS);
+        assert_eq!(app.eng().settings().mode, Mode::Pattern);
+        assert_eq!(app.phrase_index(), basses[1].index);
+        app.button(NOTE_REPEAT, false, 0.0);
+    }
+
+    /// A kit track with the panel left on Phrase: the tab says whose pads
+    /// they are, the wheel has no list to move along, and NOTE REPEAT
+    /// still repeats the pads, its - and + stepping Repeat, Arp and
+    /// Pattern alone.
+    #[test]
+    fn a_kit_left_on_phrase_keeps_note_repeat() {
+        let mut app = ready();
+        app.set_track(2);
+        app.toggle_panel();
+        app.arp_action(ArpAction::Mode(Mode::Phrase));
+        let v = app.phrase_view();
+        assert_eq!((v.kit_track, v.plays), (Some(2), false));
+        assert!(app.wheel(1).is_empty(), "no list");
+        assert_eq!(app.phrase_index(), 0);
+        // - and + still step the kinds beside the message, and - past the
+        // first leaves the tab.
+        press(&mut app, PLUS);
+        assert_eq!(app.shown_shelf(), Shelf::ALL[1]);
+        press(&mut app, MINUS);
+        press(&mut app, MINUS);
+        assert_eq!(app.phrase_view().kit_track, None, "the Pattern tab");
+        app.arp_action(ArpAction::Mode(Mode::Phrase));
+        app.toggle_panel();
+        assert_eq!(app.phrase_view().kit_track, None, "the panel is closed");
+        // NOTE REPEAT: the pad repeats.
+        app.button(NOTE_REPEAT, true, 0.0);
+        assert_eq!(app.eng().settings().mode, Mode::Repeat);
+        app.pad_down(3, 100);
+        let half = bar(&app) / 2;
+        let got = ons(&mut app, half);
+        assert!(got.len() >= 4 && got.iter().all(|n| *n == 3), "{got:?}");
+        for mode in [Mode::Arp, Mode::Pattern, Mode::Pattern] {
+            press(&mut app, PLUS);
+            assert_eq!(app.eng().settings().mode, mode);
+        }
+        app.button(NOTE_REPEAT, false, 0.0);
+    }
+
+    /// What the tab draws that moves by itself: where the phrase is, to
+    /// the 1/32 and only while the panel shows, and with the transport
+    /// playing the pick that waits for the bar line beside the phrase
+    /// still heard.
+    #[test]
+    fn the_tab_hears_where_the_phrase_is_and_what_waits() {
+        let mut app = on_the_phrase_tab();
+        pick_named(&mut app, "Up and back");
+        let first = app.phrase_index();
+        assert_eq!(app.phrase_view().at, None, "nothing plays yet");
+        // NOTE REPEAT held, so the phrase plays on with the panel closed.
+        app.button(NOTE_REPEAT, true, 0.0);
+        app.pad_down(0, 100);
+        // Half a bar at 120 BPM is 344 periods of 128 frames, and 16
+        // thirty-seconds: the screens hear of each, not of every period.
+        let mut period = 0;
+        let heard = play(&mut app, &mut period, 344);
+        assert!((14..=20).contains(&heard), "{heard} of 344 periods");
+        let at = app.phrase_view().at.expect("the phrase plays");
+        assert!((0.44..=0.5).contains(&at), "half way: {at}");
+        assert_eq!((at * 32.0).fract(), 0.0, "a whole 1/32: {at}");
+        // A pick while it plays waits for the bar line, and the tab is
+        // told which phrase is still heard.
+        app.wheel(-1);
+        let v = app.phrase_view();
+        assert!(v.waits);
+        assert_eq!(v.playing, Some(first));
+        assert_ne!(app.phrase_index(), first);
+        assert_eq!(app.eng().phrase(), &app.phrases()[first].1);
+        // At the bar line it comes in.
+        play(&mut app, &mut period, 348);
+        let v = app.phrase_view();
+        assert_eq!((v.waits, v.playing), (false, None));
+        assert_eq!(app.eng().phrase(), &app.phrases()[app.phrase_index()].1);
+        // The panel closed: no screen follows the cursor, so they hear
+        // only of the steps.
+        pick_named(&mut app, "Up and back");
+        play(&mut app, &mut period, 689);
+        assert_eq!(app.eng().phrase(), &app.phrases()[first].1);
+        app.toggle_panel();
+        assert_ne!(app.view(), View::Arp);
+        assert_eq!(app.eng().settings().mode, Mode::Phrase, "still held");
+        let heard = play(&mut app, &mut period, 344);
+        assert!((3..=7).contains(&heard), "{heard} of 344 periods");
+        app.button(NOTE_REPEAT, false, 0.0);
     }
 
     /// In key, a phrase follows the scale the pads play, and a change of

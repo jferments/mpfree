@@ -26,7 +26,7 @@
 //!
 //! [`Playhead`]: crate::phrase::Playhead
 
-use super::{Engine, EventKind, Hit, Mode, SyncStart, PPQ};
+use super::{Engine, EventKind, Hit, Mode, Settings, SyncStart, PPQ};
 use crate::phrase::{self, Feel, Join, Phrase, Turn, MAX_PHRASE_NOTES};
 use crate::scale::Scale;
 
@@ -38,6 +38,15 @@ const SIXTEENTH: u32 = PPQ / 4;
 /// playing on the beat lands. A press meant for the next 1/16 comes
 /// later than this at any tempo.
 const LATE_PRESS: f64 = 0.060;
+
+/// How fast a phrase plays against its written rhythm (written ticks per
+/// clock tick) with the settings `set` as a Modifier pushes them to
+/// `live`: the speed, times the push on the rate (two steps faster from
+/// 1/16 is 1/32: twice as fast). The engine plays by it, and a screen
+/// shows the same number.
+pub fn phrase_speed(set: &Settings, live: &Settings) -> f64 {
+    live.speed.factor() * f64::from(set.rate.ticks()) / f64::from(live.rate.ticks())
+}
 
 impl Engine {
     /// The phrase Phrase mode plays. Picked while one plays, it comes in
@@ -86,6 +95,22 @@ impl Engine {
             .position(&self.phrase, self.clock_tick(self.now as f64))
     }
 
+    /// The line of the playing phrase a waiting one comes in on: its next
+    /// bar line while the transport plays, its next step while it is
+    /// stopped ([`Engine::set_phrase`]).
+    fn phrase_join(&self) -> Join {
+        match self.sync {
+            Some(_) => Join::Bar,
+            None => Join::Step,
+        }
+    }
+
+    /// The line a picked phrase is waiting for while another still plays,
+    /// for a screen that shows the pick coming in; None when none waits.
+    pub fn phrase_waiting(&self) -> Option<Join> {
+        self.next_phrase.is_some().then(|| self.phrase_join())
+    }
+
     /// Ticks to the next place a phrase may start while the transport
     /// plays: the next 1/16, beat or bar ([`SyncStart`]).
     pub(super) fn phrase_start_unit(&self) -> u32 {
@@ -97,11 +122,9 @@ impl Engine {
         }
     }
 
-    /// Written ticks per clock tick: the speed, times the modifier's push
-    /// on the rate (two steps faster from 1/16 is 1/32: twice as fast).
+    /// Written ticks per clock tick ([`phrase_speed`]).
     fn phrase_factor(&self) -> f64 {
-        self.live.speed.factor() * f64::from(self.settings.rate.ticks())
-            / f64::from(self.live.rate.ticks())
+        phrase_speed(&self.settings, &self.live)
     }
 
     /// The phrase from its first note: on a multiple of `unit` ticks
@@ -179,10 +202,7 @@ impl Engine {
     /// transport, the next step without ([`Engine::set_phrase`]).
     pub(super) fn play_phrase(&mut self, end: u64) {
         let until = self.clock_tick(end as f64);
-        let join = match self.sync {
-            Some(_) => Join::Bar,
-            None => Join::Step,
-        };
+        let join = self.phrase_join();
         // A turn is a note or a phrase coming in: every note twice and a
         // swap at the very most in one period, so the loop always ends.
         for _ in 0..MAX_PHRASE_NOTES * 2 + 2 {
@@ -350,7 +370,7 @@ mod tests {
     use super::super::*;
     use crate::modifier::{ModSource, Modifier};
     use crate::notes::LatchMode;
-    use crate::phrase::{Follow, Phrase, Speed};
+    use crate::phrase::{Follow, Join, Phrase, Speed};
     use crate::scale::Scale;
 
     fn phrase_engine(text: &str, settings: Settings) -> Engine {
@@ -545,7 +565,9 @@ mod tests {
         );
         let first = ons(&run_synced(&mut e, &spans, &[(0, 60)], BAR + BAR / 2, 128));
         assert_eq!(first.len(), 6);
+        assert_eq!(e.phrase_waiting(), None);
         e.set_phrase(Phrase::parse("riff either : 5 5 5 5").unwrap());
+        assert_eq!(e.phrase_waiting(), Some(Join::Bar), "a screen can say so");
         let got = ons(&run_synced(&mut e, &spans, &[], 2 * BAR + BAR / 2, 128));
         assert_eq!(
             got,
@@ -559,6 +581,7 @@ mod tests {
             ]
         );
         assert_eq!(e.phrase().len(), 4);
+        assert_eq!(e.phrase_waiting(), None, "it is in");
     }
 
     /// With the transport stopped nothing else counts bars, so it comes
@@ -574,6 +597,7 @@ mod tests {
         let first = ons(&run(&mut e, 4 * STEP + STEP / 2, 128));
         assert_eq!(first, [(0, 60), (4 * STEP, 60)]);
         e.set_phrase(Phrase::parse("riff either : 5 5 5 5").unwrap());
+        assert_eq!(e.phrase_waiting(), Some(Join::Step));
         let got = ons(&run(&mut e, BAR, 128));
         assert_eq!(
             got,

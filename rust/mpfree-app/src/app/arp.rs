@@ -2,13 +2,19 @@
 //! pattern workspace do (the design is in `docs/dev/design/arpeggiator.md`).
 //!
 //! - **NOTE REPEAT held**: the pads play through the arp in its mode
-//!   (Repeat, Arp or Pattern; Repeat if the panel picked Direct). The wheel
-//!   picks the rate, order or pattern, - and + the mode, and Q-Links 1-4 set
-//!   rate, gate, swing and octaves. The screen shows the quick band over the
-//!   Play page. Let go and the pads play as pressed again, unless latched.
+//!   (Repeat, Arp, Pattern or, on a synth, Phrase; Repeat if the panel
+//!   picked Direct). The wheel picks the rate, order, pattern or phrase,
+//!   the - and + buttons the mode, and Q-Links 1-4 set rate, gate, swing
+//!   and octaves. The screen shows the quick band over the Play page. Let
+//!   go and the pads play as pressed again, unless latched.
 //! - **The Arp panel** (NOTE REPEAT + MENU, or a tap on the arp chip) sits
 //!   beside the pads, and the pads play through the arp in the mode its tabs
 //!   pick, Direct included. The wheel, - / + and the Q-Links work as above.
+//! - **On Phrase** (the panel's fifth tab, or NOTE REPEAT held with it
+//!   picked) the wheel moves the pick along its kind and Q-Link 1 is the
+//!   phrase's speed. On the panel's tab the - and + buttons step the kinds
+//!   of phrase, and past the first kind go to the Pattern tab; with NOTE
+//!   REPEAT held they step the modes, as above (`arp/phrases.rs`).
 //! - **The pattern workspace** (Edit pattern or Record on pads, on the
 //!   panel) edits the pattern by touch; the wheel turns the selected cell.
 //!   Recording writes one step per pad press (Step mode, no clock), at
@@ -21,9 +27,10 @@
 use super::{App, Effect, Item, PadNotes, View};
 use mpfree_arp::scale::{Scale, Snap, NOTE_NAMES, SCALES};
 use mpfree_arp::{
-    Chord, Held, Library, ModSource, Mode, Modifier, Order, Pattern, Rate, RecordMode, Recorder,
-    Settings, Step, Turns, Wrote,
+    Chord, Held, Join, Library, ModSource, Mode, Modifier, Order, Pattern, Rate, RecordMode,
+    Recorder, Settings, Speed, Step, Turns, Wrote, PPQ,
 };
+use mpfree_arp_ui::phrases::Shelf;
 use mpfree_arp_ui::view::{ArpAction, PatternButton};
 use mpfree_arp_ui::workspace::{Editor, WsAction};
 use mpfree_node::{Ctl, Curve, ParamInfo, Unit};
@@ -48,6 +55,8 @@ pub struct ArpView {
     /// The scale the pads play: the key a phrase follows In key while the
     /// arp's own scale is off.
     pub pads_key: Option<Scale>,
+    /// What the Phrase tab shows of the phrase as it plays.
+    pub phrase: PhraseView,
     /// Held and latched pads (slots), in the order they were pressed.
     pub notes: Vec<Held>,
     /// Steps played since the notes started.
@@ -55,6 +64,34 @@ pub struct ArpView {
     pub latched: bool,
     pub bpm: f64,
 }
+
+/// What the Phrase tab shows beyond the list and the armed track's pick
+/// (the screen's `mpfree_arp_ui::view::PhraseNow`, which names the track).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PhraseView {
+    /// The kind the list shows when it is not the pick's: an empty one
+    /// stepped to.
+    pub shelf: Option<Shelf>,
+    /// Where the phrase is as it plays, 0.0 to 1.0 of the way through, to
+    /// the 1/32 ([`CURSOR_TICKS`]).
+    pub at: Option<f32>,
+    /// The pick waits for the bar line while another phrase plays on (the
+    /// transport is playing).
+    pub waits: bool,
+    /// The phrase that plays until then, as a place in the list.
+    pub playing: Option<usize>,
+    /// A phrase plays on the armed track: its pads press notes (a synth's),
+    /// so NOTE REPEAT's - and + reach Phrase there.
+    pub plays: bool,
+    /// The Phrase tab shows on a kit track, whose pads play as pressed:
+    /// the track (0 based), for the screen to name.
+    pub kit_track: Option<usize>,
+}
+
+/// The Phrase tab's cursor moves a 1/32 at a time: fine enough to follow
+/// by eye (16 moves a second at 120 bpm, each a few pixels of the picture),
+/// and no more often than the arp screens already hear of a fast repeat.
+const CURSOR_TICKS: u32 = PPQ / 8;
 
 /// The pattern workspace, as the app wants it.
 #[derive(Clone, Debug, PartialEq)]
@@ -104,27 +141,29 @@ impl LibraryFile {
     }
 }
 
-/// Q-Link turn units per change of rate, gate, swing and octaves: rate and
-/// octaves have few values, so they need a longer turn.
+/// Q-Link turn units per change of rate (or a phrase's speed), gate, swing
+/// and octaves: the first and the last have few values, so they need a
+/// longer turn.
 const QLINK_UNITS: [i32; 4] = [3, 1, 1, 4];
-/// The panel's mode tabs, and the modes NOTE REPEAT can turn on.
 mod part;
 mod phrases;
 /// The arp part's first line, for the project opener's check.
 pub use part::HEADER as ARP_HEADER;
 pub use phrases::built_in_phrases;
 
-const MODES: [Mode; 4] = [Mode::Direct, Mode::Repeat, Mode::Arp, Mode::Pattern];
-/// Every mode a project's arp part can name: the panel's tabs and Phrase,
-/// whose tab is not built yet.
-const KEPT_MODES: [Mode; 5] = [
+/// The panel's mode tabs, which are also every mode a project's arp part
+/// can name.
+const MODES: [Mode; 5] = [
     Mode::Direct,
     Mode::Repeat,
     Mode::Arp,
     Mode::Pattern,
     Mode::Phrase,
 ];
+/// The modes NOTE REPEAT's - and + step through on a kit, and on a synth,
+/// where a phrase plays too.
 const GENERATING: [Mode; 3] = [Mode::Repeat, Mode::Arp, Mode::Pattern];
+const GENERATING_NOTES: [Mode; 4] = [Mode::Repeat, Mode::Arp, Mode::Pattern, Mode::Phrase];
 const MUTATE_AMOUNT: u8 = 35;
 /// Recording writes at least this many steps (a pattern stopped early
 /// keeps what was written; Length - shortens it).
@@ -287,12 +326,32 @@ impl App {
         }
     }
 
-    /// The mode NOTE REPEAT and Latch turn on.
+    /// The mode NOTE REPEAT and Latch turn on: the panel's, or Repeat
+    /// where that plays the pads as pressed (Direct, and Phrase on a kit,
+    /// so a tab left on Phrase never takes Note Repeat from a kit's pads).
     fn held_mode(&self) -> Mode {
-        if self.arp_mode == Mode::Direct {
-            Mode::Repeat
+        match self.arp_mode {
+            Mode::Direct => Mode::Repeat,
+            Mode::Phrase if !self.phrases_play() => Mode::Repeat,
+            m => m,
+        }
+    }
+
+    /// The Arp panel shows its Phrase tab on a kit track, whose pads play
+    /// as pressed: the tab says so in the place of its list.
+    pub(super) fn phrase_on_kit(&self) -> bool {
+        self.arp_mode == Mode::Phrase && !self.phrases_play() && self.panel_open()
+    }
+
+    /// The tab the wheel, - / + and Q-Link 1 follow: the mode the pads
+    /// play through, or Phrase while the panel shows that tab on a kit.
+    /// (The screen works out the same from what it is sent:
+    /// `ArpState::tab`.)
+    fn arp_tab(&self) -> Mode {
+        if self.phrase_on_kit() {
+            Mode::Phrase
         } else {
-            self.arp_mode
+            self.arps.engine_at(self.track).settings().mode
         }
     }
 
@@ -326,6 +385,7 @@ impl App {
             pattern_changed: self.pattern_changed(),
             phrase_index: self.phrase_index,
             pads_key: self.arps.engine_at(self.track).key(),
+            phrase: self.phrase_view(),
             notes: self.arps.engine_at(self.track).active().as_slice().to_vec(),
             step: self.arps.engine_at(self.track).step(),
             latched: self.latched,
@@ -333,15 +393,51 @@ impl App {
         })
     }
 
+    /// The 1/32 of its phrase the armed track's engine is in, and whether
+    /// a pick waits for the bar line: what the Phrase tab draws that moves
+    /// by itself.
+    fn phrase_moves(&self) -> (Option<u32>, bool) {
+        let e = self.arps.engine_at(self.track);
+        (
+            e.phrase_at().map(|t| t.max(0.0) as u32 / CURSOR_TICKS),
+            e.phrase_waiting() == Some(Join::Bar),
+        )
+    }
+
+    fn phrase_view(&self) -> PhraseView {
+        let e = self.arps.engine_at(self.track);
+        let (cursor, waits) = self.phrase_moves();
+        let ticks = e.phrase().ticks().max(1);
+        PhraseView {
+            shelf: self.phrase_shelf,
+            at: cursor.map(|c| (c * CURSOR_TICKS) as f32 / ticks as f32),
+            waits,
+            // The one the engine still plays: its place in the list.
+            playing: waits
+                .then(|| self.phrases.iter().position(|(_, p)| p == e.phrase()))
+                .flatten(),
+            plays: self.phrases_play(),
+            kit_track: self.phrase_on_kit().then_some(self.track),
+        }
+    }
+
     /// Once a period, after `process`: the arp screens' view, if the step,
-    /// the notes or a setting changed since they last heard.
+    /// the notes or a setting changed since they last heard, or, while the
+    /// panel shows, a phrase's cursor moved.
     pub fn arp_poll(&mut self) -> Option<Effect> {
         let e = self.arps.engine_at(self.track);
         let step = e.step();
         let push = ((e.modifier() * 100.0).round() as u8, e.live());
+        // The cursor is the Phrase tab's alone: no other screen redraws
+        // for it.
+        let phrase = match self.phrase_moves() {
+            (cursor, waits) if self.view == View::Arp => (cursor, waits),
+            (_, waits) => (None, waits),
+        };
         if !self.arp_dirty
             && step == self.sent_step
             && push == self.sent_push
+            && phrase == self.sent_phrase
             && *e.active() == self.sent_notes
         {
             return None;
@@ -349,6 +445,7 @@ impl App {
         self.arp_dirty = false;
         self.sent_step = step;
         self.sent_push = push;
+        self.sent_phrase = phrase;
         self.sent_notes
             .clone_from(self.arps.engine_at(self.track).active());
         Some(self.arp_view())
@@ -394,6 +491,8 @@ impl App {
 
     fn set_mode(&mut self, m: Mode) -> Vec<Effect> {
         self.arp_mode = m;
+        // The Phrase tab opens on the kind the track's phrase is.
+        self.phrase_shelf = None;
         let mut fx = vec![Effect::Note(format!("arp: {}", mode_label(m)))];
         fx.extend(self.arp_changed());
         fx
@@ -438,6 +537,9 @@ impl App {
                 self.arp.gate = s.gate;
                 self.arp.swing = s.swing;
                 self.arp.octaves = s.octaves;
+                // The Phrase tab's switch and its first slider.
+                self.arp.follow = s.follow;
+                self.arp.speed = s.speed;
                 let mut fx = self.arp_changed();
                 if took_swing {
                     fx.push(Effect::Note(
@@ -469,6 +571,8 @@ impl App {
                 fx.extend(self.open_mod_section());
                 fx
             }
+            ArpAction::Phrase(i) => self.pick_phrase(i),
+            ArpAction::Shelf(shelf) => self.show_shelf(shelf),
         }
     }
 
@@ -485,8 +589,12 @@ impl App {
     }
 
     /// The wheel while NOTE REPEAT is held or on the panel: the order (Arp),
-    /// the pattern (Pattern), the phrase (Phrase) or the rate.
+    /// the pattern (Pattern), the phrase (Phrase) or the rate. On a kit
+    /// track's Phrase tab, which has no list, it moves nothing.
     pub(super) fn arp_wheel(&mut self, delta: i32) -> Vec<Effect> {
+        if self.phrase_on_kit() {
+            return Vec::new();
+        }
         match self.arps.engine_at(self.track).settings().mode {
             Mode::Arp => {
                 let o = step_in(&Order::ALL, self.arp.order, delta);
@@ -515,10 +623,21 @@ impl App {
     }
 
     /// The - and + buttons while NOTE REPEAT is held (Repeat, Arp,
-    /// Pattern) or on the panel (its four tabs).
+    /// Pattern and, on a synth, Phrase) or on the panel (its five tabs).
+    /// On the panel's Phrase tab they step the kinds of phrase, as the
+    /// owner's plan has it; - past the first kind steps on to the tab
+    /// before, so the buttons still lead out of the tab. Away from the
+    /// panel no kinds show, so there they step the modes alone.
     pub(super) fn arp_mode_step(&mut self, d: i32) -> Vec<Effect> {
         let m = if self.view == View::Arp {
+            if self.arp_tab() == Mode::Phrase {
+                if let Some(fx) = self.phrase_kind_step(d) {
+                    return fx;
+                }
+            }
             step_in(&MODES, self.arp_mode, d)
+        } else if self.phrases_play() {
+            step_in(&GENERATING_NOTES, self.held_mode(), d)
         } else {
             step_in(&GENERATING, self.held_mode(), d)
         };
@@ -530,17 +649,19 @@ impl App {
     }
 
     /// A Q-Link turned. While NOTE REPEAT is held or on the panel, Q-Links
-    /// 1-4 set rate, gate, swing and octaves; otherwise None leaves the
-    /// knob to the page (Q-Link 1 is the level). `absolute` is the value
-    /// (0-127) when the controller sends positions, without Akai's session.
+    /// 1-4 set rate (on Phrase, the phrase's speed), gate, swing and
+    /// octaves; otherwise None leaves the knob to the page (Q-Link 1 is the
+    /// level). `absolute` is the value (0-127) when the controller sends
+    /// positions, without Akai's session.
     pub fn qlink(&mut self, knob: usize, delta: i32, absolute: Option<u8>) -> Option<Vec<Effect>> {
         if knob >= 4 || !(self.repeat_held || self.view == View::Arp) {
             return None;
         }
+        let tab = self.arp_tab();
         let mut s = self.arp;
         s.rate = self.settings.rate;
         if let Some(v) = absolute {
-            s = mpfree_arp_ui::view::with_qlink(s, knob, f32::from(v) / 127.0);
+            s = mpfree_arp_ui::view::with_qlink(s, tab, knob, f32::from(v) / 127.0);
         } else {
             self.qlink_turns[knob] += delta;
             let steps = self.qlink_turns[knob] / QLINK_UNITS[knob];
@@ -549,6 +670,7 @@ impl App {
             }
             self.qlink_turns[knob] -= steps * QLINK_UNITS[knob];
             match knob {
+                0 if tab == Mode::Phrase => s.speed = step_in(&Speed::ALL, s.speed, steps),
                 0 => s.rate = step_in(&Rate::ALL, s.rate, steps),
                 1 => s.gate = (i32::from(s.gate) + 2 * steps).clamp(1, 100) as u8,
                 2 => s.swing = (i32::from(s.swing) + steps).clamp(50, 75) as u8,
@@ -888,10 +1010,11 @@ impl App {
     // ------------------------------------------------------------ transport
 
     /// The transport's clock for the next [`App::process`]: called once a
-    /// period, before it, while the transport plays (the time engine gives
-    /// the first span of the period). None, or no call, and the arp
-    /// free-runs at the app's tempo.
-    #[cfg(test)]
+    /// period, before it, while the transport plays. None, or no call, and
+    /// the arp free-runs at the app's tempo. For tests and the sample
+    /// screens, which run the armed track's arp alone; the app's loop
+    /// plays every track's arp on the time engine's clock
+    /// (`TimeHost::period_arps`).
     pub fn set_clock(&mut self, clock: Option<mpfree_arp::Clock>) {
         self.clock = clock;
     }
@@ -1769,6 +1892,8 @@ impl App {
         self.mutations = u.mutations;
         let _ = self.set_pattern(u.pattern);
         self.phrase_index = u.phrase_index;
+        // The Phrase tab shows this track's phrase among its kind.
+        self.phrase_shelf = None;
         self.send_phrase();
         self.arp_changed()
     }

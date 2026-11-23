@@ -4,8 +4,10 @@
 //! first (docs/dev/design/arpeggiator.md, "Phrases").
 //!
 //! Nothing here draws. The arp chip and the quick band name the phrase
-//! from it; the Phrase tab's own screen is built once the owner has
-//! answered its boards, on [`PhraseList::rows`].
+//! from it, and the Phrase tab ([`crate::phrase_tab`]) shows a shelf of
+//! it at a time. The app, which keeps the list and moves a track's pick
+//! along a shelf, reads the same shelves from its own list without a
+//! copy ([`Shelves`]).
 
 use mpfree_arp::{Library, Phrase, PhraseKind, Scale};
 
@@ -58,6 +60,11 @@ impl Shelf {
             Shelf::Own => "Yours",
         }
     }
+
+    /// Its place in [`Shelf::ALL`].
+    pub fn place(self) -> usize {
+        Shelf::ALL.iter().position(|s| *s == self).unwrap_or(0)
+    }
 }
 
 /// A row of a shelf.
@@ -70,6 +77,64 @@ pub struct Row {
     /// a minor key): it comes after the ones that suit the key, dimmed,
     /// and says the scale it was written in.
     pub other_scale: bool,
+}
+
+/// The list's shelves, read from a list that is not copied: the app's
+/// own, or a [`PhraseList`]'s ([`PhraseList::shelves`]).
+#[derive(Clone, Copy, Debug)]
+pub struct Shelves<'a> {
+    pub phrases: &'a [(String, Phrase)],
+    /// MPFree's own are the first `built`, and the owner's go from there
+    /// up to `own` ([`PhraseList`]).
+    pub built: usize,
+    pub own: usize,
+}
+
+impl Shelves<'_> {
+    /// Whose phrase `i` is.
+    pub fn origin(&self, i: usize) -> Origin {
+        if i < self.built {
+            Origin::Mpfree
+        } else if i < self.own {
+            Origin::Owner
+        } else {
+            Origin::Project
+        }
+    }
+
+    /// The shelf phrase `i` is on: its kind's for one of MPFree's, the
+    /// owner's shelf for any other.
+    pub fn shelf_of(&self, i: usize) -> Shelf {
+        match self.phrases.get(i) {
+            Some((_, p)) if i < self.built => Shelf::Kind(p.kind),
+            _ => Shelf::Own,
+        }
+    }
+
+    /// How many phrases are on a shelf.
+    pub fn count(&self, shelf: Shelf) -> usize {
+        (0..self.phrases.len())
+            .filter(|&i| self.shelf_of(i) == shelf)
+            .count()
+    }
+
+    /// A shelf's rows in the order shown: the phrases that suit `key`
+    /// (the scale a phrase follows In key now; `Written::suits`) in the
+    /// list's order, then the ones written in the other kind of scale.
+    /// With no key, or one of no kind, it is the list's order.
+    pub fn rows(&self, shelf: Shelf, key: Option<Scale>) -> Vec<Row> {
+        let mut rows: Vec<Row> = (0..self.phrases.len())
+            .filter(|&i| self.shelf_of(i) == shelf)
+            .map(|index| Row {
+                index,
+                origin: self.origin(index),
+                other_scale: !self.phrases[index].1.written.suits(key),
+            })
+            .collect();
+        // Stable: each half keeps the list's order.
+        rows.sort_by_key(|r| r.other_scale);
+        rows
+    }
 }
 
 impl PhraseList {
@@ -92,42 +157,33 @@ impl PhraseList {
         self.phrases.get(i).map_or("", |(n, _)| n.as_str())
     }
 
+    /// The list's shelves.
+    pub fn shelves(&self) -> Shelves<'_> {
+        Shelves {
+            phrases: &self.phrases,
+            built: self.built,
+            own: self.own,
+        }
+    }
+
     /// Whose phrase `i` is.
     pub fn origin(&self, i: usize) -> Origin {
-        if i < self.built {
-            Origin::Mpfree
-        } else if i < self.own {
-            Origin::Owner
-        } else {
-            Origin::Project
-        }
+        self.shelves().origin(i)
     }
 
-    /// The shelf phrase `i` is on: its kind's for one of MPFree's, the
-    /// owner's shelf for any other.
+    /// The shelf phrase `i` is on ([`Shelves::shelf_of`]).
     pub fn shelf_of(&self, i: usize) -> Shelf {
-        match self.phrases.get(i) {
-            Some((_, p)) if i < self.built => Shelf::Kind(p.kind),
-            _ => Shelf::Own,
-        }
+        self.shelves().shelf_of(i)
     }
 
-    /// A shelf's rows in the order shown: the phrases that suit `key`
-    /// (the scale a phrase follows In key now; `Written::suits`) in the
-    /// list's order, then the ones written in the other kind of scale.
-    /// With no key, or one of no kind, it is the list's order.
+    /// How many phrases are on a shelf.
+    pub fn count(&self, shelf: Shelf) -> usize {
+        self.shelves().count(shelf)
+    }
+
+    /// A shelf's rows in the order shown ([`Shelves::rows`]).
     pub fn rows(&self, shelf: Shelf, key: Option<Scale>) -> Vec<Row> {
-        let mut rows: Vec<Row> = (0..self.phrases.len())
-            .filter(|&i| self.shelf_of(i) == shelf)
-            .map(|index| Row {
-                index,
-                origin: self.origin(index),
-                other_scale: !self.phrases[index].1.written.suits(key),
-            })
-            .collect();
-        // Stable: each half keeps the list's order.
-        rows.sort_by_key(|r| r.other_scale);
-        rows
+        self.shelves().rows(shelf, key)
     }
 }
 

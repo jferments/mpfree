@@ -1756,6 +1756,13 @@ pub struct App {
     phrases_own: usize,
     /// The armed track's phrase, as a place in `phrases`.
     phrase_index: usize,
+    /// The kind of phrase the Phrase tab's list shows when it is not the
+    /// pick's: an empty one stepped to (the owner's, before they have
+    /// made a phrase). None: the pick's.
+    phrase_shelf: Option<mpfree_arp_ui::phrases::Shelf>,
+    /// The phrase last picked on each kind's shelf, so stepping back to a
+    /// kind returns to it (`app/arp/phrases.rs`).
+    phrase_last: [Option<usize>; mpfree_arp_ui::phrases::Shelf::ALL.len()],
     /// The pattern the engine plays (edited, mutated or recorded from the
     /// list's).
     pattern: Pattern,
@@ -1776,6 +1783,10 @@ pub struct App {
     /// The Modifier's push the arp screens last showed, in percent, and
     /// the settings it played (they redraw when either moves).
     sent_push: (u8, mpfree_arp::Settings),
+    /// The 1/32 of its phrase the Phrase tab's cursor was last sent at
+    /// (while the Arp panel shows), and whether a pick waited for the bar
+    /// line.
+    sent_phrase: (Option<u32>, bool),
     /// Where the sustain pedal went down, while it is down
     /// ([`App::arp_pedal`]).
     pedal_down: Option<arp::PedalTo>,
@@ -2014,6 +2025,8 @@ impl App {
             phrases_own: phrases.len(),
             phrases,
             phrase_index: 0,
+            phrase_shelf: None,
+            phrase_last: [None; mpfree_arp_ui::phrases::Shelf::ALL.len()],
             pattern,
             mutations: 0,
             recorder: None,
@@ -2022,6 +2035,7 @@ impl App {
             qlink_turns: [0; 4],
             sent_step: 0,
             sent_push: (0, mpfree_arp::Settings::default()),
+            sent_phrase: (None, false),
             pedal_down: None,
             pedal_latch: None,
             sent_notes,
@@ -3002,8 +3016,8 @@ impl App {
         self.repeat_held || self.latched
     }
 
-    /// The engine makes notes of its own (Repeat, Arp or Pattern), so a hit
-    /// may sound later than the press, and latched pads stay lit.
+    /// The engine makes notes of its own (Repeat, Arp, Pattern or Phrase),
+    /// so a hit may sound later than the press, and latched pads stay lit.
     pub fn generating(&self) -> bool {
         self.arps.engine_at(self.track).settings().mode != Mode::Direct
     }

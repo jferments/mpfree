@@ -18,6 +18,7 @@ use crate::phrase::{Follow, Phrase, Playhead, Speed};
 use crate::scale::{Scale, Snap, CHROMATIC, MAJOR};
 
 mod phrase_mode;
+pub use phrase_mode::phrase_speed;
 
 /// Clock resolution: ticks per quarter note.
 pub const PPQ: u32 = 960;

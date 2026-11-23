@@ -393,10 +393,8 @@ impl App {
             let u = &mut kept[t];
             let s = &mut u.arp;
             let ok = match k {
-                "mode" => pick(&super::KEPT_MODES, v)
-                    .map(|m| u.arp_mode = m)
-                    .is_some(),
-                "plays" => pick(&super::KEPT_MODES, v).map(|m| plays[t] = m).is_some(),
+                "mode" => pick(&super::MODES, v).map(|m| u.arp_mode = m).is_some(),
+                "plays" => pick(&super::MODES, v).map(|m| plays[t] = m).is_some(),
                 "rate" => Rate::ALL
                     .iter()
                     .find(|r| r.label() == v)
