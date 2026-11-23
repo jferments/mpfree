@@ -156,13 +156,14 @@ pub(super) fn grains<C: GrainSource>(
         g.render(clip, budget, frame + at as u64, bl, br);
         let follow = v.follow.moving;
         for k in 0..n {
-            let (l, r) = if follow {
-                finish::<true>(v, rate, bl[k], br[k], 1.0)
+            // The grains are its sound: its gain before the filter is
+            // all they take there ([`Pre`]).
+            let (out, g) = ((&mut *left, &mut *right), v.pre.gain);
+            if follow {
+                finish::<true>(v, rate, bl[k], br[k], g, out, at + k);
             } else {
-                finish::<false>(v, rate, bl[k], br[k], 1.0)
-            };
-            left[at + k] += l;
-            right[at + k] += r;
+                finish::<false>(v, rate, bl[k], br[k], g, out, at + k);
+            }
             if !v.active {
                 break;
             }

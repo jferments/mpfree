@@ -11,6 +11,55 @@ pub const KILL_FRAMES: u16 = 64;
 /// Fade length of the previous sound when its voice is stolen for a new hit.
 pub const STEAL_FRAMES: u16 = 32;
 
+/// A voice's part in its hit's filter (the filter gap plan's F2c: one
+/// filter per hit, after the layer mix). The layers a hit plays that
+/// share a filter, a layer pan and a play mode are mixed into one filter:
+/// the first of them is the hit's **lead**, which holds the filter, the
+/// amp envelope and the gains after it, and the others are its
+/// **followers**, which render their sound before the filter into the
+/// lead's input ([`render_chain`]). Every other voice is **solo**: its
+/// own filter, if it has one. A hit goes with its lead: a lead that ends,
+/// or whose slot another voice takes, ends its followers, and a follower
+/// is never taken on its own ([`Engine::victim`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum Role {
+    #[default]
+    Solo,
+    Lead,
+    /// Its lead is slot [`Voice::lead`] of the same share of the pool.
+    Follower,
+}
+
+/// A filtered voice's gains in two parts (the filter gap plan's F2c): its
+/// layer's and its sound's gain and its hit's key and velocity crossfades
+/// and slice gain before the filter, so the filter hears the layers mixed
+/// as they are set, and the rest (its velocity, the pad's level and pan,
+/// the program's level: [`Voice::gain_l`]) after it, with the amp
+/// envelope. A voice with no filter, or a Comb, has its gains in one part,
+/// after everything, as it always had.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Pre {
+    /// Its gains come in two parts.
+    pub(super) on: bool,
+    /// The gain before the filter now: 1 for a voice whose gains are in
+    /// one part. An edit of its layer's level glides it there
+    /// ([`Follow::pre_to`]).
+    pub(super) gain: f32,
+    /// The hit's part of it (the crossfades and the slice gain), so an
+    /// edit of the layer's level can set it again.
+    pub(super) hit: f32,
+}
+
+impl Default for Pre {
+    fn default() -> Pre {
+        Pre {
+            on: false,
+            gain: 1.0,
+            hit: 1.0,
+        }
+    }
+}
+
 /// What a playing voice follows of the live settings: where its gain,
 /// filter and tune are going, the steps it takes there, and the pad's own
 /// settings from when it started (a voice finishes as it started, whatever
@@ -25,6 +74,10 @@ pub(super) struct Follow {
     /// the step a frame.
     pub(super) gain_to: [f32; 2],
     pub(super) gain_inc: [f32; 2],
+    /// The gain before the filter it is going to ([`Pre`]), and the step a
+    /// frame.
+    pub(super) pre_to: f32,
+    pub(super) pre_inc: f32,
     /// The cutoff (Hz) and resonance its filter is going to.
     pub(super) fc_to: f32,
     pub(super) res_to: f32,
@@ -39,6 +92,12 @@ pub(super) struct Follow {
     pub(super) own_pan: f32,
     pub(super) own_fc: f32,
     pub(super) own_res: f32,
+    /// The filter envelope's depth (octaves) it is going to, and the pad's
+    /// own depth and Drive (the filter gap plan's F3: a live
+    /// [`PadField::EnvDepth`] or [`PadField::Drive`] in their place).
+    pub(super) env_to: f32,
+    pub(super) own_env: f32,
+    pub(super) own_drive: f32,
 }
 
 /// A voice's movement (sampler R5 part 4): its pad's LFO, its pitch
@@ -72,9 +131,21 @@ pub(super) struct Motion {
     /// The pitch envelope now, in cents, and what a step leaves of it.
     pub(super) env_cents: f32,
     pub(super) env_k: f32,
-    /// The hit's velocity on its pitch (cents) and on its cutoff (a factor).
+    /// The hit's velocity on its pitch (cents), and the hit's own factor on
+    /// its cutoff (the filter gap plan's F3): its velocity's and random's
+    /// octaves (`hit_oct`) and its key's (`key_track` times the voice's
+    /// [`Voice::key_cents`]), summed and made a factor once
+    /// ([`Motion::rekey`]). A glide adds what is left of it to the key
+    /// ([`motion_step`]).
     pub(super) vel_cents: f32,
-    pub(super) vel_fc: f32,
+    pub(super) hit_fc: f32,
+    pub(super) hit_oct: f32,
+    pub(super) key_track: f32,
+    /// The hit's velocity on its filter envelope's depth (a factor, 1 at the
+    /// hardest), and its random on the resonance (added, then kept to 0 to
+    /// 1): both applied where the filter is set ([`retune`]).
+    pub(super) env_scale: f32,
+    pub(super) res_add: f32,
     /// A mono pad's glide (sampler R5.5): cents still to slide, and how
     /// many a step slides (a straight line in cents, so every interval
     /// takes the pad's glide time).
@@ -109,7 +180,11 @@ impl Default for Motion {
             env_cents: 0.0,
             env_k: 0.0,
             vel_cents: 0.0,
-            vel_fc: 1.0,
+            hit_fc: 1.0,
+            hit_oct: 0.0,
+            key_track: 0.0,
+            env_scale: 1.0,
+            res_add: 0.0,
             glide_cents: 0.0,
             glide_inc: 0.0,
             cents: 0.0,
@@ -126,6 +201,17 @@ impl Default for Motion {
 pub(super) const ENV_FALL: f32 = 9.21;
 
 impl Motion {
+    /// The hit's factor on the cutoff for a voice whose key is `key_cents`
+    /// from its sound's root ([`Voice::key_cents`]): at a new voice, and
+    /// when a legato or glide move takes it to another key. The factor in
+    /// use too, unless [`motion_step`] works it out on its next step.
+    pub(super) fn rekey(&mut self, key_cents: f32) {
+        self.hit_fc = (self.hit_oct + self.key_track * key_cents / 1200.0).exp2();
+        if !self.on {
+            self.fc = self.hit_fc;
+        }
+    }
+
     /// Slides the pitch in from `cents` over `ms` at output rate `rate`
     /// (sampler R5.5); 0 ms jumps.
     pub(super) fn glide(&mut self, cents: f32, ms: f32, rate: f32) {
@@ -314,8 +400,9 @@ pub(super) struct Voice {
     pub(super) wow: f32,
     pub(super) wow_phase: [f32; 3],
     /// Its gain before the pad's level and pan (region, layer and
-    /// velocity), its layer's own pan, and the tape's fade on its gain:
-    /// live Level and Pan work from these.
+    /// velocity; with its gains in two parts, [`Pre`], its velocity
+    /// alone), its layer's own pan, and the tape's fade on its gain: live
+    /// Level and Pan work from these.
     pub(super) unit_gain: f32,
     pub(super) layer_pan: f32,
     pub(super) tape_gain: f32,
@@ -373,6 +460,21 @@ pub(super) struct Voice {
     /// Its pad's LFO and pitch envelope, and its hit's velocity on its
     /// pitch and cutoff (sampler R5 part 4).
     pub(super) motion: Motion,
+    /// Its part in its hit's filter ([`Role`]), its lead's slot in its
+    /// share of the pool (a follower's), and its hit (the lead's age, for
+    /// the lead and its followers), so a follower whose lead's slot went
+    /// to another voice knows it.
+    pub(super) role: Role,
+    pub(super) lead: u16,
+    pub(super) hit: u64,
+    /// Its gain before the filter ([`Pre`]).
+    pub(super) pre: Pre,
+    /// A lead whose own sound has ended, filtering its followers' until
+    /// theirs ends ([`host_out`]; it keeps its sound meanwhile, so an edit
+    /// of its pad still reaches it), and the frames of this part of the
+    /// block that carry them ([`render_chain`]).
+    pub(super) hosting: bool,
+    pub(super) host_until: usize,
 }
 
 impl Voice {
@@ -697,7 +799,15 @@ pub(super) struct Pool {
     pub(super) out_l: Vec<f32>,
     pub(super) out_r: Vec<f32>,
     pub(super) played: Vec<bool>,
+    /// Where a hit's layers mix and its lead filters them, [`CHAIN_CHUNK`]
+    /// frames at a time ([`render_chain`]).
+    pub(super) chain_l: Vec<f32>,
+    pub(super) chain_r: Vec<f32>,
 }
+
+/// The frames a hit whose layers share a filter renders at a time
+/// ([`Pool::render_into`]).
+pub(super) const CHAIN_CHUNK: usize = 256;
 
 /// What a playing voice costs to render, in grains (see [`Pool::cost`]).
 /// A rough figure from the workstation bench, where a sample voice (read,
@@ -745,11 +855,15 @@ impl Pool {
             out_l: vec![0.0; out],
             out_r: vec![0.0; out],
             played: vec![false; if lane { n } else { 0 }],
+            chain_l: vec![0.0; CHAIN_CHUNK],
+            chain_r: vec![0.0; CHAIN_CHUNK],
         }
     }
 
     /// Frames `a..b` of the block (`frame` its first) of every voice, each
-    /// into its pad's pair from `out`, or played unheard.
+    /// into its pad's pair from `out`, or played unheard. A hit whose
+    /// layers share a filter plays where its lead is, its followers with it
+    /// ([`render_chain`]).
     pub(super) fn render_into(
         &mut self,
         a: usize,
@@ -766,12 +880,43 @@ impl Pool {
             scratch_r,
             unheard_l,
             unheard_r,
+            chain_l,
+            chain_r,
             ..
         } = self;
-        for (v, g) in voices.iter_mut().zip(grains.iter_mut()) {
-            if !v.active {
+        for k in 0..voices.len() {
+            if !voices[k].active {
                 continue;
             }
+            match voices[k].role {
+                Role::Follower => {
+                    if !has_lead(voices, &voices[k]) {
+                        end_follower(&mut voices[k]);
+                    }
+                    continue;
+                }
+                Role::Lead => {
+                    let (kit, pad) = (usize::from(voices[k].kit), usize::from(voices[k].pad));
+                    let mut at = a;
+                    while at < b && voices[k].active {
+                        let m = (b - at).min(CHAIN_CHUNK);
+                        let (cl, cr) = (&mut chain_l[..m], &mut chain_r[..m]);
+                        render_chain(voices, k, rate, cl, cr);
+                        if let Some((l, r)) = out.pad(kit, pad) {
+                            for (o, x) in l[at..at + m].iter_mut().zip(cl.iter()) {
+                                *o += *x;
+                            }
+                            for (o, x) in r[at..at + m].iter_mut().zip(cr.iter()) {
+                                *o += *x;
+                            }
+                        }
+                        at += m;
+                    }
+                    continue;
+                }
+                Role::Solo => {}
+            }
+            let (v, g) = (&mut voices[k], &mut grains[k]);
             match out.pad(usize::from(v.kit), usize::from(v.pad)) {
                 Some((l, r)) => play(
                     v,
@@ -810,7 +955,8 @@ impl Pool {
     }
 
     /// The lane's share: `frames` frames from `frame` of every voice, each
-    /// into its own pair in `out_l` and `out_r`.
+    /// into its own pair in `out_l` and `out_r` (a hit whose layers share a
+    /// filter into its lead's, [`render_chain`]).
     pub(super) fn render_own(&mut self, frames: usize, frame: u64, rate: f32) {
         let Pool {
             voices,
@@ -823,16 +969,36 @@ impl Pool {
             played,
             ..
         } = self;
-        for (k, (v, g)) in voices.iter_mut().zip(grains.iter_mut()).enumerate() {
-            played[k] = v.active;
-            if !v.active {
+        for k in 0..voices.len() {
+            played[k] = voices[k].active && voices[k].role != Role::Follower;
+            if !voices[k].active {
                 continue;
             }
             let at = k * LANE_BLOCK;
             let (l, r) = (&mut out_l[at..at + frames], &mut out_r[at..at + frames]);
-            l.fill(0.0);
-            r.fill(0.0);
-            play(v, g, budget, frame, rate, l, r, scratch_l, scratch_r);
+            match voices[k].role {
+                Role::Follower => {
+                    if !has_lead(voices, &voices[k]) {
+                        end_follower(&mut voices[k]);
+                    }
+                }
+                Role::Lead => render_chain(voices, k, rate, l, r),
+                Role::Solo => {
+                    l.fill(0.0);
+                    r.fill(0.0);
+                    play(
+                        &mut voices[k],
+                        &mut grains[k],
+                        budget,
+                        frame,
+                        rate,
+                        l,
+                        r,
+                        scratch_l,
+                        scratch_r,
+                    );
+                }
+            }
         }
     }
 
@@ -954,6 +1120,63 @@ impl Voices {
         }
     }
 
+    /// [`Voices::free_slot`], from the share slot `near` is in if it has
+    /// one free: a hit's layers that share a filter play in one share
+    /// ([`Role`]).
+    pub(super) fn free_slot_near(&self, near: Option<usize>) -> Option<usize> {
+        let n = self.a.voices.len();
+        match (near, self.b.as_ref()) {
+            (Some(s), Some(b)) if s >= n => b
+                .voices
+                .iter()
+                .position(|v| !v.active)
+                .map(|k| n + k)
+                .or_else(|| self.free_slot()),
+            (Some(_), Some(_)) => self
+                .a
+                .voices
+                .iter()
+                .position(|v| !v.active)
+                .or_else(|| self.free_slot()),
+            _ => self.free_slot(),
+        }
+    }
+
+    /// Ends the followers of the lead in slot `slot` (of hit `hit`) as
+    /// another voice takes the slot: a hit ends with its lead ([`Role`]),
+    /// whose tail carries the hit's sound, so its other layers' slots are
+    /// free at once (the hit's next layer takes one of them rather than
+    /// another voice).
+    pub(super) fn end_followers(&mut self, slot: usize, hit: u64) {
+        let n = self.a.voices.len();
+        let lead = self.local(slot) as u16;
+        let share = if slot < n {
+            &mut self.a
+        } else {
+            match self.b.as_mut() {
+                Some(b) => &mut **b,
+                None => return,
+            }
+        };
+        for f in share.voices.iter_mut() {
+            if f.active && f.role == Role::Follower && f.lead == lead && f.hit == hit {
+                end_follower(f);
+            }
+        }
+    }
+
+    /// Whether slots `i` and `j` are in the same share.
+    pub(super) fn same_share(&self, i: usize, j: usize) -> bool {
+        let n = self.a.voices.len();
+        (i < n) == (j < n)
+    }
+
+    /// Slot `slot`'s place in its share.
+    pub(super) fn local(&self, slot: usize) -> usize {
+        let n = self.a.voices.len();
+        slot.checked_sub(n).unwrap_or(slot)
+    }
+
     /// Shares the grain budget out before a part of a block: each share
     /// keeps its grains and gets half of what is left, so together they
     /// never pass [`GRAIN_BUDGET`].
@@ -993,6 +1216,8 @@ pub(super) fn silence(pool: &mut Pool) {
         v.tail_left = 0;
         v.follow.moving = false;
         v.data = None;
+        v.hosting = false;
+        v.role = Role::Solo;
     }
 }
 
@@ -1010,8 +1235,8 @@ impl Engine {
     /// The voice slot a new voice takes when there is no free one (or no
     /// free full voice, with `full_only`): a releasing voice first, then
     /// the oldest voice of the pad holding the most voices, whatever its
-    /// kit. `held` is [`Engine::held`], all 0, and left so. Never
-    /// allocates.
+    /// kit; never a follower ([`Role`]), whose hit goes with its lead.
+    /// `held` is [`Engine::held`], all 0, and left so. Never allocates.
     pub(super) fn victim(pool: &Voices, held: &mut [u16], full_only: bool) -> usize {
         let rel = |x: &Voice| {
             x.kill_left > 0 || x.ringing || x.amp.as_ref().is_some_and(|a| a.is_releasing())
@@ -1034,6 +1259,12 @@ impl Engine {
         let mut best: Option<(usize, Key)> = None;
         for (i, (v, _)) in pool.iter().enumerate() {
             if full_only && (!v.active || v.light) {
+                continue;
+            }
+            // A hit's layers that share a filter go with its lead, which is
+            // older than they are ([`Role`]): a follower is never taken on
+            // its own (its sound is inside its lead's, so it has no tail).
+            if v.active && v.role == Role::Follower {
                 continue;
             }
             let count = if usize::from(v.pad) < PADS {
@@ -1127,7 +1358,9 @@ impl Engine {
     pub fn kit_playheads(&self, kit: usize) -> impl Iterator<Item = (u8, u8, u64)> + '_ {
         self.pool
             .iter()
-            .filter(move |(v, _)| v.active && usize::from(v.kit) == kit)
+            // A lead whose own sound ended, still filtering its hit's
+            // other layers ([`Voice::hosting`]), reads nothing.
+            .filter(move |(v, _)| v.active && !v.hosting && usize::from(v.kit) == kit)
             .map(|(v, g)| (v.pad, v.layer, self.source_frame(v, g)))
     }
 

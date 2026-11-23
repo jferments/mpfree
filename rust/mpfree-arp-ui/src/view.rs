@@ -22,8 +22,8 @@
 //! its own widgets and the layouts that place them.
 
 use crate::widgets::{
-    Button, ButtonRow, CellKind, MiniBar, ModBox, Segments, SliderStack, StepCell, StepStrip,
-    MINI_FASTER, MINI_LATCH, MINI_OPEN, MINI_SLOWER,
+    Button, ButtonRow, CellKind, Mark, MiniBar, ModBox, PatternList, PatternRow, Segments,
+    SliderStack, StepCell, StepStrip, MARKS, MINI_FASTER, MINI_LATCH, MINI_OPEN, MINI_SLOWER,
 };
 use mpfree_arp::{
     Engine, Held, ModSource, Mode, Order, Pattern, Pick, Rate, Settings, Step, MAX_NOTES,
@@ -34,6 +34,9 @@ use mpfree_ui::{EventKind, Tone, Ui, UiEvent};
 /// Widget names the page adds. The app's own are `header`, `pads` and `hint`.
 pub const MODES: &str = "arp-modes";
 pub const LIST: &str = "arp-list";
+/// The Pattern mode's list: the library's groups as tabs, a picture of each
+/// pattern's rhythm.
+pub const PATTERNS: &str = "arp-patterns";
 pub const QLINKS: &str = "arp-qlinks";
 pub const ACTIONS: &str = "arp-actions";
 pub const STEPS: &str = "arp-steps";
@@ -55,9 +58,10 @@ pub const DIRECT_LAYOUT: &str =
 /// the step strip.
 pub const ARP_LAYOUT: &str =
     "col(header:60, row(pads:*, col(arp-modes:52, arp-list:*, arp-qlinks:236, arp-steps:112):460):*, hint:26)";
-/// Pattern: the pattern list over the pattern buttons, and the step strip.
+/// Pattern: the pattern list ([`PATTERNS`], its groups over it) over the
+/// pattern buttons, and the step strip.
 pub const PATTERN_LAYOUT: &str =
-    "col(header:60, row(pads:*, col(arp-modes:52, arp-list:*, arp-actions:128, arp-steps:112):460):*, hint:26)";
+    "col(header:60, row(pads:*, col(arp-modes:52, arp-patterns:*, arp-actions:128, arp-steps:112):460):*, hint:26)";
 /// The quick band: a slim strip ([`MINI`], [`MINI_H`] pixels) at the top of
 /// the right-hand column. An app puts it over its own column with
 /// [`ArpPanel::set_quick_layout`] (the pad player keeps its kits, level and
@@ -337,6 +341,37 @@ pub fn arp_cells(st: &ArpState) -> (Vec<StepCell>, usize, Option<usize>) {
     (cells, first, last.map(|l| l - first))
 }
 
+/// The groups of the patterns `st` lists, each with its first pattern's
+/// index ([`mpfree_arp::groups::of_list`]).
+pub fn pattern_groups(st: &ArpState) -> Vec<(&'static str, usize)> {
+    mpfree_arp::groups::of_list(st.patterns.iter().map(|(n, _)| n.as_str()))
+}
+
+/// The rhythm of a pattern's first steps (up to [`MARKS`]), as the Pattern
+/// list draws it.
+pub fn pattern_marks(p: &Pattern) -> Vec<Mark> {
+    p.steps()
+        .iter()
+        .take(MARKS)
+        .map(|s| match *s {
+            Step::Rest => Mark::Rest,
+            Step::Tie => Mark::Tie,
+            Step::Play {
+                pick,
+                accent,
+                ratchet,
+                chance,
+                ..
+            } => Mark::Hit {
+                hits: ratchet,
+                accent,
+                chord: pick == Pick::All,
+                maybe: chance < 100,
+            },
+        })
+        .collect()
+}
+
 /// One pattern step as a cell.
 pub fn pattern_cell(step: Step) -> StepCell {
     match step {
@@ -456,7 +491,7 @@ pub fn hint(mode: Mode) -> &'static str {
             "Hold or latch pads · Wheel: order · Q-Links: rate, gate, swing, octaves · TAP TEMPO"
         }
         Mode::Pattern => {
-            "Patterns play the chord you hold: \"2\" is the 2nd lowest held pad · Wheel: pattern"
+            "Patterns play the chord you hold: \"2\" is the 2nd lowest held pad · Wheel: pattern · SHIFT + wheel: group"
         }
     }
 }
@@ -464,7 +499,7 @@ pub fn hint(mode: Mode) -> &'static str {
 /// The hint line under the quick band.
 pub fn quick_hint(mode: Mode) -> &'static str {
     match mode {
-        Mode::Pattern => "Tap a rate · Q-Links: rate, gate, swing, octaves · Wheel: pattern · let go: back to your page",
+        Mode::Pattern => "Tap a rate · Q-Links: rate, gate, swing, octaves · Wheel: pattern · SHIFT + wheel: group · let go: back to your page",
         Mode::Arp => "Tap a rate · Q-Links: rate, gate, swing, octaves · Wheel: order · let go: back to your page",
         _ => "Tap a rate while you play · press harder for louder · let go: back to your page",
     }
@@ -502,6 +537,7 @@ impl ArpPanel {
     pub fn add(ui: &mut Ui, name: &str, quick: &str, st: &ArpState) -> Result<ArpPanel, String> {
         ui.add(MODES, Segments::new(&MODE_TABS));
         ui.add(LIST, ListView::new("Order · Wheel"));
+        ui.add(PATTERNS, PatternList::default());
         ui.add(QLINKS, SliderStack::new("Q-Links 1–4", &QLINK_LABELS));
         ui.add(ACTIONS, ButtonRow::new(&PATTERN_BUTTONS));
         ui.add(STEPS, StepStrip::new(8));
@@ -607,20 +643,34 @@ impl ArpPanel {
                         .collect();
                     list.selected = Order::ALL.iter().position(|o| *o == s.order).unwrap_or(0);
                 }
-                Mode::Pattern => {
-                    list.title = "Patterns · Wheel".into();
-                    list.items = st
-                        .patterns
-                        .iter()
-                        .map(|(name, p)| ListItem {
-                            text: name.clone(),
-                            detail: short(&p.to_text(), 16),
-                            color: None,
-                        })
-                        .collect();
-                    list.selected = st.pattern_index.min(st.patterns.len().saturating_sub(1));
-                }
+                // The patterns have their own list ([`PATTERNS`]).
+                Mode::Pattern => {}
             }
+        }
+        if let Some(list) = ui.get_mut::<PatternList>(PATTERNS) {
+            if list.rows.len() != st.patterns.len()
+                || list
+                    .rows
+                    .iter()
+                    .zip(&st.patterns)
+                    .any(|(r, (n, p))| r.name != *n || r.text != p.to_text())
+            {
+                list.rows = st
+                    .patterns
+                    .iter()
+                    .map(|(name, p)| PatternRow {
+                        name: name.clone(),
+                        marks: pattern_marks(p),
+                        steps: p.len(),
+                        text: p.to_text(),
+                    })
+                    .collect();
+                list.groups = pattern_groups(st)
+                    .into_iter()
+                    .map(|(g, at)| (g.to_string(), at))
+                    .collect();
+            }
+            list.selected = st.pattern_index.min(st.patterns.len().saturating_sub(1));
         }
         if let Some(q) = ui.get_mut::<SliderStack>(QLINKS) {
             let live = qlink_values(&st.live);
@@ -678,6 +728,13 @@ impl ArpPanel {
                 Mode::Arp => Order::ALL.get(*i).map(|o| ArpAction::Order(*o)),
                 Mode::Pattern => (*i < st.patterns.len()).then_some(ArpAction::Pattern(*i)),
             },
+            (PATTERNS, EventKind::Select(i)) => {
+                (*i < st.patterns.len()).then_some(ArpAction::Pattern(*i))
+            }
+            // A group's tab: its first pattern.
+            (PATTERNS, EventKind::Tab(g)) => pattern_groups(st)
+                .get(*g)
+                .map(|(_, at)| ArpAction::Pattern(*at)),
             (QLINKS, EventKind::Select(i)) => {
                 *qlink = Some(*i);
                 None
@@ -751,7 +808,7 @@ fn short(text: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use crate::sample::{built_in_patterns, samples};
-    use mpfree_ui::{Fonts, SoftCanvas, Touch};
+    use mpfree_ui::{Fonts, Rect, SoftCanvas, Touch, Widget};
 
     fn state(settings: Settings, held: &[u8], step: u64) -> ArpState {
         ArpState {
@@ -818,11 +875,11 @@ mod tests {
                 want.extend([MINI, STEPS]);
                 gone.extend([MODES, LIST, QLINKS, ACTIONS]);
             } else {
-                want.extend([MODES, LIST]);
-                want.push(if mode == Mode::Pattern {
-                    ACTIONS
+                want.push(MODES);
+                want.extend(if mode == Mode::Pattern {
+                    [PATTERNS, ACTIONS]
                 } else {
-                    QLINKS
+                    [LIST, QLINKS]
                 });
                 // The strip shows only while the arp is generating.
                 if mode == Mode::Direct {
@@ -1129,6 +1186,143 @@ mod tests {
         }
         assert_eq!(with_qlink(base, 1, 9.0).gate, 100);
         assert_eq!(qlink_values(&base)[2].1, "off");
+    }
+
+    #[test]
+    fn the_pattern_list_shows_the_groups_and_a_tab_loads_its_first_pattern() {
+        let mut s = sample("arp-up-2-oct");
+        let mut st = s.state.clone();
+        st.settings.mode = Mode::Pattern;
+        st.pattern_index = 3;
+        s.page.update(&mut s.ui, &st).unwrap();
+        let list = s.ui.get::<PatternList>(PATTERNS).unwrap();
+        assert_eq!(list.rows.len(), mpfree_arp::groups::count());
+        assert_eq!(list.groups.len(), mpfree_arp::groups::GROUPS.len());
+        assert_eq!(list.groups[3], ("Rolls".to_string(), 26));
+        assert_eq!((list.selected, list.rows[3].name.as_str()), (3, "Climb"));
+        // The picture: Climb's seven notes and a rest.
+        assert_eq!(list.rows[3].marks.len(), 8);
+        assert_eq!(list.rows[3].marks[7], Mark::Rest);
+        let r = s.ui.rect_of(PATTERNS).unwrap();
+        assert!(r.h >= 230, "three rows under the tabs: {r:?}");
+        let mut q = None;
+        // The 460 px column: one group at a time, with arrows.
+        let arrows: Vec<_> =
+            s.ui.targets()
+                .into_iter()
+                .filter(|t| t.target.id == "group")
+                .collect();
+        assert_eq!(arrows.len(), 2);
+        let on = arrows[1].target.rect;
+        let ev = s.ui.touch(1, Touch::Down, on.x + 5, on.y + 5).unwrap();
+        s.ui.touch(1, Touch::Up, on.x + 5, on.y + 5);
+        assert_eq!(
+            s.page.action(&ev, &st, &mut q),
+            Some(ArpAction::Pattern(10))
+        );
+        // As wide as the app's panel: a tab for each group.
+        s.page
+            .set_layout_wrap(&mut s.ui, |l| {
+                l.replacen("row(pads:*, ", "row(pads:160, ", 1)
+                    .replacen("):460):*", "):*):*", 1)
+            })
+            .unwrap();
+        let targets = s.ui.targets();
+        let tabs: Vec<_> = targets.iter().filter(|t| t.target.id == "group").collect();
+        assert_eq!(tabs.len(), 9);
+        let rows: Vec<_> = targets
+            .iter()
+            .filter(|t| t.widget == PATTERNS && t.target.id == "row")
+            .collect();
+        assert!(rows.len() >= 3, "at least three rows show: {}", rows.len());
+        // A tap on Rolls: its first pattern, Trap hats.
+        let rolls = tabs[3].target.rect;
+        let ev =
+            s.ui.touch(1, Touch::Down, rolls.x + rolls.w / 2, rolls.y + rolls.h / 2)
+                .unwrap();
+        s.ui.touch(1, Touch::Up, rolls.x + rolls.w / 2, rolls.y + rolls.h / 2);
+        assert_eq!(
+            s.page.action(&ev, &st, &mut q),
+            Some(ArpAction::Pattern(26))
+        );
+        // Picked, the list shows Rolls from its start.
+        st.pattern_index = 27;
+        s.page.update(&mut s.ui, &st).unwrap();
+        let first =
+            s.ui.targets()
+                .into_iter()
+                .find(|t| t.widget == PATTERNS && t.target.id == "row")
+                .unwrap()
+                .target;
+        assert_eq!((first.index, first.label.as_str()), (26, "Trap hats"));
+        let ev =
+            s.ui.touch(1, Touch::Down, first.rect.x + 20, first.rect.y + 20)
+                .unwrap();
+        assert_eq!(
+            s.page.action(&ev, &st, &mut q),
+            Some(ArpAction::Pattern(26))
+        );
+    }
+
+    #[test]
+    fn a_pattern_is_drawn_as_its_rhythm() {
+        let p = Pattern::parse("x! . x:3 *%50 _ ?").unwrap();
+        let hit = |hits, accent, chord, maybe| Mark::Hit {
+            hits,
+            accent,
+            chord,
+            maybe,
+        };
+        assert_eq!(
+            pattern_marks(&p),
+            vec![
+                hit(1, true, false, false),
+                Mark::Rest,
+                hit(3, false, false, false),
+                hit(1, false, true, true),
+                Mark::Tie,
+                hit(1, false, false, false),
+            ]
+        );
+        // Only the first bar: the rest is said in steps.
+        let long = mpfree_arp::Library::built_in();
+        let fill = long.get("Four-bar fill").unwrap();
+        assert_eq!(pattern_marks(fill).len(), MARKS);
+    }
+
+    #[test]
+    fn a_narrow_pattern_list_pages_through_the_groups() {
+        let mut list = PatternList {
+            rows: (0..12)
+                .map(|i| PatternRow {
+                    name: format!("P{i}"),
+                    marks: vec![Mark::Rest; 4],
+                    steps: 4,
+                    text: ". . . .".into(),
+                })
+                .collect(),
+            groups: (0..6).map(|g| (format!("G{g}"), g * 2)).collect(),
+            selected: 3,
+        };
+        let r = Rect::new(0, 0, 440, 240);
+        let t = list.targets(r);
+        let arrows: Vec<_> = t.iter().filter(|t| t.id == "group").collect();
+        assert_eq!(arrows.len(), 2, "six tabs in 440 px don't fit: arrows");
+        let on = arrows[1].rect;
+        assert_eq!(
+            list.touch(1, Touch::Down, on.x + 5, on.y + 5, r),
+            Some(EventKind::Tab(2))
+        );
+        let back = arrows[0].rect;
+        list.selected = 0;
+        assert_eq!(
+            list.touch(1, Touch::Down, back.x + 5, back.y + 5, r),
+            Some(EventKind::Tab(5)),
+            "back from the first group is the last"
+        );
+        // Wide enough, one tab each.
+        let wide = list.targets(Rect::new(0, 0, 1000, 240));
+        assert_eq!(wide.iter().filter(|t| t.id == "group").count(), 6);
     }
 
     #[test]

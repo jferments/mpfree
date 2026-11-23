@@ -597,8 +597,22 @@ pub mod play {
     pub const XY_NEXT: u16 = 5;
     /// The XY pad's layout before, as [`XY_NEXT`] the other way.
     pub const XY_BACK: u16 = 6;
-    /// Every one, in the order the Learn section lists them, with its name.
-    pub const ALL: [(u16, &str); 7] = [
+    /// Next patch (live shows C1): a press picks the song's next patch,
+    /// at once.
+    pub const NEXT_PATCH: u16 = 7;
+    /// Previous patch: a press picks the patch before, at once.
+    pub const PREVIOUS_PATCH: u16 = 8;
+    /// Next patch when your hands are up: as [`NEXT_PATCH`], the switch
+    /// waiting until every key and pedal is up. The learned row's
+    /// Switches line moves a control between the two numbers, so the
+    /// saved line says which with no field of its own (and a build
+    /// without patches keeps the control).
+    pub const NEXT_PATCH_HANDS_UP: u16 = 9;
+    /// Previous patch when your hands are up.
+    pub const PREVIOUS_PATCH_HANDS_UP: u16 = 10;
+    /// Every one on the Learn section's Play card, in its order, with its
+    /// name.
+    pub const ALL: [(u16, &str); 9] = [
         (SWING, "Swing"),
         (FILTER, "Filter"),
         (XY_ACROSS, "XY across"),
@@ -606,6 +620,8 @@ pub mod play {
         (XY_HOLD, "XY Hold"),
         (XY_NEXT, "XY layout next"),
         (XY_BACK, "XY layout back"),
+        (NEXT_PATCH, "Next patch"),
+        (PREVIOUS_PATCH, "Previous patch"),
     ];
 
     /// Whether `id` is a press (a button, a key, a footswitch), not a
@@ -616,7 +632,33 @@ pub mod play {
 
     /// The name of parameter `id`, if it is one.
     pub fn name(id: u16) -> Option<&'static str> {
+        let id =
+            patch_step(id).map_or(id, |(d, _)| if d > 0 { NEXT_PATCH } else { PREVIOUS_PATCH });
         ALL.iter().find(|(i, _)| *i == id).map(|(_, n)| *n)
+    }
+
+    /// Next or Previous patch: its step (1 or -1) and whether it waits
+    /// for your hands to be up.
+    pub fn patch_step(id: u16) -> Option<(i32, bool)> {
+        match id {
+            NEXT_PATCH => Some((1, false)),
+            PREVIOUS_PATCH => Some((-1, false)),
+            NEXT_PATCH_HANDS_UP => Some((1, true)),
+            PREVIOUS_PATCH_HANDS_UP => Some((-1, true)),
+            _ => None,
+        }
+    }
+
+    /// `id` (Next or Previous patch) switching at once or, `hands_up`,
+    /// when your hands are up; any other id as it is.
+    pub fn with_hands_up(id: u16, hands_up: bool) -> u16 {
+        match (patch_step(id), hands_up) {
+            (Some((1, _)), false) => NEXT_PATCH,
+            (Some((_, _)), false) => PREVIOUS_PATCH,
+            (Some((1, _)), true) => NEXT_PATCH_HANDS_UP,
+            (Some((_, _)), true) => PREVIOUS_PATCH_HANDS_UP,
+            (None, _) => id,
+        }
     }
 }
 
@@ -1337,6 +1379,24 @@ mod tests {
         assert_eq!(play::name(play::XY_HOLD), Some("XY Hold"));
         assert!(play::is_press(play::XY_NEXT) && !play::is_press(play::XY_UP));
         assert_eq!(play::name(99), None);
+        // Next and Previous patch have a number each for Switches: At once
+        // and When your hands are up, both with the one name.
+        assert_eq!(play::name(play::NEXT_PATCH_HANDS_UP), Some("Next patch"));
+        assert_eq!(play::name(play::PREVIOUS_PATCH), Some("Previous patch"));
+        assert_eq!(
+            play::patch_step(play::PREVIOUS_PATCH_HANDS_UP),
+            Some((-1, true))
+        );
+        assert_eq!(play::patch_step(play::SWING), None);
+        assert_eq!(
+            play::with_hands_up(play::NEXT_PATCH, true),
+            play::NEXT_PATCH_HANDS_UP
+        );
+        assert_eq!(
+            play::with_hands_up(play::PREVIOUS_PATCH_HANDS_UP, false),
+            play::PREVIOUS_PATCH
+        );
+        assert_eq!(play::with_hands_up(play::XY_UP, true), play::XY_UP);
         assert_eq!(Owner::Play.track(), None);
     }
 

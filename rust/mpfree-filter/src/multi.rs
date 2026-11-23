@@ -7,8 +7,22 @@
 //! linear, with a guard that damps a loud sound's ring instead of bending
 //! it: a bend inside the loop pushes a loud, lopsided wave (a sawtooth)
 //! off centre, and the pads hear their sounds at full level.
+//!
+//! The pads' slopes ([`slope`], [`plan`]; the filter gap plan's F4): a
+//! low-pass or high-pass at 6 to 48 dB an octave (1, 2, 3, 4, 6 or 8
+//! poles), Butterworth at Resonance 0 so the cutoff is the -3 dB point,
+//! with the resonance on the last (highest-Q) stage, so the gain at the
+//! cutoff is the 2-pole's at every slope and the passband stays flat; the
+//! odd slopes start with a one-pole stage, and the 6 dB takes its
+//! resonance as a boost at the cutoff. A band-pass at 12 to 48 dB (2 to 8
+//! poles: its skirts 6 to 24 dB an octave a side) is broad stages and one
+//! resonant one, so its centre and its ring are the 2-pole's at any slope;
+//! a notch at 12 or 24 dB; and a Peak, a boost at the cutoff that
+//! Resonance raises.
 
-use crate::svf::{res_to_q, Svf, SvfCoefs, SvfMode};
+use crate::db_to_gain;
+use crate::onepole::OnePole;
+use crate::svf::{corner, res_to_q, Svf, SvfCoefs, SvfMode};
 
 /// Where the resonance starts to bend, and how much more it can give, in
 /// the band-pass state's units (full scale 1), at Resonance 25 % and up.
@@ -165,68 +179,235 @@ pub fn bends(mode: SvfMode, cascaded: bool) -> (bool, bool) {
     )
 }
 
-/// The two stages' Q at Resonance `res`, as [`set_stages`] gives them: at
-/// 24 dB a low-pass or high-pass is a Butterworth pair (0.541 and 1.307)
-/// with the resonance on the second; anything else is `res_to_q(res)`.
-#[inline]
-pub fn stage_qs(mode: SvfMode, cascaded: bool, res: f32) -> (f32, f32) {
-    stage_qs_at(mode, cascaded, res_to_q(res))
-}
-
-/// [`stage_qs`] for a filter of Q `q` (the resonant stage's at 12 dB).
-#[inline]
-pub fn stage_qs_at(mode: SvfMode, cascaded: bool, q: f32) -> (f32, f32) {
-    if cascaded && matches!(mode, SvfMode::LowPass | SvfMode::HighPass) {
-        (0.541, 1.307 * (q / 0.707))
-    } else {
-        (q, q)
+/// The slope `mode` plays for `poles` (6 dB an octave each): a low-pass
+/// or high-pass 1, 2, 3, 4, 6 or 8; a band-pass 2, 4, 6 or 8 (its skirts
+/// 6 dB an octave a side for every two); a notch 2 or 4; anything else 2.
+/// A count between goes to the one below it, and 0 (no setting) is 2.
+pub fn slope(mode: SvfMode, poles: u8) -> u8 {
+    let p = if poles == 0 { 2 } else { poles };
+    match mode {
+        SvfMode::LowPass | SvfMode::HighPass => match p {
+            1..=4 => p,
+            5 => 4,
+            6 | 7 => 6,
+            _ => 8,
+        },
+        SvfMode::BandPass => match p {
+            1..=3 => 2,
+            4 | 5 => 4,
+            6 | 7 => 6,
+            _ => 8,
+        },
+        SvfMode::Notch if p >= 4 => 4,
+        _ => 2,
     }
 }
 
-/// A [`Multi`]'s curve at `hz` (dB) set to `cutoff_hz` and `res` at
-/// `rate`: the stages' exact response (for any sound short of one loud
+/// A Butterworth filter's 2-pole stages' Qs, lowest first (`1 / (2 cos
+/// a)` for its poles' angles `a` from the real axis); an odd order adds a
+/// real pole, the one-pole stage. The 4-pole's are rounded as the 24 dB
+/// filter has always had them.
+const BUTTERWORTH_3: [f32; 1] = [1.0];
+const BUTTERWORTH_4: [f32; 2] = [0.541, 1.307];
+const BUTTERWORTH_6: [f32; 3] = [0.517_638_1, std::f32::consts::FRAC_1_SQRT_2, 1.931_851_6];
+const BUTTERWORTH_8: [f32; 4] = [0.509_795_6, 0.601_344_9, 0.899_976_2, 2.562_915_5];
+
+/// One state-variable stage of a slope ([`plan`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Stage {
+    pub mode: SvfMode,
+    /// The Q its design is given ([`SvfCoefs::bilinear_at`]).
+    pub q: f32,
+    /// A bell's gain at its centre (dB).
+    pub gain_db: f32,
+    /// The scale on its output: a band-pass's broad stages are 1 at the
+    /// centre.
+    pub scale: f32,
+    /// It takes the resonance, so a loud sound rings it up: the resonance
+    /// guard watches it ([`Multi`]).
+    pub resonant: bool,
+}
+
+impl Stage {
+    fn new(mode: SvfMode, q: f32) -> Stage {
+        Stage {
+            mode,
+            q,
+            gain_db: 0.0,
+            scale: 1.0,
+            resonant: false,
+        }
+    }
+
+    fn resonant(mode: SvfMode, q: f32) -> Stage {
+        Stage {
+            resonant: true,
+            ..Stage::new(mode, q)
+        }
+    }
+
+    /// A boost at the cutoff for a resonance of Q `q` (the 6 dB slope's,
+    /// and the Peak): `q / 0.707` there, 0 dB at Resonance 0 up to 35 dB,
+    /// its poles' Q `q`, so it rings as a 2-pole filter at that Resonance
+    /// does.
+    fn boost(q: f32) -> Stage {
+        let gain = q / 0.707;
+        Stage {
+            mode: SvfMode::Bell,
+            q: q / gain.sqrt(),
+            gain_db: 20.0 * gain.log10(),
+            scale: 1.0,
+            resonant: true,
+        }
+    }
+
+    /// Its design at the prewarped corner `t` ([`corner`]).
+    #[inline]
+    pub fn coefs(&self, t: f32) -> SvfCoefs {
+        let c = SvfCoefs::bilinear_at(self.mode, t, self.q, self.gain_db);
+        if self.scale == 1.0 {
+            return c;
+        }
+        SvfCoefs {
+            m0: c.m0 * self.scale,
+            m1: c.m1 * self.scale,
+            m2: c.m2 * self.scale,
+            ..c
+        }
+    }
+
+    /// The Q of its poles, what a ring at the cutoff builds up to in its
+    /// band-pass state: a bell's design Q times the square root of its
+    /// gain, any other stage's Q.
+    #[inline]
+    pub fn pole_q(&self) -> f32 {
+        if self.mode == SvfMode::Bell {
+            self.q * db_to_gain(self.gain_db * 0.5)
+        } else {
+            self.q
+        }
+    }
+}
+
+/// A slope's stages at a Resonance ([`plan`]): a one-pole first for an odd
+/// slope, then up to four state-variable stages, the resonant one last.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Plan {
+    /// The one-pole stage (6 and 18 dB): `Some(true)` for a high-pass's.
+    pub one: Option<bool>,
+    pub stages: [Stage; 4],
+    pub n: usize,
+    /// The resonant stage's pole Q at Resonance 0 (Butterworth's, or a
+    /// boost's 0.707): the most damping the guard gives takes it there.
+    pub q0: f32,
+}
+
+impl Plan {
+    /// The state-variable stages, in the order they run.
+    pub fn stages(&self) -> &[Stage] {
+        &self.stages[..self.n]
+    }
+
+    fn push(&mut self, s: Stage) {
+        self.stages[self.n] = s;
+        self.n += 1;
+    }
+}
+
+/// The stages of `mode` at `poles` ([`slope`]) and Resonance `res` (0 to
+/// 1, [`res_to_q`]'s Q 0.707 to 40). See the module notes; the 12 and 24
+/// dB low-pass, high-pass and notch are the Filter effect's
+/// ([`set_stages`]).
+pub fn plan(mode: SvfMode, poles: u8, res: f32) -> Plan {
+    plan_q(mode, poles, res_to_q(res))
+}
+
+/// [`plan`] at a Q of `q` (Resonance 0's is 0.707).
+fn plan_q(mode: SvfMode, poles: u8, q: f32) -> Plan {
+    let mut p = Plan {
+        one: None,
+        stages: [Stage::new(mode, 0.707); 4],
+        n: 0,
+        q0: 0.707,
+    };
+    let poles = slope(mode, poles);
+    match mode {
+        SvfMode::LowPass | SvfMode::HighPass => {
+            // The last stage's Q times the 2-pole's over Butterworth's:
+            // at the cutoff the gain is the 2-pole's, `q`.
+            let lift = q / 0.707;
+            let hp = mode == SvfMode::HighPass;
+            match poles {
+                1 => {
+                    p.one = Some(hp);
+                    p.push(Stage::boost(q));
+                }
+                2 => p.push(Stage::resonant(mode, q)),
+                3 => {
+                    p.one = Some(hp);
+                    p.q0 = BUTTERWORTH_3[0];
+                    p.push(Stage::resonant(mode, BUTTERWORTH_3[0] * lift));
+                }
+                _ => {
+                    let b: &[f32] = match poles {
+                        4 => &BUTTERWORTH_4,
+                        6 => &BUTTERWORTH_6,
+                        _ => &BUTTERWORTH_8,
+                    };
+                    let (last, rest) = b.split_last().unwrap_or((&0.707, &[]));
+                    for &bq in rest {
+                        p.push(Stage::new(mode, bq));
+                    }
+                    p.q0 = *last;
+                    p.push(Stage::resonant(mode, last * lift));
+                }
+            }
+        }
+        SvfMode::BandPass => {
+            // Broad stages, 1 at the centre, steepen the skirts; the last
+            // takes the resonance, so the centre is the 2-pole's.
+            let broad = Stage {
+                scale: 1.0 / 0.707,
+                ..Stage::new(mode, 0.707)
+            };
+            for _ in 1..poles / 2 {
+                p.push(broad);
+            }
+            p.push(Stage::resonant(mode, q));
+        }
+        SvfMode::Notch => {
+            p.push(Stage::new(mode, q));
+            if poles >= 4 {
+                p.push(Stage::new(mode, q));
+            }
+        }
+        SvfMode::Bell => p.push(Stage::boost(q)),
+        SvfMode::LowShelf | SvfMode::HighShelf => p.push(Stage::new(mode, q)),
+    }
+    p
+}
+
+/// A [`Multi`]'s curve at `hz` (dB) set to `poles`, `cutoff_hz` and `res`
+/// at `rate`: the stages' exact response (for any sound short of one loud
 /// enough for the guard to ease the resonance), for drawing, so the curve
 /// shows what is heard up to Nyquist, where the bilinear transform pulls a
 /// low-pass down and cramps a high cutoff's peak.
-pub fn response_db(
-    mode: SvfMode,
-    cascaded: bool,
-    cutoff_hz: f32,
-    res: f32,
-    hz: f32,
-    rate: u32,
-) -> f32 {
-    let [c1, c2] = stage_coefs(mode, cascaded, cutoff_hz, res, rate, MULTI_TOP);
-    let power = |c: SvfCoefs| {
+pub fn response_db(mode: SvfMode, poles: u8, cutoff_hz: f32, res: f32, hz: f32, rate: u32) -> f32 {
+    let plan = plan(mode, poles, res);
+    let t = corner(cutoff_hz, rate, MULTI_TOP);
+    let power = |h: (f64, f64)| h.0 * h.0 + h.1 * h.1;
+    let mut p = 1.0f64;
+    if let Some(hp) = plan.one {
+        let mut o = OnePole::default();
+        o.set(OnePole::gain_for(t), hp);
+        p *= power(o.response(hz, rate));
+    }
+    for st in plan.stages() {
         let mut s = Svf::default();
-        s.set_coefs(c);
-        let (re, im) = s.response(hz, rate);
-        re * re + im * im
-    };
-    let mut p = power(c1);
-    if cascaded {
-        p *= power(c2);
+        s.set_coefs(st.coefs(t));
+        p *= power(s.response(hz, rate));
     }
     (10.0 * p.max(1e-24).log10()) as f32
-}
-
-/// The designs [`set_stages`] gives the two stages, without setting them,
-/// the cutoff kept under `top` of the rate ([`SvfCoefs::bilinear_under`];
-/// `set_stages` keeps it under 0.45).
-#[inline]
-pub fn stage_coefs(
-    mode: SvfMode,
-    cascaded: bool,
-    hz: f32,
-    res: f32,
-    rate: u32,
-    top: f32,
-) -> [SvfCoefs; 2] {
-    let (q1, q2) = stage_qs(mode, cascaded, res);
-    [
-        SvfCoefs::bilinear_under(mode, hz, q1, 0.0, rate, top),
-        SvfCoefs::bilinear_under(mode, hz, q2, 0.0, rate, top),
-    ]
 }
 
 /// How high a [`Multi`]'s cutoff goes: 49 % of the rate (21.6 kHz at 44.1
@@ -242,6 +423,14 @@ pub const MULTI_TOP: f32 = 0.49;
 /// sound whose ring stays under it hears the filter as set: at full
 /// Resonance (Q 40) that is any sound under about -40 dBFS at the cutoff.
 pub const GUARD_KNEE: f32 = 0.4;
+
+/// The guard's knee for a boost (the Peak, and a 1-pole's resonance): a
+/// bell adds its band-pass state to the sound times `m1`, which is up to
+/// √2 (`1/0.707 - 1/q` for a pole Q `q`), where a low-pass, high-pass or
+/// band-pass rings at its output as its band-pass state does. So a bell's
+/// state is held √2 lower, and what its ring adds at the output meets the
+/// same knee.
+pub const GUARD_KNEE_BELL: f32 = GUARD_KNEE * std::f32::consts::FRAC_1_SQRT_2;
 
 /// How hard the guard holds a ring past [`GUARD_KNEE`]: the stage's
 /// damping goes as the ring over the knee to this power, so a ring settles
@@ -271,11 +460,12 @@ pub const GUARD_SLACK: f32 = 1.03;
 // A rise takes the fourth root of the ring's overshoot (two square roots).
 const _: () = assert!(GUARD_POWER == 4);
 
-/// The guard's damping for a held peak of `held`: 1 up to the knee, then
-/// the peak over it to [`GUARD_POWER`].
+/// The guard's damping for a held peak of `held` on a stage whose knee is
+/// `1 / over`: 1 up to the knee, then the peak over it to
+/// [`GUARD_POWER`].
 #[inline]
-fn damping_for(held: f32) -> f32 {
-    let r = held * (1.0 / GUARD_KNEE);
+fn damping_for(held: f32, over: f32) -> f32 {
+    let r = held * over;
     if r > 1.0 {
         r.powi(GUARD_POWER)
     } else {
@@ -283,36 +473,58 @@ fn damping_for(held: f32) -> f32 {
     }
 }
 
-/// One voice's multimode filter (the pads'): [`Stages`] whose cutoff and
-/// resonance glide to each new setting over the frames until the next
-/// one, so a filter envelope or LFO set at a control rate moves the
-/// filter smoothly every frame. Stereo, both channels a frame at a time.
+/// One voice's multimode filter (the pads'): a slope's stages ([`plan`])
+/// whose cutoff and resonance glide to each new setting over the frames
+/// until the next one, so a filter envelope or LFO set at a control rate
+/// moves the filter smoothly every frame. Stereo, both channels a frame at
+/// a time. The last one or two stages are [`Stages`] (the 12 and 24 dB
+/// filter's); a steeper slope's plain stages and an odd one's one-pole run
+/// before them.
 ///
 /// Its stages are linear, so it adds no harmonics and no DC offset; a
-/// guard holds a loud sound's ring back instead of bending it. Each
-/// resonant stage (a low-pass's, high-pass's or band-pass's last, and both
-/// of a 24 dB band-pass's) keeps the peak of its band-pass state over a
-/// window of about 50 ms, and once that peak is past [`GUARD_KNEE`] the
-/// stage takes more damping (its `k` times the peak over the knee to
-/// [`GUARD_POWER`], at most Resonance 0's Butterworth damping). A peak
-/// higher than the one held is damped in the frame it comes, so a loud
-/// note's first ring is held as it builds; the damping holds still while
-/// the window holds the peak, and lets go 6 dB every [`GUARD_FALL_S`] once
-/// it has gone. The Filter effect's bend inside the loop holds the peak
-/// too, but on a loud lopsided wave it pushes the output off centre (a
-/// full-scale sawtooth through a 2 kHz low-pass at Resonance 30 %: -0.12,
-/// about -18 dB), which a pad, hearing its sound at full level, can't have.
+/// guard holds a loud sound's ring back instead of bending it. The
+/// resonant stage (the last, and a notch has none) keeps the peak of its
+/// band-pass state over a window of about 50 ms, and once that peak is
+/// past [`GUARD_KNEE`] (a bell's [`GUARD_KNEE_BELL`]) the stage takes
+/// more damping (its `k` times the peak over the knee to [`GUARD_POWER`],
+/// at most Resonance 0's damping).
+/// A peak higher than the one held is damped in the frame it comes, so a
+/// loud note's first ring is held as it builds; the damping holds still
+/// while the window holds the peak, and lets go 6 dB every
+/// [`GUARD_FALL_S`] once it has gone. The Filter effect's bend inside the
+/// loop holds the peak too, but on a loud lopsided wave it pushes the
+/// output off centre (a full-scale sawtooth through a 2 kHz low-pass at
+/// Resonance 30 %: -0.12, about -18 dB), which a pad, hearing its sound at
+/// full level, can't have.
 #[derive(Clone, Copy, Debug)]
 pub struct Multi {
     pub st: Stages,
+    /// A steeper slope's plain stages before the last two (36 and 48 dB,
+    /// and a band-pass's broad ones), `pre_n` of them, and an odd slope's
+    /// one-pole before those; `extra` if either runs (out of line,
+    /// [`Multi::process_extra`]).
+    extra: bool,
+    pre: [Svf; 2],
+    pre_n: u8,
+    one: OnePole,
+    one_on: bool,
     /// The setting's designs the glide runs from and to (undamped), and
     /// its frames: `left` of `span` still to go (0: landed, nothing to do
-    /// per frame).
+    /// per frame). The last two stages', the plain stages' and the
+    /// one-pole's.
     from: [SvfCoefs; 2],
     to: [SvfCoefs; 2],
+    pre_from: [SvfCoefs; 2],
+    pre_to: [SvfCoefs; 2],
+    one_from: f32,
+    one_to: f32,
     left: u32,
     span: u32,
-    mode: SvfMode,
+    /// The slope set ([`slope`]): a new one lands at once.
+    poles: u8,
+    /// Each of the last two stages is a high-pass, whose `m1` moves with
+    /// its damping.
+    hp: [bool; 2],
     /// Each stage's damping, its `k` times this (1: as set), and the most
     /// it may take (the stage's Butterworth damping over its own, so a held
     /// ring never dulls the filter past Resonance 0's).
@@ -322,12 +534,16 @@ pub struct Multi {
     /// stage the guard leaves alone), its peak since the window's block
     /// began, and the window's blocks.
     held: [f32; 2],
+    /// Each guarded stage's knee ([`GUARD_KNEE`], or [`GUARD_KNEE_BELL`]
+    /// for a bell) and its reciprocal.
+    knee: [f32; 2],
+    over: [f32; 2],
     cur: [f32; 2],
     win: [[f32; GUARD_BLOCKS]; 2],
     /// Frames into the window's block, and the block written next.
     frames: u32,
     wi: usize,
-    /// Both stages are guarded (a 24 dB band-pass).
+    /// Both stages are guarded.
     both: bool,
     /// The held peak's fall over `fall_frames` frames at `fall_rate`.
     fall: f32,
@@ -349,14 +565,26 @@ impl Default for Multi {
                 bend_a: false,
                 bend_b: false,
             },
+            extra: false,
+            pre: [Svf::default(); 2],
+            pre_n: 0,
+            one: OnePole::default(),
+            one_on: false,
             from: [c; 2],
             to: [c; 2],
+            pre_from: [c; 2],
+            pre_to: [c; 2],
+            one_from: 0.0,
+            one_to: 0.0,
             left: 0,
             span: 0,
-            mode: SvfMode::LowPass,
+            poles: 2,
+            hp: [false; 2],
             damp: [1.0; 2],
             most: [1.0; 2],
             held: [f32::INFINITY; 2],
+            knee: [GUARD_KNEE; 2],
+            over: [1.0 / GUARD_KNEE; 2],
             cur: [0.0; 2],
             win: [[0.0; GUARD_BLOCKS]; 2],
             frames: 0,
@@ -372,42 +600,56 @@ impl Default for Multi {
 }
 
 impl Multi {
-    /// Heads for a new setting, there in `frames` frames (0 or the first
-    /// setting: at once). `res` is 0 to 1 ([`res_to_q`]: Q 0.707 to 40). A
-    /// guard holding a ring back goes on holding it, within what the new
-    /// setting may take.
+    /// Heads for a new setting, there in `frames` frames (0, the first
+    /// setting or a new slope: at once). `poles` is the slope ([`slope`]),
+    /// `res` 0 to 1 ([`res_to_q`]: Q 0.707 to 40). A guard holding a ring
+    /// back goes on holding it, within what the new setting may take.
     #[inline]
-    pub fn set(
-        &mut self,
-        mode: SvfMode,
-        cascaded: bool,
-        hz: f32,
-        res: f32,
-        rate: u32,
-        frames: u32,
-    ) {
-        let jump = !self.set || frames == 0 || cascaded != self.st.cascaded;
-        let to = stage_coefs(mode, cascaded, hz, res, rate, MULTI_TOP);
-        let resonant = matches!(
-            mode,
-            SvfMode::LowPass | SvfMode::HighPass | SvfMode::BandPass
-        );
-        let guarded = if cascaded {
-            [resonant && mode == SvfMode::BandPass, resonant]
-        } else {
-            [resonant, false]
-        };
-        // Butterworth's damping, Resonance 0's.
-        let (q1, q2) = stage_qs_at(mode, cascaded, 0.707);
-        for (i, q0) in [q1, q2].into_iter().enumerate() {
+    pub fn set(&mut self, mode: SvfMode, poles: u8, hz: f32, res: f32, rate: u32, frames: u32) {
+        let poles = slope(mode, poles);
+        let jump = !self.set || frames == 0 || poles != self.poles;
+        let plan = plan(mode, poles, res);
+        let t = corner(hz, rate, MULTI_TOP);
+        let n = plan.n;
+        let cascaded = n >= 2;
+        // The last two stages are `a` and `b` (one alone is `a`).
+        let (ia, ib) = if cascaded { (n - 2, n - 1) } else { (0, 0) };
+        let ca = plan.stages[ia].coefs(t);
+        let to = [
+            ca,
+            if cascaded {
+                plan.stages[ib].coefs(t)
+            } else {
+                ca
+            },
+        ];
+        let pre_n = n.saturating_sub(2);
+        let guarded = [
+            plan.stages[ia].resonant,
+            cascaded && plan.stages[ib].resonant,
+        ];
+        for (i, si) in [ia, ib].into_iter().enumerate() {
             if guarded[i] {
+                let knee = if plan.stages[si].mode == SvfMode::Bell {
+                    GUARD_KNEE_BELL
+                } else {
+                    GUARD_KNEE
+                };
                 if !self.held[i].is_finite() {
-                    self.held[i] = GUARD_KNEE;
+                    self.held[i] = knee;
                     self.cur[i] = 0.0;
                     self.win[i] = [0.0; GUARD_BLOCKS];
+                } else if knee != self.knee[i] {
+                    // A type change to or from a boost: the held peak
+                    // moves with the knee, so the damping holds.
+                    self.held[i] *= knee / self.knee[i];
                 }
-                self.most[i] = (1.0 / (q0 * to[i].k)).max(1.0);
-                self.damp[i] = damping_for(self.held[i]).min(self.most[i]);
+                self.knee[i] = knee;
+                self.over[i] = 1.0 / knee;
+                // Resonance 0's damping, the most the guard may give (the
+                // resonant stage is the last).
+                self.most[i] = (1.0 / (plan.q0 * to[i].k)).max(1.0);
+                self.damp[i] = damping_for(self.held[i], self.over[i]).min(self.most[i]);
             } else {
                 self.held[i] = f32::INFINITY;
                 self.damp[i] = 1.0;
@@ -415,14 +657,58 @@ impl Multi {
             }
         }
         self.both = guarded[0] && guarded[1];
-        self.mode = mode;
+        self.hp = [
+            plan.stages[ia].mode == SvfMode::HighPass,
+            plan.stages[ib].mode == SvfMode::HighPass,
+        ];
+        if self.set && poles != self.poles {
+            // A stage the new slope brings in starts from silence.
+            if !self.st.cascaded {
+                self.st.b.reset();
+            }
+            for s in &mut self.pre[self.pre_n as usize..] {
+                s.reset();
+            }
+            if !self.one_on {
+                self.one.reset();
+            }
+        }
         self.rate = rate;
         self.st.cascaded = cascaded;
+        self.poles = poles;
+        self.pre_n = pre_n as u8;
+        self.one_on = plan.one.is_some();
+        self.extra = self.one_on || pre_n > 0;
+        if self.extra {
+            self.set_extra(&plan, t, jump);
+        }
         self.aim(to, frames, jump);
         self.set = true;
     }
 
-    /// Stage `i`'s design `c` with the guard's damping: its `k` (and the
+    /// The stages before the last two heading for `plan`'s at the corner
+    /// `t`: a steeper slope's plain stages and an odd slope's one-pole, at
+    /// once on a `jump`, else from where their glide is. Before
+    /// [`Multi::aim`], which starts the glide.
+    #[inline(never)]
+    fn set_extra(&mut self, plan: &Plan, t: f32, jump: bool) {
+        let mut pre_to = self.pre_to;
+        for (i, c) in pre_to.iter_mut().enumerate().take(self.pre_n as usize) {
+            *c = plan.stages[i].coefs(t);
+        }
+        let one_to = OnePole::gain_for(t);
+        if let Some(hp) = plan.one {
+            self.one.set(self.one.gain(), hp);
+        }
+        (self.pre_from, self.one_from) = if jump {
+            (pre_to, one_to)
+        } else {
+            self.extra_now()
+        };
+        (self.pre_to, self.one_to) = (pre_to, one_to);
+    }
+
+    /// Stage `i`'s design `c` with the guard's damping: its `k` (and a
     /// high-pass's mix of it) times the stage's damping.
     #[inline(always)]
     fn damped(&self, c: SvfCoefs, i: usize) -> SvfCoefs {
@@ -432,16 +718,14 @@ impl Multi {
         }
         SvfCoefs {
             k: c.k * f,
-            m1: if self.mode == SvfMode::HighPass {
-                c.m1 * f
-            } else {
-                c.m1
-            },
+            m1: if self.hp[i] { c.m1 * f } else { c.m1 },
             ..c
         }
     }
 
-    /// Glides to `to` over `frames` frames, or lands there at once.
+    /// Glides the last two stages to `to` over `frames` frames (the stages
+    /// before them with them, [`Multi::set_extra`]), or lands there at
+    /// once.
     #[inline]
     fn aim(&mut self, to: [SvfCoefs; 2], frames: u32, jump: bool) {
         if jump || frames == 0 {
@@ -465,6 +749,12 @@ impl Multi {
         let (a, b) = (self.damped(self.to[0], 0), self.damped(self.to[1], 1));
         self.st.a.set_coefs(a);
         self.st.b.set_coefs(b);
+        if self.extra {
+            for i in 0..self.pre_n as usize {
+                self.pre[i].set_coefs(self.pre_to[i]);
+            }
+            self.one.set_gain(self.one_to);
+        }
     }
 
     /// The guard's window, for the host to run every `frames` frames (the
@@ -496,11 +786,11 @@ impl Multi {
                 self.cur[i] = 0.0;
             }
             let window = self.win[i].iter().fold(self.cur[i], |m, &v| m.max(v));
-            let floor = (window * GUARD_SLACK).max(GUARD_KNEE);
+            let floor = (window * GUARD_SLACK).max(self.knee[i]);
             if floor < self.held[i] {
                 let held = floor.max(self.held[i] * self.fall);
                 self.held[i] = held;
-                let f = damping_for(held).min(self.most[i]);
+                let f = damping_for(held, self.over[i]).min(self.most[i]);
                 if f != self.damp[i] {
                     self.damp[i] = f;
                     eased = true;
@@ -516,27 +806,86 @@ impl Multi {
         }
     }
 
+    /// Where the glide is in the glide's frames: `t` of the way (0 to 1).
+    #[inline(always)]
+    fn glide_t(&self) -> f32 {
+        (self.span - self.left) as f32 / self.span as f32
+    }
+
     /// The designs the glide is at (undamped).
     fn now(&self) -> [SvfCoefs; 2] {
         if self.left == 0 {
             return self.to;
         }
-        let t = (self.span - self.left) as f32 / self.span as f32;
+        let t = self.glide_t();
         [
             self.from[0].toward(self.to[0], t),
             self.from[1].toward(self.to[1], t),
         ]
     }
 
+    /// The plain stages' and the one-pole's designs the glide is at.
+    fn extra_now(&self) -> ([SvfCoefs; 2], f32) {
+        if self.left == 0 {
+            return (self.pre_to, self.one_to);
+        }
+        let t = self.glide_t();
+        (
+            [
+                self.pre_from[0].toward(self.pre_to[0], t),
+                self.pre_from[1].toward(self.pre_to[1], t),
+            ],
+            self.one_from + t * (self.one_to - self.one_from),
+        )
+    }
+
     /// One frame, both channels: a step of the glide, then the stages
     /// ([`Svf::step_stereo`]; the host flushes every few frames with
     /// [`Multi::flush_below`]), each guarded stage's band-pass state
-    /// watched. Inlined into the voice's loop.
+    /// watched. Inlined into the voice's loop; a slope with stages before
+    /// the last two runs out of line ([`Multi::process_extra`]).
     #[inline(always)]
     pub fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
+        if self.extra {
+            return self.process_extra(l, r);
+        }
         if self.left > 0 {
             self.glide();
         }
+        self.run_last(l, r)
+    }
+
+    /// [`Multi::process`] for a slope with stages before the last two (6,
+    /// 18, 36 and 48 dB, and a band-pass's broad ones): its glide step,
+    /// its one-pole, its plain stages, then the last two. Out of line and
+    /// marked cold, so the 12 and 24 dB filters' code in a voice's loop
+    /// stays lean: with these stages inlined too, 16 held pads with a
+    /// moving 12 dB cutoff cost 6 % more than before them, the loop's
+    /// values spilling to memory; out of line, 4.5 % (the call's spills
+    /// leaking into the frames that don't take it); cold, 2.5 % (the one
+    /// test a frame and its join).
+    #[cold]
+    #[inline(never)]
+    fn process_extra(&mut self, l: f32, r: f32) -> (f32, f32) {
+        if self.left > 0 {
+            self.glide();
+            self.glide_extra();
+        }
+        let (mut l, mut r) = if self.one_on {
+            self.one.step_stereo(l, r)
+        } else {
+            (l, r)
+        };
+        for s in &mut self.pre[..self.pre_n as usize] {
+            (l, r) = s.step_stereo(l, r);
+        }
+        self.run_last(l, r)
+    }
+
+    /// The last one or two stages, each guarded stage's band-pass state
+    /// watched.
+    #[inline(always)]
+    fn run_last(&mut self, l: f32, r: f32) -> (f32, f32) {
         if self.st.cascaded {
             let (l, r) = if self.both {
                 let (l, r, p) = self.st.a.step_stereo_peak(l, r);
@@ -573,7 +922,7 @@ impl Multi {
     #[inline(never)]
     fn rise(&mut self, i: usize, p: f32) {
         self.held[i] *= (p / self.held[i]).sqrt().sqrt();
-        let f = damping_for(self.held[i]).min(self.most[i]);
+        let f = damping_for(self.held[i], self.over[i]).min(self.most[i]);
         if f != self.damp[i] {
             self.damp[i] = f;
             if self.left == 0 {
@@ -587,14 +936,14 @@ impl Multi {
         }
     }
 
-    /// One step of the glide.
+    /// One step of the glide of the last two stages.
     #[inline(always)]
     fn glide(&mut self) {
         self.left -= 1;
         // The last step lands on the setting itself, not a rounding short
         // of it.
         let last = self.left == 0;
-        let t = (self.span - self.left) as f32 / self.span as f32;
+        let t = self.glide_t();
         let at = |from: SvfCoefs, to: SvfCoefs| if last { to } else { from.toward(to, t) };
         let a = self.damped(at(self.from[0], self.to[0]), 0);
         self.st.a.set_coefs(a);
@@ -604,19 +953,47 @@ impl Multi {
         }
     }
 
+    /// The same step for the stages before them, after [`Multi::glide`]
+    /// has taken it.
+    #[inline(always)]
+    fn glide_extra(&mut self) {
+        let last = self.left == 0;
+        let t = self.glide_t();
+        for i in 0..self.pre_n as usize {
+            let c = if last {
+                self.pre_to[i]
+            } else {
+                self.pre_from[i].toward(self.pre_to[i], t)
+            };
+            self.pre[i].set_coefs(c);
+        }
+        if self.one_on {
+            let g = if last {
+                self.one_to
+            } else {
+                self.one_from + t * (self.one_to - self.one_from)
+            };
+            self.one.set_gain(g);
+        }
+    }
+
     /// The guard's damping on the more damped of the stages: 1 when it
     /// holds nothing back.
     pub fn damping(&self) -> f32 {
         self.damp[0].max(self.damp[1])
     }
 
-    /// Both stages to silence and the guard let go; the setting stays.
+    /// Every stage to silence and the guard let go; the setting stays.
     pub fn reset(&mut self) {
         self.st.a.reset();
         self.st.b.reset();
+        for s in &mut self.pre {
+            s.reset();
+        }
+        self.one.reset();
         for i in 0..2 {
             if self.held[i].is_finite() {
-                self.held[i] = GUARD_KNEE;
+                self.held[i] = self.knee[i];
             }
             self.cur[i] = 0.0;
             self.win[i] = [0.0; GUARD_BLOCKS];
@@ -634,6 +1011,12 @@ impl Multi {
     /// ([`Svf::flush_below`]); for a host to run every few frames.
     #[inline]
     pub fn flush_below(&mut self, quiet: f32) {
+        if self.extra {
+            self.one.flush_below(quiet);
+            for s in &mut self.pre[..self.pre_n as usize] {
+                s.flush_below(quiet);
+            }
+        }
         self.st.a.flush_below(quiet);
         if self.st.cascaded {
             self.st.b.flush_below(quiet);
@@ -645,55 +1028,240 @@ impl Multi {
 mod tests {
     use super::*;
 
+    /// A plan's stages designed at `hz` (under 45 % of the rate, where the
+    /// effect's stages stop).
+    fn designed(mode: SvfMode, poles: u8, hz: f32, res: f32, rate: u32) -> Vec<Svf> {
+        let t = corner(hz, rate, 0.45);
+        plan(mode, poles, res)
+            .stages()
+            .iter()
+            .map(|st| {
+                let mut s = Svf::default();
+                s.set_coefs(st.coefs(t));
+                s
+            })
+            .collect()
+    }
+
     #[test]
-    fn stage_coefs_are_what_set_stages_sets() {
-        for (mode, cascaded) in [
-            (SvfMode::LowPass, false),
-            (SvfMode::LowPass, true),
-            (SvfMode::HighPass, true),
-            (SvfMode::BandPass, true),
-            (SvfMode::Notch, true),
+    fn the_12_and_24_db_stages_are_the_effects() {
+        // The pads' 12 and 24 dB low-pass, high-pass and notch, and the
+        // 12 dB band-pass, are the Filter effect's stages exactly (its 24
+        // dB band-pass is two resonant stages; the pads' is F4's).
+        for (mode, poles) in [
+            (SvfMode::LowPass, 2),
+            (SvfMode::LowPass, 4),
+            (SvfMode::HighPass, 2),
+            (SvfMode::HighPass, 4),
+            (SvfMode::BandPass, 2),
+            (SvfMode::Notch, 2),
+            (SvfMode::Notch, 4),
         ] {
+            let cascaded = poles == 4;
             for res in [0.0, 0.3, 1.0] {
                 let (mut a, mut b) = (Svf::default(), Svf::default());
                 set_stages(&mut a, &mut b, mode, cascaded, 1234.0, res, 0.0, 44_100);
-                let c = stage_coefs(mode, cascaded, 1234.0, res, 44_100, 0.45);
-                let (mut x, mut y) = (Svf::default(), Svf::default());
-                x.set_coefs(c[0]);
-                y.set_coefs(c[1]);
+                let ours = designed(mode, poles, 1234.0, res, 44_100);
+                assert_eq!(ours.len(), if cascaded { 2 } else { 1 });
                 for hz in [100.0, 1234.0, 9000.0] {
-                    assert_eq!(a.response(hz, 44_100), x.response(hz, 44_100));
+                    assert_eq!(a.response(hz, 44_100), ours[0].response(hz, 44_100));
                     if cascaded {
-                        assert_eq!(b.response(hz, 44_100), y.response(hz, 44_100));
+                        assert_eq!(b.response(hz, 44_100), ours[1].response(hz, 44_100));
                     }
                 }
             }
         }
     }
 
+    /// `plan`'s curve at `hz` (dB), worked out the long way: each stage's
+    /// complex response multiplied, the one-pole's too, in f64.
+    fn curve_db(mode: SvfMode, poles: u8, cutoff: f32, res: f32, hz: f32, rate: u32) -> f64 {
+        let p = plan(mode, poles, res);
+        let t = corner(cutoff, rate, MULTI_TOP);
+        let mut h = (1.0f64, 0.0f64);
+        let mul = |a: (f64, f64), b: (f64, f64)| (a.0 * b.0 - a.1 * b.1, a.0 * b.1 + a.1 * b.0);
+        if let Some(hp) = p.one {
+            let mut o = OnePole::default();
+            o.set(OnePole::gain_for(t), hp);
+            h = mul(h, o.response(hz, rate));
+        }
+        for st in p.stages() {
+            let mut s = Svf::default();
+            s.set_coefs(st.coefs(t));
+            h = mul(h, s.response(hz, rate));
+        }
+        10.0 * (h.0 * h.0 + h.1 * h.1).log10()
+    }
+
     #[test]
-    fn the_drawn_curve_is_the_set_filter() {
-        for (mode, cascaded) in [
-            (SvfMode::LowPass, false),
-            (SvfMode::LowPass, true),
-            (SvfMode::HighPass, true),
-            (SvfMode::BandPass, false),
-            (SvfMode::Notch, true),
-        ] {
-            let mut m = Multi::default();
-            m.set(mode, cascaded, 3_000.0, 0.6, 44_100, 0);
-            for hz in [50.0, 2_900.0, 18_000.0] {
-                let p = |h: (f64, f64)| h.0 * h.0 + h.1 * h.1;
-                let mut heard = p(m.st.a.response(hz, 44_100));
-                if cascaded {
-                    heard *= p(m.st.b.response(hz, 44_100));
-                }
-                let drawn = response_db(mode, cascaded, 3_000.0, 0.6, hz, 44_100);
-                let heard = (10.0 * heard.max(1e-24).log10()) as f32;
+    fn every_slope_is_butterworth_at_resonance_0_and_falls_as_it_should() {
+        // The -3 dB point at the cutoff, Butterworth's curve in the
+        // passband, and 6 dB an octave a pole past the cutoff (over 4 to 8
+        // times it, a little short of that for the 6 dB).
+        let rate = 44_100;
+        for mode in [SvfMode::LowPass, SvfMode::HighPass] {
+            for poles in [1u8, 2, 3, 4, 6, 8] {
+                // Low cutoffs and frequencies, where the bilinear
+                // transform's warping is small.
+                let (cutoff, pass, far, farther) = if mode == SvfMode::LowPass {
+                    (100.0, 20.0, 400.0, 800.0)
+                } else {
+                    (400.0, 2_000.0, 100.0, 50.0)
+                };
+                let at = |hz: f32| curve_db(mode, poles, cutoff, 0.0, hz, rate);
                 assert!(
-                    (drawn - heard).abs() < 1e-3,
-                    "{mode:?} {hz}: {drawn} {heard}"
+                    (at(cutoff) + 3.0103).abs() < 0.01,
+                    "{mode:?} {poles}: {}",
+                    at(cutoff)
                 );
+                // Butterworth's own curve there: -10 log(1 + 5^-2n).
+                let flat = -10.0 * (1.0 + 0.2f64.powi(2 * i32::from(poles))).log10();
+                assert!(
+                    (at(pass) - flat).abs() < 0.01,
+                    "{mode:?} {poles}: {}",
+                    at(pass)
+                );
+                let octave = at(far) - at(farther);
+                let want = 6.02 * f64::from(poles);
+                assert!(
+                    (octave - want).abs() < 0.03 * want + 0.6,
+                    "{mode:?} {poles}: {octave} for {want}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_resonance_gives_the_same_peak_at_every_slope() {
+        // At the cutoff a low-pass, high-pass or band-pass gives the
+        // 2-pole's Q at any slope (-3 dB at Resonance 0 up to 32 dB), and
+        // the Peak a boost of that over 0.707 (0 dB up to 35 dB).
+        let rate = 44_100;
+        for res in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let want = 20.0 * f64::from(res_to_q(res)).log10();
+            for (mode, slopes) in [
+                (SvfMode::LowPass, &[1u8, 2, 3, 4, 6, 8][..]),
+                (SvfMode::HighPass, &[1, 2, 3, 4, 6, 8]),
+                (SvfMode::BandPass, &[2, 4, 6, 8]),
+            ] {
+                for &poles in slopes {
+                    let got = curve_db(mode, poles, 1_000.0, res, 1_000.0, rate);
+                    assert!(
+                        (got - want).abs() < 0.05,
+                        "{mode:?} {poles} res {res}: {got} for {want}"
+                    );
+                }
+            }
+            let peak = curve_db(SvfMode::Bell, 2, 1_000.0, res, 1_000.0, rate);
+            assert!(
+                (peak - (want + 3.0103)).abs() < 0.05,
+                "peak res {res}: {peak}"
+            );
+            // And it leaves the rest alone.
+            let far = curve_db(SvfMode::Bell, 2, 1_000.0, res, 20.0, rate);
+            assert!(far.abs() < 0.05, "peak res {res} at 20 Hz: {far}");
+        }
+    }
+
+    #[test]
+    fn a_slope_count_goes_to_one_the_mode_has() {
+        assert_eq!(slope(SvfMode::LowPass, 0), 2);
+        assert_eq!(slope(SvfMode::LowPass, 5), 4);
+        assert_eq!(slope(SvfMode::HighPass, 7), 6);
+        assert_eq!(slope(SvfMode::HighPass, 200), 8);
+        assert_eq!(slope(SvfMode::BandPass, 1), 2);
+        assert_eq!(slope(SvfMode::BandPass, 3), 2);
+        assert_eq!(slope(SvfMode::BandPass, 8), 8);
+        assert_eq!(slope(SvfMode::Notch, 8), 4);
+        assert_eq!(slope(SvfMode::Bell, 4), 2);
+        // The stages make the slope: two poles a state-variable stage (a
+        // boost adds none), one for the one-pole.
+        for mode in [SvfMode::LowPass, SvfMode::HighPass, SvfMode::BandPass] {
+            for poles in 0..=9 {
+                let p = plan(mode, poles, 0.5);
+                let made: usize = p
+                    .stages()
+                    .iter()
+                    .map(|s| if s.mode == SvfMode::Bell { 0 } else { 2 })
+                    .sum::<usize>()
+                    + usize::from(p.one.is_some());
+                assert_eq!(made, usize::from(slope(mode, poles)), "{mode:?} {poles}");
+                assert_eq!(p.stages().iter().filter(|s| s.resonant).count(), 1);
+                assert!(p.stages().last().is_some_and(|s| s.resonant));
+            }
+        }
+        // The guard's floor: the resonant stage's pole Q at Resonance 0,
+        // what that stage is in the Butterworth plan.
+        for mode in [
+            SvfMode::LowPass,
+            SvfMode::HighPass,
+            SvfMode::BandPass,
+            SvfMode::Bell,
+        ] {
+            for poles in 0..=9 {
+                let butterworth = plan(mode, poles, 0.0);
+                let last = butterworth.stages()[butterworth.n - 1];
+                for res in [0.0, 0.3, 1.0] {
+                    let q0 = plan(mode, poles, res).q0;
+                    assert!((q0 - last.pole_q()).abs() < 1e-6, "{mode:?} {poles}");
+                }
+            }
+        }
+    }
+
+    /// `x` (mono, on both channels) through a [`Multi`] set once; the left
+    /// channel out.
+    fn heard(m: &mut Multi, x: &[f32]) -> Vec<f32> {
+        x.iter()
+            .enumerate()
+            .map(|(n, &s)| {
+                if n > 0 && n % 16 == 0 {
+                    m.guard(16);
+                    m.flush_below(1e-15);
+                }
+                m.process(s, s).0
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_drawn_curve_is_what_plays() {
+        // A quiet sine (the guard never acts) through every slope: its
+        // level out is the drawn curve's at its pitch.
+        let rate = 44_100;
+        for (mode, slopes) in [
+            (SvfMode::LowPass, &[1u8, 2, 3, 4, 6, 8][..]),
+            (SvfMode::HighPass, &[1, 2, 3, 4, 6, 8]),
+            (SvfMode::BandPass, &[2, 4, 6, 8]),
+            (SvfMode::Notch, &[2, 4]),
+            (SvfMode::Bell, &[2]),
+        ] {
+            for &poles in slopes {
+                for hz in [700.0f32, 2_900.0, 9_000.0] {
+                    let mut m = Multi::default();
+                    m.set(mode, poles, 3_000.0, 0.6, rate, 0);
+                    let a = 1e-3;
+                    let x: Vec<f32> = (0..rate as usize / 2)
+                        .map(|n| {
+                            let w = std::f64::consts::TAU * f64::from(hz) * n as f64;
+                            a * (w / f64::from(rate)).sin() as f32
+                        })
+                        .collect();
+                    let y = heard(&mut m, &x);
+                    let rms = |v: &[f32]| {
+                        (v.iter().map(|&s| f64::from(s).powi(2)).sum::<f64>() / v.len() as f64)
+                            .sqrt()
+                    };
+                    let tail = &y[y.len() / 2..];
+                    let got = 20.0 * (rms(tail) / rms(&x[x.len() / 2..])).log10();
+                    let drawn = f64::from(response_db(mode, poles, 3_000.0, 0.6, hz, rate));
+                    assert!(
+                        (got - drawn).abs() < 0.05,
+                        "{mode:?} {poles} at {hz}: heard {got}, drawn {drawn}"
+                    );
+                    assert!((drawn - curve_db(mode, poles, 3_000.0, 0.6, hz, rate)).abs() < 1e-3);
+                    assert_eq!(m.damping(), 1.0);
+                }
             }
         }
     }
@@ -703,7 +1271,7 @@ mod tests {
         // Wide open, the voice's filter goes to 49 % of the rate; the
         // effect's stages stop at 45 %.
         let mut m = Multi::default();
-        m.set(SvfMode::LowPass, false, 22_000.0, 0.0, 44_100, 0);
+        m.set(SvfMode::LowPass, 2, 22_000.0, 0.0, 44_100, 0);
         let p = |h: (f64, f64)| 10.0 * (h.0 * h.0 + h.1 * h.1).log10();
         let at_top = p(m.st.a.response(0.49 * 44_100.0, 44_100));
         assert!((at_top + 3.01).abs() < 0.05, "{at_top}");
@@ -725,8 +1293,8 @@ mod tests {
     #[test]
     fn a_glide_lands_on_the_setting_and_moves_smoothly() {
         let mut m = Multi::default();
-        m.set(SvfMode::LowPass, true, 500.0, 0.2, 44_100, 0);
-        m.set(SvfMode::LowPass, true, 4000.0, 0.2, 44_100, 16);
+        m.set(SvfMode::LowPass, 4, 500.0, 0.2, 44_100, 0);
+        m.set(SvfMode::LowPass, 4, 4000.0, 0.2, 44_100, 16);
         let mut last = m.st.a.response(2000.0, 44_100);
         for _ in 0..16 {
             m.process(0.0, 0.0);
@@ -737,8 +1305,34 @@ mod tests {
             last = now;
         }
         let mut z = Svf::default();
-        z.set_coefs(stage_coefs(SvfMode::LowPass, true, 4000.0, 0.2, 44_100, MULTI_TOP)[0]);
+        let t = corner(4000.0, 44_100, MULTI_TOP);
+        z.set_coefs(plan(SvfMode::LowPass, 4, 0.2).stages[0].coefs(t));
         assert_eq!(m.st.a.response(2000.0, 44_100), z.response(2000.0, 44_100));
+    }
+
+    #[test]
+    fn a_steep_slope_glides_every_stage() {
+        // An 8-pole (and a 6 dB) low-pass opening over 64 frames: each
+        // frame lets more of a 3 kHz tone through, and it lands on the
+        // setting, as one set there at once.
+        for poles in [8u8, 1, 3, 6] {
+            let mut m = Multi::default();
+            m.set(SvfMode::LowPass, poles, 500.0, 0.3, 44_100, 0);
+            m.set(SvfMode::LowPass, poles, 4000.0, 0.3, 44_100, 64);
+            let mut glide = m;
+            let mut at = Multi::default();
+            at.set(SvfMode::LowPass, poles, 4000.0, 0.3, 44_100, 0);
+            for _ in 0..64 {
+                glide.process(0.0, 0.0);
+            }
+            // Landed: the same stages, so the same output from here on.
+            let x: Vec<f32> = (0..256)
+                .map(|n| ((n * 7919) % 97) as f32 / 48.0 - 1.0)
+                .collect();
+            for &s in &x {
+                assert_eq!(glide.process(s, s), at.process(s, s), "{poles}");
+            }
+        }
     }
 
     const RATE: u32 = 44_100;
@@ -747,15 +1341,9 @@ mod tests {
     /// `x` (mono, on both channels) through a [`Multi`] set once, the guard
     /// run every [`STEP`] frames as a voice runs it; the left channel out,
     /// and the guard's damping each frame.
-    fn guarded(
-        mode: SvfMode,
-        cascaded: bool,
-        hz: f32,
-        res: f32,
-        x: &[f32],
-    ) -> (Vec<f32>, Vec<f32>) {
+    fn guarded(mode: SvfMode, poles: u8, hz: f32, res: f32, x: &[f32]) -> (Vec<f32>, Vec<f32>) {
         let mut m = Multi::default();
-        m.set(mode, cascaded, hz, res, RATE, 0);
+        m.set(mode, poles, hz, res, RATE, 0);
         let mut y = Vec::with_capacity(x.len());
         let mut d = Vec::with_capacity(x.len());
         for (n, &s) in x.iter().enumerate() {
@@ -792,31 +1380,51 @@ mod tests {
         // guard damps it but holds still across the cycles, so nothing
         // pushes the output off centre (the Filter effect's bend gives
         // -0.12 on the high one), and the ring is held near full scale,
-        // not at 4.7 (Q 40's, linear, on the high note).
+        // not at 4.7 (Q 40's, linear, on the high note). Every slope; the
+        // 6 dB's guard, its boost rung hard by the sawtooth's first edge,
+        // takes the longest to settle (about a second on the low note), so
+        // the last half second is measured.
         for (cycle, hz) in [(25, 2_000.0), (401, 120.0)] {
             let x = sawtooth(2 * RATE as usize, cycle);
-            // Whole cycles of the second second.
-            let tail = RATE as usize / cycle * cycle;
+            // Whole cycles of the last half second.
+            let tail = RATE as usize / 2 / cycle * cycle;
             let from = x.len() - tail;
-            for cascaded in [false, true] {
+            for poles in [2u8, 4, 1, 3, 6, 8] {
                 for res in [0.3, 0.6, 1.0] {
-                    let (y, d) = guarded(SvfMode::LowPass, cascaded, hz, res, &x);
+                    let (y, d) = guarded(SvfMode::LowPass, poles, hz, res, &x);
                     let dc = mean(&y[from..]);
-                    assert!(dc.abs() < 2e-4, "{cycle} {cascaded} res {res}: {dc}");
+                    assert!(dc.abs() < 2e-4, "{cycle} {poles} res {res}: {dc}");
                     assert!(
                         peak(&y[from..]) < 1.6,
-                        "{cycle} {cascaded} res {res}: {}",
+                        "{cycle} {poles} res {res}: {}",
                         peak(&y)
                     );
                     // Held still once it has the note.
                     let (lo, hi) = d[from..]
                         .iter()
                         .fold((f32::MAX, 0.0f32), |(a, b), &v| (a.min(v), b.max(v)));
-                    assert_eq!(lo, hi, "{cycle} {cascaded} res {res}");
+                    assert_eq!(lo, hi, "{cycle} {poles} res {res}");
                 }
             }
-            let (_, d) = guarded(SvfMode::LowPass, false, hz, 1.0, &x);
+            let (_, d) = guarded(SvfMode::LowPass, 2, hz, 1.0, &x);
             assert!(d[x.len() - 1] > 4.0, "{cycle}: {}", d[x.len() - 1]);
+            // The Peak passes the sawtooth whole and adds its ring, held
+            // as a low-pass's (its band-pass state √2 lower, as the bell
+            // adds it up to √2 times).
+            for res in [0.3, 0.6, 1.0] {
+                let (y, d) = guarded(SvfMode::Bell, 2, hz, res, &x);
+                let dc = mean(&y[from..]);
+                assert!(dc.abs() < 2e-4, "{cycle} peak res {res}: {dc}");
+                assert!(
+                    peak(&y[from..]) < 1.8,
+                    "{cycle} peak res {res}: {}",
+                    peak(&y)
+                );
+                let (lo, hi) = d[from..]
+                    .iter()
+                    .fold((f32::MAX, 0.0f32), |(a, b), &v| (a.min(v), b.max(v)));
+                assert_eq!(lo, hi, "{cycle} peak res {res}");
+            }
         }
     }
 
@@ -828,12 +1436,20 @@ mod tests {
         let x: Vec<f32> = (0..RATE as usize)
             .map(|n| a * (std::f32::consts::TAU * 2_000.0 * n as f32 / RATE as f32).sin())
             .collect();
-        for cascaded in [false, true] {
-            let (y, d) = guarded(SvfMode::LowPass, cascaded, 2_000.0, 1.0, &x);
+        for poles in [2u8, 4, 1, 3, 6, 8] {
+            let (y, d) = guarded(SvfMode::LowPass, poles, 2_000.0, 1.0, &x);
             let up = 20.0 * (peak(&y[y.len() / 2..]) / a).log10();
-            assert!((up - 32.0).abs() < 0.3, "{cascaded}: {up}");
-            assert!(d.iter().all(|&v| v == 1.0), "{cascaded}");
+            assert!((up - 32.0).abs() < 0.3, "{poles}: {up}");
+            assert!(d.iter().all(|&v| v == 1.0), "{poles}");
         }
+        // The Peak's knee is √2 lower: at -46 dBFS its boost is in full,
+        // 35 dB.
+        let a = 0.005;
+        let x: Vec<f32> = x.iter().map(|v| v * (a / 0.008)).collect();
+        let (y, d) = guarded(SvfMode::Bell, 2, 2_000.0, 1.0, &x);
+        let up = 20.0 * (peak(&y[y.len() / 2..]) / a).log10();
+        assert!((up - 35.05).abs() < 0.3, "peak: {up}");
+        assert!(d.iter().all(|&v| v == 1.0), "peak");
     }
 
     #[test]
@@ -845,7 +1461,7 @@ mod tests {
             .enumerate()
             .map(|(n, &s)| if n < RATE as usize / 2 { s } else { 0.005 * s })
             .collect();
-        let (_, d) = guarded(SvfMode::LowPass, false, 2_000.0, 1.0, &x);
+        let (_, d) = guarded(SvfMode::LowPass, 2, 2_000.0, 1.0, &x);
         assert!(d[RATE as usize / 2 - 1] > 4.0);
         assert_eq!(d[x.len() - 1], 1.0);
     }
@@ -859,10 +1475,10 @@ mod tests {
             .iter()
             .map(|s| 4.0 * s)
             .collect();
-        for cascaded in [false, true] {
+        for poles in [2u8, 4, 1, 3, 6, 8] {
             for (mode, res) in [(SvfMode::LowPass, 0.0), (SvfMode::Notch, 1.0)] {
-                let (_, d) = guarded(mode, cascaded, 2_000.0, res, &x);
-                assert!(d.iter().all(|&v| v == 1.0), "{mode:?} {cascaded}");
+                let (_, d) = guarded(mode, poles, 2_000.0, res, &x);
+                assert!(d.iter().all(|&v| v == 1.0), "{mode:?} {poles}");
             }
         }
     }
@@ -882,9 +1498,15 @@ mod tests {
                 (seed as f32 / u32::MAX as f32) * 2.0 - 1.0
             })
             .collect();
-        for (cascaded, hz) in [(false, 10_000.0), (true, 10_000.0), (true, 3_000.0)] {
-            let (y, _) = guarded(SvfMode::BandPass, cascaded, hz, 0.9, &x);
-            assert!(peak(&y) < 2.0, "{cascaded} {hz}: {}", peak(&y));
+        for (poles, hz) in [
+            (2u8, 10_000.0),
+            (4, 10_000.0),
+            (4, 3_000.0),
+            (8, 10_000.0),
+            (8, 3_000.0),
+        ] {
+            let (y, _) = guarded(SvfMode::BandPass, poles, hz, 0.9, &x);
+            assert!(peak(&y) < 2.0, "{poles} {hz}: {}", peak(&y));
         }
     }
 
@@ -901,17 +1523,17 @@ mod tests {
                 a * (std::f32::consts::TAU * 700.0 * i as f32 / RATE as f32).sin()
             })
             .collect();
-        for cascaded in [false, true] {
-            let (y, d) = guarded(SvfMode::BandPass, cascaded, 700.0, 0.8, &x);
-            assert!(d[n - 1] > 1.0, "{cascaded}");
+        for poles in [2u8, 4, 6, 8] {
+            let (y, d) = guarded(SvfMode::BandPass, poles, 700.0, 0.8, &x);
+            assert!(d[n - 1] > 1.0, "{poles}");
             let top = peak(&y);
             let most = y
                 .windows(2)
                 .map(|w| (w[1] - w[0]).abs())
                 .fold(0.0f32, f32::max);
             let sine = std::f32::consts::TAU * 700.0 / RATE as f32 * top;
-            assert!(most < 1.05 * sine, "{cascaded}: {most} {sine}");
-            assert!(top < 1.2, "{cascaded}: {top}");
+            assert!(most < 1.05 * sine, "{poles}: {most} {sine}");
+            assert!(top < 1.2, "{poles}: {top}");
         }
     }
 }

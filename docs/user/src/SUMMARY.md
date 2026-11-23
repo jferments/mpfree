@@ -31,6 +31,7 @@
 - [Getting plugins](making-music/plugins.md)
 - [Playing other gear: MIDI, sync and CV](making-music/midi-and-cv.md)
 - [Saving your work](making-music/saving.md)
+- [Patches: splits and layers for your keyboard](making-music/patches.md)
 - [Set lists](making-music/set-lists.md)
 - [Exporting your music](making-music/exporting.md)
 - [Moving your beats from the MPC](making-music/moving-from-the-mpc.md)
@@ -39,6 +40,7 @@
 
 - [Buttons and controls](reference/controls.md)
 - [Prefs](reference/prefs.md)
+- [Arp patterns](reference/arp-patterns.md)
 - [Making your own theme](reference/making-a-theme.md)
 - [When something goes wrong](reference/when-something-goes-wrong.md)
 - [Coming from an MPC](reference/coming-from-an-mpc.md)

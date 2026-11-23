@@ -1,0 +1,14 @@
+[package]
+name = "mpfree-patch"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "Patches for MPFree (live shows C1): named keyboard setups of up to eight zones, each a key and velocity range playing one of the song's instruments, and the audio thread's table of where every held key and pedal went, so a patch switch never cuts a note"
+
+[lib]
+name = "mpfree_patch"
+path = "src/lib.rs"
+
+[dependencies]
+mpfree-node = { path = "../mpfree-node" }
