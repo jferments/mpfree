@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-sampler rust/mpfree-sampler-ui/src/pads_tab.rs rust/mpfree-sampler-ui/src/rec_tab.rs rust/mpfree-sampler-ui/src/recall.rs rust/mpfree-sampler-ui/src/wave_tab.rs rust/mpfree-sampler-ui/src/grain_tool.rs rust/mpfree-sampler-ui/src/sound_panel.rs rust/mpfree-sampler-ui/src/warp_tool.rs rust/mpfree-sampler-ui/src/slice_tool.rs rust/mpfree-sampler-ui/src/auto_tab.rs rust/mpfree-sampler-ui/src/stems_page.rs rust/mpfree-app/src/sample_page.rs rust/mpfree-app/src/sampler.rs
+covers: rust/mpfree-sampler rust/mpfree-sampler-ui/src/pads_tab.rs rust/mpfree-sampler-ui/src/rec_tab.rs rust/mpfree-sampler-ui/src/recall.rs rust/mpfree-sampler-ui/src/wave_tab.rs rust/mpfree-sampler-ui/src/grain_tool.rs rust/mpfree-sampler-ui/src/sound_panel.rs rust/mpfree-sampler-ui/src/warp_tool.rs rust/mpfree-sampler-ui/src/slice_tool.rs rust/mpfree-sampler-ui/src/auto_tab.rs rust/mpfree-sampler-ui/src/stems_page.rs rust/mpfree-app/src/sample_page.rs rust/mpfree-app/src/sample_page rust/mpfree-app/src/sampler.rs
 checked: 2026-11-18 ec8cb82
 -->
 
@@ -155,7 +155,7 @@ While it splits, the four lanes fill in, a part of about 12 seconds at a time, a
 
 The **Q-Links** are the four stems' levels: as you hear them on the page, and as they land on their pads or layers.
 
-When it can't start, the main button is faint and the Put on note says why: the stems model isn't on the stick (the USB Creator adds it), there isn't enough memory free ("Needs 190 MB, 120 MB free"), or another split is running (wait, or stop it).
+When it can't start, the main button is faint and the Put on note says why: the stems model isn't on the stick yet, or there isn't enough memory free ("Needs 220 MB, 120 MB free"). The USB Creator doesn't add the model yet: its file, `spleeter-4stems.mpfstem`, goes in `files/models/` on the stick's data partition (the page says "No stems model in files/models/ on the stick yet" until it is there). One split runs at a time: while one runs, **Stems** shows it, whatever pad is picked. Once the page has read the model it keeps it until you leave the page, so the next split starts sooner.
 
 > [!NOTE]
 > A stem is as good as the model can make it: in a busy mix, each stem keeps a little of the other parts. The stems are stereo, up to 16.5 kHz, and 16-bit when the sound is.

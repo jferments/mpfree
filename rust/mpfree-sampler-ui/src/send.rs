@@ -76,8 +76,28 @@ pub fn show_take(ui: &mut Ui, sending: bool) {
 /// Lights Stems while the Stems page is open (a press then takes the page
 /// back to Wave).
 pub fn light_stems(ui: &mut Ui, open: bool) {
-    if let Some(b) = ui.get_mut::<ButtonRow>(SEND) {
-        b.primary = open.then_some(STEMS);
+    let primary = open.then_some(STEMS);
+    // Only a change is drawn again.
+    if ui
+        .get::<ButtonRow>(SEND)
+        .is_some_and(|b| b.primary != primary)
+    {
+        if let Some(b) = ui.get_mut::<ButtonRow>(SEND) {
+            b.primary = primary;
+        }
+    }
+}
+
+/// Stems' label: "Stems", or how far a split has got while the page
+/// doesn't show ("Stems 42 %").
+pub fn label_stems(ui: &mut Ui, label: &str) {
+    if ui
+        .get::<ButtonRow>(SEND)
+        .is_some_and(|b| b.labels.get(STEMS).is_some_and(|l| l != label))
+    {
+        if let Some(b) = ui.get_mut::<ButtonRow>(SEND) {
+            b.labels[STEMS] = label.to_string();
+        }
     }
 }
 
@@ -111,5 +131,16 @@ mod tests {
         assert_eq!(ui.get::<ButtonRow>(SEND).unwrap().primary, Some(STEMS));
         light_stems(&mut ui, false);
         assert_eq!(ui.get::<ButtonRow>(SEND).unwrap().primary, None);
+        label_stems(&mut ui, "Stems 42 %");
+        assert_eq!(
+            ui.get::<ButtonRow>(SEND).unwrap().labels[STEMS],
+            "Stems 42 %"
+        );
+        show(&mut ui, true, false);
+        assert_eq!(
+            ui.get::<ButtonRow>(SEND).unwrap().labels[STEMS],
+            "Stems 42 %",
+            "kept while the pad changes"
+        );
     }
 }

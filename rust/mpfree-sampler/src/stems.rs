@@ -34,14 +34,14 @@
 
 use crate::jobs::{Job, Jobs, Key, Lane, Running};
 use crate::model::Source;
-use mpfree_stems::{Model, Separator, Settings, Sink};
+use mpfree_stems::{Separator, Sink};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-pub use mpfree_stems::{segments, steps, Stem, RATE, SEGMENT};
+pub use mpfree_stems::{segments, steps, Model, Settings, Stem, RATE, SEGMENT};
 
 /// The job kind of every step of a split.
 pub const KIND: &str = "stems";
@@ -285,6 +285,31 @@ impl State {
         };
         self.begin(model, samples, channels)
     }
+}
+
+/// The most bytes a split holds while it runs, for the memory promised
+/// before it starts: the model unless it is read already (`model_read`),
+/// the separation's work ([`mpfree_stems::spleeter_need`], which doesn't
+/// grow with the sound), the sound read (`samples` a channel at 44.1 kHz,
+/// `channels` of them; twice over while a sound at another rate is
+/// converted, `converts`) and the `kept` stems gathered as stereo floats.
+pub fn holds(
+    samples: usize,
+    channels: usize,
+    kept: usize,
+    model_read: bool,
+    converts: bool,
+    settings: &Settings,
+) -> u64 {
+    let floats = |n: usize| n as u64 * 4;
+    let model = if model_read {
+        0
+    } else {
+        mpfree_stems::SPLEETER_BYTES
+    };
+    let sound = floats(samples * channels) * if converts { 2 } else { 1 };
+    let stems = floats(samples * 2) * kept as u64;
+    model + mpfree_stems::spleeter_need(settings.band) + sound + stems
 }
 
 /// Frames `span` (from, to) of `source`, interleaved, converted to 44.1 kHz
@@ -761,5 +786,35 @@ mod tests {
         to_16_bits(&mut loud, &mut seed);
         assert_eq!(loud[..2], [32_767.0 / 32_768.0, -1.0]);
         assert!(loud[2] >= 32_766.0 / 32_768.0);
+    }
+
+    #[test]
+    fn what_a_split_holds_is_its_model_work_sound_and_stems() {
+        let settings = Settings::default();
+        // 24.6 s of stereo at 44.1 kHz, all four kept, the model not read:
+        // the mockup's "Soul loop".
+        let samples = (24.6 * 44_100.0) as usize;
+        let sound = samples as u64 * 2 * 4;
+        let all = holds(samples, 2, 4, false, false, &settings);
+        assert_eq!(
+            all,
+            mpfree_stems::SPLEETER_BYTES
+                + mpfree_stems::spleeter_need(settings.band)
+                + sound
+                + 4 * sound
+        );
+        assert!((210_000_000..230_000_000).contains(&all), "{all}");
+        // The model read already isn't counted again; a stem left out
+        // isn't kept; a sound converted is held twice while it is.
+        assert_eq!(
+            holds(samples, 2, 4, true, false, &settings),
+            all - mpfree_stems::SPLEETER_BYTES
+        );
+        assert_eq!(holds(samples, 2, 3, false, false, &settings), all - sound);
+        assert_eq!(holds(samples, 2, 4, false, true, &settings), all + sound);
+        assert_eq!(
+            holds(samples, 1, 4, false, false, &settings),
+            all - sound / 2
+        );
     }
 }

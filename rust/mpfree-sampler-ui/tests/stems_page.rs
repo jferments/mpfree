@@ -169,19 +169,27 @@ fn put_on_names_what_the_main_button_does() {
         assert_eq!(put(&mut page, &mut ui, p), Ask::Nothing);
         assert_eq!(go(&ui), (text.to_string(), false), "{p:?}");
     }
-    // A take on the page has no pad to layer.
+    // A take on the page has no pad to layer: a step passes over Layers.
     page.stems.sound.pad = None;
     page.show(&mut ui);
-    let ask = put(&mut page, &mut ui, Put::Layers);
+    let step = |page: &mut StemsPage, ui: &mut Ui, d: i32| page.step(ui, Row::Put.index(), d);
+    assert_eq!(step(&mut page, &mut ui, 1), Ask::Nothing);
+    assert_eq!(page.stems.put, Put::Takes);
+    assert_eq!(step(&mut page, &mut ui, -1), Ask::Nothing);
+    assert_eq!(page.stems.put, Put::Pads);
+    assert_eq!(step(&mut page, &mut ui, -1), Ask::Nothing, "the first");
+    // The page full of takes, no new kit and no library: nothing past Pads
+    // can be picked, and the step says why.
+    page.stems.room.takes = page.stems.room.max_takes - 2;
+    page.stems.room.new_kit_off = Some("No empty kit for a new track now".into());
+    page.stems.room.library = false;
+    page.show(&mut ui);
+    let ask = step(&mut page, &mut ui, 1);
     assert!(
         matches!(ask, Ask::Say(ref w) if w.contains("no pad")),
         "{ask:?}"
     );
     assert_eq!(page.stems.put, Put::Pads);
-    // The page full of takes.
-    page.stems.room.takes = page.stems.room.max_takes - 2;
-    page.show(&mut ui);
-    assert!(matches!(put(&mut page, &mut ui, Put::Takes), Ask::Say(_)));
 }
 
 #[test]
@@ -420,5 +428,59 @@ fn new_kit_and_library_hand_the_app_the_sounds() {
     {
         Landing::Library(sounds) => assert_eq!(sounds.len(), 3),
         l => panic!("{l:?}"),
+    }
+}
+
+#[test]
+fn once_landed_a_stem_is_heard_and_levelled_where_it_went() {
+    let (_, mut page, _) = sample(Fonts::embedded()).unwrap();
+    let s = &mut page.stems;
+    s.keep = [true, false, true, true];
+    assert_eq!(s.level_on(0), None, "not before it lands");
+    assert!(s.plays(None).is_err());
+    s.started();
+    s.landed(30.0);
+    // On A6–A8, the drums not kept.
+    assert_eq!(s.level_on(0), Some((5, 0)));
+    assert_eq!(s.level_on(1), None);
+    assert_eq!(s.level_on(3), Some((7, 0)));
+    assert_eq!(s.plays(Some(2)), Ok(vec![6]));
+    assert_eq!(s.plays(None), Ok(vec![5, 6, 7]));
+    // As A5's layers: a layer each, heard together only.
+    s.put = Put::Layers;
+    assert_eq!(s.level_on(2), Some((4, 1)));
+    assert_eq!(s.plays(None), Ok(vec![4]));
+    assert!(s.plays(Some(0)).is_err());
+    // On a new kit, from its A1.
+    s.put = Put::NewKit;
+    assert_eq!(s.level_on(3), Some((2, 0)));
+    assert_eq!(s.plays(None), Ok(vec![0, 1, 2]));
+    // Takes and the library aren't on pads here.
+    for put in [Put::Takes, Put::Library] {
+        s.put = put;
+        assert_eq!(s.level_on(0), None);
+        assert!(s.plays(None).is_err());
+    }
+}
+
+#[test]
+fn the_sound_is_read_from_its_view_or_itself() {
+    use mpfree_sampler::model::Source;
+    use mpfree_sampler_ui::source::SourceView;
+    let data: Vec<f32> = (0..44_100 * 2)
+        .map(|i| if i < 44_100 { 0.5 } else { -0.25 })
+        .collect();
+    let s = Source::new("Half and half", 44_100, 2, data).unwrap();
+    let view = SourceView::analyse(&s);
+    let of_view =
+        stems_page::Sound::of("Pad", Some(3), &s, (100, 30_000), Some(view.peaks.as_ref()));
+    let of_itself = stems_page::Sound::of("Pad", None, &s, (100, 99_999), None);
+    assert_eq!(of_view.trimmed, (100, 30_000));
+    assert_eq!(of_itself.trimmed, (100, 44_100), "End kept to the sound");
+    assert!(of_view.sixteen && of_itself.sixteen, "every sample 16-bit");
+    for sound in [&of_view, &of_itself] {
+        assert_eq!(sound.peaks.len(), stems_page::COLUMNS);
+        assert_eq!(sound.peaks[0], (0.0, 0.5));
+        assert_eq!(sound.peaks[stems_page::COLUMNS - 1], (-0.25, 0.0));
     }
 }

@@ -231,7 +231,38 @@ pub struct Sound {
     pub peaks: Vec<(f32, f32)>,
 }
 
+/// Columns across the sound's and the stems' pictures (the lanes' width,
+/// near enough: [`mpfree_sampler::stems::Ask::columns`]).
+pub const COLUMNS: usize = 900;
+
 impl Sound {
+    /// The sound of `source` read between `span`'s frames (its Start and
+    /// End), named `name`, on `pad` (None: a take on the page). Its picture
+    /// comes from `peaks` (its view's), or without one from the sound
+    /// itself.
+    pub fn of(
+        name: &str,
+        pad: Option<usize>,
+        source: &Source,
+        span: (u64, u64),
+        peaks: Option<&dyn mpfree_ui::wave::Peaks>,
+    ) -> Sound {
+        let frames = source.frames();
+        let peaks = match peaks {
+            Some(p) => peak_columns(p, COLUMNS),
+            None => sound_columns(source, COLUMNS),
+        };
+        Sound {
+            name: name.to_string(),
+            pad,
+            rate: source.rate(),
+            frames,
+            trimmed: (span.0.min(frames), span.1.min(frames)),
+            sixteen: source.data().is_16_bit(),
+            peaks,
+        }
+    }
+
     /// The frames read (`reads`), at the sound's rate.
     pub fn span(&self, reads: Reads) -> (u64, u64) {
         match reads {
@@ -634,12 +665,57 @@ impl Stems {
         }
     }
 
-    fn splitting(&self) -> bool {
+    /// It is splitting now.
+    pub fn splitting(&self) -> bool {
         matches!(self.phase, Phase::Splitting { .. })
     }
 
-    fn has_stems(&self) -> bool {
+    /// It has landed: the stems are where it says.
+    pub fn has_stems(&self) -> bool {
         matches!(self.phase, Phase::Landed(_))
+    }
+
+    /// Where stem `k` landed, for its level to follow it there: the pad
+    /// and the layer (the kit's pads from [`Stems::landing`], the sound's
+    /// pad's layers, or the new kit's pads from A1). None before it lands,
+    /// for a stem not kept, and for takes and the library.
+    pub fn level_on(&self, k: usize) -> Option<(usize, usize)> {
+        if !self.has_stems() {
+            return None;
+        }
+        let i = self.kept_stems().iter().position(|s| *s == k)?;
+        match self.put {
+            Put::Pads => self.landing()?.get(i).map(|p| (*p, 0)),
+            Put::Layers => self.sound.pad.map(|p| (p, i)),
+            Put::NewKit => Some((i, 0)),
+            Put::Takes | Put::Library => None,
+        }
+    }
+
+    /// The pads a tap hits to hear stem `k`, or all four together (None),
+    /// once they have landed; Err says why they can't be heard here.
+    pub fn plays(&self, k: Option<usize>) -> Result<Vec<usize>, String> {
+        if !self.has_stems() {
+            return Err("The stems play here once split".into());
+        }
+        match (self.put, k) {
+            (Put::Layers, Some(_)) => {
+                Err("A layer plays with the others: Play all four hears them".into())
+            }
+            (Put::Takes, _) => {
+                Err("The stems are takes on the Wave page: show one there to hear it".into())
+            }
+            (Put::Library, _) => Err("The stems are in the library: Browse plays them".into()),
+            (Put::Layers, None) => Ok(self.sound.pad.into_iter().collect()),
+            (Put::Pads | Put::NewKit, Some(k)) => {
+                Ok(self.level_on(k).map(|(p, _)| p).into_iter().collect())
+            }
+            (Put::Pads | Put::NewKit, None) => Ok(self
+                .kept_stems()
+                .into_iter()
+                .filter_map(|k| self.level_on(k).map(|(p, _)| p))
+                .collect()),
+        }
     }
 
     /// Stem `k` switched: kept or not (not while it splits).
@@ -708,10 +784,30 @@ impl Stems {
                 self.bank = (self.bank as i64 + i64::from(delta)).rem_euclid(banks) as usize;
             }
             Row::Put => {
-                let at = (self.put.index() as i32 + delta).clamp(0, Put::ALL.len() as i32 - 1);
+                // A choice that's off is passed over, and said if nothing
+                // past it can be picked.
+                let n = Put::ALL.len() as i32;
+                let dir = delta.signum();
+                let mut at = self.put.index() as i32;
+                let mut why = None;
+                for _ in 0..delta.unsigned_abs() {
+                    let mut next = at + dir;
+                    while let Some(off) = (0..n)
+                        .contains(&next)
+                        .then(|| self.put_off(Put::ALL[next as usize]))
+                        .flatten()
+                    {
+                        why.get_or_insert(off);
+                        next += dir;
+                    }
+                    if !(0..n).contains(&next) {
+                        break;
+                    }
+                    at = next;
+                }
                 let p = Put::ALL[at as usize];
-                if let Some(why) = self.put_off(p) {
-                    return Ask::Say(why);
+                if p == self.put {
+                    return why.map_or(Ask::Nothing, Ask::Say);
                 }
                 self.put = p;
                 self.changed();
@@ -1267,6 +1363,8 @@ impl StemsPage {
             list.rows = rows;
             list.controls = controls;
             list.panel = Some(panel);
+            // The wheel's push presses the main button and Play all four.
+            list.buttons = vec![Row::Go.index(), Row::PlayAll.index()];
             if !Row::ALL.get(list.selected).is_some_and(|r| r.picks()) {
                 list.selected = Row::Go.index();
             }
@@ -1676,9 +1774,6 @@ fn soul_loop() -> (Project, std::sync::Arc<crate::source::SourceView>) {
     (p, view)
 }
 
-/// Columns across the preview's pictures.
-const PREVIEW_COLUMNS: usize = 900;
-
 fn columns(data: &[f32], channels: usize, n: usize) -> Vec<(f32, f32)> {
     let frames = data.len() / channels.max(1);
     let per = frames.div_ceil(n).max(1);
@@ -1687,6 +1782,39 @@ fn columns(data: &[f32], channels: usize, n: usize) -> Vec<(f32, f32)> {
             let lo = c.iter().copied().fold(0.0f32, f32::min);
             let hi = c.iter().copied().fold(0.0f32, f32::max);
             (lo, hi)
+        })
+        .collect()
+}
+
+/// `n` columns across a view's peaks, both sides in each.
+fn peak_columns(p: &dyn mpfree_ui::wave::Peaks, n: usize) -> Vec<(f32, f32)> {
+    let frames = p.frames() as f64;
+    (0..n)
+        .map(|i| {
+            let f0 = frames * i as f64 / n as f64;
+            let f1 = frames * (i + 1) as f64 / n as f64;
+            (0..p.channels()).fold((0.0f32, 0.0f32), |(lo, hi), ch| {
+                let c = p.column(ch, f0, f1);
+                (lo.min(c.min), hi.max(c.max))
+            })
+        })
+        .collect()
+}
+
+/// `n` columns read from the sound itself.
+fn sound_columns(s: &Source, n: usize) -> Vec<(f32, f32)> {
+    let pcm = s.data();
+    let ch = usize::from(s.channels()).max(1);
+    let frames = pcm.len() / ch;
+    let per = frames.div_ceil(n.max(1)).max(1);
+    (0..n)
+        .map(|c| {
+            let a = (c * per * ch).min(pcm.len());
+            let b = ((c + 1) * per * ch).min(pcm.len());
+            (a..b).fold((0.0f32, 0.0f32), |(lo, hi), i| {
+                let v = pcm.get(i);
+                (lo.min(v), hi.max(v))
+            })
         })
         .collect()
 }
@@ -1700,11 +1828,7 @@ fn preview_sound(s: &Source) -> Sound {
         frames,
         trimmed: (0, frames),
         sixteen: true,
-        peaks: columns(
-            &s.data().to_vec(),
-            usize::from(s.channels()),
-            PREVIEW_COLUMNS,
-        ),
+        peaks: columns(&s.data().to_vec(), usize::from(s.channels()), COLUMNS),
     }
 }
 
@@ -1725,11 +1849,7 @@ fn preview_room(p: &Project) -> Room {
 
 /// The preview's made-up stems, `filled` of the way along.
 fn made_up_stems(s: &Source, filled: f32) -> Peaks {
-    let drums = columns(
-        &s.data().to_vec(),
-        usize::from(s.channels()),
-        PREVIEW_COLUMNS,
-    );
+    let drums = columns(&s.data().to_vec(), usize::from(s.channels()), COLUMNS);
     let n = drums.len();
     let upto = (n as f32 * filled) as usize;
     let wave = |f: &dyn Fn(usize) -> f32| -> Vec<(f32, f32)> {
@@ -1747,7 +1867,7 @@ fn made_up_stems(s: &Source, filled: f32) -> Peaks {
     let bass = |i: usize| 0.35 + 0.08 * ((i as f32 * 0.21).sin());
     let other = |i: usize| 0.12 + 0.05 * ((i as f32 * 0.05).sin());
     Peaks {
-        per: (s.frames() as usize).div_ceil(PREVIEW_COLUMNS),
+        per: (s.frames() as usize).div_ceil(COLUMNS),
         columns: n,
         stems: [
             wave(&phrase),

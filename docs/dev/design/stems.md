@@ -1,10 +1,10 @@
 <!--
-covers: rust/mpfree-stems rust/mpfree-simd/src/neon.rs rust/mpfree-bench/src/stems.rs rust/mpfree-sampler/src/stems.rs rust/mpfree-sampler-ui/src/stems_page.rs
-checked: 2026-11-23 dea01de
+covers: rust/mpfree-stems rust/mpfree-simd/src/neon.rs rust/mpfree-bench/src/stems.rs rust/mpfree-sampler/src/stems.rs rust/mpfree-sampler-ui/src/stems_page.rs rust/mpfree-app/src/sample_page/stems.rs
+checked: 2026-11-23 a2fecc1
 -->
 # Stem separation (`mpfree-stems`)
 
-**Status:** engine built (plan step 1, 2026-11-23), on the workstation only: the crate, its two NEON kernels in `mpfree-simd`, the model packer and the bench's `--stems` mode. **Nothing here has run on the MPC**. The sampler's side of plan step 4 is built too (the split as a chain of jobs, the stems landing as one undo step, the Stems page), but the app doesn't offer it yet. The plan (Spleeter, the steps after this one and the decisions put to the owner) is in the stems research notes; the device run is plan step 2, the Stems page's mockups step 3, the app step 4.
+**Status:** engine built (plan step 1, 2026-11-23), on the workstation only: the crate, its two NEON kernels in `mpfree-simd`, the model packer and the bench's `--stems` mode. **Nothing here has run on the MPC**. Plan step 4 is built too, on the workstation: the split as a chain of jobs, the stems landing as one undo step, the Stems page and the app's Sample page offering it from the pad bar's Stems button. The USB Creator doesn't put the model on the stick yet, so on the MPC the page says the model isn't there until it is copied there by hand (below). The plan (Spleeter, the steps after this one and the decisions put to the owner) is in the stems research notes; the device run is plan step 2, the Stems page's mockups step 3, the app step 4.
 
 ## What it does
 
@@ -66,7 +66,20 @@ The app runs a split as `mpfree_sampler::stems::Split`, on the job service's sou
 - **The picture as it comes:** `Split::peaks` is each stem's columns so far (the lowest and highest sample of both sides over a column's frames), which fill a segment at a time, so the Stems page draws the stems as they come.
 - **16-bit stems:** for a 16-bit sound the stems are rounded to 16 bits with triangular dither (`to_16_bits`, through `i16` so a zero has no sign), and are held as 16 bits at half the memory: a stem can't be finer than its sound.
 - **Landing:** `Project::put_stems(sounds, to)` adds the stems' sounds and puts them on pads, one pad's layers (all at full velocity, so they play together) or takes, as **one undo step** (an `Undo::Group`); it refuses a pad past the last or named twice, layers on an empty pad, a layer playing a sound neither given nor in the kit and more takes than the page keeps, changing nothing. The sampler UI's `Change::Stems` makes it.
-- **The page:** `mpfree_sampler_ui::stems_page` is the Stems page as the layout spec draws it (the picture, the Split, Put on and Listen sections, the stems' levels on the Q-Links), with what each press asks of the app, and what a finished split lands as (`Stems::land`: the kit change, or a new kit's pads, or the sounds for the library; each stem named after the sound, "Soul loop Vocals", at its level). Where they land on the pads is fixed when the split starts; `mpfree-sampler-preview` draws its five screens (`stems-*.png`). The app wiring (the model from the stick, the sound read at 44.1 kHz, the memory check, polling the split and landing it) is the rest of step 4.
+- **The page:** `mpfree_sampler_ui::stems_page` is the Stems page as the layout spec draws it (the picture, the Split, Put on and Listen sections, the stems' levels on the Q-Links), with what each press asks of the app, and what a finished split lands as (`Stems::land`: the kit change, or a new kit's pads, or the sounds for the library; each stem named after the sound, "Soul loop Vocals", at its level). Where they land on the pads is fixed when the split starts; `mpfree-sampler-preview` draws its five screens (`stems-*.png`). Once landed, `Stems::plays` and `Stems::level_on` say which pads a tap plays and where a stem's level goes.
+
+## In the app (plan step 4)
+
+`mpfree-app`'s `sample_page/stems.rs` puts the page on the Sample page, with a few hooks in `sample_page.rs` (the page, its list, its touches, the wheel, the Q-Links, the frame's poll, lift and undo) and in `gui.rs` (the hint, the model's folder, saving to the library):
+
+- **Opening:** the pad bar's Stems opens it over the Wave page for the pad or take shown (from Edit pad, the Sample tab with it), lit while it shows; Stems again goes back. While nothing splits the page follows the pad picked.
+- **The model** is `files/models/spleeter-4stems.mpfstem` in the data folder (the stick's data partition, `/run/mpfree-data` on the MPC). The split's first step reads it; the app keeps it while the page is open, so the next split doesn't read it again, and lets it go (78.7 MB) when the page closes.
+- **Memory:** before it starts, `stems::holds` (the model unless it is kept, `spleeter_need(Full)`, the sound read at 44.1 kHz, twice while it is converted, and the kept stems as floats) is promised to the shared memory check (`memory::reserve`, beside every load's promise); the page says "Needs 220 MB, 120 MB free" when it doesn't fit, and the promise is held until the split ends.
+- **While it splits** the page is drawn again when a step ends or every half second (the time left goes by how fast it has gone). On other pages it goes on, and the pad bar's Stems button says "Stems 42 %"; Stems shows it again.
+- **Landing:** on the kit's pads, the sound's pad's layers or takes, one `Change::Stems` through the sampler commands (one undo step); on New kit, the same on the empty kit the app offers for a new track, which it then adds as a chop's New kit does; on Library, the app writes each sound's stems into Samples › Stems › the sound's name, as WAV files, on a thread of its own. A failure says why on the hint line and in the log; nothing lands.
+- **Once landed** a tap on a stem's lane plays its pad (`FromUi::SampleHit`), Play all four plays them together, and a Q-Link turns a stem's level on its pad or layer (`Change::Settings`, one undo step a turn, until the Q-Link is let go). An undo makes the page ready to split again.
+
+Until the USB Creator puts it there, the model can be made on the workstation (below) and copied to `files/models/` on the stick's data partition with the stick in the workstation.
 
 `mpfree_stems::segments` and `steps` count a sound's segments and steps as a separator on Spleeter's shape counts them, so the page can say how long a split takes (10.4 s a segment on the MPC by the plan's estimate, then as the last split went) before the model is read.
 
@@ -74,7 +87,7 @@ The app runs a split as `mpfree_sampler::stems::Split`, on the job service's sou
 
 `Model::open` reads `MPFSTEM2`: the eight bytes `MPFSTEM2`, the stems (a little-endian u32, 4), then each stem's 50 tensors in Spleeter's order (seven convolutions, kernel and bias, the seventh the mask layer's; six transposed ones; twelve batch norms folded to a scale and a shift), each as its kind (u32: 1 f32, 2 half), its count (u32) and its values. Kernels are halves, the rest f32. The reader refuses a file that is short, long, of another kind or stem count, with a count that isn't the layout's, or with a half that isn't a normal number or zero, and says which tensor.
 
-`pack::pack` makes it from the `4stems` folder in `4stems.tar.gz` (Spleeter's v1.4.0 release), with no TensorFlow or Python: it reads the checkpoint's index (a LevelDB-format table of `BundleEntryProto` entries), checks each tensor's CRC-32C and shape, and folds each batch norm as Spleeter's graph does in f32 (scale = gamma / sqrt(variance + 0.001), shift = beta − mean · scale). Deezer's checkpoint packs to 78,627,740 bytes (SHA-256 `384862bb14f50848999e3e559219acd9086df9374b96337060726b8354fd8491`); 18,771 of its 39,276,928 kernel weights are below the smallest normal half and become zero. The app step (plan step 4) puts the file on the stick through the USB creator.
+`pack::pack` makes it from the `4stems` folder in `4stems.tar.gz` (Spleeter's v1.4.0 release), with no TensorFlow or Python: it reads the checkpoint's index (a LevelDB-format table of `BundleEntryProto` entries), checks each tensor's CRC-32C and shape, and folds each batch norm as Spleeter's graph does in f32 (scale = gamma / sqrt(variance + 0.001), shift = beta − mean · scale). Deezer's checkpoint packs to 78,627,740 bytes (SHA-256 `384862bb14f50848999e3e559219acd9086df9374b96337060726b8354fd8491`); 18,771 of its 39,276,928 kernel weights are below the smallest normal half and become zero. The app reads it from the data folder's `files/models/spleeter-4stems.mpfstem`; putting it there through the USB Creator is still to do.
 
 On the workstation:
 
@@ -102,7 +115,7 @@ The MPC's figures are the plan's estimate until the device run: 9.4 s for a 10 s
 ## What's next
 
 - Plan step 2: `mpfree-bench --stems` in the next device round's benchmark block (RAM only, on the owner's go).
-- Plan step 3: the Stems page's mockups, proposed for the layout spec.
-- Plan step 4, the rest: the app wiring (the model file on the stick, the sound read and converted to 44.1 kHz, the shared memory check, the split polled and landed, the pad bar's "Stems 42 %"), New kit and Library, and the manual page.
+- Plan step 3: the Stems page's layout spec change, waiting for the owner's look at the screens.
+- Plan step 4, the rest: the USB Creator puts the model on the stick, with Deezer's licence beside it; the device round that runs a split on the MPC.
 - Faster, if the device run shows the U-Nets well below twice the kernel's rate: a NEON transpose for the gather's stores (about 0.2 G of the 3.54 G above), a radix-4 FFT (it changes the bits, so the SNR checks run again) and a faster `expf`.
 - Holding less: both channels' STFT stay for the whole segment (16.8 MB); working them out again for the masks would save that for about 3 % more time.

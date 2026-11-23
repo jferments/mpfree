@@ -127,6 +127,8 @@ use crate::views::Summary;
 use mpfree_fx::{CapturePoint, StripId};
 use mpfree_sampler_ui::command::{Lands, Recorded};
 
+pub mod stems;
+
 /// The Wave tab's page.
 pub const PAGE: &str = "Sample";
 /// Edit pad's page: the Pads tab's page with the pad's layers, keygroups,
@@ -1180,6 +1182,8 @@ pub struct SamplePage {
     /// The kit a chop to a new kit filled and the pad of its first slice:
     /// the tab shows that pad once the pads play the kit.
     new_kit_pad: Option<(usize, usize)>,
+    /// The Stems page and its split ([`stems`]).
+    stems: stems::Here,
 }
 
 /// A chop to a new kit (sampler R4.6), for the app: the kit the slices
@@ -1364,6 +1368,7 @@ impl SamplePage {
             audio_cell: None,
             new_kit_track: None,
             new_kit_pad: None,
+            stems: stems::Here::default(),
         };
         p.show_empty(ui);
         Ok(p)
@@ -1374,6 +1379,7 @@ impl SamplePage {
     /// history starts here, so UNDO never takes a loaded kit apart.
     pub fn set_kits(&mut self, ui: &mut Ui, mut projects: Vec<Project>, rate: u32) {
         self.lift();
+        self.stems_kits_replaced();
         for p in &mut projects {
             p.clear_history();
         }
@@ -1949,6 +1955,7 @@ impl SamplePage {
             },
             Editor::Play if self.play_state.is_some() && self.play.is_some() => PLAY_PAGE,
             Editor::Auto if self.auto_state.is_some() && self.auto.is_some() => AUTO_PAGE,
+            Editor::Wave if self.stems_shown() => mpfree_sampler_ui::stems_page::PAGE,
             Editor::Wave if self.state.is_some() && self.tab.is_some() => PAGE,
             _ => EMPTY_PAGE,
         }
@@ -1973,6 +1980,7 @@ impl SamplePage {
             PLAY_PAGE => play_tab::LIST,
             AUTO_PAGE => auto_tab::LIST,
             PADS_PAGE => pads_tab::LIST,
+            mpfree_sampler_ui::stems_page::PAGE => mpfree_sampler_ui::stems_page::LIST,
             _ => return None,
         })
     }
@@ -1988,6 +1996,11 @@ impl SamplePage {
     /// then gets, for the GUI to hand on as a touch. None when the page
     /// has no list or the row did not move.
     pub fn pick_row(&mut self, ui: &mut Ui, delta: i32) -> Option<UiEvent> {
+        if self.stems_shown() {
+            // The Stems page's wheel passes its lines of text.
+            self.stems_pick(ui, delta);
+            return None;
+        }
         let name = self.list()?;
         let editing = self.editing;
         let l = ui.get_mut::<SettingList>(name)?;
@@ -2136,6 +2149,7 @@ impl SamplePage {
         if let Some(tab) = self.tab.as_ref() {
             tab.set_playheads(ui, &[]);
         }
+        self.refresh_stems(ui);
     }
 
     /// Live chop stops once the Wave page no longer shows the Slice tool
@@ -2656,6 +2670,13 @@ impl SamplePage {
     }
 
     fn event_on(&mut self, ui: &mut Ui, ev: &UiEvent, out: &mut Vec<FromUi>) {
+        if ev
+            .widget
+            .starts_with(mpfree_sampler_ui::stems_page::WIDGETS)
+        {
+            self.stems_event(ui, ev, out);
+            return;
+        }
         if ev.widget == send::SEND {
             if let EventKind::Tab(i) = ev.kind {
                 self.press_send(ui, i, out);
@@ -2719,10 +2740,15 @@ impl SamplePage {
 
     /// A press on the buttons beside the bar ([`send::BUTTONS`]).
     fn press_send(&mut self, ui: &mut Ui, i: usize, out: &mut Vec<FromUi>) {
+        if i == send::CHOP_TO_PADS && self.stems_shown() {
+            self.stems_chop(ui);
+            return;
+        }
         if let Some(t) = self.shown_take() {
             match i {
                 send::SEND_TO_PAD => self.send_take(ui, t),
                 send::CHOP_TO_PADS => self.chop_to_pads(ui, out),
+                send::STEMS => self.press_stems(ui),
                 _ => {}
             }
             return;
@@ -2750,6 +2776,7 @@ impl SamplePage {
                 send::show(ui, true, self.sending.is_some());
             }
             send::CHOP_TO_PADS => self.chop_to_pads(ui, out),
+            send::STEMS => self.press_stems(ui),
             _ => {}
         }
     }
@@ -3807,6 +3834,10 @@ impl SamplePage {
     /// the sprays, and size and density finer).
     pub fn qlink(&mut self, ui: &mut Ui, knob: usize, ticks: i32, fine: bool) {
         self.turned();
+        if self.stems_shown() {
+            self.stems_qlink(ui, knob, ticks);
+            return;
+        }
         if self.page() == PADS_PAGE {
             let (Some(tab), Some(st)) = (self.pads.as_mut(), self.pads_state.as_ref()) else {
                 return;
@@ -4035,6 +4066,10 @@ impl SamplePage {
     /// The data wheel: zoom round the marker last moved or the slice picked
     /// (Wave, Slice), or change the row picked (Play, Grain).
     pub fn wheel(&mut self, ui: &mut Ui, delta: i32) {
+        if self.stems_shown() {
+            self.stems_wheel(ui, delta);
+            return;
+        }
         if self.page() == PADS_PAGE {
             self.turned();
             let (Some(tab), Some(st)) = (self.pads.as_mut(), self.pads_state.as_ref()) else {
@@ -5519,6 +5554,7 @@ impl SamplePage {
         self.since_turn = None;
         self.play_turn = None;
         self.learn_turn = None;
+        self.stems_lift();
         let Some(g) = self.gesture.take() else { return };
         if let Some(i) = g.take {
             self.lift_take(&g, i);
@@ -5628,6 +5664,7 @@ impl SamplePage {
             }
             self.mark_renamed(kit);
             self.keep_open_valid();
+            self.stems_undone();
             self.lines
                 .push(format!("sample: {what} in {}", self.kit_text()));
             self.refresh(ui);
@@ -7189,6 +7226,7 @@ impl SamplePage {
         }
         self.poll_auto(ui, showing);
         self.poll_process(ui, showing);
+        self.poll_stems(ui, dt, showing);
         self.poll_open(ui);
         self.poll_kit(ui);
         self.poll_load(ui);

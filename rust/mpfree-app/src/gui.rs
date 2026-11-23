@@ -8155,6 +8155,11 @@ impl Player {
                 // REC, STOP and UNDO end it or throw it away (the music
                 // plays on); the Q-Links turn the Input's Gain, Threshold,
                 // Pre-roll and Monitor's level (step 2d).
+                // The Stems page (the stems plan's step 4): its own, by
+                // where the split is.
+                View::Sample if self.sample.page() == mpfree_sampler_ui::stems_page::PAGE => {
+                    self.sample.stems_hint()
+                }
                 View::Sample if self.sample.page() == sample_page::PAGE && self.sample.pad_take_on() => {
                     "REC again or STOP: stop and keep the take   ·   UNDO: throw it away   ·   the music plays on   ·   \
                      Q-Links 1-4: Gain, Threshold, Pre-roll, Monitor".to_string()
@@ -11825,9 +11830,10 @@ impl Player {
         // What the Q-Links turn: Edit pad's section's, and the Pads tab's
         // for the type of the pad picked (a tap on the map picks another).
         let qlinks = format!(
-            "{} | {}",
+            "{} | {} | {}",
             self.sample.play_qlinks_text(),
-            self.sample.pads_qlinks_text()
+            self.sample.pads_qlinks_text(),
+            self.sample.stems_hint()
         );
         let live = self.sample.chop_live_method();
         if keys != self.sample_keys || live != self.sample_live || qlinks != self.sample_qlinks {
@@ -11899,6 +11905,8 @@ impl Player {
     /// The library in the data folder: the Pads tab's browser over it
     /// (sounds only; it stays open beside the pads).
     fn open_library(&mut self, dir: &std::path::Path, lists: &str) {
+        // The stems model is in the data folder's files too.
+        self.sample.set_stems_model(Some(dir));
         match mpfree_library::Library::at(dir) {
             Ok(lib) => {
                 let root = lib.root().display().to_string();
@@ -13632,6 +13640,7 @@ impl Player {
     /// written into a folder of its own in Samples / Exports on a thread of
     /// its own (a long sound's files are many megabytes).
     fn save_pad_exports(&mut self) {
+        self.save_stems();
         let exports = self.sample.take_exports();
         if exports.is_empty() {
             return;
@@ -13656,6 +13665,38 @@ impl Player {
                     .file_saves
                     .push((rx, "sample: export not saved (its thread stopped)")),
                 Err(e) => self.say(format!("sample: export not saved ({e})")),
+            }
+        }
+    }
+
+    /// Stems the Stems page put in the library (Put on Library): each
+    /// sound's written into a folder of its own in Samples / Stems on a
+    /// thread of its own.
+    fn save_stems(&mut self) {
+        let saves = self.sample.take_stem_saves();
+        if saves.is_empty() {
+            return;
+        }
+        let Some(lib) = self.browser.as_ref().map(|b| b.library().clone()) else {
+            self.say("sample: stems not saved (no library)".to_string());
+            return;
+        };
+        for (name, sounds) in saves {
+            let lib = lib.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let save = std::thread::Builder::new()
+                .name("stems-save".into())
+                .spawn(move || {
+                    let r = crate::sample_page::stems::save_stems(&lib, &name, &sounds)
+                        .map(|loc| format!("sample: stems of {name} saved in {}", loc.display()))
+                        .map_err(|err| format!("sample: stems of {name} not saved ({err})"));
+                    let _ = tx.send(r);
+                });
+            match save {
+                Ok(_) => self
+                    .file_saves
+                    .push((rx, "sample: stems not saved (its thread stopped)")),
+                Err(e) => self.say(format!("sample: stems not saved ({e})")),
             }
         }
     }
@@ -23156,6 +23197,8 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         auto.take_actions();
     }
     out.push(("sample-auto", auto));
+    // The Stems page over the Wave page (the stems plan's step 4).
+    out.extend(crate::sample_page::stems::screens(&fonts));
     // The Play tab with the pad a keygroup and the pads playing notes, the
     // Pad section open on Pads play.
     {
