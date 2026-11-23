@@ -403,7 +403,12 @@ impl Session {
             kit: 0,
             synth_on: false,
             track_kits: crate::sampler::TrackKits::new(n),
-            instrument_list: crate::instrument_list::InstrumentList::new(),
+            instrument_list: {
+                // Each kit place has its id, as main.rs's (step 14).
+                let mut list = crate::instrument_list::InstrumentList::new();
+                list.follow_kits(n);
+                list
+            },
             sounds_shown: [None; crate::instruments::HOLDERS],
             pads_host_shown: None,
             pads_shown: (crate::app::PadFocus::Track, None),
@@ -460,6 +465,8 @@ impl Session {
         // What player_session shows before the sound starts.
         s.out.show(ToUi::Kits(kits));
         s.out.show(ToUi::Synth(s.synth.state()));
+        s.out
+            .show(ToUi::KitIds(Box::new(s.instrument_list.kit_ids())));
         let mut projects = vec![mpfree_sampler_ui::sample::project().0];
         projects.resize_with(n, mpfree_sampler::model::Project::new);
         s.out.show(ToUi::SampleKits {
@@ -2025,6 +2032,17 @@ impl Session {
             self.out.note(&line);
         }
         std::mem::swap(&mut self.instrument_list, &mut o.instrument_list);
+        // Every kit place here has an id, as main.rs gives them.
+        let gone = self.instrument_list.kit_ids().listed_from(self.kits);
+        if gone > 0 {
+            self.out.note(&format!(
+                "project: {gone} of its kits aren't here ({} kits), so they are gone from its list of instruments",
+                self.kits
+            ));
+        }
+        self.instrument_list.follow_kits(self.kits);
+        self.out
+            .show(ToUi::KitIds(Box::new(self.instrument_list.kit_ids())));
         // As main.rs: the app has the list before the pads part names one.
         let fx = self.app.set_instrument_list(&self.instrument_list);
         self.fx.extend(fx);
