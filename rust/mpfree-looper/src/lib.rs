@@ -3567,9 +3567,15 @@ impl Looper {
                     );
                 let first = rec_from + d.lead;
                 let from_hit = |to: u64| reread((to - first) as usize, rate, bar, &tap_reading);
+                // Moved, the beat's fit is the loop's as it now ends (the
+                // reading weighed it at the tap's length).
                 let moved = (d.verdict == Verdict::Moved)
                     .then(|| from_hit(d.end))
-                    .flatten();
+                    .flatten()
+                    .map(|r| Reading {
+                        beat: r.beat.and(d.best.map(|b| b.rhythm)),
+                        ..r
+                    });
                 // The loop's length and its start in the pass. Ends are
                 // measured from the first hit: with no smart start the loop
                 // is as long from the press.
