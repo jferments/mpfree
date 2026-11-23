@@ -12,6 +12,8 @@ The **Sample** tab works on one pad at a time. **Hit a pad** to pick it; its nam
 
 The Sample tab is yours whatever the pads play. While the pads play the synth, the page stays on the kit and pad it showed: record, keep takes, trim, slice, warp, make grains and put the result on pads or in your library as ever. Hitting a pad plays a note of the synth then, so it doesn't change the pad the page shows (pick another one with SHIFT + the data wheel), and a tap on the wave plays the page's pad on its own, not a synth note. **Load to pad** and **Send to pad**, which wait for a pad hit, wait for the pads to play a kit again.
 
+**The page follows the kit you hit.** When the pads play a kit of their own while the selected track plays another one, a pad hit opens that pad on the kit the pads played, so what you edit is what you just heard. After **Follow track**, the next hit opens the track's kit again. **Load to pad** and **Send to pad** land on the pad you hit, on the kit it played, and when that isn't the track's kit the line at the bottom of the screen says which one ("Sent on pad A2 of kit 7 (Big Kit), the kit that pad plays"). If **Send to pad** was waiting when a hit moves the page to another kit, it is called off and that line says so: press it again on the kit you want.
+
 {{shot: sample | The Sample tab on Wave: pad A5's name and source at the top, the recorder row, the Trim, Slice, Warp and Grain tools with the overview, the wave with its Start, Loop and End markers, and the pad's mode, gain and fades, options and sound underneath.}}
 
 ## Recording a sample

@@ -21,8 +21,9 @@
 
 use core::arch::global_asm;
 
-/// HWCAP_NEON in Linux's 32-bit ARM `hwcap.h`.
+/// HWCAP_NEON and HWCAP_VFPv4 in Linux's 32-bit ARM `hwcap.h`.
 const HWCAP_NEON: libc::c_ulong = 1 << 12;
+const HWCAP_VFPV4: libc::c_ulong = 1 << 16;
 
 /// Whether this processor runs NEON, as Linux tells the program.
 pub(crate) fn detect() -> bool {
@@ -608,4 +609,175 @@ pub(crate) fn mix4(
     // asks it to; the borrows outlive the call.
     unsafe { mpfree_simd_mix4_neon(&args) };
     frames
+}
+
+/// Whether this processor has VFPv4, whose half-precision conversion
+/// `VCVT.F32.F16` the [`f16_to_f32`] kernel uses (the MPC One's Cortex-A17
+/// reports it: `docs/dev/hardware/abi-handoff-survey.md`).
+pub(crate) fn half_available() -> bool {
+    use std::sync::atomic::{AtomicU8, Ordering};
+    // 0: not asked yet, 1: no, 2: yes.
+    static HALF: AtomicU8 = AtomicU8::new(0);
+    match HALF.load(Ordering::Relaxed) {
+        0 => {
+            // SAFETY: as in `detect`.
+            let hw = unsafe { libc::getauxval(libc::AT_HWCAP) };
+            let yes = hw & HWCAP_VFPV4 != 0;
+            HALF.store(if yes { 2 } else { 1 }, Ordering::Relaxed);
+            yes
+        }
+        n => n == 2,
+    }
+}
+
+/// The block `mpfree_simd_gemm4x8_neon` reads its arguments from.
+#[repr(C)]
+struct Gemm4x8 {
+    /// 0: steps.
+    kc: u32,
+    /// 4: `kc × 4` floats.
+    a: *const f32,
+    /// 8: `kc × 8` floats.
+    b: *const f32,
+    /// 12: the 4 × 8 block, read and written.
+    acc: *mut f32,
+}
+
+extern "C" {
+    fn mpfree_simd_gemm4x8_neon(args: *const Gemm4x8);
+}
+
+// The block's 32 sums in q8 to q15 (row r in q(8 + 2r) and q(9 + 2r)).
+// Each step loads a's four values into d0-d1 and b's eight into q1-q2, and
+// does eight VMLA.F32 by scalar: sum + a[r] * b[j], rounded as the twin.
+global_asm!(
+    ".pushsection .text.mpfree_simd_gemm4x8_neon,\"ax\",%progbits",
+    ".fpu neon",
+    ".arm",
+    ".p2align 4",
+    ".globl mpfree_simd_gemm4x8_neon",
+    ".hidden mpfree_simd_gemm4x8_neon",
+    ".type mpfree_simd_gemm4x8_neon,%function",
+    "mpfree_simd_gemm4x8_neon:",
+    "ldr r1, [r0]",      // kc
+    "ldr r2, [r0, #4]",  // a
+    "ldr r3, [r0, #8]",  // b
+    "ldr r0, [r0, #12]", // acc
+    "mov r12, r0",
+    "vld1.32 {{d16-d19}}, [r12]!",
+    "vld1.32 {{d20-d23}}, [r12]!",
+    "vld1.32 {{d24-d27}}, [r12]!",
+    "vld1.32 {{d28-d31}}, [r12]",
+    "cmp r1, #0",
+    "beq 2f",
+    "1:",
+    "vld1.32 {{d0-d1}}, [r2]!",
+    "vld1.32 {{d2-d5}}, [r3]!",
+    "vmla.f32 q8, q1, d0[0]",
+    "vmla.f32 q9, q2, d0[0]",
+    "vmla.f32 q10, q1, d0[1]",
+    "vmla.f32 q11, q2, d0[1]",
+    "vmla.f32 q12, q1, d1[0]",
+    "vmla.f32 q13, q2, d1[0]",
+    "vmla.f32 q14, q1, d1[1]",
+    "vmla.f32 q15, q2, d1[1]",
+    "subs r1, r1, #1",
+    "bne 1b",
+    "2:",
+    "vst1.32 {{d16-d19}}, [r0]!",
+    "vst1.32 {{d20-d23}}, [r0]!",
+    "vst1.32 {{d24-d27}}, [r0]!",
+    "vst1.32 {{d28-d31}}, [r0]",
+    "bx lr",
+    ".size mpfree_simd_gemm4x8_neon, .-mpfree_simd_gemm4x8_neon",
+    ".popsection",
+);
+
+/// [`crate::gemm4x8`] in NEON; false (nothing done) when `a` or `b` is
+/// shorter than `kc` steps or `kc` doesn't fit 32 bits, for the twin to
+/// run (and panic) instead.
+pub(crate) fn gemm4x8(kc: usize, a: &[f32], b: &[f32], acc: &mut [f32; 32]) -> bool {
+    let Ok(kc32) = u32::try_from(kc) else {
+        return false;
+    };
+    if kc.checked_mul(4).is_none_or(|n| a.len() < n)
+        || kc.checked_mul(8).is_none_or(|n| b.len() < n)
+    {
+        return false;
+    }
+    let args = Gemm4x8 {
+        kc: kc32,
+        a: a.as_ptr(),
+        b: b.as_ptr(),
+        acc: acc.as_mut_ptr(),
+    };
+    // SAFETY: the kernel reads kc·4 floats of `a` and kc·8 of `b` (both
+    // checked above) and reads and writes the 32 floats of `acc`; it
+    // changes only r0-r3, r12, q0-q2 and q8-q15, which a call may change;
+    // the borrows outlive the call.
+    unsafe { mpfree_simd_gemm4x8_neon(&args) };
+    true
+}
+
+/// The block `mpfree_simd_f16_to_f32_neon` reads its arguments from.
+#[repr(C)]
+struct F16ToF32 {
+    /// 0: `blocks × 8` halves.
+    src: *const u16,
+    /// 4: `blocks × 8` floats.
+    dst: *mut f32,
+    /// 8: groups of eight.
+    blocks: u32,
+}
+
+extern "C" {
+    fn mpfree_simd_f16_to_f32_neon(args: *const F16ToF32);
+}
+
+// Eight halves a step into d0-d1, two VCVT.F32.F16 into q1 and q2, stored.
+// `.fpu neon-vfpv4` for the half-precision conversion.
+global_asm!(
+    ".pushsection .text.mpfree_simd_f16_to_f32_neon,\"ax\",%progbits",
+    ".fpu neon-vfpv4",
+    ".arm",
+    ".p2align 4",
+    ".globl mpfree_simd_f16_to_f32_neon",
+    ".hidden mpfree_simd_f16_to_f32_neon",
+    ".type mpfree_simd_f16_to_f32_neon,%function",
+    "mpfree_simd_f16_to_f32_neon:",
+    "ldr r1, [r0, #4]", // dst
+    "ldr r2, [r0, #8]", // blocks
+    "ldr r0, [r0]",     // src
+    "cmp r2, #0",
+    "beq 2f",
+    "1:",
+    "vld1.16 {{d0-d1}}, [r0]!",
+    "vcvt.f32.f16 q1, d0",
+    "vcvt.f32.f16 q2, d1",
+    "vst1.32 {{d2-d5}}, [r1]!",
+    "subs r2, r2, #1",
+    "bne 1b",
+    "2:",
+    "bx lr",
+    ".size mpfree_simd_f16_to_f32_neon, .-mpfree_simd_f16_to_f32_neon",
+    ".popsection",
+);
+
+/// [`crate::f16_to_f32`] in NEON for the whole groups of eight: returns
+/// how many it did, for the twin to finish.
+pub(crate) fn f16_to_f32(src: &[u16], dst: &mut [f32]) -> usize {
+    let n = src.len().min(dst.len());
+    let Ok(blocks) = u32::try_from(n / 8) else {
+        return 0;
+    };
+    let args = F16ToF32 {
+        src: src.as_ptr(),
+        dst: dst.as_mut_ptr(),
+        blocks,
+    };
+    // SAFETY: the kernel reads blocks·8 halves of `src` and writes
+    // blocks·8 floats of `dst`, both within the slices (blocks·8 <= n);
+    // it changes only r0-r2 and q0-q2; the borrows outlive the call.
+    unsafe { mpfree_simd_f16_to_f32_neon(&args) };
+    blocks as usize * 8
 }

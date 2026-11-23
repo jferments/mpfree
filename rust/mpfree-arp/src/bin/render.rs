@@ -21,7 +21,9 @@
 //! `--swing`, `--strum`, `--scale d_dorian`, `--snap down|up|nearest|skip`,
 //! `--chord triad|power|sus2|sus4|seventh|ninth`, `--run`, `--turns beat|2beats|bar|2bars`,
 //! `--ramp TARGET:STEPS`, `--retrigger`,
-//! `--bars`, `--seed`, `--name`.
+//! `--sweep` (the mod wheel goes up and back down over the bars, pushing
+//! the default modifier: rate two steps faster and an octave more at the
+//! top), `--bars`, `--seed`, `--name`.
 //!
 //! Each WAV has a `.mid` beside it (format 0, 960 ticks per quarter note,
 //! the job's tempo): drum pads on channel 10 from C1 (36) up, notes on
@@ -35,8 +37,8 @@
 #![forbid(unsafe_code)]
 
 use mpfree_arp::{
-    midi_file, Engine, EventKind, Events, LatchMode, Library, MidiOut, Mode, NoteMap, Order,
-    Pattern, Ramp, Rate, Scale, Settings, BUILT_IN,
+    midi_file, Engine, EventKind, Events, LatchMode, Library, MidiOut, ModSource, Mode, Modifier,
+    NoteMap, Order, Pattern, Ramp, Rate, Scale, Settings, BUILT_IN,
 };
 use std::f32::consts::TAU;
 use std::fmt::Write as _;
@@ -234,6 +236,9 @@ struct Job {
     bpm: f64,
     bars: u32,
     seed: u32,
+    /// The modifier's controller goes from 0 up to 1 and back down over
+    /// the bars (a triangle), as a hand on a mod wheel would.
+    sweep: bool,
 }
 
 struct Rendered {
@@ -285,6 +290,15 @@ fn render(job: &Job) -> Rendered {
         }
         if this_bar >= u64::from(job.bars) && !e.active().is_empty() {
             e.clear_latched();
+        }
+        if job.sweep {
+            let x = frame as f64 / (bar_frames * u64::from(job.bars).max(1)) as f64;
+            let v = if x < 0.5 {
+                2.0 * x
+            } else {
+                (2.0 - 2.0 * x).max(0.0)
+            };
+            e.control(job.settings.modifier.source, v as f32);
         }
         e.process(PERIOD, &mut events);
         // Split the period at each event's frame, so notes start on time.
@@ -422,6 +436,7 @@ fn base(name: &str, about: &str, mode: Mode) -> Job {
         bpm: 110.0,
         bars: 4,
         seed: 1,
+        sweep: false,
     }
 }
 
@@ -622,6 +637,60 @@ fn demo_jobs() -> Vec<Job> {
     j.pattern = Pattern::parse(loose).unwrap();
     j.chords = prog.clone();
     jobs.push(j);
+    let mut j = base(
+        "modifier-01-wheel",
+        "Arp Up, 1/16, 1 octave, the mod wheel going up and back down over 8 bars: at the top the rate is two steps faster (1/32) and a second octave joins, gate +30 %",
+        Mode::Arp,
+    );
+    j.settings.modifier = Modifier {
+        source: ModSource::ModWheel,
+        rate: 2,
+        octaves: 1,
+        gate: 30,
+        ..Modifier::default()
+    };
+    j.chords = prog.clone();
+    j.bars = 8;
+    j.sweep = true;
+    jobs.push(j);
+    let mut j = base(
+        "modifier-02-drum-rolls",
+        "Note Repeat on kick and closed hat (pads 1 and 3), 1/16, a learned knob going up and back down over 8 bars: up to 3 extra hits a step (rolls) and accents on 60 % of the steps at the top",
+        Mode::Repeat,
+    );
+    j.drums = true;
+    j.chords = vec![vec![0, 2]];
+    j.settings.accent = 127;
+    j.settings.velocity = mpfree_arp::Velocity::Fixed(80);
+    j.settings.modifier = Modifier {
+        source: ModSource::Knob,
+        rate: 0,
+        octaves: 0,
+        rolls: 3,
+        accents: 60,
+        ..Modifier::default()
+    };
+    j.bpm = 92.0;
+    j.bars = 8;
+    j.sweep = true;
+    jobs.push(j);
+    let mut j = base(
+        "modifier-03-slow-down",
+        "Pattern \"Gallop\" over the four-chord loop, the wheel going up and back down over 8 bars with negative amounts: two rate steps slower (1/8 at the top) and the gate 40 % shorter",
+        Mode::Pattern,
+    );
+    j.pattern = Pattern::parse("x . x x").unwrap();
+    j.settings.modifier = Modifier {
+        source: ModSource::ModWheel,
+        rate: -2,
+        octaves: 0,
+        gate: -40,
+        ..Modifier::default()
+    };
+    j.chords = prog.clone();
+    j.bars = 8;
+    j.sweep = true;
+    jobs.push(j);
     jobs
 }
 
@@ -789,6 +858,10 @@ fn parse_args(args: &[String]) -> Result<(Vec<Job>, Option<PathBuf>), String> {
                 job.settings.ramp = Ramp { target, steps };
             }
             "--retrigger" => job.settings.retrigger = true,
+            "--sweep" => {
+                job.sweep = true;
+                job.settings.modifier.source = ModSource::ModWheel;
+            }
             "--run" => job.settings.run = true,
             "--snap" => {
                 let v = value(&mut i)?;

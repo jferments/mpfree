@@ -96,6 +96,9 @@ pub struct SynthState {
     /// Each sounding voice's pressure now, 0 to 1 (empty when the app has
     /// none to show), for the Pressure page's live bars.
     pub pressures: Vec<f32>,
+    /// Its settings on the layout the XY pad plays, by parameter id (the
+    /// screen fills them in; each knob's `now` is its own position).
+    pub xy: Vec<(u16, crate::section_view::XyMark)>,
 }
 
 impl SynthState {
@@ -120,6 +123,7 @@ impl SynthState {
             edited: false,
             own: None,
             pressures: Vec::new(),
+            xy: Vec::new(),
         }
     }
 
@@ -364,6 +368,16 @@ impl SynthPanel {
             {
                 self.refresh(ui);
             }
+        }
+    }
+
+    /// Its settings on the layout the XY pad plays (by parameter id): their
+    /// knobs wear the XY marks. The screen sends them when the layout or
+    /// the synth changes.
+    pub fn set_xy(&mut self, ui: &mut Ui, marks: Vec<(u16, crate::section_view::XyMark)>) {
+        if self.state.xy != marks {
+            self.state.xy = marks;
+            self.refresh(ui);
         }
     }
 
@@ -871,6 +885,13 @@ fn control(st: &SynthState, sec: &Section, i: usize, qlink: Option<usize>, dim: 
     } else {
         None
     };
+    // A knob on the layout the XY pad plays, where it is now.
+    let xy = st
+        .xy
+        .iter()
+        .find(|(id, _)| *id == p.id)
+        .filter(|_| matches!(kind, Kind::Knob { .. }))
+        .map(|&(_, m)| crate::section_view::XyMark { now: pos, ..m });
     Control {
         index: i,
         label: sec.label(i, p),
@@ -881,6 +902,7 @@ fn control(st: &SynthState, sec: &Section, i: usize, qlink: Option<usize>, dim: 
         qlink,
         dim,
         tint,
+        xy,
     }
 }
 
