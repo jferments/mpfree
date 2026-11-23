@@ -17,6 +17,11 @@
 //! - its **pitch**, on a melodic track only ([`Pitches`]): the next note
 //!   up or down in its key, or among the pitches the clip already plays.
 //!
+//! In a clip of notes a trigger group's notes vary as one
+//! ([`crate::groups`]): every velocity by the same amount, so the voicing
+//! stays; the trigger's chance; or the same ratchet choice on each note's
+//! own. Pitch moves leave a trigger alone.
+//!
 //! At least one note changes. A note tied or slid into keeps its pitch and
 //! its hits, and so does the note a tie continues, so ties and slides
 //! still join. A lock on a note's row (its pitch) moves with the note. The
@@ -162,17 +167,36 @@ impl Clip {
             Amount::Little => 4,
             Amount::More => 2,
         };
-        let mut changed = false;
+        // What varies as one: a note, or a trigger group's notes (a clip
+        // of notes), in the order their first notes come.
+        let mut units: Vec<Vec<usize>> = Vec::with_capacity(on.len());
         for &i in &on {
+            let n = base.notes[i];
+            let grouped = self.holds == crate::Holds::Notes && n.group != 0;
+            let with = grouped
+                .then(|| {
+                    units.iter().position(|u| {
+                        let f = base.notes[u[0]];
+                        (f.tick, f.group) == (n.tick, n.group)
+                    })
+                })
+                .flatten();
+            match with {
+                Some(u) => units[u].push(i),
+                None => units.push(vec![i]),
+            }
+        }
+        let mut changed = false;
+        for u in &units {
             if dice.below(odds) == 0 {
-                vary(i, &mut notes, &mut locks, base.length, keys, &mut dice);
+                vary_unit(u, &mut notes, &mut locks, base.length, keys, &mut dice);
                 changed = true;
             }
         }
         if !changed {
             // At least one: a velocity can always move.
-            let i = on[dice.below(on.len())];
-            vary(i, &mut notes, &mut locks, base.length, keys, &mut dice);
+            let u = &units[dice.below(units.len())];
+            vary_unit(u, &mut notes, &mut locks, base.length, keys, &mut dice);
         }
         let mut out = self.clone();
         out.length = base.length;
@@ -204,6 +228,79 @@ impl Clip {
     /// keeps no original (it was never mutated, or was restored).
     pub fn variation(&self) -> Option<u32> {
         self.original.as_ref().map(|o| o.variation)
+    }
+}
+
+/// The notes of `unit` changed: one note as [`vary`] does; a trigger
+/// group's notes as one, in one of the ways that apply to all of them:
+/// every velocity by the same amount (so the voicing stays), the
+/// trigger's chance, or the same ratchet choice on each note's own. Pitch
+/// moves leave a trigger alone, as two of its notes could land on one
+/// pitch.
+fn vary_unit(
+    unit: &[usize],
+    notes: &mut [Note],
+    locks: &mut [Lock],
+    length: Tick,
+    keys: Option<&[u8]>,
+    dice: &mut Dice,
+) {
+    if let [i] = unit {
+        return vary(*i, notes, locks, length, keys, dice);
+    }
+    let joined = |n: &Note| {
+        n.join != Join::Attack
+            || notes.iter().any(|m| {
+                let d = (m.tick - n.tick).rem_euclid(length.max(1));
+                m.join == Join::Tie && m.note == n.note && d > 0 && d <= n.len
+            })
+    };
+    let members: Vec<Note> = unit.iter().map(|&i| notes[i]).collect();
+    let mut ways = vec![Way::Velocity, Way::Chance];
+    if members
+        .iter()
+        .all(|n| !joined(n) && (n.ratchet > 1 || n.len / 2 >= MIN_HIT))
+    {
+        ways.push(Way::Ratchet);
+    }
+    let first = members[0];
+    match ways[dice.below(ways.len())] {
+        Way::Velocity => {
+            let by = 10 + dice.below(21) as i32;
+            let v = i32::from(first.velocity);
+            let (a, b) = if dice.below(2) == 0 {
+                (by, -by)
+            } else {
+                (-by, by)
+            };
+            let d = if (v + a).clamp(1, 127) != v { a } else { b };
+            for &i in unit {
+                notes[i].velocity = (i32::from(notes[i].velocity) + d).clamp(1, 127) as u8;
+            }
+        }
+        Way::Chance => {
+            let chance = if first.chance < 100 {
+                100
+            } else {
+                [50, 75][dice.below(2)]
+            };
+            for &i in unit {
+                notes[i].chance = chance;
+            }
+        }
+        Way::Ratchet => {
+            let three = members.iter().all(|n| n.len / 3 >= MIN_HIT) && dice.below(2) == 0;
+            for &i in unit {
+                notes[i].ratchet = if notes[i].ratchet > 1 {
+                    1
+                } else if three {
+                    3
+                } else {
+                    2
+                };
+            }
+        }
+        Way::Pitch => {}
     }
 }
 
@@ -328,6 +425,64 @@ mod tests {
         assert_eq!(v.restored(), Some(c.clone()));
         assert_eq!(c.restored(), None);
         assert_eq!(c.variation(), None);
+    }
+
+    /// A bar of chords in a clip of notes: each step a three-note trigger
+    /// (a pad's), voiced 90, 70 and 50 loud, and a lone note.
+    fn chords() -> Clip {
+        let mut c = Clip::new("chords", 3840);
+        c.holds = crate::Holds::Notes;
+        for s in 0..8 {
+            for (pitch, velocity) in [(60, 90), (64, 70), (67, 50)] {
+                c.notes.push(Note {
+                    group: 2,
+                    ..Note::new(s * 480, 240, pitch, velocity)
+                });
+            }
+            c.notes.push(Note::new(s * 480 + 240, 120, 72, 80));
+        }
+        c
+    }
+
+    /// Trigger groups: Mutate changes a trigger as one, whatever the
+    /// seed: one chance on all its notes, every velocity moved by the
+    /// same amount (the voicing kept), the same ratchet choice, and its
+    /// pitches left alone on a melodic track; the same seed, the same
+    /// variation.
+    #[test]
+    fn a_trigger_varies_as_one_and_keeps_its_voicing() {
+        let c = chords();
+        let key = [60, 62, 64, 65, 67, 69, 71, 72];
+        let mut varied = 0;
+        for seed in 0..100 {
+            let v = c.mutated(seed, Amount::More, Pitches::Key(&key)).unwrap();
+            assert_eq!(v.check(), Ok(()), "seed {seed}");
+            assert_eq!(
+                c.mutated(seed, Amount::More, Pitches::Key(&key)),
+                Some(v.clone())
+            );
+            for s in 0..8 {
+                let was: Vec<&Note> = c.notes.iter().filter(|n| n.tick == s * 480).collect();
+                let now: Vec<&Note> = v.notes.iter().filter(|n| n.tick == s * 480).collect();
+                assert_eq!(now.len(), 3, "seed {seed}");
+                let pitches: Vec<u8> = now.iter().map(|n| n.note).collect();
+                assert_eq!(
+                    pitches,
+                    vec![60, 64, 67],
+                    "seed {seed}: pitch moves skip it"
+                );
+                let by: Vec<i32> = was
+                    .iter()
+                    .zip(&now)
+                    .map(|(a, b)| i32::from(b.velocity) - i32::from(a.velocity))
+                    .collect();
+                assert!(by.iter().all(|&d| d == by[0]), "seed {seed}: {by:?}");
+                let ratchets: Vec<u8> = now.iter().map(|n| n.ratchet).collect();
+                assert!(ratchets.iter().all(|&r| r == ratchets[0]), "seed {seed}");
+                varied += usize::from(was.iter().zip(&now).any(|(a, b)| a != b));
+            }
+        }
+        assert!(varied > 100, "{varied}");
     }
 
     /// More varies more notes, over many seeds.

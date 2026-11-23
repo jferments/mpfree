@@ -396,8 +396,14 @@ fn a_round_stops_waiting_for_playback_once_capture_memory_is_half_full() {
         ..WriterConfig::default()
     });
     let no = b.arm(STEREO_FLOAT, 1);
+    b.passes();
+    assert!(
+        !b.gate.recording(),
+        "armed with nothing captured (only monitoring): nothing waits"
+    );
     b.gate.set_cushion(0.0);
     b.run(2.0, STEP, |_| {});
+    assert!(b.gate.recording(), "recording: background work waits");
     let shared = b.gate.capture_fill();
     assert_eq!(
         shared,
@@ -420,6 +426,7 @@ fn a_round_stops_waiting_for_playback_once_capture_memory_is_half_full() {
     b.passes();
     b.check_saved(no);
     assert_eq!(b.gate.capture_fill(), 0.0, "nothing recording");
+    assert!(!b.gate.recording(), "saved: background work goes on");
 }
 
 // ---- on its own thread ------------------------------------------------------

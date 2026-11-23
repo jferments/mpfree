@@ -10,22 +10,29 @@
 //!   plays the same notes on the same frames, and undone back to the clip
 //!   as it was, revision and all;
 //! - a step edit to the clip while its result plays invalidates it, and
-//!   so does an edit to a clip the reading listened to.
+//!   so does an edit to a clip the reading listened to;
+//! - Continue end to end (phase 0C): a clip and a drum part read, carried
+//!   on, heard where `heard` says, its new notes on the drummer's hats,
+//!   kept as heard and undone.
 
 use mpfree_compose::bind::{audition, revision, Binding, Stale};
 use mpfree_compose::preview::{Arrival, Preview, Proposal, Refusal, State};
+use mpfree_compose::read::ToRead;
 use mpfree_compose::realize::{realize, Fit};
 use mpfree_compose::timing::{heard_tick, Playback};
 use mpfree_compose::{
-    clip_notes, continuation, InstrumentKind, Motion, NoteDecision, Part, PartId, Role,
+    clip_notes, continuation, continue_clip, InstrumentKind, Motion, NoteDecision, OnClip, Part,
+    PartId, Role, Settings, GROOVE,
 };
 use mpfree_context::chord::{Chord, ChordTimeline, Heard, Quality, Tone};
+use mpfree_context::groove::{Lane, STEP};
 use mpfree_context::key::{Key, Mode};
+use mpfree_context::ReadBudget;
 use mpfree_context::{ClipRead, PartRole};
 use mpfree_play::{Event, Launch, Out, PlayView, Player, Sink, Takes};
 use mpfree_seq::steps::Grid;
 use mpfree_seq::{Clip, Holds, Note, Project, Quantise, Speed, Track};
-use mpfree_transport::time::{Swing, Tick, PPQ};
+use mpfree_transport::time::{Meter, Swing, Tick, PPQ};
 use mpfree_transport::{Block, Command, Transport};
 
 const BEAT: Tick = PPQ as Tick;
@@ -365,4 +372,140 @@ fn an_edit_to_a_clip_the_reading_listened_to_invalidates_too() {
     takes.edit(&mut project, 1, 0, &tap, None).unwrap();
     assert_eq!(preview.clip_changed(&project), Some(Stale::Heard));
     assert_eq!(preview.state(), State::Invalidated);
+}
+
+fn hats(track: usize, pad: u8) -> Option<Lane> {
+    (track == 1 && pad == 1).then_some(Lane::Hats)
+}
+
+#[test]
+fn continue_is_heard_on_the_drummer_kept_as_heard_and_undone() {
+    // The riff, swung by its own 1/8 swing, over a one-bar hat part whose
+    // off-beats are a 1/64 late (played straight, with the transport).
+    let mut lead = riff();
+    lead.swing = Some(Swing::new(PPQ / 2, 58).unwrap());
+    let mut project = one_clip(lead);
+    let mut drums = Track::new("Drums", 1);
+    let mut beat = Clip::new("hats", BAR);
+    beat.notes = (0..8)
+        .map(|i| {
+            Note::new(
+                i * BEAT / 2 + if i % 2 == 1 { STEP / 4 } else { 0 },
+                60,
+                1,
+                90,
+            )
+        })
+        .collect();
+    drums.slots[0] = Some(beat);
+    project.tracks.push(drums);
+    project.give_clip_ids();
+    let launches = [
+        launch(0)[0],
+        Launch {
+            track: 1,
+            slot: 0,
+            origin: 0,
+            start: 0,
+        },
+    ];
+    let ticks = 6 * BAR;
+    let before = sorted(play(
+        &PlayView::compile(&project, &launches).unwrap(),
+        None,
+        ticks,
+    ));
+    let others = [ToRead {
+        track: 1,
+        slot: 0,
+        role: PartRole::Drums,
+    }];
+    let on = OnClip {
+        project: &project,
+        track: 0,
+        slot: 0,
+        role: PartRole::Melody,
+        others: &others,
+        lane_of: &hats,
+        transport_swing: Swing::default(),
+        meter: Meter::default(),
+        bpm: BPM,
+        budget: ReadBudget::default(),
+    };
+    let settings = Settings {
+        style: GROOVE,
+        bars: 2,
+        seed: 5,
+        ..Settings::default()
+    };
+    let (proposal, made) = continue_clip(&on, &settings, InstrumentKind::OneNote).unwrap();
+    assert_eq!(proposal.read.len(), 2, "the clip and the hats");
+    assert_eq!(made.to, 3 * BAR);
+    let clip_before = project.clip(0, 0).unwrap().clone();
+
+    let mut preview = Preview::new();
+    let b = Binding::of(&project, 0, 0).unwrap();
+    let n = preview.ask(b).unwrap();
+    assert_eq!(preview.arrived(n, proposal, &project), Arrival::Taken);
+    preview.audition().unwrap();
+    let (pb, pe) = preview.plays().unwrap();
+    let heard_project = audition(&project, pb, pe).unwrap();
+    let heard = sorted(play(
+        &PlayView::compile(&heard_project, &launches).unwrap(),
+        None,
+        ticks,
+    ));
+    // Where `heard` says, with the clip's swing.
+    let mut longer = clip_before.clone();
+    longer.length = made.to;
+    longer.notes.extend(&made.notes);
+    let mine: Vec<(u64, u8)> = heard.iter().copied().filter(|x| x.1 != 1).collect();
+    assert_eq!(mine, predicted(&longer, Swing::default(), 0, ticks));
+    // Every new note on an off-beat 1/8 lands with the hats there.
+    let hat_frames: Vec<u64> = heard.iter().filter(|x| x.1 == 1).map(|x| x.0).collect();
+    let off_beats: Vec<&NoteDecision> = made
+        .part
+        .decisions
+        .iter()
+        .filter(|d| d.at % BEAT == BEAT / 2)
+        .collect();
+    assert!(!off_beats.is_empty());
+    for d in off_beats {
+        let song = d.at as u64 * FRAMES_PER_TICK;
+        let landed = mine
+            .iter()
+            .find(|x| x.0.abs_diff(song) < (BEAT as u64 / 4) * FRAMES_PER_TICK)
+            .expect("the note plays");
+        assert!(
+            hat_frames
+                .iter()
+                .any(|h| h.abs_diff(landed.0) <= FRAMES_PER_TICK),
+            "a note at {} heard at frame {}, off the hats",
+            d.at,
+            landed.0
+        );
+    }
+
+    // Keep is one take that plays what was heard; UNDO takes it back.
+    let mut takes = Takes::new(16);
+    let (kb, ke) = preview.keep(&project).unwrap();
+    let take = takes
+        .edit(&mut project, kb.track, kb.slot, &ke, None)
+        .unwrap();
+    preview.kept(Ok(take));
+    let kept = sorted(play(
+        &PlayView::compile(&project, &launches).unwrap(),
+        None,
+        ticks,
+    ));
+    assert_eq!(kept, heard);
+    takes.undo(&mut project).unwrap();
+    assert_eq!(
+        sorted(play(
+            &PlayView::compile(&project, &launches).unwrap(),
+            None,
+            ticks
+        )),
+        before
+    );
 }

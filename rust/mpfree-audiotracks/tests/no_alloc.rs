@@ -18,7 +18,9 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 use mpfree_audiotracks::save::TakeFile;
-use mpfree_audiotracks::{AudioTracks, Command as A, Input, Monitor, Piece, Retime, MAX_TRACKS};
+use mpfree_audiotracks::{
+    AudioTracks, Command as A, Input, Monitor, Piece, Retime, CHUNK, MAX_TRACKS,
+};
 use mpfree_transport::{Block, Command as T, Transport};
 
 struct Counting;
@@ -590,10 +592,31 @@ fn playing_from_files_never_allocates() {
         take: takes[0].id,
         rec: takes[0].rec,
         gen: tag.gen,
+        growing: false,
     });
     watch(false);
     let f = run(&mut a, &mut c, &mut t, f + BAR / 2);
     assert!(a.on_file(takes[0].id));
+    // The second's file holds only its first chunk and a little more so
+    // far, as while it records: that chunk goes, and it plays partly from
+    // its file.
+    let per = CHUNK / takes[1].channels;
+    let n = per + 100;
+    let part = dir.join("part.wav");
+    let mut bytes = std::fs::read(&paths[1]).unwrap();
+    bytes.truncate(44 + n * takes[1].channels * 4);
+    std::fs::write(&part, bytes).unwrap();
+    let tag = c.open_growing(takes[1].id, &part, n as u64).unwrap();
+    watch(true);
+    a.command(A::OnFile {
+        take: takes[1].id,
+        rec: takes[1].rec,
+        gen: tag.gen,
+        growing: true,
+    });
+    watch(false);
+    let f = run(&mut a, &mut c, &mut t, f + BAR / 2);
+    assert_eq!(a.file_frames(takes[1].id), Some(per));
     // The player away and back: the file take misses meanwhile.
     watch(true);
     let p = a.stream(None);

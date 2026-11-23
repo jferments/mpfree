@@ -304,26 +304,6 @@ impl TrackKits {
         usize::from(self.synth)
     }
 
-    /// The project's track kits part ([`crate::project::TRACK_KITS`]): a
-    /// line for each track that plays another kit than kit 1, or the
-    /// shared synth by its id in the project's list of instruments
-    /// (`track 4 instrument 1`), numbered from 1 as the screen shows them.
-    /// Only the first line while every track plays kit 1, so the part
-    /// isn't saved.
-    pub fn text(&self) -> String {
-        use std::fmt::Write as _;
-        let synth = crate::instrument_list::InstrumentId::SHARED_SYNTH;
-        let mut s = format!("{}\n", crate::project::TRACK_KITS_FORMAT);
-        for (t, &e) in self.entries.iter().enumerate().filter(|(_, &e)| e != 0) {
-            let _ = if e == self.synth {
-                writeln!(s, "track {} instrument {synth}", t + 1)
-            } else {
-                writeln!(s, "track {} kit {}", t + 1, e + 1)
-            };
-        }
-        s
-    }
-
     /// Where each kit plays in the mixer (`MixHost::pads_homed`): `homes[k]`
     /// is 1 + the first track that plays kit `k` (`plays(t)`: track `t`
     /// plays its entry, not an instrument of its own or MIDI Out), or 0:
@@ -1906,7 +1886,11 @@ mod tests {
         assert!(k.set_aside(1) && k.set_aside(3));
         assert!(!k.set_aside(2), "track 2 plays it");
         assert!(!k.set_aside(0), "kit 1 is never set aside");
-        assert!(!k.text().contains("track 4"), "not saved");
+        let mut list = crate::instrument_list::InstrumentList::new();
+        list.follow_kits(4);
+        let inst = crate::instruments::Instruments::new(44_100, 128);
+        let saved = crate::project::track_kits_text(&k, &inst, &list);
+        assert!(!saved.contains("track 4"), "not saved");
         assert!(!k.follow(3, false, true), "nothing more to set aside");
         // REDO brings track 4 back: with its kit.
         assert!(k.follow(4, true, true));
@@ -1948,27 +1932,26 @@ mod tests {
         );
         // Track 2 has its own instrument: kit 3 lives on track 3.
         assert_eq!(k.homes(|t| t != 1)[2], 3);
+        // Saved by id (sampler refactor step 14): kits 2 and 3 are
+        // instruments 3 and 4 here, the shared synth instrument 1.
+        let mut list = crate::instrument_list::InstrumentList::new();
+        list.follow_kits(3);
+        let inst = crate::instruments::Instruments::new(44_100, 128);
+        let text = crate::project::track_kits_text(&k, &inst, &list);
         assert_eq!(
-            k.text(),
+            text,
             format!(
-                "{}\ntrack 2 kit 3\ntrack 3 kit 3\ntrack 5 instrument 1\ntrack 6 kit 2\n",
+                "{}\ntrack 2 instrument 4\ntrack 3 instrument 4\ntrack 5 instrument 1\ntrack 6 instrument 3\n",
                 crate::project::TRACK_KITS_FORMAT
             )
         );
-        use crate::project::TrackPick::{Instrument, Kit};
+        let id = |n| crate::instrument_list::InstrumentId::from_number(n).unwrap();
         assert_eq!(
-            crate::project::track_kits_parse(&k.text()),
-            Ok(vec![
-                (1, Kit(2)),
-                (2, Kit(2)),
-                (
-                    4,
-                    Instrument(crate::instrument_list::InstrumentId::SHARED_SYNTH)
-                ),
-                (5, Kit(1))
-            ])
+            crate::project::track_kits_parse(&text),
+            Ok(vec![(1, id(4)), (2, id(4)), (4, id(1)), (5, id(3))])
         );
-        assert_eq!(TrackKits::new(3).text().lines().count(), 1);
+        let none = crate::project::track_kits_text(&TrackKits::new(3), &inst, &list);
+        assert_eq!(none.lines().count(), 1);
     }
 
     /// Every kit is in the engine: hits on two kits in one period both

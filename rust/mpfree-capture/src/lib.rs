@@ -59,6 +59,18 @@
 //!   left off its notes and counted ([`Kept::touch_lost`]); the notes
 //!   still go in.
 //!
+//! **Pads and notes** (step sequencer refactor E4). A clip holds one kind
+//! ([`Holds`]): pads, or notes (after the pad layout, scale, chord and
+//! octave, before the track's transpose). The history keeps each touch as
+//! both where it has both: the pad, and the notes it played, each marked
+//! [`Took::paired`]. A pad and a note of the same number are different
+//! notes. [`keep`] takes one kind, as a take there would record: over the
+//! playing clip, that clip's kind (as an overdub does); else the kind a
+//! new clip on the track holds, which the host says. A touch kept only as
+//! the other kind (a kit pad with no note, the arp's notes, which come
+//! with no pad) is left out and counted ([`Kept::left_out`]), so a clip
+//! of notes never gets a pad's number, nor a clip of pads a pitch.
+//!
 //! The Perform FX moves made over a phrase played in time go with it: the
 //! host takes them from its `mpfree_moves::MoveLog` ([`MoveLog::phrase`])
 //! and [`moves_for_clip`] puts them on the kept clip's ticks, for
@@ -74,7 +86,7 @@ use mpfree_play::record::{TOUCH_SETTLE_MS, TOUCH_STEP};
 use mpfree_play::{Event, Launch, MoveWrite, Takes};
 use mpfree_seq::mpfree_moves::{Gesture, Target};
 use mpfree_seq::{
-    Clip, ModelError, Note, Project, Touch, TouchPoint, MAX_CLIP_TICKS, MAX_NOTES,
+    Clip, Holds, ModelError, Note, Project, Touch, TouchPoint, MAX_CLIP_TICKS, MAX_NOTES,
     MAX_TOUCH_POINTS, SLOTS,
 };
 use mpfree_transport::time::{ceil_to, ticks_in, Meter, Tick};
@@ -106,6 +118,30 @@ pub const ARMED: u8 = u8::MAX;
 /// left out ([`Capture::dropped`]).
 pub const MAX_VOICES: usize = 32;
 
+/// What a note given to the history is (refactor E4): a pad or a note,
+/// and whether the same touch is given as the other kind too (a pad and
+/// the notes it played), so [`keep`] can take either kind without losing
+/// it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Took {
+    pub holds: Holds,
+    /// The same touch is in the history as the other kind too.
+    pub paired: bool,
+    /// A note's trigger group in a clip of notes: its pad's
+    /// (`mpfree_seq::groups::pad_group`), so a pad of chords is kept as
+    /// one trigger; 0 for a pad, or a note no pad played.
+    pub group: u8,
+}
+
+impl Took {
+    /// A pad alone.
+    pub const PAD: Took = Took {
+        holds: Holds::Hits,
+        paired: false,
+        group: 0,
+    };
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
     On,
@@ -123,6 +159,12 @@ struct Hit {
     kind: Kind,
     /// [`ARMED`], or the track a route played it on.
     track: u8,
+    /// A pad or a note.
+    holds: Holds,
+    /// Its touch is in the history as the other kind too.
+    paired: bool,
+    /// Its trigger group ([`Took::group`]).
+    group: u8,
     note: u8,
     velocity: u8,
 }
@@ -132,9 +174,31 @@ const NO_HIT: Hit = Hit {
     song: 0.0,
     kind: Kind::AllOff,
     track: ARMED,
+    holds: Holds::Hits,
+    paired: false,
+    group: 0,
     note: 0,
     velocity: 0,
 };
+
+/// Where a held pad or note is kept in a [`Voice`]: a pad and a note of
+/// the same number are different notes.
+fn key(holds: Holds, note: u8) -> usize {
+    usize::from(note & 127)
+        + match holds {
+            Holds::Hits => 0,
+            Holds::Notes => 128,
+        }
+}
+
+/// [`key`] read back.
+fn unkey(k: usize) -> (Holds, u8) {
+    let holds = if k >= 128 { Holds::Notes } else { Holds::Hits };
+    (holds, (k & 127) as u8)
+}
+
+/// Pads and notes a voice can hold.
+const KEYS: usize = 256;
 
 /// One pad pressure value kept in the history.
 #[derive(Clone, Copy, Debug)]
@@ -145,6 +209,7 @@ struct TouchHit {
     /// `after - 1` and before hit `after`.
     after: u64,
     track: u8,
+    holds: Holds,
     note: u8,
     value: u8,
 }
@@ -153,6 +218,7 @@ const NO_TOUCH: TouchHit = TouchHit {
     at: 0.0,
     after: 0,
     track: ARMED,
+    holds: Holds::Hits,
     note: 0,
     value: 0,
 };
@@ -176,16 +242,17 @@ const THIN: Thin = Thin {
 #[derive(Clone, Copy, Debug)]
 struct Voice {
     track: u8,
-    held: [bool; 128],
+    /// By [`key`].
+    held: [bool; KEYS],
     n_held: usize,
-    thin: [Thin; 128],
+    thin: [Thin; KEYS],
 }
 
 const VOICE: Voice = Voice {
     track: ARMED,
-    held: [false; 128],
+    held: [false; KEYS],
     n_held: 0,
-    thin: [THIN; 128],
+    thin: [THIN; KEYS],
 };
 
 impl Voice {
@@ -229,6 +296,10 @@ pub struct Played {
     pub song: Option<f64>,
     /// [`ARMED`], or the track a route played it on.
     pub track: u8,
+    /// Its number is a pad's or a note's.
+    pub holds: Holds,
+    /// Its touch is in the phrase as the other kind too.
+    pub paired: bool,
 }
 
 /// The last phrase, as clip notes.
@@ -286,40 +357,43 @@ impl Phrase {
         tracks.dedup();
         tracks
             .into_iter()
-            .map(|t| {
-                let mut touch = Vec::new();
-                let played = self
-                    .played
-                    .iter()
-                    .filter(|p| track_of(p) == t)
-                    .map(|p| {
-                        let run = self.touch_of(&p.note);
-                        let mut p = *p;
-                        p.note.touch = if run.is_empty() {
-                            Touch::NONE
-                        } else {
-                            let first = touch.len() as u32;
-                            touch.extend_from_slice(run);
-                            Touch {
-                                first,
-                                len: run.len() as u32,
-                            }
-                        };
-                        p
-                    })
-                    .collect();
-                let part = Phrase {
-                    played,
-                    touch,
-                    touch_cut: self.touch_cut,
-                    length: self.length,
-                    bar: self.bar,
-                    song_start: self.song_start,
-                    id: self.id,
-                };
-                (t, part)
-            })
+            .map(|t| (t, self.part(|p| track_of(p) == t)))
             .collect()
+    }
+
+    /// The notes `which` picks, each with its pressure, as a phrase of the
+    /// same length, bar, song start and id.
+    fn part(&self, which: impl Fn(&Played) -> bool) -> Phrase {
+        let mut touch = Vec::new();
+        let played = self
+            .played
+            .iter()
+            .filter(|p| which(p))
+            .map(|p| {
+                let run = self.touch_of(&p.note);
+                let mut p = *p;
+                p.note.touch = if run.is_empty() {
+                    Touch::NONE
+                } else {
+                    let first = touch.len() as u32;
+                    touch.extend_from_slice(run);
+                    Touch {
+                        first,
+                        len: run.len() as u32,
+                    }
+                };
+                p
+            })
+            .collect();
+        Phrase {
+            played,
+            touch,
+            touch_cut: self.touch_cut,
+            length: self.length,
+            bar: self.bar,
+            song_start: self.song_start,
+            id: self.id,
+        }
     }
 }
 
@@ -328,15 +402,15 @@ pub struct Capture {
     /// Note starts and ends ever pushed; hit `n` is at `n % MAX_HITS` while
     /// `n + MAX_HITS > pushed`.
     pushed: u64,
-    /// (offset, track, event), in offset order.
-    input: [(u32, u8, Event); MAX_INPUT],
+    /// (offset, track, event, kind), in offset order.
+    input: [(u32, u8, Event, Took); MAX_INPUT],
     n_input: usize,
     touch: Box<[TouchHit]>,
     /// Pressure values ever kept; value `n` is at `n % MAX_TOUCH_HITS`
     /// while `n + MAX_TOUCH_HITS > touch_pushed`.
     touch_pushed: u64,
-    /// (offset, track, pad, value), in offset order.
-    touch_input: [(u32, u8, u8, u8); MAX_TOUCH_INPUT],
+    /// (offset, track, pad or note, value, kind), in offset order.
+    touch_input: [(u32, u8, u8, u8, Holds); MAX_TOUCH_INPUT],
     n_touch_input: usize,
     /// Voice 0 is the armed track's; the others a routed track's while
     /// it holds notes.
@@ -371,11 +445,11 @@ impl Capture {
         Capture {
             hits: vec![NO_HIT; MAX_HITS].into_boxed_slice(),
             pushed: 0,
-            input: [(0, ARMED, Event::AllOff); MAX_INPUT],
+            input: [(0, ARMED, Event::AllOff, Took::PAD); MAX_INPUT],
             n_input: 0,
             touch: vec![NO_TOUCH; MAX_TOUCH_HITS].into_boxed_slice(),
             touch_pushed: 0,
-            touch_input: [(0, ARMED, 0, 0); MAX_TOUCH_INPUT],
+            touch_input: [(0, ARMED, 0, 0, Holds::Hits); MAX_TOUCH_INPUT],
             n_touch_input: 0,
             voices: vec![VOICE; MAX_VOICES].into_boxed_slice(),
             clock: 0.0,
@@ -397,15 +471,20 @@ impl Capture {
     /// pressure ([`Event::Pressure`], the pad and its raw value) has its
     /// own room and comes after the notes on its offset; it is kept while
     /// its pad's note is held. The notes are the armed track's
-    /// ([`ARMED`]).
+    /// ([`ARMED`]) pads.
     pub fn input(&mut self, offset: u32, event: Event) {
-        self.input_on(ARMED, offset, event);
+        self.input_on(ARMED, offset, event, Took::PAD);
     }
 
-    /// [`Capture::input`], for `track`: [`ARMED`], or a track a route
-    /// plays (0 to 254), whose notes are the pads that played them on it.
-    /// Each track holds its own notes.
-    pub fn input_on(&mut self, track: u8, offset: u32, event: Event) {
+    /// [`Capture::input`] of what `took` says: a pad or a note, and its
+    /// pressure (refactor E4).
+    pub fn input_as(&mut self, offset: u32, event: Event, took: Took) {
+        self.input_on(ARMED, offset, event, took);
+    }
+
+    /// [`Capture::input_as`], for `track`: [`ARMED`], or a track a route
+    /// plays (0 to 254). Each track holds its own notes.
+    pub fn input_on(&mut self, track: u8, offset: u32, event: Event, took: Took) {
         if let Event::Pressure { note, value } = event {
             if self.n_touch_input == MAX_TOUCH_INPUT {
                 self.dropped += 1;
@@ -416,7 +495,7 @@ impl Capture {
                 self.touch_input[i] = self.touch_input[i - 1];
                 i -= 1;
             }
-            self.touch_input[i] = (offset, track, note, value);
+            self.touch_input[i] = (offset, track, note, value, took.holds);
             self.n_touch_input += 1;
             return;
         }
@@ -429,7 +508,7 @@ impl Capture {
             self.input[i] = self.input[i - 1];
             i -= 1;
         }
-        self.input[i] = (offset, track, event);
+        self.input[i] = (offset, track, event, took);
         self.n_input += 1;
     }
 
@@ -483,31 +562,31 @@ impl Capture {
                     .filter(|&o| o < end);
                 if let Some(t) = touch {
                     if note.is_none_or(|a| t < a) {
-                        let (offset, track, pad, value) = self.touch_input[next_touch];
+                        let (offset, track, note, value, holds) = self.touch_input[next_touch];
                         next_touch += 1;
                         let frame = span.frame + u64::from(offset.saturating_sub(span.offset));
-                        self.touch_value(span, timed, frame, track, pad, value);
+                        self.touch_value(span, timed, frame, track, key(holds, note), value);
                         continue;
                     }
                 }
                 if note.is_none() {
                     break;
                 }
-                let (offset, track, event) = self.input[next];
+                let (offset, track, event, took) = self.input[next];
                 next += 1;
                 let frame = span.frame + u64::from(offset.saturating_sub(span.offset));
                 // Pressure whose time came before this note is kept first.
                 if let Some(v) = self.voice_of(track) {
                     match event {
                         Event::NoteOn { note, .. } | Event::NoteOff { note } => {
-                            self.settle(v, usize::from(note & 127), span, timed, frame + 1);
+                            self.settle(v, key(took.holds, note), span, timed, frame + 1);
                         }
                         Event::AllOff => self.settle_voice(v, span, timed, frame + 1),
                         _ => {}
                     }
                 }
                 let (at, song) = self.place(span, timed, frame);
-                self.hit(at, song, bar as u32, timed, track, event);
+                self.hit(at, song, bar as u32, timed, (track, took), event);
             }
             // One-step values whose time is up within this span.
             self.settle_all(span, timed, span.frame + u64::from(span.len));
@@ -540,10 +619,18 @@ impl Capture {
         }
     }
 
-    /// Pad `pad`'s pressure `value` on `track`, on `frame` of `span`:
-    /// thinned onto its held note (see the crate's notes).
-    fn touch_value(&mut self, span: &Span, timed: bool, frame: u64, track: u8, pad: u8, value: u8) {
-        let n = usize::from(pad & 127);
+    /// The pressure `value` of the pad or note at [`key`] `n` on `track`,
+    /// on `frame` of `span`: thinned onto its held note (see the crate's
+    /// notes).
+    fn touch_value(
+        &mut self,
+        span: &Span,
+        timed: bool,
+        frame: u64,
+        track: u8,
+        n: usize,
+        value: u8,
+    ) {
         let Some(voice) = self.voice_of(track).filter(|&v| self.voices[v].held[n]) else {
             return;
         };
@@ -575,7 +662,7 @@ impl Capture {
     }
 
     fn settle_voice(&mut self, voice: usize, span: &Span, timed: bool, before: u64) {
-        for n in 0..128 {
+        for n in 0..KEYS {
             let x = &self.voices[voice];
             if x.held[n] && x.thin[n].wait.is_some() {
                 self.settle(voice, n, span, timed, before);
@@ -591,8 +678,8 @@ impl Capture {
         }
     }
 
-    /// Keep `value` on voice `voice`'s held note `n`, on `frame` of
-    /// `span`.
+    /// Keep `value` on voice `voice`'s held note at [`key`] `n`, on
+    /// `frame` of `span`.
     fn keep_touch(
         &mut self,
         voice: usize,
@@ -604,22 +691,36 @@ impl Capture {
     ) {
         self.voices[voice].thin[n].kept = value;
         let (at, _) = self.place(span, timed, frame);
+        let (holds, note) = unkey(n);
         self.touch[(self.touch_pushed % MAX_TOUCH_HITS as u64) as usize] = TouchHit {
             at,
             after: self.pushed,
             track: self.voices[voice].track,
-            note: n as u8,
+            holds,
+            note,
             value,
         };
         self.touch_pushed += 1;
     }
 
-    fn hit(&mut self, at: f64, song: f64, bar: u32, timed: bool, track: u8, event: Event) {
+    fn hit(
+        &mut self,
+        at: f64,
+        song: f64,
+        bar: u32,
+        timed: bool,
+        (track, took): (u8, Took),
+        event: Event,
+    ) {
+        let holds = took.holds;
         let mut h = Hit {
             at,
             song,
             kind: Kind::AllOff,
             track,
+            holds,
+            paired: took.paired,
+            group: took.group,
             note: 0,
             velocity: 0,
         };
@@ -633,7 +734,7 @@ impl Capture {
             | Event::Program { .. } => return,
             // A MIDI-style note-on at velocity 0 is a release.
             Event::NoteOn { note, velocity: 0 } | Event::NoteOff { note } => {
-                let n = usize::from(note & 127);
+                let n = key(holds, note);
                 let Some(v) = self.voice_of(track).filter(|&v| self.voices[v].held[n]) else {
                     return;
                 };
@@ -646,10 +747,10 @@ impl Capture {
                     self.quiet_since = at;
                 }
                 h.kind = Kind::Off;
-                h.note = n as u8;
+                h.note = note & 127;
             }
             Event::NoteOn { note, velocity } => {
-                let n = usize::from(note & 127);
+                let n = key(holds, note);
                 let Some(v) = self.voice_for(track) else {
                     self.dropped += 1;
                     return;
@@ -689,7 +790,7 @@ impl Capture {
                     }
                 }
                 h.kind = Kind::On;
-                h.note = n as u8;
+                h.note = note & 127;
                 h.velocity = velocity.min(127);
             }
             // The track's notes all end.
@@ -774,7 +875,7 @@ impl Capture {
         let mut runs: Vec<Vec<TouchPoint>> = Vec::new();
         // Per track and note: its index in `played` and its start on the
         // clock.
-        let mut open: HashMap<(u8, u8), (usize, f64)> = HashMap::new();
+        let mut open: HashMap<(u8, usize), (usize, f64)> = HashMap::new();
         let close = |played: &mut Vec<Played>, o: (usize, f64), end: f64| {
             played[o.0].note.len = ((end - o.1).round() as Tick).clamp(1, MAX_CLIP_TICKS);
         };
@@ -790,12 +891,12 @@ impl Capture {
         let touch_cut = touch_oldest > 0 && touch_hit(touch_oldest).after > first;
         let take_touch = |upto: u64,
                           ts: &mut u64,
-                          open: &HashMap<(u8, u8), (usize, f64)>,
+                          open: &HashMap<(u8, usize), (usize, f64)>,
                           runs: &mut Vec<Vec<TouchPoint>>| {
             while *ts < self.touch_pushed && touch_hit(*ts).after <= upto {
                 let x = *touch_hit(*ts);
                 *ts += 1;
-                if let Some(&(i, from)) = open.get(&(x.track, x.note & 127)) {
+                if let Some(&(i, from)) = open.get(&(x.track, key(x.holds, x.note))) {
                     let run = &mut runs[i];
                     let at =
                         ((x.at - from).round().max(0.0) as u32).max(run.last().map_or(0, |p| p.at));
@@ -808,7 +909,7 @@ impl Capture {
             let x = *hit(s);
             match x.kind {
                 Kind::On => {
-                    if let Some(o) = open.remove(&(x.track, x.note)) {
+                    if let Some(o) = open.remove(&(x.track, key(x.holds, x.note))) {
                         close(&mut played, o, x.at);
                     }
                     let note = Note {
@@ -823,17 +924,20 @@ impl Capture {
                         on: true,
                         ramp: 0,
                         join: mpfree_seq::Join::Attack,
+                        group: x.group,
                     };
-                    open.insert((x.track, x.note), (played.len(), x.at));
+                    open.insert((x.track, key(x.holds, x.note)), (played.len(), x.at));
                     played.push(Played {
                         note,
                         song: h.timed.then_some(x.song),
                         track: x.track,
+                        holds: x.holds,
+                        paired: x.paired,
                     });
                     runs.push(Vec::new());
                 }
                 Kind::Off => {
-                    if let Some(o) = open.remove(&(x.track, x.note)) {
+                    if let Some(o) = open.remove(&(x.track, key(x.holds, x.note))) {
                         close(&mut played, o, x.at);
                     }
                 }
@@ -941,6 +1045,12 @@ pub struct Kept {
     /// Pressure values the playing clip had no room for, left off its
     /// notes. It should stay 0.
     pub touch_lost: usize,
+    /// What the notes are: pads, or notes (refactor E4).
+    pub holds: Holds,
+    /// Touches kept only as the other kind, left out: pads that played no
+    /// note into a clip of notes, or notes that came with no pad (the
+    /// arp's) into a clip of pads.
+    pub left_out: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -950,13 +1060,19 @@ pub enum KeepError {
     NoTrack(usize),
     /// Every slot of the track holds a clip.
     NoSlot(usize),
+    /// Everything played was kept only as the other kind than the clip
+    /// it would go in holds (this kind).
+    OtherKind(Holds),
     Model(ModelError),
 }
 
 /// Keep `phrase` in `track` as a take of its own (see the crate's notes):
 /// into the clip playing on the track when it was played in time over it,
-/// else as a new clip, named `name`, in the track's first empty slot.
-/// Nothing changes on an error.
+/// in that clip's kind, as an overdub records; else as a new clip holding
+/// `new` (what a new clip for a take on the track holds), named `name`, in
+/// the track's first empty slot. Touches kept only as the other kind are
+/// left out. Nothing changes on an error.
+#[allow(clippy::too_many_arguments)]
 pub fn keep(
     phrase: &Phrase,
     project: &mut Project,
@@ -965,6 +1081,7 @@ pub fn keep(
     track: usize,
     now: Now,
     name: &str,
+    new: Holds,
 ) -> Result<Kept, KeepError> {
     if phrase.played.is_empty() {
         return Err(KeepError::Nothing);
@@ -972,73 +1089,97 @@ pub fn keep(
     if track >= project.tracks.len() {
         return Err(KeepError::NoTrack(track));
     }
-    let bars = phrase.bars();
-    let with_touch = project.tracks[track].record_touch;
     // Over the clip that was playing: from where each note was played.
     let playing = launches
         .iter()
         .find(|l| l.track == track)
-        .and_then(|l| Some((l, project.clip(track, l.slot)?)));
-    if let (Some(first), Some((l, clip))) = (phrase.played[0].song, playing) {
-        if first >= l.origin as f64 {
-            let song_len = clip.speed.to_song(clip.length as f64);
-            // The notes' pressure, on the clip's ticks as their lengths.
-            let mut touch: Vec<TouchPoint> = Vec::new();
-            let notes: Vec<Note> = phrase
-                .played
-                .iter()
-                .filter_map(|p| {
-                    let from = p.song? - l.origin as f64;
-                    if from < 0.0 || song_len <= 0.0 {
-                        return None;
-                    }
-                    let mut tick = clip.speed.to_clip(from.rem_euclid(song_len)).round() as Tick;
-                    if tick >= clip.length {
-                        tick -= clip.length;
-                    }
-                    let len = (clip.speed.to_clip(p.note.len as f64).round() as Tick)
-                        .clamp(1, MAX_CLIP_TICKS);
-                    let run = phrase.touch_of(&p.note);
-                    let mut note = Note {
-                        tick: tick.max(0),
-                        len,
-                        touch: Touch::NONE,
-                        ..p.note
+        .and_then(|l| Some((l, project.clip(track, l.slot)?)))
+        .filter(|(l, _)| {
+            phrase.played[0]
+                .song
+                .is_some_and(|first| first >= l.origin as f64)
+        });
+    // A clip holds one kind (refactor E4): the playing clip's, else what a
+    // new clip there holds.
+    let holds = playing.map_or(new, |(_, clip)| clip.holds);
+    let left_out = phrase
+        .played
+        .iter()
+        .filter(|p| p.holds != holds && !p.paired)
+        .count();
+    let only;
+    let phrase = if phrase.played.iter().any(|p| p.holds != holds) {
+        only = phrase.part(|p| p.holds == holds);
+        &only
+    } else {
+        phrase
+    };
+    if phrase.played.is_empty() {
+        return Err(KeepError::OtherKind(holds));
+    }
+    let bars = phrase.bars();
+    let with_touch = project.tracks[track].record_touch;
+    if let Some((l, clip)) = playing {
+        let song_len = clip.speed.to_song(clip.length as f64);
+        // The notes' pressure, on the clip's ticks as their lengths.
+        let mut touch: Vec<TouchPoint> = Vec::new();
+        let notes: Vec<Note> = phrase
+            .played
+            .iter()
+            .filter_map(|p| {
+                let from = p.song? - l.origin as f64;
+                if from < 0.0 || song_len <= 0.0 {
+                    return None;
+                }
+                let mut tick = clip.speed.to_clip(from.rem_euclid(song_len)).round() as Tick;
+                if tick >= clip.length {
+                    tick -= clip.length;
+                }
+                let len = (clip.speed.to_clip(p.note.len as f64).round() as Tick)
+                    .clamp(1, MAX_CLIP_TICKS);
+                let run = phrase.touch_of(&p.note);
+                let mut note = Note {
+                    tick: tick.max(0),
+                    len,
+                    touch: Touch::NONE,
+                    ..p.note
+                };
+                if with_touch && !run.is_empty() {
+                    note.touch = Touch {
+                        first: touch.len() as u32,
+                        len: run.len() as u32,
                     };
-                    if with_touch && !run.is_empty() {
-                        note.touch = Touch {
-                            first: touch.len() as u32,
-                            len: run.len() as u32,
-                        };
-                        let mut last = 0;
-                        touch.extend(run.iter().map(|x| {
-                            last = (clip.speed.to_clip(f64::from(x.at)).round() as u32).max(last);
-                            TouchPoint { at: last, ..*x }
-                        }));
-                    }
-                    Some(note)
-                })
-                .collect();
-            let n = notes.len();
-            let (take, touch_lost) = takes
-                .capture_notes(project, track, l.slot, &notes, &touch)
-                .map_err(KeepError::Model)?;
-            return Ok(Kept {
-                track,
-                slot: l.slot,
-                take,
-                notes: n,
-                bars,
-                launch: None,
-                touch: touch.len() - touch_lost,
-                touch_lost,
-            });
-        }
+                    let mut last = 0;
+                    touch.extend(run.iter().map(|x| {
+                        last = (clip.speed.to_clip(f64::from(x.at)).round() as u32).max(last);
+                        TouchPoint { at: last, ..*x }
+                    }));
+                }
+                Some(note)
+            })
+            .collect();
+        let n = notes.len();
+        let (take, touch_lost) = takes
+            .capture_notes(project, track, l.slot, &notes, &touch)
+            .map_err(KeepError::Model)?;
+        return Ok(Kept {
+            track,
+            slot: l.slot,
+            take,
+            notes: n,
+            bars,
+            launch: None,
+            touch: touch.len() - touch_lost,
+            touch_lost,
+            holds,
+            left_out,
+        });
     }
     let slot = (0..SLOTS)
         .find(|&s| project.tracks[track].slots[s].is_none())
         .ok_or(KeepError::NoSlot(track))?;
     let mut clip = Clip::new(name, phrase.length);
+    clip.holds = holds;
     clip.notes = phrase.notes();
     if with_touch {
         clip.touch = phrase.touch.clone();
@@ -1082,6 +1223,8 @@ pub fn keep(
         }),
         touch: clip_touch,
         touch_lost: 0,
+        holds,
+        left_out,
     })
 }
 

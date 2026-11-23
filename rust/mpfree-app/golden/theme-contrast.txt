@@ -11,6 +11,7 @@ abletown chain-comp 3 # AbleTown (22 Nov): faded off-state labels and small mark
 abletown chain-notes 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown clips 7 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown clips-card 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown clips-card-convert 1 # the Clips grid's runs, as clips-card-mutate; none of the preview's own
 abletown clips-card-direction 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown clips-card-mutate 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown clips-loops 3 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
@@ -53,6 +54,7 @@ console chain 1 # before the theme refactor (phase 0 baseline)
 console chain-sidechain-list 1 # before the theme refactor (phase 0 baseline)
 console clips 6 # before the theme refactor (phase 0 baseline)
 console clips-card 1 # before the theme refactor (phase 0 baseline)
+console clips-card-convert 1 # the Clips grid's runs, as clips-card-mutate; none of the preview's own
 console clips-card-direction 1 # before the theme refactor (phase 0 baseline)
 console clips-card-mutate 1 # before the theme refactor (phase 0 baseline)
 console clips-loops 3 # before the theme refactor (phase 0 baseline)
@@ -179,6 +181,7 @@ default chain-sidechain 1 # before the theme refactor (phase 0 baseline)
 default chain-sidechain-list 8 # before the theme refactor (phase 0 baseline)
 default clips 6 # before the theme refactor (phase 0 baseline)
 default clips-card 1 # before the theme refactor (phase 0 baseline)
+default clips-card-convert 1 # the Clips grid's runs, as clips-card-mutate; none of the preview's own
 default clips-card-direction 1 # before the theme refactor (phase 0 baseline)
 default clips-card-mutate 1 # before the theme refactor (phase 0 baseline)
 default clips-loops 3 # before the theme refactor (phase 0 baseline)
@@ -295,6 +298,7 @@ light browser-samples 6 # Light (phase 4): faint text, under 3:1 in Default too
 light chain 1 # Light (phase 4): faint text, under 3:1 in Default too
 light clips 6 # Light (phase 4): faint text, under 3:1 in Default too
 light clips-card 1 # Light (phase 4): faint text, under 3:1 in Default too
+light clips-card-convert 1 # the Clips grid's runs, as clips-card-mutate; none of the preview's own
 light clips-card-direction 1 # Light (phase 4): faint text, under 3:1 in Default too
 light clips-card-mutate 1 # Light (phase 4): faint text, under 3:1 in Default too
 light clips-loops 3 # Light (phase 4): faint text, under 3:1 in Default too
@@ -328,6 +332,7 @@ slate chain-sidechain 1 # Slate (22 Nov): faded off-state labels and small marks
 slate chain-sidechain-list 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
 slate clips 6 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
 slate clips-card 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate clips-card-convert 1 # the Clips grid's runs, as clips-card-mutate; none of the preview's own
 slate clips-card-direction 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
 slate clips-card-mutate 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
 slate clips-loops 3 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
@@ -384,6 +389,7 @@ spaceship chain-sidechain 2 # before the theme refactor (phase 0 baseline)
 spaceship chain-sidechain-list 9 # before the theme refactor (phase 0 baseline)
 spaceship clips 43 # before the theme refactor (phase 0 baseline)
 spaceship clips-card 68 # before the theme refactor (phase 0 baseline)
+spaceship clips-card-convert 67 # the Clips grid's runs, as clips-card-mutate; none of the preview's own
 spaceship clips-card-direction 68 # before the theme refactor (phase 0 baseline)
 spaceship clips-card-mutate 68 # before the theme refactor (phase 0 baseline)
 spaceship clips-loops 44 # before the theme refactor (phase 0 baseline)
@@ -514,6 +520,7 @@ synthwave browser-samples 6 # before the theme refactor (phase 0 baseline)
 synthwave chain 1 # before the theme refactor (phase 0 baseline)
 synthwave clips 6 # before the theme refactor (phase 0 baseline)
 synthwave clips-card 1 # before the theme refactor (phase 0 baseline)
+synthwave clips-card-convert 1 # the Clips grid's runs, as clips-card-mutate; none of the preview's own
 synthwave clips-card-direction 1 # before the theme refactor (phase 0 baseline)
 synthwave clips-card-mutate 1 # before the theme refactor (phase 0 baseline)
 synthwave clips-loops 3 # before the theme refactor (phase 0 baseline)

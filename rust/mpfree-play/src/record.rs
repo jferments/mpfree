@@ -216,6 +216,8 @@ struct Held {
     /// Song tick of the press.
     tick: Tick,
     velocity: u8,
+    /// Its trigger group ([`Recorder::input_grouped`]).
+    group: u8,
     /// The speed of the clip it went into, for its pressure's clip ticks.
     speed: Speed,
     /// Its pressure buffer, or [`NO_BUF`] before the first value kept.
@@ -247,6 +249,7 @@ const NOT_HELD: Held = Held {
     on: false,
     tick: 0,
     velocity: 0,
+    group: 0,
     speed: Speed::NORMAL,
     buf: NO_BUF,
     kept: 0,
@@ -279,6 +282,7 @@ const NO_TAKE: Taken = Taken {
         on: true,
         ramp: 0,
         join: mpfree_seq::Join::Attack,
+        group: 0,
     },
     take: 0,
 };
@@ -299,7 +303,8 @@ pub struct Recorder {
     which: Which,
     /// The track it recorded in the last view, to notice a change.
     armed: Option<usize>,
-    input: [(u32, Event); MAX_INPUT],
+    /// Notes and knob moves in offset order, each with its trigger group.
+    input: [(u32, Event, u8); MAX_INPUT],
     n_input: usize,
     held: [Held; 128],
     pending: [Pending; MAX_PENDING],
@@ -387,7 +392,7 @@ impl Recorder {
         Recorder {
             which,
             armed: None,
-            input: [(0, Event::AllOff); MAX_INPUT],
+            input: [(0, Event::AllOff, 0); MAX_INPUT],
             n_input: 0,
             held: [NOT_HELD; 128],
             pending: [Pending {
@@ -445,6 +450,14 @@ impl Recorder {
     /// [`MAX_TOUCH_INPUT`], so a flood of pressure never crowds out notes;
     /// a value on the same offset as a note comes after it.
     pub fn input(&mut self, offset: u32, event: Event) {
+        self.input_grouped(offset, event, 0);
+    }
+
+    /// [`Recorder::input`] for a note of trigger group `group`: a pad's
+    /// notes come with [`mpfree_seq::groups::pad_group`], so a pad that
+    /// plays a chord records it as one trigger, with one chance. 0 is a
+    /// note of its own, as MIDI keys and the arp play.
+    pub fn input_grouped(&mut self, offset: u32, event: Event, group: u8) {
         // Another armed track's recorder keeps no locks.
         if self.which != Which::Armed && matches!(event, Event::Lock { .. }) {
             self.dropped += 1;
@@ -473,7 +486,7 @@ impl Recorder {
             self.input[i] = self.input[i - 1];
             i -= 1;
         }
-        self.input[i] = (offset, event);
+        self.input[i] = (offset, event, group);
         self.n_input += 1;
     }
 
@@ -660,9 +673,9 @@ impl Recorder {
                     (Some(a), Some(b)) if b < a => {}
                     (None, Some(_)) => {}
                     _ => {
-                        let (offset, event) = self.input[next];
+                        let (offset, event, group) = self.input[next];
                         next += 1;
-                        self.note_input(view, span, offset, event, &mut switch);
+                        self.note_input(view, span, (offset, group), event, &mut switch);
                         continue;
                     }
                 }
@@ -813,13 +826,14 @@ impl Recorder {
         }
     }
 
-    /// One note or knob move at `offset` in `span`, after the armed
-    /// track's `switch` when that is due at or before it.
+    /// One note or knob move at `offset` in `span`, of trigger group
+    /// `group`, after the armed track's `switch` when that is due at or
+    /// before it.
     fn note_input(
         &mut self,
         view: &PlayView,
         span: &Span,
-        offset: u32,
+        (offset, group): (u32, u8),
         event: Event,
         switch: &mut Option<Due>,
     ) {
@@ -864,6 +878,7 @@ impl Recorder {
                     on: true,
                     tick,
                     velocity,
+                    group,
                     speed,
                     ..NOT_HELD
                 };
@@ -1358,6 +1373,7 @@ impl Recorder {
             on: true,
             ramp: 0,
             join: mpfree_seq::Join::Attack,
+            group: h.group,
         };
         let taken = Taken {
             track,

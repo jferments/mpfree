@@ -3348,6 +3348,7 @@ fn time_song(tracks: usize, trigs: bool) -> (Song, Vec<Launch>) {
                     on: true,
                     ramp: 0,
                     join: mpfree_seq::Join::Attack,
+                    group: 0,
                 })
             })
             .collect();

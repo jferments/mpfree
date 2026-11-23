@@ -214,6 +214,7 @@ fn four_beats() -> Session {
             on: true,
             ramp: 0,
             join: mpfree_seq::Join::Attack,
+            group: 0,
         })
         .collect();
     let mut s = session(c, 0);
@@ -569,6 +570,7 @@ fn a_loop_jump_ends_the_replace_pass_and_a_new_take_replaces_again() {
             on: true,
             ramp: 0,
             join: mpfree_seq::Join::Attack,
+            group: 0,
         })
         .collect();
     let mut s = session(c, 0);
@@ -626,6 +628,7 @@ fn a_take_undoes_and_redoes_as_a_whole() {
             on: true,
             ramp: 0,
             join: mpfree_seq::Join::Attack,
+            group: 0,
         })
         .collect();
     let original = c.notes.clone();
@@ -689,6 +692,7 @@ fn a_late_note_joins_its_own_take() {
             on: true,
             ramp: 0,
             join: mpfree_seq::Join::Attack,
+            group: 0,
         },
         Note {
             tick: 1920,
@@ -702,6 +706,7 @@ fn a_late_note_joins_its_own_take() {
             on: true,
             ramp: 0,
             join: mpfree_seq::Join::Attack,
+            group: 0,
         },
     ];
     let mut s = session(c, 0);

@@ -499,6 +499,34 @@ polyphonic engines, which play the old chord's releases beside the new
 one. So nothing at a note's start needs spreading over its first control
 steps. The device run says whether that holds where memory is slower.
 
+### The composer (`--compose`)
+
+```text
+cargo run --release -p mpfree-bench -- --compose [--quick] [--calibration FILE]
+```
+
+What a request to the composer ([Composing](compose.md)) costs, whole: the
+reading of key and chords, Continue in two styles and lengths, Try again on
+one bar, and Continue on a clip in a project (its reading included). Each
+job runs 2,000 times (200 with `--quick`; the 16-bar reading a tenth of
+that), each run with a different seed as many presses of Try again would
+be, on the second prototype's two-bar C minor riff, after five runs that
+are not counted. It prints each job's median, p95, p99 and worst, in µs.
+The composer is a background job at normal priority and never runs on the
+audio thread, so the worst is what a press of Continue or Try again waits
+for, not a risk to the sound.
+
+On the workstation (22 Nov, one core; medians, the worst in brackets):
+reading two bars takes 0.12 ms and the whole reading budget (2,048 notes
+over 16 bars) 3.9 ms; Continue from 2 to 10 bars in Groove 1.1 ms, from 2
+to 18 bars in Jazz-ish 1.8 ms (3.2 ms); Try again on one bar of 18 0.13 ms;
+Continue on a clip in a project, 2 to 6 bars, 0.75 ms. With the
+calibration file (this machine times 9.3) that is about 18 ms on the MPC
+for an 18-bar Continue (23 ms), 1.3 ms for a Try again and 40 ms for the
+whole reading budget (64 ms): far under what a press can feel. The
+device's own numbers come from its bench round once `host_bench_mpc.py`
+runs `--compose` (not yet: round 2's runbook was rehearsed without it).
+
 ### Lanes (`--lanes`)
 
 ```text
@@ -781,9 +809,12 @@ running):
   a byte. The Sample page's file loads (the browser's Load and preview,
   a kit file, a project's kits) use it on the job lane and hold a promise
   while each sound is decoded; the old guess from the file's length
-  (`decode_need`) is gone. A stretched copy's need is its frames and the
-  source part the stretch thread is handed; an auto-sample's,
-  `Plan::estimate().bytes_most`.
+  (`decode_need`) is gone. A stretched copy's need, and Process's, is the
+  most its job holds at once (`warp::JobSpec::need`, from
+  `mpfree_stretch::need`): the region as floats and the stretched audio,
+  or with a tune the stretched audio and the result as it resamples, or
+  the copy twice as the worker makes it shareable, with 1 MB for the
+  windows' work; an auto-sample's, `Plan::estimate().bytes_most`.
 - The pad player checks at each load: the browser's Load and preview
   (`read_one`, on their threads), each sound as a project's kits open (one
   that doesn't fit is left out, named in the log, and the hint says how

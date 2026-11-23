@@ -16,3 +16,7 @@ mpfree-seq = { path = "../mpfree-seq" }
 
 [dev-dependencies]
 mpfree-play = { path = "../mpfree-play" }
+# The listening tool (examples/listen.rs) only: real sounds, MIDI files in and out.
+mpfree-midi = { path = "../mpfree-midi" }
+mpfree-node = { path = "../mpfree-node" }
+mpfree-synth = { path = "../mpfree-synth" }

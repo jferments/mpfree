@@ -57,6 +57,7 @@ use mpfree_mixer_ui::MixView;
 use crate::app::{App, Effect, View};
 use crate::fxmodes::Switched;
 use crate::gui::ToUi;
+use crate::hand::Hand;
 use crate::mixing::{self, Captured, MixHost, SLOTS};
 use crate::modmix::{strip_id, strip_of};
 use crate::time::TimeHost;
@@ -566,7 +567,7 @@ impl ChainHost {
                     .chain(sid)
                     .and_then(|c| c.uid(slot))
                     .map(|u| Owner::Insert(self.strip(), u));
-                let set = |h: &mut MixHost, addr, v| set(h, addr, v, recording);
+                let set = |h: &mut MixHost, addr, v| set(h, Hand::Screen, addr, v, recording);
                 match crate::fxmodes::switch(h, self.strip(), slot, mode, set) {
                     Err(why) => return ChainOut::Refused(why),
                     // A new engine has its own controls and tabs; it keeps
@@ -597,8 +598,8 @@ impl ChainHost {
                 };
                 for &(param, v) in values {
                     let addr = ParamAddr::new(Owner::Insert(self.strip(), uid), param);
-                    set(h, addr, v, recording);
-                    h.modu.release(addr);
+                    set(h, Hand::Screen, addr, v, recording);
+                    h.modu.release(Hand::Screen, addr);
                 }
                 self.selected = Some(slot);
             }
@@ -608,8 +609,8 @@ impl ChainHost {
                 self.focus = None;
             }
             ChainAction::Focus(addr) => self.focus = Some(addr),
-            ChainAction::Set { addr, value } => set(h, addr, value, recording),
-            ChainAction::Release(addr) => h.modu.release(addr),
+            ChainAction::Set { addr, value } => set(h, Hand::Screen, addr, value, recording),
+            ChainAction::Release(addr) => h.modu.release(Hand::Screen, addr),
             ChainAction::Macro { target, macro_ } => {
                 let r = match macro_ {
                     Some(m) => {
@@ -767,8 +768,8 @@ pub fn set_sidechain(
             None => return ChainOut::Shown,
         },
     };
-    set(h, control, value, recording);
-    h.modu.release(control);
+    set(h, Hand::Screen, control, value, recording);
+    h.modu.release(Hand::Screen, control);
     ChainOut::Shown
 }
 
@@ -954,11 +955,12 @@ fn moved(s: usize, from: usize, to: usize) -> usize {
 /// it records over a move lane while `recording`, else straight onto the
 /// mixer.
 pub fn set_param(h: &mut MixHost, addr: ParamAddr, value: f32, recording: bool) {
-    set(h, addr, value, recording)
+    set(h, Hand::Screen, addr, value, recording)
 }
 
-fn set(h: &mut MixHost, addr: ParamAddr, value: f32, recording: bool) {
-    if h.modu.hand(addr, value, recording) {
+/// `who`'s hand set `addr` to `value` (`hand.rs`).
+fn set(h: &mut MixHost, who: Hand, addr: ParamAddr, value: f32, recording: bool) {
+    if h.modu.hand(who, addr, value, recording) {
         return;
     }
     match addr.owner {
@@ -986,8 +988,8 @@ fn set(h: &mut MixHost, addr: ParamAddr, value: f32, recording: bool) {
 /// Sets `addr` as a knob turn would and lets it go at once (UNDO and
 /// REDO of a mixer turn, `mixturns.rs`).
 pub fn set_param_now(h: &mut MixHost, addr: ParamAddr, value: f32) {
-    set(h, addr, value, false);
-    h.modu.release(addr);
+    set(h, Hand::Screen, addr, value, false);
+    h.modu.release(Hand::Screen, addr);
 }
 
 /// A knob's map when it goes on a macro: the one it has if it is on
@@ -1086,10 +1088,17 @@ impl MacrosHost {
     pub fn action(&mut self, h: &mut MixHost, a: &MacroAction, recording: bool) -> MacroOut {
         match *a {
             MacroAction::Macro { m, value } => {
-                h.modu
-                    .hand(ParamAddr::macro_value(m as u8), value, recording);
+                h.modu.hand(
+                    Hand::Screen,
+                    ParamAddr::macro_value(m as u8),
+                    value,
+                    recording,
+                );
             }
-            MacroAction::Release(m) => h.modu.release(ParamAddr::macro_value(m as u8)),
+            MacroAction::Release(m) => {
+                h.modu
+                    .release(Hand::Screen, ParamAddr::macro_value(m as u8));
+            }
             MacroAction::Bank(b) => self.bank = b.min(1),
             MacroAction::Map { m, map } => {
                 if h.modu
@@ -1103,7 +1112,7 @@ impl MacrosHost {
                 let _ = h.modu.change(&h.mixer, Change::Unmap(t));
             }
             MacroAction::Morph(p) => {
-                h.modu.hand(ParamAddr::morph_pos(0), p, false);
+                h.modu.hand(Hand::Screen, ParamAddr::morph_pos(0), p, false);
             }
             MacroAction::Capture(which) => {
                 let _ = h.modu.change(&h.mixer, Change::Capture(which.min(1) as u8));
@@ -1163,9 +1172,10 @@ impl Panels {
 
     /// A learned MIDI control moved `addr` to `value` (in the parameter's
     /// own units; 0 to 1 for a macro), set as a chain editor knob sets it,
-    /// and the open panel shows it at once (M5).
+    /// and the open panel shows it at once (M5). Its hold while recording
+    /// ends 0.5 s after its last move (`hand.rs`).
     pub fn set_param(&mut self, mix: &mut MixHost, addr: ParamAddr, value: f32, recording: bool) {
-        set(mix, addr, value, recording);
+        set(mix, Hand::Midi, addr, value, recording);
         self.sent_at = None;
     }
 
