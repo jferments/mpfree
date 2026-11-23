@@ -123,7 +123,10 @@ struct Voice {
     pw2: f32,
     amp: Adsr,
     fenv: Adsr,
-    coefs: FilterCoefs,
+    /// The filter's coefficients, moving across each control step; a
+    /// fresh note jumps to its own (`fsnap`).
+    coefs: FilterGlide,
+    fsnap: bool,
     filt: [Filter; 2],
     /// Gain from velocity, the LFO and pressure, ramped across each control
     /// step by `gain_inc` a frame.
@@ -209,7 +212,8 @@ impl Voice {
             pw2: 0.5,
             amp: Adsr::analog_release(),
             fenv: Adsr::analog_release(),
-            coefs: FilterCoefs::default(),
+            coefs: FilterGlide::default(),
+            fsnap: true,
             filt: [Filter::default(); 2],
             gain: 0.0,
             gain_inc: 0.0,
@@ -1011,6 +1015,7 @@ impl Poly {
         v.amp.clear();
         v.fenv.clear();
         v.filt = [Filter::default(); 2];
+        v.fsnap = true;
         v.press.clear();
         v.pv = 0.0;
         v.kill_gain = 1.0;
@@ -1608,10 +1613,17 @@ impl Poly {
         }
         let res = res.clamp(0.0, 1.0);
         let coef_key = [oct.to_bits(), res.to_bits(), rate_bits];
-        if !same_key(&v.coef_key, &coef_key) {
-            v.coefs = FilterCoefs::new(exp2(oct), res, rate);
+        let next = if same_key(&v.coef_key, &coef_key) {
+            None
+        } else {
             v.coef_key = coef_key;
+            Some(FilterCoefs::new(exp2(oct), res, rate))
+        };
+        match (v.fsnap, next) {
+            (true, Some(c)) => v.coefs.snap(c),
+            _ => v.coefs.step(next, CTRL as u32),
         }
+        v.fsnap = false;
         if tables[0] || tables[1] {
             let tin = TableIn::read(&self.values, &self.sm, tables);
             table_control(
@@ -1860,7 +1872,7 @@ impl Poly {
                 &mut v.drive_level,
                 &mut v.drive_aa[0],
             );
-            v.filt[0].run(mode, &v.coefs, l);
+            let coefs = v.filt[0].run_moving(mode, &v.coefs, l);
             let dist = if v.dist_amt > 0.0 {
                 let lv = mix_level(s.unison, [s.lvl1, s.lvl2], v.sub, v.noise);
                 let (ek, en) = soft_scales(v.dist_gain, lv);
@@ -1884,7 +1896,7 @@ impl Poly {
                     }
                 }
                 drive_run_aa(r, dk, dn, v.drive_amt, &mut v.drive_aa[1]);
-                v.filt[1].run(mode, &v.coefs, r);
+                v.filt[1].run_moving(mode, &v.coefs, r);
                 if let Some((ek, en)) = dist {
                     drive_run_aa(r, ek, en, v.dist_amt, &mut v.dist_aa[1]);
                 }
@@ -1893,6 +1905,7 @@ impl Poly {
                     right[from + j] += r[j] * g[j] * s.out_r;
                 }
             }
+            v.coefs.set_pos(coefs);
         }
         if dc {
             self.dc_l.run_added(&mut left[from..to], &ml[..n]);

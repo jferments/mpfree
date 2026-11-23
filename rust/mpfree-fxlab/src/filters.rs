@@ -53,7 +53,7 @@ use mpfree_sampler::dsp::{
     vowel_formants, vowel_gain, vowel_resonance, Comb, Filter as PadFilter, FilterKind,
     Ladder as PadLadder, Svf, FORMANT_2,
 };
-use mpfree_synth::dsp::{Filter as SynthFilter, FilterCoefs, FilterMode};
+use mpfree_synth::dsp::{Filter as SynthFilter, FilterCoefs, FilterGlide, FilterMode};
 use mpfree_synth::{analog, bass, poly, squelch};
 
 use crate::fft::{power_spectrum, Fft};
@@ -165,13 +165,17 @@ fn subjects(rate: u32) -> Vec<Subject> {
             saturates: false,
             peak: true,
             sings: false,
-            // The voice works out its coefficients once a control step.
-            moving: Box::new(move |_, _, _| {
+            // The voice works out its coefficients once a control step
+            // and moves them in a straight line across it.
+            moving: Box::new(move |fc, r, _| {
                 let mut f = SynthFilter::default();
+                let mut glide = FilterGlide::default();
+                glide.snap(FilterCoefs::new(fc, r, rate as f32));
                 let step: Step = Box::new(move |fc, r, x| {
                     let c = FilterCoefs::new(fc, r, rate as f32);
+                    glide.step(Some(c), x.len() as u32);
                     let mut buf: Vec<f32> = x.iter().map(|&s| s as f32).collect();
-                    f.run(mode, &c, &mut buf);
+                    glide.set_pos(f.run_moving(mode, &glide, &mut buf));
                     buf.into_iter().map(f64::from).collect()
                 });
                 (1, step)

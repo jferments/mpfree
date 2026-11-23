@@ -249,6 +249,9 @@ pub struct FilterCoefs {
     a2: f32,
     a3: f32,
     damp: f32,
+    /// The ladder's `1 / (1 + k G⁴)`, for [`Filter::run_moving`] (the held
+    /// path works it out itself).
+    rden: f32,
 }
 
 impl FilterCoefs {
@@ -261,8 +264,10 @@ impl FilterCoefs {
         let damp = 2.0 - 1.95 * res;
         let a1 = 1.0 / (1.0 + g * (g + damp));
         let a2 = g * a1;
+        let big_g = g / (1.0 + g);
+        let g4 = big_g * big_g * big_g * big_g;
         FilterCoefs {
-            big_g: g / (1.0 + g),
+            big_g,
             inv_1g: 1.0 / (1.0 + g),
             k,
             makeup: 1.0 + 0.6 * k,
@@ -270,7 +275,131 @@ impl FilterCoefs {
             a2,
             a3: g * a2,
             damp,
+            rden: 1.0 / (1.0 + k * g4),
         }
+    }
+
+    /// Each coefficient's step a sample from `self` to `to` over `frames`.
+    fn step_to(&self, to: &FilterCoefs, frames: u32) -> FilterCoefs {
+        let per = 1.0 / frames.max(1) as f32;
+        let d = |a: f32, b: f32| (b - a) * per;
+        FilterCoefs {
+            big_g: d(self.big_g, to.big_g),
+            inv_1g: d(self.inv_1g, to.inv_1g),
+            k: d(self.k, to.k),
+            makeup: d(self.makeup, to.makeup),
+            a1: d(self.a1, to.a1),
+            a2: d(self.a2, to.a2),
+            a3: d(self.a3, to.a3),
+            damp: d(self.damp, to.damp),
+            rden: d(self.rden, to.rden),
+        }
+    }
+}
+
+/// A voice's filter coefficients moving in a straight line across each
+/// control step, from where the last step left them to where this one
+/// sets them, instead of jumping at the step: held coefficients add a
+/// zipper on a fast envelope, 13 to 21 dB in the 8 and 16 kHz bands (DSP
+/// quality Y1c, step 2.2). They move every second sample, two samples'
+/// worth at a time: what that leaves sits at the Nyquist frequency, and
+/// it costs half as much. A step that sets the same coefficients holds
+/// them and costs nothing extra.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FilterGlide {
+    /// The coefficients now.
+    now: FilterCoefs,
+    /// Whether the next sample is the second of a pair, so a buffer cut
+    /// anywhere gives the same samples as one run.
+    half: bool,
+    to: FilterCoefs,
+    /// A sample's step while moving.
+    d: FilterCoefs,
+    moving: bool,
+    /// Whether the resonance moves too, or only the cutoff.
+    res: bool,
+}
+
+/// Where a buffer leaves a [`FilterGlide`], from [`Filter::run_moving`]:
+/// stored back with [`FilterGlide::set_pos`] once every channel has run.
+#[derive(Clone, Copy, Debug)]
+pub struct GlidePos {
+    now: FilterCoefs,
+    half: bool,
+}
+
+impl FilterGlide {
+    /// Jumps to `c` and holds there (a fresh note).
+    pub fn snap(&mut self, c: FilterCoefs) {
+        self.now = c;
+        self.half = false;
+        self.to = c;
+        self.moving = false;
+    }
+
+    /// Takes up where a buffer left it.
+    pub fn set_pos(&mut self, p: GlidePos) {
+        self.now = p.now;
+        self.half = p.half;
+    }
+
+    /// The start of a control step of `frames`: lands exactly on the last
+    /// step's coefficients, then heads for `c`, or holds with `None`.
+    pub fn step(&mut self, c: Option<FilterCoefs>, frames: u32) {
+        self.now = self.to;
+        self.half = false;
+        self.moving = false;
+        if let Some(c) = c {
+            self.d = self.now.step_to(&c, frames);
+            self.res = c.k != self.now.k || c.damp != self.now.damp;
+            self.to = c;
+            self.moving = true;
+        }
+    }
+
+    /// Whether this step moves the coefficients.
+    pub fn moving(&self) -> bool {
+        self.moving
+    }
+}
+
+/// One sample through the ladder for stages `s`, with `p` its `[G, G²,
+/// G³, G⁴, 1 - G, 1 / (1 + k G⁴), k, makeup]`.
+#[inline(always)]
+fn ladder_tick(s: &mut [f32; 4], x: f32, p: &[f32; 8]) -> f32 {
+    let [g, g2, g3, g4, b, rden, k, makeup] = *p;
+    let [s0, s1, s2, s3] = *s;
+    let sig = b * (g3 * s0 + g2 * s1 + g * s2 + s3);
+    let y4 = (g4 * x + sig) * rden;
+    let u = x - k * y4;
+    let v = (u - s0) * g;
+    let y = v + s0;
+    s[0] = y + v;
+    let v = (y - s1) * g;
+    let y = v + s1;
+    s[1] = y + v;
+    let v = (y - s2) * g;
+    let y = v + s2;
+    s[2] = y + v;
+    let v = (y - s3) * g;
+    let y = v + s3;
+    s[3] = y + v;
+    y * makeup
+}
+
+/// One sample through the state-variable filter with integrators `ic`;
+/// `OUT` as for [`Filter::svf`].
+#[inline(always)]
+fn svf_tick<const OUT: u8>(ic: &mut [f32; 2], x: f32, c: &FilterCoefs) -> f32 {
+    let v3 = x - ic[1];
+    let v1 = c.a1 * ic[0] + c.a2 * v3;
+    let v2 = ic[1] + c.a2 * ic[0] + c.a3 * v3;
+    ic[0] = 2.0 * v1 - ic[0];
+    ic[1] = 2.0 * v2 - ic[1];
+    match OUT {
+        0 => v2,
+        1 => v1 * c.damp,
+        _ => x - c.damp * v1 - v2,
     }
 }
 
@@ -358,6 +487,135 @@ impl Filter {
             FilterMode::Bp12 => self.svf::<1>(c, buf),
             FilterMode::Hp12 => self.svf::<2>(c, buf),
         }
+    }
+
+    /// Filters `buf` in place with `glide`'s coefficients, moving them
+    /// while it moves (otherwise [`Filter::run`] on them); gives back where
+    /// the buffer leaves the glide. The ladder takes its `1 / (1 + k G⁴)`
+    /// along the same straight line, so a moving sample costs no division.
+    #[inline]
+    pub fn run_moving(
+        &mut self,
+        mode: FilterMode,
+        glide: &FilterGlide,
+        buf: &mut [f32],
+    ) -> GlidePos {
+        if !glide.moving {
+            self.run(mode, &glide.now, buf);
+            return GlidePos {
+                now: glide.now,
+                half: glide.half,
+            };
+        }
+        let (c, d, h) = (glide.now, &glide.d, glide.half);
+        match (mode, glide.res) {
+            (FilterMode::Lp24, false) => self.ladder_moving::<false>(c, d, h, buf),
+            (FilterMode::Lp24, true) => self.ladder_moving::<true>(c, d, h, buf),
+            (FilterMode::Lp12, false) => self.svf_moving::<0, false>(c, d, h, buf),
+            (FilterMode::Lp12, true) => self.svf_moving::<0, true>(c, d, h, buf),
+            (FilterMode::Bp12, false) => self.svf_moving::<1, false>(c, d, h, buf),
+            (FilterMode::Bp12, true) => self.svf_moving::<1, true>(c, d, h, buf),
+            (FilterMode::Hp12, false) => self.svf_moving::<2, false>(c, d, h, buf),
+            (FilterMode::Hp12, true) => self.svf_moving::<2, true>(c, d, h, buf),
+        }
+    }
+
+    /// The ladder with its coefficients `c` moving by `d` a sample, two
+    /// samples' worth every second sample, the resonance's too with `RES`;
+    /// `half` when the first sample ends a pair. `1 / (1 + g)` is `1 - G`,
+    /// so it needs no line of its own.
+    #[inline]
+    fn ladder_moving<const RES: bool>(
+        &mut self,
+        mut c: FilterCoefs,
+        d: &FilterCoefs,
+        half: bool,
+        buf: &mut [f32],
+    ) -> GlidePos {
+        #[inline(always)]
+        fn powers(g: f32, rden: f32, k: f32, makeup: f32) -> [f32; 8] {
+            let g2 = g * g;
+            let g3 = g2 * g;
+            [g, g2, g3, g3 * g, 1.0 - g, rden, k, makeup]
+        }
+        let mut s = self.s;
+        let (mut g, mut rden, mut k, mut makeup) = (c.big_g, c.rden, c.k, c.makeup);
+        let (dg, drden, dk, dmakeup) = (2.0 * d.big_g, 2.0 * d.rden, 2.0 * d.k, 2.0 * d.makeup);
+        let first = usize::from(half && !buf.is_empty());
+        if first == 1 {
+            buf[0] = ladder_tick(&mut s, buf[0], &powers(g, rden, k, makeup));
+            g += dg;
+            rden += drden;
+            if RES {
+                k += dk;
+                makeup += dmakeup;
+            }
+        }
+        let mut open = half && first == 0;
+        let mut pairs = buf[first..].chunks_exact_mut(2);
+        for pair in &mut pairs {
+            let p = powers(g, rden, k, makeup);
+            pair[0] = ladder_tick(&mut s, pair[0], &p);
+            pair[1] = ladder_tick(&mut s, pair[1], &p);
+            g += dg;
+            rden += drden;
+            if RES {
+                k += dk;
+                makeup += dmakeup;
+            }
+        }
+        if let Some(x) = pairs.into_remainder().first_mut() {
+            *x = ladder_tick(&mut s, *x, &powers(g, rden, k, makeup));
+            open = true;
+        }
+        self.s = s;
+        c.big_g = g;
+        c.inv_1g = 1.0 - g;
+        c.rden = rden;
+        c.k = k;
+        c.makeup = makeup;
+        GlidePos { now: c, half: open }
+    }
+
+    /// [`Filter::svf`] with its coefficients `c` moving by `d` a sample,
+    /// as the ladder's do (the damping too with `RES`).
+    #[inline]
+    fn svf_moving<const OUT: u8, const RES: bool>(
+        &mut self,
+        mut c: FilterCoefs,
+        d: &FilterCoefs,
+        half: bool,
+        buf: &mut [f32],
+    ) -> GlidePos {
+        let mut ic = [self.s[0], self.s[1]];
+        let (da1, da2, da3, ddamp) = (2.0 * d.a1, 2.0 * d.a2, 2.0 * d.a3, 2.0 * d.damp);
+        let advance = |c: &mut FilterCoefs| {
+            c.a1 += da1;
+            c.a2 += da2;
+            c.a3 += da3;
+            if RES {
+                c.damp += ddamp;
+            }
+        };
+        let first = usize::from(half && !buf.is_empty());
+        if first == 1 {
+            buf[0] = svf_tick::<OUT>(&mut ic, buf[0], &c);
+            advance(&mut c);
+        }
+        let mut open = half && first == 0;
+        let mut pairs = buf[first..].chunks_exact_mut(2);
+        for pair in &mut pairs {
+            pair[0] = svf_tick::<OUT>(&mut ic, pair[0], &c);
+            pair[1] = svf_tick::<OUT>(&mut ic, pair[1], &c);
+            advance(&mut c);
+        }
+        if let Some(x) = pairs.into_remainder().first_mut() {
+            *x = svf_tick::<OUT>(&mut ic, *x, &c);
+            open = true;
+        }
+        self.s[0] = ic[0];
+        self.s[1] = ic[1];
+        GlidePos { now: c, half: open }
     }
 
     /// The state-variable filter over a buffer; `OUT` 0 low-pass, 1
@@ -1255,6 +1513,70 @@ mod tests {
             y = f.process(FilterMode::Hp12, &c, 1.0);
         }
         assert!(y.abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_held_glide_filters_as_the_plain_run_and_a_moving_one_lands_exactly() {
+        let modes = [
+            FilterMode::Lp24,
+            FilterMode::Lp12,
+            FilterMode::Bp12,
+            FilterMode::Hp12,
+        ];
+        for mode in modes {
+            let a = FilterCoefs::new(800.0, 0.6, 44_100.0);
+            let b = FilterCoefs::new(6_400.0, 0.9, 44_100.0);
+            // Held: the same samples, to the bit, as `run`.
+            let mut g = FilterGlide::default();
+            g.snap(a);
+            g.step(None, 16);
+            assert!(!g.moving());
+            let (mut f1, mut f2) = (Filter::default(), Filter::default());
+            let mut x1 = signal(64);
+            let mut x2 = x1.clone();
+            f1.run(mode, &a, &mut x1);
+            g.set_pos(f2.run_moving(mode, &g, &mut x2));
+            assert!(x1.iter().zip(&x2).all(|(p, q)| p.to_bits() == q.to_bits()));
+            // Moving: a step cut in pieces gives the same samples as one
+            // run, and the next step starts exactly on the target.
+            let mut g1 = FilterGlide::default();
+            g1.snap(a);
+            g1.step(Some(b), 16);
+            let mut g2 = g1;
+            let (mut f1, mut f2) = (Filter::default(), Filter::default());
+            let mut x1 = signal(16);
+            let mut x2 = x1.clone();
+            g1.set_pos(f1.run_moving(mode, &g1, &mut x1));
+            // Cut at odd places too: mid-pair, an empty piece, one sample.
+            for (from, to) in [(0, 5), (5, 5), (5, 6), (6, 9), (9, 16)] {
+                g2.set_pos(f2.run_moving(mode, &g2, &mut x2[from..to]));
+            }
+            assert!(x1.iter().zip(&x2).all(|(p, q)| p.to_bits() == q.to_bits()));
+            assert!(f1.same_as(&f2));
+            g1.step(None, 16);
+            let mut x3 = signal(8);
+            let mut x4 = x3.clone();
+            let mut fb = f1;
+            f1.run(mode, &b, &mut x3);
+            fb.run_moving(mode, &g1, &mut x4);
+            assert!(x3.iter().zip(&x4).all(|(p, q)| p.to_bits() == q.to_bits()));
+        }
+    }
+
+    #[test]
+    fn a_moving_step_passes_between_its_two_ends() {
+        // Halfway through a step the coefficients lie between the two
+        // ends, on the straight line.
+        let a = FilterCoefs::new(1_000.0, 0.5, 44_100.0);
+        let b = FilterCoefs::new(1_100.0, 0.5, 44_100.0);
+        let mut g = FilterGlide::default();
+        g.snap(a);
+        g.step(Some(b), 16);
+        let mut x = vec![0.0f32; 8];
+        let mut f = Filter::default();
+        let c = f.run_moving(FilterMode::Lp24, &g, &mut x).now;
+        assert!(c.big_g > a.big_g.min(b.big_g) && c.big_g < a.big_g.max(b.big_g));
+        assert!((c.rden - 0.5 * (a.rden + b.rden)).abs() < 1e-4);
     }
 
     /// A test signal with steps, both signs and loud parts.
