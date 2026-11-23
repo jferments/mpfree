@@ -332,7 +332,15 @@ const XY_LIST_HINT: &str =
 
 /// The hint while the XY pad is full screen (SHIFT + NEXT SEQ).
 const XY_FULL_HINT: &str =
-    "The XY pad full screen: drag to play the effect   ·   the chip: what it plays   ·   SHIFT + NEXT SEQ: back";
+    "The XY pad full screen: drag to play   ·   the chip: what it plays   ·   Setup: what it moves   ·   SHIFT + NEXT SEQ: back";
+
+/// Hold on a ready-made layout (phase 2): it comes with the XY page.
+const XY_NO_HOLD: &str =
+    "Hold works on a layout of yours for now: Setup makes a copy of this one yours";
+
+/// The hint on Setup for a layout of yours ([`crate::xy_setup`]).
+const XY_SETUP_HINT: &str =
+    "Tap a setting: Q1 to Q3 set its range and curve   ·   + across, + up: then SHIFT + touch settings on any page   ·   Done: back to the pad";
 
 /// The hint while the REC chip's target list is open.
 /// The REC chip names the armed tracks one by one up to this many
@@ -624,6 +632,9 @@ pub enum UndoOn {
     Synth,
     /// The mixer's strips.
     Mixer,
+    /// The XY pad full screen and its Setup: Stay's lifts, each one step
+    /// over all the settings it kept.
+    Xy,
 }
 
 /// How long a told line ([`ToUi::Tell`]) stays in place of the hint.
@@ -748,6 +759,8 @@ enum TypeTo {
     /// A song marker's name (the Song view's Rename, a section picked;
     /// Arrange 3.3).
     MarkerName(usize),
+    /// A layout of yours and its directions' names (XY Setup's name).
+    XyNames(usize),
 }
 
 impl TypeTo {
@@ -760,6 +773,7 @@ impl TypeTo {
                 | TypeTo::SceneName(_)
                 | TypeTo::PerformPage(_)
                 | TypeTo::MarkerName(_)
+                | TypeTo::XyNames(_)
         )
     }
 }
@@ -1115,11 +1129,12 @@ pub enum ToUi {
         delta: i32,
         fine: bool,
     },
-    /// Whether the Synth tab's and the mixer's turns ([`crate::undo`])
-    /// have something to undo, when that changes.
+    /// Whether the Synth tab's, the mixer's and the XY pad's turns
+    /// ([`crate::undo`]) have something to undo, when that changes.
     TurnsReady {
         synth: bool,
         mixer: bool,
+        xy: bool,
     },
     /// A line for the Events log only (not printed).
     Event(String),
@@ -1221,6 +1236,10 @@ pub enum ToUi {
     /// touch on a value armed it (the hint line says so); None once a
     /// control took it or it was cancelled.
     Learning(Option<String>),
+    /// Your XY layouts in this song as the sound loop has them, after a
+    /// change ([`crate::xy_song`]): the XY pad's list, Setup, the waiting
+    /// banner, the bar under the pad.
+    Xy(Box<crate::xy_song::XyView>),
     /// Q-LINK: the Q-Link column's next bank.
     QLinkBank,
     /// SHIFT + Q-LINK: the Q-Link column's previous bank.
@@ -1993,6 +2012,9 @@ pub enum FromUi {
     /// The Play page: a filter, a send, a fader, a throw or the XY pad,
     /// for the mixer (`mixing.rs`).
     PlayFx(PlayFx),
+    /// Your XY layouts: the XY pad's list, Setup, the waiting banner and
+    /// the bar under the pad ([`crate::xy_song`]).
+    Xy(crate::xy_song::XyAction),
     /// A pattern row's speaker: pad `pad` of `track`'s kit muted or let
     /// play on that track, at once (the instrument redesign's step 10).
     PadMute {
@@ -2499,7 +2521,7 @@ pub struct Player {
     seen_loop: (usize, usize, usize),
     /// The Synth tab's and the mixer's turns can be undone (the audio
     /// thread keeps them), and what the UNDO light was last told.
-    turns_ready: (bool, bool),
+    turns_ready: (bool, bool, bool),
     /// What REC records, as the desk last said ([`ToUi::Rec`]).
     rec: crate::rec_arm::RecArm,
     /// The page (and Play view) the arm was last moved for, so that a page
@@ -2514,6 +2536,11 @@ pub struct Player {
     /// The XY pad full screen in place of Play's view (SHIFT + NEXT SEQ,
     /// [`play_page::XY_FULL_PAGE`]).
     xy_full: bool,
+    /// Setup for the layout of yours playing, in the full-screen pad's
+    /// place ([`crate::xy_setup`]).
+    xy_setup: bool,
+    /// Your layouts, as the sound loop last told them ([`ToUi::Xy`]).
+    xy_song: crate::xy_song::XyView,
     /// The Pads tab's Perform view: the project's Perform set
     /// ([`crate::perform_tab`]).
     perform: crate::perform_tab::PerformTab,
@@ -2650,6 +2677,18 @@ impl Player {
             crate::rec_list::RecList::default(),
         );
         ui.add(crate::xy_list::XY_LIST, crate::xy_list::XyList::new(0));
+        ui.add(
+            crate::xy_widgets::XY_BAR,
+            crate::xy_widgets::XyBar::default(),
+        );
+        ui.add(
+            crate::xy_setup::XY_SETUP,
+            crate::xy_setup::XySetup::default(),
+        );
+        ui.add(
+            crate::xy_widgets::XY_BANNER,
+            crate::xy_widgets::XyBanner::default(),
+        );
         ui.add(play_page::SYNTH_PADS_HEAD, PadsBar::default());
         ui.add(
             mpfree_synth_ui::pick::PICK,
@@ -2712,6 +2751,11 @@ impl Player {
         .expect("the XY pad's list");
         ui.add_page(play_page::XY_FULL_PAGE, &play_page::xy_full_layout())
             .expect("the XY pad full screen");
+        ui.add_page(
+            crate::xy_setup::XY_SETUP_PAGE,
+            &play_page::xy_setup_layout(),
+        )
+        .expect("Setup for a layout of yours");
         let debug = DebugPages::add(&mut ui).expect("debug layouts");
         ui.add_page("Console", SYSLOG_LAYOUT)
             .expect("console layout");
@@ -2841,12 +2885,14 @@ impl Player {
             recall: None,
             undo_held: None,
             seen_loop: (0, 0, 0),
-            turns_ready: (false, false),
+            turns_ready: (false, false, false),
             rec: crate::rec_arm::RecArm::default(),
             arm_page: None,
             rec_list: false,
             xy_list: false,
             xy_full: false,
+            xy_setup: false,
+            xy_song: crate::xy_song::XyView::default(),
             perform: crate::perform_tab::PerformTab::default(),
             throw_strips: vec![("Master".to_string(), mpfree_fx::StripId::Master)],
             play_own: PlayView::All,
@@ -4480,6 +4526,9 @@ impl Player {
             });
             held_title = format!("Q-Links · Controller {}", c.bank_words());
             (held_title.as_str(), cards)
+        } else if let Some(cards) = self.xy_setup_cards() {
+            // XY Setup: the picked setting's range and curve, the glide.
+            ("Q-Links · XY setup", cards)
         } else if self.perform_showing() {
             // The Perform view: the picked throw's own settings on its
             // strip's Perform FX (Q3 and Q4 faint).
@@ -5413,6 +5462,7 @@ impl Player {
         self.rec_list = false;
         self.xy_list = false;
         self.xy_full = false;
+        self.xy_setup = false;
         self.play.view = v;
         if v != PlayView::Beats {
             self.play.selected = None;
@@ -5606,6 +5656,7 @@ impl Player {
     fn toggle_xy_list(&mut self) {
         self.xy_list = !self.xy_list && self.view == View::Play;
         self.rec_list = false;
+        self.xy_setup = false;
         let picked = self.play.xy_effect.map_or(0, |k| k + 1);
         if let Some(l) = self
             .ui
@@ -5625,6 +5676,7 @@ impl Player {
         self.xy_full = !self.xy_full && self.view == View::Play;
         self.xy_list = false;
         self.rec_list = false;
+        self.xy_setup = false;
         if self.view == View::Play {
             self.show_view(self.view);
         }
@@ -5650,6 +5702,276 @@ impl Player {
             play_page::xy_choice_detail(i)
         ));
         Some(FromUi::PlayFx(PlayFx::XyEffect(pick)))
+    }
+
+    /// Setup for the layout of yours playing, in the full-screen pad's
+    /// place (the sound loop's view fills it).
+    fn open_xy_setup(&mut self) {
+        if self.view != View::Play {
+            return;
+        }
+        self.xy_list = false;
+        self.rec_list = false;
+        self.xy_full = true;
+        self.xy_setup = true;
+        let view = self
+            .xy_song
+            .playing
+            .and_then(|p| self.xy_song.yours.get(p))
+            .cloned();
+        if let Some(w) = self
+            .ui
+            .get_mut::<crate::xy_setup::XySetup>(crate::xy_setup::XY_SETUP)
+        {
+            w.reset();
+            if let Some(v) = view {
+                w.set_view(v);
+            }
+        }
+        self.show_view(self.view);
+        self.refresh_qlinks();
+        self.refresh_hint();
+    }
+
+    /// Setup's Done: the full-screen pad again.
+    fn close_xy_setup(&mut self) {
+        if !self.xy_setup {
+            return;
+        }
+        self.xy_setup = false;
+        if self.view == View::Play {
+            self.show_view(self.view);
+        }
+        self.refresh_qlinks();
+        self.refresh_hint();
+    }
+
+    /// Setup shows (its Q-Links set the picked setting).
+    fn xy_setup_showing(&self) -> bool {
+        self.xy_setup && self.view == View::Play && self.ready
+    }
+
+    /// The Q-Link cards on Setup, while it shows.
+    fn xy_setup_cards(&self) -> Option<[QLinkCard; 4]> {
+        if !self.xy_setup_showing() {
+            return None;
+        }
+        let w = self
+            .ui
+            .get::<crate::xy_setup::XySetup>(crate::xy_setup::XY_SETUP)?;
+        Some(w.qlink_cards())
+    }
+
+    /// Q-Link `k` turned on Setup.
+    fn xy_setup_qlink(&mut self, k: usize, ticks: i32) {
+        let turned = self
+            .ui
+            .get_mut::<crate::xy_setup::XySetup>(crate::xy_setup::XY_SETUP)
+            .is_some_and(|w| w.qlink(k, ticks));
+        if turned {
+            self.xy_setup_acts();
+            self.refresh_qlinks();
+        }
+    }
+
+    /// The layout of yours playing, as the sound loop last told it.
+    fn xy_mine(&self) -> Option<(usize, &crate::xy_song::MineView)> {
+        let p = self.xy_song.playing?;
+        Some((p, self.xy_song.yours.get(p)?))
+    }
+
+    /// A tap on the full-screen pad's bar: Hold (0), Let go (1) or Setup
+    /// (2). On a ready-made layout, Let go and Setup make a copy of it
+    /// yours; Hold waits for the XY page there.
+    fn xy_bar(&mut self, i: usize) -> Option<FromUi> {
+        use crate::xy_song::XyAction;
+        let mine = self.xy_mine().map(|(p, m)| (p, m.stay));
+        let pick = self.play.xy_effect;
+        match (i, mine) {
+            (0, Some(_)) => Some(FromUi::Xy(XyAction::Hold(!self.xy_song.hold))),
+            (0, None) => {
+                self.tell(XY_NO_HOLD);
+                None
+            }
+            (1, Some((layout, stay))) => Some(FromUi::Xy(XyAction::Lift {
+                layout,
+                stay: !stay,
+            })),
+            (1, None) => Some(FromUi::Xy(XyAction::FromReady {
+                pick,
+                stay: Some(!self.play.xy.stays()),
+            })),
+            (2, Some(_)) => {
+                self.open_xy_setup();
+                None
+            }
+            (2, None) => {
+                self.open_xy_setup();
+                Some(FromUi::Xy(XyAction::FromReady { pick, stay: None }))
+            }
+            _ => None,
+        }
+    }
+
+    /// What a finger did on Setup, for the sound loop (a row's range and
+    /// curve, Set or Add, Let go, the glide), or here (Done, the names).
+    fn xy_setup_acts(&mut self) {
+        use crate::xy_setup::{SetupAct, XySetup, XY_SETUP};
+        use crate::xy_song::XyAction;
+        let Some(w) = self.ui.get_mut::<XySetup>(XY_SETUP) else {
+            return;
+        };
+        let acts = w.take();
+        let view = w.view.clone();
+        let Some(layout) = self.xy_song.playing else {
+            return;
+        };
+        let row = |i: usize| view.rows.get(i).map(|r| (r.up, r.k));
+        for a in acts {
+            let out = match a {
+                SetupAct::Pick(_) => {
+                    self.refresh_qlinks();
+                    None
+                }
+                SetupAct::Range { row: i, from, to } => row(i).map(|(up, k)| XyAction::Range {
+                    layout,
+                    up,
+                    k,
+                    from,
+                    to,
+                }),
+                SetupAct::Curve { row: i, curve } => row(i).map(|(up, k)| XyAction::Curve {
+                    layout,
+                    up,
+                    k,
+                    curve,
+                }),
+                SetupAct::How { row: i, add } => {
+                    row(i).map(|(up, k)| XyAction::How { layout, up, k, add })
+                }
+                SetupAct::NoAdd(_) => {
+                    self.tell(crate::xy_song::NO_ADD);
+                    None
+                }
+                SetupAct::TakeOff(i) => row(i).map(|(up, k)| XyAction::TakeOff { layout, up, k }),
+                SetupAct::Lift(stay) => Some(XyAction::Lift { layout, stay }),
+                SetupAct::Glide(ms) => Some(XyAction::Glide { layout, ms }),
+                SetupAct::Start(from_here) => Some(XyAction::Start { layout, from_here }),
+                SetupAct::Follow(on) => Some(XyAction::Follow { layout, on }),
+                SetupAct::Plus(up) => Some(XyAction::Wait { layout, up }),
+                SetupAct::Name => {
+                    self.name_xy_layout(layout, &view);
+                    None
+                }
+                SetupAct::Delete => {
+                    self.close_xy_setup();
+                    Some(XyAction::Delete(layout))
+                }
+                SetupAct::Done => {
+                    self.close_xy_setup();
+                    None
+                }
+            };
+            if let Some(a) = out {
+                self.outbox.push(FromUi::Xy(a));
+            }
+        }
+    }
+
+    /// Setup's name: the text keyboard for the layout's name and its
+    /// directions'.
+    fn name_xy_layout(&mut self, layout: usize, v: &crate::xy_song::MineView) {
+        use crate::xy_song::{AXIS_LEN, NAME_LEN};
+        use mpfree_ui::textpad::TextAsk;
+        let ask = |key: &str, label: &str, title: String, value: &str, max_len| TextAsk {
+            key: key.to_string(),
+            label: label.to_string(),
+            title,
+            value: value.to_string(),
+            max_len,
+        };
+        self.open_textpad(
+            vec![
+                ask(
+                    "name",
+                    "Layout",
+                    "Name the layout".to_string(),
+                    &v.name,
+                    NAME_LEN,
+                ),
+                ask(
+                    "across",
+                    "Across",
+                    format!("Name across on {}", v.name),
+                    &v.across,
+                    AXIS_LEN,
+                ),
+                ask(
+                    "up",
+                    "Up",
+                    format!("Name up on {}", v.name),
+                    &v.up,
+                    AXIS_LEN,
+                ),
+            ],
+            TypeTo::XyNames(layout),
+        );
+    }
+
+    /// Your layouts as the sound loop tells them: the list's tiles, the
+    /// pad's chip and axes, the bar, Setup and the waiting banner.
+    fn apply_xy(&mut self, v: crate::xy_song::XyView) {
+        use crate::xy_widgets::{XyBanner, XY_BANNER};
+        let mine = v.playing.and_then(|p| v.yours.get(p)).cloned();
+        if let Some(l) = self
+            .ui
+            .get_mut::<crate::xy_list::XyList>(crate::xy_list::XY_LIST)
+        {
+            let yours: Vec<(String, String)> = v
+                .yours
+                .iter()
+                .map(|m| (m.name.clone(), m.line.clone()))
+                .collect();
+            if l.yours != yours || l.playing != v.playing {
+                l.yours = yours;
+                l.playing = v.playing;
+            }
+        }
+        self.play.set_yours(mine.as_ref());
+        match mine {
+            Some(m) => {
+                if let Some(w) = self
+                    .ui
+                    .get_mut::<crate::xy_setup::XySetup>(crate::xy_setup::XY_SETUP)
+                {
+                    w.set_view(m);
+                }
+            }
+            // Deleted, or none of yours plays: Setup closes.
+            None => self.close_xy_setup(),
+        }
+        let banner = v.wait.as_ref().map(|w| XyBanner {
+            up: w.up,
+            line: w.line.clone(),
+            just: w.just.clone(),
+        });
+        let was = self.xy_song.wait.is_some();
+        if let Some(b) = &banner {
+            if let Some(w) = self.ui.get_mut::<XyBanner>(XY_BANNER) {
+                *w = b.clone();
+            }
+        }
+        if banner.is_some() != was {
+            let (w, h) = self.ui.size();
+            let at = banner.is_some().then(|| XyBanner::place(w, h));
+            for page in self.ui.pages() {
+                let _ = self.ui.set_float(&page, XY_BANNER, at);
+            }
+        }
+        self.xy_song = v;
+        self.refresh_play();
+        self.refresh_qlinks();
+        self.refresh_hint();
     }
 
     /// Open or close the REC chip's target list in place of Play's or the
@@ -6251,6 +6573,23 @@ impl Player {
                 }
             }
         }
+        // The full-screen pad's Hold, Let go and Setup: what plays now.
+        let mine = self.xy_mine().map(|(_, m)| m.stay);
+        let bar = crate::xy_widgets::XyBar {
+            hold: self.xy_song.hold && mine.is_some(),
+            yours: mine.is_some(),
+            stay: mine.unwrap_or(self.play.xy.stays()),
+        };
+        let bar_name = crate::xy_widgets::XY_BAR;
+        if self
+            .ui
+            .get::<crate::xy_widgets::XyBar>(bar_name)
+            .is_some_and(|b| *b != bar)
+        {
+            if let Some(b) = self.ui.get_mut::<crate::xy_widgets::XyBar>(bar_name) {
+                *b = bar;
+            }
+        }
         // The step inspector: filled while a step is held or picked on
         // Beats, and its page swapped in for the throws' (or back).
         let inspect = self.play.inspect().unwrap_or_default();
@@ -6268,6 +6607,8 @@ impl Player {
                 crate::rec_list::REC_PAGE
             } else if self.xy_list && self.view == View::Play {
                 crate::xy_list::XY_PAGE
+            } else if self.xy_setup && self.view == View::Play {
+                crate::xy_setup::XY_SETUP_PAGE
             } else if self.xy_full && self.view == View::Play {
                 play_page::XY_FULL_PAGE
             } else {
@@ -7109,6 +7450,8 @@ impl Player {
             REC_LIST_HINT.to_string()
         } else if self.ready && self.view == View::Play && self.xy_list {
             XY_LIST_HINT.to_string()
+        } else if self.ready && self.view == View::Play && self.xy_setup {
+            XY_SETUP_HINT.to_string()
         } else if self.ready && self.view == View::Play && self.xy_full {
             XY_FULL_HINT.to_string()
         } else if self.ready && self.rec.ready.is_some() {
@@ -7630,6 +7973,8 @@ impl Player {
     /// Synth tab and the mixer. None elsewhere.
     fn undo_source(&self) -> Option<HistoryOf> {
         Some(match self.view {
+            // The XY pad full screen and Setup: Stay's turns.
+            View::Play if self.xy_full || self.xy_setup => HistoryOf::Turns(UndoOn::Xy),
             View::Play | View::Sequencer => match self.play.view {
                 PlayView::Beats => HistoryOf::Takes,
                 PlayView::All if self.undo_loop => HistoryOf::Loop,
@@ -8121,6 +8466,7 @@ impl Player {
             Some(HistoryOf::Perform) => self.perform.can_undo(),
             Some(HistoryOf::Turns(UndoOn::Synth)) => self.turns_ready.0,
             Some(HistoryOf::Turns(UndoOn::Mixer)) => self.turns_ready.1,
+            Some(HistoryOf::Turns(UndoOn::Xy)) => self.turns_ready.2,
             None => false,
         }
     }
@@ -8928,7 +9274,8 @@ impl Player {
             | TypeTo::PortName
             | TypeTo::SceneName(_)
             | TypeTo::PerformPage(_)
-            | TypeTo::MarkerName(_) => None,
+            | TypeTo::MarkerName(_)
+            | TypeTo::XyNames(_) => None,
         }
     }
 
@@ -8949,6 +9296,21 @@ impl Player {
             let acts = self.perform.rename(page, &name);
             self.perform_acts(acts);
             return None;
+        }
+        if let Some(TypeTo::XyNames(layout)) = to {
+            let named = |key: &str| {
+                names
+                    .iter()
+                    .find(|(k, _)| k == key)
+                    .map(|(_, n)| n.clone())
+                    .unwrap_or_default()
+            };
+            return Some(FromUi::Xy(crate::xy_song::XyAction::Names {
+                layout,
+                name: named("name"),
+                across: named("across"),
+                up: named("up"),
+            }));
         }
         if let Some(TypeTo::MarkerName(index)) = to {
             let (_, name) = names.into_iter().next()?;
@@ -9131,6 +9493,7 @@ impl Player {
                     let title = match on {
                         UndoOn::Synth => "Undo history · Synth sound",
                         UndoOn::Mixer => "Undo history · Mixer",
+                        UndoOn::Xy => "Undo history · XY pad",
                     };
                     self.show_history(title, rows, now);
                 }
@@ -9149,7 +9512,7 @@ impl Player {
             ToUi::LineLevel(db) => self.sample.set_monitor_level(&mut self.ui, db),
             ToUi::Nav(n) => self.nav(n),
             ToUi::Held { delta, fine } => self.held_turn(delta, fine),
-            ToUi::TurnsReady { synth, mixer } => self.turns_ready = (synth, mixer),
+            ToUi::TurnsReady { synth, mixer, xy } => self.turns_ready = (synth, mixer, xy),
             ToUi::LeftOut(what) => self.left_out([what]),
             ToUi::Line(l) | ToUi::Event(l) => {
                 let tone = tone_of(&l);
@@ -9400,7 +9763,10 @@ impl Player {
                 }
             }
             ToUi::PlayQLink(k, ticks) => {
-                if self.play.held.is_some()
+                if self.xy_setup_showing() {
+                    // XY Setup: the picked setting's range and curve.
+                    self.xy_setup_qlink(k, ticks);
+                } else if self.play.held.is_some()
                     && matches!(self.view, View::Play | View::Sequencer | View::Arrange)
                 {
                     // The step pads held: the Q-Links set them.
@@ -9646,6 +10012,7 @@ impl Player {
                 self.chain_page.cancel_learn();
                 self.refresh_qlinks();
             }
+            ToUi::Xy(v) => self.apply_xy(*v),
             ToUi::Learning(name) => {
                 if self.learning != name {
                     self.learning = name;
@@ -12760,6 +13127,7 @@ impl Player {
         if v != View::Play {
             self.xy_list = false;
             self.xy_full = false;
+            self.xy_setup = false;
         }
         let followed = self.play_follows(v);
         let page = match v {
@@ -12773,6 +13141,7 @@ impl Player {
                 crate::rec_list::REC_PAGE.to_string()
             }
             View::Play if self.xy_list && self.ready => crate::xy_list::XY_PAGE.to_string(),
+            View::Play if self.xy_setup && self.ready => crate::xy_setup::XY_SETUP_PAGE.to_string(),
             View::Play if self.xy_full && self.ready => play_page::XY_FULL_PAGE.to_string(),
             View::Play | View::Sequencer => self
                 .play
@@ -13194,6 +13563,11 @@ impl Player {
         if phase == Touch::Down && finger != WHEEL_FINGER && self.status.shift {
             if let Some(v) = self.learnable_at(x, y) {
                 self.learn_finger = Some(finger);
+                // The XY banner waits: the setting joins the layout
+                // instead of MIDI Learn.
+                if self.xy_song.wait.is_some() {
+                    return Some(FromUi::Xy(crate::xy_song::XyAction::Join(v)));
+                }
                 return Some(FromUi::LearnValue(v));
             }
         }
@@ -13987,6 +14361,26 @@ impl Player {
                 self.toggle_xy_list();
                 None
             }
+            // A layout of yours plays; + New layout opens an empty one in
+            // Setup.
+            (crate::xy_list::XY_LIST, EventKind::Cell { row: 1, col }) => {
+                self.toggle_xy_list();
+                Some(FromUi::Xy(crate::xy_song::XyAction::Play(col)))
+            }
+            (crate::xy_list::XY_LIST, EventKind::Cell { row: 2, .. }) => {
+                self.open_xy_setup();
+                Some(FromUi::Xy(crate::xy_song::XyAction::New))
+            }
+            // The full-screen pad's Hold, Let go and Setup.
+            (crate::xy_widgets::XY_BAR, EventKind::Toggle(i)) => self.xy_bar(i),
+            (crate::xy_setup::XY_SETUP, EventKind::Select(0)) => {
+                self.xy_setup_acts();
+                None
+            }
+            // The waiting banner's Cancel and Done.
+            (crate::xy_widgets::XY_BANNER, EventKind::Tab(i)) => {
+                Some(FromUi::Xy(crate::xy_song::XyAction::WaitEnd(i == 1)))
+            }
             (crate::power::CARD, EventKind::Tab(i)) => {
                 self.power_tap(i);
                 None
@@ -14041,6 +14435,10 @@ impl Player {
                 let a = self.synth.as_mut()?.qlink(&mut self.ui, index, delta);
                 self.refresh_qlinks();
                 a.map(FromUi::Synth)
+            }
+            (play_page::QLINKS, EventKind::Step { index, delta }) if self.xy_setup_showing() => {
+                self.xy_setup_qlink(index, delta);
+                None
             }
             (play_page::QLINKS, EventKind::Step { index, delta })
                 if self.chain_page.drives(self.view) && !self.band_showing() =>
@@ -18394,6 +18792,33 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     full.refresh_play();
     full.toggle_xy_full();
     out.push(("play-xy-full", full));
+    // Your XY layouts (the XY controller plan's phase 2, boards 1 to 4 of
+    // the mockups approved 23 Nov 10:34Z): the list with two of yours,
+    // Squelch playing full screen, its Setup with a setting picked, and
+    // the waiting banner over the Synth tab.
+    let mut yours = sample_player(fonts());
+    yours.apply(ToUi::Xy(Box::new(crate::xy_song::sample_view(false))));
+    yours.toggle_xy_list();
+    out.push(("play-xy-yours", yours));
+    let mut full = sample_player(fonts());
+    full.apply(ToUi::Xy(Box::new(crate::xy_song::sample_view(false))));
+    full.toggle_xy_full();
+    out.push(("play-xy-full-yours", full));
+    let mut setup = sample_player(fonts());
+    setup.apply(ToUi::Xy(Box::new(crate::xy_song::sample_view(false))));
+    setup.open_xy_setup();
+    if let Some(w) = setup
+        .ui
+        .get_mut::<crate::xy_setup::XySetup>(crate::xy_setup::XY_SETUP)
+    {
+        w.picked = Some(0);
+    }
+    setup.refresh_qlinks();
+    out.push(("play-xy-setup", setup));
+    let mut banner = sample_player(fonts());
+    banner.apply(ToUi::Xy(Box::new(crate::xy_song::sample_view(true))));
+    banner.show_view(View::Synth);
+    out.push(("xy-banner", banner));
     // The list of kits over the page (Jay's card, 13 Nov 14:57Z), opened
     // from what the pads play or the Pads tab's Kit.
     let mut kits = sample_player(fonts());
@@ -25008,6 +25433,7 @@ mod tests {
         p.apply(ToUi::TurnsReady {
             synth: false,
             mixer: true,
+            xy: false,
         });
         assert_eq!(light(&mut p), Some(true));
         assert_eq!(light(&mut p), None, "said once");
@@ -30511,6 +30937,7 @@ mod tests {
             pads: String::new(),
             pad_layers: String::new(),
             perform: String::new(),
+            xy: String::new(),
             loops: Some(loops),
             audio: Some(audio),
         };
@@ -31068,6 +31495,7 @@ mod tests {
                 pads: String::new(),
                 pad_layers: String::new(),
                 perform: String::new(),
+                xy: String::new(),
                 loops: None,
                 audio: None,
             })
@@ -31171,6 +31599,7 @@ mod tests {
                 pads: String::new(),
                 pad_layers: String::new(),
                 perform: String::new(),
+                xy: String::new(),
                 loops: None,
                 audio: None,
             })
