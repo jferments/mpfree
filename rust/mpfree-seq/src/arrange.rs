@@ -302,14 +302,34 @@ pub struct Marker {
     pub passes: u16,
 }
 
-/// The scene a section was made from (phase 4b): its row, and whether
-/// the section has been edited in the song since. Until then it follows
-/// the row; once changed it plays its own blocks, keeping its name and
-/// place, and Back to the scene puts the row's clips back.
+/// The scene a section was made from (phase 4b): its row, how long one
+/// pass of it was when the section was made, and whether the section has
+/// been edited in the song since. Until then it follows the row: its
+/// blocks are the row's clips (linked by id, so an edit of a clip on the
+/// grid reaches it), and a list edit makes it again from the row as the
+/// row is then. Once changed it plays its own blocks, keeping its name
+/// and place, and Back to the scene puts the row's clips back.
+///
+/// The pass is the section's own, not the row's length now: lengthening
+/// a clip on the grid moves nothing in the song. It is where the song's
+/// last section ends while it follows (no marker after it says).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FromScene {
     pub row: usize,
+    /// Song ticks, more than 0.
+    pub pass: Tick,
     pub changed: bool,
+}
+
+impl FromScene {
+    /// Made from row `row` now, a pass `pass` ticks long.
+    pub fn following(row: usize, pass: Tick) -> FromScene {
+        FromScene {
+            row,
+            pass,
+            changed: false,
+        }
+    }
 }
 
 impl Marker {
@@ -464,7 +484,9 @@ impl Arrangement {
             m.at < 0
                 || m.passes == 0
                 || m.passes > MAX_TIMES
-                || m.scene.is_some_and(|s| s.row >= SCENES)
+                || m.scene.is_some_and(|s| {
+                    s.row >= SCENES || s.pass <= 0 || s.pass > Tick::from(SONG_LANE_LEN)
+                })
         }) || self.markers.windows(2).any(|w| w[0].at > w[1].at)
         {
             return Err(ModelError::BadPlacement);
@@ -614,6 +636,33 @@ impl Arrangement {
             }
         }
         self.drop_unplayed();
+        Ok(())
+    }
+
+    /// Song ticks `from..to` playing `blocks` instead of what played there
+    /// (a linked list's section made again from its scene, the Arrange
+    /// refactor's 4b.2): every track's blocks there taken out as
+    /// [`Arrangement::clear`] takes them, then `blocks` put in. Refused
+    /// (`BadPlacement`), the song as it was: a block outside `from..to`,
+    /// or one that runs into another.
+    pub fn fill(
+        &mut self,
+        tracks: &[Track],
+        from: Tick,
+        to: Tick,
+        blocks: &[Placement],
+    ) -> Result<(), ModelError> {
+        if blocks.iter().any(|p| p.start < from || p.end() > to) {
+            return Err(ModelError::BadPlacement);
+        }
+        let mut song = self.clone();
+        for t in 0..tracks.len() {
+            song.clear(tracks, t, from, to)?;
+        }
+        for p in blocks {
+            song.place(p.clone())?;
+        }
+        *self = song;
         Ok(())
     }
 
@@ -1029,14 +1078,20 @@ pub fn scenes_to_song(
             }
             song.place(Placement::new(track, clip.id, t, len))?;
         }
-        let name = scene
-            .map(|s| s.name.clone())
-            .filter(|n| !n.is_empty())
-            .unwrap_or_else(|| format!("Scene {}", row + 1));
-        song.mark(t, &name)?;
+        song.mark(t, &scene_title(project, row))?;
         t += length;
     }
     Ok(ToSong { song, differences })
+}
+
+/// Row `row`'s scene by name, as a marker made from it is named: its
+/// name, or "Scene N" for one with none.
+pub fn scene_title(project: &Project, row: usize) -> String {
+    project
+        .scene(row)
+        .map(|s| s.name.clone())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| format!("Scene {}", row + 1))
 }
 
 /// Each step of the song list: where it starts, from tick 0, and how
@@ -1061,8 +1116,8 @@ pub fn list_spans(project: &Project, bar: Tick) -> Vec<(Tick, Tick)> {
 /// The song's sections, as a linked song list shows them (phase 4b, plan
 /// D8), in bars of `bar` ticks: each from its marker to the next; the
 /// song's bars before the first marker as an unnamed section (the whole
-/// song, with no marker); the last one as long as its scene's passes
-/// ([`scene_length`] times its passes) while it follows its scene, else
+/// song, with no marker); the last one as long as its passes
+/// ([`FromScene::pass`] times its passes) while it follows its scene, else
 /// to the end of the song in whole bars (one bar at least). None for an
 /// empty song with no marker.
 pub fn song_sections(project: &Project, bar: Tick) -> Vec<SongSection> {
@@ -1087,9 +1142,7 @@ pub fn song_sections(project: &Project, bar: Tick) -> Vec<SongSection> {
     for (k, m) in song.markers.iter().enumerate() {
         let to = match (song.markers.get(k + 1), m.scene) {
             (Some(n), _) => n.at,
-            (None, Some(s)) if !s.changed => {
-                m.at + scene_length(project, s.row, bar) * Tick::from(m.passes.max(1))
-            }
+            (None, Some(s)) if !s.changed => m.at + s.pass * Tick::from(m.passes.max(1)),
             (None, _) => whole(m.at),
         };
         out.push(SongSection {
@@ -1834,10 +1887,7 @@ mod tests {
             .collect();
         let mut song = scenes_to_song(p, &rows, 0).unwrap().song;
         for (m, &(row, passes)) in song.markers.iter_mut().zip(steps) {
-            m.scene = Some(FromScene {
-                row,
-                changed: false,
-            });
+            m.scene = Some(FromScene::following(row, scene_length(p, row, BAR)));
             m.passes = passes;
         }
         song.list.linked = true;
@@ -1855,12 +1905,7 @@ mod tests {
         linked(&mut p, &[(0, 2), (1, 3), (0, 1)]);
         p.check().unwrap();
         let parts = song_sections(&p, BAR);
-        let from = |row| {
-            Some(FromScene {
-                row,
-                changed: false,
-            })
-        };
+        let from = |row| Some(FromScene::following(row, scene_length(&p, row, BAR)));
         let section = |k, start, end, scene, passes| SongSection {
             marker: Some(k),
             start,
@@ -1881,14 +1926,17 @@ mod tests {
             let row = m.scene.unwrap().row;
             assert_eq!(s.pass(), scene_length(&p, row, BAR), "a pass is its scene");
         }
-        // The last section follows its scene: a row whose follow plays
-        // longer than its clips runs its follow's bars, past the blocks.
-        p.scene_mut(0).unwrap().follow = Some(Follow::after(4, FollowAction::Next));
+        // The last section follows its scene: a pass as long as it was
+        // made, past the blocks for a row whose follow plays longer than
+        // its clips; the row's length now doesn't move it.
+        p.arrangement.markers[2].scene = Some(FromScene::following(0, 4 * BAR));
+        assert_eq!(song_sections(&p, BAR)[2].end, 12 * BAR);
+        p.scene_mut(0).unwrap().follow = Some(Follow::after(8, FollowAction::Next));
         assert_eq!(song_sections(&p, BAR)[2].end, 12 * BAR);
         // Changed in the song, it runs to the song's end in whole bars.
         p.arrangement.markers[2].scene = Some(FromScene {
-            row: 0,
             changed: true,
+            ..FromScene::following(0, 4 * BAR)
         });
         assert_eq!(song_sections(&p, BAR)[2].end, 9 * BAR);
         // Bars before the first marker: a section with no marker.
@@ -1918,8 +1966,8 @@ mod tests {
         assert!(song_sections(&p, BAR).is_empty());
     }
 
-    /// A marker's passes are 1 to 99 and its scene a row; a linked list
-    /// has no steps of its own.
+    /// A marker's passes are 1 to 99, its scene a row with a pass; a
+    /// linked list has no steps of its own.
     #[test]
     fn a_marker_checks_its_scene_and_passes_and_a_linked_list_its_steps() {
         use crate::scenes::ListStep;
@@ -1931,17 +1979,60 @@ mod tests {
             q.arrangement.markers[0].passes = passes;
             assert_eq!(q.check(), Err(ModelError::BadPlacement), "×{passes}");
         }
-        let mut q = p.clone();
-        q.arrangement.markers[0].scene = Some(FromScene {
-            row: SCENES,
-            changed: false,
-        });
-        assert_eq!(q.check(), Err(ModelError::BadPlacement));
+        for (row, pass) in [(SCENES, BAR), (0, 0), (0, Tick::from(SONG_LANE_LEN) + 1)] {
+            let mut q = p.clone();
+            q.arrangement.markers[0].scene = Some(FromScene::following(row, pass));
+            assert_eq!(q.check(), Err(ModelError::BadPlacement), "{row} {pass}");
+        }
         let mut q = p.clone();
         q.arrangement.list.steps = vec![ListStep { row: 0, times: 1 }];
         assert_eq!(q.check(), Err(ModelError::BadScene));
         q.arrangement.list.linked = false;
         assert_eq!(q.check(), Ok(()), "a list of its own keeps its steps");
+    }
+
+    /// A stretch filled again (4b.2, a linked section made again from its
+    /// scene): what played there goes on every track, cut at its edges as
+    /// a clear cuts; the new blocks go in; a block outside the stretch, or
+    /// one running into another, is refused and nothing changes.
+    #[test]
+    fn a_stretch_filled_again_plays_only_its_new_blocks() {
+        let p = project();
+        let mut s = Arrangement::default();
+        s.place(Placement::of(&p.tracks, 0, 1, 0, 6 * BAR)).unwrap();
+        s.place(Placement::of(&p.tracks, 1, 0, BAR, 2 * BAR))
+            .unwrap();
+        let was = s.clone();
+        let new = [Placement::of(&p.tracks, 1, 1, 2 * BAR, 2 * BAR)];
+        s.fill(&p.tracks, 2 * BAR, 4 * BAR, &new).unwrap();
+        let said: Vec<(usize, Tick, Tick, Tick)> = s
+            .placements
+            .iter()
+            .map(|b| (b.track, b.start, b.length, b.offset))
+            .collect();
+        // The drums' block is cut either side, the rest in phase; the
+        // bass's old block is cut where the stretch starts.
+        assert_eq!(
+            said,
+            [
+                (0, 0, 2 * BAR, 0),
+                (0, 4 * BAR, 2 * BAR, 0),
+                (1, BAR, BAR, 0),
+                (1, 2 * BAR, 2 * BAR, 0),
+            ]
+        );
+        let mut t = was.clone();
+        let outside = [Placement::of(&p.tracks, 1, 1, 3 * BAR, 2 * BAR)];
+        assert_eq!(
+            t.fill(&p.tracks, 2 * BAR, 4 * BAR, &outside),
+            Err(ModelError::BadPlacement)
+        );
+        let twice = [new[0].clone(), new[0].clone()];
+        assert_eq!(
+            t.fill(&p.tracks, 2 * BAR, 4 * BAR, &twice),
+            Err(ModelError::BadPlacement)
+        );
+        assert_eq!(t, was);
     }
 
     /// A section moved or copied takes its marker's scene and passes with

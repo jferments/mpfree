@@ -36,7 +36,9 @@ use mpfree_play::{
     Takes,
 };
 use mpfree_play::{MOVE_POINTS, TOUCH_POINTS};
-use mpfree_seq::arrange::{list_spans, song_sections, song_to_scenes, Difference, Differs};
+use mpfree_seq::arrange::{
+    list_spans, scene_title, song_sections, song_to_scenes, Difference, Differs,
+};
 use mpfree_seq::loops::{self, LoopNow, LoopPlan};
 use mpfree_seq::mpfree_moves::{Kind, MoveLog};
 use mpfree_seq::scenes::{MAX_LIST_STEPS, MAX_TIMES};
@@ -69,6 +71,9 @@ use super::{
     RECORD_ROOM,
 };
 
+mod linked;
+pub use linked::edits_steps;
+
 /// The clip settings card's join keys for its takes, a row each (see
 /// `Takes::set_clip`).
 const CARD_JOIN: u64 = 0xC1_0000;
@@ -81,9 +86,9 @@ const SCENE_JOIN: u64 = 0x5C_0000;
 const STARTED_ROOM: usize = 64;
 
 /// What a linked song list can't do yet (the Arrange refactor's phase 4b:
-/// its edits move the song from 4b.2, and it plays the song from 4b.4).
+/// it plays the song from 4b.4).
 pub(super) const LIST_LINKED: &str =
-    "song list: it is the song's parts now: edit and play them in the Song view";
+    "song list: it is the song's parts now: play them with the song (SONG on)";
 
 /// The tracks' mutes and solos as they will be once a mute queue lands,
 /// read without changing the project.
@@ -2734,7 +2739,7 @@ impl TimeControl {
     }
 
     /// The time edit a song action makes (a section moved or copied, bars
-    /// put in or taken out), if it makes one.
+    /// put in or taken out, a linked list's step edited), if it makes one.
     fn time_edit_of(&self, a: &TimeAction) -> Option<TimeEdit> {
         let bar = self.info.meter.bar_ticks();
         let song = &self.project.arrangement;
@@ -2743,6 +2748,10 @@ impl TimeControl {
                 song.section_edit(marker, gap, copy, bar)
             }
             TimeAction::SongBars(e) => bars_edit(song, e, bar.max(1)).ok().map(|x| x.0),
+            // A linked list's edits are the song's (Arrange 4b.2).
+            _ if song.list.linked && edits_steps(a) => {
+                self.linked_edit(a, bar).ok().and_then(|e| e.time)
+            }
             _ => None,
         }
     }
@@ -2909,7 +2918,7 @@ impl TimeControl {
         // cancelled (step 0C, agreed with the Arrange refactor). Before the
         // edit, so the view it compiles carries it; one that fails only
         // cancels a change early.
-        if moves_song_time(&a) {
+        if moves_song_time(&a) || (self.project.arrangement.list.linked && edits_steps(&a)) {
             self.includes.timeline = next_timeline();
         }
         match a {
@@ -3997,6 +4006,7 @@ impl TimeControl {
             | TimeAction::ListScene { .. }
             | TimeAction::ListAdd
             | TimeAction::ListRemove(_)
+            | TimeAction::ListMove { .. }
             | TimeAction::ListLoop(_)
             | TimeAction::ListToSong
             | TimeAction::ScenesToSong
@@ -4027,16 +4037,11 @@ impl TimeControl {
                 // A time edit that moves audio regions is a take even with
                 // the song unchanged ([`TimeControl::act_with_audio`]).
                 let audio = self.audio_moves
-                    && matches!(a, TimeAction::MoveSection { .. } | TimeAction::SongBars(_));
-                let edited = if matches!(
-                    a,
-                    TimeAction::ListTimes { .. }
-                        | TimeAction::ListScene { .. }
-                        | TimeAction::ListAdd
-                        | TimeAction::ListRemove(_)
-                        | TimeAction::ListLoop(_)
-                        | TimeAction::ListToSong
-                ) {
+                    && (matches!(a, TimeAction::MoveSection { .. } | TimeAction::SongBars(_))
+                        || edits_steps(&a));
+                let edited = if edits_steps(&a)
+                    || matches!(a, TimeAction::ListLoop(_) | TimeAction::ListToSong)
+                {
                     self.edit_list(a, bar)
                 } else {
                     self.edit_song(a, bar)
@@ -4743,17 +4748,23 @@ impl TimeControl {
         }
     }
 
-    /// A song list edit: a step's times or scene, a step put in or taken
-    /// out, the loop switch, or List → song. A linked list takes only the
-    /// loop switch for now ([`LIST_LINKED`]). A line for the log, and what
-    /// changed for the take UNDO takes back.
+    /// A song list edit: a step's times or scene, a step put in, taken
+    /// out or moved, the loop switch, or List → song. A linked list's
+    /// step edits are the song's ([`linked`]), and it needs no List →
+    /// song. A line for the log, and what changed for the take UNDO takes
+    /// back.
     fn edit_list(
         &mut self,
         a: TimeAction,
         bar: Tick,
     ) -> Result<(String, Option<SongChange>), String> {
-        if self.project.arrangement.list.linked && !matches!(a, TimeAction::ListLoop(_)) {
-            return Err(LIST_LINKED.into());
+        if self.project.arrangement.list.linked {
+            if edits_steps(&a) {
+                return self.edit_linked(&a, bar);
+            }
+            if a == TimeAction::ListToSong {
+                return Err("list → song: the list is the song's parts already".into());
+            }
         }
         let filled: Vec<usize> = (0..SLOTS).filter(|&r| self.project.row_filled(r)).collect();
         let n = self.project.arrangement.list.steps.len();
@@ -4815,6 +4826,30 @@ impl TimeControl {
                 self.list_pick = (n > 1).then(|| step.min(n - 2));
                 Ok((
                     format!("song list: step {} taken out (UNDO puts it back)", step + 1),
+                    Some(SongChange::List),
+                ))
+            }
+            TimeAction::ListMove { step, to } => {
+                if step >= n || to > n {
+                    return Err("song list: no such step".into());
+                }
+                if to == step || to == step + 1 {
+                    return Ok((
+                        format!("song list: step {} is already there", step + 1),
+                        None,
+                    ));
+                }
+                let now = if to > step { to - 1 } else { to };
+                let s = list.steps.remove(step);
+                list.steps.insert(now, s);
+                self.perform.list_moved(step, now);
+                self.list_pick = Some(now);
+                Ok((
+                    format!(
+                        "song list: step {} is step {} now (UNDO takes it back)",
+                        step + 1,
+                        now + 1
+                    ),
                     Some(SongChange::List),
                 ))
             }
@@ -4892,11 +4927,8 @@ impl TimeControl {
                     what: Differs::SceneProgram,
                 });
             }
-            let name = scene
-                .map(|s| s.name.clone())
-                .filter(|n| !n.is_empty())
-                .unwrap_or_else(|| format!("Scene {}", row + 1));
-            song.mark(t, &name).map_err(|e| format!("{e:?}"))?;
+            song.mark(t, &scene_title(&self.project, row))
+                .map_err(|e| format!("{e:?}"))?;
         }
         song.check(&self.project.tracks)
             .map_err(|e| format!("{e:?}"))?;
@@ -6196,6 +6228,7 @@ impl TimeControl {
         st.list = self.list_rows(&st.scenes);
         st.list_pick = self.list_pick.filter(|&k| k < st.list.len());
         st.list_looped = self.project.arrangement.list.looped;
+        st.list_linked = self.project.arrangement.list.linked;
         st.list_next = self
             .perform
             .list_next(&self.project, self.info.meter.bar_ticks());
@@ -6264,6 +6297,7 @@ impl TimeControl {
                 starts: at / bar + 1,
                 playing: pass.filter(|p| p.0 == k).map(|p| (p.1, p.2)),
                 waiting: waiting == Some(k),
+                lead: false,
             })
             .collect()
     }
@@ -6294,6 +6328,7 @@ impl TimeControl {
                     starts: s.start / bar + 1,
                     playing,
                     waiting: false,
+                    lead: s.marker.is_none(),
                 }
             })
             .collect()

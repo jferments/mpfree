@@ -143,6 +143,7 @@ The song list plays scenes one after another, each so many times: "Intro × 2, V
 {{shot: arrange-list | The song list: seven steps with their times, bars and where each starts; the Drop playing its third pass of four.}}
 
 - **+ Add a scene** puts a step after the one you picked (at the end if none is), playing the next row that has clips. Tap **‹** or **›** on a step's scene to change it, and **–** or **+** to change how many times it plays (1 to 99). **Bars** says how long the step lasts, and **Starts** the bar it starts on.
+- To move a step, drag it by its **grip**, the two short bars at its left (or its number): a line shows where it will land, and it goes there when you let go. **UNDO** puts it back. A drag that starts anywhere else on the row scrolls a long list.
 - Tap a step to pick it. **Play from here** plays the list from that step, starting on the next Launch line (at once while stopped). Each step's scene plays its times, and the next comes in on the bar line, so you can play pads or turn knobs over it. The step playing is lit green with "pass 3 of 4"; the one about to start is outlined amber.
 - After the last step everything stops, unless **Loop the list** is on: then it starts again from the top.
 - Launch a scene yourself, stop all, or tap **Back to song**, and the list stops leading; what plays carries on.

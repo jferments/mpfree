@@ -123,6 +123,9 @@ pub const LIST_CARD_LAYOUT: &str =
 /// The hint line under the song list.
 pub const LIST_HINT: &str =
     "Tap a step to pick it   ·   ‹ ›: its scene   ·   – / +: times   ·   + Add a scene: after the pick   ·   Play from here: on the next launch line   ·   List → song: onto the timeline";
+/// The hint line under a song list linked to the song (phase 4b).
+pub const LINKED_LIST_HINT: &str =
+    "Tap a part to pick it   ·   ‹ ›: its scene   ·   – / +: times   ·   drag its grip: move it   ·   + Add a scene: after the pick   ·   Play from here: the song from there";
 /// The Clips view and the Song view with the Record panel on its Clip tab:
 /// the clip settings card in the record settings' place.
 pub const CLIPS_CARD_LAYOUT: &str =
@@ -745,6 +748,9 @@ pub struct TimeState {
     pub list: Vec<ListRow>,
     pub list_pick: Option<usize>,
     pub list_looped: bool,
+    /// The song list is linked to the song: its rows are the song's parts
+    /// (the Arrange refactor's phase 4b). The app sets it.
+    pub list_linked: bool,
     /// While the list plays: the step after the one playing (None: it
     /// stops) and the line it comes in on, for Perform's NEXT. The app
     /// sets it.
@@ -1039,6 +1045,7 @@ impl TimeState {
             list: Vec::new(),
             list_pick: None,
             list_looped: false,
+            list_linked: false,
             list_next: None,
             song_on: false,
             perform: project.perform,
@@ -1376,6 +1383,13 @@ pub enum TimeAction {
     ListAdd,
     /// Take this step out of the list.
     ListRemove(usize),
+    /// Step `step` moved to before step `to` (after the last for the
+    /// list's length): its grip dragged. A linked list's moves its section
+    /// in the song.
+    ListMove {
+        step: usize,
+        to: usize,
+    },
     /// The list goes round after its last step, or stops.
     ListLoop(bool),
     /// The list onto the end of the song, played offline through Rec song
@@ -2167,6 +2181,8 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             LIST_REMOVE => st.list_pick.map(TimeAction::ListRemove),
             _ => None,
         },
+        // A linked list's Song row has no scene and plays once (phase 4b).
+        (SONG_LIST, EventKind::Step { index, .. }) if list_lead(st, *index) => None,
         (SONG_LIST, EventKind::Step { index, delta }) if *index >= SCENE_STEP => {
             let step = index - SCENE_STEP;
             (step < st.list.len()).then_some(TimeAction::ListScene {
@@ -2186,6 +2202,12 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
         }
         (SONG_LIST, EventKind::Select(k)) => {
             (*k < st.list.len()).then_some(TimeAction::ListPick(Some(*k)))
+        }
+        (SONG_LIST, EventKind::Drop { from, to }) => {
+            (*from < st.list.len() && *to <= st.list.len()).then_some(TimeAction::ListMove {
+                step: *from,
+                to: *to,
+            })
         }
         (SONG, EventKind::Tab(k)) => match k {
             0 => Some(TimeAction::SongView(false)),
@@ -2340,6 +2362,9 @@ pub fn why_not(ev: &UiEvent, st: &TimeState) -> Option<String> {
             "The list is full: {} steps",
             mpfree_seq::scenes::MAX_LIST_STEPS
         )),
+        (SONG_LIST, EventKind::Step { index, .. }) if list_lead(st, *index) => {
+            Some(SONG_ROW_WHY.to_string())
+        }
         (SONG_LIST, EventKind::Step { index, delta }) if *index < SCENE_STEP => Some(end(
             *delta,
             "Once is the fewest",
@@ -3828,20 +3853,44 @@ pub fn countdown(left: Tick, meter: Meter) -> String {
     }
 }
 
+/// What a tap on a linked list's Song row says (the song's bars before its
+/// first marker, phase 4b).
+pub const SONG_ROW_WHY: &str =
+    "Bars before the first marker: add a marker on the Song view's ruler to make them a part";
+
+/// Whether a song list `Step` (`index`: a step's times, or its scene from
+/// [`SCENE_STEP`]) is on a linked list's Song row.
+fn list_lead(st: &TimeState, index: usize) -> bool {
+    let k = index.checked_sub(SCENE_STEP).unwrap_or(index);
+    st.list.get(k).is_some_and(|r| r.lead)
+}
+
 /// The song list's title line: "Song list · 7 steps · 76 bars · 2:27"
-/// (the time at the tempo now), or "Song list" while it is empty.
+/// (the time at the tempo now), or "Song list" while it is empty; linked
+/// to the song (phase 4b), "Song list · linked to the song · 7 parts · 50
+/// bars · 2:10".
 pub fn list_title(st: &TimeState) -> String {
+    let head = if st.list_linked {
+        "Song list · linked to the song"
+    } else {
+        "Song list"
+    };
     if st.list.is_empty() {
-        return "Song list".to_string();
+        return head.to_string();
     }
     let n = st.list.len();
     let bars: i64 = st.list.iter().map(|r| r.bars).sum();
     let t = &st.transport;
     let quarters = (bars * t.meter.bar_ticks()) as f64 / PPQ as f64;
     let secs = (quarters * 60.0 / t.bpm.max(1.0)).round() as i64;
+    let (one, many) = if st.list_linked {
+        ("part", "parts")
+    } else {
+        ("step", "steps")
+    };
     format!(
-        "Song list · {n} {} · {bars} {} · {}:{:02}",
-        if n == 1 { "step" } else { "steps" },
+        "{head} · {n} {} · {bars} {} · {}:{:02}",
+        if n == 1 { one } else { many },
         if bars == 1 { "bar" } else { "bars" },
         secs / 60,
         secs % 60
@@ -6149,6 +6198,29 @@ mod tests {
             ),
             Some(TimeAction::ListScene { step: 1, delta: -1 })
         );
+        // A linked list's Song row: no scene, once, and it says why.
+        st.list[0].lead = true;
+        for index in [0, SCENE_STEP] {
+            let k = EventKind::Step { index, delta: 1 };
+            assert_eq!(list(k.clone(), &st), None);
+            assert_eq!(why(k, &st).as_deref(), Some(SONG_ROW_WHY));
+        }
+        st.list[0].lead = false;
+        // A step dragged by its grip (Arrange 4b) moves to the gap.
+        assert_eq!(
+            list(EventKind::Drop { from: 1, to: 0 }, &st),
+            Some(TimeAction::ListMove { step: 1, to: 0 })
+        );
+        assert_eq!(list(EventKind::Drop { from: 2, to: 0 }, &st), None);
+        assert_eq!(list(EventKind::Drop { from: 0, to: 3 }, &st), None);
+        // Linked to the song, the title counts the song's parts.
+        st.list_linked = true;
+        page.update(&mut ui, &st);
+        assert_eq!(
+            ui.get::<SongListView>(SONG_LIST).unwrap().title,
+            "Song list · linked to the song · 2 parts · 10 bars · 0:20"
+        );
+        st.list_linked = false;
         // The Clip tab keeps the list.
         page.clip_card = true;
         page.update(&mut ui, &st);

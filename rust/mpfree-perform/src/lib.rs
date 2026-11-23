@@ -276,6 +276,29 @@ impl Perform {
         }
     }
 
+    /// Step `from` moved to `to` in the list: the step playing keeps
+    /// playing, and the list goes on from where it is now.
+    pub fn list_moved(&mut self, from: usize, to: usize) {
+        let Some(l) = self.list.as_mut() else {
+            return;
+        };
+        let moved = |k: usize| {
+            if k == from {
+                to
+            } else if from < k && k <= to {
+                k - 1
+            } else if to <= k && k < from {
+                k + 1
+            } else {
+                k
+            }
+        };
+        l.step = moved(l.step);
+        if let Some((k, s)) = l.out {
+            l.out = Some((moved(k), s));
+        }
+    }
+
     /// The list stops going on by itself (a scene launched by hand, Stop
     /// all, Back to song); what plays plays on.
     pub fn end_list(&mut self) {
@@ -1183,6 +1206,12 @@ mod tests {
         let f = perf.due(&mut p, &mut launches, &mut cues, 1, BAR);
         assert_eq!(f.scene, Some(Some(0)));
         assert_eq!(perf.list().unwrap().step, 0);
+        // A step moved (its grip, Arrange 4b): the one playing keeps
+        // playing wherever it goes, and one moved past it moves it.
+        for (from, to, now) in [(0, 2, 2), (1, 0, 2), (2, 0, 0), (1, 0, 1), (1, 0, 0)] {
+            perf.list_moved(from, to);
+            assert_eq!(perf.list().unwrap().step, now, "{from} to {to}");
+        }
         // A step put in before the one playing moves it on; the one
         // playing taken out ends the list.
         perf.list_edited(0, true);

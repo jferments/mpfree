@@ -7174,6 +7174,9 @@ impl Player {
                     .as_deref()
                     .map_or_else(String::new, time_view::report_hint),
                 View::Arrange if self.time_page.adding => mpfree_time_ui::song::ADD_HINT.to_string(),
+                View::Arrange if self.time.list_view && self.time.list_linked => {
+                    time_view::LINKED_LIST_HINT.to_string()
+                }
                 View::Arrange if self.time.list_view => time_view::LIST_HINT.to_string(),
                 View::Arrange if self.time.song_view => time_view::song_hint(&self.time).to_string(),
                 View::Arrange if self.time_page.clip_card => time_view::CLIPS_CARD_HINT.to_string(),
@@ -17921,12 +17924,53 @@ fn sample_list_state() -> Result<TimeState, String> {
                 starts,
                 playing: (k == 3).then_some((3, 0.62)),
                 waiting: false,
+                lead: false,
             };
             starts += r.bars;
             r
         })
         .collect();
     st.list_pick = Some(4);
+    Ok(st)
+}
+
+/// The song list linked to the song (the Arrange refactor's phase 4b):
+/// the song's seven parts, the Song row (its bars before the first
+/// marker) first, the Verse playing its third pass of four, the Drop
+/// picked.
+fn sample_linked_list_state() -> Result<TimeState, String> {
+    use mpfree_time_ui::list::ListRow;
+    let mut st = sample_list_state()?;
+    st.list_linked = true;
+    let parts = [
+        ("Song", None, 1, 2),
+        ("Intro", Some(0), 2, 8),
+        ("Verse", Some(1), 4, 16),
+        ("Drop", Some(3), 2, 8),
+        ("Break", Some(4), 1, 8),
+        ("Drop", Some(3), 1, 4),
+        ("Outro", Some(5), 1, 4),
+    ];
+    let mut starts = 1;
+    st.list = parts
+        .iter()
+        .enumerate()
+        .map(|(k, &(name, scene, times, bars))| {
+            let r = ListRow {
+                name: name.to_string(),
+                scene,
+                times,
+                bars,
+                starts,
+                playing: (k == 2).then_some((3, 0.62)),
+                waiting: false,
+                lead: k == 0,
+            };
+            starts += bars;
+            r
+        })
+        .collect();
+    st.list_pick = Some(3);
     Ok(st)
 }
 
@@ -19186,6 +19230,17 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             out.push(("arrange-list", p));
         }
         Err(e) => eprintln!("arrange-list sample: {e}"),
+    }
+    // The song list linked to the song (the Arrange refactor's phase 4b):
+    // the song's parts, the Song row first, the Drop picked.
+    match sample_linked_list_state() {
+        Ok(st) => {
+            let mut p = quiet_player(fonts());
+            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("arrange-list-linked", p));
+        }
+        Err(e) => eprintln!("arrange-list-linked sample: {e}"),
     }
     // Loop tracks: Loops A to C after three note tracks, row 2 playing,
     // Loop 2 overdubbing (its third layer), the loops' memory a third used.
@@ -21697,7 +21752,8 @@ mod tests {
 
     /// The song list on Arrange (sequencer S4): MAIN in Perform goes
     /// Clips, Song, List and round; its hint; a tap on a step picks it;
-    /// Remove needs the hold in Perform.
+    /// Remove needs the hold in Perform; linked to the song, its hint, and
+    /// a step's grip moves it.
     #[test]
     fn the_song_list_is_mains_third_view_and_remove_needs_a_hold() {
         use mpfree_time_ui::list::ListRow;
@@ -21778,6 +21834,30 @@ mod tests {
         p.tick(0.25);
         assert_eq!(p.take_actions(), [FromUi::Time(TimeAction::ListRemove(0))]);
         p.touch(1, Touch::Up, x, y);
+        // Linked to the song (Arrange 4b): its own hint, and a step's grip
+        // dragged down past the next step moves it there.
+        st.list_linked = true;
+        st.list.push(ListRow {
+            name: "Drop".into(),
+            scene: Some(1),
+            times: 1,
+            bars: 1,
+            starts: 3,
+            ..ListRow::default()
+        });
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        // The guard's word has had its time.
+        p.tick(TELL_SECONDS + 0.5);
+        p.ui.paint(&mut c);
+        assert_eq!(hint(&p), time_view::LINKED_LIST_HINT);
+        let g = find(&p, "Step 1 grip");
+        let (x, y) = (g.x + g.w / 2, g.y + g.h / 2);
+        assert_eq!(p.touch(2, Touch::Down, x, y), None);
+        assert_eq!(p.touch(2, Touch::Move, x, y + 116), None);
+        assert_eq!(
+            p.touch(2, Touch::Up, x, y + 116),
+            Some(FromUi::Time(TimeAction::ListMove { step: 0, to: 2 }))
+        );
     }
 
     /// The scene editor (sequencer S4, part 7): the Record panel's Scene

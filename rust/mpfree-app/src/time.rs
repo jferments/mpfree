@@ -88,7 +88,7 @@ pub use apart::Say;
 use apart::{Apart, Told};
 pub use audio::TimeAudio;
 pub use control::EXACT;
-pub use control::{MuteLight, PadTap, SongAudio, TimeControl};
+pub use control::{edits_steps, MuteLight, PadTap, SongAudio, TimeControl};
 pub use follow::Follow;
 use link::Tracks;
 pub use mpfree_play::AheadCounts;
@@ -8420,6 +8420,21 @@ mod tests {
         assert_eq!(h.state().list_pick, Some(0));
         h.act(TimeAction::Undo).unwrap();
         assert_eq!(h.state().list.len(), 2);
+        // Moved by its grip (Arrange 4b): picked where it went, and UNDO
+        // takes it back.
+        let scenes = |h: &TimeHost| h.state().list.iter().map(|r| r.scene).collect::<Vec<_>>();
+        assert_eq!(
+            h.act(TimeAction::ListMove { step: 1, to: 0 }).unwrap(),
+            "song list: step 2 is step 1 now (UNDO takes it back)"
+        );
+        assert_eq!(scenes(&h), [Some(1), Some(0)]);
+        assert_eq!(h.state().list_pick, Some(0));
+        assert_eq!(
+            h.act(TimeAction::ListMove { step: 0, to: 1 }).unwrap(),
+            "song list: step 1 is already there"
+        );
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(scenes(&h), [Some(0), Some(1)]);
         // List → song: three bars of blocks and a marker each step.
         h.command(Command::Stop);
         run(&mut h, &mut pads, 6 * BAR, &[]);
@@ -8445,9 +8460,9 @@ mod tests {
     /// Arrange 4b.1: a linked song list shows the song's sections, each
     /// with its marker's name, its scene and its passes, and the bars
     /// before the first marker as "Song"; the one the song plays is lit
-    /// with its pass, and picking one picks its scene. Until its edits move
-    /// the song (4b.2) and it plays the song (4b.4) it takes only its loop
-    /// switch: an edit or a play says where to go and changes nothing.
+    /// with its pass, and picking one picks its scene. Until it plays the
+    /// song (4b.4) a play says where to go and changes nothing; it needs no
+    /// List → song; the loop switch works.
     #[test]
     fn a_linked_list_shows_the_songs_sections_and_their_passes() {
         use mpfree_seq::arrange::{scenes_to_song, FromScene, Placement};
@@ -8466,10 +8481,7 @@ mod tests {
             .unwrap()
             .song;
         for (m, (row, passes)) in song.markers.iter_mut().zip([(0, 1), (1, 3)]) {
-            m.scene = Some(FromScene {
-                row,
-                changed: false,
-            });
+            m.scene = Some(FromScene::following(row, 3840));
             m.passes = passes;
         }
         song.place(Placement::of(&p.tracks, 0, 0, 0, 3840)).unwrap();
@@ -8505,22 +8517,335 @@ mod tests {
             h.act(TimeAction::ListPick(Some(3))).unwrap(),
             "song list: nothing picked"
         );
-        // Not yet: edits and play change nothing; the loop switch works.
+        // Not yet a play; no List → song; the loop switch works.
         let was = h.control.project.arrangement.clone();
-        for a in [
-            TimeAction::ListAdd,
-            TimeAction::ListRemove(1),
-            TimeAction::ListTimes { step: 2, delta: 1 },
-            TimeAction::ListScene { step: 1, delta: 1 },
-            TimeAction::ListToSong,
-            TimeAction::ListPlay(0),
-        ] {
-            assert_eq!(h.act(a.clone()), Err(control::LIST_LINKED.into()), "{a:?}");
-        }
+        assert_eq!(
+            h.act(TimeAction::ListPlay(0)),
+            Err(control::LIST_LINKED.into())
+        );
+        assert_eq!(
+            h.act(TimeAction::ListToSong),
+            Err("list → song: the list is the song's parts already".into())
+        );
         assert_eq!(h.control.project.arrangement, was);
         h.act(TimeAction::ListLoop(true)).unwrap();
         assert!(h.state().list_looped);
         assert_eq!(h.dropped(), 0);
+    }
+
+    /// The grid Arrange 4b.2's tests edit a linked list on: Intro (row 1)
+    /// a bar on track 1; Verse (row 2) two bars on track 1 and one on
+    /// track 2; Chorus (row 3) a bar on track 1 and four on track 2. The
+    /// song is empty and the list linked.
+    fn linked_grid() -> TimeHost {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let p = &mut h.control.project;
+        let clip = |name: &str, bars: Tick| {
+            let mut c = Clip::new(name, bars * 3840);
+            c.notes = vec![mpfree_seq::Note::new(0, 100, 4, 100)];
+            Some(c)
+        };
+        p.tracks[0].slots[0] = clip("intro", 1);
+        p.tracks[0].slots[1] = clip("verse", 2);
+        p.tracks[1].slots[1] = clip("verse bass", 1);
+        p.tracks[0].slots[2] = clip("chorus", 1);
+        p.tracks[1].slots[2] = clip("chorus bass", 4);
+        p.give_clip_ids();
+        for (row, name) in [(0, "Intro"), (1, "Verse"), (2, "Chorus")] {
+            p.scene_mut(row).unwrap().name = name.into();
+        }
+        p.arrangement.list.linked = true;
+        h
+    }
+
+    /// The song List → song lays for `steps` (row, times) on `h`'s grid,
+    /// from an empty song.
+    fn list_to_song(h: &TimeHost, steps: &[(usize, u16)]) -> mpfree_seq::Arrangement {
+        let mut q = h.control.project.clone();
+        q.arrangement = mpfree_seq::Arrangement::default();
+        q.arrangement.list.steps = steps
+            .iter()
+            .map(|&(row, times)| mpfree_seq::ListStep { row, times })
+            .collect();
+        let mut r = TimeHost::with_project(RATE, 120.0, q).unwrap();
+        r.act(TimeAction::ListToSong).unwrap();
+        r.control.project.arrangement.clone()
+    }
+
+    /// `h`'s linked song is the one List → song lays for `steps`: the same
+    /// blocks, and a marker where each step starts, named after its scene,
+    /// carrying its scene and times; the list shows them.
+    #[track_caller]
+    fn laid_as(h: &TimeHost, steps: &[(usize, u16)]) {
+        let song = &h.control.project.arrangement;
+        let want = list_to_song(h, steps);
+        assert_eq!(song.placements, want.placements, "{steps:?}");
+        assert_eq!(song.markers.len(), steps.len(), "{steps:?}");
+        for ((m, w), &(row, times)) in song.markers.iter().zip(&want.markers).zip(steps) {
+            assert_eq!((m.at, &m.name), (w.at, &w.name), "{steps:?}");
+            let from = m.scene.expect("made from its scene");
+            assert_eq!((from.row, from.changed, m.passes), (row, false, times));
+        }
+        let rows: Vec<(Option<usize>, u16)> =
+            h.state().list.iter().map(|r| (r.scene, r.times)).collect();
+        let want: Vec<(Option<usize>, u16)> = steps.iter().map(|&(r, n)| (Some(r), n)).collect();
+        assert_eq!(rows, want);
+    }
+
+    /// Arrange 4b.2: a linked list's edits move the song. Steps added, ×
+    /// N, another scene, a step moved, a step taken out: after each the
+    /// song is the one List → song lays for the new list (the same blocks,
+    /// a marker where each step starts), each marker carrying its scene and
+    /// times. Each edit is one UNDO, and REDO brings it back.
+    #[test]
+    fn a_linked_lists_edits_move_the_song_as_list_to_song_lays_it() {
+        let mut h = linked_grid();
+        let mut songs = vec![h.control.project.arrangement.clone()];
+        // Each edit, the list after it (row, times) and what it says.
+        type Edit<'a> = (TimeAction, &'a [(usize, u16)], &'a str);
+        let edits: [Edit; 10] = [
+            (
+                TimeAction::ListAdd,
+                &[(0, 1)],
+                "song list: step 1 plays Intro, at bar 1; the song after it moved on (UNDO takes it out)",
+            ),
+            (
+                TimeAction::ListAdd,
+                &[(0, 1), (1, 1)],
+                "song list: step 2 plays Verse, at bar 2; the song after it moved on (UNDO takes it out)",
+            ),
+            (
+                TimeAction::ListTimes { step: 1, delta: 1 },
+                &[(0, 1), (1, 2)],
+                "song list: Verse ×2 (UNDO takes it back)",
+            ),
+            // After the Intro: room in the song for another Verse.
+            (TimeAction::ListPick(Some(0)), &[(0, 1), (1, 2)], ""),
+            (
+                TimeAction::ListAdd,
+                &[(0, 1), (1, 1), (1, 2)],
+                "song list: step 2 plays Verse, at bar 2; the song after it moved on (UNDO takes it out)",
+            ),
+            // The Chorus is twice as long as the Verse it replaces.
+            (
+                TimeAction::ListScene { step: 1, delta: 1 },
+                &[(0, 1), (2, 1), (1, 2)],
+                "song list: step 2 plays Chorus now (UNDO takes it back)",
+            ),
+            (
+                TimeAction::ListMove { step: 2, to: 0 },
+                &[(1, 2), (0, 1), (2, 1)],
+                "song list: Verse is step 1 now, and its bars moved with it (UNDO takes it back)",
+            ),
+            // Half as long: its second bar taken out.
+            (
+                TimeAction::ListScene { step: 0, delta: -1 },
+                &[(0, 2), (0, 1), (2, 1)],
+                "song list: step 1 plays Intro now (UNDO takes it back)",
+            ),
+            (
+                TimeAction::ListRemove(1),
+                &[(0, 2), (2, 1)],
+                "song list: Intro taken out, and its bars with it; the song after it moved up (UNDO puts it back)",
+            ),
+            (
+                TimeAction::ListMove { step: 0, to: 2 },
+                &[(2, 1), (0, 2)],
+                "song list: Intro is step 2 now, and its bars moved with it (UNDO takes it back)",
+            ),
+        ];
+        for (a, steps, said) in edits {
+            let pick = matches!(a, TimeAction::ListPick(_));
+            let line = h.act(a.clone()).unwrap_or_else(|e| panic!("{a:?}: {e}"));
+            if !pick {
+                assert_eq!(line, said);
+                songs.push(h.control.project.arrangement.clone());
+            }
+            laid_as(&h, steps);
+        }
+        // Each edit is one UNDO, back to the empty song; REDO brings the
+        // first back.
+        for want in songs.iter().rev().skip(1) {
+            h.act(TimeAction::Undo).unwrap();
+            assert_eq!(&h.control.project.arrangement, want);
+        }
+        h.act(TimeAction::Redo).unwrap();
+        laid_as(&h, &[(0, 1)]);
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// The audio tracks as a song time edit sees them, holding regions
+    /// that every edit moves: the edits they were given, by song edit.
+    #[derive(Default)]
+    struct Regions(Vec<(u32, mpfree_audiotracks::Retime)>);
+
+    impl SongAudio for Regions {
+        fn busy(&self) -> Option<String> {
+            None
+        }
+        fn refused(&self, _: &mpfree_audiotracks::Retime) -> Option<String> {
+            None
+        }
+        fn moves(&self, _: &mpfree_audiotracks::Retime) -> bool {
+            true
+        }
+        fn retime(&mut self, song: u32, r: mpfree_audiotracks::Retime) -> bool {
+            self.0.push((song, r));
+            true
+        }
+        fn step(&self, _: u32, _: bool) -> mpfree_audiotracks::SongStep {
+            mpfree_audiotracks::SongStep::Next
+        }
+        fn song_undo(&mut self, _: u32, _: bool) {}
+    }
+
+    /// Arrange 4b.2: a linked list's edit that moves time in the song
+    /// gives the audio tracks the same edit, so their regions move with
+    /// the song; one that moves no time (another scene as long) gives them
+    /// none.
+    #[test]
+    fn a_linked_lists_edits_move_the_audio_regions_with_the_song() {
+        use mpfree_seq::TimeEdit;
+        const B: Tick = 3840;
+        let mut h = linked_grid();
+        // And a Bridge (row 4): a bar, as long as the Intro.
+        let mut c = Clip::new("bridge", B);
+        c.notes = vec![mpfree_seq::Note::new(0, 100, 4, 100)];
+        h.control.project.tracks[0].slots[3] = Some(c);
+        h.control.project.give_clip_ids();
+        h.control.project.scene_mut(3).unwrap().name = "Bridge".into();
+        let mut audio = Regions::default();
+        for a in [TimeAction::ListAdd, TimeAction::ListAdd] {
+            h.act_with_audio(a, &mut audio).unwrap();
+        }
+        // Intro, Verse: the room for each went to the audio too.
+        let given = |edits: &[TimeEdit]| -> Vec<mpfree_audiotracks::Retime> {
+            edits.iter().filter_map(control::retime_of).collect()
+        };
+        let had = |audio: &Regions| audio.0.iter().map(|x| x.1).collect::<Vec<_>>();
+        let mut want = vec![
+            TimeEdit::Insert { at: 0, len: B },
+            TimeEdit::Insert { at: B, len: 2 * B },
+        ];
+        assert_eq!(had(&audio), given(&want));
+        h.act_with_audio(TimeAction::ListMove { step: 1, to: 0 }, &mut audio)
+            .unwrap();
+        want.push(TimeEdit::Move {
+            from: B,
+            to: 3 * B,
+            at: 0,
+        });
+        h.act_with_audio(TimeAction::ListTimes { step: 0, delta: 1 }, &mut audio)
+            .unwrap();
+        want.push(TimeEdit::Insert {
+            at: 2 * B,
+            len: 2 * B,
+        });
+        h.act_with_audio(TimeAction::ListRemove(1), &mut audio)
+            .unwrap();
+        want.push(TimeEdit::Delete {
+            from: 4 * B,
+            to: 5 * B,
+        });
+        assert_eq!(had(&audio), given(&want));
+        // The Verse to the Chorus, × 2 each: four bars to eight.
+        h.act_with_audio(TimeAction::ListScene { step: 0, delta: 1 }, &mut audio)
+            .unwrap();
+        want.push(TimeEdit::Insert {
+            at: 4 * B,
+            len: 4 * B,
+        });
+        assert_eq!(had(&audio), given(&want));
+        laid_as(&h, &[(2, 2)]);
+        // The Bridge after it, then the Intro in its place: as long, so
+        // no time moves and the audio is given nothing.
+        h.act(TimeAction::ListAdd).unwrap();
+        laid_as(&h, &[(2, 2), (3, 1)]);
+        let n = audio.0.len();
+        h.act_with_audio(TimeAction::ListScene { step: 1, delta: 1 }, &mut audio)
+            .unwrap();
+        laid_as(&h, &[(2, 2), (0, 1)]);
+        assert_eq!(audio.0.len(), n, "{:?}", audio.0);
+    }
+
+    /// Arrange 4b.2: the Song row (the bars before the first part) stays
+    /// first, has no scene and plays once, but can be taken out; × N on a
+    /// part of the song's own puts a copy of its last pass after it,
+    /// everything in it with it (its blocks and tempo), and – takes it
+    /// out again. What is refused changes nothing.
+    #[test]
+    fn a_linked_lists_song_row_stays_first_and_a_part_of_its_own_repeats_whole() {
+        use mpfree_seq::arrange::{Marker, Placement, TempoPoint};
+        const B: Tick = 3840;
+        let mut h = linked_grid();
+        let p = &mut h.control.project;
+        let song = &mut p.arrangement;
+        // A bar of the song's own, then part A: the Verse's clip for two
+        // bars, and 140 BPM from its second bar.
+        song.place(Placement::of(&p.tracks, 0, 0, 0, B)).unwrap();
+        song.place(Placement::of(&p.tracks, 0, 1, B, 2 * B))
+            .unwrap();
+        song.mark(B, "A").unwrap();
+        song.tempo = vec![TempoPoint {
+            at: 2 * B,
+            bpm: 140.0,
+            ramp: false,
+        }];
+        p.check().unwrap();
+        let was = p.arrangement.clone();
+        let rows = |h: &TimeHost| -> Vec<(String, Option<usize>, u16, i64)> {
+            h.state()
+                .list
+                .iter()
+                .map(|r| (r.name.clone(), r.scene, r.times, r.bars))
+                .collect()
+        };
+        assert_eq!(
+            rows(&h),
+            [("Song".into(), None, 1, 1), ("A".into(), None, 1, 2)]
+        );
+        for (a, why) in [
+            (TimeAction::ListMove { step: 1, to: 0 }, "row stays first"),
+            (TimeAction::ListMove { step: 0, to: 2 }, "row stays first"),
+            (TimeAction::ListTimes { step: 0, delta: 1 }, "add a marker"),
+            (TimeAction::ListScene { step: 0, delta: 1 }, "add a marker"),
+            (TimeAction::ListRemove(2), "no such step"),
+        ] {
+            let e = h.act(a.clone()).unwrap_err();
+            assert!(e.contains(why), "{a:?}: {e}");
+            assert_eq!(h.control.project.arrangement, was);
+        }
+        // A × 2: its two bars again after it, the tempo change with them.
+        assert_eq!(
+            h.act(TimeAction::ListTimes { step: 1, delta: 1 }).unwrap(),
+            "song list: A ×2 (UNDO takes it back)"
+        );
+        assert_eq!(
+            rows(&h),
+            [("Song".into(), None, 1, 1), ("A".into(), None, 2, 4)]
+        );
+        let song = &h.control.project.arrangement;
+        assert_eq!(
+            song.markers,
+            [Marker {
+                passes: 2,
+                ..Marker::new(B, "A")
+            }]
+        );
+        assert_eq!(song.end(), 5 * B);
+        let bpm: Vec<(Tick, f64)> = song.tempo.iter().map(|t| (t.at, t.bpm)).collect();
+        assert_eq!(bpm, [(2 * B, 140.0), (3 * B, 120.0), (4 * B, 140.0)]);
+        // A × 1: the copy out again, the song as it was.
+        h.act(TimeAction::ListTimes { step: 1, delta: -1 }).unwrap();
+        assert_eq!(h.control.project.arrangement, was);
+        // The Song row taken out: A starts the song.
+        h.act(TimeAction::ListRemove(0)).unwrap();
+        assert_eq!(rows(&h), [("A".into(), None, 1, 2)]);
+        assert_eq!(h.control.project.arrangement.markers[0].at, 0);
+        for _ in 0..3 {
+            h.act(TimeAction::Undo).unwrap();
+        }
+        assert_eq!(h.control.project.arrangement, was);
     }
 
     /// Save state and Reload clip (sequencer S4): the saved state comes

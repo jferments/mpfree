@@ -7,10 +7,18 @@
 //!
 //! A step's scene steps with a tap on its left or right third (‹ ›), its
 //! times with a tap on the – or + half of its box; a tap elsewhere on the
-//! row picks it (on the lift: a drag up or down scrolls). "+ Add a scene"
-//! after the last step adds one, and the buttons under the list lay it on
-//! the timeline, play from the picked step, or remove it. The title line
-//! has the list's loop switch and the way to the other two views.
+//! row picks it (on the lift: a drag up or down scrolls). A drag that
+//! starts on its grip (the two short bars at its left, with its number)
+//! moves the step: a line shows where it lands, as dragging a section's
+//! name on the Song view's ruler does, and letting go there moves it.
+//! "+ Add a scene" after the last step adds one, and the buttons under the
+//! list lay it on the timeline, play from the picked step, or remove it.
+//! The title line has the list's loop switch and the way to the other two
+//! views.
+//!
+//! Linked to the song (the Arrange refactor's phase 4b) the rows are the
+//! song's parts; the song's bars before its first marker are the first
+//! row, "Song", in faint words and with no grip: it stays first.
 
 use std::cell::Cell;
 
@@ -36,6 +44,9 @@ pub struct ListRow {
     pub playing: Option<(u16, f32)>,
     /// Its scene waits for its line.
     pub waiting: bool,
+    /// A linked list's Song row: the song's bars before its first marker,
+    /// in faint words and with no grip (it stays first; phase 4b).
+    pub lead: bool,
 }
 
 /// `Toggle(k)` from the title line and the buttons.
@@ -71,8 +82,12 @@ const TIMES_W: i32 = 120;
 const BARS_X: i32 = 456;
 const STARTS_X: i32 = 540;
 const PASS_X: i32 = 650;
-/// How far a finger moves before it scrolls instead of picking.
+/// How far a finger moves before it scrolls (or moves its step, from the
+/// grip) instead of picking.
 const DRAG_PX: i32 = 12;
+/// A row's grip: where a drag moves its step, from the row's left edge
+/// over its number (the bars are drawn at its left).
+const GRIP_W: i32 = 44;
 
 /// The song list: see the module notes.
 #[derive(Debug, Default)]
@@ -101,6 +116,10 @@ struct Grab {
     top: usize,
     step: usize,
     dragging: bool,
+    /// It started on the step's grip: a drag moves the step.
+    grip: bool,
+    /// Where the finger is now.
+    at: i32,
 }
 
 /// Where the parts are.
@@ -193,6 +212,47 @@ impl SongListView {
         Some((scene, times))
     }
 
+    /// Step `k`'s grip, if it has one in view.
+    pub fn grip_rect(&self, r: Rect, k: usize) -> Option<Rect> {
+        let line = self.line_rect(r, k)?;
+        self.rows.get(k).filter(|row| !row.lead)?;
+        Some(Rect::new(line.x, line.y, GRIP_W, line.h))
+    }
+
+    /// The gap a step dragged by its grip lands in, with the finger at
+    /// `y`: the nearest gap between the lines in view (0 before the first
+    /// step, the list's length after the last), never before a Song row.
+    fn gap_at(&self, r: Rect, y: i32) -> usize {
+        let g = SongListView::geo(r);
+        let first = self.first(SongListView::visible(r)) as i32;
+        let pitch = ROW_H + ROW_GAP;
+        let gap = (y - g.rows.y + pitch / 2).div_euclid(pitch) + first;
+        let lead = usize::from(self.rows.first().is_some_and(|row| row.lead));
+        (gap.max(0) as usize).clamp(lead, self.rows.len())
+    }
+
+    /// Where gap `gap`'s line is drawn: half way between the lines either
+    /// side of it, if one of them is in view.
+    fn gap_y(&self, r: Rect, gap: usize) -> Option<i32> {
+        match self.line_rect(r, gap) {
+            Some(l) => Some(l.y - ROW_GAP / 2),
+            None => gap
+                .checked_sub(1)
+                .and_then(|k| self.line_rect(r, k))
+                .map(|l| l.bottom() + ROW_GAP / 2),
+        }
+    }
+
+    /// The move a grip drag makes, let go with the finger at `y`: step
+    /// `step` to gap `gap`, unless that leaves it where it is.
+    fn grip_drop(&self, r: Rect, step: usize, y: i32) -> Option<EventKind> {
+        let gap = self.gap_at(r, y);
+        (gap != step && gap != step + 1).then_some(EventKind::Drop {
+            from: step,
+            to: gap,
+        })
+    }
+
     /// The title line's buttons: the loop switch, Clips and Song.
     pub fn head_rects(r: Rect) -> [Rect; 3] {
         let h = SongListView::geo(r).head;
@@ -235,7 +295,7 @@ impl Widget for SongListView {
         let g = SongListView::geo(r);
         let c = g.cols;
         for (x, w, word) in [
-            (14, 30, "#"),
+            (24, 30, "#"),
             (SCENE_X, SCENE_W, "Scene"),
             (TIMES_X, TIMES_W, "Times"),
             (BARS_X, 70, "Bars"),
@@ -250,6 +310,8 @@ impl Widget for SongListView {
                 word,
             );
         }
+        // A step dragged by its grip.
+        let moving = self.grab.filter(|g| g.grip && g.dragging);
         for (k, row) in self.rows.iter().enumerate() {
             let Some(line) = self.line_rect(r, k) else {
                 continue;
@@ -261,7 +323,9 @@ impl Widget for SongListView {
                 t.raised
             };
             cx.canvas.fill_round_rect(line, t.round(10), fill);
-            if row.playing.is_some() {
+            if moving.is_some_and(|g| g.step == k) {
+                cx.canvas.stroke_round_rect(line, t.round(10), 2, t.outline);
+            } else if row.playing.is_some() {
                 cx.canvas.stroke_round_rect(line, t.round(10), 2, t.good);
             } else if row.waiting {
                 cx.canvas.stroke_round_rect(line, t.round(10), 2, t.warn);
@@ -269,10 +333,19 @@ impl Widget for SongListView {
                 cx.canvas.stroke_round_rect(line, t.round(10), 2, t.accent);
             }
             let mid = |x: i32, w: i32| Rect::new(line.x + x, line.y, w, line.h);
+            if !row.lead {
+                for gx in [10, 15] {
+                    cx.canvas.fill_round_rect(
+                        Rect::new(line.x + gx, line.y + 17, 2, line.h - 34),
+                        1,
+                        t.text_faint,
+                    );
+                }
+            }
             cx.text(
                 FontId::Mono,
                 t.size_body,
-                mid(14, 30),
+                mid(24, 20),
                 Align::Left,
                 t.text_dim,
                 &(k + 1).to_string(),
@@ -310,7 +383,9 @@ impl Widget for SongListView {
                     t.text_faint,
                     more,
                 );
-                cx.text(FontId::Bold, t.size_body, m, Align::Center, t.text, word);
+                // The Song row's are faint: it is the song's own bars.
+                let ink = if row.lead { t.text_faint } else { t.text };
+                cx.text(FontId::Bold, t.size_body, m, Align::Center, ink, word);
             }
             cx.text(
                 FontId::Sans,
@@ -353,6 +428,17 @@ impl Widget for SongListView {
                     t.warn,
                     "next",
                 );
+            }
+        }
+        // Where the dragged step lands: a line across the list, with a dot
+        // at each end.
+        if let Some(y) = moving.and_then(|g| self.gap_y(r, self.gap_at(r, g.at))) {
+            let rows = g.rows;
+            cx.canvas
+                .fill_round_rect(Rect::new(rows.x, y - 2, rows.w, 4), 2, t.accent);
+            for x in [rows.x, rows.right() - 12] {
+                cx.canvas
+                    .fill_round_rect(Rect::new(x, y - 6, 12, 12), 6, t.accent);
             }
         }
         if let Some(add) = self.line_rect(r, self.rows.len()) {
@@ -424,11 +510,19 @@ impl Widget for SongListView {
             else {
                 continue;
             };
-            let pick = Rect::new(line.x, line.y, scene.x - line.x, line.h);
+            let grip = self.grip_rect(r, k);
+            let left = grip.map_or(line.x, |g| g.right());
+            let pick = Rect::new(left, line.y, scene.x - left, line.h);
             out.push(
                 Target::tap("step", k, format!("Step {}", k + 1), pick)
                     .disabled_if(self.picked == Some(k)),
             );
+            if let Some(grip) = grip {
+                out.push(
+                    Target::drag("grip", k, format!("Step {} grip", k + 1), grip)
+                        .towards(0, ROW_H + ROW_GAP),
+                );
+            }
             let (less, rest) = scene.take_left(scene.w / 3);
             let more = rest.take_right(scene.w / 3).0;
             out.push(Target::tap(
@@ -476,10 +570,15 @@ impl Widget for SongListView {
             Touch::Move => {
                 let visible = SongListView::visible(r);
                 let g = self.grab.as_mut().filter(|g| g.finger == finger)?;
+                g.at = y;
                 if !g.dragging && (y - g.y).abs() < DRAG_PX {
                     return None;
                 }
                 g.dragging = true;
+                if g.grip {
+                    // The step moves on the lift; the list stays put.
+                    return None;
+                }
                 let lines = self.rows.len() + 1;
                 if lines > visible {
                     let moved = (g.y - y) / (ROW_H + ROW_GAP);
@@ -492,8 +591,15 @@ impl Widget for SongListView {
             }
             Touch::Up | Touch::Cancel => {
                 let g = self.grab.take().filter(|g| g.finger == finger)?;
-                if g.dragging || phase == Touch::Cancel {
+                if phase == Touch::Cancel {
                     return None;
+                }
+                if g.dragging {
+                    return if g.grip {
+                        self.grip_drop(r, g.step, y)
+                    } else {
+                        None
+                    };
                 }
                 return Some(EventKind::Select(g.step));
             }
@@ -534,14 +640,18 @@ impl Widget for SongListView {
             let delta = if x < times.x + times.w / 2 { -1 } else { 1 };
             return Some(EventKind::Step { index: k, delta });
         }
-        // Elsewhere on the row: picked on the lift, unless it drags.
+        // Elsewhere on the row: picked on the lift, unless it drags (from
+        // the grip, to move the step; else to scroll).
         let top = self.first(SongListView::visible(r));
+        let grip = self.grip_rect(r, k).is_some_and(|g| g.contains(x, y));
         self.grab = Some(Grab {
             finger,
             y,
             top,
             step: k,
             dragging: false,
+            grip,
+            at: y,
         });
         None
     }
@@ -625,17 +735,75 @@ mod tests {
         let t = l.targets(r);
         assert_eq!(t.iter().filter(|t| t.id == "step").count(), 3);
         assert_eq!(t.iter().filter(|t| t.id == "button").count(), 3);
-        // A long list: a drag scrolls, and the pick brings its step in view.
+        // A long list: a drag (not from a grip) scrolls, and the pick
+        // brings its step in view.
         let mut l = list(20);
         let first = l.line_rect(r, 0).unwrap();
-        l.touch(1, Touch::Down, first.x + 6, first.y + 140, r);
-        l.touch(1, Touch::Move, first.x + 6, first.y + 20, r);
-        assert_eq!(l.touch(1, Touch::Up, first.x + 6, first.y + 20, r), None);
+        let x = first.x + GRIP_W + 6;
+        l.touch(1, Touch::Down, x, first.y + 140, r);
+        l.touch(1, Touch::Move, x, first.y + 20, r);
+        assert_eq!(l.touch(1, Touch::Up, x, first.y + 20, r), None);
         assert!(l.line_rect(r, 0).is_none(), "scrolled");
         l.picked = Some(0);
         assert!(l.line_rect(r, 0).is_some(), "the pick in view");
         l.picked = Some(19);
         assert!(l.line_rect(r, 19).is_some());
         assert!(l.line_rect(r, 20).is_some(), "the add row after it");
+    }
+
+    /// A drag from a step's grip moves it to the gap nearest the finger,
+    /// and a tap there still picks it; let go where it was, or from
+    /// elsewhere on the row, nothing moves. A linked list's Song row has
+    /// no grip, and nothing lands before it.
+    #[test]
+    fn a_step_dragged_by_its_grip_moves_and_the_song_row_stays_first() {
+        let r = Rect::new(12, 128, 854, 622);
+        let mut l = list(4);
+        let pitch = ROW_H + ROW_GAP;
+        let grip = l.grip_rect(r, 1).unwrap();
+        let (x, y) = (grip.x + 12, grip.y + grip.h / 2);
+        let drag = |l: &mut SongListView, x: i32, y: i32, to: i32| {
+            assert_eq!(l.touch(1, Touch::Down, x, y, r), None);
+            assert_eq!(l.touch(1, Touch::Move, x, to, r), None);
+            l.touch(1, Touch::Up, x, to, r)
+        };
+        // Two rows down: before step 4 (gap 3).
+        assert_eq!(
+            drag(&mut l, x, y, y + 2 * pitch),
+            Some(EventKind::Drop { from: 1, to: 3 })
+        );
+        // Past the last: after it.
+        assert_eq!(
+            drag(&mut l, x, y, y + 9 * pitch),
+            Some(EventKind::Drop { from: 1, to: 4 })
+        );
+        // Up to the top.
+        assert_eq!(
+            drag(&mut l, x, y, y - pitch),
+            Some(EventKind::Drop { from: 1, to: 0 })
+        );
+        // A small drag lands where it was.
+        assert_eq!(drag(&mut l, x, y, y + pitch / 3), None);
+        // A tap on the grip picks; a drag from elsewhere scrolls.
+        assert_eq!(l.touch(1, Touch::Down, x, y, r), None);
+        assert_eq!(l.touch(1, Touch::Up, x, y, r), Some(EventKind::Select(1)));
+        let line = l.line_rect(r, 1).unwrap();
+        assert_eq!(drag(&mut l, line.x + 60, y, y + 2 * pitch), None);
+        // Every grip is a target.
+        let t = l.targets(r);
+        assert_eq!(t.iter().filter(|t| t.id == "grip").count(), 4);
+        // Linked: the Song row has none, and stays first.
+        l.rows[0].lead = true;
+        assert!(l.grip_rect(r, 0).is_none());
+        // Step 2 dragged above it lands after it, where it was.
+        assert_eq!(drag(&mut l, x, y, y - 2 * pitch), None);
+        let grip = l.grip_rect(r, 3).unwrap();
+        let y3 = grip.y + grip.h / 2;
+        assert_eq!(
+            drag(&mut l, grip.x + 12, y3, y3 - 3 * pitch),
+            Some(EventKind::Drop { from: 3, to: 1 })
+        );
+        let t = l.targets(r);
+        assert_eq!(t.iter().filter(|t| t.id == "grip").count(), 3);
     }
 }
