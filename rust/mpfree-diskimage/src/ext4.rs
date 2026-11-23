@@ -11,7 +11,7 @@
 //! gives an error, not a hang.
 
 use crate::{bad, le16, le32, ReadAt};
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 
 pub const ROOT: u32 = 2;
 
@@ -53,6 +53,8 @@ pub const MAX_WHOLE_FILE: u64 = 1 << 30;
 pub const MAX_STREAMED_FILE: u64 = 1 << 40;
 /// How many blocks of a file [`Ext4::copy_file`] maps at a time.
 const WINDOW_BLOCKS: u64 = 1 << 16;
+/// The most blocks one read of a [`FileReader`] maps and reads.
+const READ_RUN: u64 = 256;
 const MAX_EXTENT_DEPTH: u16 = 5;
 const MAX_DIR_BYTES: u64 = 256 << 20;
 
@@ -235,6 +237,13 @@ impl<R: ReadAt> Ext4<R> {
         let groups64 = (blocks_count - first_data_block).div_ceil(blocks_per_group);
         if groups64 == 0 || groups64 > 1 << 24 {
             return Err(bad(format!("{groups64} block groups is implausible")));
+        }
+        // So no block's place in the image (block × size, plus a little)
+        // can overflow, however a damaged inode or folder points.
+        if blocks_count > (1u64 << 62) / block_size {
+            return Err(bad(format!(
+                "{blocks_count} blocks of {block_size} bytes is implausible"
+            )));
         }
         let groups = groups64 as u32;
         if (groups as u64) * (inodes_per_group as u64) < inodes_count as u64 {
@@ -559,6 +568,29 @@ impl<R: ReadAt> Ext4<R> {
         Ok(ino.size)
     }
 
+    /// A regular file as a stream: [`Read`] and [`Seek`] over its contents,
+    /// holes read as zeros, a run of blocks at a time. So a caller can read
+    /// a sound's header (to promise the memory its sound needs) before it
+    /// reads the sound, or stream a long one, without holding it whole.
+    pub fn open_file(&self, ino: &Inode) -> io::Result<FileReader<'_, R>> {
+        let inline = if ino.flags & FLAG_INLINE_DATA != 0
+            && self.feature_incompat & INCOMPAT_INLINE_DATA != 0
+        {
+            Some(self.inline(ino)?)
+        } else {
+            if ino.size.div_ceil(self.block_size) > MAX_STREAMED_FILE / self.block_size + 4 {
+                return Err(bad(format!("inode {} is implausibly large", ino.ino)));
+            }
+            None
+        };
+        Ok(FileReader {
+            fs: self,
+            ino: ino.clone(),
+            pos: 0,
+            inline,
+        })
+    }
+
     /// A regular file's contents, whole (at most [`MAX_WHOLE_FILE`] bytes).
     pub fn read_file(&self, ino: &Inode) -> io::Result<Vec<u8>> {
         if ino.size > MAX_WHOLE_FILE {
@@ -802,6 +834,98 @@ fn parse_xattrs(entries: &[u8], base: &[u8], out: &mut Vec<(String, Vec<u8>)>) -
     Err(bad("too many extended attributes"))
 }
 
+/// A regular file in the image, read as a stream ([`Ext4::open_file`]).
+pub struct FileReader<'a, R> {
+    fs: &'a Ext4<R>,
+    ino: Inode,
+    pos: u64,
+    /// The contents, when the inode holds them itself (inline data).
+    inline: Option<Vec<u8>>,
+}
+
+impl<R> FileReader<'_, R> {
+    /// The file's size, in bytes.
+    pub fn len(&self) -> u64 {
+        self.ino.size
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ino.size == 0
+    }
+}
+
+impl<R: ReadAt> Read for FileReader<'_, R> {
+    /// Up to one run of blocks: consecutive on disk, or all holes.
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let size = self.ino.size;
+        if buf.is_empty() || self.pos >= size {
+            return Ok(0);
+        }
+        let want = (buf.len() as u64).min(size - self.pos);
+        if let Some(d) = &self.inline {
+            // `inline` holds exactly `size` bytes.
+            let at = self.pos as usize;
+            let n = want as usize;
+            buf[..n].copy_from_slice(&d[at..at + n]);
+            self.pos += want;
+            return Ok(n);
+        }
+        let fs = self.fs;
+        let bs = fs.block_size;
+        let off = self.pos % bs;
+        let blocks = (off + want).div_ceil(bs).min(READ_RUN);
+        let map = fs.map_window(&self.ino, self.pos / bs, blocks)?;
+        let mut run = 1;
+        while run < map.len()
+            && if map[0] == 0 {
+                map[run] == 0
+            } else {
+                map[run] == map[0] + run as u64
+            }
+        {
+            run += 1;
+        }
+        let n = (run as u64 * bs - off).min(want) as usize;
+        if map[0] == 0 {
+            buf[..n].fill(0);
+        } else {
+            if map[0] + run as u64 > fs.blocks_count {
+                return Err(bad(format!(
+                    "inode {}: data outside the filesystem",
+                    self.ino.ino
+                )));
+            }
+            fs.read(&mut buf[..n], map[0] * bs + off)?;
+        }
+        self.pos += n as u64;
+        Ok(n)
+    }
+}
+
+impl<R> Seek for FileReader<'_, R> {
+    /// Anywhere from the start on; past the end, reads give nothing.
+    fn seek(&mut self, to: SeekFrom) -> io::Result<u64> {
+        let (base, by) = match to {
+            SeekFrom::Start(n) => {
+                self.pos = n;
+                return Ok(n);
+            }
+            SeekFrom::End(d) => (self.ino.size, d),
+            SeekFrom::Current(d) => (self.pos, d),
+        };
+        match base.checked_add_signed(by) {
+            Some(n) => {
+                self.pos = n;
+                Ok(n)
+            }
+            None => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a seek before the start of the file",
+            )),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -909,6 +1033,28 @@ mod tests {
                     let mut got = Vec::new();
                     fs.copy_file_by(ino, &mut got, window)?;
                     assert!(got == want, "{path}: differs with a window of {window}");
+                }
+                // Read as a stream, 1000 bytes at a time (reads cutting
+                // through blocks, extents and holes), and from seeks: the
+                // same.
+                let mut r = fs.open_file(ino)?;
+                assert_eq!(r.len(), want.len() as u64, "{path}");
+                let mut got = Vec::new();
+                let mut chunk = [0u8; 1000];
+                loop {
+                    let n = r.read(&mut chunk)?;
+                    if n == 0 {
+                        break;
+                    }
+                    got.extend_from_slice(&chunk[..n]);
+                }
+                assert!(got == want, "{path}: differs as a stream");
+                let len = want.len();
+                for at in [0, 1, len / 2, len.saturating_sub(5), len, len + 7] {
+                    assert_eq!(r.seek(SeekFrom::Start(at as u64))?, at as u64);
+                    let mut tail = Vec::new();
+                    r.read_to_end(&mut tail)?;
+                    assert!(tail == want[at.min(len)..], "{path}: differs from {at}");
                 }
             }
             Ok(())
@@ -1056,6 +1202,36 @@ mod tests {
         assert_eq!(check.seen, marks.len());
         // Reading it whole into memory is still refused.
         assert!(fs.read_file(&ino).is_err());
+        // As a stream, each mark is where it was written, past 4 GiB too,
+        // found by a seek from the start, from the end and from here; and
+        // a seek before the start is refused, leaving the place unchanged.
+        let mut r = fs.open_file(&ino).unwrap();
+        for (at, bytes) in marks {
+            let mut got = vec![0u8; bytes.len()];
+            r.seek(SeekFrom::Start(at)).unwrap();
+            r.read_exact(&mut got).unwrap();
+            assert_eq!(got, bytes, "at {at}");
+            let back = len as i64 - at as i64;
+            assert_eq!(r.seek(SeekFrom::End(-back)).unwrap(), at);
+            r.read_exact(&mut got).unwrap();
+            assert_eq!(got, bytes, "{back} from the end");
+            let here = at + bytes.len() as u64;
+            assert_eq!(
+                r.seek(SeekFrom::Current(-(bytes.len() as i64))).unwrap(),
+                at
+            );
+            r.read_exact(&mut got).unwrap();
+            assert_eq!(got, bytes, "back from {here}");
+        }
+        let mut hole = [7u8; 64];
+        r.seek(SeekFrom::Start(3 << 30)).unwrap();
+        r.read_exact(&mut hole).unwrap();
+        assert_eq!(hole, [0u8; 64], "a hole reads as zeros");
+        let e = r.seek(SeekFrom::Current(-(4 << 30))).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(r.stream_position().unwrap(), (3 << 30) + 64);
+        assert_eq!(r.seek(SeekFrom::End(10)).unwrap(), len + 10);
+        assert_eq!(r.read(&mut hole).unwrap(), 0, "nothing past the end");
     }
 
     #[test]
@@ -1067,6 +1243,28 @@ mod tests {
         sb[1024 + 0x39] = 0xEF;
         sb[1024 + 0x18] = 9; // absurd block size
         assert!(Ext4::open(&sb).is_err());
+        // 2^48 blocks of 64 KiB: each group plausible, but the last block's
+        // place in bytes would not fit in 64 bits.
+        let mut sb = vec![0u8; 8192];
+        let put = |sb: &mut [u8], at: usize, v: u32| {
+            sb[1024 + at..1024 + at + 4].copy_from_slice(&v.to_le_bytes())
+        };
+        sb[1024 + 0x38] = 0x53;
+        sb[1024 + 0x39] = 0xEF;
+        put(&mut sb, 0x18, 6); // 64 KiB blocks
+        put(&mut sb, 0x4C, 1); // revision 1
+        sb[1024 + 0x58] = 0; // 256-byte inodes
+        sb[1024 + 0x59] = 1;
+        put(&mut sb, 0x60, INCOMPAT_64BIT);
+        put(&mut sb, 0x150, 1 << 16); // blocks, high half
+        put(&mut sb, 0x20, 1 << 31); // blocks per group
+        put(&mut sb, 0x28, 1); // inodes per group
+        put(&mut sb, 0x00, 1); // inodes
+        let e = Ext4::open(&sb).err().unwrap().to_string();
+        assert!(
+            e.contains("281474976710656 blocks of 65536 bytes is implausible"),
+            "{e}"
+        );
     }
 
     /// A folder of thousands of sounds (as on the MPC's Internal drive) is
@@ -1228,7 +1426,7 @@ mod tests {
         let mut files = Vec::new();
         let _ = fs.walk(&mut |_, ino| {
             match ino.kind() {
-                Some(Kind::File) if ino.size <= 64 << 20 => files.push(ino.clone()),
+                Some(Kind::File) => files.push(ino.clone()),
                 Some(Kind::Symlink) => {
                     let _ = fs.read_link(ino);
                 }
@@ -1238,7 +1436,18 @@ mod tests {
             Ok(())
         });
         for ino in &files {
-            let _ = fs.read_file(ino);
+            if ino.size <= 64 << 20 {
+                let _ = fs.read_file(ino);
+            }
+            // As a stream, from its middle and near its end, a little of it.
+            if let Ok(mut r) = fs.open_file(ino) {
+                for at in [SeekFrom::Start(ino.size / 2), SeekFrom::End(-3000)] {
+                    if r.seek(at).is_ok() {
+                        let mut got = Vec::new();
+                        let _ = (&mut r).take(4096).read_to_end(&mut got);
+                    }
+                }
+            }
         }
         for path in ["/Samples/Drums/Kick 0042.wav", "/Samples/nope", "/link"] {
             if let Ok(Some(ino)) = fs.lookup(path) {
