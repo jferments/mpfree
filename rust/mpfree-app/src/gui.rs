@@ -263,6 +263,11 @@ pub const TAP_HOLD_HINT: &str = "TAP TEMPO held: turn the wheel for the tempo, 1
 /// tap deletes what is tapped; a pad, its notes, since 19 Nov).
 pub const ERASE_HINT: &str = "ERASE held: tap a clip (Arrange), a step or a lane's name (Play), a layer or a ring (Looper) to delete it   ·   \
                               a pad: its notes out of the armed track's clip   ·   UNDO brings it back";
+/// The hint line while ERASE is held in the note editor (piano roll plan
+/// 1B.5).
+pub const NOTES_ERASE_HINT: &str =
+    "ERASE held: tap a note to erase it   ·   drag across notes: every one you pass over   ·   \
+                                    a lock lane's bar: its lock   ·   UNDO brings it back";
 /// The Q-Link column's title while its cards turn the arp (NOTE REPEAT
 /// held or latched, or the Arp panel open).
 const ARP_QLINKS: &str = "Q-Links · Arp";
@@ -6668,6 +6673,13 @@ impl Player {
                     pad: *index as u8,
                 })))
             }
+            // A sweep of the note editor's roll is already an erase
+            // (piano roll plan 1B.5).
+            (time_view::NOTES, EventKind::Values { index, .. })
+                if *index == mpfree_time_ui::editor::ERASE_SWEEP =>
+            {
+                None
+            }
             // A bar of the note editor's lock lane: the lock where its
             // notes play comes off (piano roll plan 3A.2).
             (time_view::NOTES, EventKind::Values { index, set })
@@ -7413,6 +7425,13 @@ impl Player {
             SHIFT_HINT.to_string()
         } else if self.status.erase && self.ready && self.status.steps.is_some_and(|s| !s.picking) {
             STEP_ERASE_HINT.to_string()
+        } else if self.status.erase
+            && self.ready
+            && self.status.steps.is_none()
+            && self.view == View::Sequencer
+            && self.time.edit.is_some()
+        {
+            NOTES_ERASE_HINT.to_string()
         } else if self.status.erase && self.ready {
             ERASE_HINT.to_string()
         } else if self.ready && self.play_frame() && self.rec_list {
@@ -13474,10 +13493,12 @@ impl Player {
         if matches!(phase, Touch::Down) {
             self.note_turn.end();
             // SHIFT held as a finger goes down on the note editor's
-            // Repeats lane draws the ramp (piano roll plan 2A.1).
-            let shift = self.status.shift;
+            // Repeats lane draws the ramp (piano roll plan 2A.1); ERASE
+            // held makes it a tap or a sweep that erases (plan 1B.5).
+            let (shift, erase) = (self.status.shift, self.status.erase);
             if let Some(g) = self.ui.get_mut::<NoteGrid>(time_view::NOTES) {
                 g.fine = shift;
+                g.erase = erase;
             }
         }
         let waiting = self.outbox.len();
@@ -22943,14 +22964,34 @@ mod tests {
         );
         assert!(p.touch(1, Touch::Up, nx, ny).is_none());
         assert!(timed(&mut p).is_empty());
-        // ERASE held + a tap takes the note out.
+        // ERASE held + a tap takes the note out, and the hint line says
+        // what ERASE does here.
         let mut held = p.status.clone();
         held.erase = true;
         p.apply(ToUi::Status(held.clone()));
+        let said = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert_eq!(said, NOTES_ERASE_HINT);
         assert_eq!(
             tap(&mut p, (nx, ny)),
             Some(FromUi::Time(TimeAction::Edit(EditAction::Erase {
                 index: 1,
+                rev: 0
+            })))
+        );
+        // ERASE held + a drag (piano roll plan 1B.5): every note it
+        // crosses, as it lifts.
+        let n0 =
+            p.ui.get::<NoteGrid>(time_view::NOTES)
+                .unwrap()
+                .note_rect(area, 0)
+                .unwrap();
+        let (x0, y0) = (n0.x + n0.w / 2, n0.y + n0.h / 2);
+        assert!(p.touch(1, Touch::Down, x0, y0).is_none());
+        assert!(p.touch(1, Touch::Move, nx, ny).is_none());
+        assert_eq!(
+            p.touch(1, Touch::Up, nx, ny),
+            Some(FromUi::Time(TimeAction::Edit(EditAction::Sweep {
+                notes: vec![0, 1],
                 rev: 0
             })))
         );
