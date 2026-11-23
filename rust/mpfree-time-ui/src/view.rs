@@ -655,6 +655,9 @@ impl TakeRow {
                 SongChange::Resized { .. } => "length",
                 SongChange::Deleted { .. } => "delete",
                 SongChange::Unique { .. } => "unique",
+                SongChange::Split { .. } => "split",
+                SongChange::Trimmed { .. } => "trim",
+                SongChange::Slid { .. } => "slide",
                 SongChange::Scenes { .. } => "scenes",
                 SongChange::List | SongChange::ListToSong { .. } => "list",
                 SongChange::Tempo { .. } => "tempo",
@@ -1561,6 +1564,23 @@ pub enum TimeAction {
     /// Give a placement its own copy of its clip.
     MakeUnique(usize),
     DeletePlacement(usize),
+    /// Split at the playhead (the Arrange refactor's phase 6): block
+    /// `Some(i)` cut there, or with `None` every block across it.
+    SplitPlacement(Option<usize>),
+    /// A copy of block `i` right after it (Duplicate, phase 6).
+    DuplicatePlacement(usize),
+    /// Trim from the left (phase 6): placement `index` starts at song tick
+    /// `start`, its end staying, and what it plays stays where it was.
+    TrimPlacement {
+        index: usize,
+        start: Tick,
+    },
+    /// What placement `index` plays slid `by` song ticks later under it
+    /// (earlier for a negative `by`; phase 6).
+    SlidePlacement {
+        index: usize,
+        by: Tick,
+    },
     /// Live to song on or off: while on and the transport plays, what the
     /// grid plays is recorded into the song
     /// (`mpfree_perform::SongRecorder`).
@@ -3681,8 +3701,17 @@ pub fn take_title(st: &TimeState, row: &TakeRow) -> String {
             | SongChange::Copied { track, .. }
             | SongChange::Resized { track, .. }
             | SongChange::Deleted { track, .. }
-            | SongChange::Unique { track, .. },
+            | SongChange::Unique { track, .. }
+            | SongChange::Split {
+                track: Some(track), ..
+            }
+            | SongChange::Trimmed { track, .. }
+            | SongChange::Slid { track, .. },
         ) => return format!("{word} {} · {}", row.shown(), st.track_name(track)),
+        Some(SongChange::Split { track: None, at }) => {
+            let bar = st.transport.meter.bar_ticks().max(1);
+            return format!("{word} {} · bar {}", row.shown(), at.div_euclid(bar) + 1);
+        }
         Some(SongChange::SectionMoved { at } | SongChange::SectionCopied { at }) => {
             let name = st
                 .markers
@@ -3753,9 +3782,13 @@ fn take_said(st: &TimeState, row: &TakeRow) -> String {
             | SongChange::SectionMoved { at: start }
             | SongChange::SectionCopied { at: start },
         ) => return format!("to bar {}", bar_of(start)),
-        Some(SongChange::Deleted { start, .. } | SongChange::Unique { start, .. }) => {
-            return format!("at bar {}", bar_of(start))
-        }
+        Some(
+            SongChange::Deleted { start, .. }
+            | SongChange::Unique { start, .. }
+            | SongChange::Split { at: start, .. }
+            | SongChange::Slid { start, .. },
+        ) => return format!("at bar {}", bar_of(start)),
+        Some(SongChange::Trimmed { start, .. }) => return format!("from bar {}", bar_of(start)),
         Some(SongChange::Resized { length, .. }) if length % bar == 0 => {
             return format!("{} bars", length / bar)
         }

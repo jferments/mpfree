@@ -1344,7 +1344,9 @@ impl Arrangement {
     /// that doesn't. The last section reaches to the song's end, so a
     /// block put after it is in it. A block across its edges counts as
     /// the part of it inside, cut in phase, so a block joined to its copy
-    /// across an edge holds what the two did.
+    /// across an edge holds what the two did. Blocks that meet with the
+    /// clip where the one before had got to count as one, so a block split
+    /// in phase (Split, phase 6) holds what it did whole.
     fn held(&self, tracks: &[Track], s: &SongSection) -> Option<Held> {
         let scene = s.scene.filter(|f| !f.changed)?;
         let last = s.marker? + 1 == self.markers.len();
@@ -1367,11 +1369,25 @@ impl Arrangement {
             })
             .collect();
         blocks.sort_by_key(|p| (p.track, p.start));
+        let mut joined: Vec<Placement> = Vec::with_capacity(blocks.len());
+        for b in blocks {
+            match joined.last_mut() {
+                Some(a)
+                    if a.track == b.track
+                        && a.clip == b.clip
+                        && a.end() == b.start
+                        && a.offset_by(a.clip(tracks, &self.clips), a.length) == b.offset =>
+                {
+                    a.length += b.length;
+                }
+                _ => joined.push(b),
+            }
+        }
         Some(Held {
             scene,
             passes: s.passes,
             reach: reach - s.start,
-            blocks,
+            blocks: joined,
         })
     }
 
@@ -2256,6 +2272,12 @@ mod tests {
             changed(&song),
             [(false, 1), (false, 2), (false, 3), (false, 3)]
         );
+        // A block split in phase (Split, phase 6) plays as it did whole:
+        // nothing is marked.
+        let before = song.clone();
+        let i = song.at(1, 4 * BAR + BAR / 2).unwrap();
+        song.split(&tracks, i, 4 * BAR + BAR / 2).unwrap();
+        assert!(song.mark_changed(&tracks, &before, BAR).is_empty());
         // So is a tempo point.
         let before = song.clone();
         song.tempo.push(TempoPoint {

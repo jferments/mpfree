@@ -2034,8 +2034,20 @@ impl TimeControl {
                 | SongChange::Copied { track, .. }
                 | SongChange::Resized { track, .. }
                 | SongChange::Deleted { track, .. }
-                | SongChange::Unique { track, .. },
+                | SongChange::Unique { track, .. }
+                | SongChange::Split {
+                    track: Some(track), ..
+                }
+                | SongChange::Trimmed { track, .. }
+                | SongChange::Slid { track, .. },
             ) => return format!("{} · {} in the song", r.short(), track_name(track)),
+            Some(SongChange::Split { track: None, at }) => {
+                return format!(
+                    "{} · the song split at {}",
+                    r.short(),
+                    bar_beat(at, self.info.meter)
+                )
+            }
             Some(SongChange::SectionMoved { .. } | SongChange::SectionCopied { .. }) => {
                 return format!("{} · a section of the song", r.short())
             }
@@ -4146,6 +4158,10 @@ impl TimeControl {
             | TimeAction::ScenesToSong
             | TimeAction::MakeUnique(_)
             | TimeAction::DeletePlacement(_)
+            | TimeAction::SplitPlacement(_)
+            | TimeAction::DuplicatePlacement(_)
+            | TimeAction::TrimPlacement { .. }
+            | TimeAction::SlidePlacement { .. }
             | TimeAction::MovePlacement { .. }
             | TimeAction::StretchPlacement { .. }
             | TimeAction::MoveSection { .. }
@@ -4586,6 +4602,7 @@ impl TimeControl {
     ) -> Result<(String, Option<SongChange>), String> {
         let meter = self.info.meter;
         let bpm = self.project_bpm;
+        let playhead = self.info.position;
         let tracks = &self.project.tracks;
         let song = &mut self.project.arrangement;
         let named = |song: &mpfree_seq::arrange::Arrangement, i: usize| {
@@ -4651,6 +4668,116 @@ impl TimeControl {
                         Some(SongChange::Moved { track, start }),
                     )
                 })
+            }
+            TimeAction::SplitPlacement(Some(i)) => {
+                let name = named(song, i);
+                let track = song
+                    .placements
+                    .get(i)
+                    .map(|p| p.track)
+                    .ok_or("split: no such block")?;
+                let j = song.split(tracks, i, playhead).map_err(|_| {
+                    format!("song: move the playhead inside {name} (Split cuts at the playhead)")
+                })?;
+                // The part after is picked: Split again cuts it further.
+                self.selected = Some(j);
+                Ok((
+                    format!(
+                        "song: {name} split at {} (UNDO takes it back)",
+                        at(playhead)
+                    ),
+                    Some(SongChange::Split {
+                        track: Some(track),
+                        at: playhead,
+                    }),
+                ))
+            }
+            TimeAction::SplitPlacement(None) => {
+                let n = song
+                    .split_all(tracks, playhead)
+                    .map_err(|_| "song: too many blocks to split them all".to_string())?;
+                if n == 0 {
+                    return Err(format!(
+                        "song: no block plays across {} (Split cuts at the playhead)",
+                        at(playhead)
+                    ));
+                }
+                let blocks = if n == 1 { "block" } else { "blocks" };
+                Ok((
+                    format!(
+                        "song: {n} {blocks} split at {} (UNDO takes it back)",
+                        at(playhead)
+                    ),
+                    Some(SongChange::Split {
+                        track: None,
+                        at: playhead,
+                    }),
+                ))
+            }
+            TimeAction::DuplicatePlacement(i) => {
+                let name = named(song, i);
+                if i >= song.placements.len() {
+                    return Err("duplicate: no such block".into());
+                }
+                let j = song.duplicate(i).map_err(|_| {
+                    format!("song: no room after {name} for its copy: a block on its lane is in the way")
+                })?;
+                let (track, start) = (song.placements[j].track, song.placements[j].start);
+                self.selected = Some(j);
+                self.section = None;
+                Ok((
+                    format!(
+                        "song: a copy of {name} at {} (UNDO takes it back)",
+                        at(start)
+                    ),
+                    Some(SongChange::Copied { track, start }),
+                ))
+            }
+            TimeAction::TrimPlacement { index, start } => {
+                let name = named(song, index);
+                let track = song
+                    .placements
+                    .get(index)
+                    .map(|p| p.track)
+                    .ok_or("trim: no such block")?;
+                song.trim_start(tracks, index, start).map_err(|_| {
+                    format!(
+                        "song: {name} can't start at {}: it would run into the block before, or past its own end",
+                        at(start)
+                    )
+                })?;
+                Ok((
+                    format!(
+                        "song: {name} starts at {} now, what it plays where it was (UNDO takes it back)",
+                        at(start)
+                    ),
+                    Some(SongChange::Trimmed { track, start }),
+                ))
+            }
+            TimeAction::SlidePlacement { index, by } => {
+                let name = named(song, index);
+                let (track, start) = song
+                    .placements
+                    .get(index)
+                    .map(|p| (p.track, p.start))
+                    .ok_or("slide: no such block")?;
+                if by == 0 {
+                    return Ok((format!("song: {name} plays as it did"), None));
+                }
+                song.slide(tracks, index, by)
+                    .map_err(|_| "slide: no such block".to_string())?;
+                let beats = by.unsigned_abs() as f64 / meter.beat_ticks().max(1) as f64;
+                let way = if by > 0 { "later" } else { "earlier" };
+                let amount = if beats.fract() == 0.0 {
+                    let n = beats as u64;
+                    format!("{n} beat{}", if n == 1 { "" } else { "s" })
+                } else {
+                    format!("{beats:.2} beats")
+                };
+                Ok((
+                    format!("song: what {name} plays slid {amount} {way} (UNDO takes it back)"),
+                    Some(SongChange::Slid { track, start }),
+                ))
             }
             TimeAction::StretchPlacement { index, length } => {
                 let name = named(song, index);
