@@ -336,14 +336,9 @@ pub struct WaitView {
     pub just: String,
 }
 
-/// Why a synth's or a pad's own setting can't join yet (they come with
-/// the pad's hand on them, the next step of phase 2).
-pub const NOT_YET: &str =
-    "A synth's and a pad's own settings join the pad soon: for now, the mixer, effects, macros and outside gear";
-
 /// Why Add is greyed on a synth's or a pad's own setting.
 pub const NO_ADD: &str =
-    "Add works on the mixer, effects and outside gear for now: a synth's and a pad's own settings join later";
+    "Add works on the mixer, effects and outside gear for now: a synth's or a pad's own setting moves by Set";
 
 /// An Add push as Setup writes it.
 fn push_text(p: f32) -> String {

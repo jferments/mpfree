@@ -1392,6 +1392,21 @@ impl Session {
         self
     }
 
+    /// The screen hears of a synth's and a pad's own settings the XY pad
+    /// kept (Stay, or its UNDO), as main.rs tells it.
+    fn own_told(
+        &mut self,
+        pads: Vec<(usize, u8, mpfree_sampler::engine::PadField, f32)>,
+        synth_turned: bool,
+    ) {
+        if !pads.is_empty() {
+            self.out.show(ToUi::PadsLearned(pads));
+        }
+        if synth_turned {
+            self.out.show(ToUi::SynthValues(self.synth.values()));
+        }
+    }
+
     fn period(&mut self) {
         self.settle();
         if self.xy_opening && !self.mix.opening() {
@@ -1403,6 +1418,25 @@ impl Session {
                 });
             }
             self.xy_show();
+        }
+        // The XY pad's hand on a synth's and a pad's own settings, as
+        // main.rs: to their owners before they play.
+        if self.mix.xy_own().holding() > 0 {
+            let mut hands = self.mix.take_xy_own();
+            let (mut kept, mut pads_learned, mut turned) = (Vec::new(), Vec::new(), false);
+            let mut side = crate::OwnReach {
+                synth: &mut *self.synth,
+                own: &mut self.mix.instruments,
+                player: self.sounds.as_mut(),
+                kits: &self.track_kits,
+                pads_learned: &mut pads_learned,
+                synth_turned: &mut turned,
+            };
+            hands.apply(PERIOD as u32, &mut side, |a, before, after| {
+                kept.push((a, before, after))
+            });
+            self.mix.put_xy_own(hands, &kept);
+            self.own_told(pads_learned, turned);
         }
         // The XY pad's Stay: the settings it kept at a lift, one UNDO step.
         if let Some((key, from, to)) = crate::xy_song::kept_turn(self.mix.take_xy_kept()) {
@@ -2404,7 +2438,7 @@ impl Session {
                             crate::mixturns::row(t)
                         }),
                     gui::UndoOn::Xy => self.xy_turns.rows("Start: before these lifts", |t| {
-                        crate::xy_turn_row(&self.mix, t)
+                        crate::xy_turn_row(&self.mix, &self.synth, &self.time, t)
                     }),
                 };
                 self.out.show(ToUi::UndoHistory { on, rows, now });
@@ -2445,13 +2479,27 @@ impl Session {
                             self.xy_turns.undo()
                         };
                         turn.map(|t| {
+                            let (mut pads_learned, mut turned) = (Vec::new(), false);
                             for (addr, v) in crate::xy_song::turn_values(&t, redo) {
-                                self.panels.set_param(&mut self.mix, addr, v, false);
+                                if crate::xy_own::is_own(addr) {
+                                    let mut side = crate::OwnReach {
+                                        synth: &mut *self.synth,
+                                        own: &mut self.mix.instruments,
+                                        player: self.sounds.as_mut(),
+                                        kits: &self.track_kits,
+                                        pads_learned: &mut pads_learned,
+                                        synth_turned: &mut turned,
+                                    };
+                                    crate::xy_own::OwnSide::keep(&mut side, addr, v);
+                                } else {
+                                    self.panels.set_param(&mut self.mix, addr, v, false);
+                                }
                             }
+                            self.own_told(pads_learned, turned);
                             format!(
                                 "{}: {}",
                                 if redo { "redo" } else { "undo" },
-                                crate::xy_turn_row(&self.mix, &t)
+                                crate::xy_turn_row(&self.mix, &self.synth, &self.time, &t)
                             )
                         })
                     }

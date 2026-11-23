@@ -664,6 +664,9 @@ pub struct MixHost {
     /// A layout of yours on the XY pad (`xy_play.rs`): while one plays,
     /// the pad's gestures play it through the hand layer.
     xy_play: crate::xy_play::XyPlay,
+    /// The pad's hand on a synth's and a pad's own settings, waiting for
+    /// the sound loop to hand them on (`xy_own.rs`, [`MixHost::take_xy_own`]).
+    xy_own: crate::xy_own::OwnHands,
     /// Frames until a learned control's gesture on a layout of yours ends
     /// (`HAND_S` after its last move; 0: none going).
     xy_midi_left: u32,
@@ -967,6 +970,7 @@ impl MixHost {
             xy_late: None,
             xy_found_up: 0,
             xy_play: crate::xy_play::XyPlay::new(rate),
+            xy_own: crate::xy_own::OwnHands::new(rate),
             xy_midi_left: 0,
             recording: false,
             waiting: [None; WAITING],
@@ -1237,7 +1241,8 @@ impl MixHost {
         self.xy_on = [false; 2];
         self.xy_late = None;
         self.xy_midi_left = 0;
-        let mut reach = crate::xy_play::ModReach::new(&mut self.modu, &self.mixer, false);
+        let mut reach =
+            crate::xy_play::ModReach::new(&mut self.modu, &mut self.xy_own, &self.mixer, false);
         self.xy_play.cancel(&mut reach);
         // An old project's pad mutes, for the tracks to take as it opens.
         self.old_pads = Some((load.old_pad_mutes, load.old_pad_solos)).filter(|&(m, s)| m | s != 0);
@@ -1801,7 +1806,8 @@ impl MixHost {
         let input = XyInput::new(device, 0, self.xy_seq, 0, phase, x, y);
         let step = self.xy_gesture.input(&input);
         let recording = self.recording;
-        let mut reach = crate::xy_play::ModReach::new(&mut self.modu, &self.mixer, recording);
+        let mut reach =
+            crate::xy_play::ModReach::new(&mut self.modu, &mut self.xy_own, &self.mixer, recording);
         match step {
             None => {}
             Some(Step::Begin { x, y }) => {
@@ -1830,7 +1836,12 @@ impl MixHost {
         let input = XyInput::new(mpfree_xy::Device::Midi, 0, self.xy_seq, 0, Phase::End, x, y);
         if let Some(Step::End { .. }) = self.xy_gesture.input(&input) {
             let recording = self.recording;
-            let mut reach = crate::xy_play::ModReach::new(&mut self.modu, &self.mixer, recording);
+            let mut reach = crate::xy_play::ModReach::new(
+                &mut self.modu,
+                &mut self.xy_own,
+                &self.mixer,
+                recording,
+            );
             self.xy_play.end(&mut reach, recording);
         }
     }
@@ -1848,7 +1859,12 @@ impl MixHost {
         self.xy_on = [false; 2];
         self.xy_late = None;
         self.xy_midi_left = 0;
-        let mut reach = crate::xy_play::ModReach::new(&mut self.modu, &self.mixer, self.recording);
+        let mut reach = crate::xy_play::ModReach::new(
+            &mut self.modu,
+            &mut self.xy_own,
+            &self.mixer,
+            self.recording,
+        );
         self.xy_play.load(&mut reach, layout);
     }
 
@@ -1909,7 +1925,8 @@ impl MixHost {
     /// layout says.
     pub fn xy_hold(&mut self, on: bool) {
         let recording = self.recording;
-        let mut reach = crate::xy_play::ModReach::new(&mut self.modu, &self.mixer, recording);
+        let mut reach =
+            crate::xy_play::ModReach::new(&mut self.modu, &mut self.xy_own, &self.mixer, recording);
         self.xy_play.set_hold(&mut reach, on, recording);
     }
 
@@ -1917,6 +1934,30 @@ impl MixHost {
     /// then, and Stay keeps no value (`main.rs`, each loop).
     pub fn set_recording(&mut self, recording: bool) {
         self.recording = recording;
+    }
+
+    /// The XY pad's moves on a synth's and a pad's own settings, for the
+    /// sound loop to hand on to their owners (`OwnHands::apply`); it puts
+    /// the table back with [`MixHost::put_xy_own`]. Copies a fixed table,
+    /// allocating nothing.
+    pub fn take_xy_own(&mut self) -> crate::xy_own::OwnHands {
+        let rate = self.modu.engine().rate();
+        std::mem::replace(&mut self.xy_own, crate::xy_own::OwnHands::new(rate))
+    }
+
+    /// The table [`MixHost::take_xy_own`] took, handed on; `kept` the Stay
+    /// turns it made, which join the lift's UNDO step.
+    pub fn put_xy_own(&mut self, own: crate::xy_own::OwnHands, kept: &[(ParamAddr, f32, f32)]) {
+        self.xy_own = own;
+        for &(addr, before, after) in kept {
+            self.xy_play.add_kept(addr, before, after);
+        }
+    }
+
+    /// The XY pad's hand on a synth's and a pad's own settings, as the
+    /// sound loop has it (the status line, the tests).
+    pub fn xy_own(&self) -> &crate::xy_own::OwnHands {
+        &self.xy_own
     }
 
     /// Stay's turns on a layout of yours since the last call, as one UNDO
@@ -2007,12 +2048,13 @@ impl MixHost {
         let g = &self.xy_gesture;
         format!(
             "XY pad: {} gestures taken by the other controller's, {} moves ignored (another touch held it), \
-             {} out of order, {} lifts found from the screen's state; {}",
+             {} out of order, {} lifts found from the screen's state; {}; {}",
             g.taken,
             g.ignored,
             g.stale,
             self.xy_found_up,
-            self.xy_play.describe()
+            self.xy_play.describe(),
+            self.xy_own.describe()
         )
     }
 
@@ -3078,8 +3120,12 @@ impl MixHost {
                     self.xy_midi_ends();
                 }
             }
-            let mut reach =
-                crate::xy_play::ModReach::new(&mut self.modu, &self.mixer, self.recording);
+            let mut reach = crate::xy_play::ModReach::new(
+                &mut self.modu,
+                &mut self.xy_own,
+                &self.mixer,
+                self.recording,
+            );
             self.xy_play.tick(&mut reach, PERIOD as u32);
         }
         // The audio tracks are in already, each on its own channel

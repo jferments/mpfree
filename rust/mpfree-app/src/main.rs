@@ -189,6 +189,7 @@ mod views;
 mod waiting;
 mod xy_layouts;
 mod xy_list;
+mod xy_own;
 mod xy_play;
 mod xy_setup;
 mod xy_slot;
@@ -7928,12 +7929,17 @@ fn xy_view(
 
 /// A Stay lift as the XY pad's undo history lists it: "Stay: Cutoff,
 /// Send A (2 settings)".
-fn xy_turn_row(mix: &mixing::MixHost, t: &undo::Turn<xy_song::XyKey, xy_song::XyValues>) -> String {
+fn xy_turn_row(
+    mix: &mixing::MixHost,
+    synth: &synth::Synth,
+    time: &time::TimeHost,
+    t: &undo::Turn<xy_song::XyKey, xy_song::XyValues>,
+) -> String {
     let names: Vec<String> = t
         .key
         .iter()
         .flatten()
-        .map(|&a| modpanels::label(mix, a))
+        .map(|&a| learn_label(mix, synth, time, a))
         .collect();
     let n = names.len();
     let shown: Vec<&str> = names.iter().take(3).map(String::as_str).collect();
@@ -7943,6 +7949,104 @@ fn xy_turn_row(mix: &mixing::MixHost, t: &undo::Turn<xy_song::XyKey, xy_song::Xy
         shown.join(", "),
         if n == 1 { "" } else { "s" }
     )
+}
+
+/// A synth's and a pad's own settings as the XY pad's hand reaches them
+/// (`xy_own.rs`), routed as a clip's lock is (`SeqPads::lock_at`): a
+/// track's own instrument (or the one it plays), else the synth on the
+/// pads; a kit pad's own setting on the kit its track plays. Stay sets
+/// one as a turn of its knob would: the Synth tab's turn (the tab follows,
+/// `synth_turned`), and a pad's on its kit by the screen, as a learned
+/// control sets it (`pads_learned`, `ToUi::PadsLearned`).
+struct OwnReach<'a> {
+    synth: &'a mut synth::Synth,
+    own: &'a mut instruments::Instruments,
+    /// The kits' sounds (None: none play, as in a smoke test without them).
+    player: Option<&'a mut sampler::Player>,
+    kits: &'a sampler::TrackKits,
+    pads_learned: &'a mut Vec<(usize, u8, mpfree_sampler::engine::PadField, f32)>,
+    synth_turned: &'a mut bool,
+}
+
+impl OwnReach<'_> {
+    /// The kit and setting of track `t`'s pad setting `param`: None for a
+    /// track that plays an instrument or the synth, or no such setting.
+    fn pad_of(&self, t: u8, param: u16) -> Option<(usize, mpfree_sampler::engine::PadField)> {
+        let t = usize::from(t);
+        if self.own.plays(t) || self.kits.plays_synth(t) {
+            return None;
+        }
+        Some((self.kits.kit_of(t)?, sampler::pad_field(param)?))
+    }
+}
+
+impl xy_own::OwnSide for OwnReach<'_> {
+    fn hold(
+        &mut self,
+        addr: mpfree_play::mpfree_param::ParamAddr,
+        value: Option<f32>,
+        over: bool,
+    ) -> bool {
+        use mpfree_play::mpfree_param::Owner;
+        match addr.owner {
+            Owner::Inst(t) if self.own.plays(usize::from(t)) => {
+                self.own.pad_hand(usize::from(t), addr.param, value, over)
+            }
+            Owner::Inst(_) => self.synth.pad_hand(addr.param, value, over),
+            Owner::Pad(t, pad) => match (self.pad_of(t, addr.param), self.player.as_mut()) {
+                (Some((kit, f)), Some(p)) => p.pad_hand(kit, usize::from(pad), f, value, over),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    fn beneath(&self, addr: mpfree_play::mpfree_param::ParamAddr) -> Option<(f32, f32)> {
+        use mpfree_play::mpfree_param::Owner;
+        match addr.owner {
+            Owner::Inst(t) if self.own.plays(usize::from(t)) => {
+                self.own.pad_beneath(usize::from(t), addr.param)
+            }
+            Owner::Inst(_) => self
+                .synth
+                .param_info(addr.param)
+                .map(|_| self.synth.pad_beneath(addr.param)),
+            Owner::Pad(t, pad) => {
+                let (kit, f) = self.pad_of(t, addr.param)?;
+                let p = self.player.as_ref()?;
+                let own = p.pad_own(kit, usize::from(pad), f)?;
+                Some((p.pad_beneath(kit, usize::from(pad), f)?, own))
+            }
+            _ => None,
+        }
+    }
+
+    fn keep(&mut self, addr: mpfree_play::mpfree_param::ParamAddr, value: f32) -> bool {
+        use mpfree_play::mpfree_param::Owner;
+        match addr.owner {
+            Owner::Inst(t) if self.own.plays(usize::from(t)) => {
+                let ok = self.own.param(usize::from(t), addr.param, value);
+                *self.synth_turned |= ok;
+                ok
+            }
+            Owner::Inst(_) => {
+                if self.synth.param_info(addr.param).is_none() {
+                    return false;
+                }
+                self.synth.set(addr.param, value);
+                *self.synth_turned = true;
+                true
+            }
+            Owner::Pad(t, pad) => match self.pad_of(t, addr.param) {
+                Some((kit, f)) => {
+                    self.pads_learned.push((kit, pad, f, value));
+                    true
+                }
+                None => false,
+            },
+            _ => false,
+        }
+    }
 }
 
 /// A setting as the XY pad's Setup and its waiting banner name it
@@ -7975,11 +8079,6 @@ fn xy_seen(
     }
     if matches!(addr.owner, Owner::Arp(_)) {
         return Err("The arp's settings can't go on the pad yet.".to_string());
-    }
-    // A synth's and a pad's own settings: the pad's hand reaches them in
-    // the next step (the XY plan's phase 2, its third pull request).
-    if matches!(addr.owner, Owner::Inst(_) | Owner::Pad(..)) {
-        return Err(xy_song::NOT_YET.to_string());
     }
     let now = desk::play_now(time, mix);
     let Some((info, _)) = learn_describe(mix, synth, app, pads, now, addr) else {
@@ -9393,9 +9492,9 @@ fn player_session(
                         gui::UndoOn::Mixer => {
                             mix_turns.rows("Start: the mix before these turns", mixturns::row)
                         }
-                        gui::UndoOn::Xy => {
-                            xy_turns.rows("Start: before these lifts", |t| xy_turn_row(&mix, t))
-                        }
+                        gui::UndoOn::Xy => xy_turns.rows("Start: before these lifts", |t| {
+                            xy_turn_row(&mix, &synth, &time, t)
+                        }),
                     };
                     out.show(gui::ToUi::UndoHistory { on, rows, now });
                 }
@@ -9422,12 +9521,24 @@ fn player_session(
                             };
                             turn.map(|t| {
                                 for (addr, v) in xy_song::turn_values(&t, redo) {
-                                    panels.set_param(&mut mix, addr, v, false);
+                                    if xy_own::is_own(addr) {
+                                        let mut side = OwnReach {
+                                            synth: &mut *synth,
+                                            own: &mut mix.instruments,
+                                            player: Some(&mut player),
+                                            kits: &track_kits,
+                                            pads_learned: &mut pads_learned,
+                                            synth_turned: &mut synth_learned,
+                                        };
+                                        xy_own::OwnSide::keep(&mut side, addr, v);
+                                    } else {
+                                        panels.set_param(&mut mix, addr, v, false);
+                                    }
                                 }
                                 format!(
                                     "{}: {}",
                                     if redo { "redo" } else { "undo" },
-                                    xy_turn_row(&mix, &t)
+                                    xy_turn_row(&mix, &synth, &time, &t)
                                 )
                             })
                         }
@@ -10364,6 +10475,33 @@ fn player_session(
             }
             let pad_now = |t: u8, pad: u8, id: u16| pad_describe(&player, &track_kits, t, pad, id);
             out.show(xy_view(&mut xy_yours, &mix, &synth, &app, &pad_now, &time));
+        }
+        // The XY pad's hand on a synth's and a pad's own settings: this
+        // period's moves, glides back and Stay go to their owners before
+        // they play (`xy_own.rs`); Stay's turns join the lift's UNDO step.
+        if mix.xy_own().holding() > 0 {
+            let mut hands = mix.take_xy_own();
+            let none = mpfree_play::mpfree_param::ParamAddr::new(
+                mpfree_play::mpfree_param::Owner::Play,
+                0,
+            );
+            let mut kept = [(none, 0.0, 0.0); mpfree_xy::SLOTS];
+            let mut n = 0;
+            let mut side = OwnReach {
+                synth: &mut *synth,
+                own: &mut mix.instruments,
+                player: Some(&mut player),
+                kits: &track_kits,
+                pads_learned: &mut pads_learned,
+                synth_turned: &mut synth_learned,
+            };
+            hands.apply(PERIOD as u32, &mut side, |a, before, after| {
+                if n < kept.len() {
+                    kept[n] = (a, before, after);
+                    n += 1;
+                }
+            });
+            mix.put_xy_own(hands, &kept[..n]);
         }
         // The XY pad's Stay: the settings it kept at a lift, one UNDO step.
         if let Some((key, from, to)) = xy_song::kept_turn(mix.take_xy_kept()) {

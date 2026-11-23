@@ -5379,4 +5379,110 @@ mod tests {
             assert!(text.contains("playing\t0"), "{text}");
         });
     }
+
+    /// A synth's own setting on a layout of yours (the XY plan's phase 2,
+    /// "a synth's settings gain the hand layer"): SHIFT + a touch on a
+    /// Synth tab knob joins it; the pad plays it without changing its own
+    /// value, Go back gives that back, Stay keeps the pad's, and UNDO
+    /// puts it back.
+    #[test]
+    fn a_layout_of_yours_plays_a_synths_knob_and_lets_go_of_it() {
+        use mpfree_synth_ui::view as synth_view;
+        on_big_stack(|| {
+            use crate::xy_widgets::XY_BANNER;
+            use mpfree_ui::Touch;
+            let mut s = Session::new();
+            s.play_view("All");
+            s.press(crate::play_page::XY, "xy-chip", "").settle();
+            s.press(crate::xy_list::XY_LIST, "new", "+ New layout")
+                .settle();
+            s.press(crate::xy_setup::XY_SETUP, "plus", "+ across")
+                .settle();
+            s.press("header", "tab", "Synth").settle();
+            let knob = s
+                .controls()
+                .into_iter()
+                .find(|o| o.widget == synth_view::TILES && o.target.id == "knob")
+                .expect("a knob on the Synth tab")
+                .target;
+            s.button_edge("SHIFT", true);
+            s.press_target(&knob).settle();
+            s.button_edge("SHIFT", false);
+            let across = s.xy_yours.yours[0].layout.across.targets.clone();
+            assert_eq!(across.len(), 1, "the knob joined across: {:?}", s.lines);
+            let addr = across[0].addr;
+            assert!(
+                matches!(addr.owner, mpfree_play::mpfree_param::Owner::Inst(_)),
+                "{addr:?}"
+            );
+            s.press(XY_BANNER, "done", "Done").settle();
+            let value = |s: &Session| s.synth.value(addr.param);
+            let before = value(&s);
+
+            // The pad plays it; its own value stays as it was.
+            s.button_with("SHIFT", "NEXT SEQ").settle();
+            assert_eq!(s.page(), crate::play_page::XY_FULL_PAGE);
+            let pad = s
+                .control(crate::play_page::XY, "xy", "")
+                .expect("the pad")
+                .target
+                .rect;
+            // The far end from where the knob is now.
+            let from = across[0].from;
+            let to = across[0].to;
+            let unit = |v: f32| ((v - from) / (to - from)).clamp(0.0, 1.0);
+            let x = if unit(before) > 0.5 {
+                pad.x + pad.w / 20
+            } else {
+                pad.x + pad.w * 19 / 20
+            };
+            let y = pad.y + pad.h / 2;
+            if let Some(a) = s.screen.touch(9, Touch::Down, x, y) {
+                s.route(a);
+            }
+            s.run_for(0.3);
+            let held = value(&s);
+            assert!(
+                (held - before).abs() > 0.05 * (to - from).abs(),
+                "the pad moved the knob: {before} → {held}"
+            );
+            assert!(s.mix.xy_own().holding() > 0, "held by the pad's hand");
+            if let Some(a) = s.screen.touch(9, Touch::Up, x, y) {
+                s.route(a);
+            }
+            s.run_for(1.0);
+            assert!(
+                (value(&s) - before).abs() < 1e-3 * (1.0 + before.abs()),
+                "Go back: {before} again, not {}",
+                value(&s)
+            );
+            assert_eq!(s.mix.xy_own().holding(), 0, "let go");
+
+            // Stay keeps the pad's value as the knob's own; UNDO gives the
+            // old one back.
+            s.press(crate::xy_widgets::XY_BAR, "xy-bar", "Let go: Go back")
+                .settle();
+            if let Some(a) = s.screen.touch(9, Touch::Down, x, y) {
+                s.route(a);
+            }
+            s.run_for(0.3);
+            if let Some(a) = s.screen.touch(9, Touch::Up, x, y) {
+                s.route(a);
+            }
+            s.run_for(0.5).settle();
+            let stayed = value(&s);
+            assert!(
+                (stayed - held).abs() < 1e-3 * (1.0 + held.abs()),
+                "Stay: {held}, not {stayed}"
+            );
+            assert_eq!(s.mix.xy_own().holding(), 0, "nothing stays held");
+            s.button("UNDO").settle();
+            s.run_for(0.2);
+            assert!(
+                (value(&s) - before).abs() < 1e-3 * (1.0 + before.abs()),
+                "UNDO: {before} again, not {}",
+                value(&s)
+            );
+        });
+    }
 }
