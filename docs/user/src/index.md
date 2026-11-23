@@ -18,8 +18,8 @@ This manual is for musicians and producers. It assumes you have never used an MP
 ## How this manual is organised
 
 - **Getting started** walks you from switching on to your first beat and your first loop.
-- **Making music** covers each part of MPFree in depth, roughly in the order of the tabs: playing live, the Sequencer and its piano roll, the Pads tab, looping, sampling, synths, clips and arranging, audio tracks, mixing and effects, then other gear, saving and exporting.
-- **Reference** lists every button, every setting and every term, shows how to make your own theme, and says what to do when something goes wrong.
+- **Making music** covers each part of MPFree in depth, roughly in the order of the tabs: playing live (with your own XY layouts, Note Repeat and the arpeggiator), the Sequencer and its piano roll, the Pads tab, looping, sampling, synths, clips and arranging, audio tracks, mixing and effects, then plugins, other gear, saving, patches and set lists for gigs, exporting, and bringing your beats over from the MPC.
+- **Reference** lists every button, every setting, every arp pattern and every term, shows how to make your own theme, and says what to do when something goes wrong.
 
 ## Which version this describes
 

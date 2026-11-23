@@ -96,6 +96,8 @@ checked: 2026-11-19 f0b39161
 
 **Parameter lock** — A setting changed for one step only, such as a filter that opens on one hit.
 
+**Patch** — A way of setting up your keyboard for a song: up to eight zones, each playing one of the song's instruments on its own keys and velocities, so you can split and layer. A song keeps its patches, and you switch them while you play. See [Patches](../making-music/patches.md).
+
 **Pattern** — A clip shown as steps: the rows on the Play page, and the Sequencer's Steps.
 
 **Perform set** — Eight pages of action pads (loop keys, throws, mutes, scenes, macros) that can take over the pads, set up on the Pads tab.
@@ -122,15 +124,27 @@ checked: 2026-11-19 f0b39161
 
 **Scene** — A row of the clip grid, launched all at once. The Sample tab also has two scenes of the whole kit to morph between.
 
+**Scene card** — The card for one row of the clip grid: its scene's name, what plays after it, its tempo, mutes and program changes, and Capture, Copy row, Insert row and Delete row. Hold the row's number to open it.
+
 **Send** — How much of a sound goes to one of the four shared effects (send returns A to D).
 
 **Sequencer** — The tab after Play: the armed track's clip as steps (**Steps**) or as notes in the note editor (**Notes**). **STEP SEQ** opens it.
+
+**Set** — A list of songs (your projects) to play in order at a gig or a rehearsal, made in BROWSE's **Sets** place and played on the Show view. See [Set lists](../making-music/set-lists.md).
+
+**Show view** — The Arrange tab's view for playing a set: the song playing, what comes next and whether it's ready, moved on with a footswitch, the wheel or a tap.
 
 **Skip back** — Keeping what had just come in without having pressed Record: Sample Recall, with **From** set to the recorder's Source.
 
 **Snap** — The grid that notes you draw or move land on in the note editor. **Auto** follows how far you have zoomed in.
 
+**Snap (loop)** — When you close a loop a little off the downbeat you played, the chip that moves the loop's end onto that downbeat. **Use my tap** puts it back where you tapped. See [Recording loops](../making-music/looping.md).
+
 **Song** — Clips laid out on a timeline on the Arrange tab, one lane per track, with the audio tracks under them.
+
+**Song list** — The song as a list of parts, each playing a scene so many times ("Intro × 2, Verse × 4"), played in order on the bar. See [The song list](../making-music/arranging.md#the-song-list).
+
+**Status chip** — The CPU and RAM numbers at the top right of every page. They turn yellow or red when something needs you; tap them for System status.
 
 **Step inspector** — The panel on the Sequencer's Steps that shows and sets the picked step's velocity, length, chance, condition, ratchet and nudge.
 
@@ -138,7 +152,11 @@ checked: 2026-11-19 f0b39161
 
 **Swing** — Delaying every other step a little, for a shuffled feel.
 
+**System status** — The page that says what went wrong, what it means for your music and what to try. See [When something goes wrong](when-something-goes-wrong.md).
+
 **Take** — One recording. UNDO takes back the newest; SHIFT + UNDO brings it back.
+
+**Theme** — MPFree's colours and the style of its panels, picked in **Prefs > Appearance**, or made from a short text file. See [Making your own theme](making-a-theme.md).
 
 **Throw** — A short performance effect that plays while you hold it.
 
@@ -155,5 +173,9 @@ checked: 2026-11-19 f0b39161
 **View** — One of a page's layouts: the Sequencer tab's Steps and Notes, or the Arrange tab's Clips grid, Song view and song list.
 
 **Warp** — Playing a sample in time with the project's tempo: Stretch keeps its pitch, Repitch changes it like a record.
+
+**XY layout** — What the XY pad moves: one of the ten ready-made layouts, or one of yours with up to eight settings across and eight up. See [Your own XY layouts](../making-music/xy-layouts.md).
+
+**Zone** — One part of a patch: a range of keys and velocities that plays one instrument. Two zones over the same keys layer.
 
 **16 Levels** — One sound spread over all 16 pads, each a step of velocity, tune, cutoff, decay or start.
