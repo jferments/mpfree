@@ -24,6 +24,9 @@ const INCOMPAT_ENCRYPT: u32 = 0x10000;
 const INCOMPAT_COMPRESSION: u32 = 0x1;
 const INCOMPAT_JOURNAL_DEV: u32 = 0x8;
 const INCOMPAT_DIRDATA: u32 = 0x1000;
+/// The journal holds changes not yet written to the filesystem itself (the
+/// system that last mounted it was cut off). This reader never replays it.
+const INCOMPAT_RECOVER: u32 = 0x4;
 /// Incompatible features this reader handles; any other one stops it.
 const INCOMPAT_KNOWN: u32 =
     0x2 | 0x4 | 0x10 | 0x40 | 0x80 | 0x100 | 0x200 | 0x400 | 0x2000 | 0x4000 | 0x8000 | 0x20000;
@@ -318,6 +321,14 @@ impl<R: ReadAt> Ext4<R> {
         let mut b = vec![0u8; self.block_size as usize];
         self.read(&mut b, n * self.block_size)?;
         Ok(b)
+    }
+
+    /// Whether the filesystem's journal still holds changes (the system
+    /// that last mounted it read-write was cut off before it unmounted).
+    /// They are not replayed here, so the newest files and changes may be
+    /// missing from what this reader sees.
+    pub fn needs_recovery(&self) -> bool {
+        self.feature_incompat & INCOMPAT_RECOVER != 0
     }
 
     /// Inode number `ino`.
@@ -1056,5 +1067,154 @@ mod tests {
         sb[1024 + 0x39] = 0xEF;
         sb[1024 + 0x18] = 9; // absurd block size
         assert!(Ext4::open(&sb).is_err());
+    }
+
+    /// A folder of thousands of sounds (as on the MPC's Internal drive) is
+    /// a hashed folder: it lists whole, every name once, each inode read.
+    /// SD card step S3's listing, on the host first.
+    #[test]
+    fn lists_a_hashed_folder_of_thousands_of_files() {
+        let Some(tool) = mke2fs() else {
+            eprintln!("mke2fs not installed; skipping");
+            return;
+        };
+        let scratch =
+            Scratch(std::env::temp_dir().join(format!("mpfree-ext4-many-{}", std::process::id())));
+        let src = scratch.0.join("src");
+        let many = src.join("Samples").join("Drums");
+        std::fs::create_dir_all(&many).unwrap();
+        const N: usize = 5000;
+        for i in 0..N {
+            std::fs::write(
+                many.join(format!("Kick {i:04}.wav")),
+                pattern(64 + i % 300, i as u32),
+            )
+            .unwrap();
+        }
+        let img = scratch.0.join("many.img");
+        std::fs::File::create(&img)
+            .unwrap()
+            .set_len(64 << 20)
+            .unwrap();
+        let out = Command::new(tool)
+            .args([
+                "-q",
+                "-F",
+                "-t",
+                "ext4",
+                "-b",
+                "4096",
+                "-E",
+                "root_owner=0:0",
+                "-d",
+            ])
+            .arg(&src)
+            .arg(&img)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "mke2fs: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        // mke2fs -d writes folders plainly; the kernel indexes one as it
+        // grows, as e2fsck -D does here.
+        let e2fsck = ["/usr/sbin/e2fsck", "/sbin/e2fsck"]
+            .into_iter()
+            .find(|p| Path::new(p).exists());
+        let Some(e2fsck) = e2fsck else {
+            eprintln!("e2fsck not installed; skipping");
+            return;
+        };
+        let out = Command::new(e2fsck)
+            .args(["-f", "-y", "-D"])
+            .arg(&img)
+            .output()
+            .unwrap();
+        // 0: nothing changed, 1: corrected (the folders indexed).
+        assert!(
+            matches!(out.status.code(), Some(0 | 1)),
+            "e2fsck: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        let fs = Ext4::open(std::fs::File::open(&img).unwrap()).unwrap();
+        assert!(!fs.needs_recovery());
+        let t = std::time::Instant::now();
+        let dir = fs.lookup("/Samples/Drums").unwrap().unwrap();
+        assert!(dir.is_dir());
+        // e2fsck -D has made a folder this big hashed (htree).
+        assert_ne!(dir.flags & 0x1000, 0, "not a hashed folder");
+        let entries = fs.read_dir(&dir).unwrap();
+        let mut names = Vec::new();
+        let mut sizes = 0u64;
+        for e in &entries {
+            let name = String::from_utf8_lossy(&e.name).into_owned();
+            if name == "." || name == ".." {
+                continue;
+            }
+            sizes += fs.inode(e.ino).unwrap().size;
+            names.push(name);
+        }
+        let took = t.elapsed();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), N);
+        assert_eq!(names[0], "Kick 0000.wav");
+        assert_eq!(sizes, (0..N).map(|i| 64 + (i % 300) as u64).sum::<u64>());
+        eprintln!("{N} files listed with their sizes in {took:?}");
+    }
+
+    /// A journal left with changes in it (Akai's system cut off while the
+    /// Internal drive was mounted) is said, and the filesystem still reads
+    /// as it stands, the journal not replayed.
+    #[test]
+    fn says_when_the_journal_still_holds_changes() {
+        let Some(tool) = mke2fs() else {
+            eprintln!("mke2fs not installed; skipping");
+            return;
+        };
+        let debugfs = ["/usr/sbin/debugfs", "/sbin/debugfs"]
+            .into_iter()
+            .find(|p| Path::new(p).exists());
+        let Some(debugfs) = debugfs else {
+            eprintln!("debugfs not installed; skipping");
+            return;
+        };
+        let scratch = Scratch(
+            std::env::temp_dir().join(format!("mpfree-ext4-journal-{}", std::process::id())),
+        );
+        let src = scratch.0.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("Kick.wav"), pattern(5000, 3)).unwrap();
+        let img = scratch.0.join("j.img");
+        std::fs::File::create(&img)
+            .unwrap()
+            .set_len(16 << 20)
+            .unwrap();
+        let out = Command::new(tool)
+            .args(["-q", "-F", "-t", "ext4", "-E", "root_owner=0:0", "-d"])
+            .arg(&src)
+            .arg(&img)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "mke2fs: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let out = Command::new(debugfs)
+            .args(["-w", "-R", "feature needs_recovery"])
+            .arg(&img)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "debugfs: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let fs = Ext4::open(std::fs::File::open(&img).unwrap()).unwrap();
+        assert!(fs.needs_recovery());
+        let ino = fs.lookup("/Kick.wav").unwrap().unwrap();
+        assert_eq!(fs.read_file(&ino).unwrap(), pattern(5000, 3));
     }
 }
