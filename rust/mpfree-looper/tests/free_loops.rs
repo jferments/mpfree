@@ -1399,3 +1399,58 @@ fn random_presses_on_free_loops_leave_the_song_loops_as_they_would_be() {
          captures {free_captures}"
     );
 }
+
+/// A snap belongs to the free loops' run it was worked out on: stopped and
+/// started again before its downbeat, the loop is back at its top on
+/// another frame, so the old downbeat's frame is no downbeat of it. The
+/// snap doesn't land, the free clock keeps its tempo and its bar 1 on the
+/// frame Play started it, and the loop plays from its top as recorded.
+#[test]
+fn a_free_snap_doesnt_land_once_the_free_loops_stop_and_start_again() {
+    let mut r = Rig::new(256);
+    let (rec_from, tap) = free_late_tap(&mut r, SmartEnd::Off);
+    r.run(tap + 5_000, &noise);
+    let bpm = r.l.free_clock().unwrap().bpm;
+    let p = r.l.snap_plan(0, Snap::Bars(4), r.frame).unwrap();
+    assert!(r.l.snap_at(p));
+    // Stop and Play, both before its downbeat.
+    r.cmd(L::FreeStop);
+    r.run(r.frame + 2 * 256, &noise);
+    r.cmd(L::FreePlay);
+    let play = r.frame;
+    assert!(play + 1_000 < p.at, "Play comes before the downbeat");
+    r.run(p.at + 1_000, &noise);
+    assert_eq!(r.l.take_snap().map(|d| d.landed), Some(false));
+    let c = r.l.free_clock().unwrap();
+    assert_eq!((c.bpm, c.anchor_frame, c.running), (bpm, play, true));
+    assert_eq!(r.status(0).ticks, 2 * BAR_TICKS, "nothing moved");
+    for j in [FADE as u64 + 10, 5_000, p.at - play + 500] {
+        assert!(close(r.out_at(play + j), noise(rec_from + j)), "frame {j}");
+    }
+}
+
+/// A snap on a free loop re-anchors the free clock at another tempo on its
+/// downbeat: bars heard before it were at the old tempo, so Capture into
+/// another free loop takes only bars since the snap landed. Right after
+/// it there is no whole bar yet; a bar on (at the new tempo) there is
+/// one, starting on the snap's frame.
+#[test]
+fn a_free_capture_takes_only_bars_since_a_snap_changed_the_free_clocks_tempo() {
+    let mut r = Rig::new(256);
+    let (_, tap) = free_late_tap(&mut r, SmartEnd::Off);
+    r.run(tap + 5_000, &noise);
+    let p = r.l.snap_plan(0, Snap::Bars(4), r.frame).unwrap();
+    assert!(r.l.snap_at(p));
+    r.run(p.at + 2_000, &noise);
+    assert_eq!(r.l.take_snap().map(|d| d.landed), Some(true));
+    assert_eq!(
+        r.l.capture_take(Clock::Free, 1),
+        None,
+        "no bar since the snap"
+    );
+    let c = r.l.free_clock().unwrap();
+    let bar = c.frame_of(p.tick + BAR_TICKS).unwrap() - p.at;
+    r.run(p.at + bar + bar / 2, &noise);
+    let t = r.l.capture_take(Clock::Free, 4).expect("one bar");
+    assert_eq!((t.bars, t.start, t.origin), (1, p.at, p.tick));
+}
