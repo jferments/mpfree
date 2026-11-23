@@ -40,6 +40,20 @@ const TRACKS: u16 = mpfree_midi::setup::ROUTE_TRACKS as u16;
 /// counted ([`PatchIn::dropped`]).
 pub const OUTS: usize = 1024;
 
+/// The keys down the screen is told of at most (the patch editor lights
+/// them); more are left out there, never here.
+pub const SHOWN: usize = 16;
+
+/// A key down as it came in, for the screen: its port and channel, its
+/// note and velocity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Shown {
+    pub port: PortId,
+    pub ch: u8,
+    pub note: u8,
+    pub vel: u8,
+}
+
 /// What a zone (or a patch's Keys outside the zones) plays, in its words.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Plays {
@@ -74,6 +88,7 @@ impl Plays {
 }
 
 /// The song's patches as the audio loop plays them.
+#[derive(Debug, PartialEq)]
 pub struct PatchRig {
     pub rig: Box<Rig>,
     /// The synths the zones name, each once, in the order first named:
@@ -117,6 +132,11 @@ pub struct PatchIn {
     /// Sends dropped: past [`OUTS`] between two takes, or to a synth no
     /// route row plays.
     pub dropped: u64,
+    /// The keys down now while the patch takes part, as they came (the
+    /// patch editor lights them and the zones they reach).
+    shown: [Option<Shown>; SHOWN],
+    /// Moves each time `shown` changes, so the loop tells the screen once.
+    shown_at: u32,
 }
 
 impl Default for PatchIn {
@@ -228,6 +248,61 @@ impl PatchIn {
             mpe: (0..MAX_PORTS).map(|_| MpeIn::new()).collect(),
             out: Vec::with_capacity(OUTS),
             dropped: 0,
+            shown: [None; SHOWN],
+            shown_at: 0,
+        }
+    }
+
+    /// A key down or up, for the screen's lit keys. Never allocates.
+    fn show(&mut self, port: PortId, msg: Msg) {
+        let (ch, note, vel) = match msg {
+            Msg::NoteOn { ch, note, vel } => (ch, note, vel),
+            Msg::NoteOff { ch, note, .. } => (ch, note, 0),
+            _ => return,
+        };
+        let same =
+            |s: &Option<Shown>| s.is_some_and(|s| s.port == port && s.ch == ch && s.note == note);
+        let at = self.shown.iter().position(same);
+        if vel == 0 {
+            if let Some(i) = at {
+                self.shown[i] = None;
+                self.shown_at = self.shown_at.wrapping_add(1);
+            }
+            return;
+        }
+        let Some(i) = at.or_else(|| self.shown.iter().position(Option::is_none)) else {
+            return;
+        };
+        self.shown[i] = Some(Shown {
+            port,
+            ch,
+            note,
+            vel,
+        });
+        self.shown_at = self.shown_at.wrapping_add(1);
+    }
+
+    /// The keys down now, for the screen, and a count that moves each
+    /// time they change ([`PatchIn::shown_at`]).
+    pub fn shown(&self) -> impl Iterator<Item = Shown> + '_ {
+        self.shown.iter().flatten().copied()
+    }
+
+    /// Moves each time the keys down change.
+    pub fn shown_at(&self) -> u32 {
+        self.shown_at
+    }
+
+    fn forget_shown(&mut self, port: Option<PortId>) {
+        let mut changed = false;
+        for s in &mut self.shown {
+            if s.is_some_and(|k| port.is_none_or(|p| k.port == p)) {
+                *s = None;
+                changed = true;
+            }
+        }
+        if changed {
+            self.shown_at = self.shown_at.wrapping_add(1);
         }
     }
 
@@ -263,6 +338,7 @@ impl PatchIn {
         if let Some(m) = self.mpe.get_mut(usize::from(port.0)) {
             m.reset();
         }
+        self.forget_shown(Some(port));
     }
 
     /// The port's MPE zone, as its profile says ([`MpeIn::set_zone`]).
@@ -284,8 +360,12 @@ impl PatchIn {
         msg: Msg,
         rows: &[Option<u32>; ROUTE_SYNTHS],
     ) -> Option<Went> {
+        let active = self.keys.active();
+        if active && usize::from(port.0) < self.mpe.len() {
+            self.show(port, msg);
+        }
         let mpe = self.mpe.get_mut(usize::from(port.0))?;
-        if !self.keys.active() {
+        if !active {
             // Only read, so it knows which channel holds which note when
             // a patch wants it.
             mpe.msg(msg, &mut |_| {});
@@ -348,6 +428,7 @@ impl PatchIn {
     /// sound): the table forgets what it held, sending nothing.
     pub fn stopped(&mut self) {
         self.keys.panic(&mut |_| {});
+        self.forget_shown(None);
     }
 
     /// Whether the patch takes part: the song has patches, or a key or
@@ -541,6 +622,34 @@ mod tests {
             p.take().collect::<Vec<_>>(),
             vec![(2, Key::Up { note: 60 })]
         );
+    }
+
+    /// The screen is told of each key down while the song has patches,
+    /// even one no zone takes, and of its let-go; a port unplugged and a
+    /// stop forget theirs.
+    #[test]
+    fn the_keys_down_are_shown_for_the_patch_editor() {
+        let mut p = PatchIn::new();
+        p.msg(P1, on(0, 60, 100), &ROWS);
+        assert_eq!(p.shown().count(), 0, "no patches: nothing shown");
+        let mut high = Layout::Whole.patch("High", "track 1");
+        high.zones[0].low = 60;
+        p.swap(&mut rig(vec![high]), &[]);
+        p.pick(Some(0), When::Now, &ROWS);
+        let at = p.shown_at();
+        p.msg(P1, on(0, 40, 52), &ROWS);
+        p.msg(PortId(2), on(3, 64, 96), &ROWS);
+        assert_ne!(p.shown_at(), at);
+        let shown: Vec<_> = p.shown().map(|s| (s.port, s.ch, s.note, s.vel)).collect();
+        assert_eq!(shown, vec![(P1, 0, 40, 52), (PortId(2), 3, 64, 96)]);
+        p.msg(P1, on(0, 40, 0), &ROWS);
+        assert_eq!(p.shown().count(), 1, "a note on at velocity 0 lets go");
+        p.unplugged(PortId(2), &ROWS);
+        assert_eq!(p.shown().count(), 0);
+        p.msg(P1, on(0, 61, 70), &ROWS);
+        p.stopped();
+        assert_eq!(p.shown().count(), 0);
+        p.take().for_each(drop);
     }
 
     #[test]

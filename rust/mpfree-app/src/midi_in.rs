@@ -860,14 +860,43 @@ impl MusicIn {
         self.patch.synths()
     }
 
-    /// The patch the keys play (from 0), or None: as routed.
-    pub fn patch_playing(&self) -> Option<usize> {
-        self.patch.playing()
-    }
-
     /// Every sound stopped: the patch's table forgets what it held.
     pub fn patches_stopped(&mut self) {
         self.patch.stopped();
+    }
+
+    /// What the keys do, cheaply, to see whether the screen must hear of
+    /// it: the patch playing, a pick waiting, and a count that moves as
+    /// keys go down and up while the song has patches.
+    pub fn keys_at(&self) -> (Option<usize>, Option<Option<usize>>, u32) {
+        (
+            self.patch.playing(),
+            self.patch.waiting(),
+            self.patch.shown_at(),
+        )
+    }
+
+    /// What the keys do now, for the patch screens: allocates, so only
+    /// when [`MusicIn::keys_at`] changed.
+    pub fn keys_now(&self) -> crate::patch_screen::KeysNow {
+        let ports = self.ports.all();
+        crate::patch_screen::KeysNow {
+            playing: self.patch.playing(),
+            waiting: self.patch.waiting(),
+            held: self
+                .patch
+                .shown()
+                .map(|k| crate::patch_screen::HeldKey {
+                    port: ports
+                        .iter()
+                        .find(|p| p.id == k.port)
+                        .map_or_else(String::new, |p| p.name.clone()),
+                    ch: k.ch,
+                    note: k.note,
+                    vel: k.vel,
+                })
+                .collect(),
+        }
     }
 
     /// The synths the project's routes name (step 11e), by the project's
@@ -2553,7 +2582,7 @@ mod tests {
         m.sync(&io, 0.6);
         assert_eq!(m.take_route_synths(), Some([Some(4), Some(9), None, None]));
         assert!(m.pick_patch(Some(0), When::Now));
-        assert_eq!(m.patch_playing(), Some(0));
+        assert_eq!(m.keys_at().0, Some(0));
         let (keys, _) = run(&mut m, DIN, &[0x90, 36, 90, 0x90, 60, 80]);
         assert!(keys.is_empty(), "the armed track hears none: {keys:?}");
         assert_eq!(m.take_routed().count(), 0, "nor the route");

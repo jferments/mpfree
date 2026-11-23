@@ -936,6 +936,9 @@ pub enum Item {
     PrefsBack,
     CalibrateTouch,
     TouchLab,
+    /// Play's MENU (live shows C1): the patch list, where a song with no
+    /// patches gets its first.
+    Patches,
     /// The Show view's MENU (live shows B1): the Set editor, the set's
     /// check, and closing the set.
     SetEditor,
@@ -1005,6 +1008,7 @@ fn opens_something(item: Item) -> bool {
             | Item::PrefsBack
             | Item::CalibrateTouch
             | Item::TouchLab
+            | Item::Patches
             | Item::SetEditor
             | Item::CheckSet
             | Item::CloseSet
@@ -1038,6 +1042,18 @@ pub enum ShowKey {
 
 /// The Show view's MENU rows.
 const SHOW_OPTIONS: [Item; 3] = [Item::SetEditor, Item::CheckSet, Item::CloseSet];
+
+/// Play's MENU: the options every page has, then Patches (live shows C1).
+const PLAY_OPTIONS: [Item; 8] = [
+    Item::Rate,
+    Item::Tempo,
+    Item::Metronome,
+    Item::MetronomeLevel,
+    Item::TimingStrip,
+    Item::PadLevel,
+    Item::Latch,
+    Item::Patches,
+];
 
 /// The menu on screen: its rows (name, value), the selected row and help.
 #[derive(Clone, Debug, PartialEq)]
@@ -1437,6 +1453,8 @@ pub enum Effect {
     Quit,
     /// Open the Touch lab page (it starts at its first step).
     TouchLab,
+    /// Open Play's patch list (Play's MENU, live shows C1).
+    PatchList,
     /// One of the Show view's MENU rows (live shows B1), for the screen's
     /// set player.
     SetMenu(SetMenu),
@@ -4838,6 +4856,7 @@ impl App {
             (_, View::Console) => &[Item::ConsoleFollow, Item::ClearConsole],
             (_, View::Arp) => &arp::ARP_OPTIONS,
             (_, View::Arrange) if self.show_view => &SHOW_OPTIONS,
+            (_, View::Play) => &PLAY_OPTIONS,
             (_, View::Synth) => &synth_pads::SYNTH_OPTIONS,
             _ => &[
                 Item::Rate,
@@ -4908,6 +4927,7 @@ impl App {
             Item::PrefsBack => ("Back to Prefs", "Back".to_string()),
             Item::CalibrateTouch => ("Calibrate touch", "Start".to_string()),
             Item::TouchLab => ("Touch lab", "Open".to_string()),
+            Item::Patches => ("Patches", "Open".to_string()),
             Item::SetEditor => ("Open the Set editor", "Open".to_string()),
             Item::CheckSet => ("Check the set", "Check".to_string()),
             Item::CloseSet => ("Close the set", "Close".to_string()),
@@ -5146,6 +5166,11 @@ impl App {
             Item::CloseSet => vec![
                 "Ends the set. The song playing stays open as a",
                 "plain project, and the Show view goes.",
+            ],
+            Item::Patches => vec![
+                "The song's patches: splits and layers for your",
+                "keyboard. New patch makes one from a layout;",
+                "KEYS PLAY on the transport bar opens them too.",
             ],
             Item::TouchLab => vec![
                 "Timed touchscreen tests: taps, long presses,",
@@ -5677,6 +5702,11 @@ impl App {
             Item::PrefsBack => return self.leave_prefs_section(),
             Item::CalibrateTouch => return vec![Effect::CalibrateTouch],
             Item::TouchLab => return vec![Effect::TouchLab],
+            Item::Patches => {
+                let mut fx = self.show(self.back);
+                fx.push(Effect::PatchList);
+                return fx;
+            }
             Item::SetEditor | Item::CheckSet | Item::CloseSet => {
                 let m = match item {
                     Item::SetEditor => SetMenu::Editor,

@@ -3304,6 +3304,82 @@ mod tests {
     /// there loads and the page comes back; Back, the button again or a
     /// tab close it and keep the kit (Jay's card, 13 Nov 14:57Z).
     #[test]
+    fn a_patch_made_from_plays_menu_splits_the_keys_and_learns_a_zones_end() {
+        use crate::midi_in::Key;
+        use crate::patch_page::{EDIT, EDIT_PAGE, LIST, LIST_PAGE};
+        on_big_stack(|| {
+            let mut s = Session::new();
+            assert!(
+                s.control(crate::play_page::TRANSPORT, "keys", "").is_none(),
+                "no patches: no KEYS PLAY"
+            );
+            // MENU on Play: Patches opens the list, empty.
+            s.button("MENU").settle();
+            let row = s
+                .app
+                .row_of(crate::app::Item::Patches)
+                .expect("Patches on Play's MENU");
+            s.route(crate::gui::FromUi::MenuStep(row, 1));
+            s.run_periods(2).settle();
+            assert_eq!(s.page(), LIST_PAGE);
+            // New patch from Bass + keys: the editor, and the keys play it.
+            s.press(LIST, "new", "New patch").settle();
+            s.press(LIST, "layout", "Bass + keys").settle();
+            assert_eq!(s.page(), EDIT_PAGE);
+            let keys = s
+                .control(crate::play_page::TRANSPORT, "keys", "")
+                .expect("KEYS PLAY over the editor, once the song has a patch");
+            assert!(keys.target.label.contains("1 · Patch 1"), "{}", keys.target.label);
+            // Zone 2 (C3 up) picked, an octave up on Q-Link 3.
+            let zone2 = s
+                .controls()
+                .into_iter()
+                .find(|c| c.widget == EDIT && c.target.id == "zone" && c.target.index == 1)
+                .expect("zone 2's lane");
+            s.press_target(&zone2.target).settle();
+            s.qlink(2, 12).settle();
+            // C2 plays the bass as played; C4 plays an octave up.
+            let down = s.keys_from_gear(&[0x90, 36, 100, 0x90, 60, 90]);
+            assert_eq!(
+                down,
+                [
+                    (0, Key::Down { note: 36, velocity: 100 }),
+                    (0, Key::Down { note: 72, velocity: 90 }),
+                ],
+                "{:?}",
+                s.said()
+            );
+            assert!(
+                s.keys_from_gear(&[0x80, 36, 0]) == [(0, Key::Up { note: 36 })],
+                "a key ends where it started"
+            );
+            let _ = s.keys_from_gear(&[0x80, 60, 0]);
+            // + Zone: Learn low is lit, and the next key, C6, starts it.
+            // The new zone layers over zone 2 from there, untransposed.
+            s.press(EDIT, "add-zone", "+ Zone").settle();
+            let _ = s.keys_from_gear(&[0x90, 84, 80]);
+            let _ = s.keys_from_gear(&[0x80, 84, 0]);
+            assert_eq!(
+                s.keys_from_gear(&[0x90, 72, 64]),
+                [(0, Key::Down { note: 84, velocity: 64 })],
+                "under C6, zone 2 alone"
+            );
+            assert_eq!(
+                s.keys_from_gear(&[0x90, 96, 64]),
+                [
+                    (0, Key::Down { note: 108, velocity: 64 }),
+                    (0, Key::Down { note: 96, velocity: 64 }),
+                ],
+                "from C6, zone 2 and the new zone"
+            );
+            let _ = s.keys_from_gear(&[0x80, 72, 0, 0x80, 96, 0]);
+            // Close: back to Play's view.
+            s.press(EDIT, "close", "Close").settle();
+            assert_eq!(s.page(), "Play");
+        });
+    }
+
+    #[test]
     fn what_the_pads_play_and_the_pads_tabs_kit_open_the_list_of_kits() {
         on_big_stack(|| {
             let mut s = Session::new();

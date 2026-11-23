@@ -1085,6 +1085,21 @@ impl Session {
         self.run_periods(2)
     }
 
+    /// A keyboard on the 5-pin MIDI In played `bytes`, as the sound loop
+    /// takes them while the song has patches (live shows C1): what the
+    /// patch sent, by track (or route row past `SYNTH_ROUTES`), and the
+    /// screen told what the keys do, as main.rs tells it.
+    pub fn keys_from_gear(&mut self, bytes: &[u8]) -> Vec<(u8, crate::midi_in::Key)> {
+        let t = self.t();
+        let mut keys = Vec::new();
+        self.music
+            .bytes(crate::midi_in::DIN, bytes, t, &mut keys, &mut |_| {});
+        let sent: Vec<_> = self.music.take_patched().collect();
+        self.out.show(ToUi::Keys(Box::new(self.music.keys_now())));
+        self.run_periods(2);
+        sent
+    }
+
     /// The controller the Perform pads' learned keys came from went away.
     pub fn unplug_perform_keys(&mut self) -> &mut Session {
         for action in self.perform_keys.let_go() {
@@ -1995,6 +2010,18 @@ impl Session {
         if let Some(m) = o.mix.take() {
             self.mix.open(m);
         }
+        // Its patches, and the keys play its patch 1, as main.rs (live
+        // shows C1).
+        self.music.patches_stopped();
+        if let Some(p) = o.patches.as_mut() {
+            self.music.swap_patches(p);
+        }
+        if !self
+            .music
+            .pick_patch(Some(0), mpfree_patch::keys::When::Now)
+        {
+            self.music.pick_patch(None, mpfree_patch::keys::When::Now);
+        }
         if let Some((options, sounds)) = o.synth.take() {
             for line in self.synth.set_sounds(&sounds) {
                 self.out.note(&line);
@@ -2272,6 +2299,15 @@ impl Session {
                 }
             }
             // The sampler's and the store's: nothing to check here.
+            // The song's patches (live shows C1), as main.rs takes them:
+            // the old ones go back to the screen.
+            FromUi::Patches(mut p) => {
+                self.music.swap_patches(&mut p);
+                self.out.show(ToUi::PatchesBack(p));
+            }
+            FromUi::PickPatch(to) => {
+                self.music.pick_patch(to, mpfree_patch::keys::When::Now);
+            }
             FromUi::SaveTouch(_)
             | FromUi::Slice { .. }
             | FromUi::SampleLiveChop { .. }

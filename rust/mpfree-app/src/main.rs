@@ -136,6 +136,8 @@ mod pace;
 mod pad_synths;
 mod parts;
 mod patch_in;
+mod patch_page;
+mod patch_screen;
 mod perf;
 mod perform_pads;
 mod perform_tab;
@@ -8247,6 +8249,8 @@ fn player_session(
     let (mut gear_moved, mut gear_moved_now) = (Vec::new(), Vec::new());
     let mut gear_moved_at = 0.0_f64;
     let mut track_names_at = 0.0_f64;
+    // What the screen was last told of the keys (live shows C1).
+    let mut keys_told: (Option<usize>, Option<Option<usize>>, u32) = (None, None, 0);
     let mut learning_shown: Option<(mpfree_play::mpfree_param::ParamAddr, midi_in::ArmedBy)> = None;
     // A learned control moved a synth's knob: the Synth tab is told, at
     // most every 50 ms.
@@ -8980,6 +8984,21 @@ fn player_session(
                     out.note(&format!("show: the song ends: {end:?}"));
                 }
                 gui::FromUi::SongEndReset => song_end.reset(),
+                // An edit on the patch screens: the keys play the song's
+                // patches as they are now; the old ones go back to be
+                // freed there.
+                gui::FromUi::Patches(mut p) => {
+                    music.swap_patches(&mut p);
+                    if let Ok(m) = io_model.lock() {
+                        app.set_route_synths(
+                            midi_in::route_synths_of(&m.setup, music.patch_synths()).0,
+                        );
+                    }
+                    out.show(gui::ToUi::PatchesBack(p));
+                }
+                gui::FromUi::PickPatch(to) => {
+                    music.pick_patch(to, mpfree_patch::keys::When::Now);
+                }
                 // Each take to a file of its own from now on (phase 3a),
                 // and where a project save put them.
                 gui::FromUi::AudioFiles(dir) => tracks.record_to(dir),
@@ -9004,6 +9023,10 @@ fn player_session(
                     music.patches_stopped();
                     if let Some(p) = o.patches.as_mut() {
                         music.swap_patches(p);
+                    }
+                    // The keys play its patch 1 (keys as routed without).
+                    if !music.pick_patch(Some(0), mpfree_patch::keys::When::Now) {
+                        music.pick_patch(None, mpfree_patch::keys::When::Now);
                     }
                     if let Ok(m) = io_model.lock() {
                         app.set_route_synths(
@@ -10051,15 +10074,21 @@ fn player_session(
             }
         }
         // What the song's patch plays (live shows C1): at once, as a
-        // route's keys to a track that isn't armed, whichever track that
-        // is (nothing records them yet: C3), and a synth no track has on
-        // its route row.
+        // route's keys to a track that isn't armed are, whichever track
+        // that is (REC with zones is C3), and a synth no track has on its
+        // route row.
         for (track, k) in music.take_patched() {
             if let Some(j) = track.checked_sub(midi_in::SYNTH_ROUTES) {
                 route_synths.key(usize::from(j), k, &mut synth, &mut mix.instruments);
                 continue;
             }
             routed_keys.push((track, k));
+        }
+        // The patch screens follow what the keys do, told when it changes.
+        let at = music.keys_at();
+        if at != keys_told {
+            keys_told = at;
+            out.show(gui::ToUi::Keys(Box::new(music.keys_now())));
         }
         // Keys play the armed track: by note while the pads press notes (a
         // synth pad layout, or the track's own synth's pad map, step 7); on

@@ -703,6 +703,9 @@ impl Desk<'_> {
             | gui::FromUi::SampleGrains(_)
             | gui::FromUi::SaveProject
             | gui::FromUi::OpenProject(_)
+            // The song's patches and the patch picked: MIDI in's.
+            | gui::FromUi::Patches(_)
+            | gui::FromUi::PickPatch(_)
             | gui::FromUi::SongEnd(_)
             | gui::FromUi::SongEndReset
             | gui::FromUi::OpenLoops(_)
@@ -878,6 +881,7 @@ impl Desk<'_> {
             app::Effect::ClearLogs => out.show(gui::ToUi::ClearLogs),
             app::Effect::ClearConsole => out.show(gui::ToUi::ClearConsole),
             app::Effect::TouchLab => out.show(gui::ToUi::TouchLab),
+            app::Effect::PatchList => out.show(gui::ToUi::PatchList),
             app::Effect::SetMenu(m) => out.show(gui::ToUi::SetMenu(m)),
             app::Effect::ShowKey(k) => out.show(gui::ToUi::ShowKey(k)),
             app::Effect::CalibrateTouch => out.show(gui::ToUi::CalibrateTouch),
