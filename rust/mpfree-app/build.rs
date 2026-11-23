@@ -1,6 +1,10 @@
 //! Records the commit the pad player is built from, for Prefs > System info.
 //! It reads the clone's .git folder directly (no git program) and gives
 //! "unknown" when there is none, such as in a source copy.
+//!
+//! For a static ARM build (the MPC's), it also asks the linker to put the
+//! sections in name order, so glibc's code sits beside the `.iplt` (see
+//! "Code over 16 MiB" in docs/dev/guides/mpfree-app.md).
 
 use std::env;
 use std::fs;
@@ -22,6 +26,23 @@ fn main() {
         }
     }
     println!("cargo:rerun-if-changed=build.rs");
+    static_arm_link_order();
+}
+
+/// Past 16 MiB of code, GNU ld 2.42 links a static ARM program whose glibc
+/// start-up calls memcpy's IFUNC resolver in ARM mode instead of Thumb, and
+/// the program dies before `main` (SIGSEGV or SIGILL; train 155 crossed the
+/// line with mpfree's .text at 0x10232b8). `--sort-section=name` keeps
+/// glibc's Thumb code beside the `.iplt` at the start of `.text`, so no
+/// long-branch stub is needed and the IRELATIVE entries keep their Thumb bit.
+/// It only orders sections: the code itself is the same.
+fn static_arm_link_order() {
+    let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    let os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let features = env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
+    if arch == "arm" && os == "linux" && features.split(',').any(|f| f == "crt-static") {
+        println!("cargo:rustc-link-arg-bins=-Wl,--sort-section=name");
+    }
 }
 
 /// The short commit HEAD names, and the files it was read from.
