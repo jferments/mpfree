@@ -6427,7 +6427,7 @@ impl Player {
                 }))))
             }
             (time_view::CLIPS, EventKind::Select(i)) => {
-                let slots = mpfree_seq::SLOTS;
+                let slots = mpfree_seq::ROWS;
                 let (track, slot) = (i / slots, i % slots);
                 if self.time.clip(track, slot).is_some() {
                     Some(Some(FromUi::Time(TimeAction::DeleteClip { track, slot })))
@@ -6448,7 +6448,7 @@ impl Player {
         let (time_view::CLIPS, EventKind::Select(i)) = (ev.widget.as_str(), &ev.kind) else {
             return None;
         };
-        let slots = mpfree_seq::SLOTS;
+        let slots = mpfree_seq::ROWS;
         let (track, slot) = (i / slots, i % slots);
         if track >= self.time.tracks.len() {
             return None;
@@ -13578,12 +13578,12 @@ impl Player {
     /// (the Arrange refactor's 5.4, decision 4). An empty Loop cell only
     /// arms for the next loop, so it stays a tap.
     fn empty_cell(&self, widget: &str, t: &mpfree_ui::Target) -> bool {
-        use mpfree_seq::SLOTS;
+        use mpfree_seq::ROWS;
         use mpfree_time_ui::view::CLIPS;
         if widget != CLIPS || t.id != "slot" {
             return false;
         }
-        let (track, slot) = (t.index / SLOTS, t.index % SLOTS);
+        let (track, slot) = (t.index / ROWS, t.index % ROWS);
         self.time
             .tracks
             .get(track)
@@ -14896,7 +14896,7 @@ impl Player {
                 // "+ Track" itself (the chooser's rows are what they say).
                 let plus = match (ev.widget.as_str(), &ev.kind) {
                     (time_view::CLIPS, EventKind::Toggle(k)) => {
-                        *k == mpfree_seq::SLOTS + mpfree_time_ui::widgets::ADD_TRACK
+                        *k == mpfree_seq::ROWS + mpfree_time_ui::widgets::ADD_TRACK
                     }
                     (time_view::SONG, EventKind::Tab(k)) => *k == mpfree_time_ui::song::ADD_TRACK,
                     _ => false,
@@ -19638,6 +19638,42 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("clips-perform sample: {e}"),
     }
+    // Scene banks (the Arrange refactor's 5.6): in Make, the grid
+    // scrolled to rows 13 to 20, a second set in bank B's first rows
+    // under a line, its letter by row 17 and lit on the bank chip.
+    match mpfree_time_ui::sample::playing() {
+        Ok(s) => {
+            let mut p = quiet_player(fonts());
+            let mut st = s.state();
+            st.scenes = vec![String::new(); 19];
+            for (k, name) in ["Intro", "Verse", "Break", "Drop"].iter().enumerate() {
+                st.scenes[k] = name.to_string();
+            }
+            for (k, name) in ["Set 2 open", "Set 2 groove", "Set 2 peak"]
+                .iter()
+                .enumerate()
+            {
+                st.scenes[16 + k] = name.to_string();
+            }
+            for (t, track) in st.tracks.iter_mut().enumerate() {
+                let Some(c) = track.slots.iter().flatten().next().cloned() else {
+                    continue;
+                };
+                for k in 0..3 {
+                    if (t + k) % 3 != 2 {
+                        let mut c = c.clone();
+                        c.name = format!("{} {}", c.name, ["B1", "B2", "B3"][k]);
+                        track.slots[16 + k] = Some(c);
+                    }
+                }
+            }
+            p.time_page.first_row = 12;
+            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("clips-bank-b", p));
+        }
+        Err(e) => eprintln!("clips-bank-b sample: {e}"),
+    }
     // The scene card (the Arrange refactor's 5.2), row 2's number held:
     // Verse moves on to the next scene after 4 bars four times in five,
     // sets 95 BPM on its line, mutes Hats and sends Stab's gear program
@@ -22257,7 +22293,7 @@ mod tests {
                 .find(|t| {
                     t.widget == time_view::CLIPS
                         && t.target.id == "slot"
-                        && t.target.index == track * mpfree_seq::SLOTS + slot
+                        && t.target.index == track * mpfree_seq::ROWS + slot
                 })
                 .expect("the empty cell")
                 .target
@@ -22285,7 +22321,7 @@ mod tests {
                 .find(|t| {
                     t.widget == time_view::CLIPS
                         && t.target.id == "slot"
-                        && t.target.index == track * mpfree_seq::SLOTS + 1
+                        && t.target.index == track * mpfree_seq::ROWS + 1
                 })
                 .unwrap()
                 .target
@@ -22307,7 +22343,7 @@ mod tests {
                 .find(|t| {
                     t.widget == time_view::CLIPS
                         && t.target.id == "slot"
-                        && t.target.index == track * mpfree_seq::SLOTS + slot
+                        && t.target.index == track * mpfree_seq::ROWS + slot
                 })
                 .unwrap()
                 .target
@@ -22925,7 +22961,7 @@ mod tests {
         });
         assert_eq!(
             p.ui.get::<ClipGrid>(time_view::CLIPS).unwrap().title,
-            "Slots 2–9 of 16"
+            "Rows 2–9"
         );
         assert!(p.take_actions().is_empty());
         // The Record panel's Clip tab: the clip settings card for the

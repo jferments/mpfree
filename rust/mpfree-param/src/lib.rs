@@ -253,14 +253,21 @@ pub mod clips {
     pub const BACK_TO_SONG: u16 = 1;
     /// The tracks the ids below count to (`mpfree_seq::MAX_TRACKS`).
     pub const TRACKS: u16 = 128;
-    /// The rows of the grid (`mpfree_seq::SLOTS`).
+    /// The rows of the grid's bank A (`mpfree_seq::SLOTS`): its cells'
+    /// ids, as learned before scene banks.
     pub const ROWS: u16 = 16;
+    /// All the grid's rows, banks A to D (`mpfree_seq::ROWS`; the Arrange
+    /// refactor's 5.6). The cells of rows 17 to 64 have ids of their own
+    /// from [`CLIP_MORE`], so a cell learned in bank A keeps its id.
+    pub const ALL_ROWS: u16 = 64;
     const SCENE: u16 = 0x100;
     const STOP: u16 = 0x200;
     const MUTE: u16 = 0x300;
     const SOLO: u16 = 0x400;
     const ARM: u16 = 0x500;
     const CLIP: u16 = 0x1000;
+    /// The cells of rows 17 to 64: `CLIP_MORE + track * ALL_ROWS + row`.
+    pub const CLIP_MORE: u16 = 0x3000;
 
     /// What a [`Owner::Clips`](super::Owner::Clips) parameter does.
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -286,9 +293,13 @@ pub mod clips {
     pub const fn scene(row: u8) -> u16 {
         SCENE + row as u16
     }
-    /// The cell of track `track`, row `row`.
+    /// The cell of track `track`, row `row` (0 to 63).
     pub const fn clip(track: u8, row: u8) -> u16 {
-        CLIP + track as u16 * ROWS + row as u16
+        if (row as u16) < ROWS {
+            CLIP + track as u16 * ROWS + row as u16
+        } else {
+            CLIP_MORE + track as u16 * ALL_ROWS + row as u16
+        }
     }
     pub const fn stop(track: u8) -> u16 {
         STOP + track as u16
@@ -305,6 +316,12 @@ pub mod clips {
 
     /// What parameter `id` does, if it is one.
     pub fn of(id: u16) -> Option<Clips> {
+        if id >= CLIP_MORE {
+            let i = id - CLIP_MORE;
+            let (track, row) = ((i / ALL_ROWS) as u8, (i % ALL_ROWS) as u8);
+            return (i < TRACKS * ALL_ROWS && u16::from(row) >= ROWS)
+                .then_some(Clips::Clip(track, row));
+        }
         if id >= CLIP {
             let i = id - CLIP;
             let (track, row) = ((i / ROWS) as u8, (i % ROWS) as u8);
@@ -317,7 +334,7 @@ pub mod clips {
                 BACK_TO_SONG => Some(Clips::BackToSong),
                 _ => None,
             },
-            SCENE => (n < ROWS).then_some(Clips::Scene(n as u8)),
+            SCENE => (n < ALL_ROWS).then_some(Clips::Scene(n as u8)),
             STOP | MUTE | SOLO | ARM if n < TRACKS => {
                 let t = n as u8;
                 Some(match kind {
@@ -1044,10 +1061,25 @@ mod tests {
         assert_eq!(clips::of(clips::STOP_ALL), Some(Clips::StopAll));
         assert_eq!(clips::of(clips::BACK_TO_SONG), Some(Clips::BackToSong));
         assert_eq!(clips::of(clips::scene(15)), Some(Clips::Scene(15)));
-        assert_eq!(clips::of(clips::scene(16)), None, "16 rows");
+        // Scene banks (5.6): 64 rows, bank A's cells keeping their ids.
+        assert_eq!(clips::of(clips::scene(63)), Some(Clips::Scene(63)));
+        assert_eq!(clips::of(clips::scene(64)), None, "64 rows");
         assert_eq!(clips::of(clips::clip(0, 0)), Some(Clips::Clip(0, 0)));
+        assert_eq!(
+            clips::clip(1, 2),
+            0x1000 + 16 + 2,
+            "as learned before banks"
+        );
         assert_eq!(clips::of(clips::clip(127, 15)), Some(Clips::Clip(127, 15)));
         assert_eq!(clips::of(clips::clip(127, 15) + 1), None);
+        assert_eq!(clips::of(clips::clip(0, 16)), Some(Clips::Clip(0, 16)));
+        assert_eq!(clips::of(clips::clip(127, 63)), Some(Clips::Clip(127, 63)));
+        assert_eq!(clips::of(clips::clip(127, 63) + 1), None);
+        assert_eq!(
+            clips::of(clips::CLIP_MORE + 3),
+            None,
+            "bank A's ids are below"
+        );
         for t in [0u8, 7, 127] {
             assert_eq!(clips::of(clips::stop(t)), Some(Clips::Stop(t)));
             assert_eq!(clips::of(clips::mute(t)), Some(Clips::Mute(t)));
@@ -1065,7 +1097,7 @@ mod tests {
                 assert!(seen.insert(c), "{id}");
             }
         }
-        assert_eq!(seen.len(), 2 + 16 + 4 * 128 + 128 * 16);
+        assert_eq!(seen.len(), 2 + 64 + 4 * 128 + 128 * 64);
     }
 
     /// The looper's footswitch ids are fixed numbers (a rig keeps its

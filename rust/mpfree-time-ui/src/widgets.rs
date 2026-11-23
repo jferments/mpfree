@@ -567,6 +567,11 @@ pub struct ClipGrid {
     /// The scene card, open over the grid (the Arrange refactor's 5.2):
     /// it takes the grid's touches while it is.
     pub scene_card: Option<crate::scene_card::SceneCard>,
+    /// Scene banks (the Arrange refactor's 5.6): a bank of
+    /// [`mpfree_seq::SLOTS`] rows each, true where one of its rows has a
+    /// clip or a named scene. With more than one, the bank chip shows
+    /// them right of the view chip; empty, it isn't there.
+    pub banks: Vec<bool>,
     /// What was drawn last, so a change redraws only the cells that changed.
     drawn: RefCell<Option<Drawn>>,
     /// A finger down on a track's name: where (x) and which track. Let go
@@ -631,6 +636,7 @@ struct Drawn {
     dragged: Option<(Held, (i32, i32))>,
     /// The scene card was drawn over it.
     card: bool,
+    banks: Vec<bool>,
 }
 
 /// `Toggle(slots + ADD_TRACK)`: "+ Track".
@@ -669,6 +675,13 @@ pub const REC_SONG_W: i32 = 112;
 
 /// `Toggle(slots + LIST_VIEW)`: the view chip's List.
 pub const LIST_VIEW: usize = 14;
+/// `Toggle(slots + BANK + k)`: the bank chip's bank `k`, A to D (scene
+/// banks, the Arrange refactor's 5.6): the grid scrolls to its first row.
+pub const BANK: usize = 15;
+/// The bank chip's letters, a part each.
+pub const BANK_LETTERS: [&str; 4] = ["A", "B", "C", "D"];
+/// A part of the bank chip.
+pub const BANK_PART_W: i32 = 28;
 
 /// Arrange's three views of one song, in the order the view chip shows
 /// them (the Arrange refactor's 5.7).
@@ -743,11 +756,16 @@ pub fn paint_view_chip(cx: &mut PaintCx, chip: Rect, on: ArrangeView) {
 /// title's words after it (in capitals, as a panel's title is), up to
 /// `end` (the buttons on its right).
 pub fn view_title(cx: &mut PaintCx, r: Rect, on: ArrangeView, title: &str, end: i32) {
+    view_title_at(cx, r, on, title, view_title_x(r), end);
+}
+
+/// An Arrange view's title line as [`view_title`] draws it, with the
+/// title's words from `x` (right of a chip of the view's own).
+pub fn view_title_at(cx: &mut PaintCx, r: Rect, on: ArrangeView, title: &str, x: i32, end: i32) {
     let t = cx.theme.clone();
     cx.titled_panel(r, "", "");
     paint_view_chip(cx, view_chip_rect(r), on);
     let head = r.inset(14).take_top(26).0;
-    let x = view_title_x(r);
     cx.text(
         FontId::Bold,
         t.size_small,
@@ -844,6 +862,7 @@ impl ClipGrid {
             big: false,
             back_to_song: false,
             scene_card: None,
+            banks: Vec::new(),
             drawn: RefCell::new(None),
             press: None,
             grip: None,
@@ -1057,6 +1076,51 @@ impl ClipGrid {
         Rect::new(head.right() - REC_SONG_W, head.y - 4, REC_SONG_W, 30)
     }
 
+    /// Where the title line's left side ends: before "Back to song", the
+    /// pager or "+ Track".
+    fn left_end(&self, r: Rect) -> i32 {
+        self.back_rect(r)
+            .or(self.pager_rects(r).map(|(b, _)| b))
+            .map_or(self.add_rect(r).x, |b| b.x)
+            - 12
+    }
+
+    /// Where the bank chip is (scene banks, the Arrange refactor's 5.6):
+    /// right of the view chip, a part for each bank, while there is more
+    /// than one. "Back to song" beside the pager (more than 8 tracks)
+    /// leaves it no room: then it isn't there, and the row numbers' bank
+    /// letters and SHIFT + wheel are the way between banks.
+    pub fn bank_chip_rect(&self, r: Rect) -> Option<Rect> {
+        if self.banks.len() < 2 {
+            return None;
+        }
+        let v = self.view_rect(r);
+        let x = v.right() + 10;
+        let w = self.banks.len() as i32 * BANK_PART_W;
+        (x + w <= self.left_end(r)).then(|| Rect::new(x, v.y, w, v.h))
+    }
+
+    /// The bank chip's part for bank `k`.
+    pub fn bank_part_rect(&self, r: Rect, k: usize) -> Option<Rect> {
+        let chip = self.bank_chip_rect(r)?;
+        (k < self.banks.len())
+            .then(|| Rect::new(chip.x + k as i32 * BANK_PART_W, chip.y, BANK_PART_W, chip.h))
+    }
+
+    /// The bank the grid shows, lit on the bank chip: the bank of the
+    /// middle row in view (rows `rows` in view; of two, the lower).
+    pub fn bank_shown(&self, rows: usize) -> usize {
+        let middle = self.first_row + rows / 2;
+        (middle / mpfree_seq::SLOTS).min(self.banks.len().saturating_sub(1))
+    }
+
+    /// Where the title's words start: right of the bank chip, else of
+    /// the view chip.
+    fn title_x(&self, r: Rect) -> i32 {
+        self.bank_chip_rect(r)
+            .map_or(view_title_x(r), |c| c.right() + 12)
+    }
+
     /// Where the Edit button is (the note editor): left of Rec song.
     pub fn edit_rect(&self, r: Rect) -> Rect {
         let rec = self.rec_rect(r);
@@ -1209,6 +1273,7 @@ impl Widget for ClipGrid {
             || self.dragged_now().is_some()
             || d.card
             || self.scene_card.is_some()
+            || d.banks != self.banks
         {
             return None;
         }
@@ -1249,21 +1314,50 @@ impl Widget for ClipGrid {
             back_to_song: self.back_to_song,
             dragged: self.dragged_now(),
             card: self.scene_card.is_some(),
+            banks: self.banks.clone(),
         });
         // The view chip, then the title, shortened to what comes before
         // " · " where "Back to song" leaves it no room.
         let head = r.inset(14).take_top(26).0;
-        let title_x = view_title_x(r);
+        let title_x = self.title_x(r);
         let back = self.back_rect(r);
         let mut title = self.title.as_str();
-        if let Some(b) = back {
-            let wide = cx.measure(FontId::Bold, t.size_small, &title.to_uppercase());
-            if title_x + wide + 12 > b.x {
+        // What the title has before it: "Back to song", or the pager.
+        if back.is_some() || self.paged() {
+            let x = self.left_end(r);
+            let mut wide = |s: &str| cx.measure(FontId::Bold, t.size_small, &s.to_uppercase());
+            if title_x + wide(title) > x {
                 title = title.split(" · ").next().unwrap_or(title);
+            }
+            if title_x + wide(title) > x {
+                // The bank chip and the row numbers say which rows show.
+                title = "";
             }
         }
         let end = back.map_or(self.add_rect(r).x, |b| b.x) - 12;
-        view_title(cx, r, ArrangeView::Clips, title, end);
+        view_title_at(cx, r, ArrangeView::Clips, title, title_x, end);
+        if let Some(chip) = self.bank_chip_rect(r) {
+            // The bank chip: A to D, the bank shown filled in the accent,
+            // a bank with nothing in it dim.
+            let shown = self.bank_shown(self.geo(r).rows);
+            cx.canvas.fill_round_rect(chip, t.round(10), t.raised);
+            for (k, used) in self.banks.iter().enumerate() {
+                let Some(b) = self.bank_part_rect(r, k) else {
+                    continue;
+                };
+                let ink = if k == shown {
+                    cx.canvas
+                        .fill_round_rect(b.inset_xy(2, 2), t.round(8), t.accent);
+                    t.ink_on(t.accent)
+                } else if *used {
+                    t.text
+                } else {
+                    t.text_dim
+                };
+                let letter = BANK_LETTERS.get(k).copied().unwrap_or("?");
+                cx.text(FontId::Bold, t.size_small, b, Align::Center, ink, letter);
+            }
+        }
         // The legend (or the pager), "+ Track", Edit and Rec song.
         let rec = self.rec_rect(r);
         let edit = self.edit_rect(r);
@@ -1370,6 +1464,28 @@ impl Widget for ClipGrid {
             cx.canvas.fill_round_rect(b, t.round(10), fill);
             if self.scene_cued == Some(slot) {
                 cx.canvas.stroke_round_rect(b, t.round(10), 2, t.warn);
+            }
+            if !self.banks.is_empty() && slot.is_multiple_of(mpfree_seq::SLOTS) {
+                // A bank's first row: its letter in the button's corner,
+                // and under the rows before it a line across the grid.
+                let k = slot / mpfree_seq::SLOTS;
+                let letter = BANK_LETTERS.get(k).copied().unwrap_or("?");
+                let ink = if playing { ink } else { t.accent };
+                cx.text(
+                    FontId::Bold,
+                    t.size_small,
+                    Rect::new(b.x + 5, b.y + 2, 16, 18),
+                    Align::Left,
+                    ink,
+                    letter,
+                );
+                if row > 0 {
+                    let y = b.y - CELL_GAP / 2 - 1;
+                    cx.canvas.fill_rect(
+                        Rect::new(b.x, y, g.body.right() - b.x, 2),
+                        t.accent.with_alpha(140),
+                    );
+                }
             }
             let mx = b.x + b.w / 2;
             let top = b.y + (b.h / 2 - 18).max(4);
@@ -1550,6 +1666,12 @@ impl Widget for ClipGrid {
         if let Some(b) = self.back_rect(r) {
             out.push(Target::tap("back-to-song", 0, "Back to song", b));
         }
+        for k in 0..self.banks.len() {
+            if let Some(b) = self.bank_part_rect(r, k) {
+                let letter = BANK_LETTERS.get(k).copied().unwrap_or("?");
+                out.push(Target::tap("bank", k, format!("Bank {letter}"), b));
+            }
+        }
         if let Some((back, on)) = self.pager_rects(r) {
             let last = self.first_track + GRID_COLS >= self.tracks.len();
             out.push(
@@ -1717,6 +1839,11 @@ impl Widget for ClipGrid {
             Some(ArrangeView::List) => return Some(EventKind::Toggle(self.slots + LIST_VIEW)),
             Some(ArrangeView::Clips) => return None,
             None => {}
+        }
+        for k in 0..self.banks.len() {
+            if self.bank_part_rect(r, k).is_some_and(|b| b.contains(x, y)) {
+                return Some(EventKind::Toggle(self.slots + BANK + k));
+            }
         }
         if self.rec_rect(r).contains(x, y) {
             return Some(EventKind::Toggle(self.slots + 2));
@@ -2829,6 +2956,72 @@ mod tests {
                 Some(EventKind::Toggle(16 + BACK_TO_SONG))
             );
         }
+    }
+
+    /// Scene banks (the Arrange refactor's 5.6): with 64 rows the bank
+    /// chip sits right of the view chip, clear of the pager and "Back to
+    /// song", lights the bank in view and taps for a bank's rows; the
+    /// title's words start after it. Without banks there is no chip.
+    #[test]
+    fn the_bank_chip_lights_the_bank_in_view_and_taps_for_another() {
+        let r = Rect::new(12, 128, 814, 610);
+        let mut g = grid(8);
+        assert_eq!(g.bank_chip_rect(r), None);
+        assert!(g.targets(r).iter().all(|t| t.id != "bank"));
+        assert_eq!(g.title_x(r), view_title_x(r));
+        g = ClipGrid {
+            slots: 64,
+            banks: vec![true, true, false, false],
+            ..grid(24)
+        };
+        for t in &mut g.tracks {
+            t.cells.resize(64, GridCell::default());
+        }
+        // Clear of the pager, and of "Back to song" with 8 tracks; with
+        // both, no room.
+        let chip = g.bank_chip_rect(r).unwrap();
+        assert!(chip.x > g.view_rect(r).right(), "{chip:?}");
+        let (back, _) = g.pager_rects(r).unwrap();
+        assert!(chip.right() + 12 <= back.x, "{chip:?} {back:?}");
+        assert_eq!(g.title_x(r), chip.right() + 12);
+        g.back_to_song = true;
+        assert_eq!(g.bank_chip_rect(r), None);
+        g.tracks.truncate(8);
+        let b = g.back_rect(r).unwrap();
+        assert!(g.bank_chip_rect(r).unwrap().right() + 12 <= b.x);
+        let c = g.bank_part_rect(r, 2).unwrap();
+        assert_eq!(
+            g.touch(1, Touch::Down, c.x + 4, c.y + 4, r),
+            Some(EventKind::Toggle(64 + BANK + 2))
+        );
+        let banks: Vec<String> = g
+            .targets(r)
+            .into_iter()
+            .filter(|t| t.id == "bank")
+            .map(|t| t.label)
+            .collect();
+        assert_eq!(banks, ["Bank A", "Bank B", "Bank C", "Bank D"]);
+        // The bank of the middle row in view; of an even split, the lower.
+        assert_eq!(g.bank_shown(8), 0);
+        g.first_row = 12;
+        assert_eq!(g.bank_shown(8), 1, "rows 13 to 20");
+        g.first_row = 56;
+        assert_eq!(g.bank_shown(8), 3);
+        // Row 17's number is a row like any other: it launches its scene.
+        g.first_row = 14;
+        let b = g.scene_rect(r, 16).unwrap();
+        g.touch(1, Touch::Down, b.x + 4, b.y + 4, r);
+        assert_eq!(
+            g.touch(1, Touch::Up, b.x + 4, b.y + 4, r),
+            Some(EventKind::Toggle(16))
+        );
+        // A cell of row 18 is track * 64 + 17.
+        let cell = g.cell_rect(r, 5, 17).unwrap();
+        g.touch(1, Touch::Down, cell.x + 4, cell.y + 4, r);
+        assert_eq!(
+            g.touch(1, Touch::Up, cell.x + 4, cell.y + 4, r),
+            Some(EventKind::Select(5 * 64 + 17))
+        );
     }
 
     #[test]

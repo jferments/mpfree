@@ -1873,7 +1873,7 @@ fn remove_each(project: &mut Project, notes: &[(usize, usize, Note)]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mpfree_seq::{Track, SLOTS};
+    use mpfree_seq::{Track, ROWS, SLOTS};
 
     fn project() -> Project {
         let mut p = Project::new();
@@ -2310,7 +2310,7 @@ mod tests {
                     let _ = t.drop_clip(&mut p, from, any_cell, roll(2) == 0);
                 }
                 (3, _) => {
-                    let _ = t.drop_row(&mut p, roll(SLOTS), roll(SLOTS + 1), roll(2) == 0);
+                    let _ = t.drop_row(&mut p, roll(ROWS), roll(ROWS + 1), roll(2) == 0);
                 }
                 (4, Some((tr, r))) => {
                     let _ = t.remove_clip(&mut p, tr, r);

@@ -16,7 +16,7 @@ The model is in `rust/mpfree-seq/src/scenes.rs`. `rust/mpfree-perform` carries i
 - **`Follow { bars, action, other, chance }`**: after `bars` bars (1 to 999, counted from where it started), `action` with a chance of `chance` %, and `other` the rest of the time. These are Ableton's A and B.
 - **`FollowAction`**: Stay, Again, Next, Previous, First, Last, Any, Other, Stop.
   - For a clip, Next means the next filled slot down its track, wrapping round to the first after the last. Empty slots are skipped. For a scene, Next is the next row with a clip on any track.
-  - Follow actions move within the bank of 16 rows the clip or scene is in (`mpfree_seq::bank`): from row 40, Next goes to the next filled row of rows 32 to 47 (counted from 0) and wraps round within them, never to the grid's rows (Arrange 1.2).
+  - Follow actions move within the bank of 16 rows the clip or scene is in (`mpfree_seq::bank`): from row 40, Next goes to the next filled row of rows 32 to 47 (counted from 0) and wraps round within them, never to another bank's (Arrange 1.2; the grid shows all four banks since 5.6).
   - Any picks any filled one, this one included. Other picks any but this one, and stays when there is no other.
   - Stop stops the clip's track, or every track for a scene.
   - `follow_target` works out where an action goes. It never allocates.

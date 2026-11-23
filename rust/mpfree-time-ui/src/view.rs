@@ -47,8 +47,8 @@ use crate::song::{
 };
 use crate::widgets::{
     BarButton, BarItem, CellState, ClipGrid, GridCell, GridTrack, MorphBar, Run, SongMark,
-    TakeItem, TakeList, TransportBar, ADD_DISMISS, ADD_KIND, ADD_TRACK, BACK_TO_SONG, GRID_COLS,
-    PAGE_BACK, PAGE_ON, ROWS_BACK, ROWS_ON, ROW_DROP,
+    TakeItem, TakeList, TransportBar, ADD_DISMISS, ADD_KIND, ADD_TRACK, BACK_TO_SONG, BANK,
+    GRID_COLS, PAGE_BACK, PAGE_ON, ROWS_BACK, ROWS_ON, ROW_DROP,
 };
 use mpfree_audiotracks::host::TakeWave;
 use mpfree_audiotracks::{Input, Monitor};
@@ -59,7 +59,7 @@ use mpfree_seq::scenes::MAX_FOLLOW_BARS;
 use mpfree_seq::{
     direction_steps, Clip, ClipProgram, ClipSettings, Direction, Follow, FollowAction, LaunchGrid,
     Project, Quantise, SceneSettings, Speed, TrackProgram, Transpose, LAUNCH_GRIDS, MAX_CLIP_TICKS,
-    MAX_TRACKS, MAX_TRANSPOSE, SLOTS,
+    MAX_TRACKS, MAX_TRANSPOSE, ROWS, SLOTS,
 };
 use mpfree_transport::time::{Meter, Swing, Tick, MAX_BPM, MIN_BPM, PPQ};
 use mpfree_transport::transport::MAX_COUNT_IN;
@@ -2009,7 +2009,7 @@ pub fn name_tap(st: &TimeState, track: usize) -> TimeAction {
 /// clip in an empty slot, or arm an empty Loop cell. None past the
 /// tracks.
 pub fn cell_tap(st: &TimeState, track: usize, slot: usize) -> Option<TimeAction> {
-    if track >= st.tracks.len() || slot >= SLOTS || st.tracks[track].audio {
+    if track >= st.tracks.len() || slot >= ROWS || st.tracks[track].audio {
         // No audio clips in the grid yet ([`why_not`] says so).
         None
     } else if st.clip(track, slot).is_none() && st.tracks[track].loops.is_some() {
@@ -2043,12 +2043,12 @@ pub fn learn_target(ev: &UiEvent, st: &TimeState) -> Option<ParamAddr> {
         return None;
     }
     let id = match ev.kind {
-        EventKind::Select(i) if i / SLOTS < st.tracks.len() => {
-            clips::clip((i / SLOTS) as u8, (i % SLOTS) as u8)
+        EventKind::Select(i) if i / ROWS < st.tracks.len() => {
+            clips::clip((i / ROWS) as u8, (i % ROWS) as u8)
         }
-        EventKind::Toggle(r) if r < SLOTS => clips::scene(r as u8),
-        EventKind::Toggle(SLOTS) => clips::STOP_ALL,
-        EventKind::Toggle(r) if r == SLOTS + BACK_TO_SONG => clips::BACK_TO_SONG,
+        EventKind::Toggle(r) if r < ROWS => clips::scene(r as u8),
+        EventKind::Toggle(ROWS) => clips::STOP_ALL,
+        EventKind::Toggle(r) if r == ROWS + BACK_TO_SONG => clips::BACK_TO_SONG,
         EventKind::Tab(t) if t < st.tracks.len() => clips::arm(t as u8),
         _ => return None,
     };
@@ -2065,7 +2065,7 @@ pub fn clips_press(st: &TimeState, c: Clips) -> Option<TimeAction> {
         Clips::StopAll => Some(TimeAction::StopAll),
         Clips::BackToSong => Some(TimeAction::BackToSong),
         Clips::Scene(r) => Some(usize::from(r))
-            .filter(|&r| r < SLOTS)
+            .filter(|&r| r < ROWS)
             .map(TimeAction::LaunchScene),
         Clips::Clip(t, r) => cell_tap(st, usize::from(t), usize::from(r)),
         Clips::Stop(t) => track(t).map(TimeAction::StopClip),
@@ -2088,7 +2088,7 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
         (MORPH, EventKind::Step { index, delta }) => {
             let m = st.morph;
             let step = |r: usize| {
-                (r as i64 + i64::from((*delta).signum())).rem_euclid(SLOTS as i64) as usize
+                (r as i64 + i64::from((*delta).signum())).rem_euclid(ROWS as i64) as usize
             };
             Some(match index {
                 0 => TimeAction::MorphRows {
@@ -2121,19 +2121,19 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             scene_step(st, *index, *delta).ok()
         }
         (CLIPS, EventKind::Toggle(row)) => Some(match *row {
-            r if r < SLOTS => TimeAction::LaunchScene(r),
-            SLOTS => TimeAction::StopAll,
-            r if r == SLOTS + 1 => TimeAction::SongView(true),
-            r if r == SLOTS + 2 => TimeAction::RecSong(!st.song_rec),
-            r if r == SLOTS + 3 => TimeAction::Edit(EditAction::Open),
-            r if r == SLOTS + ADD_TRACK => TimeAction::AddTrack,
+            r if r < ROWS => TimeAction::LaunchScene(r),
+            ROWS => TimeAction::StopAll,
+            r if r == ROWS + 1 => TimeAction::SongView(true),
+            r if r == ROWS + 2 => TimeAction::RecSong(!st.song_rec),
+            r if r == ROWS + 3 => TimeAction::Edit(EditAction::Open),
+            r if r == ROWS + ADD_TRACK => TimeAction::AddTrack,
             // The "+ Track" chooser's rows (layout spec 4c); a touch off
             // it is the page's own (TimePage::chooser).
-            r if r == SLOTS + ADD_KIND => TimeAction::AddTrack,
-            r if r == SLOTS + ADD_KIND + 1 => TimeAction::AddAudioTrack,
-            r if r == SLOTS + ADD_KIND + 2 => TimeAction::AddLoopTrack,
-            r if r == SLOTS + BACK_TO_SONG => TimeAction::BackToSong,
-            r if r == SLOTS + crate::widgets::LIST_VIEW => TimeAction::ListView(true),
+            r if r == ROWS + ADD_KIND => TimeAction::AddTrack,
+            r if r == ROWS + ADD_KIND + 1 => TimeAction::AddAudioTrack,
+            r if r == ROWS + ADD_KIND + 2 => TimeAction::AddLoopTrack,
+            r if r == ROWS + BACK_TO_SONG => TimeAction::BackToSong,
+            r if r == ROWS + crate::widgets::LIST_VIEW => TimeAction::ListView(true),
             // The pager and the drag's edges are the page's own:
             // TimePage::page_tracks.
             _ => return None,
@@ -2146,8 +2146,8 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             copy: false,
         }),
         (CLIPS, EventKind::Drop { from, to }) => Some(TimeAction::DropClip {
-            from: (from / SLOTS, from % SLOTS),
-            to: (to / SLOTS, to % SLOTS),
+            from: (from / ROWS, from % ROWS),
+            to: (to / ROWS, to % ROWS),
             copy: false,
         }),
         // The page's own: the Edit button opens the drawer, and the view
@@ -2515,7 +2515,7 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
         // track's instrument.
         (CLIPS, EventKind::Tab(track)) if *track >= crate::widgets::SOUND_TAP => None,
         (CLIPS, EventKind::Tab(track)) => Some(name_tap(st, *track)),
-        (CLIPS, EventKind::Select(i)) => cell_tap(st, i / SLOTS, i % SLOTS),
+        (CLIPS, EventKind::Select(i)) => cell_tap(st, i / ROWS, i % ROWS),
         (RECORD, EventKind::Step { index, delta }) => {
             let d = (*delta).signum();
             match *index {
@@ -2633,7 +2633,7 @@ pub fn why_not(ev: &UiEvent, st: &TimeState) -> Option<String> {
         }
     };
     match (ev.widget.as_str(), &ev.kind) {
-        (CLIPS, EventKind::Select(i)) if st.tracks.get(i / SLOTS).is_some_and(|t| t.audio) => Some(
+        (CLIPS, EventKind::Select(i)) if st.tracks.get(i / ROWS).is_some_and(|t| t.audio) => Some(
             "Audio clips aren't in the grid yet. Record this track in the Song view.".to_string(),
         ),
         (MORPH, EventKind::Tab(0 | 1)) if !st.morph.on => {
@@ -2882,8 +2882,8 @@ pub fn scene_card_action(st: &TimeState, k: usize) -> Result<TimeAction, String>
             Some(r) => Ok(TimeAction::SceneCard(Some(r))),
             None => Err("Scene 1 is the first".into()),
         },
-        sc::SCENE_AFTER if row + 1 < SLOTS => Ok(TimeAction::SceneCard(Some(row + 1))),
-        sc::SCENE_AFTER => Err(format!("Scene {SLOTS} is the last")),
+        sc::SCENE_AFTER if row + 1 < ROWS => Ok(TimeAction::SceneCard(Some(row + 1))),
+        sc::SCENE_AFTER => Err(format!("Scene {ROWS} is the last")),
         sc::SCENE_CAPTURE => Ok(TimeAction::CaptureScene),
         sc::SCENE_COPY_ROW => Ok(TimeAction::DropRow {
             from: row,
@@ -2947,11 +2947,11 @@ pub fn scene_card_of(st: &TimeState) -> Option<crate::scene_card::SceneCard> {
     let last_free = st
         .tracks
         .iter()
-        .all(|t| t.slots.get(SLOTS - 1).is_none_or(Option::is_none));
+        .all(|t| t.slots.get(ROWS - 1).is_none_or(Option::is_none));
     let plays = (0..st.tracks.len()).any(|t| st.launch(t).is_some()) || st.song_on;
     Some(SceneCard {
         row,
-        rows_count: SLOTS,
+        rows_count: ROWS,
         name,
         about,
         rows: scene_rows(st),
@@ -2961,7 +2961,7 @@ pub fn scene_card_of(st: &TimeState) -> Option<crate::scene_card::SceneCard> {
         can: [
             plays,
             last_free && has_clip,
-            last_free && row + 1 < SLOTS - 1,
+            last_free && row + 1 < ROWS - 1,
             true,
         ],
     })
@@ -3098,11 +3098,11 @@ fn scene_step(st: &TimeState, index: usize, delta: i32) -> Result<TimeAction, St
         )
     };
     match index {
-        0 => match step(row, SLOTS) {
+        0 => match step(row, ROWS) {
             Some(k) => Ok(TimeAction::SceneFocus(k)),
             None => end(
                 "Scene 1 is the first".into(),
-                format!("Scene {SLOTS} is the last"),
+                format!("Scene {ROWS} is the last"),
             ),
         },
         1 => {
@@ -4734,7 +4734,7 @@ impl TimeState {
     /// ("Drop"), "Verse again", "Stop all", "Any scene", "Another scene";
     /// with a chance, both ("Drop or stay"). None when it stays.
     fn follow_words(&self, f: FollowNext) -> Option<String> {
-        let filled: Vec<bool> = (0..SLOTS)
+        let filled: Vec<bool> = (0..ROWS)
             .map(|r| {
                 self.tracks
                     .iter()
@@ -4853,6 +4853,26 @@ impl TimeState {
 }
 
 /// The grid's tracks for `st`.
+/// Scene banks (the Arrange refactor's 5.6): for each bank of
+/// [`SLOTS`] rows, A to D, whether one of its rows has a clip or a named
+/// scene, as the bank chip shows them.
+pub fn banks_used(st: &TimeState) -> Vec<bool> {
+    let mut used = vec![false; ROWS / SLOTS];
+    for t in &st.tracks {
+        for (row, c) in t.slots.iter().enumerate().take(ROWS) {
+            if c.is_some() {
+                used[row / SLOTS] = true;
+            }
+        }
+    }
+    for (row, name) in st.scenes.iter().enumerate().take(ROWS) {
+        if !name.is_empty() {
+            used[row / SLOTS] = true;
+        }
+    }
+    used
+}
+
 pub fn grid_tracks(st: &TimeState) -> Vec<GridTrack> {
     st.tracks
         .iter()
@@ -5294,7 +5314,7 @@ impl TimePage {
             ui.add(QLINKS, QLinkColumn::new());
         }
         ui.add(TRANSPORT, TransportBar::new());
-        ui.add(CLIPS, ClipGrid::new("Clips", SLOTS));
+        ui.add(CLIPS, ClipGrid::new("Clips", ROWS));
         let mut record = OptionList::new("Record");
         record.tabs = vec!["Record".to_string(), "Clip".to_string()];
         record.tab_widths = PANEL_TAB_WIDTHS.to_vec();
@@ -5345,9 +5365,9 @@ impl TimePage {
         }
         let (button, kind, off) = match (ev.widget.as_str(), &ev.kind) {
             (CLIPS, EventKind::Toggle(k)) => (
-                *k == SLOTS + ADD_TRACK,
-                (SLOTS + ADD_KIND..SLOTS + ADD_KIND + 3).contains(k),
-                *k == SLOTS + ADD_DISMISS,
+                *k == ROWS + ADD_TRACK,
+                (ROWS + ADD_KIND..ROWS + ADD_KIND + 3).contains(k),
+                *k == ROWS + ADD_DISMISS,
             ),
             (SONG, EventKind::Tab(k)) => (
                 *k == crate::song::ADD_TRACK,
@@ -5422,13 +5442,22 @@ impl TimePage {
                 self.clip_card = *k == 1;
                 return true;
             }
-            (CLIPS, EventKind::Toggle(k)) if *k == SLOTS + PAGE_BACK => -1,
-            (CLIPS, EventKind::Toggle(k)) if *k == SLOTS + PAGE_ON => 1,
-            (CLIPS, EventKind::Toggle(k)) if *k == SLOTS + ROWS_BACK || *k == SLOTS + ROWS_ON => {
+            (CLIPS, EventKind::Toggle(k))
+                if (ROWS + BANK..ROWS + BANK + ROWS / SLOTS).contains(k) =>
+            {
+                // The bank chip (5.6): the bank's first row at the top.
+                let rows = self.rows_seen.max(1);
+                let first = (*k - ROWS - BANK) * SLOTS;
+                self.first_row = first.min(ROWS.saturating_sub(rows));
+                return true;
+            }
+            (CLIPS, EventKind::Toggle(k)) if *k == ROWS + PAGE_BACK => -1,
+            (CLIPS, EventKind::Toggle(k)) if *k == ROWS + PAGE_ON => 1,
+            (CLIPS, EventKind::Toggle(k)) if *k == ROWS + ROWS_BACK || *k == ROWS + ROWS_ON => {
                 // A dragged clip or row held at the top or bottom edge.
                 let rows = self.rows_seen.max(1);
-                let last = SLOTS.saturating_sub(rows) as i64;
-                let d = if *k == SLOTS + ROWS_ON { 1 } else { -1 };
+                let last = ROWS.saturating_sub(rows) as i64;
+                let d = if *k == ROWS + ROWS_ON { 1 } else { -1 };
                 self.first_row = (self.first_row as i64 + d).clamp(0, last) as usize;
                 return true;
             }
@@ -5447,7 +5476,7 @@ impl TimePage {
         self.first_track = track / GRID_COLS * GRID_COLS;
         let rows = self.rows_seen.max(1);
         if slot < self.first_row || slot >= self.first_row + rows {
-            self.first_row = slot.min(SLOTS.saturating_sub(rows));
+            self.first_row = slot.min(ROWS.saturating_sub(rows));
         }
     }
 
@@ -5543,7 +5572,7 @@ impl TimePage {
             return None;
         }
         let rows = self.visible_rows(ui).max(1);
-        let last = SLOTS.saturating_sub(rows) as i64;
+        let last = ROWS.saturating_sub(rows) as i64;
         self.first_row = (self.first_row as i64 + i64::from(delta)).clamp(0, last) as usize;
         None
     }
@@ -5639,71 +5668,6 @@ impl TimePage {
                 b.chips = bar.chips;
             }
         }
-        let tracks = grid_tracks(st);
-        // Perform's big rows, Make's compact ones (S4): the rows in view
-        // follow, kept within the slots.
-        // (A look first: `get_mut` marks the grid for a paint.)
-        if ui
-            .get::<ClipGrid>(CLIPS)
-            .is_some_and(|g| g.big != st.perform)
-        {
-            if let Some(g) = ui.get_mut::<ClipGrid>(CLIPS) {
-                g.big = st.perform;
-            }
-        }
-        let rows = self.visible_rows(ui).max(1);
-        self.first_row = self.first_row.min(SLOTS.saturating_sub(rows));
-        self.rows_seen = rows;
-        // With Loop tracks, the title is the loops' gauge: how many of the
-        // looper's loops hold one, and the share of its memory in use (the
-        // row numbers say which rows show). Past 8 tracks the pager takes
-        // the legend's place, so the gauge is not there.
-        let title = if st.tracks.iter().any(|t| t.loops.is_some()) {
-            let l = &st.loops;
-            format!(
-                "Loops {} of {} · memory {} %",
-                l.in_use,
-                mpfree_seq::LOOPS,
-                l.memory_pct
-            )
-        } else {
-            format!(
-                "Slots {}–{} of {SLOTS}",
-                self.first_row + 1,
-                (self.first_row + rows).min(SLOTS)
-            )
-        };
-        let legend = "ring: one pass   ·   amber: waiting   ·   red: recording".to_string();
-        let can_add = st.tracks.len() < MAX_TRACKS;
-        self.adding &= can_add;
-        let adding = self.adding;
-        let same_grid = ui.get::<ClipGrid>(CLIPS).is_some_and(|g| {
-            g.tracks == tracks
-                && g.title == title
-                && g.legend == legend
-                && g.first_row == self.first_row
-                && g.first_track == self.first_track
-                && (g.scene_playing, g.scene_cued) == (st.scene_playing, st.scene_cued)
-                && g.song_rec == st.song_rec
-                && g.can_add == can_add
-                && g.adding == adding
-                && g.back_to_song == st.over_song()
-        });
-        if !same_grid {
-            if let Some(g) = ui.get_mut::<ClipGrid>(CLIPS) {
-                g.tracks = tracks;
-                g.title = title;
-                g.legend = legend;
-                g.first_row = self.first_row;
-                g.first_track = self.first_track;
-                g.scene_playing = st.scene_playing;
-                g.scene_cued = st.scene_cued;
-                g.song_rec = st.song_rec;
-                g.can_add = can_add;
-                g.adding = adding;
-                g.back_to_song = st.over_song();
-            }
-        }
         // The grid, the song or the note editor, as the app has it.
         let editing = st.edit.is_some() && !self.edit_hidden;
         let want = match (editing, st.song_view, self.clip_card) {
@@ -5719,6 +5683,97 @@ impl TimePage {
         if ui.layout_of(CLIPS_PAGE).is_some_and(|l| l != want) {
             let _ = ui.set_layout(CLIPS_PAGE, want);
         }
+        // The grid, while it is on screen: its cells cost a row of 64 a
+        // track, so the Song view and the list don't pay for them each
+        // frame (scene banks, 5.6). Shown again, it is brought up to date
+        // first.
+        let grid_shown = ui
+            .layout_of(CLIPS_PAGE)
+            .is_some_and(|l| l == CLIPS_LAYOUT || l == CLIPS_CARD_LAYOUT);
+        // "+ Track"'s chooser closes once no track can be added.
+        self.adding &= st.tracks.len() < MAX_TRACKS;
+        if grid_shown {
+            self.update_grid(ui, st);
+        }
+        self.update_rest(ui, st, reveal);
+    }
+
+    /// [`TimePage::update`]'s part for the Clips grid.
+    fn update_grid(&mut self, ui: &mut Ui, st: &TimeState) {
+        let tracks = grid_tracks(st);
+        // Perform's big rows, Make's compact ones (S4): the rows in view
+        // follow, kept within the slots.
+        // (A look first: `get_mut` marks the grid for a paint.)
+        if ui
+            .get::<ClipGrid>(CLIPS)
+            .is_some_and(|g| g.big != st.perform)
+        {
+            if let Some(g) = ui.get_mut::<ClipGrid>(CLIPS) {
+                g.big = st.perform;
+            }
+        }
+        let rows = self.visible_rows(ui).max(1);
+        self.first_row = self.first_row.min(ROWS.saturating_sub(rows));
+        self.rows_seen = rows;
+        // With Loop tracks, the title is the loops' gauge: how many of the
+        // looper's loops hold one, and the share of its memory in use (the
+        // row numbers say which rows show). Past 8 tracks the pager takes
+        // the legend's place, so the gauge is not there.
+        let title = if st.tracks.iter().any(|t| t.loops.is_some()) {
+            let l = &st.loops;
+            format!(
+                "Loops {} of {} · memory {} %",
+                l.in_use,
+                mpfree_seq::LOOPS,
+                l.memory_pct
+            )
+        } else {
+            // Scene banks (5.6): the bank chip says which bank shows.
+            format!(
+                "Rows {}–{}",
+                self.first_row + 1,
+                (self.first_row + rows).min(ROWS)
+            )
+        };
+        let legend = "ring: one pass   ·   amber: waiting   ·   red: recording".to_string();
+        let banks = banks_used(st);
+        let can_add = st.tracks.len() < MAX_TRACKS;
+        self.adding &= can_add;
+        let adding = self.adding;
+        let same_grid = ui.get::<ClipGrid>(CLIPS).is_some_and(|g| {
+            g.tracks == tracks
+                && g.title == title
+                && g.legend == legend
+                && g.first_row == self.first_row
+                && g.first_track == self.first_track
+                && (g.scene_playing, g.scene_cued) == (st.scene_playing, st.scene_cued)
+                && g.song_rec == st.song_rec
+                && g.can_add == can_add
+                && g.adding == adding
+                && g.back_to_song == st.over_song()
+                && g.banks == banks
+        });
+        if !same_grid {
+            if let Some(g) = ui.get_mut::<ClipGrid>(CLIPS) {
+                g.tracks = tracks;
+                g.title = title;
+                g.legend = legend;
+                g.first_row = self.first_row;
+                g.first_track = self.first_track;
+                g.scene_playing = st.scene_playing;
+                g.scene_cued = st.scene_cued;
+                g.song_rec = st.song_rec;
+                g.can_add = can_add;
+                g.adding = adding;
+                g.back_to_song = st.over_song();
+                g.banks = banks;
+            }
+        }
+    }
+
+    /// [`TimePage::update`], after the grid: the song list, the Song view,
+    /// the note editor and the panels.
+    fn update_rest(&mut self, ui: &mut Ui, st: &TimeState, reveal: bool) {
         // The song list.
         let title = list_title(st);
         let can_add = st.list.len() < mpfree_seq::scenes::MAX_LIST_STEPS;
@@ -5813,7 +5868,7 @@ impl TimePage {
             .cloned();
         let kept = blocks.is_some();
         let mut lanes = song_lanes_with(st, self.first_bar, self.bars_shown(), blocks);
-        lanes.adding = adding;
+        lanes.adding = self.adding;
         let (same, same_waves) = ui.get::<SongLanes>(SONG).map_or((true, true), |l| {
             let waves = crate::song::same_waves(&l.waves, &st.waves);
             lanes.keep_scroll(l);
@@ -6578,7 +6633,7 @@ mod tests {
     fn an_empty_loop_cell_arms_and_says_what_rec_does() {
         let mut st = crate::sample::loops_playing().unwrap().state();
         let tap = |st: &TimeState, track: usize, slot: usize| {
-            action(&ev(CLIPS, EventKind::Select(track * SLOTS + slot)), st)
+            action(&ev(CLIPS, EventKind::Select(track * ROWS + slot)), st)
         };
         assert!(st.clip(3, 5).is_none() && st.tracks[3].loops.is_some());
         assert_eq!(tap(&st, 3, 5), Some(TimeAction::LoopCell(Some((3, 5)))));
@@ -6610,7 +6665,7 @@ mod tests {
     fn taps_on_the_grid_launch_stop_make_and_arm() {
         let st = state();
         let tap = |track: usize, slot: usize| {
-            action(&ev(CLIPS, EventKind::Select(track * SLOTS + slot)), &st)
+            action(&ev(CLIPS, EventKind::Select(track * ROWS + slot)), &st)
         };
         assert_eq!(tap(0, 0), Some(TimeAction::StopClip(0)));
         assert_eq!(tap(0, 1), Some(TimeAction::Launch { track: 0, slot: 1 }));
@@ -6630,7 +6685,7 @@ mod tests {
             Some(TimeAction::LaunchScene(4))
         );
         assert_eq!(
-            action(&ev(CLIPS, EventKind::Toggle(SLOTS)), &st),
+            action(&ev(CLIPS, EventKind::Toggle(ROWS)), &st),
             Some(TimeAction::StopAll)
         );
     }
@@ -6643,23 +6698,23 @@ mod tests {
         let st = state();
         let learn = |kind| learn_target(&ev(CLIPS, kind), &st).map(|a| (a.owner, a.param));
         let c = |id| Some((Owner::Clips, id));
-        assert_eq!(learn(EventKind::Select(SLOTS + 2)), c(clips::clip(1, 2)));
+        assert_eq!(learn(EventKind::Select(ROWS + 2)), c(clips::clip(1, 2)));
         assert_eq!(
-            learn(EventKind::Select(2 * SLOTS + 5)),
+            learn(EventKind::Select(2 * ROWS + 5)),
             c(clips::clip(2, 5)),
             "empty"
         );
-        assert_eq!(learn(EventKind::Select(3 * SLOTS)), None, "no such track");
+        assert_eq!(learn(EventKind::Select(3 * ROWS)), None, "no such track");
         assert_eq!(learn(EventKind::Toggle(4)), c(clips::scene(4)));
-        assert_eq!(learn(EventKind::Toggle(SLOTS)), c(clips::STOP_ALL));
+        assert_eq!(learn(EventKind::Toggle(ROWS)), c(clips::STOP_ALL));
         assert_eq!(
-            learn(EventKind::Toggle(SLOTS + BACK_TO_SONG)),
+            learn(EventKind::Toggle(ROWS + BACK_TO_SONG)),
             c(clips::BACK_TO_SONG)
         );
         assert_eq!(learn(EventKind::Tab(1)), c(clips::arm(1)));
         // SHIFT keeps its job elsewhere: + Track, the pager, the sound line.
-        assert_eq!(learn(EventKind::Toggle(SLOTS + ADD_TRACK)), None);
-        assert_eq!(learn(EventKind::Toggle(SLOTS + PAGE_ON)), None);
+        assert_eq!(learn(EventKind::Toggle(ROWS + ADD_TRACK)), None);
+        assert_eq!(learn(EventKind::Toggle(ROWS + PAGE_ON)), None);
         assert_eq!(learn(EventKind::Tab(crate::widgets::SOUND_TAP + 1)), None);
         assert_eq!(
             learn_target(&ev(RECORD, EventKind::Tab(1)), &st),
@@ -6668,7 +6723,7 @@ mod tests {
         );
         // Each press is the tap now, wherever the cell's clip stands.
         let tap = |track: usize, slot: usize| {
-            action(&ev(CLIPS, EventKind::Select(track * SLOTS + slot)), &st)
+            action(&ev(CLIPS, EventKind::Select(track * ROWS + slot)), &st)
         };
         for (t, r) in [(0, 0), (0, 1), (1, 1), (2, 5)] {
             assert_eq!(clips_press(&st, Clips::Clip(t as u8, r as u8)), tap(t, r));
@@ -6696,6 +6751,56 @@ mod tests {
         assert_eq!(clips_press(&st, Clips::Solo(0)), None, "the app's");
     }
 
+    /// Scene banks (the Arrange refactor's 5.6): the grid shows rows 1
+    /// to 64; the bank chip lights the banks that hold a clip or a named
+    /// scene, and a tap on a bank brings its first row to the top (bank
+    /// D as far as the last rows allow). A row's number and a cell past
+    /// row 16 launch as any other. The title says which rows show.
+    #[test]
+    fn the_bank_chip_scrolls_the_grid_to_a_bank_of_64_rows() {
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", Header::new(&["Play", "Clips"]));
+        ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        let mut page = TimePage::add_to(&mut ui).unwrap();
+        ui.show(CLIPS_PAGE).unwrap();
+        let mut st = crate::sample::playing().unwrap().state();
+        assert_eq!(st.tracks[0].slots.len(), ROWS, "the grid's 64 rows");
+        st.tracks[2].slots[20] = st.tracks[0].slots[0].clone();
+        st.scenes.resize(50, String::new());
+        st.scenes[49] = "Encore".into();
+        page.update(&mut ui, &st);
+        let g = ui.get::<ClipGrid>(CLIPS).unwrap();
+        assert_eq!(g.slots, ROWS);
+        assert_eq!(g.banks, [true, true, false, true]);
+        assert_eq!(g.title, "Rows 1–8");
+        assert!(page.page_tracks(&ev(CLIPS, EventKind::Toggle(ROWS + BANK + 1)), &st));
+        page.update(&mut ui, &st);
+        assert_eq!(page.first_row, 16);
+        assert_eq!(ui.get::<ClipGrid>(CLIPS).unwrap().title, "Rows 17–24");
+        assert!(page.page_tracks(&ev(CLIPS, EventKind::Toggle(ROWS + BANK + 3)), &st));
+        page.update(&mut ui, &st);
+        assert_eq!(page.first_row, 48);
+        assert!(page.page_tracks(&ev(CLIPS, EventKind::Toggle(ROWS + BANK)), &st));
+        assert_eq!(page.first_row, 0);
+        // Past row 16, a cell and a row's number act as in bank A.
+        assert_eq!(
+            action(&ev(CLIPS, EventKind::Toggle(20)), &st),
+            Some(TimeAction::LaunchScene(20))
+        );
+        assert_eq!(
+            action(&ev(CLIPS, EventKind::Select(2 * ROWS + 20)), &st),
+            Some(TimeAction::Launch { track: 2, slot: 20 })
+        );
+        assert_eq!(
+            action(&ev(CLIPS, EventKind::Toggle(ROWS)), &st),
+            Some(TimeAction::StopAll)
+        );
+        assert_eq!(
+            learn_target(&ev(CLIPS, EventKind::Select(2 * ROWS + 20)), &st),
+            Some(ParamAddr::new(Owner::Clips, clips::clip(2, 20)))
+        );
+    }
+
     /// More than 8 tracks (up to 128, Jay 14 Nov): the grid follows the
     /// armed track to its page, the pager steps 8 at a time within the
     /// tracks there are, and "+ Track" on the grid and the Song view adds
@@ -6713,8 +6818,8 @@ mod tests {
         assert_eq!(page.first_track, 8, "Vox chop's page");
         let g = ui.get::<ClipGrid>(CLIPS).unwrap();
         assert_eq!((g.first_track, g.can_add), (8, true));
-        let on = ev(CLIPS, EventKind::Toggle(SLOTS + PAGE_ON));
-        let back = ev(CLIPS, EventKind::Toggle(SLOTS + PAGE_BACK));
+        let on = ev(CLIPS, EventKind::Toggle(ROWS + PAGE_ON));
+        let back = ev(CLIPS, EventKind::Toggle(ROWS + PAGE_BACK));
         assert_eq!(action(&on, &st), None, "the page's own");
         assert!(page.page_tracks(&on, &st));
         assert_eq!(page.first_track, 16);
@@ -6729,7 +6834,7 @@ mod tests {
         assert!(page.page_tracks(&back, &st));
         assert!(page.page_tracks(&back, &st));
         assert_eq!(page.first_track, 0);
-        assert!(!page.page_tracks(&ev(CLIPS, EventKind::Toggle(SLOTS)), &st));
+        assert!(!page.page_tracks(&ev(CLIPS, EventKind::Toggle(ROWS)), &st));
         // Arming a track off the page brings its page.
         st.armed = Some(21);
         page.update(&mut ui, &st);
@@ -6741,11 +6846,11 @@ mod tests {
         page.update(&mut ui, &st);
         assert_eq!(page.first_track, 0);
         assert_eq!(
-            action(&ev(CLIPS, EventKind::Toggle(SLOTS + ADD_TRACK)), &st),
+            action(&ev(CLIPS, EventKind::Toggle(ROWS + ADD_TRACK)), &st),
             Some(TimeAction::AddTrack)
         );
         assert_eq!(
-            action(&ev(CLIPS, EventKind::Toggle(SLOTS + 1)), &st),
+            action(&ev(CLIPS, EventKind::Toggle(ROWS + 1)), &st),
             Some(TimeAction::SongView(true))
         );
         assert_eq!(
@@ -6754,7 +6859,7 @@ mod tests {
         );
         assert!(song_lanes(&st, 0).can_add_track);
         assert_eq!(
-            action(&ev(CLIPS, EventKind::Toggle(SLOTS + BACK_TO_SONG)), &st),
+            action(&ev(CLIPS, EventKind::Toggle(ROWS + BACK_TO_SONG)), &st),
             Some(TimeAction::BackToSong)
         );
     }
@@ -6944,7 +7049,7 @@ mod tests {
         ui.show(CLIPS_PAGE).unwrap();
         let mut st = state();
         assert_eq!(
-            action(&ev(CLIPS, EventKind::Toggle(SLOTS + 1)), &st),
+            action(&ev(CLIPS, EventKind::Toggle(ROWS + 1)), &st),
             Some(TimeAction::SongView(true))
         );
         st.song_view = true;
@@ -7049,7 +7154,7 @@ mod tests {
         assert!(ui.rect_of(CLIPS).is_some() && ui.rect_of(SONG).is_none());
         assert!(ui.get::<ClipGrid>(CLIPS).unwrap().song_rec);
         assert_eq!(
-            action(&ev(CLIPS, EventKind::Toggle(SLOTS + 2)), &st),
+            action(&ev(CLIPS, EventKind::Toggle(ROWS + 2)), &st),
             Some(TimeAction::RecSong(false))
         );
     }
@@ -7459,19 +7564,19 @@ mod tests {
                 on: false
             }))
         );
-        let cell = ev(CLIPS, EventKind::Select(SLOTS + 2));
+        let cell = ev(CLIPS, EventKind::Select(ROWS + 2));
         assert_eq!(action(&cell, &st), None);
         assert_eq!(
             why_not(&cell, &st).as_deref(),
             Some("Audio clips aren't in the grid yet. Record this track in the Song view.")
         );
         // The chooser's rows on the grid.
-        let row = |k| action(&ev(CLIPS, EventKind::Toggle(SLOTS + ADD_KIND + k)), &st);
+        let row = |k| action(&ev(CLIPS, EventKind::Toggle(ROWS + ADD_KIND + k)), &st);
         assert_eq!(row(0), Some(TimeAction::AddTrack));
         assert_eq!(row(1), Some(TimeAction::AddAudioTrack));
         assert_eq!(row(2), Some(TimeAction::AddLoopTrack));
         assert_eq!(
-            action(&ev(CLIPS, EventKind::Toggle(SLOTS + ADD_DISMISS)), &st),
+            action(&ev(CLIPS, EventKind::Toggle(ROWS + ADD_DISMISS)), &st),
             None
         );
     }
@@ -7483,7 +7588,7 @@ mod tests {
     fn plus_track_opens_the_chooser_and_the_new_track_comes_into_view() {
         let mut st = state();
         let mut page = TimePage::default();
-        let plus = ev(CLIPS, EventKind::Toggle(SLOTS + ADD_TRACK));
+        let plus = ev(CLIPS, EventKind::Toggle(ROWS + ADD_TRACK));
         assert!(page.chooser(&plus, &st, false));
         assert!(page.adding);
         let off = ev(SONG, EventKind::Tab(crate::song::ADD_CLOSE));
@@ -7495,7 +7600,7 @@ mod tests {
         );
         assert!(!page.adding);
         assert!(page.chooser(&plus, &st, false));
-        let audio = ev(CLIPS, EventKind::Toggle(SLOTS + ADD_KIND + 1));
+        let audio = ev(CLIPS, EventKind::Toggle(ROWS + ADD_KIND + 1));
         assert!(!page.chooser(&audio, &st, false), "the app adds it");
         assert!(!page.adding);
         // Once it is there, past the first page: its page shows.
@@ -7866,7 +7971,7 @@ mod tests {
                 },
                 &st
             ),
-            Some(TimeAction::MorphRows { a: SLOTS - 1, b: 1 }),
+            Some(TimeAction::MorphRows { a: ROWS - 1, b: 1 }),
             "round to the last row"
         );
         assert_eq!(
@@ -8499,7 +8604,7 @@ mod tests {
         assert_eq!(take_title(&st, &row), "Settings 4 · Bass / 2");
         assert_eq!(take_detail(&st, &row), "clip settings");
         // No clip on the armed track: no rows, and it says so.
-        st.tracks[1].slots = vec![None; SLOTS];
+        st.tracks[1].slots = vec![None; ROWS];
         assert_eq!(st.focus(), None);
         assert!(clip_rows(&st).is_empty());
         assert_eq!(panel_tabs(&st)[1], "Clip");
@@ -9361,7 +9466,7 @@ mod tests {
         st.cue_lines.clear();
         st.launch = LaunchGrid::Bars(1);
         let tap = |track: usize, slot: usize| {
-            action(&ev(CLIPS, EventKind::Select(track * SLOTS + slot)), &st)
+            action(&ev(CLIPS, EventKind::Select(track * ROWS + slot)), &st)
         };
         assert_eq!(tap(0, 1), Some(TimeAction::Uncue(0)), "the cued clip");
         assert_eq!(

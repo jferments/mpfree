@@ -2202,7 +2202,7 @@ mod tests {
     use mpfree_compose::State as PreviewState;
     use mpfree_play::PlayView;
     use mpfree_play::Replaced;
-    use mpfree_seq::SLOTS;
+    use mpfree_seq::{ROWS, SLOTS};
     use mpfree_time_ui::continuing::{ContinueAction, ContinueAsk, Continuing};
     use mpfree_time_ui::view::{AudioAction, RegionId};
     use mpfree_transport::time::Tick;
@@ -2310,8 +2310,16 @@ mod tests {
         assert!(h.control.project.clip(2, 0).is_none());
         h.act(TimeAction::Undo).unwrap();
         assert!(h.control.project.clip(0, 1).is_none());
-        // A full track says so.
+        // Bank A full, it goes in bank B (scene banks, 5.6); all 64
+        // rows full, the track says so.
         for s in 0..SLOTS {
+            h.control.project.tracks[2].slots[s] = Some(Clip::new("full", 960));
+        }
+        assert!(h
+            .put_clip(clip.clone())
+            .unwrap()
+            .ends_with("slot 17 of Track 3"));
+        for s in 0..ROWS {
             h.control.project.tracks[2].slots[s] = Some(Clip::new("full", 960));
         }
         assert!(h.put_clip(clip).unwrap_err().contains("no empty slot"));
@@ -2380,7 +2388,7 @@ mod tests {
         assert!(h.control.project.clip(0, 0).is_none());
         assert!(h.control.project.clip(1, 1).is_none());
         // A track with no empty slot: none goes in.
-        for s in 0..SLOTS {
+        for s in 0..ROWS {
             h.control.project.tracks[1].slots[s] = Some(Clip::new("full", 960));
         }
         let e = h.put_clips(vec![(0, drums), (1, bass)]).unwrap_err();
@@ -8400,10 +8408,11 @@ mod tests {
         assert_eq!(names, ["Scene 1", "Scene 2", "Scene 6", "Scene 3"]);
     }
 
-    /// Arrange 1.2: a clip and a scene in row 40, past the grid's 16,
+    /// Arrange 1.2 and 5.6: a clip and a scene in row 40, in bank C,
     /// save, open, launch and play; the scene's follow action moves within
-    /// its bank (rows 32 to 47), never to the grid's rows; the grid still
-    /// shows 16 rows; and a row dragged on the grid leaves row 40 alone.
+    /// its bank (rows 32 to 47), never to bank A's; the grid shows all 64
+    /// rows; a row dragged within bank A leaves row 40 alone, and a row
+    /// copied above it moves it down one.
     #[test]
     fn a_clip_and_a_scene_in_row_40_save_open_launch_and_stay_put() {
         use mpfree_seq::{Follow, FollowAction, Note, ROWS};
@@ -8426,7 +8435,7 @@ mod tests {
         let read = mpfree_seq::save::from_text(&mpfree_seq::save::to_text(&p)).unwrap();
         assert_eq!(read, p);
         let mut h = TimeHost::with_project(RATE, 120.0, read).unwrap();
-        assert_eq!(h.state().tracks[0].slots.len(), SLOTS, "the grid's rows");
+        assert_eq!(h.state().tracks[0].slots.len(), ROWS, "the grid's rows");
         let mut pads = Fake::default();
         h.act(TimeAction::LaunchScene(40)).unwrap();
         h.command(Command::Play);
@@ -8448,9 +8457,53 @@ mod tests {
         })
         .unwrap();
         let p = h.project();
-        assert_eq!(p.clip(0, 40).map(|c| c.notes[0].note), Some(40));
-        assert_eq!(p.scene(40).map(|s| s.name.as_str()), Some("Far"));
+        assert_eq!(p.clip(0, 41).map(|c| c.notes[0].note), Some(40));
+        assert_eq!(p.scene(41).map(|s| s.name.as_str()), Some("Far"));
         assert!(h.act(TimeAction::LaunchScene(ROWS)).is_err());
+    }
+
+    /// Scene banks (the Arrange refactor's 5.6): rows 17 to 64 work as
+    /// bank A's. Capture under a scene with bank A full lands in row 17;
+    /// a row copied at row 30 moves the rows under it down, as far as row
+    /// 64; the scene card opens on row 41; the morph takes rows 41 and 64.
+    #[test]
+    fn rows_past_bank_a_capture_copy_open_a_card_and_morph_as_bank_a() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let one_bar = |note: u8| {
+            let mut c = Clip::new("beat", 3840);
+            c.notes = vec![mpfree_seq::Note::new(0, 100, note, 100)];
+            c
+        };
+        for row in 0..SLOTS {
+            h.control.project.tracks[0].slots[row] = Some(one_bar(row as u8));
+        }
+        h.control.project.tracks[1].slots[40] = Some(one_bar(90));
+        h.control.project.give_clip_ids();
+        h.act(TimeAction::LaunchScene(3)).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR + BAR / 4, &[]);
+        let said = h.act(TimeAction::CaptureScene).unwrap();
+        assert!(said.contains("into row 17"), "{said}");
+        assert_eq!(h.project().clip(0, 16).map(|c| c.notes[0].note), Some(3));
+        h.act(TimeAction::DropRow {
+            from: 16,
+            to: 30,
+            copy: true,
+        })
+        .unwrap();
+        let p = h.project();
+        assert_eq!(p.clip(0, 30).map(|c| c.notes[0].note), Some(3));
+        assert_eq!(p.clip(1, 41).map(|c| c.notes[0].note), Some(90), "down one");
+        assert!(p.row_empty(40));
+        h.act(TimeAction::SceneCard(Some(41))).unwrap();
+        assert_eq!(h.state().scene_open, Some(41));
+        h.act(TimeAction::SceneCard(None)).unwrap();
+        assert!(h.act(TimeAction::SceneCard(Some(ROWS))).is_err());
+        h.act(TimeAction::MorphRows { a: 41, b: 63 }).unwrap();
+        assert_eq!((h.state().morph.a, h.state().morph.b), (41, 63));
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.project().clip(1, 40).map(|c| c.notes[0].note), Some(90));
     }
 
     /// Capture scene (Arrange 5.3): the clips playing now, one from row 1
@@ -8610,14 +8663,14 @@ mod tests {
         assert_eq!(played(&h), Vec::<usize>::new());
         assert_eq!(h.state().scene_playing, None);
         h.act(TimeAction::Undo).unwrap();
-        // No room under the grid's last row.
-        h.control.project.tracks[0].slots[SLOTS - 1] = Some(one_bar(9));
+        // No room under the grid's last row, row 64.
+        h.control.project.tracks[0].slots[ROWS - 1] = Some(one_bar(9));
         h.control.project.give_clip_ids();
         assert!(h
             .act(TimeAction::InsertRow(0))
             .unwrap_err()
             .contains("in use"));
-        h.control.project.tracks[0].slots[SLOTS - 1] = None;
+        h.control.project.tracks[0].slots[ROWS - 1] = None;
         // A row the song plays: its clips stay the song's.
         h.act(TimeAction::StopAll).unwrap();
         h.command(Command::Stop);
@@ -8711,7 +8764,7 @@ mod tests {
         // Refused (too few empty rows left in a run): nothing changes, and
         // there is nothing new to undo.
         let mut full = h.control.project.clone();
-        for row in 6..mpfree_seq::SLOTS {
+        for row in 6..ROWS {
             full.scene_mut(row).unwrap().name = format!("Taken {row}");
         }
         h.control.project = full.clone();
@@ -11475,7 +11528,7 @@ mod tests {
         let mut pads = Fake::default();
         h.act(TimeAction::Arm(Some(0))).unwrap();
         h.act(TimeAction::ArmAlso(1 << 1 | 1 << 2)).unwrap();
-        for s in 0..SLOTS {
+        for s in 0..ROWS {
             h.control.project.tracks[2].slots[s] = Some(Clip::new("full", 3840));
         }
         let said = h.act(TimeAction::Transport(Command::Record)).unwrap();
