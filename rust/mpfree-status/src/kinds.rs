@@ -11,12 +11,13 @@
 //! 4. **A new kind joins here, not on the screen.** The design page of the
 //!    feature that reports it says which level it is and why.
 //!
-//! These are the phase 1 kinds, the themes' four in Screen, and, in
-//! Storage, disk streaming's phase 3 kinds (reported by
+//! These are the phase 1 kinds, the themes' four in Screen, in Storage
+//! disk streaming's phase 3 kinds (reported by
 //! `mpfree_stream::status::Watch`; its design page
-//! `docs/dev/design/disk-streaming.md` says why each has its level).
-//! Plugins and the MIDI clock add theirs in phase 3
-//! (`docs/dev/design/status.md`). The words are drafts; any can change.
+//! `docs/dev/design/disk-streaming.md` says why each has its level), and
+//! phase 3's MIDI clock and plugin kinds (`docs/dev/design/status.md`).
+//! The MPC's temperature and clock kinds wait for lines measured on the
+//! MPC. The words are drafts; any can change.
 
 use crate::{Action, Kind, Level, Shape, System};
 
@@ -443,6 +444,25 @@ pub static PORT_MISSING: Kind = Kind {
     hides: &[],
 };
 
+/// The device whose clock the project follows (Sync's Tempo from) stopped
+/// sending it while it played: its pulses stopped without a Stop. The time
+/// engine's follower lets go of the tempo (`time/follow.rs`, counted in
+/// `FollowCounts::lost`); this lasts until the pulses come back, a Stop
+/// comes, or following ends.
+pub static CLOCK_STOPPED: Kind = Kind {
+    id: "midi/clock-stopped",
+    system: System::Midi,
+    level: Level::Warn,
+    shape: Shape::Lasts,
+    short: "Clock stopped",
+    title: "The clock MPFree follows stopped",
+    what: "The device MPFree takes its tempo from stopped sending its clock while it played, so MPFree plays on by itself at the last tempo.",
+    to_try: "Check that the device is still playing and its cable is in, or set Tempo from to MPFree in the mixer's I/O view, under Sync.",
+    action: None,
+    manual: "the-clock-mpfree-follows-stopped",
+    hides: &[],
+};
+
 // ---------------------------------------------------------------- Project
 
 /// The project opened with parts left out; it is saved as a new project
@@ -561,7 +581,59 @@ pub static SKIN_COLOURS_MOVED: Kind = Kind {
     hides: &[],
 };
 
+// ---------------------------------------------------------------- Plugins
+
+/// A plugin's own process ended (it crashed): the rack
+/// (`mpfree_plughost::rack`) restarts it from its last state, at most three
+/// times a minute, and leaves it off at the fourth crash. Red: its sound
+/// stopped, which you may have heard.
+pub static PLUGIN_STOPPED: Kind = Kind {
+    id: "plugins/plugin-stopped",
+    system: System::Plugins,
+    level: Level::Fail,
+    shape: Shape::Happens,
+    short: "Plugin stopped",
+    title: "A plugin stopped",
+    what: "A plugin crashed, so its sound stopped for a moment. MPFree starts it again where it was; after four crashes in a minute it stays off: an effect lets the sound through, an instrument is silent.",
+    to_try: "Save your project. If it keeps happening, take the plugin out and add it again, or use another one.",
+    action: None,
+    manual: "a-plugin-stopped",
+    hides: &[],
+};
+
 // ---------------------------------------------------------------- The MPC
+
+/// The MPC hotter than its line (the app's `heat::RUNNING_HOT_C`), which is
+/// measured on the MPC, never guessed; until it is, this stays off.
+pub static MPC_HOT: Kind = Kind {
+    id: "mpc/running-hot",
+    system: System::Mpc,
+    level: Level::Warn,
+    shape: Shape::Lasts,
+    short: "MPC running hot",
+    title: "The MPC is running hot",
+    what: "The MPC is hotter than it gets even with all its cores busy, so it may slow its processor to cool down, and then the sound has less room before it runs late.",
+    to_try: "Keep it out of the sun and away from heat, with room around it, and play fewer effects and instruments at once until it cools.",
+    action: None,
+    manual: "the-mpc-is-running-hot",
+    hides: &[&PROCESSOR_SLOWED],
+};
+
+/// A core's top clock fell below where it was at MPFree's start: the
+/// kernel's cooling or a governor slowed the processor (heat.rs).
+pub static PROCESSOR_SLOWED: Kind = Kind {
+    id: "mpc/processor-slowed",
+    system: System::Mpc,
+    level: Level::Warn,
+    shape: Shape::Lasts,
+    short: "Processor slowed",
+    title: "The MPC slowed its processor",
+    what: "The MPC turned its processor's top speed down, usually to cool down, so the sound has less room before it runs late.",
+    to_try: "Let it cool: keep it out of the sun and away from heat, and play fewer effects and instruments at once for now. It ends by itself when the speed comes back.",
+    action: None,
+    manual: "the-mpc-slowed-its-processor",
+    hides: &[],
+};
 
 /// A strict sound helper couldn't get its core or priority, so its part
 /// runs with the rest of the sound on one core (cores.rs).
@@ -606,6 +678,7 @@ pub static ALL: &[&Kind] = &[
     &NO_SETUP,
     &TOUCH_STOPPED,
     &PORT_MISSING,
+    &CLOCK_STOPPED,
     &CRASH_RESTART,
     &PARTS_MISSING,
     &NO_GPU,
@@ -613,6 +686,9 @@ pub static ALL: &[&Kind] = &[
     &THEME_MISTAKES,
     &THEME_NOT_FOUND,
     &SKIN_COLOURS_MOVED,
+    &PLUGIN_STOPPED,
+    &MPC_HOT,
+    &PROCESSOR_SLOWED,
     &ONE_CORE,
 ];
 
@@ -751,6 +827,9 @@ mod tests {
             &NOT_SAVED_YET,
             &STREAMING_AT_LIMIT,
             &STICK_NEARLY_FULL,
+            &CLOCK_STOPPED,
+            &MPC_HOT,
+            &PROCESSOR_SLOWED,
         ] {
             assert_eq!(k.level, Level::Warn, "{}", k.id);
         }
@@ -762,6 +841,7 @@ mod tests {
             &RECORDING_STOPPED,
             &STICK_FELL_BEHIND,
             &CARD_REMOVED,
+            &PLUGIN_STOPPED,
         ] {
             assert_eq!(k.level, Level::Fail, "{}", k.id);
         }

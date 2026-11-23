@@ -20,3 +20,4 @@ mpfree-play = { path = "../mpfree-play" }
 mpfree-midi = { path = "../mpfree-midi" }
 mpfree-node = { path = "../mpfree-node" }
 mpfree-synth = { path = "../mpfree-synth" }
+mpfree-fx = { path = "../mpfree-fx" }

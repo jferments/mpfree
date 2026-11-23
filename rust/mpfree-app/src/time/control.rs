@@ -6087,6 +6087,7 @@ impl TimeControl {
                     bpm: self.info.bpm,
                     budget: ReadBudget::default(),
                     settings,
+                    how: mpfree_compose::Making::New,
                 };
                 // Another clip's result playing goes at once.
                 if self.compose.in_view.is_some() && self.compose.bound() != Some((track, slot)) {

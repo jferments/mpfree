@@ -9,8 +9,9 @@
 //! ([`Read`]). By default the read is band-limited, as the sampler's own
 //! clean read is: a Kaiser-windowed sinc cut at the output's Nyquist
 //! frequency, so a sound played faster doesn't fold back down as
-//! aliasing. 4-point Hermite stays as the cheaper choice. At speed 1 from
-//! a whole frame either gives the file's own samples, bit for bit.
+//! aliasing. The sampler pads' 8-point read is the cheaper choice. At
+//! speed 1 from a whole frame every read gives the file's own samples,
+//! bit for bit.
 //!
 //! A cursor can stop at an end frame (a region that is part of a take):
 //! frames from there on are silent, not counted and not read ahead. A
@@ -27,7 +28,7 @@ use std::sync::OnceLock;
 
 use crate::msg::Place;
 use crate::player::Player;
-use crate::resample::Kernel;
+use crate::resample::{near_kernel, near_sum, Kernel, NEAR_HALF, NEAR_TAPS};
 
 /// The fastest a cursor moves: four file frames an output frame.
 pub const MAX_SPEED: f64 = 4.0;
@@ -40,9 +41,21 @@ pub const PASS: usize = 1024;
 /// everything else; it never changes by itself under load.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Read {
-    /// 4-point Hermite: the cheapest, but a faster read folds what it
-    /// moves past the output's Nyquist frequency back down.
-    Hermite,
+    /// The sampler pads' 8-point read ([`crate::resample::NearKernel`],
+    /// DSP quality step 1.4): the cheapest. At the file's own speed or
+    /// slower, the pads' own weights from their table, summed as they sum
+    /// them; faster, the same kernel with its cut following the speed up
+    /// to twice ([`MAX_STRETCH`]), 10 to 16 taps a frame. Measured with
+    /// every other read in `mpfree_fxlab::readers` against the pitched
+    /// reads standard (`docs/dev/design/pitched-reads.md`): images,
+    /// passband and loop wraps met wherever the pads meet them. It misses
+    /// one row: read faster, what lies just past the output's top folds
+    /// back less cut than the band-limited reads cut it (an 18 kHz tone a
+    /// fifth up, −31 dB, against −55 for [`Read::Sinc8`] and −50 the
+    /// standard). Like the pads' read, tones at the top of a sound read an
+    /// octave or a fifth down still fold (DSP quality step 3.3). Hermite,
+    /// the cheap read before it, let all but 12 dB of a fold through.
+    Near,
     /// Band-limited, 8 zero crossings a side: the sampler's own clean
     /// read. Its cut follows the speed up to twice ([`MAX_STRETCH`]);
     /// faster than that it filters a little less. 16 to 32 taps a frame.
@@ -61,13 +74,17 @@ pub const MAX_STRETCH: f64 = 2.0;
 /// Table steps per crossing of the voice reads' kernels.
 const STEPS: usize = 128;
 
-fn kernel(read: Read) -> Option<&'static Kernel> {
+/// A read's one-sided table, for the sum that stretches it
+/// ([`Cursor::sinc`]); the 8-point read at the file's speed or slower
+/// reads its rows instead ([`near_kernel`]).
+fn kernel(read: Read) -> &'static Kernel {
+    static K4: OnceLock<Kernel> = OnceLock::new();
     static K8: OnceLock<Kernel> = OnceLock::new();
     static K16: OnceLock<Kernel> = OnceLock::new();
     match read {
-        Read::Hermite => None,
-        Read::Sinc8 => Some(K8.get_or_init(|| Kernel::new(8, 5.0, STEPS))),
-        Read::Sinc16 => Some(K16.get_or_init(|| Kernel::new(16, 6.0, STEPS))),
+        Read::Near => K4.get_or_init(|| Kernel::near(STEPS)),
+        Read::Sinc8 => K8.get_or_init(|| Kernel::new(8, 5.0, STEPS)),
+        Read::Sinc16 => K16.get_or_init(|| Kernel::new(16, 6.0, STEPS)),
     }
 }
 
@@ -100,6 +117,8 @@ impl Cursor {
     /// the sound thread.
     pub fn new(source: u16, id: u16) -> Cursor {
         // Make the reads' tables here, never on the sound thread.
+        near_kernel();
+        kernel(Read::Near);
         kernel(Read::Sinc8);
         kernel(Read::Sinc16);
         Cursor {
@@ -265,20 +284,15 @@ impl Cursor {
             let last = self.frac + (n.saturating_sub(1)) as f64 * self.speed;
             let span = last.floor() as usize + 1;
             // Neighbours the read looks at before pos and after the last.
-            let (lead, tail) = match kernel(self.read) {
-                None => (1, 2),
-                Some(k) => {
-                    let r = reach(k, self.speed);
-                    (r, r + 1)
-                }
-            };
+            let r = reach(kernel(self.read), self.speed);
+            let (lead, tail) = (r, r + 1);
             self.gather_before(p, lead);
             missed += self.gather(p, self.pos, span, lead, true);
             self.gather(p, self.pos + span as u64, tail, lead + span, false);
-            match kernel(self.read) {
+            match self.read {
                 _ if self.speed == 1.0 && self.frac == 0.0 => self.copy(ch, lead, part),
-                None => self.interpolate(ch, part),
-                Some(k) => self.sinc(k, ch, lead, part),
+                Read::Near if self.speed <= 1.0 => self.near(ch, lead, part),
+                read => self.sinc(kernel(read), ch, lead, part),
             }
             // Move on.
             let moved = self.frac + n as f64 * self.speed;
@@ -346,28 +360,38 @@ impl Cursor {
         }
     }
 
-    /// Read the gathered frames (the first is the frame before pos) into
-    /// `out`, stereo.
-    fn interpolate(&self, ch: usize, out: &mut [f32]) {
+    /// The 8-point read of the gathered frames (pos is at `lead`, at
+    /// least [`NEAR_HALF`]) into `out`, stereo, at the file's own speed or
+    /// slower: each frame from the 8 round its place, with the weights the
+    /// sampler's pads take from the same table for the same fraction
+    /// ([`near_kernel`], a 32-bit fraction), summed the same way.
+    fn near(&self, ch: usize, lead: usize, out: &mut [f32]) {
+        let k = near_kernel();
         let g = &self.gathered;
+        let last = ch - 1;
         for (j, o) in out.chunks_exact_mut(2).enumerate() {
             // The same sum as `last` in play, so it never reads past it.
             let x = self.frac + j as f64 * self.speed;
             let i = x as usize;
-            let t = (x - i as f64) as f32;
-            for (c, slot) in o.iter_mut().enumerate() {
-                let c = c.min(ch - 1);
-                let y = |k: usize| g[(i + k) * ch + c];
-                *slot = hermite(y(0), y(1), y(2), y(3), t);
+            let c = k.weights(((x - i as f64) * 4_294_967_296.0) as u32);
+            // Frames i - 3 to i + 4.
+            let at = lead + i + 1 - NEAR_HALF;
+            let (mut a, mut b) = ([0.0f32; NEAR_TAPS], [0.0f32; NEAR_TAPS]);
+            for m in 0..NEAR_TAPS {
+                a[m] = g[(at + m) * ch];
+                b[m] = g[(at + m) * ch + last];
             }
+            o[0] = near_sum(&c, &a);
+            o[1] = near_sum(&c, &b);
         }
     }
 
     /// The band-limited read of the gathered frames (pos is at `lead`)
     /// into `out`, stereo: each frame a sum of its neighbours weighted by
-    /// the sinc, stretched by the speed (up to [`MAX_STRETCH`]) so it cuts
-    /// at the output's Nyquist frequency, and weights summed to 1. The
-    /// taps walk the table in fixed point, half a side at a time.
+    /// the kernel `k`, stretched by the speed (up to [`MAX_STRETCH`]) so it
+    /// cuts at the output's Nyquist frequency (the 8-point read's a little
+    /// under), and weights summed to 1. The taps walk the table in fixed
+    /// point, half a side at a time.
     fn sinc(&self, k: &Kernel, ch: usize, lead: usize, out: &mut [f32]) {
         const ONE: f64 = (1u64 << 16) as f64;
         const INV: f32 = 1.0 / (1u32 << 16) as f32;
@@ -423,13 +447,4 @@ impl Cursor {
 /// Frames a band-limited read looks at on each side at `speed`.
 fn reach(k: &Kernel, speed: f64) -> usize {
     (k.zeros() as f64 * speed.clamp(1.0, MAX_STRETCH)).ceil() as usize
-}
-
-/// 4-point Hermite between `y1` (t = 0) and `y2` (t = 1); `y1` exactly at
-/// t = 0.
-fn hermite(y0: f32, y1: f32, y2: f32, y3: f32, t: f32) -> f32 {
-    let c1 = 0.5 * (y2 - y0);
-    let c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
-    let c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
-    ((c3 * t + c2) * t + c1) * t + y1
 }

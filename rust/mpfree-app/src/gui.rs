@@ -1059,6 +1059,9 @@ pub enum ToUi {
     /// The CLAP plugins found at start (sent once, early): an open makes a
     /// project's plugins with them, here on the screen thread.
     Plugins(std::sync::Arc<crate::plugins::Plugins>),
+    /// Where the audio tracks keep their last look at the stick (sent once,
+    /// early): System status's stick meter.
+    Drive(std::sync::Arc<mpfree_audiotracks::files::DriveSeen>),
     /// What each track plays as its own instrument (None: the kit), for
     /// the line under its name on Arrange. Sent when it changes.
     TrackSounds(Box<TrackSounds>),
@@ -2218,6 +2221,12 @@ pub struct Player {
     /// The plugins an open makes a project's plugin effects and synths
     /// with ([`ToUi::Plugins`]; none until then).
     project_plugins: std::sync::Arc<crate::plugins::Plugins>,
+    /// The audio tracks' last look at the stick ([`ToUi::Drive`]): System
+    /// status's stick meter.
+    drive: Option<std::sync::Arc<mpfree_audiotracks::files::DriveSeen>>,
+    /// The MPC's temperature and processor clock at the screen thread's
+    /// last read (every 2 s, heat.rs).
+    heat: Option<crate::heat::Heat>,
     /// BROWSE's Plugins place: the Open MPC catalog, installed plugins and
     /// zips on the stick (plugin_page.rs).
     plugin_page: crate::plugin_page::PluginPage,
@@ -2899,6 +2908,8 @@ impl Player {
             io_model: None,
             project_defaults: None,
             project_plugins: std::sync::Arc::new(crate::plugins::Plugins::none()),
+            drive: None,
+            heat: None,
             plugin_page: crate::plugin_page::PluginPage::new(),
             plugins_hinted: false,
             track_sounds: [None; crate::instruments::HOLDERS],
@@ -8206,6 +8217,8 @@ impl Player {
             cpu_pct: self.engines.as_deref().and_then(crate::engines::cpu_pct),
             ram_pct: self.ram_pct,
             free: self.mem_free,
+            stick: self.drive.as_ref().and_then(|d| d.get()).flatten(),
+            heat: self.heat,
         };
         let v = crate::status_screen::view(
             &self.status_board,
@@ -8333,10 +8346,10 @@ impl Player {
                     red = Some(line);
                 }
             }
-            let about = match (c.subject, watch.subject_name(c.kind, c.subject)) {
+            let about = match (c.subject, watch.subject_name(c.subject)) {
                 (mpfree_status::Subject::NONE, _) => String::new(),
                 (_, Some(name)) => format!(" {name}"),
-                (s, None) => format!(" #{}", s.0),
+                (s, None) => format!(" {s}"),
             };
             let hidden = if c.hidden {
                 " (its cause is going)"
@@ -8368,8 +8381,9 @@ impl Player {
 
     /// The watchers' look (status_watch.rs), each time the audio loop's
     /// timing arrives: its counters, the period's verdict, memory, the
-    /// session, the project's left-out parts, the cores, and every 8th
-    /// look (2 s) the MIDI ports the project uses.
+    /// session, the project's left-out parts, the cores, the followed
+    /// clock, the plugins' crashes, and every 8th look (2 s) the MIDI ports
+    /// the project uses.
     fn status_look(&mut self) {
         self.status_looks += 1;
         let missing = if self.ready && self.status_looks.is_multiple_of(8) {
@@ -8391,6 +8405,11 @@ impl Player {
             parts_missing: self.browser.as_ref().map(|b| !b.left_out_list().is_empty()),
             one_core: self.engines.as_deref().and_then(|e| e.cores.fell_back()),
             missing_ports: missing.as_deref(),
+            clock_lost: Some(t.audio.clock_lost),
+            plugin_crashes: self.project_plugins.summary().map(|s| s.crashes),
+            temp_c: self.heat.and_then(|h| h.temp_c),
+            hot_line: crate::heat::RUNNING_HOT_C,
+            slowed: self.heat.and_then(|h| h.slowed),
         };
         // Audio tracks by lasting id, for problems about one.
         self.status_watch.set_audio_tracks(
@@ -8410,6 +8429,12 @@ impl Player {
     /// Memory free now (MemAvailable, bytes), for the status watcher.
     pub fn set_free(&mut self, free: u64) {
         self.mem_free = Some(free);
+    }
+
+    /// The MPC's temperature and processor clock, read now (every 2 s),
+    /// for the status watcher and System status's head.
+    pub fn set_heat(&mut self, h: crate::heat::Heat) {
+        self.heat = Some(h);
     }
 
     /// The problems shown this session that aren't in `allowed`, by id:
@@ -9685,6 +9710,7 @@ impl Player {
             ToUi::Printed(name, p) => self.save_print(name, p),
             ToUi::ProjectDefaults(d) => self.project_defaults = Some(*d),
             ToUi::Plugins(p) => self.project_plugins = p,
+            ToUi::Drive(d) => self.drive = Some(d),
             ToUi::TrackSounds(s) => {
                 self.track_sounds = *s;
                 self.refill_sounds();
@@ -15326,6 +15352,8 @@ pub fn spawn(
             let mut perf = crate::perf::Sampler::new();
             let (mut perf_at, mut perf_logged): (Option<Instant>, Option<Instant>) = (None, None);
             let mut ram_at: Option<Instant> = None;
+            // The MPC's temperature and clock, every 2 s with the RAM.
+            let mut heat = crate::heat::HeatReader::default();
             let mut memory_watch = crate::memory::Watch::default();
             // The touchscreen stopped answering and hasn't opened again.
             let mut touch_lost = false;
@@ -15455,6 +15483,10 @@ pub fn spawn(
                 // line when free memory falls under the floor loads keep.
                 if ram_at.is_none_or(|t| t.elapsed() >= PERF_EVERY) {
                     ram_at = Some(Instant::now());
+                    player.set_heat(heat.read());
+                    if let Some(line) = heat.cost_line() {
+                        println!("{line}");
+                    }
                     if let Ok(m) = std::fs::read_to_string("/proc/meminfo") {
                         if let Some(p) = crate::perf::ram_used_pct(&m) {
                             player.set_ram(p);
@@ -15820,6 +15852,7 @@ pub fn sample_status(fonts: Fonts) -> Player {
     let mut p = sample_player(fonts);
     p.set_ram(41.0);
     p.set_free(1_100_000_000);
+    sample_stick(&mut p);
     p.apply(ToUi::Problem(Report::happened(&kinds::VOICES_GIVEN_UP, 6)));
     let ports = ["Juno-X".to_string()];
     for _ in 0..2 {
@@ -15839,6 +15872,27 @@ pub fn sample_status(fonts: Fonts) -> Player {
     p.apply(ToUi::Problem(Report::happened(&kinds::SOUND_DROPOUT, 3)));
     p.tick(0.5);
     p
+}
+
+/// A 16 GB stick with 12.4 GB free, as the audio tracks' drive watcher
+/// would have looked at it, for System status's samples.
+fn sample_stick(p: &mut Player) {
+    let d = mpfree_audiotracks::files::DriveSeen::default();
+    d.set(Some(mpfree_audiotracks::files::Room {
+        writable: true,
+        free: 12_400_000_000,
+        total: 15_500_000_000,
+    }));
+    p.apply(ToUi::Drive(std::sync::Arc::new(d)));
+    // And the MPC as the disk streaming round saw it (23 Nov).
+    p.set_heat(crate::heat::Heat {
+        temp_c: Some(55.5),
+        critical_c: Some(113.0),
+        clock_mhz: Some(1608),
+        top_mhz: Some(1608),
+        full_mhz: Some(1608),
+        slowed: Some(false),
+    });
 }
 
 pub fn sample_player(fonts: Fonts) -> Player {
@@ -15911,6 +15965,7 @@ pub fn sample_player(fonts: Fonts) -> Player {
             faded_grains: 0,
             held_back_clouds: 0,
             crowded_s: 0.0,
+            clock_lost: false,
         },
     }));
     p.set_screen_row(
@@ -19159,6 +19214,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
                 faded_grains: 0,
                 held_back_clouds: 0,
                 crowded_s: 0.0,
+                clock_lost: false,
             },
             ..Timing::default()
         }));
@@ -19303,7 +19359,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         st.apply(ToUi::Problem(Report::happened(&kinds::VOICES_GIVEN_UP, 6)));
         st.tick(1.5);
         st.apply(ToUi::Problem(
-            Report::began(&kinds::PORT_MISSING).about(Subject(2)),
+            Report::began(&kinds::PORT_MISSING).about(Subject::midi_port(1)),
         ));
         st.tick(2.0);
         st.apply(ToUi::Problem(Report::began(&kinds::NEAR_LIMIT)));
@@ -19324,6 +19380,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     let mut good = sample_player(fonts());
     good.set_ram(38.0);
     good.set_free(1_200_000_000);
+    sample_stick(&mut good);
     good.apply(ToUi::Show(View::SystemStatus));
     out.push(("system-status-good", good));
     // Prefs > System info, with fixed rows (the host's own would differ).
@@ -30168,11 +30225,11 @@ mod tests {
         assert_eq!(r[0].1, "fail, ring · 0 now · 1 ended, not seen");
         // A report while the page shows lands at once.
         p.apply(ToUi::Problem(
-            Report::began(&kinds::PORT_MISSING).about(Subject(4)),
+            Report::began(&kinds::PORT_MISSING).about(Subject::midi_port(3)),
         ));
         assert!(rows(&mut p)
             .iter()
-            .any(|r| r.0 == "warn midi/port-missing #4" && r.1.starts_with("now")));
+            .any(|r| r.0 == "warn midi/port-missing port 4" && r.1.starts_with("now")));
         // The red one went on the hint line, in red, once (phase 2).
         assert_eq!(
             p.told.as_ref().map(|t| (t.0.as_str(), t.2)),
@@ -30213,7 +30270,7 @@ mod tests {
         p.set_ram(38.0);
         // A yellow problem: a yellow chip, nothing on the hint line.
         p.apply(ToUi::Problem(
-            Report::began(&kinds::PORT_MISSING).about(mpfree_status::Subject(1)),
+            Report::began(&kinds::PORT_MISSING).about(mpfree_status::Subject::midi_port(0)),
         ));
         assert_eq!(chip(&p).tone, Tone::Warn);
         assert!(p.told.is_none(), "yellow never goes on the hint line");

@@ -154,6 +154,20 @@ fn curve(shape: PlanShape, b: usize, total: usize) -> f32 {
     }
 }
 
+/// How busy phrase `ph` is against the others, 0.85 to 1.15, by the seed.
+fn phrase_level(seed: u64, ph: usize) -> f32 {
+    let mut d = DiceName {
+        seed,
+        part: 0,
+        phrase: ph as u16,
+        job: Job::Plan,
+        bar: 0,
+        attempt: 1,
+    }
+    .dice();
+    0.85 + 0.3 * d.unit() as f32
+}
+
 /// The plan for `total` bars, the first `yours` of them yours. `density`
 /// is your notes per beat, which decides how a contrast thins or fills.
 pub fn plan(settings: &Settings, yours: usize, total: usize, density: f32) -> Vec<BarPlan> {
@@ -182,13 +196,18 @@ pub fn plan(settings: &Settings, yours: usize, total: usize, density: f32) -> Ve
             }
         } else {
             match pattern {
-                PlanShape::Loop => {
-                    if b % 8 == 7 || (ph % 2 == 1 && pp == 0) {
-                        (BarJob::Vary, 0)
-                    } else {
-                        (BarJob::Loop, 0)
-                    }
-                }
+                // Your bar round again, but never more than twice running:
+                // the third bar moves it up or down the scale and the
+                // fourth varies it or leaves it open.
+                PlanShape::Loop => match pp {
+                    0 if contrast.is_some_and(|c| ph == c + 1) => (BarJob::Return, 0),
+                    0 => (BarJob::Loop, 0),
+                    1 if ph % 2 == 1 => (BarJob::Vary, 0),
+                    1 => (BarJob::Loop, 0),
+                    2 => (BarJob::Sequence, if ph % 2 == 0 { 1 } else { -1 }),
+                    _ if ph % 2 == 0 => (BarJob::Land(Ending::Open), 0),
+                    _ => (BarJob::Vary, 0),
+                },
                 PlanShape::CallAndAnswer => match pp {
                     0 => (
                         if ph == 0 {
@@ -237,6 +256,22 @@ pub fn plan(settings: &Settings, yours: usize, total: usize, density: f32) -> Ve
         if matches!(job, BarJob::Land(_)) {
             activity *= 0.8;
         }
+        // Busier and sparser stretches: a phrase's second bar a little
+        // sparser and its third busier, every bar busier as the tension
+        // rises, and each phrase a little busier or calmer by the seed.
+        // The listening tests' first round heard every bar as busy as the
+        // last.
+        let lift = [1.0, 0.9, 1.15, 1.0][pp];
+        activity *= lift * (0.8 + 0.4 * tension.clamp(0.0, 1.0)) * phrase_level(settings.seed, ph);
+        // The tense bars that rework your bar lift it up the scale (up
+        // to a fourth at the peak), so the line climbs to a high point and
+        // comes back for the returns and landings, which stay where you
+        // played.
+        let shift = if matches!(job, BarJob::Vary | BarJob::Answer | BarJob::Contrast) {
+            shift + ((tension - 0.4) * 5.0).round().clamp(-1.0, 3.0) as i32
+        } else {
+            shift
+        };
         // A return's source is your first bar.
         let source = if job == BarJob::Return { 0 } else { source };
         let similarity = (job.similarity() + (settings.similarity - 0.5) * 0.6).clamp(0.05, 0.98);
@@ -316,6 +351,46 @@ mod tests {
     }
 
     #[test]
+    fn a_loop_goes_round_at_most_twice_and_tense_bars_climb() {
+        for seed in 0..16 {
+            let s = Settings {
+                seed,
+                ..settings(MINIMAL)
+            };
+            let p = plan(&s, 2, 34, 1.0);
+            for w in p.windows(3) {
+                assert!(
+                    !w.iter().all(|b| b.job == BarJob::Loop),
+                    "seed {seed}: three loops running"
+                );
+            }
+        }
+        for style in [MINIMAL, GROOVE, JAZZISH] {
+            let s = settings(style);
+            let p = plan(&s, 2, 18, 1.0);
+            let reworked =
+                |b: &&BarPlan| matches!(b.job, BarJob::Vary | BarJob::Answer | BarJob::Contrast);
+            // The tensest reworked bar sits higher than the calmest.
+            let hi = p
+                .iter()
+                .filter(reworked)
+                .max_by(|a, b| a.tension.total_cmp(&b.tension));
+            let lo = p
+                .iter()
+                .filter(reworked)
+                .min_by(|a, b| a.tension.total_cmp(&b.tension));
+            if let (Some(hi), Some(lo)) = (hi, lo) {
+                assert!(
+                    hi.shift > lo.shift || hi.tension - lo.tension < 0.2,
+                    "{}",
+                    style.name
+                );
+                assert!(hi.shift >= 1, "{}: {hi:?}", style.name);
+            }
+        }
+    }
+
+    #[test]
     fn each_style_has_its_own_pattern() {
         let words = |s: Style| -> Vec<&'static str> {
             plan(&settings(s), 2, 8, 1.0)
@@ -328,11 +403,11 @@ mod tests {
             vec![
                 "yours",
                 "yours",
-                "loop",
+                "sequence",
+                "leave open",
                 "loop",
                 "vary",
-                "loop",
-                "loop",
+                "sequence",
                 "land home"
             ]
         );
@@ -382,6 +457,28 @@ mod tests {
         s.ending = Ending::Open;
         let p = plan(&s, 1, 8, 1.0);
         assert!(p[6].tension > p[2].tension);
+    }
+
+    #[test]
+    fn busier_and_sparser_stretches() {
+        let mut s = settings(JAZZISH);
+        s.seed = 4;
+        let p = plan(&s, 2, 16, 1.0);
+        // A phrase's third bar is busier than its second.
+        for ph in 1..4 {
+            let b = ph * 4;
+            if p[b + 1].job != BarJob::Contrast && p[b + 2].job != BarJob::Contrast {
+                assert!(p[b + 2].activity > p[b + 1].activity, "{ph}: {p:?}");
+            }
+        }
+        // Not every bar as busy as the last.
+        let acts: Vec<f32> = p[2..].iter().map(|b| b.activity).collect();
+        let lo = acts.iter().copied().fold(f32::MAX, f32::min);
+        let hi = acts.iter().copied().fold(0.0, f32::max);
+        assert!(hi > 1.4 * lo, "{acts:?}");
+        // The phrases' levels come from the seed, and stay inside 15 %.
+        assert_eq!(phrase_level(4, 2), phrase_level(4, 2));
+        assert!((0..64).all(|ph| (0.85..=1.15).contains(&phrase_level(9, ph))));
     }
 
     #[test]
