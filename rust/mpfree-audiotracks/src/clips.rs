@@ -524,6 +524,57 @@ impl Voice {
             })
     }
 
+    /// The audio it plays runs on through song tick `tick`: a region runs
+    /// through it, or one ends right there and what it plays next is the
+    /// same audio running on (the next part of the recording, or a
+    /// recording that loops as made from its pass end into its start).
+    /// `frames` gives a take's frames, if it is here.
+    pub(crate) fn runs_on(
+        &self,
+        map: &TempoMap,
+        rate: u32,
+        tick: f64,
+        frames: &dyn Fn(u16) -> Option<usize>,
+    ) -> bool {
+        if self.runs_through(tick) {
+            return true;
+        }
+        let s = &self.cur;
+        let p = s.pass_at(tick - LINE);
+        if s.n == 0 || p < s.first || p > s.last {
+            return false;
+        }
+        let base = s.base(p);
+        let Some(i) = s.regions[..s.n]
+            .iter()
+            .position(|r| (base + r.end as f64 - tick).abs() < LINE)
+        else {
+            return false;
+        };
+        let a = &s.regions[i];
+        let len_a = crate::frames_from(map, base + a.start as f64, base + a.end as f64, rate)
+            .round() as i64;
+        let b = if i + 1 < s.n {
+            Some(&s.regions[i + 1]).filter(|b| b.start == a.end)
+        } else if a.end != s.len {
+            None
+        } else if p < s.last {
+            Some(&s.regions[0])
+        } else {
+            self.next
+                .as_ref()
+                .filter(|nx| nx.n > 0)
+                .map(|nx| &nx.regions[0])
+        };
+        let Some(b) = b.filter(|b| b.start == 0 || i + 1 < s.n) else {
+            return false;
+        };
+        b.take == a.take
+            && a.take != NO_TAKE_ID
+            && (b.src == a.src + len_a
+                || (i + 1 == s.n && frames(a.take).is_some_and(|n| a.src + len_a == n as i64)))
+    }
+
     pub(crate) fn uses(&self, id: u16) -> bool {
         self.on && (self.cur.uses(id) || self.next.as_ref().is_some_and(|s| s.uses(id)))
     }

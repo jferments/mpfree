@@ -3871,6 +3871,7 @@ impl AudioTracks {
                 voice: self.start_voice(t, nc, f, tick),
             },
         };
+        let takes = &self.takes;
         let lane = &mut self.tracks[t].lane;
         match prev {
             Mode::Song if mode != Mode::Song => {
@@ -3918,15 +3919,19 @@ impl AudioTracks {
                         lane.voices[nv].shape.win.open = join;
                     }
                     let old = &mut lane.voices[voice];
-                    old.end_at(tick, join);
-                    if old.runs_through(tick) {
-                        // Cut here: crossed over to what follows.
+                    let frames =
+                        |id: u16| takes.get(id as usize).filter(|k| k.live).map(|k| k.frames);
+                    if old.runs_on(map, rate, tick, &frames) {
+                        // Its audio runs on (through a region, or into
+                        // the same audio next): crossed over to what
+                        // follows.
                         old.shape.win.close_at(f, join);
                     } else {
                         // Its regions end by here, each meeting what
                         // follows by its own join as the song's regions
-                        // do; the window only closes once their fades
-                        // are over.
+                        // do; nothing of its from here on plays, and the
+                        // window only closes once their fades are over.
+                        old.end_at(tick, join);
                         old.shape.win.close_at(f + 2 * FADE as u64, Join::Straight);
                     }
                 }
