@@ -2116,6 +2116,64 @@ struct SoundTrackAsk {
     track: Option<usize>,
 }
 
+/// How long after a Q-Link's last detent a turn of the note inspector
+/// ends when no release comes (piano roll plan 1C.1).
+const TURN_GAP: Duration = Duration::from_secs(3);
+
+/// The note inspector's Q-Link turns (piano roll plan 1C.1): from the
+/// first knob touched to the last let go is one turn, and every detent of
+/// a turn joins one UNDO, however many knobs turn. If a release goes
+/// missing, the turn ends at the next screen touch, pad or button, or
+/// [`TURN_GAP`] after the last detent; a controller with no touch makes a
+/// turn of each run of detents.
+#[derive(Clone, Copy, Debug, Default)]
+struct NoteTurn {
+    /// The turns so far: the editor's join key carries the number.
+    n: u64,
+    /// A turn is going on.
+    open: bool,
+    /// The knobs a finger rests on.
+    held: [bool; 4],
+    /// The last touch or detent.
+    last: Option<Instant>,
+}
+
+impl NoteTurn {
+    /// A detent at `now`: the turn it belongs to, a new one when none is
+    /// going on or the last was more than [`TURN_GAP`] ago.
+    fn detent(&mut self, now: Instant) -> u64 {
+        let stale = self.last.is_none_or(|t| now.duration_since(t) > TURN_GAP);
+        if !self.open || stale {
+            self.n += 1;
+            self.open = true;
+        }
+        self.last = Some(now);
+        self.n
+    }
+
+    /// Knob `k` touched or let go at `now`: the first touch starts a
+    /// turn, the last release ends it.
+    fn touch(&mut self, k: usize, on: bool, now: Instant) {
+        if k >= self.held.len() {
+            return;
+        }
+        let was = self.held.iter().any(|&h| h);
+        self.held[k] = on;
+        if on && !was {
+            self.n += 1;
+            self.open = true;
+            self.last = Some(now);
+        } else if !self.held.iter().any(|&h| h) {
+            self.open = false;
+        }
+    }
+
+    /// A screen touch, a pad or a button: the turn ends.
+    fn end(&mut self) {
+        self.open = false;
+    }
+}
+
 enum SoundTrackPreset {
     Factory(usize),
     Reading(std::sync::mpsc::Receiver<Result<String, String>>),
@@ -2388,6 +2446,8 @@ pub struct Player {
     /// The Q-Link column's values last handed to the audio thread
     /// ([`Player::qlink_values_changed`]).
     qlink_sent: [Option<u8>; 4],
+    /// The note inspector's Q-Link turns (piano roll plan 1C.1).
+    note_turn: NoteTurn,
     /// The time engine's bar and Arrange page, and what they show.
     pub(crate) time_page: TimePage,
     pub time: TimeState,
@@ -2971,6 +3031,7 @@ impl Player {
             #[cfg(test)]
             said_all: Vec::new(),
             qlink_sent: [None; 4],
+            note_turn: NoteTurn::default(),
             time_page,
             time: TimeState::default(),
             debug,
@@ -4469,6 +4530,8 @@ impl Player {
         let chain = (!arp && !steps_held && self.chain_page.drives(self.view))
             .then(|| self.chain_page.cards(&self.ui.theme));
         let audio = self.audio_cards().map(|k| (k.title(), k));
+        let notes = self.note_inspector();
+        let mut header = None;
         let held_title;
         let (title, cards) = if let Some(c) = &self.controller {
             // Controller mode: the Q-Links send their CCs on every page.
@@ -4550,6 +4613,16 @@ impl Player {
                 *card = QLinkCard::new(name, "Arp", &row.text, row.value);
             }
             (ARP_QLINKS, cards)
+        } else if let Some((count, mut cards)) = notes {
+            // Notes picked in the note editor: the note inspector, under
+            // its header in the note edit colour, so a turn is known to
+            // move notes (Q-LINK shows the macro banks over it).
+            let col = self.ui.theme.accent2;
+            for c in &mut cards {
+                c.color = Some(col);
+            }
+            header = Some(("Note edit".to_string(), count, col));
+            ("Q-Links · Note edit", cards)
         } else {
             let knobs = self.play.knobs();
             let pad = self.sample.pad_knobs(self.play.last_pad);
@@ -4561,11 +4634,40 @@ impl Player {
             }
         };
         if let Some(q) = self.ui.get_mut::<QLinkColumn>(play_page::QLINKS) {
-            if q.title != title || q.cards != cards {
+            if q.title != title || q.cards != cards || q.header != header {
                 q.title = title.to_string();
                 q.cards = cards;
+                q.header = header;
             }
         }
+    }
+
+    /// The note inspector's count ("3 notes") and cards while the note
+    /// editor shows notes picked (piano roll plan 1C.1), None otherwise.
+    fn note_inspector(&self) -> Option<(String, [QLinkCard; 4])> {
+        if !matches!(self.view, View::Sequencer | View::Arrange)
+            || self.time_page.edit_hidden
+            || !matches!(
+                self.ui.layout_of(time_view::CLIPS_PAGE),
+                Some(time_view::EDIT_LAYOUT | time_view::EDIT_DRAWER_LAYOUT)
+            )
+        {
+            return None;
+        }
+        time_view::note_cards(self.time.edit.as_ref()?)
+    }
+
+    /// Q-Link `k` turned `ticks` on the note inspector: the picked notes
+    /// change, every detent of the turn one UNDO (piano roll plan 1C.1).
+    fn note_qlink(&mut self, k: usize, ticks: i32) {
+        let turn = self.note_turn.detent(Instant::now());
+        self.outbox
+            .push(FromUi::Time(TimeAction::Edit(EditAction::Knob {
+                k,
+                ticks,
+                fine: self.status.shift,
+                turn,
+            })));
     }
 
     /// The Q-Link column's four values (0 to 127; None for a blank card),
@@ -5344,6 +5446,7 @@ impl Player {
     /// Q-LINK: the Q-Link column's next bank; SHIFT + Q-LINK (`back`),
     /// the one before, as on the MPC.
     fn step_qlink_bank(&mut self, back: bool) {
+        self.note_turn.end();
         if self.view == View::Looper {
             // Loops 1-4, loops 5-8, the picked loop.
             let bank = self.looper_page.next_bank(&mut self.ui, back);
@@ -7210,7 +7313,11 @@ impl Player {
                         .edit
                         .as_ref()
                         .map_or((Lens::Grid, Tool::Select), |e| (e.editor.lens, e.editor.tool));
-                    time_view::edit_hint(lens, tool).to_string()
+                    // Notes picked: the Q-Links and - / + are theirs
+                    // (piano roll plan 1C.1).
+                    let picked = self.time_page.drawer_closed(&self.ui)
+                        && self.note_inspector().is_some();
+                    time_view::edit_hint(lens, tool, picked).to_string()
                 }
                 // A kit's Steps: + Lane and the lock lanes (the redesign's
                 // step 5).
@@ -9235,6 +9342,7 @@ impl Player {
                 pad: cell,
                 velocity,
             } => {
+                self.note_turn.end();
                 if let Some(g) = self
                     .ui
                     .get_mut::<MiniPads>(play_page::PADS)
@@ -9435,11 +9543,15 @@ impl Player {
                     self.chain_qlink(k, ticks);
                 } else if self.audio_qlink(k, ticks) {
                     // An audio region's knobs.
+                } else if self.note_inspector().is_some() {
+                    // Notes picked in the note editor: the note inspector.
+                    self.note_qlink(k, ticks);
                 } else if matches!(self.view, View::Play | View::Sequencer | View::Arrange) {
                     self.play_qlink(k, ticks);
                 }
             }
             ToUi::QLinkTouch(k, on) => {
+                self.note_turn.touch(k, on, Instant::now());
                 if !on && self.perform_showing() {
                     // A run of turns ends: one UNDO step.
                     let names = self.perform_names();
@@ -10249,8 +10361,13 @@ impl Player {
                 self.refresh_arp();
             }
             ToUi::Time(mut st) => {
-                // The lens the note editor shows, if it is open.
-                let lens = |t: &TimeState| t.edit.as_ref().map(|e| e.editor.lens);
+                // The lens the note editor shows, if it is open, its tool
+                // and whether notes are picked (the inspector's hint).
+                let lens = |t: &TimeState| {
+                    t.edit
+                        .as_ref()
+                        .map(|e| (e.editor.lens, e.editor.tool, e.editor.sel.is_empty()))
+                };
                 // A block, section or tempo point picked or let go turns
                 // the Song view's hint too.
                 let swapped = st.song_view != self.time.song_view
@@ -10305,8 +10422,14 @@ impl Player {
                 self.time_page.update(&mut self.ui, &self.time);
                 self.play.set_transport(self.time.transport);
                 self.refresh_play();
-                if self.view == View::Arrange {
-                    // A region picked or let go, or its values changed.
+                let inspecting = self
+                    .ui
+                    .get::<QLinkColumn>(play_page::QLINKS)
+                    .is_some_and(|q| q.header.is_some());
+                if self.view == View::Arrange || self.time.edit.is_some() || inspecting {
+                    // A region picked or let go, or its values changed;
+                    // notes picked or changed in the note editor (its
+                    // inspector, plan 1C.1).
                     self.refresh_qlinks();
                 }
                 if swapped {
@@ -10421,6 +10544,39 @@ impl Player {
     /// (`app::RowKey`): pick a row, step it, or open it for the wheel.
     fn rows(&mut self, k: crate::app::RowKey) {
         use crate::app::RowKey;
+        self.note_turn.end();
+        // The note editor with its drawer closed (piano roll plan 1C.1):
+        // - / + nudge the picked notes a snap (SHIFT: zoom time), the
+        // wheel moves the cursor (not on the list); the push, and - / +
+        // with nothing picked, open the drawer as before.
+        let closed = matches!(self.view, View::Arrange | View::Sequencer)
+            && self.time_page.drawer_closed(&self.ui);
+        let edit = self.time.edit.as_ref();
+        let picked = edit.is_some_and(|e| e.editor.sel.iter().any(|&i| i < e.clip.notes.len()));
+        let list = edit.is_some_and(|e| e.editor.lens == mpfree_time_ui::editor::Lens::List);
+        let k = match k {
+            RowKey::Arrow { delta, shift: true } if closed => {
+                if self.time_page.zoom_time(&mut self.ui, delta) {
+                    self.time_page.update(&mut self.ui, &self.time);
+                }
+                return;
+            }
+            RowKey::Arrow { delta, .. } if closed && picked => {
+                self.outbox
+                    .push(FromUi::Time(TimeAction::Edit(EditAction::Nudge {
+                        steps: delta,
+                        fine: false,
+                    })));
+                return;
+            }
+            RowKey::Pick(d) if closed && edit.is_some() && !list => {
+                self.outbox
+                    .push(FromUi::Time(TimeAction::Edit(EditAction::Cursor(d))));
+                return;
+            }
+            RowKey::Arrow { delta, .. } => RowKey::Step(delta),
+            k => k,
+        };
         // The note editor with its drawer closed: the wheel, - / + and the
         // push open it, and the wheel and - / + do nothing more that time
         // (piano roll plan 1A.1).
@@ -13126,6 +13282,9 @@ impl Player {
     /// one's rest (an EQ dot's frequency set again by an older move). So
     /// while actions wait, this touch's first waits behind them too.
     pub fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32) -> Option<FromUi> {
+        if matches!(phase, Touch::Down) {
+            self.note_turn.end();
+        }
         let waiting = self.outbox.len();
         let action = self
             .touch_unordered(finger, phase, x, y)
@@ -22771,6 +22930,181 @@ mod tests {
             Some(FromUi::Time(TimeAction::Edit(EditAction::Open))),
             "Notes opens it again"
         );
+    }
+
+    /// The note inspector (piano roll plan 1C.1): with notes picked, the
+    /// Q-Link column shows Position, Length, Semitones and Velocity under
+    /// a Note edit header, and a turn from touch to release is one turn
+    /// (one UNDO), ended too by a screen touch, a pad or 3 s without a
+    /// detent; Q-LINK's macro banks go over it. With the drawer closed,
+    /// the – / + buttons nudge the picks, SHIFT + – / + zoom time and the
+    /// wheel moves the cursor; open, they step the options as before.
+    #[test]
+    fn the_note_inspector_turns_notes_one_turn_at_a_time() {
+        use crate::app::RowKey;
+        use mpfree_time_ui::editor::{EditAction, Editor, NoteGrid};
+        let mut p = sample_clips(Fonts::embedded()).unwrap();
+        let mut clip = mpfree_seq::Clip::new("Beat", 3840);
+        clip.notes = vec![
+            mpfree_seq::Note::new(0, 240, 60, 100),
+            mpfree_seq::Note::new(960, 480, 64, 80),
+        ];
+        p.time.edit = Some(Box::new(time_view::EditInfo {
+            editor: Editor::new(0, 0, &clip),
+            clip: clip.into(),
+            rev: 0,
+            track_name: "Track 1".into(),
+            bar: 3840,
+            answer: Default::default(),
+        }));
+        p.apply(ToUi::Show(View::Sequencer));
+        assert_eq!(p.ui.layout_of(CLIPS_PAGE), Some(time_view::EDIT_LAYOUT));
+        let column = |p: &Player| {
+            let q = p.ui.get::<QLinkColumn>(play_page::QLINKS).unwrap();
+            (q.header.clone(), q.cards.clone())
+        };
+        assert_eq!(column(&p).0, None, "nothing picked: Play's knobs");
+        let timed = |p: &mut Player| -> Vec<FromUi> {
+            p.take_actions()
+                .into_iter()
+                .filter(|a| matches!(a, FromUi::Time(_)))
+                .collect()
+        };
+        // Nothing picked: the wheel moves the cursor, - / + open the
+        // drawer as before.
+        timed(&mut p);
+        p.apply(ToUi::Rows(RowKey::Pick(1)));
+        assert_eq!(
+            timed(&mut p),
+            [FromUi::Time(TimeAction::Edit(EditAction::Cursor(1)))]
+        );
+        // Both notes picked: the inspector, in the note edit colour.
+        let mut st = p.time.clone();
+        st.edit.as_mut().unwrap().editor.sel = vec![0, 1];
+        p.apply(ToUi::Time(Box::new(st)));
+        let (header, cards) = column(&p);
+        let accent2 = p.ui.theme.accent2;
+        assert_eq!(
+            header,
+            Some(("Note edit".to_string(), "2 notes".to_string(), accent2))
+        );
+        let names: Vec<&str> = cards.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["Position", "Length", "Semitones", "Velocity"]);
+        assert_eq!(cards[3].value, "80–100");
+        assert!(cards.iter().all(|c| c.color == Some(accent2)));
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert_eq!(hint, time_view::EDIT_PICKED_HINT);
+        p.ui.paint(&mut SoftCanvas::new(1280, 800));
+        let knob = |k, ticks, fine, turn| {
+            FromUi::Time(TimeAction::Edit(EditAction::Knob {
+                k,
+                ticks,
+                fine,
+                turn,
+            }))
+        };
+        // Touch, turn two knobs, let go: one turn.
+        p.apply(ToUi::QLinkTouch(0, true));
+        p.apply(ToUi::PlayQLink(0, 1));
+        p.apply(ToUi::QLinkTouch(3, true));
+        p.apply(ToUi::PlayQLink(3, -2));
+        p.apply(ToUi::QLinkTouch(0, false));
+        p.apply(ToUi::PlayQLink(3, -1));
+        p.apply(ToUi::QLinkTouch(3, false));
+        let first = timed(&mut p);
+        let turn = match first[0] {
+            FromUi::Time(TimeAction::Edit(EditAction::Knob { turn, .. })) => turn,
+            _ => panic!("{first:?}"),
+        };
+        assert_eq!(
+            first,
+            [
+                knob(0, 1, false, turn),
+                knob(3, -2, false, turn),
+                knob(3, -1, false, turn)
+            ]
+        );
+        // The next touch is a new turn; SHIFT makes it fine.
+        let mut shifted = p.status.clone();
+        shifted.shift = true;
+        p.apply(ToUi::Status(shifted));
+        p.apply(ToUi::QLinkTouch(1, true));
+        p.apply(ToUi::PlayQLink(1, 1));
+        assert_eq!(timed(&mut p), [knob(1, 1, true, turn + 1)]);
+        let mut plain = p.status.clone();
+        plain.shift = false;
+        p.apply(ToUi::Status(plain));
+        // A lost release: a screen touch ends the turn, so does a pad.
+        let area = p.ui.rect_of(time_view::NOTES).unwrap();
+        p.touch(2, Touch::Down, area.x + 5, area.bottom() - 5);
+        p.touch(2, Touch::Cancel, area.x + 5, area.bottom() - 5);
+        timed(&mut p);
+        p.apply(ToUi::PlayQLink(2, 1));
+        assert_eq!(timed(&mut p), [knob(2, 1, false, turn + 2)]);
+        p.apply(ToUi::PadDown {
+            pad: 0,
+            velocity: 100,
+        });
+        timed(&mut p);
+        p.apply(ToUi::PlayQLink(2, 1));
+        assert_eq!(timed(&mut p), [knob(2, 1, false, turn + 3)]);
+        // 3 s with no detent: a new turn too.
+        p.note_turn.last = p
+            .note_turn
+            .last
+            .map(|t| t - TURN_GAP - Duration::from_millis(10));
+        p.apply(ToUi::PlayQLink(2, 1));
+        assert_eq!(timed(&mut p), [knob(2, 1, false, turn + 4)]);
+        // - / + with the drawer closed: nudge; SHIFT: zoom, nothing for
+        // the engine; the wheel: the cursor.
+        p.apply(ToUi::Rows(RowKey::Arrow {
+            delta: -1,
+            shift: false,
+        }));
+        assert_eq!(
+            timed(&mut p),
+            [FromUi::Time(TimeAction::Edit(EditAction::Nudge {
+                steps: -1,
+                fine: false
+            }))]
+        );
+        let ppt = p.ui.get::<NoteGrid>(time_view::NOTES).unwrap().view.ppt;
+        p.apply(ToUi::Rows(RowKey::Arrow {
+            delta: 1,
+            shift: true,
+        }));
+        assert!(timed(&mut p).is_empty());
+        assert!(p.ui.get::<NoteGrid>(time_view::NOTES).unwrap().view.ppt > ppt);
+        assert_eq!(p.ui.layout_of(CLIPS_PAGE), Some(time_view::EDIT_LAYOUT));
+        p.apply(ToUi::Rows(RowKey::Pick(-2)));
+        assert_eq!(
+            timed(&mut p),
+            [FromUi::Time(TimeAction::Edit(EditAction::Cursor(-2)))]
+        );
+        // The push opens the drawer; then - / + step the options again.
+        p.apply(ToUi::Rows(RowKey::Editing(true)));
+        assert_eq!(
+            p.ui.layout_of(CLIPS_PAGE),
+            Some(time_view::EDIT_DRAWER_LAYOUT)
+        );
+        timed(&mut p);
+        p.apply(ToUi::Rows(RowKey::Arrow {
+            delta: 1,
+            shift: false,
+        }));
+        assert!(
+            !timed(&mut p)
+                .iter()
+                .any(|a| matches!(a, FromUi::Time(TimeAction::Edit(EditAction::Nudge { .. })))),
+            "the drawer's option, not a nudge"
+        );
+        // Q-LINK: Play's macros over the inspector, then back.
+        p.apply(ToUi::QLinkBank);
+        assert_eq!(column(&p).0, None, "a macro bank");
+        p.apply(ToUi::PlayQLink(0, 1));
+        assert!(!timed(&mut p)
+            .iter()
+            .any(|a| matches!(a, FromUi::Time(TimeAction::Edit(EditAction::Knob { .. })))));
     }
 
     /// Play's loop row (the looper redesign's step 5): every loop, and a

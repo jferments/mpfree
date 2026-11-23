@@ -10796,6 +10796,75 @@ mod tests {
         assert_eq!(h.control.project.clip(1, 0).unwrap().locks.len(), 1);
     }
 
+    /// The note inspector (piano roll plan 1C.1): every detent of a turn,
+    /// whichever knob, goes in at once and joins one take; the next turn is
+    /// another; UNDO takes a turn back whole. – / + nudge as the Nudge row.
+    #[test]
+    fn the_note_inspector_makes_one_take_a_turn() {
+        use mpfree_time_ui::editor::EditAction as E;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        for step in [0, 4] {
+            h.step_action(StepAction::Tap {
+                pad: 0,
+                step,
+                velocity: 100,
+            })
+            .unwrap();
+        }
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        h.act(TimeAction::Edit(E::Choose(0))).unwrap();
+        assert_eq!(h.state().edit.unwrap().editor.sel.len(), 2, "All");
+        let notes = |h: &TimeHost| {
+            let mut v: Vec<(Tick, u8, u8)> = h
+                .control
+                .project
+                .clip(0, 0)
+                .unwrap()
+                .notes
+                .iter()
+                .map(|n| (n.tick, n.note, n.velocity))
+                .collect();
+            v.sort_unstable();
+            v
+        };
+        let before = notes(&h);
+        let takes = h.state().done.len();
+        for (k, ticks) in [(0, 1), (3, -10), (0, 1)] {
+            h.act(TimeAction::Edit(E::Knob {
+                k,
+                ticks,
+                fine: false,
+                turn: 1,
+            }))
+            .unwrap();
+        }
+        assert_eq!(h.state().done.len(), takes + 1, "one take a turn");
+        let turned = notes(&h);
+        let pad = before[0].1;
+        assert_eq!(turned, [(480, pad, 90), (1440, pad, 90)]);
+        h.act(TimeAction::Edit(E::Knob {
+            k: 2,
+            ticks: 1,
+            fine: false,
+            turn: 2,
+        }))
+        .unwrap();
+        assert_eq!(h.state().done.len(), takes + 2, "the next turn, another");
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(notes(&h), turned);
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(notes(&h), before, "the whole turn back");
+        // – / +: a snap later, the picks kept.
+        h.act(TimeAction::Edit(E::Choose(0))).unwrap();
+        h.act(TimeAction::Edit(E::Nudge {
+            steps: 1,
+            fine: false,
+        }))
+        .unwrap();
+        assert_eq!(notes(&h)[0].0, 240);
+        assert_eq!(h.state().edit.unwrap().editor.sel.len(), 2);
+    }
+
     /// An editor edit that what plays can't follow (the play view would not
     /// build) is taken back from the clip and the takes, as a step edit is.
     #[test]
@@ -12615,8 +12684,10 @@ mod tests {
         let rev = drawn.rev;
         touch(&mut together, E::Erase { index, rev }, &note);
         touch(&mut together, E::Note { index: 0, rev }, &note);
-        // COPY + a note, then COPY + empty roll (plan 1B.4): a paste, which
-        // the first UNDO takes back, the second the erase.
+        // COPY + a note, then COPY + empty roll (plan 1B.4): a paste; then
+        // a Q-Link turn of two detents on the pasted notes (plan 1C.1), one
+        // take. The first UNDO takes the turn back, the second the paste,
+        // the third the erase.
         let rev = info(&mut together).rev;
         touch(&mut together, E::Copy { index: 0, rev }, &note);
         touch(&mut together, E::Paste { tick: 2000 }, &note);
@@ -12625,7 +12696,21 @@ mod tests {
             .notes
             .iter()
             .any(|n| n.tick == 2000));
-        for _ in 0..2 {
+        for ticks in [1, 1] {
+            let k = E::Knob {
+                k: 0,
+                ticks,
+                fine: true,
+                turn: 1,
+            };
+            touch(&mut together, k, &note);
+        }
+        assert!(info(&mut together)
+            .clip
+            .notes
+            .iter()
+            .any(|n| n.tick == 2008));
+        for _ in 0..3 {
             let r = together
                 .act_then(TimeAction::Undo, Say::Undo)
                 .expect("together");
@@ -12663,7 +12748,7 @@ mod tests {
         assert_eq!(a, end.answer);
         assert!(
             matches!(a.outcome, O::Taken { .. }),
-            "the last editor touch was the paste: {a:?}"
+            "the last editor touch was the turn: {a:?}"
         );
         // A new copy for something else (a track added) shares the clip
         // while it is unchanged (plan 0C.1), so the roll isn't built again.

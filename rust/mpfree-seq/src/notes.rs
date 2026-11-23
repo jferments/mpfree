@@ -450,6 +450,69 @@ pub fn velocity(clip: &Clip, sel: &[usize], by: i32) -> Edit {
     })
 }
 
+/// The lowest and highest of `f` over the `sel` notes, None for none.
+fn span_of(clip: &Clip, sel: &[usize], f: impl Fn(&Note) -> i32) -> Option<(i32, i32)> {
+    picked(clip, sel).fold(None, |s, (_, n)| {
+        let v = f(&n);
+        Some(s.map_or((v, v), |(lo, hi): (i32, i32)| (lo.min(v), hi.max(v))))
+    })
+}
+
+/// Change the `sel` notes' velocity by `by`, each keeping its distance
+/// from the others (the note inspector's Q4, piano roll plan 1C.1): the
+/// loudest stops at 127 and the softest at 1, and the rest stop with
+/// them. Empty when they can't move that way.
+pub fn velocity_kept(clip: &Clip, sel: &[usize], by: i32) -> Edit {
+    let Some((lo, hi)) = span_of(clip, sel, |n| i32::from(n.velocity)) else {
+        return Edit::default();
+    };
+    let by = by.clamp(1 - lo, 127 - hi);
+    if by == 0 {
+        return Edit::default();
+    }
+    velocity(clip, sel, by)
+}
+
+/// Widen (`steps` above 0) or narrow the gap between the `sel` notes'
+/// softest and loudest velocities, about an eighth of it a step and at
+/// least 1 at each end, the notes between keeping their places in the gap
+/// (SHIFT + Q4, piano roll plan 1C.1). The ends stay within 1 to 127, and
+/// narrowing stops before they meet, so the order is never lost. Empty
+/// when nothing moves (one velocity among them, or at the limits).
+pub fn velocity_spread(clip: &Clip, sel: &[usize], steps: i32) -> Edit {
+    let Some((lo, hi)) = span_of(clip, sel, |n| i32::from(n.velocity)) else {
+        return Edit::default();
+    };
+    if hi == lo {
+        return Edit::default();
+    }
+    let (mut a, mut b) = (lo, hi);
+    for _ in 0..steps.unsigned_abs() {
+        let s = ((b - a + 4) / 8).max(1);
+        if steps > 0 {
+            (a, b) = ((a - s).max(1), (b + s).min(127));
+        } else {
+            let room = (b - a - 1) / 2;
+            if room == 0 {
+                break;
+            }
+            (a, b) = (a + s.min(room), b - s.min(room));
+        }
+    }
+    if (a, b) == (lo, hi) {
+        return Edit::default();
+    }
+    let (from, to) = (hi - lo, b - a);
+    map(clip, sel, |n| {
+        let v = i32::from(n.velocity) - lo;
+        let v = a + (2 * v * to + from) / (2 * from);
+        (v != i32::from(n.velocity)).then(|| Note {
+            velocity: v.clamp(1, 127) as u8,
+            ..n
+        })
+    })
+}
+
 /// Set the `sel` notes' velocity (the velocity lane).
 pub fn set_velocity(clip: &Clip, sel: &[usize], v: u8) -> Edit {
     map(clip, sel, |n| {
@@ -1267,6 +1330,50 @@ mod tests {
         assert_eq!(on(&nudge(&c, &[0], -3, Snap::Off)), vec![238, 480]);
         // Round the clip's start.
         assert_eq!(on(&nudge(&c, &[1], -3, Snap::Relative(Q))), vec![250, 3600]);
+    }
+
+    #[test]
+    fn the_inspectors_velocity_keeps_the_differences_and_spreads_them() {
+        let mut c = clip(&[(0, 240, 36), (240, 240, 38), (480, 240, 40)]);
+        for (n, v) in [(0, 80), (1, 92), (2, 104)] {
+            c.notes[n].velocity = v;
+        }
+        let vels = |d: &Clip| [by(d, 36).velocity, by(d, 38).velocity, by(d, 40).velocity];
+        let all = [0, 1, 2];
+        // Up and down, every note by the same: the loudest stops at 127
+        // and the others with it.
+        let d = applied(&c, &velocity_kept(&c, &all, 10));
+        assert_eq!(vels(&d), [90, 102, 114]);
+        let d = applied(&c, &velocity_kept(&c, &all, 40));
+        assert_eq!(vels(&d), [103, 115, 127]);
+        let d = applied(&c, &velocity_kept(&c, &all, -100));
+        assert_eq!(vels(&d), [1, 13, 25]);
+        let mut top = c.clone();
+        top.notes[2].velocity = 127;
+        assert!(
+            velocity_kept(&top, &all, 1).is_empty(),
+            "the loudest is at 127"
+        );
+        // Wider: an eighth of the gap at each end, the middle note kept
+        // in its place between them.
+        let d = applied(&c, &velocity_spread(&c, &all, 1));
+        assert_eq!(vels(&d), [77, 92, 107]);
+        let d = applied(&c, &velocity_spread(&c, &all, -1));
+        assert_eq!(vels(&d), [83, 92, 101]);
+        // Narrowing stops before the ends meet; widening stops at 1 and
+        // 127.
+        let d = applied(&c, &velocity_spread(&c, &all, -40));
+        let v = vels(&d);
+        assert!(v[0] < v[2] && v[0] <= v[1] && v[1] <= v[2], "{v:?}");
+        assert!(
+            velocity_spread(&d, &all, -1).is_empty(),
+            "as narrow as it goes"
+        );
+        let d = applied(&c, &velocity_spread(&c, &all, 60));
+        assert_eq!((vels(&d)[0], vels(&d)[2]), (1, 127));
+        // One velocity among them: nothing to spread.
+        assert!(velocity_spread(&c, &[1], 1).is_empty());
+        assert!(velocity_kept(&c, &[], 1).is_empty());
     }
 
     #[test]
