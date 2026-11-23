@@ -41,7 +41,9 @@ In the chain editor, touch an effect's control and tap **XY →** or **XY ↑** 
 - The chip is lit while the control is on that direction. Tap the lit chip to take it off; tap the other one to move it there.
 - A switch can't go on the pad: its chips are greyed, and a tap says why.
 
-Every control on the layout the pad plays wears a mark on the chain editor's pages: **X→** or **Y↑** at its knob's top left (under a macro's badge), a thin arc outside its ring from a tick at the layout's from to an arrow at its to (a backwards one's arrow runs the other way), and a dot where the setting really is now. For an Add setting the arc starts from the setting's own value, and the dot is its value plus the pad's push.
+Every control on the layout the pad plays wears a mark on the chain editor's pages and, for a synth's settings, on the Synth tab: **X→** or **Y↑** at its knob's top left (under a macro's badge), a thin arc outside its ring from a tick at the layout's from to an arrow at its to (a backwards one's arrow runs the other way), and a dot where the setting really is now. For an Add setting the arc starts from the setting's own value, and the dot is its value plus the pad's push.
+
+{{shot: synth-xy | The Synth tab's Filter page with a layout of yours playing: Cutoff on across, Resonance on up running backwards.}}
 
 ## Setup
 

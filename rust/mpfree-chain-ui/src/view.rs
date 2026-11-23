@@ -31,7 +31,9 @@ use mpfree_fx::mpfree_node::Curve;
 use mpfree_mod::{Source, MACROS};
 use mpfree_param::{Owner, ParamAddr, Strip};
 use mpfree_synth_ui::draw::Mask;
-use mpfree_synth_ui::section_view::{Control, Kind, SectionBox, SectionView};
+use mpfree_synth_ui::section_view::{
+    paint_xy_arc, paint_xy_badge, paint_xy_dot, Control, Kind, SectionBox, SectionView,
+};
 use mpfree_synth_ui::sections::Job;
 use mpfree_synth_ui::widgets::Card;
 use mpfree_ui::{Align, EventKind, FontId, Gesture, PaintCx, Rect, Target, Touch, Widget};
@@ -39,7 +41,7 @@ use mpfree_ui::{Align, EventKind, FontId, Gesture, PaintCx, Rect, Target, Touch,
 use crate::eq_page::EqPage;
 use crate::notes::{self, NoteAction};
 use crate::picker::{Hit, PickerLayout, PickerView, HOLD};
-use crate::state::{macro_color, ChainState, ParamView, StripList, XyMark, STRIP_GROUPS};
+use crate::state::{macro_color, ChainState, ParamView, StripList, STRIP_GROUPS};
 
 /// The section widget's `Tab` number for a heading's action (pages are
 /// numbered from 0, far below it).
@@ -2335,6 +2337,8 @@ fn control(params: &[ParamView], c: &crate::sections::CtlState, rows: bool) -> O
         qlink: c.qlink,
         dim: c.dim.is_some(),
         tint: None,
+        // The editor draws its own, under a macro's badge (`paint_badges`).
+        xy: None,
     })
 }
 
@@ -2502,70 +2506,10 @@ fn focused_takes_rows(st: &ChainState) -> bool {
     })
 }
 
-/// Where on a dial `d` across a setting is at knob position `p`: the
-/// angle its ring uses (clockwise on screen from the bottom left).
-fn ring_angle(p: f32) -> f32 {
-    0.75 * PI + 1.5 * PI * p.clamp(0.0, 1.0)
-}
-
-/// The XY pad's arc's radius round a dial `d` across: outside its ring,
-/// and outside the matrix's ring when it has one.
+/// The XY pad's arc's radius round a knob `d` across: outside the
+/// matrix's ring when it has one.
 fn xy_radius(d: f32, p: &ParamView) -> f32 {
-    d * 0.5 + if p.mod_range.is_some() { 13.0 } else { 10.0 }
-}
-
-/// A box round a dial at `kx`, `ky` that holds everything drawn at `r`.
-fn xy_box(kx: f32, ky: f32, r: f32) -> Rect {
-    let reach = r + 10.0;
-    Rect::new(
-        (kx - reach) as i32,
-        (ky - reach) as i32,
-        (2.0 * reach) as i32 + 1,
-        (2.0 * reach) as i32 + 1,
-    )
-}
-
-/// The XY pad's stretch round a dial at `kx`, `ky` (layout spec 4b's XY
-/// marks): a thin arc in the text colour at radius `r`, from a tick at
-/// the layout's from to an arrow at its to.
-fn paint_xy_arc(cx: &mut PaintCx, kx: f32, ky: f32, r: f32, m: XyMark) {
-    let t = cx.theme.clone();
-    let angle = ring_angle;
-    let bbox = xy_box(kx, ky, r);
-    let at = |a: f32, rr: f32| (kx + rr * a.cos(), ky + rr * a.sin());
-    let (a0, a1) = (angle(m.from), angle(m.to));
-    let mut arc = Mask::new(bbox);
-    let lo = a0.min(a1);
-    arc.arc(kx, ky, r, lo, a0.max(a1).max(lo + 0.02), 1.5);
-    arc.segment(at(a0, r - 4.0), at(a0, r + 4.0), 1.5);
-    // The arrow's head, pointing on round the ring the way it runs.
-    let way = if m.to >= m.from { 1.0 } else { -1.0 };
-    let tip = at(a1, r);
-    let (tx, ty) = (-a1.sin() * way, a1.cos() * way);
-    let (nx, ny) = (a1.cos(), a1.sin());
-    let back = (tip.0 - tx * 6.0, tip.1 - ty * 6.0);
-    arc.segment(tip, (back.0 + nx * 3.5, back.1 + ny * 3.5), 1.5);
-    arc.segment(tip, (back.0 - nx * 3.5, back.1 - ny * 3.5), 1.5);
-    arc.draw(cx.canvas, t.text);
-}
-
-/// The dot on the XY pad's arc ([`paint_xy_arc`]): the second accent
-/// where the setting really is now, hollow while a recorded move plays it.
-fn paint_xy_dot(cx: &mut PaintCx, kx: f32, ky: f32, r: f32, m: XyMark) {
-    let t = cx.theme.clone();
-    let a = ring_angle(m.now);
-    let (dx, dy) = (kx + r * a.cos(), ky + r * a.sin());
-    // A rim in the background's colour: it reads over a badge it passes.
-    let mut rim = Mask::new(xy_box(kx, ky, r));
-    rim.disc(dx, dy, 5.5);
-    rim.draw(cx.canvas, t.bg);
-    let mut dot = Mask::new(xy_box(kx, ky, r));
-    if m.recorded {
-        dot.arc(dx, dy, 3.0, 0.0, 2.0 * PI, 1.5);
-    } else {
-        dot.disc(dx, dy, 4.0);
-    }
-    dot.draw(cx.canvas, t.accent2);
+    mpfree_synth_ui::section_view::xy_radius(d, p.mod_range.is_some())
 }
 
 /// What the Modulate row's XY chips say.
@@ -3714,16 +3658,7 @@ impl ChainView {
                 y += 22;
             }
             if let Some(m) = p.xy {
-                let b = Rect::new(bx, y, 30, 18);
-                cx.canvas.fill_round_rect(b, 6, t.text);
-                cx.text(
-                    FontId::Bold,
-                    12.0,
-                    b,
-                    Align::Center,
-                    t.ink_on(t.text),
-                    if m.up { "Y↑" } else { "X→" },
-                );
+                paint_xy_badge(cx, Rect::new(bx, y, 30, 18), m.up);
                 y += 22;
             }
             if p.locked {

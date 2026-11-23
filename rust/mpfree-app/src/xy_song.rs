@@ -307,6 +307,8 @@ impl MineView {
 /// One setting's row in Setup.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RowView {
+    /// Its setting (None only in a row made as a default).
+    pub addr: Option<ParamAddr>,
     pub up: bool,
     /// Its place on its direction.
     pub k: usize,
@@ -934,6 +936,7 @@ fn mine_view(m: &mut Mine, look: Look<'_>) -> MineView {
                         How::Add => (t.from, t.to, push_text(t.from), push_text(t.to)),
                     };
                     RowView {
+                        addr: Some(t.addr),
                         up,
                         k,
                         name: seen.name,
@@ -952,6 +955,7 @@ fn mine_view(m: &mut Mine, look: Look<'_>) -> MineView {
                 Err(why) => {
                     let (name, place) = m.name_of(t.addr);
                     RowView {
+                        addr: Some(t.addr),
                         up,
                         k,
                         name,
