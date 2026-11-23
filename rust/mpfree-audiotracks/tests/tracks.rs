@@ -412,6 +412,110 @@ fn a_split_in_held_audio_plays_as_the_whole_region_did() {
     }
 }
 
+/// Splits on ticks that fall between frames (a tick is 5.74 frames
+/// here), heard from song positions that put the region's start between
+/// frames too: each part keeps the region's rounding (`Region::phase`),
+/// so the parts play sample for sample as the whole region did, its
+/// fades and all, from wherever the song plays.
+#[test]
+fn splits_between_frames_play_as_the_whole_region_from_anywhere() {
+    let play = |splits: &[i64], from: i64| {
+        let mut r = one_bar(128);
+        r.cmd(A::SetFades {
+            track: 0,
+            at: 0,
+            fade_in: 6000,
+            fade_out: 8000,
+        });
+        for &at in splits {
+            r.cmd(A::Split { track: 0, at });
+        }
+        r.run_to(r.frame + 1);
+        assert_eq!(r.a.regions(0).len(), splits.len() + 1);
+        let p = r.frame + 10;
+        r.at(p, T::Locate(from));
+        r.at(p, T::Play);
+        r.run_to(p + BAR + 1000);
+        (p, r.out)
+    };
+    for from in [0, 333, 1499, 2777] {
+        let (p, whole) = play(&[], from);
+        let (q, split) = play(&[1001, 1927, 2903, 3001], from);
+        assert_eq!(p, q);
+        let span = 2 * p as usize..2 * (p + BAR) as usize;
+        let first = (span.start..span.end).find(|&i| whole[i] != split[i]);
+        assert_eq!(
+            first,
+            None,
+            "from tick {from}: frame {:?}",
+            first.map(|i| i / 2 - p as usize)
+        );
+        assert!(
+            whole[span].iter().any(|&v| v != 0.0),
+            "it played from tick {from}"
+        );
+    }
+}
+
+/// Splits inside a region's fade in and fade out: each part keeps its
+/// share of the fades, so the parts play sample for sample as the whole
+/// region did, and setting a part's fades makes them its own.
+#[test]
+fn a_split_inside_a_fade_keeps_it_exactly() {
+    let play = |splits: &[i64], refade: bool| {
+        let mut r = one_bar(128);
+        r.cmd(A::SetFades {
+            track: 0,
+            at: 0,
+            fade_in: 6000,
+            fade_out: 8000,
+        });
+        for &at in splits {
+            r.cmd(A::Split { track: 0, at });
+        }
+        if refade {
+            r.cmd(A::SetFades {
+                track: 0,
+                at: 0,
+                fade_in: 0,
+                fade_out: 0,
+            });
+        }
+        r.run_to(r.frame + 1);
+        let p = r.frame + 10;
+        r.at(p, T::PlayStart);
+        r.run_to(p + BAR + 1000);
+        (p, r.out, r.a.regions(0).to_vec())
+    };
+    let (p, whole, _) = play(&[], false);
+    let (q, split, rs) = play(
+        &[1001, BAR_TICKS / 2, BAR_TICKS / 2 + 7, BAR_TICKS - 700],
+        false,
+    );
+    assert_eq!(p, q);
+    assert_eq!(rs.len(), 5);
+    assert!(rs.iter().all(|g| (g.fade_in, g.fade_out) == (6000, 8000)));
+    assert_eq!(
+        (rs[1].into, rs[0].left),
+        (rs[1].src as u32, BAR as u32 - rs[1].src as u32)
+    );
+    let span = 2 * p as usize..2 * (p + BAR) as usize;
+    assert!(whole[span.clone()] == split[span], "sample for sample");
+    // Near the end of the fade in, on the second part (from frame 5748).
+    let k = 5900;
+    let want = 5900.0 / 6000.0 * sig(START + k);
+    assert!((split[2 * (p + k) as usize] - want).abs() < 1e-6);
+    // The first part's fades set again (none): it plays at full level up
+    // to the split, then a straight ramp into the second part's fade in.
+    let (_, out, rs) = play(&[1001], true);
+    assert_eq!(
+        (rs[0].into, rs[0].left, rs[1].into),
+        (0, 0, rs[1].src as u32)
+    );
+    let k = 1000;
+    assert!((out[2 * (p + k) as usize] - sig(START + k)).abs() < 1e-6);
+}
+
 /// A region that fades out is silent from its end: the crossfade past
 /// its end goes on from where its fade out got to, which is nothing.
 #[test]
@@ -584,6 +688,57 @@ fn forget_gives_memory_back_only_when_nothing_plays_the_take() {
     assert_eq!(r.a.stats().refused, 2);
     assert_eq!(r.a.memory().used, 0);
     assert!(r.a.take(0).is_none());
+}
+
+/// A take a clip keeps (the audio tracks rethink, phase 2): Forget is
+/// refused while it is kept, even with no region or undo step on it, and
+/// letting it go forgets it once nothing else uses it; a take a region
+/// still plays stays when let go.
+#[test]
+fn a_take_a_clip_keeps_stays_until_let_go() {
+    let mut r = one_bar(256);
+    r.cmd(A::Keep {
+        take: 0,
+        keep: true,
+    });
+    r.run_to(r.frame + 1);
+    assert!(r.a.kept(0) && r.a.in_use(0));
+    // Let go while its region plays it: it stays.
+    r.cmd(A::Keep {
+        take: 0,
+        keep: false,
+    });
+    r.run_to(r.frame + 1);
+    assert!(!r.a.kept(0) && r.a.take(0).is_some());
+    // Kept again, its region erased and the history forgotten.
+    r.cmd(A::Keep {
+        take: 0,
+        keep: true,
+    });
+    r.cmd(A::Erase {
+        track: 0,
+        from: 0,
+        to: BAR_TICKS,
+    });
+    r.cmd(A::ClearHistory);
+    r.cmd(A::Forget(0));
+    r.run_to(r.frame + 1);
+    assert_eq!(r.a.stats().refused, 1, "a kept take can't be forgotten");
+    assert!(r.a.take(0).is_some() && r.a.memory().used > 0);
+    r.cmd(A::Keep {
+        take: 0,
+        keep: false,
+    });
+    r.run_to(r.frame + 1);
+    assert!(r.a.take(0).is_none(), "let go, nothing uses it: forgotten");
+    assert_eq!(r.a.memory().used, 0);
+    // No take there to keep.
+    r.cmd(A::Keep {
+        take: 0,
+        keep: true,
+    });
+    r.run_to(r.frame + 1);
+    assert_eq!(r.a.stats().refused, 2);
 }
 
 #[test]

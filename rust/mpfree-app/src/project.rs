@@ -132,8 +132,8 @@ pub const FORMAT: u32 = mpfree_library::project::PARTS_FORMAT;
 /// hasn't got, by feature, space-separated (`needs = audio-tracks`). A
 /// build that lacks one doesn't open the project, and says which
 /// ([`check`]; docs/dev/design/project-safety.md). Written while the
-/// project has a synth that no track has ([`SYNTHS_WITHOUT_TRACKS`]), or
-/// an audio track ([`AUDIO_TRACKS`]).
+/// project has a synth that no track has ([`SYNTHS_WITHOUT_TRACKS`]), an
+/// audio track ([`AUDIO_TRACKS`]), or an audio clip ([`AUDIO_CLIPS`]).
 pub const NEEDS_KEY: &str = "needs";
 /// A project with a synth in a free place (the instrument redesign's step
 /// 6: one picked for the pads, no track's): an older build would read the
@@ -146,6 +146,11 @@ pub const SYNTHS_WITHOUT_TRACKS: &str = "synths-without-tracks";
 /// The clips part is `mpfree-clips 3` too, which such a build doesn't
 /// read; the line says it in words before anything is read.
 pub const AUDIO_TRACKS: &str = "audio-tracks";
+/// A project with an audio clip in a cell (the audio tracks rethink,
+/// phase 2): a build from before would refuse the clips part only after
+/// starting to read it, or, before phase 1, open the clip as an empty note
+/// clip; the line says it in words before anything is read.
+pub const AUDIO_CLIPS: &str = "audio-clips";
 /// A project whose song list is linked to its song, or whose song's
 /// markers carry their sections' scenes and passes (the Arrange
 /// refactor's phase 4b): an older build would show the list empty and
@@ -161,6 +166,7 @@ pub const SCENE_KEEP: &str = "scene-keep";
 pub const KNOWN_NEEDS: &[&str] = &[
     SYNTHS_WITHOUT_TRACKS,
     AUDIO_TRACKS,
+    AUDIO_CLIPS,
     LINKED_SONG_LIST,
     SCENE_KEEP,
 ];
@@ -354,6 +360,16 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
     if c.clips.tracks.iter().any(mpfree_seq::Track::is_audio) {
         needs.push(AUDIO_TRACKS);
     }
+    // An audio clip in a cell, or among the song's own clips (a block
+    // made unique, or a deleted cell's clip the song still plays).
+    if c.clips
+        .cell_clips()
+        .map(|(_, _, clip)| clip)
+        .chain(c.clips.arrangement.clips.iter())
+        .any(|clip| clip.audio.is_some())
+    {
+        needs.push(AUDIO_CLIPS);
+    }
     if c.clips.arrangement.uses_sections() {
         needs.push(LINKED_SONG_LIST);
     }
@@ -385,6 +401,12 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
 /// ever, and things a build can't make (an effect, an instrument, a
 /// sound) are left out and said: neither stops the open.
 pub fn check(snap: &Snapshot) -> Result<u32, String> {
+    check_against(snap, KNOWN_NEEDS)
+}
+
+/// [`check`] for a build that has the features `known`: how an older
+/// build's gate answers, for the tests.
+fn check_against(snap: &Snapshot, known: &[&str]) -> Result<u32, String> {
     let format = match snap.meta.extra.iter().find(|(k, _)| k == FORMAT_KEY) {
         None => {
             return Err(format!(
@@ -414,7 +436,7 @@ pub fn check(snap: &Snapshot) -> Result<u32, String> {
         .filter(|(k, _)| k == NEEDS_KEY)
         .flat_map(|(_, v)| v.split_whitespace())
     {
-        if !KNOWN_NEEDS.contains(&need) && !lacking.contains(&need) {
+        if !known.contains(&need) && !lacking.contains(&need) {
             lacking.push(need);
         }
     }
@@ -699,8 +721,10 @@ pub fn opening(
                     "project: {given} of its clips had no lasting id, or shared one; they have new ones"
                 ));
             }
-            // The audio tracks in the track list (phase 1a).
+            // The audio tracks in the track list (phase 1a), and the
+            // recordings their clips name (phase 2).
             audio = audio_slots(&p, snap.part(AUDIOTRACKS))?;
+            audio_clips(&mut p, snap.part(AUDIOTRACKS), rate)?;
             let mut fx = Box::new([mpfree_notefx::TrackFx::default(); mpfree_seq::MAX_TRACKS]);
             for (t, tr) in p.tracks.iter().enumerate().take(mpfree_seq::MAX_TRACKS) {
                 fx[t] = tr.note_fx;
@@ -1094,6 +1118,80 @@ pub fn audio_slots(
         slots.0[s] = t.id;
     }
     Ok(slots)
+}
+
+/// The audio clips of `p` against the project's recordings (the take
+/// lines of the audio tracks part, `part`): every recording a clip names
+/// is there, and the last region's has the frame the clip ends on, or the
+/// open stops, saying which clip. Recordings made at another rate are
+/// converted to `rate` as they go in (`audio_open`), so the clips' frame
+/// counts are scaled to match ([`mpfree_seq::AudioClip::convert`]).
+pub fn audio_clips(
+    p: &mut mpfree_seq::Project,
+    part: Option<&str>,
+    rate: u32,
+) -> Result<(), String> {
+    let saved = match part.map(mpfree_audiotracks::save::from_text) {
+        Some(Ok(s)) => Some(s),
+        // Said by `audio_slots`.
+        Some(Err(_)) => return Ok(()),
+        None => None,
+    };
+    let frames_of = |rec: mpfree_seq::RecId| {
+        saved
+            .as_ref()?
+            .takes
+            .iter()
+            .find(|k| k.rec.0 == rec.0)
+            .map(|k| k.frames)
+    };
+    let clips = p
+        .cell_clips()
+        .map(|(_, _, c)| c)
+        .chain(p.arrangement.clips.iter());
+    for c in clips {
+        let Some(a) = &c.audio else { continue };
+        if a.recordings().any(|r| frames_of(r).is_none()) {
+            return Err(format!(
+                "its audio clip \"{}\" names a recording the project hasn't got",
+                c.name
+            ));
+        }
+        let last = a.regions.last().map(|r| r.rec).and_then(frames_of);
+        if last.is_some_and(|n| a.last_frame > n as i64) {
+            return Err(format!(
+                "its audio clip \"{}\" ends past the end of its recording",
+                c.name
+            ));
+        }
+    }
+    if let Some(s) = saved.filter(|s| s.rate != rate) {
+        for t in &mut p.tracks {
+            for (_, c) in t.slots.iter_mut() {
+                if let Some(a) = &mut c.audio {
+                    a.convert(s.rate, rate);
+                }
+            }
+        }
+        let song: Vec<_> = p
+            .arrangement
+            .clips
+            .iter()
+            .filter(|c| c.audio.is_some())
+            .map(|c| c.id)
+            .collect();
+        for id in song {
+            if let Some(a) = p
+                .arrangement
+                .clips
+                .get_mut(id)
+                .and_then(|c| c.audio.as_mut())
+            {
+                a.convert(s.rate, rate);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// New project: the parts the app started with, and an empty song, its
@@ -3049,6 +3147,69 @@ mod tests {
         );
     }
 
+    /// Phase 2: every recording an audio clip names must be among the
+    /// project's recordings, with the frame its clip ends on, or the open
+    /// stops naming the clip; recordings at another rate convert, and the
+    /// clips' frames with them.
+    #[test]
+    fn audio_clips_need_their_recordings_and_follow_a_rate_change() {
+        use mpfree_audiotracks::save::{to_text, Saved, TakeFile};
+        use mpfree_audiotracks::RecordingId;
+        use mpfree_seq::{AudioClip, Clip, Project, RecId, Track};
+        let mut p = Project::new();
+        let mut t = Track::new_audio("Vocal", 0);
+        let mut clip = Clip::new("Hook", 3840);
+        clip.audio = Some(AudioClip::of(RecId(5), 4410, 88_200, 3840, 120.0));
+        t.slots[0] = Some(clip);
+        p.tracks.push(t);
+        p.give_track_ids();
+        let part = |rec: u128, frames: usize| {
+            to_text(&Saved {
+                rate: 44_100,
+                tracks: Vec::new(),
+                takes: vec![TakeFile {
+                    id: 0,
+                    rec: RecordingId(rec),
+                    track: 0,
+                    group: 0,
+                    pass: 0,
+                    bpm: 120.0,
+                    anchor: 0.0,
+                    frames,
+                    channels: 1,
+                    file: "a.wav".into(),
+                    path: None,
+                    audio: Vec::new(),
+                }],
+            })
+        };
+        let open = |text: Option<&str>, rate| {
+            let mut q = p.clone();
+            audio_clips(&mut q, text, rate).map(|()| q)
+        };
+        let q = open(Some(&part(5, 88_200)), 44_100).unwrap();
+        assert_eq!(q, p);
+        let missing = "its audio clip \"Hook\" names a recording the project hasn't got";
+        assert_eq!(
+            open(Some(&part(6, 88_200)), 44_100).err().as_deref(),
+            Some(missing)
+        );
+        assert_eq!(open(None, 44_100).err().as_deref(), Some(missing));
+        assert_eq!(
+            open(Some(&part(5, 88_199)), 44_100).err().as_deref(),
+            Some("its audio clip \"Hook\" ends past the end of its recording")
+        );
+        // Recordings made at 44.1 kHz opened at 48: the clip's frames scale.
+        let q = open(Some(&part(5, 88_200)), 48_000).unwrap();
+        let a = q.tracks[0].slots[0]
+            .as_ref()
+            .unwrap()
+            .audio
+            .as_ref()
+            .unwrap();
+        assert_eq!((a.regions[0].src, a.last_frame), (4800, 96_000));
+    }
+
     /// Phase 1a: the audio tracks part names its tracks by id, each an
     /// audio track of the project; every audio track gets an engine
     /// track; a part an older mpfree saved, before audio tracks were
@@ -3158,6 +3319,68 @@ mod tests {
         assert_eq!(check(&snap), Ok(FORMAT));
     }
 
+    /// Phase 2: a project with an audio clip says it needs audio clips on
+    /// project.txt's needs line. Phase 1's gate (its features: synths
+    /// without tracks and audio tracks) refuses it in plain words before
+    /// reading any part, so the project open in that build stays as it
+    /// was (`opening` is the gate, and the app swaps only on its Ok); this
+    /// build opens it.
+    #[test]
+    fn a_project_with_an_audio_clip_needs_audio_clips_and_phase_1_refuses_it() {
+        let mut c = collected(String::new(), InstrumentList::new().text());
+        let mut t = mpfree_seq::Track::new_audio("Audio 1", 0);
+        c.clips.give_track_id(&mut t);
+        let mut clip = mpfree_seq::Clip::new("Hook", 3840);
+        clip.audio = Some(mpfree_seq::AudioClip::of(
+            mpfree_seq::RecId(5),
+            0,
+            88_200,
+            3840,
+            120.0,
+        ));
+        t.slots[0] = Some(clip);
+        c.clips.tracks.push(t);
+        c.clips.check().unwrap();
+        let snap = snapshot(&c, Vec::new());
+        let line = snap.meta.extra.iter().find(|(k, _)| k == NEEDS_KEY);
+        assert_eq!(
+            line.map(|(_, v)| v.as_str()),
+            Some("audio-tracks audio-clips")
+        );
+        assert_eq!(check(&snap), Ok(FORMAT));
+        let phase_1 = [SYNTHS_WITHOUT_TRACKS, AUDIO_TRACKS];
+        assert_eq!(
+            check_against(&snap, &phase_1),
+            Err(
+                "it needs audio-clips, which this MPFree hasn't got. Update MPFree to open it"
+                    .to_string()
+            )
+        );
+        // Deleted from its cell while a block still plays it (step 2d),
+        // the song keeps it, and the line still names audio clips.
+        c.clips.give_clip_ids();
+        let t = c.clips.tracks.len() - 1;
+        let clip = c.clips.tracks[t].slots[0].take().unwrap();
+        let id = clip.id;
+        c.clips.arrangement.clips.keep(clip).unwrap();
+        c.clips
+            .arrangement
+            .place(mpfree_seq::Placement::new(t, id, 0, 3840))
+            .unwrap();
+        c.clips.check().unwrap();
+        let snap = snapshot(&c, Vec::new());
+        let line = snap.meta.extra.iter().find(|(k, _)| k == NEEDS_KEY);
+        assert_eq!(
+            line.map(|(_, v)| v.as_str()),
+            Some("audio-tracks audio-clips")
+        );
+        // Without the clip, the line names audio tracks alone.
+        c.clips.arrangement.remove(0);
+        assert!(c.clips.arrangement.clips.is_empty());
+        let snap = snapshot(&c, Vec::new());
+        assert_eq!(check_against(&snap, &phase_1), Ok(FORMAT));
+    }
+
     /// Phase 0's gate (docs/dev/design/project-safety.md): a project that
     /// needs something this build hasn't got, or has a part this build
     /// can't read (clips saved as `mpfree-clips 9` here, as an
@@ -3176,11 +3399,11 @@ mod tests {
         let mut needs = good.clone();
         needs.meta.extra.push((
             NEEDS_KEY.to_string(),
-            "audio-clips stretch audio-clips".to_string(),
+            "loop-points stretch loop-points".to_string(),
         ));
         assert_eq!(
             opening(&needs, 44_100, "x", none).err().as_deref(),
-            Some("it needs audio-clips, stretch, which this MPFree hasn't got. Update MPFree to open it")
+            Some("it needs loop-points, stretch, which this MPFree hasn't got. Update MPFree to open it")
         );
 
         let with_part = |name: &str, text: &str| {
@@ -3803,9 +4026,12 @@ mod tests {
             end,
             take,
             src: 0,
+            phase: 0.0,
             gain: 1.0,
             fade_in: 0,
             fade_out: 0,
+            into: 0,
+            left: 0,
         };
         // Take 0 was recorded to its file, which holds all of it: copied
         // whole. Take 1 has no file: written from its samples, named for

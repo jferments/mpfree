@@ -6,7 +6,9 @@
 //! moves on every track and recorded from Perform FX gestures, and song
 //! mode: a track playing only placements, one linked and one made unique,
 //! and a track going back to the song after its clip stops, and pad
-//! pressure played on every note and recorded on the armed track) at
+//! pressure played on every note and recorded on the armed track, and an
+//! audio track whose clip switches, its answer for the audio engine asked
+//! every period) at
 //! period sizes from 1 to 4096 frames, with the look-ahead for slow gear
 //! (`Ahead`) forecasting three tracks each period.
 //!
@@ -26,8 +28,8 @@ use mpfree_play::{
 use mpfree_seq::mpfree_moves::{Input, Kind, Map, Target};
 use mpfree_seq::mpfree_param::{OnTrack, Owner, ParamAddr, RelAddr, Strip};
 use mpfree_seq::{
-    Clip, Cond, Direction, Lock, MorphRows, Note, Placement, Project, Quantise, Speed, TouchPoint,
-    Track,
+    AudioClip, Clip, Cond, Direction, Lock, MorphRows, Note, Placement, Project, Quantise, RecId,
+    Speed, TouchPoint, Track,
 };
 use mpfree_transport::time::Swing;
 use mpfree_transport::{Block, Command, Transport};
@@ -212,6 +214,22 @@ fn playing_never_allocates() {
     let mut t5 = p.tracks[0].clone();
     t5.dest = 5;
     p.tracks.push(t5);
+    // An audio track (the audio tracks rethink's phase 2): an audio clip
+    // playing and another cued on the first bar line.
+    let mut vocal = Track::new_audio("vocal", 6);
+    for (slot, bars) in [(0usize, 2i64), (1, 1)] {
+        let mut c = Clip::new("v", 3840 * bars);
+        let rec = RecId(slot as u128 + 1);
+        c.audio = Some(AudioClip::of(rec, 0, 96_000, 3840 * bars, 120.0));
+        vocal.slots[slot] = Some(c);
+    }
+    p.tracks.push(vocal);
+    launches.push(Launch {
+        track: 6,
+        slot: 0,
+        origin: 0,
+        start: 0,
+    });
     // Track 5's clips are copies of track 0's: ids of their own.
     p.give_clip_ids();
     let song = &mut p.arrangement;
@@ -240,6 +258,10 @@ fn playing_never_allocates() {
         Cue {
             track: 4,
             slot: None,
+        },
+        Cue {
+            track: 6,
+            slot: Some(1),
         },
     ];
     let mut view = PlayView::compile_cued(&p, &launches, &cues).unwrap();
@@ -276,6 +298,7 @@ fn playing_never_allocates() {
     let mut recorded_moves = 0usize;
     let mut recorded_touch = 0usize;
     let mut started = 0usize;
+    let mut audio_changes = 0usize;
 
     watch(true);
     drop(std::hint::black_box(vec![0u8; 16]));
@@ -325,6 +348,7 @@ fn playing_never_allocates() {
         ahead.check(t.frame(), |_| ahead_offs += 1);
         ahead.forecast(&t, &player, &view, n, |_| true);
         started += player.started().len();
+        audio_changes += player.audio(&view, 6).changes().len();
         sink.arp.process(&block, &mut |_, _| arp_notes += 1);
         // Pads on the recording track: notes held a few periods, some overlapping.
         let note = (i % 7) as u8;
@@ -417,6 +441,7 @@ fn playing_never_allocates() {
         "allocations or frees while playing"
     );
     assert!(sink.events > 2000, "{}", sink.events);
+    assert!(audio_changes > 0, "the audio track's switch");
     let counts = ahead.counts();
     assert!(
         counts.ahead > 500 && ahead_offs > 50,
@@ -434,7 +459,7 @@ fn playing_never_allocates() {
     assert!(recorded_locks > 500, "{recorded_locks}");
     assert_eq!(rec.stray_locks(), 0);
     assert_eq!(rec.dropped(), 0);
-    assert_eq!(started, 2, "both cues started, once");
+    assert_eq!(started, 3, "the three cues started, once each");
     assert!(sink.locks > 500, "{} locks", sink.locks);
     assert!(sink.lanes > 2000, "{} lane values", sink.lanes);
     assert!(sink.song > 500, "{} song notes", sink.song);

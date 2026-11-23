@@ -1704,6 +1704,7 @@ impl Session {
         }
         // `|`, not `||`: both flags are taken.
         if self.time.take_changed() | self.tracks.take_changed() {
+            self.tracks.keep_named(self.time.recordings());
             self.out.show(ToUi::Time(Box::new(crate::time_state(
                 &self.time,
                 &self.tracks,
@@ -1847,11 +1848,13 @@ impl Session {
         let silenced = self.time.silenced();
         self.tracks.sync(self.time.project(), silenced, false);
         self.tracks.feed_inside(&mut self.mix);
+        let time = &self.time;
         self.tracks.period(
-            self.time.block(),
-            self.time.tempo_map(),
-            self.time.song_on(),
+            time.block(),
+            time.tempo_map(),
+            time.song_on(),
             (&line, &line),
+            Some(&|p| time.audio(p)),
         );
         self.tracks.play_into(&mut self.mix);
         let mut played = 0;

@@ -1135,6 +1135,7 @@ impl AudioSession {
                 AUDIO_RATE,
             ),
             recording: None,
+            clips: Vec::new(),
         })
         .collect();
         let waves = takes.iter().filter_map(|t| self.wave(t.id, 600)).collect();
@@ -1191,6 +1192,220 @@ pub fn song_audio_state() -> Result<TimeState, String> {
     Ok(state)
 }
 
+/// The Song view with blocks of audio clips (phase 2, step 2d, layout
+/// spec 4c, board E), from [`song_audio_state`]: on Guitar's lane after
+/// its recording, Riff (its first two bars as a clip, played twice from
+/// bar 9, picked) and Outro (a once clip of all four, from bar 13).
+pub fn song_audio_blocks_state() -> Result<TimeState, String> {
+    use crate::song::{ClipBlock, ClipPiece};
+    use crate::view::PlacementInfo;
+    let mut state = song_audio_state()?;
+    state.region = None;
+    let g = 1;
+    let row = state.audio[g].row;
+    let r = state.audio[g]
+        .blocks
+        .first()
+        .cloned()
+        .ok_or("audio blocks sample: no guitar recording")?;
+    // The clip's bars from the recording's start, frames in step.
+    let per_bar = r.frames * BAR as f64 / (r.end - r.start).max(1) as f64;
+    let piece = |bars: Tick| ClipPiece {
+        start: 0,
+        end: bars * BAR,
+        take: r.take,
+        src: r.src,
+        frames: per_bar * bars as f64,
+    };
+    let mut placements = state.placements.to_vec();
+    let riff = placements.len();
+    for (name, start, pass, once) in [
+        ("Riff", 8 * BAR, 2 * BAR, false),
+        ("Outro", 12 * BAR, 4 * BAR, true),
+    ] {
+        state.audio[g].clips.push(ClipBlock {
+            index: placements.len(),
+            origin: start,
+            pass,
+            once,
+            pieces: vec![piece(pass / BAR)],
+        });
+        placements.push(PlacementInfo {
+            track: row,
+            start,
+            length: 4 * BAR,
+            name: name.into(),
+            unique: false,
+        });
+    }
+    state.placements = placements.into();
+    state.selected = Some(riff);
+    Ok(state)
+}
+
+/// The Clips grid with audio clips in the audio tracks' cells (layout
+/// spec 4f), as on the approved boards, at 92 BPM a little before bar 17:
+/// Vocal's Verse vox stopped, Hook vox playing, Ad libs from 17.1;
+/// Guitar's Riff made at 120, Outro waiting for its audio until 18.1,
+/// Solo missing; and a third audio track, Break, with Intro still
+/// ringing past its stop, Amen not ready and Pad wash. Guitar is armed,
+/// so its Riff is on the Clip tab.
+pub fn clips_audio_state() -> Result<TimeState, String> {
+    use crate::view::{AudioCellInfo, ClipInfo};
+    let mut state = song_audio_state()?;
+    state.song_view = false;
+    state.region = None;
+    let (vocal, guitar) = (state.audio[0].row, state.audio[1].row);
+    let brk_row = state.tracks.len();
+    let mut lane = state.audio[1].clone();
+    lane.track = 2;
+    lane.row = brk_row;
+    lane.name = "Break".into();
+    lane.input = mpfree_audiotracks::Input::Sum;
+    lane.color = crate::view::track_color(brk_row);
+    lane.armed = false;
+    lane.blocks.clear();
+    lane.takes.clear();
+    lane.recording = None;
+    let mut brk = state.tracks[guitar].clone();
+    brk.name = lane.name.clone();
+    brk.sound = format!("In {}", crate::song::input_chip(lane.input));
+    state.tracks.push(brk);
+    state.audio.push(lane);
+    state.transport.bpm = 92.0;
+    state.transport.position = 15 * BAR + 2 * BEAT;
+    let clip = |name: &str, bars: Tick, seed: u32, shape: Shape| {
+        let mut settings = Clip::new(name, bars * BAR).settings();
+        settings.once = shape == Shape::Swell;
+        ClipInfo {
+            name: name.to_string(),
+            length: bars * BAR,
+            speed: mpfree_seq::Speed::NORMAL,
+            notes: 0,
+            looped: None,
+            settings,
+            variation: None,
+            holds_notes: false,
+            holds: mpfree_seq::Holds::Hits,
+            audio: Some(AudioCellInfo {
+                bpm: if name == "Riff" { 120.0 } else { 92.0 },
+                gain: 1.0,
+                secs: 197.0,
+                wave: sample_wave(seed, shape),
+                missing: None,
+                ring: None,
+            }),
+        }
+    };
+    // A cell: its name, bars, wave seed and shape.
+    type Cell = (&'static str, Tick, u32, Shape);
+    let cells: [(usize, [Cell; 3]); 3] = [
+        (
+            vocal,
+            [
+                ("Verse vox", 4, 3, Shape::Vocal),
+                ("Hook vox", 2, 11, Shape::Vocal),
+                ("Ad libs", 2, 7, Shape::Vocal),
+            ],
+        ),
+        (
+            guitar,
+            [
+                ("Riff", 2, 5, Shape::Riff),
+                ("Outro", 4, 9, Shape::Riff),
+                ("Solo", 4, 13, Shape::Riff),
+            ],
+        ),
+        (
+            brk_row,
+            [
+                ("Intro", 4, 17, Shape::Swell),
+                ("Amen", 1, 19, Shape::Hits),
+                ("Pad wash", 4, 23, Shape::Pad),
+            ],
+        ),
+    ];
+    for (track, clips) in cells {
+        for (slot, (name, bars, seed, shape)) in clips.into_iter().enumerate() {
+            state.tracks[track].slots[slot] = Some(clip(name, bars, seed, shape));
+        }
+    }
+    audio_of(&mut state, guitar, 2)?.missing =
+        Some("take 4's file wasn't found when the project opened".into());
+    audio_of(&mut state, brk_row, 0)?.ring = Some(0.78);
+    state
+        .launches
+        .retain(|l| l.track != vocal && l.track != guitar && l.track != brk_row);
+    // Hook vox 0.45 through its two bars; Ad libs from bar 17.
+    state.launches.push(Launch {
+        track: vocal,
+        slot: 1,
+        origin: 15 * BAR + 2 * BEAT - (BAR * 9 / 10),
+        start: 0,
+    });
+    state.cues.retain(|c| c.track != vocal && c.track != guitar);
+    state.cues.push(Cue {
+        track: vocal,
+        slot: Some(2),
+    });
+    state.cues.push(Cue {
+        track: guitar,
+        slot: Some(1),
+    });
+    state.audio_late = vec![(guitar, 17 * BAR)];
+    state.not_ready = vec![(brk_row, 1, 2 * BAR)];
+    state.armed = None;
+    state.audio[1].armed = true;
+    state.audio_focus = Some(guitar);
+    Ok(state)
+}
+
+/// The audio facts of the clip in cell `slot` of `track`.
+fn audio_of(
+    st: &mut TimeState,
+    track: usize,
+    slot: usize,
+) -> Result<&mut crate::view::AudioCellInfo, String> {
+    st.tracks[track].slots[slot]
+        .as_mut()
+        .and_then(|c| c.audio.as_mut())
+        .ok_or_else(|| "audio cells sample: no clip".to_string())
+}
+
+/// The shapes of the sample's small waves.
+#[derive(Clone, Copy, PartialEq)]
+enum Shape {
+    Vocal,
+    Riff,
+    Swell,
+    Hits,
+    Pad,
+}
+
+/// A small wave for a sample cell: `shape`'s envelope over noise from
+/// `seed`, each column's peak 0 to 255.
+fn sample_wave(seed: u32, shape: Shape) -> [u8; crate::widgets::CELL_WAVE] {
+    let mut w = [0u8; crate::widgets::CELL_WAVE];
+    let mut x = seed.wrapping_mul(2_654_435_761).max(1);
+    let n = w.len() as f32;
+    for (c, v) in w.iter_mut().enumerate() {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        let noise = (x % 1000) as f32 / 1000.0;
+        let t = c as f32 / n;
+        let env = match shape {
+            Shape::Vocal => 0.35 + 0.55 * (t * 9.0).sin().abs(),
+            Shape::Riff => 0.45 + 0.45 * ((t * 16.0).fract() < 0.5) as u8 as f32,
+            Shape::Swell => 0.15 + 0.8 * t,
+            Shape::Hits => 0.2 + 0.75 * ((t * 8.0).fract() < 0.25) as u8 as f32,
+            Shape::Pad => 0.55 + 0.1 * (t * 3.0).sin(),
+        };
+        *v = ((env * (0.75 + 0.25 * noise)).clamp(0.0, 1.0) * 255.0) as u8;
+    }
+    w
+}
+
 /// The Clips page's Song view, from [`song_state`].
 fn song_sample(fonts: Fonts) -> Result<Sample, String> {
     let state = song_state()?;
@@ -1219,6 +1434,26 @@ fn song_audio_sample(fonts: Fonts) -> Result<Sample, String> {
         about: "Arrange page, Song view with two audio tracks after the song's tracks: \
                 Vocal recorded over bars 1-8 and punched in over 5-8 (that region picked, \
                 with fades), Guitar armed",
+        ui,
+        state,
+    })
+}
+
+/// The Song view with blocks of audio clips, from
+/// [`song_audio_blocks_state`], and the refusal of one dropped over a
+/// region on the hint line.
+fn song_audio_blocks_sample(fonts: Fonts) -> Result<Sample, String> {
+    let state = song_audio_blocks_state()?;
+    let hint = "song: Riff can't go over the region at bar 1: a block and a region never overlap on a lane";
+    let mut ui = app_ui(fonts, "Arrange", hint);
+    let mut page = TimePage::add_to(&mut ui)?;
+    ui.show(CLIPS_PAGE)?;
+    page.update(&mut ui, &state);
+    Ok(Sample {
+        name: "clips-song-audio-blocks",
+        about: "Arrange page, Song view with blocks of audio clips on Guitar's lane: Riff \
+                (two bars, twice, picked) and Outro (a once clip); a block dropped over a \
+                region refused",
         ui,
         state,
     })
@@ -1755,6 +1990,7 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         )?,
         song_sample(fonts())?,
         song_audio_sample(fonts())?,
+        song_audio_blocks_sample(fonts())?,
     ];
     // A narrow look at the bar alone, while recording.
     let rec = recording()?;
@@ -1792,7 +2028,7 @@ mod tests {
     #[test]
     fn every_sample_draws() {
         let samples = samples(Fonts::embedded).unwrap();
-        assert_eq!(samples.len(), 11);
+        assert_eq!(samples.len(), 12);
         for mut s in samples {
             let (w, h) = s.ui.size();
             let mut c = SoftCanvas::new(w, h);
