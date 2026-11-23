@@ -7352,6 +7352,7 @@ fn time_action(
             | TimeAction::PasteClip { .. }
             | TimeAction::DropClip { .. }
             | TimeAction::DropRow { .. }
+            | TimeAction::CaptureScene
             | TimeAction::MovePlacement { .. }
             | TimeAction::StretchPlacement { .. }
             | TimeAction::MoveSection { .. }

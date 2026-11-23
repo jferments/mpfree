@@ -1454,6 +1454,11 @@ pub enum TimeAction {
     KeepMorph,
     /// Store every parameter's value now in this row, for the morph.
     SaveScene(usize),
+    /// Capture scene (the Arrange refactor's 5.3): a copy of the clip
+    /// each track plays now goes into the first empty row under the scene
+    /// playing (from row 1 with none), as one take that UNDO takes back.
+    /// What plays plays on.
+    CaptureScene,
     /// Show the Song view (the timeline) or the grid.
     SongView(bool),
     /// The conversion report card closes (its Done, a tap outside it, MENU

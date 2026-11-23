@@ -8231,6 +8231,81 @@ mod tests {
         assert!(h.act(TimeAction::LaunchScene(ROWS)).is_err());
     }
 
+    /// Capture scene (Arrange 5.3): the clips playing now, one from row 1
+    /// and one launched from row 2 over it, go as copies into the first
+    /// empty row under the scene playing (row 3 has only a name, so row 4),
+    /// as one take; what plays plays on, and UNDO takes the row back. In
+    /// song mode a track with no launch gives the song's block under the
+    /// playhead; with nothing playing there is nothing to keep.
+    #[test]
+    fn capture_scene_keeps_what_plays_as_copies_in_the_first_empty_row_under_it() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let one_bar = |note: u8| {
+            let mut c = Clip::new("beat", 3840);
+            c.notes = vec![mpfree_seq::Note::new(0, 100, note, 100)];
+            c
+        };
+        h.control.project.tracks[0].slots[0] = Some(one_bar(4));
+        h.control.project.tracks[1].slots[0] = Some(one_bar(30));
+        h.control.project.tracks[0].slots[1] = Some(one_bar(5));
+        h.control.project.scene_mut(2).unwrap().name = "Kept".into();
+        h.control.project.give_clip_ids();
+        assert!(h.act(TimeAction::CaptureScene).is_err(), "nothing plays");
+        h.act(TimeAction::LaunchScene(0)).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR, &[]);
+        h.act(TimeAction::Launch { track: 0, slot: 1 }).unwrap();
+        run(&mut h, &mut pads, 2 * BAR + BAR / 4, &[]);
+        let names = (
+            h.project().tracks[0].name.clone(),
+            h.project().tracks[1].name.clone(),
+        );
+        let ids = |p: &Project| -> Vec<mpfree_seq::ClipId> {
+            p.cell_clips().map(|(_, _, c)| c.id).collect()
+        };
+        let was = ids(h.project());
+        let launches = h.control.launches.clone();
+        assert_eq!(
+            h.act(TimeAction::CaptureScene).unwrap(),
+            format!(
+                "capture: {} and {} into row 4, as copies (UNDO takes it back)",
+                names.0, names.1
+            )
+        );
+        let p = h.project();
+        assert_eq!(p.clip(0, 3).map(|c| c.notes[0].note), Some(5));
+        assert_eq!(p.clip(1, 3).map(|c| c.notes[0].note), Some(30));
+        for t in 0..2 {
+            let id = p.clip(t, 3).unwrap().id;
+            assert!(id.is_given() && !was.contains(&id), "a clip of its own");
+        }
+        assert_eq!(p.scene(2).map(|s| s.name.as_str()), Some("Kept"));
+        assert_eq!(h.control.launches, launches, "what plays plays on");
+        assert_eq!(h.state().scene_focus, 3, "the scene editor shows it");
+        h.act(TimeAction::Undo).unwrap();
+        assert!(h.project().row_empty(3));
+        h.act(TimeAction::Redo).unwrap();
+        assert_eq!(h.project().clip(1, 3).map(|c| c.notes[0].note), Some(30));
+        // The next goes under the scene playing again: row 5.
+        h.act(TimeAction::CaptureScene).unwrap();
+        assert_eq!(h.project().clip(0, 4).map(|c| c.notes[0].note), Some(5));
+        // In song mode, a track with no launch gives the song's block.
+        h.act(TimeAction::StopAll).unwrap();
+        h.command(Command::Stop);
+        run(&mut h, &mut pads, 3 * BAR, &[]);
+        h.act(TimeAction::ScenesToSong).unwrap();
+        h.act(TimeAction::SongMode(true)).unwrap();
+        h.command(Command::PlayStart);
+        run(&mut h, &mut pads, 3 * BAR + BAR / 2, &[]);
+        assert!(h.control.launches.is_empty(), "the song plays");
+        let row = (0..SLOTS).find(|&r| h.project().row_empty(r)).unwrap();
+        h.act(TimeAction::CaptureScene).unwrap();
+        let p = h.project();
+        assert_eq!(p.clip(0, row).map(|c| c.notes[0].note), Some(4));
+        assert_eq!(p.clip(1, row).map(|c| c.notes[0].note), Some(30));
+    }
+
     /// Two one-bar rows become a song (Scenes → song), which plays in song
     /// mode; a clip launched on track 1 takes it over, and the song plays
     /// on there after it stops. The song goes back into rows (Song →

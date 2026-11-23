@@ -4133,6 +4133,7 @@ impl TimeControl {
                 self.changed = true;
                 Ok(line)
             }
+            TimeAction::CaptureScene => self.capture_scene(),
             TimeAction::SongToScenes => {
                 // The rows change, not the song: one edit of whole rows,
                 // which UNDO takes back. The last conversion's card closes.
@@ -6982,6 +6983,82 @@ impl TimeControl {
         !self.takes.undone().is_empty()
     }
 
+    /// Capture scene (the Arrange refactor's 5.3): a copy of the clip
+    /// each track plays now (its launched clip, or in song mode the
+    /// song's block under the playhead; nothing from an audio track) goes
+    /// into the first empty row under the scene playing, from row 1 with
+    /// none playing, as one edit of whole rows that UNDO takes back. The
+    /// copies are clips of their own, so what plays plays on; the scene
+    /// editor shows the new row. A muted track's clip goes in too: the
+    /// row keeps the combination, and its mutes are the scene's to set.
+    fn capture_scene(&mut self) -> Result<String, String> {
+        let playing = self.perform.playing().map(|p| p.row);
+        let from = playing.map_or(0, |r| r + 1);
+        let row = (from..SLOTS)
+            .find(|&r| self.project.row_empty(r))
+            .ok_or_else(|| match playing {
+                Some(r) => format!(
+                    "capture: no empty row under row {}: empty one, or move a row away, first",
+                    r + 1
+                ),
+                None => "capture: no empty row: empty one first".to_string(),
+            })?;
+        let now = self.info.position;
+        let song = &self.project.arrangement;
+        let mut copies = Vec::new();
+        for (t, track) in self.project.tracks.iter().enumerate() {
+            if track.is_audio() {
+                continue;
+            }
+            let clip = match self.launches.iter().find(|l| l.track == t) {
+                Some(l) => self.project.clip(t, l.slot),
+                None if self.song => song
+                    .at(t, now)
+                    .and_then(|k| song.clip_of(&self.project.tracks, &song.placements[k])),
+                None => None,
+            };
+            if let Some(c) = clip {
+                copies.push((t, c.copied()));
+            }
+        }
+        if copies.is_empty() {
+            return Err("capture: nothing plays, so there's nothing to keep".to_string());
+        }
+        let names = names_of(
+            copies
+                .iter()
+                .map(|(t, _)| self.project.tracks[*t].name.as_str()),
+        );
+        let before = self.project.clone();
+        for (t, mut c) in copies {
+            c.id = self.project.new_clip_id();
+            if let Some(slot) = self
+                .project
+                .tracks
+                .get_mut(t)
+                .and_then(|tr| tr.slots.get_mut(row))
+            {
+                *slot = Some(c);
+            }
+        }
+        if let Err(e) = self.compile() {
+            // Back as it was, but for the clip ids it gave: an id is
+            // never given twice.
+            let next = self.project.next_clip;
+            self.project = before;
+            self.project.next_clip = next;
+            self.compile()?;
+            return Err(e);
+        }
+        self.takes.rows_edit(&before, &self.project);
+        self.scene_pick = Some(row);
+        self.changed = true;
+        Ok(format!(
+            "capture: {names} into row {}, as copies (UNDO takes it back)",
+            row + 1
+        ))
+    }
+
     /// The project's tracks, for TRACK MUTE's banks.
     pub fn track_count(&self) -> usize {
         self.project.tracks.len()
@@ -7733,6 +7810,19 @@ fn step_list(steps: u128) -> Vec<usize> {
 }
 
 /// "step 5", or "steps 1, 5".
+/// Names for a log line: "Keys", "Keys and Bass", "Keys, Bass and
+/// Drums", or "Keys, Bass and 3 more".
+fn names_of<'a>(names: impl Iterator<Item = &'a str>) -> String {
+    let names: Vec<&str> = names.collect();
+    match names.as_slice() {
+        [] => String::new(),
+        [a] => a.to_string(),
+        [a, b] => format!("{a} and {b}"),
+        [a, b, c] => format!("{a}, {b} and {c}"),
+        [a, b, rest @ ..] => format!("{a}, {b} and {} more", rest.len()),
+    }
+}
+
 fn steps_text(steps: &[usize]) -> String {
     let list: Vec<String> = steps.iter().map(|i| (i + 1).to_string()).collect();
     if list.len() == 1 {
