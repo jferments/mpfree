@@ -327,11 +327,14 @@ with `--quick`) at 128 frames and 44.1 kHz:
   allocations (the rest of the page's update and the text), 0.53 ms. A
   song of 16 blocks costs 3.8 million, so the longest song now costs only
   for the extra blocks it shows (about 60 in view, against 16). Most of
-  what is left is the whole page painted again for a playhead that moved;
-  drawing the playhead alone is a later step. Its count in
-  `instructions.txt` was taken with CI's pinned toolchain on the build
-  container, which gave the three Arrange cases' counts to within 0.05 %
-  of CI's.
+  what was left was the whole page painted again for a playhead that
+  moved. Phase 6's zoom chip and block tools took it to 5.8 million;
+  since then a frame that only moves the playhead paints the two strips
+  its line left and reached (`SongLanes::changed_parts`, see
+  [arrange.md](arrange.md)), and the case is 1.8 million instructions
+  (7 frames of 8 paint strips, the 8th scrolls and paints whole), counted
+  on the build container. Its line in `instructions.txt` is re-taken from
+  the count CI prints for it, as the near-5 % rows are.
 - **screen, the piano roll (piano roll plan 0C.3):** six "Piano roll: ..."
   cases draw the note editor on the full clip of the step cases (8,192
   notes, 8 bars), a frame a block, at the MPC's size, with the transport
