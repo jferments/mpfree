@@ -130,6 +130,8 @@ pub fn revision(clip: &Clip) -> Revision {
         // An audio clip's regions: the composer reads notes, and an audio
         // clip has none.
         audio: _,
+        // The synth its locks were made for: locks are out, so it is too.
+        made_for: _,
     } = clip;
     let mut h = Fnv::new();
     h.word(*length as u64);

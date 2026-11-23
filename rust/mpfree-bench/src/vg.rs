@@ -12,7 +12,7 @@
 
 #![allow(unsafe_code)]
 
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 
 /// `VG_USERREQ_TOOL_BASE('C', 'T')`: callgrind's requests.
 const CALLGRIND: u64 = ((b'C' as u64) << 24) | ((b'T' as u64) << 16);
@@ -60,12 +60,17 @@ pub fn zero_stats() {
     request(0, ZERO_STATS, 0);
 }
 
+/// A dump's name for [`dump_stats_at`], made before the count starts so
+/// that its allocation isn't counted. A NUL in it becomes a space.
+pub fn trigger(why: &str) -> CString {
+    CString::new(why.replace('\0', " ")).unwrap_or_default()
+}
+
 /// Callgrind: write the counts since the last zero or dump to a new file
 /// whose `desc: Trigger:` line names `why`, and start again from zero.
-pub fn dump_stats_at(why: &str) {
-    // A name with a NUL in it would be cut there; ours have none.
-    let text = CString::new(why.replace('\0', " ")).unwrap_or_default();
-    request(0, DUMP_STATS_AT, text.as_ptr() as u64);
+/// Allocates nothing, so a count ends where the request is.
+pub fn dump_stats_at(why: &CStr) {
+    request(0, DUMP_STATS_AT, why.as_ptr() as u64);
 }
 
 #[cfg(test)]
@@ -77,7 +82,7 @@ mod tests {
         // Under `valgrind` this test is meaningless; elsewhere it must be 0.
         if running() == 0 {
             zero_stats();
-            dump_stats_at("nothing to see");
+            dump_stats_at(&trigger("nothing to see"));
             assert_eq!(request(42, RUNNING_ON_VALGRIND, 0), 42);
         }
     }

@@ -311,7 +311,7 @@ mod tests {
         c.audio = Some(AudioClip::of(RecId(1), 0, 96_000, BAR, 120.0));
         let mut v = PlayView::compile(&p, &[]).unwrap();
         v.song = true;
-        v.song_clips = vec![view_of(&c, None, ROWS + 4, 0, 0)];
+        v.song_clips = vec![view_of(&c, None, None, ROWS + 4, 0, 0)];
         v.tracks[0].regions = blocks
             .iter()
             .map(|&(start, end)| RegionView {

@@ -140,15 +140,31 @@ impl Rig {
         }
     }
 
-    /// Periods until `done`, giving the threads time.
+    /// Periods until `done`, giving the threads time: more of it a period
+    /// before [`START`], so a busy machine's threads (the writer making an
+    /// armed take's file, the player starting) have seconds to answer in
+    /// the lead-in, not a quarter of one.
     #[track_caller]
     fn run_until(&mut self, mut done: impl FnMut(&mut Rig) -> bool) {
         let t0 = Instant::now();
         while !done(self) {
             assert!(t0.elapsed() < Duration::from_secs(30), "timed out");
             self.period();
-            std::thread::sleep(Duration::from_micros(300));
+            let pause = if self.frame < START { 4000 } else { 300 };
+            std::thread::sleep(Duration::from_micros(pause));
         }
+    }
+
+    /// Track `tracks`' files made for their armed takes, before [`START`].
+    #[track_caller]
+    fn armed(&mut self, tracks: &[usize]) {
+        let t0 = Instant::now();
+        self.run_until(|r| tracks.iter().all(|&t| r.h.armed_file(t) == Some(true)));
+        assert!(
+            self.frame < START - P,
+            "the files took {:?} to be made, past the lead-in",
+            t0.elapsed()
+        );
     }
 
     fn events(&mut self) -> Vec<FileEvent> {
@@ -163,7 +179,7 @@ impl Rig {
         self.h
             .command(A::SetInput(1, mpfree_audiotracks::Input::Stereo));
         if files {
-            self.run_until(|r| r.h.armed_file(0) == Some(true) && r.h.armed_file(1) == Some(true));
+            self.armed(&[0, 1]);
         }
         assert!(self.frame < START - P);
         self.t.command(START, T::Record);
@@ -186,8 +202,7 @@ impl Rig {
     /// until its take is on its file.
     fn record_long(&mut self, bars: u64) {
         self.h.command(A::Arm(0, true));
-        self.run_until(|r| r.h.armed_file(0) == Some(true));
-        assert!(self.frame < START - P);
+        self.armed(&[0]);
         self.t.command(START, T::Record);
         self.t.command(START + bars * BAR, T::Stop);
         self.run_to(START + bars * BAR + 4 * P);
@@ -529,10 +544,11 @@ fn the_drive_falling_behind_is_told_to_system_status() {
             .any(|p| p.report.kind == &kinds::STICK_FELL_BEHIND),
         "{before:?}"
     );
-    // A jump into the middle of the take, which the cache can't have yet.
+    // A jump into the middle of the take, played from there at once (Play,
+    // not PlayStart, which plays from bar 1: whether bar 1's start was
+    // held yet decided it before), which the cache can't have yet.
     r.t.command(r.frame, T::Locate(15 * BAR_T));
-    r.run_to(r.frame + 2 * P);
-    r.t.command(r.frame, T::PlayStart);
+    r.t.command(r.frame, T::Play);
     r.run_to(r.frame + 2 * P);
     assert!(r.h.tracks.stats().missed > 0);
     // The player's counters go to System status every 64 periods.
@@ -714,7 +730,9 @@ fn a_sound_whose_file_cant_be_written_comes_into_memory_and_is_said() {
     let dir = scratch("unwritten");
     let mut r = Rig::new(Some(&dir), true);
     r.live = false;
-    // The folder is gone: the file can't be written.
+    // The folder is gone: the file can't be written. (The worker makes it
+    // after starting the player, so wait for it first.)
+    r.run_until(|_| dir.is_dir());
     std::fs::remove_dir_all(&dir).unwrap();
     let id = r.h.import(1, 0, 2, a_sound(), vec![], 120.0).unwrap();
     r.run_until(|r| r.h.importing().is_none());
@@ -791,8 +809,9 @@ fn a_project_s_converted_takes_are_written_to_files_and_play_from_them() {
 fn record_paced(r: &mut Rig, bars: u64, files: bool) {
     r.h.command(A::Arm(0, true));
     if files {
-        r.run_until(|r| r.h.armed_file(0) == Some(true));
+        r.armed(&[0]);
     }
+    assert!(r.frame < START - P);
     r.t.command(START, T::Record);
     r.t.command(START + bars * BAR, T::Stop);
     while r.frame < START + bars * BAR + 4 * P {

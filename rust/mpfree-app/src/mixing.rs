@@ -344,8 +344,6 @@ pub struct PlayLevels {
     pub loop_filter: f32,
     /// The XY pad's FX mix, 0 to 1.
     pub fx_mix: f32,
-    /// Pads muted (a bit each), as the speakers show them.
-    pub pad_mutes: u16,
 }
 
 /// A change from the Play page for the mixer. The page says what it wants
@@ -358,12 +356,10 @@ pub enum PlayFx {
     Strip { strip: StripId, id: u16, value: f32 },
     /// A track's DJ filter: -100 (low-pass) to 100 (high-pass), 0 off.
     Filter { strip: StripId, position: f32 },
-    /// A speaker: mute or unmute a pad.
+    /// Kit 1's pad channel `pad` (A1-A16) muted or let play in the Mix
+    /// tab: the pad's sound on every track. A pad mute on a track is the
+    /// time engine's (the instrument redesign's step 10).
     PadMute { pad: usize, mute: bool },
-    /// Solo a pad of the kit, or let go of its solo (TRACK MUTE held over
-    /// the kit's pad mutes): while any pad is soloed the others are
-    /// silent.
-    PadSolo { pad: usize, solo: bool },
     /// Drop drums: these pads (a bit each) muted while held, as well.
     Drop(u16),
     /// A throw held or let go: as the Perform FX pad's own settings say
@@ -639,13 +635,27 @@ pub struct MixHost {
     last: MixView,
     selected: Option<StripId>,
     state_at: Option<Instant>,
-    /// Pads muted by their speakers or the panel, and by Drop drums.
+    /// Kit 1's pad channels muted in the Mix tab, and by Drop drums.
     pad_mutes: u16,
     dropped: u16,
-    /// Pads soloed (a bit each): while any is, the others are silent.
-    pad_solos: u16,
+    /// An old project's pad mutes and solos, for the app to give to each
+    /// track on kit 1 ([`MixHost::take_old_pad_mutes`]).
+    old_pads: Option<(u16, u16)>,
     /// What the XY pad plays ([`PlayFx::XyEffect`]).
     xy_effect: Option<usize>,
+    /// A finger holds the XY pad (the screen's or a learned control's).
+    xy_down: bool,
+    /// It is the screen's, as its actions said ([`MixHost::play_screen`]):
+    /// the pad's state on the screen ([`MixHost::screen_xy`]) can let it go.
+    xy_screen: bool,
+    /// The pad was pressed since the last period ran.
+    xy_new: bool,
+    /// A lift that came before the period its press plays in (a tap
+    /// quicker than a period): done once that period has played.
+    xy_late: Option<(f32, f32)>,
+    /// Lifts the pad's state on the screen did, its lift action not having
+    /// come (counted for the status line).
+    xy_found_up: u64,
     /// Perform pads' throws held while their strip's Perform FX is being
     /// put on: each plays when it lands ([`MixHost::poll_built`]).
     waiting: [Option<Waiting>; WAITING],
@@ -928,7 +938,7 @@ impl MixHost {
             state_at: None,
             pad_mutes: 0,
             dropped: 0,
-            pad_solos: 0,
+            old_pads: None,
             mutes_sent: 0,
             loop_point: master_in,
             audio_points: [None; mpfree_audiotracks::MAX_TRACKS],
@@ -936,6 +946,11 @@ impl MixHost {
             loop_echoes: [0; mpfree_fx::RETURNS],
             loop_bus_echo: None,
             xy_effect: None,
+            xy_down: false,
+            xy_screen: false,
+            xy_new: false,
+            xy_late: None,
+            xy_found_up: 0,
             waiting: [None; WAITING],
             throw_said: Vec::new(),
             perform_want: Vec::new(),
@@ -1197,6 +1212,13 @@ impl MixHost {
         }
         // Its inserts may reuse the old ones' slot ids.
         self.modes = crate::fxmodes::Modes::default();
+        // Nothing the last project held stays held: every hand, step lock
+        // and move lets go, and the XY pad with them.
+        self.modu.let_go_all();
+        self.xy_down = false;
+        self.xy_late = None;
+        // An old project's pad mutes, for the tracks to take as it opens.
+        self.old_pads = Some((load.old_pad_mutes, load.old_pad_solos)).filter(|&(m, s)| m | s != 0);
         self.opening = Some(Box::new(Open {
             load,
             stage: OpenStage::Clear,
@@ -1324,7 +1346,6 @@ impl MixHost {
                 }
                 self.route_lent();
                 self.pad_mutes = load.pad_mutes;
-                self.pad_solos = load.pad_solos;
                 self.apply_mutes();
                 let effects: usize = self
                     .mixer
@@ -1620,25 +1641,20 @@ impl MixHost {
                 let addr = ParamAddr::macro_value(card.min(7));
                 self.modu.lock(&self.mixer, 0, addr, value);
             }
-            PlayFx::Xy { x, y, down } => match self.xy_effect {
-                Some(_) => {
-                    use mpfree_fx::xyfx::ids as xy;
-                    // Still being built: the next move plays it.
-                    let Some(slot) = self.xy_slot() else {
-                        return;
-                    };
-                    self.insert(StripId::Master, slot, xy::X, x.clamp(0.0, 1.0) * 100.0);
-                    self.insert(StripId::Master, slot, xy::Y, y.clamp(0.0, 1.0) * 100.0);
-                    let open = if down { 1.0 } else { 0.0 };
-                    self.insert(StripId::Master, slot, xy::ACTIVE, open);
+            PlayFx::Xy { x, y, down } => {
+                if !down && self.xy_new {
+                    // Pressed and lifted before a period played it (a tap
+                    // quicker than a period): it plays for one period and
+                    // lets go after it.
+                    self.xy_late = Some((x, y));
+                    return;
                 }
-                None => {
-                    let pad = mpfree_fx::XyPad::perform();
-                    for (axis, pos) in [(pad.x, x), (pad.y, y)] {
-                        self.insert(StripId::Master, PERFORM_SLOT, axis.param, axis.value(pos));
-                    }
-                }
-            },
+                // Anything newer takes a waiting lift's place.
+                self.xy_late = None;
+                self.xy_new |= down && !self.xy_down;
+                self.xy_down = down;
+                self.play_xy(x, y, down);
+            }
             PlayFx::XyEffect(pick) => {
                 use mpfree_fx::xyfx::ids as xy;
                 let pick = pick.filter(|&k| k < XY_START.len());
@@ -1670,20 +1686,68 @@ impl MixHost {
                 }
                 self.apply_mutes();
             }
-            PlayFx::PadSolo { pad, solo } if pad < PADS => {
-                if solo {
-                    self.pad_solos |= 1 << pad;
-                } else {
-                    self.pad_solos &= !(1 << pad);
-                }
-                self.apply_mutes();
-            }
-            PlayFx::PadMute { .. } | PlayFx::PadSolo { .. } => {}
+            PlayFx::PadMute { .. } => {}
             PlayFx::Drop(pads) => {
                 self.dropped = pads;
                 self.apply_mutes();
             }
         }
+    }
+
+    /// The XY pad at `x`, `y`, held or not: the XY FX's effect picked, or
+    /// the Perform FX's DJ filter and echo.
+    fn play_xy(&mut self, x: f32, y: f32, down: bool) {
+        match self.xy_effect {
+            Some(_) => {
+                use mpfree_fx::xyfx::ids as xy;
+                // Still being built: the next move plays it.
+                let Some(slot) = self.xy_slot() else {
+                    return;
+                };
+                self.insert(StripId::Master, slot, xy::X, x.clamp(0.0, 1.0) * 100.0);
+                self.insert(StripId::Master, slot, xy::Y, y.clamp(0.0, 1.0) * 100.0);
+                let open = if down { 1.0 } else { 0.0 };
+                self.insert(StripId::Master, slot, xy::ACTIVE, open);
+            }
+            None => {
+                let pad = mpfree_fx::XyPad::perform();
+                for (axis, pos) in [(pad.x, x), (pad.y, y)] {
+                    self.insert(StripId::Master, PERFORM_SLOT, axis.param, axis.value(pos));
+                }
+            }
+        }
+    }
+
+    /// A change from the screen's Play page: as [`MixHost::play`], and the
+    /// XY pad's hold is the screen's.
+    pub fn play_screen(&mut self, fx: PlayFx) {
+        if let PlayFx::Xy { down, .. } = fx {
+            self.xy_screen = down;
+        }
+        self.play(fx);
+    }
+
+    /// The screen's XY pad as it stands (`xy_slot`), read once a period
+    /// after the screen's actions: if the mixer holds the pad for the
+    /// screen but the finger is up there, the pad lets go now, its lift
+    /// action not having come. True when it did.
+    pub fn screen_xy(&mut self, s: crate::xy_slot::XyState) -> bool {
+        if !self.xy_screen || s.down {
+            return false;
+        }
+        self.xy_screen = false;
+        self.xy_found_up += 1;
+        self.play(PlayFx::Xy {
+            x: s.x,
+            y: s.y,
+            down: false,
+        });
+        true
+    }
+
+    /// Lifts the screen's pad state did for its lost lift actions.
+    pub fn xy_found_up(&self) -> u64 {
+        self.xy_found_up
     }
 
     fn insert(&mut self, strip: StripId, slot: usize, id: u16, value: f32) {
@@ -2006,7 +2070,7 @@ impl MixHost {
     }
 
     fn apply_mutes(&mut self) {
-        let silent = self.pad_mutes | self.dropped | self.solo_silent();
+        let silent = self.pad_mutes | self.dropped;
         for p in 0..PADS {
             let bit = 1 << p;
             let want = if silent & bit != 0 { 1.0 } else { 0.0 };
@@ -2029,25 +2093,17 @@ impl MixHost {
             .min(0.0)
     }
 
-    /// The pads muted by their speakers or SHIFT + TRACK MUTE (a bit
-    /// each; Drop drums' are not counted).
+    /// Kit 1's pad channels muted in the Mix tab (a bit each; Drop
+    /// drums' are not counted).
     pub fn pad_mutes(&self) -> u16 {
         self.pad_mutes
     }
 
-    /// The pads soloed (a bit each).
-    pub fn pad_solos(&self) -> u16 {
-        self.pad_solos
-    }
-
-    /// The pads a solo silences: every pad but the soloed ones, while any
-    /// is (a bit each).
-    pub fn solo_silent(&self) -> u16 {
-        if self.pad_solos == 0 {
-            0
-        } else {
-            !self.pad_solos
-        }
+    /// The pad mutes and solos of the project just opened, if it was saved
+    /// before they were a track's (step 10): kit 1's A1-A16, a bit each,
+    /// for each track on kit 1. Taken once.
+    pub fn take_old_pad_mutes(&mut self) -> Option<(u16, u16)> {
+        self.old_pads.take()
     }
 
     /// What the Play page shows. Cheap: a few reads.
@@ -2066,7 +2122,6 @@ impl MixHost {
             drums_filter: insert(StripId::Track(DRUMS), FILTER_SLOT, dj_filter::POSITION),
             loop_filter: insert(StripId::Track(LOOP), FILTER_SLOT, dj_filter::POSITION),
             fx_mix: insert(StripId::Master, PERFORM_SLOT, perf::MIX) / 100.0,
-            pad_mutes: self.pad_mutes,
         }
     }
 
@@ -2666,7 +2721,7 @@ impl MixHost {
         self.give_back_plain();
         let lent: Vec<(StripId, usize, usize)> = self.pad_channels.lent().collect();
         let track1 = StripId::Track(self.track_channel(0));
-        crate::project::mixer_text_lent(&self.mixer, self.pad_mutes, self.pad_solos, &lent, track1)
+        crate::project::mixer_text_lent(&self.mixer, self.pad_mutes, &lent, track1)
     }
 
     /// The tracks whose own channels are in use, a bit each: playing their
@@ -2756,6 +2811,15 @@ impl MixHost {
         left: &mut [f32; PERIOD],
         right: &mut [f32; PERIOD],
     ) -> (f32, bool) {
+        // A tap on the XY pad quicker than a period played for the last
+        // one: it lets go now.
+        if !self.xy_new {
+            if let Some((x, y)) = self.xy_late.take() {
+                self.xy_down = false;
+                self.play_xy(x, y, false);
+            }
+        }
+        self.xy_new = false;
         // The audio tracks are in already, each on its own channel
         // (`audiotracks::TrackHost::play_into`): the Audio strip hears
         // nothing since phase 1b.
@@ -2913,7 +2977,8 @@ impl MixHost {
                 id: mx::MUTE,
                 value,
             } if p < PADS => {
-                // The speakers on the Play page follow.
+                // Kept with Drop drums' over it (not a track's pad mute:
+                // the Play page's speakers are those, step 10).
                 self.play(PlayFx::PadMute {
                     pad: p,
                     mute: value >= 0.5,
@@ -3249,40 +3314,39 @@ mod tests {
         );
     }
 
-    /// A pad soloed (TRACK MUTE held over the kit's pad mutes): the other
-    /// pads go silent through their strips' mutes, more solos add pads, and
-    /// letting go of the last solo gives back the pads' own mutes. The
-    /// speakers and UNDO keep reading each pad's own mute.
+    /// Step 10: a pad mute is a track's. The mixer keeps only kit 1's pad
+    /// channels muted in the Mix tab (`chanmutes`); a project saved before
+    /// kept kit 1's pad mutes and solos in the mixer part (`padmutes`,
+    /// `padsolos`): they open as the old ones, for the tracks to take
+    /// once, and mute no channel.
     #[test]
-    fn a_pad_solo_silences_the_kits_other_pads() {
-        let mut h = MixHost::new(RATE, -6.0, -6.0);
-        let muted = |h: &mut MixHost| -> u16 {
-            h.run_silent_period();
+    fn old_pad_mutes_open_for_the_tracks_and_the_mix_tabs_mutes_stay() {
+        let open = |text: &str| {
+            let mut h = MixHost::new(RATE, -6.0, 0.0);
+            let load =
+                crate::project::mixer_load(text, None, RATE, &crate::plugins::Plugins::none())
+                    .unwrap();
+            h.open(Box::new(load));
+            for _ in 0..400 {
+                h.tend_open();
+                h.run_silent_period();
+            }
+            h
+        };
+        let muted = |h: &MixHost| -> u16 {
             (0..PADS)
                 .filter(|&p| h.mixer.param(StripId::Pad(p), mx::MUTE) >= 0.5)
                 .fold(0, |m, p| m | 1 << p)
         };
-        h.play(PlayFx::PadMute { pad: 5, mute: true });
-        h.play(PlayFx::PadSolo { pad: 0, solo: true });
-        assert_eq!((h.pad_solos(), muted(&mut h)), (1, !1));
-        h.play(PlayFx::PadSolo { pad: 2, solo: true });
-        assert_eq!(muted(&mut h), !0b101);
-        assert_eq!(h.value(StripId::Pad(1), mx::MUTE), 0.0, "its own mute");
-        assert_eq!(h.play_levels().pad_mutes, 1 << 5, "the speakers");
-        h.play(PlayFx::PadSolo {
-            pad: 0,
-            solo: false,
-        });
-        h.play(PlayFx::PadSolo {
-            pad: 2,
-            solo: false,
-        });
-        assert_eq!((h.pad_solos(), muted(&mut h)), (0, 1 << 5));
-        h.play(PlayFx::PadSolo {
-            pad: 16,
-            solo: true,
-        });
-        assert_eq!(h.pad_solos(), 0, "no pad 17");
+        let text = crate::project::mixer_text(&MixHost::new(RATE, -6.0, 0.0).mixer, 0b100);
+        assert!(text.contains("\nchanmutes 4\n"), "{text}");
+        let mut h = open(&text);
+        assert_eq!((h.pad_mutes(), muted(&h)), (0b100, 0b100));
+        assert_eq!(h.take_old_pad_mutes(), None);
+        let mut h = open(&text.replace("chanmutes 4", "padmutes 5\npadsolos 1"));
+        assert_eq!((h.pad_mutes(), muted(&h)), (0, 0), "no channel muted");
+        assert_eq!(h.take_old_pad_mutes(), Some((5, 1)));
+        assert_eq!(h.take_old_pad_mutes(), None, "taken once");
     }
 
     /// Jay, 16 Nov: a delay or reverb put on a send return starts fully
@@ -4479,6 +4543,81 @@ mod tests {
         assert_eq!(xyfx(&h, xy::ACTIVE), Some(0.0));
         assert_eq!(xyfx(&h, xy::EFFECT), Some(0.0), "on the Filter, idle");
         assert_eq!(h.mixer.chain(StripId::Master).map_or(0, |c| c.len()), n);
+    }
+
+    /// The XY FX's Active switch, with Wash picked and put on the master.
+    fn xy_fx_on(h: &mut MixHost) -> impl Fn(&MixHost) -> Option<f32> {
+        use mpfree_fx::xyfx::ids as xy;
+        h.play(PlayFx::XyEffect(Some(3)));
+        run(h, 10, 0.0, 0.0);
+        let slot = h.xy_slot().expect("the XY FX on the master");
+        move |h: &MixHost| {
+            h.mixer
+                .chain(StripId::Master)
+                .and_then(|c| c.node(slot))
+                .map(|n| n.param(xy::ACTIVE))
+        }
+    }
+
+    fn xy(x: f32, y: f32, down: bool) -> PlayFx {
+        PlayFx::Xy { x, y, down }
+    }
+
+    #[test]
+    fn a_tap_on_the_xy_pad_quicker_than_a_period_plays_for_one() {
+        let mut h = MixHost::new(RATE, 0.0, 0.0);
+        let active = xy_fx_on(&mut h);
+        // Down and up before a period ran: it opens for one period...
+        h.play(xy(0.5, 0.5, true));
+        h.play(xy(0.5, 0.5, false));
+        run(&mut h, 1, 0.0, 0.0);
+        assert_eq!(active(&h), Some(1.0), "open for a period");
+        // ...and lets go after it.
+        run(&mut h, 1, 0.0, 0.0);
+        assert_eq!(active(&h), Some(0.0), "then closed");
+        // A new touch before the late lift is done: the new touch holds.
+        h.play(xy(0.5, 0.5, true));
+        h.play(xy(0.5, 0.5, false));
+        h.play(xy(0.6, 0.5, true));
+        run(&mut h, 3, 0.0, 0.0);
+        assert_eq!(active(&h), Some(1.0), "the new touch holds it");
+        // A lift in a later period than the press is done at once.
+        h.play(xy(0.6, 0.5, false));
+        run(&mut h, 1, 0.0, 0.0);
+        assert_eq!(active(&h), Some(0.0));
+    }
+
+    #[test]
+    fn the_screens_pad_state_lets_go_when_its_lift_never_came() {
+        use crate::xy_slot::XyState;
+        let mut h = MixHost::new(RATE, 0.0, 0.0);
+        let active = xy_fx_on(&mut h);
+        h.play_screen(xy(0.3, 0.6, true));
+        run(&mut h, 2, 0.0, 0.0);
+        assert_eq!(active(&h), Some(1.0));
+        let up = XyState {
+            gesture: 1,
+            down: false,
+            x: 0.3,
+            y: 0.6,
+        };
+        assert!(
+            !h.screen_xy(XyState { down: true, ..up }),
+            "still down there: nothing to do"
+        );
+        // The lift action was lost; the pad's state says the finger is up.
+        assert!(h.screen_xy(up));
+        run(&mut h, 2, 0.0, 0.0);
+        assert_eq!(active(&h), Some(0.0), "let go");
+        assert_eq!(h.xy_found_up(), 1);
+        assert!(!h.screen_xy(up), "only once");
+        // A learned control holding the pad isn't the screen: the screen's
+        // state leaves it alone.
+        h.play(xy(0.3, 0.6, true));
+        run(&mut h, 2, 0.0, 0.0);
+        assert!(!h.screen_xy(up));
+        run(&mut h, 2, 0.0, 0.0);
+        assert_eq!(active(&h), Some(1.0));
     }
 
     /// A Perform pad's throw plays as the pad says (a bar, from the next

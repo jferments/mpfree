@@ -1613,35 +1613,40 @@ mod tests {
         });
     }
 
-    /// The Kick's speaker on Play and Pad 1's M in the pad mixer are one
-    /// mute: each shows what the other did.
+    /// The Kick's speaker on Play mutes the Kick on the track the steps
+    /// show (step 10: a pad mute is the track's); Pad 1's M in the pad
+    /// mixer mutes kit 1's channel, for every track, and leaves the
+    /// speaker as it is.
     #[test]
-    fn a_speaker_on_play_and_m_in_the_pad_mixer_are_one_mute() {
+    fn a_speaker_on_play_mutes_the_tracks_pad_and_m_in_the_pad_mixer_its_channel() {
         on_big_stack(|| {
             let mut s = Session::new();
             s.play_view("Beats");
             let kick = lane(&s, "Kick").0;
+            let t = s.time.steps().track;
             s.press("steps", "mute", "Kick speaker");
-            assert!(
-                s.mix.play_levels().pad_mutes & (1 << kick) != 0,
-                "the speaker muted pad 1"
+            assert_eq!(
+                s.time.pad_mutes(t),
+                Some((1 << kick, 0)),
+                "the speaker muted the track's Kick"
             );
             assert!(lane(&s, "Kick").2, "drawn muted");
+            assert_eq!(s.mix.pad_mutes(), 0, "no channel muted");
 
             s.press("header", "tab", "Mix");
             s.press("mixer", "view", "Pads").run_for(0.1);
-            assert!(strip(&s, "Pad 1").mute, "the pad mixer shows Pad 1 muted");
+            assert!(!strip(&s, "Pad 1").mute, "Pad 1's channel plays");
             s.press("mixer", "mute", "Pad 1 M").run_for(0.1);
-            assert!(!strip(&s, "Pad 1").mute);
-            assert_eq!(
-                s.mix.play_levels().pad_mutes & (1 << kick),
-                0,
-                "M let it play"
-            );
+            assert!(strip(&s, "Pad 1").mute);
+            assert_eq!(s.mix.pad_mutes(), 1, "M muted the channel");
 
             s.press("header", "tab", "Play");
             assert_eq!(s.view(), View::Play);
-            assert!(!lane(&s, "Kick").2, "the speaker shows it playing");
+            assert!(lane(&s, "Kick").2, "the speaker shows the track's mute");
+            s.press("steps", "mute", "Kick speaker");
+            assert!(!lane(&s, "Kick").2, "the speaker let it play");
+            assert_eq!(s.time.pad_mutes(t), Some((0, 0)));
+            assert_eq!(s.mix.pad_mutes(), 1, "the channel stays muted");
         });
     }
 
@@ -2022,7 +2027,9 @@ mod tests {
     /// Track 1 keeps its kit. PAD BANK A gives the pads the kit again (FM
     /// stays, as bank B points at it) and B gives them FM; REC there
     /// records FM on a free track, and the project's pads part keeps the
-    /// bank's line.
+    /// bank's line. The Synth tab's hint then says who plays FM: "the
+    /// pads, Track 2" while Track 2 is picked (the pads follow it on the
+    /// other banks), "pads bank B, Track 2" once Track 1 is again.
     #[test]
     fn bank_b_only_plays_fm_on_bank_b_and_the_kit_on_the_others() {
         use crate::instruments::free;
@@ -2086,6 +2093,27 @@ mod tests {
                 "{}",
                 s.app.pads_part()
             );
+            // Who plays FM (step 8). REC picked Track 2, so the other
+            // banks follow it to FM: the pads, every bank.
+            s.button("STOP").settle();
+            s.run_for(crate::gui::TELL_SECONDS as f64 + 0.5).settle();
+            assert!(
+                s.hint().starts_with("FM: the pads, Track 2"),
+                "{}",
+                s.hint()
+            );
+            // Track 1 picked again: bank B alone of the pads, and Track 2.
+            let pick = mpfree_time_ui::TimeAction::Pick(0);
+            s.route(crate::gui::FromUi::Time(pick));
+            s.run_periods(2).settle();
+            assert_eq!(s.app.track(), 0);
+            assert_eq!(s.mix.instruments.pads_play_at(), Some(free(0)));
+            s.run_for(crate::gui::TELL_SECONDS as f64 + 0.5).settle();
+            assert!(
+                s.hint().starts_with("FM: pads bank B, Track 2"),
+                "{}",
+                s.hint()
+            );
         });
     }
 
@@ -2118,6 +2146,299 @@ mod tests {
                 s.hint().starts_with("FM: the pads, Track 2"),
                 "{}",
                 s.hint()
+            );
+        });
+    }
+
+    /// Layers with the shared synth (the instrument redesign's step 11a
+    /// and 11b): Track 1 plays the synth, so Layer and FM in the list of
+    /// synths make "Poly + FM", the hit going through the track to Poly
+    /// and to FM beside it. "Track 1's" again takes Poly off (FM is the
+    /// first now), and once more adds Poly as a layer, which the audio
+    /// loop plays itself; a hit's let-go ends it there.
+    #[test]
+    fn the_shared_synth_layers_with_a_synth_picked_in_the_list() {
+        use crate::instruments::free;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.pick_synth();
+            s.press("header", "tab", "Synth").settle();
+            s.press("synth-inst", "card", "").settle();
+            s.press("synth-pick", "layer", "Layer").settle();
+            s.press("synth-pick", "synth", "FM").run_periods(4).settle();
+            assert_eq!(s.mix.instruments.layer_at(0), Some(free(0)), "{}", s.hint());
+            assert_eq!(s.app.pads_layer_names().as_deref(), Some("Poly + FM"));
+            assert!(
+                s.control("header", "chip", "Pads: Poly + FM").is_some(),
+                "{}",
+                s.hint()
+            );
+            let fm = |s: &Session| s.mix.instruments.stats(free(0)).notes;
+            let before = fm(&s);
+            s.pad(3, 90, 0.05);
+            assert_eq!(fm(&s), before + 1, "FM beside Poly");
+            // Poly off: FM is what the pads play.
+            s.press("synth-pick", "synth", "Track 1's")
+                .run_periods(2)
+                .settle();
+            assert_eq!(s.mix.instruments.pads_play_at(), Some(free(0)));
+            assert!(!s.app.has_layers());
+            // Poly as a layer: the loop plays it.
+            s.press("synth-pick", "synth", "Track 1's")
+                .run_periods(2)
+                .settle();
+            assert!(s.app.pads_layer_synth(), "{}", s.hint());
+            assert_eq!(s.app.pads_layer_names().as_deref(), Some("FM + Poly"));
+            s.pad_edge(3, 90, true);
+            s.run_periods(1);
+            assert!(s.layer_synth_held());
+            s.pad_edge(3, 0, false);
+            s.run_periods(1);
+            assert!(!s.layer_synth_held(), "ended where it started");
+            // Keep, then Follow track: the layers go too.
+            s.press("synth-pick", "keep", "").run_periods(2).settle();
+            s.press("header", "chip", "Pads: FM + Poly")
+                .run_periods(2)
+                .settle();
+            assert!(!s.app.has_layers() && s.mix.instruments.layer_at(0).is_none());
+        });
+    }
+
+    /// REC records each layer on its own track (the instrument redesign's
+    /// step 11c). FM picked for the pads, with Pluck as a layer: the chip
+    /// names where FM goes and counts Pluck, "REC → Track 2 · FM + 1
+    /// more". REC points Track 2 at FM and Track 3 at Pluck and arms both;
+    /// the hits and a key go into both in one take, and one UNDO takes the
+    /// take back from both. The next REC needs nothing set up.
+    #[test]
+    fn rec_records_each_layer_on_its_own_track_in_one_take() {
+        use crate::instruments::free;
+        use crate::rec_arm::Take;
+        use mpfree_transport::State;
+        fn rec_chip(s: &Session) -> String {
+            s.screen
+                .ui
+                .get::<crate::play_widgets::PlayTransport>(crate::play_page::TRANSPORT)
+                .and_then(|t| t.look.rec.as_ref().map(|c| c.line()))
+                .expect("the REC chip")
+        }
+        fn notes(s: &Session, t: usize) -> Vec<u8> {
+            let mut n: Vec<u8> = s.time.project().tracks[t]
+                .slots
+                .clips()
+                .flat_map(|c| c.notes.iter().map(|n| n.note))
+                .collect();
+            n.sort_unstable();
+            n.dedup();
+            n
+        }
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("header", "tab", "Synth").settle();
+            s.press("synth-inst", "card", "").settle();
+            s.press("synth-pick", "synth", "FM").run_periods(4).settle();
+            s.press("synth-pick", "layer", "Layer").settle();
+            s.press("synth-pick", "synth", "Pluck")
+                .run_periods(4)
+                .settle();
+            s.press("synth-pick", "keep", "").run_periods(2).settle();
+            assert_eq!(s.app.pads_layer_names().as_deref(), Some("FM + Pluck"));
+            assert_eq!(s.mix.instruments.layer_at(0), Some(free(1)));
+            s.run_periods(1).settle();
+            assert_eq!(rec_chip(&s), "REC → Track 2 · FM + 1 more");
+            // REC: Track 2 plays FM, Track 3 Pluck, both armed.
+            s.route(crate::gui::FromUi::Time(
+                mpfree_time_ui::TimeAction::Transport(mpfree_transport::Command::SetCountIn(0)),
+            ));
+            s.button("REC").settle();
+            s.run_periods(4).settle();
+            assert_eq!(s.time.armed(), Some(1), "{:?}", s.said());
+            assert_eq!(s.mix.instruments.send(1), Some(free(0)), "Track 2: FM");
+            assert_eq!(s.mix.instruments.send(2), Some(free(1)), "Track 3: Pluck");
+            assert_eq!(s.time.also(), 1 << 2, "Track 3 armed too");
+            assert_eq!(s.app.rec.ready, Some(Take::Replace));
+            assert_eq!(s.app.pads_layer_recs(s.time.also())[0], Some(2));
+            // PLAY: the hits and a key go into both tracks.
+            s.button("PLAY");
+            let end = s.t() + 4.0;
+            while s.time.info().state != State::Recording && s.t() < end {
+                s.run_periods(1);
+            }
+            assert_eq!(s.time.info().state, State::Recording);
+            for p in [2, 3] {
+                s.pad(p, 100, 0.05);
+                s.run_for(0.1);
+            }
+            // A key Pluck's pad 6 plays alone goes into its track as that
+            // pad.
+            let key = match s.mix.instruments.pad_notes(2, 5) {
+                [n] => *n,
+                other => panic!("pad 6 plays {other:?}"),
+            };
+            s.key_edge(key, Some(100));
+            s.run_for(0.1);
+            s.key_edge(key, None);
+            s.run_for(0.1);
+            s.button("REC");
+            s.run_for(0.5);
+            assert_eq!(notes(&s, 1), [2, 3], "FM's track");
+            assert_eq!(notes(&s, 2), [2, 3, 5], "Pluck's track");
+            assert_eq!(notes(&s, 0), Vec::<u8>::new(), "Track 1's kit keeps out");
+            let st = s.time.state();
+            assert_eq!(st.done.len(), 1, "one take");
+            s.button("STOP").settle();
+            // One UNDO on Play takes the take back from both.
+            s.press("header", "tab", "Play").settle();
+            s.button("UNDO").run_for(0.3);
+            assert!(notes(&s, 1).is_empty() && notes(&s, 2).is_empty());
+            // The next REC needs nothing set up: the chip names the armed
+            // tracks.
+            s.run_periods(1).settle();
+            assert_eq!(rec_chip(&s), "REC → Track 2 + Track 3");
+        });
+    }
+
+    /// A MIDI route that names a synth (the instrument redesign's step
+    /// 11e). FM picked in the list, then the pads given back to Track 1's
+    /// kit: FM stays while a route names it, and the route's keys play it
+    /// on a route row. The REC chip names Track 1 and counts FM, "REC →
+    /// Track 1 + 1 more"; REC points the free Track 2 at FM and arms it
+    /// with Track 1, and in one take the pads go into Track 1's kit and the
+    /// route's key into Track 2, as the pad its note plays there.
+    #[test]
+    fn a_route_that_names_a_synth_plays_it_and_rec_records_it_on_its_own_track() {
+        use crate::instruments::{free, routed};
+        use mpfree_transport::State;
+        fn rec_chip(s: &Session) -> String {
+            s.screen
+                .ui
+                .get::<crate::play_widgets::PlayTransport>(crate::play_page::TRANSPORT)
+                .and_then(|t| t.look.rec.as_ref().map(|c| c.line()))
+                .expect("the REC chip")
+        }
+        fn notes(s: &Session, t: usize) -> Vec<u8> {
+            let mut n: Vec<u8> = s.time.project().tracks[t]
+                .slots
+                .clips()
+                .flat_map(|c| c.notes.iter().map(|n| n.note))
+                .collect();
+            n.sort_unstable();
+            n.dedup();
+            n
+        }
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("header", "tab", "Synth").settle();
+            s.press("synth-inst", "card", "").settle();
+            s.press("synth-pick", "synth", "FM").run_periods(4).settle();
+            s.press("synth-pick", "keep", "").run_periods(2).settle();
+            let fm = s.instrument_list.free_of(0).expect("FM has an id").number();
+            s.name_route_synths([Some(fm), None, None, None]);
+            assert_eq!(s.mix.instruments.routed_at(0), Some(free(0)));
+            // Follow track: the pads play Track 1's kit; FM stays.
+            s.press("header", "chip", "Pads: FM")
+                .run_periods(4)
+                .settle();
+            assert!(!s.app.pads_chose_synth());
+            assert!(s.mix.instruments.holds(free(0)), "{:?}", s.said());
+            // The route's key plays FM, and ends there.
+            s.route_key(0, 60, Some(100));
+            assert!(s.mix.instruments.key_held(routed(0), 60));
+            s.route_key(0, 60, None);
+            assert!(!s.mix.instruments.key_held(routed(0), 60));
+            s.run_periods(1).settle();
+            assert_eq!(rec_chip(&s), "REC → Track 1 + 1 more");
+            // REC: Track 2 plays FM and is armed with Track 1.
+            s.route(crate::gui::FromUi::Time(
+                mpfree_time_ui::TimeAction::Transport(mpfree_transport::Command::SetCountIn(0)),
+            ));
+            s.button("REC").settle();
+            s.run_periods(4).settle();
+            assert_eq!(s.time.armed(), Some(0), "{:?}", s.said());
+            assert_eq!(s.mix.instruments.send(1), Some(free(0)), "Track 2: FM");
+            assert_eq!(s.time.also(), 1 << 1, "Track 2 armed too");
+            assert_eq!(s.app.route_recs(s.time.also())[0], Some(1));
+            s.button("PLAY");
+            let end = s.t() + 4.0;
+            while s.time.info().state != State::Recording && s.t() < end {
+                s.run_periods(1);
+            }
+            assert_eq!(s.time.info().state, State::Recording);
+            s.pad(2, 100, 0.05);
+            s.run_for(0.1);
+            // A key FM's pad 6 plays alone goes into Track 2 as that pad.
+            let key = match s.mix.instruments.pad_notes(1, 5) {
+                [n] => *n,
+                other => panic!("pad 6 plays {other:?}"),
+            };
+            s.route_key(0, key, Some(100));
+            s.run_for(0.1);
+            s.route_key(0, key, None);
+            s.run_for(0.1);
+            s.button("REC");
+            s.run_for(0.5);
+            assert_eq!(notes(&s, 1), [5], "FM's track");
+            assert!(
+                !notes(&s, 0).contains(&5),
+                "Track 1's kit keeps out the key"
+            );
+            assert!(!notes(&s, 0).is_empty(), "and has the pad");
+            assert_eq!(s.time.state().done.len(), 1, "one take");
+        });
+    }
+
+    /// A track's line (the instrument redesign's step 11d): over the
+    /// Instrument row's help, the Synth tab's options say what the selected
+    /// track plays and where it is heard, the channel named as the Mix tab
+    /// names it. Track 1 on its kit, then Track 3 playing Track 2's Poly,
+    /// then Track 2 itself.
+    #[test]
+    fn the_instrument_row_says_what_the_track_plays_and_where_it_is_heard() {
+        use crate::gui::FromUi;
+        use mpfree_time_ui::TimeAction;
+        fn facts(s: &Session) -> Vec<String> {
+            let card = s.screen.ui.get::<mpfree_ui::widgets::Card>("help");
+            card.map(|c| {
+                c.lines
+                    .iter()
+                    .take_while(|(l, _)| !l.is_empty())
+                    .filter(|(_, tone)| *tone == mpfree_ui::Tone::Normal)
+                    .map(|(l, _)| l.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+        }
+        fn options(s: &mut Session, track: usize) {
+            s.route(FromUi::Time(TimeAction::Arm(Some(track))));
+            s.run_for(0.05);
+            s.press("header", "tab", "Synth").settle();
+            s.button("MENU").settle();
+            assert_eq!(s.view(), crate::app::View::Options);
+            s.run_periods(2).settle();
+        }
+        on_big_stack(|| {
+            let mut s = Session::new();
+            options(&mut s, 0);
+            assert_eq!(facts(&s), ["Track 1 plays Kit 1", "In the mixer: Drums"]);
+            s.button("MENU").settle();
+            // Track 2's own Poly, then Track 3 playing it.
+            s.give_own(1, crate::synth::Engine::Poly);
+            options(&mut s, 2);
+            s.route(FromUi::MenuStep(0, 1));
+            s.run_periods(2).settle();
+            assert_eq!(s.mix.instruments.owner(2), Some(1), "{:?}", s.said());
+            assert_eq!(
+                facts(&s),
+                [
+                    "Track 3 plays Track 2's Poly",
+                    "In the mixer: Poly · Track 2"
+                ]
+            );
+            s.button("MENU").settle();
+            options(&mut s, 1);
+            assert_eq!(
+                facts(&s),
+                ["Track 2 plays its own Poly", "In the mixer: Poly · Track 2"]
             );
         });
     }
@@ -4459,12 +4780,13 @@ mod tests {
         });
     }
 
-    /// The kit's pad mutes in Perform (sequencer S4): SHIFT + TRACK MUTE's
-    /// pads wait for the bar line as the tracks' do, and land in the mixer
-    /// there; held TRACK MUTE over them solos a pad of the kit (waiting
-    /// too) and leaves the pads the kit's; STOP lands a change that waits.
+    /// A track's pad mutes in Perform (sequencer S4; step 10): SHIFT +
+    /// TRACK MUTE's pads wait for the bar line as the tracks' do, and the
+    /// selected track takes them there, its own and no channel; held
+    /// TRACK MUTE over them solos a pad (waiting too) and leaves the pads
+    /// mute keys; STOP lands a change that waits.
     #[test]
-    fn in_perform_a_kit_pad_mute_waits_for_the_bar_and_held_it_solos() {
+    fn in_perform_a_tracks_pad_mute_waits_for_the_bar_and_held_it_solos() {
         on_big_stack(|| {
             let mut s = Session::new();
             s.play_view("Beats");
@@ -4476,44 +4798,40 @@ mod tests {
             assert!(s.time.project().perform);
             s.button_with("SHIFT", "TRACK MUTE");
             assert_eq!(s.app.mute_keys(), crate::app::MuteKeys::Pads);
+            let t = s.app.track();
+            let name = s.time.project().tracks[t].name.clone();
             s.pad(0, 100, 0.05);
-            assert!(s.time.pad_waiting(0), "it waits");
-            assert_eq!(s.mix.pad_mutes(), 0);
-            assert!(
-                s.said()
-                    .iter()
-                    .any(|l| l == "pad mute: pad 1 muted on the next bar"),
-                "{:?}",
-                s.said()
-            );
+            assert!(s.time.pad_waiting(t, 0), "it waits");
+            assert_eq!(s.time.pad_mutes(t), Some((0, 0)));
+            let said = format!("pad mute: {name} A1 muted on the next bar");
+            assert!(s.said().contains(&said), "{:?}", s.said());
             s.run_for(0.1);
             let reading = s.screen.time.waiting_reading();
-            assert_eq!(reading.as_deref(), Some("Pad 1 at 2.1"));
+            assert_eq!(reading, Some(format!("{name} A1 at 2.1")));
             s.run_for(2.0);
-            assert_eq!(s.mix.pad_mutes(), 1, "landed on bar 2");
-            assert!(!s.time.pad_waiting(0) && s.time.mute_wait().is_none());
+            assert_eq!(s.time.pad_mutes(t), Some((1, 0)), "landed on bar 2");
+            assert_eq!(s.mix.pad_mutes(), 0, "no channel muted");
+            assert!(!s.time.pad_waiting(t, 0) && s.time.mute_wait().is_none());
+            let landed = format!("pad mute: at 2.1, {name} A1 muted");
             assert!(
-                s.said()
-                    .iter()
-                    .any(|l| l.contains("pad mute: at 2.1, pad 1 muted")),
+                s.said().iter().any(|l| l.contains(&landed)),
                 "{:?}",
                 s.said()
             );
-            // Held TRACK MUTE + pad 3: its solo waits, and the pads stay the
-            // kit's once TRACK MUTE is let go.
+            // Held TRACK MUTE + pad 3: its solo waits, and the pads stay
+            // mute keys once TRACK MUTE is let go.
             s.button_edge("TRACK MUTE", true);
             s.pad(2, 100, 0.05);
             s.button_edge("TRACK MUTE", false);
             assert_eq!(s.app.mute_keys(), crate::app::MuteKeys::Pads);
-            assert!(s.time.pad_waiting(2));
+            assert!(s.time.pad_waiting(t, 2));
             s.run_for(2.0);
-            assert_eq!(s.mix.pad_solos(), 1 << 2, "soloed on bar 3");
-            assert_eq!(s.mix.solo_silent() & 1, 1, "the kick is silent by it");
+            assert_eq!(s.time.pad_mutes(t), Some((1, 1 << 2)), "soloed on bar 3");
             // STOP lands a change that waits.
             s.pad(0, 100, 0.05);
-            assert!(s.time.pad_waiting(0));
+            assert!(s.time.pad_waiting(t, 0));
             s.button("STOP").run_for(0.1);
-            assert_eq!(s.mix.pad_mutes(), 0, "STOP landed it");
+            assert_eq!(s.time.pad_mutes(t), Some((0, 1 << 2)), "STOP landed it");
             assert!(s.time.mute_wait().is_none());
             s.button("TRACK MUTE");
         });

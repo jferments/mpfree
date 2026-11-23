@@ -21,9 +21,12 @@
 //!   stop ([`Running::cancelled`]), so a quick run of changes works out
 //!   only the last.
 //! - **One memory account.** A job says what it will hold
-//!   ([`Job::needs`]). It starts only when that leaves the floor free on
-//!   top of what the running jobs hold ([`Config::room`]); otherwise it
-//!   is refused, counted, and told why, and never starts.
+//!   ([`Job::needs`]) and starts only with a promise of that much
+//!   ([`Config::promise`]), held while it runs; otherwise it is refused,
+//!   counted, and told why, and never starts. In the app the promise is the
+//!   shared memory check's (`memory::reserve`): jobs, loads and work that
+//!   holds memory back for later are promised under one lock, so two of
+//!   them never count on the same free memory.
 //! - **One way to cancel**: by key ([`Jobs::cancel`]) or by what a client
 //!   keeps ([`Jobs::retain`]).
 //! - **One a process.** [`Jobs::shared`] is the process's service, made on
@@ -77,11 +80,11 @@ pub struct Key {
     /// The kind of work, such as "view" or "pitch".
     pub kind: &'static str,
     /// The sound (its id) or other thing it is for.
-    pub id: u64,
+    pub id: u128,
 }
 
 impl Key {
-    pub fn new(kind: &'static str, id: u64) -> Key {
+    pub fn new(kind: &'static str, id: u128) -> Key {
         Key { kind, id }
     }
 }
@@ -166,12 +169,37 @@ pub struct Config {
     /// on it frame by frame, so the screen goes first) and the file lane at
     /// the normal one, both off the sound's cores.
     pub on_start: fn(Lane),
-    /// The memory free now, None where it can't be read.
-    pub free: fn() -> Option<u64>,
-    /// Whether taking `need` more of the memory free (None: unknown) leaves
-    /// the floor; Err says why, in a musician's words. The app's is
-    /// `memory::room_in`.
-    pub room: fn(Option<u64>, u64) -> Result<(), String>,
+    /// Promises a job's `need` bytes while it runs, if they fit beside the
+    /// floor and every other promise standing; Err says why, in a
+    /// musician's words. The promise ends when its [`Hold`] drops, as the
+    /// job ends. The app's is the shared memory check, `memory::reserve`.
+    pub promise: fn(u64) -> Result<Hold, String>,
+}
+
+/// A promise of memory a running job holds ([`Config::promise`]): whatever
+/// the promise's maker returns, kept until the job ends.
+pub struct Hold(Option<Box<dyn Send>>);
+
+impl Hold {
+    /// No promise: memory isn't counted.
+    pub fn none() -> Hold {
+        Hold(None)
+    }
+
+    /// Holds `promise` (a memory ticket) until dropped.
+    pub fn new(promise: impl Send + 'static) -> Hold {
+        Hold(Some(Box::new(promise)))
+    }
+}
+
+impl std::fmt::Debug for Hold {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() {
+            "Hold"
+        } else {
+            "Hold(none)"
+        })
+    }
 }
 
 impl Default for Config {
@@ -182,8 +210,7 @@ impl Default for Config {
             sound_workers: 1,
             file_workers: 1,
             on_start: |_| {},
-            free: || None,
-            room: |_, _| Ok(()),
+            promise: |_| Ok(Hold::none()),
         }
     }
 }
@@ -215,7 +242,7 @@ struct State {
     running: Vec<Busy>,
     /// Workers alive on each lane.
     live: [usize; 2],
-    /// Memory the running jobs said they hold.
+    /// Memory the running jobs said they hold (promised while they run).
     reserved: u64,
     stop: bool,
     held: bool,
@@ -516,26 +543,26 @@ fn run_one(shared: &Shared, job: Job) {
         refused,
         ..
     } = job;
-    // Read before the lock: a file read on the device.
-    let free = if need > 0 {
-        (shared.config.free)()
+    // Promised outside the service's lock: the promise reads the memory
+    // free (a file read on the device) under its own.
+    let promise = if need > 0 {
+        (shared.config.promise)(need)
     } else {
-        None
+        Ok(Hold::none())
+    };
+    let _held = match promise {
+        Ok(held) => held,
+        Err(why) => {
+            shared.lock().counts.refused += 1;
+            if let Some(r) = refused {
+                r(why);
+            }
+            return;
+        }
     };
     let cancel = Arc::new(AtomicBool::new(false));
     {
         let mut s = shared.lock();
-        if need > 0 {
-            let left = free.map(|f| f.saturating_sub(s.reserved));
-            if let Err(why) = (shared.config.room)(left, need) {
-                s.counts.refused += 1;
-                drop(s);
-                if let Some(r) = refused {
-                    r(why);
-                }
-                return;
-            }
-        }
         s.reserved += need;
         s.running.push(Busy {
             key,
@@ -563,6 +590,48 @@ mod tests {
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
+    /// A memory account for a test, as the app's shared check keeps one:
+    /// `free` bytes, `floor` kept spare, promises held until dropped.
+    struct Account {
+        free: u64,
+        floor: u64,
+        held: Mutex<u64>,
+    }
+
+    struct Promised(&'static Account, u64);
+
+    impl Drop for Promised {
+        fn drop(&mut self) {
+            *self.0.held.lock().unwrap() -= self.1;
+        }
+    }
+
+    impl Account {
+        const fn new(free: u64, floor: u64) -> Account {
+            Account {
+                free,
+                floor,
+                held: Mutex::new(0),
+            }
+        }
+
+        fn promise(&'static self, need: u64) -> Result<Hold, String> {
+            let mut held = self.held.lock().unwrap();
+            if self.free.saturating_sub(*held).saturating_sub(need) < self.floor {
+                return Err(format!(
+                    "not enough memory: needs {need}, {} free, {} promised",
+                    self.free, *held
+                ));
+            }
+            *held += need;
+            Ok(Hold::new(Promised(self, need)))
+        }
+
+        fn promised(&self) -> u64 {
+            *self.held.lock().unwrap()
+        }
+    }
+
     fn settle(jobs: &Jobs) {
         let end = Instant::now() + Duration::from_secs(10);
         while jobs.busy() {
@@ -574,7 +643,7 @@ mod tests {
     /// A job that sends `n` when it runs.
     fn say(lane: Lane, kind: &'static str, n: u64, tx: &mpsc::Sender<u64>) -> Job {
         let tx = tx.clone();
-        Job::new(lane, Key::new(kind, n), move |_| {
+        Job::new(lane, Key::new(kind, u128::from(n)), move |_| {
             let _ = tx.send(n);
         })
     }
@@ -706,13 +775,10 @@ mod tests {
 
     #[test]
     fn a_job_starts_only_when_its_memory_and_the_running_jobs_leave_the_floor() {
-        // 1000 bytes free, 200 kept spare.
+        // 1000 bytes free, 200 kept spare, as the app's shared check does.
+        static MEMORY: Account = Account::new(1000, 200);
         let config = Config {
-            free: || Some(1000),
-            room: |free, need| match free {
-                Some(f) if f.saturating_sub(need) >= 200 => Ok(()),
-                _ => Err(format!("not enough memory: needs {need}, {free:?} free")),
-            },
+            promise: |need| MEMORY.promise(need),
             ..Config::default()
         };
         let jobs = Jobs::new(config);
@@ -740,14 +806,13 @@ mod tests {
         );
         let w = why.recv_timeout(Duration::from_secs(10)).unwrap();
         assert!(w.starts_with("not enough memory"), "{w}");
-        assert!(
-            w.contains("Some(400)"),
-            "the running job's 600 counted: {w}"
-        );
+        assert!(w.contains("600 promised"), "the running job's 600: {w}");
+        // Another check of the same account (a load, say) sees it too.
+        assert!(MEMORY.promise(300).is_err());
         go_tx.send(()).unwrap();
         settle(&jobs);
         assert!(ran.try_recv().is_err(), "a refused job never runs");
-        assert_eq!(jobs.reserved(), 0);
+        assert_eq!((jobs.reserved(), MEMORY.promised()), (0, 0));
         assert_eq!(jobs.counts().refused, 1);
         // With the first job done, the same load fits.
         let (ran_tx, ran) = mpsc::channel();
@@ -763,10 +828,12 @@ mod tests {
     #[test]
     fn a_service_for_tests_runs_each_job_in_place_with_the_same_checks() {
         let config = Config {
-            free: || Some(100),
-            room: |free, need| match free {
-                Some(f) if f >= need => Ok(()),
-                _ => Err("short".into()),
+            promise: |need| {
+                if need <= 100 {
+                    Ok(Hold::none())
+                } else {
+                    Err("short".into())
+                }
             },
             ..Config::default()
         };

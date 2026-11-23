@@ -82,8 +82,8 @@ use mpfree_seq::arrange::Arrangement;
 use mpfree_seq::mpfree_moves::{Kind, Map, Point, Target};
 use mpfree_seq::steps::{Edit, MovesEdit};
 use mpfree_seq::{
-    touch_room, Clip, ClipId, ClipSettings, DestId, Lock, ModelError, Note, Project, RecId, Scene,
-    SceneSettings, Touch, TouchKeep, TouchPoint, Track, MAX_TRACKS, ROWS,
+    take_out_each, touch_room, Clip, ClipId, ClipSettings, DestId, Lock, ModelError, Note, Project,
+    RecId, Scene, SceneSettings, Touch, TouchKeep, TouchPoint, Track, MAX_TRACKS, ROWS,
 };
 use mpfree_transport::time::Tick;
 
@@ -1291,31 +1291,21 @@ impl Takes {
         }
         let take = self.done.last_mut().expect("checked");
         // A note this take put in and now takes out was never there; a note
-        // it took out and now puts back is as it was.
-        for &n in &edit.erase {
-            match take
-                .added
+        // it took out and now puts back is as it was. In one pass each, as
+        // an edit can hold all of a clip's notes.
+        let erase: Vec<_> = edit.erase.iter().map(|&n| (track, slot, n)).collect();
+        let found = take_out_each(&mut take.added, &erase);
+        take.erased.extend(
+            erase
                 .iter()
-                .position(|&(tr, sl, x)| (tr, sl, x) == (track, slot, n))
-            {
-                Some(i) => {
-                    take.added.remove(i);
-                }
-                None => take.erased.push((track, slot, n)),
-            }
-        }
-        for &n in &edit.add {
-            match take
-                .erased
-                .iter()
-                .position(|&(tr, sl, x)| (tr, sl, x) == (track, slot, n))
-            {
-                Some(i) => {
-                    take.erased.remove(i);
-                }
-                None => take.added.push((track, slot, n)),
-            }
-        }
+                .zip(&found)
+                .filter(|(_, &f)| !f)
+                .map(|(&n, _)| n),
+        );
+        let add: Vec<_> = edit.add.iter().map(|&n| (track, slot, n)).collect();
+        let found = take_out_each(&mut take.erased, &add);
+        take.added
+            .extend(add.iter().zip(&found).filter(|(_, &f)| !f).map(|(&n, _)| n));
         // The same for locks: a lock turned through many values is one.
         for &l in &edit.erase_locks {
             match take.locks_added.iter().position(|&x| x == (track, slot, l)) {
@@ -1346,11 +1336,7 @@ impl Takes {
     /// longer has room or reach for them (it was shortened), are skipped.
     pub fn undo(&mut self, project: &mut Project) -> Option<u32> {
         let mut take = self.done.pop()?;
-        for (track, slot, note) in take.added.iter().rev() {
-            if let Some(c) = clip(project, *track, *slot) {
-                c.remove_note(note);
-            }
-        }
+        remove_each(project, &take.added);
         for (track, slot, lock) in take.locks_added.iter().rev() {
             if let Some(c) = clip(project, *track, *slot) {
                 c.remove_lock(lock);
@@ -1490,11 +1476,7 @@ impl Takes {
                 }
             }
         }
-        for (track, slot, note) in &take.erased {
-            if let Some(c) = clip(project, *track, *slot) {
-                c.remove_note(note);
-            }
-        }
+        remove_each(project, &take.erased);
         for (track, slot, lock) in &take.locks_erased {
             if let Some(c) = clip(project, *track, *slot) {
                 c.remove_lock(lock);
@@ -1795,6 +1777,25 @@ fn slot_mut(project: &mut Project, track: usize, slot: usize) -> Option<&mut Opt
 
 fn clip(project: &mut Project, track: usize, slot: usize) -> Option<&mut Clip> {
     slot_mut(project, track, slot)?.as_mut()
+}
+
+/// Take each note out of its clip, as [`Clip::remove_note`] would one at a
+/// time, in one pass over each clip (an edit can hold all of a clip's
+/// notes). A note its clip no longer holds, or whose clip is gone, is
+/// skipped.
+fn remove_each(project: &mut Project, notes: &[(usize, usize, Note)]) {
+    let mut by_clip: Vec<((usize, usize), Vec<Note>)> = Vec::new();
+    for &(track, slot, n) in notes {
+        match by_clip.iter_mut().find(|(at, _)| *at == (track, slot)) {
+            Some((_, ns)) => ns.push(n),
+            None => by_clip.push(((track, slot), vec![n])),
+        }
+    }
+    for ((track, slot), ns) in by_clip {
+        if let Some(c) = clip(project, track, slot) {
+            c.remove_notes(&ns);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2978,6 +2979,55 @@ mod tests {
         // A note out of the clip's range is refused, and not remembered.
         assert!(t.add(&mut p, &taken(5000, 1)).is_err());
         assert!(t.done().is_empty());
+    }
+
+    /// A turn that moves all of a clip's notes (the note editor's
+    /// Transpose) joins one take as it always has, now in one pass: the
+    /// take holds the notes before the turn and after it, one undo puts
+    /// them back, and redo does the turn again.
+    #[test]
+    fn a_turn_on_every_note_joins_one_take_that_one_undo_takes_back() {
+        let mut p = project();
+        let notes: Vec<Note> = (0..300)
+            .map(|i| Note {
+                note: (i % 40) as u8,
+                ..taken(i64::from(i % 120) * 30, 1).note
+            })
+            .collect();
+        p.tracks[0].slots[0].as_mut().unwrap().notes = notes.clone();
+        let mut t = Takes::default();
+        let up = |by: u8| -> Vec<Note> {
+            notes
+                .iter()
+                .map(|n| Note {
+                    note: n.note + by,
+                    ..*n
+                })
+                .collect()
+        };
+        for by in 1..=3u8 {
+            let e = Edit {
+                erase: up(by - 1),
+                add: up(by),
+                ..Edit::default()
+            };
+            assert_eq!(t.edit(&mut p, 0, 0, &e, Some(9)), Ok(1));
+        }
+        let now = |p: &Project| p.tracks[0].slots[0].as_ref().unwrap().notes.clone();
+        assert_eq!(now(&p), up(3));
+        let last = t.done().last().unwrap();
+        let erased: Vec<Note> = last.erased.iter().map(|e| e.2).collect();
+        let added: Vec<Note> = last.added.iter().map(|e| e.2).collect();
+        assert_eq!((erased, added), (notes.clone(), up(3)));
+        // Undo puts the erased notes back last first, as it always has.
+        let sorted = |mut v: Vec<Note>| {
+            v.sort_by_key(|n| (n.tick, n.note));
+            v
+        };
+        assert_eq!(t.undo(&mut p), Some(1));
+        assert_eq!(sorted(now(&p)), sorted(notes.clone()));
+        assert_eq!(t.redo(&mut p), Some(1));
+        assert_eq!(sorted(now(&p)), sorted(up(3)));
     }
 
     #[test]

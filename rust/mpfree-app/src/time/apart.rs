@@ -42,8 +42,9 @@ use mpfree_seq::{Project, RecId, TrackId, LOOPS, MAX_TRACKS};
 use mpfree_time_ui::view::{MuteWait, TimeState};
 use mpfree_transport::time::Tick;
 
-use super::control::{MuteLight, TimeControl, PADS};
+use super::control::{MuteLight, TimeControl};
 use super::StepsData;
+use crate::mixing::PADS;
 
 /// Asks the facade's queue holds before one waits in the facade
 /// ([`Counts::full`]).
@@ -79,6 +80,11 @@ pub enum Say {
     /// The line into the log, or `err` and why on the screen (a step
     /// pad's tap).
     NoteOrTell { err: &'static str },
+    /// A conversion (Scenes → song, List → song, Song → scenes; layout
+    /// spec 4n): the line into the log, and on the screen too when it is
+    /// exact (it ends in [`super::EXACT`]) or couldn't be made. One with
+    /// differences opens the report card instead.
+    Convert,
 }
 
 /// What comes back from the thread, besides the copy.
@@ -91,8 +97,6 @@ pub enum Told {
     /// Lines for the log, one each: what the looper's loops did on the
     /// grid ([`TimeControl::loops_are`]).
     Notes(Vec<String>),
-    /// The kit's pads whose change in the mute queue came due.
-    Landings([Option<(bool, bool)>; PADS]),
     /// What Rec song put on audio tracks' lanes: its song edit and the
     /// blocks' spans ([`TimeControl::take_song_placed`]).
     SongPlaced(u32, Vec<(TrackId, Tick, Tick)>),
@@ -152,7 +156,7 @@ impl Light {
             silenced: c.silenced(),
             mute_bits: c.mute_bits(),
             loop_plan: c.loop_plan(),
-            pad_waiting: std::array::from_fn(|p| c.pad_waiting(p)),
+            pad_waiting: std::array::from_fn(|p| c.selected().is_some_and(|s| c.pad_waiting(s, p))),
             muted: std::array::from_fn(|t| c.muted(t)),
             mute_light: std::array::from_fn(|t| c.mute_light(t)),
             launched: (0..MAX_TRACKS.min(128))
@@ -233,7 +237,6 @@ pub struct Apart {
     steps_changed: bool,
     said: Vec<(Say, Result<String, String>)>,
     notes: VecDeque<String>,
-    landings: [Option<(bool, bool)>; PADS],
     /// What Rec song put on audio tracks' lanes, oldest first.
     placed: VecDeque<super::SongPlaced>,
     pub counts: Counts,
@@ -301,7 +304,6 @@ impl Apart {
             steps_changed: false,
             said: Vec::with_capacity(KEPT),
             notes: VecDeque::with_capacity(KEPT),
-            landings: [None; PADS],
             placed: VecDeque::new(),
             counts: Counts::default(),
             tempo: None,
@@ -415,13 +417,6 @@ impl Apart {
                 Ok(Told::Note(line)) => self.notes.push_back(line),
                 Ok(Told::Notes(lines)) => self.notes.extend(lines),
                 Ok(Told::SongPlaced(n, spans)) => self.placed.push_back((n, spans)),
-                Ok(Told::Landings(l)) => {
-                    for (k, l) in self.landings.iter_mut().zip(l) {
-                        if l.is_some() {
-                            *k = l;
-                        }
-                    }
-                }
                 Err(_) => return,
             }
         }
@@ -444,12 +439,6 @@ impl Apart {
     pub fn take_placed(&mut self) -> Option<super::SongPlaced> {
         self.drain_told();
         self.placed.pop_front()
-    }
-
-    /// The kit's pads whose change came due since the last call.
-    pub fn take_landings(&mut self) -> [Option<(bool, bool)>; PADS] {
-        self.drain_told();
-        std::mem::replace(&mut self.landings, [None; PADS])
     }
 
     pub fn take_changed(&mut self) -> bool {
@@ -559,10 +548,6 @@ impl Thread {
             }
             if let Some((n, spans)) = c.take_song_placed() {
                 self.unsent.push_back(Told::SongPlaced(n, spans));
-            }
-            let l = c.take_pad_landings();
-            if l.iter().any(Option::is_some) {
-                self.unsent.push_back(Told::Landings(l));
             }
             while let Some(t) = self.unsent.pop_front() {
                 match self.tell.try_send(t) {

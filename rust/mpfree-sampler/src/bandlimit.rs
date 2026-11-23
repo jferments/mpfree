@@ -437,7 +437,7 @@ pub fn need(frames: usize, channels: usize) -> u64 {
 
 /// The service's key for a sound's copies: its cell, which the job holds.
 fn key(cell: &Arc<OctaveCell>) -> Key {
-    Key::new("octaves", Arc::as_ptr(cell) as usize as u64)
+    Key::new("octaves", Arc::as_ptr(cell) as usize as u128)
 }
 
 /// Makes sure a sound's octave copies are made or on their way: at once
@@ -640,10 +640,13 @@ mod tests {
         let long = Pcm::F32(vec![0.1f32; SYNC_FRAMES + 10].into());
         // 1 MB more than the floor free: the copies' 1.1 MB is refused.
         let short = Jobs::new(crate::jobs::Config {
-            free: || Some(257_000_000),
-            room: |free, need| match free {
-                Some(f) if f.saturating_sub(need) >= 256_000_000 => Ok(()),
-                _ => Err("not enough memory".into()),
+            // 1 MB to spare.
+            promise: |need| {
+                if need <= 1_000_000 {
+                    Ok(crate::jobs::Hold::none())
+                } else {
+                    Err("not enough memory".into())
+                }
             },
             ..crate::jobs::Config::default()
         });

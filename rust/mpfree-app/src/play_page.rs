@@ -386,10 +386,10 @@ impl Widget for PadsBar {
             let lit = on == Some(i);
             if lit {
                 cx.canvas
-                    .fill_round_rect(half.inset(2), (half.h - 4) / 2, t.accent);
+                    .fill_round_rect(half.inset(2), (half.h - 4) / 2, t.picked());
             }
             let ink = if lit {
-                t.ink_on(t.accent)
+                t.ink_on(t.picked())
             } else if i == 1 && !s.scale {
                 t.text_faint
             } else {
@@ -834,11 +834,11 @@ pub struct PlayPage {
     pub last_pad: usize,
     pub pads: Vec<PadInfo>,
     pub levels: PlayLevels,
-    /// The armed track plays kit 1, whose pads have channels of their own
-    /// (the mixer's pad strips): its lanes show and change their mutes.
-    /// Another kit plays through its track's channel, so its pads have no
-    /// mutes of their own, as a synth's haven't.
-    pub pad_strips: bool,
+    /// The pads muted on the track the steps show, a bit each by kit pad
+    /// (`Track::pad_mutes`; the instrument redesign's step 10: a pad mute
+    /// is the track's, on any kit and bank). Its lanes' speakers show
+    /// them; a synth's pads have none.
+    pub pad_mutes: u128,
     /// The kit's page on the pads (PAD BANK A = 0): its empty pads fill
     /// the lanes left after the sounds.
     pub pad_page: usize,
@@ -1058,9 +1058,8 @@ impl Default for PlayPage {
                 drums_filter: 0.0,
                 loop_filter: 0.0,
                 fx_mix: 1.0,
-                pad_mutes: 0,
             },
-            pad_strips: true,
+            pad_mutes: 0,
             pad_page: 0,
             turned_at: None,
             transport: TransportInfo::default(),
@@ -1563,6 +1562,11 @@ impl PlayPage {
     fn lock_text(&self, addr: RelAddr, v: f32) -> (String, String) {
         use mpfree_play::mpfree_param::OnTrack;
         use mpfree_sampler::engine::PadField;
+        // Made for an instrument the track doesn't play now (F1): named
+        // as made; the instrument's knob there now reads another control.
+        if self.silent_lock(addr).is_some() {
+            return (self.lock_name(addr), format!("{v:.2}"));
+        }
         if let Some(sk) = self.sound_bank.iter().flatten().find(|k| k.addr == addr) {
             return (sk.name.clone(), sk.kind.read(v).0);
         }
@@ -2172,8 +2176,6 @@ impl PlayPage {
         let fresh = self.turned_at.is_none_or(|t| t.elapsed() >= HOLD_TURNED);
         if fresh {
             self.levels = l;
-        } else {
-            self.levels.pad_mutes = l.pad_mutes;
         }
     }
 
@@ -2488,6 +2490,7 @@ impl PlayPage {
                     picked,
                     percent: kind == NoteValue::Chance,
                 }),
+                silent: None,
             }),
         }
     }
@@ -2672,12 +2675,23 @@ impl PlayPage {
 
     /// A lock lane's name, as its knob or the inspector names it.
     pub fn lock_name(&self, addr: RelAddr) -> String {
+        // Made for an instrument the track doesn't play now (F1): its
+        // name as it was made, not the name of that number now.
+        if let Some(s) = self.silent_lock(addr) {
+            return s
+                .made_for
+                .param_name(addr.param)
+                .map_or_else(|| format!("Control {}", addr.param), str::to_string);
+        }
         self.lock_knob(addr)
             .map_or_else(|| self.lock_text(addr, 0.0).0, |k| k.name.clone())
     }
 
     /// A lock's value as text and where its bar reaches.
     fn lock_cell(&self, addr: RelAddr, v: f32) -> (f32, String) {
+        if self.silent_lock(addr).is_some() {
+            return (0.5, format!("{v:.2}"));
+        }
         match self.lock_knob(addr) {
             Some(k) => {
                 let (text, pos, _) = k.kind.read(v);
@@ -2728,6 +2742,10 @@ impl PlayPage {
         };
         let gear = l.row == LINE && l.addr.on == mpfree_play::mpfree_param::OnTrack::Midi;
         let moved = gear && self.gear_moved.contains(&self.lane_target(l));
+        // Locks made for an instrument the track doesn't play now (F1):
+        // named as they were made, and said why they don't play.
+        let silent = self.silent_lock(l.addr);
+        let sub = silent.map_or(sub, |s| format!("lock · {}", s.made_for.name));
         Lane {
             pad: crate::play_widgets::LOCK_LANE + id,
             name: self.lock_name(l.addr),
@@ -2752,8 +2770,20 @@ impl PlayPage {
                 opens_rows: gear,
                 moved,
                 values: None,
+                silent: silent.map(|s| s.line(l.addr.param)),
             }),
         }
+    }
+
+    /// What the Steps say of the clip's locks on instrument control
+    /// `addr`, when they were made for an instrument the track doesn't
+    /// play now (step sequencer refactor F1).
+    pub fn silent_lock(&self, addr: RelAddr) -> Option<&crate::time::SilentLocks> {
+        if addr.on != mpfree_play::mpfree_param::OnTrack::Inst {
+            return None;
+        }
+        let s = self.steps.clip.as_ref()?.silent.as_ref()?;
+        s.params.contains(&addr.param).then_some(s)
     }
 
     /// The setting lock lane `l` locks, on the Sequencer's track.
@@ -2810,6 +2840,9 @@ impl PlayPage {
                 value: None,
             };
             return Ok((a, format!("steps: {name} unlocked on step {}", i + 1)));
+        }
+        if let Some(s) = self.silent_lock(l.addr) {
+            return Err(format!("steps: {}: × takes them off", s.line(l.addr.param)));
         }
         let own = self
             .lock_knob(l.addr)
@@ -2991,13 +3024,9 @@ impl PlayPage {
                 })
                 .and_then(PadInfo::color)
                 .unwrap_or(draw::FX),
-            // A synth's pads have no mutes of their own (the kit's are
-            // the drums'), nor have another kit's (they share their
-            // track's channel).
-            muted: p < 16
-                && !self.pitched()
-                && self.pad_strips
-                && self.levels.pad_mutes & (1 << p) != 0,
+            // A synth's pads have no mutes (they play notes); a kit's
+            // are the track's, on any bank (step 10).
+            muted: !self.pitched() && p < 128 && self.pad_mutes >> p & 1 == 1,
             steps: (from..from + PAGE)
                 .map(|i| row.get(i).copied().flatten().map_or(0, |s| s.velocity))
                 .collect(),
@@ -3765,8 +3794,9 @@ impl PlayPage {
     }
 }
 
-/// The decay's longest time on the card: past it the sound plays out.
-pub const DECAY_MAX_MS: f32 = 4000.0;
+/// The decay's longest time on the card: past it the sound plays out (the
+/// Q-Link's top, [`mpfree_sampler_ui::command::DECAY_OPEN_MS`]).
+pub const DECAY_MAX_MS: f32 = mpfree_sampler_ui::command::DECAY_OPEN_MS;
 
 #[cfg(test)]
 mod tests {
@@ -3851,6 +3881,7 @@ mod tests {
             rows,
             locks: Vec::new(),
             lock_values: Vec::new(),
+            silent: None,
         });
         p
     }
@@ -4183,7 +4214,7 @@ mod tests {
             ]
         );
         // The synth's pads have no mutes: the kit's are the drums'.
-        p.levels.pad_mutes = 0b11;
+        p.pad_mutes = 0b11;
         p.fill_steps(&mut g);
         assert!(g.lanes.iter().all(|l| !l.muted));
         // An octave up: A4 (pad 8) at the bottom; then as high as it

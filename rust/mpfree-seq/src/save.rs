@@ -32,6 +32,8 @@
 //! direction pingpong
 //! holds notes
 //! step 1/8T
+//! madefor mpfree.poly Poly
+//! madename 3 Cutoff
 //! touch 0:10 50:40
 //! note 0 240 36 100 100 - 1 0 2
 //! note 240 240 38 90 100 - 4 0 0 ramp:-40 slide
@@ -105,6 +107,17 @@
 //! and `left`. A project with one needs `audio-clips` (the app's project
 //! gate), so a build from before refuses it before reading this part.
 //!
+//! A marker's `section <passes>[ scene <row>[ changed]]` line, right
+//! after its `marker` line, is what the marker says when the song list
+//! is linked to the song (the Arrange refactor's phase 4b,
+//! [`crate::arrange::FromScene`]): how many passes its section plays,
+//! the scene it was made from, and whether it has been changed in the
+//! song since; a plain marker (one pass, no scene) has none. A linked
+//! list is a `listlinked` line, with no `list` steps. A part with either
+//! starts `mpfree-clips 4` ([`FORMAT_4`]), which an older build doesn't
+//! open, since it would skip them and show the list as empty; a part
+//! with neither is still 2 or 3.
+//!
 //! A `tempo` line is a song's tempo point (tempo ramps): its tick, its
 //! tempo, and `ramp` when it glides to the next point. An older build
 //! skips them and plays the project's tempo.
@@ -130,6 +143,12 @@
 //! older build skips it, and a word it doesn't know, and plays the notes
 //! as pads.
 //!
+//! A clip's `madefor <node> <name>` line, and a `madename <id> <name>`
+//! line for each control, say what instrument its instrument locks were
+//! made for (step sequencer refactor F1, [`crate::inst`]): written only
+//! while it has some. An older build skips them and plays its locks; this
+//! one plays them only on that kind of instrument.
+//!
 //! A mutated clip's `original` lines (sequencer S6, [`crate::mutate`])
 //! are the clip as it was before its first Mutate, which Restore puts
 //! back: `original <length> <variation>` first, then its notes, locks,
@@ -154,7 +173,7 @@ use mpfree_notefx::{Slot, MAX_FX};
 use mpfree_param::{ParamAddr, RelAddr};
 use mpfree_transport::time::{Swing, Tick};
 
-use crate::arrange::{Marker, MorphRows, Placement, TempoPoint};
+use crate::arrange::{FromScene, Marker, MorphRows, Placement, TempoPoint};
 use crate::scenes::{Follow, FollowAction, ListStep, Scene, MAX_LIST_STEPS, SCENES};
 use crate::{
     Clip, ClipId, Cond, Join, LaunchGrid, Lock, LoopInput, Note, Original, Project, Quantise,
@@ -168,6 +187,12 @@ pub const FORMAT: &str = "mpfree-clips 2";
 /// and open it as an empty note track, so it must not open the part. A
 /// part with no audio track is still [`FORMAT`].
 pub const FORMAT_3: &str = "mpfree-clips 3";
+/// The first line of a part with a linked song list or a marker with its
+/// section's passes or scene (the Arrange refactor's phase 4b): an older
+/// build would skip their lines and show the list empty, so it must not
+/// open the part. A part with an audio track is 4 then too (a build that
+/// opens 4 opens 3).
+pub const FORMAT_4: &str = "mpfree-clips 4";
 /// The first line of a part saved before song blocks named their clip by
 /// its id (Arrange 1.3), which still opens.
 pub const FORMAT_1: &str = "mpfree-clips 1";
@@ -177,7 +202,10 @@ const TOUCH_PER_LINE: usize = 64;
 /// The project as text.
 pub fn to_text(p: &Project) -> String {
     let mut s = String::with_capacity(4096);
-    s.push_str(if p.tracks.iter().any(Track::is_audio) {
+    let a = &p.arrangement;
+    s.push_str(if a.uses_sections() {
+        FORMAT_4
+    } else if p.tracks.iter().any(Track::is_audio) {
         FORMAT_3
     } else {
         FORMAT
@@ -237,6 +265,13 @@ pub fn to_text(p: &Project) -> String {
         if t.follows {
             let _ = writeln!(s, "follows");
         }
+        // Its pad mutes and solos (step 10), by Akai's pad names: written
+        // only when it has any, and skipped by builds before them.
+        for (word, pads) in [("padmutes", t.pad_mutes), ("padsolos", t.pad_solos)] {
+            if pads != 0 {
+                let _ = writeln!(s, "{word}{}", pad_names(pads));
+            }
+        }
         for (row, c) in t.slots.iter() {
             let _ = writeln!(s, "clip {row} {} {}", c.length, one_line(&c.name));
             clip_body(&mut s, c);
@@ -257,7 +292,6 @@ pub fn to_text(p: &Project) -> String {
             let _ = writeln!(s, "program {} {}", tp.track, program_text(tp.program));
         }
     }
-    let a = &p.arrangement;
     for c in a.clips.iter() {
         let _ = writeln!(s, "songclip {} {}", c.length, one_line(&c.name));
         clip_body(&mut s, c);
@@ -271,6 +305,16 @@ pub fn to_text(p: &Project) -> String {
     }
     for m in &a.markers {
         let _ = writeln!(s, "marker {} {}", m.at, one_line(&m.name));
+        if !m.is_plain() {
+            let _ = write!(s, "section {}", m.passes);
+            if let Some(from) = m.scene {
+                let _ = write!(s, " scene {}", from.row);
+                if from.changed {
+                    s.push_str(" changed");
+                }
+            }
+            s.push('\n');
+        }
     }
     for t in &a.tempo {
         let ramp = if t.ramp { " ramp" } else { "" };
@@ -284,6 +328,9 @@ pub fn to_text(p: &Project) -> String {
     }
     if a.list.looped {
         s.push_str("listloop\n");
+    }
+    if a.list.linked {
+        s.push_str("listlinked\n");
     }
     if !a.lanes.is_empty() {
         s.push_str("songlanes\n");
@@ -348,6 +395,14 @@ fn clip_body(s: &mut String, c: &Clip) {
                 let _ = write!(s, " {}", r.phase);
             }
             s.push('\n');
+        }
+    }
+    // What its instrument locks were made for (refactor F1). A node id is
+    // one word; one that isn't is not written, and its locks play.
+    if let Some(m) = c.made_for.as_ref().filter(|m| is_word(&m.node)) {
+        let _ = writeln!(s, "madefor {} {}", m.node, m.name);
+        for (id, name) in &m.params {
+            let _ = writeln!(s, "madename {id} {name}");
         }
     }
     // Pressure first: the notes name runs of it. Only what the notes and
@@ -599,7 +654,7 @@ struct LaneAt {
 pub fn from_text(text: &str) -> Result<Project, String> {
     let mut lines = text.lines().enumerate();
     match lines.next() {
-        Some((_, l)) if [FORMAT, FORMAT_1, FORMAT_3].contains(&l.trim()) => {}
+        Some((_, l)) if [FORMAT, FORMAT_1, FORMAT_3, FORMAT_4].contains(&l.trim()) => {}
         _ => return Err(format!("not an {FORMAT} part")),
     }
     let mut p = Project::new();
@@ -608,11 +663,14 @@ pub fn from_text(text: &str) -> Result<Project, String> {
     let mut lane: Option<LaneAt> = None;
     // The lane open in a clip's original.
     let mut orig_lane: Option<LaneAt> = None;
+    // The line before was a marker's: its `section` line may follow.
+    let mut marked = false;
     for (i, raw) in lines {
         let line = raw.trim_end();
         if line.trim().is_empty() || line.starts_with('#') {
             continue;
         }
+        let after_marker = std::mem::take(&mut marked);
         let bad = |what: &str| format!("line {}: {what}: {line}", i + 1);
         let (word, rest) = line.split_once(' ').unwrap_or((line, ""));
         let mut w = rest.split_whitespace();
@@ -691,6 +749,12 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                 last(&mut p).transpose = t
             }
             ("follows", At::Track) => last(&mut p).follows = true,
+            ("padmutes", At::Track) => {
+                last(&mut p).pad_mutes = read_pads(w).ok_or_else(|| bad("padmutes"))?
+            }
+            ("padsolos", At::Track) => {
+                last(&mut p).pad_solos = read_pads(w).ok_or_else(|| bad("padsolos"))?
+            }
             ("arp", At::Track) => {
                 last(&mut p).through_arp = flag(w.next()).ok_or_else(|| bad("arp"))?
             }
@@ -807,6 +871,22 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                 }
                 a.regions
                     .push(clip_region(&mut w).ok_or_else(|| bad("region"))?);
+            }
+            // What its instrument locks were made for (refactor F1).
+            ("madefor", At::Clip(c, _)) => {
+                let node = w.next().ok_or_else(|| bad("madefor"))?;
+                c.made_for = Some(crate::inst::Inst {
+                    node: node.to_string(),
+                    name: nth_rest(rest, 1).to_string(),
+                    params: Vec::new(),
+                });
+            }
+            ("madename", At::Clip(c, _)) => {
+                let id: u16 = num(w.next()).ok_or_else(|| bad("madename"))?;
+                let m = c.made_for.as_mut().ok_or_else(|| bad("madename"))?;
+                if m.param_name(id).is_none() {
+                    m.params.push((id, nth_rest(rest, 1).to_string()));
+                }
             }
             ("launch", At::Top) => p.launch = launch(&mut w).ok_or_else(|| bad("launch"))?,
             ("touch", At::Clip(c, _)) => {
@@ -981,12 +1061,33 @@ pub fn from_text(text: &str) -> Result<Project, String> {
             }
             ("marker", At::Top | At::Track | At::Scene) => {
                 let at_tick: Tick = num(w.next()).ok_or_else(|| bad("tick"))?;
-                p.arrangement.markers.push(Marker {
-                    at: at_tick,
-                    name: nth_rest(rest, 1).to_string(),
-                });
+                p.arrangement
+                    .markers
+                    .push(Marker::new(at_tick, nth_rest(rest, 1)));
                 at = At::Top;
+                marked = true;
             }
+            ("section", At::Top) if after_marker => {
+                let m = p.arrangement.markers.last_mut().expect("just read");
+                m.passes = num(w.next()).ok_or_else(|| bad("passes"))?;
+                while let Some(x) = w.next() {
+                    match x {
+                        "scene" => {
+                            let row = num(w.next()).ok_or_else(|| bad("scene"))?;
+                            m.scene = Some(FromScene {
+                                row,
+                                changed: false,
+                            });
+                        }
+                        "changed" => {
+                            m.scene.as_mut().ok_or_else(|| bad("changed"))?.changed = true;
+                        }
+                        // Words a newer build adds are skipped.
+                        _ => {}
+                    }
+                }
+            }
+            ("section", _) => return Err(bad("a section line not after its marker")),
             ("tempo", At::Top | At::Track | At::Scene) => {
                 let t = (|| {
                     let at: Tick = num(w.next())?;
@@ -1027,6 +1128,10 @@ pub fn from_text(text: &str) -> Result<Project, String> {
             }
             ("listloop", At::Top | At::Track | At::Scene) => {
                 p.arrangement.list.looped = true;
+                at = At::Top;
+            }
+            ("listlinked", At::Top | At::Track | At::Scene) => {
+                p.arrangement.list.linked = true;
                 at = At::Top;
             }
             ("songclip", At::Top | At::Track | At::Scene) => {
@@ -1083,6 +1188,33 @@ fn close(p: &mut Project, at: &mut At) -> Result<(), String> {
         _ if p.scenes.is_empty() && p.arrangement.placements.is_empty() => Ok(()),
         _ => Err("a track after the scenes or the song".to_string()),
     }
+}
+
+/// The kit pads of `pads` (a bit each, A1 = bit 0) by Akai's names, each
+/// after a space: " A3 B5 H16".
+fn pad_names(pads: u128) -> String {
+    let mut s = String::new();
+    for p in (0..128u32).filter(|&p| pads >> p & 1 == 1) {
+        let bank = char::from(b'A' + (p / 16) as u8);
+        let _ = write!(s, " {bank}{}", p % 16 + 1);
+    }
+    s
+}
+
+/// The kit pads named by `words` ("A3", "H16"), a bit each; None if one
+/// isn't a pad's name.
+fn read_pads<'a>(words: impl Iterator<Item = &'a str>) -> Option<u128> {
+    let mut pads = 0u128;
+    for w in words {
+        let mut chars = w.chars();
+        let bank = chars.next()?;
+        let n: u32 = chars.as_str().parse().ok()?;
+        if !('A'..='H').contains(&bank) || !(1..=16).contains(&n) {
+            return None;
+        }
+        pads |= 1u128 << ((bank as u32 - 'A' as u32) * 16 + n - 1);
+    }
+    Some(pads)
 }
 
 fn last(p: &mut Project) -> &mut Track {
@@ -1259,6 +1391,11 @@ fn flag(w: Option<&str>) -> Option<bool> {
 }
 
 /// The text after the first `n` words (a name with its spaces kept).
+/// Whether `s` is one word a line can hold (not empty, no white space).
+fn is_word(s: &str) -> bool {
+    !s.is_empty() && !s.contains(char::is_whitespace)
+}
+
 fn nth_rest(rest: &str, n: usize) -> &str {
     let mut s = rest;
     for _ in 0..n {
@@ -1298,6 +1435,42 @@ mod track_id_tests {
             assert!(from_text(&t).is_err(), "{bad}");
         }
         assert!(from_text(&text.replace("nexttrack 4", "nexttrack 0")).is_err());
+    }
+
+    /// Instrument redesign step 10: a track's pad mutes and solos come
+    /// back by Akai's pad names, on every bank; a track with none writes
+    /// no line, so a project without them reads as before; a name that
+    /// isn't a pad is refused; a build before them skips the lines.
+    #[test]
+    fn a_tracks_pad_mutes_and_solos_come_back_by_pad_name() {
+        let mut p = Project::new();
+        for i in 0..2 {
+            p.tracks.push(Track::new(&format!("Track {}", i + 1), i));
+        }
+        assert!(!to_text(&p).contains("pad"), "none, no line");
+        p.tracks[1].pad_mutes = 1 << 2 | 1 << 20 | 1 << 127;
+        p.tracks[1].pad_solos = 1 << 16;
+        let text = to_text(&p);
+        assert!(text.contains("\npadmutes A3 B5 H16\n"), "{text}");
+        assert!(text.contains("\npadsolos B1\n"), "{text}");
+        assert_eq!(from_text(&text).unwrap(), p);
+        assert_eq!(
+            p.tracks[1].silent_pads(),
+            !(1u128 << 16) | 1 << 2 | 1 << 20 | 1 << 127
+        );
+        assert_eq!(p.tracks[0].silent_pads(), 0);
+        for bad in ["padmutes A0", "padmutes I1", "padmutes A17", "padmutes 3"] {
+            assert!(
+                from_text(&text.replace("padmutes A3 B5 H16", bad)).is_err(),
+                "{bad}"
+            );
+        }
+        // As a build before step 10 reads it: the lines are skipped.
+        let older = text
+            .replace("padmutes", "zzmutes")
+            .replace("padsolos", "zzsolos");
+        let back = from_text(&older).unwrap();
+        assert_eq!(back.tracks[1].pad_mutes | back.tracks[1].pad_solos, 0);
     }
 
     /// Arrange 1.2: a clip and a scene in row 40, past the grid's 16, are
@@ -1608,10 +1781,7 @@ mod tests {
         block.offset = 120;
         p.arrangement.clips.keep(own).unwrap();
         p.arrangement.placements.push(block);
-        p.arrangement.markers.push(Marker {
-            at: 0,
-            name: "Intro bit".into(),
-        });
+        p.arrangement.markers.push(Marker::new(0, "Intro bit"));
         p.arrangement.morphs.push(MorphRows { at: 0, a: 0, b: 1 });
         p.arrangement.list.steps =
             vec![ListStep { row: 2, times: 4 }, ListStep { row: 0, times: 1 }];
@@ -1920,6 +2090,45 @@ mod tests {
         assert_eq!(step(&text.replace("step 1/8T\n", "")), 240);
         assert_eq!(step(&text.replace("step 1/8T", "step 1/7")), 240);
         assert!(from_text(&text.replace("step 1/8T", "step")).is_err());
+    }
+
+    /// What a clip's instrument locks were made for (refactor F1) reads
+    /// back, names with spaces and all; a clip without has no lines; an
+    /// older file without them reads untagged; a name line with no
+    /// `madefor` before it, or no number, refuses the part.
+    #[test]
+    fn what_a_clips_locks_were_made_for_reads_back() {
+        use crate::inst::Inst;
+        use mpfree_param::OnTrack;
+        let mut p = full();
+        let c = p.tracks[0].slots[0].as_mut().unwrap();
+        c.locks
+            .push(Lock::new(0, None, RelAddr::new(OnTrack::Inst, 3), 0.5));
+        c.made_for = Some(Inst {
+            node: "mpfree.poly".into(),
+            name: "Poly synth".into(),
+            params: vec![(3, "Filter cutoff".into())],
+        });
+        let text = to_text(&p);
+        assert!(
+            text.contains("madefor mpfree.poly Poly synth\nmadename 3 Filter cutoff\n"),
+            "{text}"
+        );
+        let back = from_text(&text).unwrap();
+        assert_eq!(back.tracks[0].slots[0], p.tracks[0].slots[0]);
+        let old = text
+            .replace("madefor mpfree.poly Poly synth\n", "")
+            .replace("madename 3 Filter cutoff\n", "");
+        assert_eq!(
+            from_text(&old).unwrap().tracks[0].slots[0]
+                .as_ref()
+                .unwrap()
+                .made_for,
+            None
+        );
+        assert!(!to_text(&full()).contains("madefor"));
+        assert!(from_text(&text.replace("madefor mpfree.poly Poly synth\n", "")).is_err());
+        assert!(from_text(&text.replace("madename 3 ", "madename x ")).is_err());
     }
 
     /// A mutated clip keeps its original (S6), lanes and all, read back
@@ -2300,6 +2509,79 @@ mod tests {
         assert_eq!(moved.arrangement.placements[i].track, 2);
         assert_eq!(moved.arrangement.placements[i].clip, block.clip);
         moved.check().unwrap();
+    }
+
+    /// Arrange 4b.1: a marker's section line (its passes, its scene, and
+    /// changed in the song) and a linked list read back, in a part an
+    /// older build doesn't open; plain markers write no line, and a part
+    /// with neither keeps its format.
+    #[test]
+    fn a_linked_lists_sections_read_back_in_a_part_of_their_own_format() {
+        let mut p = full();
+        assert!(to_text(&p).starts_with("mpfree-clips 2\n"));
+        p.arrangement.list.steps.clear();
+        p.arrangement.list.linked = true;
+        let from = |row, changed| Some(FromScene { row, changed });
+        p.arrangement.markers = vec![
+            Marker {
+                scene: from(2, false),
+                passes: 4,
+                ..Marker::new(0, "Intro bit")
+            },
+            Marker::new(7680, "Break"),
+            Marker {
+                scene: from(0, true),
+                ..Marker::new(11520, "Verse")
+            },
+            Marker {
+                passes: 2,
+                ..Marker::new(15360, "Outro")
+            },
+        ];
+        p.check().unwrap();
+        let text = to_text(&p);
+        assert!(text.starts_with("mpfree-clips 4\n"), "{text}");
+        for lines in [
+            "marker 0 Intro bit\nsection 4 scene 2\nmarker 7680 Break\nmarker 11520 Verse\n",
+            "section 1 scene 0 changed\nmarker 15360 Outro\nsection 2\n",
+            "listloop\nlistlinked\n",
+        ] {
+            assert!(text.contains(lines), "{text}");
+        }
+        let back = from_text(&text).unwrap();
+        assert_eq!(back, p);
+        assert_eq!(to_text(&back), text);
+        // Linked with no marker saying more: still 4.
+        let mut plain = p.clone();
+        for m in &mut plain.arrangement.markers {
+            *m = Marker::new(m.at, &m.name);
+        }
+        assert!(to_text(&plain).starts_with("mpfree-clips 4\n"));
+        // Neither: as before, and an audio track's part stays 3.
+        plain.arrangement.list.linked = false;
+        assert!(to_text(&plain).starts_with("mpfree-clips 2\n"));
+        // A newer build's word on a section line is skipped.
+        let newer = text.replace("section 2\n", "section 2 colour=red\n");
+        assert_eq!(from_text(&newer).unwrap(), p);
+        // Refused: a section line not right after its marker, changed
+        // without a scene, passes out of range or missing, a scene off
+        // the grid, and a linked list with steps of its own.
+        for (from_, to) in [
+            (
+                "marker 7680 Break\n",
+                "listlinked\nsection 2\nmarker 7680 Break\n",
+            ),
+            ("section 2\n", "section 2 changed\n"),
+            ("section 2\n", "section 0\n"),
+            ("section 2\n", "section 100\n"),
+            ("section 2\n", "section\n"),
+            ("section 4 scene 2\n", "section 4 scene 9999\n"),
+            ("listlinked\n", "listlinked\nlist 0 1\n"),
+        ] {
+            let bad = text.replacen(from_, to, 1);
+            assert_ne!(bad, text, "{to}");
+            assert!(from_text(&bad).is_err(), "{to}");
+        }
     }
 
     #[test]

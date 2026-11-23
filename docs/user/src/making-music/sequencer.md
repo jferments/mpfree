@@ -37,7 +37,7 @@ The list starts with **What plays**, which goes back to editing the clip that pl
 
 {{shot: sequencer-edit-clips | The clip chip's list: What plays (Pattern 1, edited now), then the track's clips with their slots, Pattern 1 playing.}}
 
-**Mute a row.** Each row's name is its mute button, with a speaker in the box beside it: tap the name to mute that pad, so you can drop the kick out and bring it back. Hold **ERASE** and tap a row's name to delete all of that sound's steps.
+**Mute a row.** Each row's name is its mute button, with a speaker in the box beside it: tap the name to mute that pad on this track, so you can drop the kick out and bring it back. Another track playing the same kit keeps its kick, rows on every bank and kit have a mute, and a synth's rows (notes, not pads) have none. Hold **ERASE** and tap a row's name to delete all of that sound's steps.
 
 **Make it longer.** A pattern starts at 16 steps, one bar of 16ths. Tap **+** at the top right of the pattern to double it to 32 steps, then 64, then 128 (eight bars of 16ths). The new steps repeat the ones you have, so the beat carries on and you change what you want in the copy. **‹** and **›** turn the pages of 16 steps, and the number between them says which page you're on. **–** halves the pattern again, down to 16 steps; press **UNDO** if you want the steps it took off back.
 
@@ -136,6 +136,10 @@ A **lock** makes one step play its sound differently: tuned up, shorter, darker 
 - **On a synth:** hold a step and turn the knobs on the Synth tab.
 
 Hold a step and press **ERASE** to take its locks off and keep its note.
+
+A synth lock remembers which synth and which knob it was made for. If the track plays a different synth later, the pattern keeps those locks but doesn't play them, because the same knob number on another synth is a different control (Poly's Cutoff isn't FM's). Their lane goes faint and says so, for example "made for Poly's Cutoff, not playing on FM". Switch the track back and they play again, or tap the lane's **×** to take them off. While they are there, the pattern takes no locks for the new synth. Locks on the track's volume, pan and effects always play, whatever the track plays.
+
+{{shot: sequencer-silent-locks | Cutoff locks made on Poly, on a track that plays FM now: kept, faint, and the lane says why.}}
 
 When two tracks play the same instrument (the synth, or one track's instrument that another plays: see [Share one between tracks](synths.md#a-synth-for-each-track)) and both lock the same knob, one of them moves it at a time: the track you made first. The other track's locks wait and play once the first track's stop, the knob gliding over to them (a switch such as a waveform changes at once). Turning the knob yourself always wins: while you turn it and for half a second after, the locks wait, then the knob goes back to them.
 
@@ -249,7 +253,7 @@ Tap the REC chip for **Record into**, the list of everything that can record: ta
 
 The REC chip's list has a row for each track. Hold **SHIFT** and tap a track's row to record that track too: one REC and PLAY then record the pads into the pads' track and, into each other armed track, what its keyboard or drum machine plays it (set up its channel under the I/O view's [Routing](midi-and-cv.md#playing-several-tracks-from-your-keyboards)).
 
-For example, a keyboard on channel 1 routed to **Bass** and a drum pad controller on channel 10 routed to **Perc**: arm both with SHIFT, play the pads on **Drums**, and one take records all three. Each track records into the clip it plays, or a new clip in its first empty slot (a track with no room is left out, and the hint line says so). The chip names them ("REC → Drums + Bass + Perc", or "Drums + 2 tracks" when the names don't fit). SHIFT and a tap on an added track lets it go; a plain tap on a row, or picking a track, records that one track again. One **UNDO** takes the whole take back, on every track. Up to 16 tracks record at once. For now a routed keyboard's pressure records only on the pads' track.
+For example, a keyboard on channel 1 routed to **Bass** and a drum pad controller on channel 10 routed to **Perc**: arm both with SHIFT, play the pads on **Drums**, and one take records all three. Each track records into the clip it plays, or a new clip in its first empty slot (a track with no room is left out, and the hint line says so). The chip names them ("REC → Drums + Bass + Perc", or "Drums + 2 tracks" when the names don't fit). SHIFT and a tap on an added track lets it go; a plain tap on a row, or picking a track, records that one track again. One **UNDO** takes the whole take back, on every track. Up to 16 tracks record at once. A keyboard's aftertouch records with its notes on each armed track whose **Pressure** switch is on (the Record list's row, on for a new track), as the pads' pressure does.
 
 {{shot: play-rec-tracks-list | The REC chip's list with Drums (the pads' track) and Keys armed: a row for each track, the armed ones red, and the loop's row last. The chip says "Drums + Keys".}}
 

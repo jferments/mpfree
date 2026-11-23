@@ -299,7 +299,7 @@ fn a_loop_jump_ends_every_armed_tracks_replace_pass() {
 }
 
 #[test]
-fn an_also_recorder_with_no_track_records_nothing_and_keeps_no_pressure() {
+fn an_also_recorder_with_no_track_records_nothing() {
     let (p, launches) = project([3840; 4]);
     let mut v = PlayView::compile(&p, &launches).unwrap();
     v.set_armed(Some(1));
@@ -325,5 +325,59 @@ fn an_also_recorder_with_no_track_records_nothing_and_keeps_no_pressure() {
     t.process(4096, &mut block);
     r.process(&v, &block);
     assert!(r.taken().is_empty());
-    assert_eq!(r.dropped(), 1, "the pressure value is counted");
+    assert_eq!(
+        (r.dropped(), r.touch_dropped()),
+        (0, 0),
+        "no note to keep the pressure on, and nothing lost"
+    );
+}
+
+/// Step sequencer refactor E3: another armed track's recorder keeps the
+/// pressure on its notes as the armed track's does (a second keyboard's
+/// aftertouch), handed over with the note; a lock fed to it is still
+/// counted as dropped.
+#[test]
+fn an_also_recorder_keeps_the_pressure_on_its_notes() {
+    let (p, launches) = project([3840; 4]);
+    let mut v = PlayView::compile(&p, &launches).unwrap();
+    v.set_armed(Some(1));
+    v.set_also(1 << 3);
+    let mut r = Recorder::also(0);
+    assert_eq!(r.track(&v), Some(3));
+    let mut t = Transport::new(44_100, 120.0).unwrap();
+    assert!(t.command(0, Command::Record));
+    let mut block = Block::new();
+    let mut kept = vec![];
+    for k in 0..40u32 {
+        match k {
+            1 => r.input(0, on(5)),
+            2..=9 => r.input(
+                100,
+                Event::Pressure {
+                    note: 5,
+                    value: (k * 12) as u8,
+                },
+            ),
+            10 => r.input(0, off(5)),
+            _ => {}
+        }
+        t.process(1024, &mut block);
+        r.process(&v, &block);
+        for n in r.taken() {
+            let pts: Vec<u8> = r.touch_points(&n.note).iter().map(|p| p.value).collect();
+            kept.push((n.note.note, pts));
+        }
+    }
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert_eq!(kept[0].0, 5);
+    assert_eq!(kept[0].1, vec![24, 36, 48, 60, 72, 84, 96, 108]);
+    assert_eq!((r.dropped(), r.touch_dropped()), (0, 0));
+    r.input(
+        0,
+        Event::Lock {
+            addr: mpfree_param::ParamAddr::macro_value(0),
+            value: 0.5,
+        },
+    );
+    assert_eq!(r.dropped(), 1, "no room for locks");
 }

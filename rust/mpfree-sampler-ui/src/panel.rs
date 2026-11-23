@@ -1011,10 +1011,10 @@ pub fn paint(
                     cx.canvas.fill_round_rect(
                         *b,
                         t.round(8),
-                        if lit_one { t.accent } else { ctrl },
+                        if lit_one { t.picked() } else { ctrl },
                     );
                     let fg = if lit_one {
-                        t.on_accent
+                        t.on_picked()
                     } else if c.faint || off.contains(&i) {
                         t.text_faint
                     } else {
@@ -1065,7 +1065,7 @@ pub fn paint(
                 cx.text(FontId::Bold, 14.0, text, Align::Left, ink, name);
                 let on_now = *state && !c.faint;
                 cx.canvas
-                    .fill_round_rect(sw, SWITCH_H / 2, if on_now { t.accent } else { ctrl });
+                    .fill_round_rect(sw, SWITCH_H / 2, if on_now { t.picked() } else { ctrl });
                 let kx = if *state { sw.right() - 24 } else { sw.x + 3 };
                 cx.canvas.fill_round_rect(
                     Rect::new(kx, sw.y + 3, 21, 21),

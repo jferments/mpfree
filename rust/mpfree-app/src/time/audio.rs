@@ -70,6 +70,10 @@ pub struct TimingCounts {
     pub refused: u64,
 }
 
+/// Notes started that one period keeps for the looper
+/// ([`TimeAudio::take_notes`]).
+pub const NOTES: usize = 64;
+
 /// MIDI effect settings the mod engine can hold at once on one track.
 pub const NOTE_MODS: usize = 16;
 
@@ -87,7 +91,7 @@ pub struct TimeAudio {
     transport: Box<Transport>,
     player: Box<Player>,
     recorder: Box<Recorder>,
-    /// The other armed tracks' recorders, notes only
+    /// The other armed tracks' recorders, notes and their pressure
     /// ([`Recorder::also`]): recorder `k` records the view's `k`th other
     /// armed track ([`PlayView::also_track`]), up to [`super::MAX_ALSO`].
     also: Vec<Recorder>,
@@ -105,9 +109,9 @@ pub struct TimeAudio {
     /// The notes each pad started in a take of notes, for its pressure
     /// ([`TimeAudio::pad_pressure`]): (notes, how many).
     pad_notes: [([u8; HEARD_NOTES], u8); 128],
-    /// Pressure from routed keys on another armed track while the
-    /// transport records: not recorded (that recorder keeps notes only),
-    /// so counted with the pressure values lost ([`Counts::touch_dropped`]).
+    /// Pressure from routed keys on another armed track past
+    /// [`super::MAX_ALSO`] while the transport records: not recorded, so
+    /// counted with the pressure values lost ([`Counts::touch_dropped`]).
     also_pressure: u64,
     block: Box<Block>,
     /// The period's events, let in by its room so no ending is ever lost
@@ -157,6 +161,15 @@ pub struct TimeAudio {
     /// Pad hits this period, for the screen.
     hits: [HitInfo; MAX_HITS],
     n_hits: usize,
+    /// Notes started in the coming period, played live on any track (as
+    /// the arps give them) or by a route, for the looper's smart loop end
+    /// ([`TimeAudio::take_notes`]): the frame, the track, note and
+    /// velocity. Ones past [`NOTES`] are lost, and the newest frame of
+    /// one lost is kept, so the looper knows; ones nobody took are
+    /// forgotten when the next period starts.
+    notes: [(u64, u16, u8, u8); NOTES],
+    n_notes: usize,
+    notes_lost_to: Option<u64>,
     /// Each pad's pressure last sent to CAPTURE's history, None after a
     /// press: a value that did not change is not sent again.
     pressure_sent: [Option<u8>; 128],
@@ -271,6 +284,9 @@ impl TimeAudio {
             jump_pending: false,
             hits: [HitInfo::default(); MAX_HITS],
             n_hits: 0,
+            notes: [(0, 0, 0, 0); NOTES],
+            n_notes: 0,
+            notes_lost_to: None,
             pressure_sent: [None; 128],
             locks: Vec::with_capacity(MAX_LOCKS),
             lanes: Vec::with_capacity(MAX_LANES),
@@ -484,6 +500,33 @@ impl TimeAudio {
         &self.hits[..self.n_hits]
     }
 
+    /// Every note started in the period just run, live on a track or by
+    /// a route (as the pad that plays its note there), with its frame on
+    /// the transport's clock, its track, note and velocity; then forgets
+    /// them. The looper weighs them for smart loop end. Call it after the
+    /// period runs. The newest frame of a note the period had no room
+    /// for, if one was lost ([`NOTES`]).
+    pub fn take_notes(&mut self, mut f: impl FnMut(u64, u16, u8, u8)) -> Option<u64> {
+        for &(frame, track, key, velocity) in &self.notes[..self.n_notes] {
+            f(frame, track, key, velocity);
+        }
+        self.n_notes = 0;
+        self.notes_lost_to.take()
+    }
+
+    /// A note started on `frame`, for the looper.
+    fn note_started(&mut self, frame: u64, track: u16, event: Event) {
+        let Event::NoteOn { note, velocity } = event else {
+            return;
+        };
+        if self.n_notes == NOTES {
+            self.notes_lost_to = Some(self.notes_lost_to.map_or(frame, |f| f.max(frame)));
+            return;
+        }
+        self.notes[self.n_notes] = (frame, track, note, velocity);
+        self.n_notes += 1;
+    }
+
     pub fn clear_hits(&mut self) {
         self.n_hits = 0;
     }
@@ -653,7 +696,9 @@ impl TimeAudio {
     /// period's first frame or later): the looper's Starts: When I play,
     /// whose first note starts the song. Only while it is stopped. On
     /// `at`, in this order: back to the start of the bar it stopped in
-    /// (bar 1 after STOP twice), the tempo `bpm` if given (before PLAY, so
+    /// (bar 1 after STOP twice), `into` ticks after it (a loop smart loop
+    /// end's Auto closed on an end before `at`: the song starts as far in
+    /// as the loop is), the tempo `bpm` if given (before PLAY, so
     /// the whole song takes it), then PLAY, with no count-in. With a take
     /// ready (`take`: adding, true, or replacing), it records from there
     /// too, as a followed clock's start does: the overdub mode first, then
@@ -669,10 +714,11 @@ impl TimeAudio {
         at: u64,
         bpm: Option<f64>,
         take: Option<bool>,
+        into: Tick,
     ) -> Result<(), &'static str> {
         // While song mode plays the song's tempo points, they lead.
         let bpm = bpm.filter(|_| !self.song_tempo());
-        if let Some(why) = self.start_refusal(bpm, take) {
+        if let Some(why) = self.start_refusal(bpm, take, into) {
             self.starts_refused += 1;
             if why == QUEUE_FULL {
                 self.refused += 1;
@@ -686,7 +732,7 @@ impl TimeAudio {
         let c = TimingChange {
             at: at.max(self.transport.frame()),
             tempo: bpm,
-            position: Some(start),
+            position: Some(start + into.max(0)),
             play: true,
             take,
             made_against: self.timeline,
@@ -699,9 +745,15 @@ impl TimeAudio {
             .inspect_err(|_| self.starts_refused += 1)
     }
 
-    /// Why [`TimeAudio::start_at`] would refuse a start with this tempo
-    /// and take now, or None. Changes nothing and counts nothing.
-    pub fn start_refusal(&self, bpm: Option<f64>, take: Option<bool>) -> Option<&'static str> {
+    /// Why [`TimeAudio::start_at`] would refuse a start with this tempo,
+    /// take and ticks into the bar now, or None. Changes nothing and
+    /// counts nothing.
+    pub fn start_refusal(
+        &self,
+        bpm: Option<f64>,
+        take: Option<bool>,
+        into: Tick,
+    ) -> Option<&'static str> {
         let bpm = bpm.filter(|_| !self.song_tempo());
         let why = match self.transport.state() {
             _ if self.follower.bpm().is_some() => Some("the song follows another device's clock"),
@@ -712,7 +764,7 @@ impl TimeAudio {
         };
         why.or_else(|| {
             let (pos, start) = self.bar_start();
-            let commands = usize::from(start != pos)
+            let commands = usize::from(start + into.max(0) != pos)
                 + usize::from(bpm.is_some())
                 + usize::from(take.is_some_and(|add| add != self.transport.overdub()))
                 + 1
@@ -1171,9 +1223,12 @@ impl TimeAudio {
     /// that plays its note there (a note, its end or its pressure), or
     /// `AllOff` for every note held there ending at once, for CAPTURE's
     /// history; and, on another armed track ([`PlayView::set_also`]), for
-    /// its recorder while the transport records (its notes, not its
-    /// pressure: that is the armed track's alone for now, and counted).
+    /// its recorder while the transport records: its notes, and their
+    /// pressure when that track records pressure (`Track::record_touch`,
+    /// refactor E3), as the armed track's pads.
     pub fn routed(&mut self, track: u8, offset: u32, event: Event) {
+        let f = self.transport.frame() + u64::from(offset);
+        self.note_started(f, u16::from(track), event);
         // A routed key comes as the pad that plays its note: no note for a
         // clip of notes on that track (step 5c), so counted, not recorded.
         let mut rank = self.view.also_rank(usize::from(track));
@@ -1188,15 +1243,21 @@ impl TimeAudio {
             rank = None;
         }
         if let Some(k) = rank {
-            match event {
-                Event::NoteOn { .. } | Event::NoteOff { .. } | Event::AllOff => {
-                    match self.also.get_mut(k) {
-                        Some(r) => r.input(offset, event),
-                        None => self.also_dropped += 1,
-                    }
+            match (event, self.also.get_mut(k)) {
+                (Event::NoteOn { .. } | Event::NoteOff { .. } | Event::AllOff, Some(r)) => {
+                    r.input(offset, event)
                 }
-                Event::Pressure { .. } if self.transport.state() == State::Recording => {
-                    self.also_pressure += 1
+                (Event::NoteOn { .. } | Event::NoteOff { .. } | Event::AllOff, None) => {
+                    self.also_dropped += 1
+                }
+                (Event::Pressure { .. }, r) if self.tracks.records_touch_on(usize::from(track)) => {
+                    match r {
+                        Some(r) => r.input(offset, event),
+                        None if self.transport.state() == State::Recording => {
+                            self.also_pressure += 1
+                        }
+                        None => {}
+                    }
                 }
                 _ => {}
             }
@@ -1221,7 +1282,9 @@ impl TimeAudio {
     }
 
     pub fn touch_dropped(&self) -> u64 {
-        self.recorder.touch_dropped() + self.also_pressure
+        self.recorder.touch_dropped()
+            + self.also.iter().map(Recorder::touch_dropped).sum::<u64>()
+            + self.also_pressure
     }
 
     /// Live erase: sound `note` erased on the armed track while the
@@ -1328,6 +1391,19 @@ impl TimeAudio {
 
     pub fn advance(&mut self, frames: u32) -> bool {
         self.period_starts();
+        // Notes of a period gone that nobody took.
+        if self.n_notes > 0 {
+            let now = self.transport.frame();
+            let mut k = 0;
+            for i in 0..self.n_notes {
+                if self.notes[i].0 >= now {
+                    self.notes[k] = self.notes[i];
+                    k += 1;
+                }
+            }
+            self.n_notes = k;
+        }
+        self.notes_lost_to = self.notes_lost_to.filter(|&f| f >= self.transport.frame());
         self.receive();
         let ok = self.process(frames);
         self.advanced = Some(ok);
@@ -1544,6 +1620,8 @@ impl TimeAudio {
                 // track whose clips play through its arp, the pads as
                 // pressed do, through pad_pressed).
                 let heard = pads.live(&o);
+                let f = self.block.start_frame + u64::from(o.offset);
+                self.note_started(f, o.track, o.event);
                 if self.tracks.armed == Some(usize::from(o.track)) {
                     self.heard(o.offset, &heard);
                 }
@@ -1668,7 +1746,7 @@ impl TimeAudio {
         }
         for r in &self.also[..ran] {
             for k in r.taken() {
-                made.make(Rec::Note(*k), &[], &[]);
+                made.make(Rec::Note(*k), r.touch_points(&k.note), &[]);
             }
         }
         for k in self.recorder.taken_locks() {

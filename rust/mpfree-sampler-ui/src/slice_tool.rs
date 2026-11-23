@@ -68,19 +68,21 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use mpfree_analysis::{
-    nearest_zero_crossing, note_name, previous_zero_crossing, sound_spans, SilenceSettings,
+    nearest_zero_crossing, next_zero_crossing, note_name, previous_zero_crossing, sound_spans,
+    Samples, SilenceSettings,
 };
 use mpfree_sampler::model::{
-    ChopMode, ChopSet, ModelError, Pad, Project, Region, SourceId, KEPT_CHOP, MAX_SLICES, PADS,
+    ChopMode, ChopSet, ModelError, Project, Region, SourceId, KEPT_CHOP, MAX_SLICES, PADS,
     SLICE_KEYS_FROM,
 };
 use mpfree_sampler::phrase::{self, Phrase};
 use mpfree_ui::wave::{Marker, MarkerKind};
 
+use crate::command::{Change, Chop, Chopped};
 use crate::panel::{Control, Item, Look, PadCell, Panel, Section};
 use crate::source::SourceView;
 use crate::warp_tool::Card;
-use crate::wave_tab::{self, next_zero_crossing, pad_label, position_text, TAKE};
+use crate::wave_tab::{self, pad_label, position_text, TAKE};
 use crate::widgets::Setting;
 
 /// Pads in a bank: PAD BANK A to H each play 16 of a kit's pads.
@@ -563,14 +565,48 @@ pub enum ChopAction {
 }
 
 impl ChopAction {
+    /// The chop a [`ChopAction::ToPads`] asks for ([`Chop`], the sampler
+    /// command's), and the pad or take it is made from (`take`: the take
+    /// kept on the page). None for the other actions.
+    pub fn chop(&self, take: Option<usize>) -> Option<(Chopped, Chop)> {
+        let ChopAction::ToPads {
+            pad,
+            layer,
+            source,
+            name,
+            mode,
+            bounds,
+            to_pad,
+            keys_from,
+            one_pad,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        let from = match take {
+            Some(i) => Chopped::Take(i),
+            None => Chopped::Pad(*pad),
+        };
+        Some((
+            from,
+            Chop {
+                source: *source,
+                name: name.clone(),
+                mode: *mode,
+                bounds: bounds.clone(),
+                layer: *layer,
+                to_pad: *to_pad,
+                keys_from: *keys_from,
+                one_pad: *one_pad,
+            },
+        ))
+    }
+
     /// Applies [`ChopAction::ToPads`] to the project (one undo step) and
     /// returns the pads it filled; other actions change nothing here.
     pub fn apply(&self, p: &mut Project) -> Result<Range<usize>, ModelError> {
-        let ChopAction::ToPads { pad, .. } = self else {
-            return Ok(0..0);
-        };
-        let template = p.pad(*pad).ok_or(ModelError::BadPad)?.clone();
-        self.place(p, &template)
+        self.apply_from(p, None)
     }
 
     /// Applies a [`ChopAction::ToPads`] made on take `index` kept on the
@@ -579,36 +615,19 @@ impl ChopAction {
     /// pad, and the take goes from the page with them, all one undo step
     /// ([`Project::chop_take`]). Returns the pads it filled.
     pub fn apply_take(&self, p: &mut Project, index: usize) -> Result<Range<usize>, ModelError> {
-        if !matches!(self, ChopAction::ToPads { .. }) {
-            return Ok(0..0);
-        }
-        p.chop_take(index, |p, take| self.place(p, take))
+        self.apply_from(p, Some(index))
     }
 
-    /// The slices on the pads, each made from `made_from` (the chopped pad
-    /// or take), one undo step.
-    fn place(&self, p: &mut Project, made_from: &Pad) -> Result<Range<usize>, ModelError> {
-        let ChopAction::ToPads {
-            layer,
-            to_pad,
-            keys_from,
-            one_pad,
-            ..
-        } = self
-        else {
+    fn apply_from(&self, p: &mut Project, take: Option<usize>) -> Result<Range<usize>, ModelError> {
+        let Some((from, chop)) = self.chop(take) else {
             return Ok(0..0);
         };
-        let template = Self::template(made_from, *layer)?;
-        let (c, first, count) = self.slices(p)?;
-        if *one_pad {
-            p.chop_to_one_pad(c, first, count, *to_pad, Some(&template))?;
-            return Ok(*to_pad..*to_pad + 1);
+        Change::Chop {
+            from,
+            chop: Box::new(chop.clone()),
         }
-        match keys_from {
-            Some(from) => p.chop_to_keys(c, first, count, *to_pad, *from, Some(&template))?,
-            None => p.chop_to_pads(c, first, count, *to_pad, Some(&template))?,
-        };
-        Ok(*to_pad..*to_pad + count)
+        .apply(p, None)?;
+        Ok(chop.pads())
     }
 
     /// Applies a [`ChopAction::ToPads`] made with `new_kit` from `from`
@@ -617,11 +636,10 @@ impl ChopAction {
     /// makes them, and the sound added to it, as one undo step of `to`.
     /// `from` doesn't change. Returns the pads it filled.
     pub fn apply_to(&self, from: &Project, to: &mut Project) -> Result<Range<usize>, ModelError> {
-        let ChopAction::ToPads { pad, .. } = self else {
-            return Ok(0..0);
-        };
-        let made_from = from.pad(*pad).ok_or(ModelError::BadPad)?;
-        self.place_in(from, made_from, to)
+        match self.chop(None) {
+            Some((made_from, chop)) => chop.place_in(from, made_from, to),
+            None => Ok(0..0),
+        }
     }
 
     /// As [`ChopAction::apply_to`], for take `index` kept on `from`'s page:
@@ -633,26 +651,10 @@ impl ChopAction {
         index: usize,
         to: &mut Project,
     ) -> Result<Range<usize>, ModelError> {
-        let made_from = from.take(index).ok_or(ModelError::BadTake)?;
-        self.place_in(from, made_from, to)
-    }
-
-    /// The slices on `to`'s pads, made from `made_from` of `from`, with the
-    /// sound added to `to`: one undo step of `to`.
-    fn place_in(
-        &self,
-        from: &Project,
-        made_from: &Pad,
-        to: &mut Project,
-    ) -> Result<Range<usize>, ModelError> {
-        let ChopAction::ToPads { layer, to_pad, .. } = self else {
-            return Ok(0..0);
-        };
-        let template = Self::template(made_from, *layer)?;
-        let (c, first, count) = self.slices(from)?;
-        let s = from.source(c.source).ok_or(ModelError::UnknownSource)?;
-        to.chop_to_pads_of(s, c, first, count, *to_pad, Some(&template))?;
-        Ok(*to_pad..*to_pad + count)
+        match self.chop(Some(index)) {
+            Some((made_from, chop)) => chop.place_in(from, made_from, to),
+            None => Ok(0..0),
+        }
     }
 
     /// The phrase a [`ChopAction::ToPads`] asks for: its slices as hits in
@@ -666,47 +668,11 @@ impl ChopAction {
         else {
             return Ok(None);
         };
-        let (c, first, count) = self.slices(p)?;
-        phrase::phrase(&c, first, count, *frames_per_beat).map(Some)
-    }
-
-    /// What each slice's pad is made from: `made_from` with the chopped
-    /// layer first, so its settings carry over.
-    fn template(made_from: &Pad, layer: usize) -> Result<Pad, ModelError> {
-        let mut t = made_from.clone();
-        if layer >= t.layers.len() {
-            return Err(ModelError::BadPad);
-        }
-        t.layers.swap(0, layer);
-        Ok(t)
-    }
-
-    /// The chop a [`ChopAction::ToPads`] makes, and which of its slices
-    /// (from `first`, `count` of them) lie between its bounds.
-    fn slices(&self, p: &Project) -> Result<(ChopSet, usize, usize), ModelError> {
-        let ChopAction::ToPads {
-            source,
-            name,
-            mode,
-            bounds,
-            ..
-        } = self
-        else {
-            return Err(ModelError::BadSlice);
+        let Some((_, chop)) = self.chop(None) else {
+            return Ok(None);
         };
-        if bounds.len() < 2 || bounds.windows(2).any(|w| w[0] >= w[1]) {
-            return Err(ModelError::BadSlice);
-        }
-        let s = p.source(*source).ok_or(ModelError::UnknownSource)?;
-        let c = ChopSet::from_markers(name, s, *mode, bounds.iter().copied())?;
-        let first = usize::from(bounds[0] > 0);
-        let count = bounds.len() - 1;
-        if c.bounds(first).map(|b| b.0) != Some(bounds[0])
-            || c.bounds(first + count - 1).map(|b| b.1) != bounds.last().copied()
-        {
-            return Err(ModelError::BadSlice);
-        }
-        Ok((c, first, count))
+        let (c, first, count) = chop.slices(p)?;
+        phrase::phrase(&c, first, count, *frames_per_beat).map(Some)
     }
 }
 
@@ -1344,7 +1310,10 @@ impl SliceTool {
                     threshold_db: self.threshold_db as f32,
                     ..SilenceSettings::default()
                 };
-                sound_spans(&st.source.mono, 1, st.rate, settings)
+                let Some(mono) = &st.source.mono else {
+                    return Vec::new();
+                };
+                sound_spans(mono, 1, st.rate, settings)
                     .map_or_else(|_| Vec::new(), |s| s.iter().map(|s| s.0).collect())
             }
             Method::Pitch => {
@@ -1378,7 +1347,7 @@ impl SliceTool {
     /// app then follows it off the screen thread
     /// ([`SourceView::follow_pitch`]) and shows the page the view with it.
     pub fn wants_pitch(&self, st: &ChopState) -> bool {
-        self.method == Method::Pitch && st.source.pitch.is_none() && !st.source.mono.is_empty()
+        self.method == Method::Pitch && st.source.pitch.is_none() && st.source.mono.is_some()
     }
 
     /// The cuts as tabs on the wave: one at the start of every slice,
@@ -2155,7 +2124,9 @@ impl SliceTool {
     /// direction of `dir`.
     fn snapped(&self, st: &ChopState, to: u64, dir: i32, px: f64) -> u64 {
         let to = to.min(st.frames);
-        let x = &st.source.mono;
+        let Some(x) = &st.source.mono else {
+            return to;
+        };
         if !self.snap || x.len() < 2 || to >= x.len() as u64 {
             return to;
         }

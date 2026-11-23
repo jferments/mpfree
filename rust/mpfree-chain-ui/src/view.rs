@@ -1184,7 +1184,7 @@ impl ChainView {
         if let (Some(b), Some(l)) = (ll.off, listens) {
             let lit = !l.listening;
             cx.canvas
-                .fill_round_rect(b, t.round(10), if lit { t.accent } else { t.raised });
+                .fill_round_rect(b, t.round(10), if lit { t.picked() } else { t.raised });
             let (name, about) = match l.listens.row {
                 mpfree_fx::sidechain::Row::Source => ("Tempo", "ducks on the beat"),
                 _ => ("Off", "listens to its own track"),
@@ -1196,7 +1196,7 @@ impl ChainView {
                 t.size_body - 2.0,
                 top,
                 Align::Left,
-                if lit { t.on_accent } else { t.text },
+                if lit { t.on_picked() } else { t.text },
                 name,
             );
             cx.text(
@@ -1204,7 +1204,7 @@ impl ChainView {
                 t.size_small - 3.0,
                 bottom,
                 Align::Left,
-                if lit { t.on_accent } else { t.text_dim },
+                if lit { t.on_picked() } else { t.text_dim },
                 about,
             );
             cx.canvas
@@ -3682,13 +3682,13 @@ impl ChainView {
             );
         }
         cx.canvas
-            .fill_round_rect(l.learn, 10, if st.learning { t.accent } else { t.raised });
+            .fill_round_rect(l.learn, 10, if st.learning { t.picked() } else { t.raised });
         cx.text(
             FontId::Bold,
             t.size_small,
             l.learn,
             Align::Center,
-            if st.learning { t.on_accent } else { t.text },
+            if st.learning { t.on_picked() } else { t.text },
             if st.learning {
                 "Turn a Q-Link"
             } else {

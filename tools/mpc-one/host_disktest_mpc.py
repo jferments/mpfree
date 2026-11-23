@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""mpfree-disktest on the test build: how fast and how steadily the stick's partition 4 streams audio. Three ways to run it:
+"""mpfree-disktest on the test build: how fast and how steadily the stick's partition 4 streams audio. Four ways to run it:
 
   --survey-only   READ-ONLY. Steps 1 and 2 only: nothing is copied to or run on the MPC.
   --read-only     RAM ONLY on the MPC. Copies the program into the test build's RAM and runs
@@ -7,6 +7,10 @@
                   WRITES NOTHING THERE. Needs MPFREE_ACCEPT_DISKTEST=READ-ONLY (or YES).
   (neither)       WRITES TEST FILES ON THE STICK'S PARTITION 4, THEN DELETES THEM.
                   Needs MPFREE_ACCEPT_DISKTEST=YES.
+  --under-load    WRITES TEST FILES ON THE STICK'S PARTITION 4, THEN DELETES THEM, and keeps
+                  the MPC's processor busy (it stops at 75 degrees C). Reads the audio on partition 4
+                  while a recording, heavy reads and writes, busy cores and heavy task switching
+                  run. Needs MPFREE_ACCEPT_DISKTEST=YES.
 
 Run it while the test build runs from the USB stick (started at power-on by
 the boot hook on the installed 3.10.1, or by `collect-over-ssh.sh --kexec-boot`
@@ -51,8 +55,26 @@ the second waits for you to press Enter:
      and deletes that folder at the end, after an error, on Ctrl-C, or when
      the ssh session closes. It prints the free space before and after.
      It reads the partition's superblock (read-only) to check the label.
-  Both run as an ordinary process, so the pad player's audio thread, if
-  it is running, comes first.
+  4c. With --under-load, STICK, PARTITION 4, AND THE PROCESSOR: runs
+     `mpfree-disktest --under-load`, about 7 minutes. It refuses (exit
+     code 3, nothing written) on everything 4a and 4b refuse. Then, in 8
+     steps of about 45 s, it reads the audio as 4a does (8 streams with
+     128 KiB reads, then 24 with 512 KiB reads; a set that can't keep up
+     stops at 60 s) while a recording writes 3.1 MB/s, and adds in turn: nothing, a heavy write, a heavy read, both,
+     a busy thread on each core, heavy task switching (8 pairs of threads
+     passing a byte, 32 threads waking every 200 microseconds), those two,
+     and everything. It writes only rec.bin and copy.bin in
+     /run/mpfree-data/mpfree-disktest, made new for each step and deleted
+     after it (at most 448 MiB at once and at most half the free space;
+     a few GB written in all, each step over the same space), and deletes the
+     folder at the end, after an error, on Ctrl-C, or when the ssh session
+     closes. It reads the temperature (/sys/class/thermal) every half
+     second: the busy and switching threads stop at 75 degrees C, or the lowest
+     trip point the kernel gives if that is lower, and the steps after are
+     left out; with no temperature to read, steps 5 to 8 are left out.
+  All run as an ordinary process, so the pad player's audio thread, if
+  it is running, comes first; the screen may answer slowly during steps
+  5 to 8.
 
 The read-only test (4a) reads like the streaming engine will: 4, 8, 16 and
 24 streams of 24-bit stereo at 44.1 kHz, each with 64, 128, 256 and 512 KiB
@@ -101,6 +123,8 @@ PROGRAM = os.path.join(REPO_ROOT, "rust", "target", "armv7-unknown-linux-gnueabi
 REMOTE_DIR = "/run/mpfree-disktest"
 # No path arguments: the program picks /run/mpfree-data itself and refuses anything else.
 TIMEOUT = 900
+# The run under load: about 7 minutes, longer if the stick can't keep up (each stream set stops at 60 s).
+TIMEOUT_LOAD = 1500
 REFUSED = 3
 DEFAULT_SSH = {
     "ip": os.environ.get("MPC_IP", "10.42.0.141"),
@@ -133,6 +157,11 @@ exec "$R/run/mpfree-disktest/mpfree-disktest"
 RUN_READ = r"""R=''
 cd "$R/run/mpfree-disktest" || exit 1
 exec "$R/run/mpfree-disktest/mpfree-disktest" --read-only
+"""
+# Reads partition 4's audio and writes only its own test files there, with the processor busy.
+RUN_LOAD = r"""R=''
+cd "$R/run/mpfree-disktest" || exit 1
+exec "$R/run/mpfree-disktest/mpfree-disktest" --under-load
 """
 # Read-only: the streaming survey (step D0 of docs/dev/design/disk-streaming.md).
 SURVEY = os.path.join(HERE, "read-only-stream-survey.sh")
@@ -177,12 +206,19 @@ def main(argv):
                       help="read-only: the checks and the streaming survey; nothing is copied or run")
     mode.add_argument("--read-only", action="store_true",
                       help="copy the program to the test build's RAM and run its read-only test")
+    mode.add_argument("--under-load", action="store_true",
+                      help="copy the program to the test build's RAM and run its test under load "
+                           "(writes test files on partition 4, then deletes them; keeps the processor busy)")
     args = p.parse_args(argv)
     accept = os.environ.get("MPFREE_ACCEPT_DISKTEST")
     if args.read_only and accept not in ("YES", "READ-ONLY"):
         raise Stop("opt-in required (copies a program into the test build's RAM; reads audio on the stick's "
                    "partition 4 and writes nothing there): "
                    "MPFREE_ACCEPT_DISKTEST=READ-ONLY python3 tools/mpc-one/host_disktest_mpc.py --read-only")
+    if args.under_load and accept != "YES":
+        raise Stop("opt-in required (writes test files on the stick's partition 4, then deletes them, and keeps "
+                   "the processor busy): "
+                   "MPFREE_ACCEPT_DISKTEST=YES python3 tools/mpc-one/host_disktest_mpc.py --under-load")
     if not args.read_only and not args.survey_only and accept != "YES":
         raise Stop("opt-in required (writes test files on the stick's partition 4, then deletes them): "
                    "MPFREE_ACCEPT_DISKTEST=YES python3 tools/mpc-one/host_disktest_mpc.py")
@@ -194,6 +230,9 @@ def main(argv):
         out.say("MPFree streaming survey on the test build (read-only; nothing is copied or run)")
     elif args.read_only:
         out.say("MPFree disk test on the test build, read-only (RAM, and reads of the audio on the stick's partition 4)")
+    elif args.under_load:
+        out.say("MPFree disk test under load on the test build (RAM, reads of the audio and test files on the "
+                "stick's partition 4 that it deletes, and a busy processor)")
     else:
         out.say("MPFree disk test on the test build (RAM, and test files on the stick's partition 4 that it deletes)")
 
@@ -247,6 +286,11 @@ def main(argv):
             out.say("\n[4/4] The read-only disk test: READS the audio in /run/mpfree-data/library and the "
                     "backup in /run/mpfree-data/backup (stick partition 4); writes nothing there")
             answer = app.ready(out, "Takes about 7 minutes; the MPC can stay as it is.")
+        elif args.under_load:
+            out.say("\n[4/4] The disk test under load: READS the audio in /run/mpfree-data/library and "
+                    "/run/mpfree-data/backup, WRITES test files in /run/mpfree-data/mpfree-disktest (stick "
+                    "partition 4) and deletes them, and keeps the processor busy (it stops at 75 degrees C)")
+            answer = app.ready(out, "Takes about 7 minutes; the screen may answer slowly in steps 5 to 8.")
         else:
             out.say("\n[4/4] The disk test: WRITES test files in /run/mpfree-data/mpfree-disktest "
                     "(stick partition 4), then deletes them")
@@ -257,7 +301,8 @@ def main(argv):
             out.say("  skipped: nothing was written on the stick")
             result = 0
         else:
-            rc, _ = app.stream(mpc, RUN_READ if args.read_only else RUN, TIMEOUT, out)
+            script = RUN_READ if args.read_only else RUN_LOAD if args.under_load else RUN
+            rc, _ = app.stream(mpc, script, TIMEOUT_LOAD if args.under_load else TIMEOUT, out)
             if rc == REFUSED:
                 out.say("  the disk test refused (reason above); nothing was written on the stick")
                 result = 2
@@ -275,6 +320,7 @@ def main(argv):
     for line in text.splitlines():
         out.say(f"  {line}")
     ran = "the read-only disk test ran (numbers above); nothing was written on the stick." if args.read_only \
+        else "the disk test under load ran (numbers above)." if args.under_load \
         else "the disk test ran (numbers above)."
     stopped = "stopped early; the read-only test writes nothing on the stick." if args.read_only else "stopped early."
     out.say("\nRESULT: " + {0: ran, 2: "refused by the disk test; nothing was written on the stick.",

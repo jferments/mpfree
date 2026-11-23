@@ -58,6 +58,7 @@
 
 pub mod arrange;
 pub mod audio;
+pub mod inst;
 pub mod loops;
 pub mod mutate;
 pub mod notes;
@@ -66,7 +67,9 @@ pub mod scenes;
 pub mod steps;
 pub mod time_edit;
 
-pub use arrange::{Arrangement, Marker, MorphRows, Placement, SongClips, TempoPoint};
+pub use arrange::{
+    Arrangement, FromScene, Marker, MorphRows, Placement, SongClips, SongSection, TempoPoint,
+};
 pub use audio::{AudioClip, ClipRegion, RecId, MAX_CLIP_REGIONS};
 pub use mutate::{Amount, Original, Pitches};
 pub use scenes::{
@@ -117,7 +120,7 @@ pub const MAX_TOUCH_POINTS: usize = 65536;
 pub const LOOPS: usize = 8;
 
 /// One note in a clip, in the clip's own ticks.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Note {
     /// Start, from the clip's start: `0 <= tick < clip length`.
     pub tick: Tick,
@@ -940,6 +943,10 @@ pub struct Clip {
     /// nothing else a note clip holds, plays at normal speed, and lives on
     /// an audio track; a clip on an audio track always has one.
     pub audio: Option<AudioClip>,
+    /// The instrument its instrument locks were made for, with the names
+    /// of the controls they lock (step sequencer refactor F1,
+    /// [`inst`]); None while it has none.
+    pub made_for: Option<inst::Inst>,
 }
 
 /// A clip's settings that are not its notes: how fast it plays, its own
@@ -1025,6 +1032,43 @@ pub enum ModelError {
     /// holds what a note clip holds (notes, locks, pressure, moves, a
     /// loop, a speed, swing, quantise, a direction or a program).
     BadAudioClip,
+}
+
+/// Take one item equal to each of `out` out of `from`, the first equal one
+/// left each time, as removing them one at a time would; the rest keep
+/// their order. For each item of `out`, whether one was found. One pass,
+/// so taking m items out of n costs n + m, not n × m; a short `out` goes
+/// one at a time, which is quicker for a few.
+pub fn take_out_each<T: Copy + Eq + std::hash::Hash>(from: &mut Vec<T>, out: &[T]) -> Vec<bool> {
+    if out.len() <= 8 {
+        return out
+            .iter()
+            .map(|x| match from.iter().position(|y| y == x) {
+                Some(i) => {
+                    from.remove(i);
+                    true
+                }
+                None => false,
+            })
+            .collect();
+    }
+    // Each value asked for: how many of its asks are met, and which asks
+    // they are, in order.
+    let mut wanted: std::collections::HashMap<T, (usize, Vec<usize>)> =
+        std::collections::HashMap::with_capacity(out.len());
+    for (i, x) in out.iter().enumerate() {
+        wanted.entry(*x).or_default().1.push(i);
+    }
+    let mut found = vec![false; out.len()];
+    from.retain(|x| match wanted.get_mut(x) {
+        Some((met, asks)) if *met < asks.len() => {
+            found[asks[*met]] = true;
+            *met += 1;
+            false
+        }
+        _ => true,
+    });
+    found
 }
 
 impl Clip {
@@ -1119,6 +1163,7 @@ impl Clip {
             original: None,
             holds: Holds::Hits,
             audio: None,
+            made_for: None,
         }
     }
 
@@ -1195,6 +1240,16 @@ impl Clip {
             }
             None => false,
         }
+    }
+
+    /// Remove one note equal to each of `notes`, as [`Clip::remove_note`]
+    /// would one at a time, but in one pass however many there are (an
+    /// edit to all 8,192 notes): how many it found.
+    pub fn remove_notes(&mut self, notes: &[Note]) -> usize {
+        take_out_each(&mut self.notes, notes)
+            .iter()
+            .filter(|&&found| found)
+            .count()
     }
 
     /// Add one lock. A lock out of range (its tick, its sound, a value
@@ -1440,8 +1495,22 @@ pub struct Track {
     /// "Follows transpose": the pads' Transpose moves this track with the
     /// armed one, so a bass and its chords change key together.
     pub follows: bool,
+    /// Its kit's pads muted on this track alone (the instrument redesign's
+    /// step 10, Jay's card of 22 Nov: a pad mute belongs to one track, as
+    /// the MPC's Pad Mute does), a bit each by kit pad (A1 is bit 0, H16
+    /// bit 127): the player leaves out this track's hits of them, and
+    /// another track on the same kit still plays them.
+    pub pad_mutes: u128,
+    /// Its kit's pads soloed on this track (TRACK MUTE held over the pad
+    /// mutes): while any is, the track's other pads are silent.
+    pub pad_solos: u128,
     /// Its clips by row, 0 to [`ROWS`] - 1 ([`Rows`]).
     pub slots: Rows,
+    /// The instrument it plays now, every control named (step sequencer
+    /// refactor F1, [`inst`]): told by the app, never saved, and left out
+    /// of comparisons. None when not told (a kit, MIDI out), and then its
+    /// clips' instrument locks play.
+    pub plays: inst::Plays,
 }
 
 /// A track's clips by row number (the Arrange refactor's 1.2): row `r`'s
@@ -1689,7 +1758,10 @@ impl Track {
             kind: TrackKind::Notes,
             transpose: Transpose::NONE,
             follows: false,
+            pad_mutes: 0,
+            pad_solos: 0,
             slots: Default::default(),
+            plays: inst::Plays::default(),
         }
     }
 
@@ -1730,7 +1802,10 @@ impl Track {
             kind,
             transpose,
             follows,
+            pad_mutes,
+            pad_solos,
             slots,
+            plays: _,
         } = self;
         *dest == other.dest
             && *swing == other.swing
@@ -1743,7 +1818,21 @@ impl Track {
             && *kind == other.kind
             && *transpose == other.transpose
             && *follows == other.follows
+            && *pad_mutes == other.pad_mutes
+            && *pad_solos == other.pad_solos
             && *slots == other.slots
+    }
+
+    /// The kit pads whose hits this track leaves out (step 10): the ones
+    /// muted, and while any pad is soloed every pad that isn't, a bit each
+    /// as [`Track::pad_mutes`]. A muted pad stays silent soloed.
+    pub fn silent_pads(&self) -> u128 {
+        let solo = if self.pad_solos == 0 {
+            0
+        } else {
+            !self.pad_solos
+        };
+        self.pad_mutes | solo
     }
 
     /// A Loop track's input; None for a note track or an audio track.

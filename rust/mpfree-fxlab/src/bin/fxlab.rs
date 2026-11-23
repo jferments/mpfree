@@ -36,6 +36,11 @@
 //!     as DIR/renders/ENGINE/NN-PRESET.wav and each drum kit's tour
 //!     (docs/dev/design/synth-quality.md). With --engine, only that
 //!     engine's presets (and renders), for a quick look while working on it.
+//! fxlab reference [--sixteen] [--out DIR]
+//!     Y8 of the DSP quality plan: each aliasing case against a render at
+//!     8 times the rate brought down to 44.1 kHz, and with --sixteen the
+//!     8x reference against a 16x one; writes DIR/reference.txt
+//!     (docs/dev/design/dsp-quality.md).
 //! ```
 
 use std::path::PathBuf;
@@ -44,7 +49,7 @@ use mpfree_fxlab::card::{self, Options};
 use mpfree_fxlab::dut::{Dut, NodeDut};
 use mpfree_fxlab::plan::{self, Context, ControlList, PlanOptions};
 use mpfree_fxlab::programme::{self, Programme, Schedule};
-use mpfree_fxlab::{capture, quality, synth, wav};
+use mpfree_fxlab::{capture, quality, reference, synth, wav};
 
 fn usage() -> ! {
     eprintln!("usage: fxlab cards [--rate HZ] [--quick] [--presets] [--effect ID]... [--out DIR]");
@@ -55,6 +60,7 @@ fn usage() -> ! {
     eprintln!("                  [--gains DB,DB...] [--programme FILE] [--out DIR]");
     eprintln!("       fxlab sweep --effect ID [plan options] [--out DIR]");
     eprintln!("       fxlab synth [--rate HZ] [--renders] [--engine NAME] [--out DIR]");
+    eprintln!("       fxlab reference [--sixteen] [--out DIR]");
     eprintln!("       fxlab quality [--class delay|eq|reverb|drive|crush|compressor|filter|lofi|amp|modulation|limiter|gate|deesser|multiband|ducker|transient|strip|movement|pitch|voice]... [--rate HZ] [--out DIR]");
     std::process::exit(2);
 }
@@ -73,6 +79,7 @@ struct Args {
     reverb: bool,
     dynamics: bool,
     renders: bool,
+    sixteen: bool,
     engine: Option<String>,
     controls: Option<PathBuf>,
     plan: PlanOptions,
@@ -93,6 +100,7 @@ fn parse(mut it: impl Iterator<Item = String>) -> Args {
         reverb: false,
         dynamics: false,
         renders: false,
+        sixteen: false,
         engine: None,
         controls: None,
         plan: PlanOptions::default(),
@@ -114,6 +122,7 @@ fn parse(mut it: impl Iterator<Item = String>) -> Args {
             "--reverb" => a.reverb = true,
             "--dynamics" => a.dynamics = true,
             "--renders" => a.renders = true,
+            "--sixteen" => a.sixteen = true,
             "--engine" => a.engine = Some(it.next().unwrap_or_else(|| usage())),
             "--points" => a.plan.sweep_points = num() as usize,
             "--grid" => a.plan.grid_points = num() as usize,
@@ -390,6 +399,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
+            eprintln!("wrote {}", a.out.display());
+        }
+        "reference" => {
+            let text = reference::to_text(&reference::y8(a.sixteen));
+            print!("{text}");
+            std::fs::create_dir_all(&a.out)?;
+            std::fs::write(a.out.join("reference.txt"), &text)?;
             eprintln!("wrote {}", a.out.display());
         }
         "cut" => {

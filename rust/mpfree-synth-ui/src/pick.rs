@@ -11,8 +11,12 @@
 //! **Bank B only** (the bank the pads are on, step 6c): where a tap puts
 //! its synth.
 //!
+//! **Layer** (step 11b), a switch in the heading before Cancel: with it
+//! on, a tap adds a synth to what the pads play or takes it off, up to
+//! four; each one playing is outlined and tagged.
+//!
 //! Events: `Select(i)` a tile (choice `i`), `Tab(CANCEL)`, `Tab(KEEP)`,
-//! `Tab(ALL_BANKS)` and `Tab(BANK_ONLY)`.
+//! `Tab(ALL_BANKS)`, `Tab(BANK_ONLY)` and `Tab(LAYER)`.
 
 use mpfree_ui::text::FontId;
 use mpfree_ui::{Align, EventKind, PaintCx, Rect, Target, Touch, Widget};
@@ -27,6 +31,8 @@ pub const KEEP: usize = 1;
 pub const ALL_BANKS: usize = 2;
 /// `Tab(BANK_ONLY)`: a tap puts its synth on the bank the pads are on.
 pub const BANK_ONLY: usize = 3;
+/// `Tab(LAYER)`: the Layer switch (step 11b).
+pub const LAYER: usize = 4;
 
 /// The heading's height.
 const HEAD_H: i32 = 64;
@@ -51,6 +57,10 @@ pub struct SynthList {
     /// On a kit's pages (step 6c): the bank the pads are on ('B') and
     /// whether a tap gives it alone the synth. None: no row.
     pub bank: Option<(char, bool)>,
+    /// Layer is on (step 11b): a tap adds a synth or takes it off.
+    pub layer: bool,
+    /// The choices the pads play as layers beyond `now`, each outlined.
+    pub layers: Vec<usize>,
 }
 
 impl SynthList {
@@ -64,6 +74,17 @@ impl SynthList {
         let keep = Rect::new(h.right() - 150, h.y + 10, 150, h.h - 20);
         let cancel = Rect::new(keep.x - 12 - 120, keep.y, 120, keep.h);
         [cancel, keep]
+    }
+
+    /// The Layer switch, before Cancel (step 11b).
+    pub fn layer_button(&self, r: Rect) -> Rect {
+        let [cancel, _] = self.buttons(r);
+        Rect::new(cancel.x - 12 - 110, cancel.y, 110, cancel.h)
+    }
+
+    /// Whether choice `i` plays on the pads: the first or a layer.
+    fn playing(&self, i: usize) -> bool {
+        Some(i) == self.now || self.layers.contains(&i)
     }
 
     /// All banks and Bank B only, under the heading (step 6c), while the
@@ -94,6 +115,9 @@ impl SynthList {
     }
 
     fn keep_label(&self) -> String {
+        if !self.layers.is_empty() {
+            return "Keep layers".to_string();
+        }
         match self.now.and_then(|n| self.choices.get(n)) {
             Some((name, _)) if self.now != self.had => format!("Keep {name}"),
             _ => "Done".to_string(),
@@ -107,7 +131,8 @@ impl Widget for SynthList {
         cx.panel(r);
         let h = Self::head(r);
         let [cancel, keep] = self.buttons(r);
-        let words = Rect::new(h.x, h.y + 10, cancel.x - h.x - 12, h.h - 20);
+        let layer = self.layer_button(r);
+        let words = Rect::new(h.x, h.y + 10, layer.x - h.x - 12, h.h - 20);
         let (top, bottom) = words.take_top(words.h * 3 / 5);
         cx.text(
             FontId::Bold,
@@ -124,11 +149,27 @@ impl Widget for SynthList {
             Align::Left,
             t.text_dim,
             &match self.bank {
+                _ if self.layer => "A tap adds it to the pads or takes it off, up to 4".to_string(),
                 Some((b, true)) => {
                     format!("A tap puts it on bank {b} at once: play its pads to hear it")
                 }
                 _ => "A tap puts it on the pads at once: play them to hear it".to_string(),
             },
+        );
+        // Layer: on in the accent, off raised and outlined.
+        if self.layer {
+            cx.canvas.fill_round_rect(layer, 10, t.accent);
+        } else {
+            cx.canvas.fill_round_rect(layer, 10, t.raised);
+            cx.canvas.stroke_round_rect(layer, 10, 1, t.outline);
+        }
+        cx.text(
+            FontId::Bold,
+            t.size_body - 1.0,
+            layer,
+            Align::Center,
+            if self.layer { t.on_accent } else { t.text },
+            "Layer",
         );
         if let (Some([all, one]), Some((b, only))) = (self.scopes(r), self.bank) {
             for (rect, on, label) in [
@@ -136,7 +177,7 @@ impl Widget for SynthList {
                 (one, only, format!("Bank {b} only")),
             ] {
                 if on {
-                    cx.canvas.fill_round_rect(rect, 8, t.accent);
+                    cx.canvas.fill_round_rect(rect, 8, t.picked());
                 } else {
                     cx.canvas.fill_round_rect(rect, 8, t.raised);
                     cx.canvas.stroke_round_rect(rect, 8, 1, t.outline);
@@ -146,7 +187,7 @@ impl Widget for SynthList {
                     t.size_small,
                     rect,
                     Align::Center,
-                    if on { t.on_accent } else { t.text },
+                    if on { t.on_picked() } else { t.text },
                     &label,
                 );
             }
@@ -172,7 +213,7 @@ impl Widget for SynthList {
         );
         for (i, (name, good)) in self.choices.iter().enumerate() {
             let b = self.tile(r, i);
-            let on = Some(i) == self.now;
+            let on = self.playing(i);
             cx.canvas
                 .fill_round_rect(b, 12, if on { t.raised } else { t.bg });
             if on {
@@ -227,6 +268,7 @@ impl Widget for SynthList {
         let mut out = vec![
             Target::tap("cancel", CANCEL, "Cancel", cancel),
             Target::tap("keep", KEEP, self.keep_label(), keep),
+            Target::tap("layer", LAYER, "Layer", self.layer_button(r)),
         ];
         if let (Some([all, one]), Some((b, _))) = (self.scopes(r), self.bank) {
             out.push(Target::tap("all-banks", ALL_BANKS, "All banks", all));
@@ -253,6 +295,9 @@ impl Widget for SynthList {
         if let Some(k) = self.buttons(r).iter().position(|b| b.contains(x, y)) {
             return Some(EventKind::Tab(k));
         }
+        if self.layer_button(r).contains(x, y) {
+            return Some(EventKind::Tab(LAYER));
+        }
         if let Some(k) = self
             .scopes(r)
             .and_then(|s| s.iter().position(|b| b.contains(x, y)))
@@ -276,6 +321,8 @@ mod tests {
             now: Some(2),
             had: Some(0),
             bank: None,
+            layer: false,
+            layers: Vec::new(),
         }
     }
 
@@ -345,5 +392,27 @@ mod tests {
         );
         let names: Vec<String> = l.targets(r).into_iter().map(|t| t.label).collect();
         assert!(names.contains(&"Bank B only".to_string()), "{names:?}");
+    }
+
+    /// Step 11b: the Layer switch sits in the heading before Cancel, clear
+    /// of the title's words, and takes its tap; the layers are outlined
+    /// with the first, and Keep keeps them.
+    #[test]
+    fn the_layer_switch_sits_before_cancel_and_layers_are_outlined() {
+        let mut l = list(13);
+        let r = Rect::new(244, 84, 884, 666);
+        let [cancel, _] = l.buttons(r);
+        let layer = l.layer_button(r);
+        assert!(layer.right() < cancel.x && layer.x > r.x + 300, "{layer:?}");
+        assert_eq!(
+            l.touch(0, Touch::Down, layer.x + 5, layer.y + 5, r),
+            Some(EventKind::Tab(LAYER))
+        );
+        l.layer = true;
+        l.layers = vec![5, 7];
+        assert!(l.playing(2) && l.playing(5) && l.playing(7) && !l.playing(3));
+        assert_eq!(l.keep_label(), "Keep layers");
+        let names: Vec<String> = l.targets(r).into_iter().map(|t| t.label).collect();
+        assert!(names.contains(&"Layer".to_string()), "{names:?}");
     }
 }

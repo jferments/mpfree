@@ -319,16 +319,22 @@ when an effect's mode switch moved the controls a Q-Link had learned.
 - **New behaviour comes with tests** in the crate that owns it. Engine code
   gets unit tests. Audio output gets a fixed-output or golden check. A parser
   gets tests on bad input as well as good.
-- **A sound or screen that changes on purpose gets new golden references** in the
-  same PR, with the reason in the commit:
-  `MPFREE_GOLDEN_BLESS=1 cargo test -p mpfree-bench golden`. The golden
-  test fingerprints each bench case per eighth of its render and channel
-  (level in dB, zero crossings) and allows 0.5 dB and 3 % of crossings, so
-  another CPU or libm passes and a changed preset, tuning or filter fails.
-  A new bench case needs a reference too. A screen that changes on purpose
-  is the same: `MPFREE_GOLDEN_BLESS=1 cargo test -p mpfree-app --test cli`
-  (references are x86-64; the ARMv7 run under qemu checks only that the
-  pictures are valid).
+- **A sound or screen that changes on purpose gets new golden references**
+  in the same PR, with the reason in the commit: `MPFREE_GOLDEN_BLESS=1
+  cargo test -p mpfree-bench golden`. The golden test fingerprints each
+  bench case per eighth of its render and channel (level in dB, zero
+  crossings) and allows 0.5 dB and 3 % of crossings, so another CPU or libm
+  passes and a changed preset, tuning or filter fails. A new bench case
+  needs a reference too. The DSP quality plan's fixed test projects
+  (`src/projects.rs`, step 0.6) are left out of that test and have a finer
+  one of their own, in release: each project's 10 s through the whole chain,
+  per half second and channel, its level within 0.1 dB and its octave bands
+  within 0.25 dB, against `golden/projects.txt` (`MPFREE_GOLDEN_BLESS=1
+  cargo test --release -p mpfree-bench projects`). The check also says
+  whether each render is still bit-identical. A screen that changes on
+  purpose is the same: `MPFREE_GOLDEN_BLESS=1 cargo test -p mpfree-app
+  --test cli` (references are x86-64; the ARMv7 run under qemu checks only
+  that the pictures are valid).
 - **Themes keep every screen readable.** `mpfree-app`'s `theme_contrast` test
   measures every run of text on every sample screen in every built-in theme,
   and `mpfree-ui`'s `fixed_colours` test counts hex colours in drawing code.

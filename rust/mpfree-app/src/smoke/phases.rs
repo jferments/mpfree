@@ -1457,6 +1457,421 @@ mod looper {
             assert_ne!(bpm, before);
             assert_eq!(s.time.tempo_map().segments().len(), 1);
             assert_eq!(s.looper.tempos_refused, 0);
+            // Smart loop end (Suggest, the default) found no note near
+            // the tap: it stood, counted and said.
+            assert!(
+                s.said()
+                    .iter()
+                    .any(|l| l == "looper: Loop 1: smart loop end kept your tap: no note near it"),
+                "{:?}",
+                s.said()
+            );
+            assert_eq!(s.looper.looper.stats().taps_kept, 1);
+        });
+    }
+
+    /// Smart loop end step 1, the whole way through: on Auto, a pad hit
+    /// just after REC, the same pad again 2 s later and REC tapped 40 ms
+    /// after that. The pads' notes reach the looper, the loop is the
+    /// length between the two hits, and the song starts as far into bar
+    /// 1 as the loop already is.
+    #[test]
+    fn auto_smart_loop_end_closes_on_the_hit_you_played_again() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.make_sounds();
+            s.press("header", "tab", "Looper");
+            s.app.settings.loop_tempo = true;
+            s.app.settings.smart_end = mpfree_looper::SmartEnd::Auto;
+            let free = at(&mut s, "leditor", "bars", 1);
+            s.press_target(&free).run_for(0.1);
+            s.button("REC");
+            // The opening hit (within the reach of REC, so the loop's
+            // start is that far before it), and the same pad again.
+            let first = s.time.next_frame();
+            s.pad(0, 120, 0.1);
+            s.run_for(2.0 - 0.1);
+            let again = s.time.next_frame();
+            s.pad_edge(0, 120, true);
+            s.run_for(0.04);
+            s.button("REC");
+            s.pad_edge(0, 0, false);
+            until_phase(&mut s, Phase::Playing, 1.0);
+            let st = status(&s);
+            let between = (again - first) as usize;
+            assert!(
+                st.frames.abs_diff(between) <= crate::PERIOD,
+                "{} frames, {between} between the hits: {:?}",
+                st.frames,
+                s.said()
+            );
+            let line = s
+                .said()
+                .into_iter()
+                .find(|l| l.starts_with("looper: Loop 1: your tap was "))
+                .unwrap_or_else(|| panic!("{:?}", s.said()));
+            assert!(
+                line.contains(" ms late; smart loop end closed it on the end you played")
+                    && line.contains(" (best: "),
+                "{line}"
+            );
+            assert_eq!(s.looper.looper.stats().ends_moved, 1);
+            // The song started part-way into bar 1, where the loop is.
+            s.run_periods(1);
+            let info = s.time.info();
+            assert!(info.state.rolling());
+            let st = status(&s);
+            let loop_at = st.origin + (f64::from(st.position) * st.ticks as f64) as i64;
+            assert!(info.position > 0, "not from the bar line");
+            assert!(
+                (info.position - loop_at).abs() < st.ticks / 100,
+                "song at {}, loop at {loop_at}",
+                info.position
+            );
+        });
+    }
+
+    /// Smart loop end step 1c, a smart start: on Auto, REC pressed 80 ms
+    /// before the first pad hit. The loop starts on the hit, not on the
+    /// press, is the length between the two hits, and the log says so.
+    #[test]
+    fn auto_starts_a_loop_on_the_first_hit_after_rec() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.make_sounds();
+            s.press("header", "tab", "Looper");
+            s.app.settings.loop_tempo = true;
+            s.app.settings.smart_end = mpfree_looper::SmartEnd::Auto;
+            let free = at(&mut s, "leditor", "bars", 1);
+            s.press_target(&free).run_for(0.1);
+            s.button("REC");
+            s.run_for(0.08);
+            let first = s.time.next_frame();
+            s.pad(0, 120, 0.1);
+            s.run_for(2.0 - 0.1);
+            let again = s.time.next_frame();
+            s.pad_edge(0, 120, true);
+            s.run_for(0.04);
+            s.button("REC");
+            s.pad_edge(0, 0, false);
+            until_phase(&mut s, Phase::Playing, 1.0);
+            let st = status(&s);
+            let between = (again - first) as usize;
+            assert!(
+                st.frames.abs_diff(between) <= crate::PERIOD,
+                "{} frames, {between} between the hits",
+                st.frames
+            );
+            let b = st.bounds.expect("bounds");
+            let lead = b.start - b.captured.0;
+            // 80 ms, and the moment the session takes the pad in (its
+            // frame comes with the next screen frame, about 20 ms).
+            let want = (0.08 * f64::from(crate::RATE)) as i64;
+            assert!(
+                (want..want + (0.025 * f64::from(crate::RATE)) as i64).contains(&lead),
+                "started {lead} frames after REC"
+            );
+            assert_eq!(st.moved.map(|m| m.start), Some(lead));
+            let line = s
+                .said()
+                .into_iter()
+                .find(|l| l.starts_with("looper: Loop 1: your tap was "))
+                .unwrap_or_else(|| panic!("{:?}", s.said()));
+            assert!(
+                line.contains(", and started it on your first hit, ")
+                    && line.contains(" ms after REC (best: "),
+                "{line}"
+            );
+            assert_eq!(s.looper.looper.stats().starts_found, 1);
+        });
+    }
+
+    /// A free first loop on the pads closed 40 ms late with Suggest: the
+    /// end offered, the loop's frames and tempo at the tap, and the frames
+    /// between the two hits.
+    fn closed_late(s: &mut Session) -> (mpfree_looper::Shift, usize, f64, usize) {
+        s.make_sounds();
+        s.press("header", "tab", "Looper");
+        s.app.settings.loop_tempo = true;
+        let free = at(s, "leditor", "bars", 1);
+        s.press_target(&free).run_for(0.1);
+        s.button("REC");
+        let first = s.time.next_frame();
+        s.pad(0, 120, 0.1);
+        s.run_for(2.0 - 0.1);
+        let again = s.time.next_frame();
+        s.pad_edge(0, 120, true);
+        s.run_for(0.04);
+        s.button("REC");
+        s.pad_edge(0, 0, false);
+        until_phase(s, Phase::Playing, 1.0);
+        let tap = status(s).frames;
+        let tap_bpm = s.time.info().bpm;
+        s.run_for(0.2);
+        let by = status(s).offer.expect("an offer");
+        assert!(by.end < 0, "the tap was late");
+        (by, tap, tap_bpm, (again - first) as usize)
+    }
+
+    /// Smart loop end step 1b, the whole way through: Suggest closes on
+    /// a tap 40 ms after the hit played again, then offers the end it
+    /// heard. Snap (what the screens will offer) changes the loop's end
+    /// and the song's tempo together on the loop's next downbeat, the
+    /// app's tempo follows, and UNDO takes it back the same way.
+    #[test]
+    fn a_snap_changes_the_loop_and_the_tempo_on_its_downbeat_and_undo_takes_it_back() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let (by, tap, tap_bpm, between) = closed_late(&mut s);
+            assert_eq!(
+                s.looper.snap(mpfree_looper::Snap::Found),
+                "looper: Snap: Loop 1 changes on its next downbeat, with the tempo"
+            );
+            let until_moved = |s: &mut Session, moved: Option<mpfree_looper::Shift>| {
+                let end = s.t() + 3.0;
+                while status(s).moved != moved && s.t() < end {
+                    s.run_periods(1);
+                }
+                assert_eq!(status(s).moved, moved, "{:?}", s.said());
+            };
+            until_moved(&mut s, Some(by));
+            let st = status(&s);
+            assert_eq!(st.frames as i64, tap as i64 + by.longer());
+            assert!(
+                st.frames.abs_diff(between) <= crate::PERIOD,
+                "{}",
+                st.frames
+            );
+            let said = s.said();
+            let line = said
+                .iter()
+                .find(|l| l.starts_with("looper: Loop 1: snapped "))
+                .unwrap_or_else(|| panic!("{said:?}"));
+            assert!(line.contains(" ms earlier: 1 bar at "), "{line}");
+            s.run_for(0.1);
+            let bpm = s.time.info().bpm;
+            assert!(bpm > tap_bpm, "{bpm} after {tap_bpm}");
+            assert_eq!(s.app.settings.bpm, bpm, "the app's tempo follows");
+            assert_eq!(s.time.tempo_map().segments().len(), 1);
+            // UNDO goes back on a downbeat too, with the tap's tempo.
+            s.button("UNDO");
+            until_moved(&mut s, None);
+            s.run_for(0.1);
+            assert_eq!(status(&s).frames, tap);
+            assert_eq!(status(&s).offer, Some(by), "on offer again");
+            assert!((s.time.info().bpm - tap_bpm).abs() < 1e-9);
+            assert_eq!(s.app.settings.bpm, s.time.info().bpm);
+            assert_eq!(s.looper.snaps_refused, 0);
+        });
+    }
+
+    /// Smart loop end plan, step 2: Read as 2 bars keeps the loop's
+    /// length and doubles the song's tempo on its next downbeat, the app's
+    /// tempo following; the history says so, and UNDO reads it as before
+    /// the same way.
+    #[test]
+    fn read_as_two_bars_doubles_the_tempo_on_the_downbeat_and_undo_reads_it_as_before() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let (_, tap, tap_bpm, _) = closed_late(&mut s);
+            let bar = 4 * i64::from(mpfree_transport::time::PPQ);
+            assert_eq!(status(&s).ticks, bar);
+            assert_eq!(
+                s.looper.snap(mpfree_looper::Snap::Bars(2)),
+                "looper: Read as 2 bars: Loop 1 changes on its next downbeat, with the tempo"
+            );
+            let until_ticks = |s: &mut Session, ticks: i64| {
+                let end = s.t() + 3.0;
+                while status(s).ticks != ticks && s.t() < end {
+                    s.run_periods(1);
+                }
+                assert_eq!(status(s).ticks, ticks, "{:?}", s.said());
+                s.run_for(0.1);
+            };
+            until_ticks(&mut s, 2 * bar);
+            assert_eq!(status(&s).frames, tap, "the length stays");
+            let said = s.said();
+            assert!(
+                said.iter()
+                    .any(|l| l.starts_with("looper: Loop 1: read again: 2 bars at ")),
+                "{said:?}"
+            );
+            assert!((s.time.info().bpm - 2.0 * tap_bpm).abs() < 1e-9);
+            assert_eq!(
+                s.app.settings.bpm,
+                s.time.info().bpm,
+                "the app's tempo follows"
+            );
+            assert_eq!(
+                s.looper.looper.history().done().last(),
+                Some(&mpfree_looper::Step::Bars(2))
+            );
+            // UNDO reads it as before, on a downbeat, with the tap's tempo.
+            s.button("UNDO");
+            until_ticks(&mut s, bar);
+            let said = s.said();
+            assert!(
+                said.iter()
+                    .any(|l| l.starts_with("looper: Loop 1: Undo: read as before: 1 bar at ")),
+                "{said:?}"
+            );
+            assert!((s.time.info().bpm - tap_bpm).abs() < 1e-9);
+            assert_eq!(s.looper.snaps_refused, 0);
+        });
+    }
+
+    /// Smart loop end plan, step 2: a snap that would change the tempo
+    /// under the audio tracks' recordings asks first, and nothing moves
+    /// until Snap anyway; Not now drops it.
+    #[test]
+    fn a_snap_over_recorded_audio_asks_first() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let (by, tap, _, _) = closed_late(&mut s);
+            s.recorded_audio = Some(true);
+            // Not now: nothing changes.
+            s.looper.snap(mpfree_looper::Snap::Found);
+            s.run_for(0.1);
+            let said = s.said();
+            assert!(
+                said.iter().any(|l| l
+                    == "looper: Loop 1: that changes the tempo under the audio tracks' \
+                        recordings. Snap anyway?"),
+                "{said:?}"
+            );
+            assert_eq!(
+                s.looper.snap_asking(),
+                Some((0, mpfree_looper::Snap::Found))
+            );
+            assert_eq!(
+                s.looper.snap_not_now().as_deref(),
+                Some("looper: Loop 1: not now: it stays as it is")
+            );
+            assert_eq!(s.looper.snap_asking(), None);
+            s.run_for(2.5);
+            assert_eq!(status(&s).frames, tap);
+            assert_eq!(status(&s).offer, Some(by), "still on offer");
+            // Snap anyway: it lands on the downbeat, as any snap.
+            s.looper.snap(mpfree_looper::Snap::Found);
+            s.run_for(0.1);
+            assert!(s.looper.snap_anyway().is_some());
+            let end = s.t() + 3.0;
+            while status(&s).moved != Some(by) && s.t() < end {
+                s.run_periods(1);
+            }
+            assert_eq!(status(&s).moved, Some(by), "{:?}", s.said());
+            assert_eq!(status(&s).frames as i64, tap as i64 + by.longer());
+            assert_eq!(s.looper.snaps_refused, 0);
+        });
+    }
+
+    /// The Looper tab's editor, as drawn.
+    fn smart_editor(s: &Session) -> &crate::looper_tab::LoopEditor {
+        s.screen
+            .ui
+            .get::<crate::looper_tab::LoopEditor>(crate::looper_tab::EDITOR)
+            .expect("the editor")
+    }
+
+    /// Run until loop 1's moved is `moved` (a snap landed), and a view
+    /// after it.
+    fn until_moved(s: &mut Session, moved: Option<mpfree_looper::Shift>) {
+        let end = s.t() + 3.0;
+        while status(s).moved != moved && s.t() < end {
+            s.run_periods(1);
+        }
+        assert_eq!(status(s).moved, moved, "{:?}", s.said());
+        s.run_for(0.1);
+    }
+
+    /// Smart loop end step 2's screens, the whole way through (Jay's OK
+    /// on the drawings, 22 Nov): the chip says how late the tap was, and
+    /// its Snap snaps on the downbeat; then it says what the snap did, and
+    /// its words open the loop point view with the audio round the press
+    /// and the tap. A/B swaps the two sides on the downbeats until Keep my
+    /// tap, which puts the chip and the view away.
+    #[test]
+    fn the_chip_snaps_and_the_loop_point_view_swaps_and_keeps_a_side() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let (by, _, _, _) = closed_late(&mut s);
+            s.run_for(0.1);
+            let ms = |f: i64| (f.abs() as f64 * 1000.0 / 44_100.0).round();
+            let chip = smart_editor(&s).chip.clone().expect("the chip");
+            // (The first hit came a period's worth after REC.)
+            let late = format!("{} ms late", ms(by.end));
+            let words = match by.start {
+                0 => late,
+                f => format!("{late} · first hit {} ms after REC", ms(f)),
+            };
+            assert_eq!(chip.words, words);
+            s.press("leditor", "chip-act", "Snap");
+            until_moved(&mut s, Some(by));
+            let chip = smart_editor(&s).chip.clone().expect("the chip");
+            assert_eq!(chip.words, format!("Snapped {} ms earlier", ms(by.end)));
+            assert_eq!(chip.action.0, "Use my tap");
+            // The words open the view; the looper reads the audio for it.
+            s.press("leditor", "chip", &chip.words);
+            s.run_for(0.1);
+            let look = smart_editor(&s).point.clone().expect("the view's look");
+            assert!(
+                look.line.starts_with("Use my tap puts it back: 1 bar at "),
+                "{}",
+                look.line
+            );
+            assert!(s.control("leditor", "point-close", "").is_some());
+            assert!(
+                look.end.peaks.iter().any(|&p| p > 50),
+                "the hit played again is in the end's window"
+            );
+            // A/B: back to the tap on a downbeat, then the snap again.
+            s.press("leditor", "point-ab", "A/B");
+            until_moved(&mut s, None);
+            assert_eq!(status(&s).offer, Some(by));
+            until_moved(&mut s, Some(by));
+            assert!(smart_editor(&s).point.as_ref().unwrap().ab == Some(true));
+            // Keep my tap: A/B stops, the tap on the next downbeat, and
+            // the chip and the view go.
+            s.press("leditor", "point-pick", "Keep my tap");
+            until_moved(&mut s, None);
+            s.run_for(2.5);
+            assert_eq!(status(&s).moved, None, "A/B stopped");
+            assert_eq!(status(&s).offer, Some(by), "still found");
+            let e = smart_editor(&s);
+            assert!(e.chip.is_none(), "put away");
+            assert!(s.control("leditor", "point-close", "").is_none());
+            assert_eq!(s.looper.snaps_refused, 0);
+        });
+    }
+
+    /// Smart loop end step 2's screens: a snap over recorded audio asks on
+    /// the hint line, with Snap anyway and Not now at its end; Not now
+    /// takes them away and nothing changes.
+    #[test]
+    fn the_hint_line_asks_with_snap_anyway_and_not_now() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let (by, tap, _, _) = closed_late(&mut s);
+            s.recorded_audio = Some(true);
+            s.run_for(0.1);
+            s.press("leditor", "chip-act", "Snap");
+            s.run_for(0.1);
+            assert_eq!(
+                s.hint(),
+                "Loop 1: that changes the tempo under the audio tracks' recordings. Snap anyway?"
+            );
+            assert!(s.control("lask", "ask-yes", "Snap anyway").is_some());
+            s.press("lask", "ask-no", "Not now");
+            s.run_for(0.1);
+            assert_eq!(s.looper.snap_asking(), None);
+            assert!(s.control("lask", "ask-yes", "").is_none(), "gone");
+            assert_ne!(
+                s.hint(),
+                "Loop 1: that changes the tempo under the audio tracks' recordings. Snap anyway?"
+            );
+            s.run_for(2.5);
+            assert_eq!(status(&s).frames, tap);
+            assert_eq!(status(&s).offer, Some(by));
         });
     }
 
@@ -1876,10 +2291,11 @@ mod track_mute {
 
     /// With 24 tracks: TRACK MUTE's pads are tracks 1-16, PAD BANK B makes
     /// them tracks 17-32 (17-24 here), and the pads stay mute keys on
-    /// another tab. SHIFT + TRACK MUTE: each pad mutes itself in the kit,
-    /// and a muted pad is silent; SHIFT + TRACK MUTE again: the pads play.
+    /// another tab. SHIFT + TRACK MUTE: each pad mutes itself on the
+    /// selected track (step 10: its clips' hits; played live it still
+    /// sounds); SHIFT + TRACK MUTE again: the pads play.
     #[test]
-    fn track_mute_banks_reach_past_16_tracks_and_shift_mutes_the_kits_pads() {
+    fn track_mute_banks_reach_past_16_tracks_and_shift_mutes_the_tracks_pads() {
         on_big_stack(|| {
             let mut s = Session::new();
             while s.time.track_count() < 24 {
@@ -1918,12 +2334,14 @@ mod track_mute {
             s.button("PAD BANK A/E");
             s.press("header", "tab", "Play");
 
-            // SHIFT + TRACK MUTE: the kit's pads.
+            // SHIFT + TRACK MUTE: the selected track's pads.
             s.make_sounds();
             s.button_with("SHIFT", "TRACK MUTE");
             assert_eq!(s.app.mute_keys(), MuteKeys::Pads);
+            let t = s.app.track();
             s.pad(4, 100, 0.05);
-            assert_eq!(s.mix.pad_mutes(), 1 << 4, "pad 5 muted in the kit");
+            assert_eq!(s.time.pad_mutes(t), Some((1 << 4, 0)), "A5 muted on it");
+            assert_eq!(s.mix.pad_mutes(), 0, "no channel muted");
             assert_eq!(s.time.muted(4), Some(false), "not track 5");
             s.button_with("SHIFT", "TRACK MUTE");
             assert_eq!(s.app.mute_keys(), MuteKeys::Off, "the pads play again");
@@ -1934,12 +2352,11 @@ mod track_mute {
                 h.iter().fold(0f32, |m, x| m.max(x.abs()))
             };
             assert!(loud(&mut s, 5) > 0.01, "pad 6 sounds");
-            assert!(loud(&mut s, 4) < 1e-4, "pad 5 is muted in the kit");
+            assert!(loud(&mut s, 4) > 0.01, "pad 5 played live still sounds");
             s.button_with("SHIFT", "TRACK MUTE");
             s.pad(4, 100, 0.05);
             s.button_with("SHIFT", "TRACK MUTE");
-            assert_eq!(s.mix.pad_mutes(), 0);
-            assert!(loud(&mut s, 4) > 0.01, "pad 5 sounds again");
+            assert_eq!(s.time.pad_mutes(t), Some((0, 0)), "and plays again");
         });
     }
 }
