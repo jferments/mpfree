@@ -87,8 +87,10 @@ pub const SONG_BUTTONS: [&str; 6] = [
     "Delete",
 ];
 /// The buttons along the bottom while an audio region is picked (layout
-/// spec 4c). SHIFT + Undo redoes.
-pub const AUDIO_BUTTONS: [&str; 6] = ["Split", "Erase", "Fades", "Gain", "Takes", "Undo"];
+/// spec 4c). To a cell puts the region in its track's first empty cell;
+/// UNDO and SHIFT + UNDO undo and redo the region edits while they are
+/// what changed last.
+pub const AUDIO_BUTTONS: [&str; 6] = ["Split", "Erase", "Fades", "Gain", "Takes", "To a cell"];
 /// The last two buttons while a tempo point is picked (tempo ramps).
 pub const TEMPO_BUTTONS: [&str; 2] = ["Ramp", "Delete"];
 /// The last four buttons while a section is picked (Arrange 3.3).

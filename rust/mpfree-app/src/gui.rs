@@ -760,6 +760,9 @@ enum TypeTo {
     /// A song marker's name (the Song view's Rename, a section picked;
     /// Arrange 3.3).
     MarkerName(usize),
+    /// An audio clip's name, as (track, slot): its card's Name row
+    /// (layout spec 4j).
+    ClipName(usize, usize),
 }
 
 impl TypeTo {
@@ -772,6 +775,7 @@ impl TypeTo {
                 | TypeTo::SceneName(_)
                 | TypeTo::PerformPage(_)
                 | TypeTo::MarkerName(_)
+                | TypeTo::ClipName(..)
         )
     }
 }
@@ -2339,6 +2343,9 @@ pub struct Player {
     /// All view: the loop's (true) or the takes' (false); and the counts
     /// each was last seen at.
     undo_loop: bool,
+    /// UNDO on Arrange undoes the audio tracks' region edits (their
+    /// history moved last, layout spec 4c), not the takes.
+    undo_audio: bool,
     seen_takes: (usize, usize),
     /// The Song view's picked block or section is grabbed by the wheel's
     /// push: turns move it (Jay, 14 Nov: drag and drop).
@@ -2695,6 +2702,7 @@ impl Player {
             save_sent: None,
             told: None,
             undo_loop: false,
+            undo_audio: false,
             song_grab: false,
             seen_takes: (0, 0),
             typing: None,
@@ -6932,7 +6940,7 @@ impl Player {
                 View::Arrange if self.time_page.adding => mpfree_time_ui::song::ADD_HINT.to_string(),
                 View::Arrange if self.time.list_view => time_view::LIST_HINT.to_string(),
                 View::Arrange if self.time.song_view => time_view::song_hint(&self.time).to_string(),
-                View::Arrange if self.time_page.clip_card => time_view::CLIPS_CARD_HINT.to_string(),
+                View::Arrange if self.time_page.clip_card => time_view::clip_card_hint(&self.time),
                 View::Arrange if self.time_page.scene_card => time_view::SCENE_HINT.to_string(),
                 View::Arrange => CLIPS_HINT.to_string(),
                 View::Looper if self.looper_page.history_open() => format!("Tap a step: back or forward to it   ·   \
@@ -7285,6 +7293,14 @@ impl Player {
         let to = match self.undo_source() {
             Some(HistoryOf::Loop) => {
                 FromUi::LoopCommand(if redo { Command::Redo } else { Command::Undo })
+            }
+            // The audio tracks' region edits, while they moved last.
+            Some(HistoryOf::Takes) if self.view == View::Arrange && self.undo_audio => {
+                FromUi::Time(TimeAction::Audio(if redo {
+                    AudioAction::Redo
+                } else {
+                    AudioAction::Undo
+                }))
             }
             Some(HistoryOf::Takes) => FromUi::Time(if redo {
                 TimeAction::Redo
@@ -8444,7 +8460,8 @@ impl Player {
             | TypeTo::PortName
             | TypeTo::SceneName(_)
             | TypeTo::PerformPage(_)
-            | TypeTo::MarkerName(_) => None,
+            | TypeTo::MarkerName(_)
+            | TypeTo::ClipName(..) => None,
         }
     }
 
@@ -8471,6 +8488,15 @@ impl Player {
             return Some(FromUi::Time(TimeAction::SongMarker(
                 mpfree_time_ui::MarkerEdit::Rename { index, name },
             )));
+        }
+        if let Some(TypeTo::ClipName(track, slot)) = to {
+            let (_, name) = names.into_iter().next()?;
+            return Some(FromUi::Time(TimeAction::AudioClip {
+                track,
+                slot,
+                row: time_view::AUDIO_NAME as u8,
+                set: time_view::AudioSet::Name(name),
+            }));
         }
         if let Some(TypeTo::SceneName(row)) = to {
             let (_, name) = names.into_iter().next()?;
@@ -9697,15 +9723,22 @@ impl Player {
                 let swapped = st.song_view != self.time.song_view
                     || st.list_view != self.time.list_view
                     || lens(&st) != lens(&self.time)
-                    || time_view::song_hint(&st) != time_view::song_hint(&self.time);
+                    || time_view::song_hint(&st) != time_view::song_hint(&self.time)
+                    || time_view::clip_card_hint(&st) != time_view::clip_card_hint(&self.time);
                 let switched = st.perform != self.time.perform;
                 // The note editor opened or closed: the Sequencer's Notes
                 // or Steps.
                 let notes = st.edit.is_some() != self.time.edit.is_some();
+                // A region edited, undone or redone: UNDO on Arrange takes
+                // the audio tracks' history, until a take moves.
+                if st.audio_history != self.time.audio_history {
+                    self.undo_audio = true;
+                }
                 // A take made, undone or redone: UNDO on All takes the takes.
                 let seen = (st.done.len(), st.undone.len());
                 if seen != self.seen_takes {
                     self.undo_loop = false;
+                    self.undo_audio = false;
                     self.seen_takes = seen;
                 }
                 let synth = self.synth_plays_notes();
@@ -13999,6 +14032,30 @@ impl Player {
                     Some(FromUi::TrackInstrument(t))
                 }
             }
+            // An audio clip's Name row: a tap or a turn opens the naming
+            // keyboard (layout spec 4j).
+            (
+                time_view::CLIP_CARD,
+                EventKind::Select(time_view::AUDIO_NAME)
+                | EventKind::Step {
+                    index: time_view::AUDIO_NAME,
+                    ..
+                },
+            ) if time_view::focused_audio(&self.time).is_some() => {
+                let (track, slot, c) = time_view::focused_audio(&self.time)?;
+                let name = c.name.clone();
+                self.open_textpad(
+                    vec![mpfree_ui::textpad::TextAsk {
+                        key: "clip".to_string(),
+                        label: "Clip".to_string(),
+                        title: format!("Name {name}"),
+                        value: name,
+                        max_len: time_view::MAX_CLIP_NAME,
+                    }],
+                    TypeTo::ClipName(track, slot),
+                );
+                None
+            }
             // SHIFT + the clip card's arrows: Length and Speed halve or
             // double, Bank steps a whole CC 0; on the scene editor, Bank
             // does too.
@@ -14110,7 +14167,9 @@ impl Player {
                     if let Some(why) = time_view::why_not(&ev, &self.time) {
                         self.tell(&why);
                     }
-                } else if let (time_view::CLIPS, EventKind::Select(i)) = (ev.widget.as_str(), &ev.kind) {
+                } else if let (time_view::CLIPS, EventKind::Select(i)) =
+                    (ev.widget.as_str(), &ev.kind)
+                {
                     // An audio cell's word, said in full (layout spec 4f).
                     let (track, slot) = (i / mpfree_seq::SLOTS, i % mpfree_seq::SLOTS);
                     if let Some(h) = time_view::audio_cell_hint(&self.time, track, slot) {
@@ -14118,7 +14177,7 @@ impl Player {
                     }
                 }
                 // A swipe across a take lane and a region's drag are free
-                // with SHIFT held, and SHIFT + Undo redoes (layout spec 4c).
+                // with SHIFT held (layout spec 4c).
                 let fine = self.status.shift;
                 // "+ Track" itself (the chooser's rows are what they say).
                 let plus = match (ev.widget.as_str(), &ev.kind) {
@@ -14139,9 +14198,6 @@ impl Player {
                 }
                 a.map(|a| {
                     let a = match a {
-                        TimeAction::Audio(AudioAction::Undo) if fine => {
-                            TimeAction::Audio(AudioAction::Redo)
-                        }
                         TimeAction::Audio(AudioAction::Comp { take, from, to, .. }) => {
                             TimeAction::Audio(AudioAction::Comp {
                                 take,
@@ -18773,6 +18829,35 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             out.push(("arrange-clips-audio", p));
         }
         Err(e) => eprintln!("arrange-clips-audio sample: {e}"),
+    }
+    // Audio clips in the audio tracks' cells (layout spec 4f), at 92 BPM:
+    // one playing, two queued (one waiting for its audio), one made at
+    // 120, one missing, a once clip ringing past its stop, one not ready.
+    // Then the armed Guitar's Riff on the Clip tab (4j): made at 120, Fit
+    // to tempo; the same while it fits; and Break's Intro, a once clip.
+    match mpfree_time_ui::sample::clips_audio_state() {
+        Ok(state) => {
+            let guitar = state.audio[1].row;
+            let shown = |st: &time_view::TimeState, card: bool| {
+                let mut p = quiet_player(fonts());
+                p.apply(ToUi::Time(Box::new(st.clone())));
+                p.apply(ToUi::Show(View::Arrange));
+                p.time_page.first_track = mpfree_time_ui::widgets::GRID_COLS;
+                p.time_page.clip_card = card;
+                p.time_page.update(&mut p.ui, &p.time);
+                p.refresh_hint();
+                p
+            };
+            out.push(("arrange-clips-audio-cells", shown(&state, false)));
+            out.push(("arrange-clips-audio-card", shown(&state, true)));
+            let mut fitting = state.clone();
+            fitting.fitting = Some((guitar, 0, 0.4));
+            out.push(("arrange-clips-audio-fitting", shown(&fitting, true)));
+            let mut once = state;
+            once.audio_focus = Some(guitar + 1);
+            out.push(("arrange-clips-audio-once", shown(&once, true)));
+        }
+        Err(e) => eprintln!("arrange-clips-audio-cells sample: {e}"),
     }
     // The Song view with "+ Track"'s chooser open beside it (4c, as
     // drawn): Note track, Audio track, Loop track.
@@ -26481,18 +26566,51 @@ mod tests {
                 fine: true,
             })))
         );
-        // SHIFT + Undo on the audio row redoes (layout spec 4c).
-        p.time.region = Some(time_view::RegionId { track: 1, index: 0 });
-        let undo = |p: &mut Player| {
-            p.on_event(mpfree_ui::UiEvent {
-                widget: time_view::SONG.to_string(),
-                kind: mpfree_ui::EventKind::Tab(5),
-            })
-        };
-        let audio = |a| Some(FromUi::Time(TimeAction::Audio(a)));
-        assert_eq!(undo(&mut p), audio(AudioAction::Redo));
+        // To a cell in Undo's place on the audio row (layout spec 4c).
+        let r = time_view::RegionId { track: 1, index: 0 };
+        p.time.region = Some(r);
         p.status.shift = false;
-        assert_eq!(undo(&mut p), audio(AudioAction::Undo));
+        let to_cell = p.on_event(mpfree_ui::UiEvent {
+            widget: time_view::SONG.to_string(),
+            kind: mpfree_ui::EventKind::Tab(5),
+        });
+        let audio = |a| FromUi::Time(TimeAction::Audio(a));
+        assert_eq!(to_cell, Some(audio(AudioAction::ToCell(r))));
+        // UNDO and SHIFT + UNDO on Arrange: the takes, until the audio
+        // tracks' history moves; then the region edits, until a take moves.
+        p.apply(ToUi::Show(View::Arrange));
+        let undo = |p: &mut Player, redo| {
+            p.take_actions();
+            p.apply(ToUi::Undo(redo));
+            p.take_actions()
+        };
+        assert_eq!(undo(&mut p, false), [FromUi::Time(TimeAction::Undo)]);
+        let mut st = p.time.clone();
+        st.audio_history = (1, 0);
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        assert_eq!(undo(&mut p, false), [audio(AudioAction::Undo)]);
+        assert_eq!(undo(&mut p, true), [audio(AudioAction::Redo)]);
+        st.done.push(mpfree_time_ui::view::TakeRow {
+            number: 1,
+            captured: false,
+            edited: true,
+            made: false,
+            at: None,
+            added: 0,
+            erased: 0,
+            deleted: false,
+            new_track: None,
+            dropped: None,
+            song: None,
+            settings: false,
+            pasted: false,
+            replaced: None,
+            variant: None,
+            scene: None,
+            rows: None,
+        });
+        p.apply(ToUi::Time(Box::new(st)));
+        assert_eq!(undo(&mut p, false), [FromUi::Time(TimeAction::Undo)]);
     }
 
     #[test]

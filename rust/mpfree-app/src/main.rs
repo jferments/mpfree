@@ -6660,6 +6660,23 @@ fn time_action(
                 out.note(&format!("audio tracks: {line}"));
                 return Vec::new();
             }
+            // At a song edit's step the song still reaches, UNDO (or SHIFT
+            // + UNDO) on Arrange takes the song edit back with its regions
+            // (layout spec 4c: UNDO follows the region edits down to it).
+            let tr = &tracks.host.tracks;
+            let song = if undo {
+                tr.undo_is_song()
+            } else {
+                tr.redo_is_song()
+            };
+            if song.is_some() {
+                let a = if undo {
+                    TimeAction::Undo
+                } else {
+                    TimeAction::Redo
+                };
+                return time_action(out, time, tracks, looper, app, mix, a);
+            }
         }
         if !matches!(aa, AudioAction::Pick(_)) {
             // What the panel's Mix offers comes from the mixer (step 9).
@@ -6696,6 +6713,7 @@ fn time_action(
         TimeAction::DeleteClip { .. }
             | TimeAction::ClipSettings { .. }
             | TimeAction::ClipLength { .. }
+            | TimeAction::AudioClip { .. }
             | TimeAction::Mutate { .. }
             | TimeAction::Restore { .. }
             | TimeAction::CopyClip { .. }

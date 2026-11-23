@@ -125,12 +125,12 @@ Points are at least a 1/16 apart, and a song has up to 31.
 
 ### Audio in the song
 
-Audio you record from the INPUTS goes on **audio tracks**, with lanes of their own under the clip lanes, on the same timeline. They play whenever the song plays. Recording them, editing their regions and picking the best parts of several takes is in [Recording audio tracks](audio-tracks.md).
+Audio you record from the INPUTS goes on **audio tracks**, with lanes of their own under the clip lanes, on the same timeline. They play whenever the song plays, unless an audio clip launched on the grid plays in its place. Recording them, editing their regions and picking the best parts of several takes is in [Recording audio tracks](audio-tracks.md).
 
 When you move a section, put bars in or take them out, the audio moves with the song. A region across a section's edge is cut there, and each part plays what it played, fades included; parts that meet again in their new place are one region again.
 
 - **UNDO** takes the audio back with the song, and **SHIFT + UNDO** puts both back.
-- If you changed a region since (a split, a move, a fade), **UNDO** waits and says so. Take that change back first with the region's **Undo**, then press **UNDO**.
+- If you changed a region since (a split, a move, a fade), **UNDO** takes those changes back first, then the song edit with its audio.
 - While an audio track records, the song's bars can't move: the message line says to stop the recording first, and nothing changes.
 
 ## The song list

@@ -1464,7 +1464,13 @@ impl AudioTracks {
     /// phase 2, a ring): its clip number, and how far through its sound it
     /// is at frame `now`, 0 to 1, for the cell's dimmed playhead.
     pub fn ringing(&self, t: usize, now: u64) -> Option<(u32, f32)> {
-        let v = self.tracks.get(t)?.lane.voices.iter().find(|v| v.on && v.ring)?;
+        let v = self
+            .tracks
+            .get(t)?
+            .lane
+            .voices
+            .iter()
+            .find(|v| v.on && v.ring)?;
         let s = &v.cur;
         let first = s.regions[..s.n].first()?.src;
         let total = (s.last_frame - first).max(1) as f64;

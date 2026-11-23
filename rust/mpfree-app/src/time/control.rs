@@ -51,11 +51,12 @@ use mpfree_seq::{
 use mpfree_time_ui::editor::{EditAction, Editor};
 use mpfree_time_ui::list::ListRow;
 use mpfree_time_ui::view::{
-    bars_label, card_rows, clips_after, grid_name, rows_named, scene_rows, AudioAction, BarsEdit,
-    EditAnswer, EditInfo, EditOutcome, FollowNext, MarkerEdit, MorphInfo, MuteWait, RegionId,
-    TakeRow, TempoEdit, TimeAction, TimeState, TransportInfo, SCENE_NAME,
+    bars_beats, bars_label, card_rows, clips_after, gain_words, grid_name, rows_named, scene_rows,
+    AudioAction, AudioSet, BarsEdit, EditAnswer, EditInfo, EditOutcome, FollowNext, MarkerEdit,
+    MorphInfo, MuteWait, RegionId, TakeRow, TempoEdit, TimeAction, TimeState, TransportInfo,
+    AUDIO_GAIN, SCENE_NAME,
 };
-use mpfree_transport::time::{TempoMap, Tick};
+use mpfree_transport::time::{TempoMap, Tick, PPQ};
 use mpfree_transport::{Block, Command, State};
 
 use super::audio_wait::{AudioNeed, AudioWaits, Ctx as WaitCtx, CueKey, Wait};
@@ -91,6 +92,10 @@ const CARD_JOIN: u64 = 0xC1_0000;
 /// The scene editor's join keys for its takes, a card row each (see
 /// `Takes::set_scene`).
 const SCENE_JOIN: u64 = 0x5C_0000;
+
+/// An audio clip's card's join keys for its Length and Gain takes, a row
+/// each (see `Takes::set_audio_clip`).
+const AUDIO_CARD_JOIN: u64 = 0xA1 << 16;
 
 /// Started cues one period may bring before the list grows.
 const STARTED_ROOM: usize = 64;
@@ -1488,11 +1493,6 @@ impl TimeControl {
         Ok(())
     }
 
-    /// To a cell and Put in a cell (audio tracks phase 2): `clip`, an
-    /// audio clip, goes in audio track `track`'s first empty cell, top
-    /// down, as an edit UNDO takes away again. The row it went in, or why
-    /// not: no such audio track, no empty cell, or the clip's own
-    /// refusal. Nothing changes on an error.
     /// Audio track `track` armed (`on`) by its own arm, or disarmed: the
     /// Clip tab shows its clip until a note track is armed (layout spec
     /// 4j); disarmed, the tab goes back to the armed note track.
@@ -1512,6 +1512,11 @@ impl TimeControl {
         self.changed |= was != self.audio_focus;
     }
 
+    /// To a cell and Put in a cell (audio tracks phase 2): `clip`, an
+    /// audio clip, goes in audio track `track`'s first empty cell, top
+    /// down, as an edit UNDO takes away again. The row it went in, or why
+    /// not: no such audio track, no empty cell, or the clip's own
+    /// refusal. Nothing changes on an error.
     pub fn put_audio_clip(&mut self, track: usize, clip: Clip) -> Result<usize, String> {
         let t = self
             .project
@@ -1559,6 +1564,94 @@ impl TimeControl {
         let name = clip.name.clone();
         self.replace(track, slot, clip, Replaced::Fit)?;
         Ok(name)
+    }
+
+    /// An audio clip's card (layout spec 4j): clip `slot` of `track` with
+    /// another length, gain or name, as one take (a row turned on joins
+    /// it). A length cuts the regions past it, the one across it ending
+    /// there (its frames past the end kept in its `left`, so a longer
+    /// length brings them back), and lengthens the last region back into
+    /// what it was cut from. The line for the hint, or why not.
+    fn set_audio_clip(
+        &mut self,
+        track: usize,
+        slot: usize,
+        row: u8,
+        set: AudioSet,
+    ) -> Result<String, String> {
+        let c = self
+            .project
+            .clip(track, slot)
+            .filter(|c| c.audio.is_some())
+            .ok_or_else(|| {
+                format!(
+                    "clip: cell {} of track {} holds no audio clip",
+                    slot + 1,
+                    track + 1
+                )
+            })?;
+        let mut clip = c.clone();
+        let join = match set {
+            AudioSet::Name(_) => None,
+            _ => Some(AUDIO_CARD_JOIN + u64::from(row)),
+        };
+        let rate = self.rate;
+        let once = clip.settings().once;
+        let from = clip.length;
+        let a = clip.audio.as_mut().expect("checked");
+        match set {
+            AudioSet::Length(length) => {
+                if once {
+                    return Err(format!(
+                        "clip: {} plays once, to the end of its sound: its length is its sound's",
+                        clip.name
+                    ));
+                }
+                if !(1..=mpfree_seq::MAX_CLIP_TICKS).contains(&length) {
+                    return Err(format!("clip: {}: no clip is that long", clip.name));
+                }
+                cut_audio(a, from, length, rate);
+                clip.length = length;
+            }
+            AudioSet::Gain(g) => {
+                if !(0.0..=mpfree_seq::audio::MAX_GAIN).contains(&g) || !g.is_finite() {
+                    return Err(format!("clip: {}: that gain is out of range", clip.name));
+                }
+                a.gain = g;
+            }
+            AudioSet::Name(name) => {
+                let name = name.trim().to_string();
+                if name.is_empty() {
+                    return Err("clip: a clip needs a name".into());
+                }
+                clip.name = name;
+            }
+        }
+        let name = clip.name.clone();
+        self.takes
+            .set_audio_clip(&mut self.project, track, slot, clip, join)
+            .map_err(|_| format!("clip: {name}: that can't be set"))?;
+        if let Err(e) = self.compile() {
+            self.takes.undo(&mut self.project);
+            self.takes.forget_undone();
+            return Err(e);
+        }
+        let said = self
+            .project
+            .clip(track, slot)
+            .map(|c| {
+                let meter = self.info.meter;
+                match usize::from(row) {
+                    0 => format!("Length {}", bars_beats(c.length, meter)),
+                    AUDIO_GAIN => format!(
+                        "Gain {}",
+                        gain_words(c.audio.as_ref().map_or(1.0, |a| a.gain))
+                    ),
+                    _ => "named".to_string(),
+                }
+            })
+            .unwrap_or_default();
+        Ok(format!("clip: {name} · {said} (UNDO takes it back)"))
     }
 
     /// Cues that launch audio wait until the app has held the start of
@@ -3568,7 +3661,8 @@ impl TimeControl {
                 if self.project.tracks.get(track).is_some_and(|t| t.is_audio()) =>
             {
                 Err(format!(
-                    "{} is an audio track: it takes no clips yet; record it on the Song view",
+                    "{} is an audio track: put audio in a cell with To a cell on the Song view, \
+                     or Put in a cell on the Sample page",
                     self.project.tracks[track].name
                 ))
             }
@@ -3976,6 +4070,12 @@ impl TimeControl {
             // The fitted copies are the audio tracks' to make (the app,
             // `main::time_action`); the clip comes back through `fit_clip`.
             TimeAction::FitClip { .. } => Err("Fit to tempo goes through the audio tracks".into()),
+            TimeAction::AudioClip {
+                track,
+                slot,
+                row,
+                set,
+            } => self.set_audio_clip(track, slot, row, set),
             TimeAction::SongTempo(TempoEdit::Pick(k)) => {
                 self.tempo_pick = k.filter(|&k| k < self.project.arrangement.tempo.len());
                 if self.tempo_pick.is_some() {
@@ -5542,6 +5642,7 @@ impl TimeControl {
             Replaced::Mutate => "mutate",
             Replaced::Restore => "restore",
             Replaced::Fit => "fit",
+            Replaced::Settings => "settings",
         };
         self.takes
             .replace_clip(&mut self.project, track, slot, clip, why)
@@ -6123,18 +6224,20 @@ impl TimeControl {
         st.mute_wait = self.mute_wait().cloned();
         st.audio_waits = self.audio_waits.counts();
         st.audio_late = self.audio_waits.late();
-        st.audio_focus = self
-            .project
-            .tracks
-            .iter()
-            .position(|t| self.audio_focus.is_given() && t.id == self.audio_focus && t.is_audio());
+        st.audio_focus =
+            self.project.tracks.iter().position(|t| {
+                self.audio_focus.is_given() && t.id == self.audio_focus && t.is_audio()
+            });
         // Launched again since: no longer "not ready".
         st.not_ready = self
             .not_ready
             .iter()
             .filter(|n| {
                 !self.cues.iter().any(|c| c.track == n.0)
-                    && !self.launches.iter().any(|l| (l.track, l.slot) == (n.0, n.1))
+                    && !self
+                        .launches
+                        .iter()
+                        .any(|l| (l.track, l.slot) == (n.0, n.1))
             })
             .copied()
             .collect();
@@ -6702,4 +6805,34 @@ pub(crate) fn grid_of(c: &Clip) -> Grid {
         .filter(|_| mpfree_seq::steps::SIZES.contains(&c.step))
         .or_else(|| Grid::new(DEFAULT_SIZE))
         .expect("a 1/16 is a step size")
+}
+
+/// Audio clip `a`, `from` ticks long, cut or lengthened to `to` ticks
+/// (its card's Length, layout spec 4j), its regions laid out at its own
+/// tempo at `rate` frames a second. Regions past `to` go; the one across
+/// it ends there, the frames cut off kept in its `left`. Longer, the last
+/// region, if it ended at `from` and was cut, grows back into what it was
+/// cut from, as far as `to`. The last region's sound then ends with it.
+fn cut_audio(a: &mut mpfree_seq::AudioClip, from: Tick, to: Tick, rate: u32) {
+    let per_tick = f64::from(rate) * 60.0 / (a.bpm.max(1.0) * f64::from(PPQ));
+    let frames = |ticks: Tick| (ticks as f64 * per_tick).round() as i64;
+    let before = a.regions.last().copied();
+    if to < from {
+        a.regions.retain(|r| r.start < to);
+        if let Some(r) = a.regions.last_mut().filter(|r| r.end > to) {
+            let cut = frames(r.end - to).clamp(0, i64::from(u32::MAX)) as u32;
+            r.left = r.left.saturating_add(cut);
+            r.end = to;
+        }
+    } else if let Some(r) = a.regions.last_mut().filter(|r| r.end == from && r.left > 0) {
+        let room = frames(to - r.end).clamp(0, i64::from(u32::MAX)) as u32;
+        let back = room.min(r.left);
+        let ticks = (f64::from(back) / per_tick).floor() as Tick;
+        let grow = ticks.min(to - r.end);
+        r.end += grow;
+        r.left -= frames(grow).clamp(0, i64::from(r.left)) as u32;
+    }
+    if let Some(r) = a.regions.last().filter(|&&r| Some(r) != before) {
+        a.last_frame = r.src + frames(r.end - r.start).max(1);
+    }
 }

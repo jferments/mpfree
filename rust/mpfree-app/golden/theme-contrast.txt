@@ -4,6 +4,10 @@
 #     MPFREE_LINT_BLESS=1 cargo test -p mpfree-app --test theme_contrast
 console arp-quick-band 1 # before the theme refactor (phase 0 baseline)
 console arrange-clips-audio 1 # new screen (audio tracks rethink, phase 1): the faint labels its neighbours have
+console arrange-clips-audio-card 1 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
+console arrange-clips-audio-cells 1 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
+console arrange-clips-audio-fitting 1 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
+console arrange-clips-audio-once 1 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has, and a once clip's faint Fit to tempo
 console arrange-instruments 1 # before the theme refactor (phase 0 baseline)
 console arrange-song-tempo 1 # before the theme refactor (phase 0 baseline)
 console browser 3 # before the theme refactor (phase 0 baseline)
@@ -121,6 +125,10 @@ console synth-voice 3 # before the theme refactor (phase 0 baseline)
 default arp-quick-band 9 # before the theme refactor (phase 0 baseline)
 default arp-workspace-record 3 # before the theme refactor (phase 0 baseline)
 default arrange-clips-audio 1 # new screen (audio tracks rethink, phase 1): the faint labels its neighbours have
+default arrange-clips-audio-card 1 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
+default arrange-clips-audio-cells 1 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
+default arrange-clips-audio-fitting 1 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
+default arrange-clips-audio-once 1 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has, and a once clip's faint Fit to tempo
 default arrange-instruments 1 # before the theme refactor (phase 0 baseline)
 default browser 3 # before the theme refactor (phase 0 baseline)
 default browser-kits 1 # before the theme refactor (phase 0 baseline)
@@ -265,6 +273,10 @@ spaceship arp-panel 5 # before the theme refactor (phase 0 baseline)
 spaceship arp-quick-band 18 # before the theme refactor (phase 0 baseline)
 spaceship arp-workspace-record 18 # before the theme refactor (phase 0 baseline)
 spaceship arrange-clips-audio 9 # new screen (audio tracks rethink, phase 1): the faint labels its neighbours have
+spaceship arrange-clips-audio-card 9 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
+spaceship arrange-clips-audio-cells 9 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
+spaceship arrange-clips-audio-fitting 9 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
+spaceship arrange-clips-audio-once 10 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has, and a once clip's faint Fit to tempo
 spaceship arrange-instruments 67 # before the theme refactor (phase 0 baseline)
 spaceship arrange-list 39 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song 10 # before the theme refactor (phase 0 baseline)
@@ -366,7 +378,7 @@ spaceship play-xy-list 5 # before the theme refactor (phase 0 baseline)
 spaceship sample 4 # before the theme refactor (phase 0 baseline)
 spaceship sample-auto 8 # before the theme refactor (phase 0 baseline)
 spaceship sample-chop 5 # before the theme refactor (phase 0 baseline)
-spaceship sample-chop-audio 15 # before the theme refactor (phase 0 baseline)
+spaceship sample-chop-audio 14 # before the theme refactor (phase 0 baseline)
 spaceship sample-chop-keys 9 # before the theme refactor (phase 0 baseline)
 spaceship sample-chop-live 5 # before the theme refactor (phase 0 baseline)
 spaceship sample-chop-new-kit 14 # before the theme refactor (phase 0 baseline)
@@ -405,6 +417,10 @@ spaceship synth-voice 4 # before the theme refactor (phase 0 baseline)
 spaceship undo-history 4 # before the theme refactor (phase 0 baseline)
 synthwave arp-quick-band 1 # before the theme refactor (phase 0 baseline)
 synthwave arrange-clips-audio 1 # new screen (audio tracks rethink, phase 1): the faint labels its neighbours have
+synthwave arrange-clips-audio-card 1 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
+synthwave arrange-clips-audio-cells 1 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
+synthwave arrange-clips-audio-fitting 1 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
+synthwave arrange-clips-audio-once 1 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has, and a once clip's faint Fit to tempo
 synthwave arrange-instruments 1 # before the theme refactor (phase 0 baseline)
 synthwave browser 3 # before the theme refactor (phase 0 baseline)
 synthwave browser-kits 1 # before the theme refactor (phase 0 baseline)

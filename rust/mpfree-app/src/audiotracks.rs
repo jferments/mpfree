@@ -67,10 +67,10 @@ use mpfree_audiotracks::{
 use mpfree_play::{AudioAnswer, AudioPlays};
 use mpfree_seq::{RecId, TrackId};
 use mpfree_time_ui::song::{audio_blocks, input_chip, take_lanes, AudioLane, MixFrom, MONITORS};
-use mpfree_time_ui::widgets::CELL_WAVE;
 use mpfree_time_ui::view::{
     audio_color, track_color, AudioAction, RegionId, TimeState, TransportInfo,
 };
+use mpfree_time_ui::widgets::CELL_WAVE;
 use mpfree_transport::{Block, TempoMap, Tick};
 use mpfree_ui::qlink::QLinkCard;
 
@@ -1596,6 +1596,10 @@ impl TrackHost {
                 h.add(u64::from(r.left));
             }
         }
+        // The history UNDO on Arrange may follow.
+        let (done, redo) = tr.history();
+        h.add(done as u64);
+        h.add(redo as u64);
         // The cells' Fit to tempo bar and ringing playheads, in steps of a
         // percent and of 1/64.
         if let Some((t, slot, f)) = self.clip_fit_progress() {
@@ -1690,11 +1694,13 @@ impl TrackHost {
     /// 4f and 4j): each clip's small wave over one pass (from its takes'
     /// waveforms), its sound's length in seconds, why its audio is missing
     /// if it is, and how far a once clip still sounding past its stop has
-    /// got; and the Fit to tempo under way. Into `st` as
+    /// got; the Fit to tempo under way; and the audio tracks' history,
+    /// for UNDO on Arrange. Into `st` as
     /// [`crate::time::TimeHost::state`] made it of `project`.
     pub fn fill_cells(&self, st: &mut TimeState, project: &mpfree_seq::Project) {
         st.fitting = self.clip_fit_progress();
         let tr = &self.host.tracks;
+        st.audio_history = tr.history();
         for (i, t) in project.tracks.iter().enumerate() {
             if !t.is_audio() {
                 continue;
@@ -1728,7 +1734,9 @@ impl TrackHost {
                     .find(|r| tr.take_of(RecordingId(r.rec.0)).is_none())
                     .map(|r| r.rec);
                 info.missing = gone.map(|rec| match self.opened.iter().find(|o| o.0 == rec) {
-                    Some((_, take)) => format!("{take}'s file wasn't found when the project opened"),
+                    Some((_, take)) => {
+                        format!("{take}'s file wasn't found when the project opened")
+                    }
                     None => "its recording isn't in the project".to_string(),
                 });
                 info.wave = self.clip_wave(a, c.length, per_tick);
@@ -1765,7 +1773,10 @@ impl TrackHost {
                 let f0 = r.src as f64 + (a0 - r.start as f64) * per_tick;
                 let f1 = r.src as f64 + (a1 - r.start as f64) * per_tick;
                 let fpc = w.frames_per_column.max(1) as f64;
-                let (k0, k1) = ((f0.max(0.0) / fpc) as usize, (f1.max(0.0) / fpc).ceil() as usize);
+                let (k0, k1) = (
+                    (f0.max(0.0) / fpc) as usize,
+                    (f1.max(0.0) / fpc).ceil() as usize,
+                );
                 for &(lo, hi) in w.columns.iter().take(k1.max(k0 + 1)).skip(k0) {
                     peak = peak.max(lo.abs().max(hi.abs()) * r.gain);
                 }

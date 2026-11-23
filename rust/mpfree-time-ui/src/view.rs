@@ -41,9 +41,9 @@ use crate::song::{
     PANEL_TAKES, REC, REGION_SLOTS, RULER_ROW, SECTION_TAP, TEMPO_ROW,
 };
 use crate::widgets::{
-    BarButton, BarItem, CellAlert, CellState, ClipGrid, GridCell, GridTrack, MorphBar, Run, TakeItem,
-    TakeList, TransportBar, ADD_DISMISS, ADD_KIND, ADD_TRACK, BACK_TO_SONG, GRID_COLS, PAGE_BACK,
-    PAGE_ON, ROWS_BACK, ROWS_ON, ROW_DROP,
+    BarButton, BarItem, CellAlert, CellState, ClipGrid, GridCell, GridTrack, MorphBar, Run,
+    TakeItem, TakeList, TransportBar, ADD_DISMISS, ADD_KIND, ADD_TRACK, BACK_TO_SONG, GRID_COLS,
+    PAGE_BACK, PAGE_ON, ROWS_BACK, ROWS_ON, ROW_DROP,
 };
 use mpfree_audiotracks::host::TakeWave;
 use mpfree_audiotracks::{Input, Monitor};
@@ -60,7 +60,7 @@ use mpfree_transport::time::{Meter, Swing, Tick, MAX_BPM, MIN_BPM, PPQ};
 use mpfree_transport::transport::MAX_COUNT_IN;
 use mpfree_transport::{Command, State, Transport};
 use mpfree_ui::qlink::QLinkColumn;
-use mpfree_ui::widgets::{Chip, OptionButton, OptionList, OptionRow};
+use mpfree_ui::widgets::{Chip, OptionButton, OptionList, OptionNote, OptionRow};
 use mpfree_ui::{Color, EventKind, Tone, Ui, UiEvent};
 use std::sync::Arc;
 
@@ -130,6 +130,20 @@ pub const CLIPS_HINT: &str =
 /// The hint line under the Clips grid with the Record panel's Clip tab.
 pub const CLIPS_CARD_HINT: &str =
     "Clip: the armed track's playing clip   ·   wheel: pick a row, - / +: change it   ·   SHIFT + ‹ ›: Length and Speed halve or double   ·   COPY + a clip, then an empty slot: a copy";
+
+/// The hint line under the Clips grid with the Clip tab: an audio
+/// clip's card says what Fit to tempo makes at the project's tempo
+/// (layout spec 4j).
+pub fn clip_card_hint(st: &TimeState) -> String {
+    match focused_audio(st) {
+        Some(_) => format!(
+            "Clip: the armed track's playing clip   ·   wheel: pick a row, - / +: change it   ·   \
+             Fit to tempo: a copy that fits {} BPM, same pitch   ·   UNDO goes back",
+            tempo_short(st.transport.bpm)
+        ),
+        None => CLIPS_CARD_HINT.to_string(),
+    }
+}
 
 /// The hint line while COPY is held on the Clips grid: what a tap copies
 /// or pastes.
@@ -254,6 +268,37 @@ pub const CLIP_DIRECTION: usize = 11;
 /// The clip card's Mutate row (S6): › a new variation of the clip's
 /// notes, SHIFT + › a bolder one, ‹ the original back.
 pub const CLIP_MUTATE: usize = 12;
+
+/// An audio clip's card's rows, top to bottom (layout spec 4j): Speed,
+/// Swing, Quantise, Strength, Program, Bank, Direction and Mutate don't
+/// apply to audio.
+pub const AUDIO_CLIP_ROWS: [&str; 7] = [
+    "Length", "Mode", "Launch", "Follow", "After", "Gain", "Name",
+];
+/// The audio card's Gain row: off to +12 dB, in 0.5 dB steps (SHIFT 0.1).
+pub const AUDIO_GAIN: usize = 5;
+/// The audio card's Name row: a tap or a turn opens the naming keyboard
+/// (the app's).
+pub const AUDIO_NAME: usize = 6;
+/// The longest name the naming keyboard takes for a clip.
+pub const MAX_CLIP_NAME: usize = 24;
+/// The note card's row each audio card row steps as: Mode, Launch,
+/// Follow and After are a note clip's settings.
+const AUDIO_AS_NOTES: [usize; 7] = [0, 8, 7, 5, 6, usize::MAX, usize::MAX];
+/// An audio clip's gain at its most: +12 dB.
+pub const AUDIO_GAIN_MAX_DB: f32 = 12.0;
+/// Below this an audio clip's gain is off.
+const AUDIO_GAIN_FLOOR_DB: f32 = -60.0;
+
+/// What an audio clip's card changes ([`TimeAction::AudioClip`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum AudioSet {
+    /// A loop's length, in its own ticks.
+    Length(Tick),
+    /// Its own gain, 0 (off) to 4 (+12 dB).
+    Gain(f32),
+    Name(String),
+}
 
 /// A play direction (S6) as the clip card names it.
 pub fn direction_name(d: Direction) -> &'static str {
@@ -655,6 +700,7 @@ impl TakeRow {
                 Replaced::Mutate => "mutate",
                 Replaced::Restore => "restore",
                 Replaced::Fit => "fit",
+                Replaced::Settings => "settings",
             }
         } else if self.deleted {
             "delete"
@@ -789,6 +835,10 @@ pub struct TimeState {
     /// Fit to tempo under way on an audio clip's card: its cell, and how
     /// far it has got, 0 to 1. The app sets it.
     pub fitting: Option<(usize, usize, f32)>,
+    /// The audio tracks' history: steps their Undo can take back and Redo
+    /// bring back. UNDO on Arrange follows it while it moved last (layout
+    /// spec 4c). The app sets it.
+    pub audio_history: (usize, usize),
     /// The audio track armed last by its own arm, while no note track has
     /// been armed since: the Clip tab shows its clip ([`TimeState::focus`]).
     /// The app sets it.
@@ -1063,6 +1113,7 @@ impl TimeState {
             audio_late: Vec::new(),
             not_ready: Vec::new(),
             fitting: None,
+            audio_history: (0, 0),
             audio_focus: None,
             saved: Vec::new(),
             reloads: Vec::new(),
@@ -1350,6 +1401,15 @@ pub enum TimeAction {
         track: usize,
         slot: usize,
     },
+    /// An audio clip's card (layout spec 4j): its length, gain or name,
+    /// as an edit UNDO takes back (a row turned on joins it). `row` is
+    /// the card's row ([`AUDIO_CLIP_ROWS`]).
+    AudioClip {
+        track: usize,
+        slot: usize,
+        row: u8,
+        set: AudioSet,
+    },
     /// Put these rows on the morph's A and B (loaded again if it is on).
     MorphRows {
         a: usize,
@@ -1634,9 +1694,10 @@ pub enum AudioAction {
     /// its track's first empty cell, the song unchanged (the app builds
     /// the clip from the region and puts it in).
     ToCell(RegionId),
+    /// UNDO on Arrange while the region edits changed last (the app sends
+    /// it, layout spec 4c): take back the last.
     Undo,
-    /// SHIFT + Undo on the audio row (the app sets it): bring back what
-    /// Undo took.
+    /// SHIFT + UNDO the same way: bring back what Undo took.
     Redo,
     /// A swipe across a take lane: play take `take` from `from` to `to`
     /// on its track, over what was there (`Command::Comp`), snapped to the
@@ -2058,7 +2119,7 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                 2 => AudioAction::Fades(r),
                 3 => AudioAction::Gain(r),
                 4 => AudioAction::Takes(r.track),
-                _ => AudioAction::Undo,
+                _ => AudioAction::ToCell(r),
             }))
         }
         (SONG, EventKind::Tab(k)) if (SECTION_TAP..BARS_BACK).contains(k) => {
@@ -2299,6 +2360,10 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
         (SCENE_CARD, EventKind::Toggle(SCENE_MUTES_NOW)) => scene_mutes_now(st).ok(),
         (CLIP_CARD, EventKind::Toggle(b)) => {
             let (track, slot) = st.focus()?;
+            if st.clip(track, slot)?.audio.is_some() {
+                return (*b == 0 && fit_refused(st, track, slot).is_none())
+                    .then_some(TimeAction::FitClip { track, slot });
+            }
             match b {
                 0 => Some(TimeAction::SaveState { track, slot }),
                 1 => st
@@ -2333,6 +2398,15 @@ pub fn why_not(ev: &UiEvent, st: &TimeState) -> Option<String> {
         }
         (MORPH, EventKind::Tab(0 | 1)) if !st.morph.on => {
             Some("Move the crossfader first: Snap back and Keep work on a morph".to_string())
+        }
+        (CLIP_CARD, EventKind::Toggle(0))
+            if st
+                .focus()
+                .and_then(|(t, s)| st.clip(t, s))
+                .is_some_and(|c| c.audio.is_some()) =>
+        {
+            let (track, slot) = st.focus()?;
+            fit_refused(st, track, slot)
         }
         (MORPH, EventKind::Tab(3)) | (CLIP_CARD, EventKind::Toggle(1)) => Some(match st.focus() {
             None => "Arm a track with a clip: Reload clip reloads its clip".to_string(),
@@ -2837,6 +2911,7 @@ fn bank_next(p: ClipProgram, delta: i32, by: i32) -> Result<Option<u16>, String>
 /// The clip settings card's rows, for the focused clip; none without one.
 pub fn clip_rows(st: &TimeState) -> Vec<OptionRow> {
     match st.focus().and_then(|(t, s)| st.clip(t, s)) {
+        Some(c) if c.audio.is_some() => audio_rows(c, st.transport.meter),
         Some(c) => {
             let mut rows = card_rows(c.length, c.settings);
             rows.push(OptionRow {
@@ -2868,6 +2943,9 @@ pub fn card_buttons(st: &TimeState) -> Vec<OptionButton> {
     let Some((track, slot)) = st.focus() else {
         return Vec::new();
     };
+    if let Some(b) = fit_button(st, track, slot) {
+        return vec![b];
+    }
     let looped = st.clip(track, slot).is_some_and(|c| c.looped.is_some());
     let mut reload = OptionButton::new("Reload", st.saved.contains(&(track, slot)));
     reload.waiting = st.reload_waiting((track, slot));
@@ -2980,6 +3058,9 @@ pub fn card_action(
     delta: i32,
     shift: bool,
 ) -> Result<TimeAction, String> {
+    if let Some((track, slot, c)) = focused_audio(st) {
+        return audio_step(st, track, slot, c, index, delta, shift);
+    }
     if shift && index == 10 {
         return bank_step(st, delta, 128);
     }
@@ -3074,8 +3155,290 @@ fn gcd(a: u16, b: u16) -> u16 {
 }
 
 /// What a step of the card's row `index` asks for, or why it asks for
-/// nothing (no clip, a loop cell, a setting at its end).
+/// nothing (no clip, a loop cell, a setting at its end): an audio clip's
+/// card has rows of its own ([`AUDIO_CLIP_ROWS`]).
 fn card_step(st: &TimeState, index: usize, delta: i32) -> Result<TimeAction, String> {
+    if let Some((track, slot, c)) = focused_audio(st) {
+        return audio_step(st, track, slot, c, index, delta, false);
+    }
+    settings_step(st, index, delta)
+}
+
+/// The focused clip, if it is an audio clip: its cell and facts.
+pub fn focused_audio(st: &TimeState) -> Option<(usize, usize, &ClipInfo)> {
+    let (track, slot) = st.focus()?;
+    let c = st.clip(track, slot)?;
+    c.audio.as_ref()?;
+    Some((track, slot, c))
+}
+
+/// An audio clip's card rows (layout spec 4j): a loop's length in bars
+/// and beats or a once clip's time, its mode, launch, follow action and
+/// gain, and its name.
+fn audio_rows(c: &ClipInfo, meter: Meter) -> Vec<OptionRow> {
+    let Some(a) = &c.audio else {
+        return Vec::new();
+    };
+    let notes = card_rows(c.length, c.settings);
+    let shared = |k: usize| {
+        notes
+            .get(AUDIO_AS_NOTES[k])
+            .map_or_else(String::new, |r| r.value.clone())
+    };
+    let length = if c.settings.once {
+        clock_time(a.secs)
+    } else {
+        bars_beats(c.length, meter)
+    };
+    let values = [
+        length,
+        shared(1),
+        shared(2),
+        shared(3),
+        shared(4),
+        gain_words(a.gain),
+        c.name.clone(),
+    ];
+    AUDIO_CLIP_ROWS
+        .iter()
+        .zip(values)
+        .map(|(name, value)| OptionRow {
+            name: name.to_string(),
+            value,
+        })
+        .collect()
+}
+
+/// A loop's length as the audio card says it: "2 bars", "3 beats", "2
+/// bars 1 beat"; a length off the beat in sixteenths ("5/16").
+pub fn bars_beats(length: Tick, meter: Meter) -> String {
+    let (bar, beat) = (meter.bar_ticks().max(1), meter.beat_ticks().max(1));
+    let plural = |n: i64, one: &str| {
+        if n == 1 {
+            format!("1 {one}")
+        } else {
+            format!("{n} {one}s")
+        }
+    };
+    if length % beat != 0 {
+        return length_label(length as f64, meter);
+    }
+    match (length / bar, length % bar / beat) {
+        (0, b) => plural(b, "beat"),
+        (n, 0) => plural(n, "bar"),
+        (n, b) => format!("{} {}", plural(n, "bar"), plural(b, "beat")),
+    }
+}
+
+/// A gain as dB, the floor (-60 dB) and under as off.
+fn gain_db(g: f32) -> f32 {
+    if g <= 0.0 {
+        AUDIO_GAIN_FLOOR_DB
+    } else {
+        (20.0 * g.log10()).max(AUDIO_GAIN_FLOOR_DB)
+    }
+}
+
+/// An audio clip's gain as its card says it: "0.0 dB", "+1.5 dB", "-3.0
+/// dB", "off".
+pub fn gain_words(g: f32) -> String {
+    let db = gain_db(g);
+    if g <= 0.0 || db <= AUDIO_GAIN_FLOOR_DB {
+        "off".to_string()
+    } else if db.abs() < 0.05 {
+        "0.0 dB".to_string()
+    } else {
+        format!("{db:+.1} dB")
+    }
+}
+
+/// What a step of an audio clip's card row `index` asks for, or why it
+/// asks for nothing. Length steps a beat (SHIFT a bar) and stays on the
+/// beats; a once clip's length is its sound's. Mode, Launch, Follow and
+/// After step as a note clip's. Gain steps 0.5 dB (SHIFT 0.1 dB), off
+/// under -60 dB. Name is the app's (the naming keyboard).
+#[allow(clippy::too_many_arguments)]
+fn audio_step(
+    st: &TimeState,
+    track: usize,
+    slot: usize,
+    c: &ClipInfo,
+    index: usize,
+    delta: i32,
+    shift: bool,
+) -> Result<TimeAction, String> {
+    let a = c.audio.as_ref().ok_or("No audio clip to set")?;
+    let d = delta.signum();
+    let meter = st.transport.meter;
+    let set = |row: usize, set: AudioSet| {
+        Ok(TimeAction::AudioClip {
+            track,
+            slot,
+            row: row as u8,
+            set,
+        })
+    };
+    match index {
+        0 if c.settings.once => Err(format!(
+            "{} plays once, to the end of its sound: its length is its sound's, {}",
+            c.name,
+            clock_time(a.secs)
+        )),
+        0 => {
+            let beat = meter.beat_ticks().max(1);
+            let unit = if shift {
+                meter.bar_ticks().max(1)
+            } else {
+                beat
+            };
+            let now = c.length;
+            let max = MAX_CLIP_TICKS / beat * beat;
+            let next = if d > 0 {
+                (now / unit + 1) * unit
+            } else {
+                ((now + unit - 1) / unit - 1) * unit
+            }
+            .clamp(beat, max);
+            if next == now || (d > 0 && next < now) || (d < 0 && next > now) {
+                return Err(if d < 0 {
+                    format!("{} is at its shortest, 1 beat", c.name)
+                } else {
+                    format!("{} is at its longest, {}", c.name, bars_beats(max, meter))
+                });
+            }
+            set(0, AudioSet::Length(next))
+        }
+        1..=4 => settings_step(st, AUDIO_AS_NOTES[index], delta),
+        AUDIO_GAIN => {
+            let step = if shift { 0.1 } else { 0.5 };
+            let db = gain_db(a.gain);
+            if d < 0 && a.gain <= 0.0 {
+                return Err(format!("{}'s gain is off already", c.name));
+            }
+            if d > 0 && db >= AUDIO_GAIN_MAX_DB - 0.01 {
+                return Err(format!("{}'s gain is at its most, +12 dB", c.name));
+            }
+            let from = if a.gain <= 0.0 {
+                AUDIO_GAIN_FLOOR_DB
+            } else {
+                db
+            };
+            let next = (((from / step).round() + d as f32) * step).min(AUDIO_GAIN_MAX_DB);
+            let gain = if next <= AUDIO_GAIN_FLOOR_DB {
+                0.0
+            } else {
+                10f32.powf(next / 20.0)
+            };
+            set(AUDIO_GAIN, AudioSet::Gain(gain))
+        }
+        // The app opens the naming keyboard.
+        _ => Err(String::new()),
+    }
+}
+
+/// The audio card's foot (layout spec 4j): Fit to tempo, or "Fitting…
+/// 40 %" with its progress while it fits. Faint for a once clip and at
+/// the project's tempo, a tap then saying why. None for a note clip.
+fn fit_button(st: &TimeState, track: usize, slot: usize) -> Option<OptionButton> {
+    st.clip(track, slot)?.audio.as_ref()?;
+    let fitting = st
+        .fitting
+        .filter(|f| (f.0, f.1) == (track, slot))
+        .map(|f| f.2);
+    let label = match fitting {
+        Some(p) => format!("Fitting… {} %", (p * 100.0).round() as u32),
+        None => "Fit to tempo".to_string(),
+    };
+    // Drawn faint only when it can't fit at all; while it fits it is lit,
+    // its fill the progress (a tap says how far it has got).
+    let mut b = OptionButton::new(
+        &label,
+        fitting.is_some() || fit_refused(st, track, slot).is_none(),
+    );
+    b.explains = true;
+    b.progress = fitting;
+    Some(b)
+}
+
+/// Why Fit to tempo does nothing on the clip in cell `slot` of `track`:
+/// a fit under way, a once clip, a clip at the project's tempo. None
+/// when it can fit.
+fn fit_refused(st: &TimeState, track: usize, slot: usize) -> Option<String> {
+    let c = st.clip(track, slot)?;
+    let a = c.audio.as_ref()?;
+    let bpm = st.transport.bpm;
+    if let Some(f) = st.fitting {
+        return Some(if (f.0, f.1) == (track, slot) {
+            format!(
+                "{} is fitting to {} BPM: {} % done",
+                c.name,
+                tempo_short(bpm),
+                (f.2 * 100.0).round() as u32
+            )
+        } else {
+            "Another clip is fitting to tempo: one at a time".to_string()
+        });
+    }
+    if c.settings.once {
+        return Some(format!(
+            "{} plays once, to the end of its sound: it sounds the same at any tempo, so there is nothing to fit",
+            c.name
+        ));
+    }
+    if !off_tempo(c, a, bpm) {
+        return Some(format!(
+            "{} was made at {} BPM, the project's tempo: there is nothing to fit",
+            c.name,
+            tempo_short(a.bpm)
+        ));
+    }
+    None
+}
+
+/// The audio card's two lines over Fit to tempo (layout spec 4j): the
+/// tempo the clip was made at and what that does here. None for a note
+/// clip.
+pub fn card_note(st: &TimeState) -> Option<OptionNote> {
+    let (_, _, c) = focused_audio(st)?;
+    let a = c.audio.as_ref()?;
+    let bpm = st.transport.bpm;
+    if c.settings.once {
+        return Some(OptionNote {
+            lead: "Plays to its end".to_string(),
+            rest: "at any tempo".to_string(),
+            warn: false,
+        });
+    }
+    if !off_tempo(c, a, bpm) {
+        return Some(OptionNote {
+            lead: format!("Made at {} BPM,", tempo_short(a.bpm)),
+            rest: "the project's tempo".to_string(),
+            warn: false,
+        });
+    }
+    let gap = pass_gap(c, a, bpm);
+    let rest = if gap > 0.0 {
+        format!("at {} a {gap:.1} s gap each pass", tempo_short(bpm))
+    } else {
+        format!("at {} {:.1} s cut each pass", tempo_short(bpm), -gap)
+    };
+    Some(OptionNote {
+        lead: format!("Made at {} BPM:", tempo_short(a.bpm)),
+        rest,
+        warn: true,
+    })
+}
+
+/// The silence a loop made at `a.bpm` leaves each pass at `bpm`, in
+/// seconds; under 0 it cuts that much of its sound off.
+fn pass_gap(c: &ClipInfo, a: &AudioCellInfo, bpm: f64) -> f64 {
+    let quarters = c.length as f64 / f64::from(PPQ);
+    quarters * 60.0 / bpm.max(1.0) - quarters * 60.0 / a.bpm.max(1.0)
+}
+
+/// The note clip card's rows: what a step of row `index` asks for, or
+/// why it asks for nothing (no clip, a loop cell, a setting at its end).
+fn settings_step(st: &TimeState, index: usize, delta: i32) -> Result<TimeAction, String> {
     let (track, slot) = st
         .focus()
         .ok_or("No clip to set: arm a track with a clip, or make one")?;
@@ -3593,6 +3956,7 @@ fn take_detail(st: &TimeState, row: &TakeRow) -> String {
         (Some(Replaced::Mutate), None) => return "a variation".into(),
         (Some(Replaced::Restore), _) => return "the original".into(),
         (Some(Replaced::Fit), _) => return "to tempo".into(),
+        (Some(Replaced::Settings), _) => return "clip settings".into(),
         (None, _) => {}
     }
     if row.deleted {
@@ -3974,8 +4338,7 @@ pub fn audio_cell_hint(st: &TimeState, track: usize, slot: usize) -> Option<Stri
         ));
     }
     if off_tempo(clip, a, t.bpm) {
-        let quarters = clip.length as f64 / f64::from(PPQ);
-        let gap = quarters * 60.0 / t.bpm.max(1.0) - quarters * 60.0 / a.bpm.max(1.0);
+        let gap = pass_gap(clip, a, t.bpm);
         let what = if gap > 0.0 {
             format!("leaves {:.1} s of silence each pass", gap)
         } else {
@@ -5058,10 +5421,10 @@ impl TimePage {
         }
         let rows = clip_rows(st);
         let buttons = card_buttons(st);
-        if ui
-            .get::<OptionList>(CLIP_CARD)
-            .is_some_and(|l| l.rows != rows || l.tabs != tabs || l.buttons != buttons)
-        {
+        let note = card_note(st);
+        if ui.get::<OptionList>(CLIP_CARD).is_some_and(|l| {
+            l.rows != rows || l.tabs != tabs || l.buttons != buttons || l.note != note
+        }) {
             if let Some(l) = ui.get_mut::<OptionList>(CLIP_CARD) {
                 // Another clip: its card starts at the top.
                 if l.tabs != tabs {
@@ -5070,6 +5433,7 @@ impl TimePage {
                 l.rows = rows;
                 l.tabs = tabs.clone();
                 l.buttons = buttons;
+                l.note = note;
             }
         }
         let rows = scene_rows(st);
@@ -6225,10 +6589,7 @@ mod tests {
         );
         let cell = ev(CLIPS, EventKind::Select(SLOTS + 2));
         assert_eq!(action(&cell, &st), None);
-        assert_eq!(
-            why_not(&cell, &st).as_deref(),
-            Some(EMPTY_AUDIO_CELL)
-        );
+        assert_eq!(why_not(&cell, &st).as_deref(), Some(EMPTY_AUDIO_CELL));
         // The chooser's rows on the grid.
         let row = |k| action(&ev(CLIPS, EventKind::Toggle(SLOTS + ADD_KIND + k)), &st);
         assert_eq!(row(0), Some(TimeAction::AddTrack));
@@ -6313,7 +6674,9 @@ mod tests {
         st.not_ready.clear();
         // Missing: red, a flat dashed line for its wave.
         let why = "take 4's file wasn't found when the project opened";
-        set(&mut st, &|c| c.audio.as_mut().unwrap().missing = Some(why.into()));
+        set(&mut st, &|c| {
+            c.audio.as_mut().unwrap().missing = Some(why.into())
+        });
         let c = cell_of(&st, 2, 0);
         assert_eq!((c.foot.as_str(), c.alert), ("missing", CellAlert::Bad));
         assert!(c.missing && c.wave.is_none());
@@ -6345,6 +6708,160 @@ mod tests {
             audio_cell_hint(&st, 2, 0).as_deref(),
             Some("A waits for its audio: it starts on 18.1.")
         );
+    }
+
+    /// Layout spec 4j: an audio clip's card has its own rows, steps a
+    /// loop's length by the beat (SHIFT the bar) and its gain by 0.5 dB,
+    /// and its foot says the tempo it was made at over Fit to tempo.
+    #[test]
+    fn an_audio_clips_card_has_its_own_rows_and_fit_to_tempo() {
+        let mut st = state();
+        st.tracks[2].audio = true;
+        st.tracks[2].slots[0].as_mut().unwrap().audio = Some(AudioCellInfo {
+            bpm: 120.0,
+            gain: 1.0,
+            secs: 197.0,
+            ..AudioCellInfo::default()
+        });
+        assert_eq!(st.focus(), Some((2, 0)));
+        let rows: Vec<(String, String)> = clip_rows(&st)
+            .into_iter()
+            .map(|r| (r.name, r.value))
+            .collect();
+        let want = [
+            ("Length", "2 bars"),
+            ("Mode", "Restart"),
+            ("Launch", "project"),
+            ("Follow", "off"),
+            ("After", "—"),
+            ("Gain", "0.0 dB"),
+            ("Name", "A"),
+        ];
+        let want: Vec<(String, String)> = want
+            .iter()
+            .map(|(n, v)| (n.to_string(), v.to_string()))
+            .collect();
+        assert_eq!(rows, want);
+        let step = |st: &TimeState, index, delta, shift| card_action(st, index, delta, shift);
+        let length = |l| {
+            Ok(TimeAction::AudioClip {
+                track: 2,
+                slot: 0,
+                row: 0,
+                set: AudioSet::Length(l),
+            })
+        };
+        // Length: a beat, SHIFT a bar; never under a beat.
+        assert_eq!(step(&st, 0, 1, false), length(2 * BAR + BAR / 4));
+        assert_eq!(step(&st, 0, -1, false), length(2 * BAR - BAR / 4));
+        assert_eq!(step(&st, 0, -1, true), length(BAR));
+        assert_eq!(
+            bars_beats(2 * BAR + BAR / 4, Meter::default()),
+            "2 bars 1 beat"
+        );
+        assert_eq!(bars_beats(BAR / 2, Meter::default()), "2 beats");
+        st.tracks[2].slots[0].as_mut().unwrap().length = BAR / 4;
+        assert_eq!(
+            step(&st, 0, -1, false),
+            Err("A is at its shortest, 1 beat".to_string())
+        );
+        st.tracks[2].slots[0].as_mut().unwrap().length = 2 * BAR;
+        // Mode, Launch, Follow and After step as a note clip's rows.
+        assert_eq!(step(&st, 1, 1, false), card_step(&state(), 8, 1));
+        assert_eq!(step(&st, 3, 1, false), card_step(&state(), 5, 1));
+        // Gain: 0.5 dB, SHIFT 0.1 dB, up to +12 dB.
+        let Ok(TimeAction::AudioClip {
+            set: AudioSet::Gain(g),
+            ..
+        }) = step(&st, AUDIO_GAIN, 1, false)
+        else {
+            panic!("a gain");
+        };
+        assert_eq!(gain_words(g), "+0.5 dB");
+        let Ok(TimeAction::AudioClip {
+            set: AudioSet::Gain(g),
+            ..
+        }) = step(&st, AUDIO_GAIN, -1, true)
+        else {
+            panic!("a gain");
+        };
+        assert_eq!(gain_words(g), "-0.1 dB");
+        let set_gain = |st: &mut TimeState, g| {
+            st.tracks[2].slots[0]
+                .as_mut()
+                .unwrap()
+                .audio
+                .as_mut()
+                .unwrap()
+                .gain = g
+        };
+        set_gain(&mut st, 10f32.powf(0.6));
+        assert_eq!(clip_rows(&st)[AUDIO_GAIN].value, "+12.0 dB");
+        assert!(step(&st, AUDIO_GAIN, 1, false).is_err());
+        set_gain(&mut st, 0.0);
+        assert_eq!(clip_rows(&st)[AUDIO_GAIN].value, "off");
+        assert!(step(&st, AUDIO_GAIN, -1, false).is_err());
+        set_gain(&mut st, 1.0);
+        // Name is the app's.
+        assert_eq!(step(&st, AUDIO_NAME, 1, false), Err(String::new()));
+        // At the project's tempo: Fit to tempo faint, a tap says why.
+        let fit = ev(CLIP_CARD, EventKind::Toggle(0));
+        let b = &card_buttons(&st)[0];
+        assert_eq!(
+            (b.label.as_str(), b.enabled, b.explains),
+            ("Fit to tempo", false, true)
+        );
+        assert_eq!(action(&fit, &st), None);
+        assert_eq!(
+            why_not(&fit, &st).as_deref(),
+            Some("A was made at 120 BPM, the project's tempo: there is nothing to fit")
+        );
+        let note = card_note(&st).unwrap();
+        assert_eq!(
+            (note.lead.as_str(), note.rest.as_str(), note.warn),
+            ("Made at 120 BPM,", "the project's tempo", false)
+        );
+        // At 92: the gap each pass, amber, and Fit to tempo fits.
+        st.transport.bpm = 92.0;
+        let note = card_note(&st).unwrap();
+        assert_eq!(
+            (note.lead.as_str(), note.rest.as_str(), note.warn),
+            ("Made at 120 BPM:", "at 92 a 1.2 s gap each pass", true)
+        );
+        assert!(card_buttons(&st)[0].enabled);
+        assert_eq!(
+            action(&fit, &st),
+            Some(TimeAction::FitClip { track: 2, slot: 0 })
+        );
+        // Fitting: its progress, and a tap says how far it has got.
+        st.fitting = Some((2, 0, 0.4));
+        let b = &card_buttons(&st)[0];
+        assert_eq!(
+            (b.label.as_str(), b.progress, b.enabled),
+            ("Fitting… 40 %", Some(0.4), true)
+        );
+        assert_eq!(action(&fit, &st), None);
+        assert_eq!(
+            why_not(&fit, &st).as_deref(),
+            Some("A is fitting to 92 BPM: 40 % done")
+        );
+        st.fitting = None;
+        // A once clip: its time, not stepped, and nothing to fit.
+        st.tracks[2].slots[0].as_mut().unwrap().settings.once = true;
+        assert_eq!(clip_rows(&st)[0].value, "3:17");
+        assert_eq!(clip_rows(&st)[1].value, "Once");
+        assert!(step(&st, 0, 1, false).is_err());
+        let note = card_note(&st).unwrap();
+        assert_eq!(
+            (note.lead.as_str(), note.rest.as_str()),
+            ("Plays to its end", "at any tempo")
+        );
+        assert!(!card_buttons(&st)[0].enabled);
+        // A note clip's card is as it was.
+        st.armed = Some(1);
+        assert_eq!(clip_rows(&st).len(), CLIP_ROWS.len());
+        assert_eq!(card_note(&st), None);
+        assert_eq!(card_buttons(&st).len(), 2);
     }
 
     /// Layout spec 4j: the Clip tab follows an audio track armed by its
@@ -6481,7 +6998,7 @@ mod tests {
             AudioAction::Fades(r),
             AudioAction::Gain(r),
             AudioAction::Takes(2),
-            AudioAction::Undo,
+            AudioAction::ToCell(r),
         ];
         for (k, want) in row.into_iter().enumerate() {
             assert_eq!(song(EventKind::Tab(k), &st), audio(want), "button {k}");

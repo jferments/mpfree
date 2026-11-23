@@ -327,6 +327,10 @@ pub enum Replaced {
     /// Fit to tempo on an audio clip's card: the clip on fitted copies of
     /// its recordings, made at the project's tempo (audio tracks phase 2).
     Fit,
+    /// An audio clip's card: its length, gain or name (audio tracks phase
+    /// 2, [`Takes::set_audio_clip`]); its other settings are a note
+    /// clip's ([`Takes::set_clip`]).
+    Settings,
 }
 
 /// A scene editor change: row `row`'s settings before and after.
@@ -991,6 +995,61 @@ impl Takes {
             edited: true,
             join,
             settings: Some((track, slot, from, to)),
+            ..Take::default()
+        });
+        Ok(number)
+    }
+
+    /// An audio clip's card (audio tracks phase 2): put `clip`, the same
+    /// clip with another length, gain or name, in place of clip `slot` of
+    /// `track`, as [`Takes::replace_clip`] does for [`Replaced::Settings`].
+    /// `join` as for [`Takes::set_clip`]: a change joins the latest take
+    /// instead when that is a change of the same clip with the same key
+    /// and nothing undone since, so the wheel turned through many values
+    /// is one undo, back to the clip before the first. The edit's number;
+    /// `BadSlot` if the slot is empty, `clip`'s own refusals as they are;
+    /// nothing changes on an error, nor when `clip` is what it has.
+    pub fn set_audio_clip(
+        &mut self,
+        project: &mut Project,
+        track: usize,
+        slot: usize,
+        clip: Clip,
+        join: Option<u64>,
+    ) -> Result<u32, ModelError> {
+        clip.check()?;
+        let s = slot_mut(project, track, slot)
+            .filter(|s| s.is_some())
+            .ok_or(ModelError::BadSlot)?;
+        let clip = Clip {
+            id: s.as_ref().map_or(clip.id, |c| c.id),
+            ..clip
+        };
+        if s.as_ref() == Some(&clip) {
+            return Ok(self.edits);
+        }
+        let joins = join.is_some()
+            && self.undone.is_empty()
+            && self.done.last().is_some_and(|t| {
+                t.join == join
+                    && t.replaced == Some(Replaced::Settings)
+                    && t.made.first().is_some_and(|m| (m.0, m.1) == (track, slot))
+            });
+        let now = s.replace(clip.clone()).expect("checked");
+        if joins {
+            let take = self.done.last_mut().expect("checked");
+            take.made[0].2 = clip;
+            return Ok(take.number);
+        }
+        self.edits += 1;
+        let number = self.edits;
+        self.push(Take {
+            number,
+            edited: true,
+            join,
+            replaced: Some(Replaced::Settings),
+            removed: vec![(track, slot, now)],
+            made: vec![(track, slot, clip)],
             ..Take::default()
         });
         Ok(number)
@@ -1917,6 +1976,52 @@ mod tests {
         assert!(t.undo(&mut p).is_some());
         let old = c(&mut p);
         assert!(!old.notes.iter().any(|n| n.tick == 300), "D out");
+    }
+
+    /// An audio clip's card: its gain turned is one take back to the clip
+    /// before the turn, its name another, and the clip keeps its id.
+    #[test]
+    fn an_audio_clips_gain_turned_is_one_take() {
+        use mpfree_seq::{AudioClip, RecId};
+        let mut p = Project::new();
+        let mut track = Track::new_audio("a", 0);
+        let mut clip = Clip::new("v", 3840);
+        clip.audio = Some(AudioClip::of(RecId(7), 0, 88_200, 3840, 120.0));
+        track.slots[0] = Some(clip);
+        p.tracks.push(track);
+        let mut t = Takes::default();
+        let c = |p: &Project| p.tracks[0].slots[0].clone().unwrap();
+        let first = c(&p);
+        let gained = |g: f32| {
+            let mut c = first.clone();
+            c.audio.as_mut().unwrap().gain = g;
+            c
+        };
+        assert_eq!(t.set_audio_clip(&mut p, 0, 0, gained(1.5), Some(9)), Ok(1));
+        assert_eq!(t.set_audio_clip(&mut p, 0, 0, gained(2.0), Some(9)), Ok(1));
+        assert_eq!(t.done().len(), 1);
+        assert_eq!(t.done()[0].replaced, Some(Replaced::Settings));
+        // Nothing new: no take.
+        assert_eq!(t.set_audio_clip(&mut p, 0, 0, gained(2.0), Some(9)), Ok(1));
+        let mut named = gained(2.0);
+        named.name = "Riff".into();
+        assert_eq!(t.set_audio_clip(&mut p, 0, 0, named, None), Ok(2));
+        assert_eq!(c(&p).id, first.id);
+        // Out of range: refused, the clip as it was.
+        assert!(t
+            .set_audio_clip(&mut p, 0, 0, gained(9.0), Some(9))
+            .is_err());
+        assert_eq!(
+            t.set_audio_clip(&mut p, 0, 1, gained(1.0), None),
+            Err(ModelError::BadSlot)
+        );
+        assert_eq!(c(&p).name, "Riff");
+        t.undo(&mut p);
+        assert_eq!(c(&p), gained(2.0));
+        t.undo(&mut p);
+        assert_eq!(c(&p), first);
+        t.redo(&mut p);
+        assert_eq!(c(&p), gained(2.0));
     }
 
     /// The clip settings card: a change is an edit of its own, a turn of

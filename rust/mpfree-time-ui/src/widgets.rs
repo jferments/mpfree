@@ -1944,8 +1944,19 @@ fn paint_cell(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color) {
         let band = detail.inset_xy(0, 2);
         dashed_line(cx, band, t.surface.mix(t.bad, 0.45));
         if foot.y >= detail.bottom() - 2 {
-            let line = if cell.foot.is_empty() { &cell.detail } else { &cell.foot };
-            cx.text(foot_face, t.size_small - 1.0, foot, Align::Left, foot_ink, line);
+            let line = if cell.foot.is_empty() {
+                &cell.detail
+            } else {
+                &cell.foot
+            };
+            cx.text(
+                foot_face,
+                t.size_small - 1.0,
+                foot,
+                Align::Left,
+                foot_ink,
+                line,
+            );
         }
     } else if let Some(wave) = &cell.wave {
         // A loop or an audio clip: its wave in the detail's place, and at

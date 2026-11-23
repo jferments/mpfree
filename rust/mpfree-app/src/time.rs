@@ -11844,6 +11844,74 @@ mod tests {
                 .is_none());
         }
 
+        /// An audio clip's card (layout spec 4j): a length cut keeps the
+        /// frames it cuts and a longer one brings them back, the gain and
+        /// the name are clip settings, and a row turned is one take.
+        #[test]
+        fn an_audio_clips_card_sets_its_length_gain_and_name_a_row_a_take() {
+            use mpfree_time_ui::view::AudioSet;
+            let mut h = host();
+            let set = |row, set| TimeAction::AudioClip {
+                track: VOCAL,
+                slot: 0,
+                row,
+                set,
+            };
+            let clip = |h: &TimeHost| h.control.project.clip(VOCAL, 0).unwrap().clone();
+            let region = |h: &TimeHost| clip(h).audio.unwrap().regions[0];
+            let first = region(&h);
+            // A beat shorter: the region ends there, the beat's frames (half
+            // a second at 120 BPM) kept in its left.
+            let said = h.act(set(0, AudioSet::Length(3 * 960))).unwrap();
+            assert_eq!(said, "clip: Verse · Length 3 beats (UNDO takes it back)");
+            let r = region(&h);
+            assert_eq!((clip(&h).length, r.end, r.left), (3 * 960, 3 * 960, 22_050));
+            assert_eq!(clip(&h).audio.unwrap().last_frame, 66_150);
+            // Back a beat: it grows back into what it was cut from.
+            h.act(set(0, AudioSet::Length(3840))).unwrap();
+            assert_eq!(region(&h), first);
+            assert_eq!(clip(&h).audio.unwrap().last_frame, 88_200);
+            // A bar longer: silence after; the turn is one take.
+            h.act(set(0, AudioSet::Length(2 * 3840))).unwrap();
+            assert_eq!((clip(&h).length, region(&h)), (2 * 3840, first));
+            assert_eq!(h.state().done.len(), 1, "the row turned: one take");
+            // Gain turned: another take; the name another.
+            h.act(set(5, AudioSet::Gain(2.0))).unwrap();
+            let said = h.act(set(5, AudioSet::Gain(1.5))).unwrap();
+            assert_eq!(said, "clip: Verse · Gain +3.5 dB (UNDO takes it back)");
+            h.act(set(6, AudioSet::Name(" Hook ".into()))).unwrap();
+            assert_eq!(clip(&h).name, "Hook");
+            assert_eq!(h.state().done.len(), 3);
+            let st = h.state();
+            assert_eq!(
+                mpfree_time_ui::view::take_title(&st, &st.done[1]),
+                "Settings 2 · Vocal / 1"
+            );
+            // Refused: an empty name, a gain out of range, a once clip's
+            // length; nothing changes.
+            assert!(h.act(set(6, AudioSet::Name("  ".into()))).is_err());
+            assert!(h.act(set(5, AudioSet::Gain(5.0))).is_err());
+            let mut s = clip(&h).settings();
+            s.once = true;
+            h.act(TimeAction::ClipSettings {
+                track: VOCAL,
+                slot: 0,
+                row: 8,
+                settings: s,
+            })
+            .unwrap();
+            assert!(h.act(set(0, AudioSet::Length(3840))).is_err());
+            assert_eq!(clip(&h).length, 2 * 3840);
+            // UNDO takes each back in turn.
+            h.act(TimeAction::Undo).unwrap();
+            h.act(TimeAction::Undo).unwrap();
+            assert_eq!(clip(&h).name, "Verse");
+            h.act(TimeAction::Undo).unwrap();
+            assert_eq!(clip(&h).audio.unwrap().gain, 1.0);
+            h.act(TimeAction::Undo).unwrap();
+            assert_eq!((clip(&h).length, region(&h)), (3840, first));
+        }
+
         #[test]
         fn audio_clips_move_copy_and_paste_between_audio_tracks_only() {
             let mut h = host();
