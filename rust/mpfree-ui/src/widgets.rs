@@ -1925,13 +1925,17 @@ impl Widget for OptionList {
                 let x = name.x + drawn + 10;
                 if x + w <= name.right() {
                     let chip = Rect::new(x, name.y + (name.h - 20) / 2, w, 20);
-                    cx.canvas.stroke_round_rect(chip, 10, 1, t.accent2);
+                    // In the second accent, moved only as far as it must
+                    // to read on the row (AbleTown's orange on its grey
+                    // selected row would not).
+                    let ink = t.readable(t.accent2, if on { t.raised } else { t.surface });
+                    cx.canvas.stroke_round_rect(chip, 10, 1, ink);
                     cx.text(
                         FontId::Bold,
                         t.size_small - 3.0,
                         chip,
                         Align::Center,
-                        t.accent2,
+                        ink,
                         &it.tag.to_uppercase(),
                     );
                 }
