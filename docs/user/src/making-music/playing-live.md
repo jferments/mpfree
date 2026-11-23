@@ -49,9 +49,11 @@ The **XY pad** plays an effect on the whole mix under one finger. The chip at it
 
 {{shot: play-xy-list | The list the XY chip opens: Filter + echo and the nine XY FX, each saying what across and up do. Wash is the pick here.}}
 
-**For a bigger pad, press SHIFT + NEXT SEQ** from any page. The XY pad takes the whole of Play under the transport bar, with the master bar and the Q-Links still beside it, so you have room for big, slow moves. It plays just as the small one does, and its chip still opens the list. Press **SHIFT + NEXT SEQ** again, or go to another page, to get the small pad back.
+**For a bigger pad, press SHIFT + NEXT SEQ** from any page. The XY pad takes the whole of Play under the transport bar, with the master bar and the Q-Links still beside it, so you have room for big, slow moves. It plays just as the small one does, and its chip still opens the list. Under it are **Hold**, **Let go** and **Setup**. Press **SHIFT + NEXT SEQ** again, or go to another page, to get the small pad back.
 
-{{shot: play-xy-full | The XY pad full screen (SHIFT + NEXT SEQ), playing Wash: decay across, brightness up.}}
+{{shot: play-xy-full | The XY pad full screen (SHIFT + NEXT SEQ), playing Wash: decay across, brightness up. Under it, Hold (for layouts of yours), Let go and Setup.}}
+
+**To put your own settings on the pad,** make a layout of your own: tap **+ New layout** in the chip's list, or **Setup** under the full-screen pad to start from the ready-made layout playing. See [Your own XY layouts](xy-layouts.md).
 
 ## Fills
 

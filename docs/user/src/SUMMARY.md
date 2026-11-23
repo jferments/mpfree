@@ -14,6 +14,7 @@
 # Making music
 
 - [Playing live](making-music/playing-live.md)
+- [Your own XY layouts](making-music/xy-layouts.md)
 - [Note Repeat, Latch and the arpeggiator](making-music/note-repeat-and-arp.md)
 - [The Sequencer: programming steps](making-music/sequencer.md)
 - [Editing notes](making-music/editing-notes.md)

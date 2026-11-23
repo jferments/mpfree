@@ -184,7 +184,10 @@ mod waiting;
 mod xy_layouts;
 mod xy_list;
 mod xy_play;
+mod xy_setup;
 mod xy_slot;
+mod xy_song;
+mod xy_widgets;
 
 use mpfree_arp::scale::{pads::MAX_PAD_NOTES, Shift};
 use mpfree_controller::midi::{Message, Parser};
@@ -7613,6 +7616,140 @@ fn synth_turn_said(synth: &synth::Synth, id: u16, redo: bool) -> String {
     }
 }
 
+/// Your XY layouts as the screen shows them ([`gui::ToUi::Xy`]), each
+/// setting named afresh.
+fn xy_view(
+    song: &mut xy_song::XySong,
+    mix: &mixing::MixHost,
+    synth: &synth::Synth,
+    app: &app::App,
+    pads: PadNow<'_>,
+    time: &time::TimeHost,
+) -> gui::ToUi {
+    let look = |a| xy_seen(mix, synth, app, pads, time, a);
+    gui::ToUi::Xy(Box::new(song.view(mix.xy_held(), &look)))
+}
+
+/// A Stay lift as the XY pad's undo history lists it: "Stay: Cutoff,
+/// Send A (2 settings)".
+fn xy_turn_row(mix: &mixing::MixHost, t: &undo::Turn<xy_song::XyKey, xy_song::XyValues>) -> String {
+    let names: Vec<String> = t
+        .key
+        .iter()
+        .flatten()
+        .map(|&a| modpanels::label(mix, a))
+        .collect();
+    let n = names.len();
+    let shown: Vec<&str> = names.iter().take(3).map(String::as_str).collect();
+    let more = if n > 3 { ", …" } else { "" };
+    format!(
+        "Stay: {}{more} ({n} setting{})",
+        shown.join(", "),
+        if n == 1 { "" } else { "s" }
+    )
+}
+
+/// A setting as the XY pad's Setup and its waiting banner name it
+/// (`xy_song.rs`): its name, where it is ("Bass · Poly", "Master · Room,
+/// effect 1", "Bass strip"), its colour, its range, and whether it is a
+/// synth's or a pad's own (no Add yet). Err with why it isn't there: its
+/// track removed, its effect taken out.
+fn xy_seen(
+    mix: &mixing::MixHost,
+    synth: &synth::Synth,
+    app: &app::App,
+    pads: PadNow<'_>,
+    time: &time::TimeHost,
+    addr: mpfree_play::mpfree_param::ParamAddr,
+) -> Result<xy_song::Seen, String> {
+    use mpfree_play::mpfree_param::Owner;
+    let project = time.project();
+    let track = |t: u8| {
+        let n = track_name(project, t);
+        if n.is_empty() {
+            format!("Track {}", u16::from(t) + 1)
+        } else {
+            n
+        }
+    };
+    if let Some((t, _)) = addr.owner.split() {
+        if usize::from(t) >= project.tracks.len() {
+            return Err(format!("Track {} was removed.", u16::from(t) + 1));
+        }
+    }
+    if matches!(addr.owner, Owner::Arp(_)) {
+        return Err("The arp's settings can't go on the pad yet.".to_string());
+    }
+    // A synth's and a pad's own settings: the pad's hand reaches them in
+    // the next step (the XY plan's phase 2, its third pull request).
+    if matches!(addr.owner, Owner::Inst(_) | Owner::Pad(..)) {
+        return Err(xy_song::NOT_YET.to_string());
+    }
+    let now = desk::play_now(time, mix);
+    let Some((info, _)) = learn_describe(mix, synth, app, pads, now, addr) else {
+        return Err(match addr.owner {
+            Owner::Insert(..) => "Its effect was taken out, or has no such setting now.",
+            Owner::Pad(..) => "Its pad has no sound now.",
+            _ => "It isn't there any more.",
+        }
+        .to_string());
+    };
+    let (name, place) = match addr.owner {
+        Owner::Inst(t) => {
+            let own = mix
+                .instruments
+                .holds(usize::from(t))
+                .then(|| mix.instruments.node(usize::from(t)))
+                .flatten();
+            let engine = own.map_or_else(|| synth.engine_name(), |n| n.info().name);
+            (info.name.to_string(), format!("{} · {engine}", track(t)))
+        }
+        Owner::Pad(t, pad) => (
+            info.name.to_string(),
+            format!(
+                "{} · pad {}",
+                track(t),
+                mpfree_midi::profile::pad_name(usize::from(pad))
+            ),
+        ),
+        Owner::Strip(s) => (
+            info.name.to_string(),
+            format!("{} strip", mixing::name(modmix::strip_id(s))),
+        ),
+        Owner::Insert(s, uid) => {
+            let sid = modmix::strip_id(s);
+            let (effect, slot) = mix
+                .mixer
+                .chain(sid)
+                .and_then(|c| {
+                    let i = c.slot_of(uid)?;
+                    Some((c.node(i)?.info().name, i))
+                })
+                .unwrap_or(("?", 0));
+            (
+                info.name.to_string(),
+                format!("{} · {effect}, effect {}", mixing::name(sid), slot + 1),
+            )
+        }
+        _ => {
+            // "CC 74 (Track 3)", "Macro 2 · Grit": the name, and where in
+            // the brackets.
+            let label = learn_label(mix, synth, time, addr);
+            match label.rsplit_once(" (") {
+                Some((n, p)) => (n.to_string(), p.trim_end_matches(')').to_string()),
+                None => (label, String::new()),
+            }
+        }
+    };
+    Ok(xy_song::Seen {
+        info,
+        name,
+        place,
+        dot: xy_song::dot_of(addr),
+        own: matches!(addr.owner, Owner::Inst(_) | Owner::Pad(..)),
+    })
+}
+
 /// A synth knob's turn as the undo history lists it: "Filter Cutoff to
 /// 1.2 kHz".
 fn synth_turn_row(synth: &synth::Synth, id: u16, to: f32) -> String {
@@ -7968,8 +8105,14 @@ fn player_session(
     // UNDO on the Synth tab and the mixer: their knob and fader turns.
     let mut synth_turns: undo::Turns<u16> = undo::Turns::default();
     let mut mix_turns: mixturns::MixTurns = undo::Turns::default();
+    // Your XY layouts in this song, and Stay's lifts for UNDO.
+    let mut xy_yours = xy_song::XySong::default();
+    let mut xy_turns: xy_song::XyTurns = undo::Turns::default();
+    // A project's layouts came in: the one it played plays once its mixer
+    // and mod set-up are in.
+    let mut xy_opening = false;
     // What the screen was last told about them, for the UNDO light.
-    let mut turns_told = (false, false);
+    let mut turns_told = (false, false, false);
     let mut synth_time = RenderTime::default();
     // Q-Links on the Public port (no Akai session) send positions; the Synth
     // page wants turns, so the last position of each is kept.
@@ -8677,6 +8820,9 @@ fn player_session(
                 }
             }
             let (t_item, item) = (Instant::now(), parts::Name::of(&a));
+            // A ready-made layout picked on the XY pad's list: none of
+            // yours plays from now.
+            let xy_picked = matches!(a, gui::FromUi::PlayFx(mixing::PlayFx::XyEffect(_)));
             let mix_turn = mixturns::before_ui(&a, &mix, app.view() == app::View::Mixer);
             // The app, the mixer, the time engine, the looper and the chain
             // editor take theirs (desk.rs); the rest is this loop's.
@@ -8698,6 +8844,11 @@ fn player_session(
             record_knob(&a, desk.app, desk.mix, desk.time);
             let a = desk.screen(a, t, out, &mut fx);
             save_shelf(&mut mix, &store, out);
+            if xy_picked && xy_yours.playing.take().is_some() {
+                let pad_now =
+                    |t: u8, pad: u8, id: u16| pad_describe(&player, &track_kits, t, pad, id);
+                out.show(xy_view(&mut xy_yours, &mix, &synth, &app, &pad_now, &time));
+            }
             // UNDO on the mixer: a strip control's turn, from its value
             // before the desk set it.
             if let Some(turn) = mix_turn {
@@ -8837,6 +8988,32 @@ fn player_session(
                     kit_to = Some(k.min(n - 1));
                     kit_picked = true;
                 }
+                // Your XY layouts (xy_song.rs): the loop names each
+                // setting, the mixer plays the layout, and the screen sees
+                // the song's layouts again.
+                gui::FromUi::Xy(act) => {
+                    let pad_now =
+                        |t: u8, pad: u8, id: u16| pad_describe(&player, &track_kits, t, pad, id);
+                    let track = u8::try_from(app.track()).unwrap_or(u8::MAX);
+                    let look = |a| xy_seen(&mix, &synth, &app, &pad_now, &time, a);
+                    let mut told = None;
+                    let done = xy_yours.act(
+                        act,
+                        track,
+                        |pick, name| mix.xy_ready(pick, name),
+                        &look,
+                        &mut |l| told = Some(l),
+                    );
+                    match done {
+                        Ok(d) => mix.xy_done(d),
+                        Err(e) => told = Some(e),
+                    }
+                    if let Some(line) = told {
+                        out.note(&format!("xy: {line}"));
+                        out.show(gui::ToUi::Tell(line));
+                    }
+                    out.show(xy_view(&mut xy_yours, &mix, &synth, &app, &pad_now, &time));
+                }
                 // UNDO on the Synth tab and the mixer: their turns' history.
                 gui::FromUi::UndoHistory(on) => {
                     let (rows, now) = match on {
@@ -8846,6 +9023,9 @@ fn player_session(
                             }),
                         gui::UndoOn::Mixer => {
                             mix_turns.rows("Start: the mix before these turns", mixturns::row)
+                        }
+                        gui::UndoOn::Xy => {
+                            xy_turns.rows("Start: before these lifts", |t| xy_turn_row(&mix, t))
                         }
                     };
                     out.show(gui::ToUi::UndoHistory { on, rows, now });
@@ -8863,6 +9043,23 @@ fn player_session(
                                 synth.set(t.key, v);
                                 out.show(gui::ToUi::SynthValues(synth.values()));
                                 synth_turn_said(&synth, t.key, redo)
+                            })
+                        }
+                        gui::UndoOn::Xy => {
+                            let turn = if redo {
+                                xy_turns.redo()
+                            } else {
+                                xy_turns.undo()
+                            };
+                            turn.map(|t| {
+                                for (addr, v) in xy_song::turn_values(&t, redo) {
+                                    panels.set_param(&mut mix, addr, v, false);
+                                }
+                                format!(
+                                    "{}: {}",
+                                    if redo { "redo" } else { "undo" },
+                                    xy_turn_row(&mix, &t)
+                                )
                             })
                         }
                         gui::UndoOn::Mixer => {
@@ -9138,6 +9335,18 @@ fn player_session(
                             s,
                         ))));
                     }
+                    // The XY pad's layout of yours lets go and its rows go
+                    // before the mixer and the mod engine change; the
+                    // project's layouts come in, and the one it played
+                    // plays once its mixer is in.
+                    mix.xy_yours(None);
+                    let (song, notes) = xy_song::XySong::parse(o.xy.as_deref().unwrap_or(""));
+                    for line in notes {
+                        out.note(&format!("project: {line}"));
+                    }
+                    xy_yours = song;
+                    xy_turns.clear();
+                    xy_opening = true;
                     if let Some(m) = o.mix.take() {
                         mix.open(m);
                     }
@@ -9531,12 +9740,17 @@ fn player_session(
         if let Some(line) = param_log.poll(&synth, t_read) {
             out.note(&line);
         }
-        let turns_ready = (!synth_turns.done().is_empty(), !mix_turns.done().is_empty());
+        let turns_ready = (
+            !synth_turns.done().is_empty(),
+            !mix_turns.done().is_empty(),
+            !xy_turns.done().is_empty(),
+        );
         if turns_ready != turns_told {
             turns_told = turns_ready;
             out.show(gui::ToUi::TurnsReady {
                 synth: turns_ready.0,
                 mixer: turns_ready.1,
+                xy: turns_ready.2,
             });
         }
         if let Some(b) = preview_back.take() {
@@ -9740,6 +9954,21 @@ fn player_session(
         // chain editor knob does.
         let recording = time.info().state == mpfree_transport::State::Recording;
         mix.set_recording(recording);
+        if xy_opening && !mix.opening() {
+            xy_opening = false;
+            if let Some(c) = xy_yours.opening() {
+                mix.xy_done(xy_song::Done {
+                    load: Some(Some(c)),
+                    hold: None,
+                });
+            }
+            let pad_now = |t: u8, pad: u8, id: u16| pad_describe(&player, &track_kits, t, pad, id);
+            out.show(xy_view(&mut xy_yours, &mix, &synth, &app, &pad_now, &time));
+        }
+        // The XY pad's Stay: the settings it kept at a lift, one UNDO step.
+        if let Some((key, from, to)) = xy_song::kept_turn(mix.take_xy_kept()) {
+            xy_turns.turned(key, from, to, t_read);
+        }
         let by_touch = learning_shown.is_some_and(|(_, by)| by == midi_in::ArmedBy::Touch);
         let following = music.leader_name().is_some();
         // A controller pulled out never lets go of what it held: the
@@ -11230,6 +11459,15 @@ fn player_session(
                     synth.stop();
                     mix.instruments.stop();
                     mix.pad_synths.stop();
+                    // STOP while stopped turns the XY pad's Hold off (its
+                    // layout lets go as it says).
+                    if mix.xy_held() {
+                        mix.xy_hold(false);
+                        let pad_now = |t: u8, pad: u8, id: u16| {
+                            pad_describe(&player, &track_kits, t, pad, id)
+                        };
+                        out.show(xy_view(&mut xy_yours, &mix, &synth, &app, &pad_now, &time));
+                    }
                 }
                 app::Effect::Audio(p) => audio_change = Some(p),
                 app::Effect::Quit => stop = true,
@@ -12668,6 +12906,7 @@ fn player_session(
                 synth: project::synth_text(&app.synth_settings(), &synth.sounds()),
                 arp: app.arp_part(),
                 perform: app.perform_set().text(),
+                xy: xy_yours.text(),
                 instruments: project::instruments_text(&mix.instruments),
                 track_kits: project::track_kits_text(&track_kits, &mix.instruments, &listed),
                 instrument_list: listed.text(),
