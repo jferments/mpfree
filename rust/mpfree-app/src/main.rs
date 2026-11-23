@@ -167,6 +167,7 @@ mod shed;
 mod skin_page;
 #[cfg(test)]
 mod smoke;
+mod status_report;
 mod status_screen;
 mod status_watch;
 mod step_keys;
@@ -3874,8 +3875,9 @@ fn player(o: &Options, timed: bool) -> Result<(), String> {
     // A scripted run is the app as a musician has it (STOP stops, it
     // doesn't end the run); only its length is the script's.
     let mut player = gui::Player::new(fonts, size, timed && o.workflow.is_none(), backdrop);
-    if last_run != crash::LastRun::Fine {
+    if let crash::LastRun::Crashed(why) = &last_run {
         player.safe_start();
+        player.set_crash_why(why.clone());
     }
     match load_theme(o) {
         Ok(t) => player.ui.set_theme(t),
@@ -7992,6 +7994,7 @@ fn player_session(
     let mut views_swapped = 0u64;
     // All four PAD BANK buttons: the screen pictures' names this run.
     let mut picture_names = screen_picture::Names::default();
+    let mut report_names = status_report::Names::default();
     let mut recolour = false;
     let (mut shown_heads, mut heads_at) = (sampler::Playheads::default(), Instant::now());
     // The Grain tab's cloud box, while the audio thread holds it: filled and
@@ -9328,6 +9331,13 @@ fn player_session(
                 // the store (files/screens/).
                 gui::FromUi::ScreenPicture(png) => {
                     let line = screen_picture::save(&store, &mut picture_names, png);
+                    out.note(&line);
+                    out.show(gui::ToUi::Tell(line));
+                }
+                // System status's Save a report: to the store
+                // (files/reports/).
+                gui::FromUi::SaveReport(text) => {
+                    let line = status_report::save(&store, &mut report_names, text);
                     out.note(&line);
                     out.show(gui::ToUi::Tell(line));
                 }

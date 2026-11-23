@@ -48,7 +48,8 @@ System status (the plan's page; mockups in /mnt/project-files/status-monitor/moc
 - **The systems, on the left:** always all nine, in this order: Sound, Memory, Storage, Pads and buttons, MIDI and sync, Project, Screen, Plugins, The MPC. Each row has a dot in its colour (a grey ring for a system not in use), a line of plain words ("41 % used · 1.1 GB free for sounds", "Juno-X isn't plugged in") and a badge with its problems' count. The worst system is picked when the page opens.
 - **The picked system, on the right:** its problems as cards, worst and newest first, then the system's own numbers. A card happening now shows in full: its title, what happened, what to try, a button where MPFree can do it (one undo step where it changes the project) and one small line of numbers. One that has ended folds to a line (title, when, the start of what happened) and opens with a tap. One card per kind of problem, with how many times and when ("3 times · last 12 s ago · first at 21:14").
 - **Now | This session**, a switch at the top right: only what is happening, or everything since MPFree started.
-- **Controls:** a tap on a system picks it; the wheel steps the systems and its push opens the picked card; – / + do the same; a card's button does its job. The hint line says so.
+- **Save a report**, a button at the foot of the cards panel, on the right, on every system (Jay's pick, 23 Nov 2026 11:43Z): it saves one plain text file of this session's problems, the page's numbers and the last status lines to the stick (`files/reports/`), and the hint line says where it went. The cards and the numbers stop above it.
+- **Controls:** a tap on a system picks it; the wheel steps the systems and its push opens the picked card; – / + do the same; a card's button does its job, and Save a report saves one. The hint line says so.
 
 ## 3. The tabs
 
