@@ -37,6 +37,8 @@ pub(super) static STICK: OnceLock<Stick> = OnceLock::new();
 #[derive(Clone, Debug)]
 pub(super) struct Stick {
     pub(super) disk: String,
+    /// The disk's folder in sysfs.
+    pub(super) dir: PathBuf,
     /// Each partition's number and its folder in sysfs, by number.
     pub(super) parts: Vec<(u32, PathBuf)>,
 }
@@ -68,6 +70,7 @@ pub(super) fn stick_of(part: &Path) -> Result<Stick, String> {
         disk: disk
             .file_name()
             .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
+        dir: disk.to_path_buf(),
         parts,
     })
 }
@@ -351,6 +354,7 @@ mod tests {
     fn stick() -> Stick {
         Stick {
             disk: "sda".into(),
+            dir: PathBuf::from("sda"),
             parts: [1, 2, 4]
                 .iter()
                 .map(|&n| (n, PathBuf::from(format!("sda{n}"))))

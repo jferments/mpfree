@@ -28,7 +28,7 @@
 //! never a file's name, and checks at the end that the files it read are
 //! as they were.
 
-use super::{mbps, stopped, watch, Times, MIB, STOP};
+use super::{mbps, prio, stopped, watch, Times, MIB, STOP};
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
@@ -426,6 +426,19 @@ pub(super) fn run_config(
     secs: f64,
     cap_s: f64,
 ) -> Result<Result1, String> {
+    run_config_at(cfg, groups, dev, secs, cap_s, None)
+}
+
+/// [`run_config`], with each stream's thread at disk priority `prio` when
+/// one is given (set as the thread starts; it goes when the thread ends).
+pub(super) fn run_config_at(
+    cfg: Config,
+    groups: &[Vec<&Piece>],
+    dev: u64,
+    secs: f64,
+    cap_s: f64,
+    prio: Option<prio::IoPrio>,
+) -> Result<Result1, String> {
     let all: Vec<&Piece> = groups.iter().flatten().copied().collect();
     drop_pieces(&all, dev)?;
     let watcher = watch::STICK.get().and_then(watch::Watcher::start);
@@ -440,7 +453,11 @@ pub(super) fn run_config(
             .map(|(k, files)| {
                 let offset = LEAD_S + spread * k as f64 / groups.len() as f64;
                 s.spawn(move || {
-                    let r = stream(files, cfg, dev, secs, cap_s, start, offset);
+                    let r = match prio {
+                        Some(p) => prio::set(0, p),
+                        None => Ok(()),
+                    }
+                    .and_then(|()| stream(files, cfg, dev, secs, cap_s, start, offset));
                     if r.is_err() {
                         STOP.store(true, Ordering::Relaxed);
                     }

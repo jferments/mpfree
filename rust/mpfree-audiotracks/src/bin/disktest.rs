@@ -41,10 +41,12 @@
 //! `--recorder` (D4) puts MPFree's own recorder on the stick: 8 takes
 //! through the recording file protocol's writer, with a round every 1, 2,
 //! 5 and 10 s, spread or together, and the kernel's writeback limit as
-//! found and raised, while 8 streams read the library ([`recorder`]). It
-//! writes only its takes in its own folder, and changes one setting in the
-//! running kernel (`/proc/sys/vm/dirty_bytes`) for two steps, putting it
-//! back as found ([`vm`]).
+//! found and raised, while 8 streams read the library ([`recorder`]); its
+//! last two steps give the streams' reads the disk ahead of the recorder
+//! ([`prio`]), on its own threads only. It writes only its takes in its
+//! own folder, and changes one setting in the running kernel
+//! (`/proc/sys/vm/dirty_bytes`) for two steps, putting it back as found
+//! ([`vm`]).
 //!
 //! `--read-only` writes nothing at all: it reads the audio already under
 //! `library/` the way the streaming engine will (many paced streams, reads
@@ -126,6 +128,10 @@ mod heat;
 /// What the rest of the stick did beside the streams' reads.
 #[path = "disktest/watch.rs"]
 mod watch;
+
+/// The disk's priority for one thread (D4's steps 9 and 10).
+#[path = "disktest/prio.rs"]
+mod prio;
 
 static STOP: AtomicBool = AtomicBool::new(false);
 

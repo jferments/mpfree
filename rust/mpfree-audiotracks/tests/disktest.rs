@@ -265,6 +265,12 @@ fn a_read_only_run_reads_the_library_and_changes_nothing() {
 /// partition, with the kernel's `partition`, `stat` and `inflight` files.
 fn stick_stand_in(d: &Path, parts: &[u32]) -> PathBuf {
     let disk = d.join("usb1/1-1/block/sdz");
+    std::fs::create_dir_all(disk.join("queue")).unwrap();
+    std::fs::write(
+        disk.join("queue/scheduler"),
+        "[mq-deadline] kyber bfq none\n",
+    )
+    .unwrap();
     for n in parts {
         let p = disk.join(format!("sdz{n}"));
         std::fs::create_dir_all(&p).unwrap();
@@ -597,12 +603,17 @@ fn a_recorder_run_saves_every_take_whole_and_puts_the_writeback_limit_back() {
         "7. A round every 0.1 s, spread across the interval, writeback limit raised to 32 MiB",
         "8. A round every 0.25 s, spread across the interval, writeback limit raised to 32 MiB",
         "writeback limit raised to 32 MiB (dirty_bytes 33554432), until the last of these steps",
+        "9. A round every 0.1 s, spread across the interval, writeback as found, the reads ahead of the recorder on the disk",
+        "  writeback limit put back as found first: dirty_bytes 1048576",
+        "  disk priority: the streams' reads best effort 0, the recorder's thread best effort 7; set on this step's threads only",
+        "10. A round every 0.1 s, spread across the interval, writeback as found, the reads real-time on the disk",
+        "disk priority as found: ",
+        "; the stick's scheduler: mq-deadline",
         "recording: 8 takes, stereo float at 48 kHz (3.07 MB/s in all)",
         "frames refused: none",
         "8 of 8 takes saved, 8 of them whole (every frame in the file)",
         "2 streams, 24-bit",
         "worst shortfall",
-        "writeback limit put back as found: dirty_bytes 1048576",
         "Summary:",
         "the files read in library/ and backup/ are as they were",
         "the folder is deleted",
@@ -610,19 +621,42 @@ fn a_recorder_run_saves_every_take_whole_and_puts_the_writeback_limit_back() {
     ] {
         assert!(text.contains(want), "missing {want:?} in\n{text}");
     }
+    // The real-time class needs root (or CAP_SYS_NICE): without it step
+    // 10 is left out, saying why, and every other step runs.
+    let left: Vec<&str> = text.lines().filter(|l| l.contains("left out")).collect();
+    let ran = match left.as_slice() {
+        [] => {
+            assert!(
+                text.contains("  disk priority: the streams' reads real-time 4, the recorder's thread as found;"),
+                "{text}"
+            );
+            10
+        }
+        [one] => {
+            assert!(
+                one.starts_with("  left out: the disk priority real-time 4 could not be set: "),
+                "{text}"
+            );
+            9
+        }
+        _ => panic!("{text}"),
+    };
     assert_eq!(
         text.matches("8 of 8 takes saved, 8 of them whole").count(),
-        8,
+        ran,
         "{text}"
     );
     // The rest of the stick beside each step's streams.
     assert_eq!(
         text.matches("the rest of the stick (sdz): ").count(),
-        8,
+        ran,
         "{text}"
     );
-    assert_eq!(text.matches("    reads over 100 ms: ").count(), 8, "{text}");
-    assert!(!text.contains("left out"), "{text}");
+    assert_eq!(
+        text.matches("    reads over 100 ms: ").count(),
+        ran,
+        "{text}"
+    );
     assert!(!text.contains("NOT ALL FINISHED"), "{text}");
     for name in ["s0.wav", "notes.txt", "Samples"] {
         assert!(!text.contains(name), "{name} named in\n{text}");
@@ -657,7 +691,7 @@ fn a_recorder_run_leaves_the_writeback_limit_alone_unless_it_can_raise_it() {
         );
         let left: Vec<String> = text
             .lines()
-            .filter(|l| l.starts_with("  left out: "))
+            .filter(|l| l.starts_with("  left out: ") && !l.contains("disk priority"))
             .map(str::to_string)
             .collect();
         assert_eq!(left.len(), 2, "{text}");
