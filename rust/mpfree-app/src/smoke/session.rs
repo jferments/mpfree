@@ -1034,6 +1034,20 @@ impl Session {
         self.run_periods(2)
     }
 
+    /// A control learned on Next or Previous patch (`id`, the Play card's;
+    /// live shows C1) moved to `value` (0 to 1), as player_session takes
+    /// MIDI Learn's: on any page, a press stepping the song's patches, and
+    /// the hint line saying why when there is nowhere to go.
+    pub fn patch_footswitch(&mut self, id: u16, value: f32) -> &mut Session {
+        if let Some((d, hands_up)) = self.remote.patch_write(id, value) {
+            if let Some(why) = crate::desk::step_patch(&mut self.music, d, hands_up) {
+                self.out.show(ToUi::Tell(why));
+            }
+        }
+        self.out.show(ToUi::Keys(Box::new(self.music.keys_now())));
+        self.run_periods(2)
+    }
+
     /// A key learned on Perform parameter `id` (Learn a key) moved to
     /// `value` (0 to 1), as player_session takes MIDI Learn's: on any page.
     pub fn perform_key(&mut self, id: u16, value: f32) -> &mut Session {
@@ -1066,6 +1080,21 @@ impl Session {
             let mut m = io.lock().unwrap();
             m.setup.mmc_in = mmc_in;
             m.setup.program_in = program_in;
+            m.gen += 1;
+        }
+        let t = self.t();
+        self.music.sync(&io, t);
+        self
+    }
+
+    /// Program change in: Picks a patch (live shows C1), at once or,
+    /// `waits`, when every key and pedal is up.
+    pub fn program_picks_patches(&mut self, waits: bool) -> &mut Session {
+        let io = std::sync::Arc::new(std::sync::Mutex::new(mpfree_midi_ui::IoModel::default()));
+        {
+            let mut m = io.lock().unwrap();
+            m.setup.program_in = mpfree_midi::setup::ProgramIn::Patch;
+            m.setup.program_waits = waits;
             m.gen += 1;
         }
         let t = self.t();

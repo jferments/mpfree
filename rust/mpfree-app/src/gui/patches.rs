@@ -92,6 +92,34 @@ impl Player {
         }
     }
 
+    /// The rig's keyboards for the Show view's keyboards card, by the
+    /// names the musician gave them, each with the song's patch on it
+    /// (live shows C1): its name and the zones that reach that keyboard.
+    pub(super) fn show_keyboards(&self) -> Vec<crate::set_play::KeyboardNow> {
+        let Some(m) = &self.io_model else {
+            return Vec::new();
+        };
+        let insts = self.patch_insts();
+        let m = m.lock().unwrap_or_else(|e| e.into_inner());
+        let mut out: Vec<crate::set_play::KeyboardNow> = Vec::new();
+        let known = m.setup.ports.iter().map(|p| p.name.as_str());
+        for port in known.chain(m.live.ports.iter().map(|p| p.name.as_str())) {
+            let name = m.setup.shown(port).to_string();
+            if out.iter().any(|k| k.name == name) {
+                continue;
+            }
+            out.push(crate::set_play::KeyboardNow {
+                connected: m.live.ports.iter().any(|p| p.name == port),
+                patch: self
+                    .patch
+                    .keyboard_look(&self.patches, &insts, port)
+                    .map(|(patch, zones)| (patch, page::strip_bars(&zones))),
+                name,
+            });
+        }
+        out
+    }
+
     /// KEYS PLAY, on Play's transport only while the song has patches.
     pub(super) fn patch_keys_look(&self) -> Option<page::KeysPlay> {
         if self.play.sequencer {
@@ -480,12 +508,17 @@ impl Player {
     /// What the keys do now, from the audio loop: Learn takes its key,
     /// and the screens follow.
     pub(super) fn patch_keys(&mut self, now: KeysNow) {
+        let was = self.patch.keys.playing;
         let e = self.patch.keys_in(&mut self.patches, now);
         let said = e.is_some();
         self.patch_edited(e, false);
         self.refresh_patches();
         if said {
             self.refresh_qlinks();
+        }
+        // The Show view's keyboards name the patch playing.
+        if self.patch.keys.playing != was {
+            self.refresh_show();
         }
     }
 
@@ -560,6 +593,7 @@ impl Player {
         self.patch = crate::patch_screen::PatchScreen::default();
         self.patch.keys.playing = (!self.patches.list.is_empty()).then_some(0);
         self.refresh_patches();
+        self.refresh_show();
     }
 }
 

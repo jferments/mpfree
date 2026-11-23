@@ -2067,6 +2067,30 @@ pub fn remote_in(
     fx
 }
 
+/// Next patch (`d` 1) or Previous patch (-1) from a learned control (the
+/// Learn section's Play card, live shows C1), at once or when every key
+/// and pedal is up. None when it picked one (KEYS PLAY shows it); else
+/// why it didn't, for the hint line.
+pub fn step_patch(
+    music: &mut crate::midi_in::MusicIn,
+    d: i32,
+    hands_up: bool,
+) -> Option<String> {
+    use mpfree_patch::keys::When;
+    let when = if hands_up { When::HandsUp } else { When::Now };
+    let (playing, waiting, _) = music.keys_at();
+    if music.step_patch(d, when).is_some() {
+        return None;
+    }
+    let what = if d > 0 { "Next patch" } else { "Previous patch" };
+    Some(match waiting.unwrap_or(playing) {
+        _ if music.patch_count() == 0 => format!("{what}: this song has no patches yet"),
+        None => format!("{what}: the keys play as routed, and Next patch picks patch 1"),
+        Some(i) if d > 0 => format!("{what}: patch {} is the song's last", i + 1),
+        Some(_) => format!("{what}: patch 1 is the song's first"),
+    })
+}
+
 /// Where other gear's MMC Locate goes (the Sync section's MMC in): the
 /// tick its time reaches along the tempo map from 0, so 00:00:00:00 is
 /// the start and Locate zero then Play is PLAY START.

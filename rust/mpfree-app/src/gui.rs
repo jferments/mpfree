@@ -12486,12 +12486,7 @@ impl Player {
             beats: u32::from(t.meter.beats),
             click: self.settings.metronome,
             count_in: t.count_in,
-            keyboards: self
-                .rig()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|r| (r.name, r.connected))
-                .collect(),
+            keyboards: self.show_keyboards(),
             autosave_waiting: self.autosave_held(),
         };
         let v = sp.view(&now);

@@ -424,6 +424,19 @@ impl PatchIn {
         true
     }
 
+    /// Next patch (`d` 1) or Previous patch (-1): [`Keys::step`]. The
+    /// patch picked, or None when there was nowhere to go.
+    pub fn step(
+        &mut self,
+        d: i32,
+        when: When,
+        rows: &[Option<u32>; ROUTE_SYNTHS],
+    ) -> Option<usize> {
+        let (out, dropped, synths) = (&mut self.out, &mut self.dropped, &self.synths);
+        self.keys
+            .step(d, when, &mut |o| put(out, dropped, synths, rows, o))
+    }
+
     /// Every sound stopped (a project opening, STOP's stop of every
     /// sound): the table forgets what it held, sending nothing.
     pub fn stopped(&mut self) {

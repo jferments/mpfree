@@ -490,6 +490,18 @@ pub(crate) fn went_to(m: &IoModel, to: To) -> (String, Went) {
         To::NotFollowed => ("not followed".to_string(), Went::Nothing),
         To::Transport => ("MMC: the transport".to_string(), Went::Clock),
         To::Scene(k) => (format!("launched scene {}", u16::from(k) + 1), Went::Took),
+        To::PickedPatch { patch, waits } => (
+            format!(
+                "picked patch {}{}",
+                u16::from(patch) + 1,
+                if waits { ", when your hands are up" } else { "" }
+            ),
+            Went::Took,
+        ),
+        To::NoPatch(k) => (
+            format!("nothing: the song has no patch {}", u16::from(k) + 1),
+            Went::Nothing,
+        ),
         To::Patch { patch: Some(k) } => (format!("patch {}", u16::from(k) + 1), Went::Took),
         To::Patch { patch: None } => ("the patch it was held in".to_string(), Went::Took),
         To::PatchGap { patch: Some(k) } => (

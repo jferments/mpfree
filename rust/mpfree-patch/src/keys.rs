@@ -423,6 +423,31 @@ impl Keys {
         }
     }
 
+    /// Next patch (`d` 1) or Previous patch (-1), as learned on Learn's
+    /// Play card: from the patch a waiting switch goes to, else the one
+    /// playing. It stays at the ends, and never steps to the keys as
+    /// routed: from there Next picks patch 1 and Previous does nothing.
+    /// The patch it picked, or None when it didn't move.
+    pub fn step(&mut self, d: i32, when: When, out: &mut impl FnMut(Out)) -> Option<usize> {
+        let n = self.rig.len();
+        if n == 0 || d == 0 {
+            return None;
+        }
+        let to = match self.waiting.unwrap_or(self.now) {
+            None if d > 0 => 0,
+            None => return None,
+            Some(i) => {
+                let to = if d > 0 { (i + 1).min(n - 1) } else { i.saturating_sub(1) };
+                if to == i {
+                    return None;
+                }
+                to
+            }
+        };
+        self.pick(Some(to), when, out);
+        Some(to)
+    }
+
     fn switch(&mut self, to: Option<usize>, out: &mut impl FnMut(Out)) {
         self.waiting = None;
         if to == self.now {
@@ -1603,6 +1628,45 @@ mod tests {
         r.pick(Some(0), When::HandsUp);
         assert_eq!(r.k.waiting(), None);
         assert_eq!(r.k.stats.switches, 3);
+    }
+
+    #[test]
+    fn next_and_previous_step_through_the_patches_and_stop_at_the_ends() {
+        let mut r = Run::new(None);
+        let step = |r: &mut Run, d: i32, when: When| {
+            let sent = &mut r.sent;
+            r.k.step(d, when, &mut |o| sent.push(o))
+        };
+        // From the keys as routed: Previous does nothing, Next is patch 1.
+        assert_eq!(step(&mut r, -1, When::Now), None);
+        assert_eq!(r.k.playing(), None);
+        assert_eq!(step(&mut r, 1, When::Now), Some(0));
+        assert_eq!(step(&mut r, 1, When::Now), Some(1));
+        assert_eq!(step(&mut r, -1, When::Now), Some(0));
+        // It stays at the first and the last.
+        assert_eq!(step(&mut r, -1, When::Now), None);
+        assert_eq!(r.k.playing(), Some(0));
+        for _ in 0..3 {
+            step(&mut r, 1, When::Now);
+        }
+        assert_eq!(r.k.playing(), Some(3));
+        assert_eq!(step(&mut r, 1, When::Now), None);
+        // Waiting for the hands, a second press steps on from where the
+        // first one goes, and the switch happens once.
+        step(&mut r, -1, When::Now);
+        step(&mut r, -1, When::Now);
+        let switches = r.k.stats.switches;
+        r.down(KEYLAB, 60, 100);
+        assert_eq!(step(&mut r, 1, When::HandsUp), Some(2));
+        assert_eq!(step(&mut r, 1, When::HandsUp), Some(3));
+        assert_eq!(r.k.playing(), Some(1));
+        assert_eq!(r.k.waiting(), Some(Some(3)));
+        r.up(KEYLAB, 60);
+        assert_eq!(r.k.playing(), Some(3));
+        assert_eq!(r.k.stats.switches, switches + 1);
+        // A song with no patches: nothing to step to.
+        let mut k = Keys::new();
+        assert_eq!(k.step(1, When::Now, &mut |_| {}), None);
     }
 
     #[test]

@@ -127,6 +127,29 @@ pub fn paint_strip(cx: &mut PaintCx, r: Rect, zones: &[ZoneLook]) {
     }
 }
 
+/// The zones as the Show view's keyboard lines draw them (live shows
+/// C1): where each lies across C1 to C7, in thousandths, on the rows
+/// [`paint_strip`] gives it. A zone past the strip's keys is left out.
+pub fn strip_bars(zones: &[ZoneLook]) -> Vec<mpfree_time_ui::show::KeyBar> {
+    let (rows, n) = strip_rows(zones);
+    let scale = Rect::new(0, 0, 1000, 1);
+    zones
+        .iter()
+        .zip(&rows)
+        .filter_map(|(z, &row)| {
+            let (x, w) = bar_across(scale, z.low, z.high)?;
+            Some(mpfree_time_ui::show::KeyBar {
+                from: x as u16,
+                to: (x + w).min(1000) as u16,
+                row: row as u8,
+                rows: n as u8,
+                color: z.color,
+                missing: z.missing,
+            })
+        })
+        .collect()
+}
+
 // ------------------------------------------------------------- KEYS PLAY
 
 /// What KEYS PLAY shows on Play's transport bar (layout spec 4q).

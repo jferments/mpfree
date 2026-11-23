@@ -379,6 +379,36 @@ impl PatchScreen {
         })
     }
 
+    /// What keyboard `port`'s keys play, for the Show view's keyboards
+    /// card (live shows C1): the patch playing's name ("Keys as routed"
+    /// while none is) and its zones that reach that keyboard (set to any
+    /// keyboard, or to that one). None while the song has no patches.
+    pub fn keyboard_look(
+        &self,
+        list: &Patches,
+        insts: &[Inst],
+        port: &str,
+    ) -> Option<(String, Vec<ZoneLook>)> {
+        if list.list.is_empty() {
+            return None;
+        }
+        let playing = self.keys.playing.and_then(|i| list.list.get(i));
+        Some(match playing {
+            Some(p) => (
+                p.name.clone(),
+                p.zones
+                    .iter()
+                    .filter(|z| match &z.keyboard {
+                        mpfree_patch::Keyboard::Any => true,
+                        mpfree_patch::Keyboard::Port { name, .. } => name == port,
+                    })
+                    .map(|z| zone_look(z, insts))
+                    .collect(),
+            ),
+            None => ("Keys as routed".to_string(), Vec::new()),
+        })
+    }
+
     /// The editor's look of patch `i`, or None if the song hasn't it.
     pub fn edit_look(&self, list: &Patches, i: usize, ctx: &Ctx) -> Option<EditLook> {
         let p = list.list.get(i)?;
@@ -994,6 +1024,37 @@ mod tests {
         assert_eq!(k.line, "1 · Chorus split");
         assert_eq!(k.zones.len(), 3);
         assert_eq!(k.waiting.as_deref(), Some("Chorus split → Lead"));
+    }
+
+    /// The Show view's keyboards (live shows C1): each keyboard's line
+    /// names the patch playing and draws the zones that reach it, a zone
+    /// set to one keyboard only on that keyboard's line.
+    #[test]
+    fn each_keyboard_shows_the_zones_that_reach_it() {
+        let mut s = PatchScreen::default();
+        assert_eq!(s.keyboard_look(&Patches::default(), &insts(), "KeyLab 61"), None);
+        let mut p = chorus();
+        p.zones[2].keyboard = mpfree_patch::Keyboard::Port {
+            name: "KeyLab 61".into(),
+            ch: Some(0),
+        };
+        let list = Patches { list: vec![p] };
+        let (name, zones) = s.keyboard_look(&list, &insts(), "KeyLab 61").unwrap();
+        assert_eq!((name.as_str(), zones.len()), ("Keys as routed", 0));
+        s.keys.playing = Some(0);
+        let (name, zones) = s.keyboard_look(&list, &insts(), "KeyLab 61").unwrap();
+        assert_eq!((name.as_str(), zones.len()), ("Chorus split", 3));
+        let (_, zones) = s.keyboard_look(&list, &insts(), "Nord").unwrap();
+        let names: Vec<&str> = zones.iter().map(|z| z.name.as_str()).collect();
+        assert_eq!(names, ["Sub Bass", "Grand"]);
+        // As bars: the bass to C3, the keys above it, the strings layered
+        // over the keys on a row of their own.
+        let (_, zones) = s.keyboard_look(&list, &insts(), "KeyLab 61").unwrap();
+        let bars = crate::patch_page::strip_bars(&zones);
+        let rows: Vec<(u16, u8, u8)> = bars.iter().map(|b| (b.from, b.row, b.rows)).collect();
+        assert_eq!(rows, [(0, 0, 2), (328, 0, 2), (328, 1, 2)]);
+        assert_eq!(bars[0].to, 328);
+        assert_eq!(bars[1].to, 1000);
     }
 
     /// The editor lights the zones the keys held reach, with their

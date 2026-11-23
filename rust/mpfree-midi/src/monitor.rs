@@ -208,6 +208,12 @@ pub enum To {
     /// A program change launched this scene (from 0; the Sync section's
     /// Program change in).
     Scene(u8),
+    /// A program change picked this patch (from 0; Program change in:
+    /// Picks a patch, live shows C1), at once or, `waits`, when every key
+    /// and pedal is up.
+    PickedPatch { patch: u8, waits: bool },
+    /// A program change named a patch the song hasn't got (from 0).
+    NoPatch(u8),
     /// The song's patch played it (live shows C1): the patch playing
     /// (from 0), or None when the key was held from one before.
     Patch { patch: Option<u8> },

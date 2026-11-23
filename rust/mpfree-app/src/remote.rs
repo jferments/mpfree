@@ -289,7 +289,7 @@ const FILTER_OFF: f32 = 1.0;
 /// value each was given, 0 to 1 over its range), done once a period
 /// ([`PlayMoves::take`]), so the XY pad's two ways move together.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct PlayMoves([Option<f32>; play::ALL.len()]);
+pub struct PlayMoves([Option<f32>; play::KNOBS]);
 
 /// What learned controls do to Play this period.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -374,6 +374,8 @@ pub struct Remote {
     mute_asked: [Option<(bool, f64)>; 8],
     /// A set's controls held down now, bit `id` (the Show card's).
     show_held: u8,
+    /// Next and Previous patch held down now, bit `id - NEXT_PATCH`.
+    patch_held: u8,
 }
 
 /// What a set's learned control says while no set is open.
@@ -542,6 +544,26 @@ impl Remote {
         }
     }
 
+    /// A learned control set Next or Previous patch (`id`, [`play`]) to
+    /// `value`: its step (1 or -1) and whether it waits for your hands, as
+    /// it goes down (from the middle up), once until it comes up again.
+    pub fn patch_write(&mut self, id: u16, value: f32) -> Option<(i32, bool)> {
+        let step = play::patch_step(id)?;
+        let bit = 1u8 << (id - play::NEXT_PATCH);
+        let held = self.patch_held & bit != 0;
+        match (value >= 0.5, held) {
+            (true, false) => {
+                self.patch_held |= bit;
+                Some(step)
+            }
+            (false, true) => {
+                self.patch_held &= !bit;
+                None
+            }
+            _ => None,
+        }
+    }
+
     /// A controller went away (`MusicIn::take_unplugged`): its controls
     /// held down will never come up. The looper's keys and presses let go
     /// without acting: a key held then clears nothing, and its next press
@@ -554,6 +576,7 @@ impl Remote {
         self.loop_keys = [None; 9];
         self.looper_held = 0;
         self.show_held = 0;
+        self.patch_held = 0;
         self.clips_held.clear();
         std::mem::take(&mut self.held)
             .into_iter()
@@ -690,6 +713,29 @@ mod tests {
         assert_eq!(r.show_write(99, 1.0), None, "no such control");
         let _ = r.let_go().count();
         assert_eq!(r.show_write(show::NEXT_SONG, 1.0), Some(show::NEXT_SONG));
+    }
+
+    /// Next and Previous patch press once a press, each saying whether
+    /// it waits for the hands; the knobs aren't presses.
+    #[test]
+    fn next_and_previous_patch_press_once_a_press() {
+        let mut r = Remote::new();
+        assert_eq!(r.patch_write(play::NEXT_PATCH, 1.0), Some((1, false)));
+        assert_eq!(r.patch_write(play::NEXT_PATCH, 0.9), None, "still down");
+        assert_eq!(
+            r.patch_write(play::PREVIOUS_PATCH_HANDS_UP, 1.0),
+            Some((-1, true))
+        );
+        assert_eq!(r.patch_write(play::NEXT_PATCH, 0.0), None);
+        assert_eq!(r.patch_write(play::NEXT_PATCH, 1.0), Some((1, false)));
+        assert_eq!(r.patch_write(play::SWING, 1.0), None);
+        let _ = r.let_go().count();
+        assert_eq!(r.patch_write(play::NEXT_PATCH, 1.0), Some((1, false)));
+        // The knobs' moves still go by id.
+        let mut m = PlayMoves::default();
+        m.set(play::XY_UP, 1.0);
+        m.set(play::NEXT_PATCH, 1.0);
+        assert_eq!(m.take(STOPPED).xy, Some((0.5, 1.0, true)));
     }
 
     #[test]

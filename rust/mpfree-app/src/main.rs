@@ -8250,6 +8250,10 @@ fn player_session(
     // Learned controls on Play's Swing, Drums filter and XY pad (the Learn
     // section's Play card), done once a pass.
     let mut play_moves = remote::PlayMoves::default();
+    // Next and Previous patch pressed this pass (the Play card, live
+    // shows C1): a step and whether it waits for the hands, done once the
+    // learned controls are read.
+    let mut patch_steps: Vec<(i32, bool)> = Vec::with_capacity(8);
     let mut learn_names_gen: Option<u64> = None;
     let mut learn_now_at = 0.0_f64;
     // The gear lanes' pink ~: the MIDI out controls the mod matrix moves,
@@ -9878,6 +9882,20 @@ fn player_session(
                         }
                     }
                 }
+                // Next and Previous patch (the Play card, live shows C1): a
+                // press, once, stepping the song's patches when the pass is
+                // done.
+                midi_in::Learning::Set(w)
+                    if w.target.owner == mpfree_play::mpfree_param::Owner::Play
+                        && mpfree_play::mpfree_param::play::patch_step(w.target.param)
+                            .is_some() =>
+                {
+                    if let Some(step) = remote.patch_write(w.target.param, w.value) {
+                        if patch_steps.len() < patch_steps.capacity() {
+                            patch_steps.push(step);
+                        }
+                    }
+                }
                 // Play's own controls (the Learn section's Play card): the
                 // last value each was given goes once the pass is done.
                 midi_in::Learning::Set(w)
@@ -9968,6 +9986,13 @@ fn player_session(
         }
         // Play's Swing, Drums filter and XY pad, once a pass.
         fx.extend(desk::play_remote(&time, &mut mix, out, &mut play_moves));
+        // Next and Previous patch: the keys' new patch shows on KEYS PLAY;
+        // nowhere to go, the hint line says why.
+        for (d, hands_up) in patch_steps.drain(..) {
+            if let Some(why) = desk::step_patch(&mut music, d, hands_up) {
+                out.show(gui::ToUi::Tell(why));
+            }
+        }
         if synth_learned && mt >= synth_learned_at {
             synth_learned = false;
             synth_learned_at = mt + 0.05;

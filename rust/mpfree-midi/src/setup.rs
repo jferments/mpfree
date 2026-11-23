@@ -130,15 +130,21 @@ pub enum ProgramIn {
     /// Program N (1 to 128) launches scene N, the Clips grid's row N, as
     /// a tap on the scene's launch button does.
     Scene,
+    /// Program N picks the song's patch N (live shows C1), at once or,
+    /// with [`MidiSetup::program_waits`], when every key and pedal is up.
+    /// Past the song's last patch it does nothing, and the MIDI monitor
+    /// says so.
+    Patch,
 }
 
 impl ProgramIn {
-    pub const ALL: [ProgramIn; 2] = [ProgramIn::Off, ProgramIn::Scene];
+    pub const ALL: [ProgramIn; 3] = [ProgramIn::Off, ProgramIn::Scene, ProgramIn::Patch];
 
     pub fn label(self) -> &'static str {
         match self {
             ProgramIn::Off => "Off",
             ProgramIn::Scene => "Launches a scene",
+            ProgramIn::Patch => "Picks a patch",
         }
     }
 
@@ -146,6 +152,7 @@ impl ProgramIn {
         match self {
             ProgramIn::Off => "off",
             ProgramIn::Scene => "scene",
+            ProgramIn::Patch => "patch",
         }
     }
 
@@ -779,6 +786,9 @@ pub struct MidiSetup {
     /// What a program change coming in does, from any port that doesn't
     /// ignore program changes.
     pub program_in: ProgramIn,
+    /// A program change that picks a patch waits until every key and
+    /// pedal is up (its Switches: When your hands are up).
+    pub program_waits: bool,
     /// Ports with settings of their own, by name, in the order first set.
     pub ports: Vec<PortSetup>,
     /// Each track's MIDI output; `None` plays nothing out.
@@ -812,6 +822,7 @@ impl Default for MidiSetup {
             follow_position: true,
             mmc_in: false,
             program_in: ProgramIn::Off,
+            program_waits: false,
             ports: Vec::new(),
             tracks: std::array::from_fn(|_| None),
             routes: Vec::new(),
@@ -1143,6 +1154,9 @@ impl MidiSetup {
         if self.program_in != d.program_in {
             line(&mut s, "program-change.in", self.program_in.word());
         }
+        if self.program_waits != d.program_waits {
+            line(&mut s, "program-change.switches", "hands-up");
+        }
         for (i, p) in self.ports.iter().enumerate() {
             let k = format!("port.{}", i + 1);
             line(&mut s, &k, &p.name);
@@ -1350,7 +1364,14 @@ impl MidiSetup {
             ["mmc", "in"] => self.mmc_in = parse_on(v)?,
             ["program-change", "in"] => {
                 self.program_in = ProgramIn::from_word(v)
-                    .ok_or_else(|| format!("expected off or scene, found \"{v}\""))?
+                    .ok_or_else(|| format!("expected off, scene or patch, found \"{v}\""))?
+            }
+            ["program-change", "switches"] => {
+                self.program_waits = match v {
+                    "at-once" => false,
+                    "hands-up" => true,
+                    _ => return Err(format!("expected at-once or hands-up, found \"{v}\"")),
+                }
             }
             ["midi-follow"] => self.follow.on = parse_on(v)?,
             ["midi-follow", "port"] => self.follow.port = v.to_string(),
@@ -2533,6 +2554,22 @@ mod tests {
         let (back, w) = MidiSetup::parse(&format!("{HEADER}\nprogram-change.in = track\n"));
         assert_eq!(w.len(), 1, "{w:?}");
         assert_eq!(back.program_in, ProgramIn::Off);
+        // Picks a patch, waiting for the hands (live shows C1): the song's
+        // too, and read back.
+        let m = MidiSetup {
+            program_in: ProgramIn::Patch,
+            program_waits: true,
+            ..MidiSetup::default()
+        };
+        let text = m.project_text();
+        assert!(
+            text.contains("program-change.in = patch\nprogram-change.switches = hands-up\n"),
+            "{text}"
+        );
+        let (back, w) = MidiSetup::parse(&text);
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!((back.program_in, back.program_waits), (ProgramIn::Patch, true));
+        assert!(!m.rig().program_waits);
     }
 
     #[test]

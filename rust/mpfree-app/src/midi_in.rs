@@ -664,6 +664,8 @@ pub struct MusicIn {
     /// and what a program change coming in does.
     mmc_in: bool,
     program_in: ProgramIn,
+    /// A program change that picks a patch waits for the hands.
+    program_waits: bool,
     /// Other gear's transport commands and scene picks since the app last
     /// took them ([`MusicIn::take_remote_in`]); fixed room.
     remote_in: Vec<RemoteIn>,
@@ -748,6 +750,7 @@ impl MusicIn {
             sysex_in: [mmc::Collect::default(); MAX_PORTS],
             mmc_in: false,
             program_in: ProgramIn::Off,
+            program_waits: false,
             remote_in: Vec::with_capacity(REMOTE_IN),
             patch: crate::patch_in::PatchIn::new(),
         }
@@ -852,6 +855,20 @@ impl MusicIn {
     pub fn pick_patch(&mut self, to: Option<usize>, when: mpfree_patch::keys::When) -> bool {
         let rows = self.route_synths;
         self.patch.pick(to, when, &rows)
+    }
+
+    /// Next patch (`d` 1) or Previous patch (-1), learned on the Play
+    /// card: from the patch a waiting switch goes to, else the one
+    /// playing, stopping at the ends. The patch picked, or None when
+    /// there was nowhere to go ([`MusicIn::patch_count`] says why).
+    pub fn step_patch(&mut self, d: i32, when: mpfree_patch::keys::When) -> Option<usize> {
+        let rows = self.route_synths;
+        self.patch.step(d, when, &rows)
+    }
+
+    /// How many patches the song has.
+    pub fn patch_count(&self) -> usize {
+        self.patch.patches()
     }
 
     /// The synths the song's patches name, for the route rows
@@ -1275,6 +1292,7 @@ impl MusicIn {
             });
             self.mmc_in = m.setup.mmc_in;
             self.program_in = m.setup.program_in;
+            self.program_waits = m.setup.program_waits;
             let was = self.leader;
             self.leader =
                 leader.and_then(|n| self.ports.all().iter().find(|p| &p.name == n).map(|p| p.id));
@@ -1822,16 +1840,34 @@ impl MusicIn {
                 log(format!("+{t:.3} s {label}: {} (it said so)", z.words()));
             }
             // Program change in (the Sync section): program N launches
-            // scene N, unless the port ignores program changes.
-            let mut scene = None;
-            if let (Some(Msg::Program { program, .. }), false, ProgramIn::Scene) =
-                (seen, ignored, self.program_in)
-            {
-                if self.remote_in.len() < REMOTE_IN {
-                    self.remote_in.push(RemoteIn::Scene(program));
-                    to = To::Scene(program);
-                    scene = Some(program);
+            // scene N, or picks the song's patch N there and then (so the
+            // keys after it play the new patch), unless the port ignores
+            // program changes.
+            let mut program_did = None;
+            match (seen, ignored, self.program_in) {
+                (Some(Msg::Program { program, .. }), false, ProgramIn::Scene) => {
+                    if self.remote_in.len() < REMOTE_IN {
+                        self.remote_in.push(RemoteIn::Scene(program));
+                        to = To::Scene(program);
+                        program_did = Some(to);
+                    }
                 }
+                (Some(Msg::Program { program, .. }), false, ProgramIn::Patch) => {
+                    use mpfree_patch::keys::When;
+                    let waits = self.program_waits;
+                    let when = if waits { When::HandsUp } else { When::Now };
+                    let rows = self.route_synths;
+                    to = if self.patch.pick(Some(usize::from(program)), when, &rows) {
+                        To::PickedPatch {
+                            patch: program,
+                            waits,
+                        }
+                    } else {
+                        To::NoPatch(program)
+                    };
+                    program_did = Some(to);
+                }
+                _ => {}
             }
             // Nothing played it (a route's blocks dropped it, or no track
             // takes it): Learn and MIDI Follow still hear it.
@@ -1911,10 +1947,20 @@ impl MusicIn {
             if let Some(msg) = seen {
                 self.seen[p].messages += 1;
                 let (bytes, n) = msg.encode();
-                let after = match (ignored, scene) {
+                let after = match (ignored, program_did) {
                     (true, _) => " (ignored: this port's setting)".to_string(),
-                    (false, Some(k)) => format!(" (launches scene {})", u16::from(k) + 1),
-                    (false, None) => String::new(),
+                    (false, Some(To::Scene(k))) => {
+                        format!(" (launches scene {})", u16::from(k) + 1)
+                    }
+                    (false, Some(To::PickedPatch { patch, waits })) => format!(
+                        " (picks patch {}{})",
+                        u16::from(patch) + 1,
+                        if waits { " when your hands are up" } else { "" }
+                    ),
+                    (false, Some(To::NoPatch(k))) => {
+                        format!(" (the song has no patch {})", u16::from(k) + 1)
+                    }
+                    (false, _) => String::new(),
                 };
                 log(format!(
                     "+{t:.3} s {label}: {} = {}{after}",
@@ -3663,6 +3709,83 @@ mod tests {
                 To::PortIgnores,
             ]
         );
+    }
+
+    /// Program change in: Picks a patch (live shows C1): program N picks
+    /// the song's patch N there and then, so a key after it in the same
+    /// buffer plays the new patch; past the last patch nothing changes and
+    /// the monitor says so; with Switches: When your hands are up the pick
+    /// waits for the key held.
+    #[test]
+    fn a_program_change_picks_the_songs_patch() {
+        use mpfree_patch::{Layout, Patches};
+        let mut m = MusicIn::new();
+        let s = model();
+        {
+            let mut v = s.lock().unwrap();
+            v.setup.program_in = ProgramIn::Patch;
+            v.gen += 1;
+        }
+        m.sync(&s, 0.0);
+        let list = Patches {
+            list: vec![
+                Layout::Whole.patch("Bass", "track 1"),
+                Layout::Whole.patch("Keys", "track 2"),
+            ],
+        };
+        let mut rig = crate::patch_in::PatchRig::of(&list);
+        m.swap_patches(&mut rig);
+        m.sync(&s, 0.1);
+        let down = |note| Key::Down {
+            note,
+            velocity: 100,
+        };
+        let (_, lines) = run(&mut m, DIN, &[0xC0, 1, 0x90, 60, 100]);
+        assert_eq!(m.keys_at().0, Some(1));
+        assert_eq!(m.take_patched().collect::<Vec<_>>(), [(1, down(60))]);
+        assert!(
+            lines.iter().any(|l| l.ends_with("C0 01 = program 2 · ch 1 (picks patch 2)")),
+            "{lines:?}"
+        );
+        // Program 5: the song has two.
+        let (_, lines) = run(&mut m, DIN, &[0xC0, 4]);
+        assert_eq!(m.keys_at().0, Some(1));
+        assert!(
+            lines.iter().any(|l| l.ends_with("(the song has no patch 5)")),
+            "{lines:?}"
+        );
+        // Waiting for the hands: the key held keeps patch 2 until it's up.
+        {
+            let mut v = s.lock().unwrap();
+            v.setup.program_waits = true;
+            v.gen += 1;
+        }
+        m.sync(&s, 0.2);
+        let (_, lines) = run(&mut m, DIN, &[0xC0, 0]);
+        assert_eq!(m.keys_at().0, Some(1));
+        assert_eq!(m.keys_at().1, Some(Some(0)));
+        assert!(
+            lines.iter().any(|l| l.ends_with("(picks patch 1 when your hands are up)")),
+            "{lines:?}"
+        );
+        let _ = run(&mut m, DIN, &[0x80, 60, 0]);
+        assert_eq!(m.keys_at().0, Some(0));
+        m.sync(&s, 0.3);
+        let v = s.lock().unwrap();
+        let went: Vec<To> = v.monitor.newest().map(|(_, l)| l.to).collect();
+        for want in [
+            To::PickedPatch {
+                patch: 1,
+                waits: false,
+            },
+            To::NoPatch(4),
+            To::PickedPatch {
+                patch: 0,
+                waits: true,
+            },
+        ] {
+            assert!(went.contains(&want), "{want:?}: {went:?}");
+        }
     }
 
     /// MMC in and Program change in (the Sync section): off, an MMC
