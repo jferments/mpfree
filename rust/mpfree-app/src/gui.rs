@@ -14110,6 +14110,12 @@ impl Player {
                     if let Some(why) = time_view::why_not(&ev, &self.time) {
                         self.tell(&why);
                     }
+                } else if let (time_view::CLIPS, EventKind::Select(i)) = (ev.widget.as_str(), &ev.kind) {
+                    // An audio cell's word, said in full (layout spec 4f).
+                    let (track, slot) = (i / mpfree_seq::SLOTS, i % mpfree_seq::SLOTS);
+                    if let Some(h) = time_view::audio_cell_hint(&self.time, track, slot) {
+                        self.tell(&h);
+                    }
                 }
                 // A swipe across a take lane and a region's drag are free
                 // with SHIFT held, and SHIFT + Undo redoes (layout spec 4c).

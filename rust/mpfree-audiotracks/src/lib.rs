@@ -1460,6 +1460,18 @@ impl AudioTracks {
         self.tracks.get(track).is_some_and(|t| t.armed)
     }
 
+    /// Track `t`'s once clip still sounding past its stop (audio tracks
+    /// phase 2, a ring): its clip number, and how far through its sound it
+    /// is at frame `now`, 0 to 1, for the cell's dimmed playhead.
+    pub fn ringing(&self, t: usize, now: u64) -> Option<(u32, f32)> {
+        let v = self.tracks.get(t)?.lane.voices.iter().find(|v| v.on && v.ring)?;
+        let s = &v.cur;
+        let first = s.regions[..s.n].first()?.src;
+        let total = (s.last_frame - first).max(1) as f64;
+        let done = now.saturating_sub(v.since) as f64;
+        Some((v.clip, (done / total).clamp(0.0, 1.0) as f32))
+    }
+
     /// The take a track is recording, if any.
     pub fn recording(&self, track: usize) -> Option<u16> {
         self.tracks.get(track)?.rec.map(|r| r.take)

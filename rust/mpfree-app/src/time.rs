@@ -1084,6 +1084,12 @@ impl TimeHost {
         self.sent(r)
     }
 
+    /// Audio track `track` armed or disarmed by its own arm: the Clip tab
+    /// follows it (see `TimeControl::focus_audio`).
+    pub fn focus_audio(&mut self, track: usize, on: bool) {
+        self.with(|c| c.focus_audio(track, on));
+    }
+
     /// Put in a cell's cell (audio tracks phase 2,
     /// `mpfree_time_ui::view::pick_cell`), as (track, row); None: no audio
     /// track has an empty cell.

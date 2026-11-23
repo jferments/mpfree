@@ -6667,8 +6667,17 @@ fn time_action(
                 tracks.offer(mix.inside_sources());
             }
             match tracks.action(aa, &time.info(), looper.line.is_open()) {
-                Ok(line) if !line.is_empty() => out.note(&line),
-                Ok(_) => {}
+                Ok(line) => {
+                    // An audio track armed: the Clip tab shows its clip.
+                    if let AudioAction::Arm { track, on } = aa {
+                        if let Some(row) = tracks.place(track) {
+                            time.focus_audio(row, on);
+                        }
+                    }
+                    if !line.is_empty() {
+                        out.note(&line);
+                    }
+                }
                 Err(e) => out.note(&format!("audio tracks: {e}")),
             }
             // An erase leaves the picked region's place empty.
@@ -6860,6 +6869,7 @@ fn synth_turn_row(synth: &synth::Synth, id: u16, to: f32) -> String {
 fn time_state(time: &time::TimeHost, tracks: &audiotracks::TrackHost) -> mpfree_time_ui::TimeState {
     let mut st = time.state();
     tracks.fill(&mut st, time.tempo_map());
+    tracks.fill_cells(&mut st, time.project());
     st
 }
 

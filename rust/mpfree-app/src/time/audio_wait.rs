@@ -73,6 +73,8 @@ pub(super) struct Wait {
     grid: LaunchGrid,
     /// The line it lands on. At Now (and at a once clip's end), none.
     line: Tick,
+    /// The line it first aimed at, for how long it waited.
+    first: Tick,
     /// At Now: the frame it gives up on.
     until: u64,
     moves: u8,
@@ -135,7 +137,29 @@ fn line_name(info: &TransportInfo, line: Tick) -> String {
     }
 }
 
+impl Wait {
+    /// How long it waited for its audio before it was cancelled, in ticks
+    /// (bars of `bar` ticks at Now): for the cell's hint.
+    pub fn waited(&self, bar: Tick) -> Tick {
+        match self.grid {
+            LaunchGrid::Now | LaunchGrid::At(_) => NOW_BARS * bar,
+            _ => (self.line - self.first).max(bar),
+        }
+    }
+}
+
 impl AudioWaits {
+    /// The tracks whose cue waits for its audio and has moved to a later
+    /// line, with that line: the cell says "waits 18.1".
+    pub fn late(&self) -> Vec<(usize, Tick)> {
+        self.waits
+            .iter()
+            .filter(|w| !w.held && w.moves > 0)
+            .filter(|w| !matches!(w.grid, LaunchGrid::Now | LaunchGrid::At(_)))
+            .flat_map(|w| w.cues.iter().map(move |c| (c.track, w.line)))
+            .collect()
+    }
+
     /// Waits on (streaming on) or off. Off, every waiting cue goes into the
     /// next view as it is: true when one did, and it should compile.
     pub fn set_on(&mut self, on: bool) -> bool {
@@ -268,6 +292,7 @@ impl AudioWaits {
             scene,
             grid,
             line,
+            first: line,
             until,
             moves: 0,
             held: false,

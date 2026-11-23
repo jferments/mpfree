@@ -41,7 +41,7 @@ use crate::song::{
     PANEL_TAKES, REC, REGION_SLOTS, RULER_ROW, SECTION_TAP, TEMPO_ROW,
 };
 use crate::widgets::{
-    BarButton, BarItem, CellState, ClipGrid, GridCell, GridTrack, MorphBar, Run, TakeItem,
+    BarButton, BarItem, CellAlert, CellState, ClipGrid, GridCell, GridTrack, MorphBar, Run, TakeItem,
     TakeList, TransportBar, ADD_DISMISS, ADD_KIND, ADD_TRACK, BACK_TO_SONG, GRID_COLS, PAGE_BACK,
     PAGE_ON, ROWS_BACK, ROWS_ON, ROW_DROP,
 };
@@ -417,6 +417,32 @@ pub struct ClipInfo {
     /// The variation of its notes it plays, kept beside its original
     /// (`Clip::variation`, S6's Mutate); None when it keeps none.
     pub variation: Option<u32>,
+    /// An audio clip's facts, for its cell and card (audio tracks phase
+    /// 2); None for a note or loop clip.
+    pub audio: Option<AudioCellInfo>,
+}
+
+/// What an audio clip's cell and card show (audio tracks phase 2, layout
+/// spec 4f and 4j): the clip's own facts, and what the app adds from the
+/// audio tracks.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AudioCellInfo {
+    /// The tempo it was made at (BPM): Fit to tempo fits from it.
+    pub bpm: f64,
+    /// Its own gain (the card's Gain row), 0 to 4 (+12 dB).
+    pub gain: f32,
+    /// Its sound's length in seconds, its first frame to its last: a once
+    /// clip says it ("3:17 once"). The app sets it.
+    pub secs: f64,
+    /// Its small wave over one pass, each column's peak 0 to 255. The app
+    /// sets it.
+    pub wave: [u8; crate::widgets::CELL_WAVE],
+    /// A recording it names isn't here: why, for the hint ("take 4's file
+    /// wasn't found when the project opened"). The app sets it.
+    pub missing: Option<String>,
+    /// A once clip still sounding past its stop, this far through its
+    /// sound (its playhead is drawn dimmed). The app sets it.
+    pub ring: Option<f32>,
 }
 
 /// What the looper says of a loop, for its cells on the Clips grid: the
@@ -753,6 +779,20 @@ pub struct TimeState {
     /// Cues waiting for their audio while takes stream from their files
     /// (the audio tracks rethink's phase 2). The app sets it.
     pub audio_waits: AudioWaitCounts,
+    /// The tracks whose cue waits for its audio and has moved to a later
+    /// line, with that line (the cell says "waits 18.1"). The app sets it.
+    pub audio_late: Vec<(usize, Tick)>,
+    /// Audio clips whose launch was cancelled, their audio not ready in
+    /// time, as (track, slot, ticks it waited), until launched again (the
+    /// cell says "not ready"). The app sets it.
+    pub not_ready: Vec<(usize, usize, Tick)>,
+    /// Fit to tempo under way on an audio clip's card: its cell, and how
+    /// far it has got, 0 to 1. The app sets it.
+    pub fitting: Option<(usize, usize, f32)>,
+    /// The audio track armed last by its own arm, while no note track has
+    /// been armed since: the Clip tab shows its clip ([`TimeState::focus`]).
+    /// The app sets it.
+    pub audio_focus: Option<usize>,
     /// The clips with a saved state (Save state on the clip card, S4), as
     /// (track, slot): Reload clip brings it back.
     pub saved: Vec<(usize, usize)>,
@@ -976,6 +1016,11 @@ impl TimeState {
                             looped: c.looped,
                             settings: c.settings(),
                             variation: c.variation(),
+                            audio: c.audio.as_ref().map(|a| AudioCellInfo {
+                                bpm: a.bpm,
+                                gain: a.gain,
+                                ..AudioCellInfo::default()
+                            }),
                         })
                     })
                     .collect(),
@@ -1015,6 +1060,10 @@ impl TimeState {
             cue_lines: Vec::new(),
             mute_wait: None,
             audio_waits: AudioWaitCounts::default(),
+            audio_late: Vec::new(),
+            not_ready: Vec::new(),
+            fitting: None,
+            audio_focus: None,
             saved: Vec::new(),
             reloads: Vec::new(),
             placements: project
@@ -1092,7 +1141,9 @@ impl TimeState {
     /// note editor and the clip settings card all show it (the app's
     /// `TimeControl` picks the same one).
     pub fn focus(&self) -> Option<(usize, usize)> {
-        let track = self.armed.unwrap_or(0);
+        // An audio track armed since the note track: its clip (layout
+        // spec 4j).
+        let track = self.audio_focus.or(self.armed).unwrap_or(0);
         let tr = self.tracks.get(track)?;
         let slot = self
             .launch(track)
@@ -1765,8 +1816,11 @@ pub fn name_tap(st: &TimeState, track: usize) -> TimeAction {
 /// clip in an empty slot, or arm an empty Loop cell. None past the
 /// tracks.
 pub fn cell_tap(st: &TimeState, track: usize, slot: usize) -> Option<TimeAction> {
-    if track >= st.tracks.len() || slot >= SLOTS || st.tracks[track].audio {
-        // No audio clips in the grid yet ([`why_not`] says so).
+    if track >= st.tracks.len() || slot >= SLOTS {
+        None
+    } else if st.tracks[track].audio && st.clip(track, slot).is_none() {
+        // Nothing records into an audio cell: [`why_not`] says how audio
+        // gets there.
         None
     } else if st.clip(track, slot).is_none() && st.tracks[track].loops.is_some() {
         // An empty Loop cell arms (again: lets go of) a loop there.
@@ -2274,9 +2328,9 @@ pub fn why_not(ev: &UiEvent, st: &TimeState) -> Option<String> {
         }
     };
     match (ev.widget.as_str(), &ev.kind) {
-        (CLIPS, EventKind::Select(i)) if st.tracks.get(i / SLOTS).is_some_and(|t| t.audio) => Some(
-            "Audio clips aren't in the grid yet. Record this track in the Song view.".to_string(),
-        ),
+        (CLIPS, EventKind::Select(i)) if st.tracks.get(i / SLOTS).is_some_and(|t| t.audio) => {
+            audio_cell_hint(st, i / SLOTS, i % SLOTS)
+        }
         (MORPH, EventKind::Tab(0 | 1)) if !st.morph.on => {
             Some("Move the crossfader first: Snap back and Keep work on a morph".to_string())
         }
@@ -3714,6 +3768,9 @@ pub fn cell_of(st: &TimeState, track: usize, slot: usize) -> GridCell {
         (None, 1) => "1 note".to_string(),
         (None, n) => format!("{n} notes"),
     };
+    if let Some(a) = &clip.audio {
+        return audio_cell(st, track, slot, clip, a);
+    }
     let mut cell = GridCell {
         state: CellState::Stopped,
         name: clip.name.clone(),
@@ -3721,6 +3778,7 @@ pub fn cell_of(st: &TimeState, track: usize, slot: usize) -> GridCell {
         foot: notes,
         progress: 0.0,
         wave: facts.map(|f| f.wave),
+        ..GridCell::default()
     };
     if facts.is_some_and(|f| f.copying) {
         cell.foot = "copying in".to_string();
@@ -3765,6 +3823,176 @@ pub fn cell_of(st: &TimeState, track: usize, slot: usize) -> GridCell {
     }
     cell
 }
+
+/// An audio clip's cell (layout spec 4f): its name and wave, and under
+/// them (Perform) its length, "2 bars", or a once clip's time, "3:17
+/// once". A word that matters takes the wave's place while it is stopped
+/// or queued (Make) and the length's (Perform): "from 17.1" or, its audio
+/// late, "waits 18.1" (amber) while queued; stopped, "missing" or "not
+/// ready" (red), or "made at 120" (amber) for a loop made at another
+/// tempo. A once clip still sounding past its stop shows how far it has
+/// got, its playhead dimmed; a missing clip a flat dashed line.
+fn audio_cell(
+    st: &TimeState,
+    track: usize,
+    slot: usize,
+    clip: &ClipInfo,
+    a: &AudioCellInfo,
+) -> GridCell {
+    let t = &st.transport;
+    let len = clip.song_len().max(1.0);
+    let detail = if clip.settings.once {
+        format!("{} once", clock_time(a.secs))
+    } else {
+        length_label(len, t.meter)
+    };
+    let mut cell = GridCell {
+        state: CellState::Stopped,
+        name: clip.name.clone(),
+        detail,
+        wave: a.missing.is_none().then_some(a.wave),
+        missing: a.missing.is_some(),
+        ..GridCell::default()
+    };
+    let late = st.audio_late.iter().find(|l| l.0 == track).map(|l| l.1);
+    let cue = st.cue(track);
+    if cue.is_some_and(|c| c.slot == Some(slot)) {
+        cell.state = CellState::Queued;
+        cell.alert = CellAlert::Warn;
+        let line = st.cue_line(track);
+        let at = late.unwrap_or_else(|| cue_tick(t, line));
+        st.queued_foot(&mut cell, at, line.line(t.meter.bar_ticks()));
+        if late.is_some() {
+            cell.foot = format!("waits {}", bar_beat(at, t.meter));
+        }
+        return cell;
+    }
+    match st.launch(track).filter(|l| l.slot == slot) {
+        Some(l) if l.origin > t.position => {
+            cell.state = CellState::Queued;
+            cell.alert = CellAlert::Warn;
+            st.queued_foot(&mut cell, l.origin, t.meter.bar_ticks());
+        }
+        Some(l) => {
+            let frac = ((t.position - l.origin) as f64).rem_euclid(len) / len;
+            cell.progress = ((frac * 64.0).floor() / 64.0) as f32;
+            cell.state = CellState::Playing;
+            if let Some(c) = cue {
+                let word = if c.slot.is_none() { "stops" } else { "until" };
+                cell.detail = format!(
+                    "{word} {}",
+                    bar_beat(cue_tick(t, st.cue_line(track)), t.meter)
+                );
+            }
+        }
+        None => {
+            if let Some(r) = a.ring {
+                cell.ringing = true;
+                cell.progress = ((f64::from(r) * 64.0).floor() / 64.0) as f32;
+            }
+            let word = audio_word(st, track, slot, clip, a);
+            if let Some((word, alert)) = word.filter(|_| !cell.ringing) {
+                cell.foot = word;
+                cell.alert = alert;
+            }
+        }
+    }
+    cell
+}
+
+/// What a stopped audio clip's cell says in its wave's place, if anything:
+/// "missing", "not ready" (red), or "made at 120" (amber) for a loop made
+/// at another tempo than the project's now.
+fn audio_word(
+    st: &TimeState,
+    track: usize,
+    slot: usize,
+    clip: &ClipInfo,
+    a: &AudioCellInfo,
+) -> Option<(String, CellAlert)> {
+    if a.missing.is_some() {
+        Some(("missing".to_string(), CellAlert::Bad))
+    } else if st.not_ready.iter().any(|n| (n.0, n.1) == (track, slot)) {
+        Some(("not ready".to_string(), CellAlert::Bad))
+    } else if off_tempo(clip, a, st.transport.bpm) {
+        Some((format!("made at {}", tempo_short(a.bpm)), CellAlert::Warn))
+    } else {
+        None
+    }
+}
+
+/// An audio loop made at another tempo than `bpm`: each pass leaves a gap
+/// or cuts its sound short. A once clip plays to its end at any tempo.
+fn off_tempo(clip: &ClipInfo, a: &AudioCellInfo, bpm: f64) -> bool {
+    !clip.settings.once && (a.bpm - bpm).abs() >= 0.05
+}
+
+/// A tempo as a cell says it: "120", "92.5".
+pub fn tempo_short(bpm: f64) -> String {
+    let tenths = (bpm * 10.0).round();
+    if tenths % 10.0 == 0.0 {
+        format!("{}", tenths / 10.0)
+    } else {
+        format!("{:.1}", tenths / 10.0)
+    }
+}
+
+/// Seconds as a clock says them: "3:17", "0:12".
+pub fn clock_time(secs: f64) -> String {
+    let s = secs.max(0.0).round() as u64;
+    format!("{}:{:02}", s / 60, s % 60)
+}
+
+/// What a tap on an audio clip's cell says in full on the hint line
+/// (layout spec 4f): its word's meaning, or an empty cell's. None when it
+/// has nothing to say.
+pub fn audio_cell_hint(st: &TimeState, track: usize, slot: usize) -> Option<String> {
+    if !st.tracks.get(track)?.audio {
+        return None;
+    }
+    let Some(clip) = st.clip(track, slot) else {
+        return Some(EMPTY_AUDIO_CELL.to_string());
+    };
+    let a = clip.audio.as_ref()?;
+    let name = &clip.name;
+    let t = &st.transport;
+    if let Some(why) = &a.missing {
+        return Some(format!("{name}'s audio is missing: {why}."));
+    }
+    if let Some(&(_, line)) = st.audio_late.iter().find(|l| l.0 == track) {
+        if st.cue(track).is_some_and(|c| c.slot == Some(slot)) {
+            return Some(format!(
+                "{name} waits for its audio: it starts on {}.",
+                bar_beat(line, t.meter)
+            ));
+        }
+    }
+    if let Some(n) = st.not_ready.iter().find(|n| (n.0, n.1) == (track, slot)) {
+        return Some(format!(
+            "{name}'s audio wasn't ready within {}. Tap to try again.",
+            length_label(n.2 as f64, t.meter)
+        ));
+    }
+    if off_tempo(clip, a, t.bpm) {
+        let quarters = clip.length as f64 / f64::from(PPQ);
+        let gap = quarters * 60.0 / t.bpm.max(1.0) - quarters * 60.0 / a.bpm.max(1.0);
+        let what = if gap > 0.0 {
+            format!("leaves {:.1} s of silence each pass", gap)
+        } else {
+            format!("cuts {:.1} s off each pass", -gap)
+        };
+        return Some(format!(
+            "{name} was made at {} BPM: at {} it {what}. Fit to tempo on the Clip tab fixes it.",
+            tempo_short(a.bpm),
+            tempo_short(t.bpm)
+        ));
+    }
+    None
+}
+
+/// The hint for a tap on an empty audio cell (layout spec 4f).
+pub const EMPTY_AUDIO_CELL: &str =
+    "An empty audio cell: put audio in with To a cell on the Song view, or Put in a cell on the Sample page.";
 
 /// How long `left` ticks are, as Perform's countdowns say it: whole
 /// beats, rounded up, under a bar ("1 beat", "3 beats"), whole bars past
@@ -5999,7 +6227,7 @@ mod tests {
         assert_eq!(action(&cell, &st), None);
         assert_eq!(
             why_not(&cell, &st).as_deref(),
-            Some("Audio clips aren't in the grid yet. Record this track in the Song view.")
+            Some(EMPTY_AUDIO_CELL)
         );
         // The chooser's rows on the grid.
         let row = |k| action(&ev(CLIPS, EventKind::Toggle(SLOTS + ADD_KIND + k)), &st);
@@ -6010,6 +6238,126 @@ mod tests {
             action(&ev(CLIPS, EventKind::Toggle(SLOTS + ADD_DISMISS)), &st),
             None
         );
+    }
+
+    /// Layout spec 4f: an audio clip's cell shows its name, its wave and
+    /// its length, and in the wave's place the word that matters, each
+    /// with its full sentence on the hint line.
+    #[test]
+    fn an_audio_clip_cell_says_the_word_that_matters() {
+        let mut st = state();
+        st.armed = None;
+        st.tracks[2].audio = true;
+        let clip = st.tracks[2].slots[0].as_mut().unwrap();
+        clip.audio = Some(AudioCellInfo {
+            bpm: 120.0,
+            gain: 1.0,
+            secs: 4.0,
+            wave: [9; crate::widgets::CELL_WAVE],
+            ..AudioCellInfo::default()
+        });
+        let set = |st: &mut TimeState, f: &dyn Fn(&mut ClipInfo)| {
+            f(st.tracks[2].slots[0].as_mut().unwrap())
+        };
+        // Stopped at the tempo it was made at: its wave, nothing to say.
+        let c = cell_of(&st, 2, 0);
+        assert_eq!(
+            (c.state, c.name.as_str(), c.detail.as_str(), c.foot.as_str()),
+            (CellState::Stopped, "A", "2 bars", "")
+        );
+        assert_eq!(c.wave, Some([9; crate::widgets::CELL_WAVE]));
+        assert_eq!(c.alert, CellAlert::None);
+        assert_eq!(audio_cell_hint(&st, 2, 0), None);
+        // An empty audio cell is dashed, and says how to fill it.
+        assert_eq!(cell_of(&st, 2, 2).state, CellState::Empty);
+        assert_eq!(
+            audio_cell_hint(&st, 2, 2).as_deref(),
+            Some(EMPTY_AUDIO_CELL)
+        );
+        assert_eq!(audio_cell_hint(&st, 1, 2), None);
+        // At 92 BPM the loop leaves a gap each pass.
+        st.transport.bpm = 92.0;
+        let c = cell_of(&st, 2, 0);
+        assert_eq!((c.foot.as_str(), c.alert), ("made at 120", CellAlert::Warn));
+        assert_eq!(
+            audio_cell_hint(&st, 2, 0).as_deref(),
+            Some(
+                "A was made at 120 BPM: at 92 it leaves 1.2 s of silence each pass. \
+                 Fit to tempo on the Clip tab fixes it."
+            )
+        );
+        // Faster than it was made, it cuts its sound short.
+        st.transport.bpm = 150.0;
+        assert_eq!(
+            audio_cell_hint(&st, 2, 0).as_deref(),
+            Some(
+                "A was made at 120 BPM: at 150 it cuts 0.8 s off each pass. \
+                 Fit to tempo on the Clip tab fixes it."
+            )
+        );
+        // A once clip plays to its end at any tempo: its time, no word.
+        set(&mut st, &|c| c.settings.once = true);
+        let c = cell_of(&st, 2, 0);
+        assert_eq!((c.detail.as_str(), c.foot.as_str()), ("0:04 once", ""));
+        assert_eq!(audio_cell_hint(&st, 2, 0), None);
+        set(&mut st, &|c| c.settings.once = false);
+        st.transport.bpm = 120.0;
+        // Its audio wasn't ready in time: red, and how long it waited.
+        st.not_ready = vec![(2, 0, 2 * BAR)];
+        let c = cell_of(&st, 2, 0);
+        assert_eq!((c.foot.as_str(), c.alert), ("not ready", CellAlert::Bad));
+        assert_eq!(
+            audio_cell_hint(&st, 2, 0).as_deref(),
+            Some("A's audio wasn't ready within 2 bars. Tap to try again.")
+        );
+        st.not_ready.clear();
+        // Missing: red, a flat dashed line for its wave.
+        let why = "take 4's file wasn't found when the project opened";
+        set(&mut st, &|c| c.audio.as_mut().unwrap().missing = Some(why.into()));
+        let c = cell_of(&st, 2, 0);
+        assert_eq!((c.foot.as_str(), c.alert), ("missing", CellAlert::Bad));
+        assert!(c.missing && c.wave.is_none());
+        assert_eq!(
+            audio_cell_hint(&st, 2, 0).as_deref(),
+            Some("A's audio is missing: take 4's file wasn't found when the project opened.")
+        );
+        set(&mut st, &|c| c.audio.as_mut().unwrap().missing = None);
+        // A once clip still sounding past its stop: its playhead, dimmed.
+        set(&mut st, &|c| c.audio.as_mut().unwrap().ring = Some(0.5));
+        let c = cell_of(&st, 2, 0);
+        assert!(c.ringing);
+        assert_eq!((c.progress, c.foot.as_str()), (0.5, ""));
+        set(&mut st, &|c| c.audio.as_mut().unwrap().ring = None);
+        // Queued: when it starts, amber; its audio late, when it waits to.
+        st.cues = vec![Cue {
+            track: 2,
+            slot: Some(0),
+        }];
+        let c = cell_of(&st, 2, 0);
+        assert_eq!(
+            (c.state, c.foot.as_str(), c.alert),
+            (CellState::Queued, "from 6.1", CellAlert::Warn)
+        );
+        st.audio_late = vec![(2, 17 * BAR)];
+        let c = cell_of(&st, 2, 0);
+        assert_eq!(c.foot, "waits 18.1");
+        assert_eq!(
+            audio_cell_hint(&st, 2, 0).as_deref(),
+            Some("A waits for its audio: it starts on 18.1.")
+        );
+    }
+
+    /// Layout spec 4j: the Clip tab follows an audio track armed by its
+    /// own arm, until a note track is armed again.
+    #[test]
+    fn the_clip_tab_follows_an_armed_audio_track() {
+        let mut st = state();
+        assert_eq!(st.focus(), Some((2, 0)));
+        st.tracks[1].audio = true;
+        st.audio_focus = Some(1);
+        assert_eq!(st.focus(), Some((1, 1)));
+        st.audio_focus = None;
+        assert_eq!(st.focus(), Some((2, 0)));
     }
 
     /// The "+ Track" chooser is the page's: a tap on "+ Track" opens it

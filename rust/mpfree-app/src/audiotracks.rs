@@ -67,6 +67,7 @@ use mpfree_audiotracks::{
 use mpfree_play::{AudioAnswer, AudioPlays};
 use mpfree_seq::{RecId, TrackId};
 use mpfree_time_ui::song::{audio_blocks, input_chip, take_lanes, AudioLane, MixFrom, MONITORS};
+use mpfree_time_ui::widgets::CELL_WAVE;
 use mpfree_time_ui::view::{
     audio_color, track_color, AudioAction, RegionId, TimeState, TransportInfo,
 };
@@ -451,6 +452,11 @@ pub struct TrackHost {
     clip_fit: Option<ClipFit>,
     /// Put in a cell, the sound copying in.
     cell_sound: Option<CellSound>,
+    /// The frame the last period ended on, for a ringing clip's playhead.
+    frame_now: u64,
+    /// The recordings the project opened last listed, with the take each
+    /// was ("take 4"), for a clip whose audio is missing.
+    opened: Vec<(RecId, String)>,
     /// The song's meter, for the bar a dropout was at.
     time_sig: mpfree_transport::time::Meter,
 }
@@ -526,6 +532,8 @@ impl TrackHost {
             waits_looked: 0,
             clip_fit: None,
             cell_sound: None,
+            frame_now: 0,
+            opened: Vec::new(),
             time_sig: mpfree_transport::time::Meter::default(),
         }
     }
@@ -1018,6 +1026,7 @@ impl TrackHost {
         if song_on != self.active && self.host.command(Command::SetActive(song_on)) {
             self.active = song_on;
         }
+        self.frame_now = block.start_frame + u64::from(block.frames);
         for f in 0..PERIOD {
             self.input[2 * f] = line.0[f];
             self.input[2 * f + 1] = line.1[f];
@@ -1423,6 +1432,18 @@ impl TrackHost {
         let ids = self.slots;
         saved.tracks.retain(|t| ids.id_of(t.index).is_some());
         saved.takes.retain(|k| ids.id_of(k.track).is_some());
+        // Each recording as its track's take lane numbers it, for a clip
+        // whose take's file doesn't open.
+        self.opened = saved
+            .takes
+            .iter()
+            .map(|k| {
+                let mut mine: Vec<_> = saved.takes.iter().filter(|o| o.track == k.track).collect();
+                mine.sort_by_key(|o| (o.group, o.pass, o.id));
+                let n = mine.iter().position(|o| o.id == k.id).map_or(0, |n| n + 1);
+                (RecId(k.rec.0), format!("take {n}"))
+            })
+            .collect();
         self.silent = [false; MAX_TRACKS];
         let (tracks, takes) = (saved.tracks.len(), saved.takes.len());
         let inside: Vec<(usize, Inside)> = saved
@@ -1575,6 +1596,18 @@ impl TrackHost {
                 h.add(u64::from(r.left));
             }
         }
+        // The cells' Fit to tempo bar and ringing playheads, in steps of a
+        // percent and of 1/64.
+        if let Some((t, slot, f)) = self.clip_fit_progress() {
+            h.add((t * 64 + slot) as u64);
+            h.add((f * 100.0) as u64);
+        }
+        for t in 0..MAX_TRACKS {
+            if let Some((clip, f)) = tr.ringing(t, self.frame_now) {
+                h.add(u64::from(clip));
+                h.add((f * 64.0) as u64);
+            }
+        }
         let s = tr.stats();
         h.add(u64::from(s.refused));
         h.add(u64::from(s.dropped));
@@ -1651,6 +1684,95 @@ impl TrackHost {
         .filter(|c| c.1 > 0)
         .map(|&(w, n)| (w.to_string(), n))
         .collect();
+    }
+
+    /// The audio clips' cells and cards (audio tracks phase 2, layout spec
+    /// 4f and 4j): each clip's small wave over one pass (from its takes'
+    /// waveforms), its sound's length in seconds, why its audio is missing
+    /// if it is, and how far a once clip still sounding past its stop has
+    /// got; and the Fit to tempo under way. Into `st` as
+    /// [`crate::time::TimeHost::state`] made it of `project`.
+    pub fn fill_cells(&self, st: &mut TimeState, project: &mpfree_seq::Project) {
+        st.fitting = self.clip_fit_progress();
+        let tr = &self.host.tracks;
+        for (i, t) in project.tracks.iter().enumerate() {
+            if !t.is_audio() {
+                continue;
+            }
+            let ring = self
+                .slots
+                .slot_of(t.id)
+                .and_then(|s| tr.ringing(s, self.frame_now));
+            for (row, c) in t.slots.shown().enumerate() {
+                let Some((c, a)) = c.as_ref().and_then(|c| Some((c, c.audio.as_ref()?))) else {
+                    continue;
+                };
+                let Some(info) = st
+                    .tracks
+                    .get_mut(i)
+                    .and_then(|x| x.slots.get_mut(row))
+                    .and_then(|x| x.as_mut())
+                    .and_then(|x| x.audio.as_mut())
+                else {
+                    continue;
+                };
+                let per_tick = f64::from(self.rate) * 60.0
+                    / (a.bpm.max(1.0) * f64::from(mpfree_transport::time::PPQ));
+                info.secs = a.regions.last().map_or(0.0, |r| {
+                    (r.start as f64 * per_tick + (a.last_frame - r.src).max(0) as f64)
+                        / f64::from(self.rate)
+                });
+                let gone = a
+                    .regions
+                    .iter()
+                    .find(|r| tr.take_of(RecordingId(r.rec.0)).is_none())
+                    .map(|r| r.rec);
+                info.missing = gone.map(|rec| match self.opened.iter().find(|o| o.0 == rec) {
+                    Some((_, take)) => format!("{take}'s file wasn't found when the project opened"),
+                    None => "its recording isn't in the project".to_string(),
+                });
+                info.wave = self.clip_wave(a, c.length, per_tick);
+                info.ring = ring.filter(|r| r.0 == c.id.0).map(|r| r.1);
+            }
+        }
+    }
+
+    /// An audio clip's small wave over one pass of `length` clip ticks
+    /// (`per_tick` frames a tick at the tempo it was made at): each
+    /// column's peak, 0 to 255, from its takes' waveforms read so far
+    /// (silent where none is yet), with the regions' and clip's gains.
+    fn clip_wave(&self, a: &mpfree_seq::AudioClip, length: Tick, per_tick: f64) -> [u8; CELL_WAVE] {
+        let mut out = [0u8; CELL_WAVE];
+        let tr = &self.host.tracks;
+        let length = length.max(1) as f64;
+        for (c, v) in out.iter_mut().enumerate() {
+            let (t0, t1) = (
+                length * c as f64 / CELL_WAVE as f64,
+                length * (c + 1) as f64 / CELL_WAVE as f64,
+            );
+            let mut peak = 0f32;
+            for r in &a.regions {
+                let (a0, a1) = (t0.max(r.start as f64), t1.min(r.end as f64));
+                if a0 >= a1 {
+                    continue;
+                }
+                let Some(w) = tr
+                    .take_of(RecordingId(r.rec.0))
+                    .and_then(|id| self.waves.iter().find(|w| w.id == id))
+                else {
+                    continue;
+                };
+                let f0 = r.src as f64 + (a0 - r.start as f64) * per_tick;
+                let f1 = r.src as f64 + (a1 - r.start as f64) * per_tick;
+                let fpc = w.frames_per_column.max(1) as f64;
+                let (k0, k1) = ((f0.max(0.0) / fpc) as usize, (f1.max(0.0) / fpc).ceil() as usize);
+                for &(lo, hi) in w.columns.iter().take(k1.max(k0 + 1)).skip(k0) {
+                    peak = peak.max(lo.abs().max(hi.abs()) * r.gain);
+                }
+            }
+            *v = ((peak * a.gain).min(1.0) * 255.0).round() as u8;
+        }
+        out
     }
 
     /// To a cell (audio tracks phase 2): the audio clip that plays what

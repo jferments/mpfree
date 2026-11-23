@@ -558,6 +558,12 @@ pub struct TimeControl {
     /// Cues kept back until their audio is held, while takes stream from
     /// their files (`audio_wait.rs`).
     audio_waits: AudioWaits,
+    /// Audio clips whose launch was cancelled, their audio not ready, as
+    /// (track, slot, ticks it waited), until launched again.
+    not_ready: Vec<(usize, usize, Tick)>,
+    /// The audio track armed last, by its lasting id, while no note track
+    /// has been armed since: the Clip tab shows its clip (layout spec 4j).
+    audio_focus: TrackId,
     tx: Tx<ToAudio>,
     rx: Rx<ToControl>,
     /// A view the audio half's full queue handed back, sent again on the
@@ -691,6 +697,8 @@ impl TimeControl {
             heard: 0,
             cue_counts: CueCounts::default(),
             audio_waits: AudioWaits::default(),
+            not_ready: Vec::new(),
+            audio_focus: TrackId::NONE,
             tx,
             rx,
             unsent: None,
@@ -1401,6 +1409,14 @@ impl TimeControl {
     }
 
     pub(super) fn compile(&mut self) -> Result<(), String> {
+        // An audio clip not ready before, launched again.
+        if !self.not_ready.is_empty() {
+            let (cues, launches) = (&self.cues, &self.launches);
+            self.not_ready.retain(|n| {
+                !cues.iter().any(|c| (c.track, c.slot) == (n.0, Some(n.1)))
+                    && !launches.iter().any(|l| (l.track, l.slot) == (n.0, n.1))
+            });
+        }
         let at = Instant::now();
         // An undone capture takes its clip, and so its launch, away; an
         // undone + Track takes its track.
@@ -1477,6 +1493,25 @@ impl TimeControl {
     /// down, as an edit UNDO takes away again. The row it went in, or why
     /// not: no such audio track, no empty cell, or the clip's own
     /// refusal. Nothing changes on an error.
+    /// Audio track `track` armed (`on`) by its own arm, or disarmed: the
+    /// Clip tab shows its clip until a note track is armed (layout spec
+    /// 4j); disarmed, the tab goes back to the armed note track.
+    pub fn focus_audio(&mut self, track: usize, on: bool) {
+        let id = self
+            .project
+            .tracks
+            .get(track)
+            .filter(|t| t.is_audio())
+            .map_or(TrackId::NONE, |t| t.id);
+        let was = self.audio_focus;
+        if on {
+            self.audio_focus = id;
+        } else if self.audio_focus == id {
+            self.audio_focus = TrackId::NONE;
+        }
+        self.changed |= was != self.audio_focus;
+    }
+
     pub fn put_audio_clip(&mut self, track: usize, clip: Clip) -> Result<usize, String> {
         let t = self
             .project
@@ -1598,6 +1633,14 @@ impl TimeControl {
     /// with their scene's program changes, the mutes they queued and the
     /// scene's cue.
     fn cancel_wait(&mut self, w: Wait) {
+        // Their cells say "not ready" until launched again.
+        let waited = w.waited(self.info.meter.bar_ticks().max(1));
+        for c in &w.cues {
+            if let Some(slot) = c.slot {
+                self.not_ready.retain(|n| (n.0, n.1) != (c.track, slot));
+                self.not_ready.push((c.track, slot, waited));
+            }
+        }
         for c in &w.cues {
             if let Some(i) = self.cues.iter().position(|x| x == c) {
                 self.cues.remove(i);
@@ -3399,6 +3442,8 @@ impl TimeControl {
             TimeAction::StepSize(size) => self.step_size(size),
             TimeAction::Arm(track) => {
                 self.set_armed(track);
+                // The Clip tab follows the note track armed now.
+                self.audio_focus = TrackId::NONE;
                 self.compile()?;
                 Ok(match self.armed {
                     Some(t) => format!("armed: {}", self.project.tracks[t].name),
@@ -6077,6 +6122,22 @@ impl TimeControl {
         st.cues = self.cues.clone();
         st.mute_wait = self.mute_wait().cloned();
         st.audio_waits = self.audio_waits.counts();
+        st.audio_late = self.audio_waits.late();
+        st.audio_focus = self
+            .project
+            .tracks
+            .iter()
+            .position(|t| self.audio_focus.is_given() && t.id == self.audio_focus && t.is_audio());
+        // Launched again since: no longer "not ready".
+        st.not_ready = self
+            .not_ready
+            .iter()
+            .filter(|n| {
+                !self.cues.iter().any(|c| c.track == n.0)
+                    && !self.launches.iter().any(|l| (l.track, l.slot) == (n.0, n.1))
+            })
+            .copied()
+            .collect();
         st.saved = self.saved.iter().map(|s| (s.0, s.1)).collect();
         st.reloads = self
             .reloads
