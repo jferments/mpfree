@@ -1755,12 +1755,9 @@ impl Learn {
                 ci.bottom() - last.bottom() - 6,
             ),
             t.text_faint,
-            "Swing and Filter turn as Play's Q-Links do (Filter is track 1's, which Play calls Drums). \
-             XY across and up move the XY pad as a finger does: its effect plays until both are \
-             back, across in the middle and up at the bottom; on a layout of yours a knob holds \
-             the pad while it moves and lets go half a second after. XY Hold is the pad's Hold, \
-             a press switching it. The layout buttons step through this song's layouts of yours \
-             (the ready-made ones while there are none). Play's own touches stay as they are.",
+            "Swing and Filter turn as Play's Q-Links do (Filter is track 1's). XY across and up \
+             move the pad as a finger does, until both are back (across in the middle, up at the \
+             bottom). XY Hold is the pad's Hold; the layout buttons step through your layouts.",
         );
     }
 
