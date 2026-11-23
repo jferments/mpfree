@@ -122,6 +122,7 @@ Built in round 8 (PR #106) to Jay's approved mockups F to I (10:05Z), with real 
 - **The hint line** starts where the panels do (left-aligned, as the mockups).
 - **NOTE REPEAT's strip** takes the top of the view's first panel, so nothing else moves.
 - **The Arp panel** takes the view under the transport bar.
+  - **Its Modifier box** (Jay, 23 Nov 2026 16:08Z, "Approve and merge" on the arp controller tricks card; canvas https://claude.ai/artifact/THaamfTJUJ1T1xWKE8Mppi): its mode tabs share their row with the Modifier box (340 px, at the right): MODIFIER over the controller's name, and how far it is now as a percent over a meter in the second accent; with no controller, "Off · tap to pick a controller". A tap opens the arp options' Modifier section (Back, Controller, Pushes rate, Pushes octaves, Pushes gate, Pushes swing, Adds rolls, Adds accents); SHIFT + a touch on it arms MIDI Learn. While the Modifier pushes, each Q-Link slider shows a ring where it plays now, joined in the second accent, and its value reads "1/16 → 1/32"; the quick band's rate is the one playing, in the second accent; the step strip shows the octaves played. The sliders' knobs, the Q-Link cards and the arp chip stay as set.
 - **Macro banks:** Q-LINK steps the Q-Link column to Macros 1-4, then Macros 5-8, then back to the view's own knobs (with a step picked on the Steps it steps the step's banks instead: the inspector's × picks the step off); Play keeps its bank while other pages show. A finger held on a macro card opens the macros panel (section 4b).
 - **Half length and double** stay on the Looper tab, where a loop is shaped (the loop strip's "still to come" went with it in the looper redesign's step 5).
 
@@ -391,21 +392,22 @@ The XY controller plan (`mpfree-claude` `xy-controller/plan.md`): Jay's approval
 
 - **Main rows, in order:**
   1. Pad velocity curve
-  2. Latch keeps pads
-  3. Audio buffer
-  4. Find the buttons again
-  5. Show developer tools
-  6. Sound cores (Shared, Core 3, Cores 3 and 2, Cores 3, 2 and 1 (a test Jay asked for on 12 Nov): where the sound runs from the next start; asked for by the profiling thread, agreed by the app thread on 12 Nov; Jay's go 12 Nov 07:10Z, merged in PR #200, train 14)
-  7. Map controls
-  8. Line input
-  9. Send MIDI and CV out (Off, the default, or "On (sends MIDI)": the MIDI Out jack and the CV jacks send only while it is on, and it is kept across restarts; Jay's pick on the MIDI thread's card, 16 Nov 23:16Z, in place of the `--midi-out` and `--cv-out` start flags. It sits after the Line input latency row)
-  10. System info
-  11. System status (opens System status, section 2a, as the status chip does)
-  12. At start (New project, the default, or Last project: what opens when MPFree starts, once the sound is going; Jay's pick on the project thread's settings card, 13 Nov 14:09Z)
-  13. Export (Fast, quiet, the default, or Listen: how an export plays; a song that needs outside gear listens anyway; Jay, 14 Nov 01:32Z, on the missing-features thread)
-  14. Export file (24-bit, the default, 16-bit with dither, or 32-bit float) and 15. Export rate (44.1 kHz, the default, or 48 kHz): the format each export starts from; the Export panel's File row changes it for one export (Jay's pick "Both", 14 Nov 07:51Z, on the missing-features thread)
-  16. Backup and Akai kits (opens its own rows; Jay's pick "A Prefs row before Touch screen", this thread's card, 17 Nov 18:12Z, with the first start's backup and Akai's kits made optional, his pick "Backup and kits both optional", 18:06Z. Built in the USB creator thread's pull request; the app thread, which owns this spec, is told there.)
-  17. Touch screen (opens its own rows)
+  2. Latch keeps pads (Replace, the default, Toggle or Add)
+  3. Sustain pedal latches (Off, the default, or On: CC 64 holds the arp as Latch does, and lets it go). Both rows are in the arp options too, after Modifier (Jay, 23 Nov 2026 16:08Z, "Approve and merge" on the arp controller tricks card; canvas https://claude.ai/artifact/THaamfTJUJ1T1xWKE8Mppi)
+  4. Audio buffer
+  5. Find the buttons again
+  6. Show developer tools
+  7. Sound cores (Shared, Core 3, Cores 3 and 2, Cores 3, 2 and 1 (a test Jay asked for on 12 Nov): where the sound runs from the next start; asked for by the profiling thread, agreed by the app thread on 12 Nov; Jay's go 12 Nov 07:10Z, merged in PR #200, train 14)
+  8. Map controls
+  9. Line input
+  10. Send MIDI and CV out (Off, the default, or "On (sends MIDI)": the MIDI Out jack and the CV jacks send only while it is on, and it is kept across restarts; Jay's pick on the MIDI thread's card, 16 Nov 23:16Z, in place of the `--midi-out` and `--cv-out` start flags. It sits after the Line input latency row)
+  11. System info
+  12. System status (opens System status, section 2a, as the status chip does)
+  13. At start (New project, the default, or Last project: what opens when MPFree starts, once the sound is going; Jay's pick on the project thread's settings card, 13 Nov 14:09Z)
+  14. Export (Fast, quiet, the default, or Listen: how an export plays; a song that needs outside gear listens anyway; Jay, 14 Nov 01:32Z, on the missing-features thread)
+  15. Export file (24-bit, the default, 16-bit with dither, or 32-bit float) and 16. Export rate (44.1 kHz, the default, or 48 kHz): the format each export starts from; the Export panel's File row changes it for one export (Jay's pick "Both", 14 Nov 07:51Z, on the missing-features thread)
+  17. Backup and Akai kits (opens its own rows; Jay's pick "A Prefs row before Touch screen", this thread's card, 17 Nov 18:12Z, with the first start's backup and Akai's kits made optional, his pick "Backup and kits both optional", 18:06Z. Built in the USB creator thread's pull request; the app thread, which owns this spec, is told there.)
+  18. Touch screen (opens its own rows)
 - **The Backup and Akai kits rows** ("Prefs · Backup and Akai kits"):
   1. Back
   2. Backup of your MPC: "Made 17 Nov 2026", "Not made yet" or "Left out". Push or + asks for a backup at the next start ("At the next start", or "New one at the next start" when one is there); again, or -, takes it back.
