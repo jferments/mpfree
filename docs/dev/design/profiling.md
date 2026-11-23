@@ -523,8 +523,13 @@ to 18 bars in Jazz-ish 1.8 ms (3.2 ms); Try again on one bar of 18 0.13 ms;
 Continue on a clip in a project, 2 to 6 bars, 0.75 ms. With the
 calibration file (this machine times 9.3) that is about 18 ms on the MPC
 for an 18-bar Continue (23 ms), 1.3 ms for a Try again and 40 ms for the
-whole reading budget (64 ms): far under what a press can feel. The
-device's own numbers come from its bench round once `host_bench_mpc.py`
+whole reading budget (64 ms): far under what a press can feel. Since
+Continue makes music first (S1, 23 Nov; a cloud machine about 1.35 times
+slower than the workstation at the reading): Continue from 2 to 10 bars
+in Groove 3.0 ms (four whole drafts), from 2 to 18 bars in Jazz-ish
+2.8 ms (two drafts; 6.9 ms worst), Try again on one bar 0.02 ms, and a
+clip in a project 1.5 ms; by the same calibration about 20 ms on the MPC
+for an 8-bar Continue and about 50 ms at worst. The device's own numbers come from its bench round once `host_bench_mpc.py`
 runs `--compose` (not yet: round 2's runbook was rehearsed without it).
 
 ### Lanes (`--lanes`)
