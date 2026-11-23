@@ -823,7 +823,8 @@ pub struct TimeState {
     /// The arrangement's placements and markers. The placements are
     /// shared: the screen keeps the same list from one transport update to
     /// the next, so the Song view knows its blocks are the same without
-    /// comparing them (Arrange refactor 2.4).
+    /// comparing them (Arrange refactor 2.4). They are in the song's order,
+    /// by track and then start ([`TimeState::song_has`] searches them).
     pub placements: Arc<[PlacementInfo]>,
     pub markers: Vec<(Tick, String)>,
     /// Each marker's passes and their length while its part follows its
@@ -4205,9 +4206,12 @@ impl TimeState {
     }
 
     /// The song has something on `track` to play: a block on its lane,
-    /// or an audio track's region.
+    /// or an audio track's region. The placements are in the song's order,
+    /// by track, so a search finds the track's first block: every track's
+    /// header and cells ask, every frame, of a song of up to 4,096 blocks.
     pub fn song_has(&self, track: usize) -> bool {
-        self.placements.iter().any(|p| p.track == track)
+        let k = self.placements.partition_point(|p| p.track < track);
+        self.placements.get(k).is_some_and(|p| p.track == track)
             || self
                 .audio_lane_at(track)
                 .is_some_and(|l| !l.blocks.is_empty())
