@@ -516,9 +516,16 @@ impl<const N: usize> IirPair<N> {
     }
 
     pub(crate) fn reset(&mut self) {
+        self.reset_resampling();
+        self.phase = [[0.0; 2]; N];
+    }
+
+    /// Clears the up- and down-sampler and leaves the phase match running,
+    /// for an owner that stops the oversampling while its dry side goes on
+    /// (Character's Iron).
+    pub(crate) fn reset_resampling(&mut self) {
         self.up = [[0.0; 2]; N];
         self.down = [[0.0; 2]; N];
-        self.phase = [[0.0; 2]; N];
     }
 }
 
