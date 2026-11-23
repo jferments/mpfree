@@ -1042,11 +1042,12 @@ impl MusicIn {
         if !self.unsaved.is_empty() {
             for mut l in self.unsaved.drain(..) {
                 // The transport, the tempo, the looper's footswitch, the
-                // Perform pads' keys and Play's own controls work in every
-                // song; the rest belongs to this one.
+                // Perform pads' keys, Play's own controls and a set's
+                // controls work in every song; the rest belongs to this
+                // one.
                 let mut kept = if matches!(
                     l.target.owner,
-                    Owner::Transport | Owner::Looper | Owner::Perform | Owner::Play
+                    Owner::Transport | Owner::Looper | Owner::Perform | Owner::Play | Owner::Show
                 ) {
                     Kept::Rig
                 } else {
@@ -1901,9 +1902,11 @@ pub enum KeysPlay {
     /// By note: the synth's pad layout is on the pads.
     #[default]
     Notes,
-    /// A kit: each note its kit pad, A1 to H16
-    /// (`mpfree_midi::profile::kit_pad_of_note`).
-    KitPads,
+    /// A kit, as its Keys play sends each note (sampler step 15,
+    /// `sampler::Player::note_to`): its kit pad, A1 to H16
+    /// (`mpfree_midi::profile::kit_pad_of_note`), or the keygroups by
+    /// note.
+    KitPads(mpfree_sampler::engine::KitKeys),
     /// As the pad (1 to 16) the MPC gives each note
     /// (`mpc_one::pad_index`): the synth or a track's own instrument
     /// without a pad layout.
@@ -1920,7 +1923,13 @@ fn armed_to((track, play): (u8, KeysPlay), note: u8) -> To {
     let pad = match play {
         KeysPlay::Notes => return To::Track { track, pad: None },
         KeysPlay::PadsSynth => return To::Pads,
-        KeysPlay::KitPads => Some(mpfree_midi::profile::kit_pad_of_note(note) as u8),
+        KeysPlay::KitPads(keys) if keys.to_keygroups(note) => {
+            match keys.pad_of_note(note).filter(|_| keys.takes_notes()) {
+                Some(pad) => Some(pad),
+                None => return To::Track { track, pad: None },
+            }
+        }
+        KeysPlay::KitPads(_) => Some(mpfree_midi::profile::kit_pad_of_note(note) as u8),
         KeysPlay::Pads => mpfree_controller::mpc_one::pad_index(note),
     };
     match pad {
@@ -3268,10 +3277,18 @@ mod tests {
         // A kit on track 3: a key plays the kit pad that sends its note,
         // in any bank (20 is H2, 113). On the synth without a pad layout,
         // the pad the MPC gives it, or none.
-        m.set_armed(2, KeysPlay::KitPads);
+        m.set_armed(2, KeysPlay::KitPads(mpfree_sampler::engine::KitKeys::PADS));
         run(&mut m, usb, &[0x99, 37, 100, 0x99, 20, 90]);
         m.set_armed(2, KeysPlay::Pads);
         run(&mut m, usb, &[0x99, 20, 90]);
+        // A kit of keygroups (sampler step 15): by note.
+        let keygroups = mpfree_sampler::engine::KitKeys {
+            play: mpfree_sampler::model::KeysPlay::Keygroups,
+            held: 1 << 60,
+            pads_from: None,
+        };
+        m.set_armed(2, KeysPlay::KitPads(keygroups));
+        run(&mut m, usb, &[0x99, 60, 90]);
         // A synth on track 2: by note, and its wheel.
         m.set_armed(1, KeysPlay::Notes);
         run(&mut m, usb, &[0x90, 60, 96, 0xE0, 0, 0x50]);
@@ -3306,6 +3323,13 @@ mod tests {
                     }
                 ),
                 (usb, To::NoPad { track: 2 }),
+                (
+                    usb,
+                    To::Track {
+                        track: 2,
+                        pad: None
+                    }
+                ),
                 (
                     usb,
                     To::Track {

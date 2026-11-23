@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""mpfree-disktest on the test build: how fast and how steadily the stick's partition 4 streams audio. Five ways to run it:
+"""mpfree-disktest on the test build: how fast and how steadily the stick's partition 4 streams audio. Six ways to run it:
 
   --survey-only   READ-ONLY. Steps 1 and 2 only: nothing is copied to or run on the MPC.
   --read-only     RAM ONLY on the MPC. Copies the program into the test build's RAM and runs
@@ -14,8 +14,12 @@
   --recorder      WRITES TEST TAKES ON THE STICK'S PARTITION 4, THEN DELETES THEM, and CHANGES
                   ONE SETTING IN THE RUNNING KERNEL for two of its steps (/proc/sys/vm/dirty_bytes,
                   put back as found; a restart puts it back too). Records 8 takes with MPFree's own
-                  recorder while 8 streams read the audio on partition 4 (D4). Needs
+                  recorder while 8 streams read the audio on partition 4 (D4), the last two steps
+                  with the reads given the disk ahead of the recorder. Needs
                   MPFREE_ACCEPT_DISKTEST=YES.
+  --heat          KEEPS THE PROCESSOR BUSY until the temperature settles (30 minutes at the
+                  most, stopping at 75 degrees C), reading the temperatures and clocks. Writes
+                  no file anywhere. Needs MPFREE_ACCEPT_DISKTEST=YES.
 
 Run it while the test build runs from the USB stick (started at power-on by
 the boot hook on the installed 3.10.1, or by `collect-over-ssh.sh --kexec-boot`
@@ -78,14 +82,18 @@ the second waits for you to press Enter:
      trip point the kernel gives if that is lower, and the steps after are
      left out; with no temperature to read, steps 5 to 8 are left out.
   4d. With --recorder, STICK, PARTITION 4, AND ONE KERNEL SETTING: runs
-     `mpfree-disktest --recorder`, about 7 minutes. It refuses (exit code 3,
-     nothing written) on everything 4a and 4b refuse. Then, in 8 steps of
+     `mpfree-disktest --recorder`, about 9 minutes. It refuses (exit code 3,
+     nothing written) on everything 4a and 4b refuse. Then, in 10 steps of
      about 45 s, MPFree's own recorder (the recording file protocol's
      writer) records 8 takes of stereo float at 48 kHz (3.07 MB/s) while 8
      streams read the audio as 4a does with 128 KiB reads: a round every
      1, 2, 5 and 10 s spread across the interval, every 2 and 5 s with the
-     takes together, and every 2 and 5 s with the kernel's writeback limit
-     raised. It writes only its takes (recN_ID.wav.recording,
+     takes together, every 2 and 5 s with the kernel's writeback limit
+     raised, and every 2 s with the streams' reads ahead of the recorder on
+     the disk: at best effort 0 with the recorder's thread at 7, then in
+     the real-time class (ioprio_set on the program's own threads for that
+     step only, which end with it; nothing outside the program changes). It
+     writes only its takes (recN_ID.wav.recording,
      recN_ID.wav.checkpoint and recN_ID.wav) in
      /run/mpfree-data/mpfree-disktest, made new for each step and deleted
      after it (about 126 MiB a step), and deletes the folder at the end,
@@ -98,6 +106,22 @@ the second waits for you to press Enter:
      cycle puts it back whatever happened. This tool reads the four
      writeback settings before and after the run (read-only) and says
      whether they are as they were.
+  4e. With --heat, THE PROCESSOR ONLY: runs `mpfree-disktest --heat`, up
+     to 30 minutes. It refuses (exit code 3) on everything 4a refuses that
+     is not about the library, and when no temperature reads. One ordinary
+     thread pinned to each core filters a buffer over and over (4c's step
+     5), until the hottest zone has risen less than 0.5 degrees C in 5
+     minutes, or for 30 minutes at the most; the threads stop at once at
+     75 degrees C, or at the lowest trip point the kernel gives that is
+     lower. Every 10 s it says each zone's temperature and each core's
+     clock; each core's clock settings (scaling_cur_freq,
+     scaling_max_freq, cpuinfo_max_freq, scaling_governor) at the start
+     and the end. It reads /sys/class/thermal and /sys/devices/system/cpu
+     only and writes no file. Ctrl-C or the ssh session closing stops it.
+  Beside every set of streams (4a, 4c and 4d) it also reads the stick's
+  partitions' block counters in sysfs (/sys/class/block/sdX/sdXN/stat and
+  inflight, read-only) every 10 ms, and says what the other partitions
+  read and wrote, and what was going on beside each read over 100 ms.
   All run as an ordinary process, so the pad player's audio thread, if
   it is running, comes first; the screen may answer slowly during steps
   5 to 8.
@@ -151,8 +175,10 @@ REMOTE_DIR = "/run/mpfree-disktest"
 TIMEOUT = 900
 # The run under load: about 7 minutes, longer if the stick can't keep up (each stream set stops at 60 s).
 TIMEOUT_LOAD = 1500
-# The recorder's run: about 7 minutes; each step's streams stop at 120 s and its takes finish within 60 s.
+# The recorder's run: about 9 minutes; each step's streams stop at 120 s and its takes finish within 60 s.
 TIMEOUT_RECORDER = 1800
+# The heat run: 30 minutes at the most, and its start and end.
+TIMEOUT_HEAT = 2400
 REFUSED = 3
 DEFAULT_SSH = {
     "ip": os.environ.get("MPC_IP", "10.42.0.141"),
@@ -196,6 +222,11 @@ exec "$R/run/mpfree-disktest/mpfree-disktest" --under-load
 RUN_RECORDER = r"""R=''
 cd "$R/run/mpfree-disktest" || exit 1
 exec "$R/run/mpfree-disktest/mpfree-disktest" --recorder
+"""
+# Keeps every core busy until the temperature settles; reads the temperatures and clocks, writes no file.
+RUN_HEAT = r"""R=''
+cd "$R/run/mpfree-disktest" || exit 1
+exec "$R/run/mpfree-disktest/mpfree-disktest" --heat
 """
 # Read-only: the kernel's four writeback settings, before and after the recorder's run.
 WRITEBACK = r"""R=''
@@ -253,6 +284,9 @@ def main(argv):
                       help="copy the program to the test build's RAM and run its recorder test (writes test "
                            "takes on partition 4, then deletes them; raises /proc/sys/vm/dirty_bytes for two "
                            "steps and puts it back)")
+    mode.add_argument("--heat", action="store_true",
+                      help="copy the program to the test build's RAM and keep every core busy until the "
+                           "temperature settles (30 minutes at the most, stopping at 75 degrees C); writes no file")
     args = p.parse_args(argv)
     accept = os.environ.get("MPFREE_ACCEPT_DISKTEST")
     if args.read_only and accept not in ("YES", "READ-ONLY"):
@@ -267,6 +301,10 @@ def main(argv):
         raise Stop("opt-in required (writes test takes on the stick's partition 4, then deletes them, and raises "
                    "one writeback setting in the running kernel for two steps, putting it back): "
                    "MPFREE_ACCEPT_DISKTEST=YES python3 tools/mpc-one/host_disktest_mpc.py --recorder")
+    if args.heat and accept != "YES":
+        raise Stop("opt-in required (keeps the processor busy until the temperature settles, 30 minutes at the "
+                   "most, stopping at 75 degrees C; writes no file): "
+                   "MPFREE_ACCEPT_DISKTEST=YES python3 tools/mpc-one/host_disktest_mpc.py --heat")
     if not args.read_only and not args.survey_only and accept != "YES":
         raise Stop("opt-in required (writes test files on the stick's partition 4, then deletes them): "
                    "MPFREE_ACCEPT_DISKTEST=YES python3 tools/mpc-one/host_disktest_mpc.py")
@@ -284,6 +322,9 @@ def main(argv):
     elif args.recorder:
         out.say("MPFree recorder test on the test build (RAM, reads of the audio and test takes on the stick's "
                 "partition 4 that it deletes, and one writeback setting in the running kernel, put back)")
+    elif args.heat:
+        out.say("MPFree heat test on the test build (RAM, and the processor kept busy until the temperature "
+                "settles; no file written)")
     else:
         out.say("MPFree disk test on the test build (RAM, and test files on the stick's partition 4 that it deletes)")
 
@@ -352,7 +393,12 @@ def main(argv):
                     "/run/mpfree-data/backup, WRITES test takes in /run/mpfree-data/mpfree-disktest (stick "
                     "partition 4) and deletes them, and for steps 7 and 8 sets /proc/sys/vm/dirty_bytes to "
                     "33554432, then back to the value it found (RAM only)")
-            answer = app.ready(out, "Takes about 7 minutes; the MPC can stay as it is.")
+            answer = app.ready(out, "Takes about 9 minutes; the MPC can stay as it is.")
+        elif args.heat:
+            out.say("\n[4/4] The heat test: keeps every core busy (ordinary priority) until the hottest zone "
+                    "rises less than 0.5 degrees C in 5 minutes, 30 minutes at the most, stopping at 75 degrees C; "
+                    "reads the temperatures and clocks and writes no file")
+            answer = app.ready(out, "Takes up to 30 minutes; the screen may answer slowly. The MPC can stay as it is.")
         else:
             out.say("\n[4/4] The disk test: WRITES test files in /run/mpfree-data/mpfree-disktest "
                     "(stick partition 4), then deletes them")
@@ -364,8 +410,9 @@ def main(argv):
             result = 0
         else:
             script = RUN_READ if args.read_only else RUN_LOAD if args.under_load \
-                else RUN_RECORDER if args.recorder else RUN
-            timeout = TIMEOUT_LOAD if args.under_load else TIMEOUT_RECORDER if args.recorder else TIMEOUT
+                else RUN_RECORDER if args.recorder else RUN_HEAT if args.heat else RUN
+            timeout = TIMEOUT_LOAD if args.under_load else TIMEOUT_RECORDER if args.recorder \
+                else TIMEOUT_HEAT if args.heat else TIMEOUT
             rc, _ = app.stream(mpc, script, timeout, out)
             if rc == REFUSED:
                 out.say("  the disk test refused (reason above); nothing was written on the stick")
@@ -395,6 +442,7 @@ def main(argv):
     ran = "the read-only disk test ran (numbers above); nothing was written on the stick." if args.read_only \
         else "the disk test under load ran (numbers above)." if args.under_load \
         else "the recorder test ran (numbers above)." if args.recorder \
+        else "the heat test ran (numbers above); it wrote no file." if args.heat \
         else "the disk test ran (numbers above)."
     stopped = "stopped early; the read-only test writes nothing on the stick." if args.read_only else "stopped early."
     out.say("\nRESULT: " + {0: ran, 2: "refused by the disk test; nothing was written on the stick.",

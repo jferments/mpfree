@@ -1,0 +1,107 @@
+title Eight tracks: eight audio tracks record onto the stick beside a demo song, play back from their files, two record while six play, then the project is saved and opened again
+covers stream-record, stream-play, stream-record-while-playing, stream-seek, stream-save, stream-open
+needs demo-songs, stream-audio
+# D3 (docs/dev/design/disk-streaming.md): the whole app, with its takes on the
+# stick. host_streamtest_mpc.py puts this run's data folder on partition 4,
+# so every take is written there as it records and plays back from its file.
+# The tracks record the line input (mono; silent with nothing plugged in): the
+# drive does the same work either way. Each mark's status line (and one every
+# 30 s) counts the takes on their files and how much went silent because the
+# stick was late: tools/mpc-one/devtest_report.py puts them in its tables.
+wait 2
+mark open
+button BROWSE
+tap browser place Projects
+tap browser row Night Market
+tap browser row Night Market
+wait 1
+expect project: Night Market is in
+mark tracks
+tap header tab Arrange
+tap clips view Song
+tap song button Play song
+expect time: song on
+# Eight audio tracks, each armed as it is added.
+tap song add-track + Track
+tap song add-kind Audio track
+wait 0.5
+tap song add-track + Track
+tap song add-kind Audio track
+wait 0.5
+tap song add-track + Track
+tap song add-kind Audio track
+wait 0.5
+tap song add-track + Track
+tap song add-kind Audio track
+wait 0.5
+tap song add-track + Track
+tap song add-kind Audio track
+wait 0.5
+tap song add-track + Track
+tap song add-kind Audio track
+wait 0.5
+tap song add-track + Track
+tap song add-kind Audio track
+wait 0.5
+tap song add-track + Track
+tap song add-kind Audio track
+wait 0.5
+expect time: Audio 8 added
+# Two minutes of all eight recording while the song plays: twice the audio
+# track memory, so each take's memory goes back as its file holds it.
+mark record-eight
+button REC
+wait 0.5
+button PLAY
+wait 120
+button STOP
+wait 2
+# The eight takes play back from their files, with the song.
+mark play-eight
+button PLAY START
+wait 60
+# Back to the start twice while it plays: the starts are held in the cache.
+button PLAY START
+wait 20
+button PLAY START
+wait 40
+button STOP
+wait 2
+# Tracks 7 and 8 record again while 1 to 6 play from their files.
+mark record-two
+tap song arm Audio 1 arm
+tap song arm Audio 2 arm
+tap song arm Audio 3 arm
+tap song arm Audio 4 arm
+tap song arm Audio 5 arm
+tap song arm Audio 6 arm
+button REC
+wait 0.5
+button PLAY
+wait 60
+button STOP
+wait 2
+# The save copies every take's file into the project on the stick: about
+# 200 MB, which the stick writes at 10 to 20 MB/s, so two minutes leave room.
+mark save
+button SHIFT + BROWSE
+wait 120
+expect project: saved Night Market
+# Opened again: the takes open on their files in the project's samples.
+mark open-again
+button BROWSE
+tap browser place Projects
+tap browser row Night Market
+tap browser row Night Market
+wait 20
+expect project: Night Market is in
+expect project: 8 audio tracks and 10 takes in
+mark play-again
+tap header tab Arrange
+tap clips view Song
+tap song button Play song
+button PLAY START
+wait 60
+button STOP
+wait 2
+mark end

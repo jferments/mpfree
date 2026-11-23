@@ -37,6 +37,18 @@
 //!   song. Each clip is copied turned round to where the section starts
 //!   in it ([`turned`]), without the one-shot, legato and follow action a
 //!   song block ignores, so the row plays as the block did.
+//!   The song's audio comes too (audio tracks phase 2, step 2d;
+//!   [`SongSound`]): each audio lane's regions in a section become an
+//!   audio clip in the section's row, cut at its edges as the audio
+//!   tracks cut a region (each part keeping exactly its share of its
+//!   fades, and the part after a cut playing on from the frame the cut
+//!   was at), so rows played in order run on sample for sample; a block
+//!   of an audio clip turns round as any clip does, its region across
+//!   the turn cut in two. A lane's regions make a section where nothing
+//!   else plays, but don't cut one (their first start and last end do).
+//!   A section a clip can't hold exactly is refused before anything
+//!   changes ([`ScenesRefused`]): more than [`MAX_CLIP_REGIONS`] regions
+//!   on a lane, or regions and a block on one lane.
 //!
 //! Every conversion is exact or says how it is not (plan D7): each way
 //! the result plays differently is a [`Difference`], by track and bar.
@@ -61,8 +73,8 @@ use crate::mpfree_param::ParamAddr;
 use crate::scenes::{SongList, MAX_TIMES};
 use crate::time_edit::{Refused, TimeEdit};
 use crate::{
-    Clip, ClipId, Cond, Direction, Follow, FollowAction, Join, ModelError, Project, Scene, Track,
-    MAX_TRACKS, ROWS, SCENES, SLOTS,
+    AudioClip, Clip, ClipId, ClipRegion, Cond, Direction, Follow, FollowAction, Join, ModelError,
+    Project, Scene, Track, TrackId, MAX_CLIP_REGIONS, MAX_TRACKS, ROWS, SCENES, SLOTS,
 };
 use mpfree_transport::time::{
     valid_bpm, MapError, Segment, TempoMap, Tick, MAX_SEGMENTS, MIN_SPAN_TICKS,
@@ -454,8 +466,9 @@ impl Arrangement {
     }
 
     /// Every block and song clip in range, and each block's clip on a lane
-    /// of its kind: a loop's on a Loop track, a clip's off one (a block
-    /// whose clip is gone plays nothing and is fine). The cells' clips
+    /// of its kind: a loop's on a Loop track, a clip's off one, an audio
+    /// clip's on an audio track and a note clip's off one (a block whose
+    /// clip is gone plays nothing and is fine). The cells' clips
     /// are the project's to check.
     pub fn check(&self, tracks: &[Track]) -> Result<(), ModelError> {
         if self.placements.len() > MAX_PLACEMENTS
@@ -472,13 +485,13 @@ impl Arrangement {
             if p.length <= 0 || p.start < 0 || p.offset < 0 || p.track >= tracks.len() {
                 return Err(ModelError::BadPlacement);
             }
-            if tracks[p.track].is_audio() {
+            // An audio clip's block on an audio track's lane, and only
+            // there (the audio tracks rethink's phase 2, step 2d).
+            let clip = self.clip_of(tracks, p);
+            if clip.is_some_and(|c| c.audio.is_some() != tracks[p.track].is_audio()) {
                 return Err(ModelError::AudioTrack);
             }
-            if self
-                .clip_of(tracks, p)
-                .is_some_and(|c| c.looped.is_some() != tracks[p.track].is_loops())
-            {
+            if clip.is_some_and(|c| c.looped.is_some() != tracks[p.track].is_loops()) {
                 return Err(ModelError::BadLoop);
             }
             if let Some(prev) = i.checked_sub(1).map(|j| &self.placements[j]) {
@@ -859,7 +872,9 @@ impl Arrangement {
     /// when it would overlap a placement there or start before 0; and
     /// (`BadLoop`) when it goes to another track and either is a Loop
     /// track: a loop's block stays on its Loop track's lane, as its cell
-    /// stays in its column (loop-tracks.md). Its index now.
+    /// stays in its column (loop-tracks.md); and (`AudioTrack`) when it
+    /// goes between an audio track and another kind: an audio clip's block
+    /// stays on audio tracks' lanes. Its index now.
     pub fn move_placement(
         &mut self,
         tracks: &[Track],
@@ -876,7 +891,10 @@ impl Arrangement {
         if track != p.track && (loops(track) || loops(p.track)) {
             return Err(ModelError::BadLoop);
         }
-        if tracks[track].is_audio() {
+        // An audio clip's block goes only to another audio track's lane,
+        // and a note clip's never onto one (phase 2, step 2d).
+        let audio = |t: usize| tracks.get(t).is_some_and(Track::is_audio);
+        if audio(track) != audio(p.track) {
             return Err(ModelError::AudioTrack);
         }
         let mut moved = p.clone();
@@ -1632,13 +1650,20 @@ impl Arrangement {
 /// The song's sections: where anything starts or ends and the markers, in
 /// order, merged where the same placements play on, without the silent
 /// ones. Each is (start, end, the placement playing on each track).
-pub fn sections(project: &Project) -> Vec<(Tick, Tick, Vec<Option<usize>>)> {
+/// `cover` is each audio lane's regions as one span, its first region's
+/// start to its last one's end ([`SongSound::cover`]): a stretch under one
+/// is never silent, and its ends cut, but its own gaps don't.
+pub fn sections(
+    project: &Project,
+    cover: &[(Tick, Tick)],
+) -> Vec<(Tick, Tick, Vec<Option<usize>>)> {
     let song = &project.arrangement;
     let mut cuts: Vec<Tick> = song
         .placements
         .iter()
         .flat_map(|p| [p.start, p.end()])
         .chain(song.markers.iter().map(|m| m.at))
+        .chain(cover.iter().flat_map(|&(a, b)| [a, b]))
         .collect();
     cuts.sort_unstable();
     cuts.dedup();
@@ -1648,7 +1673,8 @@ pub fn sections(project: &Project) -> Vec<(Tick, Tick, Vec<Option<usize>>)> {
         let (a, b) = (w[0], w[1]);
         let playing: Vec<Option<usize>> =
             (0..project.tracks.len()).map(|t| song.at(t, a)).collect();
-        if playing.iter().all(Option::is_none) {
+        let sounds = cover.iter().any(|&(f, t)| f < b && t > a);
+        if playing.iter().all(Option::is_none) && !sounds {
             continue;
         }
         match out.last_mut() {
@@ -1659,14 +1685,116 @@ pub fn sections(project: &Project) -> Vec<(Tick, Tick, Vec<Option<usize>>)> {
     out
 }
 
+/// The song's audio as Song → scenes turns it (audio tracks phase 2,
+/// step 2d): each audio track's regions by its lasting id, in order, none
+/// overlapping, on song ticks, exactly as they sound; and the tempo map
+/// and rate the song plays them along, which say where a cut falls in a
+/// recording.
+#[derive(Clone, Copy, Debug)]
+pub struct SongSound<'a> {
+    pub regions: &'a [(TrackId, Vec<ClipRegion>)],
+    pub map: TempoMap,
+    pub rate: u32,
+}
+
+impl SongSound<'_> {
+    /// No regions, along `map` at `rate` (a block of an audio clip still
+    /// turns along them).
+    pub fn none(map: TempoMap, rate: u32) -> SongSound<'static> {
+        SongSound {
+            regions: &[],
+            map,
+            rate,
+        }
+    }
+
+    /// Track `track`'s regions (none for a track not named).
+    fn of(&self, track: TrackId) -> &[ClipRegion] {
+        self.regions
+            .iter()
+            .find(|(t, _)| *t == track)
+            .map_or(&[], |(_, r)| r.as_slice())
+    }
+
+    /// Each lane's regions as one span, first start to last end
+    /// ([`sections`]).
+    fn cover(&self, project: &Project) -> Vec<(Tick, Tick)> {
+        project
+            .tracks
+            .iter()
+            .filter(|t| t.is_audio())
+            .filter_map(|t| {
+                let r = self.of(t.id);
+                Some((r.first()?.start, r.iter().map(|r| r.end).max()?))
+            })
+            .collect()
+    }
+
+    /// `r`'s frames from song tick `at`, where it starts, to song tick
+    /// `t`, on its own rounding (its `phase`), as the audio tracks count
+    /// them (`Region::frames_to`): to its end, its length.
+    fn frames_of(&self, r: &ClipRegion, at: Tick, t: Tick) -> i64 {
+        let x = self.map.frames_between(at as f64, t as f64, self.rate);
+        (f64::from(r.phase) + x).round() as i64
+    }
+
+    /// `r`, on song ticks `at..end`, cut at song tick `cut` inside it, as
+    /// the audio tracks cut a region (`mpfree-audiotracks`' `cut`): the
+    /// part before ends there and counts the frames after in `left`; the
+    /// part after plays on from where `r` had got to, counting the frames
+    /// before in `into`, on `r`'s rounding, so the parts play exactly as
+    /// `r` did. Each keeps its ticks (the caller moves them).
+    fn cut(&self, r: &ClipRegion, at: Tick, end: Tick, cut: Tick) -> (ClipRegion, ClipRegion) {
+        let add = |n: u32, k: i64| (i64::from(n) + k).clamp(0, i64::from(u32::MAX)) as u32;
+        let k = self.frames_of(r, at, cut);
+        let len = self.frames_of(r, at, end);
+        let (mut before, mut after) = (*r, *r);
+        before.left = add(r.left, len - k);
+        after.src = r.src + k;
+        let x = self.map.frames_between(at as f64, cut as f64, self.rate);
+        after.phase = (f64::from(r.phase) + x - k as f64) as f32;
+        after.into = add(r.into, k);
+        (before, after)
+    }
+}
+
+/// Why Song → scenes changed nothing ([`song_to_scenes`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScenesRefused {
+    /// The rows can't be made (`NoRoom`: no run of empty rows long enough).
+    Model(ModelError),
+    /// Audio track `track` has `regions` regions in song ticks `from..to`,
+    /// more than a clip holds ([`MAX_CLIP_REGIONS`]).
+    Regions {
+        track: usize,
+        from: Tick,
+        to: Tick,
+        regions: usize,
+    },
+    /// Audio track `track` has regions and a block in song ticks
+    /// `from..to`, and a cell holds one clip.
+    Both { track: usize, from: Tick, to: Tick },
+}
+
+impl From<ModelError> for ScenesRefused {
+    fn from(e: ModelError) -> ScenesRefused {
+        ScenesRefused::Model(e)
+    }
+}
+
 /// Each section of the song into a row: see the module notes. Uses the
 /// first run of empty rows ([`Project::row_empty`]) long enough, and sets
 /// every field of each row's scene; returns the rows and the ways they
-/// play differently from the song, or `NoRoom` (and changes nothing) when
-/// there is no such run.
-pub fn song_to_scenes(project: &mut Project, bar: Tick) -> Result<ToScenes, ModelError> {
+/// play differently from the song. Refused, changing nothing: no such run
+/// (`NoRoom`), or a section an audio clip can't hold exactly
+/// ([`ScenesRefused`]).
+pub fn song_to_scenes(
+    project: &mut Project,
+    bar: Tick,
+    sound: &SongSound,
+) -> Result<ToScenes, ScenesRefused> {
     let bar = bar.max(1);
-    let parts = sections(project);
+    let parts = sections(project, &sound.cover(project));
     if parts.is_empty() {
         return Ok(ToScenes::default());
     }
@@ -1684,13 +1812,50 @@ pub fn song_to_scenes(project: &mut Project, bar: Tick) -> Result<ToScenes, Mode
     for (k, (a, b, playing)) in parts.iter().enumerate() {
         let row = first + k;
         for (track, at) in playing.iter().enumerate() {
-            let Some(i) = at else { continue };
+            // The lane's regions here, cut at the section's edges.
+            let tr = &project.tracks[track];
+            let heard = if tr.is_audio() {
+                regions_in(sound.of(tr.id), *a, *b, sound)
+            } else {
+                Vec::new()
+            };
+            let refused = |regions: usize| ScenesRefused::Regions {
+                track,
+                from: *a,
+                to: *b,
+                regions,
+            };
+            let Some(i) = at else {
+                if !heard.is_empty() {
+                    if heard.len() > MAX_CLIP_REGIONS {
+                        return Err(refused(heard.len()));
+                    }
+                    p.put_new_clip(track, row, regions_clip(tr, &heard, *a, *b, bar, sound))?;
+                }
+                continue;
+            };
+            if !heard.is_empty() {
+                return Err(ScenesRefused::Both {
+                    track,
+                    from: *a,
+                    to: *b,
+                });
+            }
             let block = &project.arrangement.placements[*i];
             // A block whose clip is gone plays nothing: nothing to copy.
             let Some(clip) = project.block_clip(block) else {
                 continue;
             };
-            let (copy, why) = section_copy(block, clip, *a);
+            let (mut copy, why) = section_copy(block, clip, *a);
+            // A block of an audio clip: its regions turned round too.
+            if let Some(audio) = &clip.audio {
+                let turned =
+                    turned_audio(audio, clip.length, block_turn(block, clip, *a), *a, sound);
+                if turned.regions.len() > MAX_CLIP_REGIONS {
+                    return Err(refused(turned.regions.len()));
+                }
+                copy.audio = Some(turned);
+            }
             differences.extend(why.into_iter().map(|w| Difference::on(track, *a, w)));
             // A copy: a clip of its own, with a new id.
             p.put_new_clip(track, row, copy)?;
@@ -1964,9 +2129,8 @@ fn song_differences(
 /// one-shot, legato and follow action the song ignores, and the ways it
 /// plays differently from the block.
 fn section_copy(block: &Placement, clip: &Clip, a: Tick) -> (Clip, Vec<Differs>) {
-    let len = clip.length.max(1);
     let into = clip.speed.to_clip((a - block.start) as f64);
-    let by = (block.offset + into.round() as Tick).rem_euclid(len);
+    let by = block_turn(block, clip, a);
     // The block carries on into the section: its row starts it again.
     let carried = a > block.start;
     let mut why = Vec::new();
@@ -2012,6 +2176,114 @@ fn section_copy(block: &Placement, clip: &Clip, a: Tick) -> (Clip, Vec<Differs>)
     copy.legato = false;
     copy.follow = None;
     (copy, why)
+}
+
+/// Where in its clip `block` is at song tick `a`: the clip tick a copy
+/// turns round to ([`turned`]).
+fn block_turn(block: &Placement, clip: &Clip, a: Tick) -> Tick {
+    let len = clip.length.max(1);
+    let into = clip.speed.to_clip((a - block.start) as f64);
+    (block.offset + into.round() as Tick).rem_euclid(len)
+}
+
+/// `regions` (song ticks, in order) in song ticks `a..b`, on ticks from
+/// `a`: each across an edge cut there as the audio tracks cut a region
+/// along the song's tempo map (`mpfree-audiotracks`' `cut`): the frames
+/// cut off count in its `into` and `left`, so it keeps exactly its share
+/// of its fades, and a part after a cut plays on from where the region
+/// had got to.
+fn regions_in(regions: &[ClipRegion], a: Tick, b: Tick, sound: &SongSound) -> Vec<ClipRegion> {
+    regions
+        .iter()
+        .filter(|r| r.start < b && r.end > a)
+        .map(|r| {
+            let mut c = *r;
+            if r.start < a {
+                c = sound.cut(&c, r.start, r.end, a).1;
+                c.start = a;
+            }
+            if r.end > b {
+                c = sound.cut(&c, c.start, r.end, b).0;
+                c.end = b;
+            }
+            c.start -= a;
+            c.end -= a;
+            c
+        })
+        .collect()
+}
+
+/// The audio clip of song ticks `a..b` on audio track `track`: `heard`,
+/// its regions there ([`regions_in`]). As To a cell makes one: named after
+/// its track and bars ("Vocal 5–8"), as long as the section, made at the
+/// song's tempo where it starts, its gain 1 (each region keeps its own),
+/// its sound ending where its last region's does.
+fn regions_clip(
+    track: &Track,
+    heard: &[ClipRegion],
+    a: Tick,
+    b: Tick,
+    bar: Tick,
+    sound: &SongSound,
+) -> Clip {
+    let (first, last) = (a / bar + 1, (b + bar - 1) / bar);
+    let name = if last > first {
+        format!("{} {first}–{last}", track.name)
+    } else {
+        format!("{} {first}", track.name)
+    };
+    let end = heard.last().map_or(0, |r| {
+        r.src + sound.frames_of(r, a + r.start, a + r.end).max(1)
+    });
+    let mut clip = Clip::new(&name, b - a);
+    clip.audio = Some(AudioClip {
+        regions: heard.to_vec(),
+        bpm: sound.map.bpm_at(a),
+        gain: 1.0,
+        last_frame: end,
+    });
+    clip
+}
+
+/// `audio`, the regions of a clip `len` ticks long, turned round by `by`
+/// as [`turned`] turns notes, where the song played clip tick `by` at song
+/// tick `at`: a region across `by` is cut there as the song played it
+/// (as in [`regions_in`]), its part after starting the turned clip and its
+/// part before ending it. Its sound ends where its new last region's does.
+fn turned_audio(audio: &AudioClip, len: Tick, by: Tick, at: Tick, sound: &SongSound) -> AudioClip {
+    let len = len.max(1);
+    let by = by.rem_euclid(len);
+    if by == 0 {
+        return audio.clone();
+    }
+    // Clip tick `t` of the pass that played `by` at `at`, on the song.
+    let song = |t: Tick| at - by + t;
+    // Each part, turned, with the song ticks it played.
+    let mut parts: Vec<(ClipRegion, Tick, Tick)> = Vec::new();
+    for r in &audio.regions {
+        let moved = |mut c: ClipRegion, from: Tick, to: Tick| {
+            let shift = if from >= by { -by } else { len - by };
+            c.start = from + shift;
+            c.end = to + shift;
+            (c, song(from), song(to))
+        };
+        if r.end <= by || r.start >= by {
+            parts.push(moved(*r, r.start, r.end));
+            continue;
+        }
+        let (before, after) = sound.cut(r, song(r.start), song(r.end), at);
+        parts.push(moved(before, r.start, by));
+        parts.push(moved(after, by, r.end));
+    }
+    parts.sort_by_key(|p| p.0.start);
+    let last_frame = parts.last().map_or(audio.last_frame, |(r, from, to)| {
+        r.src + sound.frames_of(r, *from, *to).max(1)
+    });
+    AudioClip {
+        regions: parts.into_iter().map(|p| p.0).collect(),
+        last_frame,
+        ..audio.clone()
+    }
 }
 
 /// Whether a note of `block`'s `clip` that played sounds over song tick
@@ -2176,9 +2448,14 @@ mod tests {
     }
 
     use super::*;
-    use crate::ClipAt;
+    use crate::{ClipAt, RecId};
 
     const BAR: Tick = 3840;
+
+    /// No audio, along a steady 120 BPM at 44.1 kHz.
+    fn quiet() -> SongSound<'static> {
+        SongSound::none(TempoMap::constant(120.0).unwrap(), 44_100)
+    }
 
     fn project() -> Project {
         let mut p = Project::new();
@@ -2197,6 +2474,193 @@ mod tests {
     /// plays a clip that lives elsewhere, or none).
     fn row(p: &Project, b: &Placement) -> Option<usize> {
         p.tracks[b.track].slots.row_of(b.clip)
+    }
+
+    /// Song → scenes with audio (audio tracks phase 2, step 2d): Vocal
+    /// (an audio track) first, then Drums with a two-bar block, markers
+    /// at bars 1 and 2 ("Verse", "Chorus").
+    fn audio_song() -> Project {
+        let mut p = Project::new();
+        p.tracks.push(Track::new_audio("Vocal", 0));
+        let mut drums = Track::new("Drums", 0);
+        drums.slots[0] = Some(Clip::new("Beat", 2 * BAR));
+        p.tracks.push(drums);
+        p.give_track_ids();
+        p.give_clip_ids();
+        let beat = Placement::of(&p.tracks, 1, 0, 0, 2 * BAR);
+        p.arrangement.place(beat).unwrap();
+        p.arrangement.mark(0, "Verse").unwrap();
+        p.arrangement.mark(BAR, "Chorus").unwrap();
+        p
+    }
+
+    /// Frames in `ticks` at 120 BPM and 44.1 kHz: a bar is two seconds.
+    fn frames(ticks: Tick) -> i64 {
+        ticks * 88_200 / BAR
+    }
+
+    /// Each audio lane's regions in a section become an audio clip in its
+    /// row: cut at the section's edges, each part keeping its share of its
+    /// fades (`into`, `left`) and the part after a cut playing on from the
+    /// frame the cut was at, so the rows run on sample for sample; the
+    /// regions past the last block make a section of their own.
+    #[test]
+    fn a_lanes_regions_become_an_audio_clip_in_each_sections_row() {
+        let mut p = audio_song();
+        let vocal = p.tracks[0].id;
+        let mut one = ClipRegion::new(BAR / 2, 3 * BAR / 2, RecId(1), 1000);
+        (one.fade_in, one.fade_out, one.gain) = (100, 200, 0.5);
+        let two = ClipRegion::new(7 * BAR / 4, 5 * BAR / 2, RecId(2), 0);
+        let regions = vec![(vocal, vec![one, two])];
+        let sound = SongSound {
+            regions: &regions,
+            ..quiet()
+        };
+        let done = song_to_scenes(&mut p, BAR, &sound).unwrap();
+        // Verse, Chorus, and the half bar the Vocal sings on after it.
+        assert_eq!(done.rows, [1, 2, 3], "row 0 holds the Beat");
+        let clip = |row: usize| p.tracks[0].slots[row].clone().unwrap();
+        let regions_of = |row: usize| clip(row).audio.unwrap().regions;
+        let cut = |r: ClipRegion, start, end, src, into, left| ClipRegion {
+            start,
+            end,
+            src,
+            into,
+            left,
+            ..r
+        };
+        assert_eq!(
+            regions_of(1),
+            [cut(one, BAR / 2, BAR, 1000, 0, frames(BAR / 2) as u32)]
+        );
+        assert_eq!(
+            regions_of(2),
+            [
+                cut(
+                    one,
+                    0,
+                    BAR / 2,
+                    1000 + frames(BAR / 2),
+                    frames(BAR / 2) as u32,
+                    0
+                ),
+                cut(two, 3 * BAR / 4, BAR, 0, 0, frames(BAR / 2) as u32),
+            ]
+        );
+        assert_eq!(
+            regions_of(3),
+            [cut(
+                two,
+                0,
+                BAR / 2,
+                frames(BAR / 4),
+                frames(BAR / 4) as u32,
+                0
+            )]
+        );
+        // Named and made as To a cell names and makes one.
+        let c = clip(2);
+        assert_eq!((c.name.as_str(), c.length), ("Vocal 2", BAR));
+        let a = c.audio.unwrap();
+        // Its sound ends where its last region does: a quarter bar of
+        // recording 2 from its frame 0.
+        assert_eq!((a.bpm, a.gain, a.last_frame), (120.0, 1.0, frames(BAR / 4)));
+        assert_eq!(clip(3).length, BAR / 2);
+        // The Drums have nothing in the last row: the block ended.
+        assert!(p.tracks[1].slots[3].is_none());
+        p.check().unwrap();
+    }
+
+    /// A block of an audio clip turns round as a note clip does: its
+    /// region across the turn is cut there as the song played it, the
+    /// part after starting the copy and the part before ending it.
+    #[test]
+    fn a_block_of_an_audio_clip_turns_round_cutting_its_region() {
+        let mut p = audio_song();
+        let mut c = Clip::new("Hook", 2 * BAR);
+        c.audio = Some(AudioClip::of(
+            RecId(7),
+            500,
+            500 + frames(2 * BAR),
+            2 * BAR,
+            120.0,
+        ));
+        p.tracks[0].slots[0] = Some(c);
+        p.give_clip_ids();
+        p.arrangement
+            .place(Placement::of(&p.tracks, 0, 0, 0, 2 * BAR))
+            .unwrap();
+        let done = song_to_scenes(&mut p, BAR, &quiet()).unwrap();
+        assert_eq!(done.rows, [1, 2]);
+        let audio = |row: usize| p.tracks[0].slots[row].clone().unwrap().audio.unwrap();
+        // The Verse's row: the clip as it was.
+        assert_eq!(
+            audio(1).regions,
+            [ClipRegion::new(0, 2 * BAR, RecId(7), 500)]
+        );
+        // The Chorus's, a bar in: the second bar first, then the first.
+        let turned = audio(2);
+        let mut after = ClipRegion::new(0, BAR, RecId(7), 500 + frames(BAR));
+        after.into = frames(BAR) as u32;
+        let mut before = ClipRegion::new(BAR, 2 * BAR, RecId(7), 500);
+        before.left = frames(BAR) as u32;
+        assert_eq!(turned.regions, [after, before]);
+        assert_eq!(turned.last_frame, 500 + frames(BAR));
+        p.check().unwrap();
+    }
+
+    /// A section a clip can't hold exactly is refused before anything
+    /// changes: more regions on a lane than a clip holds, or regions and a
+    /// block on one lane.
+    #[test]
+    fn a_section_a_clip_cant_hold_is_refused_and_nothing_changes() {
+        let p = audio_song();
+        let vocal = p.tracks[0].id;
+        let many: Vec<ClipRegion> = (0..17)
+            .map(|k| ClipRegion::new(k * 100, k * 100 + 50, RecId(1), 0))
+            .collect();
+        let regions = vec![(vocal, many)];
+        let sound = SongSound {
+            regions: &regions,
+            ..quiet()
+        };
+        let mut q = p.clone();
+        assert_eq!(
+            song_to_scenes(&mut q, BAR, &sound),
+            Err(ScenesRefused::Regions {
+                track: 0,
+                from: 0,
+                to: BAR,
+                regions: 17
+            })
+        );
+        assert_eq!(q, p, "nothing changed");
+        // A block of an audio clip on the Vocal's lane, and a region there
+        // too (the audio tracks never let them overlap; here they meet in
+        // one section).
+        let mut q = p.clone();
+        let mut c = Clip::new("Hook", BAR / 2);
+        c.audio = Some(AudioClip::of(RecId(7), 0, frames(BAR / 2), BAR / 2, 120.0));
+        q.tracks[0].slots[5] = Some(c);
+        q.give_clip_ids();
+        q.arrangement
+            .place(Placement::of(&q.tracks, 0, 5, 0, BAR / 2))
+            .unwrap();
+        let before = q.clone();
+        let regions = vec![(vocal, vec![ClipRegion::new(BAR / 4, BAR / 2, RecId(1), 0)])];
+        let sound = SongSound {
+            regions: &regions,
+            ..quiet()
+        };
+        assert_eq!(
+            song_to_scenes(&mut q, BAR, &sound),
+            Err(ScenesRefused::Both {
+                track: 0,
+                from: 0,
+                to: BAR / 2
+            })
+        );
+        assert_eq!(q, before, "nothing changed");
     }
 
     #[test]
@@ -2701,8 +3165,8 @@ mod tests {
         p.arrangement = song;
         assert_eq!(p.check(), Ok(()));
         // Back: three sections into rows 2, 3 and 4, chained.
-        assert_eq!(sections(&p).len(), 3);
-        let rows = song_to_scenes(&mut p, BAR).unwrap().rows;
+        assert_eq!(sections(&p, &[]).len(), 3);
+        let rows = song_to_scenes(&mut p, BAR, &quiet()).unwrap().rows;
         assert_eq!(rows, vec![2, 3, 4]);
         let s = |r: usize| p.scene(r).unwrap();
         assert_eq!(s(2).follow, Some(Follow::after(1, FollowAction::Next)));
@@ -2715,7 +3179,7 @@ mod tests {
         p.tracks[0].slots[8] = Some(Clip::new("x", BAR));
         let before = p.clone();
         assert_eq!(
-            song_to_scenes(&mut p, BAR).map(|c| c.rows),
+            song_to_scenes(&mut p, BAR, &quiet()).map(|c| c.rows),
             Ok(vec![5, 6, 7])
         );
         // No run of 3 left in bank A: bank B's first rows (scene banks,
@@ -2727,7 +3191,7 @@ mod tests {
         q.tracks[0].slots[17] = Some(Clip::new("x", BAR));
         let mut b = q.clone();
         assert_eq!(
-            song_to_scenes(&mut b, BAR).map(|c| c.rows),
+            song_to_scenes(&mut b, BAR, &quiet()).map(|c| c.rows),
             Ok(vec![18, 19, 20])
         );
         // Every bank with no run of 3: no room.
@@ -2736,8 +3200,8 @@ mod tests {
         }
         let again = q.clone();
         assert_eq!(
-            song_to_scenes(&mut q, BAR).map(|c| c.rows),
-            Err(ModelError::NoRoom)
+            song_to_scenes(&mut q, BAR, &quiet()).map(|c| c.rows),
+            Err(ScenesRefused::Model(ModelError::NoRoom))
         );
         assert_eq!(q, again, "nothing changed");
     }
@@ -3051,7 +3515,7 @@ mod tests {
         p.arrangement = scenes_to_song(&p, &[(0, BAR), (1, 2 * BAR)], 0)
             .unwrap()
             .song;
-        assert_eq!(sections(&p).len(), 2);
+        assert_eq!(sections(&p, &[]).len(), 2);
         assert!(p.row_empty(2) && !p.row_empty(0), "no clip, a plain scene");
         p.scene_mut(2).unwrap().name = "Intro".into();
         p.scene_mut(3).unwrap().mutes = Some(0);
@@ -3071,7 +3535,10 @@ mod tests {
         }
         // Rows 2 to 6 are set up and 8 is named: the first run of two
         // empty rows is 9 and 10 (7 alone is too short).
-        assert_eq!(song_to_scenes(&mut p, BAR).map(|c| c.rows), Ok(vec![9, 10]));
+        assert_eq!(
+            song_to_scenes(&mut p, BAR, &quiet()).map(|c| c.rows),
+            Ok(vec![9, 10])
+        );
         assert_eq!(p.scene(2).unwrap().name, "Intro", "left as it was");
         assert_eq!(p.scene(3).unwrap().mutes, Some(0));
         assert!(p.scene(5).unwrap().values.len() == 1);
@@ -3159,7 +3626,7 @@ mod tests {
         s.place(Placement::of(&p.tracks, 1, 0, 2 * BAR, 6 * BAR))
             .unwrap();
         let had = p.next_clip;
-        let done = song_to_scenes(&mut p, BAR).unwrap();
+        let done = song_to_scenes(&mut p, BAR, &quiet()).unwrap();
         assert_eq!(done.rows, [3, 4]);
         assert_eq!(done.differences, [], "exact");
         // Each copy a clip of its own, with a new id (Arrange 1.1).
@@ -3204,7 +3671,7 @@ mod tests {
             c
         };
         let diffs = |mut p: Project| -> Vec<(Option<usize>, Tick, Differs)> {
-            song_to_scenes(&mut p, BAR)
+            song_to_scenes(&mut p, BAR, &quiet())
                 .unwrap()
                 .differences
                 .iter()
@@ -3403,7 +3870,7 @@ mod tests {
         let back = |song: &Arrangement| {
             let mut q = project();
             q.arrangement = song.clone();
-            let to = song_to_scenes(&mut q, BAR).unwrap();
+            let to = song_to_scenes(&mut q, BAR, &quiet()).unwrap();
             let tempi: Vec<Option<f64>> =
                 to.rows.iter().map(|&r| q.scene(r).unwrap().bpm()).collect();
             let named: Vec<Tick> = to
@@ -3467,16 +3934,19 @@ mod tests {
         s.place(Placement::of(&p.tracks, 1, 0, 0, 2 * BAR)).unwrap();
         s.place(Placement::of(&p.tracks, 1, 0, 2 * BAR, 2 * BAR))
             .unwrap();
-        assert_eq!(sections(&p).len(), 2, "the bass's second placement");
+        assert_eq!(sections(&p, &[]).len(), 2, "the bass's second placement");
         p.arrangement.placements[2].start = 3 * BAR;
         p.arrangement.placements[2].length = BAR;
         // 0..2 both, 2..3 drums only, 3..4 both again.
         assert_eq!(
-            sections(&p).iter().map(|s| (s.0, s.1)).collect::<Vec<_>>(),
+            sections(&p, &[])
+                .iter()
+                .map(|s| (s.0, s.1))
+                .collect::<Vec<_>>(),
             vec![(0, 2 * BAR), (2 * BAR, 3 * BAR), (3 * BAR, 4 * BAR)]
         );
         p.arrangement.mark(BAR, "B").unwrap();
-        assert_eq!(sections(&p).len(), 4);
+        assert_eq!(sections(&p, &[]).len(), 4);
     }
 
     #[test]

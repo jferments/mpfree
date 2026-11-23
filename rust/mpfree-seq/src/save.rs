@@ -32,6 +32,7 @@
 //! direction pingpong
 //! holds notes
 //! step 1/8T
+//! scale D 0 2 3 5 7 9 10
 //! madefor mpfree.poly Poly
 //! madename 3 Cutoff
 //! touch 0:10 50:40
@@ -100,6 +101,13 @@
 //! skip the line and open the track as an empty note track; a part with
 //! none is still `mpfree-clips 2`.
 //!
+//! An audio track's clip (phase 2, [`crate::audio`]) has an `audioclip`
+//! line (the tempo it was made at, its gain and its last frame) and a
+//! `region` line a region: start and end ticks, the recording's lasting
+//! id (32 hex digits), its first frame, gain, fade in, fade out, `into`
+//! and `left`. A project with one needs `audio-clips` (the app's project
+//! gate), so a build from before refuses it before reading this part.
+//!
 //! A marker's `section <passes>[ scene <row> pass <ticks>[ changed]]`
 //! line, right after its `marker` line, is what the marker says when the
 //! song list is linked to the song (the Arrange refactor's phase 4b,
@@ -133,6 +141,19 @@
 //! for 1/16). It changes only what the Steps show, so an older build
 //! skips it, and this one a size it doesn't know, and shows 1/16 steps;
 //! the notes play the same either way.
+//!
+//! A clip's `scale` line is the scale the Notes view lights (piano roll
+//! plan 2B.1): its root's name (`C` to `B`, with sharps), then the notes
+//! going up as semitones above it, rising from 0 to at most 11, and `/`
+//! and the notes coming down the same way when they differ (`scale D 0 2
+//! 3 5 7 9 10`, `mpfree_scale::scale_text`); none for Off, and none on a
+//! clip of pad hits, which takes no scale. It changes no note and
+//! nothing that plays, so an older build skips it, and this one reads a
+//! root it doesn't name (a newer build's word, a flat) as Off, as it
+//! does a step size it doesn't know, and a line on a clip of pad hits.
+//! A line with no words, or a root this build names with notes that
+//! aren't written that way (none, past 11, falling, a degree such as
+//! `b3`), refuses the part, as a value out of range does.
 //!
 //! A clip's `holds notes` line says its notes are MIDI notes, each
 //! number a pitch (the instrument redesign's step 5c, [`crate::Holds`]);
@@ -399,6 +420,26 @@ fn clip_body(s: &mut String, c: &Clip) {
             let _ = writeln!(s, "step {name}");
         }
     }
+    if let Some(a) = &c.audio {
+        let _ = writeln!(s, "audioclip {} {} {}", a.bpm, a.gain, a.last_frame);
+        for r in &a.regions {
+            let _ = write!(
+                s,
+                "region {} {} {:032x} {} {} {} {} {} {}",
+                r.start, r.end, r.rec.0, r.src, r.gain, r.fade_in, r.fade_out, r.into, r.left
+            );
+            // Where between frames it starts, when not on a frame.
+            if r.phase != 0.0 {
+                let _ = write!(s, " {}", r.phase);
+            }
+            s.push('\n');
+        }
+    }
+    // A scale no scale could be, or one on a clip of pad hits, is not
+    // written, as a step size with no name isn't.
+    if let Some(k) = c.scale.filter(|&k| crate::scale_ok(k) && c.takes_scale()) {
+        let _ = writeln!(s, "scale {}", scale_text(k));
+    }
     // What its instrument locks were made for (refactor F1). A node id is
     // one word; one that isn't is not written, and its locks play.
     if let Some(m) = c.made_for.as_ref().filter(|m| is_word(&m.node)) {
@@ -600,6 +641,50 @@ fn program_text(p: crate::ClipProgram) -> String {
         Some(b) => format!("{} bank {b}", p.program),
         None => p.program.to_string(),
     }
+}
+
+/// A clip's scale as its line's words: `D 0 2 3 5 7 9 10`, or with the
+/// notes coming down after a `/` when they differ.
+fn scale_text(k: crate::Scale) -> String {
+    let root = mpfree_scale::NOTE_NAMES[usize::from(k.root % 12)];
+    format!("{root} {}", mpfree_scale::scale_text(k.mask, k.down))
+}
+
+/// A `scale` line's notes after its root, read only as [`scale_text`]
+/// writes them: semitones above the root, each once, rising from 0 to at
+/// most 11, and after one `/` the notes coming down the same way. None
+/// for anything else: no notes, a first note not 0, a note past 11, out
+/// of order or twice, a number written another way (`03`, `+3`), a
+/// degree (`b3`), a `/` with no notes on a side, or two of them.
+fn scale_steps<'a>(root: u8, words: impl Iterator<Item = &'a str>) -> Option<crate::Scale> {
+    let mut masks = [0u16; 2];
+    let mut side = 0;
+    let mut last: Option<u8> = None;
+    for word in words {
+        if word == "/" {
+            if side == 1 || last.is_none() {
+                return None;
+            }
+            side = 1;
+            last = None;
+            continue;
+        }
+        let n: u8 = word.parse().ok().filter(|n: &u8| n.to_string() == word)?;
+        let next = match last {
+            None => n == 0,
+            Some(l) => n > l && n < 12,
+        };
+        if !next {
+            return None;
+        }
+        masks[side] |= 1 << n;
+        last = Some(n);
+    }
+    // No notes after the root or the `/`.
+    last?;
+    let down = if side == 1 { masks[1] } else { masks[0] };
+    let k = crate::Scale::with_down(root, masks[0], down);
+    crate::scale_ok(k).then_some(k)
 }
 
 fn follow_text(f: Follow) -> String {
@@ -847,10 +932,45 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                 let word = w.next().ok_or_else(|| bad("step"))?;
                 c.step = crate::steps::size_named(word).unwrap_or(crate::steps::DEFAULT_SIZE);
             }
+            // A root this build doesn't name (a newer build's) reads as
+            // Off; one it does with notes not written as it writes them
+            // refuses the part, as a value out of range does.
+            ("scale", At::Clip(c, _)) => {
+                let root = w.next().ok_or_else(|| bad("scale"))?;
+                c.scale = match mpfree_scale::NOTE_NAMES.iter().position(|n| *n == root) {
+                    Some(r) => Some(scale_steps(r as u8, w).ok_or_else(|| bad("scale"))?),
+                    None => None,
+                };
+            }
             // A newer build's kind of notes plays as pad hits here.
             ("holds", At::Clip(c, _)) => {
                 let word = w.next().ok_or_else(|| bad("holds"))?;
                 c.holds = crate::Holds::from_word(word).unwrap_or_default();
+            }
+            // An audio clip (phase 2): its tempo, gain and last frame, then
+            // a line a region, checked with the clip at its end.
+            ("audioclip", At::Clip(c, _)) => {
+                let (bpm, gain, last_frame) = (num(w.next()), num(w.next()), num(w.next()));
+                let (Some(bpm), Some(gain), Some(last_frame)) = (bpm, gain, last_frame) else {
+                    return Err(bad("audioclip"));
+                };
+                if c.audio.is_some() {
+                    return Err(bad("audioclip"));
+                }
+                c.audio = Some(crate::AudioClip {
+                    regions: Vec::new(),
+                    bpm,
+                    gain,
+                    last_frame,
+                });
+            }
+            ("region", At::Clip(c, _)) => {
+                let a = c.audio.as_mut().ok_or_else(|| bad("region"))?;
+                if a.regions.len() >= crate::MAX_CLIP_REGIONS {
+                    return Err(bad("too many regions"));
+                }
+                a.regions
+                    .push(clip_region(&mut w).ok_or_else(|| bad("region"))?);
             }
             // What its instrument locks were made for (refactor F1).
             ("madefor", At::Clip(c, _)) => {
@@ -943,9 +1063,14 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                 lane = Some(lane_head(&mut w).ok_or_else(|| bad("lane"))?);
             }
             ("end", At::Clip(..)) => {
-                let At::Clip(c, home) = std::mem::replace(&mut at, At::Top) else {
+                let At::Clip(mut c, home) = std::mem::replace(&mut at, At::Top) else {
                     unreachable!()
                 };
+                // A clip of pad hits takes no scale: a line on one (a hand
+                // edit) reads as Off, wherever its `holds` line was.
+                if !c.takes_scale() {
+                    c.scale = None;
+                }
                 c.check().map_err(|e| bad(&format!("clip {e:?}")))?;
                 at = match home {
                     ClipHome::Slot(slot) => {
@@ -1353,6 +1478,33 @@ fn num<T: FromStr>(w: Option<&str>) -> Option<T> {
     w?.parse().ok()
 }
 
+/// An audio clip's `region` line after its word: start and end ticks, the
+/// recording's lasting id (32 hex digits), its first frame, gain, fades,
+/// `into`, `left` and where in its first frame it starts (`phase`; 0 if
+/// left out).
+fn clip_region<'a>(w: &mut impl Iterator<Item = &'a str>) -> Option<crate::ClipRegion> {
+    let (start, end) = (num(w.next())?, num(w.next())?);
+    let rec = w
+        .next()
+        .filter(|h| h.len() == 32)
+        .and_then(|h| u128::from_str_radix(h, 16).ok())?;
+    Some(crate::ClipRegion {
+        start,
+        end,
+        rec: crate::RecId(rec),
+        src: num(w.next())?,
+        gain: num(w.next())?,
+        fade_in: num(w.next())?,
+        fade_out: num(w.next())?,
+        into: num(w.next())?,
+        left: num(w.next())?,
+        phase: match w.next() {
+            None => 0.0,
+            Some(p) => num::<f32>(Some(p)).filter(|p| p.abs() <= 0.5)?,
+        },
+    })
+}
+
 fn flag(w: Option<&str>) -> Option<bool> {
     match w? {
         "0" => Some(false),
@@ -1681,6 +1833,7 @@ mod tests {
         });
         c.direction = crate::Direction::PingPong;
         c.step = 320;
+        c.scale = Some(crate::Scale::new(2, mpfree_scale::DORIAN));
         c.holds = crate::Holds::Notes;
         let pts: Vec<TouchPoint> = (0..150)
             .map(|k| TouchPoint {
@@ -1974,7 +2127,10 @@ mod tests {
                 .holds
         };
         assert_eq!(holds(&text), Holds::Notes);
-        let hits = text.replace("holds notes\n", "");
+        // As hits, without the scale a clip of pad hits doesn't take.
+        let hits = text
+            .replace("holds notes\n", "")
+            .replace("scale D 0 2 3 5 7 9 10\n", "");
         assert_eq!(holds(&hits), Holds::Hits);
         assert_eq!(
             holds(&text.replace("holds notes", "holds hits")),
@@ -2100,6 +2256,135 @@ mod tests {
         assert!(!to_text(&full()).contains("madefor"));
         assert!(from_text(&text.replace("madefor mpfree.poly Poly synth\n", "")).is_err());
         assert!(from_text(&text.replace("madename 3 ", "madename x ")).is_err());
+    }
+
+    /// A clip's scale (piano roll plan 2B.1): its root's name and its
+    /// notes, read back as written, the notes coming down too when they
+    /// differ, and saved again the same byte for byte; none is Off.
+    #[test]
+    fn a_clips_scale_reads_back() {
+        use crate::Scale;
+        let text = to_text(&full());
+        assert!(
+            text.contains("step 1/8T\nscale D 0 2 3 5 7 9 10\n"),
+            "{text}"
+        );
+        let scale = |t: &str| {
+            from_text(t).unwrap().tracks[0].slots[0]
+                .as_ref()
+                .unwrap()
+                .scale
+        };
+        assert_eq!(scale(&text), Some(Scale::new(2, mpfree_scale::DORIAN)));
+        let with = |k: Scale| {
+            let mut p = full();
+            p.tracks[0].slots[0].as_mut().unwrap().scale = Some(k);
+            to_text(&p)
+        };
+        // Every root of every built-in scale, and the fewest notes: the
+        // root alone, both ways or coming down.
+        let mut all: Vec<Scale> = (0..12)
+            .flat_map(|r| mpfree_scale::SCALES.iter().map(move |d| Scale::of(r, d)))
+            .collect();
+        all.extend([Scale::new(0, 1), Scale::with_down(0, 0b101, 1)]);
+        for k in all {
+            let t = with(k);
+            assert_eq!(scale(&t), Some(k), "{t}");
+            assert_eq!(to_text(&from_text(&t).unwrap()), t, "{k:?}");
+        }
+        let classical = mpfree_scale::by_name("Mel. minor classical").unwrap();
+        assert!(with(Scale::of(9, classical)).contains("scale A 0 2 3 5 7 9 11 / 0 2 3 5 7 8 10\n"));
+        assert!(with(Scale::new(0, 1)).contains("\nscale C 0\n"));
+        assert!(with(Scale::with_down(0, 0b101, 1)).contains("\nscale C 0 2 / 0\n"));
+        let off = text.replace("scale D 0 2 3 5 7 9 10\n", "");
+        assert_eq!(scale(&off), None);
+        assert!(!to_text(&from_text(&off).unwrap()).contains("\nscale "));
+    }
+
+    /// A `scale` line is read wherever it is in a clip's body, a song
+    /// clip's too, the last of two winning; a root this build doesn't
+    /// name reads as Off, as does a line on a clip of pad hits (which the
+    /// writer never writes); notes not written as the writer writes them
+    /// refuse the part.
+    #[test]
+    fn a_scale_line_is_read_as_written_or_as_off() {
+        use crate::Scale;
+        let text = to_text(&full());
+        let line = "scale D 0 2 3 5 7 9 10\n";
+        let dorian = Some(Scale::new(2, mpfree_scale::DORIAN));
+        let (slot, song) = text.split_at(text.find("songclip").unwrap());
+        assert!(slot.contains(line) && song.contains(line), "{text}");
+        let scales = |t: &str| {
+            let p = from_text(t).unwrap();
+            let own = p.arrangement.clips.iter().next().unwrap().scale;
+            (p.tracks[0].slots[0].as_ref().unwrap().scale, own)
+        };
+        // Last in the bodies (just before each `end`), and twice.
+        let mut moved = String::new();
+        for body in text.split_inclusive("\nend\n") {
+            if body.contains(line) {
+                moved += &body.strip_suffix("end\n").unwrap().replacen(line, "", 1);
+                moved += line;
+                moved += "end\n";
+            } else {
+                moved += body;
+            }
+        }
+        assert_eq!(moved.matches(line).count(), 2, "{moved}");
+        assert_eq!(scales(&moved), (dorian, dorian));
+        let twice = text.replacen(line, &format!("scale A 0 3 7\n{line}"), 1);
+        assert_eq!(scales(&twice), (dorian, dorian), "the last wins");
+        let twice = text.replacen(line, &format!("{line}scale A 0 3 7\n"), 1);
+        assert_eq!(scales(&twice).0, Some(Scale::new(9, 0b1000_1001)));
+        // A root this build doesn't name: Off, the part read.
+        for root in ["Db 0 3 7", "key", "d 0 2", "H 0 2 4", "c# 0 3"] {
+            let t = text.replacen(line, &format!("scale {root}\n"), 1);
+            assert_eq!(scales(&t), (None, dorian), "{root}");
+        }
+        // On a clip of pad hits: Off; and never written for one.
+        let hits = text.replacen("holds notes\n", "", 1);
+        assert_eq!(scales(&hits), (None, dorian));
+        let slot_text = |p: &Project| {
+            let t = to_text(p);
+            t[..t.find("songclip").unwrap()].to_string()
+        };
+        let mut p = full();
+        p.tracks[0].slots[0].as_mut().unwrap().holds = crate::Holds::Hits;
+        assert!(!slot_text(&p).contains("\nscale "));
+        // Nor a scale no scale could be.
+        let c = p.tracks[0].slots[0].as_mut().unwrap();
+        c.holds = crate::Holds::Notes;
+        c.scale = Some(Scale {
+            root: 14,
+            ..Scale::new(0, mpfree_scale::MAJOR)
+        });
+        assert!(!slot_text(&p).contains("\nscale "));
+        // Notes not as the writer writes them refuse the part: none, a
+        // first note not 0 (`1 4 7` is not degrees), past 11, falling,
+        // twice, another way of writing a number, a degree, a `/` with
+        // a side empty, two of them, or the notes down not from 0.
+        for odd in [
+            "D",
+            "",
+            "D 0 2 x",
+            "D 0 2 12",
+            "D 1 4 7",
+            "D 0 4 2",
+            "D 0 2 2",
+            "D 0 03 7",
+            "D 0 +3",
+            "D 0 b3",
+            "D 0 2 /",
+            "D / 0 2",
+            "D 0 2 / 0 / 0",
+            "D 0 2 / 2",
+        ] {
+            let t = text.replacen(line, &format!("scale {odd}\n"), 1);
+            assert!(from_text(&t).is_err(), "{odd}");
+        }
+        // Spaces between the words are as one.
+        let t = text.replacen(line, "scale D  0 2   3 5 7 9 10 \n", 1);
+        assert_eq!(scales(&t), (dorian, dorian));
     }
 
     /// A mutated clip keeps its original (S6), lanes and all, read back
@@ -2418,8 +2703,8 @@ mod tests {
 
     /// The audio tracks rethink, phase 1: an audio track is saved as a
     /// track with an `audio` line, and the part is then `mpfree-clips 3`;
-    /// with none it stays `mpfree-clips 2`. A clip or a song block on an
-    /// audio track is refused.
+    /// with none it stays `mpfree-clips 2`. A note clip, or a note
+    /// clip's song block, on an audio track is refused.
     #[test]
     fn audio_tracks_read_back_in_a_part_of_their_own_format() {
         let mut p = full();
@@ -2437,7 +2722,7 @@ mod tests {
         assert_eq!(back, p);
         assert!(back.tracks[1].is_audio() && !back.tracks[1].plays_notes());
         assert_eq!(back.tracks[1].loops(), None);
-        // A clip in an audio track's cell, or a block on its lane.
+        // A note clip in an audio track's cell, or its block on its lane.
         let mut cell = p.clone();
         cell.tracks[1].slots[0] = Some(Clip::new("Beat", 3840));
         assert_eq!(cell.check(), Err(crate::ModelError::AudioTrack));
@@ -2451,6 +2736,141 @@ mod tests {
             .placements
             .push(Placement::new(1, id, 0, 3840));
         assert_eq!(placed.check(), Err(crate::ModelError::AudioTrack));
+    }
+
+    /// An audio clip (phase 2) reads back exactly, its regions' ids,
+    /// fades, cut counts and place between frames included (that written
+    /// only when not 0); one out of place or out of range is refused.
+    #[test]
+    fn audio_clips_read_back_and_bad_ones_are_refused() {
+        use crate::{AudioClip, ClipRegion, RecId};
+        let mut p = full();
+        let mut a = Track::new_audio("Vocal", 5);
+        a.id = crate::TrackId(p.next_track.max(1));
+        p.next_track = a.id.0 + 1;
+        let rec = RecId(0x5b2f_0d9c_41e8_a776_3c0f_12ab_9e4d_8c01);
+        let mut clip = Clip::new("Hook", 7680);
+        let mut audio = AudioClip::of(rec, 1200, 90_000, 3840, 120.5);
+        audio.regions[0].fade_in = 300;
+        audio.regions.push(ClipRegion {
+            gain: 0.5,
+            fade_out: 64,
+            into: 22_050,
+            left: 7,
+            ..ClipRegion::new(3840, 7680, RecId(3), -40)
+        });
+        audio.regions[1].phase = -0.25;
+        audio.gain = 0.75;
+        clip.audio = Some(audio);
+        clip.once = true;
+        a.slots[2] = Some(clip);
+        p.tracks.insert(1, a);
+        p.check().unwrap();
+        let text = to_text(&p);
+        assert!(
+            text.contains(
+                "clip 2 7680 Hook\nonce\naudioclip 120.5 0.75 90000\n\
+                 region 0 3840 5b2f0d9c41e8a7763c0f12ab9e4d8c01 1200 1 300 0 0 0\n\
+                 region 3840 7680 00000000000000000000000000000003 -40 0.5 0 64 22050 7 -0.25\nend\n"
+            ),
+            "{text}"
+        );
+        assert_eq!(from_text(&text).unwrap(), p);
+        // Out of place: a region with no audioclip line before it, two
+        // audioclip lines, an id that isn't 32 hex digits, an audio clip
+        // on a note track, a note clip on an audio track, an audio clip
+        // that also holds a note, and one whose regions overlap.
+        let refused = |t: String, why: &str| assert!(from_text(&t).is_err(), "{why}");
+        refused(
+            text.replace("audioclip 120.5 0.75 90000\n", ""),
+            "no audioclip",
+        );
+        refused(
+            text.replace(
+                "audioclip 120.5 0.75 90000\n",
+                "audioclip 120.5 0.75 90000\naudioclip 1 1 1\n",
+            ),
+            "two",
+        );
+        refused(
+            text.replace("5b2f0d9c41e8a7763c0f12ab9e4d8c01", "5b2f"),
+            "short id",
+        );
+        refused(
+            text.replace("22050 7 -0.25", "22050 7 0.75"),
+            "phase past half a frame",
+        );
+        let mut on_notes = p.clone();
+        let c = on_notes.tracks[1].slots[2].take();
+        on_notes.tracks[0].slots[5] = c;
+        assert_eq!(on_notes.check(), Err(crate::ModelError::AudioTrack));
+        let mut with_note = p.clone();
+        let c = with_note.tracks[1].slots[2].as_mut().unwrap();
+        c.notes.push(crate::Note::new(0, 240, 36, 100));
+        assert_eq!(with_note.check(), Err(crate::ModelError::BadAudioClip));
+        let mut overlap = p.clone();
+        let c = overlap.tracks[1].slots[2].as_mut().unwrap();
+        c.audio.as_mut().unwrap().regions[1].start = 3000;
+        assert_eq!(overlap.check(), Err(crate::ModelError::BadAudioClip));
+        refused(to_text(&overlap), "overlap");
+    }
+
+    /// Phase 2, step 2d: an audio clip's block goes on an audio track's
+    /// lane and reads back, as a cell's clip and as the song's own; never
+    /// on a note track's, and a note clip's never on an audio track's. A
+    /// block moves or copies to another audio track only.
+    #[test]
+    fn an_audio_clips_block_goes_on_audio_lanes_only_and_reads_back() {
+        use crate::{AudioClip, Placement, RecId};
+        let mut p = full();
+        for (k, name) in ["Vocal", "Guitar"].into_iter().enumerate() {
+            let mut a = Track::new_audio(name, 5 + k as u16);
+            a.id = crate::TrackId(p.next_track.max(1));
+            p.next_track = a.id.0 + 1;
+            p.tracks.insert(1 + k, a);
+        }
+        let mut clip = Clip::new("Hook", 7680);
+        clip.audio = Some(AudioClip::of(RecId(9), 0, 180_000, 7680, 120.0));
+        p.tracks[1].slots[0] = Some(clip);
+        p.give_clip_ids();
+        p.arrangement.placements.clear();
+        p.arrangement.clips = Default::default();
+        let block = Placement::of(&p.tracks, 1, 0, 3840, 15_360);
+        p.arrangement.place(block.clone()).unwrap();
+        p.check().unwrap();
+        assert_eq!(from_text(&to_text(&p)).unwrap(), p);
+        // Made the song's own, it reads back too.
+        let mut own = p.clone();
+        own.make_unique(0).unwrap();
+        own.check().unwrap();
+        assert!(own.arrangement.clips.iter().all(|c| c.audio.is_some()));
+        assert_eq!(from_text(&to_text(&own)).unwrap(), own);
+        // On a note track's lane, refused; a note clip's block on an
+        // audio track's, refused.
+        let mut on_notes = p.clone();
+        on_notes.arrangement.placements[0].track = 0;
+        assert_eq!(on_notes.check(), Err(crate::ModelError::AudioTrack));
+        assert!(from_text(&to_text(&on_notes)).is_err());
+        let note = p.tracks[0].slots.clips().next().map(|c| c.id).unwrap();
+        let mut note_on_audio = p.clone();
+        note_on_audio.arrangement.placements[0].clip = note;
+        assert_eq!(note_on_audio.check(), Err(crate::ModelError::AudioTrack));
+        // Moved: onto Guitar it plays the same clip; onto a note track it
+        // stays where it was.
+        let mut moved = p.clone();
+        let tracks = moved.tracks.clone();
+        assert_eq!(
+            moved.arrangement.move_placement(&tracks, 0, 0, 0, false),
+            Err(crate::ModelError::AudioTrack)
+        );
+        assert_eq!(moved.arrangement.placements[0], block);
+        let i = moved
+            .arrangement
+            .move_placement(&tracks, 0, 2, 0, true)
+            .unwrap();
+        assert_eq!(moved.arrangement.placements[i].track, 2);
+        assert_eq!(moved.arrangement.placements[i].clip, block.clip);
+        moved.check().unwrap();
     }
 
     /// Arrange 4b.1: a marker's section line (its passes, its scene with

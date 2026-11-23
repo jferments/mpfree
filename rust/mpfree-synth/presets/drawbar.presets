@@ -40,7 +40,7 @@ vibrato.vibrato = C3
 tone.click = 60
 
 # Output
-output.level = 2
+output.level = 1
 
 mpfree-preset = 2
 engine = mpfree.drawbar
@@ -219,7 +219,7 @@ vibrato.vibrato = C2
 tone.click = 40
 
 # Output
-output.level = 2
+output.level = 1
 
 mpfree-preset = 2
 engine = mpfree.drawbar

@@ -237,6 +237,14 @@ pub enum EventKind {
     /// Item `index`'s end dragged so it is `to` long (the widget's own
     /// units): a block made longer or shorter.
     Stretch { index: usize, to: i64 },
+    /// A finger drawn along lane `index` (the widget's own numbering) and
+    /// lifted: each item it changed, with its new value, in the widget's
+    /// own numbering and units (the piano roll's lanes: a note and its
+    /// velocity, chance, repeats or ramp).
+    Values {
+        index: usize,
+        set: Vec<(usize, i32)>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
