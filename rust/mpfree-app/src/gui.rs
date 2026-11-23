@@ -20867,7 +20867,17 @@ fn add_io_sections(ui: &mut Ui, model: &mpfree_midi_ui::Shared) -> Vec<String> {
 /// whose setup calls deep into the engines is best its own
 /// `#[inline(never)]` function, as `io_section_screen` is, so its locals
 /// leave the frame when it returns.
-pub const SCREENS_STACK: usize = 32 << 20;
+///
+/// On 23 Nov (merge train 158: live shows' patches, tunings T5/T6, the
+/// scene card and the arp pattern library together) the frame reached
+/// 32,299,488 bytes (x86-64 debug, measured under gdb as the gap between
+/// `sample_screens`' stack pointer and its caller's), and with
+/// `sample_beats_synth` under it the preview overflowed 32 MiB. 64 MiB
+/// leaves room again. It is only reserved: pages the thread never touches
+/// cost nothing, and only the commands that draw every sample screen
+/// (`--preview`, `--display-lists`, `--check-theme`, `--contact-sheet`)
+/// and tests run on this stack.
+pub const SCREENS_STACK: usize = 64 << 20;
 
 /// Held by each test that builds every sample screen at once, so no two
 /// of them run together: each holds about 0.9 GB in a debug build (the
