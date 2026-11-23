@@ -379,7 +379,7 @@ impl Arrangement {
                 }
                 out.push(Marker {
                     at: m.at - a + d,
-                    name: m.name.clone(),
+                    ..m.clone()
                 });
             }
         }

@@ -36,7 +36,7 @@ use mpfree_play::{
     Takes,
 };
 use mpfree_play::{MOVE_POINTS, TOUCH_POINTS};
-use mpfree_seq::arrange::{list_spans, song_to_scenes, Difference, Differs};
+use mpfree_seq::arrange::{list_spans, song_sections, song_to_scenes, Difference, Differs};
 use mpfree_seq::loops::{self, LoopNow, LoopPlan};
 use mpfree_seq::mpfree_moves::{Kind, MoveLog};
 use mpfree_seq::scenes::{MAX_LIST_STEPS, MAX_TIMES};
@@ -76,6 +76,11 @@ const SCENE_JOIN: u64 = 0x5C_0000;
 
 /// Started cues one period may bring before the list grows.
 const STARTED_ROOM: usize = 64;
+
+/// What a linked song list can't do yet (the Arrange refactor's phase 4b:
+/// its edits move the song from 4b.2, and it plays the song from 4b.4).
+pub(super) const LIST_LINKED: &str =
+    "song list: it is the song's parts now: edit and play them in the Song view";
 
 /// The tracks' mutes and solos as they will be once a mute queue lands,
 /// read without changing the project.
@@ -3216,6 +3221,9 @@ impl TimeControl {
                     None => "armed: none".into(),
                 })
             }
+            TimeAction::ListPlay(_) if self.project.arrangement.list.linked => {
+                Err(LIST_LINKED.into())
+            }
             TimeAction::LaunchScene(_)
             | TimeAction::StopAll
             | TimeAction::BackToSong
@@ -3671,9 +3679,20 @@ impl TimeControl {
                 Ok(if on { "song list" } else { "clips view" }.into())
             }
             TimeAction::ListPick(k) => {
-                self.list_pick = k.filter(|&k| k < self.project.arrangement.list.steps.len());
-                if let Some(k) = self.list_pick {
-                    self.scene_pick = Some(self.project.arrangement.list.steps[k].row);
+                let list = &self.project.arrangement.list;
+                if list.linked {
+                    // A section picked, and its scene with it if it has one.
+                    let bar = self.info.meter.bar_ticks();
+                    let parts = song_sections(&self.project, bar);
+                    self.list_pick = k.filter(|&k| k < parts.len());
+                    if let Some(from) = self.list_pick.and_then(|k| parts[k].scene) {
+                        self.scene_pick = Some(from.row);
+                    }
+                } else {
+                    self.list_pick = k.filter(|&k| k < list.steps.len());
+                    if let Some(k) = self.list_pick {
+                        self.scene_pick = Some(list.steps[k].row);
+                    }
                 }
                 self.changed = true;
                 Ok(match self.list_pick {
@@ -4547,13 +4566,17 @@ impl TimeControl {
     }
 
     /// A song list edit: a step's times or scene, a step put in or taken
-    /// out, the loop switch, or List → song. A line for the log, and what
+    /// out, the loop switch, or List → song. A linked list takes only the
+    /// loop switch for now ([`LIST_LINKED`]). A line for the log, and what
     /// changed for the take UNDO takes back.
     fn edit_list(
         &mut self,
         a: TimeAction,
         bar: Tick,
     ) -> Result<(String, Option<SongChange>), String> {
+        if self.project.arrangement.list.linked && !matches!(a, TimeAction::ListLoop(_)) {
+            return Err(LIST_LINKED.into());
+        }
         let filled: Vec<usize> = (0..SLOTS).filter(|&r| self.project.row_filled(r)).collect();
         let n = self.project.arrangement.list.steps.len();
         let list = &mut self.project.arrangement.list;
@@ -6038,6 +6061,9 @@ impl TimeControl {
     fn list_rows(&self, scenes: &[String]) -> Vec<ListRow> {
         let bar = self.info.meter.bar_ticks().max(1);
         let now = self.info.position;
+        if self.project.arrangement.list.linked {
+            return self.linked_rows(bar, now);
+        }
         let pass = self.perform.list_pass(&self.project, now, bar);
         let waiting = self.perform.list_waiting(now);
         let spans = list_spans(&self.project, bar);
@@ -6054,12 +6080,43 @@ impl TimeControl {
                     .filter(|n| !n.is_empty())
                     .cloned()
                     .unwrap_or_else(|| format!("Row {}", s.row + 1)),
-                row: s.row,
+                scene: Some(s.row),
                 times: s.times,
                 bars: len / bar,
                 starts: at / bar + 1,
                 playing: pass.filter(|p| p.0 == k).map(|p| (p.1, p.2)),
                 waiting: waiting == Some(k),
+            })
+            .collect()
+    }
+
+    /// A linked list's rows (the Arrange refactor's phase 4b): the song's
+    /// sections ([`song_sections`]), each with its marker's name ("Song"
+    /// for the bars before the first marker), its scene and its passes;
+    /// the one the song plays now is lit with its pass.
+    fn linked_rows(&self, bar: Tick, now: Tick) -> Vec<ListRow> {
+        let song = &self.project.arrangement;
+        let rolling = self.song && self.info.state.rolling();
+        song_sections(&self.project, bar)
+            .into_iter()
+            .map(|s| {
+                let span = (s.end - s.start).max(1);
+                let playing = (rolling && (s.start..s.end).contains(&now)).then(|| {
+                    let into = now - s.start;
+                    let pass = (into / s.pass().max(1)) as u16 + 1;
+                    (pass.min(s.passes), into as f32 / span as f32)
+                });
+                ListRow {
+                    name: s
+                        .marker
+                        .map_or_else(|| "Song".to_string(), |k| song.markers[k].name.clone()),
+                    scene: s.scene.map(|from| from.row),
+                    times: s.passes,
+                    bars: (span + bar - 1) / bar,
+                    starts: s.start / bar + 1,
+                    playing,
+                    waiting: false,
+                }
             })
             .collect()
     }
