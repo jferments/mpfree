@@ -33,6 +33,14 @@
 //!   ([`Saved::copy_of`]).
 //! - **Earlier saves are kept** ([`Library::versions`]), the newest
 //!   `keep` of them, so going back is one tap.
+//! - **Takes no save names any more go to the Trash** (the audio tracks
+//!   rethink, phase 3b step 4). When a save lets the oldest earlier save
+//!   go, the take files its audio tracks part named (the one part the
+//!   library reads: its take lines' `file=`) are moved to the Trash,
+//!   from where they can be put back, if they are audio track takes by
+//!   name ([`is_take_file`]) and no part of this save or of an earlier one
+//!   still kept mentions them. Never a file outside `samples/`, never a
+//!   link, never on autosave's saves.
 //! - **Sounds an engine made** (a recording in RAM, a resample) come with
 //!   the save as [`NewSample`]s, named by the engine for their content
 //!   ([`Library::save_project_with`]). Each one the project's `samples/`
@@ -68,6 +76,8 @@ const NEW_PARTS: &str = ".parts-new";
 const INCOMING: &str = ".incoming-";
 pub(crate) const SAMPLES: &str = "samples";
 const VERSIONS: &str = "versions";
+/// The audio tracks' part, whose take lines name their files.
+const TAKES_PART: &str = "audiotracks.txt";
 
 /// An engine's piece of a project.
 pub trait Part {
@@ -334,6 +344,9 @@ pub struct Saved {
     /// copied by hand, so it carried the other's id): it has its own id
     /// now, and the other keeps its id.
     pub copy_of: Option<String>,
+    /// Audio track takes moved to the Trash, as neither this save nor an
+    /// earlier one still kept names them.
+    pub cleared: usize,
 }
 
 /// A whole project as text: its meta and its parts by owner.
@@ -705,8 +718,70 @@ impl Library {
         write_synced(&part, meta.to_text().as_bytes())?;
         fs::rename(&part, dir.join(PROJECT_FILE))?;
         sync_dir(&dir)?;
-        self.prune_versions(&dir, keep);
+        let let_go = self.prune_versions(&dir, keep);
+        let mut saved = saved;
+        if !meta.is_autosave() {
+            saved.cleared = self.clear_takes(project, &dir, let_go);
+        }
         Ok(saved)
+    }
+
+    /// Moves to the Trash each of `takes` (take files an earlier save let
+    /// go of named) that is an audio track take by name, a file in the
+    /// project's `samples/`, and mentioned in no part kept: this save's
+    /// and each earlier one's. If a kept part can't be read, nothing is
+    /// moved. How many were.
+    fn clear_takes(&self, project: &Loc, dir: &Path, mut takes: Vec<String>) -> usize {
+        takes.retain(|n| valid_name(n) && is_take_file(n));
+        takes.sort();
+        takes.dedup();
+        if takes.is_empty() {
+            return 0;
+        }
+        let mut kept = vec![dir.join(PARTS)];
+        let Ok(versions) = fs::read_dir(dir.join(VERSIONS)) else {
+            return 0;
+        };
+        for e in versions {
+            let Ok(e) = e else {
+                return 0;
+            };
+            if e.file_type().is_ok_and(|t| t.is_dir()) {
+                kept.push(e.path().join(PARTS));
+            }
+        }
+        let mut texts = Vec::new();
+        for parts in kept {
+            let Ok(rd) = fs::read_dir(&parts) else {
+                if parts.exists() {
+                    return 0;
+                }
+                continue;
+            };
+            for e in rd {
+                let Ok(e) = e else {
+                    return 0;
+                };
+                match fs::read(e.path()) {
+                    Ok(b) => texts.push(String::from_utf8_lossy(&b).into_owned()),
+                    Err(_) => return 0,
+                }
+            }
+        }
+        let samples = dir.join(SAMPLES);
+        let mut cleared = 0;
+        for name in takes {
+            if texts.iter().any(|t| t.contains(name.as_str()))
+                || !fs::symlink_metadata(samples.join(&name)).is_ok_and(|m| m.is_file())
+            {
+                continue;
+            }
+            let at = project.join(SAMPLES).and_then(|l| l.join(&name));
+            if at.and_then(|l| self.delete(&l)).is_ok() {
+                cleared += 1;
+            }
+        }
+        cleared
     }
 
     /// The id a save of `project` (in `dir`) writes, put in `meta` with
@@ -729,7 +804,11 @@ impl Library {
         };
         meta.id = id.clone();
         meta.folder = folder;
-        Saved { id, copy_of }
+        Saved {
+            id,
+            copy_of,
+            cleared: 0,
+        }
     }
 
     /// The project in Projects, other than `except`, that has `id` and is
@@ -786,14 +865,22 @@ impl Library {
         Ok(())
     }
 
-    fn prune_versions(&self, dir: &Path, keep: usize) {
+    /// Lets go of all but the newest `keep` earlier saves: the take files
+    /// their audio tracks parts named.
+    fn prune_versions(&self, dir: &Path, keep: usize) -> Vec<String> {
+        let mut takes = Vec::new();
         let mut v = self.read_versions(dir);
         if v.len() > keep {
             for old in v.drain(keep..) {
+                let at = dir.join(VERSIONS).join(&old.id);
+                if let Ok(t) = fs::read_to_string(at.join(PARTS).join(TAKES_PART)) {
+                    takes.extend(take_files(&t).map(str::to_string));
+                }
                 let _ = fs::remove_dir_all(dir.join(VERSIONS).join(&old.id));
             }
             let _ = sync_dir(&dir.join(VERSIONS));
         }
+        takes
     }
 
     fn read_versions(&self, dir: &Path) -> Vec<Version> {
@@ -1057,6 +1144,31 @@ pub fn civil(secs: u64) -> (i64, u32, u32, u32, u32) {
     (y, m, d, (rem / 3600) as u32, (rem / 60 % 60) as u32)
 }
 
+/// Whether `name` is an audio track take's file by its name: `NAME_ID.wav`,
+/// ID a recording's 32 lower-case hex digits, as the audio tracks name
+/// them (`mpfree_audiotracks::files::file_name`, and `take_ID.wav` for a
+/// take with no recording of its own).
+pub fn is_take_file(name: &str) -> bool {
+    name.strip_suffix(".wav")
+        .and_then(|stem| stem.rsplit_once('_'))
+        .is_some_and(|(who, id)| {
+            !who.is_empty()
+                && id.len() == 32
+                && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        })
+}
+
+/// The files the audio tracks part's take lines name: the rest of each
+/// `take=` line after ` file=` (`mpfree_audiotracks::save`).
+pub fn take_files(part: &str) -> impl Iterator<Item = &str> {
+    part.lines()
+        .filter(|l| l.starts_with("take="))
+        .filter_map(|l| {
+            l.split_once(" file=")
+                .map(|(_, f)| f.trim_end_matches('\r'))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1250,6 +1362,109 @@ mod tests {
         let old = lib.open_version(&p, &v[2].id).unwrap();
         assert_eq!(old.part("transport"), Some("take 2"));
         assert!(lib.open_version(&p, "../../x").is_err());
+    }
+
+    #[test]
+    fn takes_no_kept_save_names_go_to_the_trash_and_nothing_else_does() {
+        let d = temp();
+        let lib = Library::at(&d).unwrap();
+        let p = Loc::top(Place::Projects).join("Song").unwrap();
+        let dir = lib.root().join("Projects").join("Song");
+        let id = |c: char| c.to_string().repeat(32);
+        let (vocal, keys) = (
+            format!("Vocal_{}.wav", id('a')),
+            format!("Keys_{}.wav", id('b')),
+        );
+        let on_pad = format!("take_{}.wav", id('c'));
+        let link = format!("Bass_{}.wav", id('d'));
+        let not_a_take = "kick.wav".to_string();
+        let line = |f: &str| {
+            format!(
+                "take=0 rec={} track=0 frames=1 channels=1 file={f}\n",
+                id('e')
+            )
+        };
+        let save = |t: u64, takes: &[&String], autosave: bool| {
+            let mut m = meta("Song", t);
+            if autosave {
+                m.mark_autosave();
+            }
+            let snap = Snapshot {
+                meta: m,
+                parts: vec![
+                    (
+                        "audiotracks".into(),
+                        takes.iter().map(|f| line(f)).collect(),
+                    ),
+                    ("sampler".into(), format!("pad 1 = {on_pad}\n")),
+                ],
+            };
+            lib.save_project(&p, &snap, 2).unwrap()
+        };
+        let all = [&vocal, &keys, &on_pad, &link, &not_a_take];
+        assert_eq!(save(1, &all, false).cleared, 0);
+        let samples = dir.join(SAMPLES);
+        for f in [&vocal, &keys, &on_pad, &not_a_take] {
+            fs::write(samples.join(f), b"RIFF").unwrap();
+        }
+        let outside = d.join("Bass.wav");
+        fs::write(&outside, b"RIFF").unwrap();
+        std::os::unix::fs::symlink(&outside, samples.join(&link)).unwrap();
+        // The first save is kept as an earlier one until the fourth.
+        assert_eq!(save(2, &[&vocal], false).cleared, 0);
+        assert_eq!(save(3, &[&vocal], false).cleared, 0);
+        assert!(samples.join(&keys).exists());
+        let saved = save(4, &[&vocal], false);
+        assert_eq!(saved.cleared, 1);
+        // Keys went: a take by name, in samples/, named by no part kept.
+        // The one a pad plays, the one this save names, one not named as
+        // a take and the link (and what it points at) stay.
+        assert!(!samples.join(&keys).exists());
+        for f in [&vocal, &on_pad, &not_a_take, &link] {
+            assert!(fs::symlink_metadata(samples.join(f)).is_ok(), "{f}");
+        }
+        assert!(outside.exists());
+        // In the Trash, and back from it.
+        let t = lib.trash().unwrap();
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0].name, keys);
+        assert_eq!(
+            lib.restore(&t[0].id).unwrap(),
+            p.join(SAMPLES).unwrap().join(&keys).unwrap()
+        );
+        assert!(samples.join(&keys).exists());
+        // Autosave's saves never clear.
+        let _ = fs::remove_dir_all(&dir);
+        save(5, &[&keys], true);
+        fs::write(samples.join(&keys), b"RIFF").unwrap();
+        for t in 6..=9 {
+            assert_eq!(save(t, &[], true).cleared, 0);
+        }
+        assert!(samples.join(&keys).exists());
+    }
+
+    #[test]
+    fn a_take_file_is_known_by_its_name_and_found_in_its_part() {
+        let id = "0123456789abcdef0123456789abcdef";
+        assert!(is_take_file(&format!("Vocal take_{id}.wav")));
+        assert!(is_take_file(&format!("take_{id}.wav")));
+        for no in [
+            format!("_{id}.wav"),
+            format!("Vocal_{id}.WAV"),
+            format!("Vocal_{}.wav", id.to_uppercase()),
+            format!("Vocal_{}.wav", &id[1..]),
+            "kick.wav".into(),
+            format!("Vocal_{id}.wav.recording"),
+        ] {
+            assert!(!is_take_file(&no), "{no}");
+        }
+        let part = format!(
+            "audiotracks 3\ntrack=0 name=a\ntake=0 rec={id} file=a b_{id}.wav\r\nregion take=0\ntake=1 rec={id}\n"
+        );
+        assert_eq!(
+            take_files(&part).collect::<Vec<_>>(),
+            [format!("a b_{id}.wav")]
+        );
     }
 
     #[test]

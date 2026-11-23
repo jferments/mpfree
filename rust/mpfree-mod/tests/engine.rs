@@ -405,6 +405,83 @@ fn a_hand_beats_a_lane_and_lets_go_to_the_lane_it_holds_then() {
 }
 
 #[test]
+fn a_let_go_with_no_room_lands_first_in_the_next_block() {
+    let mut e = engine();
+    let hand = |value| ModEvent::Touch {
+        addr: mix(),
+        value,
+        over_locks: false,
+    };
+    let lock = ModEvent::Lock {
+        addr: cut(),
+        value: 500.0,
+    };
+    run(&mut e, 128, 128, &[(0, hand(20.0)), (0, lock)], None);
+    assert!(e.is_touched(mix()) && e.is_locked(cut()));
+    // Their ends found the host's events full: the targets keep them.
+    assert!(e.let_go_later(mix(), LetGo::Touch));
+    assert!(e.let_go_later(cut(), LetGo::Lock));
+    assert!(e.let_go_later(cut(), LetGo::Lock), "twice is still one");
+    let other = ParamAddr::new(Owner::Insert(Strip::Track(1), 9), 5);
+    assert!(
+        !e.let_go_later(other, LetGo::Touch),
+        "not a target: nothing to let go of"
+    );
+    assert_eq!(e.late(), 2);
+    // The next block lets go on its first frame, before its own events: a
+    // new hand there holds the setting afterwards.
+    let log = run(&mut e, 128, 128, &[(0, hand(30.0))], None);
+    assert_eq!(e.late(), 0);
+    assert!(!e.is_locked(cut()), "the lock let go");
+    assert!(e.is_touched(mix()), "the new hand holds it");
+    assert_eq!(last(&log, cut()), 1000.0, "back to its own value");
+    assert_eq!(last(&log, mix()), 30.0);
+    // A let-go kept for a target that then goes leaves nothing behind.
+    assert!(e.let_go_later(mix(), LetGo::Touch));
+    assert!(e.remove_target(mix()));
+    assert_eq!(e.late(), 0);
+    run(&mut e, 128, 128, &[], None);
+}
+
+#[test]
+fn opening_a_project_lets_go_of_every_hand_and_lock() {
+    let mut e = engine();
+    let events = [
+        (
+            0,
+            ModEvent::Touch {
+                addr: mix(),
+                value: 20.0,
+                over_locks: true,
+            },
+        ),
+        (
+            0,
+            ModEvent::Lane {
+                addr: cut(),
+                value: 400.0,
+            },
+        ),
+        (
+            0,
+            ModEvent::Lock {
+                addr: mode(),
+                value: 2.0,
+            },
+        ),
+    ];
+    run(&mut e, 128, 128, &events, None);
+    assert!(e.let_go_later(mix(), LetGo::Touch));
+    e.let_go_all();
+    assert_eq!(e.late(), 0);
+    assert!(!e.is_touched(mix()) && !e.is_locked(cut()) && !e.is_locked(mode()));
+    let log = run(&mut e, 128, 128, &[], None);
+    assert_eq!(last(&log, mix()), 50.0);
+    assert_eq!(last(&log, cut()), 1000.0);
+    assert_eq!(last(&log, mode()), 0.0);
+}
+
+#[test]
 fn a_steps_lock_keeps_its_value_under_a_hand_unless_recording() {
     let mut e = engine();
     let hand = |value, over_locks| ModEvent::Touch {

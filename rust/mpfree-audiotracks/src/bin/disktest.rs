@@ -32,6 +32,12 @@
 //! folder's parent instead (no mount checks), and `--quick` cuts every
 //! step to 2 s and 8 MiB, for the tests.
 //!
+//! `--under-load` reads the library like `--read-only` while a recording,
+//! a heavy copy, a heavy read, busy cores and heavy task switching run
+//! beside it, in eight steps of about 45 s ([`load`]). It writes only
+//! `rec.bin` and `copy.bin` in its own folder, within the same room as the
+//! write run, and needs the partition mounted `noatime` too.
+//!
 //! `--read-only` writes nothing at all: it reads the audio already under
 //! `library/` the way the streaming engine will (many paced streams, reads
 //! of 64 to 512 KiB) and gives the tail of the read times and the window
@@ -58,13 +64,15 @@ const MAX_BYTES: u64 = 448 * MIB;
 const MIN_BYTES: u64 = 32 * MIB;
 const STREAMS: usize = 8;
 /// Every file the tool may make, and so the only ones it deletes.
-const FILES: [&str; 6] = [
+const FILES: [&str; 8] = [
     "seq.bin",
     "paced.bin",
     "mix0.bin",
     "mix1.bin",
     "mix2.bin",
     "mix3.bin",
+    "rec.bin",
+    "copy.bin",
 ];
 
 /// Print, ignoring a closed output (the ssh session gone): the folder must
@@ -86,6 +94,9 @@ macro_rules! esay {
 #[path = "disktest/read.rs"]
 mod read;
 
+#[path = "disktest/load.rs"]
+mod load;
+
 static STOP: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn on_signal(_: libc::c_int) {
@@ -105,6 +116,7 @@ struct Opts {
     desktop: bool,
     quick: bool,
     read_only: bool,
+    under_load: bool,
 }
 
 fn parse() -> Result<Opts, String> {
@@ -113,6 +125,7 @@ fn parse() -> Result<Opts, String> {
         desktop: false,
         quick: false,
         read_only: false,
+        under_load: false,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -123,10 +136,13 @@ fn parse() -> Result<Opts, String> {
             }
             "--quick" => o.quick = true,
             "--read-only" => o.read_only = true,
+            "--under-load" => o.under_load = true,
             "-h" | "--help" => {
-                say!("usage: mpfree-disktest [--read-only] [--desktop-test DIR] [--quick]");
+                say!("usage: mpfree-disktest [--read-only | --under-load] [--desktop-test DIR] [--quick]");
                 say!("Without --desktop-test it runs only on {MOUNT}, the stick's partition 4.");
                 say!("--read-only reads the audio in its library folder and writes nothing.");
+                say!("--under-load reads it with a recording, heavy reads and writes, busy cores and");
+                say!("heavy task switching beside it, writing only test files in its own folder.");
                 std::process::exit(0);
             }
             _ => return Err(format!("unknown argument {a:?}")),
@@ -134,6 +150,9 @@ fn parse() -> Result<Opts, String> {
     }
     if o.quick && !o.desktop {
         return Err("--quick is only for --desktop-test".into());
+    }
+    if o.read_only && o.under_load {
+        return Err("--read-only and --under-load are different runs".into());
     }
     Ok(o)
 }
@@ -176,9 +195,10 @@ fn ext4_label(dev: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&name[..end]).into_owned())
 }
 
-/// Rule zero: only the stick's partition 4. Reading only, it must also be
-/// mounted `noatime` or read-only, so a read changes no access time.
-fn check_device(read_only: bool) -> Result<(), String> {
+/// Rule zero: only the stick's partition 4. Reading the library (the
+/// read-only and under-load runs), it must also be mounted `noatime` or
+/// read-only, so a read changes no access time.
+fn check_device(reads_library: bool) -> Result<(), String> {
     for dir in ["/dev", "/sys/block"] {
         if let Ok(rd) = fs::read_dir(dir) {
             for e in rd.flatten() {
@@ -195,7 +215,7 @@ fn check_device(read_only: bool) -> Result<(), String> {
     if fstype != "ext4" {
         return Err(format!("{MOUNT} is {fstype}, not ext4"));
     }
-    if read_only && !opts.split(',').any(|o| o == "noatime" || o == "ro") {
+    if reads_library && !opts.split(',').any(|o| o == "noatime" || o == "ro") {
         return Err(format!(
             "{MOUNT} is mounted {opts}: reading would change access times (needs noatime or ro)"
         ));
@@ -629,7 +649,7 @@ fn main() -> ExitCode {
         BLOCK / 1024
     );
     if !o.desktop {
-        if let Err(e) = check_device(o.read_only) {
+        if let Err(e) = check_device(o.read_only || o.under_load) {
             esay!("mpfree-disktest: refused: {e}. Nothing was written.");
             return ExitCode::from(3);
         }
@@ -667,6 +687,24 @@ fn main() -> ExitCode {
             }
         };
     }
+    // The under-load run finds what it reads before anything is written.
+    let ready = if o.under_load {
+        // A desktop test may name a stand-in for the thermal zones; the
+        // stick's run always reads the kernel's.
+        let thermal = match std::env::var_os("MPFREE_DISKTEST_THERMAL") {
+            Some(p) if o.desktop => PathBuf::from(p),
+            _ => PathBuf::from(load::THERMAL),
+        };
+        match load::prepare(&base, o.quick, o.desktop, &thermal) {
+            Ok(r) => Some(r),
+            Err(read::Fail::Refused(e)) | Err(read::Fail::Failed(e)) => {
+                esay!("mpfree-disktest: refused: {e}. Nothing was written.");
+                return ExitCode::from(3);
+            }
+        }
+    } else {
+        None
+    };
     let dir = base.join(FOLDER);
     if let Err(e) = clean(&dir) {
         esay!("mpfree-disktest: refused: {e}. Nothing was written.");
@@ -716,7 +754,10 @@ fn main() -> ExitCode {
     let r = fs::DirBuilder::new()
         .create(&dir)
         .map_err(|e| format!("create {}: {e}", dir.display()))
-        .and_then(|()| run(&dir, &z));
+        .and_then(|()| match ready {
+            Some(ready) => load::run(&base, &dir, room, ready),
+            None => run(&dir, &z),
+        });
     let cleaned = clean(&dir);
     let after = free_bytes(&base).map(|f| format!("{:.1} MiB", f as f64 / MIB as f64));
     say!(

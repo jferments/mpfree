@@ -129,6 +129,40 @@ pub struct Saved {
 pub const NAME_ROOM: usize = 96;
 
 impl Saved {
+    /// The takes, recorded at [`Saved::rate`], as at `rate`, so the song
+    /// plays at its own speed and pitch: each take's audio converted
+    /// through the windowed-sinc resampler ([`mpfree_stretch::convert_rate`],
+    /// flat to 20 kHz from 48 to 44.1 kHz), its frames with it, and the
+    /// frame counts of the regions playing it (where each starts in it,
+    /// its fades) scaled to match. A converted take is a copy of its own:
+    /// no file holds it yet (no `path` or name) and it gets a new lasting
+    /// id when it goes in, as a stretched copy does. Takes with no audio
+    /// here (not read) are left as they are, so read them all first. Heavy
+    /// work for long takes (a minute of 48 kHz stereo is about 300 million
+    /// multiplies): off the audio and screen threads.
+    pub fn convert(&mut self, rate: u32) {
+        let from = self.rate;
+        if from == rate || from == 0 || rate == 0 {
+            return;
+        }
+        let scale = |n: f64| (n * f64::from(rate) / f64::from(from)).round();
+        for k in self.takes.iter_mut().filter(|k| !k.audio.is_empty()) {
+            k.audio = mpfree_stretch::convert_rate(&k.audio, k.channels, from, rate);
+            k.frames = k.audio.len() / k.channels.max(1);
+            k.path = None;
+            k.file.clear();
+            k.rec = RecordingId::NONE;
+            for g in self.tracks.iter_mut().flat_map(|t| &mut t.regions) {
+                if g.take == k.id {
+                    g.src = scale(g.src as f64) as i64;
+                    g.fade_in = scale(f64::from(g.fade_in)) as u32;
+                    g.fade_out = scale(f64::from(g.fade_out)) as u32;
+                }
+            }
+        }
+        self.rate = rate;
+    }
+
     /// Room for the most a save can hold: [`MAX_TRACKS`] tracks of
     /// [`MAX_REGIONS`] regions each and [`MAX_TAKES`] takes, each with room
     /// for a [`NAME_ROOM`] file name, so that
@@ -579,6 +613,50 @@ mod tests {
         assert!(t.starts_with("mpfree-audiotracks 2\n"));
         assert!(t.contains("\ntrack=3 id=4 input=left "), "{t}");
         assert_eq!(from_text(&t), Ok(s));
+    }
+
+    /// Takes recorded at another rate come out at the one asked for: each
+    /// read take converted (its sound the same tone at the new rate), its
+    /// frames and the frame counts of its regions scaled, and no file or
+    /// lasting id kept for it; a take not read is left as it was.
+    #[test]
+    fn takes_at_another_rate_are_converted_with_their_regions() {
+        let mut s = saved();
+        // Take 0: a second of a 441 Hz tone, mono. Take 1 isn't read.
+        let tone = |rate: f64, frames: usize| -> Vec<f32> {
+            (0..frames)
+                .map(|n| (std::f64::consts::TAU * 441.0 * n as f64 / rate).sin() as f32 * 0.5)
+                .collect()
+        };
+        s.takes[0].audio = tone(44_100.0, 44_100);
+        s.tracks[0].regions[0].src = 4410;
+        s.tracks[0].regions[0].fade_out = 441;
+        let before = s.clone();
+        s.convert(48_000);
+        assert_eq!(s.rate, 48_000);
+        let k = &s.takes[0];
+        assert_eq!((k.frames, k.audio.len()), (48_000, 48_000));
+        assert!(k.path.is_none() && k.file.is_empty() && k.rec == RecordingId::NONE);
+        assert_eq!(
+            (k.anchor, k.bpm, k.channels),
+            (before.takes[0].anchor, 97.5, 1)
+        );
+        // The same tone, away from the ends where the filter starts.
+        let want = tone(48_000.0, 48_000);
+        let worst = (1000..47_000)
+            .map(|n| (k.audio[n] - want[n]).abs())
+            .fold(0.0f32, f32::max);
+        assert!(worst < 1e-3, "{worst}");
+        let g = &s.tracks[0].regions[0];
+        assert_eq!((g.src, g.fade_in, g.fade_out), (4800, 11, 480));
+        assert_eq!((g.start, g.end, g.gain), (0, 1920, 0.5));
+        // Take 1 (no sound here) and its region stay as they were.
+        assert_eq!(s.takes[1], before.takes[1]);
+        assert_eq!(s.tracks[0].regions[1], before.tracks[0].regions[1]);
+        // The same rate changes nothing.
+        let again = s.clone();
+        s.convert(48_000);
+        assert_eq!(s, again);
     }
 
     /// A part saved before audio tracks were tracks is refused in plain

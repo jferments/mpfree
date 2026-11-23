@@ -78,8 +78,8 @@ impl Rule {
 /// a loop the way back to bar 1.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Weights {
-    /// Per semitone of leap beyond a fifth; an octave and more costs a lot
-    /// but is never banned.
+    /// Per scale step of leap beyond a fourth; over an octave costs a lot
+    /// more but is never banned.
     pub leap: f32,
     /// A chromatic note that doesn't move by a half step (enclosures and
     /// unresolved neighbours cost little in Jazz-ish).
@@ -121,6 +121,16 @@ impl RangeSetting {
             RangeSetting::Narrow => "Narrow",
             RangeSetting::Medium => "Medium",
             RangeSetting::Wide => "Wide",
+        }
+    }
+
+    /// Scale steps either side of the middle of what you played that new
+    /// notes may use.
+    pub const fn steps(self) -> i32 {
+        match self {
+            RangeSetting::Narrow => 4,
+            RangeSetting::Medium => 7,
+            RangeSetting::Wide => 10,
         }
     }
 
