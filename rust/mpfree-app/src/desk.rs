@@ -952,6 +952,7 @@ impl Desk<'_> {
             | app::Effect::TrackCopy { .. }
             | app::Effect::PadsFocus(_)
             | app::Effect::SynthOnTrack(_)
+            | app::Effect::KitOnTrack { .. }
             | app::Effect::SixteenLevels
             | app::Effect::PadRec(_)
             | app::Effect::Bank { .. }
@@ -1031,10 +1032,15 @@ pub fn rec_plan(
     // The pads' synth; or, while they play the armed track's kit (or its
     // MIDI out), that track as it is when a MIDI route names a synth to
     // record (step 11e): `synth` empty.
+    let pads_kit = app.pads_kit();
     let (holder, synth, kit) = if app.pads_chose_synth() {
         (None, app.pads_synth_name(), false)
     } else if let Some(h) = app.pads_holder() {
         (Some(h), app.pads_held()?.name, false)
+    } else if pads_kit.is_some() {
+        // A kit chosen for the pads (sampler step 15): recorded where it
+        // plays, as a synth; the screen names it.
+        (None, "the pads' kit", false)
     } else if app.routes_record() {
         (None, "", true)
     } else {
@@ -1046,7 +1052,11 @@ pub fn rec_plan(
     }
     let project = time.project();
     let app_side = |t: usize| track_set_up(app, mix, t);
-    let ready = kit || app.track_plays_synth(armed, holder);
+    let ready = kit
+        || match pads_kit {
+            Some(_) => app.plays_pads_kit(armed),
+            None => app.track_plays_synth(armed, holder),
+        };
     let take = if ready {
         SynthTake::On(armed)
     } else {
@@ -1057,6 +1067,7 @@ pub fn rec_plan(
         synth,
         holder,
         ready,
+        kit: pads_kit,
         layers: [None; app::REC_MORE],
     };
     let first = match take {
@@ -1290,9 +1301,10 @@ fn rec_synth(
         ));
     }
     if !plan.ready {
-        fx.extend(match plan.holder {
-            None => app.rec_synth_on(t, added),
-            Some(h) => app.rec_send_on(t, h, added),
+        fx.extend(match (plan.kit, plan.holder) {
+            (Some(kit), _) => app.rec_kit_on(t, kit, added),
+            (None, None) => app.rec_synth_on(t, added),
+            (None, Some(h)) => app.rec_send_on(t, h, added),
         });
     }
     // Each layer's track plays its synth and is armed too, with the other

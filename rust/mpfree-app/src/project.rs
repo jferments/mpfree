@@ -19,13 +19,13 @@
 //! | `looper` | the Looper | [`loops_part`], a WAV a layer in `samples/` | [`loops_open`] on a thread, then `LoopHost::open` |
 //! | `arp` | the arps | `App::arp_part` | `App::open_arp` |
 //! | `perform` | the Perform set (`perform_pads.rs`) | `PerformSet::text` | `PerformSet::parse`, then `App::set_perform_set` |
-//! | `pads` | what the pads play (`app/pads_focus.rs`): the selected track's instrument, or one chosen for them | `App::pads_part` | `App::open_pads`; none (New, or saved before it) follows the track |
-//! | `pad-layers` | the synths the pads play beyond the first (`app/pad_layers.rs`), written only while there are some | `App::pad_layers_part` | `App::open_pad_layers`, after the pads part; none: one synth |
+//! | `pads` | what the pads play, the pad map (`app/pads_focus.rs`, sampler step 15b): the base for every bank (the selected track's instrument, or one chosen for them), each bank's own entry and the layers | `App::pads_part` (`PadMap::text`) | `App::open_pads`, after the list; none (New) follows the track |
 //! | `audiotracks` | the audio tracks | [`audio_part`]: each track's settings and regions, a WAV a take in `samples/` | [`audio_open`] on a thread, then [`crate::audiotracks::TrackHost::open`] |
 //!
 //! The project's tempo is `project.txt`'s `tempo`, and its format
-//! ([`FORMAT_KEY`]) says what the parts mean together: 3 since kits are
-//! instruments with ids. A project of an older format is refused, not
+//! ([`FORMAT_KEY`]) says what the parts mean together: 4 since the pads
+//! part is the pad map (sampler step 15b; 3 had kits as instruments with
+//! ids, step 14). A project of an older format is refused, not
 //! converted ([`check`]): mpfree is early, and no project made before
 //! needs keeping (Jay, 22 Nov 2026).
 //!
@@ -78,13 +78,10 @@ pub const TRACK_KITS: &str = "track-kits";
 /// The project's instruments, each with its lasting id
 /// ([`InstrumentList::text`]).
 pub const INSTRUMENT_LIST: &str = "instrument-list";
-/// What the pads play: the selected track's instrument, or one chosen for
-/// them (`App::pads_part`, the instrument redesign's step 3).
+/// What the pads play: the pad map (`App::pads_part`, the instrument
+/// redesign's step 3, the pads part version 2 of sampler step 15b), its
+/// banks' own and its layers too.
 pub const PADS: &str = "pads";
-/// The synths the pads play beyond the first (`App::pad_layers_part`, the
-/// instrument redesign's step 11a): a part of its own, so a build from
-/// before reads the pads part and plays the first only.
-pub const PAD_LAYERS: &str = "pad-layers";
 /// The Song view's audio tracks and their takes ([`audio_part`]).
 pub const AUDIOTRACKS: &str = "audiotracks";
 
@@ -117,10 +114,11 @@ fn instruments_version(line: &str) -> Option<u32> {
 /// 7`).
 pub const TRACK_KITS_FORMAT: &str = "mpfree-track-kits 3";
 
-/// `project.txt`'s line for what the parts mean together: `format = 3`.
-/// Format 3 has kits in the list of instruments (the sampler refactor's
-/// step 14); 2 had ids for synths only (the instrument redesign's step
-/// 2a), and no line was format 1. The library's own first line
+/// `project.txt`'s line for what the parts mean together: `format = 4`.
+/// Format 4 saves the pads as one pad map with its layers (the sampler
+/// refactor's step 15b, the pads part version 2); 3 had kits in the list
+/// of instruments (step 14); 2 had ids for synths only (the instrument
+/// redesign's step 2a), and no line was format 1. The library's own first line
 /// (`mpfree-project 1`) is the folder's format; this one is the app's,
 /// kept in the library so the MPC importer writes it too.
 pub const FORMAT_KEY: &str = mpfree_library::project::PARTS_FORMAT_KEY;
@@ -179,9 +177,6 @@ pub struct Collected {
     /// What the pads play ([`crate::app::App::pads_part`]); not saved
     /// when empty.
     pub pads: String,
-    /// The pads' layers beyond the first
-    /// ([`crate::app::App::pad_layers_part`]); not saved when empty.
-    pub pad_layers: String,
     /// The Looper's loops with their layers' audio (read as they play:
     /// [`crate::looping::LoopHost::save`]); None when the looper couldn't
     /// save. Freed on the screen thread.
@@ -239,9 +234,6 @@ pub struct Opening {
     /// What the pads play (the pads part); None (New, or a project saved
     /// before it had one): they follow the selected track.
     pub pads: Option<String>,
-    /// The pads' layers beyond the first (the pad layers part); None: one
-    /// synth.
-    pub pad_layers: Option<String>,
     /// Lines for the log: parts that didn't read.
     pub notes: Vec<String>,
     /// What of the project's was left out (an effect or instrument this
@@ -328,9 +320,6 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
     }
     if !c.pads.is_empty() {
         parts.push((PADS.to_string(), c.pads.clone()));
-    }
-    if !c.pad_layers.is_empty() {
-        parts.push((PAD_LAYERS.to_string(), c.pad_layers.clone()));
     }
     parts.extend(extra);
     let mut extra = vec![
@@ -457,7 +446,6 @@ fn part_words(part: &str) -> String {
         TRACK_KITS => "list of what its tracks play",
         INSTRUMENT_LIST => "list of instruments",
         PADS => "pads settings",
-        PAD_LAYERS => "pads' layers",
         AUDIOTRACKS => "audio tracks",
         other => other,
     };
@@ -765,7 +753,6 @@ pub fn opening(
         sends,
         instrument_list,
         pads: snap.part(PADS).map(str::to_string),
-        pad_layers: snap.part(PAD_LAYERS).map(str::to_string),
         notes,
         left_out,
         what: what.to_string(),
@@ -2791,7 +2778,6 @@ mod tests {
             track_kits,
             instrument_list: InstrumentList::new().text(),
             pads: String::new(),
-            pad_layers: String::new(),
             loops: None,
             audio: None,
         };
@@ -2856,7 +2842,6 @@ mod tests {
             track_kits,
             instrument_list,
             pads: String::new(),
-            pad_layers: String::new(),
             loops: None,
             audio: None,
         }
@@ -2905,7 +2890,7 @@ mod tests {
             }
             snap
         };
-        for (format, n) in [(Some("2"), 2), (None, 1)] {
+        for (format, n) in [(Some("3"), 3), (Some("2"), 2), (None, 1)] {
             assert_eq!(
                 opening(&old(format), 44_100, "an old project", none).err(),
                 Some(format!(
@@ -2914,9 +2899,9 @@ mod tests {
             );
         }
         assert_eq!(
-            opening(&old(Some("4")), 44_100, "a newer one", none).err(),
+            opening(&old(Some("5")), 44_100, "a newer one", none).err(),
             Some(format!(
-                "it was saved by a newer MPFree (project format 4; this one opens up to {FORMAT}). Update MPFree to open it"
+                "it was saved by a newer MPFree (project format 5; this one opens up to {FORMAT}). Update MPFree to open it"
             ))
         );
     }
@@ -2999,7 +2984,7 @@ mod tests {
             opening(&snap, 44_100, "x", none)
         };
         let list = InstrumentList::new().text();
-        let o = with(Some("3"), None).unwrap();
+        let o = with(Some(&FORMAT.to_string()), None).unwrap();
         assert!(instrument_notes(&o).is_empty(), "{:?}", o.notes);
         assert_eq!(o.instrument_list, InstrumentList::new());
         assert_eq!(o.track_kits, [(3, None)]);
@@ -3025,9 +3010,12 @@ mod tests {
             with(Some("two"), Some(list.as_str())).err(),
             Some("its format line (\"two\") can't be read".to_string())
         );
-        let why = with(Some("3"), Some("mpfree-instrument-list 1\n"))
-            .err()
-            .unwrap_or_default();
+        let why = with(
+            Some(&FORMAT.to_string()),
+            Some("mpfree-instrument-list 1\n"),
+        )
+        .err()
+        .unwrap_or_default();
         assert!(
             why.starts_with("its list of instruments can't be read"),
             "{why}"
@@ -3490,7 +3478,6 @@ mod tests {
                 track_kits: String::new(),
                 instrument_list: InstrumentList::new().text(),
                 pads: String::new(),
-                pad_layers: String::new(),
                 loops: None,
                 audio: None,
             };
@@ -3528,7 +3515,6 @@ mod tests {
             track_kits: String::new(),
             instrument_list: InstrumentList::new().text(),
             pads: String::new(),
-            pad_layers: String::new(),
             loops: None,
             audio: None,
         };
@@ -3547,9 +3533,13 @@ mod tests {
     #[test]
     fn what_the_pads_play_is_kept_and_comes_back() {
         let mut c = collected(String::new(), InstrumentList::new().text());
-        c.pads = crate::app::PadFocus::SYNTH.text();
+        c.pads = crate::app::PadMap {
+            base: crate::app::PadFocus::SYNTH,
+            ..Default::default()
+        }
+        .text();
         let mut snap = snapshot(&c, Vec::new());
-        assert_eq!(snap.part(PADS), Some("mpfree-pads 1\nplay instrument 1\n"));
+        assert_eq!(snap.part(PADS), Some("mpfree-pads 2\nplay instrument 1\n"));
         let o = opening(&snap, 44_100, "a test", &crate::plugins::Plugins::none()).unwrap();
         assert_eq!(o.pads.as_deref(), Some(c.pads.as_str()));
         snap.parts.retain(|(name, _)| name != PADS);
@@ -3563,24 +3553,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(o.pads, None, "a new project follows the track");
-        assert_eq!(o.pad_layers, None);
-    }
-
-    /// The pads' layers (the instrument redesign's step 11a): a part of
-    /// their own, only while there are some, so the pads part stays as an
-    /// older build reads it.
-    #[test]
-    fn the_pads_layers_are_a_part_of_their_own() {
-        let mut c = collected(String::new(), InstrumentList::new().text());
-        c.pads = "mpfree-pads 1\nplay instrument 2\n".into();
-        let snap = snapshot(&c, Vec::new());
-        assert_eq!(snap.part(PAD_LAYERS), None, "none: no part");
-        c.pad_layers = "mpfree-pad-layers 1\nlayer instrument 3\n".into();
-        let snap = snapshot(&c, Vec::new());
-        assert_eq!(snap.part(PADS), Some(c.pads.as_str()));
-        assert_eq!(snap.part(PAD_LAYERS), Some(c.pad_layers.as_str()));
-        let o = opening(&snap, 44_100, "a test", &crate::plugins::Plugins::none()).unwrap();
-        assert_eq!(o.pad_layers.as_deref(), Some(c.pad_layers.as_str()));
     }
 
     /// A project saved before Drums was track 1's strip plays its clips'
@@ -3625,7 +3597,6 @@ mod tests {
                 track_kits: String::new(),
                 instrument_list: InstrumentList::new().text(),
                 pads: String::new(),
-                pad_layers: String::new(),
                 loops: None,
                 audio: None,
             };
@@ -3715,7 +3686,6 @@ mod tests {
                 track_kits: String::new(),
                 instrument_list: InstrumentList::new().text(),
                 pads: String::new(),
-                pad_layers: String::new(),
                 loops: None,
                 audio: None,
             };
@@ -3752,7 +3722,6 @@ mod tests {
             track_kits: String::new(),
             instrument_list: InstrumentList::new().text(),
             pads: String::new(),
-            pad_layers: String::new(),
             loops: None,
             audio: None,
         };

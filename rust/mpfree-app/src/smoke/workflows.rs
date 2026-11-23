@@ -2783,8 +2783,9 @@ mod tests {
     /// drum clip plays on Track 1 while the pads play Poly, chosen on the
     /// Synth tab. Selecting other tracks and tapping a row of REC's list
     /// never move the pads, the header names them on every page, and no
-    /// track or clip changes; a kit picked for the selected track, or the
-    /// header's chip (Follow track), gives the pads back to the track.
+    /// track or clip changes; a kit picked for the selected track leaves
+    /// the pads on Poly (sampler step 15b), and the header's chip (Follow
+    /// track) gives them back to the track.
     #[test]
     fn the_pads_play_poly_while_a_drum_clip_plays_on_whichever_track_is_selected() {
         use crate::app::PadFocus;
@@ -2865,13 +2866,17 @@ mod tests {
                 .filter(|c| c.widget == "kits" && c.target.id == "row")
                 .collect();
             s.press_target(&rows[1].target).run_for(0.2);
-            assert_eq!(s.app.pads_focus(), PadFocus::Track);
             assert_eq!(s.track_kits.entry(1), 1, "Track 2 plays kit 2");
-            assert_eq!(s.kit, 1, "and the pads with it");
-            // Chosen again, then the header's chip: Follow track.
+            assert_eq!(s.kit, 1, "the armed track's kit");
+            assert!(
+                s.app.pads_chose_synth(),
+                "a kit picked for the track never moves the pads (step 15b)"
+            );
+            let before = s.previewed.len();
+            s.pad(1, 90, 0.05);
+            assert_eq!(s.previewed.len(), before + 1, "the pads still play Poly");
+            // The header's chip: Follow track.
             s.press("header", "tab", "Synth").settle();
-            s.press("synth-pads-head", "play", "").settle();
-            assert!(s.app.pads_chose_synth(), "{}", s.hint());
             s.press("header", "chip", "Pads: Poly").settle();
             assert_eq!(s.app.pads_focus(), PadFocus::Track);
             assert!(s.control("header", "chip", "Pads: Poly").is_none());
