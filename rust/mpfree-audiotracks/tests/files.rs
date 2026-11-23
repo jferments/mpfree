@@ -258,7 +258,8 @@ fn a_track_whose_files_cant_be_made_doesnt_arm_and_says_why() {
 
 /// Step 5d: the drive the takes record to is looked at on a thread of its
 /// own; when it goes, System status hears Stick missing, and when it is
-/// back, that it ended.
+/// back, that it ended. Each look also goes where the page's stick meter
+/// reads it (System status phase 3).
 #[test]
 fn the_drive_going_and_coming_back_is_told_to_system_status() {
     use mpfree_audiotracks::files::{Problem, Room};
@@ -267,10 +268,13 @@ fn the_drive_going_and_coming_back_is_told_to_system_status() {
         dir.exists().then_some(Room {
             writable: true,
             free: 1 << 40,
+            total: 1 << 41,
         })
     }
     let dir = scratch("drive");
     let mut r = Rig::new(&dir);
+    let seen = r.h.drive_seen();
+    assert_eq!(seen.get(), None, "not looked at before the watch starts");
     r.run_until(|r| r.frame > 10 * P && dir.exists());
     // The stick is pulled, then the drive is looked at.
     std::fs::remove_dir_all(&dir).unwrap();
@@ -285,6 +289,7 @@ fn the_drive_going_and_coming_back_is_told_to_system_status() {
         track: None,
     };
     assert_eq!(got, [missing]);
+    assert_eq!(seen.get(), Some(None), "the meter hears it's gone");
     // Back: the next look (within three seconds) ends it.
     std::fs::create_dir_all(&dir).unwrap();
     let mut back = Vec::new();
@@ -298,6 +303,14 @@ fn the_drive_going_and_coming_back_is_told_to_system_status() {
             report: Report::ended(&kinds::STICK_MISSING),
             track: None,
         }]
+    );
+    assert_eq!(
+        seen.get(),
+        Some(Some(Room {
+            writable: true,
+            free: 1 << 40,
+            total: 1 << 41,
+        }))
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

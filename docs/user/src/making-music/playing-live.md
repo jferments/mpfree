@@ -49,9 +49,11 @@ The **XY pad** plays an effect on the whole mix under one finger. The chip at it
 
 {{shot: play-xy-list | The list the XY chip opens: Filter + echo and the nine XY FX, each saying what across and up do. Wash is the pick here.}}
 
-**For a bigger pad, press SHIFT + NEXT SEQ** from any page. The XY pad takes the whole of Play under the transport bar, with the master bar and the Q-Links still beside it, so you have room for big, slow moves. It plays just as the small one does, and its chip still opens the list. Press **SHIFT + NEXT SEQ** again, or go to another page, to get the small pad back.
+**For a bigger pad, press SHIFT + NEXT SEQ** from any page. The XY pad takes the whole of Play under the transport bar, with the master bar and the Q-Links still beside it, so you have room for big, slow moves. It plays just as the small one does, and its chip still opens the list. Under it are **Hold**, **Let go** and **Setup**. Press **SHIFT + NEXT SEQ** again, or go to another page, to get the small pad back.
 
-{{shot: play-xy-full | The XY pad full screen (SHIFT + NEXT SEQ), playing Wash: decay across, brightness up.}}
+{{shot: play-xy-full | The XY pad full screen (SHIFT + NEXT SEQ), playing Wash: decay across, brightness up. Under it, Hold (for layouts of yours), Let go and Setup.}}
+
+**To put your own settings on the pad,** make a layout of your own: tap **+ New layout** in the chip's list, or **Setup** under the full-screen pad to start from the ready-made layout playing. See [Your own XY layouts](xy-layouts.md).
 
 ## Fills
 
@@ -80,7 +82,7 @@ Mutes and solos aren't undo steps, and with **Rec song** on they go into the son
 **16 LEVEL** spreads one sound over all 16 pads: the pad you hit last plays on every pad, each one a step of something else. Press **16 LEVEL** and the 16 Levels panel opens on the Play page, under the transport bar:
 
 - The cells are the pads, pad 1 at the bottom left. Each one shows what that pad plays, and they are lit in the same colour as the pads, with the pad you are holding bright.
-- The column on the right picks what the steps change: **Velocity** (8 to 127), **Tune** (a semitone a pad, pad 9 as recorded), **Cutoff** (100 Hz to 20 kHz), **Decay** (25 ms to 4.5 s), **Start** (where in the sound it starts) or **Transpose** (the armed track's notes, below). Tap one, or turn the wheel.
+- The column on the right picks what the steps change: **Velocity** (8 to 127), **Tune** (a semitone a pad, pad 9 as recorded; in another [tuning](synths.md#tuning), a note of the tuning a pad), **Cutoff** (100 Hz to 20 kHz), **Decay** (25 ms to 4.5 s), **Start** (where in the sound it starts) or **Transpose** (the armed track's notes, below). Tap one, or turn the wheel.
 - **Pick pad**, then hit a pad: the levels play that pad's sound instead.
 - **Close** hides the panel and keeps the pads on 16 Levels. **Off**, or **16 LEVEL** again, gives the pads their own sounds back. The 16 LEVEL button is lit while 16 Levels is on, and a **16 Levels** chip in the top bar says what the steps change.
 
@@ -115,12 +117,13 @@ Switching never stops or changes anything playing. The project keeps it, so a se
 
 What Perform changes today:
 
-- **MAIN** goes to the Arrange tab's Clips grid, not the Play page. Pressed again, it shows the Song view, then the song list, then the grid again.
+- **MAIN** goes to the Arrange tab's Clips grid, not the Play page. Pressed again, it shows the Song view, then the song list, then the grid again. While a [set](set-lists.md#playing-a-set) is open it goes to the Show view instead, and on Arrange goes Show, Clips, Song, List.
 - **The arm is pinned**: opening a page doesn't move what REC records; only a tap on an Arm pill does. Picking a track selects it to edit and play without moving REC. The REC chip says PINNED. Back in Make, the arm follows the page again.
 - **TRACK MUTE's pads wait for the launch line** before a mute or solo lands, and SHIFT + a pad acts at once (see [Muting tracks and pads](#muting-tracks-and-pads)).
 - **REC brings Rec song with it**: each take also records what the grid plays into the song, for as long as it lasts, and the REC chip says "+ Rec song". Tap the chip and turn off **Rec song with REC** to leave one take out (see [Recording a performance into the song](arranging.md#recording-a-performance-into-the-song)).
 - **Buttons that delete need a hold**: the Song view's **Delete** and **Erase**, the note editor's **Delete**, the Looper's **Clear**, a layer's **×** and **½ length**, the step's **Clear** and the song list's **Remove** take half a second in Perform. A red fill crosses the button while you hold it, and it acts once the fill is across; let go early, or slide off, and nothing happens, and the hint line says "Hold to delete". In Make one tap does it, and UNDO brings it back. **ERASE** + a tap works as before, since it already takes two hands.
-- **The Clips grid shows 5 big rows**, and a clip waiting to start counts down: an amber bar along its foot fills as its line comes near.
+- **The Clips grid shows 5 big rows**, and a clip waiting to start counts down: an amber bar along its foot fills as its line comes near. A clip about to stop, or to give its track back to the song, counts down the same way.
+- **An empty slot needs a hold** to make a clip: half a second, with the red fill crossing it. A tap makes nothing, and the hint line says to hold, so a stray finger can't stop what a track plays. In Make one tap still makes a clip. An empty slot on a Loop track still arms with one tap.
 - **NEXT** on the transport bar says what comes next and how soon, while the music plays: a scene you launched ("NEXT Drop in 2 beats"), the clips waiting ("Drop bass in 1 bar", "Bass stops in 3 beats"), the song list's next step ("Verse in 2 bars", "Stop all in 1 bar"), the next scene a follow action plays ("Verse in 3 bars", or "Drop or stay" when it is down to chance), or in song mode the next section ("Chorus in 4 bars"). When mutes are waiting too, WAITING comes first.
 
 {{shot: clips-perform | In Perform: five big rows, the chords waiting for bar 6 with their countdown bar, the glitch stopping there, NEXT on the transport bar, and Back to song on the grid's title line.}}
@@ -132,7 +135,7 @@ More things help on a stage, in Make and Perform alike:
 - **Back to song.** With **Song on**, a clip you launch takes its track over from the song. While any clip plays over the song, **Back to song** shows on the grid's title line: tap it and every clip stops on the next Launch line, and the song plays every track from there, on the beat (see [The song](arranging.md#the-song)).
 - **Reload a clip.** Before you take a pattern apart live, tap **Save state** on the Clip tab (see [Clip settings](clips.md#clip-settings)). Add steps, change its speed, erase half of it; then tap **Reload clip** on the morph bar, and the pattern comes back as you saved it on the next Launch line, so it lands on the beat. In Perform, NEXT says when ("Verse B reloads in 2 beats"). Tap Reload clip again before then to take it back, and **UNDO** puts the wrecked version back if you liked it after all.
 - **Live transpose.** Move a playing bass line or arp to another key from the pads, with 16 Levels' **Transpose** (see [Transpose](#transpose)): a progression from one loop, a lift for the last chorus, an octave jump for a build.
-- **The song list.** Line your scenes up in the order they play, each so many times ("Intro × 2, Verse × 4, Drop × 4"), and let the list play them on the bar while your hands are free (see [The song list](arranging.md#the-song-list)).
+- **The song list.** Line your scenes up in the order they play, each so many times ("Intro × 2, Verse × 4, Drop × 4"), and let the list play them on the bar while your hands are free. In a new project the list is the song's parts, so **Play from here** plays the song from that part, each part bringing its scene's mutes (see [The song list](arranging.md#the-song-list)).
 
 {{shot: arrange-list | The song list in Perform: seven steps, the Drop playing its third pass of four, the Break picked.}}
 

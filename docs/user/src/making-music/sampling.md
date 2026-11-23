@@ -243,18 +243,26 @@ Q-Links 2 to 4 turn the picked slice's pitch, level and filter. The **Slices** c
 
 ### Audio track: the slices on the song
 
-{{shot: sample-chop-audio | The Slice tool with Put on at Audio track: the break's 15 slices ready to go on an audio track one after another, the pad map grey, and the button reads To audio track.}}
+{{shot: sample-chop-audio | The Slice tool with Put on at Audio track: the break's 15 slices ready to go on an audio track one after another, the pad map grey, On the song picked, and the button reads To audio track.}}
 
 With **Put on** at **Audio track**, the slices go on the song instead of on pads, as the MPC's **Audio Track from Samples** puts them. Tap **To audio track**: the sound goes on the first empty audio track, from the start of the bar the playhead is in, each slice a region of its own, one after the other, at the sound's own speed. The hint line says where it went ("Break 92's 15 slices on Audio 1 from bar 5", the track by its name). A long sound, or one recorded at another rate, takes a moment to copy out: the hint line says "Copying Break 92 out for an audio track" meanwhile, and you can keep working. Then, on Arrange's **Song** view, move, erase, split or turn up any slice as you would any region (see [Editing regions](audio-tracks.md#editing-regions)).
 
 - The sound goes on as it was recorded: the pad's level, tuning and filter stay on the pad. The pads and the page don't change, so you can put it on again at another bar.
 - The first empty track can be one whose lane isn't showing yet: its lane shows, as **+ Audio** would add it. When all 8 audio tracks have something on them, the slices go on the first track with nothing from that bar on. If there is none, nothing goes on and the hint line says why.
-- The Song view's **Undo** takes all the slices off again in one go.
+- Back on Arrange, **UNDO** takes all the slices off again in one go.
 - The sound is copied for the track, which on a long recording takes memory. If the MPC is short of it, nothing goes on and the hint line says how much it needed (see [When memory runs short](pads.md)).
-- Audio tracks play when the song plays (song mode on). With song mode off, the hint line reminds you.
+- The slices on the song play when the song plays (song mode on). With song mode off, the hint line reminds you.
 - The audio tracks share one memory (see [Timing, memory and the mixer](audio-tracks.md#timing-memory-and-the-mixer)). A sound longer than what is free doesn't go on, and the hint line says so.
-- The pad map and Q-Link 4 have no pad to move, and **Phrase** is grey: it is for pads, and on an audio track the slices already play one after another. They play at the sound's own speed, so they keep to the bars when the sound's tempo is the song's.
+- The pad map and Q-Link 4 have no pad to move. The slices play one after another at the sound's own speed, so they keep to the bars when the sound's tempo is the song's.
 - A take on the page goes on an audio track the same way, and stays on the page.
+
+#### Put in a cell: the sound as an audio clip
+
+With **Audio track** picked, the row under the choices is a switch: **On the song** (what is above) or **In a cell**. On **In a cell** the sound goes in a cell of the Clips grid as an **audio clip** you launch like any clip (see [Audio clips](audio-tracks.md#audio-clips)), from **Start** to **End** as one piece, whatever the slices.
+
+- **Which cell:** the first empty cell of the armed track, if it is an audio track with one; else of the first audio track with an empty cell; else of a new audio track at the end of the track list. The main button names it: **Into Vocal, row 3**, or **Into a new audio track**.
+- **How it plays:** the section's note says so. With a tempo (the tempo finder's, or the file's), it loops: "the whole sound · loops 2 bars at 92 BPM", its length rounded to the nearest beat. Without one it plays once: "plays once · 5.2 s".
+- The sound is written to a file of its own and becomes a take of the track, as with On the song. **UNDO** on Arrange takes the clip out again in one step.
 
 ### Pitch: a slice a note
 
@@ -305,7 +313,7 @@ Load **Break 92.wav** back, on this MPC or another, and the pad comes back exact
 
 The **Source** row says what plays:
 
-- **The Synth tab's patch.** MPFree plays a copy of it, much faster than real time, so a whole instrument takes seconds.
+- **The Synth tab's patch.** MPFree plays a copy of it, much faster than real time, so a whole instrument takes seconds. The copy plays in standard tuning whatever the song's [tuning](synths.md#tuning), because the keygroups it makes play the tuning themselves. Tune your own gear to standard tuning before you sample it, for the same reason.
 - **External gear**, on a MIDI channel from 1 to 16. MPFree plays your synth through **MIDI OUT** and records it from the line input, in real time. Connect the synth's audio out to the line input, set it to the channel you picked and turn the line input on. MPFree first plays the middle note twice to hear how loud the synth is and how late it answers, so no note starts late or cut off. If the line input stops or you switch the recorder's Source to another source while it runs, it stops, lets go of the note and keeps the notes done.
 
 The notes go out of the 5-pin **MIDI OUT** jack. MIDI out is built but not yet checked on an MPC One, so it only sends while **Send MIDI and CV out** is on in [Prefs](../reference/prefs.md) (see [Playing other gear](midi-and-cv.md)). Until then the Source row offers the Synth tab's patch only, and with the gear picked the bar says there is no MIDI out for it. Every note it plays is let go when it ends or you cancel it, and the MIDI Monitor shows them as sent by the auto-sample.

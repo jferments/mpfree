@@ -39,7 +39,7 @@ use crate::dsp::*;
 use crate::expr::{expr_coef, NoteExprs, VoiceExpr};
 use crate::params::{Preset, LFO_SYNC_BEATS};
 use crate::pressure::{swell_gain, Depths, Slot};
-use crate::table_osc::{Run, Warp};
+use crate::table_osc::{Restart, Run, Warp};
 use params::*;
 use table::Table;
 
@@ -94,6 +94,8 @@ struct Voice {
     top: [f32; 2],
     pos: [f32; 2],
     run: [Run; 2],
+    /// Each oscillator's sync restart this control step (DSP quality 1.1).
+    restart: [Restart; 2],
     warp: [Warp; 2],
     amp: Env,
     menv: Env,
@@ -139,6 +141,7 @@ impl Voice {
             top: [0.0; 2],
             pos: [0.0; 2],
             run: [Run::default(); 2],
+            restart: [Restart::default(); 2],
             warp: [Warp::Off; 2],
             amp: Env::default(),
             menv: Env::default(),
@@ -245,7 +248,10 @@ impl Wavetable {
             values[p.id as usize] = p.default;
         }
         let v = |id: u16| values[id as usize];
+        // The tables and the sync restart's residuals: built on the first
+        // call in the process, here, never on the audio thread.
         let f = factory();
+        crate::table_osc::edges();
         let sm = Smoothed {
             lvl: [
                 Smooth::new(v(osc_id(0, OSC_LEVEL)) / 100.0),
@@ -399,6 +405,7 @@ impl Wavetable {
                 v.level[o] = tab.level_for(v.top[o]);
                 v.pos[o] = v.pos[o].min((tab.frames() - 1) as f32);
                 v.run[o] = Run::new(tab, v.level[o], v.pos[o], v.pos[o]);
+                v.restart[o].update(v.warp[o], &v.run[o], tab, v.level[o], true);
             }
         }
     }
@@ -937,7 +944,14 @@ impl Wavetable {
             let from = if v.snap { at } else { v.pos[o] };
             v.pos[o] = at;
             let w = base_warp[o] + me * menv_warp + p * d.get(target::WARP);
-            v.warp[o] = Warp::new(modes[o], w);
+            // A sync ratio glides across the step from where it stood,
+            // except at a note's start.
+            let warp = Warp::new(modes[o], w);
+            v.warp[o] = if v.snap {
+                warp
+            } else {
+                warp.glide_from(v.warp[o])
+            };
             let mut top = 0.0f32;
             for u in 0..unison {
                 let pos = if unison > 1 {
@@ -952,6 +966,7 @@ impl Wavetable {
             v.top[o] = top * v.warp[o].speed();
             v.level[o] = tabs[o].level_for(v.top[o]);
             v.run[o] = Run::new(tabs[o], v.level[o], from, at);
+            v.restart[o].update(v.warp[o], &v.run[o], tabs[o], v.level[o], v.snap);
         }
         v.snap = false;
         for u in 0..unison {
@@ -1015,11 +1030,18 @@ impl Wavetable {
             let mono = (0..s.unison).all(|u| v.pan_l[u].to_bits() == v.pan_r[u].to_bits())
                 && v.filt[0].same_as(&v.filt[1]);
             let out = (&mut *left, &mut *right);
+            // Sync has its own copies too (DSP quality 1.1), so the loop
+            // without it stays as it was.
+            let sync = v.warp.iter().any(|w| matches!(w, Warp::Sync { .. }));
+            let rng = &mut self.rng;
+            match (mono, sync) {
+                (true, false) => run_voice::<true, false>(v, &s, mode, tabs, rng, from..to, out),
+                (true, true) => run_voice::<true, true>(v, &s, mode, tabs, rng, from..to, out),
+                (false, false) => run_voice::<false, false>(v, &s, mode, tabs, rng, from..to, out),
+                (false, true) => run_voice::<false, true>(v, &s, mode, tabs, rng, from..to, out),
+            }
             if mono {
-                run_voice::<true>(v, &s, mode, tabs, &mut self.rng, from..to, out);
                 v.filt[1] = v.filt[0];
-            } else {
-                run_voice::<false>(v, &s, mode, tabs, &mut self.rng, from..to, out);
             }
         }
     }
@@ -1027,9 +1049,11 @@ impl Wavetable {
 
 /// One voice over frames `span` into `out` (left, right). With `MONO` the
 /// right side is the left one (see `render`) and its filter isn't run.
-/// Kept out of line, so each copy is optimised on its own.
+/// With `SYNC` (either oscillator on the sync warp) the sync ratio glides
+/// a frame at a time and each restart gets its correction. Kept out of
+/// line, so each copy is optimised on its own.
 #[inline(never)]
-fn run_voice<const MONO: bool>(
+fn run_voice<const MONO: bool, const SYNC: bool>(
     v: &mut Voice,
     s: &Shared,
     mode: FilterMode,
@@ -1039,6 +1063,13 @@ fn run_voice<const MONO: bool>(
     (left, right): (&mut [f32], &mut [f32]),
 ) {
     let (wa, wb) = (v.warp[0], v.warp[1]);
+    // A sync ratio glides a frame at a time, and each restart gets its
+    // band-limited correction (DSP quality 1.1).
+    let sync = |w: Warp| match w {
+        Warp::Sync { ratio, glide } if SYNC => (true, ratio, glide),
+        _ => (false, 0.0, 0.0),
+    };
+    let ((sa, mut ratio_a, glide_a), (sb, mut ratio_b, glide_b)) = (sync(wa), sync(wb));
     // B is read when heard or when it frequency-modulates A; A when
     // heard or when it modulates B.
     let use_b = s.lvl[1] != 0.0 || matches!(wa, Warp::Fm { .. });
@@ -1062,15 +1093,23 @@ fn run_voice<const MONO: bool>(
     } else {
         (1.0, 1.0, 0.0)
     };
+    // The runs move only their crossfades here: kept in locals, written
+    // back after.
+    let (mut ra, mut rb) = (v.run[0], v.run[1]);
+    let (rsa, rsb) = (&v.restart[0], &v.restart[1]);
     for k in span {
-        let (ra, rb) = (v.run[0], v.run[1]);
         let mut l = 0.0;
         let mut r = 0.0;
         for u in 0..s.unison {
             let mut b = 0.0;
             if use_b {
                 let ph = v.ph[1][u];
-                b = rb.read(db, wb.apply(ph, v.last[0][u]));
+                b = if sb {
+                    rb.read(db, crate::table_osc::cycle(ph * ratio_b))
+                        + rsb.at(ph, v.dt[1][u], rb.t, rb.t_inc, ratio_b, glide_b)
+                } else {
+                    rb.read(db, wb.apply(ph, v.last[0][u]))
+                };
                 v.last[1][u] = b;
                 let n = ph + v.dt[1][u];
                 v.ph[1][u] = if n >= 1.0 { n - 1.0 } else { n };
@@ -1078,7 +1117,12 @@ fn run_voice<const MONO: bool>(
             let mut a = 0.0;
             if use_a {
                 let ph = v.ph[0][u];
-                a = ra.read(da, wa.apply(ph, b));
+                a = if sa {
+                    ra.read(da, crate::table_osc::cycle(ph * ratio_a))
+                        + rsa.at(ph, v.dt[0][u], ra.t, ra.t_inc, ratio_a, glide_a)
+                } else {
+                    ra.read(da, wa.apply(ph, b))
+                };
                 v.last[0][u] = a;
                 let n = ph + v.dt[0][u];
                 v.ph[0][u] = if n >= 1.0 { n - 1.0 } else { n };
@@ -1089,8 +1133,12 @@ fn run_voice<const MONO: bool>(
                 r += x * v.pan_r[u];
             }
         }
-        v.run[0].t += ra.t_inc;
-        v.run[1].t += rb.t_inc;
+        ra.t += ra.t_inc;
+        rb.t += rb.t_inc;
+        if SYNC {
+            ratio_a += glide_a;
+            ratio_b += glide_b;
+        }
         let mut c = 0.0;
         if use_sub {
             c += osc(Wave::Sine, &mut v.ph_sub, v.dt_sub, 0.5) * s.sub;
@@ -1136,6 +1184,20 @@ fn run_voice<const MONO: bool>(
             v.state = State::Free;
             break;
         }
+    }
+    (v.run[0].t, v.run[1].t) = (ra.t, rb.t);
+    // Where the sync ratios glided to.
+    if sa {
+        v.warp[0] = Warp::Sync {
+            ratio: ratio_a,
+            glide: glide_a,
+        };
+    }
+    if sb {
+        v.warp[1] = Warp::Sync {
+            ratio: ratio_b,
+            glide: glide_b,
+        };
     }
 }
 

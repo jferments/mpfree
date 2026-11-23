@@ -21,6 +21,7 @@
 //! title A beat from scratch           the workflow's name in reports
 //! covers rec-arm, step-pads           the device checks it stands in for
 //! needs demo-songs                    the three demo songs in the library first
+//! needs stream-audio                  takes play from their files for this run
 //! wait 1.5                            seconds
 //! tap header tab Sequencer            widget, id, then the label (may be empty)
 //! button PLAY                         a hardware button by the mapper's name
@@ -51,9 +52,13 @@
 use std::fmt;
 
 /// What a script can ask to be set up before its steps.
-pub const NEEDS: [&str; 1] = [DEMO_SONGS];
+pub const NEEDS: [&str; 2] = [DEMO_SONGS, STREAM_AUDIO];
 /// The three demo songs in the library (demo_songs.rs).
 pub const DEMO_SONGS: &str = "demo-songs";
+/// Takes play from their files for this run, as Dev's "Audio tracks from
+/// their files" has them, without changing the saved setting (the stream
+/// test's workflows, D3 in docs/dev/design/disk-streaming.md).
+pub const STREAM_AUDIO: &str = "stream-audio";
 
 /// The longest script the app plays (and its `--seconds` for the run).
 pub const MAX_SECONDS: f64 = 1800.0;
@@ -819,6 +824,12 @@ expect-not refused
 ";
 
     #[test]
+    fn a_script_can_need_its_takes_played_from_their_files() {
+        let s = Script::parse("title t\nneeds demo-songs, stream-audio\nwait 1\n").expect("reads");
+        assert_eq!(s.needs, [DEMO_SONGS, STREAM_AUDIO]);
+    }
+
+    #[test]
     fn a_script_reads_and_times_its_steps() {
         let s = Script::parse(DEMO).expect("reads");
         assert_eq!(s.title, "A beat");
@@ -900,7 +911,7 @@ expect-not refused
             ("title t\nexpect\n", 2, "text"),
             ("title t\nwait 900\nwait 901\n", 3, "runs past"),
             ("title t\nbutton Pl\u{e4}y\n", 2, "ASCII"),
-            ("title t\nneeds songs\n", 2, "demo-songs"),
+            ("title t\nneeds songs\n", 2, "demo-songs, stream-audio"),
         ] {
             let e = Script::parse(text).expect_err(text);
             assert_eq!(e.line, line, "{text}: {e}");

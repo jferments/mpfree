@@ -63,15 +63,16 @@ pub const MAX_PARTS: usize = 64;
 /// Earlier saves kept by default.
 pub const KEEP_VERSIONS: usize = 10;
 /// `project.txt`'s line for what a project's parts mean together
-/// (`format = 3`): mpfree opens only the format it writes. Every program
+/// (`format = 4`): mpfree opens only the format it writes. Every program
 /// that writes a project for it writes the line (the pad player,
 /// `mpfree-mpc-import`), so it lives here. The library's own first line
 /// (`mpfree-project 1`) is the folder's format, not this.
 pub const PARTS_FORMAT_KEY: &str = "format";
-/// The project format written now: 3 since kits joined the list of
-/// instruments (the sampler refactor's step 14). What it means is the pad
-/// player's (`mpfree-app/src/project.rs`).
-pub const PARTS_FORMAT: u32 = 3;
+/// The project format written now: 4 since the pads part is the pad map
+/// (the sampler refactor's step 15b; 3 since kits joined the list of
+/// instruments, step 14). What it means is the pad player's
+/// (`mpfree-app/src/project.rs`).
+pub const PARTS_FORMAT: u32 = 4;
 /// The project autosave writes to, at the top of Projects (Jay's pick, 14
 /// Nov: one Autosave project). `Autosave 2` ... if a project of the
 /// musician's own has the name ([`Library::autosave_project`]).
@@ -244,6 +245,12 @@ impl Meta {
             self.extra
                 .push((AUTOSAVE_KEY.to_string(), "yes".to_string()));
         }
+    }
+
+    /// Takes autosave's mark off: the work is saved into a project of
+    /// the musician's (a set's song keeping its changes made on stage).
+    pub fn clear_autosave(&mut self) {
+        self.extra.retain(|(k, _)| k != AUTOSAVE_KEY);
     }
 
     pub fn to_text(&self) -> String {

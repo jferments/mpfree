@@ -64,7 +64,7 @@ const ONE: f64 = 4_294_967_296.0;
 const LEVEL_DB: f64 = -6.0;
 
 /// The ratchet file's header.
-const HEADER: &str =
+pub(crate) const HEADER: &str =
     "# The sampler's quality ratchet: every number may stay or get better, never worse.\n\
 # Written by `MPFREE_QUALITY_BLESS=1 cargo test --locked -p mpfree-fxlab --test sampler`;\n\
 # see docs/dev/design/fx-quality.md (\"The sampler\"). key<TAB>value\n";
@@ -187,12 +187,12 @@ fn put(
 // Playing the pad.
 
 /// A sound holding `x` (mono) at `rate`.
-fn sound(x: &[f64], rate: u32) -> Source {
+pub(crate) fn sound(x: &[f64], rate: u32) -> Source {
     Source::new("lab", rate, 1, x.iter().map(|&v| v as f32).collect()).expect("a lab sound")
 }
 
 /// A pad playing all of `s` once, its envelope open, as `shape` leaves it.
-fn pad(s: &Source, shape: impl FnOnce(&mut Pad)) -> Pad {
+pub(crate) fn pad(s: &Source, shape: impl FnOnce(&mut Pad)) -> Pad {
     let mut r = Region::whole(s);
     r.mode = PlayMode::OneShot;
     let mut p = Pad::new("lab", Layer::new(r));
@@ -202,7 +202,7 @@ fn pad(s: &Source, shape: impl FnOnce(&mut Pad)) -> Pad {
 }
 
 /// A kit of `pads` (pad 0 first) on their sounds.
-fn kit(pads: Vec<(Source, Pad)>) -> Project {
+pub(crate) fn kit(pads: Vec<(Source, Pad)>) -> Project {
     let mut p = Project::new();
     for (i, (s, pad)) in pads.into_iter().enumerate() {
         p.add_source(s);
@@ -212,7 +212,12 @@ fn kit(pads: Vec<(Source, Pad)>) -> Project {
 }
 
 /// `frames` frames of `project` at `rate`, each event applied at its frame.
-fn play(project: &Project, rate: u32, events: &[(usize, Event)], frames: usize) -> Stereo {
+pub(crate) fn play(
+    project: &Project,
+    rate: u32,
+    events: &[(usize, Event)],
+    frames: usize,
+) -> Stereo {
     // Made here, so a voice reading an octave up finds them at once.
     for s in project.sources() {
         s.make_octaves();
@@ -237,7 +242,31 @@ fn play(project: &Project, rate: u32, events: &[(usize, Event)], frames: usize) 
     Stereo::new(l, r, rate)
 }
 
-fn hit(pad: u8) -> Event {
+/// `x` (mono, at `rate`) played once on a pad with `filter` (`None`: the
+/// pad's filter off), the left channel's first `frames` frames: for
+/// [`crate::filters`].
+pub(crate) fn through_pad(x: &[f64], filter: Option<Filter>, rate: u32, frames: usize) -> Vec<f64> {
+    through_shaped_pad(x, rate, frames, |p| {
+        if let Some(f) = filter {
+            p.filter = f;
+        }
+    })
+}
+
+/// `x` played once on a pad as `shape` leaves it, the left channel's
+/// first `frames` frames.
+pub(crate) fn through_shaped_pad(
+    x: &[f64],
+    rate: u32,
+    frames: usize,
+    shape: impl FnOnce(&mut Pad),
+) -> Vec<f64> {
+    let s = sound(x, rate);
+    let p = pad(&s, shape);
+    play(&kit(vec![(s, p)]), rate, &[(0, hit(0))], frames).left
+}
+
+pub(crate) fn hit(pad: u8) -> Event {
     Event::NoteOn { pad, velocity: 127 }
 }
 
@@ -246,7 +275,7 @@ fn hit(pad: u8) -> Event {
 
 /// The speed a pad tuned `cents` plays a sound at `src_rate` at, as the
 /// engine rounds it.
-fn speed(cents: i32, src_rate: u32, rate: u32) -> f64 {
+pub(crate) fn speed(cents: i32, src_rate: u32, rate: u32) -> f64 {
     let ratio = f64::from(src_rate) / f64::from(rate) * (f64::from(cents) / 1200.0).exp2();
     (ratio * ONE).round().max(1.0) / ONE
 }

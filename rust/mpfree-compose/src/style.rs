@@ -38,6 +38,16 @@ pub struct HarmonyStyle {
     pub degrees: &'static [u8],
     /// A major V (or V7) in minor keys.
     pub borrowed_v: bool,
+    /// Diminished chords (vii° in major, ii° in minor) may be suggested.
+    /// Without them a degree that makes one gives way to the V.
+    pub diminished: bool,
+    /// The longest one chord may last in the new bars, in bars.
+    pub max_hold_bars: u8,
+    /// How strongly a phrase starts on the home chord: the home chord's
+    /// weight in a new phrase's first bar (1 = no pull). The second
+    /// listen heard Minimal's chords wander for 12 bars, so the next
+    /// Continue read the wrong home.
+    pub home_pull: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -52,6 +62,9 @@ pub struct RhythmStyle {
     pub density: f32,
     /// Chance a beat is left silent in new material.
     pub rest: f32,
+    /// The rest before the next phrase, in beats: where a phrase ends the
+    /// line stops this long before the bar line and takes a breath.
+    pub breath: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -193,6 +206,9 @@ pub const MINIMAL: Style = Style {
         motion: [0.0, 0.1, 0.6, 0.4, 0.5, 0.3, 0.05, 0.3, 0.6, 0.4, 0.8, 0.1],
         degrees: &[0, 3, 5, 6],
         borrowed_v: false,
+        diminished: false,
+        max_hold_bars: 4,
+        home_pull: 12.0,
     },
     rhythm: RhythmStyle {
         feel: Feel::Simplify,
@@ -203,6 +219,7 @@ pub const MINIMAL: Style = Style {
         syncopation: 0.35,
         density: 1.0,
         rest: 0.25,
+        breath: 1.0,
     },
     bass: BassStyle {
         line: BassLine::Offbeat,
@@ -253,6 +270,9 @@ pub const GROOVE: Style = Style {
         ],
         degrees: &[0, 2, 3, 4, 5, 6],
         borrowed_v: false,
+        diminished: false,
+        max_hold_bars: 4,
+        home_pull: 2.5,
     },
     rhythm: RhythmStyle {
         feel: Feel::Push,
@@ -263,6 +283,7 @@ pub const GROOVE: Style = Style {
         syncopation: 0.6,
         density: 1.6,
         rest: 0.15,
+        breath: 1.0,
     },
     bass: BassStyle {
         line: BassLine::Sixteenths,
@@ -317,6 +338,9 @@ pub const JAZZISH: Style = Style {
         ],
         degrees: &[0, 1, 2, 3, 4, 5, 6],
         borrowed_v: true,
+        diminished: true,
+        max_hold_bars: 2,
+        home_pull: 1.5,
     },
     rhythm: RhythmStyle {
         feel: Feel::Swing8,
@@ -327,6 +351,7 @@ pub const JAZZISH: Style = Style {
         syncopation: 0.45,
         density: 1.8,
         rest: 0.12,
+        breath: 0.5,
     },
     bass: BassStyle {
         line: BassLine::Walking,

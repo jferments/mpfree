@@ -51,7 +51,7 @@ const PERIOD_FULL: &str = "too many commands land in its period";
 /// timing change made before it is cancelled for that reason.
 fn moves_time(cmd: Command) -> Option<&'static str> {
     match cmd {
-        Command::Play | Command::PlayStart => Some("the song started"),
+        Command::Play | Command::PlayStart | Command::CountInPlay => Some("the song started"),
         Command::Stop | Command::StopAndRewind => Some("the song stopped"),
         Command::Record => Some("recording started or stopped"),
         Command::Locate(_) => Some("the song moved"),
@@ -132,6 +132,14 @@ pub struct TimeAudio {
     /// (refactor A2): the player's own, or what the arps pass on.
     pub(super) sink: Box<Table>,
     pub(super) view: Box<PlayView>,
+    /// The view the last period played, when a new one came after it (a
+    /// one-thread host takes the view compiled for a cue that started
+    /// before the next period): kept until that period starts, so the
+    /// audio tracks' answer ([`TimeAudio::audio`]) lends from the view
+    /// the player made it on.
+    played: Option<Box<PlayView>>,
+    /// The period has played: a view taken now goes in `played`'s place.
+    hold_played: bool,
     /// The last recorded changes, for a view that comes in late.
     pub(super) recent: Box<Recent>,
     /// The tracks' settings, as the control half last sent them.
@@ -275,6 +283,8 @@ impl TimeAudio {
             block: Box::new(Block::new()),
             sink: Box::new(Table::new()),
             view: Box::new(PlayView::empty()),
+            played: None,
+            hold_played: false,
             recent: Box::new(Recent::new()),
             tracks,
             note_fx: Box::new([TrackFx::default(); MAX_TRACKS]),
@@ -443,7 +453,11 @@ impl TimeAudio {
         match self.recent.catch_up(&mut v, after) {
             Ok(()) => {
                 let old = std::mem::replace(&mut self.view, v);
-                self.give_back(old);
+                if self.hold_played && self.played.is_none() {
+                    self.played = Some(old);
+                } else {
+                    self.give_back(old);
+                }
                 self.asked = false;
                 self.view_n = n;
                 // A song edit that moved time. The first view says only
@@ -1502,6 +1516,12 @@ impl TimeAudio {
         self.follower.waits()
     }
 
+    /// The followed device's clock stopped arriving while it played
+    /// ([`Follower::lost`]).
+    pub fn clock_lost(&self) -> bool {
+        self.follower.lost()
+    }
+
     /// A take the app has ready, adding (true) or replacing: the leader's
     /// start records it.
     pub fn take_waits(&mut self, take: Option<bool>) {
@@ -1537,6 +1557,7 @@ impl TimeAudio {
     }
 
     pub fn advance(&mut self, frames: u32) -> bool {
+        self.period_starts();
         // Notes of a period gone that nobody took.
         if self.n_notes > 0 {
             let now = self.transport.frame();
@@ -1714,6 +1735,7 @@ impl TimeAudio {
         let ok = match self.advanced.take() {
             Some(ok) => ok,
             None => {
+                self.period_starts();
                 self.receive();
                 self.process(frames)
             }
@@ -1754,6 +1776,7 @@ impl TimeAudio {
                 .player
                 .process(&self.view, &self.block, &mut *self.sink),
         }
+        self.hold_played = true;
         for i in 0..self.sink.len() {
             let Some((o, arp)) = self.sink.get(i) else {
                 break;
@@ -1984,6 +2007,22 @@ impl TimeAudio {
 
     pub fn tempo_map(&self) -> &mpfree_transport::TempoMap {
         self.transport.tempo_map()
+    }
+
+    /// What audio track `track` (in the track list) played in the last
+    /// period, for the audio tracks ([`mpfree_play::Player::audio`]).
+    pub fn audio(&self, track: usize) -> mpfree_play::AudioAnswer<'_> {
+        let view = self.played.as_deref().unwrap_or(&self.view);
+        self.player.audio(view, track)
+    }
+
+    /// A period starts: the view the last one played goes back, and a
+    /// new view plays from here.
+    fn period_starts(&mut self) {
+        self.hold_played = false;
+        if let Some(v) = self.played.take() {
+            self.give_back(v);
+        }
     }
 
     /// What `track` plays now ([`mpfree_play::Player::now_playing`]): for

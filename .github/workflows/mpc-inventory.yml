@@ -119,6 +119,7 @@ jobs:
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_hook_canary.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_boot_hook.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_stick_setup.py
+          MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_sd_card_window.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_read_only_ethernet.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_read_only_drivers.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_read_only_sd_card.py
@@ -140,6 +141,7 @@ jobs:
           python3 tools/mpc-one/tests/test_devtest_report.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_host_gpu_mpc.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_host_disktest_mpc.py
+          MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_host_streamtest_mpc.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_app_start_capture.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_midi_capture.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_midi_console.py
@@ -897,13 +899,16 @@ jobs:
         # against rust/mpfree-fxlab/quality/synth.tsv. An improvement is
         # recorded with MPFREE_QUALITY_BLESS=1 (docs/dev/design/synth-quality.md).
         run: cargo test --manifest-path rust/Cargo.toml --release --locked -p mpfree-fxlab --test synth
-      - name: DSP quality gates Y4, Y7 and Y8 (finite output, block size, reference)
+      - name: DSP quality gates Y4, Y7 and Y8, the filter ratchet (Y1, Y2) and Y3
         # Release only: every synth engine, the drums and every effect, each on
         # its own, stays finite at every setting the layers try (Y4); the
         # subjects listed as bit-exact stay so in blocks of 1 and 37 frames
         # (Y7); the aliasing cases listed as converged keep an 8x reference
-        # that agrees with 16x (Y8). docs/dev/design/dsp-quality.md.
-        run: cargo test --manifest-path rust/Cargo.toml --release --locked -p mpfree-fxlab --test robust --test reference -- --nocapture
+        # that agrees with 16x (Y8); no filter number gets worse against
+        # rust/mpfree-fxlab/quality/filters.tsv (Y1, Y2; an improvement is
+        # recorded with MPFREE_QUALITY_BLESS=1); Y3's poly-mod and fast
+        # envelope cases are printed. docs/dev/design/dsp-quality.md.
+        run: cargo test --manifest-path rust/Cargo.toml --release --locked -p mpfree-fxlab --test robust --test reference --test filters -- --nocapture
       - name: DSP quality full-project renders (step 0.6)
         # Release only, a few seconds: seven fixed projects through the whole
         # chain (track host, the sampler's pads, inserts, returns, master),
