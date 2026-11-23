@@ -390,5 +390,67 @@ pub fn mix4_on(
     Path::Plain
 }
 
+/// Rows and columns of the block [`gemm4x8`] works on.
+pub const GEMM_MR: usize = 4;
+pub const GEMM_NR: usize = 8;
+
+/// The stem separation's GEMM micro-kernel: over `kc` steps,
+///
+/// ```text
+/// acc[r * 8 + j] = acc[r * 8 + j] + a[k * 4 + r] * b[k * 8 + j]
+/// ```
+///
+/// for k from 0 up, each lane in its own order: `a` is a packed panel of
+/// four rows (`kc × 4` values), `b` one of eight columns (`kc × 8`), and
+/// `acc` the 4 × 8 block, row by row. The NEON kernel's `VMLA.F32` rounds
+/// the product before it adds, as the twin does, so both give the same
+/// sums. Calls where `a` or `b` is shorter than `kc` steps take the twin's
+/// path and panic there, as a slice index does.
+pub fn gemm4x8(kc: usize, a: &[f32], b: &[f32], acc: &mut [f32; GEMM_MR * GEMM_NR]) {
+    gemm4x8_on(path(), kc, a, b, acc);
+}
+
+/// [`gemm4x8`] on a chosen path (NEON only where [`neon_available`]);
+/// returns the path that ran.
+pub fn gemm4x8_on(
+    want: Path,
+    kc: usize,
+    a: &[f32],
+    b: &[f32],
+    acc: &mut [f32; GEMM_MR * GEMM_NR],
+) -> Path {
+    #[cfg(all(target_arch = "arm", target_endian = "little", target_os = "linux"))]
+    if want == Path::Neon && neon_available() && neon::gemm4x8(kc, a, b, acc) {
+        return Path::Neon;
+    }
+    let _ = want;
+    plain::gemm4x8(kc, a, b, acc);
+    Path::Plain
+}
+
+/// IEEE half-precision values (as bits) to f32, as many as the shorter
+/// slice holds: exact for zeros, subnormals, normals and infinities; a NaN
+/// becomes the default NaN (`0x7fc0_0000`), as NEON makes it. The NEON
+/// kernel (`VCVT.F32.F16`, VFPv4's half-precision conversion) does eight at
+/// a time, the rest go through the twin. NEON runs only where
+/// [`neon_available`] and the processor reports VFPv4.
+pub fn f16_to_f32(src: &[u16], dst: &mut [f32]) {
+    f16_to_f32_on(path(), src, dst);
+}
+
+/// [`f16_to_f32`] on a chosen path; returns the path that ran.
+pub fn f16_to_f32_on(want: Path, src: &[u16], dst: &mut [f32]) -> Path {
+    let n = src.len().min(dst.len());
+    #[cfg(all(target_arch = "arm", target_endian = "little", target_os = "linux"))]
+    if want == Path::Neon && neon_available() && neon::half_available() {
+        let done = neon::f16_to_f32(&src[..n], &mut dst[..n]);
+        plain::f16_to_f32(&src[done..n], &mut dst[done..n]);
+        return Path::Neon;
+    }
+    let _ = want;
+    plain::f16_to_f32(&src[..n], &mut dst[..n]);
+    Path::Plain
+}
+
 #[cfg(test)]
 mod tests;
