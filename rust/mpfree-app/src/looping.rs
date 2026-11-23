@@ -3260,8 +3260,13 @@ impl LoopHost {
             self.bar_ticks = span.meter.bar_ticks();
             self.bpm = span.bpm;
         }
+        // Each loop's sound apart (audio tracks phase 4a), added up where
+        // the Loop strip takes the mix, so nothing sounds different: the
+        // sum is what `process` would have added, bit for bit. Phase 4b
+        // gives each loop its own track's channel.
         self.out.fill(0.0);
-        self.looper.process(block, &self.input, &mut self.out);
+        self.looper.process_each(block, &self.input);
+        self.looper.outs().mix_into(&mut self.out);
         self.settle = self.settle.saturating_sub(1);
         if let Some(span) = block.spans().last() {
             self.printer.tend(&mut self.looper, span.bpm);
