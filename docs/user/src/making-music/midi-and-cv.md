@@ -43,6 +43,8 @@ The **mod wheel**, a **breath controller**, an **expression pedal** (the kind wi
 
 A track that plays a synth through MIDI out sends all of them to that synth as they came, on its channel.
 
+The armed track's arpeggiator can listen as well: its **Modifier** can follow the mod wheel, a breath controller, an expression pedal or how hard you press the keys you hold, pushing the arp faster or higher while the sound still gets the controller; and with **Sustain pedal latches** on in Prefs, the sustain pedal latches the arp while it plays instead of holding the sound's notes. See [Push the arp with a controller](note-repeat-and-arp.md#push-the-arp-with-a-controller).
+
 So that no note hangs, a pedal that is down comes up on the track it was holding when you arm another track or unplug the keyboard, and the notes it held end. The mod wheel stays where you left it. Keys that play a kit's pads take no pedal, and a route's track takes its port's pedals and mod wheel too. A pedal or wheel you gave to something with [MIDI Learn](#midi-learn) moves that instead of the sound.
 
 ## Playing several tracks from your keyboards

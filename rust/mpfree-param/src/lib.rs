@@ -555,7 +555,11 @@ pub mod arp {
     pub const SWING: u16 = 2;
     /// The octaves an order climbs, 1 to 4.
     pub const OCTAVES: u16 = 3;
-    /// Every one, in Q-Link order, with its name.
+    /// The Modifier, 0 to 100 %: a learned knob pushes the arp with it while
+    /// the Modifier's controller is "Learned knob" (mpfree-arp's
+    /// `modifier.rs`). Not a Q-Link.
+    pub const MODIFIER: u16 = 4;
+    /// The four the Q-Links turn, in Q-Link order, with their names.
     pub const ALL: [(u16, &str); 4] = [
         (RATE, "Rate"),
         (GATE, "Gate"),
@@ -565,6 +569,9 @@ pub mod arp {
 
     /// The name of parameter `id`, if it is one.
     pub fn name(id: u16) -> Option<&'static str> {
+        if id == MODIFIER {
+            return Some("Modifier");
+        }
         ALL.iter().find(|(i, _)| *i == id).map(|(_, n)| *n)
     }
 }

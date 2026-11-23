@@ -2972,6 +2972,8 @@ impl Player {
         let name = patterns.first().map(|(n, _)| n.clone()).unwrap_or_default();
         let arp = ArpState {
             settings: mpfree_arp::Settings::default(),
+            live: mpfree_arp::Settings::default(),
+            push: 0.0,
             pattern,
             patterns,
             pattern_index: 0,
@@ -2984,7 +2986,7 @@ impl Player {
         let mut arp_panel =
             ArpPanel::add(&mut ui, ARP_PAGE, QUICK_PAGE, &arp).expect("arp layouts");
         arp_panel
-            .set_layout_wrap(&mut ui, play_page::framed)
+            .set_layout_wrap(&mut ui, |l| play_page::framed(&arp_view::with_modifier(l)))
             .expect("arp layouts in the Play frame");
         arp_panel
             .set_quick_layout(&mut ui, &PlayView::All.quick_layout())
@@ -11137,6 +11139,8 @@ impl Player {
                 let v = *v;
                 let a = &mut self.arp;
                 a.settings = v.settings;
+                a.live = v.live;
+                a.push = v.push;
                 a.pattern = v.pattern;
                 a.pattern_index = v.pattern_index;
                 a.pattern_changed = v.pattern_changed;
@@ -14867,6 +14871,11 @@ impl Player {
         if w == arp_view::QLINKS || (w == play_page::QLINKS && arp_cards()) {
             let (id, _) = mpfree_play::mpfree_param::arp::ALL.get(t.index)?;
             return Some(LearnValue::Arp(*id));
+        }
+        // The Modifier box: a knob learned to it pushes the arp while the
+        // Modifier's controller is Learned knob.
+        if w == arp_view::MODBOX {
+            return Some(LearnValue::Arp(mpfree_play::mpfree_param::arp::MODIFIER));
         }
         // A Play Q-Link card that turns a strip's send or level (not the
         // audio tracks' or a band's cards, which turn other things).
@@ -23552,6 +23561,65 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     }
     run_arp(&mut panel, &mut app, 3 * 5513 + 2000);
     out.push(("arp-panel", panel));
+    // The same, with the Modifier on the mod wheel (rate +2, an octave
+    // and the gate +30 at its top), the wheel 80 % up: 1/16 → 1/32,
+    // 2 → 3 octaves, 50 → 74 %.
+    let mut pushed = quiet_player(fonts());
+    let mut app = sample_app();
+    let mut fx = app.button(NOTE_REPEAT, true, 0.0);
+    fx.extend(app.button(MENU, true, 0.0));
+    fx.extend(app.button(MENU, false, 0.0));
+    fx.extend(app.button(NOTE_REPEAT, false, 0.0));
+    fx.extend(app.button(PLUS, true, 0.0));
+    fx.extend(app.arp_action(ArpAction::Latch));
+    fx.extend(app.qlink(3, 4, None).unwrap_or_default());
+    fx.extend(app.arp_modifier_demo());
+    for pad in [0, 2, 4] {
+        fx.extend(app.pad_down(pad, 100));
+    }
+    for pad in [0, 2, 4] {
+        app.pad_up(pad);
+    }
+    app.arp_controller(mpfree_node::Ctl::ModWheel, 0.8);
+    apply_effects(&mut pushed, fx);
+    run_arp(&mut pushed, &mut app, 3 * 2756 + 1000);
+    out.push(("arp-modifier", pushed));
+    // MENU on the panel: the arp options at their end, Sustain pedal
+    // latches picked, with Modifier and Latch keeps pads over it.
+    let mut menu = quiet_player(fonts());
+    let mut app = sample_app();
+    let mut fx = app.toggle_panel();
+    fx.extend(app.arp_modifier_demo());
+    fx.extend(app.button(MENU, true, 0.0));
+    fx.extend(app.button(MENU, false, 0.0));
+    if let Some(i) = app.row_of(crate::app::Item::PedalLatch) {
+        fx.extend(app.select(i));
+    }
+    apply_effects(&mut menu, fx);
+    out.push(("arp-options", menu));
+    // NOTE REPEAT held on the closed hat, the Modifier on the mod wheel
+    // all the way up: the band's rate is the one playing, 1/32.
+    let mut band = quiet_player(fonts());
+    let mut app = sample_app();
+    let mut fx = app.arp_modifier_demo();
+    fx.extend(app.button(NOTE_REPEAT, true, 0.0));
+    fx.extend(app.pad_down(2, 100));
+    app.arp_controller(mpfree_node::Ctl::ModWheel, 1.0);
+    apply_effects(&mut band, fx);
+    band.apply(ToUi::PadDown {
+        pad: 2,
+        velocity: 100,
+    });
+    run_arp(&mut band, &mut app, 5 * 2756 + 1000);
+    out.push(("arp-quick-band-pushed", band));
+    // A tap on the Modifier box: the arp options' Modifier section.
+    let mut opts = quiet_player(fonts());
+    let mut app = sample_app();
+    let mut fx = app.toggle_panel();
+    fx.extend(app.arp_modifier_demo());
+    fx.extend(app.arp_action(ArpAction::Modifier));
+    apply_effects(&mut opts, fx);
+    out.push(("arp-modifier-options", opts));
     // The pattern workspace, recording on the pads, 3 of 8 steps written.
     let mut ws = quiet_player(fonts());
     let mut app = sample_app();

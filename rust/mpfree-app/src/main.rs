@@ -10816,6 +10816,22 @@ fn player_session(
                 }
                 continue;
             }
+            // The armed track's arp hears the keys' pressure and
+            // controllers: its Modifier follows the one it is set to (the
+            // sound still gets them, below), and with Prefs' Sustain pedal
+            // latches on, the pedal latches the arp while it plays instead
+            // of holding the sound's notes.
+            match k {
+                midi_in::Key::Pressure { note, value } => app.key_pressure(note, value),
+                midi_in::Key::Control { ctl, value } => {
+                    if let Some(latch) = app.arp_pedal(ctl, value) {
+                        fx.extend(latch);
+                        continue;
+                    }
+                    app.arp_controller(ctl, value);
+                }
+                _ => {}
+            }
             // Expression out: the armed track's CV outputs, and its gear on
             // MIDI out, take the keys' wheel, pressure and MPE (the keys
             // going down and up say whose count).
