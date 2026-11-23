@@ -191,6 +191,33 @@ pub struct Progress {
     pub finished: bool,
 }
 
+/// The working memory a job holds besides its sound and the audio it
+/// makes, in bytes: each window's spectra (under 600 kB at the largest
+/// window), the resampler's table and what the hit finder works with.
+pub const WORKING: u64 = 1 << 20;
+
+/// The most a [`Job`] on `input_frames` frames of `channels`-channel audio,
+/// made `output_frames` long and moved `semitones`, holds at once, in
+/// bytes: what to ask of a memory check before it starts. While the
+/// vocoder runs, the input as floats and the stretched audio, which is the
+/// output times the pitch ratio when the pitch moves (it is read back that
+/// much faster); then, with a pitch change, the stretched audio and the
+/// result together as it resamples; and the working buffers. The input
+/// counts whole, as [`Job::new`] holds it.
+pub fn need(input_frames: u64, channels: u8, output_frames: u64, semitones: f32) -> u64 {
+    let semitones = semitones.clamp(-MAX_SEMITONES, MAX_SEMITONES);
+    let (stretched, resampling) = if semitones != 0.0 {
+        let speed = 2f64.powf(f64::from(semitones) / 12.0);
+        // The resampler's reach past the end is a few dozen frames: inside
+        // the working allowance.
+        let v = (output_frames as f64 * speed).ceil() as u64;
+        (v, v + output_frames)
+    } else {
+        (output_frames, 0)
+    };
+    (input_frames + stretched).max(resampling) * u64::from(channels) * 4 + WORKING
+}
+
 /// The window for `rate`: about 46 ms, a power of two.
 pub fn auto_window(rate: u32) -> usize {
     ((rate as f64 * 0.046).round() as usize)
@@ -328,6 +355,10 @@ impl Job {
                 } else {
                     self.resets = v.resets;
                     let out = std::mem::take(&mut v.out);
+                    // The vocoder, and the input it holds, go before the
+                    // result is made, so the two are never held together
+                    // ([`need`]).
+                    drop(v);
                     match r {
                         Some(r) => {
                             self.output = vec![0.0; self.out_frames * self.ch];

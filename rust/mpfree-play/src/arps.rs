@@ -115,10 +115,12 @@ impl PadRows {
         r
     };
 
-    /// Pad `pad` plays `notes` (the first [`PAD_NOTES`]); none, or a pad
-    /// past 16, changes nothing.
+    /// Pad `pad` plays `notes` (the first [`PAD_NOTES`]), or nothing when
+    /// there are none (its notes fall outside 0 to 127: Convert to notes
+    /// refuses its hits, and a hit on it plays nothing, as on its
+    /// instrument). A pad past 16 changes nothing.
     pub fn set(&mut self, pad: usize, notes: &[u8]) {
-        let (Some(row), false) = (self.notes.get_mut(pad), notes.is_empty()) else {
+        let Some(row) = self.notes.get_mut(pad) else {
             return;
         };
         let n = notes.len().min(PAD_NOTES);
@@ -126,7 +128,8 @@ impl PadRows {
         self.n[pad] = n as u8;
     }
 
-    /// The notes pad `pad` plays, its root last; none past the 16 pads.
+    /// The notes pad `pad` plays, its root last; none for a pad that
+    /// plays nothing, or past the 16 pads.
     pub fn notes(&self, pad: usize) -> &[u8] {
         match (self.notes.get(pad), self.n.get(pad)) {
             (Some(row), Some(&n)) => &row[..usize::from(n)],
@@ -134,7 +137,8 @@ impl PadRows {
         }
     }
 
-    /// Each pad's root: the note its row shows.
+    /// Each pad's root: the note its row shows (its own number for a pad
+    /// that plays nothing).
     pub fn roots(&self) -> [u8; LAYOUT_PADS] {
         core::array::from_fn(|p| self.notes(p).last().copied().unwrap_or(p as u8))
     }

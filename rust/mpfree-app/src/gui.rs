@@ -7176,7 +7176,7 @@ impl Player {
                 View::Arrange if self.time_page.adding => mpfree_time_ui::song::ADD_HINT.to_string(),
                 View::Arrange if self.time.list_view => time_view::LIST_HINT.to_string(),
                 View::Arrange if self.time.song_view => time_view::song_hint(&self.time).to_string(),
-                View::Arrange if self.time_page.clip_card => time_view::CLIPS_CARD_HINT.to_string(),
+                View::Arrange if self.time_page.clip_card => time_view::clips_card_hint(&self.time).to_string(),
                 View::Arrange if self.time_page.scene_card => time_view::SCENE_HINT.to_string(),
                 View::Arrange => CLIPS_HINT.to_string(),
                 // A snap over recorded audio asks: Snap anyway and Not
@@ -9222,9 +9222,12 @@ impl Player {
                     let acts = self.perform.qlink_lift(k, &names);
                     self.perform_acts(acts);
                 } else if !on && self.chain_page.drives(self.view) {
-                    // A knob of the effect lets go after a recorded move.
-                    if let Some(Turned::Chain(a)) = self.chain_page.released(k) {
-                        self.outbox.push(FromUi::Chain(a));
+                    // A knob of the effect, or a macro, lets go after a
+                    // recorded move.
+                    match self.chain_page.released(k) {
+                        Some(Turned::Chain(a)) => self.outbox.push(FromUi::Chain(a)),
+                        Some(Turned::Macro(a)) => self.outbox.push(FromUi::Macros(a)),
+                        _ => {}
                     }
                 }
                 for column in [play_page::QLINKS, crate::looper_tab::QLINKS] {
@@ -19071,12 +19074,33 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
                     c.variation = Some(2);
                 }
                 p.time_page.clip_card = true;
-                p.apply(ToUi::Time(Box::new(st)));
+                p.apply(ToUi::Time(Box::new(st.clone())));
                 p.apply(ToUi::Show(View::Arrange));
                 if let Some(l) = p.ui.get_mut::<OptionList>(time_view::CLIP_CARD) {
                     l.selected = time_view::CLIP_MUTATE;
                 }
                 out.push(("clips-card-mutate", p));
+            }
+            // Convert to notes' preview (step sequencer refactor E1): its
+            // words on the hint line, Cancel and Convert under the rows.
+            if let Ok(mut p) = sample_clips(fonts()) {
+                if let Some((track, slot)) = st.focus() {
+                    st.converting = Some(time_view::Converting {
+                        track,
+                        slot,
+                        ok: true,
+                        line: "Convert to notes: 8 pad hits become 12 notes. Keeps what Clip 1 \
+                               plays now with these pads (C3 to D#4)"
+                            .to_string(),
+                    });
+                }
+                p.time_page.clip_card = true;
+                p.apply(ToUi::Time(Box::new(st)));
+                p.apply(ToUi::Show(View::Arrange));
+                if let Some(l) = p.ui.get_mut::<OptionList>(time_view::CLIP_CARD) {
+                    l.selected = time_view::CLIP_MELODY;
+                }
+                out.push(("clips-card-convert", p));
             }
         }
         Err(e) => eprintln!("clips-card sample: {e}"),
@@ -27424,6 +27448,10 @@ mod tests {
             ),
             "{sent:?}"
         );
+        // Letting go of the Q-Link lets go of the macro (a turn while
+        // recording holds it over the step locks until then).
+        p.apply(ToUi::QLinkTouch(3, false));
+        assert_eq!(p.take_actions(), [FromUi::Macros(MacroAction::Release(3))]);
         q_link(&mut p);
         assert_eq!(title(&p), "Q-Links · Macros 5-8");
         q_link(&mut p);

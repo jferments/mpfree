@@ -181,6 +181,8 @@ impl Session {
             track,
             now,
             &name,
+            // This session's pads are pads alone.
+            mpfree_seq::Holds::Hits,
         )
         .map_err(|e| format!("capture: {e:?}"))?;
         if let Some(l) = k.launch {

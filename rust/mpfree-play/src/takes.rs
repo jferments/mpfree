@@ -306,6 +306,9 @@ pub enum Replaced {
     Mutate,
     /// Restore: the clip as it was before its first Mutate (S6).
     Restore,
+    /// Convert to notes: a clip that followed the pads, now of the notes
+    /// it played (step sequencer refactor E1, `mpfree_seq::convert`).
+    Convert,
 }
 
 /// A scene editor change: row `row`'s settings before and after.
