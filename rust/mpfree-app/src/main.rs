@@ -138,6 +138,9 @@ mod modpanels;
 mod pace;
 mod pad_synths;
 mod parts;
+mod patch_in;
+mod patch_page;
+mod patch_screen;
 mod perf;
 mod perform_pads;
 mod perform_tab;
@@ -10081,6 +10084,10 @@ fn player_session(
     // Learned controls on Play's Swing, Drums filter and XY pad (the Learn
     // section's Play card), done once a pass.
     let mut play_moves = remote::PlayMoves::default();
+    // Next and Previous patch pressed this pass (the Play card, live
+    // shows C1): a step and whether it waits for the hands, done once the
+    // learned controls are read.
+    let mut patch_steps: Vec<(i32, bool)> = Vec::with_capacity(8);
     let mut learn_names_gen: Option<u64> = None;
     let mut learn_now_at = 0.0_f64;
     // The gear lanes' pink ~: the MIDI out controls the mod matrix moves,
@@ -10088,6 +10095,8 @@ fn player_session(
     let (mut gear_moved, mut gear_moved_now) = (Vec::new(), Vec::new());
     let mut gear_moved_at = 0.0_f64;
     let mut track_names_at = 0.0_f64;
+    // What the screen was last told of the keys (live shows C1).
+    let mut keys_told: (Option<usize>, Option<Option<usize>>, u32) = (None, None, 0);
     let mut learning_shown: Option<(mpfree_play::mpfree_param::ParamAddr, midi_in::ArmedBy)> = None;
     // A learned control moved a synth's knob: the Synth tab is told, at
     // most every 50 ms.
@@ -10322,7 +10331,9 @@ fn player_session(
     );
     let mut keys: Vec<midi_in::Key> = Vec::with_capacity(64);
     // Keys a route sends to a track that isn't armed, played at once.
-    let mut routed_keys: Vec<(u8, midi_in::Key)> = Vec::with_capacity(64);
+    // Room for a period's routed keys and everything a patch can send in
+    // one (live shows C1), so the sound loop never grows it.
+    let mut routed_keys: Vec<(u8, midi_in::Key)> = Vec::with_capacity(64 + patch_in::OUTS);
     let mut routed_held = midi_in::RoutedHeld::new();
     let mut routed_pads = midi_in::RoutedPads::new();
     // The track the keys' expression last went to on MIDI out: when
@@ -10920,6 +10931,21 @@ fn player_session(
                     out.note(&format!("show: the song ends: {end:?}"));
                 }
                 gui::FromUi::SongEndReset => song_end.reset(),
+                // An edit on the patch screens: the keys play the song's
+                // patches as they are now; the old ones go back to be
+                // freed there.
+                gui::FromUi::Patches(mut p) => {
+                    music.swap_patches(&mut p);
+                    if let Ok(m) = io_model.lock() {
+                        app.set_route_synths(
+                            midi_in::route_synths_of(&m.setup, music.patch_synths()).0,
+                        );
+                    }
+                    out.show(gui::ToUi::PatchesBack(p));
+                }
+                gui::FromUi::PickPatch(to) => {
+                    music.pick_patch(to, mpfree_patch::keys::When::Now);
+                }
                 // Each take to a file of its own from now on (phase 3a),
                 // and where a project save put them.
                 gui::FromUi::AudioFiles(dir) => tracks.record_to(dir),
@@ -10938,8 +10964,21 @@ fn player_session(
                     // I/O setup the screen opened before sending the
                     // project, so a synth only a route plays stays while
                     // MIDI in catches up.
+                    // Its patches (live shows C1): the old ones go back in
+                    // the box. Every sound stops above, so the table starts
+                    // empty.
+                    music.patches_stopped();
+                    if let Some(p) = o.patches.as_mut() {
+                        music.swap_patches(p);
+                    }
+                    // The keys play its patch 1 (keys as routed without).
+                    if !music.pick_patch(Some(0), mpfree_patch::keys::When::Now) {
+                        music.pick_patch(None, mpfree_patch::keys::When::Now);
+                    }
                     if let Ok(m) = io_model.lock() {
-                        app.set_route_synths(midi_in::route_synths_of(&m.setup).0);
+                        app.set_route_synths(
+                            midi_in::route_synths_of(&m.setup, music.patch_synths()).0,
+                        );
                     }
                     // A save under way stops: the project changes under it.
                     if collect_now {
@@ -11852,6 +11891,20 @@ fn player_session(
                         }
                     }
                 }
+                // Next and Previous patch (the Play card, live shows C1): a
+                // press, once, stepping the song's patches when the pass is
+                // done.
+                midi_in::Learning::Set(w)
+                    if w.target.owner == mpfree_play::mpfree_param::Owner::Play
+                        && mpfree_play::mpfree_param::play::patch_step(w.target.param)
+                            .is_some() =>
+                {
+                    if let Some(step) = remote.patch_write(w.target.param, w.value) {
+                        if patch_steps.len() < patch_steps.capacity() {
+                            patch_steps.push(step);
+                        }
+                    }
+                }
                 // Play's own controls (the Learn section's Play card): the
                 // last value each was given goes once the pass is done.
                 midi_in::Learning::Set(w)
@@ -11961,6 +12014,13 @@ fn player_session(
             out.show(xy.view());
             if let Some(e) = pick {
                 fx.extend(app.set_xy_effect(e));
+            }
+        }
+        // Next and Previous patch: the keys' new patch shows on KEYS PLAY;
+        // nowhere to go, the hint line says why.
+        for (d, hands_up) in patch_steps.drain(..) {
+            if let Some(why) = desk::step_patch(&mut music, d, hands_up) {
+                out.show(gui::ToUi::Tell(why));
             }
         }
         if synth_learned && mt >= synth_learned_at {
@@ -12085,6 +12145,23 @@ fn player_session(
             } else {
                 keys.push(k);
             }
+        }
+        // What the song's patch plays (live shows C1): at once, as a
+        // route's keys to a track that isn't armed are, whichever track
+        // that is (REC with zones is C3), and a synth no track has on its
+        // route row.
+        for (track, k) in music.take_patched() {
+            if let Some(j) = track.checked_sub(midi_in::SYNTH_ROUTES) {
+                route_synths.key(usize::from(j), k, &mut synth, &mut mix.instruments);
+                continue;
+            }
+            routed_keys.push((track, k));
+        }
+        // The patch screens follow what the keys do, told when it changes.
+        let at = music.keys_at();
+        if at != keys_told {
+            keys_told = at;
+            out.show(gui::ToUi::Keys(Box::new(music.keys_now())));
         }
         // Keys play the armed track: by note while the pads press notes (a
         // synth pad layout, or the track's own synth's pad map, step 7); on
@@ -13448,6 +13525,7 @@ fn player_session(
                     synth.stop();
                     mix.instruments.stop();
                     mix.pad_synths.stop();
+                    music.patches_stopped();
                     // STOP while stopped turns the XY pad's Hold off (its
                     // layout lets go as it says).
                     if mix.xy_held() {
@@ -20117,7 +20195,9 @@ mod tests {
         assert_eq!(name(play::FILTER), "Play · Filter");
         assert_eq!(name(play::XY_ACROSS), "Play · XY across");
         assert_eq!(name(play::XY_UP), "Play · XY up");
-        assert_eq!(name(9), "Play · ?");
+        assert_eq!(name(play::NEXT_PATCH), "Play · Next patch");
+        assert_eq!(name(play::PREVIOUS_PATCH_HANDS_UP), "Play · Previous patch");
+        assert_eq!(name(99), "Play · ?");
         let now = desk::play_now(&time, &mix);
         assert_eq!((now.swing, now.drums_filter, now.xy), (50, 0.0, (0.5, 0.0)));
         let read = |id| learn_describe(&mix, &synth, &app, &|_, _, _| None, now, at(id));
@@ -20127,7 +20207,7 @@ mod tests {
             ("Swing", 50.0, 75.0, 50.0)
         );
         assert_eq!(read(play::XY_ACROSS).unwrap().1, 0.5);
-        assert!(read(9).is_none());
+        assert!(read(99).is_none());
         assert!(!midi_in::key_toggles(at(play::XY_UP)));
     }
 

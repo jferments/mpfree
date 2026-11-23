@@ -737,6 +737,8 @@ enum HistoryOf {
     Perform,
     /// The Synth tab's or the mixer's turns, which the app keeps.
     Turns(UndoOn),
+    /// The song's patches, on the patch screens (live shows C1).
+    Patches,
 }
 
 /// The undo history open over a page: whose, the page to go back to, and
@@ -802,6 +804,8 @@ enum TypeTo {
     /// A song marker's name (the Song view's Rename, a section picked;
     /// Arrange 3.3).
     MarkerName(usize),
+    /// A patch's name (the patch editor's name tapped; live shows C1).
+    PatchName(usize),
     /// An audio clip's name, as (track, slot): its card's Name row
     /// (layout spec 4j).
     ClipName(usize, usize),
@@ -819,6 +823,7 @@ impl TypeTo {
                 | TypeTo::SceneName(_)
                 | TypeTo::PerformPage(_)
                 | TypeTo::MarkerName(_)
+                | TypeTo::PatchName(_)
                 | TypeTo::ClipName(..)
                 | TypeTo::XyNames(_)
         )
@@ -1169,6 +1174,12 @@ pub enum ToUi {
     KitIds(Box<crate::instrument_list::KitIds>),
     /// An open done: the engines it replaced, to free here.
     ProjectBack(Box<crate::project::Opening>),
+    /// The song's patches as the audio loop played them before an edit
+    /// ([`FromUi::Patches`]), to free here.
+    PatchesBack(Box<crate::patch_in::PatchRig>),
+    /// What the keys do now (live shows C1): the patch playing, a pick
+    /// waiting for the hands, the keys down. Sent when it changes.
+    Keys(Box<crate::patch_screen::KeysNow>),
     /// How a set's song's ending stands (live shows B1, song_end.rs).
     SongEnd(crate::song_end::News),
     /// A learned Show control was pressed (live shows B1): its id in
@@ -1549,6 +1560,8 @@ pub enum ToUi {
     },
     /// Open the Touch lab page; any `Show` closes it again.
     TouchLab,
+    /// Open Play's patch list (Play's MENU, live shows C1).
+    PatchList,
     /// Open the Calibrate touch page; any `Show` closes it again.
     CalibrateTouch,
     /// The touch tuning kept in the store (at the start).
@@ -1745,6 +1758,13 @@ pub enum FromUi {
     /// Start an export: the pass plays the range into its files
     /// (export.rs); it comes back as `ToUi::ExportOver`.
     Export(Box<crate::export::Run>),
+    /// The song's patches after an edit on the patch screens (live shows
+    /// C1): the audio loop plays them from now on and sends the old ones
+    /// back ([`ToUi::PatchesBack`]).
+    Patches(Box<crate::patch_in::PatchRig>),
+    /// The keys play patch N (from 0; None: as routed), at once: a tap
+    /// on the patch list or its wheel.
+    PickPatch(Option<usize>),
     /// Open a project (or a new one): the pieces built here, swapped in
     /// between two periods (project.rs).
     OpenProject(Box<crate::project::Opening>),
@@ -2465,6 +2485,13 @@ pub struct Player {
     browser: Option<Box<mpfree_browser_ui::Browser>>,
     /// The I/O view's model (its MIDI setup is the project's `midi` part).
     io_model: Option<mpfree_midi_ui::Shared>,
+    /// The song's patches (live shows C1, the project's `patches` part):
+    /// what the keys play. The audio loop plays its own copy
+    /// (`patch_in::PatchRig`).
+    patches: mpfree_patch::Patches,
+    /// The patch screens: which shows, the zone picked, their UNDO, and
+    /// what the keys do now (gui/patches.rs).
+    patch: crate::patch_screen::PatchScreen,
     /// The parts New project goes back to, once the audio loop sent them.
     project_defaults: Option<crate::project::Defaults>,
     /// The plugins an open makes a project's plugin effects and synths
@@ -2954,6 +2981,14 @@ impl Player {
         );
         ui.add(crate::xy_list::XY_LIST, crate::xy_list::XyList::new(0));
         ui.add(
+            crate::patch_page::LIST,
+            crate::patch_page::PatchList::default(),
+        );
+        ui.add(
+            crate::patch_page::EDIT,
+            crate::patch_page::PatchEditor::default(),
+        );
+        ui.add(
             crate::xy_widgets::XY_BAR,
             crate::xy_widgets::XyBar::default(),
         );
@@ -3025,6 +3060,16 @@ impl Player {
             &play_page::frame(&format!("{}:*", crate::xy_list::XY_LIST)),
         )
         .expect("the XY pad's list");
+        ui.add_page(
+            crate::patch_page::LIST_PAGE,
+            &play_page::frame(&format!("{}:*", crate::patch_page::LIST)),
+        )
+        .expect("the patch list");
+        ui.add_page(
+            crate::patch_page::EDIT_PAGE,
+            &play_page::frame(&format!("{}:*", crate::patch_page::EDIT)),
+        )
+        .expect("the patch editor");
         ui.add_page(play_page::XY_FULL_PAGE, &play_page::xy_full_layout())
             .expect("the XY pad full screen");
         ui.add_page(
@@ -3227,6 +3272,8 @@ impl Player {
             sample,
             browser: None,
             io_model: None,
+            patches: mpfree_patch::Patches::default(),
+            patch: crate::patch_screen::PatchScreen::default(),
             project_defaults: None,
             project_plugins: std::sync::Arc::new(crate::plugins::Plugins::none()),
             drive: None,
@@ -4848,6 +4895,10 @@ impl Player {
             });
             held_title = format!("Q-Links · Controller {}", c.bank_words());
             (held_title.as_str(), cards)
+        } else if let Some(cards) = self.patch_qlinks() {
+            // The patch editor: the picked zone's ends, transpose and
+            // softest velocity (layout spec 4q).
+            ("Q-Links · Patch", cards)
         } else if let Some(cards) = self.xy_setup_cards() {
             // XY Setup: the picked setting's range and curve, the glide.
             ("Q-Links · XY setup", cards)
@@ -5934,10 +5985,11 @@ impl Player {
             println!("play view: {}", v.name());
         }
         // A view picked closes the REC chip's target list, the XY pad's
-        // list and the XY pad full screen.
+        // list, the XY pad full screen and the patch screens.
         self.rec_list = false;
         self.xy_list = false;
         self.xy_full = false;
+        self.patch.open = crate::patch_screen::Open::Closed;
         self.xy_setup = false;
         self.play.view = v;
         if v != PlayView::Beats {
@@ -6132,6 +6184,7 @@ impl Player {
     fn toggle_xy_list(&mut self) {
         self.xy_list = !self.xy_list && self.view == View::Play;
         self.rec_list = false;
+        self.patch.open = crate::patch_screen::Open::Closed;
         self.xy_setup = false;
         let picked = self.play.xy_effect.map_or(0, |k| k + 1);
         if let Some(l) = self
@@ -6215,6 +6268,7 @@ impl Player {
         self.xy_full = !self.xy_full && self.view == View::Play;
         self.xy_list = false;
         self.rec_list = false;
+        self.patch.open = crate::patch_screen::Open::Closed;
         self.xy_setup = false;
         if self.view == View::Play {
             self.show_view(self.view);
@@ -6249,6 +6303,7 @@ impl Player {
         if self.view != View::Play {
             return;
         }
+        self.patch.open = crate::patch_screen::Open::Closed;
         self.xy_list = false;
         self.rec_list = false;
         self.xy_full = true;
@@ -6524,6 +6579,7 @@ impl Player {
     fn toggle_rec_list(&mut self) {
         self.rec_list = !self.rec_list;
         self.xy_list = false;
+        self.patch.open = crate::patch_screen::Open::Closed;
         self.refresh_rec_list();
         if self.play_frame() {
             self.show_view(self.view);
@@ -7015,6 +7071,7 @@ impl Player {
         let mut look = self.play.transport_look();
         look.rec = Some(self.refresh_rec_chip());
         look.pads = self.pads_play();
+        look.keys = self.patch_keys_look();
         if self
             .ui
             .get::<PlayTransport>(play_page::TRANSPORT)
@@ -7167,6 +7224,8 @@ impl Player {
                 crate::rec_list::REC_PAGE
             } else if self.xy_list && self.view == View::Play {
                 crate::xy_list::XY_PAGE
+            } else if self.patch_showing() {
+                self.patch_page()
             } else if self.xy_setup && self.view == View::Play {
                 crate::xy_setup::XY_SETUP_PAGE
             } else if self.xy_full && self.view == View::Play {
@@ -8079,6 +8138,11 @@ impl Player {
             REC_LIST_HINT.to_string()
         } else if self.ready && self.view == View::Play && self.xy_list {
             XY_LIST_HINT.to_string()
+        } else if self.ready && self.patch_showing() {
+            match self.patch.open {
+                crate::patch_screen::Open::Edit(_) => patches::EDIT_HINT.to_string(),
+                _ => patches::LIST_HINT.to_string(),
+            }
         } else if self.ready && self.view == View::Play && self.xy_setup {
             XY_SETUP_HINT.to_string()
         } else if self.ready && self.view == View::Play && self.xy_full {
@@ -8611,6 +8675,10 @@ impl Player {
                 self.perform_undo(redo);
                 return;
             }
+            Some(HistoryOf::Patches) => {
+                self.patch_undo(redo);
+                return;
+            }
             Some(HistoryOf::Sample) => {
                 let before = self.sample.page();
                 self.sample.undo(&mut self.ui, redo);
@@ -8639,6 +8707,9 @@ impl Player {
     /// the kit's edits on the Sample and Pads tabs, and the turns on the
     /// Synth tab and the mixer. None elsewhere.
     fn undo_source(&self) -> Option<HistoryOf> {
+        if self.patch_showing() {
+            return Some(HistoryOf::Patches);
+        }
         Some(match self.view {
             // The XY pad full screen and Setup: Stay's turns.
             View::Play if self.xy_full || self.xy_setup => HistoryOf::Turns(UndoOn::Xy),
@@ -8760,6 +8831,10 @@ impl Player {
                 let (rows, now) = self.perform.history_rows(&self.perform_names());
                 Some((title("Perform set"), rows, now))
             }
+            HistoryOf::Patches => {
+                let (rows, now) = self.patch_history();
+                Some((title("Patches"), rows, now))
+            }
             HistoryOf::Turns(_) => None,
         }
     }
@@ -8806,6 +8881,11 @@ impl Player {
                     self.perform_undo(redo);
                 }
             }
+            HistoryOf::Patches => {
+                for _ in 0..n {
+                    self.patch_undo(redo);
+                }
+            }
             HistoryOf::Turns(on) => {
                 self.outbox
                     .extend((0..n).map(|_| FromUi::UndoOn { on, redo }));
@@ -8821,6 +8901,11 @@ impl Player {
     /// control to control, press the control it is on, or grab a value and
     /// turn it.
     fn nav(&mut self, n: Nav) {
+        // The patch list takes the wheel: it moves the tile picked, the
+        // push picks it, - / + the patch before or after.
+        if self.patch_nav(n) {
+            return;
+        }
         // The step size list takes the wheel: it moves the row picked,
         // and the push gives the steps that size.
         if self.size_list {
@@ -9131,6 +9216,7 @@ impl Player {
             Some(HistoryOf::Takes) => !self.time.done.is_empty(),
             Some(HistoryOf::Sample) => self.sample.can_undo(),
             Some(HistoryOf::Perform) => self.perform.can_undo(),
+            Some(HistoryOf::Patches) => self.patch.can_undo(),
             Some(HistoryOf::Turns(UndoOn::Synth)) => self.turns_ready.0,
             Some(HistoryOf::Turns(UndoOn::Mixer)) => self.turns_ready.1,
             Some(HistoryOf::Turns(UndoOn::Xy)) => self.turns_ready.2,
@@ -10004,6 +10090,7 @@ impl Player {
             | TypeTo::SceneName(_)
             | TypeTo::PerformPage(_)
             | TypeTo::MarkerName(_)
+            | TypeTo::PatchName(_)
             | TypeTo::ClipName(..)
             | TypeTo::XyNames(_) => None,
         }
@@ -10025,6 +10112,11 @@ impl Player {
             let (_, name) = names.into_iter().next()?;
             let acts = self.perform.rename(page, &name);
             self.perform_acts(acts);
+            return None;
+        }
+        if let Some(TypeTo::PatchName(i)) = to {
+            let (_, name) = names.into_iter().next()?;
+            self.patch_named(i, &name);
             return None;
         }
         if let Some(TypeTo::XyNames(layout)) = to {
@@ -10531,7 +10623,9 @@ impl Player {
                 }
             }
             ToUi::PlayQLink(k, ticks) => {
-                if self.xy_setup_showing() {
+                if self.patch_qlink(k, ticks) {
+                    // The patch editor's zone.
+                } else if self.xy_setup_showing() {
                     // XY Setup: the picked setting's range and curve.
                     self.xy_setup_qlink(k, ticks);
                 } else if self.play.held.is_some()
@@ -10581,7 +10675,7 @@ impl Player {
                 // MAIN on Play: one view, All, so nothing to step through.
                 self.show_play_view(v.unwrap_or(PlayView::All));
             }
-            // With a set open (layout spec 4p): MAIN from another page goes
+            // With a set open (layout spec 4q): MAIN from another page goes
             // to the Show view, and on Arrange goes Show, Clips, Song, the
             // song list, round.
             ToUi::ArrangeView(v) if self.set_play.is_some() => {
@@ -10934,6 +11028,8 @@ impl Player {
             // The engines an open replaced: freed here. The open is in:
             // nothing is unsaved (its own news in the next moments isn't
             // an edit).
+            ToUi::PatchesBack(old) => drop(old),
+            ToUi::Keys(now) => self.patch_keys(*now),
             ToUi::ProjectBack(old) => {
                 drop(old);
                 self.opens_out = self.opens_out.saturating_sub(1);
@@ -11330,6 +11426,7 @@ impl Player {
                 self.refill_sounds();
             }
             ToUi::TouchLab => self.open_touch_page("touchlab", "Touch lab"),
+            ToUi::PatchList => self.open_patch_list(),
             ToUi::CalibrateTouch => self.open_touch_page("calibrate", "Calibrate touch"),
             ToUi::TouchTuning(t) => {
                 self.saved_tuning = t;
@@ -12997,6 +13094,11 @@ impl Player {
                 mpfree_midi_ui::MidiPart(m.clone()).save(),
             ));
         }
+        // Only while the song has patches: one without plays its keys as
+        // before, and opens in any build.
+        if !self.patches.list.is_empty() {
+            extra.push((crate::project::PATCHES.to_string(), self.patches.to_text()));
+        }
         let mut samples: Vec<_> = sounds
             .into_iter()
             .map(|(file, src)| {
@@ -13150,6 +13252,9 @@ impl Player {
             );
         }
         self.open_midi(snap.part(crate::project::MIDI));
+        // Its patches: the screen keeps the list, the loop plays the rig.
+        self.patches = std::mem::take(&mut o.patch_list);
+        self.patches_opened();
         self.opens_out += 1;
         self.outbox.push(FromUi::OpenProject(Box::new(o)));
         // No kits saved: the factory kits, as New has them.
@@ -13639,12 +13744,7 @@ impl Player {
             beats: u32::from(t.meter.beats),
             click: self.settings.metronome,
             count_in: t.count_in,
-            keyboards: self
-                .rig()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|r| (r.name, r.connected))
-                .collect(),
+            keyboards: self.show_keyboards(),
             autosave_waiting: self.autosave_held(),
         };
         let v = sp.view(&now);
@@ -14549,6 +14649,7 @@ impl Player {
                 | FromUi::SynthPickOpen
                 | FromUi::OptionsButton
                 | FromUi::PlayOnPads
+                | FromUi::PickPatch(_)
                 | FromUi::FollowTrack
                 | FromUi::Preview(_)
                 | FromUi::PreviewStop
@@ -14629,6 +14730,7 @@ impl Player {
         if v != View::Play {
             self.xy_list = false;
             self.xy_full = false;
+            self.patch.open = crate::patch_screen::Open::Closed;
             self.xy_setup = false;
         }
         let followed = self.play_follows(v);
@@ -14643,6 +14745,7 @@ impl Player {
                 crate::rec_list::REC_PAGE.to_string()
             }
             View::Play if self.xy_list && self.ready => crate::xy_list::XY_PAGE.to_string(),
+            View::Play if self.patch_showing() && self.ready => self.patch_page().to_string(),
             View::Play if self.xy_setup && self.ready => crate::xy_setup::XY_SETUP_PAGE.to_string(),
             View::Play if self.xy_full && self.ready => play_page::XY_FULL_PAGE.to_string(),
             View::Play | View::Sequencer => self
@@ -15818,6 +15921,11 @@ impl Player {
             self.print_sample_lines();
             return None;
         }
+        // The patch screens (ERASE + a lane is the editor's own).
+        if ev.widget == crate::patch_page::LIST || ev.widget == crate::patch_page::EDIT {
+            self.patch_event(&ev);
+            return None;
+        }
         if self.status.erase {
             if let Some(answer) = self.erase_tap(&ev) {
                 return answer;
@@ -15942,6 +16050,11 @@ impl Player {
             }
             (play_page::TRANSPORT, EventKind::Select(crate::play_widgets::TAP_BPM)) => {
                 Some(FromUi::TapTempo)
+            }
+            // KEYS PLAY: the patch list (live shows C1).
+            (play_page::TRANSPORT, EventKind::Select(crate::play_widgets::TAP_KEYS)) => {
+                self.toggle_patch_list();
+                None
             }
             // What the pads play: the list of kits. In controller mode the
             // pads play the gear, and the Controller chip gives them back.
@@ -16095,7 +16208,9 @@ impl Player {
                 if matches!(self.view, View::Play | View::Sequencer | View::Arrange)
                     && !self.band_showing() =>
             {
-                if !self.audio_qlink(index, delta) {
+                if self.patch_qlink(index, delta) {
+                    // The patch editor's zone.
+                } else if !self.audio_qlink(index, delta) {
                     self.play_qlink(index, delta);
                 }
                 None
@@ -18889,6 +19004,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::ClearLogs => p.apply(ToUi::ClearLogs),
             Effect::ClearConsole => p.apply(ToUi::ClearConsole),
             Effect::TouchLab => p.apply(ToUi::TouchLab),
+            Effect::PatchList => p.apply(ToUi::PatchList),
             Effect::SetMenu(m) => p.apply(ToUi::SetMenu(m)),
             Effect::ShowKey(k) => p.apply(ToUi::ShowKey(k)),
             Effect::CalibrateTouch => p.apply(ToUi::CalibrateTouch),
@@ -20731,6 +20847,19 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     full.refresh_play();
     full.toggle_xy_full();
     out.push(("play-xy-full", full));
+    // Patches (live shows C1, layout spec 4q): KEYS PLAY on the transport
+    // bar, the patch list from it, and the editor with three keys held.
+    let mut keys = sample_player(fonts());
+    patches::sample(&mut keys);
+    out.push(("play-keys", keys));
+    let mut list = sample_player(fonts());
+    patches::sample(&mut list);
+    list.toggle_patch_list();
+    out.push(("play-patches", list));
+    let mut edit = sample_player(fonts());
+    patches::sample(&mut edit);
+    patches::sample_edit(&mut edit);
+    out.push(("play-patch-edit", edit));
     // Your XY layouts (the XY controller plan's phase 2, boards 1 to 4 of
     // the mockups approved 23 Nov 10:34Z): the list with two of yours,
     // Squelch playing full screen, its Setup with a setting picked, and
@@ -24374,6 +24503,8 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
 fn button_play() -> u8 {
     mpfree_controller::mpc_one::button::PLAY
 }
+
+mod patches;
 
 #[cfg(test)]
 mod tests {
