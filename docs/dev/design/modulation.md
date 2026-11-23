@@ -116,7 +116,23 @@ A hand's `Untouch` and a lock's or lane's `Unlock` must always land, or a settin
 
 *Tests:* `a_let_go_with_no_room_lands_first_in_the_next_block` and `opening_a_project_lets_go_of_every_hand_and_lock` in `mpfree-mod`; in the app `modmix::tests::a_let_go_lands_even_when_the_periods_events_are_full` and `opening_a_project_lets_go_of_every_hand_and_lock`, `mixing::tests::a_tap_on_the_xy_pad_quicker_than_a_period_plays_for_one` and `the_screens_pad_state_lets_go_when_its_lift_never_came`, `waiting::tests`, `gui::tests::the_xy_pads_lift_waits_for_room_and_its_state_goes_beside_the_queue`, `modpanels::tests::a_macro_turned_while_recording_lets_go_when_the_finger_lifts`, and `macros::tests` in `mpfree-chain-ui`.
 
-Still to come (the XY controller plan's phase 1, later steps): owners, so only the hand holding a setting can let it go, and a learned MIDI knob's hold ending half a second after its last move (today a knob learned on a mixer control and turned while recording stays in the hand); and the same hand layer for a synth's and a pad's settings.
+### Who holds a setting (`hand.rs`)
+
+A hand that holds a setting (a `Touch`: while recording, or over a lane) has an owner, kept in a fixed table of 64 in `ModMix` (`Hands`). The owner is where the gesture comes from (`Hand`): the screen and the MPC's own controls (`Hand::Screen`: the chain editor's and the Perform view's knobs, the macros, the Q-Links), or a learned MIDI control (`Hand::Midi`, from `Panels::set_param`).
+
+- **A new gesture takes the setting.** The first touch from a hand that doesn't hold it takes it from whoever does, so the newest gesture wins, never "whichever moved last".
+- **A hand that lost it is ignored** (its moves are counted, not sent) until it lets go and touches again; a learned control lets go once it has been still for `HAND_S`, so one that keeps turning stays ignored.
+- **Only the hand that holds it lets it go** (`ModMix::release(who, addr)`). A let-go nobody holds still goes through, as before (a set and its let-go at once: UNDO of a turn, a preset).
+- **A learned MIDI control has no let-go of its own.** Its gesture ends `HAND_S` (0.5 s, `locks.rs`) after its last move: `ModMix::process` runs the table down by each period's frames and lets go of an ended gesture first that period. The same value again isn't a move, so a controller that repeats a value doesn't keep the setting. Before, a learned control turned while recording held its setting until the project closed, so the move it had just recorded never played on it.
+- **A Q-Link turned with no finger on it** (MIDI Follow, or a touch the sensor missed) ends the same way, on the screen's side: `qlink_touch::TouchHold::turned` starts a run, and `due` passes its end on as the Q-Link's release `HAND_S` after the last turn. The release does what a finger's does: the chain editor's knob or the macro lets go, the Perform view ends its run of turns, the Sample page ends its turn (one UNDO step). A finger that lands during a run takes it over.
+- **A Q-Link on a macro bank** lets go of the macro when the finger leaves it (`ChainPage::released` gives `MacroAction::Release`); before, only an effect's knob did.
+- Only holds are kept: a hand that just sets a value (not recording, no lane) holds nothing, and the morph's crossfader never holds. A full table (64 settings held at once) makes the move a plain `Set`, which never needs letting go, and is counted. Opening a project clears the table; an effect leaving its strip drops its settings' holds.
+
+The status line's `mod:` part counts the holds (held now, taken by a newer gesture, moves ignored, MIDI gestures ended, no room); the Q-Link touch line counts the runs of turns with no finger.
+
+*Tests:* `hand::tests`, `modmix::tests::a_learned_control_turned_while_recording_lets_go_half_a_second_after_its_last_move` and `only_the_hand_that_holds_a_setting_lets_it_go`, `qlink_touch::tests::turns_with_no_finger_let_go_half_a_second_after_the_last`, the macro release in `chain_page::tests::the_q_link_button_steps_to_the_macro_banks_and_back` and `gui::tests::q_link_steps_plays_column_through_the_macro_banks`.
+
+Still to come (the XY controller plan's phase 1, later steps): the same hand layer for a synth's settings (`locks.rs`) and a pad's sound (the sampler's pad locks), and the XY pad's own gestures through this table.
 
 ## Q-Link bindings
 
@@ -181,5 +197,5 @@ As of 2026-11-12 the engine, the bindings, both panels, the engine in the app's 
    - Left: `ChainOut::OpenPage` to `mpfree-fx-ui`'s effect page (a hint says it comes with the FX pages); and the set-up kept in the store (`ModMix::save` and the learned Q-Links), once the mixer's chains are kept too.
 2. **Locks on pads and instruments:** built with the sequencer's S1 locks (17 Nov 2026): the sampler engine, the synth on the pads and a track's own instrument take them before `modmix.rs` ([step-pads.md](step-pads.md#locks)). Left: a mixer or effect knob turned on its own page with a step held, as a lock.
 3. **Move lanes:** the player sends a lane's values as `Event::Lane` (the transport and FX threads), and the host passes them on as `ModEvent::Lane`.
-4. **Recording a Q-Link turn as a lock:** while a track records, the Q-Link turn also goes to `TimeHost::knob` and to the engine as `ModEvent::hand(.., recording: true)`, with `Untouch` 500 ms after the last detent until Q-Link touch is confirmed.
+4. **Recording a Q-Link turn as a lock:** while a track records, the Q-Link turn also goes to `TimeHost::knob` and to the engine as `ModEvent::hand(.., recording: true)`, with `Untouch` 500 ms after the last detent until Q-Link touch is confirmed. The let-go is built (XY controller plan, phase 1): the finger leaving the Q-Link lets go, and a turn with no finger (MIDI Follow) lets go 500 ms after the last detent ([who holds a setting](#who-holds-a-setting-handrs)).
 5. **On the MPC:** the Mod bench case's numbers, and a bench of FM under modulation, since FM rebuilds its patch on every parameter change.

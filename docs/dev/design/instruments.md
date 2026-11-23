@@ -10,17 +10,19 @@ checked: 2026-11-20 c5b97009
 
 Jay's rule (20 Nov 2026): **instruments make the sound, tracks organize and record performances, and the pads are controllers that play instruments.** A track is a place you record to. The pads, MIDI and scripts play instruments; tracks record what is played and play it back to instruments; every instrument's sound goes to the mixer, recorded or not. So the code names and routes by instrument, never by track, and a track's mixer channel is not an instrument's output.
 
-Today an instrument belongs to a track: a track plays a kit, the shared synth (the Synth kit) or its own instrument (`instruments.rs`), and the pads play the armed track's. The redesign takes that apart in steps, each of which ships on its own, keeps old projects playing as they did, and gives the musician something they couldn't do before:
+Before the redesign an instrument belonged to a track: a track played a kit, the shared synth (the Synth kit) or its own instrument (`instruments.rs`), and the pads played the armed track's. The redesign takes that apart in steps, each of which ships on its own, keeps old projects playing as they did, and gives the musician something they couldn't do before:
 
 1. **Try a synth on the pads** (on main): Play on the pads plays the shared synth while the armed track keeps its kit, and REC records it on a track nobody set up ([rec-arm.md](rec-arm.md), `app/pads_focus.rs`).
 2. **Instrument identities** (this page, below): instruments get lasting ids in a list in the project. No visible change.
 3. **Pad focus** (built, below): the pads follow the selected track or play an instrument chosen for them, which stays whichever track is selected.
 4. **Tracks send to instruments** (4a built, below): a track plays any instrument, several share one; each knob has one owner at a time (4b); Duplicate and New instrument track (4c, built); instrument channels in the mixer (4d).
 5. **Recording by source** (built, below), with one recording plan behind both the REC chip and REC.
-6. **The list of synths and banks** (built, below; the banks' place on screen waits on Jay's card).
-7. **MIDI and scripts play instruments** (keys built, below; MIDI routes and scripts later).
-8. **Layers, mutes and stems by instrument** (stems and who plays built, below; layers later).
+6. **The list of synths and banks** (built, below; Jay took the banks' way in as built, 22 Nov).
+7. **MIDI and scripts play instruments** (keys built, below, and routes that name a synth in step 11e; scripts later).
+8. **Layers, mutes and stems by instrument** (stems and who plays built, below; layers in step 11).
 9. **Audio points** (built, below): an audio track records from inside the mix.
+10. **Pad mutes on every kit and bank** (built, below): a pad mute is the track's, on any kit and bank.
+11. **Layers, a track's line, routes that name a synth** (built, below): the pieces of steps 7 and 8 that waited for a place on the screen or a way to record.
 
 ## Step 2: instrument identities
 
@@ -300,9 +302,9 @@ The plan's step 7: "MIDI in and scripts play instruments. A MIDI input or a Rhai
 - **Said:** the MIDI monitor's "Went to" reads "the pads' synth" (`KeysPlay::PadsSynth`, `mpfree_midi::monitor::To::Pads`), and so does the Routing card's last line for the port.
 - **Test:** `smoke::workflows::tests::a_keyboard_plays_the_synth_the_pads_play_on_their_own` (FM picked in the list: two keys play it by note, one no pad has; a key held as REC points Track 2 at the same FM ends on FM; then the shared synth chosen for the pads takes the keys too).
 
-### Not built yet in step 7
+### Not built in step 7
 
-- **A route that names an instrument.** A route in the Routing section names a track, and a track plays any instrument (step 4's sends, step 6's free places), so a keyboard on a route already reaches any instrument through a track that plays it, and its takes have a track to go to. A route naming an instrument with no track would play it live but leave REC nothing to record into; it waits until the recording plan covers routes.
+- **A route that names an instrument** waited here: a route named a track, and one naming an instrument with no track would have left REC nothing to record into. Step 11e built it once the recording plan covered routes ([11e as built](#11e-as-built-a-midi-route-that-names-a-synth)): REC records such a synth on a track of its own.
 - **Scripts.** They wait on the scripting mode (a separate `mpfree-script` program sending step lines, on Jay's list after device round 2). When it comes, a script is a player like the keys: unrouted, it plays what the pads play (7b's `KeysOnPads` path); its events carry a source of their own for the recorder (rule 4).
 
 ## Step 8: layers, who plays what, mute and solo scopes, stems

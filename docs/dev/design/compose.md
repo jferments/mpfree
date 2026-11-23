@@ -5,7 +5,7 @@ checked: 2026-11-22 d9a2b851
 
 # The composer and the Musical Context
 
-**Status:** phases 0A (the musical model) and 0B (the check through real playback), and phase 0C's listener, plan, new chords and phrases, 2026-11-22. The code is [`rust/mpfree-context`](../../../rust/mpfree-context) and [`rust/mpfree-compose`](../../../rust/mpfree-compose). Nothing is on screen, nothing runs on the MPC, and nothing else in mpfree uses these crates yet. The owner approved the design on 2026-11-22 with Continue as the first tool.
+**Status:** phases 0A (the musical model) and 0B (the check through real playback), and phase 0C's listener, plan, new chords, phrases, playing and Continue end to end, 2026-11-22. The code is [`rust/mpfree-context`](../../../rust/mpfree-context) and [`rust/mpfree-compose`](../../../rust/mpfree-compose). Nothing is on screen, nothing runs on the MPC, and nothing else in mpfree uses these crates yet. The owner approved the design on 2026-11-22 with Continue as the first tool.
 
 ## What it is for
 
@@ -24,7 +24,7 @@ There is no trained model: the engine is procedural. It reads what was played (k
 |---|---|---|
 | 0A | The musical model: the Musical Context, phrases of events with roles and sources, decisions kept apart from notes, stable dice, the re-fit table, the timing contract, rule kinds, style components, instrument profiles | Built (this page) |
 | 0B | An integration check, developer only: one simple phrase played in place of a clip through the real play view, kept and undone; clip revisions; the preview states tried against the real play view, player and take undo | Built (this page) |
-| 0C | The full engine: listening, plan, harmony, phrase, playing, groove; three styles; two-sided Try again; the reading budget; listening tests against simpler baselines; MPC timings | Listening, the plan, new chords, phrases and two-sided Try again built; playing, groove and the rest next |
+| 0C | The full engine: listening, plan, harmony, phrase, playing, groove; three styles; two-sided Try again; the reading budget; listening tests against simpler baselines; MPC timings | Listening, the plan, new chords, phrases, two-sided Try again, playing and groove built, with Continue end to end; baselines and MPC timings next |
 | 1 | Continue, with the preview states and an all-or-nothing Keep | |
 | 2 | Add a part, with one harmony answer for rows and the song | |
 | 3 | Improvise and Answer, with record sources, chord settle and note owners | |
@@ -76,6 +76,12 @@ Contract 6's kinds hold: the Range you picked (`RangeSetting::steps`, scale plac
 
 `continue_line` writes every new bar in order, each with its own dice (`Job::Rhythm` and `Job::Pitch`, by bar and try); `try_again` remakes one bar with everything else locked; `decisions` reads the new bars back as decisions under the chords, so a later chord change re-fits them, and realising them gives the same notes for all three styles. A 16-bar line takes 1 to 2 ms on one desktop core (9,400 to 21,000 candidates scored); MPC timings come with the rest of 0C.
 
+## Playing, and Continue end to end (phase 0C)
+
+`playing.rs` plays the new notes once their pitches are set, after the KTH performance rules as the second prototype tuned them, and writes the result into each note's decision, so a chord change re-fits the notes and keeps how they were played. Loudness: the style's level and accents per 1/16, a rise and fall over every four bars, the bar's tension, melodic charge over the chord (Friberg), contour peaks and notes after a leap, higher notes a little louder; how far these move a note is the instrument's velocity response, and Keep Accents leaves your loudness. Length: the style's gate, repeated notes shorter, short notes a little shorter and softer, and a landing note held, then a breath. Timing (`timing`): with drums read, each note on the grid takes the drummer's residual at its step for its lane (a bass the kick's, the rest the hats'), moved onto the swing the clip plays with; with none, the style's slow drift where it has one (Groove and Jazz-ish, 6 ms; never Minimal): one smooth 1/f curve (`drift`) drawn from the request's seed alone, so every part of a request drifts together.
+
+`request.rs` is Continue end to end. `continue_notes` takes your notes in the clip's ticks, a reading and the settings: the plan for your bars plus the new ones, the chords (Keep Chords plays your chords again), the phrase, the decisions, the playing, and the notes Keep writes, with the clip's new length. `try_bar` makes one new bar afresh and keeps every other note exactly as it was, played as it was. `continue_clip` reads a clip and the rest of its row from a project (a pitched clip of pad hits is refused, since a pad's note depends on the kit), maps the chords onto the clip's own ticks at its speed, takes its notes after quantise, and returns the `Proposal` a preview plays and Keep writes, bound to every clip it read. A refusal says why in words (`Refused::words`). Carrying 16 bars on takes 1 to 2.2 ms on one desktop core after the reading.
+
 ## Implementation contracts
 
 A design review set four must-haves before the code that needs them, and six more to settle early. The table says where each stands.
@@ -84,7 +90,7 @@ A design review set four must-haves before the code that needs them, and six mor
 |---|---|---|
 | 1. Try again respects both neighbours | Before phase 1 | Built in 0C: `phrase.rs` scores the way in and the way out, and a loop's way back; measured below |
 | 2. What a change re-fits, and stable dice | Phase 0 | Built: `refit.rs`, `realize.rs`, `dice.rs` |
-| 3. One timing contract | Phase 0 | Built: `timing.rs`, `groove.rs`, `keep.rs` |
+| 3. One timing contract | Phase 0 | Built: `timing.rs`, `groove.rs`, `keep.rs`; new notes take the groove or the drift in 0C (`playing.rs`) |
 | 4. One harmony question for every place | Before phase 2 | Built: `harmony.rs` |
 | 5. Saying how sure it is | Phase 0 | Built: `key.rs` (words), `chord.rs` (no clear chord, long chords) |
 | 6. Three kinds of rule | Phase 0 | Built as data: `rules.rs`; the phrase keeps them (0C) |
@@ -166,12 +172,15 @@ Trying again on a bar is filling a gap: each try is scored on its inside, its wa
 - `heard` lands on the player's frame for every note, in eight playback set-ups;
 - a one-bar phrase, realised from decisions under the chord, is heard in place of a one-bar riff, kept as one take that plays the same notes on the same frames, undone back to the riff (length, notes and revision), and redone;
 - a step tapped on the clip while its result plays invalidates the result, and the tap's UNDO doesn't bring it back;
-- a step tapped on a clip the reading listened to invalidates it too.
+- a step tapped on a clip the reading listened to invalidates it too;
+- Continue end to end (phase 0C): a swung riff and a hat part read from a project, carried on two bars in Groove, heard where `heard` says, every new note on an off-beat 1/8 landing with the drummer's late hats (not where the clip's swing alone would put it), kept as one take that plays what was heard, and undone.
 
-Phase 0C's modules carry their own tests, among them: the listener hears the prototype's examples as it did; the plan's 16 bars match the prototype's numbers; a progression keeps your chords and lands; a 16-bar phrase stays in range, lands home and sits within 0.03 of each bar's similarity aim on average; only your notes are learned from; Try again changes one bar and leads into the next (the measurement above); the Keeps hold; a range that can't fit is refused with one change; bars of three beats stay in their bars.
+Phase 0C's modules carry their own tests, among them: the listener hears the prototype's examples as it did; the plan's 16 bars match the prototype's numbers; a progression keeps your chords and lands; a 16-bar phrase stays in range, lands home and sits within 0.03 of each bar's similarity aim on average; only your notes are learned from; Try again changes one bar and leads into the next (the measurement above); the Keeps hold; a range that can't fit is refused with one change; bars of three beats stay in their bars; the playing rules ring out peaks, shorten repeats and hold the landing; the drift is smooth, shared and only where the style has one; the three styles carry the riff on each in its own way (Groove busiest and most syncopated, Minimal thinner, Jazz-ish on 1/8s); trying a bar again keeps every other note.
 
 ## What phase 1 decides
 
 - Where the app keeps the `Preview` and drives it: the control thread's step edit path (`TimeControl::step_action`) already compiles after a take and takes the edit back if the view can't be built, and Keep should go the same way.
 - Playing results through the shared audition layer (piano roll step 2B.3) in place of the project copy, from the next bar line.
 - What Keep says when the clip plays in more than one place, or when a longer clip makes its row play longer.
+- Continue carries on a clip's top line; a clip of chords waits for phase 2's comping, and until then Continue on one is a melody over its chords or is refused (phase 1 picks).
+- Whether a new clip takes the style's suggested swing (phase 2, Add a part); Continue leaves the clip's swing as it is.

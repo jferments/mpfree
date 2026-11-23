@@ -350,18 +350,38 @@ pub struct JobSpec {
 }
 
 impl JobSpec {
-    /// The job: its span copied out of the sound, then the hits found.
+    /// The job: its span copied out of the sound (once, straight into the
+    /// shared input the job holds), then the hits found.
     pub fn start(self) -> Result<Job, StretchError> {
         let ch = usize::from(self.source.channels());
         let (a, b) = (self.span.start as usize * ch, self.span.end as usize * ch);
-        let data = self.source.data().f32s(a..b).ok_or(StretchError::Empty)?;
+        let data = self
+            .source
+            .data()
+            .f32s_shared(a..b)
+            .ok_or(StretchError::Empty)?;
         Job::new(
-            data.into(),
+            data,
             self.source.channels(),
             self.source.rate(),
             self.map,
             self.settings,
         )
+    }
+
+    /// The most the job holds at once until its result is shareable, in
+    /// bytes: what to promise for it. The stretch's own most
+    /// ([`mpfree_stretch::need`]: its input and the stretched audio, or
+    /// with a tune the stretched audio and the result as it resamples), or
+    /// the result twice over at the end, as the worker turns it into the
+    /// `Arc<[f32]>` it hands back ([`Done::Copy`]), the job gone by then.
+    /// A copy longer than its region (a slower tempo) peaks there.
+    pub fn need(&self) -> u64 {
+        let ch = self.source.channels();
+        let out = self.map.output_frames();
+        let input = self.span.end.saturating_sub(self.span.start);
+        mpfree_stretch::need(input, ch, out, self.settings.semitones)
+            .max(2 * out * u64::from(ch) * 4 + mpfree_stretch::WORKING)
     }
 }
 

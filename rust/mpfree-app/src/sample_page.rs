@@ -4910,15 +4910,6 @@ impl SamplePage {
             );
             return;
         };
-        let channels = project
-            .source(region.source)
-            .map_or(1, |s| u64::from(s.channels()));
-        // The input's copy, the stretch's working copy and the result.
-        let need = (region.frames() as f64 * (2.0 + what.ratio) * channels as f64 * 4.0) as u64;
-        if let Err(why) = crate::memory::room_in((self.mem_free)(), need) {
-            say_not(self, why);
-            return;
-        }
         let spec = match what.spec(project) {
             Ok(s) => s,
             Err(e) => {
@@ -4926,6 +4917,13 @@ impl SamplePage {
                 return;
             }
         };
+        // The input's copy, the stretched audio and the result, at the
+        // most the job holds them at once.
+        let need = spec.need();
+        if let Err(why) = crate::memory::room_in((self.mem_free)(), need) {
+            say_not(self, why);
+            return;
+        }
         let (tx, rx) = mpsc::channel();
         let refused = tx.clone();
         let stop = Arc::new(AtomicBool::new(false));
@@ -7612,11 +7610,16 @@ impl SamplePage {
             .stretcher
             .get_or_insert_with(|| Worker::on(jobs.clone()));
         for k in missing {
-            // The copy, and the source's part the thread is handed.
-            let ch = project
-                .source(k.source)
-                .map_or(2, |s| u64::from(s.channels()));
-            let need = (k.frames + k.end.saturating_sub(k.start)) * ch * 4;
+            let spec = match Warps::spec(project, &k) {
+                Ok(spec) => spec,
+                Err(e) => {
+                    self.lines.push(format!("sample: can't stretch: {e}"));
+                    continue;
+                }
+            };
+            // The most the copy's job holds at once: the region's part,
+            // the stretched audio and the copy, as it is made shareable too.
+            let need = spec.need();
             if let Err(why) = crate::memory::room_in((self.mem_free)(), need) {
                 self.unstretched.push(k);
                 self.lines.push(format!(
@@ -7626,13 +7629,8 @@ impl SamplePage {
                     .push(format!("Not stretched, the pad repitches instead: {why}"));
                 continue;
             }
-            match Warps::spec(project, &k) {
-                Ok(spec) => {
-                    if w.send(k, spec, need) {
-                        self.stretching.push(k);
-                    }
-                }
-                Err(e) => self.lines.push(format!("sample: can't stretch: {e}")),
+            if w.send(k, spec, need) {
+                self.stretching.push(k);
             }
         }
     }

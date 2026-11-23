@@ -117,8 +117,12 @@ helpers=$(sed -n 's/^pub const \(FETCH_FILE\|PLUGHOST_FILE\): &str = "\([a-z0-9-
 [ -n "$names" ] || stop "couldn't read PROGRAM_FILES from rust/mpfree-stick/src/stick.rs."
 [ "$(echo $helpers | wc -w)" = 2 ] || stop "couldn't read FETCH_FILE and PLUGHOST_FILE from rust/mpfree-stick/src/stick.rs."
 is_arm() {
-  "$readelf" -h "$1" | grep -Eq 'Machine: *ARM' &&
-    "$readelf" -h "$1" | grep -Eq 'Flags:.*Version5 EABI.*hard-float ABI'
+  # Read the header first: `readelf | grep -q` under pipefail fails whenever
+  # grep stops at its match before readelf has written the rest (SIGPIPE).
+  local header
+  header=$("$readelf" -h "$1") || return 1
+  grep -Eq 'Machine: *ARM' <<<"$header" &&
+    grep -Eq 'Flags:.*Version5 EABI.*hard-float ABI' <<<"$header"
 }
 for n in $names; do
   f="$built/$n"
@@ -130,7 +134,8 @@ for n in $helpers; do
   f="$helpers_target/$arm/release/$n"
   [ -f "$f" ] || stop "$n wasn't built."
   is_arm "$f" || stop "$f isn't an ARM hard-float program."
-  "$readelf" -l "$f" | grep -q 'Requesting program interpreter: /lib/ld-linux-armhf.so.3' ||
+  segments=$("$readelf" -l "$f") || stop "couldn't read $n's program headers."
+  grep -q 'Requesting program interpreter: /lib/ld-linux-armhf.so.3' <<<"$segments" ||
     stop "$n isn't linked dynamically against the MPC's C library."
   newest=$("$readelf" -W --version-info "$f" | grep -o 'GLIBC_2\.[0-9]*' | sort -t. -k2 -n | tail -n 1)
   if [ "${newest#GLIBC_2.}" -gt 39 ]; then

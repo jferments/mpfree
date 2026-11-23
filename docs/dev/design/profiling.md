@@ -780,9 +780,12 @@ running):
   a byte. The Sample page's file loads (the browser's Load and preview,
   a kit file, a project's kits) use it on the job lane and hold a promise
   while each sound is decoded; the old guess from the file's length
-  (`decode_need`) is gone. A stretched copy's need is its frames and the
-  source part the stretch thread is handed; an auto-sample's,
-  `Plan::estimate().bytes_most`.
+  (`decode_need`) is gone. A stretched copy's need, and Process's, is the
+  most its job holds at once (`warp::JobSpec::need`, from
+  `mpfree_stretch::need`): the region as floats and the stretched audio,
+  or with a tune the stretched audio and the result as it resamples, or
+  the copy twice as the worker makes it shareable, with 1 MB for the
+  windows' work; an auto-sample's, `Plan::estimate().bytes_most`.
 - The pad player checks at each load: the browser's Load and preview
   (`read_one`, on their threads), each sound as a project's kits open (one
   that doesn't fit is left out, named in the log, and the hint says how

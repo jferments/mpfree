@@ -9222,9 +9222,12 @@ impl Player {
                     let acts = self.perform.qlink_lift(k, &names);
                     self.perform_acts(acts);
                 } else if !on && self.chain_page.drives(self.view) {
-                    // A knob of the effect lets go after a recorded move.
-                    if let Some(Turned::Chain(a)) = self.chain_page.released(k) {
-                        self.outbox.push(FromUi::Chain(a));
+                    // A knob of the effect, or a macro, lets go after a
+                    // recorded move.
+                    match self.chain_page.released(k) {
+                        Some(Turned::Chain(a)) => self.outbox.push(FromUi::Chain(a)),
+                        Some(Turned::Macro(a)) => self.outbox.push(FromUi::Macros(a)),
+                        _ => {}
                     }
                 }
                 for column in [play_page::QLINKS, crate::looper_tab::QLINKS] {
@@ -27445,6 +27448,10 @@ mod tests {
             ),
             "{sent:?}"
         );
+        // Letting go of the Q-Link lets go of the macro (a turn while
+        // recording holds it over the step locks until then).
+        p.apply(ToUi::QLinkTouch(3, false));
+        assert_eq!(p.take_actions(), [FromUi::Macros(MacroAction::Release(3))]);
         q_link(&mut p);
         assert_eq!(title(&p), "Q-Links · Macros 5-8");
         q_link(&mut p);
