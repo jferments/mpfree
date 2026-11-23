@@ -1,6 +1,6 @@
 <!--
-covers: rust/mpfree-fx/src/svf.rs
-checked: 2026-11-17 359c6ee
+covers: rust/mpfree-fx/src/svf.rs rust/mpfree-filter rust/mpfree-sampler/src/dsp.rs rust/mpfree-sampler/src/engine/render.rs
+checked: 2026-11-23 1349659
 -->
 # Filters: design
 
@@ -92,7 +92,26 @@ Each pad, and each keygroup, has one filter after its voices' read (`mpfree-samp
 
 What it is today, measured by the sampler ratchet's PF rows ([fx-quality.md](fx-quality.md#the-sampler)): the state-variable stages are the effect's trapezoidal SVF, but each at Q 0.5 at Resonance 0 (`k = 2 - 1.95 × resonance`, Q 0.5 to 20) and a 4-pole is two equal stages (the second at half the resonance). So the cutoff isn't the -3 dB point (a 4-pole low-pass at 1 kHz is 3 dB down at 435 Hz), the response sags 3 to 9 dB from a Butterworth around the cutoff, and the resonance is linear and unbounded with a lower top than the effect's (swept pink at full Resonance peaks at +0.2 dBFS through the 4-pole; a quiet sine rings up 26 dB, against the effect's 31). The Ladder is the effect's kind of TPT ladder with a `tanh`-like curve on the feedback, which sings in tune (DSP quality's Y2b), but with Drive its loop runs at the base rate after the drive's 2x, which aliases near the top (PF7).
 
-The filter gap plan (jferments/mpfree-claude `fx/quality/filters-mpc-gap/`, step by step under [History and next](#10-history-and-next)) closes this in order: the measures (F1, done), then the effect's bounded SVF in a shared `mpfree-filter` crate with Butterworth stages, Q 0.707 to 40, a per-frame cutoff and the driven Ladder inside the 2x (F2), more slopes and a Peak type (F3), keytrack and more velocity and random modulation (F4), analog-style models (F5), better vowels (F6), two filters per pad (F7) and an auto filter in the effect (F8).
+The filter gap plan (jferments/mpfree-claude `fx/quality/filters-mpc-gap/`, revised on 23 Nov after Jay's design review; step by step under [History and next](#10-history-and-next)) closes this in thirteen phases: the architecture below (F0), the measures (F1, done), the shared crate and the clean fixes (F2: Butterworth stages, a resonance policy per model, a per-frame cutoff, the filter before the amp and the driven Ladder inside the 2x), modulation through `mpfree-mod` (F3), more slopes and a Peak (F4), the first full filter UI (F5), the Ladder rebuilt (F6), two filters per pad (F7), Smooth and Scream (F8), voices (F9), Diode and Classic 12 (F10), the auto filter (F11) and device performance (F12, with a cost check in every phase).
+
+### The shared filter system (design, step F0)
+
+What the filter gap plan builds towards; the parts built so far are marked. Every filter, in the pads, the Filter effect and later the synths, is one crate, [`mpfree-filter`](../../../rust/mpfree-filter), in four layers (logical parts of the one crate, with plain enums rather than a plugin framework):
+
+1. **DSP algorithms:** SVF stages (built: the effect's stage and its bounded resonance, moved from `mpfree-fx` bit for bit), Butterworth cascades, ladders, the diode solve, Sallen-Key, formant banks, comb and half-bands. They take physical values (Hz, Q, gain) and know nothing of pads, tracks or screens.
+2. **Models and parameters:** what a musician picks. Each model declares its parameters (name, range, unit, curve, default), its **cutoff meaning** (the -3 dB point at neutral resonance for a Butterworth low-pass or high-pass, a nominal frequency as resonance rises, the centre of a band-pass, notch or bell, a documented reference frequency for an analog model), its **resonance policy** (neutral, musical and maximum resonance, whether it self-oscillates, its gain and limiting: Clean, Saturated or Self-oscillating in spirit, but each model its own), its **stability contract** (the range it is proven or tested stable in, what glides and what steps, behaviour at the extremes, finite-state checks and a reset to silence if a state ever goes non-finite), its solver (the cheapest that passes its stress tests: closed form, fixed-cost linearisation, a fixed few Newton steps; the [reference](#7-measuring-quality) is the yardstick) and its oversampling (linear types at the base rate; nonlinear ones 2x or 4x, by measurement; no stateful ADAA inside a feedback loop).
+3. **Instances and state:** integrators, feedback, half-band state, smoothing, cached coefficients and crossfades. A configuration is shared; an instance belongs to one sounding hit, or to one channel of the Filter effect.
+4. **Hosts:** the sampler (one chain per hit), the Filter effect (one chain per channel, always running) and later the synths.
+
+**Parameter flow.** `mpfree-mod` resolves base, morph, macro, lock, touch and matrix into one value per parameter, as it does for everything ([modulation.md](modulation.md)). The host adds the voice-local sources in octaves (filter envelope, velocity, keytrack from the voice's tuned pitch `key_cents`, a random offset seeded from the project and the event, pressure and the pad LFO) and clamps the sum to the model's range; the instance smooths it every frame. Nothing else decides what a parameter means. The pad's Cutoff and Resonance are already addressable offsets in octaves that glide on playing voices (`mpfree-sampler` `src/node.rs`).
+
+**Gain staging.** A nonlinear model is input Drive, then its core, then an output trim, so more Drive means more harmonics without much more level. The reference level is -18 dBFS RMS pink (the lab's and the Drive effect's), and Drive is in dB above it. No automatic loudness matching: fixed calibration between implementations and a model's own compensation (a ladder's bass loss) only.
+
+**A hit's signal path.** The layers a hit plays are read and mixed with their own gain and pan; the mix passes Filter A, then Filter B, then the amp envelope, then the pad's level and pan. A hit whose layers are all mono is filtered in mono. Today it is different: each layer is its own voice with its own filter, after the amp envelope (`render.rs` `finish`), so the grouping is a step of F2, agreed with the sampler refactor. The Comb runs after the amp so it rings on after the sound ends; a self-oscillating model needs no input and stops with its hit.
+
+**Changes while notes play.** Cutoff, Resonance, Drive and envelope depth glide on sounding hits. A change of model, slope or routing crossfades over 10 ms, old and new side by side, its cost counted in the worst case. Envelope times reach each envelope at its next stage. **Bypass** crossfades over 10 ms; a cheap model runs on while bypassed, an oversampled one stops after the fade and restarts from silence. A stolen or choked hit fades with its amp and its state is cleared before the instance plays again.
+
+**Identity, presets and versions.** Filter A and B are stable ids whatever their order, and each parameter's address keeps its meaning across models (a model without Drive ignores it). A filter configuration can be copied, pasted and saved on its own; an instrument preset holds it. Saves carry a filter version from F2, and an older one is mapped onto the new filters with a one-time notice.
 
 ### DJ filter
 
@@ -175,6 +194,7 @@ The instruction gate's cases (rustc 1.97.0, a 128-frame stereo block at 44.1 kHz
 - **Round 2, Filters PR (17 Nov, #482):** bounded resonance, the type and slope crossfade, the drive at twice the rate with ADAA, a fixed 4-frame latency, and the block path at rest.
 - **Round 2, Ladder and Res mode PR (17 Nov):** the Ladder model (plan-2 section 7.2 item 4, F9) and the Res mode on both models (Jay's pick on decision 10.4, F12).
 - **The filter gap plan (23 Nov, step F1):** the pad filter's measures, PF1 to PF7 in the sampler ratchet, the slow exact reference for analog-style models (`filter_reference`), and this page made the pad filter's design page too.
+- **The filter gap plan, revised (23 Nov):** Jay's design review turned the plan into thirteen phases around the shared filter system above (F0). Step F2's first part: the new crate `mpfree-filter`, with the Filter effect's and EQ's state-variable stage moved into it bit for bit (`mpfree-fx` re-exports it; every effect test passes unchanged).
 - **Next:** an LFO and envelope follower on the cutoff (an auto filter) and key tracking (decision 10.4's other questions); more ladder outputs (high-pass and band-pass from the stages, as the Oberheim Xpander mixes them) if asked for; ADAA-like antialiasing of the ladder's curve and of Hard's clip if heavy drive into them needs it. The DJ filter could take the bounded resonance if its Resonance range is ever raised.
 
 ## 11. Sources
