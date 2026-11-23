@@ -26,11 +26,19 @@
 //! - **Saved** on the route's line by the synth's number (`route =
 //!   instrument 4 < MIDI · ch 2`, `mpfree_midi::setup::TrackRoute`); a
 //!   build from before names the line it can't read and leaves it out.
+//! - **A kit** (sampler step 15f): a route can name a kit of the list of
+//!   instruments by its number too ([`App::route_synth_kits`]). Each note
+//!   plays the kit as its Keys play sends it: the pad that sends it (the
+//!   MPC note map, any bank) or the keygroups that hold it
+//!   (`RouteSynths::kit_key` in `main.rs`); the wheel bends its
+//!   keygroups. REC records it on a track of its own pointed at the kit,
+//!   each note as that kit takes it. The Routing card lists synths only
+//!   until step 15e's pickers; a project's setup can name a kit.
 
 use super::pad_layers::MORE;
 use super::pads_focus::{PadFocus, RecFrom, RecMore, RecSound};
 use super::App;
-use crate::instrument_list::InstrumentId;
+use crate::instrument_list::{InstrumentId, Kind};
 
 /// The most synths the routes name at once.
 pub const ROUTE_SYNTHS: usize = crate::instruments::ROUTE_SYNTHS;
@@ -60,6 +68,17 @@ impl App {
             .map(|id| id.and_then(|id| self.instrument_holder(id)))
     }
 
+    /// The kit each route row names (sampler step 15f), by its place in
+    /// the list of kits (None: no route there, a synth, or one the list
+    /// hasn't got). Allocates nothing.
+    pub fn route_synth_kits(&self) -> [Option<u8>; ROUTE_SYNTHS] {
+        self.route_synths
+            .map(|id| match self.instrument_list.kind(id?)? {
+                Kind::Kit { kit } => Some(kit.min(usize::from(u8::MAX)) as u8),
+                _ => None,
+            })
+    }
+
     /// The route rows that play the shared synth, a bit each.
     pub fn route_synth_shared(&self) -> u8 {
         (0..ROUTE_SYNTHS)
@@ -72,16 +91,17 @@ impl App {
         self.route_synth_holders().contains(&Some(holder))
     }
 
-    /// The synths the routes name, for REC, row by row (step 11e). One the
-    /// project's list hasn't got is left out.
+    /// The synths the routes name, for REC, row by row (step 11e), and the
+    /// kits (sampler step 15f). One the project's list hasn't got is left
+    /// out.
     fn route_rec_synths(&self) -> [Option<RecMore>; ROUTE_SYNTHS] {
         std::array::from_fn(|j| {
             let f = PadFocus::Instrument(self.route_synths[j]?);
             Some(RecMore {
-                name: self.instrument_name(self.route_synths[j]?),
+                name: self.sound_name(f),
                 sound: self
                     .sound_of(f)
-                    .filter(|s| matches!(s, RecSound::Synth(_)))?,
+                    .filter(|s| matches!(s, RecSound::Synth(_) | RecSound::Kit(_)))?,
                 from: RecFrom::Route(j),
             })
         })

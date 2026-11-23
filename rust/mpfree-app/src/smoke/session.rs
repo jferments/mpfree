@@ -281,7 +281,7 @@ pub struct Session {
     /// What the pads' arp played: where, the note and its velocity.
     pub arp_played: Vec<(crate::PadsPreview, u8, u8)>,
     /// The synths MIDI routes name (step 11e), as main.rs's.
-    route_synths: crate::RouteSynths,
+    pub(crate) route_synths: crate::RouteSynths,
     /// What the pads play with their layers, as the screen last heard it.
     layers_shown: [Option<&'static str>; crate::instruments::PAD_LAYERS],
     pub previewed: Vec<(usize, u8)>,
@@ -963,6 +963,22 @@ impl Session {
         };
         let own = &mut self.mix.instruments;
         self.route_synths.key(j, key, &mut self.synth, own);
+        // A route that names a kit plays it (sampler step 15f), as
+        // main.rs: a pad by its own sound, a keygroup as a key.
+        if let Some(p) = self.sounds.as_mut() {
+            use crate::sampler::NoteTo;
+            match (self.route_synths.kit_key(j, key, p), velocity) {
+                (Some((kit, NoteTo::Pad(pad))), Some(v)) => {
+                    p.hit_kit_at(usize::from(kit), pad, v.max(1), 0);
+                }
+                (Some((kit, NoteTo::Pad(pad))), None) => p.release_kit_at(usize::from(kit), pad, 0),
+                (Some((kit, NoteTo::Keys(n))), Some(v)) => {
+                    p.key_kit_at(usize::from(kit), n, v.max(1), 0);
+                }
+                (Some((kit, NoteTo::Keys(n))), None) => p.key_off_kit_at(usize::from(kit), n, 0),
+                (None, _) => {}
+            }
+        }
         let (time, own) = (&mut self.time, &self.mix.instruments);
         self.route_synths.rec_key(j, key, time, own, &self.synth);
         self.run_periods(1)
@@ -1616,8 +1632,20 @@ impl Session {
             &mut self.synth,
             &mut self.mix.instruments,
         );
+        let gone = self.route_synths.kits_to(self.app.route_synth_kits());
+        if let Some(p) = self.sounds.as_mut() {
+            for kit in gone.into_iter().flatten() {
+                p.bend_kit(usize::from(kit), 0.0);
+            }
+        }
         let recs = self.app.route_recs(self.time.also());
-        self.route_synths.rec_to(recs);
+        let sounds = &self.sounds;
+        let keys = |kit| {
+            sounds
+                .as_ref()
+                .map_or(mpfree_sampler::engine::KitKeys::PADS, |p| p.kit_keys(kit))
+        };
+        self.route_synths.rec_to(recs, keys);
         let host_name = pads_at
             .and_then(|h| self.mix.instruments.held(h))
             .map(|h| h.name);

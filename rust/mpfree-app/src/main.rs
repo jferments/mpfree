@@ -5091,6 +5091,16 @@ struct RouteSynths {
     /// The tracks each row's keys went into, a bit each, for their
     /// let-go.
     key_tracks: [u128; RouteSynths::ROWS],
+    /// The kit each row names (sampler step 15f, `App::route_synth_kits`).
+    kits: [Option<u8>; RouteSynths::ROWS],
+    /// Where each row's keys went on its kit, (kit, where) per note, for
+    /// their let-go and pressure though the row moved on since.
+    kit_keys: [[Option<(u8, sampler::NoteTo)>; 128]; RouteSynths::ROWS],
+    /// The kits the rows' wheels bent, to bend back once no row names
+    /// them.
+    bent: [Option<u8>; RouteSynths::ROWS],
+    /// A kit row's kit as the track recording it takes notes.
+    rec_kits: [Option<LayerKit>; RouteSynths::ROWS],
 }
 
 impl RouteSynths {
@@ -5104,7 +5114,74 @@ impl RouteSynths {
             rec: [None; RouteSynths::ROWS],
             keys: midi_in::RoutedPads::new(),
             key_tracks: [0; RouteSynths::ROWS],
+            kits: [None; RouteSynths::ROWS],
+            kit_keys: [[None; 128]; RouteSynths::ROWS],
+            bent: [None; RouteSynths::ROWS],
+            rec_kits: [None; RouteSynths::ROWS],
         }
+    }
+
+    /// The kits the rows name as the app has them now
+    /// (`App::route_synth_kits`, sampler step 15f): each row's keys play
+    /// its kit from then on; a key held goes on where it went. Returns the
+    /// kits the wheel bent that no row names any more, to bend back.
+    fn kits_to(
+        &mut self,
+        kits: [Option<u8>; RouteSynths::ROWS],
+    ) -> [Option<u8>; RouteSynths::ROWS] {
+        self.kits = kits;
+        let gone = self.bent.map(|b| b.filter(|k| !kits.contains(&Some(*k))));
+        self.bent = self.bent.map(|b| b.filter(|k| kits.contains(&Some(*k))));
+        gone
+    }
+
+    /// Route row `j`'s key `k` on the kit it names (sampler step 15f), as
+    /// the kit's Keys play sends it (`sampler::Player::note_to`: the pad
+    /// that sends the note, or the keygroups that hold it): (kit, where),
+    /// kept for its let-go and pressure, which go where it went though the
+    /// row moved on since. None for a row that names no kit, a second
+    /// note-on for a key held there, the wheel and the pedals.
+    fn kit_key(
+        &mut self,
+        j: usize,
+        k: midi_in::Key,
+        player: &sampler::Player,
+    ) -> Option<(u8, sampler::NoteTo)> {
+        use midi_in::Key;
+        let kit = self.kits.get(j).copied().flatten();
+        let held = self.kit_keys.get_mut(j)?;
+        match k {
+            Key::Down { note, .. } => {
+                let at = &mut held[usize::from(note & 0x7F)];
+                if at.is_some() {
+                    return None;
+                }
+                let kit = kit?;
+                *at = Some((kit, player.note_to(usize::from(kit), note)));
+                *at
+            }
+            Key::Up { note } => held[usize::from(note & 0x7F)].take(),
+            Key::Pressure { note, .. } => held[usize::from(note & 0x7F)],
+            _ => None,
+        }
+    }
+
+    /// The kit route row `j`'s wheel bends now (its keygroups), kept so
+    /// it is bent back once no row names it ([`RouteSynths::kits_to`]).
+    fn kit_bend(&mut self, j: usize) -> Option<u8> {
+        let kit = self.kits.get(j).copied().flatten()?;
+        self.bent[j] = Some(kit);
+        Some(kit)
+    }
+
+    /// The keys held on the rows' kits now (for the tests).
+    #[cfg(test)]
+    fn kit_keys_held(&self) -> usize {
+        self.kit_keys
+            .iter()
+            .flatten()
+            .filter(|k| k.is_some())
+            .count()
     }
 
     /// The rows as the app has them now (`App::route_synth_holders`,
@@ -5212,14 +5289,28 @@ impl RouteSynths {
         }
     }
 
-    /// The tracks recording the rows' synths now (`App::route_recs`).
-    fn rec_to(&mut self, recs: [Option<u8>; RouteSynths::ROWS]) {
+    /// The tracks recording the rows' synths now (`App::route_recs`), a
+    /// kit row's with how its kit takes notes now (`keys`,
+    /// `sampler::Player::kit_keys`; after [`RouteSynths::kits_to`]).
+    fn rec_to(
+        &mut self,
+        recs: [Option<u8>; RouteSynths::ROWS],
+        keys: impl Fn(usize) -> mpfree_sampler::engine::KitKeys,
+    ) {
         self.rec = recs;
+        self.rec_kits = self.kits.map(|k| {
+            k.map(|kit| LayerKit {
+                kit,
+                page: 0,
+                keys: keys(usize::from(kit)),
+            })
+        });
     }
 
     /// Route row `j`'s key into the track recording its synth, as the pad
-    /// its note plays there (`midi_file::pad_on_track`); its end and
-    /// pressure where it went.
+    /// its note plays there (`midi_file::pad_on_track`), or as a kit
+    /// row's kit takes it ([`LayerKit::key_note`], sampler step 15f); its
+    /// end and pressure where it went.
     fn rec_key(
         &mut self,
         j: usize,
@@ -5237,7 +5328,11 @@ impl RouteSynths {
                 let Some(t) = self.rec[j] else {
                     return;
                 };
-                let pad = |n| midi_file::pad_on_track(own, Some(synth), usize::from(t), n);
+                let kit = self.rec_kits[j];
+                let pad = |n| match kit {
+                    Some(k) => k.key_note(n),
+                    None => midi_file::pad_on_track(own, Some(synth), usize::from(t), n),
+                };
                 if let Some(ev) = self.keys.event(t, k, pad) {
                     time.routed_played(t, 0, ev);
                     self.key_tracks[j] |= 1 << t;
@@ -5714,9 +5809,7 @@ fn play_kit_layer_key(
     (pad_synths, synth): (&mut pad_synths::PadSynths, &mut synth::Synth),
     player: &mut sampler::Player,
 ) {
-    use midi_in::Key;
-    use mpfree_play::Event;
-    if let Key::Bend { value } = k {
+    if let midi_in::Key::Bend { value } = k {
         for kit in layers.kit_bend(armed_kit).into_iter().flatten() {
             player.bend_kit(usize::from(kit), value);
         }
@@ -5724,27 +5817,81 @@ fn play_kit_layer_key(
     }
     for (kit, to) in layers.kit_key(k, armed_kit, player).into_iter().flatten() {
         let kit = usize::from(kit);
-        match (to, k) {
-            (sampler::NoteTo::Pad(p), _) => {
-                let note = p.min(127) as u8;
-                let event = match k {
-                    Key::Down { velocity, .. } => Event::NoteOn {
-                        note,
-                        velocity: v(velocity),
-                    },
-                    Key::Up { .. } => Event::NoteOff { note },
-                    Key::Pressure { value, .. } => Event::Pressure { note, value },
-                    _ => continue,
-                };
-                play_routed_pad(track, p, event, midi, (pad_synths, synth), player, kit);
-            }
-            (sampler::NoteTo::Keys(n), Key::Down { velocity, .. }) => {
-                player.key_kit_at(kit, n, v(velocity), 0);
-            }
-            (sampler::NoteTo::Keys(n), Key::Up { .. }) => player.key_off_kit_at(kit, n, 0),
-            // A keygroup's key takes no pressure yet.
-            _ => {}
+        play_kit_key(kit, to, k, &v, track, midi, (pad_synths, synth), player);
+    }
+}
+
+/// Route row `j`'s key `k` on the kit it names (sampler step 15f,
+/// [`RouteSynths::kit_key`]), each key at its own velocity as a route to
+/// a track plays it; the wheel bends the kit's keygroups. Nothing for a
+/// row that names no kit. Never allocates.
+#[allow(clippy::too_many_arguments)]
+fn play_route_kit_key(
+    routes: &mut RouteSynths,
+    j: usize,
+    k: midi_in::Key,
+    track: u8,
+    midi: &mut midi_out::MidiOut,
+    (pad_synths, synth): (&mut pad_synths::PadSynths, &mut synth::Synth),
+    player: &mut sampler::Player,
+) {
+    if let midi_in::Key::Bend { value } = k {
+        if let Some(kit) = routes.kit_bend(j) {
+            player.bend_kit(usize::from(kit), value);
         }
+        return;
+    }
+    if let Some((kit, to)) = routes.kit_key(j, k, player) {
+        let v = |v: u8| v.max(1);
+        play_kit_key(
+            usize::from(kit),
+            to,
+            k,
+            &v,
+            track,
+            midi,
+            (pad_synths, synth),
+            player,
+        );
+    }
+}
+
+/// Key `k` on kit `kit`, where `sampler::Player::note_to` sent it (`to`):
+/// the pad as its kind has it ([`play_routed_pad`]), or the keygroups as
+/// a key (they take no pressure yet). `v` gives a key's velocity. Never
+/// allocates.
+#[allow(clippy::too_many_arguments)]
+fn play_kit_key(
+    kit: usize,
+    to: sampler::NoteTo,
+    k: midi_in::Key,
+    v: &impl Fn(u8) -> u8,
+    track: u8,
+    midi: &mut midi_out::MidiOut,
+    (pad_synths, synth): (&mut pad_synths::PadSynths, &mut synth::Synth),
+    player: &mut sampler::Player,
+) {
+    use midi_in::Key;
+    use mpfree_play::Event;
+    match (to, k) {
+        (sampler::NoteTo::Pad(p), _) => {
+            let note = p.min(127) as u8;
+            let event = match k {
+                Key::Down { velocity, .. } => Event::NoteOn {
+                    note,
+                    velocity: v(velocity),
+                },
+                Key::Up { .. } => Event::NoteOff { note },
+                Key::Pressure { value, .. } => Event::Pressure { note, value },
+                _ => return,
+            };
+            play_routed_pad(track, p, event, midi, (pad_synths, synth), player, kit);
+        }
+        (sampler::NoteTo::Keys(n), Key::Down { velocity, .. }) => {
+            player.key_kit_at(kit, n, v(velocity), 0);
+        }
+        (sampler::NoteTo::Keys(n), Key::Up { .. }) => player.key_off_kit_at(kit, n, 0),
+        _ => {}
     }
 }
 
@@ -11379,6 +11526,16 @@ fn player_session(
             if let Some(j) = track.checked_sub(midi_in::SYNTH_ROUTES) {
                 let j = usize::from(j);
                 route_synths.key(j, k, &mut synth, &mut mix.instruments);
+                // A route that names a kit plays it (sampler step 15f).
+                play_route_kit_key(
+                    &mut route_synths,
+                    j,
+                    k,
+                    armed as u8,
+                    &mut midi_out,
+                    (&mut mix.pad_synths, &mut synth),
+                    &mut player,
+                );
                 route_synths.rec_key(j, k, &mut time, &mix.instruments, &synth);
                 continue;
             }
@@ -12901,7 +13058,14 @@ fn player_session(
             &mut synth,
             &mut mix.instruments,
         );
-        route_synths.rec_to(app.route_recs(time.also()));
+        for kit in route_synths
+            .kits_to(app.route_synth_kits())
+            .into_iter()
+            .flatten()
+        {
+            player.bend_kit(usize::from(kit), 0.0);
+        }
+        route_synths.rec_to(app.route_recs(time.also()), |kit| player.kit_keys(kit));
         if mix.instruments.pads_play_at() != pads_at {
             mix.instruments.pads_play(pads_at);
             // The Synth tab shows the pads' instrument while they play it

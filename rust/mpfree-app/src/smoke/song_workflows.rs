@@ -2069,6 +2069,86 @@ mod tests {
         });
     }
 
+    /// Sampler step 15f, part 3: a MIDI route can name a kit. Its keys
+    /// play the kit as its Keys play sends them (on a kit of drum pads,
+    /// the pad that sends the note, any bank), whichever track is armed,
+    /// and let go there. REC records the kit on a track of its own,
+    /// pointed at it, each key as that kit's pad.
+    #[test]
+    fn a_route_that_names_a_kit_plays_it_and_rec_records_it_on_its_own_track() {
+        use mpfree_transport::State;
+        fn notes(s: &Session, t: usize) -> Vec<u8> {
+            let mut n: Vec<u8> = s.time.project().tracks[t]
+                .slots
+                .clips()
+                .flat_map(|c| c.notes.iter().map(|n| n.note))
+                .collect();
+            n.sort_unstable();
+            n.dedup();
+            n
+        }
+        on_big_stack(|| {
+            let mut session = Session::new();
+            let s = &mut session;
+            s.make_sounds();
+            s.run_periods(2);
+            let kit_2 = s.instrument_list.of_kit(1).expect("kit 2 has an id");
+            s.name_route_synths([Some(kit_2.number()), None, None, None]);
+            s.run_periods(2);
+            assert_eq!(
+                s.app.route_synth_kits()[0],
+                Some(1),
+                "the route names kit 2"
+            );
+            let player = s.sounds.as_ref().expect("the kits");
+            let pad = (0..16)
+                .find(|&p| player.has_sound(1, p))
+                .expect("a pad kit 2 fills");
+            let note = mpfree_midi::profile::kit_note(pad).expect("its note");
+            s.route_key(0, note, Some(100));
+            s.run_periods(2);
+            let player = s.sounds.as_ref().expect("the kits");
+            assert!(player.kit_pad_voices(1, pad) > 0, "kit 2's pad plays");
+            assert_eq!(s.route_synths.kit_keys_held(), 1, "the key is held there");
+            s.route_key(0, note, None);
+            assert_eq!(s.route_synths.kit_keys_held(), 0, "let go there");
+            s.run_for(1.0);
+
+            // REC: a track of its own on kit 2, armed with Track 1.
+            let more = s.app.rec_more_sounds();
+            assert!(
+                more.iter()
+                    .flatten()
+                    .any(|m| m.sound == crate::app::RecSound::Kit(1)
+                        && format!("{:?}", m.from) == "Route(0)"),
+                "{more:?}"
+            );
+            s.route(crate::gui::FromUi::Time(
+                mpfree_time_ui::TimeAction::Transport(mpfree_transport::Command::SetCountIn(0)),
+            ));
+            s.button("REC").settle();
+            s.run_periods(4).settle();
+            assert_eq!(s.time.armed(), Some(0), "{:?}", s.said());
+            assert_eq!(s.track_kits.kit_of(1), Some(1), "Track 2 plays kit 2");
+            assert_eq!(s.time.also(), 1 << 1, "Track 2 armed too");
+            assert_eq!(s.app.route_recs(s.time.also())[0], Some(1));
+            s.button("PLAY");
+            let end = s.t() + 4.0;
+            while s.time.info().state != State::Recording && s.t() < end {
+                s.run_periods(1);
+            }
+            assert_eq!(s.time.info().state, State::Recording);
+            s.route_key(0, note, Some(100));
+            s.run_for(0.1);
+            s.route_key(0, note, None);
+            s.run_for(0.1);
+            s.button("REC");
+            s.run_for(0.5);
+            assert_eq!(notes(s, 1), [pad as u8], "kit 2's track has the pad");
+            assert!(notes(s, 0).is_empty(), "Track 1 keeps out the key");
+        });
+    }
+
     /// Sampler step 15c: NOTE REPEAT while the pads play a kit on their
     /// own repeats that kit's pad (the pads' arp), never the track's, and
     /// the pads keep the kit; let go, the repeats stop. Held again, Follow
