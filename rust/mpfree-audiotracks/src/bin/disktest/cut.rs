@@ -30,6 +30,21 @@
 //! Only with `--desktop-test` for now: WP pulls a spare stick on a
 //! computer. The cut on the MPC (D6) has its own safety review and go, so
 //! the MPC's stick is refused here until then.
+//!
+//! `--cut-test --fat` (or `--fat-hidden`) is the same pull on a spare FAT32
+//! or exFAT stick, for saving to the SD card (S2 in
+//! docs/dev/hardware/sd-card-and-internal-drive.md): no takes, only whole
+//! files published one after another, small and large, as S2 saves them.
+//! [`Way::Rename`] publishes as MPFree does (a part file, synced, renamed,
+//! the folder synced), whose rename FAT makes in two steps;
+//! [`Way::Hidden`] writes each file under its own name, hidden, and shows
+//! it once synced, one directory entry changed in place. The saved text
+//! names the way, and `--after-cut` then checks the folder without writing
+//! anything, as MPFree treats a card a cut left marked in use: every
+//! promised import there, shown and whole, anything else shown whole too,
+//! and an import found under two names (a rename cut between its steps,
+//! two names on one file's clusters) said, for the computer's own `fsck -n`
+//! to confirm.
 
 use super::read::{Fail, KIB};
 use super::{stopped, MIB, STOP};
@@ -40,7 +55,9 @@ use mpfree_stream::recover::{self, Found};
 use mpfree_stream::writer::{Gate, RealClock, Recorder, Status, TakeNo, WriterConfig};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::Read;
+use std::io::{self, Read, Write};
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -61,11 +78,53 @@ const FEED_S: f64 = 0.01;
 const PROMISED: &str = "promised: ";
 /// Imports kept at once; the oldest goes before the next is published.
 const KEEP_IMPORTS: usize = 4;
+/// The saved text's line naming a FAT run's way.
+const WAY: &str = "cut test way: ";
+
+/// How a FAT or exFAT run publishes each import: the two ways S2 weighs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Way {
+    /// As MPFree's publish: `NAME.<job>.part` written, synced, read back,
+    /// renamed to `NAME`, the folder synced. FAT renames in two steps (the
+    /// new name added, then the old removed), so a cut between them leaves
+    /// two names on the same clusters.
+    Rename,
+    /// Made under its own name and hidden straight away, written, synced,
+    /// then shown and synced again: the last step changes one directory
+    /// entry in place.
+    Hidden,
+}
+
+impl Way {
+    fn word(self) -> &'static str {
+        match self {
+            Way::Rename => "fat-rename",
+            Way::Hidden => "fat-hidden",
+        }
+    }
+
+    fn from_word(w: &str) -> Option<Way> {
+        [Way::Rename, Way::Hidden]
+            .into_iter()
+            .find(|v| v.word() == w)
+    }
+
+    /// The way the saved text names, if it is a FAT run's.
+    pub(super) fn in_text(text: &str) -> Option<Way> {
+        text.lines()
+            .find_map(|l| Way::from_word(l.trim_end().strip_prefix(WAY)?))
+    }
+}
 
 /// How big and how long, for a real run or a test's quick one.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Sizes {
+    /// An import's size (every fourth import's, in a FAT run).
     import_bytes: u64,
+    /// The other imports' size in a FAT run; `import_bytes` otherwise.
+    small_bytes: u64,
+    /// How long a FAT run writes before it stops by itself.
+    longest_s: f64,
     /// The takes' room, all of them.
     takes_room: u64,
     /// When to say the stick can be pulled.
@@ -84,6 +143,8 @@ impl Sizes {
         if quick {
             Sizes {
                 import_bytes: 256 * KIB as u64,
+                small_bytes: 256 * KIB as u64,
+                longest_s: 0.0,
                 takes_room: 8 * MIB,
                 cut_after_s: 0.3,
                 say_every_s: 0.05,
@@ -93,12 +154,51 @@ impl Sizes {
         } else {
             Sizes {
                 import_bytes: 16 * MIB,
+                small_bytes: 16 * MIB,
+                longest_s: 0.0,
                 takes_room: 368 * MIB,
                 cut_after_s: 30.0,
                 say_every_s: 0.5,
                 interval_s: WriterConfig::default().interval_s,
                 travel_s: 2.0,
             }
+        }
+    }
+
+    /// A FAT run's: files as S2 saves them, a project's or a kit's
+    /// (256 KiB) and every fourth a sample's (4 MiB), for five minutes.
+    pub(super) fn fat(quick: bool) -> Sizes {
+        if quick {
+            Sizes {
+                import_bytes: 64 * KIB as u64,
+                small_bytes: 16 * KIB as u64,
+                longest_s: 1.5,
+                takes_room: 0,
+                cut_after_s: 0.3,
+                say_every_s: 0.05,
+                interval_s: 0.1,
+                travel_s: 0.02,
+            }
+        } else {
+            Sizes {
+                import_bytes: 4 * MIB,
+                small_bytes: 256 * KIB as u64,
+                longest_s: 300.0,
+                takes_room: 0,
+                cut_after_s: 30.0,
+                say_every_s: 0.5,
+                interval_s: WriterConfig::default().interval_s,
+                travel_s: 2.0,
+            }
+        }
+    }
+
+    /// Import `n`'s size.
+    fn bytes_of(&self, n: u32) -> u64 {
+        if n.is_multiple_of(4) {
+            self.import_bytes
+        } else {
+            self.small_bytes
         }
     }
 
@@ -147,7 +247,8 @@ fn import_differs(path: &Path, n: u32, bytes: u64) -> Result<Option<u64>, String
         let k = (len.min(bytes) - at).min(got.len() as u64) as usize;
         f.read_exact(&mut got[..k])
             .map_err(|e| format!("{}: {e}", path.display()))?;
-        import_fill(n, at, &mut want[..k]);
+        // A file a cut left can end anywhere: the fill goes in 8s.
+        import_fill(n, at, &mut want[..k.next_multiple_of(8)]);
         if let Some(i) = (0..k).find(|&i| got[i] != want[i]) {
             return Ok(Some(at + i as u64));
         }
@@ -158,6 +259,98 @@ fn import_differs(path: &Path, n: u32, bytes: u64) -> Result<Option<u64>, String
 
 fn import_name(n: u32) -> String {
     format!("import{n}.bin")
+}
+
+/// FAT's and exFAT's attribute calls (`include/uapi/linux/msdos_fs.h`;
+/// both drivers take them in 6.18), and the hidden bit, the same in both.
+const FAT_IOCTL_GET_ATTRIBUTES: u32 = 0x8004_7210;
+const FAT_IOCTL_SET_ATTRIBUTES: u32 = 0x4004_7211;
+const ATTR_HIDDEN: u32 = 0x02;
+/// The stand-in for the hidden bit in a test's quick run, whose folder
+/// isn't on FAT: the sticky bit, which a file's use ignores.
+const STAND_IN: u32 = 0o1000;
+
+/// Whether `f` is hidden. `stand_in` (a test's quick run) reads the
+/// sticky bit instead.
+fn is_hidden(f: &fs::File, stand_in: bool) -> io::Result<bool> {
+    if stand_in {
+        return Ok(f.metadata()?.permissions().mode() & STAND_IN != 0);
+    }
+    let mut attr = 0u32;
+    // SAFETY: the call writes one u32 to the address given.
+    if unsafe { libc::ioctl(f.as_raw_fd(), FAT_IOCTL_GET_ATTRIBUTES as _, &mut attr) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(attr & ATTR_HIDDEN != 0)
+}
+
+/// The kernel's error for an attribute call, said plainly when its driver
+/// doesn't take the call at all.
+fn attr_error() -> io::Error {
+    let e = io::Error::last_os_error();
+    if e.raw_os_error() == Some(libc::ENOTTY) {
+        return io::Error::other(
+            "this kernel's driver for the stick doesn't take FAT_IOCTL_SET_ATTRIBUTES, so --fat-hidden can't run on it",
+        );
+    }
+    e
+}
+
+/// Hide or show `f`, its other attributes kept.
+fn set_hidden(f: &fs::File, hidden: bool, stand_in: bool) -> io::Result<()> {
+    if stand_in {
+        let mode = f.metadata()?.permissions().mode() & 0o7777;
+        let mode = if hidden {
+            mode | STAND_IN
+        } else {
+            mode & !STAND_IN
+        };
+        return f.set_permissions(fs::Permissions::from_mode(mode));
+    }
+    let mut attr = 0u32;
+    // SAFETY: as in is_hidden; then the call reads one u32.
+    if unsafe { libc::ioctl(f.as_raw_fd(), FAT_IOCTL_GET_ATTRIBUTES as _, &mut attr) } < 0 {
+        return Err(attr_error());
+    }
+    let attr = if hidden {
+        attr | ATTR_HIDDEN
+    } else {
+        attr & !ATTR_HIDDEN
+    };
+    if unsafe { libc::ioctl(f.as_raw_fd(), FAT_IOCTL_SET_ATTRIBUTES as _, &attr) } < 0 {
+        return Err(attr_error());
+    }
+    Ok(())
+}
+
+/// [`Way::Hidden`]'s publish: `dir/name` made new and hidden, written,
+/// synced (data, size and entry), then shown and synced again, and the
+/// folder synced as [`publish::publish`] does. A file this leaves hidden
+/// was never published. On an error it removes what it made.
+fn publish_hidden(
+    dir: &Path,
+    name: &str,
+    write: &mut publish::Writer,
+    stand_in: bool,
+) -> io::Result<()> {
+    let path = dir.join(name);
+    let mut f = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&path)?;
+    let r = (|| {
+        set_hidden(&f, true, stand_in)?;
+        write(&mut |b: &[u8]| f.write_all(b))?;
+        f.sync_data()?;
+        set_hidden(&f, false, stand_in)?;
+        f.sync_all()?;
+        fs::File::open(dir)?.sync_all()
+    })();
+    if r.is_err() {
+        let _ = fs::remove_file(&path);
+    }
+    r
 }
 
 /// What was promised: each take's committed frames and the imports
@@ -174,7 +367,11 @@ impl Promise {
         let imports: Vec<String> = self.imports.iter().map(u32::to_string).collect();
         format!(
             "{PROMISED}takes {}; imports {}",
-            takes.join(" "),
+            if takes.is_empty() {
+                "none".to_string()
+            } else {
+                takes.join(" ")
+            },
             if imports.is_empty() {
                 "none".to_string()
             } else {
@@ -187,9 +384,12 @@ impl Promise {
         let rest = line.trim_end().strip_prefix(PROMISED)?;
         let (takes, imports) = rest.split_once("; ")?;
         let mut p = Promise::default();
-        for t in takes.strip_prefix("takes ")?.split(' ') {
-            let (k, f) = t.split_once('=')?;
-            p.takes.insert(k.parse().ok()?, f.parse().ok()?);
+        let takes = takes.strip_prefix("takes ")?;
+        if takes != "none" {
+            for t in takes.split(' ') {
+                let (k, f) = t.split_once('=')?;
+                p.takes.insert(k.parse().ok()?, f.parse().ok()?);
+            }
         }
         let imports = imports.strip_prefix("imports ")?;
         if imports != "none" {
@@ -257,7 +457,14 @@ struct Shared {
 /// `kept` first, and is removed only once a promise without it has been
 /// said and has had time to reach the saved text, so no promise in that
 /// text ever names an import this run removes.
-fn imports(dir: &Path, z: Sizes, sh: &Shared, on: &AtomicBool) -> Result<(), String> {
+fn imports(
+    dir: &Path,
+    z: Sizes,
+    sh: &Shared,
+    on: &AtomicBool,
+    way: Option<Way>,
+    stand_in: bool,
+) -> Result<(), String> {
     let going = || on.load(Ordering::Relaxed) && !STOP.load(Ordering::Relaxed);
     let kept = &sh.kept;
     let mut fs = StdFs::new();
@@ -285,8 +492,8 @@ fn imports(dir: &Path, z: Sizes, sh: &Shared, on: &AtomicBool) -> Result<(), Str
                 .map_err(|e| format!("import {old} could not be removed: {e}"))?;
         }
         let mut buf = vec![0u8; 256 * KIB];
-        let bytes = z.import_bytes;
-        let mut write = |sink: &mut publish::Sink| -> std::io::Result<()> {
+        let bytes = z.bytes_of(n);
+        let mut write = |sink: &mut publish::Sink| -> io::Result<()> {
             let mut at = 0;
             while at < bytes {
                 if !on.load(Ordering::Relaxed) || STOP.load(Ordering::Relaxed) {
@@ -299,8 +506,12 @@ fn imports(dir: &Path, z: Sizes, sh: &Shared, on: &AtomicBool) -> Result<(), Str
             }
             Ok(())
         };
-        match publish::publish(&mut fs, dir, &import_name(n), n, &mut write) {
-            Ok(_) => {
+        let r = match way {
+            Some(Way::Hidden) => publish_hidden(dir, &import_name(n), &mut write, stand_in),
+            _ => publish::publish(&mut fs, dir, &import_name(n), n, &mut write).map(|_| ()),
+        };
+        match r {
+            Ok(()) => {
                 kept.lock().unwrap().insert(n);
             }
             // The run ending mid-import leaves no part file: publish removes it.
@@ -312,8 +523,9 @@ fn imports(dir: &Path, z: Sizes, sh: &Shared, on: &AtomicBool) -> Result<(), Str
 }
 
 /// `--cut-test` in `base`: record and import until the stick goes, the
-/// takes reach their room, or Ctrl-C.
-pub(super) fn run(base: &Path, z: Sizes) -> Result<(), Fail> {
+/// takes reach their room, or Ctrl-C. With a `way`, a FAT run: imports
+/// only, published that way, for [`Sizes::fat`]'s five minutes.
+pub(super) fn run(base: &Path, z: Sizes, way: Option<Way>, stand_in: bool) -> Result<(), Fail> {
     let dir = base.join(FOLDER);
     if dir.exists() {
         return Err(Fail::Refused(format!(
@@ -322,7 +534,102 @@ pub(super) fn run(base: &Path, z: Sizes) -> Result<(), Fail> {
         )));
     }
     fs::create_dir(&dir).map_err(|e| Fail::Refused(format!("create {}: {e}", dir.display())))?;
-    started(&dir, z).map_err(Fail::Failed)
+    match way {
+        Some(way) => started_fat(&dir, z, way, stand_in),
+        None => started(&dir, z),
+    }
+    .map_err(Fail::Failed)
+}
+
+/// A FAT run: the import thread publishes, this one says the promises.
+fn started_fat(dir: &Path, z: Sizes, way: Way, stand_in: bool) -> Result<(), String> {
+    say!("{WAY}{}", way.word());
+    say!(
+        "cut test on FAT: imports only, as saving to a card writes them, {}, one after another in {}: {} KiB each, every fourth {} KiB",
+        match way {
+            Way::Rename => "each a part file, synced, read back and renamed",
+            Way::Hidden => "each written under its own name hidden, synced, then shown",
+        },
+        dir.display(),
+        z.small_bytes / KIB as u64,
+        z.import_bytes / KIB as u64
+    );
+    say!(
+        "files: at most {:.1} MiB at once, the oldest import removed once {KEEP_IMPORTS} are there; --after-cut checks the rest without writing",
+        z.room() as f64 / MIB as f64
+    );
+    say!(
+        "keep this text off the stick: its last \"{}\" line is what --after-cut checks against",
+        PROMISED.trim_end()
+    );
+    let sh = Shared::default();
+    let on = AtomicBool::new(true);
+    std::thread::scope(|s| {
+        let import = std::thread::Builder::new()
+            .name("disktest-import".into())
+            .spawn_scoped(s, || {
+                let r = imports(dir, z, &sh, &on, Some(way), stand_in);
+                if r.is_err() {
+                    STOP.store(true, Ordering::Relaxed);
+                }
+                r
+            })
+            .map_err(|e| format!("the import's thread could not start: {e}"))?;
+        let r = promises(z, &sh);
+        on.store(false, Ordering::Relaxed);
+        let i = import
+            .join()
+            .unwrap_or_else(|_| Err("the import's thread failed".into()));
+        // The import's own error (the stick gone) says more than the stop
+        // it caused here.
+        i.and(r)
+    })?;
+    let p = Promise {
+        takes: BTreeMap::new(),
+        imports: sh.kept.into_inner().unwrap(),
+    };
+    say!(
+        "imports at the end: {}",
+        p.line().split("; ").nth(1).unwrap_or("")
+    );
+    say!("no cut was made; run --after-cut with this text to check what is there (it writes nothing)");
+    Ok(())
+}
+
+/// A FAT run's promises, said every so often when they change, until
+/// [`Sizes::longest_s`] or a stop.
+fn promises(z: Sizes, sh: &Shared) -> Result<(), String> {
+    let start = Instant::now();
+    let mut said: Option<Promise> = None;
+    let mut said_at = f64::NEG_INFINITY;
+    let mut told = false;
+    loop {
+        stopped()?;
+        let now = start.elapsed().as_secs_f64();
+        if now >= z.longest_s {
+            return Ok(());
+        }
+        if !told && now >= z.cut_after_s {
+            told = true;
+            say!(
+                "CUT NOW: pull the stick any time in the next {:.0} s, while imports are written",
+                z.longest_s - now
+            );
+        }
+        if now - said_at >= z.say_every_s {
+            said_at = now;
+            let p = Promise {
+                takes: BTreeMap::new(),
+                imports: sh.kept.lock().unwrap().clone(),
+            };
+            if said.as_ref() != Some(&p) {
+                say!("{}", p.line());
+                sh.said.lock().unwrap().clone_from(&p.imports);
+                said = Some(p);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 fn started(dir: &Path, z: Sizes) -> Result<(), String> {
@@ -358,7 +665,7 @@ fn started(dir: &Path, z: Sizes) -> Result<(), String> {
         let import = std::thread::Builder::new()
             .name("disktest-import".into())
             .spawn_scoped(s, || {
-                let r = imports(dir, z, &sh, &on);
+                let r = imports(dir, z, &sh, &on, None, false);
                 if r.is_err() {
                     STOP.store(true, Ordering::Relaxed);
                 }
@@ -585,9 +892,11 @@ fn check_audio(path: &Path, take: u32, first: u64) -> Result<Back, String> {
 }
 
 /// `--after-cut`: recover, check every promise, and delete the folder if
-/// they all held.
-pub(super) fn after(base: &Path, promised: &str, z: Sizes) -> Result<bool, Fail> {
+/// they all held. A FAT run's text (it names its way) is checked without
+/// writing anything instead.
+pub(super) fn after(base: &Path, promised: &str, quick: bool) -> Result<bool, Fail> {
     let dir = base.join(FOLDER);
+    let way = Way::in_text(promised);
     let p = Promise::last_in(promised).ok_or_else(|| {
         Fail::Refused(format!(
             "no \"{}\" line in the saved text",
@@ -605,13 +914,177 @@ pub(super) fn after(base: &Path, promised: &str, z: Sizes) -> Result<bool, Fail>
         .flatten()
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
-    if let Some(other) = names.iter().find(|n| !is_own(n)) {
+    // A FAT run's folder holds no takes.
+    if let Some(other) = names
+        .iter()
+        .find(|n| !is_own(n) || (way.is_some() && n.starts_with("rec")))
+    {
         return Err(Fail::Refused(format!(
             "{other} in {} isn't one of the test's: nothing is touched",
             dir.display()
         )));
     }
-    check(&dir, &p, &names, z).map_err(Fail::Failed)
+    if let Some(way) = way {
+        return check_fat(&dir, &p, &names, Sizes::fat(quick), way, quick).map_err(Fail::Failed);
+    }
+    // A FAT stick a cut left is never written to: only a FAT run's text,
+    // checked without writing, is taken there.
+    let info = fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
+    if let Some(m) = mount_above(&info, &dir).filter(|m| is_fat(&m.kind)) {
+        return Err(Fail::Refused(format!(
+            "{} is on {} ({}), but the saved text is an ext4 run's, which sweeps and deletes: a FAT run's text names its way (\"{}\")",
+            dir.display(),
+            m.source,
+            m.kind,
+            WAY.trim_end()
+        )));
+    }
+    check(&dir, &p, &names, Sizes::new(quick)).map_err(Fail::Failed)
+}
+
+/// Whether a file system type is FAT's or exFAT's.
+fn is_fat(kind: &str) -> bool {
+    matches!(kind, "vfat" | "msdos" | "exfat")
+}
+
+/// A FAT run's check, which writes nothing: every promised import there,
+/// shown and whole; every shown import whole; hidden ones and part files
+/// (in flight at the cut) said; an import under both its names said, and a
+/// fail if it was promised (its rename was synced, so its old name must
+/// not come back).
+fn check_fat(
+    dir: &Path,
+    p: &Promise,
+    names: &[String],
+    z: Sizes,
+    way: Way,
+    stand_in: bool,
+) -> Result<bool, String> {
+    say!(
+        "after the cut, in {} ({}): checked without writing anything",
+        dir.display(),
+        way.word()
+    );
+    say!("{}", p.line());
+    let mut pass = true;
+    let (mut shown, mut hidden) = (BTreeSet::new(), BTreeSet::new());
+    let mut parts: Vec<(u32, String)> = Vec::new();
+    for name in names {
+        if let Some(n) = name
+            .strip_prefix("import")
+            .and_then(|r| r.strip_suffix(".bin"))
+            .and_then(|n| n.parse::<u32>().ok())
+        {
+            let path = dir.join(name);
+            let f = fs::File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            if is_hidden(&f, stand_in).map_err(|e| format!("{name}'s attributes: {e}"))? {
+                hidden.insert(n);
+            } else {
+                shown.insert(n);
+            }
+        } else if let Some(n) = name
+            .strip_prefix("import")
+            .and_then(|r| r.split_once(".bin."))
+            .and_then(|(n, _)| n.parse::<u32>().ok())
+        {
+            parts.push((n, name.clone()));
+        }
+    }
+    let mut whole = 0;
+    for &n in &shown {
+        match import_differs(&dir.join(import_name(n)), n, z.bytes_of(n))? {
+            None => whole += 1,
+            Some(at) => {
+                pass = false;
+                say!("  import {n}: FAIL: shown, but not as written from byte {at} on");
+            }
+        }
+    }
+    let state = |d: Option<u64>| match d {
+        None => "whole".to_string(),
+        Some(at) => format!("as written up to byte {at}"),
+    };
+    for &n in &hidden {
+        let d = import_differs(&dir.join(import_name(n)), n, z.bytes_of(n))?;
+        if p.imports.contains(&n) {
+            pass = false;
+            say!(
+                "  import {n}: FAIL: promised, but hidden again ({})",
+                state(d)
+            );
+        } else {
+            say!(
+                "  import {n}: hidden, in flight at the cut ({}): never shown, so not judged",
+                state(d)
+            );
+        }
+    }
+    let mut twice = Vec::new();
+    for (n, name) in &parts {
+        let d = import_differs(&dir.join(name), *n, z.bytes_of(*n))?;
+        if shown.contains(n) {
+            twice.push(n.to_string());
+            if p.imports.contains(n) {
+                pass = false;
+                say!(
+                    "  import {n}: FAIL: promised, but its part file {name} ({}) is back beside it: the rename's second step was lost after the folder was synced",
+                    state(d)
+                );
+            } else {
+                say!(
+                    "  import {n}: under two names, import{n}.bin and {name} ({}): the cut came between the rename's two steps, and both names may be on the same clusters (cross-linked); fsck -n says",
+                    state(d)
+                );
+            }
+        } else {
+            say!(
+                "  part file {name}: in flight at the cut ({}): never renamed, so not judged",
+                state(d)
+            );
+        }
+    }
+    let missing: Vec<String> = p.imports.difference(&shown).map(u32::to_string).collect();
+    let extra: Vec<String> = shown.difference(&p.imports).map(u32::to_string).collect();
+    if !missing.is_empty() {
+        pass = false;
+    }
+    say!(
+        "  imports: {} promised, {}; {whole} of {} shown there whole{}; in flight: {} hidden, {} part files",
+        p.imports.len(),
+        if missing.is_empty() {
+            "all there".to_string()
+        } else {
+            format!("FAIL: {} missing or hidden", missing.join(", "))
+        },
+        shown.len(),
+        if extra.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " (there but not promised: published, or about to be removed, when the stick went: {})",
+                extra.join(", ")
+            )
+        },
+        hidden.len(),
+        parts.len()
+    );
+    say!(
+        "  under two names: {}",
+        if twice.is_empty() {
+            "none".to_string()
+        } else {
+            twice.join(", ")
+        }
+    );
+    if pass {
+        say!("RESULT: PASS, every promise kept; nothing was written, so format the stick before its next run");
+    } else {
+        say!(
+            "RESULT: FAIL, see above; nothing was written ({})",
+            dir.display()
+        );
+    }
+    Ok(pass)
 }
 
 fn check(dir: &Path, p: &Promise, names: &[String], z: Sizes) -> Result<bool, String> {
@@ -621,6 +1094,10 @@ fn check(dir: &Path, p: &Promise, names: &[String], z: Sizes) -> Result<bool, St
     let mut pass = true;
     let found = recover::recover(&mut fs_, dir).map_err(|e| format!("recovery failed: {e}"))?;
     let mut finished: BTreeMap<u32, PathBuf> = BTreeMap::new();
+    // Audio recovery couldn't prove (nothing committed for it yet: a take
+    // cut off as it started), kept apart by design. A promise for that take
+    // fails below; without one it is said, not judged.
+    let mut unproved: BTreeMap<u32, PathBuf> = BTreeMap::new();
     for f in &found {
         let k = take_of(f.stem());
         let what = match f {
@@ -640,9 +1117,11 @@ fn check(dir: &Path, p: &Promise, names: &[String], z: Sizes) -> Result<bool, St
                 )
             }
             Found::Unverified { path, .. } => {
-                pass = false;
+                if let Some(k) = take_of(f.stem()) {
+                    unproved.insert(k, path.clone());
+                }
                 format!(
-                    "FAIL: its audio can't be proved; kept as {}",
+                    "its audio can't be proved (nothing committed for it); kept apart as {}",
                     file_name(path)
                 )
             }
@@ -691,11 +1170,19 @@ fn check(dir: &Path, p: &Promise, names: &[String], z: Sizes) -> Result<bool, St
     }
     for (&k, &want) in &p.takes {
         let Some(path) = finished.get(&k) else {
+            let kept = unproved.get(&k).map(|u| match check_audio(u, k, 0) {
+                Ok(b) => format!(
+                    "only audio that can't be proved came back ({} frames, {} of them as recorded; kept apart)",
+                    b.frames, b.good
+                ),
+                Err(e) => format!("only audio that can't be proved came back ({e}; kept apart)"),
+            });
+            let what = kept.unwrap_or_else(|| "nothing came back".to_string());
             if want > 0 {
                 pass = false;
-                say!("  take {k}: FAIL: nothing came back; {want} frames were promised");
+                say!("  take {k}: FAIL: {what}; {want} frames were promised");
             } else {
-                say!("  take {k}: nothing came back, and nothing was promised");
+                say!("  take {k}: {what}, and nothing was promised");
             }
             continue;
         };
@@ -750,7 +1237,7 @@ fn check(dir: &Path, p: &Promise, names: &[String], z: Sizes) -> Result<bool, St
     }
     let mut whole = 0;
     for &n in &there {
-        match import_differs(&dir.join(import_name(n)), n, z.import_bytes)? {
+        match import_differs(&dir.join(import_name(n)), n, z.bytes_of(n))? {
             None => whole += 1,
             Some(at) => {
                 pass = false;
@@ -824,38 +1311,64 @@ fn unescape(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// A mount, from mountinfo.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct Mount {
+    pub(super) point: PathBuf,
+    pub(super) source: String,
+    pub(super) kind: String,
+    /// The mount's own options, then the file system's.
+    pub(super) options: String,
+}
+
 /// The mount `path` is on (the longest mount point above it), from
-/// mountinfo's text: its point, source and type.
-pub(super) fn mount_above(info: &str, path: &Path) -> Option<(PathBuf, String, String)> {
-    let mut best: Option<(PathBuf, String, String)> = None;
+/// mountinfo's text.
+pub(super) fn mount_above(info: &str, path: &Path) -> Option<Mount> {
+    let mut best: Option<Mount> = None;
     for line in info.lines() {
         let f: Vec<&str> = line.split(' ').collect();
         let Some(dash) = f.iter().position(|&x| x == "-") else {
             continue;
         };
-        if f.len() <= dash + 2 || f.len() < 5 {
+        if f.len() <= dash + 2 || f.len() < 6 {
             continue;
         }
         let point = PathBuf::from(unescape(f[4]));
         if path.starts_with(&point)
             && best
                 .as_ref()
-                .is_none_or(|(b, _, _)| point.as_os_str().len() >= b.as_os_str().len())
+                .is_none_or(|b| point.as_os_str().len() >= b.point.as_os_str().len())
         {
-            best = Some((point, unescape(f[dash + 2]), f[dash + 1].to_string()));
+            best = Some(Mount {
+                point,
+                source: unescape(f[dash + 2]),
+                kind: f[dash + 1].to_string(),
+                options: format!("{}; {}", f[5], f.get(dash + 3).copied().unwrap_or("")),
+            });
         }
     }
     best
 }
 
 /// WP is for a spare stick: `base` must be on an ext4 file system (as the
-/// MPC's partition 4 is) on a USB disk. Says which, so the right stick is
-/// pulled.
-pub(super) fn on_usb_disk(base: &Path) -> Result<(), String> {
+/// MPC's partition 4 is), or with `fat` a FAT or exFAT one (as SD cards
+/// are), on a USB disk. Says which, and its options, so the right stick is
+/// pulled and the result can be read.
+pub(super) fn on_usb_disk(base: &Path, fat: bool) -> Result<(), String> {
     let info = fs::read_to_string("/proc/self/mountinfo").map_err(|e| format!("mountinfo: {e}"))?;
-    let (point, source, kind) =
-        mount_above(&info, base).ok_or_else(|| format!("no mount above {}", base.display()))?;
-    if kind != "ext4" {
+    let Mount {
+        point,
+        source,
+        kind,
+        options,
+    } = mount_above(&info, base).ok_or_else(|| format!("no mount above {}", base.display()))?;
+    if fat && !is_fat(&kind) {
+        return Err(format!(
+            "{} is on {source} ({kind}): the FAT pull test wants vfat or exfat, as SD cards are",
+            base.display()
+        ));
+    }
+    if !fat && kind != "ext4" {
         return Err(format!(
             "{} is on {source} ({kind}): the pull test wants ext4, as the MPC's partition 4 is",
             base.display()
@@ -874,9 +1387,10 @@ pub(super) fn on_usb_disk(base: &Path) -> Result<(), String> {
         ));
     }
     say!(
-        "the folder goes on {source} (ext4, mounted at {}), a USB disk: that is the stick to pull",
+        "the folder goes on {source} ({kind}, mounted at {}), a USB disk: that is the stick to pull",
         point.display()
     );
+    say!("its mount options: {options}");
     Ok(())
 }
 
@@ -934,6 +1448,13 @@ mod tests {
         assert_eq!(import_differs(&p, 3, bytes).unwrap(), Some(300_001));
         fs::write(&p, &whole[..1000]).unwrap();
         assert_eq!(import_differs(&p, 3, bytes).unwrap(), Some(1000));
+        // A length a cut left, not in 8s: as written up to its end.
+        whole[300_001] ^= 1;
+        fs::write(&p, &whole[..1003]).unwrap();
+        assert_eq!(import_differs(&p, 3, bytes).unwrap(), Some(1003));
+        whole[1001] ^= 1;
+        fs::write(&p, &whole[..1003]).unwrap();
+        assert_eq!(import_differs(&p, 3, bytes).unwrap(), Some(1001));
         fs::remove_dir_all(&d).unwrap();
     }
 
@@ -1004,21 +1525,117 @@ mod tests {
             41 30 8:33 / /media/jesse/MPFREE\\040DATA rw,nosuid shared:3 - ext4 /dev/sdc4 rw\n";
         assert_eq!(
             mount_above(info, Path::new("/media/jesse/MPFREE DATA/x")),
-            Some((
-                PathBuf::from("/media/jesse/MPFREE DATA"),
-                "/dev/sdc4".to_string(),
-                "ext4".to_string()
-            ))
+            Some(Mount {
+                point: PathBuf::from("/media/jesse/MPFREE DATA"),
+                source: "/dev/sdc4".to_string(),
+                kind: "ext4".to_string(),
+                options: "rw,nosuid; rw".to_string(),
+            })
         );
         assert_eq!(
-            mount_above(info, Path::new("/home/jesse")).map(|m| m.1),
+            mount_above(info, Path::new("/home/jesse")).map(|m| m.source),
             Some("/dev/sda2".to_string())
         );
         assert_eq!(
-            mount_above(info, Path::new("/media/other")).map(|m| m.2),
+            mount_above(info, Path::new("/media/other")).map(|m| m.kind),
             Some("tmpfs".to_string())
         );
+        let fat = "22 1 8:2 / / rw shared:1 - ext4 /dev/sda2 rw\n\
+            50 22 8:49 / /run/media/jesse/WP-FAT rw,nosuid,nodev,relatime shared:9 - vfat /dev/sdd1 rw,fmask=0022,dmask=0022,shortname=mixed,utf8,flush,errors=remount-ro\n";
+        let m = mount_above(fat, Path::new("/run/media/jesse/WP-FAT/wp")).unwrap();
+        assert!(is_fat(&m.kind) && !is_fat("ext4") && is_fat("exfat"));
+        assert_eq!(
+            m.options,
+            "rw,nosuid,nodev,relatime; rw,fmask=0022,dmask=0022,shortname=mixed,utf8,flush,errors=remount-ro"
+        );
         assert_eq!(mount_above("", Path::new("/")), None);
+    }
+
+    #[test]
+    fn a_fat_runs_promise_has_no_takes_and_its_text_names_its_way() {
+        let p = Promise {
+            takes: BTreeMap::new(),
+            imports: [7, 8].into(),
+        };
+        assert_eq!(p.line(), "promised: takes none; imports 7 8");
+        assert_eq!(Promise::parse(&p.line()), Some(p.clone()));
+        assert_eq!(
+            Promise::parse("promised: takes none; imports none"),
+            Some(Promise::default())
+        );
+        for way in [Way::Rename, Way::Hidden] {
+            let text = format!("mpfree-disktest: …\n{WAY}{}\r\n{}\n", way.word(), p.line());
+            assert_eq!(Way::in_text(&text), Some(way));
+        }
+        assert_eq!(
+            Way::in_text("cut test: 4 takes\npromised: takes 1=0; imports none\n"),
+            None
+        );
+        assert_eq!(Way::in_text("cut test way: fat-other\n"), None);
+    }
+
+    #[test]
+    fn a_fat_run_writes_small_files_and_every_fourth_a_large_one() {
+        let z = Sizes::fat(false);
+        assert_eq!(z.bytes_of(1), 256 * KIB as u64);
+        assert_eq!(z.bytes_of(3), 256 * KIB as u64);
+        assert_eq!(z.bytes_of(4), 4 * MIB);
+        assert_eq!(z.room(), 5 * 4 * MIB);
+        assert!(z.cut_after_s < z.longest_s / 5.0);
+        // An ext4 run's imports are all one size, as before.
+        let e = Sizes::new(false);
+        assert_eq!((e.bytes_of(1), e.bytes_of(4)), (16 * MIB, 16 * MIB));
+    }
+
+    #[test]
+    fn a_hidden_publish_ends_shown_and_whole_and_an_ended_one_leaves_nothing() {
+        let d = std::env::temp_dir().join(format!("mpfree-cut-hidden-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        let bytes = 40 * KIB as u64;
+        let mut seen_hidden = false;
+        let path = d.join(import_name(9));
+        let mut write = |sink: &mut publish::Sink| -> io::Result<()> {
+            let mut buf = vec![0u8; 8 * KIB];
+            let mut at = 0;
+            while at < bytes {
+                // Hidden while it is written.
+                seen_hidden |= is_hidden(&fs::File::open(&path)?, true)?;
+                import_fill(9, at, &mut buf);
+                sink(&buf)?;
+                at += buf.len() as u64;
+            }
+            Ok(())
+        };
+        publish_hidden(&d, &import_name(9), &mut write, true).unwrap();
+        assert!(seen_hidden);
+        let f = fs::File::open(&path).unwrap();
+        assert!(!is_hidden(&f, true).unwrap());
+        assert_eq!(import_differs(&path, 9, bytes).unwrap(), None);
+        // A second publish under the same name is refused, the first kept.
+        assert!(publish_hidden(&d, &import_name(9), &mut |_| Ok(()), true).is_err());
+        assert_eq!(import_differs(&path, 9, bytes).unwrap(), None);
+        // One ended mid-write leaves no file.
+        let r = publish_hidden(
+            &d,
+            &import_name(10),
+            &mut |sink| {
+                sink(&[0u8; 8])?;
+                Err(io::Error::other("the run ended"))
+            },
+            true,
+        );
+        assert!(r.is_err());
+        assert!(!d.join(import_name(10)).exists());
+        // The real call, here (not FAT): refused plainly, nothing left.
+        let e = publish_hidden(&d, &import_name(11), &mut |_| Ok(()), false).unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("doesn't take FAT_IOCTL_SET_ATTRIBUTES"),
+            "{e}"
+        );
+        assert!(!d.join(import_name(11)).exists());
+        fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]

@@ -1266,6 +1266,48 @@ impl Player {
             )
     }
 
+    /// The XY pad's hand on kit `kit`'s pad `pad`'s `field` (`Some`: a
+    /// layout of yours plays it by Set, `xy_own.rs`), or its let-go
+    /// (`None`), before the next render: over the pad's own, its live
+    /// value and its step lock (over the lock only when `over`, a track
+    /// recording). False for no such pad.
+    pub fn pad_hand(
+        &mut self,
+        kit: usize,
+        pad: usize,
+        field: PadField,
+        value: Option<f32>,
+        over: bool,
+    ) -> bool {
+        if pad >= PADS || (value.is_some() && !self.has_sound(kit, pad)) {
+            return false;
+        }
+        self.engine.apply_for(
+            kit,
+            Event::PadHand {
+                pad: pad as u8,
+                field,
+                value: value.unwrap_or(f32::NAN),
+                over,
+            },
+        );
+        true
+    }
+
+    /// What kit `kit`'s pad `pad`'s `field` plays under the XY pad's hand:
+    /// its live value, else its step lock, else its own. None for a pad
+    /// without a sound.
+    pub fn pad_beneath(&self, kit: usize, pad: usize, field: PadField) -> Option<f32> {
+        let p = u8::try_from(pad).ok()?;
+        let own = self.pad_own(kit, pad, field)?;
+        Some(
+            self.engine
+                .kit_pad_live_value(kit, p, field)
+                .or_else(|| self.engine.kit_pad_lock_value(kit, p, field))
+                .unwrap_or(own),
+        )
+    }
+
     /// Plays source frames `start..end` of pad `pad`'s layer `layer` once,
     /// from the next render, as the pad made from that slice will play it
     /// (a tap on a slice with the Slice tool), on kit `kit`; returns

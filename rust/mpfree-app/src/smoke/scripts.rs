@@ -321,6 +321,7 @@ mod tests {
         workflow_songs => "songs",
         workflow_sample_page => "sample-page",
         workflow_heavy_load => "heavy-load",
+        workflow_smart_loop_end => "smart-loop-end",
     }
 
     /// MPFREE_SCRIPT=FILE plays that file as the tests above play the

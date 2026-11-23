@@ -319,9 +319,9 @@ pub fn key_toggles(target: ParamAddr) -> bool {
 /// How a control learned on `target` from `source` works, where it isn't
 /// Learn's own choice (a key: while held; anything else: a knob or
 /// fader): a key on a switch you flip flips it ([`key_toggles`]), and
-/// the looper's presses (a loop's key, Next loop, Undo ...) and the
-/// Perform pads work while held whatever sends them, so a footswitch's CC
-/// goes down and lets go as a pad does.
+/// the looper's presses (a loop's key, Next loop, Undo ...), the Perform
+/// pads and the XY pad's buttons on Play's card work while held whatever
+/// sends them, so a footswitch's CC goes down and lets go as a pad does.
 pub fn learned_mode(source: &Source, target: ParamAddr) -> Option<Mode> {
     use mpfree_play::mpfree_param::looper;
     if matches!(source, Source::Note(_)) && key_toggles(target) {
@@ -331,6 +331,8 @@ pub fn learned_mode(source: &Source, target: ParamAddr) -> Option<Mode> {
         Owner::Looper => !looper::is_value(target.param),
         // A Perform pad plays while held, as the pad does.
         Owner::Perform => true,
+        // The XY pad's Hold and layout buttons press once past the middle.
+        Owner::Play => mpfree_play::mpfree_param::play::is_press(target.param),
         _ => false,
     };
     press.then_some(Mode::Momentary)

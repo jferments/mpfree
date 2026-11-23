@@ -187,6 +187,7 @@ Coming:
 - **A control that does nothing** with the sound as it is, such as a pulse width while the wave is a saw, is drawn faint, and the section's heading says why ("Pulse width · pulse waves only").
 - **The Q-Links** turn the four controls marked **Q1** to **Q4**. The column on the right shows what each one turns on this page and its value. Drag a card there to turn it from the screen. Each Q-Link keeps its colour on its badge and its card, the same as on the Play tab.
 - **Locking a step.** With **STEP SEQ** on, hold a step pad of a track this synth plays and turn a knob here: the knob is locked on that step only, and the sound stays as it was for the other steps. While you hold the step the tab shows its locks; let go and it shows the sound's own values again. See [Your first beat](sequencer.md#the-pads-as-steps-step-seq).
+- **The XY pad's marks.** While a layout of yours puts one of this synth's controls on the XY pad, its knob wears **X→** or **Y↑**, a thin arc for the stretch the pad covers, and a dot where the setting is now. See [Your own XY layouts](xy-layouts.md#from-the-chain-editor).
 - **The presets** are listed on the left, under the synth's name. Tap one to load it. Once you change anything, the preset is marked **edited**. The ones you saved yourself are in the browser, under **Yours**.
 - **UNDO** takes back the last knob you turned on this tab (a run of turns of one knob is one UNDO), and **SHIFT + UNDO** puts it back. Loading a preset starts the list again.
 

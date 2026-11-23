@@ -12,6 +12,7 @@
 //! mpfree-bench --count [--blocks N] [--filter TEXT]
 //! mpfree-bench --soak [--blocks N] [--filter TEXT]
 //! mpfree-bench --compose [--quick] [--calibration FILE]
+//! mpfree-bench --stems
 //! ```
 //!
 //! Any mode takes `--plain`: the NEON kernels (`mpfree-simd`) off, so every
@@ -79,18 +80,28 @@
 //!   as an MPC estimate with `--calibration`, or for real on the MPC. The
 //!   composer is a background job, never on the audio thread.
 //!
+//! - `--stems` runs the stem separation (`mpfree-stems`, Spleeter's four
+//!   networks with seeded weights) on 30 s of noise: its NEON kernels
+//!   against their twins first (exit code 1 if they differ), then, if at
+//!   least 400 MB is free, four timed runs (NEON on cores 0 and 1 at 1024
+//!   bins, on core 0 alone, the plain twins, and full band) and an
+//!   estimate for 10 s and 60 s samples. It pins its own threads, as
+//!   `--lanes` does, and prints "not pinned (reason)" if a pin is refused.
+//!
 //! It only reads and computes: it opens no device, writes no file unless
 //! `--json` names one, and runs on one thread at normal priority. The one
 //! exception is `--lanes`, which starts a worker thread per lane case (at
 //! normal priority) and closes it before the next case; pinning, asked for
 //! with `--lane-cores`, changes only this program's own threads and ends
-//! with it.
+//! with it. `--stems` too runs the separation's steps on up to two threads
+//! of its own at normal priority, pinned as it says.
 
 mod cases;
 mod compose;
 #[cfg(test)]
 mod golden;
 mod projects;
+mod stems;
 mod vg;
 
 use std::fmt::Write as _;
@@ -122,6 +133,7 @@ struct Options {
     count: bool,
     soak: bool,
     compose: bool,
+    stems: bool,
     blocks: Option<u64>,
 }
 
@@ -144,6 +156,7 @@ fn options() -> Result<Options, String> {
         count: false,
         soak: false,
         compose: false,
+        stems: false,
         blocks: None,
     };
     let mut args = std::env::args().skip(1);
@@ -165,6 +178,7 @@ fn options() -> Result<Options, String> {
             "--count" => o.count = true,
             "--soak" => o.soak = true,
             "--compose" => o.compose = true,
+            "--stems" => o.stems = true,
             "--blocks" => {
                 let v = value("--blocks")?;
                 o.blocks = Some(v.parse().ok().filter(|&n| n > 0).ok_or(format!(
@@ -864,7 +878,8 @@ fn main() -> ExitCode {
                        mpfree-bench --lanes [--lane-cores A,B] [--quick] [--json FILE]\n       \
                        mpfree-bench --count [--blocks N] [--filter TEXT]\n       \
                        mpfree-bench --soak [--blocks N] [--filter TEXT]\n       \
-                       mpfree-bench --compose [--quick] [--calibration FILE]");
+                       mpfree-bench --compose [--quick] [--calibration FILE]\n       \
+                       mpfree-bench --stems");
             eprintln!("       any mode: --plain runs the NEON kernels' plain twins (mpfree-simd)");
             return ExitCode::from(if e.is_empty() { 0 } else { 1 });
         }
@@ -887,6 +902,11 @@ fn main() -> ExitCode {
     if o.count {
         count(&o);
         return ExitCode::SUCCESS;
+    }
+    // Before the flush-to-zero below: the separation runs on job threads,
+    // which leave the processor's mode as it is (NEON flushes anyway).
+    if o.stems {
+        return stems::run(o.plain, &machine(), &build());
     }
     let flushing = !o.keep_denormals && mpfree_lanes::fpu::flush_to_zero();
     if o.soak {
