@@ -1052,6 +1052,9 @@ pub enum ToUi {
     /// The CLAP plugins found at start (sent once, early): an open makes a
     /// project's plugins with them, here on the screen thread.
     Plugins(std::sync::Arc<crate::plugins::Plugins>),
+    /// Where the audio tracks keep their last look at the stick (sent once,
+    /// early): System status's stick meter.
+    Drive(std::sync::Arc<mpfree_audiotracks::files::DriveSeen>),
     /// What each track plays as its own instrument (None: the kit), for
     /// the line under its name on Arrange. Sent when it changes.
     TrackSounds(Box<TrackSounds>),
@@ -2211,6 +2214,9 @@ pub struct Player {
     /// The plugins an open makes a project's plugin effects and synths
     /// with ([`ToUi::Plugins`]; none until then).
     project_plugins: std::sync::Arc<crate::plugins::Plugins>,
+    /// The audio tracks' last look at the stick ([`ToUi::Drive`]): System
+    /// status's stick meter.
+    drive: Option<std::sync::Arc<mpfree_audiotracks::files::DriveSeen>>,
     /// BROWSE's Plugins place: the Open MPC catalog, installed plugins and
     /// zips on the stick (plugin_page.rs).
     plugin_page: crate::plugin_page::PluginPage,
@@ -2892,6 +2898,7 @@ impl Player {
             io_model: None,
             project_defaults: None,
             project_plugins: std::sync::Arc::new(crate::plugins::Plugins::none()),
+            drive: None,
             plugin_page: crate::plugin_page::PluginPage::new(),
             plugins_hinted: false,
             track_sounds: [None; crate::instruments::HOLDERS],
@@ -8194,6 +8201,7 @@ impl Player {
             cpu_pct: self.engines.as_deref().and_then(crate::engines::cpu_pct),
             ram_pct: self.ram_pct,
             free: self.mem_free,
+            stick: self.drive.as_ref().and_then(|d| d.get()).flatten(),
         };
         let v = crate::status_screen::view(
             &self.status_board,
@@ -9676,6 +9684,7 @@ impl Player {
             ToUi::Printed(name, p) => self.save_print(name, p),
             ToUi::ProjectDefaults(d) => self.project_defaults = Some(*d),
             ToUi::Plugins(p) => self.project_plugins = p,
+            ToUi::Drive(d) => self.drive = Some(d),
             ToUi::TrackSounds(s) => {
                 self.track_sounds = *s;
                 self.refill_sounds();
@@ -15775,6 +15784,7 @@ pub fn sample_status(fonts: Fonts) -> Player {
     let mut p = sample_player(fonts);
     p.set_ram(41.0);
     p.set_free(1_100_000_000);
+    sample_stick(&mut p);
     p.apply(ToUi::Problem(Report::happened(&kinds::VOICES_GIVEN_UP, 6)));
     let ports = ["Juno-X".to_string()];
     for _ in 0..2 {
@@ -15794,6 +15804,18 @@ pub fn sample_status(fonts: Fonts) -> Player {
     p.apply(ToUi::Problem(Report::happened(&kinds::SOUND_DROPOUT, 3)));
     p.tick(0.5);
     p
+}
+
+/// A 16 GB stick with 12.4 GB free, as the audio tracks' drive watcher
+/// would have looked at it, for System status's samples.
+fn sample_stick(p: &mut Player) {
+    let d = mpfree_audiotracks::files::DriveSeen::default();
+    d.set(Some(mpfree_audiotracks::files::Room {
+        writable: true,
+        free: 12_400_000_000,
+        total: 15_500_000_000,
+    }));
+    p.apply(ToUi::Drive(std::sync::Arc::new(d)));
 }
 
 pub fn sample_player(fonts: Fonts) -> Player {
@@ -19236,6 +19258,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     let mut good = sample_player(fonts());
     good.set_ram(38.0);
     good.set_free(1_200_000_000);
+    sample_stick(&mut good);
     good.apply(ToUi::Show(View::SystemStatus));
     out.push(("system-status-good", good));
     // Prefs > System info, with fixed rows (the host's own would differ).

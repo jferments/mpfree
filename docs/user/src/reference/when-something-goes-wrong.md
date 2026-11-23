@@ -30,7 +30,7 @@ Tap the status chip, or pick **System status** in Prefs, to open the page over t
 
 {{shot: system-status | System status: the sound dropped out three times just now (red), Juno-X isn't plugged in (yellow), and some voices were faded out 30 seconds ago.}}
 
-- **The top line** says the worst problem happening now, in its colour, or **Everything is working**, with how many problems there are now and earlier. On its right are the CPU and RAM meters.
+- **The top line** says the worst problem happening now, in its colour, or **Everything is working**, with how many problems there are now and earlier. On its right are the CPU and RAM meters and, once MPFree has looked at the stick it records to, the stick's meter with how much space is free (yellow while the stick is nearly full).
 - **The systems** are always listed on the left, all nine: Sound, Memory, Storage, Pads and buttons, MIDI and sync, Project, Screen, Plugins and The MPC. Each has a dot in its colour, a few plain words ("41 % used · 1.1 GB free", "Juno-X: not plugged in") and a count of its problems. The page opens on the worst one.
 - **The picked system's problems** are on the right, worst and newest first. A problem happening now shows in full: what happened, what to try and, where MPFree can do it for you, a button. One that is over folds to a line with when it happened; tap it to open it. Each kind of problem has one card, with how many times and when ("3 times · last 12 s ago · first 4 min ago").
 - **Now | This session**, at the top right, shows only what is happening now, or everything since MPFree started.

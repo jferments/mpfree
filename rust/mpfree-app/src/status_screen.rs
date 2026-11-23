@@ -19,8 +19,10 @@
 
 use std::time::{Duration, Instant};
 
+use mpfree_audiotracks::files::Room;
 use mpfree_status::{
-    Action, Board, ChipLook, Kind, Level, ProblemState, ProblemView, Shape, Subject, System, Window,
+    kinds, Action, Board, ChipLook, Kind, Level, ProblemState, ProblemView, Shape, Subject, System,
+    Window,
 };
 use mpfree_ui::status_page::{Card, StatusView, SystemRow};
 use mpfree_ui::widgets::Chip;
@@ -89,6 +91,10 @@ pub struct Readings {
     pub ram_pct: Option<f64>,
     /// Memory free (MemAvailable), bytes.
     pub free: Option<u64>,
+    /// The stick the audio tracks record to, at its last look (their drive
+    /// watcher's, every 3 s), while it answers; None before the first look
+    /// or once it stopped answering (Stick missing says so).
+    pub stick: Option<Room>,
 }
 
 /// Where the page is: the system picked and the Now | This session switch.
@@ -243,6 +249,10 @@ fn all_good_line(system: System, r: &Readings, board: &Board) -> String {
             (Some(p), None) => format!("{p:.0} % used"),
             _ => "Working".to_string(),
         },
+        System::Storage => match r.stick {
+            Some(s) => format!("{} free on the stick", bytes(s.free)),
+            None => "Working".to_string(),
+        },
         _ => "Working".to_string(),
     }
 }
@@ -288,8 +298,8 @@ pub fn view(
             problems(n)
         ),
     };
-    // The meters: each once it can be read (the stick's free space and the
-    // MPC's temperature come with phase 3).
+    // The meters: each once it can be read (the MPC's temperature waits
+    // for its lines, measured on the MPC).
     let look = board.chip_look(r.ram_pct);
     let meter_tone = |l: Option<Level>| tone_of(l).unwrap_or(Tone::Good);
     let mut meters = Vec::new();
@@ -307,6 +317,20 @@ pub fn view(
             format!("{p:.0} %"),
             (p / 100.0).clamp(0.0, 1.0) as f32,
             meter_tone(look.ram),
+        ));
+    }
+    // The stick: how full, yellow while it is nearly full.
+    if let Some(s) = r.stick.filter(|s| s.total > 0) {
+        let used = 1.0 - s.free.min(s.total) as f64 / s.total as f64;
+        let full = board
+            .problems(System::Storage, Window::Now)
+            .iter()
+            .any(|p| p.kind == &kinds::STICK_NEARLY_FULL);
+        meters.push((
+            "Stick".to_string(),
+            format!("{} free", bytes(s.free)),
+            used as f32,
+            if full { Tone::Warn } else { Tone::Good },
         ));
     }
     // The systems: always all nine.
@@ -386,6 +410,15 @@ fn numbers(system: System, r: &Readings) -> Vec<(String, String)> {
             }
             if let Some(f) = r.free {
                 out.push(("Free".to_string(), bytes(f)));
+            }
+        }
+        System::Storage => {
+            if let Some(s) = r.stick {
+                out.push(("Free on the stick".to_string(), bytes(s.free)));
+                out.push(("The stick's size".to_string(), bytes(s.total)));
+                if !s.writable {
+                    out.push(("The stick".to_string(), "read only".to_string()));
+                }
             }
         }
         _ => {}
@@ -478,6 +511,7 @@ mod tests {
             cpu_pct: Some(92.0),
             ram_pct: Some(41.0),
             free: Some(1_100_000_000),
+            stick: None,
         };
         let v = view(&b, &Watch::default(), &r, &mut place, t);
         assert_eq!(v.head, "The sound dropped out");
@@ -534,6 +568,51 @@ mod tests {
         place.window = Window::Now;
         let v = view(&b, &Watch::default(), &r, &mut place, later);
         assert!(v.cards.is_empty() && v.now_only);
+    }
+
+    /// Phase 3: the stick's meter on the head once the audio tracks have
+    /// looked at it, yellow while it is nearly full, with its free space on
+    /// Storage's line and its numbers under the cards.
+    #[test]
+    fn the_stick_has_a_meter_once_it_is_looked_at() {
+        let t = Instant::now();
+        let mut place = Place::default();
+        let r = Readings {
+            ram_pct: Some(38.0),
+            ..Readings::default()
+        };
+        let v = view(&Board::new(), &Watch::default(), &r, &mut place, t);
+        assert_eq!(v.meters.len(), 1, "not looked at yet: no stick meter");
+        assert_eq!(v.systems[2].line, "Working");
+        let r = Readings {
+            stick: Some(Room {
+                writable: true,
+                free: 12_400_000_000,
+                total: 15_500_000_000,
+            }),
+            ..r
+        };
+        let v = view(&Board::new(), &Watch::default(), &r, &mut place, t);
+        let m = &v.meters[1];
+        assert_eq!((m.0.as_str(), m.1.as_str()), ("Stick", "12.4 GB free"));
+        assert!((m.2 - 0.2).abs() < 1e-3, "a fifth used: {}", m.2);
+        assert_eq!(m.3, Tone::Good);
+        assert_eq!(v.systems[2].line, "12.4 GB free on the stick");
+        place.picked = System::Storage;
+        let v = view(&Board::new(), &Watch::default(), &r, &mut place, t);
+        assert_eq!(
+            v.numbers,
+            [
+                ("Free on the stick".to_string(), "12.4 GB".to_string()),
+                ("The stick's size".to_string(), "15.5 GB".to_string()),
+            ]
+        );
+        // Nearly full: the meter turns yellow with the problem.
+        let mut b = board_with(&[Report::began(&kinds::STICK_NEARLY_FULL)], t);
+        let later = t + Duration::from_secs(2);
+        b.tick(later);
+        let v = view(&b, &Watch::default(), &r, &mut place, later);
+        assert_eq!(v.meters[1].3, Tone::Warn);
     }
 
     /// The anchor mdBook gives a heading.
