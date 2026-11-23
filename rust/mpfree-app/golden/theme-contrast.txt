@@ -381,6 +381,7 @@ spaceship arrange-report-scrolls 12 # as arrange-report, with nine rows scrollin
 spaceship arrange-song 10 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-add 12 # new screen (audio tracks rethink, phase 1): the faint labels its neighbours have
 spaceship arrange-song-audio 10 # before the theme refactor (phase 0 baseline)
+spaceship arrange-song-block 10 # arrange-song with Hook picked (Arrange phase 6): its start grip, Split and Duplicate; the same 10 runs as arrange-song
 spaceship arrange-song-loops 12 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-over 12 # the Song view's runs, as arrange-song; none of the preview's own
 spaceship arrange-song-panel 12 # before the theme refactor (phase 0 baseline)
@@ -390,6 +391,7 @@ spaceship arrange-song-section 10 # arrange-song with the Verse picked (Arrange 
 spaceship arrange-song-takes 10 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-tempo 10 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-tracks 12 # before the theme refactor (phase 0 baseline)
+spaceship arrange-song-trim 10 # arrange-song-block with its start grip dragged two bars back (Arrange phase 6): the same 10 runs
 spaceship browser 3 # before the theme refactor (phase 0 baseline)
 spaceship browser-kits 1 # before the theme refactor (phase 0 baseline)
 spaceship browser-samples 22 # before the theme refactor (phase 0 baseline)

@@ -41,8 +41,9 @@ use crate::list::{
 use crate::report::{ReportCard, REPORT_DONE, REPORT_UNDO};
 use crate::song::{
     AudioLane, LaneOver, SongBlocks, SongLanes, ADD_AUDIO, AUDIO_BUTTONS, BARS_BACK, BARS_ON,
-    INPUTS, MONITORS, NONE, PANEL, PANEL_CLOSE, PANEL_INPUT, PANEL_MONITOR, PANEL_MUTE, PANEL_SOLO,
-    PANEL_TAKES, REC, REGION_SLOTS, RULER_ROW, SECTION_TAP, TEMPO_ROW,
+    DUPLICATE, INPUTS, MONITORS, NONE, PANEL, PANEL_CLOSE, PANEL_INPUT, PANEL_MONITOR, PANEL_MUTE,
+    PANEL_SOLO, PANEL_TAKES, REC, REGION_SLOTS, RULER_ROW, SECTION_TAP, SLIDE_ROW, START_ROW,
+    TEMPO_ROW,
 };
 use crate::widgets::{
     BarButton, BarItem, CellState, ClipGrid, GridCell, GridTrack, MorphBar, Run, SongMark,
@@ -161,10 +162,10 @@ pub fn copy_hint(st: &TimeState) -> String {
 
 /// The hint line under the Song view.
 pub const SONG_HINT: &str =
-    "Tap a block to pick it   ·   drag a block or a section's name: move it (SHIFT as you lift: copy)   ·   tap the ruler: add a marker   ·   SHIFT + wheel: bars";
+    "Tap a block to pick it   ·   drag a block or a section's name: move it (SHIFT as you lift: copy)   ·   tap the ruler: add a marker   ·   Split: every block at the playhead";
 /// The hint line under the Song view with a block picked.
 pub const SONG_BLOCK_HINT: &str =
-    "Drag the block: move it a bar at a time (SHIFT as you lift: copy)   ·   drag its end: longer or shorter   ·   push the wheel: move it a beat at a time   ·   SHIFT + wheel: bars";
+    "Drag it: move it (SHIFT as you lift: copy)   ·   drag its start or end: trim   ·   hold it still, then drag: slide what it plays   ·   Split: at the playhead   ·   wheel: a beat";
 /// The hint line under the Song view with a section picked.
 pub const SONG_SECTION_HINT: &str =
     "Drag the name: move the section (SHIFT as you lift: copy)   ·   drag the grip: move where it starts   ·   + Bar: a bar of room before it   ·   push the wheel: move it a section at a time";
@@ -2149,6 +2150,29 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
         ) => Some(TimeAction::SongTempo(TempoEdit::Pick(
             (st.tempo_pick != Some(*col)).then_some(*col),
         ))),
+        // The picked block's start grip and a slide (phase 6).
+        (
+            SONG,
+            EventKind::Place {
+                index,
+                row: START_ROW,
+                at,
+            },
+        ) => Some(TimeAction::TrimPlacement {
+            index: *index,
+            start: *at,
+        }),
+        (
+            SONG,
+            EventKind::Place {
+                index,
+                row: SLIDE_ROW,
+                at,
+            },
+        ) => Some(TimeAction::SlidePlacement {
+            index: *index,
+            by: *at,
+        }),
         // The ruler: a tap where no name is adds a marker; the picked
         // section's grip moves its marker alone (Arrange 3.3).
         (
@@ -2233,6 +2257,7 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
         (SONG, EventKind::Tab(crate::song::ADD_CLOSE)) => None,
         (SONG, EventKind::Tab(crate::song::LIST)) => Some(TimeAction::ListView(true)),
         (SONG, EventKind::Tab(crate::song::CLIPS)) => Some(TimeAction::SongView(false)),
+        (SONG, EventKind::Tab(DUPLICATE)) => st.selected.map(TimeAction::DuplicatePlacement),
         (SONG, EventKind::Tab(k)) if *k >= PANEL_CLOSE => {
             let track = st.audio_panel?;
             let lane = st.audio.iter().find(|l| l.track == track);
@@ -2356,8 +2381,10 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             })
         }
         (SONG, EventKind::Tab(k)) => match k {
-            // Button 0 is the audio region's Split alone (the view chip
-            // has Clips, 5.7).
+            // Split at the playhead (phase 6): the picked block, or every
+            // block across it. With an audio region picked, the region's
+            // Split (above).
+            0 => Some(TimeAction::SplitPlacement(st.selected)),
             1 => Some(TimeAction::SongMode(!st.song_on)),
             2 => Some(TimeAction::ScenesToSong),
             3 => Some(TimeAction::SongToScenes),
@@ -6448,13 +6475,17 @@ mod tests {
         page.scroll(&mut ui, 4);
         assert_eq!(page.first_bar, 4, "the wheel scrolls bars");
         let song = |k: EventKind, st: &TimeState| action(&ev(SONG, k), st);
-        // The view chip's Clips (5.7); the bottom row's first place is the
-        // audio region's Split alone.
+        // The view chip's Clips (5.7); the bottom row's first place is
+        // Split (phase 6): every block at the playhead with none picked.
         assert_eq!(
             song(EventKind::Tab(crate::song::CLIPS), &st),
             Some(TimeAction::SongView(false))
         );
-        assert_eq!(song(EventKind::Tab(0), &st), None);
+        assert_eq!(
+            song(EventKind::Tab(0), &st),
+            Some(TimeAction::SplitPlacement(None))
+        );
+        assert_eq!(song(EventKind::Tab(DUPLICATE), &st), None, "nothing picked");
         assert_eq!(
             song(EventKind::Tab(1), &st),
             Some(TimeAction::SongMode(true))
@@ -6478,6 +6509,41 @@ mod tests {
         assert_eq!(
             song(EventKind::Tab(5), &st),
             Some(TimeAction::DeletePlacement(0))
+        );
+        // Phase 6: Split cuts the picked block, Duplicate copies it, its
+        // start grip trims it and a slide moves what it plays.
+        assert_eq!(
+            song(EventKind::Tab(0), &st),
+            Some(TimeAction::SplitPlacement(Some(0)))
+        );
+        assert_eq!(
+            song(EventKind::Tab(DUPLICATE), &st),
+            Some(TimeAction::DuplicatePlacement(0))
+        );
+        assert_eq!(
+            song(
+                EventKind::Place {
+                    index: 0,
+                    row: START_ROW,
+                    at: 3840
+                },
+                &st
+            ),
+            Some(TimeAction::TrimPlacement {
+                index: 0,
+                start: 3840
+            })
+        );
+        assert_eq!(
+            song(
+                EventKind::Place {
+                    index: 0,
+                    row: SLIDE_ROW,
+                    at: -240
+                },
+                &st
+            ),
+            Some(TimeAction::SlidePlacement { index: 0, by: -240 })
         );
         // Rec song, on the Song view and on the grid.
         assert_eq!(

@@ -3861,7 +3861,10 @@ mod tests {
             ]
         );
         let said = h.act(TimeAction::SplitPlacement(None)).unwrap_err();
-        assert!(said.contains("no block plays across bar 2 beat 3"), "{said}");
+        assert!(
+            said.contains("no block plays across bar 2 beat 3"),
+            "{said}"
+        );
         let said = h.act(TimeAction::SplitPlacement(Some(0))).unwrap_err();
         assert!(said.contains("move the playhead inside Beat"), "{said}");
         let said = h.act(TimeAction::Undo).unwrap();
