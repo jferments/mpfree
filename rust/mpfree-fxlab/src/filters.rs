@@ -280,6 +280,12 @@ fn subjects(rate: u32) -> Vec<Subject> {
         ("band-pass 4-pole", FilterKind::BandPass, 4),
         ("notch 2-pole", FilterKind::Notch, 2),
         ("notch 4-pole", FilterKind::Notch, 4),
+        // The filter gap plan's F4: the odd and steep slopes and the Peak.
+        ("low-pass 1-pole", FilterKind::LowPass, 1),
+        ("low-pass 8-pole", FilterKind::LowPass, 8),
+        ("high-pass 8-pole", FilterKind::HighPass, 8),
+        ("band-pass 8-pole", FilterKind::BandPass, 8),
+        ("Peak", FilterKind::Peak, 2),
         ("Ladder", FilterKind::Ladder, 4),
         ("Vowel", FilterKind::Vowel, 2),
         ("Comb", FilterKind::Comb, 2),
@@ -319,6 +325,7 @@ fn subjects(rate: u32) -> Vec<Subject> {
                 FilterKind::LowPass
                     | FilterKind::HighPass
                     | FilterKind::BandPass
+                    | FilterKind::Peak
                     | FilterKind::Ladder
             ),
             sings: kind == FilterKind::Ladder,

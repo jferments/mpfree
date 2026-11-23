@@ -9,12 +9,16 @@
 //! - [`multi`]: the multimode filter built on it (12 or 24 dB, Butterworth
 //!   with the resonance on the last stage, the resonant stages bending),
 //!   the Filter effect's Multi model and the pads' state-variable types,
-//!   with a per-frame glide for a voice ([`multi::Multi`]).
+//!   with a per-frame glide for a voice ([`multi::Multi`]), at 6 to 48 dB
+//!   on the pads ([`multi::plan`]).
+//! - [`onepole`]: the one-pole stage (6 dB an octave) an odd slope starts
+//!   with.
 //!
 //! No allocation and no dependencies: every call is safe on the audio
 //! thread.
 
 pub mod multi;
+pub mod onepole;
 pub mod svf;
 
 pub use svf::{Svf, SvfCoefs, SvfMode};

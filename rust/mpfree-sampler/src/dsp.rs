@@ -289,10 +289,18 @@ pub enum FilterKind {
     /// over and over, so it rings at the cutoff's pitch and its overtones.
     /// Resonance is the feedback ([`Comb`], sampler R5.6).
     Comb,
+    /// A boost around the cutoff, the rest left as it is (the MPC's
+    /// band-boost): Resonance raises it from nothing to 35 dB, ringing
+    /// as a 2-pole filter's resonance does (the filter gap plan's F4).
+    Peak,
 }
 
-/// A filter setting. `poles` is 2 or 4 (4 = two 2-pole stages in series).
-/// `env_octaves` is how far the filter envelope moves the cutoff at full level.
+/// A filter setting. `poles` is the slope, 6 dB an octave each: a
+/// low-pass or high-pass 1, 2, 3, 4, 6 or 8, a band-pass 2, 4, 6 or 8, a
+/// notch 2 or 4 (the filter gap plan's F4; [`mpfree_filter::multi::slope`]
+/// takes any other count to one of these). The Ladder is 4, the Vowel,
+/// Comb and Peak 2. `env_octaves` is how far the filter envelope moves the
+/// cutoff at full level.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Filter {
     pub kind: FilterKind,
@@ -312,6 +320,27 @@ pub const MAX_DRIVE_DB: f32 = 24.0;
 /// The filter envelope's deepest move of the cutoff either way, in
 /// octaves ([`Filter::env_octaves`]).
 pub const MAX_ENV_OCTAVES: f32 = 4.0;
+
+/// The Peak's boost at its cutoff for Resonance `res` (0 to 1), in dB: 0
+/// at 0, 35 at full ([`FilterKind::Peak`]).
+pub fn peak_boost_db(res: f32) -> f32 {
+    20.0 * (mpfree_filter::svf::res_to_q(res) / 0.707).log10()
+}
+
+impl Filter {
+    /// The slope it plays, in poles: a multimode type's
+    /// ([`mpfree_filter::multi::slope`]), the Ladder's 4, any other 2.
+    pub fn slope(&self) -> u8 {
+        match self.kind {
+            FilterKind::LowPass
+            | FilterKind::HighPass
+            | FilterKind::BandPass
+            | FilterKind::Notch => mpfree_filter::multi::slope(svf_mode(self.kind), self.poles),
+            FilterKind::Ladder => 4,
+            _ => 2,
+        }
+    }
+}
 
 impl Default for Filter {
     fn default() -> Self {
@@ -931,9 +960,10 @@ pub fn ladder_db(cutoff_hz: f32, resonance: f32, hz: f32) -> f32 {
 
 /// One 2-pole topology-preserving state-variable filter stage per channel
 /// (after Andrew Simper's published "SVF linear trap" design), with the
-/// pad's old resonance (Q 0.5 to 20): the Vowel's formants. The low-pass,
-/// high-pass, band-pass and notch run the Filter effect's multimode filter
-/// instead ([`VoiceFilter`]).
+/// pad's old resonance (Q 0.5 to 20): the Vowel's formants' arithmetic
+/// ([`Formants`] runs four side by side). The low-pass, high-pass,
+/// band-pass and notch run the Filter effect's multimode filter instead
+/// ([`VoiceFilter`]).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Svf {
     ic1: [f32; 2],
@@ -982,10 +1012,68 @@ impl Svf {
             FilterKind::Notch => x - self.k * v1,
             // A formant: the band-pass, its peak at unity.
             FilterKind::Vowel => self.k * v1,
-            // The ladder and the comb run on their own ([`Ladder`],
-            // [`Comb`]).
-            FilterKind::Ladder | FilterKind::Comb => v2,
+            // The ladder, the comb and the peak run on their own
+            // ([`Ladder`], [`Comb`], [`Multi`]).
+            FilterKind::Ladder | FilterKind::Comb | FilterKind::Peak => v2,
         }
+    }
+}
+
+/// The Vowel's two formants on both channels: four [`Svf`] band-passes
+/// side by side, a lane each (the first formant's left and right, then
+/// the second's), with the same arithmetic, so a Vowel plays exactly as
+/// two [`Svf`]s would. Kept as lanes so each line of a frame is one
+/// vector operation whatever code shares a voice's loop with it: as two
+/// [`Svf`]s, the compiler's packing of them depended on the rest of the
+/// loop, and the 36 and 48 dB filters' code there cost 16 held Vowel
+/// pads 15 % more (the filter gap plan's F4).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Formants {
+    ic1: [f32; 4],
+    ic2: [f32; 4],
+    a1: [f32; 4],
+    a2: [f32; 4],
+    a3: [f32; 4],
+    k: [f32; 4],
+}
+
+impl Formants {
+    /// Formant `i` (0 or 1) at `cutoff_hz` and `resonance`, as
+    /// [`Svf::set`].
+    pub fn set(&mut self, i: usize, cutoff_hz: f32, resonance: f32, rate: f32) {
+        let mut s = Svf::default();
+        s.set(cutoff_hz, resonance, rate);
+        for lane in 2 * i..2 * i + 2 {
+            self.a1[lane] = s.a1;
+            self.a2[lane] = s.a2;
+            self.a3[lane] = s.a3;
+            self.k[lane] = s.k;
+        }
+    }
+
+    /// [`Svf::flush`] on every lane.
+    #[inline]
+    pub fn flush(&mut self) {
+        let f = |x: f32| if x.abs() < TINY { 0.0 } else { x };
+        self.ic1 = self.ic1.map(f);
+        self.ic2 = self.ic2.map(f);
+    }
+
+    /// One frame of `l` and `r`: each formant's band-pass, its peak at
+    /// unity, as `[first left, first right, second left, second right]`.
+    #[inline(always)]
+    pub fn process(&mut self, l: f32, r: f32) -> [f32; 4] {
+        let x = [l, r, l, r];
+        let mut y = [0.0; 4];
+        for i in 0..4 {
+            let v3 = x[i] - self.ic2[i];
+            let v1 = self.a1[i] * self.ic1[i] + self.a2[i] * v3;
+            let v2 = self.ic2[i] + self.a2[i] * self.ic1[i] + self.a3[i] * v3;
+            self.ic1[i] = 2.0 * v1 - self.ic1[i];
+            self.ic2[i] = 2.0 * v2 - self.ic2[i];
+            y[i] = self.k[i] * v1;
+        }
+        y
     }
 }
 
@@ -996,6 +1084,7 @@ pub fn svf_mode(kind: FilterKind) -> SvfMode {
         FilterKind::HighPass => SvfMode::HighPass,
         FilterKind::BandPass => SvfMode::BandPass,
         FilterKind::Notch => SvfMode::Notch,
+        FilterKind::Peak => SvfMode::Bell,
         _ => SvfMode::LowPass,
     }
 }
@@ -1012,7 +1101,7 @@ pub const DRAW_RATE: u32 = 44_100;
 pub fn svf_db(f: &Filter, hz: f32) -> f32 {
     mpfree_filter::multi::response_db(
         svf_mode(f.kind),
-        f.poles >= 4,
+        f.poles,
         f.cutoff_hz,
         f.resonance,
         hz,
@@ -1022,18 +1111,18 @@ pub fn svf_db(f: &Filter, hz: f32) -> f32 {
 
 /// One voice's filter: the state of every type, set from the voice's
 /// [`Filter`] and run a frame at a time. The low-pass, high-pass,
-/// band-pass and notch are the Filter effect's multimode filter
+/// band-pass, notch and Peak are the Filter effect's multimode filter
 /// ([`Multi`]: Butterworth at Resonance 0, so the cutoff is the -3 dB
-/// point; Q up to 40; linear, with a resonance guard that damps a loud
-/// sound's ring as it passes a knee, so nothing bends and no DC is made;
-/// each new cutoff glided to over the frames until the next).
-/// The Ladder, Vowel and Comb are the pad's own. The
+/// point; Q up to 40; 6 to 48 dB an octave; linear, with a resonance
+/// guard that damps a loud sound's ring as it passes a knee, so nothing
+/// bends and no DC is made; each new cutoff glided to over the frames
+/// until the next). The Ladder, Vowel and Comb are the pad's own. The
 /// sampler's voices and the quality lab's pad filter both run this, so the
 /// lab measures what plays.
 #[derive(Clone, Debug)]
 pub struct VoiceFilter {
     pub multi: Multi,
-    pub vowel: [Svf; 2],
+    pub vowel: Formants,
     /// The Vowel's gain after its formants.
     pub vowel_gain: f32,
     pub ladder: Ladder,
@@ -1046,7 +1135,7 @@ impl Default for VoiceFilter {
     fn default() -> VoiceFilter {
         VoiceFilter {
             multi: Multi::default(),
-            vowel: [Svf::default(); 2],
+            vowel: Formants::default(),
             vowel_gain: 1.0,
             ladder: Ladder::default(),
             comb: Comb::default(),
@@ -1067,7 +1156,7 @@ impl VoiceFilter {
         match kind {
             FilterKind::Off | FilterKind::Comb => {}
             FilterKind::Ladder => self.ladder.flush(),
-            FilterKind::Vowel => self.vowel.iter_mut().for_each(Svf::flush),
+            FilterKind::Vowel => self.vowel.flush(),
             _ => {
                 self.multi.flush_below(QUIET);
                 self.multi.guard(frames);
@@ -1089,14 +1178,14 @@ impl VoiceFilter {
             FilterKind::Vowel => {
                 let (f1, f2) = vowel_formants(fc);
                 let r = vowel_resonance(res);
-                self.vowel[0].set(f1, r, rate);
-                self.vowel[1].set(f2, r, rate);
+                self.vowel.set(0, f1, r, rate);
+                self.vowel.set(1, f2, r, rate);
                 self.vowel_gain = vowel_gain(res);
             }
             kind => {
                 let rate = rate.round() as u32;
                 self.multi
-                    .set(svf_mode(kind), f.poles >= 4, fc, res, rate, frames);
+                    .set(svf_mode(kind), f.poles, fc, res, rate, frames);
             }
         }
     }
@@ -1120,13 +1209,9 @@ impl VoiceFilter {
         if kind == FilterKind::Ladder {
             self.ladder.process(l, r)
         } else if kind == FilterKind::Vowel {
-            let [a, b] = &mut self.vowel;
+            let y = self.vowel.process(l, r);
             let g = self.vowel_gain;
-            let k = FilterKind::Vowel;
-            (
-                g * (a.process(0, l, k) + FORMANT_2 * b.process(0, l, k)),
-                g * (a.process(1, r, k) + FORMANT_2 * b.process(1, r, k)),
-            )
+            (g * (y[0] + FORMANT_2 * y[2]), g * (y[1] + FORMANT_2 * y[3]))
         } else {
             self.multi.process(l, r)
         }
@@ -1136,7 +1221,7 @@ impl VoiceFilter {
     /// comes in on a sounding voice starts.
     pub fn clear(&mut self) {
         self.multi = Multi::default();
-        self.vowel = [Svf::default(); 2];
+        self.vowel = Formants::default();
         self.ladder = Ladder::default();
     }
 }

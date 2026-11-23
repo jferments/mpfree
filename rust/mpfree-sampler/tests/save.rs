@@ -417,6 +417,59 @@ fn a_kit_saved_before_the_filter_rework_opens_with_a_note() {
     );
     let again = from_text(&text, &mut |f| wav::read("x", &files[f])).unwrap();
     assert!(again.notes.is_empty(), "{:?}", again.notes);
+
+    // Saved with F2's filters (version 2): only a 4-pole band-pass, which
+    // F4 changed, gets a note, and it says so.
+    let v2 = |kind: &str, poles: u8| {
+        old(kind)
+            .replace("kits = 1\n", "kits = 1\nfilters = 2\n")
+            .replace("filter.poles = 4", &format!("filter.poles = {poles}"))
+    };
+    let notes = open(&v2("band-pass", 4)).notes;
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].starts_with("Old: saved before the band-pass slopes were reworked"));
+    for (kind, poles) in [("band-pass", 2), ("low-pass", 4), ("notch", 4)] {
+        let notes = open(&v2(kind, poles)).notes;
+        assert!(notes.is_empty(), "{kind} {poles}: {notes:?}");
+    }
+    // Saved before F2, the one note covers it.
+    assert_eq!(open(&old("band-pass")).notes.len(), 1);
+}
+
+/// The slopes and the Peak (the filter gap plan's F4) save and open as
+/// set.
+#[test]
+fn every_slope_and_the_peak_save_and_open() {
+    let s = noise(3_000, 2, 4, "Bass");
+    let mut p = Project::new();
+    p.add_source(s.clone());
+    let kinds = [
+        (FilterKind::LowPass, 1),
+        (FilterKind::LowPass, 3),
+        (FilterKind::LowPass, 8),
+        (FilterKind::HighPass, 6),
+        (FilterKind::BandPass, 8),
+        (FilterKind::Peak, 2),
+    ];
+    for (i, (kind, poles)) in kinds.into_iter().enumerate() {
+        let mut pad = Pad::new("p", Layer::new(Region::whole(&s)));
+        pad.filter.kind = kind;
+        pad.filter.poles = poles;
+        pad.filter.resonance = 0.4;
+        p.set_pad(i, Some(pad), None).unwrap();
+    }
+    let (text, files) = save(&[("Slopes", &p)], 0);
+    assert!(text.contains("filter.kind = peak"), "{text}");
+    let again = from_text(&text, &mut |f| wav::read("x", &files[f])).unwrap();
+    assert!(again.notes.is_empty(), "{:?}", again.notes);
+    for (i, (kind, poles)) in kinds.into_iter().enumerate() {
+        let f = again.kits[0].1.pad(i).unwrap().filter;
+        assert_eq!(
+            (f.kind, f.poles, f.resonance),
+            (kind, poles, 0.4),
+            "pad {i}"
+        );
+    }
 }
 
 #[test]

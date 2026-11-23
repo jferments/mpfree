@@ -662,7 +662,11 @@ fn stage_db(kind: FilterKind, q: f64, x: f64) -> f64 {
     let k = 1.0 / q;
     let den = ((1.0 - x * x).powi(2) + (k * x).powi(2)).sqrt();
     let num = match kind {
-        FilterKind::Off | FilterKind::Ladder | FilterKind::Vowel | FilterKind::Comb => return 0.0,
+        FilterKind::Off
+        | FilterKind::Ladder
+        | FilterKind::Vowel
+        | FilterKind::Comb
+        | FilterKind::Peak => return 0.0,
         FilterKind::LowPass => 1.0,
         FilterKind::BandPass => x,
         FilterKind::HighPass => x * x,
@@ -716,10 +720,45 @@ fn comb_prototype_db(resonance: f64, x: f64, hz: f64) -> f64 {
     10.0 * (hp * (1.0 - g * g) / (re * re + im * im)).log10()
 }
 
-/// The prototype of a filter: one stage, or two for 4 poles (a low-pass's
-/// or high-pass's a Butterworth pair with the resonance on the second, a
-/// band-pass's or notch's both at the type's Q); the Ladder's, the
-/// Vowel's and the Comb's own.
+/// A boost of `g` at `x` = 1 whose poles' Q is `q` (the Peak's, and the
+/// 6 dB slope's resonance), `(s² + (g / q) s + 1) / (s² + s / q + 1)`, dB.
+fn boost_db(g: f64, q: f64, x: f64) -> f64 {
+    let re = 1.0 - x * x;
+    let num = re * re + (g * x / q).powi(2);
+    let den = re * re + (x / q).powi(2);
+    10.0 * (num / den).log10()
+}
+
+/// A Butterworth filter of `poles`: its 2-pole stages' Qs, lowest first
+/// (`1 / (2 cos a)` of its poles' angles `a` from the real axis, the
+/// 4-pole's rounded as the engine has always had them), written out here.
+fn butterworth_qs(poles: u8) -> Vec<f64> {
+    if poles == 4 {
+        return vec![0.541, 1.307];
+    }
+    let n = f64::from(poles);
+    let mut qs: Vec<f64> = (0..poles / 2)
+        .map(|k| {
+            let k = f64::from(k);
+            let a = if poles.is_multiple_of(2) {
+                (2.0 * k + 1.0) * std::f64::consts::PI / (2.0 * n)
+            } else {
+                (k + 1.0) * std::f64::consts::PI / n
+            };
+            1.0 / (2.0 * a.cos())
+        })
+        .collect();
+    qs.sort_by(f64::total_cmp);
+    qs
+}
+
+/// The prototype of a filter (the filter gap plan's F4 for its slopes):
+/// a low-pass or high-pass a Butterworth of its poles with the resonance
+/// on the last stage (its Q times the 2-pole's over 0.707), an odd one
+/// with a one-pole, the 1-pole's resonance a boost at the cutoff; a
+/// band-pass broad stages (Q 0.707, 1 at the centre) and one at the
+/// type's Q; a notch one or two at the type's Q; the Peak a boost of Q
+/// over 0.707; the Ladder's, the Vowel's and the Comb's own.
 fn prototype_db(f: &Filter, hz: f64) -> f64 {
     let x = hz / f64::from(f.cutoff_hz);
     let r = f64::from(f.resonance);
@@ -730,14 +769,40 @@ fn prototype_db(f: &Filter, hz: f64) -> f64 {
         _ => {}
     }
     let q = svf_q(r);
-    if f.poles < 4 {
-        return stage_db(f.kind, q, x);
-    }
-    let (q1, q2) = match f.kind {
-        FilterKind::LowPass | FilterKind::HighPass => (0.541, 1.307 * q / 0.707),
-        _ => (q, q),
+    let lift = q / 0.707;
+    let one_pole = |high: bool| {
+        let w = if high { 1.0 / x } else { x };
+        -10.0 * (1.0 + w * w).log10()
     };
-    stage_db(f.kind, q1, x) + stage_db(f.kind, q2, x)
+    match (f.kind, f.poles) {
+        (FilterKind::Peak, _) => boost_db(lift, q, x),
+        (FilterKind::LowPass | FilterKind::HighPass, 1) => {
+            one_pole(f.kind == FilterKind::HighPass) + boost_db(lift, q, x)
+        }
+        (FilterKind::LowPass | FilterKind::HighPass, 2) => stage_db(f.kind, q, x),
+        (FilterKind::LowPass | FilterKind::HighPass, poles) => {
+            let qs = butterworth_qs(poles);
+            let last = qs.len() - 1;
+            let stages: f64 = qs
+                .iter()
+                .enumerate()
+                .map(|(i, &bq)| stage_db(f.kind, if i == last { bq * lift } else { bq }, x))
+                .sum();
+            let odd = if poles % 2 == 1 {
+                one_pole(f.kind == FilterKind::HighPass)
+            } else {
+                0.0
+            };
+            stages + odd
+        }
+        (FilterKind::BandPass, poles) => {
+            let broad = (stage_db(f.kind, 0.707, x) - 20.0 * 0.707f64.log10())
+                * f64::from((poles / 2).max(1) - 1);
+            broad + stage_db(f.kind, q, x)
+        }
+        (_, poles) if poles >= 4 => 2.0 * stage_db(f.kind, q, x),
+        _ => stage_db(f.kind, q, x),
+    }
 }
 
 fn filters(rows: &mut Vec<Row>, rate: u32) {
@@ -794,6 +859,26 @@ fn filters(rows: &mut Vec<Row>, rate: u32) {
             0.5,
         ),
         ("notch 2-pole", FilterKind::Notch, 2, 0.0),
+        (
+            "low-pass 1-pole, resonance 0.5",
+            FilterKind::LowPass,
+            1,
+            0.5,
+        ),
+        (
+            "low-pass 8-pole, resonance 0.5",
+            FilterKind::LowPass,
+            8,
+            0.5,
+        ),
+        ("high-pass 6-pole", FilterKind::HighPass, 6, 0.0),
+        (
+            "band-pass 8-pole, resonance 0.5",
+            FilterKind::BandPass,
+            8,
+            0.5,
+        ),
+        ("peak, resonance 0.5", FilterKind::Peak, 2, 0.5),
         ("ladder", FilterKind::Ladder, 4, 0.0),
         ("ladder, resonance 0.5", FilterKind::Ladder, 4, 0.5),
         ("vowel ah, resonance 0.5", FilterKind::Vowel, 2, 0.5),
@@ -815,6 +900,7 @@ fn filters(rows: &mut Vec<Row>, rate: u32) {
                     | FilterKind::HighPass
                     | FilterKind::BandPass
                     | FilterKind::Notch
+                    | FilterKind::Peak
             );
         let (sweep, dry) = if bends {
             (&quiet, &plain_quiet)

@@ -5,8 +5,9 @@
 //! the Filter effect's (`fx-quality.md`, F1 to F12) where they carry over:
 //!
 //! - **PF1, the cutoff:** the -3 dB point against Cutoff at Resonance 0,
-//!   low-pass and high-pass at 2 and 4 poles, 100 Hz to 16 kHz, from the
-//!   pad's response to a click against a dry pad's. Within 1 %. (The
+//!   low-pass and high-pass at every slope (1, 2, 3, 4, 6 and 8 poles; 2
+//!   and 4 since F1, the rest since F4), 100 Hz to 16 kHz, from the pad's
+//!   response to a click against a dry pad's. Within 1 %. (The
 //!   Ladder is left out: by the usual convention its Cutoff is where it
 //!   rings, which DSP quality's Y2b holds.)
 //! - **PF2, the shape:** the same responses at a 1 kHz cutoff against the
@@ -15,20 +16,28 @@
 //!   above -30 dB. Within 0.1 dB.
 //! - **PF3, the slope:** dB an octave well away from the cutoff (2 to 4
 //!   kHz above a 500 Hz low-pass, 1 kHz down to 500 Hz below a 4 kHz
-//!   high-pass). Within 1 dB of 6 dB a pole.
+//!   high-pass; at 6 and 8 poles 500 Hz to 1 kHz above a 250 Hz low-pass
+//!   and 2 kHz down to 1 kHz below a 4 kHz high-pass, where their
+//!   stopbands are still well above the click's rounding). Within 1 dB of
+//!   6 dB a pole.
 //! - **PF4, the passband by Resonance:** a 100 Hz sine under a 1 kHz
-//!   low-pass at 2 and 4 poles, at Resonance 0, 0.5 and 1. Within ±0.5 dB,
-//!   as the effect's F2. The Ladder's are reported: its bass drops as
-//!   Resonance rises by design, as the effect's does (-4.7 dB at full).
+//!   low-pass at 1, 2, 4 and 8 poles, at Resonance 0, 0.5 and 1. Within
+//!   ±0.5 dB, as the effect's F2. The Ladder's are reported: its bass
+//!   drops as Resonance rises by design, as the effect's does (-4.7 dB at
+//!   full).
 //! - **PF5, a loud sound at full Resonance:** pink at -18 dBFS RMS through
-//!   a low-pass (2 and 4 poles, the Ladder) and a band-pass that the
-//!   filter envelope sweeps from 100 Hz to 10 kHz in four seconds, at
-//!   Resonance 0.75 and 1: the loudest sample, as if the pad passed the
-//!   sound at unity. At most -1 dBFS at Resonance 1, as F3.
+//!   a low-pass (1, 2, 4 and 8 poles, the Ladder), a band-pass (2 and 8
+//!   poles) and the Peak that the filter envelope sweeps from 100 Hz to 10
+//!   kHz in four seconds, at Resonance 0.75 and 1: the loudest sample, as
+//!   if the pad passed the sound at unity. At most -1 dBFS at Resonance 1,
+//!   as F3. The Peak's are reported: it passes the whole sound (its own
+//!   loudest sample is -5.5 dBFS) and adds its ring, held as a low-pass's
+//!   is.
 //! - **PF6, a quiet sound at full Resonance:** a -40 dBFS sine at a 1 kHz
-//!   cutoff, Resonance 1, low-pass at 2 and 4 poles and band-pass: how far
-//!   it rings up. At least 28 dB, as F4. The Ladder sings on its own at
-//!   Resonance 1, so its row is at 0.9, without a target.
+//!   cutoff, Resonance 1, low-pass at every slope, high-pass at 8 poles,
+//!   band-pass at 2, 4 and 8 and the Peak: how far it rings up. At least
+//!   28 dB, as F4. The Ladder sings on its own at Resonance 1, so its row
+//!   is at 0.9, without a target.
 //! - **PF7, a driven, resonant Ladder's aliases:** a sine at 0 dBFS
 //!   through the Ladder at Drive 12 dB, below a cutoff where its loop
 //!   works hard (2.5 kHz at a 5 kHz cutoff and Resonance 0.9, 5 kHz at 8
@@ -39,7 +48,8 @@
 //! - **PF8, a loud sound stays centred:** a centred sawtooth at full scale
 //!   and about 1.8 kHz (a whole number of frames a cycle, so its cycles
 //!   average to 0) under a 2 kHz cutoff, every state-variable type at 2
-//!   and 4 poles, at Resonance 0.3 and 1: the output's DC over whole
+//!   and 4 poles, the low-pass at 1 and 8, the high-pass and band-pass at
+//!   8 and the Peak, at Resonance 0.3 and 1: the output's DC over whole
 //!   cycles once settled, as if the pad passed the sound at unity. At
 //!   most -60 dBFS, as the delay's D4. A filter that bends its states
 //!   inside the loop makes DC of a loud, lopsided wave (the bounded
@@ -54,6 +64,15 @@
 //!   key track times how far the key sounds from the sound's root in the
 //!   kit's tuning, from the key's click against the same key's click on
 //!   a dry keygroup. Within 1 %, as PF1.
+//! - **PF10, the resonance at every slope, and the Peak** (the filter gap
+//!   plan's F4): a -40 dBFS sine at a 1 kHz cutoff, Resonance 0.5, through
+//!   the low-pass and high-pass at 1, 3, 4, 6 and 8 poles and the
+//!   band-pass at 4, 6 and 8: its gain against the same type's 2-pole.
+//!   Within 0.5 dB, as every slope peaks where the 2-pole does. The Peak at
+//!   Resonance 0, 0.5 and 1: its boost at the cutoff (a -46 dBFS sine,
+//!   under its guard's knee) against the 2-pole low-pass's ring there over
+//!   its -3 dB (0 dB at Resonance 0, 35 dB at full), within 0.5 dB; and
+//!   what it does to a sine at 100 Hz and at 10 kHz, at most 0.5 dB.
 //!
 //! DSP quality's measures (`crate::filters`, Y1a to Y2b) hold the pad's
 //! filter to the curve its page draws, and cover two things the effect's
@@ -150,6 +169,7 @@ fn kind_name(kind: FilterKind, poles: u8) -> String {
         FilterKind::HighPass => "high-pass",
         FilterKind::BandPass => "band-pass",
         FilterKind::Notch => "notch",
+        FilterKind::Peak => return "peak".into(),
         FilterKind::Ladder => return "ladder".into(),
         FilterKind::Vowel => return "vowel".into(),
         FilterKind::Comb => return "comb".into(),
@@ -167,16 +187,27 @@ pub(super) fn rows(rows: &mut Vec<Row>, rate: u32) {
     driven(rows, rate);
     centred(rows, rate);
     keyed(rows, rate);
+    slopes(rows, rate);
 }
 
 // ---------------------------------------------------------------------------
 // PF1 to PF3: the cutoff, the shape, the slope.
 
-const CLEAN: [(FilterKind, u8); 4] = [
+/// The low-pass and high-pass at every slope: 2 and 4 poles since F1,
+/// the rest since F4.
+const CLEAN: [(FilterKind, u8); 12] = [
     (FilterKind::LowPass, 2),
     (FilterKind::LowPass, 4),
     (FilterKind::HighPass, 2),
     (FilterKind::HighPass, 4),
+    (FilterKind::LowPass, 1),
+    (FilterKind::LowPass, 3),
+    (FilterKind::LowPass, 6),
+    (FilterKind::LowPass, 8),
+    (FilterKind::HighPass, 1),
+    (FilterKind::HighPass, 3),
+    (FilterKind::HighPass, 6),
+    (FilterKind::HighPass, 8),
 ];
 
 fn cutoffs(rows: &mut Vec<Row>, rate: u32) {
@@ -222,10 +253,13 @@ fn cutoffs(rows: &mut Vec<Row>, rate: u32) {
             0.05,
         );
 
-        let (cutoff, near, far) = if high {
-            (4_000.0, 1_000.0, 500.0)
-        } else {
-            (500.0, 2_000.0, 4_000.0)
+        // A 6 or 8-pole slope nearer its cutoff (2 to 4 times it), where
+        // its stopband is still far above the click's rounding.
+        let (cutoff, near, far) = match (high, poles >= 6) {
+            (true, false) => (4_000.0, 1_000.0, 500.0),
+            (true, true) => (4_000.0, 2_000.0, 1_000.0),
+            (false, false) => (500.0, 2_000.0, 4_000.0),
+            (false, true) => (250.0, 500.0, 1_000.0),
         };
         let wet = click_response(Some(filter(kind, poles, cutoff as f32, 0.0)), rate);
         let slope = gain_db(&wet, &dry, near, rate) - gain_db(&wet, &dry, far, rate);
@@ -266,6 +300,8 @@ fn passband(rows: &mut Vec<Row>, rate: u32) {
         (FilterKind::LowPass, 2u8),
         (FilterKind::LowPass, 4),
         (FilterKind::Ladder, 4),
+        (FilterKind::LowPass, 1),
+        (FilterKind::LowPass, 8),
     ] {
         let ladder = kind == FilterKind::Ladder;
         for res in [0.0f32, 0.5, 1.0] {
@@ -296,6 +332,14 @@ fn quiet(rows: &mut Vec<Row>, rate: u32) {
         (FilterKind::LowPass, 4, 1.0, Some(28.0)),
         (FilterKind::BandPass, 2, 1.0, Some(28.0)),
         (FilterKind::Ladder, 4, 0.9, None),
+        (FilterKind::LowPass, 1, 1.0, Some(28.0)),
+        (FilterKind::LowPass, 3, 1.0, Some(28.0)),
+        (FilterKind::LowPass, 6, 1.0, Some(28.0)),
+        (FilterKind::LowPass, 8, 1.0, Some(28.0)),
+        (FilterKind::HighPass, 8, 1.0, Some(28.0)),
+        (FilterKind::BandPass, 4, 1.0, Some(28.0)),
+        (FilterKind::BandPass, 8, 1.0, Some(28.0)),
+        (FilterKind::Peak, 2, 1.0, Some(28.0)),
     ] {
         put(
             rows,
@@ -349,6 +393,10 @@ fn loud(rows: &mut Vec<Row>, rate: u32) {
         (FilterKind::LowPass, 4),
         (FilterKind::BandPass, 2),
         (FilterKind::Ladder, 4),
+        (FilterKind::LowPass, 1),
+        (FilterKind::LowPass, 8),
+        (FilterKind::BandPass, 8),
+        (FilterKind::Peak, 2),
     ] {
         for res in [0.75f32, 1.0] {
             put(
@@ -361,7 +409,9 @@ fn loud(rows: &mut Vec<Row>, rate: u32) {
                 "peak_dbfs",
                 swept(filter(kind, poles, 100.0, res)),
                 Better::Lower,
-                (res == 1.0).then_some(-1.0),
+                // A boost passes the whole sound and adds its held ring
+                // to it, so the Peak's are reported.
+                (res == 1.0 && kind != FilterKind::Peak).then_some(-1.0),
                 0.3,
             );
         }
@@ -440,6 +490,11 @@ fn centred(rows: &mut Vec<Row>, rate: u32) {
         (FilterKind::BandPass, 4),
         (FilterKind::Notch, 2),
         (FilterKind::Notch, 4),
+        (FilterKind::LowPass, 1),
+        (FilterKind::LowPass, 8),
+        (FilterKind::HighPass, 8),
+        (FilterKind::BandPass, 8),
+        (FilterKind::Peak, 2),
     ] {
         for res in [0.3f32, 1.0] {
             put(
@@ -585,6 +640,75 @@ fn keyed(rows: &mut Vec<Row>, rate: u32) {
             worst,
             Better::Lower,
             Some(1.0),
+            0.05,
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PF10: the resonance at every slope, and the Peak.
+
+fn slopes(rows: &mut Vec<Row>, rate: u32) {
+    // A quiet sine on a 1 kHz cutoff (under the guard's knee) at
+    // Resonance 0.5: each slope's gain there against the 2-pole's.
+    let at_cutoff =
+        |kind, poles| sine_gain_db(filter(kind, poles, 1_000.0, 0.5), 1_000.0, -40.0, rate);
+    for (kind, slopes) in [
+        (FilterKind::LowPass, &[1u8, 3, 4, 6, 8][..]),
+        (FilterKind::HighPass, &[1, 3, 4, 6, 8]),
+        (FilterKind::BandPass, &[4, 6, 8]),
+    ] {
+        let two = at_cutoff(kind, 2);
+        for &poles in slopes {
+            put(
+                rows,
+                "PF10",
+                format!(
+                    "pad filter[{}, 1 kHz, resonance 0.5, -40 dBFS sine at the cutoff]",
+                    kind_name(kind, poles)
+                ),
+                "against_2_pole_db",
+                at_cutoff(kind, poles) - two,
+                Better::Near(0.0),
+                Some(0.5),
+                0.05,
+            );
+        }
+    }
+    // The Peak: its boost at the cutoff is the 2-pole low-pass's ring
+    // over its -3 dB (0 dB at Resonance 0, 35 dB at full), and away from
+    // the cutoff it leaves the sound alone. The sine is under the boost's
+    // own knee, √2 under the low-pass's.
+    for res in [0.0f32, 0.5, 1.0] {
+        let peak = filter(FilterKind::Peak, 2, 1_000.0, res);
+        let lp = sine_gain_db(
+            filter(FilterKind::LowPass, 2, 1_000.0, res),
+            1_000.0,
+            -46.0,
+            rate,
+        );
+        put(
+            rows,
+            "PF10",
+            format!("pad filter[peak, 1 kHz, resonance {res}, -46 dBFS sine at the cutoff]"),
+            "boost_against_2_pole_db",
+            sine_gain_db(peak, 1_000.0, -46.0, rate) - (lp + 10.0 * 2.0f64.log10()),
+            Better::Near(0.0),
+            Some(0.5),
+            0.05,
+        );
+        let away = [100.0, 10_000.0]
+            .into_iter()
+            .map(|hz| sine_gain_db(peak, hz, -24.0, rate).abs())
+            .fold(0.0f64, f64::max);
+        put(
+            rows,
+            "PF10",
+            format!("pad filter[peak, 1 kHz, resonance {res}, 100 Hz and 10 kHz]"),
+            "away_db",
+            away,
+            Better::Lower,
+            Some(0.5),
             0.05,
         );
     }

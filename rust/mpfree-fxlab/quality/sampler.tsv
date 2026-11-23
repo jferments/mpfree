@@ -10,15 +10,20 @@ sampler/drive[ladder open, 12 dB, 5 kHz at 0 dBFS]/alias_worst_db	-74.0617
 sampler/drive[ladder open, 24 dB, 2.5 kHz at 0 dBFS]/alias_worst_db	-58.6118
 sampler/drive[ladder open, 24 dB, 5 kHz at 0 dBFS]/alias_worst_db	-45.8244
 sampler/filter[band-pass 2-pole, resonance 0.5, 1 kHz]/error_db	1.0312
+sampler/filter[band-pass 8-pole, resonance 0.5, 1 kHz]/error_db	0.3354
 sampler/filter[comb, resonance 0.5, 1 kHz]/error_db	0.0481
 sampler/filter[comb, resonance 0.9, 1 kHz]/error_db	0.3362
 sampler/filter[high-pass 2-pole, 1 kHz]/error_db	0.0313
+sampler/filter[high-pass 6-pole, 1 kHz]/error_db	0.0662
 sampler/filter[ladder, 1 kHz]/error_db	0.1355
 sampler/filter[ladder, resonance 0.5, 1 kHz]/error_db	0.2804
+sampler/filter[low-pass 1-pole, resonance 0.5, 1 kHz]/error_db	1.0151
 sampler/filter[low-pass 2-pole, 1 kHz]/error_db	0.7239
 sampler/filter[low-pass 2-pole, resonance 0.9, 1 kHz]/error_db	0.7438
 sampler/filter[low-pass 4-pole, 1 kHz]/error_db	0.159
+sampler/filter[low-pass 8-pole, resonance 0.5, 1 kHz]/error_db	0.1041
 sampler/filter[notch 2-pole, 1 kHz]/error_db	0.0488
+sampler/filter[peak, resonance 0.5, 1 kHz]/error_db	0.0376
 sampler/filter[vowel ah, resonance 0.5, 1 kHz]/error_db	1.0293
 sampler/fold[15 kHz an octave up]/heard_db	-86.4352
 sampler/fold[30 kHz in a 96 kHz file]/heard_db	-77.2572
@@ -30,18 +35,47 @@ sampler/pad filter[band-pass 2-pole, 2 kHz, resonance 0.3, 1.8 kHz sawtooth at 0
 sampler/pad filter[band-pass 2-pole, 2 kHz, resonance 1, 1.8 kHz sawtooth at 0 dBFS]/dc_dbfs	-140
 sampler/pad filter[band-pass 2-pole, swept 100 Hz to 10 kHz, resonance 0.75, pink at -18 dBFS]/peak_dbfs	-5.2995
 sampler/pad filter[band-pass 2-pole, swept 100 Hz to 10 kHz, resonance 1, pink at -18 dBFS]/peak_dbfs	-3.8513
+sampler/pad filter[band-pass 4-pole, 1 kHz, resonance 0.5, -40 dBFS sine at the cutoff]/against_2_pole_db	0
+sampler/pad filter[band-pass 4-pole, 1 kHz, resonance 1, -40 dBFS sine]/ring_up_db	32.0307
 sampler/pad filter[band-pass 4-pole, 2 kHz, resonance 0.3, 1.8 kHz sawtooth at 0 dBFS]/dc_dbfs	-140
 sampler/pad filter[band-pass 4-pole, 2 kHz, resonance 1, 1.8 kHz sawtooth at 0 dBFS]/dc_dbfs	-140
+sampler/pad filter[band-pass 6-pole, 1 kHz, resonance 0.5, -40 dBFS sine at the cutoff]/against_2_pole_db	0
+sampler/pad filter[band-pass 8-pole, 1 kHz, resonance 0.5, -40 dBFS sine at the cutoff]/against_2_pole_db	0
+sampler/pad filter[band-pass 8-pole, 1 kHz, resonance 1, -40 dBFS sine]/ring_up_db	32.0307
+sampler/pad filter[band-pass 8-pole, 2 kHz, resonance 0.3, 1.8 kHz sawtooth at 0 dBFS]/dc_dbfs	-140
+sampler/pad filter[band-pass 8-pole, 2 kHz, resonance 1, 1.8 kHz sawtooth at 0 dBFS]/dc_dbfs	-140
+sampler/pad filter[band-pass 8-pole, swept 100 Hz to 10 kHz, resonance 0.75, pink at -18 dBFS]/peak_dbfs	-5.446
+sampler/pad filter[band-pass 8-pole, swept 100 Hz to 10 kHz, resonance 1, pink at -18 dBFS]/peak_dbfs	-3.747
+sampler/pad filter[high-pass 1-pole, 1 kHz, resonance 0.5, -40 dBFS sine at the cutoff]/against_2_pole_db	-0.0014
+sampler/pad filter[high-pass 1-pole, 1 kHz]/butterworth_error_db	0
+sampler/pad filter[high-pass 1-pole, 4000 Hz]/slope_db_per_octave	5.8451
+sampler/pad filter[high-pass 1-pole, resonance 0]/cutoff_error_pct	0
 sampler/pad filter[high-pass 2-pole, 1 kHz]/butterworth_error_db	0.0013
 sampler/pad filter[high-pass 2-pole, 2 kHz, resonance 0.3, 1.8 kHz sawtooth at 0 dBFS]/dc_dbfs	-140
 sampler/pad filter[high-pass 2-pole, 2 kHz, resonance 1, 1.8 kHz sawtooth at 0 dBFS]/dc_dbfs	-140
 sampler/pad filter[high-pass 2-pole, 4000 Hz]/slope_db_per_octave	12.0488
 sampler/pad filter[high-pass 2-pole, resonance 0]/cutoff_error_pct	0.015
+sampler/pad filter[high-pass 3-pole, 1 kHz, resonance 0.5, -40 dBFS sine at the cutoff]/against_2_pole_db	0.0038
+sampler/pad filter[high-pass 3-pole, 1 kHz]/butterworth_error_db	0
+sampler/pad filter[high-pass 3-pole, 4000 Hz]/slope_db_per_octave	18.094
+sampler/pad filter[high-pass 3-pole, resonance 0]/cutoff_error_pct	0.0003
+sampler/pad filter[high-pass 4-pole, 1 kHz, resonance 0.5, -40 dBFS sine at the cutoff]/against_2_pole_db	0.006
 sampler/pad filter[high-pass 4-pole, 1 kHz]/butterworth_error_db	0.0014
 sampler/pad filter[high-pass 4-pole, 2 kHz, resonance 0.3, 1.8 kHz sawtooth at 0 dBFS]/dc_dbfs	-140
 sampler/pad filter[high-pass 4-pole, 2 kHz, resonance 1, 1.8 kHz sawtooth at 0 dBFS]/dc_dbfs	-140
 sampler/pad filter[high-pass 4-pole, 4000 Hz]/slope_db_per_octave	24.1266
 sampler/pad filter[high-pass 4-pole, resonance 0]/cutoff_error_pct	0.0018
+sampler/pad filter[high-pass 6-pole, 1 kHz, resonance 0.5, -40 dBFS sine at the cutoff]/against_2_pole_db	0.011
+sampler/pad filter[high-pass 6-pole, 1 kHz]/butterworth_error_db	0
+sampler/pad filter[high-pass 6-pole, 4000 Hz]/slope_db_per_octave	36.3903
+sampler/pad filter[high-pass 6-pole, resonance 0]/cutoff_error_pct	0.0003
+sampler/pad filter[high-pass 8-pole, 1 kHz, resonance 0.5, -40 dBFS sine at the cutoff]/against_2_pole_db	0.0152
+sampler/pad filter[high-pass 8-pole, 1 kHz, resonance 1, -40 dBFS sine]/ring_up_db	31.9234
+sampler/pad filter[high-pass 8-pole, 1 kHz]/butterworth_error_db	0.0001
+sampler/pad filter[high-pass 8-pole, 2 kHz, resonance 0.3, 1.8 kHz sawtooth at 0 dBFS]/dc_dbfs	-140
+sampler/pad filter[high-pass 8-pole, 2 kHz, resonance 1, 1.8 kHz sawtooth at 0 dBFS]/dc_dbfs	-140
+sampler/pad filter[high-pass 8-pole, 4000 Hz]/slope_db_per_octave	48.5149
+sampler/pad filter[high-pass 8-pole, resonance 0]/cutoff_error_pct	0.0002
 sampler/pad filter[ladder at 10 kHz, resonance 0.9, 12 dB, 7 kHz at 0 dBFS]/alias_worst_db	-70.7848
 sampler/pad filter[ladder at 5 kHz, resonance 0.9, 12 dB, 2.5 kHz at 0 dBFS]/alias_worst_db	-102.9257
 sampler/pad filter[ladder at 8 kHz, resonance 0.7, 12 dB, 5 kHz at 0 dBFS]/alias_worst_db	-85.8954
@@ -50,6 +84,18 @@ sampler/pad filter[ladder, 2 kHz, resonance 0.5, 0 dB, 1.8 kHz sawtooth at 0 dBF
 sampler/pad filter[ladder, 2 kHz, resonance 0.5, 12 dB, 1.8 kHz sawtooth at 0 dBFS]/dc_dbfs	-46.869
 sampler/pad filter[ladder, swept 100 Hz to 10 kHz, resonance 0.75, pink at -18 dBFS]/peak_dbfs	-6.2025
 sampler/pad filter[ladder, swept 100 Hz to 10 kHz, resonance 1, pink at -18 dBFS]/peak_dbfs	-2.1306
+sampler/pad filter[low-pass 1-pole, 1 kHz, resonance 0.5, -40 dBFS sine at the cutoff]/against_2_pole_db	0.004
+sampler/pad filter[low-pass 1-pole, 1 kHz, resonance 0.5]/passband_100hz_db	0.0431
+sampler/pad filter[low-pass 1-pole, 1 kHz, resonance 0]/passband_100hz_db	-0.0433
+sampler/pad filter[low-pass 1-pole, 1 kHz, resonance 1, -40 dBFS sine]/ring_up_db	32.0293
+sampler/pad filter[low-pass 1-pole, 1 kHz, resonance 1]/passband_100hz_db	0.0446
+sampler/pad filter[low-pass 1-pole, 1 kHz]/butterworth_error_db	0
+sampler/pad filter[low-pass 1-pole, 2 kHz, resonance 0.3, 1.8 kHz sawtooth at 0 dBFS]/dc_dbfs	-140
+sampler/pad filter[low-pass 1-pole, 2 kHz, resonance 1, 1.8 kHz sawtooth at 0 dBFS]/dc_dbfs	-140
+sampler/pad filter[low-pass 1-pole, 500 Hz]/slope_db_per_octave	6.0049
+sampler/pad filter[low-pass 1-pole, resonance 0]/cutoff_error_pct	0
+sampler/pad filter[low-pass 1-pole, swept 100 Hz to 10 kHz, resonance 0.75, pink at -18 dBFS]/peak_dbfs	-2.1775
+sampler/pad filter[low-pass 1-pole, swept 100 Hz to 10 kHz, resonance 1, pink at -18 dBFS]/peak_dbfs	-1.0938
 sampler/pad filter[low-pass 2-pole, 1 kHz, resonance 0.5]/passband_100hz_db	0.0859
 sampler/pad filter[low-pass 2-pole, 1 kHz, resonance 0]/passband_100hz_db	-0.0005
 sampler/pad filter[low-pass 2-pole, 1 kHz, resonance 1, -40 dBFS sine]/ring_up_db	32.0253
@@ -65,6 +111,12 @@ sampler/pad filter[low-pass 2-pole, Key track 1, just]/cutoff_error_pct	0.0149
 sampler/pad filter[low-pass 2-pole, resonance 0]/cutoff_error_pct	0.015
 sampler/pad filter[low-pass 2-pole, swept 100 Hz to 10 kHz, resonance 0.75, pink at -18 dBFS]/peak_dbfs	-2.6095
 sampler/pad filter[low-pass 2-pole, swept 100 Hz to 10 kHz, resonance 1, pink at -18 dBFS]/peak_dbfs	-1.3718
+sampler/pad filter[low-pass 3-pole, 1 kHz, resonance 0.5, -40 dBFS sine at the cutoff]/against_2_pole_db	-0.0016
+sampler/pad filter[low-pass 3-pole, 1 kHz, resonance 1, -40 dBFS sine]/ring_up_db	32.0125
+sampler/pad filter[low-pass 3-pole, 1 kHz]/butterworth_error_db	0
+sampler/pad filter[low-pass 3-pole, 500 Hz]/slope_db_per_octave	18.6026
+sampler/pad filter[low-pass 3-pole, resonance 0]/cutoff_error_pct	0.0002
+sampler/pad filter[low-pass 4-pole, 1 kHz, resonance 0.5, -40 dBFS sine at the cutoff]/against_2_pole_db	-0.0048
 sampler/pad filter[low-pass 4-pole, 1 kHz, resonance 0.5]/passband_100hz_db	0.0254
 sampler/pad filter[low-pass 4-pole, 1 kHz, resonance 0]/passband_100hz_db	-0.0001
 sampler/pad filter[low-pass 4-pole, 1 kHz, resonance 1, -40 dBFS sine]/ring_up_db	31.9952
@@ -76,10 +128,38 @@ sampler/pad filter[low-pass 4-pole, 500 Hz]/slope_db_per_octave	24.8048
 sampler/pad filter[low-pass 4-pole, resonance 0]/cutoff_error_pct	0.0018
 sampler/pad filter[low-pass 4-pole, swept 100 Hz to 10 kHz, resonance 0.75, pink at -18 dBFS]/peak_dbfs	-3.0364
 sampler/pad filter[low-pass 4-pole, swept 100 Hz to 10 kHz, resonance 1, pink at -18 dBFS]/peak_dbfs	-2.4745
+sampler/pad filter[low-pass 6-pole, 1 kHz, resonance 0.5, -40 dBFS sine at the cutoff]/against_2_pole_db	-0.0107
+sampler/pad filter[low-pass 6-pole, 1 kHz, resonance 1, -40 dBFS sine]/ring_up_db	31.9469
+sampler/pad filter[low-pass 6-pole, 1 kHz]/butterworth_error_db	0
+sampler/pad filter[low-pass 6-pole, 250 Hz]/slope_db_per_octave	36.1892
+sampler/pad filter[low-pass 6-pole, resonance 0]/cutoff_error_pct	0.0003
+sampler/pad filter[low-pass 8-pole, 1 kHz, resonance 0.5, -40 dBFS sine at the cutoff]/against_2_pole_db	-0.0173
+sampler/pad filter[low-pass 8-pole, 1 kHz, resonance 0.5]/passband_100hz_db	0.0066
+sampler/pad filter[low-pass 8-pole, 1 kHz, resonance 0]/passband_100hz_db	0
+sampler/pad filter[low-pass 8-pole, 1 kHz, resonance 1, -40 dBFS sine]/ring_up_db	31.8801
+sampler/pad filter[low-pass 8-pole, 1 kHz, resonance 1]/passband_100hz_db	0.0068
+sampler/pad filter[low-pass 8-pole, 1 kHz]/butterworth_error_db	0
+sampler/pad filter[low-pass 8-pole, 2 kHz, resonance 0.3, 1.8 kHz sawtooth at 0 dBFS]/dc_dbfs	-140
+sampler/pad filter[low-pass 8-pole, 2 kHz, resonance 1, 1.8 kHz sawtooth at 0 dBFS]/dc_dbfs	-140
+sampler/pad filter[low-pass 8-pole, 250 Hz]/slope_db_per_octave	48.2193
+sampler/pad filter[low-pass 8-pole, resonance 0]/cutoff_error_pct	0.0001
+sampler/pad filter[low-pass 8-pole, swept 100 Hz to 10 kHz, resonance 0.75, pink at -18 dBFS]/peak_dbfs	-4.5799
+sampler/pad filter[low-pass 8-pole, swept 100 Hz to 10 kHz, resonance 1, pink at -18 dBFS]/peak_dbfs	-2.736
 sampler/pad filter[notch 2-pole, 2 kHz, resonance 0.3, 1.8 kHz sawtooth at 0 dBFS]/dc_dbfs	-140
 sampler/pad filter[notch 2-pole, 2 kHz, resonance 1, 1.8 kHz sawtooth at 0 dBFS]/dc_dbfs	-140
 sampler/pad filter[notch 4-pole, 2 kHz, resonance 0.3, 1.8 kHz sawtooth at 0 dBFS]/dc_dbfs	-140
 sampler/pad filter[notch 4-pole, 2 kHz, resonance 1, 1.8 kHz sawtooth at 0 dBFS]/dc_dbfs	-140
+sampler/pad filter[peak, 1 kHz, resonance 0, -46 dBFS sine at the cutoff]/boost_against_2_pole_db	0.0067
+sampler/pad filter[peak, 1 kHz, resonance 0, 100 Hz and 10 kHz]/away_db	0
+sampler/pad filter[peak, 1 kHz, resonance 0.5, -46 dBFS sine at the cutoff]/boost_against_2_pole_db	0.0067
+sampler/pad filter[peak, 1 kHz, resonance 0.5, 100 Hz and 10 kHz]/away_db	0.0864
+sampler/pad filter[peak, 1 kHz, resonance 1, -40 dBFS sine]/ring_up_db	32.6355
+sampler/pad filter[peak, 1 kHz, resonance 1, -46 dBFS sine at the cutoff]/boost_against_2_pole_db	0.0067
+sampler/pad filter[peak, 1 kHz, resonance 1, 100 Hz and 10 kHz]/away_db	0.0879
+sampler/pad filter[peak, 2 kHz, resonance 0.3, 1.8 kHz sawtooth at 0 dBFS]/dc_dbfs	-140
+sampler/pad filter[peak, 2 kHz, resonance 1, 1.8 kHz sawtooth at 0 dBFS]/dc_dbfs	-140
+sampler/pad filter[peak, swept 100 Hz to 10 kHz, resonance 0.75, pink at -18 dBFS]/peak_dbfs	-0.9069
+sampler/pad filter[peak, swept 100 Hz to 10 kHz, resonance 1, pink at -18 dBFS]/peak_dbfs	-0.1391
 sampler/pitch[a fifth down, 13.5 kHz out]/level_db	-6.3109
 sampler/pitch[a fifth down, 13.5 kHz out]/spur_worst_db	-9.3058
 sampler/pitch[a fifth down, 3 kHz out]/level_db	-0.0255
