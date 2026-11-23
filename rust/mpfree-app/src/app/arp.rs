@@ -76,10 +76,21 @@ pub fn built_in_patterns() -> Vec<(String, Pattern)> {
 const QLINK_UNITS: [i32; 4] = [3, 1, 1, 4];
 /// The panel's mode tabs, and the modes NOTE REPEAT can turn on.
 mod part;
+mod phrases;
 /// The arp part's first line, for the project opener's check.
 pub use part::HEADER as ARP_HEADER;
+pub use phrases::built_in_phrases;
 
 const MODES: [Mode; 4] = [Mode::Direct, Mode::Repeat, Mode::Arp, Mode::Pattern];
+/// Every mode a project's arp part can name: the panel's tabs and Phrase,
+/// whose tab is not built yet.
+const KEPT_MODES: [Mode; 5] = [
+    Mode::Direct,
+    Mode::Repeat,
+    Mode::Arp,
+    Mode::Pattern,
+    Mode::Phrase,
+];
 const GENERATING: [Mode; 3] = [Mode::Repeat, Mode::Arp, Mode::Pattern];
 const MUTATE_AMOUNT: u8 = 35;
 /// Recording writes at least this many steps (a pattern stopped early
@@ -198,13 +209,14 @@ pub fn mode_label(m: Mode) -> &'static str {
         Mode::Repeat => "Repeat",
         Mode::Arp => "Arp",
         Mode::Pattern => "Pattern",
+        Mode::Phrase => "Phrase",
     }
 }
 
 impl App {
     /// What the pads play through now.
     pub(super) fn engine_mode(&self) -> Mode {
-        if self.free_time_recording() {
+        let mode = if self.free_time_recording() {
             // Free time: the pattern plays the latched notes while the pads
             // write steps into it.
             Mode::Pattern
@@ -217,6 +229,12 @@ impl App {
             self.arp_mode
         } else {
             Mode::Direct
+        };
+        // A phrase moves notes: on a kit the pads play as pressed.
+        if mode == Mode::Phrase && !self.phrases_play() {
+            Mode::Direct
+        } else {
+            mode
         }
     }
 
@@ -432,7 +450,7 @@ impl App {
     }
 
     /// The wheel while NOTE REPEAT is held or on the panel: the order (Arp),
-    /// the pattern (Pattern) or the rate.
+    /// the pattern (Pattern), the phrase (Phrase) or the rate.
     pub(super) fn arp_wheel(&mut self, delta: i32) -> Vec<Effect> {
         match self.arps.engine_at(self.track).settings().mode {
             Mode::Arp => {
@@ -454,6 +472,7 @@ impl App {
                     self.load_pattern(i)
                 }
             }
+            Mode::Phrase => self.phrase_wheel(delta),
             Mode::Direct | Mode::Repeat => {
                 self.set_rate(step_in(&Rate::ALL, self.settings.rate, delta))
             }
@@ -1286,6 +1305,7 @@ impl App {
         }
         self.pad_layout = layout;
         self.arp_dirty = true;
+        self.phrase_follows_pads();
     }
 
     /// The selected track's own synth's pad map while it plays notes, or
@@ -1301,6 +1321,7 @@ impl App {
             self.press_change(press);
         }
         self.arp_layout = layout;
+        self.phrase_follows_pads();
     }
 
     /// What the pads press into the arp: the synth's layout's notes, or
@@ -1615,6 +1636,9 @@ pub struct TrackUi {
     pattern_index: usize,
     pub(super) pattern: Pattern,
     mutations: u32,
+    /// The track's phrase, as a place in `App::phrases` (the phrase itself
+    /// is in the list and in the track's engine: `app/arp/phrases.rs`).
+    phrase_index: usize,
 }
 
 impl TrackUi {
@@ -1641,6 +1665,7 @@ impl Default for TrackUi {
             pattern_index: 0,
             pattern: Pattern::default(),
             mutations: 0,
+            phrase_index: 0,
         }
     }
 }
@@ -1659,6 +1684,7 @@ impl App {
             pattern_index: self.pattern_index,
             pattern: self.pattern,
             mutations: self.mutations,
+            phrase_index: self.phrase_index,
         }
     }
 
@@ -1674,6 +1700,8 @@ impl App {
         self.pattern_index = u.pattern_index;
         self.mutations = u.mutations;
         let _ = self.set_pattern(u.pattern);
+        self.phrase_index = u.phrase_index;
+        self.send_phrase();
         self.arp_changed()
     }
 

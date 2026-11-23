@@ -7002,6 +7002,7 @@ impl Player {
         let wheel = match mode {
             Mode::Arp => "order",
             Mode::Pattern => "pattern",
+            Mode::Phrase => "phrase",
             Mode::Direct | Mode::Repeat => "rate",
         };
         let text = if self.power.is_some() {

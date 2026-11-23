@@ -1,0 +1,929 @@
+//! Phrase mode: what the engine does with a phrase.
+//!
+//! The engine has two generators. The step modes (Repeat, Arp, Pattern)
+//! play one step after another on the rate's grid, in `engine.rs`. Phrase
+//! mode plays a [`Phrase`]'s notes where they were written, and lives
+//! here. Both share the engine's held notes and Latch, its settings and
+//! Modifier, its clock, and its queue of note-ons and note-offs.
+//!
+//! Where the phrase is (which note is next, which time round, the bar
+//! line a waiting phrase comes in on) is the [`Playhead`]'s business
+//! ([`crate::phrase`]): it counts in ticks and knows nothing of frames or
+//! of sound. This file turns what the playhead says is due into notes:
+//! the pitch from the newest held note, the velocity, the gate, swing,
+//! and who ends what.
+//!
+//! **Who ends what.** A step mode's note is a few steps long at most, so
+//! the engine lets every note it started run out. A phrase's note can be
+//! bars long, so here:
+//!
+//! - the same note struck again ends the one sounding at that moment (its
+//!   own ending, still queued, would otherwise cut the new one short);
+//! - when the phrase stops (nothing held, or the mode changes), what it
+//!   has sounding ends at once;
+//! - when it starts again (Retrigger, a transport start or jump), or
+//!   another phrase comes in on a bar line, what still sounds ends there.
+//!
+//! [`Playhead`]: crate::phrase::Playhead
+
+use super::{Engine, EventKind, Hit, Mode, SyncStart, PPQ};
+use crate::phrase::{self, Phrase, Turn, MAX_PHRASE_NOTES};
+use crate::scale::Scale;
+
+/// The 1/16 a phrase starts on and swings on, in ticks.
+const SIXTEENTH: u32 = PPQ / 4;
+
+impl Engine {
+    /// The phrase Phrase mode plays. Picked while one plays, it comes in on
+    /// the playing phrase's next bar line, from its first note; otherwise
+    /// at once. Picking again before that bar line replaces the one
+    /// waiting, and picking the one that plays leaves it playing on, with
+    /// nothing waiting (so a track armed again never starts its phrase
+    /// over).
+    pub fn set_phrase(&mut self, phrase: Phrase) {
+        if self.running && self.settings.mode == Mode::Phrase {
+            self.next_phrase = (phrase != self.phrase).then_some(phrase);
+        } else {
+            self.phrase = phrase;
+            self.next_phrase = None;
+        }
+    }
+
+    /// The phrase playing (or that plays next in Phrase mode).
+    pub fn phrase(&self) -> &Phrase {
+        &self.phrase
+    }
+
+    /// The key a phrase follows In key while the arp's own scale
+    /// (`Settings::scale`) is off: the scale the track's pads play, so a
+    /// riff stays in the key the pads are in. The arp's own scale, when
+    /// on, wins. It changes nothing in the other modes, and is not one of
+    /// the arp's settings: it belongs to the track's pads.
+    pub fn set_key(&mut self, key: Option<Scale>) {
+        self.key = key;
+    }
+
+    pub fn key(&self) -> Option<Scale> {
+        self.key
+    }
+
+    /// Where the phrase is now, in written ticks from its start (0 up to
+    /// its length), for a cursor on screen; None unless a phrase plays.
+    pub fn phrase_at(&self) -> Option<f64> {
+        if !self.running || self.settings.mode != Mode::Phrase {
+            return None;
+        }
+        self.playhead
+            .position(&self.phrase, self.clock_tick(self.now as f64))
+    }
+
+    /// Ticks to the next place a phrase may start while the transport
+    /// plays: the next 1/16, beat or bar ([`SyncStart`]).
+    pub(super) fn phrase_start_unit(&self) -> u32 {
+        match (self.settings.start, self.sync) {
+            (SyncStart::Step, _) => SIXTEENTH,
+            (SyncStart::Beat, _) => PPQ,
+            (SyncStart::Bar, Some(s)) => s.bar_ticks,
+            (SyncStart::Bar, None) => PPQ * 4,
+        }
+    }
+
+    /// Written ticks per clock tick: the speed, times the modifier's push
+    /// on the rate (two steps faster from 1/16 is 1/32: twice as fast).
+    fn phrase_factor(&self) -> f64 {
+        self.live.speed.factor() * f64::from(self.settings.rate.ticks())
+            / f64::from(self.live.rate.ticks())
+    }
+
+    /// The phrase from its first note: on the next multiple of `unit`
+    /// ticks while the transport plays, else now. A phrase that was
+    /// waiting for a bar line comes in with it.
+    pub(super) fn start_phrase(&mut self, unit: u32) {
+        if let Some(p) = self.next_phrase.take() {
+            self.phrase = p;
+        }
+        let origin = match self.sync {
+            Some(_) => self.grid_after(i64::from(unit)) as f64,
+            None => self.clock_tick(self.now as f64),
+        };
+        self.playhead.start(origin, self.phrase_factor());
+    }
+
+    /// The phrase again from its first note while it plays (see
+    /// [`Engine::start_phrase`]): what has not started never does, and
+    /// what still sounds ends where the phrase starts again.
+    pub(super) fn restart_phrase(&mut self, unit: u32) {
+        self.drop_pending_ons();
+        self.start_phrase(unit);
+        let at = self.clock_frame(self.playhead.origin());
+        self.end_notes_by(at.max(self.now as f64));
+    }
+
+    /// Retrigger: a new note starts the phrase again, on the next 1/16
+    /// while the transport plays, else now.
+    pub(super) fn retrigger_phrase(&mut self) {
+        self.restart_phrase(SIXTEENTH);
+    }
+
+    /// The phrase stops (nothing held, or the mode changed): what it has
+    /// sounding ends now.
+    pub(super) fn stop_phrase(&mut self) {
+        self.end_notes_by(self.now as f64);
+    }
+
+    /// A new speed keeps the phrase's place: from now on it plays at the
+    /// new speed from where it is.
+    pub(super) fn respeed_phrase(&mut self) {
+        let factor = self.phrase_factor();
+        if (factor - self.playhead.factor()).abs() > 1e-12 {
+            self.playhead
+                .respeed(self.clock_tick(self.now as f64), factor);
+        }
+    }
+
+    /// Plays every note of the phrase that starts before frame `end`, and
+    /// brings a waiting phrase in on its bar line.
+    pub(super) fn play_phrase(&mut self, end: u64) {
+        let until = self.clock_tick(end as f64);
+        // A turn is a note or a phrase coming in: every note twice and a
+        // swap at the very most in one period, so the loop always ends.
+        for _ in 0..MAX_PHRASE_NOTES * 2 + 2 {
+            let waiting = self.next_phrase.is_some();
+            match self.playhead.turn(&self.phrase, waiting, until) {
+                None => break,
+                Some(Turn::Swap) => {
+                    if let Some(p) = self.next_phrase.take() {
+                        self.phrase = p;
+                    }
+                    let line = self.phrase_swung(self.playhead.origin());
+                    self.end_notes_by(self.clock_frame(line));
+                }
+                Some(Turn::Note { index, at, pass }) => {
+                    let repeats = u64::from(self.settings.repeats);
+                    if repeats == 0 || pass < repeats {
+                        self.play_phrase_note(index, at, pass);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Note `i` of the phrase, `w` written ticks from where the phrase
+    /// started, on its `pass`th time round, from the newest note held:
+    /// its pitch In key or Exact; an octave more each time round, up to
+    /// the octaves set; its length by the gate ([`Phrase::gated`]); its
+    /// velocity as written times the held note's (100 plays it as
+    /// written); then the modifier's rolls and accents.
+    fn play_phrase_note(&mut self, i: usize, w: f64, pass: u64) {
+        let Some(held) = self.notes.active().as_slice().last().copied() else {
+            return;
+        };
+        let n = self.phrase.notes()[i];
+        let live = self.live;
+        let scale = live.scale.or(self.key);
+        let Some(pitch) = self
+            .phrase
+            .pitch(&n, held.note, live.follow, scale, live.snap)
+        else {
+            return;
+        };
+        let octave = (pass % u64::from(live.octaves.max(1))) as i16;
+        let note = i16::from(pitch) + 12 * octave;
+        if !(0..=127).contains(&note) {
+            return;
+        }
+        let note = note as u8;
+        // Its start and its end go through the same sums, so a note held
+        // to the next one ends on the very frame that one starts.
+        let t = self.playhead.tick_of(w);
+        let t_off = self.playhead.tick_of(w + self.phrase.gated(i, live.gate));
+        let at = self.clock_frame(self.phrase_swung(t));
+        let off = self.clock_frame(self.phrase_swung(t_off)).max(at + 1.0);
+        let v = f64::from(n.velocity) * f64::from(self.velocity_of(held.velocity)) / 100.0;
+        let v = self
+            .settings
+            .ramp
+            .apply(v.round().clamp(1.0, 127.0) as u8, self.step);
+        let hit = self.pushed_hit(Hit {
+            velocity: Some(v),
+            ..Hit::plain(100)
+        });
+        let velocity = hit.velocity.unwrap_or(v);
+        self.end_note_by(note, at);
+        if hit.ratchet > 1 {
+            self.tied = 0.0;
+            self.hit(note, velocity, at, off - at, hit.ratchet, 100);
+        } else {
+            self.queue_note(at, off, note, velocity);
+        }
+        self.step += 1;
+    }
+
+    /// Clock tick `t` moved by swing: the transport's while it plays with
+    /// some, else the arp's own on 1/16s, counted from the transport's
+    /// tick 0 while it plays and from where the phrase started while it
+    /// doesn't.
+    fn phrase_swung(&self, t: f64) -> f64 {
+        let own = f64::from(SIXTEENTH);
+        let (grid, amount, base) = match self.sync {
+            Some(s) => match s.swing {
+                Some((grid, amount)) => (f64::from(grid), amount, 0.0),
+                None => (own, self.live.swing, 0.0),
+            },
+            None => (own, self.live.swing, self.playhead.started()),
+        };
+        phrase::swing(t, grid, amount, base)
+    }
+
+    /// Nothing the phrase has queued starts at or after `frame`, and
+    /// nothing it has sounding goes on past it.
+    fn end_notes_by(&mut self, frame: f64) {
+        let mut i = 0;
+        while i < self.queued {
+            let p = &mut self.queue[i];
+            match p.kind {
+                EventKind::On { .. } if p.at >= frame => {
+                    self.queued -= 1;
+                    self.queue[i] = self.queue[self.queued];
+                    continue;
+                }
+                EventKind::Off { .. } if p.at > frame => p.at = frame,
+                _ => {}
+            }
+            i += 1;
+        }
+    }
+
+    /// The same for one note, as it is struck again at `frame`: the one
+    /// sounding ends there, so its ending can't cut the new one short.
+    fn end_note_by(&mut self, note: u8, frame: f64) {
+        let mut i = 0;
+        while i < self.queued {
+            let p = &mut self.queue[i];
+            match p.kind {
+                EventKind::On { note: n, .. } if n == note && p.at >= frame => {
+                    self.queued -= 1;
+                    self.queue[i] = self.queue[self.queued];
+                    continue;
+                }
+                EventKind::Off { note: n } if n == note && p.at > frame => p.at = frame,
+                _ => {}
+            }
+            i += 1;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::tests::{
+        engine, notes_of, on_velocities, ons, run, run_synced, span, wheel, Span, SR, STEP,
+    };
+    use super::super::*;
+    use crate::modifier::{ModSource, Modifier};
+    use crate::notes::LatchMode;
+    use crate::phrase::{Follow, Phrase, Speed};
+    use crate::scale::Scale;
+
+    fn phrase_engine(text: &str, settings: Settings) -> Engine {
+        let mut e = Engine::new(SR, 120.0);
+        e.set_settings(Settings {
+            mode: Mode::Phrase,
+            ..settings
+        });
+        e.set_phrase(Phrase::parse(text).unwrap());
+        e
+    }
+
+    fn on(note: u8, velocity: u8) -> EventKind {
+        EventKind::On { note, velocity }
+    }
+
+    fn off(note: u8) -> EventKind {
+        EventKind::Off { note }
+    }
+
+    const BAR: u64 = 16 * STEP;
+    const EVERY_SIXTEENTH: &str = "bass either : 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1";
+
+    /// A held note plays the whole phrase from it, in the phrase's own
+    /// rhythm and lengths (gate 50 plays them as written: 80 % of a 1/16),
+    /// from the press, and again from the next bar.
+    #[test]
+    fn a_held_note_plays_the_phrase_in_its_own_rhythm_from_that_note() {
+        let mut e = phrase_engine("riff either : 1 . 5 1+ . . b7 .", Settings::default());
+        e.press(60, 100);
+        let got = run(&mut e, BAR + STEP, 128);
+        let len = STEP * 8 / 10;
+        assert_eq!(
+            got,
+            [
+                (0, on(60, 100)),
+                (len, off(60)),
+                (2 * STEP, on(67, 100)),
+                (2 * STEP + len, off(67)),
+                (3 * STEP, on(72, 100)),
+                (3 * STEP + len, off(72)),
+                (6 * STEP, on(70, 100)),
+                (6 * STEP + len, off(70)),
+                (BAR, on(60, 100)),
+                (BAR + len, off(60)),
+            ]
+        );
+    }
+
+    /// In key, a phrase moves by steps of the track's scale from the held
+    /// note; Exact, by the semitones it was written with.
+    #[test]
+    fn in_key_moves_by_the_scale_and_exact_by_semitones() {
+        let line = "line major : 1 2 3 4 5 6 7 1+";
+        let c_minor = Settings {
+            scale: Some(Scale::new(0, crate::scale::MINOR)),
+            ..Settings::default()
+        };
+        let mut e = phrase_engine(line, c_minor);
+        e.press(60, 100);
+        assert_eq!(notes_of(&mut e, 8), [60, 62, 63, 65, 67, 68, 70, 72]);
+        let mut e = phrase_engine(line, c_minor);
+        e.press(62, 100);
+        assert_eq!(notes_of(&mut e, 8), [62, 63, 65, 67, 68, 70, 72, 74]);
+        let mut e = phrase_engine(
+            line,
+            Settings {
+                follow: Follow::Exact,
+                ..c_minor
+            },
+        );
+        e.press(62, 100);
+        assert_eq!(notes_of(&mut e, 8), [62, 64, 66, 67, 69, 71, 73, 74]);
+        // No scale: by semitones too.
+        let mut e = phrase_engine(line, Settings::default());
+        e.press(60, 100);
+        assert_eq!(notes_of(&mut e, 8), [60, 62, 64, 65, 67, 69, 71, 72]);
+    }
+
+    /// With the arp's own scale off, In key follows the key the track's
+    /// pads play; the arp's scale, when on, wins; Exact takes no notice.
+    #[test]
+    fn in_key_follows_the_pads_key_when_the_arp_has_no_scale() {
+        let line = "line major : 1 2 3 4 5 6 7 1+";
+        let c_minor = Some(Scale::new(0, crate::scale::MINOR));
+        let c_dorian = Some(Scale::new(0, crate::scale::DORIAN));
+        let mut e = phrase_engine(line, Settings::default());
+        e.set_key(c_minor);
+        assert_eq!(e.key(), c_minor);
+        e.press(60, 100);
+        assert_eq!(notes_of(&mut e, 8), [60, 62, 63, 65, 67, 68, 70, 72]);
+        let mut e = phrase_engine(
+            line,
+            Settings {
+                scale: c_dorian,
+                ..Settings::default()
+            },
+        );
+        e.set_key(c_minor);
+        e.press(60, 100);
+        assert_eq!(notes_of(&mut e, 8), [60, 62, 63, 65, 67, 69, 70, 72]);
+        let mut e = phrase_engine(
+            line,
+            Settings {
+                follow: Follow::Exact,
+                ..Settings::default()
+            },
+        );
+        e.set_key(c_minor);
+        e.press(60, 100);
+        assert_eq!(notes_of(&mut e, 8), [60, 62, 64, 65, 67, 69, 71, 72]);
+    }
+
+    /// The newest note held leads; letting it go goes back to the one
+    /// before. The phrase keeps its place throughout.
+    #[test]
+    fn the_newest_held_note_leads_and_the_phrase_keeps_its_place() {
+        let mut e = phrase_engine(EVERY_SIXTEENTH, Settings::default());
+        e.press(60, 100);
+        let mut got = ons(&run(&mut e, 2 * STEP, 128));
+        e.press(64, 100);
+        got.extend(ons(&run(&mut e, 2 * STEP, 128)));
+        e.release(64);
+        got.extend(ons(&run(&mut e, 2 * STEP, 128)));
+        assert_eq!(
+            got,
+            [
+                (0, 60),
+                (STEP, 60),
+                (2 * STEP, 64),
+                (3 * STEP, 64),
+                (4 * STEP, 60),
+                (5 * STEP, 60)
+            ]
+        );
+    }
+
+    /// Letting go stops the phrase and ends what it plays; Latch keeps it
+    /// going after the pad is let go.
+    #[test]
+    fn letting_go_stops_the_phrase_and_latch_keeps_it_going() {
+        let mut e = phrase_engine(EVERY_SIXTEENTH, Settings::default());
+        e.press(60, 100);
+        assert_eq!(ons(&run(&mut e, 2 * STEP, 128)).len(), 2);
+        e.release(60);
+        assert!(ons(&run(&mut e, 2 * STEP, 128)).is_empty());
+        assert_eq!(e.sounding(), 0, "nothing left sounding");
+        assert!(e.idle());
+        e.set_latch(LatchMode::Replace);
+        e.press(60, 100);
+        e.release(60);
+        assert_eq!(ons(&run(&mut e, 4 * STEP, 128)).len(), 4);
+    }
+
+    /// With Retrigger a new note starts the phrase again from its first
+    /// note; without, the phrase carries on from where it is.
+    #[test]
+    fn retrigger_starts_the_phrase_again_from_its_first_note() {
+        let scale = "line either : 1 2 3 4 5 6 7 1+";
+        for (retrigger, want) in [(true, [67, 69, 71]), (false, [72, 74, 76])] {
+            let mut e = phrase_engine(
+                scale,
+                Settings {
+                    retrigger,
+                    ..Settings::default()
+                },
+            );
+            e.press(60, 100);
+            assert_eq!(notes_of(&mut e, 3), [60, 62, 64]);
+            e.press(67, 100);
+            let got = ons(&run(&mut e, 3 * STEP, 128));
+            assert_eq!(
+                got,
+                [
+                    (3 * STEP, want[0]),
+                    (4 * STEP, want[1]),
+                    (5 * STEP, want[2])
+                ],
+                "retrigger {retrigger}"
+            );
+        }
+    }
+
+    /// A phrase picked while one plays comes in on the playing phrase's
+    /// next bar line, from its first note.
+    #[test]
+    fn a_phrase_picked_while_one_plays_comes_in_on_the_next_bar_line() {
+        let mut e = phrase_engine(
+            "bass either : 1 . . . 1 . . . 1 . . . 1 . . .",
+            Settings::default(),
+        );
+        e.press(60, 100);
+        let first = ons(&run(&mut e, BAR + BAR / 2, 128));
+        assert_eq!(first.len(), 6);
+        e.set_phrase(Phrase::parse("riff either : 5 5 5 5").unwrap());
+        let got = ons(&run(&mut e, BAR, 128));
+        assert_eq!(
+            got,
+            [
+                (24 * STEP, 60),
+                (28 * STEP, 60),
+                (2 * BAR, 67),
+                (2 * BAR + STEP, 67),
+                (2 * BAR + 2 * STEP, 67),
+                (2 * BAR + 3 * STEP, 67)
+            ]
+        );
+        assert_eq!(e.phrase().len(), 4);
+    }
+
+    /// The phrase that plays, picked again, plays on from where it is; and
+    /// picked while another waits for the bar line, it stays and the other
+    /// never comes in.
+    #[test]
+    fn picking_the_phrase_that_plays_changes_nothing() {
+        let text = "bass either : 1 . . . 5 . . . 1 . . . 5 . . .";
+        let playing = Phrase::parse(text).unwrap();
+        let mut e = phrase_engine(text, Settings::default());
+        e.press(60, 100);
+        let mut same = phrase_engine(text, Settings::default());
+        same.press(60, 100);
+        run(&mut e, BAR / 2, 128);
+        run(&mut same, BAR / 2, 128);
+        e.set_phrase(playing);
+        assert_eq!(run(&mut e, 2 * BAR, 128), run(&mut same, 2 * BAR, 128));
+        e.set_phrase(Phrase::parse("riff either : 5 5 5 5").unwrap());
+        e.set_phrase(playing);
+        assert_eq!(run(&mut e, 2 * BAR, 128), run(&mut same, 2 * BAR, 128));
+    }
+
+    /// Half and Double play the phrase at half or twice its written speed;
+    /// a modifier's push on the rate moves it by the same ratio, from where
+    /// it is.
+    #[test]
+    fn speed_halves_or_doubles_the_rhythm_and_the_modifier_pushes_it() {
+        for (speed, gap) in [
+            (Speed::Half, 2 * STEP),
+            (Speed::AsWritten, STEP),
+            (Speed::Double, STEP / 2),
+        ] {
+            let mut e = phrase_engine(
+                EVERY_SIXTEENTH,
+                Settings {
+                    speed,
+                    ..Settings::default()
+                },
+            );
+            e.press(60, 100);
+            let t: Vec<u64> = ons(&run(&mut e, 4 * gap, 128))
+                .iter()
+                .map(|(t, _)| *t)
+                .collect();
+            assert_eq!(t, [0, gap, 2 * gap, 3 * gap], "{speed:?}");
+        }
+        let mut e = phrase_engine(
+            EVERY_SIXTEENTH,
+            Settings {
+                modifier: wheel(Modifier::default()),
+                ..Settings::default()
+            },
+        );
+        e.press(60, 100);
+        assert_eq!(ons(&run(&mut e, 2 * STEP, 128)).len(), 2);
+        e.control(ModSource::ModWheel, 1.0);
+        let t: Vec<u64> = ons(&run(&mut e, 2 * STEP, 128))
+            .iter()
+            .map(|(t, _)| *t)
+            .collect();
+        assert_eq!(
+            t,
+            [2 * STEP, 2 * STEP + STEP / 2, 3 * STEP, 3 * STEP + STEP / 2]
+        );
+        e.control(ModSource::ModWheel, 0.0);
+        let t: Vec<u64> = ons(&run(&mut e, 2 * STEP, 128))
+            .iter()
+            .map(|(t, _)| *t)
+            .collect();
+        assert_eq!(t, [4 * STEP, 5 * STEP]);
+    }
+
+    /// With Octaves above 1, each time through the phrase climbs an octave,
+    /// then starts again from the bottom.
+    #[test]
+    fn octaves_climb_an_octave_each_time_through() {
+        let mut e = phrase_engine(
+            "bass either : 1",
+            Settings {
+                octaves: 2,
+                ..Settings::default()
+            },
+        );
+        e.press(60, 100);
+        let got = ons(&run(&mut e, 3 * BAR, 128));
+        assert_eq!(got, [(0, 60), (BAR, 72), (2 * BAR, 60)]);
+    }
+
+    /// Gate 50 plays the lengths as written, less shortens them, more
+    /// holds them towards the next note; at 100 a note ends on the frame
+    /// the next one starts, before it, so the same note played again is
+    /// never cut.
+    #[test]
+    fn the_gate_shortens_notes_or_holds_them_to_the_next() {
+        let phrase = "bass either : 1 . 1 .";
+        let written = STEP * 8 / 10;
+        for (gate, len) in [
+            (25, written / 2),
+            (50, written),
+            (75, (written + 2 * STEP) / 2),
+        ] {
+            let mut e = phrase_engine(
+                phrase,
+                Settings {
+                    gate,
+                    ..Settings::default()
+                },
+            );
+            e.press(60, 100);
+            let got = run(&mut e, 2 * STEP, 128);
+            assert_eq!(got, [(0, on(60, 100)), (len, off(60))], "gate {gate}");
+        }
+        let mut e = phrase_engine(
+            phrase,
+            Settings {
+                gate: 100,
+                ..Settings::default()
+            },
+        );
+        e.press(60, 100);
+        let got = run(&mut e, BAR + 1, 128);
+        assert_eq!(
+            got,
+            [
+                (0, on(60, 100)),
+                (2 * STEP, off(60)),
+                (2 * STEP, on(60, 100)),
+                (BAR, off(60)),
+                (BAR, on(60, 100)),
+            ]
+        );
+    }
+
+    /// The held note's velocity scales the phrase's own: held at 100 it
+    /// plays as written, accents and all.
+    #[test]
+    fn the_held_velocity_scales_the_written_velocities() {
+        let phrase = "riff either : 1! 1 1 | vel 0 50 0";
+        let mut e = phrase_engine(phrase, Settings::default());
+        e.press(60, 100);
+        assert_eq!(on_velocities(&run(&mut e, 3 * STEP, 128)), [127, 50, 100]);
+        let mut e = phrase_engine(phrase, Settings::default());
+        e.press(60, 50);
+        assert_eq!(on_velocities(&run(&mut e, 3 * STEP, 128)), [64, 25, 50]);
+        let mut e = phrase_engine(
+            phrase,
+            Settings {
+                velocity: Velocity::Fixed(100),
+                ..Settings::default()
+            },
+        );
+        e.press(60, 20);
+        assert_eq!(on_velocities(&run(&mut e, 3 * STEP, 128)), [127, 50, 100]);
+    }
+
+    /// With the transport playing, a phrase starts on its next 1/16, beat
+    /// or bar (the Start setting) and stays on the transport's grid.
+    #[test]
+    fn with_the_transport_a_phrase_starts_on_the_next_sixteenth_beat_or_bar() {
+        let spans = [span(0, 0, 120.0)];
+        for (start, first) in [
+            (SyncStart::Step, STEP),
+            (SyncStart::Beat, 4 * STEP),
+            (SyncStart::Bar, BAR),
+        ] {
+            let mut e = phrase_engine(
+                EVERY_SIXTEENTH,
+                Settings {
+                    start,
+                    ..Settings::default()
+                },
+            );
+            let got = run_synced(&mut e, &spans, &[(1000, 60)], first + 2 * STEP + 1, 128);
+            let t: Vec<u64> = ons(&got).iter().map(|(t, _)| *t).collect();
+            assert_eq!(t, [first, first + STEP, first + 2 * STEP], "{start:?}");
+        }
+    }
+
+    /// A jump of the transport (a loop going round, a locate) starts the
+    /// phrase again from its first note on the transport's grid.
+    #[test]
+    fn a_transport_jump_starts_the_phrase_again() {
+        let spans = [
+            span(0, 0, 120.0),
+            Span {
+                jumped: true,
+                ..span(3 * STEP + 3000, 0, 120.0)
+            },
+        ];
+        let mut e = phrase_engine("line either : 1 2 3 4 5 6 7 1+", Settings::default());
+        let got = run_synced(&mut e, &spans, &[(0, 60)], 6 * STEP + 3001, 128);
+        assert_eq!(
+            ons(&got),
+            [
+                (0, 60),
+                (STEP, 62),
+                (2 * STEP, 64),
+                (3 * STEP, 65),
+                // The jump lands on tick 0 at 3 1/2 steps: the phrase
+                // starts there, its first note on that 1/16.
+                (3 * STEP + 3000, 60),
+                (4 * STEP + 3000, 62),
+                (5 * STEP + 3000, 64),
+                (6 * STEP + 3000, 65),
+            ]
+        );
+    }
+
+    /// Free-running, the arp's swing moves every second 1/16 of the phrase
+    /// later, counted from the press.
+    #[test]
+    fn swing_moves_every_second_sixteenth_of_the_phrase() {
+        let mut e = phrase_engine(
+            EVERY_SIXTEENTH,
+            Settings {
+                swing: 66,
+                ..Settings::default()
+            },
+        );
+        e.press(60, 100);
+        let t: Vec<u64> = ons(&run(&mut e, 4 * STEP, 128))
+            .iter()
+            .map(|(t, _)| *t)
+            .collect();
+        assert_eq!(t, [0, 7920, 2 * STEP, 2 * STEP + 7920]);
+    }
+
+    /// Repeats sets how many times the phrase plays; then it stays quiet
+    /// until the notes are let go and played again.
+    #[test]
+    fn repeats_play_the_phrase_that_many_times() {
+        let mut e = phrase_engine(
+            "bass either : 1 . 1 .",
+            Settings {
+                repeats: 2,
+                ..Settings::default()
+            },
+        );
+        e.press(60, 100);
+        let got = ons(&run(&mut e, 3 * BAR, 128));
+        assert_eq!(
+            got,
+            [(0, 60), (2 * STEP, 60), (BAR, 60), (BAR + 2 * STEP, 60)]
+        );
+        e.release(60);
+        run(&mut e, STEP, 128);
+        e.press(62, 100);
+        assert_eq!(ons(&run(&mut e, STEP, 128)), [(3 * BAR + STEP, 62)]);
+    }
+
+    /// Changing to Phrase mode while notes are held starts the phrase at
+    /// once; every note any of it played has ended once it stops.
+    #[test]
+    fn changing_to_phrase_mode_starts_it_and_nothing_is_left_sounding() {
+        let mut e = engine(Mode::Arp);
+        e.set_phrase(Phrase::parse("riff either : 1 5 1+ 5").unwrap());
+        e.press(60, 100);
+        e.press(64, 100);
+        run(&mut e, STEP + STEP / 2, 128);
+        e.set_settings(Settings {
+            mode: Mode::Phrase,
+            gate: 100,
+            ..e.settings()
+        });
+        let got = ons(&run(&mut e, 2 * STEP, 128));
+        assert_eq!(got, [(STEP + STEP / 2, 64), (2 * STEP + STEP / 2, 71)]);
+        e.set_phrase(Phrase::parse("chords either : 1,3,5 . 1,3,5 .").unwrap());
+        run(&mut e, BAR, 128);
+        e.release(60);
+        e.release(64);
+        run(&mut e, BAR, 128);
+        assert_eq!(e.sounding(), 0);
+        assert!(e.idle());
+    }
+    /// A host that syncs a stopped transport every period, at an odd
+    /// period size, gets the phrase on the same frames as one that never
+    /// syncs; when the transport stops, the phrase carries on from where
+    /// it was, in time.
+    #[test]
+    fn the_phrase_keeps_time_free_running_and_when_the_transport_stops() {
+        let mut e = phrase_engine(EVERY_SIXTEENTH, Settings::default());
+        e.press(60, 100);
+        let mut got = Vec::new();
+        let mut out = Events::new();
+        while e.now < 4 * STEP {
+            let base = e.now;
+            e.sync(&Clock {
+                playing: false,
+                ..Clock::playing(0, 0, 120.0)
+            });
+            e.set_tempo(120.0);
+            e.process(77, &mut out);
+            got.extend(ons(&out
+                .as_slice()
+                .iter()
+                .map(|ev| (base + u64::from(ev.offset), ev.kind))
+                .collect::<Vec<_>>()));
+        }
+        let t: Vec<u64> = got
+            .iter()
+            .map(|(t, _)| *t)
+            .filter(|t| *t < 4 * STEP)
+            .collect();
+        assert_eq!(t, [0, STEP, 2 * STEP, 3 * STEP]);
+        // Playing from tick 0 on frame 0, then stopped at 2 1/2 steps.
+        let spans = [
+            span(0, 0, 120.0),
+            Span {
+                playing: false,
+                ..span(2 * STEP + STEP / 2, 0, 120.0)
+            },
+        ];
+        let mut e = phrase_engine(EVERY_SIXTEENTH, Settings::default());
+        let got = run_synced(&mut e, &spans, &[(0, 60)], 5 * STEP + 1, 128);
+        let t: Vec<u64> = ons(&got).iter().map(|(t, _)| *t).collect();
+        assert_eq!(t, [0, STEP, 2 * STEP, 3 * STEP, 4 * STEP, 5 * STEP]);
+    }
+    /// Letting go ends a long note at once: the phrase stops with the
+    /// hand, not when its notes run out.
+    #[test]
+    fn letting_go_ends_a_long_note_at_once() {
+        let mut e = phrase_engine("chords either : 1,5~ _ _ _ _ _ _ _", Settings::default());
+        e.press(60, 100);
+        assert_eq!(
+            run(&mut e, 2 * STEP, 128),
+            [(0, on(60, 100)), (0, on(67, 100))]
+        );
+        e.release(60);
+        assert_eq!(
+            run(&mut e, STEP, 128),
+            [(2 * STEP, off(60)), (2 * STEP, off(67))]
+        );
+        assert_eq!(e.sounding(), 0);
+        assert!(e.idle());
+    }
+
+    /// The same note struck again ends the one sounding there, so the
+    /// first one's ending can't cut the second short.
+    #[test]
+    fn the_same_note_struck_again_ends_the_one_sounding() {
+        // A fifth held for five 1/16s, and the home note four 1/16s in.
+        let unit = Rate::Sixteenth.ticks();
+        let p = Phrase::from_notes(
+            &[(0, 5 * unit, 67, 100), (4 * unit, 3 * unit, 60, 100)],
+            60,
+            crate::phrase::Written::Either,
+            Rate::Sixteenth,
+            4,
+        );
+        let mut e = Engine::new(SR, 120.0);
+        e.set_settings(Settings {
+            mode: Mode::Phrase,
+            ..Settings::default()
+        });
+        e.set_phrase(p);
+        e.press(60, 100);
+        let mut got = run(&mut e, 2 * STEP, 128);
+        // Hold the fifth: now the home note is the note still sounding.
+        e.press(67, 100);
+        got.extend(run(&mut e, 6 * STEP, 128));
+        assert_eq!(
+            got,
+            [
+                (0, on(67, 100)),
+                (4 * STEP, off(67)),
+                (4 * STEP, on(67, 100)),
+                (7 * STEP, off(67)),
+            ]
+        );
+    }
+
+    /// Starting again (Retrigger here) ends what still sounds where the
+    /// phrase starts again: at once free-running, on the next 1/16 with
+    /// the transport.
+    #[test]
+    fn starting_again_ends_what_still_sounds() {
+        let phrase = "chords either : 1~ _ _ _ _ _ _ _";
+        let retrigger = Settings {
+            retrigger: true,
+            ..Settings::default()
+        };
+        let mut e = phrase_engine(phrase, retrigger);
+        e.press(60, 100);
+        let mut got = run(&mut e, 2 * STEP, 128);
+        e.press(64, 100);
+        got.extend(run(&mut e, 2 * STEP, 128));
+        assert_eq!(
+            got,
+            [
+                (0, on(60, 100)),
+                (2 * STEP, off(60)),
+                (2 * STEP, on(64, 100))
+            ]
+        );
+        let mut e = phrase_engine(phrase, retrigger);
+        let got = run_synced(
+            &mut e,
+            &[span(0, 0, 120.0)],
+            &[(0, 60), (6144, 64)],
+            3 * STEP,
+            128,
+        );
+        assert_eq!(
+            got,
+            [
+                (0, on(60, 100)),
+                (2 * STEP, off(60)),
+                (2 * STEP, on(64, 100))
+            ]
+        );
+    }
+
+    /// A phrase coming in on a bar line ends the notes of the one before
+    /// there.
+    #[test]
+    fn a_phrase_coming_in_ends_the_old_ones_notes_on_its_bar_line() {
+        // Two bars: a note from the last quarter of bar 1, held into bar 2.
+        let mut e = phrase_engine(
+            "chords either 2 bars : . . . . . . . . . . . . 1~ _ _ _ _ _ _ _",
+            Settings::default(),
+        );
+        e.press(60, 100);
+        let mut got = run(&mut e, 13 * STEP, 128);
+        e.set_phrase(Phrase::parse("riff either : 5 . . .").unwrap());
+        got.extend(run(&mut e, 4 * STEP, 128));
+        assert_eq!(
+            got,
+            [
+                (12 * STEP, on(60, 100)),
+                (BAR, off(60)),
+                (BAR, on(67, 100)),
+                (BAR + STEP * 8 / 10, off(67)),
+            ]
+        );
+    }
+}

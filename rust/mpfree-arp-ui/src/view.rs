@@ -418,6 +418,7 @@ pub fn chip(st: &ArpState) -> Chip {
         }
         Mode::Repeat => format!("Repeat {}", s.rate.label()),
         Mode::Arp => format!("Arp: {} {}", s.order.label(), s.rate.label()),
+        Mode::Phrase => "Phrase".to_string(),
         Mode::Pattern => {
             let name = st
                 .patterns
@@ -458,6 +459,7 @@ pub fn hint(mode: Mode) -> &'static str {
         Mode::Pattern => {
             "Patterns play the chord you hold: \"2\" is the 2nd lowest held pad · Wheel: pattern"
         }
+        Mode::Phrase => "Hold a pad: the phrase plays from it · hold another: it moves there",
     }
 }
 
@@ -474,7 +476,7 @@ pub fn quick_hint(mode: Mode) -> &'static str {
 pub fn layout_for(mode: Mode) -> &'static str {
     match mode {
         Mode::Direct => DIRECT_LAYOUT,
-        Mode::Repeat | Mode::Arp => ARP_LAYOUT,
+        Mode::Repeat | Mode::Arp | Mode::Phrase => ARP_LAYOUT,
         Mode::Pattern => PATTERN_LAYOUT,
     }
 }
@@ -558,6 +560,7 @@ impl ArpPanel {
             m.mode = match s.mode {
                 Mode::Direct => "Direct".to_string(),
                 Mode::Repeat => "Repeat".to_string(),
+                Mode::Phrase => "Phrase".to_string(),
                 Mode::Arp => format!("Arp · {}", s.order.label()),
                 Mode::Pattern => {
                     let name = st
@@ -583,7 +586,7 @@ impl ArpPanel {
         }
         if let Some(list) = ui.get_mut::<ListView>(LIST) {
             match s.mode {
-                Mode::Direct | Mode::Repeat => {
+                Mode::Direct | Mode::Repeat | Mode::Phrase => {
                     list.title = "Rate · Wheel".into();
                     list.items = Rate::ALL
                         .iter()
@@ -674,7 +677,9 @@ impl ArpPanel {
         match (ev.widget.as_str(), &ev.kind) {
             (MODES, EventKind::Tab(i)) => MODES_ALL.get(*i).map(|m| ArpAction::Mode(*m)),
             (LIST, EventKind::Select(i)) => match s.mode {
-                Mode::Direct | Mode::Repeat => Rate::ALL.get(*i).map(|r| ArpAction::Rate(*r)),
+                Mode::Direct | Mode::Repeat | Mode::Phrase => {
+                    Rate::ALL.get(*i).map(|r| ArpAction::Rate(*r))
+                }
                 Mode::Arp => Order::ALL.get(*i).map(|o| ArpAction::Order(*o)),
                 Mode::Pattern => (*i < st.patterns.len()).then_some(ArpAction::Pattern(*i)),
             },

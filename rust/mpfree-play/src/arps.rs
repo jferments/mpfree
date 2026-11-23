@@ -26,8 +26,9 @@
 //! player sent them, before the arp's notes on the same frame.
 //!
 //! [`TrackArps::new`] allocates (an engine for each of the 128 tracks a
-//! project can have, about 1.5 MB) and belongs on the control thread at
-//! start; nothing else allocates. Each period only visits the tracks up to
+//! project can have, about 2.8 MB: 22 KB a track, 6 KB of it the phrase
+//! its arp plays and one waiting for its bar line) and belongs on the
+//! control thread at start; nothing else allocates. Each period only visits the tracks up to
 //! the highest one anything has asked for (its settings, a note, its
 //! switch or destination), so a project of 8 tracks pays for 8. An arp
 //! given nothing in a period whose engine is idle (`Engine::idle`) skips

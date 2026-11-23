@@ -19,6 +19,10 @@
 //! modifier-push = rate 2 octaves 1 gate 30 swing 0 rolls 0 accents 0
 //! pattern-name = Pulse
 //! pattern = x . x x | oct 0 1
+//! follow = inkey
+//! speed = aswritten
+//! phrase-name = Night drive
+//! phrase = bass minor : 1 1 1+ 1 ...
 //! track 2
 //! ...
 //! ```
@@ -28,7 +32,14 @@
 //! The pattern is kept as it plays, edits and all, with the name of the
 //! library pattern it came from. The modifier is its controller
 //! (`off`, `modwheel`, `pressure`, `expression`, `breath`, `knob`) and how
-//! far its top pushes each setting. Latch is how you play, not the song: an
+//! far its top pushes each setting. The phrase is kept as the pattern is,
+//! its name and its notes, for a track that plays a phrase or picked one
+//! (a track on the list's first phrase that plays none says neither); how
+//! a phrase follows the held note (`inkey`, `exact`) and its speed
+//! (`half`, `aswritten`, `double`) are the arp's settings, kept for every
+//! track listed. A phrase the list doesn't have under that name with those
+//! notes comes back as the project's own (`App::place_phrase`), so a
+//! project plays what it was saved with. Latch is how you play, not the song: an
 //! open lets every arp go. A word not understood is left at its default
 //! and said. Only the armed track and the tracks whose arp isn't the
 //! default are listed (a project can have 128 tracks); a track left out
@@ -38,8 +49,8 @@ use super::TrackUi;
 use crate::app::{App, Effect};
 use mpfree_arp::scale::{Scale, Snap, NOTE_NAMES};
 use mpfree_arp::{
-    Chord, LatchMode, ModSource, Mode, Modifier, Order, Pattern, Rate, Settings, SyncStart, Turns,
-    Velocity,
+    Chord, Follow, LatchMode, ModSource, Mode, Modifier, Order, Pattern, Phrase, Rate, Settings,
+    Speed, SyncStart, Turns, Velocity,
 };
 use mpfree_seq::MAX_TRACKS;
 use std::fmt::Write;
@@ -126,7 +137,7 @@ impl TrackUi {
     /// What the project keeps of a track's arp: not Latch, nor where the
     /// pattern workspace was.
     #[allow(clippy::type_complexity)]
-    fn kept(&self) -> (Settings, Mode, Rate, u8, usize, bool, usize, Pattern) {
+    fn kept(&self) -> (Settings, Mode, Rate, u8, usize, bool, usize, Pattern, usize) {
         (
             self.arp,
             self.arp_mode,
@@ -136,6 +147,7 @@ impl TrackUi {
             self.swing_from_transport,
             self.pattern_index,
             self.pattern,
+            self.phrase_index,
         )
     }
 }
@@ -169,9 +181,12 @@ impl App {
             if u.kept() == fresh {
                 continue;
             }
+            // The phrase by its name: its place alone would say nothing
+            // of which phrase it is once the list changes.
+            let phrase = self.phrases.get(u.phrase_index).map_or("", |(n, _)| n);
             let _ = write!(
                 h,
-                "{t}:{:?}|{:?}|{:?}|{}|{}|{}|{}|{:?};",
+                "{t}:{:?}|{:?}|{:?}|{}|{}|{}|{}|{:?}|{phrase};",
                 u.arp,
                 u.arp_mode,
                 u.rate,
@@ -244,10 +259,20 @@ impl App {
                 ("modifier-push", pushes(&s.modifier)),
                 ("pattern-name", pattern_name),
                 ("pattern", u.pattern.to_text()),
+                ("follow", word(s.follow)),
+                ("speed", word(s.speed)),
             ];
             let _ = writeln!(out, "track {}", t + 1);
             for (k, v) in lines {
                 let _ = writeln!(out, "{k} = {v}");
+            }
+            // The phrase, for a track that plays one or picked one.
+            let plays = self.arps.engine_at(t).settings().mode;
+            if u.phrase_index != 0 || u.arp_mode == Mode::Phrase || plays == Mode::Phrase {
+                if let Some((name, phrase)) = self.phrases.get(u.phrase_index) {
+                    let _ = writeln!(out, "phrase-name = {name}");
+                    let _ = writeln!(out, "phrase = {}", phrase.to_text());
+                }
             }
         }
         out
@@ -263,8 +288,11 @@ impl App {
         let fresh = self.arp_fresh;
         let mut kept = [fresh; MAX_TRACKS];
         let mut plays = [Mode::Direct; MAX_TRACKS];
+        // The last project's own phrases go; this one's come back below.
+        self.drop_project_phrases();
         if let Some(text) = text {
-            match self.read_arp_part(text, &mut kept, &mut plays) {
+            let mut phrases = Vec::new();
+            match self.read_arp_part(text, &mut kept, &mut plays, &mut phrases) {
                 Ok(left) if left.is_empty() => {}
                 Ok(left) => notes.push(format!(
                     "project: arp settings left out (not understood, or the scale is gone): {}",
@@ -274,7 +302,11 @@ impl App {
                     notes.push(format!("project: the arps weren't opened ({e})"));
                     kept = [fresh; MAX_TRACKS];
                     plays = [Mode::Direct; MAX_TRACKS];
+                    phrases.clear();
                 }
+            }
+            for (t, name, phrase) in phrases {
+                kept[t].phrase_index = self.place_phrase(&name, phrase);
             }
         }
         // Latch is how you play, not the song. Settings alone don't start
@@ -295,6 +327,9 @@ impl App {
             s.rate = u.rate;
             e.set_settings(s);
             e.set_pattern(u.pattern);
+            if let Some((_, phrase)) = self.phrases.get(u.phrase_index) {
+                e.set_phrase(*phrase);
+            }
             e.set_own_swing(!u.swing_from_transport);
         }
         let mut fx = self.take_ui(kept[self.track]);
@@ -304,14 +339,32 @@ impl App {
     }
 
     /// Reads the part into `kept` and `plays`. Returns what was left out
-    /// ("track 2 gate = 300").
+    /// ("track 2 gate = 300"). A track's phrase that came with its notes
+    /// goes into `phrases` (track, name, phrase) for the caller to place
+    /// in the list; one that came as a name alone is looked up here.
     fn read_arp_part(
         &self,
         text: &str,
         kept: &mut [TrackUi; MAX_TRACKS],
         plays: &mut [Mode; MAX_TRACKS],
+        phrases: &mut Vec<(usize, String, Phrase)>,
     ) -> Result<Vec<String>, String> {
         let mut left = Vec::new();
+        // Each track's phrase as the part names it, and its notes.
+        let mut named: Vec<(usize, String, Option<Phrase>)> = Vec::new();
+        fn entry(
+            named: &mut Vec<(usize, String, Option<Phrase>)>,
+            t: usize,
+        ) -> &mut (usize, String, Option<Phrase>) {
+            let i = match named.iter().position(|(track, ..)| *track == t) {
+                Some(i) => i,
+                None => {
+                    named.push((t, String::new(), None));
+                    named.len() - 1
+                }
+            };
+            &mut named[i]
+        }
         let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
         if lines.next() != Some(HEADER) {
             return Err(format!("it doesn't start with \"{HEADER}\""));
@@ -338,8 +391,10 @@ impl App {
             let u = &mut kept[t];
             let s = &mut u.arp;
             let ok = match k {
-                "mode" => pick(&super::MODES, v).map(|m| u.arp_mode = m).is_some(),
-                "plays" => pick(&super::MODES, v).map(|m| plays[t] = m).is_some(),
+                "mode" => pick(&super::KEPT_MODES, v)
+                    .map(|m| u.arp_mode = m)
+                    .is_some(),
+                "plays" => pick(&super::KEPT_MODES, v).map(|m| plays[t] = m).is_some(),
                 "rate" => Rate::ALL
                     .iter()
                     .find(|r| r.label() == v)
@@ -392,6 +447,15 @@ impl App {
                     true
                 }
                 "pattern" => Pattern::parse(v).map(|p| u.pattern = p).is_ok(),
+                "follow" => pick(&Follow::ALL, v).map(|x| s.follow = x).is_some(),
+                "speed" => pick(&Speed::ALL, v).map(|x| s.speed = x).is_some(),
+                "phrase-name" => {
+                    entry(&mut named, t).1 = v.to_string();
+                    true
+                }
+                "phrase" => Phrase::parse(v)
+                    .map(|p| entry(&mut named, t).2 = Some(p))
+                    .is_ok(),
                 _ => false,
             };
             if !ok {
@@ -415,6 +479,16 @@ impl App {
                         .map(|(_, up, down)| Scale::with_down(u.scale_root, up, down));
                 }
                 None => left.push(format!("track {} scale = {name}", t + 1)),
+            }
+        }
+        for (t, name, phrase) in named {
+            match phrase {
+                Some(p) => phrases.push((t, name, p)),
+                // A name alone: the list's phrase of that name.
+                None => match self.phrases.iter().position(|(n, _)| *n == name) {
+                    Some(i) => kept[t].phrase_index = i,
+                    None => left.push(format!("track {} phrase-name = {name}", t + 1)),
+                },
             }
         }
         Ok(left)

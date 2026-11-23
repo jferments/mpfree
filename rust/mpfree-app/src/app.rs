@@ -1736,6 +1736,12 @@ pub struct App {
     /// The patterns to pick from (built in; Save changes them in memory).
     patterns: Vec<(String, Pattern)>,
     pattern_index: usize,
+    /// The phrases to pick from: MPFree's own (the first `phrases_own`),
+    /// then the open project's (`app/arp/phrases.rs`).
+    phrases: Vec<(String, mpfree_arp::Phrase)>,
+    phrases_own: usize,
+    /// The armed track's phrase, as a place in `phrases`.
+    phrase_index: usize,
     /// The pattern the engine plays (edited, mutated or recorded from the
     /// list's).
     pattern: Pattern,
@@ -1918,6 +1924,7 @@ impl App {
         let arps = TrackArps::new(sample_rate, settings.bpm);
         let patterns = arp::built_in_patterns();
         let pattern = patterns.first().map(|(_, p)| *p).unwrap_or_default();
+        let phrases = arp::built_in_phrases();
         let sent_notes = arps.engine_at(0).active().clone();
         let mut app = App {
             settings,
@@ -1988,6 +1995,9 @@ impl App {
             swing_from_transport: true,
             patterns,
             pattern_index: 0,
+            phrases_own: phrases.len(),
+            phrases,
+            phrase_index: 0,
             pattern,
             mutations: 0,
             recorder: None,
@@ -2049,11 +2059,13 @@ impl App {
             project_edit: false,
             arp_seen: 0,
         };
-        // Every track's arp starts on the first pattern, as the panel does.
-        // Settings alone don't start an engine, so this needn't mark all
-        // 128 in use.
+        // Every track's arp starts on the first pattern and the first
+        // phrase, as the panel does. Settings alone don't start an engine,
+        // so this needn't mark all 128 in use.
+        let phrase = app.phrases.first().map(|(_, p)| *p).unwrap_or_default();
         for (e, u) in app.arps.engines_mut().zip(app.track_ui.iter_mut()) {
             e.set_pattern(pattern);
+            e.set_phrase(phrase);
             u.pattern = pattern;
         }
         app.update_engine();
