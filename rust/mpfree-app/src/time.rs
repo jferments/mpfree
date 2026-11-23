@@ -10429,6 +10429,17 @@ mod tests {
                 ticks: 240,
                 notes: 0,
             },
+            // Plan 1B.2: a handle and a note tapped while one is held.
+            E::Resize {
+                index: 0,
+                rev: mid.rev,
+                start: false,
+                ticks: 240,
+            },
+            E::Add {
+                index: 0,
+                rev: mid.rev,
+            },
         ] {
             assert!(h.act(TimeAction::Edit(a)).is_err());
             assert_eq!(notes(&h).len(), 1);
