@@ -943,6 +943,7 @@ dependencies = [
 name = "mpfree-compose"
 version = "0.1.0"
 dependencies = [
+ "mpfree-arp",
  "mpfree-context",
  "mpfree-fx",
  "mpfree-midi",
