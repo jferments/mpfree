@@ -459,7 +459,8 @@ mod tests {
         fs::create_dir_all(p.join("run")).unwrap();
         fs::create_dir_all(p.join("card")).unwrap();
         fs::write(p.join("setup-sd-card.sh"), "# service\n").unwrap();
-        fs::write(p.join("mounts"), "/dev/sda1 / ext4 ro 0 0\n").unwrap();
+        // The device field is never read: a mount is found by its mount point.
+        fs::write(p.join("mounts"), "stick / ext4 ro 0 0\n").unwrap();
         Tmp(p)
     }
 
@@ -547,10 +548,7 @@ mod tests {
             let mounts = fs::read_to_string(&p.mounts).unwrap();
             fs::write(
                 &p.mounts,
-                format!(
-                    "{mounts}/dev/mmcblk1p1 {} exfat ro,nosuid 0 0\n",
-                    card.display()
-                ),
+                format!("{mounts}card {} exfat ro,nosuid 0 0\n", card.display()),
             )
             .unwrap();
             status(
@@ -744,7 +742,7 @@ mod tests {
         let card_dir = t.0.join("card");
         fs::write(
             &p.mounts,
-            format!("/dev/mmcblk1p1 {} vfat ro 0 0\n", card_dir.display()),
+            format!("card {} vfat ro 0 0\n", card_dir.display()),
         )
         .unwrap();
         status(
