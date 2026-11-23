@@ -19,8 +19,10 @@
 use mpfree_fxlab::reference;
 
 /// The cases whose 8x reference agreed with the 16x one at the first
-/// survey (55 of 96), less one. Not listed: the drives and sync (still
-/// folding at 8x), Squelch's square, Analog's saw (C6 and C7 fizz 3.7 dB
+/// survey (55 of 96), less one, and Squelch's square since step 1.3 (its
+/// shaper now takes the plain saw, and its own jump gets the step). Not
+/// listed: the drives and sync (still folding at 8x), Analog's saw (C6 and
+/// C7 fizz 3.7 dB
 /// apart near the floor at the survey; C5 left at step 1.2, whose
 /// oscillators run flat to 0.48 of whatever rate they run at, so the 8x
 /// render's fizz rose from -81.8 to -76.5 dB against 16x's -80.8, both
@@ -43,6 +45,9 @@ const AGREES: &[&str] = &[
     "Squelch saw, C5",
     "Squelch saw, C6",
     "Squelch saw, C7",
+    "Squelch square, C5",
+    "Squelch square, C6",
+    "Squelch square, C7",
     "Squelch saw, drive 100, C5",
     "Squelch saw, drive 100, C6",
     "Squelch saw, drive 100, C7",

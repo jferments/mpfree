@@ -1030,7 +1030,9 @@ impl Squelch {
     fn sample(&mut self) -> f32 {
         let t = self.phase;
         let dt = self.inc;
-        let saw = 2.0 * t - 1.0 - blep(t, dt, self.rinc);
+        let plain = 2.0 * t - 1.0;
+        let step = blep(t, dt, self.rinc);
+        let saw = plain - step;
         self.phase += dt;
         if self.phase >= 1.0 {
             self.phase -= 1.0;
@@ -1040,7 +1042,10 @@ impl Squelch {
         let osc = if w <= 0.0 {
             saw
         } else {
-            let sq = SQ_LEVEL * tanh_pade(SQ_GAIN * (saw - SQ_THRESHOLD));
+            // The shaper hears the plain saw, which has no step to bend,
+            // and its jump at the wrap (2, to a part in 10^4 at this gain)
+            // takes the saw's step afterwards (DSP quality step 1.3).
+            let sq = SQ_LEVEL * (tanh_pade(SQ_GAIN * (plain - SQ_THRESHOLD)) - step);
             saw + w * (sq - saw)
         };
         let y = self.ladder.step(osc * IN_GAIN);

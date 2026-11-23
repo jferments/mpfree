@@ -196,9 +196,9 @@
 4085464	Song: sampler, 2 synths, mixer+FX, time, looper
 261927	Sound Keys Init with Ensemble, 8 voices
 137967	Spring reverb
-59214	Squelch Acid Line, a line
-61774	Squelch Distorted, a line
-64328	Squelch Square Acid, a line
+58563	Squelch Acid Line, a line
+61123	Squelch Distorted, a line
+63931	Squelch Square Acid, a line
 375783	Steps: a lock detent, 8,192 notes: the edit
 387476	Steps: a lock detent, 8,192 notes: until it plays
 485970	Steps: a tap, 8,192 notes: the edit

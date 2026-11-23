@@ -4719,14 +4719,14 @@ synth/Squelch[Screamer]/small_speaker_db	-13.8537
 synth/Squelch[Screamer]/start_step_dbfs	-112.4143
 synth/Squelch[Screamer]/vel_curve_err_db	0.3207
 synth/Squelch[Screamer]/vel_tone_oct	0.3731
-synth/Squelch[Square Acid]/chord8_peak_dbfs	-7.2875
+synth/Squelch[Square Acid]/chord8_peak_dbfs	-7.2868
 synth/Squelch[Square Acid]/dc_dbfs	-140
-synth/Squelch[Square Acid]/key_spread_db	3.1566
+synth/Squelch[Square Acid]/key_spread_db	3.156
 synth/Squelch[Square Acid]/low_correlation	1
 synth/Squelch[Square Acid]/mono_loss_db	0
-synth/Squelch[Square Acid]/small_speaker_db	-13.9922
-synth/Squelch[Square Acid]/start_step_dbfs	-131.5858
-synth/Squelch[Square Acid]/vel_curve_err_db	2.0585
+synth/Squelch[Square Acid]/small_speaker_db	-13.9932
+synth/Squelch[Square Acid]/start_step_dbfs	-126.438
+synth/Squelch[Square Acid]/vel_curve_err_db	2.0578
 synth/Squelch[Square Acid]/vel_tone_oct	0.1234
 synth/Strings[Ballad Pad]/chord6_vs_power_db	0.3417
 synth/Strings[Ballad Pad]/chord8_peak_dbfs	-4.4153
@@ -5165,9 +5165,9 @@ synth/alias[Squelch saw, C7]/worst_alias_db	-51.8061
 synth/alias[Squelch saw, drive 100, C5]/worst_alias_db	-77.6518
 synth/alias[Squelch saw, drive 100, C6]/worst_alias_db	-68.0981
 synth/alias[Squelch saw, drive 100, C7]/worst_alias_db	-55.157
-synth/alias[Squelch square, C5]/worst_alias_db	-48.4185
-synth/alias[Squelch square, C6]/worst_alias_db	-39.218
-synth/alias[Squelch square, C7]/worst_alias_db	-27.0794
+synth/alias[Squelch square, C5]/worst_alias_db	-84.4446
+synth/alias[Squelch square, C6]/worst_alias_db	-75.0172
+synth/alias[Squelch square, C7]/worst_alias_db	-62.3481
 synth/alias[Strings viola, C5]/worst_alias_db	-81.4609
 synth/alias[Strings viola, C6]/worst_alias_db	-75.8656
 synth/alias[Strings viola, C7]/worst_alias_db	-69.4059

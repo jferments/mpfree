@@ -4,7 +4,7 @@ checked: 2026-11-22 33571aaf
 -->
 # DSP quality: fizz, filters near the top and the sample rate
 
-**Status:** plan approved by the owner on 2026-11-22; phase 0 (measures, the rate probe, reference renders, the full-project check) is being built; the rate probe's code is written and has not run on the MPC. Phase 1 has begun: step 1.1 changes the sync warp's sound on the table oscillator ([Step 1.1: sync](#step-11-sync)), and step 1.2 Analog's oscillators ([Step 1.2: Analog's waves](#step-12-analogs-waves), built, its blind A/B next); no other sound has changed yet. Design doc with both outside reviews and the answers to them: "DSP quality" (https://claude.ai/artifact/5jsLgS5ZaRoHzpvVbEUgZ5). Related pages: [FX quality](fx-quality.md), [Synth quality](synth-quality.md), [Drive and Character](fx-drive.md), [Synth library: architecture and roadmap](synth-architecture.md), [Disk streaming](disk-streaming.md), [Profiling](profiling.md).
+**Status:** plan approved by the owner on 2026-11-22; phase 0 (measures, the rate probe, reference renders, the full-project check) is being built; the rate probe's code is written and has not run on the MPC. Phase 1 has begun: step 1.1 changes the sync warp's sound on the table oscillator ([Step 1.1: sync](#step-11-sync)), step 1.2 Analog's oscillators ([Step 1.2: Analog's waves](#step-12-analogs-waves), built, its blind A/B next) and step 1.3 Squelch's square ([Step 1.3: Squelch's square](#step-13-squelchs-square), built, its blind A/B next); no other sound has changed yet. Design doc with both outside reviews and the answers to them: "DSP quality" (https://claude.ai/artifact/5jsLgS5ZaRoHzpvVbEUgZ5). Related pages: [FX quality](fx-quality.md), [Synth quality](synth-quality.md), [Drive and Character](fx-drive.md), [Synth library: architecture and roadmap](synth-architecture.md), [Disk streaming](disk-streaming.md), [Profiling](profiling.md).
 
 ## Why
 
@@ -23,7 +23,7 @@ From the ratchet files on main (`rust/mpfree-fxlab/quality/synth.tsv`, `sampler.
 | Poly saw, pulse, tables | -78 / -84 dB | band-limited tables (the voice core) |
 | Analog saw | -54 / -48 dB | polyBLEP at the host rate; never moved to the tables; -94 / -89 dB since step 1.2 |
 | Poly table and Wavetable with sync 50 | -45 / -39 dB | the jump at each sync restart is not smoothed (`table_osc.rs`, `Warp::Sync`); -72 / -85 dB since step 1.1 |
-| Squelch square | -48 / -39 dB | the shaper that turns the saw into a square has no ADAA (it already runs at 2x) |
+| Squelch square | -48 / -39 dB | the shaper that turns the saw into a square has no ADAA (it already runs at 2x); -84 / -75 dB since step 1.3 |
 | Poly drive 24 dB / distortion 24 dB | -50 / -45 and -45 / -40 dB | the curve runs per voice at 1x |
 | Sampler, a semitone up, 9 kHz out | spur -31.5 dB | the Hermite read for small pitch changes |
 | Sampler, a fifth down, 9 kHz out | spur -43.6 dB, 1.1 dB quiet | the same read pitched down |
@@ -175,6 +175,23 @@ The target was -70 dB at C5 and C6 on the A1 Analog rows.
 - **Poly-mod into the cutoff is 2 to 2.7 dB fizzier,** and so is its 8x render (4.4 and 3.9 dB). Oscillator 2 now reaches the cutoff with its top octave. Against its references the 44.1 kHz render is 1 to 2.5 dB closer than before.
 - **The reference moved too.** With oscillators flat to 0.48 of whatever rate they run at, the 8x and 16x renders feed more above the band into the filter's saturation: Analog's saw at C5 has 8x fizz of -76.5 dB against 16x's -80.8 (were -81.8 and -85.1), so it no longer counts as converged and leaves `tests/reference.rs`'s list. The 44.1 kHz render (-81.3) is under both.
 - **Cost** (instruction gate, thousands of x86-64 instructions a block, against the build before; limit 10 % more): Analog Init 269 to 243 (-9.6 %), Poly Brass 206 to 174 (-15.3 %), Warm Pad 323 to 291 (-10.2 %), Worn Cards on 16 voices 470 to 413 (-12.1 %). The polyBLEP ran every oscillator a sample at a time through the whole voice. Running each oscillator alone for a control step, with a copy for each wave, saves more than the longer step costs. Every factory preset was counted the same way (8-voice chords): 13 of 14 are 1 to 16 % cheaper, and Clang Bell, poly-mod from oscillator 2 on two triangles, is 2.9 % dearer. Device timing (step 0.4) is the real check.
+
+### Step 1.3: Squelch's square
+
+Built. **Wave** Square is Squelch's saw through a shaper, `0.7 tanh(6 (saw + 0.1))` in its Padé form (above). The shaper took the band-limited saw, and its gain of 6 sharpened the saw's smoothed reset back into a hard edge, so the square folded at -48 / -39 / -27 dB at C5 / C6 / C7 even at twice the rate.
+
+- **What was built** (`squelch.rs`, `sample`): the shaper takes the plain saw. Near its reset the plain saw sits in the shaper's flat ends (above 0.4 and under -0.6), so the plain square has a clean jump of -1.4 at the reset and is smooth everywhere else (the Padé curve meets its flat ends with zero slope). The jump gets the saw's own polyBLEP, scaled to its height: 0.7 times the saw's. Wave's blend of saw and square is unchanged, and so is the square's shape.
+- **Compared with the plan's first-order ADAA** on the shaper (the antiderivative above, in 64-bit, the saw blended through the same half-sample delay): ADAA takes the square to -55 / -48 / -38 dB of Y8 fizz, the plain saw and the stepped jump to -79 / -72 / -62. The plain saw needs no state, no logarithm and no delay, so it was built instead.
+
+| Measure | Before | After |
+|---|---|---|
+| A1 Squelch square, C5 / C6 / C7 | -48.4 / -39.2 / -27.1 dB | -84.4 / -75.0 / -62.3 dB |
+| Y8 Squelch square fizz, C5 / C6 / C7 | -43.1 / -36.0 / -26.0 dB | -79.3 / -72.4 / -61.9 dB |
+| Y8 8x reference against 16x, C5 / C6 / C7 | -55.2 / -47.9 / -40.2 against -61.3 / -54.0 / -43.8 dB | -89.0 / -91.0 / -88.3 against -88.9 / -91.2 / -88.7 dB |
+
+The target was -60 dB at C5 and C6; C7 meets it too. The square's references now converge, so its three cases join `tests/reference.rs`'s list. Square Acid's other ratchet rows moved by a thousandth of a dB except its start step, -131.6 to -126.4 dBFS (past its 1 dB tolerance, still far under hearing); no other preset uses the square. The project renders are bit-identical.
+
+- **Cost** (instruction gate, against the build before; limit 10 % more): Squelch Square Acid 64.8k to 64.4k a block (-0.6 %), Acid Line and Distorted -1.1 % (the same code laid out a little better).
 
 ## Targets and new measures
 
