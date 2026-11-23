@@ -7360,7 +7360,11 @@ fn time_action(
             | TimeAction::SongMarker(_)
             | TimeAction::DeletePlacement(_)
             | TimeAction::Perform(_)
-    ) || matches!(a, TimeAction::SongTempo(e) if !matches!(e, TempoEdit::Pick(_)));
+    ) || matches!(a, TimeAction::SongTempo(e) if !matches!(e, TempoEdit::Pick(_)))
+        // A linked song list's step edits are the song's (Arrange 4b.2).
+        || (time.project().arrangement.list.linked && time::edits_steps(&a))
+        // Link's Song from the list puts room at the song's start (4b.5).
+        || matches!(a, TimeAction::ListLink(_));
     // PLAY or PLAY START while the transport follows another device's
     // Start and Stop and it is stopped: its Start plays, and the screen
     // says so.
@@ -7397,12 +7401,19 @@ fn time_action(
         | TimeAction::SnapBack
         | TimeAction::KeepMorph
         | TimeAction::SaveScene(_) => Some(time.morph(a, &mut mix.modu, &mix.mixer)),
-        // A song time edit, UNDO and REDO with audio regions (or a song
-        // edit's step on their history): the regions move with the song
-        // in the same period, or nothing moves (Arrange 3.4). Apart too,
-        // the control half borrowed back for it.
+        // A song time edit (a linked list's step edits too, Arrange
+        // 4b.2), UNDO and REDO with audio regions (or a song edit's step
+        // on their history): the regions move with the song in the same
+        // period, or nothing moves (Arrange 3.4). Apart too, the control
+        // half borrowed back for it.
         TimeAction::MoveSection { .. }
         | TimeAction::SongBars(_)
+        | TimeAction::ListTimes { .. }
+        | TimeAction::ListScene { .. }
+        | TimeAction::ListAdd
+        | TimeAction::ListRemove(_)
+        | TimeAction::ListMove { .. }
+        | TimeAction::ListBack(_)
         | TimeAction::Undo
         | TimeAction::Redo
             if tracks.host.tracks.has_regions() || tracks.host.tracks.has_song_steps() =>
@@ -8116,7 +8127,7 @@ fn player_session(
     });
     // The time engine (transport, clips, takes) runs in this loop too;
     // with --time-thread its editing side has a thread of its own.
-    let mut time = time::TimeHost::new(RATE, app.settings.bpm)?;
+    let mut time = time::TimeHost::new_project(RATE, app.settings.bpm)?;
     if o.time_thread {
         time = time_apart(out, time);
     }

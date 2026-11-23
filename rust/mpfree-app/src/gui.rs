@@ -7193,6 +7193,11 @@ impl Player {
                     .as_deref()
                     .map_or_else(String::new, time_view::report_hint),
                 View::Arrange if self.time_page.adding => mpfree_time_ui::song::ADD_HINT.to_string(),
+                // Link's chooser (the Arrange refactor's 4b.5).
+                View::Arrange if self.time_page.linking => time_view::LINK_HINT.to_string(),
+                View::Arrange if self.time.list_view && self.time.list_linked => {
+                    time_view::LINKED_LIST_HINT.to_string()
+                }
                 View::Arrange if self.time.list_view => time_view::LIST_HINT.to_string(),
                 View::Arrange if self.time.song_view => time_view::song_hint(&self.time).to_string(),
                 View::Arrange if self.time_page.clip_card => time_view::clips_card_hint(&self.time).to_string(),
@@ -10199,6 +10204,7 @@ impl Player {
                 // the Song view's hint too.
                 let swapped = st.song_view != self.time.song_view
                     || st.list_view != self.time.list_view
+                    || st.list_linked != self.time.list_linked
                     || lens(&st) != lens(&self.time)
                     || time_view::song_hint(&st) != time_view::song_hint(&self.time);
                 let switched = st.perform != self.time.perform;
@@ -14635,8 +14641,10 @@ impl Player {
             }
             // "+ Track" opens its chooser (Note track, Audio track, Loop
             // track; layout spec 4c), and a touch off it closes it: the
-            // page's own. SHIFT + "+ Track" still adds a Loop track.
-            (time_view::CLIPS, EventKind::Toggle(_)) | (time_view::SONG, EventKind::Tab(_))
+            // page's own. SHIFT + "+ Track" still adds a Loop track. The
+            // song list's Link opens its chooser the same way (4b.5).
+            (time_view::CLIPS | time_view::SONG_LIST, EventKind::Toggle(_))
+            | (time_view::SONG, EventKind::Tab(_))
                 if self.time_page.chooser(&ev, &self.time, self.status.shift) =>
             {
                 self.time_page.update(&mut self.ui, &self.time);
@@ -14734,6 +14742,11 @@ impl Player {
                     )
                 ) {
                     self.time_page.update(&mut self.ui, &self.time);
+                }
+                // Link's choice (4b.5): its chooser closed, and its hint with it.
+                if matches!(a, Some(TimeAction::ListLink(_))) {
+                    self.time_page.update(&mut self.ui, &self.time);
+                    self.refresh_hint();
                 }
                 a.map(|a| {
                     let a = match a {
@@ -18147,12 +18160,56 @@ fn sample_list_state() -> Result<TimeState, String> {
                 starts,
                 playing: (k == 3).then_some((3, 0.62)),
                 waiting: false,
+                lead: false,
+                changed: false,
             };
             starts += r.bars;
             r
         })
         .collect();
     st.list_pick = Some(4);
+    Ok(st)
+}
+
+/// The song list linked to the song (the Arrange refactor's phase 4b):
+/// the song's seven parts, the Song row (its bars before the first
+/// marker) first, the Verse playing its third pass of four, the first
+/// Drop changed in the song and picked (Back to the scene lit).
+fn sample_linked_list_state() -> Result<TimeState, String> {
+    use mpfree_time_ui::list::ListRow;
+    let mut st = sample_list_state()?;
+    st.list_linked = true;
+    let parts = [
+        ("Song", None, 1, 2),
+        ("Intro", Some(0), 2, 8),
+        ("Verse", Some(1), 4, 16),
+        // Changed in the song: × 1, its bars its own (4b.3).
+        ("Drop", Some(3), 1, 4),
+        ("Break", Some(4), 1, 8),
+        ("Drop", Some(3), 2, 8),
+        ("Outro", Some(5), 1, 4),
+    ];
+    let mut starts = 1;
+    st.list = parts
+        .iter()
+        .enumerate()
+        .map(|(k, &(name, scene, times, bars))| {
+            let r = ListRow {
+                name: name.to_string(),
+                scene,
+                times,
+                bars,
+                starts,
+                playing: (k == 2).then_some((3, 0.62)),
+                waiting: false,
+                lead: k == 0,
+                changed: k == 3,
+            };
+            starts += bars;
+            r
+        })
+        .collect();
+    st.list_pick = Some(3);
     Ok(st)
 }
 
@@ -18992,6 +19049,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         variant: None,
         scene: None,
         rows: None,
+        followed: None,
     };
     st.done = vec![
         take(1, 0, false, false),
@@ -19447,6 +19505,37 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("arrange-list sample: {e}"),
     }
+    // The song list linked to the song (the Arrange refactor's phase 4b):
+    // the song's parts, the Song row first, the Drop picked.
+    match sample_linked_list_state() {
+        Ok(st) => {
+            let mut p = quiet_player(fonts());
+            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("arrange-list-linked", p));
+        }
+        Err(e) => eprintln!("arrange-list-linked sample: {e}"),
+    }
+    // A list of its own with Link's chooser open (Arrange 4b.5): Song
+    // from the list, or List from the song.
+    match sample_list_state() {
+        Ok(mut st) => {
+            // A song of five marked parts made before.
+            st.markers = ["Intro", "Verse", "Chorus", "Bridge", "Outro"]
+                .iter()
+                .enumerate()
+                .map(|(k, n)| (k as i64 * 8 * 4 * 960, n.to_string()))
+                .collect();
+            let mut p = quiet_player(fonts());
+            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Show(View::Arrange));
+            p.time_page.linking = true;
+            p.time_page.update(&mut p.ui, &p.time);
+            p.refresh_hint();
+            out.push(("arrange-list-link", p));
+        }
+        Err(e) => eprintln!("arrange-list-link sample: {e}"),
+    }
     // Loop tracks: Loops A to C after three note tracks, row 2 playing,
     // Loop 2 overdubbing (its third layer), the loops' memory a third used.
     match mpfree_time_ui::sample::loops_playing() {
@@ -19547,6 +19636,24 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             out.push(("arrange-song-section", p));
         }
         Err(e) => eprintln!("arrange-song-section sample: {e}"),
+    }
+    // A song linked to its list (the Arrange refactor's 4b.4): the Verse
+    // plays its scene twice, "Verse ×2" on the ruler and a faint dashed
+    // line where its second pass starts, "pass 2 of 2".
+    match mpfree_time_ui::sample::busy_song_state() {
+        Ok(mut state) => {
+            state.list_linked = true;
+            let verse = state.markers.get(1..3).map(|m| m[1].0 - m[0].0);
+            state.passes = (0..state.markers.len())
+                .map(|k| verse.filter(|_| k == 1).map(|len| (2, len / 2)))
+                .collect();
+            let mut p = quiet_player(fonts());
+            busy_sounds(&mut p);
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("arrange-song-passes", p));
+        }
+        Err(e) => eprintln!("arrange-song-passes sample: {e}"),
     }
     // The song's tempo points on the lane over the bars: 100 BPM from
     // bar 3 ramping to 128 at bar 6, the ramping point picked (its Ramp
@@ -21957,7 +22064,8 @@ mod tests {
 
     /// The song list on Arrange (sequencer S4): MAIN in Perform goes
     /// Clips, Song, List and round; its hint; a tap on a step picks it;
-    /// Remove needs the hold in Perform.
+    /// Remove needs the hold in Perform; linked to the song, its hint, and
+    /// a step's grip moves it.
     #[test]
     fn the_song_list_is_mains_third_view_and_remove_needs_a_hold() {
         use mpfree_time_ui::list::ListRow;
@@ -22038,6 +22146,97 @@ mod tests {
         p.tick(0.25);
         assert_eq!(p.take_actions(), [FromUi::Time(TimeAction::ListRemove(0))]);
         p.touch(1, Touch::Up, x, y);
+        // Link (Arrange 4b.5): its chooser and hint; a touch off it only
+        // closes it; a choice is the engine's, and closes it.
+        p.tick(TELL_SECONDS + 0.5);
+        let tap = |p: &mut Player, b: mpfree_ui::Rect| {
+            let (x, y) = (b.x + b.w / 2, b.y + b.h / 2);
+            let down = p.touch(3, Touch::Down, x, y);
+            down.or(p.touch(3, Touch::Up, x, y))
+        };
+        assert_eq!(
+            {
+                let b = find(&p, "Link");
+                tap(&mut p, b)
+            },
+            None
+        );
+        p.ui.paint(&mut c);
+        assert_eq!(hint(&p), time_view::LINK_HINT);
+        let lines =
+            p.ui.get::<mpfree_time_ui::list::SongListView>(time_view::SONG_LIST)
+                .and_then(|l| l.link_choices.clone())
+                .unwrap();
+        assert_eq!(
+            lines[0],
+            "The list's 1 step becomes the song; its old bars go after them"
+        );
+        // Link again closes it; open, a touch under it closes it too.
+        let step = find(&p, "Song from the list");
+        assert_eq!(
+            {
+                let b = find(&p, "Link");
+                tap(&mut p, b)
+            },
+            None
+        );
+        assert!(!p.time_page.linking);
+        assert_eq!(
+            {
+                let b = find(&p, "Link");
+                tap(&mut p, b)
+            },
+            None
+        );
+        assert!(p.time_page.linking);
+        let off = mpfree_ui::Rect::new(step.x + 4, step.bottom() + 120, 4, 4);
+        assert_eq!(tap(&mut p, off), None);
+        assert!(!p.time_page.linking);
+        assert!(p.take_actions().is_empty());
+        assert_eq!(
+            {
+                let b = find(&p, "Link");
+                tap(&mut p, b)
+            },
+            None
+        );
+        assert_eq!(
+            {
+                let b = find(&p, "List from the song");
+                tap(&mut p, b)
+            },
+            Some(FromUi::Time(TimeAction::ListLink(
+                mpfree_time_ui::view::LinkFrom::Song
+            )))
+        );
+        assert!(!p.time_page.linking);
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        p.ui.paint(&mut c);
+        assert_eq!(hint(&p), time_view::LIST_HINT);
+        // Linked to the song (Arrange 4b): its own hint, and a step's grip
+        // dragged down past the next step moves it there.
+        st.list_linked = true;
+        st.list.push(ListRow {
+            name: "Drop".into(),
+            scene: Some(1),
+            times: 1,
+            bars: 1,
+            starts: 3,
+            ..ListRow::default()
+        });
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        // The guard's word has had its time.
+        p.tick(TELL_SECONDS + 0.5);
+        p.ui.paint(&mut c);
+        assert_eq!(hint(&p), time_view::LINKED_LIST_HINT);
+        let g = find(&p, "Step 1 grip");
+        let (x, y) = (g.x + g.w / 2, g.y + g.h / 2);
+        assert_eq!(p.touch(2, Touch::Down, x, y), None);
+        assert_eq!(p.touch(2, Touch::Move, x, y + 116), None);
+        assert_eq!(
+            p.touch(2, Touch::Up, x, y + 116),
+            Some(FromUi::Time(TimeAction::ListMove { step: 0, to: 2 }))
+        );
     }
 
     /// The scene editor (sequencer S4, part 7): the Record panel's Scene
@@ -24017,6 +24216,7 @@ mod tests {
             variant: None,
             scene: None,
             rows: None,
+            followed: None,
         };
         let mut st = p.time.clone();
         st.done = vec![take(1), take(2), take(3)];
@@ -24671,6 +24871,7 @@ mod tests {
             variant: None,
             scene: None,
             rows: None,
+            followed: None,
         });
         p.apply(ToUi::Time(Box::new(st.clone())));
         assert_eq!(undo(&mut p, false), takes(TimeAction::Undo));
@@ -30656,7 +30857,10 @@ mod tests {
         let mut clips_9 = good.clone();
         for (name, text) in &mut clips_9.parts {
             if name == project::CLIPS {
-                *text = text.replacen("mpfree-clips 2", "mpfree-clips 9", 1);
+                // A new project's clips are format 4 (its list linked).
+                let was = mpfree_seq::save::FORMAT_4;
+                assert!(text.contains(was));
+                *text = text.replacen(was, "mpfree-clips 9", 1);
             }
         }
         let mut newer = good.clone();

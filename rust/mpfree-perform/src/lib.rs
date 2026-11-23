@@ -50,6 +50,11 @@
 //!   round). While the list plays, the scenes' own follow actions wait;
 //!   the host ends it ([`Perform::end_list`]) when a scene is launched by
 //!   hand or everything stops.
+//! - [`Perform::section_starts`]: a song linked to its list (the Arrange
+//!   refactor's 4b.4) plays its sections' blocks, made with no scene's
+//!   mutes; as each section starts, the host brings its scene's mutes
+//!   and program changes in here, as a launch brings them for the tracks
+//!   it gives no cue (the host's `sections` module says when).
 //!
 //! [`morph`]: the scene morph (T10), two rows' stored values on the mod
 //! engine's scenes A and B.
@@ -276,6 +281,29 @@ impl Perform {
         }
     }
 
+    /// Step `from` moved to `to` in the list: the step playing keeps
+    /// playing, and the list goes on from where it is now.
+    pub fn list_moved(&mut self, from: usize, to: usize) {
+        let Some(l) = self.list.as_mut() else {
+            return;
+        };
+        let moved = |k: usize| {
+            if k == from {
+                to
+            } else if from < k && k <= to {
+                k - 1
+            } else if to <= k && k < from {
+                k + 1
+            } else {
+                k
+            }
+        };
+        l.step = moved(l.step);
+        if let Some((k, s)) = l.out {
+            l.out = Some((moved(k), s));
+        }
+    }
+
     /// The list stops going on by itself (a scene launched by hand, Stop
     /// all, Back to song); what plays plays on.
     pub fn end_list(&mut self) {
@@ -407,6 +435,60 @@ impl Perform {
                     start: bar,
                     stays: 0,
                 });
+            }
+        }
+        true
+    }
+
+    /// A section of a song linked to its list, made from row `row`,
+    /// starts on `line` (the Arrange refactor's 4b.4; None: at once, the
+    /// transport stopped or the playhead jumped into it). Its scene's
+    /// mutes and program changes come in there as a launch of the scene
+    /// brings them for the tracks it gives no cue: the mutes wait for the
+    /// line ([`Perform::take_line_mutes`]; at once they are set here), and
+    /// the program changes go out on it (at once: where the music plays
+    /// from), replacing the last ones. Nothing is cued: the song plays the
+    /// section's blocks. False (nothing done) past the last row.
+    pub fn section_starts(
+        &mut self,
+        project: &mut Project,
+        row: usize,
+        line: Option<LaunchGrid>,
+    ) -> bool {
+        if row >= SCENES {
+            return false;
+        }
+        let scene = project.scene(row);
+        let mut mute = [None; MAX_TRACKS];
+        if let Some(s) = scene {
+            for (t, m) in mute.iter_mut().enumerate() {
+                *m = s.mutes_track(t);
+            }
+        }
+        self.program_id = self.program_id.wrapping_add(1);
+        for (t, p) in self.programs.iter_mut().enumerate() {
+            *p = scene
+                .and_then(|s| s.program(t))
+                .map(|program| SceneProgram {
+                    program,
+                    line,
+                    id: self.program_id,
+                });
+        }
+        self.line_mutes = [None; MAX_TRACKS];
+        match line {
+            Some(line) => {
+                self.mute_line = line;
+                for (t, m) in mute.iter().enumerate().take(project.tracks.len()) {
+                    self.line_mutes[t] = *m;
+                }
+            }
+            None => {
+                for (track, m) in project.tracks.iter_mut().zip(mute) {
+                    if let Some(m) = m {
+                        track.mute = m;
+                    }
+                }
             }
         }
         true
@@ -1041,6 +1123,47 @@ mod tests {
         assert!(p.tracks[1].mute && !p.tracks[2].mute);
     }
 
+    /// A linked song's section starting (the Arrange refactor's 4b.4):
+    /// its scene's mutes wait for its line for every track, cued or not
+    /// (nothing is cued: the song plays), its program changes go out on
+    /// the line and replace the last; with no line the mutes land at once.
+    #[test]
+    fn a_sections_mutes_and_programs_come_in_on_its_line() {
+        use mpfree_seq::{ClipProgram, TrackProgram};
+        let mut p = project();
+        p.tracks[0].mute = true;
+        let s = p.scene_mut(1).unwrap();
+        s.mutes = Some(0b10);
+        s.programs = vec![TrackProgram {
+            track: 1,
+            program: ClipProgram {
+                program: 3,
+                bank: None,
+            },
+        }];
+        let mut perf = Perform::default();
+        let line = LaunchGrid::At(4 * BAR);
+        assert!(perf.section_starts(&mut p, 1, Some(line)));
+        let (at, mutes) = perf.take_line_mutes().unwrap();
+        assert_eq!((at, mutes[0], mutes[1]), (line, Some(false), Some(true)));
+        assert!(mutes[p.tracks.len()..].iter().all(Option::is_none));
+        assert!(p.tracks[0].mute && !p.tracks[1].mute, "not yet");
+        assert_eq!(perf.programs[0], None);
+        let sent = perf.programs[1].unwrap();
+        assert_eq!((sent.program.program, sent.line), (3, Some(line)));
+        assert_eq!((perf.cued, perf.playing.is_none()), (None, true));
+        // Row 1 has no mutes or programs: the mutes stay, the programs go.
+        assert!(perf.section_starts(&mut p, 0, None));
+        assert_eq!(perf.take_line_mutes(), None);
+        assert!(p.tracks[0].mute && !p.tracks[1].mute);
+        assert_eq!(perf.programs[1], None);
+        // Stopped: row 2's mutes at once.
+        assert!(perf.section_starts(&mut p, 1, None));
+        assert!(!p.tracks[0].mute && p.tracks[1].mute);
+        assert!(perf.programs[1].unwrap().id > sent.id);
+        assert!(!perf.section_starts(&mut p, SCENES, None));
+    }
+
     #[test]
     fn a_scene_follow_fires_in_the_bar_before_its_point() {
         let mut p = project();
@@ -1183,6 +1306,12 @@ mod tests {
         let f = perf.due(&mut p, &mut launches, &mut cues, 1, BAR);
         assert_eq!(f.scene, Some(Some(0)));
         assert_eq!(perf.list().unwrap().step, 0);
+        // A step moved (its grip, Arrange 4b): the one playing keeps
+        // playing wherever it goes, and one moved past it moves it.
+        for (from, to, now) in [(0, 2, 2), (1, 0, 2), (2, 0, 0), (1, 0, 1), (1, 0, 0)] {
+            perf.list_moved(from, to);
+            assert_eq!(perf.list().unwrap().step, now, "{from} to {to}");
+        }
         // A step put in before the one playing moves it on; the one
         // playing taken out ends the list.
         perf.list_edited(0, true);
