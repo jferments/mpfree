@@ -10221,6 +10221,43 @@ mod tests {
         assert_eq!(app.eng().modifier(), 0.0, "let go: nothing pressed");
     }
 
+    /// The manual's drum example: Note Repeat on a pad, the Modifier on
+    /// Pressure adding rolls with no rate push. Pressing harder into the
+    /// pad rolls it; easing off, or letting go, takes the rolls back. The
+    /// rate stays as set throughout.
+    #[test]
+    fn pad_pressure_rolls_note_repeat() {
+        let mut app = ready();
+        app.toggle_panel();
+        app.arp_action(ArpAction::Mode(Mode::Repeat));
+        app.step_arp_item(ArpItem::ModSource, 1);
+        app.step_arp_item(ArpItem::ModSource, 1);
+        assert_eq!(app.arp.modifier.source, ModSource::Pressure);
+        for _ in 0..2 {
+            app.step_arp_item(ArpItem::ModRate, -1);
+        }
+        app.step_arp_item(ArpItem::ModOctaves, -1);
+        for _ in 0..3 {
+            app.step_arp_item(ArpItem::ModRolls, 1);
+        }
+        let m = app.arp.modifier;
+        assert_eq!((m.rate, m.octaves, m.rolls), (0, 0, 3));
+        app.pressure(2, 127);
+        assert_eq!(app.eng().modifier(), 0.0, "a pad not held presses nothing");
+        app.pad_down(2, 100);
+        app.pressure(2, 127);
+        assert_eq!(app.eng().modifier(), 1.0);
+        assert_eq!(app.eng().rolls(), 3);
+        assert_eq!(app.eng().live().rate, app.arp.rate, "the rate stays");
+        app.pressure(2, 20);
+        assert_eq!(app.eng().rolls(), 0, "eased off");
+        app.pressure(2, 127);
+        assert_eq!(app.eng().rolls(), 3);
+        app.pad_up(2);
+        assert_eq!(app.eng().modifier(), 0.0, "let go: nothing pressed");
+        assert_eq!(app.eng().rolls(), 0);
+    }
+
     /// Prefs' Latch keeps pads steps through Replace, Toggle and Add, and
     /// both latch rows come back at the next start.
     #[test]

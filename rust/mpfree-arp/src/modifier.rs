@@ -338,6 +338,67 @@ mod tests {
         assert_eq!(push(&s4, 0.0, &mut st).settings.rate, Rate::Sixteenth);
     }
 
+    /// Any settings, any amounts and a controller wobbling anywhere: the
+    /// pushed settings stay in their ranges, a push never moves a setting
+    /// the other way from its amount, and back at 0 the arp plays exactly
+    /// as set, whatever the steps held on the way.
+    #[test]
+    fn any_push_stays_in_range_and_comes_back_to_the_settings() {
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        for _ in 0..2_000 {
+            let m = Modifier {
+                source: ModSource::ALL[1 + next(5) as usize],
+                rate: next(9) as i8 - 4,
+                octaves: next(7) as i8 - 3,
+                gate: (next(199) as i32 - 99) as i8,
+                swing: next(51) as i8 - 25,
+                rolls: next(8) as u8,
+                accents: next(101) as u8,
+            };
+            let s = Settings {
+                rate: Rate::ALL[next(Rate::ALL.len() as u64) as usize],
+                octaves: 1 + next(4) as u8,
+                gate: 1 + next(100) as u8,
+                swing: 50 + next(26) as u8,
+                modifier: m,
+                ..Settings::default()
+            };
+            let at = |r: Rate| Rate::ALL.iter().position(|x| *x == r).unwrap() as i32;
+            let mut st = Steps::default();
+            for _ in 0..20 {
+                let a = next(1_001) as f32 / 1_000.0;
+                let p = push(&s, a, &mut st);
+                let q = p.settings;
+                assert!((1..=4).contains(&q.octaves), "{q:?}");
+                assert!((1..=100).contains(&q.gate), "{q:?}");
+                assert!((50..=75).contains(&q.swing), "{q:?}");
+                assert!(p.rolls <= Modifier::ROLLS && p.accents <= m.accents);
+                let way = |d: i32, by: i8| d == 0 || d.signum() == i32::from(by.signum());
+                assert!(way(at(q.rate) - at(s.rate), m.rate), "{s:?} {q:?}");
+                assert!(way(i32::from(q.octaves) - i32::from(s.octaves), m.octaves));
+                assert!(way(i32::from(q.gate) - i32::from(s.gate), m.gate));
+                assert!(way(i32::from(q.swing) - i32::from(s.swing), m.swing));
+                // Everything but the four pushed settings stays as set.
+                let mut same = q;
+                same.rate = s.rate;
+                same.octaves = s.octaves;
+                same.gate = s.gate;
+                same.swing = s.swing;
+                assert_eq!(same, s);
+            }
+            let rest = push(&s, 0.0, &mut st);
+            assert_eq!(rest.settings, s);
+            assert_eq!((rest.rolls, rest.accents), (0, 0));
+            assert_eq!(st, Steps::default());
+        }
+    }
+
     #[test]
     fn amounts_are_clamped() {
         let m = Modifier {
