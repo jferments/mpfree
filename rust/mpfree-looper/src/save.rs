@@ -127,6 +127,10 @@ pub struct RawLayer {
     pub pieces: Vec<(u32, u32, bool)>,
     /// A Replace layer's fades in and out, in frames.
     pub replace: Option<(u32, u32)>,
+    /// The recording that holds its audio, its host's (`mpfree_seq::RecId`,
+    /// audio tracks phase 4c), 0 for none: the looper keeps it for the
+    /// host in the text, nothing more.
+    pub rec: u128,
 }
 
 /// The free clock as saved, for its free loops: its tempo, exactly, its
@@ -246,8 +250,12 @@ pub fn to_text(saved: &Saved) -> String {
                 let replace = r
                     .replace
                     .map_or("-".to_string(), |(i, o)| format!("{i},{o}"));
+                let rec = match r.rec {
+                    0 => String::new(),
+                    id => format!(" rec={id:032x}"),
+                };
                 format!(
-                    " size={} valid={},{} view={} replace={replace}",
+                    "{rec} size={} valid={},{} view={} replace={replace}",
                     r.size,
                     r.valid.0,
                     r.valid.1,
@@ -376,7 +384,23 @@ fn raw_layer(kv: &[(&str, &str)], n: usize) -> Result<RawLayer, String> {
         valid,
         pieces,
         replace,
+        rec: hex_id(kv, "rec", n)?,
     })
+}
+
+/// A lasting id's word (`id=`, `rec=`): 32 hex digits, never 0; 0 when
+/// there is none.
+fn hex_id(kv: &[(&str, &str)], key: &str, n: usize) -> Result<u128, String> {
+    match get(kv, key) {
+        None => Ok(0),
+        Some(h) => match Some(h)
+            .filter(|h| h.len() == 32 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+            .and_then(|h| u128::from_str_radix(h, 16).ok())
+        {
+            Some(id) if id != 0 => Ok(id),
+            _ => Err(format!("line {n}: {key}={h}")),
+        },
+    }
 }
 
 /// The part from its text. The layers come back without audio: load each
@@ -453,16 +477,7 @@ pub fn from_text(text: &str) -> Result<Saved, String> {
                     fade_old: level(&kv, "fade_old", n, 0.0, 1.0).unwrap_or(1.0),
                     speed: small(&kv, "speed", n, 1)?,
                     rate: small(&kv, "octaves", n, 2)?,
-                    id: match get(&kv, "id") {
-                        None => 0,
-                        Some(h) => match Some(h)
-                            .filter(|h| h.len() == 32 && h.bytes().all(|b| b.is_ascii_hexdigit()))
-                            .and_then(|h| u128::from_str_radix(h, 16).ok())
-                        {
-                            Some(id) if id != 0 => id,
-                            _ => return Err(format!("line {n}: id={h}")),
-                        },
-                    },
+                    id: hex_id(&kv, "id", n)?,
                     clock: match get(&kv, "clock") {
                         Some("free") => Clock::Free,
                         _ => Clock::Song,
@@ -733,12 +748,14 @@ mod tests {
             valid: (0, 112_776),
             pieces: vec![(9000, 79_392, false), (8192, 808, false)],
             replace: None,
+            rec: 0x0123_4567_89ab_cdef_0000_0000_0000_0001,
         });
         l.layers[1].raw = Some(RawLayer {
             size: 88_200,
             valid: (20_000, 30_000),
             pieces: vec![(88_199, 88_200, true)],
             replace: Some((256, 512)),
+            rec: 0,
         });
         let t = to_text(&s);
         assert!(t.starts_with("mpfree-looper 2\n"), "{t}");
@@ -748,6 +765,8 @@ mod tests {
             "{t}"
         );
         assert!(t.contains("valid=20000,30000 view=88199:88200:b replace=256,512"));
+        assert!(t.contains(" rec=0123456789abcdef0000000000000001 size=112776 "));
+        assert_eq!(t.matches(" rec=").count(), 1, "none for a layer with no recording");
         // Loop 2 kept as it plays, in a format 2 text: no shape, and its
         // layer needs one, so it is refused.
         let only = |s: &Saved| {
@@ -769,6 +788,8 @@ mod tests {
             ("size=88200", "size=0"),
             (" cut=88200", ""),
             ("region=8192,9000", "region=8192"),
+            ("rec=0123456789abcdef0000000000000001", "rec=0"),
+            ("rec=0123456789abcdef0000000000000001", "rec=12"),
         ] {
             assert!(t.contains(from), "{from}");
             let e = from_text(&t.replace(from, to)).unwrap_err();

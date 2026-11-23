@@ -434,3 +434,64 @@ fn a_closed_layers_audio_never_changes() {
     assert_eq!(r.l.status().layers, 4);
     unchanged(&r, &was, "the Merge and its Undo");
 }
+
+/// Each layer's number ([`mpfree_looper::LayerInfo::born`]): a new one for
+/// each layer made, the same through edits, mutes, undo and redo, and a
+/// new one for a layer loaded or merged; closed once all of its audio is
+/// written, and a first pass only once what it keeps after its loop is
+/// in.
+#[test]
+fn each_layer_keeps_a_number_of_its_own() {
+    let mut r = Rig::new(20, START);
+    r.cmd(L::SetBars(Some(1)));
+    r.cmd(L::Record);
+    r.run(START + BAR as u64 + 1, &noise);
+    let first = r.l.layer_info(0).unwrap();
+    assert!(!first.closed, "still keeping what it hears after its end");
+    r.run(START + (BAR + KEEP_AFTER) as u64 + 1_000, &noise);
+    let first = r.l.layer_info(0).unwrap();
+    assert!(first.closed && first.born > 0);
+    r.cmd(L::Overdub);
+    r.run(r.frame + 4_096, &tone);
+    let over = r.l.layer_info(1).unwrap();
+    assert!(over.recording && !over.closed && over.born > first.born);
+    r.cmd(L::Overdub);
+    r.run(r.frame + 4_096, &silence);
+    let born = |r: &Rig| -> Vec<u64> {
+        (0..r.l.status().layers)
+            .map(|k| r.l.layer_info(k).unwrap().born)
+            .collect()
+    };
+    let both = vec![first.born, over.born];
+    assert_eq!(born(&r), both);
+    assert!(r.l.layer_info(1).unwrap().closed);
+    // Edits, a mute, Undo and Redo keep the numbers.
+    r.edit(E::Reverse);
+    assert!(r.l.layer_command(over.id, Lc::Mute(true)));
+    r.run(r.frame + 4_096, &silence);
+    r.cmd(L::Undo);
+    r.run(r.frame + 4_096, &silence);
+    r.cmd(L::Undo);
+    r.run(r.frame + 4_096, &silence);
+    assert_eq!(born(&r), vec![first.born]);
+    r.cmd(L::Redo);
+    r.run(r.frame + 4_096, &silence);
+    assert_eq!(born(&r), both);
+    // A merge makes a layer of its own.
+    r.cmd(L::Merge);
+    r.run(r.frame + 2 * BAR as u64, &silence);
+    let merged = born(&r);
+    assert_eq!(merged.len(), 1);
+    assert!(merged[0] > over.born);
+    // A loop loaded in has new ones, never one given before.
+    r.cmd(L::Undo);
+    r.run(r.frame + 4_096, &silence);
+    let f = held(&r);
+    let mut b = Rig::new(20, 0);
+    b.l.load(0, f).unwrap();
+    b.run(BAR as u64, &silence);
+    let opened = born(&b);
+    assert_eq!(opened.len(), 2);
+    assert!(opened[0] != opened[1] && opened.iter().all(|&x| x > 0));
+    assert!((0..2).all(|k| b.l.layer_info(k).unwrap().closed));
+}

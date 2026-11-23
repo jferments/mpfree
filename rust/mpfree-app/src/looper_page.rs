@@ -2102,6 +2102,8 @@ mod tests {
             recording: false,
             faded: 1.0,
             replace: false,
+            born: u64::from(id) + 1,
+            closed: true,
         }
     }
 

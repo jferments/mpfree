@@ -618,6 +618,16 @@ pub struct LayerInfo {
     /// Recorded with Overdubs: Replace: the layers under it are silent
     /// where it was written ([`Overdubs::Replace`]).
     pub replace: bool,
+    /// Which layer this is, for a host that keeps it as a recording (audio
+    /// tracks phase 4c): a new number each time a layer is made (a first
+    /// pass, an overdub, a merge, a fit, a copy, a capture or a load),
+    /// never given twice in this looper, and the same through edits,
+    /// mutes, undo and redo. Its audio as written ([`Looper::raw_layer`])
+    /// never changes once it is `closed`.
+    pub born: u64,
+    /// All of its audio is written: not being recorded, and for a first
+    /// pass, no longer keeping what it hears after its loop's end.
+    pub closed: bool,
 }
 
 /// What a loop does when its first pass ends: the Looper tab's "After
@@ -1630,6 +1640,8 @@ struct Slot {
     /// 0 while the layer is muted or left out by a solo, and back, a step
     /// a frame.
     duck: f32,
+    /// Which layer it holds ([`LayerInfo::born`]).
+    born: u64,
 }
 
 impl Slot {
@@ -1646,6 +1658,7 @@ impl Slot {
         age: 1.0,
         replace: None,
         duck: 1.0,
+        born: 0,
     };
 
     /// Heard: not muted, and not left out by another layer's solo.
@@ -1710,6 +1723,8 @@ struct Store {
     kept_mask: [u16; MAX_LOOPS],
     kept_at: [u64; MAX_LOOPS],
     kept_seq: u64,
+    /// The last layer number given ([`Store::born`]).
+    born: u64,
 }
 
 impl Store {
@@ -1725,7 +1740,16 @@ impl Store {
             kept_mask: [0; MAX_LOOPS],
             kept_at: [0; MAX_LOOPS],
             kept_seq: 0,
+            born: 0,
         }
+    }
+
+    /// A new layer's number ([`LayerInfo::born`]): never given twice in
+    /// this looper, and kept here, apart from the loops, so that a loop
+    /// Undo brings back can't give one again.
+    fn born(&mut self) -> u64 {
+        self.born += 1;
+        self.born
     }
 
     #[inline]
@@ -3437,6 +3461,7 @@ impl Looper {
                     .map(|p| (p.start, p.len, p.back))
                     .collect(),
                 replace: s.replace,
+                rec: 0,
             });
         }
         Some(f)
@@ -3573,6 +3598,7 @@ impl Looper {
                 mute: y.muted,
                 solo: y.solo,
                 age: y.faded.clamp(0.0, 1.0),
+                born: self.store.born(),
                 ..Slot::NEW
             };
             let any_solo = f.layers.iter().any(|y| y.solo);
@@ -3904,6 +3930,10 @@ impl Looper {
             recording: l.od_open && l.od_layer == slot,
             faded: s.age,
             replace: s.replace.is_some(),
+            born: s.born,
+            closed: !(l.od_open && l.od_layer == slot)
+                && !(slot == 0 && (l.first_open || l.tail))
+                && !matches!(l.phase, Phase::Recording | Phase::Armed),
         })
     }
 
@@ -5819,6 +5849,7 @@ impl Looper {
         }
         l.slots[0] = Slot {
             valid: (0, t.frames),
+            born: self.store.born(),
             ..Slot::NEW
         };
         l.loading = true;
@@ -5946,6 +5977,7 @@ impl Looper {
             // Into a loop that plays, it fades in; an empty loop fades in
             // as a whole.
             presence: if empty { 1.0 } else { 0.0 },
+            born: self.store.born(),
             ..Slot::NEW
         };
         (new.gl, new.gr) = new.target(!empty && l.any_solo());
@@ -6930,6 +6962,7 @@ impl Loop {
         };
         self.slots[k] = Slot {
             valid: (0, frames),
+            born: store.born(),
             ..Slot::NEW
         };
         self.fitting = true;
@@ -7282,6 +7315,7 @@ impl Loop {
         };
         self.slots[k] = Slot {
             valid: (0, self.len),
+            born: store.born(),
             ..Slot::NEW
         };
         self.views[k] = View::whole(self.len);
@@ -8235,6 +8269,7 @@ impl Loop {
         let heard = (KEEP_BEFORE + self.written).min(if tail { kept + KEEP_AFTER } else { kept });
         self.slots[0] = Slot {
             valid: (0, heard),
+            born: store.born(),
             ..Slot::NEW
         };
         self.views[0] = view;
@@ -8422,7 +8457,10 @@ impl Loop {
             stats.refused += 1;
             return;
         };
-        self.slots[k] = Slot::NEW;
+        self.slots[k] = Slot {
+            born: store.born(),
+            ..Slot::NEW
+        };
         self.order[self.in_order] = k as u8;
         self.views[k] = View::whole(self.len);
         let mut ages = [1.0; MAX_LAYERS];
@@ -9633,6 +9671,7 @@ mod tests {
                 valid: (BLOCK, BLOCK),
                 pieces: vec![(0, frames as u32, false)],
                 replace,
+                rec: 0,
             }),
         };
         for (muted, duck) in [(true, 0.0), (false, 1.0)] {
