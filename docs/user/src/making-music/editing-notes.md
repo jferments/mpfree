@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-time-ui/src/editor.rs rust/mpfree-time-ui/src/editor/zoom.rs rust/mpfree-time-ui/src/editor/gesture.rs rust/mpfree-seq/src/notes.rs rust/mpfree-seq/src/save.rs rust/mpfree-app/src/time.rs
-checked: 2026-11-22 829e1568
+checked: 2026-11-22 77d2264a
 -->
 
 # Editing notes
@@ -25,7 +25,7 @@ The Notes view has the Arrange tab's transport bar along the top (**Stop**, **Pl
 
 ## The piano roll
 
-The notes are bars on a piano roll: higher notes higher up, time running left to right, longer notes longer. A drum clip shows its 16 pads instead of keys; a clip of notes on a synth track shows the keys even while it is empty. Under the roll, a lane shows how hard each note plays, or how likely it is to play, or how many times it repeats (see [The lane under the roll](#the-lane-under-the-roll)). A note played with [pad pressure](clips.md#pad-pressure) shows it as a lighter shape along its bottom: it rises where you pressed harder and falls where you let up.
+The notes are bars on a piano roll: higher notes higher up, time running left to right, longer notes longer. A drum clip shows its 16 pads instead of keys; a clip of notes on a synth track shows the keys even while it is empty. Under the roll, a lane shows how hard each note plays, how likely it is to play, how many times it repeats, or the picked notes' pressure (see [The lane under the roll](#the-lane-under-the-roll)). A note played with [pad pressure](clips.md#pad-pressure) shows it as a lighter shape along its bottom: it rises where you pressed harder and falls where you let up.
 
 Notes are drawn as they will play. A note whose step is off (tapped off on Steps) is only an outline: it keeps its place and settings and plays nothing. A note that repeats (a ratchet) shows each hit, lighter or darker as its velocity ramps, and each hit shows in the velocity lane too. A tied note has a short level mark just before it, and a sliding note a short slanting one.
 
@@ -53,12 +53,21 @@ Under the roll, each place where notes start has a bar in the lane, as tall as t
 - **Vel** (velocity): how hard each note plays, 1 to 127. A note that repeats also shows each later hit as a thin bar beside it, at the velocity its ramp gives it.
 - **Chance**: how likely each note is to play on a pass, 1 to 100 %. A note that never plays is an off note (tapped off on Steps), not 0 %. A chord whose notes play together or not at all (a chord pad's) has one chance, so drawing across it sets the whole chord to the last value you drew on it.
 - **Repeats**: how many times each note plays (a ratchet), 1 to 8. An arrow after the number says its ramp rises (↑) or falls (↓).
+- **Pressure**: the [pad pressure](clips.md#pad-pressure) of the picked notes, as a line along each one that rises where the pressure grows. Pick the notes first: with none picked the lane says "Pick notes to draw their pressure". See [Drawing pressure](#drawing-pressure).
 
 Draw with one finger along the lane: every bar you pass takes the height under your finger, so a crescendo or a fade is one stroke. The bars follow your finger, and nothing changes until you lift it; then the stroke is one change, and one **UNDO** takes it back. A second finger on the screen calls the stroke off.
 
 - **Notes that start together** (a chord, or a strum close together) share one bar, and a stroke sets them all. To set just one of them, pick it first: then only the picked notes there change.
 - **The ramp.** Hold **SHIFT** as your finger goes down on the Repeats lane to draw each note's ramp instead: up from the middle line makes its later hits louder, down makes them softer. Only notes that repeat take a ramp.
 - **Room.** Drag the lane's top edge (the short grip over it) up to make it taller, or down to make it shorter. Tap the **▾** under the chip to fold the lane away and give the roll its room; tap the chip to open it again. The lane stays as you leave it, for every clip.
+
+#### Drawing pressure
+
+Pick the notes whose pressure you want to shape, then tap the lane's chip until it says **Pressure**. The lane shows each picked note's pressure as a line under it; where picked notes sound together it shows the highest.
+
+{{shot: sequencer-notes-pressure | The Pressure lane under two picked notes that were played with pressure: each swell is a line under its note.}}
+
+Draw along the lane with one finger and the line follows it: a swell, a fade, or pressure on a note that had none. Before and after your stroke each note keeps the pressure it had. Nothing changes until you lift your finger; then the stroke is one change to every picked note it crossed, and one **UNDO** brings their old pressure back. The roll's own pressure shape on each note shows the result. Pressure goes to your instrument as the pads' pressure does, so a synth or a sample program that listens to it plays the new line.
 
 ### Change notes with the Q-Links
 

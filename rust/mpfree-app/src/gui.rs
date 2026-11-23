@@ -19932,6 +19932,29 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("sequencer-notes-tool sample: {e}"),
     }
+    // The Pressure lane (piano roll plan 3A.1) under the two notes that
+    // carry pressure, picked: their swells as lines.
+    match mpfree_time_ui::sample::notes_pressure_state() {
+        Ok(state) => {
+            let mut p = quiet_player(fonts());
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Sequencer));
+            let r = p.ui.rect_of(time_view::NOTES);
+            if let (Some(r), Some(g)) = (r, p.ui.get_mut::<NoteGrid>(time_view::NOTES)) {
+                g.lane.kind = mpfree_time_ui::editor::LaneKind::Pressure;
+                let roll = g.roll_rect(r);
+                g.view = mpfree_time_ui::editor::zoom::RollView {
+                    start: 0,
+                    ppt: f64::from(roll.w) / g.length.max(1) as f64,
+                    lift: 64 * 40,
+                    row_h: 40,
+                    follow: false,
+                };
+            }
+            out.push(("sequencer-notes-pressure", p));
+        }
+        Err(e) => eprintln!("sequencer-notes-pressure sample: {e}"),
+    }
     // The Arrange page's Song view: rows made into a song, song mode on,
     // Rec song armed.
     match mpfree_time_ui::sample::busy_song_state() {
@@ -23086,7 +23109,10 @@ mod tests {
         st.edit.as_mut().unwrap().rev = 1;
         p.apply(ToUi::Time(Box::new(st)));
         let grid = |p: &Player| p.ui.get::<NoteGrid>(time_view::NOTES).unwrap().clone();
-        assert_eq!(grid(&p).lane.field, Field::Repeats);
+        assert_eq!(
+            grid(&p).lane.kind,
+            mpfree_time_ui::editor::LaneKind::Value(Field::Repeats)
+        );
         assert!(grid(&p).notes[1].selected, "the new picture shows");
         // SHIFT as the finger goes down: the ramp.
         p.status.shift = true;
