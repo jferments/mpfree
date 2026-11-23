@@ -769,6 +769,9 @@ pub struct MixHost {
     /// A kit wanted a strip in the last period and found none free (it
     /// plays on the pad channels, as before), for the log.
     strips_full: bool,
+    /// The kit whose strip settings moved to its track's strip, and the
+    /// track, both from 1 ([`MixHost::take_kit_moved`]).
+    kit_moved: Option<(u8, u8)>,
     /// The pad channels lent to pads past kit 1's A1-A16 (R3 part 4a).
     pub pad_channels: PadChannels,
     /// How long the tracks' own instruments took in the last period (0
@@ -1025,6 +1028,7 @@ impl MixHost {
             kit_strips: [None; KIT_STRIPS],
             strip_of: [0; KITS],
             strips_full: false,
+            kit_moved: None,
             pad_channels: PadChannels::default(),
             instrument_time: Duration::ZERO,
             old_first_opens: 0,
@@ -2935,11 +2939,17 @@ impl MixHost {
     /// own. It keeps the strip it holds; else it takes a free one; with
     /// none free it plays on the pad channels as before
     /// ([`MixHost::strips_full`]). A strip
-    /// stays its kit's while the kit is named with no track, or while the
-    /// strip has settings (an effect, a control moved): the kit comes back
-    /// to it, and its settings with it. Only a plain strip is freed, so a
-    /// strip never changes kit with settings on it. Kit 1 has the pad
-    /// channels and never takes one. Never allocates.
+    /// stays its kit's while the kit is named with no track. When a track
+    /// takes the kit (REC gives it one), the strip's settings move with
+    /// the kit onto the track's strip ([`MixHost::move_kit_strip`], Jay's
+    /// pick of 23 Nov), so it sounds the same there, and the strip is
+    /// freed. A strip with settings that could not move (the track's strip
+    /// has settings of its own), or whose kit is just no longer named,
+    /// stays its kit's: the kit comes back to it, and its settings with
+    /// it. Only a plain strip is freed, so a strip never changes kit with
+    /// settings on it. Kit 1 has the pad channels and never takes one.
+    /// Allocates only to say a move in the log
+    /// ([`MixHost::take_kit_moved`]).
     pub fn strip_kits(&mut self, named: &[Option<u8>], homes: &[u8]) {
         let wants = |k: u8| {
             k > 0
@@ -2947,10 +2957,18 @@ impl MixHost {
                 && named.contains(&Some(k))
         };
         for n in 0..KIT_STRIPS {
-            if let Some(k) = self.kit_strips[n] {
-                if !wants(k) && self.plain_kit_strip(n) {
-                    self.kit_strips[n] = None;
-                }
+            let Some(k) = self.kit_strips[n] else {
+                continue;
+            };
+            if wants(k) {
+                continue;
+            }
+            let home = homes.get(usize::from(k)).copied().unwrap_or(0);
+            if self.plain_kit_strip(n) {
+                self.kit_strips[n] = None;
+            } else if home > 0 && self.move_kit_strip(n, usize::from(home) - 1) {
+                self.kit_strips[n] = None;
+                self.kit_moved = Some((k + 1, home));
             }
         }
         self.strips_full = false;
@@ -2982,12 +3000,57 @@ impl MixHost {
     /// Whether kit strip `n` has nothing set: no effects, every
     /// saved control at its default.
     fn plain_kit_strip(&self, n: usize) -> bool {
-        let s = StripId::Track(kit_channel(n));
+        self.plain_track(StripId::Track(kit_channel(n)))
+    }
+
+    /// Whether track strip `s` has nothing set: no effects, every saved
+    /// control at its default.
+    fn plain_track(&self, s: StripId) -> bool {
         self.mixer.chain(s).is_none_or(|c| c.is_empty())
             && mpfree_fx::strip_params()
                 .iter()
                 .filter(|p| crate::project::saved_control(s, p.id))
                 .all(|p| self.mixer.param(s, p.id) == p.default)
+    }
+
+    /// Moves kit strip `n`'s settings onto sequencer track `track`'s strip,
+    /// as a track takes the kit (sampler step 15d, part 2: they move with
+    /// the kit, Jay's pick of 23 Nov): its effects with their state, slot
+    /// ids and keys ([`Mixer::move_chain`]), and every saved control (the
+    /// fader, pan, sends, output, mute); the kit strip is left plain. Only
+    /// onto a strip with nothing set, and not while a project's mixer is
+    /// going in: false, and nothing moves, when the track's strip has
+    /// settings of its own, or the mixer refuses the effects (an edit
+    /// waiting on either strip, a sidechain the kit strip feeds). A MIDI
+    /// Learn, macro or modulation on the kit strip stays there. Never
+    /// allocates.
+    fn move_kit_strip(&mut self, n: usize, track: usize) -> bool {
+        let from = StripId::Track(kit_channel(n));
+        let to = StripId::Track(self.track_channel(track));
+        if self.opening.is_some() || from == to || !self.plain_track(to) {
+            return false;
+        }
+        let effects = self.mixer.chain(from).is_some_and(|c| !c.is_empty());
+        if effects && !self.mixer.move_chain(from, to) {
+            return false;
+        }
+        for p in mpfree_fx::strip_params() {
+            if !crate::project::saved_control(from, p.id) {
+                continue;
+            }
+            let v = self.mixer.param(from, p.id);
+            if v != p.default {
+                self.mixer.set_now(to, p.id, v);
+                self.mixer.set_now(from, p.id, p.default);
+            }
+        }
+        true
+    }
+
+    /// The kit whose strip settings last moved to a track's strip, and the
+    /// track (both from 1), once: for the log.
+    pub fn take_kit_moved(&mut self) -> Option<(u8, u8)> {
+        self.kit_moved.take()
     }
 
     /// Each lent channel's output to its kit's track (after a kit's home
@@ -3863,12 +3926,13 @@ mod tests {
     /// A kit no track plays (sampler step 15d, part 2) sounds on a kit
     /// strip of its own, named by its kit and shown with the tracks: every
     /// pad of it, and a pad lent a channel plays into it. A track that
-    /// plays the kit takes it from there; a plain strip is freed, one with
-    /// settings stays its kit's (a held strip never changes kit). Kit 1
-    /// keeps the pad channels. With every strip taken, a kit plays on the
-    /// pad channels as before.
+    /// plays the kit takes it from there, and the strip's settings move
+    /// with it to the track's strip when that has none; a plain strip is
+    /// freed, one with settings stays its kit's (a held strip never
+    /// changes kit). Kit 1 keeps the pad channels. With every strip taken,
+    /// a kit plays on the pad channels as before.
     #[test]
-    fn a_kit_no_track_plays_gets_a_kit_strip_kept_while_it_has_settings() {
+    fn a_kit_no_track_plays_gets_a_kit_strip_its_settings_moving_with_it() {
         use mpfree_fx::ids::mixer::output;
         let mut h = MixHost::new(RATE, -6.0, -6.0);
         let strip = StripId::Track(kit_channel(0));
@@ -3930,12 +3994,42 @@ mod tests {
         assert_eq!(h.kit_strips()[0], Some(2), "held: it has settings");
         assert_eq!(h.kit_strip(4), Some(1), "a held strip never changes kit");
         assert_eq!(h.strip_name(strip), "Kit 3");
-        // A track plays kit 3: it sounds there, its strip waits for it.
+        // A track plays kit 3 (REC gives it one): the strip's settings, an
+        // effect and the fader, move with it to track 2's strip, which had
+        // none, and the strip is freed.
+        h.mixer
+            .chain_mut(strip)
+            .unwrap()
+            .push(Box::new(DjFilter::new()));
+        let two = StripId::Track(h.track_channel(1));
         h.strip_kits(&[Some(2), Some(4)], &[0, 0, 2]);
         assert_eq!(h.kit_strip(2), None);
-        assert_eq!(h.kit_strips()[0], Some(2));
+        assert_eq!(h.kit_strips()[0], None, "moved, so freed");
+        assert_eq!(h.take_kit_moved(), Some((3, 2)), "for the log, once");
+        assert_eq!(h.take_kit_moved(), None);
+        assert_eq!(h.mixer.param(two, mx::VOLUME), volume - 3.0);
+        assert_eq!(h.mixer.chain(two).map(|c| c.len()), Some(1));
+        assert!(h.plain_kit_strip(0), "the kit strip is left plain");
+        // No track again: a plain strip, set again. Now track 2's strip
+        // has settings of its own: they stay, and the kit's strip waits
+        // for it with its own.
+        h.strip_kits(&[Some(2), Some(4)], &homeless);
+        assert_eq!(h.kit_strip(2), Some(0));
+        let pan = 0.5;
+        h.mixer.set_now(strip, mx::PAN, pan);
+        h.strip_kits(&[Some(2), Some(4)], &[0, 0, 2]);
+        assert_eq!(h.kit_strip(2), None);
+        assert_eq!(h.kit_strips()[0], Some(2), "held: track 2's strip is set");
+        assert_eq!(h.take_kit_moved(), None);
+        assert_eq!(h.mixer.param(strip, mx::PAN), pan);
+        assert_eq!(h.mixer.param(two, mx::VOLUME), volume - 3.0);
         // Plain again and named by nothing: freed.
-        h.mixer.set_now(strip, mx::VOLUME, volume);
+        let centre = mpfree_fx::strip_params()
+            .iter()
+            .find(|p| p.id == mx::PAN)
+            .unwrap()
+            .default;
+        h.mixer.set_now(strip, mx::PAN, centre);
         h.strip_kits(&[Some(4)], &homeless);
         assert_eq!(h.kit_strips()[0], None);
         assert_eq!(h.kit_strip(4), Some(1));

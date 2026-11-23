@@ -14772,6 +14772,11 @@ fn player_session(
             );
         }
         strips_full = mix.strips_full();
+        if let Some((kit, track)) = mix.take_kit_moved() {
+            out.note(&format!(
+                "mixer: kit {kit}'s strip settings moved with it to track {track}'s strip"
+            ));
+        }
         let mut pads = mix.pads_homed(&homes);
         // With the drums split (Cores 3 and 2), the lane's voices are waited
         // for until the period's deadline at most.
