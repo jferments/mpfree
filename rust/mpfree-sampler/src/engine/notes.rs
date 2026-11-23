@@ -1119,6 +1119,11 @@ impl Engine {
                 && lp.is_some()
                 && !reverse
                 && matches!(mode, PlayMode::Loop | PlayMode::Toggle | PlayMode::Gate),
+            // Not round its loop yet; the render works out what reads
+            // straight ([`Voice::refresh_fast`]).
+            wrapped: false,
+            fast_lo: 0,
+            fast_hi: 0,
             fade_in,
             fade_out,
             gain_l,
@@ -1201,6 +1206,7 @@ impl Engine {
             },
             hits: l.hits.as_ref().filter(|c| c.get().is_some()).cloned(),
             grain_clean: !vp.vintage,
+            vintage: vp.vintage,
             bl_step: 0,
             bl_octave: 0,
             bl_reach: Reach::default(),
@@ -1210,6 +1216,9 @@ impl Engine {
             layer_grain: l.grain,
             jump: [0.0; 2],
             jump_left: 0,
+            last_read: None,
+            xf_from: Heard::Exact,
+            xf_left: 0,
             motion,
         };
         if self.tape != 1.0 {

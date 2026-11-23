@@ -157,7 +157,7 @@ pub fn resample_cycle(cycle: &[f32], len: usize) -> Vec<f32> {
 /// A level's table length: 8 samples per cycle of its top harmonic at
 /// least, 64 to [`FRAME`].
 fn level_len(harmonics: usize) -> usize {
-    (harmonics * 8).next_power_of_two().clamp(64, FRAME)
+    (harmonics * 8).next_power_of_two().clamp(128, FRAME)
 }
 
 /// A built wavetable. Share it with `Arc`; never drop one on the audio

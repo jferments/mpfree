@@ -157,7 +157,7 @@ A fixed pool of voices is made at start-up; nothing is allocated while playing. 
 
 - a reference to its region's audio (freed off the audio thread, with `basedrop`, so the audio thread never calls `free`),
 - a position as a 64-bit fixed-point number and an increment (pitch),
-- the read: 4-point Hermite at or near the sound's pitch, and past two semitones up a band-limited windowed sinc (from an octave copy of the sound past an octave), so pitching up doesn't alias; a pad set to Vintage keeps Hermite and its aliasing (built 16 Nov, see [clean pitching](sampler-architecture.md#the-voice)),
+- the read: an 8-point windowed sinc at or near the sound's pitch (4-point Hermite until DSP quality step 1.4), and past two semitones up a band-limited windowed sinc (from an octave copy of the sound past an octave), so pitching up doesn't alias; a pad set to Vintage keeps Hermite and its aliasing (built 16 Nov, see [clean pitching](sampler-architecture.md#the-voice)),
 - an amp envelope (attack, hold, decay, sustain, release), a state-variable filter with its own envelope, pan and gain,
 - a short fade on steal and on choke (the existing `mpfree-sampler` already uses 64 and 32 frames) so nothing clicks.
 
