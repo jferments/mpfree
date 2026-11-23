@@ -41,6 +41,12 @@
 //!   and sum, so it makes no aliases of its own; the S5 rows hold its
 //!   response against the prototype.
 //!
+//! - **PF1 to PF9, the pad filter against its knobs:** the cutoff, shape
+//!   and slope at Resonance 0, the passband, a loud and a quiet sound at
+//!   full Resonance, stepping under a fast envelope and LFO, the Ladder
+//!   singing and a driven Ladder's aliases, against fixed targets rather
+//!   than each type's own prototype ([`pad_filter`]).
+//!
 //! Cost per voice is the bench's: `mpfree-bench`'s sampler cases, counted
 //! on CI by the instruction gate. Design: `docs/dev/design/fx-quality.md`
 //! ("The sampler").
@@ -57,6 +63,8 @@ use crate::quality::{Better, Row};
 use crate::response;
 use crate::signals::{coherent, db_to_amp, pink, rms_of, sine, Rng};
 use crate::wav::Stereo;
+
+mod pad_filter;
 
 /// 32.32 fixed point: how the engine holds a voice's speed.
 const ONE: f64 = 4_294_967_296.0;
@@ -81,6 +89,7 @@ pub fn report(rate: u32) -> Vec<Row> {
     filters(&mut rows, rate);
     drive(&mut rows, rate);
     comb(&mut rows, rate);
+    pad_filter::rows(&mut rows, rate);
     rows
 }
 
