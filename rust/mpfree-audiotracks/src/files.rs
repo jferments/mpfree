@@ -914,9 +914,12 @@ impl Files {
         // Loop layers' files the save holds a copy of go from the work
         // folder too (phase 4c.3); the rest stay for the next save, or
         // the next start's recovery.
+        // Only a file directly in the work folder is removed.
         self.layer_files.retain(|(name, path)| {
             let there = dir.join(name);
-            if !std::fs::symlink_metadata(&there).is_ok_and(|m| m.is_file()) || *path == there {
+            let held = std::fs::symlink_metadata(&there).is_ok_and(|m| m.is_file());
+            let in_work = work.as_deref().is_some_and(|w| path.parent() == Some(w));
+            if !held || *path == there || !in_work {
                 return true;
             }
             let _ = std::fs::remove_file(path);
