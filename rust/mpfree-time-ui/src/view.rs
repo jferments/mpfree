@@ -32,11 +32,12 @@ use std::collections::BTreeMap;
 use crate::editor::zoom::RollView;
 use crate::editor::{
     box_of, chord_name, drop_of, edit_rows, knob_name, length_name, lit_scale, note_name, pads,
-    position_name, step_name, ChordShape, EditAction, Editor, Fold, Hearing, LaneShow, Lens,
-    LockMark, LockSetting, NoteBox, NoteGrid, NoteTool, Tool, ToolAct, ToolBar, ToolKind, ADD,
-    CHORD_MAJOR, CHORD_MENU, CHORD_MINOR, EDIT_BUTTON, FIELDS, LOCK_LANES, MENU, PADS_WRITE, PEN,
-    PRESSURE_END, PRESSURE_LANE, ROOT_MENU, SCALE_MENU, SNAP_AUTO_T, START_HANDLE, STEP_FALLBACK,
-    TOOL_BUTTONS, TOOL_CANCEL, TOOL_DONE, TOOL_OPTION,
+    position_name, step_name, ChordShape, EditAction, Editor, Fold, GhostLayer, Hearing, LaneShow,
+    Lens, LockMark, LockSetting, NoteBox, NoteGrid, NoteTool, ShowOffer, Tool, ToolAct, ToolBar,
+    ToolKind, ADD, CHORD_MAJOR, CHORD_MENU, CHORD_MINOR, EDIT_BUTTON, FIELDS, GHOST_MOST,
+    GHOST_TAP, LOCK_LANES, MENU, PADS_WRITE, PEN, PRESSURE_END, PRESSURE_LANE, ROOT_MENU,
+    SCALE_MENU, SHOW_MENU, SHOW_NONE, SNAP_AUTO_T, START_HANDLE, STEP_FALLBACK, TOOL_BUTTONS,
+    TOOL_CANCEL, TOOL_DONE, TOOL_OPTION,
 };
 use crate::list::{
     ListRow, SongListView, LIST_ADD, LIST_CLIPS, LIST_LINK, LIST_LINK_CLOSE, LIST_LINK_FROM_LIST,
@@ -613,6 +614,9 @@ pub struct ClipInfo {
     /// Its notes are pitches, not pad hits (`Clip::holds`, step 5c): the
     /// clip card's Melody row (step sequencer refactor E1).
     pub holds_notes: bool,
+    /// Pad hits or notes (`Clip::holds`): the note editor shows only
+    /// clips of its own clip's kind behind it (plan 4.1).
+    pub holds: mpfree_seq::Holds,
 }
 
 /// What the looper says of a loop, for its cells on the Clips grid: the
@@ -1090,6 +1094,20 @@ pub struct EditInfo {
     /// in (empty from the time engine, and while Steps shows another
     /// clip), shared so an unchanged list costs nothing to tell.
     pub locks: Arc<Vec<LockSetting>>,
+    /// The other clips the editor shows faintly behind (plan 4.1,
+    /// [`Editor::show`]), those still there and of the clip's kind, each
+    /// shared so an unchanged one costs nothing to tell.
+    pub ghosts: Vec<Ghost>,
+}
+
+/// Another clip the note editor shows faintly behind the one it edits
+/// (plan 4.1): where it is, its notes, and its track's name.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Ghost {
+    pub track: usize,
+    pub slot: usize,
+    pub clip: Arc<Clip>,
+    pub track_name: String,
 }
 
 /// What became of the note editor's last touch, in the copy of the clip
@@ -1207,6 +1225,7 @@ impl TimeState {
                             settings: c.settings(),
                             variation: c.variation(),
                             holds_notes: c.holds == mpfree_seq::Holds::Notes,
+                            holds: c.holds,
                         })
                     })
                     .collect(),
@@ -2198,6 +2217,23 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             match *kind {
                 // The Pads write chip (plan 1C.2).
                 EventKind::Tab(PADS_WRITE) => EditAction::PadsWrite,
+                // The Show menu and another clip's faint note (plan 4.1).
+                EventKind::Tab(SHOW_NONE) => EditAction::ShowNone,
+                EventKind::Tab(k) if k >= GHOST_TAP => {
+                    let g = st.edit.as_ref()?.ghosts.get(k - GHOST_TAP)?;
+                    EditAction::Switch {
+                        track: g.track,
+                        slot: g.slot,
+                    }
+                }
+                EventKind::Tab(k) if k >= SHOW_MENU => {
+                    let e = st.edit.as_ref()?;
+                    let o = show_offers(e, st).into_iter().nth(k - SHOW_MENU)?;
+                    EditAction::Show {
+                        track: o.track,
+                        slot: o.slot,
+                    }
+                }
                 // The open tool's bar (plan 2B.3).
                 EventKind::Tab(k) if k >= TOOL_BUTTONS => {
                     EditAction::Tool(match k - TOOL_BUTTONS {
@@ -4877,6 +4913,96 @@ fn same_edit(a: &EditInfo, b: &EditInfo) -> bool {
         && a.bar == b.bar
         && a.track_name == b.track_name
         && (Arc::ptr_eq(&a.locks, &b.locks) || a.locks == b.locks)
+        && a.ghosts.len() == b.ghosts.len()
+        && a.ghosts.iter().zip(&b.ghosts).all(|(x, y)| {
+            (x.track, x.slot) == (y.track, y.slot)
+                && Arc::ptr_eq(&x.clip, &y.clip)
+                && x.track_name == y.track_name
+        })
+}
+
+/// Clip `other` plays with the clip edited, `edited` (piano roll plan
+/// 4.1): on another track, in the same scene (slot row) or playing now.
+fn plays_with(st: &TimeState, edited: (usize, usize), other: (usize, usize)) -> bool {
+    other.0 != edited.0
+        && (other.1 == edited.1 || st.launches.iter().any(|l| (l.track, l.slot) == other))
+}
+
+/// The clips the note editor's Show menu offers (piano roll plan 4.1):
+/// every other clip of the edited clip's kind with notes, on a track
+/// that plays notes; those that play with it first, then the rest, each
+/// in track and slot order; the ones it shows marked.
+pub fn show_offers(e: &EditInfo, st: &TimeState) -> Vec<ShowOffer> {
+    let edited = (e.editor.track, e.editor.slot);
+    let mut v = Vec::new();
+    for (t, tr) in st.tracks.iter().enumerate() {
+        if tr.loops.is_some() || tr.audio {
+            continue;
+        }
+        for (s, c) in tr.slots.iter().enumerate() {
+            let Some(c) = c else {
+                continue;
+            };
+            if (t, s) == edited || c.looped.is_some() || c.notes == 0 || c.holds != e.clip.holds {
+                continue;
+            }
+            v.push(ShowOffer {
+                track: t,
+                slot: s,
+                name: format!("{} · {}", tr.name, c.name),
+                with: plays_with(st, edited, (t, s)),
+                shown: e.editor.show.contains(&(t, s)),
+            });
+        }
+    }
+    v.sort_by_key(|o| !o.with);
+    v
+}
+
+/// The other clips the note editor shows faintly behind (piano roll plan
+/// 4.1), each placed where it sounds against the edited clip
+/// ([`mpfree_seq::notes::placed`]): against the pass of it playing now,
+/// from where the other's loop is then (its own launch, or as if launched
+/// with it), or with both from their tops while the edited clip doesn't
+/// play.
+pub fn ghost_layers(e: &EditInfo, st: &TimeState) -> Vec<GhostLayer> {
+    let edited = (e.editor.track, e.editor.slot);
+    ghost_phases(e, st)
+        .into_iter()
+        .zip(&e.ghosts)
+        .map(|(phase, g)| GhostLayer {
+            track: g.track,
+            slot: g.slot,
+            name: format!("{} · {}", g.track_name, g.clip.name),
+            with: plays_with(st, edited, (g.track, g.slot)),
+            color: track_color(g.track),
+            phase,
+            notes: mpfree_seq::notes::placed(&g.clip, &e.clip, phase, GHOST_MOST),
+        })
+        .collect()
+}
+
+/// [`ghost_layers`]' phases: how far into its loop, in song ticks, each
+/// other clip is as the edited clip's pass starts.
+fn ghost_phases(e: &EditInfo, st: &TimeState) -> Vec<f64> {
+    use mpfree_seq::notes::loop_phase;
+    let period = |c: &mpfree_seq::Clip| c.speed.to_song(c.length as f64);
+    let launch = |t: usize, s: usize| st.launches.iter().find(|l| (l.track, l.slot) == (t, s));
+    let me = launch(e.editor.track, e.editor.slot);
+    let pos = st.transport.position as f64;
+    // The edited clip's origin, and where its pass playing now started.
+    let pass = me.map(|l| {
+        let origin = l.origin as f64;
+        (origin, pos - loop_phase(origin, period(&e.clip), pos))
+    });
+    e.ghosts
+        .iter()
+        .map(|g| match (pass, launch(g.track, g.slot)) {
+            (Some((_, at)), Some(l)) => loop_phase(l.origin as f64, period(&g.clip), at),
+            (Some((origin, at)), None) => loop_phase(origin, period(&g.clip), at),
+            (None, _) => 0.0,
+        })
+        .collect()
 }
 
 /// The note editor's roll or list for `e`, with the playhead where the
@@ -4968,6 +5094,9 @@ pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
     g.chord = ed.chord;
     g.minor = ed.minor;
     g.pads_write = ed.pads_write;
+    // Other clips behind it, and what Show offers (plan 4.1).
+    g.ghosts = ghost_layers(e, st);
+    g.show_offers = show_offers(e, st);
     g.tool_bar = ed.open_tool.map(|t| ToolBar {
         name: t.kind.name(),
         hint: match preview {
@@ -5629,6 +5758,32 @@ impl TimePage {
                         }
                     }
                 }
+                // The other clips behind it move on with each pass, and
+                // what plays with it changes with what is launched (plan
+                // 4.1): the roll changes only when they do.
+                let edited = (e.editor.track, e.editor.slot);
+                let moved = ui.get::<NoteGrid>(NOTES).is_some_and(|g| {
+                    g.ghosts.len() != e.ghosts.len()
+                        || ghost_phases(e, st).iter().zip(&g.ghosts).any(|(&p, l)| {
+                            p != l.phase || plays_with(st, edited, (l.track, l.slot)) != l.with
+                        })
+                });
+                if moved {
+                    if let Some(g) = ui.get_mut::<NoteGrid>(NOTES) {
+                        g.ghosts = ghost_layers(e, st);
+                    }
+                }
+                if ui.get::<NoteGrid>(NOTES).is_some_and(|g| g.show_menu) {
+                    let offers = show_offers(e, st);
+                    if ui
+                        .get::<NoteGrid>(NOTES)
+                        .is_some_and(|g| g.show_offers != offers)
+                    {
+                        if let Some(g) = ui.get_mut::<NoteGrid>(NOTES) {
+                            g.show_offers = offers;
+                        }
+                    }
+                }
             }
             Some(e) => {
                 let mut grid = note_grid(e, st);
@@ -6275,6 +6430,7 @@ mod tests {
             bar: BAR,
             answer: EditAnswer::default(),
             locks: Default::default(),
+            ghosts: Default::default(),
         };
         let g = note_grid(&e, &state());
         assert_eq!(g.touch, [point(0, 90), point(40, 30)]);
@@ -6311,6 +6467,7 @@ mod tests {
                 bar: BAR,
                 answer: EditAnswer::default(),
                 locks: Default::default(),
+                ghosts: Default::default(),
             })
         };
         st.edit = Some(info(0, 4));
@@ -6411,6 +6568,7 @@ mod tests {
             bar: BAR,
             answer: EditAnswer::default(),
             locks: Default::default(),
+            ghosts: Default::default(),
         };
         assert_eq!(note_cards(&e), None, "nothing picked");
         e.editor.sel = vec![1];
@@ -6480,6 +6638,7 @@ mod tests {
             bar: BAR,
             answer: EditAnswer::default(),
             locks: Default::default(),
+            ghosts: Default::default(),
         }));
         page.update(&mut ui, &st);
         let start = ui.get::<NoteGrid>(NOTES).unwrap().view.start;
@@ -6517,6 +6676,7 @@ mod tests {
             bar: BAR,
             answer: EditAnswer::default(),
             locks: Default::default(),
+            ghosts: Default::default(),
         }));
         page.update(&mut ui, &st);
         let e = st.edit.clone().unwrap();
@@ -9591,5 +9751,94 @@ mod tests {
             vec![ui.rect_of(MORPH).unwrap()],
             "the crossfader moved: the morph bar"
         );
+    }
+
+    /// Show's offers (piano roll plan 4.1): the other clips of the edited
+    /// clip's kind with notes, those that play with it (the same scene,
+    /// or playing now on another track) first; each faint clip placed
+    /// against the pass of the edited clip playing now, from where its
+    /// own loop is; a menu pick and a faint note's tap name their clips.
+    #[test]
+    fn other_clips_are_offered_placed_and_named_by_their_taps() {
+        let mut st = state();
+        let mut stab = Clip::new("Stab", 2 * BAR);
+        stab.add_note(Note::new(0, 240, 5, 100)).unwrap();
+        let mut ed = crate::editor::Editor::new(2, 1, &stab);
+        ed.show = vec![(0, 0), (1, 0)];
+        // A one-bar drum clip at half speed, and a one-bar bass line.
+        let mut drums = Clip::new("A", BAR);
+        drums.speed = mpfree_seq::Speed::new(1, 2).unwrap();
+        drums.add_note(Note::new(0, 240, 1, 100)).unwrap();
+        let mut bass = Clip::new("A", BAR);
+        bass.add_note(Note::new(240, 240, 2, 100)).unwrap();
+        let ghost = |track: usize, clip: Clip, name: &str| Ghost {
+            track,
+            slot: 0,
+            clip: clip.into(),
+            track_name: name.into(),
+        };
+        st.edit = Some(Box::new(EditInfo {
+            editor: ed,
+            clip: stab.into(),
+            rev: 1,
+            track_name: "Stab".into(),
+            bar: BAR,
+            answer: EditAnswer::default(),
+            locks: Default::default(),
+            ghosts: vec![ghost(0, drums, "Drums"), ghost(1, bass, "Bass")],
+        }));
+        let e = st.edit.clone().unwrap();
+        let offers: Vec<(usize, usize, bool, bool)> = show_offers(&e, &st)
+            .iter()
+            .map(|o| (o.track, o.slot, o.with, o.shown))
+            .collect();
+        // Drums' A plays now; Bass' A is in another scene and stopped, and
+        // Stab's own A can't play with it; the empty B clips and the
+        // edited clip are left out.
+        assert_eq!(
+            offers,
+            [
+                (0, 0, true, true),
+                (1, 0, false, true),
+                (2, 0, false, false)
+            ]
+        );
+        // The edited clip stopped: both from their tops.
+        let at = |layers: &[GhostLayer], k: usize| -> Vec<Tick> {
+            layers[k].notes.iter().map(|n| n.tick).collect()
+        };
+        let layers = ghost_layers(&e, &st);
+        assert_eq!(layers[0].name, "Drums · A");
+        assert_eq!((layers[0].with, layers[1].with), (true, false));
+        assert_eq!(at(&layers, 0), [0], "half speed: once in two bars");
+        assert_eq!(at(&layers, 1), [240, BAR + 240]);
+        // Launched on bar 2: its pass playing now (bar 5 and a beat) began
+        // on bar 4; the drums (from bar 1, two bars a pass) are a bar in
+        // there, the bass as if launched with it.
+        st.launches.push(Launch {
+            track: 2,
+            slot: 1,
+            origin: BAR,
+            start: BAR,
+        });
+        let layers = ghost_layers(&e, &st);
+        assert_eq!(at(&layers, 0), [BAR]);
+        assert_eq!(at(&layers, 1), [240, BAR + 240]);
+        assert_eq!(layers[0].phase, BAR as f64);
+        // Show's second offer, and the second faint clip's tap.
+        let edit = |k| action(&ev(NOTES, EventKind::Tab(k)), &st);
+        assert_eq!(
+            edit(SHOW_MENU + 1),
+            Some(TimeAction::Edit(EditAction::Show { track: 1, slot: 0 }))
+        );
+        assert_eq!(
+            edit(GHOST_TAP + 1),
+            Some(TimeAction::Edit(EditAction::Switch { track: 1, slot: 0 }))
+        );
+        assert_eq!(
+            edit(SHOW_NONE),
+            Some(TimeAction::Edit(EditAction::ShowNone))
+        );
+        assert_eq!(edit(GHOST_TAP + 2), None);
     }
 }

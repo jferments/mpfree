@@ -132,6 +132,24 @@ When you pick a note, draw one or move one, you hear it through the track's inst
 
 The **Sound** chip, left of **Pads write**, says when you hear them: **Sound: On** (always), **Sound: Stopped only** (only while the transport is stopped, so playing back stays clean) or **Sound: Off**. Tap it for the next. It stays as you set it for every clip. A track that sends to MIDI out plays nothing here.
 
+### Other clips behind
+
+**Show**, just left of **Pads write** over the roll, puts up to three other clips faintly behind the one you're editing, each in its track's colour, so you can write a bass line against the chords or check a new take against the old one. Tap it to open its menu:
+
+- **Plays with** marks the clips that play along with this one: on the same row of the clip grid, or playing now. They come first. Every other clip says **Reference**. A clip of notes offers other clips of notes, and a drum clip other drum clips.
+- **Tap a clip** to show it and again to take it off. **None** takes them all off. With three showing, take one off before you pick another. The chip says how many are showing, as in **Show: 2**, and a label at the top right of the roll names each one.
+- Each one sits **where it sounds** against this clip. When both are playing, they line up as they do right now. A clip that isn't playing lines up as if you'd launched it with this one, and when this clip isn't playing, both start from their tops. A shorter clip repeats across this one, and a clip at another speed is stretched to match.
+- **Tap a faint note** (with Draw off) to open its clip. The clip you were on goes behind it, so you can go back and forth with a tap. Where one of your own notes sits on top, the tap picks yours.
+- Hold **COPY** and tap a faint note to paste there, as on empty space. **ERASE** leaves faint notes alone: they aren't this clip's.
+
+Faint clips show on the piano roll only, not on the list or the tracker. Each time you open a clip from the Steps view, it starts with none showing.
+
+{{shot: sequencer-notes-ghosts | The Keys clip with Show: 2: the stab track's Pluck faintly in red between the chords, which plays with it, and Keys take 1 faintly behind the chords, for reference; the labels at the top right name both.}}
+
+{{shot: sequencer-notes-show | The Show menu open: None, then the bass track's two lines and Pluck marked Plays with, and Keys take 1 marked Reference; the two showing are lit.}}
+
+*Try it:* open an empty bass clip on the same row as your chords, tap **Show** and pick the chords (marked **Plays with**). Draw a note under the lowest note of each chord, then tap one of the chords' faint notes to open the chords with the bass behind them.
+
 ### Zoom and scroll
 
 Rows open at least 40 pixels tall, big enough for a fingertip, and the roll opens with the clip's notes filling them. A short clip opens whole; a long one opens on two bars from its first note.

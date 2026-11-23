@@ -4103,6 +4103,7 @@ fn roll_page(pressure: bool, two: bool) -> RollPage {
             bar,
             answer: Default::default(),
             locks: Default::default(),
+            ghosts: Default::default(),
         })
     };
     let infos = [info(0, 1), info(if two { 1 } else { 0 }, 2)];

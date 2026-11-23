@@ -183,6 +183,16 @@ pub const STRUM_TICKS: Tick = PPQ as Tick / 96;
 pub const TOOL_BUTTONS: usize = 600;
 /// The Pads write chip tapped (plan 1C.2): `Tab`'s index.
 pub const PADS_WRITE: usize = 700;
+/// The Show menu (plan 4.1): `Tab(SHOW_MENU + k)` is its `k`th offer
+/// ([`NoteGrid::show_offers`]), `Tab(SHOW_NONE)` its None.
+pub const SHOW_MENU: usize = 800;
+pub const SHOW_NONE: usize = 790;
+/// A tap on a faint note of another clip (plan 4.1): `Tab(GHOST_TAP +
+/// k)` for [`NoteGrid::ghosts`]' `k`th, the cell it was on kept in
+/// [`NoteGrid::ghost_cell`].
+pub const GHOST_TAP: usize = 4000;
+/// The most notes of one other clip the roll places (plan 4.1).
+pub const GHOST_MOST: usize = 2048;
 pub const TOOL_CANCEL: usize = 0;
 pub const TOOL_OPTION: usize = 1;
 pub const TOOL_DONE: usize = 7;
@@ -483,6 +493,17 @@ pub enum EditAction {
         velocity: u8,
         down: bool,
     },
+    /// The Show menu (plan 4.1): another clip of the same kind, track
+    /// `track`'s slot `slot`, shows faintly behind the one edited, or
+    /// stops showing; at most [`SHOW_MAX`]. The editor's own setting, not
+    /// the clip's: nothing changes.
+    Show { track: usize, slot: usize },
+    /// The Show menu's None: no other clip shows.
+    ShowNone,
+    /// A tap on another clip's faint note (plan 4.1): the editor opens
+    /// that clip (and its track is selected, as the Sequencer follows),
+    /// the clip it left showing faintly in its place.
+    Switch { track: usize, slot: usize },
 }
 
 /// What the open tool's bar sends ([`EditAction::Tool`], plan 2B.3).
@@ -983,6 +1004,57 @@ pub struct Editor {
     /// The notes to sound (plan 1C.2): the note picked, or the notes
     /// drawn or moved, by the last touch, numbered so each is heard once.
     pub heard: Heard,
+    /// Other clips shown faintly behind this one (plan 4.1), as (track,
+    /// slot), in the order picked: at most [`SHOW_MAX`].
+    pub show: Vec<(usize, usize)>,
+}
+
+/// The most other clips the roll shows behind the one edited (plan 4.1).
+pub const SHOW_MAX: usize = 3;
+
+/// Another clip shown faintly behind the roll's notes (plan 4.1): its
+/// notes placed on the edited clip's ticks where they sound against it
+/// ([`notes::placed`]), in its track's colour, labelled by name and by
+/// whether it plays with this clip or is there to compare.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GhostLayer {
+    pub track: usize,
+    pub slot: usize,
+    /// "Bass · Pattern 2": its track and its own name.
+    pub name: String,
+    /// Plays with (a clip of the same scene, or one playing now on
+    /// another track), else Reference.
+    pub with: bool,
+    pub color: Color,
+    /// How far into its loop it is, in song ticks, where the edited
+    /// clip's pass starts: it moves on with the passes.
+    pub phase: f64,
+    pub notes: Vec<Note>,
+}
+
+impl GhostLayer {
+    /// "Plays with" or "Reference".
+    pub fn kind_name(&self) -> &'static str {
+        kind_name(self.with)
+    }
+}
+
+/// A clip the Show menu offers (plan 4.1): where it is, "Bass · Pattern
+/// 2", Plays with or Reference, and whether it shows now.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShowOffer {
+    pub track: usize,
+    pub slot: usize,
+    pub name: String,
+    pub with: bool,
+    pub shown: bool,
+}
+
+fn kind_name(with: bool) -> &'static str {
+    match with {
+        true => "Plays with",
+        false => "Reference",
+    }
 }
 
 /// Notes the editor asks to hear ([`Editor::heard`], plan 1C.2): the
@@ -1141,6 +1213,7 @@ impl Editor {
             pad_chord: 0,
             pad_wrote: false,
             heard: Heard::default(),
+            show: Vec::new(),
         }
     }
 
@@ -1437,6 +1510,8 @@ impl Editor {
                     | EditAction::Tool(_)
                     | EditAction::Knob { .. }
                     | EditAction::PadsWrite
+                    | EditAction::Show { .. }
+                    | EditAction::ShowNone
                     | EditAction::Row { row: 0..=5, .. }
             ) || matches!(a, EditAction::Row { row, .. } if ToolKind::of_row(row).is_some());
             // A pad that only plays leaves the tool's picks be.
@@ -1944,6 +2019,31 @@ impl Editor {
                 self.move_cursor(clip, d);
                 return Done::default();
             }
+            // Other clips behind this one (plan 4.1): the editor's own.
+            EditAction::Show { track, slot } => {
+                if let Some(k) = self.show.iter().position(|&s| s == (track, slot)) {
+                    self.show.remove(k);
+                } else if (track, slot) == (self.track, self.slot) {
+                    return Done::default();
+                } else if self.show.len() >= SHOW_MAX {
+                    return Done::line(format!(
+                        "edit: {SHOW_MAX} clips show already: tap one to take it off first"
+                    ));
+                } else {
+                    self.show.push((track, slot));
+                }
+                return Done::line(match self.show.len() {
+                    0 => "edit: no other clip shows".into(),
+                    1 => "edit: 1 other clip shows faintly behind this one".into(),
+                    n => format!("edit: {n} other clips show faintly behind this one"),
+                });
+            }
+            EditAction::ShowNone => {
+                self.show.clear();
+                return Done::line("edit: no other clip shows".into());
+            }
+            // The time engine opens the other clip (TimeControl).
+            EditAction::Switch { .. } => return Done::default(),
             // The pads (plan 1C.2): Pads write switched, a pad picking a
             // clip of pad hits' notes, or writing at the cursor.
             EditAction::PadsWrite => {
@@ -3032,6 +3132,7 @@ const SCALE_CHIP_W: i32 = 200;
 const CHORD_CHIP_W: i32 = 190;
 const FOLD_CHIP_W: i32 = 150;
 const HIDDEN_CHIP_W: i32 = 140;
+const SHOW_CHIP_W: i32 = 104;
 
 /// The roll's rows (plan 2B.1): how many, the note each shows, lowest
 /// first, and each note's row (-1 when Fold hides it). Every note, or the
@@ -3389,6 +3490,16 @@ pub struct NoteGrid {
     /// The Sound chip (the page's, plan 1C.2): a tap steps it here, and
     /// the page keeps it.
     pub hearing: Hearing,
+    /// Other clips shown faintly behind the notes (plan 4.1), in the
+    /// order picked, and what the Show menu offers.
+    pub ghosts: Vec<GhostLayer>,
+    pub show_offers: Vec<ShowOffer>,
+    /// The Show menu is open over the roll, on this page of its offers.
+    pub show_menu: bool,
+    show_page: usize,
+    /// The row and tick of the last faint note tapped (a COPY held pastes
+    /// there in place of opening its clip).
+    pub ghost_cell: (u8, Tick),
     /// A finger drawing along the lane.
     stroke: Option<Stroke>,
     drag: Option<Drag>,
@@ -3625,6 +3736,11 @@ impl Default for NoteGrid {
             tool_bar: None,
             pads_write: false,
             hearing: Hearing::On,
+            ghosts: Vec::new(),
+            show_offers: Vec::new(),
+            show_menu: false,
+            show_page: 0,
+            ghost_cell: (0, 0),
             stroke: None,
             drag: None,
             hand: Hand::Idle,
@@ -3663,12 +3779,25 @@ struct Geo {
     /// list and the tracker at the heading's right end.
     pads_chip: Rect,
     sound_chip: Rect,
+    /// Show (plan 4.1): left of Pads write on the roll; none elsewhere.
+    show_chip: Rect,
     /// The heading's line, for the legend.
     head: Rect,
     /// The rows, as Fold leaves them.
     rows: Rows,
     /// The view kept within this roll ([`RollView::clamp`]).
     v: RollView,
+}
+
+/// The Show menu's parts ([`NoteGrid::show_menu_rects`]).
+struct ShowMenu {
+    none: Rect,
+    line: Rect,
+    cells: Vec<(usize, Rect)>,
+    more: Option<Rect>,
+    page: usize,
+    pages: usize,
+    panel: Rect,
 }
 
 impl NoteGrid {
@@ -3702,6 +3831,8 @@ impl NoteGrid {
             && (self.chord, self.minor) == (other.chord, other.minor)
             && self.tool_bar == other.tool_bar
             && (self.pads_write, self.hearing) == (other.pads_write, other.hearing)
+            && self.ghosts == other.ghosts
+            && self.show_offers == other.show_offers
     }
 
     /// Note `i`'s pressure, empty for none.
@@ -3869,6 +4000,8 @@ impl NoteGrid {
         // A tool's bar closes the menus over the roll (plan 2B.3).
         let open = other.tool_bar.is_none();
         let (menu, scale_menu, chord_menu) = (menu && open, scale_menu && open, chord_menu && open);
+        // The Show menu stays open for more picks (plan 4.1).
+        let (show_menu, show_page, ghost_cell) = (self.show_menu, self.show_page, self.ghost_cell);
         *self = NoteGrid {
             stroke,
             fine,
@@ -3879,6 +4012,9 @@ impl NoteGrid {
             menu,
             scale_menu,
             chord_menu,
+            show_menu,
+            show_page,
+            ghost_cell,
             ..other
         };
     }
@@ -3934,9 +4070,14 @@ impl NoteGrid {
             let sound = chip(head.right(), SOUND_CHIP_W);
             (chip(sound.x - 6, PADS_CHIP_W), sound)
         };
+        let show_chip = match roll_lens {
+            true => Rect::new(pads_chip.x - 6 - SHOW_CHIP_W, strip.y, SHOW_CHIP_W, strip.h),
+            false => none,
+        };
         Geo {
             pads_chip,
             sound_chip,
+            show_chip,
             head: Rect::new(head.x, head.y - 2, head.w, 26),
             scale_chip: if roll_lens { scale_chip } else { none },
             chord_chip: if roll_lens && !self.pads {
@@ -3949,7 +4090,7 @@ impl NoteGrid {
                 true => chip(left - 6, HIDDEN_CHIP_W),
                 false => none,
             },
-            overview: Rect::new(roll.x, strip.y, (pads_chip.x - 6 - roll.x).max(0), strip.h),
+            overview: Rect::new(roll.x, strip.y, (show_chip.x - 6 - roll.x).max(0), strip.h),
             fit: Rect::new(keys.x, strip.y, keys.w - 6, strip.h),
             follow: if roll_lens {
                 follow
@@ -4320,6 +4461,92 @@ impl NoteGrid {
     /// while the whole clip is in view or a note is being dragged (it may
     /// be dragged into view), else the index's notes near the ticks in
     /// view.
+    /// Where another clip's faint note is drawn (plan 4.1), if it shows.
+    fn ghost_rect(&self, g: &Geo, n: &Note) -> Option<Rect> {
+        let y = self.y_of(g, n.note)?;
+        let x0 = self.x_of(g, n.tick);
+        let x1 = self.x_of(g, n.tick + n.len).max(x0 + 3);
+        if x1 < g.roll.x || x0 > g.roll.right() {
+            return None;
+        }
+        Some(Rect::new(x0, y + 2, x1 - x0, g.v.row_h - 4))
+    }
+
+    /// The other clip whose faint note is under `(x, y)`: the last drawn
+    /// (the top layer) first.
+    fn ghost_under(&self, g: &Geo, (x, y): (i32, i32)) -> Option<usize> {
+        (0..self.ghosts.len()).rev().find(|&k| {
+            self.ghosts[k]
+                .notes
+                .iter()
+                .any(|n| self.ghost_rect(g, n).is_some_and(|r| r.contains(x, y)))
+        })
+    }
+
+    /// The Show menu's parts (plan 4.1): over the roll under the overview
+    /// row, so Show stays in sight; None and a line saying what shows,
+    /// then a cell for each offer on the page it shows, with its index in
+    /// [`NoteGrid::show_offers`], and More when they don't all fit.
+    fn show_menu_rects(&self, r: Rect) -> ShowMenu {
+        const PAD: i32 = 8;
+        const H: i32 = 48;
+        const GAP: i32 = 4;
+        let g = self.geo(r);
+        let y = g.ruler.y;
+        let area = Rect::new(g.keys.x, y, g.roll.right() - g.keys.x, g.tools.y - 6 - y);
+        let inner = area.inset(PAD);
+        let none = Rect::new(inner.x, inner.y, 120, 40);
+        let line = Rect::new(
+            none.right() + 12,
+            inner.y,
+            inner.right() - none.right() - 12,
+            40,
+        );
+        let top = inner.y + 40 + PAD;
+        let cols = if inner.w >= 720 { 3 } else { 2 };
+        let cw = (inner.w - (cols - 1) * GAP) / cols;
+        let fit = ((inner.bottom() - top + GAP) / (H + GAP)).max(1);
+        let per = (cols * fit) as usize;
+        let n = self.show_offers.len();
+        let paged = n > per;
+        let room = if paged {
+            per.saturating_sub(1).max(1)
+        } else {
+            per
+        };
+        let pages = n.div_ceil(room).max(1);
+        let page = self.show_page % pages;
+        let cell = |k: usize| {
+            let k = k as i32;
+            Rect::new(
+                inner.x + (k % cols) * (cw + GAP),
+                top + (k / cols) * (H + GAP),
+                cw,
+                H,
+            )
+        };
+        let cells: Vec<(usize, Rect)> = (page * room..n.min((page + 1) * room))
+            .enumerate()
+            .map(|(k, i)| (i, cell(k)))
+            .collect();
+        let more = paged.then(|| cell(cells.len()));
+        let used = (cells.len() + usize::from(more.is_some())) as i32;
+        let rows = (used + cols - 1) / cols;
+        let bottom = match rows {
+            0 => top,
+            _ => top + rows * (H + GAP) - GAP + PAD,
+        };
+        ShowMenu {
+            none,
+            line,
+            cells,
+            more,
+            page,
+            pages,
+            panel: Rect::new(area.x, area.y, area.w, bottom - area.y),
+        }
+    }
+
     fn in_view(&self, g: &Geo) -> Vec<usize> {
         let (from, to) = (
             g.v.tick_at(g.roll, g.roll.x),
@@ -4396,7 +4623,13 @@ impl NoteGrid {
     fn paint_switches(&self, cx: &mut PaintCx, g: &Geo) {
         let t = cx.theme.clone();
         let quiet = t.raised.mix(t.warn, 0.35);
+        let show = match self.ghosts.len() {
+            0 => "Show".to_string(),
+            n => format!("Show: {n}"),
+        };
+        let shows = !self.ghosts.is_empty() || self.show_menu;
         let switches = [
+            (g.show_chip, show.as_str(), shows.then_some(t.accent)),
             (g.pads_chip, "Pads write", self.pads_write.then_some(t.bad)),
             (
                 g.sound_chip,
@@ -4676,6 +4909,9 @@ impl NoteGrid {
         cx.canvas.set_clip(was);
         self.paint_overview(cx, g);
         cx.canvas.set_clip(was.intersect(g.roll));
+        // Other clips behind (plan 4.1): faint, each in its track's
+        // colour, under this clip's notes.
+        self.paint_ghosts(cx, g);
         // The notes as they will play, then the lane under them.
         let top = t.accent;
         let shade = |v: u8| t.raised.mix(self.color, 0.35 + 0.65 * f32::from(v) / 127.0);
@@ -4885,6 +5121,139 @@ impl NoteGrid {
             scales,
             Rect::new(area.x, area.y, area.w, bottom - area.y),
         )
+    }
+
+    /// Other clips' notes, faint behind this one's (plan 4.1), and a
+    /// label for each in the roll's top right corner: its name and Plays
+    /// with or Reference, on a swatch of its colour.
+    fn paint_ghosts(&self, cx: &mut PaintCx, g: &Geo) {
+        if self.ghosts.is_empty() || self.lens != Lens::Grid {
+            return;
+        }
+        let t = cx.theme.clone();
+        let (from, to) = (
+            g.v.tick_at(g.roll, g.roll.x),
+            g.v.tick_at(g.roll, g.roll.right()) + 1,
+        );
+        for layer in &self.ghosts {
+            let fill = t.bg.mix(layer.color, 0.30);
+            let edge = t.bg.mix(layer.color, 0.60);
+            for n in layer
+                .notes
+                .iter()
+                .filter(|n| n.tick < to && n.tick + n.len > from)
+            {
+                if let Some(nr) = self.ghost_rect(g, n) {
+                    cx.canvas.fill_round_rect(nr, 3, fill);
+                    cx.canvas.stroke_round_rect(nr, 3, 1, edge);
+                }
+            }
+        }
+        // The labels, one a line from the top.
+        const LINE: i32 = 20;
+        for (k, layer) in self.ghosts.iter().enumerate() {
+            let text = format!("{} · {}", layer.name, layer.kind_name());
+            let w = cx.measure(FontId::Sans, t.size_small - 2.0, &text) + 30;
+            let w = w.min(g.roll.w - 8);
+            let tag = Rect::new(
+                g.roll.right() - 4 - w,
+                g.roll.y + 4 + k as i32 * (LINE + 2),
+                w,
+                LINE,
+            );
+            cx.canvas.fill_round_rect(tag, 6, t.bg);
+            cx.canvas.fill_round_rect(
+                Rect::new(tag.x + 8, tag.y + 6, 10, LINE - 12),
+                2,
+                layer.color,
+            );
+            cx.text(
+                FontId::Sans,
+                t.size_small - 2.0,
+                Rect::new(tag.x + 24, tag.y, tag.w - 28, tag.h),
+                Align::Left,
+                t.text_dim,
+                &text,
+            );
+        }
+    }
+
+    /// The Show menu (plan 4.1): None, a line saying what shows, each
+    /// offer named with Plays with or Reference, the ones showing lit in
+    /// their track's colour, and More when they don't all fit.
+    fn paint_show_menu(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        let m = self.show_menu_rects(r);
+        cx.canvas.fill_round_rect(m.panel, t.round(12), t.surface);
+        cx.canvas
+            .stroke_round_rect(m.panel, t.round(12), 1, t.outline);
+        let none_fill = match self.ghosts.is_empty() {
+            true => t.accent,
+            false => t.raised,
+        };
+        cx.canvas.fill_round_rect(m.none, t.round(8), none_fill);
+        cx.text(
+            FontId::Bold,
+            t.size_small - 2.0,
+            m.none,
+            Align::Center,
+            t.ink_on(none_fill),
+            "None",
+        );
+        let mut line = match self.show_offers.is_empty() {
+            true => "No other clip of this kind to show".to_string(),
+            false => format!(
+                "Up to {SHOW_MAX} clips show faintly behind this one. Plays with: the same scene, or playing now"
+            ),
+        };
+        if m.pages > 1 {
+            line = format!("{line} · page {} of {}", m.page + 1, m.pages);
+        }
+        cx.text(
+            FontId::Sans,
+            t.size_small - 2.0,
+            m.line,
+            Align::Left,
+            t.text_dim,
+            &line,
+        );
+        for &(i, c) in &m.cells {
+            let o = &self.show_offers[i];
+            let fill = match o.shown {
+                true => t.raised.mix(crate::view::track_color(o.track), 0.55),
+                false => t.raised,
+            };
+            let ink = t.ink_on(fill);
+            cx.canvas.fill_round_rect(c, t.round(8), fill);
+            let (top, bottom) = c.inset(4).take_top((c.h - 8) / 2);
+            cx.text(
+                FontId::Bold,
+                t.size_small - 2.0,
+                top,
+                Align::Center,
+                ink,
+                &o.name,
+            );
+            cx.text(
+                FontId::Sans,
+                t.size_small - 2.0,
+                bottom,
+                Align::Center,
+                ink,
+                kind_name(o.with),
+            );
+        }
+        if let Some(c) = m.more {
+            cx.canvas.fill_round_rect(c, t.round(8), t.raised);
+            cx.text(
+                FontId::Bold,
+                t.size_small - 2.0,
+                c,
+                Align::Center,
+                t.ink_on(t.raised),
+                "More ›",
+            );
+        }
     }
 
     /// The Scale menu: the roots, the clip's lit (dim with no scale), and
@@ -5878,6 +6247,9 @@ impl Widget for NoteGrid {
         if self.chord_menu && self.lens == Lens::Grid {
             self.paint_chord_menu(cx, r);
         }
+        if self.show_menu && self.lens == Lens::Grid {
+            self.paint_show_menu(cx, r);
+        }
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
@@ -5931,6 +6303,21 @@ impl Widget for NoteGrid {
                 out.push(Target::tap("select", k, SELECT_ITEMS[k], mr));
             }
             return out;
+        }
+        // So does the Show menu (plan 4.1), Show itself in sight.
+        if self.show_menu && self.lens == Lens::Grid {
+            let m = self.show_menu_rects(r);
+            out.push(Target::tap("show-none", 0, "None", m.none));
+            for (i, c) in m.cells {
+                out.push(Target::tap("show-pick", i, &self.show_offers[i].name, c));
+            }
+            if let Some(c) = m.more {
+                out.push(Target::tap("show-more", 0, "More", c));
+            }
+            return out;
+        }
+        if !g.show_chip.is_empty() {
+            out.push(Target::tap("show-chip", 0, "Show", g.show_chip));
         }
         // Pads write and Sound (plan 1C.2).
         out.push(Target::tap("pads-write", 0, "Pads write", g.pads_chip));
@@ -6009,6 +6396,24 @@ impl Widget for NoteGrid {
         }
         if !g.chip.is_empty() {
             out.push(Target::tap("lane-chip", 0, "lane", g.chip));
+        }
+        // Another clip's faint notes (plan 4.1): with Draw off, the first
+        // in sight of each, where no note of this clip covers it, opens it.
+        if self.tool == Tool::Select && !tool {
+            for (k, layer) in self.ghosts.iter().enumerate() {
+                let free = layer.notes.iter().find_map(|n| {
+                    let gr = self.ghost_rect(&g, n)?.intersect(g.roll);
+                    let (x, y) = (gr.x + gr.w / 2, gr.y + gr.h / 2);
+                    let mine = self
+                        .note_under(&g, x, y)
+                        .or_else(|| self.note_near(&g, x, y));
+                    let first = self.ghost_under(&g, (x, y)) == Some(k);
+                    (gr.w > 0 && gr.h > 0 && mine.is_none() && first).then_some(gr)
+                });
+                if let Some(gr) = free {
+                    out.push(Target::tap("ghost-note", k, &layer.name, gr));
+                }
+            }
         }
         if !g.fold.is_empty() {
             out.push(Target::tap("lane-fold", 0, "fold the lane", g.fold));
@@ -6504,6 +6909,15 @@ impl Widget for NoteGrid {
                         if !up || moved {
                             return None;
                         }
+                        // With Draw off, a tap on another clip's faint
+                        // note opens that clip (plan 4.1).
+                        if self.tool == Tool::Select {
+                            if let Some(k) = self.ghost_under(&g, at) {
+                                self.empty_tap = None;
+                                self.ghost_cell = (note, tick);
+                                return Some(EventKind::Tab(GHOST_TAP + k));
+                            }
+                        }
                         return Some(self.empty_tapped(at, note, tick));
                     }
                     Hand::Scroll {
@@ -6897,6 +7311,32 @@ impl NoteGrid {
                 Some(k) => Some(EventKind::Tab(MENU + k)),
                 None => None,
             };
+        }
+        // The Show menu, while open (plan 4.1): None, an offer (it stays
+        // open for more), More for the next page; a touch anywhere else
+        // closes it and does nothing more.
+        if self.show_menu {
+            let m = self.show_menu_rects(r);
+            if m.none.contains(x, y) {
+                return Some(EventKind::Tab(SHOW_NONE));
+            }
+            if let Some(&(i, _)) = m.cells.iter().find(|(_, c)| c.contains(x, y)) {
+                return Some(EventKind::Tab(SHOW_MENU + i));
+            }
+            if m.more.is_some_and(|c| c.contains(x, y)) {
+                self.show_page = (m.page + 1) % m.pages;
+                return None;
+            }
+            if !m.panel.contains(x, y) {
+                self.show_menu = false;
+            }
+            return None;
+        }
+        // Show opens it (plan 4.1), a tool open or not: the roll's own.
+        if g.show_chip.contains(x, y) {
+            self.show_menu = true;
+            self.show_page = 0;
+            return None;
         }
         // Pads write and Sound (plan 1C.2), a tool open or not: Sound is
         // the screen's own.
@@ -10239,5 +10679,134 @@ mod chord_tests {
         assert_eq!(target(&g, "tool-option", 0), None);
         let gap = g.button_rects(R)[1];
         assert_eq!(tap(&mut g, 9, gap), None);
+    }
+}
+
+#[cfg(test)]
+mod ghost_tests {
+    use super::*;
+
+    const R: Rect = Rect {
+        x: 0,
+        y: 0,
+        w: 1100,
+        h: 640,
+    };
+
+    fn roll(draw: bool) -> NoteGrid {
+        NoteGrid {
+            notes: vec![NoteBox::of(&Note::new(0, 240, 60, 100), false)],
+            length: 3840,
+            bar: 3840,
+            view: RollView {
+                lift: 57 * 40,
+                row_h: 40,
+                ..RollView::default()
+            },
+            tool: if draw { Tool::Draw } else { Tool::Select },
+            ghosts: vec![GhostLayer {
+                track: 3,
+                slot: 1,
+                name: "Bass · Line".into(),
+                with: true,
+                color: crate::view::track_color(3),
+                phase: 0.0,
+                notes: vec![Note::new(1920, 480, 60, 90), Note::new(0, 240, 60, 90)],
+            }],
+            show_offers: (0..40)
+                .map(|k| ShowOffer {
+                    track: k / 4,
+                    slot: k % 4,
+                    name: format!("T{} · C{}", k / 4, k % 4),
+                    with: k < 3,
+                    shown: k == 1,
+                })
+                .collect(),
+            ..NoteGrid::default()
+        }
+    }
+
+    fn target(g: &NoteGrid, id: &str, index: usize) -> Option<Rect> {
+        g.targets(R)
+            .into_iter()
+            .find(|t| t.id == id && t.index == index)
+            .map(|t| t.rect)
+    }
+
+    fn tap(g: &mut NoteGrid, f: u64, r: Rect) -> Option<EventKind> {
+        let (x, y) = (r.x + r.w / 2, r.y + r.h / 2);
+        let down = g.touch(f, Touch::Down, x, y, R);
+        let up = g.touch(f, Touch::Up, x, y, R);
+        down.or(up)
+    }
+
+    /// Show picks up to three other clips (plan 4.1), never the clip
+    /// itself; a pick again takes it off, and None takes them all off.
+    #[test]
+    fn show_picks_up_to_three_other_clips_and_none_takes_them_off() {
+        let c = Clip::new("Keys", 3840);
+        let mut ed = Editor::new(1, 0, &c);
+        for (track, slot) in [(0, 0), (2, 0), (3, 1)] {
+            ed.act(EditAction::Show { track, slot }, &c);
+        }
+        assert_eq!(ed.show, [(0, 0), (2, 0), (3, 1)]);
+        let d = ed.act(EditAction::Show { track: 4, slot: 0 }, &c);
+        assert!(d.line.contains("3 clips show already"), "{}", d.line);
+        assert_eq!(ed.show.len(), 3);
+        ed.act(EditAction::Show { track: 2, slot: 0 }, &c);
+        assert_eq!(ed.show, [(0, 0), (3, 1)]);
+        ed.act(EditAction::Show { track: 1, slot: 0 }, &c);
+        assert_eq!(ed.show.len(), 2, "never the clip itself");
+        assert!(ed.act(EditAction::ShowNone, &c).edit.is_empty());
+        assert!(ed.show.is_empty());
+    }
+
+    /// The Show chip opens its menu over the roll: an offer is picked by
+    /// its place in the list and the menu stays open; More pages; None;
+    /// a touch off it closes it.
+    #[test]
+    fn the_show_menu_picks_pages_and_closes() {
+        let mut g = roll(false);
+        let chip = target(&g, "show-chip", 0).expect("Show on the overview row");
+        assert_eq!(tap(&mut g, 1, chip), None);
+        assert!(g.show_menu);
+        let first = target(&g, "show-pick", 0).unwrap();
+        assert_eq!(tap(&mut g, 2, first), Some(EventKind::Tab(SHOW_MENU)));
+        assert!(g.show_menu, "it stays open for more");
+        let more = target(&g, "show-more", 0).expect("40 offers don't fit");
+        let on_page = g.targets(R).iter().filter(|t| t.id == "show-pick").count();
+        assert_eq!(tap(&mut g, 3, more), None);
+        let next = target(&g, "show-pick", on_page).expect("the next page's first");
+        assert_eq!(
+            tap(&mut g, 4, next),
+            Some(EventKind::Tab(SHOW_MENU + on_page))
+        );
+        let none = target(&g, "show-none", 0).unwrap();
+        assert_eq!(tap(&mut g, 5, none), Some(EventKind::Tab(SHOW_NONE)));
+        let tools = g.button_rects(R)[0];
+        assert_eq!(tap(&mut g, 6, tools), None, "a touch off it only closes it");
+        assert!(!g.show_menu);
+    }
+
+    /// With Draw off, a tap on another clip's faint note opens that clip,
+    /// keeping where it was tapped for COPY; one of this clip's notes on
+    /// top wins; with Draw on, the tap draws as on empty roll.
+    #[test]
+    fn a_tap_on_a_faint_note_opens_its_clip_with_draw_off() {
+        let mut g = roll(false);
+        let faint = target(&g, "ghost-note", 0).expect("the faint note in sight");
+        assert_eq!(tap(&mut g, 1, faint), Some(EventKind::Tab(GHOST_TAP)));
+        assert_eq!(g.ghost_cell.0, 60);
+        assert!((1920..2400).contains(&g.ghost_cell.1), "{:?}", g.ghost_cell);
+        // The faint note under this clip's own: the own note is tapped.
+        let geo = g.geo(R);
+        let own = g.ghost_rect(&geo, &Note::new(0, 240, 60, 90)).unwrap();
+        assert_eq!(tap(&mut g, 2, own), Some(EventKind::Toggle(0)));
+        let mut d = roll(true);
+        assert_eq!(target(&d, "ghost-note", 0), None, "Draw on: it draws");
+        assert!(matches!(
+            tap(&mut d, 3, faint),
+            Some(EventKind::Cell { row: 60, .. })
+        ));
     }
 }
