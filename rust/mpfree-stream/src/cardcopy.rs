@@ -51,7 +51,7 @@ pub enum Pace {
 }
 
 /// The pace for copies behind playback and recording: wait while a take
-/// is recording or not yet saved (on the MPC's stick a heavy copy beside
+/// has captured audio not yet saved (on the MPC's stick a heavy copy beside
 /// a recording put it 24 s behind in 45 s, D2b), or while playback's
 /// cushion is under `cushion_s` seconds.
 pub fn background(gate: &Gate, cushion_s: f64) -> Pace {

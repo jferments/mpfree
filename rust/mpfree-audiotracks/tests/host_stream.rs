@@ -63,7 +63,8 @@ fn small() -> StreamConfig {
 }
 
 /// A cache of `slots` units. The plan expects a 0.5 s stall, so a region's
-/// held start is a second (twice it), whatever the default stall is.
+/// held start is a second (the stall and half a second more), whatever the
+/// default stall is.
 fn cache(slots: usize) -> StreamConfig {
     StreamConfig {
         cache: Config {
@@ -474,7 +475,8 @@ fn the_starts_of_regions_on_their_files_are_held_so_a_jump_to_one_plays_at_once(
     let regions = r.split([6, 12, 18]);
     assert_eq!(regions.len(), 4);
     r.run_until(|r| r.h.heads_wanted == 4 && r.h.heads_held == 4);
-    // A second of each: twice the longest stall the plan expects.
+    // A second of each: the longest stall the plan expects, and half a
+    // second more.
     let k = regions[0].take;
     r.run_until(|r| regions.iter().all(|g| r.cached(k, g.src, BAR)));
     // Only the starts: not the rest of a region (the playhead, stopped

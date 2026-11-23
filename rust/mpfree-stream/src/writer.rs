@@ -9,9 +9,9 @@
 //!   past its time, and not at all once its take's capture memory is half
 //!   full (recording moves up).
 //! - **Recording pressure** goes the other way through the same gate:
-//!   whether any take is still to be saved, so background work on the
-//!   stick waits while anything records, and the fullest take's capture
-//!   memory.
+//!   whether any take has captured audio not yet saved, so background
+//!   work on the stick waits while anything records, and the fullest
+//!   take's capture memory.
 //! - **Spreading.** Several takes' rounds are spread across the interval,
 //!   or run together ([`WriterConfig::spread`]; D4 measures which a real
 //!   stick likes better).
@@ -106,8 +106,9 @@ impl Gate {
     pub fn set_recording(&self, on: bool) {
         self.recording.store(on, Ordering::Relaxed);
     }
-    /// Whether a take is armed, recording or not yet saved: background
-    /// work on the stick waits until it isn't (D2b on the MPC, 23 Nov).
+    /// Whether a take has captured audio not yet saved: background work on
+    /// the stick waits until none has (D2b on the MPC, 23 Nov). A take
+    /// armed but not yet recording (a track only monitoring) doesn't count.
     pub fn recording(&self) -> bool {
         self.recording.load(Ordering::Relaxed)
     }
@@ -288,8 +289,6 @@ impl Writer {
             due,
             waiting: false,
         });
-        // Background work on the stick waits from now, not the next pass.
-        self.share_fill();
         Ok(())
     }
 
@@ -473,8 +472,8 @@ impl Writer {
         }
     }
 
-    /// Recording pressure for the coordinator: whether a take is still to
-    /// be saved, and the fullest take's capture memory.
+    /// Recording pressure for the coordinator: whether a take has captured
+    /// audio not yet saved, and the fullest take's capture memory.
     fn share_fill(&self) {
         let open = || {
             self.takes
@@ -483,7 +482,8 @@ impl Writer {
         };
         let fill = open().map(|e| e.take.fill()).fold(0.0, f64::max);
         self.gate.set_capture_fill(fill);
-        self.gate.set_recording(open().next().is_some());
+        self.gate
+            .set_recording(open().any(|e| e.take.captured() > 0));
     }
 
     /// The take whose round is due first.

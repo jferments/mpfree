@@ -396,9 +396,14 @@ fn a_round_stops_waiting_for_playback_once_capture_memory_is_half_full() {
         ..WriterConfig::default()
     });
     let no = b.arm(STEREO_FLOAT, 1);
-    assert!(b.gate.recording(), "background work waits from the arm");
+    b.passes();
+    assert!(
+        !b.gate.recording(),
+        "armed with nothing captured (only monitoring): nothing waits"
+    );
     b.gate.set_cushion(0.0);
     b.run(2.0, STEP, |_| {});
+    assert!(b.gate.recording(), "recording: background work waits");
     let shared = b.gate.capture_fill();
     assert_eq!(
         shared,
