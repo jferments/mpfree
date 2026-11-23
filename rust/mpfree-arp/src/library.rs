@@ -52,7 +52,8 @@ pub struct Library {
 }
 
 impl Library {
-    /// The ten starter patterns.
+    /// The built-in patterns: the ten starters, then the rest of the
+    /// library's groups ([`crate::groups::GROUPS`]) in order.
     pub fn built_in() -> Self {
         let mut l = Self::default();
         for (name, text) in BUILT_IN {
@@ -60,6 +61,14 @@ impl Library {
                 name.to_string(),
                 Pattern::parse(text).expect("built-in patterns parse"),
             ));
+        }
+        for g in &crate::groups::GROUPS[1..] {
+            for (name, text) in g.patterns {
+                l.entries.push((
+                    name.to_string(),
+                    Pattern::parse(text).expect("built-in patterns parse"),
+                ));
+            }
         }
         l
     }
@@ -314,7 +323,7 @@ mod tests {
         let out = lib.to_text();
         assert_eq!(out.lines().next(), Some("Skip    = 1 . 3 2 . 3 x:2 ."));
         assert_eq!(Library::parse(&out).unwrap(), lib);
-        assert_eq!(Library::built_in().len(), BUILT_IN.len());
+        assert_eq!(Library::built_in().len(), crate::groups::count());
         assert_eq!(
             Library::parse(&Library::built_in().to_text()).unwrap(),
             Library::built_in()
@@ -349,10 +358,10 @@ mod tests {
         let mut lib = Library::built_in();
         let p = Pattern::parse("x . x").unwrap();
         lib.put("BOUNCE", p).unwrap();
-        assert_eq!(lib.len(), BUILT_IN.len());
+        assert_eq!(lib.len(), crate::groups::count());
         assert_eq!(lib.iter().nth(2).unwrap(), ("BOUNCE", &p));
         lib.put("New one", p).unwrap();
-        assert_eq!(lib.len(), BUILT_IN.len() + 1);
+        assert_eq!(lib.len(), crate::groups::count() + 1);
         assert!(lib.put("#hash", p).is_err());
         assert!(lib.remove("new ONE"));
         assert!(!lib.remove("new one"));
