@@ -9,6 +9,7 @@
 pub mod engine;
 pub mod library;
 pub mod midi;
+pub mod modifier;
 pub mod notes;
 pub mod pattern;
 pub mod record;
@@ -21,6 +22,7 @@ pub use engine::{
 };
 pub use library::{Library, LibraryError};
 pub use midi::{midi_file, Message, MidiOut, NoteMap};
+pub use modifier::{ModSource, Modifier};
 pub use notes::{Held, LatchMode, NoteSet, Notes, MAX_NOTES};
 pub use pattern::{Lane, Lanes, ParseError, Pattern, Pick, Step, BUILT_IN, MAX_STEPS};
 pub use record::{RecordMode, Recorder, Wrote};

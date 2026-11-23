@@ -668,6 +668,9 @@ fn auto_closes_on_the_downbeat_you_played_and_starts_the_song_that_far_in() {
         (88_200, 2 * BAR_TICKS, false)
     );
     assert_eq!(bpm, 120.0);
+    // The beat played fits the loop as it now ends, not as the tap had it.
+    let fit = r.reading.and_then(|x| x.beat).expect("the beat weighed");
+    assert!(fit > 0.9, "{fit}");
     let note = r.l.take_smart().expect("a word on the tap");
     let down = rec_from + 88_200;
     assert_eq!(note.outcome, SmartOutcome::Moved(down as i64 - tap as i64));

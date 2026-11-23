@@ -26,6 +26,15 @@
 //!   holds the knob while it moves and for [`HAND_S`] after: the locks
 //!   are kept, not played. Then the owner takes the knob back the same
 //!   way, gliding or at once.
+//! - **The XY pad's hand** (a layout of yours plays the knob by Set,
+//!   `xy_own.rs`): while the pad holds a knob its value plays and the
+//!   value under the locks is left alone, so letting go gives the knob
+//!   back to its owner's lock or the sound's own value as they are by
+//!   then ([`Under::press`], [`Under::release`]). It holds over the locks
+//!   while recording; otherwise a locked step keeps its lock under the
+//!   pad, as the mod engine's hand rule says (`ModEvent::hand`). A turn
+//!   by hand takes the knob from the pad, whose later moves are ignored
+//!   until it lets go. It never times out: only its own let-go ends it.
 //! - **An ended lock** stays known until the period has been played
 //!   ([`Under::settle`]): an end and a new lock on the same frame (a clip
 //!   switch) still find the sound's own value, though the instrument has
@@ -77,6 +86,30 @@ struct Glide {
     total: u32,
 }
 
+/// The XY pad's hand on a parameter.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+enum Pad {
+    #[default]
+    Off,
+    /// The pad holds it at `value`, over the locks when `over`.
+    Holds { value: f32, over: bool },
+    /// A turn by hand took it from the pad: the pad's moves are ignored
+    /// until it lets go.
+    Lost,
+}
+
+/// What a press of the XY pad does ([`Under::press`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Pressed {
+    /// Set the parameter to this now.
+    Set(f32),
+    /// Held, nothing to set now: a step's lock plays over the pad (not
+    /// recording), or a turn by hand took the knob.
+    Kept,
+    /// No room in the table: the pad doesn't hold it (counted).
+    Full,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Entry {
     key: u32,
@@ -89,6 +122,8 @@ struct Entry {
     last: f32,
     /// Frames the hand still holds it.
     hand: u32,
+    /// The XY pad's hand on it.
+    pad: Pad,
     glide: Glide,
 }
 
@@ -101,6 +136,7 @@ impl Default for Entry {
             owner: NONE,
             last: 0.0,
             hand: 0,
+            pad: Pad::Off,
             glide: Glide::default(),
         }
     }
@@ -246,7 +282,8 @@ impl Under {
         let e = &mut self.e[i];
         e.owner = owner;
         e.smooth = smooth;
-        if e.hand > 0 || owner != src {
+        let pad_over = matches!(e.pad, Pad::Holds { over: true, .. });
+        if e.hand > 0 || pad_over || owner != src {
             self.waited += 1;
             return Some(false);
         }
@@ -260,7 +297,9 @@ impl Under {
     /// under them; the owner's end with another track still locking gives
     /// that track's value on a stepped knob, and starts a glide to it on a
     /// smooth one ([`Under::tick`]). Nothing while another track owns the
-    /// knob, while the hand holds it, or when `src` held no lock there.
+    /// knob, while the hand or the XY pad over the locks holds it, or when
+    /// `src` held no lock there; the pad's value when the last lock under
+    /// the pad ends.
     pub fn unlock(&mut self, key: u32, src: usize) -> Option<f32> {
         let src = u8::try_from(src).ok()?;
         let j = self.hold(key, src)?;
@@ -277,6 +316,22 @@ impl Under {
         if e.hand > 0 {
             return None;
         }
+        match (e.pad, next) {
+            // The pad holds it over the locks: it plays on.
+            (Pad::Holds { over: true, .. }, _) => None,
+            // The last lock under the pad ends: the pad's value again.
+            (Pad::Holds { value, .. }, None) => {
+                e.glide = Glide::default();
+                e.last = value;
+                Some(value)
+            }
+            (_, next) => Self::next_owner(e, next, glide_frames),
+        }
+    }
+
+    /// The owner's lock ended and `next` (a track and its value) takes the
+    /// knob, or none does: the value to set now, or a glide to start.
+    fn next_owner(e: &mut Entry, next: Option<(u8, f32)>, glide_frames: u32) -> Option<f32> {
         match next {
             None => {
                 e.glide = Glide::default();
@@ -342,6 +397,103 @@ impl Under {
         e.last = value;
         e.hand = self.hand_frames;
         e.glide = Glide::default();
+        // A turn takes the knob from the XY pad.
+        if matches!(e.pad, Pad::Holds { .. }) {
+            e.pad = Pad::Lost;
+        }
+    }
+
+    /// The XY pad's hand moves `key` to `value` (a layout of yours plays
+    /// it by Set); `now` is the parameter's value before the pad's first
+    /// press, kept as the value under it, and `over` whether the pad holds
+    /// it over the locks (a track records). The value under the locks is
+    /// left alone, so [`Under::release`] gives the knob back. A press
+    /// takes the knob from a turn by hand that still holds it (the newest
+    /// gesture wins); after a turn takes it from the pad, the pad's presses
+    /// are kept until its let-go.
+    pub fn press(&mut self, key: u32, value: f32, now: f32, smooth: bool, over: bool) -> Pressed {
+        let i = match self.find(key) {
+            Some(i) => i,
+            None if self.n == MAX => {
+                self.full += 1;
+                return Pressed::Full;
+            }
+            None => {
+                self.e[self.n] = Entry {
+                    key,
+                    under: now,
+                    smooth,
+                    last: now,
+                    ..Entry::default()
+                };
+                self.n += 1;
+                self.n - 1
+            }
+        };
+        let lock = self.first(key).map(|(_, v)| v);
+        let e = &mut self.e[i];
+        if e.pad == Pad::Lost {
+            return Pressed::Kept;
+        }
+        e.pad = Pad::Holds { value, over };
+        e.glide = Glide::default();
+        let took_hand = std::mem::take(&mut e.hand) > 0;
+        match lock.filter(|_| e.owner != NONE && !over) {
+            // A step's lock plays over the pad; one the hand held plays
+            // again now.
+            Some(v) if took_hand => {
+                e.last = v;
+                Pressed::Set(v)
+            }
+            Some(_) => Pressed::Kept,
+            None => {
+                e.last = value;
+                Pressed::Set(value)
+            }
+        }
+    }
+
+    /// The XY pad lets go of `key`: the value to set now, the owner's lock
+    /// (one the pad held over) or the value under the locks, or None when
+    /// there is nothing to set (a lock plays already, a turn took it, the
+    /// pad didn't hold it).
+    pub fn release(&mut self, key: u32) -> Option<f32> {
+        let i = self.find(key)?;
+        let lock = self.first(key).map(|(_, v)| v);
+        let e = &mut self.e[i];
+        let Pad::Holds { over, .. } = std::mem::take(&mut e.pad) else {
+            return None;
+        };
+        let v = match lock.filter(|_| e.owner != NONE) {
+            Some(v) if over => v,
+            Some(_) => return None,
+            None => e.under,
+        };
+        e.last = v;
+        Some(v)
+    }
+
+    /// What `key` goes back to if the XY pad lets go now: its owner's
+    /// lock, else the value under the locks. None when nothing holds it.
+    pub fn beneath(&self, key: u32) -> Option<f32> {
+        let e = self.e[self.find(key)?];
+        Some(match self.first(key).filter(|_| e.owner != NONE) {
+            Some((_, v)) => v,
+            None => e.under,
+        })
+    }
+
+    /// The sound's own value of `key` under the locks and the pad (the
+    /// value before the XY pad's Stay, for UNDO). None when nothing holds
+    /// it (the parameter's value is its own).
+    pub fn own(&self, key: u32) -> Option<f32> {
+        self.find(key).map(|i| self.e[i].under)
+    }
+
+    /// Whether the XY pad holds `key` (or held it until a turn took it).
+    #[cfg(test)]
+    pub fn pad_holds(&self, key: u32) -> bool {
+        self.find(key).is_some_and(|i| self.e[i].pad != Pad::Off)
     }
 
     /// Once a block, before the instrument plays its `frames` frames: a
@@ -388,14 +540,16 @@ impl Under {
         }
     }
 
-    /// After the period played: a parameter no lock, hand or glide holds
-    /// any more is forgotten.
+    /// After the period played: a parameter no lock, hand, XY pad or glide
+    /// holds any more is forgotten.
     pub fn settle(&mut self) {
         let mut k = 0;
         for i in 0..self.n {
             let e = self.e[i];
-            let held =
-                e.hand > 0 || e.glide.left > 0 || self.h[..self.m].iter().any(|h| h.key == e.key);
+            let held = e.hand > 0
+                || e.glide.left > 0
+                || e.pad != Pad::Off
+                || self.h[..self.m].iter().any(|h| h.key == e.key);
             if held {
                 self.e[k] = e;
                 k += 1;
@@ -607,5 +761,87 @@ mod tests {
         assert_eq!(u.unlock(5, 1), Some(0.4), "the turn is under it");
         u.settle();
         assert_eq!(u.holding(), 0);
+    }
+
+    /// The XY pad's hand (a layout of yours by Set): its value plays, the
+    /// value under it is left alone, and its let-go gives that back. It
+    /// never times out.
+    #[test]
+    fn the_pad_holds_a_knob_and_lets_go_to_its_own_value() {
+        let mut u = table();
+        assert_eq!(u.press(3, 0.8, 0.2, true, false), Pressed::Set(0.8));
+        assert_eq!(u.press(3, 0.9, 0.8, true, false), Pressed::Set(0.9));
+        assert_eq!(u.own(3), Some(0.2), "the first press keeps the own value");
+        assert_eq!(u.beneath(3), Some(0.2));
+        u.tick(RATE * 10, |_, _| panic!("nothing glides"));
+        u.settle();
+        assert!(u.pad_holds(3), "held, however long");
+        assert_eq!(u.release(3), Some(0.2), "back to its own value");
+        assert_eq!(u.release(3), None, "once");
+        u.settle();
+        assert_eq!(u.own(3), None, "forgotten");
+    }
+
+    /// Not recording, a step's lock plays over the pad (as the mod engine's
+    /// hand rule says); its end gives the pad's value again. While
+    /// recording the pad holds over the locks, and its let-go gives the
+    /// lock's value.
+    #[test]
+    fn the_pad_holds_over_the_locks_only_while_recording() {
+        let mut u = table();
+        assert_eq!(u.press(4, 0.7, 0.1, true, false), Pressed::Set(0.7));
+        assert_eq!(u.lock(4, 0, 0.3, 0.7, true), Some(true), "the lock plays");
+        assert_eq!(u.press(4, 0.75, 0.3, true, false), Pressed::Kept);
+        assert_eq!(u.beneath(4), Some(0.3));
+        assert_eq!(u.unlock(4, 0), Some(0.75), "the pad's value again");
+        assert_eq!(u.release(4), Some(0.1));
+        u.settle();
+        // Recording.
+        assert_eq!(u.press(4, 0.6, 0.1, true, true), Pressed::Set(0.6));
+        assert_eq!(u.lock(4, 0, 0.3, 0.6, true), Some(false), "kept");
+        assert_eq!(u.press(4, 0.65, 0.6, true, true), Pressed::Set(0.65));
+        assert_eq!(u.release(4), Some(0.3), "the lock it held over");
+        assert_eq!(u.unlock(4, 0), Some(0.1), "then the own value");
+        // A lock that ends under the pad while recording sets nothing.
+        assert_eq!(u.press(5, 0.6, 0.1, true, true), Pressed::Set(0.6));
+        assert_eq!(u.lock(5, 1, 0.3, 0.6, true), Some(false));
+        assert_eq!(u.unlock(5, 1), None);
+        assert_eq!(u.release(5), Some(0.1));
+    }
+
+    /// A turn by hand takes the knob from the pad: the pad's moves are
+    /// kept until it lets go, which sets nothing; the turn is the value
+    /// under. A press takes the knob from a turn still holding it.
+    #[test]
+    fn a_turn_takes_the_knob_from_the_pad() {
+        let mut u = table();
+        assert_eq!(u.press(6, 0.8, 0.2, true, false), Pressed::Set(0.8));
+        u.hand(6, 0.5);
+        assert_eq!(u.press(6, 0.9, 0.5, true, false), Pressed::Kept);
+        assert_eq!(u.release(6), None, "the turn has it");
+        assert!(!u.pad_holds(6));
+        assert_eq!(u.own(6), Some(0.5));
+        // The newest gesture wins: the pad lands while a turn holds it,
+        // over a lock that waited for the hand.
+        assert_eq!(u.lock(6, 0, 0.3, 0.5, true), Some(false), "the hand has it");
+        assert_eq!(
+            u.press(6, 0.9, 0.5, true, false),
+            Pressed::Set(0.3),
+            "the lock plays again: the pad's press holds nothing over it"
+        );
+        u.tick(RATE, |_, _| panic!("the hand let go already"));
+        assert_eq!(u.release(6), None, "the lock plays on");
+        assert_eq!(u.unlock(6, 0), Some(0.5));
+    }
+
+    /// A full table: the pad doesn't hold the knob, and says so.
+    #[test]
+    fn a_full_table_holds_no_press() {
+        let mut u = table();
+        for k in 0..MAX as u32 {
+            assert_eq!(u.press(k, 1.0, 0.0, true, false), Pressed::Set(1.0));
+        }
+        assert_eq!(u.press(999, 1.0, 0.0, true, false), Pressed::Full);
+        assert_eq!(u.full, 1);
     }
 }

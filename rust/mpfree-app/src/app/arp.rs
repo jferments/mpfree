@@ -21,12 +21,12 @@
 use super::{App, Effect, Item, PadNotes, View};
 use mpfree_arp::scale::{Scale, Snap, NOTE_NAMES, SCALES};
 use mpfree_arp::{
-    Chord, Held, Library, Mode, Order, Pattern, Rate, RecordMode, Recorder, Settings, Step, Turns,
-    Wrote,
+    Chord, Held, Library, ModSource, Mode, Modifier, Order, Pattern, Rate, RecordMode, Recorder,
+    Settings, Step, Turns, Wrote,
 };
 use mpfree_arp_ui::view::{ArpAction, PatternButton};
 use mpfree_arp_ui::workspace::{Editor, WsAction};
-use mpfree_node::{Curve, ParamInfo, Unit};
+use mpfree_node::{Ctl, Curve, ParamInfo, Unit};
 use mpfree_play::mpfree_param::arp as arp_ids;
 
 /// What the arp screens show: the panel, the quick band and the chip.
@@ -35,6 +35,10 @@ pub struct ArpView {
     /// The engine's settings. The mode is what the pads play through now:
     /// Direct when they play as pressed.
     pub settings: Settings,
+    /// What it plays now, as the Modifier pushes the settings.
+    pub live: Settings,
+    /// How far the Modifier's controller is now, 0 to 1.
+    pub push: f32,
     pub pattern: Pattern,
     pub pattern_index: usize,
     /// The pattern was edited, mutated or recorded from the list's.
@@ -103,11 +107,26 @@ pub enum ArpItem {
     Strum,
     Retrigger,
     SwingFrom,
+    /// The arp options' row that opens the Modifier's section (its value
+    /// the Modifier's controller), and that section's row back.
+    ModSection,
+    ModBack,
+    /// The Modifier's controller ([`ModSource`]), then how far its top
+    /// pushes each setting ([`Modifier`]).
+    ModSource,
+    ModRate,
+    ModOctaves,
+    ModGate,
+    ModSwing,
+    ModRolls,
+    ModAccents,
 }
 
 /// The Options menu opened from the Arp panel: the tempo, then the arp's
-/// own settings. (Rate, mode, gate, swing and octaves are on the panel.)
-pub(super) const ARP_OPTIONS: [Item; 11] = [
+/// own settings, the row that opens the Modifier's section, and how Latch
+/// and the sustain pedal latch (Prefs' rows, here too). (Rate, mode, gate,
+/// swing and octaves are on the panel.)
+pub(super) const ARP_OPTIONS: [Item; 14] = [
     Item::Tempo,
     Item::Arp(ArpItem::Accent),
     Item::Arp(ArpItem::Scale),
@@ -119,12 +138,50 @@ pub(super) const ARP_OPTIONS: [Item; 11] = [
     Item::Arp(ArpItem::Strum),
     Item::Arp(ArpItem::Retrigger),
     Item::Arp(ArpItem::SwingFrom),
+    Item::Arp(ArpItem::ModSection),
+    Item::LatchMode,
+    Item::PedalLatch,
+];
+
+/// The arp options' Modifier section (the MPC's Arpeggiator modifiers,
+/// 3.10.1 guide pp. 83-84): back, the controller, then how far its top
+/// pushes each setting. The Modifier box on the panel opens it.
+pub(super) const MOD_ROWS: [Item; 8] = [
+    Item::Arp(ArpItem::ModBack),
+    Item::Arp(ArpItem::ModSource),
+    Item::Arp(ArpItem::ModRate),
+    Item::Arp(ArpItem::ModOctaves),
+    Item::Arp(ArpItem::ModGate),
+    Item::Arp(ArpItem::ModSwing),
+    Item::Arp(ArpItem::ModRolls),
+    Item::Arp(ArpItem::ModAccents),
 ];
 
 /// Accent level steps by this much per press or wheel click.
 const ACCENT_STEP: i32 = 8;
 /// Strum steps by this many percent.
 const STRUM_STEP: i32 = 10;
+/// The Modifier's gate and accents step by this many percent.
+const MOD_GATE_STEP: i32 = 5;
+const MOD_ACCENTS_STEP: i32 = 10;
+
+/// Where the sustain pedal went down: the arp's latch, or the sound.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PedalTo {
+    Arp,
+    Sound,
+}
+
+/// A signed push as its row shows it: "Off", "+2 steps faster".
+fn signed(v: i8, one: &str, many: &str, up: &str, down: &str) -> String {
+    let n = i32::from(v).abs();
+    let unit = if n == 1 { one } else { many };
+    match v {
+        0 => "Off".to_string(),
+        v if v > 0 => format!("+{n}{unit}{up}"),
+        _ => format!("-{n}{unit}{down}"),
+    }
+}
 
 fn snap_text(s: Snap) -> &'static str {
     match s {
@@ -211,6 +268,8 @@ impl App {
     pub fn arp_view(&self) -> Effect {
         Effect::Arp(ArpView {
             settings: self.arps.engine_at(self.track).settings(),
+            live: self.arps.engine_at(self.track).live(),
+            push: self.arps.engine_at(self.track).modifier(),
             pattern: self.pattern,
             pattern_index: self.pattern_index,
             pattern_changed: self.pattern_changed(),
@@ -224,15 +283,19 @@ impl App {
     /// Once a period, after `process`: the arp screens' view, if the step,
     /// the notes or a setting changed since they last heard.
     pub fn arp_poll(&mut self) -> Option<Effect> {
-        let step = self.arps.engine_at(self.track).step();
+        let e = self.arps.engine_at(self.track);
+        let step = e.step();
+        let push = ((e.modifier() * 100.0).round() as u8, e.live());
         if !self.arp_dirty
             && step == self.sent_step
-            && *self.arps.engine_at(self.track).active() == self.sent_notes
+            && push == self.sent_push
+            && *e.active() == self.sent_notes
         {
             return None;
         }
         self.arp_dirty = false;
         self.sent_step = step;
+        self.sent_push = push;
         self.sent_notes
             .clone_from(self.arps.engine_at(self.track).active());
         Some(self.arp_view())
@@ -343,6 +406,16 @@ impl App {
             ArpAction::Latch => self.toggle_latch(),
             ArpAction::OpenPanel if self.view != View::Arp => self.toggle_panel(),
             ArpAction::OpenPanel => Vec::new(),
+            // The Modifier box: the arp options' Modifier section.
+            ArpAction::Modifier => {
+                let mut fx = if self.view == View::Options {
+                    Vec::new()
+                } else {
+                    self.show(View::Options)
+                };
+                fx.extend(self.open_mod_section());
+                fx
+            }
         }
     }
 
@@ -844,6 +917,34 @@ impl App {
                 }
                 .to_string(),
             ),
+            ArpItem::ModSection => ("Modifier", s.modifier.source.label().to_string()),
+            ArpItem::ModBack => ("Back to Arp options", "Back".to_string()),
+            ArpItem::ModSource => ("Controller", s.modifier.source.label().to_string()),
+            ArpItem::ModRate => (
+                "Pushes rate",
+                signed(s.modifier.rate, " step", " steps", " faster", " slower"),
+            ),
+            ArpItem::ModOctaves => (
+                "Pushes octaves",
+                signed(s.modifier.octaves, " octave", " octaves", "", ""),
+            ),
+            ArpItem::ModGate => ("Pushes gate", signed(s.modifier.gate, " %", " %", "", "")),
+            ArpItem::ModSwing => ("Pushes swing", signed(s.modifier.swing, " %", " %", "", "")),
+            ArpItem::ModRolls => (
+                "Adds rolls",
+                match s.modifier.rolls {
+                    0 => "Off".to_string(),
+                    1 => "+1 hit a step".to_string(),
+                    n => format!("+{n} hits a step"),
+                },
+            ),
+            ArpItem::ModAccents => (
+                "Adds accents",
+                match s.modifier.accents {
+                    0 => "Off".to_string(),
+                    n => format!("{n} % of steps"),
+                },
+            ),
         }
     }
 
@@ -913,6 +1014,61 @@ impl App {
                 "swing (Q-Link 3). Stopped, or with the",
                 "sequencer's swing off, it is the arp's own.",
             ],
+            ArpItem::ModSection => vec![
+                "One controller pushes this track's arp while",
+                "you play: faster, more octaves, longer notes,",
+                "more swing, rolls or accents, and back as you",
+                "let it go. Push the wheel or an arrow to pick",
+                "the controller and how far it pushes (the",
+                "Modifier box on the Arp panel opens it too).",
+            ],
+            ArpItem::ModBack => vec!["Back to the arp's other options."],
+            ArpItem::ModSource => vec![
+                "One controller that pushes this track's arp",
+                "while you play: a keyboard's mod wheel, the",
+                "pressure of the pads or keys you hold, an",
+                "expression pedal (CC 11), breath (CC 2), or a",
+                "knob MIDI Learn gives it (SHIFT + touch the",
+                "Modifier box, then turn the knob). At its top",
+                "it pushes by the amounts below; let it back",
+                "and the arp plays as set. The sound still",
+                "gets the controller too.",
+            ],
+            ArpItem::ModRate => vec![
+                "How many rates faster the controller's top",
+                "plays, along 1/4, 1/8, 1/8T, 1/16, 1/16T,",
+                "1/32 and 1/32T: from 1/16, +2 is 1/32.",
+                "Below zero slows the arp down instead. A new",
+                "rate starts with the next step, on the beat.",
+            ],
+            ArpItem::ModOctaves => vec![
+                "Octaves the controller's top adds to the",
+                "order's (Q-Link 4), 1 to 4 in all. Below zero",
+                "takes octaves away.",
+            ],
+            ArpItem::ModGate => vec![
+                "Percent the controller's top adds to each",
+                "note's length (Q-Link 2), 1 to 100 % in all.",
+                "Below zero shortens the notes: a tighter,",
+                "choppier arp as you push.",
+            ],
+            ArpItem::ModSwing => vec![
+                "Percent the controller's top adds to the",
+                "swing (Q-Link 3), up to 75 %. Below zero",
+                "straightens it.",
+            ],
+            ArpItem::ModRolls => vec![
+                "Extra hits the controller's top plays in",
+                "every step, up to 7: a roll that builds as",
+                "you push, for drums with Note Repeat. A",
+                "pattern step that already rolls gets them",
+                "on top (8 hits at most).",
+            ],
+            ArpItem::ModAccents => vec![
+                "The chance, at the controller's top, that a",
+                "step plays accented, at the Accent level.",
+                "Steps already accented stay accented.",
+            ],
         }
     }
 
@@ -950,6 +1106,25 @@ impl App {
                 self.arp.strum = (i32::from(self.arp.strum) + STRUM_STEP * d).clamp(0, 100) as u8
             }
             ArpItem::Retrigger => self.arp.retrigger = d > 0,
+            ArpItem::ModSection => return self.open_mod_section(),
+            ArpItem::ModBack => return self.leave_mod_section(),
+            ArpItem::ModSource => {
+                let m = &mut self.arp.modifier;
+                m.source = step_in(&ModSource::ALL, m.source, d);
+            }
+            ArpItem::ModRate => self.step_push(|m| &mut m.rate, d, Modifier::RATE),
+            ArpItem::ModOctaves => self.step_push(|m| &mut m.octaves, d, Modifier::OCTAVES),
+            ArpItem::ModGate => self.step_push(|m| &mut m.gate, MOD_GATE_STEP * d, Modifier::GATE),
+            ArpItem::ModSwing => self.step_push(|m| &mut m.swing, d, Modifier::SWING),
+            ArpItem::ModRolls => {
+                let m = &mut self.arp.modifier;
+                m.rolls = (i32::from(m.rolls) + d).clamp(0, i32::from(Modifier::ROLLS)) as u8;
+            }
+            ArpItem::ModAccents => {
+                let m = &mut self.arp.modifier;
+                m.accents = (i32::from(m.accents) + MOD_ACCENTS_STEP * d)
+                    .clamp(0, i32::from(Modifier::ACCENTS)) as u8;
+            }
             ArpItem::SwingFrom => {
                 let t = d > 0;
                 if t == self.swing_from_transport {
@@ -988,9 +1163,64 @@ impl App {
                 "arp new notes restart: {}",
                 if self.arp.retrigger { "on" } else { "off" }
             ),
-            ArpItem::SwingFrom => unreachable!("returned above"),
+            ArpItem::ModSource => format!(
+                "arp modifier: {}",
+                self.arp.modifier.source.label().to_ascii_lowercase()
+            ),
+            ArpItem::ModRate
+            | ArpItem::ModOctaves
+            | ArpItem::ModGate
+            | ArpItem::ModSwing
+            | ArpItem::ModRolls
+            | ArpItem::ModAccents => {
+                let (name, v) = self.arp_item_text(item);
+                format!(
+                    "arp modifier {}: {}",
+                    name.to_ascii_lowercase(),
+                    v.to_ascii_lowercase()
+                )
+            }
+            ArpItem::SwingFrom | ArpItem::ModSection | ArpItem::ModBack => {
+                unreachable!("returned above")
+            }
         };
         vec![Effect::Note(note)]
+    }
+
+    /// The arp options' Modifier section, on its controller's row.
+    pub(super) fn open_mod_section(&mut self) -> Vec<Effect> {
+        self.mod_section = true;
+        self.menu_editing = false;
+        self.selected = 1;
+        vec![self.menu_view()]
+    }
+
+    /// From the Modifier section back to the arp options, on its row.
+    pub(super) fn leave_mod_section(&mut self) -> Vec<Effect> {
+        self.mod_section = false;
+        self.menu_editing = false;
+        self.selected = ARP_OPTIONS
+            .iter()
+            .position(|&i| i == Item::Arp(ArpItem::ModSection))
+            .unwrap_or(0);
+        vec![self.menu_view()]
+    }
+
+    /// The contact sheet's Modifier: the mod wheel, with the gate +30 on
+    /// top of the defaults (rate +2 steps, an octave).
+    pub fn arp_modifier_demo(&mut self) -> Vec<Effect> {
+        let mut fx = self.step_arp_item(ArpItem::ModSource, 1);
+        for _ in 0..6 {
+            fx.extend(self.step_arp_item(ArpItem::ModGate, 1));
+        }
+        fx
+    }
+
+    /// One of the Modifier's signed amounts stepped by `d`, kept to
+    /// `(lo, hi)`.
+    fn step_push(&mut self, at: fn(&mut Modifier) -> &mut i8, d: i32, (lo, hi): (i8, i8)) {
+        let v = at(&mut self.arp.modifier);
+        *v = (i32::from(*v) + d).clamp(i32::from(lo), i32::from(hi)) as i8;
     }
 
     /// A touch in the workspace (its editor already changed the pattern).
@@ -1226,6 +1456,86 @@ impl App {
         }
     }
 
+    /// A held key's pressure (poly or channel aftertouch) while the pads
+    /// play notes: the arp's notes on it swell as a pad's do, and a
+    /// Modifier on pressure follows it. (The sound gets it too, main.rs.)
+    pub fn key_pressure(&mut self, note: u8, value: u8) {
+        let n = note & 0x7F;
+        if self.press_layout().is_some() && self.keys_held[usize::from(n)] {
+            self.arps.engine_at_mut(self.track).pressure(n, value);
+        }
+    }
+
+    /// A keyboard's mod wheel, breath controller or expression pedal, on
+    /// the armed track: the arp's Modifier follows it when it is the
+    /// Modifier's controller. The sound still gets it (main.rs).
+    pub fn arp_controller(&mut self, ctl: Ctl, value: f32) {
+        let source = match ctl {
+            Ctl::ModWheel => ModSource::ModWheel,
+            Ctl::Breath => ModSource::Breath,
+            Ctl::Foot => ModSource::Expression,
+            _ => return,
+        };
+        self.arps.engine_at_mut(self.track).control(source, value);
+    }
+
+    /// The sustain pedal on the armed track, with Prefs' Sustain pedal
+    /// latches on: down while the arp plays (Repeat, Arp or Pattern) turns
+    /// Latch on; up puts Latch back as it was, so the notes no longer held
+    /// stop (the MPC's Sustain Pedal Latches, 3.10.1 guide p. 83). None
+    /// when the pedal isn't the arp's: the sound sustains with it as
+    /// before. A pedal comes up where it went down, whatever changed in
+    /// between, so neither the arp nor a sound is left holding.
+    pub fn arp_pedal(&mut self, ctl: Ctl, value: f32) -> Option<Vec<Effect>> {
+        if ctl != Ctl::Sustain {
+            return None;
+        }
+        if !Ctl::down(value) {
+            return match self.pedal_down.take() {
+                Some(PedalTo::Arp) => Some(self.pedal_lets_go()),
+                _ => None,
+            };
+        }
+        match self.pedal_down {
+            // Still down (a half pedal sends many values): where it went.
+            Some(PedalTo::Arp) => return Some(Vec::new()),
+            Some(PedalTo::Sound) => return None,
+            None => {}
+        }
+        if !self.settings.pedal_latches || !self.generating() {
+            self.pedal_down = Some(PedalTo::Sound);
+            return None;
+        }
+        self.pedal_down = Some(PedalTo::Arp);
+        self.pedal_latch = Some(self.latched);
+        if self.latched {
+            return Some(Vec::new());
+        }
+        self.latched = true;
+        let mut fx = vec![Effect::Note("Latch on (sustain pedal)".to_string())];
+        fx.extend(self.arp_changed());
+        Some(fx)
+    }
+
+    /// The sustain pedal's latch lets go: Latch as it was before the pedal
+    /// went down. Also when the track changes or Prefs turns the pedal's
+    /// latch off under it.
+    pub(super) fn pedal_lets_go(&mut self) -> Vec<Effect> {
+        if self.pedal_down == Some(PedalTo::Arp) {
+            self.pedal_down = None;
+        }
+        let Some(before) = self.pedal_latch.take() else {
+            return Vec::new();
+        };
+        if self.latched == before {
+            return Vec::new();
+        }
+        self.latched = before;
+        let mut fx = vec![Effect::Note("Latch off (sustain pedal)".to_string())];
+        fx.extend(self.arp_changed());
+        fx
+    }
+
     /// Kit pad `pad` held by one more pad or key: the arp gets it once.
     fn hold_kit_pad(&mut self, pad: u8, velocity: u8) {
         let holds = &mut self.note_holds[usize::from(pad & 0x7F)];
@@ -1379,6 +1689,10 @@ impl App {
         if track == self.track {
             return Vec::new();
         }
+        // The sustain pedal's latch was the old track's: it lets go there,
+        // and the pedal starts again on the new one.
+        let mut pedal = self.pedal_lets_go();
+        self.pedal_down = None;
         // What the pads play stays (the instrument redesign's rule 2): the
         // new track's instrument while they follow the track, the synth
         // chosen for them otherwise (app/pads_focus.rs).
@@ -1409,7 +1723,8 @@ impl App {
             track + 1,
             mode_label(self.arp_mode)
         )));
-        fx
+        pedal.append(&mut fx);
+        pedal
     }
 
     /// Track `track`'s arp setting `id` (`mpfree_param::arp`) as MIDI
@@ -1418,6 +1733,10 @@ impl App {
     /// another's as it was left.
     pub fn arp_param(&self, track: usize, id: u16) -> Option<(ParamInfo, f32)> {
         let info = arp_info(id)?;
+        if id == arp_ids::MODIFIER {
+            self.track_ui.get(track)?;
+            return Some((info, self.arps.engine_at(track).modifier() * 100.0));
+        }
         let (s, rate) = if track == self.track {
             (&self.arp, self.settings.rate)
         } else {
@@ -1444,6 +1763,14 @@ impl App {
             return Vec::new();
         };
         let value = info.clamp(value);
+        // The Modifier: the knob pushes that track's arp while it is the
+        // Modifier's controller; the screens redraw on the next poll.
+        if id == arp_ids::MODIFIER {
+            self.arps
+                .engine_at_mut(track)
+                .control(ModSource::Knob, value / 100.0);
+            return Vec::new();
+        }
         if value == now {
             return Vec::new();
         }
@@ -1522,6 +1849,7 @@ pub fn arp_info(id: u16) -> Option<ParamInfo> {
         arp_ids::GATE => info("Gate", 1.0, 100.0, 50.0, Unit::Percent, Curve::Stepped),
         arp_ids::SWING => info("Swing", 50.0, 75.0, 50.0, Unit::Percent, Curve::Stepped),
         arp_ids::OCTAVES => info("Octaves", 1.0, 4.0, 1.0, Unit::None, Curve::Stepped),
+        arp_ids::MODIFIER => info("Modifier", 0.0, 100.0, 0.0, Unit::Percent, Curve::Linear),
         _ => return None,
     })
 }

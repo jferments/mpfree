@@ -383,6 +383,13 @@ A tick seldom falls on a frame: at 117 BPM a bar is 90461.54 frames at 44.1 kHz.
 - **Saved** as `phase=` after `src=` on the `audiotracks` part's region lines, left out when 0 (an older build skips it, so it plays such a region up to half a frame off), and as the last number of a clip's `region` line in the `clips` part, also only when not 0 (0 when missing; one past half a frame is refused).
 - **Tests:** `tracks.rs` `splits_between_frames_play_as_the_whole_region_from_anywhere` (four splits between frames inside long fades, played from four places, every frame as the whole region's; it fails without the phase); `main.rs`'s `song_to_scenes_and_back_plays_the_songs_audio_sample_for_sample`, now to float rounding at 117 BPM as at 120 (the allowance for a fade a frame off is gone).
 
+## Loops joining audio tracks (phase 4)
+
+Phase 4 of the rethink ([plan](https://claude.ai/artifact/HA92ecH36LM6UDwiLCwJHa), approved by Jay on 23 Nov) makes the looper's loops clips of audio tracks: a loop belongs to one track and plays through that track's channel, the arranger says when, and a loop's layers become recordings of the project. It is built in five steps, 4a to 4e, the last of which switches it on.
+
+- **4a, each loop on its own output** (built): the looper keeps each loop's sound apart ([looper design, "Each loop on its own output"](looper.md#each-loop-on-its-own-output)), and the app adds them up where the Loop strip takes the mix, so nothing sounds different. The sum is the old mix bit for bit.
+- **4b to 4e** (not built): the project model and the track player behind Dev's switch (4b), layers as recordings (4c), one UNDO history of project transactions (4d), switched on (4e). Their contracts, written before the code: [loops-on-audio-tracks.md](loops-on-audio-tracks.md) (the identities, the track player, the transactions).
+
 ## Joining the rest of MPFree
 
 - **The arrangement.** Audio tracks keep their own regions on song ticks, next to the arrangement's MIDI placements (PR #160), so the two are independent. The Song view can draw each audio track as one more lane, with its take lanes under it for comping. `SetActive(false)` (song mode off) silences the tracks' song regions; their clips play in either mode.

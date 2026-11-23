@@ -1267,6 +1267,83 @@ mod tests {
         assert_eq!((t.id, t.index, t.moves), ("slot", 2, false));
     }
 
+    /// XY → and XY ↑ on the Modulate row (layout spec 4b's XY chips),
+    /// between the name and the macros (narrowed to 34 px): a tap sends
+    /// the touched control and the direction; the chip of the way it is on
+    /// is lit in the text colour; a switch greys both, and a tap still
+    /// goes (the app says why).
+    #[test]
+    fn the_xy_chips_send_the_touched_control_and_light_its_direction() {
+        let mut song = Song::new();
+        let uid = song.drums.uid(1).unwrap();
+        let at = |id| ParamAddr::new(Owner::Insert(DRUMS, uid), id);
+        let tone = at(ids::drive::TONE);
+        let mut st = song.chain_state(DRUMS, 1, 0, Some(tone));
+        for p in st.params.iter_mut().filter(|p| p.addr == tone) {
+            p.xy = Some(crate::state::XyMark {
+                up: true,
+                from: 0.5,
+                to: 1.0,
+                now: p.pos,
+                recorded: false,
+            });
+        }
+        let mut ui = screen(Fonts::embedded(), &mut song, Place::Mixer, Some(st), None).unwrap();
+        let mut c = SoftCanvas::new(1280, 800);
+        ui.paint(&mut c);
+        let r = ui.rect_of(crate::CHAIN).unwrap();
+        let l = ui.get::<ChainView>(crate::CHAIN).unwrap().layout(r);
+        assert!(l.mod_name.right() < l.xy_chips[0].x, "{:?}", l.mod_name);
+        assert!(l.xy_chips[0].right() < l.xy_chips[1].x);
+        assert!(l.xy_chips[1].right() < l.macros[0].x);
+        assert_eq!((l.xy_chips[0].w, l.macros[0].w), (60, 34));
+        let text = ui.theme.text;
+        let lit =
+            |c: &SoftCanvas, k: usize| c.pixel(l.xy_chips[k].x + 6, l.xy_chips[k].y + 6) == text;
+        assert!(lit(&c, 1) && !lit(&c, 0), "XY ↑ lit");
+        let chips = |ui: &Ui| -> Vec<bool> {
+            ui.targets()
+                .iter()
+                .filter(|t| t.widget == crate::CHAIN && t.target.id == "xy")
+                .map(|t| t.target.enabled)
+                .collect()
+        };
+        assert_eq!(chips(&ui), [true, true]);
+        tap(&mut ui, l.xy_chips[1].x + 5, l.xy_chips[1].y + 5);
+        tap(
+            &mut ui,
+            l.xy_chips[0].right() - 5,
+            l.xy_chips[0].bottom() - 5,
+        );
+        assert_eq!(
+            crate::take_chain_actions(&mut ui),
+            [
+                ChainAction::Xy {
+                    addr: tone,
+                    up: true
+                },
+                ChainAction::Xy {
+                    addr: tone,
+                    up: false
+                }
+            ]
+        );
+        // A switch: Auto-gain.
+        let auto = at(ids::drive::AUTO_GAIN);
+        let st = song.chain_state(DRUMS, 1, 0, Some(auto));
+        let mut ui = screen(Fonts::embedded(), &mut song, Place::Mixer, Some(st), None).unwrap();
+        ui.paint(&mut c);
+        assert_eq!(chips(&ui), [false, false]);
+        tap(&mut ui, l.xy_chips[0].x + 5, l.xy_chips[0].y + 5);
+        assert_eq!(
+            crate::take_chain_actions(&mut ui),
+            [ChainAction::Xy {
+                addr: auto,
+                up: false
+            }]
+        );
+    }
+
     #[test]
     fn chain_touches_become_actions() {
         let mut song = Song::new();
@@ -1345,6 +1422,7 @@ mod tests {
         let modulate = [
             "macro",
             "learn",
+            "xy",
             "add-lfo",
             "add-follower",
             "rows",
