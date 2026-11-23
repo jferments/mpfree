@@ -172,6 +172,14 @@ pub fn text(f: &Facts, board: &Board, names: &Watch) -> String {
             ));
         }
     }
+    if let Some(s) = r.engines {
+        let parts: Vec<String> = crate::engines::SHARES
+            .iter()
+            .zip(s)
+            .map(|((_, name), p)| format!("{name} {}", crate::engines::share_words(p)))
+            .collect();
+        now.push(format!("where the sound's time goes: {}", parts.join(", ")));
+    }
     if now.is_empty() {
         now.push("nothing read yet".to_string());
     }
@@ -312,6 +320,7 @@ mod tests {
         let readings = Readings {
             cpu_pct: Some(24.0),
             ram_pct: Some(41.0),
+            engines: Some([12.2, 0.0, 0.0, 1.0, 4.0, 6.6]),
             ..Readings::default()
         };
         let lines = vec![log_line(
@@ -332,6 +341,13 @@ mod tests {
         assert!(!t.contains("danas-mpc") && !t.contains("Host name"), "{t}");
         assert!(t.contains("A normal start."), "{t}");
         assert!(t.contains("the sound's share of the CPU 24 %"), "{t}");
+        assert!(
+            t.contains(
+                "where the sound's time goes: The pads 12 %, Synths none, The looper and line \
+                 input none, Clips and the arp 1 %, Mixing 4 %, MPFree's own work 7 %"
+            ),
+            "{t}"
+        );
         assert!(
             t.contains("red sound/dropout: The sound dropped out. 3 times · first at 0:12"),
             "{t}"
