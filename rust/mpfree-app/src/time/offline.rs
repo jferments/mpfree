@@ -130,10 +130,13 @@ fn play(
             bare(c);
         }
     }
-    if !mutes {
-        for s in &mut copy.scenes {
+    for s in &mut copy.scenes {
+        if !mutes {
             s.mutes = None;
         }
+        // The copy keeps its fast tempo: a scene's tempo (5.2b) decides
+        // no tick.
+        s.tempo = None;
     }
     let mut host = TimeHost::with_project(FAST_RATE, FAST_BPM, copy)?;
     if host.info().meter.bar_ticks() != bar {
