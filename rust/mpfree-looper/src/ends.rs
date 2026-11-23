@@ -31,7 +31,7 @@
 //! tap too. Nothing allocates: the log is fixed, and a decision works on
 //! the stack.
 
-use mpfree_transport::time::Tick;
+use mpfree_transport::time::{Tick, PPQ};
 
 /// A note started: a pad hit or a MIDI note-on, keyed on what was played
 /// (not on what sounds), on the song's frame clock: the frame it sounded.
@@ -148,6 +148,16 @@ pub const BEAT_BACKS: f64 = 0.15;
 /// then the reach is 100 ms, so such a pickup can come nearer the tap
 /// than [`FAR`].)
 pub const BEAT_FLOOR: f64 = 0.1;
+/// Ahead of the beat's own end: once the loop has a beat to go on
+/// ([`MIN_BEAT_NOTES`]), the end the beat alone backs best (the best
+/// rhythm part over the reach) is where the downbeat should be. A hit
+/// more than this part of a quarter note before it, and at least
+/// [`AHEAD_MIN_MS`], moves nothing: a fill's last kick a 16th before the
+/// downbeat sounds like the first hit, and with nothing played on the
+/// downbeat it would win. (Found by the held-out corpus, 23 Nov 2026.)
+pub const AHEAD: f64 = 0.1;
+/// The least [`AHEAD`] allows, in ms.
+pub const AHEAD_MIN_MS: f64 = 20.0;
 
 /// A pass's notes (or hits), from its start: the first [`HEAD`], then the
 /// last [`TAIL`]. Ones the tail had to drop are counted, and the newest
@@ -577,7 +587,11 @@ pub fn decide<E: Event>(
     let unbacked = ctx.beat_notes() >= MIN_BEAT_NOTES
         && (best.rhythm < BEAT_FLOOR
             || (far && (best.rhythm < BEAT_BACKS || best.rhythm < tap.rhythm)));
-    let clear = best.score >= THRESHOLD && best.score - second.score >= MARGIN && !unbacked;
+    let clear = best.score >= THRESHOLD
+        && best.score - second.score >= MARGIN
+        && !unbacked
+        && !(ctx.beat_notes() >= MIN_BEAT_NOTES
+            && ctx.ahead_of_the_beat(best.end, lo, ask.tap + ask.reach));
     Decision {
         verdict: if clear {
             Verdict::Moved
@@ -765,6 +779,53 @@ impl<E: Event> Ctx<'_, E> {
         } else {
             0.0
         }
+    }
+
+    /// The end the beat alone backs best, from `lo` to `hi`: the rhythm
+    /// part every 4 ms, then every 1 ms round the best (the bell is at
+    /// least 10 ms wide). None when the beat backs none of them.
+    fn beat_end(&self, lo: u64, hi: u64) -> Option<u64> {
+        let coarse = frames(self.ask.rate, 4.0).max(1);
+        let fine = frames(self.ask.rate, 1.0).max(1);
+        let scan = |from: u64, to: u64, step: u64, best: (u64, f64)| {
+            let mut best = best;
+            let mut e = from;
+            while e <= to {
+                let r = self.rhythm(e);
+                if r > best.1 {
+                    best = (e, r);
+                }
+                e += step;
+            }
+            best
+        };
+        let rough = scan(lo, hi, coarse, (lo, 0.0));
+        let near = rough.0;
+        let (at, most) = scan(
+            near.saturating_sub(coarse).max(lo),
+            (near + coarse).min(hi),
+            fine,
+            rough,
+        );
+        (most > 0.0).then_some(at)
+    }
+
+    /// Whether a hit at `end` comes more than [`AHEAD`] of a quarter note
+    /// (at least [`AHEAD_MIN_MS`]) before the end the beat alone backs
+    /// best between `lo` and `hi`.
+    fn ahead_of_the_beat(&self, end: u64, lo: u64, hi: u64) -> bool {
+        let Some(at) = self.beat_end(lo, hi) else {
+            return false;
+        };
+        let len = at.saturating_sub(self.ask.start + self.lead) as usize;
+        let Some(bars) = (self.bars_for)(len).filter(|&b| b > 0) else {
+            return false;
+        };
+        let beats = self.ask.bar as f64 / self.ask.beat.max(1) as f64;
+        let beat = len as f64 / (f64::from(bars) * beats);
+        let quarter = beat * f64::from(PPQ) / self.ask.beat.max(1) as f64;
+        let slack = (AHEAD * quarter).max(frames(self.ask.rate, AHEAD_MIN_MS) as f64);
+        at.saturating_sub(end) as f64 > slack
     }
 
     /// Whether the notes after the opening hit come round again after the
@@ -1104,6 +1165,54 @@ mod tests {
     }
 
     #[test]
+    fn a_fills_last_kick_ahead_of_the_beat_moves_nothing() {
+        // Two bars at 140 BPM played with a little human timing; the last
+        // beat is a fill of four 16ths on the snare, the last of them a
+        // kick (a hit like the first), and you stop before the downbeat
+        // and tap 50 ms early. (Found by the held-out corpus.)
+        let bpm = 140.0;
+        let quarter = 60_000.0 / bpm;
+        let downbeat = 8.0 * quarter;
+        let fill_from = downbeat - quarter;
+        let human = [0.0, 9.0, -11.0, 6.0, -7.0, 12.0, -4.0, 10.0, -9.0];
+        let mut notes: Vec<NoteStart> = beat(bpm, 2, 0.0, &|k| human[k % 9])
+            .into_iter()
+            .filter(|n| n.frame < 10_000 + ms(fill_from))
+            .collect();
+        for (i, v) in [60, 75, 90, 105].into_iter().enumerate() {
+            let key = if i == 3 { 36 } else { 38 };
+            notes.push(note(fill_from + i as f64 * quarter / 4.0, key, v));
+        }
+        notes.sort_by_key(|n| n.frame);
+        let kick = 10_000 + ms(downbeat - quarter / 4.0);
+        let a = ask(downbeat - 50.0, downbeat - 50.0 + 100.0, bpm);
+        let d = decide(&log_of(&notes), &a, &|_| Some(2));
+        let b = d.best.unwrap();
+        // Every other rule would let it win: it sounds like the first
+        // kick, it is clearly ahead, the beat backs it a little, and it
+        // is near the tap.
+        assert_eq!(b.end, kick, "{d:?}");
+        assert!(b.score >= THRESHOLD, "{d:?}");
+        assert!(b.score - d.second.unwrap().score >= MARGIN, "{d:?}");
+        assert!(b.rhythm >= BEAT_FLOOR, "{d:?}");
+        assert!(
+            b.end.abs_diff(a.tap) as f64 <= FAR * a.reach as f64,
+            "{d:?}"
+        );
+        // But it comes a 16th before the end the beat backs best.
+        assert_eq!((d.verdict, d.end), (Verdict::NotClear, a.tap), "{d:?}");
+        // The downbeat played, and the tap 60 ms late: it moves there.
+        notes.push(note(downbeat, 36, 120));
+        let a = ask(downbeat + 60.0, downbeat + 160.0, bpm);
+        let d = decide(&log_of(&notes), &a, &|_| Some(2));
+        assert_eq!(
+            (d.verdict, d.end),
+            (Verdict::Moved, 10_000 + ms(downbeat)),
+            "{d:?}"
+        );
+    }
+
+    #[test]
     fn a_soft_hat_near_the_tap_is_not_the_downbeat() {
         // The opening is a kick with a hat; near an on-time tap only an
         // off-beat hat sounds (a 16th at 160 BPM is 94 ms, inside the
@@ -1274,24 +1383,23 @@ mod tests {
 
     #[test]
     fn a_move_only_one_bar_count_backs_keeps_the_tap() {
-        // You stopped before the downbeat, a fill's last kick a 16th
-        // before it, and tapped 70 ms early. Read as 8 bars, the kick's
-        // grid backs it and the end would move there; read as 2 (the
-        // runner-up), nothing is clear. The bars are a guess, so the tap
-        // stands, with what was found kept for the log.
+        // Two bars at 120 BPM, you stopped before the downbeat, then a
+        // kick 60 ms after it, and tapped 40 ms early. Read as 2 bars the
+        // kick's grid backs it and the end would move there; read as 1
+        // (the runner-up), nothing moves. The bars are a guess, so the
+        // tap stands, with what was found kept for the log.
         let mut notes = beat(120.0, 2, 0.0, &|_| 0.0);
         notes.retain(|n| n.frame < 10_000 + ms(3990.0));
-        notes.push(note(3875.0, 36, 120));
-        notes.sort_by_key(|n| n.frame);
-        let a = ask(3930.0, 4030.0, 120.0);
+        notes.push(note(4060.0, 36, 120));
+        let a = ask(3960.0, 4060.0, 120.0);
         let log = log_of(&notes);
-        let alone = decide_agreed(&log, &a, 8, None);
+        let alone = decide_agreed(&log, &a, 2, None);
         assert_eq!(
             (alone.verdict, alone.end),
-            (Verdict::Moved, 10_000 + ms(3875.0))
+            (Verdict::Moved, 10_000 + ms(4060.0))
         );
-        assert_eq!(decide(&log, &a, &|_| Some(2)).verdict, Verdict::NotClear);
-        let d = decide_agreed(&log, &a, 8, Some(2));
+        assert_ne!(decide(&log, &a, &|_| Some(1)).verdict, Verdict::Moved);
+        let d = decide_agreed(&log, &a, 2, Some(1));
         assert_eq!((d.verdict, d.end), (Verdict::NotClear, a.tap), "{d:?}");
         assert_eq!(
             (d.best, d.second, d.lead),

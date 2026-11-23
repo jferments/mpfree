@@ -36,7 +36,8 @@
 //! needs it to back it a little ([`ends::BEAT_FLOOR`]): that leaves 1
 //! (half time at 174, a tap 80 ms early, to a pickup the beat backs
 //! 0.11), for 0.34 % fewer of the taps off by 15 ms or more moved to the
-//! downbeat than main (99.28 to 98.94 %). The test plays five seeds, the
+//! downbeat than main (99.28 to 98.94 %), and [`ends::AHEAD`] none
+//! (98.4 %). The test plays five seeds, the
 //! first and four picked for the far rule's last part, and makes no wrong
 //! move.
 //!
@@ -57,8 +58,10 @@
 //! keyboard; other tempos, REC leads and seed; and fills that end on a
 //! kick, the corpus's grooves too), from the pads and by ear. It found
 //! one kind of wrong move the corpus never plays, a fill's last kick
-//! taken for the downbeat ([`HELD_KNOWN_WRONG`]); the tests allow what
-//! it found and fail on more or on any other kind. Set
+//! taken for the downbeat. [`ends::AHEAD`] answers most of it, set on
+//! the corpus's grooves with every fill ending on a kick
+//! ([`KICK_FILL_KNOWN_WRONG`]); the tests allow what is left
+//! ([`HELD_KNOWN_WRONG`]) and fail on more or on any other kind. Set
 //! `MPFREE_CORPUS_SEEDS` (seeds, commas between) to play the corpus on
 //! other seeds.
 
@@ -1086,20 +1089,18 @@ const HELD_TEMPOS: &[f64] = &[80.0, 96.0, 110.0, 132.0, 150.0, 165.0];
 const HELD_EARLY: &[f64] = &[0.0, 30.0];
 const HELD_SEED: u64 = 4_040_404;
 
-/// What the held-out set found (23 Nov 2026), which no rule answers yet:
-/// a fill whose last 16th is a kick, a hit like the opening one, wins
-/// over your tap when nothing is played on the downbeat (from the pads:
-/// 1,898 of 277,992 taps, at 96 to 165 BPM, from taps up to 80 ms
-/// early; 2,392 before a bar count in doubt had to agree, 24 Nov) and,
-/// by ear, sometimes even when it is (the downbeat's kick alone isn't
-/// alike enough in tone). The beat backs it 0.1 to 0.3, and it is
-/// nearer the tap than [`ends::FAR`] of the reach. And 2 like the
-/// corpus's own last one: a tap 75 or 80 ms early, with swing at 132
-/// BPM, to a hit the beat backs 0.14 (a third, at 150 BPM, went with
-/// the agreement). The tests allow these, no more, and no other kind.
-const HELD_KNOWN_WRONG: usize = 1_900;
-const HELD_KNOWN_OTHER: usize = 2;
-const HELD_KNOWN_BY_EAR: usize = 29;
+/// What the held-out set found (23 Nov 2026): a fill whose last 16th is
+/// a kick, a hit like the opening one, won over your tap when nothing
+/// was played on the downbeat (from the pads 2,392 of 277,992 taps, at
+/// 96 to 165 BPM, from taps up to 80 ms early) and, by ear, sometimes
+/// even when it was (29 in a seventh of the takes); and 3 like the
+/// corpus's own last one. A bar count in doubt having to agree
+/// ([`ends::decide_agreed`]) took it to 1,900; [`ends::AHEAD`], set on
+/// the corpus's own grooves with such fills, answers most of the rest:
+/// 54 are left (24 Nov), all with loose timing at 150 and 165 BPM, from a
+/// fill's kick, with nothing on the downbeat, and none by ear. The tests
+/// allow those, no more, and no other kind.
+const HELD_KNOWN_WRONG: usize = 54;
 
 /// How a wrong move to a fill's kick reads (see [`Fill::words`]).
 const KICK_FILL: &str = "a fill ending on a kick";
@@ -1180,7 +1181,7 @@ fn held_out_a_tap_moves_only_to_the_downbeat_you_played() {
     }
     let other: Vec<_> = wrongs.iter().filter(|w| !w.contains(KICK_FILL)).collect();
     assert!(
-        other.len() <= HELD_KNOWN_OTHER,
+        other.is_empty(),
         "wrong moves held out, not to a fill's kick: {other:#?}"
     );
     assert!(
@@ -1221,14 +1222,79 @@ fn held_out_by_ear_a_tap_moves_only_to_the_downbeat_you_played() {
     for w in &wrongs {
         eprintln!("  wrong: {w}");
     }
+    assert!(
+        wrongs.is_empty(),
+        "wrong moves held out by ear: {wrongs:#?}"
+    );
+}
+
+/// The corpus's grooves, tempos and timings with every fill ending on a
+/// kick (the family the held-out set found), on seeds of its own: the
+/// set [`ends::AHEAD`] was set on. It allows [`KICK_FILL_KNOWN_WRONG`]
+/// wrong moves, all to a fill's kick, and fails on more or on any other.
+#[test]
+fn fills_ending_on_a_kick_a_tap_moves_only_to_the_downbeat_you_played() {
+    const TEMPOS: &[f64] = &[72.0, 90.0, 100.0, 120.0, 128.0, 140.0, 174.0];
+    const BARS: &[u32] = &[1, 2, 4];
+    const TIMING: &[(&str, f64)] = &[("tight", 2.0), ("human", 6.0), ("loose", 12.0)];
+    const EARLY: &[f64] = &[0.0, 60.0];
+    const AFTER: [After; 3] = [After::Stops, After::PlaysOn, After::Silent];
+    const SEEDS: &[u64] = &[1, 2, 3, 4, 5];
+    let mut wrongs = Vec::new();
+    let mut grooves = [Tally::default(); GROOVES.len()];
+    let mut by_after = [Tally::default(); 3];
+    for &seed in SEEDS {
+        let mut s = Seq(seed);
+        for (gi, g) in GROOVES.iter().enumerate() {
+            for &bpm in TEMPOS {
+                for &bars in BARS {
+                    for &(timing, sd) in TIMING {
+                        for &early in EARLY {
+                            for (ai, &after) in AFTER.iter().enumerate() {
+                                let fill = Fill::KickLast;
+                                let take = play_with(g, bpm, bars, sd, early, after, fill, &mut s);
+                                let what = format!(
+                                    "{} at {bpm} BPM, {bars} bars, {timing}, REC {early} ms early, {}{} (seed {seed})",
+                                    g.name,
+                                    fill.words(),
+                                    after.words()
+                                );
+                                let t = taps(&take, g, &mut wrongs, &what);
+                                grooves[gi].add(&t);
+                                by_after[ai].add(&t);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut total = Tally::default();
+    eprintln!("smart loop end, fills ending on a kick (Auto, from the pads):");
+    for (g, t) in GROOVES.iter().zip(&grooves) {
+        eprintln!("  {:>26} ({}): {}", g.name, g.meter.name, t.line());
+        total.add(t);
+    }
+    for (i, after) in AFTER.iter().enumerate() {
+        eprintln!("  {:>26}: {}", after.words(), by_after[i].line());
+    }
+    eprintln!("  {:>26}: {}", "all", total.line());
+    for w in &wrongs {
+        eprintln!("  wrong: {w}");
+    }
     let other: Vec<_> = wrongs.iter().filter(|w| !w.contains(KICK_FILL)).collect();
     assert!(
         other.is_empty(),
-        "wrong moves held out by ear, not to a fill's kick: {other:#?}"
+        "wrong moves not to a fill's kick: {other:#?}"
     );
     assert!(
-        wrongs.len() <= HELD_KNOWN_BY_EAR,
-        "{} wrong moves held out by ear, {HELD_KNOWN_BY_EAR} known",
+        wrongs.len() <= KICK_FILL_KNOWN_WRONG,
+        "{} wrong moves with fills ending on a kick, {KICK_FILL_KNOWN_WRONG} known",
         wrongs.len()
     );
 }
+
+/// With [`ends::AHEAD`] and [`ends::decide_agreed`], 234 of 498,960
+/// taps (432 with `AHEAD` alone, 7,872 with neither), all to a fill's
+/// kick.
+const KICK_FILL_KNOWN_WRONG: usize = 234;
