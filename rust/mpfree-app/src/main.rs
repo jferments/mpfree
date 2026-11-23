@@ -3046,7 +3046,7 @@ fn play_waited(
                 time.pad_pressed(offset, ev);
             }
             // The screen shows it down while its bank shows.
-            let shown = usize::from(w.kit_pad) / 16 == app.pad_page();
+            let shown = usize::from(w.kit_pad) / 16 == app.kit_page();
             if let Some(a) = awaiting.get_mut(slot) {
                 *a = w.down && shown;
             }
@@ -8593,7 +8593,7 @@ fn press_layout(
     if own.plays(sel) {
         own.pad_map(sel)
     } else {
-        kit_press_layout(kits, kit_notes, sel, app.pad_page())
+        kit_press_layout(kits, kit_notes, sel, app.kit_page())
     }
 }
 
@@ -8810,6 +8810,9 @@ fn player_session(
     // pads player (`instruments::THE_PADS`), while the armed track doesn't
     // play it.
     let mut pads_preview: Option<PadsPreview> = None;
+    // The source bank the screen was last told the pads play (sampler
+    // step 15e), while it isn't the bank shown.
+    let mut kit_source: Option<usize> = None;
     // The name of the instrument the host's pads player plays, as the
     // screen last heard it (step 6).
     let mut pads_host_shown: Option<&'static str> = None;
@@ -11677,7 +11680,7 @@ fn player_session(
                                 n
                             }
                         };
-                        let (track, page) = (app.track() as u8, app.pad_page());
+                        let (track, page) = (app.track() as u8, app.kit_page());
                         pads_arp.down(pad, &buf[..n], v, to, &mut |to, n, rec| {
                             play_pads_arp(
                                 to,
@@ -12694,7 +12697,7 @@ fn player_session(
                 // Other tracks may play the synth: it plays on.
                 synth_on = false;
                 player.select(k);
-                rest = sound_colours(player.page_sounds(k, app.pad_page()), k);
+                rest = sound_colours(player.page_sounds(k, app.kit_page()), k);
                 out.note(&format!(
                     "kit {}: {} ({} sounds)",
                     k + 1,
@@ -12749,7 +12752,7 @@ fn player_session(
         if preview_now != pads_preview || (preview_now.is_some() && kit_switched) {
             // The pads' arp's notes end where they played (sampler step
             // 15c); its next hit starts it on what the pads play now.
-            let (track, page) = (sel as u8, app.pad_page());
+            let (track, page) = (sel as u8, app.kit_page());
             pads_arp.leave(&mut |to, n, rec| {
                 play_pads_arp(
                     to,
@@ -12800,12 +12803,12 @@ fn player_session(
             let preview_on = pads_preview.is_some();
             if let Some(PadsPreview::Kit(k)) = pads_preview {
                 let k = usize::from(k);
-                rest = sound_colours(player.page_sounds(k, app.pad_page()), k);
+                rest = sound_colours(player.page_sounds(k, app.kit_page()), k);
             } else if preview_on {
                 rest = synth.pad_colours();
             } else if !synth_on {
                 rest = sound_colours(
-                    player.page_sounds(player.kit(), app.pad_page()),
+                    player.page_sounds(player.kit(), app.kit_page()),
                     player.kit(),
                 );
             }
@@ -12832,7 +12835,7 @@ fn player_session(
                 _ => None,
             };
             if let Some(k) = kit_on_pads {
-                rest = sound_colours(player.page_sounds(k, app.pad_page()), k);
+                rest = sound_colours(player.page_sounds(k, app.kit_page()), k);
             }
             if mute_shown.is_none() && kit_on_pads.is_some() {
                 ports.send_batch(
@@ -12844,6 +12847,13 @@ fn player_session(
                 lit = [None; 16];
             }
             out.show(gui::ToUi::PadPage(app.pad_page()));
+        }
+        // A bank's own kit from another of its banks (sampler step 15e):
+        // the screen's Sample page edits the pads of that bank.
+        let source_now = Some(app.kit_page()).filter(|&p| p != app.pad_page());
+        if source_now != kit_source {
+            kit_source = source_now;
+            out.show(gui::ToUi::KitSource(source_now));
         }
         // The PAD BANK buttons found so far: the bank playing is lit, or
         // TRACK MUTE's bank while the pads mute tracks.
@@ -13282,7 +13292,7 @@ fn player_session(
         parts.begin();
         // The pads' own hits: the first sound of a press shows the pad
         // down; the arp's repeats flash it.
-        let page = app.pad_page();
+        let page = app.kit_page();
         for &(pad, v) in &seq.live_hits[..seq.n_live] {
             let pad = usize::from(pad);
             // The pad it is on the page; a repeat latched on another page
@@ -13315,7 +13325,7 @@ fn player_session(
         // pads play on their own; its notes flash their pads.
         pads_arp.follow(app.arps.engine_at(app.track()), app.arp_own_swing());
         {
-            let (track, page) = (app.track() as u8, app.pad_page());
+            let (track, page) = (app.track() as u8, app.kit_page());
             // A copy (no heap): the notes record into `time` as they play.
             let block = time.block().clone();
             pads_arp.period(&block, &mut |to, n, rec| {
@@ -13364,7 +13374,7 @@ fn player_session(
             out.show(gui::ToUi::Steps(Box::new(steps)));
         }
         for (pad, &v) in seq_flashes.iter().enumerate().filter(|(_, v)| **v > 0) {
-            if let Some(c) = pad_cell(pad, app.pad_page(), !synth_on) {
+            if let Some(c) = pad_cell(pad, app.kit_page(), !synth_on) {
                 out.show(gui::ToUi::PadFlash {
                     pad: c,
                     velocity: v,
@@ -13415,7 +13425,7 @@ fn player_session(
         // sound: their resting colours follow.
         if std::mem::take(&mut recolour) && !synth_on {
             let fresh = sound_colours(
-                player.page_sounds(player.kit(), app.pad_page()),
+                player.page_sounds(player.kit(), app.kit_page()),
                 player.kit(),
             );
             for pad in 0..16 {
@@ -13565,11 +13575,11 @@ fn player_session(
             let blink = ((t * 4.0) as u64).is_multiple_of(2);
             // Only kit 1's pads 1-16 have strips, so mutes.
             let off = no_mutes(&track_kits, mix.instruments.note_tracks(), app.track()).is_some();
-            let (t, page) = (app.track(), app.pad_page());
+            let (t, page) = (app.track(), app.kit_page());
             let pad = |p: usize| pad_light(&time, t, page * 16 + p, off);
             let want = mute_colours(
                 keys,
-                sound_colours(player.page_sounds(kit, app.pad_page()), kit),
+                sound_colours(player.page_sounds(kit, app.kit_page()), kit),
                 track,
                 pad,
                 blink,
@@ -13612,12 +13622,12 @@ fn player_session(
         let latched = if synth_on {
             0
         } else {
-            (player.latched_pads() >> (app.pad_page() * 16)) as u16
+            (player.latched_pads() >> (app.kit_page() * 16)) as u16
         };
         // A Loop pad's hit waiting for the launch line blinks amber (twice
         // a second, as a cued clip's mute key does) until it sounds, and
         // the screen's pad has an amber outline (sampler R5.3b).
-        let waiting = time.hits_waiting(app.pad_page());
+        let waiting = time.hits_waiting(app.kit_page());
         if waiting != waiting_shown {
             waiting_shown = waiting;
             out.show(gui::ToUi::PadsWaiting(waiting));

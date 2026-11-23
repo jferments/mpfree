@@ -728,6 +728,25 @@ impl App {
         (self.pad_layout.is_none() && self.bank_play(b).is_some()).then_some(b)
     }
 
+    /// The bank of kit pads the 16 pads play now: the source bank of the
+    /// bank's own kit while the pads are on a bank that has one (sampler
+    /// step 15e: bank D playing kit 3's bank A, "bank D instrument 9 from
+    /// A"), else the bank they are on. A pad hit, its colours, its flash,
+    /// REC and the Sample page all take the kit pad of this bank.
+    pub fn kit_page(&self) -> usize {
+        self.pads_bank()
+            .and_then(|b| self.pad_map.banks.get(b).copied().flatten())
+            .filter(|e| match e.play {
+                PadFocus::Instrument(id) => matches!(
+                    self.instrument_list.kind(id),
+                    Some(crate::instrument_list::Kind::Kit { .. })
+                ),
+                PadFocus::Track => false,
+            })
+            .and_then(|e| e.from)
+            .map_or(self.pad_page, |f| usize::from(f).min(super::KIT_PAGES - 1))
+    }
+
     /// Whether the banks' own apply now ([`App::pads_bank`]): on a kit's
     /// pages, so the list of synths offers "Bank B only".
     pub fn banks_apply(&self) -> bool {

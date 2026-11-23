@@ -2182,15 +2182,16 @@ impl App {
     }
 
     /// The kit pad that pad `slot` (0 to 15) plays: the one it pressed
-    /// while held, else the page's, 16 * page + slot. With the synth's
-    /// pad layout on the pads, the slot itself.
+    /// while held, else the page's, 16 * page + slot, the page being the
+    /// source bank of a bank's own kit ([`App::kit_page`], sampler step
+    /// 15e). With the synth's pad layout on the pads, the slot itself.
     pub fn kit_pad(&self, slot: usize) -> usize {
         if self.pad_layout.is_some() {
             return slot;
         }
         match self.kit_held.get(slot).copied().flatten() {
             Some(k) => usize::from(k),
-            None => self.pad_page * 16 + slot,
+            None => self.kit_page() * 16 + slot,
         }
     }
 

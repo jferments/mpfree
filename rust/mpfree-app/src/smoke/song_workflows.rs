@@ -1860,6 +1860,82 @@ mod tests {
         });
     }
 
+    /// Sampler step 15e, the engine half: a bank's own kit from another of
+    /// its banks plays that bank's pads. Bank D on kit 2 from A plays kit
+    /// 2's A pads, on its own while the track plays kit 1, and the Sample
+    /// page edits them; bank D on the track's kit 1 from A plays kit 1's A
+    /// pads through the track, so the track hears (and REC would record)
+    /// the A pad. Back on bank A, the pads follow the track as before.
+    #[test]
+    fn a_banks_own_kit_from_another_bank_plays_that_banks_pads() {
+        on_big_stack(|| {
+            let mut session = Session::new();
+            let s = &mut session;
+            s.make_sounds();
+            s.run_periods(2);
+            let kit_2 = s.instrument_list.of_kit(1).expect("kit 2 has an id");
+            let part = format!("mpfree-pads 2\nplay track\nbank D instrument {kit_2} from A\n");
+            let (notes, fx) = s.app.open_pads(Some(&part));
+            assert!(notes.is_empty(), "{notes:?}");
+            s.fx.extend(fx);
+            s.run_periods(2);
+            s.button("PAD BANK D/H");
+            s.run_periods(4);
+            assert_eq!((s.app.pad_page(), s.app.kit_page()), (3, 0));
+            assert_eq!(s.app.pads_kit(), Some(1), "bank D plays kit 2");
+            let player = s.sounds.as_ref().expect("the kits");
+            let pad = (0..16)
+                .find(|&p| player.has_sound(1, p))
+                .expect("a pad of kit 2's bank A");
+            s.pad_edge(pad, 100, true);
+            s.run_periods(2);
+            let player = s.sounds.as_ref().expect("the kits");
+            assert!(player.kit_pad_voices(1, pad) > 0, "kit 2's A pad plays");
+            assert_eq!(player.kit_pad_voices(1, 48 + pad), 0, "not its D pad");
+            assert_eq!(player.kit_pad_voices(0, 48 + pad), 0, "nor kit 1's");
+            assert_eq!(
+                (s.screen.sample.edit_kit(), s.screen.sample.pad()),
+                (1, pad),
+                "the Sample page edits kit 2's A pad"
+            );
+            s.pad_edge(pad, 0, false);
+            s.run_for(1.0);
+
+            // Bank D on the track's own kit from A: through the track, as
+            // the A pad.
+            let kit_1 = s.instrument_list.of_kit(0).expect("kit 1 has an id");
+            let part = format!("mpfree-pads 2\nplay track\nbank D instrument {kit_1} from A\n");
+            let (notes, fx) = s.app.open_pads(Some(&part));
+            assert!(notes.is_empty(), "{notes:?}");
+            s.fx.extend(fx);
+            s.run_periods(4);
+            assert_eq!(s.app.pads_kit(), Some(0));
+            assert_eq!(s.app.kit_page(), 0);
+            let player = s.sounds.as_ref().expect("the kits");
+            let pad = (0..16)
+                .find(|&p| player.has_sound(0, p))
+                .expect("a pad of kit 1's bank A");
+            s.hits.on.clear();
+            s.previewed.clear();
+            s.pad_edge(pad, 100, true);
+            s.run_periods(2);
+            assert!(s.previewed.is_empty(), "through the track");
+            assert!(
+                s.hits.on.iter().any(|&(p, _)| p == pad),
+                "the track plays the A pad: {:?}",
+                s.hits.on
+            );
+            assert!(s.hits.on.iter().all(|&(p, _)| p < 16), "{:?}", s.hits.on);
+            s.pad_edge(pad, 0, false);
+            s.run_periods(2);
+
+            // Bank A has no entry of its own: the pads follow the track.
+            s.button("PAD BANK A/E");
+            s.run_periods(2);
+            assert_eq!((s.app.pad_page(), s.app.kit_page()), (0, 0));
+        });
+    }
+
     /// Sampler step 15c: NOTE REPEAT while the pads play a kit on their
     /// own repeats that kit's pad (the pads' arp), never the track's, and
     /// the pads keep the kit; let go, the repeats stop. Held again, Follow

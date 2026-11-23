@@ -1218,6 +1218,11 @@ pub enum ToUi {
     /// selected track's: a hit there shows that kit's pad on the Sample
     /// page (sampler step 15d).
     PadsKit(Option<usize>),
+    /// The bank of the kit the 16 pads play while it isn't the bank shown:
+    /// a bank's own kit from another of its banks (sampler step 15e, bank
+    /// D playing a kit's bank A); None: the bank shown. Pad n is the kit's
+    /// pad 16 * that bank + n then.
+    KitSource(Option<usize>),
     /// PAD BANK turned the kit's page (A = 0 to H = 7): the 16 pads are
     /// its pads 16 * page + 1 on. `PadDown`, `PadUp` and `PadFlash` name
     /// the 16 pads; with a kit, pad n is the kit's pad 16 * page + n.
@@ -2267,6 +2272,9 @@ pub struct Player {
     /// ([`ToUi::PadsKit`]): the Sample page follows a hit there (sampler
     /// step 15d).
     pads_kit: Option<usize>,
+    /// The source bank the pads play while it isn't the bank shown
+    /// ([`ToUi::KitSource`], sampler step 15e).
+    kit_source: Option<usize>,
     /// The kit's page on the pads (PAD BANK A = 0 to H = 7).
     pad_page: usize,
     midi: u64,
@@ -3027,6 +3035,7 @@ impl Player {
             kits: Vec::new(),
             kit: 0,
             pads_kit: None,
+            kit_source: None,
             pad_page: 0,
             midi: 0,
             midi_held_back: 0,
@@ -4163,18 +4172,19 @@ impl Player {
     }
 
     /// The kit pad pad `cell` (0 to 15) plays on the page shown: 16 *
-    /// page + cell for a kit, the cell itself for the synth's pads.
+    /// page + cell for a kit (the page being a bank's own kit's source
+    /// bank, [`ToUi::KitSource`]), the cell itself for the synth's pads.
     fn kit_pad(&self, cell: usize) -> usize {
         if self.pads_on_synth_entry() {
             cell
         } else {
-            self.pad_page * 16 + cell
+            self.kit_source.unwrap_or(self.pad_page) * 16 + cell
         }
     }
 
     /// The bank of the kit on the pads, or None while the synth has them.
     fn kit_page(&self) -> Option<usize> {
-        (!self.pads_on_synth_entry()).then_some(self.pad_page)
+        (!self.pads_on_synth_entry()).then_some(self.kit_source.unwrap_or(self.pad_page))
     }
 
     /// The pads play the synth's entry of the list of kits: the selected
@@ -10018,6 +10028,14 @@ impl Player {
                 }
             }
             ToUi::PadsKit(k) => self.pads_kit = k,
+            ToUi::KitSource(b) => {
+                if b != self.kit_source {
+                    self.kit_source = b;
+                    // The Sample and Pads tabs go to the pad of that bank.
+                    self.sample.set_pad_page(self.kit_page());
+                    self.sample_changed();
+                }
+            }
             ToUi::Kit(k) => {
                 self.set_kit(k);
                 // The synth's entry: the Sample page keeps its kit (Jay's

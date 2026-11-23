@@ -289,6 +289,9 @@ pub struct Session {
     /// player_session keeps them: the pads pressed but not yet sounded,
     /// how many found the table full, and how many STOP dropped.
     awaiting: [bool; 16],
+    /// The source bank the screen was last told the pads play (sampler
+    /// step 15e), as main.rs.
+    kit_source: Option<usize>,
     waits_full: u64,
     stop_dropped: usize,
     waiting_shown: u16,
@@ -455,6 +458,7 @@ impl Session {
             layers_shown: [None; crate::instruments::PAD_LAYERS],
             previewed: Vec::new(),
             awaiting: [false; 16],
+            kit_source: None,
             waits_full: 0,
             stop_dropped: 0,
             waiting_shown: 0,
@@ -1708,7 +1712,7 @@ impl Session {
         let mut due = time::DuePads::default();
         let dropped = self.time.due_pads(&mut due);
         crate::note_stop_dropped(dropped, &mut self.stop_dropped, &mut self.out);
-        let waiting = self.time.hits_waiting(self.app.pad_page());
+        let waiting = self.time.hits_waiting(self.app.kit_page());
         if self.waiting_shown != waiting {
             self.waiting_shown = waiting;
             self.out.show(ToUi::PadsWaiting(waiting));
@@ -2894,6 +2898,13 @@ impl Session {
             self.kit_preview = kit_now;
             // The Sample page follows a hit there (sampler step 15d).
             self.out.show(ToUi::PadsKit(kit_now));
+        }
+        // A bank's own kit from another of its banks (step 15e), as
+        // main.rs: the screen edits the pads of that bank.
+        let source_now = Some(self.app.kit_page()).filter(|&p| p != self.app.pad_page());
+        if source_now != self.kit_source {
+            self.kit_source = source_now;
+            self.out.show(ToUi::KitSource(source_now));
         }
         // The pads' arp's notes end where they played as the pads move on
         // (sampler step 15c), as main.rs.
