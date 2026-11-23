@@ -8154,6 +8154,14 @@ fn player_session(
                 bytes >> 20
             ));
         }
+        // A stream test that plays from memory would measure nothing: it
+        // stops here, before a step runs, and says why.
+        if script_streams && !tracks.streams() {
+            return Err(
+                "the script needs stream-audio, but takes can't play from their files in this run"
+                    .into(),
+            );
+        }
         app.settings.audio_streams = tracks.streams();
         out.show(gui::ToUi::Settings(app.settings.clone()));
     }
