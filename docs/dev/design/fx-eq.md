@@ -1,12 +1,12 @@
 <!--
-covers: rust/mpfree-fx/src/eq.rs rust/mpfree-fx/src/svf.rs
+covers: rust/mpfree-fx/src/eq.rs rust/mpfree-fx/src/svf.rs rust/mpfree-filter/src/svf.rs
 checked: 2026-11-17 a336df3
 -->
 # EQ
 
 **Status:** built; FX quality PR D (17 Nov, matched bells and shelves, Quality HQ 2x) is in. 79 of 90 measured targets met: every one at HQ 2x, and at Normal all but the broadest bells above 5 kHz. What is left is under [History and next](#10-history-and-next).
 
-This page is the design of MPFree's parametric EQ (`mpfree.fx.eq`, [`eq.rs`](../../../rust/mpfree-fx/src/eq.rs) on [`svf.rs`](../../../rust/mpfree-fx/src/svf.rs)): what an EQ is for, the ideas underneath it, the research behind ours, the algorithms and why, how quality and cost are measured, and how the defaults and presets were chosen. The parameter summary is the EQ entry in [fx.md](fx.md); the measured targets and their history are in [fx-quality.md](fx-quality.md#eq). The research notes, plan and baselines are in jferments/mpfree-claude `fx/quality/` (research-eq.md, plan.md section 6, baseline-2026-11-16.md). The pages that draw and drag it are the chain editor's EQ page and the Mix tab's EQ look (`mpfree-chain-ui`).
+This page is the design of MPFree's parametric EQ (`mpfree.fx.eq`, [`eq.rs`](../../../rust/mpfree-fx/src/eq.rs) on the state-variable stage in [`mpfree-filter`'s `svf.rs`](../../../rust/mpfree-filter/src/svf.rs), shared with the pads): what an EQ is for, the ideas underneath it, the research behind ours, the algorithms and why, how quality and cost are measured, and how the defaults and presets were chosen. The parameter summary is the EQ entry in [fx.md](fx.md); the measured targets and their history are in [fx-quality.md](fx-quality.md#eq). The research notes, plan and baselines are in jferments/mpfree-claude `fx/quality/` (research-eq.md, plan.md section 6, baseline-2026-11-16.md). The pages that draw and drag it are the chain editor's EQ page and the Mix tab's EQ look (`mpfree-chain-ui`).
 
 ## 1. What an EQ is for
 

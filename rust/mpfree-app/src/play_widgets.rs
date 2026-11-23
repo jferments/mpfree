@@ -4032,6 +4032,9 @@ pub struct XyPad {
     pub x: f32,
     pub y: f32,
     pub on: bool,
+    /// A touch moves the pad from where it is (a layout of yours set to
+    /// "Moves from here"): the finger doesn't put the dot, the page does.
+    pub from_here: bool,
     trail: VecDeque<(f32, f32)>,
     finger: Option<u64>,
 }
@@ -4048,6 +4051,7 @@ impl Default for XyPad {
             x: 0.5,
             y: 0.0,
             on: false,
+            from_here: false,
             trail: VecDeque::new(),
             finger: None,
         }
@@ -4231,8 +4235,10 @@ impl Widget for XyPad {
                         self.trail.pop_front();
                     }
                 }
-                self.x = fx;
-                self.y = fy;
+                if !self.from_here {
+                    self.x = fx;
+                    self.y = fy;
+                }
                 self.on = true;
                 Some(EventKind::Xy {
                     x: fx,
@@ -5092,5 +5098,19 @@ mod tests {
         assert!(!xy.on);
         // Then another finger may take it.
         assert!(xy.touch(2, Touch::Down, p.x + 5, p.y + 5, r).is_some());
+        xy.touch(2, Touch::Up, p.x + 5, p.y + 5, r);
+        // A layout of yours that moves the pad from where it is: the
+        // finger is reported, but the page puts the dot.
+        xy.from_here = true;
+        (xy.x, xy.y) = (0.5, 0.25);
+        let (tx, ty) = (p.x + p.w * 3 / 4, p.y + p.h / 4);
+        let Some(EventKind::Xy { x, y, .. }) = xy.touch(3, Touch::Down, tx, ty, r) else {
+            panic!("xy");
+        };
+        assert!(
+            (x - 0.75).abs() < 0.02 && (y - 0.75).abs() < 0.02,
+            "{x} {y}"
+        );
+        assert_eq!((xy.x, xy.y), (0.5, 0.25), "the dot stays for the page");
     }
 }

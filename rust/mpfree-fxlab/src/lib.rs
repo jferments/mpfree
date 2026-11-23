@@ -36,6 +36,9 @@
 //!   filter on its own against the curve its page draws: small signal,
 //!   driven, moving as its engine moves it, where the resonance peaks and
 //!   how the singing ones sing.
+//! - [`filter_reference`]: the filter gap plan's slow, exact reference
+//!   for analog-style filters: a model's differential equations solved by
+//!   the trapezoidal rule and Newton's method at 16 or 32 times the rate.
 //! - [`programme`]: every stimulus in one recording with a sync chirp and
 //!   a schedule, for capturing a reference device and cutting it back up.
 //! - [`card`]: report cards over the registry, written as JSON.
@@ -52,6 +55,7 @@ pub mod dut;
 pub mod dynamics;
 pub mod echo;
 pub mod fft;
+pub mod filter_reference;
 pub mod filters;
 pub mod flutter;
 pub mod grain;

@@ -2920,3 +2920,225 @@ fn listen_plays_a_loop_or_a_layer_alone_while_the_song_is_stopped() {
     r.run(play + 128, &dc(0.0));
     assert_eq!(r.l.listening(), None);
 }
+
+/// One bar of 0.25 whose free blocks hold stale audio: a loud overdub
+/// over the whole loop, undone.
+fn one_bar_over_stale_blocks() -> Rig {
+    let mut r = Rig::new(10, 128);
+    let z = dc(0.0);
+    record_one_bar(&mut r, &dc(0.25));
+    r.cmd(L::Overdub);
+    r.run(r.frame + BAR as u64 + 500, &dc(0.5));
+    r.cmd(L::Overdub);
+    r.run(r.frame + 2 * FADE as u64, &z);
+    r.cmd(L::Undo);
+    r.run(r.frame + 2 * FADE as u64, &z);
+    assert_eq!(r.l.status().layers, 1);
+    r
+}
+
+/// Layer `k`'s frames (its left channel), as the waveform reads them.
+fn layer_left(r: &Rig, k: usize) -> Vec<f32> {
+    let v = r.l.layer(k).unwrap();
+    let mut p = vec![[0.0f32; 2]; v.len() / 2];
+    v.read(0, &mut p);
+    p.iter().map(|x| x[0]).collect()
+}
+
+/// The biggest step from one frame to the next.
+fn biggest_step(x: &[f32]) -> f32 {
+    x.windows(2)
+        .map(|w| (w[1] - w[0]).abs())
+        .fold(0.0, f32::max)
+}
+
+/// An overdub with the song at another tempo than the loop was recorded
+/// at goes from loop frame to loop frame: slower, it comes to a frame
+/// again and keeps what it took first; faster, it passes frames, which
+/// take what lies between. Its layer holds only what it recorded, in one
+/// stretch with no holes, as long in the loop as the song took it (5 000
+/// frames at 200 BPM over a loop recorded at 240: about 4 170), never what
+/// its reused blocks held (a loud overdub, undone), and what plays is the
+/// loop and the overdub, fading in and out. Once records the whole loop
+/// whatever the tempo, its ends crossfading.
+#[test]
+fn an_overdub_at_another_tempo_plays_only_what_it_recorded() {
+    for bpm in [200.0, 288.0, 61.0, 397.0] {
+        let mut r = one_bar_over_stale_blocks();
+        let speed = bpm / 240.0;
+        let f = r.frame;
+        r.at(f, T::TempoNow(bpm));
+        r.run(f + 3_000, &dc(0.0));
+        r.cmd(L::Overdub);
+        r.run(r.frame + 5_000, &dc(0.125));
+        r.cmd(L::Overdub);
+        r.run(r.frame + 2 * FADE as u64, &dc(0.125));
+        assert_eq!(r.l.status().layers, 2);
+        let x = layer_left(&r, 1);
+        assert!(
+            x.iter().all(|v| (0.0..=0.125 + 1e-6).contains(v)),
+            "{bpm} BPM: stale audio in the layer"
+        );
+        // At full gain from the end of its fade-in to the punch-out.
+        let full: Vec<usize> = (0..x.len()).filter(|&q| x[q] > 0.125 - 1e-6).collect();
+        let stretch = full[full.len() - 1] - full[0] + 1;
+        assert_eq!(stretch, full.len(), "{bpm} BPM: holes");
+        let want = (5_000 - FADE) as f64 * speed;
+        assert!(
+            (full.len() as f64 - want).abs() <= speed.ceil() + 2.0,
+            "{bpm} BPM: {} frames at full gain, not {want}",
+            full.len()
+        );
+        // Its fades: a step of the input's each frame heard, so slower,
+        // where it comes to a frame again, up to `1 / speed` steps a frame.
+        let fade_step = 0.125 / FADE as f32 * (1.0 / speed).ceil() as f32;
+        assert!(biggest_step(&x) <= fade_step + 1e-6, "{bpm} BPM: a click");
+        // Heard: the loop, and the overdub fading in and out.
+        let g = r.frame;
+        r.run(g + 2 * BAR as u64, &dc(0.0));
+        let loudest = (g..r.frame).map(|f| r.left(f)).fold(0.0f32, f32::max);
+        assert!(loudest < 0.375 + 1e-4, "{bpm} BPM: {loudest} heard");
+        assert!(r.max_step(g, r.frame) < 0.125 / FADE as f32 * 1.5 + 1e-5);
+        // Once: one pass of the loop, its ends crossfading.
+        r.cmd(L::SetOverdubs(Overdubs::Once));
+        r.cmd(L::Overdub);
+        r.run(
+            r.frame + (BAR as f64 / speed) as u64 + 4 * FADE as u64,
+            &dc(0.1),
+        );
+        let s = r.l.status();
+        assert_eq!((s.phase, s.layers), (Phase::Playing, 3), "{bpm} BPM");
+        let y = layer_left(&r, 2);
+        let worst = y.iter().map(|v| (v - 0.1).abs()).fold(0.0f32, f32::max);
+        assert!(
+            worst < 0.1 * 4.0 / FADE as f32,
+            "{bpm} BPM: once, {worst} off"
+        );
+    }
+}
+
+/// The song jumping under an overdub (a locate) before it has gone round
+/// the loop: back into what it recorded, it records on there, adding to
+/// it, and past where it had got to; what it recorded last fades out
+/// where it was (only what it recorded once). Past what it recorded, it
+/// ends where it was and a new overdub records from the new place, in a
+/// layer of its own (Undo takes that one first); hardly begun, it starts
+/// again at the new place. Each layer holds only what was recorded in it,
+/// never what its reused blocks held, with no step bigger than a fade's.
+/// After it has gone round, it records on at the new place, fading in
+/// there.
+#[test]
+fn an_overdub_the_song_jumps_under_records_on_at_the_new_place() {
+    let z = dc(0.0);
+    let step = 0.125 / FADE as f32 + 1e-6;
+    // Tick `t` is loop frame `t * BAR / BAR_TICKS` (the loop is bar 1).
+    let to_frame = |frame: i64| T::Locate(frame * BAR_TICKS / BAR as i64);
+    let start = |r: &mut Rig| {
+        let p = pos_frame(r.frame, 4_000);
+        r.run(p, &z);
+        r.cmd(L::Overdub);
+        p
+    };
+    let end = |r: &mut Rig| {
+        r.cmd(L::Overdub);
+        r.run(r.frame + 2 * FADE as u64, &dc(0.125));
+    };
+    // Back: from loop frame 4 000 to 10 000, back to 6 000, on to 14 000.
+    let mut r = one_bar_over_stale_blocks();
+    let p = start(&mut r);
+    r.run(p + 6_000, &dc(0.125));
+    r.at(r.frame, to_frame(6_000));
+    r.run(r.frame + 8_000, &dc(0.125));
+    end(&mut r);
+    let s = r.l.status();
+    assert_eq!((s.phase, s.layers, s.redo), (Phase::Playing, 2, 0));
+    let x = layer_left(&r, 1);
+    assert!(
+        x.iter().all(|v| (0.0..=0.25 + 1e-6).contains(v)),
+        "stale audio"
+    );
+    assert_eq!(
+        (x[3_000], x[17_000]),
+        (0.0, 0.0),
+        "outside what it recorded"
+    );
+    for (q, v) in [(5_000, 0.125), (8_000, 0.25), (12_000, 0.125)] {
+        assert!((x[q] - v).abs() < 1e-6, "frame {q}: {}", x[q]);
+    }
+    assert!(biggest_step(&x) <= step, "a click: {}", biggest_step(&x));
+    let g = r.frame;
+    r.run(g + BAR as u64, &z);
+    assert!(r.max_step(g, r.frame) <= step * 1.5);
+    // Back twice: the second time 100 frames past where it had got to;
+    // only those fade out, not what it went back over.
+    let mut r = one_bar_over_stale_blocks();
+    let p = start(&mut r);
+    r.run(p + 6_000, &dc(0.125));
+    r.at(r.frame, to_frame(6_000));
+    r.run(r.frame + 4_100, &dc(0.125));
+    r.at(r.frame, to_frame(5_000));
+    r.run(r.frame + 1_000, &dc(0.125));
+    end(&mut r);
+    let x = layer_left(&r, 1);
+    assert!(
+        x.iter().all(|v| (0.0..=0.375 + 1e-6).contains(v)),
+        "stale audio"
+    );
+    assert!(
+        x[9_744..10_000].iter().all(|v| *v > 0.125 - 1e-6),
+        "what it went back over faded out"
+    );
+    assert!(x[10_099] < 0.01 && x[10_200] == 0.0);
+    // Past: from 4 000 to 10 000, then on from 16 000 in a new layer.
+    let mut r = one_bar_over_stale_blocks();
+    let p = start(&mut r);
+    r.run(p + 6_000, &dc(0.125));
+    r.at(r.frame, to_frame(16_000));
+    r.run(r.frame + 3_000, &dc(0.125));
+    end(&mut r);
+    let s = r.l.status();
+    assert_eq!((s.phase, s.layers), (Phase::Playing, 3));
+    assert_eq!(r.l.history().done().len(), 2);
+    let (x, y) = (layer_left(&r, 1), layer_left(&r, 2));
+    for (q, a, b) in [
+        (5_000, 0.125, 0.0),
+        (12_000, 0.0, 0.0),
+        (17_000, 0.0, 0.125),
+    ] {
+        assert!(
+            (x[q] - a).abs() < 1e-6 && (y[q] - b).abs() < 1e-6,
+            "frame {q}"
+        );
+    }
+    assert!(x.iter().chain(&y).all(|v| (0.0..=0.125 + 1e-6).contains(v)));
+    assert!(biggest_step(&x) <= step && biggest_step(&y) <= step);
+    r.cmd(L::Undo);
+    r.run(r.frame + 4 * FADE as u64, &z);
+    assert_eq!(r.l.status().layers, 2);
+    // Hardly begun: it starts again at the new place.
+    let mut r = one_bar_over_stale_blocks();
+    let p = start(&mut r);
+    r.run(p + 100, &dc(0.125));
+    r.at(r.frame, to_frame(16_000));
+    r.run(r.frame + 3_000, &dc(0.125));
+    end(&mut r);
+    assert_eq!(r.l.status().layers, 2);
+    let x = layer_left(&r, 1);
+    assert!(x[4_050] == 0.0 && (x[17_000] - 0.125).abs() < 1e-6);
+    assert!(biggest_step(&x) <= step);
+    // Round the loop, then a jump: on at the new place, fading in.
+    let mut r = one_bar_over_stale_blocks();
+    let p = start(&mut r);
+    r.run(p + BAR as u64 + 2_000, &dc(0.125));
+    r.at(r.frame, to_frame(12_000));
+    r.run(r.frame + 3_000, &dc(0.125));
+    end(&mut r);
+    assert_eq!(r.l.status().layers, 2);
+    let x = layer_left(&r, 1);
+    assert!(x.iter().all(|v| (0.0..=0.25 + 1e-6).contains(v)));
+    assert!((x[13_000] - 0.25).abs() < 1e-6 && (x[9_000] - 0.125).abs() < 1e-6);
+    assert!(
+        biggest_step(&x[11_000..14_000]) <= step,
+        "a click at the new place"
+    );
+}

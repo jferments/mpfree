@@ -25,13 +25,23 @@
 //! faster than it is, [`crate::Status::rate`]); a loop as recorded leaves
 //! them out.
 //!
+//! A free loop ([`crate::Clock::Free`]) adds `clock=free` to its line, and
+//! the part then ends with the free clock's line: its exact tempo, its
+//! meter and its bar 1, which the free loops' origins count from
+//! ([`ClockFile`]). A song loop leaves `clock=` out.
+//!
+//! ```text
+//! free-clock bpm=93.40000000000001 beats=4 unit=4 top=0
+//! ```
+//!
 //! A line is `key=value` words; `file=` comes last and takes the rest of
 //! the line. Unknown keys and lines are skipped, so a newer build's text
 //! still loads.
 
 use mpfree_transport::time::Tick;
+use mpfree_transport::Meter;
 
-use crate::{After, Starts, MAX_LAYERS, MAX_LOOPS};
+use crate::{After, Clock, FreeClock, Starts, MAX_LAYERS, MAX_LOOPS};
 
 /// The first line of the text.
 pub const FORMAT: &str = "mpfree-looper 1";
@@ -55,7 +65,31 @@ pub struct LoopFile {
     /// audio plays faster than it is ([`crate::Status::rate`]).
     pub speed: i8,
     pub rate: i8,
+    /// The clock it keeps time with: a free loop's `ticks` and `origin`
+    /// are the free clock's ([`Saved::free_clock`]).
+    pub clock: Clock,
     pub layers: Vec<LayerFile>,
+}
+
+/// The free clock as saved, for its free loops: its tempo, exactly, its
+/// meter and its bar 1 (the tick its free loops' origins count from). A
+/// project opens it stopped there ([`crate::Looper::open_free_clock`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClockFile {
+    pub bpm: f64,
+    pub meter: Meter,
+    pub top: Tick,
+}
+
+impl ClockFile {
+    /// The free clock `c` as saved.
+    pub fn of(c: &FreeClock) -> ClockFile {
+        ClockFile {
+            bpm: c.bpm,
+            meter: c.meter,
+            top: c.top,
+        }
+    }
 }
 
 /// A layer as saved.
@@ -81,6 +115,8 @@ pub struct Saved {
     pub rate: u32,
     pub selected: usize,
     pub loops: Vec<(usize, LoopFile)>,
+    /// The free clock, when a free loop is saved.
+    pub free_clock: Option<ClockFile>,
 }
 
 fn flag(b: bool) -> u8 {
@@ -117,6 +153,10 @@ pub fn to_text(saved: &Saved) -> String {
             s.pop();
             s.push_str(&format!(" speed={} octaves={}\n", l.speed, l.rate));
         }
+        if l.clock == Clock::Free {
+            s.pop();
+            s.push_str(" clock=free\n");
+        }
         for y in &l.layers {
             s.push_str(&format!(
                 "layer level={} pan={} muted={} solo={} faded={} file={}\n",
@@ -128,6 +168,12 @@ pub fn to_text(saved: &Saved) -> String {
                 y.file
             ));
         }
+    }
+    if let Some(c) = &saved.free_clock {
+        s.push_str(&format!(
+            "free-clock bpm={} beats={} unit={} top={}\n",
+            c.bpm, c.meter.beats, c.meter.unit, c.top
+        ));
     }
     s
 }
@@ -191,11 +237,24 @@ pub fn from_text(text: &str) -> Result<Saved, String> {
         rate: 0,
         selected: 0,
         loops: Vec::new(),
+        free_clock: None,
     };
     for (i, line) in lines {
         let n = i + 1;
         let (kv, file) = words(line.trim_end());
-        if let Some(r) = get(&kv, "rate") {
+        if line.starts_with("free-clock ") {
+            let bpm: f64 = num(&kv, "bpm", n)?;
+            let meter = Meter::new(num(&kv, "beats", n)?, num(&kv, "unit", n)?)
+                .ok_or_else(|| format!("line {n}: not a meter"))?;
+            if !(bpm.is_finite() && bpm > 0.0) {
+                return Err(format!("line {n}: bpm={bpm}"));
+            }
+            saved.free_clock = Some(ClockFile {
+                bpm,
+                meter,
+                top: num(&kv, "top", n)?,
+            });
+        } else if let Some(r) = get(&kv, "rate") {
             saved.rate = r.parse().map_err(|_| format!("line {n}: rate={r}"))?;
             saved.selected = get(&kv, "selected")
                 .and_then(|v| v.parse().ok())
@@ -239,6 +298,10 @@ pub fn from_text(text: &str) -> Result<Saved, String> {
                     fade_old: level(&kv, "fade_old", n, 0.0, 1.0).unwrap_or(1.0),
                     speed: small(&kv, "speed", n, 1)?,
                     rate: small(&kv, "octaves", n, 2)?,
+                    clock: match get(&kv, "clock") {
+                        Some("free") => Clock::Free,
+                        _ => Clock::Song,
+                    },
                     layers: Vec::new(),
                 },
             ));
@@ -266,6 +329,11 @@ pub fn from_text(text: &str) -> Result<Saved, String> {
     }
     if let Some((n, _)) = saved.loops.iter().find(|(_, l)| l.layers.is_empty()) {
         return Err(format!("loop {n} has no layers"));
+    }
+    if saved.free_clock.is_none() {
+        if let Some((n, _)) = saved.loops.iter().find(|(_, l)| l.clock == Clock::Free) {
+            return Err(format!("loop {n} is free, and there is no free clock"));
+        }
     }
     Ok(saved)
 }
@@ -375,6 +443,7 @@ mod tests {
                         fade_old: 0.9,
                         speed: -1,
                         rate: -2,
+                        clock: Clock::Free,
                         layers: vec![layer(1.0, "a b.wav"), layer(0.1, "c.wav")],
                     },
                 ),
@@ -392,10 +461,17 @@ mod tests {
                         fade_old: 1.0,
                         speed: 0,
                         rate: 0,
+                        clock: Clock::Song,
                         layers: vec![layer(1.0 / 3.0, "d.wav")],
                     },
                 ),
             ],
+            free_clock: Some(ClockFile {
+                // (Every bit of it comes back.)
+                bpm: std::f64::consts::PI * 30.0,
+                meter: Meter { beats: 7, unit: 8 },
+                top: -3360,
+            }),
         }
     }
 

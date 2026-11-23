@@ -232,14 +232,9 @@ pub(super) struct Voice {
     pub(super) amp: Option<Envelope>,
     pub(super) fenv: Option<Envelope>,
     pub(super) filter: Option<Filter>,
-    pub(super) svf: [Svf; 2],
-    /// The ladder's state, for a Ladder filter, and a Vowel's gain after
-    /// its formants (sampler R5.6).
-    pub(super) ladder: Ladder,
-    pub(super) vowel_gain: f32,
-    /// The Comb filter's line (sampler R5.6), made with the pool and
-    /// kept from note to note ([`Comb::reset`]), so nothing allocates.
-    pub(super) comb: Comb,
+    /// Its filter's state, every type's ([`VoiceFilter`]); the Comb's line
+    /// is made with the pool and kept from note to note.
+    pub(super) filt: VoiceFilter,
     /// Its sound has ended (or its envelope), and its Comb rings on
     /// ([`ring_out`]).
     pub(super) ringing: bool,
@@ -735,7 +730,7 @@ impl Pool {
         let out = if lane { n * LANE_BLOCK } else { 0 };
         let mut voices = vec![Voice::default(); n];
         for v in &mut voices {
-            v.comb = Comb::new(rate as f32);
+            v.filt.comb = Comb::new(rate as f32);
         }
         Pool {
             voices,
