@@ -2450,6 +2450,27 @@ impl Loop {
         self.clock == Clock::Free && (rolling || self.phase != Phase::Armed)
     }
 
+    /// The run it plays from in [`Looper::process`]: `free_run` (the free
+    /// clock's ticks for the same frames) while it goes by the free clock
+    /// (`any_free`: some free loop holds, starts or loads one; `rolling`:
+    /// the free clock runs), else the song's `run`. One place for the
+    /// choice, so that whatever cuts a loop's run further (audio tracks'
+    /// play runs) starts from the run this gives.
+    #[inline]
+    fn run_from<'r, 'a>(
+        &self,
+        any_free: bool,
+        rolling: bool,
+        run: &'r Run<'a>,
+        free_run: &'r Run<'a>,
+    ) -> &'r Run<'a> {
+        if any_free && self.on_free(rolling) {
+            free_run
+        } else {
+            run
+        }
+    }
+
     /// A free loop with audio, or with audio coming in: the free clock
     /// lasts while one does.
     fn holds_free(&self) -> bool {
@@ -3741,11 +3762,7 @@ impl Looper {
                 for (k, l) in loops.iter_mut().enumerate() {
                     if rs & (1 << k) == 0 {
                         let (p, waiting) = (prints[k].now.as_ref(), prints[k].next.is_some());
-                        let r = if any_free && l.on_free(free_rolling) {
-                            &free_run
-                        } else {
-                            &run
-                        };
+                        let r = l.run_from(any_free, free_rolling, &run, &free_run);
                         l.run(store, stats, k, r, p, waiting, &mut ys[..frames]);
                     }
                 }
@@ -3766,11 +3783,7 @@ impl Looper {
                     for (k, l) in loops.iter_mut().enumerate() {
                         if rs & (1 << k) != 0 {
                             let (p, waiting) = (prints[k].now.as_ref(), prints[k].next.is_some());
-                            let r = if any_free && l.on_free(free_rolling) {
-                                &free_run
-                            } else {
-                                &run
-                            };
+                            let r = l.run_from(any_free, free_rolling, &run, &free_run);
                             l.run(store, stats, k, r, p, waiting, &mut ys[..frames]);
                         }
                     }
