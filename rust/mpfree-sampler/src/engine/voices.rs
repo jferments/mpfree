@@ -268,6 +268,17 @@ pub(super) struct Voice {
     pub(super) plain_step: i64,
     /// The note a keygroup voice plays ([`NO_NOTE`] for a pad hit).
     pub(super) note: u8,
+    /// A keygroup note that follows its kit's tuning: the cents from its
+    /// note's 12-TET pitch its step took in at the start (and since, on a
+    /// legato or glide move). None for a pad hit, a slice, the take and a
+    /// 16 Levels step, which don't follow a change of tuning.
+    pub(super) tuned: Option<f32>,
+    /// How far its key sounds from its sound's root, in cents, in its
+    /// kit's tuning: a keygroup's semitones, its tuning's offset and a 16
+    /// Levels Tune step's interval (semitones times 100 in 12-TET), not
+    /// the pad's or program's Tune or a bend. For what follows the key
+    /// played, such as a filter's key tracking.
+    pub(super) key_cents: f32,
     /// The pad whose hit started it: its own pad, or the pad linking to it.
     pub(super) by: u8,
     /// Its pad latches: lifting a pad or a key lets it play on.

@@ -129,6 +129,10 @@ pub struct ViewPad {
     pub(super) vel_to_start: f32,
     pub(super) pressure: PressureRoute,
     pub(super) keys: Option<Keys>,
+    /// A keygroup of one key that plays one of the kit's chop slices
+    /// (Chop to keys): its key picks the slice, so the kit's tuning
+    /// doesn't move it, as it doesn't move a sliced pad's.
+    pub(super) slice_key: bool,
     pub(super) wow: f32,
     pub(super) key_fade: u8,
     pub(super) vel_fade: u8,
@@ -165,6 +169,26 @@ impl ViewPad {
     pub(super) fn sliced(&self) -> bool {
         self.layers.iter().any(|l| !l.cuts.is_empty())
     }
+
+    /// Whether its keys play the kit's tuning: a keygroup, not sliced and
+    /// not a slice on a key of its own.
+    pub(super) fn tuned(&self) -> bool {
+        self.keys.is_some() && !self.slice_key && !self.sliced()
+    }
+}
+
+/// Whether pad `p` is a keygroup of one key whose every layer plays a
+/// slice of one of `project`'s chop sets, as Chop to keys makes them.
+fn slice_key(project: &Project, p: &crate::model::Pad) -> bool {
+    p.keys.is_some_and(|k| k.lo == k.hi)
+        && !p.layers.is_empty()
+        && p.layers.iter().all(|l| {
+            let r = &l.region;
+            project.chop_sets.iter().any(|c| {
+                c.source == r.source
+                    && (0..c.slices()).any(|i| c.bounds(i) == Some((r.start, r.end)))
+            })
+        })
 }
 
 /// What the audio thread needs from the project, for every pad.
@@ -497,6 +521,7 @@ impl EngineView {
                 vel_to_start: p.vel_to_start.clamp(0.0, 1.0),
                 pressure: p.pressure,
                 keys: p.keys,
+                slice_key: slice_key(project, p),
                 wow: p.wow.clamp(0.0, 1.0),
                 key_fade: p.key_fade.min(crate::model::MAX_KEY_FADE),
                 vel_fade: p.vel_fade.min(crate::model::MAX_VEL_FADE),
@@ -664,10 +689,11 @@ impl Engine {
             pool,
             views,
             lives,
+            tunings,
             tempo,
             ..
         } = self;
-        let (view, live) = (&views[kit], &lives[kit]);
+        let (view, live, t) = (&views[kit], &lives[kit], &tunings[kit]);
         for (v, g) in pool.iter_mut() {
             let p = usize::from(v.pad);
             // A pad's voices, and the take's (TAKE_PAD: no live values).
@@ -677,7 +703,7 @@ impl Engine {
                     g,
                     view,
                     &live.row(p),
-                    &live.program_for(v.note),
+                    &live.program_of(v, t),
                     live_pads.get(p).copied().unwrap_or(false),
                     *tempo,
                 );

@@ -565,7 +565,7 @@ impl Engine {
                 Target::Own(_) => self.hit(pad, velocity),
                 Target::Key(note) => self.key(note, velocity),
                 Target::Level { pad: p, by, k } => {
-                    self.note_on(p, velocity, LEVEL_NOTE + k, Vary::level(by, k))
+                    self.note_on(p, velocity, LEVEL_NOTE + k, self.level_vary(p, by, k))
                 }
             },
             Event::NoteOff { pad } => match self.target(pad) {
@@ -715,9 +715,10 @@ impl Engine {
         if field.follows() {
             let at = self.at;
             let (live, row) = (&self.lives[at], self.lives[at].row(usize::from(pad)));
+            let t = &self.tunings[at];
             for (v, _) in self.pool.iter_mut() {
                 if v.active && usize::from(v.kit) == at && v.pad == pad {
-                    retarget(v, &row, &live.program_for(v.note));
+                    retarget(v, &row, &live.program_of(v, t));
                 }
             }
         }
@@ -727,12 +728,12 @@ impl Engine {
     pub(super) fn program_live(&mut self, field: ProgramField, value: f32) {
         let at = self.at;
         self.lives[at].program[field as usize] = field.clamp(value);
-        let live = &self.lives[at];
+        let (live, t) = (&self.lives[at], &self.tunings[at]);
         for (v, _) in self.pool.iter_mut() {
             // The pads' voices and the take's (no live values of its own).
             let p = usize::from(v.pad);
             if v.active && usize::from(v.kit) == at && (p < PADS || v.pad == TAKE_PAD) {
-                retarget(v, &live.row(p), &live.program_for(v.note));
+                retarget(v, &live.row(p), &live.program_of(v, t));
             }
         }
     }
@@ -749,11 +750,11 @@ impl Engine {
             return;
         }
         self.lives[at].bend = cents;
-        let live = &self.lives[at];
+        let (live, t) = (&self.lives[at], &self.tunings[at]);
         for (v, _) in self.pool.iter_mut() {
             let p = usize::from(v.pad);
             if v.active && usize::from(v.kit) == at && p < PADS && v.note < LEVEL_NOTE {
-                retarget(v, &live.row(p), &live.program_for(v.note));
+                retarget(v, &live.row(p), &live.program_of(v, t));
             }
         }
     }

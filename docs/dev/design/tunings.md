@@ -1,16 +1,16 @@
 <!--
-covers: rust/mpfree-tuning
+covers: rust/mpfree-tuning rust/mpfree-sampler/src/engine/tuning.rs
 checked: 2026-11-23 9d75788
 -->
 # Tunings for keygroups and every instrument
 
-**Status:** 2026-11-23, plan approved as written by the owner; T1 built (this page's first pull request). The plan, its research (Scala and MTS-ESP, Kontakt, Ableton Live 12, Pianoteq, Surge XT, the MIDI Tuning Standard) and the four decisions are in the Claude Doc [Microtonal tunings for keygroups and every instrument](https://claude.ai/artifact/4x2unuJnGr322L9XHd4Xfy). How a `Tuning` works today, and the Synth tab's Tuning rows, are in [Synths](synths.md#tunings-and-per-note-expression).
+**Status:** 2026-11-23, plan approved as written by the owner; T1 and T2 built. T2 (the sampler engine) is described in [Sampler architecture](sampler-architecture.md#kits-in-a-tuning-tunings-t2-mpfree-sampler). The plan, its research (Scala and MTS-ESP, Kontakt, Ableton Live 12, Pianoteq, Surge XT, the MIDI Tuning Standard) and the four decisions are in the Claude Doc [Microtonal tunings for keygroups and every instrument](https://claude.ai/artifact/4x2unuJnGr322L9XHd4Xfy). How a `Tuning` works today, and the Synth tab's Tuning rows, are in [Synths](synths.md#tunings-and-per-note-expression).
 
 Keygroups get the tunings the synths already have, and every instrument can have a tuning of its own that starts as the song's. Later phases bring plugin synths and outside gear into the tuning (MPE, MTS, CV), and teach the pads, the arp and the scales about tunings that don't have 12 notes.
 
 ## The rules
 
-- **Notes follow the tuning, hits don't.** Keygroup notes (from the pads playing notes, a keyboard, a clip, the arp or a MIDI route), 16 Levels set to Tune, glide and legato, warped and grain keygroups follow the tuning. A pad hit, a sliced pad and the Drums synth play as tuned on the pad, as drum hits do everywhere.
+- **Notes follow the tuning, hits don't.** Keygroup notes (from the pads playing notes, a keyboard, a clip, the arp or a MIDI route), 16 Levels set to Tune, glide and legato, warped and grain keygroups follow the tuning. A pad hit, a sliced pad, slices put on keys (Chop to keys) and the Drums synth play as tuned on the pad, as drum hits do everywhere.
 - **A keygroup's root stays at its 12-TET pitch.** Key *n* sounds at the tuning's pitch for *n*: the voice adds `Tuning::offset_cents(n)` to its Tune. A4 = 432 moves a keygroup by the same -31.8 cents it moves a synth.
 - **Bends move along the tuning's keys**, as the synths' bends already do: a bend of *b* keys plays the tuning's pitch at *note + b*.
 - **The song has one tuning, and each instrument has Song's or its own.** It belongs to the instrument (by its id in the project's [instrument list](instruments.md)), not the track. Duplicate copies the pick; a preset doesn't carry one; a patch never changes it ([Live shows](live-shows.md)).
@@ -24,7 +24,7 @@ Ten steps in four phases, one draft pull request each through the merge desk, ea
 | Step | What | State |
 |---|---|---|
 | T1 | `Tuning::offset_cents`; `TuningPick` and `TuningFile` move from the app into `mpfree-tuning` | built ([below](#t1-as-built)) |
-| T2 | The sampler engine: a tuning per kit place; keygroup notes, pads playing notes, 16 Levels Tune, glide and legato, the wheel, grains and warped keygroups follow it | next, after the sampler's step 15a |
+| T2 | The sampler engine: a tuning per kit place; keygroup notes, pads playing notes, 16 Levels Tune, glide and legato, the wheel, grains and warped keygroups follow it | built ([Sampler architecture](sampler-architecture.md#kits-in-a-tuning-tunings-t2-mpfree-sampler)) |
 | T3 | The app: kits follow the song's tuning; auto-sample in 12-TET; the manual's Tuning section and keygroup pages | planned |
 | T4 | Mockups: where the song's tuning lives, an instrument's Tuning row, a kit's, a plugin that can't follow | planned, needs the owner's approval |
 | T5 | The `tunings` project part by instrument id (Song's or own), project format 5, the resolver on the audio loop | planned |
