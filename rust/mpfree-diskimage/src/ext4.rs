@@ -1217,4 +1217,246 @@ mod tests {
         let ino = fs.lookup("/Kick.wav").unwrap().unwrap();
         assert_eq!(fs.read_file(&ino).unwrap(), pattern(5000, 3));
     }
+
+    /// What the pad player would do with a damaged Internal drive: open it,
+    /// walk every folder, read every link, attribute and file a sound could
+    /// be. Errors are fine; a panic or a hang is not. Files the place would
+    /// refuse as too big for a sound (over 64 MiB) are not read.
+    fn exercise(b: &[u8]) {
+        let Ok(fs) = Ext4::open(b) else { return };
+        let _ = fs.needs_recovery();
+        let mut files = Vec::new();
+        let _ = fs.walk(&mut |_, ino| {
+            match ino.kind() {
+                Some(Kind::File) if ino.size <= 64 << 20 => files.push(ino.clone()),
+                Some(Kind::Symlink) => {
+                    let _ = fs.read_link(ino);
+                }
+                _ => {}
+            }
+            let _ = fs.xattrs(ino);
+            Ok(())
+        });
+        for ino in &files {
+            let _ = fs.read_file(ino);
+        }
+        for path in ["/Samples/Drums/Kick 0042.wav", "/Samples/nope", "/link"] {
+            if let Ok(Some(ino)) = fs.lookup(path) {
+                let _ = fs.read_dir(&ino);
+            }
+        }
+    }
+
+    /// A damaged image gives an error, never a panic or a hang (the
+    /// module's promise): a small image's structures (its superblock, group
+    /// descriptors, used inodes and folder blocks) changed at random, a few
+    /// bytes at a time, 3000 times over, each read as the pad player would
+    /// read the MPC's Internal drive. Folders hashed (htree) where e2fsck is
+    /// there to index them.
+    #[test]
+    fn a_damaged_image_gives_an_error_not_a_panic_or_a_hang() {
+        let Some(tool) = mke2fs() else {
+            eprintln!("mke2fs not installed; skipping");
+            return;
+        };
+        let scratch = Scratch(
+            std::env::temp_dir().join(format!("mpfree-ext4-damage-{}", std::process::id())),
+        );
+        let src = scratch.0.join("src");
+        let drums = src.join("Samples").join("Drums");
+        std::fs::create_dir_all(&drums).unwrap();
+        for i in 0..300 {
+            std::fs::write(
+                drums.join(format!("Kick {i:04}.wav")),
+                pattern(100 + (i * 37) % 9000, i as u32),
+            )
+            .unwrap();
+        }
+        std::fs::write(src.join("Samples").join("Long.wav"), pattern(300 << 10, 7)).unwrap();
+        std::fs::create_dir_all(src.join("Projects/Song/Song_[ProjectData]")).unwrap();
+        std::fs::write(src.join("Projects/Song.xpj"), pattern(3000, 9)).unwrap();
+        std::os::unix::fs::symlink("Samples/Long.wav", src.join("link")).unwrap();
+        std::os::unix::fs::symlink("y".repeat(120), src.join("long-link")).unwrap();
+        let img = scratch.0.join("small.img");
+        std::fs::File::create(&img)
+            .unwrap()
+            .set_len(4 << 20)
+            .unwrap();
+        let out = Command::new(tool)
+            .args(["-q", "-F", "-t", "ext4", "-b", "1024", "-N", "512"])
+            .args(["-E", "root_owner=0:0", "-d"])
+            .arg(&src)
+            .arg(&img)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "mke2fs: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        if let Some(e2fsck) = ["/usr/sbin/e2fsck", "/sbin/e2fsck"]
+            .into_iter()
+            .find(|p| Path::new(p).exists())
+        {
+            let out = Command::new(e2fsck)
+                .args(["-f", "-y", "-D"])
+                .arg(&img)
+                .output()
+                .unwrap();
+            assert!(matches!(out.status.code(), Some(0 | 1)));
+        }
+        let image = std::fs::read(&img).unwrap();
+        // Undamaged, it reads whole. Where its structures are, to damage:
+        // the superblock, the group descriptors, every used inode and every
+        // folder's blocks.
+        let fs = Ext4::open(&image[..]).unwrap();
+        let drums_dir = fs.lookup("/Samples/Drums").unwrap().unwrap();
+        assert_eq!(fs.read_dir(&drums_dir).unwrap().len(), 300);
+        let bs = fs.block_size as usize;
+        let mut inodes: Vec<std::ops::Range<usize>> = Vec::new();
+        let mut folders: Vec<std::ops::Range<usize>> = Vec::new();
+        let mut used: Vec<Inode> = (1..=11).filter_map(|i| fs.inode(i).ok()).collect();
+        fs.walk(&mut |_, ino| {
+            used.push(ino.clone());
+            Ok(())
+        })
+        .unwrap();
+        for ino in &used {
+            let g = ((ino.ino - 1) / fs.inodes_per_group) as usize;
+            let i = ((ino.ino - 1) % fs.inodes_per_group) as usize;
+            let at = fs.inode_tables[g] as usize * bs + i * fs.inode_size as usize;
+            inodes.push(at..at + fs.inode_size as usize);
+            if ino.is_dir() {
+                let n = ino.size.div_ceil(fs.block_size);
+                for b in fs.map_window(ino, 0, n).unwrap() {
+                    if b != 0 {
+                        folders.push(b as usize * bs..(b as usize + 1) * bs);
+                    }
+                }
+            }
+        }
+        let gdt = 2048..2048 + fs.groups as usize * 64;
+        drop(fs);
+        let superblock = 1024..2048;
+        let places = [vec![superblock], vec![gdt], inodes, folders];
+        assert!(places[3].len() > 4, "the folders' blocks: {:?}", places[3]);
+        let mut rng = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move |n: usize| {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            (rng % n as u64) as usize
+        };
+        let image = std::sync::Arc::new(image);
+        let (mut panics, mut hangs) = (Vec::new(), Vec::new());
+        let started = std::time::Instant::now();
+        const ROUNDS: usize = 3000;
+        for round in 0..ROUNDS {
+            let mut b = image.to_vec();
+            let mut changed = Vec::new();
+            for _ in 0..1 + next(4) {
+                let kind = &places[next(places.len())];
+                let r = &kind[next(kind.len())];
+                let at = r.start + next(r.len());
+                b[at] ^= 1 + next(255) as u8;
+                changed.push(at);
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let r = std::panic::catch_unwind(|| exercise(&b));
+                let _ = tx.send(r.is_ok());
+            });
+            match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+                Ok(true) => {}
+                Ok(false) => panics.push((round, changed)),
+                Err(_) => hangs.push((round, changed)),
+            }
+        }
+        eprintln!(
+            "{ROUNDS} damaged images read in {:?}: {} panics, {} over 10 s",
+            started.elapsed(),
+            panics.len(),
+            hangs.len()
+        );
+        assert!(
+            panics.is_empty(),
+            "panicked (round, bytes changed): {panics:?}"
+        );
+        assert!(
+            hangs.is_empty(),
+            "over 10 s (round, bytes changed): {hangs:?}"
+        );
+    }
+
+    /// A damaged folder that links back to the root, twice, would make a
+    /// walk that followed both links grow without end; the walk stops at
+    /// 64 folders deep with an error instead, at once.
+    #[test]
+    fn a_folder_linked_back_to_the_root_ends_the_walk_with_an_error() {
+        let Some(tool) = mke2fs() else {
+            eprintln!("mke2fs not installed; skipping");
+            return;
+        };
+        let Some(debugfs) = ["/usr/sbin/debugfs", "/sbin/debugfs"]
+            .into_iter()
+            .find(|p| Path::new(p).exists())
+        else {
+            eprintln!("debugfs not installed; skipping");
+            return;
+        };
+        let scratch =
+            Scratch(std::env::temp_dir().join(format!("mpfree-ext4-loop-{}", std::process::id())));
+        let src = scratch.0.join("src");
+        std::fs::create_dir_all(src.join("Projects/Song")).unwrap();
+        std::fs::write(src.join("Projects/a.txt"), b"hi\n").unwrap();
+        let img = scratch.0.join("loop.img");
+        std::fs::File::create(&img)
+            .unwrap()
+            .set_len(4 << 20)
+            .unwrap();
+        let out = Command::new(tool)
+            .args([
+                "-q",
+                "-F",
+                "-t",
+                "ext4",
+                "-b",
+                "1024",
+                "-E",
+                "root_owner=0:0",
+                "-d",
+            ])
+            .arg(&src)
+            .arg(&img)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        for name in ["up1", "up2"] {
+            let out = Command::new(debugfs)
+                .args(["-w", "-R", &format!("link / /Projects/{name}")])
+                .arg(&img)
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+        }
+        let fs = Ext4::open(std::fs::File::open(&img).unwrap()).unwrap();
+        let projects = fs.lookup("/Projects").unwrap().unwrap();
+        let names: Vec<_> = fs
+            .read_dir(&projects)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.ino)
+            .collect();
+        assert_eq!(names.iter().filter(|&&i| i == ROOT).count(), 2, "{names:?}");
+        let mut seen = 0u64;
+        let started = std::time::Instant::now();
+        let r = fs.walk(&mut |_, _| {
+            seen += 1;
+            Ok(())
+        });
+        let e = r.unwrap_err().to_string();
+        assert!(e.contains("folders nest more than 64 deep"), "{e}");
+        assert!(seen < 10_000, "{seen} entries before it stopped");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
 }
