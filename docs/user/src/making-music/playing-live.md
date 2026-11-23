@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-sampler-ui/src/levels_panel.rs rust/mpfree-app/src/play_page.rs rust/mpfree-app/src/play_widgets.rs rust/mpfree-app/src/mixing.rs rust/mpfree-fx/src/perform.rs
-checked: 2026-11-19 ea21a9b1
+checked: 2026-11-22 068a8998
 -->
 
 # Playing live
@@ -43,7 +43,7 @@ The pattern's length, the step inspector and your timing are on the [Sequencer](
 
 The **XY pad** plays an effect on the whole mix under one finger. The chip at its top left says what it plays, for example **XY · Filter + echo**.
 
-**Filter + echo** (what it plays at first) is a filter and an echo together. Left of the middle is a low-pass filter (darker), right of it a high-pass filter (thinner), and the middle is no filter at all. Higher up adds more echo. When you lift your finger the pad glides back to the middle and the bottom, so the sound comes back clean. Its label says where it is, for example "HP 173 Hz · echo 62 %".
+**Filter + echo** (what it plays at first) is a filter and an echo together. Left of the middle is a low-pass filter (darker), right of it a high-pass filter (thinner), and the middle is no filter at all. Higher up adds more echo. When you lift your finger the pad glides back to the middle and the bottom, so the sound comes back clean. One finger plays it: a second finger on the pad does nothing until the first lifts. Its label says where it is, for example "HP 173 Hz · echo 62 %".
 
 **To play something else,** tap the chip. A list takes the place of the pattern: Filter + echo, then the nine effects of [XY FX](effects.md#xy-fx) (Filter, Echo, Dub echo, Wash, Crush, Flanger, Phaser, Ring mod and Gate), each saying what across and up do. Tap one and the pad plays it from then on; **Close** or the chip again leaves it as it was. With one of the nine, the effect opens when your finger lands and lets go when it lifts (an echo or the wash rings out), and the dot stays where you lifted it. The pad's label names both settings, for example "Decay 2.4 s · Amount 40 %". MPFree remembers your pick, like the other settings in Prefs.
 

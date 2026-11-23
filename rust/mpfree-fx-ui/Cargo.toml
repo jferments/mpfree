@@ -11,6 +11,7 @@ mpfree-fx = { path = "../mpfree-fx" }
 mpfree-node = { path = "../mpfree-node" }
 mpfree-synth-ui = { path = "../mpfree-synth-ui" }
 mpfree-ui = { path = "../mpfree-ui" }
+mpfree-xy = { path = "../mpfree-xy" }
 
 [[bin]]
 name = "mpfree-fx-preview"

@@ -42,6 +42,8 @@ mpfree-store = { path = "../mpfree-store" }
 mpfree-fx = { path = "../mpfree-fx" }
 mpfree-mixer-ui = { path = "../mpfree-mixer-ui" }
 mpfree-mod = { path = "../mpfree-mod" }
+# The XY pad's engine: timed input, who owns a gesture, layouts (xy_layouts.rs).
+mpfree-xy = { path = "../mpfree-xy" }
 # The chain editor and the macros panel (modpanels.rs), and the effects they add.
 mpfree-chain-ui = { path = "../mpfree-chain-ui" }
 mpfree-fx-ui = { path = "../mpfree-fx-ui" }

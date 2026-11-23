@@ -179,6 +179,7 @@ mod touchlab_page;
 mod undo;
 mod views;
 mod waiting;
+mod xy_layouts;
 mod xy_list;
 mod xy_slot;
 
@@ -12830,6 +12831,7 @@ fn player_session(
             ));
             out.note(&format!("status: {}", tracks.describe()));
             out.note(&format!("status: {}", mix.modu.describe()));
+            out.note(&format!("status: {}", mix.describe_xy()));
             if let Some(line) = found_plugins.summary().and_then(|s| s.line()) {
                 out.note(&format!("status: plugins: {line}"));
             }
@@ -13060,6 +13062,7 @@ fn player_session(
     out.say(&format!("{}; {}", looper.describe(), loop_time.describe()));
     out.say(&tracks.describe());
     out.say(&mix.modu.describe());
+    out.say(&mix.describe_xy());
     if let Some(line) = param_log.flush(&synth) {
         out.say(&line);
     }

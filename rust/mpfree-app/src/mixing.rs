@@ -643,11 +643,16 @@ pub struct MixHost {
     old_pads: Option<(u16, u16)>,
     /// What the XY pad plays ([`PlayFx::XyEffect`]).
     xy_effect: Option<usize>,
-    /// A finger holds the XY pad (the screen's or a learned control's).
-    xy_down: bool,
-    /// It is the screen's, as its actions said ([`MixHost::play_screen`]):
-    /// the pad's state on the screen ([`MixHost::screen_xy`]) can let it go.
-    xy_screen: bool,
+    /// Who holds the XY pad (`mpfree_xy::Gesture`): the first touch until
+    /// it ends, or a newer gesture from the other controller.
+    xy_gesture: mpfree_xy::Gesture,
+    /// Each controller's own gesture on the pad is down, the screen's
+    /// ([`MixHost::play_screen`]) and a learned control's
+    /// ([`MixHost::play`]), whether or not it holds the pad; the pad's
+    /// state on the screen ([`MixHost::screen_xy`]) can end the screen's.
+    xy_on: [bool; 2],
+    /// Counts the pad's inputs, for the gesture's order.
+    xy_seq: u32,
     /// The pad was pressed since the last period ran.
     xy_new: bool,
     /// A lift that came before the period its press plays in (a tap
@@ -946,8 +951,9 @@ impl MixHost {
             loop_echoes: [0; mpfree_fx::RETURNS],
             loop_bus_echo: None,
             xy_effect: None,
-            xy_down: false,
-            xy_screen: false,
+            xy_gesture: mpfree_xy::Gesture::default(),
+            xy_on: [false; 2],
+            xy_seq: 0,
             xy_new: false,
             xy_late: None,
             xy_found_up: 0,
@@ -1215,7 +1221,8 @@ impl MixHost {
         // Nothing the last project held stays held: every hand, step lock
         // and move lets go, and the XY pad with them.
         self.modu.let_go_all();
-        self.xy_down = false;
+        self.xy_gesture.clear();
+        self.xy_on = [false; 2];
         self.xy_late = None;
         // An old project's pad mutes, for the tracks to take as it opens.
         self.old_pads = Some((load.old_pad_mutes, load.old_pad_solos)).filter(|&(m, s)| m | s != 0);
@@ -1641,20 +1648,9 @@ impl MixHost {
                 let addr = ParamAddr::macro_value(card.min(7));
                 self.modu.lock(&self.mixer, 0, addr, value);
             }
-            PlayFx::Xy { x, y, down } => {
-                if !down && self.xy_new {
-                    // Pressed and lifted before a period played it (a tap
-                    // quicker than a period): it plays for one period and
-                    // lets go after it.
-                    self.xy_late = Some((x, y));
-                    return;
-                }
-                // Anything newer takes a waiting lift's place.
-                self.xy_late = None;
-                self.xy_new |= down && !self.xy_down;
-                self.xy_down = down;
-                self.play_xy(x, y, down);
-            }
+            // A learned control's (the screen's comes through
+            // `play_screen`).
+            PlayFx::Xy { x, y, down } => self.xy(mpfree_xy::Device::Midi, x, y, down),
             PlayFx::XyEffect(pick) => {
                 use mpfree_fx::xyfx::ids as xy;
                 let pick = pick.filter(|&k| k < XY_START.len());
@@ -1694,37 +1690,111 @@ impl MixHost {
         }
     }
 
-    /// The XY pad at `x`, `y`, held or not: the XY FX's effect picked, or
-    /// the Perform FX's DJ filter and echo.
-    fn play_xy(&mut self, x: f32, y: f32, down: bool) {
-        match self.xy_effect {
-            Some(_) => {
-                use mpfree_fx::xyfx::ids as xy;
-                // Still being built: the next move plays it.
-                let Some(slot) = self.xy_slot() else {
-                    return;
-                };
-                self.insert(StripId::Master, slot, xy::X, x.clamp(0.0, 1.0) * 100.0);
-                self.insert(StripId::Master, slot, xy::Y, y.clamp(0.0, 1.0) * 100.0);
-                let open = if down { 1.0 } else { 0.0 };
-                self.insert(StripId::Master, slot, xy::ACTIVE, open);
+    /// `device` (the screen, or a learned control's XY across and up) put
+    /// the XY pad at `x`, `y`, held or not. Its own gesture begins with the
+    /// first held move and ends with the first not held; the gesture that
+    /// owns the pad plays (`mpfree_xy::Gesture`). A move not held outside
+    /// a gesture is the pad gliding home after a lift: it plays while no
+    /// gesture holds the pad.
+    fn xy(&mut self, device: mpfree_xy::Device, x: f32, y: f32, down: bool) {
+        use mpfree_xy::{Phase, Step, XyInput};
+        let d = usize::from(device != mpfree_xy::Device::Screen);
+        let was = self.xy_on[d];
+        if !down && !was {
+            if self.xy_gesture.held() {
+                return;
             }
-            None => {
-                let pad = mpfree_fx::XyPad::perform();
-                for (axis, pos) in [(pad.x, x), (pad.y, y)] {
-                    self.insert(StripId::Master, PERFORM_SLOT, axis.param, axis.value(pos));
-                }
+            if self.xy_new {
+                // A lift waits for its press's period: this takes its place.
+                self.xy_late = Some((x, y));
+                return;
+            }
+            self.xy_late = None;
+            self.play_xy(x, y, false);
+            return;
+        }
+        self.xy_on[d] = down;
+        let phase = match (was, down) {
+            (false, true) => Phase::Begin,
+            (true, true) => Phase::Move,
+            _ => Phase::End,
+        };
+        self.xy_seq = self.xy_seq.wrapping_add(1);
+        let input = XyInput::new(device, 0, self.xy_seq, 0, phase, x, y);
+        match self.xy_gesture.input(&input) {
+            // The other controller's gesture holds the pad.
+            None => {}
+            Some(Step::Begin { x, y }) => {
+                self.xy_late = None;
+                self.xy_new = true;
+                self.play_xy(x, y, true);
+            }
+            Some(Step::Move { x, y }) => {
+                // Anything newer takes a waiting lift's place.
+                self.xy_late = None;
+                self.play_xy(x, y, true);
+            }
+            Some(Step::End { x, y }) if self.xy_new => {
+                // Pressed and lifted before a period played it (a tap
+                // quicker than a period): it plays for one period and
+                // lets go after it.
+                self.xy_late = Some((x, y));
+            }
+            Some(Step::End { x, y }) => {
+                self.xy_late = None;
+                self.play_xy(x, y, false);
             }
         }
     }
 
-    /// A change from the screen's Play page: as [`MixHost::play`], and the
-    /// XY pad's hold is the screen's.
-    pub fn play_screen(&mut self, fx: PlayFx) {
-        if let PlayFx::Xy { down, .. } = fx {
-            self.xy_screen = down;
+    /// The XY pad's layout as it plays now (`xy_layouts.rs`): the XY FX
+    /// picked, or the Perform FX's DJ filter and echo, on its insert's
+    /// slot id. `None` while the XY FX is still being put on.
+    fn xy_layout(&self) -> Option<mpfree_xy::Compiled> {
+        let slot = match self.xy_effect {
+            Some(_) => self.xy_slot()?,
+            None => PERFORM_SLOT,
+        };
+        let uid = self.mixer.chain(StripId::Master)?.uid(slot)?;
+        Some(crate::xy_layouts::compiled(self.xy_effect, uid))
+    }
+
+    /// The XY pad at `x`, `y`, held or not: its layout's settings set (a
+    /// pad still being put on plays from the next move).
+    fn play_xy(&mut self, x: f32, y: f32, down: bool) {
+        let Some(layout) = self.xy_layout() else {
+            return;
+        };
+        layout.values(x, y, down, |addr, value| self.set_insert(addr, value));
+    }
+
+    /// An insert's setting set as a turn sets it, found by its slot id.
+    fn set_insert(&mut self, addr: ParamAddr, value: f32) {
+        let Owner::Insert(s, uid) = addr.owner else {
+            return;
+        };
+        let sid = crate::modmix::strip_id(s);
+        if let Some(slot) = self.mixer.chain(sid).and_then(|c| c.slot_of(uid)) {
+            self.insert(sid, slot, addr.param, value);
         }
-        self.play(fx);
+    }
+
+    /// An insert's setting as it is now, found by its slot id.
+    fn insert_param(&self, addr: ParamAddr) -> Option<f32> {
+        let Owner::Insert(s, uid) = addr.owner else {
+            return None;
+        };
+        let c = self.mixer.chain(crate::modmix::strip_id(s))?;
+        Some(c.node(c.slot_of(uid)?)?.param(addr.param))
+    }
+
+    /// A change from the screen's Play page: as [`MixHost::play`], with
+    /// the XY pad's moves the screen's.
+    pub fn play_screen(&mut self, fx: PlayFx) {
+        match fx {
+            PlayFx::Xy { x, y, down } => self.xy(mpfree_xy::Device::Screen, x, y, down),
+            fx => self.play(fx),
+        }
     }
 
     /// The screen's XY pad as it stands (`xy_slot`), read once a period
@@ -1732,22 +1802,29 @@ impl MixHost {
     /// screen but the finger is up there, the pad lets go now, its lift
     /// action not having come. True when it did.
     pub fn screen_xy(&mut self, s: crate::xy_slot::XyState) -> bool {
-        if !self.xy_screen || s.down {
+        if !self.xy_on[0] || s.down {
             return false;
         }
-        self.xy_screen = false;
         self.xy_found_up += 1;
-        self.play(PlayFx::Xy {
-            x: s.x,
-            y: s.y,
-            down: false,
-        });
+        self.xy(mpfree_xy::Device::Screen, s.x, s.y, false);
         true
     }
 
     /// Lifts the screen's pad state did for its lost lift actions.
     pub fn xy_found_up(&self) -> u64 {
         self.xy_found_up
+    }
+
+    /// The XY pad's line for the status: gestures one controller's new
+    /// gesture took the pad from, inputs ignored (another touch held it),
+    /// inputs out of order, and lifts found from the screen's state.
+    pub fn describe_xy(&self) -> String {
+        let g = &self.xy_gesture;
+        format!(
+            "XY pad: {} gestures taken by the other controller's, {} moves ignored (another touch held it), \
+             {} out of order, {} lifts found from the screen's state",
+            g.taken, g.ignored, g.stale, self.xy_found_up
+        )
     }
 
     fn insert(&mut self, strip: StripId, slot: usize, id: u16, value: f32) {
@@ -1793,31 +1870,12 @@ impl MixHost {
     /// and echo up. For MIDI Learn's XY across and up, which move one way
     /// and leave the other where it is.
     pub fn xy_at(&self) -> (f32, f32) {
-        match self.xy_effect {
-            Some(_) => {
-                use mpfree_fx::xyfx::ids as xy;
-                let node = self
-                    .xy_slot()
-                    .and_then(|slot| self.mixer.chain(StripId::Master)?.node(slot));
-                match node {
-                    Some(n) => (
-                        (n.param(xy::X) / 100.0).clamp(0.0, 1.0),
-                        (n.param(xy::Y) / 100.0).clamp(0.0, 1.0),
-                    ),
-                    None => (0.5, 0.25),
-                }
-            }
-            None => {
-                let pad = mpfree_fx::XyPad::perform();
-                let at = |a: mpfree_fx::XyAxis| {
-                    self.mixer
-                        .chain(StripId::Master)
-                        .and_then(|c| c.node(PERFORM_SLOT))
-                        .map_or(a.rest, |n| a.position(n.param(a.param)))
-                };
-                (at(pad.x), at(pad.y))
-            }
-        }
+        let rest = crate::xy_layouts::pad(self.xy_effect).rest();
+        let Some(layout) = self.xy_layout() else {
+            return rest;
+        };
+        let (x, y) = layout.position(|a| self.insert_param(a));
+        (x.unwrap_or(rest.0), y.unwrap_or(rest.1))
     }
 
     /// Throw `fx`'s settings on strip `on`'s Perform FX, for the Perform
@@ -2815,7 +2873,6 @@ impl MixHost {
         // one: it lets go now.
         if !self.xy_new {
             if let Some((x, y)) = self.xy_late.take() {
-                self.xy_down = false;
                 self.play_xy(x, y, false);
             }
         }
@@ -4627,7 +4684,8 @@ mod tests {
                 out.push_str(&format!("{i} {fx:?} {:?}\n", read(&h)));
             }
         }
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("golden/xy-ready-made.txt");
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("golden/xy-ready-made.txt");
         if std::env::var_os("MPFREE_GOLDEN_BLESS").is_some() {
             std::fs::write(&path, &out).unwrap();
         }
@@ -4664,6 +4722,48 @@ mod tests {
         h.play(xy(0.6, 0.5, false));
         run(&mut h, 1, 0.0, 0.0);
         assert_eq!(active(&h), Some(0.0));
+    }
+
+    #[test]
+    fn a_learned_controls_gesture_takes_the_xy_pad_from_the_finger_until_it_ends() {
+        use mpfree_fx::xyfx::ids as xy_id;
+        let mut h = MixHost::new(RATE, 0.0, 0.0);
+        let active = xy_fx_on(&mut h);
+        let x = |h: &MixHost| {
+            let c = h.mixer.chain(StripId::Master).unwrap();
+            c.node(h.xy_slot().unwrap()).unwrap().param(xy_id::X)
+        };
+        h.play_screen(xy(0.2, 0.5, true));
+        run(&mut h, 1, 0.0, 0.0);
+        assert_eq!(x(&h), 20.0);
+        // A learned knob's gesture begins: the newest gesture plays.
+        h.play(xy(0.7, 0.5, true));
+        run(&mut h, 1, 0.0, 0.0);
+        assert_eq!(x(&h), 70.0);
+        // The finger moves on and lifts, and the pad glides on the
+        // screen: none of it plays, and the effect stays open.
+        h.play_screen(xy(0.3, 0.5, true));
+        h.play_screen(xy(0.3, 0.5, false));
+        h.play_screen(xy(0.4, 0.5, false));
+        run(&mut h, 1, 0.0, 0.0);
+        assert_eq!((x(&h), active(&h)), (70.0, Some(1.0)));
+        h.play(xy(0.8, 0.5, true));
+        run(&mut h, 1, 0.0, 0.0);
+        assert_eq!(x(&h), 80.0);
+        // The knob comes back to rest: it lets go.
+        h.play(xy(0.5, 0.25, false));
+        run(&mut h, 1, 0.0, 0.0);
+        assert_eq!((x(&h), active(&h)), (50.0, Some(0.0)));
+        // A new touch takes the pad back.
+        h.play_screen(xy(0.1, 0.5, true));
+        run(&mut h, 1, 0.0, 0.0);
+        assert_eq!((x(&h), active(&h)), (10.0, Some(1.0)));
+        assert!(
+            h.describe_xy()
+                .starts_with("XY pad: 1 gestures taken by the other controller's, 1 moves ignored"),
+            "{}",
+            h.describe_xy()
+        );
     }
 
     #[test]

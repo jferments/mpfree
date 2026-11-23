@@ -825,6 +825,7 @@ dependencies = [
  "mpfree-transport",
  "mpfree-tuning",
  "mpfree-ui",
+ "mpfree-xy",
 ]
 
 [[package]]
@@ -1014,6 +1015,7 @@ dependencies = [
  "mpfree-node",
  "mpfree-synth-ui",
  "mpfree-ui",
+ "mpfree-xy",
 ]
 
 [[package]]
@@ -1476,6 +1478,14 @@ version = "0.1.0"
 dependencies = [
  "fontdue",
  "mpfree-screen-log",
+]
+
+[[package]]
+name = "mpfree-xy"
+version = "0.1.0"
+dependencies = [
+ "mpfree-mod",
+ "mpfree-param",
 ]
 
 [[package]]

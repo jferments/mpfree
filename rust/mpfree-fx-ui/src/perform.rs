@@ -29,7 +29,7 @@
 use crate::lock::Locks;
 use crate::state::FxState;
 use mpfree_fx::ids::perform as pf;
-use mpfree_fx::{perform_state, XyPad, PERFORM_AMOUNTS, PERFORM_EFFECTS, PERFORM_SLOTS};
+use mpfree_fx::{perform_state, PERFORM_AMOUNTS, PERFORM_EFFECTS, PERFORM_SLOTS};
 use mpfree_node::Curve;
 use mpfree_synth_ui::draw::Mask;
 use mpfree_synth_ui::format::value_text;
@@ -38,6 +38,7 @@ use mpfree_synth_ui::widgets::{
 };
 use mpfree_ui::text::FontId;
 use mpfree_ui::{Align, EventKind, Paint, PaintCx, Rect, Touch, Ui, UiEvent, Widget};
+use mpfree_xy::{Lift, Pad};
 
 pub const TITLE: &str = "perf-title";
 pub const PADS: &str = "perf-pads";
@@ -500,11 +501,42 @@ pub struct PerformPanel {
     selected: usize,
     /// The selected tile, as an index into the parameters.
     focus: Option<usize>,
-    xy: XyPad,
+    xy: Pad,
     trail: Vec<(f32, f32)>,
     /// Lock mode: the held step and its locks.
     locks: Option<Locks>,
     pub state: FxState,
+}
+
+/// The XY pad's two ways, across then up: the setting each plays and its
+/// value at the left (bottom) and right (top) edge. Across is the DJ filter,
+/// low-pass to the left and high-pass to the right, off in the middle where
+/// the pad rests; up is the echo, none at the bottom where it rests.
+const XY_WAYS: [(u16, f32, f32); 2] = [(pf::DJ_FILTER, -100.0, 100.0), (pf::ECHO, 0.0, 100.0)];
+
+/// How fast the XY pad glides back when the finger lifts (with Hold off):
+/// about this many ms to cover 63 % of the way.
+const XY_SNAP_MS: f32 = 60.0;
+
+/// What the XY pad does when the finger lifts, with Hold on or off.
+fn xy_lift(hold: bool) -> Lift {
+    if hold {
+        Lift::Stay
+    } else {
+        Lift::GoBack {
+            snap_ms: XY_SNAP_MS,
+        }
+    }
+}
+
+/// Way `w`'s setting value at position `pos` (0 to 1).
+fn xy_value(w: (u16, f32, f32), pos: f32) -> f32 {
+    w.1 + (w.2 - w.1) * pos.clamp(0.0, 1.0)
+}
+
+/// Where on way `w` the setting's value `v` is (0 to 1).
+fn xy_position(w: (u16, f32, f32), v: f32) -> f32 {
+    ((v - w.1) / (w.2 - w.1)).clamp(0.0, 1.0)
 }
 
 /// The tiles under the pads: the selected pad's three settings and State,
@@ -540,7 +572,7 @@ impl PerformPanel {
             name: name.to_string(),
             selected: 0,
             focus: None,
-            xy: XyPad::perform(),
+            xy: Pad::new((0.5, 0.0), xy_lift(false)),
             trail: Vec::new(),
             locks: None,
             state,
@@ -566,7 +598,7 @@ impl PerformPanel {
         }
     }
 
-    pub fn xy(&self) -> &XyPad {
+    pub fn xy(&self) -> &Pad {
         &self.xy
     }
 
@@ -735,7 +767,9 @@ impl PerformPanel {
     /// Sends the XY pad's values (those that changed) and draws it.
     fn follow_xy(&mut self, ui: &mut Ui) -> Vec<PerformAction> {
         let mut out = Vec::new();
-        for (id, v) in self.xy.values() {
+        let (x, y) = self.xy.position();
+        for (w, pos) in XY_WAYS.into_iter().zip([x, y]) {
+            let (id, v) = (w.0, xy_value(w, pos));
             if let Some(i) = self.state.index(id) {
                 if let Some(value) = self.state.set(i, v) {
                     out.push(PerformAction::Set { id, value });
@@ -768,11 +802,10 @@ impl PerformPanel {
                 let Some((x, y)) = ui.get::<XyView>(XY).and_then(|w| w.finger) else {
                     return Vec::new();
                 };
-                let (xa, ya) = (self.xy.x, self.xy.y);
                 let mut out = Vec::new();
-                for (axis, pos) in [(xa, x), (ya, y)] {
-                    if let Some(i) = self.state.index(axis.param) {
-                        out.extend(self.set(ui, i, axis.value(pos)));
+                for (w, pos) in XY_WAYS.into_iter().zip([x, y]) {
+                    if let Some(i) = self.state.index(w.0) {
+                        out.extend(self.set(ui, i, xy_value(w, pos)));
                     }
                 }
                 out
@@ -801,8 +834,8 @@ impl PerformPanel {
                 Vec::new()
             }
             (XY, EventKind::Tab(0)) => {
-                let on = !self.xy.hold;
-                self.xy.set_hold(on);
+                let on = !self.xy.stays();
+                self.xy.set_lift(xy_lift(on));
                 self.refresh(ui);
                 Vec::new()
             }
@@ -915,7 +948,6 @@ impl PerformPanel {
         }
         let dj = v(pf::DJ_FILTER);
         let echo = v(pf::ECHO);
-        let (xa, ya) = (self.xy.x, self.xy.y);
         let readout = {
             let filter = if dj == 0.0 {
                 "filter off".to_string()
@@ -926,8 +958,8 @@ impl PerformPanel {
             };
             format!("{filter} · echo {echo:.0} % · {}", self.line(pf::ECHO_TIME))
         };
-        let pos = (xa.position(dj), ya.position(echo));
-        let (hold, touched, trail) = (self.xy.hold, self.xy.touched(), self.trail.clone());
+        let pos = (xy_position(XY_WAYS[0], dj), xy_position(XY_WAYS[1], echo));
+        let (hold, touched, trail) = (self.xy.stays(), self.xy.touched(), self.trail.clone());
         if let Some(w) = ui.get_mut::<XyView>(XY) {
             w.title = "XY · DJ filter and echo".to_string();
             w.edges = [
@@ -938,7 +970,7 @@ impl PerformPanel {
             ];
             w.readout = readout;
             w.pos = pos;
-            w.rest = (xa.rest, ya.rest);
+            w.rest = self.xy.rest();
             w.trail = trail;
             w.touched = touched;
             w.hold = hold;
